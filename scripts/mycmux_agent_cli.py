@@ -264,7 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("enter", "esc", "tab", "up", "down", "left", "right", "ctrl-c", "space", "backspace"),
     )
     send.add_argument("--expect-epoch", type=int)
-    send.add_argument("--expect-attention-id")
+    send.add_argument("--expect-attention-id", help="Attention ID, or null/none for no attention")
     send.add_argument("--expect-revision", type=int)
     send.add_argument("--expect-input-revision", type=int)
 
@@ -510,7 +510,9 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         }
         optional_arg(args, "key", namespace.key)
         optional_arg(args, "expectedSessionEpoch", namespace.expect_epoch)
-        optional_arg(args, "expectedAttentionId", namespace.expect_attention_id)
+        if namespace.expect_attention_id is not None:
+            value = namespace.expect_attention_id
+            args["expectedAttentionId"] = None if value.lower() in {"null", "none"} else value
         optional_arg(args, "expectedSessionRevision", namespace.expect_revision)
         optional_arg(args, "expectedInputRevision", namespace.expect_input_revision)
         return "pane.send_text", args

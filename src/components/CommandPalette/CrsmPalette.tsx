@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import Fuse from "fuse.js";
 import { homeDir } from "@tauri-apps/api/path";
 import {
@@ -20,11 +20,24 @@ import { DocumentIcon, PencilIcon, TaskIcon } from "../icons/ChromeIcons";
 import { openTabSweepInDashboard } from "../layout/tabSweep";
 import { formatShortcutLabel } from "../../lib/keybindings";
 import { useKeybindingStore } from "../../stores/keybindingStore";
+import { resumeStrings } from "../workspace/terminalPaneStrings";
 import "./CrsmPalette.css";
 
 interface CrsmPaletteProps {
   open: boolean;
   onClose: () => void;
+}
+
+function moveKindRadio(event: ReactKeyboardEvent<HTMLDivElement>): void {
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  const radios = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("[role='radio']"));
+  const index = radios.indexOf(document.activeElement as HTMLButtonElement);
+  if (index < 0 || radios.length === 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const next = radios[(index + (event.key === "ArrowRight" ? 1 : -1) + radios.length) % radios.length];
+  next.focus();
+  next.click();
 }
 
 // Grok has no CRSM transcript support yet and is deliberately excluded here.
@@ -508,6 +521,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
   const shortenCwdForDisplay = useShortenCwd();
   const listRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const listKeyboardFocusPendingRef = useRef(false);
   const requestIdRef = useRef(0);
   const selectedKeyRef = useRef<string | null>(null);
   const pendingSelectionKeyRef = useRef<string | null>(null);
@@ -801,6 +815,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
+      if (closing || event.isComposing) return;
       if (event.key === "Escape") {
         event.preventDefault();
         if (resolveCrsmEscapeAction(query) === "clear-query") {
@@ -813,6 +828,13 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
           onClose();
         }
         return;
+      }
+      // Buttons retain native activation and Tab retains browser focus order.
+      const target = event.target as HTMLElement | null;
+      const inList = target?.closest(".cmux-crsm-item") != null;
+      if (target !== inputRef.current && !inList) return;
+      if (inList && ["ArrowDown", "ArrowUp", "PageUp", "PageDown", "Home", "End"].includes(event.key)) {
+        listKeyboardFocusPendingRef.current = true;
       }
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -840,18 +862,8 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
         ));
         return;
       }
-      if (event.key === "Tab") {
-        event.preventDefault();
-        setTargetPinned(true);
-        setTargetKind((curr) => {
-          if (enabledTargets.length === 0) return curr;
-          const idx = enabledTargets.indexOf(curr);
-          if (idx === -1) return enabledTargets[0];
-          return enabledTargets[(idx + 1) % enabledTargets.length];
-        });
-        return;
-      }
       if (event.key === "Enter") {
+        if (inList) return;
         event.preventDefault();
         if (matchesTabSweepCommand(query)) {
           openTabSweepCommand();
@@ -862,14 +874,24 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [enabledTargets, listViewportHeight, listed.length, open, onClose, query, selected, targetKind]);
+  }, [closing, listViewportHeight, listed.length, open, onClose, query, selected, targetKind]);
+
+  useEffect(() => {
+    if (listKeyboardFocusPendingRef.current) {
+      const item = listRef.current?.querySelector<HTMLButtonElement>(".cmux-crsm-item.is-active");
+      if (item) {
+        item.focus();
+        listKeyboardFocusPendingRef.current = false;
+      }
+    }
+  }, [selectedIndex, virtualStart, virtualEnd]);
 
   useEffect(() => {
     if (open && !closing) inputRef.current?.focus();
   }, [closing, open]);
 
-  async function openSelected(): Promise<void> {
-    if (!selected || !activeWorkspace) return;
+  async function openSelected(sessionToOpen = selected): Promise<void> {
+    if (!sessionToOpen || !activeWorkspace) return;
     const anchorPane = activeWorkspace.panes.find((pane) => pane.sessionId === activePaneId)
       ?? activeWorkspace.panes[0];
     if (!anchorPane) return;
@@ -879,37 +901,37 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
       const launchEnv: Record<string, string> = {
         MYCMUX_AGENT_KIND: targetKind,
       };
-      let agentSessionId: string | undefined = selected.id;
-      let launchSession = selected;
-      const selectedKey = sessionKey(selected);
+      let agentSessionId: string | undefined = sessionToOpen.id;
+      let launchSession = sessionToOpen;
+      const selectedKey = sessionKey(sessionToOpen);
 
-      if (selected.kind === targetKind) {
-        if (isSummaryOnlyClaudeSession(selected)) {
+      if (sessionToOpen.kind === targetKind) {
+        if (isSummaryOnlyClaudeSession(sessionToOpen)) {
           if (summaryOnlyConfirmKey !== selectedKey) {
             setSummaryOnlyConfirmKey(selectedKey);
             setError("要約から新セッションとして再開します — もう一度 Enter で実行");
             return;
           }
           const result = await withTimeout(
-            crsmCreateHandoff(selected.id, selected.kind, targetKind, 20),
+            crsmCreateHandoff(sessionToOpen.id, sessionToOpen.kind, targetKind, 20),
             HANDOFF_TIMEOUT_MS,
             "CRSM handoff",
           );
           launchEnv.MYCMUX_HANDOFF = targetKind;
-          launchEnv.MYCMUX_HANDOFF_FROM = selected.kind;
+          launchEnv.MYCMUX_HANDOFF_FROM = sessionToOpen.kind;
           launchEnv.MYCMUX_HANDOFF_PROMPT_FILE = result.path;
-          launchEnv.MYCMUX_HANDOFF_FROM_SESSION = selected.id;
+          launchEnv.MYCMUX_HANDOFF_FROM_SESSION = sessionToOpen.id;
           agentSessionId = undefined;
         } else {
-          const exact = canFastDirectResume(selected)
-            ? selected
-            : await resolveDirectResumeSession(selected);
+          const exact = canFastDirectResume(sessionToOpen)
+            ? sessionToOpen
+            : await resolveDirectResumeSession(sessionToOpen);
           if (!isTargetKind(exact.kind)) {
             throw new Error("CRSM returned an unsupported session kind");
           }
           const supportedExact = { ...exact, kind: exact.kind };
           launchSession = supportedExact;
-          if (exact !== selected) {
+          if (exact !== sessionToOpen) {
             setSessions((prev) => upsertCrsmSession(prev, supportedExact));
           }
           launchEnv.MYCMUX_RESUME = targetKind;
@@ -918,14 +940,14 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
         }
       } else {
         const result = await withTimeout(
-          crsmCreateHandoff(selected.id, selected.kind, targetKind, 20),
+          crsmCreateHandoff(sessionToOpen.id, sessionToOpen.kind, targetKind, 20),
           HANDOFF_TIMEOUT_MS,
           "CRSM handoff",
         );
         launchEnv.MYCMUX_HANDOFF = targetKind;
-        launchEnv.MYCMUX_HANDOFF_FROM = selected.kind;
+        launchEnv.MYCMUX_HANDOFF_FROM = sessionToOpen.kind;
         launchEnv.MYCMUX_HANDOFF_PROMPT_FILE = result.path;
-        launchEnv.MYCMUX_HANDOFF_FROM_SESSION = selected.id;
+        launchEnv.MYCMUX_HANDOFF_FROM_SESSION = sessionToOpen.id;
         agentSessionId = undefined;
       }
 
@@ -970,35 +992,15 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
           placeholder="履歴を検索"
           style={styles.input}
         />
-        <button
-          type="button"
-          aria-label="タブ掃除を開く"
-          onClick={openTabSweepCommand}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-            margin: "8px 12px 0",
-            padding: "7px 10px",
-            border: `1px solid ${matchesTabSweepCommand(query) ? "var(--cmux-accent)" : "var(--cmux-border)"}`,
-            borderRadius: 6,
-            background: matchesTabSweepCommand(query) ? "var(--cmux-hover)" : "transparent",
-            color: "var(--cmux-text)",
-            cursor: "pointer",
-            fontSize: 11,
-            textAlign: "left",
-          }}
-        >
-          <span><strong>操作</strong> · タブ掃除を開く</span>
-          <kbd style={{ color: "var(--cmux-text-tertiary)", fontFamily: "inherit", fontSize: 10 }}>{tabSweepShortcut}</kbd>
-        </button>
-        <div style={styles.targetRow}>
+        <div style={styles.targetRow} role="radiogroup" aria-label={resumeStrings.targetKind} onKeyDown={moveKindRadio}>
           {enabledTargets.map((kind) => (
             <button
               key={kind}
               type="button"
               className={`cmux-crsm-target-button${targetKind === kind ? " is-active" : ""}`}
+              role="radio"
+              aria-checked={targetKind === kind}
+              tabIndex={targetKind === kind ? 0 : -1}
               onClick={() => {
                 setTargetPinned(true);
                 setTargetKind(kind);
@@ -1010,12 +1012,15 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
           ))}
           <span style={styles.targetText}>{targetSummary(selected, targetKind)}</span>
         </div>
-        <div style={styles.filterRow}>
+        <div style={styles.filterRow} role="radiogroup" aria-label={resumeStrings.sessionKind} onKeyDown={moveKindRadio}>
           {sessionFilters.map(([kind, label]) => (
             <button
               key={kind}
               type="button"
               className={`cmux-crsm-filter-button${sessionFilter === kind ? " is-active" : ""}`}
+              role="radio"
+              aria-checked={sessionFilter === kind}
+              tabIndex={sessionFilter === kind ? 0 : -1}
               onClick={() => {
                 setSessionFilter(kind);
                 setSelectedIndex(0);
@@ -1074,6 +1079,21 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
           </div>
         ) : null}
         {error ? <div style={styles.error}>{error}</div> : null}
+          {loadMoreVisible ? (
+            <button
+              type="button"
+              className="cmux-crsm-load-more"
+              style={{ position: "relative", flexShrink: 0, margin: "3px 6px", height: LOAD_MORE_HEIGHT - 6 }}
+              onClick={() => void loadMore()}
+              disabled={loadingMore}
+            >
+              {loadingMore
+                ? <><span className="cmux-spinner" aria-hidden="true" />読み込み中...</>
+                : query.trim()
+                  ? `${STR_DEEP_SEARCH_CTA} (現在 ${listed.length} 件)`
+                  : `さらに過去のセッションを読み込む (現在 ${listed.length} 件 → 全件)`}
+            </button>
+          ) : null}
         <div style={styles.mainArea}>
         <div
           ref={listRef}
@@ -1089,7 +1109,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
               {STR_LOADING_SESSIONS}
             </div>
           ) : (
-          <div style={{ ...styles.virtualTrack, height: listed.length * ITEM_HEIGHT + (loadMoreVisible ? LOAD_MORE_HEIGHT : 0) }}>
+          <div style={{ ...styles.virtualTrack, height: listed.length * ITEM_HEIGHT }}>
           {virtualSessions.map((session, offset) => {
             const index = virtualStart + offset;
             const kindColor = KIND_COLORS[session.kind];
@@ -1098,13 +1118,15 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
               key={`${session.kind}:${session.id}`}
               type="button"
               className={`cmux-crsm-item${index === selectedIndex ? " is-active" : ""}`}
+              tabIndex={index === selectedIndex ? 0 : -1}
+              onFocus={() => setSelectedIndex(index)}
               style={{ top: index * ITEM_HEIGHT, height: ITEM_HEIGHT - 2 }}
               onMouseMove={() => {
                 if (selectedIndex !== index) {
                   setSelectedIndex(index);
                 }
               }}
-              onClick={() => void openSelected()}
+              onClick={() => void openSelected(session)}
             >
               <span
                 style={{
@@ -1149,21 +1171,6 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
             </button>
             );
           })}
-          {loadMoreVisible ? (
-            <button
-              type="button"
-              className="cmux-crsm-load-more"
-              style={{ top: listed.length * ITEM_HEIGHT, height: LOAD_MORE_HEIGHT - 6 }}
-              onClick={() => void loadMore()}
-              disabled={loadingMore}
-            >
-              {loadingMore
-                ? <><span className="cmux-spinner" aria-hidden="true" />読み込み中...</>
-                : query.trim()
-                  ? `${STR_DEEP_SEARCH_CTA} (現在 ${listed.length} 件)`
-                  : `さらに過去のセッションを読み込む (現在 ${listed.length} 件 → 全件)`}
-            </button>
-          ) : null}
           </div>
           )}
         </div>
@@ -1291,6 +1298,29 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
           )}
         </div>
         </div>
+        <button
+          type="button"
+          aria-label="タブ掃除を開く"
+          onClick={openTabSweepCommand}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            margin: "8px 12px 0",
+            padding: "7px 10px",
+            border: `1px solid ${matchesTabSweepCommand(query) ? "var(--cmux-accent)" : "var(--cmux-border)"}`,
+            borderRadius: 6,
+            background: matchesTabSweepCommand(query) ? "var(--cmux-hover)" : "transparent",
+            color: "var(--cmux-text)",
+            cursor: "pointer",
+            fontSize: 11,
+            textAlign: "left",
+          }}
+        >
+          <span><strong>操作</strong> · タブ掃除を開く</span>
+          <kbd style={{ color: "var(--cmux-text-tertiary)", fontFamily: "inherit", fontSize: 10 }}>{tabSweepShortcut}</kbd>
+        </button>
       </div>
     </div>
   );

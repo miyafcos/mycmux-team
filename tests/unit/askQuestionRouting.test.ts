@@ -164,12 +164,14 @@ describe("submitAskQuestionChoice", () => {
     expect(useAskQuestionStore.getState().bySession[sessionId].screen?.question).toBe("Which density?");
 
     const second = scriptedDeps({ reads: [densityLines(), fixtures.review] });
+    second.deps.readInputRevision = async () => 8 + second.sent.length;
     const secondResult = await submitAskQuestionChoice(sessionId, 1, second.deps);
     expect(secondResult.keysSent).toEqual([{ kind: "text", text: "1" }]);
     expect(secondResult.stopReason).toBeNull();
     expect(useAskQuestionStore.getState().bySession[sessionId].screen?.kind).toBe("review");
 
     const review = scriptedDeps({ reads: [fixtures.review, ["done"]] });
+    review.deps.readInputRevision = async () => 9 + review.sent.length;
     const reviewResult = await submitAskQuestionReview(sessionId, review.deps);
     expect(reviewResult.keysSent).toEqual([{ kind: "text", text: "1" }]);
     expect(review.sent[0]).toMatchObject({ text: "1", expectedAttentionId: "att-1" });
@@ -290,22 +292,100 @@ describe("submitAskQuestionMultiSelect", () => {
 });
 
 describe("askQuestion fail-closed", () => {
-  it("keeps the screen-bound input revision when a competing write advances Q1 to Q2", async () => {
+  it("rejects Q2 appearing on the settle read after a competing write", async () => {
+    ingestAskQuestionLines(sessionId, fixtures.single, 1, 7);
+    const q2 = fixtures.single.map((line) => line.replace("Which layout", "Which color"));
+    const { deps, sent } = scriptedDeps({ reads: [fixtures.single, q2] });
+    deps.readInputRevision = async () => 8;
+    const result = await submitAskQuestionChoice(sessionId, 2, deps);
+    expect(result).toEqual({ ok: false, stopReason: "stale_question", keysSent: [] });
+    expect(sent).toEqual([]);
+  });
+
+  it("rebinds a stable revision before sending and advances it only after the write", async () => {
     ingestAskQuestionLines(sessionId, fixtures.single, 1, 7);
     const { deps, sent } = scriptedDeps({
-      reads: [fixtures.single],
-      send: async () => ({ sent: false, reason: "input_revision" }),
+      reads: [fixtures.single, fixtures.single, fixtures.single],
+      onSend: () => expect(useAskQuestionStore.getState().bySession[sessionId].expectedInputRevision).toBe(8),
     });
-    deps.readInputRevision = async () => 8;
-
+    let reads = 0;
+    deps.readTail = async () => {
+      reads += 1;
+      if (reads === 3) {
+        expect(useAskQuestionStore.getState().bySession[sessionId].expectedInputRevision).toBe(9);
+        return [];
+      }
+      return fixtures.single;
+    };
+    deps.readInputRevision = async () => 8 + sent.length;
     const result = await submitAskQuestionChoice(sessionId, 2, deps);
+    expect(result.ok).toBe(true);
+    expect(sent).toEqual([expect.objectContaining({ expectedInputRevision: 8, text: "2" })]);
+    expect(reads).toBe(3);
+  });
 
-    expect(result.keysSent).toEqual([]);
-    expect(result.stopReason).toBe("session_revision_mismatch");
-    expect(sent).toEqual([expect.objectContaining({
-      text: "2",
-      expectedInputRevision: 7,
-    })]);
+  it("stops after one settle interval when input keeps moving", async () => {
+    ingestAskQuestionLines(sessionId, fixtures.single, 1, 7);
+    const { deps, sent } = scriptedDeps({ reads: [fixtures.single] });
+    let revision = 8;
+    let sleeps = 0;
+    deps.readInputRevision = async () => revision++;
+    deps.sleep = async (ms) => { expect(ms).toBe(deps.pollMs); sleeps += 1; };
+    const result = await submitAskQuestionChoice(sessionId, 2, deps);
+    expect(result).toEqual({ ok: false, stopReason: "session_revision_mismatch", keysSent: [] });
+    expect(sent).toEqual([]);
+    expect(sleeps).toBe(1);
+    expect(revision).toBe(10);
+    expect(useAskQuestionStore.getState().bySession[sessionId].expectedInputRevision).toBe(7);
+  });
+
+  it("rejects cursor movement during settle with unchanged content", async () => {
+    const start = multiSelectAt("Auth");
+    ingestAskQuestionLines(sessionId, start, 1, 7);
+    const { deps, sent } = scriptedDeps({ reads: [start, multiSelectAt("Billing")] });
+    deps.readInputRevision = async () => 8;
+    const result = await submitAskQuestionMultiSelect(sessionId, deps);
+    expect(result).toEqual({ ok: false, stopReason: "ambiguous", keysSent: [] });
+    expect(sent).toEqual([]);
+  });
+
+  it.each(["target_disappeared", "attention_mismatch", "session_revision_mismatch"] as const)(
+    "rechecks %s during settle", async (reason) => {
+      ingestAskQuestionLines(sessionId, fixtures.single, 1, 7);
+      const { deps, sent } = scriptedDeps({ reads: [fixtures.single] });
+      deps.readInputRevision = async () => 8;
+      let settled = false;
+      deps.sessionExists = () => !(settled && reason === "target_disappeared");
+      deps.attentionFor = () => attention(!settled ? {} : reason === "attention_mismatch"
+        ? { attentionId: "next" } : reason === "session_revision_mismatch" ? { sessionEpoch: 8 } : {});
+      deps.sleep = async () => { settled = true; };
+      const result = await submitAskQuestionChoice(sessionId, 2, deps);
+      expect(result).toEqual({ ok: false, stopReason: reason, keysSent: [] });
+      expect(sent).toEqual([]);
+      expect(useAskQuestionStore.getState().bySession[sessionId].expectedInputRevision).not.toBe(8);
+    },
+  );
+
+  it.each(["attention_id", "session_epoch", "session_revision", "input_revision", "incomplete_expectations"])(
+    "preserves guarded rejection detail %s", async (reason) => {
+      ingestAskQuestionLines(sessionId, fixtures.single, 1, 7);
+      const { deps } = scriptedDeps({ reads: [fixtures.single], send: async () => ({ sent: false, reason }) });
+      const result = await submitAskQuestionChoice(sessionId, 2, deps);
+      expect(result).toEqual({ ok: false, stopReason: reason === "attention_id"
+        ? "attention_mismatch" : "session_revision_mismatch", keysSent: [], detail: reason });
+    },
+  );
+
+  it.each(["review", "multiSelect"] as const)("rebinds stable input for %s", async (kind) => {
+    const start = kind === "review" ? fixtures.review : multiSelectAt("Submit");
+    ingestAskQuestionLines(sessionId, start, 1, 7);
+    const { deps, sent } = scriptedDeps({ reads: kind === "review"
+      ? [start, start, []] : [start, start, start, fixtures.review, fixtures.review, []] });
+    deps.readInputRevision = async () => 8 + sent.length;
+    const result = kind === "review" ? await submitAskQuestionReview(sessionId, deps)
+      : await submitAskQuestionMultiSelect(sessionId, deps);
+    expect(result.ok).toBe(true);
+    expect(sent.map((args) => args.expectedInputRevision)).toEqual(kind === "review" ? [8] : [8, 9]);
   });
 
   it("sends nothing when the PTY session epoch changes before preflight", async () => {

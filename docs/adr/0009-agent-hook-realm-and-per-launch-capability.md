@@ -34,3 +34,13 @@ managed launch でも capability を agent プロセスだけに渡せず、常�
 - `sanitize_launch_env` の3リスト (always-strip / resume quartet / handoff quartet) に `MYCMUX_HOOK_*` を足し、`tests/test_ephemeral_env_keys_contract.py` の契約を更新する。この契約は v0.4.0 の全ペイン自動 resume 事故の再発防止そのものなので、迂回でなく拡張で通す。
 - helper が新しい配布物として増える。バージョン不一致 (旧 helper × 新 app、新 helper × 旧 app) の試験が要る。helper のパスを変えると Codex の再信頼が必要になることを運用に明記する。
 - Claude の `~/.claude/settings.json` には既存 hook が多数あるため、自動インストールは semantic merge (既存定義を順序保持・自分の entry だけに ownership marker・CAS か hash 確認・atomic replace・uninstall は自分の entry だけ削除) が絶対条件になる。
+
+## 実装注記 (2026-09-07・裁定は変えない)
+
+配信済みの実装は、この ADR の 2 点を別の形で満たしている。文書と現物を突き合わせるときの読み替え:
+
+- **helper は Rust ではなく Python** — `src-tauri/hooks/mycmux_hook.py` (単一用途・GUI なし・stdin から JSON を読む・シェルを起動しない・失敗時は exit 0、という要件はそのまま)。provider の hook 設定は固定パスのこのファイルと `--provider <kind>` を指す。
+- **endpoint descriptor は JSON ファイルではなく port ファイル** — helper は `MYCMUX_RUNTIME_DIR` (既定 `~/.mycmux`) の `mycmux.port` を読んで `127.0.0.1:<port>` に接続し、capability は env `MYCMUX_HOOK_CAP` から読む。descriptor に書く予定だった `app_instance_id` / `helper_protocol_major` は、接続後の応答で照合する。
+- 上の「帰結」にある `sanitize_launch_env` への `MYCMUX_HOOK_*` 追加と `tests/test_ephemeral_env_keys_contract.py` の契約更新は入っている。
+
+descriptor 方式へ寄せ直すかどうかは、port ファイルの差し替えによる偽装が実測されたときに再検討する (「この裁定が誤りと分かる観測」と同じ扱い)。

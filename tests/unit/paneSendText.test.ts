@@ -305,8 +305,9 @@ describe("pane.send_text confirmed enter", () => {
     expect(terminalBufferMocks.getTerminalBufferLines).not.toHaveBeenCalled();
     expect(terminalBufferMocks.hasTerminalBuffer).not.toHaveBeenCalled();
     expect(ipcMocks.getSessionScrollback).toHaveBeenCalledTimes(2);
-    expect(headlessBufferMocks.getHeadlessBufferLines).toHaveBeenCalledWith(sessionId, before, 24);
-    expect(headlessBufferMocks.getHeadlessBufferLines).toHaveBeenCalledWith(sessionId, after, 24);
+    // The fourth argument is the renderer's cached geometry (none for an unmounted session).
+    expect(headlessBufferMocks.getHeadlessBufferLines).toHaveBeenCalledWith(sessionId, before, 24, undefined);
+    expect(headlessBufferMocks.getHeadlessBufferLines).toHaveBeenCalledWith(sessionId, after, 24, undefined);
   });
 
   it("sends an empty follow-up Enter only once when verification disappears", async () => {

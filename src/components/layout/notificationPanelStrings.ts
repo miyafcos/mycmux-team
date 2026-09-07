@@ -1,0 +1,23 @@
+export const notificationPanelStrings = {
+  title: "Notifications",
+  attention: "要対応",
+  unread: "未読の到着",
+  input: "質問",
+  approval: "承認",
+  answer: "開いて答える",
+  sending: "送信中",
+  sent: "送りました",
+  changed: "画面が変わったため送っていません。開いて確認してください",
+  unconfirmed: "送信結果を確認できません。開いて確認してください",
+  freeInput: "自由入力は開いて答えてください",
+  freeInputLabels: ["その他", "その他を入力"] as readonly string[],
+  otherInput: "その他を入力",
+  submit: "選択を確定",
+  open: "開く",
+  clearUnread: "この区分を既読に",
+  noAttention: "要対応なし",
+  noUnread: "未読なし",
+  attentionHeading: (count: number, questions: number, approvals: number) =>
+    `要対応 ${count} (質問 ${questions}・承認 ${approvals})`,
+  unreadHeading: (count: number) => `未読の到着 ${count}`,
+};

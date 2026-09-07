@@ -167,8 +167,8 @@ export function PetTab() {
                 >
                   <span style={{ display: "flex", marginRight: -8 }}><PetSprite atlasUrl={pet.atlasUrl} state="running" height={46} rows={pet.rows} /></span>
                   <span style={{ fontSize: 12, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pet.name}</span>
-                  <span style={{ fontSize: 10, color: "var(--cmux-text-dim)" }}>{pet.source === "bundled" ? petSettingsStrings.bundledSourceLabel : petSettingsStrings.externalSourceLabel}</span>
-                  <span style={{ fontSize: 10, color: "var(--cmux-text-dim)" }}>8×{pet.rows}</span>
+                  <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-dim)" }}>{pet.source === "bundled" ? petSettingsStrings.bundledSourceLabel : petSettingsStrings.externalSourceLabel}</span>
+                  <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-dim)" }}>8×{pet.rows}</span>
                 </button>
                 {pet.source === "external" && !confirmingQuarantine && (
                   <button
@@ -184,7 +184,7 @@ export function PetTab() {
                   </button>
                 )}
                 {confirmingQuarantine && (
-                  <div style={{ position: "absolute", inset: 0, zIndex: 1, display: "grid", alignContent: "center", gap: 6, padding: 8, borderRadius: 7, background: "var(--cmux-popover)", fontSize: 10 }}>
+                  <div style={{ position: "absolute", inset: 0, zIndex: 1, display: "grid", alignContent: "center", gap: 6, padding: 8, borderRadius: 7, background: "var(--cmux-popover)", fontSize: "var(--cmux-font-size-xs)" }}>
                     <span>{petSettingsStrings.petQuarantineHint}</span>
                     <span style={{ display: "flex", gap: 4 }}>
                       <button type="button" style={dialogButtonStyle} onClick={() => { setCandidateQuarantineId(null); void quarantine(pet.folder); }}>{petSettingsStrings.petQuarantineAction}</button>
@@ -234,7 +234,7 @@ export function PetTab() {
           <div style={hintStyle}>{petSettingsStrings.invalidHint}</div>
           <div style={{ display: "grid", gap: 6 }}>
             {invalidPets.map((pet) => <div key={pet.id} style={{ border: "1px solid var(--cmux-border)", borderRadius: 6, padding: "6px 8px", display: "flex", alignItems: "center", gap: 8 }}>
-              <div style={{ minWidth: 0, flex: 1 }}><div style={{ fontSize: 12 }}>{pet.name}</div><div style={{ color: "var(--cmux-text-dim)", fontSize: 10 }}>{pet.warning ?? "Unknown atlas format"}</div></div>
+              <div style={{ minWidth: 0, flex: 1 }}><div style={{ fontSize: 12 }}>{pet.name}</div><div style={{ color: "var(--cmux-text-dim)", fontSize: "var(--cmux-font-size-xs)" }}>{pet.warning ?? "Unknown atlas format"}</div></div>
               <button type="button" style={dialogButtonStyle} onClick={() => void quarantine(pet.folder)}>{petSettingsStrings.quarantineButton}</button>
             </div>)}
           </div>
@@ -248,7 +248,7 @@ export function PetTab() {
           <div style={hintStyle}>{petSettingsStrings.quarantinedHint}</div>
           <div style={{ display: "grid", gap: 6 }}>
             {quarantinedPets.map((pet) => <div key={pet.folder} style={{ border: "1px solid var(--cmux-border)", borderRadius: 6, padding: "6px 8px", display: "flex", alignItems: "center", gap: 8 }}>
-              <div style={{ minWidth: 0, flex: 1 }}><div style={{ fontSize: 12 }}>{pet.name}</div><div style={{ color: "var(--cmux-text-dim)", fontSize: 10 }}>{pet.warning ?? (pet.rows ? `8×${pet.rows}` : "Unknown atlas format")}</div></div>
+              <div style={{ minWidth: 0, flex: 1 }}><div style={{ fontSize: 12 }}>{pet.name}</div><div style={{ color: "var(--cmux-text-dim)", fontSize: "var(--cmux-font-size-xs)" }}>{pet.warning ?? (pet.rows ? `8×${pet.rows}` : "Unknown atlas format")}</div></div>
               <button type="button" style={dialogButtonStyle} onClick={() => void restore(pet.folder)}>{petSettingsStrings.restoreButton}</button>
             </div>)}
           </div>
@@ -276,7 +276,7 @@ export function PetTab() {
                       {enabledPets.map((candidate) => (
                         <button key={candidate.id} type="button" title={candidate.name} onClick={() => { setWorkspacePet(workspace.id, candidate.id); setPickerWorkspaceId(null); }} style={{ border: `1px solid ${candidate.id === workspace.pet ? "var(--cmux-accent)" : "var(--cmux-border)"}`, borderRadius: 5, padding: 4, background: "transparent", color: "var(--cmux-text)", cursor: "pointer", display: "grid", justifyItems: "center", gap: 2, minWidth: 0 }}>
                           <PetSprite atlasUrl={candidate.atlasUrl} state="idle" height={30} rows={candidate.rows} />
-                          <span style={{ width: "100%", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{candidate.name}</span>
+                          <span style={{ width: "100%", fontSize: "var(--cmux-font-size-xs)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{candidate.name}</span>
                         </button>
                       ))}
                     </div>

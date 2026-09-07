@@ -1,6 +1,6 @@
 # Theming
 
-Updated 2026-08-11. Details and contracts: `docs/design/theme-system.md`.
+Updated 2026-09-07. Details and contracts: `docs/design/theme-system.md`.
 
 ## 30 Bundled Themes
 
@@ -11,7 +11,7 @@ on muted/dim text at definition time.
 
 ## Runtime Switching
 
-`ThemePicker` (settings → 外観, top of the tab) shows 6 recommended themes
+`ThemePicker` (settings → 外観, top of the tab) shows 3 recommended themes
 (`RECOMMENDED_THEMES`, with use-case labels) and an expandable full list per
 group. Selecting one:
 

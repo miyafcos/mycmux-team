@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 import importlib.util
 import io
+import json
 from pathlib import Path
 from typing import Any
 
@@ -115,6 +116,7 @@ class ScriptedTransport:
         duplicate_label: bool = False,
     ) -> None:
         self.states = states or [state_response()]
+        self.auto_input_revision = states is None
         self.screens = screens or [["ready"]]
         self.duplicate_label = duplicate_label
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -128,7 +130,10 @@ class ScriptedTransport:
         if cmd == "session.state_view":
             value = self.states[min(self.state_index, len(self.states) - 1)]
             self.state_index += 1
-            return deepcopy(value)
+            result = deepcopy(value)
+            if self.auto_input_revision:
+                result["sessions"][0]["input_revision"] += len(send_calls(self))
+            return result
         if cmd == "pane.read":
             value = self.screens[min(self.screen_index, len(self.screens) - 1)]
             self.screen_index += 1
@@ -195,6 +200,9 @@ def test_list_normalizes_all_tabs_with_canonical_status() -> None:
         "attention": "none",
         "attention_id": None,
         "health": "fresh",
+        "input_revision": 5,
+        "send_status": "candidate",
+        "send_reason": "",
         "ui_state": "idle",
     }
 
@@ -298,10 +306,9 @@ def test_send_binds_enter_revision_to_its_own_text_write() -> None:
 
     result = make_bridge(transport).send(text, session_id=SESSION_ID)
 
-    assert result["result"] == "residue_remains"
+    assert result["result"] == "prompt_changed"
     writes = send_calls(transport)
-    assert [write.get("key") for write in writes] == [None, "enter"]
-    assert writes[1]["expectedInputRevision"] == 6
+    assert [write.get("key") for write in writes] == [None]
 
 
 @pytest.mark.parametrize(
@@ -325,16 +332,17 @@ def test_send_never_enters_when_draft_is_not_stably_visible(
 def test_send_does_not_treat_existing_output_as_a_new_draft() -> None:
     transport = ScriptedTransport(
         screens=[
-            ["previous: hello", "prompt>"],
-            ["previous: hello", "prompt>"],
-            ["previous: hello", "prompt>"],
-            ["previous: hello", "prompt>"],
+            ["previous: hello", "PS>"],
+            ["previous: hello", "PS>"],
+            ["previous: hello", "PS>"],
+            ["previous: hello", "PS>"],
         ]
     )
 
     result = make_bridge(transport).send("hello", session_id=SESSION_ID)
 
     assert result["result"] == "draft_not_observed"
+    assert result["enter_sent"] is False
     assert [write.get("key") for write in send_calls(transport)] == [None]
 
 
@@ -360,29 +368,30 @@ def test_send_classifies_residue_without_second_enter() -> None:
     text = "hello"
     transport = ScriptedTransport(
         states=[
-            state_response(revision=10),
-            state_response(revision=10),
-            state_response(revision=10),
-            state_response(revision=10),
-            state_response(revision=10),
-            state_response(revision=10),
-            state_response(revision=11, activity="running_silent"),
-            state_response(revision=11, activity="running_silent"),
+            state_response(revision=10, input_revision=5),
+            state_response(revision=10, input_revision=5),
+            state_response(revision=10, input_revision=6),
+            state_response(revision=10, input_revision=6),
+            state_response(revision=10, input_revision=6),
+            state_response(revision=10, input_revision=7),
+            state_response(revision=11, input_revision=7, activity="running_silent"),
+            state_response(revision=11, input_revision=7, activity="running_silent"),
         ],
         screens=[
-            ["prompt>"],
-            ["prompt>"],
-            [f"prompt> {text}"],
-            [f"prompt> {text}"],
-            [f"prompt> {text}"],
-            [f"prompt> {text}"],
-            [f"prompt> {text}"],
+            ["PS>"],
+            ["PS>"],
+            [f"PS> {text}"],
+            [f"PS> {text}"],
+            [f"PS> {text}"],
+            [f"PS> {text}"],
+            [f"PS> {text}"],
         ],
     )
 
     result = make_bridge(transport).send(text, session_id=SESSION_ID)
 
     assert result["result"] == "residue_remains"
+    assert result["enter_sent"] is True
     assert [write.get("key") for write in send_calls(transport)] == [None, "enter"]
 
 
@@ -390,8 +399,9 @@ def test_send_rejects_epoch_change_after_enter() -> None:
     text = "hello"
     transport = ScriptedTransport(
         states=[
-            *[state_response(epoch=7, revision=10) for _ in range(6)],
-            *[state_response(epoch=8, revision=11) for _ in range(2)],
+            *[state_response(epoch=7, revision=10, input_revision=5 + (index >= 2) + (index >= 5))
+              for index in range(5)],
+            *[state_response(epoch=8, revision=11, input_revision=7) for _ in range(2)],
         ],
         screens=[
             ["prompt>"],
@@ -406,6 +416,7 @@ def test_send_rejects_epoch_change_after_enter() -> None:
     result = make_bridge(transport).send(text, session_id=SESSION_ID)
 
     assert result["result"] == "verification_unavailable"
+    assert result["enter_sent"] is True
     assert [write.get("key") for write in send_calls(transport)] == [None, "enter"]
 
 
@@ -877,3 +888,232 @@ def test_token_never_appears_in_stdout_stderr_or_exception(
 
     error = BridgeError("verification_unavailable", "source checkout missing")
     assert secret not in str(error)
+
+
+def test_list_keeps_live_and_exited_null_rows_and_ignores_unregistered_null():
+    transport = ScriptedTransport(states=[{"sessions": [
+        state_entry(),
+        state_entry(session_id=OTHER_SESSION_ID, lifecycle="exited", input_revision=None),
+        state_entry(session_id="unregistered-exited", lifecycle="exited", input_revision=None),
+    ]}], duplicate_label=True)
+    result = make_bridge(transport).list_tabs()
+    assert "result" not in result
+    live, exited = result["sessions"]
+    assert live["input_revision"] == 5
+    assert live["send_status"] == "candidate"
+    assert exited["input_revision"] is None
+    assert exited["send_status"] == "not_applicable"
+    assert not send_calls(transport)
+
+
+@pytest.mark.parametrize("value", [None, -1, True, False])
+def test_invalid_input_revision_is_displayed_but_never_sent(value):
+    transport = ScriptedTransport(states=[state_response(input_revision=value)])
+    result = make_bridge(transport).list_tabs()
+    assert result["sessions"][0]["input_revision"] is value
+    assert result["sessions"][0]["send_status"] == "unavailable"
+    with pytest.raises(BridgeError, match="input revision"):
+        make_bridge(transport).send("hello", session_id=SESSION_ID)
+    assert not send_calls(transport)
+
+
+@pytest.mark.parametrize("field", ["session_epoch", "session_revision"])
+@pytest.mark.parametrize("value", [None, -1, True, False])
+def test_invalid_canonical_expectations_never_write(field, value):
+    state = state_response()
+    state["sessions"][0]["view"][field] = value
+    transport = ScriptedTransport(states=[state])
+    bridge = make_bridge(transport)
+    assert bridge.list_tabs()["sessions"][0]["send_status"] == "unavailable"
+    result = bridge.send("hello", session_id=SESSION_ID)
+    assert result["result"] != "observed_delivered"
+    assert not send_calls(transport)
+
+
+@pytest.mark.parametrize("tab_type", ["launcher", "web", "declared"])
+def test_non_pty_tabs_are_listed_but_never_send_candidates(tab_type):
+    registry = pane_list_all()
+    registry["panes"][0]["tabs"].append({
+        "id": "launcher-tab", "sessionId": "launcher-session",
+        "type": tab_type, "label": "worker",
+    })
+    transport = ScriptedTransport(states=[{"sessions": [
+        state_entry(),
+        state_entry(session_id="launcher-session", input_revision=None),
+    ]}])
+    def request(cmd, args):
+        if cmd == "pane.list_all":
+            return deepcopy(registry)
+        return transport(cmd, args)
+    bridge = Bridge(request, sleep=lambda _seconds: None)
+    rows = bridge.list_tabs()["sessions"]
+    assert rows[1]["send_status"] == "not_applicable"
+    assert rows[1]["input_revision"] is None
+    assert bridge.resolve_target(session_id=None, target="worker") == SESSION_ID
+    with pytest.raises(BridgeError):
+        bridge.send("hello", session_id="launcher-session")
+    assert not send_calls(transport)
+
+
+@pytest.mark.parametrize("change", ["epoch", "input_revision"])
+def test_pre_text_reobservation_does_not_adopt_changed_target(change):
+    after = {"epoch": 8} if change == "epoch" else {"input_revision": 6}
+    transport = ScriptedTransport(states=[state_response(), state_response(**after)])
+    result = make_bridge(transport).send("hello", session_id=SESSION_ID)
+    assert result["result"] in {"stale_target", "prompt_changed"}
+    assert not send_calls(transport)
+
+
+@pytest.mark.parametrize(
+    ("prompt", "after", "kind"),
+    [
+        ("› ", ["› hello", "• response", "› Ask Codex to do anything", "... · Ready"], "Codex"),
+        ("PS> ", ["PS> hello", "output", "PS>"], "PowerShell"),
+        ("PS C:\\Users\\miyaz\\_work> ",
+         ["PS C:\\Users\\miyaz\\_work> hello", "output", "PS C:\\Users\\miyaz\\_work>"], "PowerShell"),
+        ("> ", ["> hello", "response", "> "], "Claude Code"),
+        ("❯ ", ["❯ hello", "response", "❯ "], "Claude Code"),
+        ("C:\\work> ", ["C:\\work> hello", "output", "C:\\work>"], "cmd"),
+        ("user@host:~/work$ ", ["user@host:~/work$ hello", "output", "user@host:~/work$"], "shell"),
+    ],
+)
+def test_send_ignores_echo_above_the_last_input_line(prompt, after, kind):
+    draft = [prompt + "hello"]
+    transport = ScriptedTransport(screens=[[prompt], [prompt], draft, draft, draft, after])
+
+    result = make_bridge(transport).send("hello", session_id=SESSION_ID)
+
+    assert result["result"] == "observed_delivered"
+    assert result["enter_sent"] is True
+    assert f"last {kind} input line 3: body absent" in result["detail"]
+    assert "canonical state unchanged" in result["detail"]
+    assert [write.get("key") for write in send_calls(transport)] == [None, "enter"]
+
+
+@pytest.mark.parametrize("prompt", ["› ", "> ", "PS> "])
+def test_send_reports_residue_in_current_input_and_never_repeats_enter(prompt):
+    draft = [prompt + "hello"]
+    transport = ScriptedTransport(screens=[[prompt], [prompt], draft, draft, draft, draft])
+
+    result = make_bridge(transport).send("hello", session_id=SESSION_ID)
+
+    assert result["result"] == "residue_remains"
+    assert result["enter_sent"] is True
+    assert "input line 1: body remains" in result["detail"]
+    assert [write.get("key") for write in send_calls(transport)] == [None, "enter"]
+
+
+@pytest.mark.parametrize("new_history", [False, True])
+def test_send_never_enters_when_text_is_only_output_and_not_in_input(new_history):
+    before = ["previous: hello", "PS>"]
+    after = ["previous: hello", "new output: hello", "PS>"] if new_history else before
+    transport = ScriptedTransport(screens=[before, before, after, after])
+
+    result = make_bridge(transport).send("hello", session_id=SESSION_ID)
+
+    assert result["result"] == "draft_not_observed"
+    assert result["enter_sent"] is False
+    assert [write.get("key") for write in send_calls(transport)] == [None]
+
+
+@pytest.mark.parametrize(
+    ("after", "expected", "fingerprint"),
+    [
+        (["output: hello"], "observed_delivered", "changed"),
+        (["composer: hello"], "residue_remains", "unchanged"),
+    ],
+)
+def test_send_uses_fingerprint_if_input_line_cannot_be_identified(after, expected, fingerprint):
+    draft = ["composer: hello"]
+    transport = ScriptedTransport(screens=[["composer:"], ["composer:"], draft, draft, draft, after])
+
+    result = make_bridge(transport).send("hello", session_id=SESSION_ID)
+
+    assert result["result"] == expected
+    assert result["enter_sent"] is True
+    assert f"input line not identified; post-Enter fingerprint {fingerprint}" in result["detail"]
+    assert [write.get("key") for write in send_calls(transport)] == [None, "enter"]
+
+
+@pytest.mark.parametrize("cleared", [False, True])
+def test_send_preserves_wrapped_input_detection(cleared):
+    draft = ["› line one", "  line two", "... · Ready"]
+    after = [*draft, "• response", "› Ask Codex to do anything"] if cleared else draft
+    transport = ScriptedTransport(screens=[["› "], ["› "], draft, draft, draft, after])
+
+    result = make_bridge(transport).send("line one\nline two", session_id=SESSION_ID)
+
+    assert result["result"] == ("observed_delivered" if cleared else "residue_remains")
+    assert result["enter_sent"] is True
+    assert [write.get("key") for write in send_calls(transport)] == [None, "enter"]
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected", "enter_sent"),
+    [
+        ({"sent": False, "reason": "input_revision"}, "write_failed", False),
+        ({"ok": False, "confirmed": False, "attempts": 1}, "observed_delivered", True),
+        (None, "observed_delivered", True),
+        (RuntimeError("transport disconnected"), "write_failed", True),
+        (OSError("response lost"), "write_failed", True),
+    ],
+)
+def test_send_distinguishes_rejected_enter_from_missing_confirmation(reply, expected, enter_sent):
+    class EnterReplyTransport(ScriptedTransport):
+        def __call__(self, cmd, args):
+            result = super().__call__(cmd, args)
+            if cmd == "pane.send_text" and args.get("key") == "enter":
+                if isinstance(reply, BaseException):
+                    raise reply
+                return reply
+            return result
+
+    draft = ["PS> hello"]
+    transport = EnterReplyTransport(screens=[["PS>"], ["PS>"], draft, draft, draft, ["PS>"]])
+
+    result = make_bridge(transport).send("hello", session_id=SESSION_ID)
+
+    assert result["result"] == expected
+    assert result["enter_sent"] is enter_sent
+    assert [write.get("key") for write in send_calls(transport)] == [None, "enter"]
+
+
+def test_send_cli_refusal_json_reports_enter_not_sent(monkeypatch, capsys):
+    transport = ScriptedTransport(states=[state_response(lifecycle="closed")])
+    fake_cli = type("FakeCli", (), {"send_request": transport})
+    monkeypatch.setattr(bridge_module, "resolve_repo", lambda _explicit=None: Path("C:/repo"))
+    monkeypatch.setattr(bridge_module, "load_agent_cli", lambda _repo: fake_cli)
+
+    assert bridge_module.main(["send", "--session", SESSION_ID, "--text", "hello"]) == 1
+
+    result = json.loads(capsys.readouterr().err)
+    assert result["enter_sent"] is False
+    assert send_calls(transport) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "prompt", "after"),
+    [
+        ("Ready", "› ", ["› Ready", "• response", "› Ask Codex to do anything", "... · Ready"]),
+        ("hello", "PS> ", ["PS>", "hello"]),
+    ],
+)
+def test_send_does_not_treat_footer_or_output_below_input_as_residue(text, prompt, after):
+    draft = [prompt + text]
+    transport = ScriptedTransport(screens=[[prompt], [prompt], draft, draft, draft, after])
+
+    result = make_bridge(transport).send(text, session_id=SESSION_ID)
+
+    assert result["result"] == "observed_delivered"
+    assert result["enter_sent"] is True
+    assert [write.get("key") for write in send_calls(transport)] == [None, "enter"]
+
+
+def test_send_does_not_treat_output_below_empty_input_as_a_new_draft():
+    transport = ScriptedTransport(screens=[["PS>"], ["PS>"], ["PS>", "hello"], ["PS>", "hello"]])
+
+    result = make_bridge(transport).send("hello", session_id=SESSION_ID)
+
+    assert result["result"] == "draft_not_observed"
+    assert result["enter_sent"] is False
+    assert [write.get("key") for write in send_calls(transport)] == [None]

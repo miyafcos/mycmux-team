@@ -12,23 +12,23 @@ Used in: `html, body`, UI labels, buttons.
 ```
 '${user_font}', monospace              — from config detection
 ```
-Fallback chain: `'JetBrainsMono Nerd Font Mono', 'JetBrains Mono', 'Geist Mono', 'SF Mono', monospace`
+Fallback chain: `'JetBrainsMono Nerd Font Mono', 'JetBrains Mono', 'Geist Mono', 'SF Mono', 'BIZ UDGothic', 'MS Gothic', monospace`
 
 ### Monospace UI
 ```css
-font-family: 'JetBrains Mono', 'Geist Mono', monospace;
+font-family: var(--cmux-font-mono); /* UDEV Gothic NF, UDEV Gothic, JetBrains Mono, Consolas, monospace */
 ```
-Used in: PaneTabBar labels, restart button, URL bar.
+Used in: PaneTabBar labels and monospace UI controls; the former Restart button and general URL bar are not present.
 
 ## Type Scale
 
 | Context | Size | Weight | Location |
 |---------|------|--------|----------|
-| Terminal content | User config (default 14px) | 400 / 600 bold | XTermWrapper |
+| Terminal content | User config (default 14px) | 500 / 700 bold | XTermWrapper |
 | Pane tab labels | 13px | inherit | PaneTabBar |
 | Pill badges | 11px | 500 | `.cmux-pill` |
-| URL bar input | 12px | inherit | BrowserPane |
-| Restart button | 12px | inherit | TerminalPane |
+| URL bar input (historical) | 12px | inherit | Removed general browser; current BrowserPane is an artifact preview |
+| Retry button | 12px | inherit | ErrorBoundary |
 
 ## Terminal Font Configuration
 
@@ -39,7 +39,7 @@ User's native terminal config (e.g. Ghostty font-size = 9)
   → Rust terminal_config::load()
     → JS: rawSize < 12 ? Math.round(rawSize * 1.6) : rawSize
       → Math.max(14, scaled)
-        → xterm.js fontSize option
+        → config fallback for xterm.js (explicit prop/store takes precedence)
 ```
 
 Reason: Native terminals use physical pixels; Tauri webview uses CSS pixels. Values below 12 are assumed to be physical pixel sizes and scaled up.
@@ -58,12 +58,12 @@ text-rendering: optimizeLegibility;
   font-feature-settings: "liga" 0, "calt" 0;
 }
 
-canvas {
-  image-rendering: -webkit-optimize-contrast;
+.xterm .xterm-screen canvas {
+  background: transparent !important;
 }
 ```
 
-Ligatures are explicitly disabled in terminal content. Canvas uses `optimize-contrast` for sharper glyphs on Linux/WebKitGTK.
+Ligatures are explicitly disabled in terminal content. Canvas backgrounds are transparent for theme composition; the former `optimize-contrast` override is absent.
 
 ## Spacing Constants (`lib/constants.ts`)
 
@@ -71,7 +71,8 @@ Ligatures are explicitly disabled in terminal content. Canvas uses `optimize-con
 |----------|-------|-------|
 | `PANE_HEADER_HEIGHT` | 36px | PaneTabBar height |
 | `TAB_BAR_HEIGHT` | 36px | Sidebar tab height |
-| `SIDEBAR_WIDTH` | 200px | Sidebar width |
+| `SIDEBAR_DEFAULT_WIDTH` | 280px | Default sidebar width |
+| `SIDEBAR_MIN_WIDTH` / `SIDEBAR_MAX_WIDTH` | 200px / 560px | Sidebar resize limits |
 
 ## xterm.js Terminal Options (current)
 

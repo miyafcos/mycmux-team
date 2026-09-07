@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   terminalInstances: [] as Array<{
     dispose: ReturnType<typeof vi.fn>;
     scrollToLine: ReturnType<typeof vi.fn>;
+    keyHandler?: (event: KeyboardEvent) => boolean;
   }>,
 }));
 
@@ -74,7 +75,8 @@ vi.mock("@xterm/xterm", () => {
       container.appendChild(this.element);
     }
 
-    attachCustomKeyEventHandler(): void {}
+    keyHandler?: (event: KeyboardEvent) => boolean;
+    attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void { this.keyHandler = handler; }
     focus(): void { this.textarea?.focus(); }
     refresh(): void {}
     reset(): void {}
@@ -134,7 +136,10 @@ vi.mock("../../src/components/terminal/terminalTurnMarkers", async (importOrigin
   };
 });
 
-import XTermWrapper from "../../src/components/terminal/XTermWrapper";
+import XTermWrapper, { TERMINAL_SEARCH_EVENT } from "../../src/components/terminal/XTermWrapper";
+import PaneTabBar from "../../src/components/workspace/PaneTabBar";
+import { terminalPaneStrings } from "../../src/components/workspace/terminalPaneStrings";
+import type { Pane, Workspace } from "../../src/types";
 import {
   restoreTurnMarksAtLines,
   TURN_MARKS_EVENT,
@@ -220,6 +225,72 @@ afterEach(async () => {
 });
 
 describe("XTermWrapper turn-list row integration", () => {
+  it("reachability #5 opens only the requested terminal from header/menu, shares keyboard search and removes listeners", async () => {
+    const panes = ["search-a", "search-b"].map((sessionId) => ({
+      id: `pane-${sessionId}`, sessionId, activeTabId: `tab-${sessionId}`, agentId: "shell",
+      tabs: [{ id: `tab-${sessionId}`, sessionId, agentId: "shell", type: "terminal" }],
+    })) as Pane[];
+    useWorkspaceListStore.setState({
+      workspaces: [{ id: "workspace", name: "Search", panes }] as Workspace[], activeWorkspaceId: "workspace",
+    });
+    const addListener = vi.spyOn(window, "addEventListener");
+    const removeListener = vi.spyOn(window, "removeEventListener");
+    try {
+      await act(async () => {
+        root.render(<>
+          <PaneTabBar pane={panes[0]} workspaceId="workspace" hasTerminalBuffer={() => true} />
+          {panes.map((pane) => <section key={pane.id} data-session={pane.sessionId}>
+            <XTermWrapper workspaceId="workspace" sessionId={pane.sessionId} command="powershell.exe" />
+          </section>)}
+        </>);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await vi.waitFor(() => expect(mocks.terminalInstances).toHaveLength(2));
+      const first = host.querySelector<HTMLElement>("[data-session='search-a']")!;
+      const second = host.querySelector<HTMLElement>("[data-session='search-b']")!;
+      const searchInput = () => first.querySelector<HTMLInputElement>("input[placeholder='Find...']");
+      expect(searchInput()).toBeNull();
+      await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label='${terminalPaneStrings.searchTerminal}']`)!.click());
+      expect(searchInput()).not.toBeNull();
+      expect(document.activeElement).toBe(searchInput());
+      expect(second.querySelector("input[placeholder='Find...']")).toBeNull();
+      expect(useUiStore.getState().activePaneId).toBe("search-a");
+      const closeSearch = async () => {
+        await act(async () => { searchInput()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+        expect(searchInput()).toBeNull();
+      };
+      await closeSearch();
+      await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label='${terminalPaneStrings.paneActions}']`)!.click());
+      const item = [...host.querySelectorAll<HTMLButtonElement>("[role='menuitem']")]
+        .find((node) => node.textContent === terminalPaneStrings.searchTerminal)!;
+      await act(async () => item.click());
+      expect(document.activeElement).toBe(searchInput());
+      expect(searchInput()).not.toBeNull();
+      expect(second.querySelector("input[placeholder='Find...']")).toBeNull();
+      expect(host.querySelector("[role='menu']")).toBeNull();
+      await closeSearch();
+      await act(async () => {
+        const event = new KeyboardEvent("keydown", { key: "f", ctrlKey: true, shiftKey: true, cancelable: true });
+        expect(mocks.terminalInstances[0].keyHandler!(event)).toBe(false);
+        expect(event.defaultPrevented).toBe(true);
+      });
+      expect(document.activeElement).toBe(searchInput());
+      expect(searchInput()).not.toBeNull();
+      await act(async () => {
+        window.dispatchEvent(new CustomEvent(TERMINAL_SEARCH_EVENT, { detail: { sessionId: "unknown" } }));
+      });
+      expect(second.querySelector("input[placeholder='Find...']")).toBeNull();
+      const listeners = addListener.mock.calls.filter(([name]) => name === TERMINAL_SEARCH_EVENT);
+      expect(listeners).toHaveLength(2);
+      await act(async () => root.render(null));
+      for (const [name, handler] of listeners) expect(removeListener).toHaveBeenCalledWith(name, handler);
+    } finally {
+      addListener.mockRestore();
+      removeListener.mockRestore();
+    }
+  });
+
   it("scans a lone user turn on ▲, scrolls there, and keeps the panel closed", async () => {
     const sessionId = "turn-jump-buffer-scan";
     mocks.bufferType = "normal";

@@ -727,15 +727,21 @@ __ensure_fugu_env() {
 
 cmd=""
 
-if [ -n "$MYCMUX_HANDOFF" ]; then
-  __handoff_file="$MYCMUX_HANDOFF_PROMPT_FILE"
+# Consume launch-only state before any helper, CLI, or early return can inherit it.
+__handoff_kind="${MYCMUX_HANDOFF:-}"
+__handoff_file="${MYCMUX_HANDOFF_PROMPT_FILE:-}"
+__handoff_from="${MYCMUX_HANDOFF_FROM:-}"
+__handoff_from_session="${MYCMUX_HANDOFF_FROM_SESSION:-}"
+unset MYCMUX_HANDOFF MYCMUX_HANDOFF_PROMPT_FILE MYCMUX_HANDOFF_FROM MYCMUX_HANDOFF_FROM_SESSION
+
+if [ -n "$__handoff_kind" ]; then
   __bootstrap="Handoff from previous session. Read \"${__handoff_file}\" and continue from where it left off."
   # A handoff pane starts a brand new agent session; it must get its own id the
   # same way the normal launch path does. Writing the *source* pane id here (the
   # old "<kind>-handoff:<pane>" mapping) left the pane with no real session id,
   # so restore fell back to `--continue` and adopted another tab's conversation
   # in the same cwd.
-  case "$MYCMUX_HANDOFF" in
+  case "$__handoff_kind" in
     claude)
       __handoff_project_dir="$(__get_claude_project_dir)"
       __handoff_sid="$(__stable_new_session_id "$__handoff_project_dir")"

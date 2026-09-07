@@ -114,7 +114,12 @@ def test_terminal_search_notifications_and_settings_surfaces_remain_wired() -> N
         "src/components/layout/NotificationPanel.tsx",
         [
             "const clearNotification = usePaneMetadataStore((s) => s.clearNotification);",
-            "No notifications",
+            # D6 replaces the global empty message with two independently named
+            # empty sections; D2 clears only the lower section, never all seats.
+            "strings.noAttention",
+            "strings.noUnread",
+            "strings.clearUnread",
+            "for (const n of model.unread)",
             "clearNotification(n.sessionId);",
         ],
     )

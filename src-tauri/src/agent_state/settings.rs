@@ -223,7 +223,7 @@ fn managed_group(helper: &Path, provider: Provider, event_kind: &str) -> Value {
     })
 }
 
-fn is_managed_group(group: &Value) -> bool {
+fn is_managed_group(group: &Value, provider: Provider) -> bool {
     group
         .as_object()
         .and_then(|object| object.get("hooks"))
@@ -231,16 +231,31 @@ fn is_managed_group(group: &Value) -> bool {
         .is_some_and(|handlers| {
             !handlers.is_empty()
                 && handlers.iter().all(|handler| {
-                    handler
-                        .as_object()
-                        .and_then(|object| object.get(OWNERSHIP_MARKER))
-                        .and_then(Value::as_bool)
-                        == Some(true)
+                    // Claude Code can drop unknown handler keys when rewriting settings.
+                    let command_matches =
+                        handler.get("type").and_then(Value::as_str) == Some("command")
+                            && handler.get("command").and_then(Value::as_str).is_some_and(
+                                |command| {
+                                    command.contains("mycmux_hook.py")
+                                        && command
+                                            .split_whitespace()
+                                            .zip(command.split_whitespace().skip(1))
+                                            .any(|(flag, value)| {
+                                                flag == "--provider" && value == provider.as_str()
+                                            })
+                                },
+                            );
+                    command_matches
+                        || handler.get(OWNERSHIP_MARKER).and_then(Value::as_bool) == Some(true)
                 })
         })
 }
 
-fn merge_install(root: &mut Value, groups: &[(&str, Value)]) -> Result<(), String> {
+fn merge_install(
+    root: &mut Value,
+    provider: Provider,
+    groups: &[(&str, Value)],
+) -> Result<(), String> {
     let object = root
         .as_object_mut()
         .ok_or_else(|| "settings root must be a JSON object".to_string())?;
@@ -255,13 +270,13 @@ fn merge_install(root: &mut Value, groups: &[(&str, Value)]) -> Result<(), Strin
         let existing = existing
             .as_array_mut()
             .ok_or_else(|| format!("settings hooks.{event} must be an array"))?;
-        existing.retain(|group| !is_managed_group(group));
+        existing.retain(|group| !is_managed_group(group, provider));
         existing.push(managed.clone());
     }
     Ok(())
 }
 
-fn merge_uninstall(root: &mut Value) -> Result<(), String> {
+fn merge_uninstall(root: &mut Value, provider: Provider) -> Result<(), String> {
     let object = root
         .as_object_mut()
         .ok_or_else(|| "settings root must be a JSON object".to_string())?;
@@ -276,7 +291,7 @@ fn merge_uninstall(root: &mut Value) -> Result<(), String> {
         let Some(groups) = hooks.get_mut(&event).and_then(Value::as_array_mut) else {
             continue;
         };
-        groups.retain(|group| !is_managed_group(group));
+        groups.retain(|group| !is_managed_group(group, provider));
         if groups.is_empty() {
             hooks.remove(&event);
         }
@@ -310,9 +325,9 @@ where
             .iter()
             .map(|(event, event_kind)| (*event, managed_group(helper, provider, event_kind)))
             .collect();
-        merge_install(&mut root, &groups)?;
+        merge_install(&mut root, provider, &groups)?;
     } else {
-        merge_uninstall(&mut root)?;
+        merge_uninstall(&mut root, provider)?;
     }
     if root == before {
         return Ok(WriteStatus::Unchanged);
@@ -454,7 +469,7 @@ fn codex_hooks_are_trusted(hooks_path: &Path, config_path: &Path) -> Result<bool
             continue;
         };
         for (group_index, group) in groups.iter().enumerate() {
-            if !is_managed_group(group) {
+            if !is_managed_group(group, Provider::Codex) {
                 continue;
             }
             let Some(handlers) = group.get("hooks").and_then(Value::as_array) else {
@@ -592,6 +607,7 @@ mod tests {
             json!({"theme": "dark", "hooks": {"Stop": [user_a.clone(), user_b.clone()]}});
         merge_install(
             &mut root,
+            Provider::Claude,
             &[(
                 "Stop",
                 managed_group(&helper(), Provider::Claude, "turn_ended"),
@@ -601,7 +617,10 @@ mod tests {
         assert_eq!(root["theme"], "dark");
         assert_eq!(root["hooks"]["Stop"][0], user_a);
         assert_eq!(root["hooks"]["Stop"][1], user_b);
-        assert!(is_managed_group(&root["hooks"]["Stop"][2]));
+        assert!(is_managed_group(
+            &root["hooks"]["Stop"][2],
+            Provider::Claude
+        ));
     }
 
     #[test]
@@ -609,12 +628,131 @@ mod tests {
         let managed = managed_group(&helper(), Provider::Claude, "turn_ended");
         let mut root =
             json!({"hooks": {"Stop": [managed.clone(), {"hooks": [{"command": "user"}]}]}});
-        merge_install(&mut root, &[("Stop", managed.clone())]).unwrap();
-        merge_install(&mut root, &[("Stop", managed)]).unwrap();
+        merge_install(&mut root, Provider::Claude, &[("Stop", managed.clone())]).unwrap();
+        merge_install(&mut root, Provider::Claude, &[("Stop", managed)]).unwrap();
         let groups = root["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(groups.len(), 2);
-        assert!(!is_managed_group(&groups[0]));
-        assert!(is_managed_group(&groups[1]));
+        assert!(!is_managed_group(&groups[0], Provider::Claude));
+        assert!(is_managed_group(&groups[1], Provider::Claude));
+    }
+
+    fn legacy_group(provider: Provider, event_kind: &str, backslashes: bool) -> Value {
+        let mut group = managed_group(&helper(), provider, event_kind);
+        let handler = group["hooks"][0].as_object_mut().unwrap();
+        handler.remove(OWNERSHIP_MARKER);
+        if backslashes {
+            let command = handler["command"].as_str().unwrap().replace('/', "\\");
+            handler.insert("command".into(), Value::String(command));
+        }
+        group
+    }
+
+    #[test]
+    fn legacy_groups_are_replaced_and_install_is_idempotent() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            for backslashes in [false, true] {
+                let mut root = json!({"theme": "dark", "hooks": {}});
+                let managed: Vec<_> = provider_events(provider)
+                    .into_iter()
+                    .map(|(event, event_kind)| {
+                        let legacy = legacy_group(provider, event_kind, backslashes);
+                        assert!(is_managed_group(&legacy, provider));
+                        root["hooks"][event] = json!(vec![legacy; 5]);
+                        (event, managed_group(&helper(), provider, event_kind))
+                    })
+                    .collect();
+                merge_install(&mut root, provider, &managed).unwrap();
+                for (event, group) in &managed {
+                    assert_eq!(root["hooks"][*event], json!([group]));
+                }
+                assert_eq!(root["theme"], "dark");
+                let once = root.clone();
+                merge_install(&mut root, provider, &managed).unwrap();
+                assert_eq!(root, once);
+            }
+        }
+    }
+
+    #[test]
+    fn foreign_helpers_and_provider_mismatches_are_preserved() {
+        let foreign = json!({"hooks": [{
+            "type": "command",
+            "command": "python other_hook.py --provider claude"
+        }]});
+        let mismatch = legacy_group(Provider::Codex, "turn_ended", false);
+        let prefix = json!({"hooks": [{
+            "type": "command",
+            "command": "python mycmux_hook.py --provider claude-other"
+        }]});
+        let original = json!({"hooks": {"Stop": [foreign, mismatch, prefix]}});
+        let mut root = original.clone();
+        for group in root["hooks"]["Stop"].as_array().unwrap() {
+            assert!(!is_managed_group(group, Provider::Claude));
+        }
+        let managed = managed_group(&helper(), Provider::Claude, "turn_ended");
+        merge_install(&mut root, Provider::Claude, &[("Stop", managed.clone())]).unwrap();
+        let mut expected = original.clone();
+        expected["hooks"]["Stop"]
+            .as_array_mut()
+            .unwrap()
+            .push(managed);
+        assert_eq!(root, expected);
+        merge_uninstall(&mut root, Provider::Claude).unwrap();
+        assert_eq!(root, original);
+    }
+
+    #[test]
+    fn marker_only_groups_are_still_recognized() {
+        let marked = json!({"hooks": [{(OWNERSHIP_MARKER): true}]});
+        assert!(is_managed_group(&marked, Provider::Claude));
+        let mut root = json!({"hooks": {"Stop": [marked.clone()]}});
+        let managed = managed_group(&helper(), Provider::Claude, "turn_ended");
+        merge_install(&mut root, Provider::Claude, &[("Stop", managed.clone())]).unwrap();
+        assert_eq!(root["hooks"]["Stop"], json!([managed]));
+        root["hooks"]["Stop"] = json!([marked]);
+        merge_uninstall(&mut root, Provider::Claude).unwrap();
+        assert_eq!(root, json!({"hooks": {}}));
+    }
+
+    #[test]
+    fn uninstall_removes_legacy_groups_for_only_the_selected_provider() {
+        for backslashes in [false, true] {
+            let legacy = legacy_group(Provider::Claude, "turn_ended", backslashes);
+            let other = legacy_group(Provider::Codex, "turn_ended", backslashes);
+            let mut root = json!({"theme": "dark", "hooks": {
+                "Stop": [legacy.clone(), other.clone()],
+                "SessionEnd": [legacy]
+            }});
+            merge_uninstall(&mut root, Provider::Claude).unwrap();
+            assert_eq!(root, json!({"theme": "dark", "hooks": {"Stop": [other]}}));
+            merge_uninstall(&mut root, Provider::Codex).unwrap();
+            assert_eq!(root, json!({"theme": "dark", "hooks": {}}));
+        }
+    }
+
+    #[test]
+    fn ownership_requires_every_handler_and_a_nonempty_group() {
+        let legacy = legacy_group(Provider::Claude, "turn_ended", false);
+        let handler = legacy["hooks"][0].clone();
+        let marked = json!({(OWNERSHIP_MARKER): true});
+        let mixed_owned = json!({"hooks": [handler.clone(), marked]});
+        assert!(is_managed_group(&mixed_owned, Provider::Claude));
+        let foreign =
+            json!({"type": "command", "command": "python other_hook.py --provider claude"});
+        let other_provider = legacy_group(Provider::Codex, "turn_ended", false);
+        for group in [
+            json!({"hooks": []}),
+            json!({"hooks": [handler.clone(), foreign]}),
+            json!({"hooks": [handler, other_provider["hooks"][0].clone()]}),
+            json!({"hooks": [{"type": "prompt", "command": "mycmux_hook.py --provider claude"}]}),
+            json!({"hooks": [{"type": "command"}]}),
+            json!({"hooks": [null]}),
+            json!({"hooks": {}}),
+            json!({}),
+            Value::Null,
+        ] {
+            assert!(!is_managed_group(&group, Provider::Claude), "{group}");
+        }
     }
 
     #[test]
@@ -639,6 +777,7 @@ mod tests {
         let mut root = original.clone();
         merge_install(
             &mut root,
+            Provider::Claude,
             &[
                 (
                     "Stop",
@@ -651,7 +790,7 @@ mod tests {
             ],
         )
         .unwrap();
-        merge_uninstall(&mut root).unwrap();
+        merge_uninstall(&mut root, Provider::Claude).unwrap();
         assert_eq!(root, original);
     }
 
@@ -683,6 +822,7 @@ mod tests {
         let mut root = json!({});
         merge_install(
             &mut root,
+            Provider::Claude,
             &[(
                 "Stop",
                 managed_group(&helper(), Provider::Claude, "turn_ended"),

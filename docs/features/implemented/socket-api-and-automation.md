@@ -33,7 +33,7 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 - **逃げ道**: 未対応の外部ツールがある場合は、mycmux を `MYCMUX_SOCKET_AUTH=off` の環境で起動すると認証を無効化できる (起動時に diag.log へ警告を残し、紛らわしい古いトークンファイルは削除する)
 - 同梱の消費者 (`scripts/mycmux_agent_cli.py`・`scripts/status_feed_probe.py`・`scripts/mycmux_doctor_lite.py`) はトークンファイルがあれば自動で添付し、無ければ従来どおり素で送る (旧バージョンの mycmux とも話せる)
 
-## 実装済みコマンド
+## 主な実装済みコマンド
 
 | コマンド | 引数 | 動き |
 | --- | --- | --- |
@@ -42,28 +42,34 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 | `workspace.rename` | `workspaceId`, `name` | ワークスペース名変更 |
 | `pane.list` | `workspaceId` (省略時 active) | ペインとタブの一覧 (sessionId 含む) |
 | `pane.spawn` | 下記 | 新ペインを可視で立ち上げ、`{workspaceId, paneId, sessionId, mode}` を返す |
+| `pane.spawn_tab` | `anchorSessionId`、起動引数 | 既存ペイン内に新タブを追加 |
+| `pane.list_all` | なし | 全ワークスペースのペイン一覧 |
+| `pane.activate_tab` / `pane.close_tab` / `pane.rename_tab` | `sessionId` 等 | タブの選択・終了・改名 |
+| `web.open` / `web.list` / `web.focus` / `web.push` | `presetId`、`tabId` 等 | サービス Web タブの操作 |
 | `pane.send_text` | `sessionId`, `text`, `enter?` | 既存ペインの端末へ入力を送る |
 | `pane.read` | `sessionId`, `lines?` (既定80、最大400) | 既存ペインの画面末尾を読む |
 
-snake_case の別名 (`list_workspaces` など) も受け付けます。
+一覧・ワークスペース操作には snake_case の別名 (`list_workspaces` など) もあります。全コマンドは `socketCommands.ts` の dispatcher と `mycmux_agent_cli.py` の parser が正本です。
+`status.subscribe` / `status.snapshot` は `socket.rs` が直接扱う状態フィードで、PTY 生出力のストリーミングとは別です。
 
-### `pane.spawn` の起動モード (上から優先)
+### `pane.spawn` の起動モード (Web 分岐を先に判定、端末は上から優先)
 
 | モード | 引数 | 動き |
 | --- | --- | --- |
+| web | `target: "web"`、`preset` または `presetId` | PTY を作らずサービス Web タブを開く |
 | handoff | `handoffFromSessionId` (+`handoffFromKind`) | 既存セッションの履歴から `crsm handoff` で引き継ぎ書を生成し、`MYCMUX_HANDOFF_*` env で起動 |
 | prompt | `promptFile` (+`fromSessionId`, `fromKind`) | 指定した指示書ファイルをそのまま `MYCMUX_HANDOFF_PROMPT_FILE` として起動。`fromSessionId` 省略時は `"external"` を補う (空だと `terminal.rs` の `sanitize_launch_env` が handoff env を剥がすため) |
 | resume | `resumeSessionId` | `MYCMUX_RESUME` + `MYCMUX_SESSION_ID` で resume 起動 |
-| launch / shell | なし | `MYCMUX_LAUNCH_TARGET=<target>` で新規起動。`target: "shell"` は素の shell-starter |
+| launch / shell | なし | `MYCMUX_LAUNCH_TARGET=<target>` で新規起動。`target: "shell"` は `shell-starter` の起動メニュー |
 
-共通引数: `target` (claude / codex / claude-codex / shell、必須)、`workspaceId`、`anchorPaneId`、`direction` (right / down)、`cwd`、`label`、`activate` (`pane.spawn` は既定 true、`pane.spawn_tab` は既定 false)。
+共通引数: `target` (claude / codex / claude-codex / grok / shell / web、必須)、`workspaceId`、`anchorPaneId`、`direction` (right / down)、`cwd`、`label`、`activate` (`pane.spawn` は既定 true、`pane.spawn_tab` は既定 false)。
 
 env 構築は純関数 `resolveSpawnPlan` に分離してあり、`tests/unit/socketCommands.test.ts` で単体テストしています。
 
 ## 安全設計
 
 - ループバック限定 + プロセス固有トークン (上記「認証」)。GUI パレットで人間ができる操作を、トークンを読める呼び出し元にだけ開放している
-- `MYCMUX_LAUNCH_TARGET` と、New Workspace ダイアログが同じ経路で渡す `MYCMUX_LAUNCH_MODEL` / `MYCMUX_LAUNCH_EFFORT` は ephemeral env ガード3層 (lib.rs 起動時 `remove_var` / SocketListener の永続化フィルタ / 契約テスト `tests/test_ephemeral_env_keys_contract.py`) に登録済み。data.json に残らないため、復元時にエージェントが勝手に起動する事故 (v0.4.0 の env 汚染事故と同型) は起きない
+- `MYCMUX_LAUNCH_TARGET` と、New Workspace ダイアログが同じ経路で渡す `MYCMUX_LAUNCH_MODEL` / `MYCMUX_LAUNCH_EFFORT` は ephemeral env ガード (lib.rs 起動時 `remove_var` / `terminal.rs` の `sanitize_launch_env` / SocketListener の永続化フィルタ、契約テスト `tests/test_ephemeral_env_keys_contract.py`) に登録済み。data.json に残さず、起動時の一時値が再起動時に再利用されるのを防ぐ
 - model / effort の値はコマンドラインに載るので、`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` に合うものだけを通す (先頭を英数字に固定してフラグ偽装を封じる)。検証は GUI 側 (`src/lib/agentCatalog.ts`) とランチャー2本の両方に置き、ランチャーは読んだ直後に env から消す
 - `pane.send_text` は生の端末入力。CLI ヘルプにも「対象 sessionId を確認してから使う」旨を明記
 
@@ -87,9 +93,9 @@ python scripts/mycmux_agent_cli.py send --session <sessionId> --text "続けて"
 ### 運用ノート (2026-07-15 実機検証より)
 
 - CLI は stdout/stderr を UTF-8 に reconfigure してから print する (cp932 コンソールでペイン内容の「⚠」等により UnicodeEncodeError で落ちる実害があった)
-- `--target shell` は launcher メニュー起動。**起動直後に `send` すると入力がメニューに食われて意図しないエージェントが起動する**。send 前に `read` でプロンプト表示を確認する
-- `pane.read` はフロントエンドの描画バッファ読みのため、一度も表示されていないタブは空を返す
+- `--target shell` は起動メニューを開く。現行の新規タブは React ランチャーで、bash メニューは互換経路。`send` は PTY のある端末タブを選び、送信前に状態を確認する
+- `pane.read` は端末バッファの末尾を読む。宣言だけのタブや未知の sessionId はエラーになる
 
 ## 未実装 (cmux 参照からの候補)
 
-`workspace.new` / `workspace.close`、`pane.close` / `pane.focus`、`notify.*`、`theme.*`、PTY 出力のストリーミング購読。必要になった時点で `socketCommands.ts` に追加します。
+`workspace.new` / `workspace.close`、`pane.close` / `pane.focus`、`notify.*`、`theme.*`、PTY 出力のストリーミング購読。同名コマンドは未実装です。タブ単位の終了・選択は既存の `pane.close_tab` / `pane.activate_tab` を利用できます。

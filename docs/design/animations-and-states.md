@@ -2,7 +2,9 @@
 
 ## Keyframe Animations
 
-### Pane Flash (`@keyframes paneFlash`)
+### Historical Pane Flash (`@keyframes paneFlash`)
+
+Removed on 2026-04-10 (`a5ac2fc7`), together with its shortcut/API. The values below document the former behavior; current notifications use `notificationPulse` (2.5s).
 
 ```css
 @keyframes paneFlash {
@@ -24,11 +26,11 @@
 
 | Element | Property | Duration | Easing |
 |---------|----------|----------|--------|
-| Pane action button | color, background | 0.1s | default |
-| Pane focus outline | outline | 0.15s | default |
+| Pane action button | color, background, transform | 120ms | `--cmux-ease` |
+| Pane focus border | border-color, border-width | 0.15s | default |
 | Sidebar width | width | 0.2s | ease |
 | Split sash hover | background | 0.15s | default |
-| Tab background | background | 0.1s | default |
+| Tab background | background | 120ms | `--cmux-ease` |
 
 ## Interactive States
 
@@ -36,19 +38,19 @@
 
 | State | color | background |
 |-------|-------|-----------|
-| Rest | `--cmux-text-tertiary` (0.3) | none |
-| Hover | `--cmux-text` (0.9) | `rgba(255,255,255,0.08)` |
+| Rest | `--cmux-text-tertiary` (theme-driven; static fallback 0.3) | none |
+| Hover | `--cmux-text` (theme-driven; static fallback 0.9) | `--cmux-hover` |
 | Active | (inherits hover) | (inherits hover) |
 
 ### Terminal Pane
 
 | State | Visual |
 |-------|--------|
-| Inactive | 1px transparent outline |
-| Active (focused) | 1px `rgba(10, 132, 255, 0.5)` outline |
-| Has notification | Red border-bottom on PaneTabBar (1px `rgba(255, 59, 48, 0.5)`) |
-| Flashing | 3px accent border overlay with paneFlash animation |
-| Process exited | Yellow `[Process exited]` text + floating "↺ Restart" button |
+| Inactive | 1px transparent pseudo-element border |
+| Active (focused) | 2px `--cmux-accent` pseudo-element border (hidden when zoomed) |
+| Has notification | Themed 1px PaneTabBar bottom border; inactive panes pulse a 2px `--notification-color` border |
+| Flashing (historical) | One-shot `paneFlash` removed; see historical section above |
+| Process exited | PTY exit event; current `TerminalPane` has no Restart overlay |
 
 ### Sidebar Tab
 
@@ -63,21 +65,21 @@
 | State | Visual |
 |-------|--------|
 | Inactive tab | Transparent bg, muted text, transparent bottom border |
-| Active tab | Subtle white bg, full text, accent bottom border |
-| Notification | Red dot (5px) on active tab |
+| Active tab | `--cmux-selected` background, full text, accent bottom border |
+| Notification | Semantic waiting/working/error dot (5px), including inactive tabs |
 
 ### Split Sash
 
 | State | Visual |
 |-------|--------|
-| Rest | Transparent (invisible 1px) |
+| Rest | 4px sash with pane-background fill and themed divider |
 | Hover | `--cmux-accent` colored bar |
 
 ## Disabled/Loading
 
-Currently no explicit disabled states or loading skeletons are implemented.
-The app renders a solid `#0a0a0a` div until `ready` state is true (see `App.tsx`).
+Disabled controls, pane error boundaries with Retry, and a connection-pending overlay are implemented; a PTY loading skeleton remains pending.
+The app renders `--cmux-boot-bg` (fallback `#0a0a0a`) until `ready` is true (see `App.tsx`).
 
 ## Motion Preferences
 
-No `prefers-reduced-motion` support currently. See [accessibility-and-motion.md](../features/pending/accessibility-and-motion.md) for planned implementation.
+`prefers-reduced-motion` is implemented in `global.css` (0.01ms animation/transition duration, one iteration) plus component rules. See [accessibility-and-motion.md](../features/pending/accessibility-and-motion.md) for remaining accessibility work.

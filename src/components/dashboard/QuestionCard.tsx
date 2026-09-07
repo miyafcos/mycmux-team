@@ -43,11 +43,13 @@ function AskScreenCard({
   screen,
   targetLabel,
   compact,
+  onChooseOption,
 }: {
   sessionId: string;
   screen: AskScreen;
   targetLabel: string;
   compact: boolean;
+  onChooseOption?: (index: number) => void;
 }) {
   const session = useAskQuestionStore((state) => state.bySession[sessionId]);
   const inFlight = session?.inFlight ?? false;
@@ -66,6 +68,7 @@ function AskScreenCard({
 
   const runChoice = (index: number) => {
     if (isAskQuestionBusy(sessionId)) return;
+    if (onChooseOption) { onChooseOption(index); return; }
     if (screen.kind === "review") {
       if (index === 1 && reviewSubmit) void submitAskQuestionReview(sessionId);
       return;
@@ -118,13 +121,13 @@ function AskScreenCard({
           type="button"
           disabled={disabled}
           className={`cmux-dashboard-qcard-option${isChecked ? " is-checked" : ""}${option.current ? " is-current" : ""}`}
-          style={{ opacity: disabled ? 0.55 : 1 }}
+          style={{ opacity: disabled ? 0.55 : 1, ...(compact ? { maxWidth: "100%", flexWrap: "wrap", overflowWrap: "anywhere" } as const : {}) }}
           aria-label={optionAriaName(option)}
           aria-pressed={screen.multiSelect ? isChecked : undefined}
           data-ask-question-option={option.index}
           onClick={(event) => {
             stop(event);
-            event.currentTarget.blur();
+            if (!onChooseOption) event.currentTarget.blur();
             if (
               option.index !== null
               && (option.role === "option" || (screen.kind === "review" && option.index === 1 && option.role === "submit"))
@@ -144,7 +147,7 @@ function AskScreenCard({
         type="button"
         disabled={disabled}
         className="cmux-dashboard-qcard-option"
-        style={{ opacity: disabled ? 0.55 : 1 }}
+        style={{ opacity: disabled ? 0.55 : 1, ...(compact ? { maxWidth: "100%", flexWrap: "wrap", overflowWrap: "anywhere" } as const : {}) }}
         aria-label="AskUserQuestion submit"
         data-ask-question-submit="true"
         onClick={(event) => {
@@ -180,6 +183,7 @@ export function QuestionCard({
   compact = false,
   sessionId,
   attention: _attention,
+  onChooseOption,
 }: {
   brief: LiveSessionBrief | undefined;
   events: readonly SemanticEventEnvelope[] | undefined;
@@ -188,6 +192,7 @@ export function QuestionCard({
   compact?: boolean;
   sessionId?: string;
   attention?: SessionAttention;
+  onChooseOption?: (index: number) => void;
 }) {
   const resolvedSessionId = sessionId ?? brief?.ptySessionId;
   const askSession = useAskQuestionStore((state) => (
@@ -213,6 +218,7 @@ export function QuestionCard({
       screen={screen}
       targetLabel={targetLabel}
       compact={compact}
+      onChooseOption={onChooseOption}
     />;
   }
 
@@ -251,7 +257,7 @@ export function QuestionCard({
         type="button"
         disabled={disabled}
         className="cmux-dashboard-qcard-option"
-        style={{ opacity: disabled ? 0.55 : 1 }}
+        style={{ opacity: disabled ? 0.55 : 1, ...(compact ? { maxWidth: "100%", flexWrap: "wrap", overflowWrap: "anywhere" } as const : {}) }}
         onClick={(event) => { stop(event); event.currentTarget.blur(); void chooseOption(brief, option.id); }}
       >
         <span className="cmux-dashboard-qcard-badge">{index + 1}</span>

@@ -1,5 +1,8 @@
 # Input & Interaction Enhancements
 
+> Implemented in v0.1.0 (`8859f29d`): pane zoom and custom keybindings; URL routing in v0.1.3 (`e12ca7db`). See [terminal behavior](../../../README.md#5-ターミナル) and [keybindings](../../../README.md#14-見た目と設定).
+> This remains a partial backlog: copy mode, broadcast input, file drop, clipboard images, and the other unmarked proposals remain pending.
+
 ## Copy Mode
 
 Vi-style keyboard selection for scrollback buffer navigation without mouse.
@@ -23,7 +26,7 @@ Type once, send to all visible panes simultaneously.
 ## Drag-and-Drop (file drop)
 
 Drop files into terminal to paste paths. Tab drag-reorder shipped — see
-`implemented/workspaces-and-layout.md`.
+[workspaces-and-layout.md](../implemented/workspaces-and-layout.md).
 
 | Detail | Description |
 |--------|-------------|
@@ -41,14 +44,14 @@ Right-click menus for copy, paste, split, close, search, notifications.
 | Needs | `ContextMenu.tsx` component, right-click handler on panes |
 | Priority | **Medium** |
 
-## Zoom Pane
+## Zoom Pane — Implemented
 
 Temporarily maximize a single pane to fullscreen, toggle back.
 
 | Detail | Description |
 |--------|-------------|
 | cmux | `Cmd+Shift+Enter` zooms pane, same shortcut unzooms |
-| Needs | `zoomedPaneId` state in workspace store, CSS fullscreen overlay |
+| Shipped | `useUiStore.zoomedPaneId`, viewport layout projection, `Ctrl+Shift+Enter` (Command on macOS) |
 | Priority | **High** |
 
 ## Vim Mode Badge
@@ -61,14 +64,14 @@ Visual indicator showing vim/neovim mode (NORMAL/INSERT/VISUAL) in pane chrome.
 | Needs | Escape sequence parser in `XTermWrapper`, badge in `PaneTabBar` |
 | Priority | **Low** |
 
-## Custom Keybindings
+## Custom Keybindings — Implemented
 
 User-configurable keyboard shortcuts with conflict detection.
 
 | Detail | Description |
 |--------|-------------|
 | cmux | `KeyboardShortcutSettings` with 40+ configurable actions, JSON config |
-| Needs | Keybinding registry, settings UI, JSON config file, conflict resolver |
+| Shipped | `keybindings.ts`, Settings → Keyboard Shortcuts, conflict detection, overrides persisted in `data.json` |
 | Priority | **Medium** |
 
 ## Clipboard Images
@@ -81,14 +84,14 @@ Paste images from clipboard into terminal (base64 or file path).
 | Needs | Clipboard API image detection, temp file save via Rust, path insertion |
 | Priority | **Low** |
 
-## URL Detection & Routing
+## URL Detection & Routing — Implemented
 
 Clickable URLs in terminal output, configurable open behavior.
 
 | Detail | Description |
 |--------|-------------|
 | cmux | Regex URL detection with Cmd+click to open, configurable handler |
-| Needs | xterm.js `WebLinksAddon`, Tauri `shell.open` for external URLs |
+| Shipped | xterm.js `WebLinksAddon` routes HTTP(S) URLs to the OS browser; artifact links have a separate in-app preview path |
 | Priority | **High** |
 
 ## Focus-Follows-Mouse

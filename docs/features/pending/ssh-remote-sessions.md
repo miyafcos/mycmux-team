@@ -11,7 +11,7 @@ Native SSH connection management with session persistence, reconnection, and por
 - Port forwarding UI for managing tunnels
 - Session multiplexing over single connection (SSH ControlMaster equivalent)
 
-## ptrterminal Requirements
+## mycmux Requirements
 
 | Layer | What's Needed |
 |-------|---------------|

@@ -2,21 +2,18 @@
 
 ## How Notifications Are Generated
 
-Terminal output triggers notifications when:
+The terminal approval scan generates notifications when:
 1. `term.onWriteParsed()` fires (xterm.js finished parsing output)
-2. Throttled to 500ms intervals
-3. Last non-empty line is extracted from terminal buffer
-4. If the line changed AND the pane is NOT active → `incrementNotification(sessionId)`
+2. Background scanning is throttled to 300ms
+3. An approval or question prompt is detected in the terminal buffer
+4. If notifications are enabled AND the pane is NOT active → `notifyWaiting(sessionId, patternId)` (deduplicated)
 
 ```typescript
 // Simplified flow
 term.onWriteParsed(() => {
-  // 500ms throttle
-  const lastLine = extractLastLine(term.buffer);
-  if (lastLine !== previousLine && activePaneId !== sessionId) {
-    paneMetadataStore.incrementNotification(sessionId);
-    paneMetadataStore.setMetadata(sessionId, { lastLogLine: lastLine });
-  }
+  scheduleBackgroundScan(); // 300ms throttle
+  // runScan detects approval/question prompts and calls notifyWaiting()
+  // only for an inactive session while notificationsEnabled is true.
 });
 ```
 
@@ -28,12 +25,14 @@ interface PaneMetadataState {
     lastLogLine?: string;
     notificationCount?: number;
   }>;
-  flashingPaneIds: Set<string>;
+  lastLog: Record<string, string>;
+  lastLogAt: Record<string, number>;
 }
 ```
 
 Actions:
-- `incrementNotification(sessionId)` — bump count by 1
+- `notifyWaiting(sessionId, patternId)` — bump approval count once per waiting pattern
+- `incrementNotification(sessionId)` — low-level count increment
 - `clearNotification(sessionId)` — reset to 0
 - `setMetadata(sessionId, data)` — update last log line
 
@@ -41,7 +40,7 @@ Actions:
 
 **Sidebar tabs** (`TabBar`): Aggregated notification count across all panes in a workspace, displayed as a pill badge. Also shows the most recent `lastLogLine` as a preview.
 
-**Pane tab bar** (`PaneTabBar`): Red border-bottom when `hasNotification` is true. Red dot (5px circle) on active tab with notifications.
+**Pane tab bar** (`PaneTabBar`): Theme notification-colored border-bottom when `hasNotification` is true. Status dots (5px) distinguish waiting, working, and error states.
 
 ## Notification Clearing
 
@@ -54,9 +53,11 @@ const handleFocus = () => {
 };
 ```
 
-## Flash / Attention
+## Flash / Attention (Historical)
 
-Visual flash animation on a pane for 0.9 seconds:
+The one-shot flash below was removed on 2026-04-10 (`a5ac2fc7`), including its shortcut and store API. Current inactive notification panes use a 2px themed border with a 2.5-second `notificationPulse` (reduced-motion aware).
+
+Historical behavior: visual flash animation on a pane for 0.9 seconds:
 
 ```typescript
 triggerFlash(sessionId) → {
@@ -73,4 +74,6 @@ Triggers:
 
 ## Suppression
 
-`XTermWrapper` accepts `suppressNotifications` prop. When `true` (pane is active and tab is active), notifications are not generated even when output changes. This prevents the focused terminal from notifying itself.
+`XTermWrapper` checks the active session ID and `notificationsEnabled`; ordinary output changes do not generate approval badges. `notificationSoundEnabled` controls the Web Audio chime.
+
+The title-bar bell opens `NotificationPanel`: answer/approval-needed sessions and unread arrivals have separate sections. Clearing unread arrivals does not clear pending answers (HEAD change `dac6fc02`).

@@ -105,7 +105,8 @@ describe("pane.read background fallback", () => {
       sessionId,
       lines: ["fallback"],
     });
-    expect(headlessBufferMocks.getHeadlessBufferLines).toHaveBeenCalledWith(sessionId, snapshot, 3);
+    // No renderer ever sized this session, so the headless terminal keeps its default geometry.
+    expect(headlessBufferMocks.getHeadlessBufferLines).toHaveBeenCalledWith(sessionId, snapshot, 3, undefined);
     expect(terminalBufferMocks.getTerminalBufferLines).not.toHaveBeenCalled();
   });
 
@@ -118,11 +119,18 @@ describe("pane.read background fallback", () => {
     terminalBufferMocks.hasTerminalBuffer.mockReturnValue(true);
     ipcMocks.getSessionScrollback.mockResolvedValue(snapshot);
     headlessBufferMocks.getHeadlessBufferLines.mockResolvedValue(["current"]);
-
-    await expect(readPaneTail(sessionId, 60, true)).resolves.toEqual(["current"]);
-    expect(terminalBufferMocks.getTerminalBufferLines).not.toHaveBeenCalled();
-    expect(ipcMocks.getSessionScrollback).toHaveBeenCalledWith(sessionId);
-    expect(headlessBufferMocks.getHeadlessBufferLines).toHaveBeenCalledWith(sessionId, snapshot, 60);
+    // The mounted renderer knows the pane's real geometry; the headless replay must use it,
+    // otherwise a TUI frame drawn for a wide pane comes back garbled (AskUserQuestion preflight).
+    const { terminalSizeCache } = await import("../../src/components/terminal/terminalCache");
+    terminalSizeCache.set(sessionId, { cols: 132, rows: 40 });
+    try {
+      await expect(readPaneTail(sessionId, 60, true)).resolves.toEqual(["current"]);
+      expect(terminalBufferMocks.getTerminalBufferLines).not.toHaveBeenCalled();
+      expect(ipcMocks.getSessionScrollback).toHaveBeenCalledWith(sessionId);
+      expect(headlessBufferMocks.getHeadlessBufferLines).toHaveBeenCalledWith(sessionId, snapshot, 60, { cols: 132, rows: 40 });
+    } finally {
+      terminalSizeCache.delete(sessionId);
+    }
   });
 
   it("keeps the existing error when backend scrollback is empty", async () => {

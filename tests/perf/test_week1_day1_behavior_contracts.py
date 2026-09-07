@@ -227,7 +227,9 @@ def test_resume_and_handoff_environment_contract_remains_wired() -> None:
         "launchEnv.MYCMUX_RESUME = targetKind",
         "launchEnv.MYCMUX_HANDOFF = targetKind",
         "launchEnv.MYCMUX_HANDOFF_PROMPT_FILE = result.path",
-        "launchEnv.MYCMUX_HANDOFF_FROM_SESSION = selected.id",
+        # The palette passes the clicked row's session explicitly (reachability fix #3),
+        # so the handoff source is read from `sessionToOpen`, not the highlighted `selected`.
+        "launchEnv.MYCMUX_HANDOFF_FROM_SESSION = sessionToOpen.id",
     ]:
         assert_contains(palette, snippet, "src/components/CommandPalette/CrsmPalette.tsx")
 

@@ -16,10 +16,26 @@ const HEADLESS_BUFFER_SCROLLBACK = 5000;
 const HEADLESS_BUFFER_CACHE_LIMIT = 12;
 const TERMINAL_SNAPSHOT_MAX_LINE_CHARS = 8192;
 
+/** Geometry the headless terminal is rendered with. Full-screen TUIs (Claude's
+ *  AskUserQuestion, Codex approvals) redraw with cursor moves that only line up
+ *  at the size the real pane had, so a mismatch garbles the frame. */
+export interface HeadlessBufferSize {
+  cols: number;
+  rows: number;
+}
+
 interface HeadlessBufferCacheEntry {
   terminal: HeadlessTerminal;
   endOffset: number;
   busy: boolean;
+  cols: number;
+  rows: number;
+}
+
+function resolveSize(size: HeadlessBufferSize | undefined): HeadlessBufferSize {
+  const cols = Number.isFinite(size?.cols) && (size?.cols ?? 0) >= 2 ? Math.floor(size!.cols) : HEADLESS_BUFFER_COLS;
+  const rows = Number.isFinite(size?.rows) && (size?.rows ?? 0) >= 1 ? Math.floor(size!.rows) : HEADLESS_BUFFER_ROWS;
+  return { cols, rows };
 }
 
 const headlessBufferCache = new Map<string, HeadlessBufferCacheEntry>();
@@ -82,16 +98,18 @@ function getBufferLines(terminal: HeadlessTerminal, maxLines: number): string[] 
   }
 }
 
-function createCacheEntry(): HeadlessBufferCacheEntry {
+function createCacheEntry(size: HeadlessBufferSize): HeadlessBufferCacheEntry {
   return {
     terminal: new Terminal({
-      cols: HEADLESS_BUFFER_COLS,
-      rows: HEADLESS_BUFFER_ROWS,
+      cols: size.cols,
+      rows: size.rows,
       scrollback: HEADLESS_BUFFER_SCROLLBACK,
       allowProposedApi: true,
     }),
     endOffset: 0,
     busy: false,
+    cols: size.cols,
+    rows: size.rows,
   };
 }
 
@@ -134,22 +152,26 @@ export function getHeadlessBufferLines(
   sessionId: string,
   snapshot: ScrollbackSnapshot,
   maxLines: number,
+  size?: HeadlessBufferSize,
 ): Promise<string[]> {
   return withSessionWriteQueue(sessionId, async () => {
+    const wanted = resolveSize(size);
     let entry = headlessBufferCache.get(sessionId);
     const canReplayDelta = Boolean(
       entry && entry.endOffset >= snapshot.startOffset && entry.endOffset <= snapshot.endOffset,
     );
+    // A size change invalidates every row already rendered, so replay from the start.
+    const sizeMatches = Boolean(entry && entry.cols === wanted.cols && entry.rows === wanted.rows);
 
-    if (!entry || !canReplayDelta) {
+    if (!entry || !canReplayDelta || !sizeMatches) {
       if (entry) disposeEntry(sessionId, entry);
-      entry = createCacheEntry();
+      entry = createCacheEntry(wanted);
       headlessBufferCache.set(sessionId, entry);
     } else {
       touchEntry(sessionId, entry);
     }
 
-    const replayStart = canReplayDelta ? entry.endOffset - snapshot.startOffset : 0;
+    const replayStart = canReplayDelta && sizeMatches ? entry.endOffset - snapshot.startOffset : 0;
     const data = snapshot.data.subarray(replayStart);
     entry.busy = true;
     try {

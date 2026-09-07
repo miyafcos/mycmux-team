@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SearchAddon } from "@xterm/addon-search";
+import { focusController } from "../../lib/focusController";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
@@ -599,6 +600,8 @@ function ensureConfigLoaded(): Promise<void> {
   return configPromise;
 }
 
+export const TERMINAL_SEARCH_EVENT = "mycmux:terminal-search";
+
 export default memo(function XTermWrapper({
   workspaceId,
   sessionId,
@@ -659,6 +662,23 @@ export default memo(function XTermWrapper({
   const lastBufferTypeRef = useRef<string | null>(null);
   const [turnListRows, setTurnListRows] = useState<TurnListRow[]>([]);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const openSearch = useCallback(() => {
+    focusController.request("programmatic", { sessionId, focus: false });
+    setIsSearchOpen(true);
+    searchInputRef.current?.focus();
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (isSearchOpen) searchInputRef.current?.focus();
+  }, [isSearchOpen]);
+
+  useEffect(() => {
+    const handleSearchRequest = (event: Event) => {
+      if ((event as CustomEvent<{ sessionId?: string }>).detail?.sessionId === sessionId) openSearch();
+    };
+    window.addEventListener(TERMINAL_SEARCH_EVENT, handleSearchRequest);
+    return () => window.removeEventListener(TERMINAL_SEARCH_EVENT, handleSearchRequest);
+  }, [sessionId, openSearch]);
   const turnChipRafRef = useRef<number | null>(null);
   const lastTurnChipRef = useRef<typeof turnChip>(null);
   const refreshTurnChipRef = useRef<() => void>(() => {});
@@ -1417,8 +1437,7 @@ export default memo(function XTermWrapper({
           if (actions.includes("terminal.search")) {
             e.preventDefault();
             e.stopPropagation();
-            setIsSearchOpen(true);
-            setTimeout(() => searchInputRef.current?.focus(), 50);
+            openSearch();
             return false;
           }
 

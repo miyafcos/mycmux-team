@@ -2,12 +2,12 @@
 
 ## Overview
 
-On startup, `terminal_config.rs` reads the user's native terminal configuration to match font family, font size, and color palette. This makes ptrterminal look like the user's existing terminal.
+On startup, `terminal_config.rs` reads the user's native terminal configuration to match font family, font size, and color palette. This makes mycmux look like the user's existing terminal.
 
 ## Detection Order
 
 ```
-ghostty → alacritty → kitty → system defaults
+ghostty → alacritty → kitty → Windows Terminal (Windows only) → system defaults
 ```
 
 First match wins for each property. Font and colors can come from different sources:
@@ -18,9 +18,12 @@ First match wins for each property. Font and colors can come from different sour
 
 | Terminal | Config Path | Theme Path |
 |----------|-----------|------------|
-| Ghostty | `~/.config/ghostty/config` | Via `config-file` directive |
-| Alacritty | `~/.config/alacritty/alacritty.toml` | `~/.config/omarchy/current/theme/alacritty.toml` |
-| Kitty | `~/.config/kitty/kitty.conf` | Inline in config |
+| Ghostty | `<config_dir>/ghostty/config`; macOS also `~/Library/Application Support/com.mitchellh.ghostty/config` | Via `config-file` directive |
+| Alacritty | `<config_dir>/alacritty/alacritty.toml` | Linux only: `~/.config/omarchy/current/theme/alacritty.toml` |
+| Kitty | `<config_dir>/kitty/kitty.conf` | Inline in config |
+| Windows Terminal | `%LOCALAPPDATA%/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json` (then the `Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe` package) | `profiles.defaults.colorScheme` selects a `schemes` entry |
+
+`<config_dir>` is `dirs::config_dir()`: `%APPDATA%` on Windows, `~/Library/Application Support` on macOS, and `$XDG_CONFIG_HOME` or `~/.config` on Linux.
 
 ## Ghostty Parser
 
@@ -40,7 +43,7 @@ TOML-style sections:
 - `[colors.normal]` → 8 color names (black, red, green, ...)
 - `[colors.bright]` → 8 bright color names
 
-Checks omarchy theme file first, falls back to main config.
+On Linux, checks the omarchy theme file first, then the main config.
 
 ## Kitty Parser
 
@@ -54,13 +57,13 @@ Simple key-value:
 
 ```rust
 TerminalUserConfig {
-  font_family: system_monospace_font(), // fc-match monospace
-  font_size: 15.0,
+  font_family: system_monospace_font(), // platform default
+  font_size: 14.0, // load() fallback; TerminalUserConfig::default() uses 15.0
   colors: UserColors::default(),        // One Dark-ish palette
 }
 ```
 
-`system_monospace_font()` calls `fc-match monospace --format=%{family}` on Linux.
+`system_monospace_font()` uses Cascadia Mono on Windows, Menlo on macOS, and `fc-match monospace --format=%{family}` on Linux.
 
 ## Font Size Scaling
 
@@ -77,7 +80,7 @@ Example: Ghostty `font-size = 9` → `Math.round(9 * 1.6) = 14` → `Math.max(14
 
 Config is loaded once and cached globally in XTermWrapper:
 ```typescript
-let cachedConfig: { theme: ITheme; fontSize: number; fontFamily: string } | null = null;
+let cachedConfig: { theme: ITheme; fontSize: number; fontFamily: string; windowsBuildNumber: number | null } | null = null;
 ```
 
 `preloadTerminalConfig()` is called at module level in `App.tsx` to start the fetch before any terminal mounts.

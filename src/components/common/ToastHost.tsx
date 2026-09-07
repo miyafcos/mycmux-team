@@ -1,6 +1,7 @@
-import { AlertTriangle, Info, XCircle } from "lucide-react";
+import { AlertTriangle, Info, X, XCircle } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useToastStore, type ToastKind } from "../../stores/toastStore";
+import { toastStrings } from "../workspace/terminalPaneStrings";
 
 const kindStyles: Record<ToastKind, { color: string; Icon: LucideIcon }> = {
   error: { color: "var(--cmux-red, #ff6b6b)", Icon: XCircle },
@@ -36,10 +37,16 @@ export default function ToastHost() {
           <div
             key={toast.id}
             onClick={() => dismissToast(toast.id)}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return;
+              event.preventDefault();
+              event.stopPropagation();
+              dismissToast(toast.id);
+            }}
             role={toast.kind === "error" ? "alert" : "status"}
             style={{
               display: "grid",
-              gridTemplateColumns: actions.length > 0 ? "18px 1fr auto" : "18px 1fr",
+              gridTemplateColumns: actions.length > 0 ? "18px minmax(0, 1fr) auto auto" : "18px minmax(0, 1fr) auto",
               gap: 10,
               alignItems: "center",
               width: "100%",
@@ -89,6 +96,18 @@ export default function ToastHost() {
                 ))}
               </span>
             ) : null}
+            <button
+              type="button"
+              className="pane-action-btn"
+              aria-label={toastStrings.close}
+              title={toastStrings.close}
+              onClick={(event) => {
+                event.stopPropagation();
+                dismissToast(toast.id);
+              }}
+            >
+              <X size={12} aria-hidden="true" />
+            </button>
           </div>
         );
       })}

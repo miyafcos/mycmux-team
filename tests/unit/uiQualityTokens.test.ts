@@ -35,6 +35,16 @@ const boundarySource = [
 ].join("\n");
 
 describe("UI quality Phase A contracts", () => {
+  it("reachability #7 keeps PetTab Japanese text on the 11px token", () => {
+    const petTab = read("src/components/settings/tabs/PetTab.tsx");
+    expect(petTab).not.toMatch(/fontSize:\s*(?:10\b|["']10px["'])/);
+    expect(petTab.match(/fontSize: "var\(--cmux-font-size-xs\)"/g)?.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("reachability #8 reveals sidebar actions on focus as well as hover", () => {
+    expect(globalCss).toMatch(/div:focus-within\s*>\s*\.tab-close-btn,\s*\.tab-close-btn:focus-visible\s*\{\s*opacity:\s*1\s*!important;/);
+    expect(globalCss).toContain("button:focus-visible");
+  });
   it("defines the shared surface, border, and typography tokens", () => {
     for (const token of [
       "--cmux-surface-raised:",

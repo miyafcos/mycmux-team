@@ -1,6 +1,6 @@
 # mycmux
 
-mycmux は、Claude Code / Codex / claude-codex / Grok Build といった AI エージェント CLI を、ワークスペース・ペイン・タブの単位で並べて動かすターミナルワークスペースです。Windows と macOS (Apple Silicon) で動き、エージェントが出したパスをワンクリックで開く、作業の区切りを保存して人へ渡す、複数アカウントの使用量をタイトルバーで見張る、エージェント自身が可視タブで別のエージェントを起動する、といった実務向けの機能を足しています。[cmux-for-linux (ptrcode)](https://github.com/cai0baa/cmux-for-linux) のフォークで、ライセンスは GPL-3.0 です。配布物は公開ミラーの固定 feed リリース ([mycmux-personal-updater](https://github.com/miyafcos/mycmux-team/releases/tag/mycmux-personal-updater)) から取得します。現行版は v0.62.0 (2026-09-05) です。
+mycmux は、Claude Code / Codex / claude-codex / Grok Build といった AI エージェント CLI を、ワークスペース・ペイン・タブの単位で並べて動かすターミナルワークスペースです。Windows と macOS (Apple Silicon) で動き、エージェントが出したパスをワンクリックで開く、作業の区切りを保存して人へ渡す、複数アカウントの使用量をタイトルバーで見張る、エージェント自身が可視タブで別のエージェントを起動する、といった実務向けの機能を足しています。[cmux-for-linux (ptrcode)](https://github.com/cai0baa/cmux-for-linux) のフォークで、ライセンスは GPL-3.0 です。配布物は公開ミラーの固定 feed リリース ([mycmux-personal-updater](https://github.com/miyafcos/mycmux-team/releases/tag/mycmux-personal-updater)) から取得します。現行版は v0.64.0 (2026-09-06) です。
 
 読み方は 2 通りに分かれます。**1〜3 章は初回に通読**してください (何ができるか / 入れ方 / 最初の 10 分)。**4 章以降は必要になったときに引く**参照部で、章の中は「〜したい → こうする」の逆引きと表で並べてあります。付録 A〜H はキー・コマンド・設定項目・保存先の全一覧です。
 
@@ -158,7 +158,7 @@ APPLE_SIGNING_IDENTITY="あなたの証明書名" bash scripts/build-mac.sh
 
 Resume palette (`Cmd+P`) を使うには `crsm` を `git clone https://github.com/miyafcos/crsm.git ~/crsm` → `cd ~/crsm` → `cargo build --release` で先に用意します (以後 `~/crsm/target/release/crsm` を自動検出します)。
 
-> **macOS のキー表記**: 本文は `Ctrl+…` で書いていますが、macOS では `Cmd` に読み替えて押せます。`Cmd+B` のような単独修飾だけでなく、`Cmd+Shift+N` や `Option+Cmd+D` のような組み合わせも通ります (v0.62.0 で修飾キーの照合方式を直しました)。`Ctrl` のままでも動くので、`Cmd+Tab` が OS に取られる場面では `Ctrl+Tab` を使ってください。設定の「キーボードショートカット」一覧は macOS では `⌘⇧N` のような記号表記で出ます。タイトルバー右端の最小化・最大化・閉じるはネイティブのトラフィックライトに置き換わります。
+> **macOS のキー表記**: 本文は `Ctrl+…` で書いていますが、macOS では `Cmd` に読み替えて押せます。`Cmd+B` のような単独修飾だけでなく、`Cmd+Shift+N` や `Option+Cmd+D` のような組み合わせも通ります (v0.63.0 で修飾キーの照合方式を直しました)。`Ctrl` のままでも動くので、`Cmd+Tab` が OS に取られる場面では `Ctrl+Tab` を使ってください。設定の「キーボードショートカット」一覧は macOS では `⌘⇧N` のような記号表記で出ます。タイトルバー右端の最小化・最大化・閉じるはネイティブのトラフィックライトに置き換わります。
 
 ### 旧 lite 版 (mycmux-lite) を入れている場合
 
@@ -172,13 +172,13 @@ lite 版の配布は 2026-07-23 に終了しました。以降の更新はこの
 
 **1. ワークスペースを作る** — `Ctrl+Shift+N` を押し、名前とレイアウトを決めて「Launch」。ワークスペースは案件や調査の単位です。ここで分けておくと、あとで `Ctrl+Tab` と `Ctrl+1`〜`Ctrl+8` の行き来が効きます。何も無い状態なら「ホームで新規ワークスペース」「フォルダを選んで開始」「詳しく設定して作成」の 3 ボタンが出るので、真ん中を押して作業フォルダを選ぶのが早いです。
 
-**2. ランチャーで Claude Code を立てる** — 新しいペインを開くと起動メニューが出ます。`1` を押すと `Claude Code` が起動します。先に作業ディレクトリを変えたいときは `d` (開発) か `a` (案件) を押してから選びます。ディレクトリを変えてから起動すると、そのリポジトリの CLAUDE.md とプロジェクト履歴を持つセッションになります。
+**2. ランチャーで Claude Code を立てる** — 新しいペインを開くと、そのタブ自体が起動メニュー (ランチャーペイン) になります。検索欄にフォーカスが入った状態なので、`Claude Code` の行を `↓` で選んで `Enter` を押すか、`cl` と打って絞り込んでから `Enter` を押すと起動します。先に作業フォルダを変えたいときは、下の「開発」「案件」の一覧でフォルダの行を選んでから (フッタに起動先が出ます) 項目を選びます。フォルダを変えてから起動すると、そのリポジトリの CLAUDE.md とプロジェクト履歴を持つセッションになります。
 
-**3. 分割してもう 1 本立てる** — `Ctrl+Alt+D` で右に分割し、そこで `2` を押して `Codex` を起動します。分割は「並べて見比べる」ためのもので、1 つのペインの中で切り替えたいだけならタブバーの「＋」でタブを足すほうが場所を食いません。
+**3. 分割してもう 1 本立てる** — `Ctrl+Alt+D` で右に分割すると、新しいペインにも同じランチャーが出るので、`Codex` の行を選んで起動します。分割は「並べて見比べる」ためのもので、1 つのペインの中で切り替えたいだけならタブバーの「＋」でタブを足すほうが場所を食いません。
 
 **4. パスリンクで成果物を開く** — エージェントが出力したファイルパスをクリックします。md / html / Office ならその場でプレビュータブが開き、それ以外はクリック位置に「既定のアプリで開く」「エクスプローラーで表示」の 2 アイコンが出ます。パスは実在チェックを通ったものだけがリンクになるので、存在しない文字列を押して空振りすることはありません。
 
-**5. セーブポイントを残す** — 区切りがついたらペインタブバーの「しおり」ボタンを押します。サマリ 1 行 (空欄なら自動生成) を確認して保存すると、会話履歴の要約・引き継ぎ書・復元情報が 1 件のセーブポイントになります。同じセッションで押し直せば上書き更新、「終了時の記録を残す」を選べばあとから変わらない記録になります。中断のたびにこれを押しておくと、翌日は要点から再開できます。
+**5. セーブポイントを残す** — 区切りがついたらペインタブバーの「セーブポイントを作成」ボタン (しおりのアイコン) を押します。サマリ 1 行 (空欄なら自動生成) を確認して保存すると、会話履歴の要約・引き継ぎ書・復元情報が 1 件のセーブポイントになります。同じセッションで押し直せば上書き更新、「終了時の記録を残す」を選べばあとから変わらない記録になります。中断のたびにこれを押しておくと、翌日は要点から再開できます。
 
 **6. 更新を確認する** — 設定 (⚙) →「アプリ情報」→「更新を確認」。ここまでで、作る・立てる・並べる・開く・残す・更新するがひととおり回ります。
 
@@ -201,6 +201,7 @@ lite 版の配布は 2026-07-23 に終了しました。以降の更新はこの
 | `Notifications` | 通知パネルの開閉。未読があるとドットが付く |
 | `セーブポイントを開く` | セーブポイント一覧を開く (しおりアイコン) |
 | `New Workspace (Ctrl+Shift+N)` | ワークスペース作成モーダルを開く |
+| `New Workspace with agents and models (Ctrl+Shift+Alt+N)` | ＋ の右隣の小さなボタン。エージェントとモデルを選んでワークスペースを作るダイアログを開く |
 | `TERMINAL` | ウィンドウのドラッグ領域。300ms 以内の 2 クリックで最大化・復元 |
 | ワークスペース色ドット | アクティブなワークスペースの色 (tooltip は色名) |
 | ワークスペース名 | アクティブなワークスペース名 |
@@ -304,42 +305,38 @@ PTY の生スクロールバックはディスクへ保存されます (`%APPDAT
 
 ## 6. エージェントを起動する
 
-新しいペインやタブを開くと起動メニュー (ランチャー) が出ます。実体は `~/.mycmux/bin/launcher.sh` / `launcher.ps1` で、アプリが起動時に書き出します。手で編集すると上書きされます。
+新しいペインやタブを開くと、そのタブ自体が起動メニュー (ランチャーペイン) になります。v0.62.0 で、端末の中で動く文字メニューから React のペインに置き換えました (実装は `src/components/workspace/LauncherPane.tsx`)。
 
-### 起動メニューの 19 項目
+起動処理そのものは従来どおり `~/.mycmux/bin/launcher.sh` / `launcher.ps1` が行います。ペインは「何を起動するか」を環境変数 (`MYCMUX_LAUNCH_TARGET` ほか) に載せて渡すだけです。この 2 本はアプリが起動時に書き出すので、手で編集すると上書きされます。文字メニュー (19 項目・[付録 B](#付録-b-ランチャー項目全一覧)) はこの 2 本の中に残っていて、`MYCMUX_LAUNCH_TARGET` を渡さずにスクリプトを直接読み込んだときに出ます。
 
-Windows の Git Bash 経路 (launcher.sh) では 19 項目です。PowerShell 経路 (launcher.ps1) では Change directory の 3 項目がなく 16 項目になります。コマンド行を含む全一覧は[付録 B](#付録-b-ランチャー項目全一覧)にあります。
+### 起動メニューの 5 セクション
 
-| # | 項目 | # | 項目 |
-| ---: | --- | ---: | --- |
-| 1 | `Claude Code` | 11 | `NotebookLM (Web)` |
-| 2 | `Codex` | 12 | `Claude Code (resume)` |
-| 3 | `claude-codex (Codex Models)` | 13 | `Codex (resume)` |
-| 4 | `Grok Build` | 14 | `claude-codex (resume)` |
-| 5 | `claude-codex (Open Models)` | 15 | `Grok Build (resume)` |
-| 6 | `Antigravity (agy)` | 16 | `Custom...` |
-| 7 | `ChatGPT (Web)` | 17 | `Change directory (開発)...` |
-| 8 | `Gemini (Web)` | 18 | `Change directory (案件)...` |
-| 9 | `Grok (Web)` | 19 | `Change directory (最近・フォルダを辿る)...` |
-| 10 | `Claude.ai (Web)` | | |
+検索欄が最上部にあり、何も打っていない状態では「新規に起動」「Web」「開発」「案件」「続きから」の 5 つが縦 1 列に並びます。各セクションは先頭 5 件までを出し、右端の「すべて (N)」で残りを開きます。検索語を打つとセクションの壁が消えて全体を横断した 1 本のリストになり、先頭に「— 横断 N 件 (セクションなし) —」が出ます。1 ペイン 240px を最悪ケースとして設計してあるので、長いラベルは末尾ではなく中間を省略します。
+
+| セクション | 中身 |
+| --- | --- |
+| 新規に起動 | `Claude Code` / `Codex` / `claude-codex (Codex Models)` / `Grok Build` / `claude-codex (Open Models)` / `Antigravity (agy)` の 6 行。行の右端からモデルと effort を選べます (次の節) |
+| Web | `ChatGPT (Web)` / `Gemini (Web)` / `Grok (Web)` / `Claude.ai (Web)` / `NotebookLM (Web)` の 5 行。プロセスではなく、そのタブが Web 画面になります |
+| 開発 / 案件 | 起動先フォルダの一覧。行を選ぶと起動先が変わります。空のときは「登録なし — 設定で登録 (候補 N 件)」から設定 → ランチャー へ飛べます |
+| 続きから | 直近のセッション数件。全件は `Ctrl+P` の Resume パレット (同じ一覧 API と同じ検索設定を共有するので、両方で結果が食い違いません) |
 
 Codex を `--no-alt-screen` で起動しているのは、ターミナルのスクロール履歴を残し、入力欄表示のちらつきや復元時の表示崩れを抑えるためです。
 
-**(dangerous) 系の項目は 2026-08-15 に全廃**しました。メニューが 20 項目まで伸びて番号が押しづらくなったうえ、実運用で使われていなかったためです。権限を開けた起動が要るときは `Custom...` から手で打ちます。
+**(dangerous) 系の項目は 2026-08-15 に全廃**しました。メニューが 20 項目まで伸びて番号が押しづらくなったうえ、実運用で使われていなかったためです。React のランチャーには任意コマンドを打つ `Custom...` の行もありません (文字メニューには残っています)。権限を開けた起動や任意コマンドで立てるときは、同梱 CLI の `spawn-tab -- <argv>` ([7 章](#7-エージェントに委譲する)) を使います。
 
-### キー操作
+### キー操作とマウス操作
 
-操作はキーボード専用です。フッタの表示はそのまま `^v: move   Enter/number: select   ->/m: model   d: 開発dir   a: 案件dir   /: custom   Esc/q: shell` です。`↑` `↓` (または `k` / `j`) で移動、`Enter` か数字キーで決定、`/` で `Custom...` へ飛びます (ここまでは launcher.sh / launcher.ps1 共通)。launcher.sh だけの操作が 3 つあります — `1` を押して 0.15 秒以内にもう 1 打すると `10`〜`19` の 2 桁指定、`d` で開発ディレクトリ、`a` で案件ディレクトリ。メニューを抜けて素のシェルに入るのは launcher.sh では `Esc` / `q`、launcher.ps1 では `q` だけです (`Esc` は無視されます)。
+どちらでも完結します。ペインを開いた時点で検索欄にフォーカスが入るので、そのまま打ち始められます。`↑` `↓` で行を移動し、検索欄が空のときは `←` `→` でも同じ 1 列を移動します (打っている間は行内のカーソル移動に戻ります)。`Enter` で起動、`Esc` で検索語を消します。
 
-### モデルと effort を選んで起動する → `→` / `m`
+### モデルと effort を選んで起動する → `Tab` / `Shift+Enter`
 
-項目 1〜6 (Claude Code / Codex / claude-codex 2 種 / Grok Build / Antigravity) を選んだ状態で `→` か `m` を押すと、**モデル → effort** の順に 1 画面ずつ出ます。どちらのリストも先頭が `(default)` なので、`Enter` を 2 回押せば従来どおり CLI の既定で起動します。`Esc` か `←` で 1 つ前に戻り、モデル画面で戻るとメインメニューへ帰ります。末尾の「入力する...」を選ぶと ID を直接打てます (grok と claude-codex (Open Models) は公開されたモデル一覧が無いため、この行だけになります)。
+「新規に起動」の行を選んだ状態で `Tab` か `Shift+Enter` を押す (マウスなら行の右端のボタン) と、その行の下に **モデル** と **effort** の選択が開きます。`←` `→` で値、`↑` `↓` か `Tab` で行、`Enter` で起動、`Esc` で戻ります。どちらも「既定」のままなら CLI の既定で起動します。grok と claude-codex (Open Models) は公開されたモデル一覧が無いため、モデルの行は出ません。
 
-**`Enter` と数字キーの挙動は変えていません** — 従来どおり CLI の既定で即起動します。指定した値は CLI ごとのフラグへ翻訳されます (`claude` は `--effort`、`codex` は native フラグが無いので `-c model_reasoning_effort=…`、`grok` は `--reasoning-effort`)。同じ選択は GUI の New Workspace ダイアログからもできて、そちらは `MYCMUX_LAUNCH_MODEL` / `MYCMUX_LAUNCH_EFFORT` で同じ経路に入ります。選択肢の一覧は GUI 側の `src/lib/agentCatalog.ts` と両ランチャーの 3 箇所にありますが、`tests/test_launcher_catalog_contract.py` が一致を機械検査します。
+**`Enter` の挙動は変えていません** — 選ばなければ従来どおり CLI の既定で即起動します。指定した値は CLI ごとのフラグへ翻訳されます (`claude` は `--effort`、`codex` は native フラグが無いので `-c model_reasoning_effort=…`、`grok` は `--reasoning-effort`)。同じ選択は GUI の New Workspace ダイアログからもできて、そちらは `MYCMUX_LAUNCH_MODEL` / `MYCMUX_LAUNCH_EFFORT` で同じ経路に入ります。選択肢の一覧は GUI 側の `src/lib/agentCatalog.ts` と両ランチャーの 3 箇所にありますが、`tests/test_launcher_catalog_contract.py` が一致を機械検査します。
 
 ### Web タブ — ChatGPT / Gemini / Grok / Claude.ai / NotebookLM
 
-項目 7〜11 はプロセスではありません。選ぶとそのタブ自体が指定サービスの Web 画面になります (他の項目がシェルをそのプログラムに置き換えるのと同じ挙動です)。中身は Tauri の子 webview で、ペインの矩形に追従し、mycmux のグローバルショートカットは webview にフォーカスがあっても効きます。
+「Web」セクションの 5 行 (ChatGPT / Gemini / Grok / Claude.ai / NotebookLM) はプロセスではありません。選ぶとそのタブ自体が指定サービスの Web 画面になります (他の項目がシェルをそのプログラムに置き換えるのと同じ挙動です)。中身は Tauri の子 webview で、ペインの矩形に追従し、mycmux のグローバルショートカットは webview にフォーカスがあっても効きます。
 
 ログイン状態は `%LOCALAPPDATA%\com.miyazaki.mycmux\web-profiles\<プロファイル>\` に残ります。**ChatGPT・Gemini・Claude.ai・NotebookLM は `google` プロファイルを共有**するので、Google に 1 回入れば 4 つとも通ります。Grok は X アカウントなので `grok` プロファイルを別に持ちます。
 
@@ -356,7 +353,7 @@ Google は埋め込み webview からの OAuth を仕様として拒むことが
 - **自動で登録する** — 「自動登録」ブロックのルール 4 種 (git リポジトリ / ファイル更新 / 動かした場所 / セッションで触れた) は、それぞれ「候補にする」か「自動で登録する」かを選べます。自動の行は右端に印 (`●09/05` = セッションで触れた、`09/05` = リポジトリやファイルの更新) が付き、次の走査で条件から外れると消えます。残したい行は「固定」で手動に昇格します。走査は起動 15 秒後と 3 時間おき、または「今すぐ走査」です。新規インストール時は「git リポジトリ (ホーム直下)」と「動かした場所」の 2 本が候補モードで入っています。
 - **旧ファイルからの移行** — 以前の `~/.mycmux/launch-roots.txt` があれば初回に自動で取り込みます。以後は逆にアプリがこのファイルを書き出すので (bash 経路の `d` / `a` キー用)、手で編集する必要はありません。外部で書き換えられた行は次の読み込みで取り込みます。
 
-bash 経路の起動メニュー (項目 17〜19) は今も同じ一覧を読みます。**最近使った** は直近 8 件 (`~/.mycmux/launch-dirs-mru.txt`) で、ランチャーペインで選んだフォルダもここに記録されます。**フォルダを辿る** は実フォルダを 1 階層ずつ探索して「✓ ここに決定」で確定、**Home** はホームディレクトリへ移ります。
+文字メニュー (項目 17〜19・[付録 B](#付録-b-ランチャー項目全一覧)) も今も同じ一覧を読みます。**最近使った** は直近 8 件 (`~/.mycmux/launch-dirs-mru.txt`) で、ランチャーペインで選んだフォルダもここに記録されます。**フォルダを辿る** は実フォルダを 1 階層ずつ探索して「✓ ここに決定」で確定、**Home** はホームディレクトリへ移ります。
 
 ### 対応エージェントは 4 種 + agy
 
@@ -366,7 +363,7 @@ bash 経路の起動メニュー (項目 17〜19) は今も同じ一覧を読み
 
 ### 前回の続きから立てたい → resume
 
-導線は 3 つです。`Ctrl+P` の Resume パレット、起動メニューの resume 系項目 (9〜12)、誤って閉じたペインの `Ctrl+Shift+T`。
+導線は 3 つです。`Ctrl+P` の Resume パレット、ランチャーペインの「続きから」セクション (直近数件・「すべて」で全件)、誤って閉じたペインの `Ctrl+Shift+T`。
 
 > 再起動時の自動復元は v0.4.0 でいったん廃止しました。新規ペインに `MYCMUX_RESUME` などの環境変数が伝播してエージェントモードが意図せず暴発する事故 (env 汚染) が起きたためです。v0.5.6 で多層の安全弁 (起動時の `remove_var` / `sanitize_launch_env` / フロントの `EPHEMERAL_LAUNCH_ENV_KEYS`) とセットで再導入され、現行は再起動すると前回の会話へ自動で戻ります ([8 章](#8-セッションを残す戻す))。上の 3 つは、それとは別に人が選んで再開する導線です。
 
@@ -530,7 +527,7 @@ Claude の AskUserQuestion をカード化し、番号ボタンで直接答え�
 
 **次の一手**は入力欄の直上に出ます。選択中の会話を読んだ「一言まとめ」と行動候補が最大 3 件並び、1 件目には ★ (推奨) が付きます。押すと「送る全文」を確認してから送り、「↻」で作り直せます。状態から決まる定型ボタンが先に出て AI の具体案は後追いで足す作りなので、開くだけでは AI を起動しません。状態: 配信済み v0.39.0 (定型ボタン) / AI 提案 v0.50.0。
 
-**報告インボックス**は、各セッションから届いた進捗・完了報告を届いた順にカードとして記録します。完了・テスト結果などの事実は機械が 0 秒でカード化し、AI の一言はあとから同じカードに足されます。まとめ報告には `対象N｜受領N｜まとめ反映N｜未受領N｜要判断N` のカバレッジ行が必ず付きます。受け方はセッションごとに「すぐ言って」「区切りでまとめて」「黙って記録」の 3 モードから選べます。テストらしいコマンドが走っただけ、失敗した書き込み、成功時のエラー風文字列からはカードを作りません。状態: 配信済み v0.39.0 / 機械層が実ログで動いていなかった不具合を修正 v0.41.0 (同じ 20 セッションで 0/0/0 → ファイル変更 565 件・テスト結果 110 件・エラー 86 件)。
+**報告インボックス**は、いまは気づきカード (次の段落) を届いた順に並べる入口です。v0.39.0 で入れた独自のカード記録 (機械が 0 秒でカード化・カバレッジ行・受け方 3 モード) は、実際には誰も答えないカードが積み上がるだけだったため、v0.43.0 でセッション名と実データを直したのち、v0.60.1 で「答える必要があるものだけを載せる」方針に改めて気づきカードだけに絞りました。状態: 配信済み v0.60.1 (`src/components/dashboard/ReportInbox.tsx` は気づきカードを描くだけの薄い入口です)。
 
 **気づきカード**は 10 種の気づき (「回答待ち」「停止を検知」「報告がそろいました」「確認が残っています」「使える枠に達しました」「作業先を確認してください」「食い違いを検知」「完了条件を満たしました」「次の作業を始められます」「対応をまとめました」) を優先度順に並べ、「今知らせる理由」「影響」「根拠」「返す先」「解消の条件」を明示して 1 クリックの主行動 (「開く」「開いて答える」「再試行」「契約を見る」「完了を確認」) を出します。状態: 配信済み (設定「自動化」→「先回りカード (気づき)」でオフにできます) / 次の一手が変わったときだけ発言する挙動 v0.42.0。
 
@@ -717,7 +714,7 @@ Markdown 編集中は `Text` 以降の 5 グループが非表示になります
 | 作業 | 自動化 | 見守り・自律モード・通知の敏感さ・休眠セッションの整理 |
 | 接続 | スマホ・リモート操作 | リモート接続の有効化・LAN 公開・QR・接続中クライアント・トークン再生成 |
 | アカウント | アカウント・使用量 | アカウント別の使用量と CLI アカウントの管理 |
-| その他 | キーボードショートカット | 全 37 アクションの再割り当て |
+| その他 | キーボードショートカット | 全 38 アクションの再割り当て |
 | その他 | アプリ情報 | 現在のバージョンと「更新を確認」 |
 
 ### 目に合う配色にしたい → テーマ 30 本
@@ -742,7 +739,7 @@ Markdown 編集中は `Text` 以降の 5 グループが非表示になります
 
 ### 手癖に合わせたい → キーボードショートカットの再割り当て
 
-`Ctrl+,` または設定「キーボードショートカット」で、全 37 アクションをカテゴリ・操作名・現在のキーの各列で見て個別に再割り当てできます。「Rebind」を押してキーを打つ、`Backspace` / `Delete` でクリア、「Reset」で 1 件だけ既定へ、「Restore defaults」で全解除です。重複は赤字の「Duplicate shortcut warning: 」で警告します。修飾キーなしの通常文字・`Backspace`・`Delete`・矢印キーは必ず CLI 入力として通るので、壊れた設定で `h` が奪われる事故は起きません。状態: 配信済み (初出版不明)。
+`Ctrl+,` または設定「キーボードショートカット」で、全 38 アクションをカテゴリ・操作名・現在のキーの各列で見て個別に再割り当てできます。「Rebind」を押してキーを打つ、`Backspace` / `Delete` でクリア、「Reset」で 1 件だけ既定へ、「Restore defaults」で全解除です。重複は赤字の「Duplicate shortcut warning: 」で警告します。修飾キーなしの通常文字・`Backspace`・`Delete`・矢印キーは必ず CLI 入力として通るので、壊れた設定で `h` が奪われる事故は起きません。状態: 配信済み (初出版不明)。
 
 ### 裏で勝手に AI が走るのを止めたい → AI 設定と自動化設定
 
@@ -796,7 +793,7 @@ WebView2 のネイティブ右クリックメニューは全面抑止してい�
 | 2 | ターミナルのスクロール飛び・拡大戻りの崩れ | 完了 (`6ed846b` / `7a5fae7`) |
 | 3 | grok の週間制限がログイン間隔で消える | 完了 (`f1f6036`・実機未確認) |
 | 4 | grok 制限の数字 3 つの意味 | 完了 (`0591a4c`・「65%・↻8/29・13:45」の 3 つを言葉に) |
-| 5 | 上部右 5 アイコンが幅で消える | タブ再配置の後 (方針は確定: ダッシュ → ズーム → 新規タブの順に畳む) |
+| 5 | 上部右 5 アイコンが幅で消える | 完了 (ペインタブバーは幅で 7 段階に畳み、はみ出した操作は「⋮」へ移ります。畳む順は 新規タブ・下に分割 → セーブポイント → ダッシュボード → ズーム → 右に分割 → 閉じる で、最後まで残るのは閉じるです) |
 | 6 | 会話履歴が開けずダッシュボードへ飛ぶ | 完了 (`6ed846b`) |
 | 7 | 再起動時のペイン復活が不安定 | タブ再配置の後 (原因候補は特定済み) |
 
@@ -973,7 +970,7 @@ Rust コマンドは 144 件 / 31 ファイルで、`lib.rs` の `generate_handl
 
 ## 付録 A 既定キーバインド全一覧
 
-正本は `src/lib/keybindings.ts` の `KEYBINDING_DEFINITIONS` (全 37 件)。`title` は設定「キーボードショートカット」に出る文言そのままで、キーはユーザーが上書きできます。
+正本は `src/lib/keybindings.ts` の `KEYBINDING_DEFINITIONS` (全 38 件)。`title` は設定「キーボードショートカット」に出る文言そのままで、キーはユーザーが上書きできます。
 
 | # | 分類 | アクション ID | キー (既定) | title (画面表示) |
 | ---: | --- | --- | --- | --- |
@@ -987,35 +984,35 @@ Rust コマンドは 144 件 / 31 ファイルで、`lib.rs` の `generate_handl
 | 8 | Global | `dashboard.column.close` | `Ctrl+Shift+Backspace` | ダッシュボードの列を閉じる |
 | 9 | Global | `dashboard.column.pin` | `Ctrl+Shift+P` | ダッシュボードの列を固定 |
 | 10 | Workspace | `workspace.new` | `Ctrl+Shift+N` | New workspace |
-| 11 | Workspace | `workspace.next` | `Ctrl+Tab` | Next workspace |
-| 12 | Workspace | `workspace.prev` | `Ctrl+Shift+Tab` | Previous workspace |
-| 13 | Workspace | `workspace.close` | `Ctrl+Shift+W` | Close workspace |
-| 14 | Workspace | `workspace.jump.1` | `Ctrl+1` | Jump to workspace 1 |
-| 15 | Workspace | `workspace.jump.2` | `Ctrl+2` | Jump to workspace 2 |
-| 16 | Workspace | `workspace.jump.3` | `Ctrl+3` | Jump to workspace 3 |
-| 17 | Workspace | `workspace.jump.4` | `Ctrl+4` | Jump to workspace 4 |
-| 18 | Workspace | `workspace.jump.5` | `Ctrl+5` | Jump to workspace 5 |
-| 19 | Workspace | `workspace.jump.6` | `Ctrl+6` | Jump to workspace 6 |
-| 20 | Workspace | `workspace.jump.7` | `Ctrl+7` | Jump to workspace 7 |
-| 21 | Workspace | `workspace.jump.8` | `Ctrl+8` | Jump to workspace 8 |
-| 22 | Workspace | `workspace.jump.9` | `Ctrl+9` | Jump to last workspace |
-| 23 | Pane | `pane.focus.left` | `Ctrl+Alt+ArrowLeft` | Focus pane left |
-| 24 | Pane | `pane.focus.right` | `Ctrl+Alt+ArrowRight` | Focus pane right |
-| 25 | Pane | `pane.focus.up` | `Ctrl+Alt+ArrowUp` | Focus pane up |
-| 26 | Pane | `pane.focus.down` | `Ctrl+Alt+ArrowDown` | Focus pane down |
-| 27 | Pane | `pane.split.right` | `Ctrl+Alt+D` | Split pane right |
-| 28 | Pane | `pane.split.down` | `Ctrl+Alt+Shift+D` | Split pane down |
-| 29 | Pane | `pane.close` | `Ctrl+Alt+W` | Close active pane |
-| 30 | Pane | `pane.reopen` | `Ctrl+Shift+T` | Reopen closed pane |
-| 31 | Pane | `pane.zoom.toggle` | `Ctrl+Shift+Enter` | Toggle pane zoom |
-| 32 | Pane | `pane.tab.next` | `Ctrl+Alt+PageDown` | Next tab in pane |
-| 33 | Pane | `pane.tab.prev` | `Ctrl+Alt+PageUp` | Previous tab in pane |
-| 34 | Pane | `pane.attention.next` | `Ctrl+Alt+A` | Next attention |
-| 35 | Pane | `pane.tab.pin.toggle` | `Ctrl+Alt+P` | アクティブペインをピン留め |
-| 36 | Terminal | `terminal.search` | `Ctrl+Shift+F` | Find in terminal |
-| 37 | Terminal | `composer.focus` | `Ctrl+Alt+I` | ペインの入力欄へ移動 |
+| 11 | Workspace | `workspace.new.advanced` | `Ctrl+Shift+Alt+N` | New workspace (choose agents) |
+| 12 | Workspace | `workspace.next` | `Ctrl+Tab` | Next workspace |
+| 13 | Workspace | `workspace.prev` | `Ctrl+Shift+Tab` | Previous workspace |
+| 14 | Workspace | `workspace.close` | `Ctrl+Shift+W` | Close workspace |
+| 15 | Workspace | `workspace.jump.1` | `Ctrl+1` | Jump to workspace 1 |
+| 16 | Workspace | `workspace.jump.2` | `Ctrl+2` | Jump to workspace 2 |
+| 17 | Workspace | `workspace.jump.3` | `Ctrl+3` | Jump to workspace 3 |
+| 18 | Workspace | `workspace.jump.4` | `Ctrl+4` | Jump to workspace 4 |
+| 19 | Workspace | `workspace.jump.5` | `Ctrl+5` | Jump to workspace 5 |
+| 20 | Workspace | `workspace.jump.6` | `Ctrl+6` | Jump to workspace 6 |
+| 21 | Workspace | `workspace.jump.7` | `Ctrl+7` | Jump to workspace 7 |
+| 22 | Workspace | `workspace.jump.8` | `Ctrl+8` | Jump to workspace 8 |
+| 23 | Workspace | `workspace.jump.9` | `Ctrl+9` | Jump to last workspace |
+| 24 | Pane | `pane.focus.left` | `Ctrl+Alt+ArrowLeft` | Focus pane left |
+| 25 | Pane | `pane.focus.right` | `Ctrl+Alt+ArrowRight` | Focus pane right |
+| 26 | Pane | `pane.focus.up` | `Ctrl+Alt+ArrowUp` | Focus pane up |
+| 27 | Pane | `pane.focus.down` | `Ctrl+Alt+ArrowDown` | Focus pane down |
+| 28 | Pane | `pane.split.right` | `Ctrl+Alt+D` | Split pane right |
+| 29 | Pane | `pane.split.down` | `Ctrl+Alt+Shift+D` | Split pane down |
+| 30 | Pane | `pane.close` | `Ctrl+Alt+W` | Close active pane |
+| 31 | Pane | `pane.reopen` | `Ctrl+Shift+T` | Reopen closed pane |
+| 32 | Pane | `pane.zoom.toggle` | `Ctrl+Shift+Enter` | Toggle pane zoom |
+| 33 | Pane | `pane.tab.next` | `Ctrl+Alt+PageDown` | Next tab in pane |
+| 34 | Pane | `pane.tab.prev` | `Ctrl+Alt+PageUp` | Previous tab in pane |
+| 35 | Pane | `pane.attention.next` | `Ctrl+Alt+A` | Next attention |
+| 36 | Pane | `pane.tab.pin.toggle` | `Ctrl+Alt+P` | アクティブタブをピン留め |
+| 37 | Terminal | `terminal.search` | `Ctrl+Shift+F` | Find in terminal |
+| 38 | Terminal | `composer.focus` | `Ctrl+Alt+I` | ペインの入力欄へ移動 |
 
-35 の title は画面文言のまま「アクティブペインをピン留め」ですが、実際に固定されるのはアクティブなタブです。
 
 定義ファイルの外にあり再割り当てできない操作は次のとおりです。ターミナルでは `Ctrl+V` (貼り付け)、`Shift+Enter` (改行の送出)、`Ctrl+ホイール` (端末フォントの拡大縮小・ウィンドウ全体で有効)、`Shift+ホイール` (常にローカルスクロール)。成果物プレビューの編集中は `Ctrl+S` / `Cmd+S` (保存) と `Ctrl+B` / `Ctrl+I` (太字・斜体)。ダッシュボードでは `j` `k` `↑` `↓` (選択移動)、`Enter` (元画面へ移動)、`Tab` (次の要対応へ)、`/` (検索欄へ)、`1` `2` `3` (質問カードの選択肢)、列ヘッダーの `Alt+←` / `Alt+→` (並べ替え)、配置図 separator の `←` `→` `Home` `End` (幅変更)。オーバーレイ全般は `Escape` で閉じ、コマンドパレットでは `Tab` (引き継ぎ先の巡回) と `PageUp` `PageDown` `Home` `End` (一覧の選択移動) が効きます。
 
@@ -1023,7 +1020,7 @@ Rust コマンドは 144 件 / 31 ファイルで、`lib.rs` の `generate_handl
 
 ## 付録 B ランチャー項目全一覧
 
-番号は launcher.sh 基準です。launcher.ps1 では 17〜19 がありません (合計 16 項目)。
+この一覧は `launcher.sh` / `launcher.ps1` に残っている文字メニュー (`MYCMUX_LAUNCH_TARGET` を渡さずに直接読み込んだときに出る) のものです。mycmux のランチャーペインは [6 章](#6-エージェントを起動する)の 5 セクションで、番号キーはありません。番号は launcher.sh 基準です。launcher.ps1 では 17〜19 がありません (合計 16 項目)。
 
 | # | ラベル | コマンド | ps1 との差 |
 | ---: | --- | --- | --- |
@@ -1140,7 +1137,7 @@ bootstrap の文言は `Handoff from previous session. Read "<MYCMUX_HANDOFF_PRO
 | 自動化 | 委譲の見守り / 自律モード (実行契約の次の作業を自動で始める・先回りカード (気づき)) / 通知の敏感さ (控えめ・標準・敏感・カスタム) / 見守りの通知 / 休眠セッションの整理 (自動整理しない・30分後・60分後・120分後) |
 | スマホ・リモート操作 | token末尾 / リモート接続を有効にする / リモートを LAN に公開する（0.0.0.0 で待受）/ QR と URL / 接続中クライアント / 危険な操作 (トークン再生成) |
 | アカウント・使用量 | アカウント別の使用量 (表) / CLI アカウントの管理 (追加・「現在のログインを登録/更新」・切り替え・再ログイン・名前・削除) / 未登録の保存情報 / バックアップフォルダーを開く |
-| キーボードショートカット | 「Keyboard Shortcuts」の表 (Global / Workspace / Pane / Terminal の 37 アクション) |
+| キーボードショートカット | 「Keyboard Shortcuts」の表 (Global / Workspace / Pane / Terminal の 38 アクション) |
 | アプリ情報 | 現在のバージョン表示と「更新を確認」(TEST モードと子ウィンドウでは無効) |
 
 テーマ 30 本は 真夜中 / 深海 / 胡桃 / 竹林 / 極夜 / 宵藍 / 碧湖 / 石墨 / 氷夜 / 静寂 / 炭黒 / 夜霧 / 雷鳴 / 珊瑚 / 極光 / 溶岩 / 銀河 / 電紫 / 黄金 / 熾火 / 信号灯 / 朝凪 / 生成り / 若葉 / 月白 / 桜 / 白紙 / 白昼夢 / 薄霧 / 墨昼 です。

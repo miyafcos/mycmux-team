@@ -239,6 +239,11 @@ div:hover>.tab-close-btn {
   opacity: 1 !important;
 }
 
+div:focus-within > .tab-close-btn,
+.tab-close-btn:focus-visible {
+  opacity: 1 !important;
+}
+
 .tab-close-btn {
   transition: opacity var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease);
 }

@@ -1,5 +1,8 @@
 # Accessibility & Motion
 
+> Implemented in v0.1.0 (`8859f29d`): reduced motion; overlay motion/blur expanded in v0.21.7 (`4d9f19a4`). See [appearance and motion](../../../README.md#14-見た目と設定).
+> ARIA and keyboard coverage are partial; AAA high contrast and full localization remain pending.
+
 ## ARIA Roles & Screen Reader Support
 
 Proper semantic markup for assistive technology navigation.
@@ -7,8 +10,8 @@ Proper semantic markup for assistive technology navigation.
 | Detail | Description |
 |--------|-------------|
 | cmux | macOS accessibility APIs for VoiceOver, role annotations on all interactive elements |
-| Needs | `role`, `aria-label`, `aria-live` attributes on panes, tabs, buttons |
-| Components | `TabBar`, `PaneTabBar`, `TerminalPane`, `CommandPalette` need ARIA |
+| Partial | Dialog roles, ARIA labels and focus management exist; complete pane/tab/screen-reader coverage still needs auditing |
+| Components | `TabBar`, `PaneTabBar`, `TerminalPane`, `CrsmPalette` need consistent ARIA coverage |
 | Priority | **Medium** |
 
 ## High Contrast Mode
@@ -22,16 +25,16 @@ Accessibility theme with increased contrast ratios meeting WCAG AAA.
 | Needs | `prefers-contrast: more` media query detection |
 | Priority | **Medium** |
 
-## Reduced Motion
+## Reduced Motion — Implemented
 
 Respect `prefers-reduced-motion` for users sensitive to animations.
 
 | Detail | Description |
 |--------|-------------|
 | cmux | Disables all transitions and animations when system preference set |
-| Needs | CSS `@media (prefers-reduced-motion: reduce)` blocks |
-| Needs | Disable tab flash, hover transitions, sidebar animations |
-| Current | No reduced-motion support in `global.css` |
+| Shipped | CSS `@media (prefers-reduced-motion: reduce)` blocks in `global.css` and component styles |
+| Shipped | Global animation/transition durations reduce to 0.01ms, one iteration; component rules disable selected animations |
+| Current | Global reduced-motion rule in `src/global.css`; deferred overlay exit also respects the preference |
 | Priority | **High** |
 
 ### Implementation
@@ -54,7 +57,7 @@ Multi-language support for UI strings.
 | cmux | English only, but structured for localization with string constants |
 | Needs | `i18next` or similar, string extraction from components |
 | Needs | Language selector in settings, RTL layout support |
-| Scope | ~50 UI strings (tab labels, button text, menu items, tooltips) |
+| Scope | UI strings across tabs, settings, buttons, menus and tooltips; no complete localization layer |
 | Priority | **Low** |
 
 ## Keyboard Navigation

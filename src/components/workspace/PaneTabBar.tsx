@@ -1,5 +1,5 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { clampMenuPosition } from "../../lib/menuPosition";
 import {
   ATTENTION_REASON_COLOR,
@@ -53,6 +53,10 @@ import {
   type SavepointAgentKind,
 } from "../online/onlineSavepoints";
 import { openDashboardForTab } from "../layout/openDashboardForTab";
+import { TAB_RESTORE_CLOSED_EVENT } from "../layout/tabSweep";
+import { peekClosedPane } from "../../stores/closedPaneStore";
+import { terminalPaneStrings } from "./terminalPaneStrings";
+import { TERMINAL_SEARCH_EVENT } from "../terminal/XTermWrapper";
 
 interface PaneTabBarProps {
   pane: Pane;
@@ -303,6 +307,7 @@ export type PaneTabBarMode =
 
 export type PaneTabBarActionId =
   | "new-tab"
+  | "search"
   | "publish"
   | "split-right"
   | "split-down"
@@ -344,6 +349,7 @@ const PANE_TABBAR_BOUNDARIES = [
 
 const PANE_TABBAR_ACTION_ORDER: readonly PaneTabBarActionId[] = [
   "new-tab",
+  "search",
   "publish",
   "split-right",
   "split-down",
@@ -407,7 +413,9 @@ export function resolvePaneTabBarActions(
       : mode === "compact1"
         ? 1
         : PANE_TABBAR_PRIORITY_ACTIONS.length;
-  const visiblePriorityActions = PANE_TABBAR_PRIORITY_ACTIONS.slice(-visiblePriorityCount);
+  const visiblePriorityActions: readonly PaneTabBarActionId[] = mode === "slim"
+    ? ["search", ...PANE_TABBAR_PRIORITY_ACTIONS]
+    : PANE_TABBAR_PRIORITY_ACTIONS.slice(-visiblePriorityCount);
 
   return {
     visible: available.filter((action) => visiblePriorityActions.includes(action)),
@@ -534,6 +542,12 @@ const paneTabContextMenuStyle: CSSProperties = {
 };
 
 const paneTabContextMenuItemStyle: CSSProperties = {
+  display: "block",
+  width: "100%",
+  border: 0,
+  background: "transparent",
+  font: "inherit",
+  textAlign: "left",
   padding: "6px 12px",
   cursor: "pointer",
   color: "var(--cmux-text)",
@@ -549,16 +563,20 @@ const paneTabContextMenuItemDisabledStyle: CSSProperties = {
 function PaneTabContextMenuItem({
   children,
   disabled,
+  title,
   onClick,
 }: {
   children: ReactNode;
   disabled?: boolean;
+  title?: string;
   onClick: () => void;
 }) {
   return (
-    <div
+    <button
+      type="button"
       role="menuitem"
       aria-disabled={disabled}
+      title={title}
       onClick={() => {
         if (!disabled) onClick();
       }}
@@ -574,8 +592,19 @@ function PaneTabContextMenuItem({
       }}
     >
       {children}
-    </div>
+    </button>
   );
+}
+
+function handlePaneMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+  const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("[role='menuitem']"));
+  if (items.length === 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const index = items.indexOf(document.activeElement as HTMLButtonElement);
+  const delta = event.key === "ArrowDown" ? 1 : -1;
+  items[(index + delta + items.length) % items.length]?.focus();
 }
 
 function TabStatusIndicatorDot({ indicator }: { indicator: TabStatusIndicator }) {
@@ -1053,6 +1082,7 @@ export default memo(function PaneTabBar({
   const skipNextBlurCommitRef = useRef(false);
   const [contextMenu, setContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const contextTriggerRef = useRef<HTMLElement | null>(null);
   const [contextMenuPos, setContextMenuPos] = useState({ left: 0, top: 0 });
   const [publishPopoverOpen, setPublishPopoverOpen] = useState(false);
   const [publishSummary, setPublishSummary] = useState("");
@@ -1066,12 +1096,23 @@ export default memo(function PaneTabBar({
   const [barMode, setBarMode] = useState<PaneTabBarMode>("full");
   const [kebabOpen, setKebabOpen] = useState(false);
   const kebabRef = useRef<HTMLDivElement>(null);
+  const kebabTriggerRef = useRef<HTMLButtonElement>(null);
+  const kebabMenuRef = useRef<HTMLDivElement>(null);
   const duplicateSessionLocksRef = useRef(new Set<string>());
   const [duplicatingTabIds, setDuplicatingTabIds] = useState<Set<string>>(() => new Set());
 
   // Derive active tab's agent status for the status bar
   const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
   const activeTabDeclared = Boolean(activeTab && isDeclaredTab(activeTab));
+  const canSearchTerminal = Boolean(activeTab && !activeTabDeclared
+    && (activeTab.type === undefined || activeTab.type === "terminal"));
+  const handleSearchTerminal = () => {
+    if (!canSearchTerminal || !activeTab) return;
+    setKebabOpen(false);
+    window.dispatchEvent(new CustomEvent(TERMINAL_SEARCH_EVENT, {
+      detail: { sessionId: activeTab.sessionId },
+    }));
+  };
   const activeMeta = activeTab ? metadataBySession[activeTab.sessionId] : undefined;
   const activeVolatileMeta = activeTab ? volatileMetadataBySession[activeTab.sessionId] : undefined;
   const activeAttention = activeTab ? attentionBySession[activeTab.sessionId] : undefined;
@@ -1237,11 +1278,15 @@ export default memo(function PaneTabBar({
     return () => window.clearTimeout(timeoutId);
   }, [editingTabId]);
 
-  useDismissOnOutside(Boolean(contextMenu), contextMenuRef, () => setContextMenu(null));
+  useDismissOnOutside(Boolean(contextMenu), contextMenuRef, (reason) => {
+    setContextMenu(null);
+    if (reason === "escape") contextTriggerRef.current?.focus();
+  }, { preventDefaultOnEscape: true });
 
   useLayoutEffect(() => {
     if (!contextMenu || !contextMenuRef.current) return;
     const rect = contextMenuRef.current.getBoundingClientRect();
+    contextMenuRef.current.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
     const { left, top } = clampMenuPosition(contextMenu.x, contextMenu.y, rect.width, rect.height);
     setContextMenuPos((prev) =>
       prev.left === left && prev.top === top ? prev : { left, top },
@@ -1268,10 +1313,13 @@ export default memo(function PaneTabBar({
   }, []);
 
   useEffect(() => {
-    if (overflowActions.length === 0) setKebabOpen(false);
-  }, [overflowActions.length]);
+    if (kebabOpen) kebabMenuRef.current?.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
+  }, [kebabOpen]);
 
-  useDismissOnOutside(kebabOpen, kebabRef, () => setKebabOpen(false));
+  useDismissOnOutside(kebabOpen, kebabRef, (reason) => {
+    setKebabOpen(false);
+    if (reason === "escape") kebabTriggerRef.current?.focus();
+  }, { preventDefaultOnEscape: true });
 
   useEffect(() => {
     const strip = tabStripRef.current;
@@ -1469,6 +1517,22 @@ export default memo(function PaneTabBar({
           read as a browser the pane did not have. */}
       {(visibleActions.length > 0 || overflowActions.length > 0) && (
         <div style={{ display: "flex", alignItems: "center", gap: 2, paddingRight: 6, flexShrink: 0, order: 4 }}>
+          {visibleActions.includes("search") && (
+            <button
+              type="button"
+              className="pane-action-btn"
+              aria-label={terminalPaneStrings.searchTerminal}
+              aria-disabled={!canSearchTerminal}
+              title={canSearchTerminal ? terminalPaneStrings.searchTerminalTitle : terminalPaneStrings.searchUnavailable}
+              onClick={handleSearchTerminal}
+              style={{ opacity: canSearchTerminal ? 1 : 0.55 }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+                <circle cx="10" cy="10" r="6" />
+                <path d="m15 15 6 6" />
+              </svg>
+            </button>
+          )}
           {visibleActions.includes("publish") && showPublishButton && (
             <button
               className="pane-action-btn"
@@ -1532,117 +1596,137 @@ export default memo(function PaneTabBar({
               <CloseIcon size={11} />
             </button>
           )}
-          {overflowActions.length > 0 && (
-            <div ref={kebabRef} style={{ position: "relative", flexShrink: 0 }}>
-              <button
-                className="pane-action-btn"
-                type="button"
-                title="Pane actions"
-                aria-label="Pane actions"
-                aria-expanded={kebabOpen}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setKebabOpen((open) => !open);
+          <div ref={kebabRef} style={{ position: "relative", flexShrink: 0 }}>
+            <button
+              ref={kebabTriggerRef}
+              className="pane-action-btn"
+              type="button"
+              title={terminalPaneStrings.paneActions}
+              aria-label={terminalPaneStrings.paneActions}
+              aria-haspopup="menu"
+              aria-expanded={kebabOpen}
+              onClick={(event) => {
+                event.stopPropagation();
+                setKebabOpen((open) => !open);
+              }}
+              style={{ margin: "0 1px", padding: "3px 6px", flexShrink: 0, fontSize: 14, lineHeight: 1 }}
+            >
+              ⋮
+            </button>
+            {kebabOpen && (
+              <div
+                ref={kebabMenuRef}
+                role="menu"
+                onKeyDown={handlePaneMenuKeyDown}
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 2px)",
+                  right: 0,
+                  zIndex: 130,
+                  background: "var(--cmux-popover)",
+                  border: "1px solid var(--cmux-border)",
+                  borderRadius: 6,
+                  padding: "4px 0",
+                  boxShadow: "var(--cmux-shadow-pane-menu)",
+                  minWidth: 160,
+                  fontSize: 13,
                 }}
-                style={{ margin: "0 1px", padding: "3px 6px", flexShrink: 0, fontSize: 14, lineHeight: 1 }}
               >
-                ⋮
-              </button>
-              {kebabOpen && (
-                <div
-                  role="menu"
-                  style={{
-                    position: "absolute",
-                    top: "calc(100% + 2px)",
-                    right: 0,
-                    zIndex: 130,
-                    background: "var(--cmux-popover)",
-                    border: "1px solid var(--cmux-border)",
-                    borderRadius: 6,
-                    padding: "4px 0",
-                    boxShadow: "var(--cmux-shadow-pane-menu)",
-                    minWidth: 160,
-                    fontSize: 13,
+                {overflowActions.includes("new-tab") && (
+                  <PaneTabContextMenuItem
+                    onClick={() => {
+                      setKebabOpen(false);
+                      onAddTab?.(getDefaultAgent().id, "launcher");
+                    }}
+                  >
+                    New terminal tab
+                  </PaneTabContextMenuItem>
+                )}
+                {overflowActions.includes("publish") && showPublishButton && (
+                  <PaneTabContextMenuItem
+                    onClick={() => {
+                      setKebabOpen(false);
+                      if (!agentSessionId) {
+                        useToastStore.getState().pushToast(onlineStrings.publishNoSession, "error");
+                        return;
+                      }
+                      setPublishPopoverOpen(true);
+                    }}
+                  >
+                    {published ? "Update savepoint…" : "Publish savepoint…"}
+                  </PaneTabContextMenuItem>
+                )}
+                {overflowActions.includes("split-right") && onSplitRight && showSplitRightButton && (
+                  <PaneTabContextMenuItem
+                    onClick={() => {
+                      setKebabOpen(false);
+                      onSplitRight();
+                    }}
+                  >
+                    Split right
+                  </PaneTabContextMenuItem>
+                )}
+                {overflowActions.includes("split-down") && onSplitDown && showSplitDownButton && (
+                  <PaneTabContextMenuItem
+                    onClick={() => {
+                      setKebabOpen(false);
+                      onSplitDown();
+                    }}
+                  >
+                    Split down
+                  </PaneTabContextMenuItem>
+                )}
+                {overflowActions.includes("zoom") && onZoomToggle && (
+                  <PaneTabContextMenuItem
+                    onClick={() => {
+                      setKebabOpen(false);
+                      onZoomToggle();
+                    }}
+                  >
+                    {isZoomed ? "Restore pane" : "Zoom pane"}
+                  </PaneTabContextMenuItem>
+                )}
+                {overflowActions.includes("dashboard") && activeTab && (
+                  <PaneTabContextMenuItem
+                    onClick={() => {
+                      setKebabOpen(false);
+                      openDashboardForTab(activeTab.id);
+                    }}
+                  >
+                    Open in dashboard
+                  </PaneTabContextMenuItem>
+                )}
+                <PaneTabContextMenuItem
+                  disabled={!canSearchTerminal}
+                  title={canSearchTerminal ? terminalPaneStrings.searchTerminalTitle : terminalPaneStrings.searchUnavailable}
+                  onClick={handleSearchTerminal}
+                >
+                  {terminalPaneStrings.searchTerminal}
+                </PaneTabContextMenuItem>
+                <PaneTabContextMenuItem
+                  disabled={!peekClosedPane()}
+                  title={!peekClosedPane() ? terminalPaneStrings.noClosedTab : undefined}
+                  onClick={() => {
+                    if (!peekClosedPane()) return;
+                    setKebabOpen(false);
+                    window.dispatchEvent(new Event(TAB_RESTORE_CLOSED_EVENT));
                   }}
                 >
-                  {overflowActions.includes("new-tab") && (
-                    <PaneTabContextMenuItem
-                      onClick={() => {
-                        setKebabOpen(false);
-                        onAddTab?.(getDefaultAgent().id, "launcher");
-                      }}
-                    >
-                      New terminal tab
-                    </PaneTabContextMenuItem>
-                  )}
-                  {overflowActions.includes("publish") && showPublishButton && (
-                    <PaneTabContextMenuItem
-                      onClick={() => {
-                        setKebabOpen(false);
-                        if (!agentSessionId) {
-                          useToastStore.getState().pushToast(onlineStrings.publishNoSession, "error");
-                          return;
-                        }
-                        setPublishPopoverOpen(true);
-                      }}
-                    >
-                      {published ? "Update savepoint…" : "Publish savepoint…"}
-                    </PaneTabContextMenuItem>
-                  )}
-                  {overflowActions.includes("split-right") && onSplitRight && showSplitRightButton && (
-                    <PaneTabContextMenuItem
-                      onClick={() => {
-                        setKebabOpen(false);
-                        onSplitRight();
-                      }}
-                    >
-                      Split right
-                    </PaneTabContextMenuItem>
-                  )}
-                  {overflowActions.includes("split-down") && onSplitDown && showSplitDownButton && (
-                    <PaneTabContextMenuItem
-                      onClick={() => {
-                        setKebabOpen(false);
-                        onSplitDown();
-                      }}
-                    >
-                      Split down
-                    </PaneTabContextMenuItem>
-                  )}
-                  {overflowActions.includes("zoom") && onZoomToggle && (
-                    <PaneTabContextMenuItem
-                      onClick={() => {
-                        setKebabOpen(false);
-                        onZoomToggle();
-                      }}
-                    >
-                      {isZoomed ? "Restore pane" : "Zoom pane"}
-                    </PaneTabContextMenuItem>
-                  )}
-                  {overflowActions.includes("dashboard") && activeTab && (
-                    <PaneTabContextMenuItem
-                      onClick={() => {
-                        setKebabOpen(false);
-                        openDashboardForTab(activeTab.id);
-                      }}
-                    >
-                      Open in dashboard
-                    </PaneTabContextMenuItem>
-                  )}
-                  {overflowActions.includes("close") && onClose && (
-                    <PaneTabContextMenuItem
-                      onClick={() => {
-                        setKebabOpen(false);
-                        onClose();
-                      }}
-                    >
-                      Close pane
-                    </PaneTabContextMenuItem>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
+                  {terminalPaneStrings.reopenTab}
+                </PaneTabContextMenuItem>
+                {overflowActions.includes("close") && onClose && (
+                  <PaneTabContextMenuItem
+                    onClick={() => {
+                      setKebabOpen(false);
+                      onClose();
+                    }}
+                  >
+                    Close pane
+                  </PaneTabContextMenuItem>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </>
@@ -1821,6 +1905,7 @@ export default memo(function PaneTabBar({
                 e.preventDefault();
                 e.stopPropagation();
                 if (declared) return;
+                contextTriggerRef.current = e.currentTarget;
                 setContextMenu({ tabId: tab.id, x: e.clientX, y: e.clientY });
               }}
               onClick={(event) => {
@@ -2116,6 +2201,7 @@ export default memo(function PaneTabBar({
               e.preventDefault();
               e.stopPropagation();
               if (activeTabDeclared) return;
+              contextTriggerRef.current = e.currentTarget;
               setContextMenu({ tabId: activeTab.id, x: e.clientX, y: e.clientY });
             }}
             onClick={() => {
@@ -2405,6 +2491,7 @@ export default memo(function PaneTabBar({
         <div
           ref={contextMenuRef}
           role="menu"
+          onKeyDown={handlePaneMenuKeyDown}
           style={{
             ...paneTabContextMenuStyle,
             top: contextMenuPos.top,
@@ -2416,6 +2503,7 @@ export default memo(function PaneTabBar({
           </PaneTabContextMenuItem>
           <PaneTabContextMenuItem
             disabled={!canResetContextTabName}
+            title={!canResetContextTabName ? terminalPaneStrings.automaticName : undefined}
             onClick={handleResetContextTab}
           >
             Reset name to auto

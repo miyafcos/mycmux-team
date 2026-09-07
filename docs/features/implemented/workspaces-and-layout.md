@@ -10,8 +10,8 @@ interface Workspace {
   panes: Pane[];
   status: "setup" | "running" | "stopped";
   createdAt: number;
-  color?: string;                   // auto-assigned from 6-color palette
-  splitRows?: string[][];           // dynamic split tracking
+  color?: string;                   // user-selected from 8-color palette
+  splitColumns?: string[][];        // dynamic split tracking
 }
 ```
 
@@ -21,6 +21,8 @@ interface Workspace {
 |----|--------|-----------|
 | `1x1` | Single pane | 1 |
 | `2x1` | 2 columns | 2 |
+| `3x1` | 3 columns | 3 |
+| `4x1` | 4 columns | 4 |
 | `1x2` | 2 rows | 2 |
 | `2x2` | 2×2 grid | 4 |
 | `3x2` | 3 columns × 2 rows | 6 |
@@ -28,32 +30,32 @@ interface Workspace {
 | `3x3` | 3×3 grid | 9 |
 | `4x4` | 4×4 grid | 16 |
 
-Template selected during workspace creation via `GridPicker` component.
+Template selected in the advanced workspace dialog via `GridPicker`; one-click creation uses the default layout.
 
 ## Split Layout (Allotment)
 
-`TerminalGrid` uses nested `<Allotment>` components:
+`TerminalGrid` (inside `WorkspaceView.tsx`) uses nested `<Allotment>` components:
 
 ```
-Allotment (vertical) — rows
+Allotment (horizontal) — columns
   └── Allotment.Pane × N
-      └── Allotment (horizontal) — columns per row
+      └── Allotment (vertical) — rows per column
           └── Allotment.Pane × M
               └── TerminalPane
 ```
 
 Two layout modes:
-1. **Template layout**: Panes arranged by grid template (rows × cols)
-2. **Dynamic layout**: When `splitRows` exists or pane count exceeds template — uses `splitRows` array for freeform arrangements
+1. **Template initialization**: Grid template (rows × cols) initializes `splitColumns`
+2. **Dynamic layout**: `splitColumns` drives column-first arrangements with saved column widths and row heights; missing layout falls back to one column
 
 ## Dynamic Splitting
 
 `addPaneToWorkspace(workspaceId, afterPaneId, direction)`:
 
-- **Split right**: Inserts new pane ID after target in its row
-- **Split down**: Inserts new row after the row containing target
+- **Split right**: Inserts a new column after the target column
+- **Split down**: Inserts the new pane after the target within its column
 
-`splitRows` is a `string[][]` where each inner array is a row of pane IDs.
+`splitColumns` is a `string[][]` where each inner array is a column of pane IDs.
 
 ## Tab-per-Pane Model
 
@@ -70,12 +72,12 @@ interface PaneTab {
   id: string;
   sessionId: string;
   agentId: string;
-  type?: "terminal" | "browser";
+  type?: "terminal" | "browser" | "online" | "web" | "launcher";
 }
 ```
 
 Tab actions:
-- **Add tab**: `onAddTab(agentId, type)` — creates new PTY or browser
+- **Add tab**: `onAddTab(agentId, type)` — normally opens the React launcher; selecting an agent creates the PTY
 - **Close tab**: removes tab; if last tab, removes entire pane
 - **Switch tab**: sets `activeTabId`; only the active terminal tab mounts its renderer. Inactive terminal tabs keep their PTY session running and restore scrollback when selected.
 - **Cycle tabs**: `Ctrl+Alt+PageDown` / `Ctrl+Alt+PageUp` (`pane.tab.next` / `pane.tab.prev`, v0.15.0)
@@ -85,16 +87,17 @@ Tab actions:
 ### Adaptive compact tab bar (v0.15.0)
 
 `PaneTabBar` switches to a compact layout when the pane is narrower than 360px and
-restores the full layout at 400px (hysteresis via `resolvePaneTabBarMode`, exported
+returns to the wider tier at 400px (hysteresis via `resolvePaneTabBarMode`, exported
 for unit tests). Compact mode shows the active tab label, an `n/m` dropdown listing
 all tabs (select / close), and a kebab menu hosting New tab / Publish / Split /
-Zoom / Close pane — every action stays within two clicks at any pane width. The
+Zoom / Close pane. The
 dropdown and the full-mode overflow menu share `PaneTabListMenu`.
+The current seven tiers are full / slim / compact / compact3 / compact2 / compact1 / micro; their enter/exit thresholds are 560/600, 360/400, 250/290, 210/238, 170/198, and 130/158px.
 
 ## Workspace Lifecycle
 
-1. **Create**: `WorkspaceSetup` modal → choose name, grid, agent assignments → `createWorkspace()`
-2. **Run**: Panes spawned, PTY sessions created on mount
+1. **Create**: one-click New Workspace → `createWorkspace()`; the adjacent dialog trigger chooses name, grid, and agent/model/effort assignments
+2. **Run**: new tabs show the React launcher; choosing a terminal target mounts its renderer and creates/reattaches the PTY
 3. **Close**: `handleCloseWorkspace()` kills all PTY sessions → `removeWorkspace()`
 
 ## Workspace Colors

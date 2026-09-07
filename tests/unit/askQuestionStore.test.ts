@@ -19,6 +19,19 @@ beforeEach(() => {
 });
 
 describe("askQuestionStore", () => {
+  it("rebinds only the matching revision and leaves stale or missing sessions untouched", () => {
+    ingestAskQuestionLines(sessionId, fixtures.single, 10, 7);
+    useAskQuestionStore.getState().rebindInputRevision(sessionId, 7, 8);
+    expect(useAskQuestionStore.getState().bySession[sessionId].expectedInputRevision).toBe(8);
+    const bound = useAskQuestionStore.getState();
+    bound.rebindInputRevision(sessionId, 7, 9);
+    expect(useAskQuestionStore.getState()).toBe(bound);
+    bound.rebindInputRevision("missing", 7, 9);
+    expect(useAskQuestionStore.getState()).toBe(bound);
+    ingestAskQuestionLines(sessionId, fixtures.single, 11, 10);
+    expect(useAskQuestionStore.getState().bySession[sessionId].expectedInputRevision).toBe(8);
+  });
+
   it("stores a parsed screen, revision, and unread flag", () => {
     const screen = ingestAskQuestionLines(sessionId, fixtures.single, 10, 7);
     expect(screen?.question).toBe("Which layout do you prefer?");

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import type { CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
@@ -15,7 +15,8 @@ import { resolveWorkspaceColor } from "../../lib/workspaceColors";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { useAccountsPolling } from "../../hooks/useAccountsPolling";
 import { useCliLoginEvents } from "../../hooks/useCliLoginEvents";
-import { countNotifications } from "../../lib/notificationEntries";
+import { buildNotificationPanelModel } from "../../lib/notificationPanelModel";
+import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 
 interface TitleBarProps {
   uiVariant?: "default" | "cmux";
@@ -33,13 +34,18 @@ const SidebarIcon = () => (
   </svg>
 );
 
-const BellIcon = ({ count }: { count?: number }) => (
+const BellIcon = ({ count, attention }: { count?: number; attention?: boolean }) => (
   <div style={{ position: "relative", display: "flex" }}>
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
       <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
     </svg>
-    {count ? <div style={{ position: "absolute", top: -3, right: -4, width: 6, height: 6, background: "var(--notification-color)", borderRadius: "50%" }} /> : null}
+    {count ? <span style={{
+      position: "absolute", top: -6, right: -8, minWidth: 14, height: 14, padding: "0 2px",
+      boxSizing: "border-box", display: "flex", alignItems: "center", justifyContent: "center",
+      background: attention ? "var(--cmux-yellow)" : "var(--notification-color)",
+      color: "var(--cmux-on-waiting)", borderRadius: 7, fontSize: 10, fontWeight: 600,
+    }}>{count}</span> : null}
   </div>
 );
 
@@ -88,12 +94,15 @@ export default function TitleBar({
   const sidebarShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["sidebar.toggle"]));
   const newWorkspaceShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["workspace.new"]));
   const advancedWorkspaceShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["workspace.new.advanced"]));
-  // Counted off live tabs, not the raw metadata map: the badge must never
-  // claim notifications the panel cannot list (see collectNotificationEntries).
+  // The bell and panel share the same live-tab model; attention wins over unread.
   const workspacesForNotifications = useWorkspaceListStore((s) => s.workspaces);
-  const totalNotifications = usePaneMetadataStore((state) =>
-    countNotifications(workspacesForNotifications, state.metadata),
+  const notificationMetadata = usePaneMetadataStore((s) => s.metadata);
+  const attentionBySession = useSessionAttentionStore((s) => s.attentionBySession);
+  const notificationModel = useMemo(
+    () => buildNotificationPanelModel(workspacesForNotifications, attentionBySession, notificationMetadata),
+    [workspacesForNotifications, attentionBySession, notificationMetadata],
   );
+  const totalNotifications = notificationModel.attentionCount || notificationModel.unreadCount;
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTabId>("appearance");
@@ -226,7 +235,7 @@ export default function TitleBar({
               borderRadius: 3,
             }}
           >
-            <BellIcon count={totalNotifications} />
+            <BellIcon count={totalNotifications} attention={notificationModel.attentionCount > 0} />
           </button>
           {notificationPanelMounted && (
             <NotificationPanel closing={notificationPanelClosing} onClose={() => setNotificationPanelOpen(false)} />

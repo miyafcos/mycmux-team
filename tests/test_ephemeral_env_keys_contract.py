@@ -149,3 +149,16 @@ def test_terminal_ephemeral_env_groups_are_disjoint() -> None:
                 f"terminal.rs {left_name} and {right_name} must stay disjoint. "
                 f"Overlap: {sorted(overlap)}"
             )
+
+
+def test_spawn_inheritance_filter_matches_startup_removal() -> None:
+    text = read_repo_text("src/lib/spawnLaunchEnv.ts")
+    match = re.search(
+        r"EPHEMERAL_LAUNCH_ENV_KEYS\s*=\s*new\s+Set\s*\(\s*\[(?P<body>.*?)\]\s*\)",
+        text,
+        re.S,
+    )
+    assert match is not None, "Missing spawn inheritance filter"
+    keys = set(re.findall(r'"([^"]+)"', strip_line_comments(match.group("body"))))
+    assert_matches_expected(keys, "src/lib/spawnLaunchEnv.ts")
+    assert keys == extract_lib_remove_var_keys()

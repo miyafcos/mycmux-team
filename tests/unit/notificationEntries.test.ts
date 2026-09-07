@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildNotificationPanelModel } from "../../src/lib/notificationPanelModel";
 import { collectNotificationEntries, countNotifications } from "../../src/lib/notificationEntries";
 import type { PaneMetadata } from "../../src/stores/paneMetadataStore";
 import type { Workspace } from "../../src/types";
@@ -42,11 +43,21 @@ describe("notification entries", () => {
   });
 
   it("agrees with the panel when nothing is live", () => {
-    // The badge and the panel read the same function, so "No notifications"
-    // and a lit bell can no longer disagree.
+    // The legacy collector and the two-section panel both exclude orphan sessions.
     const metadata = { orphan: waiting(4) };
 
     expect(countNotifications([], metadata)).toBe(0);
     expect(collectNotificationEntries([], metadata)).toEqual([]);
+    expect(buildNotificationPanelModel([], {}, metadata).unreadCount).toBe(0);
+  });
+
+  it("keeps the legacy sidebar count while the bell also includes completion arrivals", () => {
+    const ws = workspace(["a", "b"]);
+    const metadata = { a: { notificationCount: 2 }, b: { workDoneCount: 3 } };
+    expect(countNotifications([ws], metadata)).toBe(2);
+    expect(collectNotificationEntries([ws], metadata)).toHaveLength(1);
+    const model = buildNotificationPanelModel([ws], {}, metadata);
+    expect(model.unreadCount).toBe(5);
+    expect(model.unread.map((row) => row.sessionId)).toEqual(["b", "a"]);
   });
 });

@@ -83,7 +83,7 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "pane.tab.next", title: "Next tab in pane", category: "Pane", defaultShortcut: "ctrl+alt+pagedown" },
   { action: "pane.tab.prev", title: "Previous tab in pane", category: "Pane", defaultShortcut: "ctrl+alt+pageup" },
   { action: "pane.attention.next", title: "Next attention", category: "Pane", defaultShortcut: "ctrl+alt+a" },
-  { action: "pane.tab.pin.toggle", title: "アクティブペインをピン留め", category: "Pane", defaultShortcut: "ctrl+alt+p" },
+  { action: "pane.tab.pin.toggle", title: "アクティブタブをピン留め", category: "Pane", defaultShortcut: "ctrl+alt+p" },
 
   { action: "terminal.search", title: "Find in terminal", category: "Terminal", defaultShortcut: "ctrl+shift+f" },
   // Not ctrl+shift+i: that is the WebView's own DevTools shortcut.

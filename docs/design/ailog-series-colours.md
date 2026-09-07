@@ -57,12 +57,12 @@ OpenAI がブルーなのは、サイドバーで見慣れた Codex の色に揃
 
 ```
 anthropic: fable-5 > opus-5 > sonnet-5 > haiku-4.5          (4段)
-openai:    gpt-5.6-sol > gpt-5.6-terra > gpt-5.6-luna
-           > gpt-5.5 > gpt-5.4                               (5段)
+openai:    gpt-6-astra > gpt-5.6-sol > gpt-5.6-terra
+           > gpt-5.6-luna > gpt-5.5                          (5段)
 xai:       grok-4.6                                          (1段)
 ```
 
-同じティアの旧世代 (`opus-4.8` など) は段を増やさず、`LEGACY_FAMILIES` で親段に紐づけて
+同じティアの旧世代 (`opus-4.8`、`gpt-5.4` など) は段を増やさず、`LEGACY_FAMILIES` で親段に紐づけて
 **その段の muted 色**にする。muted は L と h を据え置き、ガマット clamp **後**の彩度に 0.55 を
 掛けて作る (clamp 前に掛けると彩度が伸びない色相で差が潰れる)。
 
@@ -91,10 +91,10 @@ CSS の `repeating-linear-gradient` で同じ見た目を作る (CSS から SVG 
 | `kind` | `src/lib/agentKindColors.ts` を再利用 (サイドバーの CLI 色と一致させる) |
 | `project` / `effort` / `origin` | 名前ハッシュの8色リング。順位ではなく名前で決まる |
 
-会社軸に最淡段を使ってはいけない。その会社の最下位モデル (haiku / gpt-5.4) と同色になり、
+会社軸に最淡段を使ってはいけない。その会社の最下位モデル (haiku / gpt-5.5) と同色になり、
 かつ段数の違う会社どうしで明度が揃わなくなる。
 
-## 識別性の実測
+## 識別性の実測 (2026-08-21 当時のモデル構成)
 
 同時に並ぶ10系列 (Anthropic 4 + OpenAI 5 + xAI 1) のペアワイズ最小 OKLab ΔE:
 

@@ -313,6 +313,7 @@ describe("resolvePaneTabBarMode", () => {
 describe("resolvePaneTabBarActions", () => {
   const allActions: PaneTabBarActionId[] = [
     "new-tab",
+    "search",
     "publish",
     "split-right",
     "split-down",
@@ -325,7 +326,7 @@ describe("resolvePaneTabBarActions", () => {
   ];
   const visibleByMode: Record<PaneTabBarMode, PaneTabBarActionId[]> = {
     full: allActions,
-    slim: ["publish", "split-right", "zoom", "dashboard", "close"],
+    slim: ["search", "publish", "split-right", "zoom", "dashboard", "close"],
     compact: ["publish", "split-right", "zoom", "dashboard", "close"],
     compact3: ["split-right", "zoom", "close"],
     compact2: ["split-right", "close"],
@@ -379,7 +380,7 @@ describe("resolvePaneTabBarActions", () => {
 
     expect(removedPerTier).toEqual([
       ["new-tab", "split-down"],
-      [],
+      ["search"],
       ["publish", "dashboard"],
       ["zoom"],
       ["split-right"],

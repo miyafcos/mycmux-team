@@ -122,8 +122,8 @@ export const dashboardStrings = {
     if (code === "busy") return "この質問への送信は処理中です";
     if (code === "stale_question") return "質問が変わったため送っていません";
     if (code === "null_scan") return "画面の質問を読めなかったため送っていません";
-    if (code === "attention_mismatch") return "対象が変わったため送っていません";
-    if (code === "session_revision_mismatch") return "対象が変わったため送っていません";
+    if (code === "attention_mismatch") return "席の要対応が切り替わったため送っていません";
+    if (code === "session_revision_mismatch") return "席に別の入力が入ったため送っていません。もう一度押すと今の画面で送り直します";
     if (code === "target_disappeared") return "質問の対象が消えたため送っていません";
     if (code === "unchanged_screen") return "画面が変わらなかったため、続きは送っていません";
     if (code === "read_failure") return "画面を読めなかったため送っていません";

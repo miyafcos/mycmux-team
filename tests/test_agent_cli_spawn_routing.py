@@ -485,3 +485,22 @@ def test_spawn_tab_detach_rejects_explicit_anchor() -> None:
     ])
     with pytest.raises(RuntimeError, match="cannot be used with --anchor-session"):
         cli.request_for(namespace)
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    ("null", None), ("none", None), ("NULL", None), ("None", None),
+    ("attention-a", "attention-a"), ("none-id", "none-id"),
+])
+def test_attention_null_is_present_in_serialized_send_request(value, expected):
+    cmd, args = request_for_send([
+        "--session", PANE_SESSION_ID, "--text", "hello",
+        "--expect-epoch", "7", "--expect-attention-id", value,
+        "--expect-revision", "11", "--expect-input-revision", "5",
+    ])
+    wire_args = json.loads(json.dumps(args))
+    assert cmd == "pane.send_text"
+    assert "expectedAttentionId" in wire_args
+    assert wire_args["expectedAttentionId"] == expected
+    assert wire_args["expectedSessionEpoch"] == 7
+    assert wire_args["expectedSessionRevision"] == 11
+    assert wire_args["expectedInputRevision"] == 5

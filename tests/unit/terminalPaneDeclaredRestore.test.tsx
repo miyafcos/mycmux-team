@@ -318,3 +318,65 @@ describe("TerminalPane declared restore boundary", () => {
     expect(props).not.toHaveProperty("restoreFallbackSessionIds");
   });
 });
+
+describe("background spawn followed by a TerminalPane mount", () => {
+  it("passes the same session IDs to renderer attachment without new PTY processes", async () => {
+    const { handleSocketCommand } = await import("../../src/components/layout/socketCommands");
+    const { createSession } = await import("../../src/lib/ipc");
+    const { liveTerms } = await import("../../src/components/terminal/terminalCache");
+    const { useSavepointDragStore } = await import("../../src/stores/savepointDragStore");
+    liveTerms.clear();
+    useSavepointDragStore.setState({ item: null });
+    const parent = paneWith({
+      id: "background-tab", sessionId: "background-session", agentId: "shell-starter", type: "terminal",
+    });
+    const background = workspaceWith([parent], "background");
+    const foreground = workspaceWith([paneWith({
+      id: "foreground-tab", sessionId: "foreground-session", agentId: "shell-starter", type: "terminal",
+    }, "foreground-pane")], "foreground");
+    useWorkspaceListStore.setState({ workspaces: [foreground, background], activeWorkspaceId: foreground.id });
+
+    // Backend fixture follows manager.rs::create_or_reattach; a create_session
+    // IPC call on mount changes the channel, not the existing PTY process.
+    const sessions = new Set([parent.sessionId]);
+    const spawnPty = vi.fn();
+    mocks.invoke.mockImplementation(async (command: string, args: { sessionId?: string }) => {
+      if (command === "create_session" && args.sessionId && !sessions.has(args.sessionId)) {
+        sessions.add(args.sessionId);
+        spawnPty(args.sessionId);
+      }
+    });
+    const ids: string[] = [];
+    for (let index = 0; index < 5; index++) {
+      const result = await handleSocketCommand("pane.spawn", {
+        workspaceId: background.id, target: "codex", prompt_file: "C:\\child\\spec.md",
+      }) as { sessionId: string };
+      ids.push(result.sessionId);
+    }
+    expect(spawnPty.mock.calls.map(([id]) => id)).toEqual(ids);
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === "create_session")).toHaveLength(5);
+    expect(mocks.xtermMount).not.toHaveBeenCalled();
+
+    // Exercise the real TerminalPane props; substitute only xterm's renderer
+    // and use the real IPC adapter for the channel-attach operation it issues.
+    const attachments: Promise<void>[] = [];
+    mocks.xtermMount.mockImplementation((props: {
+      sessionId: string; command: string; args: string[]; cwd?: string; launchEnv?: Record<string, string>;
+    }) => {
+      attachments.push(createSession(
+        props.sessionId, props.command, props.args, 80, 24, () => {}, props.cwd, props.launchEnv,
+      ));
+    });
+    await renderPanes(useWorkspaceListStore.getState().getWorkspace(background.id)!);
+    await Promise.all(attachments);
+    expect(mocks.xtermMount).toHaveBeenCalledTimes(6);
+    expect(mocks.xtermMount.mock.calls.map(([props]) => props.sessionId)).toEqual([parent.sessionId, ...ids]);
+    expect(spawnPty).toHaveBeenCalledTimes(5);
+    for (const id of ids) {
+      expect(mocks.invoke.mock.calls.filter(([command, args]) =>
+        command === "create_session" && args.sessionId === id,
+      )).toHaveLength(2); // initial headless startup + later channel attachment
+    }
+    mocks.xtermMount.mockReset();
+  });
+});

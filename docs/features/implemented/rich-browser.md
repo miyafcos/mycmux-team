@@ -1,12 +1,15 @@
 # Rich Browser Pane
 
+> Pending proposal, despite this file's location under `implemented/`. General browsing, history/bookmark UI, and DevTools controls remain unimplemented.
+> Current [service Web panes](../../../README.md#6-エージェントを起動する) use native child webviews with persistent service profiles; [artifact previews](../../../README.md#10-成果物を見る直す) use `BrowserPane.tsx` separately.
+
 ## Overview
 
-Upgrade the current iframe-based browser pane to a full embedded browser with profiles, history, DevTools, and automation API.
+Upgrade the historical iframe-based browser pane to a full embedded browser with profiles, history, DevTools, and automation API.
 
-## Current State
+## Historical State
 
-ptrterminal has a basic `BrowserPane.tsx` using an iframe with URL bar. Limitations:
+The original ptrterminal had a basic `BrowserPane.tsx` using an iframe with URL bar. Its limitations were:
 - No navigation history (back/forward)
 - No DevTools
 - iframe sandbox restrictions block many sites
@@ -20,7 +23,7 @@ ptrterminal has a basic `BrowserPane.tsx` using an iframe with URL bar. Limitati
 - Search engine integration (address bar doubles as search)
 - Per-workspace browser profiles with isolated storage
 
-## ptrterminal Requirements
+## Proposed General-Browser Requirements
 
 | Layer | What's Needed |
 |-------|---------------|
@@ -40,4 +43,4 @@ ptrterminal has a basic `BrowserPane.tsx` using an iframe with URL bar. Limitati
 
 ## Priority: **Medium**
 
-Current iframe browser works for basic use. Rich browser enables developer workflow integration (docs, dashboards alongside terminals).
+The historical iframe browser covered basic use. Rich browser enables developer workflow integration (docs, dashboards alongside terminals).

@@ -1,5 +1,8 @@
 # Browser Pane
 
+> Historical document: the orphaned native wry/WebKit2GTK backend and its browser commands were removed on 2026-07-02 (`caf1b7a3`). The body below describes that removed implementation.
+> Current alternatives: [artifact previews](../../../README.md#10-成果物を見る直す) and [service Web panes](../../../README.md#6-エージェントを起動する).
+
 ## Overview
 
 An embedded browser using a native wry/WebKit2GTK child webview (Linux). Each browser tab gets its own webview instance, positioned over the Tauri main window using a `gtk::Fixed` overlay container. This replaces the earlier `<iframe>` implementation, which was blocked by cross-origin restrictions and `X-Frame-Options` headers on most real websites.

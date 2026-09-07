@@ -29,6 +29,7 @@ export interface AskSubmitResult {
   ok: boolean;
   stopReason: AskStopReason | null;
   keysSent: AskSentKey[];
+  detail?: string;
 }
 
 export interface AskQuestionDeps {
@@ -182,28 +183,34 @@ async function preflight(
   deps: AskQuestionDeps,
   keysSent: AskSentKey[],
 ): Promise<Preflight | AskSubmitResult> {
-  if (!deps.sessionExists(sessionId)) {
-    useAskQuestionStore.getState().clearScreen(sessionId, "target_disappeared");
-    return emptyResult("target_disappeared", keysSent);
-  }
+  function checkTarget(): AskSubmitResult | null {
+    if (!deps.sessionExists(sessionId)) {
+      useAskQuestionStore.getState().clearScreen(sessionId, "target_disappeared");
+      return emptyResult("target_disappeared", keysSent);
+    }
 
-  const attention = deps.attentionFor(sessionId);
-  if (!attention?.attentionId || attention.kind !== "input") {
-    useAskQuestionStore.getState().setStopReason(sessionId, "attention_mismatch");
-    return emptyResult("attention_mismatch", keysSent);
+    const attention = deps.attentionFor(sessionId);
+    if (!attention?.attentionId || attention.kind !== "input") {
+      useAskQuestionStore.getState().setStopReason(sessionId, "attention_mismatch");
+      return emptyResult("attention_mismatch", keysSent);
+    }
+    if (attention.attentionId !== expected.expectedAttentionId) {
+      useAskQuestionStore.getState().setStopReason(sessionId, "attention_mismatch");
+      return emptyResult("attention_mismatch", keysSent);
+    }
+    if (attention.sessionEpoch !== expected.expectedSessionEpoch) {
+      useAskQuestionStore.getState().setStopReason(sessionId, "session_revision_mismatch");
+      return emptyResult("session_revision_mismatch", keysSent);
+    }
+    if (expected.expectedSessionRevision !== attention.sessionRevision) {
+      useAskQuestionStore.getState().setStopReason(sessionId, "session_revision_mismatch");
+      return emptyResult("session_revision_mismatch", keysSent);
+    }
+
+    return null;
   }
-  if (attention.attentionId !== expected.expectedAttentionId) {
-    useAskQuestionStore.getState().setStopReason(sessionId, "attention_mismatch");
-    return emptyResult("attention_mismatch", keysSent);
-  }
-  if (attention.sessionEpoch !== expected.expectedSessionEpoch) {
-    useAskQuestionStore.getState().setStopReason(sessionId, "session_revision_mismatch");
-    return emptyResult("session_revision_mismatch", keysSent);
-  }
-  if (expected.expectedSessionRevision !== attention.sessionRevision) {
-    useAskQuestionStore.getState().setStopReason(sessionId, "session_revision_mismatch");
-    return emptyResult("session_revision_mismatch", keysSent);
-  }
+  const targetFailure = checkTarget();
+  if (targetFailure) return targetFailure;
   if (expected.launchId !== undefined) {
     let current = false;
     try {
@@ -227,7 +234,7 @@ async function preflight(
     return emptyResult("read_failure", keysSent);
   }
 
-  const screen = ingestAskQuestionLines(sessionId, lines, deps.now(), observedInputRevision);
+  let screen = ingestAskQuestionLines(sessionId, lines, deps.now(), observedInputRevision);
   if (!screen) {
     useAskQuestionStore.getState().clearScreen(sessionId, "null_scan");
     return emptyResult("null_scan", keysSent);
@@ -257,6 +264,44 @@ async function preflight(
     }
   }
 
+  let inputRevision = expected.expectedInputRevision;
+  if (observedInputRevision !== inputRevision) {
+    const firstRevision = observedInputRevision;
+    const firstState = screenStateKey(screen);
+    // One bounded settle interval, followed by the second revision/screen read.
+    await deps.sleep(deps.pollMs);
+    const settledTargetFailure = checkTarget();
+    if (settledTargetFailure) return settledTargetFailure;
+    try {
+      observedInputRevision = await deps.readInputRevision(sessionId);
+      lines = await deps.readTail(sessionId, ASK_QUESTION_TAIL_LINES);
+    } catch {
+      useAskQuestionStore.getState().clearScreen(sessionId, "read_failure");
+      return emptyResult("read_failure", keysSent);
+    }
+    const rereadTargetFailure = checkTarget();
+    if (rereadTargetFailure) return rereadTargetFailure;
+    screen = ingestAskQuestionLines(sessionId, lines, deps.now(), observedInputRevision);
+    if (!screen) {
+      useAskQuestionStore.getState().clearScreen(sessionId, "null_scan");
+      return emptyResult("null_scan", keysSent);
+    }
+    if (screenContentKey(screen) !== expected.contentKey) {
+      useAskQuestionStore.getState().setStopReason(sessionId, "stale_question");
+      return emptyResult("stale_question", keysSent);
+    }
+    if (observedInputRevision !== firstRevision) {
+      useAskQuestionStore.getState().setStopReason(sessionId, "session_revision_mismatch");
+      return emptyResult("session_revision_mismatch", keysSent);
+    }
+    if (screenStateKey(screen) !== firstState) {
+      useAskQuestionStore.getState().setStopReason(sessionId, "ambiguous");
+      return emptyResult("ambiguous", keysSent);
+    }
+    useAskQuestionStore.getState().rebindInputRevision(sessionId, inputRevision, observedInputRevision);
+    inputRevision = observedInputRevision;
+  }
+
   const lock = captureLock(
     deps.attentionFor(sessionId),
     getAskQuestionSession(sessionId).expectedInputRevision,
@@ -266,8 +311,9 @@ async function preflight(
     return emptyResult("attention_mismatch", keysSent);
   }
   if (
-    expected.expectedSessionRevision !== lock.expectedSessionRevision
-    || expected.expectedInputRevision !== lock.expectedInputRevision
+    expected.expectedSessionEpoch !== lock.expectedSessionEpoch
+    || expected.expectedSessionRevision !== lock.expectedSessionRevision
+    || inputRevision !== lock.expectedInputRevision
   ) {
     useAskQuestionStore.getState().setStopReason(sessionId, "session_revision_mismatch");
     return emptyResult("session_revision_mismatch", keysSent);
@@ -291,7 +337,7 @@ async function sendOnce(
     if (sendRejected(result)) {
       const reason = lockStopReason(result);
       useAskQuestionStore.getState().setStopReason(sessionId, reason);
-      return emptyResult(reason, keysSent);
+      return { ...emptyResult(reason, keysSent), ...(result.reason ? { detail: result.reason } : {}) };
     }
     if (sendUnconfirmed(result)) {
       keysSent.push(key);

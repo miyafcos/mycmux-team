@@ -604,17 +604,25 @@ function Invoke-MycmuxCommandArray {
 }
 
 function Invoke-MycmuxHandoffFromEnv {
-  if (-not $env:MYCMUX_HANDOFF) {
+  $handoffKind = $env:MYCMUX_HANDOFF
+  $handoffFile = $env:MYCMUX_HANDOFF_PROMPT_FILE
+  $handoffFrom = $env:MYCMUX_HANDOFF_FROM
+  $handoffFromSession = $env:MYCMUX_HANDOFF_FROM_SESSION
+  # Env: is case-insensitive on Windows. Consume even incomplete launch state.
+  Remove-Item Env:\MYCMUX_HANDOFF -ErrorAction SilentlyContinue
+  Remove-Item Env:\MYCMUX_HANDOFF_PROMPT_FILE -ErrorAction SilentlyContinue
+  Remove-Item Env:\MYCMUX_HANDOFF_FROM -ErrorAction SilentlyContinue
+  Remove-Item Env:\MYCMUX_HANDOFF_FROM_SESSION -ErrorAction SilentlyContinue
+  if (-not $handoffKind) {
     return $false
   }
-  $handoffFile = $env:MYCMUX_HANDOFF_PROMPT_FILE
   $bootstrap = "Handoff from previous session. Read `"$handoffFile`" and continue from where it left off."
   # A handoff pane starts a brand new agent session, so it must get its own id
   # the same way the normal launch path does. Writing the *source* pane id here
   # (the old "<kind>-handoff:<pane>" mapping) left the pane with no real session
   # id, so restore fell back to `--continue` and adopted another tab's
   # conversation in the same cwd. Mirrors the handoff branch in launcher.sh.
-  switch -Wildcard ($env:MYCMUX_HANDOFF) {
+  switch -Wildcard ($handoffKind) {
     "claude" {
       $sid = Get-MycmuxStableSessionId (Get-MycmuxClaudeProjectDir)
       if ([string]::IsNullOrWhiteSpace($sid)) {

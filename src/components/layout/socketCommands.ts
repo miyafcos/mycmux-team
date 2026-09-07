@@ -8,6 +8,7 @@ import {
 import type { AgentSessionKind, Pane, PaneTab, Workspace } from "../../types";
 import { agentIdForSessionKind } from "../../lib/agentSessionConfig";
 import { requiresLauncherDispatch } from "../../lib/launcherDispatch";
+import { buildSpawnLaunchEnv } from "../../lib/spawnLaunchEnv";
 import { isDeclaredTab, isRestorableTab, type RestorablePaneTab } from "../../lib/tabLifecycle";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
@@ -640,7 +641,7 @@ export async function startBackgroundTabSession(tab: RestorablePaneTab, pane: Pa
     import("../../lib/ipc"),
   ]);
   const launchEnv: Record<string, string> = {
-    ...(tab.launchEnv ?? pane.launchEnv ?? {}),
+    ...(tab.launchEnv ?? buildSpawnLaunchEnv(pane.launchEnv)),
     MYCMUX_PANE_SESSION_ID: tab.sessionId,
     MYCMUX_TAB_ID: tab.id,
   };
@@ -707,11 +708,12 @@ async function resolveHandoffPromptPath(args: SocketArgs): Promise<string | unde
 }
 
 async function spawnPane(args: SocketArgs) {
-  const {
-    useUiStore,
-    useWorkspaceLayoutStore,
-    useWorkspaceListStore,
-  } = await import("../../stores/workspaceStore");
+  const [stores, { liveTerms }, { useSavepointDragStore }] = await Promise.all([
+    import("../../stores/workspaceStore"),
+    import("../terminal/terminalCache"),
+    import("../../stores/savepointDragStore"),
+  ]);
+  const { useUiStore, useWorkspaceLayoutStore, useWorkspaceListStore } = stores;
   const hasCommandArgv = hasSocketArg(args, "commandArgv", "command_argv");
   const handoffPromptPath = hasCommandArgv
     ? undefined
@@ -787,11 +789,22 @@ async function spawnPane(args: SocketArgs) {
     return { paneId: created.id, presetId };
   }
 
+  // WorkspaceView mounts the foreground, a drag source, and briefly its
+  // previous workspace. Existing live renderers cover that transition.
+  const workspaceMounted = useWorkspaceListStore.getState().activeWorkspaceId === workspaceId
+    || useSavepointDragStore.getState().item?.sourceWorkspaceId === workspaceId
+    || workspace.panes.some((pane) => pane.tabs.some((tab) => liveTerms.has(tab.sessionId)));
   useWorkspaceLayoutStore.getState().addPaneToWorkspaceWithOptions(
     workspaceId,
     anchorPane.id,
     directionArg,
-    { ...plan.paneOptions, origin: resolveSpawnOrigin(args, anchorTabId), activate, activationSource: "socket" },
+    {
+      ...plan.paneOptions,
+      launchEnv: buildSpawnLaunchEnv(anchorPane.launchEnv, plan.paneOptions.launchEnv),
+      origin: resolveSpawnOrigin(args, anchorTabId),
+      activate,
+      activationSource: "socket",
+    },
   );
   const updatedWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
   const newPanes = updatedWorkspace?.panes.filter((pane) => !beforePaneIds.has(pane.id)) ?? [];
@@ -808,6 +821,25 @@ async function spawnPane(args: SocketArgs) {
     throw new Error("pane.spawn could not identify the new pane");
   }
   const newPane = newPanes[0];
+  if (!workspaceMounted) {
+    const newTab = newPane.tabs.find((tab) => tab.sessionId === newPane.sessionId);
+    if (!newTab || !isRestorableTab(newTab)) {
+      rollbackNewPanes();
+      throw new Error("pane.spawn created a non-restorable tab");
+    }
+    try {
+      // The UI later attaches with this same sessionId; the backend reuses the
+      // existing PTY under its per-session create lock.
+      await startBackgroundTabSession(newTab, newPane);
+    } catch (error) {
+      rollbackNewPanes();
+      const { killSession } = await import("../../lib/ipc");
+      await killSession(newTab.sessionId).catch((cleanupError) => {
+        console.warn("[pane.spawn] failed to clean up new PTY", cleanupError);
+      });
+      throw error;
+    }
+  }
 
   return {
     workspaceId,
@@ -852,6 +884,7 @@ async function spawnTab(args: SocketArgs) {
     pane.id,
     {
       ...plan.paneOptions,
+      launchEnv: buildSpawnLaunchEnv(pane.launchEnv, plan.paneOptions.launchEnv),
       origin: resolveSpawnOrigin(args, anchorTabId),
       activate,
       activationSource: "socket",
@@ -1787,9 +1820,10 @@ export async function readPaneTail(
     return getTerminalBufferLines(sessionId, clampPaneReadLines(lines));
   }
 
-  const [{ getSessionScrollback }, { getHeadlessBufferLines }] = await Promise.all([
+  const [{ getSessionScrollback }, { getHeadlessBufferLines }, { terminalSizeCache }] = await Promise.all([
     import("../../lib/ipc"),
     import("../terminal/headlessBuffer"),
+    import("../terminal/terminalCache"),
   ]);
   let snapshot;
   try {
@@ -1798,7 +1832,10 @@ export async function readPaneTail(
     throw new Error("no terminal buffer for session");
   }
   if (snapshot.data.byteLength === 0) throw new Error("no terminal buffer for session");
-  return getHeadlessBufferLines(sessionId, snapshot, clampPaneReadLines(lines));
+  // Render at the size the pane really has: a TUI frame drawn for a wide pane
+  // and replayed into a narrower headless terminal comes out garbled, which the
+  // AskUserQuestion preflight then refuses to answer.
+  return getHeadlessBufferLines(sessionId, snapshot, clampPaneReadLines(lines), terminalSizeCache.get(sessionId));
 }
 
 async function movePane(args: SocketArgs) {

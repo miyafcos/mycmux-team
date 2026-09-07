@@ -80,6 +80,7 @@ interface AskQuestionStoreState {
   setInFlight: (sessionId: string, inFlight: boolean) => void;
   setStopReason: (sessionId: string, reason: AskStopReason | null) => void;
   setConfirmedStage: (sessionId: string, stage: AskConfirmedStage) => void;
+  rebindInputRevision: (sessionId: string, fromRevision: number, toRevision: number) => void;
   advanceInputRevision: (sessionId: string, expectedRevision: number) => void;
   setDraft: (sessionId: string, key: string, optionIndex: number) => void;
   setDraftChecked: (sessionId: string, key: string, optionIndexes: readonly number[]) => void;
@@ -330,6 +331,17 @@ export const useAskQuestionStore = create<AskQuestionStoreState>((set) => ({
       bySession: writeSession(state.bySession, sessionId, {
         ...previous,
         confirmedStage: stage,
+      }),
+    };
+  }),
+
+  rebindInputRevision: (sessionId, fromRevision, toRevision) => set((state) => {
+    const previous = state.bySession[sessionId];
+    if (!previous || previous.expectedInputRevision !== fromRevision) return state;
+    return {
+      bySession: writeSession(state.bySession, sessionId, {
+        ...previous,
+        expectedInputRevision: toRevision,
       }),
     };
   }),
