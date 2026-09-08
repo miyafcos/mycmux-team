@@ -149,6 +149,15 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     models: AGY_MODELS,
     efforts: SHORT_EFFORTS,
   },
+  // Hermes picks its provider and model with `hermes model`, so mycmux passes
+  // no model / effort flags and the entry carries no `cli` translation arm.
+  {
+    target: "hermes",
+    label: "Hermes",
+    kind: "agent",
+    models: NO_CHOICES,
+    efforts: NO_EFFORTS,
+  },
   // Web rows open a child webview, not a PTY, so they carry no launch flags.
   // They stay in the catalog because the contract test walks this list against
   // both launchers, and dropping them would let the two menus drift again.

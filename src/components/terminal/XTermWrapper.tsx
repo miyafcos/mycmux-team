@@ -68,6 +68,12 @@ import {
   type TurnListRow,
 } from "./terminalTurnChipState";
 import {
+  createRepaintHoldController,
+  REPAINT_HOLD_SETTLE_MS,
+  resolveRepaintHoldDeadline,
+  shouldHoldRepaint,
+} from "./terminalViewportStability";
+import {
   restoreTurnMarksFromBufferOnJump,
   restoreTurnMarksFromTranscript,
 } from "./turnMarkRestore";
@@ -994,7 +1000,10 @@ export default memo(function XTermWrapper({
     };
   }, [storeTheme, storeFontSize, storeFontFamily, storeLineHeight, terminalOpacity, mediaBackgroundActive, minimumContrastRatio]);
 
-  // Scroll to bottom when this tab becomes active only if the user was already at bottom.
+  // Return an activated tab to the live tail only if it is already following it.
+  // Asked of the buffer rather than isAtBottomRef: the ref is refreshed on a
+  // rAF, so immediately after the refit above it can still answer for the
+  // previous frame.
   useEffect(() => {
     if (previousIsActivePaneRef.current !== isActivePane) {
       bumpPaintStat("focus-change", sessionId);
@@ -1009,8 +1018,9 @@ export default memo(function XTermWrapper({
     if (isActivePane && currentTerm) {
       setTimeout(() => {
         syncResizeRef.current(true);
-        if (isAtBottomRef.current) {
-          termRef.current?.scrollToBottom();
+        const activeTerm = termRef.current;
+        if (activeTerm && viewportIsAtBottom(activeTerm.buffer.active)) {
+          activeTerm.scrollToBottom();
         }
         refreshTurnChipRef.current();
       }, 50);
@@ -1082,6 +1092,18 @@ export default memo(function XTermWrapper({
     let isImeComposing = false;
     let resizePendingDuringComposition = false;
     const forceWheelMouseReport = startsAsAgentTui(command, args, agentId, agentKind, launchEnv);
+    // An agent TUI owns the mouse *and* keeps its prompt on the bottom row.
+    // Both behaviours key off the same launch predicate; the alias is here so
+    // the viewport code does not read as if it were about wheel events.
+    const isAgentTuiPane = forceWheelMouseReport;
+    const repaintHold = createRepaintHoldController({ isStale: () => disposed });
+    let lastSizeChangeAt: number | null = null;
+    let repaintHoldTimer: ReturnType<typeof setTimeout> | null = null;
+    let repaintHoldSettleTimer: ReturnType<typeof setTimeout> | null = null;
+    let repaintHoldWriteDisposable: IDisposable | null = null;
+    let repaintHoldFrame: number | null = null;
+    let releaseResizeHold: (() => void) | null = null;
+    let resizeHoldStartedAt = 0;
     let outputDecoder = getTerminalOutputDecoder(sessionId);
     let replayOutputDecoder = new TextDecoder();
     let replayMouseModeFilter = createTerminalMouseModeControlFilter();
@@ -1209,6 +1231,80 @@ export default memo(function XTermWrapper({
       }
     };
 
+    const clearResizeHoldWatchers = (): void => {
+      if (repaintHoldTimer !== null) {
+        clearTimeout(repaintHoldTimer);
+        repaintHoldTimer = null;
+      }
+      if (repaintHoldSettleTimer !== null) {
+        clearTimeout(repaintHoldSettleTimer);
+        repaintHoldSettleTimer = null;
+      }
+      repaintHoldWriteDisposable?.dispose();
+      repaintHoldWriteDisposable = null;
+      if (repaintHoldFrame !== null) {
+        cancelAnimationFrame(repaintHoldFrame);
+        repaintHoldFrame = null;
+      }
+    };
+
+    // Reveal the pane again. The viewport needs no correction here: fit() already
+    // put a reader who was following the live end back on it, and the repaint we
+    // waited for is what closes the blank rows underneath.
+    const endResizeHold = (): void => {
+      clearResizeHoldWatchers();
+      const release = releaseResizeHold;
+      releaseResizeHold = null;
+      release?.();
+    };
+
+    /**
+     * Cover the window between the local reflow and the shell's repaint at the
+     * new size.
+     *
+     * The repaint is several kilobytes split across writes, so the pane is
+     * revealed once writes have been quiet for REPAINT_HOLD_SETTLE_MS and the
+     * frame after that has been painted -- not on the first write, which would
+     * show the repaint half finished. A pane whose process never answers, or one
+     * streaming output continuously, is revealed at the deadline instead.
+     */
+    const beginResizeHold = (currentTerm: Terminal): void => {
+      clearResizeHoldWatchers();
+      const now = Date.now();
+      const deadline = resolveRepaintHoldDeadline({
+        now,
+        holdStartedAt: resizeHoldStartedAt,
+        hasOutstandingHold: releaseResizeHold !== null,
+      });
+      if (!releaseResizeHold) {
+        releaseResizeHold = repaintHold.acquire(currentTerm.element ?? null);
+        resizeHoldStartedAt = now;
+      }
+      const revealAfterNextFrame = (): void => {
+        if (repaintHoldFrame !== null) return;
+        repaintHoldFrame = requestAnimationFrame(() => {
+          repaintHoldFrame = null;
+          endResizeHold();
+        });
+      };
+      // The deadline reveals directly rather than waiting for a frame: rAF is
+      // suspended while the window is hidden or occluded, and a backstop that
+      // can itself be suspended is not a backstop.
+      repaintHoldTimer = setTimeout(() => {
+        repaintHoldTimer = null;
+        endResizeHold();
+      }, Math.max(0, deadline - now));
+      repaintHoldWriteDisposable = currentTerm.onWriteParsed(() => {
+        if (repaintHoldFrame !== null) return;
+        const settleAt = Math.min(Date.now() + REPAINT_HOLD_SETTLE_MS, deadline);
+        if (repaintHoldSettleTimer !== null) clearTimeout(repaintHoldSettleTimer);
+        repaintHoldSettleTimer = setTimeout(() => {
+          repaintHoldSettleTimer = null;
+          revealAfterNextFrame();
+        }, Math.max(0, settleAt - Date.now()));
+      });
+    };
+
     const fitAndSyncResize = (currentTerm: Terminal, currentFitAddon: FitAddon, force = false): void => {
       if (disposed || termDisposed || !isContainerWritable()) return;
       if (isImeComposing) {
@@ -1240,7 +1336,9 @@ export default memo(function XTermWrapper({
       if (wasPinnedToBottom) currentTerm.scrollToBottom();
 
       if (currentTerm.cols <= 0 || currentTerm.rows <= 0) return;
-      const terminalSizeChanged = currentTerm.cols !== lastSentCols || currentTerm.rows !== lastSentRows;
+      const nextCols = currentTerm.cols;
+      const nextRows = currentTerm.rows;
+      const terminalSizeChanged = nextCols !== lastSentCols || nextRows !== lastSentRows;
 
       if (!terminalSizeChanged) {
         if (force || containerSizeChanged) {
@@ -1249,8 +1347,23 @@ export default memo(function XTermWrapper({
         return;
       }
 
-      const nextCols = currentTerm.cols;
-      const nextRows = currentTerm.rows;
+      // Decided before lastSent* moves. The hold covers the gap between the
+      // reflow fit() just performed and the repaint the shell sends back at the
+      // new size; it is taken in the same synchronous pass as that fit, so the
+      // browser never paints the half-moved frame.
+      const sizeChangedAt = Date.now();
+      if (sessionStarted && shouldHoldRepaint({
+        isAgentTuiPane,
+        previous: { cols: lastSentCols, rows: lastSentRows },
+        next: { cols: nextCols, rows: nextRows },
+        msSinceLastSizeChange: lastSizeChangeAt === null
+          ? null
+          : sizeChangedAt - lastSizeChangeAt,
+      })) {
+        beginResizeHold(currentTerm);
+      }
+      lastSizeChangeAt = sizeChangedAt;
+
       lastSentCols = nextCols;
       lastSentRows = nextRows;
       terminalSizeCache.set(sessionId, { cols: nextCols, rows: nextRows });
@@ -1991,10 +2104,11 @@ export default memo(function XTermWrapper({
 
     const replayTruncatedTailIntoEmptyTerminal = async (scrollback: Uint8Array): Promise<void> => {
       if (!term || termDisposed || hasMeaningfulTerminalScreen()) return;
-      const terminalElement = term.element;
-      const previousOpacity = terminalElement?.style.opacity ?? "";
-      if (terminalElement) terminalElement.style.opacity = "0";
+      // Acquired inside the try: a leaked hold would pin the reference count
+      // above zero for the rest of this mount and leave the pane hidden.
+      let releaseHold: (() => void) | null = null;
       try {
+        releaseHold = repaintHold.acquire(term.element ?? null);
         colorAdapterRef.current.reset();
         const replayTerm = term;
         snapshotTurnMarksForReset(sessionId, replayTerm);
@@ -2010,7 +2124,7 @@ export default memo(function XTermWrapper({
           recordResync(scrollback.byteLength, performance.now() - resyncStartedAt, sessionId);
         }
       } finally {
-        if (terminalElement) terminalElement.style.opacity = previousOpacity;
+        releaseHold?.();
       }
     };
 
@@ -2063,20 +2177,23 @@ export default memo(function XTermWrapper({
         return true;
       }
       if (!canWritePendingBatches()) return false;
-      const terminalElement = term.element;
-      const previousOpacity = terminalElement?.style.opacity ?? "";
       const replacesVisibleBuffer = recoveryPlan.action === "replace"
         || recoveryPlan.action === "initial-replay";
-      if (replacesVisibleBuffer) {
-        if (terminalElement) terminalElement.style.opacity = "0";
-        colorAdapterRef.current.reset();
-        snapshotTurnMarksForReset(sessionId, term);
-        term.reset();
-        outputDecoder = resetTerminalOutputDecoder(sessionId);
-      }
+      let releaseHold: (() => void) | null = null;
       const replayTerm = term;
-      const replayText = outputDecoder.decode(replay, { stream: true });
       try {
+        // Everything that can throw -- resetting the buffer, snapshotting the
+        // turn marks, decoding -- sits inside the try that releases the hold. A
+        // leaked hold would keep the reference count above zero for the rest of
+        // this mount and leave the pane hidden with output still flowing in.
+        if (replacesVisibleBuffer) {
+          releaseHold = repaintHold.acquire(term.element ?? null);
+          colorAdapterRef.current.reset();
+          snapshotTurnMarksForReset(sessionId, term);
+          term.reset();
+          outputDecoder = resetTerminalOutputDecoder(sessionId);
+        }
+        const replayText = outputDecoder.decode(replay, { stream: true });
         bumpPaintStat("resync", sessionId);
         const resyncStartedAt = import.meta.env.DEV ? performance.now() : null;
         backgroundScanResync = true;
@@ -2109,9 +2226,7 @@ export default memo(function XTermWrapper({
           recordResync(replay.byteLength, performance.now() - resyncStartedAt, sessionId);
         }
       } finally {
-        if (terminalElement && replacesVisibleBuffer) {
-          terminalElement.style.opacity = previousOpacity;
-        }
+        releaseHold?.();
       }
       replaceTerminalRawTail(sessionId, scrollback);
       lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;
@@ -2476,6 +2591,11 @@ export default memo(function XTermWrapper({
       clearResizeTimer();
       clearRefreshTimers();
       clearPendingDrainTimer();
+      // Release before the Terminal is cached: an element parked at opacity 0
+      // would come back invisible on the next attach.
+      clearResizeHoldWatchers();
+      releaseResizeHold?.();
+      releaseResizeHold = null;
       if (recoveryRedrawTimer) {
         clearTimeout(recoveryRedrawTimer);
         recoveryRedrawTimer = null;
@@ -2557,6 +2677,10 @@ export default memo(function XTermWrapper({
       cached.unlistenExit?.();
       termCache.delete(sessionId);
       container.appendChild(cached.xtermElement);
+      // Defence in depth: a repaint hold belongs to the mount that took it, so
+      // one left outstanding by the previous mount must never make this pane
+      // come back invisible.
+      cached.xtermElement.style.opacity = "";
       registerRenderListener(cached.term);
       invalidateContainerVisibilityMemo();
       term = cached.term;
@@ -2598,6 +2722,9 @@ export default memo(function XTermWrapper({
       void registerExitListener();
       setTimeout(() => {
         if (disposed || termDisposed) return;
+        // The refit re-pins a pane that was following the live end; one the
+        // reader had scrolled up in keeps its place, including across a tab or
+        // workspace switch.
         fitAndSyncResize(cached.term, cached.fitAddon, true);
         scheduleFrontendResync();
         refreshTurnChipRef.current();

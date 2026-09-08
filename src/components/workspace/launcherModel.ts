@@ -96,6 +96,7 @@ const ICON_KINDS: Record<string, string> = {
   "claude-codex-open": "claude-codex",
   grok: "grok",
   agy: "antigravity",
+  hermes: "hermes",
   "web-chatgpt": "codex",
   "web-gemini": "gemini",
   "web-grok": "grok",

@@ -136,6 +136,19 @@ export function BrowserAgentIcon({ size = 12, ...props }: AgentIconProps) {
   );
 }
 
+// Hermes ships a caduceus (☤) as its mark; this is a stroked approximation --
+// the staff, the winged crest and the two coils -- so it reads at 12px.
+export function HermesAgentIcon({ size = 12, ...props }: AgentIconProps) {
+  return (
+    <svg {...iconProps(size)} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M12 5.5v14" />
+      <path d="M7.5 7.5c1.6-1.7 3-1.7 4.5 0s2.9 1.7 4.5 0" />
+      <path d="M8.5 12c1.2 1.3 2.3 2 3.5 2s2.3-.7 3.5-2" />
+      <circle cx="12" cy="3.6" r="1.5" />
+    </svg>
+  );
+}
+
 export function HybridAgentIcon({ size = 12 }: Pick<AgentIconProps, "size">) {
   const overlapSize = Math.max(1, Math.round(size * 0.68));
   return (
@@ -158,6 +171,7 @@ const chipStyles: Record<string, CSSProperties> = {
   antigravity: { background: "rgba(66,133,244,.10)", borderColor: "rgba(66,133,244,.30)" },
   gemini: { background: "rgba(155,114,203,.12)", borderColor: "rgba(155,114,203,.30)" },
   notebooklm: { background: "rgba(66,133,244,.10)", borderColor: "rgba(66,133,244,.30)" },
+  hermes: { background: "rgba(198,152,26,.12)", borderColor: "rgba(198,152,26,.32)" },
 };
 
 export function AgentKindIcon({ kind, size = 14, chip = true }: AgentKindIconProps) {
@@ -177,6 +191,8 @@ export function AgentKindIcon({ kind, size = 14, chip = true }: AgentKindIconPro
           ? NotebookLmAgentIcon
         : kind === "browser"
           ? BrowserAgentIcon
+        : kind === "hermes"
+          ? HermesAgentIcon
           : null;
 
   if (!Icon) return null;

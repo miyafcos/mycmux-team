@@ -587,6 +587,30 @@ function Add-MycmuxLaunchSpecToCommandArray {
   return @($Command[0]) + $extra + $rest
 }
 
+function Start-MycmuxDispatchGuard {
+  # Keep the session-dispatch guard (dispatch_guard.py, shipped in the Claude skill
+  # pack) alive whenever an agent TUI starts in a pane. `ensure` is idempotent (it
+  # exits at once when a guard already holds the lease) and runs detached, so a
+  # missing or broken guard can never delay or break the launch. MYCMUX_DISPATCH_GUARD=off
+  # opts out. Mirrors __mycmux_ensure_dispatch_guard in launcher.sh.
+  param([Parameter(Mandatory = $true)][string]$Executable)
+  try {
+    if ($env:MYCMUX_DISPATCH_GUARD -eq "off") { return }
+    $name = [System.IO.Path]::GetFileNameWithoutExtension($Executable).ToLowerInvariant()
+    if (@("claude", "claude-codex", "codex", "grok") -notcontains $name) { return }
+    if ([string]::IsNullOrWhiteSpace($HOME)) { return }
+    $guard = Join-Path $HOME ".claude\skills\session-dispatch\scripts\dispatch_guard.py"
+    if (-not (Test-Path -LiteralPath $guard)) { return }
+    $python = $null
+    foreach ($candidate in @("pythonw", "python")) {
+      $found = Get-Command $candidate -ErrorAction SilentlyContinue
+      if ($found) { $python = $found.Source; break }
+    }
+    if (-not $python) { return }
+    Start-Process -FilePath $python -ArgumentList @("-X", "utf8", "`"$guard`"", "ensure") -WindowStyle Hidden -ErrorAction Stop | Out-Null
+  } catch { }
+}
+
 function Invoke-MycmuxCommandArray {
   param([Parameter(Mandatory = $true)][string[]]$Command)
   if ($Command.Count -eq 0) {
@@ -599,6 +623,11 @@ function Invoke-MycmuxCommandArray {
   $args = @()
   if ($Command.Count -gt 1) {
     $args = $Command[1..($Command.Count - 1)]
+  }
+  # Guarded lookup: contract tests load this function on its own, and a launcher
+  # without the guard helper must still start the agent.
+  if (Get-Command Start-MycmuxDispatchGuard -ErrorAction SilentlyContinue) {
+    Start-MycmuxDispatchGuard -Executable $exe
   }
   & $exe @args
 }
@@ -735,6 +764,7 @@ $Options = @(
   New-MycmuxOption "claude-codex (Open Models)" @("claude-codex", "--backend", "fcc") "claude-codex" "claude-codex-open"
   # Gemini CLI was sunset for individual accounts on 2026-06-18; agy (Antigravity CLI) replaces it
   New-MycmuxOption "Antigravity (agy)" @("agy") $null "agy"
+  New-MycmuxOption "Hermes" @("$env:LOCALAPPDATA\hermesin\hermes.exe") $null "hermes"
   # Not processes: these open a web tab through the socket, handled before exec.
   New-MycmuxOption "ChatGPT (Web)" @("__web_chatgpt__") $null
   New-MycmuxOption "Gemini (Web)" @("__web_gemini__") $null
@@ -791,6 +821,8 @@ $LaunchSpecCatalog = @{
   "grok" = [pscustomobject]@{ Models = @(); Efforts = $ShortEfforts }
   "claude-codex-open" = [pscustomobject]@{ Models = @(); Efforts = $ClaudeEfforts }
   "agy" = [pscustomobject]@{ Models = $AgyModels; Efforts = $ShortEfforts }
+  # hermes picks provider+model with `hermes model`; mycmux passes no flags.
+  "hermes" = [pscustomobject]@{ Models = @(); Efforts = @() }
 }
 
 # Index-based, so inserting an option shifts everything after it. The two Fugu
@@ -809,23 +841,24 @@ $LaunchTargets = @{
   # "gemini" stays on the Antigravity CLI: the web tab is "web-gemini".
   "gemini" = $Options[5]
   "antigravity" = $Options[5]
-  "chatgpt" = $Options[6]
-  "web-chatgpt" = $Options[6]
-  "web-gemini" = $Options[7]
-  "gemini-web" = $Options[7]
-  "web-grok" = $Options[8]
-  "grok-web" = $Options[8]
-  "web-claude" = $Options[9]
-  "claude-web" = $Options[9]
-  "claude-ai" = $Options[9]
-  "web-notebooklm" = $Options[10]
-  "notebooklm" = $Options[10]
-  "web-browser" = $Options[11]
-  "claude-resume" = $Options[12]
-  "codex-resume" = $Options[13]
-  "claude-codex-resume" = $Options[14]
-  "grok-resume" = $Options[15]
-  "custom" = $Options[16]
+  "hermes" = $Options[6]
+  "chatgpt" = $Options[7]
+  "web-chatgpt" = $Options[7]
+  "web-gemini" = $Options[8]
+  "gemini-web" = $Options[8]
+  "web-grok" = $Options[9]
+  "grok-web" = $Options[9]
+  "web-claude" = $Options[10]
+  "claude-web" = $Options[10]
+  "claude-ai" = $Options[10]
+  "web-notebooklm" = $Options[11]
+  "notebooklm" = $Options[11]
+  "web-browser" = $Options[12]
+  "claude-resume" = $Options[13]
+  "codex-resume" = $Options[14]
+  "claude-codex-resume" = $Options[15]
+  "grok-resume" = $Options[16]
+  "custom" = $Options[17]
 }
 
 function Invoke-MycmuxCustomCommand {

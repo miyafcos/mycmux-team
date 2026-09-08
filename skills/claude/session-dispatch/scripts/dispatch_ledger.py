@@ -29,6 +29,8 @@ BACKUP_SUFFIX = ".bak-260813"
 UNRECOVERABLE_NAME = "ledger.unrecoverable.jsonl"
 
 # --- status 語彙 (現行台帳の実出現値 + guide 記載値を全数) ---------------------
+STATUS_LOST = "lost"
+STATUS_BLOCKED = "blocked"
 STATUS_OPEN = "open"
 STATUS_RUNNING = "running"
 STATUS_DONE = "done"
@@ -39,7 +41,7 @@ STATUS_ABANDONED = "abandoned"
 STATUS_FALLBACK_INLINE = "fallback-inline"
 
 #: 子タブが生きていて作業中
-ACTIVE_STATUSES = frozenset({STATUS_OPEN, STATUS_RUNNING})
+ACTIVE_STATUSES = frozenset({STATUS_OPEN, STATUS_RUNNING, STATUS_BLOCKED})
 #: 子の完了自己申告のみ (タブはまだ生きている → 触ってよいが検収は親の義務)
 DONE_STATUSES = frozenset({STATUS_DONE, STATUS_CLOSE_FAILED})
 #: タブが既に無い / 二度と操作してはいけない集合 (fail-closed 判定の基準)
@@ -51,7 +53,8 @@ CLOSED_STATUSES = frozenset(
         STATUS_FALLBACK_INLINE,
     }
 )
-KNOWN_STATUSES = frozenset(ACTIVE_STATUSES | DONE_STATUSES | CLOSED_STATUSES)
+INACTIVE_STATUSES = frozenset(CLOSED_STATUSES | {STATUS_LOST})
+KNOWN_STATUSES = frozenset(ACTIVE_STATUSES | DONE_STATUSES | INACTIVE_STATUSES)
 
 SLUG_RE = re.compile(r"^\d{6}-[A-Za-z0-9][A-Za-z0-9._-]*$")
 _DATED_PREFIX_RE = re.compile(r"^\d{6}-")

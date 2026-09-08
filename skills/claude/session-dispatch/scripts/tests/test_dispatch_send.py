@@ -161,7 +161,7 @@ class MockPty:
                     self.entry["input_revision"] += 1
             return {"sessions": [deepcopy(self.entry)]}
         if cmd == "pane.read":
-            lines = ["processing"] if self.submitted else ["PS> " + self.text]
+            lines = ["processing", "PS>"] if self.submitted else ["PS> " + self.text]
             if self.text and not self.submitted:
                 self.draft_reads += 1
                 if self.interference == "last_gap" and self.draft_reads == 3:
@@ -191,6 +191,11 @@ class MockPty:
 
 @pytest.fixture()
 def install_transport(monkeypatch):
+    original_confirm = dispatch_send.confirm_delivery
+    monkeypatch.setattr(dispatch_send, "confirm_delivery",
+                        lambda *a, **kw: original_confirm(*a, timeout=0, **kw))
+    monkeypatch.setattr(dispatch_send, "ensure_guard", lambda: {"alive": True})
+    monkeypatch.setattr(dispatch_send, "handoff_pending", lambda *a, **kw: {})
     module = dispatch_send.load_bridge()
     bridge_class = module.Bridge
     monkeypatch.setattr(module, "Bridge", lambda request: bridge_class(
@@ -385,3 +390,31 @@ def test_main_refusal_has_json_enter_not_sent(install_transport, capsys, mode):
     assert result["ok"] is False and result["confirmed"] is False
     assert "SEND-REFUSED:" in captured.err
     assert pty.writes == []
+
+
+def test_unconfirmed_send_records_owned_revision_and_added_fields(install_transport, monkeypatch, capsys):
+    pty = MockPty()
+    def transport(cmd, args):
+        result = pty(cmd, args)
+        if cmd == "pane.read" and pty.submitted:
+            result["lines"] = ["PS> hello"]
+        return result
+    install_transport(transport)
+    pending = []
+    monkeypatch.setattr(dispatch_send, "handoff_pending", lambda *a, **kw: pending.append((a, kw)))
+    assert dispatch_send.main(["--session", "pty-tab-1", "--text", "hello"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["guard_pending"] is True and result["delivered_confirmed"] is False
+    assert pending[0][1]["input_revision_after"] == 7
+    assert pending[0][1]["session_epoch"] == pty.entry["view"]["session_epoch"]
+    assert [write.get("key") for write in pty.writes] == [None, "enter"]
+
+def test_external_edit_handoff_keeps_machine_revision_not_human_revision(install_transport, monkeypatch, capsys):
+    pty = install_transport(MockPty(interference="after_text"))
+    pending = []
+    monkeypatch.setattr(dispatch_send, "handoff_pending", lambda *a, **kw: pending.append((a, kw)))
+    assert dispatch_send.main(["--session", "pty-tab-1", "--text", "hello"]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["enter_sent"] is False
+    assert pending[0][1]["input_revision_after"] == 6
+    assert pty.entry["input_revision"] == 7

@@ -17,12 +17,14 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
+import time
 from functools import lru_cache
 import sys
 from pathlib import Path
 from typing import Any
 
-from dispatch_ledger import DEFAULT_LEDGER, find_dispatches, load_dispatches
+from dispatch_ledger import DEFAULT_LEDGER, INACTIVE_STATUSES, find_dispatches, load_dispatches
 
 
 def resolve_agent_cli() -> Path:
@@ -130,7 +132,7 @@ def resolve_session_id(ledger: Path, slug: str, spawn_ts: str | None) -> str:
     matches = find_dispatches(load_dispatches(ledger), slug, spawn_ts)
     if not matches:
         raise RuntimeError(f"台帳に slug がありません: {slug}")
-    active = [dispatch for dispatch in matches if not dispatch.closed]
+    active = [dispatch for dispatch in matches if dispatch.status not in INACTIVE_STATUSES]
     if not active:
         statuses = ", ".join(sorted({dispatch.status for dispatch in matches}))
         raise RuntimeError(f"クローズ済み dispatch には send しません (status={statuses}): {slug}")
@@ -175,6 +177,31 @@ def refuse_send(detail: str, *, kind: str = "verification_unavailable",
     return code
 
 
+def ensure_guard():
+    from dispatch_guard import ensure
+    return ensure()
+
+
+def confirm_delivery(bridge, session_id, baseline, **kwargs):
+    from guard_actions import observe_delivery
+    return observe_delivery(bridge, session_id, baseline, **kwargs)
+
+
+def handoff_pending(session_id, text, **kwargs):
+    from guard_actions import register_pending
+    return register_pending(session_id, text, **kwargs)
+
+
+def transcript_mtime_for(ledger_path, session_id):
+    from dispatch_guard import transcript_path
+    records = [d for d in load_dispatches(ledger_path) if d.tab_session_id == session_id
+               and d.status not in INACTIVE_STATUSES]
+    if len(records) != 1:
+        return None
+    path = transcript_path(records[0])
+    return path.stat().st_mtime if path and path.is_file() else None
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if not args.text and not args.enter and not args.show and not args.dry_run:
@@ -188,7 +215,20 @@ def main(argv: list[str] | None = None) -> int:
     bridge_module = load_bridge()
     try:
         cli = load_agent_cli()
-        bridge = bridge_module.Bridge(cli.send_request)
+        writes = []
+        def transport(command, payload):
+            if command == "pane.send_text":
+                entry = {"payload": dict(payload)}
+                writes.append(entry)
+                try:
+                    response = cli.send_request(command, payload)
+                    entry["response"] = response
+                    return response
+                except (RuntimeError, OSError):
+                    entry["unknown"] = True
+                    raise
+            return cli.send_request(command, payload)
+        bridge = bridge_module.Bridge(transport)
         state = bridge.status(session_id)
         expectations = build_expectations(
             {"sessions": [state]}, session_id, include_attention=args.expect_attention
@@ -216,6 +256,7 @@ def main(argv: list[str] | None = None) -> int:
                 "enter_sent": False,
             }, ensure_ascii=False, indent=2))
             return 0
+        before_mtime = transcript_mtime_for(Path(args.ledger), session_id)
         result = bridge.send(
             args.text, session_id=session_id,
             expected_attention=expected_attention, expected_state=state,
@@ -233,6 +274,38 @@ def main(argv: list[str] | None = None) -> int:
             "Enter was sent or its outcome is unknown; delivery is not confirmed. "
             "Do not resend automatically; inspect the current input line."
         )
+    text_writes = [w for w in writes if w["payload"].get("text")]
+    accepted_text = bool(text_writes and text_writes[-1].get("response", {}).get("sent") is not False
+                         and text_writes[-1].get("response", {}).get("ok") is not False)
+    baseline = state
+    enter_writes = [w for w in writes if w["payload"].get("key") == "enter"]
+    if enter_writes:
+        payload = enter_writes[-1]["payload"]
+        baseline = {"session_id": session_id, "input_revision": payload["expectedInputRevision"],
+                    "view": {**state["view"], "session_epoch": payload["expectedSessionEpoch"],
+                             "session_revision": payload["expectedSessionRevision"]}}
+    check = {"delivered_confirmed": False}
+    if enter_sent:
+        check = confirm_delivery(bridge, session_id, baseline,
+            transcript_mtime=lambda: transcript_mtime_for(Path(args.ledger), session_id),
+            before_mtime=before_mtime)
+    output["delivered_confirmed"] = check["delivered_confirmed"]
+    output["delivery_observation"] = check
+    if args.text and accepted_text and not check["delivered_confirmed"]:
+        last = writes[-1]["payload"]
+        response = writes[-1].get("response", {})
+        own_revision = last["expectedInputRevision"] + (0 if response.get("sent") is False else 1)
+        handoff_pending(session_id, args.text, slug=args.slug,
+                        input_revision_after=own_revision,
+                        session_epoch=last["expectedSessionEpoch"], baseline=baseline)
+        output["guard_pending"] = True
+        output["warning"] = ("Delivery is not confirmed; guard owns the pending machine send. "
+                             "Do not resend automatically; inspect the current input line.")
+    if accepted_text or enter_sent:
+        try:
+            output["guard"] = ensure_guard()
+        except (RuntimeError, OSError):
+            output["guard"] = {"alive": False, "warning": "Guard startup unavailable"}
     print(json.dumps(output, ensure_ascii=False))
     return 0 if delivered or enter_sent else 1
 

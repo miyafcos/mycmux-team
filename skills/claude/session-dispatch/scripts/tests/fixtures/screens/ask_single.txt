@@ -1,0 +1,8 @@
+ ☐ Probe A
+Pick a fruit
+❯ 1. Apple
+     甘酸っぱい定番の果物
+  2. Banana
+  4. Type something.
+  5. Chat about this
+Enter to select · ↑/↓ to navigate · Esc to cancel

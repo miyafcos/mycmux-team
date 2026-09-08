@@ -74,7 +74,7 @@ def select_dispatch(
     matches = find_dispatches(load_dispatches(ledger), slug, spawn_ts)
     if not matches:
         return None, f"slug is missing from ledger: {slug}"
-    active = [dispatch for dispatch in matches if not dispatch.closed]
+    active = [dispatch for dispatch in matches if dispatch.status not in dispatch_ledger.INACTIVE_STATUSES]
     if not active:
         statuses = ", ".join(sorted({dispatch.status for dispatch in matches}))
         return None, f"dispatch is already closed (status={statuses}): {slug}"
@@ -228,8 +228,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--timeout-min", type=positive_number, default=180.0)
     parser.add_argument("--stall-exit-min", type=positive_number, default=45.0)
     parser.add_argument("--poll-sec", type=positive_number, default=20.0)
+    parser.add_argument("--legacy-stall-exit", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
+
+
+def ensure_guard():
+    from dispatch_guard import ensure
+    return ensure()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -267,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
     start = time.monotonic()
     no_log_since: float | None = None
     polls = 0
+    handed_to_guard = False
     while True:
         elapsed_min = (time.monotonic() - start) / 60.0
         if done_path.is_file():
@@ -308,17 +315,28 @@ def main(argv: list[str] | None = None) -> int:
         log_age = activity.age_min if activity.state in ("RUNNING", "STALL") else -1.0
         log_name = activity.log_name
         now = time.monotonic()
-        if log_age >= args.stall_exit_min:
-            return finish(record, dispatch_dir, ledger, f"STALL slug={args.slug}", 2)
+        stalled = log_age >= args.stall_exit_min
         if log_age < 0:
             no_log_since = no_log_since or now
             no_log_age = (now - no_log_since) / 60.0
-            if no_log_age >= 5.0 + args.stall_exit_min:
-                return finish(record, dispatch_dir, ledger, f"STALL slug={args.slug}", 2)
+            stalled = no_log_age >= 5.0 + args.stall_exit_min
             state = activity.state
         else:
             no_log_since = None
             state = "RUNNING"
+        if stalled:
+            if args.legacy_stall_exit:
+                return finish(record, dispatch_dir, ledger, f"STALL slug={args.slug}", 2)
+            if not handed_to_guard:
+                dispatch_ledger.update_record(ledger, slug=record.slug,
+                    spawn_ts=record.spawn_ts, tab_session_id=record.tab_session_id,
+                    event="stall-handed-to-guard")
+                ensure_guard()
+                handed_to_guard = True
+        current = [d for d in load_dispatches(ledger)
+                   if d.slug == record.slug and d.tab_session_id == record.tab_session_id]
+        if current and current[-1].status == "lost":
+            return finish(record, dispatch_dir, ledger, f"TAB-GONE slug={args.slug}", 2)
         if elapsed_min >= args.timeout_min:
             return finish(record, dispatch_dir, ledger, f"TIMEOUT slug={args.slug}", 2)
         polls += 1

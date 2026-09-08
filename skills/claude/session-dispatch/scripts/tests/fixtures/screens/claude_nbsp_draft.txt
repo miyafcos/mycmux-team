@@ -1,0 +1,6 @@
+────────────────────────────────────────────────────────────────────────────────
+❯ CANARY_DRAFT: write DONE.md containing CANARY_DRAFT now, then finish.
+────────────────────────────────────────────────────────────────────────────────
+Opus 5 (1M context) (xhigh) │ ~\…\dispatch_guard\canary_260908_103233_9sri9…
+5h 45% (3h27m) │ sess 0m (10:32〜) │ sid 99c488cf
+-- INSERT -- ⏵⏵ auto mode on (shift+tab to cycle)

@@ -123,9 +123,24 @@ except (OSError, ValueError, KeyError, json.JSONDecodeError):
 PY
 }
 
+__mycmux_ensure_dispatch_guard() {
+  # Keep the session-dispatch guard (dispatch_guard.py, shipped in the Claude skill
+  # pack) alive whenever an agent TUI starts. `ensure` is idempotent and runs
+  # detached, so a missing or broken guard never delays or breaks the launch.
+  # MYCMUX_DISPATCH_GUARD=off opts out. Mirrors Start-MycmuxDispatchGuard in launcher.ps1.
+  [ "${MYCMUX_DISPATCH_GUARD:-}" = "off" ] && return 0
+  local guard="$HOME/.claude/skills/session-dispatch/scripts/dispatch_guard.py"
+  [ -f "$guard" ] || return 0
+  local python=""
+  python="$(__mycmux_python)" || return 0
+  ( "$python" -X utf8 "$guard" ensure >/dev/null 2>&1 & ) >/dev/null 2>&1
+  return 0
+}
+
 __mycmux_with_hook_cap() {
   local provider="$1"
   shift
+  __mycmux_ensure_dispatch_guard
   local capability=""
   capability="$(__mycmux_issue_hook_cap "$provider")" || capability=""
   if [ -n "$capability" ]; then
@@ -163,7 +178,7 @@ grok() {
   executable="$(type -P grok 2>/dev/null)" || return 127
   __mycmux_with_hook_cap grok "$executable" "$@"
 }
-export -f __mycmux_issue_hook_cap __mycmux_with_hook_cap claude claude-codex codex grok
+export -f __mycmux_issue_hook_cap __mycmux_ensure_dispatch_guard __mycmux_with_hook_cap claude claude-codex codex grok
 
 if [ "${MYCMUX_HOOK_WRAPPERS_ONLY:-}" = "1" ]; then
   return 0 2>/dev/null || exit 0
@@ -991,7 +1006,7 @@ __spec_efforts_for() {
 
 __spec_has_target() {
   case "$1" in
-    claude|codex|claude-codex|claude-codex-open|grok|agy) return 0 ;;
+    claude|codex|claude-codex|claude-codex-open|grok|agy|hermes) return 0 ;;
   esac
   return 1
 }
@@ -1101,6 +1116,9 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
   case "$MYCMUX_LAUNCH_TARGET" in
     claude)
       cmd="claude --allow-dangerously-skip-permissions --permission-mode auto"
+      ;;
+    hermes)
+      cmd="$HOME/AppData/Local/hermes/bin/hermes.exe"
       ;;
     claude-resume)
       cmd="claude --allow-dangerously-skip-permissions --permission-mode auto --resume"
@@ -1612,6 +1630,7 @@ if [ -z "$cmd" ]; then
     "Grok Build"
     "claude-codex (Open Models)"
     "Antigravity (agy)"
+    "Hermes"
     "ChatGPT (Web)"
     "Gemini (Web)"
     "Grok (Web)"
@@ -1638,6 +1657,7 @@ if [ -z "$cmd" ]; then
     "grok"
     "claude-codex-open"
     "agy"
+    ""
     "" "" "" "" "" ""
     "" "" "" ""
     ""
@@ -1651,6 +1671,7 @@ if [ -z "$cmd" ]; then
     "grok --no-alt-screen --permission-mode auto"
     "claude-codex --backend fcc"
     "agy"
+    "$HOME/AppData/Local/hermes/bin/hermes.exe"
     "__web_chatgpt__"
     "__web_gemini__"
     "__web_grok__"
@@ -1737,7 +1758,7 @@ if [ -z "$cmd" ]; then
         fi
         break
         ;;
-      slash) selected=16; break ;;
+      slash) selected=17; break ;;
       # → / m はこの行の model と effort を選んでから起動する。Enter と数字キーは
       # 触っていない — 従来どおり CLI の既定で即起動する。
       right)

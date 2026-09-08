@@ -14,6 +14,7 @@ EXPECTED_LAUNCHER_OPTIONS = [
     "Grok Build",
     "claude-codex (Open Models)",
     "Antigravity (agy)",
+    "Hermes",
     "ChatGPT (Web)",
     "Gemini (Web)",
     "Grok (Web)",
@@ -37,6 +38,7 @@ EXPECTED_LAUNCHER_COMMANDS = [
     "grok --no-alt-screen --permission-mode auto",
     "claude-codex --backend fcc",
     "agy",
+    "$HOME/AppData/Local/hermes/bin/hermes.exe",
     "__web_chatgpt__",
     "__web_gemini__",
     "__web_grok__",
@@ -90,7 +92,7 @@ def test_launcher_order_matches_current_contract() -> None:
         assert command in EXPECTED_LAUNCHER_COMMANDS
     # Two entries were removed on 2026-08-29 and one added, so the menu went
     # from 16 to 15 and every index after Grok Build shifted by one.
-    assert_contains(launcher, "slash) selected=16", "src-tauri/src/launcher.sh")
+    assert_contains(launcher, "slash) selected=17", "src-tauri/src/launcher.sh")
     assert_contains(launcher, "5) selected=14", "src-tauri/src/launcher.sh")
     assert_contains(launcher, "6) selected=15", "src-tauri/src/launcher.sh")
     assert_contains(launcher, "7) selected=16", "src-tauri/src/launcher.sh")

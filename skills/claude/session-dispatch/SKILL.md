@@ -89,3 +89,18 @@ metadata:
   それ以外は DONE の「要判断」。**黙って止まるのは契約違反** — idle なのに DONE も ask も無い子 (silent blocker)
   を見つけたら、人間向けカードを親が代作せず、子へ「ask を発行するか自分で判断して続行せよ」を send する
 - 委譲契約の正本は `~/cmux-for-linux-dev-master/docs/agent-integration.md`。矛盾したらそちらが勝つ
+
+## 見張り (dispatch_guard.py)
+
+- spawn 前に `python -X utf8 ~/.claude/skills/session-dispatch/scripts/dispatch_preflight.py run --cwd <cwd> --spec <spec.md> --json` を実行する。exit 3 は必要な認証経路の不通で spawn を止める。settings.json は変更しない。
+- `python -X utf8 ~/.claude/skills/session-dispatch/scripts/dispatch_guard.py ensure` が常駐を起動する。doctor は生存、最終周期、対象、分類、通報数を JSON で返す。stop は協調停止を要求する。
+- 全 agent タブを観測する。催促と AskUserQuestion の推奨選択は台帳 active の子だけ。承認は拒否して代替手段を指示する。手動タブの質問・承認は通報だけ。ログインは操作せず blocked とする。
+- 人が書いた本文は送らない。`pending_sends.jsonl` の本文と入力改訂番号を確認し、別の入力があれば Enter を打たない。
+- dispatch_send の追加フィールド `delivered_confirmed` は、空の入力欄と状態遷移または子ログ増分の観測結果。`guard_pending: true` は見張りへの引き渡し。enter_sent と既存の返却値は従来どおり。配送不明時に本文を再送しない。
+- watcher の STALL は見張りへ 1 回引き渡し、DONE / TIMEOUT / lost まで監視する。既存節の STALL 即終了の記述は `--legacy-stall-exit` 指定時に適用する。TIMEOUT は exit 2。
+- lost は非 active だが CLOSED_STATUSES には含めない。blocked は人待ちとして active に残す。初回照合でタブが無い古い行は無音で lost にする。開始後に生存を観測したタブの消失は 2 周期で確定し、通報する。close-tab は送らない。
+- 通報カードは 1 周期最大 1 枚。複数件はまとめ、同じタブ・分類は 30 分間重複させない。記録は `~/.claude/dispatch/guard/` の state.json / guard.log / pending_sends.jsonl / escalations.jsonl と台帳 event。
+- guard.lock は PID と起動時刻を持つ通常ファイル。state.json の更新が 30 秒以上止まれば次の ensure が起動し直す。古いプロセスは所有権変更を検出して停止する。
+- 開発・検証中の起動は `ensure --dry-run`。分類と記録だけを行い、操作・通報・台帳変更はしない。実操作はカナリア子への `once --session <id>` だけ。既存プロセスの設定を ensure は変更しない。モード変更時は stop 後に停止を確認する。
+- 実機試験は mycmux の委譲元タブ内で `python -X utf8 ~/.claude/skills/session-dispatch/scripts/dispatch_canary.py --scenario startup,askuser,draft` を実行する。結果は JSON と一時 cwd の result.json。--keep 以外は子タブを閉じる。試験は最初の失敗で停止する。
+- RELAY_1 対応後の本番 run は母艦が最終検証で初めて起動する。

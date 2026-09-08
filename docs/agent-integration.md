@@ -226,6 +226,22 @@ spawn したタブの完了・生存は画面でなく**実体を3層でポー�
 - AskUserQuestion への回答は通常メッセージ送信と分け、数字1バイトまたは規定の multiSelect sequence を使う
 - サブエージェントの自己申告 (「保存しました」) を成果と見なさない
 
+### 見張り (dispatch_guard) — 止まった子の回復と通報 (2026-09-08 追加)
+
+spawn した子 (と手動の agent タブ) が「起動ダイアログ・入力欄に残った本文・AskUserQuestion・承認・ログイン」で黙って止まる 4 系統を、session-dispatch スキル同梱の常駐プロセスが 15 秒周期で検出し、回復するか通報する。mycmux 本体は socket API (`session.state_view` / `pane.read` / `pane.send_text`) を提供するだけで、判定と操作はスキル側にある。
+
+| 症状 | 防ぐ場所 | 効き方 |
+| --- | --- | --- |
+| 起動ダイアログ (MCP 選択・trust・auto 確認) | Claude Code の settings (`enableAllProjectMcpServers` / `skipAutoPermissionPrompt`) + `dispatch_preflight.py` が cwd の承認を先に書く | 起きなくなる。残りは見張りが受諾キー 1 回 |
+| 子の AskUserQuestion / plan 承認 | PreToolUse hook `dispatch-child-guard.py` (台帳の active 行にある子だけ deny) | 呼べなくなる |
+| 機械送信の本文が残る | `dispatch_send.py` の配送確認 → 見張りが期待値 4 点付き Enter を 1 回 | 起きても 1〜2 分で回復。人が打った本文は送らず 10 分で通報 |
+| 承認・ログイン・手動タブの質問 | 見張りが画面を読む | 子の承認は「拒否 + 代替手段の指示」、ログインと手動タブは通報のみ |
+
+- 起動: ランチャー (`launcher.ps1` / `launcher.sh`) が agent TUI を立てるたびに `dispatch_guard.py ensure` を detached で呼ぶ (idempotent・`MYCMUX_DISPATCH_GUARD=off` で無効)。母艦側は 10 分ごとの Scheduled Task でも `ensure` する
+- 状態: `python -X utf8 ~/.claude/skills/session-dispatch/scripts/dispatch_guard.py doctor` (生存・最終周期・タブごとの分類・通報数)。記録は `~/.claude/dispatch/guard/` (guard.log / state.json / pending_sends.jsonl / escalations.jsonl)
+- 実機試験: `dispatch_canary.py --scenario startup,askuser,draft` (新規 cwd に子を立て、spec 消費 ≤ 60 秒・AskUserQuestion deny・機械本文の配送を assert し、子タブを閉じる)
+- 既知の穴: Codex 子の idle 検知 (rollout に応答終了の印が無く attention も none のまま)。mycmux 側で Codex の待機を attention に載せるのが次の一手。詳細設計と証拠は母艦の `~/.claude/_work/dispatch_guard_260908/`
+
 ## 配布物: Claude Code スキルパック
 
 mycmux の「設定 → AI → Claude Code スキル → 導入」からも、3 スキルと agent CLI を導入できます (git・ZIP 不要)。パックはアプリに同梱され、アプリ更新後はカードから更新できます。コマンド導入と同じ manifest・導入マーカーで改変を保護し、置き換えるときは旧フォルダを退避します。

@@ -50,6 +50,23 @@ guard.json の追加もローカル改変として検出されるため、更新
 個人用ルールは任意です。`~/.claude/rules/delegation.md` などは配布・上書きしません。
 スキル本文が参照する個人用の台帳・通知ツールは同梱していません。必要な手順は自分の環境で用意してください。
 
+## 見張り (dispatch_guard) の有効化
+
+session-dispatch には、立てた子タブや手動タブが「起動ダイアログ・入力欄に残った本文・質問・承認・ログイン」で黙って止まるのを検出し、回復か通報を行う常駐スクリプト `scripts/dispatch_guard.py` が同梱されています。mycmux のランチャーが agent TUI を起動するたびに `ensure` を呼ぶので、導入後は自動で常駐します (`MYCMUX_DISPATCH_GUARD=off` で止められます)。
+
+あわせて Claude Code 側に次の 2 点を入れると、起動ダイアログと子セッションの質問が構造的に起きなくなります。
+
+1. `~/.claude/settings.json` に `"enableAllProjectMcpServers": true` と `"skipAutoPermissionPrompt": true`
+2. 同ファイルの `hooks.PreToolUse` に次を追加 (子セッションだけ AskUserQuestion / plan モードを拒否します)
+
+```json
+{"matcher": "AskUserQuestion|EnterPlanMode|ExitPlanMode",
+ "hooks": [{"type": "command", "timeout": 5,
+            "command": "python -X utf8 ~/.claude/skills/session-dispatch/scripts/dispatch-child-guard.py"}]}
+```
+
+状態は `python -X utf8 ~/.claude/skills/session-dispatch/scripts/dispatch_guard.py doctor`、実機試験は同フォルダの `dispatch_canary.py --scenario startup,askuser,draft` です。通報は判断カードと Windows トーストで、カードの投入先 (`~/.claude/ops/ops_common.py`) は個人環境のツールなので同梱していません。無い環境では記録 (`~/.claude/dispatch/guard/escalations.jsonl`) だけが残ります。
+
 ## 配布コピーの同期
 
 ```text

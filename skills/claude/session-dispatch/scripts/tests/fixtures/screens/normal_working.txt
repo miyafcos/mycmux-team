@@ -1,0 +1,15 @@
+▐▛███▛█   Claude Code v2.1.263
+▝▜██████▀  Opus 5 (1M context) with xhigh effort · Claude Max
+▝▝ ▝▝    ~\AppData\Local\Temp\claude\C--Users-miyaz\d5233577-2d63-481e-a6…
+❯ Handoff from previous session. Read
+"C:\Users\example\AppData\Local\Temp\claude\C--Users-miyaz\d5233577-2d63-481e-a
+609-55687129a0cd\scratchpad\canary_spec.md" and continue from where it left
+off.
+✢ Actioning… (3s · ↓ 179 tokens · thought for 2s)
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+Opus 5 (1M context) (xhigh) │ ~\…\scratchpad\canary_cwd_untrusted2 │ CTX 6%…
+5h 27% (4h15m) │ sess 0m (09:44〜) │ sid 9ec51dc5
+-- INSERT -- ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents
+◉ xhigh · /effort
