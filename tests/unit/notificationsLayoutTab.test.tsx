@@ -26,6 +26,10 @@ beforeEach(() => {
     toastAiActivityEnabled: true,
     toastUserActionEnabled: true,
     toastSystemEnabled: true,
+    bellQuestionEnabled: true,
+    bellApprovalEnabled: true,
+    bellWorkDoneEnabled: true,
+    bellUnreadEnabled: true,
     groupingApplyAnimationEnabled: true,
   });
   container = document.createElement("div");
@@ -44,7 +48,8 @@ describe("notification toast settings", () => {
 
     act(() => root.render(<NotificationsLayoutTab />));
 
-    for (const label of ["通知サウンド", "AIの自動処理結果", "操作の結果", "システム・接続"]) {
+    for (const label of ["通知サウンド", "質問を知らせる", "承認待ちを知らせる", "作業完了を知らせる",
+      "その他の未読を知らせる", "AIの自動処理結果", "操作の結果", "システム・接続"]) {
       const checkbox = checkboxFor(label);
       expect(checkbox.disabled).toBe(true);
       expect(checkbox.checked).toBe(true);
@@ -64,6 +69,28 @@ describe("notification toast settings", () => {
       toastSystemEnabled: true,
     });
     expect(container.textContent).toContain("失敗・エラーは通知設定に関わらず常に表示します。");
+  });
+
+  it("gives the top-left bell its own section, on by default and switchable per kind", () => {
+    expect(useSettingsStore.getInitialState()).toMatchObject({
+      bellQuestionEnabled: true,
+      bellApprovalEnabled: true,
+      bellWorkDoneEnabled: true,
+      bellUnreadEnabled: true,
+    });
+    act(() => root.render(<NotificationsLayoutTab />));
+
+    expect(container.textContent).toContain("左上のベル");
+    expect(container.textContent).toContain("オフにすると、左上のベルも右下のトーストも出しません。");
+    expect(container.textContent).toContain("ベルの通知はパネルの「すべて既読にする」か各行の × で消せます。");
+
+    act(() => checkboxFor("作業完了を知らせる").click());
+    expect(useSettingsStore.getState()).toMatchObject({
+      bellQuestionEnabled: true,
+      bellApprovalEnabled: true,
+      bellWorkDoneEnabled: false,
+      bellUnreadEnabled: true,
+    });
   });
 
   it("shows the grouping apply animation setting enabled by default and persists its toggle", () => {

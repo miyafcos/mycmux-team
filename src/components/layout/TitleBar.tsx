@@ -16,6 +16,7 @@ import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmo
 import { useAccountsPolling } from "../../hooks/useAccountsPolling";
 import { useCliLoginEvents } from "../../hooks/useCliLoginEvents";
 import { buildNotificationPanelModel } from "../../lib/notificationPanelModel";
+import { useNotificationBellFilter } from "../../hooks/useNotificationBellFilter";
 import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 
 interface TitleBarProps {
@@ -98,9 +99,14 @@ export default function TitleBar({
   const workspacesForNotifications = useWorkspaceListStore((s) => s.workspaces);
   const notificationMetadata = usePaneMetadataStore((s) => s.metadata);
   const attentionBySession = useSessionAttentionStore((s) => s.attentionBySession);
+  const seenAttentionByTab = useSessionAttentionStore((s) => s.seenAttentionByTab);
+  const notificationFilter = useNotificationBellFilter();
+  // Volatile metadata is deliberately left out: the badge needs counts, not
+  // labels, and that map churns with terminal output.
   const notificationModel = useMemo(
-    () => buildNotificationPanelModel(workspacesForNotifications, attentionBySession, notificationMetadata),
-    [workspacesForNotifications, attentionBySession, notificationMetadata],
+    () => buildNotificationPanelModel(workspacesForNotifications, attentionBySession, notificationMetadata,
+      undefined, { seenAttentionByTab, filter: notificationFilter }),
+    [workspacesForNotifications, attentionBySession, notificationMetadata, seenAttentionByTab, notificationFilter],
   );
   const totalNotifications = notificationModel.attentionCount || notificationModel.unreadCount;
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);

@@ -19,6 +19,7 @@ import NotificationPanel from "../../src/components/layout/NotificationPanel";
 import { notificationPanelStrings as strings } from "../../src/components/layout/notificationPanelStrings";
 import { useWorkspaceListStore, useWorkspaceLayoutStore, usePaneMetadataStore } from "../../src/stores/workspaceStore";
 import { useSessionAttentionStore, type SessionAttention } from "../../src/stores/sessionAttentionStore";
+import { useSettingsStore } from "../../src/stores/settingsStore";
 import { focusController } from "../../src/lib/focusController";
 import type { Workspace } from "../../src/types";
 
@@ -47,6 +48,10 @@ const workspaces = [
 
 const rows = () => [...host.querySelectorAll<HTMLButtonElement>(".cmux-notification-item")];
 const sections = () => [...host.querySelectorAll("section")];
+const sectionRows = (index: number) => [...sections()[index].querySelectorAll(".cmux-notification-item")];
+const dismissButtons = () => [...host.querySelectorAll<HTMLButtonElement>("[data-notification-dismiss]")];
+const markAllRead = () => [...host.querySelectorAll<HTMLButtonElement>("button")]
+  .find((button) => button.textContent === strings.markAllRead);
 async function render(closing = false) {
   await act(async () => root.render(<><button data-trigger>Bell</button><NotificationPanel closing={closing} onClose={close} /></>));
 }
@@ -67,6 +72,12 @@ beforeEach(() => {
   useAskQuestionStore.getState().resetForTests();
   useWorkspaceListStore.setState({ workspaces, activeWorkspaceId: "here" });
   usePaneMetadataStore.setState({ metadata: { q: { notificationCount: 5 }, a: { workDoneCount: 4 }, d: { workDoneCount: 2 }, r: { notificationCount: 1 } }, volatileMetadata: {}, lastLog: { d: "Result arrived" } });
+  useSettingsStore.setState({
+    notificationsEnabled: true, bellQuestionEnabled: true, bellApprovalEnabled: true,
+    bellWorkDoneEnabled: true, bellUnreadEnabled: true,
+  });
+  // Dismissals persist seen-marks, so each case starts from an empty read state.
+  useSessionAttentionStore.getState().resetForTests();
   useSessionAttentionStore.setState({ attentionBySession: { q: state("input", 10), a: state("approval", 20) } });
   vi.spyOn(useWorkspaceListStore.getState(), "setActiveWorkspace").mockImplementation(() => {});
   vi.spyOn(useWorkspaceLayoutStore.getState(), "setActivePaneTab").mockImplementation(() => {});
@@ -89,24 +100,60 @@ describe("notification panel", () => {
     expect(rows()[0].textContent).not.toContain("Current workspace");
     expect(rows()[1].textContent).toContain("Other workspace");
     expect(rows()[2].textContent).toContain("Result arrived");
-    expect(sections()[0].querySelectorAll("button")).toHaveLength(2);
-    expect(sections()[0].textContent).not.toContain(strings.clearUnread);
+    expect(sectionRows(0)).toHaveLength(2);
     expect(rows()[0].textContent).toContain(strings.answer);
     expect(rows()[2].textContent).toContain(strings.open);
+    // Every row carries its own dismiss, and the one bulk control sits in the
+    // header rather than inside either section.
+    expect(dismissButtons()).toHaveLength(4);
+    expect(dismissButtons()[0].getAttribute("aria-label")).toBe(strings.dismiss("Question seat"));
+    expect(markAllRead()).toBeDefined();
+    expect(sections().some((section) => section.contains(markAllRead()!))).toBe(false);
   });
 
-  it("marks only the lower section read, preserving upper counters until resolution", async () => {
+  it("empties both sections from the header, marking blocked rows seen so they stay gone", async () => {
     const clear = vi.spyOn(usePaneMetadataStore.getState(), "clearNotification");
     await render();
-    await act(async () => (sections()[1].querySelector("button") as HTMLButtonElement).click());
-    expect(clear.mock.calls).toEqual([["d"], ["r"]]);
-    expect(usePaneMetadataStore.getState().metadata.q.notificationCount).toBe(5);
-    expect(usePaneMetadataStore.getState().metadata.a.workDoneCount).toBe(4);
-    expect(sections()[0].querySelectorAll("button")).toHaveLength(2);
-    expect(sections()[1].textContent).toContain(strings.noUnread);
-    await act(async () => useSessionAttentionStore.setState({ attentionBySession: {} }));
+    await act(async () => markAllRead()!.click());
+    expect(clear.mock.calls).toEqual([["q"], ["a"], ["d"], ["r"]]);
+    // Seen-marking is what keeps a still-waiting question off the bell: its
+    // session state does not change just because the person cleared the list.
+    const seen = useSessionAttentionStore.getState().seenAttentionByTab;
+    expect([seen.get("q"), seen.get("a")]).toEqual(["attention", "attention"]);
+    expect(close).toHaveBeenCalledOnce();
+    await render();
+    expect(rows()).toHaveLength(0);
+    expect(markAllRead()).toBeUndefined();
     expect(sections()[0].textContent).toContain(strings.noAttention);
-    expect(sections()[1].textContent).toContain(strings.unreadHeading(9));
+    expect(sections()[1].textContent).toContain(strings.noUnread);
+  });
+
+  it("dismisses one blocked row without disturbing the rest of the list", async () => {
+    const clear = vi.spyOn(usePaneMetadataStore.getState(), "clearNotification");
+    await render();
+    await act(async () => dismissButtons()[0].click());
+    expect(clear).toHaveBeenCalledExactlyOnceWith("q");
+    expect(useSessionAttentionStore.getState().seenAttentionByTab.get("q")).toBe("attention");
+    expect(useSessionAttentionStore.getState().seenAttentionByTab.has("a")).toBe(false);
+    expect(close).not.toHaveBeenCalled();
+    expect(rows()).toHaveLength(3);
+    expect(sectionRows(0)).toHaveLength(1);
+    expect(host.textContent).toContain(strings.attentionHeading(1, 0, 1));
+    // A brand new question in that same seat comes back: only the answered one
+    // was silenced.
+    await act(async () => useSessionAttentionStore.setState({
+      attentionBySession: { q: { ...state("input", 30), attentionId: "next" }, a: state("approval", 20) },
+    }));
+    expect(sectionRows(0)).toHaveLength(2);
+  });
+
+  it("closes itself once the last row is dismissed", async () => {
+    useSessionAttentionStore.setState({ attentionBySession: { q: state("input", 10) } });
+    usePaneMetadataStore.setState({ metadata: { q: { notificationCount: 5 } }, volatileMetadata: {}, lastLog: {} });
+    await render();
+    expect(rows()).toHaveLength(1);
+    await act(async () => dismissButtons()[0].click());
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it("crosses both section boundaries with arrows, wraps, and opens an upper row without clearing", async () => {
@@ -144,11 +191,28 @@ describe("notification panel", () => {
   it("survives focus-style clearing and removes upper rows only when state or live tab disappears", async () => {
     await render();
     await act(async () => usePaneMetadataStore.getState().clearNotification("q"));
-    expect(sections()[0].querySelectorAll("button")).toHaveLength(2);
+    expect(sectionRows(0)).toHaveLength(2);
     await act(async () => useSessionAttentionStore.setState({ attentionBySession: { a: state("approval", 20) } }));
-    expect(sections()[0].querySelectorAll("button")).toHaveLength(1);
+    expect(sectionRows(0)).toHaveLength(1);
     await act(async () => useWorkspaceListStore.setState({ workspaces: [workspaces[0]] }));
     expect(sections()[0].textContent).toContain(strings.noAttention);
+  });
+
+  it("hides the kinds the settings mute, and goes silent under the master switch", async () => {
+    useSettingsStore.setState({ bellQuestionEnabled: false });
+    await render();
+    expect(sectionRows(0).map((row) => row.textContent)).toHaveLength(1);
+    expect(host.textContent).toContain(strings.attentionHeading(1, 0, 1));
+    await act(async () => useSettingsStore.setState({ bellQuestionEnabled: true, bellWorkDoneEnabled: false }));
+    // "a" only ever had completion counters, so muting them drops it from the
+    // unread section while its approval row stays put.
+    expect(sectionRows(0)).toHaveLength(2);
+    expect(sectionRows(1)).toHaveLength(1);
+    expect(host.textContent).toContain(strings.unreadHeading(1));
+    await act(async () => useSettingsStore.setState({ bellWorkDoneEnabled: true, notificationsEnabled: false }));
+    expect(rows()).toHaveLength(0);
+    expect(host.textContent).toContain(strings.noAttention);
+    expect(host.textContent).toContain(strings.noUnread);
   });
 
   it("closes on Escape and restores the bell focus without clearing", async () => {
@@ -185,6 +249,18 @@ describe("notification panel", () => {
 
 
 describe("notification bell", () => {
+  it("keeps the badge on the same settings and read state as the panel", async () => {
+    useSettingsStore.setState({ bellQuestionEnabled: false });
+    await act(async () => root.render(<TitleBar onOpenOnlinePanel={() => {}} />));
+    const bell = host.querySelector<HTMLButtonElement>('button[title="Notifications"]')!;
+    expect(bell.textContent).toBe("1");
+    await act(async () => useSessionAttentionStore.getState().markSeen("a", "attention"));
+    // No blocking rows left: the badge falls back to the unread total (5+4+2+1).
+    expect(bell.textContent).toBe("12");
+    await act(async () => useSettingsStore.setState({ notificationsEnabled: false }));
+    expect(bell.textContent).toBe("");
+  });
+
   it("shows attention N in yellow, switches to unread M after resolution, and shares panel counts", async () => {
     await act(async () => root.render(<TitleBar onOpenOnlinePanel={() => {}} />));
     const bell = host.querySelector<HTMLButtonElement>('button[title="Notifications"]')!;

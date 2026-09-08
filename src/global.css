@@ -359,6 +359,17 @@ div:focus-within > .tab-close-btn,
   background: var(--cmux-hover) !important;
 }
 
+.cmux-notification-dismiss {
+  transition:
+    background var(--cmux-motion-fast) var(--cmux-ease),
+    color var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-notification-dismiss:hover {
+  background: var(--cmux-hover) !important;
+  color: var(--cmux-text) !important;
+}
+
 .pane-tabbar {
   background: var(--pane-tabbar-bg, var(--cmux-surface-raised)) !important;
   box-shadow: var(--cmux-edge-highlight);

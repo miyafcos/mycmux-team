@@ -114,13 +114,18 @@ def test_terminal_search_notifications_and_settings_surfaces_remain_wired() -> N
         "src/components/layout/NotificationPanel.tsx",
         [
             "const clearNotification = usePaneMetadataStore((s) => s.clearNotification);",
+            "const markSeen = useSessionAttentionStore((s) => s.markSeen);",
             # D6 replaces the global empty message with two independently named
-            # empty sections; D2 clears only the lower section, never all seats.
+            # empty sections. Clearing is the header's mark-all plus a dismiss
+            # on every row, and both mark blocked rows seen: a question lives in
+            # the session's own state, so zeroing counters alone would let it
+            # reappear the moment the next status frame arrives.
             "strings.noAttention",
             "strings.noUnread",
-            "strings.clearUnread",
-            "for (const n of model.unread)",
-            "clearNotification(n.sessionId);",
+            "strings.markAllRead",
+            "strings.dismiss(notification.label)",
+            "if (notification.attentionId) markSeen(notification.tabId, notification.attentionId);",
+            "clearNotification(notification.sessionId);",
         ],
     )
 

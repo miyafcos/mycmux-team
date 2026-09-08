@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildNotificationPanelModel } from "../../src/lib/notificationPanelModel";
+import { ALL_BELL_NOTIFICATIONS, buildNotificationPanelModel, type NotificationBellFilter } from "../../src/lib/notificationPanelModel";
 import { collectNotificationEntries } from "../../src/lib/notificationEntries";
 import type { PaneMetadata } from "../../src/stores/paneMetadataStore";
 import type { SessionAttention } from "../../src/stores/sessionAttentionStore";
@@ -97,6 +97,61 @@ describe("notification panel model", () => {
       expect(row.label).toBe(expected.find((entry) => entry.tabId === row.tabId)?.label);
     }
     expect(JSON.stringify({ workspaces, states, metadata, volatile })).toBe(before);
+  });
+
+  it("drops a blocked row the person already dismissed, and brings back the next question", () => {
+    const { workspaces, states, metadata } = fixture();
+    const seen = new Map([["tab-0", "attention"]]);
+    // s0 carries counters too: dismissing zeroes them, so the row leaves the
+    // panel entirely instead of sliding down into the unread section.
+    const model = buildNotificationPanelModel(workspaces, states, { ...metadata, s0: {} }, {}, { seenAttentionByTab: seen });
+    expect(model.attention.map((row) => row.tabId)).toEqual(["tab-6", "tab-1"]);
+    expect(model.unread.map((row) => row.tabId)).not.toContain("tab-0");
+    expect(model).toMatchObject({ attentionCount: 2, questionCount: 1, approvalCount: 1 });
+    const asked = { ...states, s0: { ...states.s0, attentionId: "next" } };
+    expect(buildNotificationPanelModel(workspaces, asked, metadata, {}, { seenAttentionByTab: seen })
+      .attention.map((row) => row.tabId)).toEqual(["tab-6", "tab-1", "tab-0"]);
+  });
+
+  it("keeps a dismissed but still-counting row visible as unread", () => {
+    const { workspaces, states, metadata } = fixture();
+    const model = buildNotificationPanelModel(workspaces, states, metadata, {},
+      { seenAttentionByTab: new Map([["tab-0", "attention"]]) });
+    expect(model.attention.map((row) => row.tabId)).toEqual(["tab-6", "tab-1"]);
+    expect(model.unread.find((row) => row.tabId === "tab-0")).toMatchObject({ kind: "unread", count: 7, attentionId: null });
+  });
+
+  it("exposes the attention id blocked rows are dismissed by", () => {
+    const { workspaces, states, metadata } = fixture();
+    const model = buildNotificationPanelModel(workspaces, states, metadata);
+    expect(model.attention.every((row) => row.attentionId === "attention")).toBe(true);
+    expect(model.unread.every((row) => row.attentionId === null)).toBe(true);
+  });
+
+  it("reports only the kinds the bell filter allows, counters included", () => {
+    const { workspaces, states, metadata } = fixture();
+    const filtered = (filter: Partial<NotificationBellFilter>) => buildNotificationPanelModel(
+      workspaces, states, metadata, {}, { filter: { ...ALL_BELL_NOTIFICATIONS, ...filter } },
+    );
+    expect(filtered({ question: false })).toMatchObject({ attentionCount: 1, questionCount: 0, approvalCount: 1 });
+    expect(filtered({ approval: false })).toMatchObject({ attentionCount: 2, questionCount: 2, approvalCount: 0 });
+    // s0 has 5 waiting + 2 completion counters; muting completions leaves the 5.
+    expect(filtered({ question: false, workDone: false }).unread.find((row) => row.tabId === "tab-0"))
+      .toMatchObject({ count: 5 });
+    // tab-2 is completion-only, so it disappears rather than showing a zero.
+    expect(filtered({ workDone: false }).unread.map((row) => row.tabId)).toEqual(["tab-3"]);
+    expect(filtered({ unread: false }).unread.map((row) => row.tabId)).toEqual(["tab-2", "tab-7"]);
+    const silent = filtered({ question: false, approval: false, workDone: false, unread: false });
+    expect(silent).toMatchObject({ attentionCount: 0, unreadCount: 0 });
+    expect([...silent.attention, ...silent.unread]).toEqual([]);
+  });
+
+  it("leaves an identity-less question in the unread section, where it can still be cleared", () => {
+    const { workspaces, states, metadata } = fixture();
+    const anonymous = { ...states, s0: { ...states.s0, attentionId: null } };
+    const model = buildNotificationPanelModel(workspaces, anonymous, metadata);
+    expect(model.attention.map((row) => row.tabId)).toEqual(["tab-6", "tab-1"]);
+    expect(model.unread.find((row) => row.tabId === "tab-0")).toMatchObject({ kind: "unread", count: 7 });
   });
 
   it("does not turn non-actionable attention into an upper row or invent completion/report types", () => {

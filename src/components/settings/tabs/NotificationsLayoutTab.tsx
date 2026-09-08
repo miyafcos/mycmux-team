@@ -10,6 +10,14 @@ export function NotificationsLayoutTab() {
   const setNotificationsEnabled = useSettingsStore((s) => s.setNotificationsEnabled);
   const notificationSoundEnabled = useSettingsStore((s) => s.notificationSoundEnabled);
   const setNotificationSoundEnabled = useSettingsStore((s) => s.setNotificationSoundEnabled);
+  const bellQuestionEnabled = useSettingsStore((s) => s.bellQuestionEnabled);
+  const setBellQuestionEnabled = useSettingsStore((s) => s.setBellQuestionEnabled);
+  const bellApprovalEnabled = useSettingsStore((s) => s.bellApprovalEnabled);
+  const setBellApprovalEnabled = useSettingsStore((s) => s.setBellApprovalEnabled);
+  const bellWorkDoneEnabled = useSettingsStore((s) => s.bellWorkDoneEnabled);
+  const setBellWorkDoneEnabled = useSettingsStore((s) => s.setBellWorkDoneEnabled);
+  const bellUnreadEnabled = useSettingsStore((s) => s.bellUnreadEnabled);
+  const setBellUnreadEnabled = useSettingsStore((s) => s.setBellUnreadEnabled);
   const toastAiActivityEnabled = useSettingsStore((s) => s.toastAiActivityEnabled);
   const setToastAiActivityEnabled = useSettingsStore((s) => s.setToastAiActivityEnabled);
   const toastUserActionEnabled = useSettingsStore((s) => s.toastUserActionEnabled);
@@ -45,6 +53,52 @@ export function NotificationsLayoutTab() {
         />
         <span>{notificationSettingsStrings.soundLabel}</span>
       </label>
+      <div style={{ color: "var(--cmux-text-dim)", fontSize: 12, marginTop: 4 }}>
+        {notificationSettingsStrings.enabledHint}
+      </div>
+
+      <div style={{ ...sectionHeadingStyle, marginTop: 20 }}>
+        {notificationSettingsStrings.bellCategoryTitle}
+      </div>
+      <label style={checkboxLabelStyleFor(notificationsEnabled)}>
+        <input
+          type="checkbox"
+          checked={bellQuestionEnabled}
+          disabled={!notificationsEnabled}
+          onChange={(e) => setBellQuestionEnabled(e.target.checked)}
+        />
+        <span>{notificationSettingsStrings.bellQuestionLabel}</span>
+      </label>
+      <label style={checkboxLabelStyleFor(notificationsEnabled)}>
+        <input
+          type="checkbox"
+          checked={bellApprovalEnabled}
+          disabled={!notificationsEnabled}
+          onChange={(e) => setBellApprovalEnabled(e.target.checked)}
+        />
+        <span>{notificationSettingsStrings.bellApprovalLabel}</span>
+      </label>
+      <label style={checkboxLabelStyleFor(notificationsEnabled)}>
+        <input
+          type="checkbox"
+          checked={bellWorkDoneEnabled}
+          disabled={!notificationsEnabled}
+          onChange={(e) => setBellWorkDoneEnabled(e.target.checked)}
+        />
+        <span>{notificationSettingsStrings.bellWorkDoneLabel}</span>
+      </label>
+      <label style={checkboxLabelStyleFor(notificationsEnabled)}>
+        <input
+          type="checkbox"
+          checked={bellUnreadEnabled}
+          disabled={!notificationsEnabled}
+          onChange={(e) => setBellUnreadEnabled(e.target.checked)}
+        />
+        <span>{notificationSettingsStrings.bellUnreadLabel}</span>
+      </label>
+      <div style={{ color: "var(--cmux-text-dim)", fontSize: 12, marginTop: 4 }}>
+        {notificationSettingsStrings.bellHint}
+      </div>
 
       <div style={{ ...sectionHeadingStyle, marginTop: 20 }}>
         {notificationSettingsStrings.toastCategoryTitle}

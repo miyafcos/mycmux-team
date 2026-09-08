@@ -53,6 +53,13 @@ export function readLegacyAiFeatureSettings(): LegacyAiFeatureSettings {
 interface SettingsState {
   notificationsEnabled: boolean;
   notificationSoundEnabled: boolean;
+  // Which arrivals the top-left bell reports. Separate from the toast
+  // switches below: the bell is a list you clear on your own schedule, a
+  // toast is a moment you either catch or miss.
+  bellQuestionEnabled: boolean;
+  bellApprovalEnabled: boolean;
+  bellWorkDoneEnabled: boolean;
+  bellUnreadEnabled: boolean;
   toastAiActivityEnabled: boolean;
   toastUserActionEnabled: boolean;
   toastSystemEnabled: boolean;
@@ -99,6 +106,10 @@ interface SettingsState {
   appearanceAdvancedOpen: boolean;
   setNotificationsEnabled: (v: boolean) => void;
   setNotificationSoundEnabled: (v: boolean) => void;
+  setBellQuestionEnabled: (v: boolean) => void;
+  setBellApprovalEnabled: (v: boolean) => void;
+  setBellWorkDoneEnabled: (v: boolean) => void;
+  setBellUnreadEnabled: (v: boolean) => void;
   setToastAiActivityEnabled: (v: boolean) => void;
   setToastUserActionEnabled: (v: boolean) => void;
   setToastSystemEnabled: (v: boolean) => void;
@@ -128,6 +139,10 @@ export const useSettingsStore = create<SettingsState>()(
     (set) => ({
       notificationsEnabled: true,
       notificationSoundEnabled: true,
+      bellQuestionEnabled: true,
+      bellApprovalEnabled: true,
+      bellWorkDoneEnabled: true,
+      bellUnreadEnabled: true,
       // Off by default: the auto-naming and auto-sweep runs announce results
       // that are already visible on screen, and the owner asked for the quiet
       // default (2026-08-28). The setting stays, so it can be turned back on.
@@ -156,6 +171,10 @@ export const useSettingsStore = create<SettingsState>()(
       appearanceAdvancedOpen: false,
       setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
       setNotificationSoundEnabled: (v) => set({ notificationSoundEnabled: v }),
+      setBellQuestionEnabled: (v) => set({ bellQuestionEnabled: v }),
+      setBellApprovalEnabled: (v) => set({ bellApprovalEnabled: v }),
+      setBellWorkDoneEnabled: (v) => set({ bellWorkDoneEnabled: v }),
+      setBellUnreadEnabled: (v) => set({ bellUnreadEnabled: v }),
       setToastAiActivityEnabled: (v) => set({ toastAiActivityEnabled: v }),
       setToastUserActionEnabled: (v) => set({ toastUserActionEnabled: v }),
       setToastSystemEnabled: (v) => set({ toastSystemEnabled: v }),

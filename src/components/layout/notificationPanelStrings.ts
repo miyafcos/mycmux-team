@@ -14,7 +14,9 @@ export const notificationPanelStrings = {
   otherInput: "その他を入力",
   submit: "選択を確定",
   open: "開く",
-  clearUnread: "この区分を既読に",
+  markAllRead: "すべて既読にする",
+  markAllReadTitle: "要対応と未読をまとめて消します",
+  dismiss: (label: string) => `${label} の通知を消す`,
   noAttention: "要対応なし",
   noUnread: "未読なし",
   attentionHeading: (count: number, questions: number, approvals: number) =>

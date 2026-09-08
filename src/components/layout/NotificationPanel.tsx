@@ -2,6 +2,7 @@ import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } fr
 import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
 import { useWorkspaceListStore, usePaneMetadataStore, useWorkspaceLayoutStore } from "../../stores/workspaceStore";
 import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
+import { useNotificationBellFilter } from "../../hooks/useNotificationBellFilter";
 import { buildNotificationPanelModel, type NotificationPanelRow } from "../../lib/notificationPanelModel";
 import { AgentKindIcon } from "../icons/AgentIcons";
 import { notificationPanelStrings as strings } from "./notificationPanelStrings";
@@ -13,10 +14,11 @@ interface NotificationPanelProps {
   onClose: () => void;
 }
 
-const NotificationItem = memo(function NotificationItem({ notification, activeWorkspaceId, onActivate, expanded = false, onToggle }: {
+const NotificationItem = memo(function NotificationItem({ notification, activeWorkspaceId, onActivate, onDismiss, expanded = false, onToggle }: {
   notification: NotificationPanelRow;
   activeWorkspaceId: string | null;
   onActivate: (notification: NotificationPanelRow) => void;
+  onDismiss: (notification: NotificationPanelRow) => void;
   expanded?: boolean;
   onToggle?: () => void;
 }) {
@@ -34,6 +36,7 @@ const NotificationItem = memo(function NotificationItem({ notification, activeWo
 
   return (
     <div ref={rowRef} data-notification-row>
+    <div style={{ display: "flex", alignItems: "stretch", borderBottom: "1px solid var(--cmux-border-hairline)" }}>
     <button
       type="button"
       className="cmux-notification-item"
@@ -41,9 +44,8 @@ const NotificationItem = memo(function NotificationItem({ notification, activeWo
       aria-controls={needsAnswer ? answerId : undefined}
       onClick={() => needsAnswer ? onToggle?.() : onActivate(notification)}
       style={{
-        display: "block", width: "100%", padding: "10px 12px", border: 0,
+        display: "block", flex: 1, minWidth: 0, padding: "10px 12px", border: 0,
         background: "transparent", color: "inherit", font: "inherit", textAlign: "left", cursor: "pointer",
-        borderBottom: "1px solid var(--cmux-border-hairline)",
       }}
     >
       <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -72,6 +74,22 @@ const NotificationItem = memo(function NotificationItem({ notification, activeWo
         </span>
       </span>
     </button>
+    <button
+      type="button"
+      className="cmux-notification-dismiss"
+      data-notification-dismiss
+      title={strings.dismiss(notification.label)}
+      aria-label={strings.dismiss(notification.label)}
+      onClick={() => onDismiss(notification)}
+      style={{
+        flexShrink: 0, width: 32, border: 0, background: "transparent",
+        color: "var(--cmux-text-secondary)", cursor: "pointer", fontSize: 14, lineHeight: 1,
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}
+    >
+      ×
+    </button>
+    </div>
     {needsAnswer && (expanded || visited) && <div id={answerId} hidden={!expanded}>
       <NotificationAnswer active={expanded} sessionId={notification.sessionId} label={notification.label}
         onOpen={() => onActivate(notification)} onBusyChange={setBusy} />
@@ -88,15 +106,19 @@ export default function NotificationPanel({ closing = false, onClose }: Notifica
   const paneMetadata = usePaneMetadataStore((s) => s.metadata);
   const volatilePaneMetadata = usePaneMetadataStore((s) => s.volatileMetadata);
   const attentionBySession = useSessionAttentionStore((s) => s.attentionBySession);
+  const seenAttentionByTab = useSessionAttentionStore((s) => s.seenAttentionByTab);
+  const markSeen = useSessionAttentionStore((s) => s.markSeen);
   const clearNotification = usePaneMetadataStore((s) => s.clearNotification);
+  const filter = useNotificationBellFilter();
   const panelRef = useRef<HTMLDivElement>(null);
   const headingId = useId();
   const [expandedTab, setExpandedTab] = useState<string | null>(null);
   useNotificationBriefs(closing);
   const [position, setPosition] = useState({ left: 8, top: 40 });
   const model = useMemo(
-    () => buildNotificationPanelModel(workspaces, attentionBySession, paneMetadata, volatilePaneMetadata),
-    [workspaces, attentionBySession, paneMetadata, volatilePaneMetadata],
+    () => buildNotificationPanelModel(workspaces, attentionBySession, paneMetadata, volatilePaneMetadata,
+      { seenAttentionByTab, filter }),
+    [workspaces, attentionBySession, paneMetadata, volatilePaneMetadata, seenAttentionByTab, filter],
   );
 
   useDismissOnOutside(!closing, panelRef, (reason) => {
@@ -135,9 +157,29 @@ export default function NotificationPanel({ closing = false, onClose }: Notifica
     if (expandedTab && !model.attention.some((row) => row.tabId === expandedTab)) setExpandedTab(null);
   }, [expandedTab, model.attention]);
 
-  function handleClearUnread() {
-    for (const n of model.unread) {
-      clearNotification(n.sessionId);
+  /**
+   * Clear one row. A question stays in the session's live attention state until
+   * the agent moves on, so marking it seen is the only thing that takes it off
+   * the bell; the counters go too, or the row would just reappear as unread.
+   */
+  function dismiss(notification: NotificationPanelRow) {
+    if (notification.attentionId) markSeen(notification.tabId, notification.attentionId);
+    clearNotification(notification.sessionId);
+    if (model.attention.length + model.unread.length <= 1) {
+      onClose();
+      return;
+    }
+    requestAnimationFrame(() => {
+      const panel = panelRef.current;
+      if (!panel || panel.contains(document.activeElement)) return;
+      panel.querySelector<HTMLButtonElement>(".cmux-notification-item")?.focus();
+    });
+  }
+
+  function handleMarkAllRead() {
+    for (const notification of [...model.attention, ...model.unread]) {
+      if (notification.attentionId) markSeen(notification.tabId, notification.attentionId);
+      clearNotification(notification.sessionId);
     }
     onClose();
   }
@@ -190,8 +232,16 @@ export default function NotificationPanel({ closing = false, onClose }: Notifica
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", color: "var(--cmux-text)",
       }}
     >
-      <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--cmux-border-hairline)", fontWeight: 600, fontSize: 11 }}>
-        {strings.title}
+      <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--cmux-border-hairline)",
+        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <span style={{ fontWeight: 600, fontSize: 11 }}>{strings.title}</span>
+        {model.attention.length + model.unread.length > 0 && (
+          <button type="button" onClick={handleMarkAllRead} title={strings.markAllReadTitle}
+            style={{ background: "none", border: "none", color: "var(--cmux-accent-text)", cursor: "pointer",
+              font: "inherit", fontSize: 11, padding: 0 }}>
+            {strings.markAllRead}
+          </button>
+        )}
       </div>
       <section aria-labelledby={`${headingId}-attention`}>
         <h3 id={`${headingId}-attention`} style={{ margin: 0, padding: "12px", fontSize: 12 }}>
@@ -202,25 +252,20 @@ export default function NotificationPanel({ closing = false, onClose }: Notifica
         )}
         {model.attention.map((notification) => (
           <NotificationItem key={notification.tabId + notification.sessionId} notification={notification} activeWorkspaceId={activeWorkspaceId} onActivate={activate}
+            onDismiss={dismiss}
             expanded={expandedTab === notification.tabId}
             onToggle={() => setExpandedTab((current) => current === notification.tabId ? null : notification.tabId)} />
         ))}
       </section>
       <section aria-labelledby={`${headingId}-unread`} style={{ borderTop: "1px solid var(--cmux-border)" }}>
-        <div style={{ padding: "12px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-          <h3 id={`${headingId}-unread`} style={{ margin: 0, fontSize: 12 }}>{strings.unreadHeading(model.unreadCount)}</h3>
-          {model.unread.length > 0 && (
-            <button type="button" onClick={handleClearUnread}
-              style={{ background: "none", border: "none", color: "var(--cmux-accent-text)", cursor: "pointer", fontSize: 11, padding: "4px 0" }}>
-              {strings.clearUnread}
-            </button>
-          )}
-        </div>
+        <h3 id={`${headingId}-unread`} style={{ margin: 0, padding: "12px", fontSize: 12 }}>
+          {strings.unreadHeading(model.unreadCount)}
+        </h3>
         {model.unread.length === 0 && (
           <div style={{ padding: "0 12px 12px", fontSize: 11, color: "var(--cmux-text-secondary)" }}>{strings.noUnread}</div>
         )}
         {model.unread.map((notification) => (
-          <NotificationItem key={notification.tabId + notification.sessionId} notification={notification} activeWorkspaceId={activeWorkspaceId} onActivate={activate} />
+          <NotificationItem key={notification.tabId + notification.sessionId} notification={notification} activeWorkspaceId={activeWorkspaceId} onActivate={activate} onDismiss={dismiss} />
         ))}
       </section>
     </div>
