@@ -26,3 +26,6 @@ pub mod attention;
 pub mod autonomy;
 pub mod workorder;
 pub mod webpane;
+pub mod webpane_native;
+#[cfg(windows)]
+mod webpane_native_win;

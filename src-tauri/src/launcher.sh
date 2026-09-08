@@ -1141,6 +1141,9 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
     web-claude|claude-web|claude-ai)
       cmd="__web_claude__"
       ;;
+    web-browser)
+      cmd="__web_browser__"
+      ;;
     web-notebooklm|notebooklm)
       cmd="__web_notebooklm__"
       ;;
@@ -1614,6 +1617,7 @@ if [ -z "$cmd" ]; then
     "Grok (Web)"
     "Claude.ai (Web)"
     "NotebookLM (Web)"
+    "Browser (Web)"
     "Claude Code (resume)"
     "Codex (resume)"
     "claude-codex (resume)"
@@ -1634,7 +1638,7 @@ if [ -z "$cmd" ]; then
     "grok"
     "claude-codex-open"
     "agy"
-    "" "" "" "" ""
+    "" "" "" "" "" ""
     "" "" "" ""
     ""
     "" "" ""
@@ -1652,6 +1656,7 @@ if [ -z "$cmd" ]; then
     "__web_grok__"
     "__web_claude__"
     "__web_notebooklm__"
+    "__web_browser__"
     "claude --allow-dangerously-skip-permissions --permission-mode auto --resume"
     "codex resume --no-alt-screen"
     "claude-codex --resume"
@@ -1688,7 +1693,7 @@ if [ -z "$cmd" ]; then
   # 1 を返したときだけ呼び出し側が break して cmd を eval する。
   __try_selected_menu_command() {
     case "${commands[$selected]}" in
-      __web_chatgpt__|__web_gemini__|__web_grok__|__web_claude__|__web_notebooklm__)
+      __web_chatgpt__|__web_gemini__|__web_grok__|__web_claude__|__web_notebooklm__|__web_browser__)
         # 実処理は __open_web_tab (MYCMUX_LAUNCH_TARGET と共有)。
         # ここはメニューを畳んで結果を返すだけ。
         tput cnorm >&$__CMUX_MENU_FD 2>/dev/null
@@ -1732,7 +1737,7 @@ if [ -z "$cmd" ]; then
         fi
         break
         ;;
-      slash) selected=11; break ;;
+      slash) selected=16; break ;;
       # → / m はこの行の model と effort を選んでから起動する。Enter と数字キーは
       # 触っていない — 従来どおり CLI の既定で即起動する。
       right)
@@ -1754,6 +1759,8 @@ if [ -z "$cmd" ]; then
                 3) selected=12 ;;
                 4) selected=13 ;;
                 5) selected=14 ;;
+                6) selected=15 ;;
+                7) selected=16 ;;
                 *) selected=0 ;;
               esac
             else
@@ -1813,7 +1820,7 @@ fi
 # MYCMUX_LAUNCH_TARGET=web-* で来た場合。Web タブはプロセスではないので eval せず、
 # ここで開いてシェルに戻る (メニュー経由の場合は既に処理済みでここには来ない)。
 case "$cmd" in
-  __web_chatgpt__|__web_gemini__|__web_grok__|__web_claude__|__web_notebooklm__)
+  __web_chatgpt__|__web_gemini__|__web_grok__|__web_claude__|__web_notebooklm__|__web_browser__)
     __open_web_tab_from_pseudo_command "$cmd"
     cmd=""
     ;;

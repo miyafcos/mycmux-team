@@ -47,10 +47,25 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 | `pane.activate_tab` / `pane.close_tab` / `pane.rename_tab` | `sessionId` 等 | タブの選択・終了・改名 |
 | `web.open` / `web.list` / `web.focus` / `web.push` | `presetId`、`tabId` 等 | サービス Web タブの操作 |
 | `web.read` / `web.close` | `tabId` (`web.read` は `presetId`、`anchorSessionId` でも指定可) | 会話を JSON で取得 / Web タブを閉じる |
+| `web.navigate` | T + url または action (back/forward/reload) | URL移動・履歴移動・再読み込み |
+| `web.wait` | T + state、selector?、timeoutMs?、intervalMs? | 読み込み・DOM静止・要素出現を待ち、期限では ready:false |
+| `web.eval` | T + script、timeoutMs? | async 関数本体の評価結果を JSON で返す（512 KB） |
+| `web.snapshot` | T + mode? (ax/text)、maxBytes? | AX-lite の nodes / ref または本文を取得 |
+| `web.find` | T + text?、role?、selector?、exact?、limit? | 可視要素を検索して nodes / ref を取得 |
+| `web.click` | T + ref または selector または x,y、button?、clickCount?、trusted? | 要素をクリック |
+| `web.type` | T + ref または selector、text、mode?、submit?、trusted? | input / textarea / contenteditable へ置換・追記 |
+| `web.key` | T + key、code?、modifiers?、ref?、trusted? | キー入力を送る |
+| `web.scroll` | T + ref? または selector?、deltaX?、deltaY? | スクロール容器またはページを移動 |
+| `web.upload` | T + ref または selector、paths、mode?、trusted? | ファイル入力またはドロップ（合計25 MB） |
+| `web.screenshot` | T + path?、clip? | PNGを保存して path / width / height / dpr を返す（Windows先行） |
+| `web.downloads` | T | URL・path・success・finishedAt を取得 |
+| `web.dialogs` | T + clear? | browser の自動応答ダイアログ記録を取得・消去 |
 | `pane.send_text` | `sessionId`, `text`, `enter?` | 既存ペインの端末へ入力を送る |
 | `pane.read` | `sessionId`, `lines?` (既定80、最大400) | 既存ペインの画面末尾を読む |
 
-`web.open` は `url` (HTTPS) と `background: true` (フォーカス維持、`replaceAnchor` と併用不可) に対応。`web.list` は `background` / `active` を返す。
+新コマンドの `T` は `{tabId?, presetId?, anchorSessionId?}`。tabId 優先、指定がなければ対象ワークスペース内の最新プリセット候補を使う。`trusted` と screenshot は Windows 先行（macOSは段2）。
+
+`web.open` は `url` (既存プリセットはHTTPS、browserはHTTPSまたはlocalhost / 127.0.0.1のHTTP) と `background: true` (フォーカス維持、`replaceAnchor` と併用不可) に対応。`web.list` は `background` / `active` を返す。
 
 一覧・ワークスペース操作には snake_case の別名 (`list_workspaces` など) もあります。全コマンドは `socketCommands.ts` の dispatcher と `mycmux_agent_cli.py` の parser が正本です。
 `status.subscribe` / `status.snapshot` は `socket.rs` が直接扱う状態フィードで、PTY 生出力のストリーミングとは別です。

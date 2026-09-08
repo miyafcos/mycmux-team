@@ -2307,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "mycmux"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2349,7 +2349,9 @@ dependencies = [
  "tower-http",
  "uuid",
  "webkit2gtk",
+ "webview2-com",
  "windows 0.58.0",
+ "windows 0.61.3",
  "wry",
  "zip",
 ]

@@ -4,6 +4,20 @@
 
 ---
 
+## [0.66.0] - 2026-09-08
+
+AI エージェントが Web サービスを Chrome なしで、mycmux の裏タブだけで操作できるようにした版 (Windows 資産を先行公開。macOS 資産は Mac 側のビルド後に追加)。
+
+- New: **Web 自動操作層**。`web.navigate` / `web.wait` / `web.eval` / `web.snapshot` (可視要素を role・name・ref つきで返す) / `web.find` / `web.click` / `web.type` / `web.key` / `web.scroll` / `web.upload` (DataTransfer 経由の添付) / `web.screenshot` / `web.downloads` / `web.dialogs` の 13 コマンドを追加し、CLI `mycmux_agent_cli.py web-*` から使える。ref は次の snapshot かページ遷移まで有効
+- New: **AI 用の汎用プリセット `browser`**。任意の HTTPS と `http://localhost` / `http://127.0.0.1` を開ける専用プロファイル (`web-profiles/ai`)。ランチャー (`Browser (Web)`)・New Workspace のカタログ・地球アイコンにも登録。`alert` / `confirm` / `prompt` は browser だけ記録して自動応答
+- New (Windows): **アプリ内 CDP** による信頼入力とスクリーンショット。`--trusted` でクリック・キー・insertText・`<input type=file>` への実ファイル設定 (isTrusted=true)、`web-screenshot` は CSS ピクセル寸法の PNG。デバッグポートは開けない。3 コマンドは primary webview 以外から呼べない
+- New: ダウンロードを `~/.mycmux/handoff/web/<preset>/downloads/` に受けて `web.downloads` で一覧 (同名は `-2`, `-3`)
+- Safety: 1 ソケットコマンドの期限は受信から 25 秒 (キュー待ち込み)、ネイティブ層は 20 秒・CDP 1 呼び出し 4 秒、同一タブのコマンドは直列化。`web.eval` の script 256 KB・添付 25 MB・`clickCount` 1〜3・`snapshot` の `maxBytes` 4096 以上。`web.eval` は strict CSP のページでも動く 2 段構え
+- Fix: CDP が int32 を超える数値を小数 (`2147483648.0`) で返すため、世代番号が 2^31 以上のとき trusted 操作が拒否されていた (実機 E2E で検出)
+- Test: fixture `tests/fixtures/web-automation/index.html` と `scripts/verify_web_automation.py` (テスト機の裏タブで 24 手順を検証。Windows は trusted と screenshot を含む)
+- Docs: `docs/agent-integration.md` の「Web 操作」節 (基本ループと全コマンド表)、`docs/plans/2026-09-08-web-automation-layer.md` (設計・境界・既知の制約)
+
+---
 ## [0.65.0] - 2026-09-07
 
 Web ペインを裏タブでもエージェントから使えるようにし、mycmux 前提の Claude Code スキルを同梱・導入できるようにした版 (Windows と macOS の資産をそろえて配信)。

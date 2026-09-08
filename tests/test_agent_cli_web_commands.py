@@ -159,3 +159,119 @@ def test_web_read_and_close_routes(monkeypatch: pytest.MonkeyPatch) -> None:
         route(["web-read", "--tab", "chat", "--preset", "grok"])
     with pytest.raises(SystemExit):
         route(["web-close"])
+
+
+@pytest.mark.parametrize(
+    ("argv", "command", "fields"),
+    [
+        (["web-navigate", "--url", "https://example.com/"], "navigate", {"url": "https://example.com/"}),
+        (["web-navigate", "--back"], "navigate", {"action": "back"}),
+        (["web-navigate", "--forward"], "navigate", {"action": "forward"}),
+        (["web-navigate", "--reload"], "navigate", {"action": "reload"}),
+        (["web-wait", "--state", "selector", "--selector", "#ready", "--timeout-ms", "20"], "wait", {"state": "selector", "selector": "#ready", "timeoutMs": 20}),
+        (["web-eval", "--script", "return 42", "--timeout-ms", "500"], "eval", {"script": "return 42", "timeoutMs": 500}),
+        (["web-snapshot", "--mode", "text", "--max-bytes", "4096"], "snapshot", {"mode": "text", "maxBytes": 4096}),
+        (["web-find", "--text", "Count", "--role", "button", "--selector", "#counter", "--exact", "--limit", "2"], "find", {"text": "Count", "role": "button", "selector": "#counter", "exact": True, "limit": 2}),
+        (["web-click", "--x", "1", "--y", "2", "--button", "right", "--click-count", "2", "--trusted"], "click", {"x": 1.0, "y": 2.0, "button": "right", "clickCount": 2, "trusted": True}),
+        (["web-click", "--ref", "r1"], "click", {"ref": "r1", "trusted": False}),
+        (["web-type", "--selector", "#input", "--text", "", "--append", "--submit", "--trusted"], "type", {"selector": "#input", "text": "", "mode": "append", "submit": True, "trusted": True}),
+        (["web-key", "--key", "A", "--code", "KeyA", "--ref", "r1", "--mod", "ctrl,shift,alt,meta", "--trusted"], "key", {"key": "A", "code": "KeyA", "ref": "r1", "modifiers": ["ctrl", "shift", "alt", "meta"], "trusted": True}),
+        (["web-scroll", "--selector", "#scroll", "--delta-x", "5", "--delta-y", "-40"], "scroll", {"selector": "#scroll", "deltaX": 5.0, "deltaY": -40.0}),
+        (["web-downloads"], "downloads", {}),
+        (["web-dialogs", "--clear"], "dialogs", {"clear": True}),
+    ],
+)
+def test_automation_routes_all_fields(argv: list[str], command: str, fields: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", "caller")
+    assert route([*argv, "--tab", "tab"]) == ("web." + command, {"tabId": "tab", **fields})
+    assert route([*argv, "--preset", "browser"]) == (
+        "web." + command, {"presetId": "browser", "anchorSessionId": "caller", **fields}
+    )
+    assert route(argv) == ("web." + command, {"presetId": "chatgpt", "anchorSessionId": "caller", **fields})
+
+
+def test_automation_reads_utf8_sources_and_resolves_upload_and_screenshot_paths(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    text = "quote ' </script>\n\u65e5\u672c\u8a9e \U0001f600"
+    source.write_text(text, encoding="utf-8")
+    assert route(["web-eval", "--tab", "tab", "--script-file", str(source)])[1]["script"] == text
+    assert route(["web-type", "--tab", "tab", "--ref", "r1", "--text-file", str(source)])[1]["text"] == text
+    for mode in ([], ["--drop"], ["--trusted"]):
+        cmd, args = route(["web-upload", "--tab", "tab", "--selector", "#file", "--file", str(source), "--file", str(source), *mode])
+        assert cmd == "web.upload"
+        assert args == {
+            "tabId": "tab", "selector": "#file", "paths": [str(source.resolve())] * 2,
+            "mode": "drop" if "--drop" in mode else "input", "trusted": "--trusted" in mode,
+        }
+    assert route(["web-screenshot", "--tab", "tab", "--out", str(source)])[1] == {"tabId": "tab", "path": str(source.resolve())}
+    assert route(["web-open", "--preset", "browser", "--background"])[1]["presetId"] == "browser"
+
+
+@pytest.mark.parametrize("argv", [
+    ["web-navigate"], ["web-navigate", "--url", "a", "--back"],
+    ["web-eval"], ["web-eval", "--script", "x", "--script-file", "a"],
+    ["web-click"], ["web-click", "--ref", "r1", "--selector", "#x"],
+    ["web-type", "--ref", "r1"], ["web-type", "--ref", "r1", "--text", "x", "--text-file", "a"],
+    ["web-key"], ["web-upload", "--ref", "r1"], ["web-upload", "--file", "a"],
+    ["web-scroll", "--ref", "r1", "--selector", "#x"],
+    ["web-downloads", "--tab", "x", "--preset", "browser"],
+])
+def test_automation_parser_rejects_missing_and_exclusive_arguments(argv: list[str]) -> None:
+    with pytest.raises(SystemExit):
+        route(argv)
+
+
+@pytest.mark.parametrize("argv", [
+    ["web-click", "--x", "1"], ["web-click", "--ref", "r1", "--y", "2"],
+    ["web-wait", "--state", "selector"], ["web-wait", "--selector", "#x"],
+    ["web-find"], ["web-key", "--key", "a", "--mod", "ctrl,bad"],
+    ["web-upload", "--ref", "r1", "--file", "a", "--drop", "--trusted"],
+])
+def test_automation_rejects_incomplete_or_incompatible_options(argv: list[str]) -> None:
+    with pytest.raises(RuntimeError):
+        route(argv)
+
+
+@pytest.mark.parametrize("command", ["web-wait", "web-eval"])
+def test_timeout_respects_socket_deadline(command: str) -> None:
+    argv = [command, "--tab", "tab"] + (["--script", "return 1"] if command == "web-eval" else [])
+    assert route([*argv, "--timeout-ms", "25000"])[1]["timeoutMs"] == 25000
+    with pytest.raises(RuntimeError, match="timeoutMs must be <= 25000"):
+        route([*argv, "--timeout-ms", "25001"])
+    with pytest.raises(RuntimeError, match="must be nonnegative"):
+        route([*argv, "--timeout-ms", "-1"])
+
+
+@pytest.mark.parametrize("count", [0, 4, -1])
+def test_click_count_rejects_outside_native_range(count: int) -> None:
+    with pytest.raises(RuntimeError, match="clickCount must be between 1 and 3"):
+        route(["web-click", "--tab", "tab", "--ref", "r1", "--click-count", str(count)])
+
+
+@pytest.mark.parametrize("count", [1, 3])
+def test_click_count_accepts_supported_boundaries(count: int) -> None:
+    assert route(["web-click", "--tab", "tab", "--ref", "r1", "--click-count", str(count)])[1]["clickCount"] == count
+
+
+def test_eval_script_limit_counts_utf8_bytes(tmp_path: Path) -> None:
+    boundary = "\U0001f600" * 65536
+    source = tmp_path / "script.js"
+    source.write_text(boundary, encoding="utf-8")
+    assert route(["web-eval", "--script-file", str(source)])[1]["script"] == boundary
+    source.write_text(boundary + "x", encoding="utf-8")
+    for options in (["--script-file", str(source)], ["--script", boundary + "x"]):
+        with pytest.raises(RuntimeError, match="web.eval script exceeds 256 KB"):
+            route(["web-eval", *options])
+
+
+def test_snapshot_minimum_is_4096_bytes() -> None:
+    with pytest.raises(RuntimeError, match="maxBytes must be between 4096 and 524288"):
+        route(["web-snapshot", "--max-bytes", "4095"])
+    assert route(["web-snapshot", "--max-bytes", "4096"])[1]["maxBytes"] == 4096
+
+
+@pytest.mark.parametrize("command", ["web-close", "web-focus"])
+def test_close_and_focus_require_tab_and_reject_preset(command: str) -> None:
+    assert route([command, "--tab", "tab"])[1] == {"tabId": "tab"}
+    with pytest.raises(SystemExit):
+        route([command, "--preset", "browser"])

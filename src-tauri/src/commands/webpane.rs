@@ -1,12 +1,16 @@
+use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+
+use base64::Engine;
 use std::time::Duration;
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use tauri::webview::NewWindowResponse;
 #[cfg(target_os = "macos")]
 use tauri::webview::PageLoadEvent;
+use tauri::webview::{DownloadEvent, NewWindowResponse};
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Url, Webview, WebviewBuilder,
     WebviewUrl, Window,
@@ -68,6 +72,16 @@ const WEB_PANE_AUTH_HOSTS: &[&str] = &[
 ];
 
 const WEB_PANE_PRESETS: &[WebPanePreset] = &[
+    WebPanePreset {
+        id: "browser",
+        label: "Browser",
+        url: "about:blank",
+        profile_dir: "ai",
+        allowed_hosts: &[],
+        signed_out_patterns: &[],
+        composer: None,
+        reader: None,
+    },
     WebPanePreset {
         id: "chatgpt",
         label: "ChatGPT",
@@ -235,6 +249,11 @@ pub struct WebPaneReadResult {
 
 fn initial_webpane_url(preset: WebPanePreset, initial_url: Option<&str>) -> Result<Url, String> {
     let value = initial_url.unwrap_or(preset.url);
+    if preset.id == "browser" && value == "about:blank" {
+        return value
+            .parse()
+            .map_err(|error| format!("invalid web pane URL: {error}"));
+    }
     let url: Url = value
         .parse()
         .map_err(|error| format!("invalid web pane URL: {error}"))?;
@@ -435,6 +454,10 @@ fn host_matches(host: &str, allowed: &[&str]) -> bool {
 }
 
 fn preset_keeps_url_inside_pane(preset: WebPanePreset, url: &Url) -> bool {
+    if preset.id == "browser" {
+        return url.scheme() == "https" && url.host_str().is_some()
+            || url.scheme() == "http" && matches!(url.host_str(), Some("localhost" | "127.0.0.1"));
+    }
     let host = url.host_str().unwrap_or_default();
     host_matches(host, preset.allowed_hosts) || host_matches(host, WEB_PANE_AUTH_HOSTS)
 }
@@ -535,7 +558,7 @@ fn direct_signin_result(preset: WebPanePreset) -> WebPaneSigninResult {
     }
 }
 
-fn webview_label(tab_id: &str) -> Result<String, String> {
+pub(crate) fn webview_label(tab_id: &str) -> Result<String, String> {
     if tab_id.is_empty()
         || tab_id.len() > 128
         || !tab_id
@@ -818,9 +841,18 @@ pub async fn webpane_create(
     let page_load_app = app.clone();
     let page_load_tab_id = tab_id.clone();
     let new_window_app = app.clone();
+    let new_window_label = label.clone();
+    let download_tab_id = tab_id.clone();
     let builder = WebviewBuilder::new(label.clone(), WebviewUrl::External(url))
         .focused(false)
         .data_directory(profile_dir)
+        .initialization_script(automation_initialization_script(preset.id == "browser")?)
+        .on_navigation(move |url| {
+            preset.id != "browser"
+                || url.as_str() == "about:blank"
+                || preset_keeps_url_inside_pane(preset, url)
+        })
+        .on_download(move |_webview, event| handle_download(&download_tab_id, preset, event))
         .initialization_script(shortcut_initialization_script(
             &tab_id,
             &forwarded_shortcuts,
@@ -860,6 +892,14 @@ pub async fn webpane_create(
         // which is why "continue with Google" did nothing at all: the OAuth
         // popup was swallowed before it could be refused or shown.
         .on_new_window(move |url, _features| {
+            if preset.id == "browser" {
+                if preset_keeps_url_inside_pane(preset, &url) {
+                    if let Some(webview) = new_window_app.get_webview(&new_window_label) {
+                        let _ = webview.navigate(url);
+                    }
+                }
+                return NewWindowResponse::Deny;
+            }
             if preset_keeps_url_inside_pane(preset, &url) {
                 return NewWindowResponse::Allow;
             }
@@ -936,6 +976,10 @@ pub async fn webpane_update(
 pub async fn webpane_destroy(app: AppHandle, tab_id: String) -> Result<(), String> {
     let label = webview_label(&tab_id)?;
     open_presets().remove(&label);
+    if let Ok(mut state) = download_state().lock() {
+        state.records.retain(|record| record.tab_id != tab_id);
+        state.reserved.retain(|_, owner| owner != &tab_id);
+    }
     if let Some(webview) = app.get_webview(&label) {
         webview
             .close()
@@ -1129,49 +1173,18 @@ pub async fn webpane_push(
         return Err("webpane_push is only available to the primary app webview".to_string());
     }
     let _push_guard = WEB_PANE_PUSH_LOCK.lock().await;
-    let label = webview_label(&tab_id)?;
-    let webview = app
-        .get_webview(&label)
-        .ok_or_else(|| format!("web pane does not exist: {tab_id}"))?;
-    let preset =
-        preset_for_label(&label).ok_or_else(|| format!("web pane {tab_id} has no known preset"))?;
-    let current_url = webview
-        .url()
-        .map_err(|error| format!("failed to read web pane URL: {error}"))?;
-    let host = current_url.host_str().unwrap_or_default();
-    let expected_host = composer_host(preset)?;
-    if !host_matches(host, &[expected_host.as_str()]) {
-        return Err(format!(
-            "web pane is not on an allowed {} composer host: {host}",
-            preset.label
-        ));
-    }
-    let request_id = uuid::Uuid::new_v4().to_string();
-    let script = composer_push_script(preset, &request_id, text.as_deref(), submit)?;
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    WEB_PANE_PUSH_RESULTS
-        .get_or_init(DashMap::new)
-        .insert(request_id.clone(), (label.clone(), sender));
-
-    if let Err(error) = webview.eval(script) {
-        WEB_PANE_PUSH_RESULTS
-            .get_or_init(DashMap::new)
-            .remove(&request_id);
-        return Err(format!("failed to evaluate web pane push script: {error}"));
-    }
+    let webview = command_webview(&caller, &app, &tab_id, "webpane_push")?;
+    let preset = composer_preset(&webview, &tab_id)?;
+    let (_pending, receiver) = start_evaluation(&webview, &WEB_PANE_PUSH_RESULTS, "push", |id| {
+        composer_push_script(preset, id, text.as_deref(), submit)
+    })?;
 
     let payload = match tokio::time::timeout(WEB_PANE_PUSH_TIMEOUT, receiver).await {
         Ok(Ok(payload)) => payload,
         Ok(Err(_)) => {
-            WEB_PANE_PUSH_RESULTS
-                .get_or_init(DashMap::new)
-                .remove(&request_id);
             return Err("web pane push result channel closed".to_string());
         }
         Err(_) => {
-            WEB_PANE_PUSH_RESULTS
-                .get_or_init(DashMap::new)
-                .remove(&request_id);
             return Err("web pane push timed out waiting for the composer".to_string());
         }
     };
@@ -1195,20 +1208,13 @@ pub async fn webpane_push_result(
     ok: bool,
     error: Option<String>,
 ) -> Result<(), String> {
-    let pending = WEB_PANE_PUSH_RESULTS.get_or_init(DashMap::new);
-    let expected_label = pending
-        .get(&request_id)
-        .map(|entry| entry.value().0.clone())
-        .ok_or_else(|| "unknown web pane push request".to_string())?;
-    if caller.label() != expected_label {
-        return Err("web pane push result came from the wrong webview".to_string());
-    }
-    let (_, (_, sender)) = pending
-        .remove(&request_id)
-        .ok_or_else(|| "web pane push request already completed".to_string())?;
-    sender
-        .send(WebPanePushEventPayload { ok, error })
-        .map_err(|_| "web pane push request receiver closed".to_string())
+    complete_evaluation(
+        &caller,
+        &WEB_PANE_PUSH_RESULTS,
+        &request_id,
+        "push",
+        WebPanePushEventPayload { ok, error },
+    )
 }
 
 #[tauri::command]
@@ -1221,49 +1227,18 @@ pub async fn webpane_read(
         return Err("webpane_read is only available to the primary app webview".to_string());
     }
     let _read_guard = WEB_PANE_READ_LOCK.lock().await;
-    let label = webview_label(&tab_id)?;
-    let webview = app
-        .get_webview(&label)
-        .ok_or_else(|| format!("web pane does not exist: {tab_id}"))?;
-    let preset =
-        preset_for_label(&label).ok_or_else(|| format!("web pane {tab_id} has no known preset"))?;
-    let current_url = webview
-        .url()
-        .map_err(|error| format!("failed to read web pane URL: {error}"))?;
-    let host = current_url.host_str().unwrap_or_default();
-    let expected_host = composer_host(preset)?;
-    if !host_matches(host, &[expected_host.as_str()]) {
-        return Err(format!(
-            "web pane is not on an allowed {} composer host: {host}",
-            preset.label
-        ));
-    }
-    let request_id = uuid::Uuid::new_v4().to_string();
-    let script = read_script(preset, &request_id)?;
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    WEB_PANE_READ_RESULTS
-        .get_or_init(DashMap::new)
-        .insert(request_id.clone(), (label.clone(), sender));
-
-    if let Err(error) = webview.eval(script) {
-        WEB_PANE_READ_RESULTS
-            .get_or_init(DashMap::new)
-            .remove(&request_id);
-        return Err(format!("failed to evaluate web pane read script: {error}"));
-    }
+    let webview = command_webview(&caller, &app, &tab_id, "webpane_read")?;
+    let preset = composer_preset(&webview, &tab_id)?;
+    let (_pending, receiver) = start_evaluation(&webview, &WEB_PANE_READ_RESULTS, "read", |id| {
+        read_script(preset, id)
+    })?;
 
     let payload = match tokio::time::timeout(WEB_PANE_READ_TIMEOUT, receiver).await {
         Ok(Ok(payload)) => payload,
         Ok(Err(_)) => {
-            WEB_PANE_READ_RESULTS
-                .get_or_init(DashMap::new)
-                .remove(&request_id);
             return Err("web pane read result channel closed".to_string());
         }
         Err(_) => {
-            WEB_PANE_READ_RESULTS
-                .get_or_init(DashMap::new)
-                .remove(&request_id);
             return Err("web pane read timed out waiting for the reader".to_string());
         }
     };
@@ -1293,30 +1268,1558 @@ pub async fn webpane_read_result(
     result: Option<WebPaneReadResult>,
     error: Option<String>,
 ) -> Result<(), String> {
-    let pending = WEB_PANE_READ_RESULTS.get_or_init(DashMap::new);
-    let expected_label = pending
-        .get(&request_id)
-        .map(|entry| entry.value().0.clone())
-        .ok_or_else(|| "unknown web pane read request".to_string())?;
-    if caller.label() != expected_label {
-        return Err("web pane read result came from the wrong webview".to_string());
-    }
     let payload = match (result, error) {
         (_, Some(error)) => Err(error),
         (Some(result), None) => Ok(result),
         (None, None) => Err("web pane read returned no result".to_string()),
     };
+    complete_evaluation(
+        &caller,
+        &WEB_PANE_READ_RESULTS,
+        &request_id,
+        "read",
+        payload,
+    )
+}
+
+type PendingReplies<T> = OnceLock<DashMap<String, (String, tokio::sync::oneshot::Sender<T>)>>;
+
+struct PendingEvaluation<T: Send + 'static> {
+    request_id: String,
+    pending: &'static PendingReplies<T>,
+}
+impl<T: Send + 'static> Drop for PendingEvaluation<T> {
+    fn drop(&mut self) {
+        self.pending
+            .get_or_init(DashMap::new)
+            .remove(&self.request_id);
+    }
+}
+
+fn start_evaluation<T: Send + 'static>(
+    webview: &Webview,
+    pending: &'static PendingReplies<T>,
+    kind: &str,
+    make_script: impl FnOnce(&str) -> Result<String, String>,
+) -> Result<(PendingEvaluation<T>, tokio::sync::oneshot::Receiver<T>), String> {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let script = make_script(&request_id)?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    pending
+        .get_or_init(DashMap::new)
+        .insert(request_id.clone(), (webview.label().to_string(), sender));
+    let guard = PendingEvaluation {
+        request_id,
+        pending,
+    };
+    let evaluation = webview.eval(script);
+    evaluation.map_err(|error| format!("failed to evaluate web pane {kind} script: {error}"))?;
+    Ok((guard, receiver))
+}
+
+fn complete_evaluation<T: Send + 'static>(
+    caller: &Webview,
+    pending: &'static PendingReplies<T>,
+    request_id: &str,
+    kind: &str,
+    payload: T,
+) -> Result<(), String> {
+    let pending = pending.get_or_init(DashMap::new);
+    let expected_label = pending
+        .get(request_id)
+        .map(|entry| entry.value().0.clone())
+        .ok_or_else(|| format!("unknown web pane {kind} request"))?;
+    if caller.label() != expected_label {
+        return Err(format!(
+            "web pane {kind} result came from the wrong webview"
+        ));
+    }
     let (_, (_, sender)) = pending
-        .remove(&request_id)
-        .ok_or_else(|| "web pane read request already completed".to_string())?;
+        .remove(request_id)
+        .ok_or_else(|| format!("web pane {kind} request already completed"))?;
     sender
         .send(payload)
-        .map_err(|_| "web pane read request receiver closed".to_string())
+        .map_err(|_| format!("web pane {kind} request receiver closed"))
+}
+
+fn command_webview(
+    caller: &Webview,
+    app: &AppHandle,
+    tab_id: &str,
+    command: &str,
+) -> Result<Webview, String> {
+    if caller.label() != caller.window().label() {
+        return Err(format!(
+            "{command} is only available to the primary app webview"
+        ));
+    }
+    let label = webview_label(tab_id)?;
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| format!("web pane does not exist: {tab_id}"))?;
+    if webview.window().label() != caller.window().label() {
+        return Err(format!(
+            "{command} cannot operate a web pane in another window"
+        ));
+    }
+    Ok(webview)
+}
+
+fn composer_preset(webview: &Webview, tab_id: &str) -> Result<WebPanePreset, String> {
+    let preset = preset_for_label(webview.label())
+        .ok_or_else(|| format!("web pane {tab_id} has no known preset"))?;
+    let current_url = webview
+        .url()
+        .map_err(|error| format!("failed to read web pane URL: {error}"))?;
+    let host = current_url.host_str().unwrap_or_default();
+    let expected_host = composer_host(preset)?;
+    if !host_matches(host, &[expected_host.as_str()]) {
+        return Err(format!(
+            "web pane is not on an allowed {} composer host: {host}",
+            preset.label
+        ));
+    }
+    Ok(preset)
+}
+
+#[derive(Debug)]
+struct EvaluationFailure {
+    message: String,
+    csp_blocked: bool,
+}
+
+fn evaluation_failure(message: String, error_name: Option<&str>) -> EvaluationFailure {
+    let csp_blocked = error_name == Some("EvalError")
+        || message.contains("Content Security Policy")
+        || message.contains("unsafe-eval");
+    EvaluationFailure {
+        message,
+        csp_blocked,
+    }
+}
+
+async fn retry_csp_failure<F, Fut>(
+    result: Result<serde_json::Value, EvaluationFailure>,
+    fallback: F,
+) -> Result<serde_json::Value, EvaluationFailure>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<serde_json::Value, EvaluationFailure>>,
+{
+    match result {
+        Err(error) if error.csp_blocked => fallback().await,
+        result => result,
+    }
+}
+
+static WEB_PANE_EVAL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static WEB_PANE_EVAL_RESULTS: PendingReplies<Result<serde_json::Value, EvaluationFailure>> =
+    OnceLock::new();
+
+fn evaluation_timeout(timeout_ms: Option<u64>) -> Result<Duration, String> {
+    let timeout_ms = timeout_ms.unwrap_or(5000);
+    if timeout_ms > 25000 {
+        return Err("web.eval timeoutMs must be <= 25000 (socket response deadline is 30s); poll again instead".to_string());
+    }
+    Ok(Duration::from_millis(timeout_ms))
+}
+
+fn validate_eval_script(script: &str) -> Result<(), String> {
+    if script.len() > WEB_PANE_MAX_TEXT_BYTES {
+        return Err("web.eval script exceeds 256 KB".to_string());
+    }
+    Ok(())
+}
+
+async fn evaluation_roundtrip(
+    webview: &Webview,
+    make_script: impl FnOnce(&str) -> Result<String, String>,
+) -> Result<serde_json::Value, EvaluationFailure> {
+    let (_pending, receiver) =
+        start_evaluation(webview, &WEB_PANE_EVAL_RESULTS, "eval", make_script)
+            .map_err(|message| evaluation_failure(message, None))?;
+    receiver.await.map_err(|_| {
+        evaluation_failure("web.eval failed: result channel closed".to_string(), None)
+    })?
+}
+
+async fn evaluation_with_timeout<T>(
+    timeout: Duration,
+    fallback_started: &std::sync::atomic::AtomicBool,
+    operation: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    tokio::time::timeout(timeout, operation).await.map_err(|_| {
+        if fallback_started.load(std::sync::atomic::Ordering::Relaxed) {
+            "web.eval: no reply after the CSP fallback (syntax error in the script?); the script must be a valid async function body".to_string()
+        } else {
+            "web.eval failed: timed out".to_string()
+        }
+    })?
+}
+
+async fn evaluate_webpane(
+    caller: &Webview,
+    app: &AppHandle,
+    tab_id: &str,
+    timeout_ms: Option<u64>,
+    fallback_script: Option<&str>,
+    make_script: impl FnOnce(&str) -> Result<String, String>,
+) -> Result<serde_json::Value, String> {
+    let webview = command_webview(caller, app, tab_id, "web.eval")?;
+    let timeout = evaluation_timeout(timeout_ms)?;
+    // Queueing and both CSP attempts share one deadline.
+    let fallback_started = std::sync::atomic::AtomicBool::new(false);
+    evaluation_with_timeout(timeout, &fallback_started, async {
+        let _eval_guard = WEB_PANE_EVAL_LOCK.lock().await;
+        let result = evaluation_roundtrip(&webview, make_script).await;
+        let result = if let Some(script) = fallback_script {
+            retry_csp_failure(result, || {
+                fallback_started.store(true, std::sync::atomic::Ordering::Relaxed);
+                evaluation_roundtrip(&webview, |id| direct_eval_script(id, script))
+            })
+            .await
+        } else {
+            result
+        };
+        result.map_err(|error| error.message)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn webpane_eval(
+    caller: Webview,
+    app: AppHandle,
+    tab_id: String,
+    script: String,
+    timeout_ms: Option<u64>,
+    direct: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    validate_eval_script(&script)?;
+    let direct = direct.unwrap_or(false);
+    let value = evaluate_webpane(
+        &caller,
+        &app,
+        &tab_id,
+        timeout_ms,
+        if direct { None } else { Some(&script) },
+        |id| {
+            if direct {
+                direct_eval_script(id, &script)
+            } else {
+                eval_script(id, &script)
+            }
+        },
+    )
+    .await?;
+    Ok(serde_json::json!({ "tabId": tab_id, "value": value }))
+}
+
+#[tauri::command]
+pub async fn webpane_eval_result(
+    caller: Webview,
+    request_id: String,
+    value: Option<serde_json::Value>,
+    error: Option<String>,
+    error_name: Option<String>,
+) -> Result<(), String> {
+    let payload = if let Some(error) = error {
+        Err(evaluation_failure(
+            format!("web.eval failed: {error}"),
+            error_name.as_deref(),
+        ))
+    } else {
+        let value = value.unwrap_or(serde_json::Value::Null);
+        if serde_json::to_vec(&value)
+            .map_err(|error| error.to_string())?
+            .len()
+            > WEB_PANE_MAX_READ_BYTES - 160
+        {
+            Err(evaluation_failure(
+                "web.eval failed: result exceeds the 512 KB limit".to_string(),
+                None,
+            ))
+        } else {
+            Ok(value)
+        }
+    };
+    complete_evaluation(
+        &caller,
+        &WEB_PANE_EVAL_RESULTS,
+        &request_id,
+        "eval",
+        payload,
+    )
+}
+
+fn automation_initialization_script(browser: bool) -> Result<String, String> {
+    let config = serde_json::to_string(&serde_json::json!({ "browser": browser }))
+        .map_err(|error| error.to_string())?;
+    Ok(r##"((config) => {
+  if (window.__mycmux) return;
+  const state = { generation: Math.floor(Math.random() * 0x100000000), refs: new Map(), lastMutationAt: Date.now(), dialogs: [] };
+  Object.defineProperty(window, "__mycmux", { value: state, enumerable: false });
+  let nextRef = Math.floor(Math.random() * 1e12);
+  const observer = new MutationObserver(records => {
+    if (records.some(r => r.type !== "attributes" || r.attributeName !== "data-mycmux-ref"))
+      state.lastMutationAt = Date.now();
+  });
+  observer.observe(document, { subtree: true, childList: true, characterData: true, attributes: true });
+  const candidates = 'a[href],button,input:not([type="hidden"]),textarea,select,[contenteditable],[role],h1,h2,h3,h4,h5,h6,img[alt],summary,[tabindex]';
+  const visible = el => {
+    const style = getComputedStyle(el);
+    return el.getClientRects().length > 0 && style.visibility !== "hidden" && Number(style.opacity) !== 0
+      && !(el.tagName === "INPUT" && el.type === "hidden");
+  };
+  const rect = el => {
+    const r = el.getBoundingClientRect();
+    return { x: r.x, y: r.y, width: r.width, height: r.height };
+  };
+  const role = el => {
+    if (el.getAttribute("role")) return el.getAttribute("role");
+    const tag = el.tagName.toLowerCase();
+    if (tag === "input") return ({ checkbox: "checkbox", radio: "radio", button: "button",
+      submit: "button", reset: "button" })[el.type] || "textbox";
+    if (el.isContentEditable || el.getAttribute("contenteditable") === "true") return "textbox";
+    return ({ a: "link", button: "button", textarea: "textbox", select: "combobox",
+      img: "img", summary: "button" })[tag] || (/^h[1-6]$/.test(tag) ? "heading" : "generic");
+  };
+  const name = el => {
+    const labelled = (el.getAttribute("aria-labelledby") || "").split(/\s+/)
+      .map(id => document.getElementById(id)?.textContent || "").join(" ").trim();
+    const label = [...(el.labels || [])].map(n => n.textContent || "").join(" ").trim()
+      || [...document.querySelectorAll("label[for]")].filter(n => n.htmlFor === el.id && el.id)
+        .map(n => n.textContent || "").join(" ").trim();
+    return el.getAttribute("aria-label") || labelled || label || el.getAttribute("title")
+      || el.getAttribute("placeholder") || (el.innerText || el.textContent || "").trim().slice(0, 80)
+      || el.getAttribute("alt") || "";
+  };
+  const describe = (el, ref) => {
+    const box = rect(el), tag = el.tagName.toLowerCase();
+    const node = { ref, role: role(el), name: name(el), tag, rect: box,
+      inViewport: box.x < innerWidth && box.y < innerHeight && box.x + box.width > 0 && box.y + box.height > 0 };
+    const text = (el.innerText || el.textContent || "").trim();
+    if (text) node.text = text;
+    if ("value" in el) node.value = String(el.value);
+    if (el.href) node.href = el.href;
+    if ("checked" in el) node.checked = Boolean(el.checked);
+    else if (el.hasAttribute("aria-checked")) node.checked = el.getAttribute("aria-checked") === "true";
+    if ("disabled" in el || el.hasAttribute("aria-disabled"))
+      node.disabled = Boolean(el.disabled) || el.getAttribute("aria-disabled") === "true";
+    if (/^h[1-6]$/.test(tag)) node.level = Number(tag[1]);
+    else if (el.hasAttribute("aria-level")) node.level = Number(el.getAttribute("aria-level"));
+    return node;
+  };
+  const scan = () => {
+    for (const el of state.refs.values()) el.removeAttribute("data-mycmux-ref");
+    state.refs.clear();
+    return [...document.querySelectorAll(candidates)].filter(visible).map(el => {
+      const ref = "r" + (++nextRef);
+      state.refs.set(ref, el);
+      el.setAttribute("data-mycmux-ref", ref);
+      return describe(el, ref);
+    });
+  };
+  const resolve = target => {
+    let el;
+    if (target.ref !== undefined) {
+      el = state.refs.get(target.ref);
+      if (!el || !el.isConnected) throw new Error("stale ref");
+    } else if (target.selector !== undefined) el = document.querySelector(target.selector);
+    else el = document.elementFromPoint(target.x, target.y);
+    if (!(el instanceof HTMLElement)) throw new Error("target was not found");
+    return el;
+  };
+  const prepare = target => {
+    const el = resolve(target);
+    if (target.ref !== undefined || target.selector !== undefined)
+      el.scrollIntoView({ block: "center", inline: "center" });
+    if (el.disabled || el.getAttribute("aria-disabled") === "true") throw new Error("target is disabled");
+    return el;
+  };
+  const targetInfo = el => ({ generation: state.generation, ...(el.getAttribute("data-mycmux-ref") ? { ref: el.getAttribute("data-mycmux-ref") } : {}), rect: rect(el) });
+  state.target = ({ target, focus = false, select = false, append = false, editable = false }) => {
+    const el = prepare(target);
+    if (editable && (el.readOnly
+      || (el instanceof HTMLInputElement && !["text","search","email","url","tel","password","number"].includes(el.type))
+      || (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)
+        && !el.isContentEditable && el.getAttribute("contenteditable") !== "true")))
+      throw new Error("target is not a writable text field");
+    if (focus) el.focus();
+    let appendWithEndKey = false;
+    if (append) {
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+        try { el.setSelectionRange(el.value.length, el.value.length); }
+        catch (_) { appendWithEndKey = true; }
+      }
+      else {
+        const range = document.createRange(); range.selectNodeContents(el); range.collapse(false);
+        const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+      }
+    }
+    if (select) {
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) el.select();
+      else {
+        const range = document.createRange(); range.selectNodeContents(el);
+        const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+      }
+    }
+    return { ...targetInfo(el), ...(appendWithEndKey ? { appendWithEndKey: true } : {}) };
+  };
+  const size = value => new TextEncoder().encode(JSON.stringify(value)).length;
+  const bound = (result, maxBytes) => {
+    if (size(result) <= maxBytes) return result;
+    result.truncated = true;
+    while (result.nodes?.length && size(result) > maxBytes) result.nodes.pop();
+    for (const field of ["text", "title", "url"]) {
+      if (typeof result[field] !== "string" || size(result) <= maxBytes) continue;
+      const chars = [...result[field]];
+      let low = 0, high = chars.length;
+      while (low < high) {
+        const mid = Math.ceil((low + high) / 2);
+        result[field] = chars.slice(0, mid).join("");
+        if (size(result) <= maxBytes) low = mid; else high = mid - 1;
+      }
+      result[field] = chars.slice(0, low).join("");
+    }
+    if (size(result) > maxBytes) throw new Error("maxBytes is too small for snapshot metadata");
+    return result;
+  };
+  state.snapshot = ({ mode = "ax", maxBytes = 262144 }) => {
+    if (!Number.isInteger(maxBytes) || maxBytes < 4096 || maxBytes > 524288)
+      throw new Error("web.snapshot maxBytes must be between 4096 and 524288");
+    const nodes = scan();
+    const result = { url: location.href, title: document.title, truncated: false };
+    if (mode === "text") result.text = document.body?.innerText || document.body?.textContent || "";
+    else {
+      result.viewport = { width: innerWidth, height: innerHeight, dpr: devicePixelRatio };
+      result.nodes = nodes.slice(0, 800);
+      result.truncated = nodes.length > 800;
+    }
+    return bound(result, maxBytes - 160);
+  };
+  state.find = ({ text, role: wantedRole, selector, exact = false, limit = 20 }) => {
+    const nodes = scan().filter(node => {
+      if (selector && !state.refs.get(node.ref).matches(selector)) return false;
+      if (wantedRole && node.role !== wantedRole) return false;
+      if (text !== undefined) {
+        const needle = text.toLowerCase();
+        return [node.name, node.text || ""].some(s => exact ? s.toLowerCase() === needle : s.toLowerCase().includes(needle));
+      }
+      return true;
+    }).slice(0, limit);
+    return { nodes };
+  };
+  state.click = ({ target, options = {} }) => {
+    const clickCount = options.clickCount ?? 1;
+    if (!Number.isInteger(clickCount) || clickCount < 1 || clickCount > 3)
+      throw new Error("web.click clickCount must be between 1 and 3");
+    const el = prepare(target), info = targetInfo(el), box = info.rect;
+    const button = ({ left: 0, middle: 1, right: 2 })[options.button || "left"];
+    const buttons = ({ 0: 1, 1: 4, 2: 2 })[button];
+    const point = { clientX: target.x ?? box.x + box.width / 2, clientY: target.y ?? box.y + box.height / 2 };
+    for (let i = 1; i <= clickCount; i++) {
+      const init = { bubbles: true, cancelable: true, composed: true, button, detail: i, ...point };
+      const pointer = typeof PointerEvent === "function" ? PointerEvent : MouseEvent;
+      el.dispatchEvent(new pointer("pointerdown", { ...init, buttons, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+      const down = el.dispatchEvent(new MouseEvent("mousedown", { ...init, buttons }));
+      if (down) el.focus();
+      el.dispatchEvent(new pointer("pointerup", { ...init, buttons: 0, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+      el.dispatchEvent(new MouseEvent("mouseup", { ...init, buttons: 0 }));
+      el.dispatchEvent(new MouseEvent(button === 0 ? "click" : "auxclick", { ...init, buttons: 0 }));
+      if (button === 2) el.dispatchEvent(new MouseEvent("contextmenu", init));
+      if (button === 0 && i === 2) el.dispatchEvent(new MouseEvent("dblclick", init));
+    }
+    return { target: info, trusted: false };
+  };
+  state.key = ({ key, code, modifiers = [], ref }) => {
+    const el = ref ? prepare({ ref }) : document.activeElement || document.body;
+    if (ref) el.focus();
+    const init = { key, code: code || "", bubbles: true, cancelable: true, composed: true,
+      ctrlKey: modifiers.includes("ctrl"), shiftKey: modifiers.includes("shift"),
+      altKey: modifiers.includes("alt"), metaKey: modifiers.includes("meta") };
+    for (const kind of ["keydown", "keypress", "keyup"]) el.dispatchEvent(new KeyboardEvent(kind, init));
+    return { key, trusted: false };
+  };
+  state.type = ({ target, text, mode = "replace", submit = false }) => {
+    const el = prepare(target); el.focus();
+    const native = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
+    if (!native && !el.isContentEditable && el.getAttribute("contenteditable") !== "true")
+      throw new Error("target is not editable");
+    if (el.readOnly || (el instanceof HTMLInputElement && !["text","search","email","url","tel","password","number"].includes(el.type)))
+      throw new Error("target is not a writable text field");
+    const before = new InputEvent("beforeinput", { bubbles: true, cancelable: true, composed: true, inputType: "insertText", data: text });
+    if (!el.dispatchEvent(before)) throw new Error("beforeinput was cancelled");
+    if (native) {
+      const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+      const value = mode === "append" ? el.value + text : text;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText", data: text }));
+    } else {
+      const range = document.createRange(); range.selectNodeContents(el);
+      if (mode === "append") range.collapse(false);
+      const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+      const previous = el.textContent || "";
+      let inserted = false;
+      try { inserted = document.execCommand("insertText", false, text); } catch (_) {}
+      if (!inserted) {
+        el.textContent = mode === "append" ? previous + text : text;
+        el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText", data: text }));
+      }
+    }
+    if (submit) state.key({ key: "Enter", code: "Enter" });
+    return { target: targetInfo(el), chars: [...text].length, submitted: submit };
+  };
+  state.scroll = ({ target = {}, deltaX = 0, deltaY = 600 }) => {
+    let el = target.ref || target.selector ? prepare(target) : null;
+    while (el) {
+      const style = getComputedStyle(el);
+      if (/(auto|scroll)/.test(style.overflow + style.overflowX + style.overflowY)
+        && (el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth)) break;
+      el = el.parentElement;
+    }
+    if (el) { el.scrollBy({ left: deltaX, top: deltaY, behavior: "instant" }); return { scrollX: el.scrollLeft, scrollY: el.scrollTop }; }
+    window.scrollBy({ left: deltaX, top: deltaY, behavior: "instant" });
+    return { scrollX: window.scrollX, scrollY: window.scrollY };
+  };
+  state.upload = ({ target, files, mode = "input" }) => {
+    const el = prepare(target), transfer = new DataTransfer();
+    for (const file of files) {
+      const bytes = Uint8Array.from(atob(file.data), c => c.charCodeAt(0));
+      transfer.items.add(new File([bytes], file.name, { type: "application/octet-stream" }));
+    }
+    if (mode === "drop") {
+      for (const kind of ["dragenter", "dragover", "drop"])
+        el.dispatchEvent(new DragEvent(kind, { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    } else {
+      if (!(el instanceof HTMLInputElement) || el.type !== "file") throw new Error("target is not a file input");
+      if (!el.multiple && files.length > 1) throw new Error("file input does not accept multiple files");
+      el.files = transfer.files;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    return { files: files.map(({ name, size }) => ({ name, size })), mode, trusted: false };
+  };
+  state.readDialogs = ({ clear = false }) => {
+    const dialogs = state.dialogs.slice();
+    if (clear) state.dialogs.length = 0;
+    return { dialogs };
+  };
+  if (config.browser) {
+    const record = (kind, message) => state.dialogs.push({ kind, message: String(message ?? ""), at: new Date().toISOString() });
+    window.alert = message => { record("alert", message); };
+    window.confirm = message => { record("confirm", message); return true; };
+    window.prompt = (message, value = "") => { record("prompt", message); return String(value); };
+  }
+})(__CONFIG__);"##.replace("__CONFIG__", &config))
+}
+
+fn evaluation_source(
+    request_id: &str,
+    script: Option<&str>,
+    method: Option<&str>,
+    parameters: serde_json::Value,
+    execution: &str,
+) -> Result<String, String> {
+    let config = serde_json::to_string(&serde_json::json!({
+        "requestId": request_id, "script": script, "method": method,
+        "parameters": parameters, "limit": WEB_PANE_MAX_READ_BYTES - 160
+    }))
+    .map_err(|error| error.to_string())?;
+    Ok(format!(
+        r#"((config) => {{
+  const reply = (value, error, errorName = null) => window.__TAURI_INTERNALS__.invoke("webpane_eval_result",
+    {{ requestId: config.requestId, value, error, errorName }}).catch(() => undefined);
+  void (async () => {{
+    try {{
+      const value = {execution};
+      const json = JSON.stringify(value === undefined ? null : value);
+      if (json === undefined) throw new Error("result is not JSON serializable");
+      if (new TextEncoder().encode(json).length > config.limit) throw new Error("result exceeds the 512 KB limit");
+      await reply(JSON.parse(json), null);
+    }} catch (error) {{ await reply(null, String(error?.message || error), String(error?.name || "")); }}
+  }})();
+}})({config});"#
+    ))
+}
+
+fn evaluation_script(
+    request_id: &str,
+    script: Option<&str>,
+    method: Option<&str>,
+    parameters: serde_json::Value,
+) -> Result<String, String> {
+    let execution = if method.is_some() {
+        "await window.__mycmux[config.method](config.parameters)"
+    } else {
+        "await Object.getPrototypeOf(async function(){}).constructor(config.script)()"
+    };
+    evaluation_source(request_id, script, method, parameters, execution)
+}
+
+fn eval_script(request_id: &str, script: &str) -> Result<String, String> {
+    validate_eval_script(script)?;
+    evaluation_script(request_id, Some(script), None, serde_json::Value::Null)
+}
+
+fn direct_eval_script(request_id: &str, script: &str) -> Result<String, String> {
+    validate_eval_script(script)?;
+    let execution = format!("await (async () => {{\n{script}\n}})()");
+    evaluation_source(request_id, None, None, serde_json::Value::Null, &execution)
+}
+
+async fn helper_result(
+    caller: &Webview,
+    app: &AppHandle,
+    tab_id: &str,
+    make_script: impl FnOnce(&str) -> Result<String, String>,
+) -> Result<serde_json::Value, String> {
+    let mut value = evaluate_webpane(caller, app, tab_id, None, None, make_script).await?;
+    let result = value
+        .as_object_mut()
+        .ok_or_else(|| "web.eval failed: expected an object".to_string())?;
+    result.insert("tabId".to_string(), serde_json::json!(tab_id));
+    Ok(value)
+}
+
+#[tauri::command]
+pub async fn webpane_navigate(
+    caller: Webview,
+    app: AppHandle,
+    tab_id: String,
+    url: Option<String>,
+    action: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let webview = command_webview(&caller, &app, &tab_id, "web.navigate")?;
+    match (url, action.as_deref()) {
+        (Some(url), None) => {
+            let parsed = url
+                .parse::<Url>()
+                .map_err(|error| format!("web.navigate invalid URL: {error}"))?;
+            let preset = preset_for_label(webview.label())
+                .ok_or_else(|| "web.navigate unknown preset".to_string())?;
+            if !preset_keeps_url_inside_pane(preset, &parsed) {
+                return Err("web.navigate URL is outside the preset's allowed hosts".to_string());
+            }
+            webview
+                .navigate(parsed)
+                .map_err(|error| format!("web.navigate failed: {error}"))?;
+        }
+        (None, Some("reload")) => webview
+            .reload()
+            .map_err(|error| format!("web.navigate failed: {error}"))?,
+        (None, Some("back")) => webview
+            .eval("history.back()")
+            .map_err(|error| format!("web.navigate failed: {error}"))?,
+        (None, Some("forward")) => webview
+            .eval("history.forward()")
+            .map_err(|error| format!("web.navigate failed: {error}"))?,
+        _ => return Err("web.navigate requires url or action back/forward/reload".to_string()),
+    }
+    Ok(serde_json::json!({ "tabId": tab_id, "accepted": true }))
+}
+
+fn validate_snapshot_max_bytes(max_bytes: usize) -> Result<(), String> {
+    if !(4096..=WEB_PANE_MAX_READ_BYTES).contains(&max_bytes) {
+        return Err("web.snapshot maxBytes must be between 4096 and 524288".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn webpane_snapshot(
+    caller: Webview,
+    app: AppHandle,
+    tab_id: String,
+    mode: Option<String>,
+    max_bytes: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let mode = mode.as_deref().unwrap_or("ax");
+    if !matches!(mode, "ax" | "text") {
+        return Err("web.snapshot mode must be ax or text".to_string());
+    }
+    let max_bytes = max_bytes.unwrap_or(262144);
+    validate_snapshot_max_bytes(max_bytes)?;
+    helper_result(&caller, &app, &tab_id, |id| {
+        snapshot_script(
+            id,
+            serde_json::json!({ "mode": mode, "maxBytes": max_bytes }),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn webpane_find(
+    caller: Webview,
+    app: AppHandle,
+    tab_id: String,
+    query: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    helper_result(&caller, &app, &tab_id, |id| find_script(id, query)).await
+}
+
+#[tauri::command]
+pub async fn webpane_click(
+    caller: Webview,
+    app: AppHandle,
+    tab_id: String,
+    target: serde_json::Value,
+    options: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    helper_result(&caller, &app, &tab_id, |id| click_script(id, serde_json::json!({ "target": target, "options": options.unwrap_or(serde_json::json!({})) }))).await
+}
+
+#[tauri::command]
+pub async fn webpane_type(
+    caller: Webview,
+    app: AppHandle,
+    tab_id: String,
+    target: serde_json::Value,
+    text: String,
+    mode: Option<String>,
+    submit: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let mode = mode.as_deref().unwrap_or("replace");
+    if !matches!(mode, "replace" | "append") {
+        return Err("web.type mode must be replace or append".to_string());
+    }
+    helper_result(&caller, &app, &tab_id, |id| type_script(id, serde_json::json!({ "target": target, "text": text, "mode": mode, "submit": submit.unwrap_or(false) }))).await
+}
+
+#[tauri::command]
+pub async fn webpane_key(
+    caller: Webview,
+    app: AppHandle,
+    tab_id: String,
+    key: String,
+    code: Option<String>,
+    modifiers: Option<Vec<String>>,
+    target: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    helper_result(&caller, &app, &tab_id, |id| {
+        key_script(
+            id,
+            serde_json::json!({
+                "key": key, "code": code, "modifiers": modifiers.unwrap_or_default(),
+                "ref": target.and_then(|target| target.get("ref").cloned())
+            }),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn webpane_scroll(
+    caller: Webview,
+    app: AppHandle,
+    tab_id: String,
+    target: Option<serde_json::Value>,
+    delta_x: Option<f64>,
+    delta_y: Option<f64>,
+) -> Result<serde_json::Value, String> {
+    helper_result(&caller, &app, &tab_id, |id| scroll_script(id, serde_json::json!({
+        "target": target.unwrap_or(serde_json::json!({})), "deltaX": delta_x.unwrap_or(0.0), "deltaY": delta_y.unwrap_or(600.0)
+    }))).await
+}
+
+const WEB_PANE_MAX_UPLOAD_BYTES: u64 = 25 * 1024 * 1024;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadFile {
+    name: String,
+    size: u64,
+    data: String,
+}
+
+fn upload_files(paths: &[String]) -> Result<Vec<UploadFile>, String> {
+    if paths.is_empty() {
+        return Err("web.upload paths must not be empty".to_string());
+    }
+    let mut total = 0_u64;
+    // Validate the entire selection before reading or sending any file.
+    for path in paths {
+        let metadata = std::fs::metadata(path)
+            .map_err(|error| format!("web.upload cannot read {path}: {error}"))?;
+        if !metadata.is_file() {
+            return Err(format!("web.upload path is not a file: {path}"));
+        }
+        total = total
+            .checked_add(metadata.len())
+            .ok_or_else(|| "web.upload size overflow".to_string())?;
+        if total > WEB_PANE_MAX_UPLOAD_BYTES {
+            return Err("web.upload files exceed the 25 MB limit".to_string());
+        }
+    }
+    let mut files = Vec::new();
+    total = 0;
+    for path in paths {
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)
+            .map_err(|error| format!("web.upload cannot open {path}: {error}"))?
+            .take(WEB_PANE_MAX_UPLOAD_BYTES - total + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("web.upload cannot read {path}: {error}"))?;
+        total += bytes.len() as u64;
+        if total > WEB_PANE_MAX_UPLOAD_BYTES {
+            return Err("web.upload files exceed the 25 MB limit".to_string());
+        }
+        let name = Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "web.upload filename is not valid UTF-8".to_string())?
+            .to_string();
+        files.push(UploadFile {
+            name,
+            size: bytes.len() as u64,
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        });
+    }
+    Ok(files)
+}
+
+#[tauri::command]
+pub async fn webpane_upload(
+    caller: Webview,
+    app: AppHandle,
+    tab_id: String,
+    target: serde_json::Value,
+    paths: Vec<String>,
+    mode: Option<String>,
+) -> Result<serde_json::Value, String> {
+    command_webview(&caller, &app, &tab_id, "web.upload")?;
+    let mode = mode.unwrap_or_else(|| "input".to_string());
+    if !matches!(mode.as_str(), "input" | "drop") {
+        return Err("web.upload mode must be input or drop".to_string());
+    }
+    let files = tauri::async_runtime::spawn_blocking(move || upload_files(&paths))
+        .await
+        .map_err(|error| format!("web.upload failed: {error}"))??;
+    helper_result(&caller, &app, &tab_id, |id| {
+        upload_script(
+            id,
+            serde_json::json!({ "target": target, "files": files, "mode": mode }),
+        )
+    })
+    .await
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadRecord {
+    #[serde(skip)]
+    tab_id: String,
+    url: String,
+    path: Option<PathBuf>,
+    success: bool,
+    finished_at: String,
+}
+#[derive(Default)]
+struct DownloadState {
+    records: Vec<DownloadRecord>,
+    reserved: HashMap<PathBuf, String>,
+}
+static WEB_PANE_DOWNLOADS: OnceLock<Mutex<DownloadState>> = OnceLock::new();
+
+fn download_state() -> &'static Mutex<DownloadState> {
+    WEB_PANE_DOWNLOADS.get_or_init(|| Mutex::new(DownloadState::default()))
+}
+
+fn sanitized_download_name(name: &str) -> String {
+    let leaf = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let mut name: String = leaf
+        .chars()
+        .map(|c| {
+            if c.is_control() || "<>:\"/\\|?*".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    name = name.trim_matches([' ', '.']).to_string();
+    if name.is_empty() {
+        name = "download".to_string();
+    }
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    if matches!(
+        stem.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    ) {
+        name.insert(0, '_');
+    }
+    while name.len() > 180 {
+        name.pop();
+    }
+    name.truncate(name.trim_end_matches([' ', '.']).len());
+    name
+}
+
+fn download_reservation_key(path: &Path) -> PathBuf {
+    if cfg!(target_os = "windows") {
+        PathBuf::from(path.to_string_lossy().to_lowercase())
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn reserve_download_path(
+    directory: &Path,
+    name: &str,
+    tab_id: &str,
+    state: &mut DownloadState,
+) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(directory)
+        .map_err(|error| format!("web.downloads cannot create directory: {error}"))?;
+    let name = sanitized_download_name(name);
+    let stem = Path::new(&name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("download");
+    let extension = Path::new(&name).extension().and_then(|s| s.to_str());
+    let mut number = 1_u64;
+    loop {
+        let filename = if number == 1 {
+            name.clone()
+        } else if let Some(extension) = extension {
+            format!("{stem}-{number}.{extension}")
+        } else {
+            format!("{stem}-{number}")
+        };
+        let path = directory.join(filename);
+        let key = download_reservation_key(&path);
+        if !path.exists() && !state.reserved.contains_key(&key) {
+            state.reserved.insert(key, tab_id.to_string());
+            return Ok(path);
+        }
+        number += 1;
+    }
+}
+
+fn handle_download(tab_id: &str, preset: WebPanePreset, event: DownloadEvent<'_>) -> bool {
+    let Ok(mut state) = download_state().lock() else {
+        return false;
+    };
+    match event {
+        DownloadEvent::Requested { destination, .. } => {
+            let Some(home) = dirs::home_dir() else {
+                return false;
+            };
+            let directory = home
+                .join(".mycmux")
+                .join("handoff")
+                .join("web")
+                .join(preset.id)
+                .join("downloads");
+            let name = destination
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("download");
+            match reserve_download_path(&directory, name, tab_id, &mut state) {
+                Ok(path) => {
+                    *destination = path;
+                    true
+                }
+                Err(error) => {
+                    eprintln!("[web-pane] {error}");
+                    false
+                }
+            }
+        }
+        DownloadEvent::Finished { url, path, success } => {
+            if let Some(path) = &path {
+                state.reserved.remove(&download_reservation_key(path));
+            }
+            if open_presets().contains_key(&format!("web-pane-{tab_id}")) {
+                state.records.push(DownloadRecord {
+                    tab_id: tab_id.to_string(),
+                    url: url.to_string(),
+                    path,
+                    success,
+                    finished_at: chrono::Utc::now().to_rfc3339(),
+                });
+            }
+            true
+        }
+        _ => true,
+    }
+}
+
+#[tauri::command]
+pub async fn webpane_downloads(
+    caller: Webview,
+    app: AppHandle,
+    tab_id: String,
+) -> Result<serde_json::Value, String> {
+    command_webview(&caller, &app, &tab_id, "web.downloads")?;
+    let state = download_state()
+        .lock()
+        .map_err(|_| "web.downloads lock poisoned".to_string())?;
+    let downloads: Vec<_> = state
+        .records
+        .iter()
+        .filter(|record| record.tab_id == tab_id)
+        .collect();
+    Ok(serde_json::json!({ "tabId": tab_id, "downloads": downloads }))
+}
+
+#[tauri::command]
+pub async fn webpane_dialogs(
+    caller: Webview,
+    app: AppHandle,
+    tab_id: String,
+    clear: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    helper_result(&caller, &app, &tab_id, |id| {
+        dialogs_script(id, serde_json::json!({ "clear": clear.unwrap_or(false) }))
+    })
+    .await
+}
+
+fn snapshot_script(request_id: &str, parameters: serde_json::Value) -> Result<String, String> {
+    evaluation_script(request_id, None, Some("snapshot"), parameters)
+}
+
+fn find_script(request_id: &str, parameters: serde_json::Value) -> Result<String, String> {
+    evaluation_script(request_id, None, Some("find"), parameters)
+}
+
+fn click_script(request_id: &str, parameters: serde_json::Value) -> Result<String, String> {
+    evaluation_script(request_id, None, Some("click"), parameters)
+}
+
+fn type_script(request_id: &str, parameters: serde_json::Value) -> Result<String, String> {
+    evaluation_script(request_id, None, Some("type"), parameters)
+}
+
+fn key_script(request_id: &str, parameters: serde_json::Value) -> Result<String, String> {
+    evaluation_script(request_id, None, Some("key"), parameters)
+}
+
+fn scroll_script(request_id: &str, parameters: serde_json::Value) -> Result<String, String> {
+    evaluation_script(request_id, None, Some("scroll"), parameters)
+}
+
+fn upload_script(request_id: &str, parameters: serde_json::Value) -> Result<String, String> {
+    evaluation_script(request_id, None, Some("upload"), parameters)
+}
+
+fn dialogs_script(request_id: &str, parameters: serde_json::Value) -> Result<String, String> {
+    evaluation_script(request_id, None, Some("readDialogs"), parameters)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn csp_fallback_timeout_explains_the_missing_reply_and_async_body_syntax() {
+        let started = std::sync::atomic::AtomicBool::new(false);
+        let result: Result<(), String> =
+            evaluation_with_timeout(Duration::from_millis(1), &started, async {
+                retry_csp_failure(
+                    Err(evaluation_failure("blocked".into(), Some("EvalError"))),
+                    || async {
+                        started.store(true, std::sync::atomic::Ordering::Relaxed);
+                        std::future::pending().await
+                    },
+                )
+                .await
+                .map(|_| ())
+                .map_err(|error| error.message)
+            })
+            .await;
+        assert_eq!(result.unwrap_err(), "web.eval: no reply after the CSP fallback (syntax error in the script?); the script must be a valid async function body");
+    }
+
+    #[tokio::test]
+    async fn evaluation_timeout_without_csp_keeps_its_existing_message() {
+        let started = std::sync::atomic::AtomicBool::new(false);
+        let result: Result<(), String> =
+            evaluation_with_timeout(Duration::from_millis(1), &started, std::future::pending())
+                .await;
+        assert_eq!(result.unwrap_err(), "web.eval failed: timed out");
+        started.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            evaluation_with_timeout(Duration::from_secs(1), &started, async { Ok(42) })
+                .await
+                .unwrap(),
+            42
+        );
+        let result: Result<(), String> =
+            evaluation_with_timeout(Duration::from_secs(1), &started, async {
+                Err("specific reply".to_string())
+            })
+            .await;
+        assert_eq!(result.unwrap_err(), "specific reply");
+    }
+
+    #[tokio::test]
+    async fn csp_fallback_retries_only_eval_errors_and_csp_messages() {
+        for (name, message, retry) in [
+            (Some("EvalError"), "blocked", true),
+            (
+                Some("Error"),
+                "Content Security Policy rejected evaluation",
+                true,
+            ),
+            (None, "unsafe-eval is forbidden", true),
+            (Some("SyntaxError"), "Unexpected token", false),
+            (Some("Error"), "ordinary error mentioning EvalError", false),
+        ] {
+            let calls = std::cell::Cell::new(0);
+            let failure = evaluation_failure(message.to_string(), name);
+            let result = retry_csp_failure(Err(failure), || async {
+                calls.set(calls.get() + 1);
+                Ok(serde_json::json!(42))
+            })
+            .await;
+            assert_eq!(calls.get(), i32::from(retry));
+            assert_eq!(result.is_ok(), retry);
+        }
+        let result = retry_csp_failure(Ok(serde_json::json!(7)), || async {
+            panic!("successful evaluation must not run twice");
+        })
+        .await
+        .unwrap();
+        assert_eq!(result, 7);
+        let result = retry_csp_failure(
+            Err(evaluation_failure("blocked".into(), Some("EvalError"))),
+            || async { Err(evaluation_failure("fallback failed".into(), None)) },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(result.message, "fallback failed");
+    }
+
+    #[test]
+    fn eval_script_limits_utf8_bytes_and_embeds_csp_fallback_directly() {
+        let at_limit = "\u{1f600}".repeat(65536);
+        assert!(validate_eval_script(&at_limit).is_ok());
+        assert_eq!(
+            validate_eval_script(&(at_limit + "x")).unwrap_err(),
+            "web.eval script exceeds 256 KB"
+        );
+        let source = "return '__CONFIG__ __EXECUTE__ </script>'; // trailing comment";
+        let direct = direct_eval_script("request", source).unwrap();
+        assert!(direct.contains(&format!("await (async () => {{\n{source}\n}})()")));
+        assert!(!direct.contains(".constructor("));
+        assert!(eval_script("request", "return 42")
+            .unwrap()
+            .contains(".constructor(config.script)"));
+        assert!(!snapshot_script("request", serde_json::json!({}))
+            .unwrap()
+            .contains(".constructor("));
+    }
+
+    #[test]
+    fn snapshot_budget_rejects_below_4096_and_accepts_the_boundary() {
+        assert!(validate_snapshot_max_bytes(4095).is_err());
+        assert!(validate_snapshot_max_bytes(4096).is_ok());
+        assert!(validate_snapshot_max_bytes(524288).is_ok());
+        assert!(validate_snapshot_max_bytes(524289).is_err());
+    }
+
+    #[test]
+    fn download_sanitize_handles_reserved_extensions_and_truncated_suffixes() {
+        for name in ["COM1.txt", "LPT1.txt", "CON.x", "AUX", "NUL", "PRN"] {
+            assert_eq!(sanitized_download_name(name), format!("_{name}"));
+        }
+        for suffix in [".txt", " suffix"] {
+            assert_eq!(
+                sanitized_download_name(&("a".repeat(179) + suffix)),
+                "a".repeat(179)
+            );
+        }
+        let long_reserved = sanitized_download_name(&("CON.".to_string() + &"x".repeat(200)));
+        assert!(long_reserved.starts_with("_CON."));
+        assert!(long_reserved.len() <= 180);
+    }
+
+    #[test]
+    fn download_reservations_fold_case_on_windows() {
+        let directory =
+            std::env::temp_dir().join(format!("mycmux-case-download-{}", uuid::Uuid::new_v4()));
+        let mut state = DownloadState::default();
+        reserve_download_path(&directory, "Report.TXT", "a", &mut state).unwrap();
+        let second = reserve_download_path(&directory, "report.txt", "b", &mut state).unwrap();
+        assert_eq!(
+            second,
+            directory.join(if cfg!(target_os = "windows") {
+                "report-2.txt"
+            } else {
+                "report.txt"
+            })
+        );
+        assert_eq!(state.reserved.len(), 2);
+    }
+
+    #[test]
+    fn evaluation_timeout_stays_below_socket_response_deadline() {
+        assert_eq!(
+            evaluation_timeout(None).unwrap(),
+            Duration::from_millis(5000)
+        );
+        assert_eq!(
+            evaluation_timeout(Some(25000)).unwrap(),
+            Duration::from_millis(25000)
+        );
+        assert_eq!(evaluation_timeout(Some(25001)).unwrap_err(), "web.eval timeoutMs must be <= 25000 (socket response deadline is 30s); poll again instead");
+    }
+
+    #[test]
+    fn browser_url_policy_and_profile_do_not_change_service_policies() {
+        let browser = preset_by_id("browser").unwrap();
+        assert_eq!(browser.profile_dir, "ai");
+        assert!(browser.reader.is_none() && browser.composer.is_none());
+        assert!(browser.signed_out_patterns.is_empty());
+        assert_eq!(
+            initial_webpane_url(browser, None).unwrap().as_str(),
+            "about:blank"
+        );
+        for url in [
+            "https://example.com/x",
+            "http://localhost:8000/a",
+            "http://127.0.0.1:1/",
+        ] {
+            assert!(
+                preset_keeps_url_inside_pane(browser, &url.parse().unwrap()),
+                "{url}"
+            );
+        }
+        for url in [
+            "http://example.com/",
+            "file:///C:/x",
+            "http://localhost.evil/",
+            "about:blank",
+            "data:text/html,x",
+        ] {
+            assert!(
+                !preset_keeps_url_inside_pane(browser, &url.parse().unwrap()),
+                "{url}"
+            );
+        }
+        for id in ["chatgpt", "gemini", "grok", "claude", "notebooklm"] {
+            let preset = preset_by_id(id).unwrap();
+            assert!(preset_keeps_url_inside_pane(
+                preset,
+                &preset.url.parse().unwrap()
+            ));
+            assert!(preset_keeps_url_inside_pane(
+                preset,
+                &"https://accounts.google.com/login".parse().unwrap()
+            ));
+            assert!(!preset_keeps_url_inside_pane(
+                preset,
+                &"https://example.com/".parse().unwrap()
+            ));
+            assert!(!automation_initialization_script(false)
+                .unwrap()
+                .contains("\"browser\":true"));
+        }
+    }
+
+    #[test]
+    fn automation_scripts_json_encode_every_parameter_and_request() {
+        let special = "quote ' \" </script>\n\u{1f600}";
+        let parameters = serde_json::json!({ "text": special, "selector": special });
+        for make in [
+            snapshot_script,
+            find_script,
+            click_script,
+            type_script,
+            key_script,
+            scroll_script,
+            upload_script,
+            dialogs_script,
+        ] {
+            let script = make(special, parameters.clone()).unwrap();
+            assert!(script.contains(&serde_json::to_string(special).unwrap()));
+            assert!(script.contains(&serde_json::to_string(&parameters).unwrap()));
+            assert!(script.contains("webpane_eval_result"));
+        }
+        let script = eval_script(special, special).unwrap();
+        assert!(script.contains(&serde_json::to_string(special).unwrap()));
+    }
+
+    #[test]
+    fn upload_validates_missing_directories_total_size_and_encodes_bytes() {
+        let directory =
+            std::env::temp_dir().join(format!("mycmux-upload-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        assert!(upload_files(&[]).is_err());
+        assert!(upload_files(&[directory.join("missing").to_string_lossy().into_owned()]).is_err());
+        assert!(upload_files(&[directory.to_string_lossy().into_owned()])
+            .unwrap_err()
+            .contains("not a file"));
+        let small = directory.join("input.txt");
+        std::fs::write(&small, b"hello").unwrap();
+        let files = upload_files(&[small.to_string_lossy().into_owned()]).unwrap();
+        assert_eq!(files[0].name, "input.txt");
+        assert_eq!(files[0].size, 5);
+        assert_eq!(files[0].data, "aGVsbG8=");
+        let big = directory.join("big.bin");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(WEB_PANE_MAX_UPLOAD_BYTES + 1)
+            .unwrap();
+        assert!(upload_files(&[big.to_string_lossy().into_owned()])
+            .unwrap_err()
+            .contains("25 MB"));
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(WEB_PANE_MAX_UPLOAD_BYTES)
+            .unwrap();
+        assert!(upload_files(&[
+            big.to_string_lossy().into_owned(),
+            small.to_string_lossy().into_owned()
+        ])
+        .unwrap_err()
+        .contains("25 MB"));
+    }
+
+    #[test]
+    fn download_names_are_sanitized_and_reservations_prevent_collisions() {
+        assert_eq!(
+            sanitized_download_name("../bad:name?.txt "),
+            "bad_name_.txt"
+        );
+        assert_eq!(sanitized_download_name("C:\\path\\CON.txt"), "_CON.txt");
+        assert_eq!(sanitized_download_name("..."), "download");
+        assert!(sanitized_download_name(&"\u{1f600}".repeat(100)).len() <= 180);
+        let directory =
+            std::env::temp_dir().join(format!("mycmux-download-{}", uuid::Uuid::new_v4()));
+        let mut state = DownloadState::default();
+        let first = reserve_download_path(&directory, "../report.txt", "a", &mut state).unwrap();
+        let second = reserve_download_path(&directory, "report.txt", "b", &mut state).unwrap();
+        assert_eq!(first, directory.join("report.txt"));
+        assert_eq!(second, directory.join("report-2.txt"));
+        std::fs::write(directory.join("report-3.txt"), b"existing").unwrap();
+        assert_eq!(
+            reserve_download_path(&directory, "report.txt", "a", &mut state).unwrap(),
+            directory.join("report-4.txt")
+        );
+    }
+
+    #[test]
+    fn generated_automation_scripts_execute_against_a_real_dom_in_node() {
+        use std::io::Write;
+        use std::process::Stdio;
+        let scripts = serde_json::json!({
+            "init": automation_initialization_script(true).unwrap(),
+            "serviceInit": automation_initialization_script(false).unwrap(),
+            "snapshot": snapshot_script("snap", serde_json::json!({})).unwrap(),
+            "click": click_script("click", serde_json::json!({"target": {"selector": "#counter"}})).unwrap(),
+            "type": type_script("type", serde_json::json!({"target": {"selector": "#text"}, "text": "quote ' </script>\n\u{1f600}"})).unwrap(),
+            "textarea": type_script("textarea", serde_json::json!({"target": {"selector": "#multiline"}, "text": "line one\nline two\n\u{1f600}"})).unwrap(),
+            "editable": type_script("editable", serde_json::json!({"target": {"selector": "#edit"}, "text": "content\nnext\n\u{1f600}", "submit": true})).unwrap(),
+            "find": find_script("find", serde_json::json!({"text": "Count", "exact": true})).unwrap(),
+            "bounded": snapshot_script("bounded", serde_json::json!({"mode": "text", "maxBytes": 4096})).unwrap(),
+            "undefined": eval_script("undefined", "await Promise.resolve();").unwrap(),
+            "exception": eval_script("exception", "throw new Error('fixture failure')").unwrap(),
+            "oversized": eval_script("oversized", "return 'x'.repeat(524288)").unwrap(),
+            "dialogs": dialogs_script("dialogs", serde_json::json!({"clear": true})).unwrap(),
+            "upload": upload_script("upload", serde_json::json!({"target":{"selector":"#file"}, "files":[{"name":"fixture.txt","size":5,"data":"aGVsbG8="}]})).unwrap(),
+            "drop": upload_script("drop", serde_json::json!({"target":{"selector":"#drop"}, "mode":"drop", "files":[{"name":"fixture.txt","size":5,"data":"aGVsbG8="}]})).unwrap(),
+            "csp": eval_script("csp", "return 42").unwrap(),
+            "direct": direct_eval_script("direct", "return {value:42,marker:'__CONFIG__ __EXECUTE__'}; // comment").unwrap(),
+            "syntax": eval_script("syntax", "return {").unwrap(),
+        });
+        let fixture = r##"
+const assert = require("node:assert/strict");
+const { JSDOM } = require("jsdom");
+const scripts = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+const dom = new JSDOM('<h2>Heading</h2><button id="counter">Count</button><label for="text">Your text</label><input id="text"><textarea id="multiline"></textarea><a href="/next">Next</a><div id="edit" contenteditable="true"></div><input type="hidden" id="hidden"><input id="email" type="email" value="a@b.test"><input id="number" type="number" value="12"><input id="file" type="file"><div id="drop"></div><p id="long"></p>', { url: "https://example.com/", runScripts: "outside-only" });
+const w = dom.window;
+w.TextEncoder = TextEncoder;
+w.Math.random = () => 0.25;
+w.HTMLElement.prototype.getClientRects = function() { return [this.getBoundingClientRect()]; };
+w.HTMLElement.prototype.getBoundingClientRect = () => ({ x: 1, y: 2, width: 100, height: 20 });
+let scrolls = 0;
+w.HTMLElement.prototype.scrollIntoView = function() { scrolls++; };
+w.document.elementFromPoint = () => w.document.querySelector("#counter");
+const computed = w.getComputedStyle.bind(w);
+w.getComputedStyle = el => { const s = computed(el); return { visibility: s.visibility, opacity: s.opacity || "1" }; };
+let reply, clicks = 0, trusted, inputEvents = [], keys = [];
+const uploadEvents = [], dropEvents = [];
+const fileInput = w.document.querySelector("#file");
+if (!w.DataTransfer) {
+  w.DataTransfer = class {
+    constructor() { this.files = []; this.items = { add: file => this.files.push(file) }; }
+  };
+  let files = [];
+  Object.defineProperty(fileInput, "files", { get: () => files, set: value => { files = value; } });
+}
+if (!w.DragEvent) w.DragEvent = class extends w.Event {
+  constructor(type, init) { super(type, init); this.dataTransfer = init.dataTransfer; }
+};
+for (const type of ["input", "change"]) fileInput.addEventListener(type, () => uploadEvents.push(type));
+for (const type of ["dragenter", "dragover", "drop"]) w.document.querySelector("#drop").addEventListener(type,
+  event => dropEvents.push({ type: event.type, files: Array.from(event.dataTransfer.files, f => ({ name: f.name, size: f.size })) }));
+w.__TAURI_INTERNALS__ = { invoke: async (command, payload) => { assert.equal(command, "webpane_eval_result"); reply = payload; } };
+w.document.querySelector("#counter").addEventListener("click", event => { clicks++; trusted = event.isTrusted; });
+w.document.querySelector("#text").addEventListener("input", event => inputEvents.push(event.data));
+w.document.querySelector("#edit").addEventListener("keydown", event => keys.push(event.key));
+const run = async script => { reply = undefined; w.eval(script); await new Promise(resolve => setImmediate(resolve)); assert.ok(reply); return reply; };
+(async () => {
+  w.eval(scripts.init);
+  const generation = w.__mycmux.generation;
+  assert.equal(generation, 0x40000000);
+  w.Math.random = () => 0.75;
+  w.eval(scripts.init);
+  assert.equal(w.__mycmux.generation, generation);
+  let result = await run(scripts.snapshot);
+  assert.equal(result.requestId, "snap");
+  assert.equal(result.error, null);
+  const nodes = result.value.nodes;
+  assert.ok(nodes.some(n => n.role === "heading" && n.level === 2));
+  assert.ok(nodes.some(n => n.role === "link" && n.name === "Next"));
+  const input = nodes.find(n => n.tag === "input");
+  assert.equal(input.name, "Your text");
+  assert.match(input.ref, /^r\d+$/);
+  assert.equal(w.document.querySelector("#text").getAttribute("data-mycmux-ref"), input.ref);
+  w.location.hash = "#same-document";
+  assert.equal(w.__mycmux.target({target:{ref:input.ref}}).generation, generation);
+  result = await run(scripts.click);
+  assert.equal(result.error, null); assert.equal(clicks, 1); assert.equal(trusted, false);
+  const scrollsBeforePoint = scrolls;
+  w.__mycmux.target({ target: { x: 10, y: 10 } });
+  assert.equal(scrolls, scrollsBeforePoint);
+  assert.throws(() => w.__mycmux.target({ target: { selector: "#hidden" }, editable: true }), /not a writable text field/);
+  result = await run(scripts.type);
+  assert.equal(result.error, null);
+  assert.equal(w.document.querySelector("#text").value, "quote ' </script>\u{1f600}");
+  assert.equal(inputEvents[0], "quote ' </script>\n\u{1f600}");
+  result = await run(scripts.textarea);
+  assert.equal(result.error, null);
+  assert.equal(w.document.querySelector("#multiline").value, "line one\nline two\n\u{1f600}");
+  assert.equal(inputEvents.length, 1);
+  result = await run(scripts.editable);
+  assert.equal(result.error, null);
+  assert.equal(w.document.querySelector("#edit").textContent, "content\nnext\n\u{1f600}");
+  assert.deepEqual(keys, ["Enter"]);
+  for (const [id, text, expected] of [["email", ".more", "a@b.test.more"], ["number", "3", "123"]]) {
+    const target = {selector: "#" + id};
+    assert.equal(w.__mycmux.target({target, focus:true, append:true, editable:true}).appendWithEndKey, true);
+    w.__mycmux.type({target, text, mode:"append"});
+    assert.equal(w.document.getElementById(id).value, expected);
+  }
+  for (const clickCount of [0, 4, -1, 1.5]) {
+    assert.throws(() => w.__mycmux.click({target:{selector:"#counter"}, options:{clickCount}}), /between 1 and 3/);
+  }
+  assert.equal(clicks, 1);
+  w.__mycmux.click({target:{selector:"#counter"}, options:{clickCount:3}});
+  assert.equal(clicks, 4);
+  result = await run(scripts.upload);
+  assert.equal(result.error, null);
+  assert.deepEqual(uploadEvents, ["input", "change"]);
+  assert.equal(fileInput.files[0].name, "fixture.txt");
+  assert.equal(fileInput.files[0].size, 5);
+  const contents = await new Promise((resolve, reject) => {
+    const reader = new w.FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject;
+    reader.readAsText(fileInput.files[0]);
+  });
+  assert.equal(contents, "hello");
+  result = await run(scripts.drop);
+  assert.equal(result.error, null);
+  assert.deepEqual(dropEvents, ["dragenter", "dragover", "drop"].map(type => ({type,files:[{name:"fixture.txt",size:5}]})));
+  assert.throws(() => w.__mycmux.snapshot({maxBytes:4095}), /between 4096 and 524288/);
+  result = await run(scripts.find);
+  assert.equal(result.value.nodes.length, 1);
+  assert.equal(result.value.nodes[0].name, "Count");
+  assert.throws(() => w.__mycmux.target({target: {ref: input.ref}}), /stale ref/);
+  w.document.querySelector("#long").textContent = "\u{1f600}".repeat(1000);
+  result = await run(scripts.bounded);
+  assert.equal(result.value.truncated, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(result.value)) <= 4096);
+  w.document.title = "t".repeat(10000);
+  dom.reconfigure({url:"https://example.com/" + "u".repeat(10000)});
+  assert.ok(Buffer.byteLength(JSON.stringify(w.__mycmux.snapshot({maxBytes:4096}))) <= 4096);
+  const asyncPrototype = w.eval("Object.getPrototypeOf(async function(){})");
+  const constructorDescriptor = Object.getOwnPropertyDescriptor(asyncPrototype, "constructor");
+  Object.defineProperty(asyncPrototype, "constructor", {
+    ...constructorDescriptor, value: function() { throw new w.EvalError("blocked by policy"); }
+  });
+  result = await run(scripts.csp);
+  assert.equal(result.errorName, "EvalError");
+  result = await run(scripts.direct);
+  assert.equal(result.error, null);
+  assert.equal(result.value.value, 42);
+  assert.equal(result.value.marker, "__CONFIG__ __EXECUTE__");
+  assert.equal((await run(scripts.snapshot)).error, null);
+  Object.defineProperty(asyncPrototype, "constructor", constructorDescriptor);
+  assert.equal((await run(scripts.syntax)).errorName, "SyntaxError");
+  assert.equal((await run(scripts.undefined)).value, null);
+  assert.match((await run(scripts.exception)).error, /fixture failure/);
+  assert.match((await run(scripts.oversized)).error, /512 KB/);
+  w.alert("record me");
+  assert.equal((await run(scripts.dialogs)).value.dialogs[0].message, "record me");
+  assert.equal((await run(scripts.dialogs)).value.dialogs.length, 0);
+  dom.window.close();
+  const service = new JSDOM("", {runScripts: "outside-only"});
+  const nativeAlert = service.window.alert;
+  service.window.eval(scripts.serviceInit);
+  assert.equal(service.window.alert, nativeAlert);
+  service.window.close();
+  const fresh = new JSDOM("", { runScripts: "outside-only" });
+  fresh.window.Math.random = () => 0.75;
+  fresh.window.eval(scripts.init);
+  assert.equal(fresh.window.__mycmux.generation, 0xc0000000);
+  assert.notEqual(fresh.window.__mycmux.generation, generation);
+  assert.equal(fresh.window.confirm("confirm"), true);
+  assert.equal(fresh.window.prompt("prompt", "default"), "default");
+  assert.equal(fresh.window.__mycmux.dialogs.length, 2);
+  fresh.window.close();
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"##;
+        let mut child = std::process::Command::new("node")
+            .arg("-e")
+            .arg(fixture)
+            .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(serde_json::to_string(&scripts).unwrap().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn readers_match_measured_services_and_scripts_include_selectors_and_request() {
@@ -1463,7 +2966,7 @@ assert.match(reply.error, /host changed/);
 
     #[test]
     fn preset_registry_is_generic_and_resolves_every_service() {
-        assert_eq!(WEB_PANE_PRESETS.len(), 5);
+        assert_eq!(WEB_PANE_PRESETS.len(), 6);
         for id in ["chatgpt", "gemini", "grok", "claude", "notebooklm"] {
             let preset = preset_by_id(id).unwrap();
             assert!(!preset.label.is_empty(), "{id}");

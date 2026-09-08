@@ -157,6 +157,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
   { target: "web-grok", label: "Grok (Web)", kind: "web", models: NO_CHOICES, efforts: NO_EFFORTS },
   { target: "web-claude", label: "Claude.ai (Web)", kind: "web", models: NO_CHOICES, efforts: NO_EFFORTS },
   { target: "web-notebooklm", label: "NotebookLM (Web)", kind: "web", models: NO_CHOICES, efforts: NO_EFFORTS },
+  { target: "web-browser", label: "Browser (Web)", kind: "web", models: NO_CHOICES, efforts: NO_EFFORTS },
 ];
 
 /** Entries a workspace pane can be opened with (web rows need a webview). */

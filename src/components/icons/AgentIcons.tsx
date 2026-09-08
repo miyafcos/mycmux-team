@@ -125,6 +125,17 @@ export function NotebookLmAgentIcon({ size = 12, ...props }: AgentIconProps) {
   );
 }
 
+export function BrowserAgentIcon({ size = 12, ...props }: AgentIconProps) {
+  return (
+    <svg {...iconProps(size)} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <ellipse cx="12" cy="12" rx="4" ry="9" />
+      <path d="M4 8h16" />
+      <path d="M4 16h16" />
+    </svg>
+  );
+}
+
 export function HybridAgentIcon({ size = 12 }: Pick<AgentIconProps, "size">) {
   const overlapSize = Math.max(1, Math.round(size * 0.68));
   return (
@@ -164,6 +175,8 @@ export function AgentKindIcon({ kind, size = 14, chip = true }: AgentKindIconPro
           ? GeminiAgentIcon
         : kind === "notebooklm"
           ? NotebookLmAgentIcon
+        : kind === "browser"
+          ? BrowserAgentIcon
           : null;
 
   if (!Icon) return null;

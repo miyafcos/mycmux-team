@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Web automation fixture</title>
+<style>
+body { font: 16px sans-serif; margin: 24px; }
+section { margin: 18px 0; }
+#editable, #dropzone { border: 1px solid #777; padding: 12px; min-height: 40px; }
+#scroller { width: 280px; height: 120px; overflow: auto; border: 1px solid; }
+#scroll-content { height: 900px; width: 700px; background: linear-gradient(#eee, #aaf); }
+</style>
+</head>
+<body>
+<h1 id="heading">Web automation fixture</h1>
+<a id="link" href="#heading">Fixture link</a>
+<section><button id="counter">Count</button><output id="count">0</output></section>
+<section>
+<label for="text-input">Text input</label>
+<input id="text-input" type="text">
+<div id="editable" contenteditable="true" aria-label="Editable text"></div>
+</section>
+<section>
+<label for="file-input">File upload</label><input id="file-input" type="file" multiple>
+<div id="dropzone" role="region" aria-label="Drop files" tabindex="0">Drop files here</div>
+</section>
+<section>
+<label for="select">Select value</label>
+<select id="select"><option value="one">One</option><option value="two">Two</option></select>
+</section>
+<section id="scroller" tabindex="0" aria-label="Scroll container"><div id="scroll-content">Scroll content</div></section>
+<button id="alert-button">Show alert</button>
+<a id="download-link" href="data:text/plain;charset=utf-8,web-automation-fixture" download="fixture-download.txt">Download fixture</a>
+<script>
+window.__state = {
+  counter: 0, clicks: [], inputs: [], keys: [], files: [], drops: [], dragEvents: [],
+  text: "", editable: "", selected: "one", scroll: { x: 0, y: 0 }, alerts: 0
+};
+const state = window.__state;
+const byId = id => document.getElementById(id);
+const fileInfo = files => [...files].map(({ name, size }) => ({ name, size }));
+byId("counter").addEventListener("click", event => {
+  state.counter++;
+  state.clicks.push({ isTrusted: event.isTrusted });
+  byId("count").textContent = String(state.counter);
+});
+for (const id of ["text-input", "editable"]) {
+  for (const kind of ["beforeinput", "input"]) byId(id).addEventListener(kind, event => {
+    state.inputs.push({ id, kind, data: event.data, inputType: event.inputType, isTrusted: event.isTrusted });
+    state.text = byId("text-input").value;
+    state.editable = byId("editable").textContent;
+  });
+  byId(id).addEventListener("keydown", event => state.keys.push({ id, key: event.key, isTrusted: event.isTrusted }));
+}
+byId("file-input").addEventListener("change", event => { state.files = fileInfo(event.target.files); });
+for (const kind of ["dragenter", "dragover", "drop"]) byId("dropzone").addEventListener(kind, event => {
+  event.preventDefault();
+  state.dragEvents.push(kind);
+  if (kind === "drop") state.drops = fileInfo(event.dataTransfer.files);
+});
+byId("select").addEventListener("change", event => { state.selected = event.target.value; });
+byId("scroller").addEventListener("scroll", event => { state.scroll = { x: event.target.scrollLeft, y: event.target.scrollTop }; });
+byId("alert-button").addEventListener("click", () => { state.alerts++; alert("Fixture alert"); });
+</script>
+</body>
+</html>

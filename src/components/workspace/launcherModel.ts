@@ -101,6 +101,7 @@ const ICON_KINDS: Record<string, string> = {
   "web-grok": "grok",
   "web-claude": "claude",
   "web-notebooklm": "notebooklm",
+  "web-browser": "browser",
 };
 
 export function shortLabel(entry: AgentCatalogEntry): string {

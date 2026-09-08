@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { AgentKindIcon } from "../../src/components/icons/AgentIcons";
 import { AGENT_CATALOG, getCatalogEntry } from "../../src/lib/agentCatalog";
 import {
   cycleChoice,
@@ -113,6 +116,17 @@ describe("launcher launch rows", () => {
     for (const item of launchItems()) {
       expect(item.iconKind, `${item.target} has no icon kind`).not.toBe("");
     }
+  });
+
+  it("renders a globe for the browser launch row", () => {
+    const browser = launchItems().find((item) => item.target === "web-browser");
+    expect(browser?.iconKind).toBe("browser");
+    const markup = renderToStaticMarkup(createElement(AgentKindIcon, { kind: browser?.iconKind, chip: false }));
+    expect(markup).toContain('viewBox="0 0 24 24"');
+    expect(markup).toContain('stroke="currentColor"');
+    expect(markup.match(/<circle\b/g)).toHaveLength(1);
+    expect(markup.match(/<ellipse\b/g)).toHaveLength(1);
+    expect(markup.match(/<path\b/g)).toHaveLength(2);
   });
 
   it("does not lend Antigravity's own mark to the web Gemini row", () => {

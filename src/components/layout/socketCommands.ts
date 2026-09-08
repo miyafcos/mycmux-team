@@ -26,6 +26,13 @@ import { applyLayoutMutation } from "../../lib/layoutMutation";
 import { collectPaneCloseVictims } from "../../lib/paneCloseImpact";
 import { invoke } from "@tauri-apps/api/core";
 
+import type { WebPaneBounds, WebPaneTarget, WebPaneTargetInfo, WebPaneWaitResult, WebPaneModifier, WebPaneNativeBudget } from "../workspace/webPaneApi";
+
+import {
+  acquireWebPaneCommandLock, cancelWebPaneCommandWaiters, webPaneCommandContext,
+  withWebPaneCommandLock, type WebPaneCommandContext,
+} from "../workspace/webPaneCommandQueue";
+
 type SocketArgs = Record<string, unknown> | null | undefined;
 type SpawnTarget = AgentSessionKind | "shell" | "web";
 export type SpawnMode = "handoff" | "prompt" | "resume" | "shell" | "launch" | "web";
@@ -987,7 +994,14 @@ async function openWebPane(args: SocketArgs) {
   const background = socketOptionalBoolean(args, "background") ?? false;
   if (replaceAnchor && background) throw new Error("web.open cannot combine replaceAnchor and background");
   const url = typeof args?.url === "string" ? args.url : undefined;
-  if (url !== undefined && !url.startsWith("https://")) throw new Error("web.open url must be https");
+  if (url !== undefined) {
+    if (presetId === "browser") {
+      let parsed: URL;
+      try { parsed = new URL(url); } catch { throw new Error("web.open invalid URL"); }
+      if (!(url === "about:blank" || parsed.protocol === "https:" || (parsed.protocol === "http:" && ["localhost", "127.0.0.1"].includes(parsed.hostname))))
+        throw new Error("web.open browser URL must be HTTPS or local HTTP");
+    } else if (!url.startsWith("https://")) throw new Error("web.open url must be https");
+  }
   const { loadWebPanePresets } = await import("../workspace/webPaneApi");
   const preset = (await loadWebPanePresets()).find((candidate) => candidate.id === presetId);
   if (!preset) throw new Error(`unknown web preset: ${presetId}`);
@@ -1087,7 +1101,7 @@ async function listWebPanes() {
   ));
 }
 
-async function focusWebPane(args: SocketArgs) {
+async function focusWebPane(args: SocketArgs, context: WebPaneCommandContext) {
   const tabId = socketArgString(args, "tabId", "tab_id");
   if (!tabId) throw new Error("web.focus requires tabId");
   const { useUiStore, useWorkspaceLayoutStore, useWorkspaceListStore } = await import(
@@ -1095,26 +1109,28 @@ async function focusWebPane(args: SocketArgs) {
   );
   const target = findTabById(useWorkspaceListStore.getState().workspaces, tabId);
   if (!target || target.tab.type !== "web") throw new Error(`web tab not found: ${tabId}`);
-  // web.focus is the explicit foreground-changing socket command. Other socket
-  // activation paths continue to preserve the operator's visible workspace.
-  useWorkspaceListStore.getState().setActiveWorkspace(target.workspace.id);
-  useWorkspaceLayoutStore.getState().setActivePaneTab(
-    target.workspace.id,
-    target.pane.id,
-    target.tab.id,
-  );
-  useUiStore.getState().setActivePaneId(null);
-  return { tabId, workspaceId: target.workspace.id };
+  return withWebPaneCommandLock(tabId, context, () => {
+    // web.focus is the explicit foreground-changing socket command. Other socket
+    // activation paths continue to preserve the operator's visible workspace.
+    useWorkspaceListStore.getState().setActiveWorkspace(target.workspace.id);
+    useWorkspaceLayoutStore.getState().setActivePaneTab(
+      target.workspace.id,
+      target.pane.id,
+      target.tab.id,
+    );
+    useUiStore.getState().setActivePaneId(null);
+    return { tabId, workspaceId: target.workspace.id };
+  });
 }
 
-async function readWebPane(args: SocketArgs) {
+async function resolveWebPaneTarget(args: SocketArgs, command = "web.read") {
   const tabId = socketArgString(args, "tabId", "tab_id");
   const presetId = socketArgString(args, "presetId", "preset_id");
   const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
   const workspaceState = useWorkspaceListStore.getState();
   let target = tabId ? findTabById(workspaceState.workspaces, tabId) : null;
   if (tabId && (!target || target.tab.type !== "web")) {
-    throw new Error(`web tab not found: ${tabId}`);
+    throw new Error(`${command === "web.read" ? "" : command + " "}web tab not found: ${tabId}`);
   }
   if (!tabId) {
     const workspace = webWorkspaceForArgs(
@@ -1122,7 +1138,7 @@ async function readWebPane(args: SocketArgs) {
       workspaceState.workspaces,
       workspaceState.activeWorkspaceId,
     );
-    if (!workspace) throw new Error("web.read found no matching web tab in the target workspace");
+    if (!workspace) throw new Error(`${command} found no matching web tab in the target workspace`);
     const matchingPreset = presetId ?? "chatgpt";
     const candidates = workspace.panes.flatMap((pane) => (
       pane.tabs
@@ -1133,9 +1149,261 @@ async function readWebPane(args: SocketArgs) {
     // available in Phase 1, so the last matching tab is the latest candidate.
     target = candidates[candidates.length - 1] ?? null;
   }
-  if (!target) throw new Error("web.read found no matching web tab in the target workspace");
+  if (!target) throw new Error(`${command} found no matching web tab in the target workspace`);
 
-  return invoke("webpane_read", { tabId: target.tab.id });
+  return target;
+}
+
+async function readWebPane(args: SocketArgs, context: WebPaneCommandContext) {
+  const target = await resolveWebPaneTarget(args);
+  return withWebPaneCommandLock(target.tab.id, context, () => invoke("webpane_read", { tabId: target.tab.id }));
+}
+
+
+function webString(args: SocketArgs, key: string, command: string, required = false, allowEmpty = false): string | undefined {
+  const value = args?.[key];
+  if (value === undefined && !required) return undefined;
+  if (typeof value !== "string" || (!allowEmpty && !value.trim())) throw new Error(command + " " + key + " must be a string" + (allowEmpty ? "" : " with content"));
+  return value;
+}
+function webNumber(args: SocketArgs, key: string, command: string, fallback: number, min = -Infinity, max = Infinity, integer = false): number {
+  const value = args?.[key] === undefined ? fallback : args[key];
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value)))
+    throw new Error(command + " " + key + " must be a finite " + (integer ? "integer" : "number") + " in range");
+  return value;
+}
+function webTimeout(args: SocketArgs, command: string, fallback: number): number {
+  const timeoutMs = webNumber(args, "timeoutMs", command, fallback, 0, Infinity, true);
+  if (timeoutMs > 25000) throw new Error(command + " timeoutMs must be <= 25000 (socket response deadline is 30s); poll again instead");
+  return timeoutMs;
+}
+function webBoolean(args: SocketArgs, key: string, command: string, fallback = false): boolean {
+  if (args?.[key] === undefined) return fallback;
+  if (typeof args[key] !== "boolean") throw new Error(command + " " + key + " must be a boolean");
+  return args[key];
+}
+function webChoice<T extends string>(args: SocketArgs, key: string, command: string, choices: readonly T[], fallback?: T): T {
+  const value = args?.[key] === undefined ? fallback : args[key];
+  if (typeof value !== "string" || !choices.includes(value as T)) throw new Error(command + " " + key + " must be " + choices.join("|"));
+  return value as T;
+}
+function webTarget(args: SocketArgs, command: string, coordinates = false, optional = false): WebPaneTarget | undefined {
+  const ref = webString(args, "ref", command);
+  const selector = webString(args, "selector", command);
+  if (ref !== undefined && !/^r\d+$/.test(ref)) throw new Error(command + " ref must be r followed by digits");
+  const hasPoint = args?.x !== undefined || args?.y !== undefined;
+  const count = Number(ref !== undefined) + Number(selector !== undefined) + Number(hasPoint);
+  if (count === 0 && optional) return undefined;
+  if (count !== 1 || (hasPoint && !coordinates)) throw new Error(command + " requires exactly one of ref, selector" + (coordinates ? ", or x,y" : ""));
+  if (ref !== undefined) return { ref };
+  if (selector !== undefined) return { selector };
+  if (args?.x === undefined || args?.y === undefined) throw new Error(command + " requires both x and y");
+  return { x: webNumber(args, "x", command, 0), y: webNumber(args, "y", command, 0) };
+}
+
+function webGeneration(value: unknown, command: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 0xffffffff)
+    throw new Error(command + " page changed since the target was resolved; snapshot again");
+  return value;
+}
+
+async function automationWebPane(command: string, args: SocketArgs, context: WebPaneCommandContext) {
+  // Validate completely before resolving a tab or dispatching an operation.
+  for (const key of ["tabId", "tab_id", "presetId", "preset_id", "anchorSessionId", "anchor_session_id"])
+    webString(args, key, command);
+  const api = await import("../workspace/webPaneApi");
+  let release = () => {};
+  const getTabId = async () => {
+    const tabId = (await resolveWebPaneTarget(args, command)).tab.id;
+    release = await acquireWebPaneCommandLock(tabId, context);
+    return tabId;
+  };
+  const nativeError = () => new Error(command + " exceeded the 20s native budget");
+  const nativeBudget = (): WebPaneNativeBudget => {
+    // The whole trusted operation, including queueing and target resolution,
+    // has one 20s cap inside the 25s socket deadline; no stage restarts it.
+    const budgetMs = Math.min(context.deadline, context.receivedAt + 20000) - Date.now();
+    if (budgetMs <= 0) throw nativeError();
+    return { budgetMs, command };
+  };
+  const nativeCall = async <T>(dispatch: (budget: WebPaneNativeBudget) => Promise<T>): Promise<T> => {
+    const budget = nativeBudget();
+    let timer!: ReturnType<typeof setTimeout>;
+    try {
+      return await Promise.race([
+        dispatch(budget),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(nativeError()), budget.budgetMs); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const targetInfo = async (tabId: string, target: WebPaneTarget, options = {}) => {
+    const script = "return window.__mycmux.target(" + JSON.stringify({ target, ...options }) + ");";
+    const info = (await api.evalWebPane<WebPaneTargetInfo>(tabId, script, Math.min(5000, nativeBudget().budgetMs), true)).value;
+    webGeneration(info.generation, command);
+    return info;
+  };
+  const run = async () => {
+    switch (command) {
+      case "web.navigate": {
+        const url = webString(args, "url", command);
+        const action = args?.action === undefined ? undefined : webChoice(args, "action", command, ["back", "forward", "reload"] as const);
+        if (Number(url !== undefined) + Number(action !== undefined) !== 1) throw new Error(command + " requires url or action");
+        return api.navigateWebPane(await getTabId(), { ...(url === undefined ? {} : { url }), ...(action === undefined ? {} : { action }) });
+      }
+      case "web.eval": {
+        const script = webString(args, "script", command, true, true)!;
+        if (new TextEncoder().encode(script).length > 256 * 1024) throw new Error("web.eval script exceeds 256 KB");
+        const timeoutMs = webTimeout(args, command, 5000);
+        const tabId = await getTabId();
+        return api.evalWebPane(tabId, script, Math.min(timeoutMs, context.deadline - Date.now()));
+      }
+      case "web.wait": {
+        const state = webChoice(args, "state", command, ["load", "idle", "selector"] as const, "load");
+        const selector = webString(args, "selector", command, state === "selector");
+        if (state !== "selector" && selector !== undefined) throw new Error(command + " selector requires state selector");
+        const timeoutMs = webTimeout(args, command, 15000);
+        const intervalMs = webNumber(args, "intervalMs", command, 250, 1, Number.MAX_SAFE_INTEGER, true);
+        const tabId = await getTabId();
+        const start = context.receivedAt;
+        const waitDeadline = Math.min(context.deadline, start + timeoutMs);
+        let url = "", ready = false;
+        const script = "const config = " + JSON.stringify({ state, selector }) + ";" +
+          'return {url: location.href, ready: config.state === "selector" ? !!document.querySelector(config.selector)' +
+          ': document.readyState === "complete" && (config.state === "load" || (window.__mycmux && Date.now() - window.__mycmux.lastMutationAt >= 500))};';
+        while (Date.now() < waitDeadline) {
+          const remaining = waitDeadline - Date.now();
+          if (remaining <= 0) break;
+          try {
+            const result = await api.evalWebPane<{ ready: boolean; url: string }>(tabId, script, Math.min(5000, remaining), true);
+            url = result.value.url;
+            ready = Boolean(result.value.ready);
+            if (ready) break;
+          } catch (error) {
+            const message = String(error);
+            if (!message.includes("web pane does not exist:") && !message.includes("web.eval failed: timed out")) throw error;
+          }
+          const delay = Math.min(intervalMs, waitDeadline - Date.now());
+          if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        return { tabId, state, ready, url, elapsedMs: Date.now() - start } satisfies WebPaneWaitResult;
+      }
+      case "web.snapshot": {
+        const mode = webChoice(args, "mode", command, ["ax", "text"] as const, "ax");
+        const maxBytes = webNumber(args, "maxBytes", command, 262144, 4096, 524288, true);
+        return api.snapshotWebPane(await getTabId(), { mode, maxBytes });
+      }
+      case "web.find": {
+        const text = webString(args, "text", command, false, true);
+        const role = webString(args, "role", command);
+        const selector = webString(args, "selector", command);
+        if (text === undefined && role === undefined && selector === undefined) throw new Error(command + " requires text, role, or selector");
+        const exact = webBoolean(args, "exact", command);
+        const limit = webNumber(args, "limit", command, 20, 1, 800, true);
+        return api.findWebPane(await getTabId(), {
+          ...(text === undefined ? {} : { text }), ...(role === undefined ? {} : { role }),
+          ...(selector === undefined ? {} : { selector }), exact, limit,
+        });
+      }
+      case "web.click": {
+        const target = webTarget(args, command, true)!;
+        const button = webChoice(args, "button", command, ["left", "right", "middle"] as const, "left");
+        const clickCount = webNumber(args, "clickCount", command, 1, 1, 3, true);
+        const trusted = webBoolean(args, "trusted", command);
+        const tabId = await getTabId();
+        if (!trusted) return api.clickWebPane(tabId, target, { button, clickCount });
+        const info = await targetInfo(tabId, target);
+        const x = "x" in target ? target.x : info.rect.x + info.rect.width / 2;
+        const y = "y" in target ? target.y : info.rect.y + info.rect.height / 2;
+        await nativeCall(budget => api.inputTrustedWebPane(tabId, { kind: "click", x, y, button, clickCount, expectedGeneration: info.generation }, budget));
+        return { tabId, target: info, trusted: true };
+      }
+      case "web.type": {
+        const target = webTarget(args, command)!;
+        const text = webString(args, "text", command, true, true)!;
+        const mode = webChoice(args, "mode", command, ["replace", "append"] as const, "replace");
+        const submit = webBoolean(args, "submit", command);
+        const trusted = webBoolean(args, "trusted", command);
+        const tabId = await getTabId();
+        if (!trusted) return api.typeWebPane(tabId, target, { text, mode, submit });
+        const info = await targetInfo(tabId, target, { focus: true, select: mode === "replace", append: mode === "append", editable: true });
+        const expectedGeneration = info.generation;
+        if (info.appendWithEndKey) await nativeCall(budget => api.inputTrustedWebPane(tabId, { kind: "key", key: "End", code: "End", expectedGeneration }, budget));
+        await nativeCall(budget => api.inputTrustedWebPane(tabId, { kind: "insertText", text, expectedGeneration }, budget));
+        if (submit) await nativeCall(budget => api.inputTrustedWebPane(tabId, { kind: "key", key: "Enter", code: "Enter", expectedGeneration }, budget));
+        return { tabId, target: info, chars: [...text].length, submitted: submit };
+      }
+      case "web.key": {
+        const key = webString(args, "key", command, true)!;
+        const code = webString(args, "code", command);
+        const ref = webString(args, "ref", command);
+        if (args?.selector !== undefined || args?.x !== undefined || args?.y !== undefined) throw new Error(command + " target accepts only ref");
+        if (ref !== undefined) webTarget({ ref }, command);
+        const raw = args?.modifiers;
+        if (raw !== undefined && (!Array.isArray(raw) || !raw.every(m => ["ctrl", "shift", "alt", "meta"].includes(m))))
+          throw new Error(command + " modifiers must be an array of ctrl|shift|alt|meta");
+        const modifiers = raw as WebPaneModifier[] | undefined;
+        const trusted = webBoolean(args, "trusted", command);
+        const options = { key, ...(code === undefined ? {} : { code }), ...(modifiers === undefined ? {} : { modifiers }) };
+        const tabId = await getTabId();
+        if (!trusted) return api.keyWebPane(tabId, { ...options, ...(ref === undefined ? {} : { target: { ref } }) });
+        const expectedGeneration = ref
+          ? (await targetInfo(tabId, { ref }, { focus: true })).generation
+          : webGeneration((await api.evalWebPane<number>(tabId, "return window.__mycmux.generation;", Math.min(5000, nativeBudget().budgetMs), true)).value, command);
+        await nativeCall(budget => api.inputTrustedWebPane(tabId, { kind: "key", ...options, expectedGeneration }, budget));
+        return { tabId, key, trusted: true };
+      }
+      case "web.scroll": {
+        const target = webTarget(args, command, false, true);
+        const deltaX = webNumber(args, "deltaX", command, 0);
+        const deltaY = webNumber(args, "deltaY", command, 600);
+        return api.scrollWebPane(await getTabId(), { ...(target === undefined ? {} : { target }), deltaX, deltaY });
+      }
+      case "web.upload": {
+        const target = webTarget(args, command)!;
+        const paths = args?.paths;
+        if (!Array.isArray(paths) || paths.length === 0 || !paths.every(path => typeof path === "string" && path.trim()))
+          throw new Error(command + " paths must be a nonempty array of strings");
+        const mode = webChoice(args, "mode", command, ["input", "drop"] as const, "input");
+        const trusted = webBoolean(args, "trusted", command);
+        if (trusted && mode === "drop") throw new Error(command + " trusted supports only mode input");
+        const tabId = await getTabId();
+        if (!trusted) return api.uploadWebPane(tabId, target, paths as string[], mode);
+        const info = await targetInfo(tabId, target);
+        const selector = "ref" in target ? '[data-mycmux-ref="' + target.ref + '"]' : (target as { selector: string }).selector;
+        const result = await nativeCall(budget => api.setWebPaneFileInput(tabId, selector, paths as string[], info.generation, budget));
+        return { ...result, mode, trusted: true };
+      }
+      case "web.screenshot": {
+        const path = webString(args, "path", command);
+        let clip: WebPaneBounds | undefined;
+        if (args?.clip !== undefined) {
+          if (!args.clip || typeof args.clip !== "object" || Array.isArray(args.clip)) throw new Error(command + " clip must be a rectangle");
+          const raw = args.clip as Record<string, unknown>;
+          for (const key of ["x", "y", "width", "height"]) if (raw[key] === undefined) throw new Error(command + " clip requires " + key);
+          clip = {
+            x: webNumber(raw, "x", command, 0, 0), y: webNumber(raw, "y", command, 0, 0),
+            width: webNumber(raw, "width", command, 0, Number.MIN_VALUE),
+            height: webNumber(raw, "height", command, 0, Number.MIN_VALUE),
+          };
+        }
+        const tabId = await getTabId();
+        return nativeCall(budget => api.screenshotWebPane(tabId, { ...(path === undefined ? {} : { path }), ...(clip === undefined ? {} : { clip }) }, budget));
+      }
+      case "web.downloads": return api.downloadsWebPane(await getTabId());
+      case "web.dialogs": {
+        const clear = webBoolean(args, "clear", command);
+        return api.dialogsWebPane(await getTabId(), clear);
+      }
+      default: throw new Error(command + " is not supported");
+    }
+  };
+  try {
+    return await run();
+  } finally {
+    release();
+  }
 }
 
 async function closeWebPane(args: SocketArgs) {
@@ -1145,11 +1413,12 @@ async function closeWebPane(args: SocketArgs) {
   const target = findTabById(useWorkspaceListStore.getState().workspaces, tabId);
   if (!target) throw new Error(`web tab not found: ${tabId}`);
   if (target.tab.type !== "web") throw new Error("web.close requires a web tab");
+  cancelWebPaneCommandWaiters(tabId);
   useWorkspaceLayoutStore.getState().removeTabFromPane(target.workspace.id, target.pane.id, tabId);
   return { tabId, closed: true };
 }
 
-async function pushWebPane(args: SocketArgs) {
+async function pushWebPane(args: SocketArgs, context: WebPaneCommandContext) {
   if (hasSocketArg(args, "files")) {
     throw new Error("web.push files are not supported in this phase");
   }
@@ -1187,11 +1456,12 @@ async function pushWebPane(args: SocketArgs) {
   }
   if (!target) throw new Error(WEB_PUSH_NO_MATCH_ERROR);
 
-  return invoke("webpane_push", {
-    tabId: target.tab.id,
+  const resolvedTabId = target.tab.id;
+  return withWebPaneCommandLock(resolvedTabId, context, () => invoke("webpane_push", {
+    tabId: resolvedTabId,
     ...(hasText ? { text } : {}),
     submit,
-  });
+  }));
 }
 
 async function declareTab(args: SocketArgs) {
@@ -1939,6 +2209,7 @@ async function movePane(args: SocketArgs) {
 }
 
 export async function handleSocketCommand(cmd: string, args: SocketArgs): Promise<unknown> {
+  const context = webPaneCommandContext(cmd);
   const { usePaneMetadataStore, useUiStore, useWorkspaceListStore } = await import(
     "../../stores/workspaceStore"
   );
@@ -2076,13 +2347,27 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
     case "web.list":
       return listWebPanes();
     case "web.focus":
-      return focusWebPane(args);
+      return focusWebPane(args, context);
+    case "web.navigate":
+    case "web.wait":
+    case "web.eval":
+    case "web.snapshot":
+    case "web.find":
+    case "web.click":
+    case "web.type":
+    case "web.key":
+    case "web.scroll":
+    case "web.upload":
+    case "web.screenshot":
+    case "web.downloads":
+    case "web.dialogs":
+      return automationWebPane(cmd, args, context);
     case "web.read":
-      return readWebPane(args);
+      return readWebPane(args, context);
     case "web.close":
       return closeWebPane(args);
     case "web.push":
-      return pushWebPane(args);
+      return pushWebPane(args, context);
     default:
       throw new Error(`Unknown socket command: ${cmd}`);
   }

@@ -285,6 +285,8 @@ def build_parser() -> argparse.ArgumentParser:
     web_read_target.add_argument("--preset")
     web_close = subparsers.add_parser("web-close", help="Close a web pane tab")
     web_close.add_argument("--tab", required=True)
+    web_focus = subparsers.add_parser("web-focus", help="Explicitly bring a web pane tab to the foreground")
+    web_focus.add_argument("--tab", required=True)
 
     subparsers.add_parser("web-list", help="List web pane tabs")
 
@@ -296,6 +298,81 @@ def build_parser() -> argparse.ArgumentParser:
     web_push_target.add_argument("--tab")
     web_push_target.add_argument("--preset")
     web_push.add_argument("--send", action="store_true")
+
+    for command, help_text in (
+        ("navigate", "Navigate a web pane"),
+        ("wait", "Wait for page readiness"),
+        ("eval", "Evaluate an async JavaScript body"),
+        ("snapshot", "Read an AX or text snapshot"),
+        ("find", "Find visible page elements"),
+        ("click", "Click a page element or point"),
+        ("type", "Type into an editable element"),
+        ("key", "Send a page key"),
+        ("scroll", "Scroll a page or element"),
+        ("upload", "Attach local files"),
+        ("screenshot", "Save a web pane screenshot"),
+        ("downloads", "List completed downloads"),
+        ("dialogs", "Read recorded browser dialogs"),
+    ):
+        web = subparsers.add_parser("web-" + command, help=help_text)
+        target = web.add_mutually_exclusive_group()
+        target.add_argument("--tab")
+        target.add_argument("--preset")
+        if command == "navigate":
+            mode = web.add_mutually_exclusive_group(required=True)
+            mode.add_argument("--url")
+            for action in ("back", "forward", "reload"):
+                mode.add_argument("--" + action, action="store_true")
+        if command in ("wait", "eval"):
+            web.add_argument("--timeout-ms", type=int)
+        if command == "wait":
+            web.add_argument("--state", choices=("load", "idle", "selector"), default="load")
+            web.add_argument("--selector")
+            web.add_argument("--interval-ms", type=int)
+        if command == "eval":
+            source = web.add_mutually_exclusive_group(required=True)
+            source.add_argument("--script")
+            source.add_argument("--script-file", type=Path)
+        if command == "snapshot":
+            web.add_argument("--mode", choices=("ax", "text"))
+            web.add_argument("--max-bytes", type=int)
+        if command == "find":
+            for key in ("text", "role", "selector"):
+                web.add_argument("--" + key)
+            web.add_argument("--exact", action="store_true")
+            web.add_argument("--limit", type=int)
+        if command in ("click", "type", "scroll", "upload"):
+            element = web.add_mutually_exclusive_group(required=command != "scroll")
+            element.add_argument("--ref")
+            element.add_argument("--selector")
+            if command == "click":
+                element.add_argument("--x", type=float)
+                web.add_argument("--y", type=float)
+                web.add_argument("--button", choices=("left", "right", "middle"))
+                web.add_argument("--click-count", type=int)
+        if command in ("click", "type", "key", "upload"):
+            web.add_argument("--trusted", action="store_true")
+        if command == "type":
+            source = web.add_mutually_exclusive_group(required=True)
+            source.add_argument("--text")
+            source.add_argument("--text-file", type=Path)
+            web.add_argument("--append", action="store_true")
+            web.add_argument("--submit", action="store_true")
+        if command == "key":
+            web.add_argument("--key", required=True)
+            web.add_argument("--code")
+            web.add_argument("--mod")
+            web.add_argument("--ref")
+        if command == "scroll":
+            web.add_argument("--delta-x", type=float)
+            web.add_argument("--delta-y", type=float)
+        if command == "upload":
+            web.add_argument("--file", type=Path, action="append", required=True)
+            web.add_argument("--drop", action="store_true")
+        if command == "screenshot":
+            web.add_argument("--out", type=Path)
+        if command == "dialogs":
+            web.add_argument("--clear", action="store_true")
     return parser
 
 
@@ -548,8 +625,8 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         args = {"presetId": namespace.preset or "chatgpt"}
         optional_arg(args, "anchorSessionId", os.environ.get("MYCMUX_PANE_SESSION_ID"))
         return "web.read", args
-    if namespace.subcommand == "web-close":
-        return "web.close", {"tabId": namespace.tab}
+    if namespace.subcommand in {"web-close", "web-focus"}:
+        return namespace.subcommand.replace("-", ".", 1), {"tabId": namespace.tab}
     if namespace.subcommand == "web-list":
         return "web.list", {}
     if namespace.subcommand == "web-push":
@@ -570,7 +647,88 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
                 os.environ.get("MYCMUX_PANE_SESSION_ID"),
             )
         return "web.push", args
+
+    if namespace.subcommand in {
+        "web-navigate", "web-wait", "web-eval", "web-snapshot", "web-find",
+        "web-click", "web-type", "web-key", "web-scroll", "web-upload",
+        "web-screenshot", "web-downloads", "web-dialogs",
+    }:
+        return web_automation_request(namespace)
     raise RuntimeError(f"unsupported subcommand: {namespace.subcommand}")
+
+
+
+def web_automation_request(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
+    """Translate the automation CLI into the camelCase socket contract."""
+    command = namespace.subcommand.removeprefix("web-")
+    args: dict[str, Any] = {}
+    if namespace.tab:
+        args["tabId"] = namespace.tab
+    else:
+        args["presetId"] = namespace.preset or "chatgpt"
+        optional_arg(args, "anchorSessionId", os.environ.get("MYCMUX_PANE_SESSION_ID"))
+    for attr, field in (
+        ("url", "url"), ("state", "state"), ("selector", "selector"), ("ref", "ref"),
+        ("timeout_ms", "timeoutMs"), ("interval_ms", "intervalMs"),
+        ("mode", "mode"), ("max_bytes", "maxBytes"), ("role", "role"),
+        ("limit", "limit"), ("x", "x"), ("y", "y"), ("button", "button"),
+        ("click_count", "clickCount"), ("key", "key"), ("code", "code"),
+        ("delta_x", "deltaX"), ("delta_y", "deltaY"),
+    ):
+        optional_arg(args, field, getattr(namespace, attr, None))
+    if command in ("wait", "eval") and namespace.timeout_ms is not None:
+        if namespace.timeout_ms > 25000:
+            raise RuntimeError(f"web.{command} timeoutMs must be <= 25000 (socket response deadline is 30s); poll again instead")
+        if namespace.timeout_ms < 0:
+            raise RuntimeError(f"web.{command} timeoutMs must be nonnegative")
+    if command == "click" and namespace.click_count is not None and not 1 <= namespace.click_count <= 3:
+        raise RuntimeError("web.click clickCount must be between 1 and 3")
+    if command == "snapshot" and namespace.max_bytes is not None and not 4096 <= namespace.max_bytes <= 524288:
+        raise RuntimeError("web.snapshot maxBytes must be between 4096 and 524288")
+    if command == "navigate":
+        for action in ("back", "forward", "reload"):
+            if getattr(namespace, action):
+                args["action"] = action
+    if command == "eval":
+        args["script"] = namespace.script if namespace.script is not None else read_utf8_text(namespace.script_file)
+        if len(args["script"].encode("utf-8")) > 256 * 1024:
+            raise RuntimeError("web.eval script exceeds 256 KB")
+    if command == "type":
+        args["text"] = namespace.text if namespace.text is not None else read_utf8_text(namespace.text_file)
+        args["mode"] = "append" if namespace.append else "replace"
+        args["submit"] = namespace.submit
+    if command == "find":
+        optional_arg(args, "text", namespace.text)
+        args["exact"] = namespace.exact
+        if not any(key in args for key in ("text", "role", "selector")):
+            raise RuntimeError("web-find requires --text, --role, or --selector")
+    if command == "click":
+        if (namespace.x is None) != (namespace.y is None):
+            raise RuntimeError("web-click requires both --x and --y")
+        if namespace.y is not None and (namespace.ref is not None or namespace.selector is not None):
+            raise RuntimeError("web-click coordinates cannot be combined with --ref or --selector")
+    if command == "wait":
+        if namespace.state == "selector" and namespace.selector is None:
+            raise RuntimeError("web-wait --state selector requires --selector")
+        if namespace.state != "selector" and namespace.selector is not None:
+            raise RuntimeError("web-wait --selector requires --state selector")
+    if command == "key" and namespace.mod is not None:
+        modifiers = namespace.mod.split(",")
+        if any(mod not in ("ctrl", "shift", "alt", "meta") for mod in modifiers):
+            raise RuntimeError("web-key --mod requires comma-separated ctrl,shift,alt,meta")
+        args["modifiers"] = modifiers
+    if command == "upload":
+        args["paths"] = [str(path.expanduser().resolve()) for path in namespace.file]
+        args["mode"] = "drop" if namespace.drop else "input"
+        if namespace.drop and namespace.trusted:
+            raise RuntimeError("web-upload --trusted does not support --drop")
+    if command == "screenshot" and namespace.out is not None:
+        args["path"] = str(namespace.out.expanduser().resolve())
+    if command == "dialogs":
+        args["clear"] = namespace.clear
+    if command in ("click", "type", "key", "upload"):
+        args["trusted"] = namespace.trusted
+    return "web." + command, args
 
 
 def send_web_push_with_open(args: dict[str, Any]) -> Any:

@@ -19,6 +19,7 @@ EXPECTED_LAUNCHER_OPTIONS = [
     "Grok (Web)",
     "Claude.ai (Web)",
     "NotebookLM (Web)",
+    "Browser (Web)",
     "Claude Code (resume)",
     "Codex (resume)",
     "claude-codex (resume)",
@@ -41,6 +42,7 @@ EXPECTED_LAUNCHER_COMMANDS = [
     "__web_grok__",
     "__web_claude__",
     "__web_notebooklm__",
+    "__web_browser__",
     "claude --allow-dangerously-skip-permissions --permission-mode auto --resume",
     "codex resume --no-alt-screen",
     "claude-codex --resume",
@@ -88,8 +90,10 @@ def test_launcher_order_matches_current_contract() -> None:
         assert command in EXPECTED_LAUNCHER_COMMANDS
     # Two entries were removed on 2026-08-29 and one added, so the menu went
     # from 16 to 15 and every index after Grok Build shifted by one.
-    assert_contains(launcher, "slash) selected=11", "src-tauri/src/launcher.sh")
+    assert_contains(launcher, "slash) selected=16", "src-tauri/src/launcher.sh")
     assert_contains(launcher, "5) selected=14", "src-tauri/src/launcher.sh")
+    assert_contains(launcher, "6) selected=15", "src-tauri/src/launcher.sh")
+    assert_contains(launcher, "7) selected=16", "src-tauri/src/launcher.sh")
     # The (dangerous) entries were retired on 2026-08-15; they must not come back
     # into the menu, and no launch target may point at them.
     for retired in ("Claude Code (dangerous)", "Codex (dangerous)", "claude-codex (dangerous)"):

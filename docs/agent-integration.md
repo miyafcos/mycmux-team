@@ -40,6 +40,49 @@ python scripts/mycmux_agent_cli.py spawn --target <claude|codex> --prompt-file <
 - effort やモデル指定は CLI フラグでは渡らない — **spec 本文に日本語で明記**する
 - spawn の初期 handoff と、既存タブへの一般入力は別経路。一般入力で生の `send --enter` を自動実行せず、後述の mycmux bridge で画面と canonical state を検証する
 
+#### Web 操作
+
+基本ループは `open --background → wait → snapshot → find/click/type → wait → snapshot/eval → close`。
+`browser` は汎用の AI 用プリセットで、HTTPS と `http://localhost` / `http://127.0.0.1` を開ける。
+省略時のプリセットは従来どおり `chatgpt`。open の結果の `tabId` を後続の `--tab` に渡して対象を固定する。
+
+`web-snapshot --mode ax` の `nodes` は role・name・rect と `ref` を返す。ref は次の snapshot/find またはページ移動まで有効で、古い ref はエラーになる。
+ref は同一文書内で有効（hash 遷移では維持・ページ遷移と reload で無効）。snapshot/find を再実行すると ref は再発行される。
+`web-eval` の script は async 関数本体なので、値の取得には `return`、非同期処理には `await` を使う。
+`web-wait` / `web-eval` の `timeoutMs`（CLIは `--timeout-ms`）は25000 ms以下。ソケット応答期限30秒を超える待機は、結果を確認して再度ポーリングする。
+`web-wait` は期限で `ready:false` を返す。`idle` は読み込み完了かつ DOM 変化から500 ms以上経過した状態。
+
+| CLI | 動き |
+| --- | --- |
+| `web-open --preset browser --url URL --background` | フォーカスを維持して裏タブを開く |
+| `web-list` | Web タブ一覧と presetId / background / active を取得 |
+| `web-navigate --tab ID (--url URL / --back / --forward / --reload)` | URL移動・履歴移動・再読み込み |
+| `web-wait --tab ID --state load/idle/selector [--selector CSS] [--timeout-ms N]` | 読み込み・DOM静止・要素出現を待つ |
+| `web-eval --tab ID (--script JS / --script-file PATH) [--timeout-ms N]` | async 関数本体を評価し JSON を取得（入力256 KB・結果512 KB上限） |
+| `web-snapshot --tab ID [--mode ax/text] [--max-bytes N]` | AX-lite または本文を取得（AXは最大800要素、max-bytesは4096以上） |
+| `web-find --tab ID [--text TEXT] [--role ROLE] [--selector CSS] [--exact] [--limit N]` | 可視要素を検索 |
+| `web-click --tab ID (--ref REF / --selector CSS / --x X --y Y) [--trusted]` | 要素・座標をクリック（button、click-count 1〜3も指定可） |
+| `web-type --tab ID (--ref REF / --selector CSS) (--text TEXT / --text-file PATH) [--append] [--submit] [--trusted]` | 置換・追記し、指定時だけ Enter を送る |
+| `web-key --tab ID --key KEY [--code CODE] [--mod ctrl,shift,alt,meta] [--ref REF] [--trusted]` | キー入力 |
+| `web-scroll --tab ID [--ref REF / --selector CSS] [--delta-x N] [--delta-y N]` | 容器またはページを移動 |
+| `web-upload --tab ID (--ref REF / --selector CSS) --file PATH [--file PATH ...] [--drop] [--trusted]` | ファイル添付（合計25 MB、drop と trusted は併用不可） |
+| `web-screenshot --tab ID [--out PNG]` | PNGを保存し寸法・パスを返す |
+| `web-downloads --tab ID` | ダウンロードの成功状態・パス・時刻を取得 |
+| `web-dialogs --tab ID [--clear]` | browser の alert / confirm / prompt 記録を取得・消去 |
+| `web-read --tab ID` | 既存サービスの会話を取得（reader 対応プリセットのみ） |
+| `web-push --tab ID --text TEXT [--send]` | 既存サービスの composer に入力し、指定時だけ送信 |
+| `web-focus --tab <id>` | 明示時のみ前面化（--tabのみ、--preset不可） |
+| `web-close --tab ID` | Web タブを閉じる（--tabのみ、--preset不可） |
+
+close / focus は `--tab` のみ（`--preset` 不可）。それ以外の操作コマンドの `--tab` は `--preset` に置き換えられる。プリセット指定では呼出元のワークスペース内の最新候補を使う。
+JS の click/type/key/upload は合成イベントで、キーの既定動作は best effort。
+`--trusted` と screenshot は Windows 先行（native レーンとの合流後）。macOS は段2で、未対応時は明示エラーになる。
+browser の confirm は true、prompt は既定値で自動応答する。既存サービスのネイティブダイアログは維持する。
+ダウンロード先は `~/.mycmux/handoff/web/<presetId>/downloads/`、同名ファイルは `-2`、`-3` と採番する。
+
+実機検証は、母艦がテスト機を起動した後に `python scripts/verify_web_automation.py --runtime-dir <test-runtime-dir>` を実行する。
+このディレクトリにはテスト機の `mycmux.port` / `mycmux.token` が必要。Windowsではscreenshotとtrusted操作の検証が必須で、未対応の応答もFAILになる。`--skip-screenshot` は非Windowsのみ指定できる。
+
 ### claude-codex 用 mycmux bridge
 
 Claude harness の `ListAgents` は harness registry、mycmux の `pane.list_all` は workspace / pane / tab / PTY registry を返す。片方に存在するセッションがもう片方へ自動登録されることはない。claude-codex で一覧が不足するときは `mycmux-bridge list` を追加実行し、結果を `source` 付きで併記する。同名の agent や tab を暗黙統合しない。

@@ -161,7 +161,7 @@ def test_every_registered_preset_has_a_launcher_entry_in_both_launchers() -> Non
     """
     rust = read("src-tauri/src/commands/webpane.rs")
     presets = re.findall(r'^\s+id: "(\w+)",$', rust, re.MULTILINE)
-    assert sorted(presets) == ["chatgpt", "claude", "gemini", "grok", "notebooklm"], presets
+    assert sorted(presets) == ["browser", "chatgpt", "claude", "gemini", "grok", "notebooklm"], presets
 
     shell = read("src-tauri/src/launcher.sh")
     ps = read("src-tauri/src/launcher.ps1")
@@ -194,6 +194,7 @@ def test_the_powershell_launch_target_table_points_at_the_right_rows() -> None:
         "web-grok": "Grok (Web)",
         "web-claude": "Claude.ai (Web)",
         "web-notebooklm": "NotebookLM (Web)",
+        "web-browser": "Browser (Web)",
         "claude-resume": "Claude Code (resume)",
         "grok-resume": "Grok Build (resume)",
         "custom": "Custom...",

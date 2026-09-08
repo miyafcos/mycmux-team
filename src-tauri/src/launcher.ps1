@@ -741,6 +741,7 @@ $Options = @(
   New-MycmuxOption "Grok (Web)" @("__web_grok__") $null
   New-MycmuxOption "Claude.ai (Web)" @("__web_claude__") $null
   New-MycmuxOption "NotebookLM (Web)" @("__web_notebooklm__") $null
+  New-MycmuxOption "Browser (Web)" @("__web_browser__") $null
   New-MycmuxOption "Claude Code (resume)" @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto", "--resume") "claude"
   New-MycmuxOption "Codex (resume)" @("codex", "resume", "--no-alt-screen") "codex"
   New-MycmuxOption "claude-codex (resume)" @("claude-codex", "--resume") "claude-codex"
@@ -819,11 +820,12 @@ $LaunchTargets = @{
   "claude-ai" = $Options[9]
   "web-notebooklm" = $Options[10]
   "notebooklm" = $Options[10]
-  "claude-resume" = $Options[11]
-  "codex-resume" = $Options[12]
-  "claude-codex-resume" = $Options[13]
-  "grok-resume" = $Options[14]
-  "custom" = $Options[15]
+  "web-browser" = $Options[11]
+  "claude-resume" = $Options[12]
+  "codex-resume" = $Options[13]
+  "claude-codex-resume" = $Options[14]
+  "grok-resume" = $Options[15]
+  "custom" = $Options[16]
 }
 
 function Invoke-MycmuxCustomCommand {
@@ -909,6 +911,10 @@ function Invoke-MycmuxOption {
   }
   if ($Option.Command[0] -eq "__web_claude__") {
     Invoke-MycmuxWebTab "claude"
+    return
+  }
+  if ($Option.Command[0] -eq "__web_browser__") {
+    Invoke-MycmuxWebTab "browser"
     return
   }
   if ($Option.Command[0] -eq "__web_notebooklm__") {
