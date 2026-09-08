@@ -192,4 +192,24 @@ describe("cliAccountStore", () => {
     expect(mockedSwitch).toHaveBeenCalledTimes(2);
     expect(useCliAccountStore.getState().busyByProvider).toEqual({ claude: null, codex: null, grok: null });
   });
+
+  it("checks automatic-switch permission inside the queue and releases busy on cancellation", async () => {
+    const pending = deferred<CliSwitchResult>();
+    mockedSwitch.mockImplementationOnce(() => pending.promise);
+    mockedList.mockResolvedValue(snapshot([profile]));
+    usageFetch.mockResolvedValue(undefined);
+    let enabled = true;
+    const guard = vi.fn(() => enabled);
+    const first = useCliAccountStore.getState().switchTo("claude", profile.id);
+    const queued = useCliAccountStore.getState().switchTo("codex", "codex-b", guard);
+    await Promise.resolve();
+    expect(guard).not.toHaveBeenCalled();
+    enabled = false;
+    pending.resolve(switchResult);
+    await first;
+    await expect(queued).resolves.toBeNull();
+    expect(guard).toHaveBeenCalledOnce();
+    expect(mockedSwitch).toHaveBeenCalledOnce();
+    expect(useCliAccountStore.getState().busyByProvider.codex).toBeNull();
+  });
 });

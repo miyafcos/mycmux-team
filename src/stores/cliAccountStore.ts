@@ -39,7 +39,7 @@ export interface CliAccountStoreState {
   lastSwitchResult: CliSwitchResult | null;
   fetch(): Promise<void>;
   capture(provider: CliProvider, label?: string): Promise<CliAccountProfile | null>;
-  switchTo(provider: CliProvider, profileId: string): Promise<CliSwitchResult | null>;
+  switchTo(provider: CliProvider, profileId: string, shouldSwitch?: () => boolean): Promise<CliSwitchResult | null>;
   remove(provider: CliProvider, profileId: string): Promise<boolean>;
   rename(provider: CliProvider, profileId: string, label: string): Promise<boolean>;
   resolveOrphan(orphan: CliOrphanSnapshot, action: CliOrphanAction, label?: string): Promise<boolean>;
@@ -160,11 +160,13 @@ export const useCliAccountStore = create<CliAccountStoreState>((set, get) => {
       }
     },
 
-    switchTo: async (provider, profileId) => {
+    switchTo: async (provider, profileId, shouldSwitch) => {
       if (get().busyByProvider[provider] !== null) return null;
       setBusy(provider, profileId);
       try {
-        const result = await enqueueMutation(() => switchCliAccount(provider, profileId));
+        const result = await enqueueMutation(() => shouldSwitch && !shouldSwitch()
+          ? Promise.resolve(null) : switchCliAccount(provider, profileId));
+        if (!result) return null;
         set({ lastSwitchResult: result });
         const identityMismatch = result.warnings.includes(
           "cli_account.warning.restored_identity_mismatch",

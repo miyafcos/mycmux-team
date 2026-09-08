@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { AccountAutoSwitchSettings } from "../AccountAutoSwitchSettings";
 import { CliAccountsPanel } from "../CliAccountsPanel";
 import type { ProfileUsage, WindowStat } from "../../../lib/ipc";
 import {
@@ -21,6 +22,7 @@ export function UsageTab() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <AccountAutoSwitchSettings />
       <section style={{ display: "grid", gap: "var(--cmux-space-4)" }}>
         <h3 style={{ margin: 0, fontSize: "var(--cmux-font-size-md)" }}>アカウント別の使用量</h3>
         <div style={{ color: "var(--cmux-text-dim)", fontSize: "var(--cmux-font-size-xs)" }}>

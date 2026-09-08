@@ -6,6 +6,8 @@ import { useCliAccountStore } from "../stores/cliAccountStore";
 import { useToastStore } from "../stores/toastStore";
 import { useUsageStore } from "../stores/usageStore";
 
+import { useAccountAutoSwitch } from "./useAccountAutoSwitch";
+
 const USAGE_FOCUS_MIN_INTERVAL_MS = 60_000;
 
 export type AccountsPollTrigger = "mount" | "cli-interval" | "usage-interval" | "focus";
@@ -89,6 +91,7 @@ export function useAccountsPolling(enabled = true): void {
   const usageInFlight = useRef(false);
 
   useLegacyUsageRetirementNotice();
+  useAccountAutoSwitch(enabled);
 
   useEffect(() => {
     if (!enabled) return;
