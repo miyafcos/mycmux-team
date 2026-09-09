@@ -1,7 +1,6 @@
 import { memo } from "react";
 import type { CSSProperties } from "react";
 
-import { agentKindColor } from "../../lib/agentKindColors";
 import { useLiveBriefStore } from "../../stores/liveBriefStore";
 import { useRecentInputStore } from "../../stores/recentInputStore";
 import { dashboardStrings } from "./dashboardStrings";
@@ -76,8 +75,7 @@ function CardRow({ card, selected, open, now, hideWorkspaceBadge, onSelect, onJu
   const stateColor = displayStateColor(state);
   const elapsedMinutes = card.noUpdateMinutes
     ?? (card.lastActivityAt ? Math.max(0, Math.floor((now - card.lastActivityAt) / 60_000)) : null);
-  const agentColor = agentKindColor(card.agentKind === "none" ? undefined : card.agentKind)?.fg
-    ?? "var(--cmux-text-tertiary)";
+  const agentColor = card.mark?.color.fg ?? "var(--cmux-text-tertiary)";
   const tone = state === "needsHuman" ? " is-ask" : state === "error" || state === "noUpdate" ? " is-error" : "";
   const instrumentSid = card.metadata?.agentSessionId ?? card.brief?.agentSessionId ?? card.tab.agentSessionId;
   const instrumentSlots = instrumentSlotsFromTelemetry(card.telemetry, instrumentSid, { compactContext: true });

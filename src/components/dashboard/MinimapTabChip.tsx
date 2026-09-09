@@ -1,4 +1,3 @@
-import { agentKindColor } from "../../lib/agentKindColors";
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { displayStateColor } from "./DashboardCardRow";
 import type { DashboardDisplayState } from "./dashboardModel";
@@ -30,7 +29,7 @@ export function MinimapTabChip({ chip, workspaceId, paneId, selected, open, colu
   const { beginPointerDrag, shouldSuppressClick } = usePaneDragSource();
   const dragItem = usePaneDragStore((state) => state.item);
   const labels = stateLabels(displayState);
-  const agentColor = agentKindColor(chip.agentKind)?.fg;
+  const agentColor = chip.mark?.color.fg;
   const label = chip.label;
   const needsAnswer = displayState === "needsHuman";
   const isBundleSelected = selectedTabIds.has(chip.tabId);
@@ -42,7 +41,7 @@ export function MinimapTabChip({ chip, workspaceId, paneId, selected, open, colu
   const timestamp = chip.declared ? null : chip.lastOutputAt ?? null;
   const ageSentence = timestamp === null ? null : formatLastOutputAge(timestamp, now);
   const age = formatLastOutputAgeCompact(timestamp, now);
-  const agentSegment = chip.declared ? DECLARED_META_LABEL : chip.agentKind;
+  const agentSegment = chip.declared ? DECLARED_META_LABEL : chip.mark?.label;
   const jumpHint = "ダブルクリックで元の画面に戻る";
   const groupHint = "Alt+クリックでグループ選択";
   const beginChipDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {

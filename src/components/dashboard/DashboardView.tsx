@@ -24,6 +24,12 @@ import {
   useDashboardViewStore,
 } from "../../stores/dashboardViewStore";
 import { isDashboardChatDropTarget, type PaneDragItem, usePaneDragStore } from "../../stores/paneDragStore";
+import {
+  stopWebPaneTranscriptPolling,
+  syncWebPaneTranscripts,
+  useWebPaneTranscriptStore,
+  webPaneTranscriptEntry,
+} from "../../stores/webPaneTranscriptStore";
 import { useComposerStore } from "../../stores/composerStore";
 import {
   connectLiveBriefStore,
@@ -527,6 +533,17 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   }, [detailKey, selectedSessionId, visibleKey]);
   // ビューを閉じたら両方止める (張り替えでは止めない)。
   useEffect(() => () => stopEventPolling(), []);
+  // Web 列は livebrief に載らない (PTY を持たない)。開いている列のぶんだけ
+  // ペインの webview を直接読んで会話を取る。
+  const webColumnKey = useMemo(
+    () => chatColumnCards.filter((card) => card.tab.type === "web").map((card) => card.tab.id).join(","),
+    [chatColumnCards],
+  );
+  useEffect(() => {
+    syncWebPaneTranscripts(webColumnKey ? webColumnKey.split(",") : []);
+  }, [webColumnKey]);
+  useEffect(() => () => stopWebPaneTranscriptPolling(), []);
+  const webTranscripts = useWebPaneTranscriptStore((state) => state.byTab);
   // 介入の結果表示は開いている間だけのもの。次に開いたとき前回の結果が残っていると、
   // 古い成功で勝手にカードが送られる (自動選択移動) ので閉じたら捨てる。
   useEffect(() => () => useInterventionFeedbackStore.getState().reset(), []);
@@ -1243,7 +1260,12 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
               }
               const { card } = slot;
               const events = eventsBySession[card.tab.sessionId];
-              const columnEvents = events ?? listEventsBySession[card.tab.sessionId] ?? [];
+              const webTranscript = card.tab.type === "web"
+                ? webPaneTranscriptEntry(webTranscripts, card.tab.id)
+                : null;
+              const columnEvents = webTranscript
+                ? webTranscript.events
+                : events ?? listEventsBySession[card.tab.sessionId] ?? [];
               return <ChatColumn
                 key={card.tab.id}
                 card={card}
@@ -1265,7 +1287,13 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
                 onJump={() => jumpToCard(card)}
                 onReorderKeyDown={(event) => reorderChatColumnFromHeader(index, event)}
                 onPreviewArtifact={viewState.openOrReloadPreviewColumn}
-                detailLoaded={eventsFetchedAtBySession[card.tab.sessionId] != null}
+                webTranscript={webTranscript}
+                onRefreshWebTranscript={webTranscript
+                  ? () => void useWebPaneTranscriptStore.getState().refresh(card.tab.id)
+                  : undefined}
+                detailLoaded={webTranscript
+                  ? webTranscript.fetchedAt != null
+                  : eventsFetchedAtBySession[card.tab.sessionId] != null}
               />;
             })}
             {!chatColumnSlots.length && !closingColumn ? <div className="cmux-dashboard-chat-columns-empty" data-dashboard-chat-columns-empty="true">{dashboardStrings.chatColumnsEmpty}</div> : null}

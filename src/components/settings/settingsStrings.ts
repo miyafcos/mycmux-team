@@ -25,7 +25,9 @@ export const delegationWatchStrings = {
   queueEmpty: "問題は見つかっていません。",
   queueUnknownSubject: "セッション",
   queueContinuing: (elapsed: string, confirmations: number): string => `${elapsed}継続・連続確認 ${confirmations} 回`,
-  additionalQueueItems: (count: number): string => `ほか ${count} 件の要確認があります`,
+  // トーストは単独で読まれるので、どのタブの何が起きたのかを機能名込みで書く。
+  toastItem: (subject: string, kind: string): string => `委譲の見守り: ${subject} — ${kind}`,
+  additionalQueueItems: (count: number): string => `委譲の見守り: ほか ${count} 件のタブが要確認です`,
   kindLabels: {
     ask: "判断待ち",
     rate_limited: "レート制限で待機中",
@@ -131,9 +133,11 @@ export const autoPaneNamingStrings = {
   label: "名前のないタブに AI が名前を付ける",
   hint: "作業内容から短い名前を自動で付けます。あなたが自分で付けた名前は書き換えません (名前をリセットすると、また自動命名の対象に戻ります)。",
   disabledByAiHint: "「AI機能を有効にする」がオフの間は動きません。",
-  toastApplied: (count: number): string => `タブ名を${count}件つけました`,
+  // トーストは 8 秒で消えて履歴が残らないので、どの機能が何をしたかが
+  // 1 行で分かるところまで書く (2026-09-09 宮崎さん指摘「中身がわかりづらい」)。
+  toastApplied: (count: number): string => `タブ名の自動命名: ${count}件のタブに名前をつけました`,
   toastUndo: "元に戻す",
-  toastUndone: "タブ名を元に戻しました",
+  toastUndone: "タブ名の自動命名: つけた名前を元に戻しました",
 } as const;
 
 // キャラ (pet) 設定タブの文言。用語は「ワークスペース > タブ > ペイン」(2026-08-11 確定)。

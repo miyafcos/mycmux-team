@@ -25,7 +25,7 @@ import { dashboardStrings } from "./dashboardStrings";
 import { unresolvedQuestion } from "./liveTimelineModel";
 
 /** 送信できない理由。文言は dashboardStrings 側に持つ。 */
-export type ComposerDisabledReason = "notStarted";
+export type ComposerDisabledReason = "notStarted" | "webPane";
 
 export type ComposerRoute =
   | { kind: "intervention" }
@@ -40,7 +40,11 @@ export type ComposerRoute =
 export function resolveComposerRoute(
   brief: LiveSessionBrief | undefined,
   hasPty: boolean,
+  isWebTab = false,
 ): ComposerRoute {
+  // Web ペインには書き込む PTY が無い。打てるように見せて黙って捨てるより、
+  // 理由を出して止める (入力はページ側で行う)。
+  if (isWebTab) return { kind: "disabled", reason: "webPane" };
   if (brief && brief.telemetryHealth === "live") {
     if (brief.operationalState === "needsHuman") return { kind: "intervention" };
     // 作業中でも打てる: Claude Code / codex の TUI は稼働中の入力をキューに積む。

@@ -172,7 +172,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
     setMenuOpen(false);
   }, [sessionId]);
 
-  const route = card ? resolveComposerRoute(brief, !card.neverStarted) : null;
+  const route = card ? resolveComposerRoute(brief, !card.neverStarted, card.tab.type === "web") : null;
   const hasMentions = tokens.length > 0;
   // A mention batch does not depend on the selected card being sendable.
   const selectedAskActive = Boolean(sessionId && askBySession[sessionId]?.screen);
@@ -181,7 +181,9 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
   const blocked = askBlocksSend || !sessionId || (!hasMentions && (!card || !route || route.kind === "disabled"));
   const disabledNote = askBlocksSend
     ? dashboardStrings.composerBlockedByAskQuestion
-    : !hasMentions && route?.kind === "disabled" ? dashboardStrings.composerNotStarted : null;
+    : !hasMentions && route?.kind === "disabled"
+      ? route.reason === "webPane" ? dashboardStrings.composerWebPane : dashboardStrings.composerNotStarted
+      : null;
   const canSubmit = !blocked && !sending && Boolean(draft.trim());
 
   const hasCurrentQuestionGuard = () => commandKind !== "answer-forward" || Boolean(
@@ -248,8 +250,13 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
     if (useAskQuestionStore.getState().bySession[recipient.sessionId]?.screen) {
       return { state: "blocked", detail: dashboardStrings.composerBlockedByAskQuestion };
     }
-    const targetRoute = resolveComposerRoute(target.brief, !target.neverStarted);
-    if (targetRoute.kind === "disabled") return { state: "failed", detail: dashboardStrings.composerNotStarted };
+    const targetRoute = resolveComposerRoute(target.brief, !target.neverStarted, target.tab.type === "web");
+    if (targetRoute.kind === "disabled") {
+      return {
+        state: "failed",
+        detail: targetRoute.reason === "webPane" ? dashboardStrings.composerWebPane : dashboardStrings.composerNotStarted,
+      };
+    }
     try {
       if (targetRoute.kind === "intervention") {
         const result = await runIntervention(target.brief, { type: "replyText", text });

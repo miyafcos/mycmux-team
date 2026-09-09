@@ -100,9 +100,9 @@ describe("buildMinimapModel", () => {
 
     expect(minimapWorkspaceStrip(model)).toEqual({
       ticks: [
-        { tabId: "tab-a", agentKind: undefined, activity: "working" },
-        { tabId: "tab-b", agentKind: undefined, activity: "waiting" },
-        { tabId: "tab-c", agentKind: undefined, activity: "idle" },
+        { tabId: "tab-a", mark: null, activity: "working" },
+        { tabId: "tab-b", mark: null, activity: "waiting" },
+        { tabId: "tab-c", mark: null, activity: "idle" },
       ],
       tabCount: 3,
       waitingCount: 1,

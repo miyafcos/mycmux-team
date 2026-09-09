@@ -113,6 +113,60 @@ def load(path: Path | None = None) -> list[dict[str, object]]:
     return sorted(merged.values(), key=lambda lane: str(lane.get("last_ts", "")))
 
 
+# A "started" row whose lane was killed never gets a terminal status, so the
+# duplicate guard has to forget it eventually or that brief is blocked forever
+# (found 2026-09-09 by killing a Deep Research consult). oracle calls the same
+# idea --zombie-timeout. Deep Research legitimately runs for tens of minutes, so
+# the cutoff is generous.
+STALE_RUN_SEC = 90 * 60
+
+
+def running_same_prompt(
+    engine: str,
+    digest: str,
+    path: Path | None = None,
+    *,
+    stale_sec: float = STALE_RUN_SEC,
+    now: datetime | None = None,
+) -> dict[str, object] | None:
+    """A lane for this engine that started on the same brief and never finished.
+
+    oracle refuses to start a second identical prompt (`--force` overrides); this
+    is the pane lane's equivalent, so a slow Pro consult is not accidentally
+    started twice and billed twice. Rows older than `stale_sec` are ignored: a
+    killed lane must not block its own brief forever.
+    """
+    started: dict[str, dict[str, object]] = {}
+    for row in load_raw(path):
+        run_id = str(row.get("run_id") or "")
+        if not run_id or str(row.get("engine") or "") != engine:
+            continue
+        if row.get("status") == "started" and str(row.get("prompt_sha") or "") == digest:
+            started[run_id] = row
+        elif row.get("status") not in (None, "started"):
+            started.pop(run_id, None)
+    if not started:
+        return None
+    moment = now or datetime.now(timezone.utc)
+    fresh = [row for row in started.values() if _age_seconds(row, moment) <= stale_sec]
+    if not fresh:
+        return None
+    return sorted(fresh, key=lambda item: str(item.get("ts") or ""))[-1]
+
+
+def _age_seconds(row: dict[str, object], moment: datetime) -> float:
+    """Seconds since the row was written. An unreadable timestamp counts as
+    stale, so a malformed line can never block a send."""
+    raw = str(row.get("ts") or "")
+    try:
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return float("inf")
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return (moment - stamp).total_seconds()
+
+
 def recent(limit: int = 20, path: Path | None = None) -> list[dict[str, object]]:
     lanes = load(path)
     return lanes[-limit:] if limit > 0 else lanes

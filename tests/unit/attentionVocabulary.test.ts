@@ -53,6 +53,7 @@ const functionSamples: Partial<Record<DashboardStringKey, readonly unknown[][]>>
   ],
   nextActionFailed: [["reason"]],
   pathActionFailed: [["reason"]],
+  webTranscriptFetchedAt: [["12:30"]],
 };
 
 function stringLeaves(value: unknown): string[] {

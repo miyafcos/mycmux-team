@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """oracmux — oracle-style consults on ChatGPT / Gemini / Grok web, tuned for mycmux.
 
-    oracmux.py doctor  [--json] [--chrome] [--no-web] [--up] [--switch-to-chat]
+    oracmux.py doctor  [--json] [--deep] [--engines a,b] [--chrome] [--no-web] [--up] [--switch-to-chat]
+    oracmux.py smoke   [--engines a,b] [--with-upload] [--timeout-min N] [--json]
     oracmux.py ask     --engine chatgpt|gemini|grok (-q TEXT | --question-file F) [--file P [P ...]]
                        [--mode M] [--via pane|oracle|cdp] [--tab T] [--close-tab] [--upload P [P ...]]
                        [--timeout-min N] [--dry-run] [--json]
+    oracmux.py followup --engine E (-q TEXT | --question-file F) [--tab T] [--close-tab]
     oracmux.py council (-q TEXT | --question-file F) [--engines a,b,c] [--file P [P ...]] [--via pane|cdp] [--no-html]
     oracmux.py push    --engine E (-q TEXT | --question-file F | --run-dir D) [--file P [P ...]] [--send]
     oracmux.py collect --engine E [--tab T | --url U | --latest] [--via pane|cdp] [--run-dir D]
@@ -24,11 +26,14 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import json
 import math
 import os
+import secrets
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -123,6 +128,38 @@ def read_text_arg(inline: str | None, file: str | None) -> str:
     return inline or ""
 
 
+def prompt_digest(text: str) -> str:
+    """Identity of a brief, for the duplicate guard. Normalised so trailing
+    whitespace and line endings do not make the same question look new."""
+    unified = text.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = "\n".join(line.rstrip() for line in unified.split("\n")).strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def resolve_model(site: dict[str, Any], ns: argparse.Namespace) -> str | None:
+    """Which model the pane lane must prove is selected before it sends.
+
+    Default is the service's expected_model, because a Web pane silently keeps
+    whatever was picked last: on 2026-09-09 Gemini sat on Flash and Grok on Fast
+    while every document said Pro / Expert. `--any-model` opts out.
+    """
+    if getattr(ns, "any_model", False):
+        return None
+    explicit = getattr(ns, "model", None)
+    if explicit:
+        return explicit
+    expected = site.get("expected_model")
+    return str(expected) if isinstance(expected, str) and expected else None
+
+
+def pane_upload_selectors(site: dict[str, Any]) -> list[str]:
+    """File-input selectors the pane lane can attach to, for this service."""
+    value = site.get("upload_input", [])
+    if isinstance(value, str):
+        return [value]
+    return [item for item in value if isinstance(item, str)]
+
+
 def expand_files(patterns: list[str] | None) -> list[Path]:
     found: list[Path] = []
     for pattern in patterns or []:
@@ -162,11 +199,20 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     doctor = sub.add_parser("doctor", help="前提点検 (Chrome / ログイン / 枠 / mycmux Web ペイン)")
+    doctor.add_argument("--deep", action="store_true", help="engines.json のセレクタを実 DOM と突き合わせ、モデル picker のラベルも読む (裏タブを開く・Web ターンは消費しない)")
+    doctor.add_argument("--engines", help="--deep の対象 (カンマ区切り・既定は 3 つ全部)")
     doctor.add_argument("--json", action="store_true")
     doctor.add_argument("--no-web", action="store_true", help="サイトの実プローブを省く")
     doctor.add_argument("--up", action="store_true", help="OracleChrome が落ちていたら上げる")
     doctor.add_argument("--switch-to-chat", action="store_true", help="ChatGPT の Work 枠切れ復旧 (OracleChrome): Chat トグルを押す")
     doctor.add_argument("--chrome", action="store_true", help="OracleChrome 経路 (oracle/cdp) も点検する (既定はペインのみ)")
+
+    smoke = sub.add_parser("smoke", help="実射の生存確認 (Web ターンを消費する。既定は Gemini 1 本)")
+    smoke.add_argument("--engines", default="gemini", help="カンマ区切り (既定: gemini。1 本 = 1 Web ターン)")
+    smoke.add_argument("--with-upload", action="store_true", help="添付経路も撃つ (ファイルの中にしか無いトークンを答えさせる)")
+    smoke.add_argument("--timeout-min", type=positive_float, help=f"1 本あたりの上限 (分・既定 {SMOKE_TIMEOUT_MIN:g})")
+    smoke.add_argument("--keep-tabs", action="store_true", help="(既定と同じ) タブを残す。将来の自動クローズ用に予約")
+    smoke.add_argument("--json", action="store_true")
 
     ask = sub.add_parser("ask", help="1 エンジンに投げて回答を回収する")
     ask.add_argument("--engine", choices=engines_mod.ENGINE_IDS, required=True)
@@ -175,12 +221,26 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--via", choices=("pane", "oracle", "cdp"), help="経路: pane = mycmux の Web ペイン裏タブ (既定・全エンジン) / oracle = steipete oracle CLI (chatgpt・OracleChrome) / cdp = 自前ドライバ (OracleChrome)")
     ask.add_argument("--tab", help="pane 経路: 既存の Web タブ (web-list の tabId) を使う (既定は裏タブを新規に開く)")
     ask.add_argument("--close-tab", action="store_true", help="pane 経路: 回収後にタブを閉じる (既定は残す)")
-    ask.add_argument("--upload", action="extend", nargs="+", default=[], help="実アップロードする添付 (PDF 等・chatgpt + oracle 経路のみ)")
+    ask.add_argument("--upload", action="extend", nargs="+", default=[], help="実アップロードする添付 (PDF 等・pane 経路は 3 エンジンとも可・合計 25MB まで。cdp 経路は不可)")
+    ask.add_argument("--model", help="このモデルが選ばれていることを確認し、違えば picker で選び直してから送る (既定: engines.json の expected_model)")
+    ask.add_argument("--any-model", action="store_true", help="モデルの確認をしない (Web 側の選択のまま送る)")
+    ask.add_argument("--research", action="store_true", help="Deep Research を有効にしてから送る (ChatGPT・Gemini。有効化を確認できなければ送らない)")
+    ask.add_argument("--url", help="この URL でタブを開く (ChatGPT のプロジェクト/フォルダなど)")
     ask.add_argument("--timeout-min", type=positive_float, help="全体タイムアウト (分)")
     ask.add_argument("--run-dir", help="既存 run フォルダを使う (council が使う。brief は再検査される)")
     ask.add_argument("--force", action="store_true", help="oracle セッション走行中でも実行する")
     ask.add_argument("--dry-run", action="store_true", help="brief と request.json を書いて止まる (送らない)")
     ask.add_argument("--json", action="store_true")
+
+    followup = sub.add_parser("followup", help="開いている会話に続けて質問し、回答を回収する (oracle の --browser-follow-up 相当)")
+    followup.add_argument("--engine", choices=engines_mod.ENGINE_IDS, required=True)
+    add_question_arguments(followup, required=False)
+    followup.add_argument("--tab", help="続ける会話のタブ (既定: そのサービスの最新の裏タブ)")
+    followup.add_argument("--run-dir", help="回答を書き足す run フォルダ (既定: 新規)")
+    followup.add_argument("--timeout-min", type=positive_float, help="全体タイムアウト (分)")
+    followup.add_argument("--close-tab", action="store_true", help="回収後にタブを閉じる")
+    followup.add_argument("--dry-run", action="store_true")
+    followup.add_argument("--json", action="store_true")
 
     council = sub.add_parser("council", help="同じ brief を 3 エンジンへ並列に投げ、判定用にまとめる")
     add_question_arguments(council, required=True)
@@ -374,6 +434,56 @@ def resolve_mode(site: dict[str, Any], requested: str | None) -> tuple[str, str]
 # ---------------------------------------------------------------- commands
 
 
+def pane_driver_groups() -> tuple[str, ...]:
+    from oracmux_lib import pane_driver
+
+    return pane_driver.SELFTEST_GROUPS
+
+
+def selected_engines(raw: str | None) -> list[str]:
+    """Comma-separated engine ids, validated against engines.json."""
+    if not raw:
+        return list(engines_mod.ENGINE_IDS)
+    wanted = [item.strip() for item in raw.split(",") if item.strip()]
+    unknown = [item for item in wanted if item not in engines_mod.ENGINE_IDS]
+    if unknown:
+        raise Precondition(f"unknown engine(s): {', '.join(unknown)} (known: {', '.join(engines_mod.ENGINE_IDS)})")
+    return wanted
+
+
+def deep_selftest(data: dict[str, Any], ns: argparse.Namespace, log: Any) -> dict[str, Any]:
+    """Check every engine's selectors against its live DOM. Opens a background tab
+    where one is missing and closes only the tabs it opened (the human's stay)."""
+    from oracmux_lib import pane, pane_driver
+
+    out: dict[str, Any] = {}
+    try:
+        open_tabs = pane.web_list()
+    except pane.PaneError as exc:
+        return {"error": str(exc)[:160]}
+    for engine_id in selected_engines(getattr(ns, "engines", None)):
+        site = engines_mod.engine(data, engine_id)
+        preset = str(site["pane_preset"])
+        existing = [item for item in open_tabs if item.get("presetId") == preset]
+        tab, opened_here = (str(existing[0]["tabId"]), False) if existing else ("", True)
+        try:
+            if opened_here:
+                tab = str(pane.web_open(preset, background=True, anchor=pane.anchor_session())["tabId"])
+                pane_driver.wait_ready(tab, log)
+            out[engine_id] = pane_driver.selftest(site, tab, log)
+        except pane_driver.PaneNotReady as exc:
+            out[engine_id] = {"ok": False, "failures": [f"pane not ready: {str(exc)[:160]}"], "groups": {}, "model_label": ""}
+        except pane.PaneError as exc:
+            out[engine_id] = {"ok": False, "failures": [f"pane error: {str(exc)[:160]}"], "groups": {}, "model_label": ""}
+        finally:
+            if opened_here and tab:
+                try:
+                    pane.web_close(tab)
+                except pane.PaneError:
+                    pass
+    return out
+
+
 def cmd_doctor(ns: argparse.Namespace) -> int:
     """Default = the pane lane: mycmux socket, open Web tabs per service and their
     signed-in / composer state. `--chrome` adds the OracleChrome lanes (oracle / cdp)."""
@@ -398,6 +508,9 @@ def cmd_doctor(ns: argparse.Namespace) -> int:
     else:
         for engine_id in engines_mod.ENGINE_IDS:
             result["engines"][engine_id] = {"ok": False, "status": "mycmux_down", "detail": "socket unavailable", "tabs": []}
+
+    if socket_ok and getattr(ns, "deep", False):
+        result["selftest"] = deep_selftest(data, ns, log)
 
     if ns.chrome or ns.switch_to_chat or ns.up:
         alive, detail = chrome.cdp_alive(endpoint)
@@ -434,10 +547,25 @@ def cmd_doctor(ns: argparse.Namespace) -> int:
             print(f"switch_to_chat: {result['switch_to_chat']}")
         for engine_id, info in result["chrome_engines"].items():
             print(f"{engine_id} (chrome): {info['status']} — {info['detail']} (mode label: {info.get('mode_label') or '-'})")
+    selftest = result.get("selftest") or {}
+    for engine_id, info in selftest.items():
+        if engine_id == "error":
+            continue
+        groups = info.get("groups") or {}
+        counts = " ".join(f"{name}={int((groups.get(name) or {}).get('hits') or 0)}" for name in pane_driver_groups())
+        print(f"{engine_id} (selectors): {'ok' if info.get('ok') else 'DRIFT'} — {counts}")
+        if info.get("model_label"):
+            print(f"    model picker: {info['model_label']}")
+        for failure in info.get("failures", []):
+            print(f"    FAIL {failure}")
+    if selftest.get("error"):
+        print(f"selectors: could not check ({selftest['error']})")
     if ns.json:
         emit_json(result)
     if not socket_ok:
         return EXIT_PRECONDITION
+    if any(engine_id != "error" and not info.get("ok") for engine_id, info in selftest.items()) or selftest.get("error"):
+        return EXIT_UI
     statuses = {info["status"] for info in result["engines"].values()}
     if result["chrome"] is not None:
         statuses |= {info["status"] for info in result["chrome_engines"].values()}
@@ -450,6 +578,97 @@ def cmd_doctor(ns: argparse.Namespace) -> int:
     return EXIT_ERROR
 
 
+SMOKE_TIMEOUT_MIN = 12.0
+
+
+def smoke_one(engine_id: str, ns: argparse.Namespace, log: Any) -> dict[str, Any]:
+    """One real consult through the real CLI, judged by a token the model can only
+    produce by actually answering (and, with --with-upload, by reading the file).
+
+    Deliberately a subprocess of this very script: the point of a smoke is to
+    exercise the path the pytest suite cannot reach — argparse, the brief builder,
+    the mycmux CLI, the socket, the injected JS and the service's own DOM.
+    """
+    nonce = "ORACMUX-" + secrets.token_hex(3).upper()
+    question = f"PING. Reply with exactly the single token {nonce} and nothing else."
+    wanted = [nonce]
+    argv = [sys.executable, str(Path(__file__).resolve()), "ask", "--engine", engine_id,
+            "-q", question, "--timeout-min", str(ns.timeout_min or SMOKE_TIMEOUT_MIN), "--json"]
+    tmpdir: tempfile.TemporaryDirectory[str] | None = None
+    if ns.with_upload:
+        file_nonce = "FILE-" + secrets.token_hex(3).upper()
+        tmpdir = tempfile.TemporaryDirectory(prefix="oracmux-smoke-")
+        probe = Path(tmpdir.name) / "oracmux_smoke_probe.txt"
+        probe.write_text(f"oracmux smoke probe.\nThe secret token in this file is {file_nonce}.\n", encoding="utf-8", newline="\n")
+        question = (f"Read the attached file. Reply with exactly two tokens separated by one space: "
+                    f"first {nonce}, then the secret token inside the file. Nothing else.")
+        wanted.append(file_nonce)
+        argv[argv.index("-q") + 1] = question
+        argv.extend(["--upload", str(probe)])
+    row: dict[str, Any] = {"engine": engine_id, "uploaded": bool(ns.with_upload), "wanted": wanted}
+    try:
+        completed = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                                   errors="replace", env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+    finally:
+        if tmpdir is not None:
+            tmpdir.cleanup()
+    row["exit"] = completed.returncode
+    payload: dict[str, Any] = {}
+    for line in (completed.stdout or "").splitlines():
+        if line.startswith("JSON "):
+            try:
+                payload = json.loads(line[5:])
+            except json.JSONDecodeError:
+                payload = {}
+    row["run_dir"] = payload.get("run_dir", "")
+    row["conversation_url"] = payload.get("conversation_url", "")
+    row["elapsed_sec"] = payload.get("elapsed_sec", 0)
+    answer = ""
+    if row["run_dir"]:
+        answer_path = Path(row["run_dir"]) / engine_id / "answer.md"
+        if answer_path.exists():
+            answer = answer_path.read_text(encoding="utf-8", errors="replace")
+    missing = [token for token in wanted if token not in answer]
+    if completed.returncode == EXIT_NEEDS_HUMAN:
+        row.update(status="needs_human", detail=(completed.stdout or "").strip().splitlines()[-1:] or [""])
+    elif completed.returncode != EXIT_OK:
+        row.update(status="fail", detail=[f"ask exited {completed.returncode}"])
+    elif missing:
+        row.update(status="fail", detail=[f"answer did not contain {missing}"])
+    else:
+        row.update(status="pass", detail=[])
+    if row["run_dir"] and not ns.keep_tabs:
+        row["tab_note"] = "tab kept (close it in the pane if it is noise)"
+    ledger.append({"run_id": Path(row["run_dir"]).name if row["run_dir"] else "-", "engine": engine_id,
+                   "status": "smoke_" + row["status"], "via": "pane", "uploaded": row["uploaded"],
+                   "elapsed_sec": row["elapsed_sec"]})
+    return row
+
+
+def cmd_smoke(ns: argparse.Namespace) -> int:
+    """Real-fire check. The pytest suite stops at the socket, so this is the only
+    thing that proves the whole chain still works end to end (2026-09-09: 116
+    green tests while ChatGPT silently swallowed every send)."""
+    if not paths.in_mycmux():
+        raise Precondition("smoke needs a mycmux terminal (MYCMUX_TERM_PROGRAM=mycmux)")
+    wanted = selected_engines(ns.engines)
+    log(f"smoke: {', '.join(wanted)}{' with an upload' if ns.with_upload else ''} — each one spends a real Web turn")
+    rows = [smoke_one(engine_id, ns, log) for engine_id in wanted]
+    for row in rows:
+        mark = {"pass": "PASS", "fail": "FAIL", "needs_human": "NEEDS HUMAN"}[row["status"]]
+        print(f"{row['engine']}: {mark} ({row['elapsed_sec']}s{', upload' if row['uploaded'] else ''})")
+        for line in row["detail"]:
+            print(f"    {line}")
+        if row["conversation_url"]:
+            print(f"    {row['conversation_url']}")
+    if ns.json:
+        emit_json({"engines": wanted, "with_upload": bool(ns.with_upload), "rows": rows})
+    statuses = {row["status"] for row in rows}
+    if "needs_human" in statuses:
+        return EXIT_NEEDS_HUMAN
+    return EXIT_OK if statuses == {"pass"} else EXIT_ERROR
+
+
 def cmd_ask(ns: argparse.Namespace) -> int:
     data = engines_mod.load()
     site = engines_mod.engine(data, ns.engine)
@@ -457,8 +676,11 @@ def cmd_ask(ns: argparse.Namespace) -> int:
     if via == "oracle" and ns.engine != "chatgpt":
         raise Precondition("the oracle lane is ChatGPT only; gemini/grok use --via pane (default) or --via cdp")
     uploads = expand_files(ns.upload)
-    if uploads and via != "oracle":
-        raise Precondition("--upload is only delivered on the chatgpt + oracle lane; the pane/CDP lanes have no file upload (audit F-09)")
+    if uploads and via == "cdp":
+        raise Precondition("--upload is delivered on the pane lane (default) and the oracle lane; the CDP lane has no file upload (audit F-09)")
+    want_model = resolve_model(site, ns)
+    if uploads and via == "pane" and not pane_upload_selectors(site):
+        raise Precondition(f"--upload has no upload_input selector for {site['label']} in engines.json")
     if ns.tab and via != "pane":
         raise Precondition("--tab belongs to the pane lane")
     mode, mode_note = resolve_mode(site, ns.mode)
@@ -471,7 +693,7 @@ def cmd_ask(ns: argparse.Namespace) -> int:
         brief_path = run_dir / "brief.md"
         slug = run_dir.name
         uploads = uploads or [Path(item) for item in request.get("uploads", []) if isinstance(item, str)]
-        if uploads and via != "oracle":
+        if uploads and via == "cdp":
             uploads = []
         if blocking:
             print_guard_block(blocking)
@@ -530,7 +752,16 @@ def cmd_ask(ns: argparse.Namespace) -> int:
             print(state)
             ledger.append({"run_id": run_dir.name, "engine": ns.engine, "status": "busy" if code == EXIT_BUSY else "precondition", "via": via, "error": state})
             return code
-    ledger.append({"run_id": run_dir.name, "engine": ns.engine, "status": "started", "via": via, "mode": mode, "chars": len(text), "run_dir": str(run_dir)})
+    digest = prompt_digest(text)
+    duplicate = ledger.running_same_prompt(ns.engine, digest)
+    if duplicate is not None and not ns.force:
+        raise Precondition(
+            f"the same brief is already running on {ns.engine}: run {duplicate.get('run_id')} "
+            f"started {duplicate.get('ts')}. Read that run's answer, or pass --force to send it again "
+            "(each send costs a Web turn)."
+        )
+    ledger.append({"run_id": run_dir.name, "engine": ns.engine, "status": "started", "via": via, "mode": mode,
+                   "chars": len(text), "run_dir": str(run_dir), "prompt_sha": digest})
     log(f"lane: {state}")
 
     def progress(phase: str, fields: dict[str, Any]) -> None:
@@ -555,6 +786,10 @@ def cmd_ask(ns: argparse.Namespace) -> int:
             timeouts={"overall_min": ns.timeout_min} if ns.timeout_min else None,
             tab_id=ns.tab,
             close_tab=ns.close_tab,
+            uploads=uploads or None,
+            enforce_model=want_model,
+            research=bool(getattr(ns, "research", False)),
+            open_url=getattr(ns, "url", None),
         )
         answer, citations, turns = result.answer, result.citations, result.turns
         meta.update(
@@ -570,7 +805,12 @@ def cmd_ask(ns: argparse.Namespace) -> int:
             tab_kept_open=result.tab_kept_open,
             page_url=result.page_url,
             tab_id=result.tab_id,
+            model=result.model,
+            model_evidence=result.model_evidence,
+            uploads=result.uploads,
         )
+        if result.model_evidence:
+            log("model evidence: " + result.model_evidence)
         if result.status == "needs_human":
             log("needs human: " + result.error + " (the pane tab is kept open; sign in there and re-run with --tab " + (result.tab_id or "<tabId>") + ")")
     elif via == "cdp":
@@ -691,6 +931,99 @@ def parse_engines(value: str) -> list[str]:
     if unknown or not selected:
         raise Precondition(f"unknown engines: {unknown or 'none selected'}")
     return selected
+
+
+def latest_pane_tab(preset: str) -> str:
+    """The most recently listed Web tab of this service, for a follow-up."""
+    from oracmux_lib import pane
+
+    tabs = [item for item in pane.web_list() if item.get("presetId") == preset]
+    if not tabs:
+        raise Precondition(
+            f"no {preset} pane is open to follow up on. Run `ask` first, or pass --tab."
+        )
+    return str(tabs[-1]["tabId"])
+
+
+def cmd_followup(ns: argparse.Namespace) -> int:
+    """Continue an existing conversation. The turn still costs, but the model
+    and research state come from the conversation, so neither gate re-runs."""
+    if not paths.in_mycmux():
+        raise Precondition("followup runs on the pane lane, which needs a mycmux terminal")
+    data = engines_mod.load()
+    site = engines_mod.engine(data, ns.engine)
+    from oracmux_lib import pane_driver
+
+    built, slug, files, _question = prepare_brief(ns, str(site["label"]), int(site["max_inline_chars"]))
+    hits, blocking = guard_check(built.text, guard_paths(ns, files), ns.allow_markers)
+    run_dir = Path(ns.run_dir).resolve() if ns.run_dir else run_mod.new_run_dir(run_mod.prefixed("followup-", slug))
+    run_dir.mkdir(parents=True, exist_ok=True)
+    eng_dir = run_mod.engine_dir(run_dir, ns.engine)
+    brief_path = run_dir / "followup.md"
+    brief_path.write_text(built.text, encoding="utf-8", newline="\n")
+    write_request(
+        run_dir,
+        {
+            "command": "followup",
+            "engine": ns.engine,
+            "files": [item.as_dict() for item in built.attachments],
+            "guard_paths": [str(path) for path in guard_paths(ns, files)],
+            "uploads": [],
+            "guard_hits": hits,
+            "guard_blocking": blocking,
+            "chars": built.total_chars,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+    if blocking:
+        print_guard_block(blocking)
+        ledger.append({"run_id": run_dir.name, "engine": ns.engine, "status": "guard_blocked", "via": "pane"})
+        return EXIT_GUARD
+    tab = ns.tab or latest_pane_tab(str(site["pane_preset"]))
+    if ns.dry_run:
+        print(f"dry-run: would follow up on tab {tab} with {built.total_chars} chars\n  {brief_path}")
+        if ns.json:
+            emit_json({"run_dir": str(run_dir), "tab": tab, "chars": built.total_chars, "dry_run": True})
+        return EXIT_OK
+    log(f"followup: {site['label']} tab {tab} ({built.total_chars} chars)")
+    ledger.append({"run_id": run_dir.name, "engine": ns.engine, "status": "started", "via": "pane",
+                   "mode": "followup", "chars": built.total_chars, "run_dir": str(run_dir),
+                   "prompt_sha": prompt_digest(built.text)})
+
+    def progress(phase: str, fields: dict[str, Any]) -> None:
+        run_mod.write_progress(eng_dir, phase, engine=ns.engine, **fields)
+
+    result = pane_driver.follow_up(
+        site, tab, brief_path, built.text, log=log, progress=progress,
+        timeouts={"overall_min": ns.timeout_min} if ns.timeout_min else None,
+    )
+    if ns.close_tab and result.tab_id:
+        from oracmux_lib import pane
+
+        try:
+            pane.web_close(result.tab_id)
+        except pane.PaneError:
+            pass
+    meta = {
+        "engine": ns.engine, "via": "pane", "command": "followup", "run_dir": str(run_dir),
+        "status": result.status, "conversation_url": result.conversation_url,
+        "detection": result.detection, "elapsed_sec": result.elapsed_sec,
+        "trace": result.trace, "error": result.error, "tab_id": result.tab_id,
+        "tab_kept_open": result.tab_kept_open, "page_url": result.page_url,
+        "turns_note": result.turns_note,
+    }
+    write_lane(eng_dir, ns.engine, meta, result.answer, result.citations, result.turns)
+    ledger.append({"run_id": run_dir.name, "engine": ns.engine, "status": result.status, "via": "pane",
+                   "mode_actual": "followup", "elapsed_sec": result.elapsed_sec,
+                   "chars": len(result.answer), "url": result.conversation_url, "error": result.error})
+    answer_path = eng_dir / ("answer.md" if result.status == "ok" else "partial.md")
+    print(f"{ns.engine}: status={result.status} elapsed={result.elapsed_sec}s chars={len(result.answer)} url={result.conversation_url}")
+    print(f"  {answer_path}")
+    if result.tab_kept_open:
+        print(f"  tab kept open for the human: {result.conversation_url or result.page_url}")
+    if ns.json:
+        emit_json({"run_dir": str(run_dir), "engine": ns.engine, **{k: v for k, v in meta.items() if k != "trace"}})
+    return result.exit_code
 
 
 def cmd_council(ns: argparse.Namespace) -> int:
@@ -998,7 +1331,9 @@ def cmd_ledger(ns: argparse.Namespace) -> int:
 
 HANDLERS = {
     "doctor": cmd_doctor,
+    "smoke": cmd_smoke,
     "ask": cmd_ask,
+    "followup": cmd_followup,
     "council": cmd_council,
     "push": cmd_push,
     "collect": cmd_collect,

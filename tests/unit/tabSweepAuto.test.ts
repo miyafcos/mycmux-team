@@ -114,7 +114,7 @@ describe("tab sweep auto", () => {
     await createAutoSweepRunner(dependencies({ pushToast })).run();
 
     expect(pushToast).toHaveBeenCalledWith(
-      "掃除するタブはありませんでした",
+      "タブの自動掃除: 閉じる対象のタブはありませんでした",
       "info",
       expect.any(Array),
       undefined,

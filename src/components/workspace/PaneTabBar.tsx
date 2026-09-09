@@ -11,7 +11,7 @@ import type { Pane, PaneTab } from "../../types";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
 import { resolveDisplayAgentKind } from "../../lib/agentDisplayKind";
-import { agentKindColor } from "../../lib/agentKindColors";
+import { resolveTabMark, type TabMark } from "../../lib/tabMark";
 import { crsmCreateHandoff, duplicateAgentSession } from "../../lib/ipc";
 import {
   buildClonedDuplicateSessionPaneOptions,
@@ -495,15 +495,6 @@ const AGENT_KIND_LABELS: Record<string, string> = {
   "hermes": "Hermes",
 };
 
-const AGENT_KIND_BADGE_LABELS: Record<string, string> = {
-  "claude": "Claude",
-  "codex": "Codex",
-  "claude-codex": "Hybrid",
-  "grok": "Grok",
-  "antigravity": "Antigravity",
-  "hermes": "Hermes",
-};
-
 export function resolveActiveAgentLabel(
   agentId: string | undefined,
   agentKind: string | undefined,
@@ -629,11 +620,10 @@ function TabStatusIndicatorDot({ indicator }: { indicator: TabStatusIndicator })
   );
 }
 
-function TabAgentIcon({ kind, indicator }: { kind: string | null | undefined; indicator: TabStatusIndicator }) {
-  if (!agentKindColor(kind)) return null;
+function TabAgentIcon({ mark, indicator }: { mark: TabMark; indicator: TabStatusIndicator }) {
   return (
     <span style={{ position: "relative", display: "inline-flex", width: 14, height: 14, flexShrink: 0 }}>
-      <AgentKindIcon kind={kind} size={14} />
+      <AgentKindIcon kind={mark.kind} size={14} />
       {indicator && (
         <span
           title={TAB_STATUS_INDICATOR_CONFIG[indicator].title}
@@ -806,12 +796,7 @@ function PaneTabListMenu({
     const isTabActive = tab.id === pane.activeTabId;
     const declared = isDeclaredTab(tab);
     const tabMeta = metadataBySession[tab.sessionId];
-    const rowAgentKind = resolveDisplayAgentKind(
-      tabMeta?.agentKind ?? tab.agentKind,
-      tab.commandArgv,
-      tab.launchEnv?.MYCMUX_LAUNCH_TARGET,
-    );
-    const rowKindColor = agentKindColor(rowAgentKind);
+    const rowMark = resolveTabMark(tab, tabMeta?.agentKind);
     const status = deriveDisplayStatus(tabMeta, volatileMetadataBySession[tab.sessionId]);
     const label = getTabDisplayLabel(tab, isTabActive);
     const attention = attentionBySession[tab.sessionId];
@@ -836,7 +821,7 @@ function PaneTabListMenu({
         title={detail ?? label}
         aria-label={[
           label,
-          rowKindColor ? AGENT_KIND_BADGE_LABELS[rowAgentKind ?? ""] : null,
+          rowMark?.label ?? null,
           unreadLabel,
           detail,
         ].filter(Boolean).join(": ")}
@@ -889,18 +874,18 @@ function PaneTabListMenu({
             flexShrink: 0,
           }}
         />
-        {rowKindColor && (
-          <AgentKindIcon kind={rowAgentKind} size={14} />
+        {rowMark && (
+          <AgentKindIcon kind={rowMark.kind} size={14} />
         )}
-        {rowKindColor && (
+        {rowMark && (
           <span
             className="agent-kind-badge"
             style={{
-              "--agent-kind-fg": rowKindColor.fg,
-              "--agent-kind-bg": rowKindColor.bg,
+              "--agent-kind-fg": rowMark.color.fg,
+              "--agent-kind-bg": rowMark.color.bg,
             } as AgentKindStyle}
           >
-            {AGENT_KIND_BADGE_LABELS[rowAgentKind ?? ""]}
+            {rowMark.label}
           </span>
         )}
         <span style={{ flex: 1, minWidth: 0 }}>
@@ -1141,12 +1126,14 @@ export default memo(function PaneTabBar({
     publishIdentityKey ? state.publishedSessionIds[publishIdentityKey] === true : false,
   );
   const activeStatus: EffectiveStatus = deriveDisplayStatus(activeMeta, activeVolatileMeta);
+  const activeMark = activeTab ? resolveTabMark(activeTab, activeMeta?.agentKind) : null;
+  // The agent label names what is *running*, so it stays on the agent kind: a
+  // Web tab has no process and keeps the pane's own agent label.
   const activeAgentKind = resolveDisplayAgentKind(
     activeMeta?.agentKind ?? activeTab?.agentKind,
     activeTab?.commandArgv,
     activeTab?.launchEnv?.MYCMUX_LAUNCH_TARGET,
   );
-  const activeKindColor = agentKindColor(activeAgentKind);
   const activeAgentLabel = activeTab
     ? resolveActiveAgentLabel(
         activeTab.agentId,
@@ -1498,14 +1485,7 @@ export default memo(function PaneTabBar({
     ? previewChipRect.right - previewBarRect.left
     : 0;
   const previewMeta = previewTab ? metadataBySession[previewTab.sessionId] : undefined;
-  const previewAgentKind = previewTab
-    ? resolveDisplayAgentKind(
-        previewMeta?.agentKind ?? previewTab.agentKind,
-        previewTab.commandArgv,
-        previewTab.launchEnv?.MYCMUX_LAUNCH_TARGET,
-      )
-    : undefined;
-  const previewKindColor = agentKindColor(previewAgentKind);
+  const previewMark = previewTab ? resolveTabMark(previewTab, previewMeta?.agentKind) : null;
   const showsInlinePinControl = shouldShowInlinePinControl(renderMode);
   const isActiveTabPinned = activeTab !== undefined && activeTab.id === pane.pinnedTabId;
   const paneActions = (
@@ -1795,12 +1775,7 @@ export default memo(function PaneTabBar({
           const declared = isDeclaredTab(tab);
           const tabMeta = metadataBySession[tab.sessionId];
           const tabVolatileMeta = volatileMetadataBySession[tab.sessionId];
-          const tabAgentKind = resolveDisplayAgentKind(
-            tabMeta?.agentKind ?? tab.agentKind,
-            tab.commandArgv,
-            tab.launchEnv?.MYCMUX_LAUNCH_TARGET,
-          );
-          const tabKindColor = agentKindColor(tabAgentKind);
+          const tabMark = resolveTabMark(tab, tabMeta?.agentKind);
           const tabNotificationCount = tabMeta?.notificationCount ?? 0;
           const tabEffectiveStatus = deriveDisplayStatus(tabMeta, tabVolatileMeta);
           const canonicalAttention = attentionBySession[tab.sessionId];
@@ -1947,10 +1922,10 @@ export default memo(function PaneTabBar({
               title={isChip ? undefined : tabTitle}
               aria-label={[
                 tabTitle,
-                tabKindColor ? AGENT_KIND_BADGE_LABELS[tabAgentKind ?? ""] : null,
+                tabMark?.label ?? null,
                 canonicalUnreadLabel,
               ].filter(Boolean).join(": ")}
-              className={`pane-tab-pill ${isChip ? "pane-tab-chip" : isTabActive ? "is-active" : ""}${isSavepointDropTarget ? " is-savepoint-write-target" : ""}` + (tabKindColor ? " has-agent-kind" : "") + (isTabPinned ? " is-pinned" : "")}
+              className={`pane-tab-pill ${isChip ? "pane-tab-chip" : isTabActive ? "is-active" : ""}${isSavepointDropTarget ? " is-savepoint-write-target" : ""}` + (tabMark ? " has-agent-kind" : "") + (isTabPinned ? " is-pinned" : "")}
               style={isChip ? {
                 display: "flex",
                 alignItems: "center",
@@ -1966,7 +1941,7 @@ export default memo(function PaneTabBar({
                 background: "transparent",
                 borderRight: "none",
                 borderBottom: "2px solid transparent",
-                "--agent-kind-color": tabKindColor?.fg,
+                "--agent-kind-color": tabMark?.color.fg,
               } as AgentKindStyle : {
                 display: "flex",
                 alignItems: "center",
@@ -1982,7 +1957,7 @@ export default memo(function PaneTabBar({
                 borderBottom: "2px solid transparent",
                 flexShrink: 1,
                 transition: "background 0.1s",
-                "--agent-kind-color": tabKindColor?.fg,
+                "--agent-kind-color": tabMark?.color.fg,
               } as AgentKindStyle}
               onPointerEnter={isChip ? () => {
                 clearChipPreviewTimer();
@@ -1998,8 +1973,8 @@ export default memo(function PaneTabBar({
             >
               {isChip ? <>
                 <span className="pane-tab-chip-face">
-                  {tabKindColor ? (
-                    <TabAgentIcon kind={tabAgentKind} indicator={tabStatusIndicator} />
+                  {tabMark ? (
+                    <TabAgentIcon mark={tabMark} indicator={tabStatusIndicator} />
                   ) : (
                     <TabStatusIndicatorDot indicator={tabStatusIndicator} />
                   )}
@@ -2010,8 +1985,8 @@ export default memo(function PaneTabBar({
                   </span>
                 )}
               </> : <>
-              {tabKindColor ? (
-                <TabAgentIcon kind={tabAgentKind} indicator={tabStatusIndicator} />
+              {tabMark ? (
+                <TabAgentIcon mark={tabMark} indicator={tabStatusIndicator} />
               ) : (
                 <TabStatusIndicatorDot indicator={tabStatusIndicator} />
               )}
@@ -2168,7 +2143,7 @@ export default memo(function PaneTabBar({
       {usesCompactTabs && activeTab && (
         <>
           <div
-            className={"pane-tab-pill is-active pane-tab-compact" + (activeKindColor ? " has-agent-kind" : "")}
+            className={"pane-tab-pill is-active pane-tab-compact" + (activeMark ? " has-agent-kind" : "")}
             onPointerDown={(event) => {
               if (!isEditingActiveTab && event.button === MIDDLE_MOUSE_BUTTON) {
                 event.preventDefault();
@@ -2219,7 +2194,7 @@ export default memo(function PaneTabBar({
             title={attentionDetail(activeAttention) ?? activeTabLabel}
             aria-label={[
               activeTabLabel,
-              activeKindColor ? AGENT_KIND_BADGE_LABELS[activeAgentKind ?? ""] : null,
+              activeMark?.label ?? null,
               activeUnreadLabel,
             ].filter(Boolean).join(": ")}
             style={{
@@ -2232,11 +2207,11 @@ export default memo(function PaneTabBar({
               minWidth: 0,
               cursor: isEditingActiveTab ? "text" : activeTabDeclared ? "pointer" : "default",
               borderBottom: activeTabDeclared ? "2px dashed var(--cmux-border)" : "2px solid transparent",
-              "--agent-kind-color": activeKindColor?.fg,
+              "--agent-kind-color": activeMark?.color.fg,
             } as AgentKindStyle}
           >
-            {activeKindColor ? (
-              <TabAgentIcon kind={activeAgentKind} indicator={activeStatusIndicator} />
+            {activeMark ? (
+              <TabAgentIcon mark={activeMark} indicator={activeStatusIndicator} />
             ) : (
               <TabStatusIndicatorDot indicator={activeStatusIndicator} />
             )}
@@ -2385,10 +2360,10 @@ export default memo(function PaneTabBar({
             ...(previewDirection === "right"
               ? { left: previewLeft }
               : { left: previewRight - PANE_TAB_CHIP_PREVIEW_MAX_WIDTH }),
-            "--agent-kind-color": previewKindColor?.fg,
+            "--agent-kind-color": previewMark?.color.fg,
           } as AgentKindStyle}
         >
-          {previewKindColor && <TabAgentIcon kind={previewAgentKind} indicator={null} />}
+          {previewMark && <TabAgentIcon mark={previewMark} indicator={null} />}
           <span style={{
             fontSize: "var(--cmux-font-size-xs)",
             fontFamily: "var(--cmux-font-mono)",

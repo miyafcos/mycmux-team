@@ -298,3 +298,54 @@ def test_update_keeps_explicit_tab_session_id_flag(tmp_path, capsys):
     dispatch = dispatch_ledger.load_dispatches(ledger)[0]
     assert dispatch.status == "close_failed"
     assert not dispatch.closed
+
+
+# --- 便の同一性 (2026-09-09 の幽霊便) ------------------------------------------
+
+
+def test_off_by_seconds_spawn_ts_attaches_to_the_real_run_via_tab_session_id(tmp_path):
+    """2026-09-09 の実害そのもの。
+
+    open 行は spawn_ts キーを持たず、後続行は open 行の ts を名乗る。10 秒ずれた
+    closed を書くと load_result は当たり先を見つけられず、警告も出さずに別の便を
+    作っていた。結果、本物の便は open のまま見張りに lost にされ、幽霊便だけが
+    closed になった。tab session id が一致するなら、ずれた spawn_ts より
+    そちらを信じる。
+    """
+    ledger = tmp_path / "ledger.jsonl"
+    dispatch_ledger.append_record(ledger, {
+        "slug": "260909-followup", "status": "open", "tab_session_id": "pty-real",
+    }, ledger_ts="2026-09-09T09:13:46")
+
+    dispatch_ledger.update_record(
+        ledger, slug="260909-followup", spawn_ts="2026-09-09T09:13:56",
+        tab_session_id="pty-real", status="closed")
+
+    runs = dispatch_ledger.load_dispatches(ledger)
+    assert len(runs) == 1
+    assert runs[0].spawn_ts == "2026-09-09T09:13:46"
+    assert runs[0].status == "closed"
+
+
+def test_unresolvable_spawn_ts_is_refused_instead_of_forking_a_phantom(tmp_path):
+    """当たり先が無いキーは、黙って新しい便を作らずに拒む。"""
+    ledger = tmp_path / "ledger.jsonl"
+    dispatch_ledger.append_record(ledger, {
+        "slug": "260909-followup", "status": "open", "tab_session_id": "pty-real",
+    }, ledger_ts="2026-09-09T09:13:46")
+
+    with pytest.raises(ValueError) as excinfo:
+        dispatch_ledger.update_record(
+            ledger, slug="260909-followup", spawn_ts="2026-09-09T09:13:56",
+            status="closed")
+    assert "2026-09-09T09:13:46" in str(excinfo.value)
+    assert len(dispatch_ledger.load_dispatches(ledger)) == 1
+
+
+def test_a_slug_with_no_rows_yet_still_accepts_a_diff_row(tmp_path):
+    """初回の便や、まだ open 行が無い slug は従来どおり書ける。"""
+    ledger = tmp_path / "ledger.jsonl"
+    dispatch_ledger.update_record(
+        ledger, slug="260909-brand-new", spawn_ts="2026-09-09T10:00:00",
+        tab_session_id="pty-x", status="open")
+    assert dispatch_ledger.load_dispatches(ledger)[0].status == "open"

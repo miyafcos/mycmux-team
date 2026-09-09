@@ -1,6 +1,6 @@
 {
   "_schema": "oracmux-engines-v1",
-  "_measured": "2026-09-07 DOM probe on OracleChrome (Chrome 151, CDP 9222). Selector notes and drift history: references/engine-notes.md",
+  "_measured": "2026-09-07 DOM probe on OracleChrome (Chrome 151, CDP 9222). Selector notes and drift history: references/engine-notes.md / 2026-09-09 実測 (本番ペイン v0.67.2): chatgpt/grok は読込時点で file input が DOM にある。gemini は upload_open を押すまで file input が存在しない。いずれも OS のファイル選択ダイアログは開かない (input へ直接 files を代入するため)。 / 2026-09-09 実測 (モデル選択): chatgpt=composer pill の innerText / gemini=aria-label の「現在のモデル: X」/ grok=innerText。会話ページの「モデルを切り替える」は再試行ボタンで picker ではない。実測時 gemini=Flash・grok=ファストで、期待 (Pro/エキスパート) と違っていた。",
   "cdp": {
     "host": "127.0.0.1",
     "port": 9222
@@ -47,7 +47,7 @@
     ],
     "dismiss": [],
     "mode_label": [
-      "[data-testid='model-switcher-dropdown-button']"
+      "button.__composer-pill[aria-haspopup='menu']"
     ],
     "default_mode": "current",
     "modes": {
@@ -83,7 +83,44 @@
       "Thought for .*",
       "Reasoned for .*",
       "Thinking\\.\\.\\."
-    ]
+    ],
+    "upload_open": [],
+    "upload_input": [
+      "input#upload-files",
+      "input[type='file']:not([accept*='image'])"
+    ],
+    "model_button": [
+      "button.__composer-pill[aria-haspopup='menu']"
+    ],
+    "model_read": "text",
+    "model_menu_item": [
+      "[role='menuitem']"
+    ],
+    "expected_model": "Pro",
+    "research": {
+      "steps": [
+        {
+          "selector": "[data-testid='composer-plus-btn']"
+        },
+        {
+          "text": "Deep Research",
+          "in": [
+            "div.__menu-item",
+            "[role='menuitem']"
+          ]
+        }
+      ],
+      "active": {
+        "text": "Deep Research",
+        "in": [
+          "form button",
+          "form span",
+          "form div"
+        ]
+      },
+      "verified": true,
+      "note": "2026-09-09 実測: 有効化すると composer に「Deep Research」ピルが出る"
+    }
   },
   "gemini": {
     "label": "Gemini",
@@ -208,7 +245,54 @@
       "Gemini said",
       "思考プロセスを表示",
       "Show thinking"
-    ]
+    ],
+    "upload_open": [
+      "button[aria-label='アップロードとツール']",
+      "button[aria-label*='Upload'][aria-haspopup='menu']",
+      "button[maticonbutton][aria-haspopup='menu'][matbadgeposition]"
+    ],
+    "upload_input": [
+      "input.hidden-file-input",
+      "input[type='file']"
+    ],
+    "model_button": [
+      "button[aria-label*='モード選択']",
+      "[data-test-id='bard-mode-menu-button']"
+    ],
+    "model_read": "aria",
+    "model_menu_item": [
+      "[role='menuitem']"
+    ],
+    "expected_model": "Pro",
+    "model_pattern": "現在のモデル:\\s*([^）)]+)",
+    "research": {
+      "steps": [
+        {
+          "selector": "button[aria-label='アップロードとツール']"
+        },
+        {
+          "text": "その他のツール",
+          "in": [
+            "button",
+            "[role='menuitem']"
+          ]
+        },
+        {
+          "text": "Deep Research",
+          "in": [
+            "[role='menuitemcheckbox']"
+          ]
+        }
+      ],
+      "active": {
+        "checked": "Deep Research",
+        "in": [
+          "[role='menuitemcheckbox']"
+        ]
+      },
+      "verified": false,
+      "note": "2026-09-09: メニュー行は実在するが手動 2 回とも aria-checked が false のまま。要再測"
+    }
   },
   "grok": {
     "label": "Grok",
@@ -325,6 +409,26 @@
       "Worked for .*",
       "Thought for .*",
       "Thinking\\.\\.\\."
-    ]
+    ],
+    "upload_open": [
+      "button[data-testid='attach-button']",
+      "button[aria-label='添付']"
+    ],
+    "upload_input": [
+      "input[type='file']"
+    ],
+    "model_button": [
+      "button#model-select-trigger",
+      "button[aria-label='モデル選択']"
+    ],
+    "model_read": "text",
+    "model_menu_item": [
+      "[role='menuitemradio']"
+    ],
+    "expected_model": "エキスパート",
+    "research": {
+      "steps": [],
+      "unavailable": "Grok に Deep Research 相当は無い (DeepSearch は廃止・エキスパートが最深)"
+    }
   }
 }

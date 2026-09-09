@@ -12,6 +12,7 @@ import Fuse from "fuse.js";
 import type { IFuseOptions } from "fuse.js";
 import { AGENT_CATALOG, type AgentCatalogEntry } from "../../lib/agentCatalog";
 import type { LauncherDirEntry, LauncherDirsView } from "../../lib/ipc";
+import { WEB_PRESET_MARKS } from "../../lib/tabMark";
 
 export interface LauncherLaunchItem {
   kind: "agent" | "web";
@@ -88,6 +89,9 @@ const SHORT_LABELS: Record<string, string> = {
  * Which mark a row gets. The web rows borrow the CLI marks where the vendor is
  * the same; Antigravity keeps its own, so `web-gemini` gets the Gemini spark
  * rather than the arch.
+ *
+ * The web half is derived from `WEB_PRESET_MARKS` rather than repeated, so a
+ * launcher row and the tab it opens can never drift to different marks.
  */
 const ICON_KINDS: Record<string, string> = {
   claude: "claude",
@@ -97,12 +101,9 @@ const ICON_KINDS: Record<string, string> = {
   grok: "grok",
   agy: "antigravity",
   hermes: "hermes",
-  "web-chatgpt": "codex",
-  "web-gemini": "gemini",
-  "web-grok": "grok",
-  "web-claude": "claude",
-  "web-notebooklm": "notebooklm",
-  "web-browser": "browser",
+  ...Object.fromEntries(
+    Object.entries(WEB_PRESET_MARKS).map(([presetId, mark]) => [`web-${presetId}`, mark.kind]),
+  ),
 };
 
 export function shortLabel(entry: AgentCatalogEntry): string {

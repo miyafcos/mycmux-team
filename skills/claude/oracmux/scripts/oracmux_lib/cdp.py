@@ -91,6 +91,10 @@ class Result:
     tab_kept_open: bool = False
     format: str = "innertext"
     tab_id: str = ""
+    uploads: list[str] = field(default_factory=list)
+    model: str = ""
+    model_evidence: str = ""
+    research: bool = False
 
     @property
     def exit_code(self) -> int:

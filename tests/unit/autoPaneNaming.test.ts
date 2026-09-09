@@ -156,7 +156,7 @@ describe("auto pane naming", () => {
     expect(deps.invokeJudge).toHaveBeenCalledTimes(1);
     expect(deps.setTabLabel).toHaveBeenCalledWith("workspace", "pane", "unnamed", "名前 unnamed", "ai");
     expect(deps.pushToast).toHaveBeenCalledWith(
-      "タブ名を1件つけました",
+      "タブ名の自動命名: 1件のタブに名前をつけました",
       "info",
       expect.any(Array),
       TOAST_UNDO_DISMISS_MS,
@@ -166,7 +166,7 @@ describe("auto pane naming", () => {
     const undo = vi.mocked(deps.pushToast).mock.calls[0][2]?.[0];
     undo?.run();
     expect(deps.pushToast).toHaveBeenLastCalledWith(
-      "タブ名を元に戻しました",
+      "タブ名の自動命名: つけた名前を元に戻しました",
       "info",
       undefined,
       undefined,

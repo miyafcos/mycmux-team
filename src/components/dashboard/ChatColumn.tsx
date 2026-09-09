@@ -1,6 +1,7 @@
 import type { PreviewArtifactInfo } from "../../lib/ipc";
 import type { LiveSessionBrief, SemanticEventEnvelope } from "../../lib/livebrief";
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { WebPaneTranscriptEntry } from "../../stores/webPaneTranscriptStore";
 import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { useComposerStore, type DashboardOptimisticMessage } from "../../stores/composerStore";
 import { DashboardTelemetryFallback } from "./DashboardSessionDetail";
@@ -50,6 +51,8 @@ export function ChatColumn({
   onJump,
   onReorderKeyDown,
   onPreviewArtifact,
+  webTranscript = null,
+  onRefreshWebTranscript,
   detailLoaded = false,
 }: {
   card: DashboardCardModel;
@@ -71,6 +74,9 @@ export function ChatColumn({
   onJump: () => void;
   onReorderKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => void;
   onPreviewArtifact?: (info: PreviewArtifactInfo) => void;
+  /** Set for a Web tab: what its pane was showing at the last read. */
+  webTranscript?: WebPaneTranscriptEntry | null;
+  onRefreshWebTranscript?: () => void;
   detailLoaded?: boolean;
 }) {
   const sessionId = card.tab.sessionId;
@@ -160,7 +166,11 @@ export function ChatColumn({
       <button type="button" data-dashboard-chat-column-close={card.tab.id} className="cmux-dashboard-chat-column-close" aria-label={`${card.label} を閉じる`} onClick={(event) => { event.stopPropagation(); onClose(); }}>×</button>
     </header>
     <div className="cmux-dashboard-chat-column-body">
-      {card.telemetryHealth !== "live" && card.telemetryHealth !== "ended" ? <DashboardTelemetryFallback card={card} now={now} /> : null}
+      {webTranscript
+        ? <WebTranscriptStatus entry={webTranscript} onRefresh={onRefreshWebTranscript} />
+        : card.telemetryHealth !== "live" && card.telemetryHealth !== "ended"
+          ? <DashboardTelemetryFallback card={card} now={now} />
+          : null}
       <ChatTranscript
         events={events}
         sessionId={card.tab.sessionId}
@@ -194,7 +204,7 @@ export function ChatColumn({
           {message.state === "failed" ? <div className="cmux-dashboard-optimistic-retry"><span>{message.error ?? dashboardStrings.composerMessageFailed}</span><button type="button" onClick={() => requestOptimisticRetry(sessionId, message.id)}>{dashboardStrings.composerRetry}</button></div> : null}
         </div>)}
       </div> : null}
-      {card.telemetryHealth !== "ended" ? <QuestionCard
+      {!webTranscript && card.telemetryHealth !== "ended" ? <QuestionCard
         brief={card.brief}
         events={events}
         targetLabel={`${card.workspace.name} › ${card.label}`}
@@ -204,4 +214,41 @@ export function ChatColumn({
       /> : null}
     </div>
   </article>;
+}
+
+/**
+ * What a Web column can say about its own freshness.
+ *
+ * The turns come from reading the page, not from a session log, so the column
+ * states when it read and lets the reader force another one. Without this the
+ * bubbles' clock times (all stamped at the first read) would be the only hint,
+ * and they would read as message times.
+ */
+function WebTranscriptStatus({ entry, onRefresh }: {
+  entry: WebPaneTranscriptEntry;
+  onRefresh?: () => void;
+}) {
+  const clock = entry.fetchedAt
+    ? new Date(entry.fetchedAt).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })
+    : null;
+  const notes = [
+    entry.signedOut ? dashboardStrings.webTranscriptSignedOut : null,
+    entry.generating ? dashboardStrings.webTranscriptGenerating : null,
+    entry.truncated ? dashboardStrings.webTranscriptTruncated : null,
+  ].filter((note) => note !== null);
+  return <div className="cmux-dashboard-web-transcript-status" data-dashboard-web-transcript-status="true">
+    <span className="cmux-dashboard-web-transcript-source">{dashboardStrings.webTranscriptSource}</span>
+    <span className="cmux-dashboard-web-transcript-when">
+      {clock ? dashboardStrings.webTranscriptFetchedAt(clock) : dashboardStrings.webTranscriptLoading}
+    </span>
+    {notes.map((note) => <span key={note} className="cmux-dashboard-web-transcript-note">{note}</span>)}
+    {entry.error ? <span className="cmux-dashboard-web-transcript-error" role="alert">{entry.error}</span> : null}
+    {onRefresh ? <button
+      type="button"
+      className="cmux-dashboard-chat-header-action"
+      data-dashboard-web-transcript-refresh="true"
+      disabled={entry.loading}
+      onClick={(event) => { event.stopPropagation(); onRefresh(); }}
+    >{dashboardStrings.webTranscriptRefresh}</button> : null}
+  </div>;
 }

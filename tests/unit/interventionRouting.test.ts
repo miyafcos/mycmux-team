@@ -102,6 +102,8 @@ describe("resolveComposerRoute", () => {
 
   it("disables everything when the tab was never started", () => {
     expect(resolveComposerRoute(undefined, false)).toEqual({ kind: "disabled", reason: "notStarted" });
+    // A Web pane has no PTY to write to, however live its page looks.
+    expect(resolveComposerRoute(undefined, true, true)).toEqual({ kind: "disabled", reason: "webPane" });
     expect(resolveComposerRoute(brief({ telemetryHealth: "ended" }), false))
       .toEqual({ kind: "disabled", reason: "notStarted" });
   });

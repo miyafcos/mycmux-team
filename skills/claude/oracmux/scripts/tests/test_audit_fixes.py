@@ -51,12 +51,25 @@ def test_upload_text_content_is_scanned_and_binaries_are_reported(isolated_home,
     assert request["uploads"] == [str(pdf.resolve())]
 
 
-def test_upload_is_refused_on_the_cdp_lane(isolated_home, tmp_path, capsys):
+def test_upload_is_refused_on_the_cdp_lane_but_allowed_on_the_pane_lane(isolated_home, tmp_path, capsys):
+    """The CDP lane still has no file upload; the pane lane grew one on
+    2026-09-09 (web.upload onto the service's own file input)."""
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(b"%PDF-1.4")
-    assert oracmux.main(["ask", "--engine", "gemini", "-q", "q", "--upload", str(pdf), "--dry-run"]) == oracmux.EXIT_PRECONDITION
-    assert "--upload is only delivered" in capsys.readouterr().out
     assert oracmux.main(["ask", "--engine", "chatgpt", "--via", "cdp", "-q", "q", "--upload", str(pdf), "--dry-run"]) == oracmux.EXIT_PRECONDITION
+    assert "the CDP lane has no file upload" in capsys.readouterr().out
+    for engine in ("chatgpt", "gemini", "grok"):
+        assert oracmux.main(["ask", "--engine", engine, "-q", "q", "--upload", str(pdf), "--dry-run"]) == oracmux.EXIT_OK
+
+
+def test_pane_upload_needs_a_selector_for_the_service(isolated_home, tmp_path, monkeypatch, capsys):
+    """A service with no upload_input in engines.json must fail before sending,
+    not push a brief that cites a file the service never received."""
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    monkeypatch.setattr(oracmux, "pane_upload_selectors", lambda _site: [])
+    assert oracmux.main(["ask", "--engine", "gemini", "-q", "q", "--upload", str(pdf), "--dry-run"]) == oracmux.EXIT_PRECONDITION
+    assert "no upload_input selector" in capsys.readouterr().out
 
 
 def test_reused_run_rescans_original_paths_and_uploads(isolated_home, tmp_path, monkeypatch, capsys):

@@ -4,6 +4,7 @@ import { usePaneDragStore } from "../../stores/paneDragStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
+import { useWebPaneTranscriptStore } from "../../stores/webPaneTranscriptStore";
 import type { Workspace } from "../../types";
 import {
   createWebPane,
@@ -78,6 +79,7 @@ export default function WebPaneController() {
   const keybindings = useKeybindingStore((state) => state.keybindings);
   const paneDragActive = usePaneDragStore((state) => state.item !== null);
   const savepointDragActive = useSavepointDragStore((state) => state.item !== null);
+  const readingTabIds = useWebPaneTranscriptStore((state) => state.readingTabIds);
   const tabs = useMemo(() => collectWebPaneTabs(workspaces), [workspaces]);
   const tabsSignature = tabs.map((tab) => `${tab.tabId}:${tab.presetId}`).sort().join("|");
   const forwardedShortcuts = useMemo(
@@ -100,10 +102,14 @@ export default function WebPaneController() {
   const operationsRef = useRef(new Map<string, Promise<void>>());
   const dragBlockedRef = useRef(false);
   const forwardedShortcutsRef = useRef(new Set<string>());
+  // Tabs the dashboard is reading. They are parked instead of hidden so the
+  // page keeps running while the dashboard covers the workspace.
+  const readingRef = useRef(new Set<string>());
 
   desiredRef.current = new Map(tabs.map((tab) => [tab.tabId, tab.presetId]));
   dragBlockedRef.current = paneDragActive || savepointDragActive;
   forwardedShortcutsRef.current = new Set(forwardedShortcuts);
+  readingRef.current = new Set(readingTabIds);
 
   useEffect(() => {
     let cancelled = false;
@@ -230,7 +236,7 @@ export default function WebPaneController() {
           // A background tab is parked off-screen rather than hidden: a hidden
           // WebView2 pauses requestAnimationFrame and Gemini's streamed answer
           // never reaches the DOM (2026-09-07).
-          const park = bounds === null && tab?.webBackground === true;
+          const park = bounds === null && (tab?.webBackground === true || readingRef.current.has(tabId));
           enqueue(tabId, () => (park
             ? updateWebPane(tabId, null, false, forwardedShortcuts, { park: true })
             : updateWebPane(tabId, bounds, bounds !== null, forwardedShortcuts)));

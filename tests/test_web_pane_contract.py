@@ -306,3 +306,29 @@ def test_the_retired_fugu_entries_are_gone() -> None:
     assert '"claude-codex (Fugu)"' not in launcher
     assert "codex-fugu-ultra)" not in launcher
     assert "claude-codex-fugu)" not in launcher
+
+
+def test_every_web_preset_has_a_tab_mark() -> None:
+    """A Web tab must show the same mark its launcher row showed.
+
+    The tab bar reads `agentKind` and the PTY command to decide which mark to
+    draw, and a Web tab has neither -- so before `WEB_PRESET_MARKS` existed the
+    tab fell back to an empty grey chip while the launcher row next to it drew
+    the vendor's mark. The preset id is the only thing that connects the two,
+    which makes this list the contract: a preset added to Rust without a mark
+    here ships that grey chip again.
+    """
+    rust = read("src-tauri/src/commands/webpane.rs")
+    presets_block = rust[rust.index("const WEB_PANE_PRESETS:") : rust.index("static WEB_PANE_OPEN_PRESETS")]
+    rust_ids = set(re.findall(r'^\s+id: "([a-z0-9-]+)",', presets_block, re.MULTILINE))
+    assert rust_ids, "no preset ids found in webpane.rs"
+
+    marks = read("src/lib/tabMark.ts")
+    marks_block = marks[marks.index("export const WEB_PRESET_MARKS") :]
+    marks_block = marks_block[: marks_block.index("};")]
+    mark_ids = set(re.findall(r"^\s+([a-z0-9-]+): \{ kind:", marks_block, re.MULTILINE))
+
+    assert mark_ids == rust_ids, (
+        f"web preset marks drifted from webpane.rs: only in Rust {sorted(rust_ids - mark_ids)}, "
+        f"only in tabMark.ts {sorted(mark_ids - rust_ids)}"
+    )

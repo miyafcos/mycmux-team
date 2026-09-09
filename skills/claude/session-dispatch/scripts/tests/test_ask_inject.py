@@ -39,7 +39,36 @@ def write_ledger(hook: ModuleType, tmp_path: Path, records: list[dict]) -> Path:
 
 
 def test_closed_status_set_matches_the_ledger_module(hook: ModuleType) -> None:
-    assert set(hook.CLOSED_DISPATCH_STATUSES) == set(dispatch_ledger.CLOSED_STATUSES)
+    assert set(hook.CLOSED_DISPATCH_STATUSES) == set(dispatch_ledger.INACTIVE_STATUSES)
+
+
+def test_both_hooks_agree_on_what_a_live_child_is() -> None:
+    """The two hooks must not disagree about the same tab.
+
+    They did until 2026-09-09: ask-inject used CLOSED_STATUSES (no "lost") and
+    dispatch-child-guard used INACTIVE_STATUSES (with it), so a tab the guard
+    had marked lost was a child to one and not to the other. In that direction
+    the injector went silent for that session permanently.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "child_guard_under_test",
+        Path.home() / ".claude" / "skills" / "session-dispatch" / "scripts" / "dispatch-child-guard.py")
+    assert spec is not None and spec.loader is not None
+    child_guard = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = child_guard
+    spec.loader.exec_module(child_guard)
+    assert set(load_hook().CLOSED_DISPATCH_STATUSES) == set(child_guard.INACTIVE_STATUSES)
+
+
+@pytest.mark.parametrize("status", ["lost"])
+def test_lost_tabs_are_not_children(hook: ModuleType, tmp_path: Path, status: str) -> None:
+    """A lost tab must stop suppressing card injection for its session id."""
+    write_ledger(
+        hook,
+        tmp_path,
+        [{"ts": "t", "slug": "260813-foo", "tab_session_id": "pane-1", "status": status}],
+    )
+    assert hook.is_dispatch_child("pane-1") is False
 
 
 @pytest.mark.parametrize("status", ["open", "running", "done", "in-review", ""])

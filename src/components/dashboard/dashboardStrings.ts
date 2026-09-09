@@ -138,6 +138,15 @@ export const dashboardStrings = {
   // 読み込み失敗と「本当に空」を区別する (2026-08-17 FB)。理由の詳細は telemetryUnlinked / telemetryUnavailable を併記
   chatUnavailable: "会話の記録を読み込めていません",
   chatAriaLabel: "会話ログ (整形表示)",
+  // Web ペイン (ChatGPT などのページ) をダッシュボードで読むときの行。
+  webTranscriptSource: "ページから読み取り",
+  webTranscriptFetchedAt: (clock: string): string => `取得 ${clock}`,
+  webTranscriptLoading: "ページを読み取り中",
+  webTranscriptRefresh: "読み直す",
+  webTranscriptEmpty: "このページにまだ会話がありません",
+  webTranscriptSignedOut: "サインインしていません",
+  webTranscriptGenerating: "ページが応答を書いています",
+  webTranscriptTruncated: "古い発言は読み取りの上限を超えたため省いています",
   chatRoleUser: "私",
   chatRoleAgent: "エージェント",
   userTurnNavAriaLabel: (n: number, total: number): string => `自分の命令文 ${n}/${total}`,
@@ -157,6 +166,7 @@ export const dashboardStrings = {
   composerSend: "送信 ⏎",
   composerAriaLabel: "選択中のペインへの指示入力",
   composerNotStarted: "まだ開いていないタブなので送信できません",
+  composerWebPane: "Web ページには送信できません。ページを開いて入力してください",
   composerBlockedByAskQuestion: "質問カードで回答するまで通常の指示は送信できません",
   sendConfirmedOnScreen: "入力後の画面更新を確認しました",
   sendUnverified: "入力をキューに追加しましたが、画面で確認できませんでした",

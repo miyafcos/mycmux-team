@@ -110,8 +110,12 @@ def read_progress(engine_dir_path: Path) -> dict[str, object]:
 
 def answer_header(meta: dict[str, object]) -> str:
     lines = ["---"]
-    for key in ("engine", "status", "mode_requested", "mode_actual", "conversation_url", "elapsed_sec", "detection", "chars", "collected_at"):
-        if key in meta:
+    # `model` / `model_evidence` mirror the oracle lane's "Model selection
+    # evidence" line: the reader must be able to see which model answered.
+    for key in ("engine", "status", "model", "model_evidence", "uploads",
+                "mode_requested", "mode_actual", "conversation_url", "elapsed_sec",
+                "detection", "chars", "collected_at"):
+        if meta.get(key) not in (None, "", [], {}):
             lines.append(f"{key}: {meta[key]}")
     lines.append("---")
     return "\n".join(lines) + "\n\n"

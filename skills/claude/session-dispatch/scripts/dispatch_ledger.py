@@ -273,6 +273,38 @@ def append_record(
     return normalized
 
 
+def resolve_run_key(
+    path: Path | str,
+    slug: str,
+    spawn_ts: str | None = None,
+    tab_session_id: str | None = None,
+) -> tuple[str | None, list[str] | None]:
+    """差分行がどの便に付くかを解いて返す.
+
+    戻り値は (使うべき spawn_ts, 候補一覧)。候補一覧が None 以外なら、
+    名乗ったキーはどの便にも当たらない。
+
+    load_result は slug + spawn_ts の完全一致で便を探し、外れたら警告なしに
+    新しい便を作る。2026-09-09 に 10 秒ずれた spawn_ts で closed を書いて
+    実害が出た (本物の便は open のまま見張りに lost にされ、幽霊の便だけが
+    closed になった)。台帳全体では 286 便中 27 便が tab_session_id を持たない。
+    """
+    try:
+        runs = [d for d in load_result(Path(path)).dispatches if d.slug == slug]
+    except (OSError, ValueError):
+        return spawn_ts, None
+    if not runs:
+        return spawn_ts, None
+    if tab_session_id:
+        matched = [d for d in runs if d.tab_session_id == tab_session_id]
+        if matched:
+            # tab session id は一意なので、ずれた spawn_ts よりこちらを信じる
+            return matched[-1].spawn_ts, None
+    if spawn_ts and not any(d.spawn_ts == spawn_ts for d in runs):
+        return None, [d.spawn_ts for d in runs]
+    return spawn_ts, None
+
+
 def update_record(
     path: Path | str,
     *,
@@ -286,6 +318,14 @@ def update_record(
     """既存 dispatch への差分行を追記する (slug + spawn_ts で対象を特定)."""
     validate_slug(slug)
     validate_status(status)
+    if spawn_ts or tab_session_id:
+        resolved, candidates = resolve_run_key(path, slug, spawn_ts, tab_session_id)
+        if candidates is not None:
+            raise ValueError(
+                "spawn_ts " + str(spawn_ts) + " matches no run of " + slug
+                + "; known runs: " + ", ".join(candidates)
+            )
+        spawn_ts = resolved
     record: dict[str, Any] = {"ts": ledger_ts or local_timestamp(), "slug": slug}
     if spawn_ts:
         record["spawn_ts"] = spawn_ts

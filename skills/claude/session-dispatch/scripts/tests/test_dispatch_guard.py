@@ -1,4 +1,5 @@
 import copy
+import importlib.util
 import json
 from pathlib import Path
 import pytest
@@ -111,12 +112,24 @@ def test_acceptance_scope_suppresses_noncanary_input(tmp_path):
     assert len(bridge.writes) == 1
 
 def test_manual_ask_never_becomes_child_from_audit(tmp_path):
+    """A manual tab leaves no trace in the ledger at all.
+
+    This used to be satisfied by writing a YYMMDD-guard-manual row with
+    status fallback-inline. That row was itself the problem: 6,829 of 7,687
+    ledger rows on 2026-09-09 were these, and because ask-inject.py and
+    dispatch-child-guard.py read "is this a dispatch child" as the last status
+    seen for a pane session id, such a row could mask a live child. The guard
+    trail belongs in guard.log.
+    """
     bridge = FakeBridge(["Not logged in"])
     guard, actions, path, _ = setup(tmp_path, bridge)
     bridge.tabs = [{"session_id": "manual", "agent_kind": "claude"}]
+    before = len(ledger.load_dispatches(path))
     guard.cycle()
-    manual = next(d for d in ledger.load_dispatches(path) if d.tab_session_id == "manual")
-    assert manual.status == "fallback-inline"
+    assert not [d for d in ledger.load_dispatches(path) if d.tab_session_id == "manual"]
+    assert len(ledger.load_dispatches(path)) == before
+    assert any(row.get("session_id") == "manual"
+               for row in list(json_rows(tmp_path / "guard.log")))
     guard.cycle()
     assert guard.state["targets"]["manual"]["slug"] is None
 
@@ -378,6 +391,141 @@ def test_dead_pty_is_classified_even_when_strict_status_is_unavailable(tmp_path)
     assert state["targets"]["s"]["verdict"]["cls"] == "pty_dead"
     assert ledger.load_dispatches(path)[0].status == "lost"
     assert len(alerts) == 1
+
+@pytest.mark.parametrize("cls,lines", [
+    ("login_required", ["Not logged in"]),
+    ("tab_gone", None),
+])
+def test_guard_cards_satisfy_the_real_ops_entry_gate(tmp_path, cls, lines):
+    """Bind the card the guard actually builds to the validator that judges it.
+
+    The two lived apart until 2026-09-09: the guard's question carried a 句点 and
+    ops_common rejected every one of them on question_sentences, silently, 51
+    times. Import the real validator rather than restating its rules here, so a
+    change on either side fails this test instead of the delivery path.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "ops_common", Path.home() / ".claude" / "ops" / "ops_common.py")
+    ops = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ops)
+
+    captured = []
+    bridge = FakeBridge(lines) if lines else FakeBridge()
+    if lines is None:
+        bridge.tabs[0]["lifecycle"] = "exited"
+        bridge.status = lambda sid: (_ for _ in ()).throw(RuntimeError("unavailable"))
+    guard, actions, _, _ = setup(tmp_path, bridge)
+    actions.alert = lambda card: captured.append(card) or {"enqueue_exit": 0}
+    guard.cycle()
+
+    assert captured, "the guard raised no card for " + cls
+    for card in captured:
+        ops.validate_ask_card(
+            card["question"], card["detail"], card["options"],
+            card["recommendation_reason"], card["blocking_reason"],
+            card["decision_class"])
+
+def test_append_only_files_have_a_ceiling(tmp_path):
+    """No file this skill writes may grow without bound."""
+    from guard_actions import MAX_LOG_BYTES, append_json, rotate_if_large
+    log = tmp_path / "guard.log"
+    log.write_bytes(b"x" * MAX_LOG_BYTES)
+    append_json(log, {"event": "guard:cycle"})
+    assert log.stat().st_size < MAX_LOG_BYTES
+    assert (tmp_path / "guard.log.1").stat().st_size == MAX_LOG_BYTES
+    # Below the ceiling nothing is moved.
+    rotate_if_large(log)
+    assert len(list(json_rows(log))) == 1
+
+def test_rejected_escalation_is_spooled_instead_of_lost(tmp_path):
+    """A card the ops entry gate refuses must stay visible.
+
+    On 2026-09-08/09 the guard shelled out to ops_common enqueue, captured
+    exit 2 into the audit trail, and moved on. 51 escalations vanished that way
+    over 17 hours; nothing distinguished "never raised" from "raised and
+    refused". The spool is what ask-inject reads to tell the two apart.
+    """
+    bridge = FakeBridge(["Not logged in"])
+    guard, actions, _, alerts = setup(tmp_path, bridge)
+    actions.alert = lambda card: alerts.append(card) or {
+        "enqueue_exit": 2,
+        "output": "ask validation failed [question_sentences]: ...",
+    }
+    guard.cycle()
+
+    spooled = list(json_rows(tmp_path / "undelivered.jsonl"))
+    assert len(spooled) == 1
+    assert spooled[0]["cls"] == "login_required"
+    assert spooled[0]["enqueue_exit"] == 2
+    assert spooled[0]["card"]["question"]
+    assert "question_sentences" in spooled[0]["output"]
+
+def test_accepted_escalation_leaves_no_spool_row(tmp_path):
+    bridge = FakeBridge(["Not logged in"])
+    guard, _, _, alerts = setup(tmp_path, bridge)
+    guard.cycle()
+    assert len(alerts) == 1
+    assert not (tmp_path / "undelivered.jsonl").exists()
+
+def test_dead_pty_settles_and_does_not_re_act_on_the_next_cycle(tmp_path):
+    """The whole point of the terminal gate: repeating a verdict must be free.
+
+    Regression for 2026-09-09, when one dead-but-listed tab was re-judged every
+    15 s for 4 h 21 min. mark_lost had already moved the ledger row, and
+    Actions.escalate deduplicated the card, but audit() still wrote two rows per
+    cycle -- 782 repeats for the worst single session. The old pty_dead test ran
+    one cycle only, so nothing caught it.
+    """
+    bridge = FakeBridge()
+    bridge.tabs[0]["lifecycle"] = "exited"
+    bridge.status = lambda sid: (_ for _ in ()).throw(RuntimeError("input revision unavailable"))
+    guard, _, path, alerts = setup(tmp_path, bridge)
+
+    first = guard.cycle()
+    assert first["targets"]["s"]["verdict"]["cls"] == "pty_dead"
+    assert ledger.load_dispatches(path)[0].status == "lost"
+    assert len(alerts) == 1
+    rows_after_first = len(ledger.load_dispatches(path))
+    log_after_first = len(list(json_rows(tmp_path / "guard.log")))
+
+    second = guard.cycle()
+    assert second["targets"]["s"]["verdict"]["cls"] == "pty_dead"
+    assert second["targets"]["s"]["result"] == {"action": "mark_lost", "suppressed": "terminal"}
+    assert len(alerts) == 1
+    assert len(ledger.load_dispatches(path)) == rows_after_first
+    # Only the per-cycle guard:cycle row may be added; no action / action-result pair.
+    added = list(json_rows(tmp_path / "guard.log"))[log_after_first:]
+    assert [row.get("event") for row in added] == ["guard:cycle"]
+
+def test_terminal_gate_expires_so_a_still_stuck_tab_is_reported_again(tmp_path):
+    """Settled is not silence forever: re-report on the documented 30 min cadence."""
+    clock = {"t": 1000}
+    bridge = FakeBridge()
+    bridge.tabs[0]["lifecycle"] = "exited"
+    bridge.status = lambda sid: (_ for _ in ()).throw(RuntimeError("input revision unavailable"))
+    guard, _, _, alerts = setup(tmp_path, bridge, now=lambda: clock["t"])
+    guard.cycle()
+    assert len(alerts) == 1
+    clock["t"] += dg.TERMINAL_TTL_SEC - 1
+    guard.cycle()
+    assert len(alerts) == 1
+    clock["t"] += 2
+    guard.cycle()
+    assert len(alerts) == 2
+
+def test_terminal_marker_is_dropped_when_the_session_epoch_changes(tmp_path):
+    """A new epoch is a new life; the old verdict must not silence it."""
+    bridge = FakeBridge(["Not logged in"])
+    guard, _, _, alerts = setup(tmp_path, bridge)
+    guard.cycle()
+    assert guard.state["targets"]["s"]["verdict"]["cls"] == "login_required"
+    assert len(alerts) == 1
+    guard.cycle()
+    assert len(alerts) == 1
+    assert guard.state["targets"]["s"]["result"] == {"action": "block", "suppressed": "terminal"}
+    bridge.state["view"]["session_epoch"] += 1
+    third = guard.cycle()
+    assert third["targets"]["s"]["result"] != {"action": "block", "suppressed": "terminal"}
 
 def test_pending_delivery_confirms_exact_child_transcript_growth_when_state_does_not_change(tmp_path, monkeypatch):
     log = tmp_path / "child.jsonl"

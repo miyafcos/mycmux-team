@@ -1006,7 +1006,8 @@ describe("LayoutMinimapPanel", () => {
     const chip = container.querySelector<HTMLElement>("[data-minimap-tab='a']")!;
     expect(chip.querySelector(".cmux-minimap-age")).toBeNull();
     expect(chip.title).toBe("a");
-    expect(chip.getAttribute("aria-label")).toContain("a — codex・");
+    // The chip names the vendor the same way the tab bar badge does.
+    expect(chip.getAttribute("aria-label")).toContain("a — Codex・");
   });
 
   it("hides the bulk-close entry point when no tabs are selected", async () => {

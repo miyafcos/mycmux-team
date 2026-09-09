@@ -13,12 +13,16 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from . import paths
 
 MAX_TEXT_BYTES = 256 * 1024  # WEB_PANE_MAX_TEXT_BYTES in src-tauri/src/commands/webpane.rs
+# web.upload reads every file into the page; the app rejects the batch above this
+# (WEB_PANE_UPLOAD_LIMIT in src-tauri/src/commands/webpane.rs, 2026-09-09).
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 NO_MATCH_MARKERS = ("found no matching web tab",)
 NOT_READY_MARKERS = ("web pane does not exist", "was not found", "timed out waiting for the composer", "has no known preset", "timed out waiting for the reader")
 HOST_ERROR_MARKER = "composer host:"
@@ -89,6 +93,34 @@ def build_close_command(tab: str, cli: Path | None = None) -> list[str]:
     return [sys.executable, cli_path(cli), "web-close", "--tab", tab]
 
 
+def build_eval_command(tab: str, script_file: Path, cli: Path | None = None) -> list[str]:
+    return [sys.executable, cli_path(cli), "web-eval", "--tab", tab, "--script-file", str(script_file)]
+
+
+def build_click_command(tab: str, selector: str, cli: Path | None = None) -> list[str]:
+    return [sys.executable, cli_path(cli), "web-click", "--tab", tab, "--selector", selector]
+
+
+def build_upload_command(tab: str, selector: str, files: list[Path], cli: Path | None = None) -> list[str]:
+    command = [sys.executable, cli_path(cli), "web-upload", "--tab", tab, "--selector", selector]
+    for path in files:
+        command.extend(["--file", str(path)])
+    return command
+
+
+def check_upload_size(files: list[Path]) -> int:
+    """The app rejects the whole batch above the limit, so fail before the round trip."""
+    total = 0
+    for path in files:
+        try:
+            total += path.stat().st_size
+        except OSError as exc:
+            raise ValueError(f"cannot read upload {path}: {exc}") from exc
+    if total > MAX_UPLOAD_BYTES:
+        raise ValueError(f"uploads total {total} bytes; the web pane accepts at most {MAX_UPLOAD_BYTES}")
+    return total
+
+
 def check_text_size(text: str) -> int:
     size = len(text.encode("utf-8"))
     if size > MAX_TEXT_BYTES:
@@ -149,6 +181,28 @@ def web_push(*, preset: str, text_file: Path, send: bool = False, tab: str | Non
 
 def web_close(tab: str) -> Any:
     return _run(build_close_command(tab))
+
+
+def web_eval(tab: str, script: str) -> Any:
+    """Run an async JS body in the pane and return its `value`. The script goes
+    through a temp file so no shell quoting touches it."""
+    with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf-8", newline="\n", delete=False) as handle:
+        handle.write(script)
+        script_file = Path(handle.name)
+    try:
+        result = _run(build_eval_command(tab, script_file))
+    finally:
+        script_file.unlink(missing_ok=True)
+    return result.get("value") if isinstance(result, dict) else None
+
+
+def web_click(tab: str, selector: str) -> Any:
+    return _run(build_click_command(tab, selector))
+
+
+def web_upload(tab: str, selector: str, files: list[Path]) -> Any:
+    check_upload_size(files)
+    return _run(build_upload_command(tab, selector, files), timeout=180.0)
 
 
 def host_of_error(message: str) -> str | None:

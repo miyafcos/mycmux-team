@@ -9,6 +9,7 @@ import { usePaneDragStore } from "../../src/stores/paneDragStore";
 import { useKeybindingStore } from "../../src/stores/keybindingStore";
 import { useSavepointDragStore } from "../../src/stores/savepointDragStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { useWebPaneTranscriptStore } from "../../src/stores/webPaneTranscriptStore";
 
 const apiMocks = vi.hoisted(() => ({
   createWebPane: vi.fn(),
@@ -75,6 +76,7 @@ beforeEach(() => {
   usePaneDragStore.setState({ item: null });
   useKeybindingStore.getState().resetAll();
   useSavepointDragStore.setState({ item: null });
+  useWebPaneTranscriptStore.setState({ readingTabIds: [] });
   const workspace = workspaceWithWebTab();
   useWorkspaceListStore.setState({ workspaces: [workspace], activeWorkspaceId: workspace.id });
 });
@@ -218,4 +220,38 @@ describe("WebPaneController lifecycle", () => {
     expect(apiMocks.createWebPane).toHaveBeenCalledTimes(1);
   });
 
+  it("parks -- never hides -- a pane the dashboard is reading", async () => {
+    // Hiding pauses the page (that is why background tabs are parked), and a
+    // paused page stops updating the DOM the dashboard reader walks: the Web
+    // column would freeze on whatever it read as the dashboard opened.
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    }));
+    const runFrame = async () => {
+      await act(async () => {
+        frames.shift()?.(0);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    };
+    await act(async () => root.render(<WebPaneController />));
+    const host = document.createElement("div");
+    host.dataset.webPaneHostTabId = "web-tab";
+    host.getBoundingClientRect = () => ({ x: 0, y: 0, width: 800, height: 600 }) as DOMRect;
+    container.appendChild(host);
+    await runFrame();
+    expect(apiMocks.createWebPane).toHaveBeenCalledTimes(1);
+
+    // The dashboard covers the workspace: the host is gone, but the column is
+    // reading this tab.
+    await act(async () => {
+      useWebPaneTranscriptStore.setState({ readingTabIds: ["web-tab"] });
+      await Promise.resolve();
+    });
+    host.remove();
+    await runFrame();
+    expect(apiMocks.updateWebPane).toHaveBeenLastCalledWith("web-tab", null, false, expect.any(Array), { park: true });
+  });
 });

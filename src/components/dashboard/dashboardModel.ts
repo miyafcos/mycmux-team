@@ -9,6 +9,7 @@ import {
   type AttentionCategory,
   type SessionAttention,
 } from "../../stores/sessionAttentionStore";
+import { resolveTabMark, type TabMark } from "../../lib/tabMark";
 import type { Pane, PaneTab, Workspace } from "../../types";
 import { noUpdateMinutes } from "./liveTimelineModel";
 
@@ -50,6 +51,8 @@ export interface DashboardCardModel {
   lastActivityAt: number;
   label: string;
   agentKind: DashboardAgentKind;
+  /** Vendor mark for the row. A Web tab has no agentKind but still has one. */
+  mark: TabMark | null;
   /** xterm のバッファを持っていないだけの状態。表示には出さない (断定できないため)。 */
   unobserved: boolean;
   /** 一度も開いていないタブ。telemetry も端末バッファも活動記録も無い状態だけを指す。 */
@@ -188,7 +191,11 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
           metadata?.screenStatusAt ?? 0,
           metadata?.agentStatusAt ?? 0,
         );
-        const unobserved = !input.hasTerminalBuffer(tab.sessionId);
+        // A Web tab has no terminal buffer and never will: judging it by one
+        // labelled every ChatGPT tab "未観測・未起動" while the page was open
+        // and readable. Its conversation is read from the pane instead.
+        const isWebTab = tab.type === "web";
+        const unobserved = !isWebTab && !input.hasTerminalBuffer(tab.sessionId);
         const group = groupDashboardCard(category, stall, lastActivityAt, input.now);
         const status: DashboardStatus = category === "error"
           ? "error"
@@ -222,8 +229,9 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
             input.volatileMetadataBySession,
           ),
           agentKind: normalizeAgentKind(metadata?.agentKind ?? tab.agentKind),
+          mark: resolveTabMark(tab, metadata?.agentKind),
           unobserved,
-          neverStarted: !brief && unobserved && !lastActivityAt,
+          neverStarted: !isWebTab && !brief && unobserved && !lastActivityAt,
           brief,
           operationalState: brief?.operationalState,
           telemetryHealth: brief?.telemetryHealth,

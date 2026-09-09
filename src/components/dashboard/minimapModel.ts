@@ -2,6 +2,7 @@ import { reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
 import { fitLayoutSizes } from "../../lib/layoutMetrics";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
 import { isDeclaredTab } from "../../lib/tabLifecycle";
+import { resolveTabMark, type TabMark } from "../../lib/tabMark";
 import type { Pane, PaneTab, Workspace } from "../../types";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 
@@ -11,7 +12,8 @@ export interface MinimapChip {
   index: number;
   label: string;
   typeGlyph: string;
-  agentKind?: PaneTab["agentKind"];
+  /** Vendor mark; null for a plain shell tab. A Web tab carries its preset mark. */
+  mark: TabMark | null;
   displayState?: string;
   isActiveTab: boolean;
   isPinned: boolean;
@@ -126,7 +128,7 @@ export type MinimapStripActivity = "working" | "waiting" | "idle";
 
 export interface MinimapStripEntry {
   tabId: string;
-  agentKind?: PaneTab["agentKind"];
+  mark: TabMark | null;
   activity: MinimapStripActivity;
 }
 
@@ -161,7 +163,7 @@ export function minimapWorkspaceStrip(
       for (const chip of cell.chips) {
         const activity = stripActivity(displayStateByTabId?.get(chip.tabId) ?? chip.displayState);
         if (activity === "waiting") waitingCount += 1;
-        ticks.push({ tabId: chip.tabId, agentKind: chip.agentKind, activity });
+        ticks.push({ tabId: chip.tabId, mark: chip.mark, activity });
       }
     }
   }
@@ -182,7 +184,7 @@ function chip(tab: PaneTab, pane: Pane, index: number, ctx: MinimapModelContext)
     lastOutputAt: metadata?.backendLastOutputAt,
     contextPct: ctx.contextPctBySession?.[tab.sessionId],
     typeGlyph: typeGlyph(tab.type),
-    agentKind: tab.agentKind,
+    mark: resolveTabMark(tab, metadata?.agentKind),
     displayState: ctx.displayStateByTabId?.[tab.id],
     isActiveTab: tab.id === pane.activeTabId,
     isPinned: tab.id === pane.pinnedTabId,

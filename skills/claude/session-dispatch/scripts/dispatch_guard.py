@@ -16,9 +16,19 @@ import dispatch_status
 from dispatch_send import load_bridge, load_agent_cli
 from guard_classify import Observation, Verdict, classify, current_input_line, input_body, screen_fingerprint, pending_matches
 from guard_actions import (Actions, root_path, read_json, atomic_json, append_json, stamp,
-                           json_rows, pending_by_session, resolve_pending, hidden_kwargs, OPS)
+                           json_rows, pending_by_session, resolve_pending, hidden_kwargs, OPS, append_json_capped)
 
 AGENTS = {"claude", "codex", "grok"}
+
+#: Actions that cannot change anything by being repeated. Re-running them only
+#: re-writes audit rows: the escalation itself is deduplicated for 30 minutes
+#: inside Actions.escalate, and mark_lost has already moved the ledger row.
+#: Before this gate one dead-but-listed tab produced 2 audit rows every 15 s
+#: forever -- 782 repeats for a single session on 2026-09-09.
+TERMINAL_ACTIONS = {"mark_lost", "escalate", "block"}
+#: Kept in step with the escalation dedup window so a session that is still
+#: stuck is re-reported on the documented 30 minute cadence, not every cycle.
+TERMINAL_TTL_SEC = 1800
 
 class Singleton:
     """Readable PID lease. A short claim lock serializes writers, never guard.lock readers."""
@@ -275,6 +285,7 @@ class Guard:
                 same_epoch = canonical["view"].get("session_epoch") == old.get("session_epoch")
                 if not same_epoch:
                     counters.clear()
+                    old = {k: v for k, v in old.items() if k != "terminal"}
                 unchanged_since = old.get("unchanged_since", now) if not obs.screen_changed and same_epoch else now
                 obs.unchanged_s = max(0, now - unchanged_since)
                 revision = canonical.get("input_revision")
@@ -320,8 +331,15 @@ class Guard:
                                   "Continue after the observed denial", [], {})
             if not tab and sid not in seen_alive:
                 verdict = Verdict("tab_gone", "mark_lost", "Initial ledger reconciliation", [], {})
+            terminal = old.get("terminal")
+            settled = (terminal is not None
+                       and terminal.get("cls") == verdict.cls
+                       and terminal.get("action") == verdict.action
+                       and now - terminal.get("at", 0) < TERMINAL_TTL_SEC)
             if dry_run:
                 result = {"action": verdict.action, "dry_run": True}
+            elif settled:
+                result = {"action": verdict.action, "suppressed": "terminal"}
             elif verdict.action == "mark_lost" and not tab and sid not in seen_alive:
                 self.actions.session, self.actions.dispatch = sid, child
                 if child:
@@ -338,6 +356,8 @@ class Guard:
                 counters[verdict.cls] = counters.get(verdict.cls, 0) + 1
                 if verdict.action == "nudge":
                     old["last_nudge_at"] = now
+            if verdict.action in TERMINAL_ACTIONS and not dry_run and not result.get("suppressed"):
+                old["terminal"] = {"cls": verdict.cls, "action": verdict.action, "at": now}
             records[sid] = {**old, "slug": obs.slug, "agent_kind": obs.agent_kind,
                 "observed_at": stamp(), "verdict": asdict(verdict), "result": result,
                 "counters": counters, "present": obs.present}
@@ -448,7 +468,7 @@ def main(argv=None):
         import uuid
         request = {"id": uuid.uuid4().hex, "session": args.session,
                    "requested_at": stamp(), "dry_run": args.dry_run}
-        append_json(root_path() / "once_requests.jsonl", request)
+        append_json_capped(root_path() / "once_requests.jsonl", request)
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             state = read_json(root_path() / "state.json", {}) or {}

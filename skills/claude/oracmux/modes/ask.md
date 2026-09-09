@@ -4,7 +4,8 @@
 python ~/.claude/skills/oracmux/scripts/oracmux.py ask --engine chatgpt|gemini|grok \
   (-q "問い" | --question-file Q.md) [--context-file C.md] [--constraints "..."] \
   [--file P [P ...]] [--via pane|oracle|cdp] [--tab <tabId>] [--close-tab] [--mode M] \
-  [--upload P [P ...]] [--timeout-min N] [--slug s] [--dry-run] [--json]
+  [--upload P [P ...]] [--model NAME | --any-model] [--research] [--url URL] [--force]
+  [--timeout-min N] [--slug s] [--dry-run] [--json]
 ```
 
 `--file` / `--upload` は複数パスを続けて書けるし、繰り返しても書ける (glob 可)。
@@ -14,11 +15,28 @@ python ~/.claude/skills/oracmux/scripts/oracmux.py ask --engine chatgpt|gemini|g
 | `--via` | 実体 | 使う場面 |
 |---|---|---|
 | **pane** (既定・全エンジン) | 呼び出し元と同じペインに **裏タブ (非アクティブ)** で Web ペインを開き、`web.push` で送信、`web.read` で回収。mycmux 内で完結・Chrome 不要 | 通常はこれ。宮崎さんはタブを押せば会話をそのまま見られる |
-| oracle (chatgpt のみ) | steipete/oracle CLI → 画面外 OracleChrome。モデル選択証跡・セッション保存・実アップロード (`--upload`) | PDF などをアップロードしたいとき・oracle の証跡が要るとき |
+| oracle (chatgpt のみ) | steipete/oracle CLI → 画面外 OracleChrome。モデル選択証跡・セッション保存 | oracle の証跡が要るときだけ。**添付は pane で足りる (2026-09-09)** |
 | cdp | 自前 Playwright ドライバ → OracleChrome。思考モード切替 (`--mode`) はこの経路だけ | pane が使えないとき (mycmux 外) やモード切替が要るとき |
 
 pane 経路の前提: そのサービスのペインがログイン済みであること (`doctor` で `ok`)。サインアウトなら exit 3 で止まり、タブは残る (ペインの「別の窓でログイン」でログインして `--tab <tabId>` で再実行)。
-`--mode` は pane 経路では効かない (クリック API が無い)。Web 側の選択状態 (GPT-6 Pro / Gemini Pro / Grok Expert) に従う。
+### モデルの確認 (pane 経路・既定で有効)
+
+送る前に picker を読み、`engines.json` の `expected_model` と違えばメニューで選び直し、**選び直せたことを読み直して確かめてから**送る。
+確かめられなければ **1 ターンも使わずに exit 3 で止まる**。証跡は `answer.md` の `model` / `model_evidence`。
+
+| エンジン | 期待値 | picker の場所 | 現在のモデルの読み方 |
+|---|---|---|---|
+| chatgpt | `Pro` | 入力欄の横のピル (**新規チャット画面にしかない**) | ボタンの文字がそのままモデル名 (`6 Pro`) |
+| gemini | `Pro` | 「モード選択ツール」ボタン | aria-label の「現在のモデル: ○○」 |
+| grok | `エキスパート` | `#model-select-trigger` | ボタンの文字 (`エキスパート`) |
+
+- `--model <名前>` で期待値を上書き (部分一致・例 `--model 強化版思考モード`)
+- `--any-model` で確認そのものを省略 (Web 側の選択のまま送る)
+- **会話中のタブを `--tab` で再利用すると ChatGPT は picker が見えない** — 会話内の「モデルを切り替える」は
+  メッセージ単位の再試行ボタンであって picker ではない。既定 (新規裏タブ) なら問題ない
+
+`--mode` は pane 経路では効かない (engines.json の `modes` は cdp 経路用)。
+`--upload` は pane 経路で 3 エンジンとも使える (合計 25MB)。サービス自身のプレビューにファイル名が出るまで待ってから送るので、添付が届かないまま送られることはない。
 
 ## 作法 (母艦)
 
@@ -46,7 +64,13 @@ pane 経路の前提: そのサービスのペインがログイン済みであ�
 | exit 3 (chrome 経路) | ログイン切れ・captcha・枠切れ | 窓は出してあり、当該タブは残す。報告して止まる |
 | exit 4 `composer did not appear` / `pane: …` | Web ペインが応えない・セレクタ不一致 | `doctor` でタブ状態を見る。cdp 経路は `<engine>/fail.png` |
 | exit 7 `mycmux unavailable` | mycmux が動いていない・ソケット不一致 | mycmux 内で叩く。外なら `--via cdp` |
-| oracle 経路で `Attachments did not finish uploading` | 実アップロードの詰まり | `--upload` を外して本文インライン (既定) に戻す |
+| oracle 経路で `Attachments did not finish uploading` | 実アップロードの詰まり | pane 経路 (既定) に戻す。pane は添付の受理をサービスのプレビューで確認してから送る |
+| exit 3 `did not show the attachment` (pane) | サービスが添付を表示しなかった | タブは残る。ペインで添付を確認し `--tab <tabId>` で再実行。25MB 超なら分割 |
+| exit 3 `never accepted the submit` (pane) | 送信が飲まれた (添付アップロード中など) | タブは残る。ペインで送信を押してから `collect --tab <tabId>` で回収 |
+| exit 3 `deep research step N/M not found` / `did not turn on` | Deep Research の導線が変わった / 有効化が反映されない | `doctor --deep` でセレクタを見る。ペインで手動有効化して `--tab` で再実行 |
+| exit 7 `the same brief is already running` | 同じ引き継ぎ書が走行中 | 走行中の run の `answer.md` を待つ。意図して 2 回投げるなら `--force` |
+| exit 3 `model picker was not found` (pane) | 会話中のタブで ChatGPT の picker が無い / UI 変更 | `--tab` を外して新規裏タブで撃つ。UI 変更が疑わしければ `doctor --deep` |
+| exit 3 `no menu row matched` / `still reads` (pane) | 期待するモデルがメニューに無い・切替が反映されない | メニューの実物は例外文に列挙される。`--model` で実在する名前を指定するか、ペインで選んでから `--any-model` |
 | oracle 経路で `same prompt is already running` | ゾンビ session | `~/.oracle/sessions/<slug>` を `~/.oracle/zombie-quarantine/` へ移す (削除しない) |
 
 ## 例
@@ -56,6 +80,6 @@ pane 経路の前提: そのサービスのペインがログイン済みであ�
 python ~/.claude/skills/oracmux/scripts/oracmux.py ask --engine gemini \
   --question-file Q.md --context-file keii.md --file docs/plans/2026-08-27-*.md
 
-# ChatGPT に PDF を実アップロードして最終判定 (oracle 経路)
-python ~/.claude/skills/oracmux/scripts/oracmux.py ask --engine chatgpt --via oracle --question-file Q.md --upload spec.pdf
+# ChatGPT に PDF を実アップロードして最終判定 (pane 経路・既定。3 エンジンとも可・合計 25MB まで)
+python ~/.claude/skills/oracmux/scripts/oracmux.py ask --engine chatgpt --question-file Q.md --upload spec.pdf
 ```

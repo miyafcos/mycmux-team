@@ -1,10 +1,26 @@
 # mode: doctor — 前提点検と復旧
 
 ```
-python ~/.claude/skills/oracmux/scripts/oracmux.py doctor [--json] [--chrome] [--no-web] [--up] [--switch-to-chat]
+python ~/.claude/skills/oracmux/scripts/oracmux.py doctor [--json] [--deep] [--engines a,b] [--chrome] [--no-web] [--up] [--switch-to-chat]
 ```
 
 既定は pane 経路の点検 (数秒)。`--chrome` を付けると OracleChrome 経路 (oracle / cdp) も 3 サイトを開いて点検する (30〜40 秒)。
+
+**`--deep` は engines.json のセレクタを実 DOM と突き合わせる** (数十秒・**Web ターンは消費しない**)。
+タブが無いサービスは裏タブを開いて調べ、開いたぶんだけ閉じる (宮崎さんのタブは残す)。
+pytest はソケットの手前で止まるので、**サービス側の画面変更を安く検知できるのはこれだけ**。
+
+| `--deep` が見るもの | 判定 |
+|---|---|
+| `composer` / `mode_label` が実 DOM に居るか | 0 件なら **DRIFT** (exit 4)。engines.json を実物を見て直す |
+| `send` / `assistant` の件数 | 参考表示。空の会話では 0 が正常なので落とさない |
+| 添付が成立するか | file input が無ければ `upload_open` を押して生えるか確かめる。生えなければ **DRIFT** |
+| **いまどのモデルが選ばれているか** | picker のラベルをそのまま出す。ChatGPT は**新規チャット画面でのみ**読める (会話中の「モデルを切り替える」は再試行ボタンで picker ではない) |
+
+初回実行 (2026-09-09) で ChatGPT の `model-switcher-dropdown-button` 消滅・Gemini の Flash 化・Grok の ファスト 化を検知した。
+DRIFT を直したら `smoke` で実射して確認する (`modes/smoke.md`)。
+
+**ask はモデルを自分で直すので、`--deep` は点検用**。重い相談の前に叩くと、セレクタのズレを 0 円で見つけられる (ask が picker を見つけられなければ 1 ターンも使わず exit 3 になる)。
 
 | 行 | 見るもの | ok の条件 |
 |---|---|---|

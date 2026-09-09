@@ -3,7 +3,6 @@ import type { DashboardDisplayState } from "./dashboardModel";
 import { buildMinimapModel, minimapWorkspaceStrip } from "./minimapModel";
 import { MinimapPaneCell } from "./MinimapPaneCell";
 import type { Workspace } from "../../types";
-import { agentKindColor } from "../../lib/agentKindColors";
 import { usePaneMetadataStore } from "../../stores/paneMetadataStore";
 import { useLiveBriefStore } from "../../stores/liveBriefStore";
 import { resolveWorkspaceColor } from "../../lib/workspaceColors";
@@ -114,7 +113,7 @@ export function MinimapWorkspaceBlock({ workspace, selectedTabId, selectedTabIds
       <span className="cmux-minimap-workspace-summary" aria-hidden="true">
         <span className="cmux-minimap-workspace-strip">
           {strip.ticks.slice(0, MINIMAP_STRIP_MAX_TICKS).map((entry) => {
-            const tickColor = agentKindColor(entry.agentKind)?.fg;
+            const tickColor = entry.mark?.color.fg;
             return <i
               key={entry.tabId}
               className={`cmux-minimap-strip-tick is-${entry.activity}`}

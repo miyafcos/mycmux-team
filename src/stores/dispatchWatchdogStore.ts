@@ -225,7 +225,7 @@ export const WATCHDOG_KIND_LABELS: Record<WatchdogKind, string> = {
 
 function describe(item: WatchdogItem): string {
   const subject = item.label ?? item.slug ?? item.sessionId ?? delegationWatchStrings.queueUnknownSubject;
-  return `${subject}: ${WATCHDOG_KIND_LABELS[item.kind]}`;
+  return delegationWatchStrings.toastItem(subject, WATCHDOG_KIND_LABELS[item.kind]);
 }
 
 export function connectDispatchWatchdog(): () => void {

@@ -18,6 +18,12 @@ from guard_classify import (classify, current_input_line, input_body, pending_ma
                            screen_fingerprint, scan_ask_question)
 
 DEFAULT_ROOT = Path.home() / ".claude" / "dispatch" / "guard"
+#: Escalations the ops entry gate refused. Written so a rejected card is
+#: visible instead of silently gone; read by ~/.claude/scripts/ask-inject.py.
+UNDELIVERED_NAME = "undelivered.jsonl"
+#: Ceiling for any append-only file this module writes. 8 MiB is about two
+#: days of the pre-fix guard.log; after the terminal gate it is months.
+MAX_LOG_BYTES = 8 * 1024 * 1024
 OPS = Path.home() / ".claude" / "ops" / "ops_common.py"
 DENY_TEXT = "\u3053\u306e\u64cd\u4f5c\u306f\u6bcd\u8266\u306e\u627f\u8a8d\u304c\u8981\u308b\u3002\u4ee3\u66ff\u624b\u6bb5\u3067\u7d9a\u884c\u3057\u3001\u7121\u7406\u306a\u3089 DONE.md \u306e\u672a\u89e3\u6c7a\u30fb\u8981\u5224\u65ad\u306b\u66f8\u3051"
 NUDGE_TEXT = "\u7d9a\u884c\u305b\u3088\u3002\u5b8c\u4e86\u306a\u3089 DONE.md\u3001\u5224\u65ad\u304c\u8981\u308b\u306a\u3089 ask \u30ab\u30fc\u30c9\u3002\u9ed9\u3063\u3066\u6b62\u307e\u308b\u306e\u306f\u5951\u7d04\u9055\u53cd"
@@ -45,9 +51,45 @@ def atomic_json(path, data):
     assert "\ufffd" not in tmp.read_text(encoding="utf-8")
     os.replace(tmp, path)
 
+def rotate_if_large(path, limit=MAX_LOG_BYTES):
+    """Roll a log over instead of letting it grow without bound.
+
+    Nothing in this skill capped any file it wrote: on 2026-09-09 guard.log
+    had reached 3.4 MB in a day and ledger.jsonl 4.8 MB. One generation is
+    enough here -- the point is a ceiling, not history.
+    """
+    path = Path(path)
+    try:
+        if path.exists() and path.stat().st_size >= limit:
+            os.replace(path, path.with_name(path.name + ".1"))
+    except OSError:
+        pass
+
+
+def append_json_capped(path, data, keep=50):
+    """Append, then keep only the newest `keep` rows.
+
+    For files whose reader only wants the tail. once_requests.jsonl is read
+    in full about twice a second by the supervisor wait loop, which only
+    looks at the last row, and nothing ever trimmed it.
+    """
+    append_json(path, data)
+    path = Path(path)
+    try:
+        rows = list(json_rows(path))
+        if len(rows) > keep:
+            tmp = path.with_name(path.name + "." + str(os.getpid()) + ".tmp")
+            body = "".join(json.dumps(row, ensure_ascii=False) + chr(10) for row in rows[-keep:])
+            tmp.write_text(body, encoding="utf-8", newline=chr(10))
+            os.replace(tmp, path)
+    except (OSError, ValueError):
+        pass
+
+
 def append_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    rotate_if_large(path)
     raw = (json.dumps(data, ensure_ascii=False) + "\n").encode("utf-8")
     assert b"\xef\xbf\xbd" not in raw
     # One append write; readers ignore an incomplete trailing line.
@@ -164,19 +206,21 @@ class Actions:
         self.alert_queue = []
 
     def audit(self, event, **details):
+        """Guard trail goes to guard.log only.
+
+        It used to be mirrored into the dispatch ledger, which made the guard
+        feed the file it re-parses every cycle: 6,829 of 7,687 rows on
+        2026-09-09 were guard audit rows. Worse than the size, the mirrored
+        rows changed what the ledger says about a session -- both
+        ask-inject.py and dispatch-child-guard.py decide "is this a dispatch
+        child" from the last status seen for a pane session id, so a
+        fallback-inline audit row could make a live child read as not-a-child.
+        State transitions still go to the ledger; they are written explicitly
+        by mark_lost and by the reconcile branch in dispatch_guard.py.
+        """
         row = dict(ts=stamp(), at=self.now(), session_id=self.session,
                    slug=self.dispatch.slug if self.dispatch else None, event=event, **details)
         append_json(self.root / "guard.log", row)
-        if self.dispatch:
-            ledger.update_record(self.ledger_path, slug=self.dispatch.slug,
-                spawn_ts=self.dispatch.spawn_ts, tab_session_id=self.session,
-                event=event, guard=row)
-        else:
-            # An audit-only row must never turn a manual tab into a dispatch child.
-            ledger.append_record(self.ledger_path, dict(
-                slug=datetime.now().strftime("%y%m%d") + "-guard-manual",
-                tab_session_id=self.session, status=ledger.STATUS_FALLBACK_INLINE,
-                event=event, guard=row))
         return row
 
     def allowed(self):
@@ -314,6 +358,7 @@ class Actions:
             "recommendation_reason": "自動回復ができない状態のため",
             "blocking_reason": "人の判断が必要なため",
             "decision_class": "owner_judgment"}
+        path = None
         if self.alert is not None:
             result = self.alert(card)
         else:
@@ -329,6 +374,21 @@ class Actions:
             except (OSError, subprocess.TimeoutExpired):
                 result = {"enqueue_exit": None, "error": "Local alert invocation unavailable",
                           "toast": toast(cls)}
+        if result.get("enqueue_exit") == 0:
+            if path is not None:
+                path.unlink(missing_ok=True)
+        else:
+            # A rejected card used to be dropped here: the exit code went into the
+            # audit trail and nothing read it. Between 2026-09-08 11:07 and
+            # 2026-09-09 04:03 that lost 51 escalations to one validator rule, so
+            # no stall reached a human at all. Spool it instead; ask-inject
+            # surfaces the spool at the start of the next mothership turn.
+            append_json(self.root / UNDELIVERED_NAME, {
+                "ts": stamp(), "at": self.now(), "cls": cls,
+                "session_id": first["session_id"], "slug": first["slug"],
+                "enqueue_exit": result.get("enqueue_exit"),
+                "output": result.get("output") or result.get("error"),
+                "card_file": str(path) if path else None, "card": card})
         previous_session, previous_dispatch = self.session, self.dispatch
         self.session, self.dispatch = first["session_id"], first["dispatch"]
         self.audit("guard:escalate-batch", cls=cls, events=len(queue), card=card, result=result)
