@@ -98,7 +98,11 @@ export function buildNotificationPanelModel(
       ...entry,
       count: unreadCountFor(meta),
       kind,
-      agentKind: resolveDisplayAgentKind(meta?.agentKind ?? tab.agentKind, tab.commandArgv),
+      agentKind: resolveDisplayAgentKind(
+        meta?.agentKind ?? tab.agentKind,
+        tab.commandArgv,
+        tab.launchEnv?.MYCMUX_LAUNCH_TARGET,
+      ),
       attentionId: kind === "unread" ? null : state.attentionId,
     };
     byTab.set(row.tabId, row);

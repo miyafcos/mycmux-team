@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 
 import { ChatTranscript } from "../dashboard/ChatTranscript";
-import { stopEventPolling, syncDashboardEvents, useLiveBriefStore } from "../../stores/liveBriefStore";
+import { holdDetailSession, useLiveBriefStore } from "../../stores/liveBriefStore";
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 import { terminalTurnStrings } from "./terminalTurnStrings";
 
@@ -33,15 +33,15 @@ export function TerminalTranscriptPanel({
   const detailEvents = useLiveBriefStore((state) => state.eventsBySession[sessionId]);
   const listEvents = useLiveBriefStore((state) => state.listEventsBySession[sessionId]);
   const dashboardOpen = useDashboardViewStore((state) => state.open);
-  const events = detailEvents?.length ? detailEvents : listEvents ?? [];
+  const events = detailEvents ?? listEvents ?? [];
+  const detailLoaded = useLiveBriefStore((state) => state.eventsFetchedAtBySession[sessionId] != null);
+  const brief = useLiveBriefStore((state) => state.briefsBySession[sessionId]);
 
-  // The Dashboard owns the detail poll while it is open; borrow it only while
-  // the reader is here, and hand it back on the way out.
-  useEffect(() => {
-    if (dashboardOpen) return;
-    syncDashboardEvents({ selectedId: sessionId, visibleIds: [sessionId] });
-    return () => stopEventPolling();
-  }, [dashboardOpen, sessionId]);
+  // Hold this session's deep poll for as long as the reader is here, whether or
+  // not the Dashboard is open. The hold also keeps the backend transcript sweep
+  // subscribed: without it the panel would re-read a ring nobody refreshes and
+  // the conversation would freeze at whatever the Dashboard last saw.
+  useEffect(() => holdDetailSession(sessionId), [sessionId]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -78,7 +78,9 @@ export function TerminalTranscriptPanel({
           sessionId={sessionId}
           tabId={dashboardOpen ? null : tabId}
           agentKind={agentKind as never}
-          detailLoaded={Boolean(detailEvents?.length)}
+          detailLoaded={detailLoaded}
+          telemetryHealth={brief?.telemetryHealth}
+          lastOutputAt={brief?.lastEventAt ?? null}
         />
       </div>
     </div>

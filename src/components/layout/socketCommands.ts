@@ -2216,6 +2216,13 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
   const workspaceState = useWorkspaceListStore.getState();
 
   switch (cmd) {
+    // Read-only: the account usage report mycmux already fetches for the Usage
+    // tab. Exposed over the socket so an agent can see how much room each
+    // registered CLI account has left without touching the credential store.
+    case "account.usage":
+    case "usage":
+      return await invoke("get_account_usage");
+
     case "workspace.list":
     case "list_workspaces":
       return {

@@ -1,6 +1,8 @@
 import { useId } from "react";
 import type { CSSProperties, SVGProps } from "react";
 
+import hermesMarkUrl from "../../assets/agents/hermes.webp";
+
 type AgentIconProps = Omit<SVGProps<SVGSVGElement>, "height" | "width"> & {
   size?: number;
 };
@@ -136,16 +138,23 @@ export function BrowserAgentIcon({ size = 12, ...props }: AgentIconProps) {
   );
 }
 
-// Hermes ships a caduceus (☤) as its mark; this is a stroked approximation --
-// the staff, the winged crest and the two coils -- so it reads at 12px.
-export function HermesAgentIcon({ size = 12, ...props }: AgentIconProps) {
+// The official Hermes mark is an illustration, not a glyph: NousResearch ships
+// it as raster art only (website/static/img/logo.png, the drawing its favicon.ico
+// downscales), so the row carries a bundled 128px copy instead of a traced path.
+// Provenance is recorded in src/assets/agents/SOURCES.md.
+export function HermesAgentIcon({ size = 12 }: Pick<AgentIconProps, "size">) {
   return (
-    <svg {...iconProps(size)} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
-      <path d="M12 5.5v14" />
-      <path d="M7.5 7.5c1.6-1.7 3-1.7 4.5 0s2.9 1.7 4.5 0" />
-      <path d="M8.5 12c1.2 1.3 2.3 2 3.5 2s2.3-.7 3.5-2" />
-      <circle cx="12" cy="3.6" r="1.5" />
-    </svg>
+    <img
+      src={hermesMarkUrl}
+      alt=""
+      aria-hidden="true"
+      draggable={false}
+      width={size}
+      height={size}
+      // The art is a white plate with its own black frame, so it keeps its
+      // contrast in both themes; the corner radius only softens it into the chip.
+      style={{ display: "block", borderRadius: Math.max(2, Math.round(size * 0.16)), flexShrink: 0 }}
+    />
   );
 }
 

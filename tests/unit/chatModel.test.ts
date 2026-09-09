@@ -32,6 +32,46 @@ describe("toChatMessages", () => {
     expect(toChatMessages([first, second])).toEqual([{ id: first.eventId, role: "assistant", text: "first\n\nsecond", at: second.occurredAt }]);
   });
 
+  it("keeps an agent message written after tool work as its own bubble below the tool group", () => {
+    const before = envelope({ type: "agentMessage", text: "調べます" });
+    const start = envelope({ type: "toolStart", call_id: "c", tool: "Read", target: "a.ts" });
+    const end = envelope({ type: "toolEnd", call_id: "c", tool: "Read", target: "a.ts", ok: true, summary: null });
+    const after = envelope({ type: "agentMessage", text: "結論です" });
+    expect(toChatMessages([before, start, end, after])).toEqual([
+      { id: before.eventId, role: "assistant", text: "調べます", at: before.occurredAt },
+      { id: after.eventId, role: "assistant", text: "結論です", at: after.occurredAt },
+    ]);
+    // The transcript shows it in source order: text, tools, then the newest text at the tail.
+    expect(toChatTranscriptRows([before, start, end, after]).map((row) => row.kind === "message" ? row.message.text : `tools:${row.tools.length}`))
+      .toEqual(["調べます", "tools:1", "結論です"]);
+  });
+
+
+  it("joins Grok streaming chunks verbatim while keeping tool boundaries", () => {
+    const first = envelope({ type: "agentMessage", text: "hel" });
+    const second = envelope({ type: "agentMessage", text: "lo world" });
+    const tool = envelope({ type: "toolStart", call_id: "c", tool: "Read", target: null });
+    const third = envelope({ type: "agentMessage", text: "after tool" });
+    expect(toChatMessages([first, second], "grok")[0].text).toBe("hello world");
+    expect(toChatTranscriptRows([first, second, tool, third], "grok").map((row) => row.kind === "message" ? row.message.text : "tools"))
+      .toEqual(["hello world", "tools", "after tool"]);
+  });
+
+  it("keeps non-rendered event boundaries and stable user ids", () => {
+    for (const boundary of [
+      envelope({ type: "questionResolved", prompt_event_id: "q", provider_call_id: "c" }),
+      envelope({ type: "fileChange", path: "a", change: "modified" }),
+      envelope({ type: "testResult", pass: 1, fail: 0 }),
+    ]) {
+      const user = envelope({ type: "userMessage", kind: "taskStart", text: "task", digest: "d" });
+      const before = envelope({ type: "agentMessage", text: "before" });
+      const after = envelope({ type: "agentMessage", text: "after" });
+      const rows = toChatTranscriptRows([user, before, boundary, after]);
+      expect(userTurnsFromRows(rows)[0].id).toBe(user.eventId);
+      expect(rows.filter((row) => row.kind === "message")).toHaveLength(3);
+    }
+  });
+
   it("excludes timeline-only events and handles empty input", () => {
     expect(toChatMessages([])).toEqual([]);
     expect(toChatMessages([

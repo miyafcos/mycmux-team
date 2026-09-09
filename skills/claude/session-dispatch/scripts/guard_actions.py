@@ -298,9 +298,11 @@ class Actions:
         summary = ", ".join(f"{row['slug']} ({row['cls']})" for row in queue[:3])
         if len(queue) > 3:
             summary += f"; 他 {len(queue) - 3} 件は guard/escalations.jsonl"
-        detail = f"{len(queue)} 件: " + summary
         evidence = first["detail"].replace("\n", " ")[:36]
-        question = f"{first['slug'][:32]} が {cls} ({evidence}) で止まっています。どうしますか？"
+        detail = f"{len(queue)} 件: " + summary + f" / {evidence}"
+        # ops_common の ask 検証は「。？? の合計 <= 1 かつ末尾が疑問符」。句点を挟むと
+        # question_sentences で弾かれて enqueue exit=2 になる (2026-09-08 に 52 件全滅)。
+        question = f"{first['slug'][:32]} の {cls} をどうしますか？"
         labels = (["台帳を lost にする", "放置"] if cls in {"tab_gone", "pty_dead"} else
                   ["認証を確認する", "保留する"] if cls == "login_required" else
                   ["入力内容を確認", "書きかけを保持"] if cls == "human_draft_idle" else

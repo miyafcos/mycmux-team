@@ -17,6 +17,7 @@ import {
 import {
   __resetLiveBriefStoreForTests,
   connectLiveBriefStore,
+  holdDetailSession,
   LIVE_EVENT_LIST_POLL_MS,
   LIVE_EVENT_POLL_MS,
   stopEventPolling,
@@ -213,6 +214,125 @@ describe("syncDashboardEvents", () => {
     await vi.advanceTimersByTimeAsync(LIVE_EVENT_LIST_POLL_MS * 4);
     expect(eventCalls()).toEqual([]);
   });
+
+  it("keeps every open chat column deep, not just the active one, and drops the slice of a closed column", async () => {
+    mocks.invoke.mockImplementation((command: string, args: { ptySessionIds: string[]; limit: number }) => {
+      if (command !== "get_live_events") return Promise.resolve([]);
+      const count = args.limit === LIVE_EVENT_LIST_LIMIT ? 12 : 200;
+      return Promise.resolve(args.ptySessionIds.map((id) => sessionEvents(id, count)));
+    });
+
+    // 列 s-1・s-2 が開いていて s-1 がアクティブ。
+    syncDashboardEvents({ selectedId: "s-1", visibleIds: ["s-1", "s-2", "s-3"], detailIds: ["s-1", "s-2"] });
+    await settle();
+    expect(eventCalls()).toContainEqual({ ptySessionIds: ["s-1", "s-2"], limit: LIVE_EVENT_DETAIL_LIMIT });
+
+    // s-2 をアクティブにしても s-1 の詳細は取り続ける (前は選択中 1 本だけだった)。
+    mocks.invoke.mockClear();
+    syncDashboardEvents({ selectedId: "s-2", visibleIds: ["s-1", "s-2", "s-3"], detailIds: ["s-1", "s-2"] });
+    await settle();
+    await vi.advanceTimersByTimeAsync(LIVE_EVENT_POLL_MS);
+    const deep = eventCalls().filter((call) => call.limit === LIVE_EVENT_DETAIL_LIMIT);
+    expect(deep.length).toBeGreaterThan(0);
+    for (const call of deep) expect([...call.ptySessionIds].sort()).toEqual(["s-1", "s-2"]);
+    expect(useLiveBriefStore.getState().eventsBySession["s-1"]).toHaveLength(200);
+    expect(useLiveBriefStore.getState().eventsBySession["s-2"]).toHaveLength(200);
+    // 一覧だけのセッションは浅いまま。
+    expect(useLiveBriefStore.getState().eventsBySession["s-3"]).toBeUndefined();
+
+    // s-1 の列を閉じたら、その古い詳細スライスは残さない (一覧の最新 12 件に譲る)。
+    syncDashboardEvents({ selectedId: "s-2", visibleIds: ["s-1", "s-2", "s-3"], detailIds: ["s-2"] });
+    await settle();
+    const state = useLiveBriefStore.getState();
+    expect(state.eventsBySession["s-1"]).toBeUndefined();
+    expect(state.eventsFetchedAtBySession["s-1"]).toBeUndefined();
+    expect(state.eventsBySession["s-2"]).toHaveLength(200);
+  });
+
+  it("does not let a batch that was in flight resurrect a column closed meanwhile", async () => {
+    let release: ((value: unknown) => void) | undefined;
+    mocks.invoke.mockImplementation((command: string, args: { ptySessionIds: string[]; limit: number }) => {
+      if (command !== "get_live_events") return Promise.resolve([]);
+      if (args.limit === LIVE_EVENT_LIST_LIMIT) return Promise.resolve([]);
+      return new Promise((resolve) => { release = resolve; });
+    });
+    syncDashboardEvents({ selectedId: "s-1", visibleIds: ["s-1", "s-2"], detailIds: ["s-1", "s-2"] });
+    await settle();
+    expect(eventCalls().find((call) => call.limit === LIVE_EVENT_DETAIL_LIMIT)?.ptySessionIds).toContain("s-2");
+    // 応答が返る前に s-2 を閉じる。
+    syncDashboardEvents({ selectedId: "s-1", visibleIds: ["s-1", "s-2"], detailIds: ["s-1"] });
+    release?.([sessionEvents("s-1", 5), sessionEvents("s-2", 5)]);
+    await settle();
+    expect(useLiveBriefStore.getState().eventsBySession["s-1"]).toHaveLength(5);
+    expect(useLiveBriefStore.getState().eventsBySession["s-2"]).toBeUndefined();
+  });
+});
+
+describe("holdDetailSession", () => {
+  it("keeps the deep poll and the backend sweep subscribed for a pane with no dashboard open", async () => {
+    mocks.invoke.mockImplementation((command: string, args: { ptySessionIds: string[]; limit: number }) => {
+      if (command !== "get_live_events") return Promise.resolve([]);
+      return Promise.resolve(args.ptySessionIds.map((id) => sessionEvents(id, 3)));
+    });
+    const release = holdDetailSession("pane-a");
+    await settle();
+    // 購読が付く (backend の transcript 読み取りが動く) + 詳細が 1 回目から取れる。
+    expect(backendSubscriptionCalls()).toEqual(["subscribe_live_briefs"]);
+    expect(eventCalls()).toEqual([{ ptySessionIds: ["pane-a"], limit: LIVE_EVENT_DETAIL_LIMIT }]);
+    expect(useLiveBriefStore.getState().eventsBySession["pane-a"]).toHaveLength(3);
+
+    mocks.invoke.mockClear();
+    await vi.advanceTimersByTimeAsync(LIVE_EVENT_POLL_MS * 2);
+    expect(eventCalls()).toHaveLength(2);
+
+    // 解放したら詳細もスライスも購読も畳む。
+    mocks.invoke.mockClear();
+    release();
+    await settle();
+    expect(backendSubscriptionCalls()).toEqual(["unsubscribe_live_briefs"]);
+    expect(useLiveBriefStore.getState().eventsBySession["pane-a"]).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(LIVE_EVENT_POLL_MS * 2);
+    expect(eventCalls()).toEqual([]);
+  });
+
+  it("survives the dashboard opening and closing around it", async () => {
+    const release = holdDetailSession("pane-a");
+    await settle();
+    syncDashboardEvents({ selectedId: "s-1", visibleIds: ["s-1"], detailIds: ["s-1"] });
+    await settle();
+    mocks.invoke.mockClear();
+    await vi.advanceTimersByTimeAsync(LIVE_EVENT_POLL_MS);
+    const deep = eventCalls().filter((call) => call.limit === LIVE_EVENT_DETAIL_LIMIT);
+    expect(deep.some((call) => [...call.ptySessionIds].sort().join(",") === "pane-a,s-1")).toBe(true);
+
+    // ダッシュボードを閉じても pane-a の hold は続き、購読も外れない。
+    stopEventPolling();
+    mocks.invoke.mockClear();
+    await vi.advanceTimersByTimeAsync(LIVE_EVENT_POLL_MS);
+    expect(eventCalls()).toEqual([{ ptySessionIds: ["pane-a"], limit: LIVE_EVENT_DETAIL_LIMIT }]);
+    expect(backendSubscriptionCalls()).toEqual([]);
+
+    release();
+    await settle();
+    expect(backendSubscriptionCalls()).toEqual(["unsubscribe_live_briefs"]);
+  });
+
+  it("shares one poll between two readers of the same session", async () => {
+    const first = holdDetailSession("pane-a");
+    const second = holdDetailSession("pane-a");
+    await settle();
+    mocks.invoke.mockClear();
+    await vi.advanceTimersByTimeAsync(LIVE_EVENT_POLL_MS);
+    expect(eventCalls()).toEqual([{ ptySessionIds: ["pane-a"], limit: LIVE_EVENT_DETAIL_LIMIT }]);
+    first();
+    mocks.invoke.mockClear();
+    await vi.advanceTimersByTimeAsync(LIVE_EVENT_POLL_MS);
+    expect(eventCalls()).toHaveLength(1);
+    second();
+    mocks.invoke.mockClear();
+    await vi.advanceTimersByTimeAsync(LIVE_EVENT_POLL_MS);
+    expect(eventCalls()).toEqual([]);
+  });
 });
 
 describe("connectLiveBriefStore", () => {
@@ -240,6 +360,74 @@ describe("connectLiveBriefStore", () => {
   });
 });
 
+
+describe("connection generations", () => {
+  it("disposes a late listener from an already released StrictMode mount", async () => {
+    const staleDispose = vi.fn();
+    const activeDispose = vi.fn();
+    let completeStale!: (dispose: () => void) => void;
+    mocks.listen.mockImplementationOnce(() => new Promise((resolve) => { completeStale = resolve; }));
+    mocks.listen.mockImplementationOnce(() => Promise.resolve(activeDispose));
+    const first = connectLiveBriefStore();
+    first();
+    const second = connectLiveBriefStore();
+    await settle();
+    completeStale(staleDispose);
+    await settle();
+    expect(staleDispose).toHaveBeenCalledTimes(1);
+    expect(activeDispose).not.toHaveBeenCalled();
+    second();
+    await settle();
+    expect(activeDispose).toHaveBeenCalledTimes(1);
+    expect(staleDispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not mark an omitted session as loaded while the initial sweep is still running", async () => {
+    const release = holdDetailSession("new-pane");
+    await settle();
+    expect(useLiveBriefStore.getState().eventsBySession["new-pane"]).toBeUndefined();
+    expect(useLiveBriefStore.getState().eventsFetchedAtBySession["new-pane"]).toBeUndefined();
+    mocks.invoke.mockImplementation((command: string) => (
+      Promise.resolve(command === "get_live_events" ? [sessionEvents("new-pane", 0)] : [])
+    ));
+    await vi.advanceTimersByTimeAsync(LIVE_EVENT_POLL_MS);
+    expect(useLiveBriefStore.getState().eventsBySession["new-pane"]).toEqual([]);
+    expect(useLiveBriefStore.getState().eventsFetchedAtBySession["new-pane"]).toBeDefined();
+    release();
+  });
+
+  it("balances the dashboard plus two identical panel holds across StrictMode and visibility", async () => {
+    mocks.invoke.mockImplementation((command: string) => (
+      Promise.resolve(command === "get_live_events" ? [sessionEvents("pane", 1)] : [])
+    ));
+    const old = holdDetailSession("pane");
+    old();
+    const dashboard = connectLiveBriefStore();
+    const first = holdDetailSession("pane");
+    const second = holdDetailSession("pane");
+    syncDashboardEvents({ selectedId: "pane", visibleIds: ["pane"], detailIds: ["pane"] });
+    await settle();
+    fakeDocument.visibilityState = "hidden";
+    fireVisibilityChange();
+    await settle();
+    fakeDocument.visibilityState = "visible";
+    fireVisibilityChange();
+    await settle();
+    stopEventPolling();
+    dashboard();
+    first();
+    await vi.advanceTimersByTimeAsync(LIVE_EVENT_POLL_MS);
+    expect(useLiveBriefStore.getState().eventsBySession.pane).toBeDefined();
+    second();
+    second();
+    await vi.advanceTimersByTimeAsync(LIVE_EVENT_POLL_MS);
+    const calls = backendSubscriptionCalls();
+    expect(calls.filter((c) => c === "subscribe_live_briefs").length)
+      .toBe(calls.filter((c) => c === "unsubscribe_live_briefs").length);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
 describe("applyEventsBatch", () => {
   it("writes every session in a single store update", () => {
     const updates = vi.fn();
@@ -257,5 +445,88 @@ describe("applyEventsBatch", () => {
     expect(state.listEventsFetchedAtBySession).toEqual({ "s-1": 1_234, "s-2": 1_234 });
     // 詳細スライスは触らない。
     expect(state.eventsBySession).toEqual({});
+  });
+});
+
+describe("followup subscription and detail regressions", () => {
+  it("retries a failed subscribe and event listener on the next detail tick", async () => {
+    let attempts = 0;
+    mocks.listen.mockRejectedValueOnce(new Error("listen unavailable"));
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "subscribe_live_briefs" && attempts++ === 0) return Promise.reject(new Error("IPC unavailable"));
+      return Promise.resolve([]);
+    });
+    const release = holdDetailSession("pane");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(backendSubscriptionCalls()).toEqual(["subscribe_live_briefs"]);
+    const listenerCalls = mocks.listen.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(LIVE_EVENT_POLL_MS);
+    expect(backendSubscriptionCalls()).toEqual(["subscribe_live_briefs", "subscribe_live_briefs"]);
+    expect(mocks.listen.mock.calls.length).toBe(listenerCalls + 1);
+    await vi.advanceTimersByTimeAsync(LIVE_EVENT_POLL_MS);
+    expect(backendSubscriptionCalls()).toHaveLength(2);
+    release();
+  });
+
+  it("cleans up an uncertain subscribe that fails after the last reader closes", async () => {
+    let reject!: (reason: Error) => void;
+    mocks.invoke.mockImplementation((command: string) => command === "subscribe_live_briefs"
+      ? new Promise((_, fail) => { reject = fail; }) : Promise.resolve([]));
+    const release = connectLiveBriefStore();
+    await settle();
+    release();
+    reject(new Error("reply lost"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(backendSubscriptionCalls()).toEqual(["subscribe_live_briefs", "unsubscribe_live_briefs"]);
+  });
+
+  it("retries failed unsubscribe on visibility and resubscribes after an in-flight release", async () => {
+    let finish!: (value: unknown) => void;
+    const release = connectLiveBriefStore();
+    await vi.advanceTimersByTimeAsync(0);
+    mocks.invoke.mockImplementationOnce(() => Promise.reject(new Error("unsubscribe lost")));
+    fakeDocument.visibilityState = "hidden";
+    fireVisibilityChange();
+    await vi.advanceTimersByTimeAsync(0);
+    fireVisibilityChange();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(backendSubscriptionCalls()).toEqual(["subscribe_live_briefs", "unsubscribe_live_briefs", "unsubscribe_live_briefs"]);
+    fakeDocument.visibilityState = "visible";
+    fireVisibilityChange();
+    await vi.advanceTimersByTimeAsync(0);
+    mocks.invoke.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    release();
+    await settle();
+    const releaseNext = connectLiveBriefStore();
+    finish([]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(backendSubscriptionCalls().slice(-2)).toEqual(["unsubscribe_live_briefs", "subscribe_live_briefs"]);
+    releaseNext();
+  });
+
+  it("polls every detail owner beyond sixty in bounded batches and survives a batch failure", async () => {
+    fakeDocument.visibilityState = "hidden";
+    const ids = Array.from({ length: 125 }, (_, i) => `detail-${i}`);
+    syncDashboardEvents({ selectedId: ids[0], visibleIds: [], detailIds: ids.slice(0, 70) });
+    const releases = ids.slice(65).map(holdDetailSession);
+    mocks.invoke.mockImplementation((command: string, args: { ptySessionIds: string[] }) => {
+      if (command !== "get_live_events") return Promise.resolve([]);
+      return Promise.resolve(args.ptySessionIds.map((id) => sessionEvents(id, 1)));
+    });
+    fakeDocument.visibilityState = "visible";
+    fireVisibilityChange();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(eventCalls().map((call) => call.ptySessionIds.length)).toEqual([60, 60, 5]);
+    expect(eventCalls().flatMap((call) => call.ptySessionIds)).toEqual(ids);
+    expect(Object.keys(useLiveBriefStore.getState().eventsBySession)).toHaveLength(125);
+    mocks.invoke.mockClear();
+    mocks.invoke.mockImplementationOnce(() => Promise.reject(new Error("first batch unavailable")));
+    await vi.advanceTimersByTimeAsync(LIVE_EVENT_POLL_MS);
+    expect(eventCalls().flatMap((call) => call.ptySessionIds)).toEqual(ids);
+    stopEventPolling();
+    expect(useLiveBriefStore.getState().eventsBySession[ids[124]]).toHaveLength(1);
+    releases.forEach((release) => release());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useLiveBriefStore.getState().eventsBySession).toEqual({});
   });
 });

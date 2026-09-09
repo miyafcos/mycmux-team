@@ -5,8 +5,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  syncDashboardEvents: vi.fn(),
-  stopEventPolling: vi.fn(),
+  releaseHold: vi.fn(),
+  holdDetailSession: vi.fn((_sessionId: string) => mocks.releaseHold),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
@@ -16,8 +16,7 @@ vi.mock("../../src/stores/liveBriefStore", async (importActual) => {
   return {
     ...actual,
     connectLiveBriefStore: () => () => {},
-    syncDashboardEvents: mocks.syncDashboardEvents,
-    stopEventPolling: mocks.stopEventPolling,
+    holdDetailSession: mocks.holdDetailSession,
   };
 });
 
@@ -54,8 +53,8 @@ async function mountPanel(onClose = vi.fn()): Promise<ReturnType<typeof vi.fn>> 
 }
 
 beforeEach(() => {
-  mocks.syncDashboardEvents.mockClear();
-  mocks.stopEventPolling.mockClear();
+  mocks.holdDetailSession.mockClear();
+  mocks.releaseHold.mockClear();
   useDashboardViewStore.setState({ open: false, userTurnRequests: {}, userTurnRequestSeq: 0 });
   useLiveBriefStore.setState({
     eventsBySession: { [SESSION]: [event("e1", "最初の指示", 1), event("e2", "次の指示", 2)] },
@@ -78,19 +77,38 @@ describe("TerminalTranscriptPanel", () => {
     expect(document.body.textContent).toContain(terminalTurnStrings.conversationHistory);
   });
 
-  it("borrows the detail poll while open and hands it back on close", async () => {
+  it("holds its session's deep poll while open and releases it on close", async () => {
     await mountPanel();
-    expect(mocks.syncDashboardEvents).toHaveBeenCalledWith({ selectedId: SESSION, visibleIds: [SESSION] });
-    expect(mocks.stopEventPolling).not.toHaveBeenCalled();
+    expect(mocks.holdDetailSession).toHaveBeenCalledWith(SESSION);
+    expect(mocks.releaseHold).not.toHaveBeenCalled();
     await act(async () => root?.unmount());
     root = null;
-    expect(mocks.stopEventPolling).toHaveBeenCalled();
+    expect(mocks.releaseHold).toHaveBeenCalledTimes(1);
   });
 
-  it("leaves the poll alone while the dashboard owns it", async () => {
+  it("keeps its own hold even while the dashboard is open, so the pane never reads a frozen ring", async () => {
     useDashboardViewStore.setState({ open: true });
     await mountPanel();
-    expect(mocks.syncDashboardEvents).not.toHaveBeenCalled();
+    expect(mocks.holdDetailSession).toHaveBeenCalledWith(SESSION);
+  });
+
+
+  it("does not resurrect the shallow old conversation after an empty detail response", async () => {
+    useLiveBriefStore.setState({
+      eventsBySession: { [SESSION]: [] },
+      eventsFetchedAtBySession: { [SESSION]: 123 },
+      listEventsBySession: { [SESSION]: [event("old", "stale conversation")] },
+    });
+    await mountPanel();
+    expect(document.body.textContent).not.toContain("stale conversation");
+    expect(document.querySelector("[data-dashboard-chat-empty]")).not.toBeNull();
+  });
+
+  it("consumes a bounded step against a loaded empty detail without waiting forever", async () => {
+    useLiveBriefStore.setState({ eventsBySession: { [SESSION]: [] }, eventsFetchedAtBySession: { [SESSION]: 123 } });
+    useDashboardViewStore.getState().requestUserTurnStep(TAB, -1);
+    await mountPanel();
+    expect(useDashboardViewStore.getState().userTurnRequests[TAB]).toBeUndefined();
   });
 
   it("closes on Escape", async () => {

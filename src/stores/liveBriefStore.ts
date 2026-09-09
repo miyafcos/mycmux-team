@@ -14,7 +14,7 @@ import {
   type SemanticEventEnvelope,
 } from "../lib/livebrief";
 
-/** 詳細 (選択中 1 セッション) の取得間隔。 */
+/** 詳細 (開いている会話すべて) の取得間隔。 */
 export const LIVE_EVENT_POLL_MS = 1_500;
 /** 一覧 (表示中の全セッション) の取得間隔。動きが無ければ下の上限まで伸ばす。 */
 export const LIVE_EVENT_LIST_POLL_MS = 3_000;
@@ -28,7 +28,7 @@ type BriefMap = Record<string, LiveSessionBrief>;
 
 interface LiveBriefStoreState {
   briefsBySession: BriefMap;
-  /** 詳細 (選択中・深い limit) 専用のイベント。一覧の浅い取得で踏まない。 */
+  /** 詳細 (開いている会話・深い limit) 専用のイベント。一覧の浅い取得で踏まない。 */
   eventsBySession: Record<string, SemanticEventEnvelope[]>;
   /** イベントを取得した時刻 (ms)。取得済みかどうかの判定にも使う。 */
   eventsFetchedAtBySession: Record<string, number>;
@@ -38,7 +38,10 @@ interface LiveBriefStoreState {
   applyBrief: (brief: LiveSessionBrief) => void;
   applyBriefs: (briefs: readonly LiveSessionBrief[]) => void;
   applyEvents: (sessionId: string, events: SemanticEventEnvelope[], fetchedAt: number) => void;
+  applyDetailBatch: (entries: ReadonlyArray<{ ptySessionId: string; events: SemanticEventEnvelope[] }>, fetchedAt: number) => void;
   applyEventsBatch: (entries: readonly LiveSessionEvents[], fetchedAt: number) => void;
+  /** 詳細スライスを `keep` に無いセッションぶんだけ捨てる。取得が止まった古い行を最新より優先させない。 */
+  dropDetailExcept: (keep: ReadonlySet<string>) => void;
   reset: () => void;
 }
 
@@ -70,6 +73,17 @@ export const useLiveBriefStore = create<LiveBriefStoreState>((set) => ({
     eventsBySession: { ...state.eventsBySession, [sessionId]: events },
     eventsFetchedAtBySession: { ...state.eventsFetchedAtBySession, [sessionId]: fetchedAt },
   })),
+  // 1 回の set() で全キーを入れ替える (開いている会話の数ぶん再描画を撃たない)。
+  applyDetailBatch: (entries, fetchedAt) => set((state) => {
+    if (!entries.length) return state;
+    const eventsBySession = { ...state.eventsBySession };
+    const eventsFetchedAtBySession = { ...state.eventsFetchedAtBySession };
+    for (const entry of entries) {
+      eventsBySession[entry.ptySessionId] = entry.events;
+      eventsFetchedAtBySession[entry.ptySessionId] = fetchedAt;
+    }
+    return { eventsBySession, eventsFetchedAtBySession };
+  }),
   // 1 回の set() で全キーを入れ替える (セッション数ぶん再描画を撃たない)。
   applyEventsBatch: (entries, fetchedAt) => set((state) => {
     if (!entries.length) return state;
@@ -80,6 +94,16 @@ export const useLiveBriefStore = create<LiveBriefStoreState>((set) => ({
       listEventsFetchedAtBySession[entry.ptySessionId] = fetchedAt;
     }
     return { listEventsBySession, listEventsFetchedAtBySession };
+  }),
+  dropDetailExcept: (keep) => set((state) => {
+    const stale = Object.keys(state.eventsBySession).filter((sessionId) => !keep.has(sessionId));
+    const staleFetched = Object.keys(state.eventsFetchedAtBySession).filter((sessionId) => !keep.has(sessionId));
+    if (!stale.length && !staleFetched.length) return state;
+    const eventsBySession = { ...state.eventsBySession };
+    const eventsFetchedAtBySession = { ...state.eventsFetchedAtBySession };
+    for (const sessionId of stale) delete eventsBySession[sessionId];
+    for (const sessionId of staleFetched) delete eventsFetchedAtBySession[sessionId];
+    return { eventsBySession, eventsFetchedAtBySession };
   }),
   reset: () => set({
     briefsBySession: {},
@@ -93,22 +117,52 @@ export const useLiveBriefStore = create<LiveBriefStoreState>((set) => ({
 // --- livebrief://update の購読はアプリ全体で 1 本だけ持つ ------------------
 let subscriberCount = 0;
 let unlisten: UnlistenFn | undefined;
-let unlistenPending: Promise<UnlistenFn> | undefined;
-let backendSubscribed = false;
+let connectionGeneration = 0;
+let backendSubscribed: boolean | undefined = false;
+let backendSubscriptionInFlight = false;
 let backendSubscriptionQueue: Promise<void> = Promise.resolve();
 let briefVisibilityHooked = false;
+let listenerPendingGeneration: number | undefined;
 
 function updateBackendSubscription(): void {
   const shouldSubscribe = subscriberCount > 0 && !isHidden();
-  if (backendSubscribed === shouldSubscribe) return;
-  backendSubscribed = shouldSubscribe;
-  backendSubscriptionQueue = backendSubscriptionQueue
+  if (backendSubscriptionInFlight || backendSubscribed === shouldSubscribe) return;
+  backendSubscriptionInFlight = true;
+  backendSubscriptionQueue = Promise.resolve()
     .then(() => shouldSubscribe ? subscribeLiveBriefs() : unsubscribeLiveBriefs())
-    .catch(() => {});
+    .then(() => { backendSubscribed = shouldSubscribe; })
+    .catch(() => { backendSubscribed = undefined; })
+    .finally(() => {
+      backendSubscriptionInFlight = false;
+      // Reconcile a visibility/release change that happened during the IPC.
+      // A failure with unchanged intent waits for the next poll or visibility event.
+      if (shouldSubscribe !== (subscriberCount > 0 && !isHidden())) updateBackendSubscription();
+    });
+}
+
+function ensureBriefListener(): void {
+  if (!subscriberCount || unlisten || listenerPendingGeneration === connectionGeneration) return;
+  const generation = connectionGeneration;
+  listenerPendingGeneration = generation;
+  void onLiveBriefUpdate((brief) => {
+    if (generation === connectionGeneration && subscriberCount > 0) {
+      useLiveBriefStore.getState().applyBrief(brief);
+    }
+  }).then((dispose) => {
+    if (generation !== connectionGeneration || subscriberCount === 0) dispose();
+    else unlisten = dispose;
+  }).catch(() => {}).finally(() => {
+    if (listenerPendingGeneration === generation) listenerPendingGeneration = undefined;
+  });
+}
+
+function retryBriefConnection(): void {
+  updateBackendSubscription();
+  ensureBriefListener();
 }
 
 function onBriefVisibilityChange(): void {
-  updateBackendSubscription();
+  retryBriefConnection();
   if (subscriberCount > 0 && !isHidden()) {
     void refreshLiveBriefs();
   }
@@ -142,11 +196,8 @@ export function connectLiveBriefStore(): () => void {
   if (subscriberCount === 1) {
     attachBriefVisibilityListener();
     updateBackendSubscription();
-    unlistenPending = onLiveBriefUpdate((brief) => useLiveBriefStore.getState().applyBrief(brief));
-    void unlistenPending.then((dispose) => {
-      if (subscriberCount === 0) dispose();
-      else unlisten = dispose;
-    }).catch(() => {});
+    connectionGeneration += 1;
+    ensureBriefListener();
     if (!isHidden()) void refreshLiveBriefs();
   }
   let released = false;
@@ -159,14 +210,21 @@ export function connectLiveBriefStore(): () => void {
     detachBriefVisibilityListener();
     unlisten?.();
     unlisten = undefined;
-    unlistenPending = undefined;
+    connectionGeneration += 1;
   };
 }
 
-// --- イベント取得は「一覧バッチ」と「選択中 1 本」の 2 系統 -----------------
+// --- イベント取得は「一覧バッチ」と「詳細バッチ」の 2 系統 ------------------
 // 別スライス (listEventsBySession / eventsBySession) に書き分けるので、浅い一覧が
 // 深い詳細を上書きすることが構造上ありえない。
-let detailSessionId: string | null = null;
+//
+// Detail ownership covers every open conversation, fetched in bounded batches:
+// (アクティブかどうかを問わない) + 選択中 + ペインの会話パネルが hold 中のもの。
+// 選択中 1 本だけを深く取っていた頃は、別の列をアクティブにした瞬間から前の列の
+// 詳細スライスが二度と更新されないのに「空でない」ので一覧より優先され続け、
+// 非アクティブ列の会話がその時点で止まって見えた。
+let dashboardDetailIds: string[] = [];
+const detailHolds = new Map<string, number>();
 let detailTimer: ReturnType<typeof setInterval> | undefined;
 let detailInFlight = false;
 
@@ -177,6 +235,15 @@ let listIntervalMs = LIVE_EVENT_LIST_POLL_MS;
 let listUnchangedStreak = 0;
 let lastListRevisions: Map<string, number> | null = null;
 let visibilityHooked = false;
+
+/**
+ * ポーリング中は backend の transcript 読み取り (livebrief スレッド) を購読で
+ * 起こしておく。`get_live_events` は backend が既に読んだ ring を返すだけなので、
+ * 購読者が居ないと (ダッシュボードを閉じたままペインの会話パネルを開いたとき)
+ * 止まった ring を 1.5 秒ごとに読み直すだけになり、会話が最後に読んだ時点で
+ * 固まって見えた。
+ */
+let pollingHold: (() => void) | undefined;
 
 function isHidden(): boolean {
   return typeof document !== "undefined" && document.visibilityState === "hidden";
@@ -192,16 +259,53 @@ function clampVisibleIds(ids: readonly string[]): string[] {
   return unique;
 }
 
-/** 1 回だけ選択中セッションのイベントを取り直す。詳細スライスにだけ書く。 */
-export async function ensureEvents(sessionId: string, limit: number = LIVE_EVENT_DETAIL_LIMIT): Promise<void> {
-  if (detailInFlight) return;
+function uniqueDetailIds(ids: readonly string[]): string[] {
+  return [...new Set(ids.filter(Boolean))];
+}
+
+/** 今この瞬間に深く取るべきセッション (ダッシュボード側 + hold 中)。 */
+function detailIds(): string[] {
+  return uniqueDetailIds([...dashboardDetailIds, ...detailHolds.keys()]);
+}
+
+function reconcilePollingHold(): void {
+  const active = listTimer !== undefined || detailTimer !== undefined;
+  if (active && !pollingHold) pollingHold = connectLiveBriefStore();
+  else if (!active && pollingHold) {
+    const release = pollingHold;
+    pollingHold = undefined;
+    release();
+  }
+}
+
+/** 集合から外れたセッションの詳細スライスを捨てる (古い行を最新の一覧より優先させない)。 */
+function pruneDetailSlices(): void {
+  useLiveBriefStore.getState().dropDetailExcept(new Set(detailIds()));
+}
+
+/** Refresh every owned detail session, with at most sixty ids in each IPC. */
+async function fetchDetailBatch(): Promise<void> {
+  retryBriefConnection();
+  const ids = detailIds();
+  if (detailInFlight || !ids.length) return;
   detailInFlight = true;
   try {
-    const snapshot = await getLiveEvents([sessionId], limit);
-    const entry = snapshot.find((item) => item.ptySessionId === sessionId);
-    useLiveBriefStore.getState().applyEvents(sessionId, entry?.events ?? [], Date.now());
-  } catch {
-    // 取得できない間は前回の行を出したままにする (画面を空にしない)。
+    for (let offset = 0; offset < ids.length; offset += LIVE_EVENT_VISIBLE_LIMIT) {
+      if (isHidden()) break;
+      const wantedBeforeRequest = new Set(detailIds());
+      const batch = ids.slice(offset, offset + LIVE_EVENT_VISIBLE_LIMIT).filter((id) => wantedBeforeRequest.has(id));
+      if (!batch.length) continue;
+      try {
+        const snapshot = await getLiveEvents(batch, LIVE_EVENT_DETAIL_LIMIT);
+        const wanted = new Set(detailIds());
+        const requested = new Set(batch);
+        // Only an explicit entry confirms a loaded transcript; closed columns stay absent.
+        const entries = snapshot.filter((entry) => requested.has(entry.ptySessionId) && wanted.has(entry.ptySessionId));
+        useLiveBriefStore.getState().applyDetailBatch(entries, Date.now());
+      } catch {
+        // A failed batch must not starve later held sessions.
+      }
+    }
   } finally {
     detailInFlight = false;
   }
@@ -209,6 +313,7 @@ export async function ensureEvents(sessionId: string, limit: number = LIVE_EVENT
 
 /** 表示中セッションぶんを 1 往復で取り直す。一覧スライスにだけ書く。 */
 async function fetchListBatch(): Promise<void> {
+  retryBriefConnection();
   if (listInFlight || !listIds.length) return;
   listInFlight = true;
   try {
@@ -273,21 +378,21 @@ function startListPolling(): void {
 
 function startDetailPolling(): void {
   stopDetailTimer();
-  if (!detailSessionId || isHidden()) return;
-  void ensureEvents(detailSessionId);
-  detailTimer = setInterval(() => {
-    if (detailSessionId) void ensureEvents(detailSessionId);
-  }, LIVE_EVENT_POLL_MS);
+  if (!detailIds().length || isHidden()) return;
+  void fetchDetailBatch();
+  detailTimer = setInterval(() => { void fetchDetailBatch(); }, LIVE_EVENT_POLL_MS);
 }
 
 function onVisibilityChange(): void {
   if (isHidden()) {
     stopListTimer();
     stopDetailTimer();
+    reconcilePollingHold();
     return;
   }
   startListPolling();
   startDetailPolling();
+  reconcilePollingHold();
 }
 
 function attachVisibilityListener(): void {
@@ -302,11 +407,21 @@ function detachVisibilityListener(): void {
   document.removeEventListener("visibilitychange", onVisibilityChange);
 }
 
+/** 何も取るものが無くなったら聴取ごと畳む。 */
+function settleAfterChange(): void {
+  if (!detailIds().length) stopDetailTimer();
+  if (!listIds.length) stopListTimer();
+  reconcilePollingHold();
+  if (listTimer === undefined && detailTimer === undefined && !listIds.length && !detailIds().length) {
+    detachVisibilityListener();
+  }
+}
+
 /**
  * ダッシュボードが要るイベント取得をまとめて張り直す。
- * 一覧 = 表示中の全セッションを浅く、詳細 = 選択中 1 本だけ深く。
+ * 一覧 = 表示中の全セッションを浅く、詳細 = 開いている列 + 選択中を深く。
  */
-export function syncDashboardEvents(opts: { selectedId: string | null; visibleIds: string[] }): void {
+export function syncDashboardEvents(opts: { selectedId: string | null; visibleIds: string[]; detailIds?: readonly string[] }): void {
   attachVisibilityListener();
 
   const ids = clampVisibleIds(opts.visibleIds);
@@ -318,35 +433,65 @@ export function syncDashboardEvents(opts: { selectedId: string | null; visibleId
     listIntervalMs = LIVE_EVENT_LIST_POLL_MS;
   }
   if (listChanged || (ids.length && listTimer === undefined && !isHidden())) startListPolling();
-  if (!ids.length) stopListTimer();
 
-  const detailChanged = opts.selectedId !== detailSessionId;
-  detailSessionId = opts.selectedId;
-  if (detailChanged || (detailSessionId && detailTimer === undefined && !isHidden())) startDetailPolling();
-  if (!detailSessionId) stopDetailTimer();
+  const wantedDetail = uniqueDetailIds([opts.selectedId ?? "", ...(opts.detailIds ?? [])]);
+  const detailChanged = wantedDetail.join(",") !== dashboardDetailIds.join(",");
+  dashboardDetailIds = wantedDetail;
+  if (detailChanged) pruneDetailSlices();
+  if (detailChanged || (detailIds().length && detailTimer === undefined && !isHidden())) startDetailPolling();
+
+  settleAfterChange();
 }
 
-/** 一覧・詳細どちらのポーリングも止める。 */
+/**
+ * 1 セッションの詳細を、ダッシュボードの開閉と無関係に取り続ける (ペインの
+ * 会話パネル用)。返り値で解放する。同じセッションを何枚が hold しても取得は 1 本。
+ */
+export function holdDetailSession(sessionId: string): () => void {
+  attachVisibilityListener();
+  const fresh = !detailIds().includes(sessionId);
+  detailHolds.set(sessionId, (detailHolds.get(sessionId) ?? 0) + 1);
+  if (fresh || (detailTimer === undefined && !isHidden())) startDetailPolling();
+  reconcilePollingHold();
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const remaining = (detailHolds.get(sessionId) ?? 1) - 1;
+    if (remaining <= 0) detailHolds.delete(sessionId);
+    else detailHolds.set(sessionId, remaining);
+    pruneDetailSlices();
+    settleAfterChange();
+  };
+}
+
+/** ダッシュボード側の一覧・詳細を止める。パネルの hold は残る。 */
 export function stopEventPolling(): void {
-  stopListTimer();
-  stopDetailTimer();
   listIds = [];
-  detailSessionId = null;
+  dashboardDetailIds = [];
   listIntervalMs = LIVE_EVENT_LIST_POLL_MS;
   listUnchangedStreak = 0;
   lastListRevisions = null;
-  detachVisibilityListener();
+  stopListTimer();
+  pruneDetailSlices();
+  settleAfterChange();
 }
 
 export function __resetLiveBriefStoreForTests(): void {
+  detailHolds.clear();
+  pollingHold = undefined;
   stopEventPolling();
+  stopDetailTimer();
+  detachVisibilityListener();
   listInFlight = false;
   detailInFlight = false;
   subscriberCount = 0;
   backendSubscribed = false;
+  backendSubscriptionInFlight = false;
+  listenerPendingGeneration = undefined;
   backendSubscriptionQueue = Promise.resolve();
   detachBriefVisibilityListener();
   unlisten = undefined;
-  unlistenPending = undefined;
+  connectionGeneration += 1;
   useLiveBriefStore.getState().reset();
 }

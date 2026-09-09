@@ -764,7 +764,7 @@ $Options = @(
   New-MycmuxOption "claude-codex (Open Models)" @("claude-codex", "--backend", "fcc") "claude-codex" "claude-codex-open"
   # Gemini CLI was sunset for individual accounts on 2026-06-18; agy (Antigravity CLI) replaces it
   New-MycmuxOption "Antigravity (agy)" @("agy") $null "agy"
-  New-MycmuxOption "Hermes" @("$env:LOCALAPPDATA\hermesin\hermes.exe") $null "hermes"
+  New-MycmuxOption "Hermes" @("$env:LOCALAPPDATA\hermes\bin\hermes.exe") $null "hermes"
   # Not processes: these open a web tab through the socket, handled before exec.
   New-MycmuxOption "ChatGPT (Web)" @("__web_chatgpt__") $null
   New-MycmuxOption "Gemini (Web)" @("__web_gemini__") $null

@@ -71,6 +71,7 @@ struct AgentDescendantCandidate {
 pub(super) struct AgentSessionAttribution {
     pub(super) agent_kind: &'static str,
     pub(super) session_id: String,
+    hook_confirmed: bool,
 }
 
 impl AgentSessionAttribution {
@@ -78,6 +79,7 @@ impl AgentSessionAttribution {
         Self {
             agent_kind,
             session_id,
+            hook_confirmed: false,
         }
     }
 }
@@ -135,7 +137,7 @@ pub(super) fn mapped_agent_session_attribution_for_pane(
         .get(pty_session_key)
         .filter(|mapping| mapping_matches_detected_agent_kind(mapping, agent_kind))
         .filter(|mapping| {
-            !excluded_session_ids.contains(&mapping.session_id)
+            mapping.hook_confirmed || !excluded_session_ids.contains(&mapping.session_id)
                 || exact_session_id == Some(mapping.session_id.as_str())
         })
         .map(|mapping| {
@@ -146,7 +148,9 @@ pub(super) fn mapped_agent_session_attribution_for_pane(
                 Some("claude") | None => "claude",
                 Some(_) => unreachable!("incompatible mapping kind was already filtered"),
             };
-            AgentSessionAttribution::new(agent_kind, mapping.session_id.clone())
+            let mut attribution = AgentSessionAttribution::new(agent_kind, mapping.session_id.clone());
+            attribution.hook_confirmed = mapping.hook_confirmed;
+            attribution
         })
 }
 
@@ -175,6 +179,45 @@ pub(super) fn claude_family_kind_for(
     }
 }
 
+/// Resolve both native Claude and explicitly detected claude-codex processes.
+pub(super) fn claude_process_kind_for(
+    process_kind: DetectedAgentKind,
+    previous_agent_kind: Option<&str>,
+    previous_session_id: Option<&str>,
+    candidate: &str,
+) -> &'static str {
+    if process_kind == DetectedAgentKind::ClaudeCodex {
+        "claude-codex"
+    } else {
+        claude_family_kind_for(previous_agent_kind, previous_session_id, candidate)
+    }
+}
+
+/// Once a provider root is known, a successor must stay in that root.
+pub(super) fn claude_process_uses_codex_root(
+    kind: DetectedAgentKind,
+    pinned: Option<&AgentSessionAttribution>,
+) -> bool {
+    kind == DetectedAgentKind::ClaudeCodex
+        || pinned.is_some_and(|value| value.agent_kind == "claude-codex")
+}
+
+/// A native Claude process may continue an already grounded claude-codex
+/// mapping. A scan alone must not change a plain Claude pane's provider.
+pub(super) fn mapping_kind_is_grounded_for_pane(
+    mappings: &HashMap<String, AgentSessionMapping>,
+    pane: &str,
+    mapping_kind: &str,
+    detected_kind: DetectedAgentKind,
+) -> bool {
+    mapping_kind_is_grounded_in_detected_process(mapping_kind, detected_kind)
+        || (detected_kind == DetectedAgentKind::Claude
+            && mapping_kind == "claude-codex"
+            && mappings.get(pane).is_some_and(|mapping| {
+                mapping.agent_kind.as_deref() == Some("claude-codex")
+            }))
+}
+
 /// Pick the session id a Claude pane is showing.
 ///
 /// A pane is normally pinned to the id captured at launch — the launcher's
@@ -191,20 +234,24 @@ pub(super) fn claude_family_kind_for(
 /// that another pane already owns. A silent pin is still returned as the last
 /// resort when the scan finds nothing: a frozen transcript beats none.
 pub(super) fn select_claude_process_attribution<F, S>(
+    process_kind: DetectedAgentKind,
     mapped: Option<AgentSessionAttribution>,
     exact_session_id: Option<String>,
     cached_session_id: Option<String>,
     previous_agent_kind: Option<&str>,
     previous_session_id: Option<String>,
     excluded_session_ids: &HashSet<String>,
-    transcript_is_stale: S,
+    mut transcript_is_stale: S,
     detect: F,
 ) -> Option<AgentSessionAttribution>
 where
     F: FnOnce() -> Option<AgentSessionAttribution>,
-    S: Fn(&str, &str) -> bool,
+    S: FnMut(&str, &str) -> bool,
 {
-    let is_stale =
+    if mapped.as_ref().is_some_and(|mapping| mapping.hook_confirmed) {
+        return mapped;
+    }
+    let mut is_stale =
         |value: &AgentSessionAttribution| transcript_is_stale(value.agent_kind, &value.session_id);
     let mapped_is_stale = mapped.as_ref().is_some_and(|value| is_stale(value));
 
@@ -213,7 +260,8 @@ where
     let cached_session_id =
         cached_session_id.filter(|candidate| !excluded_session_ids.contains(candidate));
     let family_kind = |candidate: &str| {
-        claude_family_kind_for(
+        claude_process_kind_for(
+            process_kind,
             previous_agent_kind,
             previous_session_id.as_deref(),
             candidate,
@@ -396,7 +444,10 @@ pub(super) fn preferred_known_agent_session_id(
     agent_kind: DetectedAgentKind,
     excluded_session_ids: &HashSet<String>,
 ) -> Option<String> {
-    exact_session_id
+    mappings.get(pty_session_key)
+        .filter(|mapping| mapping.hook_confirmed && mapping_matches_detected_agent_kind(mapping, agent_kind))
+        .map(|mapping| mapping.session_id.clone())
+        .or(exact_session_id)
         .or_else(|| {
             mapped_agent_session_id_for_pane(
                 mappings,
@@ -817,6 +868,45 @@ mod tests {
             select_agent_descendant(&[shallow_executable, deep_interpreter], Pid::from_u32(99))
                 .unwrap();
         assert_eq!(selected.kind, DetectedAgentKind::Codex);
+    }
+
+    #[test]
+    fn grounded_claude_codex_rollover_can_persist_under_a_native_claude_process() {
+        let pinned = AgentSessionAttribution::new("claude-codex", "old".into());
+        assert!(claude_process_uses_codex_root(DetectedAgentKind::Claude, Some(&pinned)));
+        assert!(claude_process_uses_codex_root(DetectedAgentKind::ClaudeCodex, None));
+        assert!(!claude_process_uses_codex_root(DetectedAgentKind::Claude, None));
+        let mappings = HashMap::from([("pane".to_string(), AgentSessionMapping {
+            hook_confirmed: false,
+            agent_kind: Some("claude-codex".to_string()), session_id: "old".to_string(),
+        })]);
+        assert!(mapping_kind_is_grounded_for_pane(&mappings, "pane", "claude-codex", DetectedAgentKind::Claude));
+        assert!(should_write_agent_session_mapping(&mappings, "pane", "claude-codex", "new"));
+        assert!(!mapping_kind_is_grounded_for_pane(&HashMap::new(), "pane", "claude-codex", DetectedAgentKind::Claude));
+        assert!(!mapping_kind_is_grounded_for_pane(&mappings, "other-pane", "claude-codex", DetectedAgentKind::Claude));
+        assert!(!mapping_kind_is_grounded_for_pane(&mappings, "pane", "claude-codex", DetectedAgentKind::Codex));
+    }
+
+    #[test]
+    fn explicitly_detected_claude_codex_uses_rollover_and_keeps_its_provider() {
+        let old = AgentSessionAttribution::new("claude-codex", "old".to_string());
+        let next = select_claude_process_attribution(
+            DetectedAgentKind::ClaudeCodex, Some(old.clone()), Some("old".into()),
+            None, None, None, &HashSet::new(),
+            |kind, id| { assert_eq!(kind, "claude-codex"); id == "old" },
+            || Some(AgentSessionAttribution::new("claude-codex", "new".into())),
+        );
+        let mut pending = HashMap::new();
+        let first = confirm_agent_session_switch(&mut pending, "pane", Pid::from_u32(1), Some(&old), next.clone());
+        assert_eq!(first.attribution, Some(old.clone()));
+        let second = confirm_agent_session_switch(&mut pending, "pane", Pid::from_u32(1), Some(&old), next);
+        assert_eq!(second.attribution.unwrap().session_id, "new");
+        assert_eq!(second.switched_from.as_deref(), Some("old"));
+        let fresh = select_claude_process_attribution(
+            DetectedAgentKind::ClaudeCodex, None, Some("fresh".into()),
+            None, None, None, &HashSet::new(), |kind, _| { assert_eq!(kind, "claude-codex"); false }, || None,
+        ).unwrap();
+        assert_eq!(fresh.agent_kind, "claude-codex");
     }
 
     #[test]

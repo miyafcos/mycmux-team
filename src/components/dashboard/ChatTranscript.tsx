@@ -6,6 +6,7 @@ import { DashboardLinkedText, type DashboardLinkContext } from "./DashboardLinke
 import { MarkdownView } from "./MarkdownView";
 import {
   toChatTranscriptRows,
+  chatMessageIdForEvent,
   userTurnIndexFromTops,
   userTurnLabelFrom,
   userTurnsFromRows,
@@ -194,14 +195,24 @@ export function ChatTranscript({
   detailLoaded?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const findEventElement = useCallback((eventId: string): HTMLElement | undefined => (
+    Array.from(scrollRef.current?.querySelectorAll<HTMLElement>("[data-dashboard-event]") ?? [])
+      .find((element) => element.dataset.dashboardEvent === eventId)
+  ), []);
+  const targetMessageId = targetEventId ? chatMessageIdForEvent(events, targetEventId) : null;
+  const lastSourceRequestRef = useRef<string | null>(null);
   const followRef = useRef(true);
   const navRafRef = useRef<number | null>(null);
   const lastNavRef = useRef<UserTurnNavState | null>(null);
   const [expandedToolGroups, setExpandedToolGroups] = useState<ReadonlySet<string>>(() => new Set());
-  const rows = useMemo(() => toChatTranscriptRows(events), [events]);
+  const rows = useMemo(() => toChatTranscriptRows(events, agentKind), [events, agentKind]);
   const userTurns = useMemo(() => userTurnsFromRows(rows), [rows]);
   const lastRow = rows.length ? rows[rows.length - 1] : undefined;
   const lastId = lastRow?.kind === "message" ? lastRow.message.id : lastRow?.id;
+  // A new event can grow the last row without adding one (a second agent
+  // message merged into the last bubble, another tool folded into the last
+  // group), so following the bottom keys on the newest event, not the row count.
+  const lastEventId = events.length ? events[events.length - 1].eventId : undefined;
   const [userTurnNav, setUserTurnNav] = useState<UserTurnNavState | null>(() => {
     if (!userTurns.length) return null;
     const index = userTurns.length - 1;
@@ -216,7 +227,7 @@ export function ChatTranscript({
   });
 
   const refreshUserTurnNav = useCallback(() => {
-    if (navRafRef.current != null) return;
+    if (navRafRef.current != null) cancelAnimationFrame(navRafRef.current);
     navRafRef.current = requestAnimationFrame(() => {
       navRafRef.current = null;
       if (!userTurns.length) {
@@ -230,7 +241,7 @@ export function ChatTranscript({
       const containerTop = node?.getBoundingClientRect().top ?? 0;
       const followingBottom = !node || followRef.current;
       const tops = userTurns.map((turn) => {
-        const element = document.getElementById(`dashboard-event-${turn.id}`);
+        const element = findEventElement(turn.id);
         return element?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY;
       });
       const index = userTurnIndexFromTops(tops, containerTop, followingBottom);
@@ -252,7 +263,7 @@ export function ChatTranscript({
       lastNavRef.current = next;
       setUserTurnNav(next);
     });
-  }, [userTurns]);
+  }, [findEventElement, userTurns]);
 
   const onScroll = useCallback(() => {
     const node = scrollRef.current;
@@ -269,16 +280,26 @@ export function ChatTranscript({
     }
     node.scrollTop = node.scrollHeight;
     refreshUserTurnNav();
-  }, [lastId, refreshUserTurnNav, rows.length]);
+  }, [lastEventId, lastId, refreshUserTurnNav, rows.length]);
 
   useEffect(() => () => {
     if (navRafRef.current != null) cancelAnimationFrame(navRafRef.current);
+    navRafRef.current = null;
   }, []);
 
   useEffect(() => {
-    if (!targetEventId) return;
-    document.getElementById(`dashboard-event-${targetEventId}`)?.scrollIntoView({ block: "nearest" });
-  }, [targetEventId, targetEventRequest, rows]);
+    if (!targetEventId || !targetMessageId) {
+      lastSourceRequestRef.current = null;
+      return;
+    }
+    const requestKey = JSON.stringify([sessionId, targetEventId, targetEventRequest]);
+    if (lastSourceRequestRef.current === requestKey) return;
+    const node = findEventElement(targetMessageId);
+    if (!node) return; // The deeper event slice may still be on its way.
+    lastSourceRequestRef.current = requestKey;
+    followRef.current = false;
+    node.scrollIntoView({ block: "nearest" });
+  }, [findEventElement, sessionId, targetEventId, targetMessageId, targetEventRequest, rows]);
 
   const onToolGroupToggle = useCallback((key: string, open: boolean) => {
     setExpandedToolGroups((current) => {
@@ -291,9 +312,9 @@ export function ChatTranscript({
 
   const scrollToUserTurn = useCallback((target: ChatMessage) => {
     followRef.current = false;
-    document.getElementById(`dashboard-event-${target.id}`)?.scrollIntoView({ block: "start" });
+    findEventElement(target.id)?.scrollIntoView({ block: "start" });
     refreshUserTurnNav();
-  }, [refreshUserTurnNav]);
+  }, [findEventElement, refreshUserTurnNav]);
 
   const jumpUserTurn = useCallback((direction: -1 | 1) => {
     const currentIndex = lastNavRef.current?.index ?? userTurnNav?.index ?? 0;
@@ -309,9 +330,9 @@ export function ChatTranscript({
     const nextIndex = currentIndex + direction;
     const target = userTurns[nextIndex];
     if (!target) return;
-    document.getElementById(`dashboard-event-${target.id}`)?.scrollIntoView({ block: "start" });
+    findEventElement(target.id)?.scrollIntoView({ block: "start" });
     refreshUserTurnNav();
-  }, [refreshUserTurnNav, userTurnNav?.index, userTurns]);
+  }, [findEventElement, refreshUserTurnNav, userTurnNav?.index, userTurns]);
 
   const userTurnRequest = useDashboardViewStore((state) => (
     tabId ? state.userTurnRequests[tabId] ?? null : null
@@ -379,7 +400,7 @@ export function ChatTranscript({
       <div className="cmux-dashboard-msg-plain">{syntheticSource.text}</div>
     </div> : null}
     {rows.map((row) => row.kind === "message"
-      ? row.message.role === "question" ? null : <ChatBubble key={row.message.id} message={row.message} context={linkContext} highlighted={row.message.id === targetEventId} />
+      ? row.message.role === "question" ? null : <ChatBubble key={row.message.id} message={row.message} context={linkContext} highlighted={row.message.id === targetMessageId} />
       : <details key={row.id} className="cmux-dashboard-toolfold" open={expandedToolGroups.has(`${sessionId ?? "none"}:${row.id}`)} onToggle={(event) => onToolGroupToggle(`${sessionId ?? "none"}:${row.id}`, event.currentTarget.open)}>
         <summary>{`▸ ツール実行 ${row.tools.length}件`}</summary>
         {row.tools.map((tool) => <ToolDetails key={tool.id} tool={tool} context={linkContext} />)}

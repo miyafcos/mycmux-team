@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Read pane-session mapping files written by launcher.sh
@@ -9,6 +10,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct AgentSessionMapping {
     pub agent_kind: Option<String>,
     pub session_id: String,
+    /// In-process provenance; never part of the frontend wire contract.
+    #[serde(skip)]
+    pub(crate) hook_confirmed: bool,
 }
 
 pub(crate) fn is_agent_session_kind(value: &str) -> bool {
@@ -32,18 +36,19 @@ fn parse_agent_session_mapping(contents: &str) -> Option<AgentSessionMapping> {
         return None;
     }
     Some(AgentSessionMapping {
+        hook_confirmed: false,
         agent_kind: Some(kind.to_string()),
         session_id: session_id.to_string(),
     })
 }
 
-fn session_mapping_dir() -> Option<PathBuf> {
+pub(crate) fn session_mapping_dir() -> Option<PathBuf> {
     crate::test_profile::runtime_dir()
         .ok()
         .map(|runtime_dir| runtime_dir.join("pane-sessions"))
 }
 
-fn is_safe_mapping_id(session_id: &str) -> bool {
+pub(crate) fn is_safe_mapping_id(session_id: &str) -> bool {
     if session_id.is_empty()
         || session_id.len() > 240
         || session_id != session_id.trim()
@@ -102,7 +107,7 @@ fn read_valid_mapping(path: &Path) -> Option<AgentSessionMapping> {
     parse_agent_session_mapping(&std::fs::read_to_string(path).ok()?)
 }
 
-fn read_session_mapping_files_for_ids<I, S>(
+fn read_session_mapping_files_unlocked<I, S>(
     map_dir: &Path,
     session_ids: I,
 ) -> HashMap<String, AgentSessionMapping>
@@ -140,6 +145,67 @@ where
         }
     }
     mappings
+}
+
+// Serializes hook/monitor writes so a tick captured before a hook cannot
+// put its old id back afterwards. Provenance lasts only for the current launch.
+fn hook_mappings() -> &'static Mutex<HashMap<PathBuf, AgentSessionMapping>> {
+    static MAPPINGS: OnceLock<Mutex<HashMap<PathBuf, AgentSessionMapping>>> = OnceLock::new();
+    MAPPINGS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn mapping_path(map_dir: &Path, session_id: &str) -> PathBuf {
+    map_dir.join(format!("{}.txt", mapping_storage_id(session_id)))
+}
+
+pub(crate) fn read_session_mapping_files_for_ids<I, S>(map_dir: &Path, session_ids: I) -> HashMap<String, AgentSessionMapping>
+where I: IntoIterator<Item = S>, S: AsRef<str>,
+{
+    let mut hooks = hook_mappings().lock().unwrap_or_else(|p| p.into_inner());
+    let mut mappings = read_session_mapping_files_unlocked(map_dir, session_ids);
+    for (id, mapping) in &mut mappings {
+        let path = mapping_path(map_dir, id);
+        if let Some(hook) = hooks.get(&path) {
+            if hook.agent_kind == mapping.agent_kind && hook.session_id == mapping.session_id {
+                mapping.hook_confirmed = true;
+            } else {
+                // An external launcher has replaced this file for a new process.
+                hooks.remove(&path);
+            }
+        }
+    }
+    mappings
+}
+
+pub(crate) fn clear_hook_session_mapping(map_dir: &Path, session_id: &str) {
+    hook_mappings().lock().unwrap_or_else(|p| p.into_inner()).remove(&mapping_path(map_dir, session_id));
+}
+
+pub(crate) fn write_hook_session_mapping(
+    map_dir: &Path, terminal_session_id: &str, provider: &str, provider_session_id: &str,
+) -> Result<(), &'static str> {
+    if !is_safe_mapping_id(terminal_session_id) || !is_safe_mapping_id(provider_session_id) {
+        return Err("malformed");
+    }
+    if !matches!(provider, "claude" | "codex" | "grok") { return Err("wrong_provider"); }
+    let mut hooks = hook_mappings().lock().unwrap_or_else(|p| p.into_inner());
+    let mappings = read_session_mapping_files_unlocked(map_dir, [terminal_session_id]);
+    let existing = mappings.get(terminal_session_id);
+    let kind = match existing.and_then(|mapping| mapping.agent_kind.as_deref()) {
+        Some("claude-codex") if provider == "claude" => "claude-codex",
+        Some(kind) if kind == provider => kind,
+        None => provider,
+        _ => return Err("wrong_provider"),
+    };
+    let path = mapping_path(map_dir, terminal_session_id);
+    if existing.is_none_or(|mapping| mapping.session_id != provider_session_id) {
+        write_text_file_atomic(&path, &format!("{kind}:{provider_session_id}\n"))
+            .map_err(|_| "queue_dropped")?;
+    }
+    hooks.insert(path, AgentSessionMapping {
+        agent_kind: Some(kind.to_string()), session_id: provider_session_id.to_string(), hook_confirmed: true,
+    });
+    Ok(())
 }
 
 pub(crate) fn agent_mappings_for_ids<I, S>(session_ids: I) -> HashMap<String, AgentSessionMapping>
@@ -197,7 +263,7 @@ fn write_text_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
         })
 }
 
-fn write_session_mapping_file_to_dir(
+pub(crate) fn write_session_mapping_file_to_dir(
     map_dir: &Path,
     session_id: &str,
     agent_kind: &str,
@@ -210,7 +276,9 @@ fn write_session_mapping_file_to_dir(
     {
         return Ok(());
     }
-    let path = map_dir.join(format!("{}.txt", mapping_storage_id(session_id)));
+    let hooks = hook_mappings().lock().unwrap_or_else(|p| p.into_inner());
+    let path = mapping_path(map_dir, session_id);
+    if hooks.contains_key(&path) { return Ok(()); }
     write_text_file_atomic(&path, &format!("{agent_kind}:{agent_session_id}\n"))?;
     Ok(())
 }
@@ -231,6 +299,8 @@ fn remove_session_mapping_file_from_dir(map_dir: &Path, session_id: &str) -> Res
         return Ok(());
     }
     let path = map_dir.join(format!("{}.txt", mapping_storage_id(session_id)));
+    let mut hooks = hook_mappings().lock().unwrap_or_else(|p| p.into_inner());
+    hooks.remove(&path);
     match std::fs::remove_file(&path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -373,6 +443,27 @@ mod tests {
                 .to_string_lossy()
                 .contains(".tmp-")
         }));
+    }
+
+    #[test]
+    fn hook_provenance_is_private_and_stable_tab_aliases_share_the_write_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let tab = "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+        let composite = format!("pty-5231da42-1111-4111-8111-111111111111-bb391b49-3333-4333-8333-333333333333-{tab}");
+        write_hook_session_mapping(dir.path(), &composite, "claude", "hook-session").unwrap();
+        write_session_mapping_file_to_dir(dir.path(), tab, "claude", "stale-tick").unwrap();
+        let mappings = read_session_mapping_files_for_ids(dir.path(), [tab]);
+        assert!(mappings[tab].hook_confirmed);
+        assert_eq!(serde_json::to_value(&mappings[tab]).unwrap(), serde_json::json!({"agent_kind":"claude","session_id":"hook-session"}));
+        // A launcher's direct replacement clears provenance on the next read.
+        std::fs::write(mapping_path(dir.path(), tab), "claude:external-launch\n").unwrap();
+        assert!(!read_session_mapping_files_for_ids(dir.path(), [tab])[tab].hook_confirmed);
+        write_session_mapping_file_to_dir(dir.path(), tab, "claude", "successor").unwrap();
+        assert_eq!(read_session_mapping_files_for_ids(dir.path(), [tab])[tab].session_id, "successor");
+        write_hook_session_mapping(dir.path(), tab, "claude", "hook-session").unwrap();
+        remove_session_mapping_file_from_dir(dir.path(), &composite).unwrap();
+        write_session_mapping_file_to_dir(dir.path(), tab, "codex", "new-process").unwrap();
+        assert_eq!(read_session_mapping_files_for_ids(dir.path(), [tab])[tab].session_id, "new-process");
     }
 
     #[test]

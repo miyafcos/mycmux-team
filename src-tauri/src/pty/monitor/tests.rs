@@ -41,6 +41,7 @@
     #[test]
     fn grok_mapping_matches_the_detected_grok_process() {
         let mapping = AgentSessionMapping {
+            hook_confirmed: false,
             agent_kind: Some("grok".to_string()),
             session_id: "grok-session".to_string(),
         };
@@ -222,6 +223,7 @@
         let mappings = HashMap::from([(
             "pane-a".to_string(),
             AgentSessionMapping {
+            hook_confirmed: false,
                 agent_kind: Some("claude-codex".to_string()),
                 session_id: "mapped-session".to_string(),
             },
@@ -237,6 +239,7 @@
         );
 
         let attribution = select_claude_process_attribution(
+            DetectedAgentKind::Claude,
             mapped,
             exact,
             None,
@@ -280,6 +283,7 @@
             detection_exclusions_for_exact_session(&excluded, Some("codex-dir-session"));
 
         let attribution = select_claude_process_attribution(
+            DetectedAgentKind::Claude,
             None,
             Some("codex-dir-session".to_string()),
             None,
@@ -317,6 +321,7 @@
         let excluded = HashSet::new();
 
         let attribution = select_claude_process_attribution(
+            DetectedAgentKind::Claude,
             None,
             None,
             None,
@@ -363,6 +368,7 @@
         let excluded = HashSet::new();
 
         let attribution = select_claude_process_attribution(
+            DetectedAgentKind::Claude,
             None,
             None,
             None,
@@ -404,6 +410,7 @@
         let mappings = HashMap::from([(
             "pane-a".to_string(),
             AgentSessionMapping {
+            hook_confirmed: false,
                 agent_kind: Some("claude".to_string()),
                 session_id: "stale-mapped-session".to_string(),
             },
@@ -421,6 +428,7 @@
         );
 
         let attribution = select_claude_process_attribution(
+            DetectedAgentKind::Claude,
             mapped,
             exact,
             None,
@@ -520,6 +528,7 @@
             (
                 "pane-a".to_string(),
                 AgentSessionMapping {
+            hook_confirmed: false,
                     agent_kind: Some("claude".to_string()),
                     session_id: pane_a_session.to_string(),
                 },
@@ -527,6 +536,7 @@
             (
                 "pane-b".to_string(),
                 AgentSessionMapping {
+            hook_confirmed: false,
                     agent_kind: Some("claude".to_string()),
                     session_id: pane_b_session.to_string(),
                 },
@@ -588,6 +598,7 @@
             (
                 "pane-a".to_string(),
                 AgentSessionMapping {
+            hook_confirmed: false,
                     agent_kind: Some("claude".to_string()),
                     session_id: duplicate.to_string(),
                 },
@@ -595,6 +606,7 @@
             (
                 "pane-b".to_string(),
                 AgentSessionMapping {
+            hook_confirmed: false,
                     agent_kind: Some("claude".to_string()),
                     session_id: duplicate.to_string(),
                 },
@@ -697,6 +709,7 @@
         let mappings = HashMap::from([(
             "pane-a".to_string(),
             AgentSessionMapping {
+            hook_confirmed: false,
                 agent_kind: Some("claude".to_string()),
                 session_id: "pinned-session".to_string(),
             },
@@ -712,6 +725,7 @@
         );
 
         let attribution = select_claude_process_attribution(
+            DetectedAgentKind::Claude,
             mapped,
             exact,
             None,
@@ -754,6 +768,7 @@
         let mappings = HashMap::from([(
             "pane-a".to_string(),
             AgentSessionMapping {
+            hook_confirmed: false,
                 agent_kind: Some("claude".to_string()),
                 session_id: "pinned-session".to_string(),
             },
@@ -770,6 +785,7 @@
         let detected_ran = std::cell::Cell::new(false);
 
         let attribution = select_claude_process_attribution(
+            DetectedAgentKind::Claude,
             mapped,
             exact,
             None,
@@ -812,6 +828,7 @@
             (
                 "pane-a".to_string(),
                 AgentSessionMapping {
+            hook_confirmed: false,
                     agent_kind: Some("claude".to_string()),
                     session_id: "pane-a-session".to_string(),
                 },
@@ -819,6 +836,7 @@
             (
                 "pane-b".to_string(),
                 AgentSessionMapping {
+            hook_confirmed: false,
                     agent_kind: Some("claude".to_string()),
                     session_id: "pane-b-session".to_string(),
                 },
@@ -844,6 +862,7 @@
         );
 
         let attribution = select_claude_process_attribution(
+            DetectedAgentKind::Claude,
             mapped,
             exact,
             None,
@@ -876,6 +895,7 @@
         let mappings = HashMap::from([(
             "pane-a".to_string(),
             AgentSessionMapping {
+            hook_confirmed: false,
                 agent_kind: Some("claude".to_string()),
                 session_id: "pinned-session".to_string(),
             },
@@ -889,6 +909,7 @@
         );
 
         let attribution = select_claude_process_attribution(
+            DetectedAgentKind::Claude,
             mapped,
             None,
             None,
@@ -924,6 +945,7 @@
         let mappings = HashMap::from([(
             "pane-a".to_string(),
             AgentSessionMapping {
+            hook_confirmed: false,
                 agent_kind: Some("claude".to_string()),
                 session_id: "successor-session".to_string(),
             },
@@ -938,6 +960,7 @@
         );
 
         let attribution = select_claude_process_attribution(
+            DetectedAgentKind::Claude,
             mapped,
             exact,
             None,
@@ -1155,4 +1178,54 @@
         )
         .unwrap();
         assert!(claude_codex.to_string_lossy().contains("claude-codex"));
+    }
+
+    #[test]
+    fn hook_observe_updates_mapping_survives_monitor_ticks_and_rebinds_livebrief() {
+        use crate::agent_state::{HookService, Provider};
+        use crate::commands::session_mapping::{read_session_mapping_files_for_ids, write_session_mapping_file_to_dir};
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        for (kind, provider, detected_kind) in [
+            ("claude", Provider::Claude, DetectedAgentKind::Claude),
+            ("claude-codex", Provider::Claude, DetectedAgentKind::Claude),
+            ("claude-codex", Provider::Claude, DetectedAgentKind::ClaudeCodex),
+            ("codex", Provider::Codex, DetectedAgentKind::Codex),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let pty = "terminal-hook-test";
+            write_session_mapping_file_to_dir(dir.path(), pty, kind, "old-session").unwrap();
+            let service = HookService::for_mapping_test(Some(dir.path().to_path_buf()));
+            let grant = runtime.block_on(service.issue_capability(pty.into(), provider, Some("layout-pane".into()))).unwrap();
+            crate::livebrief::hook_tests::assert_hook_rebind(kind, pty, || {
+                let response = runtime.block_on(service.handle_hook(1, grant.hook_cap, "hook.observe".into(), serde_json::json!({
+                    "provider": provider.as_str(), "event_kind":"turn_active", "provider_session_id":"new-session",
+                    "provider_turn_id":"turn-new", "source_event_id":"source-new",
+                })));
+                assert!(response.ok, "{:?}", response.reason);
+                let mut pending = HashMap::new();
+                for _ in 0..2 {
+                    let mappings = read_session_mapping_files_for_ids(dir.path(), [pty]);
+                    assert!(mappings[pty].hook_confirmed);
+                    let chosen = if detected_kind == DetectedAgentKind::Codex {
+                        preferred_known_agent_session_id(Some("old-session".into()), &mappings, &HashMap::new(),
+                            pty, Pid::from_u32(1), detected_kind, &HashSet::new()).unwrap()
+                    } else {
+                        let mapped = mapped_agent_session_attribution_for_pane(&mappings, pty, detected_kind,
+                            &HashSet::new(), Some("old-session"));
+                        let candidate = select_claude_process_attribution(detected_kind, mapped.clone(), Some("old-session".into()),
+                            Some("old-session".into()), Some(kind), Some("old-session".into()), &HashSet::new(),
+                            |_, _| panic!("hook provenance must bypass silence heuristics"),
+                            || panic!("hook provenance must bypass transcript scans"));
+                        confirm_agent_session_switch(&mut pending, pty, Pid::from_u32(1), mapped.as_ref(), candidate)
+                            .attribution.unwrap().session_id
+                    };
+                    assert_eq!(chosen, "new-session");
+                    // A tick already in flight before hook.observe can still try this write.
+                    write_session_mapping_file_to_dir(dir.path(), pty, kind, "old-session").unwrap();
+                    assert_eq!(read_session_mapping_files_for_ids(dir.path(), [pty])[pty].session_id, "new-session");
+                }
+                assert!(!dir.path().join("layout-pane.txt").exists());
+                read_session_mapping_files_for_ids(dir.path(), [pty]).remove(pty).unwrap()
+            });
+        }
     }

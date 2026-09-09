@@ -492,6 +492,7 @@ const AGENT_KIND_LABELS: Record<string, string> = {
   "claude-codex": "Claude＋Codex",
   "grok": "Grok Build",
   "antigravity": "Antigravity",
+  "hermes": "Hermes",
 };
 
 const AGENT_KIND_BADGE_LABELS: Record<string, string> = {
@@ -500,6 +501,7 @@ const AGENT_KIND_BADGE_LABELS: Record<string, string> = {
   "claude-codex": "Hybrid",
   "grok": "Grok",
   "antigravity": "Antigravity",
+  "hermes": "Hermes",
 };
 
 export function resolveActiveAgentLabel(
@@ -807,6 +809,7 @@ function PaneTabListMenu({
     const rowAgentKind = resolveDisplayAgentKind(
       tabMeta?.agentKind ?? tab.agentKind,
       tab.commandArgv,
+      tab.launchEnv?.MYCMUX_LAUNCH_TARGET,
     );
     const rowKindColor = agentKindColor(rowAgentKind);
     const status = deriveDisplayStatus(tabMeta, volatileMetadataBySession[tab.sessionId]);
@@ -1141,6 +1144,7 @@ export default memo(function PaneTabBar({
   const activeAgentKind = resolveDisplayAgentKind(
     activeMeta?.agentKind ?? activeTab?.agentKind,
     activeTab?.commandArgv,
+    activeTab?.launchEnv?.MYCMUX_LAUNCH_TARGET,
   );
   const activeKindColor = agentKindColor(activeAgentKind);
   const activeAgentLabel = activeTab
@@ -1495,7 +1499,11 @@ export default memo(function PaneTabBar({
     : 0;
   const previewMeta = previewTab ? metadataBySession[previewTab.sessionId] : undefined;
   const previewAgentKind = previewTab
-    ? resolveDisplayAgentKind(previewMeta?.agentKind ?? previewTab.agentKind, previewTab.commandArgv)
+    ? resolveDisplayAgentKind(
+        previewMeta?.agentKind ?? previewTab.agentKind,
+        previewTab.commandArgv,
+        previewTab.launchEnv?.MYCMUX_LAUNCH_TARGET,
+      )
     : undefined;
   const previewKindColor = agentKindColor(previewAgentKind);
   const showsInlinePinControl = shouldShowInlinePinControl(renderMode);
@@ -1790,6 +1798,7 @@ export default memo(function PaneTabBar({
           const tabAgentKind = resolveDisplayAgentKind(
             tabMeta?.agentKind ?? tab.agentKind,
             tab.commandArgv,
+            tab.launchEnv?.MYCMUX_LAUNCH_TARGET,
           );
           const tabKindColor = agentKindColor(tabAgentKind);
           const tabNotificationCount = tabMeta?.notificationCount ?? 0;

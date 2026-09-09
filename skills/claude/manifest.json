@@ -1,9 +1,9 @@
 {
   "pack_version": "1.0.0",
-  "generated_at": "2026-09-08T02:35:56.732438+00:00",
+  "generated_at": "2026-09-09T00:59:17.809995+00:00",
   "cli": {
     "path": "scripts/mycmux_agent_cli.py",
-    "sha256": "9a573273ee0e70b373d25602ac226e04f103ebbab548fa11544820f62cc73a06"
+    "sha256": "21c971de97975420d066ee6bb9e66af1fe94b965fc35b8c20f1f0bd34c33e867"
   },
   "skills": [
     {
@@ -22,7 +22,7 @@
         "scripts/dispatch_send.py": "be44decbce6e317696b6ef3a5c55a1af343f693c99e4a6027b089e7a5e8b6ae3",
         "scripts/dispatch_status.py": "a9f10c7e4aa2cd88ca7874f83891a3429d8c34c358570b6ee2e3d7ec20fb7969",
         "scripts/dispatch_watch.py": "17bc66846ffa8251f2448e7190b7b7325ba24ca3152c74ee74787562af208a35",
-        "scripts/guard_actions.py": "37f1010b5c26f46dd31018e75b971822f2cb423cfeb1b1a772c29f288ac4b2ad",
+        "scripts/guard_actions.py": "148c938425f110a306770ba8c2caff7875f12e11a47f5cfb9221ac032b279baf",
         "scripts/guard_classify.py": "86b88dbab8a4cfc18f7eb4683d06000aca457d6a744e02df56be38019175048a",
         "scripts/tests/conftest.py": "51a4e769c2e3d8ac57e836f0cfcc36f99f4e9750d4ddc5830e1247f2f0c2acfc",
         "scripts/tests/fixtures/screens/ask_multi.txt": "f23441bb86488f5d2e8134d704c778c860634b7d8c96e73dcadbee3f7a463d6c",

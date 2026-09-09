@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-FORBIDDEN = ("claude", "codex", "grok", "agy", "antigravity", "agentkind")
+FORBIDDEN = ("claude", "codex", "grok", "agy", "antigravity", "hermes", "agentkind")
 TARGETS = ("src/lib/promptShape.ts", "src/lib/stallVerdict.ts")
 
 

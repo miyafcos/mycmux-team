@@ -14,6 +14,7 @@ use crate::session_state::{
 };
 
 use super::*;
+use crate::commands::session_mapping;
 
 pub const HOOK_PROTOCOL_MAJOR: u64 = 1;
 pub const HOOK_PROTOCOL_MINOR: u64 = 0;
@@ -272,14 +273,19 @@ impl HookService {
     }
 
     #[cfg(test)]
-    fn for_test() -> Self {
+    fn for_test() -> Self { Self::for_mapping_test(None) }
+
+    #[cfg(test)]
+    pub(crate) fn for_mapping_test(mapping_dir: Option<std::path::PathBuf>) -> Self {
         let app_instance_id = AppInstanceId::try_new("app-test-service").unwrap();
         let (sender, receiver) = mpsc::sync_channel(HOOK_QUEUE_CAPACITY);
         let metrics = Arc::new(HookMetrics::default());
         let worker_metrics = metrics.clone();
         let worker_app_instance = app_instance_id.clone();
         std::thread::spawn(move || {
-            Worker::for_test(worker_app_instance, worker_metrics).run(receiver)
+            let mut worker = Worker::for_test(worker_app_instance, worker_metrics);
+            worker.mapping_dir = mapping_dir;
+            worker.run(receiver)
         });
         Self {
             app_instance_id,
@@ -379,6 +385,9 @@ struct CapabilityRecord {
     launch: LaunchKey,
     state: CapabilityState,
     rate: TokenBucket,
+    last_mapping_event: Option<String>,
+    last_mapping_session: Option<String>,
+    observed_sessions: HashSet<String>,
 }
 
 struct Worker {
@@ -390,6 +399,7 @@ struct Worker {
     provider_modes: HashMap<Provider, HookMode>,
     answered_prompts: HashSet<(TerminalSessionId, String)>,
     session_state: Option<SessionStateStore>,
+    mapping_dir: Option<std::path::PathBuf>,
     reconciler: Reconciler,
     ledger: Result<Ledger, String>,
     global_rate: TokenBucket,
@@ -410,6 +420,7 @@ impl Worker {
             provider_modes: HashMap::new(),
             answered_prompts: HashSet::new(),
             session_state,
+            mapping_dir: session_mapping::session_mapping_dir(),
             reconciler: Reconciler::new(),
             ledger: Ledger::open().map_err(|error| error.to_string()),
             global_rate: TokenBucket::new(200, 200),
@@ -427,6 +438,7 @@ impl Worker {
             provider_modes: HashMap::new(),
             answered_prompts: HashSet::new(),
             session_state: None,
+            mapping_dir: None,
             reconciler: Reconciler::new(),
             ledger: Ledger::from_connection(rusqlite::Connection::open_in_memory().unwrap())
                 .map_err(|error| error.to_string()),
@@ -499,6 +511,9 @@ impl Worker {
 
     fn revoke_all(&mut self) {
         for record in self.capabilities.values_mut() {
+            if let Some(dir) = &self.mapping_dir {
+                session_mapping::clear_hook_session_mapping(dir, record.launch.terminal_session_id().as_str());
+            }
             record.state = CapabilityState::Revoked;
         }
         self.current_launch.clear();
@@ -573,6 +588,9 @@ impl Worker {
         if !self.reconciler.register_launch(launch.clone(), hook_mode) {
             return WorkerReply::Wire(HookWireResponse::rejected(0, "malformed", true));
         }
+        if let Some(dir) = &self.mapping_dir {
+            session_mapping::clear_hook_session_mapping(dir, launch.terminal_session_id().as_str());
+        }
         self.current_launch.insert(slot, launch_id);
         let hook_cap = random_hex(32);
         self.capabilities.insert(
@@ -582,6 +600,9 @@ impl Worker {
                 launch,
                 state: CapabilityState::Active,
                 rate: TokenBucket::new(40, 20),
+                last_mapping_event: None,
+                last_mapping_session: None,
+                observed_sessions: HashSet::new(),
             },
         );
         WorkerReply::Grant(CapabilityGrant {
@@ -692,6 +713,24 @@ impl Worker {
             return self.reject(id, "stale_launch", false);
         }
 
+        if !session_mapping::is_safe_mapping_id(&parsed.provider_session_id) {
+            return self.reject(id, "malformed", false);
+        }
+        // Reject a mapping/provider conflict before persisting canonical events
+        // or ingesting attention evidence. The writer checks again under its lock.
+        if record.state == CapabilityState::Active {
+            if let Some(dir) = &self.mapping_dir {
+                let mappings = session_mapping::read_session_mapping_files_for_ids(dir, [record.launch.terminal_session_id().as_str()]);
+                let kind = mappings.get(record.launch.terminal_session_id().as_str()).and_then(|mapping| mapping.agent_kind.as_deref());
+                let provider = record.launch.provider().as_str();
+                if kind.is_some_and(|kind| kind != provider && !(provider == "claude" && kind == "claude-codex")) {
+                    return self.reject(id, "wrong_provider", false);
+                }
+            }
+        }
+        let mapping_session_id = parsed.provider_session_id.clone();
+        let mapping_event_id = parsed.source_event_id.clone();
+
         let identity = IdentityKey::new(
             record.launch.clone(),
             match ProviderSessionId::try_new(parsed.provider_session_id) {
@@ -754,6 +793,9 @@ impl Worker {
                         );
                     }
                 }
+                if let Err(reason) = self.sync_mapping(hook_cap, &mapping_session_id, &mapping_event_id, parsed.event_kind, true) {
+                    return self.reject(id, reason, reason == "queue_dropped");
+                }
                 self.metrics.accepted.fetch_add(1, Ordering::Relaxed);
                 HookWireResponse::success(
                     id,
@@ -766,7 +808,12 @@ impl Worker {
             Ok(PersistedReconcileOutcome::Rejected {
                 reason: RejectionReason::Duplicate,
                 ..
-            }) => HookWireResponse::success(id, json!({ "deduplicated": true })),
+            }) => {
+                if let Err(reason) = self.sync_mapping(hook_cap, &mapping_session_id, &mapping_event_id, parsed.event_kind, false) {
+                    return self.reject(id, reason, reason == "queue_dropped");
+                }
+                HookWireResponse::success(id, json!({ "deduplicated": true }))
+            },
             Ok(PersistedReconcileOutcome::Rejected {
                 reason: RejectionReason::StaleLaunch,
                 ..
@@ -774,6 +821,34 @@ impl Worker {
             Ok(PersistedReconcileOutcome::Rejected { .. }) => self.reject(id, "malformed", false),
             Err(_) => self.reject(id, "queue_dropped", true),
         }
+    }
+
+    fn sync_mapping(&mut self, cap: &str, session_id: &str, event_id: &str, state: NormalizedState, accepted: bool) -> Result<(), &'static str> {
+        let record = self.capabilities.get_mut(cap).ok_or("unauthorized")?;
+        if record.state != CapabilityState::Active { return Ok(()); }
+        if !accepted && record.last_mapping_event.as_deref() != Some(event_id) { return Ok(()); }
+        if record.last_mapping_session.is_none() {
+            if let Some(dir) = &self.mapping_dir {
+                let mappings = session_mapping::read_session_mapping_files_for_ids(dir, [record.launch.terminal_session_id().as_str()]);
+                if let Some(mapping) = mappings.get(record.launch.terminal_session_id().as_str()) {
+                    record.observed_sessions.insert(mapping.session_id.clone());
+                    record.last_mapping_session = Some(mapping.session_id.clone());
+                }
+            }
+        }
+        // An old session's delayed Stop/SessionEnd must not undo a newer input.
+        // A new active event can still explicitly resume that older session.
+        if state.is_terminal() && record.observed_sessions.contains(session_id)
+            && record.last_mapping_session.as_deref() != Some(session_id) { return Ok(()); }
+        record.last_mapping_event = Some(event_id.to_string());
+        if let Some(dir) = &self.mapping_dir {
+            session_mapping::write_hook_session_mapping(
+                dir, record.launch.terminal_session_id().as_str(), record.launch.provider().as_str(), session_id,
+            )?;
+        }
+        record.observed_sessions.insert(session_id.to_string());
+        record.last_mapping_session = Some(session_id.to_string());
+        Ok(())
     }
 
     fn drain(&mut self, terminal_session_id: &str, at: u64) {
@@ -1387,5 +1462,104 @@ mod tests {
             Some("queue_dropped")
         );
         assert_eq!(metrics.snapshot().queue_dropped, 1);
+    }
+
+    #[test]
+    fn mapping_rejects_unsafe_ids_wrong_providers_and_stale_capabilities() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut worker = worker();
+        worker.mapping_dir = Some(dir.path().to_path_buf());
+        session_mapping::write_session_mapping_file_to_dir(dir.path(), "terminal-a", "claude-codex", "old").unwrap();
+        let grant = issue(&mut worker, "terminal-a", Provider::Claude);
+        for unsafe_id in ["../outside", "bad:id", "bad\nline", " CON", "CON", "COM1", ".."] {
+            let mut input = body("turn_active", "source");
+            input["provider_session_id"] = json!(unsafe_id);
+            assert_eq!(worker.handle(1, &grant.hook_cap, "hook.observe", input, 1).reason, Some("malformed"));
+        }
+        let mut wrong = body("turn_active", "wrong");
+        wrong["provider"] = json!("codex");
+        assert_eq!(worker.handle(2, &grant.hook_cap, "hook.observe", wrong, 2).reason, Some("wrong_provider"));
+        let next = issue(&mut worker, "terminal-a", Provider::Claude);
+        assert_eq!(worker.handle(3, &grant.hook_cap, "hook.observe", body("turn_active", "stale"), 3).reason, Some("stale_launch"));
+        assert!(worker.handle(4, &next.hook_cap, "hook.observe", body("turn_active", "fresh"), 4).ok);
+        let mapping = session_mapping::read_session_mapping_files_for_ids(dir.path(), ["terminal-a"]).remove("terminal-a").unwrap();
+        assert_eq!(mapping.agent_kind.as_deref(), Some("claude-codex"));
+        assert_eq!(mapping.session_id, "provider-session-a");
+        let codex = issue(&mut worker, "terminal-a", Provider::Codex);
+        let codex_launch = worker.capabilities[&codex.hook_cap].launch.clone();
+        assert_eq!(worker.handle(5, &codex.hook_cap, "hook.observe", body("turn_active", "cross-provider"), 5).reason, Some("wrong_provider"));
+        assert!(worker.reconciler.canonical_for(&codex_launch).is_none());
+        assert_eq!(session_mapping::read_session_mapping_files_for_ids(dir.path(), ["terminal-a"])["terminal-a"].agent_kind.as_deref(), Some("claude-codex"));
+    }
+
+    #[test]
+    fn mapping_follows_new_sessions_but_not_replayed_or_delayed_old_terminal_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut worker = worker();
+        worker.mapping_dir = Some(dir.path().to_path_buf());
+        let grant = issue(&mut worker, "terminal-a", Provider::Codex);
+        let input = |session: &str, turn: &str, event: &str, state: &str| json!({
+            "event_kind":state, "provider_session_id":session, "provider_turn_id":turn, "source_event_id":event,
+        });
+        let old = input("old", "turn-old", "event-old", "turn_active");
+        assert!(worker.handle(1, &grant.hook_cap, "hook.observe", old.clone(), 1).ok);
+        assert!(worker.handle(2, &grant.hook_cap, "hook.observe", input("new", "turn-new", "event-new", "turn_active"), 2).ok);
+        assert!(worker.handle(3, &grant.hook_cap, "hook.observe", old, 3).ok);
+        assert!(worker.handle(4, &grant.hook_cap, "hook.observe", input("old", "turn-old", "stop-old", "turn_ended"), 4).ok);
+        let read = || session_mapping::read_session_mapping_files_for_ids(dir.path(), ["terminal-a"])["terminal-a"].session_id.clone();
+        assert_eq!(read(), "new");
+        assert!(worker.handle(5, &grant.hook_cap, "hook.observe", input("old", "turn-resume", "resume", "turn_active"), 5).ok);
+        assert_eq!(read(), "old");
+        worker.drain("terminal-a", 6);
+        assert!(worker.handle(6, &grant.hook_cap, "hook.observe", input("new", "turn-new", "end-new", "turn_ended"), 7).ok);
+        assert_eq!(read(), "old");
+    }
+
+    #[test]
+    fn a_delayed_stop_for_the_launch_mapping_cannot_undo_the_first_new_session_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut worker = worker();
+        worker.mapping_dir = Some(dir.path().to_path_buf());
+        session_mapping::write_session_mapping_file_to_dir(dir.path(), "terminal-a", "claude", "launch-old").unwrap();
+        let grant = issue(&mut worker, "terminal-a", Provider::Claude);
+        assert!(worker.handle(1, &grant.hook_cap, "hook.observe", body("turn_active", "new"), 1).ok);
+        let mut old_stop = body("turn_ended", "old-stop");
+        old_stop["provider_session_id"] = json!("launch-old");
+        assert!(worker.handle(2, &grant.hook_cap, "hook.observe", old_stop, 2).ok);
+        assert_eq!(session_mapping::read_session_mapping_files_for_ids(dir.path(), ["terminal-a"])["terminal-a"].session_id, "provider-session-a");
+    }
+
+    #[test]
+    fn revoking_hooks_or_starting_a_new_launch_releases_mapping_provenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut worker = worker();
+        worker.mapping_dir = Some(dir.path().to_path_buf());
+        for revoke in [false, true] {
+            let grant = issue(&mut worker, "terminal-a", Provider::Codex);
+            assert!(worker.handle(1, &grant.hook_cap, "hook.observe", body("turn_active", "active"), 1).ok);
+            assert!(session_mapping::read_session_mapping_files_for_ids(dir.path(), ["terminal-a"])["terminal-a"].hook_confirmed);
+            if revoke { worker.revoke_all(); }
+            else { let _ = issue(&mut worker, "terminal-a", Provider::Codex); }
+            assert!(!session_mapping::read_session_mapping_files_for_ids(dir.path(), ["terminal-a"])["terminal-a"].hook_confirmed);
+            session_mapping::write_session_mapping_file_to_dir(dir.path(), "terminal-a", "codex", "next-launch").unwrap();
+            assert_eq!(session_mapping::read_session_mapping_files_for_ids(dir.path(), ["terminal-a"])["terminal-a"].session_id, "next-launch");
+        }
+    }
+
+    #[test]
+    fn a_failed_mapping_write_can_retry_the_current_deduplicated_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut worker = worker();
+        let invalid_dir = dir.path().join("not-a-directory");
+        fs::write(&invalid_dir, b"file").unwrap();
+        worker.mapping_dir = Some(invalid_dir);
+        let grant = issue(&mut worker, "terminal-a", Provider::Codex);
+        let input = body("turn_active", "retry");
+        assert_eq!(worker.handle(1, &grant.hook_cap, "hook.observe", input.clone(), 1).reason, Some("queue_dropped"));
+        worker.mapping_dir = Some(dir.path().join("valid"));
+        assert!(worker.handle(2, &grant.hook_cap, "hook.observe", input, 2).ok);
+        let mapping = session_mapping::read_session_mapping_files_for_ids(worker.mapping_dir.as_ref().unwrap(), ["terminal-a"]);
+        assert_eq!(mapping["terminal-a"].session_id, "provider-session-a");
+        assert!(mapping["terminal-a"].hook_confirmed);
     }
 }

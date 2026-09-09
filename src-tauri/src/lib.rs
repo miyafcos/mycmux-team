@@ -730,6 +730,14 @@ pub fn run() {
             }
             Ok(())
         })
+        .on_window_event(|window, event| {
+            use tauri::Manager;
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Some(state) = window.try_state::<AppState>() {
+                    state.livebrief_service.unsubscribe(window.label());
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -5,17 +5,18 @@
 //! its source, binding and PTY input revision all still match.
 
 mod adapter;
+#[cfg(test)]
+pub(crate) mod hook_tests;
 mod excerpt;
 pub(crate) mod excerpt_ja;
 mod intervene;
 mod reducer;
 mod telemetry;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -50,6 +51,12 @@ const MAX_PROMPT_SCAN_BYTES: u64 = 8 * 1024 * 1024;
 /// Matches `MAX_TURN_MARKS_PER_SESSION` on the frontend: more prompts than
 /// that could never all hold a mark anyway.
 const MAX_RESTORED_PROMPTS: usize = 200;
+/// How long the sweep thread parks between checks while nobody is subscribed.
+/// `subscribe` unparks it, so a returning subscriber never waits this long.
+const SWEEP_IDLE_PARK: Duration = Duration::from_secs(30);
+/// A sweep that has not finished a refresh for this long is idle: the once-a-
+/// second loop is parked, so an event poll refreshes once itself (see `events`).
+const SWEEP_IDLE_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -158,7 +165,9 @@ pub struct LiveBriefService {
     service_epoch: String,
     app_handle: Arc<OnceLock<AppHandle>>,
     started: Arc<OnceLock<()>>,
-    subscribers: Arc<AtomicUsize>,
+    subscribers: Arc<Mutex<HashSet<String>>>,
+    /// The sweep thread, kept so `subscribe` can wake it out of its idle park.
+    sweep: Arc<OnceLock<thread::Thread>>,
     coordinators: Arc<DashMap<String, Arc<Mutex<intervene::Coordinator>>>>,
 }
 
@@ -171,7 +180,8 @@ impl LiveBriefService {
             service_epoch: Uuid::new_v4().to_string(),
             app_handle: Arc::new(OnceLock::new()),
             started: Arc::new(OnceLock::new()),
-            subscribers: Arc::new(AtomicUsize::new(0)),
+            subscribers: Arc::new(Mutex::new(HashSet::new())),
+            sweep: Arc::new(OnceLock::new()),
             coordinators: Arc::new(DashMap::new()),
         }
     }
@@ -182,22 +192,33 @@ impl LiveBriefService {
             return;
         }
         let service = self.clone();
-        thread::spawn(move || loop {
-            if service.subscribers.load(Ordering::Acquire) == 0 {
-                thread::sleep(Duration::from_secs(30));
+        let handle = thread::spawn(move || loop {
+            if !service.has_subscribers() {
+                // Parked rather than asleep: `subscribe` unparks, so the first
+                // refresh after a subscriber returns is immediate instead of up
+                // to `SWEEP_IDLE_PARK` late. A spurious wake just re-checks.
+                thread::park_timeout(SWEEP_IDLE_PARK);
                 continue;
             }
             service.refresh_all();
             thread::sleep(Duration::from_secs(1));
         });
+        let _ = self.sweep.set(handle.thread().clone());
     }
 
-    pub fn subscribe(&self) {
-        self.subscribers.fetch_add(1, Ordering::AcqRel);
+    fn has_subscribers(&self) -> bool {
+        !self.subscribers.lock().unwrap_or_else(|p| p.into_inner()).is_empty()
     }
 
-    pub fn unsubscribe(&self) {
-        let _ = self.subscribers.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| count.checked_sub(1));
+    pub fn subscribe(&self, window_label: &str) {
+        self.subscribers.lock().unwrap_or_else(|p| p.into_inner()).insert(window_label.to_string());
+        if let Some(sweep) = self.sweep.get() {
+            sweep.unpark();
+        }
+    }
+
+    pub fn unsubscribe(&self, window_label: &str) {
+        self.subscribers.lock().unwrap_or_else(|p| p.into_inner()).remove(window_label);
     }
 
     pub fn snapshots(&self) -> Vec<LiveSessionBrief> {
@@ -246,7 +267,7 @@ impl LiveBriefService {
             if changed {
                 state.brief_revision = state.brief_revision.saturating_add(1);
                 snapshot.brief.brief_revision = state.brief_revision;
-                if self.subscribers.load(Ordering::Acquire) > 0 {
+                if self.has_subscribers() {
                     if let Some(app) = self.app_handle.get() {
                     let _ = app.emit(EVENT_NAME, LiveBriefUpdate { brief: snapshot.brief.clone() });
                     }
@@ -332,10 +353,18 @@ impl LiveBriefService {
         }
     }
 
-    /// Tail of the cached event ring for each requested session. Deliberately
-    /// does not call `refresh_all` — the once-a-second thread already keeps
-    /// `state.sessions` current, so a poll here must stay a memory read.
+    /// Tail of the cached event ring for each requested session.
+    ///
+    /// While someone is subscribed the once-a-second sweep keeps
+    /// `state.sessions` current and a poll must stay a memory read: refreshing
+    /// on every poll is the output-driven amplification that 2c9391b0 cut.
+    /// Only when the sweep has been idle (nobody subscribed, thread parked) is
+    /// one refresh run here, so a reader that polls without subscribing still
+    /// sees the transcript tail instead of a ring nobody has read for minutes.
     pub fn events(&self, ids: &[String], limit: usize) -> Vec<LiveSessionEvents> {
+        if self.sweep_is_idle() {
+            self.refresh_all();
+        }
         let state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         ids.iter()
             .filter_map(|pty_session_id| {
@@ -349,6 +378,12 @@ impl LiveBriefService {
                 })
             })
             .collect()
+    }
+
+    fn sweep_is_idle(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        !state.refresh_in_progress
+            && state.last_refresh_finished_at.is_none_or(|at| at.elapsed() > SWEEP_IDLE_GRACE)
     }
 
     /// Builds an excerpt from already-cached data without refreshing transcripts.
@@ -695,16 +730,18 @@ fn mapping_dir() -> Option<PathBuf> {
 /// mapping-file mtime fails closed to "all unavailable".
 fn newest_pane_by_mapping_mtime(map_dir: &Path, pane_ids: &[&str]) -> Option<String> {
     let mut best: Option<(SystemTime, &str)> = None;
+    let mut tied = false;
     for id in pane_ids {
         let mtime = std::fs::metadata(map_dir.join(format!("{id}.txt")))
             .and_then(|metadata| metadata.modified())
             .ok()?;
         match best {
-            Some((best_time, _)) if mtime <= best_time => {}
-            _ => best = Some((mtime, *id)),
+            Some((best_time, _)) if mtime < best_time => {}
+            Some((best_time, _)) if mtime == best_time => tied = true,
+            _ => { best = Some((mtime, *id)); tied = false; }
         }
     }
-    best.map(|(_, id)| id.to_string())
+    if tied { None } else { best.map(|(_, id)| id.to_string()) }
 }
 
 fn grok_root() -> Option<PathBuf> {
@@ -936,6 +973,12 @@ fn advance_transcript_with_history(
     file.seek(SeekFrom::Start(snapshot.cursor.read_offset)).map_err(|error| format!("seek transcript tail: {error}"))?;
     let mut appended = Vec::new();
     file.read_to_end(&mut appended).map_err(|error| format!("read transcript tail: {error}"))?;
+    // Absolute end of what was actually read, as in the bootstrap. The stat'd
+    // length can already be behind it when the transcript grew between the
+    // stat and this read; resetting the cursor to that shorter length would
+    // replay the same bytes next tick (duplicate events, a torn anchor, and a
+    // needless full bootstrap to recover).
+    let read_end = snapshot.cursor.read_offset.saturating_add(appended.len() as u64);
     let mut bytes = std::mem::take(&mut snapshot.cursor.pending_bytes);
     bytes.extend_from_slice(&appended);
     let parsed = complete_line_records(&bytes, snapshot.cursor.committed_offset);
@@ -957,7 +1000,7 @@ fn advance_transcript_with_history(
     let now = unix_ms();
     snapshot.brief = snapshot.reducer.to_brief(binding, "live", service_epoch, now);
     snapshot.cursor.file_identity = file_identity(&snapshot.cursor.path, metadata);
-    snapshot.cursor.read_offset = metadata.len();
+    snapshot.cursor.read_offset = read_end;
     snapshot.cursor.committed_offset = committed_offset;
     snapshot.cursor.pending_bytes = pending_bytes;
     snapshot.cursor.committed_anchor = transcript_anchor(&snapshot.cursor.path, committed_offset)?;
@@ -1077,17 +1120,23 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String { hex::encode(Sha256::digest(by
 pub(crate) fn unix_ms() -> i64 { SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_millis() as i64).unwrap_or_default() }
 
 #[tauri::command(async)]
-pub async fn get_live_briefs(state: State<'_, AppState>) -> Result<Vec<LiveSessionBrief>, String> { Ok(state.livebrief_service.snapshots()) }
+pub async fn get_live_briefs(state: State<'_, AppState>) -> Result<Vec<LiveSessionBrief>, String> {
+    snapshots_on_blocking_pool(state.livebrief_service.clone()).await
+}
+
+async fn snapshots_on_blocking_pool(service: LiveBriefService) -> Result<Vec<LiveSessionBrief>, String> {
+    crate::util::task::run_blocking("get_live_briefs", move || Ok(service.snapshots())).await
+}
 
 #[tauri::command(async)]
-pub async fn subscribe_live_briefs(state: State<'_, AppState>) -> Result<(), String> {
-    state.livebrief_service.subscribe();
+pub async fn subscribe_live_briefs(window: tauri::Window, state: State<'_, AppState>) -> Result<(), String> {
+    state.livebrief_service.subscribe(window.label());
     Ok(())
 }
 
 #[tauri::command(async)]
-pub async fn unsubscribe_live_briefs(state: State<'_, AppState>) -> Result<(), String> {
-    state.livebrief_service.unsubscribe();
+pub async fn unsubscribe_live_briefs(window: tauri::Window, state: State<'_, AppState>) -> Result<(), String> {
+    state.livebrief_service.unsubscribe(window.label());
     Ok(())
 }
 
@@ -1097,7 +1146,15 @@ pub async fn get_live_events(
     pty_session_ids: Vec<String>,
     limit: Option<usize>,
 ) -> Result<Vec<LiveSessionEvents>, String> {
-    Ok(state.livebrief_service.events(&pty_session_ids, clamp_event_limit(limit)))
+    events_on_blocking_pool(state.livebrief_service.clone(), pty_session_ids, limit).await
+}
+
+async fn events_on_blocking_pool(
+    service: LiveBriefService, pty_session_ids: Vec<String>, limit: Option<usize>,
+) -> Result<Vec<LiveSessionEvents>, String> {
+    crate::util::task::run_blocking("get_live_events", move || {
+        Ok(service.events(&pty_session_ids, clamp_event_limit(limit)))
+    }).await
 }
 
 /// Prompts a pane's agent recorded before mycmux was watching it type.
@@ -1184,6 +1241,161 @@ mod tests {
         assert_eq!(advanced.cursor.committed_offset, metadata.len());
         assert_eq!(advanced.brief.binding.source_revision, 2);
         assert_eq!(advanced.brief.event_seq, 2);
+    }
+
+    /// The sweep stats the transcript, then reads it. An agent that appends in
+    /// between makes the stat'd length shorter than what the read returned;
+    /// the cursor must follow the read, or the next tick replays that line.
+    #[test]
+    fn a_transcript_that_grows_between_stat_and_read_is_not_replayed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("rollout.jsonl");
+        std::fs::write(&path, codex_user_line("first")).expect("write first record");
+        let snapshot = bootstrap_transcript(&path, "codex", &test_binding(), "epoch").expect("bootstrap");
+
+        let mut file = std::fs::OpenOptions::new().append(true).open(&path).expect("open append");
+        file.write_all(codex_user_line("second").as_bytes()).expect("append second");
+        let stale = std::fs::metadata(&path).expect("stat before the late append");
+        file.write_all(codex_user_line("third").as_bytes()).expect("append third after the stat");
+        drop(file);
+
+        let advanced = advance_transcript_with_history(snapshot, &stale, &test_binding(), "epoch", None, None)
+            .expect("advance with a stale stat");
+        let fresh = std::fs::metadata(&path).expect("stat after both appends");
+        assert!(stale.len() < fresh.len(), "the test must stat before the late append");
+        assert_eq!(advanced.cursor.read_offset, fresh.len());
+        assert_eq!(advanced.cursor.committed_offset, fresh.len());
+        assert_eq!(user_message_texts(&advanced), vec!["first", "second", "third"]);
+
+        // Next tick, same file: nothing new, nothing replayed, and the anchor
+        // still matches so no fallback bootstrap is needed.
+        let settled = advance_transcript_with_history(advanced, &fresh, &test_binding(), "epoch", None, None)
+            .expect("advance again on the settled file");
+        assert_eq!(user_message_texts(&settled), vec!["first", "second", "third"]);
+        assert_eq!(settled.brief.event_seq, 3);
+        assert_eq!(settled.cursor.read_offset, fresh.len());
+    }
+
+    #[test]
+    fn a_pending_record_survives_growth_after_stat_and_the_next_cached_poll() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout-agent-1.jsonl");
+        std::fs::write(&path, codex_user_line("first")).unwrap();
+        let snapshot = bootstrap_transcript(&path, "codex", &test_binding(), "epoch").unwrap();
+        let stale = std::fs::metadata(&path).unwrap();
+        let next = codex_user_line("second");
+        let split = next.len() / 2;
+        let mut writer = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writer.write_all(&next.as_bytes()[..split]).unwrap();
+        let partial = advance_transcript_with_history(snapshot, &stale, &test_binding(), "epoch", None, None).unwrap();
+        assert_eq!(partial.cursor.pending_bytes, next.as_bytes()[..split]);
+        assert_eq!(partial.cursor.read_offset, stale.len() + split as u64);
+        writer.write_all(&next.as_bytes()[split..]).unwrap();
+        drop(writer);
+        let calls = Cell::new(0);
+        let visits = Cell::new(0);
+        let full = poll_transcript(Some(&partial), &test_binding(), "codex", "agent-1", dir.path(), &calls, &visits).unwrap();
+        assert_eq!(calls.get(), 0);
+        assert_eq!(user_message_texts(&full), vec!["first", "second"]);
+        assert!(full.cursor.pending_bytes.is_empty());
+        assert!(poll_transcript(Some(&full), &test_binding(), "codex", "agent-1", dir.path(), &calls, &visits).is_none());
+    }
+
+    #[test]
+    fn events_refresh_only_when_the_sweep_is_idle_and_never_during_another_refresh() {
+        let service = LiveBriefService::new(Arc::new(SessionManager::new()), crate::pty::monitor::new_metadata_store());
+        assert!(service.sweep_is_idle());
+        assert!(service.events(&[], 200).is_empty());
+        let finished = service.state.lock().unwrap().last_refresh_finished_at;
+        service.subscribe("test-window");
+        for _ in 0..10 { service.events(&[], 200); }
+        assert_eq!(service.state.lock().unwrap().last_refresh_finished_at, finished);
+        {
+            let mut state = service.state.lock().unwrap();
+            state.last_refresh_finished_at = Some(std::time::Instant::now() - Duration::from_secs(6));
+            state.refresh_in_progress = true;
+        }
+        assert!(!service.sweep_is_idle());
+        service.events(&[], 200);
+        assert!(service.state.lock().unwrap().refresh_in_progress);
+        service.state.lock().unwrap().refresh_in_progress = false;
+        assert!(service.sweep_is_idle());
+        service.events(&[], 200);
+        assert!(!service.sweep_is_idle());
+        service.unsubscribe("test-window");
+    }
+
+    #[test]
+    fn subscriptions_are_idempotent_per_window_and_destroy_removes_only_its_owner() {
+        let service = LiveBriefService::new(Arc::new(SessionManager::new()), crate::pty::monitor::new_metadata_store());
+        service.subscribe("main");
+        service.subscribe("child");
+        service.subscribe("child");
+        assert_eq!(service.subscribers.lock().unwrap().len(), 2);
+        service.unsubscribe("child");
+        service.unsubscribe("child");
+        assert!(service.has_subscribers());
+        assert_eq!(service.subscribers.lock().unwrap().len(), 1);
+        service.unsubscribe("main");
+        assert!(!service.has_subscribers());
+        service.subscribe("child");
+        assert_eq!(service.subscribers.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn idle_ipc_refreshes_use_the_blocking_pool_without_blocking_the_async_worker() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        for snapshots in [false, true] {
+            let service = LiveBriefService::new(Arc::new(SessionManager::new()), crate::pty::monitor::new_metadata_store());
+            let state = service.state.clone();
+            let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let owner = std::thread::spawn(move || {
+                let _guard = state.lock().unwrap();
+                locked_tx.send(()).unwrap();
+                // Bound a broken implementation's deadlock so the regression fails.
+                release_rx.recv_timeout(Duration::from_secs(3)).is_ok()
+            });
+            locked_rx.recv().unwrap();
+            runtime.block_on(async {
+                let job = tokio::spawn(async move {
+                    if snapshots { snapshots_on_blocking_pool(service).await.map(|_| ()) }
+                    else { events_on_blocking_pool(service, vec![], Some(200)).await.map(|_| ()) }
+                });
+                tokio::task::yield_now().await;
+                assert!(release_tx.send(()).is_ok(), "IPC blocked the only async worker");
+                job.await.unwrap().unwrap();
+            });
+            assert!(owner.join().unwrap());
+        }
+    }
+
+    #[test]
+    fn duplicate_mapping_mtime_ties_do_not_choose_a_random_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        for pane in ["a", "b", "c"] {
+            let path = dir.path().join(format!("{pane}.txt"));
+            std::fs::write(&path, b"claude:session").unwrap();
+            set_mtime(&path, 1_700_000_000);
+        }
+        assert_eq!(newest_pane_by_mapping_mtime(dir.path(), &["a", "b"]), None);
+        assert_eq!(newest_pane_by_mapping_mtime(dir.path(), &["b", "a"]), None);
+        set_mtime(&dir.path().join("c.txt"), 1_700_000_001);
+        assert_eq!(newest_pane_by_mapping_mtime(dir.path(), &["a", "b", "c"]), Some("c".into()));
+    }
+
+    #[test]
+    fn an_ended_snapshot_recovers_when_its_transcript_grows_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout-agent-1.jsonl");
+        std::fs::write(&path, codex_user_line("before")).unwrap();
+        let prior = bootstrap_transcript(&path, "codex", &test_binding(), "epoch").unwrap();
+        let ended = keep_last_picture(Some(&prior), unavailable_snapshot(test_binding(), "unavailable", "epoch"));
+        assert_eq!(ended.brief.telemetry_health, "ended");
+        append_codex_line(&path, "after");
+        let recovered = poll_transcript(Some(&ended), &test_binding(), "codex", "agent-1", dir.path(), &Cell::new(0), &Cell::new(0)).unwrap();
+        assert_eq!(recovered.brief.telemetry_health, "live");
+        assert_eq!(user_message_texts(&recovered), vec!["before", "after"]);
     }
 
     fn codex_user_line(message: &str) -> String {

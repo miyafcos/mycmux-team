@@ -21,6 +21,7 @@ pub fn start_monitor(
         let mut last_output_evidence_at: HashMap<String, u64> = HashMap::new();
         let mut session_epochs: HashMap<String, u64> = HashMap::new();
         let mut codex_rollout_detector = CodexRolloutDetector::new();
+        let mut transcript_activity = TranscriptActivityTracker::default();
         // `None` until the first report. Seeding this with `Instant::now() - 60s`
         // would panic when mycmux starts within a minute of boot, because the
         // Windows Instant epoch is boot time.
@@ -64,6 +65,7 @@ pub fn start_monitor(
                 }
             }
 
+            transcript_activity.retain_recent(std::time::SystemTime::now());
             let pids = manager.iter_pids();
             let refresh_started = Instant::now();
 
@@ -252,61 +254,7 @@ pub fn start_monitor(
                     );
                     let (agent_kind, agent_session_id, claude_session_id) = match foreground_agent {
                         Some((kind, agent_pid)) => match kind {
-                            DetectedAgentKind::ClaudeCodex => {
-                                let exact = session_id_from_agent_args(&sys, agent_pid, false);
-                                let detected = preferred_known_agent_session_id(
-                                    exact,
-                                    &agent_mappings,
-                                    &detected_agent_sessions,
-                                    &session_id,
-                                    agent_pid,
-                                    kind,
-                                    &excluded_agent_session_ids,
-                                )
-                                .or_else(|| {
-                                    detect_agent_session_id_with_negative_ttl(
-                                        &mut failed_detected_agent_sessions,
-                                        &session_id,
-                                        agent_pid,
-                                        kind,
-                                        || {
-                                            detect_claude_codex_session_id(
-                                                &cwd,
-                                                agent_min_created,
-                                                &excluded_agent_session_ids,
-                                            )
-                                        },
-                                    )
-                                });
-                                remember_detected_agent_session_id(
-                                    &mut detected_agent_sessions,
-                                    &session_id,
-                                    agent_pid,
-                                    kind,
-                                    &detected,
-                                );
-                                let previous_same_kind_session =
-                                    if previous_agent_kind.as_deref() == Some("claude-codex") {
-                                        previous_agent_session_id.clone()
-                                    } else {
-                                        None
-                                    }
-                                    .filter(|candidate| {
-                                        !excluded_agent_session_ids.contains(candidate)
-                                    });
-                                let agent_session_id = detected.or(previous_same_kind_session);
-                                if let Some(candidate) = agent_session_id.as_ref() {
-                                    claimed_agent_session_ids.insert(candidate.clone());
-                                }
-                                (
-                                    agent_session_id
-                                        .as_ref()
-                                        .map(|_| "claude-codex".to_string()),
-                                    agent_session_id,
-                                    previous_claude_session_id.clone(),
-                                )
-                            }
-                            DetectedAgentKind::Claude => {
+                            DetectedAgentKind::Claude | DetectedAgentKind::ClaudeCodex => {
                                 let exact = session_id_from_agent_args(&sys, agent_pid, false);
                                 let mapped = mapped_agent_session_attribution_for_pane(
                                     &agent_mappings,
@@ -333,15 +281,16 @@ pub fn start_monitor(
                                     exact.as_deref(),
                                 );
                                 let observed_now = std::time::SystemTime::now();
-                                let transcript_last_write = |agent_kind: &str, id: &str| {
-                                    claude_family_transcript_last_write(agent_kind, &cwd, id)
+                                let mut transcript_last_write = |agent_kind: &str, id: &str| {
+                                    transcript_activity.last_write(agent_kind, &cwd, id, observed_now)
                                 };
                                 // The identity this pane was pinned to before
                                 // any re-detection ran: the launcher mapping,
                                 // otherwise the id frozen into the agent's argv.
                                 let pinned_attribution = mapped.clone().or_else(|| {
                                     exact.clone().map(|id| {
-                                        let pinned_kind = claude_family_kind_for(
+                                        let pinned_kind = claude_process_kind_for(
+                                            kind,
                                             previous_agent_kind.as_deref(),
                                             previous_session_id.as_deref().filter(|candidate| {
                                                 !excluded_agent_session_ids.contains(*candidate)
@@ -361,10 +310,11 @@ pub fn start_monitor(
                                         transcript_last_write(
                                             value.agent_kind,
                                             &value.session_id,
-                                        )
+                                        ).map(|(_, floor)| floor)
                                     }),
                                 );
                                 let attribution = select_claude_process_attribution(
+                                    kind,
                                     mapped,
                                     exact,
                                     cached,
@@ -373,7 +323,7 @@ pub fn start_monitor(
                                     &excluded_agent_session_ids,
                                     |agent_kind, id| {
                                         transcript_is_silent(
-                                            transcript_last_write(agent_kind, id),
+                                            transcript_last_write(agent_kind, id).map(|(at, _)| at),
                                             observed_now,
                                         )
                                     },
@@ -384,11 +334,19 @@ pub fn start_monitor(
                                             agent_pid,
                                             kind,
                                             || {
-                                                detect_claude_family_session_id(
-                                                    &cwd,
-                                                    successor_min_created,
-                                                    &detection_exclusions,
-                                                )
+                                                if claude_process_uses_codex_root(kind, pinned_attribution.as_ref()) {
+                                                    detect_claude_codex_session_id(
+                                                        &cwd,
+                                                        successor_min_created,
+                                                        &detection_exclusions,
+                                                    ).map(|id| AgentSessionAttribution::new("claude-codex", id))
+                                                } else {
+                                                    detect_claude_family_session_id(
+                                                        &cwd,
+                                                        successor_min_created,
+                                                        &detection_exclusions,
+                                                    )
+                                                }
                                             },
                                         )
                                     },
@@ -438,7 +396,7 @@ pub fn start_monitor(
                                     attribution
                                         .as_ref()
                                         .map(|value| value.agent_kind)
-                                        .unwrap_or("claude")
+                                        .unwrap_or(if kind == DetectedAgentKind::ClaudeCodex { "claude-codex" } else { "claude" })
                                         .to_string(),
                                 );
                                 (agent_kind, agent_session_id, claude_session_id)
@@ -594,7 +552,7 @@ pub fn start_monitor(
                         (agent_kind.as_deref(), agent_session_id.as_deref())
                     {
                         let process_identity_matches = foreground_agent.is_some_and(|(detected_kind, _)| {
-                            mapping_kind_is_grounded_in_detected_process(kind, detected_kind)
+                            mapping_kind_is_grounded_for_pane(&agent_mappings, &session_id, kind, detected_kind)
                         });
                         if process_identity_matches && should_write_agent_session_mapping(
                             &agent_mappings,

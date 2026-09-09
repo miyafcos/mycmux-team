@@ -219,9 +219,8 @@ pub(super) fn detect_claude_family_session_id_in_dirs(
 /// Claude Code rolls its session id over mid-run (`/clear`, a resume, a
 /// compaction boundary): the old `<id>.jsonl` stops at the instant the new one
 /// is created, while the pane mapping — written once at launch — keeps pointing
-/// at the file that never grows again. mtime is the signal rather than the last
-/// line's timestamp because it moves on every append and costs one stat instead
-/// of a parse of a multi-megabyte transcript.
+/// at the file that never grows again. The monitor observes both size and
+/// mtime across ticks: Windows may leave mtime frozen while a writer is open.
 ///
 /// The grace period only decides *when* the successor scan runs. A live
 /// conversation that happens to be quiet (one long tool call) has no successor
@@ -260,16 +259,68 @@ pub(super) fn claude_family_transcript_path(
     Some(project_dir.join(format!("{session_id}.jsonl")))
 }
 
-pub(super) fn claude_family_transcript_last_write(
-    agent_kind: &str,
-    cwd: &str,
-    session_id: &str,
-) -> Option<std::time::SystemTime> {
-    if crate::test_profile::is_active() {
-        return None;
+#[derive(Default)]
+pub(super) struct TranscriptActivityTracker {
+    observed: HashMap<std::path::PathBuf, TranscriptActivity>,
+}
+
+struct TranscriptActivity {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    last_write: std::time::SystemTime,
+    last_seen: std::time::SystemTime,
+    successor_floor: std::time::SystemTime,
+}
+
+impl TranscriptActivityTracker {
+    pub(super) fn last_write(
+        &mut self,
+        kind: &str,
+        cwd: &str,
+        session_id: &str,
+        now: std::time::SystemTime,
+    ) -> Option<(std::time::SystemTime, std::time::SystemTime)> {
+        if crate::test_profile::is_active() {
+            return None;
+        }
+        let path = claude_family_transcript_path(kind, cwd, session_id)?;
+        let metadata = std::fs::metadata(&path).ok()?;
+        Some(self.observe(&path, &metadata, now))
     }
-    let path = claude_family_transcript_path(agent_kind, cwd, session_id)?;
-    std::fs::metadata(path).ok()?.modified().ok()
+
+    fn observe(
+        &mut self,
+        path: &std::path::Path,
+        metadata: &std::fs::Metadata,
+        now: std::time::SystemTime,
+    ) -> (std::time::SystemTime, std::time::SystemTime) {
+        let modified = metadata.modified().ok();
+        // Windows can leave mtime unchanged while an open writer appends.
+        // Require observed silence, including on the first encounter, before
+        // permitting a pane to abandon its pinned transcript.
+        let entry = self.observed.entry(path.to_path_buf()).or_insert(TranscriptActivity {
+            len: metadata.len(), modified, last_write: now, last_seen: now,
+            successor_floor: modified.unwrap_or(now).min(now),
+        });
+        if entry.len != metadata.len() || entry.modified != modified {
+            entry.last_write = now;
+            // The append happened after the previous observation, not necessarily
+            // at this poll. Using now would exclude a successor already created
+            // between those two polls.
+            entry.successor_floor = entry.last_seen;
+        }
+        entry.len = metadata.len();
+        entry.modified = modified;
+        entry.last_seen = now;
+        (entry.last_write, entry.successor_floor)
+    }
+
+    pub(super) fn retain_recent(&mut self, now: std::time::SystemTime) {
+        self.observed.retain(|_, entry| {
+            now.duration_since(entry.last_seen)
+                .map_or(true, |elapsed| elapsed <= AGENT_TRANSCRIPT_SILENCE_GRACE * 2)
+        });
+    }
 }
 
 /// `None` (no transcript on disk) is deliberately *not* silent: an agent that
@@ -468,4 +519,39 @@ pub(super) fn detect_codex_session_id(
         &mut best,
     );
     best.map(|(id, _)| id)
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+    use std::fs::{File, OpenOptions};
+    use std::io::Write;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn appends_with_a_frozen_mtime_are_not_silent_and_keep_a_safe_successor_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        std::fs::write(&path, b"seed").unwrap();
+        let frozen = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let now = frozen + Duration::from_secs(600);
+        File::options().write(true).open(&path).unwrap().set_modified(frozen).unwrap();
+        let mut tracker = TranscriptActivityTracker::default();
+        let first = tracker.observe(&path, &std::fs::metadata(&path).unwrap(), now);
+        assert!(!transcript_is_silent(Some(first.0), now));
+        for step in 1..=8 {
+            let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+            file.write_all(b"more").unwrap();
+            file.set_modified(frozen).unwrap();
+            let at = now + Duration::from_secs(step * 10);
+            let observation = tracker.observe(&path, &std::fs::metadata(&path).unwrap(), at);
+            assert!(!transcript_is_silent(Some(observation.0), at));
+            assert_eq!(observation.1, at - Duration::from_secs(10));
+        }
+        let quiet = now + Duration::from_secs(140);
+        let observation = tracker.observe(&path, &std::fs::metadata(&path).unwrap(), quiet);
+        assert!(transcript_is_silent(Some(observation.0), quiet));
+        tracker.retain_recent(quiet + AGENT_TRANSCRIPT_SILENCE_GRACE * 3);
+        assert!(tracker.observed.is_empty());
+    }
 }

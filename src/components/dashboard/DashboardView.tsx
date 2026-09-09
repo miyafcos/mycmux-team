@@ -274,9 +274,8 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   const selectedSessionId = selectedCard?.tab.sessionId ?? null;
   const activeColumnSessionId = activeColumnCard?.tab.sessionId ?? null;
   const activeColumnEvents = activeColumnSessionId ? eventsBySession[activeColumnSessionId] : undefined;
-  const activeColumnTranscriptEvents = activeColumnEvents?.length
-    ? activeColumnEvents
-    : activeColumnSessionId ? listEventsBySession[activeColumnSessionId] ?? [] : [];
+  const activeColumnTranscriptEvents = activeColumnEvents
+    ?? (activeColumnSessionId ? listEventsBySession[activeColumnSessionId] ?? [] : []);
   const askBySession = useAskQuestionStore((state) => state.bySession);
   const activeColumnAsk = activeColumnSessionId ? askBySession[activeColumnSessionId]?.screen : undefined;
   const activeColumnQuestion = activeColumnAsk ?? questionModel(activeColumnCard?.brief, activeColumnTranscriptEvents);
@@ -513,12 +512,19 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     for (const card of visibleCards) push(card.tab.sessionId);
     return ids.slice(0, LIVE_EVENT_VISIBLE_LIMIT).join(",");
   }, [chatColumnCards, urgentCards, visibleCards]);
+  // 開いている列は全部深く取る (アクティブな 1 本だけだと、他の列は切り替えた
+  // 時点の詳細スライスが残ったまま二度と更新されない)。
+  const detailKey = useMemo(
+    () => chatColumnCards.map((card) => card.tab.sessionId).join(","),
+    [chatColumnCards],
+  );
   useEffect(() => {
     syncDashboardEvents({
       selectedId: selectedSessionId,
       visibleIds: visibleKey ? visibleKey.split(",") : [],
+      detailIds: detailKey ? detailKey.split(",") : [],
     });
-  }, [selectedSessionId, visibleKey]);
+  }, [detailKey, selectedSessionId, visibleKey]);
   // ビューを閉じたら両方止める (張り替えでは止めない)。
   useEffect(() => () => stopEventPolling(), []);
   // 介入の結果表示は開いている間だけのもの。次に開いたとき前回の結果が残っていると、
@@ -1051,9 +1057,9 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
       if (numberIndex >= 0 && selectedCard) {
         const store = useLiveBriefStore.getState();
         const brief = store.briefsBySession[selectedCard.tab.sessionId];
-        // 詳細スライスが空 (未取得・0件) なら一覧スライスで代替する。
+        // An empty fetched detail is authoritative; only an absent slice falls back.
         const detailEvents = store.eventsBySession[selectedCard.tab.sessionId];
-        const events = detailEvents?.length ? detailEvents : store.listEventsBySession[selectedCard.tab.sessionId];
+        const events = detailEvents ?? store.listEventsBySession[selectedCard.tab.sessionId];
         const model = questionModel(brief, events);
         const option = model && model.canSend && model.options.length <= NUMBER_KEYS.length
           ? model.options[numberIndex]
@@ -1237,7 +1243,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
               }
               const { card } = slot;
               const events = eventsBySession[card.tab.sessionId];
-              const columnEvents = events?.length ? events : listEventsBySession[card.tab.sessionId] ?? [];
+              const columnEvents = events ?? listEventsBySession[card.tab.sessionId] ?? [];
               return <ChatColumn
                 key={card.tab.id}
                 card={card}

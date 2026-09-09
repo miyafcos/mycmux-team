@@ -181,6 +181,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--all", action="store_true", help="List panes across all workspaces"
     )
 
+    subparsers.add_parser(
+        "usage",
+        help="Report how much of each registered CLI account's window is used",
+    )
+
     status = subparsers.add_parser("status", help="Read canonical session state")
     status.add_argument("--session")
 
@@ -535,6 +540,8 @@ def build_detached_spawn_request(namespace: argparse.Namespace) -> dict[str, Any
 def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     if namespace.subcommand == "workspaces":
         return "workspace.list", {}
+    if namespace.subcommand == "usage":
+        return "account.usage", {}
     if namespace.subcommand == "panes":
         if namespace.all:
             return "pane.list_all", {}

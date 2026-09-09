@@ -565,6 +565,29 @@ describe("DashboardView split3 selection", () => {
     expect(liveEmpty.textContent).toContain("まだ会話の記録がありません");
   });
 
+
+  it("uses empty detail for the column and active question state instead of reviving a shallow question", async () => {
+    const item = tab("tab-empty", "s-empty", "Empty detail");
+    seedDashboard({
+      workspace: workspace([item]), selectedTabId: item.id,
+      briefs: [brief({ ptySessionId: item.sessionId, pendingPrompt: null, pendingInputKind: null, pendingOptions: [], promptEventId: null, promptHash: null })],
+    });
+    const staleQuestion = {
+      eventId: "stale", sourceRevision: 1, occurredAt: NOW, sourceByteStart: 0, sourceByteEnd: 1,
+      kind: { type: "question" as const, prompt_event_id: "q-old", provider_call_id: "c-old", prompt: "stale question", kind: "choice" as const, options: [{ id: "a", label: "yes" }] },
+    };
+    useLiveBriefStore.setState({
+      eventsBySession: { [item.sessionId]: [] },
+      eventsFetchedAtBySession: { [item.sessionId]: NOW },
+      listEventsBySession: { [item.sessionId]: [staleQuestion] },
+    });
+    await renderDashboard();
+    const column = container.querySelector("[data-dashboard-chat-column]");
+    expect(column?.textContent).not.toContain("stale question");
+    expect(column?.querySelector("[data-dashboard-chat-empty]")).not.toBeNull();
+    expect(mocks.observeActiveSession).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: item.sessionId, questionActive: false }));
+  });
+
   it("keeps status, elapsed time, and controls on the single chat header without the old detail band", async () => {
     const asking = tab("tab-header", "s-header", "Header session");
     seedDashboard({ workspace: workspace([asking]), selectedTabId: asking.id, briefs: [brief({ ptySessionId: asking.sessionId })] });
@@ -599,6 +622,10 @@ describe("DashboardView Q1 chat columns", () => {
     expect(state.chatColumnTabIds).toEqual([first.id, second.id]);
     expect(state.activeChatColumn).toBe(1);
     expect(state.selectedTabId).toBe(second.id);
+    // Both open columns are polled deep, not only the active one.
+    const lastSync = mocks.syncDashboardEvents.mock.calls.at(-1)?.[0] as { selectedId: string | null; detailIds?: string[] };
+    expect(lastSync.selectedId).toBe("s-second");
+    expect(lastSync.detailIds).toEqual(["s-first", "s-second"]);
   });
 
   it("adds a column for a minimap drop, de-duplicates it, and keeps the report inbox column", async () => {

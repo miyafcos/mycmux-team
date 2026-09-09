@@ -390,6 +390,51 @@ describe("ChatTranscript user-turn requests", () => {
     expect(metrics.scrollTop).toBe(400);
   });
 
+
+  it("jumps inside its own log when another mounted transcript has the same event ids", async () => {
+    const events = threeTurnEvents();
+    const { useDashboardViewStore } = await import("../../src/stores/dashboardViewStore");
+    await act(async () => root.render(<>
+      <ChatTranscript events={events} tabId={null} detailLoaded />
+      <ChatTranscript events={events} tabId="visible" detailLoaded />
+    </>));
+    const logs = host.querySelectorAll('[role="log"]');
+    const first = logs[0].querySelectorAll("[data-dashboard-event]")[2] as HTMLElement;
+    const second = logs[1].querySelectorAll("[data-dashboard-event]")[2] as HTMLElement;
+    const hiddenScroll = vi.fn();
+    const visibleScroll = vi.fn();
+    first.scrollIntoView = hiddenScroll;
+    second.scrollIntoView = visibleScroll;
+    await act(async () => useDashboardViewStore.getState().requestUserTurnStep("visible", -1));
+    expect(visibleScroll).toHaveBeenCalledTimes(1);
+    expect(hiddenScroll).not.toHaveBeenCalled();
+  });
+
+  it("highlights and jumps to a merged message source once, without pinning later polling to it", async () => {
+    const first = envelope({ type: "agentMessage", text: "first paragraph" });
+    const second = envelope({ type: "agentMessage", text: "second paragraph" });
+    const events = [first, second];
+    await act(async () => root.render(<ChatTranscript events={events} />));
+    const scroll = spyScroll(first.eventId);
+    await act(async () => root.render(<ChatTranscript events={events} targetEventId={second.eventId} targetEventRequest={1} />));
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(host.querySelector(".is-source-highlighted")?.getAttribute("data-dashboard-event")).toBe(first.eventId);
+    await act(async () => root.render(<ChatTranscript events={[...events]} targetEventId={second.eventId} targetEventRequest={1} />));
+    expect(scroll).toHaveBeenCalledTimes(1);
+    await act(async () => root.render(<ChatTranscript events={[...events]} targetEventId={second.eventId} targetEventRequest={2} />));
+    expect(scroll).toHaveBeenCalledTimes(2);
+  });
+
+  it("updates the turn count after the StrictMode setup-cleanup-setup cycle", async () => {
+    const events = [userMessage("first")];
+    await act(async () => root.render(<StrictMode><ChatTranscript events={events} /></StrictMode>));
+    await act(async () => {
+      root.render(<StrictMode><ChatTranscript events={[...events, userMessage("second")]} /></StrictMode>);
+    });
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    expect(host.querySelector("[data-dashboard-user-turn-count]")?.getAttribute("data-dashboard-user-turn-count")).toBe("2/2");
+  });
+
   it("ignores a request for a different tab", async () => {
     const { useDashboardViewStore } = await import("../../src/stores/dashboardViewStore");
     useDashboardViewStore.getState().requestUserTurnStep("tab-other", -1);

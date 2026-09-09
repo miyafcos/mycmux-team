@@ -91,6 +91,8 @@ pub struct AgentAdapter {
     seen_native_ids: HashSet<String>,
     seen_operator_message: bool,
     claude_billed: HashMap<String, BillableTokens>,
+    codex_turn_id: Option<String>,
+    codex_unpaired_users: Vec<(bool, String)>,
     codex_model: Option<String>,
     codex_effort: Option<String>,
     last_codex_total: Option<CodexTotals>,
@@ -114,6 +116,8 @@ impl AgentAdapter {
             seen_native_ids: HashSet::new(),
             seen_operator_message: false,
             claude_billed: HashMap::new(),
+            codex_turn_id: None,
+            codex_unpaired_users: Vec::new(),
             codex_model: None,
             codex_effort: None,
             last_codex_total: None,
@@ -196,18 +200,37 @@ impl AgentAdapter {
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        let turn_id = payload.get("turn_id").or_else(|| value.get("turn_id"))
+            .and_then(Value::as_str).filter(|id| !id.is_empty());
+        if outer == "turn_context" || (outer == "event_msg" && inner == "task_started") {
+            self.set_codex_turn(turn_id);
+        }
+        let is_user = (outer == "event_msg" && inner == "user_message")
+            || (outer == "response_item" && inner == "message"
+                && payload.get("role").and_then(Value::as_str) == Some("user"));
+        if is_user {
+            if turn_id.is_some() { self.set_codex_turn(turn_id); }
+        } else if (outer == "response_item" && matches!(inner, "message" | "function_call" | "custom_tool_call"))
+            || (outer == "event_msg" && inner == "agent_message") {
+            // A new input after assistant/tool work is a new occurrence, even
+            // when a provider retains the same turn id for steering.
+            self.codex_unpaired_users.clear();
+        }
+        if outer == "event_msg" && matches!(inner, "task_complete" | "turn_aborted") {
+            self.set_codex_turn(None);
+        }
         match (outer, inner) {
             ("event_msg", "user_message") => payload
                 .get("message")
                 .and_then(Value::as_str)
-                .map(|text| self.user_message(text))
+                .and_then(|text| self.codex_user_message(text, true))
                 .into_iter()
                 .collect(),
             ("response_item", "message")
                 if payload.get("role").and_then(Value::as_str) == Some("user") =>
             {
                 collect_text(payload.get("content"))
-                    .map(|text| self.user_message(&text))
+                    .and_then(|text| self.codex_user_message(&text, false))
                     .into_iter()
                     .collect()
             }
@@ -226,6 +249,28 @@ impl AgentAdapter {
             | ("response_item", "custom_tool_call_output") => self.codex_tool_end(payload),
             _ => Vec::new(),
         }
+    }
+
+    fn set_codex_turn(&mut self, turn_id: Option<&str>) {
+        if self.codex_turn_id.as_deref() != turn_id || turn_id.is_none() {
+            self.codex_turn_id = turn_id.map(str::to_string);
+            self.codex_unpaired_users.clear();
+        }
+    }
+
+    fn codex_user_message(&mut self, text: &str, event_form: bool) -> Option<SemanticEventKind> {
+        // Pair two representations once, only inside a proven provider turn.
+        // Same-form repeats and all inputs without a turn id remain visible.
+        if self.codex_turn_id.is_some() {
+            let digest = sha256_hex(text.as_bytes());
+            if let Some(index) = self.codex_unpaired_users.iter()
+                .position(|(form, seen)| *form != event_form && seen == &digest) {
+                self.codex_unpaired_users.remove(index);
+                return None;
+            }
+            self.codex_unpaired_users.push((event_form, digest));
+        }
+        Some(self.user_message(text))
     }
 
     fn decode_claude(&mut self, value: &Value) -> Vec<SemanticEventKind> {
@@ -933,6 +978,66 @@ mod tests {
             .into_iter()
             .map(|envelope| envelope.kind)
             .collect()
+    }
+
+    fn codex_records(records: Vec<Value>) -> Vec<SemanticEventEnvelope> {
+        let mut adapter = AgentAdapter::new("codex").unwrap();
+        records.into_iter().enumerate().flat_map(|(i, record)| {
+            adapter.decode_record(&record.to_string(), ByteRange { start: i as u64, end: i as u64 + 1 }, 1).unwrap()
+        }).collect()
+    }
+
+    fn codex_input(event_form: bool, turn: Option<&str>, timestamp: &str) -> Value {
+        let mut value = if event_form {
+            serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"repeat this task"}})
+        } else {
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"repeat this task"}]}})
+        };
+        value["timestamp"] = serde_json::json!(timestamp);
+        if let Some(turn) = turn { value["payload"]["turn_id"] = serde_json::json!(turn); }
+        value
+    }
+
+    #[test]
+    fn codex_pairs_both_user_formats_once_per_provider_turn_in_either_order() {
+        for reverse in [false, true] {
+            let first = codex_input(reverse, None, "2026-09-08T15:42:18.547Z");
+            let second = codex_input(!reverse, None, "2026-09-08T15:42:18.548Z");
+            let events = codex_records(vec![
+                serde_json::json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}),
+                first.clone(),
+                serde_json::json!({"type":"turn_context","payload":{"turn_id":"turn-1"}}),
+                second.clone(),
+                first, second,
+            ]);
+            assert_eq!(events.len(), 2, "two genuine submissions, each represented twice");
+            assert!(events.iter().all(|event| matches!(event.kind, SemanticEventKind::UserMessage { .. })));
+        }
+    }
+
+    #[test]
+    fn codex_preserves_reinputs_across_turns_missing_turns_and_same_format() {
+        assert_eq!(codex_records(vec![
+            codex_input(false, Some("one"), "2026-09-08T00:00:00Z"),
+            codex_input(true, Some("two"), "2026-09-08T00:00:00Z"),
+        ]).len(), 2);
+        assert_eq!(codex_records(vec![
+            codex_input(false, None, "2026-09-08T00:00:00Z"),
+            codex_input(true, None, "2026-09-08T00:00:00Z"),
+        ]).len(), 2);
+        assert_eq!(codex_records(vec![
+            codex_input(false, Some("one"), "2026-09-08T00:00:00Z"),
+            codex_input(false, Some("one"), "2026-09-08T00:00:01Z"),
+        ]).len(), 2);
+        for boundary in [
+            serde_json::json!({"type":"event_msg","payload":{"type":"task_complete","turn_id":"one"}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}),
+        ] {
+            assert_eq!(codex_records(vec![
+                codex_input(false, Some("one"), "2026-09-08T00:00:00Z"), boundary,
+                codex_input(true, None, "2026-09-08T00:00:01Z"),
+            ]).len(), 2);
+        }
     }
 
     fn grok_line(event_id: &str, timestamp_ms: i64, update: serde_json::Value) -> String {
