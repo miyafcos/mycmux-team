@@ -72,7 +72,7 @@ function UnseenAttentionRing({ count, category }: { count: number; category: Att
   );
 }
 
-export default memo(function TabItem({ uiVariant = "default", name, tabCount, activeTabLabels = [], remainingTabCount = 0, notificationCount, petState = "idle", petAtlasUrl, showPet = true, unseenAttentionCount = 0, unseenAttentionCategory = null, color, active, onClick, onClose, onMenu, onRename, renameSignal = 0 }: TabItemProps) {
+export default memo(function TabItem({ uiVariant = "default", name, tabCount, activeTabLabels = [], remainingTabCount = 0, notificationCount, petState = "resting", petAtlasUrl, showPet = true, unseenAttentionCount = 0, unseenAttentionCategory = null, color, active, onClick, onClose, onMenu, onRename, renameSignal = 0 }: TabItemProps) {
   const hasUnseenAttention = unseenAttentionCount > 0 && unseenAttentionCategory !== null;
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(name);
@@ -128,6 +128,11 @@ export default memo(function TabItem({ uiVariant = "default", name, tabCount, ac
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
+        // The row holds the pet, the labels and the badges side by side with no
+        // gap of its own, so the sprite's feet touched the first tab name. 8 is
+        // the same step the label row inside already uses, which keeps the card
+        // reading as one rhythm rather than two.
+        gap: 8,
         padding: "9px 10px 9px 12px",
         cursor: "pointer",
         // Two independent signals share this row, so they use disjoint
@@ -158,7 +163,7 @@ export default memo(function TabItem({ uiVariant = "default", name, tabCount, ac
           atlasUrl={petAtlasUrl}
           state={petState}
           height={40}
-          animate={active || petState !== "idle" || Boolean(notificationCount) || hasUnseenAttention}
+          animate={showPet}
         />
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0, overflow: "hidden", flex: 1 }}>

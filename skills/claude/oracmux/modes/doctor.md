@@ -15,6 +15,7 @@ pytest はソケットの手前で止まるので、**サービス側の画面�
 | `composer` / `mode_label` が実 DOM に居るか | 0 件なら **DRIFT** (exit 4)。engines.json を実物を見て直す |
 | `send` / `assistant` の件数 | 参考表示。空の会話では 0 が正常なので落とさない |
 | 添付が成立するか | file input が無ければ `upload_open` を押して生えるか確かめる。生えなければ **DRIFT** |
+| **引き継ぎ書が composer に入るか** | 本物と同じ**末尾フェンス付き**の文面を入れて、送信ボタンが出るかを見る (0 ターン・確認後に消す)。出なければ **DRIFT**。`web.push` が拒まれて `web.type` で入った場合は `fill: WARN` で理由を出す (oracmux は自力で直すが、mycmux 側の `web.push` は壊れたまま) |
 | **いまどのモデルが選ばれているか** | picker のラベルをそのまま出す。ChatGPT は**新規チャット画面でのみ**読める (会話中の「モデルを切り替える」は再試行ボタンで picker ではない) |
 
 初回実行 (2026-09-09) で ChatGPT の `model-switcher-dropdown-button` 消滅・Gemini の Flash 化・Grok の ファスト 化を検知した。
@@ -41,5 +42,7 @@ exit: 0 = ソケット ok で全サービスが ok か no_tab / 3 = サインア
 | chrome `not_logged_in` / `captcha` | OracleChrome のログイン切れ | `oracle-chrome show` で窓を出して報告。済んだら `oracle-chrome hide` |
 | chrome chatgpt `limit` | ChatGPT Work の週次上限 | `doctor --chrome --switch-to-chat` |
 | chrome alive=False | OracleChrome 落ち | `doctor --chrome --up` |
+| chrome `debugger socket is dead` | HTTP は応えるが CDP の実体が死んでいる (stale target)。**oracle はここで `Unexpected server response: 404` を出して 50 秒後に落ちる** | `oracle status` で走行中が無いことを確かめてから `oracle-chrome down` → `up`。急ぐなら `--via pane` (Chrome 不要) |
+| `fill: FAIL` | 引き継ぎ書が composer に入らない (セレクタは合っているのに editor が受け取らない) | 宮崎さんへ 1 行報告。ペインに手で貼れば送れる。mycmux 側 `web.push` の修正が要る |
 | oracle session alive=True | 誰かの consult が走行中 (cdp/oracle 経路のみ影響) | 待つか `--force` |
 | oracle session zombie=True | kill された CLI の残骸 | `~/.oracle/sessions/<id>` を `~/.oracle/zombie-quarantine/` へ移動 (削除しない) |

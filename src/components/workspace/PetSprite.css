@@ -18,14 +18,13 @@
   background-position: 0 var(--pet-row-offset);
 }
 
-@keyframes cmux-pet-sprite-4 {
-  from { background-position: 0 var(--pet-row-offset); }
-  to { background-position: calc(var(--pet-frame-width) * -4) var(--pet-row-offset); }
-}
-
-@keyframes cmux-pet-sprite-5 {
-  from { background-position: 0 var(--pet-row-offset); }
-  to { background-position: calc(var(--pet-frame-width) * -5) var(--pet-row-offset); }
+@keyframes cmux-pet-sprite-resting {
+  0% { background-position: 0 var(--pet-row-offset); }
+  25.4545% { background-position: calc(var(--pet-frame-width) * -1) var(--pet-row-offset); }
+  35.4545% { background-position: calc(var(--pet-frame-width) * -2) var(--pet-row-offset); }
+  45.4545% { background-position: calc(var(--pet-frame-width) * -3) var(--pet-row-offset); }
+  58.1818% { background-position: calc(var(--pet-frame-width) * -4) var(--pet-row-offset); }
+  70.9091%, 100% { background-position: calc(var(--pet-frame-width) * -5) var(--pet-row-offset); }
 }
 
 @keyframes cmux-pet-sprite-6 {

@@ -14,6 +14,10 @@ from oracmux_lib.pane_driver import _values
 SITE = dict(engines.load(paths.engines_json())["gemini"])
 SITE["timeouts"] = {"answer_appear_sec": 20, "stable_sec": 4, "min_wait_sec": 2, "overall_min": 1}
 
+# Every oracmux brief ends this way: the output contract is a fenced block. That
+# trailing fence is what ChatGPT's editor refused on 2026-09-10.
+FENCED_BRIEF = "問い\n\n```\ncontract\n```\n"
+
 
 class Clock:
     def __init__(self) -> None:
@@ -54,6 +58,14 @@ class FakePane:
         # sitting in the composer (ChatGPT during an attachment upload, 2026-09-09).
         self.composer_text = ""
         self.clears_composer_on_click = True
+        # Fill acceptance: the editor renders a send control only once it has
+        # really taken the text. ChatGPT's ProseMirror refused what web.push wrote
+        # for a brief ending in a code fence (2026-09-10), so a fake service can
+        # refuse the push and accept only a web.type retype.
+        self.accepts_push = True
+        self.accepts_type = True
+        self.filled = False
+        self.typed: list[tuple[str, bool]] = []
 
     def install_upload(self, monkeypatch) -> None:
         monkeypatch.setattr(pane, "web_eval", self.web_eval)
@@ -65,6 +77,9 @@ class FakePane:
         monkeypatch.setattr(pane, "web_open", self.web_open)
         monkeypatch.setattr(pane, "web_read", self.web_read)
         monkeypatch.setattr(pane, "web_push", self.web_push)
+        monkeypatch.setattr(pane, "web_type", self.web_type)
+        monkeypatch.setattr(pane, "web_eval", self.web_eval)
+        monkeypatch.setattr(pane, "web_click", self.web_click)
         monkeypatch.setattr(pane, "web_close", self.web_close)
         monkeypatch.setattr(pane, "web_list", lambda: list(self.tabs))
         monkeypatch.setattr(pane, "anchor_session", lambda: "caller")
@@ -77,8 +92,20 @@ class FakePane:
 
     def web_push(self, *, preset, text_file, send=False, tab=None):
         self.pushed.append((str(text_file), send))
-        self.sent = send
+        if send:
+            self.sent = True
+        self.filled = self.accepts_push
+        self.composer_text = "brief" if self.filled else self.composer_text
         return {"tabId": tab, "submitted": send, "textBytes": 10}
+
+    def web_type(self, tab, text_file, *, selector, submit=False, trusted=False, append=False):
+        self.typed.append((selector, trusted))
+        self.filled = self.accepts_type
+        if self.filled:
+            self.composer_text = "brief"
+        if submit:
+            self.sent = True
+        return {"tabId": tab, "chars": 10, "submitted": submit}
 
     def web_close(self, tab):
         self.closed.append(tab)
@@ -91,6 +118,12 @@ class FakePane:
         self.evals.append(script)
         if "const groups" in script:
             raise AssertionError("FakePane.web_eval has no groups answer; use a selftest fake")
+        if "present: true" in script:  # the send control probe (fill acceptance)
+            return {"present": self.filled, "selector": "button.send" if self.filled else ""}
+        if "execCommand(\"delete\")" in script:  # clear the composer
+            self.filled = False
+            self.composer_text = ""
+            return {"cleared": True, "selector": "composer"}
         if "querySelectorAll" in script:
             return 1 if self.input_mounted else 0
         if "el.value" in script:
@@ -103,8 +136,11 @@ class FakePane:
         self.clicked.append(selector)
         if selector in self.opener_mounts:
             self.input_mounted = True
-        if selector in _values(SITE, "send") and self.clears_composer_on_click:
-            self.composer_text = ""
+        if selector in _values(SITE, "send"):
+            self.sent = True  # pressing send is what submits, now that push no longer does
+            if self.clears_composer_on_click:
+                self.composer_text = ""
+                self.filled = False
         return {"tabId": tab, "selector": selector}
 
     def web_upload(self, tab, selector, files):
@@ -150,7 +186,9 @@ def test_consult_opens_background_tab_pushes_and_harvests(monkeypatch, tmp_path)
     assert result.answer == "ORACMUX-OK"
     assert result.conversation_url == "https://gemini.google.com/app/deadbeef01"
     assert fake.opened == [{"preset": "gemini", "url": None, "background": True, "anchor": "caller"}]
-    assert fake.pushed == [(str(brief), True)]
+    assert fake.pushed == [(str(brief), False)], "the push fills the composer; it must not submit"
+    assert fake.typed == [], "an accepted push needs no retype"
+    assert fake.clicked == [_values(SITE, "send")[0]], "the send control is pressed once"
     assert result.tab_kept_open and fake.closed == [] and result.tab_id == "tab-1"
     assert result.citations == ["https://example.com/ref"]
     assert result.turns[-1]["role"] == "assistant"
@@ -171,6 +209,79 @@ def _quiet_pane(fake):
         }
 
     return quiet_read
+
+
+def test_fill_composer_retypes_when_the_editor_refuses_the_pushed_text(monkeypatch, tmp_path):
+    """2026-09-10 ChatGPT: web.push wrote a brief ending in a code fence into the
+    DOM, ProseMirror never adopted it, and no send control appeared. The push
+    reported success, so only the missing send control gave it away."""
+    fake = FakePane()
+    fake.install(monkeypatch)
+    fake.accepts_push = False
+    brief = tmp_path / "brief.md"
+    brief.write_text(FENCED_BRIEF, encoding="utf-8")
+    filled = pane_driver.fill_composer(SITE, "tab-1", brief, lambda _m: None)
+    assert filled["method"] == "type", "the repair path is a retype, not a second push"
+    assert fake.pushed == [(str(brief), False)] and fake.typed == [(_values(SITE, "composer")[0], False)]
+
+
+def test_fill_composer_escalates_to_a_trusted_type_before_giving_up(monkeypatch, tmp_path):
+    fake = FakePane()
+    fake.install(monkeypatch)
+    fake.accepts_push = False
+    fake.accepts_type = False
+    brief = tmp_path / "brief.md"
+    brief.write_text("問い", encoding="utf-8")
+    with pytest.raises(pane_driver.PaneNotReady) as excinfo:
+        pane_driver.fill_composer(SITE, "tab-1", brief, lambda _m: None)
+    assert "never produced a send control" in str(excinfo.value)
+    assert [trusted for _sel, trusted in fake.typed] == [False, True], "untrusted first, then CDP insertText"
+    assert fake.clicked == [], "nothing may be sent when the editor never took the brief"
+
+
+def test_consult_recovers_when_the_editor_refuses_the_push(monkeypatch, tmp_path):
+    """End to end: the failure that made oracmux unusable now self-repairs."""
+    fake = FakePane()
+    fake.install(monkeypatch)
+    fake.accepts_push = False
+    brief = tmp_path / "brief.md"
+    brief.write_text(FENCED_BRIEF, encoding="utf-8")
+    result = pane_driver.consult(SITE, brief, "問い", mode="current", out_dir=None, log=lambda _m: None)
+    assert result.status == cdp.STATUS_OK and result.answer == "ORACMUX-OK"
+    assert "filled=type" in result.trace
+    assert fake.clicked == [_values(SITE, "send")[0]]
+
+
+def test_consult_stops_without_sending_when_the_composer_cannot_be_filled(monkeypatch, tmp_path):
+    fake = FakePane()
+    fake.install(monkeypatch)
+    fake.accepts_push = False
+    fake.accepts_type = False
+    brief = tmp_path / "brief.md"
+    brief.write_text("問い", encoding="utf-8")
+    result = pane_driver.consult(SITE, brief, "問い", mode="current", out_dir=None, log=lambda _m: None)
+    assert result.status == cdp.STATUS_NEEDS_HUMAN
+    assert result.tab_kept_open and fake.clicked == []
+
+
+def test_fill_selftest_fails_the_doctor_when_the_composer_cannot_be_filled(monkeypatch):
+    """doctor --deep has to reproduce the real failure, not just match selectors:
+    on 2026-09-10 every selector matched and the composer still could not be filled."""
+    fake = FakePane()
+    fake.install(monkeypatch)
+    fake.accepts_push = False
+    fake.accepts_type = False
+    report = pane_driver.fill_selftest(SITE, "tab-1", lambda _m: None)
+    assert report["ok"] is False and "send control" in report["detail"]
+
+
+def test_fill_selftest_names_the_repair_when_only_the_push_is_broken(monkeypatch):
+    fake = FakePane()
+    fake.install(monkeypatch)
+    fake.accepts_push = False
+    report = pane_driver.fill_selftest(SITE, "tab-1", lambda _m: None)
+    assert report["ok"] is True and report["method"] == "type"
+    assert "web.push was rejected" in report["detail"]
 
 
 def test_confirm_submitted_presses_send_again_when_the_brief_is_still_in_the_composer(monkeypatch):
@@ -237,12 +348,15 @@ MODEL_SITE = dict(
 class FakePicker:
     """A model picker: reads a name, opens a menu, and switches when clicked."""
 
-    def __init__(self, current="現在のモデル: Flash", menu=("3.8 Flash", "3.1 Pro 高度な推論"), switches=True):
+    def __init__(self, current="現在のモデル: Flash", menu=("3.8 Flash", "3.1 Pro 高度な推論"), switches=True, fallback=None):
         self.current = current
         self.menu = list(menu)
         self.switches = switches
         self.clicked: list[str] = []
         self.found = True
+        # A consult needs more than a picker (fill probe, send click); hand those
+        # to the pane fake instead of pretending the picker knows them.
+        self.fallback = fallback
 
     def install(self, monkeypatch):
         monkeypatch.setattr(pane, "web_eval", self.web_eval)
@@ -250,6 +364,10 @@ class FakePicker:
         monkeypatch.setattr(pane_driver.time, "sleep", lambda _s: None)
 
     def web_eval(self, tab, script):
+        # Checked first on purpose: the send selectors carry "aria-label" into the
+        # script text, so the picker heuristic below would swallow the fill probe.
+        if "present: true" in script and self.fallback is not None:
+            return self.fallback.web_eval(tab, script)
         if "__BUTTONS__" in script or "aria-label" in script and "getClientRects" in script:
             if not self.found:
                 return {"found": False, "aria": "", "text": ""}
@@ -262,10 +380,14 @@ class FakePicker:
                         self.current = f"現在のモデル: {want}"
                     return {"ok": True, "clicked": row, "seen": self.menu}
             return {"ok": False, "seen": self.menu}
+        if self.fallback is not None:
+            return self.fallback.web_eval(tab, script)
         raise AssertionError("unexpected script for FakePicker")
 
     def web_click(self, tab, selector):
         self.clicked.append(selector)
+        if self.fallback is not None:
+            return self.fallback.web_click(tab, selector)
         return {"tabId": tab, "selector": selector}
 
 
@@ -353,14 +475,14 @@ def test_consult_stops_before_sending_when_the_model_is_wrong(monkeypatch, tmp_p
 def test_consult_records_the_model_evidence(monkeypatch, tmp_path):
     fake = FakePane()
     fake.install(monkeypatch)
-    picker = FakePicker(current="現在のモデル: Pro")
+    picker = FakePicker(current="現在のモデル: Pro", fallback=fake)
     monkeypatch.setattr(pane, "web_eval", picker.web_eval)
     monkeypatch.setattr(pane, "web_click", picker.web_click)
     brief = tmp_path / "brief.md"
     brief.write_text("問い", encoding="utf-8")
     result = pane_driver.consult(MODEL_SITE, brief, "問い", mode="current", out_dir=None,
                                  log=lambda _m: None, enforce_model="Pro")
-    assert result.status == cdp.STATUS_OK
+    assert result.status == cdp.STATUS_OK, result.error
     assert "Pro" in result.model and "Gemini picker" in result.model_evidence
 
 
@@ -476,7 +598,7 @@ def test_follow_up_reuses_the_tab_and_never_opens_one(monkeypatch, tmp_path):
     result = pane_driver.follow_up(SITE, "tab-1", brief, "追い質問", log=lambda _m: None)
     assert result.status == cdp.STATUS_OK
     assert fake.opened == [], "a follow-up must not open a new conversation"
-    assert fake.pushed == [(str(brief), True)]
+    assert fake.pushed == [(str(brief), False)]
     assert result.tab_kept_open
 
 
@@ -537,6 +659,8 @@ def test_selftest_flags_a_selector_that_no_longer_matches(monkeypatch):
     fake.install(monkeypatch)
 
     def counts(tab, script):
+        if "present: true" in script:
+            return {"present": True, "selector": "button.send"}
         if "el.value" in script:
             return {"found": True, "text": ""}
         # composer matches, the model picker no longer does
@@ -560,7 +684,7 @@ def test_selftest_surfaces_the_model_picker_label(monkeypatch):
     """Gemini was silently on Flash while the docs claimed Pro."""
     fake = FakePane()
     fake.install(monkeypatch)
-    monkeypatch.setattr(pane, "web_eval", lambda tab, script: {
+    monkeypatch.setattr(pane, "web_eval", lambda tab, script: {"present": True, "selector": "button.send"} if "present: true" in script else {
         "composer": {"hits": 1, "matched": "div.ql-editor"},
         "send": {"hits": 0, "matched": None},
         "assistant": {"hits": 0, "matched": None},
@@ -584,6 +708,8 @@ def test_selftest_presses_the_opener_when_the_file_input_is_absent(monkeypatch):
     calls = {"n": 0}
 
     def counts(tab, script):
+        if "present: true" in script:
+            return {"present": True, "selector": "button.send"}
         if "el.value" in script:
             return {"found": True, "text": ""}
         if "const groups" not in script:  # _first_present_input, after the click
@@ -615,6 +741,8 @@ def test_selftest_fails_when_the_opener_mounts_nothing(monkeypatch):
     fake.opener_mounts = ()
 
     def counts(tab, script):
+        if "present: true" in script:
+            return {"present": True, "selector": "button.send"}
         if "el.value" in script:
             return {"found": True, "text": ""}
         if "const groups" not in script:

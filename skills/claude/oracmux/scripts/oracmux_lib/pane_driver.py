@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -195,6 +196,46 @@ for (const container of (spec.in || ["form button"])) {
   }
 }
 return { known: true, active: false };
+"""
+
+FILL_VERIFY_SEC = 10.0
+FILL_POLL_SEC = 1.0
+# The proof that the composer really took the brief. A service renders its send
+# control only once the *editor state* is non-empty, so this is the one signal
+# that separates "the text is in the editor" from "the text is lying in the DOM
+# where the editor cannot see it" (2026-09-10 — see fill_composer).
+SEND_PRESENT_JS = """
+const sels = __SENDS__;
+for (const s of sels) {
+  for (const el of document.querySelectorAll(s)) {
+    if (!el.getClientRects().length) continue;
+    if (el.disabled === true || el.getAttribute("aria-disabled") === "true") continue;
+    return { present: true, selector: s };
+  }
+}
+return { present: false, selector: "" };
+"""
+# Empty the composer through the editor (selection + delete), never by assigning
+# textContent: assigning is exactly what leaves a rich-text editor out of sync.
+CLEAR_COMPOSER_JS = """
+const sels = __SELECTORS__;
+for (const s of sels) {
+  const el = document.querySelector(s);
+  if (!el) continue;
+  el.focus();
+  if (el.value !== undefined && el.value !== null) {
+    const proto = Object.getPrototypeOf(el);
+    const setter = Object.getOwnPropertyDescriptor(proto, "value");
+    if (setter && setter.set) setter.set.call(el, "");
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
+    return { cleared: true, selector: s };
+  }
+  const range = document.createRange(); range.selectNodeContents(el);
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+  try { document.execCommand("delete"); } catch (e) {}
+  return { cleared: true, selector: s };
+}
+return { cleared: false, selector: "" };
 """
 
 SUBMIT_CONFIRM_SEC = 75.0
@@ -458,6 +499,112 @@ def attach_uploads(
     )
 
 
+def send_control_present(site: dict[str, Any], tab: str) -> bool:
+    """Is there an enabled send control on screen right now?"""
+    sends = _values(site, "send")
+    if not sends:
+        return False
+    try:
+        state = pane.web_eval(tab, _js(SEND_PRESENT_JS, sends=sends))
+    except pane.PaneError:
+        return False
+    return bool(isinstance(state, dict) and state.get("present"))
+
+
+def wait_send_control(site: dict[str, Any], tab: str, *, seconds: float = FILL_VERIFY_SEC) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if send_control_present(site, tab):
+            return True
+        time.sleep(FILL_POLL_SEC)
+    return send_control_present(site, tab)
+
+
+def clear_composer(site: dict[str, Any], tab: str) -> None:
+    selectors = _values(site, "composer")
+    if not selectors:
+        return
+    try:
+        pane.web_eval(tab, _js(CLEAR_COMPOSER_JS, selectors=selectors))
+    except pane.PaneError:
+        pass
+
+
+def fill_composer(site: dict[str, Any], tab: str, prompt_file: Path, log: Log) -> dict[str, Any]:
+    """Put the brief in the composer and prove the editor actually ingested it.
+
+    `web.push` assigns the text to the composer element and fires one synthetic
+    `input` event. A rich-text editor (ChatGPT and Grok are ProseMirror) rebuilds
+    its document from that mutation — and sometimes refuses to. Measured
+    2026-09-10 on ChatGPT: a brief whose last line is a Markdown code fence left
+    the text sitting in the DOM as a bare text node with the editor state still
+    empty, so no send control ever rendered and the push failed with "submit
+    button was not found". Length was not the trigger; 17,000 plain characters
+    went in fine, and the same brief with its trailing fence removed went in fine.
+
+    So the send control is the acceptance test, and `web.type` (beforeinput +
+    execCommand, then CDP insertText) is the repair: both reproduce what typing
+    does, and both were measured to carry the same 7 KB fenced brief into the
+    editor correctly.
+
+    Never submits. Raises PaneNotReady with the tab left open when no path makes
+    the editor accept the brief.
+    """
+    pane.web_push(preset=str(site["pane_preset"]), text_file=prompt_file, send=False, tab=tab)
+    return repair_fill(site, tab, prompt_file, log)
+
+
+def repair_fill(site: dict[str, Any], tab: str, prompt_file: Path, log: Log) -> dict[str, Any]:
+    """The half of `fill_composer` that runs after the text has been pushed:
+    check the editor took it, and retype if it did not. Split out so the human
+    `push` mode gets the same repair without pushing twice."""
+    label = str(site.get("label") or "")
+    composer = _values(site, "composer")
+    if wait_send_control(site, tab):
+        return {"method": "push", "send_present": True}
+    if not composer:
+        raise PaneNotReady(
+            f"{label}: web.push left no send control and engines.json has no composer selector to retype into."
+        )
+    log(f"fill: {label} showed no send control after web.push; the editor did not take it — retyping via web.type")
+    attempted: list[str] = []
+    for trusted in (False, True):
+        method = "type-trusted" if trusted else "type"
+        attempted.append(method)
+        clear_composer(site, tab)
+        try:
+            pane.web_type(tab, prompt_file, selector=composer[0], submit=False, trusted=trusted)
+        except pane.PaneError as exc:
+            # A long trusted insert can blow the app's CDP budget and still land
+            # the text, so the editor - not this return value - decides.
+            log(f"fill: web.type({method}) reported {str(exc)[:120]}; checking the editor anyway")
+        if wait_send_control(site, tab):
+            log(f"fill: {label} accepted the brief via web.type ({method})")
+            return {"method": method, "send_present": True}
+    raise PaneNotReady(
+        f"{label}: the brief reached the composer but the editor never produced a send control "
+        f"(tried push, {', '.join(attempted)}). Nothing was sent. The tab is left open — "
+        "paste the brief in the pane and send it by hand, then collect with --tab."
+    )
+
+
+def press_send(site: dict[str, Any], tab: str, log: Log) -> str:
+    """Click the send control once. `fill_composer` has already proven one is there."""
+    label = str(site.get("label") or "")
+    for selector in _values(site, "send"):
+        try:
+            pane.web_click(tab, selector)
+        except pane.PaneError as exc:
+            log(f"submit: {selector} did not click: {str(exc)[:120]}")
+            continue
+        log(f"submit: pressed {selector}")
+        return selector
+    raise PaneNotReady(
+        f"{label}: the editor accepted the brief but no send selector could be clicked "
+        f"({_values(site, 'send')}). Nothing was sent; the tab is left open."
+    )
+
+
 def confirm_submitted(
     site: dict[str, Any],
     tab: str,
@@ -591,9 +738,15 @@ def consult(
             result.trace.append(f"uploaded={attached['files']} via={attached['selector']}")
         report("composing")
         baseline_turns = len(state.get("turns") or [])
-        pushed = pane.web_push(preset=preset, text_file=prompt_file, send=True, tab=tab)
+        # Fill and submit are separate steps on purpose: the fill has to be proven
+        # (the editor shows a send control) before anything is clicked, otherwise a
+        # rejected fill reads exactly like a missing button (2026-09-10).
+        filled = fill_composer(site, tab, prompt_file, log)
+        result.trace.append(f"filled={filled['method']}")
+        report("submitting", fill=filled["method"])
+        pressed = press_send(site, tab, log)
         sent_at = time.monotonic()
-        result.trace.append(f"pushed={pushed if isinstance(pushed, dict) else 'ok'}")
+        result.trace.append(f"pressed={pressed}")
         submitted = confirm_submitted(site, tab, baseline_turns, log)
         result.trace.append(f"submit={submitted}")
         report("waiting_answer")
@@ -783,6 +936,11 @@ def collect(
 # anything is typed, so they are reported but never fail the check.
 SELFTEST_GROUPS = ("composer", "send", "assistant", "mode_label", "upload_input", "upload_open")
 SELFTEST_REQUIRED = ("composer", "mode_label")
+# The shape that broke ChatGPT on 2026-09-10: a brief ending in a Markdown code
+# fence. Every oracmux brief ends in one (the output contract is fenced), so this
+# is the realistic probe, not a synthetic one. Zero Web turns: it is filled and
+# then cleared, never sent.
+FILL_PROBE_TEXT = "oracmux doctor fill probe\n\n```\ncontract\n```\n"
 COUNT_GROUPS_JS = """
 const groups = __GROUPS__;
 const out = {};
@@ -847,7 +1005,51 @@ def selftest(site: dict[str, Any], tab: str, log: Log, *, settle_sec: float = UP
             else:
                 upload = {"hits": 1, "matched": selector, "after_opener": opened_with}
     counts["upload_input"] = upload
+    fill = fill_selftest(site, tab, log)
+    counts["fill"] = fill
+    if not fill.get("ok"):
+        failures.append(
+            f"fill: a fence-terminated brief went into the composer but no send control appeared "
+            f"({fill.get('detail')}). Real briefs would fail to send"
+        )
     return {"ok": not failures, "failures": failures, "groups": counts, "model_label": model_label}
+
+
+def fill_selftest(site: dict[str, Any], tab: str, log: Log) -> dict[str, Any]:
+    """Prove the composer can still be filled, without spending a Web turn.
+
+    Checking that the selectors match is not enough: on 2026-09-10 every selector
+    in engines.json matched and ChatGPT still could not be filled, because the
+    editor refused the text `web.push` wrote. So the probe writes a realistic
+    brief (one ending in a code fence) and asks the page the only question that
+    matters — did a send control appear? Then it clears the composer. Nothing is
+    ever submitted.
+    """
+    if not _values(site, "composer") or not _values(site, "send"):
+        return {"ok": True, "skipped": "engines.json has no composer/send selector", "detail": ""}
+    handle = tempfile.NamedTemporaryFile("w", suffix=".md", encoding="utf-8", newline="\n", delete=False)
+    try:
+        handle.write(FILL_PROBE_TEXT)
+        handle.close()
+        probe_file = Path(handle.name)
+        try:
+            filled = fill_composer(site, tab, probe_file, log)
+        except PaneNotReady as exc:
+            return {"ok": False, "method": "", "detail": str(exc)[:200]}
+        except pane.PaneError as exc:
+            return {"ok": False, "method": "", "detail": f"pane error: {str(exc)[:160]}"}
+        finally:
+            clear_composer(site, tab)
+        # `push` is the path every caller takes. Needing the repair path means the
+        # app's web.push is broken for this service even though oracmux recovers.
+        return {
+            "ok": True,
+            "method": filled["method"],
+            "detail": "" if filled["method"] == "push" else
+                      f"web.push was rejected by the editor; recovered with {filled['method']}",
+        }
+    finally:
+        Path(handle.name).unlink(missing_ok=True)
 
 
 def probe(site: dict[str, Any], log: Log) -> dict[str, Any]:

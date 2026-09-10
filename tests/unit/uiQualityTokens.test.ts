@@ -26,7 +26,6 @@ const boundarySource = [
   read("src/components/layout/TitleBar.tsx"),
   read("src/components/layout/TabBar.tsx"),
   read("src/components/layout/TabItem.tsx"),
-  read("src/components/layout/NotificationPanel.tsx"),
   read("src/components/layout/AccountsButton.tsx"),
   read("src/components/layout/AccountsPanel.tsx"),
   read("src/components/settings/tabs/UsageTab.tsx"),
@@ -63,7 +62,7 @@ describe("UI quality Phase A contracts", () => {
       expect(globalCss).toContain(family);
     }
     expect(globalCss).toContain(
-      '--cmux-font-mono: "UDEV Gothic NF", "UDEV Gothic", "JetBrains Mono", Consolas, monospace;',
+      '--cmux-font-mono: "UDEV Gothic NF", "UDEV Gothic", ui-monospace, SFMono-Regular, "JetBrains Mono", Consolas, monospace;',
     );
   });
 
@@ -155,7 +154,6 @@ describe("UI quality Phase A contracts", () => {
       "src/global.css",
       "src/components/CommandPalette/CrsmPalette.tsx",
       "src/components/CommandPalette/CrsmPalette.css",
-      "src/components/layout/NotificationPanel.tsx",
       "src/components/layout/TabItem.tsx",
       "src/components/layout/TabSweepPanel.tsx",
       "src/components/online/OnlinePanel.tsx",

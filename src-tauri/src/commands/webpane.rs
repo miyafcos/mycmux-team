@@ -693,14 +693,36 @@ fn composer_push_script(
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
       if (!setter) throw new Error(service + " composer value setter is unavailable");
       setter.call(composer, text);
+      composer.dispatchEvent(new InputEvent("input", {{
+        bubbles: true,
+        inputType: "insertText",
+        data: text
+      }}));
     }} else {{
-      composer.textContent = text;
-    }}
-    composer.dispatchEvent(new InputEvent("input", {{
-      bubbles: true,
-      inputType: "insertText",
-      data: text
-    }}));"#,
+      // A rich-text composer (ChatGPT and Grok are ProseMirror) owns its DOM and
+      // rebuilds its document from what it observes. Assigning textContent asks it
+      // to adopt a node it did not create, which it can refuse outright: the text
+      // is then visible on screen while the editor state stays empty, so no send
+      // button ever renders. Measured 2026-09-10 on ChatGPT with a brief whose
+      // last line was a Markdown code fence -- push reported success and the send
+      // never became possible. Insert the way a keystroke does instead, and keep
+      // the assignment only as a fallback for editors that refuse execCommand.
+      const range = document.createRange();
+      range.selectNodeContents(composer);
+      const selection = getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      let inserted = false;
+      try {{ inserted = document.execCommand("insertText", false, text); }} catch (_) {{}}
+      if (!inserted) {{
+        composer.textContent = text;
+        composer.dispatchEvent(new InputEvent("input", {{
+          bubbles: true,
+          inputType: "insertText",
+          data: text
+        }}));
+      }}
+    }}"#,
             )
         }
         None => "composer.focus();".to_string(),
@@ -2948,6 +2970,40 @@ assert.match(reply.error, /host changed/);
             composer.submit_selector,
             r#"[data-testid="chat-submit"], form button[type="submit"]"#
         );
+    }
+
+    #[test]
+    fn push_types_into_a_rich_text_composer_instead_of_assigning_its_text() {
+        // 2026-09-10: pushing a brief whose last line was a Markdown code fence
+        // into ChatGPT left the text on screen with the editor state empty, so no
+        // send button rendered and the push failed with "submit button was not
+        // found". ProseMirror refuses a textContent assignment it did not make.
+        // Length was not the trigger: 17,000 plain characters went in fine.
+        let script =
+            composer_push_script(preset_by_id("chatgpt").unwrap(), "req", Some("hi"), false)
+                .unwrap();
+        assert!(
+            script.contains(r#"document.execCommand("insertText", false, text)"#),
+            "a rich-text composer has to be typed into, not assigned to"
+        );
+        assert!(
+            script.contains("selectNodeContents(composer)"),
+            "the insertion replaces the whole document, so it must select it first"
+        );
+        // The assignment survives only as the fallback, behind the failed insert.
+        let fallback = script
+            .split_once("if (!inserted)")
+            .expect("textContent must be reachable only when execCommand failed")
+            .1;
+        assert!(fallback.contains("composer.textContent = text"));
+        assert_eq!(
+            script.matches("composer.textContent = text").count(),
+            1,
+            "exactly one textContent assignment, and it is the fallback"
+        );
+        // A plain <textarea> has no editor of its own, so it keeps the direct
+        // value setter; that branch must survive the change.
+        assert!(script.contains("HTMLTextAreaElement.prototype"));
     }
 
     #[test]

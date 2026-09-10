@@ -165,7 +165,7 @@ export function PetTab() {
                     gap: 4,
                   }}
                 >
-                  <span style={{ display: "flex", marginRight: -8 }}><PetSprite atlasUrl={pet.atlasUrl} state="running" height={46} rows={pet.rows} /></span>
+                  <span style={{ display: "flex", marginRight: -8 }}><PetSprite atlasUrl={pet.atlasUrl} state="working" height={46} rows={pet.rows} /></span>
                   <span style={{ fontSize: 12, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pet.name}</span>
                   <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-dim)" }}>{pet.source === "bundled" ? petSettingsStrings.bundledSourceLabel : petSettingsStrings.externalSourceLabel}</span>
                   <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-dim)" }}>8×{pet.rows}</span>
@@ -264,7 +264,7 @@ export function PetTab() {
             const pet = workspace.pet ? resolvePet(pets, workspace.pet) : undefined;
             return (
               <div key={workspace.id} ref={pickerWorkspaceId === workspace.id ? pickerRef : undefined} style={{ border: "1px solid var(--cmux-border)", borderRadius: 6, padding: "6px 8px", display: "flex", alignItems: "center", gap: 8, minWidth: 0, position: "relative" }}>
-                <span style={{ display: "flex", marginRight: -8 }}><PetSprite atlasUrl={(pet ?? resolvePet(pets, undefined)).atlasUrl} state="idle" height={26} /></span>
+                <span style={{ display: "flex", marginRight: -8 }}><PetSprite atlasUrl={(pet ?? resolvePet(pets, undefined)).atlasUrl} state="resting" height={26} /></span>
                 <span style={{ flex: 1, minWidth: 0, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{workspace.name}</span>
                 <span style={{ maxWidth: 108, fontSize: 11, color: "var(--cmux-text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pet?.name ?? "-"}</span>
                 <button type="button" style={dialogButtonStyle} onClick={() => setWorkspacePet(workspace.id, nextPet(workspace.pet, true))}>{petSettingsStrings.rerollButton}</button>
@@ -275,7 +275,7 @@ export function PetTab() {
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
                       {enabledPets.map((candidate) => (
                         <button key={candidate.id} type="button" title={candidate.name} onClick={() => { setWorkspacePet(workspace.id, candidate.id); setPickerWorkspaceId(null); }} style={{ border: `1px solid ${candidate.id === workspace.pet ? "var(--cmux-accent)" : "var(--cmux-border)"}`, borderRadius: 5, padding: 4, background: "transparent", color: "var(--cmux-text)", cursor: "pointer", display: "grid", justifyItems: "center", gap: 2, minWidth: 0 }}>
-                          <PetSprite atlasUrl={candidate.atlasUrl} state="idle" height={30} rows={candidate.rows} />
+                          <PetSprite atlasUrl={candidate.atlasUrl} state="resting" height={30} rows={candidate.rows} />
                           <span style={{ width: "100%", fontSize: "var(--cmux-font-size-xs)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{candidate.name}</span>
                         </button>
                       ))}

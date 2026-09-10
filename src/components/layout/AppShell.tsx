@@ -32,18 +32,20 @@ import SocketListener from "./SocketListener";
 import KeybindingsModal from "./KeybindingsModal";
 import CrsmPalette, { preloadCrsmSessions } from "../CommandPalette/CrsmPalette";
 import { useKeybindingStore } from "../../stores/keybindingStore";
-import { isEditableTarget } from "../../lib/keybindings";
+import { isEditableTarget, IS_MAC } from "../../lib/keybindings";
 import { TAB_RESTORE_CLOSED_EVENT, openTabSweepInDashboard } from "./tabSweep";
 import { openDashboardForActiveSession } from "./openDashboardForTab";
 import { DashboardView } from "../dashboard/DashboardView";
 import { GroupingFlightHost } from "./GroupingFlightHost";
 import { UI_DENSITY_TOKENS, useThemeStore, type UiDensity } from "../../stores/themeStore";
 import ErrorBoundary from "../common/ErrorBoundary";
+import { macSurfaceOverrides } from "../../lib/theme/macSurfaces";
 import {
   isMediaBackgroundActive,
   resolveCompositionPolicy,
   resolveTheme,
   resolvedThemeToCssVars,
+  type ResolvedTheme,
 } from "../../lib/theme/resolveTheme";
 import {
   cachedWallpaperPath,
@@ -115,6 +117,27 @@ export function dashboardTypographyVars(
   };
 }
 
+/**
+ * Lifts the quiet end of the text ladder on macOS.
+ *
+ * CoreText applies almost no hinting, so at the same colour a glyph carries
+ * visibly less ink than DirectWrite gives it on Windows. The ladder's louder
+ * tiers survive that; the quiet ones do not. Photographed side by side on
+ * 2026-09-10, the launcher's section headings — tertiary — were legible on
+ * Windows and close to invisible on the Mac at identical values.
+ *
+ * Each tier is nudged toward the one above rather than recoloured, so the
+ * relationships the resolver established stay intact and no theme needs its own
+ * exception. Windows is untouched: this returns nothing there.
+ */
+function macQuietTextCompensation(resolved: ResolvedTheme): Record<string, string> {
+  if (!IS_MAC) return {};
+  return {
+    "--cmux-text-tertiary": `color-mix(in srgb, ${resolved.textTertiary} 55%, ${resolved.textSecondary})`,
+    "--cmux-text-dim": `color-mix(in srgb, ${resolved.textDim} 55%, ${resolved.textTertiary})`,
+  };
+}
+
 export interface ThemeVarsInput {
   theme: ThemeDefinition;
   background: ThemeBackgroundSettings;
@@ -152,6 +175,11 @@ export function buildThemeVars(input: ThemeVarsInput): React.CSSProperties {
 
   const { resolved } = resolveTheme({ theme, background, mediaActive });
 
+  // Named because the macOS surface pass reads the same map it writes into:
+  // the lift is computed from the ground and panel tiers this theme resolved
+  // to, not from the raw palette, so a wallpaper composite is accounted for.
+  const themeVars = resolvedThemeToCssVars(resolved);
+
   return {
     "--cmux-font-size-xs": scalePx(densityTokens.fontXs),
     "--cmux-font-size-sm": scalePx(densityTokens.fontSm),
@@ -165,7 +193,15 @@ export function buildThemeVars(input: ThemeVarsInput): React.CSSProperties {
     "--cmux-space-5": densitySpace(10),
     "--cmux-space-6": densitySpace(12),
     "--cmux-space-7": densitySpace(16),
-    ...resolvedThemeToCssVars(resolved),
+    ...themeVars,
+    ...(IS_MAC
+      ? macSurfaceOverrides({
+          background: themeVars["--cmux-bg"] ?? "",
+          surface: themeVars["--cmux-surface"] ?? "",
+          tokens: themeVars,
+        })
+      : {}),
+    ...macQuietTextCompensation(resolved),
     colorScheme: resolved.colorScheme,
   } as React.CSSProperties;
 }

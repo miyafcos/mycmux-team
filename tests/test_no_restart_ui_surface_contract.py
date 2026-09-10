@@ -110,24 +110,6 @@ def test_terminal_search_notifications_and_settings_surfaces_remain_wired() -> N
             "setNotificationSoundEnabled(e.target.checked)",
         ],
     )
-    assert_snippets(
-        "src/components/layout/NotificationPanel.tsx",
-        [
-            "const clearNotification = usePaneMetadataStore((s) => s.clearNotification);",
-            "const markSeen = useSessionAttentionStore((s) => s.markSeen);",
-            # D6 replaces the global empty message with two independently named
-            # empty sections. Clearing is the header's mark-all plus a dismiss
-            # on every row, and both mark blocked rows seen: a question lives in
-            # the session's own state, so zeroing counters alone would let it
-            # reappear the moment the next status frame arrives.
-            "strings.noAttention",
-            "strings.noUnread",
-            "strings.markAllRead",
-            "strings.dismiss(notification.label)",
-            "if (notification.attentionId) markSeen(notification.tabId, notification.attentionId);",
-            "clearNotification(notification.sessionId);",
-        ],
-    )
 
 
 def test_savepoints_and_remote_control_have_separate_settings_destinations() -> None:

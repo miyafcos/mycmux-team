@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { ThemeBackgroundSettings, ThemeDefinition, ThemeTweakColorKey, ThemeTweaks } from "../types";
 import { DEFAULT_THEME_ID, getTheme, resolveThemeId } from "../components/theme/themeDefinitions";
+import { stackBreaksBoxDrawing, stackFallsBackEntirely } from "../lib/fontAvailability";
 import {
   DEFAULT_THEME_TWEAKS,
   THEME_TWEAK_GROUPS,
@@ -21,8 +22,15 @@ export interface TerminalFontPreset {
   recommendedLineHeight?: number;
 }
 
+// The first family ships with the app (see the @font-face block at the top of
+// global.css), so this resolves to identical glyphs on Windows and macOS. It
+// used to name JetBrains Mono first, which no stock macOS install carries:
+// measured on the Mac on 2026-09-10, none of the families any preset named were
+// present and every stack fell through to Menlo, whose 0.6em halfwidth advance
+// does not divide the 1.0em fullwidth one and so misaligns Japanese tables and
+// box drawing by roughly 3px per character.
 export const DEFAULT_TERMINAL_FONT_FAMILY =
-  "'JetBrainsMono Nerd Font Mono', 'JetBrains Mono', 'Geist Mono', 'SF Mono', 'BIZ UDGothic', 'MS Gothic', monospace";
+  "'UDEV Gothic NF', 'BIZ UDGothic', ui-monospace, 'MS Gothic', monospace";
 
 const LEGACY_CASCADIA_FONT_FAMILY =
   "'Cascadia Mono', 'Cascadia Code', 'BIZ UDGothic', 'MS Gothic', monospace";
@@ -33,8 +41,15 @@ const HG_GOTHIC_FONT_FAMILY = "'HGｺﾞｼｯｸM', 'HGPｺﾞｼｯｸM', 'BIZ
 const BIZ_READABLE_FONT_FAMILY = "'BIZ UDGothic', 'Cascadia Mono', 'JetBrains Mono', 'MS Gothic', monospace";
 const BIZ_UDMINCHO_FONT_FAMILY =
   "'BIZ UDMincho', 'BIZ UDPMincho', 'Yu Mincho', 'MS Mincho', 'BIZ UDGothic', monospace";
-const MAC_STYLE_FONT_FAMILY =
+// Retained only so an old saved value still migrates. It names 'SF Mono', which
+// is not a family CSS can resolve on macOS -- the system exposes that face
+// through the `ui-monospace` generic instead -- so every stack below it was
+// dead weight and the whole thing silently resolved to Menlo.
+const LEGACY_MAC_STYLE_FONT_FAMILY =
   "'SF Mono', 'Menlo', 'Monaco', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'BIZ UDGothic', 'Yu Gothic UI', monospace";
+// The macOS system faces, reached the way macOS actually exposes them.
+const SYSTEM_MONO_FONT_FAMILY =
+  "ui-monospace, SFMono-Regular, Menlo, 'Hiragino Sans', 'BIZ UDGothic', monospace";
 const CASCADIA_BIZ_FONT_FAMILY =
   "'Cascadia Code', 'Cascadia Mono', 'BIZ UDGothic', 'Yu Gothic UI', 'MS Gothic', monospace";
 const CONSOLAS_MEIRYO_FONT_FAMILY =
@@ -43,11 +58,11 @@ const CONSOLAS_MEIRYO_FONT_FAMILY =
 export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
   {
     id: "jetbrains-ja",
-    label: "JetBrains + 日本語",
+    label: "UDEV Gothic (同梱)",
     value: DEFAULT_TERMINAL_FONT_FAMILY,
     sample: "Aa 0123 日本語",
-    description: "標準。英数字が締まり、日本語も安定",
-    tags: ["標準", "コード"],
+    description: "標準。アプリに入っているので Windows と Mac で字面が揃う",
+    tags: ["標準", "コード", "同梱"],
     recommendedLineHeight: 1.35,
   },
   {
@@ -67,6 +82,15 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
     description: "英数字が幅広の UDEV。英語ログ・パスが読みやすい",
     tags: ["日本語", "コード"],
     recommendedLineHeight: 1.4,
+  },
+  {
+    id: "system-mono-ja",
+    label: "macOS 標準 + ヒラギノ",
+    value: SYSTEM_MONO_FONT_FAMILY,
+    sample: "Aa 0123 日本語",
+    description: "Mac 純正。英数字は美しいが、日本語の幅が半角2文字ぶんにならない",
+    tags: ["macOS", "日本語"],
+    recommendedLineHeight: 1.45,
   },
   {
     id: "cascadia-biz",
@@ -170,6 +194,13 @@ interface ThemeState {
   previousThemeSnapshot: ThemeSnapshot | null;
   uiDensity: UiDensity;
   uiFontScale: number;
+  /**
+   * The stack hydration replaced because this machine can resolve none of it,
+   * or null. Hydration runs before the autosave subscription is attached, so a
+   * repair made there would live only in memory and be redone on every launch;
+   * the owner of persistence reads this, saves once, and clears it.
+   */
+  fontFamilyRepairedFrom: string | null;
 
   setTheme: (id: string) => void;
   restoreThemeSnapshot: () => void;
@@ -179,6 +210,7 @@ interface ThemeState {
   setFontSize: (size: number) => void;
   adjustFontSize: (delta: number) => void;
   setFontFamily: (fontFamily: string) => void;
+  clearFontFamilyRepair: () => void;
   setLineHeight: (lineHeight: number) => void;
   setThemeTweakEnabled: (enabled: boolean) => void;
   setThemeTweakColor: (key: ThemeTweakColorKey, color: string) => void;
@@ -243,7 +275,7 @@ function normalizeFontFamily(value: unknown): string {
   if (trimmed === LEGACY_CONSOLAS_FONT_FAMILY) {
     return BIZ_UDMINCHO_FONT_FAMILY;
   }
-  if (trimmed === MAC_STYLE_FONT_FAMILY) {
+  if (trimmed === LEGACY_MAC_STYLE_FONT_FAMILY) {
     return DEFAULT_TERMINAL_FONT_FAMILY;
   }
   if (trimmed === HG_GOTHIC_FONT_FAMILY) {
@@ -272,6 +304,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
   theme: getTheme(DEFAULT_THEME_ID),
   fontSize: 14,
   fontFamily: DEFAULT_TERMINAL_FONT_FAMILY,
+  fontFamilyRepairedFrom: null,
   lineHeight: 1.35,
   themeTweaks: DEFAULT_THEME_TWEAKS,
   previousThemeSnapshot: null,
@@ -354,7 +387,11 @@ export const useThemeStore = create<ThemeState>((set) => ({
   },
 
   setFontFamily: (fontFamily) => {
-    set({ fontFamily: normalizeFontFamily(fontFamily) });
+    set({ fontFamily: normalizeFontFamily(fontFamily), fontFamilyRepairedFrom: null });
+  },
+
+  clearFontFamilyRepair: () => {
+    set({ fontFamilyRepairedFrom: null });
   },
 
   setLineHeight: (lineHeight) => {
@@ -459,7 +496,21 @@ export const useThemeStore = create<ThemeState>((set) => ({
     const nextThemeId = resolveThemeId(settings.themeId ?? DEFAULT_THEME_ID);
     const themeTweaks = migrateLegacyThemeSettings(settings.themeId, settings.themeTweaks);
     const nextFont = normalizeFontSize(settings.fontSize);
-    const nextFontFamily = normalizeFontFamily(settings.fontFamily);
+    const savedFontFamily = normalizeFontFamily(settings.fontFamily);
+    // Two ways a saved stack stops working as a terminal font, both of which the
+    // Mac hit with `'MS Gothic', 'BIZ UDGothic', monospace` carried over from the
+    // Windows box. MS Gothic is not installed there at all. BIZ UDGothic is --
+    // a real monospace face with correct 0.5em/1.0em proportions, which is why
+    // nothing flagged it -- but it draws box-drawing glyphs at full width, and
+    // the terminal lays them out as one cell, so every table, tree and progress
+    // bar came apart. Falling back to the bundled face is visible and
+    // correctable; rendering a setting nobody chose is neither.
+    const absent = stackFallsBackEntirely(savedFontFamily);
+    const rulesBroken = stackBreaksBoxDrawing(savedFontFamily);
+    const savedStackIsUnusable = absent || rulesBroken;
+    const nextFontFamily = savedStackIsUnusable
+      ? DEFAULT_TERMINAL_FONT_FAMILY
+      : savedFontFamily;
     const nextLineHeight = normalizeLineHeight(settings.lineHeight);
     set({
       themeId: nextThemeId,
@@ -470,6 +521,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
       themeTweaks,
       uiDensity: normalizeUiDensity(settings.uiDensity),
       uiFontScale: normalizeUiFontScale(settings.uiFontScale),
+      fontFamilyRepairedFrom: nextFontFamily === savedFontFamily ? null : savedFontFamily,
     });
   },
 }));

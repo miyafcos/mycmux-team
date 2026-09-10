@@ -705,6 +705,13 @@ pub fn run() {
                 #[cfg(target_os = "macos")]
                 {
                     let _ = main_window.show();
+                    // The reveal command carries the off-screen rescue, and it
+                    // is exactly the path that does not fire here, so a window
+                    // that comes back parked outside every display has nothing
+                    // to bring it in. Reaching a display it no longer has is
+                    // the case: unplugging a second monitor leaves the window
+                    // at that monitor's old origin.
+                    crate::commands::window::recenter_if_offscreen(&main_window);
                 }
 
                 let remote_sessions_for_close = remote_sessions.clone();

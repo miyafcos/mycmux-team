@@ -13,6 +13,78 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::AppState;
 
+/// Whether a window rectangle overlaps any monitor at all.
+///
+/// A window that overlaps nothing is unreachable: it cannot be clicked, dragged
+/// or closed, and on macOS nothing brings it back on its own. That gap is real
+/// even though the case that prompted this was not one -- a window found at
+/// x=-1920 on 2026-09-10 turned out to be sitting on a second display at that
+/// origin, not stranded. What remains true is that the rescue existed only for
+/// Windows, so a Mac that loses the display a window is on has no way back.
+///
+/// Rectangles are half-open: touching edges do not count as overlapping, which
+/// is what puts a window flush against the left edge of a monitor on-screen
+/// rather than one pixel outside it.
+pub(crate) fn rect_overlaps_any_monitor(
+    rect: (i32, i32, i32, i32),
+    monitors: &[(i32, i32, i32, i32)],
+) -> bool {
+    let (left, top, right, bottom) = rect;
+    monitors.iter().any(|&(m_left, m_top, m_right, m_bottom)| {
+        left < m_right && right > m_left && top < m_bottom && bottom > m_top
+    })
+}
+
+/// Brings the window back onto a display if it is stranded off every monitor.
+///
+/// Tauri's own geometry rather than Win32: this is the path macOS takes, where
+/// the frontend reveal flow does not fire and the Windows-only rescue below
+/// never runs. Centring is the recovery — a window overlapping no monitor is by
+/// definition somewhere the operator cannot reach. A window on a second display
+/// overlaps that display and is left alone.
+pub(crate) fn recenter_if_offscreen(window: &tauri::WebviewWindow) {
+    let (Ok(position), Ok(size), Ok(monitors)) = (
+        window.outer_position(),
+        window.outer_size(),
+        window.available_monitors(),
+    ) else {
+        return;
+    };
+    if monitors.is_empty() {
+        return;
+    }
+
+    let width = i32::try_from(size.width).unwrap_or(i32::MAX);
+    let height = i32::try_from(size.height).unwrap_or(i32::MAX);
+    let rect = (
+        position.x,
+        position.y,
+        position.x.saturating_add(width),
+        position.y.saturating_add(height),
+    );
+    let bounds: Vec<(i32, i32, i32, i32)> = monitors
+        .iter()
+        .map(|monitor| {
+            let origin = monitor.position();
+            let extent = monitor.size();
+            (
+                origin.x,
+                origin.y,
+                origin
+                    .x
+                    .saturating_add(i32::try_from(extent.width).unwrap_or(i32::MAX)),
+                origin
+                    .y
+                    .saturating_add(i32::try_from(extent.height).unwrap_or(i32::MAX)),
+            )
+        })
+        .collect();
+
+    if !rect_overlaps_any_monitor(rect, &bounds) {
+        let _ = window.center();
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn ensure_window_bounds(window: &tauri::WebviewWindow) {
     if let Ok(hwnd) = window.hwnd() {
@@ -78,6 +150,7 @@ pub fn reveal_main_window(app: AppHandle) -> Result<(), String> {
             let _ = window.show();
             #[cfg(target_os = "windows")]
             ensure_window_bounds(&window);
+            recenter_if_offscreen(&window);
         }
     })
     .map_err(|e| e.to_string())
@@ -403,5 +476,54 @@ mod tests {
             assert!(label.starts_with(CHILD_WINDOW_LABEL_PREFIX), "{label}");
             assert!(is_valid_child_window_label(&label), "{label}");
         }
+    }
+    #[test]
+    fn a_window_inside_the_only_monitor_is_left_alone() {
+        let monitors = [(0, 0, 1920, 1080)];
+        assert!(rect_overlaps_any_monitor((100, 80, 1500, 980), &monitors));
+    }
+
+    #[test]
+    fn a_window_one_screen_to_the_left_overlaps_nothing() {
+        // What unplugging a second display leaves behind: the window keeps the
+        // old monitor's origin, which no remaining monitor covers.
+        let monitors = [(0, 0, 1920, 1080)];
+        assert!(!rect_overlaps_any_monitor((-1920, 0, 0, 1080), &monitors));
+    }
+
+    #[test]
+    fn the_same_rect_is_reachable_while_that_display_is_still_attached() {
+        // The distinction the check has to make, and the one that caught out a
+        // reading of the Mac on 2026-09-10: those coordinates look stranded
+        // until the second monitor at the same origin is counted.
+        let monitors = [(0, 0, 1920, 1080), (-1920, 0, 0, 1080)];
+        assert!(rect_overlaps_any_monitor((-1920, 0, 0, 1080), &monitors));
+    }
+
+    #[test]
+    fn a_window_half_off_an_edge_still_counts_as_reachable() {
+        // Partly visible is still draggable, so it must not be recentred: doing
+        // so would yank windows the operator deliberately parked at an edge.
+        let monitors = [(0, 0, 1920, 1080)];
+        assert!(rect_overlaps_any_monitor((-200, 0, 1000, 900), &monitors));
+    }
+
+    #[test]
+    fn a_window_on_a_second_monitor_is_reachable() {
+        let monitors = [(0, 0, 1920, 1080), (1920, 0, 3840, 1080)];
+        assert!(rect_overlaps_any_monitor((2000, 100, 3000, 900), &monitors));
+    }
+
+    #[test]
+    fn touching_edges_do_not_count_as_overlap() {
+        // Half-open rectangles: a window whose right edge is the monitor's left
+        // edge shows nothing at all.
+        let monitors = [(0, 0, 1920, 1080)];
+        assert!(!rect_overlaps_any_monitor((-800, 0, 0, 600), &monitors));
+    }
+
+    #[test]
+    fn no_monitors_means_no_claim_either_way() {
+        assert!(!rect_overlaps_any_monitor((0, 0, 100, 100), &[]));
     }
 }

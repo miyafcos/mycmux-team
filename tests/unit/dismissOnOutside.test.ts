@@ -80,7 +80,6 @@ describe("useDismissOnOutside wiring", () => {
 describe("popover dismiss call sites", () => {
   const callSites = [
     "src/components/layout/AccountsButton.tsx",
-    "src/components/layout/NotificationPanel.tsx",
     "src/components/workspace/PaneTabBar.tsx",
     "src/components/workspace/TerminalPane.tsx",
     "src/components/settings/tabs/PetTab.tsx",
@@ -95,12 +94,12 @@ describe("popover dismiss call sites", () => {
     }
   });
 
-  it("covers all eight popovers", () => {
+  it("covers all seven popovers", () => {
     const total = callSites.reduce(
       (count, path) => count + (source(path).match(/useDismissOnOutside\(/g)?.length ?? 0),
       0,
     );
-    // AccountsButton 1, NotificationPanel 1, PaneTabBar 4, TerminalPane 1, PetTab 1.
-    expect(total).toBe(8);
+    // AccountsButton 1, PaneTabBar 4, TerminalPane 1, PetTab 1.
+    expect(total).toBe(7);
   });
 });

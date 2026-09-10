@@ -1,4 +1,5 @@
 ﻿import { memo, useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useTerminalObservationStore } from "../../stores/terminalObservationStore";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -2648,6 +2649,7 @@ export default memo(function XTermWrapper({
       cacheCurrentTerminal();
       if (term && liveTerms.get(sessionId) === term) {
         liveTerms.delete(sessionId);
+        useTerminalObservationStore.getState().markUnobserved(sessionId);
       }
       recordXtermUnmounted(sessionId);
       if (pendingBatches.length > 0) {
@@ -2687,6 +2689,7 @@ export default memo(function XTermWrapper({
       fitAddon = cached.fitAddon;
       sessionStarted = true;
       liveTerms.set(sessionId, cached.term);
+      useTerminalObservationStore.getState().markObserved(sessionId);
       recordXtermMounted(sessionId);
       applyTerminalRenderer(sessionId, cached.term, resolveEffectiveTerminalRendererFromStores());
       termRef.current = cached.term;
@@ -2844,6 +2847,7 @@ export default memo(function XTermWrapper({
       refreshTurnChipAfterFirstRender(term);
       invalidateContainerVisibilityMemo();
       liveTerms.set(sessionId, term);
+      useTerminalObservationStore.getState().markObserved(sessionId);
       recordXtermMounted(sessionId);
       recordCursorBlink(sessionId, term.options.cursorBlink === true);
       applyTerminalRenderer(sessionId, term, resolveEffectiveTerminalRendererFromStores());

@@ -190,6 +190,8 @@ fn provider_events(provider: Provider) -> Vec<(&'static str, &'static str)> {
             ("UserPromptSubmit", "turn_active"),
             ("PermissionRequest", "attention_required"),
             ("Notification", "attention_required"),
+            ("PreToolUse", "pre_tool_use"),
+            ("PostToolUse", "turn_active"),
             ("Stop", "turn_ended"),
             ("SessionEnd", "session_terminated"),
         ],
@@ -323,7 +325,19 @@ where
     if install {
         let groups: Vec<_> = events
             .iter()
-            .map(|(event, event_kind)| (*event, managed_group(helper, provider, event_kind)))
+            .map(|(event, event_kind)| {
+                let mut group = managed_group(helper, provider, event_kind);
+                if provider == Provider::Claude {
+                    match *event {
+                        "PreToolUse" => {
+                            group["matcher"] = json!("AskUserQuestion|Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit|WebFetch|WebSearch|Agent|Skill");
+                        }
+                        "PostToolUse" => group["matcher"] = json!("AskUserQuestion"),
+                        _ => {}
+                    }
+                }
+                (*event, group)
+            })
             .collect();
         merge_install(&mut root, provider, &groups)?;
     } else {
@@ -884,6 +898,81 @@ mod tests {
         let installed = append_grok_block(owner, &helper());
         assert!(installed.contains("[[hooks.StopFailure]]"));
         assert_eq!(remove_grok_block(&installed).unwrap(), owner);
+    }
+
+    #[test]
+    fn claude_tool_hooks_merge_with_matchers_and_preserve_user_handlers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let user = json!({"matcher": "Bash|PowerShell|Agent|Skill", "hooks": [{"type": "command", "command": "user.py"}]});
+        let original = json!({"theme": "dark", "hooks": {
+            "PreToolUse": [user.clone()], "PostToolUse": [user.clone()]
+        }});
+        fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+        let events = provider_events(Provider::Claude);
+        assert_eq!(events.len(), 7);
+        assert!(events.contains(&("PreToolUse", "pre_tool_use")));
+        assert!(events.contains(&("PostToolUse", "turn_active")));
+        for expected_status in [WriteStatus::Changed, WriteStatus::Unchanged] {
+            assert_eq!(
+                update_json_hooks_with_helper(
+                    &path,
+                    &helper(),
+                    Provider::Claude,
+                    &events,
+                    true,
+                    || Ok(())
+                )
+                .unwrap(),
+                expected_status
+            );
+            let installed: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(installed["theme"], "dark");
+            assert_eq!(installed["hooks"].as_object().unwrap().len(), 7);
+            for (event, kind) in &events {
+                let groups = installed["hooks"][*event].as_array().unwrap();
+                let question = matches!(*event, "PreToolUse" | "PostToolUse");
+                assert_eq!(groups.len(), if question { 2 } else { 1 });
+                if question {
+                    assert_eq!(groups[0], user);
+                }
+                let managed = groups.last().unwrap();
+                assert!(is_managed_group(managed, Provider::Claude));
+                assert_eq!(
+                    managed["matcher"].as_str(),
+                    match *event {
+                        "PreToolUse" => Some("AskUserQuestion|Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit|WebFetch|WebSearch|Agent|Skill"),
+                        "PostToolUse" => Some("AskUserQuestion"),
+                        _ => None,
+                    }
+                );
+                assert!(managed["hooks"][0]["command"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(&format!("--provider claude --event-kind {kind}")));
+            }
+        }
+        // Upgrade the old question-only group without accumulating managed groups.
+        let mut installed: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let mut old_pre = managed_group(&helper(), Provider::Claude, "attention_required");
+        old_pre["matcher"] = json!("AskUserQuestion");
+        installed["hooks"]["PreToolUse"][1] = old_pre;
+        fs::write(&path, serde_json::to_vec(&installed).unwrap()).unwrap();
+        update_json_hooks_with_helper(&path, &helper(), Provider::Claude, &events, true, || Ok(()))
+            .unwrap();
+        let upgraded: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let pre_groups = upgraded["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre_groups.len(), 2);
+        assert_eq!(pre_groups[0], user);
+        assert_eq!(pre_groups[1]["matcher"], "AskUserQuestion|Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit|WebFetch|WebSearch|Agent|Skill");
+        assert!(pre_groups[1]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .ends_with("--provider claude --event-kind pre_tool_use"));
+        update_json_hooks_with_helper(&path, &helper(), Provider::Claude, &[], false, || Ok(()))
+            .unwrap();
+        let removed: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(removed, original);
     }
 
     #[test]

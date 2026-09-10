@@ -1504,7 +1504,10 @@ export default memo(function PaneTabBar({
           "ChatGPT (Web)" entry (2026-09-02). A globe next to New terminal tab
           read as a browser the pane did not have. */}
       {(visibleActions.length > 0 || overflowActions.length > 0) && (
-        <div style={{ display: "flex", alignItems: "center", gap: 2, paddingRight: 6, flexShrink: 0, order: 4 }}>
+        // gap 2 packed seven controls into a strip that read as one object.
+        // 4 is the smallest step that separates them without pushing the
+        // cluster into a narrow pane's tab labels.
+        <div style={{ display: "flex", alignItems: "center", gap: 4, paddingRight: 6, flexShrink: 0, order: 4 }}>
           {visibleActions.includes("search") && (
             <button
               type="button"
@@ -1953,7 +1956,17 @@ export default memo(function PaneTabBar({
                 minWidth: isTabActive || canDuplicateSession ? 120 : 76,
                 cursor: isEditingTab ? "text" : "pointer",
                 background: isTabActive ? "var(--cmux-selected)" : "transparent",
-                borderRight: declared ? "1px dashed var(--cmux-border)" : "1px solid var(--cmux-border-hairline)",
+                // The active tab reads as a sheet lifted toward the reader, so
+                // its fill is rounded at the top and square where it meets the
+                // pane below — the shape a tab has on this platform. An
+                // inactive tab has no fill to round, and squaring its divider
+                // keeps the row of them reading as one strip.
+                borderRadius: isTabActive ? "7px 7px 0 0" : 0,
+                // The active tab's own edges are its rounding; a divider drawn
+                // through them would cut the corner off.
+                borderRight: isTabActive
+                  ? "1px solid transparent"
+                  : declared ? "1px dashed var(--cmux-border)" : "1px solid var(--cmux-border-hairline)",
                 borderBottom: "2px solid transparent",
                 flexShrink: 1,
                 transition: "background 0.1s",

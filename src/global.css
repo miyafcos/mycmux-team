@@ -1,3 +1,33 @@
+/* Bundled terminal typeface. -------------------------------------------------
+   The font is shipped rather than named, because that is what makes the
+   terminal grid hold. UDEV Gothic advances a halfwidth glyph 0.5em and a
+   fullwidth one 1.0em, so one CJK cell is exactly two ASCII cells. Every
+   monospace face macOS ships advances halfwidth at 0.6em instead (Menlo and SF
+   Mono both), which leaves roughly 3px of slack per fullwidth character and
+   pulls Japanese tables and box drawing out of alignment. Measured on the Mac
+   on 2026-09-10: none of the families the presets named were installed there --
+   not UDEV Gothic, JetBrains Mono, Consolas, BIZ UDGothic nor MS Gothic -- so
+   every preset fell through to Menlo plus Hiragino Sans at a ratio of 1.661.
+   Licensed under the SIL Open Font License 1.1; see assets/fonts/OFL.txt. */
+@font-face {
+  font-family: "UDEV Gothic NF";
+  src: url("./assets/fonts/UDEVGothicNF-Regular.woff") format("woff");
+  font-weight: 400;
+  font-style: normal;
+  /* `block`, not `swap`: the WebGL renderer bakes a glyph atlas from whichever
+     face is resolved at first paint, and a swap after that point leaves the
+     atlas holding fallback metrics for the rest of the session. */
+  font-display: block;
+}
+
+@font-face {
+  font-family: "UDEV Gothic NF";
+  src: url("./assets/fonts/UDEVGothicNF-Bold.woff") format("woff");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
 :root {
   --cmux-bg: #0a0a0a;
   --cmux-bg-solid: #0a0a0a;
@@ -47,11 +77,18 @@
   /* UI chrome line-height, driven by the density setting (AppShell overrides
      per uiDensity). "normal" keeps the historical look for "standard". */
   --cmux-line-height-ui: normal;
-  --cmux-dash-ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  /* UI chrome. The Japanese faces are named explicitly because the generic
+     sans-serif fallback differs per platform; on macOS this resolves to
+     Hiragino Sans, the best Japanese UI face the system ships. */
+  --cmux-font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", Meiryo, Roboto, sans-serif;
+  --cmux-dash-ui-font: var(--cmux-font-ui);
   --cmux-dash-body-font: var(--cmux-font-mono);
   --cmux-dash-font-size: var(--cmux-font-size-sm);
   --cmux-dash-line-height: var(--cmux-line-height-ui);
-  --cmux-font-mono: "UDEV Gothic NF", "UDEV Gothic", "JetBrains Mono", Consolas, monospace;
+  /* "UDEV Gothic NF" is the bundled face declared above, so this resolves to
+     the same glyphs on every platform. The rest is a safety net for a build
+     whose font assets failed to load. */
+  --cmux-font-mono: "UDEV Gothic NF", "UDEV Gothic", ui-monospace, SFMono-Regular, "JetBrains Mono", Consolas, monospace;
   --cmux-focus-ring: color-mix(in srgb, var(--cmux-accent) 45%, transparent);
   --cmux-dnd-tab: #38bdf8;
   --cmux-dnd-pane: #f59e0b;
@@ -220,6 +257,19 @@ body,
   text-rendering: optimizeLegibility;
 }
 
+/* macOS draws text through CoreText, which applies almost no hinting, and
+   `-webkit-font-smoothing: antialiased` forces greyscale antialiasing on top
+   of that and thins every glyph further. Windows ignores the property and
+   draws through DirectWrite, which hints and thickens. Photographed side by
+   side on 2026-09-10 at 1x, the same tokens read as solid text on Windows and
+   as faint grey on the Mac -- the section headings at --cmux-text-tertiary
+   were close to invisible. Letting CoreText render at its own weight is the
+   whole fix; the property stays on elsewhere, where WebKitGTK wants it. */
+:root[data-platform="mac"] #root {
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+}
+
 .cmux-pill {
   background: color-mix(in srgb, var(--cmux-text) 18%, transparent);
   color: var(--cmux-text);
@@ -286,7 +336,10 @@ div:focus-within > .tab-close-btn,
   padding: 3px;
   display: flex;
   align-items: center;
-  border-radius: var(--cmux-radius-sm);
+  /* radius-md, not sm: at 4px the hover fill read as a square behind a round
+     glyph. 6px against an 18px button is the proportion macOS uses for a
+     toolbar control, and the fill stops competing with the icon. */
+  border-radius: var(--cmux-radius-md);
   transition: color var(--cmux-motion-fast) var(--cmux-ease), background var(--cmux-motion-fast) var(--cmux-ease), transform var(--cmux-motion-fast) var(--cmux-ease);
 }
 .pane-action-btn:hover {
@@ -620,6 +673,13 @@ div:focus-within > .tab-close-btn,
   -webkit-font-smoothing: antialiased;
   text-rendering: geometricPrecision;
   font-feature-settings: "liga" 0, "calt" 0;
+}
+
+/* Same reason as #root above: on macOS this thins terminal glyphs that are
+   already light. Only reaches the DOM renderer -- the WebGL one bakes its own
+   atlas and ignores CSS text properties. */
+:root[data-platform="mac"] .xterm-rows {
+  -webkit-font-smoothing: auto;
 }
 
 

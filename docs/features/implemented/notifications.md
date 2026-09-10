@@ -76,4 +76,4 @@ Triggers:
 
 `XTermWrapper` checks the active session ID and `notificationsEnabled`; ordinary output changes do not generate approval badges. `notificationSoundEnabled` controls the Web Audio chime.
 
-The title-bar bell opens `NotificationPanel`: answer/approval-needed sessions and unread arrivals have separate sections. Clearing unread arrivals does not clear pending answers (HEAD change `dac6fc02`).
+The title-bar bell and `NotificationPanel` were removed (2026-09-10): the panel duplicated a sweep the owner does per tab anyway, and a badge count never said what the session was waiting on. Waiting state now shows on the tab badges, and the cross-session view is the dashboard.

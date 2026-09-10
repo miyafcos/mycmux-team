@@ -89,6 +89,22 @@ if [[ ! -d "$APP" ]]; then
   exit 1
 fi
 
+# Sign before the .dmg is assembled so the copy inside it carries the signature
+# too. Skipped when a real Apple identity was supplied, because Tauri already
+# signed with it above.
+#
+# This is for TCC, not Gatekeeper. The ad-hoc signature --no-sign leaves behind
+# carries no certificate, so macOS pins every privacy grant to the exact binary
+# hash and each rebuild makes the app ask for Desktop, Documents, Downloads and
+# network volumes all over again. See the header of
+# mac-local-signing-identity.sh for the measurement behind this.
+if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+  if ! "$SCRIPT_DIR/mac-local-signing-identity.sh" sign "$APP"; then
+    echo "warning: local signing failed. The bundle keeps its ad-hoc signature," >&2
+    echo "         so macOS will re-ask for privacy permissions after updates." >&2
+  fi
+fi
+
 STAGING=$(mktemp -d)
 cleanup() { [[ -n "${STAGING:-}" && -d "$STAGING" ]] && rm -r "$STAGING"; }
 trap cleanup EXIT

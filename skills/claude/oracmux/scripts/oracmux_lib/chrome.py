@@ -7,26 +7,77 @@ Cloudflare and a second visible Chrome would fight over the profile.
 
 from __future__ import annotations
 
+import base64
 import json
+import os
+import socket
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import urlopen
 
 from . import paths
 
 
-def cdp_alive(endpoint: str, timeout: float = 5.0) -> tuple[bool, str]:
+def cdp_version(endpoint: str, timeout: float = 5.0) -> tuple[bool, str, str]:
+    """(reachable, browser label or error, browser WebSocket endpoint)."""
     try:
         with urlopen(endpoint.rstrip("/") + "/json/version", timeout=timeout) as response:
-            if response.getcode() == 200:
-                data = json.loads(response.read().decode("utf-8", errors="replace"))
-                return True, str(data.get("Browser", "chrome"))
-            return False, f"HTTP {response.getcode()}"
+            if response.getcode() != 200:
+                return False, f"HTTP {response.getcode()}", ""
+            data = json.loads(response.read().decode("utf-8", errors="replace"))
+            return True, str(data.get("Browser", "chrome")), str(data.get("webSocketDebuggerUrl", ""))
     except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+        return False, str(exc), ""
+
+
+def cdp_ws_alive(ws_url: str, timeout: float = 5.0) -> tuple[bool, str]:
+    """Does the browser's debugger socket actually accept a connection?
+
+    `/json/version` is plain HTTP and answers even when the target it advertises
+    is gone, so it cannot tell a healthy Chrome from a stale one. oracle then
+    attaches, gets `Unexpected server response: 404` on the WebSocket upgrade and
+    dies about a minute in — which is how 2026-09-10 was spent. One handshake
+    here turns that into an instant, nameable precondition.
+
+    No Origin header is sent: Chrome answers 403 to a DevTools upgrade that
+    carries one (measured 2026-09-10), so adding it would report a false death.
+    """
+    parsed = urlparse(ws_url)
+    host, port, path = parsed.hostname, parsed.port, parsed.path or "/"
+    if not host or not port:
+        return False, f"unusable webSocketDebuggerUrl: {ws_url!r}"
+    key = base64.b64encode(os.urandom(16)).decode("ascii")
+    request = (
+        f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\n"
+        f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    )
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as connection:
+            connection.settimeout(timeout)
+            connection.sendall(request.encode("ascii"))
+            status = connection.recv(256).split(b"\r\n", 1)[0].decode("latin-1", errors="replace")
+    except OSError as exc:
         return False, str(exc)
+    if " 101 " in status:
+        return True, status
+    return False, status.strip() or "no response to the WebSocket upgrade"
+
+
+def cdp_alive(endpoint: str, timeout: float = 5.0) -> tuple[bool, str]:
+    """Alive means attachable: HTTP answers *and* the debugger socket connects."""
+    reachable, detail, ws_url = cdp_version(endpoint, timeout)
+    if not reachable:
+        return False, detail
+    if not ws_url:
+        return False, f"{detail} but /json/version advertised no webSocketDebuggerUrl"
+    ws_ok, ws_detail = cdp_ws_alive(ws_url, timeout)
+    if ws_ok:
+        return True, detail
+    return False, f"{detail} answers HTTP but its debugger socket is dead ({ws_detail})"
 
 
 def oracle_chrome(action: str) -> tuple[int, str]:
@@ -51,11 +102,23 @@ def ensure_up(endpoint: str) -> str:
     alive, detail = cdp_alive(endpoint)
     if alive:
         return f"already up ({detail})"
+    reachable, _, _ = cdp_version(endpoint)
     code, output = oracle_chrome("up")
     alive, detail = cdp_alive(endpoint)
-    if not alive:
-        raise RuntimeError(f"oracle-chrome up failed (rc={code}): {output or detail}")
-    return f"started: {output}"
+    if alive:
+        return f"started: {output}"
+    if reachable:
+        # `oracle-chrome up` is a no-op while /json/version answers, so a stale
+        # target survives it. Never restart Chrome from here: an oracle session
+        # may be mid-answer in that very browser.
+        raise RuntimeError(
+            f"OracleChrome answers on {endpoint} but its debugger socket is dead ({detail}), and "
+            "`oracle-chrome up` cannot repair that. oracle would attach and die with a bare 404. "
+            "Check for a running oracle session first (`oracle status`); once nothing is running, "
+            "restart it with `oracle-chrome down` then `oracle-chrome up`. "
+            "Or use --via pane, which needs no Chrome at all."
+        )
+    raise RuntimeError(f"oracle-chrome up failed (rc={code}): {output or detail}")
 
 
 def show() -> str:

@@ -142,10 +142,18 @@ const markText: CSSProperties = {
   fontFamily: "var(--cmux-font-mono)",
 };
 
+// A section heading carried only size and colour, which at 11px in the quietest
+// text tier left it barely present — on macOS, where CoreText hints almost
+// nothing, 新規に起動 / Web / 開発 were close to invisible. Weight and a little
+// tracking are what a sidebar heading is made of on this platform: it stays
+// small and quiet, but it reads as a label rather than as faded body text. The
+// colour tier is unchanged, so the hierarchy the theme drew still holds.
 const sectionHeading: CSSProperties = {
   fontSize: "var(--cmux-font-size-xs)",
   color: "var(--cmux-text-tertiary)",
-  padding: "11px 10px 4px",
+  fontWeight: 600,
+  letterSpacing: "0.02em",
+  padding: "14px 10px 6px",
   display: "flex",
   justifyContent: "space-between",
   alignItems: "baseline",

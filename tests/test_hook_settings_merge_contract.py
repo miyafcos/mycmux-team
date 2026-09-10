@@ -28,6 +28,19 @@ REAL_SETTINGS = Path.home() / ".claude" / "settings.json"
 # The marker that identifies a handler as ours. Uninstall removes exactly the
 # handlers carrying it and nothing else.
 OWNERSHIP_MARKER = "mycmux_managed"
+CLAUDE_EVENTS = {
+    "UserPromptSubmit": "turn_active",
+    "PermissionRequest": "attention_required",
+    "Notification": "attention_required",
+    "PreToolUse": "pre_tool_use",
+    "PostToolUse": "turn_active",
+    "Stop": "turn_ended",
+    "SessionEnd": "session_terminated",
+}
+CLAUDE_MATCHERS = {
+    "PreToolUse": "AskUserQuestion|Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit|WebFetch|WebSearch|Agent|Skill",
+    "PostToolUse": "AskUserQuestion",
+}
 
 SYNTHETIC: dict[str, Any] = {
     "cleanupPeriodDays": 30,
@@ -83,8 +96,8 @@ def load_fixture() -> dict[str, Any]:
 def managed_handler(event: str) -> dict[str, Any]:
     return {
         "type": "command",
-        "command": f"mycmux-hook.exe --event={event}",
-        "timeout": 10,
+        "command": f'python "mycmux_hook.py" --provider claude --event-kind {CLAUDE_EVENTS.get(event, event)}',
+        "timeout": 1,
         OWNERSHIP_MARKER: True,
     }
 
@@ -100,7 +113,10 @@ def install(settings: dict[str, Any], events: list[str]) -> dict[str, Any]:
     for event in events:
         groups = hooks.setdefault(event, [])
         kept = [g for g in groups if not is_managed_group(g)]
-        kept.append({"matcher": "", "hooks": [managed_handler(event)]})
+        group = {"hooks": [managed_handler(event)]}
+        if event in CLAUDE_MATCHERS:
+            group["matcher"] = CLAUDE_MATCHERS[event]
+        kept.append(group)
         hooks[event] = kept
     return result
 
@@ -142,7 +158,7 @@ def user_groups(settings: dict[str, Any]) -> dict[str, list[Any]]:
 
 def test_install_preserves_every_user_group_and_its_order() -> None:
     before = load_fixture()
-    after = install(before, ["Stop", "UserPromptSubmit", "PreToolUse"])
+    after = install(before, list(CLAUDE_EVENTS))
     assert user_groups(after) == user_groups(before)
 
 
@@ -157,14 +173,14 @@ def test_install_preserves_every_unrelated_top_level_key() -> None:
 
 def test_uninstall_returns_the_file_to_its_original_state() -> None:
     before = load_fixture()
-    after = uninstall(install(before, ["Stop", "UserPromptSubmit", "PostToolUse"]))
+    after = uninstall(install(before, list(CLAUDE_EVENTS)))
     assert after == before
 
 
 def test_install_is_idempotent() -> None:
     before = load_fixture()
-    once = install(before, ["Stop", "UserPromptSubmit"])
-    twice = install(once, ["Stop", "UserPromptSubmit"])
+    once = install(before, list(CLAUDE_EVENTS))
+    twice = install(once, list(CLAUDE_EVENTS))
     assert twice == once
 
 
@@ -205,7 +221,7 @@ def test_the_real_settings_file_is_never_written() -> None:
     if not REAL_SETTINGS.is_file():
         pytest.skip("no real settings file on this machine")
     before = REAL_SETTINGS.read_bytes()
-    install(load_fixture(), ["Stop", "UserPromptSubmit"])
+    install(load_fixture(), list(CLAUDE_EVENTS))
     uninstall(load_fixture())
     assert REAL_SETTINGS.read_bytes() == before
 
@@ -219,3 +235,35 @@ def test_fixture_shape_is_what_we_think_it_is() -> None:
         for group in groups:
             assert isinstance(group, dict), f"{event} contains a non-object group"
             assert isinstance(group.get("hooks"), list), f"{event} group has no handler list"
+
+
+@pytest.mark.parametrize("event", list(CLAUDE_EVENTS))
+def test_all_claude_events_replace_only_our_group(event: str) -> None:
+    before = copy.deepcopy(SYNTHETIC)
+    user = {"matcher": "Bash|PowerShell|Agent|Skill", "hooks": [{"type": "command", "command": "user.py"}]}
+    before["hooks"][event] = [user, {"matcher": "old", "hooks": [managed_handler(event)]}]
+    after = install(before, list(CLAUDE_EVENTS))
+    assert after["hooks"][event][0] == user
+    assert len(after["hooks"][event]) == 2
+    group = after["hooks"][event][1]
+    assert group.get("matcher") == CLAUDE_MATCHERS.get(event)
+    assert group["hooks"][0]["command"].endswith(f"--event-kind {CLAUDE_EVENTS[event]}")
+    assert install(after, list(CLAUDE_EVENTS)) == after
+    assert user_groups(uninstall(after)) == user_groups(before)
+    assert len(after["hooks"]) == 7
+
+
+def test_old_question_pre_hook_is_upgraded_to_one_managed_group() -> None:
+    before = copy.deepcopy(SYNTHETIC)
+    user = {"matcher": "Bash|PowerShell|Agent|Skill", "hooks": [{"type": "command", "command": "user.py"}]}
+    old = managed_handler("PreToolUse")
+    old["command"] = old["command"].replace("--event-kind pre_tool_use", "--event-kind attention_required")
+    before["hooks"]["PreToolUse"] = [user, {"matcher": "AskUserQuestion", "hooks": [old]}]
+    after = install(before, list(CLAUDE_EVENTS))
+    groups = after["hooks"]["PreToolUse"]
+    assert groups[0] == user
+    assert len(groups) == 2
+    assert groups[1]["matcher"] == CLAUDE_MATCHERS["PreToolUse"]
+    assert groups[1]["hooks"][0]["command"].endswith("--event-kind pre_tool_use")
+    assert install(after, list(CLAUDE_EVENTS)) == after
+    assert user_groups(uninstall(after)) == user_groups(before)

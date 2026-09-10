@@ -409,7 +409,6 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
     terminal_pane = read_repo_text("src/components/workspace/TerminalPane.tsx")
     terminal_sources = read_terminal_sources()
     app_shell = read_repo_text("src/components/layout/AppShell.tsx")
-    notification_panel = read_repo_text("src/components/layout/NotificationPanel.tsx")
     pane_drag_source = read_repo_text("src/hooks/usePaneDragSource.ts")
 
     focus_controller = read_repo_text("src/lib/focusController.ts")
@@ -461,7 +460,6 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
     for text, source in [
         (terminal_pane, "src/components/workspace/TerminalPane.tsx"),
         (app_shell, "src/components/layout/AppShell.tsx"),
-        (notification_panel, "src/components/layout/NotificationPanel.tsx"),
         (pane_drag_source, "src/hooks/usePaneDragSource.ts"),
     ]:
         assert 'querySelector<HTMLTextAreaElement>("textarea")' not in text, source

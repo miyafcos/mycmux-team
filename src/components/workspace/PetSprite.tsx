@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
+import { PET_DEMOTE_HOLD_MS } from "../../lib/petState";
 import "./PetSprite.css";
 
-export type PetSpriteState = "idle" | "waving" | "failed" | "waiting" | "running" | "jumping";
+export type PetSpriteState = "calling" | "stuck" | "working" | "ready" | "resting";
 
 interface PetSpriteProps {
   atlasUrl: string;
@@ -14,21 +15,19 @@ interface PetSpriteProps {
 
 interface PetAnimation {
   row: number;
-  frames: 4 | 5 | 6 | 8;
+  frames: 6 | 8;
   duration: number;
 }
 
 const PET_ANIMATIONS: Record<PetSpriteState, PetAnimation> = {
-  // Atlas contract from openai/codex TUI: 8 columns, 192x208 cells. Rows 0-7
-  // are idle, running-right, running-left, waving, jumping, failed, waiting,
-  // and running in both v1 (9 rows) and v2 (11 rows) sheets.
-  idle: { row: 0, frames: 6, duration: 1100 },
-  waving: { row: 3, frames: 4, duration: 700 },
-  jumping: { row: 4, frames: 5, duration: 840 },
-  failed: { row: 5, frames: 8, duration: 1220 },
-  // P5 can map its stalled state here without changing sprite behavior.
-  waiting: { row: 6, frames: 6, duration: 1010 },
-  running: { row: 7, frames: 6, duration: 820 },
+  // Codex atlas: 8 columns of 192x208 cells, in both v1 (9 rows) and v2 (11).
+  // calling = waiting (6), stuck = failed (5), working = running (7),
+  // ready = review (8), resting = idle (0). Other rows are not status states.
+  calling: { row: 6, frames: 6, duration: 1010 },
+  stuck: { row: 5, frames: 8, duration: 1220 },
+  working: { row: 7, frames: 6, duration: 820 },
+  ready: { row: 8, frames: 6, duration: 1030 },
+  resting: { row: 0, frames: 6, duration: 6600 },
 };
 
 type PetSpriteStyle = CSSProperties & Record<
@@ -65,11 +64,11 @@ export default function PetSprite({ atlasUrl, state, height, rows = 9, animate =
 
   useEffect(() => {
     if (state === displayedState) return;
-    if (state === "waving" || state === "failed") {
+    if (displayedState !== "working" || (state !== "resting" && state !== "ready")) {
       setDisplayedState(state);
       return;
     }
-    const timeoutId = window.setTimeout(() => setDisplayedState(state), 1500);
+    const timeoutId = window.setTimeout(() => setDisplayedState(state), PET_DEMOTE_HOLD_MS);
     return () => window.clearTimeout(timeoutId);
   }, [displayedState, state]);
 
@@ -82,7 +81,8 @@ export default function PetSprite({ atlasUrl, state, height, rows = 9, animate =
     height,
     backgroundImage: `url("${atlasUrl}")`,
     ...spriteAtlasStyle(height, atlasRows, animation.row),
-    "--pet-animation": `cmux-pet-sprite-${animation.frames}`,
+    animationTimingFunction: displayedState === "resting" ? "step-end" : undefined,
+    "--pet-animation": displayedState === "resting" ? "cmux-pet-sprite-resting" : `cmux-pet-sprite-${animation.frames}`,
     "--pet-duration": `${animation.duration}ms`,
     "--pet-frames": String(animation.frames),
     "--pet-frame-width": `${width}px`,

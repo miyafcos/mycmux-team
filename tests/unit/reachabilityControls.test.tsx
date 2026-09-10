@@ -13,9 +13,7 @@ vi.mock("../../src/hooks/usePaneDragSource", () => ({
 
 import PaneTabBar from "../../src/components/workspace/PaneTabBar";
 import { TERMINAL_SEARCH_EVENT } from "../../src/components/terminal/XTermWrapper";
-import NotificationPanel from "../../src/components/layout/NotificationPanel";
 import { useSessionAttentionStore } from "../../src/stores/sessionAttentionStore";
-import { notificationPanelStrings } from "../../src/components/layout/notificationPanelStrings";
 import ToastHost from "../../src/components/common/ToastHost";
 import CrsmPalette from "../../src/components/CommandPalette/CrsmPalette";
 import { terminalPaneStrings, toastStrings, resumeStrings } from "../../src/components/workspace/terminalPaneStrings";
@@ -148,49 +146,6 @@ describe("reachability controls", () => {
     await click(button(terminalPaneStrings.paneActions));
     await act(async () => { document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
     expect(host.querySelector("[role='menu']")).toBeNull();
-  });
-
-  it("reachability #2 focuses the upper row and Down/Enter crosses into unread and activates only the second", async () => {
-    usePaneMetadataStore.setState({ metadata: {
-      "session-a": { notificationCount: 2 }, "session-b": { notificationCount: 1 },
-    } as ReturnType<typeof usePaneMetadataStore.getState>["metadata"] });
-    useSessionAttentionStore.setState({ attentionBySession: {
-      "session-a": { sessionId: "session-a", sessionEpoch: 1, attentionId: "question-a", kind: "input",
-        detail: null, sessionRevision: 1, uiState: "WaitingInput", stateSince: 1, occurrenceOrder: 1 },
-    } });
-    const activate = vi.spyOn(useWorkspaceLayoutStore.getState(), "setActivePaneTab").mockImplementation(() => {});
-    const setActive = vi.spyOn(useWorkspaceListStore.getState(), "setActiveWorkspace").mockImplementation(() => {});
-    const clear = vi.spyOn(usePaneMetadataStore.getState(), "clearNotification").mockImplementation(() => {});
-    const close = vi.fn();
-    await act(async () => root.render(<NotificationPanel onClose={close} />));
-    const rows = [...host.querySelectorAll<HTMLButtonElement>(".cmux-notification-item")];
-    expect(host.querySelectorAll("section")).toHaveLength(2);
-    expect(rows[0].textContent).toContain(notificationPanelStrings.answer);
-    expect(rows[1].textContent).toContain(notificationPanelStrings.open);
-    expect(document.activeElement).toBe(rows[0]);
-    await key("ArrowDown");
-    expect(document.activeElement).toBe(rows[1]);
-    await key("Enter");
-    expect(activate).toHaveBeenCalledExactlyOnceWith(workspace.id, pane.id, "tab-b");
-    expect(setActive).toHaveBeenCalledExactlyOnceWith(workspace.id);
-    expect(focusController.request).toHaveBeenCalledExactlyOnceWith("programmatic", { sessionId: "session-b", focus: true });
-    expect(clear).toHaveBeenCalledExactlyOnceWith("session-b");
-    expect(close).toHaveBeenCalledOnce();
-    await key("Escape");
-    expect(close).toHaveBeenCalledTimes(2);
-  });
-
-  it("reachability #2 preserves mouse activation and does not focus a closing panel", async () => {
-    usePaneMetadataStore.setState({ metadata: { "session-a": { notificationCount: 1 } } as ReturnType<typeof usePaneMetadataStore.getState>["metadata"] });
-    const activate = vi.spyOn(useWorkspaceLayoutStore.getState(), "setActivePaneTab").mockImplementation(() => {});
-    vi.spyOn(useWorkspaceListStore.getState(), "setActiveWorkspace").mockImplementation(() => {});
-    vi.spyOn(usePaneMetadataStore.getState(), "clearNotification").mockImplementation(() => {});
-    const close = vi.fn();
-    await act(async () => root.render(<NotificationPanel closing onClose={close} />));
-    expect(document.activeElement).toBe(document.body);
-    await act(async () => root.render(<NotificationPanel onClose={close} />));
-    await click(host.querySelector<HTMLButtonElement>(".cmux-notification-item")!);
-    expect(activate).toHaveBeenCalledExactlyOnceWith(workspace.id, pane.id, "tab-a");
   });
 
   it("reachability #3 Tab reaches kind radios, arrows select kinds, Shift+Tab returns to search", async () => {

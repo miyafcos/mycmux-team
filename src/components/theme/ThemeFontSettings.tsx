@@ -12,6 +12,7 @@ import {
   type TerminalFontPreset,
   type UiDensity,
 } from "../../stores/themeStore";
+import { stackBreaksBoxDrawing, stackFallsBackEntirely } from "../../lib/fontAvailability";
 
 const UI_DENSITY_OPTIONS: Array<{ value: UiDensity; label: string; detail: string }> = [
   { value: "compact", label: "つめる", detail: "行間と余白を絞って一覧性を上げる" },
@@ -156,6 +157,15 @@ function FontPresetOption({
   active: boolean;
   onSelect: () => void;
 }) {
+  // A stack whose every named family is absent still renders -- as the generic
+  // fallback, at metrics nobody chose. Saying so is the difference between a
+  // preset list that means something on this machine and one that only looks
+  // like it does; on macOS most of these name Windows-only faces.
+  const unavailable = stackFallsBackEntirely(preset.value);
+  // A face can be installed and still be wrong for a terminal: BIZ UDGothic and
+  // MS Gothic draw box-drawing glyphs at full width against a half-width Latin
+  // advance, so rules land in the next cell and tables come apart.
+  const breaksRules = !unavailable && stackBreaksBoxDrawing(preset.value);
   return (
     <button
       type="button"
@@ -180,6 +190,7 @@ function FontPresetOption({
         boxShadow: active
           ? "0 0 0 1px color-mix(in srgb, var(--cmux-accent) 70%, transparent)"
           : "none",
+        opacity: unavailable && !active ? 0.55 : 1,
       }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
@@ -218,6 +229,34 @@ function FontPresetOption({
       </div>
 
       <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+        {unavailable && (
+          <span
+            style={{
+              border: "1px solid color-mix(in srgb, var(--status-error) 45%, transparent)",
+              borderRadius: 999,
+              padding: "1px 6px",
+              color: "var(--status-error)",
+              fontSize: 11,
+              lineHeight: 1.25,
+            }}
+          >
+            この環境に無し
+          </span>
+        )}
+        {breaksRules && (
+          <span
+            style={{
+              border: "1px solid color-mix(in srgb, var(--status-waiting) 45%, transparent)",
+              borderRadius: 999,
+              padding: "1px 6px",
+              color: "var(--status-waiting)",
+              fontSize: 11,
+              lineHeight: 1.25,
+            }}
+          >
+            罫線がずれる
+          </span>
+        )}
         {preset.tags.slice(0, 2).map((tag) => (
           <span
             key={tag}

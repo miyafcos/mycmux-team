@@ -35,7 +35,7 @@ Audio feedback for notifications plus a centralized notification panel.
 |--------|-------------|
 | cmux | `UNUserNotificationCenter` with system + custom sounds, notification panel with timeline |
 | Shipped | Web Audio chime in `XTermWrapper` |
-| Shipped | `NotificationPanel.tsx` popover separates sessions needing an answer from unread arrivals |
+| Removed | The `NotificationPanel.tsx` popover and its bell were deleted (2026-09-10) |
 | Partial | Enable/disable settings exist; user volume and custom sounds remain pending |
 | Priority | **Medium** |
 

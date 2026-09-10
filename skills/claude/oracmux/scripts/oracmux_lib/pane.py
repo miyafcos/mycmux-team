@@ -89,6 +89,29 @@ def build_push_command(
     return command
 
 
+def build_type_command(
+    tab: str,
+    text_file: Path,
+    *,
+    selector: str,
+    submit: bool = False,
+    trusted: bool = False,
+    append: bool = False,
+    cli: Path | None = None,
+) -> list[str]:
+    command = [
+        sys.executable, cli_path(cli), "web-type",
+        "--tab", tab, "--selector", selector, "--text-file", str(text_file),
+    ]
+    if trusted:
+        command.append("--trusted")
+    if append:
+        command.append("--append")
+    if submit:
+        command.append("--submit")
+    return command
+
+
 def build_close_command(tab: str, cli: Path | None = None) -> list[str]:
     return [sys.executable, cli_path(cli), "web-close", "--tab", tab]
 
@@ -177,6 +200,33 @@ def web_read(*, tab: str | None = None, preset: str | None = None) -> dict[str, 
 
 def web_push(*, preset: str, text_file: Path, send: bool = False, tab: str | None = None) -> Any:
     return _run(build_push_command(preset, text_file, send=send, tab=tab))
+
+
+def web_type(
+    tab: str,
+    text_file: Path,
+    *,
+    selector: str,
+    submit: bool = False,
+    trusted: bool = False,
+    append: bool = False,
+) -> Any:
+    """Type into the composer the way a keystroke would.
+
+    `web.push` writes the text straight onto the element and fires one synthetic
+    `input` event; `web.type` goes through `beforeinput` + `execCommand` (or, with
+    `trusted=True`, CDP `Input.insertText`). A rich-text editor (ProseMirror /
+    TipTap) adopts the latter and can silently reject the former, so this is the
+    repair path when a push leaves the editor empty (2026-09-10).
+
+    Long trusted inserts can exceed the app's own CDP budget and come back as an
+    error even though the text landed; callers re-check the editor rather than
+    trusting the return value.
+    """
+    return _run(
+        build_type_command(tab, text_file, selector=selector, submit=submit, trusted=trusted, append=append),
+        timeout=180.0,
+    )
 
 
 def web_close(tab: str) -> Any:

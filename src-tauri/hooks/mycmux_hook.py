@@ -15,6 +15,21 @@ from typing import Any
 DEADLINE_SECONDS = 0.5
 MAX_INPUT_BYTES = 1024 * 1024
 MAX_REPLY_BYTES = 64 * 1024
+NON_BLOCKING_NOTIFICATION_TYPES = (
+    "idle_prompt",
+    "auth_success",
+    "elicitation_complete",
+    "elicitation_response",
+    "agent_completed",
+    "quota_auto_resume_fired",
+    "quota_auto_resume_stale",
+    "quota_auto_resume_disabled",
+)
+
+RESUMING_PRE_TOOL_NAMES = (
+    "Bash", "PowerShell", "Edit", "Write", "MultiEdit", "NotebookEdit",
+    "WebFetch", "WebSearch", "Agent", "Skill",
+)
 
 
 def _argument(name: str) -> str | None:
@@ -116,6 +131,7 @@ def _run() -> None:
     event_kind = _argument("--event-kind")
     if provider not in {"claude", "codex", "grok"} or event_kind not in {
         "turn_active",
+        "pre_tool_use",
         "attention_required",
         "turn_ended",
         "process_exited",
@@ -130,6 +146,19 @@ def _run() -> None:
         return
     payload = json.loads(raw)
     if not isinstance(payload, dict):
+        return
+    if event_kind == "pre_tool_use":
+        tool_name = payload.get("tool_name")
+        if tool_name == "AskUserQuestion":
+            event_kind = "attention_required"
+        elif tool_name in RESUMING_PRE_TOOL_NAMES:
+            event_kind = "turn_active"
+        else:
+            return
+    elif (
+        event_kind == "attention_required"
+        and payload.get("notification_type") in NON_BLOCKING_NOTIFICATION_TYPES
+    ):
         return
     body = _identity(payload, provider, event_kind)
     if body is None:

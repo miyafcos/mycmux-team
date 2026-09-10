@@ -2080,7 +2080,38 @@ export function useWorkspacePersist() {
         agentMappingsDirty = true;
       }
     });
-    const unsubTheme = useThemeStore.subscribe(markDirty);
+    // Hydration may replace a terminal font stack this machine cannot render --
+    // the Mac inherited `'MS Gothic', 'BIZ UDGothic', monospace` from the
+    // Windows box, where neither family resolves. That repair has to be both
+    // persisted and announced, and it cannot be read once at setup: hydration
+    // runs from an async effect that resolves after this one, so the flag is
+    // still empty here. Checking on every store change catches it whichever way
+    // round the two effects happen to land.
+    const flushFontRepair = () => {
+      const repairedFrom = useThemeStore.getState().fontFamilyRepairedFrom;
+      if (!repairedFrom) return;
+      useThemeStore.getState().clearFontFamilyRepair();
+      markDirty();
+      // Held on screen far longer than a routine notice: this reports that a
+      // saved setting was changed without being asked, which the operator has to
+      // be able to read and act on rather than catch in passing.
+      useToastStore
+        .getState()
+        .pushToast(
+          "保存されていたターミナルフォントがこの環境で正しく表示できないため、同梱フォントに切り替えました (設定 → 表示 で変更できます)",
+          "info",
+          undefined,
+          undefined,
+          20000,
+          "system",
+        );
+    };
+    const unsubTheme = useThemeStore.subscribe(() => {
+      markDirty();
+      flushFontRepair();
+    });
+    flushFontRepair();
+
     const unsubKeys = useKeybindingStore.subscribe(markDirty);
     const unsubPets = usePetSettingsStore.subscribe((state, previousState) => {
       if (

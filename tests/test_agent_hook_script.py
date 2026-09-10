@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import socket
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +23,7 @@ def run_hook(
     *,
     cap: str | None,
     event_kind: str = "turn_ended",
+    provider: str = "codex",
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["MYCMUX_RUNTIME_DIR"] = str(runtime)
@@ -32,7 +36,7 @@ def run_hook(
             sys.executable,
             str(HOOK_SCRIPT),
             "--provider",
-            "codex",
+            provider,
             "--event-kind",
             event_kind,
         ],
@@ -75,7 +79,24 @@ def test_refused_connection_is_fast_and_silent(tmp_path: Path) -> None:
     assert elapsed < 1.0
 
 
-def test_health_then_observe_reaches_the_socket(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("provider", "event_kind", "extra", "wire_kind"), [
+    ("codex", "turn_ended", {}, "turn_ended"),
+    *[("claude", "attention_required", {"notification_type": kind}, "attention_required") for kind in (
+        "permission_prompt", "elicitation_dialog", "elicitation_url_dialog",
+        "agent_needs_input", "future_notification", None,
+    )],
+    ("claude", "attention_required", {"hook_event_name": "PermissionRequest"}, "attention_required"),
+    ("claude", "pre_tool_use", {"hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion"}, "attention_required"),
+    *[("claude", "pre_tool_use", {"hook_event_name": "PreToolUse", "tool_name": tool}, "turn_active") for tool in (
+        "Bash", "PowerShell", "Edit", "Write", "MultiEdit", "NotebookEdit",
+        "WebFetch", "WebSearch", "Agent", "Skill",
+    )],
+    ("claude", "turn_active", {"hook_event_name": "PostToolUse", "tool_name": "AskUserQuestion"}, "turn_active"),
+    ("claude", "turn_ended", {"notification_type": "idle_prompt"}, "turn_ended"),
+])
+def test_health_then_observe_reaches_the_socket(
+    tmp_path: Path, provider: str, event_kind: str, extra: dict[str, object], wire_kind: str,
+) -> None:
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
@@ -113,8 +134,10 @@ def test_health_then_observe_reaches_the_socket(tmp_path: Path) -> None:
     thread.start()
     result = run_hook(
         tmp_path,
-        '{"session_id":"session-a","turn_id":"turn-a","event_id":"event-a"}',
+        json.dumps({"session_id": "session-a", "turn_id": "turn-a", "event_id": "event-a", **extra}),
         cap="secret-cap",
+        provider=provider,
+        event_kind=event_kind,
     )
     thread.join(timeout=3)
     listener.close()
@@ -124,9 +147,38 @@ def test_health_then_observe_reaches_the_socket(tmp_path: Path) -> None:
     assert [request["cmd"] for request in requests] == ["hook.health", "hook.observe"]
     assert requests[0]["hook_cap"] == "secret-cap"
     assert requests[1]["body"] == {
-        "event_kind": "turn_ended",
+        "event_kind": wire_kind,
         "provider_session_id": "session-a",
         "provider_turn_id": "turn-a",
         "source_event_id": "event-a",
-        "provider": "codex",
+        "provider": provider,
     }
+
+
+@pytest.mark.parametrize(("event_kind", "extra"), [
+    *[("attention_required", {"notification_type": kind}) for kind in (
+        "idle_prompt", "auth_success", "elicitation_complete", "elicitation_response",
+        "agent_completed", "quota_auto_resume_fired", "quota_auto_resume_stale",
+        "quota_auto_resume_disabled",
+    )],
+    *[("pre_tool_use", {"hook_event_name": "PreToolUse", "tool_name": tool}) for tool in (
+        "Read", "UnknownTool", "", None, ["Bash"],
+    )],
+    ("pre_tool_use", {"hook_event_name": "PreToolUse"}),
+])
+def test_filtered_events_do_not_connect(
+    tmp_path: Path, event_kind: str, extra: dict[str, object],
+) -> None:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        (tmp_path / "mycmux.port").write_text(str(listener.getsockname()[1]), encoding="utf-8")
+        result = run_hook(
+            tmp_path,
+            json.dumps({"session_id": "session-a", **extra}),
+            cap="secret-cap",
+            event_kind=event_kind,
+            provider="claude",
+        )
+        assert_silent_success(result, "secret-cap")
+        assert not select.select([listener], [], [], 0)[0], "filtered hook opened a socket"

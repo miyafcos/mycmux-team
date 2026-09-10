@@ -767,7 +767,25 @@ impl Worker {
         };
         match result {
             Ok(PersistedReconcileOutcome::Accepted(reserved)) => {
-                if parsed.event_kind == NormalizedState::AttentionRequired {
+                let mapping_result = self.sync_mapping(
+                    hook_cap, &mapping_session_id, &mapping_event_id, parsed.event_kind, true,
+                );
+                let record = self.capabilities.get(hook_cap).expect("validated capability");
+                // Use sync_mapping's session guard for attention too: a delayed
+                // terminal event from a previously observed session is ledger-only.
+                let is_current_session = !parsed.event_kind.is_terminal()
+                    || !record.observed_sessions.contains(&mapping_session_id)
+                    || record.last_mapping_session.as_deref() == Some(mapping_session_id.as_str());
+                let attention = match parsed.event_kind {
+                    NormalizedState::AttentionRequired => Some(AttentionKind::Input),
+                    NormalizedState::TurnEnded => Some(AttentionKind::Done),
+                    NormalizedState::TurnActive
+                    | NormalizedState::ProcessExited
+                    | NormalizedState::SessionTerminated
+                    | NormalizedState::Cancelled => Some(AttentionKind::None),
+                    NormalizedState::Failed | NormalizedState::RateLimited => None,
+                };
+                if let Some(attention) = attention.filter(|_| is_current_session) {
                     if let Some(session_state) = &self.session_state {
                         let session_id = record.launch.terminal_session_id().as_str().to_string();
                         let attention_id = format!(
@@ -783,8 +801,9 @@ impl Worker {
                                 session_epoch: session_state.current_epoch(&session_id),
                                 process: None,
                                 signal: EvidenceSignal::Hook {
-                                    attention: AttentionKind::Input,
-                                    attention_id: Some(attention_id),
+                                    attention,
+                                    attention_id: (attention != AttentionKind::None)
+                                        .then_some(attention_id),
                                     detail: None,
                                     confidence: 1.0,
                                     stale_after: HOOK_ATTENTION_STALE_AFTER_MS,
@@ -793,7 +812,9 @@ impl Worker {
                         );
                     }
                 }
-                if let Err(reason) = self.sync_mapping(hook_cap, &mapping_session_id, &mapping_event_id, parsed.event_kind, true) {
+                // Mapping I/O may be retried by a duplicate; accepted semantic
+                // evidence must already be applied even if that write failed.
+                if let Err(reason) = mapping_result {
                     return self.reject(id, reason, reason == "queue_dropped");
                 }
                 self.metrics.accepted.fetch_add(1, Ordering::Relaxed);
@@ -1177,6 +1198,187 @@ mod tests {
     }
 
     #[test]
+    fn accepted_hook_lifecycle_updates_attention_and_deduplicated_events_do_not() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            let state = SessionStateStore::new();
+            let mut worker = worker();
+            worker.session_state = Some(state.clone());
+            let grant = issue(&mut worker, "terminal-a", provider);
+            let mut first_done_id = None;
+            for turn in 1..=2 {
+                for (offset, (kind, expected)) in [
+                    ("attention_required", AttentionKind::Input),
+                    ("turn_active", AttentionKind::None),
+                    ("turn_ended", AttentionKind::Done),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let at = turn * 10 + offset as u64;
+                    let mut event = body(kind, &format!("event-{at}"));
+                    event["provider_turn_id"] = json!(format!("turn-{turn}"));
+                    assert!(
+                        worker
+                            .handle(at, &grant.hook_cap, "hook.observe", event.clone(), at)
+                            .ok
+                    );
+                    let view = state.current_view("terminal-a").unwrap();
+                    assert_eq!(view.attention.kind, expected);
+                    assert_eq!(view.attention.stale_after, HOOK_ATTENTION_STALE_AFTER_MS);
+                    if expected == AttentionKind::None {
+                        assert_eq!(view.attention.attention_id, None);
+                        assert_eq!(view.attention.detail, None);
+                        assert!(view.attention.sources.is_empty());
+                    } else {
+                        assert_eq!(view.attention.sources, vec![EvidenceSource::Hook]);
+                        assert!(view
+                            .attention
+                            .attention_id
+                            .as_deref()
+                            .unwrap()
+                            .starts_with("agent-hook:"));
+                    }
+                    if expected == AttentionKind::Done {
+                        assert_eq!(
+                            session_state::derive_ui_state(&view),
+                            session_state::UiSessionState::Done
+                        );
+                        if turn == 1 {
+                            first_done_id = view.attention.attention_id.clone();
+                        } else {
+                            assert_ne!(first_done_id, view.attention.attention_id);
+                        }
+                    }
+                    let before = state.snapshot(None).sessions[0].recent_evidence.len();
+                    let duplicate = worker.handle(at, &grant.hook_cap, "hook.observe", event, at);
+                    assert!(duplicate.ok);
+                    assert_eq!(duplicate.result.unwrap()["deduplicated"], true);
+                    assert_eq!(state.current_view("terminal-a").unwrap(), view);
+                    assert_eq!(
+                        state.snapshot(None).sessions[0].recent_evidence.len(),
+                        before
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn termination_hooks_clear_attention_but_failed_and_rate_limited_stay_unchanged() {
+        for (kind, expected) in [
+            ("process_exited", AttentionKind::None),
+            ("session_terminated", AttentionKind::None),
+            ("cancelled", AttentionKind::None),
+            ("failed", AttentionKind::Input),
+            ("rate_limited", AttentionKind::Input),
+        ] {
+            let state = SessionStateStore::new();
+            let mut worker = worker();
+            worker.session_state = Some(state.clone());
+            let grant = issue(&mut worker, "terminal-a", Provider::Claude);
+            assert!(
+                worker
+                    .handle(
+                        1,
+                        &grant.hook_cap,
+                        "hook.observe",
+                        body("attention_required", "input"),
+                        1
+                    )
+                    .ok
+            );
+            let before = state.current_view("terminal-a").unwrap();
+            assert!(
+                worker
+                    .handle(
+                        2,
+                        &grant.hook_cap,
+                        "hook.observe",
+                        body(kind, "terminal"),
+                        2
+                    )
+                    .ok
+            );
+            let after = state.current_view("terminal-a").unwrap();
+            assert_eq!(after.attention.kind, expected, "{kind}");
+            if expected == AttentionKind::Input {
+                assert_eq!(before, after);
+            }
+        }
+    }
+
+    #[test]
+    fn stale_launch_terminal_hook_cannot_clear_new_launch_input() {
+        let state = SessionStateStore::new();
+        let mut worker = worker();
+        worker.session_state = Some(state.clone());
+        let old = issue(&mut worker, "terminal-a", Provider::Claude);
+        let new = issue(&mut worker, "terminal-a", Provider::Claude);
+        assert!(
+            worker
+                .handle(
+                    1,
+                    &new.hook_cap,
+                    "hook.observe",
+                    body("attention_required", "input"),
+                    1
+                )
+                .ok
+        );
+        let before = state.current_view("terminal-a").unwrap();
+        for kind in ["turn_ended", "session_terminated"] {
+            assert_eq!(
+                worker
+                    .handle(2, &old.hook_cap, "hook.observe", body(kind, kind), 2)
+                    .reason,
+                Some("stale_launch")
+            );
+            assert_eq!(state.current_view("terminal-a").unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn delayed_old_session_terminal_hooks_cannot_overwrite_current_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = SessionStateStore::new();
+        let mut worker = worker();
+        worker.session_state = Some(state.clone());
+        worker.mapping_dir = Some(dir.path().to_path_buf());
+        session_mapping::write_session_mapping_file_to_dir(
+            dir.path(),
+            "terminal-a",
+            "claude",
+            "launch-old",
+        )
+        .unwrap();
+        let grant = issue(&mut worker, "terminal-a", Provider::Claude);
+        assert!(
+            worker
+                .handle(
+                    1,
+                    &grant.hook_cap,
+                    "hook.observe",
+                    body("attention_required", "input"),
+                    1
+                )
+                .ok
+        );
+        let before = state.current_view("terminal-a").unwrap();
+        for kind in ["turn_ended", "session_terminated"] {
+            let mut old = body(kind, kind);
+            old["provider_session_id"] = json!("launch-old");
+            assert!(worker.handle(2, &grant.hook_cap, "hook.observe", old, 2).ok);
+            assert_eq!(state.current_view("terminal-a").unwrap(), before);
+            assert_eq!(
+                session_mapping::read_session_mapping_files_for_ids(dir.path(), ["terminal-a"])
+                    ["terminal-a"]
+                    .session_id,
+                "provider-session-a"
+            );
+        }
+    }
+
+    #[test]
     fn hook_attention_evidence_expires_like_every_other_source() {
         let state = SessionStateStore::new();
         let metrics = Arc::new(HookMetrics::default());
@@ -1550,14 +1752,19 @@ mod tests {
     fn a_failed_mapping_write_can_retry_the_current_deduplicated_hook() {
         let dir = tempfile::tempdir().unwrap();
         let mut worker = worker();
+        let state = SessionStateStore::new();
+        worker.session_state = Some(state.clone());
         let invalid_dir = dir.path().join("not-a-directory");
         fs::write(&invalid_dir, b"file").unwrap();
         worker.mapping_dir = Some(invalid_dir);
         let grant = issue(&mut worker, "terminal-a", Provider::Codex);
-        let input = body("turn_active", "retry");
+        let input = body("attention_required", "retry");
         assert_eq!(worker.handle(1, &grant.hook_cap, "hook.observe", input.clone(), 1).reason, Some("queue_dropped"));
+        let accepted_view = state.current_view("terminal-a").unwrap();
+        assert_eq!(accepted_view.attention.kind, AttentionKind::Input);
         worker.mapping_dir = Some(dir.path().join("valid"));
         assert!(worker.handle(2, &grant.hook_cap, "hook.observe", input, 2).ok);
+        assert_eq!(state.current_view("terminal-a").unwrap(), accepted_view);
         let mapping = session_mapping::read_session_mapping_files_for_ids(worker.mapping_dir.as_ref().unwrap(), ["terminal-a"]);
         assert_eq!(mapping["terminal-a"].session_id, "provider-session-a");
         assert!(mapping["terminal-a"].hook_confirmed);

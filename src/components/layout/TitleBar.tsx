@@ -1,11 +1,10 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
-import { useWorkspaceListStore, useUiStore, usePaneMetadataStore } from "../../stores/workspaceStore";
+import { useWorkspaceListStore, useUiStore } from "../../stores/workspaceStore";
 import { formatShortcutLabel, IS_MAC } from "../../lib/keybindings";
 import { useKeybindingStore } from "../../stores/keybindingStore";
-import NotificationPanel from "./NotificationPanel";
 import SettingsDialog, { type SettingsTabId } from "../settings/SettingsDialog";
 import { AiLogButton } from "../ailog/AiLogButton";
 import { DashboardButton } from "../dashboard/DashboardButton";
@@ -15,9 +14,6 @@ import { resolveWorkspaceColor } from "../../lib/workspaceColors";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { useAccountsPolling } from "../../hooks/useAccountsPolling";
 import { useCliLoginEvents } from "../../hooks/useCliLoginEvents";
-import { buildNotificationPanelModel } from "../../lib/notificationPanelModel";
-import { useNotificationBellFilter } from "../../hooks/useNotificationBellFilter";
-import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 
 interface TitleBarProps {
   uiVariant?: "default" | "cmux";
@@ -33,21 +29,6 @@ const SidebarIcon = () => (
     <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
     <line x1="9" y1="3" x2="9" y2="21"></line>
   </svg>
-);
-
-const BellIcon = ({ count, attention }: { count?: number; attention?: boolean }) => (
-  <div style={{ position: "relative", display: "flex" }}>
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
-      <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
-    </svg>
-    {count ? <span style={{
-      position: "absolute", top: -6, right: -8, minWidth: 14, height: 14, padding: "0 2px",
-      boxSizing: "border-box", display: "flex", alignItems: "center", justifyContent: "center",
-      background: attention ? "var(--cmux-yellow)" : "var(--notification-color)",
-      color: "var(--cmux-on-waiting)", borderRadius: 7, fontSize: 10, fontWeight: 600,
-    }}>{count}</span> : null}
-  </div>
 );
 
 const SavepointIcon = () => (
@@ -95,21 +76,6 @@ export default function TitleBar({
   const sidebarShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["sidebar.toggle"]));
   const newWorkspaceShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["workspace.new"]));
   const advancedWorkspaceShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["workspace.new.advanced"]));
-  // The bell and panel share the same live-tab model; attention wins over unread.
-  const workspacesForNotifications = useWorkspaceListStore((s) => s.workspaces);
-  const notificationMetadata = usePaneMetadataStore((s) => s.metadata);
-  const attentionBySession = useSessionAttentionStore((s) => s.attentionBySession);
-  const seenAttentionByTab = useSessionAttentionStore((s) => s.seenAttentionByTab);
-  const notificationFilter = useNotificationBellFilter();
-  // Volatile metadata is deliberately left out: the badge needs counts, not
-  // labels, and that map churns with terminal output.
-  const notificationModel = useMemo(
-    () => buildNotificationPanelModel(workspacesForNotifications, attentionBySession, notificationMetadata,
-      undefined, { seenAttentionByTab, filter: notificationFilter }),
-    [workspacesForNotifications, attentionBySession, notificationMetadata, seenAttentionByTab, notificationFilter],
-  );
-  const totalNotifications = notificationModel.attentionCount || notificationModel.unreadCount;
-  const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTabId>("appearance");
   const requestedSettingsTab = useUiStore((state) => state.requestedSettingsTab);
@@ -120,10 +86,6 @@ export default function TitleBar({
     setIsSettingsOpen(true);
     clearRequestedSettingsTab();
   }, [requestedSettingsTab, clearRequestedSettingsTab]);
-  const { mounted: notificationPanelMounted, closing: notificationPanelClosing } = useDeferredUnmount(
-    notificationPanelOpen,
-    OVERLAY_EXIT_MS,
-  );
   const { mounted: settingsMounted, closing: settingsClosing } = useDeferredUnmount(
     isSettingsOpen,
     OVERLAY_EXIT_MS,
@@ -194,7 +156,7 @@ export default function TitleBar({
           TEST ({testProfile})
         </div>
       )}
-      {/* Left group: Sidebar, Bell, Plus */}
+      {/* Left group: Sidebar, Plus */}
       {/* macOS (titleBarStyle: Overlay): native traffic lights float over the
           top-left corner, so inset the button group past them */}
       <div
@@ -223,30 +185,6 @@ export default function TitleBar({
         >
           <SidebarIcon />
         </button>
-
-        <div style={{ position: "relative" }}>
-          <button
-            onMouseDown={(event) => event.stopPropagation()}
-            onClick={() => setNotificationPanelOpen((o) => !o)}
-            title="Notifications"
-            className="cmux-title-btn"
-            style={{
-              background: "none",
-              border: "none",
-              color: "var(--cmux-text-secondary)",
-              cursor: "pointer",
-              padding: "3px 6px",
-              display: "flex",
-              alignItems: "center",
-              borderRadius: 3,
-            }}
-          >
-            <BellIcon count={totalNotifications} attention={notificationModel.attentionCount > 0} />
-          </button>
-          {notificationPanelMounted && (
-            <NotificationPanel closing={notificationPanelClosing} onClose={() => setNotificationPanelOpen(false)} />
-          )}
-        </div>
 
         {onOpenOnlinePanel && (
           <button

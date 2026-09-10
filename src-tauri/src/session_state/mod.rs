@@ -331,7 +331,16 @@ fn apply_attention(view: &mut SessionView, evidence: &Evidence, update: Attentio
         if evidence.observed_at < view.attention.observed_at {
             return;
         }
-        if view.attention.sources.contains(&evidence.source) && view.attention.sources.len() > 1 {
+        // A current hook proves the agent resumed or terminated, regardless
+        // of which observation source first detected the prompt.
+        if evidence.source == EvidenceSource::Hook {
+            view.attention = Attention {
+                state_since: evidence.observed_at,
+                observed_at: evidence.observed_at,
+                stale_after: update.stale_after,
+                ..Attention::default()
+            };
+        } else if view.attention.sources.contains(&evidence.source) && view.attention.sources.len() > 1 {
             view.attention
                 .sources
                 .retain(|source| *source != evidence.source);
@@ -350,9 +359,15 @@ fn apply_attention(view: &mut SessionView, evidence: &Evidence, update: Attentio
     }
 
     let next_id = attention_id(view, evidence, update.supplied_id);
-    let same_attention = view.attention.kind == update.kind
-        && (view.attention.attention_id.as_deref() == Some(next_id.as_str())
-            || update.supplied_id.is_none());
+    let same_identity = view.attention.attention_id.as_deref() == Some(next_id.as_str())
+        || update.supplied_id.is_none();
+    let done_alias = view.attention.kind == AttentionKind::Done
+        && update.kind == AttentionKind::Done;
+    // A different ID still has to pass the existing timestamp check.
+    if done_alias && !same_identity && evidence.observed_at < view.attention.observed_at {
+        return;
+    }
+    let same_attention = view.attention.kind == update.kind && (same_identity || done_alias);
 
     if same_attention {
         if !view.attention.sources.contains(&evidence.source) {
@@ -370,7 +385,7 @@ fn apply_attention(view: &mut SessionView, evidence: &Evidence, update: Attentio
         view.attention.state_since = view.attention.state_since.min(evidence.observed_at);
         view.attention.observed_at = view.attention.observed_at.max(evidence.observed_at);
         view.attention.stale_after = view.attention.stale_after.max(update.stale_after);
-        if update.supplied_id.is_some() {
+        if update.supplied_id.is_some() && !done_alias {
             view.attention.attention_id = Some(next_id);
         }
         return;

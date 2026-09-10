@@ -13,6 +13,17 @@ beforeEach(() => {
 });
 
 describe("normalizeFontSize", () => {
+  it("reaches the macOS system face through ui-monospace, not a family name", () => {
+    // The preset this replaced named 'SF Mono', which macOS does not expose to
+    // CSS as a family: the whole stack silently resolved to Menlo instead, and
+    // nothing in the UI said so. `ui-monospace` is how the system face is
+    // actually reachable.
+    const stack = TERMINAL_FONT_PRESETS.find((preset) => preset.id === "system-mono-ja")?.value;
+    expect(stack).toBeDefined();
+    expect(stack).toContain("ui-monospace");
+    expect(stack).not.toContain("'SF Mono'");
+  });
+
   it.each([undefined, null, "14", Number.NaN, Number.POSITIVE_INFINITY])(
     "uses the default for invalid value %s",
     (value) => {
@@ -203,8 +214,10 @@ describe("solidSurfaces survives the load -> edit -> save -> load round trip", (
 });
 
 describe("terminal font presets", () => {
-  it("keeps only the approved nine presets", () => {
-    expect(TERMINAL_FONT_PRESETS).toHaveLength(9);
+  it("keeps only the approved ten presets", () => {
+    // Ten since 2026-09-10, when the macOS system stack was added. The two ids
+    // asserted absent below are removed presets that must not come back.
+    expect(TERMINAL_FONT_PRESETS).toHaveLength(10);
     expect(TERMINAL_FONT_PRESETS.map((preset) => preset.id)).not.toContain(["mac", "style"].join("-"));
     expect(TERMINAL_FONT_PRESETS.map((preset) => preset.id)).not.toContain(["hg", "gothic", "m"].join("-"));
   });

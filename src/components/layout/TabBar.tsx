@@ -1,13 +1,15 @@
-import { memo, useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
+import { memo, useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo, useSyncExternalStore } from "react";
 import type { CSSProperties, MutableRefObject, ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useWorkspaceListStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import { usePaneDragStore } from "../../stores/paneDragStore";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
-import { deriveDisplayStatus } from "../../lib/notificationStatus";
+import { aggregatePetTier, classifyPetTier, petSpriteStateFor } from "../../lib/petState";
+import { useTerminalObservationStore } from "../../stores/terminalObservationStore";
 import { clampMenuPosition } from "../../lib/menuPosition";
 import { workspaceTabCount, workspaceTabPreview } from "../../lib/workspaceRow";
 import {
+  isAttentionUnseen,
   summarizeUnseenAttention,
   useSessionAttentionStore,
   type SessionAttention,
@@ -19,7 +21,6 @@ import {
   resolveWorkspaceColor,
 } from "../../lib/workspaceColors";
 import TabItem from "./TabItem";
-import type { PetSpriteState } from "../workspace/PetSprite";
 import { useStallStore } from "../../stores/stallStore";
 import { tearOutWorkspaceToNewWindow } from "../../lib/workspaceTearOut";
 import { isOutsideWindowViewport } from "../../lib/windowEdge";
@@ -203,6 +204,29 @@ interface WorkspaceTabEntryProps {
   onRename: (workspaceId: string, newName: string) => void;
 }
 
+// All workspace rows share one clock, with no timer left behind after unmount.
+const petClockListeners = new Set<() => void>();
+let petClockNow = Date.now();
+let petClockInterval: ReturnType<typeof setInterval> | undefined;
+function subscribePetClock(listener: () => void): () => void {
+  petClockListeners.add(listener);
+  if (petClockInterval === undefined) {
+    petClockNow = Date.now();
+    petClockInterval = setInterval(() => {
+      petClockNow = Date.now();
+      petClockListeners.forEach((notify) => notify());
+    }, 15_000);
+  }
+  return () => {
+    petClockListeners.delete(listener);
+    if (petClockListeners.size === 0) {
+      clearInterval(petClockInterval);
+      petClockInterval = undefined;
+    }
+  };
+}
+const getPetClockNow = () => petClockNow;
+
 const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
   uiVariant,
   ws,
@@ -248,24 +272,26 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
   const tabStalls = useStallStore(useShallow((s) =>
     sessionIds.map((sessionId) => s.entries[sessionId]),
   ));
-  const seenAttentionByTab = useSessionAttentionStore((s) => s.seenAttentionByTab);
+  const tabSignals = useSessionAttentionStore(useShallow((s) =>
+    sessionIds.map((sessionId) => s.statusSignalsBySession[sessionId]),
+  ));
+  const tabObserved = useTerminalObservationStore(useShallow((s) =>
+    sessionIds.map((sessionId) => s.observed.has(sessionId)),
+  ));
+  const tabSeenAttention = useSessionAttentionStore(useShallow((s) =>
+    workspaceTabs.map((tab) => s.seenAttentionByTab.get(tab.id)),
+  ));
+  const seenAttentionByTab = new Map(workspaceTabs.flatMap((tab, index) => {
+    const seen = tabSeenAttention[index];
+    return seen === undefined ? [] : [[tab.id, seen] as const];
+  }));
+  const now = useSyncExternalStore(subscribePetClock, getPetClockNow);
 
   let totalWsNotifications = 0;
-  let hasWorkspaceError = false;
-  const statusCounts = { working: 0, waiting: 0 };
   const attentionBySession: Record<string, SessionAttention | undefined> = {};
   sessionIds.forEach((sessionId, index) => {
-    const m = tabMetadata[index];
-    const volatile = tabVolatileMetadata[index];
     attentionBySession[sessionId] = tabAttention[index];
-    if (tabAttention[index]?.kind === "error") hasWorkspaceError = true;
-    if (m) {
-      totalWsNotifications += m.notificationCount ?? 0;
-      const eff = deriveDisplayStatus(m, volatile);
-      if (eff === "working" || eff === "waiting") {
-        statusCounts[eff]++;
-      }
-    }
+    totalWsNotifications += tabMetadata[index]?.notificationCount ?? 0;
   });
   // A background workspace holding an unread error/approval used to look idle
   // in the sidebar unless it also bumped a notification counter.
@@ -274,15 +300,28 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
     attentionBySession,
     seenAttentionByTab,
   );
-  const petState: PetSpriteState = statusCounts.waiting > 0
-    ? "waving"
-    : hasWorkspaceError
-      ? "failed"
-      : tabStalls.some(Boolean)
-        ? "waiting"
-        : statusCounts.working > 0
-          ? "running"
-          : "idle";
+  const petState = petSpriteStateFor(aggregatePetTier(workspaceTabs.map((tab, index) => {
+    const meta = tabMetadata[index];
+    const volatile = tabVolatileMetadata[index];
+    const signals = tabSignals[index];
+    return classifyPetTier({
+      tabType: tab.type === "launcher" ? undefined : tab.type,
+      observed: tabObserved[index],
+      agentStatus: meta?.agentStatus,
+      attentionKind: tabAttention[index]?.kind,
+      attentionStateSince: tabAttention[index]?.stateSince,
+      attentionUnseen: isAttentionUnseen(tab.id, tabAttention[index], seenAttentionByTab),
+      activity: signals?.activity,
+      backendLastOutputAt: Math.max(
+        signals?.lastOutputAt ?? 0,
+        volatile?.backendLastOutputAt ?? meta?.backendLastOutputAt ?? 0,
+      ) || undefined,
+      outputActive: volatile?.outputActive ?? meta?.outputActive,
+      workingPatternVisible: volatile?.workingPatternVisible ?? meta?.workingPatternVisible,
+      stallReason: tabStalls[index]?.reason,
+      now,
+    });
+  })));
 
   const tabPreview = workspaceTabPreview(ws);
   const isDragged = draggingRef.current && dragIndex === wsIndex;

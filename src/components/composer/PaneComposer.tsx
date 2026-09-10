@@ -263,18 +263,25 @@ const rootStyle: CSSProperties = {
   borderTop: "1px solid var(--cmux-border)",
   background: "var(--cmux-bg)",
 };
+// A text field has to look like one before anybody clicks it. Transparent left
+// the composer indistinguishable from the pane above, so the only sign that
+// something could be typed there was the placeholder text — and once that was
+// replaced by a draft, nothing at all. A quiet fill and a hairline give it an
+// edge at rest; focus still lifts it, and now lifts it onto a higher tier
+// rather than out of nothing, which is the difference macOS draws between a
+// control that is idle and one that is taking input.
 const shellStyle: CSSProperties = {
   display: "flex",
   alignItems: "flex-end",
   gap: 6,
   padding: "4px 6px",
   borderRadius: "var(--cmux-radius-lg)",
-  background: "transparent",
-  boxShadow: "none",
+  background: "var(--cmux-surface)",
+  boxShadow: "inset 0 0 0 1px var(--cmux-border-hairline)",
   transition: "background 120ms ease-out, box-shadow 120ms ease-out",
 };
 const shellFocusedStyle: CSSProperties = {
-  background: "var(--cmux-surface)",
+  background: "var(--cmux-surface-raised)",
   boxShadow: "inset 0 0 0 1px color-mix(in srgb, var(--cmux-accent) 40%, transparent), 0 2px 12px rgba(0, 0, 0, 0.18)",
 };
 const badgeStyle: CSSProperties = {

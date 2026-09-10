@@ -4,6 +4,7 @@ import App from "./App";
 import { initializePerfDiagnostics } from "./lib/perfDiagnostics";
 import { recordReactCommit } from "./lib/paintStats";
 import { useToastStore } from "./stores/toastStore";
+import { IS_MAC } from "./lib/keybindings";
 import "./global.css";
 
 // Sole unhandledrejection handler for the app (App.tsx used to register a second
@@ -48,12 +49,48 @@ if (import.meta.env.DEV) {
   initializePerfDiagnostics();
 }
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  import.meta.env.DEV ? (
-    <Profiler id="mycmux-root" onRender={recordReactCommit}>
+// The bundled terminal face has to be resolved before anything paints. xterm's
+// WebGL renderer bakes a glyph atlas from whichever font is live when it first
+// draws, and `font-display: block` on its own does not hold React back -- so a
+// terminal opened during the load spends the rest of its session drawing from
+// an atlas built on the fallback face, at the wrong cell width.
+const BUNDLED_FONT_TIMEOUT_MS = 3000;
+
+async function waitForBundledFonts(): Promise<void> {
+  if (typeof document === "undefined" || !document.fonts?.load) return;
+  try {
+    await Promise.race([
+      Promise.all([
+        document.fonts.load('400 16px "UDEV Gothic NF"'),
+        document.fonts.load('700 16px "UDEV Gothic NF"'),
+      ]),
+      // A slow or broken asset must not turn into a blank window. The CSS stack
+      // still falls through to a system monospace face if this times out.
+      new Promise((resolve) => setTimeout(resolve, BUNDLED_FONT_TIMEOUT_MS)),
+    ]);
+  } catch (error) {
+    console.error("[mycmux] bundled font load failed:", error);
+  }
+}
+
+// Text rendering differs enough between the two platforms to need saying so in
+// the DOM. Windows draws through DirectWrite, which hints and thickens; macOS
+// draws through CoreText, which does neither, and `-webkit-font-smoothing:
+// antialiased` — a property Windows ignores entirely — thins it further. Side
+// by side on 2026-09-10 the same tokens read as solid text on Windows and as
+// faint grey on the Mac, worst on a 1x display. The stylesheet keys off this.
+document.documentElement.dataset.platform = IS_MAC ? "mac" : "other";
+
+function mount(): void {
+  ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+    import.meta.env.DEV ? (
+      <Profiler id="mycmux-root" onRender={recordReactCommit}>
+        <App />
+      </Profiler>
+    ) : (
       <App />
-    </Profiler>
-  ) : (
-    <App />
-  ),
-);
+    ),
+  );
+}
+
+void waitForBundledFonts().then(mount);

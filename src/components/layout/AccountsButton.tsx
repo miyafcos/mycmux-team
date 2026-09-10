@@ -11,6 +11,7 @@ import {
   orderAccountRows,
   rowHasWindows,
   rowMessage,
+  rowIsPressed,
   rowNeedsAttention,
   usageBarColor,
 } from "../../lib/accountRows";
@@ -217,7 +218,14 @@ function ProviderSummary({
   const label = row
     ? (chipLabels.get(row.profile_id) ?? row.label.slice(0, 4))
     : "—";
-  const showLabel = mode !== "compact" || provider === "claude";
+  // An account with room to spare gets the short line: provider mark and its
+  // number, nothing else. The name and the bar come back only when a window is
+  // near its limit, so the strip stays quiet until something needs doing and
+  // the eye is drawn to the one row that does. Before this every provider was
+  // spelled out at all times, and the reading — CC miy2 — · CX miy1 7d ▮▮▮ 100%
+  // · GK tari — — buried the single figure that mattered.
+  const pressed = rowIsPressed(row);
+  const showLabel = pressed && (mode !== "compact" || provider === "claude");
 
   return (
     <span
@@ -228,7 +236,9 @@ function ProviderSummary({
         minWidth: 0,
       }}
     >
-      <span>{PROVIDER_SHORT[provider]}</span>
+      <span style={pressed ? undefined : { color: "var(--cmux-text-tertiary)" }}>
+        {PROVIDER_SHORT[provider]}
+      </span>
       {showLabel && (
         <span
           style={{ maxWidth: 54, overflow: "hidden", textOverflow: "ellipsis" }}
@@ -236,7 +246,7 @@ function ProviderSummary({
           {label}
         </span>
       )}
-      <ProviderUsageSummary row={row} mode={mode} />
+      <ProviderUsageSummary row={row} mode={pressed ? mode : "compact"} />
     </span>
   );
 }

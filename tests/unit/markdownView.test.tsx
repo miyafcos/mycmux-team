@@ -100,7 +100,13 @@ describe("MarkdownView", () => {
     expect(css).toContain(".cmux-dashboard-msg { display: grid; min-width: 0; max-width: 84%; gap: 4px; border-radius: 10px; padding: 9px 13px; font-family: var(--cmux-dash-body-font);");
     expect(css).toContain(".cmux-dashboard-markdown { font-family: var(--cmux-dash-body-font) !important;");
     expect(css).toContain(".cmux-dashboard-markdown-table th, .cmux-dashboard-markdown-table td { border-right: 1px solid var(--cmux-border-hairline); border-bottom: 1px solid var(--cmux-border-hairline); padding: 6px 9px; vertical-align: top; text-align: left; white-space: normal; overflow-wrap: anywhere; font-family: var(--cmux-dash-body-font);");
-    expect(globalCss).toContain("--cmux-dash-ui-font: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif;");
+    // The chrome stack moved into --cmux-font-ui so the Japanese face is named
+    // explicitly: the generic sans-serif fallback differs per platform, and on
+    // macOS the right answer is Hiragino Sans rather than whatever comes last.
+    expect(globalCss).toContain(
+      '--cmux-font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", Meiryo, Roboto, sans-serif;',
+    );
+    expect(globalCss).toContain("--cmux-dash-ui-font: var(--cmux-font-ui);");
     expect(globalCss).toContain("font-family: var(--cmux-dash-ui-font);");
     expect(markdown).toContain('fontFamily: "var(--cmux-dash-body-font)"');
     expect(terminalTail).toContain('fontFamily: "var(--cmux-dash-body-font)"');

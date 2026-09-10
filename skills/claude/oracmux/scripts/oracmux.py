@@ -556,6 +556,13 @@ def cmd_doctor(ns: argparse.Namespace) -> int:
         print(f"{engine_id} (selectors): {'ok' if info.get('ok') else 'DRIFT'} — {counts}")
         if info.get("model_label"):
             print(f"    model picker: {info['model_label']}")
+        # A repaired fill still means web.push is broken for this service. Say so:
+        # oracmux recovers, but the human `push` mode has no repair path.
+        fill = (info.get("groups") or {}).get("fill") or {}
+        if fill.get("detail"):
+            print(f"    fill: {'WARN' if fill.get('ok') else 'FAIL'} {fill['detail']}")
+        elif fill.get("method"):
+            print(f"    fill: ok (web.push accepted by the editor)")
         for failure in info.get("failures", []):
             print(f"    FAIL {failure}")
     if selftest.get("error"):
@@ -1241,14 +1248,31 @@ def cmd_push(ns: argparse.Namespace) -> int:
         if ns.json:
             emit_json({"run_dir": str(run_dir), "brief": str(push_path), "bytes": size, "send": ns.send, "preset": site["pane_preset"], "dry_run": True})
         return EXIT_OK
+    from oracmux_lib import pane_driver
+
     try:
-        result = pane.push(str(site["pane_preset"]), push_path, send=ns.send, tab=ns.tab)
+        # Always land the text first, then prove the editor took it. Letting
+        # web.push submit would fail before the repair could run on a brief the
+        # editor refuses (2026-09-10), and a brief the human cannot send is worse
+        # here than in `ask`: nothing reports it, the composer just looks full.
+        result = pane.push(str(site["pane_preset"]), push_path, send=False, tab=ns.tab)
     except RuntimeError as exc:
         print(f"push failed: {exc}")
         ledger.append({"run_id": run_dir.name, "engine": ns.engine, "status": "push_failed", "via": "pane", "error": str(exc)[:200]})
         return EXIT_UI
-    ledger.append({"run_id": run_dir.name, "engine": ns.engine, "status": "sent" if ns.send else "pushed", "via": "pane", "chars": len(normalized), "run_dir": str(run_dir)})
-    print(f"pushed {size} bytes into the {site['label']} pane composer (send={ns.send})")
+    tab_id = result.get("tabId") if isinstance(result, dict) else None
+    filled = {"method": "push"}
+    if tab_id:
+        try:
+            filled = pane_driver.repair_fill(site, str(tab_id), push_path, log)
+            if ns.send:
+                pane_driver.press_send(site, str(tab_id), log)
+        except (pane_driver.PaneNotReady, pane.PaneError) as exc:
+            print(f"push failed: {exc}")
+            ledger.append({"run_id": run_dir.name, "engine": ns.engine, "status": "push_failed", "via": "pane", "error": str(exc)[:200]})
+            return EXIT_NEEDS_HUMAN
+    ledger.append({"run_id": run_dir.name, "engine": ns.engine, "status": "sent" if ns.send else "pushed", "via": "pane", "chars": len(normalized), "run_dir": str(run_dir), "fill": filled["method"]})
+    print(f"pushed {size} bytes into the {site['label']} pane composer (send={ns.send}, fill={filled['method']})")
     print(f"  brief: {push_path}")
     print(f"  result: {json.dumps(result, ensure_ascii=False)}")
     print(f"  回収: python {Path(__file__).resolve()} collect --engine {ns.engine} --latest  (または --url <会話 URL>)")

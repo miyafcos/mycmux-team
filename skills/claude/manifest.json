@@ -1,6 +1,6 @@
 {
   "pack_version": "1.0.0",
-  "generated_at": "2026-09-09T03:05:18.275090+00:00",
+  "generated_at": "2026-09-10T04:51:59.305184+00:00",
   "cli": {
     "path": "scripts/mycmux_agent_cli.py",
     "sha256": "21c971de97975420d066ee6bb9e66af1fe94b965fc35b8c20f1f0bd34c33e867"
@@ -65,11 +65,11 @@
     {
       "name": "oracmux",
       "files": {
-        "SKILL.md": "3d3892457351b22b62cb84f328ed93b2e7823417e8250bca666eb8075aa3e51d",
+        "SKILL.md": "b7d8e11430eddb903c209a33cdf5987de1f9eaae5cef11fd6786020a21909062",
         "modes/ask.md": "6aa561a266498dee182935ebd580aa782385d50a2c0e3cf71e8c11bf11f9d582",
         "modes/collect.md": "0f19ee555bbdde96d0343b779d1a2237ed338fb86a28fc3168009d9f0896afc3",
         "modes/council.md": "f8f125aa66d1f41adf5e125695945ded94e53b908ecbb203fecaeaa02b3b7685",
-        "modes/doctor.md": "1f31ee79257d32a3da2e8166c53192384bcc8976656977a698e90ea0b7436c7f",
+        "modes/doctor.md": "b3a9bd50196a0cbe090b7cc21a121f0f40bc4a318f47efc00537664bba433c3a",
         "modes/followup.md": "0483af092293a50bf4730738cc5304927565bfc55dbec1840665dcb6802d25c0",
         "modes/push.md": "ac48e42c1ca832c01720c5dcd129530d399f6f04e6ec663200ef856ffe234f4d",
         "modes/smoke.md": "5d97dfb1def3fe9533a838dc2fc94e614aed8cc8998c86d1fdc5568fdd230adf",
@@ -79,17 +79,17 @@
         "references/judge-template.md": "baefcb248c079b8ca9742e5527d467188d1a7f113e96e72a44b815ba455132f8",
         "scripts/engines.json": "1dcec54e72ab22f2c8eac9e99938dac71330cc2dc803b5467f4662f9708d7cbe",
         "scripts/guard.example.json": "5a6048ee2b608c748d074180a88ad1973e5d7e031604b6a135b55e01ba1eb434",
-        "scripts/oracmux.py": "0e9dfb4fb1650d1697ffe853ec10ccee72ceb01ff1144cd5c7a892ebb1dc2324",
+        "scripts/oracmux.py": "2eeabc49b054d67b760c38308791b9e61dd2a7d9f47caf83165005a42b6703cc",
         "scripts/oracmux_lib/__init__.py": "d867def193e7b8d9c2be09383df23dc9281c435990770985e6da851c58e81efd",
         "scripts/oracmux_lib/brief.py": "cd91b9c2a0a9ea4167dd5327e938135ab962c13f4595270c0999498f9d6f4d05",
         "scripts/oracmux_lib/cdp.py": "4624a0b745ede1d56fd5c8e5f99c9e3931f39ad3acaf4e8b264fe4edc938a58b",
-        "scripts/oracmux_lib/chrome.py": "89ea08e1a01e49767966831f13158f766dea4db121b4abaf043fd02b87af36aa",
+        "scripts/oracmux_lib/chrome.py": "5f31a2114d7308539d26661e2adc09b5a19a012d17f30b41895e89a4219af6e9",
         "scripts/oracmux_lib/engines.py": "e220137426371fd8f9227bf6c2029f5b88b584b8411329328bf8e9bce16d9c17",
         "scripts/oracmux_lib/guard.py": "359c466d19a0ebdda95276a6804b2a7ba15ce2979887847fb8c2fc82315e5fac",
         "scripts/oracmux_lib/ledger.py": "7433e055fcb4ef638248a2a62c65943a860abf0bca5f835e386fa9b569965abb",
         "scripts/oracmux_lib/oracle_cli.py": "e369d0f6f7259fa4c8dafcdb89f84a484240e06ca364a0e348de4b23c34cd8c4",
-        "scripts/oracmux_lib/pane.py": "4681132d468f2030ea2ed492baa4f346fc9c8d9e13bcbb618e714b2d06cd1394",
-        "scripts/oracmux_lib/pane_driver.py": "d90c59c6bd909c3df64ca187fdd1a47c53803ce44d2e454de2b907be98baa6a5",
+        "scripts/oracmux_lib/pane.py": "2c967ee0b071feee355d42c94fa9090d8a9b176a5bcd633dcf2102b59b6558d7",
+        "scripts/oracmux_lib/pane_driver.py": "e3d1b647b8760fd319eaebcd29e22af7406cc1fa8bf652eece25bcf4390a6c34",
         "scripts/oracmux_lib/paths.py": "32e3dad9a83a584c8b1b4fc02613c29695a0dc9684addab8e1a54522c47b4ebf",
         "scripts/oracmux_lib/report.py": "27d3e3231aac9f57cb316888336328470676d835bcd3c8dabad37dec8c3c89be",
         "scripts/oracmux_lib/run.py": "b679da53e93c6f91497ba2edd6134c12b7ec922751e2a36bfbe9a19d3eaca3a6",
@@ -104,9 +104,9 @@
         "scripts/tests/test_engines.py": "39060a29adfd6d2358a20d14d579f230652c30210604ad31c72ddd4ce2528771",
         "scripts/tests/test_guard.py": "7002ab2e77ae2d5c004c549d55bb4fd66221ba441ca730fcda61d6893eceb7a3",
         "scripts/tests/test_guard_hardening.py": "e03b2d8a653a335a15d23a3484ca29ab2d6709bebc821b15c766992d29283def",
-        "scripts/tests/test_lanes.py": "b15a5aea44b6cc78afd98d3b29d6db1b38d1138556e63d14513c1d1db132a1df",
+        "scripts/tests/test_lanes.py": "65fa928c53050d44763853af83fbfc388e32b0396c80e0e3f39ea0bf0fe2224e",
         "scripts/tests/test_ledger.py": "42c7b0e83f4907a70afba9651b7012872ea3eecf7787520432fadaefecd29b8c",
-        "scripts/tests/test_pane_lane.py": "9c65c0a0a6b3cc5b6133b0b666f5217487f6ba16c0724a13112fa4137b8f5e54",
+        "scripts/tests/test_pane_lane.py": "c7fa87b642411a8f27ead5506b4bd9caf470cd032cc1a2a70143f15c692e1040",
         "scripts/tests/test_run_and_report.py": "fd194d116c73c5699dfec8fd7c9d7d13b64766ae3660b1172ab09ad50e744244",
         "scripts/tests/test_watcher.py": "1d60737fefa7732d649a48e6b8b5c70b16aba10622f6a0c475fe771491d204a7"
       }

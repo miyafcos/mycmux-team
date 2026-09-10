@@ -10,7 +10,6 @@ describe("cross-review residue removal", () => {
   it("keeps work completion out of notification UI", () => {
     expect(source("src/components/workspace/TerminalPane.tsx"))
       .not.toMatch(/const notificationCount[\s\S]*?workDoneCount/);
-    expect(source("src/components/layout/NotificationPanel.tsx")).not.toContain("workDoneCount");
   });
 
   it("removes obsolete workspace metadata and agent-dot selectors", () => {

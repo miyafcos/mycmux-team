@@ -102,9 +102,43 @@ export function usageColor(pct: number): string {
 
 /** The bar carries the healthy colour that the number gives up. */
 export function usageBarColor(pct: number): string {
-  if (pct >= 95) return "var(--cmux-usage-danger)";
-  if (pct >= 80) return "var(--cmux-usage-warn)";
+  if (pct >= USAGE_DANGER_PCT) return "var(--cmux-usage-danger)";
+  if (pct >= USAGE_ATTENTION_PCT) return "var(--cmux-usage-warn)";
   return "var(--cmux-usage-ok)";
+}
+
+/** Where a window stops being background noise and starts being a deadline. */
+export const USAGE_ATTENTION_PCT = 80;
+/** Where it stops being a deadline and starts being a wall. */
+export const USAGE_DANGER_PCT = 95;
+
+/**
+ * The tightest window on a row, or null when it reports no numbers.
+ *
+ * A row can carry a five-hour and a seven-day window, and only the worse of the
+ * two decides whether the operator needs to look. A row in cooldown still holds
+ * its last good figures and counts; one that never had any does not.
+ */
+export function worstWindowPct(row: {
+  state: string;
+  five_hour: WindowStat | null;
+  seven_day: WindowStat | null;
+}): number | null {
+  const usable = row.state === "ok" || row.state === "cooldown";
+  if (!usable) return null;
+  const values = [row.five_hour?.pct, row.seven_day?.pct].filter(
+    (pct): pct is number => typeof pct === "number",
+  );
+  return values.length > 0 ? Math.max(...values) : null;
+}
+
+/** Whether a row is close enough to its limit to earn full detail. */
+export function rowIsPressed(
+  row: { state: string; five_hour: WindowStat | null; seven_day: WindowStat | null } | undefined,
+): boolean {
+  if (!row) return false;
+  const worst = worstWindowPct(row);
+  return worst !== null && worst >= USAGE_ATTENTION_PCT;
 }
 
 export function resetHint(stat: WindowStat | null): string | undefined {
