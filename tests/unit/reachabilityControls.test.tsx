@@ -16,13 +16,15 @@ import { TERMINAL_SEARCH_EVENT } from "../../src/components/terminal/XTermWrappe
 import { useSessionAttentionStore } from "../../src/stores/sessionAttentionStore";
 import ToastHost from "../../src/components/common/ToastHost";
 import CrsmPalette from "../../src/components/CommandPalette/CrsmPalette";
-import { terminalPaneStrings, toastStrings, resumeStrings } from "../../src/components/workspace/terminalPaneStrings";
+import { paneToolbarStrings, terminalPaneStrings, toastStrings, resumeStrings } from "../../src/components/workspace/terminalPaneStrings";
 import { useWorkspaceListStore, useWorkspaceLayoutStore, usePaneMetadataStore, useUiStore } from "../../src/stores/workspaceStore";
 import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useToastStore } from "../../src/stores/toastStore";
 import { popClosedPane, pushClosedTab } from "../../src/stores/closedPaneStore";
 import { TAB_RESTORE_CLOSED_EVENT } from "../../src/components/layout/tabSweep";
 import { focusController } from "../../src/lib/focusController";
+import { formatShortcutLabel } from "../../src/lib/keybindings";
+import { useKeybindingStore } from "../../src/stores/keybindingStore";
 import { crsmListSessions } from "../../src/lib/ipc";
 import type { Pane, Workspace } from "../../src/types";
 
@@ -120,7 +122,7 @@ describe("reachability controls", () => {
     const items = [...host.querySelectorAll<HTMLButtonElement>("[role='menuitem']")];
     expect(document.activeElement).toBe(items[0]);
     expect(items[0].type).toBe("button");
-    expect(items[1].textContent).toBe("Split down");
+    expect(items[1].textContent).toBe(paneToolbarStrings.splitDown);
     await key("ArrowDown");
     expect(document.activeElement).toBe(items[1]);
     await key("Enter");
@@ -277,7 +279,11 @@ describe("reachability controls", () => {
       const header = host.querySelector<HTMLButtonElement>(`button[aria-label='${terminalPaneStrings.searchTerminal}']`);
       expect(Boolean(header)).toBe(barWidth >= 360);
       if (header) {
-        expect(header.title).toBe(terminalPaneStrings.searchTerminalTitle);
+        // The tooltip now carries the live binding, so it reads ⇧⌘F on macOS
+        // instead of the Ctrl spelling that was hardcoded here.
+        expect(header.title).toBe(terminalPaneStrings.searchTerminalTitle(
+          formatShortcutLabel(useKeybindingStore.getState().keybindings["terminal.search"]),
+        ));
         await click(header);
         expect(search).toHaveBeenCalledOnce();
         expect((search.mock.calls[0][0] as CustomEvent).detail).toEqual({ sessionId: "session-a" });

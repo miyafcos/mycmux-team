@@ -8,6 +8,9 @@ import { aggregatePetTier, classifyPetTier, petSpriteStateFor } from "../../lib/
 import { useTerminalObservationStore } from "../../stores/terminalObservationStore";
 import { clampMenuPosition } from "../../lib/menuPosition";
 import { workspaceTabCount, workspaceTabPreview } from "../../lib/workspaceRow";
+import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
+import type { PaneMetadata, PaneVolatileMetadata } from "../../stores/paneMetadataStore";
+import { sidebarStrings } from "../../lib/sidebarStrings";
 import {
   isAttentionUnseen,
   summarizeUnseenAttention,
@@ -119,7 +122,7 @@ const workspaceContextMenuStyle: CSSProperties = {
   boxShadow: "var(--cmux-shadow-pane-menu)",
   minWidth: 176,
   fontSize: 13,
-  fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+  fontFamily: "var(--cmux-font-ui)",
 };
 
 function WorkspaceContextMenuItem({ children, onClick }: { children: ReactNode; onClick: () => void }) {
@@ -289,8 +292,14 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
 
   let totalWsNotifications = 0;
   const attentionBySession: Record<string, SessionAttention | undefined> = {};
+  // The sidebar names a tab the way its own pane tab bar does. Both need the
+  // process title and cwd, which live per session rather than on the tab.
+  const metadataBySession: Record<string, PaneMetadata | undefined> = {};
+  const volatileMetadataBySession: Record<string, PaneVolatileMetadata | undefined> = {};
   sessionIds.forEach((sessionId, index) => {
     attentionBySession[sessionId] = tabAttention[index];
+    metadataBySession[sessionId] = tabMetadata[index];
+    volatileMetadataBySession[sessionId] = tabVolatileMetadata[index];
     totalWsNotifications += tabMetadata[index]?.notificationCount ?? 0;
   });
   // A background workspace holding an unread error/approval used to look idle
@@ -323,7 +332,8 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
     });
   })));
 
-  const tabPreview = workspaceTabPreview(ws);
+  const tabPreview = workspaceTabPreview(ws, (tab, isTabActive) =>
+    getTabDisplayLabel(tab, isTabActive, metadataBySession, volatileMetadataBySession));
   const isDragged = draggingRef.current && dragIndex === wsIndex;
   const showLine = draggingRef.current && dropIndex === wsIndex && dragIndex !== wsIndex;
   const isPaneDropHover = paneDragActive && hoverWorkspaceId === ws.id;
@@ -611,7 +621,12 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
     >
       <div
         style={{
-          padding: "10px 12px 6px 16px",
+          // The pane tab bar is a 36px row plus its 1px rule, so 37 lands this
+          // heading's rule on exactly the same scanline. Measured on the Mac
+          // they ended 7px apart, which read as two panels built separately.
+          height: 37,
+          boxSizing: "border-box",
+          padding: "0 12px 0 16px",
           borderBottom: "1px solid var(--cmux-border-hairline)",
           display: "flex",
           justifyContent: "space-between",
@@ -619,10 +634,10 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
           color: "var(--cmux-text-tertiary)",
           fontSize: 11,
           fontWeight: 600,
-          letterSpacing: 0,
+          letterSpacing: "0.02em",
         }}
       >
-        <span>Workspaces</span>
+        <span>{sidebarStrings.workspacesHeading}</span>
         <span>{workspaces.length}</span>
       </div>
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", paddingTop: 4 }}>
@@ -661,7 +676,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
         type="button"
         data-dnd-new-workspace-target="true"
         onClick={onNewWorkspace}
-        title={`New workspace (${newWorkspaceShortcut})`}
+        title={`${sidebarStrings.newWorkspace} (${newWorkspaceShortcut})`}
         className={`tab-new-workspace-btn${uiVariant === "cmux" ? " cmux-title-btn" : ""}`}
         data-pane-drag-active={paneDragActive ? "true" : undefined}
         style={{
@@ -680,7 +695,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
           cursor: "pointer",
           padding: "10px 16px",
           fontSize: 12,
-          fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+          fontFamily: "var(--cmux-font-ui)",
           textAlign: "left",
           flexShrink: 0,
           outline: newWorkspaceDropActive ? "1px solid var(--cmux-accent)" : "1px solid transparent",
@@ -691,7 +706,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
         }}
       >
         <PlusIcon />
-        <span>New workspace</span>
+        <span>{sidebarStrings.newWorkspace}</span>
       </button>
 
       {tearOutReady && <TearOutBanner label={`⬈ ${paneDndStrings.dropInNewWindow}`} />}

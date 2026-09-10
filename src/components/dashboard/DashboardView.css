@@ -48,7 +48,7 @@
 
 .cmux-dashboard-shell { display: flex; min-height: 0; flex: 1; overflow: hidden; }
 
-.cmux-dash-list { display: flex; width: var(--dashboard-session-list-width, 256px); min-height: 0; flex: 0 0 var(--dashboard-session-list-width, 256px); flex-direction: column; overflow: hidden; border-right: 1px solid var(--cmux-border-hairline); padding: 8px; background: var(--cmux-surface); transition: width .2s ease; }
+.cmux-dash-list { display: flex; width: var(--dashboard-session-list-width, 256px); min-height: 0; flex: 0 0 var(--dashboard-session-list-width, 256px); flex-direction: column; overflow: hidden; border-right: 1px solid var(--cmux-border-hairline); padding: 8px; background: var(--cmux-surface); transition: width .2s var(--cmux-ease); }
 .cmux-dash-list-toolbar { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
 .cmux-dash-list-toggle { flex: 0 0 auto; border: 0; border-radius: var(--cmux-radius-sm); padding: 4px 6px; background: transparent; color: var(--cmux-text-secondary); font: inherit; font-size: var(--cmux-font-size-xs); white-space: nowrap; cursor: pointer; }
 .cmux-dash-list-toggle:hover { background: var(--cmux-hover); color: var(--cmux-text); }

@@ -153,7 +153,7 @@ export function SavepointsTab({ onOpen }: SavepointsTabProps) {
               style={{
                 display: "block",
                 color: "var(--cmux-text)",
-                fontFamily: "Menlo, Consolas, monospace",
+                fontFamily: "var(--cmux-font-mono)",
                 fontSize: 11,
                 lineHeight: 1.6,
                 overflowWrap: "anywhere",
@@ -188,7 +188,7 @@ export function SavepointsTab({ onOpen }: SavepointsTabProps) {
                 display: "block",
                 marginBottom: 7,
                 color: "var(--cmux-text)",
-                fontFamily: "Menlo, Consolas, monospace",
+                fontFamily: "var(--cmux-font-mono)",
                 fontSize: 11,
                 lineHeight: 1.6,
                 overflowWrap: "anywhere",

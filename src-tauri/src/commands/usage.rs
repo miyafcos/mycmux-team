@@ -310,9 +310,12 @@ pub async fn get_account_usage(
         }
         let source = if row.is_active {
             match row.provider {
+                // macOS keeps Claude's credentials in the login keychain rather
+                // than in a file, so reading the path straight left every Mac
+                // showing an em dash where the plan usage belongs.
                 CliProvider::Claude => ClaudePaths::resolve()
                     .ok()
-                    .and_then(|paths| std::fs::read_to_string(paths.credentials).ok()),
+                    .and_then(|paths| claude::read_credentials(&paths)),
                 CliProvider::Codex => CodexPaths::resolve()
                     .ok()
                     .and_then(|paths| std::fs::read_to_string(paths.auth).ok()),
@@ -325,9 +328,12 @@ pub async fn get_account_usage(
             snapshot_text(&base, &row.profile_id, row.provider)
         } else {
             match row.provider {
+                // macOS keeps Claude's credentials in the login keychain rather
+                // than in a file, so reading the path straight left every Mac
+                // showing an em dash where the plan usage belongs.
                 CliProvider::Claude => ClaudePaths::resolve()
                     .ok()
-                    .and_then(|paths| std::fs::read_to_string(paths.credentials).ok()),
+                    .and_then(|paths| claude::read_credentials(&paths)),
                 CliProvider::Codex => CodexPaths::resolve()
                     .ok()
                     .and_then(|paths| std::fs::read_to_string(paths.auth).ok()),

@@ -88,7 +88,13 @@ function editorCss(sourceKind: ArtifactSourceKind | undefined): string {
       box-sizing: border-box;
       background: #dfe4eb;
       color: #1f2937;
-      font-family: Aptos, "Yu Gothic", Meiryo, "Segoe UI", sans-serif;
+      /* Word's own stack first, so a document looks like itself where those
+         fonts exist. None of the four is on a Mac without Office installed
+         — checked on 2026-09-10, only Times New Roman was there — and the
+         bare sans-serif that followed dropped Japanese onto whatever the
+         system picked. Hiragino is what Word for Mac uses for Japanese, so
+         it is the honest stand-in rather than a guess. */
+      font-family: Aptos, "Yu Gothic", Meiryo, "Segoe UI", "Hiragino Sans", "Helvetica Neue", sans-serif;
       font-size: 12pt;
       line-height: 1.55;
     }
@@ -156,7 +162,11 @@ function editorCss(sourceKind: ArtifactSourceKind | undefined): string {
       border-radius: 4px;
       background: #eff6ff;
       color: #1d4ed8;
-      font-family: "Cambria Math", "Times New Roman", serif;
+      /* Cambria Math is Windows-only; Times New Roman ships with macOS, so
+         the fallback already lands somewhere reasonable. Hiragino Mincho
+         catches any Japanese inside an equation, which neither of the
+         first two covers. */
+      font-family: "Cambria Math", "Times New Roman", "Hiragino Mincho ProN", serif;
       font-style: italic;
       white-space: pre-wrap;
     }
@@ -943,9 +953,12 @@ function BrowserPaneImpl({
             flex: "0 0 auto",
             padding: "6px 10px",
             fontSize: 12,
-            color: "#fecaca",
-            background: "rgba(127, 29, 29, 0.6)",
-            borderBottom: "1px solid rgba(248, 113, 113, 0.28)",
+            // Mixed from the theme's error colour rather than pinned to one
+            // palette's idea of red, so the strip stays legible on a light theme
+            // instead of putting pale pink on dark maroon wherever it lands.
+            color: "var(--status-error)",
+            background: "color-mix(in srgb, var(--status-error) 18%, var(--cmux-surface))",
+            borderBottom: "1px solid color-mix(in srgb, var(--status-error) 35%, transparent)",
           }}
         >
           {error}
@@ -977,10 +990,15 @@ function BrowserPaneImpl({
             outline: "none",
             resize: "none",
             padding: "18px 22px",
-            background: "#0f172a",
-            color: "#e5edf7",
-            caretColor: "#60a5fa",
-            fontFamily: "Consolas, 'Cascadia Mono', 'Yu Gothic UI', monospace",
+            // Consolas, Cascadia Mono and Yu Gothic UI are all Windows fonts.
+            // None exists on macOS, so this editor fell through to the generic
+            // monospace — the same failure the terminal had, still sitting here
+            // after that one was fixed. --cmux-font-mono leads with the face
+            // bundled with the app, so it resolves identically everywhere.
+            background: "var(--cmux-bg-solid)",
+            color: "var(--cmux-text)",
+            caretColor: "var(--cmux-accent)",
+            fontFamily: "var(--cmux-font-mono)",
             fontSize: 14,
             lineHeight: 1.65,
             tabSize: 2,

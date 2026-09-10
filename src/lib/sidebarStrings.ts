@@ -3,4 +3,6 @@
 // and must not add new non-ASCII literals elsewhere.
 export const sidebarStrings = {
   resizerLabel: "サイドバーの幅を変更",
+  workspacesHeading: "ワークスペース",
+  newWorkspace: "新しいワークスペース",
 } as const;

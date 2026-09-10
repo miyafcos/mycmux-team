@@ -61,7 +61,7 @@ describe("MarkdownView", () => {
 
     const scroll = container.querySelector<HTMLElement>(".cmux-dashboard-markdown-table-scroll");
     const table = scroll?.querySelector("table");
-    expect(scroll?.getAttribute("aria-label")).toBe("Markdown table");
+    expect(scroll?.getAttribute("aria-label")).toBe("表");
     expect(table).not.toBeNull();
     expect(table?.querySelectorAll("thead th")).toHaveLength(3);
     expect(table?.querySelectorAll("tbody tr")).toHaveLength(1);

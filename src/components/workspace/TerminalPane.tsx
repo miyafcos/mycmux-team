@@ -434,7 +434,13 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     : isActive
       ? "var(--cmux-accent, rgba(10, 132, 255, 0.7))"
       : "transparent";
-  const borderWidth = isActive && !isZoomed ? 2 : 1;
+  // Depth instead of a thicker line: a ring just inside the edge, and a soft
+  // spread outside it. The border itself stays 1px at every state so nothing
+  // steps as focus moves between panes.
+  const focusGlow = isActive && !isZoomed
+    ? "inset 0 0 0 1px color-mix(in srgb, var(--cmux-accent) 55%, transparent),"
+      + " 0 0 0 3px color-mix(in srgb, var(--cmux-accent) 12%, transparent)"
+    : "none";
 
 
   const activatePane = useCallback((options: PaneActivationOptions = {}) => {
@@ -796,8 +802,8 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         flexDirection: "column",
         overflow: "hidden",
         background: "transparent",
-        ["--pane-border-width" as string]: `${borderWidth}px`,
         ["--pane-border-color" as string]: borderColor,
+        ["--pane-focus-glow" as string]: focusGlow,
       } as React.CSSProperties & Record<string, string>}
     >
       <PaneTabBar

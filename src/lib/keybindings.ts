@@ -38,54 +38,64 @@ export type KeybindingActionId =
   | "composer.focus"
   | "crsm.palette";
 
+export type KeybindingCategory = "Global" | "Workspace" | "Pane" | "Terminal";
+
 export interface KeybindingDefinition {
   action: KeybindingActionId;
   title: string;
-  category: "Global" | "Workspace" | "Pane" | "Terminal";
+  category: KeybindingCategory;
   defaultShortcut: string;
 }
 
+/** The category stays an English key; only its printed name is translated. */
+export const KEYBINDING_CATEGORY_LABEL: Record<KeybindingCategory, string> = {
+  Global: "全体",
+  Workspace: "ワークスペース",
+  Pane: "ペイン",
+  Terminal: "ターミナル",
+};
+
 export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
-  { action: "sidebar.toggle", title: "Toggle sidebar", category: "Global", defaultShortcut: "ctrl+b" },
-  { action: "settings.keybindings", title: "Open keyboard shortcuts", category: "Global", defaultShortcut: "ctrl+," },
-  { action: "crsm.palette", title: "Open Resume", category: "Global", defaultShortcut: "ctrl+p" },
+  { action: "sidebar.toggle", title: "サイドバーの表示切り替え", category: "Global", defaultShortcut: "ctrl+b" },
+  { action: "settings.keybindings", title: "キーボードショートカットを開く", category: "Global", defaultShortcut: "ctrl+," },
+  { action: "crsm.palette", title: "セッションを続きから開く", category: "Global", defaultShortcut: "ctrl+p" },
   { action: "tab.sweep", title: "タブ掃除を開く", category: "Global", defaultShortcut: "ctrl+shift+k" },
-  { action: "dashboard.open", title: "Open dashboard", category: "Global", defaultShortcut: "ctrl+shift+g" },
+  { action: "dashboard.open", title: "ダッシュボードを開く", category: "Global", defaultShortcut: "ctrl+shift+g" },
   { action: "dashboard.column.prev", title: "ダッシュボードの左の列へ", category: "Global", defaultShortcut: "ctrl+shift+arrowleft" },
   { action: "dashboard.column.next", title: "ダッシュボードの右の列へ", category: "Global", defaultShortcut: "ctrl+shift+arrowright" },
   { action: "dashboard.column.close", title: "ダッシュボードの列を閉じる", category: "Global", defaultShortcut: "ctrl+shift+backspace" },
   { action: "dashboard.column.pin", title: "ダッシュボードの列を固定", category: "Global", defaultShortcut: "ctrl+shift+p" },
 
-  { action: "workspace.new", title: "New workspace", category: "Workspace", defaultShortcut: "ctrl+shift+n" },
-  { action: "workspace.new.advanced", title: "New workspace (choose agents)", category: "Workspace", defaultShortcut: "ctrl+shift+alt+n" },
-  { action: "workspace.next", title: "Next workspace", category: "Workspace", defaultShortcut: "ctrl+tab" },
-  { action: "workspace.prev", title: "Previous workspace", category: "Workspace", defaultShortcut: "ctrl+shift+tab" },
-  { action: "workspace.close", title: "Close workspace", category: "Workspace", defaultShortcut: "ctrl+shift+w" },
-  { action: "workspace.jump.1", title: "Jump to workspace 1", category: "Workspace", defaultShortcut: "ctrl+1" },
-  { action: "workspace.jump.2", title: "Jump to workspace 2", category: "Workspace", defaultShortcut: "ctrl+2" },
-  { action: "workspace.jump.3", title: "Jump to workspace 3", category: "Workspace", defaultShortcut: "ctrl+3" },
-  { action: "workspace.jump.4", title: "Jump to workspace 4", category: "Workspace", defaultShortcut: "ctrl+4" },
-  { action: "workspace.jump.5", title: "Jump to workspace 5", category: "Workspace", defaultShortcut: "ctrl+5" },
-  { action: "workspace.jump.6", title: "Jump to workspace 6", category: "Workspace", defaultShortcut: "ctrl+6" },
-  { action: "workspace.jump.7", title: "Jump to workspace 7", category: "Workspace", defaultShortcut: "ctrl+7" },
-  { action: "workspace.jump.8", title: "Jump to workspace 8", category: "Workspace", defaultShortcut: "ctrl+8" },
-  { action: "workspace.jump.9", title: "Jump to last workspace", category: "Workspace", defaultShortcut: "ctrl+9" },
+  { action: "workspace.new", title: "新しいワークスペース", category: "Workspace", defaultShortcut: "ctrl+shift+n" },
+  { action: "workspace.new.advanced", title: "新しいワークスペース (エージェントを選ぶ)", category: "Workspace", defaultShortcut: "ctrl+shift+alt+n" },
+  { action: "workspace.next", title: "次のワークスペース", category: "Workspace", defaultShortcut: "ctrl+tab" },
+  { action: "workspace.prev", title: "前のワークスペース", category: "Workspace", defaultShortcut: "ctrl+shift+tab" },
+  { action: "workspace.close", title: "ワークスペースを閉じる", category: "Workspace", defaultShortcut: "ctrl+shift+w" },
+  { action: "workspace.jump.1", title: "ワークスペース 1 へ", category: "Workspace", defaultShortcut: "ctrl+1" },
+  { action: "workspace.jump.2", title: "ワークスペース 2 へ", category: "Workspace", defaultShortcut: "ctrl+2" },
+  { action: "workspace.jump.3", title: "ワークスペース 3 へ", category: "Workspace", defaultShortcut: "ctrl+3" },
+  { action: "workspace.jump.4", title: "ワークスペース 4 へ", category: "Workspace", defaultShortcut: "ctrl+4" },
+  { action: "workspace.jump.5", title: "ワークスペース 5 へ", category: "Workspace", defaultShortcut: "ctrl+5" },
+  { action: "workspace.jump.6", title: "ワークスペース 6 へ", category: "Workspace", defaultShortcut: "ctrl+6" },
+  { action: "workspace.jump.7", title: "ワークスペース 7 へ", category: "Workspace", defaultShortcut: "ctrl+7" },
+  { action: "workspace.jump.8", title: "ワークスペース 8 へ", category: "Workspace", defaultShortcut: "ctrl+8" },
+  { action: "workspace.jump.9", title: "最後のワークスペースへ", category: "Workspace", defaultShortcut: "ctrl+9" },
 
-  { action: "pane.focus.left", title: "Focus pane left", category: "Pane", defaultShortcut: "ctrl+alt+arrowleft" },
-  { action: "pane.focus.right", title: "Focus pane right", category: "Pane", defaultShortcut: "ctrl+alt+arrowright" },
-  { action: "pane.focus.up", title: "Focus pane up", category: "Pane", defaultShortcut: "ctrl+alt+arrowup" },
-  { action: "pane.focus.down", title: "Focus pane down", category: "Pane", defaultShortcut: "ctrl+alt+arrowdown" },
-  { action: "pane.split.right", title: "Split pane right", category: "Pane", defaultShortcut: "ctrl+alt+d" },
-  { action: "pane.split.down", title: "Split pane down", category: "Pane", defaultShortcut: "ctrl+alt+shift+d" },
-  { action: "pane.close", title: "Close active pane", category: "Pane", defaultShortcut: "ctrl+alt+w" },
-  { action: "pane.reopen", title: "Reopen closed pane", category: "Pane", defaultShortcut: "ctrl+shift+t" },
-  { action: "pane.zoom.toggle", title: "Toggle pane zoom", category: "Pane", defaultShortcut: "ctrl+shift+enter" },
-  { action: "pane.tab.next", title: "Next tab in pane", category: "Pane", defaultShortcut: "ctrl+alt+pagedown" },
-  { action: "pane.tab.prev", title: "Previous tab in pane", category: "Pane", defaultShortcut: "ctrl+alt+pageup" },
-  { action: "pane.attention.next", title: "Next attention", category: "Pane", defaultShortcut: "ctrl+alt+a" },
-  { action: "pane.tab.pin.toggle", title: "アクティブタブをピン留め", category: "Pane", defaultShortcut: "ctrl+alt+p" },
+  { action: "pane.focus.left", title: "左のペインへ", category: "Pane", defaultShortcut: "ctrl+alt+arrowleft" },
+  { action: "pane.focus.right", title: "右のペインへ", category: "Pane", defaultShortcut: "ctrl+alt+arrowright" },
+  { action: "pane.focus.up", title: "上のペインへ", category: "Pane", defaultShortcut: "ctrl+alt+arrowup" },
+  { action: "pane.focus.down", title: "下のペインへ", category: "Pane", defaultShortcut: "ctrl+alt+arrowdown" },
+  { action: "pane.split.right", title: "ペインを右に分割", category: "Pane", defaultShortcut: "ctrl+alt+d" },
+  { action: "pane.split.down", title: "ペインを下に分割", category: "Pane", defaultShortcut: "ctrl+alt+shift+d" },
+  { action: "pane.close", title: "アクティブなペインを閉じる", category: "Pane", defaultShortcut: "ctrl+alt+w" },
+  { action: "pane.reopen", title: "閉じたペインを開き直す", category: "Pane", defaultShortcut: "ctrl+shift+t" },
+  { action: "pane.zoom.toggle", title: "ペインの最大化を切り替え", category: "Pane", defaultShortcut: "ctrl+shift+enter" },
+  { action: "pane.tab.next", title: "ペイン内の次のタブ", category: "Pane", defaultShortcut: "ctrl+alt+pagedown" },
+  { action: "pane.tab.prev", title: "ペイン内の前のタブ", category: "Pane", defaultShortcut: "ctrl+alt+pageup" },
+  { action: "pane.attention.next", title: "次の要対応へ", category: "Pane", defaultShortcut: "ctrl+alt+a" },
+  { action: "pane.tab.pin.toggle", title: "アクティブタブを固定", category: "Pane", defaultShortcut: "ctrl+alt+p" },
 
-  { action: "terminal.search", title: "Find in terminal", category: "Terminal", defaultShortcut: "ctrl+shift+f" },
+  { action: "terminal.search", title: "端末内を検索", category: "Terminal", defaultShortcut: "ctrl+shift+f" },
   // Not ctrl+shift+i: that is the WebView's own DevTools shortcut.
   { action: "composer.focus", title: "ペインの入力欄へ移動", category: "Terminal", defaultShortcut: "ctrl+alt+i" },
 

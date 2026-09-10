@@ -30,6 +30,23 @@ TERMINAL_ACTIONS = {"mark_lost", "escalate", "block"}
 #: stuck is re-reported on the documented 30 minute cadence, not every cycle.
 TERMINAL_TTL_SEC = 1800
 
+
+def has_done_marker(directory):
+    """True when a dispatch left any completion marker in its folder.
+
+    The test used to be the literal name DONE.md. Fan-out runs write one marker
+    per lane (DONE_01.md ... DONE_99.md), so every lane of such a run looked
+    unfinished and its normal close was reported as a lost tab: 76 of the 109
+    guard cards ever raised were tab_gone (2026-09-10 queue audit).
+    """
+    try:
+        if (directory / "DONE.md").is_file():
+            return True
+        return any(path.is_file() for path in directory.glob("DONE*.md"))
+    except OSError:
+        return False
+
+
 class Singleton:
     """Readable PID lease. A short claim lock serializes writers, never guard.lock readers."""
     def __init__(self, root):
@@ -304,7 +321,7 @@ class Guard:
                         obs.transcript_age_s, obs.turn_ended = transcript_observation(path)
                     if active and not obs.turn_ended:
                         idle_since = now
-                    obs.done_exists = bool(child.get("dir")) and (Path(child.get("dir")) / "DONE.md").is_file()
+                    obs.done_exists = bool(child.get("dir")) and has_done_marker(Path(child.get("dir")))
                     # On alert service failure fail closed for idle nudges.
                     obs.pending_ask = asks is None or sid in asks
                 if (obs.pending_send and (not active or obs.turn_ended) and

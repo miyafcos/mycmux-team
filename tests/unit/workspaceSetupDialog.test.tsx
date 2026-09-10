@@ -12,6 +12,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import WorkspaceSetup, { type WorkspaceSetupResult } from "../../src/components/setup/WorkspaceSetup";
 import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
+import { setupStrings } from "../../src/components/setup/setupStrings";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }));
 
@@ -84,7 +85,7 @@ function effortSelect(index = 0): HTMLSelectElement {
 
 function clickLaunch() {
   const launch = Array.from(container.querySelectorAll("button")).find(
-    (button) => button.textContent === "Launch",
+    (button) => button.textContent === setupStrings.launch,
   );
   if (!launch) throw new Error("Launch button is missing");
   act(() => {

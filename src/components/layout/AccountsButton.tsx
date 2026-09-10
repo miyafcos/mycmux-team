@@ -115,8 +115,7 @@ export function AccountsButton({ onOpenUsageSettings }: { onOpenUsageSettings: (
           color: "var(--cmux-text-secondary)",
           cursor: "pointer",
           fontSize: "var(--cmux-font-size-xs)",
-          fontFamily:
-            "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+          fontFamily: "var(--cmux-font-ui)",
           whiteSpace: "nowrap",
           overflow: "hidden",
         }}

@@ -183,7 +183,7 @@ export function RemoteTab() {
               />
               <div
                 style={{
-                  fontFamily: "Menlo, Consolas, monospace",
+                  fontFamily: "var(--cmux-font-mono)",
                   fontSize: 11,
                   lineHeight: 1.45,
                   wordBreak: "break-all",
@@ -230,7 +230,7 @@ export function RemoteTab() {
               </div>
               <div
                 style={{
-                  fontFamily: "Menlo, Consolas, monospace",
+                  fontFamily: "var(--cmux-font-mono)",
                   fontSize: 11,
                   lineHeight: 1.45,
                   wordBreak: "break-all",
@@ -277,7 +277,7 @@ export function RemoteTab() {
                     style={{
                       gridColumn: "1 / -1",
                       color: "var(--cmux-text-dim)",
-                      fontFamily: "Menlo, Consolas, monospace",
+                      fontFamily: "var(--cmux-font-mono)",
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                       whiteSpace: "nowrap",

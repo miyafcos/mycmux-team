@@ -24,6 +24,7 @@ import {
   X,
 } from "lucide-react";
 import type { ArtifactSourceKind } from "../../types";
+import { artifactEditorStrings } from "./artifactEditorStrings";
 
 export type ArtifactEditorCommand =
   | "bold"
@@ -264,7 +265,17 @@ function buttonStyle(variant: ButtonVariant, disabled?: boolean, withLabel?: boo
 }
 
 function statusStyle(isDirty: boolean, isEditing: boolean, isBusy: boolean): CSSProperties {
-  const color = isBusy ? "#f59e0b" : isDirty ? "#ef4444" : isEditing ? "#0a84ff" : "#22c55e";
+  // The literals these replace were the theme's own status colours copied by
+  // hand: #f59e0b and #ef4444 matched exactly, #0a84ff was the default accent.
+  // Copies do not follow a theme change, so on any palette but the default
+  // these four dots drifted away from every other status mark in the app.
+  const color = isBusy
+    ? "var(--status-waiting)"
+    : isDirty
+      ? "var(--status-error)"
+      : isEditing
+        ? "var(--cmux-accent)"
+        : "var(--status-done)";
   return {
     flex: "0 0 auto",
     height: 22,
@@ -360,32 +371,32 @@ function StatusPill({
   const iconSize = 13;
   if (isBusy) {
     return (
-      <span style={statusStyle(isDirty, isEditing, isBusy)} title="Working">
+      <span style={statusStyle(isDirty, isEditing, isBusy)} title={artifactEditorStrings.statusBusy}>
         <Loader2 size={iconSize} />
-        Working
+        {artifactEditorStrings.statusBusyPill}
       </span>
     );
   }
   if (isDirty) {
     return (
-      <span style={statusStyle(isDirty, isEditing, isBusy)} title="Unsaved edits">
-        <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", background: "#ef4444" }} />
-        Unsaved
+      <span style={statusStyle(isDirty, isEditing, isBusy)} title={artifactEditorStrings.statusDirty}>
+        <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--status-error)" }} />
+        {artifactEditorStrings.statusDirtyPill}
       </span>
     );
   }
   if (isEditing) {
     return (
-      <span style={statusStyle(isDirty, isEditing, isBusy)} title="Editing">
-        <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", background: "#0a84ff" }} />
-        Editing
+      <span style={statusStyle(isDirty, isEditing, isBusy)} title={artifactEditorStrings.statusEditing}>
+        <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--cmux-accent)" }} />
+        {artifactEditorStrings.statusEditingPill}
       </span>
     );
   }
   return (
-    <span style={statusStyle(isDirty, isEditing, isBusy)} title="Preview mode">
-      <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", background: "#22c55e" }} />
-      Preview
+    <span style={statusStyle(isDirty, isEditing, isBusy)} title={artifactEditorStrings.statusPreview}>
+      <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--status-done)" }} />
+      {artifactEditorStrings.statusPreviewPill}
     </span>
   );
 }
@@ -417,12 +428,12 @@ function ArtifactEditorToolbarImpl({
         <div style={fileBlockStyle} title={sourcePath}>
           <span style={kindBadgeStyle}>{sourceKindLabel(sourceKind, sourcePath)}</span>
           <span style={fileNameStyle}>{name}</span>
-          <span style={parentPathStyle}>{parent || "No source file"}</span>
+          <span style={parentPathStyle}>{parent || artifactEditorStrings.noSourceFile}</span>
         </div>
         <StatusPill isDirty={isDirty} isEditing={isEditing} isBusy={isBusy} />
         <div style={actionsStyle}>
           <ToolbarButton
-            title={isEditing ? "Editing" : "Edit this artifact"}
+            title={isEditing ? artifactEditorStrings.statusEditing : artifactEditorStrings.startEdit}
             disabled={!canEdit || isBusy || isEditing}
             variant={isEditing ? "primary" : "default"}
             onClick={onStartEdit}
@@ -430,14 +441,14 @@ function ArtifactEditorToolbarImpl({
             <Pencil size={iconSize} />
           </ToolbarButton>
           <ToolbarButton
-            title="Open in the default desktop app"
+            title={artifactEditorStrings.openInDesktopApp}
             disabled={!sourcePath || isBusy}
             onClick={onOpenSource}
           >
             <ExternalLink size={iconSize} />
           </ToolbarButton>
           <ToolbarButton
-            title="Show document location"
+            title={artifactEditorStrings.showLocation}
             disabled={!sourcePath || isBusy}
             onClick={onRevealSource}
           >
@@ -448,7 +459,7 @@ function ArtifactEditorToolbarImpl({
 
       {isEditing && (
       <div style={commandRowStyle}>
-        <div style={groupStyle} role="group" aria-label="File actions">
+        <div style={groupStyle} role="group" aria-label={artifactEditorStrings.fileActions}>
           <span style={groupLabelStyle}>File</span>
           <ToolbarButton
             title={isDirty ? "Save changes to the source file" : "No changes to save"}
@@ -459,11 +470,11 @@ function ArtifactEditorToolbarImpl({
           >
             <Save size={iconSize} />
           </ToolbarButton>
-          <ToolbarButton title="Reload from disk" disabled={isBusy} onClick={onReload}>
+          <ToolbarButton title={artifactEditorStrings.reloadFromDisk} disabled={isBusy} onClick={onReload}>
             <RefreshCw size={iconSize} />
           </ToolbarButton>
           <ToolbarButton
-            title="Discard edits and leave edit mode"
+            title={artifactEditorStrings.discardEdits}
             disabled={isBusy}
             variant={isDirty ? "danger" : "default"}
             onClick={onCancel}
@@ -473,84 +484,84 @@ function ArtifactEditorToolbarImpl({
         </div>
 
         {!isSourceMode && <>
-        <div style={groupStyle} role="group" aria-label="Text formatting">
+        <div style={groupStyle} role="group" aria-label={artifactEditorStrings.textFormatting}>
           <span style={groupLabelStyle}>Text</span>
-          <ToolbarButton title="Bold" disabled={commandDisabled} onClick={() => onCommand("bold")}>
+          <ToolbarButton title={artifactEditorStrings.bold} disabled={commandDisabled} onClick={() => onCommand("bold")}>
             <Bold size={iconSize} />
           </ToolbarButton>
-          <ToolbarButton title="Italic" disabled={commandDisabled} onClick={() => onCommand("italic")}>
+          <ToolbarButton title={artifactEditorStrings.italic} disabled={commandDisabled} onClick={() => onCommand("italic")}>
             <Italic size={iconSize} />
           </ToolbarButton>
           <ToolbarSelect
-            title="Font family"
+            title={artifactEditorStrings.fontFamily}
             disabled={commandDisabled}
-            placeholder="Font"
+            placeholder={artifactEditorStrings.fontFamilyPlaceholder}
             options={FONT_FAMILY_OPTIONS}
             onChange={(value) => onCommand("fontFamily", value)}
           />
           <ToolbarSelect
-            title="Font size"
+            title={artifactEditorStrings.fontSize}
             disabled={commandDisabled}
-            placeholder="Size"
+            placeholder={artifactEditorStrings.fontSizePlaceholder}
             options={FONT_SIZE_OPTIONS.map((value) => ({ label: `${value} pt`, value }))}
             onChange={(value) => onCommand("fontSize", value)}
           />
         </div>
 
-        <div style={groupStyle} role="group" aria-label="Paragraph formatting">
+        <div style={groupStyle} role="group" aria-label={artifactEditorStrings.paragraphFormatting}>
           <span style={groupLabelStyle}>Para</span>
-          <ToolbarButton title="Align left" disabled={commandDisabled} onClick={() => onCommand("alignLeft")}>
+          <ToolbarButton title={artifactEditorStrings.alignLeft} disabled={commandDisabled} onClick={() => onCommand("alignLeft")}>
             <AlignLeft size={iconSize} />
           </ToolbarButton>
-          <ToolbarButton title="Align center" disabled={commandDisabled} onClick={() => onCommand("alignCenter")}>
+          <ToolbarButton title={artifactEditorStrings.alignCenter} disabled={commandDisabled} onClick={() => onCommand("alignCenter")}>
             <AlignCenter size={iconSize} />
           </ToolbarButton>
-          <ToolbarButton title="Align right" disabled={commandDisabled} onClick={() => onCommand("alignRight")}>
+          <ToolbarButton title={artifactEditorStrings.alignRight} disabled={commandDisabled} onClick={() => onCommand("alignRight")}>
             <AlignRight size={iconSize} />
           </ToolbarButton>
-          <ToolbarButton title="Outdent" disabled={commandDisabled} onClick={() => onCommand("outdent")}>
+          <ToolbarButton title={artifactEditorStrings.outdent} disabled={commandDisabled} onClick={() => onCommand("outdent")}>
             <ListIndentDecrease size={iconSize} />
           </ToolbarButton>
-          <ToolbarButton title="Indent" disabled={commandDisabled} onClick={() => onCommand("indent")}>
+          <ToolbarButton title={artifactEditorStrings.indent} disabled={commandDisabled} onClick={() => onCommand("indent")}>
             <ListIndentIncrease size={iconSize} />
           </ToolbarButton>
         </div>
 
-        <div style={groupStyle} role="group" aria-label="Document structure">
+        <div style={groupStyle} role="group" aria-label={artifactEditorStrings.documentStructure}>
           <span style={groupLabelStyle}>Struct</span>
-          <ToolbarButton title="Heading" disabled={commandDisabled} onClick={() => onCommand("heading")}>
+          <ToolbarButton title={artifactEditorStrings.heading} disabled={commandDisabled} onClick={() => onCommand("heading")}>
             <Heading2 size={iconSize} />
           </ToolbarButton>
-          <ToolbarButton title="Bullet list" disabled={commandDisabled} onClick={() => onCommand("bulletList")}>
+          <ToolbarButton title={artifactEditorStrings.bulletList} disabled={commandDisabled} onClick={() => onCommand("bulletList")}>
             <List size={iconSize} />
           </ToolbarButton>
-          <ToolbarButton title="Numbered list" disabled={commandDisabled} onClick={() => onCommand("numberedList")}>
+          <ToolbarButton title={artifactEditorStrings.numberedList} disabled={commandDisabled} onClick={() => onCommand("numberedList")}>
             <ListOrdered size={iconSize} />
           </ToolbarButton>
         </div>
 
-        <div style={groupStyle} role="group" aria-label="Insert">
+        <div style={groupStyle} role="group" aria-label={artifactEditorStrings.insert}>
           <span style={groupLabelStyle}>Insert</span>
-          <ToolbarButton title="Link" disabled={commandDisabled} onClick={() => onCommand("link")}>
+          <ToolbarButton title={artifactEditorStrings.link} disabled={commandDisabled} onClick={() => onCommand("link")}>
             <Link size={iconSize} />
           </ToolbarButton>
-          <ToolbarButton title="Equation" disabled={commandDisabled} onClick={() => onCommand("equation")}>
+          <ToolbarButton title={artifactEditorStrings.equation} disabled={commandDisabled} onClick={() => onCommand("equation")}>
             <Sigma size={iconSize} />
           </ToolbarButton>
         </div>
 
-        <div style={groupStyle} role="group" aria-label="Table editing">
+        <div style={groupStyle} role="group" aria-label={artifactEditorStrings.tableEditing}>
           <span style={groupLabelStyle}>Table</span>
-          <ToolbarButton title="Add row" disabled={commandDisabled} onClick={() => onCommand("addRow")}>
+          <ToolbarButton title={artifactEditorStrings.addRow} disabled={commandDisabled} onClick={() => onCommand("addRow")}>
             <Plus size={iconSize} />
           </ToolbarButton>
-          <ToolbarButton title="Add column" disabled={commandDisabled} onClick={() => onCommand("addColumn")}>
+          <ToolbarButton title={artifactEditorStrings.addColumn} disabled={commandDisabled} onClick={() => onCommand("addColumn")}>
             <Table size={iconSize} />
           </ToolbarButton>
-          <ToolbarButton title="Delete row" disabled={commandDisabled} onClick={() => onCommand("deleteRow")}>
+          <ToolbarButton title={artifactEditorStrings.deleteRow} disabled={commandDisabled} onClick={() => onCommand("deleteRow")}>
             <Minus size={iconSize} />
           </ToolbarButton>
-          <ToolbarButton title="Delete column" disabled={commandDisabled} onClick={() => onCommand("deleteColumn")}>
+          <ToolbarButton title={artifactEditorStrings.deleteColumn} disabled={commandDisabled} onClick={() => onCommand("deleteColumn")}>
             <X size={iconSize} />
           </ToolbarButton>
         </div>

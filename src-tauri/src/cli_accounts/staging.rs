@@ -74,6 +74,10 @@ pub fn claude_staging_paths(dir: &Path) -> ClaudePaths {
         } else {
             dir.join(".claude.json")
         },
+        // Staging is files on every platform: a CLAUDE_CONFIG_DIR pointed away
+        // from home starts unauthenticated and the CLI writes into it, so the
+        // keychain is not involved even on macOS.
+        store: super::claude::CredentialStore::File,
     }
 }
 
@@ -336,6 +340,7 @@ mod tests {
         let live_dir = tempdir().unwrap();
         let staging = tempdir().unwrap();
         let live = ClaudePaths {
+            store: super::claude::CredentialStore::File,
             credentials: live_dir.path().join(".credentials.json"),
             claude_json: live_dir.path().join(".claude.json"),
         };
@@ -371,6 +376,7 @@ mod tests {
         let live_dir = tempdir().unwrap();
         let staging = tempdir().unwrap();
         let live = ClaudePaths {
+            store: super::claude::CredentialStore::File,
             credentials: live_dir.path().join(".credentials.json"),
             claude_json: live_dir.path().join(".claude.json"),
         };

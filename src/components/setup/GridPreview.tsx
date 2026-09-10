@@ -58,7 +58,7 @@ export default function GridPreview({ template, selected, onClick }: GridPreview
         style={{
           fontSize: 10,
           color: selected ? "var(--cmux-accent-text)" : "var(--cmux-text-tertiary)",
-          fontFamily: "'JetBrains Mono', monospace",
+          fontFamily: "var(--cmux-font-ui)",
         }}
       >
         {template.label}

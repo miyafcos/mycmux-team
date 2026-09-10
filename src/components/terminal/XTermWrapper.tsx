@@ -54,6 +54,7 @@ import {
 } from "./terminalTurnMarkers";
 import { startsAsAgentTui } from "./agentTuiDetection";
 import { TerminalTranscriptPanel } from "./TerminalTranscriptPanel";
+import { terminalPaneStrings } from "../workspace/terminalPaneStrings";
 import {
   buildTurnListRows,
   createTurnChipVisibilityController,
@@ -3082,7 +3083,7 @@ export default memo(function XTermWrapper({
           alignItems: "center",
           boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
           color: "var(--cmux-text, #ededed)",
-          fontFamily: "'JetBrains Mono', monospace",
+          fontFamily: "var(--cmux-font-ui)",
           fontSize: 12
         }}>
           <input
@@ -3091,7 +3092,7 @@ export default memo(function XTermWrapper({
             value={searchQuery}
             onChange={handleSearchChange}
             onKeyDown={handleSearchKeyDown}
-            placeholder="Find..."
+            placeholder={terminalPaneStrings.searchPlaceholder}
             style={{
               background: "transparent",
               border: "none",

@@ -309,11 +309,50 @@ div:focus-within > .tab-close-btn,
   filter: var(--cmux-chrome-icon-shadow);
 }
 
-/* Brand text + workspace name use the same flat treatment. */
+/* Title bar text + pane tab labels use the same flat treatment. The
+   [data-cmux-brand] selector went with the TERMINAL word it styled. */
 [data-tauri-drag-region] > span,
-[data-cmux-brand="true"],
 .pane-tab-label {
   text-shadow: var(--cmux-chrome-text-shadow);
+}
+
+/* Scrollbars.
+
+   Only the all-tabs dropdown had ever been styled, so every other scrollable
+   surface fell back to the engine default. On the Mac that is a permanently
+   drawn bar: measured beside a pane at 10px wide and 900px tall in
+   rgb(55, 58, 61), against a terminal ground of rgb(17, 19, 20) — brighter and
+   wider than the split seam next to it, and the loudest piece of chrome in the
+   window after the text itself.
+
+   The gutter keeps its width so the bar stays as easy to grab as it was; the
+   thumb is drawn inset with a transparent border, so what the eye sees is a
+   hairline that darkens under the pointer. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--cmux-text) 16%, transparent) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--cmux-text) 16%, transparent);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--cmux-text) 30%, transparent);
+  background-clip: padding-box;
 }
 
 /* xterm.js overrides for crisp rendering */
@@ -691,8 +730,13 @@ div:focus-within > .tab-close-btn,
 }
 
 [class*="sash"]::before {
-  background: var(--cmux-border) !important;
-  transition: background 0.15s;
+  /* Hairline, not border. The panes on either side already separate themselves
+     by surface lightness — measured on the Mac, 24,27,29 against 17,19,20 —
+     and a seam drawn brighter than both of them is a third thing competing
+     with the two it sits between. macOS leaves a split alone until the pointer
+     is on it, which the hover rule below already does. */
+  background: var(--cmux-border-hairline) !important;
+  transition: background var(--cmux-motion-fast) var(--cmux-ease);
 }
 [class*="sash"]:hover::before,
 [class*="sash"][class*="active"]::before {
@@ -754,8 +798,17 @@ div:focus-within > .tab-close-btn,
   inset: 0;
   pointer-events: none;
   z-index: 10;
-  border: var(--pane-border-width, 1px) solid var(--pane-border-color, transparent);
-  transition: border-color 0.15s, border-width 0.15s;
+  /* A 2px accent line drawn around the whole pane is a Windows convention.
+     macOS marks the focused surface with a thin ring and a soft spread just
+     outside it, which reads as depth rather than as a frame somebody drew. The
+     width is fixed at 1px so the transition animates colour and glow alone:
+     animating border-width made the edge step a pixel part-way through the
+     fade, which is visible on every pane click. */
+  border: 1px solid var(--pane-border-color, transparent);
+  box-shadow: var(--pane-focus-glow, none);
+  transition:
+    border-color 0.15s var(--cmux-ease),
+    box-shadow 0.15s var(--cmux-ease);
 }
 
 .cmux-terminal-grid-fit [class*="splitView"],
@@ -1433,7 +1486,13 @@ button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
-a:focus-visible {
+a:focus-visible,
+/* Fourteen scroll regions, menu rows and card bodies are div/span with a
+   tabIndex, so the list above never reached them and they were the only
+   things a keyboard could land on with nothing to show for it. Elements
+   held at tabindex="-1" are focused by script (menus, dialogs) and are not
+   stops on the tab ring, so they stay out. */
+[tabindex]:not([tabindex="-1"]):focus-visible {
   outline: 2px solid var(--cmux-accent) !important;
   outline-offset: 1px !important;
 }
@@ -1515,7 +1574,11 @@ a:focus-visible {
   background: var(--workspace-swatch-color, transparent);
   cursor: pointer;
   flex-shrink: 0;
-  transition: transform 0.12s ease, box-shadow 0.12s ease;
+  /* 0.12s is --cmux-motion-fast to the millisecond, so only the curve was
+     ever different: CSS `ease` is symmetric where the app decelerates. */
+  transition:
+    transform var(--cmux-motion-fast) var(--cmux-ease),
+    box-shadow var(--cmux-motion-fast) var(--cmux-ease);
 }
 
 .workspace-color-swatch:hover {

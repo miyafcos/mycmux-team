@@ -55,7 +55,9 @@ import {
 import { openDashboardForTab } from "../layout/openDashboardForTab";
 import { TAB_RESTORE_CLOSED_EVENT } from "../layout/tabSweep";
 import { peekClosedPane } from "../../stores/closedPaneStore";
-import { terminalPaneStrings } from "./terminalPaneStrings";
+import { paneTabMenuStrings, paneToolbarStrings, terminalPaneStrings } from "./terminalPaneStrings";
+import { formatShortcutLabel } from "../../lib/keybindings";
+import { useKeybindingStore } from "../../stores/keybindingStore";
 import { TERMINAL_SEARCH_EVENT } from "../terminal/XTermWrapper";
 
 interface PaneTabBarProps {
@@ -75,7 +77,7 @@ interface PaneTabBarProps {
 }
 
 const SplitRightIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
     <line x1="12" y1="3" x2="12" y2="21"></line>
     <line x1="12" y1="12" x2="21" y2="12"></line>
@@ -83,7 +85,7 @@ const SplitRightIcon = () => (
 );
 
 const SplitDownIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
     <line x1="3" y1="12" x2="21" y2="12"></line>
     <line x1="12" y1="12" x2="12" y2="21"></line>
@@ -91,7 +93,7 @@ const SplitDownIcon = () => (
 );
 
 const MaximizeIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="15 3 21 3 21 9"></polyline>
     <polyline points="9 21 3 21 3 15"></polyline>
     <line x1="21" y1="3" x2="14" y2="10"></line>
@@ -100,7 +102,7 @@ const MaximizeIcon = () => (
 );
 
 const MinimizeIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="4 14 10 14 10 20"></polyline>
     <polyline points="20 10 14 10 14 4"></polyline>
     <line x1="14" y1="10" x2="21" y2="3"></line>
@@ -141,22 +143,35 @@ const PlusIcon = () => (
 );
 
 const BookmarkIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"></path>
   </svg>
 );
 
 const PinIcon = ({ size = 12, filled = false }: { size?: number; filled?: boolean }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? "currentColor" : "none"}
-       stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
+       stroke="currentColor" strokeWidth={24 / size} strokeLinecap="round" strokeLinejoin="round"
        aria-hidden="true" focusable="false">
     <path d="M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5Z" />
     <line x1="12" y1="13" x2="12" y2="21" />
   </svg>
 );
 
+// The overflow control used to be the text character U+22EE, which put a
+// font glyph in a row of vectors: different weight, different rhythm, and it
+// followed the UI font rather than the icons beside it. Circles of radius 2
+// on a 24 viewBox drawn at 12px are 2 device pixels across and sit on whole
+// pixel boundaries, so the dots stay round instead of smearing.
+const KebabIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+    <circle cx="12" cy="5" r="2" />
+    <circle cx="12" cy="12" r="2" />
+    <circle cx="12" cy="19" r="2" />
+  </svg>
+);
+
 const EyeIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
     <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
     <circle cx="12" cy="12" r="3" />
   </svg>
@@ -931,8 +946,8 @@ function PaneTabListMenu({
         <button
           className={`pane-action-btn pane-tab-menu-pin-btn${isPinned ? " is-pinned" : ""}`}
           type="button"
-          title={isPinned ? "Unpin tab" : "Pin tab"}
-          aria-label={isPinned ? "Unpin tab" : "Pin tab"}
+          title={isPinned ? paneToolbarStrings.unpinTab : paneToolbarStrings.pinTab}
+          aria-label={isPinned ? paneToolbarStrings.unpinTab : paneToolbarStrings.pinTab}
           aria-pressed={isPinned}
           onClick={(event) => {
             event.stopPropagation();
@@ -946,7 +961,7 @@ function PaneTabListMenu({
           <button
             className="pane-action-btn"
             type="button"
-            title="Close tab"
+            title={paneToolbarStrings.closeTab}
             onClick={(event) => {
               event.stopPropagation();
               onRemoveTab?.(tab.id);
@@ -1104,6 +1119,11 @@ export default memo(function PaneTabBar({
   const activeMeta = activeTab ? metadataBySession[activeTab.sessionId] : undefined;
   const activeVolatileMeta = activeTab ? volatileMetadataBySession[activeTab.sessionId] : undefined;
   const activeAttention = activeTab ? attentionBySession[activeTab.sessionId] : undefined;
+  // These tooltips used to spell the shortcut out as "Ctrl+Shift+Enter". On
+  // macOS the same binding answers to ⇧⌘↩, so the tooltip was naming keys the
+  // user does not press — and it went stale whenever the binding was rebound.
+  const zoomShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["pane.zoom.toggle"]));
+  const searchShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["terminal.search"]));
   const showPublishButton = shouldShowPublishButton(activeTab, activeMeta);
   const renderMode: PaneTabBarMode = !activeTab && barMode !== "full" && barMode !== "slim"
     ? "full"
@@ -1494,7 +1514,7 @@ export default memo(function PaneTabBar({
         <button
           className="pane-action-btn"
           onClick={() => onAddTab?.(getDefaultAgent().id, "launcher")}
-          title="New terminal tab"
+          title={paneToolbarStrings.newTab}
           style={{ margin: "0 1px", padding: "3px 5px", flexShrink: 0, order: 3 }}
         >
           <PlusIcon />
@@ -1514,11 +1534,13 @@ export default memo(function PaneTabBar({
               className="pane-action-btn"
               aria-label={terminalPaneStrings.searchTerminal}
               aria-disabled={!canSearchTerminal}
-              title={canSearchTerminal ? terminalPaneStrings.searchTerminalTitle : terminalPaneStrings.searchUnavailable}
+              title={canSearchTerminal
+                ? terminalPaneStrings.searchTerminalTitle(searchShortcut)
+                : terminalPaneStrings.searchUnavailable}
               onClick={handleSearchTerminal}
               style={{ opacity: canSearchTerminal ? 1 : 0.55 }}
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                 <circle cx="10" cy="10" r="6" />
                 <path d="m15 15 6 6" />
               </svg>
@@ -1550,12 +1572,12 @@ export default memo(function PaneTabBar({
             </button>
           )}
           {visibleActions.includes("split-right") && onSplitRight && showSplitRightButton && (
-            <button className="pane-action-btn pane-tabbar-split" onClick={onSplitRight} title="Split right">
+            <button className="pane-action-btn pane-tabbar-split" onClick={onSplitRight} title={paneToolbarStrings.splitRight}>
               <SplitRightIcon />
             </button>
           )}
           {visibleActions.includes("split-down") && onSplitDown && showSplitDownButton && (
-            <button className="pane-action-btn pane-tabbar-split" onClick={onSplitDown} title="Split down">
+            <button className="pane-action-btn pane-tabbar-split" onClick={onSplitDown} title={paneToolbarStrings.splitDown}>
               <SplitDownIcon />
             </button>
           )}
@@ -1563,7 +1585,9 @@ export default memo(function PaneTabBar({
             <button
               className="pane-action-btn pane-tabbar-zoom"
               onClick={onZoomToggle}
-              title={isZoomed ? "Restore pane (Ctrl+Shift+Enter)" : "Zoom pane (Ctrl+Shift+Enter)"}
+              title={isZoomed
+                ? paneToolbarStrings.restorePaneAt(zoomShortcut)
+                : paneToolbarStrings.zoomPaneAt(zoomShortcut)}
             >
               {isZoomed ? <MinimizeIcon /> : <MaximizeIcon />}
             </button>
@@ -1576,14 +1600,14 @@ export default memo(function PaneTabBar({
                 event.stopPropagation();
                 openDashboardForTab(activeTab.id);
               }}
-              title="Open in dashboard"
-              aria-label="Open in dashboard"
+              title={paneToolbarStrings.openInDashboard}
+              aria-label={paneToolbarStrings.openInDashboard}
             >
               <EyeIcon />
             </button>
           )}
           {visibleActions.includes("close") && onClose && (
-            <button className="pane-action-btn" onClick={onClose} title="Close pane">
+            <button className="pane-action-btn" onClick={onClose} title={paneToolbarStrings.closePane}>
               <CloseIcon size={11} />
             </button>
           )}
@@ -1600,9 +1624,9 @@ export default memo(function PaneTabBar({
                 event.stopPropagation();
                 setKebabOpen((open) => !open);
               }}
-              style={{ margin: "0 1px", padding: "3px 6px", flexShrink: 0, fontSize: 14, lineHeight: 1 }}
+              style={{ margin: "0 1px", padding: "3px 5px", flexShrink: 0 }}
             >
-              ⋮
+              <KebabIcon />
             </button>
             {kebabOpen && (
               <div
@@ -1630,7 +1654,7 @@ export default memo(function PaneTabBar({
                       onAddTab?.(getDefaultAgent().id, "launcher");
                     }}
                   >
-                    New terminal tab
+                    {paneToolbarStrings.newTab}
                   </PaneTabContextMenuItem>
                 )}
                 {overflowActions.includes("publish") && showPublishButton && (
@@ -1644,7 +1668,7 @@ export default memo(function PaneTabBar({
                       setPublishPopoverOpen(true);
                     }}
                   >
-                    {published ? "Update savepoint…" : "Publish savepoint…"}
+                    {published ? onlineStrings.publishButtonTitleUpdate : onlineStrings.publishButtonTitleNew}
                   </PaneTabContextMenuItem>
                 )}
                 {overflowActions.includes("split-right") && onSplitRight && showSplitRightButton && (
@@ -1654,7 +1678,7 @@ export default memo(function PaneTabBar({
                       onSplitRight();
                     }}
                   >
-                    Split right
+                    {paneToolbarStrings.splitRight}
                   </PaneTabContextMenuItem>
                 )}
                 {overflowActions.includes("split-down") && onSplitDown && showSplitDownButton && (
@@ -1664,7 +1688,7 @@ export default memo(function PaneTabBar({
                       onSplitDown();
                     }}
                   >
-                    Split down
+                    {paneToolbarStrings.splitDown}
                   </PaneTabContextMenuItem>
                 )}
                 {overflowActions.includes("zoom") && onZoomToggle && (
@@ -1674,7 +1698,7 @@ export default memo(function PaneTabBar({
                       onZoomToggle();
                     }}
                   >
-                    {isZoomed ? "Restore pane" : "Zoom pane"}
+                    {isZoomed ? paneToolbarStrings.restorePane : paneToolbarStrings.zoomPane}
                   </PaneTabContextMenuItem>
                 )}
                 {overflowActions.includes("dashboard") && activeTab && (
@@ -1684,12 +1708,14 @@ export default memo(function PaneTabBar({
                       openDashboardForTab(activeTab.id);
                     }}
                   >
-                    Open in dashboard
+                    {paneToolbarStrings.openInDashboard}
                   </PaneTabContextMenuItem>
                 )}
                 <PaneTabContextMenuItem
                   disabled={!canSearchTerminal}
-                  title={canSearchTerminal ? terminalPaneStrings.searchTerminalTitle : terminalPaneStrings.searchUnavailable}
+                  title={canSearchTerminal
+                ? terminalPaneStrings.searchTerminalTitle(searchShortcut)
+                : terminalPaneStrings.searchUnavailable}
                   onClick={handleSearchTerminal}
                 >
                   {terminalPaneStrings.searchTerminal}
@@ -1712,7 +1738,7 @@ export default memo(function PaneTabBar({
                       onClose();
                     }}
                   >
-                    Close pane
+                    {paneToolbarStrings.closePane}
                   </PaneTabContextMenuItem>
                 )}
               </div>
@@ -2063,9 +2089,9 @@ export default memo(function PaneTabBar({
               <button
                 type="button"
                 className={`pane-action-btn pane-tab-pin-btn${isTabPinned ? " is-pinned" : ""}`}
-                aria-label={isTabPinned ? "Unpin tab" : "Pin tab"}
+                aria-label={isTabPinned ? paneToolbarStrings.unpinTab : paneToolbarStrings.pinTab}
                 aria-pressed={isTabPinned}
-                title={isTabPinned ? "Unpin tab" : "Pin tab"}
+                title={isTabPinned ? paneToolbarStrings.unpinTab : paneToolbarStrings.pinTab}
                 onPointerDown={(event) => event.stopPropagation()}
                 onDoubleClick={(event) => event.stopPropagation()}
                 onClick={(event) => {
@@ -2100,7 +2126,7 @@ export default memo(function PaneTabBar({
                 <button
                   className="pane-action-btn"
                   onClick={(e) => { e.stopPropagation(); onRemoveTab?.(tab.id); }}
-                  title="Close tab"
+                  title={paneToolbarStrings.closeTab}
                   style={{ padding: 2, flexShrink: 0 }}
                 >
                   <CloseIcon size={9} />
@@ -2121,8 +2147,8 @@ export default memo(function PaneTabBar({
           <button
             className="pane-action-btn"
             type="button"
-            title="All tabs"
-            aria-label="All tabs"
+            title={paneToolbarStrings.allTabs}
+            aria-label={paneToolbarStrings.allTabs}
             aria-expanded={allTabsOpen}
             onClick={(event) => {
               event.stopPropagation();
@@ -2232,8 +2258,8 @@ export default memo(function PaneTabBar({
                 and let the dropdown row do the toggling. */}
             {!showsInlinePinControl && isActiveTabPinned && (
               <span
-                title="Pinned tab"
-                aria-label="Pinned tab"
+                title={paneToolbarStrings.pinnedTab}
+                aria-label={paneToolbarStrings.pinnedTab}
                 role="img"
                 style={{ color: "var(--cmux-accent-text)", display: "inline-flex", flexShrink: 0 }}
               >
@@ -2293,9 +2319,9 @@ export default memo(function PaneTabBar({
               <button
                 type="button"
                 className={`pane-action-btn pane-tab-pin-btn${isActiveTabPinned ? " is-pinned" : ""}`}
-                aria-label={isActiveTabPinned ? "Unpin tab" : "Pin tab"}
+                aria-label={isActiveTabPinned ? paneToolbarStrings.unpinTab : paneToolbarStrings.pinTab}
                 aria-pressed={isActiveTabPinned}
-                title={isActiveTabPinned ? "Unpin tab" : "Pin tab"}
+                title={isActiveTabPinned ? paneToolbarStrings.unpinTab : paneToolbarStrings.pinTab}
                 onPointerDown={(event) => event.stopPropagation()}
                 onDoubleClick={(event) => event.stopPropagation()}
                 onClick={(event) => {
@@ -2331,8 +2357,8 @@ export default memo(function PaneTabBar({
             <button
               className="pane-action-btn"
               type="button"
-              title="All tabs"
-              aria-label={`All tabs (${formatTabPosition(activeTabIndex, pane.tabs.length)})`}
+              title={paneToolbarStrings.allTabs}
+              aria-label={paneToolbarStrings.allTabsAt(formatTabPosition(activeTabIndex, pane.tabs.length))}
               aria-expanded={allTabsOpen}
               onClick={(event) => {
                 event.stopPropagation();
@@ -2496,17 +2522,17 @@ export default memo(function PaneTabBar({
           }}
         >
           <PaneTabContextMenuItem onClick={handleRenameContextTab}>
-            Rename
+            {paneTabMenuStrings.rename}
           </PaneTabContextMenuItem>
           <PaneTabContextMenuItem
             disabled={!canResetContextTabName}
             title={!canResetContextTabName ? terminalPaneStrings.automaticName : undefined}
             onClick={handleResetContextTab}
           >
-            Reset name to auto
+            {paneTabMenuStrings.resetName}
           </PaneTabContextMenuItem>
           <PaneTabContextMenuItem onClick={handleTogglePinContextTab}>
-            {isContextTabPinned ? "Unpin tab" : "Pin tab"}
+            {isContextTabPinned ? paneToolbarStrings.unpinTab : paneToolbarStrings.pinTab}
           </PaneTabContextMenuItem>
         </div>
       )}

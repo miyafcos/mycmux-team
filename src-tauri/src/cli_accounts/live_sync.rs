@@ -381,6 +381,7 @@ mod tests {
     fn unregistered_live_login_is_auto_registered() {
         let dir = tempdir().unwrap();
         let claude_paths = claude::ClaudePaths {
+            store: claude::CredentialStore::File,
             credentials: dir.path().join("credentials.json"),
             claude_json: dir.path().join("claude.json"),
         };
@@ -413,6 +414,7 @@ mod tests {
     fn resync_clears_refresh_rejection_after_capturing_live_tokens() {
         let dir = tempdir().unwrap();
         let claude_paths = claude::ClaudePaths {
+            store: claude::CredentialStore::File,
             credentials: dir.path().join("credentials.json"),
             claude_json: dir.path().join("claude.json"),
         };

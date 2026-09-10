@@ -48,7 +48,7 @@ export function TabGroupingButton() {
         aria-controls="tab-grouping-panel"
         onClick={() => openPanel()}
       >
-        <svg aria-hidden="true" focusable="false" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <svg aria-hidden="true" focusable="false" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <rect x="3" y="4" width="7" height="16" rx="1.5" />
           <rect x="14" y="4" width="7" height="7" rx="1.5" />
           <rect x="14" y="13" width="7" height="7" rx="1.5" />

@@ -1,5 +1,6 @@
 import { useId } from "react";
 import type { CSSProperties } from "react";
+import { setupStrings } from "./setupStrings";
 import {
   LAUNCHABLE_AGENTS,
   LAUNCHER_MENU_TARGET,
@@ -88,9 +89,9 @@ export default function AgentSelector({ slotIndex, value, onChange }: AgentSelec
               list={modelListId}
               value={model}
               onChange={(event) => onChange({ ...value, model: event.target.value })}
-              placeholder="model (default)"
+              placeholder={setupStrings.modelPlaceholder}
               spellCheck={false}
-              aria-label={`Pane ${slotIndex + 1} model`}
+              aria-label={setupStrings.paneModelLabel(slotIndex + 1)}
               style={{
                 ...controlStyle,
                 flex: 2,
@@ -109,7 +110,7 @@ export default function AgentSelector({ slotIndex, value, onChange }: AgentSelec
               <select
                 value={value.effort ?? ""}
                 onChange={(event) => onChange({ ...value, effort: event.target.value })}
-                aria-label={`Pane ${slotIndex + 1} effort`}
+                aria-label={setupStrings.paneEffortLabel(slotIndex + 1)}
                 style={{ ...controlStyle, flex: 1, minWidth: 0, cursor: "pointer" }}
               >
                 <option value="" style={optionStyle}>effort (default)</option>

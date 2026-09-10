@@ -1,6 +1,6 @@
 {
   "pack_version": "1.0.0",
-  "generated_at": "2026-09-10T04:51:59.305184+00:00",
+  "generated_at": "2026-09-10T15:00:27.391919+00:00",
   "cli": {
     "path": "scripts/mycmux_agent_cli.py",
     "sha256": "21c971de97975420d066ee6bb9e66af1fe94b965fc35b8c20f1f0bd34c33e867"
@@ -16,13 +16,13 @@
         "references/spec-template.md": "9a5da4a39bb71bc3c9d038bb28e1e67fd2c03863e895e3d273f450c00b1981ff",
         "scripts/dispatch-child-guard.py": "91badcf06154a67ad6ae404481a7490ad88b59bfa9683a5f697fad29d51a79d9",
         "scripts/dispatch_canary.py": "2b6ec2221886e3002ba881f6347e8bba812641da277e0cd18ea0b2870e482bd1",
-        "scripts/dispatch_guard.py": "a229d07e143226a1919e8150cad7272218c7a76853da83a8d89c0d01ce52e36d",
+        "scripts/dispatch_guard.py": "369a72da02a59e06a0d1b6378634738b3ae0aa260fc4da6f2e2437aadb977bbf",
         "scripts/dispatch_ledger.py": "9b84dae7077a5028ba54b74f19b37ebfe434764538c2ec2e6871415a834f0c8e",
         "scripts/dispatch_preflight.py": "cd23a723b7f84b9ce7782eec5a2b9f40371c1618d16293aa4ddcc7d5992bc88b",
         "scripts/dispatch_send.py": "be44decbce6e317696b6ef3a5c55a1af343f693c99e4a6027b089e7a5e8b6ae3",
         "scripts/dispatch_status.py": "a9f10c7e4aa2cd88ca7874f83891a3429d8c34c358570b6ee2e3d7ec20fb7969",
         "scripts/dispatch_watch.py": "17bc66846ffa8251f2448e7190b7b7325ba24ca3152c74ee74787562af208a35",
-        "scripts/guard_actions.py": "3444f0d1b7940bfe71805e5a3638c9acfb08a4d681857075ff9b911b3ab8b0b5",
+        "scripts/guard_actions.py": "8731dbf9a6fa11f111a530259a3a242d69494e1a5774fdcb75e8b104d11337f3",
         "scripts/guard_classify.py": "86b88dbab8a4cfc18f7eb4683d06000aca457d6a744e02df56be38019175048a",
         "scripts/tests/conftest.py": "51a4e769c2e3d8ac57e836f0cfcc36f99f4e9750d4ddc5830e1247f2f0c2acfc",
         "scripts/tests/fixtures/screens/ask_multi.txt": "f23441bb86488f5d2e8134d704c778c860634b7d8c96e73dcadbee3f7a463d6c",
@@ -44,6 +44,7 @@
         "scripts/tests/fixtures/screens/unknown.txt": "87e1b4a8079c0ef80c3163904cff2b0bd15cbe9c50854031c4575f2894e1486b",
         "scripts/tests/fixtures/screens/whats_new.txt": "ed2da4922ae7156f4e44edd83e73bed7168148af2ab54cd0ee74470f88d307ef",
         "scripts/tests/test_ask_inject.py": "d9d4e8d7bdeda1f79983bcc23bcc283ee62c8f064560c72222c161a060599a43",
+        "scripts/tests/test_ask_inject_addressing.py": "fb59cbf59155fce39ad9106abbc8de0879a3de093aadb69c5fc96255725c282d",
         "scripts/tests/test_dispatch_child_guard.py": "4091aa4c2a08ca35e09aecb021380167c512cf98d0aed5d36082a7488bc9084e",
         "scripts/tests/test_dispatch_guard.py": "8463fe8231242d9b6592e3a3c6abf3d4df619a739b6a21d52d2e8777c60b0f0e",
         "scripts/tests/test_dispatch_ledger.py": "b1ff9bcfba255936214b8dc9cc8a17f7d517b831ad2e56392589c83e7d9ed0cf",
@@ -51,6 +52,7 @@
         "scripts/tests/test_dispatch_send.py": "fdd3b7083e9c155c5ceaeee02857113f80c1e70b22a0e8b9e9112e6135176812",
         "scripts/tests/test_dispatch_status.py": "145dddd5bc551cdde0546c23ab3228fb941a71b27829d29549fb718b0888e74e",
         "scripts/tests/test_dispatch_watch.py": "32794771af6bfd2381963de277fed4f6b468c7b05d7b0fd63fd7aeab5c8076a8",
+        "scripts/tests/test_guard_card_volume.py": "4719c638d8de1b91486901f23a35264e76e92e63ef6cfd26c0a4cd4efbd3ca35",
         "scripts/tests/test_guard_classify.py": "abe552374a646ae623c6c107e91ce83ab261ac26e44ff143fe57278cc8e1ffb9"
       }
     },

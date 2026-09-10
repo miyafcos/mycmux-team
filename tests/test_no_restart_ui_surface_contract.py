@@ -35,8 +35,9 @@ def test_pane_and_workspace_ui_surfaces_remain_wired() -> None:
             "onClose={() => onClose(ws.id)}",
             # The shortcut is rendered from the live binding rather than written
             # out, so it follows a rebind and prints the macOS glyphs. The
-            # tooltip still has to be there, which is what this pins.
-            "title={`New workspace (${newWorkspaceShortcut})`}",
+            # tooltip still has to be there, which is what this pins. Its words
+            # come from sidebarStrings, so pin the wiring, not the wording.
+            "title={`${sidebarStrings.newWorkspace} (${newWorkspaceShortcut})`}",
         ],
     )
     assert_snippets(
@@ -44,16 +45,30 @@ def test_pane_and_workspace_ui_surfaces_remain_wired() -> None:
         [
             "notificationCount?: number;",
             "{notificationCount}",
-            'title="Close workspace"',
+            'title="ワークスペースを閉じる"',
         ],
     )
+    # These four controls used to be pinned by their English tooltips, which
+    # made the contract fail the moment the toolbar stopped speaking two
+    # languages. What has to stay wired is the button, so pin the string key.
     assert_snippets(
         "src/components/workspace/PaneTabBar.tsx",
         [
-            'title="New terminal tab"',
-            'title="Split right"',
-            'title="Split down"',
-            'title="Close pane"',
+            "title={paneToolbarStrings.newTab}",
+            "title={paneToolbarStrings.splitRight}",
+            "title={paneToolbarStrings.splitDown}",
+            "title={paneToolbarStrings.closePane}",
+        ],
+    )
+    # ...and the keys themselves have to resolve to Japanese, so an English
+    # literal cannot creep back in through the string table.
+    assert_snippets(
+        "src/components/workspace/terminalPaneStrings.ts",
+        [
+            'newTab: "新しいターミナルタブ"',
+            'splitRight: "右に分割"',
+            'splitDown: "下に分割"',
+            'closePane: "ペインを閉じる"',
         ],
     )
     assert_snippets(
@@ -281,7 +296,7 @@ def test_file_preview_agent_usage_and_fault_surfaces_remain_wired() -> None:
         "src/components/common/ErrorBoundary.tsx",
         [
             "export default class ErrorBoundary extends Component<Props, State>",
-            "Pane crashed",
+            "ペインが停止しました",
         ],
     )
     assert_snippets(

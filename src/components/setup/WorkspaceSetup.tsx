@@ -7,6 +7,7 @@ import { normalizeCwd, workspaceNameFromCwd } from "../../lib/workspaceBootstrap
 import type { PaneLaunchSpec } from "../../lib/agentCatalog";
 import GridPicker from "./GridPicker";
 import AgentSlotList from "./AgentSlotList";
+import { setupStrings } from "./setupStrings";
 
 export interface WorkspaceSetupResult {
   name: string;
@@ -126,11 +127,11 @@ export default function WorkspaceSetup({ defaultCwd, onLaunch, onCancel }: Works
             fontWeight: 600,
           }}
         >
-          New Workspace
+          {setupStrings.title}
         </div>
 
         <div>
-          <div style={fieldLabelStyle}>Name</div>
+          <div style={fieldLabelStyle}>{setupStrings.nameLabel}</div>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -141,18 +142,18 @@ export default function WorkspaceSetup({ defaultCwd, onLaunch, onCancel }: Works
         </div>
 
         <div>
-          <div style={fieldLabelStyle}>Working folder</div>
+          <div style={fieldLabelStyle}>{setupStrings.folderLabel}</div>
           <div style={{ display: "flex", gap: 8 }}>
             <input
               value={cwd}
               onChange={(e) => setCwd(e.target.value)}
-              placeholder="(home)"
+              placeholder={setupStrings.folderPlaceholder}
               spellCheck={false}
               onKeyDown={(e) => e.key === "Enter" && handleLaunch()}
               style={{ ...inputStyle, flex: 1, minWidth: 0 }}
             />
             <button type="button" onClick={handleBrowse} style={buttonStyle}>
-              Browse
+              {setupStrings.browse}
             </button>
           </div>
         </div>
@@ -166,7 +167,7 @@ export default function WorkspaceSetup({ defaultCwd, onLaunch, onCancel }: Works
 
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
           <button onClick={onCancel} style={buttonStyle}>
-            Cancel
+            {setupStrings.cancel}
           </button>
           <button
             onClick={handleLaunch}
@@ -178,7 +179,7 @@ export default function WorkspaceSetup({ defaultCwd, onLaunch, onCancel }: Works
               fontWeight: 600,
             }}
           >
-            Launch
+            {setupStrings.launch}
           </button>
         </div>
       </div>

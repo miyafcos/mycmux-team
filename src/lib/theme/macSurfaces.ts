@@ -147,3 +147,51 @@ export function macSurfaceOverrides(input: SurfaceInput): Record<string, string>
   }
   return overrides;
 }
+
+/** How far the quiet tiers are nudged toward the tier above them. */
+export const QUIET_TEXT_MIX_PERCENT = 55;
+
+export interface QuietTextInput {
+  textSecondary: string;
+  textTertiary: string;
+  textDim: string;
+  /**
+   * The lightness the panel tiers were lifted by, from lightnessLiftFor.
+   * Text rides the same distance so the gap it had against a panel survives
+   * the lift; without it the panels move and the glyphs do not.
+   */
+  surfaceLift?: number;
+}
+
+/**
+ * Lifts the quiet end of the text ladder for macOS.
+ *
+ * Two things happen here, in order, and they answer different problems.
+ *
+ * First the tier rides the surface lift. The panels above move by a fixed
+ * lightness in OKLab; a glyph that does not move with them loses exactly that
+ * much separation from the thing it is written on. Measured across the dark
+ * themes on 2026-09-10, leaving it behind cost up to 0.49 of contrast ratio
+ * (yougan 4.38 -> 3.89 against its panel) and pushed twelve of twenty-one
+ * below where they started.
+ *
+ * Then the tier is nudged toward the one above it, which is the CoreText
+ * compensation proper: macOS applies almost no hinting, so at the same colour
+ * a glyph carries visibly less ink than DirectWrite gives it. Photographed
+ * side by side, the launcher's section headings -- tertiary -- were legible on
+ * Windows and close to invisible on the Mac at identical values.
+ *
+ * Nudging rather than recolouring keeps the relationships the resolver
+ * established, so no theme needs its own exception. The platform gate lives at
+ * the call site.
+ */
+export function macQuietTextOverrides(input: QuietTextInput): Record<string, string> {
+  const lift = input.surfaceLift ?? 0;
+  const ride = (color: string) => (lift > 0 ? shiftLightness(color, lift) : color);
+  const mix = (from: string, toward: string) =>
+    `color-mix(in srgb, ${ride(from)} ${QUIET_TEXT_MIX_PERCENT}%, ${ride(toward)})`;
+  return {
+    "--cmux-text-tertiary": mix(input.textTertiary, input.textSecondary),
+    "--cmux-text-dim": mix(input.textDim, input.textTertiary),
+  };
+}

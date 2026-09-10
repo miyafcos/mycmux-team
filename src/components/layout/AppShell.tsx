@@ -39,7 +39,7 @@ import { DashboardView } from "../dashboard/DashboardView";
 import { GroupingFlightHost } from "./GroupingFlightHost";
 import { UI_DENSITY_TOKENS, useThemeStore, type UiDensity } from "../../stores/themeStore";
 import ErrorBoundary from "../common/ErrorBoundary";
-import { macSurfaceOverrides } from "../../lib/theme/macSurfaces";
+import { lightnessLiftFor, macQuietTextOverrides, macSurfaceOverrides } from "../../lib/theme/macSurfaces";
 import {
   isMediaBackgroundActive,
   resolveCompositionPolicy,
@@ -117,25 +117,12 @@ export function dashboardTypographyVars(
   };
 }
 
-/**
- * Lifts the quiet end of the text ladder on macOS.
- *
- * CoreText applies almost no hinting, so at the same colour a glyph carries
- * visibly less ink than DirectWrite gives it on Windows. The ladder's louder
- * tiers survive that; the quiet ones do not. Photographed side by side on
- * 2026-09-10, the launcher's section headings — tertiary — were legible on
- * Windows and close to invisible on the Mac at identical values.
- *
- * Each tier is nudged toward the one above rather than recoloured, so the
- * relationships the resolver established stay intact and no theme needs its own
- * exception. Windows is untouched: this returns nothing there.
- */
-function macQuietTextCompensation(resolved: ResolvedTheme): Record<string, string> {
-  if (!IS_MAC) return {};
-  return {
-    "--cmux-text-tertiary": `color-mix(in srgb, ${resolved.textTertiary} 55%, ${resolved.textSecondary})`,
-    "--cmux-text-dim": `color-mix(in srgb, ${resolved.textDim} 55%, ${resolved.textTertiary})`,
-  };
+/** macOS only; the arithmetic and its reasons live in macSurfaces. */
+function macQuietTextCompensation(
+  resolved: ResolvedTheme,
+  surfaceLift: number,
+): Record<string, string> {
+  return IS_MAC ? macQuietTextOverrides({ ...resolved, surfaceLift }) : {};
 }
 
 export interface ThemeVarsInput {
@@ -180,6 +167,13 @@ export function buildThemeVars(input: ThemeVarsInput): React.CSSProperties {
   // to, not from the raw palette, so a wallpaper composite is accounted for.
   const themeVars = resolvedThemeToCssVars(resolved);
 
+  const surfaceLift = lightnessLiftFor(themeVars["--cmux-bg"] ?? "", themeVars["--cmux-surface"] ?? "");
+  const surfaceOverrides = macSurfaceOverrides({
+    background: themeVars["--cmux-bg"] ?? "",
+    surface: themeVars["--cmux-surface"] ?? "",
+    tokens: themeVars,
+  });
+
   return {
     "--cmux-font-size-xs": scalePx(densityTokens.fontXs),
     "--cmux-font-size-sm": scalePx(densityTokens.fontSm),
@@ -194,14 +188,10 @@ export function buildThemeVars(input: ThemeVarsInput): React.CSSProperties {
     "--cmux-space-6": densitySpace(12),
     "--cmux-space-7": densitySpace(16),
     ...themeVars,
-    ...(IS_MAC
-      ? macSurfaceOverrides({
-          background: themeVars["--cmux-bg"] ?? "",
-          surface: themeVars["--cmux-surface"] ?? "",
-          tokens: themeVars,
-        })
-      : {}),
-    ...macQuietTextCompensation(resolved),
+    ...(IS_MAC ? surfaceOverrides : {}),
+    // The same lift, so the quiet glyphs travel with the panels they sit on
+    // rather than staying put while the ground under them brightens.
+    ...macQuietTextCompensation(resolved, IS_MAC ? surfaceLift : 0),
     colorScheme: resolved.colorScheme,
   } as React.CSSProperties;
 }
@@ -1253,7 +1243,6 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         <div data-cmux-hide-during-pane-zoom={zoomedPaneId ? "true" : undefined}>
           <ErrorBoundary fallback={chromeCrashFallback("タイトルバー")}>
             <TitleBar
-              uiVariant={uiVariant}
               onNewWorkspace={handleNewWorkspace}
               onOpenWorkspaceSetup={handleOpenSetup}
               onOpenOnlinePanel={() => {

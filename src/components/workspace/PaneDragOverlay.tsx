@@ -89,7 +89,7 @@ export function TearOutBanner({ label }: { label: string }) {
         boxShadow: "var(--cmux-shadow-popover)",
         color: "var(--cmux-text)",
         fontSize: 12,
-        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+        fontFamily: "var(--cmux-font-ui)",
         pointerEvents: "none",
         whiteSpace: "nowrap",
       }}

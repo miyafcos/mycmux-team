@@ -45,13 +45,13 @@ export default class ErrorBoundary extends Component<Props, State> {
             height: "100%",
             background: "var(--cmux-bg, #0a0a0a)",
             color: "var(--cmux-text-secondary, rgba(255,255,255,0.6))",
-            fontFamily: "'JetBrains Mono', monospace",
+            fontFamily: "var(--cmux-font-ui)",
             fontSize: 13,
             padding: 24,
           }}
         >
           <span style={{ fontSize: 20, color: "var(--cmux-red)" }}>⚠</span>
-          <span style={{ color: "var(--cmux-text, #ededed)" }}>Pane crashed</span>
+          <span style={{ color: "var(--cmux-text, #ededed)" }}>ペインが停止しました</span>
           <span
             style={{
               fontSize: 11,
@@ -76,7 +76,7 @@ export default class ErrorBoundary extends Component<Props, State> {
               cursor: "pointer",
             }}
           >
-            Retry
+            もう一度試す
           </button>
         </div>
       );

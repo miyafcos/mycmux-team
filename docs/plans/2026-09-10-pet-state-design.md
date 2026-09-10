@@ -254,7 +254,8 @@ hook の event と attention の対応を次のとおりにする。正本は実
 | 1 backend | Codex `gpt-6-astra` xhigh | `~/.claude/dispatch/260910-pet-backend/spec.md` | 13:35 着手 → 14:02 コミット `fae2ac32` (8 ファイル・Rust 1,219 PASS・pytest 41 PASS) → 母艦受理 |
 | 2 frontend | Codex `gpt-6-astra` high | `~/.claude/dispatch/260910-pet-frontend/spec.md` | 13:35 着手 → 13:46 コミット `a0e847ac` (11 ファイル・vitest 4,213 PASS・tsc 0) → 母艦受理 (pytest の失敗は WSL bash スタブと oracmux の drift = 環境要因・母艦環境で 93 PASS) |
 | 監査 | Codex `gpt-6-astra` xhigh (read-only) | `~/.claude/dispatch/260910-pet-audit/spec.md` | 14:11 着手 → 14:24 FINDINGS (Blocker 0 / High 3 / Medium 3 / Low 1) → 10 章の裁定 |
-| 3 修正便 | Codex `gpt-6-astra` xhigh | `~/.claude/dispatch/260910-pet-fix/spec.md` | 14:32 着手 → 14:49 コミット `78bd2890` (10 ファイル・pytest 56 PASS・vitest 4,235 PASS・tsc 0)。Rust スイートは RAM ゲート待ちで母艦がデタッチ実行 |
+| 3 修正便 | Codex `gpt-6-astra` xhigh | `~/.claude/dispatch/260910-pet-fix/spec.md` | 14:32 着手 → 14:49 コミット `78bd2890` (10 ファイル・pytest 56 PASS・vitest 4,235 PASS・tsc 0)。Rust スイートは RAM 待ちの末 16:12 に母艦のデタッチ実行で 1,223 PASS / 0 FAIL |
+| リリース | 母艦 | `~/.claude/dispatch/260910-pet-release/` | **v0.70.0 を 17:01 に feed 配信** (タグ `de94a6b5`・Windows は release-local.ps1、Mac は mac-mini で universal ビルド + Windows で updater 署名・5 プラットフォーム key-id PASS・公開ミラー同期)。詳細は memory `project-v0700-release` |
 
 受け入れは母艦が独立検証 (テスト実行・diff・実機 S1〜S9) してから。feed への配信は別の GO。
 
@@ -285,3 +286,11 @@ hook の event と attention の対応を次のとおりにする。正本は実
 | S5 | 外から指示を送る | `turn_active` で `input` が解除 → 行 7 → 行 8。出力が出るまでの 2〜5 秒だけ行 0 (修正便で対処) |
 | S1 (観測中) | 表示中タブで AskUserQuestion | 画面スキャンで行 6 → 回答後に行 8 |
 | S1 (裏)・S9 | 裏タブの AskUserQuestion / 承認 | テスト機では hook の登録が本番のままなので未確認。本番更新後に確認する |
+
+### 本番 (v0.70.0 更新後) に見る 3 点
+
+| # | 操作 | 期待 |
+|---|---|---|
+| S8 | Claude を空のプロンプトで 2 分放置 | キャラは寝てる (行 0) のまま・未読リングも出ない (旧版では `input` が立って呼んでるになった) |
+| S1 裏 | 裏のワークスペースの Claude に AskUserQuestion を出させる | 呼んでる (行 6)。答えると走ってる → 見て見て |
+| S9 | 承認プロンプトを裏で出して答える | 承認直後 (ツール開始 = PreToolUse) に呼んでるが消える |

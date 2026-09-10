@@ -10,13 +10,13 @@ import { AiLogButton } from "../ailog/AiLogButton";
 import { DashboardButton } from "../dashboard/DashboardButton";
 import { AccountsButton } from "./AccountsButton";
 import { onlineStrings } from "../online/onlineStrings";
+import { titleBarStrings } from "./titleBarStrings";
 import { resolveWorkspaceColor } from "../../lib/workspaceColors";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { useAccountsPolling } from "../../hooks/useAccountsPolling";
 import { useCliLoginEvents } from "../../hooks/useCliLoginEvents";
 
 interface TitleBarProps {
-  uiVariant?: "default" | "cmux";
   onNewWorkspace?: () => void;
   /** Opens the dialog that picks the layout, folder, agents and models. */
   onOpenWorkspaceSetup?: () => void;
@@ -51,14 +51,13 @@ const CaretDownIcon = () => (
 );
 
 const SettingsIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="12" cy="12" r="3"></circle>
     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33 1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82 1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
   </svg>
 );
 
 export default function TitleBar({
-  uiVariant = "default",
   onNewWorkspace,
   onOpenWorkspaceSetup,
   onOpenOnlinePanel,
@@ -231,8 +230,8 @@ export default function TitleBar({
         {onOpenWorkspaceSetup && (
           <button
             onClick={onOpenWorkspaceSetup}
-            title={`New Workspace with agents and models (${advancedWorkspaceShortcut})`}
-            aria-label="New Workspace with agents and models"
+            title={titleBarStrings.newWorkspaceAdvancedAt(advancedWorkspaceShortcut)}
+            aria-label={titleBarStrings.newWorkspaceAdvanced}
             className="cmux-title-btn"
             style={{
               background: "none",
@@ -251,7 +250,7 @@ export default function TitleBar({
         )}
       </div>
 
-      {/* Center: TERMINAL · WorkspaceName (drag region + click-based maximize) */}
+      {/* Center: the active workspace (drag region + click-based maximize) */}
       <div
         data-tauri-drag-region
         onClick={handleTitleBarClick}
@@ -265,25 +264,8 @@ export default function TitleBar({
           overflow: "hidden",
         }}
       >
-        <span
-          data-cmux-brand={uiVariant === "cmux" ? "true" : undefined}
-          data-tauri-drag-region
-          style={{
-            flexShrink: 0,
-            fontSize: 11,
-            fontWeight: 700,
-            letterSpacing: "0.12em",
-            color: "var(--cmux-text-secondary)",
-            fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-            textTransform: "uppercase",
-          }}
-        >
-          TERMINAL
-        </span>
-
         {activeWorkspace && (
           <>
-            <span data-tauri-drag-region style={{ flexShrink: 0, color: "var(--cmux-text-secondary)", fontSize: 12 }}>·</span>
             {activeWorkspaceColor && (
               <span
                 data-tauri-drag-region
@@ -300,9 +282,14 @@ export default function TitleBar({
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
-                fontSize: 12,
-                color: "var(--cmux-text-secondary)",
-                fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+                // The whole title now. A fixed word reading TERMINAL used to sit
+                // in front of it, saying nothing a person needed: the window is
+                // already a terminal, and which workspace it is showing is the
+                // only thing here that changes.
+                fontSize: 13,
+                fontWeight: 500,
+                color: "var(--cmux-text)",
+                fontFamily: "var(--cmux-font-ui)",
               }}
             >
               {activeWorkspace.name}
@@ -327,7 +314,7 @@ export default function TitleBar({
               setSettingsTab("appearance");
               setIsSettingsOpen((v) => !v);
             }}
-            title="Settings"
+            title={titleBarStrings.settings}
             className="cmux-title-btn"
             style={{
               background: "none",
@@ -358,7 +345,7 @@ export default function TitleBar({
           <>
             <button
               onClick={handleMinimize}
-              title="Minimize"
+              title={titleBarStrings.minimize}
               className="cmux-title-btn"
               style={{
                 background: "none",
@@ -377,7 +364,7 @@ export default function TitleBar({
             </button>
             <button
               onClick={handleMaximize}
-              title={isMaximized ? "Restore" : "Maximize"}
+              title={isMaximized ? titleBarStrings.restore : titleBarStrings.maximize}
               className="cmux-title-btn"
               style={{
                 background: "none",
@@ -403,7 +390,7 @@ export default function TitleBar({
             </button>
             <button
               onClick={handleClose}
-              title="Close"
+              title={titleBarStrings.close}
               style={{
                 background: "none",
                 border: "none",

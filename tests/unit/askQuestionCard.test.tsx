@@ -95,12 +95,12 @@ describe("AskUserQuestion QuestionCard", () => {
     );
     expect(container.textContent).toContain("ログイン・セッション・権限管理");
     expect(container.querySelector("[data-ask-question-option='1']")?.textContent).toContain("[ ]");
-    expect(container.querySelector("[aria-label='AskUserQuestion option 1']")).not.toBeNull();
-    expect(container.querySelector("[aria-label='AskUserQuestion tabs']")).not.toBeNull();
-    expect(container.querySelector("[aria-label='AskUserQuestion status']")?.textContent).toBe(
+    expect(container.querySelector("[aria-label='選択肢 1']")).not.toBeNull();
+    expect(container.querySelector("[aria-label='質問の切り替え']")).not.toBeNull();
+    expect(container.querySelector("[aria-label='質問の状態']")?.textContent).toBe(
       dashboardStrings.askQuestionSending,
     );
-    expect(container.querySelector("[aria-label='AskUserQuestion stop reason']")?.textContent).toBe(
+    expect(container.querySelector("[aria-label='質問が止まった理由']")?.textContent).toBe(
       dashboardStrings.askQuestionStopReason("needs_confirmation"),
     );
     expect(container.querySelector<HTMLButtonElement>("[data-ask-question-option='1']")?.disabled).toBe(true);
@@ -144,7 +144,7 @@ describe("AskUserQuestion QuestionCard", () => {
     expect(container.textContent).not.toContain("Cancel");
     const submit = container.querySelector<HTMLButtonElement>("[data-ask-question-option='1']");
     expect(submit?.textContent).toContain("Submit answers");
-    expect(submit?.getAttribute("aria-label")).toBe("AskUserQuestion submit");
+    expect(submit?.getAttribute("aria-label")).toBe("回答を送る");
 
     await act(async () => submit?.click());
     expect(routingMocks.submitAskQuestionReview).toHaveBeenCalledWith("s-ask");
@@ -165,7 +165,7 @@ describe("AskUserQuestion QuestionCard", () => {
     useAskQuestionStore.getState().clearScreen("s-ask", "read_failure");
     await renderCard();
 
-    expect(container.querySelector("[aria-label='AskUserQuestion stop reason']")?.textContent).toBe(
+    expect(container.querySelector("[aria-label='質問が止まった理由']")?.textContent).toBe(
       dashboardStrings.askQuestionStopReason("read_failure"),
     );
   });
@@ -178,7 +178,7 @@ describe("AskUserQuestion QuestionCard", () => {
       await renderCard();
 
       expect(container.querySelector("[data-ask-question-session='s-ask']")).not.toBeNull();
-      expect(container.querySelector("[aria-label='AskUserQuestion stop reason']")?.textContent).toBe(
+      expect(container.querySelector("[aria-label='質問が止まった理由']")?.textContent).toBe(
         dashboardStrings.askQuestionStopReason(reason),
       );
     },

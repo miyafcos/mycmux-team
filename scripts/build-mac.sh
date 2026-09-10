@@ -105,6 +105,35 @@ if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   fi
 fi
 
+# Repack the updater archive from the *signed* bundle.
+#
+# Tauri writes mycmux.app.tar.gz during the build, which is before the signing
+# step above, so the archive it produced holds a bundle with no
+# Contents/_CodeSignature in it. The updater unpacks that archive straight over
+# /Applications/mycmux.app, so pressing "check for updates" replaced a signed
+# app with an unsigned one and every privacy grant went with it -- which is what
+# made macOS ask for screen recording and the rest again after each update.
+# Verified against the v0.70.0 asset on 2026-09-11: seven entries, no
+# _CodeSignature among them.
+#
+# Repacking here also produces the archive on a machine that cannot reach the
+# updater key at all (the password lives in a Keychain an SSH session cannot
+# read), which is the case this release is built from. The signature is made
+# separately, against this file.
+UPDATER_TARBALL="$BUNDLE_DIR/macos/mycmux.app.tar.gz"
+if [[ "$UPDATER_ARTIFACTS" == "true" || -n "${MYCMUX_PACK_UPDATER:-}" ]]; then
+  rm -f "$UPDATER_TARBALL" "$UPDATER_TARBALL.sig"
+  # gzip -n so the archive does not carry a timestamp; two builds of the same
+  # tree then produce the same bytes and a mismatch means a real difference.
+  tar -C "$BUNDLE_DIR/macos" -cf - mycmux.app | gzip -n > "$UPDATER_TARBALL"
+  if tar -tzf "$UPDATER_TARBALL" | grep -q "_CodeSignature"; then
+    echo "Updater archive repacked from the signed bundle."
+  else
+    echo "warning: the updater archive carries no signature; an update from it" >&2
+    echo "         will make macOS ask for every privacy permission again." >&2
+  fi
+fi
+
 STAGING=$(mktemp -d)
 cleanup() { [[ -n "${STAGING:-}" && -d "$STAGING" ]] && rm -r "$STAGING"; }
 trap cleanup EXIT

@@ -1,7 +1,9 @@
 import { useMemo, useState, useEffect } from "react";
 import type { JSX } from "react";
 import { OverlayShell } from "../common/OverlayShell";
+import { keybindingStrings } from "./keybindingStrings";
 import {
+  KEYBINDING_CATEGORY_LABEL,
   KEYBINDING_DEFINITIONS,
   formatShortcutLabel,
   getActionDefinition,
@@ -96,8 +98,8 @@ export function KeybindingsPanel({ embedded = false, hosted = false, closing = f
       }}
     >
       <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--cmux-border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ color: "var(--cmux-text)", fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700 }}>
-          Keyboard Shortcuts
+        <div style={{ color: "var(--cmux-text)", fontFamily: "var(--cmux-font-ui)", fontSize: 13, fontWeight: 700 }}>
+          {keybindingStrings.title}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <button
@@ -109,11 +111,11 @@ export function KeybindingsPanel({ embedded = false, hosted = false, closing = f
               borderRadius: 4,
               padding: "6px 10px",
               fontSize: 11,
-              fontFamily: "'JetBrains Mono', monospace",
+              fontFamily: "var(--cmux-font-ui)",
               cursor: "pointer",
             }}
           >
-            Restore defaults
+            {keybindingStrings.restoreDefaults}
           </button>
           {!embedded && (
             <button
@@ -125,18 +127,18 @@ export function KeybindingsPanel({ embedded = false, hosted = false, closing = f
                 borderRadius: 4,
                 padding: "6px 10px",
                 fontSize: 11,
-                fontFamily: "'JetBrains Mono', monospace",
+                fontFamily: "var(--cmux-font-ui)",
                 cursor: "pointer",
               }}
             >
-              Done
+              {keybindingStrings.done}
             </button>
           )}
         </div>
       </div>
 
-      <div style={{ padding: "10px 16px", color: "var(--cmux-text-tertiary)", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", borderBottom: "1px solid var(--cmux-border)" }}>
-        Click Rebind, then press a shortcut. Press Backspace/Delete to clear.
+      <div style={{ padding: "10px 16px", color: "var(--cmux-text-tertiary)", fontSize: 11, fontFamily: "var(--cmux-font-ui)", borderBottom: "1px solid var(--cmux-border)" }}>
+        {keybindingStrings.hint}
       </div>
 
       {conflictGroups.length > 0 && (
@@ -148,11 +150,11 @@ export function KeybindingsPanel({ embedded = false, hosted = false, closing = f
             background: "color-mix(in srgb, var(--cmux-red) 10%, transparent)",
             color: "var(--cmux-red)",
             fontSize: 11,
-            fontFamily: "'JetBrains Mono', monospace",
+            fontFamily: "var(--cmux-font-ui)",
             lineHeight: 1.5,
           }}
         >
-          Duplicate shortcut warning:{" "}
+          {keybindingStrings.conflictHeading}{" "}
           {conflictGroups.map((group) => (
             `${formatShortcutLabel(group.shortcut)} (${group.actions.map((action) => getActionDefinition(action).title).join(", ")})`
           )).join("; ")}
@@ -178,20 +180,22 @@ export function KeybindingsPanel({ embedded = false, hosted = false, closing = f
                 borderBottom: "1px solid color-mix(in srgb, var(--cmux-border) 45%, transparent)",
               }}
             >
-              <div style={{ fontSize: 11, color: "var(--cmux-text-tertiary)", fontFamily: "'JetBrains Mono', monospace" }}>
-                {def.category}
+              <div style={{ fontSize: 11, color: "var(--cmux-text-tertiary)", fontFamily: "var(--cmux-font-ui)" }}>
+                {KEYBINDING_CATEGORY_LABEL[def.category]}
               </div>
-              <div style={{ fontSize: 12, color: "var(--cmux-text)", fontFamily: "'JetBrains Mono', monospace" }}>
+              <div style={{ fontSize: 12, color: "var(--cmux-text)", fontFamily: "var(--cmux-font-ui)" }}>
                 {def.title}
               </div>
               <div
                 style={{
                   fontSize: 12,
                   color: hasConflict ? "var(--cmux-red)" : "var(--cmux-text-secondary)",
-                  fontFamily: "'JetBrains Mono', monospace",
+                  // The one column where a fixed advance earns its keep: the
+                  // glyph runs (⇧⌘↩) line up down the list instead of jittering.
+                  fontFamily: "var(--cmux-font-mono)",
                 }}
               >
-                {isCapturing ? "Press keys..." : formatShortcutLabel(current)}
+                {isCapturing ? keybindingStrings.pressKeys : formatShortcutLabel(current)}
                 {overridden ? " *" : ""}
               </div>
               <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
@@ -204,11 +208,11 @@ export function KeybindingsPanel({ embedded = false, hosted = false, closing = f
                     borderRadius: 4,
                     padding: "4px 8px",
                     fontSize: 11,
-                    fontFamily: "'JetBrains Mono', monospace",
+                    fontFamily: "var(--cmux-font-ui)",
                     cursor: "pointer",
                   }}
                 >
-                  Rebind
+                  {keybindingStrings.rebind}
                 </button>
                 <button
                   onClick={() => clearOverride(def.action)}
@@ -220,11 +224,11 @@ export function KeybindingsPanel({ embedded = false, hosted = false, closing = f
                     borderRadius: 4,
                     padding: "4px 8px",
                     fontSize: 11,
-                    fontFamily: "'JetBrains Mono', monospace",
+                    fontFamily: "var(--cmux-font-ui)",
                     cursor: overridden ? "pointer" : "not-allowed",
                   }}
                 >
-                  Reset
+                  {keybindingStrings.reset}
                 </button>
               </div>
             </div>

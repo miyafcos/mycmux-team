@@ -22,7 +22,7 @@ describe("global keybindings", () => {
 
   it("registers the dashboard command without a shortcut conflict", () => {
     expect(getActionDefinition("dashboard.open")).toMatchObject({
-      title: "Open dashboard",
+      title: "ダッシュボードを開く",
       category: "Global",
       defaultShortcut: "ctrl+shift+g",
     });

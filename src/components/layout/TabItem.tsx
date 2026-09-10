@@ -1,5 +1,5 @@
 import { memo, useState, useRef, useCallback, useEffect } from "react";
-import { ATTENTION_REASON_COLOR, unseenAttentionLabel } from "../../lib/attentionPresentation";
+import { ATTENTION_REASON_COLOR, ATTENTION_REASON_LABEL, unseenAttentionLabel } from "../../lib/attentionPresentation";
 import { resolveWorkspaceColor, workspaceRowBackground } from "../../lib/workspaceColors";
 import PetSprite, { type PetSpriteState } from "../workspace/PetSprite";
 import type { AttentionCategory } from "../../stores/sessionAttentionStore";
@@ -147,7 +147,7 @@ export default memo(function TabItem({ uiVariant = "default", name, tabCount, ac
         ),
         color: active ? "var(--cmux-text)" : "var(--cmux-text-secondary)",
         fontSize: "13px",
-        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+        fontFamily: "var(--cmux-font-ui)",
         userSelect: "none",
         borderRadius: uiVariant === "cmux" ? "0 6px 6px 0" : "0 6px 6px 0",
         borderLeft: workspaceColor
@@ -169,7 +169,7 @@ export default memo(function TabItem({ uiVariant = "default", name, tabCount, ac
       <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0, overflow: "hidden", flex: 1 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
           {notificationCount ? (
-            <span key={`waiting-${notificationCount}`} className="cmux-badge-pop" title="Waiting for approval" style={{
+            <span key={`waiting-${notificationCount}`} className="cmux-badge-pop" title={ATTENTION_REASON_LABEL.waiting} style={{
               background: "var(--status-waiting)",
               color: "var(--cmux-on-waiting)",
               fontSize: "10px",
@@ -231,7 +231,9 @@ export default memo(function TabItem({ uiVariant = "default", name, tabCount, ac
             background: active ? "color-mix(in srgb, var(--cmux-text) 16%, transparent)" : "color-mix(in srgb, var(--cmux-text) 9%, transparent)",
             color: active ? "var(--cmux-text)" : "var(--cmux-text-tertiary)"
           }}>
-            {tabCount} {tabCount === 1 ? "tab" : "tabs"}
+            {/* The overflow line under this card reads "ほか N", so an English
+                plural here left one small card speaking two languages. */}
+            タブ {tabCount}
           </span>
         </div>
         {active && activeTabLabels.map((label, index) => (
@@ -306,7 +308,7 @@ export default memo(function TabItem({ uiVariant = "default", name, tabCount, ac
           flexShrink: 0,
           opacity: 0,
         }}
-        title="Close workspace"
+        title="ワークスペースを閉じる"
         className="tab-close-btn"
       >
         ×

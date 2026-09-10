@@ -1165,7 +1165,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
                   {isSummaryOnlyClaudeSession(session) ? (
                     <span style={styles.itemRow2Tag}>要約のみ</span>
                   ) : null}
-                  {session.summary_file ? <span style={styles.itemRow2Tag} aria-label="Summary available"><DocumentIcon /></span> : null}
+                  {session.summary_file ? <span style={styles.itemRow2Tag} aria-label="要約あり"><DocumentIcon /></span> : null}
                 </span>
               </span>
             </button>

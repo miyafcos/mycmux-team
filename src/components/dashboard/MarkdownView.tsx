@@ -30,7 +30,7 @@ function MarkdownBlock({ block, context }: { block: MdBlock; context: DashboardL
     case "code": return <pre style={codeBlockStyle}><code><DashboardLinkedText text={block.text} context={context} /></code></pre>;
     case "quote": return <blockquote style={quoteStyle}><InlineContent inline={block.inline} context={context} /></blockquote>;
     case "hr": return <hr className="cmux-dashboard-markdown-rule" />;
-    case "table": return <div className="cmux-dashboard-markdown-table-scroll" tabIndex={0} aria-label="Markdown table">
+    case "table": return <div className="cmux-dashboard-markdown-table-scroll" tabIndex={0} aria-label="表">
       <table className="cmux-dashboard-markdown-table">
         <thead><tr>{block.header.map((cell, index) => <th key={index} scope="col" data-align={block.align[index]} data-numeric={block.numeric[index] || undefined}><InlineContent inline={cell} context={context} /></th>)}</tr></thead>
         <tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, columnIndex) => <td key={columnIndex} data-align={block.align[columnIndex]} data-numeric={block.numeric[columnIndex] || undefined}><InlineContent inline={cell} context={context} /></td>)}</tr>)}</tbody>

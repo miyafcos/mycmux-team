@@ -25,6 +25,13 @@ UNDELIVERED_NAME = "undelivered.jsonl"
 #: days of the pre-fix guard.log; after the terminal gate it is months.
 MAX_LOG_BYTES = 8 * 1024 * 1024
 OPS = Path.home() / ".claude" / "ops" / "ops_common.py"
+#: Classes whose subject is the operator, not a worker: an idle draft is text
+#: the operator typed, and an unreadable idle screen on a tab they opened is a
+#: tab they are looking at. On a tab that was never dispatched these say nothing
+#: a human does not already know, so they are logged and not carded. Blockers
+#: that a human genuinely cannot see coming (login_required above all) stay
+#: carded whoever owns the tab.
+OPERATOR_OWNED_CLASSES = {"human_draft_idle", "unclassified_idle"}
 DENY_TEXT = "\u3053\u306e\u64cd\u4f5c\u306f\u6bcd\u8266\u306e\u627f\u8a8d\u304c\u8981\u308b\u3002\u4ee3\u66ff\u624b\u6bb5\u3067\u7d9a\u884c\u3057\u3001\u7121\u7406\u306a\u3089 DONE.md \u306e\u672a\u89e3\u6c7a\u30fb\u8981\u5224\u65ad\u306b\u66f8\u3051"
 NUDGE_TEXT = "\u7d9a\u884c\u305b\u3088\u3002\u5b8c\u4e86\u306a\u3089 DONE.md\u3001\u5224\u65ad\u304c\u8981\u308b\u306a\u3089 ask \u30ab\u30fc\u30c9\u3002\u9ed9\u3063\u3066\u6b62\u307e\u308b\u306e\u306f\u5951\u7d04\u9055\u53cd"
 
@@ -318,7 +325,36 @@ class Actions:
             result["guard_pending"] = True
         return result
 
+    def known_to_ledger(self, session):
+        """Whether this tab was ever dispatched, whatever its status is now.
+
+        Not the same question as "did this cycle load a dispatch record": a tab
+        already marked lost drops out of the live set but is still a child, and
+        must keep its right to be re-reported on the 30 minute cadence.
+        """
+        try:
+            for row in json_rows(self.ledger_path):
+                for key in ("tab_session_id", "tabSessionId"):
+                    if row.get(key) == session:
+                        return True
+        except OSError:
+            return True
+        return False
+
     def escalate(self, session, cls, detail):
+        if cls in OPERATOR_OWNED_CLASSES and self.dispatch is None and not self.known_to_ledger(session):
+            # A tab that appears in no ledger row is one the operator opened by
+            # hand. Its half-typed input is not a stalled child, and the card can
+            # only name the tab by an id nobody recognises ("manual-98f4f470 の
+            # human_draft_idle をどうしますか？"): 31 of the 109 cards ever raised
+            # were of that shape and every one was withdrawn as not blocking.
+            # Keep the evidence in the log, drop the interruption.
+            append_json(self.root / "escalations.jsonl",
+                dict(ts=stamp(), at=self.now(), session_id=session, cls=cls,
+                     slug="manual-" + session[-8:], detail=detail, carded=False,
+                     skip_reason="unowned_tab"))
+            self.audit("guard:escalate-unowned", cls=cls, session=session)
+            return {"escalated": False, "unowned": True}
         previous = [r for r in json_rows(self.root / "escalations.jsonl")
                     if r.get("session_id") == session and r.get("cls") == cls]
         if previous and self.now() - previous[-1].get("at", 0) < 1800:
@@ -395,7 +431,19 @@ class Actions:
         self.session, self.dispatch = previous_session, previous_dispatch
         return {"cards": 1, "events": len(queue), "result": result}
 
-    def mark_lost(self, slug, reason):
+    def mark_lost(self, slug, reason, *, done_exists=False):
+        if done_exists:
+            # A tab that closed after leaving its DONE marker reached the end of
+            # its dispatch. Filing that as "lost" and asking a human what to do
+            # about it was the guard's largest source of cards, and the answer
+            # was always "nothing" (2026-09-10: the two cards raised for a
+            # finished 4-lane research run).
+            if self.dispatch:
+                ledger.update_record(self.ledger_path, slug=slug, spawn_ts=self.dispatch.spawn_ts,
+                    tab_session_id=self.session, status="closed", event="guard:reconcile-done",
+                    reason="tab closed after its DONE marker")
+            self.audit("guard:reconcile-done", reason=reason)
+            return {"escalated": False, "completed": True}
         if self.dispatch:
             ledger.update_record(self.ledger_path, slug=slug, spawn_ts=self.dispatch.spawn_ts,
                 tab_session_id=self.session, status="lost", event="guard:reconcile", reason=reason)
@@ -494,7 +542,7 @@ class Actions:
             elif action == "nudge":
                 result = self.send_text(session, NUDGE_TEXT)
             elif action == "mark_lost":
-                result = self.mark_lost(obs.slug, verdict.reason)
+                result = self.mark_lost(obs.slug, verdict.reason, done_exists=obs.done_exists)
             else:
                 if action == "block" and dispatch and dispatch.status != "blocked":
                     ledger.update_record(self.ledger_path, slug=dispatch.slug,

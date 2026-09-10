@@ -91,6 +91,7 @@ fn grok_identity_reads_fixture_and_tier() {
 fn claude_identity_and_relogin() {
     let d = tempdir().unwrap();
     let p = ClaudePaths {
+        store: claude::CredentialStore::File,
         credentials: d.path().join("c.json"),
         claude_json: d.path().join("x.json"),
     };
@@ -273,6 +274,7 @@ fn orphan_metadata_rejects_provider_or_prefix_mismatch() {
 fn switch_flow_end_to_end_in_tempdir() {
     let d = tempdir().unwrap();
     let cp = ClaudePaths {
+        store: claude::CredentialStore::File,
         credentials: d.path().join("credentials.json"),
         claude_json: d.path().join("claude.json"),
     };
@@ -300,6 +302,7 @@ fn switch_flow_end_to_end_in_tempdir() {
 fn switch_persists_live_rejection_clear_before_target_validation() {
     let d = tempdir().unwrap();
     let cp = ClaudePaths {
+        store: claude::CredentialStore::File,
         credentials: d.path().join("credentials.json"),
         claude_json: d.path().join("claude.json"),
     };
@@ -341,6 +344,7 @@ fn switch_persists_live_rejection_clear_before_target_validation() {
 fn update_snapshot_tokens_rejects_stale_refresh_token() {
     let d = tempdir().unwrap();
     let cp = ClaudePaths {
+        store: claude::CredentialStore::File,
         credentials: d.path().join("credentials.json"),
         claude_json: d.path().join("claude.json"),
     };
@@ -369,6 +373,7 @@ fn update_snapshot_tokens_rejects_stale_refresh_token() {
 fn refreshed_snapshot_still_restores_byte_exact() {
     let d = tempdir().unwrap();
     let cp = ClaudePaths {
+        store: claude::CredentialStore::File,
         credentials: d.path().join("credentials.json"),
         claude_json: d.path().join("claude.json"),
     };
@@ -410,6 +415,7 @@ fn refreshed_snapshot_still_restores_byte_exact() {
 fn switch_writes_orphan_snapshot_for_unregistered_live_login() {
     let d = tempdir().unwrap();
     let cp = ClaudePaths {
+        store: claude::CredentialStore::File,
         credentials: d.path().join("credentials.json"),
         claude_json: d.path().join("claude.json"),
     };
@@ -602,6 +608,7 @@ fn rename_resolved_changes_only_label() {
 fn list_recomputes_relogin_without_rewriting_registry() {
     let d = tempdir().unwrap();
     let cp = ClaudePaths {
+        store: claude::CredentialStore::File,
         credentials: d.path().join("credentials.json"),
         claude_json: d.path().join("claude.json"),
     };
@@ -661,6 +668,7 @@ fn refresh_rejection_marks_but_keeps_profile() {
 
     assert_eq!(registry::load(d.path()).unwrap().profiles.len(), 1);
     let cp = ClaudePaths {
+        store: claude::CredentialStore::File,
         credentials: d.path().join("live-credentials.json"),
         claude_json: d.path().join("live-claude.json"),
     };
@@ -704,6 +712,7 @@ fn no_refresh_rejection_uses_stored_expiry_only() {
 fn recapture_clears_refresh_rejection() {
     let d = tempdir().unwrap();
     let cp = ClaudePaths {
+        store: claude::CredentialStore::File,
         credentials: d.path().join("credentials.json"),
         claude_json: d.path().join("claude.json"),
     };
@@ -733,6 +742,7 @@ fn recapture_clears_refresh_rejection() {
 fn list_exposes_intended_active_pointer() {
     let d = tempdir().unwrap();
     let cp = ClaudePaths {
+        store: claude::CredentialStore::File,
         credentials: d.path().join("credentials.json"),
         claude_json: d.path().join("claude.json"),
     };

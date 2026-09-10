@@ -1,5 +1,6 @@
 import AgentSelector from "./AgentSelector";
 import type { PaneLaunchSpec } from "../../lib/agentCatalog";
+import { setupStrings } from "./setupStrings";
 
 interface AgentSlotListProps {
   paneCount: number;
@@ -20,7 +21,7 @@ export default function AgentSlotList({ paneCount, specs, onChange }: AgentSlotL
           fontFamily: "var(--cmux-font-mono)",
         }}
       >
-        Agents ({paneCount} panes)
+        {setupStrings.agents(paneCount)}
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
         {Array.from({ length: paneCount }, (_, i) => (

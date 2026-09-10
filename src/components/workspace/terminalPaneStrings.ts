@@ -4,7 +4,8 @@
 export const terminalPaneStrings = {
   paneActions: "ペインの操作",
   searchTerminal: "端末内を検索",
-  searchTerminalTitle: "端末内を検索 (Ctrl+Shift+F)",
+  searchTerminalTitle: (shortcut: string) => `端末内を検索 (${shortcut})`,
+  searchPlaceholder: "検索…",
   searchUnavailable: "実行中の端末タブで検索できます",
   reopenTab: "最後に閉じたタブを戻す",
   noClosedTab: "復元できる閉じたタブがありません",
@@ -13,6 +14,34 @@ export const terminalPaneStrings = {
   revealFailed: "ファイルの場所を表示できませんでした",
   // プレビューに失敗し、既定のアプリへのフォールバックも失敗したとき (別の障害面として区別する)
   previewFallbackFailed: "プレビューに失敗し、既定のアプリでも開けませんでした",
+} as const;
+
+// ペインのツールバーとタブの操作ボタンの tooltip (2026-09-10)。
+// 同じ 1 本のツールバーに "Split right" と「セッションを複製」が並んでいて、
+// ホバーするたび言語が入れ替わっていた。ショートカットは埋め込まず
+// formatShortcutLabel で組む — mac は ⇧⌘↩ で、Ctrl とは書かれていない。
+export const paneToolbarStrings = {
+  newTab: "新しいターミナルタブ",
+  splitRight: "右に分割",
+  splitDown: "下に分割",
+  zoomPane: "ペインを最大化",
+  restorePane: "最大化を解除",
+  zoomPaneAt: (shortcut: string) => `ペインを最大化 (${shortcut})`,
+  restorePaneAt: (shortcut: string) => `最大化を解除 (${shortcut})`,
+  openInDashboard: "ダッシュボードで開く",
+  closePane: "ペインを閉じる",
+  pinTab: "タブを固定",
+  unpinTab: "固定を解除",
+  pinnedTab: "固定中のタブ",
+  closeTab: "タブを閉じる",
+  allTabs: "タブ一覧",
+  allTabsAt: (position: string) => `タブ一覧 (${position})`,
+} as const;
+
+// タブを右クリック (⋮ 経由) したときのメニュー。
+export const paneTabMenuStrings = {
+  rename: "名前を変更",
+  resetName: "名前を自動に戻す",
 } as const;
 
 export const toastStrings = {

@@ -34,8 +34,8 @@ function stop(event: MouseEvent) {
 }
 
 function optionAriaName(option: AskOption): string {
-  if (option.role === "submit") return "AskUserQuestion submit";
-  return `AskUserQuestion option ${option.index}`;
+  if (option.role === "submit") return "回答を送る";
+  return `選択肢 ${option.index}`;
 }
 
 function AskScreenCard({
@@ -96,7 +96,7 @@ function AskScreenCard({
       <span>{targetLabel}</span>
     </div>}
     {screen.header ? <div className="cmux-dashboard-qcard-header" data-ask-question-header>{screen.header}</div> : null}
-    {screen.tabs.length ? <div className="cmux-dashboard-qcard-tabs" role="list" aria-label="AskUserQuestion tabs">
+    {screen.tabs.length ? <div className="cmux-dashboard-qcard-tabs" role="list" aria-label="質問の切り替え">
       {screen.tabs.map((tab) => <span
         key={tab.label}
         role="listitem"
@@ -148,7 +148,7 @@ function AskScreenCard({
         disabled={disabled}
         className="cmux-dashboard-qcard-option"
         style={{ opacity: disabled ? 0.55 : 1, ...(compact ? { maxWidth: "100%", flexWrap: "wrap", overflowWrap: "anywhere" } as const : {}) }}
-        aria-label="AskUserQuestion submit"
+        aria-label="回答を送る"
         data-ask-question-submit="true"
         onClick={(event) => {
           stop(event);
@@ -162,10 +162,10 @@ function AskScreenCard({
         : null}
     </div>}
     {inFlight
-      ? <div className="cmux-dashboard-qcard-result" role="status" aria-label="AskUserQuestion status" aria-live="polite">{dashboardStrings.askQuestionSending}</div>
+      ? <div className="cmux-dashboard-qcard-result" role="status" aria-label="質問の状態" aria-live="polite">{dashboardStrings.askQuestionSending}</div>
       : null}
     {stopReason
-      ? <div className="cmux-dashboard-qcard-result is-error" role="status" aria-label="AskUserQuestion stop reason">{dashboardStrings.askQuestionStopReason(stopReason)}</div>
+      ? <div className="cmux-dashboard-qcard-result is-error" role="status" aria-label="質問が止まった理由">{dashboardStrings.askQuestionStopReason(stopReason)}</div>
       : null}
   </section>;
 }
@@ -229,7 +229,7 @@ export function QuestionCard({
       data-ask-question-session={resolvedSessionId}
       className={`cmux-dashboard-qcard${compact ? " is-compact" : ""}`}
     >
-      <div className="cmux-dashboard-qcard-result is-error" role="status" aria-label="AskUserQuestion stop reason">
+      <div className="cmux-dashboard-qcard-result is-error" role="status" aria-label="質問が止まった理由">
         {dashboardStrings.askQuestionStopReason(askSession.stopReason)}
       </div>
     </section>;

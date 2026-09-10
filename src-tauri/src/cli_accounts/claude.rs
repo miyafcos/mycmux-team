@@ -11,10 +11,34 @@ use super::{
     ERR_LIVE_LOGIN_UNAVAILABLE, ERR_RESTORE_FAILED, ERR_SNAPSHOT_INVALID,
 };
 
+/// Where Claude Code keeps the credentials for a given config directory.
+///
+/// On macOS the live install does not use a file at all: the credentials sit in
+/// the login keychain under the service `Claude Code-credentials`, and
+/// `~/.claude/.credentials.json` never exists. Reading it as a file therefore
+/// always failed there — `capture` returned ERR_LIVE_LOGIN_UNAVAILABLE, so
+/// registering a Claude account from the accounts panel could not work at all,
+/// while Codex and Grok, which do use files, registered fine. Confirmed on the
+/// Mac on 2026-09-10: no credentials file, keychain item present.
+///
+/// A staging directory is different. `CLAUDE_CONFIG_DIR` pointed somewhere else
+/// starts unauthenticated (measured: `Not logged in` even with the keychain
+/// item in place), and the CLI writes into that directory, so staging stays on
+/// files on every platform.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CredentialStore {
+    File,
+    Keychain,
+}
+
+/// The keychain service Claude Code stores its credentials under.
+const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
+
 #[derive(Clone)]
 pub struct ClaudePaths {
     pub credentials: PathBuf,
     pub claude_json: PathBuf,
+    pub store: CredentialStore,
 }
 
 impl ClaudePaths {
@@ -23,9 +47,139 @@ impl ClaudePaths {
         Ok(Self {
             credentials: home.join(".claude").join(".credentials.json"),
             claude_json: home.join(".claude.json"),
+            store: if cfg!(target_os = "macos") {
+                CredentialStore::Keychain
+            } else {
+                CredentialStore::File
+            },
         })
     }
 }
+
+/// Reads the credentials JSON, whichever store this install uses.
+pub fn read_credentials(paths: &ClaudePaths) -> Option<String> {
+    match paths.store {
+        CredentialStore::File => fs::read_to_string(&paths.credentials).ok(),
+        CredentialStore::Keychain => read_keychain_credentials(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_keychain_credentials() -> Option<String> {
+    let output = std::process::Command::new("/usr/bin/security")
+        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_keychain_credentials() -> Option<String> {
+    // Only macOS has this store; the variant is unreachable elsewhere.
+    None
+}
+
+/// Writes the credentials JSON back to whichever store this install uses.
+fn write_credentials<F>(paths: &ClaudePaths, text: &str, writer: &mut F) -> Result<(), String>
+where
+    F: FnMut(&std::path::Path, &[u8]) -> Result<(), String>,
+{
+    match paths.store {
+        CredentialStore::File => writer(&paths.credentials, text.as_bytes()),
+        CredentialStore::Keychain => write_keychain_credentials(text),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn write_keychain_credentials(text: &str) -> Result<(), String> {
+    use std::io::Write;
+
+    let account = std::env::var("USER").unwrap_or_else(|_| "default".to_string());
+    // The credential goes in over stdin, never as an argument. `security -h`
+    // says so itself: "Use of the -p or -w options is insecure. Specify -w as
+    // the last option to be prompted." An argument would sit in this process's
+    // argv, readable by anything running as the same user for as long as the
+    // call takes.
+    //
+    // The prompt reads a line at a time and asks twice to confirm, so the value
+    // has to be one line. Re-serialising compact guarantees that without
+    // changing what the JSON means — and it is JSON that Claude Code parses
+    // back, not a byte-exact blob.
+    let one_line = serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|value| serde_json::to_string(&value).ok())
+        .ok_or_else(|| ERR_SNAPSHOT_INVALID.to_string())?;
+
+    // -U replaces the existing item rather than failing on a duplicate, which is
+    // what switching between two accounts does every time.
+    let mut child = std::process::Command::new("/usr/bin/security")
+        .args([
+            "add-generic-password",
+            "-U",
+            "-s",
+            KEYCHAIN_SERVICE,
+            "-a",
+            &account,
+            "-w",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| ERR_RESTORE_FAILED.to_string())?;
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| ERR_RESTORE_FAILED.to_string())?;
+        for _ in 0..2 {
+            stdin
+                .write_all(one_line.as_bytes())
+                .and_then(|()| stdin.write_all(b"
+"))
+                .map_err(|_| ERR_RESTORE_FAILED.to_string())?;
+        }
+    }
+    let status = child.wait().map_err(|_| ERR_RESTORE_FAILED.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(ERR_RESTORE_FAILED.to_string())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn write_keychain_credentials(_text: &str) -> Result<(), String> {
+    Err(ERR_RESTORE_FAILED.to_string())
+}
+
+/// Removes the credentials, used to undo a half-finished restore.
+fn remove_credentials(paths: &ClaudePaths) {
+    match paths.store {
+        CredentialStore::File => {
+            let _ = fs::remove_file(&paths.credentials);
+        }
+        CredentialStore::Keychain => remove_keychain_credentials(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn remove_keychain_credentials() {
+    let _ = std::process::Command::new("/usr/bin/security")
+        .args(["delete-generic-password", "-s", KEYCHAIN_SERVICE])
+        .status();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn remove_keychain_credentials() {}
 
 fn field(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_string)
@@ -82,8 +236,7 @@ pub fn read_live_identity(paths: &ClaudePaths) -> CliLiveLogin {
         present: true,
         email: field(account, "emailAddress"),
         identity_key: field(account, "accountUuid"),
-        plan: fs::read_to_string(&paths.credentials)
-            .ok()
+        plan: read_credentials(paths)
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
             .and_then(|value| field(value.get("claudeAiOauth")?, "subscriptionType")),
         org_name: field(account, "organizationName"),
@@ -93,8 +246,8 @@ pub fn read_live_identity(paths: &ClaudePaths) -> CliLiveLogin {
 }
 
 pub fn capture(paths: &ClaudePaths) -> Result<(ClaudeSnapshot, CliLiveLogin), String> {
-    let credentials = fs::read_to_string(&paths.credentials)
-        .map_err(|_| ERR_LIVE_LOGIN_UNAVAILABLE.to_string())?;
+    let credentials =
+        read_credentials(paths).ok_or_else(|| ERR_LIVE_LOGIN_UNAVAILABLE.to_string())?;
     let claude_json = fs::read_to_string(&paths.claude_json)
         .map_err(|_| ERR_LIVE_LOGIN_UNAVAILABLE.to_string())?;
     let oauth_account_text = extract_top_level_member(&claude_json, "oauthAccount")
@@ -135,21 +288,15 @@ where
         fs::read_to_string(&paths.claude_json).map_err(|_| ERR_RESTORE_FAILED.to_string())?;
     let replaced = replace_top_level_member(&live, "oauthAccount", &snapshot.oauth_account_text)
         .map_err(|_| ERR_RESTORE_FAILED.to_string())?;
-    let original_credentials = match fs::read(&paths.credentials) {
-        Ok(value) => Some(value),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(_) => return Err(ERR_RESTORE_FAILED.to_string()),
-    };
-    writer(&paths.credentials, snapshot.credentials_text.as_bytes())
+    let original_credentials = read_credentials(paths);
+    write_credentials(paths, &snapshot.credentials_text, &mut writer)
         .map_err(|_| ERR_RESTORE_FAILED.to_string())?;
     if writer(&paths.claude_json, replaced.as_bytes()).is_err() {
         match original_credentials {
-            Some(bytes) => {
-                let _ = writer(&paths.credentials, &bytes);
+            Some(text) => {
+                let _ = write_credentials(paths, &text, &mut writer);
             }
-            None => {
-                let _ = fs::remove_file(&paths.credentials);
-            }
+            None => remove_credentials(paths),
         }
         return Err(ERR_RESTORE_FAILED.to_string());
     }
@@ -158,6 +305,60 @@ where
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_live_install_reads_where_this_platform_actually_keeps_credentials() {
+        // macOS Claude Code stores them in the login keychain and never writes
+        // ~/.claude/.credentials.json. Reading that path as a file is why
+        // registering a Claude account could not work there at all: capture
+        // insisted on a file that does not exist, and returned
+        // ERR_LIVE_LOGIN_UNAVAILABLE every time. Confirmed on the Mac on
+        // 2026-09-10 — no credentials file, keychain item present.
+        let paths = ClaudePaths::resolve().expect("home dir");
+        if cfg!(target_os = "macos") {
+            assert_eq!(paths.store, CredentialStore::Keychain);
+        } else {
+            assert_eq!(paths.store, CredentialStore::File);
+        }
+    }
+
+    #[test]
+    fn a_staging_directory_is_files_on_every_platform() {
+        // A CLAUDE_CONFIG_DIR pointed away from home starts unauthenticated —
+        // measured as `Not logged in` with the keychain item in place — and the
+        // CLI writes into that directory, so the keychain is not involved even
+        // on macOS. Getting this backwards would have staging logins read the
+        // live account instead of the one being added.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::cli_accounts::staging::claude_staging_paths(dir.path());
+        assert_eq!(paths.store, CredentialStore::File);
+    }
+
+    #[test]
+    fn reading_a_file_backed_store_returns_what_is_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = dir.path().join(".credentials.json");
+        fs::write(&credentials, r#"{"claudeAiOauth":{"subscriptionType":"max"}}"#).unwrap();
+        let paths = ClaudePaths {
+            credentials,
+            claude_json: dir.path().join(".claude.json"),
+            store: CredentialStore::File,
+        };
+        assert!(read_credentials(&paths).unwrap().contains("max"));
+    }
+
+    #[test]
+    fn reading_a_file_backed_store_with_no_file_returns_nothing() {
+        // Not an error: an install that has never logged in looks exactly like
+        // this, and capture turns the None into the right message itself.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ClaudePaths {
+            credentials: dir.path().join(".credentials.json"),
+            claude_json: dir.path().join(".claude.json"),
+            store: CredentialStore::File,
+        };
+        assert!(read_credentials(&paths).is_none());
+    }
     use super::*;
     use tempfile::tempdir;
 
@@ -165,6 +366,7 @@ mod tests {
     fn restore_rolls_back_credentials_when_claude_json_write_fails() {
         let dir = tempdir().unwrap();
         let paths = ClaudePaths {
+            store: CredentialStore::File,
             credentials: dir.path().join("credentials.json"),
             claude_json: dir.path().join("claude.json"),
         };

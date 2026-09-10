@@ -1,6 +1,7 @@
 import type { GridTemplateId } from "../../types";
 import { GRID_TEMPLATES } from "../../lib/gridTemplates";
 import GridPreview from "./GridPreview";
+import { setupStrings } from "./setupStrings";
 
 interface GridPickerProps {
   selected: GridTemplateId;
@@ -19,10 +20,10 @@ export default function GridPicker({ selected, onSelect }: GridPickerProps) {
           fontSize: 12,
           color: "var(--cmux-text-tertiary)",
           marginBottom: 8,
-          fontFamily: "'JetBrains Mono', monospace",
+          fontFamily: "var(--cmux-font-ui)",
         }}
       >
-        Layout
+        {setupStrings.layout}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
         {DISPLAY_ORDER.map((id) => (

@@ -59,4 +59,34 @@ describe("workspace row helpers", () => {
       pane("b", [undefined], "missing"),
     ]))).toEqual(["(名前なし)", "(名前なし)"]);
   });
+
+  it("prefers the name the pane resolves over the placeholder", () => {
+    // The sidebar showed "(名前なし)" for tabs whose own tab bar was showing
+    // "node", because only the stored label reaches the workspace record.
+    expect(activeWorkspaceTabLabels(
+      workspace([pane("a", [undefined]), pane("b", [undefined])]),
+      (tab) => (tab.id === "a-0" ? "node" : "mycmux"),
+    )).toEqual(["node", "mycmux"]);
+  });
+
+  it("tells the resolver whether the tab it is naming is the pane's active one", () => {
+    // The cwd fallback is only correct for the tab in front, so the pane's
+    // first-tab rescue must not be reported as active.
+    const seen: Array<[string, boolean]> = [];
+    activeWorkspaceTabLabels(
+      workspace([pane("a", [undefined, undefined], "a-1"), pane("b", [undefined], "missing")]),
+      (tab, isTabActive) => {
+        seen.push([tab.id, isTabActive]);
+        return undefined;
+      },
+    );
+    expect(seen).toEqual([["a-1", true], ["b-0", false]]);
+  });
+
+  it("falls back to the stored label when the resolver has no name", () => {
+    expect(activeWorkspaceTabLabels(
+      workspace([pane("a", ["stored"]), pane("b", [undefined])]),
+      () => "   ",
+    )).toEqual(["stored", "(名前なし)"]);
+  });
 });

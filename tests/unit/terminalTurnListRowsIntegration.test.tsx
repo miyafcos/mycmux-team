@@ -148,6 +148,11 @@ import { terminalTurnStrings } from "../../src/components/terminal/terminalTurnS
 import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useUiStore } from "../../src/stores/uiStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { terminalPaneStrings } from "../../src/components/workspace/terminalPaneStrings";
+
+// Built from the placeholder the component renders, so translating it does
+// not silently turn these reachability checks into no-ops.
+const SEARCH_INPUT = `input[placeholder='${terminalPaneStrings.searchPlaceholder}']`;
 
 let host: HTMLDivElement;
 let root: Root;
@@ -249,12 +254,12 @@ describe("XTermWrapper turn-list row integration", () => {
       await vi.waitFor(() => expect(mocks.terminalInstances).toHaveLength(2));
       const first = host.querySelector<HTMLElement>("[data-session='search-a']")!;
       const second = host.querySelector<HTMLElement>("[data-session='search-b']")!;
-      const searchInput = () => first.querySelector<HTMLInputElement>("input[placeholder='Find...']");
+      const searchInput = () => first.querySelector<HTMLInputElement>(SEARCH_INPUT);
       expect(searchInput()).toBeNull();
       await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label='${terminalPaneStrings.searchTerminal}']`)!.click());
       expect(searchInput()).not.toBeNull();
       expect(document.activeElement).toBe(searchInput());
-      expect(second.querySelector("input[placeholder='Find...']")).toBeNull();
+      expect(second.querySelector(SEARCH_INPUT)).toBeNull();
       expect(useUiStore.getState().activePaneId).toBe("search-a");
       const closeSearch = async () => {
         await act(async () => { searchInput()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
@@ -267,7 +272,7 @@ describe("XTermWrapper turn-list row integration", () => {
       await act(async () => item.click());
       expect(document.activeElement).toBe(searchInput());
       expect(searchInput()).not.toBeNull();
-      expect(second.querySelector("input[placeholder='Find...']")).toBeNull();
+      expect(second.querySelector(SEARCH_INPUT)).toBeNull();
       expect(host.querySelector("[role='menu']")).toBeNull();
       await closeSearch();
       await act(async () => {
@@ -280,7 +285,7 @@ describe("XTermWrapper turn-list row integration", () => {
       await act(async () => {
         window.dispatchEvent(new CustomEvent(TERMINAL_SEARCH_EVENT, { detail: { sessionId: "unknown" } }));
       });
-      expect(second.querySelector("input[placeholder='Find...']")).toBeNull();
+      expect(second.querySelector(SEARCH_INPUT)).toBeNull();
       const listeners = addListener.mock.calls.filter(([name]) => name === TERMINAL_SEARCH_EVENT);
       expect(listeners).toHaveLength(2);
       await act(async () => root.render(null));
