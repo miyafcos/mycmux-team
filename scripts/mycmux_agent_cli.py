@@ -42,6 +42,12 @@ def prompt_dir() -> Path:
 AGENT_TARGETS = ("claude", "codex", "claude-codex", "grok", "shell", "web")
 AGENT_KINDS = ("claude", "codex", "claude-codex", "grok")
 
+# Mirrors GRID_TEMPLATES in src/lib/gridTemplates.ts; tests/test_agent_cli_workspace_new.py
+# asserts the two lists stay identical.
+GRID_TEMPLATE_IDS = (
+    "1x1", "2x1", "3x1", "4x1", "1x2", "2x2", "3x2", "2x3", "3x3", "4x4",
+)
+
 
 def read_port(path: Path | None = None) -> int:
     """Read and validate the loopback socket port."""
@@ -173,6 +179,20 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
     subparsers.add_parser("workspaces", help="List workspaces")
+    workspace_new = subparsers.add_parser(
+        "workspace-new",
+        help=(
+            "Create a workspace in the background. Never changes the operator "
+            "foreground; follow up with spawn --split --workspace <id>"
+        ),
+    )
+    workspace_new.add_argument("--name", required=True)
+    workspace_new.add_argument("--cwd")
+    workspace_new.add_argument(
+        "--grid",
+        choices=sorted(GRID_TEMPLATE_IDS),
+        help="Pane grid for the new workspace (default 1x1)",
+    )
 
     panes = subparsers.add_parser("panes", help="List panes")
     panes_scope = panes.add_mutually_exclusive_group()
@@ -540,6 +560,12 @@ def build_detached_spawn_request(namespace: argparse.Namespace) -> dict[str, Any
 def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     if namespace.subcommand == "workspaces":
         return "workspace.list", {}
+    if namespace.subcommand == "workspace-new":
+        args: dict[str, Any] = {"name": namespace.name}
+        # Same default as spawn: the new workspace is rooted where the caller is.
+        args["cwd"] = namespace.cwd if namespace.cwd is not None else os.getcwd()
+        optional_arg(args, "gridTemplateId", namespace.grid)
+        return "workspace.new", args
     if namespace.subcommand == "usage":
         return "account.usage", {}
     if namespace.subcommand == "panes":

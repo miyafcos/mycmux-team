@@ -2208,6 +2208,46 @@ async function movePane(args: SocketArgs) {
   };
 }
 
+/**
+ * workspace.new — create an empty workspace for an external agent.
+ *
+ * Never moves the operator's foreground (dbfabc76): the new workspace is
+ * created in the background and the caller is expected to follow up with
+ * pane.spawn --split --workspace <id>, which starts a background PTY.
+ * The one exception is a first workspace: with activeWorkspaceId still null
+ * the workspace area renders nothing (AppShell hides the empty state as soon
+ * as workspaceCount > 0), and there is no foreground to preserve.
+ */
+async function newWorkspace(args: SocketArgs) {
+  const name = socketArgString(args, "name");
+  if (!name) throw new Error("workspace.new requires name");
+  const requestedGrid = socketArgString(args, "gridTemplateId", "grid_template_id", "grid");
+  const [{ createWorkspaceAtCwd, DEFAULT_WORKSPACE_GRID, normalizeCwd }, { GRID_TEMPLATES }] = await Promise.all([
+    import("../../lib/workspaceBootstrap"),
+    import("../../lib/gridTemplates"),
+  ]);
+  if (requestedGrid && !Object.prototype.hasOwnProperty.call(GRID_TEMPLATES, requestedGrid)) {
+    throw new Error(`unsupported workspace.new gridTemplateId: ${requestedGrid}`);
+  }
+  const gridTemplateId = (requestedGrid as keyof typeof GRID_TEMPLATES | undefined)
+    ?? DEFAULT_WORKSPACE_GRID;
+  const cwd = socketArgString(args, "cwd") ?? "";
+  const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
+  const bootstrapping = useWorkspaceListStore.getState().activeWorkspaceId === null;
+  const workspaceId = createWorkspaceAtCwd(cwd, { name, gridTemplateId, activate: bootstrapping });
+  const created = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+  if (!created) throw new Error("workspace.new could not read back the new workspace");
+  return {
+    workspaceId,
+    name: created.name,
+    gridTemplateId: created.gridTemplateId,
+    cwd: normalizeCwd(cwd),
+    panes: created.panes.map((pane) => ({ paneId: pane.id, sessionId: pane.sessionId })),
+    activeWorkspaceId: useWorkspaceListStore.getState().activeWorkspaceId,
+    foregroundChanged: bootstrapping,
+  };
+}
+
 export async function handleSocketCommand(cmd: string, args: SocketArgs): Promise<unknown> {
   const context = webPaneCommandContext(cmd);
   const { usePaneMetadataStore, useUiStore, useWorkspaceListStore } = await import(
@@ -2256,6 +2296,10 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
       workspaceState.renameWorkspace(workspaceId, name);
       return { id: workspaceId, name };
     }
+
+    case "workspace.new":
+    case "new_workspace":
+      return newWorkspace(args);
 
     case "pane.list":
     case "list_panes": {

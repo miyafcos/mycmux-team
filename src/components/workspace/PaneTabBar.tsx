@@ -1524,225 +1524,241 @@ export default memo(function PaneTabBar({
           "ChatGPT (Web)" entry (2026-09-02). A globe next to New terminal tab
           read as a browser the pane did not have. */}
       {(visibleActions.length > 0 || overflowActions.length > 0) && (
-        // gap 2 packed seven controls into a strip that read as one object.
-        // 4 is the smallest step that separates them without pushing the
-        // cluster into a narrow pane's tab labels.
-        <div style={{ display: "flex", alignItems: "center", gap: 4, paddingRight: 6, flexShrink: 0, order: 4 }}>
-          {visibleActions.includes("search") && (
-            <button
-              type="button"
-              className="pane-action-btn"
-              aria-label={terminalPaneStrings.searchTerminal}
-              aria-disabled={!canSearchTerminal}
-              title={canSearchTerminal
-                ? terminalPaneStrings.searchTerminalTitle(searchShortcut)
-                : terminalPaneStrings.searchUnavailable}
-              onClick={handleSearchTerminal}
-              style={{ opacity: canSearchTerminal ? 1 : 0.55 }}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                <circle cx="10" cy="10" r="6" />
-                <path d="m15 15 6 6" />
-              </svg>
-            </button>
-          )}
-          {visibleActions.includes("publish") && showPublishButton && (
-            <button
-              className="pane-action-btn"
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                // The monitor reports agentKind before the session id resolves;
-                // a silently-disabled button reads as "broken", so explain instead.
-                if (!agentSessionId) {
-                  useToastStore.getState().pushToast(onlineStrings.publishNoSession, "error");
-                  return;
-                }
-                setPublishPopoverOpen(true);
-              }}
-              title={agentSessionId
-                ? (published ? onlineStrings.publishButtonTitleUpdate : onlineStrings.publishButtonTitleNew)
-                : onlineStrings.publishNoSession}
-              style={{
-                color: published ? "var(--cmux-accent-text)" : undefined,
-                opacity: agentSessionId ? 1 : 0.55,
-              }}
-            >
-              <BookmarkIcon />
-            </button>
-          )}
-          {visibleActions.includes("split-right") && onSplitRight && showSplitRightButton && (
-            <button className="pane-action-btn pane-tabbar-split" onClick={onSplitRight} title={paneToolbarStrings.splitRight}>
-              <SplitRightIcon />
-            </button>
-          )}
-          {visibleActions.includes("split-down") && onSplitDown && showSplitDownButton && (
-            <button className="pane-action-btn pane-tabbar-split" onClick={onSplitDown} title={paneToolbarStrings.splitDown}>
-              <SplitDownIcon />
-            </button>
-          )}
-          {visibleActions.includes("zoom") && onZoomToggle && (
-            <button
-              className="pane-action-btn pane-tabbar-zoom"
-              onClick={onZoomToggle}
-              title={isZoomed
-                ? paneToolbarStrings.restorePaneAt(zoomShortcut)
-                : paneToolbarStrings.zoomPaneAt(zoomShortcut)}
-            >
-              {isZoomed ? <MinimizeIcon /> : <MaximizeIcon />}
-            </button>
-          )}
-          {visibleActions.includes("dashboard") && activeTab && (
-            <button
-              className="pane-action-btn pane-tabbar-dashboard"
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                openDashboardForTab(activeTab.id);
-              }}
-              title={paneToolbarStrings.openInDashboard}
-              aria-label={paneToolbarStrings.openInDashboard}
-            >
-              <EyeIcon />
-            </button>
-          )}
-          {visibleActions.includes("close") && onClose && (
-            <button className="pane-action-btn" onClick={onClose} title={paneToolbarStrings.closePane}>
-              <CloseIcon size={11} />
-            </button>
-          )}
-          <div ref={kebabRef} style={{ position: "relative", flexShrink: 0 }}>
-            <button
-              ref={kebabTriggerRef}
-              className="pane-action-btn"
-              type="button"
-              title={terminalPaneStrings.paneActions}
-              aria-label={terminalPaneStrings.paneActions}
-              aria-haspopup="menu"
-              aria-expanded={kebabOpen}
-              onClick={(event) => {
-                event.stopPropagation();
-                setKebabOpen((open) => !open);
-              }}
-              style={{ margin: "0 1px", padding: "3px 5px", flexShrink: 0 }}
-            >
-              <KebabIcon />
-            </button>
-            {kebabOpen && (
-              <div
-                ref={kebabMenuRef}
-                role="menu"
-                onKeyDown={handlePaneMenuKeyDown}
+        // Eight controls at one spacing read as a single object, and the one
+        // that closes the pane sat 4px from the one that opens it in the
+        // dashboard. Three groups instead, at the seams the verbs already
+        // make: what this tab holds, what shape the pane is, and ending it.
+        // Measured on the Mac at gap 10 the seam came out 18px against 12px
+        // within, which is only 1.5x and reads as a wobble rather than a break.
+        // 14 puts it at 22 against 12.
+        // as a break; the 12px it costs comes out of the tab strip, which
+        // scrolls, and the bar's width modes are measured on the bar itself
+        // so none of the collapse thresholds move.
+        <div style={{ display: "flex", alignItems: "center", gap: 14, paddingRight: 6, flexShrink: 0, order: 4 }}>
+          {/* What this tab holds. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            {visibleActions.includes("search") && (
+              <button
+                type="button"
+                className="pane-action-btn"
+                aria-label={terminalPaneStrings.searchTerminal}
+                aria-disabled={!canSearchTerminal}
+                title={canSearchTerminal
+                  ? terminalPaneStrings.searchTerminalTitle(searchShortcut)
+                  : terminalPaneStrings.searchUnavailable}
+                onClick={handleSearchTerminal}
+                style={{ opacity: canSearchTerminal ? 1 : 0.55 }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <circle cx="10" cy="10" r="6" />
+                  <path d="m15 15 6 6" />
+                </svg>
+              </button>
+            )}
+            {visibleActions.includes("publish") && showPublishButton && (
+              <button
+                className="pane-action-btn"
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  // The monitor reports agentKind before the session id resolves;
+                  // a silently-disabled button reads as "broken", so explain instead.
+                  if (!agentSessionId) {
+                    useToastStore.getState().pushToast(onlineStrings.publishNoSession, "error");
+                    return;
+                  }
+                  setPublishPopoverOpen(true);
+                }}
+                title={agentSessionId
+                  ? (published ? onlineStrings.publishButtonTitleUpdate : onlineStrings.publishButtonTitleNew)
+                  : onlineStrings.publishNoSession}
                 style={{
-                  position: "absolute",
-                  top: "calc(100% + 2px)",
-                  right: 0,
-                  zIndex: 130,
-                  background: "var(--cmux-popover)",
-                  border: "1px solid var(--cmux-border)",
-                  borderRadius: 6,
-                  padding: "4px 0",
-                  boxShadow: "var(--cmux-shadow-pane-menu)",
-                  minWidth: 160,
-                  fontSize: 13,
+                  color: published ? "var(--cmux-accent-text)" : undefined,
+                  opacity: agentSessionId ? 1 : 0.55,
                 }}
               >
-                {overflowActions.includes("new-tab") && (
-                  <PaneTabContextMenuItem
-                    onClick={() => {
-                      setKebabOpen(false);
-                      onAddTab?.(getDefaultAgent().id, "launcher");
-                    }}
-                  >
-                    {paneToolbarStrings.newTab}
-                  </PaneTabContextMenuItem>
-                )}
-                {overflowActions.includes("publish") && showPublishButton && (
-                  <PaneTabContextMenuItem
-                    onClick={() => {
-                      setKebabOpen(false);
-                      if (!agentSessionId) {
-                        useToastStore.getState().pushToast(onlineStrings.publishNoSession, "error");
-                        return;
-                      }
-                      setPublishPopoverOpen(true);
-                    }}
-                  >
-                    {published ? onlineStrings.publishButtonTitleUpdate : onlineStrings.publishButtonTitleNew}
-                  </PaneTabContextMenuItem>
-                )}
-                {overflowActions.includes("split-right") && onSplitRight && showSplitRightButton && (
-                  <PaneTabContextMenuItem
-                    onClick={() => {
-                      setKebabOpen(false);
-                      onSplitRight();
-                    }}
-                  >
-                    {paneToolbarStrings.splitRight}
-                  </PaneTabContextMenuItem>
-                )}
-                {overflowActions.includes("split-down") && onSplitDown && showSplitDownButton && (
-                  <PaneTabContextMenuItem
-                    onClick={() => {
-                      setKebabOpen(false);
-                      onSplitDown();
-                    }}
-                  >
-                    {paneToolbarStrings.splitDown}
-                  </PaneTabContextMenuItem>
-                )}
-                {overflowActions.includes("zoom") && onZoomToggle && (
-                  <PaneTabContextMenuItem
-                    onClick={() => {
-                      setKebabOpen(false);
-                      onZoomToggle();
-                    }}
-                  >
-                    {isZoomed ? paneToolbarStrings.restorePane : paneToolbarStrings.zoomPane}
-                  </PaneTabContextMenuItem>
-                )}
-                {overflowActions.includes("dashboard") && activeTab && (
-                  <PaneTabContextMenuItem
-                    onClick={() => {
-                      setKebabOpen(false);
-                      openDashboardForTab(activeTab.id);
-                    }}
-                  >
-                    {paneToolbarStrings.openInDashboard}
-                  </PaneTabContextMenuItem>
-                )}
-                <PaneTabContextMenuItem
-                  disabled={!canSearchTerminal}
-                  title={canSearchTerminal
-                ? terminalPaneStrings.searchTerminalTitle(searchShortcut)
-                : terminalPaneStrings.searchUnavailable}
-                  onClick={handleSearchTerminal}
-                >
-                  {terminalPaneStrings.searchTerminal}
-                </PaneTabContextMenuItem>
-                <PaneTabContextMenuItem
-                  disabled={!peekClosedPane()}
-                  title={!peekClosedPane() ? terminalPaneStrings.noClosedTab : undefined}
-                  onClick={() => {
-                    if (!peekClosedPane()) return;
-                    setKebabOpen(false);
-                    window.dispatchEvent(new Event(TAB_RESTORE_CLOSED_EVENT));
+                <BookmarkIcon />
+              </button>
+            )}
+          </div>
+          {/* What shape the pane is, and where else to look at it. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            {visibleActions.includes("split-right") && onSplitRight && showSplitRightButton && (
+              <button className="pane-action-btn pane-tabbar-split" onClick={onSplitRight} title={paneToolbarStrings.splitRight}>
+                <SplitRightIcon />
+              </button>
+            )}
+            {visibleActions.includes("split-down") && onSplitDown && showSplitDownButton && (
+              <button className="pane-action-btn pane-tabbar-split" onClick={onSplitDown} title={paneToolbarStrings.splitDown}>
+                <SplitDownIcon />
+              </button>
+            )}
+            {visibleActions.includes("zoom") && onZoomToggle && (
+              <button
+                className="pane-action-btn pane-tabbar-zoom"
+                onClick={onZoomToggle}
+                title={isZoomed
+                  ? paneToolbarStrings.restorePaneAt(zoomShortcut)
+                  : paneToolbarStrings.zoomPaneAt(zoomShortcut)}
+              >
+                {isZoomed ? <MinimizeIcon /> : <MaximizeIcon />}
+              </button>
+            )}
+            {visibleActions.includes("dashboard") && activeTab && (
+              <button
+                className="pane-action-btn pane-tabbar-dashboard"
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openDashboardForTab(activeTab.id);
+                }}
+                title={paneToolbarStrings.openInDashboard}
+                aria-label={paneToolbarStrings.openInDashboard}
+              >
+                <EyeIcon />
+              </button>
+            )}
+          </div>
+          {/* Ending it, and everything that did not fit. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            {visibleActions.includes("close") && onClose && (
+              <button className="pane-action-btn" onClick={onClose} title={paneToolbarStrings.closePane}>
+                <CloseIcon size={11} />
+              </button>
+            )}
+            <div ref={kebabRef} style={{ position: "relative", flexShrink: 0 }}>
+              <button
+                ref={kebabTriggerRef}
+                className="pane-action-btn"
+                type="button"
+                title={terminalPaneStrings.paneActions}
+                aria-label={terminalPaneStrings.paneActions}
+                aria-haspopup="menu"
+                aria-expanded={kebabOpen}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setKebabOpen((open) => !open);
+                }}
+                style={{ margin: "0 1px", padding: "3px 5px", flexShrink: 0 }}
+              >
+                <KebabIcon />
+              </button>
+              {kebabOpen && (
+                <div
+                  ref={kebabMenuRef}
+                  role="menu"
+                  onKeyDown={handlePaneMenuKeyDown}
+                  style={{
+                    position: "absolute",
+                    top: "calc(100% + 2px)",
+                    right: 0,
+                    zIndex: 130,
+                    background: "var(--cmux-popover)",
+                    border: "1px solid var(--cmux-border)",
+                    borderRadius: 6,
+                    padding: "4px 0",
+                    boxShadow: "var(--cmux-shadow-pane-menu)",
+                    minWidth: 160,
+                    fontSize: 13,
                   }}
                 >
-                  {terminalPaneStrings.reopenTab}
-                </PaneTabContextMenuItem>
-                {overflowActions.includes("close") && onClose && (
+                  {overflowActions.includes("new-tab") && (
+                    <PaneTabContextMenuItem
+                      onClick={() => {
+                        setKebabOpen(false);
+                        onAddTab?.(getDefaultAgent().id, "launcher");
+                      }}
+                    >
+                      {paneToolbarStrings.newTab}
+                    </PaneTabContextMenuItem>
+                  )}
+                  {overflowActions.includes("publish") && showPublishButton && (
+                    <PaneTabContextMenuItem
+                      onClick={() => {
+                        setKebabOpen(false);
+                        if (!agentSessionId) {
+                          useToastStore.getState().pushToast(onlineStrings.publishNoSession, "error");
+                          return;
+                        }
+                        setPublishPopoverOpen(true);
+                      }}
+                    >
+                      {published ? onlineStrings.publishButtonTitleUpdate : onlineStrings.publishButtonTitleNew}
+                    </PaneTabContextMenuItem>
+                  )}
+                  {overflowActions.includes("split-right") && onSplitRight && showSplitRightButton && (
+                    <PaneTabContextMenuItem
+                      onClick={() => {
+                        setKebabOpen(false);
+                        onSplitRight();
+                      }}
+                    >
+                      {paneToolbarStrings.splitRight}
+                    </PaneTabContextMenuItem>
+                  )}
+                  {overflowActions.includes("split-down") && onSplitDown && showSplitDownButton && (
+                    <PaneTabContextMenuItem
+                      onClick={() => {
+                        setKebabOpen(false);
+                        onSplitDown();
+                      }}
+                    >
+                      {paneToolbarStrings.splitDown}
+                    </PaneTabContextMenuItem>
+                  )}
+                  {overflowActions.includes("zoom") && onZoomToggle && (
+                    <PaneTabContextMenuItem
+                      onClick={() => {
+                        setKebabOpen(false);
+                        onZoomToggle();
+                      }}
+                    >
+                      {isZoomed ? paneToolbarStrings.restorePane : paneToolbarStrings.zoomPane}
+                    </PaneTabContextMenuItem>
+                  )}
+                  {overflowActions.includes("dashboard") && activeTab && (
+                    <PaneTabContextMenuItem
+                      onClick={() => {
+                        setKebabOpen(false);
+                        openDashboardForTab(activeTab.id);
+                      }}
+                    >
+                      {paneToolbarStrings.openInDashboard}
+                    </PaneTabContextMenuItem>
+                  )}
                   <PaneTabContextMenuItem
+                    disabled={!canSearchTerminal}
+                    title={canSearchTerminal
+                  ? terminalPaneStrings.searchTerminalTitle(searchShortcut)
+                  : terminalPaneStrings.searchUnavailable}
+                    onClick={handleSearchTerminal}
+                  >
+                    {terminalPaneStrings.searchTerminal}
+                  </PaneTabContextMenuItem>
+                  <PaneTabContextMenuItem
+                    disabled={!peekClosedPane()}
+                    title={!peekClosedPane() ? terminalPaneStrings.noClosedTab : undefined}
                     onClick={() => {
+                      if (!peekClosedPane()) return;
                       setKebabOpen(false);
-                      onClose();
+                      window.dispatchEvent(new Event(TAB_RESTORE_CLOSED_EVENT));
                     }}
                   >
-                    {paneToolbarStrings.closePane}
+                    {terminalPaneStrings.reopenTab}
                   </PaneTabContextMenuItem>
-                )}
-              </div>
-            )}
+                  {overflowActions.includes("close") && onClose && (
+                    <PaneTabContextMenuItem
+                      onClick={() => {
+                        setKebabOpen(false);
+                        onClose();
+                      }}
+                    >
+                      {paneToolbarStrings.closePane}
+                    </PaneTabContextMenuItem>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

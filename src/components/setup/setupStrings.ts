@@ -11,7 +11,7 @@ export const setupStrings = {
   launch: "開く",
   layout: "レイアウト",
   agents: (paneCount: number) => `エージェント (${paneCount} ペイン)`,
-  modelPlaceholder: "モデル (既定)",
+  modelPlaceholder: "モデル（既定）",
   paneModelLabel: (slot: number) => `ペイン ${slot} のモデル`,
   paneEffortLabel: (slot: number) => `ペイン ${slot} の thinking`,
 } as const;

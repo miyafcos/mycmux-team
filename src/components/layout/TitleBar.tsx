@@ -179,7 +179,6 @@ export default function TitleBar({
             padding: "3px 4px",
             display: "flex",
             alignItems: "center",
-            borderRadius: 3,
           }}
         >
           <SidebarIcon />
@@ -199,7 +198,6 @@ export default function TitleBar({
               padding: "3px 6px",
               display: "flex",
               alignItems: "center",
-              borderRadius: 3,
             }}
           >
             <SavepointIcon />
@@ -221,7 +219,6 @@ export default function TitleBar({
             padding: "3px 6px",
             display: "flex",
             alignItems: "center",
-            borderRadius: 3,
           }}
         >
           <PlusIcon />
@@ -242,7 +239,6 @@ export default function TitleBar({
               marginLeft: -4,
               display: "flex",
               alignItems: "center",
-              borderRadius: 3,
             }}
           >
             <CaretDownIcon />
@@ -322,7 +318,6 @@ export default function TitleBar({
               color: "var(--cmux-text-secondary)",
               cursor: "pointer",
               padding: "3px 6px",
-              borderRadius: 3,
               display: "flex",
               alignItems: "center",
             }}
@@ -353,7 +348,6 @@ export default function TitleBar({
                 color: "var(--cmux-text-secondary)",
                 cursor: "pointer",
                 padding: "3px 6px",
-                borderRadius: 3,
                 display: "flex",
                 alignItems: "center",
               }}
@@ -372,7 +366,6 @@ export default function TitleBar({
                 color: "var(--cmux-text-secondary)",
                 cursor: "pointer",
                 padding: "3px 6px",
-                borderRadius: 3,
                 display: "flex",
                 alignItems: "center",
               }}
@@ -397,7 +390,6 @@ export default function TitleBar({
                 color: "var(--cmux-text-secondary)",
                 cursor: "pointer",
                 padding: "3px 6px",
-                borderRadius: 3,
                 display: "flex",
                 alignItems: "center",
               }}

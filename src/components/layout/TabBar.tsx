@@ -605,7 +605,13 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
         display: "flex",
         flexDirection: "column",
         background: "var(--cmux-sidebar)",
-        borderRight: "1px solid var(--cmux-border-hairline)",
+        // No border here: the resizer immediately to the right draws its own
+        // left border, so the seam carried two lines a pixel apart at
+        // different brightness -- measured on the Mac, 40,43,45 against
+        // 30,31,32, because each sat on its own ground. The resizer's line is
+        // the one to keep: it goes accent while you drag, and the resizer
+        // paints the pane backdrop so a wallpaper cannot show through the
+        // seam either.
         flexShrink: 0,
         overflowY: "hidden",
         overflowX: "hidden",

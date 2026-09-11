@@ -386,7 +386,13 @@ div:focus-within > .tab-close-btn,
   background: var(--cmux-hover);
 }
 
+/* Same control as .pane-action-btn, one band away, and it was carrying half
+   the radius: 3px against 6px. The comment on that rule applies here word for
+   word -- a tight corner makes the hover fill read as a square behind a round
+   icon -- and two rows of icon buttons that round differently is the kind of
+   thing you feel before you can name it. */
 .cmux-title-btn {
+  border-radius: var(--cmux-radius-md);
   transition: background var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease), transform var(--cmux-motion-fast) var(--cmux-ease);
 }
 
@@ -510,6 +516,13 @@ div:focus-within > .tab-close-btn,
   transition: background var(--cmux-motion-fast) var(--cmux-ease);
 }
 
+/* The colour bar sits above the tab bar's own hairline rather than on it, so
+   an agent tab shows two lines a pixel apart. Pulling the pill down to cover
+   the hairline was tried and reverted on 2026-09-11: the tab strip clips at
+   overflow-y hidden, so the overhang is cut and the bar renders 1px instead
+   of 2 -- measured, y=71 coloured and y=72 still grey. The hairline is also
+   the bar's own edge across its whole width, which is a line worth having;
+   a browser tab reads the same way. Left as it is. */
 .pane-tab-pill.has-agent-kind {
   border-bottom: 2px solid color-mix(in srgb, var(--agent-kind-color) 55%, transparent) !important;
 }
@@ -1254,7 +1267,10 @@ div:focus-within > .tab-close-btn,
   pointer-events: auto;
   opacity: 1;
   transform: translateY(0);
-  transition: opacity 180ms var(--cmux-ease), transform 180ms var(--cmux-ease);
+  /* The turn chip appears and leaves on its own, without the pointer asking,
+     so it takes the slow step rather than the one used for hover feedback. */
+  transition: opacity var(--cmux-motion-slow) var(--cmux-ease),
+    transform var(--cmux-motion-slow) var(--cmux-ease);
 }
 
 .terminal-turn-chip.is-leaving {

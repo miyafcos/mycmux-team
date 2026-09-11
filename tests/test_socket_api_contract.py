@@ -46,6 +46,7 @@ def test_socket_api_has_frontend_response_bridge() -> None:
     assert_contains(socket_rs, "session_manager.input_revision(id).ok()", "src-tauri/src/socket.rs")
 
     for snippet in [
+        'case "workspace.new":',
         'case "pane.spawn":',
         'case "pane.spawn_tab":',
         'case "pane.declare_tab":',
@@ -131,6 +132,7 @@ def test_socket_activation_preserves_the_operator_foreground() -> None:
         function_slice(socket_commands, "async function launchDeclared(", "async function activateTab("),
         function_slice(socket_commands, "async function activateTab(", "async function restoreActivation("),
         function_slice(socket_commands, "async function restoreActivation(", "async function closeTab("),
+        function_slice(socket_commands, "async function newWorkspace(", "export async function handleSocketCommand("),
     ]
     for scope in socket_scopes:
         assert "setActiveWorkspace(" not in scope
@@ -145,6 +147,7 @@ def test_socket_activation_preserves_the_operator_foreground() -> None:
     assert "foreground_changed: false" in socket_scopes[4]
     assert "foreground_changed: false" in socket_scopes[5]
     assert "foreground_preserved" in socket_scopes[5]
+    assert "foregroundChanged" in socket_scopes[-1]
     focus_web = function_slice(socket_commands, "async function focusWebPane(", "async function pushWebPane(")
     assert "setActiveWorkspace(" in focus_web
     assert "explicit foreground-changing socket command" in focus_web

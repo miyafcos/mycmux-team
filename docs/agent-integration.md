@@ -40,6 +40,9 @@ python scripts/mycmux_agent_cli.py spawn --target <claude|codex> --prompt-file <
 - effort やモデル指定は CLI フラグでは渡らない — **spec 本文に日本語で明記**する
 - spawn の初期 handoff と、既存タブへの一般入力は別経路。一般入力で生の `send --enter` を自動実行せず、後述の mycmux bridge で画面と canonical state を検証する
 
+別ワークスペースで走らせるときは `python scripts/mycmux_agent_cli.py workspace-new --name <name>` で新設します。
+応答の `workspaceId` を使い、`python scripts/mycmux_agent_cli.py spawn --split --workspace <id> --target codex --no-activate` で起動します。
+
 #### Web 操作
 
 基本ループは `open --background → wait → snapshot → find/click/type → wait → snapshot/eval → close`。

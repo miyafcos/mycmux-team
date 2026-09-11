@@ -40,6 +40,7 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 | `workspace.list` | なし | ワークスペース一覧と active ID |
 | `workspace.select` | `workspaceId` | ワークスペース切替 |
 | `workspace.rename` | `workspaceId`, `name` | ワークスペース名変更 |
+| `workspace.new` | `name`、`cwd?`、`gridTemplateId?` | 背景にワークスペースを新設し `{workspaceId, name, panes[], foregroundChanged}` を返す |
 | `pane.list` | `workspaceId` (省略時 active) | ペインとタブの一覧 (sessionId 含む) |
 | `pane.spawn` | 下記 | 新ペインを可視で立ち上げ、`{workspaceId, paneId, sessionId, mode}` を返す |
 | `pane.spawn_tab` | `anchorSessionId`、起動引数 | 既存ペイン内に新タブを追加 |
@@ -70,6 +71,13 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 一覧・ワークスペース操作には snake_case の別名 (`list_workspaces` など) もあります。全コマンドは `socketCommands.ts` の dispatcher と `mycmux_agent_cli.py` の parser が正本です。
 `status.subscribe` / `status.snapshot` は `socket.rs` が直接扱う状態フィードで、PTY 生出力のストリーミングとは別です。
 
+### `workspace.new` の作成と起動
+
+既定で active ワークスペースを動かしません。前面を変えるフラグも用意していません（`dbfabc76` の契約）。
+例外はワークスペースが 0 個で active ID が null のときだけで、最初のワークスペースを表示し、応答の `foregroundChanged` が true になります。
+新ワークスペースは GUI の New Workspace と同じ launcher ペイン 1 枚で始まります（`gridTemplateId` 指定時はそのグリッドの枚数）。
+エージェントを足すには `pane.spawn` を使います。背景ワークスペースでも `startBackgroundTabSession` で PTY が起動します。
+
 ### `pane.spawn` の起動モード (Web 分岐を先に判定、端末は上から優先)
 
 | モード | 引数 | 動き |
@@ -95,6 +103,8 @@ env 構築は純関数 `resolveSpawnPlan` に分離してあり、`tests/unit/so
 
 ```bash
 python scripts/mycmux_agent_cli.py panes
+python scripts/mycmux_agent_cli.py workspace-new --name hermes-lane
+python scripts/mycmux_agent_cli.py spawn --split --workspace <id> --target codex --no-activate
 python scripts/mycmux_agent_cli.py spawn --target codex --prompt "指示書の内容"   # アクティブなタブは移動しない。切り替えるときは --activate
 python scripts/mycmux_agent_cli.py spawn --target codex --split --prompt "..."   # 分割ペインで開く
 python scripts/mycmux_agent_cli.py spawn --target claude --handoff-from-session <ID>
@@ -116,4 +126,4 @@ python scripts/mycmux_agent_cli.py send --session <sessionId> --text "続けて"
 
 ## 未実装 (cmux 参照からの候補)
 
-`workspace.new` / `workspace.close`、`pane.close` / `pane.focus`、`notify.*`、`theme.*`、PTY 出力のストリーミング購読。同名コマンドは未実装です。タブ単位の終了・選択は既存の `pane.close_tab` / `pane.activate_tab` を利用できます。
+`workspace.close`（`workspace.new` は実装済み。閉じる側は PTY kill・scrollback 削除・Ctrl+Shift+T の復元履歴を伴う破壊操作なので、確認導線の設計が済むまでソケットに出していません）、`pane.close` / `pane.focus`、`notify.*`、`theme.*`、PTY 出力のストリーミング購読。同名コマンドは未実装です。タブ単位の終了・選択は既存の `pane.close_tab` / `pane.activate_tab` を利用できます。

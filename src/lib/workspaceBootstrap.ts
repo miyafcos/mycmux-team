@@ -64,6 +64,7 @@ export function applyCwdToPanes(panes: Pane[], cwd: string): Pane[] {
 export interface CreateWorkspaceAtCwdOptions {
   name?: string;
   gridTemplateId?: GridTemplateId;
+  activate?: boolean;
   /** Per-pane agent / model / effort. Absent panes open the launcher menu. */
   paneSpecs?: Record<number, PaneLaunchSpec>;
 }
@@ -123,6 +124,7 @@ export function activeWorkspaceCwd(): string {
 /**
  * Creates a workspace rooted at `cwd` using the standard store actions.
  * Returns the new workspace id.
+ * `activate: false` is for socket creation, preserving the operator foreground.
  */
 export function createWorkspaceAtCwd(
   cwd: string | null | undefined,
@@ -144,7 +146,7 @@ export function createWorkspaceAtCwd(
     gridTemplateId,
     panes,
     splitColumns,
-    { id: workspaceId },
+    { id: workspaceId, activate: options.activate },
   );
 
   return workspaceId;
