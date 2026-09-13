@@ -13,6 +13,7 @@ import {
   type PaneLaunchSpec,
 } from "../lib/agentCatalog";
 import { makeSessionId } from "../lib/constants";
+import { portableSessionId } from "../lib/detachedPane";
 import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../lib/layoutColumns";
 import { useWorkspaceListStore } from "./workspaceListStore";
 import { usePaneMetadataStore } from "./paneMetadataStore";
@@ -41,12 +42,12 @@ function makeTab(
   paneId: string,
   agentId: string,
   type: PaneTab["type"] = "terminal",
-  options?: Partial<Pick<PaneTab, "id" | "label" | "labelSource" | "presetId" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "turnMarks" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "isDirty" | "reloadCounter" | "lifecycle" | "origin" | "declaredPrompt" | "declaredTarget">>,
+  options?: Partial<Pick<PaneTab, "id" | "sessionId" | "label" | "labelSource" | "presetId" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "turnMarks" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "isDirty" | "reloadCounter" | "lifecycle" | "origin" | "declaredPrompt" | "declaredTarget">>,
 ): PaneTab {
   const tabId = options?.id ?? uuid();
   return {
     id: tabId,
-    sessionId: makeSessionId(workspaceId, `${paneId}-${tabId}`),
+    sessionId: options?.sessionId ?? makeSessionId(workspaceId, `${paneId}-${tabId}`),
     agentId,
     label: options?.label,
     labelSource: options?.labelSource,
@@ -341,7 +342,8 @@ function normalizeBrowserPath(path: string): string {
   return path.replace(/\\/g, "/");
 }
 
-function sourceKindFromPath(path: string): ArtifactSourceKind {
+export function sourceKindFromPath(path: string): ArtifactSourceKind {
+  if (/\.pdf$/i.test(path)) return "pdf";
   if (/\.(?:md|markdown)$/i.test(path)) return "markdown";
   if (/\.(?:docx?|docm|dotx?|dotm|xlsx?|xlsm|xlsb|xltx?|xltm|pptx?|pptm|potx?|potm|ppsx?|ppsm)$/i.test(path)) {
     return "office";
@@ -350,6 +352,7 @@ function sourceKindFromPath(path: string): ArtifactSourceKind {
 }
 
 function sourceKindLabel(kind: ArtifactSourceKind): string {
+  if (kind === "pdf") return "PDF";
   if (kind === "markdown") return "MD";
   if (kind === "office") return "OFFICE";
   return "HTML";
@@ -572,6 +575,9 @@ interface WorkspaceLayoutState {
     targetWorkspaceId: string,
     targetPaneId: string,
   ) => void;
+  insertRestoredPaneToSplit: (
+    workspaceId: string, targetPaneId: string, pane: Pane, direction: SplitInsertDirection,
+  ) => boolean;
   movePaneToSplit: (
     sourceWorkspaceId: string,
     sourcePaneId: string,
@@ -633,13 +639,17 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
   restorePanes: (workspaceId, configs, savedSplitColumns, gridTemplateId) => {
     const defaultAgentId = getDefaultAgent().id;
     const paneByConfigIndex = new Map<number, Pane>();
+    const occupiedSessionIds = new Set(
+      useWorkspaceListStore.getState().workspaces.flatMap((workspace) =>
+        workspace.panes.flatMap((pane) => pane.tabs.map((tab) => tab.sessionId))),
+    );
     const panes = configs.map((pc, configIndex): Pane | null => {
       const paneId = pc.pane_id ?? uuid();
       const tabs = pc.tabs && pc.tabs.length > 0
           ? pc.tabs.map((tabConfig) => {
             const restoredTabType = tabConfig.type as PaneTab["type"] | null | undefined;
             const isDeclaredRestoredTab = tabConfig.lifecycle === "declared";
-            const isWebRestoredTab = restoredTabType === "web";
+            const isWebRestoredTab = restoredTabType === "web" || restoredTabType === "browser";
             const tabClaudeSessionId = isDeclaredRestoredTab || isWebRestoredTab
               ? undefined
               : tabConfig.claude_session_id ?? undefined;
@@ -661,6 +671,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
               restoredTabType ?? "terminal",
               {
                 id: tabConfig.tab_id ?? undefined,
+                sessionId: portableSessionId(tabConfig.session_id, occupiedSessionIds),
                 label: restoredTabType === "online"
                   ? onlineStrings.panelTitle
                   : tabConfig.label ?? tabConfig.preset_id ?? undefined,
@@ -668,6 +679,10 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
                   ? undefined
                   : tabConfig.label_source ?? undefined,
                 presetId: tabConfig.preset_id ?? undefined,
+                htmlPath: tabConfig.html_path ?? undefined,
+                sourcePath: tabConfig.source_path ?? undefined,
+                sourceKind: tabConfig.source_kind ?? undefined,
+                previewPath: tabConfig.preview_path ?? undefined,
                 cwd: isWebRestoredTab ? undefined : tabConfig.cwd ?? pc.cwd ?? undefined,
                 claudeSessionId: tabClaudeSessionId,
                 agentKind: tabAgentKind,
@@ -686,6 +701,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
                 declaredTarget: tabConfig.declared_target ?? undefined,
               },
             );
+            occupiedSessionIds.add(tab.sessionId);
             if (!isDeclaredRestoredTab && tab.turnMarks && tab.turnMarks.length > 0) {
               seedTurnMarkSnapshots(tab.sessionId, tab.turnMarks);
             }
@@ -1482,6 +1498,16 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     );
     listStore._updateWorkspacePanes(targetWorkspaceId, targetPanes);
     removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
+  },
+
+  insertRestoredPaneToSplit: (workspaceId, targetPaneId, pane, direction) => {
+    const listStore = useWorkspaceListStore.getState();
+    const workspace = listStore.getWorkspace(workspaceId);
+    if (!workspace || workspace.panes.some((existing) => existing.id === pane.id)) return false;
+    const columns = insertPaneIdIntoColumns(cloneSplitColumns(workspace), targetPaneId, pane.id, direction);
+    if (!columns) return false;
+    listStore._updateWorkspacePanes(workspaceId, [...workspace.panes, pane], normalizeWorkspaceSplitColumns(columns), true);
+    return true;
   },
 
   movePaneToSplit: (sourceWorkspaceId, sourcePaneId, targetWorkspaceId, targetPaneId, direction) => {

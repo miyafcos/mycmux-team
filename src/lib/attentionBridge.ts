@@ -59,7 +59,3 @@ export function attentionResolveCard(id: string): Promise<void> {
 export function attentionSetTracked(ptySessionId: string, tracked: boolean): Promise<void> {
   return invoke<void>("attention_set_tracked", { ptySessionId, tracked });
 }
-
-export function attentionListTracked(): Promise<string[]> {
-  return invoke<string[]>("attention_list_tracked");
-}

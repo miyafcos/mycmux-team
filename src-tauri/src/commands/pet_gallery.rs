@@ -1,5 +1,4 @@
 use crate::commands::pets::{pet_info_from_directory, validate_atlas, PetInfo};
-use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -10,8 +9,6 @@ use std::time::Duration;
 use uuid::Uuid;
 use zip::ZipArchive;
 
-const GALLERY_ORIGIN: &str = "https://codex-pets.net/";
-const MAX_PREVIEW_BYTES: usize = 2 * 1024 * 1024;
 const MAX_DOWNLOAD_BYTES: usize = 16 * 1024 * 1024;
 const MAX_EXTRACTED_ENTRY_BYTES: u64 = 16 * 1024 * 1024;
 const ALLOWED_ARCHIVE_ENTRIES: &[&str] = &["pet.json", "spritesheet.webp", "spritesheet.png"];
@@ -297,18 +294,6 @@ pub async fn fetch_pet_gallery(query: Option<String>, page: u32, page_size: u32,
         .error_for_status().map_err(|error| format!("Could not fetch pet gallery: {error}"))?;
     let body = response.bytes().await.map_err(|error| format!("Could not read gallery response: {error}"))?;
     parse_gallery_page(&body)
-}
-
-#[tauri::command(async)]
-pub async fn fetch_pet_preview(preview_url: String) -> Result<String, String> {
-    if !preview_url.starts_with(GALLERY_ORIGIN) { return Err("Preview URL must use codex-pets.net".to_string()); }
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).redirect(reqwest::redirect::Policy::none()).build()
-        .map_err(|error| format!("Could not initialize gallery client: {error}"))?;
-    let response = client.get(&preview_url).send().await.map_err(|error| format!("Could not fetch pet preview: {error}"))?
-        .error_for_status().map_err(|error| format!("Could not fetch pet preview: {error}"))?;
-    let content_type = response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|value| value.to_str().ok()).unwrap_or("image/webp").to_string();
-    let bytes = bounded_bytes(response, MAX_PREVIEW_BYTES, "Pet preview").await?;
-    Ok(format!("data:{content_type};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
 }
 
 #[tauri::command(async)]

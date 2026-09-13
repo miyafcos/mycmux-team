@@ -702,7 +702,7 @@ describe("LayoutMinimapPanel", () => {
 
   it("places the tab sweep control in the minimap footer and removes it from the title bar", async () => {
     await renderDndPanel(dndWorkspaces());
-    const sweepButton = container.querySelector<HTMLElement>("[aria-label='タブ掃除']")!;
+    const sweepButton = container.querySelector<HTMLElement>("[aria-label='ペイン掃除']")!;
     expect(sweepButton.closest(".cmux-minimap-footer")).not.toBeNull();
     expect(readFileSync("src/components/layout/TitleBar.tsx", "utf8")).not.toContain("TabSweepButton");
   });
@@ -831,7 +831,7 @@ describe("LayoutMinimapPanel", () => {
     await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]} displayStateByTabId={new Map()} selectedTabId={null} activePaneSessionId={null} onSelect={vi.fn()} />));
     const cell = container.querySelector<HTMLElement>("[data-minimap-pane='empty']")!;
 
-    expect(cell.querySelector(".cmux-minimap-pane-empty")?.textContent).toBe("空きペイン");
+    expect(cell.querySelector(".cmux-minimap-pane-empty")?.textContent).toBe("空きタブ");
     expect(container.querySelectorAll("[data-minimap-pane='empty'] [data-minimap-tab]")).toHaveLength(0);
     // A 0-tab pane is budgeted as one row, exactly like a 1-tab pane.
     expect(minimapCellHeightPx(0, true)).toBe(minimapCellHeightPx(1, true));

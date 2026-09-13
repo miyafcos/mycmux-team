@@ -77,9 +77,6 @@ const SECTION_PREVIEW = 5;
  */
 const RESUME_FETCH_LIMIT = 40;
 
-/** Section keys that can be switched off alongside individual catalog rows. */
-export const LAUNCHER_SECTION_IDS = ["resume", "dev", "anken"] as const;
-
 /**
  * Clicking anything in this pane must not move the focus off the search box.
  *

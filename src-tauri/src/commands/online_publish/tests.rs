@@ -317,7 +317,7 @@
         assert_eq!(
             result.warnings[0],
             format!(
-                "タブ記録のセッション {requested_prefix} に会話ログが無いため、この作業ディレクトリの最新会話 {resolved_prefix} を保存しました"
+                "ペイン記録のセッション {requested_prefix} に会話ログが無いため、この作業ディレクトリの最新会話 {resolved_prefix} を保存しました"
             )
         );
     }

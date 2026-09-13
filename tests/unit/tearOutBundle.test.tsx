@@ -220,3 +220,25 @@ describe("tab-bundle tear-out", () => {
     expect(getWorkspace("workspace-detached").panes[0].activeTabId).toBe("one");
   });
 });
+
+
+describe("single-tab content-only tear-out", () => {
+  it.each(["minimap", "pane"] as const)("captures origin on the %s surface", async (surface) => {
+    const item: PaneDragItem = { kind: "tab", workspaceId: "source", paneId: "source-pane",
+      tabId: "three", label: "Three", ...(surface === "minimap" ? { surface } : {}) };
+    await act(async () => root.render(<DragHarness item={item} />));
+    const source = container.querySelector<HTMLElement>("[data-testid='drag-source']")!;
+    await act(async () => {
+      source.dispatchEvent(pointer("pointerdown", 10, 10, 100, 100));
+      window.dispatchEvent(pointer("pointermove", -50, 10, 500, 600));
+      window.dispatchEvent(pointer("pointerup", -50, 10, 500, 600));
+      await Promise.resolve();
+    });
+    expect(tearOutMocks.tearOutWorkspaceToNewWindow).toHaveBeenCalledWith("workspace-detached", {
+      x: 460, y: 580,
+      detachedFrom: { workspace_id: "source", pane_id: "source-pane", tab_id: "three", index: 2, column: 0, row: 0, column_size: 2 },
+    });
+    expect(getWorkspace("workspace-detached").panes[0].tabs.map((tab) => tab.id)).toEqual(["three"]);
+    expect(getWorkspace("source").panes[0].tabs.map((tab) => tab.id)).toEqual(["one", "two", "four"]);
+  });
+});

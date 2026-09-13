@@ -312,5 +312,5 @@ matrix:
 - [Tauri v2 Documentation](https://v2.tauri.app/)
 - [wry GitHub](https://github.com/tauri-apps/wry) — WebView abstraction
 - [portable-pty GitHub](https://github.com/wez/wezterm/tree/main/pty) — PTY library
-- [BridgeSpace RE Docs](../bridgespace-re/) — Competitive reference
+- BridgeSpace RE Docs — removed from this repository on 2026-09-13
 - [tauri-action](https://github.com/tauri-apps/tauri-action) — CI/CD

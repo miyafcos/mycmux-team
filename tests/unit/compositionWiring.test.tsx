@@ -188,10 +188,11 @@ describe("a terminal created after an await sees the current answer", () => {
     act(() => root.render(<ColdInitStandIn />));
     expect(atMount).toMatchObject({ mediaActive: false, minimumContrastRatio: 7, terminalOpacity: 1 });
 
-    // The wallpaper lands (or the user unticks "fill with theme colour") while
-    // the session-alive probe is still in flight.
+    // The wallpaper lands and a light theme is selected while the
+    // session-alive probe is still in flight.
     act(() => {
       useCompositionStore.setState({ mediaActive: true });
+      useThemeStore.getState().setTheme("geppaku");
     });
     await act(async () => {
       release?.();
@@ -200,8 +201,13 @@ describe("a terminal created after an await sees the current answer", () => {
 
     expect(atConstruction).toMatchObject({
       mediaActive: true,
-      minimumContrastRatio: 1,
+      minimumContrastRatio: 5.5,
       terminalOpacity: 0.45,
+    });
+
+    act(() => useCompositionStore.setState({ mediaActive: false }));
+    expect(readLiveTerminalAppearance()).toMatchObject({
+      mediaActive: false, minimumContrastRatio: 4.5, terminalOpacity: 1,
     });
 
     act(() => root.unmount());

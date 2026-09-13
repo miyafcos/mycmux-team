@@ -1,10 +1,9 @@
 // ANSI palette correction for the terminal theme handed to xterm.
 //
-// xterm's own minimumContrastRatio is disabled under a media (wallpaper)
-// background, because the terminal background is transparent there and xterm
-// would correct against a phantom black one. That leaves the ANSI palette
-// completely uncorrected exactly where the background is least predictable, so
-// the floor has to be baked into the ITheme before it is handed over.
+// Media backgrounds keep an ANSI palette floor baked into ITheme. xterm also
+// corrects ANSI and truecolor text against the theme RGB retained in its
+// transparent background. Both corrections use the authored theme background,
+// not the changing pixels of the wallpaper composited underneath.
 
 import type { ITheme } from "@xterm/xterm";
 import { applyContrastFloor, isHexColor } from "../theme/colorContrast";
@@ -25,7 +24,7 @@ const ANSI_CONTRAST_TARGET = 4.5;
 /**
  * Returns `theme` with its ANSI colors lifted to the WCAG AA floor against the
  * terminal background. `mediaActive` false returns the theme untouched — xterm
- * applies its own (stricter) correction then.
+ * applies its own correction in both modes (4.5 light / 7 dark).
  *
  * Must run before the background is swapped for the transparent media one,
  * since the authored opaque background is what the floor measures against.

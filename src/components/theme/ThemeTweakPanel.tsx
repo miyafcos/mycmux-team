@@ -45,7 +45,7 @@ const QUICK_TWEAK_FIELDS: TweakField[] = [
   { key: "chrome.accent", label: "アクセント", detail: "選択中・フォーカス" },
   { key: "chrome.background", label: "背景", detail: "アプリ全体" },
   { key: "chrome.surface", label: "パネル", detail: "サイドバー・設定画面" },
-  { key: "chrome.border", label: "境界線", detail: "ペインや区切り" },
+  { key: "chrome.border", label: "境界線", detail: "タブや区切り" },
   { key: "chrome.text", label: "UI 文字", detail: "メニュー・ラベル" },
   { key: "terminal.background", label: "端末背景", detail: "Codex/Claude の出力面" },
   { key: "terminal.foreground", label: "端末文字", detail: "通常の出力文字" },

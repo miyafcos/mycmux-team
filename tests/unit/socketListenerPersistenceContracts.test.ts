@@ -11,15 +11,16 @@ describe("SocketListener persistence production contracts", () => {
 
   it("keeps one workspace serializer for autosave and request-bound persistence", () => {
     expect(source).not.toContain("function requestWorkspaceConfigs(");
-    expect(source.match(/\.map\(\(workspace\) => toConfig\(workspace\)\)/g)).toHaveLength(2);
+    expect(source.match(/\.map\(\(workspace\) => toConfig\(workspace\)\)/g)).toHaveLength(1);
     expect(source.match(/serializePersistentWorkspaceSet\(\{/g)).toHaveLength(2);
   });
 
   it("does not cancel a pending complete autosave for an immediate request", () => {
-    const leaderDriver = source.slice(
-      source.indexOf("registerPersistenceLeader({"),
-      source.indexOf("const countLiveAgentSessions"),
-    );
+    const start = source.indexOf("registerPersistenceLeader({");
+    const end = source.indexOf("const promptAfterFinalSaveFailure", start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const leaderDriver = source.slice(start, end);
     expect(leaderDriver).not.toMatch(/sync:\s*\(request\)[\s\S]*?clearTimeout\(debounceTimer\)/);
   });
 

@@ -165,7 +165,3 @@ export const useComposerStore = create<ComposerState>((set) => ({
     return { dashboardRetryBySession };
   }),
 }));
-
-export function composerDraft(sessionId: string | null | undefined): string {
-  return sessionId ? useComposerStore.getState().draftBySession[sessionId] ?? "" : "";
-}

@@ -7,7 +7,7 @@ import {
   useUiStore,
   usePaneMetadataStore,
 } from "../../stores/workspaceStore";
-import { killSession, removeWorkspaceScrollback } from "../../lib/ipc";
+import { killSession } from "../../lib/ipc";
 import { isMainWindow } from "../../lib/windowContext";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
 import { attachGlobalFontZoom } from "../terminal/terminalMouseInputFilter";
@@ -61,10 +61,10 @@ import { listen } from "@tauri-apps/api/event";
 import { tabHasPty } from "../../lib/tabLifecycle";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
 import { confirmPaneClose } from "../../lib/paneCloseConfirmation";
+import { closeWorkspaceAfterConfirmation } from "../../lib/workspaceClose";
 import {
   peekClosedPane,
   popClosedPane,
-  pushClosedWorkspace,
 } from "../../stores/closedPaneStore";
 import { useOnlineSavepointStore } from "../../stores/onlineSavepointStore";
 import { paneContainsSession } from "../../stores/workspaceListStore";
@@ -570,7 +570,6 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const setSidebarWidth = useUiStore((s) => s.setSidebarWidth);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const setActiveWorkspace = useWorkspaceListStore((s) => s.setActiveWorkspace);
-  const removeWorkspace = useWorkspaceListStore((s) => s.removeWorkspace);
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const activePaneId = useUiStore((s) => s.activePaneId);
   const lastActivePaneId = useUiStore((s) => s.lastActivePaneId);
@@ -787,36 +786,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       if (ws && ws.panes.flatMap((pane) => pane.tabs).map((tab) => tab.sessionId).join("\0")
         !== requestedWorkspace.panes.flatMap((pane) => pane.tabs).map((tab) => tab.sessionId).join("\0")
         && !await confirmPaneClose(ws.panes, "workspace", { workspaceName })) return;
-      if (ws) {
-        // Record the workspace's tabs before their sessions die so
-        // Ctrl+Shift+T can undo the close. Bounded by
-        // CLOSED_WORKSPACE_BULK_LIMIT (half the history) — one gesture must not
-        // flush every individually-closed pane. The focused session ranks
-        // first so the most recently used tab comes back first.
-        const focusedSessionId = listState.activeWorkspaceId === id
-          ? useUiStore.getState().activePaneId
-          : listState.lastActivePaneByWorkspace[id] ?? null;
-        pushClosedWorkspace(ws, focusedSessionId);
-        for (const pane of ws.panes) {
-          for (const tab of pane.tabs) {
-            if (!tabHasPty(tab)) continue;
-            evictTerminalCache(tab.sessionId);
-            killSession(tab.sessionId).catch((err) =>
-              console.warn("[mycmux] killSession failed", tab.sessionId, err),
-            );
-            usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
-          }
-        }
-      }
-      const workspaceSessionIds = ws?.panes.flatMap((pane) => (
-        pane.tabs.filter(tabHasPty).map((tab) => tab.sessionId)
-      )) ?? [];
-      await removeWorkspaceScrollback(id, workspaceSessionIds).catch((err) =>
-        console.warn("[mycmux] removeWorkspaceScrollback failed", id, err),
-      );
-      removeWorkspace(id);
+      await closeWorkspaceAfterConfirmation(id);
     },
-    [workspaces, removeWorkspace],
+    [],
   );
 
   const handleCancelSetup = useCallback(() => {

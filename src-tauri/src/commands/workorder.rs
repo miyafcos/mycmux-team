@@ -11,9 +11,9 @@ use uuid::Uuid;
 
 use crate::workorder::{
     build_source_digests, create_draft, load_plan, record_source_snapshot, source_coverage, writer,
-    AdvanceOutcome, BlockedItem, GateId, GateStatus, GoContext, GoOptions, PlanDraft,
-    ReportEnvelope, SessionRole, SourceCoverage, SourceDigest, SourceSnapshotStatus, SpawnRequest,
-    WorkItemId, WorkOrderId,
+    AdvanceOutcome, BlockedItem, GoContext, GoOptions, PlanDraft,
+    SessionRole, SourceCoverage, SourceDigest, SourceSnapshotStatus, SpawnRequest,
+    WorkOrderId,
 };
 use crate::{test_profile, AppState};
 
@@ -105,17 +105,6 @@ impl From<AdvanceOutcome> for AdvanceResponse {
 pub struct SpawnResultInput {
     pub session_id: Option<String>,
     pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GateResultInput {
-    pub work_order_id: String,
-    pub plan_version: u32,
-    pub work_item_id: String,
-    pub gate_id: String,
-    pub status: GateStatus,
-    pub evidence: Value,
 }
 
 /// WorkOrder plans predate the frontend's camelCase IPC convention. Convert
@@ -487,53 +476,6 @@ pub async fn workorder_retry_spawn(
     Ok(RetrySpawnResponse {
         spawn_request_id: request.request_id,
     })
-}
-
-#[tauri::command(async)]
-pub async fn workorder_advance(
-    app: tauri::AppHandle,
-    id: String,
-) -> Result<AdvanceResponse, String> {
-    let id = WorkOrderId::try_new(&id).map_err(|error| error.to_string())?;
-    let mut conn = writer(&database_path()?).map_err(|error| error.to_string())?;
-    advance_current(&app, &mut conn, &id)
-}
-
-#[tauri::command(async)]
-pub async fn workorder_record_report(
-    app: tauri::AppHandle,
-    mut envelope: Value,
-) -> Result<AdvanceResponse, String> {
-    camel_keys_to_snake(&mut envelope);
-    let envelope: ReportEnvelope = serde_json::from_value(envelope)
-        .map_err(|error| format!("invalid WorkOrder report envelope: {error}"))?;
-    let mut conn = writer(&database_path()?).map_err(|error| error.to_string())?;
-    crate::workorder::record_report(&conn, &envelope).map_err(|error| error.to_string())?;
-    advance_current(&app, &mut conn, &envelope.work_order_id)
-}
-
-#[tauri::command(async)]
-pub async fn workorder_record_gate_result(
-    app: tauri::AppHandle,
-    input: GateResultInput,
-) -> Result<AdvanceResponse, String> {
-    let id = WorkOrderId::try_new(&input.work_order_id).map_err(|error| error.to_string())?;
-    let work_item_id =
-        WorkItemId::try_new(&input.work_item_id).map_err(|error| error.to_string())?;
-    let gate_id = GateId::try_new(&input.gate_id).map_err(|error| error.to_string())?;
-    let mut conn = writer(&database_path()?).map_err(|error| error.to_string())?;
-    crate::workorder::record_gate_result(
-        &conn,
-        &id,
-        input.plan_version,
-        &work_item_id,
-        &gate_id,
-        input.status,
-        &input.evidence,
-        now_ms()?,
-    )
-    .map_err(|error| error.to_string())?;
-    advance_current(&app, &mut conn, &id)
 }
 
 #[tauri::command(async)]

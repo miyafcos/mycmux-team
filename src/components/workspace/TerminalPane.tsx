@@ -35,6 +35,7 @@ import { isArtifactPreviewUri, isDirectoryLikeUri } from "../terminal/terminalLi
 import { focusController } from "../../lib/focusController";
 import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
 import { usePaneDragStore, type PaneDragItem, type PaneDropTarget } from "../../stores/paneDragStore";
+import { useDetachedDockStore } from "../../stores/detachedDockStore";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { resolveLiveSavepointTargetKind, savepointTargetLabel } from "../../lib/savepointHandoff";
 import { resolvePaneHandoffEligibility } from "../../lib/paneHandoff";
@@ -86,9 +87,9 @@ export function buildLaunchArgs(
     if (agentId === "claude-code" && newSessionId) {
       const launchArgs = [
         ...args,
-        "--dangerously-skip-permissions",
+        "--allow-dangerously-skip-permissions",
         "--permission-mode",
-        "bypassPermissions",
+        "auto",
         "--session-id",
         newSessionId,
       ];
@@ -99,9 +100,14 @@ export function buildLaunchArgs(
   switch (savedSession.kind) {
     case "claude":
       return [
-        "--dangerously-skip-permissions",
+        ...args.flatMap((arg, index) =>
+          (arg === "--model" || arg === "--effort") && args[index + 1]
+            ? [arg, args[index + 1]]
+            : /^(--model|--effort)=/.test(arg) ? [arg] : [],
+        ),
+        "--allow-dangerously-skip-permissions",
         "--permission-mode",
-        "bypassPermissions",
+        "auto",
         "--resume",
         savedSession.sessionId,
       ];
@@ -283,6 +289,9 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       ? s.target
       : null,
   );
+  const detachedDropZone = useDetachedDockStore((state) =>
+    state.target?.kind === "pane-zone" && state.target.workspaceId === workspaceId && state.target.paneId === pane.id
+      ? state.target.zone : null);
   const handoffDropTarget = usePaneDragStore((s) =>
     s.target?.kind === "handoff"
       && s.target.workspaceId === workspaceId
@@ -756,19 +765,22 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     }
     return env;
   }, [activeTab, launchThroughLauncher, pane.launchEnv, resolvedAgentId, savedAgentSession]);
-  const dropPreviewClass = dropTarget && dragItem
+  const previewZone = dropTarget && dragItem ? dropTarget.zone : detachedDropZone;
+  const previewKind = dropTarget && dragItem ? dragItem.kind : "tab";
+  const dropPreviewClass = previewZone
     ? [
         "pane-drop-preview",
-        `pane-drop-preview--${dropTarget.zone}`,
-        dropTarget.zone === "center"
-          ? (dragItem.kind === "tab" ? "pane-drop-preview--attach-tab" : "pane-drop-preview--merge-pane")
+        `pane-drop-preview--${previewZone}`,
+        previewZone === "center"
+          ? (previewKind === "tab" ? "pane-drop-preview--attach-tab" : "pane-drop-preview--merge-pane")
           : "pane-drop-preview--split",
-        `pane-drop-preview--source-${dragItem.kind}`,
+        `pane-drop-preview--source-${previewKind}`,
       ].join(" ")
     : null;
   const dropPreviewLabel = dropTarget && dragItem
     ? getDropPreviewLabel(dragItem, dropTarget)
-    : null;
+    : detachedDropZone === "center" ? paneDndStrings.attachTab
+      : detachedDropZone ? paneDndStrings.split[detachedDropZone] : null;
 
   return (
     <div

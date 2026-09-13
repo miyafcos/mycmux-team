@@ -165,6 +165,8 @@ pub struct PaneTabOriginConfig {
 pub struct PaneTabConfig {
     #[serde(default)]
     pub tab_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
     pub agent_id: String,
     pub label: Option<String>,
     /// Who set `label`: "user" or "ai". Absent means user-set, so a name that
@@ -175,6 +177,14 @@ pub struct PaneTabConfig {
     pub r#type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_path: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default)]
@@ -231,7 +241,25 @@ pub struct PaneConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetachedPaneOriginConfig {
+    pub workspace_id: String,
+    pub pane_id: String,
+    pub tab_id: String,
+    pub index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column_size: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
+    #[serde(default)]
+    pub detached: Option<bool>,
+    #[serde(default)]
+    pub detached_from: Option<DetachedPaneOriginConfig>,
     pub id: String,
     pub name: String,
     pub grid_template_id: String,
@@ -1688,5 +1716,22 @@ mod tests {
 
         let legacy: PaneTabConfig = serde_json::from_str(r#"{"agent_id":"shell-starter"}"#).unwrap();
         assert!(legacy.preset_id.is_none());
+    }
+
+    #[test]
+    fn browser_tab_transfer_metadata_round_trips_and_defaults() {
+        let json = r#"{"agent_id":"shell-starter","type":"browser","html_path":"C:/preview.html","source_path":"C:/source.pdf","source_kind":"pdf","preview_path":"C:/preview.pdf"}"#;
+        let tab: PaneTabConfig = serde_json::from_str(json).unwrap();
+        let restored: PaneTabConfig = serde_json::from_str(&serde_json::to_string(&tab).unwrap()).unwrap();
+        assert_eq!(restored.r#type.as_deref(), Some("browser"));
+        assert_eq!(restored.html_path.as_deref(), Some("C:/preview.html"));
+        assert_eq!(restored.source_path.as_deref(), Some("C:/source.pdf"));
+        assert_eq!(restored.source_kind.as_deref(), Some("pdf"));
+        assert_eq!(restored.preview_path.as_deref(), Some("C:/preview.pdf"));
+        let legacy: PaneTabConfig = serde_json::from_str(r#"{"agent_id":"shell-starter"}"#).unwrap();
+        assert!(legacy.html_path.is_none());
+        assert!(legacy.source_path.is_none());
+        assert!(legacy.source_kind.is_none());
+        assert!(legacy.preview_path.is_none());
     }
 }

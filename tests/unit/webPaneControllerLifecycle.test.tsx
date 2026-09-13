@@ -255,3 +255,63 @@ describe("WebPaneController lifecycle", () => {
     expect(apiMocks.updateWebPane).toHaveBeenLastCalledWith("web-tab", null, false, expect.any(Array), { park: true });
   });
 });
+
+describe("WebPaneController window transfers", () => {
+  it.each(["released", "occupied", "unrelated"] as const)(
+    "handles a destination host while the source is %s", async (scenario) => {
+      const frames: FrameRequestCallback[] = [];
+      vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => {
+        frames.push(callback);
+        return frames.length;
+      }));
+      let now = 1000;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      const host = document.createElement("div");
+      host.dataset.webPaneHostTabId = "web-tab";
+      host.getBoundingClientRect = () => ({ x: 0, y: 30, width: 720, height: 490 }) as DOMRect;
+      container.appendChild(host);
+      const collision = "web pane web-tab is attached to a different window";
+      if (scenario === "released") apiMocks.createWebPane.mockRejectedValueOnce(collision);
+      else apiMocks.createWebPane.mockRejectedValue(scenario === "occupied" ? collision : "invalid preset");
+      const runFrame = async () => {
+        await act(async () => {
+          frames.shift()?.(now);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      };
+      try {
+        await act(async () => root.render(<WebPaneController />));
+        container.appendChild(host);
+        await runFrame();
+        expect(apiMocks.createWebPane).toHaveBeenCalledTimes(1);
+        await runFrame();
+        expect(apiMocks.createWebPane).toHaveBeenCalledTimes(1);
+        expect(apiMocks.destroyWebPane).not.toHaveBeenCalled();
+        now += 250;
+        await runFrame();
+        if (scenario === "released") {
+          expect(apiMocks.createWebPane).toHaveBeenCalledTimes(2);
+          await runFrame();
+          expect(apiMocks.updateWebPane).toHaveBeenCalledWith(
+            "web-tab", { x: 0, y: 30, width: 720, height: 490 }, true, expect.any(Array),
+          );
+          expect(errors).not.toHaveBeenCalled();
+        } else {
+          for (let attempt = 0; attempt < 25; attempt++) {
+            now += 250;
+            await runFrame();
+          }
+          expect(apiMocks.createWebPane).toHaveBeenCalledTimes(scenario === "occupied" ? 21 : 1);
+          expect(errors).toHaveBeenCalledTimes(1);
+          expect(apiMocks.updateWebPane).not.toHaveBeenCalled();
+        }
+        expect(apiMocks.destroyWebPane).not.toHaveBeenCalled();
+      } finally {
+        clock.mockRestore();
+        errors.mockRestore();
+      }
+    },
+  );
+});

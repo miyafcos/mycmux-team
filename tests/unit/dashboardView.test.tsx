@@ -453,7 +453,7 @@ describe("DashboardView split3 selection", () => {
 
     await act(async () => doneRow?.click());
     expect(useDashboardViewStore.getState().selectedTabId).toBe(done.id);
-    expect(centerBreadcrumb(container)).toBe("Workspace A › タブ2 › P1");
+    expect(centerBreadcrumb(container)).toBe("Workspace A › タブ1 › P2");
 
     const region = container.querySelector<HTMLElement>("[role='region']");
     expect(region).not.toBeNull();
@@ -463,7 +463,7 @@ describe("DashboardView split3 selection", () => {
 
     await act(async () => region?.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true })));
     expect(useDashboardViewStore.getState().selectedTabId).toBe(done.id);
-    expect(centerBreadcrumb(container)).toBe("Workspace A › タブ2 › P1");
+    expect(centerBreadcrumb(container)).toBe("Workspace A › タブ1 › P2");
   });
 
   it("keeps the split3 center as the only question anchor", async () => {
@@ -488,7 +488,7 @@ describe("DashboardView split3 selection", () => {
     expect(useDashboardViewStore.getState().selectedTabId).toBe(second.id);
     const selectedRow = container.querySelector<HTMLElement>(`[data-dashboard-row="${second.id}"]`);
     expect(selectedRow?.style.boxShadow).toContain("var(--cmux-accent)");
-    expect(centerBreadcrumb(container)).toBe("Workspace A › タブ2 › P1");
+    expect(centerBreadcrumb(container)).toBe("Workspace A › タブ1 › P2");
     expect(chip?.classList.contains("is-selected")).toBe(true);
   });
 

@@ -28,9 +28,12 @@ python -m pytest tests/               # sync-command allowlist 契約テスト�
 
 - **macOS ではこのコマンド列がそのままは使えない**。`run_windows_tests.py` は mt.exe に依存するので、
   代わりに `cargo test --manifest-path src-tauri/Cargo.toml --lib` を使う。
-  `vitest` は macOS で **348 件が環境由来で常に落ちる** (jsdom の getContext 未実装 / React act /
-  localStorage 未提供)。**生の失敗数では退行を判定できない** — `git worktree` で変更前を切り出して
-  同じテストを回し、失敗数の一致で判断する。`clippy` も同様に 180 件が定常。ビルドは
+  `vitest` は macOS でも**ほぼ通る — 定常の失敗は 2 件だけ** (2026-09-12 実測)。真因は
+  `tests/unit/tabGroupingLiveMock.test.ts:6` が `C:\Users\miyaz\reports\_quick\2026-08` を
+  決め打ちで読むこと。**この 2 件以外が落ちたら退行**として扱う。
+  **「348 件が環境由来で常に落ちる」という旧記述は誤り**だった (jsdom getContext / React act /
+  localStorage を疑っていたが、実測ではどれも落ちていない)。生の失敗数で判定できないと思い込んで
+  `git worktree` で変更前と比較する手順も、もう要らない。`clippy` の 180 件定常は未再測。ビルドは
   `bash scripts/build-mac.sh` (未署名が既定。`APPLE_SIGNING_IDENTITY` を渡すと署名する)
 - **Rust テストは `cargo test --release` を直接叩かない。`scripts/run_windows_tests.py` を使う (2026-08-05 恒久化)**:
   素の `cargo test --release` は lib テストハーネス (`mycmux_lib-*.exe`) が起動する前に

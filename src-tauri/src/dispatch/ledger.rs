@@ -134,10 +134,6 @@ pub fn scan(path: &Path, projects: &Path) -> io::Result<Vec<DispatchEntry>> {
     scan_with_rate_limited_sessions(path, projects, &HashSet::new())
 }
 
-pub fn scan_default() -> io::Result<Vec<DispatchEntry>> {
-    scan_default_with_rate_limited_sessions(&HashSet::new())
-}
-
 pub fn scan_default_with_rate_limited_sessions(rate_limited_sessions: &HashSet<String>) -> io::Result<Vec<DispatchEntry>> {
     let Some(path) = ledger_path() else { return Ok(Vec::new()); };
     let Some(projects) = projects_root() else { return Ok(Vec::new()); };

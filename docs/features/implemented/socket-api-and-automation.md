@@ -41,13 +41,14 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 | `workspace.select` | `workspaceId` | ワークスペース切替 |
 | `workspace.rename` | `workspaceId`, `name` | ワークスペース名変更 |
 | `workspace.new` | `name`、`cwd?`、`gridTemplateId?` | 背景にワークスペースを新設し `{workspaceId, name, panes[], foregroundChanged}` を返す |
-| `pane.list` | `workspaceId` (省略時 active) | ペインとタブの一覧 (sessionId 含む) |
-| `pane.spawn` | 下記 | 新ペインを可視で立ち上げ、`{workspaceId, paneId, sessionId, mode}` を返す |
-| `pane.spawn_tab` | `anchorSessionId`、起動引数 | 既存ペイン内に新タブを追加 |
-| `pane.list_all` | なし | 全ワークスペースのペイン一覧 |
-| `pane.activate_tab` / `pane.close_tab` / `pane.rename_tab` | `sessionId` 等 | タブの選択・終了・改名 |
-| `web.open` / `web.list` / `web.focus` / `web.push` | `presetId`、`tabId` 等 | サービス Web タブの操作 |
-| `web.read` / `web.close` | `tabId` (`web.read` は `presetId`、`anchorSessionId` でも指定可) | 会話を JSON で取得 / Web タブを閉じる |
+| `workspace.close` | `workspaceId` | 背景ワークスペースを閉じる（PTY kill・scrollback 削除・復元履歴の記録）。active は拒否 |
+| `pane.list` | `workspaceId` (省略時 active) | タブとペインの一覧 (sessionId 含む) |
+| `pane.spawn` | 下記 | 新タブを可視で立ち上げ、`{workspaceId, paneId, sessionId, mode}` を返す |
+| `pane.spawn_tab` | `anchorSessionId`、起動引数 | 既存タブ内に新ペインを追加 |
+| `pane.list_all` | なし | 全ワークスペースのタブ一覧 |
+| `pane.activate_tab` / `pane.close_tab` / `pane.rename_tab` | `sessionId` 等 | ペインの選択・終了・改名 |
+| `web.open` / `web.list` / `web.focus` / `web.push` | `presetId`、`tabId` 等 | サービス Web ペインの操作 |
+| `web.read` / `web.close` | `tabId` (`web.read` は `presetId`、`anchorSessionId` でも指定可) | 会話を JSON で取得 / Web ペインを閉じる |
 | `web.navigate` | T + url または action (back/forward/reload) | URL移動・履歴移動・再読み込み |
 | `web.wait` | T + state、selector?、timeoutMs?、intervalMs? | 読み込み・DOM静止・要素出現を待ち、期限では ready:false |
 | `web.eval` | T + script、timeoutMs? | async 関数本体の評価結果を JSON で返す（512 KB） |
@@ -75,14 +76,18 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 
 既定で active ワークスペースを動かしません。前面を変えるフラグも用意していません（`dbfabc76` の契約）。
 例外はワークスペースが 0 個で active ID が null のときだけで、最初のワークスペースを表示し、応答の `foregroundChanged` が true になります。
-新ワークスペースは GUI の New Workspace と同じ launcher ペイン 1 枚で始まります（`gridTemplateId` 指定時はそのグリッドの枚数）。
-エージェントを足すには `pane.spawn` を使います。背景ワークスペースでも `startBackgroundTabSession` で PTY が起動します。
+新ワークスペースの1枚目は起動メニューの仮タブです（`gridTemplateId` 指定時はそのグリッドの枚数）。
+タブ1枚・launcher ペイン1枚の未使用状態なら、最初の端末用 `pane.spawn` がそのタブを使い切り、メニューは残りません。応答の `replacedLauncherPane: true` が置き換え、`false` が既存の分割経路を示します。Web ターゲットは従来どおりタブを増やします。その際、`addPaneToWorkspace` と `addWebTabToPane` が全体の active タブを動かすので、`pane.spawn` は前後で UI の active タブ・focus 対象を退避して復元します（`web.open` と同じ扱い。2026-09-11 にこの復元漏れを修正）。
+背景ワークスペースでも `startBackgroundTabSession` で PTY が起動します。起動に失敗した場合は追加ペインを外し、元の起動メニューを残します。
+
+`workspace.close` は確認ダイアログを持たない代わりに、active なワークスペースを拒否します。人が見ているワークスペースを閉じる操作は画面の ✕ から行います。
+背景ワークスペースを閉じると PTY を終了し、scrollback を削除します。復元可能なペインは `Ctrl+Shift+T` の復元履歴に入り、`undoRecorded` が記録件数を返します。
 
 ### `pane.spawn` の起動モード (Web 分岐を先に判定、端末は上から優先)
 
 | モード | 引数 | 動き |
 | --- | --- | --- |
-| web | `target: "web"`、`preset` または `presetId` | PTY を作らずサービス Web タブを開く |
+| web | `target: "web"`、`preset` または `presetId` | PTY を作らずサービス Web ペインを開く |
 | handoff | `handoffFromSessionId` (+`handoffFromKind`) | 既存セッションの履歴から `crsm handoff` で引き継ぎ書を生成し、`MYCMUX_HANDOFF_*` env で起動 |
 | prompt | `promptFile` (+`fromSessionId`, `fromKind`) | 指定した指示書ファイルをそのまま `MYCMUX_HANDOFF_PROMPT_FILE` として起動。`fromSessionId` 省略時は `"external"` を補う (空だと `terminal.rs` の `sanitize_launch_env` が handoff env を剥がすため) |
 | resume | `resumeSessionId` | `MYCMUX_RESUME` + `MYCMUX_SESSION_ID` で resume 起動 |
@@ -105,8 +110,9 @@ env 構築は純関数 `resolveSpawnPlan` に分離してあり、`tests/unit/so
 python scripts/mycmux_agent_cli.py panes
 python scripts/mycmux_agent_cli.py workspace-new --name hermes-lane
 python scripts/mycmux_agent_cli.py spawn --split --workspace <id> --target codex --no-activate
-python scripts/mycmux_agent_cli.py spawn --target codex --prompt "指示書の内容"   # アクティブなタブは移動しない。切り替えるときは --activate
-python scripts/mycmux_agent_cli.py spawn --target codex --split --prompt "..."   # 分割ペインで開く
+python scripts/mycmux_agent_cli.py workspace-close --workspace <id>
+python scripts/mycmux_agent_cli.py spawn --target codex --prompt "指示書の内容"   # アクティブなペインは移動しない。切り替えるときは --activate
+python scripts/mycmux_agent_cli.py spawn --target codex --split --prompt "..."   # 分割タブで開く
 python scripts/mycmux_agent_cli.py spawn --target claude --handoff-from-session <ID>
 python scripts/mycmux_agent_cli.py read --session <sessionId> --lines 120
 python scripts/mycmux_agent_cli.py send --session <sessionId> --text "続けて" --enter
@@ -116,14 +122,14 @@ python scripts/mycmux_agent_cli.py send --session <sessionId> --text "続けて"
 
 ### CLI `spawn` の配置既定 (2026-07-15 変更)
 
-`spawn` はペイン内から呼ぶと (`MYCMUX_PANE_SESSION_ID` 検出) **既定で `pane.spawn_tab`** に送り、呼び出し元ペインの新タブとして、アクティブなタブを移動せずに立ち上がります (呼び出し元との親子関係がタブ並びで見える)。`--activate` で新しいタブへ切り替えます。従来のペイン分割にするのは `--split` 明示のみ (2026-08-21 以降)。`--direction` / `--anchor-pane` / `--workspace` は `--split` と併用必須で、単独指定はエラー。ペイン外 (env なし) からの実行もエラーになり、暗黙に新ペインへ落ちることはありません (`--split` を付ければ可)。応答 JSON に `placement` (`tab` / `pane`) が付きます。`pane.spawn` の `activate` 既定値は true のままです。
+`spawn` はペイン内から呼ぶと (`MYCMUX_PANE_SESSION_ID` 検出) **既定で `pane.spawn_tab`** に送り、呼び出し元タブの新ペインとして、アクティブなペインを移動せずに立ち上がります (呼び出し元との親子関係がペイン並びで見える)。`--activate` で新しいペインへ切り替えます。従来のタブ分割にするのは `--split` 明示のみ (2026-08-21 以降)。`--direction` / `--anchor-pane` / `--workspace` は `--split` と併用必須で、単独指定はエラー。ペイン外 (env なし) からの実行もエラーになり、暗黙に新タブへ落ちることはありません (`--split` を付ければ可)。応答 JSON に `placement` (`tab` / `pane`) が付きます。`pane.spawn` の `activate` 既定値は true のままです。
 
 ### 運用ノート (2026-07-15 実機検証より)
 
 - CLI は stdout/stderr を UTF-8 に reconfigure してから print する (cp932 コンソールでペイン内容の「⚠」等により UnicodeEncodeError で落ちる実害があった)
-- `--target shell` は起動メニューを開く。現行の新規タブは React ランチャーで、bash メニューは互換経路。`send` は PTY のある端末タブを選び、送信前に状態を確認する
-- `pane.read` は端末バッファの末尾を読む。宣言だけのタブや未知の sessionId はエラーになる
+- `--target shell` は起動メニューを開く。現行の新規ペインは React ランチャーで、bash メニューは互換経路。`send` は PTY のある端末ペインを選び、送信前に状態を確認する
+- `pane.read` は端末バッファの末尾を読む。宣言だけのペインや未知の sessionId はエラーになる
 
 ## 未実装 (cmux 参照からの候補)
 
-`workspace.close`（`workspace.new` は実装済み。閉じる側は PTY kill・scrollback 削除・Ctrl+Shift+T の復元履歴を伴う破壊操作なので、確認導線の設計が済むまでソケットに出していません）、`pane.close` / `pane.focus`、`notify.*`、`theme.*`、PTY 出力のストリーミング購読。同名コマンドは未実装です。タブ単位の終了・選択は既存の `pane.close_tab` / `pane.activate_tab` を利用できます。
+`pane.close` / `pane.focus`、`notify.*`、`theme.*`、PTY 出力のストリーミング購読。同名コマンドは未実装です。ペイン単位の終了・選択は既存の `pane.close_tab` / `pane.activate_tab` を利用できます。

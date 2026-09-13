@@ -13,12 +13,14 @@ const productionRaceMocks = vi.hoisted(() => ({
   listPets: vi.fn(),
   loadPersistentData: vi.fn(),
   onCloseRequested: vi.fn(),
-  quitApp: vi.fn(),
+  destroy: vi.fn(),
   readAgentSessionMappings: vi.fn(),
   restoreWorkspaceConfigs: vi.fn(),
   savePersistentData: vi.fn(),
   setAppFrontendVisible: vi.fn(),
 }));
+
+vi.mock("../../src/lib/paneCloseConfirmation", () => ({ confirmPaneClose: vi.fn(async () => true) }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   confirm: productionRaceMocks.confirm,
@@ -32,6 +34,7 @@ vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     label: "main",
     onCloseRequested: productionRaceMocks.onCloseRequested,
+    destroy: productionRaceMocks.destroy,
   }),
 }));
 
@@ -40,11 +43,14 @@ vi.mock("../../src/lib/ipc", async (importOriginal) => {
   return {
     ...actual,
     claimLeader: productionRaceMocks.claimLeader,
+    setWindowCloseIntent: vi.fn(async () => {}),
+    takePendingAdoption: vi.fn(async () => []),
+    killSession: vi.fn(async () => {}),
+    publishWindowFragment: vi.fn(async () => {}),
     getPtyMetadataSnapshot: productionRaceMocks.getPtyMetadataSnapshot,
     getWindowFragments: productionRaceMocks.getWindowFragments,
     listPets: productionRaceMocks.listPets,
     loadPersistentData: productionRaceMocks.loadPersistentData,
-    quitApp: productionRaceMocks.quitApp,
     readAgentSessionMappings: productionRaceMocks.readAgentSessionMappings,
     savePersistentData: productionRaceMocks.savePersistentData,
     setAppFrontendVisible: productionRaceMocks.setAppFrontendVisible,
@@ -84,6 +90,7 @@ import {
 import { hashCanonical, type Sha256 } from "../../src/lib/persistentLayoutProjection";
 import { __resetToastStoreForTests, useToastStore } from "../../src/stores/toastStore";
 import type { Workspace } from "../../src/types";
+import { setWindowRole, hasWindowRole } from "../../src/lib/windowContext";
 
 describe("SocketListener production autosave subscriptions", () => {
   let host: HTMLDivElement | null = null;
@@ -106,7 +113,7 @@ describe("SocketListener production autosave subscriptions", () => {
       productionRaceMocks.closeHandler = handler;
       return () => {};
     });
-    productionRaceMocks.quitApp.mockResolvedValue(undefined);
+    productionRaceMocks.destroy.mockResolvedValue(undefined);
     productionRaceMocks.restoreWorkspaceConfigs.mockReturnValue({ activePaneSessionId: null });
     productionRaceMocks.savePersistentData.mockResolvedValue(undefined);
     productionRaceMocks.setAppFrontendVisible.mockResolvedValue(undefined);
@@ -233,7 +240,7 @@ describe("SocketListener production autosave subscriptions", () => {
       "ワークスペースを保存できていません。保存せずに終了しますか？",
       expect.objectContaining({ kind: "warning" }),
     );
-    expect(productionRaceMocks.quitApp).not.toHaveBeenCalled();
+    expect(productionRaceMocks.destroy).not.toHaveBeenCalled();
 
     await act(async () => {
       releaseMapping();
@@ -374,7 +381,7 @@ describe("SocketListener production autosave subscriptions", () => {
       "ワークスペースを保存できていません。保存せずに終了しますか？",
       expect.objectContaining({ kind: "warning" }),
     );
-    expect(productionRaceMocks.quitApp).not.toHaveBeenCalled();
+    expect(productionRaceMocks.destroy).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -447,13 +454,13 @@ describe("SocketListener production autosave subscriptions", () => {
         "ワークスペースを保存できていません。保存せずに終了しますか？",
         expect.objectContaining({ kind: "warning" }),
       );
-      expect(productionRaceMocks.quitApp).not.toHaveBeenCalled();
+      expect(productionRaceMocks.destroy).not.toHaveBeenCalled();
 
       productionRaceMocks.confirm.mockResolvedValueOnce(true);
       await act(async () => productionRaceMocks.closeHandler?.({ preventDefault: vi.fn() }));
       expect(productionRaceMocks.savePersistentData).toHaveBeenCalledOnce();
       expect(productionRaceMocks.confirm).toHaveBeenCalledTimes(2);
-      expect(productionRaceMocks.quitApp).toHaveBeenCalledOnce();
+      expect(productionRaceMocks.destroy).toHaveBeenCalledOnce();
     },
   );
 
@@ -579,7 +586,7 @@ describe("SocketListener production autosave subscriptions", () => {
       "新しい形式の設定ファイルを検出したため、この起動中の変更は保存されません。終了しますか？",
       expect.objectContaining({ kind: "warning" }),
     );
-    expect(productionRaceMocks.quitApp).not.toHaveBeenCalled();
+    expect(productionRaceMocks.destroy).not.toHaveBeenCalled();
 
     productionRaceMocks.confirm.mockResolvedValueOnce(true);
     const acceptedPreventDefault = vi.fn();
@@ -588,7 +595,7 @@ describe("SocketListener production autosave subscriptions", () => {
     expect(acceptedPreventDefault).toHaveBeenCalledOnce();
     expect(productionRaceMocks.savePersistentData).not.toHaveBeenCalled();
     expect(productionRaceMocks.confirm).toHaveBeenCalledTimes(2);
-    expect(productionRaceMocks.quitApp).toHaveBeenCalledOnce();
+    expect(productionRaceMocks.destroy).toHaveBeenCalledOnce();
   });
 
   it("requires an explicit unsaved close choice after a future-schema save failure", async () => {
@@ -697,7 +704,7 @@ describe("SocketListener production autosave subscriptions", () => {
       "新しい形式の設定ファイルを検出したため、この起動中の変更は保存されません。終了しますか？",
       expect.objectContaining({ kind: "warning" }),
     );
-    expect(productionRaceMocks.quitApp).not.toHaveBeenCalled();
+    expect(productionRaceMocks.destroy).not.toHaveBeenCalled();
 
     productionRaceMocks.confirm.mockResolvedValueOnce(true);
     const acceptedPreventDefault = vi.fn();
@@ -706,7 +713,7 @@ describe("SocketListener production autosave subscriptions", () => {
     }));
     expect(acceptedPreventDefault).toHaveBeenCalledOnce();
     expect(productionRaceMocks.confirm).toHaveBeenCalledTimes(2);
-    expect(productionRaceMocks.quitApp).toHaveBeenCalledOnce();
+    expect(productionRaceMocks.destroy).toHaveBeenCalledOnce();
   });
 
   it("does not report a close save as successful when quarantine wins an in-flight race", async () => {
@@ -764,7 +771,54 @@ describe("SocketListener production autosave subscriptions", () => {
       "ワークスペースを保存できていません。保存せずに終了しますか？",
       expect.objectContaining({ kind: "warning" }),
     );
-    expect(productionRaceMocks.quitApp).not.toHaveBeenCalled();
+    expect(productionRaceMocks.destroy).not.toHaveBeenCalled();
     expect(productionRaceMocks.savePersistentData).toHaveBeenCalledOnce();
   });
+  it.each(["mappings", "fragments"] as const)(
+    "does not write after losing the role while awaiting %s",
+    async (pausedRead) => {
+      productionRaceMocks.loadPersistentData.mockResolvedValue({
+        schemaVersion: 1, supported: true,
+        data: { schema_version: 1, workspaces: [], settings: {
+          font_size: 14, line_height: 1.2, font_family: "monospace", theme_id: "default",
+        } },
+      });
+      productionRaceMocks.readAgentSessionMappings.mockResolvedValue({});
+      const Harness = () => { useWorkspacePersist(); return null; };
+      host = document.createElement("div");
+      document.body.appendChild(host);
+      root = createRoot(host);
+      await act(async () => root?.render(createElement(Harness)));
+      await vi.waitFor(() => expect(productionRaceMocks.claimLeader).toHaveBeenCalledTimes(2));
+      expect(hasWindowRole()).toBe(true);
+      expect(getPersistentSchemaState().status).toBe("supported");
+
+      let resume!: () => void;
+      let entered = false;
+      const read = pausedRead === "mappings"
+        ? productionRaceMocks.readAgentSessionMappings : productionRaceMocks.getWindowFragments;
+      read.mockImplementationOnce(() => new Promise((resolve) => {
+        entered = true;
+        resume = () => resolve(pausedRead === "mappings" ? {} : []);
+      }));
+      const snapshot = { workspaces: [] };
+      const request = {
+        requestId: `role-loss-${pausedRead}`, revision: 1,
+        signature: "a".repeat(64) as Sha256,
+        snapshot, snapshotDigest: hashCanonical(snapshot),
+      };
+      const pending = requestImmediatePersist(request);
+      await vi.waitFor(() => expect(entered).toBe(true));
+      setWindowRole(false);
+      expect(getPersistentSchemaState().status).toBe("supported");
+      await act(async () => { resume(); await pending; });
+      expect(productionRaceMocks.savePersistentData).not.toHaveBeenCalled();
+
+      // A new owner can still write: role loss must not quarantine storage.
+      setWindowRole(true);
+      await act(async () => { await requestImmediatePersist({ ...request, requestId: "successor" }); });
+      expect(productionRaceMocks.savePersistentData).toHaveBeenCalledOnce();
+    },
+  );
+
 });

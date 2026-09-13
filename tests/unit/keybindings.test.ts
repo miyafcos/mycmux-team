@@ -11,7 +11,7 @@ describe("global keybindings", () => {
   it("registers a non-conflicting global command", () => {
     const definition = getActionDefinition("tab.sweep");
     expect(definition).toMatchObject({
-      title: "タブ掃除を開く",
+      title: "ペイン掃除を開く",
       category: "Global",
       defaultShortcut: "ctrl+shift+k",
     });

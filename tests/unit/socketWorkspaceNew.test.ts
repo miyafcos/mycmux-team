@@ -12,6 +12,9 @@ const ipc = vi.hoisted(() => ({
   ackFrontendData: vi.fn(() => Promise.resolve()),
 }));
 vi.mock("../../src/lib/ipc", () => ipc);
+vi.mock("../../src/components/workspace/webPaneApi", () => ({
+  loadWebPanePresets: vi.fn(async () => [{ id: "chatgpt", label: "ChatGPT" }]),
+}));
 
 function workspace(id: string): Workspace {
   const tab: PaneTab = {
@@ -122,10 +125,66 @@ describe("workspace.new", () => {
       workspaceId: created.workspaceId, target, activate: false,
     }) as { workspaceId: string; sessionId: string };
     expect(result.workspaceId).toBe(created.workspaceId);
-    expect(useWorkspaceListStore.getState().getWorkspace(created.workspaceId)!.panes).toHaveLength(2);
+    // 2026-09-11: the first spawn consumes the unused launcher, without splitting.
+    const panes = useWorkspaceListStore.getState().getWorkspace(created.workspaceId)!.panes;
+    expect(panes).toHaveLength(1);
+    expect(panes[0].tabs).toHaveLength(1);
+    expect(panes[0].tabs[0].type).not.toBe("launcher");
+    expect(panes[0].tabs[0].sessionId).toBe(result.sessionId);
+    expect(result).toMatchObject({ replacedLauncherPane: true });
     expect(ipc.createSession).toHaveBeenCalledOnce();
     expect(ipc.createSession.mock.calls[0][0]).toBe(result.sessionId);
     expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe("foreground");
     expect(useUiStore.getState().activePaneId).toBe("foreground-session");
+  });
+});
+
+
+describe("pane.spawn launcher consumption", () => {
+  afterEach(() => {
+    expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe("foreground");
+    expect(useUiStore.getState().activePaneId).toBe("foreground-session");
+  });
+
+  it("splits on the second spawn", async () => {
+    const created = await create();
+    const args = { workspaceId: created.workspaceId, target: "codex" };
+    await handleSocketCommand("pane.spawn", args);
+    const result = await handleSocketCommand("pane.spawn", args);
+    expect(useWorkspaceListStore.getState().getWorkspace(created.workspaceId)!.panes).toHaveLength(2);
+    expect(result).toMatchObject({ replacedLauncherPane: false });
+    expect(ipc.createSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("still splits an existing workspace with a real terminal pane", async () => {
+    const result = await handleSocketCommand("pane.spawn", { workspaceId: "background", target: "codex" });
+    expect(useWorkspaceListStore.getState().getWorkspace("background")!.panes).toHaveLength(2);
+    expect(result).toMatchObject({ replacedLauncherPane: false });
+  });
+
+  it("restores the original launcher when session startup fails", async () => {
+    const created = await create();
+    const before = useWorkspaceListStore.getState().getWorkspace(created.workspaceId)!;
+    ipc.createSession.mockRejectedValueOnce(new Error("startup failed"));
+    await expect(handleSocketCommand("pane.spawn", {
+      workspaceId: created.workspaceId, target: "codex",
+    })).rejects.toThrow("startup failed");
+    const after = useWorkspaceListStore.getState().getWorkspace(created.workspaceId)!;
+    expect(after.panes).toHaveLength(1);
+    expect(after.panes[0].id).toBe(before.panes[0].id);
+    expect(after.panes[0].tabs).toEqual(before.panes[0].tabs);
+    expect(after.panes[0].tabs).toHaveLength(1);
+    expect(after.panes[0].tabs[0].type).toBe("launcher");
+  });
+
+  it("keeps the launcher pane when spawning a web target", async () => {
+    const created = await create();
+    const before = useWorkspaceListStore.getState().getWorkspace(created.workspaceId)!.panes[0];
+    await handleSocketCommand("pane.spawn", { workspaceId: created.workspaceId, target: "web" });
+    const after = useWorkspaceListStore.getState().getWorkspace(created.workspaceId)!;
+    expect(after.panes).toHaveLength(2);
+    expect(after.panes.find((pane) => pane.id === before.id)!.tabs).toEqual(before.tabs);
+    expect(after.panes.some((pane) => pane.tabs.some((tab) => tab.type === "web"))).toBe(true);
+    expect(ipc.createSession).not.toHaveBeenCalled();
   });
 });

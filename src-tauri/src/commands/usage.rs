@@ -1,4 +1,5 @@
 use chrono::Utc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::cli_accounts::{
     claude::{self, ClaudePaths},
@@ -26,6 +27,10 @@ const ERROR_NEEDS_RELOGIN: &str = "usage.error.needs_relogin";
 const ERROR_TOKEN_EXPIRED_ACTIVE: &str = "usage.error.token_expired_active";
 const ERROR_CODEX_UNSUPPORTED: &str = "usage.error.codex_unsupported";
 const ERROR_GROK_UNSUPPORTED: &str = "usage.error.grok_unsupported";
+// Like Codex, an unsupported endpoint stays disabled until the app restarts.
+// Serialize refresh attempts so concurrent polls cannot send after the stop.
+static GROK_REFRESH_DISABLED: AtomicBool = AtomicBool::new(false);
+static GROK_REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const ERROR_NETWORK: &str = "usage.error.network";
 const ERROR_UPSTREAM: &str = "usage.error.upstream";
 const ERROR_SNAPSHOT_UNAVAILABLE: &str = "usage.error.snapshot_unavailable";
@@ -286,6 +291,10 @@ pub async fn get_account_usage(
                     None,
                 ),
             ));
+            continue;
+        }
+        if row.provider == CliProvider::Grok && GROK_REFRESH_DISABLED.load(Ordering::Relaxed) {
+            output.push((index, grok_refresh_stopped(&row).usage));
             continue;
         }
         if row.needs_relogin {
@@ -817,7 +826,11 @@ async fn fetch_grok_profile(
                 cooldown_key,
             ).await,
             Err((status, detail)) => {
-                if !should_retry_grok_after_unauthorized(status, refreshed_once) {
+                let refresh_disabled = GROK_REFRESH_DISABLED.load(Ordering::Relaxed);
+                if !should_retry_grok_after_unauthorized(status, refreshed_once, refresh_disabled) {
+                    if refresh_disabled {
+                        return grok_refresh_stopped(row);
+                    }
                     return usage_fetch_failure(app, state, row, cooldown_key, status, &detail).await;
                 }
                 refreshed_once = true;
@@ -837,8 +850,29 @@ async fn fetch_grok_profile(
 /// registered profile always matches the live login. Gating the retry on
 /// `is_active`, as those two do, would mean grok never refreshed at all, so the
 /// flag is deliberately not consulted here.
-fn should_retry_grok_after_unauthorized(status: Option<u16>, already_refreshed: bool) -> bool {
-    matches!(status, Some(401) | Some(403)) && !already_refreshed
+fn should_retry_grok_after_unauthorized(
+    status: Option<u16>,
+    already_refreshed: bool,
+    refresh_disabled: bool,
+) -> bool {
+    matches!(status, Some(401) | Some(403)) && !already_refreshed && !refresh_disabled
+}
+
+fn grok_refresh_stopped(row: &PlannedRow) -> FetchResult {
+    FetchResult {
+        usage: profile_usage(row, UsageRowState::Unsupported, Some(ERROR_GROK_UNSUPPORTED), None),
+    }
+}
+
+fn should_log_refresh_failure(
+    provider: CliProvider,
+    error: &refresh::RefreshError,
+    grok_disabled: &AtomicBool,
+) -> bool {
+    if provider == CliProvider::Grok && matches!(error, refresh::RefreshError::Unsupported { .. }) {
+        return !grok_disabled.swap(true, Ordering::Relaxed);
+    }
+    true
 }
 
 fn should_persist_grok_snapshot(new_refresh_token: Option<&str>) -> bool {
@@ -874,6 +908,10 @@ async fn refresh_grok_snapshot(
     cooldown_key: &str,
     fetch_count: &mut usize,
 ) -> Result<String, FetchResult> {
+    let _refresh_guard = GROK_REFRESH_LOCK.lock().await;
+    if GROK_REFRESH_DISABLED.load(Ordering::Relaxed) {
+        return Err(grok_refresh_stopped(row));
+    }
     match live_identity_check(row) {
         LiveIdentityCheck::Active | LiveIdentityCheck::Inactive => {}
         LiveIdentityCheck::Unknown => return Err(FetchResult { usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_UNAVAILABLE), None) }),
@@ -1229,14 +1267,23 @@ async fn refresh_failure(
     // Name the row: without it the log says only that "a refresh was refused",
     // which is true of a stale snapshot, a token the CLI rotated, and a wrong
     // client id alike. profile_id is an internal handle, never an address.
-    crate::usage::log_oauth_failure(
-        app,
-        "get_account_usage_refresh",
-        &format!(
-            "provider={:?} profile={} active={} {error:?}",
-            row.provider, row.profile_id, row.is_active
-        ),
-    );
+    if should_log_refresh_failure(row.provider, &error, &GROK_REFRESH_DISABLED) {
+        let stopped = if row.provider == CliProvider::Grok
+            && matches!(error, refresh::RefreshError::Unsupported { .. })
+        {
+            " automatic_refresh_disabled_until_restart=true"
+        } else {
+            ""
+        };
+        crate::usage::log_oauth_failure(
+            app,
+            "get_account_usage_refresh",
+            &format!(
+                "provider={:?} profile={} active={} {error:?}{stopped}",
+                row.provider, row.profile_id, row.is_active
+            ),
+        );
+    }
     match error {
         refresh::RefreshError::Rejected { .. } => {
             // A rejected refresh usually means the provider rotated this token
@@ -1492,11 +1539,11 @@ mod tests {
     // windows would stay empty until the next manual `grok login`.
     #[test]
     fn grok_retries_where_claude_and_codex_wait_for_the_cli() {
-        assert!(should_retry_grok_after_unauthorized(Some(401), false));
-        assert!(should_retry_grok_after_unauthorized(Some(403), false));
-        assert!(!should_retry_grok_after_unauthorized(Some(401), true));
+        assert!(should_retry_grok_after_unauthorized(Some(401), false, false));
+        assert!(should_retry_grok_after_unauthorized(Some(403), false, false));
+        assert!(!should_retry_grok_after_unauthorized(Some(401), true, false));
         for status in [None, Some(400), Some(429), Some(500)] {
-            assert!(!should_retry_grok_after_unauthorized(status, false));
+            assert!(!should_retry_grok_after_unauthorized(status, false, false));
         }
 
         assert!(!should_retry_claude_after_unauthorized(
@@ -1523,6 +1570,37 @@ mod tests {
         assert_eq!(grok_token_destination(true, false), GrokTokenDestination::LiveAuth);
         assert_eq!(grok_token_destination(false, false), GrokTokenDestination::LiveAuth);
         assert_eq!(grok_token_destination(false, true), GrokTokenDestination::Snapshot);
+    }
+
+    #[test]
+    fn grok_415_stops_future_polls_and_logs_only_once() {
+        let disabled = AtomicBool::new(false);
+        let error = refresh::classify_refresh_error(Some(415), None);
+        assert!(should_log_refresh_failure(CliProvider::Grok, &error, &disabled));
+        assert!(disabled.load(Ordering::Relaxed));
+        for _ in 0..3 {
+            assert!(!should_log_refresh_failure(CliProvider::Grok, &error, &disabled));
+            for status in [Some(401), Some(403)] {
+                assert!(!should_retry_grok_after_unauthorized(
+                    status, false, disabled.load(Ordering::Relaxed),
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn other_providers_and_retryable_failures_do_not_stop_grok() {
+        let disabled = AtomicBool::new(false);
+        let unsupported = refresh::classify_refresh_error(Some(415), None);
+        for provider in [CliProvider::Claude, CliProvider::Codex] {
+            assert!(should_log_refresh_failure(provider, &unsupported, &disabled));
+            assert!(!disabled.load(Ordering::Relaxed));
+        }
+        for status in [None, Some(401), Some(429), Some(500)] {
+            let error = refresh::classify_refresh_error(status, None);
+            assert!(should_log_refresh_failure(CliProvider::Grok, &error, &disabled));
+            assert!(!disabled.load(Ordering::Relaxed));
+        }
     }
 
     #[test]

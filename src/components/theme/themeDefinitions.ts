@@ -77,7 +77,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "mayonaka",
     name: "真夜中",
     group: "calm-dark",
-    description: "黒系・静かな差し色",
+    description: "黒地に控えめな青",
     terminal: {
       background: "#07090d",
       foreground: "#edf2f7",
@@ -113,7 +113,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "kyokuya",
     name: "極夜",
     group: "calm-dark",
-    description: "青灰系・北欧",
+    description: "まぶしさを抑えた青灰の暗色",
     terminal: {
       background: "#2e3440",
       foreground: "#d8dee9",
@@ -149,7 +149,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "yoi-ai",
     name: "宵藍",
     group: "calm-dark",
-    description: "藍系・レトロ端末",
+    description: "青緑の地に灰色の文字",
     terminal: {
       background: "#002b36",
       foreground: "#93a1a1",
@@ -185,7 +185,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "shinkai",
     name: "深海",
     group: "calm-dark",
-    description: "青緑系・深海",
+    description: "深い青緑の落ち着いた地",
     terminal: {
       background: "#07131c",
       foreground: "#cde7f4",
@@ -221,7 +221,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "chikurin",
     name: "竹林",
     group: "calm-dark",
-    description: "緑系・森林",
+    description: "深緑に若葉色の差し色",
     terminal: {
       background: "#121b16",
       foreground: "#d7e5d8",
@@ -257,7 +257,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "seijaku",
     name: "静寂",
     group: "calm-dark",
-    description: "無彩色・OLED",
+    description: "純黒の地、OLED 向け",
     terminal: {
       background: "#000000",
       foreground: "#9ca3af",
@@ -293,7 +293,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "yogiri",
     name: "夜霧",
     group: "vivid-dark",
-    description: "紫系・ネオン",
+    description: "紫のネオンが映える暗色",
     terminal: {
       background: "#1e1733",
       foreground: "#f8f4ff",
@@ -329,7 +329,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "ginga",
     name: "銀河",
     group: "vivid-dark",
-    description: "紺系・宇宙",
+    description: "紺の地に星のような差し色",
     terminal: {
       background: "#0a1020",
       foreground: "#f5f7ff",
@@ -365,7 +365,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "sango",
     name: "珊瑚",
     group: "vivid-dark",
-    description: "赤紫系・珊瑚",
+    description: "赤紫の差し色が強い暗色",
     terminal: {
       background: "#2b1824",
       foreground: "#fff3f7",
@@ -401,7 +401,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "raimei",
     name: "雷鳴",
     group: "vivid-dark",
-    description: "黄系・雷光",
+    description: "黄色の差し色が鋭い暗色",
     terminal: {
       background: "#17191d",
       foreground: "#f8fafc",
@@ -437,7 +437,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "yougan",
     name: "溶岩",
     group: "vivid-dark",
-    description: "赤系・溶岩",
+    description: "赤と橙が燃える暗色",
     terminal: {
       background: "#120909",
       foreground: "#ffe6df",
@@ -473,7 +473,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "kogane",
     name: "黄金",
     group: "vivid-dark",
-    description: "金系・ラグジュアリー",
+    description: "金の差し色、華やかな暗色",
     terminal: {
       background: "#15120a",
       foreground: "#f7f1dc",
@@ -509,7 +509,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "asanagi",
     name: "朝凪",
     group: "light",
-    description: "青灰系・ニュートラル",
+    description: "青みの薄い灰、癖のない明色",
     terminal: {
       background: "#f4f7fb",
       foreground: "#223042",
@@ -545,7 +545,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "kinari",
     name: "生成り",
     group: "light",
-    description: "ベージュ系・和紙",
+    description: "和紙のようなベージュの明色",
     terminal: {
       background: "#fbf3e4",
       foreground: "#4a3b2a",
@@ -581,7 +581,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "geppaku",
     name: "月白",
     group: "light",
-    description: "氷青系・クリア",
+    description: "明るい氷青、資料作業向け",
     terminal: {
       background: "#f6fbff",
       foreground: "#24374a",
@@ -617,7 +617,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "sakura",
     name: "桜",
     group: "light",
-    description: "桃系・桜",
+    description: "桃色の差し色が入った明色",
     terminal: {
       background: "#fff5f7",
       foreground: "#4c2d38",
@@ -653,7 +653,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "wakaba",
     name: "若葉",
     group: "light",
-    description: "緑系・若葉",
+    description: "若葉色を添えた明色",
     terminal: {
       background: "#f3fbf5",
       foreground: "#264133",
@@ -689,7 +689,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "hakuchuumu",
     name: "白昼夢",
     group: "light",
-    description: "パステル系・夢色",
+    description: "パステルの柔らかい明色",
     terminal: {
       background: "#fcf8ff",
       foreground: "#473a54",
@@ -725,7 +725,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "graphite",
     name: "石墨",
     group: "calm-dark",
-    description: "無彩色・中間コントラスト",
+    description: "無彩色で補助文字も明瞭",
     terminal: {
       background: "#101214",
       foreground: "#d6dde4",
@@ -761,7 +761,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "carbon",
     name: "炭黒",
     group: "calm-dark",
-    description: "黒系・低グレア",
+    description: "黒地で反射を抑えた低グレア",
     terminal: {
       background: "#050607",
       foreground: "#d1d5db",
@@ -797,7 +797,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "arctic-night",
     name: "氷夜",
     group: "calm-dark",
-    description: "青灰系・寒色",
+    description: "青灰の冷たい地に白い文字",
     terminal: {
       background: "#0b1320",
       foreground: "#dce7f3",
@@ -833,7 +833,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "walnut",
     name: "胡桃",
     group: "calm-dark",
-    description: "茶系・木質",
+    description: "茶色の木質、暖かい暗色",
     terminal: {
       background: "#1b1510",
       foreground: "#eadfce",
@@ -869,7 +869,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "lagoon",
     name: "碧湖",
     group: "calm-dark",
-    description: "青緑系・水面",
+    description: "青緑の穏やかな水面色",
     terminal: {
       background: "#06191c",
       foreground: "#d5f2f1",
@@ -905,7 +905,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "ember",
     name: "熾火",
     group: "vivid-dark",
-    description: "橙系・火種",
+    description: "橙の火種色、暖かい暗色",
     terminal: {
       background: "#170d0a",
       foreground: "#ffe7d6",
@@ -941,7 +941,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "aurora",
     name: "極光",
     group: "vivid-dark",
-    description: "緑紫系・発光",
+    description: "緑と紫が発光するオーロラ色",
     terminal: {
       background: "#0b1020",
       foreground: "#e8f2ff",
@@ -977,7 +977,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "synthwave",
     name: "電紫",
     group: "vivid-dark",
-    description: "紫青系・ネオン",
+    description: "紫と青のネオン、シンセ風",
     terminal: {
       background: "#160824",
       foreground: "#f6e8ff",
@@ -1013,7 +1013,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "signal",
     name: "信号灯",
     group: "vivid-dark",
-    description: "黄黒系・端末",
+    description: "黄と黒の信号色、端末風",
     terminal: {
       background: "#080806",
       foreground: "#f7e7b3",
@@ -1049,7 +1049,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "paper",
     name: "白紙",
     group: "light",
-    description: "白系・紙面",
+    description: "紙のような白、印刷物風",
     terminal: {
       background: "#fbfaf7",
       foreground: "#2d3136",
@@ -1085,7 +1085,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "mist",
     name: "薄霧",
     group: "light",
-    description: "青白系・霧",
+    description: "霧のような青白い明色",
     terminal: {
       background: "#f5f8fb",
       foreground: "#243241",
@@ -1121,7 +1121,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
     id: "ink-day",
     name: "墨昼",
     group: "light",
-    description: "高コントラスト・昼光",
+    description: "白地に墨、最も高い対比",
     terminal: {
       background: "#ffffff",
       foreground: "#161a20",

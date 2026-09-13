@@ -16,7 +16,8 @@ import { resolveDisplayAgentKind, type DisplayAgentKind } from "./agentDisplayKi
 import { agentKindColor, type AgentKindColor } from "./agentKindColors";
 
 /** Everything `AgentKindIcon` can draw: the agent kinds plus the Web-only vendors. */
-export type TabMarkKind = DisplayAgentKind | "gemini" | "notebooklm" | "browser";
+export type ArtifactMarkKind = "html" | "markdown" | "pdf" | "word" | "excel" | "powerpoint" | "office";
+export type TabMarkKind = DisplayAgentKind | "gemini" | "notebooklm" | "browser" | ArtifactMarkKind;
 
 export interface TabMark {
   /** The `kind` AgentKindIcon dispatches on. */
@@ -49,6 +50,22 @@ const WEB_MARK_COLORS: Record<"gemini" | "notebooklm" | "browser", AgentKindColo
   browser: { fg: "#9aa7b4", bg: "rgba(154, 167, 180, 0.10)" },
 };
 
+/** Fixed document colours, independent of the theme and agent palette. */
+export const ARTIFACT_MARK_COLORS: Record<ArtifactMarkKind, AgentKindColor> = {
+  html: { fg: "#607d8b", bg: "rgba(96, 125, 139, 0.10)" },
+  markdown: { fg: "#707780", bg: "rgba(112, 119, 128, 0.10)" },
+  pdf: { fg: "#c62828", bg: "rgba(198, 40, 40, 0.10)" },
+  word: { fg: "#185abd", bg: "rgba(24, 90, 189, 0.10)" },
+  excel: { fg: "#107c41", bg: "rgba(16, 124, 65, 0.10)" },
+  powerpoint: { fg: "#c84b14", bg: "rgba(200, 75, 20, 0.10)" },
+  office: { fg: "#78628c", bg: "rgba(120, 98, 140, 0.10)" },
+};
+
+const ARTIFACT_MARK_LABELS: Record<ArtifactMarkKind, string> = {
+  html: "HTML", markdown: "Markdown", pdf: "PDF",
+  word: "Word", excel: "Excel", powerpoint: "PowerPoint", office: "Office",
+};
+
 /** The badge text for an agent mark. Web tabs use their preset label instead. */
 const AGENT_MARK_LABELS: Record<DisplayAgentKind, string> = {
   "claude": "Claude",
@@ -60,12 +77,14 @@ const AGENT_MARK_LABELS: Record<DisplayAgentKind, string> = {
 };
 
 export function tabMarkColor(kind: TabMarkKind): AgentKindColor {
-  return agentKindColor(kind) ?? WEB_MARK_COLORS[kind as keyof typeof WEB_MARK_COLORS];
+  return agentKindColor(kind)
+    ?? WEB_MARK_COLORS[kind as keyof typeof WEB_MARK_COLORS]
+    ?? ARTIFACT_MARK_COLORS[kind as ArtifactMarkKind];
 }
 
 export type TabMarkInput = Pick<
   PaneTab,
-  "type" | "presetId" | "agentKind" | "commandArgv" | "launchEnv"
+  "type" | "presetId" | "agentKind" | "commandArgv" | "launchEnv" | "sourceKind" | "sourcePath"
 >;
 
 /**
@@ -78,6 +97,21 @@ export function resolveTabMark(tab: TabMarkInput, agentKind?: string | null): Ta
     // An unknown preset still gets the globe: a Web tab is never mark-less.
     const preset = WEB_PRESET_MARKS[tab.presetId ?? ""] ?? WEB_PRESET_MARKS.browser;
     return { ...preset, color: tabMarkColor(preset.kind) };
+  }
+  if (tab.type === "browser") {
+    let kind: ArtifactMarkKind;
+    if (tab.sourceKind === "office") {
+      const path = tab.sourcePath ?? "";
+      kind = /\.(?:doc|docx|docm|dot|dotx|dotm)$/i.test(path) ? "word"
+        : /\.(?:xls|xlsx|xlsm|xlsb|xlt|xltx|xltm)$/i.test(path) ? "excel"
+        : /\.(?:ppt|pptx|pptm|pot|potx|potm|pps|ppsx|ppsm)$/i.test(path) ? "powerpoint"
+        : "office";
+    } else if (tab.sourceKind === "html" || tab.sourceKind === "markdown" || tab.sourceKind === "pdf") {
+      kind = tab.sourceKind;
+    } else {
+      return null;
+    }
+    return { kind, label: ARTIFACT_MARK_LABELS[kind], color: tabMarkColor(kind) };
   }
   const kind = resolveDisplayAgentKind(
     agentKind ?? tab.agentKind,

@@ -143,7 +143,6 @@ pub struct AppState {
     pub scrollback_dir: OnceLock<PathBuf>,
     pub session_state_store: session_state::SessionStateStore,
     pub status_feed: status_feed::StatusFeed,
-    pub bootstrapped: AtomicBool,
     pub frontend_visible: Arc<AtomicBool>,
     pub metadata_store: pty::monitor::MetadataStore,
     pub livebrief_service: livebrief::LiveBriefService,
@@ -322,7 +321,6 @@ pub fn run() {
         scrollback_dir: OnceLock::new(),
         session_state_store: session_state_store.clone(),
         status_feed,
-        bootstrapped: AtomicBool::new(false),
         frontend_visible: Arc::new(AtomicBool::new(true)),
         metadata_store: metadata_store.clone(),
         livebrief_service: livebrief::LiveBriefService::new(
@@ -344,6 +342,12 @@ pub fn run() {
                     tauri_plugin_window_state::StateFlags::all()
                         & !tauri_plugin_window_state::StateFlags::VISIBLE,
                 )
+                // Only the main window has a geometry worth remembering. Child
+                // labels (`mycmux-w<n>`) are recycled slots, not identities, so
+                // restoring by label opened a freshly detached pane at the size
+                // and place of whatever used that slot before — never at the
+                // drop point the tear-out asked for (2026-09-12).
+                .with_filter(|label| label == crate::window_registry::MAIN_WINDOW_LABEL)
                 .build(),
         )
         .manage(state)
@@ -373,7 +377,6 @@ pub fn run() {
             commands::terminal::remove_workspace_scrollback,
             commands::terminal::discard_session_scrollback,
             commands::terminal::kill_session,
-            commands::agent_hooks::agent_hooks_set_enabled,
             commands::agent_prompts::agent_prompt_try_answer,
             commands::agent_prompts::agent_prompt_is_current_launch,
             commands::artifact::preview_artifact_uri_for_session_v2,
@@ -422,16 +425,12 @@ pub fn run() {
             commands::workorder::workorder_preview,
             commands::workorder::workorder_go,
             commands::workorder::workorder_spawn_result,
-            commands::workorder::workorder_advance,
-            commands::workorder::workorder_record_report,
-            commands::workorder::workorder_record_gate_result,
             commands::workorder::workorder_retry_spawn,
             commands::workorder::workorder_cancel,
             commands::workorder::workorder_activate_version,
             commands::attention::attention_list_cards,
             commands::attention::attention_resolve_card,
             commands::attention::attention_set_tracked,
-            commands::attention::attention_list_tracked,
             commands::workspace::load_persistent_data,
             commands::workspace::save_persistent_data,
             commands::launcher::launcher_dirs_get,
@@ -480,7 +479,6 @@ pub fn run() {
             commands::wallpapers::clear_wallpaper_cache,
             commands::pets::list_pets,
             commands::pet_gallery::fetch_pet_gallery,
-            commands::pet_gallery::fetch_pet_preview,
             commands::pet_gallery::install_pet_from_gallery,
             commands::pet_gallery::quarantine_pet,
             commands::pet_gallery::restore_pet,
@@ -491,6 +489,7 @@ pub fn run() {
             commands::fs::open_with_default,
             commands::fs::open_path_with_default_app,
             commands::window::claim_leader,
+            commands::window::release_leader,
             commands::window::reveal_main_window,
             commands::window::open_child_window,
             commands::window::quit_app,
@@ -500,6 +499,7 @@ pub fn run() {
             commands::window_registry::release_workspaces,
             commands::window_registry::get_window_fragments,
             commands::window_registry::get_app_settings,
+            commands::window_registry::set_window_close_intent,
             test_profile::get_test_profile,
             commands::usage::get_account_usage,
             commands::ailog::ailog_index_start,
@@ -508,9 +508,7 @@ pub fn run() {
             commands::ailog::ailog_summarize_start,
             commands::ailog::ailog_summarize_cancel,
             commands::ailog::ailog_summarize_status,
-            commands::ailog::ailog_digest_get,
             commands::ailog::ailog_digest_generate,
-            commands::ailog::ailog_dashboard,
             commands::ailog::ailog_overview,
             commands::ailog::ailog_series,
             commands::ailog::ailog_breakdown,
@@ -522,8 +520,6 @@ pub fn run() {
             commands::ailog::ailog_models,
             commands::ailog::ailog_model_handoffs,
             commands::ailog::ailog_efficiency,
-            commands::ailog::ailog_rule_check,
-            commands::ailog::ailog_findings,
             commands::ailog::ailog_rework_rankings,
             commands::ailog::ailog_usage_rhythm,
             commands::ailog::ailog_get_prices,
@@ -537,7 +533,6 @@ pub fn run() {
             commands::cli_accounts::rename_cli_account,
             commands::cli_accounts::begin_cli_login,
             commands::cli_accounts::cancel_cli_login,
-            commands::cli_accounts::list_cli_login_sessions,
             cli_accounts::resolve_cli_account_orphan,
             remote::get_remote_info,
             remote::rotate_remote_token,
@@ -683,10 +678,7 @@ pub fn run() {
                     let _ = app_handle.emit("remote-error", format!("Failed to start remote server: {error}"));
                 }
             }
-            // Kill all PTY sessions when the main window closes
-            let mgr = state.session_manager.clone();
-            let hook_service_for_close = state.hook_service.clone();
-            let scrollback_dir_for_close = scrollback_dir.clone();
+            // Configure startup window appearance; shutdown belongs to the runtime hook.
             if let Some(main_window) = app.get_webview_window("main") {
                 if let Some(icon) = app.default_window_icon().cloned() {
                     let _ = main_window.set_icon(icon);
@@ -713,20 +705,6 @@ pub fn run() {
                     // at that monitor's old origin.
                     crate::commands::window::recenter_if_offscreen(&main_window);
                 }
-
-                let remote_sessions_for_close = remote_sessions.clone();
-                main_window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::Destroyed = event {
-                        if let Some(dir) = &scrollback_dir_for_close {
-                            if let Err(error) = mgr.flush_all_scrollbacks(dir) {
-                                crate::diag_warn!("scrollback", "shutdown flush failed: {error}");
-                            }
-                        }
-                        mgr.kill_all();
-                        hook_service_for_close.revoke_all();
-                        remote_sessions_for_close.kill_all();
-                    }
-                });
             }
 
             #[cfg(debug_assertions)]
@@ -742,9 +720,11 @@ pub fn run() {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 if let Some(state) = window.try_state::<AppState>() {
                     state.livebrief_service.unsubscribe(window.label());
+                    commands::window_registry::handle_window_destroyed(window.app_handle(), window.label());
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(commands::window::handle_app_run_event);
 }

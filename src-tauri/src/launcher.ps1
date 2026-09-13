@@ -524,12 +524,7 @@ function Invoke-MycmuxWithNoColorGuard {
 }
 
 # --- Launch spec (model / effort) --------------------------------------------
-# The GUI's New Workspace dialog and this launcher's own model menu both end up
-# here, so a fresh start (menu pick or MYCMUX_LAUNCH_TARGET) turns a model and an
-# effort into the right flags in one place. Resume and handoff are deliberately
-# left alone: they continue a session that already has a model, and launcher.sh
-# runs those through their own exec paths, so applying it here would make the two
-# launchers behave differently.
+# Fresh launches and Claude resume use the same saved model / effort values.
 $script:MycmuxLaunchModel = ""
 $script:MycmuxLaunchEffort = ""
 
@@ -698,14 +693,15 @@ function Invoke-MycmuxResumeFromEnv {
       if ($env:MYCMUX_SESSION_ID) {
         if ($env:MYCMUX_RESUME_FORK -eq "1") {
           Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude-codex" (Get-MycmuxClaudeCodexProjectDir)
-          Invoke-MycmuxCommandArray -Command @("claude-codex", "--resume", $env:MYCMUX_SESSION_ID, "--fork-session")
+          Invoke-MycmuxCommandArray -Command (Add-MycmuxLaunchSpecToCommandArray @("claude-codex", "--resume", $env:MYCMUX_SESSION_ID, "--fork-session"))
         } else {
           Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude-codex" $env:MYCMUX_SESSION_ID
-          Invoke-MycmuxCommandArray -Command @("claude-codex", "--resume", $env:MYCMUX_SESSION_ID)
+          Invoke-MycmuxCommandArray -Command (Add-MycmuxLaunchSpecToCommandArray @("claude-codex", "--resume", $env:MYCMUX_SESSION_ID))
         }
       } else {
         Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude-codex" (Get-MycmuxClaudeCodexProjectDir)
-        Invoke-MycmuxCommandArray -Command @("claude-codex", "--continue")
+        Write-Host "  Previous conversation could not be restored; starting a new session."
+        Invoke-MycmuxCommandArray -Command (Add-MycmuxLaunchSpecToCommandArray @("claude-codex"))
       }
       return $true
     }
@@ -714,18 +710,20 @@ function Invoke-MycmuxResumeFromEnv {
         if (Set-MycmuxClaudeResumeLocation $env:MYCMUX_SESSION_ID) {
           if ($env:MYCMUX_RESUME_FORK -eq "1") {
             Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude" (Get-MycmuxClaudeProjectDir)
-            Invoke-MycmuxCommandArray -Command @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions", "--resume", $env:MYCMUX_SESSION_ID, "--fork-session")
+            Invoke-MycmuxCommandArray -Command (Add-MycmuxLaunchSpecToCommandArray @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto", "--resume", $env:MYCMUX_SESSION_ID, "--fork-session"))
           } else {
             Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude" $env:MYCMUX_SESSION_ID
-            Invoke-MycmuxCommandArray -Command @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions", "--resume", $env:MYCMUX_SESSION_ID)
+            Invoke-MycmuxCommandArray -Command (Add-MycmuxLaunchSpecToCommandArray @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto", "--resume", $env:MYCMUX_SESSION_ID))
           }
         } else {
           Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude" (Get-MycmuxClaudeProjectDir)
-          Invoke-MycmuxCommandArray -Command @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions", "--continue")
+          Write-Host "  Previous conversation could not be restored; starting a new session."
+          Invoke-MycmuxCommandArray -Command (Add-MycmuxLaunchSpecToCommandArray @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto"))
         }
       } else {
         Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude" (Get-MycmuxClaudeProjectDir)
-        Invoke-MycmuxCommandArray -Command @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions", "--continue")
+        Write-Host "  Previous conversation could not be restored; starting a new session."
+        Invoke-MycmuxCommandArray -Command (Add-MycmuxLaunchSpecToCommandArray @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto"))
       }
       return $true
     }

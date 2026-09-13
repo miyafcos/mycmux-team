@@ -17,10 +17,6 @@ export interface BuildWorkspaceRecordInput {
   rowHeightsPerCol?: number[][];
 }
 
-type Assert<T extends true> = T;
-type Equal<A, B> =
-  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
-export type _FactoryCoversWorkspace = Assert<Equal<keyof Workspace, keyof BuildWorkspaceRecordInput>>;
 
 function cloneLayoutSizes(
   columnWidths: number[] | undefined,

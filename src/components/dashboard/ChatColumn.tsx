@@ -141,7 +141,7 @@ export function ChatColumn({
         {card.stall ? <span className="cmux-dashboard-chat-header-stall">{stallLabel(card.stall.reason)}</span> : null}
         {instrument ? <span className="cmux-dashboard-chat-header-instrument" data-dashboard-instrument={card.tab.id} title={instrument}>{instrument}</span> : null}
       </div>
-      <span>{dashboardStrings.breadcrumb(card.workspace.name, card.tabIndex + 1, card.paneIndex + 1)}</span>
+      <span>{dashboardStrings.breadcrumb(card.workspace.name, card.paneIndex + 1, card.tabIndex + 1)}</span>
       {card.manualDoneAt === undefined
         ? <button type="button" data-dashboard-manual-done-toggle={card.tab.id} className="cmux-dashboard-chat-header-action" title={dashboardStrings.markDoneTitle} onClick={(event) => {
           event.stopPropagation();

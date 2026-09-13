@@ -1,20 +1,20 @@
 # Agent Integration Contract — mycmux 内エージェントの委譲規約
 
 mycmux はエージェント (Claude Code / Codex) の振る舞いを強制しない。
-「委譲は見える形で = 新しいセッションタブを開いて行う」という方針は、
+「委譲は見える形で = 新しいセッションペインを開いて行う」という方針は、
 **各エージェント側のルールファイルに書くことで成立する**設計になっている。
 この文書はその契約の正本 (mycmux 側から見た全体図)。環境再構築・別 PC 展開時はここを起点にする。
 
 ## 方針 (2026-07-16 宮崎さん確定)
 
 - mycmux 内でエージェントが別エージェントへまとまった作業を委譲するときは、
-  **ヘッドレスのバックグラウンドジョブではなく、同ペインに可視タブを spawn する**。
+  **ヘッドレスのバックグラウンドジョブではなく、同タブに可視ペインを spawn する**。
   画面で監視・介入できる形が正 (openai-codex プラグインの裏ジョブは同日撤去済み)。
 - ヘッドレス (`codex exec` 等) の許可場面は3つのみ:
   1. 非 mycmux セッション (cron / schedule の自律ジョブ — 見る人がいない)
-  2. Workflow の大量 fan-out 並列段 (タブ爆発防止)
+  2. Workflow の大量 fan-out 並列段 (ペイン爆発防止)
   3. 介入余地のない短い照合 (math-verify 等)
-- Claude Code 内部の Task / subagent は対象外 (従来どおり裏実行。タブ爆発防止)。
+- Claude Code 内部の Task / subagent は対象外 (従来どおり裏実行。ペイン爆発防止)。
 
 ## mycmux がエージェントに提供するもの
 
@@ -23,22 +23,22 @@ mycmux はエージェント (Claude Code / Codex) の振る舞いを強制し�
 | 変数 | 用途 |
 | --- | --- |
 | `MYCMUX_TERM_PROGRAM=mycmux` | mycmux 内で動いているかの判定 (委譲経路の分岐キー) |
-| `MYCMUX_TAB_ID` / `MYCMUX_PANE_SESSION_ID` | 自タブ・自ペインの識別。spawn-tab のアンカーに使われる |
+| `MYCMUX_TAB_ID` / `MYCMUX_PANE_SESSION_ID` | 自ペイン・自ペインの識別。spawn-tab のアンカーに使われる |
 | `MYCMUX_MARKDOWN_OUT` / `MYCMUX_HTML_OUT` / `MYCMUX_ARTIFACTS_DIR` | セッション成果物の出力先 |
 
 ### CLI (`scripts/mycmux_agent_cli.py`)
 
 Web 操作: `web-open --url https://chatgpt.com/c/abc --background`、`web-read --tab <id>` (または `--preset <id>`)、`web-close --tab <id>`。結果は JSON で返す。
-`web-push` がタブを新規作成するときは裏タブで開き、呼び出し元のフォーカスを維持する。前面で開く場合は `web-open` → `web-push --tab <id>` を使う。
+`web-push` がペインを新規作成するときは裏ペインで開き、呼び出し元のフォーカスを維持する。前面で開く場合は `web-open` → `web-push --tab <id>` を使う。
 
 ```
 python scripts/mycmux_agent_cli.py spawn --target <claude|codex> --prompt-file <spec.md>
 ```
 
-- 同ペインに新しいタブを開き、純正の対話 TUI (Claude Code / Codex) を起動して spec を流し込む
-  (内部 RPC: `pane.spawn_tab`。`--split` または `spawn-tab --detach` 指定時のみ `pane.spawn` = 新ペイン。`--workspace` / `--anchor-pane` / `--direction` は `--split` 必須。`MYCMUX_PANE_SESSION_ID` 欠落時はエラー終了 — 新ペインへのフォールバックはしない (2026-08-21 裁定)。応答 JSON の `placement` が `tab` / `pane` を示す)
+- 同タブに新しいペインを開き、純正の対話 TUI (Claude Code / Codex) を起動して spec を流し込む
+  (内部 RPC: `pane.spawn_tab`。`--split` または `spawn-tab --detach` 指定時のみ `pane.spawn` = 新タブ。`--workspace` / `--anchor-pane` / `--direction` は `--split` 必須。`MYCMUX_PANE_SESSION_ID` 欠落時はエラー終了 — 新タブへのフォールバックはしない (2026-08-21 裁定)。応答 JSON の `placement` が `tab` / `pane` を示す)
 - effort やモデル指定は CLI フラグでは渡らない — **spec 本文に日本語で明記**する
-- spawn の初期 handoff と、既存タブへの一般入力は別経路。一般入力で生の `send --enter` を自動実行せず、後述の mycmux bridge で画面と canonical state を検証する
+- spawn の初期 handoff と、既存ペインへの一般入力は別経路。一般入力で生の `send --enter` を自動実行せず、後述の mycmux bridge で画面と canonical state を検証する
 
 別ワークスペースで走らせるときは `python scripts/mycmux_agent_cli.py workspace-new --name <name>` で新設します。
 応答の `workspaceId` を使い、`python scripts/mycmux_agent_cli.py spawn --split --workspace <id> --target codex --no-activate` で起動します。
@@ -57,8 +57,8 @@ ref は同一文書内で有効（hash 遷移では維持・ページ遷移と r
 
 | CLI | 動き |
 | --- | --- |
-| `web-open --preset browser --url URL --background` | フォーカスを維持して裏タブを開く |
-| `web-list` | Web タブ一覧と presetId / background / active を取得 |
+| `web-open --preset browser --url URL --background` | フォーカスを維持して裏ペインを開く |
+| `web-list` | Web ペイン一覧と presetId / background / active を取得 |
 | `web-navigate --tab ID (--url URL / --back / --forward / --reload)` | URL移動・履歴移動・再読み込み |
 | `web-wait --tab ID --state load/idle/selector [--selector CSS] [--timeout-ms N]` | 読み込み・DOM静止・要素出現を待つ |
 | `web-eval --tab ID (--script JS / --script-file PATH) [--timeout-ms N]` | async 関数本体を評価し JSON を取得（入力256 KB・結果512 KB上限） |
@@ -75,7 +75,7 @@ ref は同一文書内で有効（hash 遷移では維持・ページ遷移と r
 | `web-read --tab ID` | 既存サービスの会話を取得（reader 対応プリセットのみ） |
 | `web-push --tab ID --text TEXT [--send]` | 既存サービスの composer に入力し、指定時だけ送信 |
 | `web-focus --tab <id>` | 明示時のみ前面化（--tabのみ、--preset不可） |
-| `web-close --tab ID` | Web タブを閉じる（--tabのみ、--preset不可） |
+| `web-close --tab ID` | Web ペインを閉じる（--tabのみ、--preset不可） |
 
 close / focus は `--tab` のみ（`--preset` 不可）。それ以外の操作コマンドの `--tab` は `--preset` に置き換えられる。プリセット指定では呼出元のワークスペース内の最新候補を使う。
 JS の click/type/key/upload は合成イベントで、キーの既定動作は best effort。
@@ -126,7 +126,7 @@ python C:/Users/miyaz/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py answ
 
 Gemini CLI は 2026-06-18 に個人アカウント向け終了 (実測: `IneligibleTierError`)。後継は
 `agy` (Antigravity CLI)。`spawn --target` は claude/codex 系のみなので、agy は
-**spawn-tab の任意コマンド argv 経路**で可視タブを立てる:
+**spawn-tab の任意コマンド argv 経路**で可視ペインを立てる:
 
 ```
 python scripts/mycmux_agent_cli.py spawn-tab --label agy -- env NO_COLOR=1 agy -i "C:/path/spec.md を読んで実行して"
@@ -174,7 +174,7 @@ python scripts/mycmux_agent_cli.py spawn --target grok --prompt-file <spec.md>
   cwd キーは `C%3A%5CUsers%5C...` 形式なので、復元判定は cwd バケットを走査して
   session-id のディレクトリを探す方式にしてある (`agent_restore.rs::grok_session_exists`)
 - ailog の使用量集計、livebrief の会話取り込み (ダッシュボードの介入・要約)、およびアカウント
-  切替と週間使用量表示は対応済み。CRSM パレットのフィルタは未対応で、grok タブはここでは見えない。
+  切替と週間使用量表示は対応済み。CRSM パレットのフィルタは未対応で、grok ペインはここでは見えない。
 - 認証は SuperGrok / X Premium Plus のブラウザログイン (`grok login`)。未認証だと TUI が
   サインイン画面で止まる
 
@@ -214,7 +214,7 @@ python scripts/mycmux_agent_cli.py spawn --target grok --prompt-file <spec.md>
 
 ### 完了検知の規約
 
-spawn したタブの完了・生存は画面でなく**実体を3層でポーリング**する (2026-07-16 確立):
+spawn したペインの完了・生存は画面でなく**実体を3層でポーリング**する (2026-07-16 確立):
 
 1. **DONE マーカーファイル** (spec で出力先を指定・末尾行判定は CRLF 耐性をつける) — 正常完了
 2. **自セッションの rollout ログ増分** (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`) —
@@ -231,18 +231,18 @@ spawn したタブの完了・生存は画面でなく**実体を3層でポー�
 
 ### 見張り (dispatch_guard) — 止まった子の回復と通報 (2026-09-08 追加)
 
-spawn した子 (と手動の agent タブ) が「起動ダイアログ・入力欄に残った本文・AskUserQuestion・承認・ログイン」で黙って止まる 4 系統を、session-dispatch スキル同梱の常駐プロセスが 15 秒周期で検出し、回復するか通報する。mycmux 本体は socket API (`session.state_view` / `pane.read` / `pane.send_text`) を提供するだけで、判定と操作はスキル側にある。
+spawn した子 (と手動の agent ペイン) が「起動ダイアログ・入力欄に残った本文・AskUserQuestion・承認・ログイン」で黙って止まる 4 系統を、session-dispatch スキル同梱の常駐プロセスが 15 秒周期で検出し、回復するか通報する。mycmux 本体は socket API (`session.state_view` / `pane.read` / `pane.send_text`) を提供するだけで、判定と操作はスキル側にある。
 
 | 症状 | 防ぐ場所 | 効き方 |
 | --- | --- | --- |
 | 起動ダイアログ (MCP 選択・trust・auto 確認) | Claude Code の settings (`enableAllProjectMcpServers` / `skipAutoPermissionPrompt`) + `dispatch_preflight.py` が cwd の承認を先に書く | 起きなくなる。残りは見張りが受諾キー 1 回 |
 | 子の AskUserQuestion / plan 承認 | PreToolUse hook `dispatch-child-guard.py` (台帳の active 行にある子だけ deny) | 呼べなくなる |
 | 機械送信の本文が残る | `dispatch_send.py` の配送確認 → 見張りが期待値 4 点付き Enter を 1 回 | 起きても 1〜2 分で回復。人が打った本文は送らず 10 分で通報 |
-| 承認・ログイン・手動タブの質問 | 見張りが画面を読む | 子の承認は「拒否 + 代替手段の指示」、ログインと手動タブは通報のみ |
+| 承認・ログイン・手動ペインの質問 | 見張りが画面を読む | 子の承認は「拒否 + 代替手段の指示」、ログインと手動ペインは通報のみ |
 
 - 起動: ランチャー (`launcher.ps1` / `launcher.sh`) が agent TUI を立てるたびに `dispatch_guard.py ensure` を detached で呼ぶ (idempotent・`MYCMUX_DISPATCH_GUARD=off` で無効)。母艦側は 10 分ごとの Scheduled Task でも `ensure` する
-- 状態: `python -X utf8 ~/.claude/skills/session-dispatch/scripts/dispatch_guard.py doctor` (生存・最終周期・タブごとの分類・通報数)。記録は `~/.claude/dispatch/guard/` (guard.log / state.json / pending_sends.jsonl / escalations.jsonl)
-- 実機試験: `dispatch_canary.py --scenario startup,askuser,draft` (新規 cwd に子を立て、spec 消費 ≤ 60 秒・AskUserQuestion deny・機械本文の配送を assert し、子タブを閉じる)
+- 状態: `python -X utf8 ~/.claude/skills/session-dispatch/scripts/dispatch_guard.py doctor` (生存・最終周期・ペインごとの分類・通報数)。記録は `~/.claude/dispatch/guard/` (guard.log / state.json / pending_sends.jsonl / escalations.jsonl)
+- 実機試験: `dispatch_canary.py --scenario startup,askuser,draft` (新規 cwd に子を立て、spec 消費 ≤ 60 秒・AskUserQuestion deny・機械本文の配送を assert し、子ペインを閉じる)
 - 既知の穴: Codex 子の idle 検知 (rollout に応答終了の印が無く attention も none のまま)。mycmux 側で Codex の待機を attention に載せるのが次の一手。詳細設計と証拠は母艦の `~/.claude/_work/dispatch_guard_260908/`
 
 ## 配布物: Claude Code スキルパック

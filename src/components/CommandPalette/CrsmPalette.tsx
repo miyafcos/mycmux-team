@@ -72,7 +72,7 @@ export function resolveCrsmEscapeAction(query: string): CrsmEscapeAction {
 export function matchesTabSweepCommand(query: string): boolean {
   const normalized = query.trim().toLocaleLowerCase().replace(/\s+/g, "");
   if (!normalized) return false;
-  return ["タブ掃除", "tabsweep"].some((term) => term.includes(normalized));
+  return ["ペイン掃除", "tabsweep"].some((term) => term.includes(normalized));
 }
 
 export function pageJumpIndex(
@@ -1300,7 +1300,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
         </div>
         <button
           type="button"
-          aria-label="タブ掃除を開く"
+          aria-label="ペイン掃除を開く"
           onClick={openTabSweepCommand}
           style={{
             display: "flex",
@@ -1318,7 +1318,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
             textAlign: "left",
           }}
         >
-          <span><strong>操作</strong> · タブ掃除を開く</span>
+          <span><strong>操作</strong> · ペイン掃除を開く</span>
           <kbd style={{ color: "var(--cmux-text-tertiary)", fontFamily: "inherit", fontSize: 10 }}>{tabSweepShortcut}</kbd>
         </button>
       </div>

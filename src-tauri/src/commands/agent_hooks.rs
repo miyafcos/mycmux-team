@@ -1,5 +1,4 @@
 use crate::agent_state::{self, HookMode, Provider};
-use crate::AppState;
 
 fn apply_modes(
     service: &agent_state::HookService,
@@ -30,25 +29,4 @@ pub fn install_at_startup(service: &agent_state::HookService) {
             crate::diag_warn!("agent_hooks", "startup reconciliation failed: {error}");
         }
     }
-}
-
-#[tauri::command(async)]
-pub async fn agent_hooks_set_enabled(
-    enabled: bool,
-    state: tauri::State<'_, AppState>,
-) -> Result<bool, String> {
-    let service = state.hook_service.clone();
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
-        agent_state::settings::reconcile_default(Some(enabled))
-    })
-    .await
-    .map_err(|error| error.to_string())??;
-    apply_modes(&service, &outcome);
-    if !enabled {
-        service.revoke_all();
-    }
-    for warning in outcome.warnings {
-        crate::diag_warn!("agent_hooks", "{warning}");
-    }
-    Ok(outcome.enabled)
 }

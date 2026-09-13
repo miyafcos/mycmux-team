@@ -412,7 +412,7 @@ describe("TabGroupingPanel editable after map", () => {
     await mountPanel();
     await click(button(tabGroupingStrings.editPlan));
     const summary = document.querySelector<HTMLElement>(".cmux-tab-grouping-editsummary");
-    const counts = [...(summary?.textContent?.matchAll(/(\d+)タブ/g) ?? [])]
+    const counts = [...(summary?.textContent?.matchAll(/(\d+)ペイン/g) ?? [])]
       .map((match) => Number(match[1]));
     const fixtureTabCount = new Set(mockWorkspaces.flatMap((workspace) => (
       workspace.panes.flatMap((pane) => pane.tabs.map((tab) => tab.id))

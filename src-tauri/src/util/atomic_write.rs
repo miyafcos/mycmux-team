@@ -19,6 +19,42 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
 
+/// Private to file I/O: never return these paths to WebView/Chromium callers.
+/// Resolve relative components before adding a verbatim prefix, without
+/// requiring the destination (or its parents) to exist. Preserve OS strings.
+fn filesystem_write_path(path: &Path) -> std::io::Result<std::borrow::Cow<'_, Path>> {
+    #[cfg(windows)]
+    {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use std::path::{Component, PathBuf, Prefix};
+
+        let absolute = std::path::absolute(path)?;
+        let extended = match absolute.components().next() {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::Disk(_) => {
+                    let mut value = OsString::from(r"\\?\");
+                    value.push(absolute.as_os_str());
+                    value
+                }
+                Prefix::UNC(_, _) => {
+                    let wide: Vec<u16> = absolute.as_os_str().encode_wide().collect();
+                    let mut value = OsString::from(r"\\?\UNC\");
+                    value.push(OsString::from_wide(&wide[2..]));
+                    value
+                }
+                _ => return Ok(std::borrow::Cow::Owned(absolute)),
+            },
+            _ => return Ok(std::borrow::Cow::Owned(absolute)),
+        };
+        Ok(std::borrow::Cow::Owned(PathBuf::from(extended)))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(std::borrow::Cow::Borrowed(path))
+    }
+}
+
 /// A configured atomic writer for one call site.
 pub struct AtomicWrite {
     temp_label: String,
@@ -69,6 +105,9 @@ impl AtomicWrite {
     where
         F: FnOnce(&mut File) -> Result<(), String>,
     {
+        path.parent().ok_or_else(|| self.parent_missing.clone())?;
+        let path = filesystem_write_path(path)
+            .map_err(|error| format!("Failed to resolve write path: {error}"))?;
         let parent = path.parent().ok_or_else(|| self.parent_missing.clone())?;
         if self.create_parents {
             fs::create_dir_all(parent)
@@ -82,7 +121,7 @@ impl AtomicWrite {
         temp.as_file()
             .sync_all()
             .map_err(|error| format!("Failed to sync {}: {error}", self.temp_label))?;
-        temp.persist(path)
+        temp.persist(path.as_ref())
             .map(|_| ())
             .map_err(|error| format!("{}: {}", self.replace_prefix, error.error))
     }
@@ -95,7 +134,9 @@ impl AtomicWrite {
 /// the rename themselves because they need extra steps in between (`db::storage`
 /// takes a pre-replace backup of the live file first).
 pub fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut file = File::create(path)
+    let path = filesystem_write_path(path)
+        .map_err(|error| format!("Failed to resolve write path: {error}"))?;
+    let mut file = File::create(path.as_ref())
         .map_err(|error| format!("Failed to create {}: {error}", path.display()))?;
     file.write_all(bytes)
         .map_err(|error| format!("Failed to write {}: {error}", path.display()))?;
@@ -166,6 +207,48 @@ mod tests {
 
         assert_eq!(error, "payload build failed");
         assert_eq!(fs::read(&path).unwrap(), b"old");
+    }
+
+    #[test]
+    fn long_destination_supports_create_replace_sync_and_failed_fill() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut parent = dir.path().to_path_buf();
+        for _ in 0..7 {
+            parent.push("long-write-directory-0123456789abcdef");
+        }
+        let path = parent.join("data.json");
+        assert!(path.as_os_str().len() > 260);
+        let writer = AtomicWrite::new("temporary file", "Failed to replace file atomically")
+            .create_parents();
+        writer.write_bytes(&path, b"first").unwrap();
+        writer.write_bytes(&path, b"replacement").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"replacement");
+        let error = writer.write_with(&path, |_| Err("failed fill".into())).unwrap_err();
+        assert_eq!(error, "failed fill");
+        assert_eq!(fs::read(&path).unwrap(), b"replacement");
+        write_synced(&path, b"short").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"short");
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn filesystem_paths_normalize_disk_unc_relative_and_existing_prefixes() {
+        assert_eq!(
+            filesystem_write_path(Path::new(r"C:\folder\..\target\file.json")).unwrap().as_ref(),
+            Path::new(r"\\?\C:\target\file.json"),
+        );
+        assert_eq!(
+            filesystem_write_path(Path::new(r"\\server\share\folder\file.json")).unwrap().as_ref(),
+            Path::new(r"\\?\UNC\server\share\folder\file.json"),
+        );
+        let already = Path::new(r"\\?\C:\target\file.json");
+        assert_eq!(filesystem_write_path(already).unwrap().as_ref(), already);
+        let relative = filesystem_write_path(Path::new("folder/../file.json")).unwrap();
+        assert_eq!(
+            relative,
+            filesystem_write_path(&std::env::current_dir().unwrap().join("file.json")).unwrap(),
+        );
     }
 
     #[test]

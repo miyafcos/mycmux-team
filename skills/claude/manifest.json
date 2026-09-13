@@ -1,9 +1,9 @@
 {
   "pack_version": "1.0.0",
-  "generated_at": "2026-09-11T01:18:04.552659+00:00",
+  "generated_at": "2026-09-12T13:13:44.541429+00:00",
   "cli": {
     "path": "scripts/mycmux_agent_cli.py",
-    "sha256": "f65708c6ca10da1cb177a9333560c99ad90bd6cc5ccfd7f40525cda4733404ad"
+    "sha256": "9f4a967ff3a60215d5deed823e3e350a4766488129a9e02a455dd26a9da01174"
   },
   "skills": [
     {

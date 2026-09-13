@@ -507,8 +507,8 @@ export const LayoutMinimapPanel = memo(function LayoutMinimapPanel({ workspaces,
       {TAB_GROUPING_ENTRY_ENABLED ? <TabGroupingButton /> : null}
       <TabSweepButton />
     </div>
-    {closeConfirmation ? <section className="cmux-minimap-bundle-confirm" role="dialog" aria-modal="true" aria-label="選択したタブを閉じる確認" data-minimap-close-confirm="true">
-      <div>{`${closeConfirmation.tabIds.length}本のタブを閉じます`}</div>
+    {closeConfirmation ? <section className="cmux-minimap-bundle-confirm" role="dialog" aria-modal="true" aria-label="選択したペインを閉じる確認" data-minimap-close-confirm="true">
+      <div>{`${closeConfirmation.tabIds.length}本のペインを閉じます`}</div>
       <ul>{closeConfirmation.labels.map((label, index) => <li key={`${closeConfirmation.tabIds[index]}-${label}`}>{label}</li>)}</ul>
       {closeError ? <div role="alert">{closeError}</div> : null}
       <div className="cmux-minimap-bundle-confirm-actions">

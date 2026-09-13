@@ -12,7 +12,7 @@ import {
 import type { AgentSessionKind, ArtifactSourceKind, ThemeTweaks, TurnMarkPersistSnapshot } from "../types";
 import type { OnlineSavepointEntry } from "../components/online/onlineSavepoints";
 import { markSessionFrontendActivity } from "./agentDormancy";
-import { windowLabel } from "./windowContext";
+import { windowLabel, hasWindowRole, setWindowRole } from "./windowContext";
 
 export { getCurrentSessionEpoch, type FrontendDataBatch };
 
@@ -940,12 +940,27 @@ export async function getDefaultShell(): Promise<DefaultShellInfo> {
 
 // ─── Window / leader election ────────────────────────────────────────────────
 
+export async function releaseLeader(): Promise<void> {
+  const owned = hasWindowRole();
+  setWindowRole(false);
+  try {
+    await invoke<void>("release_leader");
+  } catch (error) {
+    setWindowRole(owned);
+    throw error;
+  }
+}
+
 export async function claimLeader(): Promise<boolean> {
   return invoke<boolean>("claim_leader");
 }
 
 export async function revealMainWindow(): Promise<void> {
   return invoke<void>("reveal_main_window");
+}
+
+export async function setWindowCloseIntent(closing: boolean): Promise<void> {
+  return invoke<void>("set_window_close_intent", { closing });
 }
 
 export async function quitApp(): Promise<void> {
@@ -1054,8 +1069,8 @@ export async function getWindowFragments(): Promise<WindowFragment[]> {
 }
 
 /** Settings-only hydration for windows that must not load workspaces. */
-export async function getAppSettings(): Promise<AppSettings> {
-  return invoke<AppSettings>("get_app_settings");
+export async function getAppSettings(): Promise<AppSettings & { schema_version: number }> {
+  return invoke<AppSettings & { schema_version: number }>("get_app_settings");
 }
 
 // ─── Persistence commands ────────────────────────────────────────────────────
@@ -1068,6 +1083,7 @@ export interface SuppressedAgentSessionConfig {
 
 export interface PaneTabConfig {
   tab_id?: string | null;
+  session_id?: string | null;
   agent_id: string;
   label?: string | null;
   label_source?: "user" | "ai" | null;
@@ -1076,8 +1092,12 @@ export interface PaneTabConfig {
    * not send keystrokes to it. It used to be reported as "terminal", which made
    * a delegation script's `send` look like it succeeded while going nowhere.
    */
-  type?: "terminal" | "web" | "launcher" | null;
+  type?: "terminal" | "web" | "browser" | "launcher" | null;
   preset_id?: string | null;
+  html_path?: string | null;
+  source_path?: string | null;
+  source_kind?: "html" | "markdown" | "office" | "pdf" | null;
+  preview_path?: string | null;
   cwd?: string | null;
   last_process?: string | null;
   claude_session_id?: string | null;
@@ -1109,7 +1129,20 @@ export interface PaneConfig {
   tabs?: PaneTabConfig[] | null;
 }
 
+export interface DetachedPaneOrigin {
+  workspace_id: string;
+  pane_id: string;
+  tab_id: string;
+  index: number;
+  column?: number;
+  row?: number;
+  /** Distinguishes a removed column from a removed row in a surviving column. */
+  column_size?: number;
+}
+
 export interface WorkspaceConfig {
+  detached?: boolean | null;
+  detached_from?: DetachedPaneOrigin | null;
   id: string;
   name: string;
   grid_template_id: string;
@@ -1162,12 +1195,6 @@ export interface PersistentDataEnvelope {
   schemaVersion: number;
   data: PersistentData | null;
   supported: boolean;
-}
-
-export interface PersistentStorageCommandError {
-  kind: "unsupportedSchema" | "unsupportedPlatform" | "invalidPayloadSchema" | "storage";
-  schemaVersion?: number;
-  message: string;
 }
 
 export type NonRetryablePersistentStorageError =
@@ -1281,10 +1308,6 @@ export interface QuarantinedPet {
 
 export async function fetchPetGallery(query = "", page = 1, pageSize = 24, sort = "new"): Promise<GalleryPage> {
   return invoke<GalleryPage>("fetch_pet_gallery", { query: query.trim() || null, page, pageSize, sort });
-}
-
-export async function fetchPetPreview(previewUrl: string): Promise<string> {
-  return invoke<string>("fetch_pet_preview", { previewUrl });
 }
 
 export async function installPetFromGallery(id: string): Promise<ListedPet> {
@@ -1538,10 +1561,6 @@ export async function beginCliLogin(
 
 export async function cancelCliLogin(loginId: string): Promise<void> {
   return invoke<void>("cancel_cli_login", { loginId } satisfies LoginIdArgs);
-}
-
-export async function listCliLoginSessions(): Promise<CliLoginSessionStatus[]> {
-  return invoke<CliLoginSessionStatus[]>("list_cli_login_sessions");
 }
 
 // ─── Launcher commands ─────────────────────────────────────────────

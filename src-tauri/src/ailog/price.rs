@@ -81,15 +81,6 @@ impl ModelProvider {
     }
 }
 
-impl ModelClass {
-    pub const fn is_covered(self) -> bool {
-        matches!(
-            self,
-            Self::Priced | Self::Local | Self::Flat | Self::Reported
-        )
-    }
-}
-
 /// Per-million-token rates in USD.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Price {

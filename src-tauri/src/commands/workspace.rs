@@ -284,11 +284,16 @@ mod tests {
         pane.active_tab_id = Some("tab-1".to_string());
         pane.tabs = Some(vec![PaneTabConfig {
             tab_id: Some("tab-1".to_string()),
+            session_id: None,
             agent_id: "codex".to_string(),
             label: Some("Codex".to_string()),
             label_source: None,
             r#type: None,
             preset_id: None,
+            html_path: None,
+            source_path: None,
+            source_kind: None,
+            preview_path: None,
             cwd: None,
             last_process: None,
             claude_session_id: None,

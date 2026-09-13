@@ -28,13 +28,6 @@ export const sectionHeadingStyle: CSSProperties = {
   marginBottom: 10,
 };
 
-export const sectionSubheadingStyle: CSSProperties = {
-  fontSize: 11,
-  fontWeight: 600,
-  color: "var(--cmux-text-dim, rgba(255,255,255,0.55))",
-  marginBottom: 6,
-};
-
 export const dialogButtonStyle: CSSProperties = {
   padding: "6px 10px",
   fontSize: 12,

@@ -1,9 +1,10 @@
-import { openWorkspaceWindow } from "./ipc";
+import { openWorkspaceWindow, type DetachedPaneOrigin } from "./ipc";
+import { detachedWorkspaceConfig } from "./detachedPane";
 import { windowLabel } from "./windowContext";
 import { focusController } from "./focusController";
 import { usePaneMetadataStore, useWorkspaceListStore } from "../stores/workspaceStore";
 import { evictTerminalCache } from "../components/terminal/terminalCache";
-import { toConfig } from "../components/layout/SocketListener";
+import { toTransferConfig } from "../components/layout/SocketListener";
 import type { Workspace } from "../types";
 
 /**
@@ -36,6 +37,7 @@ export function sessionIdsInWorkspace(workspace: Workspace): string[] {
 export interface TearOutPlacement {
   x?: number;
   y?: number;
+  detachedFrom?: DetachedPaneOrigin;
 }
 
 export async function tearOutWorkspaceToNewWindow(
@@ -46,14 +48,18 @@ export async function tearOutWorkspaceToNewWindow(
   const workspace = listStore.workspaces.find((candidate) => candidate.id === workspaceId);
   if (!workspace) return null;
 
-  const config = toConfig(workspace);
-  if (config.panes.length === 0) return null;
+  const serialized = toTransferConfig(workspace);
+  const config = placement.detachedFrom
+    ? detachedWorkspaceConfig(serialized, placement.detachedFrom)
+    : serialized;
+  if (!config || config.panes.length === 0) return null;
 
   const label = await openWorkspaceWindow({
     fromLabel: windowLabel(),
     workspaces: [config],
     x: placement.x,
     y: placement.y,
+    ...(config.detached ? { width: 720, height: 520 } : {}),
   });
 
   // Only now does it leave this window: if opening the window failed, the

@@ -1,7 +1,6 @@
 use std::collections::HashSet;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::RECT;
@@ -135,11 +134,22 @@ fn ensure_window_bounds(window: &tauri::WebviewWindow) {
 }
 
 #[tauri::command]
-pub fn claim_leader(state: State<'_, AppState>) -> bool {
-    state
-        .bootstrapped
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
+pub fn claim_leader(window: tauri::WebviewWindow, state: State<'_, AppState>) -> bool {
+    state.window_registry.claim_leader(window.label())
+}
+
+#[tauri::command(async)]
+pub fn release_leader(window: tauri::WebviewWindow) {
+    release_window_role(window.app_handle(), window.label());
+}
+
+pub fn release_window_role(app: &AppHandle, label: &str) {
+    if let Some(state) = app.try_state::<AppState>() {
+        if state.window_registry.release_leader(label) {
+            let _ = app.emit(crate::window_registry::WINDOW_REGISTRY_CHANGED_EVENT,
+                state.window_registry.revision());
+        }
+    }
 }
 
 #[tauri::command]
@@ -228,6 +238,50 @@ fn schedule_child_window_reveal_fallback(app: AppHandle, label: String) {
     });
 }
 
+/// Keep a torn-out window fully on the monitor it was dropped on. Dropping near
+/// the right or bottom edge is the normal way to detach, and without this the
+/// window opens half off-screen with its title band out of reach.
+///
+/// Pure geometry so the clamp itself is unit-tested (`clamp_window_origin`).
+pub fn clamp_window_origin(
+    monitor: (f64, f64, f64, f64),
+    origin: (f64, f64),
+    size: (f64, f64),
+) -> (f64, f64) {
+    let (mx, my, mw, mh) = monitor;
+    let max_x = (mx + mw - size.0).max(mx);
+    let max_y = (my + mh - size.1).max(my);
+    (origin.0.clamp(mx, max_x), origin.1.clamp(my, max_y))
+}
+
+fn clamp_to_monitor<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> (f64, f64) {
+    // The drop point decides the monitor; falling back to the window's current
+    // one keeps a multi-monitor drop on the screen the user dropped it on.
+    let monitor = window
+        .app_handle()
+        .monitor_from_point(x, y)
+        .ok()
+        .flatten()
+        .or_else(|| window.current_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return (x, y);
+    };
+    let scale = monitor.scale_factor();
+    let position = monitor.position().to_logical::<f64>(scale);
+    let size = monitor.size().to_logical::<f64>(scale);
+    clamp_window_origin(
+        (position.x, position.y, size.width, size.height),
+        (x, y),
+        (width, height),
+    )
+}
+
 /// Outcome of label allocation: either the label is free and the caller must
 /// build the window, or a window already carries it and was revealed instead.
 pub enum ResolvedChildWindow {
@@ -269,6 +323,17 @@ pub fn resolve_child_window_label(
 /// `reveal_main_window`, blocking on the result from a sync command would
 /// deadlock the very event loop that has to run the closure.
 ///
+/// The hop through a worker thread is what makes that posting real. Both
+/// callers are sync commands (the allowlist in
+/// `tests/test_command_sync_contract.py` names them), so they already run on
+/// the main thread, and wry's `run_on_main_thread` executes inline when it is
+/// called from there. Building a webview inline means creating it inside the WebView2
+/// IPC callback: `build()` then waits for the controller while the message
+/// loop it needs is still inside our call stack, so the app freezes with an
+/// empty, invisible window on screen (reproduced twice on a test machine,
+/// 2026-09-11). Handing the closure to a thread makes `run_on_main_thread`
+/// post a user event that the event loop runs after the command returns.
+///
 /// Shared by `open_child_window` (Phase 3a dev hook) and
 /// `open_workspace_window` (Phase 3b tear-out) so both windows get identical
 /// chrome, the reveal fallback and the merge-back-on-destroy hook.
@@ -282,68 +347,70 @@ pub fn spawn_child_window(
 ) -> Result<(), String> {
     let app_handle = app.clone();
     let build_label = label;
-    app.run_on_main_thread(move || {
-        let mut builder = tauri::WebviewWindowBuilder::new(
-            &app_handle,
-            &build_label,
-            tauri::WebviewUrl::default(),
-        )
-        .title("mycmux")
-        // Same undecorated chrome as the main window (tauri.conf.json) — the
-        // in-app TitleBar draws the controls.
-        .decorations(false)
-        .resizable(true)
-        // Revealed by the frontend after first paint (App.tsx), mirroring the
-        // main window's hidden-until-ready startup.
-        .visible(false)
-        .min_inner_size(CHILD_WINDOW_MIN_WIDTH, CHILD_WINDOW_MIN_HEIGHT)
-        .inner_size(
-            width.unwrap_or(CHILD_WINDOW_DEFAULT_WIDTH),
-            height.unwrap_or(CHILD_WINDOW_DEFAULT_HEIGHT),
-        );
+    let post_handle = app.clone();
+    std::thread::spawn(move || {
+        let _ = post_handle.run_on_main_thread(move || {
+            let mut builder = tauri::WebviewWindowBuilder::new(
+                &app_handle,
+                &build_label,
+                tauri::WebviewUrl::default(),
+            )
+            .title("mycmux")
+            // Same undecorated chrome as the main window (tauri.conf.json) — the
+            // in-app TitleBar draws the controls.
+            .decorations(false)
+            .resizable(true)
+            // Revealed by the frontend after first paint (App.tsx), mirroring the
+            // main window's hidden-until-ready startup.
+            .visible(false)
+            .min_inner_size(CHILD_WINDOW_MIN_WIDTH, CHILD_WINDOW_MIN_HEIGHT)
+            .inner_size(
+                width.unwrap_or(CHILD_WINDOW_DEFAULT_WIDTH),
+                height.unwrap_or(CHILD_WINDOW_DEFAULT_HEIGHT),
+            );
 
-        if let (Some(x), Some(y)) = (x, y) {
-            builder = builder.position(x, y);
-        }
+            if let (Some(x), Some(y)) = (x, y) {
+                builder = builder.position(x, y);
+            }
 
-        match builder.build() {
-            Ok(window) => {
-                // Per-window taskbar button needs its own icon (mirrors lib.rs
-                // doing this for "main").
-                if let Some(icon) = app_handle.default_window_icon().cloned() {
-                    let _ = window.set_icon(icon);
-                }
-                // Safety net for the failure mode the JS boot probe exists to
-                // report: if the capability glob ever stops covering this
-                // label, the frontend cannot show its own window either (that
-                // is an IPC call too), and the hard error UI would render into
-                // a window nobody can see. Reveal it from Rust if the frontend
-                // has not done so itself.
-                schedule_child_window_reveal_fallback(app_handle.clone(), build_label.clone());
-
-                // Merge-back safety net (Phase 3b). The clean close path
-                // releases the window's workspaces itself, so this normally
-                // finds nothing. It exists for the paths that never run JS:
-                // a crashed webview, an OS-forced close, the taskbar's
-                // "close window". Whatever is still assigned to the label
-                // goes back to main, sessions and all.
-                let reclaim_handle = app_handle.clone();
-                let reclaim_label = build_label.clone();
-                window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::Destroyed = event {
-                        crate::commands::window_registry::reclaim_destroyed_window(
-                            &reclaim_handle,
-                            &reclaim_label,
-                        );
+            match builder.build() {
+                Ok(window) => {
+                    // Restate size and position in explicit logical units now that
+                    // the window knows which monitor (and scale factor) it is on.
+                    // The builder applies them before that is settled, which on a
+                    // 150% display produced a window of the wrong size in the wrong
+                    // place: 720x520 asked, 585x696 measured (2026-09-12).
+                    let size = (
+                        width.unwrap_or(CHILD_WINDOW_DEFAULT_WIDTH),
+                        height.unwrap_or(CHILD_WINDOW_DEFAULT_HEIGHT),
+                    );
+                    let _ = window.set_size(tauri::LogicalSize::new(size.0, size.1));
+                    if let (Some(x), Some(y)) = (x, y) {
+                        let (x, y) = clamp_to_monitor(&window, x, y, size.0, size.1);
+                        let _ = window.set_position(tauri::LogicalPosition::new(x, y));
                     }
-                });
+                    // Per-window taskbar button needs its own icon (mirrors lib.rs
+                    // doing this for "main").
+                    if let Some(icon) = app_handle.default_window_icon().cloned() {
+                        let _ = window.set_icon(icon);
+                    }
+                    // Safety net for the failure mode the JS boot probe exists to
+                    // report: if the capability glob ever stops covering this
+                    // label, the frontend cannot show its own window either (that
+                    // is an IPC call too), and the hard error UI would render into
+                    // a window nobody can see. Reveal it from Rust if the frontend
+                    // has not done so itself.
+                    schedule_child_window_reveal_fallback(app_handle.clone(), build_label.clone());
+
+
+                }
+                Err(err) => {
+                    crate::diag_warn!("window", "failed to open child window {build_label}: {err}");
+                }
             }
-            Err(err) => {
-                crate::diag_warn!("window", "failed to open child window {build_label}: {err}");
-            }
-        }
-    })
-    .map_err(|e| e.to_string())
+        });
+    });
+    Ok(())
 }
 
 /// Phase 3a: open an additional app window. It boots the same frontend bundle;
@@ -372,19 +439,42 @@ pub fn open_child_window(
     }
 }
 
-#[tauri::command]
-pub fn quit_app(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    remote_sessions: State<'_, Arc<crate::remote::session::RemoteSessionManager>>,
-) -> Result<(), String> {
+/// Window closure, explicit exit/restart and native loop termination share cleanup.
+pub fn handle_app_run_event(app: &AppHandle, event: tauri::RunEvent) {
+    let (live_windows, code) = match event {
+        tauri::RunEvent::ExitRequested { code, api, .. } => {
+            let live_windows = app.webview_windows().len();
+            if code.is_none() && live_windows != 0 {
+                api.prevent_exit();
+                return;
+            }
+            (live_windows, code)
+        }
+        // Native termination (including macOS Cmd+Q) may skip ExitRequested.
+        // The shared latch also makes Exit after ExitRequested harmless.
+        tauri::RunEvent::Exit => (0, Some(0)),
+        _ => return,
+    };
+    let state = app.state::<AppState>();
+    if !state.window_registry.begin_shutdown(live_windows, code) { return; }
     if let Some(dir) = state.scrollback_dir.get() {
         if let Err(error) = state.session_manager.flush_all_scrollbacks(dir) {
             crate::diag_warn!("scrollback", "shutdown flush failed: {error}");
         }
     }
     state.session_manager.kill_all();
-    remote_sessions.kill_all();
+    state.hook_service.revoke_all();
+    if let Some(remote_sessions) = app.try_state::<Arc<crate::remote::session::RemoteSessionManager>>() {
+        remote_sessions.kill_all();
+    }
+}
+
+#[tauri::command]
+pub fn quit_app(app: AppHandle) -> Result<(), String> {
+    if !app.webview_windows().is_empty() {
+        return Err("Cannot quit while a window is still alive".to_string());
+    }
+    // Cleanup is centralized in the runtime exit hook, including this path.
     app.exit(0);
     Ok(())
 }
@@ -395,6 +485,29 @@ mod tests {
 
     fn labels(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn a_drop_near_the_edge_still_opens_on_screen() {
+        let monitor = (0.0, 0.0, 1707.0, 1067.0);
+        let size = (720.0, 520.0);
+        // Inside the monitor the drop point is used as-is.
+        assert_eq!(clamp_window_origin(monitor, (300.0, 200.0), size), (300.0, 200.0));
+        // Past the right/bottom edge the window slides back into view.
+        assert_eq!(clamp_window_origin(monitor, (1576.0, 900.0), size), (987.0, 547.0));
+        // Negative coordinates land back at the monitor origin.
+        assert_eq!(clamp_window_origin(monitor, (-200.0, -50.0), size), (0.0, 0.0));
+        // A second monitor to the right keeps its own origin.
+        assert_eq!(
+            clamp_window_origin((1707.0, 0.0, 1707.0, 1067.0), (3500.0, 10.0), size),
+            (2694.0, 10.0),
+        );
+    }
+
+    #[test]
+    fn a_window_larger_than_the_monitor_pins_to_its_origin() {
+        let monitor = (0.0, 0.0, 600.0, 400.0);
+        assert_eq!(clamp_window_origin(monitor, (200.0, 200.0), (1200.0, 800.0)), (0.0, 0.0));
     }
 
     #[test]

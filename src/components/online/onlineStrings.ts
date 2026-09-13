@@ -19,8 +19,8 @@ export const onlineStrings = {
   dragGhostTransferTarget: "人に渡すファイルを作成",
   dragDropPastePreview: (agent: string): string => `ここに${agent}へ引き継ぎ文書を渡します（Enterで送信）`,
   dragDropCwdMissing: "元の作業フォルダが見つからないため、ホームフォルダで新しいセッションを開始しました。引き継ぎ書は絶対パスで参照できます。",
-  dragDropInvalidTarget: "ペインの左端・右端（完全再開）、下（引き継ぎ）、または「人に渡す」へドロップしてください。",
-  dragDropTargetGone: "ドロップ先のタブまたはペインが変わったため、処理を中止しました。",
+  dragDropInvalidTarget: "タブの左端・右端（完全再開）、下（引き継ぎ）、または「人に渡す」へドロップしてください。",
+  dragDropTargetGone: "ドロップ先のペインまたはタブが変わったため、処理を中止しました。",
   dragDropApprovalBlocked: "確認や選択肢への回答待ちのため、入力欄へ貼り付けませんでした。回答後にもう一度ドロップしてください。",
   dragDropPreparingDraft: "引き継ぎ文を準備しています…",
   dragDropSpawning: "完全再開を準備しています…",
@@ -177,5 +177,3 @@ export const onlineStrings = {
   panelLocalSessionsCardOpenHint: "クリックしてこのペインへ移動します",
   panelLocalSessionsCardOpenUnavailable: "ペインが未起動のため開けません",
 } as const;
-
-export type OnlineStrings = typeof onlineStrings;

@@ -45,7 +45,11 @@ export default memo(function PaneDragOverlay() {
   // has left the viewport), so tear-out readiness gets a stationary banner
   // instead of a cursor-following hint.
   if (target?.kind === "new-window") {
-    return <TearOutBanner label={`⬈ ${paneDndStrings.dropInNewWindow}`} />;
+    // Only a lone pane becomes a content-only window (see detachedOriginForDrag);
+    // a tab or a bundle opens the normal shell.
+    return <TearOutBanner label={`⬈ ${item.kind === "tab"
+      ? paneDndStrings.dropAsDetachedPane
+      : paneDndStrings.dropInNewWindow}`} />;
   }
 
   return (

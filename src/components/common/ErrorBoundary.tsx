@@ -51,7 +51,7 @@ export default class ErrorBoundary extends Component<Props, State> {
           }}
         >
           <span style={{ fontSize: 20, color: "var(--cmux-red)" }}>⚠</span>
-          <span style={{ color: "var(--cmux-text, #ededed)" }}>ペインが停止しました</span>
+          <span style={{ color: "var(--cmux-text, #ededed)" }}>画面の表示が停止しました</span>
           <span
             style={{
               fontSize: 11,

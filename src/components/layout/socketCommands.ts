@@ -6,6 +6,7 @@ import {
   type SessionStatusSnapshotPayload,
 } from "../../lib/ipc";
 import type { AgentSessionKind, Pane, PaneTab, Workspace } from "../../types";
+import { SHELL_TARGET } from "../../lib/agentCatalog";
 import { agentIdForSessionKind } from "../../lib/agentSessionConfig";
 import { requiresLauncherDispatch } from "../../lib/launcherDispatch";
 import { buildSpawnLaunchEnv } from "../../lib/spawnLaunchEnv";
@@ -123,6 +124,11 @@ function optionalAgentKind(args: SocketArgs, ...keys: string[]): AgentSessionKin
 }
 
 function agentIdForSpawnTarget(target: SpawnTarget): string {
+  // `shell` means a shell, not the launch menu. `shell-starter` runs
+  // launcher.sh, which only skips its own ANSI menu when it is given a target
+  // in launchEnv — and a plain shell spawn deliberately sets none, so every
+  // `pane.spawn --target shell` used to land in the retired TUI menu.
+  if (target === SHELL_TARGET) return SHELL_TARGET;
   return isAgentKind(target) ? agentIdForSessionKind(target) ?? "shell-starter" : "shell-starter";
 }
 
@@ -784,16 +790,84 @@ async function spawnPane(args: SocketArgs) {
     const presets = await loadWebPanePresets().catch(() => []);
     const preset = presets.find((candidate) => candidate.id === presetId);
     if (!preset) throw new Error(`unknown web preset: ${presetId}`);
+    // addPaneToWorkspace and addWebTabToPane are human-oriented actions that
+    // activate globally, so the operator's pane and focus target are put back
+    // afterwards — the same restore web.open already does. The terminal branch
+    // below never moves them (the store skips activation for
+    // activationSource: "socket"), and this branch was the one place a socket
+    // spawn could still drag the keyboard target into a background workspace.
+    const foregroundUi = {
+      activePaneId: useUiStore.getState().activePaneId,
+      lastActivePaneId: useUiStore.getState().lastActivePaneId,
+      focusRevision: useUiStore.getState().focusRevision,
+    };
     const layout = useWorkspaceLayoutStore.getState();
     layout.addPaneToWorkspace(workspaceId, anchorPane.id, directionArg);
     const created = useWorkspaceListStore.getState().getWorkspace(workspaceId)?.panes
       .find((pane) => !beforePaneIds.has(pane.id));
-    if (!created) throw new Error("pane.spawn could not create a pane for the web tab");
+    if (!created) {
+      useUiStore.setState(foregroundUi);
+      throw new Error("pane.spawn could not create a pane for the web tab");
+    }
     layout.addWebTabToPane(workspaceId, created.id, {
       presetId,
       label: plan.paneOptions.label ?? preset.label,
     });
+    useUiStore.setState(foregroundUi);
     return { paneId: created.id, presetId };
+  }
+
+  // A workspace whose only pane is an unused launcher menu is not in use yet:
+  // the first agent takes that pane over instead of splitting it, so a
+  // workspace.new + pane.spawn pair leaves exactly one working pane and no
+  // leftover menu (2026-09-11 宮崎さん裁定).
+  const lonePane = workspace.panes.length === 1 ? workspace.panes[0] : undefined;
+  const unusedLauncherTab = lonePane?.tabs.length === 1 && lonePane.tabs[0].type === "launcher"
+    ? lonePane.tabs[0]
+    : undefined;
+  if (lonePane && unusedLauncherTab) {
+    const beforeTabIds = new Set(lonePane.tabs.map((tab) => tab.id));
+    useWorkspaceLayoutStore.getState().addTabToPaneWithOptions(workspaceId, lonePane.id, {
+      ...plan.paneOptions,
+      launchEnv: buildSpawnLaunchEnv(lonePane.launchEnv, plan.paneOptions.launchEnv),
+      origin: resolveSpawnOrigin(args, undefined),
+      activate,
+      activationSource: "socket",
+    });
+    const updatedPane = useWorkspaceListStore.getState().getWorkspace(workspaceId)
+      ?.panes.find((pane) => pane.id === lonePane.id);
+    const newTabs = updatedPane?.tabs.filter((tab) => !beforeTabIds.has(tab.id)) ?? [];
+    const rollbackNewTabs = () => {
+      for (const tab of newTabs) {
+        useWorkspaceLayoutStore.getState().removeTabFromPane(workspaceId, lonePane.id, tab.id);
+      }
+    };
+    if (newTabs.length !== 1 || !updatedPane) {
+      rollbackNewTabs();
+      throw new Error("pane.spawn could not identify the new tab");
+    }
+    const newTab = newTabs[0];
+    if (!isRestorableTab(newTab)) {
+      rollbackNewTabs();
+      throw new Error("pane.spawn created a non-restorable tab");
+    }
+    try {
+      await startBackgroundTabSession(newTab, updatedPane);
+    } catch (error) {
+      rollbackNewTabs();
+      throw error;
+    }
+    useWorkspaceLayoutStore.getState().removeTabFromPane(workspaceId, lonePane.id, unusedLauncherTab.id);
+    return {
+      workspaceId,
+      paneId: lonePane.id,
+      tabId: newTab.id,
+      sessionId: newTab.sessionId,
+      mode: plan.mode,
+      foregroundChanged: false,
+      activationRequested: activate,
+      replacedLauncherPane: true,
+    };
   }
 
   // WorkspaceView mounts the foreground, a drag source, and briefly its
@@ -855,6 +929,7 @@ async function spawnPane(args: SocketArgs) {
     mode: plan.mode,
     foregroundChanged: false,
     activationRequested: activate,
+    replacedLauncherPane: false,
   };
 }
 
@@ -2248,6 +2323,39 @@ async function newWorkspace(args: SocketArgs) {
   };
 }
 
+/**
+ * workspace.close — let an agent tidy up a workspace it no longer needs.
+ *
+ * There is no dialog on this route, so the guard is structural instead: the
+ * active workspace is refused, because removing it would hand the operator a
+ * different workspace than the one they were looking at (dbfabc76). A human
+ * closes the displayed workspace with its own close button.
+ */
+async function closeWorkspace(args: SocketArgs) {
+  const workspaceId = socketArgString(args, "workspaceId", "workspace_id", "id");
+  if (!workspaceId) throw new Error("workspace.close requires workspaceId");
+  const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
+  const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+  if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
+  if (useWorkspaceListStore.getState().activeWorkspaceId === workspaceId) {
+    throw new Error(
+      "workspace.close refuses the active workspace: closing it would move the operator's foreground",
+    );
+  }
+  const { closeWorkspaceAfterConfirmation } = await import("../../lib/workspaceClose");
+  const result = await closeWorkspaceAfterConfirmation(workspaceId);
+  return {
+    workspaceId,
+    name: result.name,
+    closedPanes: result.paneCount,
+    closedTabs: result.tabCount,
+    killedSessions: result.killedSessionIds.length,
+    undoRecorded: result.undoRecorded,
+    activeWorkspaceId: useWorkspaceListStore.getState().activeWorkspaceId,
+    foregroundChanged: false,
+  };
+}
+
 export async function handleSocketCommand(cmd: string, args: SocketArgs): Promise<unknown> {
   const context = webPaneCommandContext(cmd);
   const { usePaneMetadataStore, useUiStore, useWorkspaceListStore } = await import(
@@ -2300,6 +2408,10 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
     case "workspace.new":
     case "new_workspace":
       return newWorkspace(args);
+
+    case "workspace.close":
+    case "close_workspace":
+      return closeWorkspace(args);
 
     case "pane.list":
     case "list_panes": {

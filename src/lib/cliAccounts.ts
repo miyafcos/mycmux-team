@@ -73,7 +73,7 @@ const CLI_ACCOUNT_MESSAGES: Record<string, string> = {
   "cli_account.error.login_cancelled":
     "原因: ログインを中止しました。次にすること: 一時フォルダーは破棄しました。追加が必要な場合はもう一度お試しください。",
   "cli_account.error.login_already_running":
-    "原因: このCLIのログインがすでに進行中です。次にすること: 開いているログインタブを完了するか中止してから、もう一度お試しください。",
+    "原因: このCLIのログインがすでに進行中です。次にすること: 開いているログインペインを完了するか中止してから、もう一度お試しください。",
   "cli_account.error.login_session_not_found":
     "原因: 対象のログイン処理が見つかりません。次にすること: 一覧を更新してから、もう一度お試しください。",
   "cli_account.warning.active_snapshot_refreshed":

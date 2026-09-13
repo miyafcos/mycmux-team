@@ -67,8 +67,8 @@ def test_window_leader_commands_have_safe_single_instance_semantics() -> None:
     socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
 
     for snippet in [
-        "pub fn claim_leader(state: State<'_, AppState>) -> bool",
-        ".compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)",
+        "pub fn claim_leader(window: tauri::WebviewWindow, state: State<'_, AppState>) -> bool",
+        "state.window_registry.claim_leader(window.label())",
         "pub fn reveal_main_window(app: AppHandle) -> Result<(), String>",
         "app.run_on_main_thread(move ||",
         'app_handle.get_webview_window("main")',
@@ -105,7 +105,7 @@ def test_window_leader_commands_have_safe_single_instance_semantics() -> None:
         "if (!gotLeadership) {",
         "return loadPersistentData().then(async (envelope) => {",
         "await sync(true);",
-        "await quitApp();",
+        "await closeWindowWorkspacesAndDestroy();",
     ]:
         assert_contains(socket_listener, snippet, "src/components/layout/SocketListener.tsx")
 
@@ -113,7 +113,7 @@ def test_window_leader_commands_have_safe_single_instance_semantics() -> None:
 def test_close_requested_blocks_quit_when_forced_workspace_save_fails() -> None:
     socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
     close_handler = socket_listener.split(
-        "const unlistenCloseRequested = getCurrentWindow().onCloseRequested",
+        "const unlistenCloseRequested =",
         1,
     )[1].split("    });", 1)[0]
 
@@ -128,9 +128,10 @@ def test_close_requested_blocks_quit_when_forced_workspace_save_fails() -> None:
         "if (saved) {",
         "choice = await promptAfterFinalSaveFailure();",
         "if (choice === \"quit-anyway\") {",
-        "if (shouldQuitAfterSave) {\n          await quitApp();\n        } else {\n          closing = false;\n        }",
+        "if (shouldQuitAfterSave) {",
+        "await closeWindowWorkspacesAndDestroy();",
     ]:
         assert_contains(socket_listener, snippet, "src/components/layout/SocketListener.tsx")
 
-    assert close_handler.index("const saved = await sync(true);") < close_handler.index("await quitApp();")
+    assert close_handler.index("const saved = await sync(true);") < close_handler.index("await closeWindowWorkspacesAndDestroy();")
     assert "finally {\n        await quitApp();\n      }" not in close_handler

@@ -15,7 +15,7 @@ pub(crate) const HEADING_LATEST_INSTRUCTION: &str = "最新の指示:";
 pub(crate) const HEADING_CURRENT_POSITION: &str = "現在地:";
 pub(crate) const HEADING_CHECKPOINT: &str = "確認済み:";
 pub(crate) const HEADING_OPEN_QUESTION: &str = "未解決の質問:";
-pub(crate) const HEADING_TAB: &str = "タブ:";
+pub(crate) const HEADING_TAB: &str = "ペイン:";
 pub(crate) const HEADING_CWD: &str = "作業フォルダ:";
 
 /// Separator between the heading block and the conversation lines.

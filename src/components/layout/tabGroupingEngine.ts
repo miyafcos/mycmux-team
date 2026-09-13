@@ -715,7 +715,7 @@ function compileGroupingPlanCore(
     if (workspaceId) noteGeneratedId(workspaceId);
     if (group.layout!.columns.length > 4) errors.push(`グループ ${group.groupId} の列数が4を超えます`);
     group.layout!.columns.forEach((column, columnIndex) => {
-      if (column.panes.length > 4) errors.push(`グループ ${group.groupId} の1列あたりペイン数が4を超えます`);
+      if (column.panes.length > 4) errors.push(`グループ ${group.groupId} の1列あたりタブ数が4を超えます`);
       column.panes.forEach((_itemPane, paneIndex) => {
         noteGeneratedId(allocator.paneId(group.groupId, columnIndex, paneIndex));
       });
@@ -727,7 +727,7 @@ function compileGroupingPlanCore(
   const moved = new Map<string, PaneTab>();
   for (const id of targetIds) {
     const found = sourceIndex.get(id);
-    if (!found) return { ok: false, errors: [`タブ ${id} が見つかりません`], stale: [] };
+    if (!found) return { ok: false, errors: [`ペイン ${id} が見つかりません`], stale: [] };
     moved.set(id, structuredClone(found.tab));
   }
   const preferredTabId = selectedTabId(current, context.activeSessionId);

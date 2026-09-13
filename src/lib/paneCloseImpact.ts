@@ -60,7 +60,7 @@ export function paneCloseImpactMessage(victims: readonly PaneCloseVictim[]): str
   const remaining = victims.length - listed.length;
   if (remaining > 0) listed.push(`ほか ${remaining} 件`);
   return [
-    `稼働中のタブが ${victims.length} 個あります。閉じると、まとめて終了します。`,
+    `稼働中のペインが ${victims.length} 個あります。閉じると、まとめて終了します。`,
     ...listed,
   ].join("\n");
 }

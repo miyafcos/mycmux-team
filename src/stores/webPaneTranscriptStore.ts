@@ -68,7 +68,7 @@ function readFailureMessage(error: unknown): string {
   // The Rust wording is the contract here: webpane.rs::command_webview says
   // "web pane does not exist" for a tab whose webview was never built.
   if (text.includes("web pane does not exist")) {
-    return "このタブのページをまだ開いていないため読めません";
+    return "このペインのページをまだ開いていないため読めません";
   }
   if (text.includes("has no reader")) return "このページは会話の読み取りに対応していません";
   if (text.includes("timed out")) return "ページの読み取りが時間内に終わりませんでした";

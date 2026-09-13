@@ -16,7 +16,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::commands::window::{resolve_child_window_label, spawn_child_window, ResolvedChildWindow};
 use crate::db::storage::{self, AppSettings};
 use crate::window_registry::{
-    workspace_config_ids, WindowAdoptPayload, WindowFragment, MAIN_WINDOW_LABEL,
+    workspace_config_ids, WindowAdoptPayload, WindowFragment,
     WINDOW_ADOPT_EVENT, WINDOW_REGISTRY_CHANGED_EVENT,
 };
 use crate::AppState;
@@ -93,7 +93,7 @@ pub fn open_workspace_window(
         // Never strand the workspaces (and their live sessions) in a queue no
         // window will ever drain.
         let orphaned = state.window_registry.take_pending_adoption(&label);
-        state.window_registry.queue_adoption(MAIN_WINDOW_LABEL, orphaned);
+        state.window_registry.queue_adoption(&from_label, orphaned);
         emit_registry_changed(&app, state.window_registry.revision());
         return Err(err);
     }
@@ -112,6 +112,7 @@ pub fn publish_window_fragment(
     if fragment.window_label.is_empty() {
         return Err("publish_window_fragment requires a window label".to_string());
     }
+    if state.window_registry.is_closing(&fragment.window_label) { return Ok(()); }
     state.window_registry.publish_fragment(fragment);
     // Deliberately no `window-registry-changed` emit: fragments are republished
     // on every debounce tick and nothing reacts to them synchronously (main
@@ -136,9 +137,12 @@ pub fn release_workspaces(
     workspace_ids: Vec<String>,
     to_label: String,
 ) -> Result<usize, String> {
+    if app.get_webview_window(&to_label).is_none() {
+        return Err("Receiving window no longer exists".to_string());
+    }
     let moved = state
         .window_registry
-        .release_workspaces(&from_label, &workspace_ids, &to_label);
+        .release_to_open_window(&from_label, &workspace_ids, &to_label)?;
     if moved.is_empty() {
         return Ok(0);
     }
@@ -165,35 +169,55 @@ pub fn get_window_fragments(state: State<'_, AppState>) -> Result<Vec<WindowFrag
 /// leader path reads the same file through `load_persistent_data`; this is the
 /// same load with the workspace list left behind.
 #[tauri::command(async)]
-pub fn get_app_settings(app_handle: AppHandle) -> Result<AppSettings, String> {
-    Ok(storage::load(&app_handle)?.settings)
+pub fn get_app_settings(app_handle: AppHandle) -> Result<WindowSettings, String> {
+    let data = storage::load(&app_handle)?;
+    Ok(WindowSettings { settings: data.settings, schema_version: data.schema_version })
 }
 
-/// `WindowEvent::Destroyed` hook installed on every child window. Anything the
-/// window still owns goes back to main so its PTY sessions stay reachable —
-/// the clean close path has already released, so this is normally a no-op.
-pub fn reclaim_destroyed_window(app: &AppHandle, label: &str) {
-    let Some(state) = app.try_state::<AppState>() else {
-        return;
-    };
-    let moved = state.window_registry.release_all(label, MAIN_WINDOW_LABEL);
-    state.window_registry.forget_window(label);
-    if moved.is_empty() {
+#[derive(serde::Serialize)]
+pub struct WindowSettings {
+    #[serde(flatten)]
+    settings: AppSettings,
+    schema_version: u32,
+}
+
+/// Explicit close is recorded before any PTY is killed. A later Destroyed
+/// event therefore cannot mistake an intentional close for a crash.
+#[tauri::command(async)]
+pub fn set_window_close_intent(
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    closing: bool,
+) {
+    state.window_registry.set_close_intent(window.label(), closing);
+}
+
+pub fn handle_window_destroyed(app: &AppHandle, label: &str) {
+    crate::commands::window::release_window_role(app, label);
+    let Some(state) = app.try_state::<AppState>() else { return; };
+    if state.window_registry.take_close_intent(label) {
+        state.window_registry.forget_window(label);
         emit_registry_changed(app, state.window_registry.revision());
-        return;
+    } else {
+        reclaim_destroyed_window(app, label);
     }
-    crate::diag_warn!(
-        "window-registry",
-        "window {label} was destroyed holding {} workspace(s) — returning them to main",
-        moved.len()
-    );
-    emit_adopt(
-        app,
-        WindowAdoptPayload {
-            from_label: label.to_string(),
-            to_label: MAIN_WINDOW_LABEL.to_string(),
-            workspace_ids: workspace_config_ids(&moved),
-        },
-    );
+}
+
+/// Crash-only rescue: no close request completed, so preserve live sessions.
+pub fn reclaim_destroyed_window(app: &AppHandle, label: &str) {
+    let Some(state) = app.try_state::<AppState>() else { return; };
+    let live: Vec<String> = app.webview_windows().keys().cloned().collect();
+    let target = state.window_registry.rescue_target(label, &live);
+    if let Some(target) = target {
+        let moved = state.window_registry.release_all(label, &target);
+        if !moved.is_empty() {
+            emit_adopt(app, WindowAdoptPayload {
+                from_label: label.to_string(),
+                to_label: target,
+                workspace_ids: workspace_config_ids(&moved),
+            });
+        }
+    }
+    state.window_registry.forget_window(label);
     emit_registry_changed(app, state.window_registry.revision());
 }

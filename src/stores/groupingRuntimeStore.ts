@@ -155,7 +155,7 @@ export class GroupingUnavailableError extends Error {
   readonly kind = "schema_incompatible" as const;
 
   constructor() {
-    super("永続データのschemaが未確認または非対応のため、タブ再配置を利用できません");
+    super("永続データのschemaが未確認または非対応のため、ペイン再配置を利用できません");
     this.name = "GroupingUnavailableError";
   }
 }

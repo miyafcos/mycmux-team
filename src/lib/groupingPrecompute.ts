@@ -797,10 +797,6 @@ export function requestGroupingPrecomputeRefresh(): void {
   groupingPrecompute.requestBackgroundRefresh();
 }
 
-export function getGroupingPrecomputeMetrics(): GroupingPrecomputeMetrics {
-  return groupingPrecompute.getMetrics();
-}
-
 export function rememberGroupingAnalysis(
   analysis: GroupingAnalysisResult,
   generatedAt?: number,

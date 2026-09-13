@@ -58,7 +58,7 @@ def test_session_retention_keeps_terminal_ids_but_mapping_uses_tab_ids() -> None
     )
     assert_contains(
         layout_store,
-        "sessionId: makeSessionId(workspaceId, `${paneId}-${tabId}`),",
+        "sessionId: options?.sessionId ?? makeSessionId(workspaceId, `${paneId}-${tabId}`),",
         "src/stores/workspaceLayoutStore.ts",
     )
     assert_contains(socket_listener, "agentMappings[tabId]", "src/components/layout/SocketListener.tsx")

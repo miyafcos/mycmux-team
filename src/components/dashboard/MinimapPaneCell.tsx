@@ -21,13 +21,16 @@ export function MinimapPaneCell({ cell, workspaceId, selectedTabId, selectedTabI
   onSelectGroup: (tabId: string) => void;
   onJump?: (workspaceId: string, paneId: string, tabId: string) => void;
 }) {
-  const target = usePaneDragStore((state) => state.target);
+  // Selecting the zone (not the target object) keeps cells that are not under
+  // the pointer out of the drag's per-frame re-render.
+  const dropZone = usePaneDragStore((state) => state.target?.kind === "pane"
+    && state.target.surface === "minimap"
+    && state.target.workspaceId === workspaceId
+    && state.target.paneId === cell.paneId
+    ? state.target.zone
+    : null);
   const dragItem = usePaneDragStore((state) => state.item);
-  const isDropTarget = target?.kind === "pane"
-    && target.surface === "minimap"
-    && target.workspaceId === workspaceId
-    && target.paneId === cell.paneId;
-  const dropZone = isDropTarget ? target.zone : null;
+  const isDropTarget = dropZone !== null;
   const isDragSource = dragItem?.kind === "pane"
     && dragItem.surface === "minimap"
     && dragItem.workspaceId === workspaceId
@@ -45,10 +48,10 @@ export function MinimapPaneCell({ cell, workspaceId, selectedTabId, selectedTabI
     <div
       className="cmux-minimap-pane-grip"
       data-minimap-pane-grip=""
-      title="ペインを移動"
+      title="タブを移動"
       aria-hidden="true"
     />
-    {cell.chips.length === 0 ? <span className="cmux-minimap-pane-empty">空きペイン</span> : null}
+    {cell.chips.length === 0 ? <span className="cmux-minimap-pane-empty">空きタブ</span> : null}
     {cell.chips.map((chip) => {
       const openColumn = openColumnByTabId.get(chip.tabId);
       return <MinimapTabChip key={chip.tabId} chip={chip} workspaceId={workspaceId} paneId={cell.paneId} selected={!isDragSource && chip.tabId === selectedTabId} open={openColumn !== undefined} columnColor={openColumn === undefined ? undefined : chatColumnColor(openColumn)} selectedTabIds={selectedTabIds} groupPulseTabIds={groupPulseTabIds} displayState={displayStateByTabId.get(chip.tabId) ?? "idle"} collapsed={!expanded} now={now} onSelect={onSelect} onSelectGroup={onSelectGroup} onJump={onJump} />;

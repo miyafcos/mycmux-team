@@ -233,7 +233,7 @@ export default memo(function TabItem({ uiVariant = "default", name, tabCount, ac
           }}>
             {/* The overflow line under this card reads "ほか N", so an English
                 plural here left one small card speaking two languages. */}
-            タブ {tabCount}
+            ペイン {tabCount}
           </span>
         </div>
         {active && activeTabLabels.map((label, index) => (

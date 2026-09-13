@@ -65,10 +65,10 @@ def test_pane_and_workspace_ui_surfaces_remain_wired() -> None:
     assert_snippets(
         "src/components/workspace/terminalPaneStrings.ts",
         [
-            'newTab: "新しいターミナルタブ"',
+            'newTab: "新しいターミナルペイン"',
             'splitRight: "右に分割"',
             'splitDown: "下に分割"',
-            'closePane: "ペインを閉じる"',
+            'closePane: "タブを閉じる"',
         ],
     )
     assert_snippets(
@@ -296,7 +296,7 @@ def test_file_preview_agent_usage_and_fault_surfaces_remain_wired() -> None:
         "src/components/common/ErrorBoundary.tsx",
         [
             "export default class ErrorBoundary extends Component<Props, State>",
-            "ペインが停止しました",
+            "画面の表示が停止しました",
         ],
     )
     assert_snippets(

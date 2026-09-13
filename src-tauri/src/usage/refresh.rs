@@ -129,7 +129,9 @@ pub fn disable_codex_refresh() {
 pub fn classify_refresh_error(status: Option<u16>, body_error: Option<&str>) -> RefreshError {
     let code = body_error.map(str::to_string);
     match (status, body_error) {
-        (_, Some("invalid_client" | "unauthorized_client")) | (Some(404 | 405), _) => {
+        (_, Some("invalid_client" | "unauthorized_client" | "invalid_request"
+            | "unsupported_grant_type" | "unsupported_media_type"))
+        | (Some(404 | 405 | 406 | 415 | 422), _) => {
             RefreshError::Unsupported { status, code }
         }
         (_, Some("invalid_grant")) | (Some(400 | 401), _) => RefreshError::Rejected { status, code },
@@ -146,10 +148,9 @@ pub async fn refresh_claude(
     refresh_token: &str,
 ) -> Result<RefreshedClaude, RefreshError> {
     let (status, body, retry_after) = post_refresh(
-        client,
-        CLAUDE_TOKEN_URL,
-        serde_json::json!({"grant_type":"refresh_token","refresh_token":refresh_token,"client_id":CLAUDE_CLIENT_ID}),
-        true,
+        client.post(CLAUDE_TOKEN_URL)
+            .header("anthropic-beta", "oauth-2025-04-20")
+            .json(&serde_json::json!({"grant_type":"refresh_token","refresh_token":refresh_token,"client_id":CLAUDE_CLIENT_ID})),
     ).await?;
     if !status.is_success() {
         return Err(classify_with_retry(status, &body, retry_after));
@@ -172,10 +173,8 @@ pub async fn refresh_codex(
     refresh_token: &str,
 ) -> Result<RefreshedCodex, RefreshError> {
     let (status, body, retry_after) = post_refresh(
-        client,
-        CODEX_TOKEN_URL,
-        serde_json::json!({"grant_type":"refresh_token","refresh_token":refresh_token,"client_id":CODEX_CLIENT_ID,"scope":"openid profile email"}),
-        false,
+        client.post(CODEX_TOKEN_URL)
+            .json(&serde_json::json!({"grant_type":"refresh_token","refresh_token":refresh_token,"client_id":CODEX_CLIENT_ID,"scope":"openid profile email"})),
     ).await?;
     if !status.is_success() {
         let error = classify_with_retry(status, &body, retry_after);
@@ -198,12 +197,8 @@ pub async fn refresh_grok(
     refresh_token: &str,
     client_id: &str,
 ) -> Result<RefreshedGrok, RefreshError> {
-    let (status, body, retry_after) = post_refresh(
-        client,
-        GROK_TOKEN_URL,
-        serde_json::json!({"grant_type":"refresh_token","refresh_token":refresh_token,"client_id":client_id}),
-        false,
-    ).await?;
+    let (status, body, retry_after) =
+        post_refresh(grok_refresh_request(client, refresh_token, client_id)).await?;
     if !status.is_success() {
         return Err(classify_with_retry(status, &body, retry_after));
     }
@@ -215,20 +210,26 @@ pub async fn refresh_grok(
     })
 }
 
-async fn post_refresh(
+fn grok_refresh_request(
     client: &Client,
-    url: &str,
-    body: serde_json::Value,
-    claude: bool,
+    refresh_token: &str,
+    client_id: &str,
+) -> reqwest::RequestBuilder {
+    client.post(GROK_TOKEN_URL).form(&[
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token),
+        ("client_id", client_id),
+    ])
+}
+
+async fn post_refresh(
+    request: reqwest::RequestBuilder,
 ) -> Result<(StatusCode, String, Option<u64>), RefreshError> {
-    let mut request = client
-        .post(url)
+    let response = request
         .header(reqwest::header::USER_AGENT, REFRESH_UA)
-        .json(&body);
-    if claude {
-        request = request.header("anthropic-beta", "oauth-2025-04-20");
-    }
-    let response = request.send().await.map_err(|_| RefreshError::Network)?;
+        .send()
+        .await
+        .map_err(|_| RefreshError::Network)?;
     let status = response.status();
     let retry_after = response
         .headers()
@@ -342,6 +343,48 @@ mod tests {
         ] {
             assert_eq!(classify_refresh_error(status, error), expected);
         }
+    }
+
+    #[test]
+    fn malformed_refresh_requests_are_not_transient() {
+        for status in [406, 415, 422] {
+            assert_eq!(
+                classify_refresh_error(Some(status), None),
+                RefreshError::Unsupported { status: Some(status), code: None },
+            );
+        }
+        for code in ["invalid_request", "unsupported_grant_type", "unsupported_media_type"] {
+            assert_eq!(
+                classify_refresh_error(Some(400), Some(code)),
+                RefreshError::Unsupported { status: Some(400), code: Some(code.into()) },
+            );
+        }
+        assert!(matches!(
+            classify_with_retry(StatusCode::UNSUPPORTED_MEDIA_TYPE, "not JSON", None),
+            RefreshError::Unsupported { status: Some(415), .. }
+        ));
+        assert_eq!(
+            classify_with_retry(StatusCode::TOO_MANY_REQUESTS, "", Some(60)),
+            RefreshError::RateLimited { retry_after_secs: Some(60) },
+        );
+    }
+
+    #[test]
+    fn grok_refresh_uses_form_encoding_and_escapes_token_fields() {
+        let request = grok_refresh_request(&Client::new(), "a+b&c=d %", "client +&")
+            .build()
+            .unwrap();
+        assert_eq!(request.method(), reqwest::Method::POST);
+        assert_eq!(request.url().as_str(), GROK_TOKEN_URL);
+        assert_eq!(
+            request.headers()[reqwest::header::CONTENT_TYPE],
+            "application/x-www-form-urlencoded",
+        );
+        assert_eq!(
+            request.body().unwrap().as_bytes().unwrap(),
+            b"grant_type=refresh_token&refresh_token=a%2Bb%26c%3Dd+%25&client_id=client+%2B%26",
+        );
+        assert!(!request.headers().contains_key("anthropic-beta"));
     }
 
     #[test]

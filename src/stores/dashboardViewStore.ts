@@ -17,7 +17,6 @@ export const DASHBOARD_SESSION_LIST_COLLAPSED_STORAGE_KEY = "mycmux:dashboard-se
 export const DASHBOARD_CHAT_COLUMN_LIMIT_MIN = 1;
 export const DASHBOARD_CHAT_COLUMN_LIMIT_MAX = 5;
 export const DASHBOARD_CHAT_COLUMN_LIMIT_DEFAULT = 3;
-export const DASHBOARD_CHAT_COLUMN_LIMIT = DASHBOARD_CHAT_COLUMN_LIMIT_DEFAULT;
 export const DASHBOARD_CHAT_COLUMN_LIMIT_STORAGE_KEY = "mycmux:dashboard-chat-column-limit";
 export const DASHBOARD_CHAT_COLUMN_PINS_STORAGE_KEY = "mycmux:dashboard-chat-column-pins";
 export const DASHBOARD_INBOX_COLUMN_ID = "__mycmux_report_inbox__";
@@ -71,11 +70,6 @@ export function dashboardMinimapMaxWidth(width = viewportWidth(), collapsed = fa
     - DASHBOARD_MINIMAP_RESIZER_WIDTH
     - DASHBOARD_CHAT_MIN_WIDTH);
   return Math.max(DASHBOARD_MINIMAP_MIN_WIDTH, Math.min(ratioMaximum, readableChatMaximum));
-}
-
-export function normalizeDashboardMinimapWidth(value: number): number {
-  const safeValue = Number.isFinite(value) && value > 0 ? value : DASHBOARD_MINIMAP_DEFAULT_WIDTH;
-  return Math.max(DASHBOARD_MINIMAP_MIN_WIDTH, Math.round(safeValue));
 }
 
 export function clampDashboardMinimapWidth(value: number, width = viewportWidth(), collapsed = false): number {
@@ -183,16 +177,13 @@ export function dashboardReportInboxOpen(tabIds: readonly string[]): boolean {
   return tabIds.includes(DASHBOARD_INBOX_COLUMN_ID);
 }
 
-export function dashboardPreviewOpen(tabIds: readonly string[]): boolean {
-  return tabIds.includes(DASHBOARD_PREVIEW_COLUMN_ID);
-}
-
 function normalizeDashboardPreviewPath(path: string): string {
   return path.replace(/\\/g, "/");
 }
 
 function dashboardPreviewSourceKind(path: string, kind?: ArtifactSourceKind): ArtifactSourceKind {
   if (kind) return kind;
+  if (/\.pdf$/i.test(path)) return "pdf";
   if (/\.(?:md|markdown)$/i.test(path)) return "markdown";
   if (/\.(?:docx?|docm|dotx?|dotm|xlsx?|xlsm|xlsb|xltx?|xltm|pptx?|pptm|potx?|potm|ppsx?|ppsm)$/i.test(path)) {
     return "office";
@@ -202,6 +193,7 @@ function dashboardPreviewSourceKind(path: string, kind?: ArtifactSourceKind): Ar
 
 function dashboardPreviewLabel(sourcePath: string, sourceKind: ArtifactSourceKind): string {
   const fileLeaf = sourcePath.split(/[\\/]/).pop() || "artifact";
+  if (sourceKind === "pdf") return `PDF ${fileLeaf}`;
   if (sourceKind === "markdown") return `MD ${fileLeaf}`;
   if (sourceKind === "office") return `OFFICE ${fileLeaf}`;
   return `HTML ${fileLeaf}`;

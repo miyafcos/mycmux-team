@@ -95,6 +95,7 @@ export default function WebPaneController() {
   const createdRef = useRef(new Set<string>());
   const openingRef = useRef(new Set<string>());
   const failedRef = useRef(new Set<string>());
+  const transferRetryRef = useRef(new Map<string, { attempts: number; retryAt: number }>());
   const lastFrameRef = useRef(new Map<string, string>());
   // Tabs whose profile folder is currently held by a sign-in browser window.
   // Recreating a webview then would fight the other process for the folder.
@@ -180,6 +181,7 @@ export default function WebPaneController() {
       openingRef.current.delete(tabId);
       failedRef.current.delete(tabId);
       lastFrameRef.current.delete(tabId);
+      transferRetryRef.current.delete(tabId);
       enqueue(tabId, async () => {
         await destroyWebPane(tabId);
         createdRef.current.delete(tabId);
@@ -201,6 +203,8 @@ export default function WebPaneController() {
 
       for (const [tabId, presetId] of desiredRef.current) {
         if (suspendedRef.current.has(tabId)) continue;
+        const retry = transferRetryRef.current.get(tabId);
+        if (retry && Date.now() < retry.retryAt) continue;
         const bounds = blocked ? null : webPaneBoundsForHost(findHost(tabId));
         const key = `${frameKey(bounds)}:${shortcutsSignature}`;
 
@@ -222,9 +226,19 @@ export default function WebPaneController() {
                 createdRef.current.delete(tabId);
                 return;
               }
+              transferRetryRef.current.delete(tabId);
               createdRef.current.add(tabId);
               lastFrameRef.current.delete(tabId);
             } catch (error) {
+              // The source controller releases the old webview after adoption.
+              // Retry only that ownership collision, without destroying its view.
+              const attempts = transferRetryRef.current.get(tabId)?.attempts ?? 0;
+              if (String(error).includes(`web pane ${tabId} is attached to a different window`)
+                && desiredRef.current.has(tabId) && attempts < 20) {
+                transferRetryRef.current.set(tabId, { attempts: attempts + 1, retryAt: Date.now() + 250 });
+                return;
+              }
+              transferRetryRef.current.delete(tabId);
               failedRef.current.add(tabId);
               throw error;
             } finally {

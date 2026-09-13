@@ -1013,8 +1013,8 @@ describe("E. stale tickets and re-prepare", () => {
   });
 
   for (const [id, kind, autoSucceeds, failureReason] of [
-    ["G4-40", "close", false, "タブ tb2 が閉じられています"],
-    ["G4-41", "move", false, "タブ tb2 が分析後に手動で移動されています"],
+    ["G4-40", "close", false, "ペイン tb2 が閉じられています"],
+    ["G4-41", "move", false, "ペイン tb2 が分析後に手動で移動されています"],
   ] as const) {
     it(`[${id}] invalidates a confirm ticket after external ${kind}`, { timeout: 10_000 }, async () => {
       const { oldTicket, prepareCount } = await openConfirmThenMutate(kind);
@@ -1068,8 +1068,8 @@ describe("E. stale tickets and re-prepare", () => {
   });
 
   for (const [id, kind, failureReason] of [
-    ["G4-44", "close", "タブ tb2 が閉じられています"],
-    ["G4-45", "move", "タブ tb2 が分析後に手動で移動されています"],
+    ["G4-44", "close", "ペイン tb2 が閉じられています"],
+    ["G4-45", "move", "ペイン tb2 が分析後に手動で移動されています"],
   ] as const) {
     it(`[${id}] adds exactly one manual prepare after the automatic ${kind} retry fails`, { timeout: 10_000 }, async () => {
       const { oldTicket, prepareCount } = await openConfirmThenMutate(kind);

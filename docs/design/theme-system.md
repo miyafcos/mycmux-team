@@ -81,8 +81,8 @@ guarded by `tests/unit/themeRecommendations.test.ts`.
 on the root element: chrome colors, derived tokens (`--cmux-accent-text`,
 `--cmux-yellow`, shadows, on-colors), density tokens, and `colorScheme`.
 `XTermWrapper` consumes `theme.terminal` via `resolveTerminalTheme()`
-(`terminalThemeColors.ts`), which pre-applies an ANSI contrast floor when a
-wallpaper background disables xterm's own `minimumContrastRatio` guard.
+which pre-applies an ANSI contrast floor (`terminalThemeColors.ts`) for media
+backgrounds, alongside xterm's `minimumContrastRatio` guard for ANSI and truecolor.
 
 ### Solid fill vs glass
 
@@ -105,8 +105,17 @@ subscribe with a primitive selector (`useCompositionStore(s => s.mediaActive)`)
 rather than to the wallpaper cache, so a download's percent ticks cannot
 re-render them, and they re-read it immediately before `new Terminal()` because
 cold init awaits IPC first. The contrast policy travels the same way:
-`resolveMinimumContrastRatio` (glass 1 / opaque light 4.5 / opaque dark 7) is
-the single rule for live updates, cached reattach and cold init.
+`resolveMinimumContrastRatio` (light media 5.5 / opaque light 4.5 / dark 7) is the
+single rule for live updates, cached reattach and cold init. With media active,
+`withTerminalOpacity` sends the theme background RGB with alpha 0 to xterm:
+CSS still paints the wallpaper, while xterm measures against the theme RGB
+instead of transparent black. This is a theme-color floor, not a guarantee
+against every wallpaper pixel. Light media uses headroom because its actual
+backdrop is the wallpaper composite: Geppaku + Monterey + frosted measured
+3.95:1 with a 4.5 request and 5.53:1 with 5.5. Dark themes retain native dim behavior.
+Light themes now rewrite streamed SGR 2 to ANSI 90 before xterm parses it, avoiding dim alpha.
+SGR 22 also restores the default foreground (39); extended-color arguments remain intact.
+Live output and scrollback replay share a bounded streaming filter; dark themes pass through.
 Wiring is guarded by `tests/unit/compositionWiring.test.tsx`.
 
 The dashboard is still painted solid (`--cmux-bg-solid`); glass there is a

@@ -635,6 +635,7 @@ describe("grouping production boundary contract", () => {
       "src/components/layout/tabGroupingEngine.ts -> call replaceWorkspaces",
       "src/hooks/usePaneDragSource.ts -> call _replaceWorkspaces",
       "src/hooks/usePaneDragSource.ts -> call _replaceWorkspaces",
+      "src/lib/workspaceRestore.ts -> call _replaceWorkspaces",
     ]);
   }, 120_000);
 

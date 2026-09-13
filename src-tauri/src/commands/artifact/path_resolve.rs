@@ -285,6 +285,7 @@ pub(super) fn preview_path_for_artifact(
     let source_kind =
         artifact_source_kind(path).ok_or_else(|| "Unsupported artifact source kind".to_string())?;
     match source_kind {
+        "pdf" => Ok(path.to_string_lossy().to_string()),
         "html" => Ok(path.to_string_lossy().to_string()),
         "markdown" => {
             ensure_artifact_file_within_read_limit(path, "preview")?;

@@ -2432,18 +2432,6 @@ pub fn recompute_session(
     Ok(())
 }
 
-/// Re-price every session in the database. Used after a price edit.
-pub fn reprice_all(conn: &mut Connection) -> Result<usize, String> {
-    let tx = conn
-        .transaction()
-        .map_err(|err| format!("begin reprice: {err}"))?;
-    let prices = PriceTable::load(&tx)?;
-    let count = reprice_all_in_transaction(&tx, &prices)?;
-    tx.commit()
-        .map_err(|err| format!("commit reprice: {err}"))?;
-    Ok(count)
-}
-
 /// Re-price and rebuild rollups under a transaction already owned by the
 /// caller. Price table updates use this so a new price cannot commit while a
 /// stale ready rollup remains visible.

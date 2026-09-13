@@ -2,6 +2,7 @@ import { useId } from "react";
 import type { CSSProperties, SVGProps } from "react";
 
 import hermesMarkUrl from "../../assets/agents/hermes.webp";
+import { ARTIFACT_MARK_COLORS } from "../../lib/tabMark";
 
 type AgentIconProps = Omit<SVGProps<SVGSVGElement>, "height" | "width"> & {
   size?: number;
@@ -172,7 +173,78 @@ export function HybridAgentIcon({ size = 12 }: Pick<AgentIconProps, "size">) {
   );
 }
 
+// Document glyphs use a solid plate and at least one pixel of ink at 12px.
+export function HtmlArtifactIcon({ size = 12, ...props }: AgentIconProps) {
+  return (
+    <svg {...iconProps(size)} {...props}>
+      <rect width="24" height="24" rx="4" fill={ARTIFACT_MARK_COLORS.html.fg} />
+      <path d="M10 4H6L2 12l4 8h4l-4-8ZM14 4h4l4 8-4 8h-4l4-8Z" fill="#fff" />
+    </svg>
+  );
+}
+
+export function MarkdownArtifactIcon({ size = 12, ...props }: AgentIconProps) {
+  return (
+    <svg {...iconProps(size)} {...props}>
+      <rect width="24" height="24" rx="4" fill={ARTIFACT_MARK_COLORS.markdown.fg} />
+      <path d="M3 18V6l5 6 5-6v12M19 6v12m-3-3 3 3 3-3" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function PdfArtifactIcon({ size = 12, ...props }: AgentIconProps) {
+  return (
+    <svg {...iconProps(size)} {...props}>
+      <rect width="24" height="24" rx="4" fill={ARTIFACT_MARK_COLORS.pdf.fg} />
+      <path d="M6 3h8l4 4v14H6ZM14 3v5h4M10 13h4M10 17h4" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function WordArtifactIcon({ size = 12, ...props }: AgentIconProps) {
+  return (
+    <svg {...iconProps(size)} {...props}>
+      <rect width="24" height="24" rx="4" fill={ARTIFACT_MARK_COLORS.word.fg} />
+      <path d="M2 4h4l2 10 2-8h4l2 8 2-10h4l-4 16h-4l-2-8-2 8H6Z" fill="#fff" />
+    </svg>
+  );
+}
+
+export function ExcelArtifactIcon({ size = 12, ...props }: AgentIconProps) {
+  return (
+    <svg {...iconProps(size)} {...props}>
+      <rect width="24" height="24" rx="4" fill={ARTIFACT_MARK_COLORS.excel.fg} />
+      <path d="M4 4h5l3 5 3-5h5l-5 8 5 8h-5l-3-5-3 5H4l5-8Z" fill="#fff" />
+    </svg>
+  );
+}
+
+export function PowerPointArtifactIcon({ size = 12, ...props }: AgentIconProps) {
+  return (
+    <svg {...iconProps(size)} {...props}>
+      <rect width="24" height="24" rx="4" fill={ARTIFACT_MARK_COLORS.powerpoint.fg} />
+      <path d="M7 20V5h7a5 5 0 0 1 0 10H7" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function OfficeArtifactIcon({ size = 12, ...props }: AgentIconProps) {
+  return (
+    <svg {...iconProps(size)} {...props}>
+      <rect width="24" height="24" rx="4" fill={ARTIFACT_MARK_COLORS.office.fg} />
+      <path d="M4 4h5v5H4ZM15 4h5v5h-5ZM4 15h5v5H4ZM15 15h5v5h-5Z" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 const chipStyles: Record<string, CSSProperties> = {
+  html: { background: ARTIFACT_MARK_COLORS.html.bg, borderColor: ARTIFACT_MARK_COLORS.html.fg },
+  markdown: { background: ARTIFACT_MARK_COLORS.markdown.bg, borderColor: ARTIFACT_MARK_COLORS.markdown.fg },
+  pdf: { background: ARTIFACT_MARK_COLORS.pdf.bg, borderColor: ARTIFACT_MARK_COLORS.pdf.fg },
+  word: { background: ARTIFACT_MARK_COLORS.word.bg, borderColor: ARTIFACT_MARK_COLORS.word.fg },
+  excel: { background: ARTIFACT_MARK_COLORS.excel.bg, borderColor: ARTIFACT_MARK_COLORS.excel.fg },
+  powerpoint: { background: ARTIFACT_MARK_COLORS.powerpoint.bg, borderColor: ARTIFACT_MARK_COLORS.powerpoint.fg },
+  office: { background: ARTIFACT_MARK_COLORS.office.bg, borderColor: ARTIFACT_MARK_COLORS.office.fg },
   claude: { background: "rgba(217,119,87,.12)", borderColor: "rgba(217,119,87,.30)" },
   codex: { background: "rgba(122,157,255,.10)", borderColor: "rgba(122,157,255,.30)" },
   "claude-codex": { background: "rgba(125,204,151,.10)", borderColor: "rgba(125,204,151,.30)" },
@@ -202,6 +274,20 @@ export function AgentKindIcon({ kind, size = 14, chip = true }: AgentKindIconPro
           ? BrowserAgentIcon
         : kind === "hermes"
           ? HermesAgentIcon
+        : kind === "html"
+          ? HtmlArtifactIcon
+        : kind === "markdown"
+          ? MarkdownArtifactIcon
+        : kind === "pdf"
+          ? PdfArtifactIcon
+        : kind === "word"
+          ? WordArtifactIcon
+        : kind === "excel"
+          ? ExcelArtifactIcon
+        : kind === "powerpoint"
+          ? PowerPointArtifactIcon
+        : kind === "office"
+          ? OfficeArtifactIcon
           : null;
 
   if (!Icon) return null;

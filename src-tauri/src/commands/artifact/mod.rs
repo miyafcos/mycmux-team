@@ -100,7 +100,8 @@ fn is_previewable_artifact(path: &Path) -> bool {
             .and_then(|extension| extension.to_str())
             .map(|extension| extension.to_ascii_lowercase())
             .as_deref(),
-        Some("html")
+        Some("pdf")
+            | Some("html")
             | Some("htm")
             | Some("md")
             | Some("markdown")
@@ -136,6 +137,7 @@ fn artifact_source_kind(path: &Path) -> Option<&'static str> {
         .map(|extension| extension.to_ascii_lowercase())
         .as_deref()
     {
+        Some("pdf") => Some("pdf"),
         Some("html") | Some("htm") => Some("html"),
         Some("md") | Some("markdown") => Some("markdown"),
         Some("doc") | Some("docx") | Some("docm") | Some("dot") | Some("dotx") | Some("dotm")
@@ -509,6 +511,37 @@ mod tests {
     use super::*;
     use zip::write::SimpleFileOptions;
     use zip::CompressionMethod;
+
+    #[test]
+    fn pdf_source_kind_and_previewability_are_case_insensitive() {
+        for name in ["report.pdf", "report.PDF"] {
+            let path = Path::new(name);
+            assert_eq!(artifact_source_kind(path), Some("pdf"));
+            assert!(is_previewable_artifact(path));
+        }
+    }
+
+    #[test]
+    fn pdf_preview_returns_original_path_without_conversion() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.PDF");
+        let bytes = b"%PDF-1.4\n%%EOF";
+        std::fs::write(&path, bytes).unwrap();
+        let preview = preview_path_for_artifact("pdf-preview-test", &path, true).unwrap();
+        assert_eq!(preview, path.to_string_lossy());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert!(preview_path_for_artifact("pdf-preview-test", &path, false).is_err());
+    }
+
+    #[test]
+    fn pdf_editable_path_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.pdf");
+        std::fs::write(&path, b"%PDF-1.4\n%%EOF").unwrap();
+        let error = validate_editable_artifact_path(&path.to_string_lossy()).unwrap_err();
+        assert!(error.contains("Editable artifact must be"));
+    }
 
     fn write_test_docx(path: &Path, document_xml: &str) {
         let file = File::create(path).unwrap();

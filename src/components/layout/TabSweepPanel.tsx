@@ -44,7 +44,7 @@ const lockReasonLabels: Record<SweepLockReason, string> = {
   working: "作業中",
   buffer_unavailable: "画面を確認できない",
   not_at_prompt: "待機プロンプトを確認できない",
-  unsupported_tab: "対象外のタブ",
+  unsupported_tab: "対象外のペイン",
 };
 
 const verdictLabels: Record<Exclude<Verdict["verdict"], "unknown">, string> = {
@@ -131,7 +131,7 @@ function TabIdentity({
   return (
     <div style={{ minWidth: 0 }}>
       <div style={{ fontSize: 11, color: "var(--cmux-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {tab.label?.trim() || "無名タブ"}
+        {tab.label?.trim() || "無名ペイン"}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, marginTop: 2, fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>
         <span style={{ flex: "none" }}>{tab.workspaceName}</span>
@@ -161,7 +161,7 @@ function TabIdentity({
 
 function SkeletonRows() {
   return (
-    <div aria-label="タブを確認中" style={{ display: "grid", gap: 6, padding: "12px 16px" }}>
+    <div aria-label="ペインを確認中" style={{ display: "grid", gap: 6, padding: "12px 16px" }}>
       {["72%", "55%"].map((width) => (
         <div key={width} style={{ width, height: 18, borderRadius: 4, background: "var(--cmux-hover)", opacity: 0.65 }} />
       ))}
@@ -174,7 +174,7 @@ function verdictInputKey(tab: SweepTab): string {
 }
 
 function tabName(tab: SweepTab): string {
-  return tab.label?.trim() || "無名タブ";
+  return tab.label?.trim() || "無名ペイン";
 }
 
 export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSweepPanelProps) {
@@ -188,7 +188,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
   const [scanning, setScanning] = useState(false);
   const [judging, setJudging] = useState(false);
   const [applying, setApplying] = useState(false);
-  const [status, setStatus] = useState("タブを確認しています…");
+  const [status, setStatus] = useState("ペインを確認しています…");
   const [judgeStartedAt, setJudgeStartedAt] = useState<number | null>(null);
   const [judgeTargetCount, setJudgeTargetCount] = useState(0);
   const [judgeElapsedSeconds, setJudgeElapsedSeconds] = useState(0);
@@ -424,12 +424,12 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
       closing={closing}
       onClose={onClose}
       size="full"
-      ariaLabel="タブ掃除"
+      ariaLabel="ペイン掃除"
       id="tab-sweep-panel"
     >
         <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--cmux-border)" }}>
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 14, fontWeight: 700 }}>タブ掃除</div>
+            <div style={{ fontSize: 14, fontWeight: 700 }}>ペイン掃除</div>
             <div role="status" aria-live="polite" title={status} style={{ marginTop: 2, fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {judging ? `${judgeTargetCount}件を判定中 · ${judgeElapsedSeconds}秒経過` : status}
             </div>
@@ -456,7 +456,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
           {scanning && !report ? <SkeletonRows /> : null}
           {report && rows.length === 0 ? (
             <div role="status" style={{ padding: "12px 16px", color: "var(--cmux-text-secondary)", fontSize: 11 }}>
-              掃除できるタブはありません
+              掃除できるペインはありません
             </div>
           ) : null}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))", gap: "8px 12px", padding: "4px 16px 12px" }}>
@@ -569,14 +569,14 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
               {formatSweepAiNote("judge", aiProvider, aiModel, aiEnabled)}
             </div>
             <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
-              閉じたタブは {reopenTabShortcut} で復元できます（会話も再開されます）
+              閉じたペインは {reopenTabShortcut} で復元できます（会話も再開されます）
             </div>
           </div>
           <ActionButton
             danger
             primary={selectedCount > 0}
             disabled={busy || selectedCount === 0}
-            ariaLabel={`選択した${selectedCount}件のタブを閉じる。${reopenTabShortcut}で復元できます`}
+            ariaLabel={`選択した${selectedCount}件のペインを閉じる。${reopenTabShortcut}で復元できます`}
             onClick={closeSelected}
           >
             {`選択した${selectedCount}件を閉じる`}

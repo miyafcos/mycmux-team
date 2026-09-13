@@ -16,12 +16,14 @@ const persistenceMocks = vi.hoisted(() => ({
   listPets: vi.fn(),
   loadPersistentData: vi.fn(),
   onCloseRequested: vi.fn(),
-  quitApp: vi.fn(),
+  destroy: vi.fn(),
   readAgentSessionMappings: vi.fn(),
   savePersistentData: vi.fn(),
   setAppFrontendVisible: vi.fn(),
   takePendingAdoption: vi.fn(),
 }));
+
+vi.mock("../../src/lib/paneCloseConfirmation", () => ({ confirmPaneClose: vi.fn(async () => true) }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: persistenceMocks.confirm }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
@@ -29,6 +31,7 @@ vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     label: "main",
     onCloseRequested: persistenceMocks.onCloseRequested,
+    destroy: persistenceMocks.destroy,
   }),
 }));
 vi.mock("../../src/lib/ipc", async (importOriginal) => {
@@ -36,11 +39,13 @@ vi.mock("../../src/lib/ipc", async (importOriginal) => {
   return {
     ...actual,
     claimLeader: persistenceMocks.claimLeader,
+    setWindowCloseIntent: vi.fn(async () => {}),
+    killSession: vi.fn(async () => {}),
+    publishWindowFragment: vi.fn(async () => {}),
     getPtyMetadataSnapshot: persistenceMocks.getPtyMetadataSnapshot,
     getWindowFragments: persistenceMocks.getWindowFragments,
     listPets: persistenceMocks.listPets,
     loadPersistentData: persistenceMocks.loadPersistentData,
-    quitApp: persistenceMocks.quitApp,
     readAgentSessionMappings: persistenceMocks.readAgentSessionMappings,
     savePersistentData: persistenceMocks.savePersistentData,
     setAppFrontendVisible: persistenceMocks.setAppFrontendVisible,
@@ -238,7 +243,7 @@ async function expectPoisonSealsPersistence(): Promise<void> {
     "ワークスペースを保存できていません。保存せずに終了しますか？",
     expect.objectContaining({ kind: "warning" }),
   );
-  expect(persistenceMocks.quitApp).not.toHaveBeenCalled();
+  expect(persistenceMocks.destroy).not.toHaveBeenCalled();
 }
 
 async function restartFromKnownGoodDisk(): Promise<string[]> {
@@ -286,13 +291,13 @@ beforeEach(async () => {
     persistenceMocks.closeHandler = handler;
     return () => {};
   });
-  persistenceMocks.quitApp.mockResolvedValue(undefined);
+  persistenceMocks.destroy.mockResolvedValue(undefined);
   persistenceMocks.readAgentSessionMappings.mockResolvedValue({});
   persistenceMocks.savePersistentData.mockImplementation(async (data: PersistentData) => {
     diskData = structuredClone(data);
   });
   persistenceMocks.setAppFrontendVisible.mockResolvedValue(undefined);
-  persistenceMocks.takePendingAdoption.mockResolvedValue(null);
+  persistenceMocks.takePendingAdoption.mockResolvedValue([]);
   await mountProductionPersistence();
 });
 

@@ -133,6 +133,19 @@ function tabAgentSessionKey(tab: Workspace["panes"][number]["tabs"][number]): st
   return agentSessionIdentityKey(tab.agentKind, tab.agentSessionId, tab.claudeSessionId);
 }
 
+interface AgentSessionFields {
+  claudeSessionId?: string;
+  agentKind?: AgentSessionKind;
+  agentSessionId?: string;
+}
+
+/** A deleted key and an absent key both read as undefined, so === is enough. */
+function sameAgentSessionFields(before: AgentSessionFields, after: AgentSessionFields): boolean {
+  return before.claudeSessionId === after.claudeSessionId
+    && before.agentKind === after.agentKind
+    && before.agentSessionId === after.agentSessionId;
+}
+
 function findAgentSessionTarget(
   workspaces: Workspace[],
   terminalSessionId: string,
@@ -177,7 +190,7 @@ function reportLiveAgentSessionConflict(conflict: PaneAgentSessionConflict): voi
   console.warn("[persist] rejected duplicate live agent session claim:", conflict);
   useToastStore
     .getState()
-    .pushToast("同じ会話IDが別のタブにあるため、重複した復元割り当てを止めました", "warning");
+    .pushToast("同じ会話IDが別のペインにあるため、重複した復元割り当てを止めました", "warning");
 }
 
 function clearReportedLiveAgentSessionConflicts(sessionId: string, key?: string | null): void {
@@ -580,12 +593,14 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       }
 
       let mutated = false;
+      let matched = false;
       const workspaces = state.workspaces.map((ws) => {
         let workspaceMutated = false;
         const panes = ws.panes.map((pane) => {
           const tabIdx = pane.tabs.findIndex((t) => t.sessionId === sessionId);
           const isPaneMatch = pane.sessionId === sessionId;
           if (tabIdx === -1 && !isPaneMatch) return pane;
+          matched = true;
 
           const tabs = pane.tabs.map((tab, i) => {
             if (i !== tabIdx) return tab;
@@ -607,6 +622,8 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
           // Mirror the live session onto the pane only when the matched tab is
           // active (or when the match was on pane.sessionId itself).
           const matchedTab = tabIdx >= 0 ? pane.tabs[tabIdx] : null;
+          const tabChanged = matchedTab !== null
+            && !sameAgentSessionFields(matchedTab, tabs[tabIdx]);
           const mirrorOntoPane =
             isPaneMatch || (matchedTab !== null && matchedTab.id === pane.activeTabId);
 
@@ -628,6 +645,10 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
               agentSessionId: payload.agentSessionId ?? pane.agentSessionId,
             };
           }
+          // sysinfo re-reports the same identity every poll (5 s per session).
+          // Rebuilding the array for an unchanged value would hand every
+          // `workspaces` subscriber a fresh identity forever.
+          if (!tabChanged && sameAgentSessionFields(pane, nextPane)) return pane;
           workspaceMutated = true;
           return nextPane;
         });
@@ -635,7 +656,9 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
         mutated = true;
         return { ...ws, panes };
       });
-      result = { accepted: true, applied: mutated };
+      // `applied` answers "is this identity now on the pane", which an
+      // idempotent re-claim satisfies without rebuilding anything.
+      result = { accepted: true, applied: matched };
       return mutated ? { workspaces } : state;
     }, "metadata");
     if (result.conflict) {

@@ -1,4 +1,3 @@
-import { v4 as uuid } from "uuid";
 
 import type { PtyMetadataSnapshot, SessionOutputSnapshot } from "../../lib/ipc";
 import { reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
@@ -842,44 +841,6 @@ export function clonePlanForEdit(plan: GroupingPlan): GroupingPlan {
   return structuredClone(plan);
 }
 
-export function setGroupAdopted(plan: GroupingPlan, groupId: string, adopted: boolean): GroupingPlan {
-  return {
-    ...plan,
-    groups: plan.groups.map((group) => group.groupId === groupId ? { ...group, adopted } : group),
-  };
-}
-
-export function setGroupDestination(
-  plan: GroupingPlan,
-  groupId: string,
-  destination: GroupingDestination,
-): GroupingPlan {
-  return {
-    ...plan,
-    groups: plan.groups.map((group) => {
-      if (group.groupId !== groupId) return group;
-      if (destination.kind === "current_locations") {
-        return {
-          ...group,
-          disposition: "keep",
-          destination,
-          layout: null,
-          adopted: true,
-        };
-      }
-      const layout = group.layout ?? defaultLayoutForTabs(group.tabIds, group.title);
-      return {
-        ...group,
-        disposition: "reorganize",
-        destination,
-        layout,
-        tabIds: flattenLayoutTabIds(layout),
-        adopted: true,
-      };
-    }),
-  };
-}
-
 export function defaultLayoutForTabs(tabIds: readonly string[], title: string): GroupingLayout {
   return {
     columns: [{
@@ -889,29 +850,6 @@ export function defaultLayoutForTabs(tabIds: readonly string[], title: string): 
         tabIds: [...tabIds],
       }],
     }],
-  };
-}
-
-export function addGroup(
-  plan: GroupingPlan,
-  title: string,
-  idFactory: () => string = uuid,
-): GroupingPlan {
-  const groupId = idFactory();
-  return {
-    ...plan,
-    groups: [
-      ...plan.groups,
-      {
-        groupId,
-        title,
-        disposition: "reorganize",
-        destination: { kind: "new_workspace", proposedName: title },
-        layout: defaultLayoutForTabs([], title),
-        tabIds: [],
-        adopted: true,
-      },
-    ],
   };
 }
 
@@ -998,7 +936,7 @@ export function validateEditedPlan(
       for (const column of group.layout.columns) {
         if (column.panes.length === 0) errors.push(`グループ「${group.title}」に空の列があります`);
         for (const pane of column.panes) {
-          if (pane.tabIds.length === 0) errors.push(`グループ「${group.title}」に空のペインがあります`);
+          if (pane.tabIds.length === 0) errors.push(`グループ「${group.title}」に空のタブがあります`);
         }
       }
       const layoutIds = flattenLayoutTabIds(group.layout);
@@ -1024,7 +962,7 @@ export function validateEditedPlan(
   }
   plan.unassignedTabIds.forEach(note);
   for (const id of allowed) {
-    if ((appearances.get(id) ?? 0) !== 1) errors.push(`タブ ${id} の出現回数が1ではありません`);
+    if ((appearances.get(id) ?? 0) !== 1) errors.push(`ペイン ${id} の出現回数が1ではありません`);
   }
   return errors;
 }
@@ -1057,7 +995,7 @@ export function classifyStale(
       issues.push({
         code: "tab_closed",
         tabId: entry.tabId,
-        message: `タブ ${entry.tabId} が閉じられています`,
+        message: `ペイン ${entry.tabId} が閉じられています`,
       });
       continue;
     }
@@ -1065,14 +1003,14 @@ export function classifyStale(
       issues.push({
         code: "session_mismatch",
         tabId: entry.tabId,
-        message: `タブ ${entry.tabId} の sessionId が分析時と違います`,
+        message: `ペイン ${entry.tabId} の sessionId が分析時と違います`,
       });
     }
     if (live.workspace.id !== entry.workspaceId || live.pane.id !== entry.paneId) {
       issues.push({
         code: "tab_moved",
         tabId: entry.tabId,
-        message: `タブ ${entry.tabId} が分析後に手動で移動されています`,
+        message: `ペイン ${entry.tabId} が分析後に手動で移動されています`,
       });
     }
   }
@@ -1082,7 +1020,7 @@ export function classifyStale(
 
 function tabLabel(workspaces: readonly Workspace[], tabId: string): string {
   const found = tabIndex(workspaces).get(tabId);
-  return found?.tab.label?.trim() || "無名タブ";
+  return found?.tab.label?.trim() || "無名ペイン";
 }
 
 export function buildApplyReport(
@@ -1193,12 +1131,4 @@ export async function runGroupingAnalysis(
   deps.onProgress?.("validating");
   parsed = parseGroupingOutput(secondRaw, allowed, workspaceIds, names);
   return { scan, parsed, retried: true, raw: secondRaw };
-}
-
-export function openTabGroupingInDashboard(): void {
-  if (typeof window === "undefined") return;
-  void import("../../stores/dashboardViewStore").then(({ useDashboardViewStore }) => {
-    useDashboardViewStore.getState().openView();
-    window.setTimeout(() => window.dispatchEvent(new Event(TAB_GROUPING_OPEN_EVENT)), 0);
-  });
 }

@@ -18,7 +18,7 @@ import {
   readAgentSessionMappings,
   getTerminalConfig,
 } from "./lib/ipc";
-import { isMainWindow, windowLabel } from "./lib/windowContext";
+import { isMainWindow, windowLabel, useWindowRole } from "./lib/windowContext";
 import { installChildWindowDevHook } from "./lib/multiWindowDev";
 import { useUiStore } from "./stores/uiStore";
 import { agentSessionIdentityKey } from "./stores/workspaceListStore";
@@ -34,6 +34,8 @@ import {
   waitForStartupSessionGate,
 } from "./lib/startupSessionGate";
 import AppShell from "./components/layout/AppShell";
+import DetachedPaneShell from "./components/layout/DetachedPaneShell";
+import { detachedWorkspaceForWindow } from "./lib/detachedPane";
 import ErrorBoundary from "./components/common/ErrorBoundary";
 import ToastHost from "./components/common/ToastHost";
 import { initDefaultShell } from "./lib/agents";
@@ -150,25 +152,29 @@ function App() {
   const [childProbeError, setChildProbeError] = useState<string | null>(null);
   const uiVariantEnv = import.meta.env.VITE_UI_VARIANT;
   const uiVariant = uiVariantEnv === "mycmux" || uiVariantEnv === "cmux" ? "cmux" : "default";
-  // Multi-window (Phase 3a): the app-wide singletons below run in the main
-  // window only. Child windows (`mycmux-w<n>`) render the same shell but skip
-  // persistence, the socket handler, the quit path, dormancy sweeps and the
-  // updater — see src/lib/windowContext.ts.
+  // Startup identity controls hydration/reveal; shared tasks follow the role.
   const isMain = isMainWindow();
+  const hasRole = useWindowRole();
+  // Selecting the workspace itself (not the array) keeps the main window off
+  // this subscription entirely: it resolves to a stable null, so unrelated
+  // layout churn no longer re-renders the whole shell.
+  const detachedWorkspace = useWorkspaceListStore(
+    (state) => detachedWorkspaceForWindow(state.workspaces, isMain),
+  );
 
   useWorkspacePersist();
-  useAgentDormancy(ready && isMain);
+  useAgentDormancy(ready && hasRole);
 
   useEffect(() => {
-    if (!ready || !isMain) return;
+    if (!ready || !hasRole) return;
     return connectDispatchWatchdog();
-  }, [ready, isMain]);
+  }, [ready, hasRole]);
 
   useEffect(() => {
-    if (!ready || !isMain) return;
+    if (!ready || !hasRole) return;
     startAutoPaneNaming();
     return stopAutoPaneNaming;
-  }, [ready, isMain]);
+  }, [ready, hasRole]);
 
   useEffect(() => {
     async function bootstrap() {
@@ -502,7 +508,9 @@ function App() {
   return (
     <div style={{ position: "relative", width: "100vw", height: "100vh", background: "var(--cmux-boot-bg, #0a0a0a)" }}>
       <ErrorBoundary>
-        <AppShell uiVariant={uiVariant} />
+        {detachedWorkspace
+          ? <DetachedPaneShell workspace={detachedWorkspace} />
+          : <AppShell uiVariant={uiVariant} />}
         <ToastHost />
       </ErrorBoundary>
       {startupMaskVisible && (

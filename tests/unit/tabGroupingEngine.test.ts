@@ -660,7 +660,7 @@ describe("Gate 1 deterministic allocation and identity", () => {
     };
     const panes = engine.compileGroupingPlan(panesPlan, current, contextFor(current, "seed-panes"));
     expect(panes.ok).toBe(false);
-    if (!panes.ok) expect(panes.errors.join(" ")).toContain("ペイン数が4を超えます");
+    if (!panes.ok) expect(panes.errors.join(" ")).toContain("タブ数が4を超えます");
   });
 
   it.each(["five-columns", "five-panes"] as const)(

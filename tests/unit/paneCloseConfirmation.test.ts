@@ -50,7 +50,7 @@ describe("confirmPaneClose", () => {
   it("uses the agent wording for a cohabiting live agent tab", async () => {
     await expect(confirmPaneClose([cohabitingAgentPane()], "pane")).resolves.toBe(true);
     expect(confirmDialog).toHaveBeenCalledOnce();
-    expect(confirmDialog.mock.calls[0][0]).toBe("このペインには実行中のエージェントタブが 1 件あります。まとめて閉じますか？");
+    expect(confirmDialog.mock.calls[0][0]).toBe("このタブには実行中のエージェントペインが 1 件あります。まとめて閉じますか？");
     expect(confirmDialog.mock.calls[0][1]).toMatchObject({ okLabel: "終了", cancelLabel: "キャンセル" });
   });
 
@@ -60,7 +60,7 @@ describe("confirmPaneClose", () => {
     };
     await expect(confirmPaneClose([idlePane()], "pane")).resolves.toBe(true);
     expect(confirmDialog).toHaveBeenCalledOnce();
-    expect(confirmDialog.mock.calls[0][0]).toContain("稼働中のタブが 1 個あります");
+    expect(confirmDialog.mock.calls[0][0]).toContain("稼働中のペインが 1 個あります");
   });
 
   // A workspace close has always been confirmed. Reusing the pane rule here

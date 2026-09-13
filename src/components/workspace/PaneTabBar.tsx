@@ -23,6 +23,7 @@ import type { PaneMetadata, PaneVolatileMetadata } from "../../stores/paneMetada
 import { deriveDisplayStatus, type EffectiveStatus } from "../../lib/notificationStatus";
 import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
 import { usePaneDragSource } from "../../hooks/usePaneDragSource";
+import { useDetachedDockStore } from "../../stores/detachedDockStore";
 import { usePaneDragStore } from "../../stores/paneDragStore";
 import { useSavepointPublish } from "../../hooks/useSavepointPublish";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
@@ -1057,13 +1058,17 @@ export default memo(function PaneTabBar({
   const { beginPointerDrag, shouldSuppressClick } = usePaneDragSource();
   const chipDragActive = usePaneDragStore((state) => state.item !== null);
   // Insertion slot of an in-progress reorder over this pane's strip, or null.
-  const tabInsertionIndex = usePaneDragStore((state) =>
+  const paneTabInsertionIndex = usePaneDragStore((state) =>
     state.target?.kind === "tab-index"
       && state.target.workspaceId === workspaceId
       && state.target.paneId === pane.id
       ? state.target.index
       : null,
   );
+  const detachedInsertionIndex = useDetachedDockStore((state) =>
+    state.target?.kind === "tab-index" && state.target.workspaceId === workspaceId && state.target.paneId === pane.id
+      ? state.target.index : null);
+  const tabInsertionIndex = paneTabInsertionIndex ?? detachedInsertionIndex;
   const savepointDropTabId = useSavepointDragStore((state) =>
     state.target?.mode === "paste"
       && state.target.workspaceId === workspaceId

@@ -36,10 +36,10 @@ def test_watchdog_is_notification_only() -> None:
         assert forbidden not in store
 
 
-def test_watchdog_is_main_window_only() -> None:
+def test_watchdog_follows_window_role() -> None:
     app = read("src/App.tsx")
     expected = """useEffect(() => {
-    if (!ready || !isMain) return;
+    if (!ready || !hasRole) return;
     return connectDispatchWatchdog();
-  }, [ready, isMain]);"""
+  }, [ready, hasRole]);"""
     assert expected in app

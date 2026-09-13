@@ -24,17 +24,17 @@ export async function confirmPaneClose(
   if (victims.length === 0 && scope === "pane") return true;
 
   const body = scope === "pane" && liveAgentTabs.length > 0
-    ? `このペインには実行中のエージェントタブが ${liveAgentTabs.length} 件あります。まとめて閉じますか？`
+    ? `このタブには実行中のエージェントペインが ${liveAgentTabs.length} 件あります。まとめて閉じますか？`
     : victims.length > 0
       ? paneCloseImpactMessage(victims)
-    : "開いているタブは、まとめて終了します。";
+    : "開いているペインは、まとめて終了します。";
   const named = scope === "workspace" && options.workspaceName
     ? `ワークスペース「${options.workspaceName}」\n${body}`
     : body;
 
   return confirm(named, {
     ...(scope === "pane"
-      ? agentCloseDialogOptions("このペインを閉じます")
+      ? agentCloseDialogOptions("このタブを閉じます")
       : {
           title: "このワークスペースを閉じます",
           kind: "warning" as const,

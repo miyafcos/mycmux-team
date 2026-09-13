@@ -54,7 +54,7 @@ fn publish_savepoint_impl(
             warnings.insert(
                 0,
                 format!(
-                    "タブ記録のセッション {} に会話ログが無いため、この作業ディレクトリの最新会話 {} を保存しました",
+                    "ペイン記録のセッション {} に会話ログが無いため、この作業ディレクトリの最新会話 {} を保存しました",
                     requested.chars().take(8).collect::<String>(),
                     session_id.chars().take(8).collect::<String>()
                 ),

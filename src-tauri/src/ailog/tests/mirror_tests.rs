@@ -234,3 +234,39 @@ fn low_space_skips_the_full_text_tier_and_says_so() {
         Some(WARNING_TIER2_LOW_SPACE)
     );
 }
+
+#[test]
+fn full_mirror_writes_replaces_and_skips_destinations_over_260_chars() {
+    let mut fixture = MirrorFixture::new();
+    for _ in 0..7 {
+        fixture.tier2_root.push("long-mirror-directory-0123456789abcdef");
+    }
+    let source = fixture.write_source("rollout.jsonl", b"first transcript\n");
+    let config = fixture.config(true);
+    let free = FixedFreeSpace(Some(u64::MAX));
+    let destination = mirror_destination(
+        &fixture.source_root,
+        &source,
+        &fixture.tier2_root,
+        KIND_CODEX,
+    )
+    .unwrap();
+    assert!(destination.as_os_str().len() > 260);
+
+    let first = run_once_with(&config, &free);
+    assert!(first.errors.is_empty(), "{:?}", first.errors);
+    assert_eq!(first.tier2_written, 1);
+    assert_eq!(decode(&destination), b"first transcript\n");
+
+    fs::write(&source, b"second, longer transcript\n").unwrap();
+    let second = run_once_with(&config, &free);
+    assert!(second.errors.is_empty(), "{:?}", second.errors);
+    assert_eq!(second.tier2_written, 1);
+    assert_eq!(decode(&destination), b"second, longer transcript\n");
+
+    let third = run_once_with(&config, &free);
+    assert!(third.errors.is_empty(), "{:?}", third.errors);
+    assert_eq!(third.tier2_written, 0);
+    assert_eq!(third.tier2_skipped_unchanged, 1);
+    assert_eq!(fs::read_dir(destination.parent().unwrap()).unwrap().count(), 1);
+}

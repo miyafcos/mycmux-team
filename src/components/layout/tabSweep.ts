@@ -369,8 +369,8 @@ export function formatSweepAiNote(
   if (!enabled) return aiSettingsStrings.disabledReason;
   const target = `${aiProviderDef(provider).label} (${model})`;
   return kind === "judge"
-    ? `各タブの画面末尾${TAB_SWEEP_TAIL_LINES}行と作業フォルダを ${target} に送って判定します（チェックの提案のみ）`
-    : `名前のないタブの画面末尾${TAB_NAMING_TAIL_LINES}行・作業フォルダ・ペイン構成を ${target} に送って名前を付けます（自動で適用・元に戻せます）`;
+    ? `各ペインの画面末尾${TAB_SWEEP_TAIL_LINES}行と作業フォルダを ${target} に送って判定します（チェックの提案のみ）`
+    : `名前のないペインの画面末尾${TAB_NAMING_TAIL_LINES}行・作業フォルダ・タブ構成を ${target} に送って名前を付けます（自動で適用・元に戻せます）`;
 }
 
 export function formatJudgeError(error: unknown, provider: AiProviderId): JudgeErrorPresentation {

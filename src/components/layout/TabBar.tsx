@@ -2,6 +2,8 @@ import { memo, useRef, useState, useCallback, useEffect, useLayoutEffect, useMem
 import type { CSSProperties, MutableRefObject, ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useWorkspaceListStore, usePaneMetadataStore } from "../../stores/workspaceStore";
+import { openChildWindow } from "../../lib/ipc";
+import { useDetachedDockStore } from "../../stores/detachedDockStore";
 import { usePaneDragStore } from "../../stores/paneDragStore";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { aggregatePetTier, classifyPetTier, petSpriteStateFor } from "../../lib/petState";
@@ -394,7 +396,9 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
   const savepointHoverWorkspaceId = useSavepointDragStore((s) => s.hoverWorkspaceId);
   const paneDragActive = paneMoveDragActive || savepointDragActive;
   const hoverWorkspaceId = paneMoveHoverWorkspaceId ?? savepointHoverWorkspaceId;
-  const newWorkspaceDropActive = usePaneDragStore((s) => s.target?.kind === "new-workspace");
+  const paneNewWorkspaceDropActive = usePaneDragStore((s) => s.target?.kind === "new-workspace");
+  const detachedNewWorkspaceDropActive = useDetachedDockStore((s) => s.target?.kind === "workspace");
+  const newWorkspaceDropActive = paneNewWorkspaceDropActive || detachedNewWorkspaceDropActive;
   const tearOutMeasurement = usePaneDragStore((s) => s.tearOutMeasurement);
   const newWorkspaceShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["workspace.new"]));
 
@@ -514,7 +518,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
             trace?.rolledBack("source workspace remained in its original window");
             clearTearOutMeasurementAfterDelay();
             console.error("[multiwindow] drag tear-out failed", err);
-            useToastStore.getState().pushToast("新しいウィンドウを開けませんでした", "error");
+            useToastStore.getState().pushToast(sidebarStrings.newWindowFailed, "error");
           });
       }
     } else if (dragIndex !== null && dropIndex !== null && dragging.current) {
@@ -715,6 +719,27 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
         <span>{sidebarStrings.newWorkspace}</span>
       </button>
 
+      <button
+        type="button"
+        data-open-sidebar-window="true"
+        onClick={() => {
+          void openChildWindow().catch((error) => {
+            console.error("[multiwindow] open sidebar window failed", error);
+            useToastStore.getState().pushToast(sidebarStrings.newWindowFailed, "error");
+          });
+        }}
+        className={`tab-new-workspace-btn${uiVariant === "cmux" ? " cmux-title-btn" : ""}`}
+        style={{
+          width: "100%", background: "none", border: "none",
+          borderTop: "1px solid var(--cmux-border-hairline)",
+          color: "var(--cmux-text-tertiary)", cursor: "pointer",
+          padding: "10px 16px", fontSize: 12, fontFamily: "var(--cmux-font-ui)",
+          textAlign: "left", flexShrink: 0,
+        }}
+      >
+        {sidebarStrings.newWindow}
+      </button>
+
       {tearOutReady && <TearOutBanner label={`⬈ ${paneDndStrings.dropInNewWindow}`} />}
       <TearOutDiagnosticsHud measurement={tearOutMeasurement} />
 
@@ -778,7 +803,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
                 console.error("[multiwindow] tear-out failed", err);
                 useToastStore
                   .getState()
-                  .pushToast("新しいウィンドウを開けませんでした", "error");
+                  .pushToast(sidebarStrings.newWindowFailed, "error");
               });
             }}
           >

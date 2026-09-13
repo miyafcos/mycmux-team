@@ -88,14 +88,12 @@ describe("terminal ANSI contrast floor", () => {
 
 });
 
-// The policy, not the spelling of the function that carries it. Glass means
-// xterm's own correction is off (the background it would correct against is
-// transparent); opaque means the AA floor for light and the stricter dark
-// floor. Live theme updates, cached reattach and cold init all read this.
+// Glass and opaque modes share the theme RGB reference; light glass needs
+// extra headroom. Live updates, cached reattach and cold init all read this.
 describe("terminal minimum contrast policy", () => {
   it.each([
-    ["glass, dark", { mediaActive: true, isLight: false }, 1],
-    ["glass, light", { mediaActive: true, isLight: true }, 1],
+    ["glass, dark", { mediaActive: true, isLight: false }, 7],
+    ["glass, light", { mediaActive: true, isLight: true }, 5.5],
     ["opaque, light", { mediaActive: false, isLight: true }, 4.5],
     ["opaque, dark", { mediaActive: false, isLight: false }, 7],
   ] as const)("%s -> %d", (_label, input, expected) => {
@@ -108,7 +106,7 @@ describe("terminal minimum contrast policy", () => {
     ).toEqual({ mediaActive: false, isLight: false, terminalOpacity: 1, minimumContrastRatio: 7 });
     expect(
       resolveTerminalAppearance({ mediaActive: true, isLight: false, terminalOpacity: 0.45 }),
-    ).toEqual({ mediaActive: true, isLight: false, terminalOpacity: 0.45, minimumContrastRatio: 1 });
+    ).toEqual({ mediaActive: true, isLight: false, terminalOpacity: 0.45, minimumContrastRatio: 7 });
   });
 
   it("resolves from the live stores, so an async terminal open cannot use a stale value", () => {
@@ -126,7 +124,7 @@ describe("terminal minimum contrast policy", () => {
     expect(readLiveTerminalAppearance()).toMatchObject({
       mediaActive: true,
       terminalOpacity: 0.5,
-      minimumContrastRatio: 1,
+      minimumContrastRatio: 7,
     });
   });
 });

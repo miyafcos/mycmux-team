@@ -567,16 +567,6 @@ pub async fn ailog_index_status() -> Result<IndexStatus, String> {
 // ---------------------------------------------------------------------------
 
 #[tauri::command(async)]
-pub async fn ailog_digest_get(date: String) -> Result<digest::DigestReport, String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = open()?;
-        digest::get(&conn, &date)
-    })
-    .await
-    .map_err(|err| format!("digest reader task failed: {err}"))?
-}
-
-#[tauri::command(async)]
 pub async fn ailog_digest_generate(
     app: AppHandle,
     date: String,
@@ -604,29 +594,6 @@ pub async fn ailog_digest_generate(
 // ---------------------------------------------------------------------------
 // Reports
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DashboardArgs {
-    #[serde(default = "default_dashboard_granularity")]
-    pub granularity: String,
-}
-
-fn default_dashboard_granularity() -> String {
-    "family".to_string()
-}
-
-#[tauri::command(async)]
-pub async fn ailog_dashboard(
-    range: Option<Range>,
-    filters: Option<Filters>,
-    args: Option<DashboardArgs>,
-) -> Result<query::DashboardReport, String> {
-    let range = range.unwrap_or_default();
-    let filters = filters.unwrap_or_default();
-    let granularity = args.map(|value| value.granularity).unwrap_or_else(default_dashboard_granularity);
-    blocking_report(move |conn| query::dashboard(conn, &range, &filters, &granularity, now_ms())).await
-}
 
 #[tauri::command(async)]
 pub async fn ailog_overview(
@@ -778,36 +745,6 @@ pub async fn ailog_efficiency(
     let range = range.unwrap_or_default();
     let filters = filters.unwrap_or_default();
     blocking_report(move |conn| query::efficiency(conn, &range, &filters, now_ms())).await
-}
-
-#[tauri::command(async)]
-pub async fn ailog_rule_check(
-    range: Option<Range>,
-    filters: Option<Filters>,
-) -> Result<query::RuleCheckReport, String> {
-    let range = range.unwrap_or_default();
-    let filters = filters.unwrap_or_default();
-    blocking_report(move |conn| query::rule_check(conn, &range, &filters, now_ms())).await
-}
-
-#[tauri::command(async)]
-pub async fn ailog_findings(
-    range: Option<Range>,
-    filters: Option<Filters>,
-    kind: Option<String>,
-    query: Option<String>,
-    limit: Option<i64>,
-    offset: Option<i64>,
-) -> Result<query::FindingsReport, String> {
-    let range = range.unwrap_or_default();
-    let filters = filters.unwrap_or_default();
-    let options = query::FindingsOptions {
-            kind,
-            query,
-            limit: limit.unwrap_or(50),
-            offset: offset.unwrap_or(0),
-        };
-    blocking_report(move |conn| query::findings(conn, &range, &filters, &options, now_ms())).await
 }
 
 /// Absolute-volume view: totals, per-day series, hour-of-day and weekday shape,

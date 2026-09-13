@@ -51,7 +51,7 @@ export interface KeybindingDefinition {
 export const KEYBINDING_CATEGORY_LABEL: Record<KeybindingCategory, string> = {
   Global: "全体",
   Workspace: "ワークスペース",
-  Pane: "ペイン",
+  Pane: "タブ",
   Terminal: "ターミナル",
 };
 
@@ -59,7 +59,7 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "sidebar.toggle", title: "サイドバーの表示切り替え", category: "Global", defaultShortcut: "ctrl+b" },
   { action: "settings.keybindings", title: "キーボードショートカットを開く", category: "Global", defaultShortcut: "ctrl+," },
   { action: "crsm.palette", title: "セッションを続きから開く", category: "Global", defaultShortcut: "ctrl+p" },
-  { action: "tab.sweep", title: "タブ掃除を開く", category: "Global", defaultShortcut: "ctrl+shift+k" },
+  { action: "tab.sweep", title: "ペイン掃除を開く", category: "Global", defaultShortcut: "ctrl+shift+k" },
   { action: "dashboard.open", title: "ダッシュボードを開く", category: "Global", defaultShortcut: "ctrl+shift+g" },
   { action: "dashboard.column.prev", title: "ダッシュボードの左の列へ", category: "Global", defaultShortcut: "ctrl+shift+arrowleft" },
   { action: "dashboard.column.next", title: "ダッシュボードの右の列へ", category: "Global", defaultShortcut: "ctrl+shift+arrowright" },
@@ -81,19 +81,19 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "workspace.jump.8", title: "ワークスペース 8 へ", category: "Workspace", defaultShortcut: "ctrl+8" },
   { action: "workspace.jump.9", title: "最後のワークスペースへ", category: "Workspace", defaultShortcut: "ctrl+9" },
 
-  { action: "pane.focus.left", title: "左のペインへ", category: "Pane", defaultShortcut: "ctrl+alt+arrowleft" },
-  { action: "pane.focus.right", title: "右のペインへ", category: "Pane", defaultShortcut: "ctrl+alt+arrowright" },
-  { action: "pane.focus.up", title: "上のペインへ", category: "Pane", defaultShortcut: "ctrl+alt+arrowup" },
-  { action: "pane.focus.down", title: "下のペインへ", category: "Pane", defaultShortcut: "ctrl+alt+arrowdown" },
-  { action: "pane.split.right", title: "ペインを右に分割", category: "Pane", defaultShortcut: "ctrl+alt+d" },
-  { action: "pane.split.down", title: "ペインを下に分割", category: "Pane", defaultShortcut: "ctrl+alt+shift+d" },
-  { action: "pane.close", title: "アクティブなペインを閉じる", category: "Pane", defaultShortcut: "ctrl+alt+w" },
+  { action: "pane.focus.left", title: "左のタブへ", category: "Pane", defaultShortcut: "ctrl+alt+arrowleft" },
+  { action: "pane.focus.right", title: "右のタブへ", category: "Pane", defaultShortcut: "ctrl+alt+arrowright" },
+  { action: "pane.focus.up", title: "上のタブへ", category: "Pane", defaultShortcut: "ctrl+alt+arrowup" },
+  { action: "pane.focus.down", title: "下のタブへ", category: "Pane", defaultShortcut: "ctrl+alt+arrowdown" },
+  { action: "pane.split.right", title: "タブを右に分割", category: "Pane", defaultShortcut: "ctrl+alt+d" },
+  { action: "pane.split.down", title: "タブを下に分割", category: "Pane", defaultShortcut: "ctrl+alt+shift+d" },
+  { action: "pane.close", title: "アクティブなタブを閉じる", category: "Pane", defaultShortcut: "ctrl+alt+w" },
   { action: "pane.reopen", title: "閉じたペインを開き直す", category: "Pane", defaultShortcut: "ctrl+shift+t" },
-  { action: "pane.zoom.toggle", title: "ペインの最大化を切り替え", category: "Pane", defaultShortcut: "ctrl+shift+enter" },
-  { action: "pane.tab.next", title: "ペイン内の次のタブ", category: "Pane", defaultShortcut: "ctrl+alt+pagedown" },
-  { action: "pane.tab.prev", title: "ペイン内の前のタブ", category: "Pane", defaultShortcut: "ctrl+alt+pageup" },
+  { action: "pane.zoom.toggle", title: "タブの最大化を切り替え", category: "Pane", defaultShortcut: "ctrl+shift+enter" },
+  { action: "pane.tab.next", title: "タブ内の次のペイン", category: "Pane", defaultShortcut: "ctrl+alt+pagedown" },
+  { action: "pane.tab.prev", title: "タブ内の前のペイン", category: "Pane", defaultShortcut: "ctrl+alt+pageup" },
   { action: "pane.attention.next", title: "次の要対応へ", category: "Pane", defaultShortcut: "ctrl+alt+a" },
-  { action: "pane.tab.pin.toggle", title: "アクティブタブを固定", category: "Pane", defaultShortcut: "ctrl+alt+p" },
+  { action: "pane.tab.pin.toggle", title: "アクティブペインを固定", category: "Pane", defaultShortcut: "ctrl+alt+p" },
 
   { action: "terminal.search", title: "端末内を検索", category: "Terminal", defaultShortcut: "ctrl+shift+f" },
   // Not ctrl+shift+i: that is the WebView's own DevTools shortcut.

@@ -89,6 +89,11 @@ pub fn create_session(
     let requested_command = command;
     let mut args = args;
     let mut env_map = env.unwrap_or_default();
+    let mut restore_notice = false;
+    let mut cwd = cwd;
+    if command_leaf(&requested_command).eq_ignore_ascii_case("claude") {
+        normalize_claude_launch_args(&mut args, &env_map);
+    }
     // A PTY that is still tracked for this session_id means create() below
     // will take the reattach branch (channel swap only, no spawn / resume).
     // Restore validation only matters for an actual spawn, so skip it here —
@@ -96,7 +101,17 @@ pub fn create_session(
     // re-run stale-id validation and re-emit "agent-restore-downgraded" for
     // sessions that were never being restored in the first place.
     if !state.session_manager.is_alive(&session_id) {
-        match validate_agent_restore_request(cwd.as_deref(), &env_map) {
+        let validation = validate_agent_restore_request(cwd.as_deref(), &env_map).and_then(|()| {
+            if env_map.get("MYCMUX_RESUME").is_some_and(|kind| kind == "claude")
+                && (env_map.get("MYCMUX_SESSION_ID").is_none_or(|id| id.trim().is_empty())
+                    || cwd.as_deref().is_some_and(|value| !Path::new(value).is_dir()))
+            {
+                Err("Previous Claude session id or working directory is unavailable".to_string())
+            } else {
+                Ok(())
+            }
+        });
+        match validation {
             Ok(()) => {}
             Err(err) => {
                 let kind = env_map
@@ -132,6 +147,15 @@ pub fn create_session(
                                     "reason": &err,
                                 }),
                             );
+                            if matches!(kind, "claude" | "claude-codex") {
+                                restore_notice = true;
+                                if kind == "claude" && !command_leaf(&requested_command).eq_ignore_ascii_case("claude") {
+                                    env_map.insert("MYCMUX_LAUNCH_TARGET".to_string(), "claude".to_string());
+                                }
+                                if cwd.as_deref().is_some_and(|value| !Path::new(value).is_dir()) {
+                                    cwd = None;
+                                }
+                            }
                             env_map.remove("MYCMUX_SESSION_ID");
                             env_map.remove("MYCMUX_RESUME");
                         }
@@ -250,6 +274,11 @@ pub fn create_session(
         }
     }
     write_launch_session_mapping(&session_id, &env_map);
+    let command = if restore_notice {
+        wrap_restore_notice(&command, &mut args)
+    } else {
+        command
+    };
     state.session_manager.create(
         session_id.clone(),
         &command,
@@ -387,15 +416,88 @@ fn command_leaf(command: &str) -> &str {
         .unwrap_or(leaf)
 }
 
+// Keep explicit saved values, without supplying a model or effort default.
+fn claude_launch_spec_args(args: &[String]) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if matches!(arg.as_str(), "--model" | "--effort") {
+            if let Some(value) = iter.next() {
+                values.extend([arg.clone(), value.clone()]);
+            }
+        } else if arg.starts_with("--model=") || arg.starts_with("--effort=") {
+            values.push(arg.clone());
+        }
+    }
+    values
+}
+
+fn normalize_claude_launch_args(args: &mut Vec<String>, env: &HashMap<String, String>) {
+    let mut normalized = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--permission-mode" => { iter.next(); }
+            "--dangerously-skip-permissions" | "--allow-dangerously-skip-permissions" => {}
+            _ if arg.starts_with("--permission-mode=") => {}
+            _ => normalized.push(arg.clone()),
+        }
+    }
+    normalized.extend([
+        "--allow-dangerously-skip-permissions".to_string(),
+        "--permission-mode".to_string(),
+        "auto".to_string(),
+    ]);
+    for (key, flag) in [("MYCMUX_LAUNCH_MODEL", "--model"), ("MYCMUX_LAUNCH_EFFORT", "--effort")] {
+        let Some(value) = env.get(key).map(|value| value.trim()).filter(|value| {
+            !value.is_empty() && value.len() <= 64
+                && value.as_bytes()[0].is_ascii_alphanumeric()
+                && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        }) else { continue };
+        if !normalized.iter().any(|arg| arg == flag || arg.starts_with(&format!("{flag}="))) {
+            normalized.extend([flag.to_string(), value.to_string()]);
+        }
+    }
+    *args = normalized;
+}
+
+// Print through the PTY itself, so release builds and terminal scrollback retain
+// the warning. Arguments stay separate from shell code (literal-quoted on Windows).
+fn wrap_restore_notice(command: &str, args: &mut Vec<String>) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        let quote = |value: &str| format!("'{}'", value.replace('\'', "''"));
+        let invocation = std::iter::once(command).chain(args.iter().map(String::as_str))
+            .map(quote).collect::<Vec<_>>().join(" ");
+        *args = vec!["-NoLogo".into(), "-NoProfile".into(), "-Command".into(), format!(
+            "Write-Host '  Previous conversation could not be restored; starting a new session.'; & {invocation}; exit $LASTEXITCODE"
+        )];
+        "powershell.exe".to_string()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut wrapped = vec![
+            "-c".to_string(),
+            "printf '%s\\n' '  Previous conversation could not be restored; starting a new session.'; exec \"$@\"".to_string(),
+            "mycmux-restore".to_string(), command.to_string(),
+        ];
+        wrapped.append(args);
+        *args = wrapped;
+        "/bin/sh".to_string()
+    }
+}
+
 fn apply_agent_restore_fallback_args(command: &str, args: &mut Vec<String>, kind: &str) {
     let leaf = command_leaf(command).to_ascii_lowercase();
     match (leaf.as_str(), kind) {
         ("claude", "claude") => {
+            let launch_spec = claude_launch_spec_args(args);
             *args = vec![
-                "--dangerously-skip-permissions".to_string(),
+                "--allow-dangerously-skip-permissions".to_string(),
                 "--permission-mode".to_string(),
-                "bypassPermissions".to_string(),
+                "auto".to_string(),
             ];
+            args.extend(launch_spec);
         }
         ("codex", "codex") => {
             *args = vec!["--no-alt-screen".to_string()];
@@ -429,7 +531,11 @@ fn apply_agent_restore_recovery_args(
         requested_session_id,
         _fallback_session_ids,
         cwd,
-        can_restore_agent_session,
+        |kind, session_id, cwd| {
+            !(kind == "claude" && (session_id.trim().is_empty()
+                || cwd.is_some_and(|value| !Path::new(value).is_dir())))
+                && can_restore_agent_session(kind, session_id, cwd)
+        },
     )
 }
 
@@ -913,6 +1019,39 @@ mod tests {
     }
 
     #[test]
+    fn claude_restore_keeps_explicit_launch_values_and_auto_permissions() {
+        let mut args: Vec<String> = ["--resume", "missing", "--model=opus", "--effort", "high"]
+            .into_iter().map(str::to_string).collect();
+        apply_agent_restore_fallback_args("claude", &mut args, "claude");
+        assert_eq!(args, ["--allow-dangerously-skip-permissions", "--permission-mode", "auto",
+            "--model=opus", "--effort", "high"]);
+    }
+
+    #[test]
+    fn claude_direct_launch_normalizes_permissions_and_uses_saved_env_values() {
+        let mut args: Vec<String> = ["--dangerously-skip-permissions", "--permission-mode=auto", "--resume", "saved"]
+            .into_iter().map(str::to_string).collect();
+        normalize_claude_launch_args(&mut args, &env(&[
+            ("MYCMUX_LAUNCH_MODEL", " opus "), ("MYCMUX_LAUNCH_EFFORT", " high "),
+        ]));
+        assert_eq!(args, ["--resume", "saved", "--allow-dangerously-skip-permissions",
+            "--permission-mode", "auto", "--model", "opus", "--effort", "high"]);
+        normalize_claude_launch_args(&mut args, &env(&[
+            ("MYCMUX_LAUNCH_MODEL", "sonnet"), ("MYCMUX_LAUNCH_EFFORT", "low"),
+        ]));
+        assert_eq!(claude_launch_spec_args(&args), ["--model", "opus", "--effort", "high"]);
+    }
+
+    #[test]
+    fn claude_direct_launch_does_not_invent_defaults_or_accept_unsafe_env_values() {
+        for values in [env(&[]), env(&[("MYCMUX_LAUNCH_MODEL", "$(bad)"), ("MYCMUX_LAUNCH_EFFORT", "--bad")])] {
+            let mut args = Vec::new();
+            normalize_claude_launch_args(&mut args, &values);
+            assert_eq!(args, ["--allow-dangerously-skip-permissions", "--permission-mode", "auto"]);
+        }
+    }
+
+    #[test]
     fn sanitize_drops_pane_internal_keys_when_no_resume_context() {
         let mut e = env(&[
             ("MYCMUX_PANE_SESSION_ID", "pane-1"),
@@ -1105,9 +1244,9 @@ mod tests {
     #[test]
     fn restore_missing_requested_id_does_not_probe_any_fallback() {
         let mut args = vec![
-            "--dangerously-skip-permissions".to_string(),
+            "--allow-dangerously-skip-permissions".to_string(),
             "--permission-mode".to_string(),
-            "bypassPermissions".to_string(),
+            "auto".to_string(),
             "--resume".to_string(),
             "missing-session".to_string(),
         ];
@@ -1182,9 +1321,9 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "--dangerously-skip-permissions".to_string(),
+                "--allow-dangerously-skip-permissions".to_string(),
                 "--permission-mode".to_string(),
-                "bypassPermissions".to_string(),
+                "auto".to_string(),
             ]
         );
         assert!(!args.iter().any(|arg| arg == "--continue"));

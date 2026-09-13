@@ -41,14 +41,3 @@ pub async fn attention_set_tracked(pty_session_id: String, tracked: bool) -> Res
     .await
     .map_err(|error| error.to_string())?
 }
-
-#[tauri::command(async)]
-pub async fn attention_list_tracked() -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        attention::store::open().and_then(|conn| {
-            attention::store::list_tracked(&conn).map(|sessions| sessions.into_iter().collect())
-        })
-    })
-    .await
-    .map_err(|error| error.to_string())?
-}

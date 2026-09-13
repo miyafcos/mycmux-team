@@ -62,7 +62,7 @@ export interface CliLoginState {
 const EMPTY_BY_PROVIDER: Record<CliProvider, CliLoginEntry | null> = { claude: null, codex: null, grok: null };
 
 const NO_HOST_PANE_MESSAGE =
-  "原因: ログイン画面を開くタブを用意できませんでした。次にすること: ターミナルのタブをひとつ開いてから、もう一度お試しください。";
+  "原因: ログイン画面を開くペインを用意できませんでした。次にすること: ターミナルのペインをひとつ開いてから、もう一度お試しください。";
 
 interface HostPane {
   workspaceId: string;

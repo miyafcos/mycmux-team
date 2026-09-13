@@ -94,7 +94,7 @@ def test_save_rejection_is_typed_and_quarantines_before_retry() -> None:
 
 def test_child_window_surfaces_unsupported_schema_diagnostic() -> None:
     source = read_repo_text("src/components/layout/SocketListener.tsx")
-    child = source[source.index("hydrateChildWindow()") : source.index("claimLeader()")]
+    child = source[source.index("if (!isMainWindow()) {") : source.index("claimLeader()\n      .then")]
     assert "unsupportedPersistentSchemaVersion" in child
     assert "reportUnsupportedPersistentSchema" in child
     assert "対応していない保存データ" in source

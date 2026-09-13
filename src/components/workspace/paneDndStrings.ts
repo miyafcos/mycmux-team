@@ -10,6 +10,10 @@ const SESSION_SPLIT_LABELS = {
 export const paneDndStrings = {
   moveToNewWorkspace: "新しいワークスペースへ移動",
   dropInNewWindow: "離すと新しいウィンドウで開きます",
+  // A single pane leaves as a content-only window; a whole tab (or a bundle)
+  // keeps the normal shell. Saying which one is coming makes the difference
+  // read as a rule instead of a surprise.
+  dropAsDetachedPane: "離すとこのペインだけの窓になります",
   attachTab: "このタブのペインに追加",
   mergePane: "タブを統合",
   split: {
@@ -24,5 +28,3 @@ export const paneDndStrings = {
   tabGhostMeta: "ペイン",
   handoffDropChip: (agent: string): string => `${agent} へ引き継ぎ文書を渡す`,
 } as const;
-
-export type PaneDndStrings = typeof paneDndStrings;

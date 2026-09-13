@@ -10,8 +10,8 @@ const strings = {
   title: "Claude Code スキル",
   labels: { "not-installed": "未導入", latest: "最新", outdated: "更新あり", "locally-modified": "ローカル改変" },
   descriptions: {
-    "session-dispatch": "指示書を作り、可視タブへの委譲と完了を確認",
-    "mycmux-bridge": "タブの状態を読み、メッセージや質問回答を渡す",
+    "session-dispatch": "指示書を作り、可視ペインへの委譲と完了を確認",
+    "mycmux-bridge": "ペインの状態を読み、メッセージや質問回答を渡す",
     oracmux: "引き継ぎ文書を作り、Web ペインで相談",
   } as Record<string, string>,
   install: "導入", update: "更新", replace: "退避して置き換える",

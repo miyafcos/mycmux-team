@@ -16,7 +16,3 @@ export function sortAttentionCards(cards: readonly AttentionCard[]): AttentionCa
 export function primaryActionLabel(action: PrimaryAction, label: (kind: PrimaryAction["type"]) => string): string {
   return label(action.type);
 }
-
-export function primaryActionIsAcknowledgement(action: PrimaryAction): boolean {
-  return action.type === "acknowledgeGoalReached";
-}

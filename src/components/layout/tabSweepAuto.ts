@@ -70,12 +70,12 @@ const defaultDependencies: AutoSweepDependencies = {
 
 // トーストは 8 秒で消えて履歴が残らないので、機能名を頭に置いて 1 行で
 // 「誰が何をしたか」が読めるようにする (2026-09-09 宮崎さん指摘)。
-const SWEEP_LABEL = "タブの自動掃除";
+const SWEEP_LABEL = "ペインの自動掃除";
 
 function completionMessage(closed: number): string {
   return closed > 0
-    ? `${SWEEP_LABEL}: ${closed}件のタブを閉じました`
-    : `${SWEEP_LABEL}: 閉じる対象のタブはありませんでした`;
+    ? `${SWEEP_LABEL}: ${closed}件のペインを閉じました`
+    : `${SWEEP_LABEL}: 閉じる対象のペインはありませんでした`;
 }
 
 export function createAutoSweepRunner(dependencies: AutoSweepDependencies = defaultDependencies) {
@@ -91,7 +91,7 @@ export function createAutoSweepRunner(dependencies: AutoSweepDependencies = defa
     dependencies.pushToast(
       result.closed > 0
         ? `${SWEEP_LABEL}: AI判定を使えなかったため、終了済みの${result.closed}件だけ閉じました。${prefix}`
-        : `${SWEEP_LABEL}: AI判定を使えなかったため、終了済みのタブだけを対象にしました。${prefix}`,
+        : `${SWEEP_LABEL}: AI判定を使えなかったため、終了済みのペインだけを対象にしました。${prefix}`,
       "info",
       [showDetails()],
       undefined,
@@ -128,7 +128,7 @@ export function createAutoSweepRunner(dependencies: AutoSweepDependencies = defa
             label: "取り消し",
             run: () => {
               dependencies.restoreClosedTabs(closed);
-              dependencies.pushToast(`${SWEEP_LABEL}: 閉じたタブを元に戻しました`, "info", undefined, undefined, "user-action");
+              dependencies.pushToast(`${SWEEP_LABEL}: 閉じたペインを元に戻しました`, "info", undefined, undefined, "user-action");
             },
           }, showDetails()]
         : [showDetails()];

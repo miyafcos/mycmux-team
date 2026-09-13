@@ -838,24 +838,8 @@ export async function ailogSummarizeStatus(range: AilogRange = { preset: "7d" })
   return invoke<SummarizeStatus>("ailog_summarize_status", { range });
 }
 
-export async function ailogDigestGet(date: string): Promise<DigestReport> {
-  return invoke<DigestReport>("ailog_digest_get", { date });
-}
-
 export async function ailogDigestGenerate(date: string, force = false): Promise<DigestReport> {
   return invoke<DigestReport>("ailog_digest_generate", { date, force });
-}
-
-export async function ailogDashboard(
-  range: AilogRange,
-  filters: AilogFilters,
-  granularity: AilogGranularity,
-): Promise<DashboardReport> {
-  return invoke<DashboardReport>("ailog_dashboard", {
-    range,
-    filters,
-    args: { granularity },
-  });
 }
 
 export async function ailogOverview(
@@ -893,38 +877,12 @@ export async function ailogPivot(
   return invoke<PivotReport>("ailog_pivot", { range, filters, options });
 }
 
-export async function ailogEfficiency(
-  range: AilogRange,
-  filters: AilogFilters,
-): Promise<EfficiencyReport> {
-  return invoke<EfficiencyReport>("ailog_efficiency", { range, filters });
-}
-
-export async function ailogRuleCheck(
-  range: AilogRange,
-  filters: AilogFilters,
-): Promise<RuleCheckReport> {
-  return invoke<RuleCheckReport>("ailog_rule_check", { range, filters });
-}
-
-export async function ailogGetPrices(): Promise<PriceEntry[]> {
-  return invoke<PriceEntry[]>("ailog_get_prices");
-}
-
-export async function ailogSetPrice(entry: PriceEntry): Promise<SetPriceResult> {
-  return invoke<SetPriceResult>("ailog_set_price", { entry });
-}
-
 export const DEFAULT_USD_JPY_RATE = 150;
 
 let usdJpyRate = DEFAULT_USD_JPY_RATE;
 
 export function sanitizeUsdJpyRate(rate: number): number {
   return Number.isFinite(rate) && rate > 0 ? rate : DEFAULT_USD_JPY_RATE;
-}
-
-export function getUsdJpyRate(): number {
-  return usdJpyRate;
 }
 
 /** Process-local rate used by formatMoney. Does not persist. */
@@ -982,14 +940,6 @@ export async function ailogModelHandoffs(
   return invoke<HandoffsReport>("ailog_model_handoffs", { range, filters, options });
 }
 
-export async function ailogFindings(
-  range: AilogRange,
-  filters: AilogFilters,
-  options: { kind?: FindingKind | null; query?: string; limit?: number; offset?: number } = {},
-): Promise<FindingsReport> {
-  return invoke<FindingsReport>("ailog_findings", { range, filters, ...options });
-}
-
 export async function ailogReworkRankings(
   range: AilogRange,
   filters: AilogFilters,
@@ -1034,10 +984,6 @@ export const RANGE_PRESETS: { id: RangePreset; label: string }[] = [
   { id: "all", label: "全期間" },
   { id: "custom", label: "カスタム" },
 ];
-
-export function rangePresetLabel(preset: RangePreset): string {
-  return RANGE_PRESETS.find((entry) => entry.id === preset)?.label ?? preset;
-}
 
 const DAY_MS = 86_400_000;
 
@@ -1296,16 +1242,6 @@ export function formatBucketLabel(ms: number, bucket: UsageBucket): string {
   return bucket === "week" ? `${md}週` : md;
 }
 
-/** Weekday of a day bucket, 0 = Sunday, in the bucketing timezone. */
-export function dayBucketWeekday(ms: number): number {
-  return new Date(ms + DAY_OFFSET_MS).getUTCDay();
-}
-
-/** Month index (0-11) of a day bucket, in the bucketing timezone. */
-export function dayBucketMonth(ms: number): number {
-  return new Date(ms + DAY_OFFSET_MS).getUTCMonth();
-}
-
 export function formatLocalDateTime(ms: number | null | undefined): string {
   if (!ms) return "—";
   const date = new Date(ms);
@@ -1335,15 +1271,6 @@ export function formatDuration(ms: number): string {
   if (hours > 0) return `${hours}時間${mins}分`;
   if (mins > 0) return `${mins}分${secs}秒`;
   return `${secs}秒`;
-}
-
-/** `128MB` / `1.2GB` */
-export function formatBytes(bytes: number): string {
-  const value = Math.max(0, safe(bytes));
-  if (value >= 1_073_741_824) return `${(value / 1_073_741_824).toFixed(1)}GB`;
-  if (value >= 1_048_576) return `${(value / 1_048_576).toFixed(0)}MB`;
-  if (value >= 1_024) return `${(value / 1_024).toFixed(0)}KB`;
-  return `${Math.round(value)}B`;
 }
 
 export function errorMessage(error: unknown): string {

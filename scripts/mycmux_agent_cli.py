@@ -141,7 +141,7 @@ def add_interactive_launch_arguments(
     parser: argparse.ArgumentParser, *, target_required: bool
 ) -> None:
     parser.add_argument("--target", choices=AGENT_TARGETS, required=target_required)
-    parser.add_argument("--preset", help="web タブのプリセット id (--target web のとき)")
+    parser.add_argument("--preset", help="web ペインのプリセット id (--target web のとき)")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--prompt")
     mode.add_argument("--prompt-file", type=Path)
@@ -193,6 +193,16 @@ def build_parser() -> argparse.ArgumentParser:
         choices=sorted(GRID_TEMPLATE_IDS),
         help="Pane grid for the new workspace (default 1x1)",
     )
+
+    workspace_close = subparsers.add_parser(
+        "workspace-close",
+        help=(
+            "Close a background workspace: kills every PTY under it, drops its "
+            "scrollback, and records the tabs for Ctrl+Shift+T. Refuses the "
+            "workspace the operator is looking at"
+        ),
+    )
+    workspace_close.add_argument("--workspace", required=True)
 
     panes = subparsers.add_parser("panes", help="List panes")
     panes_scope = panes.add_mutually_exclusive_group()
@@ -566,6 +576,8 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         args["cwd"] = namespace.cwd if namespace.cwd is not None else os.getcwd()
         optional_arg(args, "gridTemplateId", namespace.grid)
         return "workspace.new", args
+    if namespace.subcommand == "workspace-close":
+        return "workspace.close", {"workspaceId": namespace.workspace}
     if namespace.subcommand == "usage":
         return "account.usage", {}
     if namespace.subcommand == "panes":

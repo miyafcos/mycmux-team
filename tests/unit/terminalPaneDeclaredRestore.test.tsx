@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Pane, PaneTab, Workspace } from "../../src/types";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
+import { useDetachedDockStore } from "../../src/stores/detachedDockStore";
 import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useUiStore } from "../../src/stores/uiStore";
 import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
@@ -265,6 +266,29 @@ describe("TerminalPane declared restore boundary", () => {
     expect(props.launchEnv).not.toHaveProperty("MYCMUX_SESSION_ID");
   });
 
+  it("restores Claude with auto permissions and explicit model / effort", () => {
+    const args = buildLaunchArgs(
+      "claude", ["--model", "opus", "--effort=high", "old-prompt"], "claude-code",
+      { kind: "claude", sessionId: "saved-id" }, undefined, undefined, undefined,
+    );
+    expect(args).toEqual([
+      "--model", "opus", "--effort=high",
+      "--allow-dangerously-skip-permissions", "--permission-mode", "auto", "--resume", "saved-id",
+    ]);
+    expect(args).not.toContain("--continue");
+    expect(args).not.toContain("bypassPermissions");
+  });
+
+  it("leaves absent Claude model / effort at the CLI default on new and restored launches", () => {
+    for (const saved of [null, { kind: "claude" as const, sessionId: "saved-id" }]) {
+      const args = buildLaunchArgs("claude", [], "claude-code", saved, "new-id", undefined, undefined);
+      expect(args).toContain("auto");
+      expect(args).not.toContain("--dangerously-skip-permissions");
+      expect(args).not.toContain("--model");
+      expect(args).not.toContain("--effort");
+    }
+  });
+
   it("never appends an initial prompt to shell launcher argv", () => {
     expect(buildLaunchArgs(
       "powershell.exe",
@@ -378,5 +402,23 @@ describe("background spawn followed by a TerminalPane mount", () => {
       )).toHaveLength(2); // initial headless startup + later channel attachment
     }
     mocks.xtermMount.mockReset();
+  });
+});
+
+
+describe("detached docking preview rendering", () => {
+  it.each(["center", "left", "right", "up", "down"] as const)("reuses the existing dashed preview for %s", async (zone) => {
+    const ws = workspaceWith([paneWith({ id: "tab", sessionId: "pty-tab", agentId: "shell-starter", type: "terminal" })]);
+    await renderPanes(ws);
+    try {
+      await act(async () => useDetachedDockStore.getState().setTarget({ kind: "pane-zone", workspaceId: ws.id, paneId: "pane", zone }));
+      const preview = container.querySelector(".pane-drop-preview")!;
+      expect(preview).not.toBeNull();
+      expect(preview.classList.contains("pane-drop-preview--" + zone)).toBe(true);
+      expect(preview.classList.contains(zone === "center" ? "pane-drop-preview--attach-tab" : "pane-drop-preview--split")).toBe(true);
+      expect(preview.querySelector(".pane-drop-preview__label")!.textContent).toBeTruthy();
+      await act(async () => useDetachedDockStore.getState().setTarget({ kind: "tab-index", workspaceId: ws.id, paneId: "pane", index: 0 }));
+      expect(container.querySelector(".pane-drop-preview")).toBeNull();
+    } finally { await act(async () => useDetachedDockStore.getState().clear()); }
   });
 });

@@ -76,10 +76,6 @@ export function useBackgroundAiSuggestion(sessionId: string | null): BackgroundA
   return useBackgroundAiSuggestionStore((state) => (sessionId ? state.bySession[sessionId] : undefined));
 }
 
-export function useBackgroundAiReportSummary(batchId: string): BackgroundAiSuggestion | undefined {
-  return useBackgroundAiSuggestionStore((state) => state.byReportBatch[batchId]);
-}
-
 interface PendingRequest {
   requestId: string;
   requestKey: string;

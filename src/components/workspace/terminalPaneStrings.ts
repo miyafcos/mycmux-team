@@ -2,13 +2,13 @@
 // 失敗は英語の短文で握りつぶさず日本語で見える化する。文言はここに集約し、
 // TerminalPane 側のハンドラは非 ASCII を持たない (委譲先の文字化け防止)。
 export const terminalPaneStrings = {
-  paneActions: "ペインの操作",
+  paneActions: "タブの操作",
   searchTerminal: "端末内を検索",
   searchTerminalTitle: (shortcut: string) => `端末内を検索 (${shortcut})`,
   searchPlaceholder: "検索…",
-  searchUnavailable: "実行中の端末タブで検索できます",
-  reopenTab: "最後に閉じたタブを戻す",
-  noClosedTab: "復元できる閉じたタブがありません",
+  searchUnavailable: "実行中の端末ペインで検索できます",
+  reopenTab: "最後に閉じたペインを戻す",
+  noClosedTab: "復元できる閉じたペインがありません",
   automaticName: "名前はすでに自動設定です",
   openFailed: "開けませんでした",
   revealFailed: "ファイルの場所を表示できませんでした",
@@ -21,21 +21,21 @@ export const terminalPaneStrings = {
 // ホバーするたび言語が入れ替わっていた。ショートカットは埋め込まず
 // formatShortcutLabel で組む — mac は ⇧⌘↩ で、Ctrl とは書かれていない。
 export const paneToolbarStrings = {
-  newTab: "新しいターミナルタブ",
+  newTab: "新しいターミナルペイン",
   splitRight: "右に分割",
   splitDown: "下に分割",
-  zoomPane: "ペインを最大化",
+  zoomPane: "タブを最大化",
   restorePane: "最大化を解除",
-  zoomPaneAt: (shortcut: string) => `ペインを最大化 (${shortcut})`,
+  zoomPaneAt: (shortcut: string) => `タブを最大化 (${shortcut})`,
   restorePaneAt: (shortcut: string) => `最大化を解除 (${shortcut})`,
   openInDashboard: "ダッシュボードで開く",
-  closePane: "ペインを閉じる",
-  pinTab: "タブを固定",
+  closePane: "タブを閉じる",
+  pinTab: "ペインを固定",
   unpinTab: "固定を解除",
-  pinnedTab: "固定中のタブ",
-  closeTab: "タブを閉じる",
-  allTabs: "タブ一覧",
-  allTabsAt: (position: string) => `タブ一覧 (${position})`,
+  pinnedTab: "固定中のペイン",
+  closeTab: "ペインを閉じる",
+  allTabs: "ペイン一覧",
+  allTabsAt: (position: string) => `ペイン一覧 (${position})`,
 } as const;
 
 // タブを右クリック (⋮ 経由) したときのメニュー。

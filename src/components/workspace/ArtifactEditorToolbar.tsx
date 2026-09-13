@@ -225,6 +225,7 @@ function sourceKindLabel(kind: ArtifactEditorToolbarProps["sourceKind"], sourceP
   }
   if (kind === "markdown") return "MD";
   if (kind === "html") return "HTML";
+  if (kind === "pdf") return "PDF";
   return "FILE";
 }
 
@@ -432,14 +433,14 @@ function ArtifactEditorToolbarImpl({
         </div>
         <StatusPill isDirty={isDirty} isEditing={isEditing} isBusy={isBusy} />
         <div style={actionsStyle}>
-          <ToolbarButton
+          {sourceKind !== "pdf" && <ToolbarButton
             title={isEditing ? artifactEditorStrings.statusEditing : artifactEditorStrings.startEdit}
             disabled={!canEdit || isBusy || isEditing}
             variant={isEditing ? "primary" : "default"}
             onClick={onStartEdit}
           >
             <Pencil size={iconSize} />
-          </ToolbarButton>
+          </ToolbarButton>}
           <ToolbarButton
             title={artifactEditorStrings.openInDesktopApp}
             disabled={!sourcePath || isBusy}
@@ -457,7 +458,7 @@ function ArtifactEditorToolbarImpl({
         </div>
       </div>
 
-      {isEditing && (
+      {isEditing && sourceKind !== "pdf" && (
       <div style={commandRowStyle}>
         <div style={groupStyle} role="group" aria-label={artifactEditorStrings.fileActions}>
           <span style={groupLabelStyle}>File</span>

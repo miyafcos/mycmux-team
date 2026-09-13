@@ -740,163 +740,9 @@ __ensure_fugu_env() {
   fi
 }
 
-cmd=""
-
-# Consume launch-only state before any helper, CLI, or early return can inherit it.
-__handoff_kind="${MYCMUX_HANDOFF:-}"
-__handoff_file="${MYCMUX_HANDOFF_PROMPT_FILE:-}"
-__handoff_from="${MYCMUX_HANDOFF_FROM:-}"
-__handoff_from_session="${MYCMUX_HANDOFF_FROM_SESSION:-}"
-unset MYCMUX_HANDOFF MYCMUX_HANDOFF_PROMPT_FILE MYCMUX_HANDOFF_FROM MYCMUX_HANDOFF_FROM_SESSION
-
-if [ -n "$__handoff_kind" ]; then
-  __bootstrap="Handoff from previous session. Read \"${__handoff_file}\" and continue from where it left off."
-  # A handoff pane starts a brand new agent session; it must get its own id the
-  # same way the normal launch path does. Writing the *source* pane id here (the
-  # old "<kind>-handoff:<pane>" mapping) left the pane with no real session id,
-  # so restore fell back to `--continue` and adopted another tab's conversation
-  # in the same cwd.
-  case "$__handoff_kind" in
-    claude)
-      __handoff_project_dir="$(__get_claude_project_dir)"
-      __handoff_sid="$(__stable_new_session_id "$__handoff_project_dir")"
-      if [ -n "$__handoff_sid" ]; then
-        __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude" "$__handoff_sid"
-        claude --session-id "$__handoff_sid" --allow-dangerously-skip-permissions --permission-mode auto "$__bootstrap"
-      else
-        __track_claude_session "$MYCMUX_PANE_SESSION_ID" &
-        claude --allow-dangerously-skip-permissions --permission-mode auto "$__bootstrap"
-      fi
-      ;;
-    codex)
-      # codex has no --session-id flag, so the real id can only be learned after
-      # the fact from the rollout log it writes.
-      __track_codex_session "$MYCMUX_PANE_SESSION_ID" &
-      codex --no-alt-screen "$__bootstrap"
-      ;;
-    grok)
-      __handoff_sid="$(__grok_new_session_id)"
-      if [ -n "$__handoff_sid" ]; then
-        __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "grok" "$__handoff_sid"
-        grok --no-alt-screen --session-id "$__handoff_sid" --permission-mode bypassPermissions "$__bootstrap"
-      else
-        grok --no-alt-screen --permission-mode bypassPermissions "$__bootstrap"
-      fi
-      ;;
-    claude-codex)
-      __track_claude_codex_session "$MYCMUX_PANE_SESSION_ID" &
-      claude-codex "$__bootstrap"
-      ;;
-  esac
-  return 0 2>/dev/null || exit 0
-fi
-
-if [ -n "$MYCMUX_RESUME" ]; then
-  case "$MYCMUX_RESUME" in
-    claude-codex*)
-      if [ -n "$MYCMUX_SESSION_ID" ]; then
-        if [ "${MYCMUX_RESUME_FORK:-}" = "1" ]; then
-          __track_claude_codex_session "$MYCMUX_PANE_SESSION_ID" &
-          eval "claude-codex --resume $MYCMUX_SESSION_ID --fork-session"
-        else
-          __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude-codex" "$MYCMUX_SESSION_ID"
-          eval "claude-codex --resume $MYCMUX_SESSION_ID"
-        fi
-      else
-        __track_claude_codex_session "$MYCMUX_PANE_SESSION_ID" &
-        eval "claude-codex --continue"
-      fi
-      ;;
-    claude*)
-      if [ -n "$MYCMUX_SESSION_ID" ]; then
-        if __prepare_claude_resume "$MYCMUX_SESSION_ID"; then
-          __trust_claude_cwd
-          if [ "${MYCMUX_RESUME_FORK:-}" = "1" ]; then
-            __track_claude_session "$MYCMUX_PANE_SESSION_ID" &
-            eval "claude --dangerously-skip-permissions --permission-mode bypassPermissions --resume $MYCMUX_SESSION_ID --fork-session"
-          else
-            __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude" "$MYCMUX_SESSION_ID"
-            eval "claude --dangerously-skip-permissions --permission-mode bypassPermissions --resume $MYCMUX_SESSION_ID"
-          fi
-        else
-          __trust_claude_cwd
-          __track_claude_session "$MYCMUX_PANE_SESSION_ID" &
-          eval "claude --dangerously-skip-permissions --permission-mode bypassPermissions --continue"
-        fi
-      else
-        __trust_claude_cwd
-        __track_claude_session "$MYCMUX_PANE_SESSION_ID" &
-        eval "claude --dangerously-skip-permissions --permission-mode bypassPermissions --continue"
-      fi
-      ;;
-    codex*)
-      if [ -n "$MYCMUX_SESSION_ID" ]; then
-        __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "codex" "$MYCMUX_SESSION_ID"
-        eval "codex resume --no-alt-screen $MYCMUX_SESSION_ID"
-      else
-        __track_codex_session "$MYCMUX_PANE_SESSION_ID" &
-        eval "codex resume --no-alt-screen --last"
-      fi
-      ;;
-    grok*)
-      if [ -n "$MYCMUX_SESSION_ID" ]; then
-        if [ "${MYCMUX_RESUME_FORK:-}" = "1" ]; then
-          grok --no-alt-screen --resume "$MYCMUX_SESSION_ID" --fork-session
-        else
-          __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "grok" "$MYCMUX_SESSION_ID"
-          grok --no-alt-screen --resume "$MYCMUX_SESSION_ID"
-        fi
-      else
-        grok --no-alt-screen --continue
-      fi
-      ;;
-  esac
-  return 0 2>/dev/null || exit 0
-fi
-
-# Web タブはターミナルで動くコマンドではないので eval できない。ソケット経由で
-# mycmux 本体に「Web タブを開いて」と頼む。--replace-anchor を使うのは、他の項目が
-# シェルをそのプログラムに置き換えるのと同じで、このタブ自体がそのサービスのタブに
-# なるため (spawn は --split なしだと pane.spawn_tab に落ち、web を扱えない)。
-# メニューからも MYCMUX_LAUNCH_TARGET からも同じ経路を通す。
-__open_web_tab() {
-  local preset="$1"
-  local cli="$HOME/cmux-for-linux-dev-master/scripts/mycmux_agent_cli.py"
-  local web_out="" web_rc=0 python
-  if [ ! -f "$cli" ]; then
-    printf '  mycmux_agent_cli.py が見つかりません:
-    %s
-
-' "$cli"
-    return 1
-  fi
-  python="$(__mycmux_python)" || return 1
-  web_out=$(PYTHONIOENCODING=utf-8 "$python" "$cli" web-open --preset "$preset" --replace-anchor 2>&1)
-  web_rc=$?
-  # 失敗を握りつぶすと「押しても何も起きない」に見える。理由は必ず出す。
-  if [ "$web_rc" -ne 0 ]; then
-    printf '  Web タブを開けませんでした (exit %s):
-' "$web_rc"
-    printf '    %s
-' "$web_out"
-    printf '
-'
-  fi
-  return $web_rc
-}
-
-# 疑似コマンド __web_<preset>__ から preset id を取り出して開く。
-__open_web_tab_from_pseudo_command() {
-  local preset="$1"
-  preset="${preset#__web_}"
-  preset="${preset%__}"
-  __open_web_tab "$preset"
-}
-
 # --- 起動スペック (model / effort) -------------------------------------------
 # GUI の New Workspace とランチャーのモデル選択が、同じ変換をここに集まる。
-# resume / handoff には掛けない (再開先には既にモデルがあり、launcher.ps1 と
-# 挙動を揃えるため)。
+# Saved launch values also apply to Claude resume and fresh recovery.
 __MYCMUX_LAUNCH_MODEL=""
 __MYCMUX_LAUNCH_EFFORT=""
 
@@ -968,6 +814,163 @@ __add_launch_spec_to_cmd() {
 }
 
 __read_launch_spec_from_env
+
+cmd=""
+
+# Consume launch-only state before any helper, CLI, or early return can inherit it.
+__handoff_kind="${MYCMUX_HANDOFF:-}"
+__handoff_file="${MYCMUX_HANDOFF_PROMPT_FILE:-}"
+__handoff_from="${MYCMUX_HANDOFF_FROM:-}"
+__handoff_from_session="${MYCMUX_HANDOFF_FROM_SESSION:-}"
+unset MYCMUX_HANDOFF MYCMUX_HANDOFF_PROMPT_FILE MYCMUX_HANDOFF_FROM MYCMUX_HANDOFF_FROM_SESSION
+
+if [ -n "$__handoff_kind" ]; then
+  __bootstrap="Handoff from previous session. Read \"${__handoff_file}\" and continue from where it left off."
+  # A handoff pane starts a brand new agent session; it must get its own id the
+  # same way the normal launch path does. Writing the *source* pane id here (the
+  # old "<kind>-handoff:<pane>" mapping) left the pane with no real session id,
+  # so restore fell back to `--continue` and adopted another tab's conversation
+  # in the same cwd.
+  case "$__handoff_kind" in
+    claude)
+      __handoff_project_dir="$(__get_claude_project_dir)"
+      __handoff_sid="$(__stable_new_session_id "$__handoff_project_dir")"
+      if [ -n "$__handoff_sid" ]; then
+        __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude" "$__handoff_sid"
+        claude --session-id "$__handoff_sid" --allow-dangerously-skip-permissions --permission-mode auto "$__bootstrap"
+      else
+        __track_claude_session "$MYCMUX_PANE_SESSION_ID" &
+        claude --allow-dangerously-skip-permissions --permission-mode auto "$__bootstrap"
+      fi
+      ;;
+    codex)
+      # codex has no --session-id flag, so the real id can only be learned after
+      # the fact from the rollout log it writes.
+      __track_codex_session "$MYCMUX_PANE_SESSION_ID" &
+      codex --no-alt-screen "$__bootstrap"
+      ;;
+    grok)
+      __handoff_sid="$(__grok_new_session_id)"
+      if [ -n "$__handoff_sid" ]; then
+        __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "grok" "$__handoff_sid"
+        grok --no-alt-screen --session-id "$__handoff_sid" --permission-mode bypassPermissions "$__bootstrap"
+      else
+        grok --no-alt-screen --permission-mode bypassPermissions "$__bootstrap"
+      fi
+      ;;
+    claude-codex)
+      __track_claude_codex_session "$MYCMUX_PANE_SESSION_ID" &
+      claude-codex "$__bootstrap"
+      ;;
+  esac
+  return 0 2>/dev/null || exit 0
+fi
+
+if [ -n "$MYCMUX_RESUME" ]; then
+  case "$MYCMUX_RESUME" in
+    claude-codex*)
+      if [ -n "$MYCMUX_SESSION_ID" ]; then
+        if [ "${MYCMUX_RESUME_FORK:-}" = "1" ]; then
+          __track_claude_codex_session "$MYCMUX_PANE_SESSION_ID" &
+          eval "$(__add_launch_spec_to_cmd "claude-codex --resume $MYCMUX_SESSION_ID --fork-session")"
+        else
+          __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude-codex" "$MYCMUX_SESSION_ID"
+          eval "$(__add_launch_spec_to_cmd "claude-codex --resume $MYCMUX_SESSION_ID")"
+        fi
+      else
+        __track_claude_codex_session "$MYCMUX_PANE_SESSION_ID" &
+        echo "  Previous conversation could not be restored; starting a new session."
+        eval "$(__add_launch_spec_to_cmd "claude-codex")"
+      fi
+      ;;
+    claude*)
+      if [ -n "$MYCMUX_SESSION_ID" ]; then
+        if __prepare_claude_resume "$MYCMUX_SESSION_ID"; then
+          __trust_claude_cwd
+          if [ "${MYCMUX_RESUME_FORK:-}" = "1" ]; then
+            __track_claude_session "$MYCMUX_PANE_SESSION_ID" &
+            eval "$(__add_launch_spec_to_cmd "claude --allow-dangerously-skip-permissions --permission-mode auto --resume $MYCMUX_SESSION_ID --fork-session")"
+          else
+            __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude" "$MYCMUX_SESSION_ID"
+            eval "$(__add_launch_spec_to_cmd "claude --allow-dangerously-skip-permissions --permission-mode auto --resume $MYCMUX_SESSION_ID")"
+          fi
+        else
+          __trust_claude_cwd
+          __track_claude_session "$MYCMUX_PANE_SESSION_ID" &
+          echo "  Previous conversation could not be restored; starting a new session."
+          eval "$(__add_launch_spec_to_cmd "claude --allow-dangerously-skip-permissions --permission-mode auto")"
+        fi
+      else
+        __trust_claude_cwd
+        __track_claude_session "$MYCMUX_PANE_SESSION_ID" &
+        echo "  Previous conversation could not be restored; starting a new session."
+        eval "$(__add_launch_spec_to_cmd "claude --allow-dangerously-skip-permissions --permission-mode auto")"
+      fi
+      ;;
+    codex*)
+      if [ -n "$MYCMUX_SESSION_ID" ]; then
+        __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "codex" "$MYCMUX_SESSION_ID"
+        eval "codex resume --no-alt-screen $MYCMUX_SESSION_ID"
+      else
+        __track_codex_session "$MYCMUX_PANE_SESSION_ID" &
+        eval "codex resume --no-alt-screen --last"
+      fi
+      ;;
+    grok*)
+      if [ -n "$MYCMUX_SESSION_ID" ]; then
+        if [ "${MYCMUX_RESUME_FORK:-}" = "1" ]; then
+          grok --no-alt-screen --resume "$MYCMUX_SESSION_ID" --fork-session
+        else
+          __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "grok" "$MYCMUX_SESSION_ID"
+          grok --no-alt-screen --resume "$MYCMUX_SESSION_ID"
+        fi
+      else
+        grok --no-alt-screen --continue
+      fi
+      ;;
+  esac
+  return 0 2>/dev/null || exit 0
+fi
+
+# Web タブはターミナルで動くコマンドではないので eval できない。ソケット経由で
+# mycmux 本体に「Web タブを開いて」と頼む。--replace-anchor を使うのは、他の項目が
+# シェルをそのプログラムに置き換えるのと同じで、このタブ自体がそのサービスのタブに
+# なるため (spawn は --split なしだと pane.spawn_tab に落ち、web を扱えない)。
+# メニューからも MYCMUX_LAUNCH_TARGET からも同じ経路を通す。
+__open_web_tab() {
+  local preset="$1"
+  local cli="$HOME/cmux-for-linux-dev-master/scripts/mycmux_agent_cli.py"
+  local web_out="" web_rc=0 python
+  if [ ! -f "$cli" ]; then
+    printf '  mycmux_agent_cli.py が見つかりません:
+    %s
+
+' "$cli"
+    return 1
+  fi
+  python="$(__mycmux_python)" || return 1
+  web_out=$(PYTHONIOENCODING=utf-8 "$python" "$cli" web-open --preset "$preset" --replace-anchor 2>&1)
+  web_rc=$?
+  # 失敗を握りつぶすと「押しても何も起きない」に見える。理由は必ず出す。
+  if [ "$web_rc" -ne 0 ]; then
+    printf '  Web ペインを開けませんでした (exit %s):
+' "$web_rc"
+    printf '    %s
+' "$web_out"
+    printf '
+'
+  fi
+  return $web_rc
+}
+
+# 疑似コマンド __web_<preset>__ から preset id を取り出して開く。
+__open_web_tab_from_pseudo_command() {
+  local preset="$1"
+  preset="${preset#__web_}"
+  preset="${preset%__}"
+  __open_web_tab "$preset"
+}
+
 
 # --- 起動スペックの選択肢 -----------------------------------------------------
 # src/lib/agentCatalog.ts の AGENT_CATALOG と同じ内容。ズレは

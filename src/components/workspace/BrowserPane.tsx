@@ -76,6 +76,7 @@ function wrapOfficeBody(doc: Document, isEditing: boolean): void {
 }
 
 function editorCss(sourceKind: ArtifactSourceKind | undefined): string {
+  if (sourceKind === "pdf") return "";
   const officeCss = isOfficeEditorSource(sourceKind)
     ? `
     html {
@@ -964,8 +965,23 @@ function BrowserPaneImpl({
           {error}
         </div>
       )}
-      {/* Read-only preview stays no-script; same-origin lets the parent capture shortcuts. */}
-      {isEditing && sourceKind === "markdown" ? (
+      {/* PDFs use the native viewer; HTML-based previews keep their no-script sandbox. */}
+      {sourceKind === "pdf" ? (
+        <embed
+          key={`${resolvedPreviewPath}#${reloadKey}#${localReloadKey}`}
+          src={src}
+          type="application/pdf"
+          title={sourcePath ?? htmlPath}
+          style={{
+            flex: 1,
+            minHeight: 0,
+            width: "100%",
+            border: "none",
+            display: "block",
+            background: "white",
+          }}
+        />
+      ) : isEditing && sourceKind === "markdown" ? (
         <textarea
           value={markdownDraft}
           spellCheck

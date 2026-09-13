@@ -1,6 +1,6 @@
 [package]
 name = "mycmux"
-version = "0.70.2"
+version = "0.71.0"
 description = "mycmux - AI agent terminal workspace"
 authors = ["miyafcos"]
 edition = "2021"
@@ -41,7 +41,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Remote terminal (WebSocket server for iPhone access)
 axum = { version = "0.8", features = ["ws"] }
-tower-http = { version = "0.6", features = ["cors"] }
 qrcode = { version = "0.14", default-features = false }
 rust-embed = "8"
 uuid = { version = "1", features = ["v4"] }
@@ -60,14 +59,10 @@ libc = "0.2"
 # Linux-specific dependencies (GTK + WebKitGTK for browser pane)
 [target.'cfg(target_os = "linux")'.dependencies]
 wry = { version = "0.54", features = [] }
-webkit2gtk = { version = "2.0" }
-gtk = { version = "0.18" }
 
 # macOS-specific dependencies (WKWebView via wry)
 [target.'cfg(target_os = "macos")'.dependencies]
 wry = { version = "0.54", features = [] }
-cocoa = "0.26"
-objc = "0.2"
 
 # Windows-specific dependencies (WebView2 via wry)
 [target.'cfg(target_os = "windows")'.dependencies]

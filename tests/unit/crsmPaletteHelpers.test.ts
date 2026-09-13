@@ -37,8 +37,8 @@ describe("CrsmPalette helpers", () => {
   });
 
   it("finds the tab sweep command without hijacking an empty Enter", () => {
-    expect(matchesTabSweepCommand("タブ掃除")).toBe(true);
-    expect(matchesTabSweepCommand("タブ")).toBe(true);
+    expect(matchesTabSweepCommand("ペイン掃除")).toBe(true);
+    expect(matchesTabSweepCommand("ペイン")).toBe(true);
     expect(matchesTabSweepCommand("tab sweep")).toBe(true);
     expect(matchesTabSweepCommand("")).toBe(false);
     expect(matchesTabSweepCommand("resume work")).toBe(false);

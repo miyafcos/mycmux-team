@@ -61,7 +61,7 @@ describe("web pane transcript store", () => {
     invokeMock.mockRejectedValueOnce("web pane does not exist: tab-1");
     await useWebPaneTranscriptStore.getState().refresh("tab-1");
     const state = entry("tab-1");
-    expect(state.error).toBe("このタブのページをまだ開いていないため読めません");
+    expect(state.error).toBe("このペインのページをまだ開いていないため読めません");
     expect(state.events).toHaveLength(1);
     expect(state.loading).toBe(false);
   });

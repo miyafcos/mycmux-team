@@ -6,7 +6,6 @@ import type { AskOption, AskScreen } from "../../lib/askQuestionScan";
 import type { SessionAttention } from "../../stores/sessionAttentionStore";
 import {
   checkedOptionIndexes,
-  getAskQuestionSession,
   questionKey,
   useAskQuestionStore,
 } from "../../stores/askQuestionStore";
@@ -280,8 +279,4 @@ export function QuestionCard({
       ? <div className={`cmux-dashboard-qcard-result${isInterventionConflict(result) ? " is-error" : ""}`}>{resultText}</div>
       : null}
   </section>;
-}
-
-export function hasAskQuestionScreen(sessionId: string | undefined): boolean {
-  return Boolean(sessionId && getAskQuestionSession(sessionId).screen);
 }

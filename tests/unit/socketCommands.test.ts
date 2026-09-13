@@ -101,7 +101,9 @@ describe("resolveSpawnPlan", () => {
     const plan = resolveSpawnPlan({ target: "shell" });
     expect(plan.mode).toBe("shell");
     expect(plan.launchEnv).toBeUndefined();
-    expect(plan.paneOptions).toEqual({ agentId: "shell-starter" });
+    // Not "shell-starter": that agent runs launcher.sh, which only skips its
+    // own menu when launchEnv names a target, and a shell spawn names none.
+    expect(plan.paneOptions).toEqual({ agentId: "shell" });
   });
 
   it("uses handoff before prompt and resume", () => {
@@ -216,7 +218,7 @@ describe("resolveSpawnTabPlan", () => {
   it("builds a plain shell tab", () => {
     expect(resolveSpawnTabPlan({ target: "shell" })).toEqual({
       mode: "shell",
-      paneOptions: { agentId: "shell-starter" },
+      paneOptions: { agentId: "shell" },
     });
   });
 });

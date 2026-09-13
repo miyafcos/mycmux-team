@@ -33,15 +33,15 @@ export function TabSweepButton() {
       <button
         type="button"
         className="cmux-minimap-tab-sweep-button"
-        title={running ? "タブ掃除中…" : "タブ掃除"}
-        aria-label="タブ掃除"
+        title={running ? "ペイン掃除中…" : "ペイン掃除"}
+        aria-label="ペイン掃除"
         aria-busy={running}
         aria-expanded={open}
         aria-controls="tab-sweep-panel"
         onClick={startAutoSweep}
       >
         <SweepIcon />
-        <span>タブ掃除</span>
+        <span>ペイン掃除</span>
       </button>
       <TabSweepPanel
         open={open}

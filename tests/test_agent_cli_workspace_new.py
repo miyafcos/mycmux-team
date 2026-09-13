@@ -81,3 +81,30 @@ def test_followup_spawn_routes_to_new_workspace(target: str) -> None:
     assert payload["workspaceId"] == "new-workspace-id"
     assert payload["target"] == target
     assert payload["activate"] is False
+
+
+def close_request(argv: list[str]) -> tuple[str, dict[str, Any]]:
+    return cli.request_for(cli.build_parser().parse_args(["workspace-close", *argv]))
+
+
+def test_workspace_close_request() -> None:
+    assert close_request(["--workspace", "ws-1"]) == (
+        "workspace.close", {"workspaceId": "ws-1"},
+    )
+
+
+def test_workspace_close_requires_workspace() -> None:
+    with pytest.raises(SystemExit) as exc:
+        close_request([])
+    assert exc.value.code == 2
+
+
+def test_workspace_close_is_in_help() -> None:
+    assert "workspace-close" in cli.build_parser().format_help()
+
+
+@pytest.mark.parametrize("flag", ["--force", "--allow-active", "--allowActive"])
+def test_workspace_close_has_no_active_escape_flag(flag: str) -> None:
+    with pytest.raises(SystemExit) as exc:
+        close_request(["--workspace", "ws-1", flag])
+    assert exc.value.code == 2

@@ -34,7 +34,10 @@ def test_ai_command_building_is_centralized() -> None:
         relative = path.relative_to(RUST_ROOT).as_posix()
         is_ai_module = relative.startswith("ai/")
         for token in ('"--model"', "codex_program", '"codex.cmd"', 'prepare_spawn_command("claude"'):
-            assert token not in source or is_ai_module, f"{path}: centralized AI command token {token}"
+            # PTY launch/restore forwards the user's saved model; it does not
+            # select a model for the application's internal AI calls.
+            is_saved_pty_model = relative == "commands/terminal.rs" and token == '"--model"'
+            assert token not in source or is_ai_module or is_saved_pty_model, f"{path}: centralized AI command token {token}"
 
 
 def test_sql_model_literals_are_forbidden() -> None:

@@ -210,7 +210,7 @@ describe("ReplyComposer mentions", () => {
     await key(textarea, "Enter");
     const note = container.querySelector<HTMLElement>(".cmux-dashboard-composer-note");
     expect(note?.getAttribute("role")).toBe("status");
-    expect(note?.textContent).toBe("入力をキューに追加しましたが、対象タブが未マウントのため画面で確認できませんでした");
+    expect(note?.textContent).toBe("入力をキューに追加しましたが、対象ペインが未マウントのため画面で確認できませんでした");
     expect(note?.textContent).not.toContain("送信を画面で確認しました");
   });
 

@@ -71,17 +71,6 @@ impl UsageState {
         }
     }
 
-    pub async fn clear_profile(&self, profile_id: &str) {
-        self.profile_usage_cache.lock().await.remove(profile_id);
-        self.cooldowns
-            .lock()
-            .await
-            .remove(&format!("profile:{profile_id}"));
-        self.deferred_priority
-            .lock()
-            .await
-            .retain(|id| id != profile_id);
-    }
 }
 
 impl Default for UsageState {

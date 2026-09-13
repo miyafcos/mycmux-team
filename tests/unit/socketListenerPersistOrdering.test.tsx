@@ -11,12 +11,14 @@ const orderingMocks = vi.hoisted(() => ({
   listPets: vi.fn(),
   loadPersistentData: vi.fn(),
   onCloseRequested: vi.fn(),
-  quitApp: vi.fn(),
+  destroy: vi.fn(),
   readAgentSessionMappings: vi.fn(),
   restoreWorkspaceConfigs: vi.fn(),
   savePersistentData: vi.fn(),
   setAppFrontendVisible: vi.fn(),
 }));
+
+vi.mock("../../src/lib/paneCloseConfirmation", () => ({ confirmPaneClose: vi.fn(async () => true) }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   confirm: vi.fn(async () => false),
@@ -30,6 +32,7 @@ vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     label: "main",
     onCloseRequested: orderingMocks.onCloseRequested,
+    destroy: orderingMocks.destroy,
   }),
 }));
 
@@ -38,11 +41,14 @@ vi.mock("../../src/lib/ipc", async (importOriginal) => {
   return {
     ...actual,
     claimLeader: orderingMocks.claimLeader,
+    setWindowCloseIntent: vi.fn(async () => {}),
+    takePendingAdoption: vi.fn(async () => []),
+    killSession: vi.fn(async () => {}),
+    publishWindowFragment: vi.fn(async () => {}),
     getPtyMetadataSnapshot: orderingMocks.getPtyMetadataSnapshot,
     getWindowFragments: orderingMocks.getWindowFragments,
     listPets: orderingMocks.listPets,
     loadPersistentData: orderingMocks.loadPersistentData,
-    quitApp: orderingMocks.quitApp,
     readAgentSessionMappings: orderingMocks.readAgentSessionMappings,
     savePersistentData: orderingMocks.savePersistentData,
     setAppFrontendVisible: orderingMocks.setAppFrontendVisible,
@@ -213,7 +219,7 @@ describe("SocketListener persistent write ordering", () => {
       },
     });
     orderingMocks.onCloseRequested.mockResolvedValue(() => {});
-    orderingMocks.quitApp.mockResolvedValue(undefined);
+    orderingMocks.destroy.mockResolvedValue(undefined);
     orderingMocks.readAgentSessionMappings.mockResolvedValue({});
     orderingMocks.restoreWorkspaceConfigs.mockReturnValue({ activePaneSessionId: null });
     orderingMocks.savePersistentData.mockResolvedValue(undefined);

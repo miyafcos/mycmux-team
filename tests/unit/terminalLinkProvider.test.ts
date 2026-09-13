@@ -251,7 +251,7 @@ describe("terminal local file path links", () => {
   });
 
   it("classifies other detected file extensions as non-preview paths", () => {
-    expect(isArtifactPreviewUri(String.raw`C:\tmp\report.pdf`)).toBe(false);
+    expect(isArtifactPreviewUri(String.raw`C:\tmp\archive.zip`)).toBe(false);
     expect(isArtifactPreviewUri("/c/Users/miyaz/data.csv")).toBe(false);
     expect(isArtifactPreviewUri(String.raw`C:\tmp\note.txt`)).toBe(false);
     expect(isArtifactPreviewUri(String.raw`C:\tmp\image.png`)).toBe(false);

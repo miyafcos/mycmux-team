@@ -70,7 +70,7 @@ describe("notification toast settings", () => {
     expect(useSettingsStore.getInitialState().groupingApplyAnimationEnabled).toBe(true);
     act(() => root.render(<NotificationsLayoutTab />));
 
-    const checkbox = checkboxFor("タブ再配置の適用時に動きを表示");
+    const checkbox = checkboxFor("ペイン再配置の適用時に動きを表示");
     expect(checkbox.checked).toBe(true);
     expect(container.textContent).toContain("Windows のアニメーション効果をオフにしている場合も動きません。");
 

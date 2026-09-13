@@ -1,6 +1,7 @@
 ﻿import { memo, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useTerminalObservationStore } from "../../stores/terminalObservationStore";
 import { Terminal } from "@xterm/xterm";
+import { SgrLightRewriter } from "./sgrLightTheme";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SearchAddon } from "@xterm/addon-search";
@@ -295,23 +296,25 @@ function buildThemeFromConfig(
   return theme;
 }
 
-function withTerminalOpacity(theme: ITheme, opacity: number, mediaActive: boolean): ITheme {
+export function withTerminalOpacity(theme: ITheme, opacity: number, mediaActive: boolean): ITheme {
   return {
     ...theme,
-    background: mediaActive ? "rgba(0, 0, 0, 0)" : colorWithOpacity(theme.background, opacity),
+    // xterm measures contrast against RGB even when alpha is zero. Keep the
+    // theme background as that reference while CSS paints the media beneath.
+    background: colorWithOpacity(theme.background, mediaActive ? 0 : opacity),
   };
 }
 
 // The single place an ITheme is prepared for xterm. Every path that assigns
-// options.theme goes through here so the wallpaper-mode ANSI floor (which the
-// disabled minimumContrastRatio no longer provides) can never be skipped.
+// options.theme goes through here so the wallpaper-mode ANSI floor and the
+// transparent background with theme RGB can never be skipped.
 function resolveTerminalTheme(theme: ITheme, opacity: number, mediaActive: boolean): ITheme {
   return withTerminalOpacity(withAnsiContrastFloor(theme, mediaActive), opacity, mediaActive);
 }
 
 // The contrast policy itself lives in compositionStore so live updates, cached
-// reattach and cold init cannot drift apart. See the note there for why a media
-// background has to disable xterm's own correction.
+// reattach and cold init cannot drift apart. Media backgrounds retain the
+// theme RGB reference, so xterm can correct truecolor as well as ANSI text.
 
 function resolveEffectiveTerminalRendererFromStores(): "webgl" | "dom" {
   const setting = useSettingsStore.getState().terminalRenderer;
@@ -320,6 +323,8 @@ function resolveEffectiveTerminalRendererFromStores(): "webgl" | "dom" {
 }
 
 // Cache terminal config globally - fetched once, reused across all panes
+const sgrLightRewriters = new WeakMap<Terminal, SgrLightRewriter>();
+
 let cachedConfig: { theme: ITheme; fontSize: number; fontFamily: string; windowsBuildNumber: number | null } | null = null;
 let configPromise: Promise<void> | null = null;
 
@@ -951,6 +956,8 @@ export default memo(function XTermWrapper({
   }, [hasTurnTranscript]);
 
   const storeTheme = useThemeStore((s) => s.theme);
+  const isLightThemeRef = useRef(storeTheme.colorScheme === "light");
+  isLightThemeRef.current = storeTheme.colorScheme === "light";
   const storeFontSize = useThemeStore((s) => s.fontSize);
   const storeFontFamily = useThemeStore((s) => s.fontFamily);
   const storeLineHeight = useThemeStore((s) => s.lineHeight);
@@ -2046,7 +2053,10 @@ export default memo(function XTermWrapper({
           const displayOutput = typeof output === "string"
             ? colorAdapterRef.current.transform(output, colorAdaptEnabled)
             : output;
-          term.write(displayOutput, finish);
+          const rewrittenOutput = typeof displayOutput === "string"
+            ? sgrLightRewriters.get(term)!.transform(displayOutput, isLightThemeRef.current)
+            : displayOutput;
+          term.write(rewrittenOutput, finish);
         } catch {
           finish();
         }
@@ -2114,6 +2124,7 @@ export default memo(function XTermWrapper({
         colorAdapterRef.current.reset();
         const replayTerm = term;
         snapshotTurnMarksForReset(sessionId, replayTerm);
+        sgrLightRewriters.get(term)?.reset();
         term.reset();
         outputDecoder = resetTerminalOutputDecoder(sessionId);
         const replayText = outputDecoder.decode(scrollback, { stream: true });
@@ -2192,6 +2203,7 @@ export default memo(function XTermWrapper({
           releaseHold = repaintHold.acquire(term.element ?? null);
           colorAdapterRef.current.reset();
           snapshotTurnMarksForReset(sessionId, term);
+          sgrLightRewriters.get(term)?.reset();
           term.reset();
           outputDecoder = resetTerminalOutputDecoder(sessionId);
         }
@@ -2373,6 +2385,7 @@ export default memo(function XTermWrapper({
         replayOutputDecoder = new TextDecoder();
         replayMouseModeFilter = createTerminalMouseModeControlFilter();
         colorAdapterRef.current.reset();
+        sgrLightRewriters.get(term)?.reset();
         term.reset();
         replayActive = true;
       },
@@ -2478,17 +2491,37 @@ export default memo(function XTermWrapper({
       });
     };
 
+    // Tauri's unlisten throws (reading 'handlerId' of undefined) when the
+    // listener is already gone, and its rejection reaches the app as an error
+    // toast. Docking a detached pane back by drag reached that state: the
+    // desired end — no listener — is the same either way, so drop the handle
+    // first and let a late unregister be a no-op.
+    const releaseExitListener = (unlisten: (() => void) | null): void => {
+      if (!unlisten) return;
+      try {
+        const result = unlisten() as unknown;
+        if (result && typeof (result as Promise<void>).catch === "function") {
+          void (result as Promise<void>).catch((error) => {
+            if (import.meta.env.DEV) console.debug(`[mycmux-diag xterm:${sessionId}] exit unlisten ignored`, error);
+          });
+        }
+      } catch (error) {
+        if (import.meta.env.DEV) console.debug(`[mycmux-diag xterm:${sessionId}] exit unlisten ignored`, error);
+      }
+    };
+
     const registerExitListener = async (): Promise<void> => {
       const nextUnlisten = await onPtyExit(sessionId, () => {
         if (disposed || !sessionStarted) return;
         onExit?.();
       });
       if (disposed) {
-        nextUnlisten();
+        releaseExitListener(nextUnlisten);
         return;
       }
-      unlistenExit?.();
+      const previous = unlistenExit;
       unlistenExit = nextUnlisten;
+      releaseExitListener(previous);
     };
 
     const registerInputListeners = (currentTerm: Terminal): void => {
@@ -2645,8 +2678,9 @@ export default memo(function XTermWrapper({
       removePtyReplayTarget?.();
       removePtyReplayTarget = null;
       disposeSelectionCopyListener(term);
-      unlistenExit?.();
+      const exitListener = unlistenExit;
       unlistenExit = null;
+      releaseExitListener(exitListener);
       cacheCurrentTerminal();
       if (term && liveTerms.get(sessionId) === term) {
         liveTerms.delete(sessionId);
@@ -2677,7 +2711,7 @@ export default memo(function XTermWrapper({
     };
 
     const attachCachedTerminal = (cached: CachedTerm): void => {
-      cached.unlistenExit?.();
+      releaseExitListener(cached.unlistenExit ?? null);
       termCache.delete(sessionId);
       container.appendChild(cached.xtermElement);
       // Defence in depth: a repaint hold belongs to the mount that took it, so
@@ -2822,6 +2856,12 @@ export default memo(function XTermWrapper({
           ? { windowsPty: { backend: "conpty", buildNumber: windowsBuildNumber } }
           : {}),
       });
+      const sgrLightRewriter = new SgrLightRewriter();
+      sgrLightRewriters.set(term, sgrLightRewriter);
+      term.loadAddon({
+        activate() {},
+        dispose() { sgrLightRewriter.reset(); },
+      });
       termRef.current = term;
 
       fitAddon = new FitAddon();
@@ -2874,7 +2914,8 @@ export default memo(function XTermWrapper({
             colorAdaptCommandsRef.current,
           );
           const adaptedOutput = colorAdapterRef.current.transform(output, colorAdaptEnabled);
-          replayTerm.write(adaptedOutput, () => {
+          const rewrittenOutput = sgrLightRewriter.transform(adaptedOutput, isLightThemeRef.current);
+          replayTerm.write(rewrittenOutput, () => {
             recordTerminalWriteCallback(writeMeasurement);
             resolve();
           });

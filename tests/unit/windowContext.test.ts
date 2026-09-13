@@ -11,6 +11,9 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 
 import {
+  hasWindowRole,
+  setWindowRole,
+  subscribeWindowRole,
   isChildWindow,
   isMainWindow,
   resetWindowContextCacheForTests,
@@ -50,5 +53,35 @@ describe("windowContext", () => {
     });
     expect(windowLabel()).toBe("main");
     expect(isMainWindow()).toBe(true);
+  });
+});
+
+describe("transferable window role", () => {
+  beforeEach(() => setWindowRole(false));
+
+  it("notifies consumers only when ownership changes and stops after unsubscribe", () => {
+    const notify = vi.fn();
+    const stop = subscribeWindowRole(notify);
+    expect(hasWindowRole()).toBe(false);
+    setWindowRole(true);
+    expect(hasWindowRole()).toBe(true);
+    setWindowRole(true);
+    expect(notify).toHaveBeenCalledTimes(1);
+    setWindowRole(false);
+    expect(notify).toHaveBeenCalledTimes(2);
+    stop();
+    setWindowRole(true);
+    expect(notify).toHaveBeenCalledTimes(2);
+    setWindowRole(false);
+  });
+
+  it("does not reinterpret the window label when the role moves", () => {
+    resetWindowContextCacheForTests();
+    label.mockReturnValue("mycmux-w2");
+    setWindowRole(true);
+    expect(hasWindowRole()).toBe(true);
+    expect(isMainWindow()).toBe(false);
+    expect(windowLabel()).toBe("mycmux-w2");
+    setWindowRole(false);
   });
 });

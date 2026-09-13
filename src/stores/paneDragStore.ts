@@ -97,6 +97,32 @@ interface PointerPosition {
 }
 
 /**
+ * Value identity for a drop target. The drag loop re-resolves a target on every
+ * frame; publishing a structurally identical one would re-render every drop-zone
+ * subscriber (minimap cells, the hovered pane, the tab strip) for no visual
+ * change. `new-window` keeps its screen point in the comparison because the
+ * child window is created exactly there.
+ */
+export function samePaneDropTarget(a: PaneDropTarget | null, b: PaneDropTarget | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  switch (a.kind) {
+    case "pane":
+      return b.kind === "pane" && a.workspaceId === b.workspaceId && a.paneId === b.paneId
+        && a.zone === b.zone && a.surface === b.surface;
+    case "tab-index":
+      return b.kind === "tab-index" && a.workspaceId === b.workspaceId
+        && a.paneId === b.paneId && a.index === b.index;
+    case "new-workspace":
+      return b.kind === "new-workspace" && a.surface === b.surface;
+    case "new-window":
+      return b.kind === "new-window" && a.screenX === b.screenX && a.screenY === b.screenY;
+    case "handoff":
+      return b.kind === "handoff" && a.workspaceId === b.workspaceId && a.paneId === b.paneId;
+  }
+}
+
+/**
  * The dashboard owns its receipt/commit path because its columns are view
  * state, not workspace layout. Keeping this selector here makes the semantic
  * target explicit without extending the layout drag core.

@@ -46,7 +46,7 @@ function DashboardSweepHost() {
 describe("TabSweepButton", () => {
   it("starts the sweep from the minimap footer control and opens details from the event", async () => {
     await act(async () => root.render(<TabSweepButton />));
-    const button = container.querySelector<HTMLButtonElement>("[aria-label='タブ掃除']")!;
+    const button = container.querySelector<HTMLButtonElement>("[aria-label='ペイン掃除']")!;
     expect(button.classList.contains("cmux-minimap-tab-sweep-button")).toBe(true);
 
     await act(async () => button.click());

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from "react";
 import {
   resolveTabInsertionIndex,
+  samePaneDropTarget,
   usePaneDragStore,
   type PaneDragItem,
   type PaneDropTarget,
@@ -9,7 +10,8 @@ import { useWorkspaceLayoutStore } from "../stores/workspaceLayoutStore";
 import { useWorkspaceListStore } from "../stores/workspaceListStore";
 import { useSavepointDragStore } from "../stores/savepointDragStore";
 import { focusController } from "../lib/focusController";
-import { publishSavepoint } from "../lib/ipc";
+import { publishSavepoint, type DetachedPaneOrigin } from "../lib/ipc";
+import { detachedOriginForDrag, isTransferableTab } from "../lib/detachedPane";
 import { isOutsideWindowViewport } from "../lib/windowEdge";
 import { tearOutWorkspaceToNewWindow } from "../lib/workspaceTearOut";
 import {
@@ -105,7 +107,7 @@ function resolvePaneHandoffContext(
   return { eligibility, pasteTarget };
 }
 
-function canDropTarget(item: PaneDragItem, target: PaneDropTarget): boolean {
+export function canDropTarget(item: PaneDragItem, target: PaneDropTarget): boolean {
   const listState = useWorkspaceListStore.getState();
   const sourceWorkspace = listState.getWorkspace(item.workspaceId);
   if (!sourceWorkspace) return false;
@@ -114,9 +116,18 @@ function canDropTarget(item: PaneDragItem, target: PaneDropTarget): boolean {
   if (!sourcePane) return false;
 
   if (target.kind === "new-workspace" || target.kind === "new-window") {
-    if (item.kind === "pane") return true;
-    if (item.kind === "tab") return sourcePane.tabs.some((tab) => tab.id === item.tabId);
-    return item.tabIds.some((tabId) => sourcePane.tabs.some((tab) => tab.id === tabId));
+    // A window transfer must carry every selected tab. Unsupported tabs cannot
+    // arm the tear-out at all — no banner, no promise, nothing to strand.
+    const transferable = (tabId: string) => {
+      const tab = sourcePane.tabs.find((candidate) => candidate.id === tabId);
+      return tab !== undefined && (target.kind === "new-workspace" || isTransferableTab(tab));
+    };
+    if (item.kind === "pane") {
+      return target.kind === "new-workspace" || sourcePane.tabs.length > 0 && sourcePane.tabs.every(isTransferableTab);
+    }
+    if (item.kind === "tab") return transferable(item.tabId);
+    return target.kind === "new-workspace" ? item.tabIds.some(transferable)
+      : item.tabIds.length > 0 && item.tabIds.every(transferable);
   }
 
   if (target.kind === "handoff") {
@@ -375,6 +386,7 @@ function tearOutMovedWorkspace(
   focusSessionId: string | null,
   target: Extract<PaneDropTarget, { kind: "new-window" }>,
   trace: TearOutDragTrace | null,
+  detachedFrom?: DetachedPaneOrigin,
 ): void {
   // If opening the window fails the workspace simply stays here — nothing to
   // undo and no PTY session is lost.
@@ -383,6 +395,7 @@ function tearOutMovedWorkspace(
   void tearOutWorkspaceToNewWindow(workspaceId, {
     x: target.screenX - 40,
     y: target.screenY - 20,
+    ...(detachedFrom ? { detachedFrom } : {}),
   }).then((label) => {
     if (!label) {
       trace?.failed("transfer-failed", "workspace transfer returned no destination window");
@@ -409,6 +422,9 @@ function commitPaneDragDrop(
   if (!target || !canDropTarget(item, target)) return;
 
   const focusSessionId = getFocusSessionId(item);
+  const detachedFrom = target.kind === "new-window"
+    ? detachedOriginForDrag(useWorkspaceListStore.getState().getWorkspace(item.workspaceId), item)
+    : undefined;
 
   if (item.surface === "minimap") {
     if (target.kind === "pane" && (item.kind === "tab" || item.kind === "tab-bundle")) commitMinimapTabDrop(item, target);
@@ -429,7 +445,7 @@ function commitPaneDragDrop(
         clearTearOutMeasurementAfterDelay();
         return;
       }
-      tearOutMovedWorkspace(workspaceId, focusSessionId, target, trace);
+      tearOutMovedWorkspace(workspaceId, focusSessionId, target, trace, detachedFrom);
     }
     return;
   }
@@ -465,7 +481,7 @@ function commitPaneDragDrop(
     if (target.kind === "new-window") {
       // Dropped outside the window: the fresh workspace immediately tears out
       // to a new OS window at the drop point.
-      tearOutMovedWorkspace(workspaceId, focusSessionId, target, trace);
+      tearOutMovedWorkspace(workspaceId, focusSessionId, target, trace, detachedFrom);
       return;
     }
     useWorkspaceListStore.getState().setActiveWorkspace(workspaceId);
@@ -582,6 +598,16 @@ export function usePaneDragSource() {
       : item;
     let dragging = false;
     let finishing = false;
+    let pendingMove: PointerEvent | null = null;
+    let moveFrame = 0;
+
+    const cancelPendingMove = () => {
+      if (moveFrame) {
+        cancelAnimationFrame(moveFrame);
+        moveFrame = 0;
+      }
+      pendingMove = null;
+    };
     const trace = createTearOutDragTrace({
       itemKind: dragItem.kind === "pane" ? "pane" : "tab",
       itemId: dragItem.kind === "pane"
@@ -602,6 +628,7 @@ export function usePaneDragSource() {
     }
 
     const cleanup = () => {
+      cancelPendingMove();
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
       window.removeEventListener("pointercancel", handlePointerCancel);
@@ -626,6 +653,12 @@ export function usePaneDragSource() {
           shouldCommit ? "pointerup" : "pointercancel",
           tearOutPointerSample(nativeEvent),
         );
+      }
+      // The release point is authoritative: a frame-coalesced move can still be
+      // pending, and dropping it would commit a one-frame-stale target.
+      cancelPendingMove();
+      if (dragging && shouldCommit && nativeEvent) {
+        applyMove(nativeEvent);
       }
       cleanup();
       if (!dragging) {
@@ -654,6 +687,47 @@ export function usePaneDragSource() {
 
     const cancelDrag = () => finishDrag(null, false);
 
+    function applyMove(nativeEvent: PointerEvent) {
+      const dragStore = usePaneDragStore.getState();
+      dragStore.moveDrag({ x: nativeEvent.clientX, y: nativeEvent.clientY });
+      let target = resolveDropTargetAtPoint(nativeEvent.clientX, nativeEvent.clientY, dragItem);
+      if (
+        !target &&
+        isOutsideWindowViewport(
+          nativeEvent.clientX,
+          nativeEvent.clientY,
+          window.innerWidth,
+          window.innerHeight,
+        )
+      ) {
+        const candidate = {
+          kind: "new-window" as const,
+          screenX: nativeEvent.screenX,
+          screenY: nativeEvent.screenY,
+        };
+        target = canDropTarget(dragItem, candidate) ? candidate : null;
+      }
+      if (!samePaneDropTarget(dragStore.target, target)) {
+        dragStore.setTarget(target);
+      }
+      const pointer = tearOutPointerSample(nativeEvent);
+      if (target?.kind === "new-window") {
+        trace?.arm(pointer);
+      } else {
+        trace?.disarm(pointer, target?.kind ?? null);
+        trace?.updateCandidate(pointer, target?.kind ?? null);
+      }
+      updateWorkspaceHover(nativeEvent.clientX, nativeEvent.clientY);
+    }
+
+    function flushMove() {
+      moveFrame = 0;
+      const nativeEvent = pendingMove;
+      pendingMove = null;
+      if (!nativeEvent || finishing || !dragging) return;
+      applyMove(nativeEvent);
+    }
+
     function handlePointerMove(nativeEvent: PointerEvent) {
       if (nativeEvent.pointerId !== pointerId) return;
       const dx = nativeEvent.clientX - startX;
@@ -676,37 +750,22 @@ export function usePaneDragSource() {
         }
         document.body.style.cursor = "grabbing";
         usePaneDragStore.getState().beginDrag(dragItem, { x: nativeEvent.clientX, y: nativeEvent.clientY });
+        nativeEvent.preventDefault();
+        // The drag starts with its highlight already painted; only the stream
+        // after this first move is worth coalescing.
+        applyMove(nativeEvent);
+        return;
       }
 
       nativeEvent.preventDefault();
-      const dragStore = usePaneDragStore.getState();
-      dragStore.moveDrag({ x: nativeEvent.clientX, y: nativeEvent.clientY });
-      let target = resolveDropTargetAtPoint(nativeEvent.clientX, nativeEvent.clientY, dragItem);
-      if (
-        !target &&
-        isOutsideWindowViewport(
-          nativeEvent.clientX,
-          nativeEvent.clientY,
-          window.innerWidth,
-          window.innerHeight,
-        )
-      ) {
-        const candidate = {
-          kind: "new-window" as const,
-          screenX: nativeEvent.screenX,
-          screenY: nativeEvent.screenY,
-        };
-        target = canDropTarget(dragItem, candidate) ? candidate : null;
+      // Pointer events arrive well above the display rate, and each one costs
+      // two hit-tests, a rect sweep of the tab strip and up to three store
+      // writes. Collapse them to one pass per frame — that is all the pointer
+      // ghost and the drop highlights can show anyway.
+      pendingMove = nativeEvent;
+      if (!moveFrame) {
+        moveFrame = requestAnimationFrame(flushMove);
       }
-      dragStore.setTarget(target);
-      const pointer = tearOutPointerSample(nativeEvent);
-      if (target?.kind === "new-window") {
-        trace?.arm(pointer);
-      } else {
-        trace?.disarm(pointer, target?.kind ?? null);
-        trace?.updateCandidate(pointer, target?.kind ?? null);
-      }
-      updateWorkspaceHover(nativeEvent.clientX, nativeEvent.clientY);
     }
 
     function handlePointerUp(nativeEvent: PointerEvent) {

@@ -6,7 +6,7 @@ export const settingsStrings = {
 // 委譲を見守る機能の画面語。内部の dispatchWatchdog* 識別子とは分ける。
 export const delegationWatchStrings = {
   heading: "委譲の見守り",
-  description: "バックグラウンドで動かしている AI タブを定期的に確認し、質問待ち・完了未確認・見守りの停滞を通知します。",
+  description: "バックグラウンドで動かしている AI ペインを定期的に確認し、質問待ち・完了未確認・見守りの停滞を通知します。",
   enabledLabel: "見守りを有効にする",
   sensitivityTitle: "通知の敏感さ",
   sensitivityAriaLabel: "見守り通知の敏感さ",
@@ -21,13 +21,13 @@ export const delegationWatchStrings = {
   notifyTitle: "見守りの通知",
   notifyLabel: "見守りの通知を出す",
   notifyHint: "「通知とレイアウト」の通知をオフにしている間は、ここをオンにしてもトーストとバッジは出ません。",
-  queueTitle: (count: number): string => `いま気になっているタブ (${count}件)`,
+  queueTitle: (count: number): string => `いま気になっているペイン (${count}件)`,
   queueEmpty: "問題は見つかっていません。",
   queueUnknownSubject: "セッション",
   queueContinuing: (elapsed: string, confirmations: number): string => `${elapsed}継続・連続確認 ${confirmations} 回`,
   // トーストは単独で読まれるので、どのタブの何が起きたのかを機能名込みで書く。
   toastItem: (subject: string, kind: string): string => `委譲の見守り: ${subject} — ${kind}`,
-  additionalQueueItems: (count: number): string => `委譲の見守り: ほか ${count} 件のタブが要確認です`,
+  additionalQueueItems: (count: number): string => `委譲の見守り: ほか ${count} 件のペインが要確認です`,
   kindLabels: {
     ask: "判断待ち",
     rate_limited: "レート制限で待機中",
@@ -67,7 +67,7 @@ export const notificationSettingsStrings = {
   layoutTitle: "レイアウト",
   splitRightLabel: "「右に分割」ボタンを表示",
   splitDownLabel: "「下に分割」ボタンを表示",
-  groupingApplyAnimationLabel: "タブ再配置の適用時に動きを表示",
+  groupingApplyAnimationLabel: "ペイン再配置の適用時に動きを表示",
   groupingApplyAnimationHint: "オフにすると、配置図から実画面への移動を省略して即時に切り替えます。Windows のアニメーション効果をオフにしている場合も動きません。",
   terminalInputTitle: "ターミナル入力",
   paneComposerLabel: "ペインの下に入力欄を出す",
@@ -87,8 +87,8 @@ export const aiSettingsStrings = {
   manualBadge: "ボタンで実行",
   features: {
     autoPaneNaming: {
-      label: "タブの自動命名",
-      disclosure: "画面末尾14行・作業フォルダ・ペイン構成を送ります",
+      label: "ペインの自動命名",
+      disclosure: "画面末尾14行・作業フォルダ・タブ構成を送ります",
     },
     replyDraft: {
       label: "返信案の準備",
@@ -99,8 +99,8 @@ export const aiSettingsStrings = {
       disclosure: "報告本文を送ります",
     },
     tabSweep: {
-      label: "タブ整理のAI判定",
-      disclosure: "各タブの画面末尾8行と作業フォルダを送ります",
+      label: "ペイン整理のAI判定",
+      disclosure: "各ペインの画面末尾8行と作業フォルダを送ります",
     },
     ailogSession: {
       label: "ailog セッション要約",
@@ -111,7 +111,7 @@ export const aiSettingsStrings = {
       disclosure: "選択したセッションのログを順に送ります",
     },
     tabRelayout: {
-      label: "タブ再配置（準備中）",
+      label: "ペイン再配置（準備中）",
       disclosure: "監査完了まで利用できません",
     },
   },
@@ -123,15 +123,15 @@ export const aiSettingsStrings = {
 
 // タブ名の自動命名 (AI が無名タブに名前を付ける定期ジョブ) の文言。
 export const autoPaneNamingStrings = {
-  title: "タブ名の自動命名",
-  label: "名前のないタブに AI が名前を付ける",
+  title: "ペイン名の自動命名",
+  label: "名前のないペインに AI が名前を付ける",
   hint: "作業内容から短い名前を自動で付けます。あなたが自分で付けた名前は書き換えません (名前をリセットすると、また自動命名の対象に戻ります)。",
   disabledByAiHint: "「AI機能を有効にする」がオフの間は動きません。",
   // トーストは 8 秒で消えて履歴が残らないので、どの機能が何をしたかが
   // 1 行で分かるところまで書く (2026-09-09 宮崎さん指摘「中身がわかりづらい」)。
-  toastApplied: (count: number): string => `タブ名の自動命名: ${count}件のタブに名前をつけました`,
+  toastApplied: (count: number): string => `ペイン名の自動命名: ${count}件のペインに名前をつけました`,
   toastUndo: "元に戻す",
-  toastUndone: "タブ名の自動命名: つけた名前を元に戻しました",
+  toastUndone: "ペイン名の自動命名: つけた名前を元に戻しました",
 } as const;
 
 // キャラ (pet) 設定タブの文言。用語は「ワークスペース > タブ > ペイン」(2026-08-11 確定)。

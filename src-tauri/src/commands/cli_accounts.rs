@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::cli_accounts::{
     self,
     login_watch::{
-        CliLoginMode, CliLoginSessionStatus, LoginMode, LoginRegistry, LoginWatch, PendingLogin,
+        CliLoginMode, LoginMode, LoginRegistry, LoginWatch, PendingLogin,
     },
     staging, CliAccountProfile, CliAccountsSnapshot, CliProvider, CliSwitchResult,
 };
@@ -164,9 +164,4 @@ pub async fn cancel_cli_login(app: AppHandle, login_id: String) -> Result<(), St
         return Ok(());
     }
     Err(cli_accounts::ERR_LOGIN_SESSION_NOT_FOUND.to_string())
-}
-
-#[tauri::command(async)]
-pub async fn list_cli_login_sessions(app: AppHandle) -> Result<Vec<CliLoginSessionStatus>, String> {
-    Ok(app.state::<LoginRegistry>().list())
 }

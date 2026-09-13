@@ -75,13 +75,13 @@ def test_tab_sweep_ui_contract_covers_all_entry_points_and_safety_copy() -> None
     # The shortcut comes from the live binding now, so the sentence is split
     # around it. Both halves still have to be present: the point of the check is
     # that the panel tells the operator the close is undoable.
-    assert "閉じたタブは {reopenTabShortcut} で復元できます（会話も再開されます）" in panel
+    assert "閉じたペインは {reopenTabShortcut} で復元できます（会話も再開されます）" in panel
     # The model is a user setting now, so the disclosure is built in
     # tabSweep.ts. What must not regress is that it still says exactly what
     # leaves the machine.
-    assert "各タブの画面末尾${TAB_SWEEP_TAIL_LINES}行と作業フォルダを ${target} に送って判定します（チェックの提案のみ）" in sweep
+    assert "各ペインの画面末尾${TAB_SWEEP_TAIL_LINES}行と作業フォルダを ${target} に送って判定します（チェックの提案のみ）" in sweep
     assert 'formatSweepAiNote("judge"' in panel
-    assert "掃除できるタブはありません" in panel
+    assert "掃除できるペインはありません" in panel
 
     # One list with checkboxes — the numbered sections and their per-section
     # action buttons are gone, and so is the collapsed LOCKED list.
@@ -129,7 +129,7 @@ def test_tab_sweep_ui_contract_covers_all_entry_points_and_safety_copy() -> None
     assert 'case "tab.sweep":' in app_shell
     assert "openTabSweepInDashboard();" in app_shell
     assert "matchesTabSweepCommand(query)" in palette
-    assert "タブ掃除を開く" in palette
+    assert "ペイン掃除を開く" in palette
     assert "openTabSweepInDashboard" in palette
     assert "useDashboardViewStore.getState().openView()" in sweep
     assert "window.setTimeout(() => window.dispatchEvent(new Event(TAB_SWEEP_OPEN_EVENT)), 0)" in sweep
@@ -200,7 +200,7 @@ def test_auto_pane_naming_never_closes_tabs_or_overwrites_human_labels() -> None
 
     # The disclosure has to match what actually happens now: it applies by
     # itself, and only to unnamed tabs.
-    assert "名前のないタブの画面末尾${TAB_NAMING_TAIL_LINES}行・作業フォルダ・ペイン構成を ${target} に送って名前を付けます（自動で適用・元に戻せます）" in sweep_source
+    assert "名前のないペインの画面末尾${TAB_NAMING_TAIL_LINES}行・作業フォルダ・タブ構成を ${target} に送って名前を付けます（自動で適用・元に戻せます）" in sweep_source
     # There is no panel to open first, so the disclosure sits by the switch.
     assert "aiSettingsStrings.features.autoPaneNaming.disclosure" in ai_tab
 
@@ -235,7 +235,7 @@ def test_grouping_mode_is_wired_without_closing_tabs() -> None:
     # it is still declared rather than pinning it to the sealed value.
     assert "export const TAB_GROUPING_ENTRY_ENABLED" in button
     assert "tabGroupingStrings.buttonLabel" in button
-    assert 'buttonLabel: "タブ再配置"' in strings
+    assert 'buttonLabel: "ペイン再配置"' in strings
     assert "deps.replaceWorkspaces(" in read("src/components/layout/tabGroupingEngine.ts") and "_restoreGroupingLayout(" in read("src/components/layout/groupingStoreAdapter.ts")
     assert "moveTabToPane" not in grouping
     engine = read("src/components/layout/tabGroupingEngine.ts")

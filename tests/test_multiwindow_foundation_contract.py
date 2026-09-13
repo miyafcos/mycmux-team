@@ -16,6 +16,7 @@ The three that cause visible damage when they regress:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 
@@ -81,97 +82,105 @@ def test_window_context_helper_exists() -> None:
     assert_contains(window_rs, 'pub const CHILD_WINDOW_LABEL_PREFIX: &str = "mycmux-w";', WINDOW_RS)
 
 
-def test_socket_request_handler_is_main_window_only() -> None:
-    socket_listener = read_repo_text(SOCKET_LISTENER)
-
-    # The pinned literal from test_socket_api_contract.py must survive: the
-    # guard is a JS early-return, NOT an emit → emit_to switch on the Rust side.
-    listen_index = socket_listener.index('listen<SocketRequestPayload>("socket-request"')
-    guard_index = socket_listener.rindex(MAIN_ONLY_GUARD, 0, listen_index)
-    effect_index = socket_listener.rindex("useEffect(() => {", 0, listen_index)
-
-    assert effect_index < guard_index < listen_index, (
-        "The socket-request subscription must be preceded by the isMainWindow() "
-        "early-return inside the same useEffect — Rust broadcasts the event to "
-        "every window."
-    )
-
+def test_socket_request_handler_is_role_owner_only() -> None:
+    """A broadcast socket command must execute in exactly one role owner."""
+    text = read_repo_text(SOCKET_LISTENER)
+    subscriptions = list(re.finditer(r'listen<SocketRequestPayload>\("socket-request"', text))
+    assert len(subscriptions) == 1
+    start = subscriptions[0].start()
+    end = text.index('return () => {', start)
+    handler = text[start:end]
+    guard = handler.index("if (!isLeader.current) return;")
+    dispatch = handler.index("handleSocketCommand(cmd, args)")
+    assert guard < dispatch
+    assert "await " not in handler[guard:dispatch].replace("const result = await ", "")
     socket_rs = read_repo_text("src-tauri/src/socket.rs")
-    assert_contains(socket_rs, 'app.emit("socket-request", &req)', "src-tauri/src/socket.rs")
+    assert 'app.emit("socket-request", &req)' in socket_rs
     assert 'emit_to("main", "socket-request"' not in socket_rs
 
 
 def test_quit_app_is_unreachable_from_a_child_window_close() -> None:
-    socket_listener = read_repo_text(SOCKET_LISTENER)
-
-    autosave_index = socket_listener.index("// Auto-save — only leader saves.")
-    close_handler_index = socket_listener.index(
-        "const unlistenCloseRequested = getCurrentWindow().onCloseRequested"
+    """No frontend close path may globally quit while a peer survives."""
+    for source in [SOCKET_LISTENER, APP, APP_SHELL]:
+        assert "quitApp" not in read_repo_text(source), source
+    window_rs = read_repo_text(WINDOW_RS)
+    quit_start = window_rs.index("pub fn quit_app(")
+    quit_body = window_rs[quit_start:window_rs.index("#[cfg(test)]", quit_start)]
+    guard = quit_body.index("if !app.webview_windows().is_empty()")
+    refusal = quit_body.index("return Err(", guard)
+    calls = [match.start() for match in re.finditer(r"app\.exit\(0\)", window_rs)]
+    assert len(calls) == 1
+    assert quit_start + guard < quit_start + refusal < calls[0]
+    assert "kill_all" not in quit_body
+    lifecycle = window_rs[window_rs.index("pub fn handle_app_run_event("):quit_start]
+    event = lifecycle.index("tauri::RunEvent::ExitRequested")
+    assert "ExitRequested { code, api, .. }" in lifecycle
+    # Pin the complete veto branch: programmatic exit/restart must bypass it.
+    veto = re.search(
+        r"if code\.is_none\(\) && live_windows != 0\s*\{\s*"
+        r"api\.prevent_exit\(\);\s*return;\s*\}", lifecycle,
     )
-    guard_index = socket_listener.index(MAIN_ONLY_GUARD, autosave_index)
-
-    assert autosave_index < guard_index < close_handler_index, (
-        "The autosave/close effect must early-return for child windows before "
-        "registering onCloseRequested. Otherwise closing a torn-out window runs "
-        "the quit path (kill_all + exit)."
-    )
-
-    # Every quitApp() call site in the frontend lives behind that guard.
-    call_sites = [
-        index
-        for index in range(len(socket_listener))
-        if socket_listener.startswith("await quitApp();", index)
-    ]
-    assert call_sites, "expected the main-window quit path to still call quitApp()"
-    for index in call_sites:
-        assert index > guard_index, (
-            "quitApp() is reachable from code that runs in child windows"
-        )
-
-    for source in [APP, APP_SHELL]:
-        assert "quitApp" not in read_repo_text(source), (
-            f"{source} must not call quitApp() — the quit path stays in the "
-            "main window's persistence effect"
-        )
-
-
-def test_persistence_engine_is_main_window_only() -> None:
-    socket_listener = read_repo_text(SOCKET_LISTENER)
-
-    claim_index = socket_listener.index("claimLeader()")
-    # The load effect has to unblock `persistLoaded` before returning, so its
-    # guard is a block, not the one-line early return used elsewhere.
-    guard_index = socket_listener.rindex("if (!isMainWindow()) {", 0, claim_index)
-    load_index = socket_listener.index("return loadPersistentData().then(async (envelope) => {")
-
-    assert_contains(socket_listener, "      isLeader.current = false;", SOCKET_LISTENER)
-    assert_contains(socket_listener, "      _resolveLoaded();", SOCKET_LISTENER)
-
-    assert guard_index < claim_index < load_index, (
-        "Child windows must return before claimLeader(): leadership is a "
-        "one-shot compare_exchange, so a child winning the race would leave "
-        "the main window with nothing loaded."
-    )
-
-    # data.json stays a main-window-only write.
-    snapshot_index = socket_listener.index(
-        "const snapshot = buildSnapshot(agentMappings, windowFragments);"
-    )
-    save_index = socket_listener.index("savePersistentData(snapshot)")
-    assert snapshot_index < save_index
-    assert socket_listener.index("// Auto-save — only leader saves.") < save_index
-    assert socket_listener.index(MAIN_ONLY_GUARD, socket_listener.index(
-        "// Auto-save — only leader saves."
-    )) < save_index
+    assert veto is not None, "Only a non-programmatic exit with live peers may be vetoed"
+    assert lifecycle.count("api.prevent_exit()") == 1
+    assert "tauri::RunEvent::Exit => (0, Some(0))" in lifecycle
+    assert lifecycle.count("begin_shutdown(") == 1
+    live = veto.start()
+    prevent = lifecycle.index("api.prevent_exit();")
+    latch = lifecycle.index("begin_shutdown(live_windows, code)")
+    assert "if !state.window_registry.begin_shutdown(live_windows, code) { return; }" in lifecycle
+    registry = read_repo_text("src-tauri/src/window_registry.rs")
+    shutdown = registry[registry.index("pub fn begin_shutdown("):registry.index("pub fn rescue_target(")]
+    assert "(code.is_some() || live_windows == 0) && self.shutdown_started" in shutdown
+    assert ".compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok()" in shutdown
+    assert "programmatic_exit_and_updater_restart_clean_up_with_live_windows_once" in registry
+    assert "for code in [0, i32::MAX]" in registry
+    assert "assert!(registry.begin_shutdown(2, Some(code)))" in registry
+    assert "assert!(!registry.begin_shutdown(2, Some(code)))" in registry
+    kills = [match.start() for match in re.finditer(r"\.kill_all\(", lifecycle)]
+    assert len(kills) == 2
+    assert all(event < live < prevent < latch < kill for kill in kills)
+    assert latch < lifecycle.index("flush_all_scrollbacks") < kills[0]
+    assert latch < lifecycle.index("revoke_all()")
+    lib_rs = read_repo_text("src-tauri/src/lib.rs")
+    assert "kill_all()" not in lib_rs
+    assert ".run(commands::window::handle_app_run_event)" in lib_rs
 
 
-def test_app_level_singletons_are_main_window_only() -> None:
+def test_startup_restore_stays_main_and_persistence_role_is_transferable() -> None:
+    """Do not restore startup data before acquiring the role; never restore it in peers."""
+    text = read_repo_text(SOCKET_LISTENER)
+    boot = text.index("// Load on mount")
+    identity_guard = text.index("if (!isMainWindow()) {", boot)
+    claim = text.index("claimLeader()", identity_guard)
+    peer_branch = text[identity_guard:claim]
+    assert "hydrateChildWindow()" in peer_branch
+    assert "_resolveLoaded();" in peer_branch
+    assert "return;" in peer_branch
+    owner_set = text.index("isLeader.current = gotLeadership;", claim)
+    reject = text.index("if (!gotLeadership) {", owner_set)
+    load = text.index("return loadPersistentData().then(async (envelope) => {", reject)
+    assert boot < identity_guard < claim < owner_set < reject < load
+    assert "_resolveLoaded();" in text[reject:load]
+    assert "return;" in text[reject:load]
+    loads = [match.start() for match in re.finditer(r"loadPersistentData\(", text)]
+    assert loads == [load + len("return ")]
+    retry = text.index("const claim = () => {")
+    hydrated = text.index("await persistLoaded;", retry)
+    reclaim = text.index("await claimLeader();", hydrated)
+    assert retry < hydrated < reclaim
+    assert "listen(WINDOW_REGISTRY_CHANGED_EVENT, claim)" in text
+    hydration = text[text.index("async function hydrateChildWindow()"):text.index("function buildWindowFragment(")]
+    assert "publishPersistentSchemaAfterHydration(settings.schema_version" in hydration
+    assert "loadPersistentData" not in hydration
+
+
+def test_app_level_singletons_follow_role_without_changing_startup_identity() -> None:
     app = read_repo_text(APP)
 
     for snippet in [
         "const isMain = isMainWindow();",
         # Dormancy sweeps kill idle agent sessions — must not double-fire.
-        "useAgentDormancy(ready && isMain);",
+        "useAgentDormancy(ready && hasRole);",
         "connectDispatchWatchdog();",
         # Children start empty; bootstrap would spawn a stray PTY per tear-out.
         "if (isMain && listStore.workspaces.length === 0 && launchCwd) {",
@@ -223,18 +232,18 @@ def test_shell_level_singletons_are_main_window_only() -> None:
 
 
 def test_updater_ui_is_main_window_only() -> None:
-    app_info = read_repo_text(APP_INFO_TAB)
-
-    for snippet in [
-        # The updater stays gated on the main window; test-profile instances
-        # additionally disable it (testProfile === null).
-        "const canCheckForUpdates = isMainWindow() && testProfile === null;",
-        "{canCheckForUpdates && (",
-    ]:
-        assert_contains(app_info, snippet, APP_INFO_TAB)
-
-    handler_index = app_info.index("const handleCheckUpdate")
-    assert app_info.index("const canCheckForUpdates = isMainWindow()") > handler_index
+    """Updater ownership reacts to takeover, with test profiles still disabled."""
+    source = read_repo_text(APP_INFO_TAB)
+    subscribe = source.index("const hasRole = useWindowRole();")
+    gate = source.index("const canCheckForUpdates = hasRole && testProfile === null;")
+    button = source.index("{canCheckForUpdates && (")
+    assert subscribe < gate < button
+    handler = source.index("const handleCheckUpdate")
+    guard = source.index("if (!hasWindowRole() || testProfile !== null) return;", handler)
+    run = source.index("await runUpdateCheck", handler)
+    assert handler < guard < run
+    context = read_repo_text(WINDOW_CONTEXT)
+    assert "useSyncExternalStore(subscribeWindowRole, hasWindowRole" in context
 
 
 def test_window_registry_commands_are_exposed() -> None:
@@ -258,7 +267,7 @@ def test_window_registry_commands_are_exposed() -> None:
         'invoke<WorkspaceConfig[]>("take_pending_adoption", { label })',
         'invoke<number>("release_workspaces", { fromLabel, workspaceIds, toLabel })',
         'invoke<WindowFragment[]>("get_window_fragments")',
-        'invoke<AppSettings>("get_app_settings")',
+        'invoke<AppSettings & { schema_version: number }>("get_app_settings")',
     ]:
         assert_contains(ipc, snippet, "src/lib/ipc.ts")
 
@@ -267,32 +276,37 @@ def test_window_registry_commands_are_exposed() -> None:
     assert_contains(lib_rs, "window_registry: window_registry::WindowRegistry::new(),", "src-tauri/src/lib.rs")
 
 
-def test_children_publish_fragments_and_never_write_data_json() -> None:
-    """Two windows writing data.json is the double-save failure mode."""
-    socket_listener = read_repo_text(SOCKET_LISTENER)
+def test_all_windows_publish_fragments_and_only_role_owner_writes_data_json() -> None:
+    """Two windows writing data.json is the double-save failure mode.
 
-    save_sites = [
-        index
-        for index in range(len(socket_listener))
-        if socket_listener.startswith("savePersistentData(", index)
-    ]
-    assert save_sites, "expected main to still write data.json"
-    autosave_guard = socket_listener.index(
-        MAIN_ONLY_GUARD, socket_listener.index("// Auto-save — only leader saves.")
-    )
-    for index in save_sites:
-        assert index > autosave_guard, (
-            "savePersistentData() must stay behind the main-window guard — a "
-            "child window writing data.json would race main's own save"
-        )
-
-    # ... and the child's substitute is the registry.
-    publish_index = socket_listener.index("await publishWindowFragment(buildWindowFragment());")
-    child_guard = socket_listener.rindex("if (isMainWindow()) return;", 0, publish_index)
-    child_effect = socket_listener.rindex("useEffect(() => {", 0, publish_index)
-    assert child_effect < child_guard < publish_index, (
-        "fragment publishing must be a child-window-only effect"
-    )
+    Every write needs a fresh role guard AFTER the last await. Counting an
+    entry guard, or checking the schema alone, does not prove exclusivity.
+    """
+    text = read_repo_text(SOCKET_LISTENER)
+    start = text.index("async function syncBound(")
+    end = text.index("const sync = async", start)
+    calls = [match.start() for match in re.finditer(r"savePersistentData\(", text)]
+    assert calls, "expected persistence to still write data.json"
+    guard_text = "if (!isLeader.current || !isPersistenceWriteAllowed())"
+    for call in calls:
+        assert start < call < end, "unguarded save outside syncBound"
+        guard = text.rfind(guard_text, start, call)
+        assert guard >= start, "missing write-time role and schema guard"
+        between = text[guard + len(guard_text):call]
+        assert re.fullmatch(
+            r'\s*\{\s*return request \? null : false;\s*\}\s*'
+            r'assertSideEffectAllowed\("autosave"\);\s*const run = ', between
+        ), "role guard must immediately precede the write, without an await"
+        assert text.index("await readAgentSessionMappings", start) < guard
+        assert text.index("await getWindowFragments()", start) < guard
+    publish = text.index("await publishWindowFragment(buildWindowFragment());")
+    effect = text.rindex("useEffect(() => {", 0, publish)
+    assert "if (isMainWindow()) return;" not in text[effect:publish]
+    assert "if (!isMainWindow()) return;" not in text[effect:publish]
+    end = text.index("return listenForDetachedDock();", publish)
+    assert "persistLoaded.then" in text[publish:end]
+    assert "useWorkspaceListStore.subscribe(markDirty)" in text[publish:end]
+    assert "useWorkspaceLayoutStore.subscribe(markDirty)" in text[publish:end]
 
 
 def test_leader_snapshot_merges_the_other_windows_workspaces() -> None:
@@ -356,7 +370,8 @@ def test_tear_out_moves_sessions_instead_of_killing_them() -> None:
 
     for snippet in [
         "export async function tearOutWorkspaceToNewWindow(",
-        "const config = toConfig(workspace);",
+        "const serialized = toTransferConfig(workspace);",
+        "detachedWorkspaceConfig(serialized, placement.detachedFrom)",
         "await openWorkspaceWindow({",
         "evictTerminalCache(sessionId);",
         "focusController.clearSession(sessionId);",
@@ -377,54 +392,56 @@ def test_tear_out_moves_sessions_instead_of_killing_them() -> None:
     assert_contains(tab_bar, "tearOutWorkspaceToNewWindow(workspaceId, {", TAB_BAR)
 
 
-def test_child_close_merges_back_instead_of_quitting() -> None:
-    socket_listener = read_repo_text(SOCKET_LISTENER)
-
-    child_close_index = socket_listener.index(
-        "const unlistenCloseRequested = getCurrentWindow().onCloseRequested",
-        socket_listener.index("if (isMainWindow()) return;"),
-    )
-    child_close = socket_listener[child_close_index : child_close_index + 2000]
-
-    for snippet in [
-        "await publishWindowFragment(buildWindowFragment());",
-        "await releaseWorkspaces(windowLabel(), workspaceIds, MAIN_WINDOW_LABEL);",
-        "await getCurrentWindow().destroy();",
-    ]:
-        assert_contains(child_close, snippet, "child close handler")
-    assert "quitApp" not in child_close, "a child close must never reach the quit path"
-
-    # window.destroy() is not part of core:window:default.
+def test_intentional_close_kills_only_its_window_panes() -> None:
+    """Intentional close kills only local PTYs; moving is a separate drag action."""
+    text = read_repo_text(SOCKET_LISTENER)
+    start = text.index("const unlistenCloseRequested = getCurrentWindow().onCloseRequested")
+    end = text.index("    return () => {", start)
+    handler = text[start:end]
+    assert handler.index("event.preventDefault();") < handler.index("confirmPaneClose(panes, \"workspace\")")
+    assert "useWorkspaceListStore.getState().workspaces.flatMap" in handler
+    assert handler.index("const saved = await sync(true);") < handler.index("await closeWindowWorkspacesAndDestroy();")
+    assert "releaseWorkspaces" not in handler
+    assert "transferWindowWorkspacesAndClose" not in handler
+    assert "isMainWindow" not in handler
+    helper_start = text.index("export async function closeWindowWorkspacesAndDestroy()")
+    helper_end = text.index("export async function discardWindowWorkspacesAndClose", helper_start)
+    helper = text[helper_start:helper_end]
+    ordered = ["await setWindowCloseIntent(true);", "const workspaces = [...useWorkspaceListStore.getState().workspaces];", "await killSession(sessionId);", "await getCurrentWindow().destroy();"]
+    assert [helper.index(item) for item in ordered] == sorted(helper.index(item) for item in ordered)
+    assert "releaseWorkspaces" not in helper and "getWindowFragments" not in helper
+    transfer_start = text.index("export async function transferWindowWorkspacesAndClose(")
+    transfer = text[transfer_start:helper_start]
+    assert "killSession(" not in transfer
+    assert transfer.index('await publishWindowFragment(buildWindowFragment("transfer"));') < transfer.index("await releaseWorkspaces(windowLabel(), workspaceIds, toLabel)") < transfer.index("await getCurrentWindow().destroy();")
+    dock = read_repo_text("src/stores/detachedDockStore.ts")
+    assert "await emitTo(payload.label, DETACHED_DOCK_REQUEST_EVENT" in dock
+    assert ".close()" not in dock
     capability = json.loads(read_repo_text("src-tauri/capabilities/default.json"))
     assert "core:window:allow-destroy" in capability["permissions"]
 
 
 def test_registry_reclaims_workspaces_from_a_destroyed_window() -> None:
-    """Crash path: a child that never runs its close handler still gives back."""
-    window_rs = read_repo_text(WINDOW_RS)
-    registry_commands = read_repo_text(WINDOW_REGISTRY_COMMANDS_RS)
+    """Crash rescue preserves sessions; explicit-close intent bypasses it."""
+    commands = read_repo_text(WINDOW_REGISTRY_COMMANDS_RS)
+    start = commands.index("pub fn handle_window_destroyed(")
+    end = commands.index("pub fn reclaim_destroyed_window(", start)
+    handler = commands[start:end]
+    assert handler.index("take_close_intent(label)") < handler.index("forget_window(label)") < handler.index("} else {") < handler.index("reclaim_destroyed_window(app, label)")
+    crash = commands[end:]
+    assert "app.webview_windows()" in crash
+    assert "rescue_target(label, &live)" in crash
+    assert "release_all(label, &target)" in crash
+    assert "MAIN_WINDOW_LABEL" not in crash
+    assert "kill_all" not in crash and "kill_session" not in crash
+    assert "emit_to(target.as_str(), WINDOW_ADOPT_EVENT, payload)" in commands
+    lib_rs = read_repo_text("src-tauri/src/lib.rs")
+    event = lib_rs.index(".on_window_event(|window, event|")
+    assert lib_rs.index("handle_window_destroyed(window.app_handle(), window.label())", event) > event
+    assert "reclaim_destroyed_window(" not in read_repo_text(WINDOW_RS)
     registry = read_repo_text(WINDOW_REGISTRY_RS)
-
-    assert_contains(window_rs, "tauri::WindowEvent::Destroyed = event", WINDOW_RS)
-    assert_contains(
-        window_rs,
-        "crate::commands::window_registry::reclaim_destroyed_window(",
-        WINDOW_RS,
-    )
-    for snippet in [
-        "pub fn reclaim_destroyed_window(app: &AppHandle, label: &str)",
-        "release_all(label, MAIN_WINDOW_LABEL)",
-        "emit_to(target.as_str(), WINDOW_ADOPT_EVENT, payload)",
-    ]:
-        assert_contains(registry_commands, snippet, WINDOW_REGISTRY_COMMANDS_RS)
-
-    for snippet in [
-        "pub fn release_workspaces(",
-        "pub fn release_all(",
-        "pub fn take_pending_adoption(",
-        "pub fn publish_fragment(",
-    ]:
-        assert_contains(registry, snippet, WINDOW_REGISTRY_RS)
+    for snippet in ["pub fn release_workspaces(", "pub fn release_all(", "pub fn take_pending_adoption(", "pub fn publish_fragment("]:
+        assert snippet in registry
 
 
 def test_savepoint_publish_progress_is_scoped_to_one_window() -> None:
@@ -463,3 +480,18 @@ def test_child_window_dev_entry_point_is_dev_only() -> None:
     assert guard_index < dev_hook.index("window.__mycmuxOpenChildWindow = async"), (
         "the dev hook must not be installed in production builds"
     )
+
+
+def test_close_intent_serializes_with_incoming_drag_handoffs() -> None:
+    registry = read_repo_text(WINDOW_REGISTRY_RS)
+    start = registry.index("pub fn release_to_open_window(")
+    end = registry.index("pub fn release_workspaces(", start)
+    body = registry[start:end]
+    assert body.index("self.closing.lock()") < body.index("closing.contains(to_label)") < body.index("self.release_workspaces(") < body.index("drop(closing)")
+    commands = read_repo_text(WINDOW_REGISTRY_COMMANDS_RS)
+    start = commands.index("pub fn release_workspaces(")
+    assert commands.index("app.get_webview_window(&to_label).is_none()", start) < commands.index("release_to_open_window", start)
+    listener = read_repo_text(SOCKET_LISTENER)
+    start = listener.index("export async function closeWindowWorkspacesAndDestroy()")
+    body = listener[start:]
+    assert body.index("setWindowCloseIntent(true)") < body.index("takePendingAdoption(windowLabel())") < body.index("const workspaces =") < body.index("killSession(sessionId)")

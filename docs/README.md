@@ -36,8 +36,7 @@ AI agent terminal workspace built with Tauri v2 + React + xterm.js.
 - [socket-api-and-automation.md](features/implemented/socket-api-and-automation.md) — Authenticated loopback TCP, newline-delimited JSON, Python CLI
 
 ### Research & Competitive Analysis
-- [bridgespace-re/README.md](bridgespace-re/README.md) — BridgeSpace reverse engineering findings (stack, architecture, swarm protocol, auth, voice, network)
-- [bridgespace-re/09-competitive/ptrcode-gaps.md](bridgespace-re/09-competitive/ptrcode-gaps.md) — Feature gap analysis and recommended build order for ptrcode
+- The BridgeSpace reverse-engineering notes inherited from upstream were removed from this repository on 2026-09-13 because the public mirror ships the whole tree.
 
 ### Features — Pending / Partially Implemented (from cmux reference)
 - [ssh-remote-sessions.md](features/pending/ssh-remote-sessions.md) — SSH daemon, reconnect, port forwarding

@@ -40,13 +40,6 @@ export function statePillStyle(color: string): CSSProperties {
   };
 }
 
-export const instructionBlockStyle: CSSProperties = {
-  background: "color-mix(in srgb, var(--cmux-accent) 10%, transparent)",
-  borderLeft: "2px solid var(--cmux-accent)",
-  borderRadius: "0 var(--cmux-radius-md) var(--cmux-radius-md) 0",
-  padding: "var(--cmux-space-2) var(--cmux-space-5)",
-};
-
 function CardRow({ card, selected, open, now, hideWorkspaceBadge, onSelect, onJump }: {
   card: DashboardCardModel;
   selected: boolean;

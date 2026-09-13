@@ -709,13 +709,6 @@ export function hasThemeTweak(tweaks: ThemeTweaks, key: ThemeTweakColorKey): boo
   return Object.prototype.hasOwnProperty.call(tweaks.colors, key);
 }
 
-export function getThemeTweakPresetColors(
-  preset: ThemeTweakPreset,
-  theme: ThemeDefinition,
-): ThemeTweakPresetColors {
-  return preset.colorsByScheme[theme.colorScheme];
-}
-
 function withThemeColor(
   theme: ThemeDefinition,
   key: ThemeTweakColorKey,

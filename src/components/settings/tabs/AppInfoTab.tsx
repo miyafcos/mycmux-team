@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { useToastStore } from "../../../stores/toastStore";
 import { runUpdateCheck, type UpdatePhase } from "../../../lib/forcedAutoUpdater";
-import { isMainWindow } from "../../../lib/windowContext";
+import { hasWindowRole, useWindowRole } from "../../../lib/windowContext";
 import { invoke } from "@tauri-apps/api/core";
 import { dialogButtonStyle, sectionHeadingStyle } from "../tabStyles";
 
@@ -14,6 +14,7 @@ function toSettingsUpdateStatus(phase: UpdatePhase): UpdateStatus {
 
 // Ported from SettingsMenu.tsx: current version display + manual update check.
 export function AppInfoTab() {
+  const hasRole = useWindowRole();
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
   const [updateMsg, setUpdateMsg] = useState<string>("");
   const [currentVersion, setCurrentVersion] = useState<string>("読み込み中…");
@@ -42,6 +43,7 @@ export function AppInfoTab() {
   }, []);
 
   const handleCheckUpdate = async () => {
+    if (!hasWindowRole() || testProfile !== null) return;
     await runUpdateCheck({
       source: "manual",
       force: true,
@@ -57,9 +59,8 @@ export function AppInfoTab() {
 
   const checking = updateStatus === "checking" || updateStatus === "downloading";
   // Multi-window (Phase 3a): the updater relaunches the whole process after
-  // installing, so it must run from exactly one window. Main owns it; child
-  // windows only show the version.
-  const canCheckForUpdates = isMainWindow() && testProfile === null;
+  // installing, so it follows the reactive, exclusive window role.
+  const canCheckForUpdates = hasRole && testProfile === null;
 
   return (
     <div>

@@ -79,13 +79,14 @@ export function getEffectiveMediaActive(): boolean {
   return useCompositionStore.getState().mediaActive;
 }
 
-// xterm's minimumContrastRatio only works against an opaque, known background.
-// With a media background the terminal background is transparent (the wallpaper
-// is composited in CSS), so it must be disabled — otherwise xterm corrects the
-// foreground against a phantom black background and washes out dark text.
+// Transparent terminal backgrounds retain the theme's RGB channels. xterm
+// ignores alpha when measuring contrast, so its reference is the theme color
+// in both glass and opaque modes; CSS still composites the wallpaper beneath.
 export const TERMINAL_MIN_CONTRAST_DARK = 7;
 export const TERMINAL_MIN_CONTRAST_LIGHT = 4.5;
-export const TERMINAL_MIN_CONTRAST_GLASS = 1;
+// xterm compares against theme RGB, while the real glass backdrop is a wallpaper
+// composite. Leave headroom: Geppaku + Monterey + frosted measured 3.95 -> 5.53.
+export const TERMINAL_MIN_CONTRAST_LIGHT_MEDIA = 5.5;
 
 /**
  * The contrast policy, in one place. Live theme updates, cached reattach and
@@ -96,10 +97,8 @@ export function resolveMinimumContrastRatio(input: {
   mediaActive: boolean;
   isLight: boolean;
 }): number {
-  if (input.mediaActive) {
-    return TERMINAL_MIN_CONTRAST_GLASS;
-  }
-  return input.isLight ? TERMINAL_MIN_CONTRAST_LIGHT : TERMINAL_MIN_CONTRAST_DARK;
+  if (!input.isLight) return TERMINAL_MIN_CONTRAST_DARK;
+  return input.mediaActive ? TERMINAL_MIN_CONTRAST_LIGHT_MEDIA : TERMINAL_MIN_CONTRAST_LIGHT;
 }
 
 export interface TerminalAppearance {
