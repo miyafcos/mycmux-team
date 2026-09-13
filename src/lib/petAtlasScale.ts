@@ -13,7 +13,17 @@
  * resampling out of paint altogether.
  */
 
+import { cleanKeyHalo, estimateKeyColours, type Rgb } from "./petKeyHalo";
+
 const ATLAS_COLUMNS = 8;
+
+/**
+ * Transparent device pixels right of and below every pre-scaled cell. The
+ * sprite box is exactly one cell, so a renderer that samples a pixel or two
+ * past its edge (rounding, a driver's filtering, a scaled layer) lands in the
+ * gutter instead of on the neighbouring frame.
+ */
+export const PRESCALE_GUTTER = 2;
 
 export function deriveRowsFromNatural(width: number, height: number): number | null {
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 || width % ATLAS_COLUMNS !== 0) return null;
@@ -144,8 +154,108 @@ export function downscaleAtlasCells(
   return { data, width, height };
 }
 
+/** Unsharp-mask strength and blur (Gaussian sigma, output px): chosen by eye against Lanczos and bicubic, 2026-09-14. */
+const SHARPEN_AMOUNT = 0.9;
+const SHARPEN_SIGMA = 0.7;
+
+/**
+ * Unsharp mask on every cell of a `columns` x `rows` atlas, each cell on its own.
+ *
+ * An area average is exact but soft: a 1px outline shared with a white
+ * interior comes out grey. Pushing each pixel away from its blurred
+ * surroundings brings the contrast back without bringing back the noise.
+ * Outside a cell counts as transparent (what surrounds the sprite on
+ * screen), and a transparent pixel stays transparent, so sharpening can only
+ * act inward.
+ */
+export function sharpenAtlasCells(
+  source: AtlasPixels,
+  columns: number,
+  rows: number,
+  amount = SHARPEN_AMOUNT,
+  sigma = SHARPEN_SIGMA,
+): AtlasPixels {
+  const { width, height } = source;
+  const cellWidth = width / columns;
+  const cellHeight = height / rows;
+  const n = width * height;
+  const src = source.data;
+  const premultiplied = new Float32Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    const p = i * 4;
+    const a = src[p + 3] / 255;
+    premultiplied[p] = src[p] * a;
+    premultiplied[p + 1] = src[p + 1] * a;
+    premultiplied[p + 2] = src[p + 2] * a;
+    premultiplied[p + 3] = src[p + 3];
+  }
+  const radius = Math.max(1, Math.ceil(sigma * 3));
+  const kernel = new Float32Array(radius * 2 + 1);
+  let total = 0;
+  for (let t = -radius; t <= radius; t++) total += kernel[t + radius] = Math.exp(-(t * t) / (2 * sigma * sigma));
+  for (let t = 0; t < kernel.length; t++) kernel[t] /= total;
+  const across = new Float32Array(n * 4);
+  const blurred = new Float32Array(n * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const cellStart = x - (x % cellWidth);
+      const lo = Math.max(cellStart, x - radius);
+      const hi = Math.min(cellStart + cellWidth - 1, x + radius);
+      const q = (y * width + x) * 4;
+      for (let xx = lo; xx <= hi; xx++) {
+        const w = kernel[xx - x + radius];
+        const p = (y * width + xx) * 4;
+        across[q] += w * premultiplied[p];
+        across[q + 1] += w * premultiplied[p + 1];
+        across[q + 2] += w * premultiplied[p + 2];
+        across[q + 3] += w * premultiplied[p + 3];
+      }
+    }
+  }
+  for (let y = 0; y < height; y++) {
+    const cellStart = y - (y % cellHeight);
+    const lo = Math.max(cellStart, y - radius);
+    const hi = Math.min(cellStart + cellHeight - 1, y + radius);
+    for (let x = 0; x < width; x++) {
+      const q = (y * width + x) * 4;
+      for (let yy = lo; yy <= hi; yy++) {
+        const w = kernel[yy - y + radius];
+        const p = (yy * width + x) * 4;
+        blurred[q] += w * across[p];
+        blurred[q + 1] += w * across[p + 1];
+        blurred[q + 2] += w * across[p + 2];
+        blurred[q + 3] += w * across[p + 3];
+      }
+    }
+  }
+  // Colour is pushed away from the alpha-weighted mean of its surroundings, so
+  // transparent neighbours do not count as black (a flat colour stays flat up
+  // to the silhouette); alpha is sharpened on its own, which tightens the
+  // silhouette's soft edge. Only a pixel the character fully covers gets its
+  // colour sharpened: a partly covered one (the silhouette, a whisker) also
+  // holds whatever the character was cut out of, and pushing it away from its
+  // neighbours would turn that trace into a visible tint.
+  const data = new Uint8ClampedArray(n * 4);
+  for (let i = 0; i < n; i++) {
+    const p = i * 4;
+    const alpha = premultiplied[p + 3];
+    if (alpha <= 0) continue;
+    const a = Math.min(255, Math.max(0, alpha + amount * (alpha - blurred[p + 3])));
+    if (a <= 0) continue;
+    const around = blurred[p + 3];
+    const colourAmount = alpha >= 255 ? amount : 0;
+    for (let c = 0; c < 3; c++) {
+      const own = (premultiplied[p + c] * 255) / alpha;
+      const mean = around > 0 ? (blurred[p + c] * 255) / around : own;
+      data[p + c] = own + colourAmount * (own - mean);
+    }
+    data[p + 3] = a;
+  }
+  return { data, width, height };
+}
+
 export interface PrescaledAtlas {
-  /** Object URL of a PNG whose cells are exactly one frame in device pixels. */
+  /** Object URL of a PNG whose cells are exactly one frame in device pixels, each followed by PRESCALE_GUTTER transparent pixels. */
   url: string;
   rows: number;
 }
@@ -225,26 +335,42 @@ async function buildPrescaledAtlas(
     band.height = sourceCellHeight;
     const bandContext = band.getContext("2d", { willReadFrequently: true });
     const output = document.createElement("canvas");
-    output.width = ATLAS_COLUMNS * deviceWidth;
-    output.height = rows * deviceHeight;
+    const pitchWidth = deviceWidth + PRESCALE_GUTTER;
+    const pitchHeight = deviceHeight + PRESCALE_GUTTER;
+    output.width = ATLAS_COLUMNS * pitchWidth;
+    output.height = rows * pitchHeight;
     const outputContext = output.getContext("2d");
     if (!bandContext || !outputContext) return null;
+    // The key colours the character was cut out of, pooled over every band:
+    // a band with little residue of its own still carries the same rim.
+    const keys: Rgb[] = [];
+    const readBand = (row: number) => {
+      bandContext.clearRect(0, 0, band.width, band.height);
+      bandContext.drawImage(bitmap, 0, row * sourceCellHeight, band.width, sourceCellHeight, 0, 0, band.width, sourceCellHeight);
+      return bandContext.getImageData(0, 0, band.width, band.height);
+    };
+    for (const row of onlyRows) {
+      if (row >= rows) continue;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      for (const key of estimateKeyColours(readBand(row))) {
+        if (!keys.some((known) => known[0] === key[0] && known[1] === key[1] && known[2] === key[2])) keys.push(key);
+      }
+    }
     for (const row of onlyRows) {
       if (row >= rows) continue;
       // One row of cells per task: a few milliseconds each, instead of one
       // long block per pet while the sidebar is starting up.
       await new Promise((resolve) => setTimeout(resolve, 0));
-      bandContext.clearRect(0, 0, band.width, band.height);
-      bandContext.drawImage(bitmap, 0, row * sourceCellHeight, band.width, sourceCellHeight, 0, 0, band.width, sourceCellHeight);
-      const scaled = downscaleAtlasCells(
-        bandContext.getImageData(0, 0, band.width, band.height),
-        ATLAS_COLUMNS,
-        1,
-        { width: deviceWidth, height: deviceHeight },
-      );
+      const source = readBand(row);
+      // Take the key's share out of the outline before averaging, or it tints the edge.
+      if (keys.length > 0) cleanKeyHalo(source, keys);
+      const scaled = sharpenAtlasCells(downscaleAtlasCells(source, ATLAS_COLUMNS, 1, { width: deviceWidth, height: deviceHeight }), ATLAS_COLUMNS, 1);
       const pixels = outputContext.createImageData(scaled.width, scaled.height);
       pixels.data.set(scaled.data);
-      outputContext.putImageData(pixels, 0, row * deviceHeight);
+      // Cell k of the band lands at k * pitch, leaving its gutter transparent.
+      for (let column = 0; column < ATLAS_COLUMNS; column++) {
+        outputContext.putImageData(pixels, column * PRESCALE_GUTTER, row * pitchHeight, column * deviceWidth, 0, deviceWidth, deviceHeight);
+      }
     }
     const blob = await new Promise<Blob | null>((resolve) => output.toBlob(resolve, "image/png"));
     return blob ? { url: URL.createObjectURL(blob), rows } : null;

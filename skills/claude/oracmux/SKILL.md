@@ -97,6 +97,7 @@ ChatGPT が送信を飲み、**Gemini は Flash・Grok は ファスト** に変
 - **NDA・社外提供不可の素材は投げない**。`guard.json` のマーカー・deny_roots で機械ブロック (exit 5)。`--allow-markers` は人が中身を確認した後だけ
 - **1 consult = Web 1 ターン消費** (ChatGPT Pro は週次枠・Grok は Chat/Build 共有プール)。大量バッチに使わない。PING 以外の再試行は原因を直してから
 - **裏タブは残す** (宮崎さんが見るため)。閉じるのは `--close-tab` を付けたときだけ。フォーカスは奪わない (`web.open background`)
+- **`--tab <tabId>` は Web タブの ID** (`mycmux_agent_cli.py web-list` の `tabId`・ask の meta.json `tab_id`)。mycmux-bridge の PTY `session_id` や pane / workspace の ID を渡さない
 - **push は載せるだけ**。送信は宮崎さんのクリックか `--send` 明示。Pro のターンは取り消せない
 - **サインアウト (exit 3) は止まって報告**: ペインの「別の窓でログイン」を案内し、代わりにログインしない・認証情報を扱わない
 - **モデルは実行のたびに確認し、違えば選び直してから送る (2026-09-09〜)**。pane 経路は毎回 picker を読み、`engines.json` の `expected_model` (ChatGPT/Gemini=`Pro`・Grok=`エキスパート`) と違えばメニューで選び直し、**選び直せたことを読み直して確かめてから**送る。確かめられなければ **1 ターンも使わずに exit 3 で止まる**。証跡は `answer.md` の `model` / `model_evidence` に残る (oracle の "Model selection evidence" と同じ役割)。`--model <名前>` で上書き、`--any-model` で確認を省略

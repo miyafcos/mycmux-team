@@ -28,15 +28,14 @@ python "~/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py" send --session 
 python "~/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py" answer-ask --session <PTY-sessionId> --answers-json '{"<question>": 2}'
 ```
 
-`--target <label-or-agent-name>` は完全一致が1件の場合だけ使用できる。0件・複数件は拒否される。安全性が必要な操作では `list` が返す exact `session_id` を使う。
-
 一覧は終了済み・launcher 型も行ごとに返す。`send_status` は `candidate` (送信候補) /
 `not_applicable` (対象外) / `unavailable` (取得不能)。`input_revision: null` を0に補完しない。
 送信時は対象の PTY 型・状態・期待値を改めて厳密検査する。
 
 ## ID 契約
 
-read / status / send / answer-ask の対象は `pane.list_all` の `tabs[].sessionId` だけ。workspace ID、pane ID、tab ID、agentSessionId、claudeSessionId を PTY session ID として渡さない。
+- read / status / send / answer-ask の宛先 (`--session`) は `list` が返す PTY `session_id` (`pane.list_all` の `tabs[].sessionId`) だけ。`workspace.id`・`pane.id`・`tab.id`・`agent_session_id`・`claude_session_id` を `--session` に渡さない。一致が 1 件でなければ `stale_target` で止まる。
+- `--target <label-or-agent-name>` は `list` の label / agent 名と完全一致が 1 件のときだけ使える。0 件・複数件は `stale_target` で拒否される。部分一致・前方一致はない。
 
 ## 送信契約
 
@@ -48,6 +47,17 @@ read / status / send / answer-ask の対象は `pane.list_all` の `tabs[].sessi
 4. Enter 後は最後の入力行 (Codex `›` / Claude Code `>`・`❯` / シェルのプロンプト) に始まる本文だけを残留とみなす。履歴の本文は数えない。入力欄から本文が消え、画面か state が変われば `observed_delivered`。入力行を特定できなければ、Enter 直前からの fingerprint 変化で判定する (変化あり = `observed_delivered`、なし = `residue_remains`)。入力行の種類・行番号か、fallback の根拠を `detail` に返す。
 
 一般メッセージの結果 JSON は `enter_sent` を常に持つ。Enter 要求を送ったら true (応答消失を含む)、要求前の拒否・明示的な `sent: false` 応答なら false。配送の確度とは別の値なので、true の結果から本文・Enter を自動再送しない。bridge CLI は従来どおり `observed_delivered` 以外で非 0 を返す。`dispatch_send.py` は再送防止のため `enter_sent: true` なら exit 0 とし、配送未確認時は stdout JSON に `warning` を付ける。自動経路で生の `mycmux_agent_cli.py send --enter` を使わない。`SendMessage` と PTY text send は相互互換ではない。
+
+## 到達の判定と再送禁止
+
+- `input_revision` が 1 進んだことを到達と読まない。`pane.send_text` は composer (入力欄) に本文を出さずに revision だけ進めることがある。到達の根拠は、入力欄に本文が安定して見えたこと (draft) と、Enter 後に入力欄から本文が消えて画面か state が変わったこと (`observed_delivered`) の 2 つだけ。
+- `draft_not_observed` と `screen_changed_ambiguously` はどちらも Enter を送っていない (`enter_sent: false`)。本文を再送しない (入力欄に同じ本文が重なって届く)。`read` で入力行を見直し、本文が入力行に残っていれば Enter だけを 1 回送る (`mycmux_agent_cli.py send --key enter` に `status` の view から取った `--expect-epoch` `--expect-attention-id` `--expect-revision` `--expect-input-revision` の 4 点を付ける)。入力行が読めない席 (描画待ち・作業中のアニメーション) は待って `read` し直す。
+
+## resume 失敗の席 (already in use)
+
+- 画面に `Session ID … is already in use` が出ている席へは送らない。その席は目的の会話を持っていない。
+- 復帰手順: ①その席を `mycmux_agent_cli.py close-tab --session <PTY session_id>` で閉じる。②同じペインで生きている兄弟タブの PTY `session_id` を `--anchor-session` にして `mycmux_agent_cli.py spawn-tab --anchor-session <兄弟の PTY session_id> --target claude --resume-session <claude_session_id> --no-activate` を実行する (閉じた席を anchor にしない)。③`read` で会話の履歴が戻ったことを確認してから send する。`already in use` が画面に残る間は送らない。
+- 前面を奪わない。spawn / spawn-tab は `--no-activate` を付ける。`--activate` は付けない。
 
 ## AskUserQuestion 契約
 

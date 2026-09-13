@@ -138,10 +138,10 @@ export const autoPaneNamingStrings = {
 export const petSettingsStrings = {
   tabLabel: "キャラ",
   displayTitle: "表示",
-  displayHint: "キャラの出し方。",
-  displayModeWs: "ワークスペースに1体 (既定)",
+  displayHint: "必要な場合だけ表示できます。",
+  displayModeWs: "ワークスペースに1体",
   displayModeBoth: "＋タブにも小さく",
-  displayModeNone: "キャラなし",
+  displayModeNone: "キャラなし (既定)",
   candidatesTitle: "キャラ (pet) の候補",
   candidatesHint: "チェックを入れたものだけが、新しいワークスペースのランダム抽選に出ます。クリックで切替。",
   newWsTitle: "新しいワークスペースを作ったとき",

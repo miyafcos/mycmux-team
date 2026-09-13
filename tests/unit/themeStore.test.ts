@@ -153,7 +153,7 @@ describe("solidSurfaces survives the load -> edit -> save -> load round trip", (
   /** A background written by a build that had never heard of solidSurfaces. */
   const LEGACY_BACKGROUND = {
     mode: "preset",
-    presetId: "catppuccin_black_hole",
+    presetId: "jellyfish",
     imagePath: "",
     imageOpacity: 0.9,
     imageBlur: 4,

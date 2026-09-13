@@ -34,13 +34,13 @@ function keepOneEnabled(disabled: string[], pets: readonly PetCandidate[]): stri
 }
 
 export const usePetSettingsStore = create<PetSettingsState>((set) => ({
-  petDisplayMode: "ws",
+  petDisplayMode: "none",
   petNewWorkspaceMode: "random",
   petDisabled: [],
   petFixedId: undefined,
   pets: [bundledPet],
   hydratePetSettings: (settings) => set((state) => ({
-    petDisplayMode: settings.petDisplayMode ?? "ws",
+    petDisplayMode: settings.petDisplayMode ?? "none",
     petNewWorkspaceMode: settings.petNewWorkspaceMode ?? "random",
     petDisabled: keepOneEnabled(settings.petDisabled ?? [], state.pets),
     petFixedId: settings.petFixedId,

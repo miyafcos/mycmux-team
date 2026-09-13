@@ -475,7 +475,7 @@ fn default_ui_font_scale() -> f32 {
 }
 
 fn default_pet_display_mode() -> String {
-    "ws".to_string()
+    "none".to_string()
 }
 
 fn default_pet_new_ws_mode() -> String {
@@ -1315,11 +1315,23 @@ mod tests {
     }
 
     #[test]
+    fn app_settings_preserve_saved_pet_display_modes() {
+        for mode in ["ws", "both", "none"] {
+            let settings: AppSettings = serde_json::from_value(serde_json::json!({
+                "font_size": 14, "theme_id": "yoru-cafe", "pet_display_mode": mode
+            }))
+            .unwrap();
+            assert_eq!(settings.pet_display_mode, mode);
+        }
+    }
+
+    #[test]
     fn app_settings_missing_pet_settings_use_defaults() {
         let settings: AppSettings =
             serde_json::from_str(r#"{"font_size":14,"theme_id":"yoru-cafe"}"#).unwrap();
 
-        assert_eq!(settings.pet_display_mode, "ws");
+        assert_eq!(settings.pet_display_mode, "none");
+        assert_eq!(AppSettings::default().pet_display_mode, "none");
         assert_eq!(settings.pet_new_ws_mode, "random");
         assert!(settings.pet_disabled.is_empty());
         assert!(settings.pet_fixed_id.is_none());

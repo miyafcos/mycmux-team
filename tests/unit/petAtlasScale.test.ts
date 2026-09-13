@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { downscaleAtlasCells, type AtlasPixels } from "../../src/lib/petAtlasScale";
+import { downscaleAtlasCells, sharpenAtlasCells, type AtlasPixels } from "../../src/lib/petAtlasScale";
 
 type Rgba = [number, number, number, number];
 
@@ -62,6 +62,47 @@ describe("pet atlas pre-scale", () => {
       const alone = downscaleAtlasCells(pixels(16, 7, (x, y) => paint(x, row * 7 + y)), 2, 1, { width: 3, height: 4 });
       const rowBytes = 6 * 4 * 4;
       expect(Array.from(alone.data)).toEqual(Array.from(whole.data.slice(row * rowBytes, (row + 1) * rowBytes)));
+    }
+  });
+
+  it("sharpening leaves a flat opaque cell exactly as it was", () => {
+    const out = sharpenAtlasCells(pixels(12, 10, () => [40, 120, 200, 255]), 2, 1);
+    for (let y = 0; y < 10; y++) {
+      for (let x = 0; x < 12; x++) expect(at(out, x, y)).toEqual([40, 120, 200, 255]);
+    }
+  });
+
+  it("sharpening raises the contrast across an edge inside the cell", () => {
+    // A soft grey ramp between a dark outline and a white interior, as the area average leaves it.
+    const ramp = [30, 30, 30, 90, 170, 230, 230, 230];
+    const out = sharpenAtlasCells(pixels(8, 3, (x) => [ramp[x], ramp[x], ramp[x], 255]), 1, 1);
+    expect(at(out, 3, 1)[0]).toBeLessThan(90);
+    expect(at(out, 4, 1)[0]).toBeGreaterThan(170);
+  });
+
+  it("sharpening never paints outside the character", () => {
+    // A white square in the middle of a transparent cell: every transparent pixel must stay transparent.
+    const out = sharpenAtlasCells(pixels(10, 10, (x, y) => (x >= 3 && x < 7 && y >= 3 && y < 7 ? [255, 255, 255, 255] : [0, 0, 0, 0])), 1, 1);
+    for (let y = 0; y < 10; y++) {
+      for (let x = 0; x < 10; x++) {
+        if (x < 3 || x >= 7 || y < 3 || y >= 7) expect(at(out, x, y)[3]).toBe(0);
+      }
+    }
+  });
+
+  it("sharpening does not strengthen the tint of a partly covered edge pixel", () => {
+    // A dark outline whose soft edge still carries a trace of the magenta it was cut from.
+    const out = sharpenAtlasCells(pixels(6, 3, (x) => (x < 3 ? [40, 40, 40, 255] : x === 3 ? [90, 40, 90, 128] : [0, 0, 0, 0])), 1, 1);
+    expect(at(out, 3, 1).slice(0, 3)).toEqual([90, 40, 90]);
+    expect(at(out, 3, 1)[3]).not.toBe(128);
+  });
+
+  it("sharpening does not reach into the neighbouring frame", () => {
+    // Cell 0 is empty, cell 1 solid red: the seam must not pick up or push anything across.
+    const out = sharpenAtlasCells(pixels(8, 4, (x) => (x < 4 ? [0, 0, 0, 0] : [255, 0, 0, 255])), 2, 1);
+    for (let y = 0; y < 4; y++) {
+      for (let x = 0; x < 4; x++) expect(at(out, x, y)).toEqual([0, 0, 0, 0]);
+      for (let x = 4; x < 8; x++) expect(at(out, x, y)).toEqual([255, 0, 0, 255]);
     }
   });
 });

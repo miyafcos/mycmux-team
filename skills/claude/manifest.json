@@ -1,6 +1,6 @@
 {
   "pack_version": "1.0.0",
-  "generated_at": "2026-09-12T13:13:44.541429+00:00",
+  "generated_at": "2026-09-13T18:41:57.431952+00:00",
   "cli": {
     "path": "scripts/mycmux_agent_cli.py",
     "sha256": "9f4a967ff3a60215d5deed823e3e350a4766488129a9e02a455dd26a9da01174"
@@ -9,7 +9,7 @@
     {
       "name": "session-dispatch",
       "files": {
-        "SKILL.md": "8169cf3d2c5b8a13f71a8ad4f092d3b24beb1e971e9903ca3448d4631c275807",
+        "SKILL.md": "ea582f35ee9bf229930e21d0dbdd64f655414039ace8159a7472aa22b0defd5d",
         "references/ask-card-contract.md": "a69c38ecf9c89c2fa905a6d95c74017b6b9ec1606a3595b84b5a005f78fccd2a",
         "references/decompose-guide.md": "622ebcb21b6e7774a8da991775a94557e0d2176b066a703deee5917a94f76f85",
         "references/dispatch-guide.md": "7e21ef65864b2a523bacfd02cbafb36cfbfee4cd3d774990e0a9d67993db77ae",
@@ -59,15 +59,15 @@
     {
       "name": "mycmux-bridge",
       "files": {
-        "SKILL.md": "a58154a69de4d1e1f07130ccdd77eaf6769b435e373ba46efe58581bf2f88c40",
+        "SKILL.md": "5382152a5f17a143c227081bb30ea7dacc72e297a4f1ee6da1cdcf540fb4080d",
         "scripts/mycmux_bridge.py": "95d8dd5d581cf8a77669822bf829dd11f7998c77045b8bc35b663a9631816524",
-        "scripts/mycmux_bridge_support.py": "ba0b375f0ab4bbd770084afb9e3398e2f3ed6ea9f3894b4eecb832fd0a07a92a"
+        "scripts/mycmux_bridge_support.py": "1bfc9f360c882a09b0cb9899f28f61d53fbc7060eed49f4e7af192fe8e4f3330"
       }
     },
     {
       "name": "oracmux",
       "files": {
-        "SKILL.md": "b7d8e11430eddb903c209a33cdf5987de1f9eaae5cef11fd6786020a21909062",
+        "SKILL.md": "1edef7f353ed241817ddef08530f6804e9cd881c84517589c03bbe616c15d9a6",
         "modes/ask.md": "6aa561a266498dee182935ebd580aa782385d50a2c0e3cf71e8c11bf11f9d582",
         "modes/collect.md": "0f19ee555bbdde96d0343b779d1a2237ed338fb86a28fc3168009d9f0896afc3",
         "modes/council.md": "f8f125aa66d1f41adf5e125695945ded94e53b908ecbb203fecaeaa02b3b7685",

@@ -38,7 +38,7 @@ import type { ThemeBackgroundSettings } from "../../src/types";
 /** What an install that picked a wallpaper on an older build has stored. */
 const STORED_WALLPAPER_CHOICE: Record<string, unknown> = {
   mode: "preset",
-  presetId: "catppuccin_black_hole",
+  presetId: "jellyfish",
   imagePath: "",
   imageOpacity: 0.9,
   imageBlur: 4,
@@ -64,7 +64,7 @@ function cacheWith(id: string, path: string): WallpaperCache {
 
 describe("the picker works with nothing downloaded", () => {
   it("bundles a thumbnail for every preset, so the grid is never blank offline", () => {
-    expect(THEME_BACKGROUND_PRESETS).toHaveLength(59);
+    expect(THEME_BACKGROUND_PRESETS).toHaveLength(11);
     for (const preset of THEME_BACKGROUND_PRESETS) {
       expect(preset.thumbnailUrl, `${preset.id} has no thumbnail`).toBeTruthy();
     }
@@ -93,7 +93,7 @@ describe("a stored wallpaper choice survives the move to on-demand", () => {
     const normalized = normalizeThemeBackground(STORED_WALLPAPER_CHOICE);
     expect(normalized).toEqual({
       mode: "preset",
-      presetId: "catppuccin_black_hole",
+      presetId: "jellyfish",
       imagePath: "",
       imageOpacity: 0.9,
       imageBlur: 4,
@@ -110,14 +110,14 @@ describe("a stored wallpaper choice survives the move to on-demand", () => {
     expect(cachedWallpaperPath(background.presetId, OFFLINE_CACHE)).toBe("");
     // The setting itself is untouched: the choice is still theirs.
     expect(background.mode).toBe("preset");
-    expect(background.presetId).toBe("catppuccin_black_hole");
+    expect(background.presetId).toBe("jellyfish");
   });
 
   it("paints the wallpaper again the moment the download lands", () => {
     const background = normalizeThemeBackground(STORED_WALLPAPER_CHOICE) as ThemeBackgroundSettings;
-    const path = "C:/Users/someone/.mycmux/wallpapers/catppuccin_black_hole.webp";
+    const path = "C:/Users/someone/.mycmux/wallpapers/jellyfish.webp";
     const cache = applyDownloadFinished(OFFLINE_CACHE, {
-      id: "catppuccin_black_hole",
+      id: "jellyfish",
       path,
       bytes: 4096,
     });
@@ -200,11 +200,11 @@ describe("the painted-media answer is published once and read everywhere", () =>
   const presetOnDisk: ThemeBackgroundSettings = {
     ...DEFAULT_THEME_BACKGROUND,
     mode: "preset",
-    presetId: "catppuccin_black_hole",
+    presetId: "jellyfish",
   };
   const cached = cacheWith(
-    "catppuccin_black_hole",
-    "C:/Users/someone/.mycmux/wallpapers/catppuccin_black_hole.webp",
+    "jellyfish",
+    "C:/Users/someone/.mycmux/wallpapers/jellyfish.webp",
   );
 
   /** What a terminal sees: the store, never the cache. */
@@ -250,14 +250,14 @@ describe("the painted-media answer is published once and read everywhere", () =>
   });
 
   it("does not notify subscribers while only the download percentage moves", () => {
-    let downloading = applyDownloadStarted(OFFLINE_CACHE, "catppuccin_black_hole");
+    let downloading = applyDownloadStarted(OFFLINE_CACHE, "jellyfish");
     publishEffectiveMediaActive(presetOnDisk, downloading);
     const notified = vi.fn();
     const unsubscribe = useCompositionStore.subscribe(notified);
 
     for (let percent = 10; percent <= 100; percent += 10) {
       downloading = applyProgress(downloading, {
-        id: "catppuccin_black_hole",
+        id: "jellyfish",
         receivedBytes: percent,
         totalBytes: 100,
         percent,

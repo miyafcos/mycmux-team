@@ -43,9 +43,8 @@ import {
   nonRetryablePersistentStorageError,
   persistentStorageErrorMessage,
   unsupportedPersistentSchemaVersion,
-  listPets,
 } from "../../lib/ipc";
-import { candidatesFromListedPets } from "../../lib/pets";
+import { loadPetCatalog } from "../../lib/petCatalog";
 import type { AgentSessionKind, SuppressedAgentSession, TurnMarkPersistSnapshot, Workspace } from "../../types";
 import { useThemeStore } from "../../stores/themeStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
@@ -1339,22 +1338,6 @@ function adoptWorkspaceConfigs(configs: WorkspaceConfig[]): string[] {
   return restoredWorkspaceIds;
 }
 
-/**
- * External pets live on disk and are only known through `list_pets`. Without
- * this startup load the catalog is just the bundled pet, so every workspace
- * assigned an external pet silently renders as Clawd until the Pet settings
- * tab happens to mount and rescan — which made the pet appear to "change"
- * after opening and closing settings.
- */
-async function loadPetCatalog(): Promise<void> {
-  try {
-    const listed = await listPets();
-    usePetSettingsStore.getState().setPets(candidatesFromListedPets(listed).candidates);
-  } catch (error) {
-    console.warn("[pets] Failed to load pet catalog at startup:", error);
-  }
-}
-
 export async function publishPersistentSchemaAfterHydration(
   schemaVersion: number,
   hydrate: () => Promise<void>,
@@ -2191,6 +2174,9 @@ export function useWorkspacePersist() {
 
     const unsubKeys = useKeybindingStore.subscribe(markDirty);
     const unsubPets = usePetSettingsStore.subscribe((state, previousState) => {
+      if (state.petDisplayMode !== previousState.petDisplayMode && state.petDisplayMode !== "none") {
+        void loadPetCatalog();
+      }
       if (
         state.petDisplayMode !== previousState.petDisplayMode
         || state.petNewWorkspaceMode !== previousState.petNewWorkspaceMode

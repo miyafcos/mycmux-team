@@ -254,7 +254,7 @@ function legacyThemeVars(input: ThemeVarsCase): Record<string, string> {
 // about the product rather than about a fixture.
 const WALLPAPER_ON: ThemeBackgroundSettings = {
   mode: "preset",
-  presetId: "macos_monterey",
+  presetId: "dark_city",
   imagePath: "",
   imageOpacity: 1,
   imageBlur: 0,

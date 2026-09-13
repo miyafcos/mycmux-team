@@ -780,8 +780,9 @@ def test_answer_ask_multiselect_uses_toggle_down_enter_review_sequence() -> None
             MULTI_DOWN_4,
             REVIEW_MULTI,
             REVIEW_MULTI,
-            REVIEW_MULTI,
-            REVIEW_MULTI,
+            # After the review digit the seat drops to attention "none"; the
+            # bridge then reads the screen and accepts closure only once the
+            # question has left it, so the next reads must not show the review.
             ["done"],
             ["done"],
         ],

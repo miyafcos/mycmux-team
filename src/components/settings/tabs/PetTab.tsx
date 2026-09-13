@@ -52,11 +52,12 @@ export function PetTab() {
   );
 
   const rescan = useCallback(async () => {
+    if (usePetSettingsStore.getState().petDisplayMode === "none") return;
     const currentRequest = ++requestId.current;
     setScanning(true);
     try {
       const [listed, quarantined] = await Promise.all([listPets(), listQuarantinedPets()]);
-      if (currentRequest === requestId.current) {
+      if (currentRequest === requestId.current && usePetSettingsStore.getState().petDisplayMode !== "none") {
         const candidates = candidatesFromListedPets(listed);
         setPets(candidates.candidates);
         setInvalidPets(candidates.invalid);
@@ -70,9 +71,10 @@ export function PetTab() {
   }, [setPets]);
 
   useEffect(() => {
-    void rescan();
+    if (displayMode !== "none") void rescan();
+    else setScanning(false);
     return () => { requestId.current += 1; };
-  }, [rescan]);
+  }, [displayMode, rescan]);
 
   useDismissOnOutside(Boolean(pickerWorkspaceId), pickerRef, () => setPickerWorkspaceId(null), { preventDefaultOnEscape: true });
 
@@ -118,7 +120,7 @@ export function PetTab() {
         <div style={sectionHeadingStyle}>{petSettingsStrings.displayTitle}</div>
         <div style={hintStyle}>{petSettingsStrings.displayHint}</div>
         {/* "both" (small pets on tab pills) is not implemented yet — do not offer it */}
-        {(["ws", "none"] as const).map((mode) => (
+        {(["none", "ws"] as const).map((mode) => (
           <label key={mode} style={radioStyle}>
             <input type="radio" name="pet-display" checked={displayMode === mode} onChange={() => setDisplayMode(mode)} />
             <span>{mode === "ws" ? petSettingsStrings.displayModeWs : petSettingsStrings.displayModeNone}</span>
@@ -126,6 +128,7 @@ export function PetTab() {
         ))}
       </section>
 
+      {displayMode !== "none" && <>
       <div style={dividerStyle} />
       <section>
         <div style={sectionHeadingStyle}>{petSettingsStrings.candidatesTitle}</div>
@@ -288,6 +291,7 @@ export function PetTab() {
           })}
         </div>
       </section>
+      </>}
     </div>
   );
 }

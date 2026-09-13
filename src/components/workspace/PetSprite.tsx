@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { useDevicePixelRatio } from "../../hooks/useDevicePixelRatio";
-import { deriveRowsFromNatural, peekPrescaledAtlas, prescalePetAtlas, type PrescaledAtlas } from "../../lib/petAtlasScale";
+import { PRESCALE_GUTTER, deriveRowsFromNatural, peekPrescaledAtlas, prescalePetAtlas, type PrescaledAtlas } from "../../lib/petAtlasScale";
 import { PET_DEMOTE_HOLD_MS } from "../../lib/petState";
 import "./PetSprite.css";
 
@@ -115,17 +115,22 @@ export default function PetSprite({ atlasUrl, state, height, rows = 9, animate =
   if (failedToLoad) return null;
 
   const animation = PET_ANIMATIONS[displayedState];
+  // Distance from one frame to the next in the atlas being painted: the
+  // pre-scaled one keeps a transparent gutter after every cell.
+  const pitch = prescaled
+    ? { width: (frame.deviceWidth + PRESCALE_GUTTER) / devicePixelRatio, height: (frame.deviceHeight + PRESCALE_GUTTER) / devicePixelRatio }
+    : frame;
   const style: PetSpriteStyle = {
     width: frame.width,
     height: frame.height,
     backgroundImage: `url("${prescaled?.url ?? atlasUrl}")`,
-    ...spriteAtlasStyle(frame, prescaled?.rows ?? atlasRows, animation.row),
+    ...spriteAtlasStyle(pitch, prescaled?.rows ?? atlasRows, animation.row),
     animationTimingFunction: displayedState === "resting" ? "step-end" : undefined,
     "--pet-animation": displayedState === "resting" ? "cmux-pet-sprite-resting" : `cmux-pet-sprite-${animation.frames}`,
     "--pet-duration": `${animation.duration}ms`,
     "--pet-frames": String(animation.frames),
-    "--pet-frame-width": `${frame.width}px`,
-    "--pet-row-offset": `${-animation.row * frame.height}px`,
+    "--pet-frame-width": `${pitch.width}px`,
+    "--pet-row-offset": `${-animation.row * pitch.height}px`,
   };
   const className = `cmux-pet-sprite${prescaled ? " cmux-pet-sprite--prescaled" : ""}${animate ? "" : " cmux-pet-sprite--static"}`;
 

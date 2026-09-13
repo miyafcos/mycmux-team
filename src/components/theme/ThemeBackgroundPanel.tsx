@@ -11,7 +11,7 @@ import {
   isDefaultThemeBackground,
 } from "../../lib/themeTweaks";
 import { BackgroundPresetSegment } from "./BackgroundPresetSegment";
-import type { ThemeBackgroundCategory, ThemeBackgroundTone } from "../../lib/themeTweaks";
+import type { ThemeBackgroundTone } from "../../lib/themeTweaks";
 import type { WallpaperCardState } from "../../lib/wallpaperCache";
 import {
   clearWallpaperCache,
@@ -27,16 +27,7 @@ interface ThemeBackgroundPanelProps {
   setThemeBackground: (background: Partial<ThemeBackgroundSettings>) => void;
 }
 
-type CategoryFilter = "all" | ThemeBackgroundCategory;
 type ToneFilter = "all" | ThemeBackgroundTone;
-
-const CATEGORY_FILTERS: { value: CategoryFilter; label: string }[] = [
-  { value: "all", label: "すべて" },
-  { value: "macos", label: "macOS" },
-  { value: "warp", label: "Warp" },
-  { value: "win11", label: "Windows" },
-  { value: "catppuccin", label: "Catppuccin" },
-];
 
 const TONE_FILTERS: { value: ToneFilter; label: string }[] = [
   { value: "all", label: "すべて" },
@@ -173,7 +164,6 @@ export function ThemeBackgroundPanel({
   setThemeBackground,
 }: ThemeBackgroundPanelProps) {
   const [isPickingImage, setIsPickingImage] = useState(false);
-  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
   const [toneFilter, setToneFilter] = useState<ToneFilter>("all");
   const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -203,9 +193,6 @@ export function ThemeBackgroundPanel({
 
   const filteredPresets = useMemo(() => {
     return THEME_BACKGROUND_PRESETS.filter((preset) => {
-      if (categoryFilter !== "all" && preset.category !== categoryFilter) {
-        return false;
-      }
       if (toneFilter !== "all" && preset.tone !== toneFilter) {
         return false;
       }
@@ -214,7 +201,7 @@ export function ThemeBackgroundPanel({
       }
       return `${preset.label} ${preset.description}`.toLowerCase().includes(searchQuery);
     });
-  }, [categoryFilter, searchQuery, toneFilter]);
+  }, [searchQuery, toneFilter]);
 
   const failedDownloads = useMemo(
     () => THEME_BACKGROUND_PRESETS.filter((preset) => wallpaperCache.errors[preset.id]),
@@ -382,19 +369,6 @@ export function ThemeBackgroundPanel({
         <BackgroundPresetSegment background={background} onChange={setThemeBackground} />
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {CATEGORY_FILTERS.map((filter) => (
-              <button
-                key={filter.value}
-                type="button"
-                onClick={() => setCategoryFilter(filter.value)}
-                style={chipStyle(categoryFilter === filter.value)}
-              >
-                {filter.label}
-              </button>
-            ))}
-          </div>
-
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {TONE_FILTERS.map((filter) => (
               <button

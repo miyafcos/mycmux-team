@@ -60,7 +60,16 @@ class BridgeBase:
         while steps < max_steps:
             prompt_hash = ask_fingerprint(ask)
             if ask["kind"] == "review":
-                if not review_matches_answers(ask, answered, answers):
+                expected = answered
+                # A call that starts on the review screen (the phone answers one tab
+                # per request) has answered nothing itself. It may name the answers
+                # it expects the screen to show; they must match it exactly.
+                if not expected and steps == 0 and all(isinstance(value, str) for value in answers.values()):
+                    expected = {
+                        question: [part.strip() for part in value.split(",") if part.strip()]
+                        for question, value in answers.items()
+                    }
+                if not review_matches_answers(ask, expected, answers):
                     raise BridgeError("prompt_changed", "review answers do not match the requested answers")
                 self._send_ask_digit(session_id, "1", state, prompt_hash)
                 _, _, after_submit = self._await_ask_change(
@@ -192,6 +201,9 @@ class BridgeBase:
                         continue
                     if state_transition_signature(state) != state_transition_signature(before_state):
                         closed_state = state
+                    elif screen_evidence_only(before_state) and scan_ask_question(
+                            self.read(session_id)["lines"]) is None:
+                        closed_state = state
                 self.sleep(self.poll_seconds)
                 continue
             if ask_fingerprint(observed[2]) != previous_hash:
@@ -220,7 +232,7 @@ class BridgeBase:
                 session_id,
                 text=digit,
                 state=latest_state,
-                require_attention=True,
+                require_attention=not screen_evidence_only(latest_state),
                 expected_input_revision=expected_input_revision,
             ),
         )
@@ -246,7 +258,7 @@ class BridgeBase:
                 text="",
                 key=key,
                 state=latest_state,
-                require_attention=True,
+                require_attention=not screen_evidence_only(latest_state),
                 expected_input_revision=expected_input_revision,
             ),
         )
@@ -258,6 +270,16 @@ class BridgeBase:
         view = state.get("view")
         attention = view.get("attention") if isinstance(view, dict) else None
         expected_attention = attention.get("kind") if isinstance(attention, dict) else None
+        if expected_attention == "none":
+            # mycmux notices a question only on a tab it renders; a background
+            # seat stays at "none". Then the parsed question on screen is the
+            # evidence, and every send is locked to "no attention" instead.
+            screen = self.read(session_id)["lines"]
+            ask = scan_ask_question(screen)
+            if ask is None:
+                raise BridgeError("stale_target", "target attention is not an AskUserQuestion")
+            self._ensure_sendable(state, expected_attention)
+            return state, screen, ask
         if expected_attention not in {"input", "approval"}:
             raise BridgeError("stale_target", "target attention is not an AskUserQuestion")
         self._ensure_sendable(state, expected_attention)
@@ -465,6 +487,13 @@ def infer_agent_kind(tab: dict[str, Any]) -> str:
 def screen_fingerprint(lines: Sequence[str]) -> str:
     normalized = "\n".join(line.rstrip("\r\n ") for line in lines)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+def screen_evidence_only(state: dict[str, Any]) -> bool:
+    """True when the question was admitted from the screen, mycmux reporting no attention."""
+    view = state.get("view") if isinstance(state, dict) else None
+    attention = view.get("attention") if isinstance(view, dict) else None
+    return isinstance(attention, dict) and attention.get("kind") == "none"
+
+
 def ask_fingerprint(ask: dict[str, Any]) -> str:
     raw = json.dumps(ask, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()

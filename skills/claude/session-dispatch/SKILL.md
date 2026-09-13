@@ -30,7 +30,7 @@ metadata:
 | 母艦が重い (compact 接近・長大化) ときに来た新規の重依頼 | 新タブへ。母艦は司令塔に徹する |
 | 「どこまでやったっけ」系で、この先に重作業が続く | 母艦で現状整理 → 作業本体を spec 化して新タブ |
 | 軽い読み調査・その場の検証 | 母艦直 (サブエージェント・タブにしない) |
-| 素材大量の走査・分類・抽出 (MCP 不要) | codex タブ (luna は明示起動 `spawn-tab -- powershell -NoLogo -NoExit -Command "codex --model gpt-5.6-luna -c model_reasoning_effort=max -c features.fast_mode=false"`。素の `spawn --target codex` は config 既定 = astra max で立つ・2026-09-05 実測) |
+| 素材大量の走査・分類・抽出 (MCP 不要) | codex タブ (luna は明示起動 `spawn-tab --no-activate -- powershell -NoLogo -NoExit -Command "codex --model gpt-5.6-luna -c model_reasoning_effort=max -c features.fast_mode=false"`。素の `spawn --target codex` は config 既定 = astra max で立つ・2026-09-05 実測) |
 | MCP 必須素材・日本語プロースの fan-out | Agent tool `model:'opus'` 明示 (無指定は agent-model-guard hook が遮断) |
 
 非 mycmux セッション (cron 等) では spawn 不可 → Agent tool / Workflow で代替する。
@@ -58,7 +58,7 @@ metadata:
    effort・モデル指定は spec 本文に日本語で明記 (CLI フラグでは渡らない)
 2. **spawn**:
    `python <resolved-mycmux-agent-cli> spawn --target claude --prompt-file <spec> --label <slug> --cwd <作業フォルダ> --no-activate`
-   — 既定は裏タブ。`--split` は宮崎さん指定 or AskUserQuestion 承認後のみ足す。`--activate` 禁止 (フォーカスを奪うと戻せない)。
+   — 既定は裏タブ。`--split` は宮崎さん指定 or AskUserQuestion 承認後のみ足す。spawn / spawn-tab はどちらも `--no-activate` を付け、`--activate` は付けない (前面を奪うと戻せない)。
    応答 JSON を台帳に記録
 3. **台帳記録**: `scripts/dispatch_ledger.py append --slug <YYMMDD-名前> --status open --json '<spawn応答+dir/cwd>'`
    (手書き `>>` 追記は禁止 — パス中の `\` で行が壊れる。slug は日付必須・キーは snake)
@@ -83,6 +83,8 @@ metadata:
 - 子への追加指示は **`scripts/dispatch_send.py --slug <slug> --text ...`** (状態検査・本文投入・安定確認後の Enter 1回まで一括)。別コマンドで Enter を後追いしない。Enter 要求済み (`enter_sent: true`) は再送防止のため exit 0。配送未確認なら JSON の `warning` を確認し、本文も自動再送しない。配送の観測は `result: observed_delivered` で判断する
 - **close-tab / send は「その dispatch の行が持つ tab_session_id」だけに撃つ**。同じ slug が
   別日に2本あるとき、台帳の後勝ちマージで旧タブへ撃つのが過去の事故経路 (2026-08-13 修正)
+- **`--session` / `--anchor-session` に渡すのは PTY `session_id` だけ** (spawn 応答の `sessionId` = 台帳の `tab_session_id`、または `mycmux_bridge.py list` の `session_id`)。`tab.id`・`pane.id`・`workspace.id` を渡さない。`--resume-session` / `--handoff-from-session` だけは agent 側の `claude_session_id` を取る
+- **resume に失敗した席 (画面に `Session ID … is already in use`) へ催促・再送をしない**。復帰は mycmux-bridge と同じ手順: `close-tab --session <その PTY session_id>` → 同じペインで生きている兄弟タブの PTY を `--anchor-session` に `spawn-tab --anchor-session <兄弟の PTY session_id> --target claude --resume-session <claude_session_id> --no-activate` → `read` で履歴が戻ってから send。台帳は古い行を closed にし、新しい spawn 応答を append する (同一性は (slug, tab_session_id))
 - pane.read は表示中タブの renderer buffer、背景タブでは PTY scrollback を headless xterm で再生した画面を返す (transcript ではない)。完了検知は DONE.md / セッション JSONL 増分 / 成果物 mtime で行い、canonical state は `mycmux_agent_cli.py status --session <id>` で読む
 - 状態は常に外部化 (spec / DONE / 成果物ファイル)。「子の画面を見ないと分からない」状態を作らない
 - **子は人間に生ログを読ませない**。走行中の判断は ask カード (契約=references/ask-card-contract.md)、

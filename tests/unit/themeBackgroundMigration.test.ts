@@ -30,7 +30,7 @@ const LIGHT_THEME = THEMES.find((theme) => theme.id === "asanagi")!;
 function legacySettings(imageDim: number): Record<string, unknown> {
   return {
     mode: "preset",
-    presetId: "macos_monterey",
+    presetId: "dark_city",
     imagePath: "",
     imageOpacity: 1,
     imageBlur: 0,
@@ -164,5 +164,15 @@ describe("a migrated setting paints the same wallpaper it did before", () => {
     const painted = paintedToneLayer(undefined, LIGHT_THEME, 0.3);
     expect(painted.color).toBe(LIGHT_THEME.chrome.surface);
     expect(painted.opacity).toBeCloseTo(0.3, 10);
+  });
+});
+
+describe("removed wallpaper migration", () => {
+  it.each(["macos_monterey", "macos_ventura", "macos_big_sur", "macos_mojave", "earth_and_moon", "milky_way", "win11_default_dark", "catppuccin_black_hole", "catppuccin_atlantis", "catppuccin_blueprint", "catppuccin_bsod", "catppuccin_abandoned_station", "catppuccin_abstract_swirls", "oppenheimer", "macos_sonoma", "macos_high_sierra", "macos_sierra", "macos_el_capitan", "macos_yosemite", "antelope_canyon", "asteroid_city", "warp", "grafbase", "win11_motion_01", "win11_motion_02", "win11_motion_03", "win11_motion_04", "win11_spectrum_01", "win11_spectrum_02", "win11_spectrum_03", "win11_spectrum_04", "win11_flow_01", "win11_flow_02", "win11_flow_03", "win11_flow_04", "catppuccin_bluehour", "catppuccin_artificial_valley", "catppuccin_blue_landscape", "catppuccin_3d_model", "catppuccin_cabin", "catppuccin_aesthetic", "barbie", "lumon", "win11_bloom_01", "win11_bloom_02", "win11_bloom_03", "win11_bloom_04", "win11_default_bloom"])("maps removed %s to the default without losing adjustments", (presetId) => {
+    const migrated = normalizeThemeBackground({ ...legacySettings(0.3), presetId });
+    expect(migrated.presetId).toBe(DEFAULT_THEME_BACKGROUND.presetId);
+    expect(migrated.mode).toBe("preset");
+    expect(migrated.wallpaperTone).toBe(-0.3);
+    expect(normalizeThemeBackground(migrated)).toEqual(migrated);
   });
 });

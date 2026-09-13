@@ -26,7 +26,7 @@ use uuid::Uuid;
 const MANIFEST_JSON: &str = include_str!("../../../src/assets/wallpaper-manifest.json");
 
 /// Where the pack is published. The tag lives in the manifest so that
-/// re-pointing the app at a new pack is a tag bump, not 59 edits.
+/// re-pointing the app at a new pack is a tag bump, not 11 edits.
 const PACK_RELEASE_BASE: &str = "https://github.com/miyafcos/mycmux-team/releases/download";
 
 /// Well clear of the largest wallpaper in the pack (2.5 MiB), and small enough
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn bundled_manifest_parses_and_every_entry_is_addressable() {
         let manifest = manifest().expect("the bundled manifest must parse");
-        assert_eq!(manifest.wallpapers.len(), 59);
+        assert_eq!(manifest.wallpapers.len(), 11);
         assert!(!manifest.pack_tag.is_empty());
 
         let mut ids = std::collections::HashSet::new();
@@ -421,14 +421,14 @@ mod tests {
         ] {
             assert!(!is_safe_filename(filename), "{filename} should be refused");
         }
-        assert!(is_safe_filename("macos_monterey.webp"));
+        assert!(is_safe_filename("dark_city.webp"));
     }
 
     #[test]
     fn the_download_url_is_built_from_the_pack_tag() {
         assert_eq!(
-            resolve_download_url("wallpapers-v1", "macos_monterey.webp"),
-            "https://github.com/miyafcos/mycmux-team/releases/download/wallpapers-v1/macos_monterey.webp"
+            resolve_download_url("wallpapers-v1", "dark_city.webp"),
+            "https://github.com/miyafcos/mycmux-team/releases/download/wallpapers-v1/dark_city.webp"
         );
         // Changing the tag is the whole re-pointing mechanism.
         assert!(resolve_download_url("wallpapers-v2", "koi.webp").contains("wallpapers-v2"));
@@ -489,6 +489,18 @@ mod tests {
     }
 
     #[test]
+    fn removed_wallpapers_in_the_cache_are_ignored() {
+        let directory = tempfile::tempdir().unwrap();
+        let removed = directory.path().join("macos_monterey.webp");
+        fs::write(&removed, b"old cached wallpaper").unwrap();
+        let state = cache_state_at(directory.path());
+        assert!(state.entries.is_empty());
+        assert_eq!(state.total_bytes, 0);
+        assert_eq!(clear_cache_at(directory.path()).unwrap(), 0);
+        assert!(removed.exists());
+    }
+
+    #[test]
     fn an_empty_cache_lists_nothing() {
         let directory = tempfile::tempdir().unwrap();
         let state = cache_state_at(directory.path());
@@ -520,8 +532,8 @@ mod tests {
 
     #[test]
     fn only_manifest_ids_can_be_requested() {
-        assert!(entry_for("macos_monterey").is_ok());
-        for id in ["", "../../secret", "unknown_wallpaper"] {
+        assert!(entry_for("dark_city").is_ok());
+        for id in ["", "../../secret", "unknown_wallpaper", "macos_monterey"] {
             assert!(entry_for(id).is_err(), "{id} should not resolve");
         }
     }

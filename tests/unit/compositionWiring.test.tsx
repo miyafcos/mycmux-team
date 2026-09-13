@@ -30,7 +30,7 @@ import {
 import { useThemeStore } from "../../src/stores/themeStore";
 import type { ThemeBackgroundSettings } from "../../src/types";
 
-const PRESET_ID = "catppuccin_black_hole";
+const PRESET_ID = "jellyfish";
 
 const OFFLINE_CACHE: WallpaperCache = {
   ...EMPTY_WALLPAPER_CACHE,

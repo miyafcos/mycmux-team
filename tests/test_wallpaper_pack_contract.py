@@ -1,10 +1,10 @@
 """The wallpaper pack ships as thumbnails plus a manifest, never as originals.
 
-Nothing here is about taste: it is about the 31.9 MiB of full-resolution webp
+Nothing here is about taste: it is about the full-resolution webp
 under ``src/assets/**`` staying out of the installer while the picker keeps
 working offline. The three things worth breaking a build over are that no
 original is imported by the frontend, that the manifest the app verifies
-downloads against still matches the files on disk, and that all 59 wallpapers
+downloads against still matches the files on disk, and that all 11 wallpapers
 remain present as originals so the pack can be rebuilt.
 """
 
@@ -30,9 +30,9 @@ WALLPAPER_DIRS = (
 )
 
 # The whole point of the change: thumbnails are bundled, originals are not.
-# 59 thumbnails currently weigh ~306 KiB; the ceiling leaves room to re-encode
+# 11 thumbnails currently weigh about 64 KiB; the ceiling leaves room to re-encode
 # without quietly drifting back toward a megabyte.
-THUMBNAIL_BUDGET_BYTES = 700 * 1024
+THUMBNAIL_BUDGET_BYTES = 128 * 1024
 
 
 def read_json(path: Path) -> dict:
@@ -47,6 +47,8 @@ def preset_ids() -> list[str]:
 def test_sources_cover_exactly_the_presets_the_ui_offers() -> None:
     sources = read_json(SOURCES)["wallpapers"]
     source_ids = [entry["id"] for entry in sources]
+    assert len(source_ids) == 11
+    assert set(source_ids) == {'pink_city', 'winter', 'snowy', 'dark_city', 'koi', 'leafy', 'marble', 'pride', 'jellyfish', 'thanksgiving', 'red_rock'}
     assert len(source_ids) == len(set(source_ids)), "duplicate id in sources.json"
     assert source_ids == preset_ids(), (
         "scripts/wallpapers/sources.json and THEME_BACKGROUND_PRESETS have drifted. "
@@ -62,6 +64,13 @@ def test_every_original_is_still_in_the_repository() -> None:
         if not (REPO_ROOT / entry["source"]).is_file()
     ]
     assert not missing, "originals are missing from the repository: " + ", ".join(missing)
+    expected = {entry["source"] for entry in read_json(SOURCES)["wallpapers"]}
+    actual = {
+        path.relative_to(REPO_ROOT).as_posix()
+        for directory in WALLPAPER_DIRS
+        for path in (ASSETS / directory).glob("*.webp")
+    }
+    assert actual == expected, "original files must match the 11-entry source catalog"
 
 
 def test_manifest_matches_the_originals_on_disk() -> None:
