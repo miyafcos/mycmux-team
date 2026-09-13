@@ -148,7 +148,6 @@ import { terminalTurnStrings } from "../../src/components/terminal/terminalTurnS
 import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useUiStore } from "../../src/stores/uiStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
-import { terminalPaneStrings } from "../../src/components/workspace/terminalPaneStrings";
 
 // Built from the placeholder the component renders, so translating it does
 // not silently turn these reachability checks into no-ops.

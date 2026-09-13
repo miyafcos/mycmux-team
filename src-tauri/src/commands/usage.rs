@@ -5,7 +5,8 @@ use crate::cli_accounts::{
     claude::{self, ClaudePaths},
     codex::{self, CodexPaths},
     grok::{self, GrokPaths},
-    CliAccountProfile, CliLiveLogin, CliProvider, SnapshotUpdate,
+    token_owner::{self, OwnerCheck, TokenOwner},
+    CliAccountProfile, CliLiveLogin, CliProvider, ForeignTokenOwner, SnapshotUpdate,
 };
 use crate::usage::{
     credentials, oauth_claude, oauth_codex, oauth_grok, refresh, AccountUsageReport, CachedWindows, Cooldown,
@@ -22,6 +23,8 @@ const COOLDOWN_MAX_MS: i64 = 1_800_000;
 /// go first on the next round (see `deferred_priority`), so a long account
 /// list rotates through instead of starving its tail.
 const MAX_FETCH_PER_ROUND: usize = 12;
+const ERROR_FOREIGN_TOKEN: &str = "usage.error.foreign_token";
+const ERROR_LIVE_TOKEN_FOREIGN: &str = "usage.error.live_token_foreign";
 const ERROR_RATE_LIMITED: &str = "usage.error.rate_limited";
 const ERROR_NEEDS_RELOGIN: &str = "usage.error.needs_relogin";
 const ERROR_TOKEN_EXPIRED_ACTIVE: &str = "usage.error.token_expired_active";
@@ -66,6 +69,7 @@ struct PlannedRow {
     registered: bool,
     is_active: bool,
     needs_relogin: bool,
+    foreign_owner: Option<ForeignTokenOwner>,
 }
 
 fn planned_rows(profiles: &[CliAccountProfile], live: &[CliLiveLogin]) -> Vec<PlannedRow> {
@@ -85,6 +89,7 @@ fn planned_rows(profiles: &[CliAccountProfile], live: &[CliLiveLogin]) -> Vec<Pl
                     && login.identity_key.as_deref() == Some(profile.identity_key.as_str())
             }),
             needs_relogin: profile.needs_relogin,
+            foreign_owner: profile.foreign_token_owner.clone(),
         })
         .collect::<Vec<_>>();
     for login in live
@@ -113,6 +118,7 @@ fn planned_rows(profiles: &[CliAccountProfile], live: &[CliLiveLogin]) -> Vec<Pl
             registered: false,
             is_active: true,
             needs_relogin: false,
+            foreign_owner: None,
         });
     }
     rows.sort_by(|left, right| {
@@ -155,6 +161,7 @@ fn profile_usage(
         seven_day_opus: None,
         model_windows: Vec::new(),
         error_code: error_code.map(str::to_string),
+        token_owner_email: None,
         retry_at,
         fetched_at: Utc::now().to_rfc3339(),
     }
@@ -259,6 +266,11 @@ pub async fn get_account_usage(
         std::collections::HashMap::new();
     for index in processing_order(&rows, &priority) {
         let row = rows[index].clone();
+        if let Some(owner) = &row.foreign_owner {
+            state.profile_usage_cache.lock().await.remove(&row.profile_id);
+            output.push((index, foreign_token_usage(&row, owner.email.clone(), true)));
+            continue;
+        }
         let now_ms = Utc::now().timestamp_millis();
         if let Some(cached) = cached_profile_windows(&state, &row.profile_id, now_ms).await {
             output.push((
@@ -450,6 +462,59 @@ async fn stagger_before_fetch(fetch_count: &mut usize) {
     *fetch_count += 1;
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum OwnerGate {
+    Proceed,
+    LiveForeign(TokenOwner),
+    SnapshotForeign(TokenOwner),
+    AsFailure(Option<u16>),
+}
+
+/// An older CLI can rewrite X's tokens without changing the name P. The name
+/// alone cannot authorize showing X's usage on P's row.
+fn claude_owner_gate(row_identity: Option<&str>, is_active: bool, registered: bool, check: &OwnerCheck) -> OwnerGate {
+    match check {
+        OwnerCheck::Owner(owner) if row_identity.is_none_or(|identity| identity == owner.account_uuid) => OwnerGate::Proceed,
+        OwnerCheck::Owner(owner) if is_active || !registered => OwnerGate::LiveForeign(owner.clone()),
+        OwnerCheck::Owner(owner) => OwnerGate::SnapshotForeign(owner.clone()),
+        OwnerCheck::Rejected { status } => OwnerGate::AsFailure(Some(*status)),
+        OwnerCheck::RateLimited { .. } => OwnerGate::AsFailure(Some(429)),
+        OwnerCheck::Unavailable => OwnerGate::AsFailure(None),
+    }
+}
+
+fn foreign_token_usage(row: &PlannedRow, email: Option<String>, snapshot: bool) -> ProfileUsage {
+    let mut usage = profile_usage(row,
+        if snapshot { UsageRowState::NeedsRelogin } else { UsageRowState::Error },
+        Some(if snapshot { ERROR_FOREIGN_TOKEN } else { ERROR_LIVE_TOKEN_FOREIGN }), None);
+    usage.needs_relogin |= snapshot;
+    usage.token_owner_email = email;
+    usage
+}
+
+async fn foreign_claude_usage(
+    app: &tauri::AppHandle, state: &UsageState, base: &std::path::Path,
+    row: &PlannedRow, owner: TokenOwner, snapshot: bool,
+) -> FetchResult {
+    state.profile_usage_cache.lock().await.remove(&row.profile_id);
+    crate::usage::log_oauth_failure(app, "claude_token_owner_mismatch", &format!(
+        "profile={} claimed={} owner={} active={}", row.profile_id,
+        row.identity_key.as_deref().unwrap_or("").chars().take(8).collect::<String>(),
+        owner.account_uuid.chars().take(8).collect::<String>(), !snapshot));
+    if snapshot {
+        let base = base.to_path_buf();
+        let id = row.profile_id.clone();
+        let saved_owner = owner.clone();
+        let result = tokio::task::spawn_blocking(move ||
+            crate::cli_accounts::record_foreign_token_owner(&base, &id, &saved_owner, Utc::now().to_rfc3339())).await;
+        if !matches!(result, Ok(Ok(()))) {
+            crate::usage::log_oauth_failure(app, "claude_token_owner_record",
+                &format!("profile={} record_failed", row.profile_id));
+        }
+    }
+    FetchResult { usage: foreign_token_usage(row, owner.email, snapshot) }
+}
+
 async fn fetch_claude_profile(
     app: &tauri::AppHandle,
     state: &UsageState,
@@ -514,24 +579,30 @@ async fn fetch_claude_profile(
         }
     };
     loop {
-        stagger_before_fetch(fetch_count).await;
-        let (status, detail) =
-            match oauth_claude::fetch_with_token_status(&state.http, &access_token).await {
-                Ok(usage) => {
-                    return successful_fetch(
-                        state,
-                        row,
-                        usage.five_hour,
-                        usage.seven_day,
-                        usage.seven_day_sonnet,
-                        usage.seven_day_opus,
-                        usage.model_windows,
-                        cooldown_key,
-                    )
-                    .await
+        let check = match token_owner::cached_owner(&access_token) {
+            Some(owner) => OwnerCheck::Owner(owner),
+            None => {
+                stagger_before_fetch(fetch_count).await;
+                token_owner::claude_token_owner(&state.http, &access_token).await
+            }
+        };
+        let (status, detail) = match claude_owner_gate(row.identity_key.as_deref(), row.is_active, row.registered, &check) {
+            OwnerGate::Proceed => {
+                stagger_before_fetch(fetch_count).await;
+                match oauth_claude::fetch_with_token_status(&state.http, &access_token).await {
+                    Ok(usage) => return successful_fetch(
+                        state, row, usage.five_hour, usage.seven_day, usage.seven_day_sonnet,
+                        usage.seven_day_opus, usage.model_windows, cooldown_key).await,
+                    Err(error) => error,
                 }
-                Err(error) => error,
-            };
+            }
+            OwnerGate::LiveForeign(owner) => return foreign_claude_usage(app, state, base, row, owner, false).await,
+            OwnerGate::SnapshotForeign(owner) => return foreign_claude_usage(app, state, base, row, owner, true).await,
+            OwnerGate::AsFailure(status) => (status, match status {
+                Some(status) => format!("Claude OAuth profile error: HTTP {status}"),
+                None => "Claude OAuth profile network error".to_string(),
+            }),
+        };
         if !should_retry_claude_after_unauthorized(status, row.is_active, refreshed_once) {
             return usage_fetch_failure(app, state, row, cooldown_key, status, &detail).await;
         }
@@ -567,9 +638,13 @@ fn should_retry_claude_after_unauthorized(
     matches!(status, Some(401) | Some(403)) && !is_active && !already_refreshed
 }
 
-/// Refresh an inactive Claude snapshot and persist the new tokens before using
-/// them. Returns the fresh access token, or the FetchResult the caller should
-/// return as-is.
+/// An inactive name can still share the live CLI's refresh-token lineage.
+fn shares_live_refresh_token(snapshot_refresh: &str, live_credentials: Option<&str>) -> bool {
+    live_credentials.and_then(|text| credentials::claude_tokens(text).ok())
+        .is_some_and(|tokens| tokens.refresh_token == snapshot_refresh)
+}
+
+/// Refresh an inactive Claude snapshot and persist the new tokens before use.
 async fn refresh_claude_snapshot(
     app: &tauri::AppHandle,
     state: &UsageState,
@@ -602,11 +677,22 @@ async fn refresh_claude_snapshot(
         }
         LiveIdentityCheck::Inactive => {}
     }
+    // Filing X's live tokens into X's snapshot leaves X inactive by name but
+    // sharing the CLI's refresh token. Rotating it here would log the terminal out.
+    let live_credentials = ClaudePaths::resolve().ok().and_then(|paths| claude::read_credentials(&paths));
+    if shares_live_refresh_token(&tokens.refresh_token, live_credentials.as_deref()) {
+        return Err(FetchResult { usage: profile_usage(row, UsageRowState::WaitForCli,
+            Some(ERROR_TOKEN_EXPIRED_ACTIVE), None) });
+    }
     stagger_before_fetch(fetch_count).await;
     let refreshed = match refresh::refresh_claude(&state.http, &tokens.refresh_token).await {
         Ok(value) => value,
         Err(error) => return Err(refresh_failure(app, state, row, cooldown_key, error).await),
     };
+    // A refresh preserves the owner of this refresh-token lineage.
+    if let Some(owner) = token_owner::cached_owner(&tokens.access_token) {
+        token_owner::remember_owner(&refreshed.access_token, &owner);
+    }
     let next = credentials::ClaudeTokens {
         access_token: refreshed.access_token.clone(),
         refresh_token: refreshed
@@ -1218,6 +1304,17 @@ async fn recapture_live_snapshot(app: &tauri::AppHandle, row: &PlannedRow) -> bo
     if !matches!(live_identity_check(row), LiveIdentityCheck::Active) {
         return false;
     }
+    if row.provider == CliProvider::Claude {
+        let Some(token) = ClaudePaths::resolve().ok()
+            .and_then(|paths| claude::read_credentials(&paths))
+            .and_then(|text| token_owner::claude_access_token(&text)) else { return false };
+        let state = app.state::<UsageState>();
+        match token_owner::claude_token_owner(&state.http, &token).await {
+            OwnerCheck::Owner(owner) if row.identity_key.as_deref() == Some(owner.account_uuid.as_str()) => {}
+            _ => return false,
+        }
+    }
+    // Codex/Grok already store name and token together; their recapture is unchanged.
     let Ok(default_dir) = app.path().app_data_dir() else {
         return false;
     };
@@ -1413,6 +1510,7 @@ mod tests {
             last_switched_at: None,
             needs_relogin: false,
             refresh_rejected_at: None,
+            foreign_token_owner: None,
         }
     }
 
@@ -1732,6 +1830,7 @@ mod tests {
             registered: true,
             is_active: false,
             needs_relogin: false,
+            foreign_owner: None,
         };
 
         // Nothing fetched yet: the cooldown row is honestly blank.
@@ -1813,6 +1912,7 @@ mod tests {
             registered: true,
             is_active: false,
             needs_relogin: false,
+            foreign_owner: None,
         };
         let rows = vec![row("a"), row("b"), row("c"), row("d")];
 
@@ -1837,6 +1937,7 @@ mod tests {
             registered: true,
             is_active: false,
             needs_relogin: false,
+            foreign_owner: None,
         };
         let profile_key = profile_cooldown_key("p");
         let provider_key = provider_cooldown_key(CliProvider::Claude);
@@ -1877,4 +1978,59 @@ mod tests {
             vec![300_000, 600_000, 1_200_000, 1_800_000, 1_800_000]
         );
     }
+    #[test]
+    fn claude_owner_gate_table() {
+        let owner = TokenOwner { account_uuid: "X".into(), email: Some("x@example.test".into()) };
+        for active in [true, false] {
+            for registered in [true, false] {
+                let check = OwnerCheck::Owner(owner.clone());
+                for identity in [Some("X"), None] {
+                    assert_eq!(claude_owner_gate(identity, active, registered, &check), OwnerGate::Proceed);
+                }
+                let expected = if active || !registered { OwnerGate::LiveForeign(owner.clone()) }
+                    else { OwnerGate::SnapshotForeign(owner.clone()) };
+                assert_eq!(claude_owner_gate(Some("P"), active, registered, &check), expected);
+                for (check, expected) in [
+                    (OwnerCheck::Rejected { status: 401 }, Some(401)),
+                    (OwnerCheck::Rejected { status: 403 }, Some(403)),
+                    (OwnerCheck::RateLimited { retry_after_secs: Some(600) }, Some(429)),
+                    (OwnerCheck::Unavailable, None),
+                ] {
+                    assert_eq!(claude_owner_gate(Some("P"), active, registered, &check), OwnerGate::AsFailure(expected));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shares_live_refresh_token_table() {
+        let live = include_str!("../cli_accounts/fixtures/claude_credentials_sample.json");
+        assert!(shares_live_refresh_token("synthetic-refresh", Some(live)));
+        assert!(!shares_live_refresh_token("another-refresh", Some(live)));
+        assert!(!shares_live_refresh_token("synthetic-refresh", None));
+        assert!(!shares_live_refresh_token("synthetic-refresh", Some("broken")));
+        assert!(!shares_live_refresh_token("", Some("{}")));
+    }
+
+    #[test]
+    fn foreign_token_rows_never_carry_usage_windows() {
+        let mut p = profile("claude-p", CliProvider::Claude, "P", "P");
+        p.foreign_token_owner = Some(ForeignTokenOwner {
+            account_uuid: "X".into(), email: Some("x@example.test".into()), detected_at: "now".into(),
+        });
+        let rows = planned_rows(&[p], &[live(CliProvider::Claude, Some("P"), Some("claude-p"))]);
+        let row = &rows[0];
+        assert!(row.foreign_owner.is_some());
+        for snapshot in [true, false] {
+            let usage = foreign_token_usage(row, Some("x@example.test".into()), snapshot);
+            assert_eq!(usage.state, if snapshot { UsageRowState::NeedsRelogin } else { UsageRowState::Error });
+            assert_eq!(usage.error_code.as_deref(), Some(if snapshot { ERROR_FOREIGN_TOKEN } else { ERROR_LIVE_TOKEN_FOREIGN }));
+            assert_eq!(usage.needs_relogin, snapshot);
+            assert!(usage.five_hour.is_none() && usage.seven_day.is_none());
+            assert!(usage.seven_day_sonnet.is_none() && usage.seven_day_opus.is_none() && usage.model_windows.is_empty());
+            assert_eq!(serde_json::to_value(&usage).unwrap()["token_owner_email"], "x@example.test");
+        }
+        assert!(planned_rows(&[], &[live(CliProvider::Claude, Some("P"), None)])[0].foreign_owner.is_none());
+    }
+
 }

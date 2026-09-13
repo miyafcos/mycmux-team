@@ -32,13 +32,9 @@ describe("XTermWrapper turn-chip lifecycle wiring", () => {
     expect(source).not.toContain('if (lastTurnChipRef.current?.mode === "transcript") return;');
   });
 
-  it("scans a mark-free transcript buffer before resolving the same jump", () => {
-    const scan = source.indexOf("const restored = restoreTurnMarksFromBufferOnJump(sessionId, currentTerm, mode)");
-    expect(scan).toBeGreaterThan(-1);
-    expect(source.indexOf("const action = resolveTurnJump(resolvedIntent, {")).toBeGreaterThan(scan);
-    expect(source).toContain("const marks = getTurnMarkData(sessionId)");
-    expect(source).toContain('restored > 0 && intent.kind === "step" && intent.direction === -1');
-  });
+  // The scan-before-resolve order is exercised end to end by
+  // terminalTurnListRowsIntegration.test.tsx ("scans a lone user turn on ▲")
+  // and turnMarkRestore.test.ts, so it is no longer pinned here as source text.
 
   it("keeps a turn jump inside the pane and opens the reader for it", () => {
     // Only the reader's own link may open the Dashboard now; a jump queues the

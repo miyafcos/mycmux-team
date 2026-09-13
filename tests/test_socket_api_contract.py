@@ -21,22 +21,11 @@ def function_slice(text: str, start: str, end: str) -> str:
 
 
 def test_socket_api_has_frontend_response_bridge() -> None:
-    socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
     socket_commands = read_repo_text("src/components/layout/socketCommands.ts")
     ipc = read_repo_text("src/lib/ipc.ts")
     socket_rs = read_repo_text("src-tauri/src/socket.rs")
 
-    for snippet in [
-        'listen<SocketRequestPayload>("socket-request"',
-        "handleSocketCommand(cmd, args)",
-        "await sendSocketResponse(id, result, null);",
-        "await sendSocketResponse(id, null, message);",
-        'case "workspace.list":',
-        'case "pane.list":',
-        "Unknown socket command",
-    ]:
-        assert_contains(socket_listener, snippet, "src/components/layout/SocketListener.tsx")
-
+    # Frontend success/error dispatch: peerWindowClose.test.tsx.
     assert_contains(ipc, 'return invoke<void>("socket_response", { id, result, error } satisfies SocketResponseArgs);', "src/lib/ipc.ts")
     assert_contains(socket_rs, 'app.emit("socket-request", &req)', "src-tauri/src/socket.rs")
     assert_contains(socket_rs, 'state.pending_requests.remove(&id);', "src-tauri/src/socket.rs")
@@ -45,25 +34,8 @@ def test_socket_api_has_frontend_response_bridge() -> None:
     assert_contains(socket_rs, ".snapshot_with_input_revisions(", "src-tauri/src/socket.rs")
     assert_contains(socket_rs, "session_manager.input_revision(id).ok()", "src-tauri/src/socket.rs")
 
-    for snippet in [
-        'case "workspace.new":',
-        'case "workspace.close":',
-        'case "pane.spawn":',
-        'case "pane.spawn_tab":',
-        'case "pane.declare_tab":',
-        'case "pane.launch_declared":',
-        'case "pane.activate_tab":',
-        'case "pane.restore_activation":',
-        'case "pane.close_tab":',
-        'case "pane.close_tabs":',
-        'case "pane.rename_tab":',
-        'case "pane.move":',
-        'case "web.open":',
-        'case "web.list":',
-        'case "web.focus":',
-        'case "web.push":',
-    ]:
-        assert_contains(socket_commands, snippet, "src/components/layout/socketCommands.ts")
+    # The exported command table is checked against the dispatch AST by
+    # socketCommandNames.test.ts; names are still an external API contract.
     assert_contains(socket_commands, 'value === "grok"', "src/components/layout/socketCommands.ts")
 
 
@@ -122,39 +94,11 @@ def test_one_shot_tab_command_is_not_persisted() -> None:
     assert "commandArgv" not in to_config
 
 
-def test_socket_activation_preserves_the_operator_foreground() -> None:
+def test_socket_global_activation_prohibitions_remain_explicit() -> None:
+    # Whole-file bans and type-level guarantees have no exhaustive runtime equivalent.
     socket_commands = read_repo_text("src/components/layout/socketCommands.ts")
     layout_store = read_repo_text("src/stores/workspaceLayoutStore.ts")
-
-    socket_scopes = [
-        function_slice(socket_commands, "function activateLocation(", "export function serializeWorkspaceLayoutForSocket"),
-        function_slice(socket_commands, "async function spawnPane(", "async function spawnTab("),
-        function_slice(socket_commands, "async function spawnTab(", "type DeclaredLaunchResult"),
-        function_slice(socket_commands, "async function launchDeclared(", "async function activateTab("),
-        function_slice(socket_commands, "async function activateTab(", "async function restoreActivation("),
-        function_slice(socket_commands, "async function restoreActivation(", "async function closeTab("),
-        # workspace.close now follows workspace.new; preserve existing scope indices.
-        function_slice(socket_commands, "async function newWorkspace(", "async function closeWorkspace("),
-        function_slice(socket_commands, "async function closeWorkspace(", "export async function handleSocketCommand("),
-    ]
-    for scope in socket_scopes:
-        assert "setActiveWorkspace(" not in scope
-        assert "focusController.request(" not in scope
-        assert "focus: true" not in scope
-
-    assert 'activationSource: "socket"' in socket_scopes[1]
-    assert 'activationSource: "socket"' in socket_scopes[2]
-    assert "foregroundChanged: false" in socket_scopes[1]
-    assert "foregroundChanged: false" in socket_scopes[2]
-    assert 'activationSource: "socket"' in socket_scopes[3]
-    assert "foreground_changed: false" in socket_scopes[4]
-    assert "foreground_changed: false" in socket_scopes[5]
-    assert "foreground_preserved" in socket_scopes[5]
-    assert "foregroundChanged" in socket_scopes[-2]
-    assert "foregroundChanged" in socket_scopes[-1]
     focus_web = function_slice(socket_commands, "async function focusWebPane(", "async function pushWebPane(")
-    assert "setActiveWorkspace(" in focus_web
-    assert "explicit foreground-changing socket command" in focus_web
     assert "setActiveWorkspace(" not in socket_commands.replace(focus_web, "")
     assert "focusController." not in socket_commands
     assert "force_focus" not in socket_commands

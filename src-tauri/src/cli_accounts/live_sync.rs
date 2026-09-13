@@ -1,3 +1,6 @@
+//! Claude's name and tokens are separate writes: an older CLI can leave name P
+//! beside X's tokens. File only under the verified owner, never the name alone.
+//!
 //! Keeps the snapshot of the *live* CLI login in step with token rotation.
 //!
 //! Both CLIs rewrite their credential file whenever they refresh an access
@@ -23,7 +26,9 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use super::{claude, codex, grok, registry, snapshot, CliAccountProfile, CliProvider};
+use super::{claude, codex, grok, registry, snapshot, token_owner, ClaudeLiveFiling,
+    CliAccountProfile, CliProvider, UnverifiedPolicy};
+use token_owner::{OwnerLookup, OwnerCheck};
 
 /// Rotation is driven by token lifetime (hours), not by user actions, so a
 /// coarse poll is enough. Short enough that a switch right after a rotation
@@ -46,6 +51,9 @@ pub enum SyncOutcome {
     Registered(String),
     /// Snapshot rewritten for this profile id.
     Resynced(String),
+    FiledToOwner(String),
+    ForeignUnregistered,
+    Unverified,
     /// Capture or save failed; the stamp is left untouched so the next tick retries.
     Failed(String),
 }
@@ -138,8 +146,9 @@ pub fn sync_provider(
     claude_paths: &claude::ClaudePaths,
     codex_paths: &codex::CodexPaths,
     stamps: &mut FileStamps,
+    lookup: OwnerLookup,
 ) -> SyncOutcome {
-    sync_provider_with_grok(base, provider, claude_paths, codex_paths, None, stamps)
+    sync_provider_with_grok(base, provider, claude_paths, codex_paths, None, stamps, lookup)
 }
 
 fn sync_provider_with_grok(
@@ -149,6 +158,7 @@ fn sync_provider_with_grok(
     codex_paths: &codex::CodexPaths,
     grok_paths: Option<&grok::GrokPaths>,
     stamps: &mut FileStamps,
+    lookup: OwnerLookup,
 ) -> SyncOutcome {
     let watched = match provider {
         CliProvider::Claude => claude_watched(claude_paths),
@@ -175,6 +185,48 @@ fn sync_provider_with_grok(
             return SyncOutcome::Failed(error);
         }
     };
+    // Capture once, then classify and save exactly those bytes. A CLI can
+    // rotate again while this tick runs; a second read must not bypass the check.
+    let captured_claude = if provider == CliProvider::Claude {
+        let Some(identity) = live.identity_key.as_deref() else {
+            return SyncOutcome::NoIdentity;
+        };
+        let stored = match claude::capture(claude_paths) {
+            Ok((stored, _)) => stored,
+            Err(_) => {
+                stamps.forget(&watched);
+                return SyncOutcome::Failed(super::ERR_LIVE_LOGIN_UNAVAILABLE.to_string());
+            }
+        };
+        if !super::claude_snapshot_names(&stored, identity) {
+            stamps.forget(&watched);
+            return SyncOutcome::Unverified;
+        }
+        match super::classify_claude_live(identity, &stored.credentials_text, &file.profiles, lookup) {
+            ClaudeLiveFiling::Claimed => Some(stored),
+            ClaudeLiveFiling::ToOwner { profile_id, owner } => {
+                if super::replace_claude_credentials(base, &profile_id, &owner.account_uuid, &stored.credentials_text).is_err() {
+                    stamps.forget(&watched);
+                    return SyncOutcome::Failed(super::ERR_REGISTRY_SAVE_FAILED.to_string());
+                }
+                let cleared = file.profiles.iter_mut().find(|profile| profile.id == profile_id)
+                    .is_some_and(super::clear_saved_token_flags);
+                if cleared && registry::save(base, &file).is_err() {
+                    stamps.forget(&watched);
+                    return SyncOutcome::Failed(super::ERR_REGISTRY_SAVE_FAILED.to_string());
+                }
+                return SyncOutcome::FiledToOwner(profile_id);
+            }
+            ClaudeLiveFiling::ForeignUnregistered(_) => return SyncOutcome::ForeignUnregistered,
+            ClaudeLiveFiling::Unverified => {
+                stamps.forget(&watched);
+                return SyncOutcome::Unverified;
+            }
+        }
+    } else {
+        // Codex/Grok keep identity and tokens together in one CLI-written file.
+        None
+    };
     let Some(profile_id) = resync_target(provider, live.identity_key.as_deref(), &file.profiles)
     else {
         if live.identity_key.is_none() {
@@ -183,7 +235,7 @@ fn sync_provider_with_grok(
         // A live login with no matching profile: register it in place. Must go
         // through `capture_account` (not `capture_resolved`) — the caller of
         // this tick already holds the non-reentrant mutation guard.
-        return match super::capture_account_with_grok(base, claude_paths, codex_paths, grok_paths, provider, None) {
+        return match super::capture_account_with_grok(base, claude_paths, codex_paths, grok_paths, provider, None, lookup, UnverifiedPolicy::Refuse) {
             Ok(profile) => SyncOutcome::Registered(profile.id),
             Err(error) => {
                 stamps.forget(&watched);
@@ -193,9 +245,7 @@ fn sync_provider_with_grok(
     };
 
     let stored = match provider {
-        CliProvider::Claude => claude::capture(claude_paths).map(|(stored, _)| {
-            snapshot::StoredSnapshot::Claude(stored)
-        }),
+        CliProvider::Claude => Ok(snapshot::StoredSnapshot::Claude(captured_claude.expect("Claude captured above"))),
         CliProvider::Codex => {
             codex::capture(codex_paths).map(|(stored, _)| snapshot::StoredSnapshot::Codex(stored))
         }
@@ -215,7 +265,7 @@ fn sync_provider_with_grok(
                 .profiles
                 .iter_mut()
                 .find(|profile| profile.id == profile_id)
-                .is_some_and(|profile| profile.refresh_rejected_at.take().is_some());
+                .is_some_and(super::clear_saved_token_flags);
             if !cleared {
                 return SyncOutcome::Resynced(profile_id);
             }
@@ -239,6 +289,8 @@ fn sync_provider_with_grok(
 pub fn start_live_sync(base: PathBuf) {
     thread::spawn(move || {
         let mut stamps = FileStamps::new();
+        let mut prewarm_stamps = FileStamps::new();
+        let mut prewarm_unverified = true;
         loop {
             thread::sleep(POLL_INTERVAL);
             let (claude_paths, codex_paths, grok_paths) =
@@ -246,6 +298,17 @@ pub fn start_live_sync(base: PathBuf) {
                     (Ok(claude_paths), Ok(codex_paths), Ok(grok_paths)) => (claude_paths, codex_paths, grok_paths),
                     _ => continue,
                 };
+            // No mutation guard across network I/O. The sync below re-reads
+            // the token and consults the cache, so rotations during prewarm fail closed.
+            let moved = prewarm_stamps.changed(&claude_watched(&claude_paths));
+            if moved || prewarm_unverified {
+                prewarm_unverified = claude::read_credentials(&claude_paths)
+                    .and_then(|text| token_owner::claude_access_token(&text))
+                    .map(|token| {
+                        token_owner::cached_owner(&token).is_none()
+                            && !matches!(token_owner::claude_token_owner_blocking(&token), OwnerCheck::Owner(_))
+                    }).unwrap_or(true);
+            }
             // A switch is mid-flight: its own capture already covers this
             // rotation, and interleaving would race the restore. Skip rather
             // than block — the next tick picks up whatever it left behind.
@@ -253,7 +316,7 @@ pub fn start_live_sync(base: PathBuf) {
                 continue;
             };
             for provider in [CliProvider::Claude, CliProvider::Codex, CliProvider::Grok] {
-                match sync_provider_with_grok(&base, provider, &claude_paths, &codex_paths, Some(&grok_paths), &mut stamps) {
+                match sync_provider_with_grok(&base, provider, &claude_paths, &codex_paths, Some(&grok_paths), &mut stamps, &token_owner::cached_owner) {
                     SyncOutcome::Failed(error) => {
                         crate::diag_warn!(
                             "cli-accounts",
@@ -268,11 +331,18 @@ pub fn start_live_sync(base: PathBuf) {
                             "auto-registered live login ({provider:?}) as {profile_id}"
                         );
                     }
+                    SyncOutcome::FiledToOwner(profile_id) => {
+                        crate::diag_warn!("cli-accounts", "filed live Claude tokens to owner profile={profile_id}");
+                    }
+                    SyncOutcome::ForeignUnregistered => {
+                        crate::diag_warn!("cli-accounts", "live Claude token owner is unregistered; snapshot unchanged");
+                    }
                     // Success is the common case and would thrash the 1MB log.
                     SyncOutcome::Resynced(_)
                     | SyncOutcome::Unchanged
                     | SyncOutcome::NoLiveLogin
-                    | SyncOutcome::NoIdentity => {}
+                    | SyncOutcome::NoIdentity
+                    | SyncOutcome::Unverified => {}
                 }
             }
         }
@@ -301,6 +371,7 @@ mod tests {
             last_switched_at: None,
             needs_relogin: false,
             refresh_rejected_at: None,
+            foreign_token_owner: None,
         }
     }
 
@@ -399,6 +470,7 @@ mod tests {
             &claude_paths,
             &codex_paths,
             &mut stamps,
+            &|_| Some(token_owner::TokenOwner { account_uuid: "claude-account-a".into(), email: None }),
         );
         let SyncOutcome::Registered(profile_id) = outcome else {
             panic!("expected auto-registration, got {outcome:?}");
@@ -437,6 +509,7 @@ mod tests {
                 &claude_paths,
                 &codex_paths,
                 &mut stamps,
+                &|_| Some(token_owner::TokenOwner { account_uuid: "claude-account-a".into(), email: None }),
             ),
             SyncOutcome::Resynced("claude-1".into())
         );

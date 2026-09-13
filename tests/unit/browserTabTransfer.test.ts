@@ -1,3 +1,5 @@
+import * as terminalCache from "../../src/components/terminal/terminalCache";
+import { focusController } from "../../src/lib/focusController";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../src/components/terminal/XTermWrapper", () => ({
   hasTerminalBuffer: () => false, getTerminalWriteCounter: () => 0, getTerminalBufferLines: () => [],
@@ -55,6 +57,21 @@ describe("browser window transfer", () => {
     expect(pane.pinnedTabId).toBe("pdf");
   });
 
+  it("hands off before evicting local renderers and focus without killing PTYs", async () => {
+    const ws = workspace();
+    useWorkspaceListStore.getState()._replaceWorkspaces([ws]);
+    const calls: string[] = [];
+    vi.spyOn(ipc, "openWorkspaceWindow").mockImplementation(async () => { calls.push("open"); return "child"; });
+    const evict = vi.spyOn(terminalCache, "evictTerminalCache").mockImplementation((id) => { calls.push(`evict:${id}`); });
+    const clear = vi.spyOn(focusController, "clearSession").mockImplementation((id) => { calls.push(`focus:${id}`); });
+    const kill = vi.spyOn(ipc, "killSession").mockResolvedValue();
+    await tearOutWorkspaceToNewWindow(ws.id);
+    expect(calls[0]).toBe("open");
+    expect(evict.mock.calls.map(([id]) => id).sort()).toEqual(["pty-original", "pty-pdf"]);
+    expect(clear.mock.calls.map(([id]) => id).sort()).toEqual(["pty-original", "pty-pdf"]);
+    expect(useWorkspaceListStore.getState().workspaces).toHaveLength(0);
+    expect(kill).not.toHaveBeenCalled();
+  });
   it.each(["html", "markdown", "office", "pdf"] as const)("restores browser metadata for %s without terminal state", (sourceKind) => {
     const cfg = toTransferConfig(workspace()).panes[0];
     cfg.tabs = [{ ...cfg.tabs![1], source_kind: sourceKind, cwd: "C:/terminal", agent_kind: "claude", agent_session_id: "old",

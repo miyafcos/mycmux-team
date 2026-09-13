@@ -128,6 +128,7 @@ pub struct ProfileUsage {
     pub seven_day_opus: Option<WindowStat>,
     pub model_windows: Vec<NamedWindow>,
     pub error_code: Option<String>,
+    pub token_owner_email: Option<String>,
     pub retry_at: Option<String>,
     pub fetched_at: String,
 }
@@ -186,10 +187,14 @@ mod tests {
             seven_day_opus: None,
             model_windows: Vec::new(),
             error_code: None,
+            token_owner_email: None,
             retry_at: None,
             fetched_at: "now".into(),
         };
         let wire = serde_json::to_string(&usage).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&wire).unwrap()["token_owner_email"], serde_json::Value::Null);
+        let named = ProfileUsage { token_owner_email: Some("x@example.test".into()), ..usage };
+        assert_eq!(serde_json::to_value(&named).unwrap()["token_owner_email"], "x@example.test");
         assert!(!wire.contains(synthetic_access));
         assert!(!wire.contains(synthetic_refresh));
         let refreshed = crate::usage::refresh::RefreshedClaude {

@@ -509,12 +509,12 @@ See ``CHANGELOG.md`` for details.
   }
   Invoke-NativeVisible -FilePath "git" -Arguments @("fetch", $mirrorRemote, "master") -Label "公開ミラーの取得"
   $mirrorHead = Invoke-NativeCapture -FilePath "git" -Arguments @("rev-parse", "$mirrorRemote/master") -Label "公開ミラー HEAD の確認"
-  $localTree = Invoke-NativeCapture -FilePath "git" -Arguments @("rev-parse", "master^{tree}") -Label "master tree の確認"
+  $localTree = Invoke-NativeCapture -FilePath "python" -Arguments @((Join-Path $PSScriptRoot "public_export.py"), "--rev", "master", "--tree-object") -Label "master tree の確認"
   $mirrorTree = Invoke-NativeCapture -FilePath "git" -Arguments @("rev-parse", "$mirrorHead^{tree}") -Label "公開ミラー tree の確認"
   if ($mirrorTree -eq $localTree) {
     Write-Host "公開ミラー: SKIP (tree は既に master と一致)"
   } else {
-    $syncCommit = Invoke-NativeCapture -FilePath "git" -Arguments @("commit-tree", "master^{tree}", "-p", $mirrorHead, "-m", "sync: mycmux $tag") -Label "sync コミットの作成"
+    $syncCommit = Invoke-NativeCapture -FilePath "git" -Arguments @("commit-tree", $localTree, "-p", $mirrorHead, "-m", "sync: mycmux $tag (public export)") -Label "sync コミットの作成"
     Invoke-NativeVisible -FilePath "git" -Arguments @("push", $mirrorRemote, "${syncCommit}:refs/heads/master") -Label "公開ミラーへの push"
     # 自己申告ではなく実体で確かめる: push した commit の tree が master と同一か。
     $pushedHead = Invoke-NativeCapture -FilePath "git" -Arguments @("ls-remote", $mirrorRemote, "refs/heads/master") -Label "公開ミラー HEAD の再確認"

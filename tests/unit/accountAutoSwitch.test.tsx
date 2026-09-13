@@ -188,3 +188,11 @@ describe("automatic switching lifecycle", () => {
     await act(async () => root.unmount());
   });
 });
+
+it("does not auto-switch from a live token owner mismatch", () => {
+  const source = row("a", 100);
+  source.state = "error";
+  source.error_code = "usage.error.live_token_foreign";
+  source.token_owner_email = "x@example.test";
+  expect(pick([source, row("b", 1)])).toBeNull();
+});

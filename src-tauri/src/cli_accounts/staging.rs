@@ -164,6 +164,9 @@ pub fn capture_staged(
         Some(&grok_paths),
         provider,
         label,
+        &super::token_owner::cached_owner,
+        // One isolated login writes both files; an observed mismatch still refuses capture.
+        super::UnverifiedPolicy::Allow,
     )?;
     Ok((profile, updated_existing))
 }
@@ -433,4 +436,28 @@ mod tests {
         sweep_stale_staging(base.path(), Duration::ZERO);
         assert!(stray.is_file());
     }
+    #[test]
+    fn staged_unverified_login_is_allowed_but_known_foreign_owner_is_refused() {
+        for foreign in [false, true] {
+            let base = tempdir().unwrap();
+            let dir = create_staging_dir(base.path()).unwrap();
+            let token = if foreign { "staged-known-foreign-unique" } else { "staged-unverified-unique" };
+            staged_claude(&dir, CLAUDE_JSON);
+            fs::write(dir.join(".credentials.json"), CREDS.replace("synthetic-access", token)).unwrap();
+            if foreign {
+                super::super::token_owner::remember_owner(token, &super::super::token_owner::TokenOwner {
+                    account_uuid: "another-account".into(), email: None,
+                });
+            }
+            let result = capture_staged(base.path(), CliProvider::Claude, &dir, None, None);
+            if foreign {
+                assert_eq!(result.err().as_deref(), Some(super::super::ERR_LIVE_TOKEN_FOREIGN));
+                assert!(registry::load(base.path()).unwrap().profiles.is_empty());
+                assert!(!snapshot::snapshot_dir(base.path()).exists());
+            } else {
+                assert!(result.is_ok());
+            }
+        }
+    }
+
 }

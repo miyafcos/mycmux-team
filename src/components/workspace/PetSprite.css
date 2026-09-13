@@ -2,11 +2,18 @@
   background-repeat: no-repeat;
   flex: none;
   margin-right: 8px;
-  image-rendering: pixelated;
   animation-name: var(--pet-animation);
   animation-duration: var(--pet-duration);
   animation-timing-function: steps(var(--pet-frames));
   animation-iteration-count: infinite;
+}
+
+/* The pre-scaled atlas already has one texel per device pixel, and nearest
+   keeps that copy exact even when the row sits on a fractional pixel. The raw
+   192x208 atlas (shown only until the pre-scale is ready) keeps the browser's
+   smoothing: nearest on a 3-5x shrink is what dotted the outlines. */
+.cmux-pet-sprite--prescaled {
+  image-rendering: pixelated;
 }
 
 .cmux-pet-sprite__probe {

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
+import { useDevicePixelRatio } from "../../hooks/useDevicePixelRatio";
+import { deriveRowsFromNatural, peekPrescaledAtlas, prescalePetAtlas, type PrescaledAtlas } from "../../lib/petAtlasScale";
 import { PET_DEMOTE_HOLD_MS } from "../../lib/petState";
 import "./PetSprite.css";
 
@@ -30,32 +32,70 @@ const PET_ANIMATIONS: Record<PetSpriteState, PetAnimation> = {
   resting: { row: 0, frames: 6, duration: 6600 },
 };
 
+// The rows a status can show. The rest of the atlas is never painted, so it is
+// not worth pre-scaling.
+const STATUS_ROWS = [...new Set(Object.values(PET_ANIMATIONS).map((animation) => animation.row))];
+
 type PetSpriteStyle = CSSProperties & Record<
   "--pet-animation" | "--pet-duration" | "--pet-frames" | "--pet-frame-width" | "--pet-row-offset",
   string
 >;
 
-export function deriveRowsFromNatural(width: number, height: number): number | null {
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 || width % 8 !== 0) return null;
-  const cellWidth = width / 8;
-  const rowHeight = cellWidth * 208 / 192;
-  const rawRows = height / rowHeight;
-  const rows = Math.round(rawRows);
-  return Math.abs(rawRows - rows) < 0.001 && rows >= 9 && rows <= 11 ? rows : null;
+export interface SpriteFrame {
+  /** CSS px. */
+  width: number;
+  height: number;
+  /** The same box in whole device pixels. */
+  deviceWidth: number;
+  deviceHeight: number;
 }
 
-export function spriteAtlasStyle(height: number, rows: number, row: number): Pick<CSSProperties, "backgroundSize" | "backgroundPosition"> {
-  const width = height * 192 / 208;
+/**
+ * The box of one frame for a sprite `height` CSS px tall, snapped to whole
+ * device pixels so the pre-scaled atlas lands on the screen grid 1:1. The
+ * 192:208 cell aspect holds to within one device pixel.
+ */
+export function spriteFrame(height: number, devicePixelRatio: number): SpriteFrame {
+  const deviceHeight = Math.max(1, Math.round(height * devicePixelRatio));
+  const deviceWidth = Math.max(1, Math.round(height * devicePixelRatio * 192 / 208));
+  return { width: deviceWidth / devicePixelRatio, height: deviceHeight / devicePixelRatio, deviceWidth, deviceHeight };
+}
+
+export function spriteAtlasStyle(
+  frame: Pick<SpriteFrame, "width" | "height">,
+  rows: number,
+  row: number,
+): Pick<CSSProperties, "backgroundSize" | "backgroundPosition"> {
   return {
-    backgroundSize: `${width * 8}px ${height * rows}px`,
-    backgroundPosition: `0 ${-row * height}px`,
+    backgroundSize: `${frame.width * 8}px ${frame.height * rows}px`,
+    backgroundPosition: `0 ${-row * frame.height}px`,
   };
+}
+
+/** The atlas shrunk to this frame's device size: null until it is ready, or when it cannot be built. */
+function usePrescaledAtlas(atlasUrl: string, frame: SpriteFrame): PrescaledAtlas | null {
+  const { deviceWidth, deviceHeight } = frame;
+  const [, setBuilt] = useState(0);
+  useEffect(() => {
+    if (peekPrescaledAtlas(atlasUrl, deviceWidth, deviceHeight, STATUS_ROWS) !== undefined) return;
+    let live = true;
+    void prescalePetAtlas(atlasUrl, deviceWidth, deviceHeight, STATUS_ROWS).then(() => {
+      if (live) setBuilt((count) => count + 1);
+    });
+    return () => {
+      live = false;
+    };
+  }, [atlasUrl, deviceWidth, deviceHeight]);
+  return peekPrescaledAtlas(atlasUrl, deviceWidth, deviceHeight, STATUS_ROWS) ?? null;
 }
 
 export default function PetSprite({ atlasUrl, state, height, rows = 9, animate = true }: PetSpriteProps) {
   const [displayedState, setDisplayedState] = useState(state);
   const [failedToLoad, setFailedToLoad] = useState(false);
   const [atlasRows, setAtlasRows] = useState(rows);
+  const devicePixelRatio = useDevicePixelRatio();
+  const frame = spriteFrame(height, devicePixelRatio);
+  const prescaled = usePrescaledAtlas(atlasUrl, frame);
 
   useEffect(() => {
     setFailedToLoad(false);
@@ -75,22 +115,22 @@ export default function PetSprite({ atlasUrl, state, height, rows = 9, animate =
   if (failedToLoad) return null;
 
   const animation = PET_ANIMATIONS[displayedState];
-  const width = height * 192 / 208;
   const style: PetSpriteStyle = {
-    width,
-    height,
-    backgroundImage: `url("${atlasUrl}")`,
-    ...spriteAtlasStyle(height, atlasRows, animation.row),
+    width: frame.width,
+    height: frame.height,
+    backgroundImage: `url("${prescaled?.url ?? atlasUrl}")`,
+    ...spriteAtlasStyle(frame, prescaled?.rows ?? atlasRows, animation.row),
     animationTimingFunction: displayedState === "resting" ? "step-end" : undefined,
     "--pet-animation": displayedState === "resting" ? "cmux-pet-sprite-resting" : `cmux-pet-sprite-${animation.frames}`,
     "--pet-duration": `${animation.duration}ms`,
     "--pet-frames": String(animation.frames),
-    "--pet-frame-width": `${width}px`,
-    "--pet-row-offset": `${-animation.row * height}px`,
+    "--pet-frame-width": `${frame.width}px`,
+    "--pet-row-offset": `${-animation.row * frame.height}px`,
   };
+  const className = `cmux-pet-sprite${prescaled ? " cmux-pet-sprite--prescaled" : ""}${animate ? "" : " cmux-pet-sprite--static"}`;
 
   return (
-    <span className={`cmux-pet-sprite${animate ? "" : " cmux-pet-sprite--static"}`} style={style} aria-hidden="true">
+    <span className={className} style={style} aria-hidden="true">
       <img
         className="cmux-pet-sprite__probe"
         src={atlasUrl}

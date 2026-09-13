@@ -1,3 +1,4 @@
+import { persistenceStrings } from "../../lib/persistenceStrings";
 import { confirmPaneClose } from "../../lib/paneCloseConfirmation";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
 import { evictTerminalCache } from "../terminal/terminalCache";
@@ -1375,7 +1376,7 @@ export async function publishPersistentSchemaAfterHydration(
 }
 
 function unsupportedSchemaDiagnostic(schemaVersion: number): string {
-  return `対応していない保存データ（schema ${schemaVersion}）を検出したため、この起動中は保存を停止しました。元の data.json は変更していません。`;
+  return persistenceStrings.unsupportedSchema(schemaVersion);
 }
 
 function reportUnsupportedPersistentSchema(schemaVersion: number): string {
@@ -1406,7 +1407,7 @@ function reportUnsupportedPersistentSchemaAfterSaveFailure(schemaVersion: number
 }
 
 function reportPersistentHydrationFailure(): string {
-  const diagnostic = "保存データの読み込みに失敗したため、この起動中は保存を停止しました。ワークスペースは保存できていません。";
+  const diagnostic = persistenceStrings.hydrationFailed;
   if (quarantinePersistentWrites({
     reason: "hydrationFailed",
     diagnostic,
@@ -1425,8 +1426,8 @@ function reportTerminalPersistentStorageError(
     return reportUnsupportedPersistentSchema(error.schemaVersion);
   }
   const diagnostic = error.kind === "unsupportedPlatform"
-    ? "この環境では data.json を安全に保存できないため、この起動中は保存を停止しました。元の data.json は変更していません。"
-    : `保存しようとした data.json の schema ${error.schemaVersion} が現在の形式と一致しないため、この起動中は保存を停止しました。元の data.json は変更していません。`;
+    ? persistenceStrings.unsupportedPlatform
+    : persistenceStrings.invalidPayloadSchema(error.schemaVersion);
   if (quarantinePersistentWrites({
     reason: error.kind,
     schemaVersion: error.kind === "invalidPayloadSchema" ? error.schemaVersion : undefined,
@@ -2137,7 +2138,7 @@ export function useWorkspacePersist() {
     ): Promise<boolean> => confirm(
       state.status === "quarantined" && state.reason === "unsupportedSchema"
         ? dashboardStrings.futureSchemaUnsavedQuitPrompt
-        : "ワークスペースを保存できていません。保存せずに終了しますか？",
+        : persistenceStrings.unsavedQuit,
       {
         title: "mycmux 保存停止",
         kind: "warning",

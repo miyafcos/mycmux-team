@@ -214,3 +214,14 @@ describe("isolated CLI login", () => {
     expect(loginRemainingLabel(null, startedAt)).toBe("10:00");
   });
 });
+
+it.each([
+  "cli_account.error.snapshot_foreign",
+  "cli_account.error.live_token_foreign",
+  "cli_account.error.live_token_unverified",
+  "cli_account.warning.live_token_not_saved",
+  "cli_account.warning.live_token_filed_to_owner",
+  "cli_account.warning.live_token_foreign_unregistered"
+])("explains token-owner code %s", (code) => {
+  expect(cliAccountMessage(code)).not.toBe(cliAccountMessage("unknown-owner-code"));
+});

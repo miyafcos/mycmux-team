@@ -47,8 +47,25 @@ pub async fn list_cli_accounts(app: AppHandle) -> Result<CliAccountsSnapshot, St
     cli_accounts::list_resolved(&app_data_dir(&app)?)
 }
 
+async fn prewarm_claude_token(app: &AppHandle, token: &str) {
+    let state = app.state::<crate::usage::UsageState>();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(6),
+        cli_accounts::token_owner::claude_token_owner(&state.http, token)).await;
+}
+
+async fn prewarm_claude_live(app: &AppHandle) {
+    if let Some(token) = cli_accounts::claude::ClaudePaths::resolve().ok()
+        .and_then(|paths| cli_accounts::claude::read_credentials(&paths))
+        .and_then(|text| cli_accounts::token_owner::claude_access_token(&text)) {
+        prewarm_claude_token(app, &token).await;
+    }
+}
+
 #[tauri::command(async)]
 pub async fn capture_cli_account(app: AppHandle, provider: CliProvider, label: Option<String>) -> Result<CliAccountProfile, String> {
+    if provider == CliProvider::Claude {
+        prewarm_claude_live(&app).await;
+    }
     cli_accounts::capture_resolved(&app_data_dir(&app)?, provider, label)
 }
 
@@ -57,7 +74,14 @@ pub async fn switch_cli_account(app: AppHandle, provider: CliProvider, profile_i
     if crate::test_profile::is_active() {
         return Err("CLI account switching is disabled while a test profile is active".to_string());
     }
-    let result = cli_accounts::switch_resolved(&app_data_dir(&app)?, provider, &profile_id);
+    let base = app_data_dir(&app)?;
+    if provider == CliProvider::Claude {
+        prewarm_claude_live(&app).await;
+        if let Some(token) = cli_accounts::claude_snapshot_access_token(&base, &profile_id) {
+            prewarm_claude_token(&app, &token).await;
+        }
+    }
+    let result = cli_accounts::switch_resolved(&base, provider, &profile_id);
     if let Err(error) = &result {
         crate::usage::log_oauth_failure(&app, "switch_cli_account", error);
     }

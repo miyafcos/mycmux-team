@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
-import PetSprite, { deriveRowsFromNatural, spriteAtlasStyle, type PetSpriteState } from "../../src/components/workspace/PetSprite";
+import PetSprite, { spriteAtlasStyle, spriteFrame, type PetSpriteState } from "../../src/components/workspace/PetSprite";
+import { deriveRowsFromNatural } from "../../src/lib/petAtlasScale";
 
 describe("pet sprite atlas dimensions", () => {
   it("accepts both supported atlas formats", () => {
@@ -16,10 +17,28 @@ describe("pet sprite atlas dimensions", () => {
   });
 
   it("uses the selected row count for background geometry", () => {
-    expect(spriteAtlasStyle(208, 11, 7)).toEqual({
+    expect(spriteAtlasStyle({ width: 192, height: 208 }, 11, 7)).toEqual({
       backgroundSize: "1536px 2288px",
       backgroundPosition: "0 -1456px",
     });
+  });
+});
+
+describe("sprite frame on the device pixel grid", () => {
+  // The sidebar sprite at the display scales Windows offers: every frame must
+  // be whole device pixels, or the pre-scaled atlas would be resampled again.
+  it.each([
+    [1, 37, 40],
+    [1.25, 46, 50],
+    [1.5, 55, 60],
+    [1.75, 65, 70],
+    [2, 74, 80],
+  ])("at %sx a 40px sprite is %ix%i device pixels", (ratio, deviceWidth, deviceHeight) => {
+    const frame = spriteFrame(40, ratio);
+    expect([frame.deviceWidth, frame.deviceHeight]).toEqual([deviceWidth, deviceHeight]);
+    expect(frame.width * ratio).toBeCloseTo(deviceWidth, 9);
+    expect(frame.height * ratio).toBeCloseTo(deviceHeight, 9);
+    expect(Math.abs(frame.deviceWidth - frame.deviceHeight * 192 / 208)).toBeLessThanOrEqual(0.5);
   });
 });
 

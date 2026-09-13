@@ -419,3 +419,15 @@ describe("row messaging", () => {
     ).toBe(USAGE_STATE_MESSAGE.error);
   });
 });
+
+describe("verified Claude token owner messages", () => {
+  it.each(["usage.error.foreign_token", "usage.error.live_token_foreign"])("names the owner only when available: %s", (error_code) => {
+    const state = error_code === "usage.error.foreign_token" ? "needs_relogin" : "error";
+    expect(rowMessage(row({ state, error_code, token_owner_email: "x@example.test" }))).toContain("（x@example.test）");
+    for (const token_owner_email of [null, undefined]) {
+      const message = rowMessage(row({ state, error_code, token_owner_email }));
+      expect(message).not.toMatch(/[（）]/);
+      expect(message).not.toContain("{owner}");
+    }
+  });
+});

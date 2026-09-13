@@ -378,6 +378,15 @@ async fn run(app: &AppHandle, base: &Path, watch: &LoginWatch) {
                 continue;
             }
             TickOutcome::Ready => {
+                if watch.provider == CliProvider::Claude {
+                    let paths = staging::claude_staging_paths(&watch.dir);
+                    if let Some(token) = claude::read_credentials(&paths)
+                        .and_then(|text| super::token_owner::claude_access_token(&text)) {
+                        let state = app.state::<crate::usage::UsageState>();
+                        let _ = tokio::time::timeout(Duration::from_secs(6),
+                            super::token_owner::claude_token_owner(&state.http, &token)).await;
+                    }
+                }
                 let base = base.to_path_buf();
                 let dir = watch.dir.clone();
                 let provider = watch.provider;

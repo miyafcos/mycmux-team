@@ -53,7 +53,9 @@ def test_store_resolver_still_exists() -> None:
 
 def test_usage_reads_through_the_resolver() -> None:
     usage = (RUST_SRC / "commands" / "usage.rs").read_text(encoding="utf-8")
-    assert usage.count("claude::read_credentials(&paths)") == 2, (
-        "usage.rs sources Claude credentials for both the active row and the "
-        "unregistered row; both have to use the resolver"
+    assert usage.count("claude::read_credentials(&paths)") == 4, (
+        "usage.rs sources Claude credentials for the active row, the "
+        "unregistered row, the owner check before a recapture and the refresh "
+        "safety valve that compares refresh tokens; all four have to use the "
+        "resolver"
     )

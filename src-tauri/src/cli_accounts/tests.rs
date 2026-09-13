@@ -7,6 +7,15 @@ const CLAUDE_JSON: &str = include_str!("fixtures/claude_json_sample.json");
 const CREDS: &str = include_str!("fixtures/claude_credentials_sample.json");
 const CODEX: &str = include_str!("fixtures/codex_auth_sample.json");
 const GROK: &str = include_str!("fixtures/grok_auth_sample.json");
+
+fn fixture_owner(token: &str) -> Option<TokenOwner> {
+    Some(TokenOwner { account_uuid: match token {
+        "synthetic-access-b" => "claude-account-b",
+        "synthetic-access-other" => "other",
+        _ => "claude-account-a",
+    }.into(), email: None })
+}
+
 #[test]
 fn splice_replaces_only_target_member() {
     let (s, e) = find_top_level_member(CLAUDE_JSON, "oauthAccount")
@@ -124,6 +133,7 @@ fn registry_round_trip_and_defaults() {
         last_switched_at: None,
         needs_relogin: false,
         refresh_rejected_at: None,
+        foreign_token_owner: None,
     };
     registry::upsert_by_identity_key(&mut f, p);
     registry::save(d.path(), &f).unwrap();
@@ -154,6 +164,7 @@ fn registry_loads_legacy_profile_without_refresh_rejection() {
 
     let file = registry::load(d.path()).unwrap();
     assert!(file.profiles[0].refresh_rejected_at.is_none());
+    assert!(file.profiles[0].foreign_token_owner.is_none());
     registry::save(d.path(), &file).unwrap();
     assert!(!fs::read_to_string(d.path().join("cli_accounts.json"))
         .unwrap()
@@ -283,14 +294,16 @@ fn switch_flow_end_to_end_in_tempdir() {
     };
     fs::write(&cp.credentials, CREDS).unwrap();
     fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
-    let first = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    let first = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None, &fixture_owner, UnverifiedPolicy::Refuse).unwrap();
     let changed = CLAUDE_JSON
         .replace("claude-account-a", "claude-account-b")
         .replace("a@example.test", "b@example.test");
     fs::write(&cp.claude_json, &changed).unwrap();
-    let second = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    fs::write(&cp.credentials, CREDS.replace("synthetic-access", "synthetic-access-b")).unwrap();
+    let second = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None, &fixture_owner, UnverifiedPolicy::Refuse).unwrap();
     fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
-    switch_account(d.path(), &cp, &xp, CliProvider::Claude, &second.id).unwrap();
+    fs::write(&cp.credentials, CREDS).unwrap();
+    switch_account(d.path(), &cp, &xp, CliProvider::Claude, &second.id, &fixture_owner).unwrap();
     assert!(fs::read_to_string(&cp.claude_json)
         .unwrap()
         .contains("claude-account-b"));
@@ -311,21 +324,23 @@ fn switch_persists_live_rejection_clear_before_target_validation() {
     };
     fs::write(&cp.credentials, CREDS).unwrap();
     fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
-    let first = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    let first = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None, &fixture_owner, UnverifiedPolicy::Refuse).unwrap();
     let changed = CLAUDE_JSON
         .replace("claude-account-a", "claude-account-b")
         .replace("a@example.test", "b@example.test");
     fs::write(&cp.claude_json, &changed).unwrap();
-    let second = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    fs::write(&cp.credentials, CREDS.replace("synthetic-access", "synthetic-access-b")).unwrap();
+    let second = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None, &fixture_owner, UnverifiedPolicy::Refuse).unwrap();
     record_refresh_rejection(d.path(), &first.id, "2026-08-09T00:00:00Z".into()).unwrap();
     fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
+    fs::write(&cp.credentials, CREDS).unwrap();
     fs::write(
         snapshot::snapshot_dir(d.path()).join(format!("{}.json", second.id)),
         "{}",
     )
     .unwrap();
 
-    let result = switch_account(d.path(), &cp, &xp, CliProvider::Claude, &second.id);
+    let result = switch_account(d.path(), &cp, &xp, CliProvider::Claude, &second.id, &fixture_owner);
     assert!(matches!(
         result,
         Err(ref error) if error == ERR_SNAPSHOT_UNAVAILABLE
@@ -353,7 +368,7 @@ fn update_snapshot_tokens_rejects_stale_refresh_token() {
     };
     fs::write(&cp.credentials, CREDS).unwrap();
     fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
-    let profile = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    let profile = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None, &fixture_owner, UnverifiedPolicy::Refuse).unwrap();
     let path = snapshot::snapshot_dir(d.path()).join(format!("{}.json", profile.id));
     let before = fs::read(&path).unwrap();
     assert_eq!(
@@ -382,12 +397,13 @@ fn refreshed_snapshot_still_restores_byte_exact() {
     };
     fs::write(&cp.credentials, CREDS).unwrap();
     fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
-    let first = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    let first = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None, &fixture_owner, UnverifiedPolicy::Refuse).unwrap();
     let changed = CLAUDE_JSON
         .replace("claude-account-a", "claude-account-b")
         .replace("a@example.test", "b@example.test");
     fs::write(&cp.claude_json, &changed).unwrap();
-    let second = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    fs::write(&cp.credentials, CREDS.replace("synthetic-access", "synthetic-access-b")).unwrap();
+    let second = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None, &fixture_owner, UnverifiedPolicy::Refuse).unwrap();
     fs::write(&cp.credentials, CREDS).unwrap();
     fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
     let expected = CREDS
@@ -403,7 +419,18 @@ fn refreshed_snapshot_still_restores_byte_exact() {
         ),
         Ok(SnapshotUpdate::Applied)
     );
-    switch_account(d.path(), &cp, &xp, CliProvider::Claude, &second.id).unwrap();
+    // The chained replace above also rewrites the "synthetic-refresh" prefix
+    // inside the new access token, so name the owner of the access token the
+    // refreshed credentials actually carry instead of guessing its spelling.
+    let refreshed_access = token_owner::claude_access_token(&expected).unwrap();
+    let owner_of_refreshed = |token: &str| {
+        if token == refreshed_access {
+            Some(TokenOwner { account_uuid: "claude-account-b".into(), email: None })
+        } else {
+            fixture_owner(token)
+        }
+    };
+    switch_account(d.path(), &cp, &xp, CliProvider::Claude, &second.id, &owner_of_refreshed).unwrap();
     assert_eq!(fs::read(&cp.credentials).unwrap(), expected.as_bytes());
     assert_eq!(
         claude::read_live_identity(&cp).identity_key.as_deref(),
@@ -424,10 +451,11 @@ fn switch_writes_orphan_snapshot_for_unregistered_live_login() {
     };
     fs::write(&cp.credentials, CREDS).unwrap();
     fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
-    let target = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    let target = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None, &fixture_owner, UnverifiedPolicy::Refuse).unwrap();
     let changed = CLAUDE_JSON.replace("claude-account-a", "other");
     fs::write(&cp.claude_json, changed).unwrap();
-    switch_account(d.path(), &cp, &xp, CliProvider::Claude, &target.id).unwrap();
+    fs::write(&cp.credentials, CREDS.replace("synthetic-access", "synthetic-access-other")).unwrap();
+    switch_account(d.path(), &cp, &xp, CliProvider::Claude, &target.id, &fixture_owner).unwrap();
     assert!(fs::read_dir(d.path().join("cli_account_snapshots"))
         .unwrap()
         .flatten()
@@ -450,6 +478,7 @@ fn test_profile(id: &str) -> CliAccountProfile {
         last_switched_at: Some("switched".into()),
         needs_relogin: true,
         refresh_rejected_at: None,
+        foreign_token_owner: None,
     }
 }
 #[test]
@@ -617,7 +646,7 @@ fn list_recomputes_relogin_without_rewriting_registry() {
     };
     fs::write(&cp.credentials, CREDS).unwrap();
     fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
-    let profile = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    let profile = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None, &fixture_owner, UnverifiedPolicy::Refuse).unwrap();
     let stored = snapshot::StoredSnapshot::Claude(snapshot::ClaudeSnapshot {
         version: 1,
         provider: CliProvider::Claude,
@@ -721,7 +750,7 @@ fn recapture_clears_refresh_rejection() {
     };
     fs::write(&cp.credentials, CREDS).unwrap();
     fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
-    let first = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    let first = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None, &fixture_owner, UnverifiedPolicy::Refuse).unwrap();
     record_refresh_rejection(d.path(), &first.id, "2026-08-09T00:00:00Z".into()).unwrap();
     assert_eq!(
         registry::load(d.path()).unwrap().profiles[0]
@@ -730,7 +759,7 @@ fn recapture_clears_refresh_rejection() {
         Some("2026-08-09T00:00:00Z")
     );
 
-    let recaptured = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    let recaptured = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None, &fixture_owner, UnverifiedPolicy::Refuse).unwrap();
     assert_eq!(recaptured.id, first.id);
     assert!(recaptured.refresh_rejected_at.is_none());
     let saved = registry::load(d.path()).unwrap();
@@ -812,4 +841,302 @@ fn orphan_discard_rejects_unsafe_ids_and_removes_only_the_target() {
     let id = path.file_stem().unwrap().to_string_lossy().to_string();
     resolve_orphan_inner(d.path(), &id, CliOrphanAction::Discard, None).unwrap();
     assert!(!path.exists());
+}
+
+fn synthetic_owner(identity: &str) -> TokenOwner {
+    TokenOwner { account_uuid: identity.into(), email: Some(format!("{identity}@example.test")) }
+}
+
+fn owner_lookup(token: &str) -> Option<TokenOwner> {
+    match token {
+        "p-access" => Some(synthetic_owner("P")),
+        "x-access" | "x-live" => Some(synthetic_owner("X")),
+        _ => None,
+    }
+}
+
+fn owner_credentials(token: &str) -> String {
+    CREDS.replace("synthetic-access", token)
+        .replace("synthetic-refresh", &format!("{token}-refresh"))
+}
+
+struct OwnerCase {
+    dir: tempfile::TempDir,
+    cp: ClaudePaths,
+    xp: CodexPaths,
+    p: CliAccountProfile,
+    x: CliAccountProfile,
+}
+
+impl OwnerCase {
+    fn new() -> Self {
+        let dir = tempdir().unwrap();
+        let cp = ClaudePaths { store: claude::CredentialStore::File,
+            credentials: dir.path().join("live-credentials.json"), claude_json: dir.path().join("live-name.json") };
+        let xp = CodexPaths { auth: dir.path().join("codex-auth.json") };
+        fs::write(&cp.claude_json, CLAUDE_JSON.replace("claude-account-a", "P")).unwrap();
+        fs::write(&cp.credentials, owner_credentials("p-access")).unwrap();
+        let p = capture_account(dir.path(), &cp, &xp, CliProvider::Claude, None, &owner_lookup, UnverifiedPolicy::Refuse).unwrap();
+        fs::write(&cp.claude_json, CLAUDE_JSON.replace("claude-account-a", "X")).unwrap();
+        fs::write(&cp.credentials, owner_credentials("x-access")).unwrap();
+        let x = capture_account(dir.path(), &cp, &xp, CliProvider::Claude, None, &owner_lookup, UnverifiedPolicy::Refuse).unwrap();
+        let case = Self { dir, cp, xp, p, x };
+        case.live("P", "x-live");
+        case
+    }
+
+    fn live(&self, identity: &str, token: &str) {
+        fs::write(&self.cp.claude_json, CLAUDE_JSON.replace("claude-account-a", identity)).unwrap();
+        fs::write(&self.cp.credentials, owner_credentials(token)).unwrap();
+    }
+
+    fn path(&self, id: &str) -> std::path::PathBuf {
+        snapshot::snapshot_dir(self.dir.path()).join(format!("{id}.json"))
+    }
+
+    fn stored(&self, id: &str) -> snapshot::ClaudeSnapshot {
+        match snapshot::load(self.dir.path(), id).unwrap() {
+            snapshot::StoredSnapshot::Claude(stored) => stored,
+            _ => panic!("expected Claude"),
+        }
+    }
+
+    fn tick(&self, stamps: &mut live_sync::FileStamps, lookup: OwnerLookup) -> live_sync::SyncOutcome {
+        live_sync::sync_provider(self.dir.path(), CliProvider::Claude, &self.cp, &self.xp, stamps, lookup)
+    }
+
+    fn switch(&self, id: &str, lookup: OwnerLookup) -> Result<CliSwitchResult, String> {
+        switch_account(self.dir.path(), &self.cp, &self.xp, CliProvider::Claude, id, lookup)
+    }
+
+    fn live_bytes(&self) -> (Vec<u8>, Vec<u8>) {
+        (fs::read(&self.cp.credentials).unwrap(), fs::read(&self.cp.claude_json).unwrap())
+    }
+}
+
+#[test]
+fn classify_claude_live_filing_table() {
+    let mut x = test_profile("claude-x"); x.identity_key = "X".into();
+    let profiles = [x.clone()];
+    assert_eq!(classify_claude_live("P", &owner_credentials("p-access"), &profiles, &owner_lookup), ClaudeLiveFiling::Claimed);
+    assert_eq!(classify_claude_live("P", &owner_credentials("x-live"), &profiles, &owner_lookup),
+        ClaudeLiveFiling::ToOwner { profile_id: x.id, owner: synthetic_owner("X") });
+    assert_eq!(classify_claude_live("P", &owner_credentials("x-live"), &[], &owner_lookup),
+        ClaudeLiveFiling::ForeignUnregistered(synthetic_owner("X")));
+    assert_eq!(classify_claude_live("P", "{}", &profiles, &owner_lookup), ClaudeLiveFiling::Unverified);
+    assert_eq!(classify_claude_live("P", &owner_credentials("p-access"), &profiles, &|_| None), ClaudeLiveFiling::Unverified);
+    let mut codex = profiles[0].clone(); codex.provider = CliProvider::Codex;
+    assert!(matches!(classify_claude_live("P", &owner_credentials("x-live"), &[codex], &owner_lookup), ClaudeLiveFiling::ForeignUnregistered(_)));
+}
+
+#[test]
+fn live_sync_files_mismatched_tokens_only_to_the_owner() {
+    let c = OwnerCase::new();
+    let p_before = fs::read(c.path(&c.p.id)).unwrap();
+    let x_name = c.stored(&c.x.id).oauth_account_text;
+    record_refresh_rejection(c.dir.path(), &c.x.id, "old".into()).unwrap();
+    record_foreign_token_owner(c.dir.path(), &c.x.id, &synthetic_owner("P"), "old".into()).unwrap();
+    assert_eq!(c.tick(&mut live_sync::FileStamps::new(), &owner_lookup), live_sync::SyncOutcome::FiledToOwner(c.x.id.clone()));
+    assert_eq!(fs::read(c.path(&c.p.id)).unwrap(), p_before);
+    assert_eq!(c.stored(&c.x.id).credentials_text, owner_credentials("x-live"));
+    assert_eq!(c.stored(&c.x.id).oauth_account_text, x_name);
+    let profiles = registry::load(c.dir.path()).unwrap().profiles;
+    let x = profiles.iter().find(|profile| profile.id == c.x.id).unwrap();
+    assert!(x.foreign_token_owner.is_none() && x.refresh_rejected_at.is_none());
+}
+
+#[test]
+fn live_sync_unverified_leaves_every_snapshot_and_retries_next_tick() {
+    let c = OwnerCase::new();
+    let before = (fs::read(c.path(&c.p.id)).unwrap(), fs::read(c.path(&c.x.id)).unwrap(), fs::read(registry::path(c.dir.path())).unwrap());
+    let mut stamps = live_sync::FileStamps::new();
+    for _ in 0..2 {
+        assert_eq!(c.tick(&mut stamps, &|_| None), live_sync::SyncOutcome::Unverified);
+    }
+    assert_eq!((fs::read(c.path(&c.p.id)).unwrap(), fs::read(c.path(&c.x.id)).unwrap(), fs::read(registry::path(c.dir.path())).unwrap()), before);
+    assert_eq!(c.tick(&mut stamps, &owner_lookup), live_sync::SyncOutcome::FiledToOwner(c.x.id.clone()));
+}
+
+#[test]
+fn live_sync_never_registers_an_unregistered_name_with_foreign_tokens() {
+    let c = OwnerCase::new();
+    registry::save(c.dir.path(), &registry::CliAccountsFile::default()).unwrap();
+    let before = fs::read(registry::path(c.dir.path())).unwrap();
+    assert_eq!(c.tick(&mut live_sync::FileStamps::new(), &owner_lookup), live_sync::SyncOutcome::ForeignUnregistered);
+    assert_eq!(fs::read(registry::path(c.dir.path())).unwrap(), before);
+    assert!(registry::load(c.dir.path()).unwrap().profiles.is_empty());
+}
+
+#[test]
+fn switch_to_named_profile_preserves_its_real_tokens_and_files_live_to_owner() {
+    let c = OwnerCase::new();
+    let p_before = fs::read(c.path(&c.p.id)).unwrap();
+    let x_name = c.stored(&c.x.id).oauth_account_text;
+    let result = c.switch(&c.p.id, &owner_lookup).unwrap();
+    assert_eq!(fs::read(c.path(&c.p.id)).unwrap(), p_before);
+    assert_eq!(c.stored(&c.x.id).credentials_text, owner_credentials("x-live"));
+    assert_eq!(c.stored(&c.x.id).oauth_account_text, x_name);
+    assert_eq!(fs::read_to_string(&c.cp.credentials).unwrap(), c.stored(&c.p.id).credentials_text);
+    assert_eq!(result.wrote_back_to, Some(c.x.id));
+    assert!(result.warnings.contains(&WARN_LIVE_TOKEN_FILED_TO_OWNER.to_string()));
+}
+
+#[test]
+fn switch_to_token_owner_does_not_poison_the_named_profile() {
+    let c = OwnerCase::new();
+    let before = fs::read(c.path(&c.p.id)).unwrap();
+    let result = c.switch(&c.x.id, &owner_lookup).unwrap();
+    assert_eq!(fs::read(c.path(&c.p.id)).unwrap(), before);
+    assert_eq!(fs::read_to_string(&c.cp.credentials).unwrap(), owner_credentials("x-live"));
+    assert_eq!(claude::read_live_identity(&c.cp).identity_key.as_deref(), Some("X"));
+    assert!(result.warnings.contains(&WARN_LIVE_TOKEN_FILED_TO_OWNER.to_string()));
+}
+
+#[test]
+fn switch_unverified_skips_writeback_and_keeps_backup() {
+    let c = OwnerCase::new();
+    let before = fs::read(c.path(&c.p.id)).unwrap();
+    let live_before = c.live_bytes();
+    let result = c.switch(&c.p.id, &|_| None).unwrap();
+    assert_eq!(fs::read(c.path(&c.p.id)).unwrap(), before);
+    assert_eq!(result.wrote_back_to, None);
+    assert!(result.warnings.contains(&WARN_LIVE_TOKEN_NOT_SAVED.to_string()));
+    assert_eq!(fs::read(Path::new(&result.backup_dir).join("live-credentials.json")).unwrap(), live_before.0);
+}
+
+#[test]
+fn switch_rejects_flagged_or_verified_foreign_target_without_live_writes() {
+    for flagged in [true, false] {
+        let c = OwnerCase::new();
+        c.live("X", "x-live");
+        if flagged {
+            record_foreign_token_owner(c.dir.path(), &c.p.id, &synthetic_owner("X"), "now".into()).unwrap();
+        } else {
+            replace_claude_credentials(c.dir.path(), &c.p.id, "P", &owner_credentials("x-access")).unwrap();
+        }
+        let before = c.live_bytes();
+        assert_eq!(c.switch(&c.p.id, &owner_lookup).err().as_deref(), Some(ERR_SNAPSHOT_FOREIGN));
+        assert_eq!(c.live_bytes(), before);
+        assert!(!snapshot::backup_root(c.dir.path()).exists());
+        let listed = list(c.dir.path(), &c.cp, &c.xp).unwrap();
+        let p = listed.profiles.iter().find(|profile| profile.id == c.p.id).unwrap();
+        assert!(p.needs_relogin);
+        assert_eq!(p.foreign_token_owner.as_ref().unwrap().account_uuid, "X");
+    }
+}
+
+#[test]
+fn capture_refuses_foreign_and_unverified_live_tokens_without_writes() {
+    let c = OwnerCase::new();
+    let before = fs::read(registry::path(c.dir.path())).unwrap();
+    let p_before = fs::read(c.path(&c.p.id)).unwrap();
+    for policy in [UnverifiedPolicy::Refuse, UnverifiedPolicy::Allow] {
+        assert_eq!(capture_account(c.dir.path(), &c.cp, &c.xp, CliProvider::Claude, None, &owner_lookup, policy).err().as_deref(), Some(ERR_LIVE_TOKEN_FOREIGN));
+    }
+    assert_eq!(capture_account(c.dir.path(), &c.cp, &c.xp, CliProvider::Claude, None, &|_| None, UnverifiedPolicy::Refuse).err().as_deref(), Some(ERR_LIVE_TOKEN_UNVERIFIED));
+    assert_eq!(fs::read(registry::path(c.dir.path())).unwrap(), before);
+    assert_eq!(fs::read(c.path(&c.p.id)).unwrap(), p_before);
+}
+
+#[test]
+fn verified_capture_and_claimed_sync_clear_both_flags() {
+    let c = OwnerCase::new();
+    c.live("P", "p-access");
+    for capture in [true, false] {
+        record_foreign_token_owner(c.dir.path(), &c.p.id, &synthetic_owner("X"), "old".into()).unwrap();
+        record_refresh_rejection(c.dir.path(), &c.p.id, "old".into()).unwrap();
+        if capture {
+            capture_account(c.dir.path(), &c.cp, &c.xp, CliProvider::Claude, None, &owner_lookup, UnverifiedPolicy::Refuse).unwrap();
+        } else {
+            assert_eq!(c.tick(&mut live_sync::FileStamps::new(), &owner_lookup), live_sync::SyncOutcome::Resynced(c.p.id.clone()));
+        }
+        let profiles = list(c.dir.path(), &c.cp, &c.xp).unwrap().profiles;
+        let p = profiles.iter().find(|profile| profile.id == c.p.id).unwrap();
+        assert!(p.foreign_token_owner.is_none() && p.refresh_rejected_at.is_none() && !p.needs_relogin);
+    }
+}
+
+#[test]
+fn switch_foreign_unregistered_or_missing_owner_snapshot_keeps_named_copy() {
+    for registered in [false, true] {
+        let c = OwnerCase::new();
+        if registered {
+            fs::write(c.path(&c.x.id), "{}").unwrap();
+        } else {
+            let mut file = registry::load(c.dir.path()).unwrap();
+            file.profiles.retain(|profile| profile.id != c.x.id);
+            registry::save(c.dir.path(), &file).unwrap();
+        }
+        let before = fs::read(c.path(&c.p.id)).unwrap();
+        let result = c.switch(&c.p.id, &owner_lookup).unwrap();
+        assert_eq!(fs::read(c.path(&c.p.id)).unwrap(), before);
+        assert!(result.warnings.contains(&if registered { WARN_LIVE_TOKEN_NOT_SAVED } else { WARN_LIVE_TOKEN_FOREIGN_UNREGISTERED }.to_string()));
+        assert!(result.wrote_back_to.is_none());
+    }
+}
+
+#[test]
+fn captured_identity_bytes_must_match_the_filing_key() {
+    let c = OwnerCase::new();
+    let stored = c.stored(&c.p.id);
+    assert!(claude_snapshot_names(&stored, "P"));
+    assert!(!claude_snapshot_names(&stored, "X"));
+    assert!(!claude_snapshot_names(&snapshot::ClaudeSnapshot { oauth_account_text: "{}".into(), ..stored }, "P"));
+}
+
+#[test]
+fn owner_filing_refuses_broken_embedded_snapshot_metadata() {
+    let c = OwnerCase::new();
+    let broken = snapshot::StoredSnapshot::Claude(snapshot::ClaudeSnapshot {
+        oauth_account_text: "{}".into(), ..c.stored(&c.x.id)
+    });
+    snapshot::save(c.dir.path(), &c.x.id, &broken).unwrap();
+    let before = fs::read(c.path(&c.x.id)).unwrap();
+    assert!(replace_claude_credentials(c.dir.path(), &c.x.id, "X", &owner_credentials("x-live")).is_err());
+    assert_eq!(fs::read(c.path(&c.x.id)).unwrap(), before);
+}
+
+#[test]
+fn owner_filing_refuses_a_destination_that_names_someone_else() {
+    // Moving X's tokens into a copy whose identity bytes say P would recreate
+    // the very split this filing exists to repair.
+    let c = OwnerCase::new();
+    let before = fs::read(c.path(&c.p.id)).unwrap();
+    assert!(replace_claude_credentials(c.dir.path(), &c.p.id, "X", &owner_credentials("x-live")).is_err());
+    assert_eq!(fs::read(c.path(&c.p.id)).unwrap(), before);
+}
+
+#[test]
+fn switch_is_not_refused_on_a_flag_its_own_write_back_just_cleared() {
+    // The live login is the target's own and verified: the write-back refreshes
+    // the target's copy and clears its foreign flag, so the switch must not be
+    // refused on the copy of the flag read before the write-back ran.
+    let c = OwnerCase::new();
+    c.live("P", "p-access");
+    record_foreign_token_owner(c.dir.path(), &c.p.id, &synthetic_owner("X"), "old".into()).unwrap();
+    let result = c.switch(&c.p.id, &owner_lookup).unwrap();
+    assert_eq!(result.wrote_back_to.as_deref(), Some(c.p.id.as_str()));
+    let profiles = registry::load(c.dir.path()).unwrap().profiles;
+    let p = profiles.iter().find(|profile| profile.id == c.p.id).unwrap();
+    assert!(p.foreign_token_owner.is_none());
+}
+
+#[test]
+fn codex_and_grok_capture_switch_never_consult_claude_owner_lookup() {
+    for provider in [CliProvider::Codex, CliProvider::Grok] {
+        let dir = tempdir().unwrap();
+        let cp = ClaudePaths { store: claude::CredentialStore::File,
+            credentials: dir.path().join("claude-credentials.json"), claude_json: dir.path().join("claude-name.json") };
+        let xp = CodexPaths { auth: dir.path().join("codex-auth.json") };
+        let gp = grok::GrokPaths { auth: dir.path().join("grok-auth.json"), lock: dir.path().join("grok-auth.lock") };
+        fs::write(&xp.auth, CODEX).unwrap();
+        fs::write(&gp.auth, GROK).unwrap();
+        let forbidden_lookup = |_: &str| -> Option<TokenOwner> { panic!("Claude lookup must not run for Codex/Grok") };
+        let profile = capture_account_with_grok(dir.path(), &cp, &xp, Some(&gp), provider, None, &forbidden_lookup, UnverifiedPolicy::Refuse).unwrap();
+        let result = switch_account_with_grok(dir.path(), &cp, &xp, Some(&gp), provider, &profile.id, &forbidden_lookup).unwrap();
+        assert_eq!(result.wrote_back_to.as_deref(), Some(profile.id.as_str()));
+        assert!(result.warnings.contains(&WARN_ACTIVE_SNAPSHOT_REFRESHED.to_string()));
+        assert!(result.profile.foreign_token_owner.is_none());
+        assert!(!cp.credentials.exists() && !cp.claude_json.exists());
+    }
 }

@@ -8,6 +8,9 @@ pub(crate) mod login_watch;
 mod registry;
 mod snapshot;
 pub(crate) mod staging;
+pub(crate) mod token_owner;
+
+use token_owner::{OwnerLookup, OwnerVerdict, TokenOwner};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -56,6 +59,13 @@ pub const WARN_UNREGISTERED_LIVE_LOGIN_SAVED: &str =
 pub const WARN_RESTORED_IDENTITY_MISMATCH: &str = "cli_account.warning.restored_identity_mismatch";
 pub const WARN_SWITCH_METADATA_NOT_SAVED: &str = "cli_account.warning.switch_metadata_not_saved";
 
+pub const ERR_SNAPSHOT_FOREIGN: &str = "cli_account.error.snapshot_foreign";
+pub const ERR_LIVE_TOKEN_FOREIGN: &str = "cli_account.error.live_token_foreign";
+pub const ERR_LIVE_TOKEN_UNVERIFIED: &str = "cli_account.error.live_token_unverified";
+pub const WARN_LIVE_TOKEN_NOT_SAVED: &str = "cli_account.warning.live_token_not_saved";
+pub const WARN_LIVE_TOKEN_FILED_TO_OWNER: &str = "cli_account.warning.live_token_filed_to_owner";
+pub const WARN_LIVE_TOKEN_FOREIGN_UNREGISTERED: &str = "cli_account.warning.live_token_foreign_unregistered";
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum CliProvider {
@@ -69,6 +79,14 @@ pub enum SnapshotUpdate {
     Applied,
     Conflict,
     NotFound,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ForeignTokenOwner {
+    pub account_uuid: String,
+    #[serde(default)]
+    pub email: Option<String>,
+    pub detected_at: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -94,6 +112,8 @@ pub struct CliAccountProfile {
     /// eats into the IP-wide rate limit that the healthy accounts share.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_rejected_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreign_token_owner: Option<ForeignTokenOwner>,
 }
 
 #[derive(Serialize, Clone)]
@@ -188,6 +208,7 @@ fn refreshed_profiles(base: &Path, profiles: &[CliAccountProfile]) -> Vec<CliAcc
                 };
             }
             profile.needs_relogin |= profile.refresh_rejected_at.is_some();
+            profile.needs_relogin |= profile.foreign_token_owner.is_some();
             profile
         })
         .collect()
@@ -241,14 +262,89 @@ fn list_with_grok(
     })
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ClaudeLiveFiling {
+    Claimed,
+    ToOwner { profile_id: String, owner: TokenOwner },
+    ForeignUnregistered(TokenOwner),
+    Unverified,
+}
+
+/// On September 13, a CLI running as X rewrote tokens while the name stayed P.
+/// Different processes write the two files: filing by name alone poisons P's copy.
+pub(crate) fn classify_claude_live(
+    claimed_identity: &str,
+    credentials_text: &str,
+    profiles: &[CliAccountProfile],
+    lookup: OwnerLookup,
+) -> ClaudeLiveFiling {
+    let owner = token_owner::claude_access_token(credentials_text).and_then(|token| lookup(&token));
+    match token_owner::verdict(claimed_identity, owner.as_ref()) {
+        OwnerVerdict::Matches => ClaudeLiveFiling::Claimed,
+        OwnerVerdict::Unverified => ClaudeLiveFiling::Unverified,
+        OwnerVerdict::Foreign(owner) => {
+            match profiles.iter().find(|profile| profile.provider == CliProvider::Claude
+                && profile.identity_key == owner.account_uuid) {
+                Some(profile) => ClaudeLiveFiling::ToOwner { profile_id: profile.id.clone(), owner },
+                None => ClaudeLiveFiling::ForeignUnregistered(owner),
+            }
+        }
+    }
+}
+
+/// Keep the owner's original identity bytes; only the verified credentials move.
+/// The destination must itself name the owner: otherwise the move would pair
+/// the owner's tokens with somebody else's name, the very split being repaired.
+fn replace_claude_credentials(
+    base: &Path,
+    profile_id: &str,
+    owner_uuid: &str,
+    credentials_text: &str,
+) -> Result<(), String> {
+    let mut stored = snapshot::load(base, profile_id)?;
+    snapshot::metadata_from_stored(profile_id, &stored, false)?;
+    match &mut stored {
+        snapshot::StoredSnapshot::Claude(stored)
+            if stored.provider == CliProvider::Claude
+                && claude_snapshot_names(stored, owner_uuid) =>
+        {
+            stored.credentials_text = credentials_text.to_string();
+            stored.captured_at = Utc::now().to_rfc3339();
+        }
+        _ => return Err(ERR_SNAPSHOT_PROVIDER_MISMATCH.to_string()),
+    }
+    snapshot::save(base, profile_id, &stored).map(|_| ())
+}
+
+// capture reads the name more than once. If another process changes it in
+// between, never save a snapshot whose identity bytes disagree with its filing key.
+fn claude_snapshot_names(stored: &snapshot::ClaudeSnapshot, identity: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(&stored.oauth_account_text).ok()
+        .is_some_and(|account| account.get("accountUuid").and_then(serde_json::Value::as_str) == Some(identity))
+}
+
+fn clear_saved_token_flags(profile: &mut CliAccountProfile) -> bool {
+    let rejected = profile.refresh_rejected_at.take().is_some();
+    let foreign = profile.foreign_token_owner.take().is_some();
+    rejected || foreign
+}
+
+#[derive(Clone, Copy)]
+pub enum UnverifiedPolicy {
+    Refuse,
+    Allow,
+}
+
 pub fn capture_account(
     base: &Path,
     claude_paths: &claude::ClaudePaths,
     codex_paths: &codex::CodexPaths,
     provider: CliProvider,
     label: Option<String>,
+    lookup: OwnerLookup,
+    unverified: UnverifiedPolicy,
 ) -> Result<CliAccountProfile, String> {
-    capture_account_with_grok(base, claude_paths, codex_paths, None, provider, label)
+    capture_account_with_grok(base, claude_paths, codex_paths, None, provider, label, lookup, unverified)
 }
 
 pub(crate) fn capture_account_with_grok(
@@ -258,6 +354,8 @@ pub(crate) fn capture_account_with_grok(
     grok_paths: Option<&grok::GrokPaths>,
     provider: CliProvider,
     label: Option<String>,
+    lookup: OwnerLookup,
+    unverified: UnverifiedPolicy,
 ) -> Result<CliAccountProfile, String> {
     let (stored, live) = match provider {
         CliProvider::Claude => {
@@ -277,6 +375,21 @@ pub(crate) fn capture_account_with_grok(
         .identity_key
         .clone()
         .ok_or_else(|| ERR_LIVE_IDENTITY_MISSING.to_string())?;
+    if let snapshot::StoredSnapshot::Claude(stored) = &stored {
+        if !claude_snapshot_names(stored, &identity) {
+            return Err(ERR_LIVE_TOKEN_UNVERIFIED.to_string());
+        }
+        let owner = token_owner::claude_access_token(&stored.credentials_text).and_then(|token| lookup(&token));
+        match token_owner::verdict(&identity, owner.as_ref()) {
+            OwnerVerdict::Matches => {}
+            OwnerVerdict::Foreign(_) => return Err(ERR_LIVE_TOKEN_FOREIGN.to_string()),
+            OwnerVerdict::Unverified if matches!(unverified, UnverifiedPolicy::Refuse) => {
+                return Err(ERR_LIVE_TOKEN_UNVERIFIED.to_string());
+            }
+            OwnerVerdict::Unverified => {}
+        }
+    }
+    // Codex/Grok write identity and tokens together in one file; keep their capture path.
     let mut file = registry::load(base).map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())?;
     let existing = file
         .profiles
@@ -321,6 +434,7 @@ pub(crate) fn capture_account_with_grok(
             snapshot::StoredSnapshot::Grok(_) => false,
         },
         refresh_rejected_at: None,
+        foreign_token_owner: None,
     };
     snapshot::save(base, &id, &stored).map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())?;
     registry::upsert_by_identity_key(&mut file, profile.clone());
@@ -334,8 +448,9 @@ pub fn switch_account(
     codex_paths: &codex::CodexPaths,
     provider: CliProvider,
     profile_id: &str,
+    lookup: OwnerLookup,
 ) -> Result<CliSwitchResult, String> {
-    switch_account_with_grok(base, claude_paths, codex_paths, None, provider, profile_id)
+    switch_account_with_grok(base, claude_paths, codex_paths, None, provider, profile_id, lookup)
 }
 
 pub(crate) fn switch_account_with_grok(
@@ -345,6 +460,7 @@ pub(crate) fn switch_account_with_grok(
     grok_paths: Option<&grok::GrokPaths>,
     provider: CliProvider,
     profile_id: &str,
+    lookup: OwnerLookup,
 ) -> Result<CliSwitchResult, String> {
     let mut file = registry::load(base).map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())?;
     let target = file
@@ -383,22 +499,46 @@ pub(crate) fn switch_account_with_grok(
             }
         };
         if let Some(identity) = identity {
-            if let Some(profile) = file
-                .profiles
-                .iter_mut()
-                .find(|profile| profile.provider == provider && profile.identity_key == identity)
-            {
-                snapshot::save(base, &profile.id, &current)
-                    .map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())?;
-                wrote_back_to = Some(profile.id.clone());
-                cleared_live_rejection = profile.refresh_rejected_at.take().is_some();
-                if profile.id == target.id {
-                    warnings.push(WARN_ACTIVE_SNAPSHOT_REFRESHED.to_string());
+            let filing = match &current {
+                snapshot::StoredSnapshot::Claude(stored) if claude_snapshot_names(stored, &identity) =>
+                    classify_claude_live(&identity, &stored.credentials_text, &file.profiles, lookup),
+                snapshot::StoredSnapshot::Claude(_) => ClaudeLiveFiling::Unverified,
+                // Codex/Grok write the name and tokens atomically in the same file.
+                _ => ClaudeLiveFiling::Claimed,
+            };
+            match filing {
+                ClaudeLiveFiling::Claimed => {
+                    if let Some(profile) = file.profiles.iter_mut()
+                        .find(|profile| profile.provider == provider && profile.identity_key == identity) {
+                        snapshot::save(base, &profile.id, &current)
+                            .map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())?;
+                        wrote_back_to = Some(profile.id.clone());
+                        cleared_live_rejection = clear_saved_token_flags(profile);
+                        if profile.id == target.id {
+                            warnings.push(WARN_ACTIVE_SNAPSHOT_REFRESHED.to_string());
+                        }
+                    } else {
+                        snapshot::save_orphan(base, provider, &current)
+                            .map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())?;
+                        warnings.push(WARN_UNREGISTERED_LIVE_LOGIN_SAVED.to_string());
+                    }
                 }
-            } else {
-                snapshot::save_orphan(base, provider, &current)
-                    .map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())?;
-                warnings.push(WARN_UNREGISTERED_LIVE_LOGIN_SAVED.to_string());
+                ClaudeLiveFiling::ToOwner { profile_id, owner } => {
+                    let snapshot::StoredSnapshot::Claude(stored) = &current else { unreachable!() };
+                    if replace_claude_credentials(base, &profile_id, &owner.account_uuid, &stored.credentials_text).is_ok() {
+                        if let Some(profile) = file.profiles.iter_mut().find(|profile| profile.id == profile_id) {
+                            cleared_live_rejection = clear_saved_token_flags(profile);
+                        }
+                        wrote_back_to = Some(profile_id);
+                        warnings.push(WARN_LIVE_TOKEN_FILED_TO_OWNER.to_string());
+                    } else {
+                        warnings.push(WARN_LIVE_TOKEN_NOT_SAVED.to_string());
+                    }
+                }
+                ClaudeLiveFiling::ForeignUnregistered(_) => {
+                    warnings.push(WARN_LIVE_TOKEN_FOREIGN_UNREGISTERED.to_string());
+                }
+                ClaudeLiveFiling::Unverified => warnings.push(WARN_LIVE_TOKEN_NOT_SAVED.to_string()),
             }
         }
     }
@@ -412,6 +552,31 @@ pub(crate) fn switch_account_with_grok(
         (snapshot::StoredSnapshot::Claude(stored), CliProvider::Claude)
             if stored.provider == CliProvider::Claude =>
         {
+            // The write-back above may have just cleared this flag with a verified
+            // copy of the target's own tokens, so read the registry entry as it is
+            // now rather than the copy taken before the write-back.
+            let flagged = file
+                .profiles
+                .iter()
+                .find(|profile| profile.id == target.id)
+                .map_or(target.foreign_token_owner.is_some(), |profile| {
+                    profile.foreign_token_owner.is_some()
+                });
+            if flagged {
+                return Err(ERR_SNAPSHOT_FOREIGN.to_string());
+            }
+            let owner = token_owner::claude_access_token(&stored.credentials_text).and_then(|token| lookup(&token));
+            if let OwnerVerdict::Foreign(owner) = token_owner::verdict(&target.identity_key, owner.as_ref()) {
+                if let Some(profile) = file.profiles.iter_mut().find(|profile| profile.id == target.id) {
+                    profile.foreign_token_owner = Some(ForeignTokenOwner {
+                        account_uuid: owner.account_uuid,
+                        email: owner.email,
+                        detected_at: Utc::now().to_rfc3339(),
+                    });
+                }
+                registry::save(base, &file).map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())?;
+                return Err(ERR_SNAPSHOT_FOREIGN.to_string());
+            }
             serde_json::from_str::<serde_json::Value>(&stored.credentials_text)
                 .map_err(|_| ERR_SNAPSHOT_INVALID.to_string())?;
             if claude::needs_relogin(&stored.credentials_text) {
@@ -544,6 +709,30 @@ pub fn update_snapshot_tokens(
     Ok(SnapshotUpdate::Applied)
 }
 
+pub fn claude_snapshot_access_token(base: &Path, profile_id: &str) -> Option<String> {
+    match snapshot::load(base, profile_id).ok()? {
+        snapshot::StoredSnapshot::Claude(stored) if stored.provider == CliProvider::Claude =>
+            token_owner::claude_access_token(&stored.credentials_text),
+        _ => None,
+    }
+}
+
+pub(crate) fn record_foreign_token_owner(
+    base: &Path,
+    profile_id: &str,
+    owner: &TokenOwner,
+    detected_at: String,
+) -> Result<(), String> {
+    let _guard = mutation_guard()?;
+    let mut file = registry::load(base).map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())?;
+    let profile = file.profiles.iter_mut().find(|profile| profile.id == profile_id)
+        .ok_or_else(|| ERR_PROFILE_NOT_FOUND.to_string())?;
+    profile.foreign_token_owner = Some(ForeignTokenOwner {
+        account_uuid: owner.account_uuid.clone(), email: owner.email.clone(), detected_at,
+    });
+    registry::save(base, &file).map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())
+}
+
 pub(crate) fn record_refresh_rejection(
     base: &Path,
     profile_id: &str,
@@ -576,7 +765,7 @@ pub fn capture_resolved(
     let claude_paths = claude::ClaudePaths::resolve()?;
     let codex_paths = codex::CodexPaths::resolve()?;
     let grok_paths = grok::GrokPaths::resolve()?;
-    capture_account_with_grok(base, &claude_paths, &codex_paths, Some(&grok_paths), provider, label)
+    capture_account_with_grok(base, &claude_paths, &codex_paths, Some(&grok_paths), provider, label, &token_owner::cached_owner, UnverifiedPolicy::Refuse)
 }
 
 pub fn switch_resolved(
@@ -588,7 +777,7 @@ pub fn switch_resolved(
     let claude_paths = claude::ClaudePaths::resolve()?;
     let codex_paths = codex::CodexPaths::resolve()?;
     let grok_paths = grok::GrokPaths::resolve()?;
-    switch_account_with_grok(base, &claude_paths, &codex_paths, Some(&grok_paths), provider, profile_id)
+    switch_account_with_grok(base, &claude_paths, &codex_paths, Some(&grok_paths), provider, profile_id, &token_owner::cached_owner)
 }
 
 pub fn remove_resolved(base: &Path, profile_id: &str) -> Result<(), String> {
@@ -707,6 +896,7 @@ pub fn rescue_rejected_snapshots(base: &Path) -> Result<Vec<String>, String> {
             last_switched_at: None,
             needs_relogin: true,
             refresh_rejected_at: Some(rejected_at.to_rfc3339()),
+            foreign_token_owner: None,
         });
         restored.push(id);
     }
@@ -769,6 +959,7 @@ fn resolve_orphan_inner(
                 last_switched_at: None,
                 needs_relogin: metadata.needs_relogin,
                 refresh_rejected_at: None,
+                foreign_token_owner: None,
             };
             registry::upsert_by_identity_key(&mut file, profile.clone());
             registry::save(base, &file).map_err(|_| ERR_ORPHAN_MANAGE_FAILED.to_string())?;

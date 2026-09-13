@@ -263,6 +263,10 @@ export function formatResetShort(iso: string, now: Date = new Date()): string {
 }
 
 const USAGE_ERROR_MESSAGE: Record<string, string> = {
+  "usage.error.foreign_token":
+    "保存されたログイン情報が別のアカウント{owner}のものだったため、表示を止めました。このアカウントで再ログインしてください。",
+  "usage.error.live_token_foreign":
+    "CLI のログイン情報が別のアカウント{owner}のものに置き換わっています。切り替え前から動いているセッションが書き戻した可能性があります。そのセッションを終了してから、使いたいアカウントへ切り替え直してください。",
   "usage.error.rate_limited":
     "取得を一時停止しています。しばらくしてから再表示されます。",
   "usage.error.needs_relogin":
@@ -284,8 +288,9 @@ const USAGE_ERROR_MESSAGE: Record<string, string> = {
 };
 
 /** Null for an unknown code, so the caller falls back to the state message. */
-export function usageErrorMessage(code: string | null): string | null {
-  return code ? (USAGE_ERROR_MESSAGE[code] ?? null) : null;
+export function usageErrorMessage(code: string | null, ownerEmail?: string | null): string | null {
+  const message = code ? (USAGE_ERROR_MESSAGE[code] ?? null) : null;
+  return message?.replace("{owner}", () => ownerEmail ? `（${ownerEmail}）` : "") ?? null;
 }
 
 const USAGE_STATE_MESSAGE: Record<UsageRowState, string> = {
@@ -318,7 +323,7 @@ export function rowMessage(row: ProfileUsage): string {
     // 頃: the time is a local backoff estimate, not the server's word.
     return `取得を一時停止しています。${formatUpdatedAt(row.retry_at)} 頃に再開します。`;
   }
-  return usageErrorMessage(row.error_code) ?? USAGE_STATE_MESSAGE[row.state];
+  return usageErrorMessage(row.error_code, row.token_owner_email) ?? USAGE_STATE_MESSAGE[row.state];
 }
 
 export { USAGE_STATE_MESSAGE };

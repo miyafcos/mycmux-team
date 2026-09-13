@@ -11,7 +11,10 @@ const mocks = vi.hoisted(() => ({
   intent: vi.fn(async (_closing: boolean) => {}),
   kill: vi.fn(async (_id: string) => {}),
   destroy: vi.fn(async () => {}),
-  save: vi.fn(async () => {}),
+  save: vi.fn(async (_data: import("../../src/lib/ipc").PersistentData) => {}),
+  publish: vi.fn(async (_fragment: import("../../src/lib/ipc").WindowFragment) => {}),
+  release: vi.fn(async () => 0),
+  response: vi.fn(async (_id: string, _result: unknown, _error: string | null) => {}),
   quit: vi.fn(async () => {}),
   fragments: [] as Array<Record<string, unknown>>,
   events: new Map<string, (event: { payload: unknown }) => void>(),
@@ -34,7 +37,7 @@ vi.mock("../../src/lib/ipc", async (original) => {
     loadPersistentData: async () => ({ supported: true, schemaVersion: 1, data: { schema_version: 1, workspaces: [], settings } }),
     getAppSettings: async () => settings,
     takePendingAdoption: mocks.takePending, getWindowFragments: async () => mocks.fragments,
-    publishWindowFragment: async () => {}, getPtyMetadataSnapshot: async () => ({}),
+    releaseWorkspaces: mocks.release, publishWindowFragment: mocks.publish, sendSocketResponse: mocks.response, getPtyMetadataSnapshot: async () => ({}),
     readAgentSessionMappings: async () => ({}), listPets: async () => [], setAppFrontendVisible: async () => {},
     savePersistentData: mocks.save, setWindowCloseIntent: mocks.intent,
     killSession: mocks.kill, quitApp: mocks.quit,
@@ -166,6 +169,7 @@ describe("native close-request path scopes its victims to the closing window", (
   });
   it.each(["main", "mycmux-w2"])("closing %s confirms its panes and leaves the keeper PTYs alive", async (label) => {
     await boot(label);
+    mocks.save.mockClear();
     const preventDefault = vi.fn();
     await act(async () => mocks.close?.({ preventDefault }));
     expect(preventDefault).toHaveBeenCalledOnce();
@@ -177,6 +181,54 @@ describe("native close-request path scopes its victims to the closing window", (
     expect(mocks.kill.mock.invocationCallOrder[1]).toBeLessThan(mocks.destroy.mock.invocationCallOrder[0]);
     expect(mocks.destroy).toHaveBeenCalledOnce();
     expect(mocks.quit).not.toHaveBeenCalled();
+    expect(mocks.release).not.toHaveBeenCalled();
+    expect(preventDefault.mock.invocationCallOrder[0]).toBeLessThan(mocks.confirm.mock.invocationCallOrder[0]);
+    expect(mocks.intent.mock.invocationCallOrder[0]).toBeLessThan(mocks.takePending.mock.invocationCallOrder.at(-1)!);
+    if (label === "main") {
+      expect(mocks.save).toHaveBeenCalledOnce();
+      expect(mocks.save.mock.invocationCallOrder[0]).toBeLessThan(mocks.intent.mock.invocationCallOrder[0]);
+      expect(mocks.save.mock.calls[0][0].workspaces.map((ws) => ws.id).sort()).toEqual(["keeper-ws", "victim-ws"]);
+    }
+  });
+  it.each(["main", "mycmux-w2"])("dispatches socket success and error only while %s owns the role", async (label) => {
+    await boot(label);
+    const socket = mocks.events.get("socket-request")!;
+    await act(async () => { setWindowRole(false); });
+    const count = useWorkspaceListStore.getState().workspaces.length;
+    await act(async () => { await socket({ payload: { id: "ignored", cmd: "workspace.new", args: { name: "Ignored" } } }); });
+    expect(useWorkspaceListStore.getState().workspaces).toHaveLength(count);
+    expect(mocks.response).not.toHaveBeenCalled();
+    await act(async () => { setWindowRole(true); });
+    await act(async () => { await socket({ payload: { id: "success", cmd: "workspace.new", args: { name: "Socket" } } }); });
+    expect(useWorkspaceListStore.getState().workspaces).toHaveLength(count + 1);
+    expect(mocks.response).toHaveBeenCalledExactlyOnceWith("success", expect.objectContaining({ name: "Socket" }), null);
+    await act(async () => { await socket({ payload: { id: "failure", cmd: "unknown-command", args: {} } }); });
+    expect(mocks.response).toHaveBeenLastCalledWith("failure", null, "Unknown socket command: unknown-command");
+  });
+  it.each(["main", "mycmux-w2"])("publishes %s workspace changes regardless of its role", async (label) => {
+    await boot(label);
+    await act(async () => { setWindowRole(false); });
+    mocks.publish.mockClear();
+    await act(async () => useWorkspaceListStore.getState().renameWorkspace("victim-ws", "Changed"));
+    await vi.waitFor(() => expect(mocks.publish).toHaveBeenCalled());
+    expect(mocks.publish.mock.calls.at(-1)![0]).toMatchObject({ window_label: label,
+      workspaces: [expect.objectContaining({ id: "victim-ws", name: "Changed" })] });
+  });
+  it("closes already committed incoming PTYs after recording close intent", async () => {
+    await boot("mycmux-w2");
+    const incoming = toTransferConfig(workspace());
+    incoming.id = "incoming";
+    incoming.panes[0].pane_id = "incoming-pane";
+    incoming.panes[0].tabs = [{ tab_id: "incoming-tab", session_id: "pty-incoming-incoming-pane-incoming-tab", agent_id: "shell", type: "terminal" }];
+    incoming.panes[0].active_tab_id = "incoming-tab";
+    mocks.takePending.mockClear().mockResolvedValueOnce([incoming]);
+    await act(async () => mocks.close!({ preventDefault: vi.fn() }));
+    expect(mocks.kill.mock.calls.map(([id]) => id).sort()).toEqual(["pty-incoming-incoming-pane-incoming-tab", "victim-a", "victim-b"]);
+    expect(mocks.intent.mock.invocationCallOrder[0]).toBeLessThan(mocks.takePending.mock.invocationCallOrder[0]);
+    expect(mocks.takePending.mock.invocationCallOrder[0]).toBeLessThan(mocks.kill.mock.invocationCallOrder[0]);
+    expect(mocks.destroy).toHaveBeenCalledOnce();
+    expect(mocks.quit).not.toHaveBeenCalled();
+    expect(mocks.release).not.toHaveBeenCalled();
   });
   it("cancellation leaves all sessions and both windows untouched", async () => {
     mocks.confirm.mockResolvedValue(false);

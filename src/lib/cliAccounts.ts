@@ -19,6 +19,18 @@ export const PROVIDER_TITLE: Record<CliProvider, string> = {
 };
 
 const CLI_ACCOUNT_MESSAGES: Record<string, string> = {
+  "cli_account.error.snapshot_foreign":
+    "原因: このアカウントの保存データに、別のアカウントのログイン情報が入っています。次にすること: このアカウントで再ログインしてから切り替えてください。",
+  "cli_account.error.live_token_foreign":
+    "原因: 現在の CLI のログイン情報は、表示名とは別のアカウントのものです。次にすること: 登録したいアカウントで CLI にログインし直してから、もう一度お試しください。",
+  "cli_account.error.live_token_unverified":
+    "原因: ログイン情報の持ち主を確認できませんでした。次にすること: ネットワークを確認して、しばらくしてからもう一度お試しください。",
+  "cli_account.warning.live_token_not_saved":
+    "切り替え前のログイン情報は持ち主を確認できなかったため、控えを更新しませんでした。元のファイルはバックアップに残っています。",
+  "cli_account.warning.live_token_filed_to_owner":
+    "切り替え前のログイン情報は別の登録アカウントのものだったため、そのアカウントの控えとして保存しました。",
+  "cli_account.warning.live_token_foreign_unregistered":
+    "切り替え前のログイン情報は未登録のアカウントのものだったため、控えには保存しませんでした。元のファイルはバックアップに残っています。",
   "cli_account.error.accounts_unavailable":
     "原因: アカウント一覧を読み取れませんでした。次にすること: ログイン状態と保存ファイルを確認して、もう一度お試しください。",
   "cli_account.error.live_login_unavailable":

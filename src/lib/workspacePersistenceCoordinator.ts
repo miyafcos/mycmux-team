@@ -1,3 +1,4 @@
+import { persistenceStrings } from "./persistenceStrings";
 import {
   hashCanonical,
   type PersistentLayoutProjection,
@@ -124,10 +125,10 @@ export function quarantineTerminalPersistentStorageError(error: unknown): string
   const terminal = nonRetryablePersistentStorageError(error);
   if (!terminal) return null;
   const diagnostic = terminal.kind === "unsupportedSchema"
-    ? `対応していない保存データ（schema ${terminal.schemaVersion}）を検出したため、この起動中は保存を停止しました。元の data.json は変更していません。`
+    ? persistenceStrings.unsupportedSchema(terminal.schemaVersion)
     : terminal.kind === "unsupportedPlatform"
-      ? "この環境では data.json を安全に保存できないため、この起動中は保存を停止しました。元の data.json は変更していません。"
-      : `保存しようとした data.json の schema ${terminal.schemaVersion} が現在の形式と一致しないため、この起動中は保存を停止しました。元の data.json は変更していません。`;
+      ? persistenceStrings.unsupportedPlatform
+      : persistenceStrings.invalidPayloadSchema(terminal.schemaVersion);
   quarantinePersistentWrites({
     reason: terminal.kind,
     schemaVersion: terminal.kind === "unsupportedPlatform" ? undefined : terminal.schemaVersion,

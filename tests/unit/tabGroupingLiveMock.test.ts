@@ -1,34 +1,49 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const outputParent = "C:\\Users\\miyaz\\reports\\_quick\\2026-08";
+// scripts/build_grouping_live_mock.ps1 writes the generated mock outside the
+// repository, into the author's local report folder. That artifact exists on
+// one machine only, so the checks that need it run only where it is present
+// (MYCMUX_LIVE_MOCK_DIR overrides the folder). A hand-written fixture would
+// only test itself and say nothing about what the build produces, so none is
+// shipped; the repository is mirrored publicly and must not carry the real
+// report either.
+const outputParent = process.env.MYCMUX_LIVE_MOCK_DIR ?? "C:\\Users\\miyaz\\reports\\_quick\\2026-08";
+const GUIDE_HEADINGS = ["① 案を比較する", "② 内容を編集する", "③ 適用前に確認する", "④ 適用して元に戻す"];
 
-function latestGeneratedHtml(): string {
+function latestGeneratedHtml(): string | null {
+  if (!existsSync(outputParent)) return null;
   const directory = readdirSync(outputParent, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && entry.name.startsWith("タブ再配置_動くモック_"))
     .sort((left, right) => right.name.localeCompare(left.name, "ja"))[0];
-  if (!directory) throw new Error("生成済みの live mock がありません。");
-  return readFileSync(join(outputParent, directory.name, "index.html"), "utf8");
+  if (!directory) return null;
+  const indexPath = join(outputParent, directory.name, "index.html");
+  return existsSync(indexPath) ? readFileSync(indexPath, "utf8") : null;
 }
 
-describe("Tab grouping live mock artifact", () => {
-  it("is a self-contained HTML file with the real Panel bundle", () => {
-    const html = latestGeneratedHtml();
-    expect(html).not.toMatch(/<script\b[^>]*\bsrc=/i);
-    expect(html).not.toMatch(/<link\b[^>]*\bhref=/i);
-    expect(html).not.toMatch(/https?:\/\//i);
-    expect(html).toContain("cmux-tab-grouping");
-    expect(html).toContain("MYCMUX_GROUPING_LIVE_MOCK");
-  });
+const generatedHtml = latestGeneratedHtml();
 
-  it("contains the four contextual guide headings", () => {
-    const html = latestGeneratedHtml();
-    expect(html).toContain("① 案を比較する");
-    expect(html).toContain("② 内容を編集する");
-    expect(html).toContain("③ 適用前に確認する");
-    expect(html).toContain("④ 適用して元に戻す");
+describe("Tab grouping live mock artifact", () => {
+  it.skipIf(generatedHtml === null)(
+    "is a self-contained HTML file with the real Panel bundle (skipped unless the generated mock is present locally)",
+    () => {
+      const html = generatedHtml ?? "";
+      expect(html).not.toMatch(/<script\b[^>]*\bsrc=/i);
+      expect(html).not.toMatch(/<link\b[^>]*\bhref=/i);
+      expect(html).not.toMatch(/https?:\/\//i);
+      expect(html).toContain("cmux-tab-grouping");
+      expect(html).toContain("MYCMUX_GROUPING_LIVE_MOCK");
+    },
+  );
+
+  it("defines the four contextual guide headings in the mock (and ships them when a build is present)", () => {
+    const source = readFileSync("src/mock/tabGroupingLiveMock.tsx", "utf8");
+    for (const heading of GUIDE_HEADINGS) {
+      expect(source).toContain(`title: "${heading}"`);
+      if (generatedHtml !== null) expect(generatedHtml).toContain(heading);
+    }
   });
 
   it("documents and captures the edit-map step", () => {

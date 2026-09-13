@@ -1375,6 +1375,7 @@ export interface NamedWindowStat {
 export type UsageRowState = "ok" | "wait_for_cli" | "cooldown" | "needs_relogin" | "unsupported" | "error";
 
 export interface ProfileUsage {
+  token_owner_email?: string | null;
   profile_id: string;
   provider: CliProvider;
   label: string;
@@ -1406,6 +1407,7 @@ export async function getAccountUsage(): Promise<AccountUsageReport> {
 export type CliProvider = "claude" | "codex" | "grok";
 
 export interface CliAccountProfile {
+  foreign_token_owner?: { account_uuid: string; email: string | null; detected_at: string } | null;
   id: string;
   provider: CliProvider;
   label: string;

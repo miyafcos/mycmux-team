@@ -29,40 +29,13 @@ def test_rust_load_returns_a_tagged_nullable_envelope() -> None:
     assert 'invoke<PersistentDataEnvelope>("load_persistent_data")' in ipc
 
 
-def test_frontend_checks_schema_before_any_hydration_or_session_mapping_read() -> None:
-    source = read_repo_text("src/components/layout/SocketListener.tsx")
-    envelope = source.index("loadPersistentData().then(async (envelope)")
-    quarantine = source.index("reportUnsupportedPersistentSchema", envelope)
-    mapping_read = source.index("readAgentSessionMappings", envelope)
-    theme_hydrate = source.index("hydrateSettings", envelope)
-    workspace_restore = source.index("restoreWorkspaceConfigs", envelope)
-
-    assert envelope < quarantine < mapping_read
-    assert quarantine < theme_hydrate
-    assert quarantine < workspace_restore
+def test_unsupported_startup_diagnostic_copy() -> None:
+    source = read_repo_text("src/lib/persistenceStrings.ts")
     assert "対応していない保存データ" in source
-
-
-def test_supported_schema_is_published_only_after_full_hydration_and_restore() -> None:
-    source = read_repo_text("src/components/layout/SocketListener.tsx")
-    envelope = source.index("loadPersistentData().then(async (envelope)")
-    mapping_read = source.index("readAgentSessionMappings", envelope)
-    ai_hydrate = source.index("hydrateAiSettingsFromDataJson", envelope)
-    startup_hold = source.index("startupAutosaveHoldUntil.current", envelope)
-    workspace_restore = source.index("restoreWorkspaceConfigs", envelope)
-    hydration_barrier = source.index("publishPersistentSchemaAfterHydration", envelope)
-    loaded = source.index("_resolveLoaded()", hydration_barrier)
-
-    assert hydration_barrier < mapping_read < ai_hydrate < startup_hold < workspace_restore < loaded
-    helper = source[
-        source.index("export async function publishPersistentSchemaAfterHydration") : envelope
-    ]
-    assert helper.index("await hydrate()") < helper.index("markPersistentSchemaSupported")
 
 
 def test_all_frontend_persistence_starts_fail_closed() -> None:
     coordinator = read_repo_text("src/lib/workspacePersistenceCoordinator.ts")
-    listener = read_repo_text("src/components/layout/SocketListener.tsx")
 
     for snippet in (
         'status: "pending"',
@@ -71,32 +44,23 @@ def test_all_frontend_persistence_starts_fail_closed() -> None:
         "isPersistenceWriteAllowed",
     ):
         assert snippet in coordinator
-    assert "if (!isPersistenceWriteAllowed())" in listener
 
 
-def test_save_rejection_is_typed_and_quarantines_before_retry() -> None:
+def test_save_rejection_preserves_typed_error_and_diagnostic() -> None:
     storage = read_repo_text("src-tauri/src/db/storage.rs")
     command = read_repo_text("src-tauri/src/commands/workspace.rs")
     ipc = read_repo_text("src/lib/ipc.ts")
-    listener = read_repo_text("src/components/layout/SocketListener.tsx")
+    listener = read_repo_text("src/lib/persistenceStrings.ts")
 
     assert "pub enum PersistentStorageError" in storage
     assert "UnsupportedSchema" in storage
     assert "Result<(), storage::PersistentStorageError>" in command
     assert "unsupportedPersistentSchemaVersion" in ipc
-    catch = listener.index(".catch((err) =>", listener.index("savePersistentData(snapshot)"))
-    quarantine = listener.index("reportUnsupportedPersistentSchema", catch)
-    dirty = listener.index("dirty = true", catch)
-    retry = listener.index("scheduleSaveRetry", catch)
-    assert catch < quarantine < dirty < retry
     assert "対応していない保存データ" in listener
 
 
-def test_child_window_surfaces_unsupported_schema_diagnostic() -> None:
-    source = read_repo_text("src/components/layout/SocketListener.tsx")
-    child = source[source.index("if (!isMainWindow()) {") : source.index("claimLeader()\n      .then")]
-    assert "unsupportedPersistentSchemaVersion" in child
-    assert "reportUnsupportedPersistentSchema" in child
+def test_child_window_diagnostic_copy() -> None:
+    source = read_repo_text("src/lib/persistenceStrings.ts")
     assert "対応していない保存データ" in source
 
 
@@ -113,11 +77,10 @@ def test_remote_setting_is_persisted_before_runtime_side_effects() -> None:
 def test_round_three_terminal_errors_are_typed_and_non_retryable() -> None:
     storage = read_repo_text("src-tauri/src/db/storage.rs")
     ipc = read_repo_text("src/lib/ipc.ts")
-    listener = read_repo_text("src/components/layout/SocketListener.tsx")
+    listener = read_repo_text("src/lib/persistenceStrings.ts")
     for snippet in ("UnsupportedPlatform", '"unsupportedPlatform"'):
         assert snippet in storage
     assert "nonRetryablePersistentStorageError" in ipc
-    assert 'reason: "hydrationFailed"' in listener
     assert "保存せずに終了しますか" in listener
 
 

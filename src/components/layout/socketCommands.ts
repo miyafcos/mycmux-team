@@ -2356,6 +2356,58 @@ async function closeWorkspace(args: SocketArgs) {
   };
 }
 
+// Public socket names, including compatibility aliases. Dispatch and contracts share this table.
+export const SOCKET_COMMAND_NAMES = [
+  "account.usage",
+  "usage",
+  "workspace.list",
+  "list_workspaces",
+  "workspace.select",
+  "select_workspace",
+  "workspace.rename",
+  "rename_workspace",
+  "workspace.new",
+  "new_workspace",
+  "workspace.close",
+  "close_workspace",
+  "pane.list",
+  "list_panes",
+  "pane.list_all",
+  "list_all_panes",
+  "pane.spawn",
+  "pane.spawn_tab",
+  "pane.declare_tab",
+  "pane.launch_declared",
+  "pane.activate_tab",
+  "pane.restore_activation",
+  "pane.close_tab",
+  "pane.close_tabs",
+  "pane.rename_tab",
+  "pane.send_text",
+  "pane.read",
+  "pane.move",
+  "web.open",
+  "web.list",
+  "web.focus",
+  "web.navigate",
+  "web.wait",
+  "web.eval",
+  "web.snapshot",
+  "web.find",
+  "web.click",
+  "web.type",
+  "web.key",
+  "web.scroll",
+  "web.upload",
+  "web.screenshot",
+  "web.downloads",
+  "web.dialogs",
+  "web.read",
+  "web.close",
+  "web.push",
+] as const;
+type SocketCommandName = (typeof SOCKET_COMMAND_NAMES)[number];
+
 export async function handleSocketCommand(cmd: string, args: SocketArgs): Promise<unknown> {
   const context = webPaneCommandContext(cmd);
   const { usePaneMetadataStore, useUiStore, useWorkspaceListStore } = await import(
@@ -2363,7 +2415,7 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
   );
   const workspaceState = useWorkspaceListStore.getState();
 
-  switch (cmd) {
+  switch (cmd as SocketCommandName) {
     // Read-only: the account usage report mycmux already fetches for the Usage
     // tab. Exposed over the socket so an agent can see how much room each
     // registered CLI account has left without touching the credential store.
