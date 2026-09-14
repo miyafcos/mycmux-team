@@ -1,0 +1,5 @@
+# Files that stay on this machine. mycmux embeds the portable pack in its
+# installer and publishes it, so nothing here may describe personal setup.
+# A rule ending in "/" covers that directory; any other rule names one file.
+mcp/
+references/local-mcp-sandbox.md

@@ -17,9 +17,18 @@ pub(super) fn number_field(value: &Value, keys: &[&str]) -> Option<f64> {
     })
 }
 
+/// Clamp a provider's percentage into the range the UI can draw.
+///
+/// Every provider read here reports whole percents on a 0-100 scale: Claude's
+/// `utilization` and `limits[].percent`, Codex's `used_percent`, Grok's
+/// `creditUsagePercent` and `usagePercent` (all confirmed against the live
+/// endpoints on 2026-09-14). This used to guess that a value at or below 1.0
+/// was a 0-1 fraction and multiply it by 100, so an account at exactly 1% was
+/// shown as 100% -- a wall in the panel and titlebar for an account that had
+/// barely been touched. A genuine fraction could only ever under-report, so
+/// the guess is gone: the value is taken as the percent it is.
 pub(super) fn normalize_pct(value: f64) -> f64 {
-    let pct = if value <= 1.0 { value * 100.0 } else { value };
-    pct.clamp(0.0, 999.9)
+    value.clamp(0.0, 999.9)
 }
 
 pub(super) fn epoch_to_rfc3339(value: i64) -> String {
@@ -57,7 +66,6 @@ mod tests {
     fn numeric_helpers_preserve_existing_normalization() {
         let value = json!({ "ratio": "0.75", "epoch": "1700000000000" });
         assert_eq!(number_field(&value, &["ratio"]), Some(0.75));
-        assert_eq!(normalize_pct(0.75), 75.0);
         assert_eq!(normalize_pct(12.5), 12.5);
         assert_eq!(normalize_pct(1_000.0), 999.9);
         assert_eq!(number_to_i64(&value["epoch"]), Some(1_700_000_000_000));
@@ -65,6 +73,16 @@ mod tests {
             epoch_to_rfc3339(1_700_000_000_000),
             "2023-11-14T22:13:20+00:00"
         );
+    }
+
+    /// The providers report whole percents; nothing at or below 1.0 is a
+    /// fraction to scale up. 1% used to come out as 100%.
+    #[test]
+    fn small_percents_are_not_scaled_as_fractions() {
+        assert_eq!(normalize_pct(1.0), 1.0);
+        assert_eq!(normalize_pct(0.75), 0.75);
+        assert_eq!(normalize_pct(0.0), 0.0);
+        assert_eq!(normalize_pct(-3.0), 0.0);
     }
 
     #[test]

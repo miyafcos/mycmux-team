@@ -35,25 +35,35 @@ fn read(path: &Path) -> Result<Vec<u8>, String> {
     fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 fn hashes(root: &Path) -> Result<BTreeMap<String, String>, String> {
-    fn walk(root: &Path, dir: &Path, result: &mut BTreeMap<String, String>) -> Result<(), String> {
+    fn walk(
+        root: &Path,
+        dir: &Path,
+        rules: &[String],
+        result: &mut BTreeMap<String, String>,
+    ) -> Result<(), String> {
         for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
             if pack_rules::excluded_part(&entry.file_name().to_string_lossy()) {
                 continue;
             }
             let path = entry.path();
+            let rel = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            // The skill's own `.packignore`: files it keeps out of the pack are
+            // not local changes either.
+            if pack_rules::packignored(&rel, rules) {
+                continue;
+            }
             let kind = entry.file_type().map_err(|e| e.to_string())?;
             if kind.is_symlink() {
                 return Err(format!("symlink is not supported: {}", path.display()));
             }
             if kind.is_dir() {
-                walk(root, &path, result)?;
+                walk(root, &path, rules, result)?;
             } else if kind.is_file() {
-                let rel = path
-                    .strip_prefix(root)
-                    .unwrap()
-                    .to_string_lossy()
-                    .replace('\\', "/");
                 result.insert(rel, sha(&path, &read(&path)?));
             }
         }
@@ -62,7 +72,10 @@ fn hashes(root: &Path) -> Result<BTreeMap<String, String>, String> {
     let mut result = BTreeMap::new();
     // pathlib.rglob on a plain file returns no files.
     if root.is_dir() {
-        walk(root, root, &mut result)?;
+        let rules = fs::read_to_string(root.join(pack_rules::PACKIGNORE))
+            .map(|text| pack_rules::packignore_rules(&text))
+            .unwrap_or_default();
+        walk(root, root, &rules, &mut result)?;
     }
     Ok(result)
 }

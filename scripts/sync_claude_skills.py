@@ -16,6 +16,13 @@ ROOT = Path(__file__).resolve().parents[1]
 PACK = ROOT / "skills" / "claude"
 NAMES = ("session-dispatch", "mycmux-bridge", "oracmux")
 EXCLUDES = ("__pycache__", ".pytest_cache", "*.pyc", "*.bak*", "_backup*", "_prev", ".mycmux-pack.json")
+# A skill keeps personal or machine-bound files out of the portable pack by
+# listing them in `.packignore` at its root: one rule per line, `#` comments,
+# a rule ending in `/` covers that directory, any other rule names one file.
+# Honoured here, by src-tauri/build.rs (the embedded pack) and by the app's
+# installer walk (src-tauri/src/claude_skills/install.rs), so the three views
+# of a skill never disagree. mycmux embeds the pack in a published installer.
+PACKIGNORE = ".packignore"
 VERSION = "1.0.0"
 TEXT_EXTENSIONS = frozenset((".py", ".md", ".json", ".txt", ".yaml", ".yml",
                              ".sh", ".ps1", ".toml", ".cfg", ".ini"))
@@ -45,11 +52,34 @@ def excluded(rel: Path) -> bool:
     return any(fnmatch.fnmatch(part, pattern) for part in rel.parts for pattern in EXCLUDES)
 
 
+def packignore_rules(root: Path) -> tuple[str, ...]:
+    path = root / PACKIGNORE
+    if not path.is_file():
+        return ()
+    rules = []
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip().replace("\\", "/")
+        if line and not line.startswith("#"):
+            rules.append(line)
+    return tuple(rules)
+
+
+def packignored(rel: str, rules: tuple[str, ...]) -> bool:
+    for rule in rules:
+        if rule.endswith("/"):
+            if rel == rule[:-1] or rel.startswith(rule):
+                return True
+        elif rel == rule:
+            return True
+    return False
+
+
 def files(root: Path) -> dict[str, bytes]:
     result = {}
+    rules = packignore_rules(root)
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root)
-        if excluded(rel):
+        if excluded(rel) or packignored(rel.as_posix(), rules):
             continue
         if path.is_symlink():
             raise ValueError(f"symlink is not supported: {path}")
@@ -58,9 +88,15 @@ def files(root: Path) -> dict[str, bytes]:
     return result
 
 
+def is_text(path: str | Path) -> bool:
+    # `.packignore` has no extension but is a text rule file; mirrored by
+    # pack_rules::is_text so a CRLF checkout installs and verifies the same.
+    return Path(path).suffix.lower() in TEXT_EXTENSIONS or Path(path).name == PACKIGNORE
+
+
 def normalized_bytes(path: str | Path, data: bytes) -> bytes:
     """Canonical manifest/install bytes; non-text extensions stay byte-exact."""
-    if Path(path).suffix.lower() in TEXT_EXTENSIONS:
+    if is_text(path):
         return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
     return data
 
@@ -78,7 +114,7 @@ def write(path: Path, data: bytes) -> bool:
     if path.is_file() and path.read_bytes() == data:
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.suffix.lower() in TEXT_EXTENSIONS:
+    if is_text(path):
         content = data.decode("utf-8")
         if content.startswith("\ufeff") or "\ufffd" in content:
             raise ValueError(f"text must be UTF-8 without BOM or replacement characters: {path}")
@@ -104,7 +140,7 @@ def replace_once(text: str, old: str, new: str) -> str:
 
 
 def portable(name: str, rel: str, data: bytes) -> tuple[str, bytes]:
-    if Path(rel).suffix.lower() not in TEXT_EXTENSIONS:
+    if not is_text(rel):
         return rel, data
     text = normalized_bytes(rel, data).decode("utf-8-sig")
     if rel.endswith(".py"):
@@ -184,6 +220,12 @@ def check_manifest() -> list[str]:
             errors.append(f"excluded artifact in pack: {rel}")
         elif rel.parts[0] not in (*NAMES, "README.md", "manifest.json"):
             errors.append(f"unmanaged pack path: {rel}")
+    for name in NAMES:
+        rules = packignore_rules(PACK / name)
+        for path in (PACK / name).rglob("*"):
+            rel = path.relative_to(PACK / name).as_posix()
+            if path.is_file() and packignored(rel, rules):
+                errors.append(f"packignored file present in pack: {name}/{rel}")
     return errors
 
 

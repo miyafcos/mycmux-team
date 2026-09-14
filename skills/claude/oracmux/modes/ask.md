@@ -4,7 +4,7 @@
 python ~/.claude/skills/oracmux/scripts/oracmux.py ask --engine chatgpt|gemini|grok \
   (-q "問い" | --question-file Q.md) [--context-file C.md] [--constraints "..."] \
   [--file P [P ...]] [--via pane|oracle|cdp] [--tab <tabId>] [--close-tab] [--mode M] \
-  [--upload P [P ...]] [--model NAME | --any-model] [--research] [--url URL] [--force]
+  [--upload P [P ...]] [--model NAME | --any-model] [--research] [--url URL] [--plugin NAME] [--force]
   [--timeout-min N] [--slug s] [--dry-run] [--json]
 ```
 
@@ -32,6 +32,7 @@ pane 経路の前提: そのサービスのペインがログイン済みであ�
 
 - `--model <名前>` で期待値を上書き (部分一致・例 `--model 強化版思考モード`)
 - `--any-model` で確認そのものを省略 (Web 側の選択のまま送る)
+- `--plugin <名前>` (ChatGPT・pane) は送る前に `+` メニューからそのプラグインのチップを composer に付け、brief を追記で入れる (`web.type --append`)。開発者モードの MCP アプリ (例 `oracmux-sandbox`) はチップ無しだと書き込み系ツールがモデルに見えない (2026-09-14 実測)。行が出ない・チップが載らないときは 1 ターンも使わず exit 3。詳細 `references/local-mcp-sandbox.md`
 - **会話中のタブを `--tab` で再利用すると ChatGPT は picker が見えない** — 会話内の「モデルを切り替える」は
   メッセージ単位の再試行ボタンであって picker ではない。既定 (新規裏タブ) なら問題ない
 

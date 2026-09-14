@@ -112,6 +112,20 @@ def build_type_command(
     return command
 
 
+def build_key_command(tab: str, key: str, *, trusted: bool = False, cli: Path | None = None) -> list[str]:
+    command = [sys.executable, cli_path(cli), "web-key", "--tab", tab, "--key", key]
+    if trusted:
+        command.append("--trusted")
+    return command
+
+
+def build_click_xy_command(tab: str, x: float, y: float, *, trusted: bool = True, cli: Path | None = None) -> list[str]:
+    command = [sys.executable, cli_path(cli), "web-click", "--tab", tab, "--x", str(x), "--y", str(y)]
+    if trusted:
+        command.append("--trusted")
+    return command
+
+
 def build_close_command(tab: str, cli: Path | None = None) -> list[str]:
     return [sys.executable, cli_path(cli), "web-close", "--tab", tab]
 
@@ -248,6 +262,17 @@ def web_eval(tab: str, script: str) -> Any:
 
 def web_click(tab: str, selector: str) -> Any:
     return _run(build_click_command(tab, selector))
+
+
+def web_click_xy(tab: str, x: float, y: float, *, trusted: bool = True) -> Any:
+    """Click a viewport point (CDP mouse event when trusted) — for menu rows that
+    have no stable selector, located first with `web_eval`."""
+    return _run(build_click_xy_command(tab, x, y, trusted=trusted))
+
+
+def web_key(tab: str, key: str, *, trusted: bool = False) -> Any:
+    """Send one key to the page (CDP key event when trusted)."""
+    return _run(build_key_command(tab, key, trusted=trusted))
 
 
 def web_upload(tab: str, selector: str, files: list[Path]) -> Any:

@@ -311,7 +311,7 @@ mod tests {
     fn limits_array_entries_become_named_windows() {
         let usage = parse_usage(&json!({
             "limits": [
-                { "name": "fable", "utilization": 0.42, "resets_at": 1770000000 },
+                { "name": "fable", "utilization": 42, "resets_at": 1770000000 },
                 { "model": "opus", "utilization": 7 },
                 { "name": "", "utilization": 5 },
                 { "name": "no-utilization" },
@@ -324,6 +324,29 @@ mod tests {
         assert_eq!(usage.model_windows[1].key, "opus");
         assert_eq!(usage.model_windows[1].window.pct, 7.0);
         assert_eq!(usage.model_windows[1].window.resets_at, "");
+    }
+
+    /// The endpoint reports whole percents (`utilization: 1.0`, `percent: 1`
+    /// for one percent). Two production rows at exactly 1% were shown as 100%
+    /// on 2026-09-14 because 1.0 was taken for a 0-1 fraction.
+    #[test]
+    fn one_percent_stays_one_percent() {
+        let usage = parse_usage(&json!({
+            "five_hour": { "utilization": 1.0, "resets_at": "2026-09-14T16:00:00.103333+00:00" },
+            "seven_day": { "utilization": 1.0, "resets_at": "2026-09-19T20:00:00.089908+00:00" },
+            "seven_day_opus": null,
+            "seven_day_sonnet": null,
+            "limits": [
+                { "kind": "session", "group": "session", "percent": 1, "resets_at": "2026-09-14T16:00:00.103333+00:00", "scope": null },
+                { "kind": "weekly_all", "group": "weekly", "percent": 1, "resets_at": "2026-09-19T20:00:00.089908+00:00", "scope": null },
+                { "kind": "weekly_scoped", "group": "weekly", "percent": 1, "resets_at": "2026-09-19T20:00:00+00:00", "scope": { "model": { "id": null, "display_name": "Fable" } } }
+            ]
+        }));
+        assert_eq!(usage.five_hour.as_ref().map(|stat| stat.pct), Some(1.0));
+        assert_eq!(usage.seven_day.as_ref().map(|stat| stat.pct), Some(1.0));
+        assert_eq!(usage.model_windows.len(), 1);
+        assert_eq!(usage.model_windows[0].key, "Fable");
+        assert_eq!(usage.model_windows[0].window.pct, 1.0);
     }
 
     #[test]

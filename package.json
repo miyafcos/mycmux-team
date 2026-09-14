@@ -1,7 +1,7 @@
 {
   "name": "mycmux",
   "private": true,
-  "version": "0.71.4",
+  "version": "0.71.6",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -238,6 +238,39 @@ for (const s of sels) {
 return { cleared: false, selector: "" };
 """
 
+PLUGIN_MENU_SEC = 1.5
+PLUGIN_ROW_WAIT_SEC = 8.0
+PLUGIN_ATTACH_SEC = 5.0
+PLUGIN_POLL_SEC = 0.5
+# ChatGPT's "+" menu has a search box; typing the first letters of a plugin name
+# lists it as a row (no stable selector, so it is located by its text and clicked
+# by viewport point). Selecting it puts a non-editable chip into the composer,
+# and that chip is what makes the plugin's write tools available to the model in
+# that conversation (measured 2026-09-14: without it apply_patch was "not in the
+# available tools").
+PLUGIN_ROW_JS = """
+const name = __NAME__;
+const rows = Array.from(document.querySelectorAll("div, li")).filter(el =>
+  el.childElementCount > 0 && el.innerText && el.innerText.startsWith(name) && el.innerText.length < 160);
+if (!rows.length) return { found: false };
+const row = rows[rows.length - 1];
+const r = row.getBoundingClientRect();
+return { found: true, x: r.x + r.width / 2, y: r.y + r.height / 2, text: row.innerText.slice(0, 80) };
+"""
+PLUGIN_ATTACHED_JS = """
+const name = __NAME__;
+const sels = __SELECTORS__;
+for (const s of sels) {
+  const el = document.querySelector(s);
+  if (!el) continue;
+  const text = el.innerText || "";
+  const chip = Array.from(el.querySelectorAll("*")).some(n =>
+    n !== el && n.getAttribute && n.getAttribute("contenteditable") === "false" && (n.innerText || "").includes(name));
+  return { found: true, attached: chip || text.includes(name), text: text.trim().slice(0, 120) };
+}
+return { found: false, attached: false, text: "" };
+"""
+
 SUBMIT_CONFIRM_SEC = 75.0
 SUBMIT_POLL_SEC = 3.0
 SUBMIT_RETRY_LIMIT = 2
@@ -499,6 +532,75 @@ def attach_uploads(
     )
 
 
+def attach_plugin(site: dict[str, Any], tab: str, name: str, log: Log) -> dict[str, Any]:
+    """Put the plugin's chip into a fresh composer (ChatGPT developer-mode apps).
+
+    Opens the composer's "+" menu, types the first letters of the name into its
+    search box, clicks the matching row by viewport point, and proves the chip is
+    in the editor. Must run before the brief is typed, and the brief must then be
+    appended (a `web.push` would replace the chip). Raises PaneNotReady when the
+    service has no plugin opener or never shows the row.
+    """
+    label = str(site.get("label") or "")
+    openers = _values(site, "plugin_open")
+    composer = _values(site, "composer")
+    if not openers or not composer:
+        raise PaneNotReady(f"{label}: engines.json has no plugin_open/composer selector; --plugin is not supported here")
+    try:
+        pane.web_click(tab, composer[0])
+    except pane.PaneError as exc:
+        log(f"plugin: focusing the composer failed: {str(exc)[:120]}")
+    opened = None
+    for opener in openers:
+        try:
+            pane.web_click(tab, opener)
+        except pane.PaneError as exc:
+            log(f"plugin: opener {opener} did not click: {str(exc)[:120]}")
+            continue
+        opened = opener
+        break
+    if opened is None:
+        raise PaneNotReady(f"{label}: no plugin opener could be clicked ({openers})")
+    time.sleep(PLUGIN_MENU_SEC)
+    for ch in name[:4]:
+        pane.web_key(tab, ch, trusted=True)
+    deadline = time.monotonic() + PLUGIN_ROW_WAIT_SEC
+    row: dict[str, Any] | None = None
+    while time.monotonic() < deadline:
+        try:
+            probe = pane.web_eval(tab, _js(PLUGIN_ROW_JS, name=name))
+        except pane.PaneError as exc:
+            log(f"plugin: row probe failed: {str(exc)[:120]}")
+            probe = None
+        if isinstance(probe, dict) and probe.get("found"):
+            row = probe
+            break
+        time.sleep(PLUGIN_POLL_SEC)
+    if row is None:
+        raise PaneNotReady(
+            f"{label}: the plugin picker never listed {name!r} after typing {name[:4]!r} into the "
+            f"{opened} search — is the plugin installed and developer mode on? The tab is left open."
+        )
+    pane.web_click_xy(tab, float(row["x"]), float(row["y"]), trusted=True)
+    deadline = time.monotonic() + PLUGIN_ATTACH_SEC
+    state: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        try:
+            probe = pane.web_eval(tab, _js(PLUGIN_ATTACHED_JS, name=name, selectors=composer))
+        except pane.PaneError:
+            probe = None
+        if isinstance(probe, dict):
+            state = probe
+            if probe.get("attached"):
+                log(f"plugin: {name} chip is in the {label} composer")
+                return {"plugin": name, "row": row.get("text"), "composer": probe.get("text")}
+        time.sleep(PLUGIN_POLL_SEC)
+    raise PaneNotReady(
+        f"{label}: clicked the {name!r} row but no chip appeared in the composer "
+        f"(composer reads {state.get('text')!r}). Nothing was sent; the tab is left open."
+    )
+
+
 def send_control_present(site: dict[str, Any], tab: str) -> bool:
     """Is there an enabled send control on screen right now?"""
     sends = _values(site, "send")
@@ -530,7 +632,7 @@ def clear_composer(site: dict[str, Any], tab: str) -> None:
         pass
 
 
-def fill_composer(site: dict[str, Any], tab: str, prompt_file: Path, log: Log) -> dict[str, Any]:
+def fill_composer(site: dict[str, Any], tab: str, prompt_file: Path, log: Log, *, append: bool = False) -> dict[str, Any]:
     """Put the brief in the composer and prove the editor actually ingested it.
 
     `web.push` assigns the text to the composer element and fires one synthetic
@@ -549,7 +651,25 @@ def fill_composer(site: dict[str, Any], tab: str, prompt_file: Path, log: Log) -
 
     Never submits. Raises PaneNotReady with the tab left open when no path makes
     the editor accept the brief.
+
+    With `append=True` the composer already holds something that must survive (a
+    chip inserted by `attach_plugin`), so the brief is typed after it instead of
+    pushed, and there is no clear-and-retry.
     """
+    if append:
+        composer = _values(site, "composer")
+        if not composer:
+            raise PaneNotReady(f"{site.get('label')}: append fill needs a composer selector in engines.json")
+        try:
+            pane.web_type(tab, prompt_file, selector=composer[0], submit=False, trusted=True, append=True)
+        except pane.PaneError as exc:
+            log(f"fill: web.type(append) reported {str(exc)[:120]}; checking the editor anyway")
+        if wait_send_control(site, tab):
+            return {"method": "type-append", "send_present": True}
+        raise PaneNotReady(
+            f"{site.get('label')}: the brief was appended but the editor never produced a send control. "
+            "Nothing was sent. The tab is left open."
+        )
     pane.web_push(preset=str(site["pane_preset"]), text_file=prompt_file, send=False, tab=tab)
     return repair_fill(site, tab, prompt_file, log)
 
@@ -681,6 +801,7 @@ def consult(
     enforce_model: str | None = None,
     research: bool = False,
     open_url: str | None = None,
+    plugin: str | None = None,
 ) -> Result:
     started = time.monotonic()
     cfg_src = dict(site["timeouts"])
@@ -736,12 +857,16 @@ def consult(
             attached = attach_uploads(site, tab, uploads, log)
             result.uploads = list(attached["files"])
             result.trace.append(f"uploaded={attached['files']} via={attached['selector']}")
+        if plugin:
+            report("attaching_plugin", plugin=plugin)
+            chip = attach_plugin(site, tab, plugin, log)
+            result.trace.append(f"plugin={plugin} row={chip.get('row')!r}")
         report("composing")
         baseline_turns = len(state.get("turns") or [])
         # Fill and submit are separate steps on purpose: the fill has to be proven
         # (the editor shows a send control) before anything is clicked, otherwise a
         # rejected fill reads exactly like a missing button (2026-09-10).
-        filled = fill_composer(site, tab, prompt_file, log)
+        filled = fill_composer(site, tab, prompt_file, log, append=bool(plugin))
         result.trace.append(f"filled={filled['method']}")
         report("submitting", fill=filled["method"])
         pressed = press_send(site, tab, log)

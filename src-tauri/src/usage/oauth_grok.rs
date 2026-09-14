@@ -72,4 +72,14 @@ mod tests {
         assert_eq!(usage.seven_day.unwrap().pct, 64.0);
         assert_eq!(usage.model_windows[0].key, "GrokBuild");
     }
+
+    /// `creditUsagePercent` and `usagePercent` are whole percents (a live
+    /// response on 2026-09-14 read 100.0 / 98.0 / 2.0), so 1.0 is one percent.
+    #[test]
+    fn one_percent_stays_one_percent() {
+        let value: Value = serde_json::json!({"config":{"creditUsagePercent":1.0,"currentPeriod":{"end":"2026-09-19T09:31:56.659983+00:00"},"productUsage":[{"product":"GrokChat","usagePercent":1.0}]}});
+        let usage = parse_usage(&value).unwrap();
+        assert_eq!(usage.seven_day.unwrap().pct, 1.0);
+        assert_eq!(usage.model_windows[0].window.pct, 1.0);
+    }
 }

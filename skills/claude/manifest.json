@@ -1,6 +1,6 @@
 {
   "pack_version": "1.0.0",
-  "generated_at": "2026-09-13T18:41:57.431952+00:00",
+  "generated_at": "2026-09-14T14:04:26.502280+00:00",
   "cli": {
     "path": "scripts/mycmux_agent_cli.py",
     "sha256": "9f4a967ff3a60215d5deed823e3e350a4766488129a9e02a455dd26a9da01174"
@@ -67,8 +67,9 @@
     {
       "name": "oracmux",
       "files": {
-        "SKILL.md": "1edef7f353ed241817ddef08530f6804e9cd881c84517589c03bbe616c15d9a6",
-        "modes/ask.md": "6aa561a266498dee182935ebd580aa782385d50a2c0e3cf71e8c11bf11f9d582",
+        ".packignore": "823240ab4ea0e2405e761c47850015df4e3b6a6bdd7d3ec96ded65c37de7bb62",
+        "SKILL.md": "ac5ecabc99eeddfdee1d0b3bbcf5bfbc081b9f67d56f52f71ff8ce1c1b9c790d",
+        "modes/ask.md": "d757ee454792971f618c5f5580836645faa6ee2890cdf25b7b2aeb2206bc9d1b",
         "modes/collect.md": "0f19ee555bbdde96d0343b779d1a2237ed338fb86a28fc3168009d9f0896afc3",
         "modes/council.md": "f8f125aa66d1f41adf5e125695945ded94e53b908ecbb203fecaeaa02b3b7685",
         "modes/doctor.md": "b3a9bd50196a0cbe090b7cc21a121f0f40bc4a318f47efc00537664bba433c3a",
@@ -79,9 +80,9 @@
         "references/brief-template.md": "6580dcc69e037ff9e721ac8e3ef48ba7376cf513d73c63b076f79b789dd74fc1",
         "references/engine-notes.md": "fc27dcb03299db0df40cad9e4c6293a15ac0e17934fec0d0adfaa1cff6a3b827",
         "references/judge-template.md": "baefcb248c079b8ca9742e5527d467188d1a7f113e96e72a44b815ba455132f8",
-        "scripts/engines.json": "1dcec54e72ab22f2c8eac9e99938dac71330cc2dc803b5467f4662f9708d7cbe",
+        "scripts/engines.json": "4b5a5e7dc39b34d4089376f1a3626cfd39ba676e8527969ada7a15d9823e49b2",
         "scripts/guard.example.json": "5a6048ee2b608c748d074180a88ad1973e5d7e031604b6a135b55e01ba1eb434",
-        "scripts/oracmux.py": "2eeabc49b054d67b760c38308791b9e61dd2a7d9f47caf83165005a42b6703cc",
+        "scripts/oracmux.py": "cacbd1ba946019f6f394a3518b89f8020c287de0095c40ae688fc796408d42c2",
         "scripts/oracmux_lib/__init__.py": "d867def193e7b8d9c2be09383df23dc9281c435990770985e6da851c58e81efd",
         "scripts/oracmux_lib/brief.py": "cd91b9c2a0a9ea4167dd5327e938135ab962c13f4595270c0999498f9d6f4d05",
         "scripts/oracmux_lib/cdp.py": "4624a0b745ede1d56fd5c8e5f99c9e3931f39ad3acaf4e8b264fe4edc938a58b",
@@ -90,8 +91,8 @@
         "scripts/oracmux_lib/guard.py": "359c466d19a0ebdda95276a6804b2a7ba15ce2979887847fb8c2fc82315e5fac",
         "scripts/oracmux_lib/ledger.py": "7433e055fcb4ef638248a2a62c65943a860abf0bca5f835e386fa9b569965abb",
         "scripts/oracmux_lib/oracle_cli.py": "e369d0f6f7259fa4c8dafcdb89f84a484240e06ca364a0e348de4b23c34cd8c4",
-        "scripts/oracmux_lib/pane.py": "2c967ee0b071feee355d42c94fa9090d8a9b176a5bcd633dcf2102b59b6558d7",
-        "scripts/oracmux_lib/pane_driver.py": "e3d1b647b8760fd319eaebcd29e22af7406cc1fa8bf652eece25bcf4390a6c34",
+        "scripts/oracmux_lib/pane.py": "d020de42b2781ddd132b3c5335193fd94e6ea0592e3365d500d30d1f6fa7e127",
+        "scripts/oracmux_lib/pane_driver.py": "67d9ff8b314b8d9689e05194b28ec50606e981999971ffde14cc8af0682f97d1",
         "scripts/oracmux_lib/paths.py": "32e3dad9a83a584c8b1b4fc02613c29695a0dc9684addab8e1a54522c47b4ebf",
         "scripts/oracmux_lib/report.py": "27d3e3231aac9f57cb316888336328470676d835bcd3c8dabad37dec8c3c89be",
         "scripts/oracmux_lib/run.py": "b679da53e93c6f91497ba2edd6134c12b7ec922751e2a36bfbe9a19d3eaca3a6",
@@ -109,6 +110,7 @@
         "scripts/tests/test_lanes.py": "65fa928c53050d44763853af83fbfc388e32b0396c80e0e3f39ea0bf0fe2224e",
         "scripts/tests/test_ledger.py": "42c7b0e83f4907a70afba9651b7012872ea3eecf7787520432fadaefecd29b8c",
         "scripts/tests/test_pane_lane.py": "c7fa87b642411a8f27ead5506b4bd9caf470cd032cc1a2a70143f15c692e1040",
+        "scripts/tests/test_plugin_chip.py": "39baa7fd1846854e437e9ab006715f6d34985df0fe0a300e224c8d638441df6e",
         "scripts/tests/test_run_and_report.py": "fd194d116c73c5699dfec8fd7c9d7d13b64766ae3660b1172ab09ad50e744244",
         "scripts/tests/test_watcher.py": "1d60737fefa7732d649a48e6b8b5c70b16aba10622f6a0c475fe771491d204a7"
       }

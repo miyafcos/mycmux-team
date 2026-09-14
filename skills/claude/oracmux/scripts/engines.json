@@ -89,6 +89,9 @@
       "input#upload-files",
       "input[type='file']:not([accept*='image'])"
     ],
+    "plugin_open": [
+      "[data-testid='composer-plus-btn']"
+    ],
     "model_button": [
       "button.__composer-pill[aria-haspopup='menu']"
     ],

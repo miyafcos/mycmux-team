@@ -332,3 +332,48 @@ fn http_error(status: u16, body: &str) -> String {
     }
     format!("HTTP {status}: {}", truncate(&cleaned, 300))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The shape the endpoint returned on 2026-09-14: one weekly window
+    /// (`limit_window_seconds` 604800) and no secondary window. `used_percent`
+    /// is a whole percent, so 1 is one percent, not a fraction to scale.
+    #[test]
+    fn weekly_only_response_keeps_one_percent_as_one_percent() {
+        let usage = parse_usage(&json!({
+            "plan_type": "pro",
+            "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "primary_window": {
+                    "used_percent": 1,
+                    "limit_window_seconds": 604800,
+                    "reset_after_seconds": 559240,
+                    "reset_at": 1789949732
+                },
+                "secondary_window": null
+            }
+        }))
+        .unwrap();
+        assert!(usage.five_hour.is_none());
+        let seven_day = usage.seven_day.unwrap();
+        assert_eq!(seven_day.pct, 1.0);
+        assert_eq!(seven_day.resets_at, "2026-09-21T00:15:32+00:00");
+    }
+
+    #[test]
+    fn session_and_weekly_windows_are_told_apart_by_length() {
+        let usage = parse_usage(&json!({
+            "rate_limit": {
+                "primary_window": { "used_percent": 100, "limit_window_seconds": 604800 },
+                "secondary_window": { "used_percent": 0.5, "limit_window_seconds": 18000 }
+            }
+        }))
+        .unwrap();
+        assert_eq!(usage.five_hour.map(|stat| stat.pct), Some(0.5));
+        assert_eq!(usage.seven_day.map(|stat| stat.pct), Some(100.0));
+    }
+}

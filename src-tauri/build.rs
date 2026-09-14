@@ -44,6 +44,18 @@ fn main() {
     scan(&root, &root, &mut files);
     // Top-level README is documentation, not a manifest-managed payload.
     files.retain(|(rel, _)| rel != "README.md");
+    // Per-skill `.packignore`: personal or machine-bound files never enter the
+    // embedded pack. sync_claude_skills.py keeps them out of the manifest with
+    // the same rules, so validate_pack still sees one identical set.
+    files.retain(|(rel, _)| {
+        let Some((skill, inner)) = rel.split_once('/') else {
+            return true;
+        };
+        let rules = fs::read_to_string(root.join(skill).join(pack_rules::PACKIGNORE))
+            .map(|text| pack_rules::packignore_rules(&text))
+            .unwrap_or_default();
+        !pack_rules::packignored(inner, &rules)
+    });
     let cli = Path::new("../scripts/mycmux_agent_cli.py")
         .canonicalize()
         .expect("agent CLI");

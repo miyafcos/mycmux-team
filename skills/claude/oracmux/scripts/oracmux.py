@@ -226,6 +226,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--any-model", action="store_true", help="モデルの確認をしない (Web 側の選択のまま送る)")
     ask.add_argument("--research", action="store_true", help="Deep Research を有効にしてから送る (ChatGPT・Gemini。有効化を確認できなければ送らない)")
     ask.add_argument("--url", help="この URL でタブを開く (ChatGPT のプロジェクト/フォルダなど)")
+    ask.add_argument("--plugin", help="pane 経路 (ChatGPT): 送る前にこのプラグインのチップを composer に付ける (開発者モードの MCP アプリ。例 oracmux-sandbox。チップ無しでは書き込み系ツールが見えない)")
     ask.add_argument("--timeout-min", type=positive_float, help="全体タイムアウト (分)")
     ask.add_argument("--run-dir", help="既存 run フォルダを使う (council が使う。brief は再検査される)")
     ask.add_argument("--force", action="store_true", help="oracle セッション走行中でも実行する")
@@ -797,6 +798,7 @@ def cmd_ask(ns: argparse.Namespace) -> int:
             enforce_model=want_model,
             research=bool(getattr(ns, "research", False)),
             open_url=getattr(ns, "url", None),
+            plugin=getattr(ns, "plugin", None),
         )
         answer, citations, turns = result.answer, result.citations, result.turns
         meta.update(

@@ -182,6 +182,34 @@ def test_outdated_marker_updates_without_force(tmp_path):
     assert install(tmp_path).returncode == 0
 
 
+def test_packignore_keeps_listed_paths_out_of_every_view(tmp_path):
+    skill = tmp_path / "skill"
+    (skill / "mcp").mkdir(parents=True)
+    (skill / "references").mkdir()
+    (skill / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
+    (skill / "mcp" / "stack.py").write_text("print(1)\n", encoding="utf-8")
+    (skill / "references" / "local-mcp-sandbox.md").write_text("private\n", encoding="utf-8")
+    (skill / "references" / "public.md").write_text("public\n", encoding="utf-8")
+    (skill / ".packignore").write_text("# personal setup\nmcp/\nreferences\\local-mcp-sandbox.md\n", encoding="utf-8")
+    rules = sync.packignore_rules(skill)
+    assert rules == ("mcp/", "references/local-mcp-sandbox.md")
+    assert sorted(sync.files(skill)) == [".packignore", "SKILL.md", "references/public.md"]
+    assert sorted(sync.live_view(skill, "oracmux")) == [".packignore", "SKILL.md", "references/public.md"]
+    assert sync.packignored("mcp", rules) and sync.packignored("mcp/deep/x.py", rules)
+    assert not sync.packignored("mcp2/x.py", rules) and not sync.packignored("references/local-mcp-sandbox.md.bak", rules)
+
+
+def test_oracmux_pack_carries_no_personal_mcp_setup():
+    # 2026-09-14: the live skill's MCP sandbox notes (tunnel id, key location)
+    # reached a published installer and the public mirror through the pack.
+    rules = sync.packignore_rules(PACK / "oracmux")
+    assert "mcp/" in rules and "references/local-mcp-sandbox.md" in rules
+    assert not (PACK / "oracmux" / "mcp").exists()
+    assert not (PACK / "oracmux" / "references" / "local-mcp-sandbox.md").exists()
+    for path in (PACK / "oracmux").rglob("*.md"):
+        assert "tunnel_" not in path.read_text(encoding="utf-8"), path
+
+
 @pytest.mark.parametrize("name", NAMES)
 def test_live_drift_when_present(name):
     source = Path.home() / ".claude/skills" / name

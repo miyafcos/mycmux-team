@@ -143,4 +143,5 @@ ChatGPT が送信を飲み、**Gemini は Flash・Grok は ファスト** に変
 ## 関連
 
 oracle 本体の罠 = memory `reference_oracle_gpt55pro_gate` / Work 枠切れ = `reference-oracle-work-weekly-limit` /
-Web ペイン仕様 = `~/cmux-for-linux-dev-master/docs/plans/2026-08-27-web-pane-chatgpt-requirements.md` / app 側の契約 = `references/app-side-web-read-spec.md` / 他タブ操作 = mycmux-bridge
+Web ペイン仕様 = `~/cmux-for-linux-dev-master/docs/plans/2026-08-27-web-pane-chatgpt-requirements.md` / app 側の契約 = `references/app-side-web-read-spec.md` / 他タブ操作 = mycmux-bridge /
+**ChatGPT からローカルの sandbox 1 フォルダを read/apply_patch** (局所 MCP・`ask --plugin oracmux-sandbox`・起動は `mcp/stack.py start`) = `references/local-mcp-sandbox.md`
