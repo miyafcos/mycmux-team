@@ -428,5 +428,5 @@ def test_close_intent_serializes_with_incoming_drag_handoffs() -> None:
     assert body.index("self.closing.lock()") < body.index("closing.contains(to_label)") < body.index("self.release_workspaces(") < body.index("drop(closing)")
     commands = read_repo_text(WINDOW_REGISTRY_COMMANDS_RS)
     start = commands.index("pub fn release_workspaces(")
-    assert commands.index("app.get_webview_window(&to_label).is_none()", start) < commands.index("release_to_open_window", start)
+    assert commands.index("app.get_window(&to_label).is_none()", start) < commands.index("release_to_open_window", start)
     # Frontend adoption-before-victim-enumeration is exercised by peerWindowClose.

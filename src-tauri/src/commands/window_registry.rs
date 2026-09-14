@@ -137,7 +137,11 @@ pub fn release_workspaces(
     workspace_ids: Vec<String>,
     to_label: String,
 ) -> Result<usize, String> {
-    if app.get_webview_window(&to_label).is_none() {
+    // `get_webview_window` answers None for any window that also hosts a web
+    // pane (a second webview under its own label), so the receiver must be
+    // looked up as a plain window or a drop onto a window showing a web pane
+    // is refused as "gone".
+    if app.get_window(&to_label).is_none() {
         return Err("Receiving window no longer exists".to_string());
     }
     let moved = state
@@ -183,9 +187,14 @@ pub struct WindowSettings {
 
 /// Explicit close is recorded before any PTY is killed. A later Destroyed
 /// event therefore cannot mistake an intentional close for a crash.
+///
+/// Takes `tauri::Window`, not `tauri::WebviewWindow`: once a web pane has
+/// attached its own webview, the window is no longer a `WebviewWindow` and
+/// that argument fails with "current webview is not a WebviewWindow" — which
+/// left a detached web pane window impossible to close or dock.
 #[tauri::command(async)]
 pub fn set_window_close_intent(
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     state: State<'_, AppState>,
     closing: bool,
 ) {

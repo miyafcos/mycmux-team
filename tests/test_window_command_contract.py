@@ -67,7 +67,7 @@ def test_window_leader_commands_have_safe_single_instance_semantics() -> None:
     socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
 
     for snippet in [
-        "pub fn claim_leader(window: tauri::WebviewWindow, state: State<'_, AppState>) -> bool",
+        "pub fn claim_leader(window: tauri::Window, state: State<'_, AppState>) -> bool",
         "state.window_registry.claim_leader(window.label())",
         "pub fn reveal_main_window(app: AppHandle) -> Result<(), String>",
         "app.run_on_main_thread(move ||",
@@ -135,3 +135,38 @@ def test_close_requested_blocks_quit_when_forced_workspace_save_fails() -> None:
 
     assert close_handler.index("const saved = await sync(true);") < close_handler.index("await closeWindowWorkspacesAndDestroy();")
     assert "finally {\n        await quitApp();\n      }" not in close_handler
+
+
+def test_window_commands_never_take_a_webview_window_argument() -> None:
+    """A web pane attaches a second webview (its own label) to the window that
+    shows it, and from then on that window is no longer a `WebviewWindow`:
+    Tauri rejects every command declared with a `tauri::WebviewWindow` argument
+    with "current webview is not a WebviewWindow", and `get_webview_window`
+    answers None for it. In practice a detached web pane window could neither
+    be closed nor docked back (2026-09-14). Commands must take `tauri::Window`
+    and look peers up with `get_window`.
+    """
+    import re
+
+    # An attribute, optional `//` comment lines, then the fn signature.
+    command_re = re.compile(
+        r"#\[tauri::command[^\]]*\]\s*(?://[^\n]*\n\s*)*pub\s+(?:async\s+)?fn\s+(\w+)\s*\(([^)]*)\)",
+        re.S,
+    )
+    for relative in [
+        "src-tauri/src/commands/window.rs",
+        "src-tauri/src/commands/window_registry.rs",
+        "src-tauri/src/commands/webpane.rs",
+    ]:
+        source = read_repo_text(relative)
+        for name, params in command_re.findall(source):
+            assert "WebviewWindow" not in params, (
+                f"{relative}: command {name} takes a tauri::WebviewWindow argument; "
+                "it fails once a web pane is attached to the calling window"
+            )
+
+    registry = read_repo_text("src-tauri/src/commands/window_registry.rs")
+    start = registry.index("pub fn release_workspaces(")
+    body = registry[start:registry.index("pub fn get_window_fragments", start)]
+    assert "app.get_webview_window(" not in body, "release_workspaces must not refuse a receiver that hosts a web pane"
+    assert "app.get_window(&to_label).is_none()" in body

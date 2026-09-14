@@ -470,7 +470,10 @@ function commitPaneDragDrop(
   if (target.kind === "new-workspace" || target.kind === "new-window") {
     const workspaceId = crypto.randomUUID();
     const workspaceName = `Workspace ${listStore.workspaces.length + 1}`;
-    const moved = moveDragItemToNewWorkspace(item, workspaceId, workspaceName);
+    // A tear-out's transfer workspace leaves this window right away; activating
+    // it would make its removal jump the view to the last workspace in the list.
+    const moved = moveDragItemToNewWorkspace(item, workspaceId, workspaceName,
+      target.kind === "new-window" ? { activate: false } : undefined);
     if (!moved) {
       if (target.kind === "new-window") {
         trace?.failed("transfer-failed", "source pane/tab could not move into the transfer workspace");

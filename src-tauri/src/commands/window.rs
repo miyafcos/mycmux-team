@@ -133,13 +133,17 @@ fn ensure_window_bounds(window: &tauri::WebviewWindow) {
     }
 }
 
+// Both take `tauri::Window`: a window that hosts a web pane carries a second
+// webview and stops being a `WebviewWindow`, and that argument type then
+// rejects the call ("current webview is not a WebviewWindow"). The label is
+// all these need.
 #[tauri::command]
-pub fn claim_leader(window: tauri::WebviewWindow, state: State<'_, AppState>) -> bool {
+pub fn claim_leader(window: tauri::Window, state: State<'_, AppState>) -> bool {
     state.window_registry.claim_leader(window.label())
 }
 
 #[tauri::command(async)]
-pub fn release_leader(window: tauri::WebviewWindow) {
+pub fn release_leader(window: tauri::Window) {
     release_window_role(window.app_handle(), window.label());
 }
 
@@ -224,7 +228,7 @@ fn schedule_child_window_reveal_fallback(app: AppHandle, label: String) {
         std::thread::sleep(std::time::Duration::from_millis(
             CHILD_WINDOW_REVEAL_FALLBACK_MS,
         ));
-        let Some(window) = app.get_webview_window(&label) else {
+        let Some(window) = app.get_window(&label) else {
             return; // closed in the meantime
         };
         if window.is_visible().unwrap_or(true) {
@@ -308,7 +312,9 @@ pub fn resolve_child_window_label(
         None => next_child_window_label(&existing),
     };
 
-    if let Some(window) = app.get_webview_window(&label) {
+    // `get_window`, not `get_webview_window`: a child that already shows a web
+    // pane is a multi-webview window and would otherwise read as absent.
+    if let Some(window) = app.get_window(&label) {
         // Idempotent: asking for a label that is already open just reveals it.
         let _ = window.show();
         let _ = window.set_focus();

@@ -241,4 +241,22 @@ describe("single-tab content-only tear-out", () => {
     expect(getWorkspace("workspace-detached").panes[0].tabs.map((tab) => tab.id)).toEqual(["three"]);
     expect(getWorkspace("source").panes[0].tabs.map((tab) => tab.id)).toEqual(["one", "two", "four"]);
   });
+
+  // The transfer workspace is removed the moment the child window opens; had it
+  // been activated, that removal would jump the view to the last workspace.
+  it("keeps the source workspace active during a pane-surface tear-out", async () => {
+    const item: PaneDragItem = { kind: "tab", workspaceId: "source", paneId: "source-pane",
+      tabId: "three", label: "Three" };
+    await act(async () => root.render(<DragHarness item={item} />));
+    const source = container.querySelector<HTMLElement>("[data-testid='drag-source']")!;
+    await act(async () => {
+      source.dispatchEvent(pointer("pointerdown", 10, 10, 100, 100));
+      window.dispatchEvent(pointer("pointermove", -50, 10, 500, 600));
+      window.dispatchEvent(pointer("pointerup", -50, 10, 500, 600));
+      await Promise.resolve();
+    });
+    expect(tearOutMocks.tearOutWorkspaceToNewWindow).toHaveBeenCalledTimes(1);
+    expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe("source");
+    expect(useUiStore.getState().focusRevision).toBe(0);
+  });
 });
