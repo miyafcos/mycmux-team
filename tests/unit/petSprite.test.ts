@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
-import PetSprite, { spriteAtlasStyle, spriteFrame, type PetSpriteState } from "../../src/components/workspace/PetSprite";
-import { deriveRowsFromNatural } from "../../src/lib/petAtlasScale";
+import PetSprite, { spriteAtlasGeometry, spriteFrame, type PetSpriteState } from "../../src/components/workspace/PetSprite";
+import { deriveRowsFromNatural, packRows, packedRowOf } from "../../src/lib/petAtlasScale";
 
 describe("pet sprite atlas dimensions", () => {
   it("accepts both supported atlas formats", () => {
@@ -16,11 +16,22 @@ describe("pet sprite atlas dimensions", () => {
     expect(deriveRowsFromNatural(1252, 939)).toBeNull();
   });
 
-  it("uses the selected row count for background geometry", () => {
-    expect(spriteAtlasStyle({ width: 192, height: 208 }, 11, 7)).toEqual({
-      backgroundSize: "1536px 2288px",
-      backgroundPosition: "0 -1456px",
+  it("uses the selected row count for the atlas image geometry", () => {
+    expect(spriteAtlasGeometry({ width: 192, height: 208 }, 11, 7)).toEqual({
+      imageWidth: 1536,
+      imageHeight: 2288,
+      rowOffset: -1456,
     });
+  });
+
+  it("pre-scales only the rows asked for, in that order, and finds them again", () => {
+    expect(packRows([6, 5, 7, 8, 0], 11)).toEqual([6, 5, 7, 8, 0]);
+    // A v1 atlas has nine rows; rows past the end, duplicates and junk are dropped.
+    expect(packRows([6, 5, 7, 8, 0, 9, 10, 6, -1, 2.5], 9)).toEqual([6, 5, 7, 8, 0]);
+    const packed = packRows([6, 5, 7, 8, 0], 11);
+    expect(packedRowOf(packed, 7)).toBe(2);
+    expect(packedRowOf(packed, 0)).toBe(4);
+    expect(packedRowOf(packed, 3)).toBe(-1);
   });
 });
 
@@ -56,7 +67,7 @@ describe("Codex pet animation contract", () => {
       expect(html).toContain(`--pet-row-offset:${-row * 208}px`);
       expect(html).toContain(`--pet-frames:${frames}`);
       expect(html).toContain(`--pet-duration:${duration}ms`);
-      expect(html).toContain(`background-size:1536px ${rows * 208}px`);
+      expect(html).toContain(`cmux-pet-sprite__atlas" src="pet.webp" alt="" draggable="false" style="width:1536px;height:${rows * 208}px`);
       expect(html).toContain(`--pet-animation:cmux-pet-sprite-${state === "resting" ? "resting" : frames}`);
       if (state === "resting") expect(html).toContain("animation-timing-function:step-end");
     }
@@ -74,7 +85,25 @@ describe("Codex pet animation contract", () => {
   it("keeps reduced motion on frame zero", () => {
     const reduced = css.split("@media (prefers-reduced-motion: reduce)")[1];
     expect(reduced).toContain("animation: none !important");
-    expect(reduced).toContain("background-position: 0 var(--pet-row-offset) !important");
+    expect(reduced).toContain("transform: translate(0, var(--pet-row-offset)) !important");
+  });
+  it("steps frames on a compositor layer of the atlas image, never on the row's paint", () => {
+    // The frame change must be a transform of the image (its own layer), not a
+    // background-position repaint into the sidebar row's raster tile.
+    const rules = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const layer = rules.split(".cmux-pet-sprite__atlas {")[1].split("}")[0];
+    expect(layer).toContain("will-change: transform");
+    expect(layer).toContain("animation-name: var(--pet-animation)");
+    expect(rules).not.toContain("background-position");
+    expect(rules).not.toContain("background-image");
+    for (const name of ["resting", "6", "8"]) {
+      const keyframes = rules.split(`@keyframes cmux-pet-sprite-${name} {`)[1].split("@keyframes")[0].split("@media")[0];
+      expect(keyframes).toContain("transform: translate(");
+      expect(keyframes).not.toContain("background");
+    }
+    // Nearest sampling only once the atlas is 1:1 device pixels.
+    expect(rules.split(".cmux-pet-sprite--prescaled .cmux-pet-sprite__atlas {")[1].split("}")[0]).toContain("image-rendering: pixelated");
+    expect(layer).not.toContain("image-rendering");
   });
   it("can disable animation explicitly", () => {
     expect(renderToStaticMarkup(createElement(PetSprite, { atlasUrl: "pet.webp", state: "resting", height: 40, animate: false }))).toContain("cmux-pet-sprite--static");

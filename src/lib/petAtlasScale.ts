@@ -255,9 +255,24 @@ export function sharpenAtlasCells(
 }
 
 export interface PrescaledAtlas {
-  /** Object URL of a PNG whose cells are exactly one frame in device pixels, each followed by PRESCALE_GUTTER transparent pixels. */
+  /**
+   * Object URL of a PNG holding only the rows that were asked for, one under
+   * the other in the order given. Each cell is exactly one frame in device
+   * pixels, followed by PRESCALE_GUTTER transparent pixels right and below.
+   */
   url: string;
-  rows: number;
+  /** The atlas row painted at each packed row of the PNG: packedRows[k] is the atlas row at PNG row k. */
+  packedRows: number[];
+}
+
+/** Which packed row of a pre-scaled PNG holds atlas row `row`, or -1 when that row was not pre-scaled. */
+export function packedRowOf(packedRows: readonly number[], row: number): number {
+  return packedRows.indexOf(row);
+}
+
+/** The atlas rows a PNG will hold, in order: the rows asked for that the atlas actually has. */
+export function packRows(onlyRows: readonly number[], rows: number): number[] {
+  return [...new Set(onlyRows.filter((row) => Number.isInteger(row) && row >= 0 && row < rows))];
 }
 
 interface PrescaleEntry {
@@ -329,6 +344,8 @@ async function buildPrescaledAtlas(
   try {
     const rows = deriveRowsFromNatural(bitmap.width, bitmap.height);
     if (rows === null) return null;
+    const packedRows = packRows(onlyRows, rows);
+    if (packedRows.length === 0) return null;
     const sourceCellHeight = bitmap.height / rows;
     const band = document.createElement("canvas");
     band.width = bitmap.width;
@@ -337,8 +354,11 @@ async function buildPrescaledAtlas(
     const output = document.createElement("canvas");
     const pitchWidth = deviceWidth + PRESCALE_GUTTER;
     const pitchHeight = deviceHeight + PRESCALE_GUTTER;
+    // Only the rows that are ever painted: the PNG is the texture of every
+    // sidebar row's sprite layer, so blank rows would cost their full size
+    // over again for each workspace.
     output.width = ATLAS_COLUMNS * pitchWidth;
-    output.height = rows * pitchHeight;
+    output.height = packedRows.length * pitchHeight;
     const outputContext = output.getContext("2d");
     if (!bandContext || !outputContext) return null;
     // The key colours the character was cut out of, pooled over every band:
@@ -349,15 +369,13 @@ async function buildPrescaledAtlas(
       bandContext.drawImage(bitmap, 0, row * sourceCellHeight, band.width, sourceCellHeight, 0, 0, band.width, sourceCellHeight);
       return bandContext.getImageData(0, 0, band.width, band.height);
     };
-    for (const row of onlyRows) {
-      if (row >= rows) continue;
+    for (const row of packedRows) {
       await new Promise((resolve) => setTimeout(resolve, 0));
       for (const key of estimateKeyColours(readBand(row))) {
         if (!keys.some((known) => known[0] === key[0] && known[1] === key[1] && known[2] === key[2])) keys.push(key);
       }
     }
-    for (const row of onlyRows) {
-      if (row >= rows) continue;
+    for (const [packed, row] of packedRows.entries()) {
       // One row of cells per task: a few milliseconds each, instead of one
       // long block per pet while the sidebar is starting up.
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -369,11 +387,11 @@ async function buildPrescaledAtlas(
       pixels.data.set(scaled.data);
       // Cell k of the band lands at k * pitch, leaving its gutter transparent.
       for (let column = 0; column < ATLAS_COLUMNS; column++) {
-        outputContext.putImageData(pixels, column * PRESCALE_GUTTER, row * pitchHeight, column * deviceWidth, 0, deviceWidth, deviceHeight);
+        outputContext.putImageData(pixels, column * PRESCALE_GUTTER, packed * pitchHeight, column * deviceWidth, 0, deviceWidth, deviceHeight);
       }
     }
     const blob = await new Promise<Blob | null>((resolve) => output.toBlob(resolve, "image/png"));
-    return blob ? { url: URL.createObjectURL(blob), rows } : null;
+    return blob ? { url: URL.createObjectURL(blob), packedRows } : null;
   } finally {
     bitmap.close();
   }

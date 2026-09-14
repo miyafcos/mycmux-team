@@ -1,18 +1,42 @@
+/* One frame of the atlas, seen through a box the size of a frame. */
 .cmux-pet-sprite {
-  background-repeat: no-repeat;
+  position: relative;
+  overflow: hidden;
   flex: none;
   margin-right: 8px;
+}
+
+/* The atlas image slides under the box, one frame per step of the animation.
+   It is a compositor layer of its own (will-change), and the step is a
+   transform, so a frame change never repaints the sidebar row around it: the
+   row's raster tile is untouched, and the layer is redrawn whole. Stepping the
+   frame as a background-position change painted into the row's own tile went
+   with stray coloured pixels in a 2-3px band just outside the sprite, which
+   nothing in the app paints (2026-09-14, WebView2 at 150%, seen now and then;
+   the pre-scaled PNG itself was verified clean). This keeps the only per-frame
+   write out of that tile. */
+.cmux-pet-sprite__atlas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  max-width: none;
+  pointer-events: none;
+  user-select: none;
+  will-change: transform;
+  transform: translate(0, var(--pet-row-offset));
   animation-name: var(--pet-animation);
   animation-duration: var(--pet-duration);
   animation-timing-function: steps(var(--pet-frames));
   animation-iteration-count: infinite;
 }
 
-/* The pre-scaled atlas already has one texel per device pixel, and nearest
-   keeps that copy exact even when the row sits on a fractional pixel. The raw
+/* The pre-scaled atlas already has one texel per device pixel. A layer whose
+   only content is a pixelated image is composited with nearest sampling, so
+   the copy stays exact even when the row sits on a fractional pixel. The raw
    192x208 atlas (shown only until the pre-scale is ready) keeps the browser's
    smoothing: nearest on a 3-5x shrink is what dotted the outlines. */
-.cmux-pet-sprite--prescaled {
+.cmux-pet-sprite--prescaled .cmux-pet-sprite__atlas {
   image-rendering: pixelated;
 }
 
@@ -20,33 +44,33 @@
   display: none;
 }
 
-.cmux-pet-sprite--static {
+.cmux-pet-sprite--static .cmux-pet-sprite__atlas {
   animation: none;
-  background-position: 0 var(--pet-row-offset);
+  transform: translate(0, var(--pet-row-offset));
 }
 
 @keyframes cmux-pet-sprite-resting {
-  0% { background-position: 0 var(--pet-row-offset); }
-  25.4545% { background-position: calc(var(--pet-frame-width) * -1) var(--pet-row-offset); }
-  35.4545% { background-position: calc(var(--pet-frame-width) * -2) var(--pet-row-offset); }
-  45.4545% { background-position: calc(var(--pet-frame-width) * -3) var(--pet-row-offset); }
-  58.1818% { background-position: calc(var(--pet-frame-width) * -4) var(--pet-row-offset); }
-  70.9091%, 100% { background-position: calc(var(--pet-frame-width) * -5) var(--pet-row-offset); }
+  0% { transform: translate(0, var(--pet-row-offset)); }
+  25.4545% { transform: translate(calc(var(--pet-frame-width) * -1), var(--pet-row-offset)); }
+  35.4545% { transform: translate(calc(var(--pet-frame-width) * -2), var(--pet-row-offset)); }
+  45.4545% { transform: translate(calc(var(--pet-frame-width) * -3), var(--pet-row-offset)); }
+  58.1818% { transform: translate(calc(var(--pet-frame-width) * -4), var(--pet-row-offset)); }
+  70.9091%, 100% { transform: translate(calc(var(--pet-frame-width) * -5), var(--pet-row-offset)); }
 }
 
 @keyframes cmux-pet-sprite-6 {
-  from { background-position: 0 var(--pet-row-offset); }
-  to { background-position: calc(var(--pet-frame-width) * -6) var(--pet-row-offset); }
+  from { transform: translate(0, var(--pet-row-offset)); }
+  to { transform: translate(calc(var(--pet-frame-width) * -6), var(--pet-row-offset)); }
 }
 
 @keyframes cmux-pet-sprite-8 {
-  from { background-position: 0 var(--pet-row-offset); }
-  to { background-position: calc(var(--pet-frame-width) * -8) var(--pet-row-offset); }
+  from { transform: translate(0, var(--pet-row-offset)); }
+  to { transform: translate(calc(var(--pet-frame-width) * -8), var(--pet-row-offset)); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .cmux-pet-sprite {
+  .cmux-pet-sprite__atlas {
     animation: none !important;
-    background-position: 0 var(--pet-row-offset) !important;
+    transform: translate(0, var(--pet-row-offset)) !important;
   }
 }
