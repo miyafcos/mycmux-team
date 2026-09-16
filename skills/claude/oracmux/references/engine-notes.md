@@ -56,7 +56,7 @@ UI が変わったら **engines.json を直し、この表に日付と症状を 
 
 | 項目 | 実測 |
 |---|---|
-| 裏タブの hidden webview | `web.open --background` で作られ、非アクティブのままページをロードし `web.read` に応える (Gemini: signedOut=false / composerPresent=true / title "Google Gemini") |
+| 裏ペインの hidden webview | `web.open --background` で作られ、非アクティブのままページをロードし `web.read` に応える (Gemini: signedOut=false / composerPresent=true / title "Google Gemini") |
 | Gemini push | 送信ボタンが日本語ラベルのため旧セレクタで失敗 → 修正版で再実射 |
 | ChatGPT ペイン | `google` プロファイルは Google ログインのみで ChatGPT 自体は未ログイン (title「ChatGPT: Chat, Work, Create & Code with AI」・composer 無し)。ペインでの ChatGPT ログインが 1 回要る |
 | Grok ペイン | `grok` プロファイル (9/4) は未ログイン相当 (composer 無し)。ペインでのログインが 1 回要る |

@@ -174,7 +174,12 @@ def add_spawn_arguments(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Control visible mycmux panes through the local socket.",
-        epilog="Safety: send types text into a live terminal; verify the session first.",
+        epilog=(
+            "Safety: send types text into a live terminal; verify the session first. "
+            "Vocabulary: this CLI's English mirrors the Japanese UI - English 'pane' is the "
+            "Japanese 'tab' (a split region), English 'tab' is the Japanese 'pane' (one "
+            "session). See docs/adr/0013-vocabulary-workspace-tab-pane.md."
+        ),
     )
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 

@@ -40,11 +40,11 @@ STATUS_DONE_VERIFIED_CLOSED = "done-verified-closed"
 STATUS_ABANDONED = "abandoned"
 STATUS_FALLBACK_INLINE = "fallback-inline"
 
-#: 子タブが生きていて作業中
+#: 子ペインが生きていて作業中
 ACTIVE_STATUSES = frozenset({STATUS_OPEN, STATUS_RUNNING, STATUS_BLOCKED})
-#: 子の完了自己申告のみ (タブはまだ生きている → 触ってよいが検収は親の義務)
+#: 子の完了自己申告のみ (ペインはまだ生きている → 触ってよいが検収は親の義務)
 DONE_STATUSES = frozenset({STATUS_DONE, STATUS_CLOSE_FAILED})
-#: タブが既に無い / 二度と操作してはいけない集合 (fail-closed 判定の基準)
+#: ペインが既に無い / 二度と操作してはいけない集合 (fail-closed 判定の基準)
 CLOSED_STATUSES = frozenset(
     {
         STATUS_CLOSED,
@@ -114,7 +114,7 @@ def normalize_spawn_record(record: dict[str, Any]) -> dict[str, Any]:
 
 @dataclass
 class Dispatch:
-    """1 dispatch = 1 タブ起動。行はこの単位でのみマージされる。"""
+    """1 dispatch = 1 ペイン起動。行はこの単位でのみマージされる。"""
 
     slug: str
     spawn_ts: str

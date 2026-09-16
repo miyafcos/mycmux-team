@@ -36,7 +36,7 @@ const GUIDE = [
     title: "① 案を比較する",
     operations: [
       "案件別・役割別・移動最小の3案を切り替えます。",
-      "各案で動くタブ数と新しいワークスペース数を比べます。",
+      "各案で動くペイン数と新しいワークスペース数を比べます。",
       "「現在」と「適用後」で配置の差を確認します。",
     ],
     next: "この案でよければ「この案で確認」、直すなら「内容を編集」を押します。",
@@ -45,10 +45,10 @@ const GUIDE = [
     title: "② 内容を編集する",
     operations: [
       "左のグループで「再配置する」「現状維持」を選びます。",
-      "タブを選び、右の配置図の移動先ペインをクリックします。",
-      "タブはドラッグして移動先ペインへ落とせます。",
+      "ペインを選び、右の配置図の移動先タブをクリックします。",
+      "ペインはドラッグして移動先タブへ落とせます。",
       tabGroupingStrings.dragCancelHint,
-      "「変更対象のみ表示」で動くタブだけに絞れます。",
+      "「変更対象のみ表示」で動くペインだけに絞れます。",
     ],
     next: "内容が決まったら、「適用前確認へ」を押します。",
   },
@@ -56,8 +56,8 @@ const GUIDE = [
     title: "③ 適用前に確認する",
     operations: [
       "現在の配置と適用後の配置を見比べます。",
-      "移動するタブと残るタブを差分で確認します。",
-      "タブをクリックすると、その1本だけ固定して追えます。",
+      "移動するペインと残るペインを差分で確認します。",
+      "ペインをクリックすると、その1本だけ固定して追えます。",
       "気になる場合は編集へ戻って直せます。",
     ],
     next: "問題がなければ、「適用」を押します。",
@@ -443,7 +443,7 @@ function LiveMockApp() {
     <main className="grouping-live-mock" style={themeStyle} data-live-mock={LIVE_MOCK_MARKER}>
       <header className="grouping-live-mock__topbar">
         <div className="grouping-live-mock__brand">
-          <strong>mycmux タブ再配置</strong>
+          <strong>mycmux ペイン再配置</strong>
           <span>本物の Panel / engine / façade / store</span>
         </div>
         <div className="grouping-live-mock__theme-controls" aria-label="テーマ切替">
@@ -498,7 +498,7 @@ function LiveMockApp() {
               <li>3案を切り替えて配置の違いを見る。</li>
               <li>使う案を選び、内容を編集する。</li>
               <li>適用前確認で差分を確かめる。</li>
-              <li>「適用」でタブを再配置する。</li>
+              <li>「適用」でペインを再配置する。</li>
               <li>下のバーから「元に戻す」を押す。</li>
             </ol>
           </details>

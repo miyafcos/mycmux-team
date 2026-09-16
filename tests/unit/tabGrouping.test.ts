@@ -250,10 +250,10 @@ describe("buildGroupingPrompt", () => {
     expect(prompt).toContain("全ワークスペース");
     expect(prompt).toContain("日本語");
     expect(prompt).toContain("固有名詞");
-    expect(prompt).toContain("3〜8タブ");
+    expect(prompt).toContain("3〜8ペイン");
     expect(prompt).toContain("1案件=1ワークスペースに機械的に割らない");
     expect(prompt).toContain("レイアウトは列で分けます");
-    expect(prompt).toContain("裏タブ");
+    expect(prompt).toContain("裏ペイン");
     expect(prompt).toContain("別のワークスペースへ隔離");
     // Each of these earns its place from a measured failure of the answer:
     // a tab claimed by two groups (v3), a tab quietly dropped (v4/v5), and

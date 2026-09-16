@@ -1,25 +1,25 @@
 {
   "pack_version": "1.0.0",
-  "generated_at": "2026-09-14T14:04:26.502280+00:00",
+  "generated_at": "2026-09-16T01:33:13.483482+00:00",
   "cli": {
     "path": "scripts/mycmux_agent_cli.py",
-    "sha256": "9f4a967ff3a60215d5deed823e3e350a4766488129a9e02a455dd26a9da01174"
+    "sha256": "c54ef198288836fca7ff33269acfec77eef2e31cec151248fef7891a0c87dd01"
   },
   "skills": [
     {
       "name": "session-dispatch",
       "files": {
-        "SKILL.md": "ea582f35ee9bf229930e21d0dbdd64f655414039ace8159a7472aa22b0defd5d",
+        "SKILL.md": "0e8f85f4d6b5a16e4d12a5f290aadc3e20f87c1ba2fbb1cbbdc17a384d5b38a6",
         "references/ask-card-contract.md": "a69c38ecf9c89c2fa905a6d95c74017b6b9ec1606a3595b84b5a005f78fccd2a",
         "references/decompose-guide.md": "622ebcb21b6e7774a8da991775a94557e0d2176b066a703deee5917a94f76f85",
-        "references/dispatch-guide.md": "7e21ef65864b2a523bacfd02cbafb36cfbfee4cd3d774990e0a9d67993db77ae",
-        "references/spec-template.md": "9a5da4a39bb71bc3c9d038bb28e1e67fd2c03863e895e3d273f450c00b1981ff",
+        "references/dispatch-guide.md": "d80658b1fb8d27315afffbc6dae9bf1de8f83a1d92ba4261e119dfe9d87ac082",
+        "references/spec-template.md": "a919326d45b30df1366f0e2fa2da6a9bc8cd620893ca62f8405767b291ec266b",
         "scripts/dispatch-child-guard.py": "91badcf06154a67ad6ae404481a7490ad88b59bfa9683a5f697fad29d51a79d9",
         "scripts/dispatch_canary.py": "2b6ec2221886e3002ba881f6347e8bba812641da277e0cd18ea0b2870e482bd1",
         "scripts/dispatch_guard.py": "369a72da02a59e06a0d1b6378634738b3ae0aa260fc4da6f2e2437aadb977bbf",
-        "scripts/dispatch_ledger.py": "9b84dae7077a5028ba54b74f19b37ebfe434764538c2ec2e6871415a834f0c8e",
+        "scripts/dispatch_ledger.py": "1769b8a43f9aaabf99870d21520dc029c00db225d3e94d426b20c2191581d31c",
         "scripts/dispatch_preflight.py": "cd23a723b7f84b9ce7782eec5a2b9f40371c1618d16293aa4ddcc7d5992bc88b",
-        "scripts/dispatch_send.py": "be44decbce6e317696b6ef3a5c55a1af343f693c99e4a6027b089e7a5e8b6ae3",
+        "scripts/dispatch_send.py": "5580aab9b12af5bfa59dc4f645ff7619e036bcc422ca8bdaa9a81cec0dc66096",
         "scripts/dispatch_status.py": "a9f10c7e4aa2cd88ca7874f83891a3429d8c34c358570b6ee2e3d7ec20fb7969",
         "scripts/dispatch_watch.py": "17bc66846ffa8251f2448e7190b7b7325ba24ca3152c74ee74787562af208a35",
         "scripts/guard_actions.py": "8731dbf9a6fa11f111a530259a3a242d69494e1a5774fdcb75e8b104d11337f3",
@@ -43,11 +43,11 @@
         "scripts/tests/fixtures/screens/trust.txt": "ad6c204548fb148904f044668cb50a962ef8d1af2bfc107e78fca76ba129fd96",
         "scripts/tests/fixtures/screens/unknown.txt": "87e1b4a8079c0ef80c3163904cff2b0bd15cbe9c50854031c4575f2894e1486b",
         "scripts/tests/fixtures/screens/whats_new.txt": "ed2da4922ae7156f4e44edd83e73bed7168148af2ab54cd0ee74470f88d307ef",
-        "scripts/tests/test_ask_inject.py": "d9d4e8d7bdeda1f79983bcc23bcc283ee62c8f064560c72222c161a060599a43",
+        "scripts/tests/test_ask_inject.py": "573e0e6f96f563684b30264ff1ed34069dc21bafebe8ffab7f177b3014f27255",
         "scripts/tests/test_ask_inject_addressing.py": "fb59cbf59155fce39ad9106abbc8de0879a3de093aadb69c5fc96255725c282d",
         "scripts/tests/test_dispatch_child_guard.py": "4091aa4c2a08ca35e09aecb021380167c512cf98d0aed5d36082a7488bc9084e",
         "scripts/tests/test_dispatch_guard.py": "8463fe8231242d9b6592e3a3c6abf3d4df619a739b6a21d52d2e8777c60b0f0e",
-        "scripts/tests/test_dispatch_ledger.py": "b1ff9bcfba255936214b8dc9cc8a17f7d517b831ad2e56392589c83e7d9ed0cf",
+        "scripts/tests/test_dispatch_ledger.py": "a4ad4a720a429240ed07f75ffff88e731a828879d286b343393c547e520faf5d",
         "scripts/tests/test_dispatch_preflight.py": "78b5ad0d737f47eff4c0f064556effbf9ff83e0701c732311994a73683944dcb",
         "scripts/tests/test_dispatch_send.py": "fdd3b7083e9c155c5ceaeee02857113f80c1e70b22a0e8b9e9112e6135176812",
         "scripts/tests/test_dispatch_status.py": "145dddd5bc551cdde0546c23ab3228fb941a71b27829d29549fb718b0888e74e",
@@ -59,30 +59,30 @@
     {
       "name": "mycmux-bridge",
       "files": {
-        "SKILL.md": "5382152a5f17a143c227081bb30ea7dacc72e297a4f1ee6da1cdcf540fb4080d",
+        "SKILL.md": "651e42a82d541b636c16b692f6b2f54ccae705f4e2c211d19eabcd6cf461bd8e",
         "scripts/mycmux_bridge.py": "95d8dd5d581cf8a77669822bf829dd11f7998c77045b8bc35b663a9631816524",
-        "scripts/mycmux_bridge_support.py": "1bfc9f360c882a09b0cb9899f28f61d53fbc7060eed49f4e7af192fe8e4f3330"
+        "scripts/mycmux_bridge_support.py": "dd73bf8fe07fb6ad425dc6538de976fb10d8069562b2c4ebf48fa0001e7c2905"
       }
     },
     {
       "name": "oracmux",
       "files": {
         ".packignore": "823240ab4ea0e2405e761c47850015df4e3b6a6bdd7d3ec96ded65c37de7bb62",
-        "SKILL.md": "ac5ecabc99eeddfdee1d0b3bbcf5bfbc081b9f67d56f52f71ff8ce1c1b9c790d",
-        "modes/ask.md": "d757ee454792971f618c5f5580836645faa6ee2890cdf25b7b2aeb2206bc9d1b",
-        "modes/collect.md": "0f19ee555bbdde96d0343b779d1a2237ed338fb86a28fc3168009d9f0896afc3",
+        "SKILL.md": "8d3c26c6f76f61cadd06133c900986ed2a759d32fd35eb7b267af57e267ece5f",
+        "modes/ask.md": "954522b8032827413d2a5142364aa8003fdfb0493986c132a0e2e9f59e8da401",
+        "modes/collect.md": "2342b3d602359da43670815192b143e640560c28a8087301810351e063b4fa1a",
         "modes/council.md": "f8f125aa66d1f41adf5e125695945ded94e53b908ecbb203fecaeaa02b3b7685",
-        "modes/doctor.md": "b3a9bd50196a0cbe090b7cc21a121f0f40bc4a318f47efc00537664bba433c3a",
-        "modes/followup.md": "0483af092293a50bf4730738cc5304927565bfc55dbec1840665dcb6802d25c0",
+        "modes/doctor.md": "a247f40f62caf534ce26f2c3f9c550d4407d8ca139502ea6905c46a0354433d2",
+        "modes/followup.md": "95dce6d63de4defa05480531651a0a5036ef53a238021b277a91408156b6cdaf",
         "modes/push.md": "ac48e42c1ca832c01720c5dcd129530d399f6f04e6ec663200ef856ffe234f4d",
-        "modes/smoke.md": "5d97dfb1def3fe9533a838dc2fc94e614aed8cc8998c86d1fdc5568fdd230adf",
+        "modes/smoke.md": "fba0637edb4185fb7dad605c821469761f9b210f9969bee67c19d90501af3e35",
         "references/app-side-web-read-spec.md": "0a27cde72a0e055207bc936ad76e0e2f300635a3ea79941a822666c10a51f2bf",
         "references/brief-template.md": "6580dcc69e037ff9e721ac8e3ef48ba7376cf513d73c63b076f79b789dd74fc1",
-        "references/engine-notes.md": "fc27dcb03299db0df40cad9e4c6293a15ac0e17934fec0d0adfaa1cff6a3b827",
+        "references/engine-notes.md": "0de31857ce1e32a1750202a6002ea4d82ea0a115ebda80104c06c06d0790ad39",
         "references/judge-template.md": "baefcb248c079b8ca9742e5527d467188d1a7f113e96e72a44b815ba455132f8",
         "scripts/engines.json": "4b5a5e7dc39b34d4089376f1a3626cfd39ba676e8527969ada7a15d9823e49b2",
         "scripts/guard.example.json": "5a6048ee2b608c748d074180a88ad1973e5d7e031604b6a135b55e01ba1eb434",
-        "scripts/oracmux.py": "cacbd1ba946019f6f394a3518b89f8020c287de0095c40ae688fc796408d42c2",
+        "scripts/oracmux.py": "b1b0193838ecbe16e6adb5043546dcac713e12e52f1b1e7d1512c571a137aeca",
         "scripts/oracmux_lib/__init__.py": "d867def193e7b8d9c2be09383df23dc9281c435990770985e6da851c58e81efd",
         "scripts/oracmux_lib/brief.py": "cd91b9c2a0a9ea4167dd5327e938135ab962c13f4595270c0999498f9d6f4d05",
         "scripts/oracmux_lib/cdp.py": "4624a0b745ede1d56fd5c8e5f99c9e3931f39ad3acaf4e8b264fe4edc938a58b",

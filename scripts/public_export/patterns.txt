@@ -1,0 +1,19 @@
+# PRIVATE: must never be included in a public export.
+# audit_rows = category size; targeted_rows = matching non-keep excerpts.
+# Counts describe the audit snapshot, not expected current gate occurrences.
+# Generic examples and public identifiers also fail; review them individually.
+# skill_pack, binary_filename, embedded_binary and public_attribution are
+# inventory/review categories, not literal private-word families.
+(?i:宮崎|詠富|みやざき|ミヤザキ|miyazaki|\befu\b) # category=self_name audit_rows=393 targeted_rows=392
+(?i:miyaz|miyafcos|[A-Z]:[\\/]+Users[\\/]+[^\\/\s"\x27<>]+|/(?:Users|home)/[^/\s"\x27<>]+) # category=user_home audit_rows=750 targeted_rows=626
+(?i:[A-Z0-9.!#$%&\x27*+/=?^_\x60{|}~-]+@[A-Z0-9-]+(?:\.[A-Z0-9-]+)+) # category=email audit_rows=39 targeted_rows=5
+(?i:エデュ[・･\s]*プラニング|edu[.-]planning) # category=organization audit_rows=15 targeted_rows=15
+(?i:モモスタ|momosta|駿台|なるゼミ|naruzemi|東洋食品|\btoyo\b|弘学館|kogakukan|エデュトリア[ル]?|これヤバ|都立中学校適性検査) # category=client_project audit_rows=81 targeted_rows=81
+(?i:間屋口|\btari\b|kywa\.uk) # category=third_person audit_rows=5 targeted_rows=5
+(?i:\bm1book\b|\bmac-mini\b|tail[0-9a-f]+\.ts\.net|(?<![0-9.])100\.(?:6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\.(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(?![0-9.])) # category=machine audit_rows=27 targeted_rows=26
+(?i:事務関係|Dropbox[\\/]+[^\r\n"\x27\x60<>]+|CloudStorage[\\/]+Dropbox|OneDrive[\\/]+[^\r\n"\x27\x60<>]+) # category=cloud_path audit_rows=202 targeted_rows=53
+(?i:edu\.math|e\.miyazaki|\bmiy[12]\b|chatgpt\.com/c/[0-9a-f-]+|[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com|["\x27]?(?:oidc_client_id|account_id)["\x27]?\s*:\s*(?:Some\()?["\x27][^"\x27\r\n]+) # category=account_id audit_rows=17 targeted_rows=10
+(?i:母艦|社内ルール|社内対応済み|TaskInbox|ka-expense|unreplied-sweep|commsq\.py|update_launch_(?:anken|dev)\.py|ops_common\.py|quick_html(?:\.py)?|claude-buddy|codex-buddy|agmsg(?:-research)?|bunshin|ultra-deep-research|\bfusion\b|\bFable\b|constitution(?:\.md)?|\.claude[\\/]+(?:dispatch|memory|projects)|\.codex[\\/]+memories|(?:reference|feedback|project)[_-][A-Za-z0-9_-]+|google-drive-link-search|\bUDR\b|udr-0[0-9]|codex-kessan|osaka-sample-pack|shinso-kenshu) # category=internal_operations audit_rows=314 targeted_rows=310
+(?i:com\.miyazaki\.mycmux) # category=bundle_identifier audit_rows=86 targeted_rows=86
+(?i:miyafcos(?:[\\/]+(?:mycmux-team|mycmux|crsm))?) # category=public_repository audit_rows=64 targeted_rows=64
+(?i:-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b) # category=secret_candidate audit_rows=60 targeted_rows=0

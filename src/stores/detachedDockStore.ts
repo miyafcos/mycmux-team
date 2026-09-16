@@ -19,7 +19,20 @@ export interface DetachedDragPayload {
   screenY: number;
   phase: "start" | "move" | "end" | "cancel";
 }
-type DockTarget =
+
+export const WINDOW_DRAG_EVENT = "mycmux://window-drag";
+
+/**
+ * A cursor position sampled by the backend while the window manager moves a
+ * window. No pointer events reach the page during an OS move, so this is the
+ * only way the drag stays visible to the app.
+ */
+export interface WindowDragSample {
+  x: number;
+  y: number;
+  done: boolean;
+}
+export type DockTarget =
   | { kind: "tab-index"; workspaceId: string; paneId: string; index: number }
   | Extract<DetachedReturnTarget, { kind: "pane-zone" | "workspace" }>;
 export interface DockGeometry { x: number; y: number; scale: number }

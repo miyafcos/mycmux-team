@@ -3,11 +3,13 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::RECT;
+use windows::Win32::Foundation::{POINT, RECT};
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, SetForegroundWindow, SetWindowPos, ShowWindow, HWND_TOP, SWP_SHOWWINDOW,
-    SW_SHOWNORMAL,
+    GetCursorPos, GetWindowRect, SetForegroundWindow, SetWindowPos, ShowWindow, HWND_TOP,
+    SWP_SHOWWINDOW, SW_SHOWNORMAL,
 };
 
 use crate::AppState;
@@ -483,6 +485,73 @@ pub fn quit_app(app: AppHandle) -> Result<(), String> {
     // Cleanup is centralized in the runtime exit hook, including this path.
     app.exit(0);
     Ok(())
+}
+
+pub const WINDOW_DRAG_EVENT: &str = "mycmux://window-drag";
+
+/// A cursor position sampled while the window manager is moving a window.
+#[derive(Clone, serde::Serialize)]
+pub struct WindowDragSample {
+    /// Screen position in logical pixels, the space PointerEvent.screenX uses.
+    pub x: f64,
+    pub y: f64,
+    /// The button came up: the move is over and any drop can be committed.
+    pub done: bool,
+}
+
+/// Follows the cursor while the window manager moves a window.
+///
+/// Handing the move to the OS is the only way the edge snap is the real one —
+/// an app cannot reproduce Windows' own, and a hand-rolled imitation reads as
+/// wrong however closely it is tuned. But once the OS owns the drag no pointer
+/// events reach the page, so the app goes blind and cannot tell that a
+/// detached window is being dropped back into the main one.
+///
+/// Chromium settles this the same way: it runs the OS move loop for the tab
+/// tear-out window and polls the cursor alongside it to drive its own merge
+/// preview. This is that poll.
+///
+/// Returns whether the poll is running. Where it is not, the caller keeps
+/// moving the window from pointer events as it always did: that loses the OS
+/// snap, but keeps the drop-back-into-the-main-window gesture, which is the
+/// worse of the two to lose.
+#[tauri::command]
+pub async fn watch_window_drag(window: tauri::Window) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let scale = window.scale_factor().map_err(|error| error.to_string())?;
+        // ponytail: a 16ms poll, which is what the preview needs to keep up.
+        // A WM_MOVING hook would be event-driven but needs a subclassed window
+        // proc, and tao owns that.
+        std::thread::spawn(move || loop {
+            let mut point = POINT::default();
+            let read = unsafe { GetCursorPos(&mut point) }.is_ok();
+            let held = unsafe { GetAsyncKeyState(i32::from(VK_LBUTTON.0)) } as u16 & 0x8000 != 0;
+            if read {
+                let _ = window.emit(
+                    WINDOW_DRAG_EVENT,
+                    WindowDragSample {
+                        x: f64::from(point.x) / scale,
+                        y: f64::from(point.y) / scale,
+                        done: !held,
+                    },
+                );
+            }
+            if !held {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        });
+        return Ok(true);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // ponytail: no cursor poll on macOS - it needs Core Graphics, which is
+        // not a dependency here yet. Until it is, the page keeps moving the
+        // window itself there.
+        let _ = window;
+        Ok(false)
+    }
 }
 
 #[cfg(test)]

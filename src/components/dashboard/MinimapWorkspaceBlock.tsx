@@ -35,7 +35,7 @@ export function minimapCellHeightPx(chipCount: number, expanded: boolean): numbe
   const chip = expanded ? MINIMAP_ROW_EXPANDED : MINIMAP_ROW_COLLAPSED;
   const cellPad = expanded ? MINIMAP_CELL_PADDING_EXPANDED : MINIMAP_CELL_PADDING_COLLAPSED;
   const gap = chipGapPx(expanded);
-  // A tab-less pane still needs one row of budget: it renders the "空きペイン"
+  // A tab-less pane still needs one row of budget: it renders the "空きタブ"
   // line, and without it the cell collapses to ~19px where the five drop zones
   // overlap and the centre (merge) target disappears.
   const rows = Math.max(1, chips);
@@ -104,7 +104,7 @@ export function MinimapWorkspaceBlock({ workspace, selectedTabId, selectedTabIds
       mapStyle: { "--minimap-map-height": `${minimapMapHeightPx(columnChipCounts, expanded)}px` } as CSSProperties,
     };
   }, [expanded, model]);
-  // 実画面のタブバーと同じ解決 (TabItem 参照): 未設定の WS には色を発明しない。
+  // 実画面のサイドバー (ワークスペース一覧)と同じ解決 (TabItem 参照): 未設定の WS には色を発明しない。
   const workspaceColor = resolveWorkspaceColor(workspace.color)?.value;
   return <section className={`cmux-minimap-workspace${expanded ? " is-expanded" : ""}`} data-minimap-workspace={workspace.id} style={workspaceColor ? { "--minimap-ws": workspaceColor } as CSSProperties : undefined}>
     <button type="button" className="cmux-minimap-workspace-header" aria-expanded={expanded} onClick={onToggle} title={workspace.name} aria-label={`${workspace.name} — ${strip.tabCount}本${strip.waitingCount > 0 ? `、返答待ち${strip.waitingCount}本` : ""}`}>

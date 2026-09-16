@@ -128,7 +128,7 @@ export const mockGroupingPlans: GroupingPlan[] = [
   {
     planId: "p3",
     title: "移動最小",
-    rationale: "混在ペインの分解だけ行う",
+    rationale: "混在タブの分解だけ行う",
     strategy: "minimal_move",
     groups: minimalGroups,
     unassignedTabIds: remainingTabIds(minimalGroups),

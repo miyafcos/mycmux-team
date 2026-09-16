@@ -34,7 +34,7 @@ v0.4.0 で「保存済みセッション ID で自動 resume 起動を優先」�
 - Width: `min(1200px, calc(100vw - 32px))` / 2 カラムレイアウト (左: セッション一覧 / 右: 詳細サブパネル)
 - 左カラムの行: agent kind (色分けバッジ) + タイトル要約 + cwd chip + 相対時刻 (started_at)
 - 右カラム: 選択中セッションの詳細 (会話プレビュー / フルパス / kind / 開始時刻)
-- Enter で選択 → 新規ペインを spawn し対象セッションを resume
+- Enter で選択 → 新規タブを spawn し対象セッションを resume
 
 ### Implementation
 

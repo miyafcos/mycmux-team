@@ -55,7 +55,7 @@ export interface DashboardCardModel {
   mark: TabMark | null;
   /** xterm のバッファを持っていないだけの状態。表示には出さない (断定できないため)。 */
   unobserved: boolean;
-  /** 一度も開いていないタブ。telemetry も端末バッファも活動記録も無い状態だけを指す。 */
+  /** 一度も開いていないペイン。telemetry も端末バッファも活動記録も無い状態だけを指す。 */
   neverStarted: boolean;
   // --- livebrief 由来 (telemetryHealth === "live" のときだけ意味がある) ---
   brief?: LiveSessionBrief;
@@ -167,10 +167,10 @@ export function resolveDisplayState(card: DashboardCardModel): DashboardDisplayS
   if (card.attentionCategory === "error") return "error";
   if (card.attentionCategory === "done") return "done";
   if (card.telemetryHealth === "ended" || card.stall?.reason === "pty_dead") return "stopped";
-  // まだ一度も開いていないタブに「更新なし」「作業中」を貼らない (未起動はバッジで出す)。
+  // まだ一度も開いていないペインに「更新なし」「作業中」を貼らない (未起動はバッジで出す)。
   if (card.neverStarted) return "idle";
   if (card.stall) return "noUpdate";
-  // まだ一度も動いていないタブを「更新なし」と言い切らない。
+  // まだ一度も動いていないペインを「更新なし」と言い切らない。
   if (!card.lastActivityAt) return "idle";
   return card.group === "idle" ? "noUpdate" : "running";
 }

@@ -695,7 +695,7 @@ export interface PaneTabMenuRow {
 }
 
 // One list, not two. The previous two-section menu listed every attention tab a
-// second time under "全タブ", so a pane with four busy tabs showed eight rows
+// second time under an all-tabs section, so a pane with four busy tabs showed eight rows
 // and the reader had to diff them. Attention tabs are hoisted to the top in
 // occurrence order and marked; everything else keeps its tab-strip order.
 // The user-pinned tab outranks attention and is extracted before hoisting, so

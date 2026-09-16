@@ -932,9 +932,9 @@ if [ -n "$MYCMUX_RESUME" ]; then
   return 0 2>/dev/null || exit 0
 fi
 
-# Web タブはターミナルで動くコマンドではないので eval できない。ソケット経由で
-# mycmux 本体に「Web タブを開いて」と頼む。--replace-anchor を使うのは、他の項目が
-# シェルをそのプログラムに置き換えるのと同じで、このタブ自体がそのサービスのタブに
+# Web ペインはターミナルで動くコマンドではないので eval できない。ソケット経由で
+# mycmux 本体に「Web ペインを開いて」と頼む。--replace-anchor を使うのは、他の項目が
+# シェルをそのプログラムに置き換えるのと同じで、このペイン自体がそのサービスのペインに
 # なるため (spawn は --split なしだと pane.spawn_tab に落ち、web を扱えない)。
 # メニューからも MYCMUX_LAUNCH_TARGET からも同じ経路を通す。
 __open_web_tab() {
@@ -1841,7 +1841,7 @@ if [ "$cmd" = "__custom__" ]; then
   fi
 fi
 
-# MYCMUX_LAUNCH_TARGET=web-* で来た場合。Web タブはプロセスではないので eval せず、
+# MYCMUX_LAUNCH_TARGET=web-* で来た場合。Web ペインはプロセスではないので eval せず、
 # ここで開いてシェルに戻る (メニュー経由の場合は既に処理済みでここには来ない)。
 case "$cmd" in
   __web_chatgpt__|__web_gemini__|__web_grok__|__web_claude__|__web_notebooklm__|__web_browser__)

@@ -62,6 +62,7 @@ vi.mock("../../src/components/terminal/XTermWrapper", async () => {
 });
 
 import TerminalPane, { buildLaunchArgs } from "../../src/components/workspace/TerminalPane";
+import PaneDragOverlay from "../../src/components/workspace/PaneDragOverlay";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -88,7 +89,7 @@ function workspaceWith(panes: Pane[], id = "workspace"): Workspace {
   };
 }
 
-async function renderPanes(workspace: Workspace): Promise<void> {
+async function renderPanes(workspace: Workspace, withOverlay = false): Promise<void> {
   useWorkspaceListStore.setState({
     workspaces: [workspace],
     activeWorkspaceId: workspace.id,
@@ -99,6 +100,7 @@ async function renderPanes(workspace: Workspace): Promise<void> {
       {workspace.panes.map((pane) => (
         <TerminalPane key={pane.id} pane={pane} workspaceId={workspace.id} />
       ))}
+      {withOverlay ? <PaneDragOverlay /> : null}
     </>);
     await Promise.resolve();
     await Promise.resolve();
@@ -407,18 +409,38 @@ describe("background spawn followed by a TerminalPane mount", () => {
 
 
 describe("detached docking preview rendering", () => {
-  it.each(["center", "left", "right", "up", "down"] as const)("reuses the existing dashed preview for %s", async (zone) => {
+  // A window dragged back lands exactly like a pane drag, so it gets the same
+  // frame at the result's real size instead of the old in-pane band.
+  const expected: Record<string, { left: number; top: number; width: number; height: number }> = {
+    center: { left: 0, top: 0, width: 800, height: 600 },
+    left: { left: 0, top: 0, width: 400, height: 600 },
+    right: { left: 400, top: 0, width: 400, height: 600 },
+    up: { left: 0, top: 0, width: 800, height: 300 },
+    down: { left: 0, top: 300, width: 800, height: 300 },
+  };
+
+  it.each(["center", "left", "right", "up", "down"] as const)("frames the landing spot for %s", async (zone) => {
     const ws = workspaceWith([paneWith({ id: "tab", sessionId: "pty-tab", agentId: "shell-starter", type: "terminal" })]);
-    await renderPanes(ws);
+    await renderPanes(ws, true);
+    const paneElement = container.querySelector<HTMLElement>("[data-dnd-pane-id]")!;
+    paneElement.getBoundingClientRect = () => ({
+      left: 0, top: 0, width: 800, height: 600, right: 800, bottom: 600, x: 0, y: 0, toJSON: () => ({}),
+    }) as DOMRect;
     try {
       await act(async () => useDetachedDockStore.getState().setTarget({ kind: "pane-zone", workspaceId: ws.id, paneId: "pane", zone }));
-      const preview = container.querySelector(".pane-drop-preview")!;
-      expect(preview).not.toBeNull();
-      expect(preview.classList.contains("pane-drop-preview--" + zone)).toBe(true);
-      expect(preview.classList.contains(zone === "center" ? "pane-drop-preview--attach-tab" : "pane-drop-preview--split")).toBe(true);
-      expect(preview.querySelector(".pane-drop-preview__label")!.textContent).toBeTruthy();
-      await act(async () => useDetachedDockStore.getState().setTarget({ kind: "tab-index", workspaceId: ws.id, paneId: "pane", index: 0 }));
+      const frame = container.querySelector<HTMLElement>(".pane-drop-result")!;
+      expect(frame).not.toBeNull();
+      // The old band drew inside the pane and could never cover a whole column.
       expect(container.querySelector(".pane-drop-preview")).toBeNull();
+      expect(frame.classList.contains(zone === "center" ? "pane-drop-result--merge" : "pane-drop-result--split")).toBe(true);
+      const box = expected[zone];
+      expect(frame.style.left).toBe(`${box.left + 3}px`);
+      expect(frame.style.top).toBe(`${box.top + 3}px`);
+      expect(frame.style.width).toBe(`${box.width - 6}px`);
+      expect(frame.style.height).toBe(`${box.height - 6}px`);
+      expect(frame.querySelector(".pane-drop-result__label")!.textContent).toBeTruthy();
+      await act(async () => useDetachedDockStore.getState().setTarget({ kind: "tab-index", workspaceId: ws.id, paneId: "pane", index: 0 }));
+      expect(container.querySelector(".pane-drop-result")).toBeNull();
     } finally { await act(async () => useDetachedDockStore.getState().clear()); }
   });
 });

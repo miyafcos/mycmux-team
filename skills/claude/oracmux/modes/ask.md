@@ -14,11 +14,11 @@ python ~/.claude/skills/oracmux/scripts/oracmux.py ask --engine chatgpt|gemini|g
 
 | `--via` | 実体 | 使う場面 |
 |---|---|---|
-| **pane** (既定・全エンジン) | 呼び出し元と同じペインに **裏タブ (非アクティブ)** で Web ペインを開き、`web.push` で送信、`web.read` で回収。mycmux 内で完結・Chrome 不要 | 通常はこれ。宮崎さんはタブを押せば会話をそのまま見られる |
+| **pane** (既定・全エンジン) | 呼び出し元と同じタブに **裏ペイン (非アクティブ)** で Web ペインを開き、`web.push` で送信、`web.read` で回収。mycmux 内で完結・Chrome 不要 | 通常はこれ。宮崎さんはペインを押せば会話をそのまま見られる |
 | oracle (chatgpt のみ) | steipete/oracle CLI → 画面外 OracleChrome。モデル選択証跡・セッション保存 | oracle の証跡が要るときだけ。**添付は pane で足りる (2026-09-09)** |
 | cdp | 自前 Playwright ドライバ → OracleChrome。思考モード切替 (`--mode`) はこの経路だけ | pane が使えないとき (mycmux 外) やモード切替が要るとき |
 
-pane 経路の前提: そのサービスのペインがログイン済みであること (`doctor` で `ok`)。サインアウトなら exit 3 で止まり、タブは残る (ペインの「別の窓でログイン」でログインして `--tab <tabId>` で再実行)。
+pane 経路の前提: そのサービスのペインがログイン済みであること (`doctor` で `ok`)。サインアウトなら exit 3 で止まり、ペインは残る (ペインの「別の窓でログイン」でログインして `--tab <tabId>` で再実行)。
 ### モデルの確認 (pane 経路・既定で有効)
 
 送る前に picker を読み、`engines.json` の `expected_model` と違えばメニューで選び直し、**選び直せたことを読み直して確かめてから**送る。
@@ -33,8 +33,8 @@ pane 経路の前提: そのサービスのペインがログイン済みであ�
 - `--model <名前>` で期待値を上書き (部分一致・例 `--model 強化版思考モード`)
 - `--any-model` で確認そのものを省略 (Web 側の選択のまま送る)
 - `--plugin <名前>` (ChatGPT・pane) は送る前に `+` メニューからそのプラグインのチップを composer に付け、brief を追記で入れる (`web.type --append`)。開発者モードの MCP アプリ (例 `oracmux-sandbox`) はチップ無しだと書き込み系ツールがモデルに見えない (2026-09-14 実測)。行が出ない・チップが載らないときは 1 ターンも使わず exit 3。詳細 `references/local-mcp-sandbox.md`
-- **会話中のタブを `--tab` で再利用すると ChatGPT は picker が見えない** — 会話内の「モデルを切り替える」は
-  メッセージ単位の再試行ボタンであって picker ではない。既定 (新規裏タブ) なら問題ない
+- **会話中のペインを `--tab` で再利用すると ChatGPT は picker が見えない** — 会話内の「モデルを切り替える」は
+  メッセージ単位の再試行ボタンであって picker ではない。既定 (新規の裏ペイン) なら問題ない
 
 `--mode` は pane 経路では効かない (engines.json の `modes` は cdp 経路用)。
 `--upload` は pane 経路で 3 エンジンとも使える (合計 25MB)。サービス自身のプレビューにファイル名が出るまで待ってから送るので、添付が届かないまま送られることはない。
@@ -44,9 +44,9 @@ pane 経路の前提: そのサービスのペインがログイン済みであ�
 1. `--dry-run` で `brief.md` を作り、添付一覧 (未添付の理由つき) と文字数を確認する。60,000 字を超える分は落ちる
 2. 本番は Bash `run_in_background: true`。出力はログファイルへ (`> run.log 2>&1`)
 3. `<run>/<engine>/progress.json` の `phase` (connecting → composing → waiting_answer → answer_streaming → done/failed) と `chars` を 2〜3 分おきに読み、「gemini: streaming 1,200 字・3 分経過」のように 1 行報告
-4. 終わったら `answer.md` を読む。ヘッダの `conversation_url` と meta.json の `tab_id` を報告に載せる (宮崎さんは裏タブを押せば同じ会話が見える)。
-   回答本文は画面の表示テキスト (innerText) で Markdown 記法は復元されない。表・コードが要るなら会話 URL/タブを開く
-5. 裏タブは既定で残す (`--close-tab` で回収後に閉じる)。同じ run フォルダで再実行すると前回の answer.md 等は `<engine>/_prev/<時刻>/` へ退避される
+4. 終わったら `answer.md` を読む。ヘッダの `conversation_url` と meta.json の `tab_id` を報告に載せる (宮崎さんは裏ペインを押せば同じ会話が見える)。
+   回答本文は画面の表示テキスト (innerText) で Markdown 記法は復元されない。表・コードが要るなら会話 URL/ペインを開く
+5. 裏ペインは既定で残す (`--close-tab` で回収後に閉じる)。同じ run フォルダで再実行すると前回の answer.md 等は `<engine>/_prev/<時刻>/` へ退避される
 
 ## 所要時間の目安 (2026-09-07 実測)
 
@@ -63,21 +63,21 @@ pane 経路の前提: そのサービスのペインがログイン済みであ�
 | exit 2 `timeout` (本文なし) / `partial` (途中まで) | 回答が出る前・出きる前に時間切れ | 会話は Web 側で続いていることが多い。`collect --engine X --tab <tabId>` (pane) か `--url <会話 URL>`。途中本文は partial.md にある |
 | exit 3 (pane) `signed out` | ペインがサインアウト | ペインでログイン → `--tab <tabId>` で再実行。代わりにログインしない |
 | exit 3 (chrome 経路) | ログイン切れ・captcha・枠切れ | 窓は出してあり、当該タブは残す。報告して止まる |
-| exit 4 `composer did not appear` / `pane: …` | Web ペインが応えない・セレクタ不一致 | `doctor` でタブ状態を見る。cdp 経路は `<engine>/fail.png` |
+| exit 4 `composer did not appear` / `pane: …` | Web ペインが応えない・セレクタ不一致 | `doctor` でペイン状態を見る。cdp 経路は `<engine>/fail.png` |
 | exit 7 `mycmux unavailable` | mycmux が動いていない・ソケット不一致 | mycmux 内で叩く。外なら `--via cdp` |
 | oracle 経路で `Attachments did not finish uploading` | 実アップロードの詰まり | pane 経路 (既定) に戻す。pane は添付の受理をサービスのプレビューで確認してから送る |
-| exit 3 `did not show the attachment` (pane) | サービスが添付を表示しなかった | タブは残る。ペインで添付を確認し `--tab <tabId>` で再実行。25MB 超なら分割 |
-| exit 3 `never accepted the submit` (pane) | 送信が飲まれた (添付アップロード中など) | タブは残る。ペインで送信を押してから `collect --tab <tabId>` で回収 |
+| exit 3 `did not show the attachment` (pane) | サービスが添付を表示しなかった | ペインは残る。ペインで添付を確認し `--tab <tabId>` で再実行。25MB 超なら分割 |
+| exit 3 `never accepted the submit` (pane) | 送信が飲まれた (添付アップロード中など) | ペインは残る。ペインで送信を押してから `collect --tab <tabId>` で回収 |
 | exit 3 `deep research step N/M not found` / `did not turn on` | Deep Research の導線が変わった / 有効化が反映されない | `doctor --deep` でセレクタを見る。ペインで手動有効化して `--tab` で再実行 |
 | exit 7 `the same brief is already running` | 同じ引き継ぎ書が走行中 | 走行中の run の `answer.md` を待つ。意図して 2 回投げるなら `--force` |
-| exit 3 `model picker was not found` (pane) | 会話中のタブで ChatGPT の picker が無い / UI 変更 | `--tab` を外して新規裏タブで撃つ。UI 変更が疑わしければ `doctor --deep` |
+| exit 3 `model picker was not found` (pane) | 会話中のペインで ChatGPT の picker が無い / UI 変更 | `--tab` を外して新規の裏ペインで撃つ。UI 変更が疑わしければ `doctor --deep` |
 | exit 3 `no menu row matched` / `still reads` (pane) | 期待するモデルがメニューに無い・切替が反映されない | メニューの実物は例外文に列挙される。`--model` で実在する名前を指定するか、ペインで選んでから `--any-model` |
 | oracle 経路で `same prompt is already running` | ゾンビ session | `~/.oracle/sessions/<slug>` を `~/.oracle/zombie-quarantine/` へ移す (削除しない) |
 
 ## 例
 
 ```
-# Gemini に設計判断の裏取り (裏タブで実行・経緯ファイル+設計書 2 本を展開)
+# Gemini に設計判断の裏取り (裏ペインで実行・経緯ファイル+設計書 2 本を展開)
 python ~/.claude/skills/oracmux/scripts/oracmux.py ask --engine gemini \
   --question-file Q.md --context-file keii.md --file docs/plans/2026-08-27-*.md
 

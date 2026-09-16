@@ -110,7 +110,7 @@ def test_closed_status_set_covers_the_real_vocabulary() -> None:
     assert dispatch_ledger.is_closed("done-verified-closed")
     assert dispatch_ledger.is_closed("abandoned")
     assert dispatch_ledger.is_closed("fallback-inline")
-    # done は「子の自己申告」であってタブは生きている
+    # done は「子の自己申告」であってペインは生きている
     assert not dispatch_ledger.is_closed("done")
     assert not dispatch_ledger.is_closed("open")
     assert not dispatch_ledger.is_closed("running")

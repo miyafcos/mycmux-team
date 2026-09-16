@@ -16,7 +16,7 @@ export const terminalPaneStrings = {
   previewFallbackFailed: "プレビューに失敗し、既定のアプリでも開けませんでした",
 } as const;
 
-// ペインのツールバーとタブの操作ボタンの tooltip (2026-09-10)。
+// タブのツールバーとペインの操作ボタンの tooltip (2026-09-10)。
 // 同じ 1 本のツールバーに "Split right" と「セッションを複製」が並んでいて、
 // ホバーするたび言語が入れ替わっていた。ショートカットは埋め込まず
 // formatShortcutLabel で組む — mac は ⇧⌘↩ で、Ctrl とは書かれていない。
@@ -38,7 +38,7 @@ export const paneToolbarStrings = {
   allTabsAt: (position: string) => `ペイン一覧 (${position})`,
 } as const;
 
-// タブを右クリック (⋮ 経由) したときのメニュー。
+// ペイン (つまみ) を右クリック (⋮ 経由) したときのメニュー。
 export const paneTabMenuStrings = {
   rename: "名前を変更",
   resetName: "名前を自動に戻す",

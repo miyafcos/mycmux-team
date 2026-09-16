@@ -8,9 +8,9 @@ python ~/.claude/skills/oracmux/scripts/oracmux.py collect --engine chatgpt|gemi
 
 | 指定 | 経路 | 動き |
 |---|---|---|
-| なし | pane | そのサービスの**開いているペインの最新タブ**を読む (宮崎さんが会話した場所) |
-| `--tab <tabId>` | pane | 指定した Web タブを読む (`mycmux_agent_cli.py web-list` / ask の meta.json `tab_id`) |
-| `--url <会話 URL>` | pane (既定) / cdp | pane: 裏タブで URL を開いて読む (`--close-tab` で回収後に閉じる)。cdp: OracleChrome で開く |
+| なし | pane | そのサービスの**開いている最新の Web ペイン**を読む (宮崎さんが会話した場所) |
+| `--tab <tabId>` | pane | 指定した Web ペインを読む (`mycmux_agent_cli.py web-list` / ask の meta.json `tab_id`) |
+| `--url <会話 URL>` | pane (既定) / cdp | pane: 裏ペインで URL を開いて読む (`--close-tab` で回収後に閉じる)。cdp: OracleChrome で開く |
 | `--latest` | cdp のみ | OracleChrome のサイドバー履歴の先頭 (ピン留めは飛ばす)。同一アカウントが前提 |
 
 生成中なら止まるまで待ち、最後の回答と描画されているターンを保存する。
@@ -23,7 +23,7 @@ python ~/.claude/skills/oracmux/scripts/oracmux.py collect --engine chatgpt|gemi
 
 ## 使う場面
 
-- **push → 宮崎さんがペインで会話 → 取り込み**。これが往復の帰り道 (pane 経路なら同じタブを読むだけ)
+- **push → 宮崎さんがペインで会話 → 取り込み**。これが往復の帰り道 (pane 経路なら同じペインを読むだけ)
 - ask が時間切れになった (`exit 2`)。`--tab` は meta.json、URL は ledger にある
 - Web で人が続けた会話の続きを、次の brief の「経緯」に貼りたい
 

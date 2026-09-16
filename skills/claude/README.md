@@ -1,8 +1,8 @@
 # mycmux を使うならこの 3 本
 
-**session-dispatch** は、指示書を作り、可視タブへの委譲と完了条件の確認を扱います。「別タブに任せて」「作業を委譲して」が発火語です。mycmux 内の Claude Code が前提で、送信機能には mycmux-bridge も必要です。
+**session-dispatch** は、指示書を作り、可視ペインへの委譲と完了条件の確認を扱います。「別ペインに任せて」「作業を委譲して」が発火語です。mycmux 内の Claude Code が前提で、送信機能には mycmux-bridge も必要です。
 
-**mycmux-bridge** は、タブ一覧・画面・状態を読み、宛先と入力状態を確認してメッセージや質問回答を渡します。「タブの状態を見て」「セッションに伝えて」が発火語です。起動中の mycmux と対象の PTY session ID が前提です。
+**mycmux-bridge** は、ペイン一覧・画面・状態を読み、宛先と入力状態を確認してメッセージや質問回答を渡します。「ペインの状態を見て」「セッションに伝えて」が発火語です。起動中の mycmux と対象の PTY session ID が前提です。
 
 **oracmux** は、引き継ぎ文書を作り、Web ペインで相談し、回答を回収します。「oracmux で相談して」「Web ペインで聞いて」が発火語です。mycmux と Web サービスへのログインが前提です。既定の pane 経路は標準ライブラリで動きます。別経路の oracle / cdp は追加の外部ツールが必要です。
 
@@ -52,7 +52,7 @@ guard.json の追加もローカル改変として検出されるため、更新
 
 ## 見張り (dispatch_guard) の有効化
 
-session-dispatch には、立てた子タブや手動タブが「起動ダイアログ・入力欄に残った本文・質問・承認・ログイン」で黙って止まるのを検出し、回復か通報を行う常駐スクリプト `scripts/dispatch_guard.py` が同梱されています。mycmux のランチャーが agent TUI を起動するたびに `ensure` を呼ぶので、導入後は自動で常駐します (`MYCMUX_DISPATCH_GUARD=off` で止められます)。
+session-dispatch には、立てた子ペインや手動ペインが「起動ダイアログ・入力欄に残った本文・質問・承認・ログイン」で黙って止まるのを検出し、回復か通報を行う常駐スクリプト `scripts/dispatch_guard.py` が同梱されています。mycmux のランチャーが agent TUI を起動するたびに `ensure` を呼ぶので、導入後は自動で常駐します (`MYCMUX_DISPATCH_GUARD=off` で止められます)。
 
 あわせて Claude Code 側に次の 2 点を入れると、起動ダイアログと子セッションの質問が構造的に起きなくなります。
 

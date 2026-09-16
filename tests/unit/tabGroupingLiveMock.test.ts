@@ -50,8 +50,8 @@ describe("Tab grouping live mock artifact", () => {
     const source = readFileSync("src/mock/tabGroupingLiveMock.tsx", "utf8");
     const buildScript = readFileSync("scripts/build_grouping_live_mock.ps1", "utf8");
     expect(source).toContain("左のグループで「再配置する」「現状維持」を選びます。");
-    expect(source).toContain("タブを選び、右の配置図の移動先ペインをクリックします。");
-    expect(source).toContain("「変更対象のみ表示」で動くタブだけに絞れます。");
+    expect(source).toContain("ペインを選び、右の配置図の移動先タブをクリックします。");
+    expect(source).toContain("「変更対象のみ表示」で動くペインだけに絞れます。");
     expect(source).toContain("tabGroupingStrings.editPlan");
     expect(source).toContain('params.get("step") !== "2"');
     expect(buildScript).toContain("preview_step2.png");

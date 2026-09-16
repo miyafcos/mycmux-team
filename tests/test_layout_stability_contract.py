@@ -39,9 +39,13 @@ def test_pane_layout_metrics_survive_split_structure_changes() -> None:
         "export function reconcileColumnWidths(",
         "export function reconcileRowHeightsPerCol(",
         "export function reconcileLayoutMetrics(",
-        "export function columnsRequireBalancedWidths(",
         "function previousColumnIndicesForSurvivors(",
         "return nextColumns.map(() => DEFAULT_LAYOUT_SIZE);",
+        # A split cuts the column the drop landed in and leaves every other
+        # column at the width the user dragged it to. Rebalancing all of them
+        # (what this did until 2026-09-16) threw the layout away on each split.
+        "function splitColumnWidths(",
+        "return splitColumnWidths(previousColumns, previousWidths, nextColumns);",
         # Pane removal keeps the survivors' stored sizes (proportional spread)
         # instead of resetting every column to the balanced default.
         "const survivorWidths = previousIndices.map((previousIndex) =>",

@@ -25,7 +25,7 @@ function layout(columns: string[][][]): GroupingLayout {
   return {
     columns: columns.map((panes, columnIndex) => ({
       panes: panes.map((tabIds, paneIndex) => ({
-        title: `ペイン${columnIndex + 1}${paneIndex + 1}`,
+        title: `タブ${columnIndex + 1}${paneIndex + 1}`,
         role: "unspecified",
         tabIds: [...tabIds],
       })),
@@ -370,9 +370,9 @@ describe("grouping edit invariants", () => {
     const paneRenamed = applyEditCommand(workspaceRenamed, {
       kind: "rename_pane",
       pane: { groupId: "group:a", columnIndex: 0, paneIndex: 0 },
-      title: "ペイン12",
+      title: "タブ12",
     });
-    expect(paneRenamed.plan.groups[0].layout?.columns[0].panes[0].title).toBe("ペイン12 2");
+    expect(paneRenamed.plan.groups[0].layout?.columns[0].panes[0].title).toBe("タブ12 2");
     expectValid(paneRenamed.plan);
   });
 });

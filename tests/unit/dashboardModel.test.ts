@@ -157,7 +157,7 @@ describe("dashboard model", () => {
     const [built] = cards({ hasTerminalBuffer: () => false });
     expect(built.neverStarted).toBe(true);
     expect(built.latestInstruction).toBeNull();
-    // 端末バッファが無いだけの稼働中タブは未起動ではない。
+    // 端末バッファが無いだけの稼働中ペインは未起動ではない。
     expect(cards({ hasTerminalBuffer: () => false, lastLogAtBySession: { "s-1": now - 1 } })[0].neverStarted).toBe(false);
     // brief があるなら未起動ではない。
     expect(cards({ hasTerminalBuffer: () => false, briefsBySession: { "s-1": brief() } })[0].neverStarted).toBe(false);
@@ -332,7 +332,7 @@ describe("dashboard model", () => {
       }))).toBe("noUpdate");
       expect(resolveDisplayState(card({ attentionCategory: "done", group: "done" }))).toBe("done");
       expect(resolveDisplayState(card({ group: "idle", lastActivityAt: now - 600_000 }))).toBe("noUpdate");
-      // 一度も動いていないタブを「更新なし」と言い切らない。
+      // 一度も動いていないペインを「更新なし」と言い切らない。
       expect(resolveDisplayState(card({ group: "idle", lastActivityAt: 0 }))).toBe("idle");
     });
 

@@ -1,14 +1,23 @@
-import { memo, useLayoutEffect, useRef, useState } from "react";
-import { usePaneDragStore } from "../../stores/paneDragStore";
+import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { usePaneDragStore, type PaneDropZone } from "../../stores/paneDragStore";
+import { useDetachedDockStore } from "../../stores/detachedDockStore";
+import { useWorkspaceListStore } from "../../stores/workspaceListStore";
+import { measureDropResultRect } from "../../lib/paneDropResultRect";
 import { paneDndStrings } from "./paneDndStrings";
 
 const GHOST_OFFSET = 14;
 const GHOST_PAD = 8;
+/** Keeps the frame just inside the pane border it is drawn over. */
+const RESULT_INSET = 3;
 
 export default memo(function PaneDragOverlay() {
   const item = usePaneDragStore((state) => state.item);
   const pointer = usePaneDragStore((state) => state.pointer);
   const target = usePaneDragStore((state) => state.target);
+  // A detached window being dragged back lands the same way, so it gets the
+  // same frame. Its pointer lives in another window, hence no ghost here.
+  const dockZone = useDetachedDockStore((state) =>
+    state.target?.kind === "pane-zone" ? state.target : null);
   const ghostRef = useRef<HTMLDivElement>(null);
   const [offset, setOffset] = useState({ x: GHOST_OFFSET, y: GHOST_OFFSET });
 
@@ -26,7 +35,16 @@ export default memo(function PaneDragOverlay() {
     setOffset((prev) => (prev.x === x && prev.y === y ? prev : { x, y }));
   }, [pointer]);
 
-  if (!item || !pointer) return null;
+  if (!item || !pointer) {
+    return dockZone
+      ? <PaneDropResultFrame
+          workspaceId={dockZone.workspaceId}
+          paneId={dockZone.paneId}
+          zone={dockZone.zone}
+          source="pane"
+        />
+      : null;
+  }
 
   const isTabBundle = item.kind === "tab-bundle";
   const isTabDrag = item.kind === "tab" || isTabBundle;
@@ -52,28 +70,91 @@ export default memo(function PaneDragOverlay() {
       : paneDndStrings.dropInNewWindow}`} />;
   }
 
+  const zoneTarget = target?.kind === "pane" && target.surface !== "minimap" ? target : null;
   return (
-    <div
-      ref={ghostRef}
-      className={className}
-      style={{
-        transform: `translate3d(${pointer.x + offset.x}px, ${pointer.y + offset.y}px, 0)`,
-      }}
-    >
-      {isTabDrag ? (
-        <span className="pane-drag-ghost-tab-mark" />
-      ) : (
-        <span className="pane-drag-ghost-pane-mark">
-          <span />
-          <span />
-        </span>
+    <>
+      {zoneTarget && (
+        <PaneDropResultFrame
+          workspaceId={zoneTarget.workspaceId}
+          paneId={zoneTarget.paneId}
+          zone={zoneTarget.zone}
+          source={isTabDrag ? "tab" : "pane"}
+        />
       )}
-      <span className="pane-drag-ghost-label">{item.label}</span>
-      {isTabBundle ? <span className="pane-drag-ghost-count" aria-label={`${item.tabIds.length}本を移動`}>{item.tabIds.length}</span> : null}
-      <span className="pane-drag-ghost-meta">{meta}</span>
-    </div>
+      <div
+        ref={ghostRef}
+        className={className}
+        style={{
+          transform: `translate3d(${pointer.x + offset.x}px, ${pointer.y + offset.y}px, 0)`,
+        }}
+      >
+        {isTabDrag ? (
+          <span className="pane-drag-ghost-tab-mark" />
+        ) : (
+          <span className="pane-drag-ghost-pane-mark">
+            <span />
+            <span />
+          </span>
+        )}
+        <span className="pane-drag-ghost-label">{item.label}</span>
+        {isTabBundle ? <span className="pane-drag-ghost-count" aria-label={`${item.tabIds.length}本を移動`}>{item.tabIds.length}</span> : null}
+        <span className="pane-drag-ghost-meta">{meta}</span>
+      </div>
+    </>
   );
 });
+
+/**
+ * Draws where the pane will land, at the size it will land in — a left/right
+ * split covers half the column, an up/down split half the pane. It is a fixed
+ * overlay because a pane cannot paint outside its own box, which is why the
+ * old in-pane band could never show a column-wide result.
+ *
+ * The minimap keeps its own cell feedback, and a tear-out has no rectangle to
+ * point at, so neither draws a frame here.
+ */
+function PaneDropResultFrame({ workspaceId, paneId, zone, source }: {
+  workspaceId: string;
+  paneId: string;
+  zone: PaneDropZone;
+  source: "tab" | "pane";
+}) {
+  // Read the layout once per target change: it cannot move mid-drag, and
+  // subscribing to the workspace list would re-render this on every store write.
+  const rect = useMemo(() => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return null;
+    return measureDropResultRect(
+      workspaceId,
+      paneId,
+      zone,
+      workspace.splitColumns,
+      workspace.panes.map((pane) => pane.id),
+    );
+  }, [workspaceId, paneId, zone]);
+  if (!rect) return null;
+
+  const label = zone === "center"
+    ? (source === "tab" ? paneDndStrings.attachTab : paneDndStrings.mergePane)
+    : paneDndStrings.split[zone];
+  return (
+    <div
+      className={[
+        "pane-drop-result",
+        zone === "center" ? "pane-drop-result--merge" : "pane-drop-result--split",
+        `pane-drop-result--source-${source}`,
+      ].join(" ")}
+      style={{
+        left: rect.left + RESULT_INSET,
+        top: rect.top + RESULT_INSET,
+        width: Math.max(0, rect.width - RESULT_INSET * 2),
+        height: Math.max(0, rect.height - RESULT_INSET * 2),
+      }}
+    >
+      <span className="pane-drop-result__label">{label}</span>
+    </div>
+  );
+}
 
 /** Shared by tab/pane drags and the sidebar workspace drag (TabBar). */
 export function TearOutBanner({ label }: { label: string }) {

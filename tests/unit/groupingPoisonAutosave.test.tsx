@@ -92,7 +92,7 @@ function pane(id: string, tabs: PaneTab[]): Pane {
     sessionId: tabs[0].sessionId,
     activeTabId: tabs[0].id,
     tabs,
-    label: `ペイン${id}`,
+    label: `タブ${id}`,
     cwd: tabs[0].cwd,
   };
 }

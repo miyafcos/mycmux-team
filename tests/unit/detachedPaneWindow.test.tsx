@@ -10,6 +10,9 @@ const mocks = vi.hoisted(() => ({
   browser: vi.fn(),
   webController: vi.fn(),
   emit: vi.fn(async () => {}),
+  listen: vi.fn(),
+  invoke: vi.fn(async () => true),
+  startDragging: vi.fn(async () => {}),
   setPosition: vi.fn(async () => {}),
   outerPosition: vi.fn(async () => ({ x: 300, y: 150 })),
   scaleFactor: vi.fn(async () => 1.5),
@@ -18,9 +21,14 @@ const mocks = vi.hoisted(() => ({
   discardAndClose: vi.fn(async () => {}),
   evictTerminalCache: vi.fn(),
 }));
-vi.mock("@tauri-apps/api/event", () => ({ emit: mocks.emit }));
+vi.mock("@tauri-apps/api/event", () => ({ emit: mocks.emit, listen: mocks.listen }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ label: "child", close: mocks.close, setTitle: mocks.setTitle, setPosition: mocks.setPosition, outerPosition: mocks.outerPosition, scaleFactor: mocks.scaleFactor }),
+  getCurrentWindow: () => ({
+    label: "child", close: mocks.close, setTitle: mocks.setTitle,
+    startDragging: mocks.startDragging, setPosition: mocks.setPosition,
+    outerPosition: mocks.outerPosition, scaleFactor: mocks.scaleFactor,
+  }),
 }));
 vi.mock("../../src/lib/paneCloseConfirmation", () => ({ confirmPaneClose: mocks.confirmPaneClose }));
 vi.mock("../../src/lib/focusController", () => ({ focusController: { request: vi.fn() } }));
@@ -58,50 +66,125 @@ function workspace(type: "terminal" | "launcher" | "browser" | "web" = "terminal
 afterEach(() => { vi.clearAllMocks(); vi.unstubAllGlobals(); });
 
 describe("DetachedPaneShell", () => {
-  it.each(["terminal", "browser", "web"] as const)("coalesces %s screen-space moves, ignores buttons, and restores on Escape", async (type) => {
+  it.each(["terminal", "browser", "web"] as const)(
+    "hands a %s window's move to the OS and relays the cursor back", async (type) => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    let nextFrame: FrameRequestCallback | null = null;
-    vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => { nextFrame = callback; return 1; }));
-    vi.stubGlobal("cancelAnimationFrame", vi.fn(() => { nextFrame = null; }));
+    let relay: ((event: { payload: { x: number; y: number; done: boolean } }) => void) | null = null;
+    const unlisten = vi.fn();
+    mocks.listen.mockImplementation(async (_event: string, handler: never) => {
+      relay = handler;
+      return unlisten;
+    });
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
-    const pointer = (node: Element, type: string, x: number, y: number) => {
-      const event = new MouseEvent(type, { bubbles: true, button: 0, screenX: x, screenY: y });
+    const pointer = (node: Element, kind: string, x: number, y: number) => {
+      const event = new MouseEvent(kind, { bubbles: true, button: 0, screenX: x, screenY: y });
       Object.defineProperty(event, "pointerId", { value: 7 });
       node.dispatchEvent(event);
     };
     try {
       await act(async () => root.render(<DetachedPaneShell workspace={workspace(type)} />));
       const band = host.querySelector("[data-detached-pane-shell]")!.children[0] as HTMLElement;
-      band.setPointerCapture = vi.fn();
-      band.hasPointerCapture = () => true;
-      band.releasePointerCapture = vi.fn();
+
+      // The close button inside the band is not a drag handle.
       await act(async () => pointer(band.querySelector("button")!, "pointerdown", 220, 110));
-      expect(mocks.outerPosition).not.toHaveBeenCalled();
+      expect(mocks.startDragging).not.toHaveBeenCalled();
+
       await act(async () => pointer(band, "pointerdown", 220, 110));
-      await act(async () => {
-        pointer(band, "pointermove", 250, 130);
-        pointer(band, "pointermove", 280, 150);
-      });
-      expect(mocks.setPosition).not.toHaveBeenCalled();
-      expect(mocks.emit.mock.calls.map((call: unknown[]) => (call[1] as { phase: string }).phase)).toEqual(["start"]);
-      await act(async () => { nextFrame?.(0); });
-      expect(mocks.setPosition).toHaveBeenCalledTimes(1);
+      // The window manager moves the window, so its own edge snap is the real
+      // one; the backend poll is what keeps this page aware of the drag.
+      expect(mocks.invoke).toHaveBeenCalledWith("watch_window_drag");
+      expect(mocks.startDragging).toHaveBeenCalledTimes(1);
+      expect(mocks.emit.mock.calls.map((call: unknown[]) => (call[1] as { phase: string }).phase))
+        .toEqual(["start"]);
+
+      await act(async () => relay?.({ payload: { x: 280, y: 150, done: false } }));
       expect(mocks.emit).toHaveBeenLastCalledWith("mycmux://detached-drag", expect.objectContaining({
         label: "child", workspaceId: "transfer", sessionId: "pty-original-pane-tab", tabId: "tab",
         screenX: 280, screenY: 150, phase: "move",
       }));
-      expect(mocks.setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: 260, y: 140 }));
-      await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
-      expect(mocks.setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: 200, y: 100 }));
-      await act(async () => pointer(band, "pointermove", 999, 999));
-      expect(mocks.setPosition).toHaveBeenCalledTimes(2);
-      await act(async () => pointer(band, "pointerdown", 220, 110));
-      await act(async () => pointer(band, "pointerup", 300, 160));
-      expect(mocks.setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: 280, y: 150 }));
-      expect(nextFrame).toBeNull();
+
+      // The button coming up ends the drag and releases the relay.
+      await act(async () => relay?.({ payload: { x: 300, y: 160, done: true } }));
+      expect(mocks.emit).toHaveBeenLastCalledWith("mycmux://detached-drag", expect.objectContaining({
+        screenX: 300, screenY: 160, phase: "end",
+      }));
+      expect(unlisten).toHaveBeenCalledTimes(1);
+
+      // Samples that arrive after the end are ignored.
+      const settled = mocks.emit.mock.calls.length;
+      await act(async () => relay?.({ payload: { x: 400, y: 200, done: false } }));
+      expect(mocks.emit.mock.calls.length).toBe(settled);
       expect(mocks.close).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+  it("treats a click on the band as a click, not a drop", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let relay: ((event: { payload: { x: number; y: number; done: boolean } }) => void) | null = null;
+    mocks.listen.mockImplementation(async (_event: string, handler: never) => {
+      relay = handler;
+      return vi.fn();
+    });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<DetachedPaneShell workspace={workspace()} />));
+      const band = host.querySelector("[data-detached-pane-shell]")!.children[0] as HTMLElement;
+      const press = new MouseEvent("pointerdown", { bubbles: true, button: 0, screenX: 220, screenY: 110 });
+      Object.defineProperty(press, "pointerId", { value: 7 });
+      await act(async () => { band.dispatchEvent(press); });
+
+      // The button comes up two pixels away: the window overlapping the main
+      // one must not count that as dropping it back in.
+      await act(async () => relay?.({ payload: { x: 222, y: 111, done: true } }));
+      expect(mocks.emit).toHaveBeenLastCalledWith("mycmux://detached-drag",
+        expect.objectContaining({ phase: "cancel" }));
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+  it("moves the window itself where the backend cannot follow the cursor", async () => {
+    // macOS has no cursor poll yet. Losing the OS snap there is acceptable;
+    // losing the drop-back-into-the-main-window gesture is not.
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let nextFrame: FrameRequestCallback | null = null;
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => { nextFrame = callback; return 1; }));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn(() => { nextFrame = null; }));
+    mocks.invoke.mockResolvedValueOnce(false);
+    mocks.listen.mockImplementation(async () => vi.fn());
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const pointer = (node: Element, kind: string, x: number, y: number) => {
+      const event = new MouseEvent(kind, { bubbles: true, button: 0, screenX: x, screenY: y });
+      Object.defineProperty(event, "pointerId", { value: 7 });
+      node.dispatchEvent(event);
+    };
+    try {
+      await act(async () => root.render(<DetachedPaneShell workspace={workspace()} />));
+      const band = host.querySelector("[data-detached-pane-shell]")!.children[0] as HTMLElement;
+      band.setPointerCapture = vi.fn();
+      band.hasPointerCapture = () => true;
+      band.releasePointerCapture = vi.fn();
+
+      await act(async () => pointer(band, "pointerdown", 220, 110));
+      expect(mocks.startDragging).not.toHaveBeenCalled();
+      await act(async () => pointer(band, "pointermove", 280, 150));
+      await act(async () => { nextFrame?.(0); });
+      // Grabbed at 220,110 with the window at 200,100: the offset is 20,10.
+      expect(mocks.setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: 260, y: 140 }));
+      expect(mocks.emit).toHaveBeenLastCalledWith("mycmux://detached-drag",
+        expect.objectContaining({ screenX: 280, screenY: 150, phase: "move" }));
+
+      await act(async () => pointer(band, "pointerup", 300, 160));
+      expect(mocks.emit).toHaveBeenLastCalledWith("mycmux://detached-drag",
+        expect.objectContaining({ screenX: 300, screenY: 160, phase: "end" }));
     } finally {
       await act(async () => root.unmount());
       host.remove();

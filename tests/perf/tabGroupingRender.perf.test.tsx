@@ -159,7 +159,7 @@ function d2Plan(items: readonly Workspace[]): GroupingPlan {
   return {
     planId: "D2-plan",
     title: "D2性能案",
-    rationale: "100タブの描画分離を測る",
+    rationale: "100ペインの描画分離を測る",
     strategy: "project",
     groups: [{
       groupId: "D2-group",

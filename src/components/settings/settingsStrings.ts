@@ -25,7 +25,7 @@ export const delegationWatchStrings = {
   queueEmpty: "問題は見つかっていません。",
   queueUnknownSubject: "セッション",
   queueContinuing: (elapsed: string, confirmations: number): string => `${elapsed}継続・連続確認 ${confirmations} 回`,
-  // トーストは単独で読まれるので、どのタブの何が起きたのかを機能名込みで書く。
+  // トーストは単独で読まれるので、どのペインの何が起きたのかを機能名込みで書く。
   toastItem: (subject: string, kind: string): string => `委譲の見守り: ${subject} — ${kind}`,
   additionalQueueItems: (count: number): string => `委譲の見守り: ほか ${count} 件のペインが要確認です`,
   kindLabels: {
@@ -121,7 +121,7 @@ export const aiSettingsStrings = {
   disabledReason: "設定 > AI で「AI機能を有効にする」がオフになっています",
 } as const;
 
-// タブ名の自動命名 (AI が無名タブに名前を付ける定期ジョブ) の文言。
+// ペイン名の自動命名 (AI が無名ペインに名前を付ける定期ジョブ) の文言。
 export const autoPaneNamingStrings = {
   title: "ペイン名の自動命名",
   label: "名前のないペインに AI が名前を付ける",
@@ -140,7 +140,7 @@ export const petSettingsStrings = {
   displayTitle: "表示",
   displayHint: "必要な場合だけ表示できます。",
   displayModeWs: "ワークスペースに1体",
-  displayModeBoth: "＋タブにも小さく",
+  displayModeBoth: "＋ペインにも小さく",
   displayModeNone: "キャラなし (既定)",
   candidatesTitle: "キャラ (pet) の候補",
   candidatesHint: "チェックを入れたものだけが、新しいワークスペースのランダム抽選に出ます。クリックで切替。",

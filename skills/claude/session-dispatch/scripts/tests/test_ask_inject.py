@@ -109,7 +109,7 @@ def test_camel_case_session_key_is_recognised(hook: ModuleType, tmp_path: Path) 
 
 
 def test_other_dispatch_status_does_not_leak(hook: ModuleType, tmp_path: Path) -> None:
-    """同じ slug の別 dispatch (別タブ) の closed が、生きているタブを開放しない."""
+    """同じ slug の別 dispatch (別ペイン) の closed が、生きているペインを開放しない."""
     write_ledger(
         hook,
         tmp_path,

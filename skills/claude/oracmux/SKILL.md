@@ -1,6 +1,6 @@
 ---
 name: oracmux
-description: "oracle 型の相談 (引き継ぎ書+添付を投げて回答を回収) を ChatGPT / Gemini / Grok の Web に広げ、mycmux の Web ペイン (呼び出し元と同じペインの裏タブ) で完結させる入口。単発 ask・三者並列 council・ペインへの push・ペインの会話の collect・前提点検 doctor。最終判定ゲートの裏取り、設計判断の異系統チェック、Web 本家モデルの比較に使う。"
+description: "oracle 型の相談 (引き継ぎ書+添付を投げて回答を回収) を ChatGPT / Gemini / Grok の Web に広げ、mycmux の Web ペイン (呼び出し元と同じタブの裏ペイン) で完結させる入口。単発 ask・三者並列 council・ペインへの push・ペインの会話の collect・前提点検 doctor。最終判定ゲートの裏取り、設計判断の異系統チェック、Web 本家モデルの比較に使う。"
 metadata:
   triggers:
     - "oracmux"
@@ -17,12 +17,12 @@ metadata:
     - "7 系統のディープリサーチ=ultra-deep-research"
 ---
 
-# oracmux — oracle を 3 つの Web に広げ、mycmux の裏タブで完結させる
+# oracmux — oracle を 3 つの Web に広げ、mycmux の裏ペインで完結させる
 
 oracle (steipete・ChatGPT Pro の Last-Resort ゲート) の「引き継ぎ書+添付を投げて回答を回収する」型を、
 ChatGPT / Gemini / Grok の Web 本家へ広げる。実体は決定論スクリプト `scripts/oracmux.py`。
-**既定の経路は pane**: 呼び出し元と同じペインに裏タブ (非アクティブ) で Web ペインを開き、`web.push` で送り、`web.read` で回収する。
-Chrome も CDP も使わない。宮崎さんは裏タブを押せばその会話をそのまま見られる。エージェントが読む場所は `~/.mycmux/handoff/oracmux/<run>/`。
+**既定の経路は pane**: 呼び出し元と同じタブに裏ペイン (非アクティブ) で Web ペインを開き、`web.push` で送り、`web.read` で回収する。
+Chrome も CDP も使わない。宮崎さんは裏ペインを押せばその会話をそのまま見られる。エージェントが読む場所は `~/.mycmux/handoff/oracmux/<run>/`。
 
 ## モード判定 (依頼を受けて 3 秒で)
 
@@ -48,7 +48,7 @@ ChatGPT が送信を飲み、**Gemini は Flash・Grok は ファスト** に変
 
 | 確かめたいこと | 使う | Web ターン | 目安 |
 |---|---|---|---|
-| ログイン・タブの生死 | `doctor` | 消費しない | 実行のたび |
+| ログイン・ペインの生死 | `doctor` | 消費しない | 実行のたび |
 | **セレクタが実 DOM と合っているか・今どのモデルか** | **`doctor --deep`** | **消費しない** | 週 1・久しぶりに使う前。**ask は毎回自分で確認して直すので、これは点検用** |
 | **引き継ぎ書が composer に本当に入るか** | **`doctor --deep`** (同じ 1 回に含む) | **消費しない** | 上と同じ。**セレクタが全部合っていても入らないことがある** (下記 2026-09-10) |
 | 送信から回収までの全経路 | `smoke [--with-upload]` | **1 エンジン 1 ターン** | 月 1・重い相談の前・`--deep` が DRIFT を出した後 |
@@ -76,7 +76,7 @@ ChatGPT が送信を飲み、**Gemini は Flash・Grok は ファスト** に変
 
 | 経路 | 実体 | 位置づけ |
 |---|---|---|
-| **pane** (既定) | mycmux Web ペインの裏タブ + `web.push` / `web.read` / `web.upload` (mycmux v0.65 以降・添付は v0.66 以降) | 通常はこれ。3 エンジンとも `--upload` 可。ログインはペイン側 (`web-profiles/google` / `grok`) |
+| **pane** (既定) | mycmux 裏の Web ペイン + `web.push` / `web.read` / `web.upload` (mycmux v0.65 以降・添付は v0.66 以降) | 通常はこれ。3 エンジンとも `--upload` 可。ログインはペイン側 (`web-profiles/google` / `grok`) |
 | oracle (chatgpt のみ) | steipete/oracle CLI → 画面外 OracleChrome | oracle の証跡が要るときだけ。添付は pane で足りる |
 | cdp | 自前 Playwright ドライバ → OracleChrome | mycmux 外・`--mode` (思考モード切替) が要るとき。添付は不可 |
 
@@ -96,18 +96,18 @@ ChatGPT が送信を飲み、**Gemini は Flash・Grok は ファスト** に変
 
 - **NDA・社外提供不可の素材は投げない**。`guard.json` のマーカー・deny_roots で機械ブロック (exit 5)。`--allow-markers` は人が中身を確認した後だけ
 - **1 consult = Web 1 ターン消費** (ChatGPT Pro は週次枠・Grok は Chat/Build 共有プール)。大量バッチに使わない。PING 以外の再試行は原因を直してから
-- **裏タブは残す** (宮崎さんが見るため)。閉じるのは `--close-tab` を付けたときだけ。フォーカスは奪わない (`web.open background`)
-- **`--tab <tabId>` は Web タブの ID** (`mycmux_agent_cli.py web-list` の `tabId`・ask の meta.json `tab_id`)。mycmux-bridge の PTY `session_id` や pane / workspace の ID を渡さない
+- **裏ペインは残す** (宮崎さんが見るため)。閉じるのは `--close-tab` を付けたときだけ。フォーカスは奪わない (`web.open background`)
+- **`--tab <tabId>` は Web ペインの ID** (`mycmux_agent_cli.py web-list` の `tabId`・ask の meta.json `tab_id`)。mycmux-bridge の PTY `session_id` や pane / workspace の ID を渡さない
 - **push は載せるだけ**。送信は宮崎さんのクリックか `--send` 明示。Pro のターンは取り消せない
 - **サインアウト (exit 3) は止まって報告**: ペインの「別の窓でログイン」を案内し、代わりにログインしない・認証情報を扱わない
 - **モデルは実行のたびに確認し、違えば選び直してから送る (2026-09-09〜)**。pane 経路は毎回 picker を読み、`engines.json` の `expected_model` (ChatGPT/Gemini=`Pro`・Grok=`エキスパート`) と違えばメニューで選び直し、**選び直せたことを読み直して確かめてから**送る。確かめられなければ **1 ターンも使わずに exit 3 で止まる**。証跡は `answer.md` の `model` / `model_evidence` に残る (oracle の "Model selection evidence" と同じ役割)。`--model <名前>` で上書き、`--any-model` で確認を省略
-- **ChatGPT の picker は新規チャット画面にしか無い**。会話の中にある「モデルを切り替える」ボタンは**メッセージ単位の再試行**であって picker ではない。`--tab` で会話中のタブを再利用すると picker が見つからず exit 3 になる (既定の新規裏タブなら問題ない)
+- **ChatGPT の picker は新規チャット画面にしか無い**。会話の中にある「モデルを切り替える」ボタンは**メッセージ単位の再試行**であって picker ではない。`--tab` で会話中のペインを再利用すると picker が見つからず exit 3 になる (既定の新規の裏ペインなら問題ない)
 - **Deep Research は `--research`** (ChatGPT は実測済み・Gemini はメニューまで到達・Grok は該当機能なし)。有効化を画面で確認できなければ**送らずに exit 3** で止まる (浅い回答に Pro ターンを使わないため)。所要は数十分単位なので `run_in_background` で回し `progress.json` を見る
 - **同じ引き継ぎ書の二重起動は止まる**。走行中の同一 brief があれば exit 7 で拒否し、走行中の run を指す。意図して 2 回投げるときだけ `--force` (1 回 = 1 ターン)
-- **続けて聞くのは `followup`**。裏タブの会話にそのまま重ねる。モデル確認と Deep Research は会話の設定を引き継ぐので再実行しない
+- **続けて聞くのは `followup`**。裏ペインの会話にそのまま重ねる。モデル確認と Deep Research は会話の設定を引き継ぐので再実行しない
 - **ChatGPT のプロジェクト内で聞くときは `--url`** (`ask --url https://chatgpt.com/g/.../project`)
 - **生ログを母艦に流さない**: 読むのは `answer.md` / `council.md` / `progress.json` だけ。lane.log は失敗時のみ
-- **回答は表示テキスト** (Markdown 記法なし・描画済みターンのみ)。構造が要るときは会話タブ/URL を開く。セレクタは `scripts/engines.json` と mycmux 側 `webpane.rs` の reader 表 (同値を保つ)
+- **回答は表示テキスト** (Markdown 記法なし・描画済みターンのみ)。構造が要るときは会話ペイン/URL を開く。セレクタは `scripts/engines.json` と mycmux 側 `webpane.rs` の reader 表 (同値を保つ)
 - OracleChrome 経路 (oracle / cdp) は oracle セッション走行中なら待つ (exit 6)。`--force` は理由を報告に書く
 
 ## 出力の置き場と台帳
@@ -124,8 +124,8 @@ ChatGPT が送信を飲み、**Gemini は Flash・Grok は ファスト** に変
 |---|---|---|
 | 0 | 回収済 | answer.md を読む |
 | 2 | 途中まで (partial) / 時間切れ (timeout) | 再送しない。`collect --engine X --tab <tabId>` (pane) か `--url <会話 URL>` で回収 |
-| 3 | 要人手 (ペインのサインアウト・captcha・枠切れ) | タブは残してある。宮崎さんに 1 行報告 (ペインでログイン → `--tab` で再実行) |
-| 4 | UI が応えない (composer 不在・セレクタ不一致) | `doctor` でタブ状態。cdp 経路は `<engine>/fail.png` と `engines.json` |
+| 3 | 要人手 (ペインのサインアウト・captcha・枠切れ) | ペインは残してある。宮崎さんに 1 行報告 (ペインでログイン → `--tab` で再実行) |
+| 4 | UI が応えない (composer 不在・セレクタ不一致) | `doctor` でペイン状態。cdp 経路は `<engine>/fail.png` と `engines.json` |
 | 5 | NDA ガード | 素材を外すか、人が確認して `--allow-markers` |
 | 6 | oracle 走行中 (oracle / cdp 経路のみ) | 待つ (`oracle status`) |
 | 7 | 前提不足 (mycmux 不通・引数/設定不正・経路に無い flag) | mycmux 内で実行 / 引数を直す / `--via cdp` |
@@ -136,12 +136,12 @@ ChatGPT が送信を飲み、**Gemini は Flash・Grok は ファスト** に変
 - **`--upload` の実体**: サービス自身の隠し file input へ直接ファイルを載せる。OS のファイル選択ダイアログは開かない。file input がいつ DOM に生えるかはサービスで違う (2026-09-09 実測) — ChatGPT (`input#upload-files`) と Grok (`input[type=file]`) は読込時点で存在、Gemini は「アップロードとツール」を押すまで存在しない。セレクタは `engines.json` の `upload_input` / `upload_open`。**サービス側のプレビューにファイル名が出るまで待ってから送る** (出なければ送らず exit 3) ので、「添付したつもりで中身が届いていない引き継ぎ書」は送られない
 - ペインのログインはサービスごと (`web-profiles/google` = ChatGPT/Gemini・`web-profiles/grok` = Grok)。本番 mycmux は 2026-09-07 時点で 3 サービスともログイン済み (宮崎さん確認)。未ログインだと composer が出ず exit 3 になる。Gemini はログインなしでも答えるので、「Gemini が通った」だけではログイン状態の証拠にならない
 - **本番実射済み (2026-09-09)**: Gemini ask 39 秒で `ORACMUX-PROD-OK`、Grok は `--upload` つきで 44 秒。テスト機での 3 サービス往復は 9/7 (ChatGPT 74 秒 / Gemini 38 秒 / Grok 36 秒)。テスト機で検証するときは `WEBVIEW2_USER_DATA_FOLDER` が Web ペインのプロファイル分離を上書きする点に注意 (memory `reference-testmachine-webview-profile-override`)
-- **モデルの取り違えは 2026-09-09 に実在した**: Gemini=Flash・Grok=ファストで動いていた。いまは ask が毎回直すが、**ChatGPT だけは会話中のタブで picker が見えない**ので `--tab` の再利用に注意
+- **モデルの取り違えは 2026-09-09 に実在した**: Gemini=Flash・Grok=ファストで動いていた。いまは ask が毎回直すが、**ChatGPT だけは会話中のペインで picker が見えない**ので `--tab` の再利用に注意
 - Gemini の Deep Research は UI から到達不可。Grok の DeepSearch は消滅 (Expert が最深)
 - ペイン (`web-profiles/google` / `grok`) と OracleChrome は別プロファイル。cdp 経路の `collect --latest` は同一アカウントが前提
 
 ## 関連
 
 oracle 本体の罠 = memory `reference_oracle_gpt55pro_gate` / Work 枠切れ = `reference-oracle-work-weekly-limit` /
-Web ペイン仕様 = `~/cmux-for-linux-dev-master/docs/plans/2026-08-27-web-pane-chatgpt-requirements.md` / app 側の契約 = `references/app-side-web-read-spec.md` / 他タブ操作 = mycmux-bridge /
+Web ペイン仕様 = `~/cmux-for-linux-dev-master/docs/plans/2026-08-27-web-pane-chatgpt-requirements.md` / app 側の契約 = `references/app-side-web-read-spec.md` / 他ペイン操作 = mycmux-bridge /
 **ChatGPT からローカルの sandbox 1 フォルダを read/apply_patch** (局所 MCP・`ask --plugin oracmux-sandbox`・起動は `mcp/stack.py start`) = `references/local-mcp-sandbox.md`

@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ランチャー再設計モック — 2026-09-03 (確定案)</title>
+<style>
+:root {
+  /* mycmux src/global.css の実値 */
+  --cmux-bg: #0a0a0a;
+  --cmux-surface: #161616;
+  --cmux-popover: #262626;
+  --cmux-accent: #0A84FF;
+  --cmux-accent-text: #0A84FF;
+  --cmux-border: rgba(255, 255, 255, 0.1);
+  --cmux-border-hairline: rgba(255, 255, 255, 0.07);
+  --cmux-text: rgba(255, 255, 255, 0.9);
+  --cmux-text-secondary: rgba(255, 255, 255, 0.6);
+  --cmux-text-tertiary: rgba(255, 255, 255, 0.3);
+  --cmux-text-dim: rgba(255, 255, 255, 0.42);
+  --cmux-hover: rgba(255, 255, 255, 0.06);
+  --cmux-selected: rgba(255, 255, 255, 0.08);
+  --cmux-yellow: #f5c542;
+  --cmux-font-size-xs: 11px;
+  --cmux-font-size-sm: 12px;
+  --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Yu Gothic UI", sans-serif;
+  --mono: "UDEV Gothic NF", "UDEV Gothic", "JetBrains Mono", Consolas, monospace;
+
+  /* src/lib/agentKindColors.ts の KIND_COLORS 実値 */
+  --k-claude: #f0a878;
+  --k-codex: #8ab8e8;
+  --k-claude-codex: #7dcc97;
+  --k-grok: #f38ba8;
+  --k-antigravity: #4285f4;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: #050505; color: var(--cmux-text);
+  font-family: var(--ui); font-size: 13px; line-height: 1.6;
+  padding: 28px 24px 60px;
+}
+h1 { font-size: 19px; margin: 0 0 4px; font-weight: 620; }
+.lede { color: var(--cmux-text-secondary); font-size: 12px; margin: 0 0 6px; max-width: 940px; }
+.meta { color: var(--cmux-text-tertiary); font-size: 11px; margin: 0 0 26px; font-family: var(--mono); }
+b.hot { color: var(--cmux-text); }
+
+.stage { display: flex; gap: 40px; align-items: flex-start; flex-wrap: wrap; }
+.col > h2 { font-size: 13px; margin: 0 0 2px; font-weight: 620; }
+.col > .sub {
+  font-size: 11px; color: var(--cmux-text-secondary); margin: 0 0 10px;
+  max-width: 250px; line-height: 1.5; min-height: 46px;
+}
+.ruler {
+  width: 240px; border-top: 1px solid var(--cmux-accent);
+  color: var(--cmux-accent-text); font-size: 10px; font-family: var(--mono);
+  text-align: center; padding-top: 2px; margin-bottom: 6px; position: relative;
+}
+.ruler::before, .ruler::after {
+  content: ""; position: absolute; top: -4px; width: 1px; height: 8px; background: var(--cmux-accent);
+}
+.ruler::before { left: 0; } .ruler::after { right: 0; }
+
+/* ===== ペイン本体 (240 x 780 — 実機は ~1000px) ===== */
+.pane {
+  width: 240px; height: 780px; background: var(--cmux-surface);
+  border: 1px solid var(--cmux-border); border-radius: 6px;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.search {
+  flex: 0 0 auto; padding: 8px; border-bottom: 1px solid var(--cmux-border-hairline);
+  display: flex; align-items: center; gap: 7px;
+}
+.search > svg { flex: 0 0 auto; opacity: .45; }
+.search input {
+  flex: 1 1 auto; min-width: 0; background: transparent; border: 0; outline: 0;
+  color: var(--cmux-text); font-family: var(--ui); font-size: var(--cmux-font-size-sm); padding: 3px 0;
+}
+.search input::placeholder { color: var(--cmux-text-tertiary); }
+
+.body { flex: 1 1 auto; overflow-y: auto; padding: 2px 0 10px; }
+.body::-webkit-scrollbar { width: 8px; }
+.body::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 4px; }
+
+.sec-h {
+  font-size: var(--cmux-font-size-xs); color: var(--cmux-text-tertiary);
+  padding: 11px 10px 4px; display: flex; justify-content: space-between; align-items: baseline;
+}
+.sec-h .more { color: var(--cmux-text-dim); cursor: pointer; }
+.sec-h .more:hover { color: var(--cmux-accent-text); }
+
+.row {
+  display: flex; align-items: center; gap: 8px; padding: 5px 10px;
+  cursor: pointer; border-left: 2px solid transparent;
+}
+.row:hover { background: var(--cmux-hover); }
+.row.sel { background: var(--cmux-selected); border-left-color: var(--cmux-accent); }
+.txt { flex: 1 1 auto; min-width: 0; }
+.t1 { font-size: var(--cmux-font-size-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t2 {
+  font-size: var(--cmux-font-size-xs); color: var(--cmux-text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.when { flex: 0 0 auto; font-size: var(--cmux-font-size-xs); color: var(--cmux-text-tertiary); font-family: var(--mono); }
+mark { background: rgba(10,132,255,.28); color: #cfe6ff; border-radius: 2px; }
+
+/* ===== アイコン (AgentIcons.tsx の意匠をそのまま) ===== */
+.ic { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+      width: 16px; height: 16px; border: 1px solid transparent; border-radius: 5px; line-height: 0; }
+.ic svg { width: 13px; height: 13px; display: block; }
+.ic-claude       { background: rgba(217,119,87,.12); border-color: rgba(217,119,87,.30); }
+.ic-codex        { background: rgba(122,157,255,.10); border-color: rgba(122,157,255,.30); }
+.ic-claude-codex { background: rgba(125,204,151,.10); border-color: rgba(125,204,151,.30); }
+.ic-grok         { background: rgba(243,139,168,.10); border-color: rgba(243,139,168,.30); }
+.ic-agy          { background: rgba(66,133,244,.10); border-color: rgba(66,133,244,.30); }
+.ic-new          { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.14); }
+/* claude-codex = Claude と Codex の重ね (HybridAgentIcon と同じ作り) */
+.hybrid { position: relative; display: inline-block; width: 13px; height: 13px; }
+.hybrid svg { position: absolute; width: 9px; height: 9px; }
+.hybrid svg:first-child { left: 5%; top: 5%; }
+.hybrid svg:last-child { right: 5%; bottom: 5%; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 3px 10px 6px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--cmux-border); border-radius: 999px;
+  padding: 3px 9px 3px 4px; font-size: var(--cmux-font-size-xs);
+  color: var(--cmux-text-secondary); cursor: pointer; background: transparent; font-family: var(--ui);
+}
+.chip:hover { background: var(--cmux-hover); color: var(--cmux-text); border-color: rgba(255,255,255,.2); }
+.chip .ic { width: 17px; height: 17px; }
+
+.foot {
+  flex: 0 0 auto; border-top: 1px solid var(--cmux-border-hairline);
+  padding: 6px 10px; font-size: var(--cmux-font-size-xs); color: var(--cmux-text-dim);
+  display: flex; align-items: center; gap: 6px;
+}
+.foot .path {
+  font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--cmux-text-secondary);
+}
+.foot .swap { margin-left: auto; color: var(--cmux-text-tertiary); cursor: pointer; flex: 0 0 auto; }
+.foot .swap:hover { color: var(--cmux-accent-text); }
+.empty { padding: 18px 12px; font-size: 11px; color: var(--cmux-text-tertiary); text-align: center; }
+/* 日本語を含むので 11px 下限 (docs/design/typography-and-spacing.md)。
+   初版は 10px で、実装がそれを忠実に写して規約違反になった。 */
+.flat-note {
+  font-size: var(--cmux-font-size-xs); color: var(--cmux-accent-text); padding: 6px 10px 2px;
+  font-family: var(--mono); opacity: .8;
+}
+
+.tui {
+  width: 240px; height: 780px; background: #0a0a0a; border: 1px solid var(--cmux-border);
+  border-radius: 6px; padding: 8px 6px; font-family: var(--mono); font-size: 12px;
+  color: rgba(255,255,255,.78); overflow: hidden; white-space: pre; line-height: 1.45;
+}
+.tui .cur { color: #0a0a0a; background: rgba(255,255,255,.85); }
+.tui .ov { color: var(--cmux-yellow); }
+
+.note {
+  margin-top: 34px; padding: 14px 16px; border: 1px solid var(--cmux-border-hairline);
+  border-radius: 6px; background: var(--cmux-surface); max-width: 940px;
+}
+.note + .note { margin-top: 14px; }
+.note h3 { font-size: 12px; margin: 0 0 8px; color: var(--cmux-text-secondary); font-weight: 620; }
+.note ul { margin: 0; padding-left: 18px; font-size: 12px; color: var(--cmux-text-secondary); }
+.note li { margin-bottom: 5px; }
+.note code { font-family: var(--mono); font-size: 11px; color: var(--cmux-accent-text); }
+.note table { border-collapse: collapse; font-size: 11px; margin-top: 6px; }
+.note td { padding: 3px 12px 3px 0; color: var(--cmux-text-secondary); vertical-align: middle; }
+.note td:first-child { white-space: nowrap; }
+.warn { color: var(--cmux-yellow); }
+kbd {
+  font-family: var(--mono); font-size: 10px; border: 1px solid var(--cmux-border);
+  border-bottom-width: 2px; border-radius: 3px; padding: 1px 5px; color: var(--cmux-text-secondary);
+}
+</style>
+</head>
+<body>
+
+<!-- ===== アイコン定義 (src/components/icons/AgentIcons.tsx から) ===== -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="g-codex" x1="12" x2="12" y1="3" y2="21" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#b1a7ff"/><stop offset="50%" stop-color="#7a9dff"/><stop offset="100%" stop-color="#3941ff"/>
+    </linearGradient>
+    <linearGradient id="g-agy-x" x1="3" y1="12" x2="21" y2="12" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3087fa"/><stop offset="0.35" stop-color="#57b657"/>
+      <stop offset="0.6" stop-color="#f6863a"/><stop offset="0.8" stop-color="#e25652"/>
+      <stop offset="1" stop-color="#7b7bcc"/>
+    </linearGradient>
+    <linearGradient id="g-gemini" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4285f4"/><stop offset="0.5" stop-color="#9b72cb"/>
+      <stop offset="1" stop-color="#d96570"/>
+    </linearGradient>
+  </defs>
+
+  <symbol id="ic-claude" viewBox="0 0 24 24">
+    <path fill="#d97757" fill-rule="evenodd" clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0v-3.1h3V5h17.998zM6 10.949h1.488V8.102H6zm10.51 0H18V8.102h-1.49z"/>
+  </symbol>
+
+  <symbol id="ic-codex" viewBox="0 0 24 24">
+    <path fill="#fff" d="M19.503 0H4.496A4.496 4.496 0 0 0 0 4.496v15.007A4.496 4.496 0 0 0 4.496 24h15.007A4.496 4.496 0 0 0 24 19.503V4.496A4.496 4.496 0 0 0 19.503 0"/>
+    <path fill="url(#g-codex)" d="M9.064 3.344a4.6 4.6 0 0 1 2.285-.312q1.5.173 2.673 1.275.016.015.037.021a.1.1 0 0 0 .043 0 4.55 4.55 0 0 1 3.046.275l.047.022.116.057a4.58 4.58 0 0 1 2.188 2.399q.313.765.315 1.595a4.2 4.2 0 0 1-.134 1.223.12.12 0 0 0 .03.115q.89.91 1.183 2.17.433 2.138-.887 3.854l-.136.166a4.55 4.55 0 0 1-2.201 1.388.12.12 0 0 0-.081.076c-.191.551-.383 1.023-.74 1.494-.9 1.187-2.222 1.846-3.711 1.838q-1.78-.009-3.157-1.302a.11.11 0 0 0-.105-.024c-.388.125-.78.143-1.204.138a4.44 4.44 0 0 1-1.945-.466 4.54 4.54 0 0 1-1.61-1.335c-.152-.202-.303-.392-.414-.617a6 6 0 0 1-.37-.961 4.6 4.6 0 0 1-.014-2.298.1.1 0 0 0 .006-.056.1.1 0 0 0-.027-.048 4.5 4.5 0 0 1-1.034-1.651 3.9 3.9 0 0 1-.251-1.192 5.2 5.2 0 0 1 .141-1.6Q3.659 7.92 5.086 6.97q.318-.212.601-.33a6 6 0 0 1 .646-.227.1.1 0 0 0 .065-.066 4.5 4.5 0 0 1 .829-1.615 4.54 4.54 0 0 1 1.837-1.388m3.482 10.565a.637.637 0 0 0 0 1.272h3.636a.637.637 0 1 0 0-1.272zM8.462 9.23a.637.637 0 0 0-1.106.631l1.272 2.224-1.266 2.136a.636.636 0 1 0 1.095.649l1.454-2.455a.64.64 0 0 0 .005-.64z"/>
+  </symbol>
+
+  <symbol id="ic-grok" viewBox="0 0 24 24">
+    <rect width="24" height="24" rx="4.5" fill="#fff"/>
+    <g transform="translate(2.4 2.4) scale(.8)">
+      <path fill="#000" fill-rule="evenodd" clip-rule="evenodd" d="M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815"/>
+    </g>
+  </symbol>
+
+  <symbol id="ic-agy" viewBox="0 0 24 24">
+    <path d="M3 20.5 C8.5 19.5 9.5 6.5 12 6.5 C14.5 6.5 15.5 19.5 21 20.5" fill="none" stroke="url(#g-agy-x)" stroke-width="4.6" stroke-linecap="round"/>
+  </symbol>
+
+  <!-- 新規に用意が必要 (公式アセット未取得・近似) -->
+  <symbol id="ic-gemini" viewBox="0 0 24 24">
+    <path fill="url(#g-gemini)" d="M12 2c0 5.5 4.5 10 10 10-5.5 0-10 4.5-10 10 0-5.5-4.5-10-10-10 5.5 0 10-4.5 10-10z"/>
+  </symbol>
+  <symbol id="ic-nlm" viewBox="0 0 24 24">
+    <rect width="24" height="24" rx="5" fill="#1a73e8"/>
+    <path fill="#fff" d="M7 6h7l4 4v8a1.6 1.6 0 0 1-1.6 1.6H7A1.6 1.6 0 0 1 5.4 18V7.6A1.6 1.6 0 0 1 7 6zm6.6 1.6v3.2h3.2z" opacity=".92"/>
+  </symbol>
+</svg>
+
+<h1>ランチャー再設計 — 確定案 (実寸モック)</h1>
+<p class="lede">
+  幅 240px は実測値です。「モモスタ」ワークスペースが <code style="font-family:var(--mono);font-size:11px;color:var(--cmux-accent-text)">split_columns = [[7],[3],[2],[4],[5],[6],[0],[1]]</code> の横8分割・均等幅なので、1920px ディスプレイで 1 ペイン = 240px。高さは実機 ~1000px、モックは 780px。
+</p>
+<p class="lede">
+  検索欄は実際に動きます。<b class="hot">「モモ」「cmux」「東洋」「gpt」</b>などを打つと、<b class="hot">セクションの壁が消えて横断1本のリストに変わります</b>。何も打っていない状態では、宮崎さん指定の順 — 新規に起動 → Web → 開発 → 案件 → 続きから — でセクションが並びます。
+</p>
+<p class="meta">アイコンは src/components/icons/AgentIcons.tsx の実物 / 色は agentKindColors.ts の KIND_COLORS / 中身は実データ (launch-roots.txt の dev 28・anken 21)</p>
+
+<div class="stage">
+
+  <div class="col">
+    <h2>現行 (参考)</h2>
+    <p class="sub">bash の ANSI 描画。19項目フラット・スクロールなし・マウス不可。<span class="warn">黄色</span>= 240px で切れる部分。</p>
+    <div class="ruler">240px</div>
+    <div class="tui">
+  Launch:  [dir: C:\Users\miy<span class="ov">az\cmux-for-linux-dev-ma</span>
+
+<span class="cur">> 1. Claude Code</span>
+  2. Codex
+  3. claude-codex (Codex M<span class="ov">odels)</span>
+  4. Grok Build
+  5. claude-codex (Open Mo<span class="ov">dels)</span>
+  6. Antigravity (agy)
+  7. ChatGPT (Web)
+  8. Gemini (Web)
+  9. Grok (Web)
+  10. Claude.ai (Web)
+  11. NotebookLM (Web)
+  12. Claude Code (resume)
+  13. Codex (resume)
+  14. claude-codex (resume)
+  15. Grok Build (resume)
+  16. Custom...
+  17. Change directory (開発<span class="ov">)...</span>
+  18. Change directory (案件<span class="ov">)...</span>
+  19. Change directory (最近<span class="ov">・フォルダを辿る)...</span>
+
+  ^v: move   Enter/number: <span class="ov">select   ->/m: model   d:</span>
+</div>
+  </div>
+
+  <div class="col">
+    <h2>確定案 — 新規ペインの中身</h2>
+    <p class="sub">既定は指定順の5セクション。打った瞬間にセクションの壁が消えて、全カタログ横断の1本リストになる。</p>
+    <div class="ruler">240px</div>
+    <div class="pane">
+      <div class="search">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+        <input id="q" placeholder="打って探す / そのまま選ぶ" autocomplete="off" autofocus>
+      </div>
+      <div class="body" id="body"></div>
+      <div class="foot">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" style="opacity:.5;flex:0 0 auto"><path d="M1.5 4.5h5l1.5 2h6.5v7h-13z"/></svg>
+        <span class="path">cmux-for-linux-dev-master</span>
+        <span class="swap">変更</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="col" style="max-width:320px">
+    <h2>並び順の根拠</h2>
+    <p class="sub">2026-09-03 宮崎さん指定。</p>
+    <div class="note" style="margin-top:0;max-width:320px">
+      <ul style="padding-left:16px">
+        <li><b class="hot">新規に起動</b> — 新規ペインを開く動機の大半。最上段に置いて指を止めない</li>
+        <li><b class="hot">Web</b> — 起動の一種なので直下</li>
+        <li><b class="hot">開発</b> (28件) → <b class="hot">案件</b> (21件) — 起動先を変えてから起動する流れ</li>
+        <li><b class="hot">続きから</b> — 最下段。<kbd>Ctrl+P</kbd> の Open Resume と役割が重なるので、ここは直近数件のショートカットに留める</li>
+      </ul>
+    </div>
+    <div class="note" style="max-width:320px">
+      <h3>240px でのラベル短縮</h3>
+      <p style="font-size:11px;color:var(--cmux-text-secondary);margin:0 0 6px">アイコンが識別を担うぶん、チップの文字は削れる。<b class="hot">カタログ正本の項目名と、表示名は分けて持つ</b>。</p>
+      <table>
+        <tr><td><code>claude-codex (Codex Models)</code></td><td>→ claude-codex</td></tr>
+        <tr><td><code>claude-codex (Open Models)</code></td><td>→ cc (Open)</td></tr>
+        <tr><td><code>Antigravity (agy)</code></td><td>→ agy</td></tr>
+        <tr><td><code>Grok Build</code></td><td>→ Grok</td></tr>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<div class="note">
+  <h3>アイコンは既存資産で足りる — 足すのは2つだけ</h3>
+  <table>
+    <tr><td><span class="ic ic-claude"><svg><use href="#ic-claude"/></svg></span> Claude Code</td><td><code>ClaudeAgentIcon</code></td><td>既存</td></tr>
+    <tr><td><span class="ic ic-codex"><svg><use href="#ic-codex"/></svg></span> Codex</td><td><code>CodexAgentIcon</code></td><td>既存</td></tr>
+    <tr><td><span class="ic ic-claude-codex"><span class="hybrid"><svg><use href="#ic-claude"/></svg><svg><use href="#ic-codex"/></svg></span></span> claude-codex (2種)</td><td><code>HybridAgentIcon</code></td><td>既存 — Claude と Codex を重ねた合成。<b class="hot">自作ツールなのでこれが正しい</b></td></tr>
+    <tr><td><span class="ic ic-grok"><svg><use href="#ic-grok"/></svg></span> Grok Build</td><td><code>GrokAgentIcon</code></td><td>既存</td></tr>
+    <tr><td><span class="ic ic-agy"><svg><use href="#ic-agy"/></svg></span> Antigravity</td><td><code>AntigravityAgentIcon</code></td><td>既存</td></tr>
+    <tr><td><span class="ic ic-codex"><svg><use href="#ic-codex"/></svg></span> ChatGPT (Web)</td><td><code>CodexAgentIcon</code></td><td>流用 (同じ OpenAI マーク)</td></tr>
+    <tr><td><span class="ic ic-grok"><svg><use href="#ic-grok"/></svg></span> Grok (Web)</td><td><code>GrokAgentIcon</code></td><td>流用</td></tr>
+    <tr><td><span class="ic ic-claude"><svg><use href="#ic-claude"/></svg></span> Claude.ai (Web)</td><td><code>ClaudeAgentIcon</code></td><td>流用</td></tr>
+    <tr><td><span class="ic ic-new"><svg><use href="#ic-gemini"/></svg></span> Gemini (Web)</td><td class="warn">未</td><td class="warn">新規に用意する (モックは近似)</td></tr>
+    <tr><td><span class="ic ic-new"><svg><use href="#ic-nlm"/></svg></span> NotebookLM (Web)</td><td class="warn">未</td><td class="warn">新規に用意する (モックは近似)</td></tr>
+  </table>
+  <ul style="margin-top:10px">
+    <li><code>AgentKindIcon({ kind, size, chip })</code> が既にチップ描画まで持っているので、<b class="hot">ランチャーはこれを呼ぶだけでよい</b></li>
+    <li>Antigravity の意匠は Gemini 公式マークとは別物なので、Web の Gemini に流用しない</li>
+  </ul>
+</div>
+
+<div class="note">
+  <h3>既存 <kbd>Ctrl+P</kbd> (Open Resume) との棲み分け</h3>
+  <ul>
+    <li><code>src/components/CommandPalette/CrsmPalette.tsx</code> が既に実装済み。Fuse.js のファジー検索・kind フィルタ・cwd チップ・最大10,000件の仮想スクロール</li>
+    <li><code>CrsmSessionEntry</code> は <code>label</code> / <code>preview</code> / <code>last_activity</code> / <code>cwd</code> / <code>has_user_messages</code> を既に返す。<b class="hot">ランチャーの「続きから」はこの API を呼ぶだけでよい</b></li>
+    <li>当初あった <kbd>Ctrl+K</kbd> オーバーレイ案は取り下げ (2026-09-03)。将来案として、Open Resume 側に「新規に起動」を足す方向を残す</li>
+  </ul>
+</div>
+
+<script>
+const ICONS = {
+  claude:  '<span class="ic ic-claude"><svg><use href="#ic-claude"/></svg></span>',
+  codex:   '<span class="ic ic-codex"><svg><use href="#ic-codex"/></svg></span>',
+  hybrid:  '<span class="ic ic-claude-codex"><span class="hybrid"><svg><use href="#ic-claude"/></svg><svg><use href="#ic-codex"/></svg></span></span>',
+  grok:    '<span class="ic ic-grok"><svg><use href="#ic-grok"/></svg></span>',
+  agy:     '<span class="ic ic-agy"><svg><use href="#ic-agy"/></svg></span>',
+  gemini:  '<span class="ic ic-new"><svg><use href="#ic-gemini"/></svg></span>',
+  nlm:     '<span class="ic ic-new"><svg><use href="#ic-nlm"/></svg></span>',
+};
+
+/* launcher.sh の options 1-6 と同じ並び。表示名は 240px 向けに短縮 */
+const AGENTS = [
+  { id:'claude',    label:'Claude Code',  full:'Claude Code',                 icon:'claude' },
+  { id:'codex',     label:'Codex',        full:'Codex',                       icon:'codex'  },
+  { id:'cc-gpt',    label:'claude-codex', full:'claude-codex (Codex Models)', icon:'hybrid' },
+  { id:'cc-open',   label:'cc (Open)',    full:'claude-codex (Open Models)',  icon:'hybrid' },
+  { id:'grok',      label:'Grok',         full:'Grok Build',                  icon:'grok'   },
+  { id:'agy',       label:'agy',          full:'Antigravity (agy)',           icon:'agy'    },
+];
+const WEBS = [
+  { id:'chatgpt',    label:'ChatGPT',    full:'ChatGPT (Web)',    icon:'codex'  },
+  { id:'gemini',     label:'Gemini',     full:'Gemini (Web)',     icon:'gemini' },
+  { id:'grokweb',    label:'Grok',       full:'Grok (Web)',       icon:'grok'   },
+  { id:'claudeai',   label:'Claude.ai',  full:'Claude.ai (Web)',  icon:'claude' },
+  { id:'notebooklm', label:'NotebookLM', full:'NotebookLM (Web)', icon:'nlm'    },
+];
+const DEV = [
+  { label:'mycmux (master)' },
+  { label:'mulmoclaude-dev (並列エージェント管制塔)' },
+  { label:'ime-dev (自作IME)' },
+  { label:'mado-gyutto (窓ぎゅっと)' },
+  { label:'HTML Hub (旧html-editor拡張)' },
+];
+const ANKEN = [
+  { label:'駿台/モモスタ/数学', mark:'09/03' },
+  { label:'駿台/モモスタ/理科', mark:'09/03' },
+  { label:'駿台/モモスタ/00_資料', mark:'09/03' },
+  { label:'東洋食品工業短期大学/2027年度入試', mark:'09/03' },
+  { label:'東洋食品工業短期大学/2025年度入試', mark:'09/03' },
+];
+const SESSIONS = [
+  { icon:'claude', dir:'cmux-for-linux-dev-master', head:'ふと思ったのですが、chatGPTなどのwebページも表示できるように', when:'2分前' },
+  { icon:'claude', dir:'miyaz', head:'gemini(agy)がめっちゃ承認もとめてきてめんどくさいです', when:'14分前' },
+  { icon:'codex',  dir:'モモスタ/数学', head:'579群の採否を反映して残りのQ11を通してください', when:'1時間前' },
+  { icon:'hybrid', dir:'miyaz', head:'4003_東洋食品工業短期大学の依頼について 今年依頼されている科目と', when:'3時間前' },
+  { icon:'codex',  dir:'モモスタ/理科', head:'スライドの検査器をFAIL全数で回して台帳に落として', when:'昨日' },
+];
+
+const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function hl(text, q) {
+  const t = esc(text);
+  if (!q) return t;
+  const i = text.toLowerCase().indexOf(q.toLowerCase());
+  if (i < 0) return t;
+  return esc(text.slice(0,i)) + '<mark>' + esc(text.slice(i,i+q.length)) + '</mark>' + esc(text.slice(i+q.length));
+}
+const match = (q, ...f) => !q || f.join(' ').toLowerCase().includes(q.toLowerCase());
+const H = (t, more) => `<div class="sec-h"><span>${t}</span>${more?`<span class="more">${more}</span>`:''}</div>`;
+
+const rowSession = (s, q, sel) => `<div class="row${sel?' sel':''}">${ICONS[s.icon]}
+  <span class="txt"><span class="t1">${hl(s.dir,q)}</span><span class="t2">${hl(s.head,q)}</span></span>
+  <span class="when">${s.when}</span></div>`;
+
+const rowDir = (d, q, anken, sel) => `<div class="row${sel?' sel':''}">
+  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="${anken?'var(--k-claude)':'currentColor'}" stroke-width="1.4" style="opacity:.65;flex:0 0 auto"><path d="M1.5 4.5h5l1.5 2h6.5v7h-13z"/></svg>
+  <span class="txt"><span class="t1">${hl(d.label,q)}</span></span>
+  ${d.mark?`<span class="when">●${d.mark}</span>`:''}</div>`;
+
+const chips = (list, q) => `<div class="chips">` + list.filter(x => match(q, x.full, x.id))
+  .map(x => `<button class="chip" title="${esc(x.full)}">${ICONS[x.icon]}${esc(x.label)}</button>`).join('') + `</div>`;
+
+/* 既定: 指定順の5セクション / 検索時: 壁が消えて横断1本 */
+function render(q) {
+  if (!q) {
+    return H('新規に起動') + chips(AGENTS, '')
+      + H('Web') + chips(WEBS, '')
+      + H('開発', 'すべて (28)') + DEV.map(d => rowDir(d, '', false)).join('')
+      + H('案件', 'すべて (21)') + ANKEN.map(d => rowDir(d, '', true)).join('')
+      + H('続きから', 'すべて') + SESSIONS.map(s => rowSession(s, '', false)).join('');
+  }
+  const launch = AGENTS.concat(WEBS).filter(x => match(q, x.full, x.id));
+  const rows = [];
+  DEV.filter(d => match(q, d.label)).forEach(d => rows.push(rowDir(d, q, false)));
+  ANKEN.filter(d => match(q, d.label)).forEach(d => rows.push(rowDir(d, q, true)));
+  SESSIONS.filter(s => match(q, s.dir, s.head)).forEach(s => rows.push(rowSession(s, q, false)));
+
+  let h = '';
+  if (launch.length) h += H('新規に起動') + chips(AGENTS.concat(WEBS), q);
+  if (rows.length) {
+    h += `<div class="flat-note">— 横断 ${rows.length} 件 (セクションなし) —</div>`;
+    h += rows.map((r,i) => i === 0 ? r.replace('class="row"','class="row sel"') : r).join('');
+  }
+  return h || `<div class="empty">「${esc(q)}」に一致なし</div>`;
+}
+
+const input = document.getElementById('q'), body = document.getElementById('body');
+const draw = () => { body.innerHTML = render(input.value.trim()); };
+input.addEventListener('input', draw);
+draw();
+</script>
+</body>
+</html>

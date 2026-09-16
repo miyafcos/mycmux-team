@@ -1,4 +1,4 @@
-/* 配置図 = 方眼の地に部屋 (ペイン) を置く平面図。階層は枠でなく面の明度 3 段で作る:
+/* 配置図 = 方眼の地に部屋 (タブ) を置く平面図。階層は枠でなく面の明度 3 段で作る:
    panel = --cmux-bg / map = --cmux-surface / chip = --cmux-popover を実値で分離する。
    新規 --cmux-* トークンは足さない (tokenContract): ローカル --minimap-* 変数 +
    フォールバックと color-mix だけで組む。--minimap-agent = エージェント色 /
@@ -24,7 +24,7 @@
 .cmux-minimap-workspace-swatch { width: 8px; height: 8px; flex: none; border-radius: 2px; background: var(--minimap-ws); transform: rotate(45deg); }
 .cmux-minimap-workspace-name { min-width: 0; overflow: hidden; font-size: var(--cmux-font-size-md); font-weight: 600; letter-spacing: .01em; text-overflow: ellipsis; white-space: nowrap; }
 .cmux-minimap-workspace-summary { display: flex; align-items: center; gap: 6px; color: var(--cmux-text-tertiary); font-size: var(--cmux-font-size-xs); }
-/* 稼働ストリップ: タブ1本 = 5x10px の縦線。色=エージェント / 脈動=稼働 / 輪郭=返答待ち。
+/* 稼働ストリップ: ペイン1本 = 5x10px の縦線。色=エージェント / 脈動=稼働 / 輪郭=返答待ち。
    外側 1px リングはライト面で塗りが地に沈まないようにするためのもの。 */
 .cmux-minimap-workspace-strip { display: flex; align-items: center; gap: 3px; }
 .cmux-minimap-strip-tick { display: block; width: 5px; height: 10px; flex: none; border-radius: 1.5px; background: var(--minimap-agent, var(--cmux-text-tertiary)); box-shadow: 0 0 0 1px var(--minimap-marker-ring); }

@@ -27,7 +27,7 @@ function pane(id: string, tabIds: string[]): Pane {
     sessionId: tabs[0]?.sessionId ?? `session-${id}`,
     activeTabId: tabs[0]?.id ?? "",
     tabs,
-    label: `ペイン${id}`,
+    label: `タブ${id}`,
     cwd: tabs[0]?.cwd ?? "C:/work",
   };
 }
@@ -315,7 +315,7 @@ describe("Gate 3 grouping preview equivalence", () => {
 
   it("keeps the 100-tab preview median below 50ms", () => {
     const ids = Array.from({ length: 100 }, (_, index) => `t${index + 1}`);
-    const current = [workspace("ws-a", "百タブ", [ids])];
+    const current = [workspace("ws-a", "百ペイン", [ids])];
     seedStores(modules, current);
     const plan = planFor(modules, current, ids.slice(0, 50));
     const context = contextFor(current, "preview-performance");
@@ -385,7 +385,7 @@ describe("Gate 3 grouping preview equivalence", () => {
 
   it("keeps the 100-tab Undo invalidation watcher median below 20ms with restored scrollback", () => {
     const ids = Array.from({ length: 100 }, (_, index) => `watcher-t${index + 1}`);
-    const current = [workspace("ws-watcher", "復元済み百タブ", [ids])];
+    const current = [workspace("ws-watcher", "復元済み百ペイン", [ids])];
     current[0].panes[0].tabs.forEach((itemTab, tabIndex) => {
       itemTab.terminalSnapshot = Array.from(
         { length: 160 },

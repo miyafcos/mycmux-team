@@ -26,7 +26,7 @@ python ~/.claude/skills/oracmux/scripts/oracmux.py smoke [--engines a,b] [--with
 |---|---|---|
 | `PASS` | 全経路が生きている | そのまま使ってよい |
 | `FAIL` | 送れた/回収できたが合言葉が無い、または ask が異常終了 | `doctor --deep` でセレクタのズレを見る。run フォルダの `answer.md` と `progress.json` を読む |
-| `NEEDS HUMAN` | ログイン切れ・添付が表示されない・送信が受理されない | タブは残してある。ペインを見て人が直す |
+| `NEEDS HUMAN` | ログイン切れ・添付が表示されない・送信が受理されない | ペインは残してある。ペインを見て人が直す |
 
 exit: 0 = 全部 PASS / 1 = FAIL あり / 3 = 要人手あり / 7 = mycmux 外。台帳には `smoke_pass` / `smoke_fail` で残る。
 

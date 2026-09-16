@@ -252,7 +252,14 @@ function resolveDropTargetAtPoint(x: number, y: number, item: PaneDragItem): Pan
     return prioritizePaneHandoffDropTarget(Boolean(handoffElement), handoffTarget, null);
   }
 
-  const zone = resolvePaneDropZone(paneElement.getBoundingClientRect(), x, y);
+  const prior = usePaneDragStore.getState().target;
+  const previousZone = prior?.kind === "pane"
+    && prior.surface !== "minimap"
+    && prior.workspaceId === workspaceId
+    && prior.paneId === paneId
+    ? prior.zone
+    : "center";
+  const zone = resolvePaneDropZone(paneElement.getBoundingClientRect(), x, y, previousZone);
   const target = { kind: "pane" as const, workspaceId, paneId, zone };
   fallbackTarget = canDropTarget(item, target) ? target : null;
   return prioritizePaneHandoffDropTarget(Boolean(handoffElement), handoffTarget, fallbackTarget);

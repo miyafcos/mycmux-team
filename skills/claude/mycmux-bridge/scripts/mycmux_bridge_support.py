@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import time
+import unicodedata
 from typing import Any, Callable, Sequence
 
 DEFAULT_OBSERVATIONS = 5
@@ -128,6 +129,31 @@ class BridgeBase:
                 continue
             choice = self._validate_choices(ask, [answer])[0]
             answered[question] = [option_by_index(ask, choice)["label"]]
+            if ask.get("layout") == "preview":
+                # A digit only moves the cursor here; Enter selects. The move is
+                # skipped when the cursor already sits on the choice, and it is
+                # verified on screen before Enter goes.
+                current = ask
+                if option_by_index(current, choice).get("current") is not True:
+                    self._send_ask_digit(session_id, str(choice), state, prompt_hash)
+                    steps += 1
+                    state, _, current = self._await_ask_change(
+                        session_id, state, prompt_hash, "preview cursor movement")
+                    if current is None or option_by_index(current, choice).get("current") is not True:
+                        raise BridgeError("verification_unavailable", "preview cursor movement was not observed")
+                current_hash = ask_fingerprint(current)
+                self._send_ask_key(session_id, "enter", state, current_hash)
+                steps += 1
+                state, _, ask = self._await_ask_change(
+                    session_id,
+                    state,
+                    current_hash,
+                    "preview selection",
+                    allow_close=current["kind"] == "single",
+                )
+                if ask is None:
+                    return self._result("observed_delivered", session_id, "single AskUserQuestion resolved")
+                continue
             self._send_ask_digit(session_id, str(choice), state, prompt_hash)
             steps += 1
             state, _, ask = self._await_ask_change(
@@ -587,12 +613,51 @@ SIMPLE_HEADER = re.compile(r"^\s*☐\s+(.+)$")
 NUMBERED = re.compile(r"^(\d+)\.\s+(?:\[([ ✔])\]\s+)?(.+)$")
 FOOTER = re.compile(r"Enter to select")
 READY = re.compile(r"^Ready to submit your answers\?\s*$")
+# The preview layout (an option carries a `preview`, Claude Code 2.1.272): the
+# options sit in a 30-cell column with the highlighted option's preview framed
+# to their right, the footer gains "n to add notes", and a digit only moves the
+# cursor - Enter selects (measured on a real seat, 2026-09-15). pane.read trims
+# every row, so the frame is told apart by what a row starts with, and the
+# label by the column gap (padding plus a 4-cell gap: never fewer than 4 spaces).
+PREVIEW_FOOTER = re.compile(r"\bn to add notes\b")
+PREVIEW_ROW = re.compile(r"^(?:[┌│├└]|Notes:)")
+COLUMN_GAP = re.compile(r" {4,}")
+TRAILING_TICK = re.compile(r"\s*[✔✓]$")
+# A footer too long for the pane continues on the next row(s): only its own
+# chords, "·"-separated (e.g. "Esc to cancel" alone, 80 columns, 2026-09-15).
+FOOTER_CHORD = (r"(?:Enter to select|↑/↓ to navigate|Tab/Arrow keys to navigate|n to add notes"
+                r"|Tab to switch questions|ctrl\+g to edit in [^·]+?|Esc to cancel)")
+FOOTER_TAIL = re.compile(rf"^(?:·\s*)?{FOOTER_CHORD}(?:\s*·\s*{FOOTER_CHORD})*\s*·?$")
+
+
+def _wide(character: str) -> bool:
+    return unicodedata.east_asian_width(character) in {"W", "F"}
+
+
+def join_wrapped(left: str, right: str) -> str:
+    """Two rows of one wrapped label: CJK wraps mid-word, so no space is put back."""
+    if left and right and _wide(left[-1]) and _wide(right[0]):
+        return left + right
+    return f"{left} {right}".strip()
+
+
+def preview_column(line: str) -> str:
+    """The options column of one row of the preview layout, or "" for a preview row."""
+    if PREVIEW_ROW.match(line):
+        return ""
+    return COLUMN_GAP.split(line, 1)[0].rstrip()
+
+
 def scan_ask_question(lines: Sequence[str]) -> dict[str, Any] | None:
     normalized = [line.rstrip("\r ") for line in lines]
     footer_index = max((i for i, line in enumerate(normalized) if FOOTER.search(line)), default=-1)
-    if footer_index >= 0 and any(line.strip() for line in normalized[footer_index + 1 :]):
+    if footer_index >= 0 and any(
+        line.strip() and not FOOTER_TAIL.match(line.strip()) for line in normalized[footer_index + 1 :]
+    ):
         return None
     bound = footer_index if footer_index >= 0 else len(normalized)
+    footer_text = " ".join(line.strip() for line in normalized[footer_index:]) if footer_index >= 0 else ""
+    preview = PREVIEW_FOOTER.search(footer_text) is not None
     hits: list[tuple[int, dict[str, Any]]] = []
     for index, line in enumerate(normalized[:bound]):
         parsed = parse_ask_option(line)
@@ -664,7 +729,6 @@ def scan_ask_question(lines: Sequence[str]) -> dict[str, Any] | None:
         if tabs:
             kind = "tabbed"
         else:
-            footer_text = " ".join(normalized[footer_index : footer_index + 2])
             if footer_index < 0 or "↑/↓ to navigate" not in footer_text:
                 return None
             kind = "single"
@@ -679,6 +743,23 @@ def scan_ask_question(lines: Sequence[str]) -> dict[str, Any] | None:
     options: list[dict[str, Any]] = []
     for position, (line_index, parsed) in enumerate(cluster):
         end = cluster[position + 1][0] if position + 1 < len(cluster) else bound
+        if preview and kind != "review":
+            # No descriptions here: the rows beside and below an option are its
+            # label wrapped in the 30-cell column, or the preview frame.
+            cleaned = parse_ask_option(preview_column(normalized[line_index]))
+            if cleaned is None:
+                return None
+            label = cleaned["label"]
+            for line in normalized[line_index + 1 : end]:
+                if SEPARATOR.match(line):
+                    break
+                more = preview_column(line)
+                if more:
+                    label = join_wrapped(label, more)
+            parsed["label"] = TRAILING_TICK.sub("", label)
+            parsed["role"] = ask_role(parsed["label"])
+            options.append(parsed)
+            continue
         description = " ".join(
             line.strip()
             for line in normalized[line_index + 1 : end]
@@ -695,6 +776,8 @@ def scan_ask_question(lines: Sequence[str]) -> dict[str, Any] | None:
         "question": question,
         "options": options,
     }
+    if preview and kind != "review":
+        result["layout"] = "preview"
     if kind == "review":
         review_answers = parse_review_answers(normalized[open_separator + 1 : ready_index])
         if not review_answers:

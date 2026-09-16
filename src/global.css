@@ -1018,7 +1018,8 @@ div:focus-within > .tab-close-btn,
   animation: paneDropPreviewPulse 0.9s ease-in-out infinite;
 }
 
-.pane-drop-preview__label {
+.pane-drop-preview__label,
+.pane-drop-result__label {
   max-width: calc(100% - 18px);
   padding: 4px 8px;
   border: 1px solid color-mix(in srgb, var(--pane-dnd-color) 70%, white);
@@ -1041,8 +1042,7 @@ div:focus-within > .tab-close-btn,
   --pane-dnd-color: var(--cmux-dnd-tab);
 }
 
-.pane-drop-preview--source-pane,
-.pane-drop-preview--merge-pane {
+.pane-drop-preview--source-pane {
   --pane-dnd-color: var(--cmux-dnd-pane);
 }
 
@@ -1055,13 +1055,6 @@ div:focus-within > .tab-close-btn,
   height: 34px;
   border-bottom-width: 3px;
   background: color-mix(in srgb, var(--cmux-dnd-tab) 20%, transparent);
-}
-
-.pane-drop-preview--center.pane-drop-preview--merge-pane {
-  inset: 10px;
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--cmux-dnd-pane) 20%, transparent), transparent 42%),
-    color-mix(in srgb, var(--cmux-dnd-pane) 12%, transparent);
 }
 
 .pane-drop-preview--left,
@@ -1096,6 +1089,44 @@ div:focus-within > .tab-close-btn,
 
 .pane-drop-preview--split {
   border-style: dashed;
+}
+
+/*
+ * The pane/tab drag result, drawn over the layout at the size the drop will
+ * actually produce. Fixed, because a left/right split claims a whole column and
+ * a pane cannot paint outside its own box. It does not pulse: a still frame is
+ * easier to aim at than a breathing one.
+ */
+.pane-drop-result {
+  position: fixed;
+  z-index: 990;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid color-mix(in srgb, var(--pane-dnd-color) 82%, white);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--pane-dnd-color) 16%, transparent);
+  box-shadow: var(--cmux-shadow-dnd);
+  /* Only the move between zones is animated — the frame itself stays put. */
+  transition: left 80ms ease, top 80ms ease, width 80ms ease, height 80ms ease;
+}
+
+/* Dashed = a new tab gets cut; solid = the drop joins the tab under it. */
+.pane-drop-result--split {
+  border-style: dashed;
+}
+
+.pane-drop-result--merge {
+  border-style: solid;
+}
+
+.pane-drop-result--source-tab {
+  --pane-dnd-color: var(--cmux-dnd-tab);
+}
+
+.pane-drop-result--source-pane {
+  --pane-dnd-color: var(--cmux-dnd-pane);
 }
 
 .pane-tab-pill.is-savepoint-write-target {
@@ -1487,6 +1518,10 @@ div:focus-within > .tab-close-btn,
   .savepoint-write-preview__caret,
   .pane-tab-pill.is-savepoint-write-target {
     animation: none;
+  }
+
+  .pane-drop-result {
+    transition: none;
   }
 }
 

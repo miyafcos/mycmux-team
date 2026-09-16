@@ -1,4 +1,4 @@
-"""dispatch_send.py — 子タブへの状態検査・本文投入・Enter 1回をまとめる。
+"""dispatch_send.py — 子ペインへの状態検査・本文投入・Enter 1回をまとめる。
 
 epoch / attention id (JSON null を含む) / session revision / input revision を
 canonical state から取得し、bridge の構造化送信で本文の入力改訂番号を追跡する。

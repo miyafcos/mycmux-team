@@ -114,11 +114,47 @@ function previousColumnIndicesForSurvivors(
   return previousIndices;
 }
 
-export function columnsRequireBalancedWidths(
+/**
+ * Widths for a layout whose columns did not survive one-to-one — a split, or a
+ * pane moved between columns. A new column is cut out of the column it was
+ * dropped against, so it takes half of that column's width and every other
+ * column keeps the width the user dragged it to. Rebalancing all of them (what
+ * this used to do) threw away the whole layout on every single split.
+ *
+ * Widths are relative — fitLayoutSizes normalises them against the viewport —
+ * so the halves do not have to add up to anything in particular.
+ */
+function splitColumnWidths(
   previousColumns: string[][],
+  previousWidths: number[] | undefined,
   nextColumns: string[][],
-): boolean {
-  return previousColumnIndicesForSurvivors(previousColumns, nextColumns) === null;
+): number[] {
+  const usedIndices = new Set<number>();
+  const origins = nextColumns.map((column) => {
+    const index = bestPreviousColumnIndex(column, previousColumns, usedIndices);
+    if (index < 0) return null;
+    usedIndices.add(index);
+    return index;
+  });
+  // A column born from a split sits next to the column it was cut from, so it
+  // inherits that neighbour's origin and the two then share its width.
+  // ponytail: a column inserted between two others is charged to its left
+  // neighbour — the layout alone cannot say which side it was cut from. Thread
+  // the drop zone through from layoutMutation if that guess starts to matter.
+  const inherited: (number | null)[] = [];
+  for (let index = 0; index < origins.length; index += 1) {
+    inherited.push(origins[index] ?? inherited[index - 1] ?? origins[index + 1] ?? null);
+  }
+  const shares = new Map<number, number>();
+  for (const origin of inherited) {
+    if (origin === null) continue;
+    shares.set(origin, (shares.get(origin) ?? 0) + 1);
+  }
+  return inherited.map((origin) => {
+    if (origin === null) return DEFAULT_LAYOUT_SIZE;
+    const width = positiveSize(previousWidths?.[origin]) ?? DEFAULT_LAYOUT_SIZE;
+    return width / (shares.get(origin) ?? 1);
+  });
 }
 
 export function reconcileColumnWidths(
@@ -129,7 +165,7 @@ export function reconcileColumnWidths(
   if (nextColumns.length === 0) return undefined;
   const previousIndices = previousColumnIndicesForSurvivors(previousColumns, nextColumns);
   if (!previousIndices) {
-    return nextColumns.map(() => DEFAULT_LAYOUT_SIZE);
+    return splitColumnWidths(previousColumns, previousWidths, nextColumns);
   }
 
   const survivorWidths = previousIndices.map((previousIndex) =>

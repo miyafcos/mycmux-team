@@ -165,7 +165,7 @@ function planFor(distribution: Distribution): GroupingPlan {
   return {
     planId: `plan-${distribution.id}`,
     title: `性能案${distribution.id}`,
-    rationale: "100タブの描画データを決定的に測る",
+    rationale: "100ペインの描画データを決定的に測る",
     strategy: "project",
     groups: [
       {

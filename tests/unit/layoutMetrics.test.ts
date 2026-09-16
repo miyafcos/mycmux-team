@@ -29,12 +29,46 @@ describe("reconcileColumnWidths", () => {
     )).toEqual([1, 1]);
   });
 
-  it("balances all columns when a new column is added", () => {
+  // A split used to rebalance every column, so each one threw away the widths
+  // the user had dragged. It now only cuts the column the drop landed in.
+  it("cuts a new column out of the neighbour it was dropped against", () => {
     expect(reconcileColumnWidths(
       [["a"], ["b"]],
       [2, 5],
       [["a"], ["b"], ["new"]],
-    )).toEqual([1, 1, 1]);
+    )).toEqual([2, 2.5, 2.5]);
+  });
+
+  it("charges a column inserted between two others to its left neighbour", () => {
+    expect(reconcileColumnWidths(
+      [["a"], ["b"]],
+      [2, 5],
+      [["a"], ["new"], ["b"]],
+    )).toEqual([1, 1, 5]);
+  });
+
+  it("charges a leading new column to the neighbour on its right", () => {
+    expect(reconcileColumnWidths(
+      [["a"], ["b"]],
+      [2, 5],
+      [["new"], ["a"], ["b"]],
+    )).toEqual([1, 1, 5]);
+  });
+
+  it("splits evenly while the workspace still has no stored widths", () => {
+    expect(reconcileColumnWidths(
+      [["a"]],
+      undefined,
+      [["a"], ["new"]],
+    )).toEqual([0.5, 0.5]);
+  });
+
+  it("balances columns that share no pane with the previous layout", () => {
+    expect(reconcileColumnWidths(
+      [["a"]],
+      [3],
+      [["x"], ["y"]],
+    )).toEqual([1, 1]);
   });
 
   it("keeps outer widths when a new pane is added within an existing column", () => {
@@ -45,12 +79,12 @@ describe("reconcileColumnWidths", () => {
     )).toEqual([2, 5]);
   });
 
-  it("balances all columns when a pane moves into another previous column", () => {
+  it("keeps both widths when a pane moves into the next column", () => {
     expect(reconcileColumnWidths(
       [["a", "b"], ["c"]],
       [2, 5],
       [["a"], ["b", "c"]],
-    )).toEqual([1, 1]);
+    )).toEqual([2, 5]);
   });
 });
 

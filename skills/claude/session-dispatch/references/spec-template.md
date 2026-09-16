@@ -34,12 +34,12 @@ spawn される新しい Claude セッションへの初回プロンプト。子
 
 ## 自動検収 (machine gate)
 
-<自律完遂型なら必須。書けない (意味判断が要る) なら本節ごと削除 — その場合タブは自動 close されない>
+<自律完遂型なら必須。書けない (意味判断が要る) なら本節ごと削除 — その場合ペインは自動 close されない>
 
 auto_close: true
 
 ```verify
-# 1行=1コマンド (PowerShell)。全行 exit 0 で PASS → watcher がタブを自動 close する
+# 1行=1コマンド (PowerShell)。全行 exit 0 で PASS → watcher がペインを自動 close する
 if (-not (Test-Path -LiteralPath "<成果物のフルパス>")) { exit 1 }
 <照合スクリプト実行など。行数チェック例: if ((Get-Content <path> | Measure-Object -Line).Lines -ge 100) { exit 0 } else { exit 1 }>
 ```

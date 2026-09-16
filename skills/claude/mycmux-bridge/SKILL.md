@@ -1,17 +1,17 @@
 ---
 name: mycmux-bridge
-description: "Claude Code / claude-codex から mycmux の全 workspace・pane・tab・PTY session を列挙し、\n別タブの画面・canonical status を確認して安全に入力する。"
+description: "Claude Code / claude-codex から mycmux の全 workspace・pane・tab・PTY session を列挙し、\n別ペインの画面・canonical status を確認して安全に入力する。"
 metadata:
   triggers:
-    - "mycmux の他タブを見たい"
-    - "mycmux のタブ一覧"
+    - "mycmux の他ペインを見たい"
+    - "mycmux のペイン一覧"
     - "mycmux のセッション一覧"
-    - "別タブの画面を読んで"
-    - "○○タブの状態を見て"
-    - "○○タブへ伝えて"
-    - "ListAgents に出ないタブを探して"
+    - "別ペインの画面を読んで"
+    - "○○ペインの状態を見て"
+    - "○○ペインへ伝えて"
+    - "ListAgents に出ないペインを探して"
     - "mycmux の質問に答えて"
-  auto_apply: "mycmux 内で agent / session 一覧を求められ、ListAgents が空、または\n目的の mycmux タブを含まない場合。"
+  auto_apply: "mycmux 内で agent / session 一覧を求められ、ListAgents が空、または\n目的の mycmux ペインを含まない場合。"
 ---
 
 # mycmux bridge
@@ -56,7 +56,7 @@ python "~/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py" answer-ask --se
 ## resume 失敗の席 (already in use)
 
 - 画面に `Session ID … is already in use` が出ている席へは送らない。その席は目的の会話を持っていない。
-- 復帰手順: ①その席を `mycmux_agent_cli.py close-tab --session <PTY session_id>` で閉じる。②同じペインで生きている兄弟タブの PTY `session_id` を `--anchor-session` にして `mycmux_agent_cli.py spawn-tab --anchor-session <兄弟の PTY session_id> --target claude --resume-session <claude_session_id> --no-activate` を実行する (閉じた席を anchor にしない)。③`read` で会話の履歴が戻ったことを確認してから send する。`already in use` が画面に残る間は送らない。
+- 復帰手順: ①その席を `mycmux_agent_cli.py close-tab --session <PTY session_id>` で閉じる。②同じタブで生きている兄弟ペインの PTY `session_id` を `--anchor-session` にして `mycmux_agent_cli.py spawn-tab --anchor-session <兄弟の PTY session_id> --target claude --resume-session <claude_session_id> --no-activate` を実行する (閉じた席を anchor にしない)。③`read` で会話の履歴が戻ったことを確認してから send する。`already in use` が画面に残る間は送らない。
 - 前面を奪わない。spawn / spawn-tab は `--no-activate` を付ける。`--activate` は付けない。
 
 ## AskUserQuestion 契約

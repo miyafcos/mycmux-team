@@ -600,9 +600,9 @@ export function buildJudgePrompt(candidates: readonly SweepTab[], unnamed: reado
     tail: tab.tail.slice(-TAB_SWEEP_TAIL_LINES),
   }));
   return [
-    "次のタブを判定してください。",
+    "次のペインを判定してください。",
     "verdict は done_waiting（完了してプロンプト待機）、queued_input（未送信指示あり）、working（作業継続中）、unknown のいずれかです。",
-    "label が空のタブには cwd と tail から12文字以内の日本語ラベル案を付けてください（日本語基本。mycmux などの固有名詞はアルファベット可、一般語は日本語で）。",
+    "label が空のペインには cwd と tail から12文字以内の日本語ラベル案を付けてください（日本語基本。mycmux などの固有名詞はアルファベット可、一般語は日本語で）。",
     "出力は JSON 配列のみ。前後の説明文やコードフェンスは禁止です。",
     '[{"id":"...","verdict":"done_waiting|queued_input|working|unknown","label":"..."}]',
     JSON.stringify(payload),
@@ -615,15 +615,15 @@ export function buildNamingPrompt(groups: readonly NamingPaneGroup[]): string {
     tabs: group.tabs.map((tab) => ({ ...tab, tail: tab.tail.slice(-TAB_NAMING_TAIL_LINES) })),
   }));
   return [
-    "次のワークスペース内の全タブに体系的な名前を提案してください。",
+    "次のワークスペース内の全ペインに体系的な名前を提案してください。",
     "ラベルは日本語を基本にしてください。mycmux のようなプロジェクト名・製品名・ツール名の固有名詞はアルファベットのままで構いません。一般語のアルファベット（fix / build / review など）は日本語に置き換えてください。",
     "フォルダ名やコマンド名をそのまま写さず、作業内容を短い日本語に要約してください。短いほど良く、目安は12文字までです。",
-    "ペイン見出し（isPaneHead が true）は「領域 内容」の形にし、全角20文字以内にしてください。",
-    "同じ領域に属する別ペインは先頭語（領域）を共有してください。",
-    "従属タブ（isPaneHead が false）は「↳実行者 対象」の形にしてください。実行者は tail と作業フォルダから codex / claude / 合成 などを判断してください。",
+    "タブ見出し（isPaneHead が true）は「領域 内容」の形にし、全角20文字以内にしてください。",
+    "同じ領域に属する別タブは先頭語（領域）を共有してください。",
+    "従属ペイン（isPaneHead が false）は「↳実行者 対象」の形にしてください。実行者は tail と作業フォルダから codex / claude / 合成 などを判断してください。",
     "記号 + ＋ ' ` \" < > は使わないでください。",
     "出力は JSON 配列のみです。コードフェンスや説明文は禁止です。形式は [{\"id\":\"...\",\"label\":\"...\"}] です。",
-    "全タブに対して必ず1件ずつ返してください。",
+    "全ペインに対して必ず1件ずつ返してください。",
     JSON.stringify(payload),
   ].join("\n");
 }

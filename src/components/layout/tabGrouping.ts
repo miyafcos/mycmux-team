@@ -506,25 +506,25 @@ export function groupingPromptPayload(scan: GroupingScan) {
 export function buildGroupingPrompt(scan: GroupingScan): string {
   const payload = groupingPromptPayload(scan);
   return [
-    "次の全ワークスペースの生きているターミナルタブを、案件・役割ごとに再配置するプランを2〜3件作ってください。",
+    "次の全ワークスペースの生きているターミナルペインを、案件・役割ごとに再配置するプランを2〜3件作ってください。",
     "切り口の異なる案を並べてください。strategy は project / role / minimal_move / mixed のいずれかです。",
-    "タブは閉じません。PTY も殺しません。配置（ワークスペース・ペイン）だけを設計してください。",
+    "ペインは閉じません。PTY も殺しません。配置（ワークスペース・タブ）だけを設計してください。",
     "origin.parentTabId でつながる系譜クラスタは、特別な理由がなければ同じグループに残してください。",
     "ワークスペースは案件の厳密な境界ではなく、見渡す場所です。1案件=1ワークスペースに機械的に割らないでください。",
-    "1つのタブを2つ以上のグループに入れないでください。系譜クラスタを分けたくなったときも、どちらか一方のグループにだけ入れてください。",
-    "ただし性質の違うタブを同じワークスペースに混ぜないでください。起動失敗・エラー・要対応のタブは、正常に動いているタブとは別のワークスペースへ隔離してください。隔離用のワークスペースは1〜2タブでも構いません。",
-    "1ワークスペースは3〜8タブにしてください。3タブ未満のグループを作らないでください（隔離用ワークスペースだけが例外です）。3タブに満たない案件は、性質の近い他の小案件と同じワークスペースへまとめ、列で分け、グループ名は「国語課+雑務」のように両方を書いてください。大きな案件だけ独立したワークスペースにしてください。",
-    "どのグループにも収まらないタブは、省略せず unassignedTabIds に入れてください。サイズを整えるためにタブを落とすことは禁止です。",
+    "1つのペインを2つ以上のグループに入れないでください。系譜クラスタを分けたくなったときも、どちらか一方のグループにだけ入れてください。",
+    "ただし性質の違うペインを同じワークスペースに混ぜないでください。起動失敗・エラー・要対応のペインは、正常に動いているペインとは別のワークスペースへ隔離してください。隔離用のワークスペースは1〜2ペインでも構いません。",
+    "1ワークスペースは3〜8ペインにしてください。3ペイン未満のグループを作らないでください（隔離用ワークスペースだけが例外です）。3ペインに満たない案件は、性質の近い他の小案件と同じワークスペースへまとめ、列で分け、グループ名は「国語課+雑務」のように両方を書いてください。大きな案件だけ独立したワークスペースにしてください。",
+    "どのグループにも収まらないペインは、省略せず unassignedTabIds に入れてください。サイズを整えるためにペインを落とすことは禁止です。",
     "どの strategy の案も、この見やすいサイズを守ってください。",
-    "レイアウトは列で分けます。1つの列にペインを2つ以上重ねてよいのは、上が親（母艦・指揮側）で下がその子（worker）のときだけです。それ以外は必ず列を増やしてください。ペインを重ねた列が、その案の列数の3分の1を超えないようにしてください。",
-    "同じ役割で関連の深いタブは、ペインを分けず1つのペインの tabIds にまとめて裏タブとして重ねてください。",
-    "親子関係は階層で表現してください。親（母艦・指揮側）のペインを列の一番上に置き、子（worker）はその下のペインか、親と同じペインの裏タブに入れてください。",
+    "レイアウトは列で分けます。1つの列にタブを2つ以上重ねてよいのは、上が親（母艦・指揮側）で下がその子（worker）のときだけです。それ以外は必ず列を増やしてください。タブを重ねた列が、その案の列数の3分の1を超えないようにしてください。",
+    "同じ役割で関連の深いペインは、タブを分けず1つのタブの tabIds にまとめて裏ペインとして重ねてください。",
+    "親子関係は階層で表現してください。親（母艦・指揮側）のタブを列の一番上に置き、子（worker）はその下のタブか、親と同じタブの裏ペインに入れてください。",
     "名前は日本語が基本です。固有名詞（mycmux / Claude / Codex など）はアルファベットのままで構いません。fix / build / review / server のような一般英単語は日本語にしてください。ツール名をカタカナへ無理に直さないでください。短く（目安20文字以内）。",
     "pane.role は mother / worker / review / mixed / unspecified のみです。warnings は {code, tabIds, message} の配列で、code は LOW_CONFIDENCE / MIXED_PROJECT / UNCLEAR_ROLE / EXISTING_WORKSPACE_CONFLICT のみです。",
-    "各プランで、渡した全タブが groups または unassignedTabIds のどこかに正確に1回だけ現れるようにしてください。タブを1つでも省略した案は使えません。",
-    "disposition=keep のグループは destination.kind を current_locations、layout を null にし、残すタブを tabIds に列挙してください。",
-    "disposition=reorganize のグループは layout を必須にし、空の列・空のペインは禁止です。列は最大4、1列あたりペインは最大4です。",
-    "既存ワークスペースへの合流は、既存タブを動かさず末尾に新しい列を足す前提で書いてください。",
+    "各プランで、渡した全ペインが groups または unassignedTabIds のどこかに正確に1回だけ現れるようにしてください。ペインを1つでも省略した案は使えません。",
+    "disposition=keep のグループは destination.kind を current_locations、layout を null にし、残すペインを tabIds に列挙してください。",
+    "disposition=reorganize のグループは layout を必須にし、空の列・空のタブは禁止です。列は最大4、1列あたりタブは最大4です。",
+    "既存ワークスペースへの合流は、既存ペインを動かさず末尾に新しい列を足す前提で書いてください。",
     "出力は JSON オブジェクトのみです。コードフェンス、説明文、末尾の感想は禁止です。",
     '形式: {"schemaVersion":1,"plans":[{"planId":"...","title":"...","rationale":"...","strategy":"project","groups":[{"groupId":"...","title":"...","disposition":"reorganize","destination":{"kind":"new_workspace","proposedName":"..."},"layout":{"columns":[{"panes":[{"title":"...","role":"mother","tabIds":["..."]}]}]},"tabIds":["..."]}],"unassignedTabIds":[],"warnings":[]}]}',
     JSON.stringify(payload),
@@ -575,16 +575,16 @@ function parseLayout(value: unknown): GroupingLayout | string {
   for (const columnValue of value.columns) {
     if (!isObject(columnValue) || !Array.isArray(columnValue.panes)) return "layout の列が不正です";
     if (columnValue.panes.length === 0) return "空の列は禁止です";
-    if (columnValue.panes.length > TAB_GROUPING_MAX_PANES_PER_COLUMN) return "1列あたりのペイン数が上限を超えています";
+    if (columnValue.panes.length > TAB_GROUPING_MAX_PANES_PER_COLUMN) return "1列あたりのタブ数が上限を超えています";
     const panes: GroupingLayoutPane[] = [];
     for (const paneValue of columnValue.panes) {
-      if (!isObject(paneValue)) return "layout のペインが不正です";
+      if (!isObject(paneValue)) return "layout のタブが不正です";
       const title = asString(paneValue.title)?.trim() ?? "";
-      if (!isJapaneseGroupingName(title)) return "ペイン名が不正です";
+      if (!isJapaneseGroupingName(title)) return "タブ名が不正です";
       if (typeof paneValue.role !== "string" || !ROLES.has(paneValue.role as GroupingPaneRole)) {
         return "pane.role が不正です";
       }
-      if (!Array.isArray(paneValue.tabIds) || paneValue.tabIds.length === 0) return "空のペインは禁止です";
+      if (!Array.isArray(paneValue.tabIds) || paneValue.tabIds.length === 0) return "空のタブは禁止です";
       if (paneValue.tabIds.some((id) => typeof id !== "string" || !id.trim())) return "pane.tabIds が不正です";
       panes.push({
         title,
@@ -610,7 +610,7 @@ function parseWarnings(value: unknown, allowedTabIds: ReadonlySet<string>): Grou
       return "warning.tabIds が不正です";
     }
     const tabIds = entry.tabIds.map((id) => id.trim());
-    if (tabIds.some((id) => !allowedTabIds.has(id))) return "warning が未知のタブを参照しています";
+    if (tabIds.some((id) => !allowedTabIds.has(id))) return "warning が未知のペインを参照しています";
     warnings.push({
       code: entry.code as GroupingWarningCode,
       tabIds,
@@ -656,7 +656,7 @@ function parseGroup(
     if (!Array.isArray(value.tabIds) || value.tabIds.length === 0) return "keep グループの tabIds が空です";
     if (value.tabIds.some((id) => typeof id !== "string" || !id.trim())) return "keep グループの tabIds が不正です";
     const tabIds = value.tabIds.map((id) => id.trim());
-    if (tabIds.some((id) => !allowedTabIds.has(id))) return "keep グループが未知のタブを含みます";
+    if (tabIds.some((id) => !allowedTabIds.has(id))) return "keep グループが未知のペインを含みます";
     return {
       groupId,
       title,
@@ -675,14 +675,14 @@ function parseGroup(
   const layout = parseLayout(value.layout);
   if (typeof layout === "string") return layout;
   const tabIds = flattenLayoutTabIds(layout);
-  if (tabIds.some((id) => !allowedTabIds.has(id))) return "layout が未知のタブを含みます";
+  if (tabIds.some((id) => !allowedTabIds.has(id))) return "layout が未知のペインを含みます";
   if (value.tabIds !== undefined) {
     if (!Array.isArray(value.tabIds) || value.tabIds.some((id) => typeof id !== "string" || !id.trim())) {
       return "group.tabIds が不正です";
     }
     const explicit = value.tabIds.map((id) => id.trim());
     if ([...explicit].sort().join("\0") !== [...tabIds].sort().join("\0")) {
-      return "group.tabIds と layout のタブが一致しません";
+      return "group.tabIds と layout のペインが一致しません";
     }
   }
   return {
@@ -734,7 +734,7 @@ function parsePlan(
     return "unassignedTabIds が不正です";
   }
   const unassignedTabIds = value.unassignedTabIds.map((id) => id.trim());
-  if (unassignedTabIds.some((id) => !allowedTabIds.has(id))) return "unassignedTabIds が未知のタブを含みます";
+  if (unassignedTabIds.some((id) => !allowedTabIds.has(id))) return "unassignedTabIds が未知のペインを含みます";
 
   const appearances = new Map<string, number>();
   const note = (id: string) => appearances.set(id, (appearances.get(id) ?? 0) + 1);
@@ -748,12 +748,12 @@ function parsePlan(
   const missing: string[] = [];
   for (const id of allowedTabIds) {
     const count = appearances.get(id) ?? 0;
-    if (count > 1) return `タブ ${id} の出現回数が1ではありません`;
+    if (count > 1) return `ペイン ${id} の出現回数が1ではありません`;
     if (count === 0) missing.push(id);
   }
   unassignedTabIds.push(...missing);
   for (const id of appearances.keys()) {
-    if (!allowedTabIds.has(id)) return `未知のタブ ${id}`;
+    if (!allowedTabIds.has(id)) return `未知のペイン ${id}`;
   }
 
   const warnings = parseWarnings(value.warnings, allowedTabIds);

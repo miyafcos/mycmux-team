@@ -34,8 +34,7 @@ import { openPathWithDefaultApp, revealPathInExplorer } from "../../lib/ipc";
 import { isArtifactPreviewUri, isDirectoryLikeUri } from "../terminal/terminalLinkProvider";
 import { focusController } from "../../lib/focusController";
 import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
-import { usePaneDragStore, type PaneDragItem, type PaneDropTarget } from "../../stores/paneDragStore";
-import { useDetachedDockStore } from "../../stores/detachedDockStore";
+import { usePaneDragStore } from "../../stores/paneDragStore";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { resolveLiveSavepointTargetKind, savepointTargetLabel } from "../../lib/savepointHandoff";
 import { resolvePaneHandoffEligibility } from "../../lib/paneHandoff";
@@ -248,22 +247,6 @@ function getDocumentSelectionText(): string {
   return selection?.toString().trim() ?? "";
 }
 
-function getDropPreviewLabel(
-  item: PaneDragItem,
-  target: Exclude<PaneDropTarget, { kind: "handoff" | "tab-index" }>,
-): string {
-  if (target.kind === "new-workspace") {
-    return paneDndStrings.moveToNewWorkspace;
-  }
-  if (target.kind === "new-window") {
-    return paneDndStrings.dropInNewWindow;
-  }
-  if (target.zone === "center") {
-    return item.kind === "tab" ? paneDndStrings.attachTab : paneDndStrings.mergePane;
-  }
-  return paneDndStrings.split[target.zone];
-}
-
 export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitRight, onSplitDown }: TerminalPaneProps) {
   const [testProfile, setTestProfile] = useState<string | null | undefined>(undefined);
   useEffect(() => {
@@ -284,14 +267,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const isPaneVisible = activeWorkspaceId === workspaceId
     && (zoomedPaneId === null || isZoomed);
   const dragItem = usePaneDragStore((s) => s.item);
-  const dropTarget = usePaneDragStore((s) =>
-    s.target?.kind === "pane" && s.target.workspaceId === workspaceId && s.target.paneId === pane.id
-      ? s.target
-      : null,
-  );
-  const detachedDropZone = useDetachedDockStore((state) =>
-    state.target?.kind === "pane-zone" && state.target.workspaceId === workspaceId && state.target.paneId === pane.id
-      ? state.target.zone : null);
   const handoffDropTarget = usePaneDragStore((s) =>
     s.target?.kind === "handoff"
       && s.target.workspaceId === workspaceId
@@ -765,22 +740,9 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     }
     return env;
   }, [activeTab, launchThroughLauncher, pane.launchEnv, resolvedAgentId, savedAgentSession]);
-  const previewZone = dropTarget && dragItem ? dropTarget.zone : detachedDropZone;
-  const previewKind = dropTarget && dragItem ? dragItem.kind : "tab";
-  const dropPreviewClass = previewZone
-    ? [
-        "pane-drop-preview",
-        `pane-drop-preview--${previewZone}`,
-        previewZone === "center"
-          ? (previewKind === "tab" ? "pane-drop-preview--attach-tab" : "pane-drop-preview--merge-pane")
-          : "pane-drop-preview--split",
-        `pane-drop-preview--source-${previewKind}`,
-      ].join(" ")
-    : null;
-  const dropPreviewLabel = dropTarget && dragItem
-    ? getDropPreviewLabel(dragItem, dropTarget)
-    : detachedDropZone === "center" ? paneDndStrings.attachTab
-      : detachedDropZone ? paneDndStrings.split[detachedDropZone] : null;
+  // Every drop preview - a pane/tab drag and a detached window coming back -
+  // is drawn at the result's real size by PaneDragOverlay. A pane cannot paint
+  // outside its own box, so it could never show a column-wide split.
 
   return (
     <div
@@ -988,13 +950,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
             }}
           />
         </ErrorBoundary>
-      )}
-      {dropPreviewClass && (
-        <div className={dropPreviewClass}>
-          {dropPreviewLabel && (
-            <span className="pane-drop-preview__label">{dropPreviewLabel}</span>
-          )}
-        </div>
       )}
       {savepointDropTarget?.mode === "paste" && savepointDropTarget.tabId === activeTab?.id && (
         <div className="savepoint-write-preview">

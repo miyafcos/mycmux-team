@@ -237,7 +237,7 @@ describe("LayoutMinimapPanel", () => {
   });
 
   it("keeps four equal columns in their screen geometry without horizontal scrolling when expanded", async () => {
-    const labels = ["第一タブ名", "第二タブ名", "第三タブ名", "第四タブ名"];
+    const labels = ["第一ペイン名", "第二ペイン名", "第三ペイン名", "第四ペイン名"];
     const workspace: Workspace = { id: "ws", name: "4列", gridTemplateId: "1x1", status: "running", createdAt: 1,
       panes: labels.map((label, index) => pane(`pane-${index}`, [{ ...tab(`tab-${index}`), label }])),
       splitColumns: [["pane-0"], ["pane-1"], ["pane-2"], ["pane-3"]] };

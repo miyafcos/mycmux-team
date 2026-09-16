@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { emit } from "@tauri-apps/api/event";
-import { DETACHED_DRAG_EVENT, type DetachedDragPayload } from "../../stores/detachedDockStore";
+import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
+import { TEAR_OUT_DRAG_THRESHOLD_PX } from "../../lib/tearOutDiagnostics";
+import {
+  DETACHED_DRAG_EVENT,
+  WINDOW_DRAG_EVENT,
+  type DetachedDragPayload,
+  type WindowDragSample,
+} from "../../stores/detachedDockStore";
 import XTermWrapper, { evictTerminalCache } from "../terminal/XTermWrapper";
 import LauncherPane from "../workspace/LauncherPane";
 import BrowserPane from "../workspace/BrowserPane";
@@ -94,10 +101,8 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
     const band = bandRef.current!;
     const child = getCurrentWindow();
     type Point = { x: number; y: number };
-    let drag: { pointerId: number; start: Point; latest: Point; origin?: Point; offset?: Point } | null = null;
-    let frame: number | null = null;
-    // Serialize native moves so Escape's restoration always runs last.
-    let moves = Promise.resolve();
+    let dragging = false;
+    let unlisten: UnlistenFn | undefined;
     let events = Promise.resolve();
     const broadcast = (phase: DetachedDragPayload["phase"], point: Point) => {
       const payload: DetachedDragPayload = { label: child.label, workspaceId: workspace.id,
@@ -105,70 +110,130 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
       events = events.then(() => emit(DETACHED_DRAG_EVENT, payload))
         .catch((reason) => setError(String(reason)));
     };
+
+    /*
+     * Windows moves the window itself, so its edge snap is the real one - no
+     * imitation matches it, and a hand-rolled version read as wrong however
+     * closely it was tuned (2026-09-16). The cost is that no pointer events
+     * reach this page for the rest of the drag, so the backend polls the cursor
+     * and sends it back. Chromium does exactly this for a torn-out tab.
+     *
+     * Where that poll is unavailable (macOS, until Core Graphics is a
+     * dependency) the window is moved from pointer events as before: no OS
+     * snap, but dropping it back into the main window still works.
+     */
+    let manual: { pointerId: number; start: Point; latest: Point; origin?: Point; offset?: Point } | null = null;
+    let frame: number | null = null;
+    let moves = Promise.resolve();
     const position = (point: Point) => {
       moves = moves.then(() => child.setPosition(new LogicalPosition(point.x, point.y)))
         .catch((reason) => setError(String(reason)));
     };
-    const cancelPendingMove = () => {
+    const flushManual = () => {
+      frame = null;
+      if (!manual?.offset) return;
+      position({ x: manual.latest.x - manual.offset.x, y: manual.latest.y - manual.offset.y });
+      broadcast("move", manual.latest);
+    };
+    const finishManual = (cancel: boolean) => {
+      if (!manual) return;
       if (frame !== null) cancelAnimationFrame(frame);
       frame = null;
-    };
-    const flushMove = () => {
-      frame = null;
-      if (!drag?.offset) return;
-      position({ x: drag.latest.x - drag.offset.x, y: drag.latest.y - drag.offset.y });
-      broadcast("move", drag.latest);
-    };
-    const finish = (cancel: boolean) => {
-      if (!drag) return;
-      cancelPendingMove();
-      if (cancel && drag.origin) position(drag.origin);
-      broadcast(cancel ? "cancel" : "end", drag.latest);
-      const pointerId = drag.pointerId;
-      drag = null;
+      if (cancel && manual.origin) position(manual.origin);
+      broadcast(cancel ? "cancel" : "end", manual.latest);
+      const pointerId = manual.pointerId;
+      manual = null;
+      dragging = false;
       try {
         if (band.hasPointerCapture(pointerId)) band.releasePointerCapture(pointerId);
       } catch {
         // Capture can already be gone when the pointer left with the window.
       }
     };
-    const down = (event: PointerEvent) => {
-      if (drag || event.button !== 0 || (event.target as Element).closest("button")) return;
-      event.preventDefault();
+    const beginManual = (event: PointerEvent) => {
       const current = { pointerId: event.pointerId,
         start: { x: event.screenX, y: event.screenY }, latest: { x: event.screenX, y: event.screenY } };
-      drag = current;
+      manual = current;
       try {
         band.setPointerCapture(event.pointerId);
       } catch {
         // Non-critical; the window follows the cursor, so the band keeps
         // receiving the move stream even without capture.
       }
-      broadcast("start", current.start);
       void Promise.all([child.outerPosition(), child.scaleFactor()]).then(([outer, scale]) => {
-        if (drag !== current) return;
-        drag.origin = { x: outer.x / scale, y: outer.y / scale };
-        drag.offset = { x: current.start.x - drag.origin.x, y: current.start.y - drag.origin.y };
-        if (frame === null) frame = requestAnimationFrame(flushMove);
-      }).catch((reason) => { if (drag === current) finish(true); setError(String(reason)); });
+        if (manual !== current) return;
+        manual.origin = { x: outer.x / scale, y: outer.y / scale };
+        manual.offset = { x: current.start.x - manual.origin.x, y: current.start.y - manual.origin.y };
+        if (frame === null) frame = requestAnimationFrame(flushManual);
+      }).catch((reason) => { if (manual === current) finishManual(true); setError(String(reason)); });
+    };
+
+    const stopWatching = () => {
+      unlisten?.();
+      unlisten = undefined;
+      dragging = false;
+    };
+    const down = (event: PointerEvent) => {
+      if (dragging || event.button !== 0 || (event.target as Element).closest("button")) return;
+      event.preventDefault();
+      dragging = true;
+      const start = { x: event.screenX, y: event.screenY };
+      broadcast("start", start);
+      void listen<WindowDragSample>(WINDOW_DRAG_EVENT, ({ payload }) => {
+        if (!dragging || manual) return;
+        if (payload.done) {
+          // A click on the band is not a drag. Without this floor, pressing the
+          // header while the window happens to overlap the main one docks it
+          // instantly, because the button comes up before anything has moved.
+          const moved = Math.hypot(payload.x - start.x, payload.y - start.y);
+          broadcast(moved >= TEAR_OUT_DRAG_THRESHOLD_PX ? "end" : "cancel",
+            { x: payload.x, y: payload.y });
+          stopWatching();
+          return;
+        }
+        broadcast("move", { x: payload.x, y: payload.y });
+      }).then((off) => {
+        if (dragging) unlisten = off;
+        else off();
+      }).catch((reason) => setError(String(reason)));
+      // Start the poll before the move loop: once the OS owns the drag this
+      // page stops being scheduled reliably, and a command issued then can sit
+      // unsent until the button comes up.
+      void invoke<boolean>("watch_window_drag")
+        .then((tracked) => {
+          if (!dragging) return;
+          if (!tracked) {
+            stopWatching();
+            dragging = true;
+            beginManual(event);
+            return;
+          }
+          return child.startDragging();
+        })
+        .catch((reason) => {
+          broadcast("cancel", start);
+          stopWatching();
+          setError(String(reason));
+        });
     };
     const move = (event: PointerEvent) => {
-      if (drag?.pointerId !== event.pointerId) return;
-      drag.latest = { x: event.screenX, y: event.screenY };
-      if (frame === null) frame = requestAnimationFrame(flushMove);
+      if (manual?.pointerId !== event.pointerId) return;
+      manual.latest = { x: event.screenX, y: event.screenY };
+      if (frame === null) frame = requestAnimationFrame(flushManual);
     };
     const up = (event: PointerEvent) => {
-      if (drag?.pointerId !== event.pointerId) return;
-      drag.latest = { x: event.screenX, y: event.screenY };
-      cancelPendingMove();
-      if (drag.offset) position({ x: drag.latest.x - drag.offset.x, y: drag.latest.y - drag.offset.y });
-      finish(false);
+      if (manual?.pointerId !== event.pointerId) return;
+      manual.latest = { x: event.screenX, y: event.screenY };
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = null;
+      if (manual.offset) position({ x: manual.latest.x - manual.offset.x, y: manual.latest.y - manual.offset.y });
+      finishManual(false);
     };
     const cancel = (event: PointerEvent) => {
-      if (drag?.pointerId === event.pointerId) finish(true);
+      if (manual?.pointerId === event.pointerId) finishManual(true);
     };
     const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && drag) { event.preventDefault(); finish(true); }
+      if (event.key === "Escape" && manual) { event.preventDefault(); finishManual(true); }
     };
     band.addEventListener("pointerdown", down);
     band.addEventListener("pointermove", move);
@@ -177,7 +242,9 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
     band.addEventListener("lostpointercapture", cancel);
     window.addEventListener("keydown", escape);
     return () => {
-      finish(true);
+      if (manual) finishManual(true);
+      else if (dragging) broadcast("cancel", { x: 0, y: 0 });
+      stopWatching();
       band.removeEventListener("pointerdown", down);
       band.removeEventListener("pointermove", move);
       band.removeEventListener("pointerup", up);

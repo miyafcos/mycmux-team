@@ -1,0 +1,23 @@
+# Root-relative, case-sensitive globs. Reasons reference audit categories.
+# Runtime sources, skills, README files and licenses stay for later scrubbing.
+docs/plans/** # internal_operations; D7 private plans and review records
+docs/history/** # internal_operations,embedded_binary; D7 development history
+CLAUDE.md # internal_operations,self_name,user_home; D7 private agent instructions
+CONTEXT.md # internal_operations,account_id; D7 private business context
+package-source-*.txt # organization,self_name,user_home; D7 private source-package notes
+docs/mail-*.md # organization,account_id,internal_operations; D7 company mail design
+docs/qa/*.xlsx # binary_filename; D7 private QA workbook
+docs/qa/** # user_home,self_name,bundle_identifier; private QA scripts and evidence
+docs/DEPLOY.md # user_home,public_repository; private deployment runbook
+docs/current-state.md # user_home,self_name; private development status
+docs/adr/** # self_name,internal_operations; private decision records
+docs/design/2026-08-20-light-theme-system.md # self_name,user_home; private dated implementation design
+docs/design/wallpaper-on-demand.md # public_repository; private distribution design
+docs/dormancy-churn-20260731.md # user_home; private dated investigation
+docs/mobile-chat-design-260829.md # self_name,cloud_path,internal_operations; private implementation design
+docs/performance/** # user_home,self_name; private machine measurements
+docs/portable-pty-maintenance.md # user_home; private maintenance runbook
+docs/features/pending/** # internal_operations; D7 unpublished development plans
+docs/infrastructure/optimization-history.md # internal_operations; D7 development history
+scripts/public_export/denylist.txt # internal_operations; private removal policy must not be published
+scripts/public_export/patterns.txt # self_name,user_home,account_id; private detection policy must not be published

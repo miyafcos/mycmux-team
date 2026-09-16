@@ -59,7 +59,15 @@ def test_capability_covers_child_window_labels() -> None:
     permissions = capability["permissions"]
     # Children reveal themselves after first paint (App.tsx) — neither
     # allow-show nor allow-set-focus is part of core:window:default.
-    for permission in ["core:window:allow-show", "core:window:allow-set-focus", "core:window:allow-destroy"]:
+    # allow-set-size is how a detached window snaps to a screen edge; without
+    # it the call is refused by the ACL and the window silently only moves.
+    for permission in [
+        "core:window:allow-show",
+        "core:window:allow-set-focus",
+        "core:window:allow-destroy",
+        "core:window:allow-set-position",
+        "core:window:allow-set-size",
+    ]:
         assert permission in permissions, (
             f"{permission} missing from capabilities/default.json"
         )

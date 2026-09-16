@@ -493,6 +493,7 @@ pub fn run() {
             commands::window::reveal_main_window,
             commands::window::open_child_window,
             commands::window::quit_app,
+            commands::window::watch_window_drag,
             commands::window_registry::open_workspace_window,
             commands::window_registry::publish_window_fragment,
             commands::window_registry::take_pending_adoption,

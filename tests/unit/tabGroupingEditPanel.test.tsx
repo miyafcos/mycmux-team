@@ -239,10 +239,10 @@ describe("TabGroupingPanel edit session controls", () => {
     await click(paneHost);
     const paneInput = paneHost.querySelector<HTMLInputElement>("input");
     if (!paneInput) throw new Error("pane title input is missing");
-    await setInputValue(paneInput, "作業ペイン改");
+    await setInputValue(paneInput, "作業タブ改");
     await act(async () => paneInput.blur());
     await settle();
-    expect(paneHost.textContent).toContain("作業ペイン改");
+    expect(paneHost.textContent).toContain("作業タブ改");
   });
 
   it("cancels Escape and blank names without closing the panel", async () => {
