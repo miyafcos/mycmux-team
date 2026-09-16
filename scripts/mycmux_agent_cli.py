@@ -39,7 +39,13 @@ def prompt_dir() -> Path:
     return runtime_dir() / "agent-prompts"
 # "web" is not an agent: it opens a web tab (no PTY, no process). It shares the
 # spawn command because where a tab lands is the same question either way.
-AGENT_TARGETS = ("claude", "codex", "claude-codex", "grok", "shell", "web")
+# Every launchable row of src/lib/agentCatalog.ts, plus the two non-agent
+# targets. agy and hermes are agents mycmux keeps no session file for, which
+# is why they are absent from AGENT_KINDS but startable all the same.
+AGENT_TARGETS = (
+    "claude", "codex", "claude-codex", "claude-codex-open", "grok", "agy",
+    "hermes", "shell", "web",
+)
 AGENT_KINDS = ("claude", "codex", "claude-codex", "grok")
 
 # Mirrors GRID_TEMPLATES in src/lib/gridTemplates.ts; tests/test_agent_cli_workspace_new.py
@@ -148,6 +154,11 @@ def add_interactive_launch_arguments(
     mode.add_argument("--handoff-from-session")
     mode.add_argument("--resume-session")
     parser.add_argument("--handoff-from-kind", choices=AGENT_KINDS)
+    # The launcher route's model / effort, the same pair the GUI launcher's
+    # spec panel sends. They reach the CLI as MYCMUX_LAUNCH_MODEL and
+    # MYCMUX_LAUNCH_EFFORT, which is why nothing here builds a --model flag.
+    parser.add_argument("--model")
+    parser.add_argument("--effort")
 
 
 def add_spawn_arguments(parser: argparse.ArgumentParser) -> None:
@@ -449,6 +460,12 @@ def add_launch_mode_request_args(
     if "promptFile" in args:
         optional_arg(args, "fromSessionId", os.environ.get("MYCMUX_PANE_SESSION_ID"))
 
+    # Only a plain launch reads them: a resume restores the session's own
+    # model, and a handoff inherits the one its prompt was written for.
+    if not (set(args) & {"promptFile", "handoffFromSessionId", "resumeSessionId"}):
+        optional_arg(args, "model", getattr(namespace, "model", None))
+        optional_arg(args, "effort", getattr(namespace, "effort", None))
+
 
 def spawn_wants_split(namespace: argparse.Namespace) -> bool:
     """Decide between a split pane and the default same-pane tab.
@@ -537,6 +554,8 @@ def build_spawn_tab_request(namespace: argparse.Namespace) -> dict[str, Any]:
                 namespace.handoff_from_session,
                 namespace.handoff_from_kind,
                 namespace.resume_session,
+                namespace.model,
+                namespace.effort,
             )
         ):
             raise RuntimeError("spawn-tab command argv cannot use interactive launch options")
@@ -563,7 +582,7 @@ def build_detached_spawn_request(namespace: argparse.Namespace) -> dict[str, Any
     optional_arg(args, "anchorSessionId", os.environ.get("MYCMUX_PANE_SESSION_ID"))
     optional_arg(args, "label", namespace.label)
     if has_command:
-        if any(value is not None for value in (namespace.prompt, namespace.prompt_file, namespace.handoff_from_session, namespace.handoff_from_kind, namespace.resume_session)):
+        if any(value is not None for value in (namespace.prompt, namespace.prompt_file, namespace.handoff_from_session, namespace.handoff_from_kind, namespace.resume_session, namespace.model, namespace.effort)):
             raise RuntimeError("spawn-tab command argv cannot use interactive launch options")
         args["commandArgv"] = command_argv
     else:

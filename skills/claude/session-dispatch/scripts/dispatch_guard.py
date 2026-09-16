@@ -469,6 +469,16 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.poll_sec <= 0:
         parser.error("--poll-sec must be positive")
+    # Kill switch (2026-09-16): while <guard root>/DISABLED exists, the supervisor
+    # never starts. MYCMUX_DISPATCH_GUARD=off already opts out in the launcher, but
+    # that env var only reaches mycmux processes started after it was set, so the
+    # flag file closes the gap for an app instance that is already running.
+    # Re-enable by deleting the flag file; doctor and stop keep working meanwhile.
+    disabled_flag = root_path() / "DISABLED"
+    if args.command in ("ensure", "run", "once") and disabled_flag.exists():
+        print(json.dumps({"disabled": True, "command": args.command,
+                          "flag": str(disabled_flag)}, ensure_ascii=False))
+        return 0
     if args.command == "doctor":
         result = doctor()
     elif args.command == "ensure":

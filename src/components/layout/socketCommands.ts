@@ -6,7 +6,12 @@ import {
   type SessionStatusSnapshotPayload,
 } from "../../lib/ipc";
 import type { AgentSessionKind, Pane, PaneTab, Workspace } from "../../types";
-import { SHELL_TARGET } from "../../lib/agentCatalog";
+import {
+  SHELL_TARGET,
+  buildLaunchSpecEnv,
+  getCatalogEntry,
+  isValidLaunchSpecValue,
+} from "../../lib/agentCatalog";
 import { agentIdForSessionKind } from "../../lib/agentSessionConfig";
 import { requiresLauncherDispatch } from "../../lib/launcherDispatch";
 import { buildSpawnLaunchEnv } from "../../lib/spawnLaunchEnv";
@@ -35,7 +40,11 @@ import {
 } from "../workspace/webPaneCommandQueue";
 
 type SocketArgs = Record<string, unknown> | null | undefined;
-type SpawnTarget = AgentSessionKind | "shell" | "web";
+// Every launchable catalog row, not only the four kinds mycmux tracks a
+// session identity for: `agy` and `hermes` are agents the launcher starts and
+// keeps no session file for, and they were unreachable from the socket while
+// this was typed as AgentSessionKind (2026-09-16).
+type SpawnTarget = string;
 export type SpawnMode = "handoff" | "prompt" | "resume" | "shell" | "launch" | "web";
 
 export interface SpawnPlan {
@@ -110,10 +119,31 @@ function isAgentKind(value: string): value is AgentSessionKind {
 function spawnTarget(args: SocketArgs): SpawnTarget {
   const target = socketArgString(args, "target");
   if (!target) throw new Error("pane.spawn requires target");
-  if (target !== "shell" && target !== "web" && !isAgentKind(target)) {
+  if (target === "shell" || target === "web") return target;
+  // The catalog is the same list the launcher menu draws, so a socket caller
+  // can start anything a mouse can. Rows the catalog calls "web" are opened by
+  // web.open, not by a target, and are rejected above by the plain "web" arm.
+  const entry = getCatalogEntry(target);
+  if (!entry || entry.kind !== "agent") {
     throw new Error(`unsupported pane.spawn target: ${target}`);
   }
   return target;
+}
+
+/**
+ * The model / effort a launch carries, refused rather than dropped when it
+ * could be read as a flag: `sanitizeLaunchSpecValue` would silently discard
+ * `--model -x`, and a caller that asked for Opus and got the default without
+ * being told would have no way to notice.
+ */
+function launchSpecValue(args: SocketArgs, key: string): string | undefined {
+  const value = socketArgString(args, key);
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (!isValidLaunchSpecValue(trimmed)) {
+    throw new Error(`pane.spawn ${key} is not a usable value: ${value}`);
+  }
+  return trimmed;
 }
 
 function optionalAgentKind(args: SocketArgs, ...keys: string[]): AgentSessionKind | undefined {
@@ -129,7 +159,26 @@ function agentIdForSpawnTarget(target: SpawnTarget): string {
   // in launchEnv — and a plain shell spawn deliberately sets none, so every
   // `pane.spawn --target shell` used to land in the retired TUI menu.
   if (target === SHELL_TARGET) return SHELL_TARGET;
-  return isAgentKind(target) ? agentIdForSessionKind(target) ?? "shell-starter" : "shell-starter";
+  return agentIdForSessionKind(trackedKind(target)) ?? "shell-starter";
+}
+
+/**
+ * The session identity mycmux keeps for this target, when it keeps one. `agy`
+ * and `hermes` launch fine and have none, so everything that writes an
+ * agentKind has to tolerate undefined rather than assume the target is one.
+ */
+function trackedKind(target: SpawnTarget): AgentSessionKind | undefined {
+  return isAgentKind(target) ? target : getCatalogEntry(target)?.agentKind;
+}
+
+/**
+ * Handoff, prompt and resume all address a previous session by id, which only
+ * exists for a target mycmux tracks.
+ */
+function requireTrackedKind(target: SpawnTarget, mode: string): AgentSessionKind {
+  const kind = trackedKind(target);
+  if (!kind) throw new Error(`pane.spawn ${mode} requires a target mycmux tracks sessions for`);
+  return kind;
 }
 
 export function resolveSpawnPlan(args: SocketArgs, handoffPromptPath?: string): SpawnPlan {
@@ -162,7 +211,7 @@ export function resolveSpawnPlan(args: SocketArgs, handoffPromptPath?: string): 
   };
 
   if (handoffFromSessionId) {
-    if (target === "shell") throw new Error("pane.spawn handoff requires an agent target");
+    const kind = requireTrackedKind(target, "handoff");
     if (!handoffPromptPath) throw new Error("pane.spawn handoff prompt path is unavailable");
     const handoffFromKind = optionalAgentKind(
       args,
@@ -170,8 +219,8 @@ export function resolveSpawnPlan(args: SocketArgs, handoffPromptPath?: string): 
       "handoff_from_kind",
     );
     const launchEnv: Record<string, string> = {
-      MYCMUX_AGENT_KIND: target,
-      MYCMUX_HANDOFF: target,
+      MYCMUX_AGENT_KIND: kind,
+      MYCMUX_HANDOFF: kind,
       MYCMUX_HANDOFF_PROMPT_FILE: handoffPromptPath,
       MYCMUX_HANDOFF_FROM_SESSION: handoffFromSessionId,
       ...(handoffFromKind ? { MYCMUX_HANDOFF_FROM: handoffFromKind } : {}),
@@ -180,17 +229,17 @@ export function resolveSpawnPlan(args: SocketArgs, handoffPromptPath?: string): 
       target,
       mode: "handoff",
       launchEnv,
-      paneOptions: { ...paneOptions, agentKind: target, launchEnv },
+      paneOptions: { ...paneOptions, agentKind: kind, launchEnv },
     };
   }
 
   if (promptFile) {
-    if (target === "shell") throw new Error("pane.spawn prompt requires an agent target");
+    const kind = requireTrackedKind(target, "prompt");
     const fromSessionId = socketArgString(args, "fromSessionId", "from_session_id") ?? "external";
     const fromKind = optionalAgentKind(args, "fromKind", "from_kind");
     const launchEnv: Record<string, string> = {
-      MYCMUX_AGENT_KIND: target,
-      MYCMUX_HANDOFF: target,
+      MYCMUX_AGENT_KIND: kind,
+      MYCMUX_HANDOFF: kind,
       MYCMUX_HANDOFF_PROMPT_FILE: promptFile,
       MYCMUX_HANDOFF_FROM_SESSION: fromSessionId,
       ...(fromKind ? { MYCMUX_HANDOFF_FROM: fromKind } : {}),
@@ -199,15 +248,15 @@ export function resolveSpawnPlan(args: SocketArgs, handoffPromptPath?: string): 
       target,
       mode: "prompt",
       launchEnv,
-      paneOptions: { ...paneOptions, agentKind: target, launchEnv },
+      paneOptions: { ...paneOptions, agentKind: kind, launchEnv },
     };
   }
 
   if (resumeSessionId) {
-    if (target === "shell") throw new Error("pane.spawn resume requires an agent target");
+    const kind = requireTrackedKind(target, "resume");
     const launchEnv: Record<string, string> = {
-      MYCMUX_AGENT_KIND: target,
-      MYCMUX_RESUME: target,
+      MYCMUX_AGENT_KIND: kind,
+      MYCMUX_RESUME: kind,
       MYCMUX_SESSION_ID: resumeSessionId,
     };
     return {
@@ -216,7 +265,7 @@ export function resolveSpawnPlan(args: SocketArgs, handoffPromptPath?: string): 
       launchEnv,
       paneOptions: {
         ...paneOptions,
-        agentKind: target,
+        agentKind: kind,
         agentSessionId: resumeSessionId,
         launchEnv,
       },
@@ -225,12 +274,20 @@ export function resolveSpawnPlan(args: SocketArgs, handoffPromptPath?: string): 
 
   if (target === "shell") return { target, mode: "shell", paneOptions };
 
-  const launchEnv = { MYCMUX_LAUNCH_TARGET: target };
+  // L1 of the launcher pane applies here too: the env is never assembled by
+  // hand, so the same sanitiser guards a socket launch and a clicked one.
+  const launchEnv = buildLaunchSpecEnv({
+    target,
+    model: launchSpecValue(args, "model"),
+    effort: launchSpecValue(args, "effort"),
+  });
+  if (!launchEnv) throw new Error(`pane.spawn cannot launch target: ${target}`);
+  const agentKind = trackedKind(target);
   return {
     target,
     mode: "launch",
     launchEnv,
-    paneOptions: { ...paneOptions, agentKind: target, launchEnv },
+    paneOptions: { ...paneOptions, ...(agentKind ? { agentKind } : {}), launchEnv },
   };
 }
 
@@ -700,12 +757,10 @@ async function resolveHandoffPromptPath(args: SocketArgs): Promise<string | unde
   if (!handoffFromSessionId) return undefined;
 
   const { crsmCreateHandoff } = await import("../../lib/ipc");
-  const target = spawnTarget(args);
-  // A handoff carries a conversation between agents; a shell has none to carry
-  // and a web tab is not an agent at all.
-  if (target === "shell" || target === "web") {
-    throw new Error("pane.spawn handoff requires an agent target");
-  }
+  // A handoff carries a conversation between agents; a shell has none to carry,
+  // a web tab is not an agent at all, and agy / hermes keep no session file for
+  // the other side to read.
+  const target = requireTrackedKind(spawnTarget(args), "handoff");
   const handoffFromKind = optionalAgentKind(
     args,
     "handoffFromKind",

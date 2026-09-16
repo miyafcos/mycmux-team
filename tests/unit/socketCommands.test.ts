@@ -128,7 +128,54 @@ describe("resolveSpawnPlan", () => {
 
   it("rejects shell prompt modes", () => {
     expect(() => resolveSpawnPlan({ target: "shell", promptFile: "prompt.md" }))
-      .toThrow("pane.spawn prompt requires an agent target");
+      .toThrow("pane.spawn prompt requires a target mycmux tracks sessions for");
+  });
+
+  // agy and hermes are launcher rows with no session file of their own. They
+  // launch like any other agent and are refused by everything that addresses a
+  // previous session by id.
+  it("launches a catalog agent mycmux keeps no session identity for", () => {
+    const plan = resolveSpawnPlan({ target: "hermes" });
+    expect(plan.mode).toBe("launch");
+    expect(plan.launchEnv).toEqual({ MYCMUX_LAUNCH_TARGET: "hermes" });
+    expect(plan.paneOptions).toEqual({ agentId: "shell-starter", launchEnv: plan.launchEnv });
+    expect(plan.paneOptions.agentKind).toBeUndefined();
+  });
+
+  it("refuses to resume a target it keeps no session identity for", () => {
+    expect(() => resolveSpawnPlan({ target: "agy", resumeSessionId: "some-id" }))
+      .toThrow("pane.spawn resume requires a target mycmux tracks sessions for");
+  });
+
+  it("rejects a target the catalog does not offer", () => {
+    expect(() => resolveSpawnPlan({ target: "web-chatgpt" }))
+      .toThrow("unsupported pane.spawn target: web-chatgpt");
+  });
+
+  // The model / effort pair the GUI launcher's spec panel sends. Before this
+  // the socket route dropped both, so a phone could pick a model and silently
+  // get the default (2026-09-16).
+  it("carries the launch spec model and effort", () => {
+    const plan = resolveSpawnPlan({ target: "claude", model: "opus", effort: "max" });
+    expect(plan.launchEnv).toEqual({
+      MYCMUX_LAUNCH_TARGET: "claude",
+      MYCMUX_LAUNCH_MODEL: "opus",
+      MYCMUX_LAUNCH_EFFORT: "max",
+    });
+  });
+
+  it("refuses a model that could be read as a flag rather than dropping it", () => {
+    expect(() => resolveSpawnPlan({ target: "claude", model: "--dangerously" }))
+      .toThrow("pane.spawn model is not a usable value");
+  });
+
+  it("leaves the launch spec out of a resume", () => {
+    const plan = resolveSpawnPlan({ target: "claude", resumeSessionId: "id", model: "opus" });
+    expect(plan.launchEnv).toEqual({
+      MYCMUX_AGENT_KIND: "claude",
+      MYCMUX_RESUME: "claude",
+      MYCMUX_SESSION_ID: "id",
+    });
   });
 
   it("rejects a missing target", () => {

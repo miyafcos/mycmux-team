@@ -4,6 +4,17 @@
 
 ---
 
+## [0.72.1] - 2026-09-16
+
+ソケット経由の起動が、ランチャーのメニューに並んでいるものを全部立てられるようになった版。モデルと effort も一緒に渡せる。iPhone のポケットから席を立てるための土台。
+
+- Change: **ソケットから起動できる相手を、ランチャーのメニューと同じにした**。`pane.spawn` / `pane.spawn_tab` の `target` は mycmux がセッションを追う 4 種 (claude / codex / claude-codex / grok) と shell / web しか受けておらず、ランチャーの一覧には並んでいる agy と hermes と claude-codex (Open Models) を、ソケットからは立てられなかった。判定を `src/lib/agentCatalog.ts` の `kind: "agent"` 行そのものに変えたので、GUI で押せるものは CLI からも立つ。セッションを追わない行は `agentKind` を名乗らずに起動する
+- Change: **ソケット経由の起動でも、モデルと effort を渡せるようにした**。ランチャーのペインはこの 2 つを `addTabToPaneWithOptions` へ直接渡しており、ソケット側が組む起動環境は `MYCMUX_LAUNCH_TARGET` 1 つだけだったため、CLI から起動すると必ず CLI の既定モデルになっていた。両方とも `buildLaunchSpecEnv` を通るようにしたので、`--model -x` のような旗と読める値を止めるのも GUI と同じ 1 か所になる。`mycmux_agent_cli.py` に `--model` / `--effort` を追加した
+- Fix: **渡せない値を黙って捨てるのをやめた**。旗と読める値は `sanitizeLaunchSpecValue` が落としていたため、Opus を頼んだ呼び出し元が既定のまま起動したことに気づけなかった。いまは拒否して、どの値が使えなかったかを返す
+- Change: **前のセッションを id で名指しする起動 (handoff / prompt / resume) は、mycmux がセッションを追う相手に限る**。agy と hermes はセッションファイルを持たないので、読む相手のいない id を渡すことになる
+- Test: 起動できる相手の一覧が `agentCatalog.ts` と食い違ったら落ちる契約テスト (`tests/test_agent_cli_launch_spec.py`) を追加。モデルと effort が起動環境として運ばれること、resume と handoff には載らないこと、argv 起動とは排他であることを固定した
+- Change: **同梱の Claude Code スキル session-dispatch を 9/16 の内容に更新**。見張りのキルスイッチを追加した (`<guard root>/DISABLED` がある間は ensure / run / once が起動しない)。`MYCMUX_DISPATCH_GUARD=off` はそれ以降に起こした mycmux にしか届かないため、すでに動いているアプリを止める手がなかった。doctor と stop はその間も使える
+
 ## [0.72.0] - 2026-09-16
 
 ペインをドラッグして画面を割るときに、落とした後の大きさがそのまま枠で出るようにした版。切り離した窓は Windows のスナップに乗るようになった。

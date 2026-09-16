@@ -1,9 +1,9 @@
 {
   "pack_version": "1.0.0",
-  "generated_at": "2026-09-16T01:33:13.483482+00:00",
+  "generated_at": "2026-09-16T06:17:26.792022+00:00",
   "cli": {
     "path": "scripts/mycmux_agent_cli.py",
-    "sha256": "c54ef198288836fca7ff33269acfec77eef2e31cec151248fef7891a0c87dd01"
+    "sha256": "255eb6a8f221245bf6d6e5b78190299b9f1c212b90cd987325c4a0b69bf697a4"
   },
   "skills": [
     {
@@ -16,7 +16,7 @@
         "references/spec-template.md": "a919326d45b30df1366f0e2fa2da6a9bc8cd620893ca62f8405767b291ec266b",
         "scripts/dispatch-child-guard.py": "91badcf06154a67ad6ae404481a7490ad88b59bfa9683a5f697fad29d51a79d9",
         "scripts/dispatch_canary.py": "2b6ec2221886e3002ba881f6347e8bba812641da277e0cd18ea0b2870e482bd1",
-        "scripts/dispatch_guard.py": "369a72da02a59e06a0d1b6378634738b3ae0aa260fc4da6f2e2437aadb977bbf",
+        "scripts/dispatch_guard.py": "2356fa186467051a177ff024badf233261286867c766d6f044a0714d841bd5db",
         "scripts/dispatch_ledger.py": "1769b8a43f9aaabf99870d21520dc029c00db225d3e94d426b20c2191581d31c",
         "scripts/dispatch_preflight.py": "cd23a723b7f84b9ce7782eec5a2b9f40371c1618d16293aa4ddcc7d5992bc88b",
         "scripts/dispatch_send.py": "5580aab9b12af5bfa59dc4f645ff7619e036bcc422ca8bdaa9a81cec0dc66096",
