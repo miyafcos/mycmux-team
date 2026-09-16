@@ -600,8 +600,11 @@ describe("pane socket responses", () => {
     expect(updated.panes).toHaveLength(1);
     expect(updated.panes[0]).toMatchObject({ id: "pane-2", tabs: [], activeTabId: "" });
     expect(updated.splitColumns).toEqual([["pane-2"]]);
-    expect(updated.columnWidths).toEqual([50]);
+    // The two closed columns take their dividers with them; nothing was pinned,
+    // so the one that is left fills the axis.
+    expect(updated.columnWidths).toEqual([1]);
     expect(updated.rowHeightsPerCol).toEqual([[100]]);
+    expect(updated.columnDividerPins).toEqual([]);
     expect(getClosedPaneCount()).toBe(3);
     replace.mockRestore();
   });

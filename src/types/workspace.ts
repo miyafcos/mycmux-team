@@ -140,6 +140,15 @@ export interface Workspace {
   columnWidths?: number[];
   /** Saved row heights within each column (inner vertical Allotment per column) */
   rowHeightsPerCol?: number[][];
+  /**
+   * One flag per divider between the columns (so `splitColumns.length - 1` of
+   * them): `true` once the user has dragged that divider, which is what makes
+   * the layout keep its width there. Every other divider is spread evenly again
+   * on each split and close. Absent means nothing was ever dragged.
+   */
+  columnDividerPins?: boolean[];
+  /** The same flags for the dividers between the panes inside each column. */
+  rowDividerPinsPerCol?: boolean[][];
 }
 
 /** Raw fields excluded from persistent layout state. Keep this list explicit. */

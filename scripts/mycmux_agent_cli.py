@@ -266,6 +266,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Request internal activation without changing the operator foreground",
     )
     spawn_tab_activation.add_argument("--no-activate", action="store_true")
+    spawn_tab.add_argument(
+        "--operator",
+        action="store_true",
+        help=(
+            "Only with --activate: the person asked for this tab right now, so "
+            "bring it forward even in the workspace they are looking at. A relay "
+            "for a human tap (the phone) may pass this; automation must not."
+        ),
+    )
     add_interactive_launch_arguments(spawn_tab, target_required=False)
     spawn_tab.add_argument("command_argv", nargs=argparse.REMAINDER)
 
@@ -544,6 +553,8 @@ def build_spawn_tab_request(namespace: argparse.Namespace) -> dict[str, Any]:
         "cwd": namespace.cwd,
         "activate": namespace.activate,
     }
+    if namespace.operator:
+        args["operator"] = True
     optional_arg(args, "label", namespace.label)
     if has_command:
         if any(
@@ -619,7 +630,13 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
             return "pane.spawn", build_spawn_request(namespace)
         return "pane.spawn_tab", build_spawn_as_tab_request(namespace)
     if namespace.subcommand == "spawn-tab":
+        # Fail loudly rather than accept a flag that would silently do nothing:
+        # only the anchored spawn-tab path reads `operator`.
+        if namespace.operator and not namespace.activate:
+            raise RuntimeError("spawn-tab --operator requires --activate")
         if namespace.detach:
+            if namespace.operator:
+                raise RuntimeError("spawn-tab --operator cannot be used with --detach")
             if namespace.anchor_session:
                 raise RuntimeError("spawn-tab --detach cannot be used with --anchor-session")
             print(

@@ -15,6 +15,7 @@ import {
 import { makeSessionId } from "../lib/constants";
 import { portableSessionId } from "../lib/detachedPane";
 import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../lib/layoutColumns";
+import type { SplitInsertHint } from "../lib/layoutMetrics";
 import { useWorkspaceListStore } from "./workspaceListStore";
 import { usePaneMetadataStore } from "./paneMetadataStore";
 import { useUiStore } from "./uiStore";
@@ -175,6 +176,27 @@ function removePaneIdFromColumns(columns: string[][], paneId: string): string[][
   return columns
     .map((col) => col.filter((id) => id !== paneId))
     .filter((col) => col.length > 0);
+}
+
+/**
+ * Which pane the new one was cut from, and on which side. The layout alone
+ * cannot recover this: a pane inserted between two others looks the same
+ * whether it came from the left neighbour or the right one, and guessing wrong
+ * halves the wrong pane.
+ */
+function splitInsertHint(
+  columns: string[][],
+  targetPaneId: string,
+  insertedPaneId: string,
+  direction: SplitInsertDirection,
+): SplitInsertHint | undefined {
+  return columns.some((column) => column.includes(targetPaneId))
+    ? {
+      insertedPaneId,
+      sourcePaneId: targetPaneId,
+      side: direction === "right" || direction === "down" ? "after" : "before",
+    }
+    : undefined;
 }
 
 function insertPaneIdIntoColumns(
@@ -846,6 +868,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       newPanes,
       normalizeWorkspaceSplitColumns(newSplitColumns),
       true,
+      splitInsertHint(existingColumns, afterPaneId, paneId, direction),
     );
     applyStructuralActivation(newPane.sessionId);
   },
@@ -890,6 +913,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       newPanes,
       normalizeWorkspaceSplitColumns(newSplitColumns),
       true,
+      splitInsertHint(existingColumns, afterPaneId, paneId, direction),
     );
     if (options.activate !== false && options.activationSource !== "socket") {
       applyStructuralActivation(newPane.sessionId);
@@ -942,6 +966,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       [...workspace.panes, onlinePane],
       normalizeWorkspaceSplitColumns(nextSplitColumns),
       true,
+      splitInsertHint(baseColumns, sourcePane.id, onlinePane.id, "right"),
     );
     applyStructuralActivation(onlineTab.sessionId);
     useUiStore.getState().setZoomedPaneId(null);
@@ -1170,6 +1195,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       newPanes,
       normalizeWorkspaceSplitColumns(nextSplitColumns),
       true,
+      splitInsertHint(baseColumns, sourcePane.id, newPreviewPane.id, "right"),
     );
     applyStructuralActivation(openedTab.sessionId);
     useUiStore.getState().setZoomedPaneId(null);
@@ -1377,6 +1403,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         [...panesAfterSource, newPane],
         normalizeWorkspaceSplitColumns(nextSplitColumns),
         true,
+        splitInsertHint(baseColumns, targetPaneId, newPane.id, direction),
       );
       return;
     }
@@ -1408,6 +1435,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       [...targetWorkspace.panes, newPane],
       normalizeWorkspaceSplitColumns(targetColumns),
       true,
+      splitInsertHint(cloneSplitColumns(targetWorkspace), targetPaneId, newPane.id, direction),
     );
     removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
   },
@@ -1504,9 +1532,16 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     const listStore = useWorkspaceListStore.getState();
     const workspace = listStore.getWorkspace(workspaceId);
     if (!workspace || workspace.panes.some((existing) => existing.id === pane.id)) return false;
-    const columns = insertPaneIdIntoColumns(cloneSplitColumns(workspace), targetPaneId, pane.id, direction);
+    const baseColumns = cloneSplitColumns(workspace);
+    const columns = insertPaneIdIntoColumns(baseColumns, targetPaneId, pane.id, direction);
     if (!columns) return false;
-    listStore._updateWorkspacePanes(workspaceId, [...workspace.panes, pane], normalizeWorkspaceSplitColumns(columns), true);
+    listStore._updateWorkspacePanes(
+      workspaceId,
+      [...workspace.panes, pane],
+      normalizeWorkspaceSplitColumns(columns),
+      true,
+      splitInsertHint(baseColumns, targetPaneId, pane.id, direction),
+    );
     return true;
   },
 
@@ -1530,6 +1565,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         sourceWorkspace.panes,
         normalizeWorkspaceSplitColumns(nextSplitColumns),
         true,
+        splitInsertHint(baseColumns, targetPaneId, sourcePaneId, direction),
       );
       return;
     }
@@ -1555,6 +1591,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       [...targetWorkspace.panes, sourcePane],
       normalizeWorkspaceSplitColumns(targetColumns),
       true,
+      splitInsertHint(cloneSplitColumns(targetWorkspace), targetPaneId, sourcePaneId, direction),
     );
     removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
   },

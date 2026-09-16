@@ -66,6 +66,9 @@ export function detachedWorkspaceConfig(
     split_columns: [[0]],
     column_widths: [1],
     row_heights_per_col: [[1]],
+    // One pane in one column: there is no divider to have dragged.
+    column_divider_pins: [],
+    row_divider_pins_per_col: [[]],
     detached: true,
     detached_from: { ...origin },
   };

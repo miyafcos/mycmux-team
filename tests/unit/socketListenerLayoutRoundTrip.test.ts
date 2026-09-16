@@ -100,9 +100,13 @@ describe("SocketListener layout persistence", () => {
     ));
 
     expect(saved.split_columns).toEqual([[0], [1]]);
-    expect(saved.column_widths).toEqual([2, 5]);
+    // Dropping the browser column is a close like any other: nobody had
+    // dragged these dividers, so the survivors come back even.
+    expect(saved.column_widths).toEqual([0.5, 0.5]);
     expect(saved.column_widths).toHaveLength(saved.split_columns!.length);
+    expect(saved.column_divider_pins).toEqual([false]);
     expect(saved.row_heights_per_col).toEqual([[4], [6]]);
+    expect(saved.row_divider_pins_per_col).toEqual([[], []]);
   });
 
   it("omits browser, online, and ephemeral tabs without creating empty terminal panes", () => {
@@ -123,7 +127,7 @@ describe("SocketListener layout persistence", () => {
     expect(saved.panes[0].tabs?.map((savedTab) => savedTab.type)).toEqual(["terminal"]);
   });
 
-  it("preserves surviving column proportions when an omitted pane removes a column", () => {
+  it("balances the survivors when an omitted pane removes a column", () => {
     const saved = toConfig(workspace(
       [pane("left"), pane("browser", "browser"), pane("right")],
       [["left"], ["browser"], ["right"]],
@@ -131,7 +135,7 @@ describe("SocketListener layout persistence", () => {
       [[1], [1], [1]],
     ));
 
-    expect(saved.column_widths).toEqual([2, 5]);
+    expect(saved.column_widths).toEqual([0.5, 0.5]);
   });
 
   it("keeps metrics unchanged when every pane is persisted", () => {
@@ -144,6 +148,42 @@ describe("SocketListener layout persistence", () => {
 
     expect(saved.column_widths).toEqual([2, 5]);
     expect(saved.row_heights_per_col).toEqual([[4], [6]]);
+  });
+
+  it("carries the dividers the user dragged into the saved config", () => {
+    const source = workspace(
+      [pane("left"), pane("right")],
+      [["left"], ["right"]],
+      [0.7, 0.3],
+      [[1], [1]],
+    );
+    source.columnDividerPins = [true];
+    source.rowDividerPinsPerCol = [[], []];
+
+    const saved = toConfig(source);
+
+    expect(saved.column_divider_pins).toEqual([true]);
+    expect(saved.row_divider_pins_per_col).toEqual([[], []]);
+    expect(saved.column_widths).toEqual([0.7, 0.3]);
+  });
+
+  it("carries the remembered position through a column the save path drops", () => {
+    const source = workspace(
+      [pane("left"), pane("browser", "browser"), pane("right")],
+      [["left"], ["browser"], ["right"]],
+      [0.5, 0.25, 0.25],
+      [[1], [1], [1]],
+    );
+    source.columnDividerPins = [true, false];
+    source.rowDividerPinsPerCol = [[], [], []];
+
+    const saved = toConfig(source);
+
+    // The browser column goes, so its two dividers merge into one. Only the
+    // left one was dragged, so the merged divider keeps that position: the
+    // left pane stays at half the width and the survivor takes the rest.
+    expect(saved.column_divider_pins).toEqual([true]);
+    expect(saved.column_widths).toEqual([0.5, 0.5]);
   });
 
   it("does not persist ephemeral launch environment keys with noncanonical casing", () => {

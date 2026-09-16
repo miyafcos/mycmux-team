@@ -3,6 +3,7 @@
 // 表示方針: 会話の正本は livebrief の意味イベント。生端末は小さな切替で確認し、
 // 「裏」「観測外」のような断定表示は置かない (2026-08-12 段3)。
 type PrimaryActionLabel = "openSession" | "answerQuestion" | "retryWorkItem" | "reviewConflict" | "raiseBudget" | "acknowledgeGoalReached";
+type AttentionFactKindLabel = "pendingQuestion" | "queuedInput" | "noUpdate";
 type AttentionKindLabel = "agentAsked" | "workStopped" | "reportsComplete" | "completionWithoutTests" | "budgetReached" | "outOfScopeWrite" | "conflictDetected" | "goalReached" | "nextItemReady" | "workOrderStalled" | "sessionBoardIncident";
 
 export const dashboardStrings = {
@@ -234,14 +235,21 @@ export const dashboardStrings = {
   // 「機械信号」「機械」は実装都合の語なので画面には出さない (2026-08-15 FB)。
   previewColumnTitle: "プレビュー",
   previewColumnEmpty: "ファイルのリンクを開くと、ここに表示します",
-  reportInboxTitle: "報告インボックス",
-  reportInboxHint: "届いた順に記録します",
-  reportInboxRailIcon: "報",
+  attentionNavHint: "質問・未送信・無出力",
+  attentionRailIcon: "気",
   sessionListCollapse: "◀ 畳む",
   sessionListExpand: "▶",
   sessionListCollapseTitle: "セッション一覧を畳む",
   sessionListExpandTitle: "セッション一覧を開く",
   attentionTitle: "気づき",
+  // 事実カード (2026-09-16)。観測できたことと経過だけを書き、どうするかは書かない。
+  attentionEmpty: "いま出ている事実はありません",
+  attentionFactOpen: "このセッションを開く",
+  attentionFactKindLabel: (kind: AttentionFactKindLabel, minutes: number | null): string => {
+    if (kind === "pendingQuestion") return "質問";
+    if (kind === "queuedInput") return "未送信の指示が残っている";
+    return minutes === null ? "出力なし" : `${dashboardStrings.elapsed(minutes)} 出力なし`;
+  },
   attentionWhyNow: "今知らせる理由",
   attentionImpact: "影響",
   attentionEvidence: "根拠",

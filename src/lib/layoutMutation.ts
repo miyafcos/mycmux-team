@@ -1,5 +1,5 @@
 import { reconcileSplitColumnsForPanes } from "./layoutColumns";
-import { reconcileColumnWidths, reconcileRowHeightsPerCol } from "./layoutMetrics";
+import { reconcileSplitLayoutMetrics, type SplitInsertHint } from "./layoutMetrics";
 import {
   applyActiveTabFields,
   clearPinIfMissing,
@@ -40,6 +40,8 @@ export function layoutStructureRevision(workspaces: readonly Workspace[]): strin
     splitColumns: workspace.splitColumns,
     columnWidths: workspace.columnWidths,
     rowHeightsPerCol: workspace.rowHeightsPerCol,
+    columnDividerPins: workspace.columnDividerPins,
+    rowDividerPinsPerCol: workspace.rowDividerPinsPerCol,
   })));
 }
 
@@ -73,6 +75,8 @@ function cloneWorkspace(workspace: Workspace): Workspace {
     splitColumns: workspace.splitColumns?.map((column) => [...column]),
     columnWidths: workspace.columnWidths ? [...workspace.columnWidths] : undefined,
     rowHeightsPerCol: workspace.rowHeightsPerCol?.map((rows) => [...rows]),
+    columnDividerPins: workspace.columnDividerPins ? [...workspace.columnDividerPins] : undefined,
+    rowDividerPinsPerCol: workspace.rowDividerPinsPerCol?.map((pins) => [...pins]),
   };
 }
 
@@ -110,7 +114,12 @@ function cleanNonEmptyPane(pane: Pane): Pane {
   return withPinnedTabFirst(applyActiveTabFields(withoutStalePin, activeTab));
 }
 
-function cleanWorkspace(current: Workspace, previous: Workspace, summary: MutationSummary): Workspace {
+function cleanWorkspace(
+  current: Workspace,
+  previous: Workspace,
+  summary: MutationSummary,
+  insertHint?: SplitInsertHint,
+): Workspace {
   const nonEmpty = current.panes.filter((pane) => pane.tabs.length > 0);
   let panes: Pane[];
   if (nonEmpty.length > 0) {
@@ -142,12 +151,7 @@ function cleanWorkspace(current: Workspace, previous: Workspace, summary: Mutati
     ...current,
     panes,
     splitColumns,
-    columnWidths: reconcileColumnWidths(previousColumns, previous.columnWidths, splitColumns),
-    rowHeightsPerCol: reconcileRowHeightsPerCol(
-      previousColumns,
-      previous.rowHeightsPerCol,
-      splitColumns,
-    ),
+    ...reconcileSplitLayoutMetrics(previousColumns, previous, splitColumns, insertHint),
   };
 }
 
@@ -218,6 +222,10 @@ export function applyLayoutMutation(
     summary.skipped.push(...selectedIds);
     return { workspaces: workspaces.map(cloneWorkspace), summary };
   }
+  // Only a drop against a pane knows which side of it the new pane was cut
+  // from; a drop onto a column/row slot has no source pane, so the reconciler
+  // falls back to its guess there.
+  let insertHint: SplitInsertHint | undefined;
   const targetPaneId = "paneId" in mutation.to ? mutation.to.paneId : undefined;
   const destinationPaneId = targetPaneId ?? ("split" in mutation.to ? mutation.to.split.paneId : undefined);
   const newPanePosition = "newPane" in mutation.to ? mutation.to.newPane : undefined;
@@ -291,6 +299,11 @@ export function applyLayoutMutation(
     }
     targetWorkspace.panes.push(pane);
     targetWorkspace.splitColumns = columns;
+    insertHint = {
+      insertedPaneId: paneId,
+      sourcePaneId: targetPane.id,
+      side: split.zone === "right" || split.zone === "down" ? "after" : "before",
+    };
   } else if (newPanePosition !== undefined) {
     const position = newPanePosition;
     const baseId = `pane-${mutation.operationId}`;
@@ -327,7 +340,9 @@ export function applyLayoutMutation(
     workspaces: result.map((workspace) => {
       if (!summary.affectedWorkspaces.includes(workspace.id)) return workspace;
       const previous = originalsById.get(workspace.id);
-      return previous ? cleanWorkspace(workspace, previous, summary) : workspace;
+      if (!previous) return workspace;
+      const hint = workspace.id === mutation.to.workspaceId ? insertHint : undefined;
+      return cleanWorkspace(workspace, previous, summary, hint);
     }),
     summary,
   };

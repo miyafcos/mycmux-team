@@ -94,8 +94,12 @@ describe("browser window transfer", () => {
         windowFragments: [{ window_label: pending ? "main" : "child", pending, workspaces: [incoming], active_workspace_id: ws.id }] }).configs[0];
       expect(saved.panes).toHaveLength(1);
       expect(saved.panes[0].tabs!.map((tab) => tab.type)).toEqual(["terminal"]);
-      expect(saved.split_columns).toEqual([[0]]); expect(saved.column_widths).toEqual([2]);
+      // The preview column is dropped, so its divider goes too and the one
+      // surviving column fills the axis (nobody had dragged that divider).
+      expect(saved.split_columns).toEqual([[0]]); expect(saved.column_widths).toEqual([1]);
       expect(saved.row_heights_per_col).toEqual([[3]]);
+      expect(saved.column_divider_pins).toEqual([]);
+      expect(saved.row_divider_pins_per_col).toEqual([[]]);
     }
     expect(incoming).toEqual(before);
   });

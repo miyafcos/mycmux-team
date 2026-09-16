@@ -78,6 +78,9 @@ struct NextAction {
     target: String,
 }
 
+/// 既定のスナップショットからの取り込み。2026-09-16 に呼び出しを外した (供給が止まったため)
+/// が、session-board が動き出したときに繋ぎ直せるように経路ごと残してある。
+#[allow(dead_code)]
 pub(crate) fn sync_default(conn: &Connection, now: i64) -> Result<bool, String> {
     let Some(path) = default_snapshot_path() else {
         return Ok(false);
@@ -85,6 +88,7 @@ pub(crate) fn sync_default(conn: &Connection, now: i64) -> Result<bool, String> 
     sync_path(conn, &path, now)
 }
 
+#[allow(dead_code)]
 fn default_snapshot_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| default_snapshot_path_for_home(&home))
 }

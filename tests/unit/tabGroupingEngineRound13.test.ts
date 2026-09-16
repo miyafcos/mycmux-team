@@ -414,7 +414,13 @@ describe("Gate 2 round 13 engine fixes", () => {
     expect(prepared.ok).toBe(true);
     if (!prepared.ok) return;
     expect(prepared.ticket.transaction.expected.movedTabIds).toEqual([]);
-    expect(prepared.ticket.transaction.workspaces).toEqual(current);
+    // The compiler rebuilds from the persistent projection, which spells the
+    // absent divider-pin lists as empty ones.
+    expect(prepared.ticket.transaction.workspaces).toEqual(current.map((workspace) => ({
+      ...workspace,
+      columnDividerPins: [],
+      rowDividerPinsPerCol: [],
+    })));
   });
 
   it("rejects reorganize with current_locations without mutating any tab", () => {

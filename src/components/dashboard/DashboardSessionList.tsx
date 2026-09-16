@@ -67,8 +67,8 @@ export function DashboardSessionList({
   clearDoneCount,
   onClearDone,
   filteredSummary,
-  reportInboxOpen,
-  onOpenReportInbox,
+  attentionOpen,
+  onOpenAttention,
   openTabIds,
   collapsed,
   onToggleCollapsed,
@@ -90,8 +90,8 @@ export function DashboardSessionList({
   clearDoneCount: number;
   onClearDone: () => void;
   filteredSummary: string | null;
-  reportInboxOpen: boolean;
-  onOpenReportInbox: () => void;
+  attentionOpen: boolean;
+  onOpenAttention: () => void;
   openTabIds?: readonly string[];
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -161,16 +161,16 @@ export function DashboardSessionList({
     </div>
     <button
       type="button"
-      data-report-inbox-nav="true"
-      className={`cmux-dash-report-nav${reportInboxOpen ? " is-selected" : ""}`}
-      aria-pressed={reportInboxOpen}
-      aria-label={dashboardStrings.reportInboxTitle}
-      title={dashboardStrings.reportInboxTitle}
-      onClick={onOpenReportInbox}
+      data-attention-nav="true"
+      className={`cmux-dash-attention-nav${attentionOpen ? " is-selected" : ""}`}
+      aria-pressed={attentionOpen}
+      aria-label={dashboardStrings.attentionTitle}
+      title={dashboardStrings.attentionTitle}
+      onClick={onOpenAttention}
     >
-      <span className="cmux-dash-report-nav-icon" aria-hidden="true">{dashboardStrings.reportInboxRailIcon}</span>
-      <span>{dashboardStrings.reportInboxTitle}</span>
-      <small>{dashboardStrings.reportInboxHint}</small>
+      <span className="cmux-dash-attention-nav-icon" aria-hidden="true">{dashboardStrings.attentionRailIcon}</span>
+      <span>{dashboardStrings.attentionTitle}</span>
+      <small>{dashboardStrings.attentionNavHint}</small>
     </button>
     <div className="cmux-dash-list-scroll">
     <Section title={dashboardStrings.sectionNeedsAnswer} count={attentionSections.needsAnswer.length}>{attentionSections.needsAnswer.map((card) => row(card, `answer-${card.tab.id}`))}</Section>

@@ -1269,13 +1269,13 @@ describe("DashboardView multi-open columns", () => {
     expect(container.querySelector<HTMLElement>(`[data-dashboard-row='${first.id}']`)?.dataset.dashboardOpen).toBe("true");
   });
 
-  it("renders the report inbox as a column beside a chat column", async () => {
+  it("renders the attention column beside a chat column", async () => {
     const { DASHBOARD_INBOX_COLUMN_ID } = await import("../../src/stores/dashboardViewStore");
     const first = tab("tab-first", "s-first", "First");
     seedDashboard({ workspace: workspace([first]), selectedTabId: first.id });
     await renderDashboard();
 
-    await act(async () => container.querySelector<HTMLButtonElement>("[data-report-inbox-nav='true']")?.click());
+    await act(async () => container.querySelector<HTMLButtonElement>("[data-attention-nav='true']")?.click());
 
     expect(useDashboardViewStore.getState().chatColumnTabIds).toEqual([first.id, DASHBOARD_INBOX_COLUMN_ID]);
     expect(container.querySelector(`[data-dashboard-chat-column='${first.id}']`)).not.toBeNull();
@@ -1283,7 +1283,10 @@ describe("DashboardView multi-open columns", () => {
     const inboxColumn = container.querySelector<HTMLElement>("[data-dashboard-inbox-column='true']");
     expect(inboxColumn).not.toBeNull();
     expect(inboxColumn?.querySelector("[data-attention-cards='true']")).not.toBeNull();
-    expect(container.querySelector("[aria-label='報告インボックス']")).not.toBeNull();
+    expect(container.querySelector("[aria-label='気づき']")).not.toBeNull();
+    // 報告インボックス (供給 0 件のままだった欄) は 2026-09-16 に外した。
+    expect(container.querySelector("[data-report-inbox-nav]")).toBeNull();
+    expect(container.textContent).not.toContain("報告インボックス");
     expect(mocks.attentionCards.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
       sessionLabel: expect.any(Function),
       openCardSession: expect.any(Function),
@@ -1341,16 +1344,16 @@ describe("DashboardView session list collapse", () => {
     expect(window.localStorage.getItem(DASHBOARD_SESSION_LIST_COLLAPSED_STORAGE_KEY)).toBe("true");
   });
 
-  it("keeps the report inbox nav while collapsed", async () => {
-    const target = tab("tab-report-rail", "s-report-rail", "Report rail");
+  it("keeps the attention nav while collapsed", async () => {
+    const target = tab("tab-attention-rail", "s-attention-rail", "Attention rail");
     seedDashboard({ workspace: workspace([target]), selectedTabId: target.id });
     await renderDashboard();
 
     await act(async () => container.querySelector<HTMLButtonElement>("[data-session-list-toggle='true']")?.click());
-    const inbox = container.querySelector<HTMLButtonElement>("[data-report-inbox-nav='true']");
-    expect(inbox).not.toBeNull();
+    const attentionNav = container.querySelector<HTMLButtonElement>("[data-attention-nav='true']");
+    expect(attentionNav).not.toBeNull();
 
-    await act(async () => inbox?.click());
+    await act(async () => attentionNav?.click());
     expect(useDashboardViewStore.getState().chatColumnTabIds).toContain(DASHBOARD_INBOX_COLUMN_ID);
   });
 

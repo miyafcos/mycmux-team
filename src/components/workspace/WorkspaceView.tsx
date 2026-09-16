@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, memo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, memo, useRef, useState } from "react";
 import { Allotment, type AllotmentHandle } from "allotment";
 import "allotment/dist/style.css";
 import type { Pane, GridTemplateId } from "../../types";
@@ -10,7 +10,13 @@ import {
   reconcileStableLayoutColumnIdentities,
   type StableLayoutColumnIdentity,
 } from "../../lib/layoutColumns";
-import { fitLayoutSizes } from "../../lib/layoutMetrics";
+import {
+  applyAxisDrag,
+  balancedAxis,
+  fitLayoutSizes,
+  normalizeDividerPins,
+  type AxisMetrics,
+} from "../../lib/layoutMetrics";
 import { terminalLayoutSignatureOf } from "../../lib/terminalLayoutSignature";
 import { focusController } from "../../lib/focusController";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
@@ -37,11 +43,66 @@ interface LayoutStructureSnapshot {
   rowSignatures: Map<string, string>;
 }
 
+/**
+ * What the reset handlers need to know at the moment they fire.
+ *
+ * allotment wires the sash double click once, on mount, and never swaps that
+ * callback again (it re-assigns onDidChange / onDidDragStart / onDidDragEnd on
+ * every render, but there is no onDidReset). A handler that closed over the
+ * columns as they were on mount would answer a double click with the wrong
+ * lengths after any split or close, and the store would throw the whole axis
+ * away. So the handlers stay the same function for the life of the grid and
+ * read the current layout from here.
+ */
+interface LatestLayout {
+  cols: string[][];
+  columnIds: string[];
+  width: number;
+  height: number;
+}
+
 function sameViewportSize(
   prev: { width: number; height: number },
   next: { width: number; height: number },
 ): boolean {
   return Math.abs(prev.width - next.width) < 1 && Math.abs(prev.height - next.height) < 1;
+}
+
+function totalSize(sizes: readonly number[]): number {
+  return sizes.reduce((sum, size) => sum + size, 0);
+}
+
+/**
+ * Show a settled axis. allotment keeps whatever pixels the drag (or the double
+ * click) left behind, so rebalancing the free dividers only becomes visible
+ * once it is pushed back through the imperative handle — and only a whole
+ * pixel of difference is worth a repaint.
+ */
+function pushSettledAxis(
+  handle: AllotmentHandle | null | undefined,
+  settled: AxisMetrics,
+  currentSizes: readonly number[],
+): void {
+  // A drag that shut a pane is left exactly as the pointer left it: the axis
+  // was not settled, and fitLayoutSizes cannot express a zero-width pane
+  // anyway (it would hand back an even split and undo the drag).
+  if (settled.sizes.some((size) => size <= 0)) return;
+  const fitted = fitLayoutSizes(settled.sizes, totalSize(currentSizes), settled.sizes.length);
+  if (!fitted || fitted.length !== currentSizes.length) return;
+  if (!fitted.some((size, index) => Math.abs(size - currentSizes[index]) >= 1)) return;
+  handle?.resize(fitted);
+}
+
+/** Double clicking a divider forgets every pin on its axis and evens it out. */
+function resetAxis(
+  handle: AllotmentHandle | null | undefined,
+  itemCount: number,
+  availableSize: number,
+): AxisMetrics {
+  const settled = balancedAxis(itemCount);
+  const fitted = fitLayoutSizes(settled.sizes, availableSize, itemCount);
+  if (fitted) handle?.resize(fitted);
+  return settled;
 }
 
 export const TerminalGrid = memo(function TerminalGrid({
@@ -57,6 +118,12 @@ export const TerminalGrid = memo(function TerminalGrid({
   const outerAllotmentRef = useRef<AllotmentHandle | null>(null);
   const innerAllotmentRefs = useRef(new Map<string, AllotmentHandle>());
   const previousLayoutStructureRef = useRef<LayoutStructureSnapshot | null>(null);
+  // Where each axis stood when the drag began, so the dividers the pointer
+  // actually moved can be told apart from the ones it left alone.
+  const columnDragStartRef = useRef<number[] | null>(null);
+  const rowDragStartRefs = useRef(new Map<string, number[]>());
+  const latestLayoutRef = useRef<LatestLayout>({ cols: [], columnIds: [], width: 0, height: 0 });
+  const rowResetHandlersRef = useRef(new Map<string, () => void>());
 
   const handleClose = useCallback(async (paneId: string) => {
     // Kill all PTY sessions — read fresh state to avoid stale closure
@@ -114,6 +181,9 @@ export const TerminalGrid = memo(function TerminalGrid({
     layoutColumns,
   );
   columnIdentitiesRef.current = columnIdentities;
+  const columnIds = layoutColumns.map(
+    (_column, index) => columnIdentities[index]?.id ?? `column-${index}`,
+  );
   const layoutStructureSignature = useMemo(
     () => layoutColumns.map((col) => col.join(",")).join("|"),
     [layoutColumns],
@@ -236,6 +306,79 @@ export const TerminalGrid = memo(function TerminalGrid({
     };
   }, [terminalLayoutSignature, viewportSize.height, viewportSize.width, workspaceId]);
 
+  // Refreshed before the browser paints the commit, so a double click can
+  // never reach a handler that is still describing the layout before it.
+  useLayoutEffect(() => {
+    latestLayoutRef.current = {
+      cols: layoutColumns,
+      columnIds,
+      width: viewportSize.width,
+      height: viewportSize.height,
+    };
+  });
+
+  // Row metrics are stored for the whole workspace, so one column's drag has
+  // to hand back a full description of every column: a partial one fails the
+  // store's length check and the drag would be dropped on the floor.
+  const saveRowAxis = useCallback((columnIndex: number, settled: AxisMetrics) => {
+    const { cols } = latestLayoutRef.current;
+    if (columnIndex < 0 || columnIndex >= cols.length) return;
+    const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    const currentRowHeights = currentWorkspace?.rowHeightsPerCol;
+    const currentRowPins = currentWorkspace?.rowDividerPinsPerCol;
+    setWorkspaceLayoutMetrics(
+      workspaceId,
+      currentWorkspace?.columnWidths,
+      cols.map((column, index) => {
+        if (index === columnIndex) return settled.sizes;
+        return currentRowHeights?.[index]?.length === column.length
+          ? currentRowHeights[index]
+          : balancedAxis(column.length).sizes;
+      }),
+      currentWorkspace?.columnDividerPins,
+      cols.map((column, index) => (
+        index === columnIndex
+          ? settled.pins
+          : normalizeDividerPins(currentRowPins?.[index], column.length)
+      )),
+    );
+  }, [setWorkspaceLayoutMetrics, workspaceId]);
+
+  const handleColumnsReset = useCallback(() => {
+    const { cols, width } = latestLayoutRef.current;
+    if (cols.length === 0 || width <= 0) return;
+    const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    const settled = resetAxis(outerAllotmentRef.current, cols.length, width);
+    setWorkspaceLayoutMetrics(
+      workspaceId,
+      settled.sizes,
+      currentWorkspace?.rowHeightsPerCol,
+      settled.pins,
+      currentWorkspace?.rowDividerPinsPerCol,
+    );
+  }, [setWorkspaceLayoutMetrics, workspaceId]);
+
+  // One handler per column identity, kept for as long as the grid lives. The
+  // column's position can change underneath it, so it is looked up again from
+  // the identity every time the handler runs.
+  const rowsResetHandlerFor = useCallback((columnId: string) => {
+    const existing = rowResetHandlersRef.current.get(columnId);
+    if (existing) return existing;
+    const handler = () => {
+      const { cols, columnIds: currentColumnIds, height } = latestLayoutRef.current;
+      const columnIndex = currentColumnIds.indexOf(columnId);
+      const column = cols[columnIndex];
+      if (!column || height <= 0) return;
+      saveRowAxis(columnIndex, resetAxis(
+        innerAllotmentRefs.current.get(columnId),
+        column.length,
+        height,
+      ));
+    };
+    rowResetHandlersRef.current.set(columnId, handler);
+    return handler;
+  }, [saveRowAxis]);
+
   // Column-first layout: outer = horizontal columns, inner = vertical rows within each column
   if (splitColumns) {
     const cols: string[][] = layoutColumns;
@@ -262,10 +405,28 @@ export const TerminalGrid = memo(function TerminalGrid({
             proportionalLayout
             defaultSizes={columnWidths}
             minSize={0}
+            onDragStart={(sizes) => {
+              columnDragStartRef.current = sizes;
+            }}
             onDragEnd={(sizes) => {
               const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-              setWorkspaceLayoutMetrics(workspaceId, sizes, currentWorkspace?.rowHeightsPerCol);
+              const dragStart = columnDragStartRef.current ?? sizes;
+              columnDragStartRef.current = null;
+              const settled = applyAxisDrag(
+                dragStart,
+                sizes,
+                normalizeDividerPins(currentWorkspace?.columnDividerPins, sizes.length),
+              );
+              pushSettledAxis(outerAllotmentRef.current, settled, sizes);
+              setWorkspaceLayoutMetrics(
+                workspaceId,
+                settled.sizes,
+                currentWorkspace?.rowHeightsPerCol,
+                settled.pins,
+                currentWorkspace?.rowDividerPinsPerCol,
+              );
             }}
+            onReset={handleColumnsReset}
           >
             {cols.map((col, colIdx) => {
               const columnId = columnIdentities[colIdx]?.id ?? `column-${colIdx}`;
@@ -282,17 +443,26 @@ export const TerminalGrid = memo(function TerminalGrid({
                   proportionalLayout
                   defaultSizes={rowHeights}
                   minSize={0}
+                  onDragStart={(sizes) => {
+                    rowDragStartRefs.current.set(columnId, sizes);
+                  }}
                   onDragEnd={(sizes) => {
                     const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-                    const currentRowHeights = currentWorkspace?.rowHeightsPerCol;
-                    const nextRowHeights = cols.map((currentCol, currentColIdx) => {
-                      if (currentColIdx === colIdx) return sizes;
-                      return currentRowHeights?.[currentColIdx]?.length === currentCol.length
-                        ? currentRowHeights[currentColIdx]
-                        : [];
-                    });
-                    setWorkspaceLayoutMetrics(workspaceId, currentWorkspace?.columnWidths, nextRowHeights);
+                    const dragStart = rowDragStartRefs.current.get(columnId) ?? sizes;
+                    rowDragStartRefs.current.delete(columnId);
+                    const columnIndex = latestLayoutRef.current.columnIds.indexOf(columnId);
+                    const settled = applyAxisDrag(
+                      dragStart,
+                      sizes,
+                      normalizeDividerPins(
+                        currentWorkspace?.rowDividerPinsPerCol?.[columnIndex],
+                        sizes.length,
+                      ),
+                    );
+                    pushSettledAxis(innerAllotmentRefs.current.get(columnId), settled, sizes);
+                    saveRowAxis(columnIndex, settled);
                   }}
+                  onReset={rowsResetHandlerFor(columnId)}
                 >
                   {col.map((paneId, rowIdx) => {
                     const pane = paneMap[paneId];

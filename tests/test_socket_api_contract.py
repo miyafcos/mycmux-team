@@ -103,6 +103,14 @@ def test_socket_global_activation_prohibitions_remain_explicit() -> None:
     assert "focusController." not in socket_commands
     assert "force_focus" not in socket_commands
     assert "forceFocus" not in socket_commands
+    # One deliberate exception to "a socket never moves the foreground": a tap the
+    # person made on the phone, relayed as pane.spawn_tab --operator. It may take
+    # the tab strip of the workspace already on screen and nothing more — a
+    # workspace switch stays banned by the whole-file assertion above.
+    spawn_tab = function_slice(socket_commands, "async function spawnTab(", "type DeclaredLaunchResult")
+    assert 'socketArgBoolean(args, "operator", false)' in spawn_tab
+    assert "applyStructuralActivation(newTab.sessionId)" in spawn_tab
+    assert "setActiveWorkspace(" not in spawn_tab
     assert "activationSource?: \"human\" | \"socket\";" in layout_store
     assert "options.activationSource !== \"socket\"" in layout_store
 

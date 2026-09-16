@@ -4,6 +4,7 @@ import type { CSSProperties } from "react";
 import { useLiveBriefStore } from "../../stores/liveBriefStore";
 import { useRecentInputStore } from "../../stores/recentInputStore";
 import { dashboardStrings } from "./dashboardStrings";
+import { firstLine } from "./attentionModel";
 import { instrumentLineFromTelemetry, instrumentSlotsFromTelemetry } from "./instrumentLine";
 import { resolveDisplayState, type DashboardCardModel, type DashboardDisplayState } from "./dashboardModel";
 import { latestInstruction as latestInstructionFromEvents } from "./liveTimelineModel";
@@ -56,14 +57,14 @@ function CardRow({ card, selected, open, now, hideWorkspaceBadge, onSelect, onJu
     ?? (listEvents ? latestInstructionFromEvents(listEvents) : null)
     ?? recentInput?.text
     ?? null;
-  const preview = card.brief?.pendingPrompt
-    ?? card.activityText
-    ?? card.checkpoint
-    ?? instruction
-    ?? card.task
-    ?? card.lastLog
-    ?? card.metadata?.cwd
-    ?? dashboardStrings.listEmpty;
+  // 最後に言ったことを 1 行だけ。複数行は先頭行で切り、どれも無ければ行ごと出さない。
+  const preview = firstLine(card.brief?.pendingPrompt)
+    ?? firstLine(card.activityText)
+    ?? firstLine(card.checkpoint)
+    ?? firstLine(instruction)
+    ?? firstLine(card.task)
+    ?? firstLine(card.lastLog)
+    ?? firstLine(card.metadata?.cwd);
   const labels = stateLabels(state);
   const stateColor = displayStateColor(state);
   const elapsedMinutes = card.noUpdateMinutes
@@ -92,7 +93,7 @@ function CardRow({ card, selected, open, now, hideWorkspaceBadge, onSelect, onJu
         <strong>{card.label}</strong>
         {hideWorkspaceBadge ? null : <span className="cmux-dash-row-workspace">{card.workspace.name}</span>}
       </span>
-      <span className="cmux-dash-row-preview">{preview}</span>
+      {preview ? <span className="cmux-dash-row-preview">{preview}</span> : null}
       <span className="cmux-dash-row-status">
         <span title={labels.tooltip} aria-label={labels.tooltip} style={statePillStyle(stateColor)}>{card.neverStarted ? dashboardStrings.stateNotStarted : labels.primary}</span>
         <span className="cmux-dash-row-activity">{labels.activityLabel}</span>

@@ -153,6 +153,11 @@ export function restoreWorkspaceConfigs(
         pet: cfg.pet ?? undefined,
         columnWidths: cfg.column_widths ?? undefined,
         rowHeightsPerCol: cfg.row_heights_per_col ?? undefined,
+        // buildWorkspaceRecord validates these against the restored columns and
+        // drops them when they do not fit, which is how data saved before
+        // 2026-09-16 comes back as "nothing was ever dragged".
+        columnDividerPins: cfg.column_divider_pins ?? undefined,
+        rowDividerPinsPerCol: cfg.row_divider_pins_per_col ?? undefined,
         activate: false,
       },
     );

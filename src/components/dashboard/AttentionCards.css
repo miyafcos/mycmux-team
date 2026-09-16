@@ -1,3 +1,24 @@
+.cmux-attention-section {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding: 14px 16px;
+  background: var(--cmux-bg);
+}
+
+.cmux-attention-empty { margin: 0; color: var(--cmux-text-tertiary); font-size: var(--cmux-font-size-sm); }
+
+/* 事実カードは既存カードと同じ枠で、左の色だけ「観測した事実」として控えめにする。 */
+.cmux-attention-fact { border-left-color: var(--cmux-border); }
+.cmux-attention-fact[data-attention-fact-kind="pendingQuestion"] { border-left-color: var(--status-waiting); }
+.cmux-attention-fact-prompt { margin: 8px 0 0; color: var(--cmux-text); font-size: 0.95em; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cmux-attention-fact-options { margin: 6px 0 0; padding-left: 1.2em; color: var(--cmux-text-secondary); font-size: 0.9em; }
+.cmux-attention-fact-options li { overflow-wrap: anywhere; }
+.cmux-attention-fact-detail { margin: 8px 0 0; overflow: hidden; color: var(--cmux-text-secondary); font-size: 0.9em; text-overflow: ellipsis; white-space: nowrap; }
+
 .cmux-attention-card {
   border: 1px solid var(--cmux-border, #667085);
   border-left: 3px solid var(--status-warning, #d97706);

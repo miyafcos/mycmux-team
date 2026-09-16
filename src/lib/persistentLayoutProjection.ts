@@ -130,6 +130,10 @@ function persistentWorkspaceProjection(workspace: Workspace) {
         finiteNumber(height, `workspace.rowHeightsPerCol[${columnIndex}][${rowIndex}]`)
       ))
     )),
+    // Which dividers the user dragged is saved state in its own right: moving
+    // one without changing a size still has to reach the autosave.
+    columnDividerPins: (workspace.columnDividerPins ?? []).map((pin) => pin),
+    rowDividerPinsPerCol: (workspace.rowDividerPinsPerCol ?? []).map((column) => [...column]),
     panes: workspace.panes.map(persistentPaneProjection),
   } satisfies Record<PersistentWorkspaceKey, unknown>;
   return projection;

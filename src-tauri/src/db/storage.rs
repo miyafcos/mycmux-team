@@ -283,6 +283,13 @@ pub struct WorkspaceConfig {
     pub column_widths: Option<Vec<f64>>,
     #[serde(default)]
     pub row_heights_per_col: Option<Vec<Vec<f64>>>,
+    // Which dividers the user dragged. Added 2026-09-16 without a schema bump:
+    // data.json files written before it simply have no pins, which reads as
+    // "nothing was ever dragged" on the frontend.
+    #[serde(default)]
+    pub column_divider_pins: Option<Vec<bool>>,
+    #[serde(default)]
+    pub row_divider_pins_per_col: Option<Vec<Vec<bool>>>,
 }
 
 fn default_true() -> bool {
@@ -1616,6 +1623,49 @@ mod tests {
         let serialized = serde_json::to_string(&workspace).unwrap();
         let restored: WorkspaceConfig = serde_json::from_str(&serialized).unwrap();
         assert_eq!(restored.pet.as_deref(), Some("clawd"));
+    }
+
+    /// Everything saved before 2026-09-16 predates the divider pins, so the
+    /// fields have to be optional both ways: absent on the way in, and back out
+    /// unchanged once the frontend starts writing them.
+    #[test]
+    fn workspace_divider_pins_default_to_none_when_absent_and_round_trip() {
+        let mut workspace: WorkspaceConfig = serde_json::from_str(
+            r#"{"id":"ws-1","name":"Workspace","grid_template_id":"1x1","panes":[],"created_at":1,"column_widths":[0.7,0.3],"row_heights_per_col":[[1.0],[1.0]]}"#,
+        )
+        .unwrap();
+        assert!(workspace.column_divider_pins.is_none());
+        assert!(workspace.row_divider_pins_per_col.is_none());
+
+        workspace.column_divider_pins = Some(vec![true]);
+        workspace.row_divider_pins_per_col = Some(vec![vec![], vec![]]);
+        let serialized = serde_json::to_string(&workspace).unwrap();
+        let restored: WorkspaceConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(restored.column_divider_pins, Some(vec![true]));
+        assert_eq!(
+            restored.row_divider_pins_per_col,
+            Some(vec![vec![], vec![]])
+        );
+        assert_eq!(restored.column_widths, Some(vec![0.7, 0.3]));
+    }
+
+    /// A pin list that is longer than one axis is still stored verbatim: the
+    /// frontend decides what is believable, Rust only carries the value.
+    #[test]
+    fn workspace_divider_pins_are_stored_verbatim() {
+        let workspace: WorkspaceConfig = serde_json::from_str(
+            r#"{"id":"ws-1","name":"Workspace","grid_template_id":"1x1","panes":[],"created_at":1,"column_divider_pins":[true,false,true],"row_divider_pins_per_col":[[false,true]]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            workspace.column_divider_pins,
+            Some(vec![true, false, true])
+        );
+        assert_eq!(
+            workspace.row_divider_pins_per_col,
+            Some(vec![vec![false, true]])
+        );
     }
 
     #[test]

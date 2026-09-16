@@ -214,6 +214,82 @@ describe("pane.spawn_tab activation", () => {
     expect(useUiStore.getState().focusRevision).toBe(0);
   });
 
+  it("brings the tab forward in the visible workspace for an operator request", async () => {
+    const result = await handleSocketCommand("pane.spawn_tab", {
+      anchorSessionId: originalSessionId,
+      commandArgv: ["cmd.exe"],
+      activate: true,
+      operator: true,
+    }) as {
+      tabId: string;
+      sessionId: string;
+      foregroundChanged: boolean;
+      activationRequested: boolean;
+      activationApplied: boolean;
+    };
+
+    const pane = currentPane();
+    expect(pane.activeTabId).toBe(result.tabId);
+    expect(pane.sessionId).toBe(result.sessionId);
+    expect(useUiStore.getState().activePaneId).toBe(result.sessionId);
+    expect(result).toMatchObject({
+      foregroundChanged: true,
+      activationRequested: true,
+      activationApplied: true,
+    });
+  });
+
+  it("leaves the foreground alone when operator arrives without activate", async () => {
+    const result = await handleSocketCommand("pane.spawn_tab", {
+      anchorSessionId: originalSessionId,
+      commandArgv: ["cmd.exe"],
+      operator: true,
+    }) as { foregroundChanged: boolean; activationApplied: boolean };
+
+    const pane = currentPane();
+    expect(pane.activeTabId).toBe(originalTabId);
+    expect(useUiStore.getState().activePaneId).toBe(originalSessionId);
+    expect(useUiStore.getState().focusRevision).toBe(0);
+    expect(result).toMatchObject({ foregroundChanged: false, activationApplied: false });
+  });
+
+  it("still leaves a background workspace alone for an operator request", async () => {
+    const background = workspace();
+    background.id = "workspace-background";
+    background.panes = background.panes.map((pane) => ({
+      ...pane,
+      id: "pane-background",
+      sessionId: "session-background-original",
+      activeTabId: "tab-background-original",
+      tabs: [{ ...pane.tabs[0], id: "tab-background-original", sessionId: "session-background-original" }],
+    }));
+    background.splitColumns = [["pane-background"]];
+    useWorkspaceListStore.setState((state) => ({ workspaces: [...state.workspaces, background] }));
+
+    const result = await handleSocketCommand("pane.spawn_tab", {
+      anchorSessionId: "session-background-original",
+      commandArgv: ["cmd.exe"],
+      activate: true,
+      operator: true,
+    }) as {
+      tabId: string;
+      sessionId: string;
+      foregroundChanged: boolean;
+      activationApplied: boolean;
+    };
+
+    const backgroundPane = useWorkspaceListStore.getState()
+      .getWorkspace(background.id)!
+      .panes[0];
+    // The tab is the one waiting in that workspace, but the operator keeps the
+    // screen they are on: a socket may not switch workspaces.
+    expect(backgroundPane.activeTabId).toBe(result.tabId);
+    expect(backgroundPane.sessionId).toBe(result.sessionId);
+    expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe(workspaceId);
+    expect(useUiStore.getState().activePaneId).toBe(originalSessionId);
+    expect(result).toMatchObject({ foregroundChanged: false, activationApplied: true });
+  });
+
   it("starts an agent target through the shell launcher without a renderer", async () => {
     const { getAgent } = await import("../../src/lib/agents");
     await handleSocketCommand("pane.spawn_tab", {

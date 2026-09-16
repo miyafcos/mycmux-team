@@ -50,6 +50,8 @@ import {
   useAskQuestionStore,
 } from "../../stores/askQuestionStore";
 import { DashboardSessionList, useFrozenCardOrder } from "./DashboardSessionList";
+import { AttentionCards } from "./AttentionCards";
+import type { AttentionFactSource } from "./attentionModel";
 import { AskStrip } from "./AskStrip";
 import { buildAskStripItems } from "./askStripModel";
 import {
@@ -80,7 +82,6 @@ import { WorkOrderContract } from "./WorkOrderContract";
 import { targetKey } from "../../lib/livebrief";
 import { LayoutMinimapPanel } from "./LayoutMinimapPanel";
 import { resolveDisplayState } from "./dashboardModel";
-import { ReportInbox } from "./ReportInbox";
 import { ChatColumn } from "./ChatColumn";
 import { chatColumnColor } from "../../lib/chatColumnColors";
 import ErrorBoundary from "../common/ErrorBoundary";
@@ -234,6 +235,13 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     now,
     hasTerminalBuffer,
   }), [attentionState, briefsBySession, metadataState, now, stallsBySession, workspaces]);
+  const attentionFactSources = useMemo<AttentionFactSource[]>(() => cards.map((card) => ({
+    sessionId: card.tab.sessionId,
+    label: card.label,
+    brief: card.brief,
+    noUpdateMinutes: card.noUpdateMinutes,
+    queuedInput: card.stall?.reason === "queued_input" ? card.stall.detail ?? null : null,
+  })), [cards]);
   const minimapDisplayStateByTabId = useMemo(() => new Map(cards.map((card) => [card.tab.id, resolveDisplayState(card)] as const)), [cards]);
   const filteredCards = useMemo(() => applyDashboardFilters(cards, {
     query: viewState.query,
@@ -317,7 +325,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     // visibleCards is rebuilt on every poll; aheadKey keeps this to real changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aheadKey]);
-  const reportInboxOpen = dashboardReportInboxOpen(chatColumnTabIds);
+  const attentionOpen = dashboardReportInboxOpen(chatColumnTabIds);
   const openChatColumnTabIds = useMemo(
     () => chatColumnSlots.map(chatSlotId),
     [chatColumnSlots],
@@ -722,7 +730,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
       paneId: card?.paneId ?? "",
       tabId,
       label: card?.label
-        ?? (isDashboardPreviewColumn(tabId) ? (viewState.previewColumn?.label ?? dashboardStrings.previewColumnTitle) : dashboardStrings.reportInboxTitle),
+        ?? (isDashboardPreviewColumn(tabId) ? (viewState.previewColumn?.label ?? dashboardStrings.previewColumnTitle) : dashboardStrings.attentionTitle),
     };
     let dragging = false;
     let dashboardTarget = false;
@@ -1116,8 +1124,8 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     clearDoneCount: clearableCards.length,
     onClearDone: clearDone,
     filteredSummary: filterActive ? dashboardStrings.filteredSummary(filteredCards.length, cards.length) : null,
-    reportInboxOpen,
-    onOpenReportInbox: () => viewState.toggleChatColumn(DASHBOARD_INBOX_COLUMN_ID),
+    attentionOpen,
+    onOpenAttention: () => viewState.toggleChatColumn(DASHBOARD_INBOX_COLUMN_ID),
     openTabIds: openSessionTabIds,
   } as const;
 
@@ -1236,12 +1244,12 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
                     data-dashboard-column-drag-handle="true"
                     tabIndex={0}
                     role="group"
-                    aria-label={`${dashboardStrings.reportInboxTitle} の列。Alt+左矢印またはAlt+右矢印で並べ替え`}
+                    aria-label={`${dashboardStrings.attentionTitle} の列。Alt+左矢印またはAlt+右矢印で並べ替え`}
                     style={columnColor ? { borderLeftColor: columnColor } : undefined}
                     onClick={() => viewState.setActiveChatColumn(index)}
                     onKeyDown={(event) => reorderChatColumnFromHeader(index, event)}
                   >
-                    <strong>{dashboardStrings.reportInboxTitle}</strong>
+                    <strong>{dashboardStrings.attentionTitle}</strong>
                     <button
                       type="button"
                       data-dashboard-chat-column-pin={slotId}
@@ -1251,10 +1259,10 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
                       title={viewState.pinnedChatColumnTabIds.includes(slotId) ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel}
                       onClick={(event) => { event.stopPropagation(); viewState.toggleChatColumnPin(slotId); }}
                     >{dashboardStrings.chatColumnPin}</button>
-                    <button type="button" data-dashboard-chat-column-close={slotId} className="cmux-dashboard-chat-column-close" aria-label={`${dashboardStrings.reportInboxTitle} を閉じる`} onClick={(event) => { event.stopPropagation(); closeChatColumn(index, slot); }}>×</button>
+                    <button type="button" data-dashboard-chat-column-close={slotId} className="cmux-dashboard-chat-column-close" aria-label={`${dashboardStrings.attentionTitle} を閉じる`} onClick={(event) => { event.stopPropagation(); closeChatColumn(index, slot); }}>×</button>
                   </header>
                   <div className="cmux-dashboard-chat-column-body" data-dashboard-inbox-column="true">
-                    <ReportInbox attentionActions={attentionActions} />
+                    <AttentionCards {...attentionActions} sessions={attentionFactSources} />
                   </div>
                 </article>;
               }
@@ -1303,7 +1311,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
         </div>
         <div className="cmux-dashboard-composer-destination" aria-live="polite">
           <span>{activeColumnIsInbox
-            ? `入力先: ${dashboardStrings.reportInboxTitle}（${activeChatColumn + 1}/${chatColumnTabIds.length}列）`
+            ? `入力先: ${dashboardStrings.attentionTitle}（${activeChatColumn + 1}/${chatColumnTabIds.length}列）`
             : activeColumnIsPreview
               ? `入力先: ${viewState.previewColumn?.label ?? dashboardStrings.previewColumnTitle}（${activeChatColumn + 1}/${chatColumnTabIds.length}列）`
             : activeColumnCard

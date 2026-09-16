@@ -1153,6 +1153,10 @@ export interface WorkspaceConfig {
   split_columns?: number[][] | null;
   column_widths?: number[] | null;
   row_heights_per_col?: number[][] | null;
+  /** One flag per divider between the columns; `true` = the user dragged it. */
+  column_divider_pins?: boolean[] | null;
+  /** The same, for the dividers between the panes inside each column. */
+  row_divider_pins_per_col?: boolean[][] | null;
   // Legacy fields (read-only, for migration from older data formats)
   split_rows?: number[][] | null;
   row_sizes?: number[] | null;

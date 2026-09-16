@@ -1,4 +1,4 @@
-import { DEFAULT_LAYOUT_SIZE } from "../../lib/layoutMetrics";
+import { DEFAULT_LAYOUT_SIZE, normalizeDividerPins } from "../../lib/layoutMetrics";
 import {
   canonicalize,
   hashCanonical,
@@ -590,12 +590,30 @@ function metricsFor(previous: Workspace | undefined, next: Workspace): Workspace
       ? [...previousRows[priorIndex]]
       : equalSizes(column.length);
   });
+  // A dragged divider remembers a position along one particular row of
+  // columns (or panes). Grouping rebuilds those rows, so the memory only
+  // carries over where the row came out exactly as it went in.
+  const sameColumns = columns.length === previousColumns.length
+    && columns.every((column, index) => column.length === previousColumns[index].length
+      && column.every((id, row) => id === previousColumns[index][row]));
+  const columnDividerPins = sameColumns
+    ? normalizeDividerPins(previous?.columnDividerPins, columns.length)
+    : undefined;
+  const rowDividerPinsPerCol = columns.map((column) => {
+    const priorIndex = previousColumns.findIndex((candidate) => candidate.length === column.length
+      && candidate.every((id, index) => id === column[index]));
+    return priorIndex >= 0
+      ? normalizeDividerPins(previous?.rowDividerPinsPerCol?.[priorIndex], column.length)
+      : normalizeDividerPins(undefined, column.length);
+  });
   return {
     ...next,
     splitColumns: columns,
     gridTemplateId: deriveGridTemplateId(columns),
     columnWidths,
     rowHeightsPerCol,
+    columnDividerPins,
+    rowDividerPinsPerCol,
   };
 }
 

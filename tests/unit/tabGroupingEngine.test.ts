@@ -455,6 +455,11 @@ describe("Gate 1 deterministic allocation and identity", () => {
     expect(compiled.transaction.workspaces.find((item) => item.id === "ws-c")).toEqual({
       ...untouchedBefore,
       gridTemplateId: "1x1",
+      // The compiler works from the persistent projection, which spells an
+      // absent divider-pin list as an empty one — the same round trip the
+      // widths have always had.
+      columnDividerPins: [],
+      rowDividerPinsPerCol: [],
     });
   });
 

@@ -3,10 +3,13 @@ import { v4 as uuid } from "uuid";
 import type { Workspace, GridTemplateId, AgentSessionKind } from "../types";
 import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../lib/layoutColumns";
 import {
+  columnDividerPinsMatch,
   columnWidthsMatch,
   fallbackColumns,
   reconcileLayoutMetrics,
+  rowDividerPinsMatch,
   rowHeightsMatch,
+  type SplitInsertHint,
 } from "../lib/layoutMetrics";
 import { normalizeWorkspaceColor } from "../lib/workspaceColors";
 import {
@@ -213,6 +216,8 @@ interface CreateWorkspaceOptions {
   color?: string;
   columnWidths?: number[];
   rowHeightsPerCol?: number[][];
+  columnDividerPins?: boolean[];
+  rowDividerPinsPerCol?: boolean[][];
   activate?: boolean;
   pet?: string;
 }
@@ -304,14 +309,22 @@ interface WorkspaceListState {
     id: string,
     columnWidths?: number[],
     rowHeightsPerCol?: number[][],
+    columnDividerPins?: boolean[],
+    rowDividerPinsPerCol?: boolean[][],
   ) => void;
-  
+
   // Internal update for layout store to modify panes
   _updateWorkspacePanes: (
     id: string,
     panes: Workspace["panes"],
     splitColumns?: string[][],
     resetLayoutMetrics?: boolean,
+    /**
+     * Where a new pane was cut from, when the caller knows. Without it the
+     * reconciler has to guess, and a guess puts a left/up split on the wrong
+     * side of the layout.
+     */
+    insertHint?: SplitInsertHint,
   ) => void;
   /** Atomic whole-layout replacement for a single layout mutation transaction. */
   _replaceWorkspaces: (
@@ -369,6 +382,8 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       pet: resolveNewWorkspacePet(options),
       columnWidths: options?.columnWidths,
       rowHeightsPerCol: options?.rowHeightsPerCol,
+      columnDividerPins: options?.columnDividerPins,
+      rowDividerPinsPerCol: options?.rowDividerPinsPerCol,
     });
 
     commitLayoutMutation(set, (state) => ({
@@ -484,21 +499,37 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     });
   },
 
-  setWorkspaceLayoutMetrics: (id, columnWidths, rowHeightsPerCol) => {
+  setWorkspaceLayoutMetrics: (
+    id,
+    columnWidths,
+    rowHeightsPerCol,
+    columnDividerPins,
+    rowDividerPinsPerCol,
+  ) => {
     commitLayoutMutation(set, (state) => ({
       workspaces: state.workspaces.map((w) => {
         if (w.id !== id) return w;
         const columns = fallbackColumns(w.splitColumns, w.panes.map((pane) => pane.id));
+        // Pins address dividers between sizes, so they are only taken along
+        // with sizes the axis actually accepted.
+        const keepWidths = columnWidthsMatch(columns, columnWidths);
+        const keepHeights = rowHeightsMatch(columns, rowHeightsPerCol);
         return {
           ...w,
-          columnWidths: columnWidthsMatch(columns, columnWidths) ? columnWidths : undefined,
-          rowHeightsPerCol: rowHeightsMatch(columns, rowHeightsPerCol) ? rowHeightsPerCol : undefined,
+          columnWidths: keepWidths ? columnWidths : undefined,
+          rowHeightsPerCol: keepHeights ? rowHeightsPerCol : undefined,
+          columnDividerPins: keepWidths && columnDividerPinsMatch(columns, columnDividerPins)
+            ? columnDividerPins
+            : undefined,
+          rowDividerPinsPerCol: keepHeights && rowDividerPinsMatch(columns, rowDividerPinsPerCol)
+            ? rowDividerPinsPerCol
+            : undefined,
         };
       }),
     }));
   },
 
-  _updateWorkspacePanes: (id, panes, splitColumns, resetLayoutMetrics = false) => {
+  _updateWorkspacePanes: (id, panes, splitColumns, resetLayoutMetrics = false, insertHint) => {
     const beforeState = get();
     const activeSessionId = useUiStore.getState().activePaneId;
     const beforeFocusTarget = activeFocusTargetSignature(
@@ -519,10 +550,10 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
         const splitLayoutChanged = splitColumnsChanged(previousSplitColumns, normalizedSplitColumns);
         const layoutMetrics = reconcileLayoutMetrics(
           previousSplitColumns,
-          w.columnWidths,
-          w.rowHeightsPerCol,
+          w,
           normalizedSplitColumns,
           resetLayoutMetrics || panesChanged || splitLayoutChanged,
+          insertHint,
         );
         return {
           ...w,

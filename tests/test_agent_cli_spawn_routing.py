@@ -504,3 +504,28 @@ def test_attention_null_is_present_in_serialized_send_request(value, expected):
     assert wire_args["expectedSessionEpoch"] == 7
     assert wire_args["expectedSessionRevision"] == 11
     assert wire_args["expectedInputRevision"] == 5
+
+
+def test_spawn_tab_operator_marks_the_request_as_a_human_tap() -> None:
+    cmd, args = request_for_spawn_tab(["--target", "claude", "--activate", "--operator"])
+    assert cmd == "pane.spawn_tab"
+    assert args["activate"] is True
+    assert args["operator"] is True
+
+
+def test_spawn_tab_omits_operator_unless_asked() -> None:
+    _, args = request_for_spawn_tab(["--target", "claude", "--activate"])
+    assert "operator" not in args
+
+
+def test_spawn_tab_operator_requires_activate() -> None:
+    with pytest.raises(RuntimeError, match="requires --activate"):
+        request_for_spawn_tab(["--target", "claude", "--operator"])
+
+
+def test_spawn_tab_operator_rejects_detach() -> None:
+    namespace = cli.build_parser().parse_args([
+        "spawn-tab", "--detach", "--target", "codex", "--activate", "--operator",
+    ])
+    with pytest.raises(RuntimeError, match="cannot be used with --detach"):
+        cli.request_for(namespace)

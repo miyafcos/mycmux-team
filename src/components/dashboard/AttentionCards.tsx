@@ -4,7 +4,13 @@ import type { AttentionCard, SessionRef } from "../../lib/attentionBridge";
 import { useAskQuestionStore } from "../../stores/askQuestionStore";
 import { connectAttentionStore, useAttentionStore } from "../../stores/attentionStore";
 import { dashboardStrings } from "./dashboardStrings";
-import { primaryActionLabel, sortAttentionCards } from "./attentionModel";
+import {
+  buildAttentionFactCards,
+  primaryActionLabel,
+  sortAttentionCards,
+  type AttentionFactCard,
+  type AttentionFactSource,
+} from "./attentionModel";
 import { QuestionCard } from "./QuestionCard";
 import "./AttentionCards.css";
 
@@ -18,7 +24,14 @@ export interface AttentionCardActions {
   resolveCard?: (id: string) => Promise<void>;
 }
 
-export function AttentionCards(actions: AttentionCardActions) {
+export interface AttentionCardsProps extends AttentionCardActions {
+  /** ダッシュボードが見ているセッション。ここから事実カードを組む。 */
+  sessions?: readonly AttentionFactSource[];
+}
+
+const NO_SESSIONS: readonly AttentionFactSource[] = [];
+
+export function AttentionCards({ sessions = NO_SESSIONS, ...actions }: AttentionCardsProps) {
   const cardsById = useAttentionStore((state) => state.cardsById);
   const cardIds = useAttentionStore((state) => state.cardIds);
   const storedResolveCard = useAttentionStore((state) => state.resolveCard);
@@ -41,8 +54,14 @@ export function AttentionCards(actions: AttentionCardActions) {
   const askSessions = useMemo(() => Object.entries(askBySession).filter(([, state]) => (
     state.screen !== null || state.stopReason !== null
   )), [askBySession]);
-  if (cards.length === 0 && askSessions.length === 0) return null;
-  return <section aria-label={dashboardStrings.attentionTitle}>
+  // 質問は答えられる QuestionCard が出ているほうを採り、同じ席で二重に出さない。
+  const askSessionIds = useMemo(() => new Set(askSessions.map(([sessionId]) => sessionId)), [askSessions]);
+  const factCards = useMemo(() => buildAttentionFactCards(sessions).filter((card) => (
+    card.kind !== "pendingQuestion" || !askSessionIds.has(card.sessionId)
+  )), [askSessionIds, sessions]);
+  const empty = factCards.length === 0 && cards.length === 0 && askSessions.length === 0;
+  return <section aria-label={dashboardStrings.attentionTitle} className="cmux-attention-section" data-attention-section="true">
+    {factCards.map((card) => <AttentionFactCardItem key={card.id} card={card} openSession={actions.openSession} />)}
     {askSessions.map(([sessionId]) => {
       const sourceCard = allCards.find((card) => (
         card.kind === "agentAsked"
@@ -59,7 +78,46 @@ export function AttentionCards(actions: AttentionCardActions) {
       />;
     })}
     {cards.map((card) => <AttentionCardItem key={card.id} card={card} actions={actions} onResolve={resolveCard} />)}
+    {empty ? <p className="cmux-attention-empty" data-attention-empty="true">{dashboardStrings.attentionEmpty}</p> : null}
   </section>;
+}
+
+/** 観測した事実 1 件ぶん。判定は書かず、席・本文・経過だけを出す。 */
+function AttentionFactCardItem({
+  card,
+  openSession,
+}: {
+  card: AttentionFactCard;
+  openSession: AttentionCardActions["openSession"];
+}) {
+  const [running, setRunning] = useState(false);
+  const open = () => {
+    if (running) return;
+    setRunning(true);
+    void Promise.resolve(openSession({ type: "pty", pty_session_id: card.sessionId }))
+      .catch(() => undefined)
+      .finally(() => setRunning(false));
+  };
+  return <article
+    className="cmux-attention-card cmux-attention-fact"
+    data-attention-fact-card={card.id}
+    data-attention-fact-kind={card.kind}
+  >
+    <div className="cmux-attention-card-head">
+      <div className="cmux-attention-card-head-main">
+        <button type="button" className="cmux-attention-card-session-chip" onClick={open}>{card.label}</button>
+        <strong>{dashboardStrings.attentionFactKindLabel(card.kind, card.minutes)}</strong>
+      </div>
+    </div>
+    {card.prompt ? <p className="cmux-attention-fact-prompt" data-attention-fact-prompt={card.id}>{card.prompt}</p> : null}
+    {card.options.length ? <ul className="cmux-attention-fact-options" data-attention-fact-options={card.id}>
+      {card.options.map((option, index) => <li key={`${index}:${option}`}>{option}</li>)}
+    </ul> : null}
+    {card.detail ? <p className="cmux-attention-fact-detail">{card.detail}</p> : null}
+    <div className="cmux-attention-card-action">
+      <button type="button" aria-busy={running || undefined} onClick={open}>{dashboardStrings.attentionFactOpen}</button>
+    </div>
+  </article>;
 }
 
 function AttentionCardItem({

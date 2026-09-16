@@ -63,7 +63,11 @@ import { isShellProcess } from "../../lib/notificationStatus";
 import { confirmAgentSessionClear } from "../../lib/agentSessionClearGuard";
 import { makeSessionId } from "../../lib/constants";
 import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
-import { reconcileColumnWidths, reconcileRowHeightsPerCol } from "../../lib/layoutMetrics";
+import {
+  columnDividerPinsMatch,
+  reconcileSplitLayoutMetrics,
+  rowDividerPinsMatch,
+} from "../../lib/layoutMetrics";
 import { focusController } from "../../lib/focusController";
 import { getTerminalBufferLines, getTerminalWriteCounter, hasTerminalBuffer } from "../terminal/XTermWrapper";
 import { useToastStore } from "../../stores/toastStore";
@@ -302,6 +306,24 @@ function normalizeRowHeightsPerCol(
     return saved && saved.length === col.length ? saved : [];
   });
   return rows.some((row) => row.length > 0) ? rows : null;
+}
+
+function normalizeColumnDividerPins(
+  splitColumns: string[][] | null,
+  columnDividerPins: boolean[] | undefined,
+): boolean[] | null {
+  return splitColumns && columnDividerPinsMatch(splitColumns, columnDividerPins)
+    ? columnDividerPins!
+    : null;
+}
+
+function normalizeRowDividerPinsPerCol(
+  splitColumns: string[][] | null,
+  rowDividerPinsPerCol: boolean[][] | undefined,
+): boolean[][] | null {
+  return splitColumns && rowDividerPinsMatch(splitColumns, rowDividerPinsPerCol)
+    ? rowDividerPinsPerCol!
+    : null;
 }
 
 function inferAgentKindFromAgentId(agentId?: string | null): AgentSessionKind | null {
@@ -932,6 +954,11 @@ export function dedupeAgentSessionsInConfigs(
   };
 }
 
+/** A config addresses its panes by index; the reconciler wants stable names. */
+function paneIdentity(paneIndex: number): string {
+  return `pane:${paneIndex}`;
+}
+
 /** Registry fragments can contain live previews while an adoption is pending. */
 function toSavedWorkspaceConfig(cfg: WorkspaceConfig): WorkspaceConfig {
   const panes = cfg.panes.map((pane) => {
@@ -952,17 +979,40 @@ function toSavedWorkspaceConfig(cfg: WorkspaceConfig): WorkspaceConfig {
     kept.set(i, kept.size);
     return true;
   });
-  const columns = cfg.split_columns?.map((column, c) => ({
-    ids: column.filter((i) => kept.has(i)).map((i) => kept.get(i)!),
-    width: cfg.column_widths?.[c],
-    heights: cfg.row_heights_per_col?.[c]?.filter((_, r) => kept.has(column[r])),
-  })).filter((column) => column.ids.length > 0);
+  // Dropping the live previews is a structural change, so the metrics are
+  // reconciled by the same rule as every other close (R5): the surviving
+  // columns keep the dividers the user dragged and even out the rest. Panes
+  // are addressed by their original index, which is what lets the reconciler
+  // recognise the survivors.
+  const previousColumns = cfg.split_columns?.map((column) => column.map(paneIdentity));
+  const keptColumns = cfg.split_columns
+    ?.map((column) => column.filter((index) => kept.has(index)))
+    .filter((column) => column.length > 0);
+  const metrics = previousColumns && keptColumns
+    ? reconcileSplitLayoutMetrics(
+      previousColumns,
+      {
+        columnWidths: cfg.column_widths ?? undefined,
+        rowHeightsPerCol: cfg.row_heights_per_col ?? undefined,
+        columnDividerPins: cfg.column_divider_pins ?? undefined,
+        rowDividerPinsPerCol: cfg.row_divider_pins_per_col ?? undefined,
+      },
+      keptColumns.map((column) => column.map(paneIdentity)),
+    )
+    : null;
+  const splitColumns = keptColumns?.map((column) => column.map((index) => kept.get(index)!)) ?? null;
+  const columnIdColumns = keptColumns?.map((column) => column.map(paneIdentity)) ?? null;
   return {
     ...cfg,
     panes: savedPanes,
-    split_columns: columns?.map((column) => column.ids) ?? null,
-    column_widths: cfg.column_widths && columns ? columns.map((column) => column.width!) : null,
-    row_heights_per_col: cfg.row_heights_per_col && columns ? columns.map((column) => column.heights!) : null,
+    split_columns: splitColumns,
+    column_widths: normalizeColumnWidths(columnIdColumns, metrics?.columnWidths),
+    row_heights_per_col: normalizeRowHeightsPerCol(columnIdColumns, metrics?.rowHeightsPerCol),
+    column_divider_pins: normalizeColumnDividerPins(columnIdColumns, metrics?.columnDividerPins),
+    row_divider_pins_per_col: normalizeRowDividerPinsPerCol(
+      columnIdColumns,
+      metrics?.rowDividerPinsPerCol,
+    ),
   };
 }
 
@@ -988,8 +1038,12 @@ function dropEmptyTabPanesFromConfig(cfg: WorkspaceConfig): WorkspaceConfig {
     ...cfg,
     panes,
     split_columns,
+    // The sizes are dropped because the columns were rebuilt; the pins address
+    // dividers between those sizes, so they go with them.
     column_widths: null,
     row_heights_per_col: null,
+    column_divider_pins: null,
+    row_divider_pins_per_col: null,
   };
 }
 
@@ -1130,13 +1184,22 @@ export function toConfig(
   // const droppedEphemeralPane = paneEntries.length !== ws.panes.length;
   // column_widths: droppedEphemeralPane ? null : normalizeColumnWidths(ws, splitColumns),
   // row_heights_per_col: droppedEphemeralPane ? null : normalizeRowHeightsPerCol(ws, splitColumns),
-  const columnWidths = normalizeColumnWidths(
-    splitColumns,
-    reconcileColumnWidths(previousSplitColumns, ws.columnWidths, splitColumns),
-  );
+  // Dropping the panes that are not persisted is a structural change like any
+  // other, so the same reconciliation decides both the sizes and which
+  // dividers are still remembered as dragged.
+  const persistedMetrics = reconcileSplitLayoutMetrics(previousSplitColumns, ws, splitColumns ?? []);
+  const columnWidths = normalizeColumnWidths(splitColumns, persistedMetrics.columnWidths);
   const rowHeightsPerCol = normalizeRowHeightsPerCol(
     splitColumns,
-    reconcileRowHeightsPerCol(previousSplitColumns, ws.rowHeightsPerCol, splitColumns),
+    persistedMetrics.rowHeightsPerCol,
+  );
+  const columnDividerPins = normalizeColumnDividerPins(
+    splitColumns,
+    persistedMetrics.columnDividerPins,
+  );
+  const rowDividerPinsPerCol = normalizeRowDividerPinsPerCol(
+    splitColumns,
+    persistedMetrics.rowDividerPinsPerCol,
   );
 
   return {
@@ -1270,6 +1333,8 @@ export function toConfig(
     split_columns,
     column_widths: columnWidths,
     row_heights_per_col: rowHeightsPerCol,
+    column_divider_pins: columnDividerPins,
+    row_divider_pins_per_col: rowDividerPinsPerCol,
   };
 }
 

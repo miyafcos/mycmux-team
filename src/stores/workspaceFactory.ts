@@ -1,9 +1,19 @@
 import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../lib/layoutColumns";
-import { columnWidthsMatch, rowHeightsMatch } from "../lib/layoutMetrics";
+import {
+  columnDividerPinsMatch,
+  columnWidthsMatch,
+  rowDividerPinsMatch,
+  rowHeightsMatch,
+} from "../lib/layoutMetrics";
 import { normalizeWorkspaceColor } from "../lib/workspaceColors";
 import type { GridTemplateId, Workspace } from "../types";
 
-export interface BuildWorkspaceRecordInput {
+export type WorkspaceLayoutSizes = Pick<
+  Workspace,
+  "columnWidths" | "rowHeightsPerCol" | "columnDividerPins" | "rowDividerPinsPerCol"
+>;
+
+export interface BuildWorkspaceRecordInput extends WorkspaceLayoutSizes {
   id: string;
   name: string;
   gridTemplateId: GridTemplateId;
@@ -13,19 +23,18 @@ export interface BuildWorkspaceRecordInput {
   createdAt: number;
   color?: string;
   pet?: string;
-  columnWidths?: number[];
-  rowHeightsPerCol?: number[][];
 }
 
 
-function cloneLayoutSizes(
-  columnWidths: number[] | undefined,
-  rowHeightsPerCol: number[][] | undefined,
-): Pick<Workspace, "columnWidths" | "rowHeightsPerCol"> {
+function cloneLayoutSizes(sizes: WorkspaceLayoutSizes): WorkspaceLayoutSizes {
   return {
-    columnWidths: columnWidths ? [...columnWidths] : undefined,
-    rowHeightsPerCol: rowHeightsPerCol
-      ? rowHeightsPerCol.map((rows) => [...rows])
+    columnWidths: sizes.columnWidths ? [...sizes.columnWidths] : undefined,
+    rowHeightsPerCol: sizes.rowHeightsPerCol
+      ? sizes.rowHeightsPerCol.map((rows) => [...rows])
+      : undefined,
+    columnDividerPins: sizes.columnDividerPins ? [...sizes.columnDividerPins] : undefined,
+    rowDividerPinsPerCol: sizes.rowDividerPinsPerCol
+      ? sizes.rowDividerPinsPerCol.map((pins) => [...pins])
       : undefined,
   };
 }
@@ -36,7 +45,11 @@ export function normalizeWorkspaceLayout(workspace: Workspace): Workspace {
     normalizeReadableSplitColumns(structuredClone(workspace.splitColumns ?? [])),
     panes.map((pane) => pane.id),
   );
-  const sizes = cloneLayoutSizes(workspace.columnWidths, workspace.rowHeightsPerCol);
+  const sizes = cloneLayoutSizes(workspace);
+  // A pin remembers a position measured against the sizes it was saved with, so
+  // it is only believed while those sizes survive validation.
+  const keepWidths = columnWidthsMatch(splitColumns, sizes.columnWidths);
+  const keepHeights = rowHeightsMatch(splitColumns, sizes.rowHeightsPerCol);
   return {
     id: workspace.id,
     name: workspace.name,
@@ -47,11 +60,13 @@ export function normalizeWorkspaceLayout(workspace: Workspace): Workspace {
     color: normalizeWorkspaceColor(workspace.color),
     pet: workspace.pet,
     splitColumns,
-    columnWidths: columnWidthsMatch(splitColumns, sizes.columnWidths)
-      ? sizes.columnWidths
+    columnWidths: keepWidths ? sizes.columnWidths : undefined,
+    rowHeightsPerCol: keepHeights ? sizes.rowHeightsPerCol : undefined,
+    columnDividerPins: keepWidths && columnDividerPinsMatch(splitColumns, sizes.columnDividerPins)
+      ? sizes.columnDividerPins
       : undefined,
-    rowHeightsPerCol: rowHeightsMatch(splitColumns, sizes.rowHeightsPerCol)
-      ? sizes.rowHeightsPerCol
+    rowDividerPinsPerCol: keepHeights && rowDividerPinsMatch(splitColumns, sizes.rowDividerPinsPerCol)
+      ? sizes.rowDividerPinsPerCol
       : undefined,
   };
 }
@@ -67,6 +82,6 @@ export function buildWorkspaceRecord(input: BuildWorkspaceRecordInput): Workspac
     createdAt: input.createdAt,
     color: input.color,
     pet: input.pet,
-    ...cloneLayoutSizes(input.columnWidths, input.rowHeightsPerCol),
+    ...cloneLayoutSizes(input),
   });
 }

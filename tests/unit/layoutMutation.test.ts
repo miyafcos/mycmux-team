@@ -125,8 +125,11 @@ describe("applyLayoutMutation", () => {
       kind: "move-tabs", operationId: "metrics", tabIds: ["t3", "t4"], anchorTabId: "t4",
       to: { workspaceId: "b", paneId: "b1" }, sourceLayoutRevision: 1,
     }, 1);
+    // Nobody had dragged these dividers, so losing a column and a row leaves
+    // the one survivor on each axis filling it.
     expect(workspaces[0]).toMatchObject({
-      splitColumns: [["a1"]], columnWidths: [40], rowHeightsPerCol: [[45]],
+      splitColumns: [["a1"]], columnWidths: [1], rowHeightsPerCol: [[1]],
+      columnDividerPins: [], rowDividerPinsPerCol: [[]],
     });
     expect(workspaces[1].columnWidths).toHaveLength(workspaces[1].splitColumns?.length ?? 0);
     assertWellFormed(workspaces, ["t1", "t2", "t3", "t4", "t5", "t6"]);

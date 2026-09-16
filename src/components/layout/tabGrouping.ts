@@ -290,6 +290,8 @@ export function layoutSignature(workspaces: readonly Workspace[]): string {
     splitColumns: workspace.splitColumns ?? [],
     columnWidths: workspace.columnWidths ?? [],
     rowHeightsPerCol: workspace.rowHeightsPerCol ?? [],
+    columnDividerPins: workspace.columnDividerPins ?? [],
+    rowDividerPinsPerCol: workspace.rowDividerPinsPerCol ?? [],
     panes: workspace.panes.map((pane) => ({
       id: pane.id,
       tabs: pane.tabs.map((tab) => ({

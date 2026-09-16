@@ -180,7 +180,11 @@ describe("AttentionCards", () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toBe("");
+    // 欄そのものは残る (空のときは空だと書く) が、中身のないカードは作らない。
+    expect(container.querySelector("[data-attention-card]")).toBeNull();
+    expect(container.querySelector("[data-attention-fact-card]")).toBeNull();
+    expect(container.querySelector("[data-ask-question-session]")).toBeNull();
+    expect(container.querySelector("[data-attention-empty]")?.textContent).toBe(dashboardStrings.attentionEmpty);
   });
 });
 

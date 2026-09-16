@@ -1016,6 +1016,12 @@ async function spawnTab(args: SocketArgs) {
   const anchorTabId = pane.tabs.find((tab) => tab.sessionId === anchorSessionId)?.id;
   const beforeTabIds = new Set(pane.tabs.map((tab) => tab.id));
   const activate = socketArgBoolean(args, "activate", false);
+  // dbfabc76 stops an agent from taking the screen the operator is using. The
+  // phone is the operator, not an agent: when somebody taps "bring it forward"
+  // the tab has to actually come forward, in the visible workspace too. Only a
+  // caller that is relaying a person's tap may set `operator`.
+  const operatorRequest = activate && socketArgBoolean(args, "operator", false);
+  const backgroundWorkspace = useWorkspaceListStore.getState().activeWorkspaceId !== workspace.id;
   useWorkspaceLayoutStore.getState().addTabToPaneWithOptions(
     workspace.id,
     pane.id,
@@ -1024,6 +1030,9 @@ async function spawnTab(args: SocketArgs) {
       launchEnv: buildSpawnLaunchEnv(pane.launchEnv, plan.paneOptions.launchEnv),
       origin: resolveSpawnOrigin(args, anchorTabId),
       activate,
+      // Stays on the socket contract even for an operator request: nothing on
+      // screen moves until the PTY is up, so a spawn that fails and rolls back
+      // never leaves the operator staring at a tab that is about to vanish.
       activationSource: "socket",
     },
   );
@@ -1056,15 +1065,29 @@ async function spawnTab(args: SocketArgs) {
       throw error;
     }
   }
+  // The PTY is up, so the tab is safe to show. setActiveWorkspace restores that
+  // workspace's own last active pane, so the new tab has to be selected after
+  // the switch rather than before it.
+  if (operatorRequest) {
+    useWorkspaceLayoutStore.getState().setActivePaneTab(workspace.id, pane.id, newTab.id);
+    // Switching workspaces from a socket stays banned (test_socket_api_contract),
+    // so only a spawn into the workspace already on screen moves the foreground.
+    // A background one keeps the old behaviour: its tab is simply the one waiting
+    // when that workspace is opened.
+    if (!backgroundWorkspace) {
+      const { applyStructuralActivation } = await import("../../lib/focusController");
+      applyStructuralActivation(newTab.sessionId);
+    }
+  }
   return {
     workspaceId: workspace.id,
     paneId: pane.id,
     tabId: newTab.id,
     sessionId: newTab.sessionId,
     mode: plan.mode,
-    foregroundChanged: false,
+    foregroundChanged: operatorRequest && !backgroundWorkspace,
     activationRequested: activate,
-    activationApplied: activate && useWorkspaceListStore.getState().activeWorkspaceId !== workspace.id,
+    activationApplied: operatorRequest || (activate && backgroundWorkspace),
   };
 }
 

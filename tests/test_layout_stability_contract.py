@@ -36,22 +36,36 @@ def test_pane_layout_metrics_survive_split_structure_changes() -> None:
     # Pure metric reconciliation lives in src/lib/layoutMetrics.ts so it stays
     # unit-testable; the store only adapts Workspace state onto it.
     for snippet in [
-        "export function reconcileColumnWidths(",
-        "export function reconcileRowHeightsPerCol(",
+        "export function reconcileAxisMetrics(",
+        "export function reconcileSplitLayoutMetrics(",
         "export function reconcileLayoutMetrics(",
-        "function previousColumnIndicesForSurvivors(",
-        "return nextColumns.map(() => DEFAULT_LAYOUT_SIZE);",
-        # A split cuts the column the drop landed in and leaves every other
-        # column at the width the user dragged it to. Rebalancing all of them
-        # (what this did until 2026-09-16) threw the layout away on each split.
-        "function splitColumnWidths(",
-        "return splitColumnWidths(previousColumns, previousWidths, nextColumns);",
-        # Pane removal keeps the survivors' stored sizes (proportional spread)
-        # instead of resetting every column to the balanced default.
-        "const survivorWidths = previousIndices.map((previousIndex) =>",
-        "const survivorHeights = nextColumn.map((paneId) =>",
+        "export function settleAxis(",
+        "export function applyAxisDrag(",
+        "export function balancedAxis(",
+        "export function normalizeDividerPins(",
+        "function previousColumnOrigins(",
+        "if (!resetLayoutMetrics) return undefined;",
+        # Since 2026-09-16 only the dividers the user dragged keep a position.
+        # Every other divider is spread evenly again on each split and close,
+        # which is what stops a layout drifting further out of balance.
+        "function spreadFreeDividers(",
+        "return balancedAxis(nextIds.length);",
+        # A divider counts as dragged once it has travelled a whole pixel.
+        "Math.abs(position - before[index]) * total >= 1",
+        # An axis that neither gained nor lost an item is left exactly as it
+        # is, so a workspace saved before the pins existed keeps its widths
+        # until the user next splits or closes along that axis.
+        "const unchanged = previousIds.length === nextIds.length",
+        # Pane removal replays the close on the axis: an end pane takes its
+        # divider with it, and a middle pane merges the two around it.
+        "function removeFromAxis(",
+        "function insertIntoAxis(",
+        # Sizes and pins are validated as a pair, because a pin addresses a
+        # divider between two sizes the axis accepted.
         "columnWidths.every((size) => positiveSize(size) !== null)",
         "row.every((size) => positiveSize(size) !== null)",
+        "export function columnDividerPinsMatch(",
+        "export function rowDividerPinsMatch(",
     ]:
         assert_contains(layout_metrics, snippet, "src/lib/layoutMetrics.ts")
 
@@ -59,24 +73,79 @@ def test_pane_layout_metrics_survive_split_structure_changes() -> None:
         '} from "../lib/layoutMetrics";',
         "const layoutMetrics = reconcileLayoutMetrics(",
         "resetLayoutMetrics || panesChanged || splitLayoutChanged,",
+        "insertHint,",
         "...(layoutMetrics ?? {})",
+        # Which side of the source pane a split landed on cannot be recovered
+        # from the resulting layout, so the actions hand it over explicitly.
+        "insertHint?: SplitInsertHint,",
+        "columnDividerPinsMatch(columns, columnDividerPins)",
+        "rowDividerPinsMatch(columns, rowDividerPinsPerCol)",
     ]:
         assert_contains(store, snippet, "src/stores/workspaceListStore.ts")
-
-    assert "columnWidths: undefined, rowHeightsPerCol: undefined" not in layout_metrics.replace(
-        "return { columnWidths: undefined, rowHeightsPerCol: undefined };",
-        "",
-    )
 
     # allotment ignores preferredSize updates on surviving panes and lets the
     # edge pane absorb a removed sibling's space, so the grid must push the
     # reconciled metrics through the imperative resize() handles whenever the
-    # split structure changes.
+    # split structure changes -- and again after a drag or a double click,
+    # which allotment otherwise leaves exactly where the pointer left them.
     for snippet in [
         "const outerAllotmentRef = useRef<AllotmentHandle | null>(null);",
         "const innerAllotmentRefs = useRef(new Map<string, AllotmentHandle>());",
         "outerAllotmentRef.current?.resize(columnWidths);",
         "innerAllotmentRefs.current.get(columnId)?.resize(rowHeights);",
+        "const settled = applyAxisDrag(",
+        "pushSettledAxis(outerAllotmentRef.current, settled, sizes);",
+        "pushSettledAxis(innerAllotmentRefs.current.get(columnId), settled, sizes);",
+        "function resetAxis(",
+    ]:
+        assert_contains(workspace_view, snippet, "src/components/workspace/WorkspaceView.tsx")
+
+    # The four saved layout fields are decided as one set: a reconciliation
+    # either fills all four in or hands all four back undefined. A path that
+    # returned some of them would leave the rest describing a layout that no
+    # longer exists -- which is what the pre-2026-09-16 version of this guard
+    # was watching for when the pair was just widths and heights.
+    assert_contains(
+        layout_metrics,
+        "    columnWidths: columns.sizes,\n"
+        "    rowHeightsPerCol: rows.map((row) => row.sizes),\n"
+        "    columnDividerPins: columns.pins,\n"
+        "    rowDividerPinsPerCol: rows.map((row) => row.pins),\n",
+        "src/lib/layoutMetrics.ts",
+    )
+    undefined_counts = {
+        field: layout_metrics.count(f"{field}: undefined,")
+        for field in [
+            "columnWidths",
+            "rowHeightsPerCol",
+            "columnDividerPins",
+            "rowDividerPinsPerCol",
+        ]
+    }
+    assert len(set(undefined_counts.values())) == 1 and 0 not in undefined_counts.values(), (
+        f"the four layout fields must go undefined together, got {undefined_counts}"
+    )
+
+    # Both axes have to take part: the columns and the panes inside each one.
+    # The reset handlers are stable functions, because allotment wires the sash
+    # double click once on mount and never swaps that callback again -- an
+    # inline arrow would answer later double clicks with the mounted layout.
+    assert workspace_view.count("onDragStart={(sizes) => {") == 2, (
+        "both the column axis and the row axis must record where a drag began"
+    )
+    assert workspace_view.count("onReset={") == 2, (
+        "both the column axis and the row axis must answer a divider double click"
+    )
+    assert "onReset={() => {" not in workspace_view, (
+        "a reset handler created during render would close over a stale layout"
+    )
+    for snippet in [
+        "const latestLayoutRef = useRef<LatestLayout>(",
+        "const handleColumnsReset = useCallback(() => {",
+        "const rowsResetHandlerFor = useCallback((columnId: string) => {",
+        "const columnIndex = currentColumnIds.indexOf(columnId);",
+        "onReset={handleColumnsReset}",
+        "onReset={rowsResetHandlerFor(columnId)}",
     ]:
         assert_contains(workspace_view, snippet, "src/components/workspace/WorkspaceView.tsx")
 
@@ -87,7 +156,6 @@ def test_terminal_grid_fits_every_split_inside_the_viewport_without_outer_scroll
     global_css = read_repo_text("src/global.css")
 
     for snippet in [
-        'import { fitLayoutSizes } from "../../lib/layoutMetrics";',
         "const layoutWidth = viewportSize.width;",
         "const layoutHeight = viewportSize.height;",
         "const columnWidths = fitLayoutSizes(workspace?.columnWidths, layoutWidth, cols.length);",
