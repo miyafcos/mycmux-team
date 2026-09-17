@@ -1,4 +1,5 @@
 mod markdown;
+mod markdown_preview;
 mod office;
 mod path_resolve;
 
@@ -14,7 +15,8 @@ use std::path::{Path, PathBuf};
 use zip::{ZipArchive, ZipWriter};
 
 pub(crate) use path_resolve::artifact_path_from_uri;
-use markdown::{html_fragment_to_markdown, looks_like_html_fragment, markdown_to_static_html};
+use markdown::{html_fragment_to_markdown, looks_like_html_fragment};
+use markdown_preview::markdown_to_static_html;
 use office::{
     docx_to_html, html_fragment_to_docx_document_xml, office_to_static_html, read_zip_text_entry,
     unsupported_docx_editing_feature,
@@ -167,8 +169,11 @@ fn validate_editable_artifact_path(source_path: &str) -> Result<(PathBuf, String
     {
         return Err("Editable artifact must be .html, .htm, .md, .markdown, or .docx".to_string());
     }
-    let canonical = path
-        .canonicalize()
+    // dunce, not std: on Windows `canonicalize()` answers with the
+    // extended-length form (`\\?\C:\...`), which travels from here into the tab
+    // and onto the toolbar. It keeps the prefix for the paths that genuinely
+    // need it (too long, reserved name), so nothing that used to open stops.
+    let canonical = dunce::canonicalize(&path)
         .map_err(|error| format!("Failed to canonicalize editable artifact: {error}"))?;
     Ok((canonical, kind.to_string()))
 }
@@ -192,8 +197,7 @@ fn preview_info_for_artifact(
     let source_kind = artifact_source_kind(path)
         .ok_or_else(|| "Unsupported artifact source kind".to_string())?
         .to_string();
-    let source_path = path
-        .canonicalize()
+    let source_path = dunce::canonicalize(path)
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
         .to_string();
@@ -265,7 +269,7 @@ fn read_editable_artifact_inner(source_path: String) -> Result<EditableArtifactS
             let raw = std::fs::read_to_string(&path)
                 .map_err(|error| format!("Failed to read editable artifact: {error}"))?;
             raw_content = Some(raw.clone());
-            markdown_to_static_html(&raw)
+            markdown_to_static_html(&raw, Some(&path))
         }
         "html" => {
             ensure_artifact_file_within_read_limit(&path, "read")?;
@@ -430,7 +434,7 @@ fn preview_path_after_save(
     let written_path = write_preview_html_with_fallback(
         &preview_path,
         &fallback_path,
-        markdown_to_static_html(markdown),
+        markdown_to_static_html(markdown, Some(path)),
         "markdown",
     )?;
     Ok(written_path.to_string_lossy().to_string())
@@ -500,7 +504,7 @@ pub async fn save_editable_artifact(
 
 #[cfg(test)]
 mod tests {
-    use super::markdown::markdown_to_static_html;
+    use super::markdown_preview::markdown_to_static_html;
     use super::office::{
         docx_xml_to_html, pptx_slide_xml_to_paragraphs, xlsx_shared_strings_xml_to_vec,
         xlsx_sheet_xml_to_html,
@@ -744,17 +748,23 @@ mod tests {
     }
 
     #[test]
-    fn markdown_preview_escapes_raw_html_and_unsafe_links() {
+    fn markdown_preview_filters_raw_html_and_unsafe_links() {
+        // The preview renders raw HTML now instead of showing it as text, so
+        // the contract moved: nothing dangerous may reach the webview.
         let html = markdown_to_static_html(
-            "# レポート\n\n<script>alert(1)</script>\n\n- [safe](https://example.com)\n- [bad](file:///C:/Users/miyaz/.ssh/id_rsa)\n\n```\n<div>code</div>\n```",
+            "# レポート\n\n<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n- [safe](https://example.com)\n- [js](javascript:alert(1))\n- [bad](file:///C:/Users/miyaz/.ssh/id_rsa)\n\n```\n<div>code</div>\n```",
+            None,
         );
-        assert!(html.contains("<h1>レポート</h1>"));
-        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(html.contains(">レポート</h1>"));
         assert!(html.contains("<a href=\"https://example.com\""));
-        assert!(html.contains("[bad](file:///C:/Users/miyaz/.ssh/id_rsa)"));
         assert!(html.contains("&lt;div&gt;code&lt;/div&gt;"));
-        assert!(!html.contains("<script>"));
-        assert!(!html.contains("href=\"file://"));
+        assert!(!html.contains("<script"));
+        assert!(!html.contains("onerror"));
+        assert!(!html.contains(" style="));
+        assert!(!html.contains("javascript:"));
+        // A file on this machine is handed to the pane, which decides what
+        // opening it means, rather than being followed by the webview.
+        assert!(html.contains("data-mycmux-local-path="));
     }
 
     #[test]
@@ -773,6 +783,30 @@ mod tests {
         assert_eq!(
             normalize_preview_path(Path::new(&info.preview_path)),
             normalize_preview_path(&html_path)
+        );
+    }
+
+    #[test]
+    fn a_source_path_is_spelled_the_way_a_person_would_type_it() {
+        // The path travels into the tab and onto the toolbar, so it must not
+        // carry Windows' extended-length prefix (`\\?\C:\...`).
+        let dir = tempfile::tempdir().unwrap();
+        let markdown_path = dir.path().join("report.md");
+        std::fs::write(&markdown_path, "# ok\n").unwrap();
+
+        let info = preview_info_for_artifact("session-1", &markdown_path, true).unwrap();
+        let (validated, _) = validate_editable_artifact_path(&markdown_path.to_string_lossy())
+            .expect("the file is editable");
+
+        assert!(!info.source_path.starts_with(r"\\?\"), "{}", info.source_path);
+        assert!(
+            !validated.to_string_lossy().starts_with(r"\\?\"),
+            "{}",
+            validated.display()
+        );
+        assert_eq!(
+            normalize_preview_path(Path::new(&info.source_path)),
+            normalize_preview_path(&markdown_path)
         );
     }
 

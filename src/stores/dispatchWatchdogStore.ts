@@ -1,9 +1,13 @@
 import { create } from "zustand";
 
+import { focusController } from "../lib/focusController";
 import { dispatchClaimWatchdog, dispatchScan, type DispatchEntry } from "../lib/ipc";
+import { getTabDisplayLabel } from "../lib/tabDisplayLabel";
+import type { Pane, PaneTab, Workspace } from "../types";
+import { useDashboardViewStore } from "./dashboardViewStore";
 import { useSettingsStore } from "./settingsStore";
 import { type StallEntry, useStallStore } from "./stallStore";
-import { usePaneMetadataStore, useWorkspaceListStore } from "./workspaceStore";
+import { usePaneMetadataStore, useUiStore, useWorkspaceLayoutStore, useWorkspaceListStore } from "./workspaceStore";
 import { useSessionAttentionStore } from "./sessionAttentionStore";
 import { useToastStore } from "./toastStore";
 import { delegationWatchStrings } from "../components/settings/settingsStrings";
@@ -24,6 +28,27 @@ export type WatchdogKind =
  * on its own, and prodding it only burns more of the limit it is waiting out.
  */
 export const WAITING_KINDS: ReadonlySet<WatchdogKind> = new Set<WatchdogKind>(["ask", "rate_limited"]);
+
+/**
+ * Kinds that raise a toast: each one needs a person to act inside the pane.
+ * Timeouts, unverified completions and log-age stalls stay in the queue only.
+ * Log age is read per working directory, so a parent session in the same
+ * folder keeps it fresh and those kinds cannot be trusted as alarms.
+ */
+export type NotifyKind = keyof typeof delegationWatchStrings.toastSituations;
+export const NOTIFY_KINDS: ReadonlySet<WatchdogKind> = new Set<WatchdogKind>(["ask", "done_needs_review", "tab_queued_input"]);
+
+function isNotifyKind(kind: WatchdogKind): kind is NotifyKind {
+  return NOTIFY_KINDS.has(kind);
+}
+
+/**
+ * Ledger statuses with no pane left to watch. Mirrors INACTIVE_STATUSES in
+ * session-dispatch's dispatch_ledger.py and ledger.rs.
+ */
+export const INACTIVE_DISPATCH_STATUSES: ReadonlySet<string> = new Set([
+  "closed", "done-verified-closed", "abandoned", "fallback-inline", "lost",
+]);
 
 export interface WatchdogItem {
   key: string;
@@ -121,7 +146,11 @@ export function buildWatchdogQueue(input: BuildWatchdogQueueInput): { queue: Wat
   for (const entry of input.entries) {
     if (entry.tabSessionId) ledgerSessionIds.add(entry.tabSessionId);
     if (entry.tabSessionId && !input.knownSessionIds.has(entry.tabSessionId)) abandonedSlugs.push(entry.slug);
-    if (entry.status === "closed" || entry.status === "abandoned") continue;
+    if (entry.status && INACTIVE_DISPATCH_STATUSES.has(entry.status)) continue;
+    // Every finding must point at a pane the user can open. Rows whose pane is
+    // gone, or was never recorded, once filled the toasts with slugs of runs
+    // that had ended weeks earlier (0 of 102 open rows had a live pane).
+    if (!entry.tabSessionId || !input.knownSessionIds.has(entry.tabSessionId)) continue;
 
     const spawnedAt = parseTimestamp(entry.ts);
     if (spawnedAt === null) continue;
@@ -223,9 +252,49 @@ export const WATCHDOG_KIND_LABELS: Record<WatchdogKind, string> = {
   ...delegationWatchStrings.kindLabels,
 };
 
-function describe(item: WatchdogItem): string {
-  const subject = item.label ?? item.slug ?? item.sessionId ?? delegationWatchStrings.queueUnknownSubject;
-  return delegationWatchStrings.toastItem(subject, WATCHDOG_KIND_LABELS[item.kind]);
+interface SessionLocation {
+  workspace: Workspace;
+  pane: Pane;
+  tab: PaneTab;
+}
+
+function locateSession(sessionId: string): SessionLocation | null {
+  for (const workspace of useWorkspaceListStore.getState().workspaces) {
+    for (const pane of workspace.panes) {
+      const tab = pane.tabs.find((candidate) => candidate.sessionId === sessionId)
+        ?? (pane.sessionId === sessionId ? pane.tabs.find((candidate) => candidate.id === pane.activeTabId) : undefined);
+      if (tab) return { workspace, pane, tab };
+    }
+  }
+  return null;
+}
+
+/** Brings the pane a watch toast is about to the front, the way the dashboard jump does. */
+export function openWatchdogSession(sessionId: string): void {
+  const location = locateSession(sessionId);
+  if (!location) return;
+  const { workspace, pane, tab } = location;
+  const dashboard = useDashboardViewStore.getState();
+  if (dashboard.open) dashboard.close();
+  if (useWorkspaceListStore.getState().activeWorkspaceId !== workspace.id) {
+    useWorkspaceListStore.getState().setActiveWorkspace(workspace.id);
+  }
+  const zoomedPaneId = useUiStore.getState().zoomedPaneId;
+  useWorkspaceLayoutStore.getState().setActivePaneTab(workspace.id, pane.id, tab.id);
+  if (zoomedPaneId !== null && zoomedPaneId !== pane.id) useUiStore.getState().setZoomedPaneId(pane.id);
+  if (tab.type === undefined || tab.type === "terminal") {
+    focusController.request("programmatic", { sessionId: tab.sessionId, focus: true });
+  } else {
+    focusController.request("programmatic", { sessionId: null, focus: false });
+  }
+}
+
+function describeWatchdogItem(item: WatchdogItem & { kind: NotifyKind; sessionId: string }, location: SessionLocation): string {
+  const { metadata, volatileMetadata } = usePaneMetadataStore.getState();
+  const paneLabel = location.tab.label
+    ?? item.label
+    ?? getTabDisplayLabel(location.tab, location.tab.id === location.pane.activeTabId, metadata, volatileMetadata);
+  return delegationWatchStrings.toastItem(paneLabel, location.workspace.name, delegationWatchStrings.toastSituations[item.kind]);
 }
 
 export function connectDispatchWatchdog(): () => void {
@@ -274,19 +343,24 @@ export function connectDispatchWatchdog(): () => void {
       if (!ownsNotificationLease || !notificationsAllowed) return;
 
       const state = useDispatchWatchdogStore.getState();
-      const pending = queue.filter((item) => item.confirmations >= 2 && !state.notifiedKeys.has(item.key));
-      const direct = pending.slice(0, MAX_TOASTS_PER_TICK);
-      const notified = direct.map((item) => item.key);
-      for (const item of direct) {
-        useToastStore.getState().pushToast(describe(item), "warning");
-        if (item.sessionId) usePaneMetadataStore.getState().incrementNotification(item.sessionId);
+      const notified: string[] = [];
+      for (const item of queue) {
+        if (notified.length >= MAX_TOASTS_PER_TICK) break;
+        if (!isNotifyKind(item.kind) || !item.sessionId || item.confirmations < 2 || state.notifiedKeys.has(item.key)) continue;
+        const location = locateSession(item.sessionId);
+        if (!location) continue;
+        const sessionId = item.sessionId;
+        useToastStore.getState().pushToast(
+          describeWatchdogItem({ ...item, kind: item.kind, sessionId }, location),
+          "warning",
+          { label: delegationWatchStrings.toastOpenAction, run: () => openWatchdogSession(sessionId) },
+        );
+        usePaneMetadataStore.getState().incrementNotification(sessionId);
+        notified.push(item.key);
       }
-      // Only the items we actually showed are marked as seen. The overflow keeps
-      // its unseen state so the next tick surfaces it individually instead of
-      // collapsing it into a count the user can never expand.
-      if (pending.length > MAX_TOASTS_PER_TICK) {
-        useToastStore.getState().pushToast(delegationWatchStrings.additionalQueueItems(pending.length - MAX_TOASTS_PER_TICK), "warning");
-      }
+      // Only the items we actually showed are marked as seen, so anything past
+      // the per-tick cap surfaces on a later tick. There is no list to send a
+      // "N more" toast to, so none is shown.
       if (notified.length > 0) useDispatchWatchdogStore.getState().markNotified(notified);
     } catch (error) {
       console.warn("[dispatch-watchdog] Detection tick failed", error);

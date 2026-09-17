@@ -36,6 +36,24 @@ def test_watchdog_is_notification_only() -> None:
         assert forbidden not in store
 
 
+def test_finished_ledger_statuses_match_between_rust_and_typescript() -> None:
+    # Both sides mirror INACTIVE_STATUSES in session-dispatch's
+    # dispatch_ledger.py. When they drifted to closed/abandoned only, 96
+    # finished rows raised watch toasts (2026-09-17).
+    expected = {"closed", "done-verified-closed", "abandoned", "fallback-inline", "lost"}
+    rust = read("src-tauri/src/dispatch/ledger.rs")
+    store = read("src/stores/dispatchWatchdogStore.ts")
+    command = read("src-tauri/src/commands/dispatch.rs")
+
+    rust_match = re.search(r"pub const INACTIVE_STATUSES: \[&str; \d+\] = \[([^\]]*)\];", rust)
+    ts_match = re.search(r"INACTIVE_DISPATCH_STATUSES: ReadonlySet<string> = new Set\(\[([^\]]*)\]\)", store)
+    assert rust_match and ts_match
+    assert set(re.findall(r'"([^"]+)"', rust_match.group(1))) == expected
+    assert set(re.findall(r'"([^"]+)"', ts_match.group(1))) == expected
+    assert "ledger::is_inactive_status(" in command
+    assert '"closed" | "abandoned"' not in command
+
+
 def test_watchdog_follows_window_role() -> None:
     app = read("src/App.tsx")
     expected = """useEffect(() => {

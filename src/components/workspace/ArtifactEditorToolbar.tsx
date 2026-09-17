@@ -209,6 +209,22 @@ function fileLeaf(path: string | undefined): string {
   return path.split(/[\\/]/).filter(Boolean).pop() || path;
 }
 
+/**
+ * A path spelled the way a person would type it.
+ *
+ * `canonicalize()` on Windows returns the extended-length form (`\\?\C:\...`,
+ * `\\?\UNC\server\share\...`), which the toolbar used to show verbatim - and
+ * after the separators were flipped for display, as `//?/C:/...`. The prefix
+ * lifts the MAX_PATH limit for file I/O and means nothing to a reader.
+ */
+export function displaySourcePath(path: string): string {
+  if (path.startsWith("\\\\?\\UNC\\")) return `\\\\${path.slice(8)}`;
+  if (path.startsWith("\\\\?\\")) return path.slice(4);
+  if (path.startsWith("//?/UNC/")) return `//${path.slice(8)}`;
+  if (path.startsWith("//?/")) return path.slice(4);
+  return path;
+}
+
 function parentPath(path: string | undefined): string {
   if (!path) return "";
   const normalized = path.replace(/\\/g, "/");
@@ -421,12 +437,13 @@ function ArtifactEditorToolbarImpl({
   const commandDisabled = !isEditing || isBusy || Boolean(isSourceMode);
   const iconSize = 13;
   const name = fileLeaf(sourcePath);
-  const parent = parentPath(sourcePath);
+  const displayPath = sourcePath === undefined ? undefined : displaySourcePath(sourcePath);
+  const parent = parentPath(displayPath);
 
   return (
     <div style={shellStyle}>
       <div style={topRowStyle}>
-        <div style={fileBlockStyle} title={sourcePath}>
+        <div style={fileBlockStyle} title={displayPath}>
           <span style={kindBadgeStyle}>{sourceKindLabel(sourceKind, sourcePath)}</span>
           <span style={fileNameStyle}>{name}</span>
           <span style={parentPathStyle}>{parent || artifactEditorStrings.noSourceFile}</span>

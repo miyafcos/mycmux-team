@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-shell";
 import type { ArtifactSourceKind } from "../../types";
 import {
   openWithDefault,
@@ -9,6 +10,15 @@ import {
   type SaveEditableArtifactResult,
 } from "../../lib/ipc";
 import { useKeybindingStore } from "../../stores/keybindingStore";
+import { useThemeStore } from "../../stores/themeStore";
+import {
+  applyMarkdownPreviewAppearance,
+  buildMarkdownPreviewSrcDoc,
+  classifyPreviewLink,
+  findAnchorElement,
+  type MarkdownPreviewAppearance,
+} from "../../lib/markdownPreviewDocument";
+import { markdownPreviewMonoFont, markdownPreviewPalette } from "../../lib/markdownPreviewTheme";
 import {
   createReadonlyHtmlBlob,
   htmlBlobPreviewUrl,
@@ -35,6 +45,13 @@ interface BrowserPaneProps {
   onDirtyChange: (isDirty: boolean) => void;
   onSaved: (result: SaveEditableArtifactResult) => void;
   onZoomToggle?: () => void;
+  /**
+   * A local file a link inside a Markdown preview points at. Without this the
+   * pane opens the file's location instead - a document must never be able to
+   * start a program, so opening it with its default application is not offered
+   * here.
+   */
+  onOpenLocalPath?: (path: string) => void;
 }
 
 const EDITOR_STYLE_ID = "mycmux-artifact-editor-style";
@@ -451,6 +468,7 @@ function BrowserPaneImpl({
   onDirtyChange,
   onSaved,
   onZoomToggle,
+  onOpenLocalPath,
 }: BrowserPaneProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const inputCleanupRef = useRef<(() => void) | null>(null);
@@ -469,6 +487,7 @@ function BrowserPaneImpl({
   const [markdownDraft, setMarkdownDraft] = useState("");
   const [editableSrcDoc, setEditableSrcDoc] = useState<string>("");
   const [readOnlySrcDoc, setReadOnlySrcDoc] = useState<string>("");
+  const [readOnlyLoadFailed, setReadOnlyLoadFailed] = useState(false);
   const [htmlBlobPreview, setHtmlBlobPreview] = useState<HtmlBlobPreviewState>(() =>
     initialHtmlBlobPreview(sourceKind),
   );
@@ -479,6 +498,22 @@ function BrowserPaneImpl({
     sourceKind === "html" || sourceKind === "markdown" || isEditableWordSource(sourceKind, sourcePath);
   const canEdit = Boolean(sourcePath && canUseInAppEditor);
   const getActionsForEvent = useKeybindingStore((s) => s.getActionsForEvent);
+  const theme = useThemeStore((s) => s.theme);
+  const terminalFontFamily = useThemeStore((s) => s.fontFamily);
+  const markdownAppearance = useMemo<MarkdownPreviewAppearance>(() => ({
+    palette: markdownPreviewPalette(theme),
+    monoFont: markdownPreviewMonoFont(terminalFontFamily),
+  }), [theme, terminalFontFamily]);
+  // The load and the frame's own listeners must not re-run when the theme
+  // changes - the document is re-painted in place instead - so they read the
+  // appearance from a ref rather than closing over it.
+  const appearanceRef = useRef(markdownAppearance);
+  appearanceRef.current = markdownAppearance;
+  const onOpenLocalPathRef = useRef(onOpenLocalPath);
+
+  useEffect(() => {
+    onOpenLocalPathRef.current = onOpenLocalPath;
+  }, [onOpenLocalPath]);
 
   useEffect(() => {
     onDirtyChangeRef.current = onDirtyChange;
@@ -621,14 +656,22 @@ function BrowserPaneImpl({
     }
 
     let cancelled = false;
+    setReadOnlyLoadFailed(false);
     readEditableArtifact(sourcePath)
       .then((source) => {
         if (cancelled) return;
-        setReadOnlySrcDoc(buildReadOnlySrcDoc(source.content, source.sourcePath, source.sourceKind));
+        setReadOnlySrcDoc(
+          source.sourceKind === "markdown"
+            ? buildMarkdownPreviewSrcDoc(source.content, appearanceRef.current, convertFileSrc)
+            : buildReadOnlySrcDoc(source.content, source.sourcePath, source.sourceKind),
+        );
       })
       .catch((caught) => {
         if (cancelled) return;
         setReadOnlySrcDoc("");
+        // Stop waiting for a document that is not coming: the frame falls back
+        // to the preview file on disk.
+        setReadOnlyLoadFailed(true);
         console.warn("[artifactEditor] read-only srcdoc load failed", caught);
       });
 
@@ -645,6 +688,21 @@ function BrowserPaneImpl({
     sourceKind,
     sourcePath,
   ]);
+
+  // Re-paint the document that is already on screen when the theme or the
+  // terminal font changes. Rebuilding the srcDoc would reload the frame and
+  // throw away where the reader had scrolled to.
+  useEffect(() => {
+    if (isEditing || sourceKind !== "markdown") return;
+    let doc: Document | null = null;
+    try {
+      doc = iframeRef.current?.contentDocument ?? null;
+    } catch {
+      doc = null;
+    }
+    if (!doc) return;
+    applyMarkdownPreviewAppearance(doc, markdownAppearance);
+  }, [isEditing, markdownAppearance, sourceKind]);
 
   const handleFrameLoad = useCallback(() => {
     inputCleanupRef.current?.();
@@ -728,8 +786,65 @@ function BrowserPaneImpl({
     doc.addEventListener("keydown", forwardShortcut, true);
 
     if (!isEditing) {
+      const previewDoc = doc;
+      const cleanups: Array<() => void> = [
+        () => previewDoc.removeEventListener("keydown", forwardShortcut, true),
+      ];
+
+      // A Markdown preview has no scripts of its own, and the frame cannot
+      // navigate anywhere useful: every link is answered here instead.
+      if (sourceKind === "markdown") {
+        applyMarkdownPreviewAppearance(previewDoc, appearanceRef.current);
+        const reportFailure = (caught: unknown) => {
+          setError(caught instanceof Error ? caught.message : String(caught));
+        };
+        const activateLink = (event: MouseEvent) => {
+          const anchor = findAnchorElement(event.target);
+          if (!anchor) return;
+          // Even a link that leads nowhere must not move the frame itself.
+          event.preventDefault();
+          event.stopPropagation();
+          const action = classifyPreviewLink(anchor);
+          switch (action.kind) {
+            case "fragment": {
+              const target = action.id
+                ? previewDoc.getElementById(action.id)
+                  ?? previewDoc.getElementsByName(action.id)[0]
+                  ?? null
+                : previewDoc.documentElement;
+              target?.scrollIntoView({ block: "start" });
+              break;
+            }
+            case "local": {
+              const openLocalPath = onOpenLocalPathRef.current;
+              if (openLocalPath) {
+                openLocalPath(action.path);
+              } else {
+                revealInExplorer(action.path).catch(reportFailure);
+              }
+              break;
+            }
+            case "external":
+              open(action.url).catch(reportFailure);
+              break;
+            case "none":
+              break;
+          }
+        };
+        const activateMiddleClick = (event: MouseEvent) => {
+          if (event.button !== 1) return;
+          activateLink(event);
+        };
+        previewDoc.addEventListener("click", activateLink, true);
+        previewDoc.addEventListener("auxclick", activateMiddleClick, true);
+        cleanups.push(() => {
+          previewDoc.removeEventListener("click", activateLink, true);
+          previewDoc.removeEventListener("auxclick", activateMiddleClick, true);
+        });
+      }
+
       inputCleanupRef.current = () => {
-        doc.removeEventListener("keydown", forwardShortcut, true);
+        for (const cleanup of cleanups) cleanup();
       };
       return;
     }
@@ -759,7 +874,7 @@ function BrowserPaneImpl({
       doc.removeEventListener("paste", markDirty);
     };
     doc.body.focus();
-  }, [getActionsForEvent, isEditing, onZoomToggle, updateDirty]);
+  }, [getActionsForEvent, isEditing, onZoomToggle, sourceKind, updateDirty]);
 
   const getEditableDocument = useCallback((): Document | null => {
     return iframeRef.current?.contentDocument ?? null;
@@ -919,6 +1034,10 @@ function BrowserPaneImpl({
     htmlBlobPreview,
     readOnlySrcDoc,
     assetSrc: src,
+    // The Markdown preview on disk is painted in the stylesheet's own light
+    // colours; showing it first would flash a white page in a dark workspace.
+    awaitReadOnlySrcDoc:
+      sourceKind === "markdown" && canUseInAppEditor && Boolean(sourcePath) && !readOnlyLoadFailed,
   });
 
   return (
@@ -1040,7 +1159,11 @@ function BrowserPaneImpl({
           width: "100%",
           border: "none",
           display: "block",
-          background: "white",
+          // The frame's own colour shows while the document loads, so for a
+          // Markdown preview it is the page colour the theme is about to paint.
+          background: sourceKind === "markdown"
+            ? markdownAppearance.palette.vars["--md-bg"]
+            : "white",
         }}
       />
       )}

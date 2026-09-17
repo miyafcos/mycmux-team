@@ -45,6 +45,12 @@ export function resolveBrowserIframeSources(input: {
   htmlBlobPreview: HtmlBlobPreviewState;
   readOnlySrcDoc: string;
   assetSrc: string;
+  /**
+   * Wait for the read-only srcDoc instead of showing the file on disk first.
+   * The Markdown preview on disk carries the stylesheet's own light palette, so
+   * loading it first flashes a white page before the themed document arrives.
+   */
+  awaitReadOnlySrcDoc?: boolean;
 }): { src: string | undefined; srcDoc: string | undefined } {
   if (input.isEditing) {
     return { src: undefined, srcDoc: input.editableSrcDoc };
@@ -59,6 +65,9 @@ export function resolveBrowserIframeSources(input: {
     case "idle":
       if (input.readOnlySrcDoc) {
         return { src: undefined, srcDoc: input.readOnlySrcDoc };
+      }
+      if (input.awaitReadOnlySrcDoc) {
+        return { src: undefined, srcDoc: undefined };
       }
       return { src: input.assetSrc, srcDoc: undefined };
   }

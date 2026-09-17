@@ -23,11 +23,17 @@ export const delegationWatchStrings = {
   notifyHint: "「通知とレイアウト」の通知をオフにしている間は、ここをオンにしてもトーストとバッジは出ません。",
   queueTitle: (count: number): string => `いま気になっているペイン (${count}件)`,
   queueEmpty: "問題は見つかっていません。",
-  queueUnknownSubject: "セッション",
   queueContinuing: (elapsed: string, confirmations: number): string => `${elapsed}継続・連続確認 ${confirmations} 回`,
-  // トーストは単独で読まれるので、どのペインの何が起きたのかを機能名込みで書く。
-  toastItem: (subject: string, kind: string): string => `委譲の見守り: ${subject} — ${kind}`,
-  additionalQueueItems: (count: number): string => `委譲の見守り: ほか ${count} 件のペインが要確認です`,
+  // トーストは単独で読まれるので、どのペインで何が起きたのかを文で書き、開くボタンを添える。
+  // 内部の便名 (slug) や判定名は出さない (2026-09-17「この通知でなにがわかるんだ」)。
+  toastItem: (paneLabel: string, workspaceName: string | undefined, situation: string): string =>
+    workspaceName ? `${workspaceName} の「${paneLabel}」${situation}` : `「${paneLabel}」${situation}`,
+  toastSituations: {
+    ask: "が判断を待っています",
+    done_needs_review: "の作業が検収で不合格になりました",
+    tab_queued_input: "に送信されていない入力が残っています",
+  },
+  toastOpenAction: "開く",
   kindLabels: {
     ask: "判断待ち",
     rate_limited: "レート制限で待機中",

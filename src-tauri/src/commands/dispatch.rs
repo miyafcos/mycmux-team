@@ -26,7 +26,7 @@ pub async fn dispatch_scan(state: State<'_, AppState>, include_closed: Option<bo
         .await
         .map_err(|error| DispatchError::internal(format!("dispatch scan task failed: {error}")))?
         .map_err(|error| DispatchError::ledger_unreadable(format!("dispatch ledger could not be read: {error}")))?;
-    Ok(entries.into_iter().filter(|entry| include_closed.unwrap_or(false) || !matches!(entry.status.as_deref(), Some("closed" | "abandoned"))).collect())
+    Ok(entries.into_iter().filter(|entry| include_closed.unwrap_or(false) || !ledger::is_inactive_status(entry.status.as_deref())).collect())
 }
 
 #[tauri::command]

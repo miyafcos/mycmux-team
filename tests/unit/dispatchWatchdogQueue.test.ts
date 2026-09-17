@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { buildWatchdogQueue, telemetryForSkip, telemetryForTick, WAITING_KINDS, type WatchdogItem } from "../../src/stores/dispatchWatchdogStore";
+import {
+  buildWatchdogQueue,
+  INACTIVE_DISPATCH_STATUSES,
+  NOTIFY_KINDS,
+  telemetryForSkip,
+  telemetryForTick,
+  WAITING_KINDS,
+  type WatchdogItem,
+} from "../../src/stores/dispatchWatchdogStore";
 import type { DispatchEntry } from "../../src/lib/ipc";
 
 const NOW = Date.parse("2026-08-13T12:00:00.000Z");
@@ -9,6 +17,7 @@ const MINUTE = 60_000;
 function entry(overrides: Partial<DispatchEntry> = {}): DispatchEntry {
   return {
     slug: "child",
+    tabSessionId: "ledger-tab",
     ts: new Date(NOW - 60 * MINUTE).toISOString(),
     hasDone: false,
     hasAsk: false,
@@ -79,12 +88,46 @@ describe("buildWatchdogQueue", () => {
     const result = buildWatchdogQueue({
       entries: [
         entry({ slug: "closed", status: "closed", hasAsk: true, tabSessionId: "missing" }),
-        entry({ slug: "abandoned", status: "abandoned", hasAsk: true }),
+        entry({ slug: "abandoned", status: "abandoned", hasAsk: true, tabSessionId: undefined }),
       ],
       stallEntries: {}, knownSessionIds: new Set(), previous: [], now: NOW, stallMinutes: 45,
     });
     expect(result.queue).toEqual([]);
     expect(result.abandonedSlugs).toEqual(["closed"]);
+  });
+
+  it("treats every finished ledger status as finished, even with a live pane", () => {
+    // session-dispatch writes five finished statuses. Checking only closed and
+    // abandoned let 96 lost / verified rows keep raising timeouts.
+    const finished = ["closed", "done-verified-closed", "abandoned", "fallback-inline", "lost"];
+    expect([...INACTIVE_DISPATCH_STATUSES].sort()).toEqual([...finished].sort());
+    const result = queue(finished.map((status) => entry({ slug: status, status, hasAsk: true })));
+    expect(result.queue).toEqual([]);
+    const stillRunning = queue(["open", "running", "blocked", "done", "close_failed"]
+      .map((status) => entry({ slug: status, status, hasAsk: true })));
+    expect(stillRunning.queue.map((item) => item.slug)).toEqual(["open", "running", "blocked", "done", "close_failed"]);
+  });
+
+  it("drops ledger rows whose pane is gone or was never recorded", () => {
+    // The 2026-09-17 toasts: open rows from runs that ended weeks earlier,
+    // none of which had a pane left to open.
+    const result = buildWatchdogQueue({
+      entries: [
+        entry({ slug: "gone", tabSessionId: "closed-long-ago", ts: new Date(NOW - 23 * 24 * 60 * MINUTE).toISOString() }),
+        entry({ slug: "no-sid", tabSessionId: undefined, hasAsk: true }),
+        entry({ slug: "live", hasAsk: true }),
+      ],
+      stallEntries: {}, knownSessionIds: new Set(["ledger-tab"]), previous: [], now: NOW, stallMinutes: 45,
+    });
+    expect(result.queue.map((item) => item.slug)).toEqual(["live"]);
+    expect(result.abandonedSlugs).toEqual(["gone"]);
+  });
+
+  it("raises toasts only for findings a person has to act on", () => {
+    expect([...NOTIFY_KINDS].sort()).toEqual(["ask", "done_needs_review", "tab_queued_input"]);
+    for (const quiet of ["timeout", "stalled", "done_unverified", "no_log", "rate_limited", "tab_no_output", "tab_silent"] as const) {
+      expect(NOTIFY_KINDS.has(quiet)).toBe(false);
+    }
   });
 
   it("distinguishes unverified and failed review states", () => {

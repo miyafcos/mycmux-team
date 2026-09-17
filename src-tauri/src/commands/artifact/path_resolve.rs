@@ -10,7 +10,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-use super::markdown::markdown_to_static_html;
+use super::markdown_preview::markdown_to_static_html;
 use super::office::office_to_static_html;
 use super::{
     artifact_source_kind, ensure_artifact_file_within_read_limit, is_allowed_artifact_path,
@@ -296,7 +296,7 @@ pub(super) fn preview_path_for_artifact(
             } else {
                 external_markdown_preview_path(&session_dir, path)?
             };
-            std::fs::write(&preview_path, markdown_to_static_html(&markdown))
+            std::fs::write(&preview_path, markdown_to_static_html(&markdown, Some(path)))
                 .map_err(|error| format!("Failed to write markdown preview: {error}"))?;
             Ok(preview_path.to_string_lossy().to_string())
         }

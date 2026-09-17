@@ -10,6 +10,16 @@ use super::DispatchEntry;
 
 const STALL_MINUTES: f64 = 5.0;
 
+/// Statuses after which a dispatch no longer has a pane to watch. Mirrors
+/// `INACTIVE_STATUSES` in session-dispatch's dispatch_ledger.py and
+/// `INACTIVE_DISPATCH_STATUSES` in dispatchWatchdogStore.ts. Checking only
+/// closed/abandoned let 96 finished rows (mostly `lost`) raise watch toasts.
+pub const INACTIVE_STATUSES: [&str; 5] = ["closed", "done-verified-closed", "abandoned", "fallback-inline", "lost"];
+
+pub fn is_inactive_status(status: Option<&str>) -> bool {
+    status.is_some_and(|status| INACTIVE_STATUSES.contains(&status))
+}
+
 pub fn slugify_cwd(cwd: &str) -> String {
     cwd.chars()
         .map(|character| if character.is_ascii_alphanumeric() { character } else { '-' })
@@ -176,6 +186,17 @@ mod tests {
         assert_eq!(live_state(Some("open"), false, false, false, 5.0), "RUNNING");
         assert_eq!(live_state(Some("open"), false, false, true, 5.1), "RATE_LIMITED");
         assert_eq!(live_state(Some("open"), false, false, false, 5.1), "STALL");
+    }
+
+    #[test]
+    fn inactive_statuses_cover_every_finished_ledger_state() {
+        for status in ["closed", "done-verified-closed", "abandoned", "fallback-inline", "lost"] {
+            assert!(is_inactive_status(Some(status)), "{status}");
+        }
+        for status in ["open", "running", "blocked", "done", "close_failed"] {
+            assert!(!is_inactive_status(Some(status)), "{status}");
+        }
+        assert!(!is_inactive_status(None));
     }
 
     #[test]

@@ -644,6 +644,46 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     setPreviewActionError(detail);
   }, []);
 
+  /**
+   * A link inside a document the pane is previewing.
+   *
+   * Something mycmux can show opens in the preview pane; anything else opens
+   * its location in the file manager. A document never gets to start the file's
+   * default application - that is how a link would run a program.
+   */
+  const handleDocumentLocalLink = useCallback((path: string) => {
+    setPreviewActionError(null);
+    const revealInstead = (error: unknown) => {
+      if (error) {
+        console.warn("[mycmux] document link preview rejected, revealing instead", error);
+      }
+      revealPathInExplorer(path).catch((revealError) => {
+        reportArtifactActionFailure(terminalPaneStrings.revealFailed, revealError);
+      });
+    };
+
+    if (!isArtifactPreviewUri(path)) {
+      revealInstead(null);
+      return;
+    }
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    const currentPane = workspace?.panes.find((candidate) => candidate.id === pane.id);
+    const currentTab = currentPane?.tabs.find((tab) => tab.id === currentPane.activeTabId)
+      ?? currentPane?.tabs[0];
+    if (!currentTab) {
+      revealInstead(null);
+      return;
+    }
+    // The pane showing the document is a browser tab, so its own session is the
+    // one that owns the preview written for this file.
+    previewArtifactUriForSessionV2(currentTab.sessionId, path)
+      .then((info) => {
+        openOrReloadHtmlPreviewPane(workspaceId, pane.id, info);
+        setPreviewActionError(null);
+      })
+      .catch(revealInstead);
+  }, [openOrReloadHtmlPreviewPane, pane.id, reportArtifactActionFailure, workspaceId]);
+
   const handleArtifactLinkClick = useCallback((uri: string, screenPos: { x: number; y: number }) => {
     if (isArtifactPreviewUri(uri)) {
       handleUrlClick(uri);
@@ -839,6 +879,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
               onDirtyChange={handleBrowserDirtyChange}
               onZoomToggle={handleZoomToggle}
               onSaved={handleBrowserSaved}
+              onOpenLocalPath={handleDocumentLocalLink}
             />
           </ErrorBoundary>
         ) : activeTab?.type === "launcher" ? (

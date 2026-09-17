@@ -92,6 +92,46 @@ describe("resolveBrowserIframeSources", () => {
     })).toEqual({ src: assetSrc, srcDoc: undefined });
   });
 
+  it("waits for the themed markdown document instead of showing the file on disk", () => {
+    // The preview written to disk carries the stylesheet's own light palette,
+    // so showing it first flashes a white page in a dark workspace.
+    expect(resolveBrowserIframeSources({
+      isEditing: false,
+      editableSrcDoc,
+      htmlBlobPreview: { status: "idle" },
+      readOnlySrcDoc: "",
+      assetSrc,
+      awaitReadOnlySrcDoc: true,
+    })).toEqual({ src: undefined, srcDoc: undefined });
+    // Once it has arrived, or when the load failed and nothing is coming, the
+    // usual resolution applies.
+    expect(resolveBrowserIframeSources({
+      isEditing: false,
+      editableSrcDoc,
+      htmlBlobPreview: { status: "idle" },
+      readOnlySrcDoc,
+      assetSrc,
+      awaitReadOnlySrcDoc: true,
+    })).toEqual({ src: undefined, srcDoc: readOnlySrcDoc });
+    expect(resolveBrowserIframeSources({
+      isEditing: false,
+      editableSrcDoc,
+      htmlBlobPreview: { status: "idle" },
+      readOnlySrcDoc: "",
+      assetSrc,
+      awaitReadOnlySrcDoc: false,
+    })).toEqual({ src: assetSrc, srcDoc: undefined });
+    // Editing wins over the wait, exactly as it does over every other state.
+    expect(resolveBrowserIframeSources({
+      isEditing: true,
+      editableSrcDoc,
+      htmlBlobPreview: { status: "idle" },
+      readOnlySrcDoc: "",
+      assetSrc,
+      awaitReadOnlySrcDoc: true,
+    })).toEqual({ src: undefined, srcDoc: editableSrcDoc });
+  });
+
   it("resolves markdown/office through readOnlySrcDoc then the asset src", () => {
     expect(resolveBrowserIframeSources({
       isEditing: false,
