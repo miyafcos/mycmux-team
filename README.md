@@ -605,23 +605,26 @@ Claude の AskUserQuestion をカード化し、番号ボタンで直接答え�
 
 ### エージェントが作ったレポートをその場で見たい → プレビュー
 
-パスリンクのクリック、`OSC 9988`、成果物ペインの選択でペイン内の iframe に表示します。対応拡張子は 26 種です。
+パスリンクのクリック、`OSC 9988`、成果物ペインの選択でペイン内の iframe に表示します。対応拡張子は 30 種です。
 
 | 種別 | 拡張子 | 表示方法 |
 | --- | --- | --- |
-| HTML | `html` `htm` | Blob URL 経由 (失敗時は asset プロトコルへフォールバック) |
+| HTML | `html` `htm` | ディスク上のファイルを asset プロトコルで直接読む |
 | Markdown | `md` `markdown` | スクリプト除去済みの srcdoc |
+| テキスト | `txt` `text` `log` | 等幅の srcdoc (読み取り専用・Shift_JIS / UTF-16 も読む) |
 | Word | `doc` `docx` `docm` `dot` `dotx` `dotm` | 静的 HTML 化 (OMML 数式は往復対応) |
 | Excel | `xls` `xlsx` `xlsm` `xlsb` `xlt` `xltx` `xltm` | バックエンド生成のプレビュー HTML |
 | PowerPoint | `ppt` `pptx` `pptm` `pot` `potx` `potm` `pps` `ppsx` `ppsm` | 同上 |
 
-Office 由来の HTML は白い A4 風ページ (最大 820px 幅・影付き・12pt・行間 1.55) の中に入れて表示します。プレビューに失敗したローカルファイルは、黙って死んだクリックにせず OS の既定アプリで開き直します。状態: 配信済み (初出版不明) / 読み取り専用 HTML の Blob URL ストリーミング v0.46.1。
+Office 由来の HTML は白い A4 風ページ (最大 820px 幅・影付き・12pt・行間 1.55) の中に入れて表示します。プレビューに失敗したローカルファイルは、黙って死んだクリックにせず OS の既定アプリで開き直します。状態: 配信済み (初出版不明) / 読み取り専用 HTML の Blob URL ストリーミング v0.46.1 / Blob を挟まずディスクのファイルを直接読む形に変更・テキストビューア追加 (次版)。
+
+テキストは `pre` 1 枚に流し込み、行の折り返し・タブ幅・行長を読み物として整えます。文字コードは BOM → UTF-8 → Shift_JIS の順に判定し、UTF-8 以外で読めたときだけ画面上部にその旨を出します。本文中の `http(s)` の URL と絶対パスはリンクになり、パスはクリックでそのファイルを開きます (相対パスはリンクにしません)。保存は用意していません — Shift_JIS で読んだファイルを UTF-8 で書き戻すと、黙って文字コードが変わるためです。
 
 ### プレビューしたまま直したい → アプリ内編集
 
 ツールバーの鉛筆ボタン (`Edit this artifact`) で編集モードに入ります。対象は `.html` `.htm` `.docx` `.docm` `.dotx` `.dotm` です。`Ctrl+S` で元ファイルへ書き戻し、保存後も編集モードを維持します。編集中は `Ctrl+B` / `Ctrl+I` が太字・斜体になります。Markdown (`.md` / `.markdown`) は WYSIWYG ではなく生テキストの textarea で編集します。未保存のまま編集をやめようとすると確認が出ます (「Discard unsaved edits?」/「Discard unsaved edits and reload?」/ ペインを閉じるときは「<ラベル> has unsaved edits. Close it anyway?」)。
 
-ツールバーの上段には種別バッジ (`DOCX` / `OFFICE` / `MD` / `HTML` / `FILE`)・ファイル名・親フォルダ・ステータスピル (`Working` / `Unsaved` / `Editing` / `Preview`)・「既定のアプリで開く」「エクスプローラーで表示」が並びます。下段は編集モードのときだけ出る 6 グループです。
+ツールバーの上段には種別バッジ (`DOCX` / `OFFICE` / `MD` / `HTML` / `TXT` / `FILE`)・ファイル名・親フォルダ・ステータスピル (`Working` / `Unsaved` / `Editing` / `Preview`)・「既定のアプリで開く」「エクスプローラーで表示」が並びます。下段は編集モードのときだけ出る 6 グループです。
 
 | グループ | 項目 |
 | --- | --- |

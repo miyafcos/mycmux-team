@@ -6,6 +6,7 @@ import type { PaneConfig } from "../lib/ipc";
 import { agentIdForSessionKind } from "../lib/agentSessionConfig";
 import { getGridTemplate } from "../lib/gridTemplates";
 import { getDefaultAgent } from "../lib/agents";
+import { sourceKindFromPath, sourceKindLabel } from "../lib/artifactSourceKind";
 import {
   buildLaunchSpecEnv,
   getCatalogEntry,
@@ -43,7 +44,7 @@ function makeTab(
   paneId: string,
   agentId: string,
   type: PaneTab["type"] = "terminal",
-  options?: Partial<Pick<PaneTab, "id" | "sessionId" | "label" | "labelSource" | "presetId" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "turnMarks" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "isDirty" | "reloadCounter" | "lifecycle" | "origin" | "declaredPrompt" | "declaredTarget">>,
+  options?: Partial<Pick<PaneTab, "id" | "sessionId" | "label" | "labelSource" | "presetId" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "turnMarks" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "sourceMtimeMs" | "isDirty" | "reloadCounter" | "lifecycle" | "origin" | "declaredPrompt" | "declaredTarget">>,
 ): PaneTab {
   const tabId = options?.id ?? uuid();
   return {
@@ -70,6 +71,7 @@ function makeTab(
     sourcePath: options?.sourcePath,
     sourceKind: options?.sourceKind,
     previewPath: options?.previewPath,
+    sourceMtimeMs: options?.sourceMtimeMs,
     isDirty: options?.isDirty,
     reloadCounter: options?.reloadCounter,
     lifecycle: options?.lifecycle,
@@ -354,31 +356,20 @@ function isBrowserOnlyPane(pane: Pane): boolean {
   return pane.tabs.length > 0 && pane.tabs.every((tab) => tab.type === "browser");
 }
 
-interface BrowserPreviewInfo {
+export interface BrowserPreviewInfo {
   previewPath: string;
   sourcePath?: string;
   sourceKind?: ArtifactSourceKind;
+  sourceMtimeMs?: number | null;
 }
 
 function normalizeBrowserPath(path: string): string {
   return path.replace(/\\/g, "/");
 }
 
-export function sourceKindFromPath(path: string): ArtifactSourceKind {
-  if (/\.pdf$/i.test(path)) return "pdf";
-  if (/\.(?:md|markdown)$/i.test(path)) return "markdown";
-  if (/\.(?:docx?|docm|dotx?|dotm|xlsx?|xlsm|xlsb|xltx?|xltm|pptx?|pptm|potx?|potm|ppsx?|ppsm)$/i.test(path)) {
-    return "office";
-  }
-  return "html";
-}
-
-function sourceKindLabel(kind: ArtifactSourceKind): string {
-  if (kind === "pdf") return "PDF";
-  if (kind === "markdown") return "MD";
-  if (kind === "office") return "OFFICE";
-  return "HTML";
-}
+// Kept exported here because this is where callers have always imported it
+// from; the table itself lives in lib/artifactSourceKind.ts.
+export { sourceKindFromPath };
 
 function normalizeBrowserPreviewInfo(info: string | BrowserPreviewInfo): Required<BrowserPreviewInfo> {
   if (typeof info === "string") {
@@ -387,6 +378,9 @@ function normalizeBrowserPreviewInfo(info: string | BrowserPreviewInfo): Require
       previewPath: path,
       sourcePath: path,
       sourceKind: sourceKindFromPath(path),
+      // A bare path carries no timestamp, so this preview reloads as it
+      // always did.
+      sourceMtimeMs: null,
     };
   }
   const previewPath = normalizeBrowserPath(info.previewPath);
@@ -395,6 +389,7 @@ function normalizeBrowserPreviewInfo(info: string | BrowserPreviewInfo): Require
     previewPath,
     sourcePath,
     sourceKind: info.sourceKind ?? sourceKindFromPath(sourcePath),
+    sourceMtimeMs: info.sourceMtimeMs ?? null,
   };
 }
 
@@ -421,10 +416,27 @@ function makeBrowserTab(
     sourcePath: info.sourcePath,
     sourceKind: info.sourceKind,
     previewPath: info.previewPath,
+    sourceMtimeMs: info.sourceMtimeMs,
     isDirty: false,
     reloadCounter: 0,
     label: `${labelPrefix} ${fileLeaf}`,
   });
+}
+
+/**
+ * Whether opening `info` again has to throw the frame away.
+ *
+ * Clicking the same path twice used to re-read and re-lay-out the whole
+ * document, which on a 13 MB report is seconds of a frozen pane for a file
+ * that did not change. A file system that will not answer for its own
+ * timestamps reloads as it always did.
+ */
+export function browserTabNeedsReload(tab: PaneTab, info?: Required<BrowserPreviewInfo>): boolean {
+  if (!info) return true;
+  if (tab.isDirty) return true;
+  if (info.sourceMtimeMs == null || tab.sourceMtimeMs == null) return true;
+  if (info.sourceMtimeMs !== tab.sourceMtimeMs) return true;
+  return tab.previewPath !== info.previewPath || tab.sourcePath !== info.sourcePath;
 }
 
 function bumpBrowserTabReloadCounter(tab: PaneTab, info?: Required<BrowserPreviewInfo>): PaneTab {
@@ -434,8 +446,11 @@ function bumpBrowserTabReloadCounter(tab: PaneTab, info?: Required<BrowserPrevie
     sourcePath: info?.sourcePath ?? tab.sourcePath,
     sourceKind: info?.sourceKind ?? tab.sourceKind,
     previewPath: info?.previewPath ?? tab.previewPath,
+    sourceMtimeMs: info?.sourceMtimeMs ?? tab.sourceMtimeMs,
     isDirty: false,
-    reloadCounter: (tab.reloadCounter ?? 0) + 1,
+    reloadCounter: browserTabNeedsReload(tab, info)
+      ? (tab.reloadCounter ?? 0) + 1
+      : tab.reloadCounter ?? 0,
   };
 }
 

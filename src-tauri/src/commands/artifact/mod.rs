@@ -2,6 +2,7 @@ mod markdown;
 mod markdown_preview;
 mod office;
 mod path_resolve;
+mod text_preview;
 
 use crate::util::atomic_write::AtomicWrite;
 use crate::util::task::run_blocking;
@@ -22,6 +23,7 @@ use office::{
     unsupported_docx_editing_feature,
 };
 use path_resolve::preview_path_for_artifact;
+use text_preview::text_to_static_html;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +31,11 @@ pub struct PreviewArtifactInfo {
     pub preview_path: String,
     pub source_path: String,
     pub source_kind: String,
+    /// When the source file was last written, so the pane can leave a
+    /// document that has not changed exactly where the reader left it
+    /// instead of laying a 13 MB report out again. `None` when the file
+    /// will not say, which means the pane reloads as it always did.
+    pub source_mtime_ms: Option<u64>,
 }
 
 #[derive(serde::Serialize)]
@@ -49,6 +56,8 @@ pub struct SaveEditableArtifactResult {
 }
 
 const MAX_ARTIFACT_FILE_BYTES: u64 = 20 * 1024 * 1024;
+const UNSUPPORTED_DOCUMENT_MESSAGE: &str =
+    "Editable artifact must be .html, .htm, .md, .markdown, .txt, .log, or .docx";
 const MAX_ARTIFACT_FILE_MB: u64 = MAX_ARTIFACT_FILE_BYTES / (1024 * 1024);
 
 fn ensure_artifact_file_within_read_limit(path: &Path, action: &str) -> Result<(), String> {
@@ -107,6 +116,9 @@ fn is_previewable_artifact(path: &Path) -> bool {
             | Some("htm")
             | Some("md")
             | Some("markdown")
+            | Some("txt")
+            | Some("text")
+            | Some("log")
             | Some("doc")
             | Some("docx")
             | Some("docm")
@@ -142,6 +154,7 @@ fn artifact_source_kind(path: &Path) -> Option<&'static str> {
         Some("pdf") => Some("pdf"),
         Some("html") | Some("htm") => Some("html"),
         Some("md") | Some("markdown") => Some("markdown"),
+        Some("txt") | Some("text") | Some("log") => Some("text"),
         Some("doc") | Some("docx") | Some("docm") | Some("dot") | Some("dotx") | Some("dotm")
         | Some("xls") | Some("xlsx") | Some("xlsm") | Some("xlsb") | Some("xlt") | Some("xltx")
         | Some("xltm") | Some("ppt") | Some("pptx") | Some("pptm") | Some("pot") | Some("potx")
@@ -162,12 +175,12 @@ fn validate_editable_artifact_path(source_path: &str) -> Result<(PathBuf, String
         return Err("Editable artifact path must be a file".to_string());
     }
     let Some(kind) = artifact_source_kind(&path) else {
-        return Err("Editable artifact must be .html, .htm, .md, .markdown, or .docx".to_string());
+        return Err(UNSUPPORTED_DOCUMENT_MESSAGE.to_string());
     };
-    if !(matches!(kind, "html" | "markdown")
+    if !(matches!(kind, "html" | "markdown" | "text")
         || kind == "office" && is_editable_word_artifact(&path))
     {
-        return Err("Editable artifact must be .html, .htm, .md, .markdown, or .docx".to_string());
+        return Err(UNSUPPORTED_DOCUMENT_MESSAGE.to_string());
     }
     // dunce, not std: on Windows `canonicalize()` answers with the
     // extended-length form (`\\?\C:\...`), which travels from here into the tab
@@ -188,6 +201,17 @@ fn is_editable_word_artifact(path: &Path) -> bool {
     )
 }
 
+/// Milliseconds since the epoch, or `None` for a clock the file system
+/// cannot answer for (a network share, a platform without mtime).
+fn file_mtime_ms(path: &Path) -> Option<u64> {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|since| since.as_millis() as u64)
+}
+
 fn preview_info_for_artifact(
     session_id: &str,
     path: &Path,
@@ -205,6 +229,7 @@ fn preview_info_for_artifact(
         preview_path,
         source_path,
         source_kind,
+        source_mtime_ms: file_mtime_ms(path),
     })
 }
 
@@ -275,6 +300,12 @@ fn read_editable_artifact_inner(source_path: String) -> Result<EditableArtifactS
             ensure_artifact_file_within_read_limit(&path, "read")?;
             std::fs::read_to_string(&path)
                 .map_err(|error| format!("Failed to read editable artifact: {error}"))?
+        }
+        "text" => {
+            ensure_artifact_file_within_read_limit(&path, "read")?;
+            let raw = std::fs::read(&path)
+                .map_err(|error| format!("Failed to read editable artifact: {error}"))?;
+            text_to_static_html(&raw, Some(&path))?
         }
         "office" => {
             ensure_artifact_file_within_read_limit(&path, "read")?;
@@ -446,6 +477,9 @@ fn save_editable_artifact_inner(
     content: String,
 ) -> Result<SaveEditableArtifactResult, String> {
     let (path, actual_kind) = validate_editable_artifact_path(&source_path)?;
+    if actual_kind == "text" {
+        return Err("Plain text files open read-only: saving would rewrite the file in UTF-8 even when it was read as Shift_JIS.".to_string());
+    }
     if source_kind != actual_kind {
         return Err("Editable artifact source kind does not match file extension".to_string());
     }
@@ -583,24 +617,27 @@ mod tests {
         assert!(!is_allowed_artifact_path(&session_dir, &outside_path));
         assert!(is_previewable_artifact(&markdown_path));
         assert!(is_previewable_artifact(&office_path));
-        assert!(!is_previewable_artifact(&artifacts_dir.join("secret.txt")));
+        assert!(is_previewable_artifact(&artifacts_dir.join("notes.txt")));
+        assert!(!is_previewable_artifact(&artifacts_dir.join("secret.zip")));
     }
 
     #[test]
-    fn external_preview_allows_absolute_html_md_and_office_only() {
+    fn external_preview_allows_absolute_documents_only() {
         let dir = tempfile::tempdir().unwrap();
         let html_path = dir.path().join("report.html");
         let markdown_path = dir.path().join("report.md");
         let word_path = dir.path().join("report.docx");
         let excel_path = dir.path().join("budget.xlsx");
         let powerpoint_path = dir.path().join("deck.pptx");
-        let text_path = dir.path().join("secret.txt");
+        let text_path = dir.path().join("notes.txt");
+        let archive_path = dir.path().join("secret.zip");
         std::fs::write(&html_path, "<h1>ok</h1>").unwrap();
         std::fs::write(&markdown_path, "# ok").unwrap();
         std::fs::write(&word_path, "word").unwrap();
         std::fs::write(&excel_path, "excel").unwrap();
         std::fs::write(&powerpoint_path, "powerpoint").unwrap();
-        std::fs::write(&text_path, "secret").unwrap();
+        std::fs::write(&text_path, "notes").unwrap();
+        std::fs::write(&archive_path, "archive").unwrap();
 
         assert!(is_allowed_external_artifact_path(&html_path));
         assert!(is_allowed_external_artifact_path(&markdown_path));
@@ -610,7 +647,8 @@ mod tests {
         assert!(is_previewable_artifact(&word_path));
         assert!(is_previewable_artifact(&excel_path));
         assert!(is_previewable_artifact(&powerpoint_path));
-        assert!(!is_previewable_artifact(&text_path));
+        assert!(is_previewable_artifact(&text_path));
+        assert!(!is_previewable_artifact(&archive_path));
         assert!(!is_allowed_external_artifact_path(Path::new(
             "relative.html"
         )));
@@ -833,6 +871,32 @@ mod tests {
             "<h1>old</h1>"
         );
         assert!(result.backup_path.contains("report.html.bak-"));
+    }
+
+    #[test]
+    fn a_text_file_opens_but_cannot_be_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let text_path = dir.path().join("notes.txt");
+        // Shift_JIS, which read_to_string would have refused outright.
+        std::fs::write(&text_path, [0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea, 0x0a]).unwrap();
+
+        let source = read_editable_artifact_inner(text_path.to_string_lossy().to_string())
+            .expect("a text file opens");
+        assert_eq!(source.source_kind, "text");
+        assert!(source.content.contains("日本語"), "{}", source.content);
+        assert!(source.content.contains("Shift_JIS"), "{}", source.content);
+
+        // Saving would write the editor's UTF-8 over a Shift_JIS file and
+        // change its encoding without saying so.
+        let error = save_editable_artifact_inner(
+            text_path.to_string_lossy().to_string(),
+            "text".to_string(),
+            "rewritten".to_string(),
+        )
+        .map(|_| ())
+        .expect_err("a text file does not save");
+        assert!(error.contains("read-only"), "{error}");
+        assert_eq!(std::fs::read(&text_path).unwrap().len(), 7);
     }
 
     #[test]

@@ -240,6 +240,7 @@ function sourceKindLabel(kind: ArtifactEditorToolbarProps["sourceKind"], sourceP
     return "OFFICE";
   }
   if (kind === "markdown") return "MD";
+  if (kind === "text") return "TXT";
   if (kind === "html") return "HTML";
   if (kind === "pdf") return "PDF";
   return "FILE";
@@ -439,6 +440,10 @@ function ArtifactEditorToolbarImpl({
   const name = fileLeaf(sourcePath);
   const displayPath = sourcePath === undefined ? undefined : displaySourcePath(sourcePath);
   const parent = parentPath(displayPath);
+  // A PDF is shown by the native viewer, and a text file opens read-only:
+  // writing the editor's UTF-8 back over a Shift_JIS file would change its
+  // encoding without saying so. Neither gets the editor buttons.
+  const canUseEditor = sourceKind !== "pdf" && sourceKind !== "text";
 
   return (
     <div style={shellStyle}>
@@ -450,7 +455,7 @@ function ArtifactEditorToolbarImpl({
         </div>
         <StatusPill isDirty={isDirty} isEditing={isEditing} isBusy={isBusy} />
         <div style={actionsStyle}>
-          {sourceKind !== "pdf" && <ToolbarButton
+          {canUseEditor && <ToolbarButton
             title={isEditing ? artifactEditorStrings.statusEditing : artifactEditorStrings.startEdit}
             disabled={!canEdit || isBusy || isEditing}
             variant={isEditing ? "primary" : "default"}
@@ -475,7 +480,7 @@ function ArtifactEditorToolbarImpl({
         </div>
       </div>
 
-      {isEditing && sourceKind !== "pdf" && (
+      {isEditing && canUseEditor && (
       <div style={commandRowStyle}>
         <div style={groupStyle} role="group" aria-label={artifactEditorStrings.fileActions}>
           <span style={groupLabelStyle}>File</span>

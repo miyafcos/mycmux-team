@@ -1,0 +1,108 @@
+/* Plain-text preview: a .txt or .log shown as it was typed.
+   The Markdown preview next door styles a document; this styles a file, so the
+   page is one monospaced column and nothing in it is markup.
+
+   The colours are the same --md-* custom properties the Markdown preview uses.
+   The app paints the active theme over them on <html> and sets data-scheme
+   (src/lib/markdownPreviewTheme.ts), which means every theme's contrast is
+   already measured by tests/unit/markdownPreviewTheme.test.ts - a private set of
+   variables here would be outside that check. The values below are the light
+   paper a file opened outside the app falls back to. */
+:root {
+  color-scheme: light;
+  --md-bg: #ffffff;
+  --md-text: #1f2328;
+  --md-muted: #57606a;
+  --md-faint: #8c959f;
+  --md-border: #d0d7de;
+  --md-link: #0b5fc7;
+  --md-selection: #cde2ff;
+  --md-font-mono: "Cascadia Mono", Consolas, "SF Mono", Menlo, "BIZ UDGothic", monospace;
+}
+
+:root[data-scheme="dark"] {
+  color-scheme: dark;
+  --md-bg: #1f2329;
+  --md-text: #d9dee6;
+  --md-muted: #a3adba;
+  --md-faint: #77818e;
+  --md-border: #3d4450;
+  --md-link: #7fb8ff;
+  --md-selection: #37506f;
+}
+
+html {
+  background: var(--md-bg);
+  -webkit-text-size-adjust: 100%;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--md-text) 28%, transparent) transparent;
+}
+
+/* content-box on purpose: the 80ch is a promise about the text column, so the
+   padding has to sit outside it. A log written to 80 columns then arrives
+   unwrapped, and a file of prose still stops before the line grows too long to
+   track back to. Everything longer wraps rather than scrolling sideways. */
+body {
+  box-sizing: content-box;
+  max-width: 80ch;
+  margin: 0 auto;
+  padding: 14px 16px 48px;
+  background: var(--md-bg);
+  color: var(--md-text);
+  font-family: var(--md-font-mono);
+  font-size: 14px;
+  line-height: 1.7;
+  font-kerning: normal;
+  line-break: strict;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 560px) {
+  body { font-size: 15px; padding: 28px 32px 64px; }
+}
+
+@media (min-width: 960px) {
+  body { padding: 40px 44px 80px; }
+}
+
+::selection { background: var(--md-selection); }
+
+/* The file itself. It gets no surface of its own - the page is the file, and
+   body text on --md-bg is the pair every theme holds to 7:1, which the code and
+   pre surfaces are only held to 4.5:1. */
+pre {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+
+a {
+  color: var(--md-link);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: .2em;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  cursor: pointer;
+}
+a:hover { text-decoration-color: currentColor; }
+
+/* What the renderer has to say about the file, which is never what the file
+   says. Ruled off and faded so it cannot be read as the first or the last line
+   of the text. */
+.notice {
+  margin: 0 0 1em;
+  padding: 0 0 .7em;
+  border-bottom: 1px solid var(--md-border);
+  color: var(--md-faint);
+  font-size: .85em;
+  line-height: 1.6;
+}
+
+.notice-end {
+  margin: 1.4em 0 0;
+  padding: .7em 0 0;
+  border-bottom: 0;
+  border-top: 1px solid var(--md-border);
+}

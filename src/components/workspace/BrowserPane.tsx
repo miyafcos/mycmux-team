@@ -20,13 +20,8 @@ import {
 } from "../../lib/markdownPreviewDocument";
 import { markdownPreviewMonoFont, markdownPreviewPalette } from "../../lib/markdownPreviewTheme";
 import {
-  createReadonlyHtmlBlob,
-  htmlBlobPreviewUrl,
-  initialHtmlBlobPreview,
-  objectUrlToRevoke,
+  rendersThemedSrcDoc,
   resolveBrowserIframeSources,
-  shouldLoadHtmlAsBlobPreview,
-  type HtmlBlobPreviewState,
 } from "../../lib/browserPanePreview";
 import ArtifactEditorToolbar, {
   type ArtifactEditorCommand,
@@ -477,7 +472,6 @@ function BrowserPaneImpl({
   const lastSavedSourcePathRef = useRef<string | null>(null);
   const saveCurrentArtifactRef = useRef<() => void>(() => {});
   const editLoadRequestRef = useRef(0);
-  const readOnlyBlobUrlRef = useRef<string | null>(null);
   const onDirtyChangeRef = useRef(onDirtyChange);
   const onSavedRef = useRef(onSaved);
   const [isEditing, setIsEditing] = useState(false);
@@ -488,15 +482,21 @@ function BrowserPaneImpl({
   const [editableSrcDoc, setEditableSrcDoc] = useState<string>("");
   const [readOnlySrcDoc, setReadOnlySrcDoc] = useState<string>("");
   const [readOnlyLoadFailed, setReadOnlyLoadFailed] = useState(false);
-  const [htmlBlobPreview, setHtmlBlobPreview] = useState<HtmlBlobPreviewState>(() =>
-    initialHtmlBlobPreview(sourceKind),
-  );
   const [localReloadKey, setLocalReloadKey] = useState(0);
   const resolvedPreviewPath = previewPath ?? htmlPath;
   const src = useMemo(() => convertFileSrc(resolvedPreviewPath), [resolvedPreviewPath]);
   const canUseInAppEditor =
     sourceKind === "html" || sourceKind === "markdown" || isEditableWordSource(sourceKind, sourcePath);
   const canEdit = Boolean(sourcePath && canUseInAppEditor);
+  // Markdown, text and Word arrive as a document the app builds, so the
+  // frame is fed a srcDoc. HTML deliberately does not: reading a 13 MB
+  // report into a string copies it through the IPC channel and again into
+  // the frame, and that detour is most of what made heavy pages slow. The
+  // file on disk is handed to the frame as it is.
+  const loadsRenderedDocument =
+    sourceKind === "markdown"
+    || sourceKind === "text"
+    || isEditableWordSource(sourceKind, sourcePath);
   const getActionsForEvent = useKeybindingStore((s) => s.getActionsForEvent);
   const theme = useThemeStore((s) => s.theme);
   const terminalFontFamily = useThemeStore((s) => s.fontFamily);
@@ -528,14 +528,6 @@ function BrowserPaneImpl({
     onDirtyChangeRef.current(nextDirty);
   }, []);
 
-  const adoptHtmlBlobPreview = useCallback((next: HtmlBlobPreviewState) => {
-    const nextUrl = htmlBlobPreviewUrl(next);
-    const revoke = objectUrlToRevoke(readOnlyBlobUrlRef.current, nextUrl);
-    if (revoke) URL.revokeObjectURL(revoke);
-    readOnlyBlobUrlRef.current = nextUrl;
-    setHtmlBlobPreview(next);
-  }, []);
-
   useEffect(() => {
     setDirty(isDirty);
   }, [isDirty]);
@@ -559,20 +551,14 @@ function BrowserPaneImpl({
     setMarkdownDraft("");
     setEditableSrcDoc("");
     setReadOnlySrcDoc("");
-    adoptHtmlBlobPreview(initialHtmlBlobPreview(sourceKind));
     selectionRangeRef.current = null;
     setError(null);
     updateDirty(false);
-  }, [htmlPath, resolvedPreviewPath, reloadKey, sourceKind, sourcePath, updateDirty, adoptHtmlBlobPreview]);
+  }, [htmlPath, resolvedPreviewPath, reloadKey, sourceKind, sourcePath, updateDirty]);
 
   useEffect(() => {
     return () => {
       inputCleanupRef.current?.();
-      const leftover = readOnlyBlobUrlRef.current;
-      if (leftover) {
-        URL.revokeObjectURL(leftover);
-        readOnlyBlobUrlRef.current = null;
-      }
     };
   }, []);
 
@@ -616,42 +602,7 @@ function BrowserPaneImpl({
   }, [canUseInAppEditor, sourcePath, updateDirty]);
 
   useEffect(() => {
-    if (shouldLoadHtmlAsBlobPreview(sourceKind, isEditing)) {
-      let cancelled = false;
-      const controller = new AbortController();
-
-      const loadBlob = async () => {
-        try {
-          const url = convertFileSrc(resolvedPreviewPath);
-          const res = await fetch(url, { signal: controller.signal });
-          if (!res.ok) throw new Error(`asset fetch failed: ${res.status}`);
-          const buf = await res.arrayBuffer();
-          if (cancelled) return;
-          const objectUrl = URL.createObjectURL(createReadonlyHtmlBlob(buf));
-          if (cancelled) {
-            URL.revokeObjectURL(objectUrl);
-            return;
-          }
-          adoptHtmlBlobPreview({ status: "ready", url: objectUrl });
-          setReadOnlySrcDoc("");
-        } catch (caught) {
-          if (cancelled) return;
-          adoptHtmlBlobPreview({ status: "error" });
-          console.warn("[artifactEditor] read-only blob load failed", caught);
-        }
-      };
-
-      void loadBlob();
-      return () => {
-        cancelled = true;
-        controller.abort();
-        adoptHtmlBlobPreview({ status: "loading" });
-      };
-    }
-
-    adoptHtmlBlobPreview({ status: "idle" });
-
-    if (isEditing || !sourcePath || !canUseInAppEditor) {
+    if (isEditing || !sourcePath || !loadsRenderedDocument) {
       return;
     }
 
@@ -661,7 +612,7 @@ function BrowserPaneImpl({
       .then((source) => {
         if (cancelled) return;
         setReadOnlySrcDoc(
-          source.sourceKind === "markdown"
+          rendersThemedSrcDoc(source.sourceKind)
             ? buildMarkdownPreviewSrcDoc(source.content, appearanceRef.current, convertFileSrc)
             : buildReadOnlySrcDoc(source.content, source.sourcePath, source.sourceKind),
         );
@@ -679,8 +630,7 @@ function BrowserPaneImpl({
       cancelled = true;
     };
   }, [
-    adoptHtmlBlobPreview,
-    canUseInAppEditor,
+    loadsRenderedDocument,
     isEditing,
     localReloadKey,
     reloadKey,
@@ -693,7 +643,7 @@ function BrowserPaneImpl({
   // terminal font changes. Rebuilding the srcDoc would reload the frame and
   // throw away where the reader had scrolled to.
   useEffect(() => {
-    if (isEditing || sourceKind !== "markdown") return;
+    if (isEditing || !rendersThemedSrcDoc(sourceKind)) return;
     let doc: Document | null = null;
     try {
       doc = iframeRef.current?.contentDocument ?? null;
@@ -791,9 +741,9 @@ function BrowserPaneImpl({
         () => previewDoc.removeEventListener("keydown", forwardShortcut, true),
       ];
 
-      // A Markdown preview has no scripts of its own, and the frame cannot
+      // A rendered document has no scripts of its own, and the frame cannot
       // navigate anywhere useful: every link is answered here instead.
-      if (sourceKind === "markdown") {
+      if (rendersThemedSrcDoc(sourceKind)) {
         applyMarkdownPreviewAppearance(previewDoc, appearanceRef.current);
         const reportFailure = (caught: unknown) => {
           setError(caught instanceof Error ? caught.message : String(caught));
@@ -1031,13 +981,15 @@ function BrowserPaneImpl({
   const iframeSources = resolveBrowserIframeSources({
     isEditing,
     editableSrcDoc,
-    htmlBlobPreview,
     readOnlySrcDoc,
     assetSrc: src,
-    // The Markdown preview on disk is painted in the stylesheet's own light
+    // The preview written to disk is painted in the stylesheet's own light
     // colours; showing it first would flash a white page in a dark workspace.
     awaitReadOnlySrcDoc:
-      sourceKind === "markdown" && canUseInAppEditor && Boolean(sourcePath) && !readOnlyLoadFailed,
+      rendersThemedSrcDoc(sourceKind)
+      && loadsRenderedDocument
+      && Boolean(sourcePath)
+      && !readOnlyLoadFailed,
   });
 
   return (
@@ -1161,7 +1113,7 @@ function BrowserPaneImpl({
           display: "block",
           // The frame's own colour shows while the document loads, so for a
           // Markdown preview it is the page colour the theme is about to paint.
-          background: sourceKind === "markdown"
+          background: rendersThemedSrcDoc(sourceKind)
             ? markdownAppearance.palette.vars["--md-bg"]
             : "white",
         }}

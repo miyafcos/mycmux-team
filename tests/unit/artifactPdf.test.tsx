@@ -7,7 +7,7 @@ import { useDashboardViewStore } from "../../src/stores/dashboardViewStore";
 import { isArtifactPreviewUri, findLocalFilePathLinks } from "../../src/components/terminal/terminalLinkProvider";
 import ArtifactEditorToolbar from "../../src/components/workspace/ArtifactEditorToolbar";
 import BrowserPane from "../../src/components/workspace/BrowserPane";
-import { initialHtmlBlobPreview, resolveBrowserIframeSources, shouldLoadHtmlAsBlobPreview } from "../../src/lib/browserPanePreview";
+import { rendersThemedSrcDoc, resolveBrowserIframeSources } from "../../src/lib/browserPanePreview";
 
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => `http://asset.localhost/${path}`,
@@ -29,10 +29,10 @@ describe("PDF artifacts", () => {
   });
 
   it("renders the original PDF asset in a native PDF embed instead of the sandboxed iframe", () => {
-    expect(shouldLoadHtmlAsBlobPreview("pdf", false)).toBe(false);
+    expect(rendersThemedSrcDoc("pdf")).toBe(false);
     expect(resolveBrowserIframeSources({
       isEditing: false, editableSrcDoc: "", readOnlySrcDoc: "",
-      htmlBlobPreview: initialHtmlBlobPreview("pdf"), assetSrc: "http://asset.localhost/report.pdf",
+      assetSrc: "http://asset.localhost/report.pdf",
     })).toEqual({ src: "http://asset.localhost/report.pdf", srcDoc: undefined });
     const markup = renderToStaticMarkup(createElement(BrowserPane, {
       htmlPath: "report.pdf", sourcePath: "report.pdf", sourceKind: "pdf",
@@ -51,7 +51,7 @@ describe("PDF artifacts", () => {
     expect(markup).not.toContain("lucide-save");
   });
 
-  it.each(["html", "markdown", "office"] as const)("keeps the %s preview on the original sandboxed iframe", (sourceKind) => {
+  it.each(["html", "markdown", "text", "office"] as const)("keeps the %s preview on the original sandboxed iframe", (sourceKind) => {
     const markup = renderToStaticMarkup(createElement(BrowserPane, {
       htmlPath: "preview.html", sourcePath: "source", sourceKind,
       reloadKey: 0, isDirty: false, onDirtyChange: noop, onSaved: noop,

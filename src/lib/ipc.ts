@@ -464,6 +464,8 @@ export interface PreviewArtifactInfo {
   previewPath: string;
   sourcePath: string;
   sourceKind: ArtifactSourceKind;
+  /** When the source file was last written, or null if it would not say. */
+  sourceMtimeMs?: number | null;
 }
 
 export interface EditableArtifactSource {
@@ -1111,7 +1113,7 @@ export interface PaneTabConfig {
   preset_id?: string | null;
   html_path?: string | null;
   source_path?: string | null;
-  source_kind?: "html" | "markdown" | "office" | "pdf" | null;
+  source_kind?: ArtifactSourceKind | null;
   preview_path?: string | null;
   cwd?: string | null;
   last_process?: string | null;

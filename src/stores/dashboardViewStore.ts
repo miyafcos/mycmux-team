@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { dashboardStrings } from "../components/dashboard/dashboardStrings";
 import type { ArtifactSourceKind } from "../types";
+import { sourceKindFromPath, sourceKindLabel } from "../lib/artifactSourceKind";
 import { useToastStore } from "./toastStore";
 
 export type DashboardStateFilter = "needsHuman" | "running" | "noUpdate" | "done";
@@ -182,21 +183,12 @@ function normalizeDashboardPreviewPath(path: string): string {
 }
 
 function dashboardPreviewSourceKind(path: string, kind?: ArtifactSourceKind): ArtifactSourceKind {
-  if (kind) return kind;
-  if (/\.pdf$/i.test(path)) return "pdf";
-  if (/\.(?:md|markdown)$/i.test(path)) return "markdown";
-  if (/\.(?:docx?|docm|dotx?|dotm|xlsx?|xlsm|xlsb|xltx?|xltm|pptx?|pptm|potx?|potm|ppsx?|ppsm)$/i.test(path)) {
-    return "office";
-  }
-  return "html";
+  return kind ?? sourceKindFromPath(path);
 }
 
 function dashboardPreviewLabel(sourcePath: string, sourceKind: ArtifactSourceKind): string {
   const fileLeaf = sourcePath.split(/[\\/]/).pop() || "artifact";
-  if (sourceKind === "pdf") return `PDF ${fileLeaf}`;
-  if (sourceKind === "markdown") return `MD ${fileLeaf}`;
-  if (sourceKind === "office") return `OFFICE ${fileLeaf}`;
-  return `HTML ${fileLeaf}`;
+  return `${sourceKindLabel(sourceKind)} ${fileLeaf}`;
 }
 
 function normalizeDashboardPreviewSource(info: DashboardPreviewSource): Omit<DashboardPreviewColumn, "reloadKey" | "isDirty"> {

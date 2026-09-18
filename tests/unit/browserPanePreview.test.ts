@@ -1,151 +1,76 @@
-// @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-
 import {
-  READONLY_HTML_BLOB_MIME,
-  createReadonlyHtmlBlob,
-  initialHtmlBlobPreview,
-  objectUrlToRevoke,
+  rendersThemedSrcDoc,
   resolveBrowserIframeSources,
-  shouldLoadHtmlAsBlobPreview,
 } from "../../src/lib/browserPanePreview";
 
-describe("shouldLoadHtmlAsBlobPreview", () => {
-  it("is true only for read-only html", () => {
-    expect(shouldLoadHtmlAsBlobPreview("html", false)).toBe(true);
-    expect(shouldLoadHtmlAsBlobPreview("html", true)).toBe(false);
-    expect(shouldLoadHtmlAsBlobPreview("markdown", false)).toBe(false);
-    expect(shouldLoadHtmlAsBlobPreview("office", false)).toBe(false);
-    expect(shouldLoadHtmlAsBlobPreview(undefined, false)).toBe(false);
-  });
-});
+const assetSrc = "http://asset.localhost/preview.html";
+const editableSrcDoc = "<html>editable</html>";
+const readOnlySrcDoc = "<html>readonly</html>";
 
-describe("createReadonlyHtmlBlob", () => {
-  it("forces text/html charset even when the source buffer has no type", () => {
-    const blob = createReadonlyHtmlBlob(new TextEncoder().encode("<html></html>"));
-    expect(blob.type).toBe(READONLY_HTML_BLOB_MIME);
+describe("rendersThemedSrcDoc", () => {
+  it("is true for the kinds the app renders itself", () => {
+    expect(rendersThemedSrcDoc("markdown")).toBe(true);
+    expect(rendersThemedSrcDoc("text")).toBe(true);
   });
-});
 
-describe("objectUrlToRevoke", () => {
-  it("revokes the previous url only when it is replaced or cleared", () => {
-    expect(objectUrlToRevoke("blob:a", "blob:b")).toBe("blob:a");
-    expect(objectUrlToRevoke("blob:a", null)).toBe("blob:a");
-    expect(objectUrlToRevoke("blob:a", "blob:a")).toBe(null);
-    expect(objectUrlToRevoke(null, "blob:b")).toBe(null);
-    expect(objectUrlToRevoke(null, null)).toBe(null);
-  });
-});
-
-describe("initialHtmlBlobPreview", () => {
-  it("starts loading only for read-only html", () => {
-    expect(initialHtmlBlobPreview("html")).toEqual({ status: "loading" });
-    expect(initialHtmlBlobPreview("html", true)).toEqual({ status: "idle" });
-    expect(initialHtmlBlobPreview("markdown")).toEqual({ status: "idle" });
-    expect(initialHtmlBlobPreview("office")).toEqual({ status: "idle" });
+  it("is false for the kinds shown as the file on disk", () => {
+    expect(rendersThemedSrcDoc("html")).toBe(false);
+    expect(rendersThemedSrcDoc("office")).toBe(false);
+    expect(rendersThemedSrcDoc("pdf")).toBe(false);
+    expect(rendersThemedSrcDoc(undefined)).toBe(false);
   });
 });
 
 describe("resolveBrowserIframeSources", () => {
-  const assetSrc = "http://asset.localhost/preview.html";
-  const blobUrl = "blob:http://localhost/html";
-  const readOnlySrcDoc = "<html>readonly</html>";
-  const editableSrcDoc = "<html>edit</html>";
-
-  it("prefers the editor srcDoc while editing", () => {
+  it("shows the editable document while editing, whatever else is loaded", () => {
     expect(resolveBrowserIframeSources({
       isEditing: true,
       editableSrcDoc,
-      htmlBlobPreview: { status: "ready", url: blobUrl },
       readOnlySrcDoc,
       assetSrc,
     })).toEqual({ src: undefined, srcDoc: editableSrcDoc });
   });
 
-  it("leaves src and srcDoc unset while the html blob is loading", () => {
+  it("shows the rendered document once it has arrived", () => {
     expect(resolveBrowserIframeSources({
       isEditing: false,
-      editableSrcDoc,
-      htmlBlobPreview: { status: "loading" },
+      editableSrcDoc: "",
       readOnlySrcDoc,
       assetSrc,
-    })).toEqual({ src: undefined, srcDoc: undefined });
+    })).toEqual({ src: undefined, srcDoc: readOnlySrcDoc });
   });
 
-  it("uses the blob url when the html preview is ready", () => {
+  it("holds the frame empty while a themed document is still on its way", () => {
+    // The preview on disk carries the stylesheet's own light palette, so
+    // showing it first flashes a white page in a dark workspace.
     expect(resolveBrowserIframeSources({
       isEditing: false,
-      editableSrcDoc,
-      htmlBlobPreview: { status: "ready", url: blobUrl },
-      readOnlySrcDoc,
-      assetSrc,
-    })).toEqual({ src: blobUrl, srcDoc: undefined });
-  });
-
-  it("falls back to the asset protocol src after a blob load error", () => {
-    expect(resolveBrowserIframeSources({
-      isEditing: false,
-      editableSrcDoc,
-      htmlBlobPreview: { status: "error" },
-      readOnlySrcDoc,
-      assetSrc,
-    })).toEqual({ src: assetSrc, srcDoc: undefined });
-  });
-
-  it("waits for the themed markdown document instead of showing the file on disk", () => {
-    // The preview written to disk carries the stylesheet's own light palette,
-    // so showing it first flashes a white page in a dark workspace.
-    expect(resolveBrowserIframeSources({
-      isEditing: false,
-      editableSrcDoc,
-      htmlBlobPreview: { status: "idle" },
+      editableSrcDoc: "",
       readOnlySrcDoc: "",
       assetSrc,
       awaitReadOnlySrcDoc: true,
     })).toEqual({ src: undefined, srcDoc: undefined });
-    // Once it has arrived, or when the load failed and nothing is coming, the
-    // usual resolution applies.
+  });
+
+  it("points an html preview straight at the file on disk", () => {
+    // No fetch, no ArrayBuffer and no Blob: those copied a 13 MB report twice
+    // through the thread that also paints the terminal.
     expect(resolveBrowserIframeSources({
       isEditing: false,
-      editableSrcDoc,
-      htmlBlobPreview: { status: "idle" },
-      readOnlySrcDoc,
+      editableSrcDoc: "",
+      readOnlySrcDoc: "",
       assetSrc,
-      awaitReadOnlySrcDoc: true,
-    })).toEqual({ src: undefined, srcDoc: readOnlySrcDoc });
+    })).toEqual({ src: assetSrc, srcDoc: undefined });
+  });
+
+  it("falls back to the file on disk when the rendered document never came", () => {
     expect(resolveBrowserIframeSources({
       isEditing: false,
-      editableSrcDoc,
-      htmlBlobPreview: { status: "idle" },
+      editableSrcDoc: "",
       readOnlySrcDoc: "",
       assetSrc,
       awaitReadOnlySrcDoc: false,
-    })).toEqual({ src: assetSrc, srcDoc: undefined });
-    // Editing wins over the wait, exactly as it does over every other state.
-    expect(resolveBrowserIframeSources({
-      isEditing: true,
-      editableSrcDoc,
-      htmlBlobPreview: { status: "idle" },
-      readOnlySrcDoc: "",
-      assetSrc,
-      awaitReadOnlySrcDoc: true,
-    })).toEqual({ src: undefined, srcDoc: editableSrcDoc });
-  });
-
-  it("resolves markdown/office through readOnlySrcDoc then the asset src", () => {
-    expect(resolveBrowserIframeSources({
-      isEditing: false,
-      editableSrcDoc,
-      htmlBlobPreview: { status: "idle" },
-      readOnlySrcDoc,
-      assetSrc,
-    })).toEqual({ src: undefined, srcDoc: readOnlySrcDoc });
-    expect(resolveBrowserIframeSources({
-      isEditing: false,
-      editableSrcDoc,
-      htmlBlobPreview: { status: "idle" },
-      readOnlySrcDoc: "",
-      assetSrc,
     })).toEqual({ src: assetSrc, srcDoc: undefined });
   });
 });

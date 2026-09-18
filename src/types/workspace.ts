@@ -85,6 +85,8 @@ export interface PaneTab {
   isDirty?: boolean;
   /** Browser tabs: bump to force <iframe> remount when the same htmlPath is re-emitted. */
   reloadCounter?: number;
+  /** When the source file was last written, as the preview reported it. */
+  sourceMtimeMs?: number | null;
   /** A declared tab is visible in planning UI but must not be restored or launched. */
   lifecycle?: "declared";
   /** Stable ownership metadata for dashboard grouping; runtime session ids are not used here. */
@@ -120,7 +122,7 @@ export interface Pane {
 
 export type AgentSessionKind = "claude" | "codex" | "claude-codex" | "grok";
 
-export type ArtifactSourceKind = "html" | "markdown" | "office" | "pdf";
+export type ArtifactSourceKind = "html" | "markdown" | "office" | "pdf" | "text";
 
 export type WorkspaceStatus = "setup" | "running" | "stopped";
 
@@ -154,7 +156,10 @@ export interface Workspace {
 /** Raw fields excluded from persistent layout state. Keep this list explicit. */
 export type WorkspaceNonPersistentKey = never;
 export type PaneNonPersistentKey = never;
-export type PaneTabNonPersistentKey = "webBackground" | "webInitialUrl";
+// sourceMtimeMs is deliberately not saved: the file can change while the app
+// is closed, and a stale timestamp would make the restored pane skip the
+// reload it needs.
+export type PaneTabNonPersistentKey = "webBackground" | "webInitialUrl" | "sourceMtimeMs";
 
 export type PersistentWorkspaceKey = Exclude<keyof Workspace, WorkspaceNonPersistentKey>;
 export type PersistentPaneKey = Exclude<keyof Pane, PaneNonPersistentKey>;

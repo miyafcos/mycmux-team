@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use super::markdown_preview::markdown_to_static_html;
 use super::office::office_to_static_html;
+use super::text_preview::text_to_static_html;
 use super::{
     artifact_source_kind, ensure_artifact_file_within_read_limit, is_allowed_artifact_path,
     is_allowed_external_artifact_path, is_previewable_artifact, sidetab_session_dir,
@@ -226,6 +227,10 @@ pub(super) fn external_office_preview_path(session_dir: &Path, path: &Path) -> R
     external_artifact_preview_path(session_dir, path, "office")
 }
 
+pub(super) fn external_text_preview_path(session_dir: &Path, path: &Path) -> Result<PathBuf, String> {
+    external_artifact_preview_path(session_dir, path, "text")
+}
+
 fn external_artifact_preview_path(
     session_dir: &Path,
     path: &Path,
@@ -298,6 +303,21 @@ pub(super) fn preview_path_for_artifact(
             };
             std::fs::write(&preview_path, markdown_to_static_html(&markdown, Some(path)))
                 .map_err(|error| format!("Failed to write markdown preview: {error}"))?;
+            Ok(preview_path.to_string_lossy().to_string())
+        }
+        "text" => {
+            ensure_artifact_file_within_read_limit(path, "preview")?;
+            let raw = std::fs::read(path)
+                .map_err(|error| format!("Failed to read text artifact: {error}"))?;
+            // Not `preview.html`: a report.md and a report.txt sitting in one
+            // folder would otherwise fight over the same preview file.
+            let preview_path = if is_session_artifact {
+                path.with_extension("text.preview.html")
+            } else {
+                external_text_preview_path(&session_dir, path)?
+            };
+            std::fs::write(&preview_path, text_to_static_html(&raw, Some(path))?)
+                .map_err(|error| format!("Failed to write text preview: {error}"))?;
             Ok(preview_path.to_string_lossy().to_string())
         }
         "office" => {

@@ -16,7 +16,7 @@ import { resolveDisplayAgentKind, type DisplayAgentKind } from "./agentDisplayKi
 import { agentKindColor, type AgentKindColor } from "./agentKindColors";
 
 /** Everything `AgentKindIcon` can draw: the agent kinds plus the Web-only vendors. */
-export type ArtifactMarkKind = "html" | "markdown" | "pdf" | "word" | "excel" | "powerpoint" | "office";
+export type ArtifactMarkKind = "html" | "markdown" | "text" | "pdf" | "word" | "excel" | "powerpoint" | "office";
 export type TabMarkKind = DisplayAgentKind | "gemini" | "notebooklm" | "browser" | ArtifactMarkKind;
 
 export interface TabMark {
@@ -54,6 +54,7 @@ const WEB_MARK_COLORS: Record<"gemini" | "notebooklm" | "browser", AgentKindColo
 export const ARTIFACT_MARK_COLORS: Record<ArtifactMarkKind, AgentKindColor> = {
   html: { fg: "#607d8b", bg: "rgba(96, 125, 139, 0.10)" },
   markdown: { fg: "#707780", bg: "rgba(112, 119, 128, 0.10)" },
+  text: { fg: "#0f766e", bg: "rgba(15, 118, 110, 0.10)" },
   pdf: { fg: "#c62828", bg: "rgba(198, 40, 40, 0.10)" },
   word: { fg: "#185abd", bg: "rgba(24, 90, 189, 0.10)" },
   excel: { fg: "#107c41", bg: "rgba(16, 124, 65, 0.10)" },
@@ -62,7 +63,7 @@ export const ARTIFACT_MARK_COLORS: Record<ArtifactMarkKind, AgentKindColor> = {
 };
 
 const ARTIFACT_MARK_LABELS: Record<ArtifactMarkKind, string> = {
-  html: "HTML", markdown: "Markdown", pdf: "PDF",
+  html: "HTML", markdown: "Markdown", text: "Text", pdf: "PDF",
   word: "Word", excel: "Excel", powerpoint: "PowerPoint", office: "Office",
 };
 
@@ -106,7 +107,12 @@ export function resolveTabMark(tab: TabMarkInput, agentKind?: string | null): Ta
         : /\.(?:xls|xlsx|xlsm|xlsb|xlt|xltx|xltm)$/i.test(path) ? "excel"
         : /\.(?:ppt|pptx|pptm|pot|potx|potm|pps|ppsx|ppsm)$/i.test(path) ? "powerpoint"
         : "office";
-    } else if (tab.sourceKind === "html" || tab.sourceKind === "markdown" || tab.sourceKind === "pdf") {
+    } else if (
+      tab.sourceKind === "html"
+      || tab.sourceKind === "markdown"
+      || tab.sourceKind === "text"
+      || tab.sourceKind === "pdf"
+    ) {
       kind = tab.sourceKind;
     } else {
       return null;

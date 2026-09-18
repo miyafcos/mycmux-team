@@ -2,9 +2,9 @@
 import { homeDir } from "@tauri-apps/api/path";
 import { resolveLocalPathLinks, type ResolvedLocalPathLink } from "../../lib/ipc";
 import { getTerminalWriteCounter } from "./terminalCache";
+import { ARTIFACT_EXTENSION_PATTERN } from "../../lib/artifactSourceKind";
 
 export const HTTP_LINK_REGEX = /https?:\/\/[^\s"'<>+\uFF0B]+[^\s"'<>+\uFF0B.,!?;:)}\]]/i;
-const ARTIFACT_EXTENSION_PATTERN = String.raw`html?|markdown|md|pdf|docx?|docm|dotx?|dotm|xlsx?|xlsm|xlsb|xltx?|xltm|pptx?|pptm|potx?|potm|ppsx?|ppsm`;
 const GENERIC_FILE_EXTENSION_PATTERN = String.raw`[A-Za-z0-9][A-Za-z0-9_~-]{0,9}`;
 const GENERIC_FILE_EXTENSION_SUFFIX_PATTERN = String.raw`${GENERIC_FILE_EXTENSION_PATTERN}(?:\.${GENERIC_FILE_EXTENSION_PATTERN})*`;
 const ARTIFACT_LINK_TERMINATOR_PATTERN = String.raw`(?=$|[\s\x60"'<>+\uFF0B.,!?;:)}\]\uFF08\uFF09\u30FB\u3002\u3001\uFF0C])`;

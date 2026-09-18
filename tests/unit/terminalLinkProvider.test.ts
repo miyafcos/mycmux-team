@@ -248,12 +248,13 @@ describe("terminal local file path links", () => {
     expect(isArtifactPreviewUri(String.raw`C:\tmp\notes.md`)).toBe(true);
     expect(isArtifactPreviewUri(String.raw`C:\tmp\book.xlsx`)).toBe(true);
     expect(isArtifactPreviewUri("file:///C:/tmp/deck.pptx")).toBe(true);
+    expect(isArtifactPreviewUri(String.raw`C:\tmp\note.txt`)).toBe(true);
+    expect(isArtifactPreviewUri("/c/Users/miyaz/run.log")).toBe(true);
   });
 
   it("classifies other detected file extensions as non-preview paths", () => {
     expect(isArtifactPreviewUri(String.raw`C:\tmp\archive.zip`)).toBe(false);
     expect(isArtifactPreviewUri("/c/Users/miyaz/data.csv")).toBe(false);
-    expect(isArtifactPreviewUri(String.raw`C:\tmp\note.txt`)).toBe(false);
     expect(isArtifactPreviewUri(String.raw`C:\tmp\image.png`)).toBe(false);
   });
 

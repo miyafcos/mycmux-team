@@ -12,6 +12,8 @@ function artifact(sourceKind: ArtifactSourceKind, sourcePath?: string): PaneTab 
 const cases: [ArtifactSourceKind, string, ArtifactMarkKind, string][] = [
   ["html", "report.html", "html", "HTML"],
   ["markdown", "report.md", "markdown", "Markdown"],
+  ["text", "notes.txt", "text", "Text"],
+  ["text", "run.log", "text", "Text"],
   ["pdf", "report.pdf", "pdf", "PDF"],
   ["office", "report.docx", "word", "Word"],
   ["office", "report.xlsx", "excel", "Excel"],

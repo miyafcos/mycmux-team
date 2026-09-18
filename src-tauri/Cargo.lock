@@ -2307,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "mycmux"
-version = "0.74.0"
+version = "0.75.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2319,6 +2319,7 @@ dependencies = [
  "dashmap",
  "dirs",
  "dunce",
+ "encoding_rs",
  "flate2",
  "futures-util",
  "glob",

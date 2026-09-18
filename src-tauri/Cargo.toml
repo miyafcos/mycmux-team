@@ -1,6 +1,6 @@
 [package]
 name = "mycmux"
-version = "0.74.0"
+version = "0.75.0"
 description = "mycmux - AI agent terminal workspace"
 authors = ["miyafcos"]
 edition = "2021"
@@ -31,6 +31,10 @@ kuchikiki = "=0.8.8-speedreader"
 # features are the CLI, syntax highlighting and a builder macro, none of which
 # this app uses.
 comrak = { version = "=0.55.0", default-features = false }
+# Text preview decoding. Japanese .txt files off Windows are routinely
+# Shift_JIS, and read_to_string refuses them outright. Already in the lock
+# file through other crates, so promoting it here downloads nothing new.
+encoding_rs = "0.8"
 quick-xml = "0.38.4"
 zip = "4.6.1"
 flate2 = "1.1.9"

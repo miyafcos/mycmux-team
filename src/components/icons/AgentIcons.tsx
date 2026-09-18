@@ -192,6 +192,15 @@ export function MarkdownArtifactIcon({ size = 12, ...props }: AgentIconProps) {
   );
 }
 
+export function TextArtifactIcon({ size = 12, ...props }: AgentIconProps) {
+  return (
+    <svg {...iconProps(size)} {...props}>
+      <rect width="24" height="24" rx="4" fill={ARTIFACT_MARK_COLORS.text.fg} />
+      <path d="M6 6h12M6 10h12M6 14h12M6 18h7" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function PdfArtifactIcon({ size = 12, ...props }: AgentIconProps) {
   return (
     <svg {...iconProps(size)} {...props}>
@@ -240,6 +249,7 @@ export function OfficeArtifactIcon({ size = 12, ...props }: AgentIconProps) {
 const chipStyles: Record<string, CSSProperties> = {
   html: { background: ARTIFACT_MARK_COLORS.html.bg, borderColor: ARTIFACT_MARK_COLORS.html.fg },
   markdown: { background: ARTIFACT_MARK_COLORS.markdown.bg, borderColor: ARTIFACT_MARK_COLORS.markdown.fg },
+  text: { background: ARTIFACT_MARK_COLORS.text.bg, borderColor: ARTIFACT_MARK_COLORS.text.fg },
   pdf: { background: ARTIFACT_MARK_COLORS.pdf.bg, borderColor: ARTIFACT_MARK_COLORS.pdf.fg },
   word: { background: ARTIFACT_MARK_COLORS.word.bg, borderColor: ARTIFACT_MARK_COLORS.word.fg },
   excel: { background: ARTIFACT_MARK_COLORS.excel.bg, borderColor: ARTIFACT_MARK_COLORS.excel.fg },
@@ -278,6 +288,8 @@ export function AgentKindIcon({ kind, size = 14, chip = true }: AgentKindIconPro
           ? HtmlArtifactIcon
         : kind === "markdown"
           ? MarkdownArtifactIcon
+        : kind === "text"
+          ? TextArtifactIcon
         : kind === "pdf"
           ? PdfArtifactIcon
         : kind === "word"
