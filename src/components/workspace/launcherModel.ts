@@ -80,7 +80,6 @@ export function cycleChoice(current: string, choices: readonly string[], step: 1
  */
 const SHORT_LABELS: Record<string, string> = {
   "claude-codex": "claude-codex",
-  "claude-codex-open": "cc (Open)",
   agy: "agy",
   grok: "Grok",
 };
@@ -97,7 +96,6 @@ const ICON_KINDS: Record<string, string> = {
   claude: "claude",
   codex: "codex",
   "claude-codex": "claude-codex",
-  "claude-codex-open": "claude-codex",
   grok: "grok",
   agy: "antigravity",
   hermes: "hermes",
@@ -163,7 +161,7 @@ export function dirSections(
  *
  * `label` is weighted above the chip label because S10 makes the catalog name
  * the thing a query is aimed at; the short label is searchable only so that
- * `cc` finds the row that shows `cc (Open)`.
+ * `cc` finds the `claude-codex` row.
  */
 function fuseOptions<T>(): IFuseOptions<T> {
   return {

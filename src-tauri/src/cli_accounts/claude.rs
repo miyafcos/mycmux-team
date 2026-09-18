@@ -34,6 +34,68 @@ pub enum CredentialStore {
 /// The keychain service Claude Code stores its credentials under.
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
+/// `security` exits with errSecItemNotFound when the login keychain holds no
+/// item for the service. That is the logged-out state, not a malfunction:
+/// measured on the Mac with `security find-generic-password -s 'Claude
+/// Code-credentials'; echo $?`.
+#[cfg(target_os = "macos")]
+const KEYCHAIN_ITEM_NOT_FOUND: i32 = 44;
+
+/// What the credential store answered.
+///
+/// The two failures are worth keeping apart. "Logged out" is a resting state —
+/// retrying cannot change it, and the live-sync watcher used to report it as a
+/// failed tick every 20 seconds. "Unavailable" is a store we could not consult
+/// (spawn failed, keychain locked, permission denied) and may answer next time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialsRead {
+    Found(String),
+    LoggedOut,
+    Unavailable,
+}
+
+/// Reads the live credentials at most once.
+///
+/// On macOS every read spawns `security`, and one live-sync tick did it three
+/// times for the same answer: the plan lookup in `read_live_identity`, the
+/// capture itself, and the identity read inside that capture. Passing this
+/// holder down the tick collapses them into one read, and keeps the answer
+/// consistent while the tick runs — the identity and the bytes we file away
+/// can no longer come from two different reads of a rotating store.
+///
+/// Scope is one tick on purpose. A longer-lived cache would hand a switch or a
+/// restore the credentials of the account it just replaced.
+pub struct CredentialsOnce<'a> {
+    paths: &'a ClaudePaths,
+    value: Option<CredentialsRead>,
+}
+
+impl<'a> CredentialsOnce<'a> {
+    pub fn new(paths: &'a ClaudePaths) -> Self {
+        Self { paths, value: None }
+    }
+
+    fn read(&mut self) -> &CredentialsRead {
+        let paths = self.paths;
+        self.value
+            .get_or_insert_with(|| read_credentials_status(paths))
+    }
+
+    /// The credentials text, or `None` for both failures.
+    pub fn text(&mut self) -> Option<&str> {
+        match self.read() {
+            CredentialsRead::Found(text) => Some(text.as_str()),
+            _ => None,
+        }
+    }
+
+    /// True when the store answered "there is nothing here" rather than
+    /// "I could not look".
+    pub fn logged_out(&mut self) -> bool {
+        matches!(self.read(), CredentialsRead::LoggedOut)
+    }
+}
+
 #[derive(Clone)]
 pub struct ClaudePaths {
     pub credentials: PathBuf,
@@ -58,33 +120,55 @@ impl ClaudePaths {
 
 /// Reads the credentials JSON, whichever store this install uses.
 pub fn read_credentials(paths: &ClaudePaths) -> Option<String> {
+    match read_credentials_status(paths) {
+        CredentialsRead::Found(text) => Some(text),
+        CredentialsRead::LoggedOut | CredentialsRead::Unavailable => None,
+    }
+}
+
+/// Same read, keeping "nothing stored" apart from "could not look".
+pub fn read_credentials_status(paths: &ClaudePaths) -> CredentialsRead {
     match paths.store {
-        CredentialStore::File => fs::read_to_string(&paths.credentials).ok(),
+        CredentialStore::File => match fs::read_to_string(&paths.credentials) {
+            Ok(text) => CredentialsRead::Found(text),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                CredentialsRead::LoggedOut
+            }
+            Err(_) => CredentialsRead::Unavailable,
+        },
         CredentialStore::Keychain => read_keychain_credentials(),
     }
 }
 
 #[cfg(target_os = "macos")]
-fn read_keychain_credentials() -> Option<String> {
-    let output = std::process::Command::new("/usr/bin/security")
+fn read_keychain_credentials() -> CredentialsRead {
+    let Ok(output) = std::process::Command::new("/usr/bin/security")
         .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
         .output()
-        .ok()?;
+    else {
+        return CredentialsRead::Unavailable;
+    };
     if !output.status.success() {
-        return None;
+        return if output.status.code() == Some(KEYCHAIN_ITEM_NOT_FOUND) {
+            CredentialsRead::LoggedOut
+        } else {
+            CredentialsRead::Unavailable
+        };
     }
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if text.is_empty() {
-        None
+        // An item that exists but holds nothing is not a logged-out keychain;
+        // report it as a store we could not get an answer out of.
+        CredentialsRead::Unavailable
     } else {
-        Some(text)
+        CredentialsRead::Found(text)
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn read_keychain_credentials() -> Option<String> {
+fn read_keychain_credentials() -> CredentialsRead {
     // Only macOS has this store; the variant is unreachable elsewhere.
-    None
+    CredentialsRead::Unavailable
 }
 
 /// Writes the credentials JSON back to whichever store this install uses.
@@ -199,6 +283,14 @@ pub fn needs_relogin(text: &str) -> bool {
 }
 
 pub fn read_live_identity(paths: &ClaudePaths) -> CliLiveLogin {
+    read_live_identity_reusing(paths, &mut CredentialsOnce::new(paths))
+}
+
+/// `read_live_identity` against credentials already read this tick.
+pub fn read_live_identity_reusing(
+    paths: &ClaudePaths,
+    credentials: &mut CredentialsOnce<'_>,
+) -> CliLiveLogin {
     let blank = || CliLiveLogin {
         provider: CliProvider::Claude,
         present: false,
@@ -236,8 +328,9 @@ pub fn read_live_identity(paths: &ClaudePaths) -> CliLiveLogin {
         present: true,
         email: field(account, "emailAddress"),
         identity_key: field(account, "accountUuid"),
-        plan: read_credentials(paths)
-            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        plan: credentials
+            .text()
+            .and_then(|text| serde_json::from_str::<Value>(text).ok())
             .and_then(|value| field(value.get("claudeAiOauth")?, "subscriptionType")),
         org_name: field(account, "organizationName"),
         matched_profile_id: None,
@@ -246,15 +339,25 @@ pub fn read_live_identity(paths: &ClaudePaths) -> CliLiveLogin {
 }
 
 pub fn capture(paths: &ClaudePaths) -> Result<(ClaudeSnapshot, CliLiveLogin), String> {
-    let credentials =
-        read_credentials(paths).ok_or_else(|| ERR_LIVE_LOGIN_UNAVAILABLE.to_string())?;
+    capture_reusing(paths, &mut CredentialsOnce::new(paths))
+}
+
+/// `capture` against credentials already read this tick.
+pub fn capture_reusing(
+    paths: &ClaudePaths,
+    credentials_once: &mut CredentialsOnce<'_>,
+) -> Result<(ClaudeSnapshot, CliLiveLogin), String> {
+    let credentials = credentials_once
+        .text()
+        .ok_or_else(|| ERR_LIVE_LOGIN_UNAVAILABLE.to_string())?
+        .to_string();
     let claude_json = fs::read_to_string(&paths.claude_json)
         .map_err(|_| ERR_LIVE_LOGIN_UNAVAILABLE.to_string())?;
     let oauth_account_text = extract_top_level_member(&claude_json, "oauthAccount")
         .map_err(|_| ERR_CLAUDE_IDENTITY_INVALID.to_string())?
         .ok_or_else(|| ERR_CLAUDE_IDENTITY_INVALID.to_string())?
         .to_string();
-    let live = read_live_identity(paths);
+    let live = read_live_identity_reusing(paths, credentials_once);
     if let Some(error) = &live.error {
         return Err(error.clone());
     }
@@ -345,6 +448,43 @@ mod tests {
             store: CredentialStore::File,
         };
         assert!(read_credentials(&paths).unwrap().contains("max"));
+    }
+
+    #[test]
+    fn an_absent_store_reads_as_logged_out_rather_than_unreadable() {
+        // The live-sync watcher counts "unavailable" ticks as failures and logs
+        // every one of them. A CLI that is simply not logged in must not look
+        // like a malfunction: on the Mac that filled diag.log with the same
+        // line every 20 seconds for as long as the app ran.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ClaudePaths {
+            credentials: dir.path().join(".credentials.json"),
+            claude_json: dir.path().join(".claude.json"),
+            store: CredentialStore::File,
+        };
+        assert_eq!(read_credentials_status(&paths), CredentialsRead::LoggedOut);
+        assert!(CredentialsOnce::new(&paths).logged_out());
+    }
+
+    #[test]
+    fn one_holder_reads_the_store_once() {
+        // Each read is a `security` process on macOS. Deleting the file between
+        // the two calls is how a test can tell a reused answer from a re-read.
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = dir.path().join(".credentials.json");
+        fs::write(&credentials, r#"{"claudeAiOauth":{"subscriptionType":"max"}}"#).unwrap();
+        let paths = ClaudePaths {
+            credentials: credentials.clone(),
+            claude_json: dir.path().join(".claude.json"),
+            store: CredentialStore::File,
+        };
+        let mut once = CredentialsOnce::new(&paths);
+        assert!(once.text().unwrap().contains("max"));
+        fs::remove_file(&credentials).unwrap();
+        assert!(once.text().unwrap().contains("max"), "the first answer is reused");
+        assert!(!once.logged_out());
+        // A fresh holder is a fresh read, so nothing is cached across ticks.
+        assert!(CredentialsOnce::new(&paths).text().is_none());
     }
 
     #[test]

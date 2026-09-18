@@ -21,22 +21,113 @@ fn load_persistent_data_for<T: storage::PersistentDataTarget + ?Sized>(
 #[tauri::command(async)]
 pub fn save_persistent_data(
     app_handle: AppHandle,
-    data: PersistentData,
+    mut data: PersistentData,
 ) -> Result<(), storage::PersistentStorageError> {
-    save_persistent_data_for(&app_handle, data)
+    attach_detached_window_frames(&app_handle, &mut data);
+    let live = live_workspace_ids(&app_handle);
+    save_persistent_data_for(&app_handle, data, &live)
+}
+
+/// Record where each detached workspace's window sits, so the next launch can
+/// open it there. The owning window is the only one that knows its own frame,
+/// and the frontend cannot read another window's — so the save path asks the
+/// registry who owns the workspace and measures that window here.
+fn attach_detached_window_frames(app_handle: &AppHandle, data: &mut PersistentData) {
+    use tauri::Manager;
+
+    let Some(state) = app_handle.try_state::<crate::AppState>() else {
+        return;
+    };
+    for workspace in &mut data.workspaces {
+        if workspace.detached != Some(true) {
+            workspace.window_frame = None;
+            continue;
+        }
+        let Some(label) = state.window_registry.window_for_workspace(&workspace.id) else {
+            continue; // Keep whatever frame the caller carried over.
+        };
+        let Some(window) = app_handle.get_window(&label) else {
+            continue;
+        };
+        let Ok(scale) = window.scale_factor() else {
+            continue;
+        };
+        let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size()) else {
+            continue;
+        };
+        let position = position.to_logical::<f64>(scale);
+        let size = size.to_logical::<f64>(scale);
+        workspace.window_frame = Some(storage::WindowFrameConfig {
+            x: position.x,
+            y: position.y,
+            width: size.width,
+            height: size.height,
+        });
+    }
+}
+
+/// Workspaces some live window still holds: its own published list, plus the
+/// queues of workspaces handed to a window that has not adopted them yet.
+fn live_workspace_ids(app_handle: &AppHandle) -> std::collections::HashSet<String> {
+    use tauri::Manager;
+
+    let Some(state) = app_handle.try_state::<crate::AppState>() else {
+        return std::collections::HashSet::new();
+    };
+    state.window_registry.held_workspace_ids()
 }
 
 fn save_persistent_data_for<T: storage::PersistentDataTarget + ?Sized>(
     target: &T,
     mut data: PersistentData,
+    live_workspace_ids: &std::collections::HashSet<String>,
 ) -> Result<(), storage::PersistentStorageError> {
     data.schema_version = storage::CURRENT_SCHEMA_VERSION;
-    storage::update(target, move |disk| merge_persistent_data(disk, data))
+    let live = live_workspace_ids.clone();
+    storage::update(target, move |disk| merge_persistent_data(disk, data, &live))
 }
 
-fn merge_persistent_data(disk: &mut PersistentData, data: PersistentData) {
+/// Workspaces the save left out, although a live window still holds them.
+///
+/// Every window writes the whole file, and what it writes is its own
+/// workspaces plus the fragments its peers published. A peer that has not
+/// published yet — mid tear-out, mid handover, or one whose leadership was
+/// just handed over — is therefore invisible to the writer, and a straight
+/// assignment would drop its workspaces (and its saved sessions) from the
+/// file. Carrying those entries over from disk keeps a save additive for
+/// anything still on screen somewhere; a workspace nobody holds any more (the
+/// user closed it, or closed the window that held it) is absent from the
+/// registry too, so it still leaves the file.
+fn carry_over_live_workspaces(
+    disk: &[storage::WorkspaceConfig],
+    saved: &[storage::WorkspaceConfig],
+    live: &std::collections::HashSet<String>,
+) -> Vec<storage::WorkspaceConfig> {
+    let written: std::collections::HashSet<&str> =
+        saved.iter().map(|workspace| workspace.id.as_str()).collect();
+    disk.iter()
+        .filter(|workspace| !written.contains(workspace.id.as_str()))
+        .filter(|workspace| live.contains(&workspace.id))
+        .cloned()
+        .collect()
+}
+
+fn merge_persistent_data(
+    disk: &mut PersistentData,
+    data: PersistentData,
+    live: &std::collections::HashSet<String>,
+) {
     disk.schema_version = data.schema_version;
-    disk.workspaces = data.workspaces;
+    let mut workspaces = data.workspaces;
+    let carried = carry_over_live_workspaces(&disk.workspaces, &workspaces, live);
+    if !carried.is_empty() {
+        crate::diag::log(&format!(
+            "[persist] kept {} workspace(s) a live window still holds but this save left out",
+            carried.len()
+        ));
+        workspaces.extend(carried);
+    }
+    disk.workspaces = workspaces;
     // These settings have no frontend store or setter, so the frontend's
     // persistence payload omits them; preserve their Rust-owned values.
     let remote_bind_all = disk.settings.remote_bind_all;
@@ -177,6 +268,7 @@ fn sanitize_agent_sessions(data: &mut PersistentData) {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::collections::HashSet;
 
     struct SchemaLatchReset;
 
@@ -211,7 +303,7 @@ mod tests {
             .into_iter()
             .enumerate()
         {
-            let error = save_persistent_data_for(path.as_path(), PersistentData::default())
+            let error = save_persistent_data_for(path.as_path(), PersistentData::default(), &HashSet::new())
                 .expect_err(phase);
             assert_eq!(error.kind(), "unsupportedSchema", "{phase}");
             assert_eq!(error.schema_version(), Some(999), "{phase}");
@@ -230,7 +322,7 @@ mod tests {
             if index == 0 {
                 let clean_path = temp.path().join("clean-target.json");
                 let latched_error =
-                    save_persistent_data_for(clean_path.as_path(), PersistentData::default())
+                    save_persistent_data_for(clean_path.as_path(), PersistentData::default(), &HashSet::new())
                         .expect_err("process latch must reject a different clean target");
                 assert_eq!(latched_error.kind(), "unsupportedSchema");
                 assert_eq!(latched_error.schema_version(), Some(999));
@@ -324,6 +416,49 @@ mod tests {
         );
     }
 
+    fn workspace_config(id: &str) -> storage::WorkspaceConfig {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "name": id,
+            "grid_template_id": "1x1",
+            "panes": [],
+            "created_at": 0,
+        }))
+        .expect("workspace config fixture")
+    }
+
+    #[test]
+    fn a_save_cannot_drop_a_workspace_another_window_still_holds() {
+        // What a leadership handover used to do: the window that took over
+        // wrote only its own workspace, and the other window's disappeared
+        // from data.json with every session saved in it.
+        let mut disk = PersistentData::default();
+        disk.workspaces = vec![workspace_config("main-ws"), workspace_config("child-ws")];
+        let mut incoming = PersistentData::default();
+        incoming.workspaces = vec![workspace_config("child-ws")];
+        let live = HashSet::from(["main-ws".to_string(), "child-ws".to_string()]);
+
+        merge_persistent_data(&mut disk, incoming, &live);
+
+        let ids: Vec<&str> = disk.workspaces.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(ids, vec!["child-ws", "main-ws"]);
+    }
+
+    #[test]
+    fn a_closed_workspace_still_leaves_the_file() {
+        // Nothing holds it any more, so the guard must not resurrect it.
+        let mut disk = PersistentData::default();
+        disk.workspaces = vec![workspace_config("kept"), workspace_config("closed")];
+        let mut incoming = PersistentData::default();
+        incoming.workspaces = vec![workspace_config("kept")];
+        let live = HashSet::from(["kept".to_string()]);
+
+        merge_persistent_data(&mut disk, incoming, &live);
+
+        let ids: Vec<&str> = disk.workspaces.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(ids, vec!["kept"]);
+    }
+
     #[test]
     fn merge_persistent_data_preserves_rust_owned_settings() {
         let mut disk = PersistentData::default();
@@ -340,7 +475,7 @@ mod tests {
         incoming.settings.ailog_mirror_full_text_root = None;
         incoming.settings.font_size = 19;
 
-        merge_persistent_data(&mut disk, incoming);
+        merge_persistent_data(&mut disk, incoming, &HashSet::new());
 
         assert!(disk.settings.remote_bind_all);
         assert!(disk.settings.dirty_save_mode);

@@ -158,6 +158,22 @@ pub fn release_window_role(app: &AppHandle, label: &str) {
     }
 }
 
+/// Bring the main window back after macOS hid it (its close button and ⌘W
+/// hide rather than close, so the panes in it keep running).
+#[cfg(target_os = "macos")]
+pub fn show_main_window(app: &AppHandle) {
+    let app_handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(window) = app_handle.get_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+            if let Some(webview_window) = app_handle.get_webview_window("main") {
+                recenter_if_offscreen(&webview_window);
+            }
+        }
+    });
+}
+
 #[tauri::command]
 pub fn reveal_main_window(app: AppHandle) -> Result<(), String> {
     let app_handle = app.clone();
@@ -364,9 +380,11 @@ pub fn spawn_child_window(
                 tauri::WebviewUrl::default(),
             )
             .title("mycmux")
-            // Same undecorated chrome as the main window (tauri.conf.json) — the
-            // in-app TitleBar draws the controls.
-            .decorations(false)
+            // macOS: a decorated window, so the Accessibility API reports a
+            // standard window that window managers (Magnet and the like) can
+            // move and resize. Elsewhere the in-app TitleBar keeps drawing the
+            // controls on an undecorated window, as the main window does.
+            .decorations(cfg!(target_os = "macos"))
             .resizable(true)
             // Revealed by the frontend after first paint (App.tsx), mirroring the
             // main window's hidden-until-ready startup.
@@ -376,6 +394,16 @@ pub fn spawn_child_window(
                 width.unwrap_or(CHILD_WINDOW_DEFAULT_WIDTH),
                 height.unwrap_or(CHILD_WINDOW_DEFAULT_HEIGHT),
             );
+
+            // The same Overlay title bar as the main window
+            // (tauri.macos.conf.json), so the native bar never doubles the
+            // in-app one.
+            #[cfg(target_os = "macos")]
+            {
+                builder = builder
+                    .title_bar_style(tauri::TitleBarStyle::Overlay)
+                    .hidden_title(true);
+            }
 
             if let (Some(x), Some(y)) = (x, y) {
                 builder = builder.position(x, y);
@@ -461,10 +489,27 @@ pub fn handle_app_run_event(app: &AppHandle, event: tauri::RunEvent) {
         // Native termination (including macOS Cmd+Q) may skip ExitRequested.
         // The shared latch also makes Exit after ExitRequested harmless.
         tauri::RunEvent::Exit => (0, Some(0)),
+        // Clicking the Dock icon with every window closed: on macOS the app
+        // keeps running with no window (closing the main window hides it), so
+        // this is how the user asks for it back.
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } => {
+            if !has_visible_windows {
+                show_main_window(app);
+            }
+            return;
+        }
         _ => return,
     };
     let state = app.state::<AppState>();
     if !state.window_registry.begin_shutdown(live_windows, code) { return; }
+    // Before anything is torn down: an exit that never reached a window (the
+    // Dock's Quit, a logout) leaves data.json at its last autosave, so fill in
+    // whatever a window still holds and the file has not seen.
+    crate::commands::quit::fill_in_unsaved_workspaces(app);
     if let Some(dir) = state.scrollback_dir.get() {
         if let Err(error) = state.session_manager.flush_all_scrollbacks(dir) {
             crate::diag_warn!("scrollback", "shutdown flush failed: {error}");

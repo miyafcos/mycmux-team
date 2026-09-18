@@ -9,6 +9,8 @@ mod commands;
 mod db;
 mod diag;
 mod dispatch;
+#[cfg(feature = "e2e")]
+mod e2e;
 mod events;
 mod history;
 mod livebrief;
@@ -358,6 +360,7 @@ pub fn run() {
         .manage(remote_control)
         .manage(remote_sessions)
         .manage(remote::RemoteServerRuntime::new())
+        .manage(commands::quit::QuitCoordinator::new())
         .manage(usage::UsageState::new())
         .manage(cli_accounts::login_watch::LoginRegistry::default())
         .invoke_handler(tauri::generate_handler![
@@ -433,6 +436,7 @@ pub fn run() {
             commands::attention::attention_set_tracked,
             commands::workspace::load_persistent_data,
             commands::workspace::save_persistent_data,
+            commands::claude_codex_models::claude_codex_model_choices,
             commands::launcher::launcher_dirs_get,
             commands::launcher::launcher_dirs_set_section_label,
             commands::launcher::launcher_dirs_add_entry,
@@ -493,6 +497,8 @@ pub fn run() {
             commands::window::reveal_main_window,
             commands::window::open_child_window,
             commands::window::quit_app,
+            commands::quit::quit_prepared,
+            commands::quit::quit_saved,
             commands::window::watch_window_drag,
             commands::window_registry::open_workspace_window,
             commands::window_registry::publish_window_fragment,
@@ -706,6 +712,13 @@ pub fn run() {
                     // at that monitor's old origin.
                     crate::commands::window::recenter_if_offscreen(&main_window);
                 }
+            }
+
+            // macOS: replace the default menu so Quit writes every window's
+            // work down before the app exits (commands::quit).
+            #[cfg(target_os = "macos")]
+            if let Err(error) = commands::menu::install(&app_handle) {
+                crate::diag_warn!("menu", "failed to install the macOS menu: {error}");
             }
 
             #[cfg(debug_assertions)]

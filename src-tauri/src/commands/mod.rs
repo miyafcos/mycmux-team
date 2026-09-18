@@ -1,4 +1,5 @@
 pub mod ailog;
+pub mod claude_codex_models;
 pub mod artifact;
 pub mod agent_session_clone;
 pub mod agent_hooks;
@@ -7,10 +8,12 @@ pub mod crsm;
 pub mod dispatch;
 pub mod fs;
 pub mod launcher;
+pub mod menu;
 pub mod online;
 pub mod online_publish;
 pub mod next_action;
 pub mod pets;
+pub mod quit;
 pub mod pet_gallery;
 pub mod session_mapping;
 pub mod shell;

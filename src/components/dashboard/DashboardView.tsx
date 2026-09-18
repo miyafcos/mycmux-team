@@ -957,11 +957,13 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "g") return;
+      const actions = useKeybindingStore.getState().getActionsForEvent(event);
+      // The toggle is AppShell's to handle; let it pass untouched. Reading it
+      // from the bindings keeps it right on macOS, where the keys are ⇧⌘G.
+      if (actions.includes("dashboard.open")) return;
       const target = event.target as HTMLElement | null;
       if (!isEditableTarget(target)) {
-        const columnAction = useKeybindingStore.getState().getActionsForEvent(event)
-          .find((action) => action.startsWith("dashboard.column."));
+        const columnAction = actions.find((action) => action.startsWith("dashboard.column."));
         if (columnAction) {
           event.preventDefault();
           event.stopPropagation();

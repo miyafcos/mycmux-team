@@ -169,7 +169,27 @@ function Get-MycmuxClaudeProjectDir {
 function Get-MycmuxClaudeProjectKey {
   param([Parameter(Mandatory = $true)][string]$Path)
   $normalized = (ConvertTo-MycmuxProjectPath $Path).TrimEnd([char[]]@('\', '/'))
-  return ([regex]::Replace($normalized, "[^A-Za-z0-9-]", "-")).TrimStart([char]'-')
+  $mangled = ([regex]::Replace($normalized, "[^A-Za-z0-9-]", "-")).TrimStart([char]'-')
+  if ($mangled.Length -le 200) { return $mangled }
+  # Past 200 characters Claude Code keeps the first 200 and appends a base-36
+  # hash of the path it was given (2.1.274: JA / K9 / F9). A .NET string is
+  # already UTF-16, which is the unit Claude's regex and hash both count.
+  # Plain 64-bit arithmetic with an explicit modulo: PowerShell 5.1's -band
+  # does not mask a [uint64], and the running value never exceeds 2^32 * 31.
+  [long]$hash = 0
+  foreach ($character in $normalized.ToCharArray()) {
+    $hash = ($hash * 31 + [long][int]$character) % 4294967296
+  }
+  if ($hash -ge 2147483648) { $hash -= 4294967296 }
+  $remaining = [math]::Abs($hash)
+  $digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+  $suffix = ""
+  while ($remaining -gt 0) {
+    $suffix = $digits[[int]($remaining % 36)] + $suffix
+    $remaining = [math]::Floor($remaining / 36)
+  }
+  if ($suffix -eq "") { $suffix = "0" }
+  return ("{0}-{1}" -f $mangled.Substring(0, 200), $suffix)
 }
 
 function Find-MycmuxClaudeSessionFile {
@@ -534,7 +554,10 @@ function Get-MycmuxLaunchSpecValue {
   $trimmed = $Value.Trim()
   # The value lands on a command line, so it must not be mistakable for a flag.
   # Mirrors sanitizeLaunchSpecValue in src/lib/agentCatalog.ts.
-  if ($trimmed -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') { return "" }
+  # `/` is allowed for claude-codex's gateway picker ids (anthropic/gateway/...).
+  # -cnotmatch: a case-insensitive match lets letters that fold to ASCII
+  # (the Kelvin sign) through, which the other three checks refuse.
+  if ($trimmed -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$') { return "" }
   return $trimmed
 }
 
@@ -715,6 +738,13 @@ function Invoke-MycmuxResumeFromEnv {
             Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude" $env:MYCMUX_SESSION_ID
             Invoke-MycmuxCommandArray -Command (Add-MycmuxLaunchSpecToCommandArray @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto", "--resume", $env:MYCMUX_SESSION_ID))
           }
+        } elseif ($env:MYCMUX_SESSION_ID -match '^[0-9a-fA-F-]{36}$' -and -not (Find-MycmuxClaudeSessionFile $env:MYCMUX_SESSION_ID)) {
+          # Nothing was ever written under this id — a pane that was opened and
+          # never typed into. There is no conversation to lose and no reason to
+          # say one could not be restored: start under the same id, so the tab,
+          # the mapping and the transcript Claude is about to write all agree.
+          Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude" $env:MYCMUX_SESSION_ID
+          Invoke-MycmuxCommandArray -Command (Add-MycmuxLaunchSpecToCommandArray @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto", "--session-id", $env:MYCMUX_SESSION_ID))
         } else {
           Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude" (Get-MycmuxClaudeProjectDir)
           Write-Host "  Previous conversation could not be restored; starting a new session."
@@ -757,7 +787,7 @@ function Invoke-MycmuxResumeFromEnv {
 $Options = @(
   New-MycmuxOption "Claude Code" @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto") "claude" "claude"
   New-MycmuxOption "Codex" @("codex", "--no-alt-screen") "codex" "codex"
-  New-MycmuxOption "claude-codex (Codex Models)" @("claude-codex", "--backend", "gpt") "claude-codex" "claude-codex"
+  New-MycmuxOption "claude-codex" @("claude-codex", "--backend", "gpt") "claude-codex" "claude-codex"
   New-MycmuxOption "Grok Build" @("grok", "--no-alt-screen", "--permission-mode", "auto") "grok" "grok"
   New-MycmuxOption "claude-codex (Open Models)" @("claude-codex", "--backend", "fcc") "claude-codex" "claude-codex-open"
   # Gemini CLI was sunset for individual accounts on 2026-06-18; agy (Antigravity CLI) replaces it
@@ -821,6 +851,88 @@ $LaunchSpecCatalog = @{
   "agy" = [pscustomobject]@{ Models = $AgyModels; Efforts = $ShortEfforts }
   # hermes picks provider+model with `hermes model`; mycmux passes no flags.
   "hermes" = [pscustomobject]@{ Models = @(); Efforts = @() }
+}
+
+# claude-codex's model menu is its installed model table, not a list kept here:
+# the rules match claude_codex_models.rs (src-tauri/src/commands) and
+# tests/fixtures/claude_codex_models pins both to the same expected lists. The
+# gpt, claude and fugu profiles plus the fcc profile's cloud open_router/ ids
+# are what the proxy publishes to Claude Code's /model picker; an id with a
+# slash only passes --model in the gateway spelling. Empty when the table
+# cannot be read, and $CodexModels stays the menu then.
+#
+# Known, accepted differences from the Rust reader, all outside what
+# claude-codex writes (UTF-8 JSON with lower-case keys): ConvertFrom-Json takes
+# single-quoted or bare keys and UTF-16 files that serde_json refuses, and
+# refuses keys that differ only in case, which serde_json takes.
+
+# Case-sensitive, type-checked field read. PowerShell's own member access
+# ignores case and unrolls arrays; serde_json does neither, and the two readers
+# must accept the same shapes.
+function Get-MycmuxJsonField {
+  param($Object, [string]$Name)
+  if ($Object -isnot [System.Management.Automation.PSCustomObject]) { return $null }
+  foreach ($property in $Object.PSObject.Properties) {
+    if ($property.Name -ceq $Name) {
+      Write-Output -NoEnumerate $property.Value
+      return
+    }
+  }
+  return $null
+}
+
+# A label is shown in the menu, so control characters (escape sequences, line
+# breaks) are dropped before it is trimmed.
+function Get-MycmuxCleanLabel {
+  param($Text)
+  if ($Text -isnot [string]) { return "" }
+  return ($Text -replace '\p{Cc}', '').Trim()
+}
+
+function Get-MycmuxClaudeCodexModelChoices {
+  param([string]$Path)
+  if (-not $Path) {
+    $base = if ($env:CLAUDE_CODEX_HOME) { $env:CLAUDE_CODEX_HOME } else { [Environment]::GetFolderPath("UserProfile") }
+    $Path = Join-Path $base ".claude-codex\config\models.json"
+  }
+  try {
+    if (-not (Test-Path -LiteralPath $Path)) { return @() }
+    $json = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+  } catch {
+    return @()
+  }
+  $backends = Get-MycmuxJsonField $json "backends"
+  if ($backends -isnot [System.Management.Automation.PSCustomObject]) { return @() }
+  $seen = New-Object "System.Collections.Generic.HashSet[string]"
+  $choices = @()
+  foreach ($route in @(@("gpt", "codex"), @("claude", "claude"), @("fugu", "fugu"), @("fcc", "fcc"))) {
+    $backend = Get-MycmuxJsonField $backends $route[0]
+    $ids = Get-MycmuxJsonField $backend "availableModels"
+    if ($ids -isnot [array]) { continue }
+    $aliases = Get-MycmuxJsonField $backend "aliases"
+    $display = Get-MycmuxJsonField $backend "display"
+    foreach ($raw in $ids) {
+      if ($raw -isnot [string]) { continue }
+      $id = $raw.Trim()
+      if ($route[0] -eq "fcc" -and -not $id.StartsWith("open_router/", [StringComparison]::Ordinal)) { continue }
+      $value = if ($id.Contains("/")) { "anthropic/gateway/{0}/{1}" -f $route[1], $id } else { $id }
+      if (-not $value -or (Get-MycmuxLaunchSpecValue $value) -cne $value) { continue }
+      if (-not $seen.Add($value)) { continue }
+      $label = ""
+      foreach ($family in @("fable", "opus", "sonnet", "haiku")) {
+        $aliasTarget = Get-MycmuxJsonField $aliases $family
+        if ($aliasTarget -isnot [string] -or $aliasTarget -cne $id) { continue }
+        $label = Get-MycmuxCleanLabel (Get-MycmuxJsonField $display ("{0}Name" -f $family))
+        if ($label) { break }
+      }
+      if (-not $label) {
+        $tail = ($id -split "/")[-1]
+        $label = if ($tail) { $tail } else { $id }
+      }
+      $choices += New-MycmuxModelChoice $label $value
+    }
+  }
+  return $choices
 }
 
 # Index-based, so inserting an option shifts everything after it. The two Fugu
@@ -1019,7 +1131,7 @@ function Read-MycmuxTypedSpecValue {
   $value = Get-MycmuxLaunchSpecValue $typed
   if (-not $value) {
     Write-Host ""
-    Write-Host "  Refused: start with a letter or digit, then letters, digits, . _ - only."
+    Write-Host "  Refused: start with a letter or digit, then letters, digits, . _ / - only (128 at most)."
     Start-Sleep -Milliseconds 1200
     return $null
   }
@@ -1097,8 +1209,13 @@ function Invoke-MycmuxLaunchSpecMenu {
     return $false
   }
   $spec = $LaunchSpecCatalog[$Option.Target]
+  $models = $spec.Models
+  if ($Option.Target -eq "claude-codex") {
+    $installed = @(Get-MycmuxClaudeCodexModelChoices)
+    if ($installed.Count -gt 0) { $models = $installed }
+  }
 
-  $model = Show-MycmuxSpecMenu -Title ("{0} - model" -f $Option.Label) -Choices $spec.Models
+  $model = Show-MycmuxSpecMenu -Title ("{0} - model" -f $Option.Label) -Choices $models
   if ($null -eq $model) { return $false }
 
   $note = if ($model) { "model: $model" } else { "model: (default)" }

@@ -89,23 +89,76 @@ pub fn normalize_cwd_key(cwd: &str) -> String {
     normalize_agent_cwd(cwd).to_ascii_lowercase()
 }
 
+/// Longest project key Claude Code writes out in full; past this it truncates
+/// and appends a hash of the untouched path.
+const CLAUDE_PROJECT_KEY_MAX_LEN: usize = 200;
+
+/// Claude Code's string hash: `h = h * 31 + unit` over UTF-16 code units,
+/// wrapped to a signed 32-bit integer at every step.
+///
+/// Read out of the shipped binary (Claude Code 2.1.274, `chunk-3z43h68h.js`):
+/// `function K9(e){let r=0;for(let n=0;n<e.length;n++)r=(r<<5)-r+e.charCodeAt(n)|0;return r}`.
+/// `(r<<5)-r` is `r*31`, and `charCodeAt` yields UTF-16 code units — which is
+/// why this iterates `encode_utf16` and not `chars`.
+fn claude_path_hash(path: &str) -> i32 {
+    path.encode_utf16().fold(0i32, |hash, unit| {
+        hash.wrapping_mul(31).wrapping_add(i32::from(unit))
+    })
+}
+
+/// `Number.prototype.toString(36)` — lowercase digits, no padding.
+fn to_base36(mut value: u64) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    if value == 0 {
+        return "0".to_string();
+    }
+    let mut reversed = Vec::new();
+    while value > 0 {
+        reversed.push(DIGITS[(value % 36) as usize]);
+        value /= 36;
+    }
+    reversed.reverse();
+    String::from_utf8(reversed).expect("base36 digits are ASCII")
+}
+
 /// Mangle a working directory into the `~/.claude/projects/<key>` directory name.
 ///
 /// This must match Claude Code's raw cwd-derived project key and must not
 /// canonicalize, because junctions, symlinks, and Windows path normalization can
 /// produce a different on-disk project directory.
+///
+/// The shipped rule (Claude Code 2.1.274, `chunk-2j5f33gt.js` / the module that
+/// builds `~/.claude/projects`) is:
+///
+/// ```js
+/// var F9=200;
+/// function k(e){return e.replace(/[^a-zA-Z0-9]/g,"-")}
+/// function JA(e){let n=k(e);if(n.length<=F9)return n;return`${n.slice(0,F9)}-${Le(e)}`}
+/// ```
+///
+/// Two details decide whether a long path resolves at all. The regex has no `u`
+/// flag, so it replaces *code units* — a non-BMP character becomes two dashes,
+/// not one. And the hash is taken over the path as given, not over the mangled
+/// form. Japanese paths under Dropbox or CloudStorage pass 200 characters
+/// easily, and without the truncation every resume from one of them looked for
+/// a directory Claude had never created.
 pub fn claude_project_key(path: &str) -> String {
-    posix_drive_to_windows(path)
-        .trim_end_matches(['/', '\\'])
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' {
-                ch
-            } else {
-                '-'
-            }
+    let normalized = posix_drive_to_windows(path);
+    let normalized = normalized.trim_end_matches(['/', '\\']);
+    let mangled: String = normalized
+        .encode_utf16()
+        .map(|unit| match u8::try_from(unit) {
+            Ok(byte) if byte.is_ascii_alphanumeric() || byte == b'-' => char::from(byte),
+            _ => '-',
         })
-        .collect()
+        .collect();
+    if mangled.len() <= CLAUDE_PROJECT_KEY_MAX_LEN {
+        return mangled;
+    }
+    // Every character of `mangled` is ASCII, so byte offsets and the JS string
+    // indices this has to agree with are the same thing.
+    let hash = to_base36(i64::from(claude_path_hash(normalized)).unsigned_abs());
+    format!("{}-{hash}", &mangled[..CLAUDE_PROJECT_KEY_MAX_LEN])
 }
 
 #[cfg(test)]
@@ -268,5 +321,81 @@ mod tests {
             claude_project_key(r"C:\Users\miyaz\日本語"),
             "C--Users-miyaz----"
         );
+    }
+
+    // The expectations below were produced by running Claude Code 2.1.274's own
+    // key functions, lifted verbatim out of the shipped binary, under node:
+    //
+    //   function K9(e){let r=0;for(let n=0;n<e.length;n++)r=(r<<5)-r+e.charCodeAt(n)|0;return r}
+    //   const F9=200;
+    //   function k(e){return e.replace(/[^a-zA-Z0-9]/g,"-")}
+    //   function JA(e){let n=k(e);if(n.length<=F9)return n;return`${n.slice(0,F9)}-${Math.abs(K9(e)).toString(36)}`}
+
+    #[test]
+    fn claude_project_key_keeps_a_key_of_exactly_the_limit_whole() {
+        let key = claude_project_key(&format!("/Users/edu/{}", "b".repeat(189)));
+        assert_eq!(key.len(), 200);
+        assert_eq!(key, format!("-Users-edu-{}", "b".repeat(189)));
+    }
+
+    #[test]
+    fn claude_project_key_truncates_and_hashes_past_the_limit() {
+        // 210 and 211 characters: the same 200-character prefix, told apart
+        // only by the hash — which is why the hash runs over the path, not
+        // over the truncated key.
+        assert_eq!(
+            claude_project_key(&format!("/Users/edu/{}", "b".repeat(199))),
+            format!("-Users-edu-{}-rd488d", "b".repeat(189)),
+        );
+        assert_eq!(
+            claude_project_key(&format!("/Users/edu/{}", "b".repeat(200))),
+            format!("-Users-edu-{}-42pkkv", "b".repeat(189)),
+        );
+    }
+
+    #[test]
+    fn claude_project_key_truncates_a_deep_japanese_cloud_path() {
+        // The shape that broke every resume from Dropbox: 224 characters
+        // mangled, so Claude wrote the truncated directory and mycmux looked
+        // for the full one.
+        let cwd = format!(
+            "/Users/edu/Library/CloudStorage/Dropbox/{}work",
+            "日本語のとても長いフォルダ名/".repeat(12),
+        );
+        let key = claude_project_key(&cwd);
+        assert_eq!(key.len(), 207);
+        assert_eq!(
+            key,
+            format!("-Users-edu-Library-CloudStorage-Dropbox{}-mtdr4m", "-".repeat(161)),
+        );
+    }
+
+    #[test]
+    fn claude_project_key_counts_a_non_bmp_character_as_two_units() {
+        // Claude's regex has no `u` flag, so it replaces UTF-16 code units: a
+        // surrogate pair becomes two dashes, and it costs two of the 200.
+        assert_eq!(claude_project_key("😀/x"), "---x");
+        assert_eq!(
+            claude_project_key(&format!("/Users/edu/😀{}", "c".repeat(200))),
+            format!("-Users-edu---{}-lx6sfi", "c".repeat(187)),
+        );
+    }
+
+    #[test]
+    fn claude_path_hash_matches_the_shipped_implementation() {
+        assert_eq!(claude_path_hash("C:\\Users\\miyaz"), 1_063_363_677);
+        assert_eq!(claude_path_hash("/Users/example/work/mycmux"), -671_413_284);
+        assert_eq!(claude_path_hash(""), 0);
+        assert_eq!(claude_path_hash("-"), 45);
+    }
+
+    #[test]
+    fn to_base36_matches_javascript_number_to_string() {
+        assert_eq!(to_base36(0), "0");
+        assert_eq!(to_base36(35), "z");
+        assert_eq!(to_base36(36), "10");
+        // Math.abs(-2147483648) is 2147483648 in JavaScript, where the hash is
+        // a float by then; taking `i32::abs` here would overflow instead.
+        assert_eq!(to_base36(i64::from(i32::MIN).unsigned_abs()), "zik0zk");
     }
 }

@@ -1046,6 +1046,21 @@ export async function openWorkspaceWindow(
  * Every window publishes its own workspaces here. Main merges the non-main
  * fragments into `data.json`; children never call `savePersistentData`.
  */
+/** Sent to every window when the app is quitting: publish, then answer. */
+export const QUIT_PREPARE_EVENT = "mycmux://prepare-quit";
+/** Sent to the window that owns data.json once its peers have published. */
+export const QUIT_SAVE_EVENT = "mycmux://save-and-quit";
+
+/** This window has published everything it holds; the quit may proceed. */
+export async function quitPrepared(): Promise<void> {
+  return invoke<void>("quit_prepared");
+}
+
+/** data.json is written; the app may exit. */
+export async function quitSaved(): Promise<void> {
+  return invoke<void>("quit_saved");
+}
+
 export async function publishWindowFragment(fragment: WindowFragment): Promise<void> {
   return invoke<void>("publish_window_fragment", { fragment });
 }
@@ -1143,6 +1158,12 @@ export interface DetachedPaneOrigin {
 export interface WorkspaceConfig {
   detached?: boolean | null;
   detached_from?: DetachedPaneOrigin | null;
+  /**
+   * Where the window showing this detached workspace sat, in logical pixels.
+   * Written by the Rust save path from the live window; read at startup to open
+   * the window again where the user left it.
+   */
+  window_frame?: { x: number; y: number; width: number; height: number } | null;
   id: string;
   name: string;
   grid_template_id: string;

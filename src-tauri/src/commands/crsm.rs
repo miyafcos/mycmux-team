@@ -1,170 +1,117 @@
+//! The session index behind 続きから (launcher) and Ctrl+P.
+//!
+//! Built in-process from the vendored `crsm-core` crate (see
+//! `crates/crsm-core/VENDOR.md`) rather than by running the `crsm` CLI. A macOS
+//! GUI app inherits launchd's minimal PATH, so the binary was never found no
+//! matter where it was installed, and both lists were permanently empty there.
+
+use crsm_core::cache::cache_path;
+use crsm_core::path_norm::home_dir;
+use crsm_core::sessions::CACHE_FRESH_TTL_SECS;
+use crsm_core::{
+    create_handoff_file, list_all_sessions, rank_sessions, AgentKind, HandoffRequest, ListOptions,
+    SessionEntry,
+};
 use serde_json::Value;
-use std::fs::{self, File};
-use std::io::Read;
-use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, SystemTime};
 
-// crsm list serves a fresh cache in ~0.1s, but a TTL-expired call rescans
-// incrementally first (measured 1.5-2.5s, longer under disk pressure); 4s
-// killed those rescans mid-flight and surfaced spawn errors in the palette.
-const CRSM_LIST_TIMEOUT: Duration = Duration::from_secs(15);
-const CRSM_HANDOFF_TIMEOUT: Duration = Duration::from_secs(10);
+/// What the palette asks for when it does not say; kept here so a caller that
+/// omits `limit` gets the same page as before.
+const DEFAULT_LIST_LIMIT: usize = 200;
+const DEFAULT_RECENT_TURNS: usize = 20;
 
-struct CrsmOutput {
-    status: ExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-}
+const CACHE_FRESH_TTL: Duration = Duration::from_secs(CACHE_FRESH_TTL_SECS as u64);
 
-fn crsm_candidates() -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    let exe_name = format!("crsm{}", std::env::consts::EXE_SUFFIX);
-    candidates.push(PathBuf::from("crsm"));
-    if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join("bin").join(&exe_name));
-        candidates.push(
-            home.join("crsm")
-                .join("target")
-                .join("release")
-                .join(&exe_name),
-        );
-        candidates.push(
-            home.join("crsm")
-                .join("target")
-                .join("debug")
-                .join(&exe_name),
-        );
+/// Held while a rescan is running. crsm-core's own detached-child refresh is
+/// compiled out here, so mycmux decides when to rebuild the cache — and a
+/// rescan walks every transcript, which is pointless to do twice at once.
+static REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+struct RefreshSlot;
+
+impl Drop for RefreshSlot {
+    fn drop(&mut self) {
+        REFRESH_IN_FLIGHT.store(false, Ordering::Release);
     }
-    candidates
 }
 
-fn temp_output_path(stream: &str) -> PathBuf {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    std::env::temp_dir().join(format!(
-        "mycmux-crsm-{stream}-{}-{timestamp}.tmp",
-        std::process::id()
-    ))
+/// `Some` when the caller took the single refresh slot, `None` while another
+/// rescan still holds it. Dropping the guard hands the slot back, including
+/// when the rescan panics.
+fn claim_refresh_slot() -> Option<RefreshSlot> {
+    REFRESH_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .ok()
+        .map(|_| RefreshSlot)
 }
 
-fn read_file_bytes(path: &Path) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    if let Ok(mut file) = File::open(path) {
-        let _ = file.read_to_end(&mut bytes);
-    }
-    bytes
+/// How long ago the cache was written, or `None` when there is no cache to
+/// serve — the next list call then scans in the foreground and writes one, so
+/// there is nothing to refresh behind it.
+fn cache_age(now: SystemTime) -> Option<Duration> {
+    let home = home_dir()?;
+    let modified = cache_path(&home).metadata().ok()?.modified().ok()?;
+    now.duration_since(modified).ok()
 }
 
-fn command_output_with_timeout(
-    candidate: &Path,
-    args: &[String],
-    timeout: Duration,
-) -> Result<CrsmOutput, String> {
-    let stdout_path = temp_output_path("stdout");
-    let stderr_path = temp_output_path("stderr");
-    let stdout_file = File::create(&stdout_path)
-        .map_err(|error| format!("create {}: {error}", stdout_path.display()))?;
-    let stderr_file = File::create(&stderr_path)
-        .map_err(|error| format!("create {}: {error}", stderr_path.display()))?;
+fn cache_is_stale(age: Option<Duration>) -> bool {
+    age.is_some_and(|age| age >= CACHE_FRESH_TTL)
+}
 
-    let mut command = Command::new(candidate);
-    command
-        .args(args)
-        .stdout(Stdio::from(stdout_file))
-        .stderr(Stdio::from(stderr_file));
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(crate::util::process::CREATE_NO_WINDOW);
-    }
-    let mut child = match command.spawn()
-    {
-        Ok(child) => child,
-        Err(error) => {
-            let _ = fs::remove_file(&stdout_path);
-            let _ = fs::remove_file(&stderr_path);
-            return Err(error.to_string());
-        }
+/// Rebuild the cache on the blocking pool so the *next* call is fresh. The
+/// caller has already been handed the stale list: a rescan takes seconds and
+/// the list is a shortcut, not a source of truth.
+fn spawn_cache_refresh() {
+    let Some(slot) = claim_refresh_slot() else {
+        return;
     };
-
-    let started_at = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let stdout = read_file_bytes(&stdout_path);
-                let stderr = read_file_bytes(&stderr_path);
-                let _ = fs::remove_file(&stdout_path);
-                let _ = fs::remove_file(&stderr_path);
-                return Ok(CrsmOutput {
-                    status,
-                    stdout,
-                    stderr,
-                });
-            }
-            Ok(None) => {
-                if started_at.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let stderr =
-                        String::from_utf8_lossy(&read_file_bytes(&stderr_path)).to_string();
-                    let _ = fs::remove_file(&stdout_path);
-                    let _ = fs::remove_file(&stderr_path);
-                    return Err(format!(
-                        "{} timed out after {} ms{}",
-                        candidate.display(),
-                        timeout.as_millis(),
-                        if stderr.trim().is_empty() {
-                            String::new()
-                        } else {
-                            format!(": {}", stderr.trim())
-                        }
-                    ));
-                }
-                thread::sleep(Duration::from_millis(25));
-            }
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = fs::remove_file(&stdout_path);
-                let _ = fs::remove_file(&stderr_path);
-                return Err(error.to_string());
-            }
+    tauri::async_runtime::spawn_blocking(move || {
+        let _slot = slot;
+        if let Err(error) = list_all_sessions(&ListOptions {
+            refresh: true,
+            use_cache: true,
+        }) {
+            eprintln!("[crsm] background session refresh failed: {error}");
         }
+    });
+}
+
+/// The same order `crsm list` applies: drop what nobody typed into, then either
+/// rank against the query or take the most recent. `--all` has no caller here,
+/// so headless and handoff sessions stay hidden.
+fn select_sessions(
+    mut sessions: Vec<SessionEntry>,
+    query: Option<&str>,
+    limit: usize,
+) -> Vec<SessionEntry> {
+    sessions.retain(|entry| entry.has_user_messages);
+    match query {
+        Some(query) => rank_sessions(&sessions, query, limit),
+        None => sessions.into_iter().take(limit).collect(),
     }
 }
 
-fn run_crsm_json(args: &[String], timeout: Duration) -> Result<Value, String> {
-    let mut last_error = String::new();
-    for candidate in crsm_candidates() {
-        let output = command_output_with_timeout(&candidate, args, timeout);
-        match output {
-            Ok(output) if output.status.success() => {
-                return serde_json::from_slice(&output.stdout).map_err(|error| {
-                    format!("parse crsm JSON from {}: {error}", candidate.display())
-                });
-            }
-            Ok(output) => {
-                last_error = format!(
-                    "{} exited with {}: {}",
-                    candidate.display(),
-                    output.status,
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-            Err(error) => {
-                last_error = format!("spawn {}: {error}", candidate.display());
-            }
-        }
-    }
-    Err(last_error)
+fn list_sessions_blocking(
+    query: Option<String>,
+    limit: usize,
+    refresh: bool,
+) -> Result<Value, String> {
+    let sessions = list_all_sessions(&ListOptions {
+        refresh,
+        use_cache: true,
+    })
+    .map_err(|error| error.to_string())?;
+    serde_json::to_value(select_sessions(sessions, query.as_deref(), limit))
+        .map_err(|error| format!("serialize crsm sessions: {error}"))
 }
 
-async fn run_crsm_json_async(args: Vec<String>, timeout: Duration) -> Result<Value, String> {
-    crate::util::task::run_blocking("crsm command", move || run_crsm_json(&args, timeout)).await
+/// crsm's own spelling, the one the CLI accepts for `--from` / `--target`.
+/// "grok" reaches here from the palette's kind union and has no transcript
+/// format, so it comes back named in the error rather than silently ignored.
+fn parse_agent_kind(value: &str) -> Result<AgentKind, String> {
+    AgentKind::from_str(value.trim())
 }
 
 #[tauri::command]
@@ -173,20 +120,20 @@ pub async fn crsm_list_sessions(
     limit: Option<usize>,
     refresh: Option<bool>,
 ) -> Result<Value, String> {
-    let mut args = vec![
-        "list".to_string(),
-        "--json".to_string(),
-        "--limit".to_string(),
-        limit.unwrap_or(200).to_string(),
-    ];
-    if refresh.unwrap_or(false) {
-        args.push("--refresh".to_string());
+    let refresh = refresh.unwrap_or(false);
+    let limit = limit.unwrap_or(DEFAULT_LIST_LIMIT);
+    let query = query.filter(|value| !value.trim().is_empty());
+    let sessions = crate::util::task::run_blocking("crsm list", move || {
+        list_sessions_blocking(query, limit, refresh)
+    })
+    .await?;
+    // Checked after the answer is in hand: a foreground scan (no cache yet, or
+    // refresh asked for) has just written a fresh one, and then there is
+    // nothing to do.
+    if !refresh && cache_is_stale(cache_age(SystemTime::now())) {
+        spawn_cache_refresh();
     }
-    if let Some(query) = query.filter(|value| !value.trim().is_empty()) {
-        args.push("--query".to_string());
-        args.push(query);
-    }
-    run_crsm_json_async(args, CRSM_LIST_TIMEOUT).await
+    Ok(sessions)
 }
 
 #[tauri::command]
@@ -196,19 +143,186 @@ pub async fn crsm_create_handoff(
     target_kind: String,
     recent_turns: Option<usize>,
 ) -> Result<Value, String> {
-    let mut args = vec![
-        "handoff".to_string(),
-        "--session-id".to_string(),
-        session_id,
-        "--target".to_string(),
-        target_kind,
-        "--recent-turns".to_string(),
-        recent_turns.unwrap_or(20).to_string(),
-        "--json".to_string(),
-    ];
-    if let Some(from_kind) = from_kind.filter(|value| !value.trim().is_empty()) {
-        args.push("--from".to_string());
-        args.push(from_kind);
+    let from_kind = match from_kind.filter(|value| !value.trim().is_empty()) {
+        Some(value) => Some(parse_agent_kind(&value)?),
+        None => None,
+    };
+    let target_kind = parse_agent_kind(&target_kind)?;
+    let recent_turns = recent_turns.unwrap_or(DEFAULT_RECENT_TURNS);
+    crate::util::task::run_blocking("crsm handoff", move || {
+        let result = create_handoff_file(&HandoffRequest {
+            session_id,
+            from_kind,
+            target_kind,
+            recent_turns,
+        })
+        .map_err(|error| error.to_string())?;
+        serde_json::to_value(result).map_err(|error| format!("serialize crsm handoff: {error}"))
+    })
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration as ChronoDuration, Utc};
+    use std::path::PathBuf;
+
+    fn entry(id: &str, cwd: &str, minutes_ago: i64, has_user_messages: bool) -> SessionEntry {
+        SessionEntry {
+            kind: AgentKind::Claude,
+            id: id.to_string(),
+            cwd: cwd.to_string(),
+            label: format!("{id} opening prompt"),
+            preview: String::new(),
+            last_activity: Utc::now() - ChronoDuration::minutes(minutes_ago),
+            started_at: None,
+            source: "test".to_string(),
+            source_path: PathBuf::from("test.jsonl"),
+            transcript_path: None,
+            summary_file: None,
+            files_modified: Vec::new(),
+            incomplete_tasks: Vec::new(),
+            has_user_messages,
+        }
     }
-    run_crsm_json_async(args, CRSM_HANDOFF_TIMEOUT).await
+
+    fn ids(entries: &[SessionEntry]) -> Vec<String> {
+        entries.iter().map(|entry| entry.id.clone()).collect()
+    }
+
+    #[test]
+    fn sessions_nobody_typed_into_stay_out_of_the_list() {
+        let sessions = vec![
+            entry("typed", "C:/work/alpha", 1, true),
+            entry("headless", "C:/work/bravo", 2, false),
+        ];
+        assert_eq!(ids(&select_sessions(sessions, None, 10)), ["typed"]);
+    }
+
+    #[test]
+    fn a_query_ranks_instead_of_taking_the_most_recent() {
+        let sessions = vec![
+            entry("alpha", "C:/work/alpha", 1, true),
+            entry("bravo", "C:/work/bravo", 2, true),
+            entry("charlie", "C:/work/charlie", 3, true),
+        ];
+        // Without ranking this would answer alpha (the newest); the query has to
+        // reach rank_sessions for bravo to win and the rest to drop out.
+        assert_eq!(ids(&select_sessions(sessions, Some("bravo"), 10)), ["bravo"]);
+    }
+
+    #[test]
+    fn an_empty_list_takes_the_newest_up_to_the_limit() {
+        let sessions = vec![
+            entry("alpha", "C:/work/alpha", 1, true),
+            entry("bravo", "C:/work/bravo", 2, true),
+            entry("charlie", "C:/work/charlie", 3, true),
+        ];
+        assert_eq!(
+            ids(&select_sessions(sessions, None, 2)),
+            ["alpha", "bravo"]
+        );
+    }
+
+    /// The frontend reads these field names straight off the command's reply
+    /// (`CrsmSessionEntry` in src/lib/ipc.ts), and they are what `crsm list
+    /// --json` prints.
+    #[test]
+    fn entries_serialise_with_the_cli_field_names() {
+        let value = serde_json::to_value(vec![entry("alpha", "C:/work/alpha", 1, true)])
+            .expect("serialize entries");
+        let first = value[0].as_object().expect("entry object");
+        let mut keys = first.keys().map(String::as_str).collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "cwd",
+                "files_modified",
+                "has_user_messages",
+                "id",
+                "incomplete_tasks",
+                "kind",
+                "label",
+                "last_activity",
+                "preview",
+                "source",
+                "source_path",
+                "started_at",
+                "summary_file",
+                "transcript_path",
+            ]
+        );
+        assert_eq!(first["kind"], serde_json::json!("claude"));
+        assert!(first["last_activity"].is_string());
+    }
+
+    /// Same contract on the handoff side: `CrsmHandoffResult` in src/lib/ipc.ts
+    /// reads these names, and they are what `crsm handoff --json` prints.
+    /// crsm-core's own smoke test covers the file this result points at.
+    #[test]
+    fn handoff_results_serialise_with_the_cli_field_names() {
+        let value = serde_json::to_value(crsm_core::HandoffResult {
+            path: PathBuf::from("C:/Users/test/.crsm/handoff/20260917T000000Z-claude-to-codex.md"),
+            bootstrap_prompt: "Handoff from previous session.".to_string(),
+            from_kind: AgentKind::Claude,
+            target_kind: AgentKind::Codex,
+            from_session_id: "session-a".to_string(),
+            cwd: "C:/work/alpha".to_string(),
+        })
+        .expect("serialize handoff result");
+        let result = value.as_object().expect("handoff object");
+        let mut keys = result.keys().map(String::as_str).collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "bootstrap_prompt",
+                "cwd",
+                "from_kind",
+                "from_session_id",
+                "path",
+                "target_kind",
+            ]
+        );
+        assert_eq!(result["from_kind"], serde_json::json!("claude"));
+        assert_eq!(result["target_kind"], serde_json::json!("codex"));
+    }
+
+    #[test]
+    fn a_fresh_cache_is_not_rescanned() {
+        assert!(!cache_is_stale(Some(Duration::from_secs(0))));
+        assert!(!cache_is_stale(Some(CACHE_FRESH_TTL - Duration::from_secs(1))));
+        // No cache file: the next list call builds one in the foreground, so a
+        // background rescan on top of it would be wasted work.
+        assert!(!cache_is_stale(None));
+        assert!(cache_is_stale(Some(CACHE_FRESH_TTL)));
+        assert!(cache_is_stale(Some(CACHE_FRESH_TTL + Duration::from_secs(30))));
+    }
+
+    #[test]
+    fn only_one_background_refresh_runs_at_a_time() {
+        let first = claim_refresh_slot().expect("first caller takes the slot");
+        assert!(
+            claim_refresh_slot().is_none(),
+            "a second rescan must not start while the first holds the slot"
+        );
+        drop(first);
+        assert!(
+            claim_refresh_slot().is_some(),
+            "the slot is free again once the rescan finishes"
+        );
+    }
+
+    #[test]
+    fn agent_kinds_use_the_cli_spelling() {
+        assert_eq!(parse_agent_kind("claude"), Ok(AgentKind::Claude));
+        assert_eq!(parse_agent_kind("codex"), Ok(AgentKind::Codex));
+        assert_eq!(parse_agent_kind(" claude-codex "), Ok(AgentKind::ClaudeCodex));
+        assert_eq!(
+            parse_agent_kind("grok"),
+            Err("unknown agent kind: grok".to_string())
+        );
+    }
 }

@@ -73,6 +73,24 @@ describe("confirmPaneClose", () => {
     expect(options.title).toBe("このワークスペースを閉じます");
   });
 
+  // Closing the last window is quitting, and everything comes back next
+  // launch; closing one of several ends the work in it. The question has to
+  // say which one it is asking.
+  it("says the work comes back when the window being closed is the last one", async () => {
+    await expect(confirmPaneClose([idlePane()], "window", { peerWindowCount: 0 })).resolves.toBe(true);
+    const [body, options] = confirmDialog.mock.calls[0];
+    expect(options.title).toBe("mycmux を終了します");
+    expect(body).toContain("次に起動したときに、いまの状態から再開できます。");
+  });
+
+  it("says the work does not come back while another window stays open", async () => {
+    await expect(confirmPaneClose([idlePane()], "window", { peerWindowCount: 2 })).resolves.toBe(true);
+    const [body, options] = confirmDialog.mock.calls[0];
+    expect(options.title).toBe("このウィンドウを閉じます");
+    expect(body).toContain("次に起動しても戻りません");
+    expect(body).toContain("他の 2 個のウィンドウ");
+  });
+
   it("returns false when the user cancels", async () => {
     confirmDialog.mockResolvedValue(false);
     await expect(confirmPaneClose([cohabitingAgentPane()], "pane")).resolves.toBe(false);

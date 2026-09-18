@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_LAUNCHER_OPTIONS = [
     "Claude Code",
     "Codex",
-    "claude-codex (Codex Models)",
+    "claude-codex",
     "Grok Build",
     "claude-codex (Open Models)",
     "Antigravity (agy)",
@@ -109,7 +109,7 @@ def test_launcher_order_matches_current_contract() -> None:
 def test_integrated_model_profiles_match_powershell_launcher() -> None:
     launcher_ps1 = read_repo_text("src-tauri/src/launcher.ps1")
     expected = {
-        "claude-codex (Codex Models)": "gpt",
+        "claude-codex": "gpt",
         "claude-codex (Open Models)": "fcc",
     }
     for label, backend in expected.items():

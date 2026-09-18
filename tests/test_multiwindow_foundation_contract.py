@@ -61,8 +61,11 @@ def test_capability_covers_child_window_labels() -> None:
     # allow-show nor allow-set-focus is part of core:window:default.
     # allow-set-size is how a detached window snaps to a screen edge; without
     # it the call is refused by the ACL and the window silently only moves.
+    # allow-hide is what macOS's close button does to the main window; without
+    # it the window refuses to close at all (measured on a Mac, 2026-09-17).
     for permission in [
         "core:window:allow-show",
+        "core:window:allow-hide",
         "core:window:allow-set-focus",
         "core:window:allow-destroy",
         "core:window:allow-set-position",
@@ -71,6 +74,23 @@ def test_capability_covers_child_window_labels() -> None:
         assert permission in permissions, (
             f"{permission} missing from capabilities/default.json"
         )
+
+
+def test_mac_child_chrome_matches_main_without_changing_windows() -> None:
+    """分離窓も Mac の標準枠を使い、独自タイトルバーと重ねる。"""
+    text = read_repo_text(WINDOW_RS)
+    child = text[text.index("pub fn spawn_child_window("):text.index("pub fn open_child_window(")]
+    assert '.decorations(cfg!(target_os = "macos"))' in child
+    assert re.search(
+        r'#\[cfg\(target_os = "macos"\)\]\s*\{\s*builder = builder\s*'
+        r'\.title_bar_style\(tauri::TitleBarStyle::Overlay\)\s*'
+        r'\.hidden_title\(true\);\s*\}', child,
+    )
+    main = json.loads(read_repo_text("src-tauri/tauri.macos.conf.json"))["app"]["windows"][0]
+    assert main["decorations"] is True
+    assert main["titleBarStyle"] == "Overlay"
+    assert main["hiddenTitle"] is True
+    assert ".set_decorations(" not in child
 
 
 def test_window_context_helper_exists() -> None:

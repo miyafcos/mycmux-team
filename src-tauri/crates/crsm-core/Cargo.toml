@@ -1,0 +1,28 @@
+[package]
+name = "crsm-core"
+# Vendored from the crsm repository, which inherits these three from its
+# workspace. mycmux has no workspace table, so they are spelled out.
+edition = "2021"
+license = "MIT"
+version = "0.1.0"
+
+[features]
+# Re-execs `current_exe()` as `crsm list --refresh` to rebuild the cache in the
+# background. Off here: `current_exe()` is mycmux, not the crsm CLI, so the app
+# would relaunch itself. mycmux refreshes the cache in-process instead
+# (src/commands/crsm.rs).
+spawn-refresh = []
+
+[dependencies]
+# crsm pins these exactly so its own lockfile stays reproducible. Vendored into
+# mycmux they share the app's Cargo.lock, and `=` pins would build a second
+# chrono / serde_json / thiserror beside the ones the app already links.
+chrono = { version = "0.4.42", features = ["serde"] }
+dirs = "6.0.0"
+nucleo-matcher = "0.3.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+thiserror = "2.0.17"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console"] }

@@ -72,7 +72,7 @@ describe("launcher spec keyboard navigation", () => {
     expect(specRowsFor(claude)).toEqual(["model", "effort", "launch"]);
   });
 
-  it.each(["grok", "claude-codex-open"])("keeps the free-text model row for %s", (target) => {
+  it.each(["grok"])("keeps the free-text model row for %s", (target) => {
     const entry = getCatalogEntry(target)!;
     expect(entry.models).toHaveLength(0);
     expect(specRowsFor(entry)).toEqual(["model", "effort", "launch"]);
@@ -103,13 +103,14 @@ describe("launcher spec keyboard navigation", () => {
 });
 
 describe("launcher launch rows", () => {
-  it("carries every catalog row, both claude-codex backends included", () => {
+  it("carries every catalog row", () => {
     const items = launchItems();
     expect(items).toHaveLength(AGENT_CATALOG.length);
     const targets = items.map((item) => item.target);
-    // The first draft dropped one of these; the launcher must offer both.
     expect(targets).toContain("claude-codex");
-    expect(targets).toContain("claude-codex-open");
+    // One claude-codex row since 2026-09-18: the open models are reachable
+    // with /model inside it, so a second row would start the same CLI.
+    expect(targets).not.toContain("claude-codex-open");
   });
 
   it("gives every row a mark to draw", () => {
@@ -139,9 +140,8 @@ describe("launcher launch rows", () => {
   // S10: the canonical name stays the search target, the chip shows less.
   it("shortens the names a 240px column cannot hold", () => {
     const byTarget = Object.fromEntries(launchItems().map((i) => [i.target, i]));
-    expect(byTarget["claude-codex"].label).toBe("claude-codex (Codex Models)");
+    expect(byTarget["claude-codex"].label).toBe("claude-codex");
     expect(byTarget["claude-codex"].short).toBe("claude-codex");
-    expect(byTarget["claude-codex-open"].short).toBe("cc (Open)");
     expect(byTarget.agy.short).toBe("agy");
     expect(byTarget.grok.short).toBe("Grok");
     expect(byTarget["web-chatgpt"].short).toBe("ChatGPT");
@@ -154,10 +154,13 @@ describe("launcher search", () => {
 
   // U2: the same Fuse options CrsmPalette uses, so one query does not give two
   // different answers depending on which surface it was typed into.
-  it("finds the Open Models row by its chip label and by its canonical name", () => {
-    expect(searchItems(launch, "cc").map((i) => i.target)).toContain("claude-codex-open");
-    expect(searchItems(launch, "open").map((i) => i.target)).toContain("claude-codex-open");
-    expect(searchItems(launch, "Open Models").map((i) => i.target)).toContain("claude-codex-open");
+  // "cc" stopped matching when the "cc (Open)" chip left the catalog on
+  // 2026-09-18: nothing else carries those two letters as a token. The row
+  // dropped "(Codex Models)" the same day, since its chips now name every
+  // model claude-codex has; "codex" and the canonical name still find it.
+  it("finds the claude-codex row by its chip label and by its canonical name", () => {
+    expect(searchItems(launch, "codex").map((i) => i.target)).toContain("claude-codex");
+    expect(searchItems(launch, "claude-codex").map((i) => i.target)).toContain("claude-codex");
   });
 
   it("returns everything when the query is blank", () => {

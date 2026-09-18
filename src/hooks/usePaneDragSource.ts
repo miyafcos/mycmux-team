@@ -421,7 +421,7 @@ function tearOutMovedWorkspace(
   });
 }
 
-function commitPaneDragDrop(
+export function commitPaneDragDrop(
   item: PaneDragItem,
   target: PaneDropTarget | null,
   trace: TearOutDragTrace | null = null,

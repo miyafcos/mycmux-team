@@ -81,7 +81,7 @@ def test_window_leader_commands_have_safe_single_instance_semantics() -> None:
         "pub fn open_child_window(",
         "pub fn next_child_window_label(existing: &[String]) -> String",
         "tauri::WebviewWindowBuilder::new(",
-        ".decorations(false)",
+        '.decorations(cfg!(target_os = "macos"))',
         ".visible(false)",
         ".min_inner_size(CHILD_WINDOW_MIN_WIDTH, CHILD_WINDOW_MIN_HEIGHT)",
     ]:

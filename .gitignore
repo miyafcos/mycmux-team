@@ -6,6 +6,9 @@ dist/
 dist-cmux-ui/
 src-tauri/target/
 src-tauri/target-*/
+# A vendored crate built on its own (cargo --manifest-path) leaves these behind.
+src-tauri/crates/*/target/
+src-tauri/crates/*/Cargo.lock
 
 # Environment files
 .env

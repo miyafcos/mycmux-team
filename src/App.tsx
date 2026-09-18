@@ -47,6 +47,10 @@ import { connectSessionAttentionStore } from "./stores/sessionAttentionStore";
 import { connectStallStore } from "./stores/stallStore";
 import { connectDispatchWatchdog } from "./stores/dispatchWatchdogStore";
 import { startAutoPaneNaming, stopAutoPaneNaming } from "./lib/autoPaneNaming";
+import { IS_MAC } from "./lib/keybindings";
+
+/** Longest a visible window waits for its first frames before it reveals anyway. */
+const REVEAL_FRAME_FALLBACK_MS = 250;
 
 // Kick off config fetch immediately — will be cached by the time terminals mount
 preloadTerminalConfig();
@@ -399,50 +403,66 @@ function App() {
     if (!ready) return;
 
     let cancelled = false;
+    let started = false;
     let rafA = 0;
     let rafB = 0;
+    let frameFallback: ReturnType<typeof setTimeout> | null = null;
 
-    const revealWindow = (): void => {
-      rafA = requestAnimationFrame(() => {
-        rafB = requestAnimationFrame(async () => {
-          if (cancelled) return;
-          try {
-            if (!isMain) {
-              // Child windows are built hidden (open_child_window →
-              // `.visible(false)`) and reveal themselves after first paint.
-              // There is no startup session gate to wait for: a child restores
-              // nothing in Phase 3a.
-              const childWindow = getCurrentWindow();
-              await childWindow.show();
-              await childWindow.setFocus();
-              setStartupMaskVisible(false);
-              return;
-            }
-            const { expected } = getStartupSessionGateSnapshot();
-            const startupTimeoutMs = Math.min(12000, Math.max(1800, 700 + expected * 350));
-            const gateCompletion = waitForStartupSessionGate(startupTimeoutMs);
-            await revealMainWindow();
-            if (cancelled) return;
-            setStartupMaskVisible(false);
-            void gateCompletion.then((gateResult) => {
-              if (gateResult.timedOut) {
-                console.warn(`[startup] session gate timed out with ${gateResult.pending} sessions still pending`);
-              }
-            });
-          } catch (error) {
-            console.error(error);
-            setStartupMaskVisible(false);
+    const reveal = async (): Promise<void> => {
+      if (cancelled || started) return;
+      started = true;
+      cancelAnimationFrame(rafA);
+      cancelAnimationFrame(rafB);
+      if (frameFallback !== null) clearTimeout(frameFallback);
+      try {
+        if (!isMain) {
+          // Child windows are built hidden (open_child_window →
+          // `.visible(false)`) and reveal themselves once they have painted.
+          // There is no startup session gate to wait for: a child restores
+          // nothing in Phase 3a.
+          const childWindow = getCurrentWindow();
+          await childWindow.show();
+          await childWindow.setFocus();
+          setStartupMaskVisible(false);
+          return;
+        }
+        const { expected } = getStartupSessionGateSnapshot();
+        const startupTimeoutMs = Math.min(12000, Math.max(1800, 700 + expected * 350));
+        const gateCompletion = waitForStartupSessionGate(startupTimeoutMs);
+        await revealMainWindow();
+        if (cancelled) return;
+        setStartupMaskVisible(false);
+        void gateCompletion.then((gateResult) => {
+          if (gateResult.timedOut) {
+            console.warn(`[startup] session gate timed out with ${gateResult.pending} sessions still pending`);
           }
         });
-      });
+      } catch (error) {
+        console.error(error);
+        setStartupMaskVisible(false);
+      }
     };
 
-    revealWindow();
+    // Normally the window shows after its second frame, so the first paint is
+    // already there. WKWebView runs no animation frames for a window that is not
+    // on screen, though, and every child window is built hidden: on macOS those
+    // frames never came, and a torn-out pane sat invisible until the 6 s Rust
+    // fallback showed it (measured on a Mac mini, 2026-09-17). A hidden Mac page
+    // therefore reveals right away and paints once it is visible; anywhere else
+    // a missing frame (an occluded window) costs at most the fallback delay.
+    rafA = requestAnimationFrame(() => {
+      rafB = requestAnimationFrame(() => { void reveal(); });
+    });
+    frameFallback = setTimeout(
+      () => { void reveal(); },
+      IS_MAC && document.visibilityState === "hidden" ? 0 : REVEAL_FRAME_FALLBACK_MS,
+    );
 
     return () => {
       cancelled = true;
-      if (rafA) cancelAnimationFrame(rafA);
-      if (rafB) cancelAnimationFrame(rafB);
+      cancelAnimationFrame(rafA);
+      cancelAnimationFrame(rafB);
+      if (frameFallback !== null) clearTimeout(frameFallback);
     };
   }, [ready, isMain]);
 

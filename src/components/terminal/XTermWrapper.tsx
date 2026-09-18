@@ -34,6 +34,7 @@ import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
+import { IS_MAC } from "../../lib/keybindings";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { LightDarkColorAdaptController, shouldAdaptLightColorsForPane } from "../../lib/lightDarkColorAdapt";
 import { colorWithOpacity } from "../../lib/theme/colorPrimitives";
@@ -161,6 +162,7 @@ import {
 } from "../../lib/askQuestionEvidence";
 import { scanRateLimit } from "../../lib/rateLimitScan";
 import { observeTerminalVisibility } from "../../lib/terminalVisibilityTracker";
+import { cancelTerminalResync, requestTerminalResync } from "./terminalResyncScheduler";
 import {
   bump as bumpPaintStat,
   recordApprovalScan,
@@ -361,6 +363,42 @@ type WebglRendererState = {
 
 const webglRendererStates = new WeakMap<Terminal, WebglRendererState>();
 const webglRendererFailures = new WeakSet<Terminal>();
+/**
+ * How long a terminal stays on the DOM renderer after losing its GPU context,
+ * and how many times it tries to get back.
+ *
+ * A context is lost when the system takes the GPU process down — under memory
+ * pressure on a Mac that happens to a healthy app — and it comes back a moment
+ * later. Treating the first loss as final left that pane drawing through the
+ * DOM renderer for the rest of the session, which is exactly the pane the
+ * reader is watching. Backing off keeps a genuinely broken context from
+ * thrashing.
+ */
+const WEBGL_RETRY_DELAYS_MS = [2_000, 8_000, 30_000];
+const webglRetryCounts = new WeakMap<Terminal, number>();
+const webglRetryTimers = new WeakMap<Terminal, ReturnType<typeof setTimeout>>();
+
+function cancelWebglRetry(term: Terminal): void {
+  const timer = webglRetryTimers.get(term);
+  if (timer === undefined) return;
+  clearTimeout(timer);
+  webglRetryTimers.delete(term);
+}
+
+function scheduleWebglRetry(sessionId: string, term: Terminal): void {
+  const attempt = webglRetryCounts.get(term) ?? 0;
+  const delay = WEBGL_RETRY_DELAYS_MS[attempt];
+  if (delay === undefined) return;
+  webglRetryCounts.set(term, attempt + 1);
+  cancelWebglRetry(term);
+  webglRetryTimers.set(term, setTimeout(() => {
+    webglRetryTimers.delete(term);
+    if (!webglRendererFailures.has(term)) return;
+    webglRendererFailures.delete(term);
+    console.info(`[XTermWrapper] retrying the WebGL renderer for ${sessionId} (attempt ${attempt + 1})`);
+    enableWebglRenderer(sessionId, term);
+  }, delay));
+}
 
 function disposeWebglRenderer(
   sessionId: string,
@@ -390,6 +428,9 @@ function disposeWebglRenderer(
     webglRendererFailures.add(term);
     stats.webglLostAt = Date.now();
     recordWebglContextLoss(sessionId);
+    scheduleWebglRetry(sessionId, term);
+  } else {
+    cancelWebglRetry(term);
   }
 }
 
@@ -417,6 +458,8 @@ function enableWebglRenderer(sessionId: string, term: Terminal): void {
     if (webglRendererStates.get(term)?.addon === addon) {
       diagStatsFor(sessionId).webgl = "on";
       recordRenderer(sessionId, "webgl");
+      // It came back; a later loss gets the full budget again.
+      webglRetryCounts.delete(term);
     }
   } catch (error) {
     if (webglRendererStates.get(term)?.addon === addon) {
@@ -1135,8 +1178,17 @@ export default memo(function XTermWrapper({
     ));
     let stopVisibilityTracking: (() => void) | null = null;
     let containerVisibilityMemo:
-      | { sampledAt: number; displayed: boolean; painted: boolean; writableSize: boolean }
+      | {
+        sampledAt: number;
+        displayed: boolean;
+        painted: boolean;
+        paintedInWindow: boolean;
+        writableSize: boolean;
+      }
       | null = null;
+    // Set when the pane stopped painting only because the window went behind
+    // something. Read once by the resync that follows the window coming back.
+    let parkedByWindowOnly = false;
     let lastObservedWidth = -1;
     let lastObservedHeight = -1;
     const cachedSize = terminalSizeCache.get(sessionId);
@@ -1520,7 +1572,10 @@ export default memo(function XTermWrapper({
       currentTerm.attachCustomKeyEventHandler((e: KeyboardEvent) => {
         if (e.type !== "keydown") return true;
 
-        if (e.key === "v" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+        // Hand Ctrl+V to the browser's paste path instead of the PTY. Not on
+        // macOS: there Control belongs to the shell — ⌃V is quoted-insert —
+        // and pasting is ⌘V, which never reaches this branch anyway.
+        if (e.key === "v" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && !IS_MAC) {
           return false;
         }
 
@@ -1865,30 +1920,39 @@ export default memo(function XTermWrapper({
       containerVisibilityMemo = null;
     };
 
-    const readContainerVisibilitySnapshot = (): { displayed: boolean; painted: boolean; writableSize: boolean } => {
+    const readContainerVisibilitySnapshot = (): {
+      displayed: boolean;
+      painted: boolean;
+      paintedInWindow: boolean;
+      writableSize: boolean;
+    } => {
       const now = typeof performance !== "undefined" ? performance.now() : Date.now();
       if (containerVisibilityMemo && now - containerVisibilityMemo.sampledAt < 16) {
         return containerVisibilityMemo;
       }
       let displayed = container.isConnected;
-      let painted = displayed && document.visibilityState !== "hidden";
+      // `paintedInWindow` answers the layout question alone — would this pane be
+      // on screen if the window were? The window's own state is folded in
+      // afterwards, so the two reasons a pane stops painting stay separable.
+      let paintedInWindow = displayed;
       let current: HTMLElement | null = container;
-      while (current && (displayed || painted)) {
+      while (current && (displayed || paintedInWindow)) {
         const style = window.getComputedStyle(current);
         if (style.display === "none") {
           displayed = false;
-          painted = false;
+          paintedInWindow = false;
           break;
         }
         if (style.visibility === "hidden" || style.visibility === "collapse") {
-          painted = false;
+          paintedInWindow = false;
         }
         current = current.parentElement;
       }
       const rect = container.getBoundingClientRect();
       const snapshot = {
         displayed,
-        painted,
+        painted: paintedInWindow && document.visibilityState !== "hidden",
+        paintedInWindow,
         writableSize: rect.width > 0 && rect.height > 0,
       };
       containerVisibilityMemo = { sampledAt: now, ...snapshot };
@@ -1905,6 +1969,25 @@ export default memo(function XTermWrapper({
 
     const isContainerWritable = (): boolean => {
       return isContainerPainted() && hasWritableTerminalSize();
+    };
+
+    // The window sitting behind another app is the one "not painting" that must
+    // stay cheap: the pane keeps its box and its place, and the reader will be
+    // looking straight at it again. On macOS that happens on every Cmd-Tab, and
+    // it used to cost each visible pane a full scrollback round trip. Every
+    // other reason (a background pane, a zero-sized box, a detached container)
+    // still parks the stream the old way.
+    const isParkedByWindowOnly = (): boolean => {
+      const snapshot = readContainerVisibilitySnapshot();
+      return !snapshot.painted && snapshot.paintedInWindow && snapshot.writableSize;
+    };
+
+    // Read-only twin of rememberContainerSize: it must not consume the
+    // "changed" signal that fitAndSyncResize reads.
+    const containerSizeMatchesLastFit = (): boolean => {
+      const rect = container.getBoundingClientRect();
+      return Math.round(rect.width) === lastObservedWidth
+        && Math.round(rect.height) === lastObservedHeight;
     };
 
     const canWritePendingBatches = (): boolean => {
@@ -1934,24 +2017,57 @@ export default memo(function XTermWrapper({
       }, delay);
     };
 
-    const scheduleFrontendResync = (): void => {
+    const terminalHoldsFocus = (): boolean => {
+      const textarea = term?.textarea;
+      return Boolean(textarea && textarea === document.activeElement);
+    };
+
+    const runFrontendResync = (): void | Promise<void> => {
+      if (disposed || termDisposed || !term || !fitAddon) return;
+      if (!isContainerWritable()) return;
+      // The three-step refit burst exists for the ConPTY resize/repaint gap: the
+      // shell needs a moment to answer at a new size. A window coming back from
+      // behind another app is not a resize — the box is the same one the last
+      // fit measured — so refitting it three times only burns frames. A pane
+      // that did change size while the window was away still gets the burst.
+      const skipRefit = parkedByWindowOnly && containerSizeMatchesLastFit();
+      parkedByWindowOnly = false;
+      if (skipRefit) {
+        clearResizeTimer();
+      } else {
+        scheduleResizeBurst(term, fitAddon);
+      }
+      // The repaint count stays at three: WebKit hands the layer back over
+      // several frames, and a single refresh can land before the surface is
+      // there. Repaints are local to the pane; the refit was the costly half.
+      scheduleFullRefresh(term, [0, 48, 160]);
+      if (pendingBatches.length > 0 || terminalScrollbackResyncNeeded.has(sessionId)) {
+        if (canWritePendingBatches()) {
+          return pumpTerminalWrites();
+        }
+        if (isContainerWritable()) {
+          schedulePendingWriteDrain();
+        }
+      }
+    };
+
+    const scheduleFrontendResync = (options: { stagger?: boolean } = {}): void => {
       if (disposed || termDisposed || !term || !fitAddon) return;
       refreshFrontendVisible();
       refreshTerminalPaintedVisible();
       if (!isContainerWritable()) {
+        cancelTerminalResync(sessionId);
         clearResizeTimer();
         clearRefreshTimers();
         return;
       }
-      scheduleResizeBurst(term, fitAddon);
-      scheduleFullRefresh(term, [0, 48, 160]);
-      if (pendingBatches.length > 0 || terminalScrollbackResyncNeeded.has(sessionId)) {
-        if (canWritePendingBatches()) {
-          void pumpTerminalWrites();
-        } else if (isContainerWritable()) {
-          schedulePendingWriteDrain();
-        }
+      if (options.stagger) {
+        // Every mounted pane wakes in the same tick when the window returns.
+        // Let the pane the reader is in catch up first and space the rest out.
+        requestTerminalResync(sessionId, terminalHoldsFocus(), runFrontendResync);
+        return;
       }
+      void runFrontendResync();
     };
 
     const setFrontendVisibleIfChanged = (visible: boolean): boolean => {
@@ -1977,7 +2093,11 @@ export default memo(function XTermWrapper({
       const frontendChanged = refreshFrontendVisible();
       const paintChanged = refreshTerminalPaintedVisible();
       if (frontendChanged && !frontendVisible) {
-        terminalScrollbackResyncNeeded.add(sessionId);
+        // A pane parked only because the window went behind something keeps its
+        // batches: replaying those on return is one incremental write, where a
+        // resync is a 256 KB round trip for every pane at once.
+        parkedByWindowOnly = isParkedByWindowOnly();
+        if (!parkedByWindowOnly) terminalScrollbackResyncNeeded.add(sessionId);
         clearResizeTimer();
         clearRefreshTimers();
       }
@@ -1985,7 +2105,7 @@ export default memo(function XTermWrapper({
         (frontendVisible && (frontendChanged || pendingBatches.length > 0))
         || (terminalPaintedVisible && paintChanged);
       if (shouldResync) {
-        scheduleFrontendResync();
+        scheduleFrontendResync({ stagger: true });
       }
     };
 
@@ -2294,7 +2414,7 @@ export default memo(function XTermWrapper({
             continue;
           }
           if (!canWritePendingBatches()) {
-            if (!isContainerWritable()) {
+            if (!isContainerWritable() && !isParkedByWindowOnly()) {
               terminalScrollbackResyncNeeded.add(sessionId);
               ackPendingBatch(pending);
               continue;
@@ -2426,11 +2546,15 @@ export default memo(function XTermWrapper({
       if (batch.resync) {
         terminalScrollbackResyncNeeded.add(sessionId);
       }
-      if (!isContainerWritable()) {
+      if (!isContainerWritable() && !isParkedByWindowOnly()) {
         terminalScrollbackResyncNeeded.add(sessionId);
         ackBatch(batch);
         return;
       }
+      // Parked by the window alone: keep the bytes. They are ACKed below
+      // without being written, so the backend's in-flight window keeps moving
+      // while the queue holds the catch-up. enforcePendingBatchCap bounds it
+      // and falls back to a scrollback resync past the cap.
       const pending: PendingFrontendBatch = { batch, acked: false };
       pendingBatches.push(pending);
       enforcePendingBatchCap();

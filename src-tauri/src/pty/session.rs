@@ -31,6 +31,15 @@ const FRONTEND_MAX_INFLIGHT_BATCHES: usize = 16;
 // write. A later matching-generation ACK resets stale state and resumes sends.
 const FRONTEND_ACK_TIMEOUT: Duration = Duration::from_millis(2500);
 const FRONTEND_STALE_TIMEOUTS: u32 = 2;
+// A hidden window keeps receiving output instead of dropping it. The renderer
+// parks the batches and replays them incrementally once it paints again, which
+// costs far less than the full scrollback resync AutoConsume forces on every
+// pane at once — on macOS a plain Cmd-Tab hides the whole webview, so that
+// resync used to fire for every visible pane each time the app lost focus.
+// The budget bounds the backlog: past it the stream falls back to AutoConsume
+// and the renderer rebuilds from the 256 KB scrollback snapshot, which loses
+// nothing. 1 MiB is four snapshots' worth of catch-up.
+const FRONTEND_HIDDEN_BUDGET_BYTES: usize = 1024 * 1024;
 const INPUT_QUEUE_MESSAGE_CAP: usize = 256;
 const INPUT_QUEUE_BYTE_CAP: usize = 512 * 1024;
 const INPUT_WRITE_CHUNK_BYTES: usize = 1024;
@@ -183,6 +192,9 @@ struct FrontendFlowState {
     inflight: VecDeque<InFlight>,
     attached: bool,
     visible: bool,
+    /// Bytes the stream may still deliver while the window is hidden. Refilled
+    /// every time the window comes back.
+    hidden_budget_bytes: usize,
     stale_timeouts: u32,
     dropped_since_send: bool,
     closing: bool,
@@ -220,6 +232,7 @@ impl FrontendFlow {
                 inflight: VecDeque::with_capacity(FRONTEND_MAX_INFLIGHT_BATCHES),
                 attached: true,
                 visible: true,
+                hidden_budget_bytes: FRONTEND_HIDDEN_BUDGET_BYTES,
                 stale_timeouts: 0,
                 dropped_since_send: false,
                 closing: false,
@@ -239,7 +252,7 @@ impl FrontendFlow {
                 if st.closing {
                     return FlowPermit::Closed;
                 }
-                if !st.attached || !st.visible || st.stale_timeouts >= FRONTEND_STALE_TIMEOUTS {
+                if !st.attached || st.stale_timeouts >= FRONTEND_STALE_TIMEOUTS {
                     st.dropped_since_send = true;
                     return FlowPermit::AutoConsume;
                 }
@@ -251,24 +264,21 @@ impl FrontendFlow {
                 let under_bytes =
                     st.inflight_bytes.saturating_add(bytes) <= FRONTEND_MAX_INFLIGHT_BYTES;
                 let under_batches = st.inflight.len() < FRONTEND_MAX_INFLIGHT_BATCHES;
+                if !st.visible {
+                    // Hidden windows never wait: a renderer that is not painting
+                    // may also be slow to ACK, and parking the forwarder here
+                    // would stall the PTY drain. Deliver while the budget and the
+                    // in-flight window both allow it, and drop to AutoConsume the
+                    // moment either runs out.
+                    if !under_bytes || !under_batches || st.hidden_budget_bytes < bytes {
+                        st.dropped_since_send = true;
+                        return FlowPermit::AutoConsume;
+                    }
+                    st.hidden_budget_bytes -= bytes;
+                    return Self::reserve_locked(&mut st, bytes);
+                }
                 if under_bytes && under_batches {
-                    let seq = st.next_seq;
-                    st.next_seq = st.next_seq.saturating_add(1);
-                    let generation = st.generation;
-                    let resync = st.dropped_since_send;
-                    st.dropped_since_send = false;
-                    st.inflight_bytes = st.inflight_bytes.saturating_add(bytes);
-                    st.inflight.push_back(InFlight {
-                        generation,
-                        seq,
-                        bytes,
-                        sent_at: Instant::now(),
-                    });
-                    return FlowPermit::Send {
-                        generation,
-                        seq,
-                        resync,
-                    };
+                    return Self::reserve_locked(&mut st, bytes);
                 }
             }
 
@@ -281,6 +291,26 @@ impl FrontendFlow {
                     self.notify.notify_waiters();
                 }
             }
+        }
+    }
+
+    fn reserve_locked(st: &mut FrontendFlowState, bytes: usize) -> FlowPermit {
+        let seq = st.next_seq;
+        st.next_seq = st.next_seq.saturating_add(1);
+        let generation = st.generation;
+        let resync = st.dropped_since_send;
+        st.dropped_since_send = false;
+        st.inflight_bytes = st.inflight_bytes.saturating_add(bytes);
+        st.inflight.push_back(InFlight {
+            generation,
+            seq,
+            bytes,
+            sent_at: Instant::now(),
+        });
+        FlowPermit::Send {
+            generation,
+            seq,
+            resync,
         }
     }
 
@@ -383,6 +413,7 @@ impl FrontendFlow {
         st.inflight_bytes = 0;
         st.attached = true;
         st.visible = true;
+        st.hidden_budget_bytes = FRONTEND_HIDDEN_BUDGET_BYTES;
         st.stale_timeouts = 0;
         st.dropped_since_send = false;
         self.notify.notify_waiters();
@@ -396,8 +427,12 @@ impl FrontendFlow {
         st.visible = visible;
         if visible {
             st.stale_timeouts = 0;
+            st.hidden_budget_bytes = FRONTEND_HIDDEN_BUDGET_BYTES;
         }
         if !visible {
+            // Start the hidden budget from an empty in-flight window so a batch
+            // that was still awaiting an ACK when the window went away cannot
+            // eat into the catch-up the renderer is about to park.
             st.inflight.clear();
             st.inflight_bytes = 0;
         }
@@ -430,6 +465,9 @@ pub struct PtySession {
     scrollback_end: Arc<AtomicU64>,
     scrollback_dirty: Arc<AtomicBool>,
     scrollback_flush_gate: Mutex<()>,
+    /// What the last successful flush put on disk, so a flush that would write
+    /// the same bytes again can stop before touching the filesystem.
+    scrollback_written: Mutex<Option<super::scrollback_store::ScrollbackFingerprint>>,
     last_output_at: Arc<AtomicU64>,
     session_epoch: u64,
     frontend_flow: Arc<FrontendFlow>,
@@ -867,6 +905,7 @@ impl PtySession {
             scrollback_end,
             scrollback_dirty,
             scrollback_flush_gate: Mutex::new(()),
+            scrollback_written: Mutex::new(None),
             last_output_at,
             session_epoch,
             frontend_flow,
@@ -1059,14 +1098,23 @@ impl PtySession {
         let snapshot = self.get_scrollback_snapshot();
         let (start_offset, data) =
             super::scrollback_store::sanitize_ring_head(snapshot.start_offset, &snapshot.data);
-        match super::scrollback_store::save(
+        // Rewriting bytes that are already there buys nothing and costs a full
+        // file replace plus an fsync. The shutdown flush is where this shows:
+        // it forces every session, including all the ones that have produced
+        // nothing since the last periodic flush.
+        let mut written = self
+            .scrollback_written
+            .lock()
+            .map_err(|error| format!("Failed to lock scrollback fingerprint: {error}"))?;
+        match super::scrollback_store::save_if_changed(
             dir,
             &self.id,
             start_offset,
             snapshot.end_offset,
             data,
+            &mut written,
         ) {
-            Ok(()) => Ok(true),
+            Ok(wrote) => Ok(wrote),
             Err(error) => {
                 self.scrollback_dirty.store(true, Ordering::Release);
                 Err(format!("Failed to persist scrollback for {}: {error}", self.id))
@@ -1224,6 +1272,11 @@ mod tests {
         for item in st.inflight.iter_mut() {
             item.sent_at = Instant::now() - FRONTEND_ACK_TIMEOUT - Duration::from_millis(1);
         }
+    }
+
+    fn hidden_budget(flow: &FrontendFlow) -> usize {
+        let st = flow.inner.lock().expect("flow lock poisoned");
+        st.hidden_budget_bytes
     }
 
     fn flow_snapshot(flow: &FrontendFlow) -> (u64, u64, usize, usize, bool, u32) {
@@ -1419,6 +1472,51 @@ mod tests {
             assert_eq!(pending.load(Ordering::Acquire), 3);
         }
         assert_eq!(pending.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn hidden_frontend_keeps_delivering_until_the_hidden_budget_is_spent() {
+        // Cmd-Tab on macOS hides the whole webview. Dropping output then costs
+        // every visible pane a full scrollback resync when the window returns,
+        // so a hidden stream keeps flowing until the budget is gone.
+        let flow = FrontendFlow::new(test_channel());
+        flow.set_visible(false);
+
+        let chunk = FRONTEND_HIDDEN_BUDGET_BYTES / 8;
+        for _ in 0..8 {
+            let (generation, seq, resync) = expect_send_with_resync(flow.reserve(chunk).await);
+            assert!(!resync, "an in-budget hidden batch must not ask for a resync");
+            // A parked renderer still ACKs: it queues the batch instead of
+            // painting it.
+            flow.ack(generation, seq, chunk);
+        }
+        assert_eq!(hidden_budget(&flow), 0);
+
+        // Past the budget the stream falls back to AutoConsume, and the first
+        // batch after that tells the renderer to rebuild from the scrollback —
+        // so the overflow is re-read, never silently lost.
+        assert_auto_consume(flow.reserve(chunk).await);
+        flow.set_visible(true);
+        assert_eq!(hidden_budget(&flow), FRONTEND_HIDDEN_BUDGET_BYTES);
+        let (_, _, resync) = expect_send_with_resync(flow.reserve(chunk).await);
+        assert!(resync, "the batch after a hidden overflow must ask for a resync");
+    }
+
+    #[tokio::test]
+    async fn hidden_frontend_reserve_never_parks_the_forwarder() {
+        let flow = FrontendFlow::new(test_channel());
+        flow.set_visible(false);
+        for _ in 0..FRONTEND_MAX_INFLIGHT_BATCHES {
+            expect_send(flow.reserve(1).await);
+        }
+
+        // A visible stream waits for an ACK here. A hidden one must not: the
+        // renderer may be slow to ACK while it is not painting, and parking the
+        // forwarder would stall the PTY drain behind it.
+        let permit = tokio::time::timeout(Duration::from_millis(50), flow.reserve(1))
+            .await
+            .expect("a hidden reserve must answer without waiting");
+        assert_auto_consume(permit);
     }
 
     #[tokio::test]

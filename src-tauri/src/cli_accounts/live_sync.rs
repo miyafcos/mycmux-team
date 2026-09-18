@@ -23,7 +23,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     thread,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use super::{claude, codex, grok, registry, snapshot, token_owner, ClaudeLiveFiling,
@@ -34,6 +34,145 @@ use token_owner::{OwnerLookup, OwnerCheck};
 /// coarse poll is enough. Short enough that a switch right after a rotation
 /// still finds a fresh snapshot; long enough to stay invisible in CPU terms.
 const POLL_INTERVAL: Duration = Duration::from_secs(20);
+
+/// Ceiling for the spacing a repeatedly failing provider is put on.
+const BACKOFF_CEILING: Duration = Duration::from_secs(600);
+
+/// How long the same failure stays out of the log before it is reported again.
+const FAILURE_REPORT_INTERVAL: Duration = Duration::from_secs(3600);
+
+/// Three providers, so a slot each beats hashing (and keeps `CliProvider` free
+/// of a `Hash` bound it needs nowhere else).
+const PROVIDER_SLOTS: usize = 3;
+
+fn provider_slot(provider: CliProvider) -> usize {
+    match provider {
+        CliProvider::Claude => 0,
+        CliProvider::Codex => 1,
+        CliProvider::Grok => 2,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Retry {
+    spacing: Duration,
+    due: Instant,
+}
+
+/// Spacing for a provider whose ticks keep failing.
+///
+/// A failed tick forgets its file stamps on purpose, so the next tick is
+/// guaranteed to try the same thing again. That is right for a rotation we
+/// missed and wrong for a standing condition — a keychain the app may not read,
+/// a registry directory it cannot write — which then repeats every 20 seconds
+/// for as long as the app runs (measured on the Mac: 8,434 identical lines in a
+/// day, enough to push everything else out of the 1MiB diagnostic log).
+///
+/// Doubling the spacing up to ten minutes keeps the retry without the churn,
+/// and one tick that does not fail puts the provider back on the poll interval.
+#[derive(Default)]
+pub struct SyncBackoff {
+    waiting: [Option<Retry>; PROVIDER_SLOTS],
+}
+
+impl SyncBackoff {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// False while this provider is still serving the spacing from an earlier
+    /// failure. A provider that is not due is skipped whole: nothing reads its
+    /// credential store, so the tick costs nothing for it.
+    pub fn due(&self, provider: CliProvider, now: Instant) -> bool {
+        self.waiting[provider_slot(provider)].is_none_or(|retry| now >= retry.due)
+    }
+
+    /// Record what a tick did with this provider.
+    pub fn record(&mut self, provider: CliProvider, failed: bool, now: Instant) {
+        let slot = &mut self.waiting[provider_slot(provider)];
+        if !failed {
+            *slot = None;
+            return;
+        }
+        let spacing = slot
+            .map(|retry| (retry.spacing * 2).min(BACKOFF_CEILING))
+            .unwrap_or(POLL_INTERVAL * 2);
+        *slot = Some(Retry {
+            spacing,
+            due: now + spacing,
+        });
+    }
+
+    #[cfg(test)]
+    fn spacing(&self, provider: CliProvider) -> Option<Duration> {
+        self.waiting[provider_slot(provider)].map(|retry| retry.spacing)
+    }
+}
+
+/// Whether a failure is worth a line in the diagnostic log this time.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FailureReport {
+    /// Log it, mentioning how many identical ticks went unreported since the
+    /// last line for this provider.
+    Report { suppressed: u64 },
+    Skip,
+}
+
+struct Repeat {
+    reason: String,
+    reported_at: Instant,
+    suppressed: u64,
+}
+
+/// One line per standing failure instead of one per tick.
+///
+/// A reason is reported when it first appears, when it changes, and once an
+/// hour while it persists. Anything the provider does that is not a failure
+/// clears the record, so the next failure is reported straight away.
+#[derive(Default)]
+pub struct FailureLog {
+    seen: [Option<Repeat>; PROVIDER_SLOTS],
+}
+
+impl FailureLog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn on_failure(&mut self, provider: CliProvider, reason: &str, now: Instant) -> FailureReport {
+        let slot = &mut self.seen[provider_slot(provider)];
+        match slot {
+            Some(repeat)
+                if repeat.reason == reason
+                    && now.saturating_duration_since(repeat.reported_at)
+                        < FAILURE_REPORT_INTERVAL =>
+            {
+                repeat.suppressed += 1;
+                FailureReport::Skip
+            }
+            Some(repeat) => {
+                let suppressed = std::mem::take(&mut repeat.suppressed);
+                repeat.reason = reason.to_string();
+                repeat.reported_at = now;
+                FailureReport::Report { suppressed }
+            }
+            None => {
+                *slot = Some(Repeat {
+                    reason: reason.to_string(),
+                    reported_at: now,
+                    suppressed: 0,
+                });
+                FailureReport::Report { suppressed: 0 }
+            }
+        }
+    }
+
+    /// The provider got through a tick without failing: the next failure is new
+    /// again, whatever it says.
+    pub fn on_recovery(&mut self, provider: CliProvider) {
+        self.seen[provider_slot(provider)] = None;
+    }
+}
 
 /// What a single provider's tick did — returned so tests can assert without
 /// reading the log.
@@ -169,8 +308,13 @@ fn sync_provider_with_grok(
         return SyncOutcome::Unchanged;
     }
 
+    // One read of Claude's credential store for the whole tick. On macOS that
+    // store is the login keychain and every read spawns `security`; the
+    // identity read below and the capture further down used to spawn it once
+    // each, for the same bytes.
+    let mut claude_credentials = claude::CredentialsOnce::new(claude_paths);
     let live = match provider {
-        CliProvider::Claude => claude::read_live_identity(claude_paths),
+        CliProvider::Claude => claude::read_live_identity_reusing(claude_paths, &mut claude_credentials),
         CliProvider::Codex => codex::read_live_identity(codex_paths),
         CliProvider::Grok => grok::read_live_identity(grok_paths.expect("grok path required")),
     };
@@ -191,9 +335,17 @@ fn sync_provider_with_grok(
         let Some(identity) = live.identity_key.as_deref() else {
             return SyncOutcome::NoIdentity;
         };
-        let stored = match claude::capture(claude_paths) {
+        let stored = match claude::capture_reusing(claude_paths, &mut claude_credentials) {
             Ok((stored, _)) => stored,
             Err(_) => {
+                // A store that holds no Claude item is a logged-out CLI, not a
+                // broken tick: `~/.claude.json` can still name the account the
+                // user logged out of, which is why we get this far. Reporting
+                // it as a failure retried it — and logged it — every 20
+                // seconds on every Mac with no Claude login.
+                if claude_credentials.logged_out() {
+                    return SyncOutcome::NoLiveLogin;
+                }
                 stamps.forget(&watched);
                 return SyncOutcome::Failed(super::ERR_LIVE_LOGIN_UNAVAILABLE.to_string());
             }
@@ -291,8 +443,11 @@ pub fn start_live_sync(base: PathBuf) {
         let mut stamps = FileStamps::new();
         let mut prewarm_stamps = FileStamps::new();
         let mut prewarm_unverified = true;
+        let mut backoff = SyncBackoff::new();
+        let mut failures = FailureLog::new();
         loop {
             thread::sleep(POLL_INTERVAL);
+            let now = Instant::now();
             let (claude_paths, codex_paths, grok_paths) =
                 match (claude::ClaudePaths::resolve(), codex::CodexPaths::resolve(), grok::GrokPaths::resolve()) {
                     (Ok(claude_paths), Ok(codex_paths), Ok(grok_paths)) => (claude_paths, codex_paths, grok_paths),
@@ -300,14 +455,30 @@ pub fn start_live_sync(base: PathBuf) {
                 };
             // No mutation guard across network I/O. The sync below re-reads
             // the token and consults the cache, so rotations during prewarm fail closed.
-            let moved = prewarm_stamps.changed(&claude_watched(&claude_paths));
-            if moved || prewarm_unverified {
-                prewarm_unverified = claude::read_credentials(&claude_paths)
-                    .and_then(|text| token_owner::claude_access_token(&text))
-                    .map(|token| {
-                        token_owner::cached_owner(&token).is_none()
-                            && !matches!(token_owner::claude_token_owner_blocking(&token), OwnerCheck::Owner(_))
-                    }).unwrap_or(true);
+            // That re-read is why the prewarm cannot share this tick's holder:
+            // verifying one set of bytes and filing another is the stale
+            // snapshot this module exists to prevent.
+            //
+            // Nothing consults the owner cache while Claude is backing off, so
+            // a tick that will skip Claude skips filling it too.
+            if backoff.due(CliProvider::Claude, now) {
+                let moved = prewarm_stamps.changed(&claude_watched(&claude_paths));
+                if moved || prewarm_unverified {
+                    prewarm_unverified = match claude::read_credentials(&claude_paths)
+                        .and_then(|text| token_owner::claude_access_token(&text))
+                    {
+                        Some(token) => {
+                            token_owner::cached_owner(&token).is_none()
+                                && !matches!(token_owner::claude_token_owner_blocking(&token), OwnerCheck::Owner(_))
+                        }
+                        // No token to verify — a logged-out CLI, or one whose
+                        // credentials carry no access token. Staying "unverified"
+                        // re-read the store every tick for an answer that cannot
+                        // change until a login writes the watched files, which
+                        // sets `moved` and brings the prewarm back by itself.
+                        None => false,
+                    };
+                }
             }
             // A switch is mid-flight: its own capture already covers this
             // rotation, and interleaving would race the restore. Skip rather
@@ -316,12 +487,29 @@ pub fn start_live_sync(base: PathBuf) {
                 continue;
             };
             for provider in [CliProvider::Claude, CliProvider::Codex, CliProvider::Grok] {
-                match sync_provider_with_grok(&base, provider, &claude_paths, &codex_paths, Some(&grok_paths), &mut stamps, &token_owner::cached_owner) {
+                if !backoff.due(provider, now) {
+                    continue;
+                }
+                let outcome = sync_provider_with_grok(&base, provider, &claude_paths, &codex_paths, Some(&grok_paths), &mut stamps, &token_owner::cached_owner);
+                let failed = matches!(outcome, SyncOutcome::Failed(_));
+                backoff.record(provider, failed, now);
+                if !failed {
+                    failures.on_recovery(provider);
+                }
+                match outcome {
                     SyncOutcome::Failed(error) => {
-                        crate::diag_warn!(
-                            "cli-accounts",
-                            "live snapshot sync failed ({provider:?}): {error}"
-                        );
+                        if let FailureReport::Report { suppressed } = failures.on_failure(provider, &error, now) {
+                            match suppressed {
+                                0 => crate::diag_warn!(
+                                    "cli-accounts",
+                                    "live snapshot sync failed ({provider:?}): {error}"
+                                ),
+                                count => crate::diag_warn!(
+                                    "cli-accounts",
+                                    "live snapshot sync failed ({provider:?}): {error} ({count} failed ticks went unreported since the previous line)"
+                                ),
+                            }
+                        }
                     }
                     // Rare enough to log, and the one outcome that changes the
                     // account list without a user action.
@@ -395,6 +583,101 @@ mod tests {
         pin(&path);
         assert!(stamps.changed(&[path.as_path()]));
         assert!(!stamps.changed(&[path.as_path()]));
+    }
+
+    #[test]
+    fn a_failing_provider_is_spaced_out_and_a_good_tick_puts_it_back() {
+        let start = Instant::now();
+        let mut backoff = SyncBackoff::new();
+        assert!(backoff.due(CliProvider::Claude, start), "nothing failed yet");
+
+        backoff.record(CliProvider::Claude, true, start);
+        assert_eq!(backoff.spacing(CliProvider::Claude), Some(POLL_INTERVAL * 2));
+        assert!(!backoff.due(CliProvider::Claude, start + POLL_INTERVAL));
+        assert!(backoff.due(CliProvider::Claude, start + POLL_INTERVAL * 2));
+        // The other providers keep their own pace.
+        assert!(backoff.due(CliProvider::Codex, start));
+
+        let mut at = start;
+        for expected in [80u64, 160, 320, 600, 600] {
+            at += backoff.spacing(CliProvider::Claude).unwrap();
+            backoff.record(CliProvider::Claude, true, at);
+            assert_eq!(
+                backoff.spacing(CliProvider::Claude),
+                Some(Duration::from_secs(expected)),
+                "doubling stops at the ceiling"
+            );
+        }
+
+        backoff.record(CliProvider::Claude, false, at);
+        assert_eq!(backoff.spacing(CliProvider::Claude), None);
+        assert!(backoff.due(CliProvider::Claude, at), "back on the poll interval");
+    }
+
+    #[test]
+    fn a_standing_failure_is_logged_once_an_hour_with_the_count_it_swallowed() {
+        let start = Instant::now();
+        let mut log = FailureLog::new();
+        assert_eq!(
+            log.on_failure(CliProvider::Claude, "boom", start),
+            FailureReport::Report { suppressed: 0 },
+            "a new reason is reported at once"
+        );
+        for minute in 1..=59 {
+            assert_eq!(
+                log.on_failure(CliProvider::Claude, "boom", start + Duration::from_secs(minute * 60)),
+                FailureReport::Skip
+            );
+        }
+        assert_eq!(
+            log.on_failure(CliProvider::Claude, "boom", start + FAILURE_REPORT_INTERVAL),
+            FailureReport::Report { suppressed: 59 }
+        );
+
+        // A different reason is a state change, so it does not wait an hour.
+        assert_eq!(
+            log.on_failure(CliProvider::Claude, "other", start + FAILURE_REPORT_INTERVAL),
+            FailureReport::Report { suppressed: 0 }
+        );
+        // Neither does the first failure after the provider recovers.
+        log.on_recovery(CliProvider::Claude);
+        assert_eq!(
+            log.on_failure(CliProvider::Claude, "other", start + FAILURE_REPORT_INTERVAL),
+            FailureReport::Report { suppressed: 0 }
+        );
+    }
+
+    #[test]
+    fn a_logged_out_claude_store_is_not_a_failed_tick() {
+        // `~/.claude.json` still names the account after a logout, so the tick
+        // gets as far as the capture and the capture finds nothing. Counting
+        // that as a failure retried it — and logged it — every 20 seconds.
+        let dir = tempdir().unwrap();
+        let claude_paths = claude::ClaudePaths {
+            store: claude::CredentialStore::File,
+            credentials: dir.path().join("credentials.json"),
+            claude_json: dir.path().join("claude.json"),
+        };
+        let codex_paths = codex::CodexPaths {
+            auth: dir.path().join("auth.json"),
+        };
+        fs::write(&claude_paths.claude_json, CLAUDE_JSON).unwrap();
+        registry::save(dir.path(), &registry::CliAccountsFile::default()).unwrap();
+
+        let mut stamps = FileStamps::new();
+        let sync = |stamps: &mut FileStamps| {
+            sync_provider(
+                dir.path(),
+                CliProvider::Claude,
+                &claude_paths,
+                &codex_paths,
+                stamps,
+                &|_| Some(token_owner::TokenOwner { account_uuid: "claude-account-a".into(), email: None }),
+            )
+        };
+        assert_eq!(sync(&mut stamps), SyncOutcome::NoLiveLogin);
+        // The stamps were kept, so the next tick does not touch the store at all.
+        assert_eq!(sync(&mut stamps), SyncOutcome::Unchanged);
     }
 
     #[test]

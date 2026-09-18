@@ -67,12 +67,46 @@ fn prefer_wrapper_bash(shell: &str) -> String {
 /// So ask the login shell once for the PATH it would build. It runs
 /// interactively (`-i`) because a zsh user's PATH usually lives in `.zshrc`,
 /// which a login-only shell never reads.
+/// Only a *successful* answer is remembered. A shell that was slow once (the
+/// probe has an 8-second deadline) or failed once would otherwise leave every
+/// pane for the rest of the run without Homebrew or ~/.local/bin on PATH, with
+/// nothing the operator could do short of restarting the app.
 #[cfg(target_os = "macos")]
 pub(crate) fn login_shell_path() -> Option<&'static str> {
-    static RESOLVED: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    RESOLVED
-        .get_or_init(resolve_login_shell_path)
-        .as_deref()
+    struct Probe {
+        path: Option<&'static str>,
+        failed_at: Option<std::time::Instant>,
+    }
+    static PROBE: std::sync::Mutex<Probe> = std::sync::Mutex::new(Probe {
+        path: None,
+        failed_at: None,
+    });
+    /// How long a failure stands before the shell is asked again. Long enough
+    /// that a shell which always fails does not cost every pane the probe's
+    /// deadline, short enough that fixing a shell takes effect within a minute.
+    const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+
+    let mut probe = PROBE.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(path) = probe.path {
+        return Some(path);
+    }
+    if probe
+        .failed_at
+        .is_some_and(|at| at.elapsed() < RETRY_AFTER)
+    {
+        return None;
+    }
+    match resolve_login_shell_path() {
+        Some(path) => {
+            let path: &'static str = Box::leak(path.into_boxed_str());
+            probe.path = Some(path);
+            Some(path)
+        }
+        None => {
+            probe.failed_at = Some(std::time::Instant::now());
+            None
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]

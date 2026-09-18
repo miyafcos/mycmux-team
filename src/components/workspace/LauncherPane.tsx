@@ -20,6 +20,7 @@ import {
   isValidLaunchSpecValue,
 } from "../../lib/agentCatalog";
 import { agentIdForSessionKind } from "../../lib/agentSessionConfig";
+import { useLaunchModels } from "../../lib/claudeCodexModels";
 import {
   crsmListSessions,
   launcherRecordDirMru,
@@ -306,10 +307,15 @@ export default function LauncherPane({
   const [effort, setEffort] = useState("");
   const [cursor, setCursor] = useState(0);
   const [sessions, setSessions] = useState<CrsmSessionEntry[]>([]);
+  const [resumeError, setResumeError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const modelInputRef = useRef<HTMLInputElement | null>(null);
   const paneRef = useRef<HTMLDivElement | null>(null);
   const specEntry = specTarget ? getCatalogEntry(specTarget) : undefined;
+  // claude-codex's chips are its installed models.json, re-read on each open.
+  const specModels = useLaunchModels(specEntry);
+  // No list means the model is typed; focus follows that, not the list itself.
+  const specTypesModel = specModels.length === 0;
 
   const hiddenIds = useSettingsStore((s) => s.launcherHiddenIds);
   const hidden = useMemo(() => new Set(hiddenIds), [hiddenIds]);
@@ -341,12 +347,12 @@ export default function LauncherPane({
   // one, or opening a background pane would steal the caret.
   useEffect(() => {
     if (!isActive) return;
-    if (specEntry && specRow === "model" && specEntry.models.length === 0) {
+    if (specEntry && specRow === "model" && specTypesModel) {
       modelInputRef.current?.focus();
     } else {
       inputRef.current?.focus();
     }
-  }, [isActive, specEntry, specRow]);
+  }, [isActive, specEntry, specTypesModel, specRow]);
 
   useEffect(() => {
     void loadDirs();
@@ -365,14 +371,22 @@ export default function LauncherPane({
   useEffect(() => {
     if (!showResume) {
       setSessions([]);
+      setResumeError(null);
       return undefined;
     }
     let cancelled = false;
     // Not awaited before the first paint: the catalog is already on screen and
     // this list drops in when it arrives.
     crsmListSessions(undefined, RESUME_FETCH_LIMIT, false)
-      .then((list) => { if (!cancelled) setSessions(list); })
-      .catch(() => { if (!cancelled) setSessions([]); });
+      .then((list) => { if (!cancelled) { setSessions(list); setResumeError(null); } })
+      .catch((error: unknown) => {
+        // The reason used to be swallowed here, so a failed read and an empty
+        // history both rendered as "再開できるセッションがありません" — which is
+        // how the macOS builds spent weeks looking like they had no history.
+        if (cancelled) return;
+        setSessions([]);
+        setResumeError(error instanceof Error ? error.message : String(error));
+      });
     return () => { cancelled = true; };
   }, [showResume]);
 
@@ -566,8 +580,8 @@ export default function LauncherPane({
       } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
         event.preventDefault();
         const step = event.key === "ArrowLeft" ? -1 : 1;
-        if (specRow === "model" && specEntry.models.length > 0) {
-          setModel((current) => cycleChoice(current, specEntry.models.map((choice) => choice.value), step));
+        if (specRow === "model" && specModels.length > 0) {
+          setModel((current) => cycleChoice(current, specModels.map((choice) => choice.value), step));
         } else if (specRow === "effort") {
           setEffort((current) => cycleChoice(current, specEntry.efforts, step));
         }
@@ -757,6 +771,18 @@ export default function LauncherPane({
     </div>
   );
 
+  // Carries the reason, not just the fact: "no history" and "the history could
+  // not be read" send you looking in completely different places.
+  const resumeFailedNote = resumeError ? (
+    <div
+      key="resume-failed"
+      style={{ padding: "6px 12px", fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}
+    >
+      <span style={{ display: "block" }}>{S.resumeFailed}</span>
+      <span style={{ ...secondaryText, whiteSpace: "normal" }}>{resumeError}</span>
+    </div>
+  ) : null;
+
   const modelRejected = model.trim().length > 0 && !isValidLaunchSpecValue(model.trim());
 
   let offset = 0;
@@ -792,6 +818,9 @@ export default function LauncherPane({
         </div>,
       );
     }
+    // The crossing run is missing its 続きから half here, so say so rather than
+    // let "一致なし" stand for a list that was never read.
+    if (resumeFailedNote) body.push(resumeFailedNote);
   } else {
     body.push(
       <div key="h-agents" style={sectionHeading}><span>{S.launch}</span></div>,
@@ -842,7 +871,9 @@ export default function LauncherPane({
         ...resumeShown.map((item, i) => resumeRow(item, offset + i)),
       );
       offset += resumeShown.length;
-      if (resumes.length === 0) {
+      if (resumeFailedNote) {
+        body.push(resumeFailedNote);
+      } else if (resumes.length === 0) {
         body.push(
           <div key="resume-empty" style={{ padding: "6px 12px", fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>
             {S.resumeEmpty}
@@ -924,7 +955,7 @@ export default function LauncherPane({
             {specEntry.label}
           </div>
           <div style={{ ...specLabel, ...(isActive && specRow === "model" ? { color: "var(--cmux-accent-text)" } : null) }}>{S.modelLabel}</div>
-          {specEntry.models.length > 0 ? (
+          {specModels.length > 0 ? (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
               <button
                 type="button"
@@ -934,7 +965,7 @@ export default function LauncherPane({
               >
                 {S.specDefault}
               </button>
-              {specEntry.models.map((choice) => (
+              {specModels.map((choice) => (
                 <button
                   key={choice.value}
                   type="button"
@@ -948,8 +979,8 @@ export default function LauncherPane({
               ))}
             </div>
           ) : (
-            // grok and the open-model backend publish no id list, so the value
-            // is typed. sanitizeLaunchSpecValue still guards what reaches the CLI.
+            // grok publishes no id list, so the value is typed.
+            // sanitizeLaunchSpecValue still guards what reaches the CLI.
             <input
               ref={modelInputRef}
               value={model}

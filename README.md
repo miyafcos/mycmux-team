@@ -334,7 +334,7 @@ PTY の生スクロールバックはディスクへ保存されます (`%APPDAT
 
 | セクション | 中身 |
 | --- | --- |
-| 新規に起動 | `Claude Code` / `Codex` / `claude-codex (Codex Models)` / `Grok Build` / `claude-codex (Open Models)` / `Antigravity (agy)` の 6 行。行の右端からモデルと effort を選べます (次の節) |
+| 新規に起動 | `Claude Code` / `Codex` / `claude-codex` / `Grok Build` / `Antigravity (agy)` / `Hermes` の 6 行。行の右端からモデルと effort を選べます (次の節)。claude-codex の OpenRouter のモデルもこの 1 行のモデルから選びます (v0.74.0 で `claude-codex (Open Models)` の行をまとめた) |
 | Web | `ChatGPT (Web)` / `Gemini (Web)` / `Grok (Web)` / `Claude.ai (Web)` / `NotebookLM (Web)` の 5 行。プロセスではなく、そのペインが Web 画面になります |
 | 開発 / 案件 | 起動先フォルダの一覧。行を選ぶと起動先が変わります。空のときは「登録なし — 設定で登録 (候補 N 件)」から設定 → ランチャー へ飛べます |
 | 続きから | 直近のセッション数件。全件は `Ctrl+P` の Resume パレット (同じ一覧 API と同じ検索設定を共有するので、両方で結果が食い違いません) |
@@ -349,9 +349,9 @@ Codex を `--no-alt-screen` で起動しているのは、ターミナルのス�
 
 ### モデルと effort を選んで起動する → `Tab` / `Shift+Enter`
 
-「新規に起動」の行を選んだ状態で `Tab` か `Shift+Enter` を押す (マウスなら行の右端のボタン) と、その行の下に **モデル** と **effort** の選択が開きます。`←` `→` で値、`↑` `↓` か `Tab` で行、`Enter` で起動、`Esc` で戻ります。どちらも「既定」のままなら CLI の既定で起動します。grok と claude-codex (Open Models) は公開されたモデル一覧が無いため、モデルの行は出ません。
+「新規に起動」の行を選んだ状態で `Tab` か `Shift+Enter` を押す (マウスなら行の右端のボタン) と、その行の下に **モデル** と **effort** の選択が開きます。`←` `→` で値、`↑` `↓` か `Tab` で行、`Enter` で起動、`Esc` で戻ります。どちらも「既定」のままなら CLI の既定で起動します。grok は公開されたモデル一覧が無いため、モデルは打ち込みます。claude-codex のモデルは、パネルを開くたびに claude-codex の設定 (`~/.claude-codex/config/models.json`) を読んで、GPT・Claude・Fugu・OpenRouter の入っているモデルを全部出します。設定が読めないとき (claude-codex の入っていない環境) は GPT の 4 本です。
 
-**`Enter` の挙動は変えていません** — 選ばなければ従来どおり CLI の既定で即起動します。指定した値は CLI ごとのフラグへ翻訳されます (`claude` は `--effort`、`codex` は native フラグが無いので `-c model_reasoning_effort=…`、`grok` は `--reasoning-effort`)。同じ選択は GUI の New Workspace ダイアログからもできて、そちらは `MYCMUX_LAUNCH_MODEL` / `MYCMUX_LAUNCH_EFFORT` で同じ経路に入ります。選択肢の一覧は GUI 側の `src/lib/agentCatalog.ts` と両ランチャーの 3 箇所にありますが、`tests/test_launcher_catalog_contract.py` が一致を機械検査します。
+**`Enter` の挙動は変えていません** — 選ばなければ従来どおり CLI の既定で即起動します。指定した値は CLI ごとのフラグへ翻訳されます (`claude` は `--effort`、`codex` は native フラグが無いので `-c model_reasoning_effort=…`、`grok` は `--reasoning-effort`)。同じ選択は GUI の New Workspace ダイアログからもできて、そちらは `MYCMUX_LAUNCH_MODEL` / `MYCMUX_LAUNCH_EFFORT` で同じ経路に入ります。選択肢の一覧は GUI 側の `src/lib/agentCatalog.ts` と両ランチャーの 3 箇所にありますが、`tests/test_launcher_catalog_contract.py` が一致を機械検査します。claude-codex だけは設定から読むので、GUI の読み取り (`src-tauri/src/commands/claude_codex_models.rs`) と launcher.ps1 の読み取りを、同じ見本 (`tests/fixtures/claude_codex_models/`) で突き合わせています。launcher.sh の文字メニューは GPT の 4 本と打ち込みのままです。
 
 ### Web ペイン — ChatGPT / Gemini / Grok / Claude.ai / NotebookLM
 
@@ -1061,9 +1061,9 @@ Rust コマンドは 144 件 / 31 ファイルで、`lib.rs` の `generate_handl
 | ---: | --- | --- | --- |
 | 1 | `Claude Code` | `claude --allow-dangerously-skip-permissions --permission-mode auto` | 同一 |
 | 2 | `Codex` | `codex --no-alt-screen` | 同一 |
-| 3 | `claude-codex (Codex Models)` | `claude-codex --backend gpt` | 同一 |
+| 3 | `claude-codex` | `claude-codex --backend gpt` | 同一 |
 | 4 | `Grok Build` | `grok --no-alt-screen --permission-mode auto` | 同一 |
-| 5 | `claude-codex (Open Models)` | `claude-codex --backend fcc` | 同一 |
+| 5 | `claude-codex (Open Models)` | `claude-codex --backend fcc` | 同一 (ランチャーペインには出ない・FCC だけのプロファイル) |
 | 6 | `Antigravity (agy)` | `agy` | 同一 |
 | 7 | `ChatGPT (Web)` | 疑似コマンド `__web_chatgpt__` → `web-open --preset chatgpt --replace-anchor` | 同一 |
 | 8 | `Gemini (Web)` | 疑似コマンド `__web_gemini__` | 同一 |

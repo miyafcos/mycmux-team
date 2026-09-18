@@ -84,6 +84,23 @@ pub fn start_monitor(
                     .with_cwd(UpdateKind::OnlyIfNotSet),
             );
             let child_index = build_child_index(&sys);
+            // `OnlyIfNotSet` above reads a process's CWD once and never again,
+            // which freezes the directory of any shell that does not announce
+            // its own (zsh — the macOS default — and cmd.exe / PowerShell have
+            // no OSC 7 hook). Re-read it, but only for the processes in front
+            // of a tracked PTY: a handful of lookups rather than a few thousand.
+            let foreground_pids: Vec<Pid> = pids
+                .iter()
+                .filter_map(|(_, pid)| *pid)
+                .map(|pid| deepest_child_pid(&sys, &child_index, Pid::from_u32(pid)))
+                .collect();
+            if !foreground_pids.is_empty() {
+                sys.refresh_processes_specifics(
+                    ProcessesToUpdate::Some(&foreground_pids),
+                    false,
+                    ProcessRefreshKind::nothing().with_cwd(UpdateKind::Always),
+                );
+            }
             if last_refresh_diagnostic.is_none_or(|at| at.elapsed() >= Duration::from_secs(60)) {
                 let diagnostic = format!(
                     "[mycmux-diag monitor] refresh_ms={} tracked_ptys={} processes={}",

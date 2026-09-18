@@ -15,6 +15,27 @@ pub struct PersistedScrollback {
     pub data: Vec<u8>,
 }
 
+/// What `save` last put on disk for one session.
+///
+/// The periodic flush rewrites the whole ring — up to 256KB — for every session
+/// that produced output, and the shutdown flush rewrites every session whether
+/// it produced any or not. Carrying the CRC the header needs anyway makes
+/// "these are the bytes already on disk" a comparison of 20 bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ScrollbackFingerprint {
+    start_offset: u64,
+    end_offset: u64,
+    crc: u32,
+}
+
+fn fingerprint(start_offset: u64, end_offset: u64, data: &[u8]) -> ScrollbackFingerprint {
+    ScrollbackFingerprint {
+        start_offset,
+        end_offset,
+        crc: hash(data),
+    }
+}
+
 fn session_file_name(session_id: &str) -> io::Result<String> {
     let mut components = Path::new(session_id).components();
     let is_single_normal_component =
@@ -116,6 +137,33 @@ pub fn load(dir: &Path, session_id: &str) -> Option<PersistedScrollback> {
     Some(persisted)
 }
 
+/// Push the scrollback to the filesystem, but no further on macOS.
+///
+/// `File::sync_all` is `fcntl(F_FULLFSYNC)` there, which waits for the drive to
+/// empty its own write cache — tens of milliseconds, taken every ten seconds
+/// for every session that produced output. This file is a redraw cache for the
+/// next launch: losing the last seconds of it to a power cut costs a few lines
+/// of scrollback, and the conversation itself lives in the agent's transcript.
+/// `data.json`, whose loss costs the workspace, keeps `sync_all` — see
+/// `util::atomic_write`.
+fn sync_scrollback(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+
+        // SAFETY: the descriptor is owned by `file` and stays open for the call.
+        if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        file.sync_all()
+    }
+}
+
 pub fn save(
     dir: &Path,
     session_id: &str,
@@ -152,7 +200,7 @@ pub fn save(
         file.write_all(&data_len.to_le_bytes())?;
         file.write_all(&hash(data).to_le_bytes())?;
         file.write_all(data)?;
-        file.sync_all()?;
+        sync_scrollback(&file)?;
         fs::rename(&tmp_path, &path)
     })();
 
@@ -160,6 +208,28 @@ pub fn save(
         let _ = fs::remove_file(&tmp_path);
     }
     write_result
+}
+
+/// `save`, unless `written` says these exact bytes are already on disk.
+///
+/// Returns whether anything was written. `written` is the caller's memory of
+/// its own last successful save — one per session, held for as long as the
+/// session is.
+pub fn save_if_changed(
+    dir: &Path,
+    session_id: &str,
+    start_offset: u64,
+    end_offset: u64,
+    data: &[u8],
+    written: &mut Option<ScrollbackFingerprint>,
+) -> io::Result<bool> {
+    let current = fingerprint(start_offset, end_offset, data);
+    if *written == Some(current) {
+        return Ok(false);
+    }
+    save(dir, session_id, start_offset, end_offset, data)?;
+    *written = Some(current);
+    Ok(true)
 }
 
 pub fn remove(dir: &Path, session_id: &str) -> io::Result<()> {
@@ -302,6 +372,33 @@ mod tests {
         assert_eq!(loaded.start_offset, 12);
         assert_eq!(loaded.end_offset, 15);
         assert_eq!(loaded.data, b"abc");
+    }
+
+    #[test]
+    fn an_unchanged_scrollback_is_not_written_again() {
+        // The periodic flush rewrites the whole ring and fsyncs it; the
+        // shutdown flush does it for every session at once, most of which have
+        // produced nothing since the last one. Deleting the file between the
+        // two calls is how this test can tell a skipped write from a repeated
+        // one: a write would put the file back.
+        let temp = tempfile::tempdir().unwrap();
+        let mut written = None;
+
+        assert!(save_if_changed(temp.path(), "pty-one", 0, 3, b"abc", &mut written).unwrap());
+        let path = temp.path().join("pty-one.bin");
+        fs::remove_file(&path).unwrap();
+
+        assert!(!save_if_changed(temp.path(), "pty-one", 0, 3, b"abc", &mut written).unwrap());
+        assert!(!path.exists(), "identical contents must not be written again");
+
+        // Any of the three parts changing is a write: more bytes, the same
+        // length with different bytes, and a ring that scrolled.
+        for (start, end, data) in [(0u64, 4u64, &b"abcd"[..]), (0, 4, b"abce"), (1, 5, b"bcde")] {
+            assert!(save_if_changed(temp.path(), "pty-one", start, end, data, &mut written).unwrap());
+            let loaded = load(temp.path(), "pty-one").unwrap();
+            assert_eq!((loaded.start_offset, loaded.end_offset, loaded.data), (start, end, data.to_vec()));
+            fs::remove_file(&path).unwrap();
+        }
     }
 
     #[test]

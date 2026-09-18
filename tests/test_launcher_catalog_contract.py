@@ -40,7 +40,14 @@ LAUNCHER_ONLY_TARGETS = {
     "custom",
     "shell",
     "aider",
+    # Dropped from the dialog on 2026-09-18 (the open models are claude-codex
+    # chips now), but kept as the launchers' own "claude-codex (Open Models)"
+    # menu row and MYCMUX_LAUNCH_TARGET value for the FCC-only profile.
+    "claude-codex-open",
 }
+
+# Launcher-only rows that still carry a model / effort menu in both launchers.
+LAUNCHER_ONLY_SPEC_TARGETS = {"claude-codex-open"}
 
 # Aliases the launchers keep for older callers; the catalog names one of each.
 TARGET_ALIASES = {
@@ -159,7 +166,9 @@ def test_every_launcher_target_is_offered_by_the_catalog() -> None:
     """The reverse direction: a launcher row the dialog never shows."""
     known = {entry["target"] for entry in catalog_entries()}
     for target in powershell_launch_targets() | shell_launch_targets():
-        if target in LAUNCHER_ONLY_TARGETS:
+        # An alias of a launcher-only row is launcher-only too (fcc ->
+        # claude-codex-open), so resolve before deciding to skip.
+        if target in LAUNCHER_ONLY_TARGETS or canonical(target) in LAUNCHER_ONLY_TARGETS:
             continue
         assert canonical(target) in known, (
             f"{target} can be launched but is missing from AGENT_CATALOG"
@@ -261,7 +270,7 @@ def shell_spec_catalog() -> dict[str, dict[str, list[str]]]:
     if not bash:
         pytest.skip("bash is not available")
     functions = extract_named_sh_functions(["__spec_models_for", "__spec_efforts_for"])
-    targets = sorted(catalog_choices_by_target())
+    targets = sorted(set(catalog_choices_by_target()) | LAUNCHER_ONLY_SPEC_TARGETS)
     script = [functions]
     for target in targets:
         script.append(
@@ -305,8 +314,19 @@ def test_the_menu_offers_the_same_models_and_efforts_as_the_dialog() -> None:
     ps1 = powershell_spec_catalog()
     sh = shell_spec_catalog()
 
-    assert sorted(ps1) == sorted(expected), "launcher.ps1 covers a different set of targets"
-    assert sorted(sh) == sorted(expected), "launcher.sh covers a different set of targets"
+    # Launcher-only rows (claude-codex-open) still need a model / effort menu
+    # at the CLI even though the dialog no longer offers them.
+    assert sorted(set(ps1) - LAUNCHER_ONLY_TARGETS) == sorted(expected), (
+        "launcher.ps1 covers a different set of targets"
+    )
+    assert sorted(set(sh) - LAUNCHER_ONLY_TARGETS) == sorted(expected), (
+        "launcher.sh covers a different set of targets"
+    )
+
+    # A launcher-only row has no catalog entry to compare with, but its two
+    # menus must still offer the same thing.
+    for target in sorted(LAUNCHER_ONLY_SPEC_TARGETS):
+        assert ps1[target] == sh[target], f"launcher.ps1 and launcher.sh differ for {target}"
 
     for target, choices in expected.items():
         for field in ("models", "efforts"):
@@ -355,6 +375,9 @@ PARITY_CASES = [
     ("grok", "grok --no-alt-screen --permission-mode auto", "grok-4", "high"),
     ("agy", "agy", "gemini-3.1-pro-high", "high"),
     ("claude-codex", "claude-codex --backend gpt", "gpt-5.6-sol", "max"),
+    # An OpenRouter model reaches claude-codex only in the gateway spelling,
+    # slashes and all (a bare "grok-4.3" is routed to codex and refused).
+    ("claude-codex-gateway", "claude-codex --backend gpt", "anthropic/gateway/fcc/open_router/x-ai/grok-4.3", "max"),
     # No spec, an unknown executable, and values that must be refused because
     # they could be read as a flag or as shell syntax.
     ("no-spec", CLAUDE_CMD, "", ""),
@@ -362,6 +385,11 @@ PARITY_CASES = [
     ("reject-flag", CLAUDE_CMD, "--evil-flag", "high"),
     ("reject-semicolon", CLAUDE_CMD, "a; echo pwned", "high"),
     ("reject-substitution", CLAUDE_CMD, "$(echo sub)", "high"),
+    ("reject-leading-slash", CLAUDE_CMD, "/etc/passwd", "high"),
+    ("reject-too-long", CLAUDE_CMD, "a" * 129, "high"),
+    # The Kelvin sign folds to "K" under a case-insensitive match.
+    ("reject-kelvin", CLAUDE_CMD, "\u212aimi", "high"),
+    ("accept-128", CLAUDE_CMD, "a" * 128, "high"),
     # Surrounding whitespace is trimmed, not treated as a bad value.
     ("trim", CLAUDE_CMD, "  opus  ", " high "),
     # Whitespace only is the same as saying nothing.
@@ -497,6 +525,10 @@ def test_a_launch_spec_translates_to_the_flags_each_cli_documents() -> None:
     assert "--reasoning-effort high" in by_id["grok"]
     assert by_id["agy"] == "agy --model gemini-3.1-pro-high --effort high"
     assert by_id["claude-codex"].startswith("claude-codex --model gpt-5.6-sol --effort max ")
+    assert by_id["accept-128"].startswith(f"claude --model {'a' * 128} --effort high ")
+    assert by_id["claude-codex-gateway"].startswith(
+        "claude-codex --model anthropic/gateway/fcc/open_router/x-ai/grok-4.3 --effort max "
+    )
     # No spec: untouched. Unknown executable: untouched rather than handed flags
     # it may reject.
     assert by_id["no-spec"] == CLAUDE_CMD
@@ -506,7 +538,17 @@ def test_a_launch_spec_translates_to_the_flags_each_cli_documents() -> None:
     assert by_id["blank"] == CLAUDE_CMD
 
 
-@pytest.mark.parametrize("case_id", ["reject-flag", "reject-semicolon", "reject-substitution"])
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "reject-flag",
+        "reject-semicolon",
+        "reject-substitution",
+        "reject-leading-slash",
+        "reject-too-long",
+        "reject-kelvin",
+    ],
+)
 def test_a_model_that_could_be_read_as_a_flag_is_dropped(case_id: str) -> None:
     rejected = next(case[2] for case in PARITY_CASES if case[0] == case_id)
     line = shell_translation_by_id()[case_id]
@@ -723,3 +765,89 @@ def test_the_two_launchers_run_their_model_menu_identically() -> None:
 def test_the_model_menu_records_what_was_picked(index: int) -> None:
     case_id, _target, keys, _ps_keys, _lines, expected = MENU_CASES[index]
     assert run_shell_menu()[index] == expected, f"{case_id} [{keys}] in launcher.sh"
+
+
+# --- claude-codex's installed model table --------------------------------------
+# The GUI chips (claude_codex_models.rs) and the Windows terminal menu
+# (Get-MycmuxClaudeCodexModelChoices) both read ~/.claude-codex/config/models.json.
+# One fixture and one expected list keep the two readers from drifting; the Rust
+# side checks the same pair in its unit test.
+
+CLAUDE_CODEX_FIXTURE_DIR = ROOT / "tests" / "fixtures" / "claude_codex_models"
+
+PS_CLAUDE_CODEX_HARNESS = r"""
+$ErrorActionPreference = "Stop"
+$src = Get-Content -LiteralPath $env:MYCMUX_LAUNCHER_PS1 -Raw -Encoding utf8
+$ast = [System.Management.Automation.Language.Parser]::ParseInput($src, [ref]$null, [ref]$null)
+$want = @(
+  "New-MycmuxModelChoice", "Get-MycmuxLaunchSpecValue", "Get-MycmuxJsonField",
+  "Get-MycmuxCleanLabel", "Get-MycmuxClaudeCodexModelChoices"
+)
+$fns = $ast.FindAll({
+  param($n)
+  $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $want -contains $n.Name
+}, $true)
+if ($fns.Count -ne $want.Count) { throw "expected $($want.Count) functions, found $($fns.Count)" }
+foreach ($f in $fns) { Invoke-Expression $f.Extent.Text }
+$out = [ordered]@{
+  fixture = @(Get-MycmuxClaudeCodexModelChoices $env:MYCMUX_FIXTURE | ForEach-Object { [ordered]@{ value = $_.Value; label = $_.Label } })
+  shapes = @(Get-MycmuxClaudeCodexModelChoices $env:MYCMUX_SHAPES | ForEach-Object { [ordered]@{ value = $_.Value; label = $_.Label } })
+  missing = @(Get-MycmuxClaudeCodexModelChoices (Join-Path $env:MYCMUX_EMPTY_HOME "nope.json")).Count
+  broken = @(Get-MycmuxClaudeCodexModelChoices $env:MYCMUX_BROKEN).Count
+  home = @(Get-MycmuxClaudeCodexModelChoices | ForEach-Object { $_.Value })
+}
+$out | ConvertTo-Json -Depth 5 -Compress
+"""
+
+
+def test_the_terminal_menu_reads_claude_codex_models_like_the_gui(tmp_path: Path) -> None:
+    shell = shutil.which("powershell") or shutil.which("pwsh")
+    if not shell:
+        pytest.skip("PowerShell is not available")
+    fixture = CLAUDE_CODEX_FIXTURE_DIR / "models.json"
+    expected = json.loads((CLAUDE_CODEX_FIXTURE_DIR / "expected.json").read_text(encoding="utf-8"))
+
+    # CLAUDE_CODEX_HOME is honoured, the same base the claude-codex launcher uses.
+    home = tmp_path / "home"
+    (home / ".claude-codex" / "config").mkdir(parents=True)
+    (home / ".claude-codex" / "config" / "models.json").write_bytes(
+        b"\xef\xbb\xbf" + fixture.read_bytes()
+    )
+    broken = tmp_path / "broken.json"
+    broken.write_text("{ not json", encoding="utf-8")
+
+    result = subprocess.run(
+        [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", PS_CLAUDE_CODEX_HARNESS],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+        env={
+            "MYCMUX_LAUNCHER_PS1": str(LAUNCHER_PS1),
+            "MYCMUX_FIXTURE": str(fixture),
+            "MYCMUX_SHAPES": str(CLAUDE_CODEX_FIXTURE_DIR / "shapes.json"),
+            "MYCMUX_EMPTY_HOME": str(tmp_path),
+            "MYCMUX_BROKEN": str(broken),
+            "CLAUDE_CODEX_HOME": str(home),
+            "PATH": os.environ.get("PATH", ""),
+            "SystemRoot": os.environ.get("SystemRoot", ""),
+        },
+    )
+    assert result.returncode == 0, f"powershell failed: {result.stderr}"
+    out = json.loads(result.stdout)
+    assert out["fixture"] == expected
+    assert out["shapes"] == json.loads(
+        (CLAUDE_CODEX_FIXTURE_DIR / "shapes_expected.json").read_text(encoding="utf-8")
+    )
+    assert out["missing"] == 0
+    assert out["broken"] == 0
+    assert out["home"] == [choice["value"] for choice in expected]
+
+
+def test_the_claude_codex_fixture_values_pass_the_launch_spec_check() -> None:
+    """Every expected chip must survive the check both launchers apply."""
+    expected = json.loads((CLAUDE_CODEX_FIXTURE_DIR / "expected.json").read_text(encoding="utf-8"))
+    by_id = shell_translation_by_id()
+    assert by_id["claude-codex-gateway"].split()[2] in {choice["value"] for choice in expected}
+    for choice in expected:
+        assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}", choice["value"]), choice

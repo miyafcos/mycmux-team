@@ -784,10 +784,14 @@ div:focus-within > .tab-close-btn,
   display: inline-block;
 }
 
-/* Notification pulse — gentle breathing for panes needing attention */
+/* Notification pulse — gentle breathing for panes needing attention.
+   Opacity rather than border-color: a colour animation is painted on the CPU,
+   and this ring spans the whole pane, so every frame repainted a pane-sized
+   area for as long as the notification stood. Opacity is composited, and the
+   ring is the only thing the pseudo-element draws, so it looks the same. */
 @keyframes notificationPulse {
-  0%, 100% { border-color: var(--notification-color); }
-  50%      { border-color: color-mix(in srgb, var(--notification-color) 55%, transparent); }
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
 }
 
 /* Japanese IME composition styling */
@@ -866,6 +870,7 @@ div:focus-within > .tab-close-btn,
   border-width: 2px;
   border-color: var(--notification-color);
   animation: notificationPulse 2.5s ease-in-out infinite;
+  will-change: opacity;
 }
 
 .terminal-pane-border.has-notification[data-active-pane="true"]::after {

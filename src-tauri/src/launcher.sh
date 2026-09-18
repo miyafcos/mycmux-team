@@ -203,19 +203,62 @@ __write_session_mapping() {
   fi
 }
 
+# Claude Code's own project-key rule, as one Python definition both callers
+# below prepend to their script. Read out of the shipped binary (2.1.274):
+#
+#   function K9(e){let r=0;for(let n=0;n<e.length;n++)r=(r<<5)-r+e.charCodeAt(n)|0;return r}
+#   var F9=200; function k(e){return e.replace(/[^a-zA-Z0-9]/g,"-")}
+#   function JA(e){let n=k(e);if(n.length<=F9)return n;return`${n.slice(0,F9)}-${Math.abs(K9(e)).toString(36)}`}
+#
+# The regex has no `u` flag, so it works on UTF-16 code units: a non-BMP
+# character becomes two dashes and costs two of the 200. Without the
+# truncation, a deep Japanese path resolved to a directory Claude never wrote
+# and every resume from it failed.
+__claude_key_py() {
+  cat <<'PY'
+import re
+
+def claude_project_key(cwd):
+    cwd = cwd.rstrip("/\\")
+    if re.match(r"^/[a-zA-Z]/", cwd):
+        cwd = f"{cwd[1].upper()}:{cwd[2:]}"
+    data = cwd.encode("utf-16-le")
+    units = [data[i] | (data[i + 1] << 8) for i in range(0, len(data), 2)]
+    mangled = "".join(
+        chr(unit)
+        if unit < 128 and (chr(unit).isalnum() or chr(unit) == "-")
+        else "-"
+        for unit in units
+    )
+    if len(mangled) <= 200:
+        return mangled
+    hash_value = 0
+    for unit in units:
+        hash_value = (hash_value * 31 + unit) & 0xFFFFFFFF
+    if hash_value >= 0x80000000:
+        hash_value -= 0x100000000
+    hash_value = abs(hash_value)
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    suffix = ""
+    while hash_value:
+        suffix = digits[hash_value % 36] + suffix
+        hash_value //= 36
+    return f"{mangled[:200]}-{suffix or '0'}"
+PY
+}
+
 __claude_project_key() {
   local path="$1"
   local python
   python="$(__mycmux_python)" || return 1
-  PYTHONIOENCODING=utf-8 MYCMUX_CLAUDE_PROJECT_PATH="$path" "$python" - <<'PY' 2>/dev/null
+  {
+    __claude_key_py
+    cat <<'PY'
 import os
-import re
 
-path = os.environ.get("MYCMUX_CLAUDE_PROJECT_PATH", "").rstrip("/\\")
-if re.match(r"^/[a-zA-Z]/", path):
-    path = f"{path[1].upper()}:{path[2:]}"
-print(re.sub(r"[^A-Za-z0-9-]", "-", path), end="")
+print(claude_project_key(os.environ.get("MYCMUX_CLAUDE_PROJECT_PATH", "")), end="")
 PY
+  } | PYTHONIOENCODING=utf-8 MYCMUX_CLAUDE_PROJECT_PATH="$path" "$python" - 2>/dev/null
 }
 
 __get_claude_project_dir() {
@@ -258,20 +301,15 @@ __claude_session_cwd() {
   local session_file="$1"
   local python
   python="$(__mycmux_python)" || return 1
-  PYTHONIOENCODING=utf-8 MYCMUX_CLAUDE_SESSION_FILE="$session_file" "$python" - <<'PY' 2>/dev/null
+  {
+    __claude_key_py
+    cat <<'PY'
 import json
 import os
-import re
 from pathlib import Path
 
 path = os.environ.get("MYCMUX_CLAUDE_SESSION_FILE", "")
 project_key = Path(path).parent.name
-
-def claude_project_key(cwd):
-    cwd = cwd.rstrip("/\\")
-    if re.match(r"^/[a-zA-Z]/", cwd):
-        cwd = f"{cwd[1].upper()}:{cwd[2:]}"
-    return re.sub(r"[^A-Za-z0-9-]", "-", cwd)
 
 try:
     with open(path, "r", encoding="utf-8-sig") as handle:
@@ -287,6 +325,7 @@ try:
 except OSError:
     pass
 PY
+  } | PYTHONIOENCODING=utf-8 MYCMUX_CLAUDE_SESSION_FILE="$session_file" "$python" - 2>/dev/null
 }
 
 __prepare_claude_resume() {
@@ -754,13 +793,14 @@ __launch_spec_value() {
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
   [ -z "$value" ] && { printf ''; return 0; }
-  [ "${#value}" -gt 64 ] && { printf ''; return 0; }
+  [ "${#value}" -gt 128 ] && { printf ''; return 0; }
   case "$value" in
     [A-Za-z0-9]*) ;;
     *) printf ''; return 0 ;;
   esac
+  # `/` is allowed for claude-codex's gateway picker ids (anthropic/gateway/...).
   case "$value" in
-    *[!A-Za-z0-9._-]*) printf ''; return 0 ;;
+    *[!A-Za-z0-9._/-]*) printf ''; return 0 ;;
   esac
   printf '%s' "$value"
   return 0
@@ -894,6 +934,14 @@ if [ -n "$MYCMUX_RESUME" ]; then
             __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude" "$MYCMUX_SESSION_ID"
             eval "$(__add_launch_spec_to_cmd "claude --allow-dangerously-skip-permissions --permission-mode auto --resume $MYCMUX_SESSION_ID")"
           fi
+        elif [[ "$MYCMUX_SESSION_ID" =~ ^[0-9a-fA-F-]{36}$ ]] && ! __find_claude_session_file "$MYCMUX_SESSION_ID" >/dev/null 2>&1; then
+          # Nothing was ever written under this id — a pane that was opened and
+          # never typed into. There is no conversation to lose and no reason to
+          # say one could not be restored: start under the same id, so the tab,
+          # the mapping and the transcript Claude is about to write all agree.
+          __trust_claude_cwd
+          __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude" "$MYCMUX_SESSION_ID"
+          eval "$(__add_launch_spec_to_cmd "claude --allow-dangerously-skip-permissions --permission-mode auto --session-id $MYCMUX_SESSION_ID")"
         else
           __trust_claude_cwd
           __track_claude_session "$MYCMUX_PANE_SESSION_ID" &
@@ -980,6 +1028,10 @@ __spec_models_for() {
   case "$1" in
     claude)
       printf '%s\n' "Fable (flagship)|fable" "Opus|opus" "Sonnet|sonnet" "Haiku|haiku" ;;
+    # claude-codex's GUI chips (claude_codex_models.rs) and launcher.ps1's menu
+    # read its installed models.json; this menu keeps the GPT tiers, and its
+    # type-in row reaches any other id. It serves macOS, where neither Mac has
+    # claude-codex (2026-09-18), and a Windows pane whose shell is Git Bash.
     codex|claude-codex)
       printf '%s\n' "Astra (flagship)|gpt-6-astra" "Sol (5.6 fallback)|gpt-5.6-sol" "Terra (standard)|gpt-5.6-terra" "Luna (light)|gpt-5.6-luna" ;;
     agy)
@@ -1072,7 +1124,7 @@ __spec_menu() {
       __SPEC_RESULT="$(__launch_spec_value "$typed")"
       if [ -z "$__SPEC_RESULT" ]; then
         echo "" >&$__CMUX_MENU_FD
-        echo "  使えない値です (英数字で始まり、英数字と . _ - のみ)" >&$__CMUX_MENU_FD
+        echo "  使えない値です (英数字で始まり、英数字と . _ / - のみ・128 文字まで)" >&$__CMUX_MENU_FD
         sleep 1.2
         continue
       fi
@@ -1629,7 +1681,7 @@ if [ -z "$cmd" ]; then
   options=(
     "Claude Code"
     "Codex"
-    "claude-codex (Codex Models)"
+    "claude-codex"
     "Grok Build"
     "claude-codex (Open Models)"
     "Antigravity (agy)"

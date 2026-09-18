@@ -116,6 +116,54 @@ describe("WebPaneController lifecycle", () => {
     expect(apiMocks.destroyWebPane).toHaveBeenCalledWith("web-tab");
   });
 
+  it("stops asking for frames when the workspace holds no web pane", async () => {
+    // The placement loop used to run at the display rate in every window, each
+    // frame querying the DOM for overlay selectors, whether or not a web pane
+    // existed anywhere.
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    }));
+    const terminalOnly = workspaceWithWebTab();
+    const terminal = terminalOnly.panes[0].tabs[0];
+    useWorkspaceListStore.setState({
+      workspaces: [{
+        ...terminalOnly,
+        panes: [{
+          ...terminalOnly.panes[0],
+          agentId: terminal.agentId,
+          sessionId: terminal.sessionId,
+          tabs: [terminal],
+          activeTabId: terminal.id,
+        }],
+      }],
+    });
+
+    await act(async () => {
+      root.render(<WebPaneController />);
+      await Promise.resolve();
+    });
+
+    const runFrame = async () => {
+      const next = frames.shift();
+      await act(async () => {
+        next?.(0);
+        await Promise.resolve();
+      });
+    };
+
+    await runFrame();
+    expect(frames).toHaveLength(0);
+
+    // A web tab appearing wakes it again.
+    await act(async () => {
+      useWorkspaceListStore.setState({ workspaces: [workspaceWithWebTab()] });
+      await Promise.resolve();
+    });
+    expect(frames.length).toBeGreaterThan(0);
+  });
+
   it("holds the pane closed while a sign-in window owns the profile, then reopens it", async () => {
     // Rust closes these webviews itself so the sign-in browser can take the
     // profile folder. If the controller still believed the webview existed the

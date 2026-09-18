@@ -5,6 +5,7 @@ import { initializePerfDiagnostics } from "./lib/perfDiagnostics";
 import { recordReactCommit } from "./lib/paintStats";
 import { useToastStore } from "./stores/toastStore";
 import { IS_MAC } from "./lib/keybindings";
+import { installE2eHooks } from "./lib/e2eHooks";
 import "./global.css";
 
 // Sole unhandledrejection handler for the app (App.tsx used to register a second
@@ -93,4 +94,5 @@ function mount(): void {
   );
 }
 
+installE2eHooks();
 void waitForBundledFonts().then(mount);

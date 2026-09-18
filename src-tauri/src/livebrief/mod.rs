@@ -19,7 +19,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -337,7 +337,7 @@ impl LiveBriefService {
             &self.service_epoch,
             history_cwd.as_deref(),
             history_branch.as_deref(),
-            locate_transcript,
+            locate_transcript_cached,
         )
     }
 
@@ -690,6 +690,77 @@ fn apply_known_transcript_path(
 
 fn clamp_event_limit(limit: Option<usize>) -> usize {
     limit.unwrap_or(DEFAULT_EVENT_LIMIT).clamp(MIN_EVENT_LIMIT, RING_CAPACITY)
+}
+
+/// How long an agent session with no transcript on disk stays "not found".
+const MISSING_TRANSCRIPT_TTL: Duration = Duration::from_secs(30);
+
+/// Agent sessions whose transcript discovery came up empty, and when.
+///
+/// Discovery walks the whole session tree — `~/.claude/projects/**` and its
+/// equivalents — and a session that has no transcript yet misses every single
+/// time. Those are ordinary: a Claude pane that has been opened but not
+/// spoken to, or an agent that has exited. Meanwhile the dashboard refreshes
+/// once a second and every status change asks again, so the same fruitless
+/// walk ran over and over. Remembering the miss for half a minute turns that
+/// into one walk per session per 30 seconds; a session that appears is picked
+/// up on the next walk after that.
+#[derive(Default)]
+struct MissingTranscripts {
+    seen: HashMap<(String, String), Instant>,
+}
+
+impl MissingTranscripts {
+    fn suppressed(&self, kind: &str, session_id: &str, now: Instant) -> bool {
+        self.seen
+            .get(&(kind.to_string(), session_id.to_string()))
+            .is_some_and(|at| now.saturating_duration_since(*at) < MISSING_TRANSCRIPT_TTL)
+    }
+
+    fn record(&mut self, kind: &str, session_id: &str, found: bool, now: Instant) {
+        let key = (kind.to_string(), session_id.to_string());
+        if found {
+            self.seen.remove(&key);
+            return;
+        }
+        // Panes come and go, so drop what has aged out rather than keeping a
+        // row per session id the app has ever seen.
+        self.seen
+            .retain(|_, at| now.saturating_duration_since(*at) < MISSING_TRANSCRIPT_TTL);
+        self.seen.insert(key, now);
+    }
+}
+
+fn missing_transcripts() -> &'static Mutex<MissingTranscripts> {
+    static MISSING: OnceLock<Mutex<MissingTranscripts>> = OnceLock::new();
+    MISSING.get_or_init(Mutex::default)
+}
+
+/// `locate_transcript` without the walks that would find nothing again.
+fn locate_transcript_cached(kind: &str, session_id: &str) -> Option<PathBuf> {
+    locate_with_miss_cache(kind, session_id, Instant::now(), locate_transcript)
+}
+
+fn locate_with_miss_cache(
+    kind: &str,
+    session_id: &str,
+    now: Instant,
+    locate: impl FnOnce(&str, &str) -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    // The walk runs outside the lock: it touches the filesystem, and every
+    // other pane's poll would queue behind it.
+    {
+        let missing = missing_transcripts().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if missing.suppressed(kind, session_id, now) {
+            return None;
+        }
+    }
+    let found = locate(kind, session_id);
+    missing_transcripts()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .record(kind, session_id, found.is_some(), now);
+    found
 }
 
 fn locate_transcript(kind: &str, session_id: &str) -> Option<PathBuf> {
@@ -1609,6 +1680,55 @@ mod tests {
     }
 
     /// A-4: duplicated (kind, session id) mappings keep the newest pane live.
+    #[test]
+    fn a_missing_transcript_is_not_searched_for_again_for_thirty_seconds() {
+        // One walk of ~/.claude/projects/** per miss, for a dashboard that
+        // refreshes once a second and re-asks on every status change. Panes
+        // that have not been spoken to yet, and agents that have exited, miss
+        // every time.
+        let start = Instant::now();
+        let mut missing = MissingTranscripts::default();
+        missing.record("claude", "s1", false, start);
+        assert!(missing.suppressed("claude", "s1", start + Duration::from_secs(29)));
+        assert!(!missing.suppressed("claude", "s1", start + MISSING_TRANSCRIPT_TTL), "the walk comes back");
+        // Neither another session nor the same id under another agent is covered.
+        assert!(!missing.suppressed("claude", "s2", start));
+        assert!(!missing.suppressed("codex", "s1", start));
+        // Finding it forgets the miss at once.
+        missing.record("claude", "s1", true, start);
+        assert!(!missing.suppressed("claude", "s1", start));
+        // Aged-out rows do not pile up, one per session id ever seen.
+        missing.record("claude", "gone", false, start);
+        missing.record("claude", "s3", false, start + MISSING_TRANSCRIPT_TTL);
+        assert_eq!(missing.seen.len(), 1);
+    }
+
+    #[test]
+    fn a_suppressed_transcript_lookup_never_reaches_the_walk() {
+        let start = Instant::now();
+        let walks = std::cell::Cell::new(0u32);
+        let locate = |_: &str, _: &str| -> Option<PathBuf> {
+            walks.set(walks.get() + 1);
+            None
+        };
+        let id = "miss-cache-suppression";
+        assert_eq!(locate_with_miss_cache("claude", id, start, &locate), None);
+        assert_eq!(walks.get(), 1);
+        for second in [1, 10, 29] {
+            assert_eq!(
+                locate_with_miss_cache("claude", id, start + Duration::from_secs(second), &locate),
+                None
+            );
+        }
+        assert_eq!(walks.get(), 1, "the tree is not walked again inside the window");
+
+        assert_eq!(
+            locate_with_miss_cache("claude", id, start + MISSING_TRANSCRIPT_TTL, &locate),
+            None
+        );
+        assert_eq!(walks.get(), 2, "and it is walked again once the window is over");
+    }
+
     #[test]
     fn newest_pane_by_mapping_mtime_picks_the_latest_and_fails_closed() {
         let dir = tempfile::tempdir().expect("tempdir");

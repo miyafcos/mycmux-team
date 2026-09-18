@@ -254,12 +254,28 @@ pub struct DetachedPaneOriginConfig {
     pub column_size: Option<usize>,
 }
 
+/// Where a detached workspace's window sat, in logical pixels.
+///
+/// Written by the save path from the live window rather than by the frontend:
+/// only Rust can read another window's frame, and the window that owns the
+/// workspace is the one that knows where it is. Read at startup to open the
+/// window again where the user left it (2026-09-17).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WindowFrameConfig {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
     #[serde(default)]
     pub detached: Option<bool>,
     #[serde(default)]
     pub detached_from: Option<DetachedPaneOriginConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_frame: Option<WindowFrameConfig>,
     pub id: String,
     pub name: String,
     pub grid_template_id: String,

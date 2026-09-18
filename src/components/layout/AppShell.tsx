@@ -834,7 +834,14 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     const sourceWs = closedPane.workspaceId
       ? ws.find((workspace) => workspace.id === closedPane.workspaceId)
       : undefined;
-    const targetWs = sourceWs ?? ws.find((workspace) => workspace.id === aid);
+    let targetWs = sourceWs ?? ws.find((workspace) => workspace.id === aid);
+    if (!targetWs) {
+      // A window with no workspace at all — what the Dock opens — used to
+      // answer the shortcut with nothing at all. Give the pane somewhere to
+      // land: the directory it was closed in.
+      const createdId = createWorkspaceAtCwd(closedPane.cwd ?? "", { activate: true });
+      targetWs = useWorkspaceListStore.getState().getWorkspace(createdId);
+    }
     if (!targetWs) return;
     const targetIsActive = targetWs.id === aid;
     const targetLastPaneSession = targetIsActive
@@ -881,7 +888,10 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         || stateRef.current.isCrsmPaletteOpen
         || document.getElementById("tab-sweep-panel")
       ) return;
-      if (stateRef.current.dashboardOpen && !(e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "g")) return;
+      // An open dashboard owns the keyboard; only its own toggle still gets
+      // through. Ask the bindings rather than spelling the default out here —
+      // on macOS the keys are ⇧⌘G, not Ctrl+Shift+G.
+      if (stateRef.current.dashboardOpen && !getActionsForEvent(e).includes("dashboard.open")) return;
       if (isPlainXtermInputEvent(e)) return;
       // Skip if focus is on a native editable control (dialog inputs, selects,
       // contentEditable) outside the terminal — e.g. typing into

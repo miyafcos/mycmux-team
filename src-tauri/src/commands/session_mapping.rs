@@ -234,7 +234,38 @@ fn unique_mapping_tmp_path(path: &Path) -> PathBuf {
     ))
 }
 
+/// True when the file already holds exactly `contents`, having first moved its
+/// modified time to now.
+///
+/// Every pane launch rewrites its mapping file, including the reconnects that
+/// re-run `create_session` for a session that already exists — and the rewrite
+/// is a create, an fsync and a rename. On macOS `sync_all` is `F_FULLFSYNC`,
+/// which flushes the drive's own cache and costs tens of milliseconds, so the
+/// read that avoids it is far cheaper than the write it replaces (the file is
+/// one short line).
+///
+/// The timestamp still has to move. `livebrief::newest_pane_by_mapping_mtime`
+/// breaks ties between two panes bound to the same agent session by mapping
+/// mtime, so a launch that stopped touching the file would quietly hand the
+/// live brief to the other pane. Stamping the time costs an open and a
+/// `futimens`, not a rename and a drive flush.
+fn already_written(path: &Path, contents: &str) -> bool {
+    if std::fs::read_to_string(path).is_ok_and(|current| current == contents) {
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .and_then(|file| {
+                file.set_times(std::fs::FileTimes::new().set_modified(SystemTime::now()))
+            });
+        return true;
+    }
+    false
+}
+
 fn write_text_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
+    if already_written(path, contents) {
+        return Ok(());
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("create mapping dir {}: {error}", parent.display()))?;
@@ -326,6 +357,43 @@ pub fn read_agent_session_mappings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_identical_mapping_is_reused_instead_of_replaced() {
+        // Every pane launch writes this file, reconnects to an existing session
+        // included, and the write is a create plus an fsync plus a rename. On
+        // macOS that fsync is F_FULLFSYNC: tens of milliseconds each time.
+        let dir = tempfile::tempdir().unwrap();
+        write_session_mapping_file_to_dir(dir.path(), "pane-a", "claude", "s1").unwrap();
+        let path = mapping_path(dir.path(), "pane-a");
+
+        // A second name for the same file. An atomic replace renames a new file
+        // over the mapping, which leaves this name on the old contents; reusing
+        // the file leaves both names on the same one.
+        let witness = dir.path().join("witness");
+        std::fs::hard_link(&path, &witness).unwrap();
+        let pinned = UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(pinned))
+            .unwrap();
+
+        write_session_mapping_file_to_dir(dir.path(), "pane-a", "claude", "s1").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "claude:s1\n");
+        assert!(
+            std::fs::metadata(&witness).unwrap().modified().unwrap() > pinned,
+            "an unchanged mapping must keep its file — and move its timestamp, \
+             which is how livebrief breaks ties between panes on one agent session"
+        );
+
+        // A mapping that really changed still goes through the atomic replace,
+        // which is what leaves the old file behind under the second name.
+        write_session_mapping_file_to_dir(dir.path(), "pane-a", "claude", "s2").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "claude:s2\n");
+        assert_eq!(std::fs::read_to_string(&witness).unwrap(), "claude:s1\n");
+    }
 
     #[test]
     fn parse_agent_session_mapping_with_kind() {

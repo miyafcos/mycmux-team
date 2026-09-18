@@ -1,9 +1,10 @@
 import { create } from "zustand";
 import {
   DEFAULT_KEYBINDINGS,
+  effectiveShortcut,
   KEYBINDING_DEFINITIONS,
   normalizeShortcut,
-  shortcutFromKeyboardEvent,
+  shortcutCandidatesFromKeyboardEvent,
   type KeybindingActionId,
 } from "../lib/keybindings";
 
@@ -20,10 +21,14 @@ function buildEffective(overrides: Partial<KeybindingsMap>): KeybindingsMap {
   };
 }
 
+// Keyed by the shortcut the binding answers to on this platform, not by the
+// shortcut it is written as. On macOS that is what turns a `ctrl+...` default
+// into the ⌘ key the user presses, and it is also what keeps physical Control
+// out of the lookup entirely so the shell still gets ⌃C, ⌃P and ⌃W.
 function toLookup(map: KeybindingsMap): Record<string, KeybindingActionId[]> {
   const lookup: Record<string, KeybindingActionId[]> = {};
   for (const def of KEYBINDING_DEFINITIONS) {
-    const shortcut = normalizeShortcut(map[def.action]);
+    const shortcut = effectiveShortcut(map[def.action]);
     if (!shortcut) continue;
     if (!lookup[shortcut]) lookup[shortcut] = [];
     lookup[shortcut].push(def.action);
@@ -105,10 +110,17 @@ export const useKeybindingStore = create<KeybindingState>((set, get) => ({
     });
   },
 
-  getActionsForShortcut: (shortcut) => get().lookup[normalizeShortcut(shortcut)] ?? [],
+  getActionsForShortcut: (shortcut) => get().lookup[effectiveShortcut(shortcut)] ?? [],
   getActionsForEvent: (event) => {
-    const shortcut = shortcutFromKeyboardEvent(event);
-    return get().lookup[shortcut] ?? [];
+    const lookup = get().lookup;
+    // More than one candidate only on macOS with Option held, where `e.key` is
+    // a composed glyph ("∂", "Dead") and the physical `e.code` is the reading
+    // that can still be matched.
+    for (const shortcut of shortcutCandidatesFromKeyboardEvent(event)) {
+      const actions = lookup[shortcut];
+      if (actions?.length) return actions;
+    }
+    return [];
   },
   getShortcutForAction: (action) => get().keybindings[action],
   getConflicts: () => getConflictsFromLookup(get().lookup),

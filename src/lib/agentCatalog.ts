@@ -114,10 +114,14 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
   },
   {
     target: "claude-codex",
-    label: "claude-codex (Codex Models)",
+    label: "claude-codex",
     kind: "agent",
     cli: "claude-codex",
     agentKind: "claude-codex",
+    // Only the fallback: the chips come from claude-codex's own models.json
+    // (useLaunchModels in claudeCodexModels.ts), which also names its Claude,
+    // Fugu and OpenRouter models. These four are what an install without a
+    // readable table (neither Mac has claude-codex) still gets.
     models: CODEX_MODELS,
     efforts: CLAUDE_EFFORTS,
   },
@@ -132,15 +136,12 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     models: NO_CHOICES,
     efforts: SHORT_EFFORTS,
   },
-  {
-    target: "claude-codex-open",
-    label: "claude-codex (Open Models)",
-    kind: "agent",
-    cli: "claude-codex",
-    agentKind: "claude-codex",
-    models: NO_CHOICES,
-    efforts: CLAUDE_EFFORTS,
-  },
+  // "claude-codex (Open Models)" left the dialog on 2026-09-18: the proxy's
+  // dispatcher publishes the cloud open models in the ordinary claude-codex
+  // profile, so the one claude-codex row reaches them (as chips and with
+  // /model). The launchers keep claude-codex-open as their own menu row and
+  // MYCMUX_LAUNCH_TARGET value for the FCC-only profile (the local Ollama
+  // route); a socket or CLI spawn names catalog rows only.
   {
     target: "agy",
     label: "Antigravity (agy)",
@@ -198,10 +199,15 @@ export interface PaneLaunchSpec {
  * Model and effort reach the CLI as command-line flags, so a value is only
  * accepted when it cannot be mistaken for one. The leading character is forced
  * to be alphanumeric: `--model -x` would otherwise hand the CLI a second flag,
- * and the POSIX launcher builds its command as a string before `eval`.
- * Mirrors `sanitized_model` in src-tauri/src/ai/mod.rs.
+ * and the POSIX launcher builds its command as a string before `eval`. `/` is
+ * allowed (special to neither shell) because claude-codex names an OpenRouter
+ * model by its gateway picker id, e.g.
+ * `anthropic/gateway/fcc/open_router/qwen/qwen3-235b-a22b-2507`.
+ * Mirrors `is_launch_spec_value` in src-tauri/src/commands/terminal.rs,
+ * `Get-MycmuxLaunchSpecValue` in launcher.ps1 and `__launch_spec_value` in
+ * launcher.sh.
  */
-const LAUNCH_SPEC_VALUE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const LAUNCH_SPEC_VALUE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
 
 export function isValidLaunchSpecValue(value: string | undefined | null): boolean {
   return typeof value === "string" && LAUNCH_SPEC_VALUE.test(value);

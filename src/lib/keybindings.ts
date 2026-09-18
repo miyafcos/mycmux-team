@@ -45,6 +45,14 @@ export interface KeybindingDefinition {
   title: string;
   category: KeybindingCategory;
   defaultShortcut: string;
+  /**
+   * Used instead of `defaultShortcut` on macOS, where the Windows default maps
+   * onto a shortcut macOS has already spoken for. Only set this for a real
+   * collision: every other default reaches the Mac user as Command through
+   * `effectiveShortcut`, and a second spelling of the same binding is one more
+   * thing to keep in step.
+   */
+  macDefaultShortcut?: string;
 }
 
 /** The category stays an English key; only its printed name is translated. */
@@ -85,8 +93,10 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "pane.focus.right", title: "右のタブへ", category: "Pane", defaultShortcut: "ctrl+alt+arrowright" },
   { action: "pane.focus.up", title: "上のタブへ", category: "Pane", defaultShortcut: "ctrl+alt+arrowup" },
   { action: "pane.focus.down", title: "下のタブへ", category: "Pane", defaultShortcut: "ctrl+alt+arrowdown" },
-  { action: "pane.split.right", title: "タブを右に分割", category: "Pane", defaultShortcut: "ctrl+alt+d" },
-  { action: "pane.split.down", title: "タブを下に分割", category: "Pane", defaultShortcut: "ctrl+alt+shift+d" },
+  // ⌥⌘D is the system shortcut for hiding the Dock, so macOS never lets the
+  // split shortcuts through. Drop Option there and split on ⌘D / ⇧⌘D.
+  { action: "pane.split.right", title: "タブを右に分割", category: "Pane", defaultShortcut: "ctrl+alt+d", macDefaultShortcut: "meta+d" },
+  { action: "pane.split.down", title: "タブを下に分割", category: "Pane", defaultShortcut: "ctrl+alt+shift+d", macDefaultShortcut: "meta+shift+d" },
   { action: "pane.close", title: "アクティブなタブを閉じる", category: "Pane", defaultShortcut: "ctrl+alt+w" },
   { action: "pane.reopen", title: "閉じたペインを開き直す", category: "Pane", defaultShortcut: "ctrl+shift+t" },
   { action: "pane.zoom.toggle", title: "タブの最大化を切り替え", category: "Pane", defaultShortcut: "ctrl+shift+enter" },
@@ -103,10 +113,32 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
 
 const MOD_ORDER = ["ctrl", "alt", "shift", "meta"];
 
+export function isMacPlatform(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  // Three sources, because each one is absent somewhere: userAgentData is
+  // Chromium-only, `platform` is deprecated and can come back blank, and the
+  // user agent string is the last field every engine still fills in. Reading
+  // only the first is how a WebView without userAgentData reported "not a Mac"
+  // and silently dropped every Command shortcut.
+  const uaPlatform = nav.userAgentData?.platform;
+  if (uaPlatform) return uaPlatform === "macOS";
+  const legacy = nav.platform || "";
+  if (legacy) return /mac/i.test(legacy);
+  return /Macintosh|Mac OS X/i.test(nav.userAgent || "");
+}
+
+export const IS_MAC = isMacPlatform();
+
+/** The shipped binding for an action on this platform, normalized. */
+export function defaultShortcutFor(def: KeybindingDefinition, isMac: boolean = IS_MAC): string {
+  return normalizeShortcut(isMac && def.macDefaultShortcut ? def.macDefaultShortcut : def.defaultShortcut);
+}
+
 export const DEFAULT_KEYBINDINGS: Record<KeybindingActionId, string> = {
   ...KEYBINDING_DEFINITIONS.reduce(
     (acc, def) => {
-      acc[def.action] = normalizeShortcut(def.defaultShortcut);
+      acc[def.action] = defaultShortcutFor(def);
       return acc;
     },
     {} as Record<KeybindingActionId, string>,
@@ -145,7 +177,70 @@ export function normalizeShortcut(shortcut: string): string {
   return key ? [...orderedMods, key].join("+") : orderedMods.join("+");
 }
 
-export function shortcutFromKeyboardEvent(e: KeyboardEvent): string {
+/** `e.code` values that stand for a key our shortcut strings spell by name. */
+const NAMED_EVENT_CODES: Record<string, string> = {
+  ArrowLeft: "arrowleft",
+  ArrowRight: "arrowright",
+  ArrowUp: "arrowup",
+  ArrowDown: "arrowdown",
+  Backquote: "`",
+  Backslash: "\\",
+  Backspace: "backspace",
+  BracketLeft: "[",
+  BracketRight: "]",
+  Comma: ",",
+  Delete: "delete",
+  End: "end",
+  Enter: "enter",
+  Equal: "=",
+  Escape: "escape",
+  Home: "home",
+  Insert: "insert",
+  Minus: "-",
+  NumpadEnter: "enter",
+  PageDown: "pagedown",
+  PageUp: "pageup",
+  Period: ".",
+  Quote: "'",
+  Semicolon: ";",
+  Slash: "/",
+  Space: "space",
+  Tab: "tab",
+};
+
+/**
+ * The key a physical `e.code` stands for, or null when we cannot say.
+ *
+ * macOS rewrites `e.key` while Option is held — ⌥D arrives as "∂", ⌥I as
+ * "Dead", ⌥A as "å" — so an Option binding can never be recognised from
+ * `e.key`. The physical code survives Option untouched, which is why it is the
+ * only readable source for those. It is a US-layout reading, so we only reach
+ * for it where `e.key` has already stopped being usable.
+ */
+export function keyFromEventCode(code: string | undefined | null): string | null {
+  if (!code) return null;
+  const named = NAMED_EVENT_CODES[code];
+  if (named) return named;
+  const letter = /^Key([A-Z])$/.exec(code);
+  if (letter) return letter[1]!.toLowerCase();
+  const digit = /^(?:Digit|Numpad)([0-9])$/.exec(code);
+  if (digit) return digit[1]!;
+  const fn = /^F([1-9]|1[0-9]|2[0-4])$/.exec(code);
+  if (fn) return `f${fn[1]}`;
+  return null;
+}
+
+/**
+ * Every normalized shortcut a key event could stand for, best reading first.
+ *
+ * There is more than one only on macOS with Option held, where `e.key` is a
+ * composed glyph and `e.code` is the honest answer; we keep the `e.key`
+ * reading behind it so a layout the code table cannot name still has a chance.
+ */
+export function shortcutCandidatesFromKeyboardEvent(
+  e: KeyboardEvent,
+  isMac: boolean = IS_MAC,
+): string[] {
   const mods: string[] = [];
   if (e.ctrlKey) mods.push("ctrl");
   if (e.altKey) mods.push("alt");
@@ -153,38 +248,26 @@ export function shortcutFromKeyboardEvent(e: KeyboardEvent): string {
   if (e.metaKey) mods.push("meta");
   const key = normalizeKey(e.key);
   const isModifierOnly = ["control", "alt", "shift", "meta"].includes(key);
-  if (!isModifierOnly) {
-    mods.push(key);
-  }
-  return normalizeShortcut(mods.join("+"));
+  if (isModifierOnly) return [normalizeShortcut(mods.join("+"))];
+
+  const fromKey = normalizeShortcut([...mods, key].join("+"));
+  if (!isMac || !e.altKey) return [fromKey];
+  const fromCode = keyFromEventCode(e.code);
+  if (!fromCode || fromCode === key) return [fromKey];
+  return [normalizeShortcut([...mods, fromCode].join("+")), fromKey];
 }
 
-export function isMacPlatform(): boolean {
-  if (typeof navigator === "undefined") return false;
-  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
-  // Three sources, because each one is absent somewhere: userAgentData is
-  // Chromium-only, `platform` is deprecated and can come back blank, and the
-  // user agent string is the last field every engine still fills in. Reading
-  // only the first is how a WebView without userAgentData reported "not a Mac"
-  // and silently dropped every Command shortcut.
-  const uaPlatform = nav.userAgentData?.platform;
-  if (uaPlatform) return uaPlatform === "macOS";
-  const legacy = nav.platform || "";
-  if (legacy) return /mac/i.test(legacy);
-  return /Macintosh|Mac OS X/i.test(nav.userAgent || "");
+export function shortcutFromKeyboardEvent(e: KeyboardEvent): string {
+  return shortcutCandidatesFromKeyboardEvent(e)[0]!;
 }
-
-export const IS_MAC = isMacPlatform();
 
 /**
  * The same shortcut with ctrl and meta traded, re-normalized.
  *
- * Shortcuts are authored Windows-first as `ctrl+...` and a Mac user reaches for
- * Command instead. Comparing prefixes cannot bridge the two: normalization
- * sorts modifiers ctrl, alt, shift, meta, so `ctrl+shift+n` becomes
- * `shift+meta+n` once Command replaces Control — the strings stop sharing a
- * prefix, which is why every multi-modifier shortcut did nothing under Cmd
- * while the single-modifier ones (Cmd+B, Cmd+P, Cmd+1) worked.
+ * Re-normalizing is the point: the modifier order is ctrl, alt, shift, meta, so
+ * `ctrl+shift+n` has to come back as `shift+meta+n` rather than `meta+shift+n`.
+ * Comparing the two strings any other way — by prefix, by substring — lines up
+ * only for the single-modifier bindings and quietly drops the rest.
  */
 function swapCtrlMeta(shortcut: string): string {
   const swapped = shortcut
@@ -199,6 +282,28 @@ function swapCtrlMeta(shortcut: string): string {
 }
 
 /**
+ * The keys a binding actually answers to on this platform, normalized.
+ *
+ * Bindings are authored Windows-first as `ctrl+...`, and on macOS the key a
+ * user reaches for is Command. The trade has to be exclusive, not additive:
+ * the physical Control key belongs to the shell there (⌃C, ⌃P, ⌃W, ⌃V), so an
+ * app that also answers to Control eats the terminal's own keys.
+ *
+ * Two things stay as written. A binding whose key is Tab keeps Control,
+ * because ⌘⇥ never reaches an app — macOS switches applications with it. And a
+ * binding spelled with `meta` was asked for as Command on purpose, whether it
+ * is a macOS default or something the user typed into the shortcut list.
+ */
+export function effectiveShortcut(shortcut: string, isMac: boolean = IS_MAC): string {
+  const normalized = normalizeShortcut(shortcut);
+  if (!isMac || !normalized) return normalized;
+  const parts = normalized.split("+");
+  if (parts[parts.length - 1] === "tab") return normalized;
+  if (!parts.includes("ctrl") || parts.includes("meta")) return normalized;
+  return swapCtrlMeta(normalized);
+}
+
+/**
  * Whether a normalized event shortcut activates a normalized binding.
  *
  * Split out of `eventMatchesShortcut` so the macOS bridge is testable without
@@ -210,14 +315,13 @@ export function shortcutMatchesEvent(
   isMac: boolean,
 ): boolean {
   if (!normalized) return false;
-  if (eventShortcut === normalized) return true;
-  if (!isMac) return false;
-  return swapCtrlMeta(normalized) === eventShortcut;
+  return effectiveShortcut(normalized, isMac) === eventShortcut;
 }
 
 export function eventMatchesShortcut(e: KeyboardEvent, shortcut?: string): boolean {
   if (!shortcut) return false;
-  return shortcutMatchesEvent(normalizeShortcut(shortcut), shortcutFromKeyboardEvent(e), IS_MAC);
+  const candidates = shortcutCandidatesFromKeyboardEvent(e, IS_MAC);
+  return candidates.some((candidate) => shortcutMatchesEvent(normalizeShortcut(shortcut), candidate, IS_MAC));
 }
 
 export function getActionDefinition(action: KeybindingActionId): KeybindingDefinition {
@@ -262,18 +366,25 @@ function formatKeyLabel(key: string): string {
  * A binding written the way macOS writes one: glyphs in the order ⌃⌥⇧⌘, run
  * together with no separator.
  *
- * A `ctrl+...` default is shown as ⌘ because Command is the key a Mac user
- * presses for it (see `swapCtrlMeta`). Printing "Ctrl+Shift+N" next to a
- * shortcut that answers to ⌘⇧N is what made the shortcut list read as wrong.
+ * The label is built from `effectiveShortcut`, so what it prints is the key
+ * that actually fires: ⌘ for a `ctrl+...` default, and ⌃ for the two Tab
+ * bindings that keep the physical Control key. Printing "Ctrl+Shift+N" next to
+ * a shortcut that answers to ⌘⇧N is what made the shortcut list read as wrong,
+ * and printing ⌘⇥ next to one that only answers to ⌃⇥ is the same mistake.
  */
 export function formatMacShortcutLabel(shortcut: string): string {
-  const parts = normalizeShortcut(shortcut).split("+").filter(Boolean);
+  const parts = effectiveShortcut(shortcut, true).split("+").filter(Boolean);
+  let control = false;
   let command = false;
   let option = false;
   let shift = false;
   let key = "";
   for (const part of parts) {
-    if (part === "ctrl" || part === "meta") {
+    if (part === "ctrl") {
+      control = true;
+      continue;
+    }
+    if (part === "meta") {
       command = true;
       continue;
     }
@@ -287,7 +398,7 @@ export function formatMacShortcutLabel(shortcut: string): string {
     }
     key = part;
   }
-  const glyphs = `${option ? "⌥" : ""}${shift ? "⇧" : ""}${command ? "⌘" : ""}`;
+  const glyphs = `${control ? "⌃" : ""}${option ? "⌥" : ""}${shift ? "⇧" : ""}${command ? "⌘" : ""}`;
   if (!key) return glyphs;
   return `${glyphs}${MAC_KEY_GLYPHS[key] ?? formatKeyLabel(key)}`;
 }

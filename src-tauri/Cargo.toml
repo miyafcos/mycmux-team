@@ -1,6 +1,6 @@
 [package]
 name = "mycmux"
-version = "0.73.0"
+version = "0.74.0"
 description = "mycmux - AI agent terminal workspace"
 authors = ["miyafcos"]
 edition = "2021"
@@ -8,6 +8,12 @@ edition = "2021"
 [lib]
 name = "mycmux_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
+
+[features]
+# Test-only socket commands that let scripts drive a real window (src/e2e.rs).
+# Off in every shipped build; the commands also refuse to answer outside
+# `--profile`.
+e2e = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -43,6 +49,10 @@ dirs = "6.0.0"
 dunce = "1"
 tempfile = "3"
 rusqlite = { version = "0.32", features = ["bundled"] }
+# Session index for 続きから / Ctrl+P. Vendored from the crsm repository rather
+# than shelling out to the CLI, which a macOS GUI app never finds: launchd hands
+# it a minimal PATH. See crates/crsm-core/VENDOR.md.
+crsm-core = { path = "crates/crsm-core" }
 
 # Remote terminal (WebSocket server for iPhone access)
 axum = { version = "0.8", features = ["ws"] }
@@ -68,6 +78,13 @@ wry = { version = "0.54", features = [] }
 # macOS-specific dependencies (WKWebView via wry)
 [target.'cfg(target_os = "macos")'.dependencies]
 wry = { version = "0.54", features = [] }
+# AppKit / WebKit bindings. All of these are already in the tree through tao
+# and wry; naming them here only adds the few classes the app calls directly.
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSEnumerator", "NSError", "NSGeometry", "NSObject", "NSString", "NSValue"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSBitmapImageRep", "NSButton", "NSControl", "NSEvent", "NSGraphicsContext", "NSImage", "NSImageRep", "NSMenu", "NSMenuItem", "NSResponder", "NSRunningApplication", "NSView", "NSWindow"] }
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "objc2-app-kit", "block2", "WKWebView", "WKSnapshotConfiguration"] }
 
 # Windows-specific dependencies (WebView2 via wry)
 [target.'cfg(target_os = "windows")'.dependencies]

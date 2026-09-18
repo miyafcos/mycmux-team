@@ -860,13 +860,18 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
     # display:none anywhere up the chain kills both displayed and painted
     assert 'style.display === "none"' in snapshot_fn
     assert 'document.visibilityState !== "hidden"' in snapshot_fn
-    # visibility hidden/collapse demotes painted. Hidden terminals stay mounted
+    # visibility hidden/collapse demotes painting. Hidden terminals stay mounted
     # but must not parse/render PTY output until they are visible again.
+    # The snapshot answers the layout question (`paintedInWindow`) separately
+    # from the window's own state, so a pane that only stopped painting because
+    # the window went behind another app can keep its batches instead of
+    # replaying the whole scrollback (2026-09-18).
     visibility_branch = snapshot_fn.split(
         'style.visibility === "hidden" || style.visibility === "collapse"', 1
     )[1].split("}", 1)[0]
-    assert "painted = false" in visibility_branch
+    assert "paintedInWindow = false" in visibility_branch
     assert "displayed" not in visibility_branch
+    assert 'painted: paintedInWindow && document.visibilityState !== "hidden"' in snapshot_fn
 
     can_write_fn = xterm_wrapper.split("const canWritePendingBatches = (): boolean => {", 1)[1].split(
         "const schedulePendingWriteDrain =",

@@ -14,7 +14,7 @@ import { checkboxLabelStyle, dialogButtonStyle, dividerStyle, sectionHeadingStyl
 import { launcherTabStrings as T } from "./launcherTabStrings";
 
 const ICON_FOR: Record<string, string> = {
-  claude: "claude", codex: "codex", "claude-codex": "claude-codex", "claude-codex-open": "claude-codex",
+  claude: "claude", codex: "codex", "claude-codex": "claude-codex",
   grok: "grok", agy: "antigravity", "web-chatgpt": "codex", "web-gemini": "gemini",
   "web-grok": "grok", "web-claude": "claude", "web-notebooklm": "notebooklm",
 };

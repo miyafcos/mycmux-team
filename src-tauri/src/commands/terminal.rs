@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::commands::session_mapping::{is_agent_session_kind, write_session_mapping_file};
 use crate::pty::monitor::PtyMetadata;
@@ -133,6 +133,14 @@ pub fn create_session(
                         cwd.as_deref(),
                     ) {
                         AgentRestoreRecovery::RequestedValid => {}
+                        AgentRestoreRecovery::FreshUnderRequestedId => {
+                            // The env stays as it is: launcher.sh sees the id,
+                            // starts Claude under it and writes the mapping, so
+                            // the pane keeps the identity it was restored with.
+                            crate::diag::log(&format!(
+                                "[restore] {kind} session {requested_session_id} has no transcript yet; starting it under that id"
+                            ));
+                        }
                         AgentRestoreRecovery::Downgrade => {
                             eprintln!(
                                 "[mycmux] agent restore validation failed, starting a fresh session: {err}"
@@ -155,6 +163,22 @@ pub fn create_session(
                                 if cwd.as_deref().is_some_and(|value| !Path::new(value).is_dir()) {
                                     cwd = None;
                                 }
+                            }
+                            // The pane is about to hold a different
+                            // conversation, so the mapping that still points at
+                            // the one that went missing has to go with it —
+                            // otherwise the monitor keeps writing that id back
+                            // onto the pane and the new session is never
+                            // tracked.
+                            if let Err(error) =
+                                crate::commands::session_mapping::remove_session_mapping_file(
+                                    &session_id,
+                                )
+                            {
+                                crate::diag_warn!(
+                                    "restore",
+                                    "could not drop the mapping for {session_id}: {error}"
+                                );
                             }
                             env_map.remove("MYCMUX_SESSION_ID");
                             env_map.remove("MYCMUX_RESUME");
@@ -432,6 +456,21 @@ fn claude_launch_spec_args(args: &[String]) -> Vec<String> {
     values
 }
 
+/// A model or effort value is only put on a command line when it cannot be
+/// read as a flag or as shell syntax: an alphanumeric first byte, then
+/// `A-Za-z0-9._/-`, at most 128 bytes. `/` is allowed because claude-codex
+/// names an OpenRouter model by its gateway picker id
+/// (`anthropic/gateway/fcc/open_router/x-ai/grok-4.3`); it is not special to
+/// either shell. Mirrors `LAUNCH_SPEC_VALUE` in src/lib/agentCatalog.ts,
+/// `Get-MycmuxLaunchSpecValue` in launcher.ps1 and `__launch_spec_value` in
+/// launcher.sh.
+pub(crate) fn is_launch_spec_value(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._/-".contains(&byte))
+}
+
 fn normalize_claude_launch_args(args: &mut Vec<String>, env: &HashMap<String, String>) {
     let mut normalized = Vec::new();
     let mut iter = args.iter();
@@ -449,11 +488,8 @@ fn normalize_claude_launch_args(args: &mut Vec<String>, env: &HashMap<String, St
         "auto".to_string(),
     ]);
     for (key, flag) in [("MYCMUX_LAUNCH_MODEL", "--model"), ("MYCMUX_LAUNCH_EFFORT", "--effort")] {
-        let Some(value) = env.get(key).map(|value| value.trim()).filter(|value| {
-            !value.is_empty() && value.len() <= 64
-                && value.as_bytes()[0].is_ascii_alphanumeric()
-                && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-        }) else { continue };
+        let Some(value) = env.get(key).map(|value| value.trim()).filter(|value| is_launch_spec_value(value))
+        else { continue };
         if !normalized.iter().any(|arg| arg == flag || arg.starts_with(&format!("{flag}="))) {
             normalized.extend([flag.to_string(), value.to_string()]);
         }
@@ -513,6 +549,9 @@ fn apply_agent_restore_fallback_args(command: &str, args: &mut Vec<String>, kind
 #[derive(Debug, PartialEq, Eq)]
 enum AgentRestoreRecovery {
     RequestedValid,
+    /// Nothing was ever written under the saved id, so there is no
+    /// conversation to lose: start a new one under that same id.
+    FreshUnderRequestedId,
     Downgrade,
 }
 
@@ -554,8 +593,42 @@ where
     if can_restore(kind, requested_session_id, cwd) {
         return AgentRestoreRecovery::RequestedValid;
     }
+    // A Claude pane that was never typed into has no transcript anywhere —
+    // which is exactly why the check above failed. Starting a fresh session
+    // with a *new* id used to strand it: the tab and the launcher mapping kept
+    // pointing at the id nobody would ever write, so the conversation the user
+    // then had was never tracked and every restart said it could not be
+    // restored. Claude takes `--session-id`, so the pane can simply start
+    // under the id it was already carrying.
+    if kind == "claude"
+        && is_uuid_like(requested_session_id)
+        && cwd.is_some_and(|value| Path::new(value).is_dir())
+    {
+        apply_claude_pinned_id_args(command, args, requested_session_id);
+        return AgentRestoreRecovery::FreshUnderRequestedId;
+    }
     apply_agent_restore_fallback_args(command, args, kind);
     AgentRestoreRecovery::Downgrade
+}
+
+/// Start Claude under a given id rather than resuming it.
+///
+/// Only meaningful when the command is Claude itself; a launcher command
+/// (`bash -i -c …`) keeps its arguments and decides inside the script, which is
+/// where it can also write the pane mapping.
+fn apply_claude_pinned_id_args(command: &str, args: &mut Vec<String>, session_id: &str) {
+    if !command_leaf(command).eq_ignore_ascii_case("claude") {
+        return;
+    }
+    let launch_spec = claude_launch_spec_args(args);
+    *args = vec![
+        "--allow-dangerously-skip-permissions".to_string(),
+        "--permission-mode".to_string(),
+        "auto".to_string(),
+        "--session-id".to_string(),
+        session_id.to_string(),
+    ];
+    args.extend(launch_spec);
 }
 
 fn should_trust_claude_workspace(command: &str, env: &HashMap<String, String>) -> bool {
@@ -898,12 +971,49 @@ pub fn set_frontend_visible(
     Ok(())
 }
 
+/// Per-window frontend visibility. Every window reports its own
+/// `document.visibilityState`, so a single shared flag let a hidden detached
+/// window slow the metadata monitor down for the main window too. The shared
+/// `AppState::frontend_visible` now carries the aggregate — "is any window
+/// on screen" — and this map holds what each window last said.
+static WINDOW_FRONTEND_VISIBILITY: std::sync::Mutex<Option<HashMap<String, bool>>> =
+    std::sync::Mutex::new(None);
+
+/// Records one window's visibility and answers whether any tracked window is
+/// still on screen. `live_labels`, when given, drops windows that no longer
+/// exist so a closed window cannot hold the aggregate up forever.
+pub(crate) fn merge_window_frontend_visibility(
+    tracked: &mut HashMap<String, bool>,
+    live_labels: Option<&std::collections::HashSet<String>>,
+    label: &str,
+    visible: bool,
+) -> bool {
+    if let Some(live) = live_labels {
+        tracked.retain(|known, _| known == label || live.contains(known));
+    }
+    tracked.insert(label.to_string(), visible);
+    tracked.values().any(|entry| *entry)
+}
+
 #[tauri::command(async)]
 pub async fn set_app_frontend_visible(
+    window: tauri::Window,
     state: State<'_, AppState>,
     visible: bool,
 ) -> Result<(), String> {
-    state.frontend_visible.store(visible, Ordering::Release);
+    // `tauri::Window`, not `tauri::WebviewWindow`: a window that hosts a web
+    // pane is no longer a webview window, and the argument would fail to
+    // resolve there.
+    let live_labels: std::collections::HashSet<String> =
+        window.app_handle().windows().into_keys().collect();
+    let any_visible = {
+        let mut guard = WINDOW_FRONTEND_VISIBILITY
+            .lock()
+            .map_err(|e| format!("Lock failed: {e}"))?;
+        let tracked = guard.get_or_insert_with(HashMap::new);
+        merge_window_frontend_visibility(tracked, Some(&live_labels), window.label(), visible)
+    };
+    state.frontend_visible.store(any_visible, Ordering::Release);
     Ok(())
 }
 
@@ -1048,6 +1158,31 @@ mod tests {
             let mut args = Vec::new();
             normalize_claude_launch_args(&mut args, &values);
             assert_eq!(args, ["--allow-dangerously-skip-permissions", "--permission-mode", "auto"]);
+        }
+    }
+
+    #[test]
+    fn launch_spec_values_accept_gateway_ids_and_refuse_flags_and_shell() {
+        for good in [
+            "opus",
+            "vendor-1.2-tier",
+            "anthropic/gateway/fcc/open_router/qwen/qwen3-235b-a22b-2507",
+            &"a".repeat(128),
+        ] {
+            assert!(is_launch_spec_value(good), "{good} should pass");
+        }
+        for bad in [
+            "",
+            "--model",
+            "/abs/path",
+            "a;b",
+            "$(bad)",
+            "a b",
+            "a\\b",
+            "open_router/x:y",
+            &"a".repeat(129),
+        ] {
+            assert!(!is_launch_spec_value(bad), "{bad} should be refused");
         }
     }
 
@@ -1330,6 +1465,110 @@ mod tests {
     }
 
     #[test]
+    fn a_claude_session_nobody_wrote_to_starts_under_the_same_id() {
+        // The pane was opened and never typed into, so there is no transcript
+        // to find — and nothing to lose by starting under the id it carries.
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = "019bc371-82cf-7d82-ad0b-96d026aaca73";
+        let mut args = vec![
+            "--allow-dangerously-skip-permissions".to_string(),
+            "--permission-mode".to_string(),
+            "auto".to_string(),
+            "--resume".to_string(),
+            session_id.to_string(),
+        ];
+
+        let recovery = apply_agent_restore_recovery_args_with(
+            "claude",
+            &mut args,
+            "claude",
+            session_id,
+            &[],
+            Some(dir.path().to_str().unwrap()),
+            |_, _, _| false,
+        );
+
+        assert_eq!(recovery, AgentRestoreRecovery::FreshUnderRequestedId);
+        assert_eq!(
+            args,
+            vec![
+                "--allow-dangerously-skip-permissions".to_string(),
+                "--permission-mode".to_string(),
+                "auto".to_string(),
+                "--session-id".to_string(),
+                session_id.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pinned_id_keeps_the_model_and_effort_the_pane_was_launched_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = "019bc371-82cf-7d82-ad0b-96d026aaca73";
+        let mut args = vec![
+            "--model".to_string(),
+            "opus".to_string(),
+            "--resume".to_string(),
+            session_id.to_string(),
+        ];
+
+        apply_agent_restore_recovery_args_with(
+            "claude",
+            &mut args,
+            "claude",
+            session_id,
+            &[],
+            Some(dir.path().to_str().unwrap()),
+            |_, _, _| false,
+        );
+
+        assert!(args.windows(2).any(|pair| pair == ["--model", "opus"]));
+        assert!(args.windows(2).any(|pair| pair == ["--session-id", session_id]));
+    }
+
+    #[test]
+    fn a_launcher_command_is_left_to_pin_the_id_itself() {
+        // launcher.sh reads MYCMUX_SESSION_ID and writes the pane mapping; its
+        // arguments must not be rewritten into a Claude command line.
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = "019bc371-82cf-7d82-ad0b-96d026aaca73";
+        let mut args = vec!["-i".to_string(), "-c".to_string(), "source launcher.sh".to_string()];
+        let original = args.clone();
+
+        let recovery = apply_agent_restore_recovery_args_with(
+            "/bin/bash",
+            &mut args,
+            "claude",
+            session_id,
+            &[],
+            Some(dir.path().to_str().unwrap()),
+            |_, _, _| false,
+        );
+
+        assert_eq!(recovery, AgentRestoreRecovery::FreshUnderRequestedId);
+        assert_eq!(args, original);
+    }
+
+    #[test]
+    fn a_session_id_without_a_working_directory_still_starts_fresh() {
+        let session_id = "019bc371-82cf-7d82-ad0b-96d026aaca73";
+        let mut args = vec!["--resume".to_string(), session_id.to_string()];
+
+        let recovery = apply_agent_restore_recovery_args_with(
+            "claude",
+            &mut args,
+            "claude",
+            session_id,
+            &[],
+            Some(r"C:\definitely-not-a-directory-9f2a"),
+            |_, _, _| false,
+        );
+
+        assert_eq!(recovery, AgentRestoreRecovery::Downgrade);
+        assert!(!args.iter().any(|arg| arg == "--session-id"));
+    }
+
+    #[test]
     fn restore_valid_requested_id_ignores_fallbacks() {
         let mut args = vec!["--resume".to_string(), "requested-session".to_string()];
         let original = args.clone();
@@ -1397,5 +1636,51 @@ mod tests {
         let mut e = env(&[]);
         inject_no_color_for_agy("bash", &mut e);
         assert!(!e.contains_key("NO_COLOR"));
+    }
+
+    #[test]
+    fn a_hidden_detached_window_does_not_make_the_whole_app_look_hidden() {
+        let live: std::collections::HashSet<String> =
+            ["main", "pane-1"].into_iter().map(String::from).collect();
+        let mut tracked = HashMap::new();
+
+        assert!(merge_window_frontend_visibility(
+            &mut tracked,
+            Some(&live),
+            "main",
+            true
+        ));
+        // The detached window goes behind something; main is still on screen.
+        assert!(merge_window_frontend_visibility(
+            &mut tracked,
+            Some(&live),
+            "pane-1",
+            false
+        ));
+        // Only once every window is hidden does the app count as hidden.
+        assert!(!merge_window_frontend_visibility(
+            &mut tracked,
+            Some(&live),
+            "main",
+            false
+        ));
+    }
+
+    #[test]
+    fn a_closed_window_stops_holding_the_aggregate_up() {
+        let mut tracked = HashMap::new();
+        let both: std::collections::HashSet<String> =
+            ["main", "pane-1"].into_iter().map(String::from).collect();
+        merge_window_frontend_visibility(&mut tracked, Some(&both), "pane-1", true);
+
+        let only_main: std::collections::HashSet<String> =
+            ["main"].into_iter().map(String::from).collect();
+        assert!(!merge_window_frontend_visibility(
+            &mut tracked,
+            Some(&only_main),
+            "main",
+            false
+        ));
+        assert_eq!(tracked.len(), 1);
     }
 }

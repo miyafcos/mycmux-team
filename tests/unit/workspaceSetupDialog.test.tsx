@@ -102,9 +102,8 @@ describe("WorkspaceSetup", () => {
       "$ Shell",
       "Claude Code",
       "Codex",
-      "claude-codex (Codex Models)",
+      "claude-codex",
       "Grok Build",
-      "claude-codex (Open Models)",
       "Antigravity (agy)",
       "Hermes",
     ]);

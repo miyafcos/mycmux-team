@@ -1,6 +1,9 @@
 import {
+  effectiveShortcut,
+  keyFromEventCode,
   KEYBINDING_DEFINITIONS,
   normalizeShortcut,
+  IS_MAC,
   type KeybindingActionId,
 } from "../../lib/keybindings";
 import type { KeybindingsMap } from "../../stores/keybindingStore";
@@ -74,7 +77,9 @@ function webPaneMayOwnShortcut(shortcut: string): boolean {
 export function deriveWebPaneForwardedShortcuts(keybindings: KeybindingsMap): string[] {
   const actionsByShortcut = new Map<string, KeybindingActionId[]>();
   for (const definition of KEYBINDING_DEFINITIONS) {
-    const shortcut = normalizeShortcut(keybindings[definition.action]);
+    // The key the user actually presses: on macOS a `ctrl+…` binding
+    // answers to Command, and a web pane only forwards what it is told to.
+    const shortcut = effectiveShortcut(keybindings[definition.action]);
     if (!shortcut) continue;
     const actions = actionsByShortcut.get(shortcut) ?? [];
     actions.push(definition.action);
@@ -130,7 +135,10 @@ export function shortcutFromWebPanePayload(payload: WebPaneForwardedKey): string
   if (payload.altKey) parts.push("alt");
   if (payload.shiftKey) parts.push("shift");
   if (payload.metaKey) parts.push("meta");
-  parts.push(payload.key);
+  // macOS rewrites the character while Option is held (⌥D arrives as "∂"), so
+  // the physical key is the only reliable name for these.
+  const key = (IS_MAC && payload.altKey ? keyFromEventCode(payload.code) : null) ?? payload.key;
+  parts.push(key);
   return normalizeShortcut(parts.join("+"));
 }
 

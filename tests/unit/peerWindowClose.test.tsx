@@ -173,7 +173,13 @@ describe("native close-request path scopes its victims to the closing window", (
     const preventDefault = vi.fn();
     await act(async () => mocks.close?.({ preventDefault }));
     expect(preventDefault).toHaveBeenCalledOnce();
-    expect(mocks.confirm).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ id: "victim-pane" })]), "workspace");
+    // "window", not "workspace": what the question has to say depends on
+    // whether another window stays open, so the scope carries that count.
+    expect(mocks.confirm).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ id: "victim-pane" })]),
+      "window",
+      expect.objectContaining({ peerWindowCount: expect.any(Number) }),
+    );
     expect(mocks.kill.mock.calls.map(([id]) => id)).toEqual(["victim-a", "victim-b"]);
     expect([...alive].sort()).toEqual(["keeper-a", "keeper-b"]);
     expect(mocks.intent).toHaveBeenCalledWith(true);

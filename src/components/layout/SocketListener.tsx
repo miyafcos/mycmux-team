@@ -29,6 +29,11 @@ import {
   releaseWorkspaces,
   takePendingAdoption,
   discardSessionScrollback,
+  openWorkspaceWindow,
+  quitPrepared,
+  quitSaved,
+  QUIT_PREPARE_EVENT,
+  QUIT_SAVE_EVENT,
   WINDOW_ADOPT_EVENT,
   WINDOW_REGISTRY_CHANGED_EVENT,
   type AgentSessionMapping,
@@ -88,6 +93,7 @@ import {
   resolvePersistedSelection,
 } from "../../lib/sessionRestoreSafety";
 import { handleSocketCommand } from "./socketCommands";
+import { IS_MAC } from "../../lib/keybindings";
 import { handleWorkOrderSpawnRequest, type SpawnRequest } from "../../lib/workOrderBridge";
 import { isMainWindow, windowLabel, hasWindowRole, setWindowRole, subscribeWindowRole } from "../../lib/windowContext";
 import { detachedMetadata, detachedWorkspaceForWindow, isTransferableTab } from "../../lib/detachedPane";
@@ -657,6 +663,28 @@ function collectTerminalSessionIds(workspaces: readonly WorkspaceSerializationSo
     }
   }
   return Array.from(sessionIds);
+}
+
+/**
+ * Tab ids for the mapping lookup at save time.
+ *
+ * `applyMappingsToConfig` reads the map by tab id, and the mapping files are
+ * named after the tab, so asking for PTY session ids — which is what the save
+ * path did — produced a map keyed by something the lookup never asks for. The
+ * gap-filling it was written for (an agent launched after startup, whose id
+ * launcher.sh wrote into pane-sessions) therefore only ever happened at
+ * startup, contradicting the comment above the call.
+ */
+function collectTerminalTabIds(workspaces: readonly WorkspaceSerializationSource[]): string[] {
+  const tabIds = new Set<string>();
+  for (const workspace of workspaces) {
+    for (const pane of workspace.panes) {
+      for (const tab of pane.tabs) {
+        if (tab.type === "terminal" && isRestorableTab(tab)) tabIds.add(tab.id);
+      }
+    }
+  }
+  return Array.from(tabIds);
 }
 
 export function collectLiveTerminalSessionIds(): string[] {
@@ -1370,6 +1398,60 @@ export const persistLoaded = new Promise<void>((resolve) => {
  * `makeSessionId` reproduces the same session ids and `create_session` takes
  * the reattach branch in `pty/manager.rs`. Nothing here may kill a session.
  */
+/**
+ * macOS: put the main window away without ending the work in it.
+ *
+ * A window call the capability file does not list is refused by the ACL and
+ * fails silently — which would leave the window simply refusing to close — so
+ * the refusal is said out loud rather than swallowed.
+ */
+function hideMainWindow(): void {
+  getCurrentWindow().hide().catch((error) => {
+    console.error("[window] Failed to hide the main window:", error);
+    useToastStore.getState().pushToast("ウィンドウを隠せませんでした", "error");
+  });
+}
+
+/** Default frame for a detached window whose saved frame is missing. */
+const DETACHED_WINDOW_FALLBACK = { x: 120, y: 120, width: 720, height: 520 };
+
+/**
+ * Put every workspace that was in its own window last time back into one.
+ *
+ * The window takes the frame the save path recorded for it, so a torn-out pane
+ * comes back where the user left it. If a window cannot be opened the
+ * workspace is not lost: it lands in this window instead, as an ordinary
+ * workspace, with the detached mark cleared so it no longer points at a pane
+ * that is not there.
+ */
+async function reopenDetachedWindows(configs: WorkspaceConfig[]): Promise<void> {
+  const stranded: WorkspaceConfig[] = [];
+  for (const [index, config] of configs.entries()) {
+    const frame = config.window_frame ?? null;
+    const cascade = index * 28;
+    try {
+      await openWorkspaceWindow({
+        fromLabel: windowLabel(),
+        workspaces: [config],
+        x: frame?.x ?? DETACHED_WINDOW_FALLBACK.x + cascade,
+        y: frame?.y ?? DETACHED_WINDOW_FALLBACK.y + cascade,
+        width: frame?.width ?? DETACHED_WINDOW_FALLBACK.width,
+        height: frame?.height ?? DETACHED_WINDOW_FALLBACK.height,
+      });
+    } catch (error) {
+      console.warn("[persist] Failed to reopen a detached window:", error);
+      stranded.push({ ...config, detached: false, detached_from: null, window_frame: null });
+    }
+  }
+  if (stranded.length > 0) {
+    adoptWorkspaceConfigs(stranded);
+    useToastStore.getState().pushToast(
+      persistenceStrings.detachedWindowFallback(stranded.length),
+      "warning",
+    );
+  }
+}
+
 function adoptWorkspaceConfigs(configs: WorkspaceConfig[]): string[] {
   const restorable = filterAlreadyRestoredConfigs(configs)
     .map(dropEmptyTabPanesFromConfig)
@@ -1726,7 +1808,13 @@ export function useWorkspacePersist() {
               data.active_pane_id,
               data.active_tab_id,
             );
-            const restoredConfigs = restoredDedupe.configs;
+            // A workspace that was in its own window last time goes back to its
+            // own window, at the frame the save path recorded for it. Leaving
+            // them in this list would restore them as ordinary workspaces in
+            // the sidebar — which is what used to happen, and why a torn-out
+            // pane never came back as a window (2026-09-17).
+            const restoredConfigs = restoredDedupe.configs.filter((cfg) => !cfg.detached);
+            const detachedConfigs = restoredDedupe.configs.filter((cfg) => cfg.detached);
             reportAgentSessionDedupeConflicts(restoredDedupe.conflicts);
             discardDedupeLoserScrollbacks(restoredDedupe.discardScrollbackSessionIds);
             const startupRestoreTargetWorkspaceCount = restoredConfigs.filter(workspaceConfigHasRestorableAgentSession).length;
@@ -1776,6 +1864,9 @@ export function useWorkspacePersist() {
                 sessionId: restoredActivePaneSessionId,
                 focus: false,
               });
+            }
+            if (detachedConfigs.length > 0) {
+              void reopenDetachedWindows(detachedConfigs);
             }
           }
           });
@@ -1943,7 +2034,7 @@ export function useWorkspacePersist() {
             return request ? null : true;
           }
           const mappingSource = request?.snapshot.workspaces ?? useWorkspaceListStore.getState().workspaces;
-          const mappingSessionIds = collectTerminalSessionIds(mappingSource).sort();
+          const mappingSessionIds = collectTerminalTabIds(mappingSource).sort();
           const mappingSessionKey = mappingSessionIds.join("\0");
           if (agentMappingsDirty || cachedMappingSessionIds !== mappingSessionKey) {
             try {
@@ -2152,6 +2243,26 @@ export function useWorkspacePersist() {
     const registryDirty = listen(WINDOW_REGISTRY_CHANGED_EVENT, () => {
       if (isLeader.current) markDirty();
     });
+
+    // Quitting (⌘Q on macOS) runs in two steps so nothing is lost on the way
+    // out: every window publishes what it holds, then the window that owns
+    // data.json writes the union. Rust waits for both, with a deadline —
+    // commands/quit.rs.
+    const unlistenPrepareQuit = listen(QUIT_PREPARE_EVENT, () => {
+      void publishWindowFragment(buildWindowFragment())
+        .catch((error) => console.warn("[quit] Failed to publish this window:", error))
+        .finally(() => {
+          void quitPrepared().catch(() => {});
+        });
+    });
+    const unlistenSaveQuit = listen(QUIT_SAVE_EVENT, () => {
+      if (!isLeader.current) return;
+      void sync(true)
+        .catch((error) => console.warn("[quit] Final save failed:", error))
+        .finally(() => {
+          void quitSaved().catch(() => {});
+        });
+    });
     const unsubscribeRole = subscribeWindowRole(() => {
       if (hasWindowRole()) markDirty();
     });
@@ -2288,6 +2399,15 @@ export function useWorkspacePersist() {
     window.addEventListener("beforeunload", handleBeforeUnload);
 
     const unlistenCloseRequested = getCurrentWindow().onCloseRequested(async (event) => {
+      if (IS_MAC && isMainWindow()) {
+        // macOS: the close button and ⌘W put this window away rather than end
+        // the work in it. Every pane keeps running, and the Dock icon (or
+        // ウィンドウ ▸ mycmux のウィンドウ) brings it back. Quitting is ⌘Q,
+        // which writes every window down first — see commands/quit.rs.
+        event.preventDefault();
+        hideMainWindow();
+        return;
+      }
       if (closing || closePromptOpen) {
         event.preventDefault();
         return;
@@ -2302,7 +2422,15 @@ export function useWorkspacePersist() {
       const panes = useWorkspaceListStore.getState().workspaces.flatMap((workspace) => workspace.panes);
       closePromptOpen = true;
       try {
-        if (panes.length > 0 && !await confirmPaneClose(panes, "workspace")) return;
+        // Closing a window is not closing a workspace: what happens to the
+        // work in it depends on whether another window stays open.
+        const peerWindowCount = await getWindowFragments()
+          .then((fragments) => new Set(fragments
+            .map((fragment) => fragment.window_label)
+            .filter((label) => label && label !== windowLabel())).size)
+          .catch(() => 0);
+        if (panes.length > 0
+          && !await confirmPaneClose(panes, "window", { peerWindowCount })) return;
       } finally {
         closePromptOpen = false;
       }
@@ -2413,6 +2541,8 @@ export function useWorkspacePersist() {
       unregisterPersistenceLeader();
       unsubscribeRole();
       void registryDirty.then((stop) => stop()).catch(() => {});
+      void unlistenPrepareQuit.then((stop) => stop()).catch(() => {});
+      void unlistenSaveQuit.then((stop) => stop()).catch(() => {});
       if (debounceTimer) clearTimeout(debounceTimer);
       clearSaveRetry();
       window.removeEventListener("beforeunload", handleBeforeUnload);

@@ -13,6 +13,7 @@ import {
   useWorkspaceLayoutStore,
 } from "../../stores/workspaceStore";
 import { paneContainsSession, useWorkspaceListStore } from "../../stores/workspaceListStore";
+import { createWorkspaceAtCwd } from "../../lib/workspaceBootstrap";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { KIND_COLORS } from "../../lib/agentKindColors";
@@ -891,9 +892,18 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
   }, [closing, open]);
 
   async function openSelected(sessionToOpen = selected): Promise<void> {
-    if (!sessionToOpen || !activeWorkspace) return;
-    const anchorPane = activeWorkspace.panes.find((pane) => pane.sessionId === activePaneId)
-      ?? activeWorkspace.panes[0];
+    if (!sessionToOpen) return;
+    let workspace = activeWorkspace;
+    if (!workspace) {
+      // A window with no workspace — what the Dock opens — had nowhere to put
+      // the session, so the palette closed and nothing happened. Make the
+      // workspace the session is about to live in, in its own directory.
+      const createdId = createWorkspaceAtCwd(sessionToOpen.cwd ?? "", { activate: true });
+      workspace = useWorkspaceListStore.getState().getWorkspace(createdId);
+    }
+    if (!workspace) return;
+    const anchorPane = workspace.panes.find((pane) => pane.sessionId === activePaneId)
+      ?? workspace.panes[0];
     if (!anchorPane) return;
     setError(null);
 
@@ -951,7 +961,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
         agentSessionId = undefined;
       }
 
-      addPaneToWorkspaceWithOptions(activeWorkspace.id, anchorPane.id, "right", {
+      addPaneToWorkspaceWithOptions(workspace.id, anchorPane.id, "right", {
         agentId: "shell-starter",
         label: launchSession.label,
         cwd: launchSession.cwd,

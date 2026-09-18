@@ -9,6 +9,7 @@ import {
   isValidLaunchSpecValue,
   type PaneLaunchSpec,
 } from "../../lib/agentCatalog";
+import { useLaunchModels } from "../../lib/claudeCodexModels";
 
 interface AgentSelectorProps {
   slotIndex: number;
@@ -44,6 +45,7 @@ const optionStyle: CSSProperties = {
 export default function AgentSelector({ slotIndex, value, onChange }: AgentSelectorProps) {
   const modelListId = useId();
   const entry = getCatalogEntry(value.target);
+  const models = useLaunchModels(entry);
   const model = value.model ?? "";
   // Empty is the default (no flag). A non-empty value that could be read as a
   // flag is dropped at launch, so say so here rather than silently ignoring it.
@@ -100,7 +102,7 @@ export default function AgentSelector({ slotIndex, value, onChange }: AgentSelec
               }}
             />
             <datalist id={modelListId}>
-              {entry.models.map((choice) => (
+              {models.map((choice) => (
                 <option key={choice.value} value={choice.value}>
                   {choice.label}
                 </option>

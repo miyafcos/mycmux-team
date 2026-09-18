@@ -106,6 +106,9 @@ export default function WebPaneController() {
   // Tabs the dashboard is reading. They are parked instead of hidden so the
   // page keeps running while the dashboard covers the workspace.
   const readingRef = useRef(new Set<string>());
+  // Set by the placement loop below while it is running. The loop parks
+  // itself when there is no web pane to place, and this is how it is woken.
+  const wakePlacementRef = useRef<(() => void) | null>(null);
 
   desiredRef.current = new Map(tabs.map((tab) => [tab.tabId, tab.presetId]));
   dragBlockedRef.current = paneDragActive || savepointDragActive;
@@ -189,14 +192,33 @@ export default function WebPaneController() {
     }
     knownRef.current = next;
     for (const tabId of next.keys()) failedRef.current.delete(tabId);
+    wakePlacementRef.current?.();
   }, [enqueue, tabsSignature]);
 
   useEffect(() => {
     let cancelled = false;
     let rafId = 0;
 
+    const schedule = () => {
+      if (cancelled || rafId !== 0) return;
+      rafId = window.requestAnimationFrame(tick);
+    };
+
     const tick = () => {
+      rafId = 0;
       if (cancelled) return;
+      // Nothing to follow: stop asking for frames. This loop ran at the display
+      // rate in every window — each frame querying the DOM for five overlay
+      // selectors — whether or not the workspace had a single web pane in it,
+      // which kept WebKit's frame loop awake and burned battery for nothing.
+      // Anything that can create one wakes it again (wakePlacementRef).
+      if (
+        desiredRef.current.size === 0
+        && createdRef.current.size === 0
+        && openingRef.current.size === 0
+      ) {
+        return;
+      }
       const domOccluded = document.visibilityState === "hidden"
         || document.querySelector(OCCLUDER_SELECTOR) !== null;
       const blocked = dragBlockedRef.current || domOccluded;
@@ -257,12 +279,14 @@ export default function WebPaneController() {
         }
       }
 
-      rafId = window.requestAnimationFrame(tick);
+      schedule();
     };
 
-    rafId = window.requestAnimationFrame(tick);
+    wakePlacementRef.current = schedule;
+    schedule();
     return () => {
       cancelled = true;
+      wakePlacementRef.current = null;
       window.cancelAnimationFrame(rafId);
     };
   }, [enqueue, forwardedShortcuts, shortcutsSignature]);

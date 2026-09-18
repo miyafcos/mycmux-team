@@ -7,11 +7,18 @@ import { agentCloseDialogOptions } from "./agentCloseDialog";
 export interface PaneCloseConfirmOptions {
   /** Shown in the body when a workspace is closed, so the target is unambiguous. */
   workspaceName?: string;
+  /**
+   * Closing a window: how many other windows stay open. The two outcomes read
+   * nothing alike — closing the last window is quitting, and everything in it
+   * comes back next launch, while closing one of several ends the work in it
+   * for good — so the question has to say which one it is asking.
+   */
+  peerWindowCount?: number;
 }
 
 export async function confirmPaneClose(
   panes: readonly Pane[],
-  scope: "pane" | "workspace",
+  scope: "pane" | "workspace" | "window",
   options: PaneCloseConfirmOptions = {},
 ): Promise<boolean> {
   const metadata = usePaneMetadataStore.getState().metadata;
@@ -28,15 +35,23 @@ export async function confirmPaneClose(
     : victims.length > 0
       ? paneCloseImpactMessage(victims)
     : "開いているペインは、まとめて終了します。";
+  const peers = options.peerWindowCount ?? 0;
+  const outcome = scope !== "window"
+    ? ""
+    : peers > 0
+      ? `\nこのウィンドウの中のものは、次に起動しても戻りません（他の ${peers} 個のウィンドウはそのまま動きます）。`
+      : "\n次に起動したときに、いまの状態から再開できます。";
   const named = scope === "workspace" && options.workspaceName
     ? `ワークスペース「${options.workspaceName}」\n${body}`
-    : body;
+    : `${body}${outcome}`;
 
   return confirm(named, {
     ...(scope === "pane"
       ? agentCloseDialogOptions("このタブを閉じます")
       : {
-          title: "このワークスペースを閉じます",
+          title: scope === "window"
+            ? peers > 0 ? "このウィンドウを閉じます" : "mycmux を終了します"
+            : "このワークスペースを閉じます",
           kind: "warning" as const,
           okLabel: "閉じる",
           cancelLabel: "やめる",

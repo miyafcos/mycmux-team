@@ -350,6 +350,22 @@ impl WindowRegistry {
         self.bump();
     }
 
+    /// Ids some live window still holds: what it published, plus what is
+    /// queued for a window that has not adopted it yet.
+    ///
+    /// Only the ids, because the save path asks this on every write and the
+    /// values are whole workspaces.
+    pub fn held_workspace_ids(&self) -> std::collections::HashSet<String> {
+        let mut ids = std::collections::HashSet::new();
+        for entry in self.fragments.iter() {
+            ids.extend(workspace_config_ids(&entry.value().workspaces));
+        }
+        for entry in self.pending_adoptions.iter() {
+            ids.extend(workspace_config_ids(entry.value()));
+        }
+        ids
+    }
+
     /// Labels the registry still holds state for (fragments, queues or
     /// assignments) — the input to orphan reconciliation.
     pub fn known_windows(&self) -> Vec<String> {

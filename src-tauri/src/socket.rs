@@ -456,7 +456,7 @@ pub fn socket_response(
     Ok(())
 }
 
-async fn await_frontend_response(
+pub(crate) async fn await_frontend_response(
     pending_requests: &DashMap<usize, oneshot::Sender<SocketResponse>>,
     id: usize,
     rx: oneshot::Receiver<SocketResponse>,
@@ -775,6 +775,19 @@ async fn handle_connection(
                             let _ = writer.write_all(response_json.as_bytes()).await;
                             let _ = writer.write_all(b"\n").await;
                             let _ = writer.flush().await;
+                            continue;
+                        }
+                        #[cfg(feature = "e2e")]
+                        if crate::e2e::handles(&cmd) {
+                            let response = crate::e2e::dispatch(
+                                &app,
+                                state.pending_requests.as_ref(),
+                                id,
+                                &cmd,
+                                &args,
+                            )
+                            .await;
+                            let _ = write_json_line(&mut writer, &response).await;
                             continue;
                         }
                         let store = &app.state::<crate::AppState>().session_state_store;
