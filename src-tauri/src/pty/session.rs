@@ -139,7 +139,7 @@ pub struct ScrollbackSnapshot {
     pub end_offset: u64,
 }
 
-/// PTY output published to remote WebSocket subscribers.
+/// PTY output published to broadcast subscribers.
 /// Offsets are absolute byte positions in the session's output stream
 /// (the same space as `ScrollbackSnapshot::{start,end}_offset`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -596,7 +596,10 @@ impl PtySession {
             }
         });
 
-        // Create broadcast channel and scrollback for remote clients
+        // Scrollback backs get_session_scrollback and resume. The broadcast
+        // channel has had no subscriber since the built-in phone server was
+        // removed (2026-09); the send site is guarded by receiver_count(), so
+        // an idle channel costs nothing and a future reader can attach.
         let (broadcast_tx, _) = broadcast::channel::<OutputChunk>(256);
         let (initial_scrollback, initial_scrollback_end) = initialize_scrollback(&preload);
         let scrollback = Arc::new(Mutex::new(initial_scrollback));
@@ -864,8 +867,8 @@ impl PtySession {
                         #[cfg(debug_assertions)]
                         let send_micros = send_start.elapsed().as_micros();
 
-                        // Also send to broadcast for remote clients, keeping
-                        // the absolute offsets the desktop path already has.
+                        // Also feed any broadcast subscriber, keeping the
+                        // absolute offsets the desktop path already has.
                         if broadcast_tx_clone.receiver_count() > 0 {
                             let _ = broadcast_tx_clone.send(OutputChunk {
                                 data: chunk,

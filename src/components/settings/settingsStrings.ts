@@ -1,6 +1,11 @@
+// スマホから使う画面。mycmux 内蔵のモバイル UI は 2026-09 に廃止し、
+// 入口は iPhone アプリ「ポケットmycmux」(同じ URL の PWA) に一本化した。
 export const settingsStrings = {
-  remoteTabLabel: "スマホ・リモート操作",
-  remoteDescription: "スマホや別のブラウザから、今このPCで開いている端末を操作します。セーブポイントとは別の機能です。",
+  pocketTabLabel: "スマホから使う",
+  pocketDescription: "iPhone の「ポケットmycmux」から、このPCのセッションを見て指示を送ります。QRを読むとブラウザで開きます (ホーム画面に追加すればアプリのように使えます)。",
+  pocketUnreachableNote: "配信はされていますが、いま応答がありません。ポケットmycmux のサーバが止まっている可能性があります。",
+  pocketMissingHeading: "このPCからポケットmycmux が配信されていません。",
+  pocketMissingBody: "ポケットmycmux のサーバを起動し、Tailscale で /pocket を公開すると、ここにQRが出ます。",
 } as const;
 
 // 委譲を見守る機能の画面語。内部の dispatchWatchdog* 識別子とは分ける。

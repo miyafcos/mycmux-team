@@ -68,7 +68,7 @@ fn is_shell_process(name: &str) -> bool {
     )
 }
 
-/// Shared metadata store accessible from remote server.
+/// Shared metadata store, read by the socket API and the live brief.
 pub type MetadataStore = Arc<DashMap<String, PtyMetadata>>;
 
 pub fn new_metadata_store() -> MetadataStore {

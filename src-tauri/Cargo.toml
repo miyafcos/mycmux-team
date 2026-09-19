@@ -1,6 +1,6 @@
 [package]
 name = "mycmux"
-version = "0.75.0"
+version = "0.76.1"
 description = "mycmux - AI agent terminal workspace"
 authors = ["miyafcos"]
 edition = "2021"
@@ -58,16 +58,15 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # it a minimal PATH. See crates/crsm-core/VENDOR.md.
 crsm-core = { path = "crates/crsm-core" }
 
-# Remote terminal (WebSocket server for iPhone access)
-axum = { version = "0.8", features = ["ws"] }
+# QR for the phone entry in settings. The built-in phone server it used to
+# serve was removed in 2026-09 along with axum/rust-embed/futures-util,
+# which nothing else depended on.
 qrcode = { version = "0.14", default-features = false }
-rust-embed = "8"
 uuid = { version = "1", features = ["v4"] }
 rand = "0.8.5"
 hex = "0.4"
 base64 = "0.22"
 sha2 = "0.10"
-futures-util = "0.3"
 tauri-plugin-dialog = "2.7.0"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"

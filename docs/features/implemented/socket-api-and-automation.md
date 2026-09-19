@@ -24,11 +24,11 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 
 ## 認証 (2026-08-09 追加)
 
-ループバックは**認可の境界ではない** — 同じ PC 上のどのユーザーセッションのどのプロセスからも届くため、従来はローカルの任意プロセスが pane spawn / send_text / close を叩けました。remote サーバと同じ姿勢に揃えて、ローカルソケットにもトークン認証を入れています。
+ループバックは**認可の境界ではない** — 同じ PC 上のどのユーザーセッションのどのプロセスからも届くため、従来はローカルの任意プロセスが pane spawn / send_text / close を叩けました。そのためローカルソケットにもトークン認証を入れています。
 
 - mycmux は起動のたびに 32 バイト乱数を hex 化した**プロセス固有トークン**を `~/.mycmux/mycmux.token` へ書き出す (ポートファイルより先に書く)。前回起動のトークンは使えない
 - 呼び出し側は毎リクエストの JSON トップレベルに `"token": "<ファイルの中身>"` を入れる。`status.subscribe` / `status.snapshot` のフィードフレームも同じ
-- 検証は定数時間比較 (`remote::auth::validate_token`)。不一致・欠落なら `{"ok":false,"error":"unauthorized"}` を返して即切断する。`token` フィールドは検証後に取り除かれ、フロントエンドにもログにも渡らない
+- 検証は定数時間比較 (`socket.rs` の `validate_token`)。不一致・欠落なら `{"ok":false,"error":"unauthorized"}` を返して即切断する。`token` フィールドは検証後に取り除かれ、フロントエンドにもログにも渡らない
 - 拒否は diag.log に記録するが、リトライループで 1MB ログを潰さないよう**60秒に1行 + 抑止件数**にまとめる
 - **逃げ道**: 未対応の外部ツールがある場合は、mycmux を `MYCMUX_SOCKET_AUTH=off` の環境で起動すると認証を無効化できる (起動時に diag.log へ警告を残し、紛らわしい古いトークンファイルは削除する)
 - 同梱の消費者 (`scripts/mycmux_agent_cli.py`・`scripts/status_feed_probe.py`・`scripts/mycmux_doctor_lite.py`) はトークンファイルがあれば自動で添付し、無ければ従来どおり素で送る (旧バージョンの mycmux とも話せる)

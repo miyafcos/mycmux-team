@@ -56,8 +56,6 @@ import {
 import { useEffectiveMediaActive } from "../../stores/compositionStore";
 import { focusController } from "../../lib/focusController";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
-import { message } from "@tauri-apps/plugin-dialog";
-import { listen } from "@tauri-apps/api/event";
 import { tabHasPty } from "../../lib/tabLifecycle";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
 import { confirmPaneClose } from "../../lib/paneCloseConfirmation";
@@ -708,36 +706,6 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     setupOpen: showSetup,
     hasCreatedWorkspace,
   });
-
-  // Surface backend remote-server failures (port bind, token validation, etc.)
-  // The Rust side already emits "remote-error"; without a listener the Settings →
-  // Remote panel would just sit blank with no way to know it failed.
-  useEffect(() => {
-    // Multi-window (Phase 3a): "remote-error" is a broadcast emit, and the
-    // remote server is a process-wide singleton. Without this guard every open
-    // window would pop its own modal for the same failure.
-    if (!isMainWindow()) return;
-
-    // Capture the listen() promise itself (not its resolved value) so cleanup
-    // can chain onto it regardless of whether it resolves before or after
-    // unmount — assigning `unlisten` inside a separate .then() left a window
-    // where an unmount racing the IPC round-trip would never call it,
-    // leaking the backend listener. Mirrors App.tsx's unlistenMeta/
-    // unlistenWorkDone/unlistenDragDrop pattern.
-    const unlistenPromise = listen<string>("remote-error", (event) => {
-      const text = typeof event.payload === "string" && event.payload.length > 0
-        ? event.payload
-        : "Remote terminal encountered an unknown error.";
-      console.error("[remote-error]", text);
-      void message(text, { title: "mycmux Remote Terminal", kind: "error" });
-    });
-    unlistenPromise.catch((err) => {
-      console.error("Failed to subscribe to remote-error events", err);
-    });
-    return () => {
-      unlistenPromise.then((fn) => fn()).catch(() => {});
-    };
-  }, []);
 
   // One click, one workspace: the dialog only ever got its Launch button
   // pressed, so the button now does that directly and the dialog moved to the

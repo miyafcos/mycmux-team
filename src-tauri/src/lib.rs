@@ -15,8 +15,8 @@ mod events;
 mod history;
 mod livebrief;
 mod launcher_dirs;
+mod pocket;
 mod pty;
-mod remote;
 mod session_retention;
 mod session_state;
 mod socket;
@@ -311,8 +311,6 @@ pub fn run() {
     }
 
     let metadata_store = pty::monitor::new_metadata_store();
-    let remote_control = Arc::new(remote::RemoteControl::new());
-    let remote_sessions = Arc::new(remote::session::RemoteSessionManager::new());
 
     let session_state_store = session_state::SessionStateStore::new();
     let status_feed = status_feed::StatusFeed::new(session_state_store.clone());
@@ -357,9 +355,6 @@ pub fn run() {
             pending_requests: Arc::new(dashmap::DashMap::new()),
             next_id: std::sync::atomic::AtomicUsize::new(1),
         })
-        .manage(remote_control)
-        .manage(remote_sessions)
-        .manage(remote::RemoteServerRuntime::new())
         .manage(commands::quit::QuitCoordinator::new())
         .manage(usage::UsageState::new())
         .manage(cli_accounts::login_watch::LoginRegistry::default())
@@ -541,12 +536,7 @@ pub fn run() {
             commands::cli_accounts::begin_cli_login,
             commands::cli_accounts::cancel_cli_login,
             cli_accounts::resolve_cli_account_orphan,
-            remote::get_remote_info,
-            remote::rotate_remote_token,
-            remote::get_remote_bind_all,
-            remote::set_remote_bind_all,
-            remote::get_remote_enabled,
-            remote::set_remote_enabled,
+            pocket::get_pocket_entry,
             status_feed::get_session_status_snapshot,
             socket::socket_response,
         ])
@@ -657,34 +647,6 @@ pub fn run() {
             }
 
             socket::start_socket_listener(app_handle.clone());
-            let remote_control = app.state::<Arc<remote::RemoteControl>>().inner().clone();
-            let remote_sessions = app
-                .state::<Arc<remote::session::RemoteSessionManager>>()
-                .inner()
-                .clone();
-            let remote_runtime = app.state::<remote::RemoteServerRuntime>();
-            // S-2: read the persisted LAN-bind preference once at startup;
-            // changes to this setting take effect on next launch (see
-            // remote::set_remote_bind_all).
-            let remote_settings = db::storage::load(&app_handle)
-                .map(|data| (data.settings.remote_enabled, data.settings.remote_bind_all))
-                .unwrap_or((false, false));
-            if remote_settings.0 {
-                if let Err(error) = tauri::async_runtime::block_on(remote_runtime.enable(
-                    app_handle.clone(),
-                    state.session_manager.clone(),
-                    ms,
-                    remote_control,
-                    remote_sessions.clone(),
-                    remote_settings.1,
-                )) {
-                    crate::diag_warn!("remote", "Failed to start enabled remote server: {error}");
-                    // Legacy users default to enabled, so a bind failure (e.g. port
-                    // in use) must reach the UI — AppShell listens for this event.
-                    use tauri::Emitter;
-                    let _ = app_handle.emit("remote-error", format!("Failed to start remote server: {error}"));
-                }
-            }
             // Configure startup window appearance; shutdown belongs to the runtime hook.
             if let Some(main_window) = app.get_webview_window("main") {
                 if let Some(icon) = app.default_window_icon().cloned() {

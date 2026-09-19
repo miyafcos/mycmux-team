@@ -64,7 +64,7 @@ def test_local_socket_requires_a_token_from_every_caller() -> None:
         'error: "unauthorized",',
         'const SOCKET_TOKEN_FILE: &str = "mycmux.token";',
         'const SOCKET_AUTH_ENV: &str = "MYCMUX_SOCKET_AUTH";',
-        "crate::remote::auth::validate_token(provided, expected)",
+        "validate_token(provided, expected)",
     ]:
         assert_contains(socket_rs, snippet, "src-tauri/src/socket.rs")
 

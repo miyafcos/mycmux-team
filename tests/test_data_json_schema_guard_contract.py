@@ -64,14 +64,10 @@ def test_child_window_diagnostic_copy() -> None:
     assert "対応していない保存データ" in source
 
 
-def test_remote_setting_is_persisted_before_runtime_side_effects() -> None:
-    source = read_repo_text("src-tauri/src/remote/mod.rs")
-    body = source[source.index("async fn apply_remote_enabled_transition") : source.index(
-        "#[tauri::command(async)]\npub async fn set_remote_enabled"
-    )]
-    update = body.index("crate::db::storage::update")
-    assert update < body.index("apply_runtime(bind_all).await")
-    assert "data.settings.remote_enabled = previous_enabled" in body
+# The former test_remote_setting_is_persisted_before_runtime_side_effects
+# guarded the built-in phone server's enable toggle, which was removed with
+# that server in 2026-09. The phone entry is read-only (no persisted setting),
+# so there is no persist-before-side-effect ordering left to guard.
 
 
 def test_round_three_terminal_errors_are_typed_and_non_retryable() -> None:
@@ -86,12 +82,12 @@ def test_round_three_terminal_errors_are_typed_and_non_retryable() -> None:
 
 def test_round_four_terminal_writers_project_typed_errors_into_quarantine() -> None:
     coordinator = read_repo_text("src/lib/workspacePersistenceCoordinator.ts")
-    remote = read_repo_text("src/components/settings/tabs/RemoteTab.tsx")
     ailog = read_repo_text("src/stores/ailogStore.ts")
     storage = read_repo_text("src-tauri/src/db/storage.rs")
 
+    # RemoteTab was the third writer here until the built-in phone server was
+    # removed (2026-09); its replacement, PocketTab, writes no setting.
     assert "quarantineTerminalPersistentStorageError" in coordinator
-    assert "quarantineTerminalPersistentStorageError" in remote
     assert "quarantineTerminalPersistentStorageError" in ailog
     constructor = storage.index("fn unsupported_platform")
     assert "#[cfg(any(test, not(windows)))]" in storage[max(0, constructor - 80) : constructor]
@@ -111,12 +107,10 @@ def test_retention_reprobes_before_any_gc_and_logs_a_durable_abort() -> None:
 
 
 def test_round_three_writer_commands_preserve_typed_storage_errors() -> None:
-    remote = read_repo_text("src-tauri/src/remote/mod.rs")
+    # The remote server's set_remote_enabled was the bool-returning half of
+    # this contract; it went away with that server in 2026-09.
     ailog = read_repo_text("src-tauri/src/commands/ailog.rs")
-    assert "Result<bool, crate::db::storage::PersistentStorageError>" in remote
     assert "Result<f64, crate::db::storage::PersistentStorageError>" in ailog
-    assert "previous_enabled" in remote
-    assert "apply_runtime" in remote
 
 
 def test_test_mutex_is_process_scoped_and_dead_preflight_helpers_are_test_only() -> None:

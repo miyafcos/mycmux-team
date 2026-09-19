@@ -577,13 +577,6 @@ pub struct AppSettings {
     /// switch for Phase B.
     #[serde(default = "default_true")]
     pub osc7_tracking_enabled: bool,
-    /// When true, the remote terminal server binds `0.0.0.0` (reachable from
-    /// the LAN/Tailscale). When false (the default), it binds `127.0.0.1`
-    /// only. Read once at startup; a change takes effect on next app launch.
-    #[serde(default)]
-    pub remote_bind_all: bool,
-    #[serde(default = "default_true")]
-    pub remote_enabled: bool,
     #[serde(default = "default_pet_display_mode")]
     pub pet_display_mode: String,
     #[serde(default = "default_pet_new_ws_mode")]
@@ -621,8 +614,6 @@ impl Default for AppSettings {
             reply_draft_suggestions_enabled: None,
             dirty_save_mode: true,
             osc7_tracking_enabled: true,
-            remote_bind_all: false,
-            remote_enabled: false,
             pet_display_mode: default_pet_display_mode(),
             pet_new_ws_mode: default_pet_new_ws_mode(),
             pet_disabled: Vec::new(),
@@ -633,10 +624,11 @@ impl Default for AppSettings {
     }
 }
 
-// NOTE: no `deny_unknown_fields` here on purpose. Retired keys (e.g. the
-// former `pinned_roots`, dropped with the file-explorer sidebar) can still be
-// present in an existing data.json; serde must ignore them rather than fail
-// the whole load.
+// NOTE: no `deny_unknown_fields` here on purpose. Retired keys (the former
+// `pinned_roots`, dropped with the file-explorer sidebar; `remote_enabled` and
+// `remote_bind_all`, dropped with the built-in phone server in 2026-09) can
+// still be present in an existing data.json; serde must ignore them rather
+// than fail the whole load.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistentData {
     #[serde(default = "default_schema_version")]
@@ -1389,29 +1381,22 @@ mod tests {
         );
     }
 
+    /// Every install that ran the built-in phone server still has its two
+    /// keys in data.json. They were dropped from `AppSettings` in 2026-09, so
+    /// the load must ignore them instead of failing the whole file.
     #[test]
-    fn remote_enabled_defaults_true_only_for_legacy_data() {
+    fn retired_remote_keys_do_not_fail_the_load() {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir.path().join("data.json");
 
-        let new_install = load_from_path(&path).unwrap();
-        assert!(!new_install.settings.remote_enabled);
-
         fs::write(
             &path,
-            r#"{"schema_version":1,"workspaces":[],"settings":{"font_size":14,"theme_id":"yoru-cafe"}}"#,
+            r#"{"schema_version":1,"workspaces":[],"settings":{"font_size":17,"theme_id":"yoru-cafe","remote_enabled":true,"remote_bind_all":true}}"#,
         )
         .unwrap();
-        let legacy_install = load_from_path(&path).unwrap();
-        assert!(legacy_install.settings.remote_enabled);
 
-        fs::write(
-            &path,
-            r#"{"schema_version":1,"workspaces":[],"settings":{"font_size":14,"theme_id":"yoru-cafe","remote_enabled":false}}"#,
-        )
-        .unwrap();
-        let explicit_opt_out = load_from_path(&path).unwrap();
-        assert!(!explicit_opt_out.settings.remote_enabled);
+        let loaded = load_from_path(&path).unwrap();
+        assert_eq!(loaded.settings.font_size, 17);
     }
 
     #[test]

@@ -12,8 +12,8 @@
 //!                   list + active selection. The **main window is still the
 //!                   sole `data.json` writer**; its `buildSnapshot` appends
 //!                   every non-main fragment so a torn-out workspace never
-//!                   disappears from `data.json` (which the phone remote reads
-//!                   for workspace names),
+//!                   disappears from `data.json` (the file every launch
+//!                   restores from),
 //! - `pending_adoptions`  window label → workspaces waiting to be picked up by
 //!                   that window on boot (tear-out) or on merge-back (child
 //!                   close / crash).

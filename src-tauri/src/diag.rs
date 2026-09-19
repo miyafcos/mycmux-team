@@ -80,8 +80,8 @@ pub fn format_panic_report(payload: &str, location: Option<&str>) -> String {
 
 /// One-line "log to stderr **and** to diag.log" for error paths.
 ///
-/// `crate::diag_warn!("remote", "Failed to bind {addr}: {e}")` prints
-/// `[remote] Failed to bind ...` on stderr (dev builds) and appends the same
+/// `crate::diag_warn!("socket", "Failed to bind {addr}: {e}")` prints
+/// `[socket] Failed to bind ...` on stderr (dev builds) and appends the same
 /// text with a timestamp to diag.log (release builds have no console).
 /// Only use it on low-frequency paths — diag.log rotates at 1 MiB.
 #[macro_export]
@@ -131,8 +131,8 @@ mod tests {
     #[test]
     fn tags_module_lines_so_diag_log_says_where_the_failure_came_from() {
         assert_eq!(
-            format_module_line("remote", "Failed to bind 0.0.0.0:7682"),
-            "[remote] Failed to bind 0.0.0.0:7682"
+            format_module_line("socket", "Failed to bind 127.0.0.1:0"),
+            "[socket] Failed to bind 127.0.0.1:0"
         );
     }
 

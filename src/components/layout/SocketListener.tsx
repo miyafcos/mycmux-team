@@ -1954,8 +1954,8 @@ export function useWorkspacePersist() {
       // never overwrites live values; it only fills gaps.
       // Multi-window (Phase 3b): main is still the sole data.json writer, but
       // after a tear-out it no longer holds every workspace. Appending the
-      // other windows' published fragments keeps data.json (and the phone
-      // remote, which reads it for workspace names) complete.
+      // other windows' published fragments keeps data.json complete, which is
+      // what the next launch restores from.
       const serialized = serializePersistentWorkspaceSet({
         sourceWorkspaces: sourceWorkspaces ?? state.workspaces,
         agentMappings,

@@ -28,8 +28,9 @@ def _squeeze(text: str) -> str:
 def test_rust_profile_isolation_uses_the_runtime_directory() -> None:
     targets = [
         "src-tauri/src/commands/session_mapping.rs",
-        "src-tauri/src/remote/auth.rs",
-        "src-tauri/src/remote/mod.rs",
+        # The socket token took over this contract from remote/auth.rs when
+        # the built-in phone server was removed (2026-09).
+        "src-tauri/src/socket.rs",
         "src-tauri/src/commands/artifact/mod.rs",
         "src-tauri/src/commands/online.rs",
         "src-tauri/src/commands/online_publish.rs",
@@ -97,15 +98,10 @@ def test_profile_launcher_and_transcript_fallbacks_are_fail_closed() -> None:
     assert transcripts.count("if crate::test_profile::is_active() {") >= 3
 
 
-def test_profile_remote_binds_ephemeral_port_and_persists_the_bound_value() -> None:
-    remote = read_repo_text("src-tauri/src/remote/mod.rs")
-    script = read_repo_text("scripts/test-profile.ps1")
-
-    assert contains_ignoring_layout(remote, "unwrap_or(if profile_active { 0 } else { 7682 })")
-    assert contains_ignoring_layout(remote, "listener.local_addr()")
-    assert contains_ignoring_layout(remote, "control.set_port(port);")
-    assert contains_ignoring_layout(remote, 'path.push("remote.port")')
-    assert "MYCMUX_REMOTE_PORT" in script
+# test_profile_remote_binds_ephemeral_port_and_persists_the_bound_value used
+# to guard the built-in phone server's per-profile port. That server was
+# removed in 2026-09; the only listener left is the socket API, whose port
+# file already lives under the profile runtime dir (checked above).
 
 
 def test_profile_intervention_audit_uses_runtime_directory() -> None:
@@ -151,11 +147,10 @@ def test_profile_fresh_start_rotates_all_mutable_runtime_state() -> None:
         assert f"'{path}'" in script
 
 
-def test_profile_clone_ailog_copies_sqlite_sidecars_and_scrubs_remote_port() -> None:
+def test_profile_clone_ailog_copies_sqlite_sidecars() -> None:
     script = read_repo_text("scripts/test-profile.ps1")
 
     assert "foreach ($suffix in @('', '-wal', '-shm'))" in script
-    assert "MYCMUX_REMOTE_PORT" in script
 
 
 def test_profile_gets_its_own_webview2_browser_process() -> None:

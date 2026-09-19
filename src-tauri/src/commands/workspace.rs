@@ -130,8 +130,6 @@ fn merge_persistent_data(
     disk.workspaces = workspaces;
     // These settings have no frontend store or setter, so the frontend's
     // persistence payload omits them; preserve their Rust-owned values.
-    let remote_bind_all = disk.settings.remote_bind_all;
-    let remote_enabled = disk.settings.remote_enabled;
     let dirty_save_mode = disk.settings.dirty_save_mode;
     let osc7_tracking_enabled = disk.settings.osc7_tracking_enabled;
     // Frontend settings payload has no store for this; dedicated ailog
@@ -139,8 +137,6 @@ fn merge_persistent_data(
     let ailog_usd_jpy_rate = disk.settings.ailog_usd_jpy_rate;
     let ailog_mirror_full_text_root = disk.settings.ailog_mirror_full_text_root.clone();
     disk.settings = data.settings;
-    disk.settings.remote_bind_all = remote_bind_all;
-    disk.settings.remote_enabled = remote_enabled;
     disk.settings.dirty_save_mode = dirty_save_mode;
     disk.settings.osc7_tracking_enabled = osc7_tracking_enabled;
     disk.settings.ailog_usd_jpy_rate = ailog_usd_jpy_rate;
@@ -462,13 +458,11 @@ mod tests {
     #[test]
     fn merge_persistent_data_preserves_rust_owned_settings() {
         let mut disk = PersistentData::default();
-        disk.settings.remote_bind_all = true;
         disk.settings.dirty_save_mode = true;
         disk.settings.osc7_tracking_enabled = false;
         disk.settings.ailog_usd_jpy_rate = 155.0;
         disk.settings.ailog_mirror_full_text_root = Some("X:\\archive".to_string());
         let mut incoming = PersistentData::default();
-        incoming.settings.remote_bind_all = false;
         incoming.settings.dirty_save_mode = false;
         incoming.settings.osc7_tracking_enabled = true;
         incoming.settings.ailog_usd_jpy_rate = 150.0;
@@ -477,7 +471,6 @@ mod tests {
 
         merge_persistent_data(&mut disk, incoming, &HashSet::new());
 
-        assert!(disk.settings.remote_bind_all);
         assert!(disk.settings.dirty_save_mode);
         assert!(!disk.settings.osc7_tracking_enabled);
         assert_eq!(disk.settings.ailog_usd_jpy_rate, 155.0);

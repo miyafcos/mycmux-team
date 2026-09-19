@@ -163,7 +163,7 @@ pub fn release_workspaces(
 }
 
 /// Read by main's `buildSnapshot` so `data.json` keeps every window's
-/// workspaces (the phone remote reads that file for workspace names).
+/// workspaces (one missing there is gone on the next launch).
 #[tauri::command(async)]
 pub fn get_window_fragments(state: State<'_, AppState>) -> Result<Vec<WindowFragment>, String> {
     Ok(state.window_registry.fragments())

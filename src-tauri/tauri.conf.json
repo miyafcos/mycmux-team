@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "mycmux",
-  "version": "0.75.0",
+  "version": "0.76.1",
   "identifier": "com.miyazaki.mycmux",
   "build": {
     "frontendDist": "../dist",
@@ -44,7 +44,7 @@
     "targets": "all",
     "category": "Utility",
     "shortDescription": "Cross-platform terminal workspace manager",
-    "longDescription": "mycmux is an AI agent terminal workspace built with Tauri and React. Features include workspaces, split panes, remote terminal access, and a socket API for automation.",
+    "longDescription": "mycmux is an AI agent terminal workspace built with Tauri and React. Features include workspaces, split panes, savepoints, and a socket API for automation.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -110,8 +110,8 @@ mod tests {
 
         for child in [
             "pane-sessions",
-            "remote-token",
-            "remote.port",
+            "mycmux.port",
+            "mycmux.token",
             "savepoint.json",
             "savepoints",
         ] {

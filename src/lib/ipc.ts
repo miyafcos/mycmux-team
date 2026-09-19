@@ -27,7 +27,6 @@ interface DuplicateAgentSessionArgs {
   sessionId: string;
   cwd?: string;
 }
-interface EnabledArgs { enabled: boolean }
 interface CreateSessionArgs {
   sessionId: string;
   command: string;
@@ -875,49 +874,23 @@ export async function crsmCreateHandoff(
   } satisfies CrsmCreateHandoffArgs);
 }
 
-// ─── Remote access commands ─────────────────────────────────────────────────
+// ─── Phone entry (ポケットmycmux) ────────────────────────────────────────────
 
-export interface RemoteClientInfo {
-  id: number;
-  peer_addr: string;
-  connected_at: number;
-  attached_session_id?: string | null;
-}
-
-export interface RemoteInfo {
+export interface PocketEntry {
+  /** URL the phone should open. Empty when nothing is being served. */
   url: string;
-  token_suffix: string;
+  /** QR for `url`. Empty when `url` is empty. */
   qr_svg: string;
-  connected_clients: RemoteClientInfo[];
-}
-
-export async function getRemoteInfo(): Promise<RemoteInfo> {
-  return invoke<RemoteInfo>("get_remote_info");
-}
-
-export async function rotateRemoteToken(): Promise<RemoteInfo> {
-  return invoke<RemoteInfo>("rotate_remote_token");
+  /** False with a non-empty `url`: published, but not answering right now. */
+  reachable: boolean;
 }
 
 /**
- * Whether the remote terminal server should bind 0.0.0.0 (LAN/Tailscale
- * reachable) instead of 127.0.0.1-only. Persisted; a change takes effect on
- * the next app restart.
+ * Where the phone app is reachable, read from `tailscale serve` each time.
+ * mycmux does not serve the app itself — it only points at it.
  */
-export async function getRemoteBindAll(): Promise<boolean> {
-  return invoke<boolean>("get_remote_bind_all");
-}
-
-export async function setRemoteBindAll(enabled: boolean): Promise<boolean> {
-  return invoke<boolean>("set_remote_bind_all", { enabled } satisfies EnabledArgs);
-}
-
-export async function getRemoteEnabled(): Promise<boolean> {
-  return invoke<boolean>("get_remote_enabled");
-}
-
-export async function setRemoteEnabled(enabled: boolean): Promise<boolean> {
-  return invoke<boolean>("set_remote_enabled", { enabled } satisfies EnabledArgs);
+export async function getPocketEntry(): Promise<PocketEntry> {
+  return invoke<PocketEntry>("get_pocket_entry");
 }
 
 export interface AgentSessionMapping {

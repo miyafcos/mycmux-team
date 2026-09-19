@@ -163,8 +163,10 @@ def test_quit_app_is_unreachable_from_a_child_window_close() -> None:
     assert "for code in [0, i32::MAX]" in registry
     assert "assert!(registry.begin_shutdown(2, Some(code)))" in registry
     assert "assert!(!registry.begin_shutdown(2, Some(code)))" in registry
+    # Two kill_all sites until the built-in phone server's session manager was
+    # removed in 2026-09; the PTY session manager is the only one left.
     kills = [match.start() for match in re.finditer(r"\.kill_all\(", lifecycle)]
-    assert len(kills) == 2
+    assert len(kills) == 1
     assert all(event < live < prevent < latch < kill for kill in kills)
     assert latch < lifecycle.index("flush_all_scrollbacks") < kills[0]
     assert latch < lifecycle.index("revoke_all()")
@@ -245,10 +247,11 @@ def test_child_boot_probe_reports_capability_failures() -> None:
 def test_shell_level_singletons_are_main_window_only() -> None:
     app_shell = read_repo_text(APP_SHELL)
 
+    # 'listen<string>("remote-error"' was a third anchor until the built-in
+    # phone server (and its error event) were removed in 2026-09.
     for anchor in [
         "preloadCrsmSessions();",
         "void useOnlineSavepointStore.getState().refresh();",
-        'listen<string>("remote-error"',
     ]:
         anchor_index = app_shell.index(anchor)
         guard_index = app_shell.rindex(MAIN_ONLY_GUARD, 0, anchor_index)
@@ -318,7 +321,7 @@ def test_all_windows_publish_fragments_and_only_role_owner_writes_data_json() ->
 
 
 def test_leader_snapshot_merges_the_other_windows_workspaces() -> None:
-    """data.json losing a torn-out workspace also breaks the phone remote."""
+    """data.json losing a torn-out workspace also breaks the phone app."""
     merge = read_repo_text(WINDOW_FRAGMENTS)
     for snippet in [
         "export function mergeWindowFragmentWorkspaces(",

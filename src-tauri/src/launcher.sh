@@ -788,6 +788,12 @@ __MYCMUX_LAUNCH_EFFORT=""
 # コマンドラインにそのまま載る値なので、フラグと誤認されない形だけ通す。
 # src/lib/agentCatalog.ts の sanitizeLaunchSpecValue と同じ規則。
 __launch_spec_value() {
+  # `[A-Za-z0-9]` in a bracket expression is collation-dependent. Under a
+  # UTF-8 locale bash folds characters into that range — U+212A KELVIN SIGN
+  # reads as `K` — so a non-ASCII model name walked straight through both
+  # checks below and landed on the command line. Pin the C locale for the
+  # length of this function so the ranges mean exactly ASCII.
+  local LC_ALL=C
   local value="$1"
   # 前後の空白を落としてから見る (launcher.ps1 の .Trim() と揃える)
   value="${value#"${value%%[![:space:]]*}"}"

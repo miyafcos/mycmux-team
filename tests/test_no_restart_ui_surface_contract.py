@@ -106,15 +106,17 @@ def test_terminal_search_notifications_and_settings_surfaces_remain_wired() -> N
         ],
     )
     # The flat SettingsMenu popover was replaced by the tabbed SettingsDialog
-    # (2026-07-13); the Remote and notification surfaces now live in tab files.
+    # (2026-07-13); the phone and notification surfaces now live in tab files.
+    # RemoteTab (the built-in phone server's token panel) became PocketTab when
+    # that server was removed in 2026-09 — the tab now only points at the
+    # separate phone app, so there is no token or client list to assert.
     assert_snippets(
-        "src/components/settings/tabs/RemoteTab.tsx",
+        "src/components/settings/tabs/PocketTab.tsx",
         [
-            "const [remoteInfo, setRemoteInfo] = useState<RemoteInfo | null>(null);",
-            "const nextInfo = await rotateRemoteToken();",
-            "setRemoteMsg(`token を再生成しました。末尾: ${nextInfo.token_suffix}`);",
-            "setRemoteInfo(nextInfo);",
-            "remoteInfo.connected_clients.length === 0",
+            "const [entry, setEntry] = useState<PocketEntry | null>(null);",
+            "setEntry(await getPocketEntry());",
+            "dangerouslySetInnerHTML={{ __html: entry.qr_svg }}",
+            "settingsStrings.pocketMissingHeading",
         ],
     )
     assert_snippets(
@@ -127,7 +129,7 @@ def test_terminal_search_notifications_and_settings_surfaces_remain_wired() -> N
     )
 
 
-def test_savepoints_and_remote_control_have_separate_settings_destinations() -> None:
+def test_savepoints_and_the_phone_entry_have_separate_settings_destinations() -> None:
     assert_snippets(
         "src/components/settings/SettingsDialog.tsx",
         [
@@ -135,7 +137,7 @@ def test_savepoints_and_remote_control_have_separate_settings_destinations() -> 
             '| "savepoints"',
             '{ id: "savepoints", label: onlineStrings.settingsTabLabel }',
             'label: "接続"',
-            '{ id: "remote", label: settingsStrings.remoteTabLabel }',
+            '{ id: "pocket", label: settingsStrings.pocketTabLabel }',
             "onOpenOnlinePanel: () => void;",
             'activeTab === "savepoints"',
             "onOpenOnlinePanel();",
@@ -222,10 +224,10 @@ def test_savepoints_and_remote_control_have_separate_settings_destinations() -> 
         ],
     )
     assert_snippets(
-        "src/components/settings/tabs/RemoteTab.tsx",
+        "src/components/settings/tabs/PocketTab.tsx",
         [
-            "{settingsStrings.remoteTabLabel}",
-            "{settingsStrings.remoteDescription}",
+            "{settingsStrings.pocketTabLabel}",
+            "{settingsStrings.pocketDescription}",
         ],
     )
 

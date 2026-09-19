@@ -59,6 +59,9 @@ if (-not $Keep -and (Test-Path -LiteralPath $profileData -PathType Leaf)) {
 # The runtime dir carries all mutable profile state. Keeping it is how a
 # "fresh" machine quietly reattaches to something it should not know about.
 # `bin` is intentionally absent: it contains immutable launcher assets.
+# `remote.port`/`remote-token` are retired (the built-in phone server was
+# removed in 2026-09) but stay on the list so an older profile's leftovers
+# still get swept.
 $runtimeMutableState = @(
   'pane-sessions', 'sessions', 'mycmux.port', 'mycmux.token', 'remote.port', 'remote-token',
   'savepoint.json', 'savepoints',
@@ -133,7 +136,7 @@ New-Item -ItemType Directory -Force -Path $webviewFolder | Out-Null
 $launchScrubbed = @{}
 # Not $name: PowerShell variable names are case-insensitive, so that would
 # overwrite the $Name parameter and launch the wrong profile.
-foreach ($envKey in @('NO_COLOR', 'FORCE_COLOR', 'CLICOLOR', 'CLICOLOR_FORCE', 'TERM', 'TERM_PROGRAM', 'TERM_PROGRAM_VERSION', 'COLORTERM', 'MYCMUX_REMOTE_PORT')) {
+foreach ($envKey in @('NO_COLOR', 'FORCE_COLOR', 'CLICOLOR', 'CLICOLOR_FORCE', 'TERM', 'TERM_PROGRAM', 'TERM_PROGRAM_VERSION', 'COLORTERM')) {
   $item = Get-Item -LiteralPath "Env:$envKey" -ErrorAction SilentlyContinue
   if ($item) {
     $launchScrubbed[$envKey] = $item.Value

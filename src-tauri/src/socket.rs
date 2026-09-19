@@ -25,8 +25,8 @@ const STATUS_RECONCILE_INTERVAL: Duration = Duration::from_secs(90);
 /// Every process on the machine can reach 127.0.0.1, so the loopback peer check
 /// is not an authorization boundary — it only keeps the LAN out. Callers must
 /// additionally prove they can read this process's token file, which lives next
-/// to the port file. Same posture as the remote server (`remote/auth.rs`), but a
-/// separate secret with a separate lifetime: it is regenerated on every start.
+/// to the port file. Regenerated on every start, so a token captured from an
+/// earlier run cannot drive this one.
 const SOCKET_TOKEN_FILE: &str = "mycmux.token";
 /// Escape hatch for external consumers that have not been migrated yet.
 const SOCKET_AUTH_ENV: &str = "MYCMUX_SOCKET_AUTH";
@@ -117,7 +117,7 @@ impl SocketAuth {
         let Some(expected) = self.expected_token.as_deref() else {
             return true;
         };
-        provided.is_some_and(|provided| crate::remote::auth::validate_token(provided, expected))
+        provided.is_some_and(|provided| validate_token(provided, expected))
     }
 
     /// Log a rejection with enough detail to find the caller.
@@ -926,11 +926,27 @@ fn get_token_file_path() -> PathBuf {
     path
 }
 
-/// Generate a new 32-byte hex token (same shape as the remote token).
+/// Generate a new 32-byte hex token.
 fn generate_socket_token() -> String {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
+}
+
+/// Constant-time-ish comparison of a caller's token against ours.
+///
+/// Lived in `remote/auth.rs` until that module was removed (2026-09-19);
+/// the socket API is the only caller left, so it moved here rather than
+/// being deleted with it.
+fn validate_token(provided: &str, expected: &str) -> bool {
+    if provided.len() != expected.len() {
+        return false;
+    }
+    provided
+        .bytes()
+        .zip(expected.bytes())
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
 }
 
 /// Write a fresh per-process token. The file is rewritten on every start, so a

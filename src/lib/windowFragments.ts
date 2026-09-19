@@ -6,9 +6,9 @@ import { MAIN_WINDOW_LABEL } from "./windowContext";
  *
  * Main is the only window that writes `data.json`, but after a tear-out it no
  * longer holds every workspace. Persisting only its own list would drop the
- * torn-out ones from disk — and the phone remote reads that file for workspace
- * names (`remote/mod.rs`), so they would vanish there too. `buildSnapshot`
- * therefore appends every other window's last published fragment.
+ * torn-out ones from disk, and the next launch restores from that file, so
+ * they would be gone for good. `buildSnapshot` therefore appends every other
+ * window's last published fragment.
  *
  * Staleness is bounded by the publishing debounce (500ms, same as main's own
  * autosave); the final flush on a child's close happens before it releases, so

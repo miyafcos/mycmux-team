@@ -180,7 +180,7 @@ def test_backend_owned_settings_survive_a_snapshot_save() -> None:
     # explicitly or they revert to serde defaults on every save.
     workspace = read_repo_text("src-tauri/src/commands/workspace.rs")
     snapshot = read_repo_text("src/components/layout/SocketListener.tsx")
-    for field in ("remote_bind_all", "dirty_save_mode", "osc7_tracking_enabled"):
+    for field in ("dirty_save_mode", "osc7_tracking_enabled"):
         assert field not in snapshot, (
             f"{field} is now in buildSnapshot; drop it from the preserve list in workspace.rs"
         )

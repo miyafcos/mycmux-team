@@ -9,7 +9,7 @@ import { AutomationTab } from "./tabs/AutomationTab";
 import { ResumeTab } from "./tabs/ResumeTab";
 import { LauncherTab } from "./tabs/LauncherTab";
 import { SavepointsTab } from "./tabs/SavepointsTab";
-import { RemoteTab } from "./tabs/RemoteTab";
+import { PocketTab } from "./tabs/PocketTab";
 import { UsageTab } from "./tabs/UsageTab";
 import { KeybindingsTab } from "./tabs/KeybindingsTab";
 import { AppInfoTab } from "./tabs/AppInfoTab";
@@ -27,7 +27,7 @@ export type SettingsTabId =
   | "resume"
   | "launcher"
   | "savepoints"
-  | "remote"
+  | "pocket"
   | "usage"
   | "keybindings"
   | "appInfo";
@@ -42,8 +42,8 @@ interface SettingsSectionDef {
   tabs: SettingsTabDef[];
 }
 
-// Keep local history, asynchronous handoff, and live remote control as
-// separate destinations. They solve different user jobs and share no state.
+// Keep local history, asynchronous handoff, and the phone entry as separate
+// destinations. They solve different user jobs and share no state.
 const SETTINGS_SECTIONS: SettingsSectionDef[] = [
   {
     label: "表示",
@@ -65,7 +65,7 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
   },
   {
     label: "接続",
-    tabs: [{ id: "remote", label: settingsStrings.remoteTabLabel }],
+    tabs: [{ id: "pocket", label: settingsStrings.pocketTabLabel }],
   },
   {
     label: "アカウント",
@@ -246,7 +246,7 @@ export default function SettingsDialog({ closing = false, onClose, onOpenCrsmPal
                 }}
               />
             )}
-            {activeTab === "remote" && <RemoteTab />}
+            {activeTab === "pocket" && <PocketTab />}
             {activeTab === "usage" && <UsageTab />}
             {activeTab === "keybindings" && <KeybindingsTab />}
             {activeTab === "appInfo" && <AppInfoTab />}

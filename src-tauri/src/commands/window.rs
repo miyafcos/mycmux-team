@@ -517,9 +517,6 @@ pub fn handle_app_run_event(app: &AppHandle, event: tauri::RunEvent) {
     }
     state.session_manager.kill_all();
     state.hook_service.revoke_all();
-    if let Some(remote_sessions) = app.try_state::<Arc<crate::remote::session::RemoteSessionManager>>() {
-        remote_sessions.kill_all();
-    }
 }
 
 #[tauri::command]
