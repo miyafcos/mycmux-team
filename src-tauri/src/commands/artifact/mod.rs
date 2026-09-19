@@ -1,3 +1,4 @@
+mod local_path;
 mod markdown;
 mod markdown_preview;
 mod office;

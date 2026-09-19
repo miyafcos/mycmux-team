@@ -17,6 +17,7 @@ use std::path::{Component, Path, PathBuf};
 
 use comrak::nodes::{AstNode, NodeValue};
 use comrak::{format_html, parse_document, Arena, Options};
+use super::local_path::{is_safe_path_segment, normalize_local_path, starts_with_two_separators};
 use kuchikiki::traits::TendrilSink;
 use kuchikiki::{Attribute, ExpandedName, NodeData, NodeRef};
 
@@ -685,11 +686,6 @@ fn decoded_path_of(cleaned: &str) -> String {
     clean_target(&decode_file_uri(path))
 }
 
-fn starts_with_two_separators(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    bytes.len() >= 2 && matches!(bytes[0], b'/' | b'\\') && matches!(bytes[1], b'/' | b'\\')
-}
-
 fn looks_like_drive_path(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() >= 3
@@ -816,66 +812,6 @@ fn local_target_from(path: PathBuf, kind: TargetKind) -> Target {
         Some(normalized) => Target::Local(normalized.to_string_lossy().into_owned()),
         None => Target::Drop,
     }
-}
-
-/// Resolves `.` and `..` without touching the disk, and refuses a path that
-/// climbs above its own root or names a Windows device.
-fn normalize_local_path(path: &Path) -> Option<PathBuf> {
-    let mut normalized = PathBuf::new();
-    let mut depth = 0usize;
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if depth == 0 {
-                    continue;
-                }
-                normalized.pop();
-                depth -= 1;
-            }
-            Component::Normal(segment) => {
-                if !is_safe_path_segment(&segment.to_string_lossy()) {
-                    return None;
-                }
-                normalized.push(segment);
-                depth += 1;
-            }
-        }
-    }
-    (!normalized.as_os_str().is_empty()).then_some(normalized)
-}
-
-#[cfg(windows)]
-fn is_safe_path_segment(segment: &str) -> bool {
-    // A colon here is an alternate data stream or a drive relative path, and a
-    // reserved name is a device: opening either would not be reading a file.
-    if segment.contains(':') {
-        return false;
-    }
-    let stem = segment
-        .split('.')
-        .next()
-        .unwrap_or(segment)
-        .trim_end_matches([' ', '.'])
-        .to_ascii_uppercase();
-    if matches!(
-        stem.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
-    ) {
-        return false;
-    }
-    let is_numbered_device = |prefix: &str| {
-        stem.strip_prefix(prefix)
-            .is_some_and(|rest| rest.len() == 1 && rest.as_bytes()[0].is_ascii_digit())
-    };
-    !(is_numbered_device("COM") || is_numbered_device("LPT"))
-}
-
-#[cfg(not(windows))]
-fn is_safe_path_segment(segment: &str) -> bool {
-    !segment.is_empty()
 }
 
 // ---------------------------------------------------------------------------

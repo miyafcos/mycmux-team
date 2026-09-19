@@ -51,6 +51,9 @@ describe("PDF artifacts", () => {
     expect(markup).not.toContain("lucide-save");
   });
 
+  // Without a tab id there is nowhere to place a child webview, so every kind
+  // here stays on the frame. An HTML preview that does have one is covered by
+  // tests/unit/documentPreviewWebview.test.tsx.
   it.each(["html", "markdown", "text", "office"] as const)("keeps the %s preview on the original sandboxed iframe", (sourceKind) => {
     const markup = renderToStaticMarkup(createElement(BrowserPane, {
       htmlPath: "preview.html", sourcePath: "source", sourceKind,

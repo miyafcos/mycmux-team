@@ -29,15 +29,23 @@ param(
   # Seed the AI log so the usage tab has something to show (it is large).
   [switch]$CloneAiLog,
   # Carry the previous test run's layout over instead of starting fresh.
-  [switch]$Keep
+  [switch]$Keep,
+  # The build to run, when it is not the one in this repository's own target.
+  # Two sessions releasing from one repository have to build somewhere other
+  # than target/release or they overwrite each other's binaries, and a test
+  # machine still has to be launched through this script: it is what strips
+  # the agent session handles and points the app at an isolated profile.
+  [string]$ExePath
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$exePath = Join-Path $repoRoot 'src-tauri\target\release\mycmux.exe'
+$exePath = if ($ExePath) { $ExePath } else { Join-Path $repoRoot 'src-tauri\target\release\mycmux.exe' }
 if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
   throw "Release executable was not found: $exePath. Run npm run tauri build first."
 }
+$exePath = (Resolve-Path -LiteralPath $exePath).ProviderPath
+Write-Host "test machine exe: $exePath"
 
 $appDataRoot = Join-Path $env:APPDATA 'com.miyazaki.mycmux'
 $profileDataDir = Join-Path $appDataRoot (Join-Path 'profiles' $Name)

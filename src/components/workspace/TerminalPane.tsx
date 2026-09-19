@@ -870,6 +870,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         ) : activeTab?.type === "browser" && activeTab.htmlPath ? (
           <ErrorBoundary>
             <BrowserPane
+              tabId={activeTab.id}
               htmlPath={activeTab.htmlPath}
               sourcePath={activeTab.sourcePath}
               sourceKind={activeTab.sourceKind}

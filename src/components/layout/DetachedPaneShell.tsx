@@ -13,7 +13,7 @@ import {
 import XTermWrapper, { evictTerminalCache } from "../terminal/XTermWrapper";
 import LauncherPane from "../workspace/LauncherPane";
 import BrowserPane from "../workspace/BrowserPane";
-import WebPaneController from "../workspace/WebPaneController";
+import WebPaneController, { isChildWebviewPreview } from "../workspace/WebPaneController";
 import WebPaneStatusBar from "../workspace/WebPaneStatusBar";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
 import { buildLaunchArgs } from "../workspace/TerminalPane";
@@ -311,9 +311,19 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
       <div data-session-id={tab.sessionId} style={{ flex: 1, minHeight: 0, position: "relative" }}
         onPointerDown={() => focusController.request("pointer", { sessionId: tab.sessionId, focus: true })}>
         {tab.type === "browser" && tab.htmlPath ? (
-          <BrowserPane htmlPath={tab.htmlPath} sourcePath={tab.sourcePath} sourceKind={tab.sourceKind}
-            previewPath={tab.previewPath ?? tab.htmlPath} reloadKey={tab.reloadCounter ?? 0}
-            isDirty={tab.isDirty ?? false} onDirtyChange={handleBrowserDirtyChange} onSaved={handleBrowserSaved} />
+          <>
+            {/* An HTML preview here is a child webview like the Web panes are,
+                and it needs the controller that measures its host and moves the
+                view onto it. Without this the window shows an empty rectangle. */}
+            {isChildWebviewPreview({
+              type: tab.type,
+              sourceKind: tab.sourceKind,
+              previewPath: tab.previewPath ?? tab.htmlPath,
+            }) && <WebPaneController />}
+            <BrowserPane tabId={tab.id} htmlPath={tab.htmlPath} sourcePath={tab.sourcePath} sourceKind={tab.sourceKind}
+              previewPath={tab.previewPath ?? tab.htmlPath} reloadKey={tab.reloadCounter ?? 0}
+              isDirty={tab.isDirty ?? false} onDirtyChange={handleBrowserDirtyChange} onSaved={handleBrowserSaved} />
+          </>
         ) : tab.type === "web" ? (
           <div data-web-pane-content="true"
             style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column" }}>

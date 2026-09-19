@@ -368,11 +368,6 @@ pub(super) fn read_zip_text_entry(path: &Path, entry_name: &str) -> Result<Strin
     read_archive_text_entry(&mut archive, entry_name)
 }
 
-fn zip_entry_names(path: &Path, prefix: &str, suffix: &str) -> Result<Vec<String>, String> {
-    let mut archive = open_office_archive(path)?;
-    archive_entry_names(&mut archive, prefix, suffix)
-}
-
 // --- Pictures ----------------------------------------------------------
 //
 // The two preview routes render the same HTML in different places: the Word
@@ -535,6 +530,14 @@ impl MediaMap {
     }
 
     fn image_html(&self, rel_id: &str, size: Option<(u32, u32)>) -> String {
+        self.image_html_with_alt(rel_id, size, "")
+    }
+
+    /// `alt` is the description the author gave the picture, which is what a
+    /// reader who cannot see it is left with. It is written out even when it is
+    /// empty, because an `<img>` with no `alt` at all is read aloud as its file
+    /// name instead of being skipped.
+    fn image_html_with_alt(&self, rel_id: &str, size: Option<(u32, u32)>, alt: &str) -> String {
         match self.images.get(rel_id) {
             Some(MediaImage::Ready(src)) => {
                 let mut html = String::from("<img src=\"");
@@ -543,7 +546,7 @@ impl MediaMap {
                 if let Some((width, height)) = size {
                     html.push_str(&format!(" width=\"{width}\" height=\"{height}\""));
                 }
-                html.push_str(" alt=\"\">");
+                html.push_str(&format!(" alt=\"{}\">", escape_html(alt)));
                 html
             }
             Some(MediaImage::Unavailable(reason)) => media_unavailable_html(reason),
@@ -565,10 +568,19 @@ struct MediaRelationship {
     external: bool,
 }
 
-/// Reads the `<Relationship>` entries of a `.rels` part and keeps the ones that
-/// point at a picture. The relationship type decides; the file extension is a
-/// fallback for writers that spell the type differently.
-fn parse_media_relationships(xml: &str) -> Vec<(String, MediaRelationship)> {
+/// One `<Relationship>` entry of a `.rels` part, whatever it points at.
+#[derive(Debug)]
+struct PackageRelationship {
+    id: String,
+    relationship_type: String,
+    target: String,
+    external: bool,
+}
+
+/// Reads the `<Relationship>` entries of a `.rels` part. Pictures are only one
+/// of the things a part names: an Excel sheet reaches its pictures through a
+/// drawing part, and that is a relationship of its own.
+fn parse_package_relationships(xml: &str) -> Vec<PackageRelationship> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
 
@@ -588,21 +600,45 @@ fn parse_media_relationships(xml: &str) -> Vec<(String, MediaRelationship)> {
         ) else {
             continue;
         };
-        let relationship_type = xml_attr_value(&element, b"Type").unwrap_or_default();
-        let is_image = relationship_type.to_ascii_lowercase().ends_with("/image")
-            || image_mime_from_name(&target).is_some();
-        if !is_image {
-            continue;
-        }
         let external = xml_attr_value(&element, b"TargetMode")
             .is_some_and(|mode| mode.eq_ignore_ascii_case("External"))
             // A target carrying a scheme is external whether or not the writer
             // said so; resolving it inside the package would go looking for a
             // folder called `https:`.
             || target.contains("://");
-        relationships.push((id, MediaRelationship { target, external }));
+        relationships.push(PackageRelationship {
+            id,
+            relationship_type: xml_attr_value(&element, b"Type").unwrap_or_default(),
+            target,
+            external,
+        });
     }
     relationships
+}
+
+/// The relationships of a part that point at a picture. The relationship type
+/// decides; the file extension is a fallback for writers that spell the type
+/// differently.
+fn parse_media_relationships(xml: &str) -> Vec<(String, MediaRelationship)> {
+    parse_package_relationships(xml)
+        .into_iter()
+        .filter(|relationship| {
+            relationship
+                .relationship_type
+                .to_ascii_lowercase()
+                .ends_with("/image")
+                || image_mime_from_name(&relationship.target).is_some()
+        })
+        .map(|relationship| {
+            (
+                relationship.id,
+                MediaRelationship {
+                    target: relationship.target,
+                    external: relationship.external,
+                },
+            )
+        })
+        .collect()
 }
 
 fn part_directory(part_name: &str) -> &str {
@@ -863,8 +899,9 @@ fn collect_part_media<R: Read + Seek>(
     MediaMap { images }
 }
 
-/// `<wp:extent cx cy>` states the size the author gave the picture, in EMU.
-fn docx_extent_pixels(element: &quick_xml::events::BytesStart<'_>) -> Option<(u32, u32)> {
+/// The size the author gave a picture, in EMU: `<wp:extent cx cy>` in Word,
+/// `<xdr:ext cx cy>` in an Excel drawing anchor.
+fn extent_pixels(element: &quick_xml::events::BytesStart<'_>) -> Option<(u32, u32)> {
     let width = emu_to_pixels(&xml_attr_value(element, b"cx")?)?;
     let height = emu_to_pixels(&xml_attr_value(element, b"cy")?)?;
     Some((width, height))
@@ -1060,7 +1097,7 @@ fn docx_xml_to_html_with_media(xml: &str, media: &MediaMap) -> String {
                     }
                     b"extent" if drawing_depth > 0 => {
                         if drawing_extent.is_none() {
-                            drawing_extent = docx_extent_pixels(&element);
+                            drawing_extent = extent_pixels(&element);
                         }
                     }
                     b"blip" | b"imagedata" if drawing_depth > 0 => {
@@ -1116,7 +1153,7 @@ fn docx_xml_to_html_with_media(xml: &str, media: &MediaMap) -> String {
                 match name {
                     b"extent" if drawing_depth > 0 => {
                         if drawing_extent.is_none() {
-                            drawing_extent = docx_extent_pixels(&element);
+                            drawing_extent = extent_pixels(&element);
                         }
                     }
                     b"blip" | b"imagedata" if drawing_depth > 0 => {
@@ -1930,23 +1967,259 @@ pub(super) fn xlsx_sheet_xml_to_html(xml: &str, shared_strings: &[String]) -> St
     body
 }
 
+// --- Excel pictures ----------------------------------------------------
+//
+// A sheet does not name its pictures. It names a drawing part
+// (`<drawing r:id="rId2"/>` → `xl/worksheets/_rels/sheetN.xml.rels` →
+// `xl/drawings/drawingN.xml`), and that part names the pictures
+// (`<a:blip r:embed="rId1">` → `xl/drawings/_rels/drawingN.xml.rels` →
+// `xl/media/imageN.png`). Word and PowerPoint name theirs in one step, which is
+// why this is the only preview that walks two `.rels` files. Verified against
+// real workbooks in `C:/Users/miyaz/Downloads` on 2026-09-19: a sheet with no
+// picture still names `printerSettings` in the same `.rels`, an anchor's
+// `<xdr:pic>` can sit beside or inside an `<xdr:grpSp>`, and `<xdr:cNvPr>`
+// carries an `<a:extLst><a:ext uri=...>` of its own.
+
+/// A picture an anchor of a drawing part holds.
+#[derive(Debug)]
+struct XlsxFigure {
+    /// The relationship the shape names, or `None` when it names none.
+    rel_id: Option<String>,
+    /// `<xdr:cNvPr descr>`, the description the author typed for the picture.
+    alt: String,
+    /// `<xdr:ext cx cy>` in pixels, when the anchor states a size.
+    size: Option<(u32, u32)>,
+}
+
+/// `<drawing r:id="rId2"/>` is how a sheet names the part that holds its
+/// pictures. `<legacyDrawing>` (the shapes behind cell comments) and
+/// `<drawingHF>` (header and footer art) are different elements and are left
+/// alone, as is `<picture>`, which is the sheet's background wallpaper.
+fn xlsx_sheet_drawing_ids(sheet_xml: &str) -> Vec<String> {
+    let mut reader = Reader::from_str(sheet_xml);
+    reader.config_mut().trim_text(false);
+
+    let mut ids: Vec<String> = Vec::new();
+    loop {
+        let element = match reader.read_event() {
+            Ok(Event::Start(element)) | Ok(Event::Empty(element)) => element,
+            Ok(Event::Eof) | Err(_) => break,
+            _ => continue,
+        };
+        if xml_local_name(element.name().as_ref()) != b"drawing" {
+            continue;
+        }
+        if let Some(id) = xml_attr_value(&element, b"id") {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    ids
+}
+
+/// The drawing parts a sheet names, in the order it names them. The
+/// relationship has to say it is a drawing: printer settings sit in the same
+/// `.rels`, and an external target would send the preview reading a file
+/// outside the workbook.
+fn xlsx_drawing_part_names(sheet_name: &str, sheet_xml: &str, rels_xml: &str) -> Vec<String> {
+    let relationships = parse_package_relationships(rels_xml);
+    xlsx_sheet_drawing_ids(sheet_xml)
+        .iter()
+        .filter_map(|rel_id| {
+            let relationship = relationships
+                .iter()
+                .find(|relationship| &relationship.id == rel_id)?;
+            let is_drawing = relationship
+                .relationship_type
+                .to_ascii_lowercase()
+                .ends_with("/drawing");
+            (is_drawing && !relationship.external)
+                .then(|| resolve_package_target(sheet_name, &relationship.target))
+        })
+        .collect()
+}
+
+/// The pictures of one drawing part, in the order the part lists them.
+///
+/// Every `<a:blip>` inside an anchor counts, not only the ones under
+/// `<xdr:pic>`: a shape filled with a picture is a picture on the sheet as far
+/// as the reader is concerned. A `<c:chart>` in an `<xdr:graphicFrame>` holds
+/// no blip and therefore adds nothing here, which is what the preview wants —
+/// a chart is drawn from the workbook's numbers rather than stored as an image,
+/// so there is nothing to show and nothing to apologise for either.
+fn xlsx_drawing_xml_to_figures(xml: &str) -> Vec<XlsxFigure> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    let mut figures: Vec<XlsxFigure> = Vec::new();
+    let mut anchor_figures: Vec<XlsxFigure> = Vec::new();
+    let mut anchor_extent: Option<(u32, u32)> = None;
+    // Depth of the open anchor and of the open `<xdr:pic>`, because the
+    // elements below are told apart by where they sit, not by their names.
+    let mut depth = 0usize;
+    let mut anchor_depth: Option<usize> = None;
+    let mut picture_depth: Option<usize> = None;
+    let mut picture_alt = String::new();
+
+    loop {
+        let (element, is_start) = match reader.read_event() {
+            Ok(Event::Start(element)) => (element, true),
+            Ok(Event::Empty(element)) => (element, false),
+            Ok(Event::End(element)) => {
+                depth = depth.saturating_sub(1);
+                match xml_local_name(element.name().as_ref()) {
+                    b"pic" if picture_depth == Some(depth) => {
+                        picture_depth = None;
+                        // The description belongs to the shape that carried it,
+                        // so it must not reach a later fill in the same anchor.
+                        picture_alt.clear();
+                    }
+                    b"twoCellAnchor" | b"oneCellAnchor" | b"absoluteAnchor"
+                        if anchor_depth == Some(depth) =>
+                    {
+                        flush_xlsx_anchor(&mut figures, &mut anchor_figures, anchor_extent);
+                        anchor_depth = None;
+                        anchor_extent = None;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => continue,
+        };
+        let own_depth = depth;
+        if is_start {
+            depth += 1;
+        }
+        match xml_local_name(element.name().as_ref()) {
+            b"twoCellAnchor" | b"oneCellAnchor" | b"absoluteAnchor" if is_start => {
+                anchor_depth = Some(own_depth);
+                anchor_extent = None;
+                anchor_figures.clear();
+            }
+            b"pic" if is_start => {
+                picture_depth = Some(own_depth);
+                picture_alt.clear();
+            }
+            // `<xdr:ext>` is a direct child of the anchor. `<a:ext>` has the
+            // same local name and appears inside `<a:extLst>` and inside a
+            // shape's `<a:xfrm>`, so the depth is what separates them.
+            b"ext" if anchor_depth.is_some_and(|anchor| own_depth == anchor + 1) => {
+                anchor_extent = extent_pixels(&element);
+            }
+            b"cNvPr" if picture_depth.is_some() && picture_alt.is_empty() => {
+                picture_alt = xml_attr_value(&element, b"descr").unwrap_or_default();
+            }
+            b"blip" if anchor_depth.is_some() => {
+                anchor_figures.push(XlsxFigure {
+                    rel_id: xml_first_attr_value(&element, &[b"embed", b"link"]),
+                    alt: picture_alt.clone(),
+                    size: None,
+                });
+            }
+            _ => {}
+        }
+    }
+    // A drawing cut short mid-anchor still gets its pictures shown.
+    flush_xlsx_anchor(&mut figures, &mut anchor_figures, anchor_extent);
+    figures
+}
+
+/// The anchor's extent is the size of the anchored object as a whole, so it is
+/// only handed to the picture when the anchor holds exactly one. A group of
+/// pictures would otherwise have the whole group's size stamped on each of its
+/// members.
+fn flush_xlsx_anchor(
+    figures: &mut Vec<XlsxFigure>,
+    anchor_figures: &mut Vec<XlsxFigure>,
+    extent: Option<(u32, u32)>,
+) {
+    if anchor_figures.len() == 1 {
+        if let Some(figure) = anchor_figures.first_mut() {
+            figure.size = extent;
+        }
+    }
+    figures.append(anchor_figures);
+}
+
+fn xlsx_figure_html(figure: &XlsxFigure, media: &MediaMap) -> String {
+    let mut html = String::from("<p class=\"sheet-figure\">");
+    match &figure.rel_id {
+        Some(rel_id) => html.push_str(&media.image_html_with_alt(rel_id, figure.size, &figure.alt)),
+        None => html.push_str(&media_unavailable_html("画像の参照が読み取れません")),
+    }
+    html.push_str("</p>");
+    html
+}
+
+/// The pictures of one sheet, to be placed after that sheet's table.
+///
+/// They are collected at the end of the sheet rather than at the cell their
+/// anchor names: the preview lays each sheet out as one plain table, with no
+/// grid to hang a picture on, so honouring the anchor's row, column and offsets
+/// would drop pictures on top of the rows below them. Reading them in anchor
+/// order at least keeps them in the order the sheet has them.
+fn xlsx_sheet_pictures_html<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    sheet_name: &str,
+    sheet_xml: &str,
+    budget: &mut MediaBudget,
+) -> String {
+    let rels_part = part_relationships_name(sheet_name);
+    let Ok(rels_xml) = read_archive_text_entry(archive, &rels_part) else {
+        return String::new();
+    };
+    let mut html = String::new();
+    for drawing_name in xlsx_drawing_part_names(sheet_name, sheet_xml, &rels_xml) {
+        let Ok(drawing_xml) = read_archive_text_entry(archive, &drawing_name) else {
+            continue;
+        };
+        let figures = xlsx_drawing_xml_to_figures(&drawing_xml);
+        if figures.is_empty() {
+            // A drawing of charts, text boxes and connectors names no picture,
+            // so nothing is read and the budget stays untouched.
+            continue;
+        }
+        let media = collect_part_media(archive, &drawing_name, &drawing_xml, budget);
+        for figure in &figures {
+            html.push_str(&xlsx_figure_html(figure, &media));
+        }
+    }
+    html
+}
+
 fn xlsx_to_html(path: &Path) -> Result<String, String> {
-    let shared_strings = read_zip_text_entry(path, "xl/sharedStrings.xml")
+    // One handle for the whole workbook: the pictures are read from the same
+    // archive as the sheets, and re-opening it per part would read the central
+    // directory again for every sheet.
+    let mut archive = open_office_archive(path)?;
+    let shared_strings = read_archive_text_entry(&mut archive, "xl/sharedStrings.xml")
         .map(|xml| xlsx_shared_strings_xml_to_vec(&xml))
         .unwrap_or_default();
-    let sheets = zip_entry_names(path, "xl/worksheets/sheet", ".xml")?;
+    let sheets = archive_entry_names(&mut archive, "xl/worksheets/sheet", ".xml")?;
     if sheets.is_empty() {
         return Ok("<p class=\"office-empty\">No readable worksheets were found.</p>".to_string());
     }
 
     let mut body = String::new();
+    // One budget for the workbook, so a logo several sheets share is encoded
+    // once and charged once.
+    let mut budget = MediaBudget::default();
     for (index, sheet_name) in sheets.iter().take(6).enumerate() {
-        let xml = read_zip_text_entry(path, sheet_name)?;
+        let xml = read_archive_text_entry(&mut archive, sheet_name)?;
         body.push_str(&format!(
             "<section class=\"sheet\"><h2>Sheet {}</h2>",
             index + 1
         ));
         body.push_str(&xlsx_sheet_xml_to_html(&xml, &shared_strings));
+        body.push_str(&xlsx_sheet_pictures_html(
+            &mut archive,
+            sheet_name,
+            &xml,
+            &mut budget,
+        ));
         body.push_str("</section>\n");
     }
     Ok(body)
@@ -2133,7 +2406,7 @@ pub(super) fn office_to_static_html(path: &Path) -> String {
         });
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>{}</style></head><body><section class=\"office-shell\"><header class=\"office-header\"><div class=\"office-type\">{}</div><h1>{}</h1><dl><dt>Folder</dt><dd>{}</dd><dt>Path</dt><dd>{}</dd></dl><p class=\"office-note\">Use Open in the toolbar to edit this document in the default desktop app.</p></header><main class=\"office-preview\">{}</main></section></body></html>",
-        r#"html{background:#edf1f5;color:#1f2937}body{margin:0;min-height:100vh;padding:28px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;box-sizing:border-box}.office-shell{width:min(1040px,100%);margin:0 auto;box-sizing:border-box;border:1px solid #d6dbe3;background:#fff;box-shadow:0 18px 50px rgba(15,23,42,.10)}.office-header{padding:24px 28px 18px;border-bottom:1px solid #e5e7eb}.office-type{display:inline-flex;align-items:center;height:24px;padding:0 9px;border:1px solid #c8d0da;background:#f5f7fa;color:#475569;font-size:11px;font-weight:700;letter-spacing:0;text-transform:uppercase}h1{margin:14px 0 16px;font-size:25px;line-height:1.2;font-weight:720;letter-spacing:0;color:#111827;overflow-wrap:anywhere}dl{display:grid;grid-template-columns:72px minmax(0,1fr);gap:6px 14px;margin:0;padding:14px 0;border-top:1px solid #eef2f7}dt{color:#64748b;font-size:12px;font-weight:700}dd{margin:0;color:#1f2937;font-size:13px;line-height:1.45;overflow-wrap:anywhere}.office-note{margin:12px 0 0;color:#475569;font-size:13px;line-height:1.55}.office-preview{padding:28px;font-size:14px;line-height:1.65}.office-preview p{margin:0 0 .85em}.office-preview h2{margin:0 0 12px;font-size:16px;line-height:1.3;color:#111827}.office-preview table{width:100%;border-collapse:collapse;margin:0 0 18px;display:block;overflow-x:auto}.office-preview th,.office-preview td{border:1px solid #d8dee8;padding:7px 9px;vertical-align:top;min-width:56px}.office-preview tr:nth-child(even) td{background:#fbfcfe}.office-preview .mycmux-equation,.office-preview [data-mycmux-equation]{display:inline-block;margin:0 .12em;padding:.06em .34em;border:1px solid #bfdbfe;border-radius:4px;background:#eff6ff;color:#1d4ed8;font-family:'Cambria Math','Times New Roman',serif;font-style:italic;white-space:pre-wrap}.sheet,.slide{margin:0 0 22px;padding-bottom:18px;border-bottom:1px solid #eef2f7}.office-empty{color:#64748b;font-style:italic}.office-preview img{max-width:100%;height:auto;vertical-align:middle}.office-preview .media-missing{display:inline-block;padding:1px 7px;border:1px dashed #c8d0da;background:#f8fafc;color:#64748b;font-size:12px;font-style:normal;vertical-align:middle}.office-preview .office-textbox{display:inline-block;padding:0 7px;border-left:2px solid #d8dee8;color:#334155}.office-preview .slide-figure{margin:0 0 12px}@media(max-width:640px){body{padding:14px}.office-header,.office-preview{padding:18px}h1{font-size:21px}dl{grid-template-columns:1fr;gap:4px}}"#,
+        r#"html{background:#edf1f5;color:#1f2937}body{margin:0;min-height:100vh;padding:28px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;box-sizing:border-box}.office-shell{width:min(1040px,100%);margin:0 auto;box-sizing:border-box;border:1px solid #d6dbe3;background:#fff;box-shadow:0 18px 50px rgba(15,23,42,.10)}.office-header{padding:24px 28px 18px;border-bottom:1px solid #e5e7eb}.office-type{display:inline-flex;align-items:center;height:24px;padding:0 9px;border:1px solid #c8d0da;background:#f5f7fa;color:#475569;font-size:11px;font-weight:700;letter-spacing:0;text-transform:uppercase}h1{margin:14px 0 16px;font-size:25px;line-height:1.2;font-weight:720;letter-spacing:0;color:#111827;overflow-wrap:anywhere}dl{display:grid;grid-template-columns:72px minmax(0,1fr);gap:6px 14px;margin:0;padding:14px 0;border-top:1px solid #eef2f7}dt{color:#64748b;font-size:12px;font-weight:700}dd{margin:0;color:#1f2937;font-size:13px;line-height:1.45;overflow-wrap:anywhere}.office-note{margin:12px 0 0;color:#475569;font-size:13px;line-height:1.55}.office-preview{padding:28px;font-size:14px;line-height:1.65}.office-preview p{margin:0 0 .85em}.office-preview h2{margin:0 0 12px;font-size:16px;line-height:1.3;color:#111827}.office-preview table{width:100%;border-collapse:collapse;margin:0 0 18px;display:block;overflow-x:auto}.office-preview th,.office-preview td{border:1px solid #d8dee8;padding:7px 9px;vertical-align:top;min-width:56px}.office-preview tr:nth-child(even) td{background:#fbfcfe}.office-preview .mycmux-equation,.office-preview [data-mycmux-equation]{display:inline-block;margin:0 .12em;padding:.06em .34em;border:1px solid #bfdbfe;border-radius:4px;background:#eff6ff;color:#1d4ed8;font-family:'Cambria Math','Times New Roman',serif;font-style:italic;white-space:pre-wrap}.sheet,.slide{margin:0 0 22px;padding-bottom:18px;border-bottom:1px solid #eef2f7}.office-empty{color:#64748b;font-style:italic}.office-preview img{max-width:100%;height:auto;vertical-align:middle}.office-preview .media-missing{display:inline-block;padding:1px 7px;border:1px dashed #c8d0da;background:#f8fafc;color:#64748b;font-size:12px;font-style:normal;vertical-align:middle}.office-preview .office-textbox{display:inline-block;padding:0 7px;border-left:2px solid #d8dee8;color:#334155}.office-preview .slide-figure,.office-preview .sheet-figure{margin:0 0 12px}@media(max-width:640px){body{padding:14px}.office-header,.office-preview{padding:18px}h1{font-size:21px}dl{grid-template-columns:1fr;gap:4px}}"#,
         escape_html(office_kind_label(path)),
         escape_html(file_name),
         escape_html(&parent),
@@ -2219,6 +2492,81 @@ mod tests {
         entries.extend(media.iter().copied());
         let path = office_file(dir.path(), "report.docx", &entries);
         docx_to_html(&path).expect("the preview is produced")
+    }
+
+    const DRAWING_RELATIONSHIP: &str =
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing";
+
+    /// A worksheet holding one cell, plus whatever the sheet names after its
+    /// rows — a `<drawing>` reference in these tests.
+    fn worksheet(tail: &str) -> String {
+        format!(
+            r#"<worksheet xmlns="x" xmlns:r="r"><sheetData><row r="1"><c r="A1"><v>42</v></c></row></sheetData>{tail}</worksheet>"#
+        )
+    }
+
+    /// A sheet's own relationships: the drawing part, beside the printer
+    /// settings a real sheet names in the same file.
+    fn sheet_relationships(drawing_id: &str, target: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/printerSettings" Target="../printerSettings/printerSettings1.bin"/><Relationship Id="{drawing_id}" Type="{DRAWING_RELATIONSHIP}" Target="{target}"/></Relationships>"#
+        )
+    }
+
+    fn excel_drawing(anchors: &str) -> String {
+        format!(r#"<xdr:wsDr xmlns:xdr="xdr" xmlns:a="a" xmlns:r="r">{anchors}</xdr:wsDr>"#)
+    }
+
+    /// The `<xdr:pic>` element, which is what an anchor holds when it holds a
+    /// picture. The `<a:extLst>` inside `<xdr:cNvPr>` and the `<a:xfrm>` in
+    /// `<xdr:spPr>` are what a real drawing writes: both carry an `ext` of
+    /// their own, and neither is the anchor's size.
+    fn picture_shape(rel_id: &str, descr: Option<&str>) -> String {
+        format!(
+            r#"<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="2" name="Image 1"{}><a:extLst><a:ext uri="{{FF2B5EF4}}" cx="999999" cy="999999"/></a:extLst></xdr:cNvPr><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="{rel_id}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="888888" cy="888888"/></a:xfrm></xdr:spPr></xdr:pic>"#,
+            descr
+                .map(|descr| format!(r#" descr="{descr}""#))
+                .unwrap_or_default()
+        )
+    }
+
+    /// One anchored picture. `ext` is the `<xdr:ext>` a `oneCellAnchor` states;
+    /// a `twoCellAnchor` takes its size from the cells it spans and has none.
+    fn anchored_picture(rel_id: &str, ext: Option<&str>, descr: Option<&str>) -> String {
+        format!(
+            r#"<xdr:oneCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>3</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>{}{}<xdr:clientData/></xdr:oneCellAnchor>"#,
+            ext.unwrap_or(""),
+            picture_shape(rel_id, descr)
+        )
+    }
+
+    /// A workbook on disk, previewed the way the pane previews one.
+    fn xlsx_preview(entries: &[(&str, &[u8])]) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let path = office_file(dir.path(), "book.xlsx", entries);
+        office_document_body_html(&path).expect("the preview is produced")
+    }
+
+    const SHEET_RELS_PART: &str = "xl/worksheets/_rels/sheet1.xml.rels";
+    const DRAWING_RELS_PART: &str = "xl/drawings/_rels/drawing1.xml.rels";
+
+    /// A workbook of one sheet whose pictures hang off `drawing1.xml`, with the
+    /// two `.rels` parts Excel puts between the sheet and its pictures.
+    fn xlsx_picture_preview(
+        sheet: &str,
+        sheet_rels: &str,
+        drawing: &str,
+        drawing_rels: &str,
+        media: &[(&str, &[u8])],
+    ) -> String {
+        let mut entries: Vec<(&str, &[u8])> = vec![
+            ("xl/worksheets/sheet1.xml", sheet.as_bytes()),
+            (SHEET_RELS_PART, sheet_rels.as_bytes()),
+            ("xl/drawings/drawing1.xml", drawing.as_bytes()),
+            (DRAWING_RELS_PART, drawing_rels.as_bytes()),
+        ];
+        entries.extend(media.iter().copied());
+        xlsx_preview(&entries)
     }
 
     #[test]
@@ -2684,6 +3032,207 @@ mod tests {
                 "both slides still show the picture"
             );
         }
+    }
+
+    /// One sheet of one cell, before any picture is added to it.
+    const PLAIN_SHEET_HTML: &str = "<section class=\"sheet\"><h2>Sheet 1</h2><table><tbody>\n<tr><td>42</td></tr>\n</tbody></table>\n</section>\n";
+
+    #[test]
+    fn a_sheet_reaches_its_drawing_through_its_own_relationships() {
+        let sheet = worksheet(r#"<legacyDrawing r:id="rId8"/><drawing r:id="rId1"/>"#);
+        let rels = sheet_relationships("rId1", "../drawings/drawing1.xml");
+
+        assert_eq!(
+            xlsx_drawing_part_names("xl/worksheets/sheet1.xml", &sheet, &rels),
+            vec!["xl/drawings/drawing1.xml".to_string()]
+        );
+        // The printer settings sit in the same `.rels` and are not a drawing,
+        // and the shapes behind cell comments are not `<drawing>` either.
+        assert!(xlsx_drawing_part_names(
+            "xl/worksheets/sheet1.xml",
+            &worksheet(r#"<drawing r:id="rId9"/>"#),
+            &rels
+        )
+        .is_empty());
+        let no_drawing = worksheet("");
+        assert!(xlsx_drawing_part_names("xl/worksheets/sheet1.xml", &no_drawing, &rels).is_empty());
+    }
+
+    #[test]
+    fn a_sheet_picture_is_rendered_after_the_sheet_table() {
+        let html = xlsx_picture_preview(
+            &worksheet(r#"<drawing r:id="rId1"/>"#),
+            &sheet_relationships("rId1", "../drawings/drawing1.xml"),
+            &excel_drawing(&anchored_picture("rId2", None, None)),
+            &relationships(&[("rId2", "../media/photo.png", false)]),
+            &[("xl/media/photo.png", PNG_BYTES)],
+        );
+
+        let expected = format!(
+            "<p class=\"sheet-figure\"><img src=\"data:image/png;base64,{}\" alt=\"\"></p>",
+            base64_encode(PNG_BYTES)
+        );
+        assert!(html.contains(&expected), "{html}");
+        // The preview has no grid to hang a picture on, so the pictures come
+        // after the table rather than at the cell the anchor names.
+        let table_end = html.find("</table>").expect("the sheet table");
+        let picture = html.find("<img").expect("the picture");
+        assert!(table_end < picture, "{html}");
+        assert!(!html.contains("media-missing"), "{html}");
+        // No `<xdr:ext>`, so the picture is left to the stylesheet even though
+        // the shape carries sizes of its own further down.
+        assert!(!html.contains("width="), "{html}");
+    }
+
+    #[test]
+    fn an_anchor_extent_becomes_a_pixel_width_and_height() {
+        let extent = Some(r#"<xdr:ext cx="952500" cy="476250"/>"#);
+        let html = xlsx_picture_preview(
+            &worksheet(r#"<drawing r:id="rId1"/>"#),
+            &sheet_relationships("rId1", "../drawings/drawing1.xml"),
+            &excel_drawing(&anchored_picture("rId2", extent, None)),
+            &relationships(&[("rId2", "../media/photo.png", false)]),
+            &[("xl/media/photo.png", PNG_BYTES)],
+        );
+
+        // 952500 EMU / 9525 = 100 px, 476250 EMU / 9525 = 50 px.
+        assert!(html.contains("width=\"100\" height=\"50\""), "{html}");
+    }
+
+    #[test]
+    fn an_anchor_that_holds_a_group_of_pictures_keeps_its_size_off_them() {
+        let drawing = excel_drawing(&format!(
+            r#"<xdr:oneCellAnchor><xdr:from><xdr:col>0</xdr:col></xdr:from><xdr:ext cx="952500" cy="476250"/><xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr id="7" name="Group 6" descr="the group"/></xdr:nvGrpSpPr>{}{}</xdr:grpSp><xdr:clientData/></xdr:oneCellAnchor>"#,
+            picture_shape("rId2", Some("the first picture")),
+            picture_shape("rId3", None)
+        ));
+
+        let figures = xlsx_drawing_xml_to_figures(&drawing);
+
+        assert_eq!(figures.len(), 2);
+        // The extent is the size of the group, not of either picture in it.
+        assert!(figures.iter().all(|figure| figure.size.is_none()));
+        assert_eq!(figures[0].alt, "the first picture");
+        // The description belongs to the shape that carries it, so it does not
+        // carry over to the next picture or come down from the group.
+        assert_eq!(figures[1].alt, "");
+    }
+
+    #[test]
+    fn a_picture_description_becomes_the_alt_text() {
+        let picture = anchored_picture("rId2", None, Some("第1四半期の売上"));
+        let html = xlsx_picture_preview(
+            &worksheet(r#"<drawing r:id="rId1"/>"#),
+            &sheet_relationships("rId1", "../drawings/drawing1.xml"),
+            &excel_drawing(&picture),
+            &relationships(&[("rId2", "../media/photo.png", false)]),
+            &[("xl/media/photo.png", PNG_BYTES)],
+        );
+
+        assert!(html.contains("alt=\"第1四半期の売上\">"), "{html}");
+    }
+
+    #[test]
+    fn a_sheet_picture_that_cannot_be_shown_leaves_a_visible_note() {
+        // A format no webview paints, and a reference the drawing's `.rels`
+        // does not answer.
+        let anchors = format!(
+            "{}{}",
+            anchored_picture("rId2", None, None),
+            anchored_picture("rId7", None, None)
+        );
+        let html = xlsx_picture_preview(
+            &worksheet(r#"<drawing r:id="rId1"/>"#),
+            &sheet_relationships("rId1", "../drawings/drawing1.xml"),
+            &excel_drawing(&anchors),
+            &relationships(&[("rId2", "../media/diagram.emf", false)]),
+            &[("xl/media/diagram.emf", b"not a web image")],
+        );
+
+        assert!(html.contains("未対応の形式 .emf"), "{html}");
+        assert!(html.contains("参照先が見つかりません"), "{html}");
+        assert!(!html.contains("<img"), "{html}");
+        assert_eq!(html.matches("media-missing").count(), 2, "{html}");
+    }
+
+    #[test]
+    fn a_picture_two_sheets_share_is_encoded_once() {
+        let drawing = excel_drawing(&anchored_picture("rId2", None, None));
+        let rels = relationships(&[("rId2", "../media/photo.png", false)]);
+        let first_part = "xl/drawings/drawing1.xml";
+        let second_part = "xl/drawings/drawing2.xml";
+        let mut archive = ZipArchive::new(Cursor::new(office_zip(&[
+            (first_part, drawing.as_bytes()),
+            (second_part, drawing.as_bytes()),
+            (DRAWING_RELS_PART, rels.as_bytes()),
+            ("xl/drawings/_rels/drawing2.xml.rels", rels.as_bytes()),
+            ("xl/media/photo.png", PNG_BYTES),
+        ])))
+        .unwrap();
+
+        let mut budget = MediaBudget::default();
+        let first = collect_part_media(&mut archive, first_part, &drawing, &mut budget);
+        let after_first = budget.used_bytes;
+        let second = collect_part_media(&mut archive, second_part, &drawing, &mut budget);
+
+        assert_eq!(after_first, PNG_BYTES.len());
+        // One workbook, one budget: a logo on every sheet is charged once.
+        assert_eq!(budget.used_bytes, after_first);
+        for media in [first, second] {
+            assert!(
+                matches!(media.images.get("rId2"), Some(MediaImage::Ready(_))),
+                "both sheets still show the picture"
+            );
+        }
+    }
+
+    #[test]
+    fn a_picture_on_two_sheets_is_shown_on_both() {
+        let sheet_one = worksheet(r#"<drawing r:id="rId1"/>"#);
+        let sheet_two = worksheet(r#"<drawing r:id="rId4"/>"#);
+        let rels_one = sheet_relationships("rId1", "../drawings/drawing1.xml");
+        let rels_two = sheet_relationships("rId4", "../drawings/drawing2.xml");
+        let drawing = excel_drawing(&anchored_picture("rId2", None, None));
+        let rels = relationships(&[("rId2", "../media/photo.png", false)]);
+        let html = xlsx_preview(&[
+            ("xl/worksheets/sheet1.xml", sheet_one.as_bytes()),
+            ("xl/worksheets/sheet2.xml", sheet_two.as_bytes()),
+            (SHEET_RELS_PART, rels_one.as_bytes()),
+            ("xl/worksheets/_rels/sheet2.xml.rels", rels_two.as_bytes()),
+            ("xl/drawings/drawing1.xml", drawing.as_bytes()),
+            ("xl/drawings/drawing2.xml", drawing.as_bytes()),
+            (DRAWING_RELS_PART, rels.as_bytes()),
+            ("xl/drawings/_rels/drawing2.xml.rels", rels.as_bytes()),
+            ("xl/media/photo.png", PNG_BYTES),
+        ]);
+
+        assert_eq!(html.matches("<img").count(), 2, "{html}");
+        assert!(!html.contains("media-missing"), "{html}");
+    }
+
+    #[test]
+    fn a_sheet_of_charts_adds_nothing_to_its_table() {
+        // A chart is drawn from the workbook's numbers rather than stored as a
+        // picture, so there is nothing to embed and nothing to stand in for it.
+        let chart = r#"<xdr:twoCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:row>2</xdr:row></xdr:from><xdr:to><xdr:col>6</xdr:col><xdr:row>18</xdr:row></xdr:to><xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="Chart 1"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x="0" y="0"/><a:ext cx="5400000" cy="3000000"/></xdr:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="c" r:id="rId2"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor>"#;
+        let chart_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/></Relationships>"#;
+        let html = xlsx_picture_preview(
+            &worksheet(r#"<drawing r:id="rId1"/>"#),
+            &sheet_relationships("rId1", "../drawings/drawing1.xml"),
+            &excel_drawing(chart),
+            chart_rels,
+            &[],
+        );
+
+        assert_eq!(html, PLAIN_SHEET_HTML);
+    }
+
+    #[test]
+    fn a_workbook_without_pictures_is_unchanged() {
+        let sheet = worksheet("");
+        let html = xlsx_preview(&[("xl/worksheets/sheet1.xml", sheet.as_bytes())]);
+
+        assert_eq!(html, PLAIN_SHEET_HTML);
     }
 
     #[test]

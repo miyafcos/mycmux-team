@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { usePaneDragStore } from "../../stores/paneDragStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
@@ -34,13 +35,71 @@ export interface WebPaneTabDescriptor {
   presetId: string;
   webBackground?: boolean;
   webInitialUrl?: string;
+  /**
+   * The file a document preview shows. Only the `preview` preset has one:
+   * it is turned into an asset URL by the controller, which is where the
+   * Tauri API lives, so this stays a plain path that a test can read.
+   */
+  previewPath?: string;
+  /**
+   * Bumped when the file has been written again. The webview is rebuilt on
+   * a change rather than told to reload, because the reload command is only
+   * available to the main window and a detached preview would be stuck.
+   */
+  previewReload?: number;
+}
+
+/**
+ * The preset a local document preview runs under.
+ *
+ * It is not in the launcher: nobody opens an empty preview. It exists so a
+ * report can be shown by a real browser view -- its scripts run, its
+ * relative pictures resolve, and laying out 13 MB of it no longer blocks the
+ * thread that paints the terminal.
+ */
+export const DOCUMENT_PREVIEW_PRESET_ID = "preview";
+
+/**
+ * Which kinds are shown by a child webview rather than by an iframe.
+ *
+ * Only HTML. Markdown, text and the Office previews are documents the app
+ * renders itself and paints in the current theme, and the pane has to reach
+ * into them to answer their links; PDF is already handed to the platform's
+ * own viewer.
+ */
+export function isChildWebviewPreview(tab: {
+  type?: string;
+  sourceKind?: string;
+  previewPath?: string;
+}): boolean {
+  return tab.type === "browser" && tab.sourceKind === "html" && Boolean(tab.previewPath);
 }
 
 export function collectWebPaneTabs(workspaces: readonly Workspace[]): WebPaneTabDescriptor[] {
   return workspaces.flatMap((workspace) => workspace.panes.flatMap((pane) => (
-    pane.tabs.flatMap((tab) => tab.type === "web" && tab.presetId
-      ? [{ tabId: tab.id, presetId: tab.presetId, webBackground: tab.webBackground, webInitialUrl: tab.webInitialUrl }]
-      : [])
+    pane.tabs.flatMap((tab): WebPaneTabDescriptor[] => {
+      if (tab.type === "web" && tab.presetId) {
+        return [{
+          tabId: tab.id,
+          presetId: tab.presetId,
+          webBackground: tab.webBackground,
+          webInitialUrl: tab.webInitialUrl,
+        }];
+      }
+      // The same fallback the pane uses for its own host rectangle. A tab
+      // that carries only htmlPath would otherwise show a host with no
+      // webview over it: a white rectangle and no way to tell why.
+      const previewPath = tab.previewPath ?? tab.htmlPath;
+      if (isChildWebviewPreview({ ...tab, previewPath })) {
+        return [{
+          tabId: tab.id,
+          presetId: DOCUMENT_PREVIEW_PRESET_ID,
+          previewPath,
+          previewReload: tab.reloadCounter ?? 0,
+        }];
+      }
+      return [];
+    })
   )));
 }
 
@@ -68,6 +127,29 @@ export function webPaneBoundsForHost(host: HTMLElement | null): WebPaneBounds | 
   return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
 }
 
+/**
+ * What makes this tab's webview the one it already has. A change here tears
+ * the webview down and builds it again.
+ */
+export function webPaneIdentity(tab: WebPaneTabDescriptor): string {
+  return tab.presetId === DOCUMENT_PREVIEW_PRESET_ID
+    ? `${tab.presetId}:${tab.previewPath ?? ""}:${tab.previewReload ?? 0}`
+    : tab.presetId;
+}
+
+/**
+ * The address the webview is pointed at. A preview names a file on disk; the
+ * asset protocol is what a webview is allowed to read it through.
+ */
+export function webPaneUrl(
+  tab: WebPaneTabDescriptor | undefined,
+  toAssetUrl: (path: string) => string = convertFileSrc,
+): string | undefined {
+  if (!tab) return undefined;
+  if (tab.presetId !== DOCUMENT_PREVIEW_PRESET_ID) return tab.webInitialUrl;
+  return tab.previewPath ? toAssetUrl(tab.previewPath) : undefined;
+}
+
 function frameKey(bounds: WebPaneBounds | null): string {
   return bounds
     ? `${bounds.x.toFixed(2)}:${bounds.y.toFixed(2)}:${bounds.width.toFixed(2)}:${bounds.height.toFixed(2)}`
@@ -81,7 +163,13 @@ export default function WebPaneController() {
   const savepointDragActive = useSavepointDragStore((state) => state.item !== null);
   const readingTabIds = useWebPaneTranscriptStore((state) => state.readingTabIds);
   const tabs = useMemo(() => collectWebPaneTabs(workspaces), [workspaces]);
-  const tabsSignature = tabs.map((tab) => `${tab.tabId}:${tab.presetId}`).sort().join("|");
+  // A preview is rebuilt when its file or its reload counter changes, so both
+  // belong to the tab's identity here. The store only bumps the counter when
+  // the file was actually written again, so a re-click keeps the page.
+  const tabsSignature = tabs
+    .map((tab) => `${tab.tabId}:${webPaneIdentity(tab)}`)
+    .sort()
+    .join("|");
   const forwardedShortcuts = useMemo(
     () => deriveWebPaneForwardedShortcuts(keybindings),
     [keybindings],
@@ -92,6 +180,7 @@ export default function WebPaneController() {
   descriptorsRef.current = tabs;
   const desiredRef = useRef(new Map<string, string>());
   const knownRef = useRef(new Map<string, string>());
+  const identitiesRef = useRef(new Map<string, string>());
   const createdRef = useRef(new Set<string>());
   const openingRef = useRef(new Set<string>());
   const failedRef = useRef(new Set<string>());
@@ -111,6 +200,7 @@ export default function WebPaneController() {
   const wakePlacementRef = useRef<(() => void) | null>(null);
 
   desiredRef.current = new Map(tabs.map((tab) => [tab.tabId, tab.presetId]));
+  identitiesRef.current = new Map(tabs.map((tab) => [tab.tabId, webPaneIdentity(tab)]));
   dragBlockedRef.current = paneDragActive || savepointDragActive;
   forwardedShortcutsRef.current = new Set(forwardedShortcuts);
   readingRef.current = new Set(readingTabIds);
@@ -177,10 +267,10 @@ export default function WebPaneController() {
   }, []);
 
   useEffect(() => {
-    const next = new Map(tabs.map((tab) => [tab.tabId, tab.presetId]));
-    for (const [tabId, previousPresetId] of knownRef.current) {
-      const nextPresetId = next.get(tabId);
-      if (nextPresetId === previousPresetId) continue;
+    const next = new Map(tabs.map((tab) => [tab.tabId, webPaneIdentity(tab)]));
+    for (const [tabId, previousIdentity] of knownRef.current) {
+      const nextIdentity = next.get(tabId);
+      if (nextIdentity === previousIdentity) continue;
       openingRef.current.delete(tabId);
       failedRef.current.delete(tabId);
       lastFrameRef.current.delete(tabId);
@@ -235,13 +325,14 @@ export default function WebPaneController() {
           openingRef.current.add(tabId);
           enqueue(tabId, async () => {
             try {
+              const url = webPaneUrl(tab);
               if (bounds) {
                 await createWebPane(tabId, presetId, bounds, forwardedShortcuts,
-                  tab?.webInitialUrl === undefined ? undefined : { url: tab.webInitialUrl });
+                  url === undefined ? undefined : { url });
               } else {
                 await createWebPane(tabId, presetId,
                   { x: 0, y: 0, width: 1024, height: 768 }, forwardedShortcuts,
-                  { visible: false, url: tab?.webInitialUrl });
+                  { visible: false, url });
               }
               if (!desiredRef.current.has(tabId)) {
                 await destroyWebPane(tabId);

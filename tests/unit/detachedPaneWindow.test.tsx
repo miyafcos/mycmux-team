@@ -44,6 +44,10 @@ vi.mock("../../src/components/workspace/BrowserPane", () => ({
 }));
 vi.mock("../../src/components/workspace/WebPaneController", () => ({
   default: () => { mocks.webController(); return null; },
+  // The shell asks this which previews are drawn by a child webview, so it
+  // knows whether to mount the controller that places one.
+  isChildWebviewPreview: (tab: { type?: string; sourceKind?: string; previewPath?: string }) =>
+    tab.type === "browser" && tab.sourceKind === "html" && Boolean(tab.previewPath),
 }));
 vi.mock("../../src/components/workspace/WebPaneStatusBar", () => ({
   default: (props: { tabId: string }) => <div data-web-status-tab-id={props.tabId} />,

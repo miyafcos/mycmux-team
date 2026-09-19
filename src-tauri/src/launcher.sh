@@ -793,6 +793,12 @@ __launch_spec_value() {
   # reads as `K` — so a non-ASCII model name walked straight through both
   # checks below and landed on the command line. Pin the C locale for the
   # length of this function so the ranges mean exactly ASCII.
+  #
+  # Do NOT "fix" this by reaching for `[[:alnum:]]` instead: that is worse.
+  # A UTF-8 locale classifies U+212A as alphanumeric, so the POSIX class
+  # accepts it whatever the range would have done — measured 2026-09-19,
+  # alongside `=~ ^[A-Za-z0-9]` and enumerated alternatives, which both
+  # reject it. The locale pin is what does the work here.
   local LC_ALL=C
   local value="$1"
   # 前後の空白を落としてから見る (launcher.ps1 の .Trim() と揃える)

@@ -545,7 +545,12 @@ def test_release_mirror_uses_filtered_tree_and_capture_throws_on_failure():
     block = release[release.index('  $mirrorRemote = "public"'):
                     release.index('    Write-Host "公開ミラー: PASS')]
     assert '$localTree = Invoke-NativeCapture -FilePath "python"' in block
-    assert '"public_export.py"), "--rev", "master", "--tree-object")' in block
+    # The tag, not the branch. Two sessions share one local `master`, so reading
+    # it can export a tree that was never released -- on 2026-09-19 the main
+    # tree carried an unreleased v0.77.0 while v0.76.1 shipped from a detached
+    # worktree. tests/test_release_script_contract.py holds the same line.
+    assert '"public_export.py"), "--rev", $tag, "--tree-object")' in block
+    assert '"--rev", "master"' not in block
     assert 'if ($mirrorTree -eq $localTree)' in block
     assert '@("commit-tree", $localTree, "-p", $mirrorHead, "-m", "sync: mycmux $tag (public export)")' in block
     assert "master^{tree}" not in block

@@ -55,6 +55,14 @@ pub struct WebPanePreset {
     pub composer: Option<WebPaneComposer>,
     #[serde(skip)]
     pub reader: Option<WebPaneReader>,
+    /// Whether this preset is something the operator opens. A service the
+    /// launcher offers is `true`; a preset the app builds panes from for its
+    /// own surfaces -- the document preview -- is `false`. The distinction is a
+    /// field rather than a list of ids somewhere else so that a new internal
+    /// preset cannot reach a launcher by being forgotten: the registry declares
+    /// it once, and `webpane_list_presets` is the only door to the frontend.
+    #[serde(skip)]
+    pub launchable: bool,
 }
 
 /// Sign-in popups are the same handful of identity providers for every service,
@@ -81,6 +89,7 @@ const WEB_PANE_PRESETS: &[WebPanePreset] = &[
         signed_out_patterns: &[],
         composer: None,
         reader: None,
+        launchable: true,
     },
     WebPanePreset {
         id: "chatgpt",
@@ -100,6 +109,7 @@ const WEB_PANE_PRESETS: &[WebPanePreset] = &[
             generating: r#"[data-testid="stop-button"]"#,
             composer: r#"#prompt-textarea"#,
         }),
+        launchable: true,
     },
     WebPanePreset {
         id: "gemini",
@@ -122,6 +132,7 @@ const WEB_PANE_PRESETS: &[WebPanePreset] = &[
             generating: r#"button[aria-label*="停止"], button[aria-label*="Stop"]"#,
             composer: r#"rich-textarea .ql-editor"#,
         }),
+        launchable: true,
     },
     WebPanePreset {
         id: "grok",
@@ -141,6 +152,7 @@ const WEB_PANE_PRESETS: &[WebPanePreset] = &[
             generating: r#"button[aria-label="Stop"], button[aria-label*="Stop"]"#,
             composer: r#"div.tiptap[role="textbox"]"#,
         }),
+        launchable: true,
     },
     WebPanePreset {
         id: "claude",
@@ -154,6 +166,7 @@ const WEB_PANE_PRESETS: &[WebPanePreset] = &[
             submit_selector: "button[aria-label*=\"Send\"]",
         }),
         reader: None,
+        launchable: true,
     },
     WebPanePreset {
         id: "notebooklm",
@@ -165,6 +178,25 @@ const WEB_PANE_PRESETS: &[WebPanePreset] = &[
         // Notebook-scoped chat has no stable composer selector worth guessing at.
         composer: None,
         reader: None,
+        launchable: true,
+    },
+    // The pane a local document is previewed in. It is not a service and has
+    // no launcher row: the app addresses it by id when a tab holds an HTML
+    // file, and points it at that file through the asset protocol.
+    WebPanePreset {
+        id: "preview",
+        label: "Preview",
+        url: "about:blank",
+        // Its own folder, shared with nothing. A report opened here is somebody
+        // else's HTML running in a real browser view, so it must not be handed
+        // the cookies the operator is signed in with: no profile the services
+        // use may be reachable from a document.
+        profile_dir: "preview",
+        allowed_hosts: &["asset.localhost"],
+        signed_out_patterns: &[],
+        composer: None,
+        reader: None,
+        launchable: false,
     },
 ];
 
@@ -249,7 +281,11 @@ pub struct WebPaneReadResult {
 
 fn initial_webpane_url(preset: WebPanePreset, initial_url: Option<&str>) -> Result<Url, String> {
     let value = initial_url.unwrap_or(preset.url);
-    if preset.id == "browser" && value == "about:blank" {
+    // Both of these presets start on an empty page: the browser waits for an
+    // address, and a preview is built before the document it will show is
+    // known. `about:blank` has no host, so it can never pass the host rules
+    // below and has to be named here.
+    if matches!(preset.id, "browser" | "preview") && value == "about:blank" {
         return value
             .parse()
             .map_err(|error| format!("invalid web pane URL: {error}"));
@@ -457,6 +493,26 @@ fn preset_keeps_url_inside_pane(preset: WebPanePreset, url: &Url) -> bool {
     if preset.id == "browser" {
         return url.scheme() == "https" && url.host_str().is_some()
             || url.scheme() == "http" && matches!(url.host_str(), Some("localhost" | "127.0.0.1"));
+    }
+    if preset.id == "preview" {
+        // One host, matched exactly: the asset protocol's, which is the only
+        // way a local file reaches a webview. `host_matches` is deliberately
+        // not used -- it also accepts subdomains, and `evil.asset.localhost`
+        // has no business being read as the asset host.
+        //
+        // WEB_PANE_AUTH_HOSTS is deliberately not consulted either. A document
+        // has no account to sign in to, so an identity provider opening inside
+        // a preview could only be the document's doing -- and a page that can
+        // reach accounts.google.com inside a pane the operator trusts can dress
+        // itself up as the real sign-in screen and ask for the password.
+        // Two spellings, because `convertFileSrc` has two. Windows and Android
+        // get `http://asset.localhost/<path>`; everywhere else it is
+        // `asset://localhost/<path>` (tauri's core.js branches on the OS).
+        // Both are accepted on every platform rather than under cfg: the
+        // spelling this build cannot produce is inert, and a rule that reads
+        // the same everywhere is a rule a test can hold on one machine.
+        return url.scheme() == "http" && url.host_str() == Some("asset.localhost")
+            || url.scheme() == "asset" && url.host_str() == Some("localhost");
     }
     let host = url.host_str().unwrap_or_default();
     host_matches(host, preset.allowed_hosts) || host_matches(host, WEB_PANE_AUTH_HOSTS)
@@ -804,9 +860,24 @@ fn set_webview_bounds(webview: &tauri::Webview, bounds: WebPaneBounds) -> Result
     Ok(())
 }
 
+/// What the operator can ask for, which is not the whole registry.
+///
+/// This is the only route the presets take to the frontend -- the launcher
+/// rows, `web.open` and the status bar all read this one list -- so filtering
+/// here is what keeps an internal preset out of every surface at once, instead
+/// of each surface having to remember to skip it. Panes for an internal preset
+/// are still built normally: `webpane_create` resolves it by id.
+fn launchable_presets() -> Vec<WebPanePreset> {
+    WEB_PANE_PRESETS
+        .iter()
+        .copied()
+        .filter(|preset| preset.launchable)
+        .collect()
+}
+
 #[tauri::command]
 pub async fn webpane_list_presets() -> Vec<WebPanePreset> {
-    WEB_PANE_PRESETS.to_vec()
+    launchable_presets()
 }
 
 #[tauri::command]
@@ -870,6 +941,18 @@ pub async fn webpane_create(
         .data_directory(profile_dir)
         .initialization_script(automation_initialization_script(preset.id == "browser")?)
         .on_navigation(move |url| {
+            // Three answers, not two. A service pane follows its own site
+            // wherever it goes, because that is what being signed in to it
+            // means. The browser pane is held to its scheme rules. A preview
+            // is held to the tightest rule of all: the blank page it starts on
+            // and the asset host its own file is served from, and nothing
+            // else -- a link inside a report must not be able to navigate the
+            // pane onto a web site, which would leave a document sitting where
+            // the operator expects their own file.
+            if preset.id == "preview" {
+                return url.as_str() == "about:blank"
+                    || preset_keeps_url_inside_pane(preset, url);
+            }
             preset.id != "browser"
                 || url.as_str() == "about:blank"
                 || preset_keeps_url_inside_pane(preset, url)
@@ -914,6 +997,14 @@ pub async fn webpane_create(
         // which is why "continue with Google" did nothing at all: the OAuth
         // popup was swallowed before it could be refused or shown.
         .on_new_window(move |url, _features| {
+            // A preview opens no second window of its own, whatever the
+            // document asks for -- not a popup, not a new tab, not another
+            // site in place of the file. The link is not swallowed: it goes to
+            // the operator's own browser, where a page from a report belongs.
+            if preset.id == "preview" {
+                open_in_os_browser(&new_window_app, url.as_str());
+                return NewWindowResponse::Deny;
+            }
             if preset.id == "browser" {
                 if preset_keeps_url_inside_pane(preset, &url) {
                     if let Some(webview) = new_window_app.get_webview(&new_window_label) {
@@ -3022,7 +3113,7 @@ assert.match(reply.error, /host changed/);
 
     #[test]
     fn preset_registry_is_generic_and_resolves_every_service() {
-        assert_eq!(WEB_PANE_PRESETS.len(), 6);
+        assert_eq!(WEB_PANE_PRESETS.len(), 7);
         for id in ["chatgpt", "gemini", "grok", "claude", "notebooklm"] {
             let preset = preset_by_id(id).unwrap();
             assert!(!preset.label.is_empty(), "{id}");
@@ -3050,6 +3141,162 @@ assert.match(reply.error, /host changed/);
         }
         // Grok signs in through X, so it keeps its own.
         assert_eq!(preset_by_id("grok").unwrap().profile_dir, "grok");
+    }
+
+    /// A document served through the asset protocol, spelled the way
+    /// `convertFileSrc` spells it on Windows.
+    const PREVIEW_DOCUMENT: &str = "http://asset.localhost/C%3A%2FUsers%2Fmiyaz%2Freport.html";
+
+    #[test]
+    fn a_preview_only_opens_documents_served_from_the_asset_host() {
+        // The Mac spelling of the same document. Without it the preview never
+        // opens there: `initial_webpane_url` refuses the only URL the pane is
+        // ever handed.
+        let mac_document = "asset://localhost/C%3A%2FUsers%2Fmiyaz%2Freport.html";
+        assert!(preset_keeps_url_inside_pane(
+            preset_by_id("preview").expect("the preview preset is registered"),
+            &mac_document.parse().expect("a url"),
+        ));
+        // The scheme alone is not enough: another host on it stays out.
+        assert!(!preset_keeps_url_inside_pane(
+            preset_by_id("preview").expect("the preview preset is registered"),
+            &"asset://evil/x".parse().expect("a url"),
+        ));
+        let preview = preset_by_id("preview").unwrap();
+        for url in [PREVIEW_DOCUMENT, "http://asset.localhost/"] {
+            assert!(
+                preset_keeps_url_inside_pane(preview, &url.parse().unwrap()),
+                "{url}"
+            );
+        }
+        for url in [
+            "file:///C:/x",
+            "https://example.com/",
+            "data:text/html,x",
+            // Allowed as a starting page by initial_webpane_url and by the
+            // navigation guard, but it is not a URL this rule keeps: it has no
+            // host at all.
+            "about:blank",
+            "http://asset.localhost.evil/",
+            "http://localhost/",
+            // The right name under the wrong scheme, and a subdomain of it.
+            // Neither is where the asset protocol serves a file from.
+            "https://asset.localhost/x",
+            "http://evil.asset.localhost/x",
+        ] {
+            assert!(
+                !preset_keeps_url_inside_pane(preview, &url.parse().unwrap()),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_preview_refuses_the_identity_providers_every_other_preset_allows() {
+        // The point of the preview's own rule. A document has no account, so a
+        // sign-in screen inside a preview could only be the document's doing --
+        // and a page that can park on accounts.google.com inside a pane the
+        // operator trusts can imitate it and ask for the password.
+        let preview = preset_by_id("preview").unwrap();
+        let signin: Url = "https://accounts.google.com/o/oauth2/v2/auth".parse().unwrap();
+        for id in ["browser", "chatgpt", "gemini", "grok", "claude", "notebooklm"] {
+            assert!(
+                preset_keeps_url_inside_pane(preset_by_id(id).unwrap(), &signin),
+                "{id} stopped allowing the sign-in flow"
+            );
+        }
+        assert!(!preset_keeps_url_inside_pane(preview, &signin));
+        // Not only Google: none of the shared providers are a way in.
+        for host in WEB_PANE_AUTH_HOSTS {
+            let url: Url = format!("https://{host}/").parse().unwrap();
+            assert!(!preset_keeps_url_inside_pane(preview, &url), "{host}");
+        }
+    }
+
+    #[test]
+    fn a_preview_starts_blank_and_takes_only_an_asset_document_as_its_initial_url() {
+        let preview = preset_by_id("preview").unwrap();
+        assert_eq!(
+            initial_webpane_url(preview, None).unwrap().as_str(),
+            "about:blank"
+        );
+        assert_eq!(
+            initial_webpane_url(preview, Some(PREVIEW_DOCUMENT))
+                .unwrap()
+                .as_str(),
+            PREVIEW_DOCUMENT
+        );
+        assert!(
+            initial_webpane_url(preview, Some("https://example.com/"))
+                .unwrap_err()
+                .starts_with("web pane url is outside the preset's allowed hosts:")
+        );
+        assert!(initial_webpane_url(preview, Some("file:///C:/report.html")).is_err());
+    }
+
+    #[test]
+    fn the_preview_profile_is_shared_with_no_other_preset() {
+        // Whatever a document does with storage, it does in a folder no signed
+        // in service has ever written a cookie to.
+        let preview = preset_by_id("preview").unwrap();
+        assert_eq!(preview.profile_dir, "preview");
+        assert!(safe_directory_component(preview.profile_dir).is_ok());
+        for other in WEB_PANE_PRESETS.iter().filter(|other| other.id != "preview") {
+            assert_ne!(
+                other.profile_dir, preview.profile_dir,
+                "{} shares the preview's profile folder",
+                other.id
+            );
+        }
+    }
+
+    #[test]
+    fn exactly_one_preset_is_not_launchable_and_it_is_the_preview() {
+        let internal: Vec<&str> = WEB_PANE_PRESETS
+            .iter()
+            .filter(|preset| !preset.launchable)
+            .map(|preset| preset.id)
+            .collect();
+        assert_eq!(internal, ["preview"]);
+        // And the one list the frontend reads does not carry it, which is what
+        // keeps it out of the launcher.
+        let offered: Vec<&str> = launchable_presets().iter().map(|p| p.id).collect();
+        assert_eq!(offered.len(), WEB_PANE_PRESETS.len() - 1);
+        assert!(!offered.contains(&"preview"));
+        assert!(offered.contains(&"chatgpt"));
+    }
+
+    #[test]
+    fn adding_the_preview_preset_left_every_other_url_policy_where_it_was() {
+        // The browser pane still takes any https host and local http.
+        let browser = preset_by_id("browser").unwrap();
+        for url in [
+            "https://example.com/x",
+            "http://localhost:8000/a",
+            "http://127.0.0.1:1/",
+        ] {
+            assert!(
+                preset_keeps_url_inside_pane(browser, &url.parse().unwrap()),
+                "{url}"
+            );
+        }
+        // The asset host is not one of them: `asset.localhost` is not
+        // `localhost`, so a preview's document stays out of every other pane.
+        let document: Url = PREVIEW_DOCUMENT.parse().unwrap();
+        for id in ["browser", "chatgpt", "gemini", "grok", "claude", "notebooklm"] {
+            assert!(
+                !preset_keeps_url_inside_pane(preset_by_id(id).unwrap(), &document),
+                "{id}"
+            );
+        }
+        // And every service still reaches its own site.
+        for id in ["chatgpt", "gemini", "grok", "claude", "notebooklm"] {
+            let preset = preset_by_id(id).unwrap();
+            assert!(
+                preset_keeps_url_inside_pane(preset, &preset.url.parse().unwrap()),
+                "{id}"
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]

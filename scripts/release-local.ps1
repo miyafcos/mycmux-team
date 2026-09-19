@@ -244,21 +244,28 @@ function Assert-ReleaseGuards {
 
   $branch = Invoke-NativeCapture -FilePath "git" -Arguments @("rev-parse", "--abbrev-ref", "HEAD") -Label "ブランチ確認"
   if ($branch -ne "master") {
-    # A release may also run from a detached worktree that already contains
-    # master. That is how one session ships while another holds the main tree
-    # mid-implementation. The guarantee is unchanged: everything master has is
-    # in what we are about to build, and the clean-tree check below still runs.
+    # A release may also run from a detached worktree, which is how one session
+    # ships while another holds the main tree mid-implementation.
+    #
+    # The question is asked of `origin/master`, not of the local branch. Two
+    # sessions in one repository share one local `master`, so reading it means
+    # reading whatever the other session has committed there: a release either
+    # throws because the other session moved ahead, or silently builds on work
+    # that was never meant to ship. `origin/master` is what has actually been
+    # published, and that is the floor the guarantee needs -- everything the
+    # world already has is in what we are about to build.
     $containsMaster = $false
     if ($branch -eq "HEAD") {
+      Invoke-NativeVisible -FilePath "git" -Arguments @("fetch", "origin", "master") -Label "origin/master の取得"
       # A non-zero exit is the answer here, not a failure, so this one asks git
       # directly instead of going through the throwing helper.
-      & git merge-base --is-ancestor master HEAD 2>$null
+      & git merge-base --is-ancestor origin/master HEAD 2>$null
       $containsMaster = $LASTEXITCODE -eq 0
     }
     if (-not $containsMaster) {
-      throw "master ブランチ、または master を内包する worktree で実行してください (現在: $branch)。"
+      throw "master ブランチ、または origin/master を内包する worktree で実行してください (現在: $branch)。"
     }
-    Write-Host "master を内包する worktree から実行します。"
+    Write-Host "origin/master を内包する worktree から実行します。"
   }
 
   $trackedStatus = Invoke-NativeCapture -FilePath "git" -Arguments @("status", "--porcelain", "--untracked-files=no") -Label "追跡ファイル確認"
@@ -415,9 +422,31 @@ try {
     Invoke-NativeVisible -FilePath "npx" -Arguments @("vitest", "run") -Label "npx vitest run"
     Write-Host "Vitest: PASS"
 
-    Write-Stage "Pytest"
-    Invoke-NativeVisible -FilePath "python" -Arguments @("-m", "pytest", "tests/") -Label "python -m pytest tests/"
-    Write-Host "Pytest: PASS"
+    # Twice, under two collations, because neither run alone is enough.
+    #
+    # Shell bracket ranges like [A-Za-z0-9] are locale-dependent: under a UTF-8
+    # locale U+212A (KELVIN SIGN) sorts with K and passes a check meant to allow
+    # only ASCII. That is a real hole in the environment operators actually run,
+    # so pinning the locale for the whole verification would hide it -- it did,
+    # until 2026-09-19, when the same unchanged file passed in the morning and
+    # failed at noon because a restart put LANG in the environment. Running only
+    # bare is no better: the result then depends on who is running it.
+    #
+    # A failure in the bare run means "broken here, now". A failure under C
+    # means "broken wherever the locale is not UTF-8".
+    Write-Stage "Pytest (この環境のロケール)"
+    Invoke-NativeVisible -FilePath "python" -Arguments @("-m", "pytest", "tests/") -Label "python -m pytest tests/ (inherited locale)"
+    Write-Host "Pytest (この環境のロケール): PASS"
+
+    Write-Stage "Pytest (LC_ALL=C)"
+    $previousLcAll = $env:LC_ALL
+    try {
+      $env:LC_ALL = "C"
+      Invoke-NativeVisible -FilePath "python" -Arguments @("-m", "pytest", "tests/") -Label "python -m pytest tests/ (LC_ALL=C)"
+    } finally {
+      $env:LC_ALL = $previousLcAll
+    }
+    Write-Host "Pytest (LC_ALL=C): PASS"
 
     # cargo test --release is intentionally excluded because it is a separate,
     # long-running manual verification on this Windows host.
@@ -509,10 +538,15 @@ See ``CHANGELOG.md`` for details.
   }
   Invoke-NativeVisible -FilePath "git" -Arguments @("fetch", $mirrorRemote, "master") -Label "公開ミラーの取得"
   $mirrorHead = Invoke-NativeCapture -FilePath "git" -Arguments @("rev-parse", "$mirrorRemote/master") -Label "公開ミラー HEAD の確認"
-  $localTree = Invoke-NativeCapture -FilePath "python" -Arguments @((Join-Path $PSScriptRoot "public_export.py"), "--rev", "master", "--tree-object") -Label "master tree の確認"
+  # `--rev $tag`, not `--rev master`. The local branch is shared between
+  # sessions, so reading it can export a tree that was never released: on
+  # 2026-09-19 the main tree carried an unreleased v0.77.0 while v0.76.1 was
+  # being shipped from a detached worktree. The tag is the thing being
+  # released, and it was verified against $Version above.
+  $localTree = Invoke-NativeCapture -FilePath "python" -Arguments @((Join-Path $PSScriptRoot "public_export.py"), "--rev", $tag, "--tree-object") -Label "$tag tree の確認"
   $mirrorTree = Invoke-NativeCapture -FilePath "git" -Arguments @("rev-parse", "$mirrorHead^{tree}") -Label "公開ミラー tree の確認"
   if ($mirrorTree -eq $localTree) {
-    Write-Host "公開ミラー: SKIP (tree は既に master と一致)"
+    Write-Host "公開ミラー: SKIP (tree は既に $tag と一致)"
   } else {
     $syncCommit = Invoke-NativeCapture -FilePath "git" -Arguments @("commit-tree", $localTree, "-p", $mirrorHead, "-m", "sync: mycmux $tag (public export)") -Label "sync コミットの作成"
     Invoke-NativeVisible -FilePath "git" -Arguments @("push", $mirrorRemote, "${syncCommit}:refs/heads/master") -Label "公開ミラーへの push"

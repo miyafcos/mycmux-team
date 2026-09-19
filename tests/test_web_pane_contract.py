@@ -9,6 +9,27 @@ def read(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
+def registered_presets() -> dict[str, bool]:
+    """Every preset id in the Rust registry, mapped to its `launchable` flag.
+
+    `launchable` is what separates a service the operator picks from a preset
+    the app builds panes from for itself, so the launcher contracts below are
+    derived from it rather than from a list repeated here.
+    """
+    rust = read("src-tauri/src/commands/webpane.rs")
+    block = rust[
+        rust.index("const WEB_PANE_PRESETS:") : rust.index("static WEB_PANE_OPEN_PRESETS")
+    ]
+    entries = re.findall(r'id: "([a-z0-9-]+)",(.*?)\n    \},', block, re.S)
+    assert entries, "no presets found in webpane.rs -- the pattern stopped matching"
+    presets: dict[str, bool] = {}
+    for preset_id, body in entries:
+        flag = re.search(r"^\s+launchable: (true|false),$", body, re.MULTILINE)
+        assert flag, f"{preset_id} does not declare launchable"
+        presets[preset_id] = flag.group(1) == "true"
+    return presets
+
+
 def test_child_webview_uses_isolated_profile_and_explicit_lifecycle() -> None:
     rust = read("src-tauri/src/commands/webpane.rs")
     assert "WEB_PANE_PRESETS" in rust
@@ -152,20 +173,35 @@ def test_web_tab_can_be_opened_from_the_launcher() -> None:
     assert "addWebTabToPane(" in socket_commands, "the web branch never creates a web tab"
 
 
-def test_every_registered_preset_has_a_launcher_entry_in_both_launchers() -> None:
-    """A preset nobody can reach from the launcher is not shipped.
+def test_every_launchable_preset_has_a_launcher_entry_and_no_other_preset_does() -> None:
+    """A service the operator can pick is reachable from every launcher, and a
+    preset the app keeps for itself is offered by none of them.
 
     Presets are declared once in Rust; each launcher needs a menu slot and a
-    dispatch arm per preset. Deriving the expected set from the Rust table
-    means adding a service cannot quietly skip one of the two launchers.
+    dispatch arm per preset an operator may pick. Deriving the expected set from
+    the Rust table means adding a service cannot quietly skip one of the three
+    launchers -- the two shell menus and the launcher pane's catalog.
+
+    The other half matters just as much. `preview` is a pane the app builds
+    around a file on disk; it has no page of its own, so a menu row for it would
+    open an empty webview, and it deliberately reaches no service and no sign-in
+    screen. `launchable: false` is the declaration, and this is where it is
+    enforced -- a preset that stops being internal has to say so in Rust before
+    a launcher may list it.
     """
-    rust = read("src-tauri/src/commands/webpane.rs")
-    presets = re.findall(r'^\s+id: "(\w+)",$', rust, re.MULTILINE)
-    assert sorted(presets) == ["browser", "chatgpt", "claude", "gemini", "grok", "notebooklm"], presets
+    presets = registered_presets()
+    assert sorted(presets) == [
+        "browser", "chatgpt", "claude", "gemini", "grok", "notebooklm", "preview",
+    ], sorted(presets)
+    launchable = sorted(preset for preset, offered in presets.items() if offered)
+    internal = sorted(preset for preset, offered in presets.items() if not offered)
+    assert launchable == ["browser", "chatgpt", "claude", "gemini", "grok", "notebooklm"], launchable
+    assert internal == ["preview"], internal
 
     shell = read("src-tauri/src/launcher.sh")
     ps = read("src-tauri/src/launcher.ps1")
-    for preset in presets:
+    catalog = read("src/lib/agentCatalog.ts")
+    for preset in launchable:
         pseudo = f"__web_{preset}__"
         assert f'"{pseudo}"' in shell, f"launcher.sh has no menu slot for {preset}"
         assert pseudo in ps, f"launcher.ps1 has no menu slot for {preset}"
@@ -173,6 +209,39 @@ def test_every_registered_preset_has_a_launcher_entry_in_both_launchers() -> Non
         assert f'Invoke-MycmuxWebTab "{preset}"' in ps, (
             f"launcher.ps1 never asks for the {preset} preset"
         )
+        assert f'target: "web-{preset}"' in catalog, (
+            f"the launcher pane has no row for {preset}"
+        )
+    for preset in internal:
+        pseudo = f"__web_{preset}__"
+        assert pseudo not in shell, f"launcher.sh offers {preset}, which is not launchable"
+        assert pseudo not in ps, f"launcher.ps1 offers {preset}, which is not launchable"
+        assert f'Invoke-MycmuxWebTab "{preset}"' not in ps, (
+            f"launcher.ps1 asks for {preset}, which is not launchable"
+        )
+        assert f"web-{preset}" not in catalog, (
+            f"the launcher pane offers {preset}, which is not launchable"
+        )
+
+
+def test_the_frontend_is_only_offered_the_launchable_presets() -> None:
+    """One filter, at the only door the presets take to the frontend.
+
+    `webpane_list_presets` is what the launcher pane, `web.open` and the status
+    bar all read. Filtering there is what keeps an internal preset out of every
+    surface at once instead of each surface remembering to skip it -- and a pane
+    for one is still built normally, because `webpane_create` resolves a preset
+    by id and never consults this list.
+    """
+    rust = read("src-tauri/src/commands/webpane.rs")
+    lister = rust[rust.index("fn launchable_presets()") : rust.index("pub async fn webpane_create(")]
+    assert ".filter(|preset| preset.launchable)" in lister, (
+        "the preset list handed to the frontend is no longer filtered"
+    )
+    assert "launchable_presets()" in rust[rust.index("pub async fn webpane_list_presets()") :][:200]
+    assert "WEB_PANE_PRESETS.to_vec()" not in rust, (
+        "the whole registry is being handed to the frontend again"
+    )
 
 
 def test_the_powershell_launch_target_table_points_at_the_right_rows() -> None:
@@ -308,7 +377,7 @@ def test_the_retired_fugu_entries_are_gone() -> None:
     assert "claude-codex-fugu)" not in launcher
 
 
-def test_every_web_preset_has_a_tab_mark() -> None:
+def test_every_launchable_web_preset_has_a_tab_mark() -> None:
     """A Web tab must show the same mark its launcher row showed.
 
     The tab bar reads `agentKind` and the PTY command to decide which mark to
@@ -317,18 +386,30 @@ def test_every_web_preset_has_a_tab_mark() -> None:
     the vendor's mark. The preset id is the only thing that connects the two,
     which makes this list the contract: a preset added to Rust without a mark
     here ships that grey chip again.
+
+    Scoped to the launchable presets, because that is the question the map
+    answers: which chip a *Web tab* draws. An internal preset opens no Web tab
+    -- a document preview hangs off an artifact tab (`type: "browser"`,
+    `sourceKind: "html"`, see `collectWebPaneTabs`), which already draws the
+    HTML mark out of `ARTIFACT_MARK_COLORS`. An entry here would also claim a
+    launcher row it must not have: `tests/unit/tabMark.test.ts` requires one for
+    every key in this map.
     """
-    rust = read("src-tauri/src/commands/webpane.rs")
-    presets_block = rust[rust.index("const WEB_PANE_PRESETS:") : rust.index("static WEB_PANE_OPEN_PRESETS")]
-    rust_ids = set(re.findall(r'^\s+id: "([a-z0-9-]+)",', presets_block, re.MULTILINE))
-    assert rust_ids, "no preset ids found in webpane.rs"
+    presets = registered_presets()
+    launchable = {preset for preset, offered in presets.items() if offered}
+    internal = {preset for preset, offered in presets.items() if not offered}
+    assert launchable, "no launchable preset ids found in webpane.rs"
 
     marks = read("src/lib/tabMark.ts")
     marks_block = marks[marks.index("export const WEB_PRESET_MARKS") :]
     marks_block = marks_block[: marks_block.index("};")]
     mark_ids = set(re.findall(r"^\s+([a-z0-9-]+): \{ kind:", marks_block, re.MULTILINE))
 
-    assert mark_ids == rust_ids, (
-        f"web preset marks drifted from webpane.rs: only in Rust {sorted(rust_ids - mark_ids)}, "
-        f"only in tabMark.ts {sorted(mark_ids - rust_ids)}"
+    assert mark_ids == launchable, (
+        f"web preset marks drifted from webpane.rs: only in Rust {sorted(launchable - mark_ids)}, "
+        f"only in tabMark.ts {sorted(mark_ids - launchable)}"
+    )
+    assert not (mark_ids & internal), (
+        f"{sorted(mark_ids & internal)} is not launchable, so it opens no Web tab and "
+        "must not claim a mark -- every key here is required to have a launcher row"
     )

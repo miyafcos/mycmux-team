@@ -23,6 +23,7 @@ import {
   rendersThemedSrcDoc,
   resolveBrowserIframeSources,
 } from "../../lib/browserPanePreview";
+import { isChildWebviewPreview } from "./WebPaneController";
 import ArtifactEditorToolbar, {
   type ArtifactEditorCommand,
   type ArtifactEditorCommandValue,
@@ -34,6 +35,13 @@ interface BrowserPaneProps {
   sourcePath?: string;
   sourceKind?: ArtifactSourceKind;
   previewPath?: string;
+  /**
+   * The tab this pane belongs to, when it has one. A read-only HTML preview
+   * is drawn by a child webview that the controller places over this pane's
+   * host rectangle, and the tab id is how the two find each other. Without
+   * it -- the dashboard's preview column -- the document stays in a frame.
+   */
+  tabId?: string;
   /** Bump to force iframe remount when the same htmlPath is re-emitted. */
   reloadKey: number;
   isDirty: boolean;
@@ -454,6 +462,7 @@ function runTableCommand(doc: Document, command: ArtifactEditorCommand): boolean
 }
 
 function BrowserPaneImpl({
+  tabId,
   htmlPath,
   sourcePath,
   sourceKind,
@@ -493,6 +502,16 @@ function BrowserPaneImpl({
   // report into a string copies it through the IPC channel and again into
   // the frame, and that detour is most of what made heavy pages slow. The
   // file on disk is handed to the frame as it is.
+  // A read-only HTML preview is shown by a child webview, which the controller
+  // places over this rectangle. Scripts run there, relative pictures resolve,
+  // and laying the file out no longer blocks the thread that paints the
+  // terminal. Editing goes back to the frame: the editor works by reaching
+  // into the document, and a child webview is a different process.
+  const showsChildWebview = isChildWebviewPreview({
+    type: "browser",
+    sourceKind,
+    previewPath: resolvedPreviewPath,
+  }) && !isEditing && Boolean(tabId);
   const loadsRenderedDocument =
     sourceKind === "markdown"
     || sourceKind === "text"
@@ -1036,8 +1055,23 @@ function BrowserPaneImpl({
           {error}
         </div>
       )}
-      {/* PDFs use the native viewer; HTML-based previews keep their no-script sandbox. */}
-      {sourceKind === "pdf" ? (
+      {/* PDFs use the native viewer. A read-only HTML preview is a child
+          webview placed over the host below. Everything else is a document the
+          app rendered, in a frame that runs no scripts. */}
+      {showsChildWebview ? (
+        <div
+          data-web-pane-host-tab-id={tabId}
+          data-html-preview-host="true"
+          style={{
+            flex: 1,
+            minHeight: 0,
+            width: "100%",
+            // What shows through until the webview has painted, and behind it
+            // if the rectangle is ever a fraction larger than the view.
+            background: "white",
+          }}
+        />
+      ) : sourceKind === "pdf" ? (
         <embed
           key={`${resolvedPreviewPath}#${reloadKey}#${localReloadKey}`}
           src={src}
