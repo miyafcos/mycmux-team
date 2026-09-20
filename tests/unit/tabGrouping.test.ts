@@ -290,7 +290,7 @@ function onePlanJson(ids: string[]) {
 }
 
 describe("runGroupingAnalysis", () => {
-  it("retries once when the first response has fewer than two valid plans", async () => {
+  it("retries once when the first response has no valid plans", async () => {
     const { runGroupingAnalysis } = await import("../../src/components/layout/tabGrouping");
     const ids = ["t1", "t2"];
     let calls = 0;
@@ -329,7 +329,7 @@ describe("runGroupingAnalysis", () => {
     expect(stages).toEqual(["scanning", "judging"]);
   });
 
-  it("shows a single valid plan after retry and does not call a third time", async () => {
+  it("shows a single valid plan immediately without retry", async () => {
     const { runGroupingAnalysis } = await import("../../src/components/layout/tabGrouping");
     const ids = ["t1", "t2"];
     let calls = 0;
@@ -338,8 +338,8 @@ describe("runGroupingAnalysis", () => {
       requestId: () => `req-${++calls}`,
       judge: async () => JSON.stringify(onePlanJson(ids)),
     });
-    expect(calls).toBe(2);
-    expect(result.retried).toBe(true);
+    expect(calls).toBe(1);
+    expect(result.retried).toBe(false);
     expect(result.parsed.status).toBe("ok");
     if (result.parsed.status === "ok") {
       expect(result.parsed.plans).toHaveLength(1);
@@ -489,14 +489,16 @@ describe("parseGroupingOutput", () => {
     }
   });
 
-  it("rejects a new workspace name that collides with an existing workspace", () => {
+  it("numbers a new workspace name that collides with an existing workspace", () => {
     const colliding = validPlanJson(ids);
     colliding.plans[0].groups[0].destination = { kind: "new_workspace", proposedName: "母艦" };
     const parsed = parseGroupingOutput(JSON.stringify(colliding), ids, ["ws-a"], ["母艦"]);
     expect(parsed.status).toBe("ok");
     if (parsed.status === "ok") {
-      expect(parsed.droppedPlans.some((issue) => issue.reason.includes("衝突"))).toBe(true);
-      expect(parsed.plans.map((plan) => plan.planId)).toEqual(["plan-b"]);
+      expect(parsed.droppedPlans).toEqual([]);
+      expect(parsed.plans.map((plan) => plan.planId)).toEqual(["plan-a", "plan-b"]);
+      expect(parsed.plans[0].groups[0].destination).toEqual({ kind: "new_workspace", proposedName: "母艦 2" });
+      expect(parsed.plans[0].warnings[0].code).toBe("EXISTING_WORKSPACE_CONFLICT");
     }
   });
 

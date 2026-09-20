@@ -32,6 +32,7 @@ import {
   type GroupingScan,
   type LayoutTransaction,
   type ParseGroupingResult,
+  type ParseIssue,
   type StaleIssue,
   type TabPreviewKind,
 } from "./tabGrouping";
@@ -106,6 +107,29 @@ type GroupingCommitAttempt =
   | { kind: "throw"; error: unknown };
 
 const GROUPING_STEPS: readonly GroupingStepId[] = ["compare", "edit", "confirm"];
+
+type AnalysisDiagnostic = { summary: string; issues: ParseIssue[]; raw: string };
+
+function GroupingAnalysisDetails({ summary, issues, raw }: AnalysisDiagnostic) {
+  return (
+    <div className="cmux-tab-grouping-note">
+      <div role="status">{summary}</div>
+      {issues.length > 0 ? (
+        <ul>
+          {issues.map((issue, index) => (
+            <li key={index}>{issue.planTitle ?? issue.planId ? `${issue.planTitle ?? issue.planId}: ` : ""}{issue.reason}</li>
+          ))}
+        </ul>
+      ) : null}
+      {raw ? (
+        <details>
+          <summary>{tabGroupingStrings.analysisDetails}</summary>
+          <pre className="cmux-tab-grouping-raw">{raw}</pre>
+        </details>
+      ) : null}
+    </div>
+  );
+}
 
 function usePrefersReducedMotion(): boolean {
   const [reduced, setReduced] = useState(() => (
@@ -1682,6 +1706,11 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
   const [editedByPlan, setEditedByPlan] = useState<Record<string, GroupingEditSession>>({});
   const [comparisonInsufficient, setComparisonInsufficient] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
+  const [parseIssues, setParseIssues] = useState<ParseIssue[]>([]);
+  const [analysisNotice, setAnalysisNotice] = useState<AnalysisDiagnostic | null>(null);
+  const [availableAnalysis, setAvailableAnalysis] = useState<{
+    analysis: GroupingAnalysisResult; generatedAt: number;
+  } | null>(null);
   const [raw, setRaw] = useState("");
   const [analysisFreshness, setAnalysisFreshness] = useState<GroupingAnalysisFreshness | null>(null);
   const [analysisGeneratedAt, setAnalysisGeneratedAt] = useState<number | null>(null);
@@ -1860,6 +1889,9 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     setMode("compare");
     setScan(result.scan);
     setRaw(result.raw);
+    setAnalysisNotice(null);
+    setAvailableAnalysis(null);
+    setParseIssues(result.parsed.status === "invalid" ? result.parsed.issues : result.parsed.droppedPlans);
     setAnalysisFreshness(freshness);
     setAnalysisGeneratedAt(generatedAt);
     if (result.parsed.status === "invalid") {
@@ -1878,7 +1910,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     ])));
     setSelectedPlanId(orderedPlans[0]?.planId ?? null);
     setSelectedGroupId(orderedPlans[0]?.groups[0]?.groupId ?? null);
-    setComparisonInsufficient(parsed.comparisonInsufficient);
+    setComparisonInsufficient(freshness !== "local" && parsed.comparisonInsufficient);
     setStatus(groupingPreparedStatus(freshness, generatedAt));
   }, [resetTransientUi]);
 
@@ -1897,7 +1929,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
    * false when no usable local plan exists, and the caller falls back to the
    * previous behaviour of waiting on the judge with an empty panel.
    */
-  const showLocalPlan = useCallback(async (): Promise<boolean> => {
+  const showLocalPlan = useCallback(async (isCurrent: () => boolean): Promise<boolean> => {
     try {
       const attentionState = useSessionAttentionStore.getState();
       const workspaceState = useWorkspaceListStore.getState();
@@ -1918,7 +1950,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
       const analysis = buildLocalGroupingAnalysis(scan, attentionByTabId, {
         existingWorkspaceNames: workspaceState.workspaces.map((workspace) => workspace.name),
       });
-      if (!analysis) return false;
+      if (!analysis || !isCurrent()) return false;
       hydrateAnalysis(analysis, "local", Date.now());
       return true;
     } catch {
@@ -1932,11 +1964,14 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     setAnalyzing(true);
     setAnalysisStage("scanning");
     setAnalysisElapsedSeconds(0);
+    setAnalysisNotice(null);
+    setAvailableAnalysis(null);
     // keepCurrent: a structure-stale plan stays on screen (read-only) while
     // the judge re-derives it, instead of the panel going blank for the
     // whole judge run.
     if (!options?.keepCurrent) {
       setParseError(null);
+      setParseIssues([]);
       setRaw("");
       setPlans([]);
       setAnalysisFreshness(null);
@@ -1954,9 +1989,18 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
         setStatus("状態が変わったため、もう一度分析してください");
         return;
       }
+      if (options?.keepCurrent && produced.analysis.parsed.status === "invalid") {
+        setAnalysisNotice({
+          summary: tabGroupingStrings.judgeFailedKeepingCurrent,
+          issues: produced.analysis.parsed.issues,
+          raw: produced.analysis.raw,
+        });
+        setStatus(tabGroupingStrings.judgeFailedKeepingCurrent);
+        return;
+      }
       if (options?.keepCurrent && panelTouchedRef.current) {
-        // The plan on screen is the user's now. Announce the AI result instead
-        // of overwriting an edit or a confirmation they are in the middle of.
+        // Keep the completed result so switching later never starts another judge.
+        setAvailableAnalysis(produced);
         setStatus(tabGroupingStrings.judgeReadyKeepingCurrent);
         return;
       }
@@ -1964,9 +2008,19 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     } catch (error) {
       if (generation !== analyzeGenerationRef.current) return;
       const presented = formatJudgeError(error, aiProvider);
-      setParseError(presented.summary);
-      setRaw(presented.raw);
-      setStatus(presented.summary);
+      if (options?.keepCurrent) {
+        setAnalysisNotice({
+          summary: tabGroupingStrings.judgeFailedKeepingCurrent,
+          issues: [{ scope: "response", reason: presented.summary }],
+          raw: presented.raw,
+        });
+        setStatus(tabGroupingStrings.judgeFailedKeepingCurrent);
+      } else {
+        setParseError(presented.summary);
+        setParseIssues([]);
+        setRaw(presented.raw);
+        setStatus(presented.summary);
+      }
     } finally {
       if (generation === analyzeGenerationRef.current) {
         setAnalyzing(false);
@@ -1980,6 +2034,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
       return;
     }
     if (intent === "review" && useGroupingRuntimeStore.getState().undo?.status === "available") return;
+    let cancelled = false;
     markGroupingInterest();
     const cached = peekGroupingPrecompute();
     if (cached.kind === "fresh" || cached.kind === "soft-stale") {
@@ -1993,11 +2048,14 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
       }
     } else {
       void (async () => {
-        const shown = await showLocalPlan();
-        await analyze(false, shown ? { keepCurrent: true } : undefined);
+        const shown = await showLocalPlan(() => !cancelled);
+        if (!cancelled) await analyze(false, shown ? { keepCurrent: true } : undefined);
       })();
     }
-    return () => cancelJudge();
+    return () => {
+      cancelled = true;
+      cancelJudge();
+    };
   }, [analyze, cancelJudge, hydrateAnalysis, intent, open, showLocalPlan]);
 
   useEffect(() => {
@@ -2587,6 +2645,12 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
           {tabGroupingStrings.dropPickerHint}
         </div>
 
+        {analysisNotice ? (
+          <div className="cmux-tab-grouping-analysis-notice">
+            <GroupingAnalysisDetails {...analysisNotice} />
+          </div>
+        ) : null}
+
         <div className={`cmux-tab-grouping-body is-${mode}${applying ? " is-locked" : ""}`}>
           {mode === "compare" ? (
             <>
@@ -2599,8 +2663,13 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
                   </div>
                 ) : null}
                 {comparisonInsufficient ? <div className="cmux-tab-grouping-note">{tabGroupingStrings.comparisonInsufficient}</div> : null}
-                {parseError ? <div className="cmux-tab-grouping-error">{parseError}</div> : null}
-                {raw && parseError ? <pre className="cmux-tab-grouping-raw">{raw}</pre> : null}
+                {parseError || parseIssues.length > 0 ? (
+                  <GroupingAnalysisDetails
+                    summary={parseError ?? tabGroupingStrings.partialPlans}
+                    issues={parseIssues.filter((issue) => issue.reason !== parseError)}
+                    raw={raw}
+                  />
+                ) : null}
                 {displayedPlans.map((plan) => {
                   const displayedPlan = editedByPlan[plan.planId]?.plan ?? plan;
                   const stats = planCardStats(displayedPlan, scan?.baseline ?? []);
@@ -3206,9 +3275,20 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
 
         <footer className="cmux-tab-grouping-footer">
           <div className="cmux-tab-grouping-footer-left">
-            <button type="button" className="cmux-tab-grouping-button" disabled={analyzing || applying} onClick={() => void analyze(true)}>
+            <button type="button" className="cmux-tab-grouping-button" disabled={analyzing || applying} onClick={() => void analyze(true, { keepCurrent: plans.length > 0 })}>
               {tabGroupingStrings.analyzeAgain}
             </button>
+            {availableAnalysis ? (
+              <button
+                type="button"
+                className="cmux-tab-grouping-button"
+                disabled={analyzing || applying || Boolean(applied)}
+                title={tabGroupingStrings.showReadyPlansHint}
+                onClick={() => hydrateAnalysis(availableAnalysis.analysis, "fresh", availableAnalysis.generatedAt)}
+              >
+                {tabGroupingStrings.showReadyPlans}
+              </button>
+            ) : null}
             <div className="cmux-tab-grouping-note">
               {mode === "compare" && currentPlanStats ? `${tabGroupingStrings.planMoveNote(currentPlanStats.moved)} / ` : ""}
               {formatGroupingAiNote(aiProvider, aiModel, aiEnabled)}

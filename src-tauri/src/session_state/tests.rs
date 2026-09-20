@@ -633,3 +633,90 @@ fn done_after_none_gets_a_new_id_with_or_without_hook_alias() {
         assert_eq!(done.attention.state_since, 30);
     }
 }
+
+// A live Claude Code seat calls itself working from the moment it starts
+// until it is closed, because the only material is "the foreground is not a
+// shell". These say what the clock adds on top of that.
+mod quiet_working_seat {
+    use super::*;
+
+    /// A seat that monitor calls working, with output at `last_output_at`.
+    fn working_at(last_output_at: u64) -> SessionView {
+        let events = [
+            Evidence::last_output(last_output_at, EPOCH, OutputOrigin::Pty),
+            Evidence::monitor_status(last_output_at, EPOCH, MonitorStatus::Working, None),
+        ];
+        let view = replay(&events);
+        assert_eq!(derive_ui_state(&view), UiSessionState::Working);
+        view
+    }
+
+    #[test]
+    fn a_seat_that_spoke_a_moment_ago_is_still_working() {
+        let view = working_at(1_000_000);
+        assert_eq!(
+            derive_ui_state_at(&view, 1_000_000 + QUIET_AFTER_MS - 1),
+            UiSessionState::Working,
+        );
+    }
+
+    #[test]
+    fn a_seat_quiet_past_the_window_is_idle_however_long_it_stays_quiet() {
+        let view = working_at(1_000_000);
+        for elapsed in [QUIET_AFTER_MS, QUIET_AFTER_MS + 1, 60 * 60_000] {
+            assert_eq!(
+                derive_ui_state_at(&view, 1_000_000 + elapsed),
+                UiSessionState::Idle,
+                "quiet for {elapsed} ms",
+            );
+        }
+    }
+
+    #[test]
+    fn output_puts_the_seat_back_to_working() {
+        let mut view = working_at(1_000_000);
+        assert_eq!(derive_ui_state_at(&view, 2_000_000), UiSessionState::Idle);
+        view = reduce(
+            &view,
+            &Evidence::last_output(2_000_000, EPOCH, OutputOrigin::Pty),
+        );
+        assert_eq!(derive_ui_state_at(&view, 2_000_001), UiSessionState::Working);
+    }
+
+    #[test]
+    fn a_hook_knows_better_than_the_clock() {
+        // Waiting and done come from the agent itself; silence says nothing
+        // about them, and a seat asking a question must not go quiet-idle
+        // while it waits for the answer.
+        for (attention, expected) in [
+            (AttentionKind::Input, UiSessionState::Waiting),
+            (AttentionKind::Approval, UiSessionState::Waiting),
+            (AttentionKind::Done, UiSessionState::Done),
+        ] {
+            let mut view = working_at(1_000_000);
+            view = reduce(&view, &hook(1_000_001, EPOCH, attention, "hook-a", "asked"));
+            assert_eq!(derive_ui_state_at(&view, 9_000_000), expected, "{attention:?}");
+        }
+    }
+
+    #[test]
+    fn a_seat_that_has_never_spoken_is_left_alone() {
+        // No output yet is not silence: the first byte has not arrived.
+        let view = replay(&[Evidence::monitor_status(
+            1_000_000,
+            EPOCH,
+            MonitorStatus::Working,
+            None,
+        )]);
+        assert_eq!(view.last_output_at, 0);
+        assert_eq!(derive_ui_state_at(&view, 9_000_000), UiSessionState::Working);
+    }
+
+    #[test]
+    fn an_unreadable_clock_changes_nothing() {
+        // unix_epoch_millis falls back to a value the subtraction saturates
+        // on; nothing may flip to idle because the clock failed.
+        let view = working_at(1_000_000);
+        assert_eq!(derive_ui_state_at(&view, 0), UiSessionState::Working);
+    }
+}

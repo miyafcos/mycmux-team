@@ -2821,12 +2821,14 @@ mod tests {
 
     #[test]
     fn an_external_file_that_is_not_there_leaves_a_visible_note() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("photo.png");
         let html = docx_preview(
             &word_document(&format!(
                 "<w:p><w:r>{}</w:r></w:p>",
                 inline_picture("rId4", None)
             )),
-            &relationships(&[("rId4", "file:///C:/mycmux-no-such-folder/photo.png", true)]),
+            &relationships(&[("rId4", &missing.to_string_lossy(), true)]),
             &[],
         );
 

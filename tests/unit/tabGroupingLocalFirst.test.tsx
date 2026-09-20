@@ -8,6 +8,7 @@ const analysisHarness = vi.hoisted(() => ({
   value: null as unknown,
   calls: 0,
   release: null as (() => void) | null,
+  reject: null as ((error: unknown) => void) | null,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -18,8 +19,9 @@ vi.mock("../../src/components/layout/tabGrouping", async (importActual) => {
   const actual = await importActual<typeof import("../../src/components/layout/tabGrouping")>();
   return {
     ...actual,
-    runGroupingAnalysis: vi.fn(() => new Promise((resolve) => {
+    runGroupingAnalysis: vi.fn(() => new Promise((resolve, reject) => {
       analysisHarness.calls += 1;
+      analysisHarness.reject = reject;
       analysisHarness.release = () => resolve(analysisHarness.value);
     })),
   };
@@ -125,6 +127,7 @@ beforeEach(() => {
   __resetGroupingPrecomputeForTests();
   analysisHarness.calls = 0;
   analysisHarness.release = null;
+  analysisHarness.reject = null;
   analysisHarness.value = mockGroupingAnalysis;
   resetStores(localWorkspaces());
 });
@@ -137,6 +140,83 @@ afterEach(async () => {
 });
 
 describe("local plan on a cold open", () => {
+  function invalidAnalysis() {
+    return {
+      ...mockGroupingAnalysis,
+      raw: '{"plans":[]}',
+      parsed: {
+        status: "invalid",
+        reason: "有効なプランがありません",
+        issues: [
+          { scope: "response", reason: "有効なプランがありません" },
+          { scope: "plan", planId: "bad", planTitle: "案件案", reason: "layout が未知のペインを含みます" },
+        ],
+        raw: '{"plans":[]}', validPlans: [],
+      },
+    };
+  }
+
+  it("keeps the local plan usable after invalid AI output and shows a collapsed diagnostic", async () => {
+    await mountPanel();
+    analysisHarness.value = invalidAnalysis();
+    await act(async () => analysisHarness.release?.());
+    await settle();
+
+    expect(document.body.textContent).toContain(LOCAL_GROUPING_PLAN_TITLE);
+    expect(document.body.textContent).toContain(tabGroupingStrings.judgeFailedKeepingCurrent);
+    expect(document.body.textContent).toContain("案件案: layout が未知のペインを含みます");
+    expect(document.querySelector("details")?.open).toBe(false);
+    expect(button(tabGroupingStrings.editPlan).disabled).toBe(false);
+    expect(button(tabGroupingStrings.confirmPlan).disabled).toBe(false);
+  });
+
+  it("keeps editing and confirmation available after a judge timeout", async () => {
+    await mountPanel();
+    await act(async () => analysisHarness.reject?.({ code: "timeout", detail: "timed out" }));
+    await settle();
+
+    expect(document.body.textContent).toContain(LOCAL_GROUPING_PLAN_TITLE);
+    expect(button(tabGroupingStrings.editPlan).disabled).toBe(false);
+    await click(button(tabGroupingStrings.editPlan));
+    expect(document.body.textContent).toContain(tabGroupingStrings.judgeFailedKeepingCurrent);
+  });
+
+  it("retains the plan during explicit retry and after another failure", async () => {
+    await mountPanel();
+    await act(async () => analysisHarness.reject?.(new Error("offline")));
+    await settle();
+    await click(button(tabGroupingStrings.analyzeAgain));
+    expect(document.body.textContent).toContain(LOCAL_GROUPING_PLAN_TITLE);
+    expect(button(tabGroupingStrings.editPlan).disabled).toBe(false);
+    analysisHarness.value = invalidAnalysis();
+    await act(async () => analysisHarness.release?.());
+    await settle();
+    expect(button(tabGroupingStrings.confirmPlan).disabled).toBe(false);
+  });
+
+  it("switches to an already generated AI result without asking the judge again", async () => {
+    await mountPanel();
+    await click(button(tabGroupingStrings.editPlan));
+    await act(async () => analysisHarness.release?.());
+    await settle();
+    expect(document.body.textContent).toContain(LOCAL_GROUPING_PLAN_TITLE);
+    await click(button(tabGroupingStrings.showReadyPlans));
+    expect(document.body.textContent).toContain(mockGroupingAnalysis.parsed.plans[0].title);
+    expect(document.body.textContent).not.toContain(LOCAL_GROUPING_PLAN_TITLE);
+    expect(analysisHarness.calls).toBe(1);
+  });
+
+  it("shows the reason for each rejected plan when no local plan exists", async () => {
+    resetStores([]);
+    await mountPanel();
+    analysisHarness.value = invalidAnalysis();
+    await act(async () => analysisHarness.release?.());
+    await settle();
+    expect(document.body.textContent).toContain("案件案: layout が未知のペインを含みます");
+    expect(document.querySelector("details")?.open).toBe(false);
+    expect(button(tabGroupingStrings.editPlan).disabled).toBe(true);
+  });
+
   it("shows an applicable plan before the judge has answered", async () => {
     await mountPanel();
 

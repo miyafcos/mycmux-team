@@ -60,6 +60,7 @@ import {
   TabGroupingPanel,
 } from "../../src/components/layout/TabGroupingPanel";
 import { groupingBoundary } from "../../src/components/layout/groupingBoundary";
+import { __resetGroupingPrecomputeForTests } from "../../src/lib/groupingPrecompute";
 import { defaultLayoutForTabs, type GroupingPlan } from "../../src/components/layout/tabGrouping";
 import {
   __resetPersistenceCoordinatorForTests,
@@ -358,6 +359,8 @@ function logStat(itemId: "(e)", stat: PerfStat, thresholdMs: number): void {
 }
 
 beforeEach(() => {
+  // Each measurement owns its analysis; cached plans from a prior fixture are stale.
+  __resetGroupingPrecomputeForTests();
   liveRenderHarness.counts.clear();
   parentRenderHarness.panel = 0;
   parentRenderHarness.sideBySide = 0;
@@ -367,6 +370,7 @@ beforeEach(() => {
 afterEach(async () => {
   if (root) await act(async () => root?.unmount());
   root = null;
+  __resetGroupingPrecomputeForTests();
   document.body.replaceChildren();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();

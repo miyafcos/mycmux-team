@@ -550,6 +550,11 @@ fn web_link_at(escaped: &str, index: usize) -> Option<Link> {
 /// paths at all; linking those would put a link under half the words in a
 /// sentence.
 fn local_link_at(escaped: &str, index: usize) -> Option<Link> {
+    // A slash immediately after an escaped opening angle bracket starts a
+    // closing tag in the displayed text, not an absolute Unix file path.
+    if escaped[..index].ends_with("&lt;") && escaped[index..].starts_with('/') {
+        return None;
+    }
     if !is_left_boundary(escaped, index) {
         return None;
     }

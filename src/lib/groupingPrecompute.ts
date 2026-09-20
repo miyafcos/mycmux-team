@@ -444,6 +444,12 @@ export function createGroupingPrecomputeCoordinator(
     if (invalidated) {
       return { kind: "obsolete" };
     }
+    if (analysis.parsed.status === "invalid") {
+      // Deliver diagnostics, but never replace a usable cached plan with a failure.
+      quietWaitStartedAt = null;
+      clearScheduled();
+      return { kind: "ready", analysis, generatedAt: dependencies.now() };
+    }
     if (mode === "foreground" && layoutRevision !== current.layoutRevision) {
       return { kind: "ready", analysis, generatedAt: dependencies.now() };
     }

@@ -124,6 +124,36 @@ describe("grouping precompute coordinator", () => {
     vi.useRealTimers();
   });
 
+  it("keeps a valid cached plan when a forced refresh returns invalid output", async () => {
+    const harness = createHarness();
+    await harness.coordinator.generateForeground(true);
+    const before = harness.coordinator.peek();
+    harness.analyzeCurrent.mockResolvedValueOnce({
+      ...mockGroupingAnalysis,
+      parsed: { status: "invalid", reason: "invalid", issues: [], raw: "bad", validPlans: [] },
+      raw: "bad",
+    });
+    const failed = await harness.coordinator.generateForeground(true);
+    expect(failed.kind).toBe("ready");
+    if (failed.kind === "ready") expect(failed.analysis.parsed.status).toBe("invalid");
+    expect(harness.coordinator.peek()).toEqual(before);
+    harness.coordinator.stop();
+  });
+
+  it("does not cache an invalid result on a cold open", async () => {
+    const harness = createHarness();
+    harness.analyzeCurrent.mockResolvedValueOnce({
+      ...mockGroupingAnalysis,
+      parsed: { status: "invalid", reason: "invalid", issues: [], raw: "bad", validPlans: [] },
+      raw: "bad",
+    });
+    await harness.coordinator.generateForeground(true);
+    expect(harness.coordinator.peek().kind).toBe("miss");
+    await harness.coordinator.generateForeground(false);
+    expect(harness.analyzeCurrent).toHaveBeenCalledTimes(2);
+    harness.coordinator.stop();
+  });
+
   it("ignores output from background panes when the active pane is quiet", () => {
     expect(groupingActivePtyQuietDelay(Date.now(), "active", {
       active: { outputActive: false, backendLastOutputAt: Date.now() - GROUPING_PTY_QUIET_MS },

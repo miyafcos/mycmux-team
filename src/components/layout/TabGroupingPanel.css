@@ -649,6 +649,12 @@ button.cmux-tab-grouping-chip {
   color: var(--cmux-red);
 }
 
+.cmux-tab-grouping-analysis-notice {
+  padding: 8px 20px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
 .cmux-tab-grouping-raw {
   max-height: 160px;
   overflow: auto;
@@ -733,7 +739,13 @@ button.cmux-tab-grouping-chip {
   gap: var(--cmux-space-4);
 }
 
+.cmux-tab-grouping-footer-left > .cmux-tab-grouping-button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .cmux-tab-grouping-footer-left .cmux-tab-grouping-note {
+  min-width: 0;
   margin: 0;
 }
 

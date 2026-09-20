@@ -270,6 +270,21 @@ pub enum UiSessionState {
     Unknown,
 }
 
+/// How long a seat's PTY has to stay quiet before "working" stops being true.
+///
+/// The only material behind `MonitorStatus::Working` is that the foreground
+/// process is not a shell (`pty/monitor.rs`), and Claude Code keeps node in
+/// front while it waits for a person. A seat therefore claims to be working
+/// from the moment it starts until it is closed, and silence is the only thing
+/// that tells thinking apart from waiting.
+///
+/// Measured 2026-09-20 over 260+ samples of seats that really were working
+/// (a turn with 23 s of thinking, a 61 s command): the longest the PTY ever
+/// went quiet was 9.7 s. Seats waiting for a person were quiet for 29 s at the
+/// very least, usually minutes. A minute is six times the longest working
+/// silence seen, so a slow turn is not going to be called idle.
+pub const QUIET_AFTER_MS: u64 = 60_000;
+
 pub fn derive_ui_state(view: &SessionView) -> UiSessionState {
     match view.attention.kind {
         AttentionKind::Input | AttentionKind::Approval | AttentionKind::RateLimited | AttentionKind::Error => {
@@ -281,6 +296,24 @@ pub fn derive_ui_state(view: &SessionView) -> UiSessionState {
             Activity::Idle => UiSessionState::Idle,
             Activity::Unknown => UiSessionState::Unknown,
         },
+    }
+}
+
+/// The same reading with the clock in hand.
+///
+/// Only Working is reconsidered: a hook that said the turn ended, or that the
+/// seat is asking something, already knows better than the clock does. A view
+/// that has never seen output has nothing to measure, so it is left alone -
+/// that is a seat whose first byte has not arrived yet, not a quiet one.
+pub fn derive_ui_state_at(view: &SessionView, now: u64) -> UiSessionState {
+    let state = derive_ui_state(view);
+    if state != UiSessionState::Working || view.last_output_at == 0 {
+        return state;
+    }
+    if now.saturating_sub(view.last_output_at) >= QUIET_AFTER_MS {
+        UiSessionState::Idle
+    } else {
+        state
     }
 }
 
@@ -646,6 +679,9 @@ impl SessionStateStore {
         session_id: Option<&str>,
         input_revision_for: impl Fn(&str) -> Option<u64>,
     ) -> SessionStateSnapshot {
+        // One clock for the whole snapshot, so two seats that fell quiet at
+        // the same moment are never read on different sides of the window.
+        let now = unix_epoch_millis();
         let mut sessions: Vec<_> = self
             .sessions
             .iter()
@@ -654,7 +690,7 @@ impl SessionStateStore {
                 session_id: record.key().clone(),
                 input_revision: input_revision_for(record.key()),
                 view: record.view.clone(),
-                ui_state: derive_ui_state(&record.view),
+                ui_state: derive_ui_state_at(&record.view, now),
                 recent_evidence: record.recent_evidence.iter().cloned().collect(),
             })
             .collect();

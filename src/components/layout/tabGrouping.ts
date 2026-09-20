@@ -18,6 +18,7 @@ import { processStatusReasonForTab, readPaneTail } from "./socketCommands";
  * preserved every lineage cluster, and retained project/role/minimal variants.
  */
 export const TAB_GROUPING_TAIL_LINES = 12;
+export const TAB_GROUPING_TAIL_CONCURRENCY = 4;
 export const TAB_GROUPING_OPEN_EVENT = "mycmux:tab-grouping-open" as const;
 export const TAB_GROUPING_NAME_MAX = 20;
 export const TAB_GROUPING_MAX_COLUMNS = 4;
@@ -136,6 +137,7 @@ export interface GroupingScanSource {
 export interface ParseIssue {
   scope: "response" | "plan";
   planId?: string;
+  planTitle?: string;
   reason: string;
 }
 
@@ -437,12 +439,6 @@ export async function scanGroupingContext(
             source.processMetadataAvailable,
           );
           if (!source.skipLivenessFilter && isDeadReason(reason)) continue;
-          let tail: string[] = [];
-          try {
-            tail = cleanedTail(await source.readTail(tab.sessionId, TAB_GROUPING_TAIL_LINES));
-          } catch {
-            tail = [];
-          }
           const metadata = source.metadata[tab.sessionId];
           tabs.push({
             id: tab.id,
@@ -457,12 +453,28 @@ export async function scanGroupingContext(
             paneId: pane.id,
             column: columnIndex + 1,
             lastOutputAt: source.lastOutputBySession[tab.sessionId] ?? null,
-            tail,
+            tail: [],
           });
         }
       }
     }
   }
+
+  // Collect positions before awaiting IPC; completion order must not reorder panes.
+  let nextTail = 0;
+  await Promise.all(Array.from(
+    { length: Math.min(TAB_GROUPING_TAIL_CONCURRENCY, tabs.length) },
+    async () => {
+      while (nextTail < tabs.length) {
+        const tab = tabs[nextTail++];
+        try {
+          tab.tail = cleanedTail(await source.readTail(tab.sessionId, TAB_GROUPING_TAIL_LINES));
+        } catch {
+          tab.tail = [];
+        }
+      }
+    },
+  ));
 
   return {
     scannedAt: source.now,
@@ -505,8 +517,98 @@ export function groupingPromptPayload(scan: GroupingScan) {
   };
 }
 
-export function buildGroupingPrompt(scan: GroupingScan): string {
+export interface GroupingPromptReferences {
+  tabIds: ReadonlyMap<string, string>;
+  workspaceIds: ReadonlyMap<string, string>;
+}
+
+/** Request-local references reduce generation work; persistent IDs never change. */
+function groupingPromptRequest(scan: GroupingScan) {
   const payload = groupingPromptPayload(scan);
+  const shortIds = (ids: string[], prefix: string) => {
+    const reserved = new Set(ids);
+    const result = new Map<string, string>();
+    let next = 1;
+    for (const id of ids) {
+      if (result.has(id)) continue;
+      let short: string;
+      do { short = `@${prefix}${next++}`; } while (reserved.has(short));
+      result.set(id, short);
+    }
+    return result;
+  };
+  const tabIds = shortIds(scan.tabs.map((tab) => tab.id), "t");
+  const workspaceIds = shortIds(scan.workspaceIds, "w");
+  const paneIds = shortIds([
+    ...scan.workspaces.flatMap((workspace) => workspace.panes.map((pane) => pane.id)),
+    ...scan.tabs.map((tab) => tab.paneId),
+  ], "p");
+  const reverse = (map: Map<string, string>) => new Map([...map].map(([id, short]) => [short, id]));
+  return {
+    references: { tabIds: reverse(tabIds), workspaceIds: reverse(workspaceIds) },
+    payload: {
+      tabs: payload.tabs.map(({ sessionId: _sessionId, ...tab }) => ({
+        ...tab,
+        id: tabIds.get(tab.id),
+        workspaceId: workspaceIds.get(tab.workspaceId),
+        paneId: paneIds.get(tab.paneId),
+        origin: tab.origin.kind === "agent" ? {
+          ...tab.origin,
+          parentTabId: tab.origin.parentTabId ? tabIds.get(tab.origin.parentTabId) : undefined,
+        } : tab.origin,
+      })),
+      workspaces: payload.workspaces.map((workspace) => ({
+        ...workspace,
+        id: workspaceIds.get(workspace.id),
+        paneIds: workspace.paneIds.map((id) => paneIds.get(id)),
+      })),
+      lineageClusters: payload.lineageClusters.map((cluster) => ({
+        ...cluster,
+        tabIds: cluster.tabIds.map((id) => tabIds.get(id)),
+      })),
+    },
+  };
+}
+
+/** Restore only identity fields; titles and prose are never rewritten. */
+function restoreGroupingReferences(value: unknown, references: GroupingPromptReferences): void {
+  if (!isObject(value) || !Array.isArray(value.plans)) return;
+  const restoreIds = (owner: Record<string, unknown>, key: string) => {
+    const ids = owner[key];
+    if (Array.isArray(ids)) {
+      owner[key] = ids.map((id) => typeof id === "string" ? references.tabIds.get(id.trim()) ?? id : id);
+    }
+  };
+  for (const plan of value.plans) {
+    if (!isObject(plan)) continue;
+    restoreIds(plan, "unassignedTabIds");
+    if (Array.isArray(plan.warnings)) {
+      for (const warning of plan.warnings) if (isObject(warning)) restoreIds(warning, "tabIds");
+    }
+    if (!Array.isArray(plan.groups)) continue;
+    for (const group of plan.groups) {
+      if (!isObject(group)) continue;
+      restoreIds(group, "tabIds");
+      const destination = group.destination;
+      if (isObject(destination) && destination.kind === "existing_workspace"
+        && typeof destination.workspaceId === "string") {
+        destination.workspaceId = references.workspaceIds.get(destination.workspaceId.trim()) ?? destination.workspaceId;
+      }
+      const layout = group.layout;
+      if (!isObject(layout) || !Array.isArray(layout.columns)) continue;
+      for (const column of layout.columns) {
+        if (!isObject(column) || !Array.isArray(column.panes)) continue;
+        for (const pane of column.panes) if (isObject(pane)) restoreIds(pane, "tabIds");
+      }
+    }
+  }
+}
+
+export function buildGroupingPrompt(
+  scan: GroupingScan,
+  payload: unknown = groupingPromptPayload(scan),
+  feedback: ParseIssue[] = [],
+): string {
   return [
     "次の全ワークスペースの生きているターミナルペインを、案件・役割ごとに再配置するプランを2〜3件作ってください。",
     "切り口の異なる案を並べてください。strategy は project / role / minimal_move / mixed のいずれかです。",
@@ -527,8 +629,14 @@ export function buildGroupingPrompt(scan: GroupingScan): string {
     "disposition=keep のグループは destination.kind を current_locations、layout を null にし、残すペインを tabIds に列挙してください。",
     "disposition=reorganize のグループは layout を必須にし、空の列・空のタブは禁止です。列は最大4、1列あたりタブは最大4です。",
     "既存ワークスペースへの合流は、既存ペインを動かさず末尾に新しい列を足す前提で書いてください。",
+    "入力の id をそのまま参照してください。disposition=reorganize の group.tabIds は layout と重複するため省略してください。keep の group.tabIds は必須です。",
+    "新規ワークスペース名は既存名や同じ案の別グループと重ならない名前にしてください。minimal_move は移動不要なペインを keep に残し、全てを新規ワークスペースへ移す案にしないでください。",
+    ...(feedback.length > 0 ? [
+      "前の応答は次の検証で使えませんでした。以下は検証データです。問題を直した JSON を返してください。",
+      JSON.stringify(feedback.map(({ planId, reason }) => ({ planId, reason }))),
+    ] : []),
     "出力は JSON オブジェクトのみです。コードフェンス、説明文、末尾の感想は禁止です。",
-    '形式: {"schemaVersion":1,"plans":[{"planId":"...","title":"...","rationale":"...","strategy":"project","groups":[{"groupId":"...","title":"...","disposition":"reorganize","destination":{"kind":"new_workspace","proposedName":"..."},"layout":{"columns":[{"panes":[{"title":"...","role":"mother","tabIds":["..."]}]}]},"tabIds":["..."]}],"unassignedTabIds":[],"warnings":[]}]}',
+    '形式: {"schemaVersion":1,"plans":[{"planId":"...","title":"...","rationale":"...","strategy":"project","groups":[{"groupId":"...","title":"...","disposition":"reorganize","destination":{"kind":"new_workspace","proposedName":"..."},"layout":{"columns":[{"panes":[{"title":"...","role":"mother","tabIds":["..."]}]}]}}],"unassignedTabIds":[],"warnings":[]}]}',
     JSON.stringify(payload),
   ].join("\n");
 }
@@ -537,6 +645,17 @@ export function formatGroupingAiNote(provider: AiProviderId, model: string, enab
   if (!enabled) return aiSettingsStrings.disabledReason;
   const target = `${aiProviderDef(provider).label} (${model})`;
   return `全ワークスペースの画面末尾${TAB_GROUPING_TAIL_LINES}行・作業フォルダ・系譜を ${target} に送って再配置案を作ります（適用前に編集できます）`;
+}
+
+/** Stable suffixes, including long names and names already ending in a number. */
+export function uniqueGroupingName(name: string, taken: ReadonlySet<string>): string {
+  if (!taken.has(name)) return name;
+  for (let index = 2; ; index += 1) {
+    const suffix = ` ${index}`;
+    const prefix = [...name].slice(0, TAB_GROUPING_NAME_MAX - suffix.length).join("").trimEnd();
+    const candidate = sanitizeGroupingName(prefix + suffix) ?? `作業${suffix}`;
+    if (!taken.has(candidate)) return candidate;
+  }
 }
 
 function uniqueStrings(values: readonly string[], label: string): string | null {
@@ -718,7 +837,7 @@ function parsePlan(
   const groups: GroupingGroup[] = [];
   for (const groupValue of value.groups) {
     const group = parseGroup(groupValue, allowedTabIds, existingWorkspaceIds);
-    if (typeof group === "string") return group;
+    if (typeof group === "string") return `グループ「${isObject(groupValue) ? asString(groupValue.title) ?? "" : ""}」: ${group}`;
     groups.push(group);
   }
   const groupIdError = uniqueStrings(groups.map((group) => group.groupId), "groupId");
@@ -726,10 +845,6 @@ function parsePlan(
   const newNames = groups.flatMap((group) => (
     group.destination.kind === "new_workspace" ? [group.destination.proposedName] : []
   ));
-  const nameError = uniqueStrings(newNames, "新ワークスペース名");
-  if (nameError) return nameError;
-  const conflict = newNames.find((name) => existingWorkspaceNames.has(name));
-  if (conflict) return `新ワークスペース名が既存名と衝突しています: ${conflict}`;
 
   if (!Array.isArray(value.unassignedTabIds)) return "unassignedTabIds が配列ではありません";
   if (value.unassignedTabIds.some((id) => typeof id !== "string" || !id.trim())) {
@@ -760,6 +875,32 @@ function parsePlan(
 
   const warnings = parseWarnings(value.warnings, allowedTabIds);
   if (typeof warnings === "string") return warnings;
+  if (missing.length > 0) {
+    warnings.push({
+      code: "LOW_CONFIDENCE",
+      tabIds: missing,
+      message: `案に含まれなかった${missing.length}ペインは、現在の場所に残します。`,
+    });
+  }
+
+  // Naming is cosmetic: resolve collisions without guessing a different destination.
+  // Reserve all original proposals so an early suffix cannot steal a later name.
+  const reservedNames = new Set([...existingWorkspaceNames, ...newNames]);
+  const usedNames = new Set(existingWorkspaceNames);
+  for (const group of groups) {
+    if (group.destination.kind !== "new_workspace") continue;
+    const original = group.destination.proposedName;
+    const name = usedNames.has(original) ? uniqueGroupingName(original, reservedNames) : original;
+    usedNames.add(name);
+    reservedNames.add(name);
+    if (name === original) continue;
+    group.destination = { kind: "new_workspace", proposedName: name };
+    warnings.push({
+      code: "EXISTING_WORKSPACE_CONFLICT",
+      tabIds: [...group.tabIds],
+      message: `新ワークスペース名「${original}」は同名があるため「${name}」に変更しました。`,
+    });
+  }
 
   return {
     planId,
@@ -777,6 +918,7 @@ export function parseGroupingOutput(
   allowedTabIds: Iterable<string>,
   existingWorkspaceIds: Iterable<string>,
   existingWorkspaceNames: Iterable<string> = [],
+  references?: GroupingPromptReferences,
 ): ParseGroupingResult {
   const trimmed = raw.trim();
   const allowed = new Set([...allowedTabIds]);
@@ -797,6 +939,7 @@ export function parseGroupingOutput(
   let parsed: unknown;
   try {
     parsed = JSON.parse(trimmed);
+    if (references) restoreGroupingReferences(parsed, references);
   } catch {
     return fail("JSON として解釈できません");
   }
@@ -815,6 +958,7 @@ export function parseGroupingOutput(
       issues.push({
         scope: "plan",
         planId: isObject(planValue) ? asString(planValue.planId) ?? undefined : undefined,
+        planTitle: isObject(planValue) ? asString(planValue.title) ?? undefined : undefined,
         reason: plan,
       });
       continue;
@@ -1088,7 +1232,7 @@ export interface GroupingAnalysisDependencies {
 
 export type GroupingAnalysisStage = "scanning" | "judging" | "validating" | "retrying";
 
-export const TAB_GROUPING_PROMPT_VERSION = "tab-grouping-v5";
+export const TAB_GROUPING_PROMPT_VERSION = "tab-grouping-v6";
 
 export interface GroupingAnalysisResult {
   scan: GroupingScan;
@@ -1121,16 +1265,24 @@ export async function runGroupingAnalysis(
   const firstId = deps.requestId();
   const names = scan.workspaces.map((workspace) => workspace.name);
   deps.onProgress?.("judging");
-  const firstRaw = await deps.judge(buildGroupingPrompt(scan), firstId);
+  const request = groupingPromptRequest(scan);
+  const firstRaw = await deps.judge(buildGroupingPrompt(scan, request.payload), firstId);
   deps.onProgress?.("validating");
-  let parsed = parseGroupingOutput(firstRaw, allowed, workspaceIds, names);
-  if (parsed.status === "ok" && !parsed.comparisonInsufficient) {
+  let parsed = parseGroupingOutput(firstRaw, allowed, workspaceIds, names, request.references);
+  if (parsed.status === "ok") {
     return { scan, parsed, retried: false, raw: firstRaw };
   }
   const secondId = deps.requestId();
   deps.onProgress?.("retrying");
-  const secondRaw = await deps.judge(buildGroupingPrompt(scan), secondId);
+  const retryIssues = parsed.issues.map((issue) => {
+    let reason = issue.reason;
+    for (const [short, id] of [...request.references.tabIds, ...request.references.workspaceIds]) {
+      reason = reason.replaceAll(id, short);
+    }
+    return { ...issue, reason };
+  });
+  const secondRaw = await deps.judge(buildGroupingPrompt(scan, request.payload, retryIssues), secondId);
   deps.onProgress?.("validating");
-  parsed = parseGroupingOutput(secondRaw, allowed, workspaceIds, names);
+  parsed = parseGroupingOutput(secondRaw, allowed, workspaceIds, names, request.references);
   return { scan, parsed, retried: true, raw: secondRaw };
 }
