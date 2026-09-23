@@ -13,3 +13,8 @@ examples/claude-skills/** text eol=lf
 
 # Shell scripts run on macOS and Linux; a stray CR breaks them.
 *.sh text eol=lf
+
+# include_str! embeds this stylesheet byte for byte, and a text_preview test
+# checks that no CR reaches the preview. With core.autocrlf a fresh Windows
+# worktree would check it out CRLF and fail that test (2026-09-21).
+src-tauri/src/commands/artifact/text_preview.css text eol=lf

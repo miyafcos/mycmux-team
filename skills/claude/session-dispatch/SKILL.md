@@ -30,7 +30,7 @@ metadata:
 | 母艦が重い (compact 接近・長大化) ときに来た新規の重依頼 | 新ペインへ。母艦は司令塔に徹する |
 | 「どこまでやったっけ」系で、この先に重作業が続く | 母艦で現状整理 → 作業本体を spec 化して新ペイン |
 | 軽い読み調査・その場の検証 | 母艦直 (サブエージェント・ペインにしない) |
-| 素材大量の走査・分類・抽出 (MCP 不要) | codex ペイン (luna は明示起動 `spawn-tab --no-activate -- powershell -NoLogo -NoExit -Command "codex --model gpt-5.6-luna -c model_reasoning_effort=max -c features.fast_mode=false"`。素の `spawn --target codex` は config 既定 = astra max で立つ・2026-09-05 実測) |
+| 素材大量の走査・分類・抽出 (MCP 不要) | codex ペイン (luna は明示起動 `spawn-tab --no-activate -- powershell -NoLogo -NoExit -Command "codex --model gpt-6-luna -c model_reasoning_effort=max -c features.fast_mode=false"`。素の `spawn --target codex` は config 既定 = gpt-6-sol xhigh (2026-09-23) で立つ) |
 | MCP 必須素材・日本語プロースの fan-out | Agent tool `model:'opus'` 明示 (無指定は agent-model-guard hook が遮断) |
 
 非 mycmux セッション (cron 等) では spawn 不可 → Agent tool / Workflow で代替する。

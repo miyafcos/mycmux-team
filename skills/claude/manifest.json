@@ -1,6 +1,6 @@
 {
   "pack_version": "1.0.0",
-  "generated_at": "2026-09-18T01:09:25.578169+00:00",
+  "generated_at": "2026-09-23T13:54:24.708500+00:00",
   "cli": {
     "path": "scripts/mycmux_agent_cli.py",
     "sha256": "78a33d663de14642cc36a2e9dd1ae8440035abd26f3d319558b0cdcc255aeb99"
@@ -9,7 +9,7 @@
     {
       "name": "session-dispatch",
       "files": {
-        "SKILL.md": "0e8f85f4d6b5a16e4d12a5f290aadc3e20f87c1ba2fbb1cbbdc17a384d5b38a6",
+        "SKILL.md": "d0d5941aa934f1bba2a896256d2c81c775e96535fdcd6c17c3cf3a753bf5dff6",
         "references/ask-card-contract.md": "a69c38ecf9c89c2fa905a6d95c74017b6b9ec1606a3595b84b5a005f78fccd2a",
         "references/decompose-guide.md": "622ebcb21b6e7774a8da991775a94557e0d2176b066a703deee5917a94f76f85",
         "references/dispatch-guide.md": "d80658b1fb8d27315afffbc6dae9bf1de8f83a1d92ba4261e119dfe9d87ac082",
@@ -76,7 +76,7 @@
         "modes/followup.md": "95dce6d63de4defa05480531651a0a5036ef53a238021b277a91408156b6cdaf",
         "modes/push.md": "ac48e42c1ca832c01720c5dcd129530d399f6f04e6ec663200ef856ffe234f4d",
         "modes/smoke.md": "fba0637edb4185fb7dad605c821469761f9b210f9969bee67c19d90501af3e35",
-        "references/app-side-web-read-spec.md": "0a27cde72a0e055207bc936ad76e0e2f300635a3ea79941a822666c10a51f2bf",
+        "references/app-side-web-read-spec.md": "f0fbc64b9e3f304c5d3b751b912cba910b96dd71e0b72aaa1a0003c4c1711a7c",
         "references/brief-template.md": "6580dcc69e037ff9e721ac8e3ef48ba7376cf513d73c63b076f79b789dd74fc1",
         "references/engine-notes.md": "0de31857ce1e32a1750202a6002ea4d82ea0a115ebda80104c06c06d0790ad39",
         "references/judge-template.md": "baefcb248c079b8ca9742e5527d467188d1a7f113e96e72a44b815ba455132f8",

@@ -43,11 +43,12 @@ export interface AgentCatalogEntry {
 /** Claude Code and its fork: `--effort low|medium|high|xhigh|max`. */
 const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 /**
- * Codex reasoning effort has a sixth step ("none") the Claude CLIs lack, and
- * since GPT-6 Astra (Codex CLI 0.153, 2026-09) a seventh: "ultra" = maximum
- * reasoning with automatic task delegation to internal sub-agents.
+ * Codex's current GPT-6 and 5.6 models support low through max; Astra, Sol
+ * and Terra also support ultra. Luna stops at max. Verified against the
+ * Codex model catalog and official model docs on 2026-09-23.
  */
-const CODEX_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+const CODEX_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
+const CODEX_LUNA_EFFORTS = CODEX_EFFORTS.filter((effort) => effort !== "ultra");
 /** grok and agy both document three steps. */
 const SHORT_EFFORTS = ["low", "medium", "high"] as const;
 
@@ -63,15 +64,17 @@ const CLAUDE_MODELS: readonly ModelChoice[] = [
 ];
 
 /**
- * GPT-6 Astra (GA 2026-09-03) took the flagship seat on 2026-09-05; the 5.6
- * tiers stay selectable as the cost lane (terra), the scan lane (luna) and the
- * fallback when Astra is rate-limited (sol).
+ * Current GPT-6 choices first, followed by the still-supported 5.6 fallbacks.
+ * Keep generations explicit so an old saved choice is never silently upgraded.
+ * Source: https://developers.openai.com/codex/models (2026-09-23).
  */
 const CODEX_MODELS: readonly ModelChoice[] = [
-  { value: "gpt-6-astra", label: "Astra (flagship)" },
-  { value: "gpt-5.6-sol", label: "Sol (5.6 fallback)" },
-  { value: "gpt-5.6-terra", label: "Terra (standard)" },
-  { value: "gpt-5.6-luna", label: "Luna (light)" },
+  { value: "gpt-6-astra", label: "Astra (6 flagship)" },
+  { value: "gpt-6-sol", label: "Sol (6)" },
+  { value: "gpt-6-luna", label: "Luna (6 light)" },
+  { value: "gpt-5.6-sol", label: "Sol (5.6)" },
+  { value: "gpt-5.6-terra", label: "Terra (5.6)" },
+  { value: "gpt-5.6-luna", label: "Luna (5.6)" },
 ];
 
 /** From `agy models` — the effort is baked into most of these ids. */
@@ -120,7 +123,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     agentKind: "claude-codex",
     // Only the fallback: the chips come from claude-codex's own models.json
     // (useLaunchModels in claudeCodexModels.ts), which also names its Claude,
-    // Fugu and OpenRouter models. These four are what an install without a
+    // Fugu and OpenRouter models. These tiers are what an install without a
     // readable table (neither Mac has claude-codex) still gets.
     models: CODEX_MODELS,
     efforts: CLAUDE_EFFORTS,
@@ -178,6 +181,17 @@ export const LAUNCHABLE_AGENTS: readonly AgentCatalogEntry[] = AGENT_CATALOG.fil
 export function getCatalogEntry(target: string | undefined): AgentCatalogEntry | undefined {
   if (!target) return undefined;
   return AGENT_CATALOG.find((entry) => entry.target === target);
+}
+
+/** Model-specific effort choices for both launcher and workspace setup. */
+export function getLaunchEfforts(
+  entry: AgentCatalogEntry | undefined,
+  model?: string,
+): readonly string[] {
+  if (entry?.cli === "codex" && ["gpt-6-luna", "gpt-5.6-luna"].includes(model?.trim() ?? "")) {
+    return CODEX_LUNA_EFFORTS;
+  }
+  return entry?.efforts ?? NO_EFFORTS;
 }
 
 /** Leave the choice to the launcher's own menu — what a pane does today. */

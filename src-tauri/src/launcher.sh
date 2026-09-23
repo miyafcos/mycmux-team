@@ -1045,7 +1045,7 @@ __spec_models_for() {
     # type-in row reaches any other id. It serves macOS, where neither Mac has
     # claude-codex (2026-09-18), and a Windows pane whose shell is Git Bash.
     codex|claude-codex)
-      printf '%s\n' "Astra (flagship)|gpt-6-astra" "Sol (5.6 fallback)|gpt-5.6-sol" "Terra (standard)|gpt-5.6-terra" "Luna (light)|gpt-5.6-luna" ;;
+      printf '%s\n' "Astra (6 flagship)|gpt-6-astra" "Sol (6)|gpt-6-sol" "Luna (6 light)|gpt-6-luna" "Sol (5.6)|gpt-5.6-sol" "Terra (5.6)|gpt-5.6-terra" "Luna (5.6)|gpt-5.6-luna" ;;
     agy)
       printf '%s\n' \
         "Gemini 3.1 Pro (High)|gemini-3.1-pro-high" \
@@ -1065,7 +1065,11 @@ __spec_models_for() {
 __spec_efforts_for() {
   case "$1" in
     claude|claude-codex|claude-codex-open) printf '%s\n' low medium high xhigh max ;;
-    codex) printf '%s\n' none low medium high xhigh max ultra ;;
+    codex)
+      case "${2:-}" in
+        gpt-6-luna|gpt-5.6-luna) printf '%s\n' low medium high xhigh max ;;
+        *) printf '%s\n' low medium high xhigh max ultra ;;
+      esac ;;
     grok|agy) printf '%s\n' low medium high ;;
   esac
   return 0
@@ -1170,7 +1174,7 @@ __launch_spec_menu() {
     [ -z "$entry" ] && continue
     __SPEC_LABELS+=("$entry")
     __SPEC_VALUES+=("$entry")
-  done < <(__spec_efforts_for "$target")
+  done < <(__spec_efforts_for "$target" "$model")
   __SPEC_LABELS+=("入力する..."); __SPEC_VALUES+=("__type__")
   __spec_menu "$label - effort" "$note" || return 1
 

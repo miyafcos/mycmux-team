@@ -6,6 +6,7 @@ import {
   LAUNCHER_MENU_TARGET,
   SHELL_TARGET,
   getCatalogEntry,
+  getLaunchEfforts,
   isValidLaunchSpecValue,
   type PaneLaunchSpec,
 } from "../../lib/agentCatalog";
@@ -47,6 +48,7 @@ export default function AgentSelector({ slotIndex, value, onChange }: AgentSelec
   const entry = getCatalogEntry(value.target);
   const models = useLaunchModels(entry);
   const model = value.model ?? "";
+  const efforts = getLaunchEfforts(entry, model);
   // Empty is the default (no flag). A non-empty value that could be read as a
   // flag is dropped at launch, so say so here rather than silently ignoring it.
   // Trimmed the same way the launch path trims it, or a trailing space would
@@ -90,7 +92,15 @@ export default function AgentSelector({ slotIndex, value, onChange }: AgentSelec
             <input
               list={modelListId}
               value={model}
-              onChange={(event) => onChange({ ...value, model: event.target.value })}
+              onChange={(event) => {
+                const nextModel = event.target.value;
+                const nextEfforts = getLaunchEfforts(entry, nextModel);
+                onChange({
+                  ...value,
+                  model: nextModel,
+                  effort: value.effort && !nextEfforts.includes(value.effort) ? "" : value.effort,
+                });
+              }}
               placeholder={setupStrings.modelPlaceholder}
               spellCheck={false}
               aria-label={setupStrings.paneModelLabel(slotIndex + 1)}
@@ -108,7 +118,7 @@ export default function AgentSelector({ slotIndex, value, onChange }: AgentSelec
                 </option>
               ))}
             </datalist>
-            {entry.efforts.length > 0 && (
+            {efforts.length > 0 && (
               <select
                 value={value.effort ?? ""}
                 onChange={(event) => onChange({ ...value, effort: event.target.value })}
@@ -116,7 +126,7 @@ export default function AgentSelector({ slotIndex, value, onChange }: AgentSelec
                 style={{ ...controlStyle, flex: 1, minWidth: 0, cursor: "pointer" }}
               >
                 <option value="" style={optionStyle}>effort (default)</option>
-                {entry.efforts.map((effort) => (
+                {efforts.map((effort) => (
                   <option key={effort} value={effort} style={optionStyle}>
                     {effort}
                   </option>

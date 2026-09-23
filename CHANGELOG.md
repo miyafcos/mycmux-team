@@ -4,6 +4,17 @@
 
 ---
 
+## [0.78.1] - 2026-09-23
+
+ランチャーで選べるCodexのモデルにGPT-6のSolとLunaを加えた版。
+
+- Add: ランチャーと「新しいワークスペース」の画面で選べるCodexのモデルに、GPT-6のSolとLunaを追加した。GPT-6の3つを先に並べ、5.6系は名前に世代を入れて残した。
+- Change: Codexのeffortの選択肢から、現行のモデルが受け付けないnoneを外した。Lunaではultraを出さず、モデルを替えて選んでいたeffortが使えなくなったときは既定に戻す。
+- Change: 同梱のClaudeスキル (session-dispatch・oracmux) が案内するCodexのモデルを、GPT-6のSol (既定) とLunaに合わせた。
+- Chore: 新しい作業ツリーで取り出すとテキストプレビューのCSSがCRLFになり、テストが1件落ちていた。.gitattributesでLFに固定した。
+
+---
+
 ## [0.78.0] - 2026-09-21
 
 Jev / OpenRouterでペインの関係・役割・状態を判定し、3つの再配置案を作れる版。

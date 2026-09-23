@@ -40,7 +40,7 @@ python scripts/mycmux_agent_cli.py web-open --preset gemini && python scripts/my
 ## 判断者・セルフレビュー
 
 採否は母艦→宮崎さん。提出前にセルフレビュー 2 周 (1 周目=受入条件の充足、2 周目=指示外変更・退行・積み残し) を報告に書く。
-モデル・effort: `gpt-6-astra` high (標準実装)。3 ファイル超なので Codex ALWAYS 委譲。Grok canary 適格 (認証・決済・DB を含まない)。
+モデル・effort: `gpt-6-sol` xhigh (L1 標準実装・2026-09-23〜)。3 ファイル超なので Codex ALWAYS 委譲。Grok canary 適格 (認証・決済・DB を含まない)。
 
 ## 完成後に oracmux 側で変えること
 

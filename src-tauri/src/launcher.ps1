@@ -822,10 +822,12 @@ $ClaudeModels = @(
   New-MycmuxModelChoice "Haiku" "haiku"
 )
 $CodexModels = @(
-  New-MycmuxModelChoice "Astra (flagship)" "gpt-6-astra"
-  New-MycmuxModelChoice "Sol (5.6 fallback)" "gpt-5.6-sol"
-  New-MycmuxModelChoice "Terra (standard)" "gpt-5.6-terra"
-  New-MycmuxModelChoice "Luna (light)" "gpt-5.6-luna"
+  New-MycmuxModelChoice "Astra (6 flagship)" "gpt-6-astra"
+  New-MycmuxModelChoice "Sol (6)" "gpt-6-sol"
+  New-MycmuxModelChoice "Luna (6 light)" "gpt-6-luna"
+  New-MycmuxModelChoice "Sol (5.6)" "gpt-5.6-sol"
+  New-MycmuxModelChoice "Terra (5.6)" "gpt-5.6-terra"
+  New-MycmuxModelChoice "Luna (5.6)" "gpt-5.6-luna"
 )
 $AgyModels = @(
   New-MycmuxModelChoice "Gemini 3.1 Pro (High)" "gemini-3.1-pro-high"
@@ -837,7 +839,7 @@ $AgyModels = @(
   New-MycmuxModelChoice "Claude Sonnet 4.6 (Thinking)" "claude-sonnet-4-6"
 )
 $ClaudeEfforts = @("low", "medium", "high", "xhigh", "max")
-$CodexEfforts = @("none", "low", "medium", "high", "xhigh", "max", "ultra")
+$CodexEfforts = @("low", "medium", "high", "xhigh", "max", "ultra")
 $ShortEfforts = @("low", "medium", "high")
 
 $LaunchSpecCatalog = @{
@@ -1221,6 +1223,7 @@ function Invoke-MycmuxLaunchSpecMenu {
   $note = if ($model) { "model: $model" } else { "model: (default)" }
   $effortChoices = @()
   foreach ($effort in $spec.Efforts) {
+    if ($Option.Target -eq "codex" -and $model -cin @("gpt-6-luna", "gpt-5.6-luna") -and $effort -eq "ultra") { continue }
     $effortChoices += [pscustomobject]@{ Label = $effort; Value = $effort }
   }
   $effort = Show-MycmuxSpecMenu -Title ("{0} - effort" -f $Option.Label) -Choices $effortChoices -Note $note

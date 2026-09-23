@@ -17,6 +17,7 @@ import { AgentKindIcon } from "../icons/AgentIcons";
 import {
   buildLaunchSpecEnv,
   getCatalogEntry,
+  getLaunchEfforts,
   isValidLaunchSpecValue,
 } from "../../lib/agentCatalog";
 import { agentIdForSessionKind } from "../../lib/agentSessionConfig";
@@ -314,6 +315,13 @@ export default function LauncherPane({
   const specEntry = specTarget ? getCatalogEntry(specTarget) : undefined;
   // claude-codex's chips are its installed models.json, re-read on each open.
   const specModels = useLaunchModels(specEntry);
+  const specEfforts = getLaunchEfforts(specEntry, model);
+  const chooseModel = (next: string) => {
+    setModel(next);
+    // A supported effort can survive a model change; an unsupported one
+    // returns to the CLI default rather than failing when the pane starts.
+    if (effort && !getLaunchEfforts(specEntry, next).includes(effort)) setEffort("");
+  };
   // No list means the model is typed; focus follows that, not the list itself.
   const specTypesModel = specModels.length === 0;
 
@@ -581,9 +589,9 @@ export default function LauncherPane({
         event.preventDefault();
         const step = event.key === "ArrowLeft" ? -1 : 1;
         if (specRow === "model" && specModels.length > 0) {
-          setModel((current) => cycleChoice(current, specModels.map((choice) => choice.value), step));
+          chooseModel(cycleChoice(model, specModels.map((choice) => choice.value), step));
         } else if (specRow === "effort") {
-          setEffort((current) => cycleChoice(current, specEntry.efforts, step));
+          setEffort((current) => cycleChoice(current, specEfforts, step));
         }
       } else if (event.key === "Enter") {
         event.preventDefault();
@@ -960,7 +968,7 @@ export default function LauncherPane({
               <button
                 type="button"
                 onMouseDown={keepFocus}
-                onClick={() => setModel("")}
+                onClick={() => chooseModel("")}
                 style={{ ...specChip, ...(model === "" ? specChipOn : null) }}
               >
                 {S.specDefault}
@@ -971,7 +979,7 @@ export default function LauncherPane({
                   type="button"
                   onMouseDown={keepFocus}
                   title={choice.value}
-                  onClick={() => setModel(choice.value)}
+                  onClick={() => chooseModel(choice.value)}
                   style={{ ...specChip, ...(model === choice.value ? specChipOn : null) }}
                 >
                   {choice.label}
@@ -986,14 +994,14 @@ export default function LauncherPane({
               value={model}
               onFocus={() => setSpecRow("model")}
               onKeyDown={onModelKeyDown}
-              onChange={(event) => setModel(event.target.value)}
+              onChange={(event) => chooseModel(event.target.value)}
               placeholder={S.modelDefault}
               aria-label={S.modelLabel}
               spellCheck={false}
               style={{ ...specControl, borderColor: modelRejected ? "var(--cmux-red)" : "var(--cmux-border)" }}
             />
           )}
-          {specEntry.efforts.length > 0 && (
+          {specEfforts.length > 0 && (
             <>
               <div style={{ ...specLabel, ...(isActive && specRow === "effort" ? { color: "var(--cmux-accent-text)" } : null) }}>{S.effortLabel}</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
@@ -1005,7 +1013,7 @@ export default function LauncherPane({
                 >
                   {S.specDefault}
                 </button>
-                {specEntry.efforts.map((value) => (
+                {specEfforts.map((value) => (
                   <button
                     key={value}
                     type="button"

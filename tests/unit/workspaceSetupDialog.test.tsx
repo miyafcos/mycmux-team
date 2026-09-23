@@ -139,15 +139,16 @@ describe("WorkspaceSetup", () => {
     const datalist = container.querySelector("datalist");
     expect(Array.from(datalist?.querySelectorAll("option") ?? []).map((o) => o.value)).toEqual([
       "gpt-6-astra",
+      "gpt-6-sol",
+      "gpt-6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
     ]);
-    // Codex has a "none" step the Claude CLIs do not, and (since GPT-6 Astra)
-    // an "ultra" step above max.
+    // With no model chosen Codex offers low through max plus "ultra" above it;
+    // the current models no longer take "none" (Luna, when chosen, stops at max).
     expect(Array.from(effortSelect().options).map((o) => o.value)).toEqual([
       "",
-      "none",
       "low",
       "medium",
       "high",

@@ -564,40 +564,46 @@ def test_a_model_that_could_be_read_as_a_flag_is_dropped(case_id: str) -> None:
 # that is off by one on one side, which is exactly what a menu gets wrong.
 
 # (id, target, POSIX key bytes, PowerShell key names, typed lines, expected)
-# Codex rows since GPT-6 Astra (2026-09-05): 1 default, 2 astra, 3 sol, 4 terra,
-# 5 luna, 6 type-in. Effort rows: 1 default, 2 none, 3 low, 4 medium, 5 high,
-# 6 xhigh, 7 max, 8 ultra.
+# Codex rows (2026-09-23): 1 default, 2 Astra 6, 3 Sol 6, 4 Luna 6,
+# 5 Sol 5.6, 6 Terra 5.6, 7 Luna 5.6, 8 type-in.
+# Efforts: 1 default, 2 low, 3 medium, 4 high, 5 xhigh, 6 max, 7 ultra
+# (Luna has no ultra; its type-in row is 7).
 MENU_CASES = [
-    ("digits", "codex", "45", ["4", "5"], [], "gpt-5.6-terra|high"),
+    ("digits", "codex", "64", ["6", "4"], [], "gpt-5.6-terra|high"),
     (
         "arrows",
         "codex",
         "\\x1b[B\\x1b[B\\x1b[B\\n\\x1b[B\\n",
         ["down", "down", "down", "enter", "down", "enter"],
         [],
-        "gpt-5.6-terra|none",
+        "gpt-6-luna|low",
     ),
     # The flagship row sits right under the default; the last effort row is ultra.
-    ("astra-ultra", "codex", "28", ["2", "8"], [], "gpt-6-astra|ultra"),
+    ("astra-ultra", "codex", "27", ["2", "7"], [], "gpt-6-astra|ultra"),
+    ("sol-ultra", "codex", "37", ["3", "7"], [], "gpt-6-sol|ultra"),
+    ("luna-max", "codex", "46", ["4", "6"], [], "gpt-6-luna|max"),
+    ("legacy-luna-max", "codex", "76", ["7", "6"], [], "gpt-5.6-luna|max"),
+    # Up from default selects type-in, then max: no hidden ultra row for Luna.
+    ("luna-cap", "codex", "4\\x1b[A\\x1b[A\\n", ["4", "up", "up", "enter"], [], "gpt-6-luna|max"),
     # Enter twice is the launch that happened before this menu existed.
     ("defaults", "claude", "\\n\\n", ["enter", "enter"], [], "|"),
     ("escape", "claude", "\\x1b", ["esc"], [], "CANCELLED"),
-    ("typed", "codex", "6gpt-5.6-custom\\n1", ["6", "1"], ["gpt-5.6-custom"], "gpt-5.6-custom|"),
+    ("typed", "codex", "8gpt-5.6-custom\\n1", ["8", "1"], ["gpt-5.6-custom"], "gpt-5.6-custom|"),
     # grok publishes no model list, so its type-in row is row 2.
     ("typed-grok", "grok", "2grok-4-fast\\n4", ["2", "4"], ["grok-4-fast"], "grok-4-fast|high"),
     (
         "typed-trim",
         "codex",
-        "6  gpt-5.6-luna  \\n1",
-        ["6", "1"],
+        "8  gpt-5.6-luna  \\n1",
+        ["8", "1"],
         ["  gpt-5.6-luna  "],
         "gpt-5.6-luna|",
     ),
     # Typing nothing takes the default rather than stranding the user there.
-    ("typed-blank", "codex", "6\\n1", ["6", "1"], [""], "|"),
+    ("typed-blank", "codex", "8\\n1", ["8", "1"], [""], "|"),
     # A typed value that could pass as a flag is refused and the menu stays put,
     # so the scripted keys run out and it backs out instead of launching.
-    ("typed-refused", "codex", "6--evil\\n", ["6"], ["--evil"], "CANCELLED"),
+    ("typed-refused", "codex", "8--evil\\n", ["8"], ["--evil"], "CANCELLED"),
     # Web and directory rows carry no target; the key does nothing.
     ("no-target", "", "\\n\\n", ["enter", "enter"], [], "CANCELLED"),
 ]
