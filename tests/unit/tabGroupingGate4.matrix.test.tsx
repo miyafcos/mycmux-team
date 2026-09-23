@@ -1427,6 +1427,7 @@ describe("I. external review reopen", () => {
     const listener = (event: Event) => intents.push((event as CustomEvent).detail);
     window.addEventListener(TAB_GROUPING_OPEN_EVENT, listener);
     await click(button(tabGroupingStrings.undoReview));
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
     window.removeEventListener(TAB_GROUPING_OPEN_EVENT, listener);
     expect(intents).toEqual([{ intent: "review" }]);
   });

@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { OverlayShell } from "../common/OverlayShell";
 import { tabGroupingStrings } from "../dashboard/dashboardStrings";
 import { useAiSettingsStore } from "../../stores/aiSettingsStore";
+import { jevErrorMessage, useJevSettingsStore } from "../../stores/jevSettingsStore";
 import { useGroupingRuntimeStore } from "../../stores/groupingRuntimeStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -24,10 +25,12 @@ import {
   planCardStats,
   previewKindForTab,
   TAB_GROUPING_NAME_MAX,
+  TAB_GROUPING_WAIT_BUDGET_MS,
   validateEditedPlan,
   type GroupingPlan,
   type GroupingAnalysisResult,
   type GroupingAnalysisStage,
+  type GroupingAnalysisTimings,
   type GroupingDestination,
   type GroupingScan,
   type LayoutTransaction,
@@ -1697,7 +1700,9 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisStage, setAnalysisStage] = useState<GroupingAnalysisStage>("scanning");
   const [analysisElapsedSeconds, setAnalysisElapsedSeconds] = useState(0);
+  const [analysisTimings, setAnalysisTimings] = useState<GroupingAnalysisTimings | null>(null);
   const [applying, setApplying] = useState(false);
+  const [applyingPreview, setApplyingPreview] = useState<{ before: Workspace[]; after: Workspace[] } | null>(null);
   const [highlightMoved, setHighlightMoved] = useState(false);
   const [status, setStatus] = useState<string>(tabGroupingStrings.analyzing);
   const [scan, setScan] = useState<GroupingScan | null>(null);
@@ -1742,6 +1747,8 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
   const aiProvider = useAiSettingsStore((state) => state.aiProvider);
   const aiModel = useAiSettingsStore((state) => state.aiModel);
   const aiEnabled = useAiSettingsStore((state) => state.aiEnabled);
+  const jevEnabled = useJevSettingsStore((state) => state.enabled);
+  const jevModel = useJevSettingsStore((state) => state.model);
   const groupingApplyAnimationEnabled = useSettingsStore((state) => state.groupingApplyAnimationEnabled);
   const prefersReducedMotion = usePrefersReducedMotion();
   const applyMotionEnabled = groupingApplyAnimationEnabled && !prefersReducedMotion;
@@ -1784,6 +1791,11 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
   const canReviewUndo = undo?.status === "available";
   const canReviewApplied = canReviewUndo;
   const analysisProgress = tabGroupingStrings.analysisProgress(analysisStage, analysisElapsedSeconds);
+  const analysisWaitExceeded = analysisElapsedSeconds * 1000 >= TAB_GROUPING_WAIT_BUDGET_MS;
+  const usablePlanWhileJudging = plans.length > 0 && !resultReadOnly;
+  const analysisInBackground = analyzing && analysisWaitExceeded && usablePlanWhileJudging;
+  const completedTimings = availableAnalysis?.analysis.timings ?? analysisTimings;
+  const secondsForTiming = (milliseconds: number) => Math.round(milliseconds / 100) / 10;
 
   useEffect(() => {
     if (!analyzing || !open) return;
@@ -1894,6 +1906,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     setParseIssues(result.parsed.status === "invalid" ? result.parsed.issues : result.parsed.droppedPlans);
     setAnalysisFreshness(freshness);
     setAnalysisGeneratedAt(generatedAt);
+    setAnalysisTimings(result.timings ?? null);
     if (result.parsed.status === "invalid") {
       setParseError(result.parsed.reason);
       setPlans([]);
@@ -1961,6 +1974,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
   const analyze = useCallback(async (force = true, options?: { keepCurrent?: boolean }) => {
     cancelJudge();
     const generation = ++analyzeGenerationRef.current;
+    const startedAt = Date.now();
     setAnalyzing(true);
     setAnalysisStage("scanning");
     setAnalysisElapsedSeconds(0);
@@ -1976,6 +1990,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
       setPlans([]);
       setAnalysisFreshness(null);
       setAnalysisGeneratedAt(null);
+      setAnalysisTimings(null);
       resetTransientUi();
       setMode("compare");
     }
@@ -1998,16 +2013,20 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
         setStatus(tabGroupingStrings.judgeFailedKeepingCurrent);
         return;
       }
-      if (options?.keepCurrent && panelTouchedRef.current) {
-        // Keep the completed result so switching later never starts another judge.
+      if (options?.keepCurrent && (
+        panelTouchedRef.current || Date.now() - startedAt >= TAB_GROUPING_WAIT_BUDGET_MS
+      )) {
+        // A late answer is offered explicitly even if the user has not edited yet.
         setAvailableAnalysis(produced);
-        setStatus(tabGroupingStrings.judgeReadyKeepingCurrent);
+        setStatus(panelTouchedRef.current
+          ? tabGroupingStrings.judgeReadyKeepingCurrent
+          : tabGroupingStrings.judgeReadyAfterWait);
         return;
       }
       hydrateAnalysis(produced.analysis, "fresh", produced.generatedAt);
     } catch (error) {
       if (generation !== analyzeGenerationRef.current) return;
-      const presented = formatJudgeError(error, aiProvider);
+      const presented = jevEnabled ? { summary: jevErrorMessage(error), raw: "" } : formatJudgeError(error, aiProvider);
       if (options?.keepCurrent) {
         setAnalysisNotice({
           summary: tabGroupingStrings.judgeFailedKeepingCurrent,
@@ -2026,7 +2045,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
         setAnalyzing(false);
       }
     }
-  }, [aiProvider, cancelJudge, hydrateAnalysis, resetTransientUi]);
+  }, [aiProvider, jevEnabled, cancelJudge, hydrateAnalysis, resetTransientUi]);
 
   useEffect(() => {
     if (!open) {
@@ -2172,6 +2191,10 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
       return;
     }
     applyInFlightRef.current = true;
+    setApplyingPreview({
+      before: structuredClone(useWorkspaceListStore.getState().workspaces),
+      after: ticket.transaction.workspaces,
+    });
     setApplying(true);
     setStatus(tabGroupingStrings.applying);
     const commit = (): GroupingCommitAttempt => {
@@ -2182,6 +2205,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
       }
     };
     const finish = (attempt: GroupingCommitAttempt) => {
+      setApplyingPreview(null);
       if (attempt.kind === "throw") {
         const message = attempt.error instanceof Error ? attempt.error.message : String(attempt.error);
         setTicket(null);
@@ -2309,8 +2333,12 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     setStatus(tabGroupingStrings.undoRestored);
   }, [edited]);
 
-  const previewCurrent = reviewApplied && undo && canReviewApplied ? undo.snapshot.workspaces : workspaces;
-  const previewAfter = reviewApplied && undo && canReviewApplied
+  // Committing updates the live store before the flight finishes. Keep its scene
+  // stable so the changing move count cannot remount and cancel the controller.
+  const previewCurrent = applying && applyingPreview ? applyingPreview.before
+    : reviewApplied && undo && canReviewApplied ? undo.snapshot.workspaces : workspaces;
+  const previewAfter = applying && applyingPreview ? applyingPreview.after
+    : reviewApplied && undo && canReviewApplied
     ? applied?.workspaces ?? workspaces
     : mode === "confirm" && ticket && preparedPlan === edited
       ? ticket.transaction.workspaces
@@ -2606,7 +2634,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
             <div className="cmux-tab-grouping-title">{tabGroupingStrings.title}</div>
             <div className="cmux-tab-grouping-header-copy">
               <div className="cmux-tab-grouping-status" role="status">
-                {analyzing ? tabGroupingStrings.analysisStage(analysisStage) : status}
+                {analyzing ? (analysisInBackground ? tabGroupingStrings.analysisBackground : tabGroupingStrings.analysisStage(analysisStage)) : status}
               </div>
               <div className="cmux-tab-grouping-headmeta">
                 {mode === "edit" && edited
@@ -2659,7 +2687,16 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
                   <div className="cmux-tab-grouping-note">
                     <div>{analysisProgress}</div>
                     {analysisFreshness === "local" ? <div>{tabGroupingStrings.localPlanWhileJudging}</div> : null}
-                    {analysisElapsedSeconds >= 60 ? <div>{tabGroupingStrings.analysisSlowHint}</div> : null}
+                    {analysisWaitExceeded ? <div>{usablePlanWhileJudging ? tabGroupingStrings.analysisSlowHint : tabGroupingStrings.analysisSlowNoPlanHint}</div> : null}
+                  </div>
+                ) : null}
+                {!analyzing && completedTimings ? (
+                  <div className="cmux-tab-grouping-note" title={tabGroupingStrings.analysisTimingDetail(
+                    secondsForTiming(completedTimings.scanMs),
+                    secondsForTiming(completedTimings.judgeMs),
+                    secondsForTiming(completedTimings.validationMs),
+                  )}>
+                    {tabGroupingStrings.analysisDuration(secondsForTiming(completedTimings.totalMs))}
                   </div>
                 ) : null}
                 {comparisonInsufficient ? <div className="cmux-tab-grouping-note">{tabGroupingStrings.comparisonInsufficient}</div> : null}
@@ -3291,7 +3328,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
             ) : null}
             <div className="cmux-tab-grouping-note">
               {mode === "compare" && currentPlanStats ? `${tabGroupingStrings.planMoveNote(currentPlanStats.moved)} / ` : ""}
-              {formatGroupingAiNote(aiProvider, aiModel, aiEnabled)}
+              {jevEnabled && aiEnabled ? `Jev / OpenRouter (${jevModel}) で関連するタスクから3案を作ります。適用前に編集できます。` : formatGroupingAiNote(aiProvider, aiModel, aiEnabled)}
               {editErrors.length > 0 ? ` / ${editErrors.join(" / ")}` : ""}
               {status !== tabGroupingStrings.ticketInvalidated && stale.length > 0
                 ? ` / ${stale.map((issue) => issue.message).join(" / ")}`

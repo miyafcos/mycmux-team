@@ -122,8 +122,8 @@ export const aiSettingsStrings = {
       disclosure: "選択したセッションのログを順に送ります",
     },
     tabRelayout: {
-      label: "ペイン再配置（準備中）",
-      disclosure: "監査完了まで利用できません",
+      label: "ペイン再配置",
+      disclosure: "画面末尾12行・作業フォルダ・親子関係から複数案を作ります。Jevは下で設定できます。",
     },
   },
   modelMismatch: (providerLabel: string): string =>

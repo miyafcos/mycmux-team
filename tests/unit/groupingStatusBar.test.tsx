@@ -45,6 +45,7 @@ vi.mock("../../src/components/dashboard/groupingStatusBarModel", () => ({
 }));
 
 import { GroupingStatusBar } from "../../src/components/dashboard/GroupingStatusBar";
+import { useDashboardViewStore } from "../../src/stores/dashboardViewStore";
 import { acquireGroupingPanelOpen } from "../../src/components/layout/groupingPanelPresence";
 import { TAB_GROUPING_OPEN_EVENT } from "../../src/components/layout/tabGrouping";
 
@@ -171,7 +172,8 @@ describe("GroupingStatusBar undo diagnostics", () => {
     expect(mocks.undo).toHaveBeenCalledTimes(1);
   });
 
-  it("dispatches review intent when the user opens the applied-layout review", () => {
+  it.each([true, false])("opens the applied-layout review with dashboard open=%s", async (open) => {
+    useDashboardViewStore.setState({ open });
     mocks.view = {
       kind: "undo_available",
       message: "再配置を適用しました",
@@ -186,7 +188,11 @@ describe("GroupingStatusBar undo diagnostics", () => {
       const review = [...container.querySelectorAll("button")]
         .find((button) => button.textContent === "変更内容を見る");
       expect(review).toBeDefined();
-      act(() => review?.click());
+      await act(async () => {
+        review?.click();
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(useDashboardViewStore.getState().open).toBe(true);
       expect(events).toHaveLength(1);
       expect(events[0]).toBeInstanceOf(CustomEvent);
       expect((events[0] as CustomEvent).detail).toEqual({ intent: "review" });

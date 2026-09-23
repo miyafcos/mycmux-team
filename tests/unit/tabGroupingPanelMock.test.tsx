@@ -515,20 +515,20 @@ describe("TabGroupingPanel mounted interaction", () => {
     await mountPanel();
     expect(document.body.textContent).toContain(tabGroupingStrings.analysisProgress("scanning", 0));
 
-    await act(async () => vi.advanceTimersByTimeAsync(48_000));
-    expect(document.body.textContent).toContain(tabGroupingStrings.analysisProgress("scanning", 48));
+    await act(async () => vi.advanceTimersByTimeAsync(8_000));
+    expect(document.body.textContent).toContain(tabGroupingStrings.analysisProgress("scanning", 8));
     expect(document.body.textContent).not.toContain(tabGroupingStrings.analysisSlowHint);
 
     await act(async () => analysisHarness.onProgress?.("judging"));
-    expect(document.body.textContent).toContain(tabGroupingStrings.analysisProgress("judging", 48));
+    expect(document.body.textContent).toContain(tabGroupingStrings.analysisProgress("judging", 8));
     expect(document.body.textContent).not.toContain(tabGroupingStrings.analysisStage("scanning"));
 
-    await act(async () => vi.advanceTimersByTimeAsync(11_000));
-    expect(document.body.textContent).toContain("59秒");
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(document.body.textContent).toContain("9秒");
     expect(document.body.textContent).not.toContain(tabGroupingStrings.analysisSlowHint);
 
     await act(async () => vi.advanceTimersByTimeAsync(1_000));
-    expect(document.body.textContent).toContain("60秒");
+    expect(document.body.textContent).toContain("10秒");
     expect(document.body.textContent).toContain(tabGroupingStrings.analysisSlowHint);
 
     await act(async () => resolveAnalysis(structuredClone(mockGroupingAnalysis)));
@@ -803,6 +803,29 @@ describe("TabGroupingPanel mounted interaction", () => {
     for (const flight of document.querySelectorAll<HTMLElement>(".cmux-tab-grouping-flight-chip[data-flight-tab-id]")) {
       expect(flight.dataset.flightPath).toBe(frozen.get(flight.dataset.flightTabId!));
     }
+  });
+
+  it("finishes the animated apply after the live store changes and keeps Undo usable", async () => {
+    useSettingsStore.setState({ groupingApplyAnimationEnabled: true });
+    const harness = installMeasurementHarness();
+    const onClose = vi.fn();
+    await mountPanel(onClose);
+    await openConfirm();
+    const original = structuralUndoSignature(useWorkspaceListStore.getState().workspaces);
+    await click(button(tabGroupingStrings.apply));
+    expect(document.querySelector(".cmux-tab-grouping-flight-chip")).not.toBeNull();
+    for (const time of [0, 90, 180, 270]) {
+      const frames = harness.frames.splice(0);
+      await act(async () => frames.forEach((frame) => frame(time)));
+      await settle();
+    }
+    expect(boundaryHarness.committed).not.toBeNull();
+    expect(structuralUndoSignature(useWorkspaceListStore.getState().workspaces)).not.toBe(original);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".cmux-tab-grouping-flight-chip")).toBeNull();
+    expect(button(tabGroupingStrings.apply).disabled).toBe(true);
+    await click(button(tabGroupingStrings.undo));
+    expect(structuralUndoSignature(useWorkspaceListStore.getState().workspaces)).toBe(original);
   });
 
   it.each([

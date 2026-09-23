@@ -292,6 +292,19 @@ describe("persistent numeric validation", () => {
 });
 
 describe("Gate 1 CommitTicket OCC", () => {
+  it("follows the moved active-workspace tab when dashboard focus clears the active session", () => {
+    const engine = createGroupingEngine(); const current = initialLayout();
+    const plan = planFor(["t1", "t2", "t3"], ["t1", "t2"]);
+    const context = { ...contextFor(current, "dashboard-null-focus"), activeSessionId: null };
+    const prepared = engine.prepareGroupingCommit(plan, current, context);
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) throw new Error(prepared.errors.join(" / "));
+    const store = harness(current); store.mutateSelection((s) => { s.activeSessionId = null; });
+    expect(engine.commitPreparedGrouping(plan, prepared.ticket, store.deps).ok).toBe(true);
+    expect(store.selection().activeWorkspaceId).not.toBe("ws-a");
+    expect(store.selection().activeSessionId).toBe("session-t1");
+    expect(engine.restoreGroupingUndo(store.deps).ok).toBe(true);
+  });
   it("rejects target close after preview without replacing", () => {
     const { engine, current, plan, ticket } = prepare();
     const store = harness(current);
@@ -669,7 +682,7 @@ describe("Gate 1 deterministic allocation and identity", () => {
   });
 
   it.each(["five-columns", "five-panes"] as const)(
-    "rejects an untouched workspace that already has %s",
+    "preserves an existing workspace that already has %s through apply and undo",
     (kind) => {
       const current = applyCapacityViolation(initialLayout(), kind);
       const allTabIds = current.flatMap((itemWorkspace) => (
@@ -682,11 +695,17 @@ describe("Gate 1 deterministic allocation and identity", () => {
         contextFor(current, `seed-existing-${kind}`),
       );
 
-      expect(validateLayoutIdentity(current)).toEqual(expect.arrayContaining([
-        expect.objectContaining({ locations: [expect.stringContaining("splitColumns")] }),
-      ]));
-      expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.errors.join(" ")).toContain("splitColumns");
+      expect(validateLayoutIdentity(current)).toEqual([]);
+      expect(result.ok).toBe(true);
+      const plan = planFor(allTabIds, ["t1"]);
+      const prepared = engine.prepareGroupingCommit(plan, current, contextFor(current, `wide-${kind}`));
+      expect(prepared.ok).toBe(true);
+      if (!prepared.ok) throw new Error(prepared.errors.join(" / "));
+      const store = harness(current);
+      expect(engine.commitPreparedGrouping(plan, prepared.ticket, store.deps).ok).toBe(true);
+      expect(store.workspaces().find((item) => item.id === "ws-b")?.splitColumns).toEqual(current[1].splitColumns);
+      expect(engine.restoreGroupingUndo(store.deps).ok).toBe(true);
+      expect(store.workspaces().map((item) => item.splitColumns)).toEqual(current.map((item) => item.splitColumns));
     },
   );
 
@@ -1023,14 +1042,14 @@ describe("Gate 1 undo boundary", () => {
       corrupt: (record: GroupingUndoRecord) => {
         applyCapacityViolation(record.snapshot.workspaces, "five-columns");
       },
-      marker: "splitColumns",
+      marker: "identities",
     },
     {
       name: "five panes in one column",
       corrupt: (record: GroupingUndoRecord) => {
         applyCapacityViolation(record.snapshot.workspaces, "five-panes");
       },
-      marker: "splitColumns",
+      marker: "identities",
     },
   ])("rejects an invalid undo snapshot immediately: $name", ({ corrupt, marker }) => {
     const { engine, current, plan, ticket } = prepare(`seed-invalid-undo-${marker}`);

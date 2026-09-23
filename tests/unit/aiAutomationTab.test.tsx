@@ -29,7 +29,9 @@ describe("AI と自動化の設定", () => {
       "ペイン整理のAI判定",
       "ailog セッション要約",
       "ailog 一括要約",
-      "ペイン再配置（準備中）",
+      "ペイン再配置 — Jev",
+      "OpenRouter APIキー",
+      "Jev設定を保存",
       "画面末尾14行・作業フォルダ・タブ構成を送ります",
       "セッションログ全文を送ります（トークン消費が大きい機能です）",
     ]) {
@@ -38,7 +40,9 @@ describe("AI と自動化の設定", () => {
 
     expect(html).toContain("自動");
     expect(html).toContain("ボタンで実行");
-    expect(html.match(/<select/g)).toHaveLength(2);
+    expect(html.match(/<select/g)).toHaveLength(3);
+    expect(html).toContain('aria-label="Jevの接続先"');
+    expect(html).not.toContain("ペイン再配置（準備中）");
     expect(html).not.toContain("委譲の見守り");
   });
 

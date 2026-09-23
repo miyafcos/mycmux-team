@@ -8,6 +8,7 @@ import {
   subscribeGroupingPanelOpen,
 } from "../layout/groupingPanelPresence";
 import { TAB_GROUPING_OPEN_EVENT } from "../layout/tabGrouping";
+import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 import { useGroupingRuntimeStore } from "../../stores/groupingRuntimeStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import {
@@ -76,7 +77,12 @@ export function GroupingStatusBar() {
       return;
     }
     if (id === "review_changes") {
-      window.dispatchEvent(new CustomEvent(TAB_GROUPING_OPEN_EVENT, { detail: { intent: "review" } }));
+      if (useDashboardViewStore.getState().open) {
+        window.dispatchEvent(new CustomEvent(TAB_GROUPING_OPEN_EVENT, { detail: { intent: "review" } }));
+      } else {
+        useDashboardViewStore.getState().openView();
+        window.setTimeout(() => window.dispatchEvent(new CustomEvent(TAB_GROUPING_OPEN_EVENT, { detail: { intent: "review" } })), 0);
+      }
     }
   };
 

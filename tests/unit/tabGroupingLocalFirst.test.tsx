@@ -137,9 +137,46 @@ afterEach(async () => {
   root = null;
   document.body.replaceChildren();
   __resetGroupingPrecomputeForTests();
+  vi.useRealTimers();
 });
 
 describe("local plan on a cold open", () => {
+  it("switches the wait message at ten seconds and offers a late AI result explicitly", async () => {
+    vi.useFakeTimers();
+    await mountPanel();
+    await act(async () => vi.advanceTimersByTimeAsync(9_999));
+    expect(document.body.textContent).not.toContain(tabGroupingStrings.analysisSlowHint);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(document.body.textContent).toContain(tabGroupingStrings.analysisSlowHint);
+    expect(document.body.textContent).toContain(tabGroupingStrings.analysisBackground);
+    expect(button(tabGroupingStrings.editPlan).disabled).toBe(false);
+    expect(button(tabGroupingStrings.confirmPlan).disabled).toBe(false);
+    analysisHarness.value = {
+      ...mockGroupingAnalysis,
+      timings: { totalMs: 10_000, scanMs: 100, judgeMs: 9900, validationMs: 0, judgeRequests: 1 },
+    };
+    await act(async () => analysisHarness.release?.());
+    await settle();
+    expect(document.body.textContent).toContain(LOCAL_GROUPING_PLAN_TITLE);
+    expect(document.body.textContent).toContain(tabGroupingStrings.judgeReadyAfterWait);
+    expect(document.body.textContent).toContain(tabGroupingStrings.analysisDuration(10));
+    expect(document.body.textContent).not.toContain(tabGroupingStrings.analysisSlowHint);
+    await click(button(tabGroupingStrings.showReadyPlans));
+    expect(document.body.textContent).toContain(mockGroupingAnalysis.parsed.plans[0].title);
+    expect(analysisHarness.calls).toBe(1);
+  });
+
+  it("does not claim a usable fallback when no local plan exists after ten seconds", async () => {
+    vi.useFakeTimers();
+    resetStores([]);
+    await mountPanel();
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(document.body.textContent).toContain(tabGroupingStrings.analysisSlowNoPlanHint);
+    expect(document.body.textContent).not.toContain(tabGroupingStrings.analysisBackground);
+    expect(document.body.textContent).not.toContain(tabGroupingStrings.analysisSlowHint);
+    expect(button(tabGroupingStrings.editPlan).disabled).toBe(true);
+  });
+
   function invalidAnalysis() {
     return {
       ...mockGroupingAnalysis,

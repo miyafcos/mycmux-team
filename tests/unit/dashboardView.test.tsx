@@ -346,6 +346,7 @@ describe("DashboardView page layout contract", () => {
     const workspaceView = readFileSync("src/components/workspace/WorkspaceView.tsx", "utf8");
     const dashboardCss = readFileSync("src/components/dashboard/DashboardView.css", "utf8");
     const dashboardView = readFileSync("src/components/dashboard/DashboardView.tsx", "utf8");
+    const appShell = readFileSync("src/components/layout/AppShell.tsx", "utf8");
 
     expect(workspaceView).toContain('visibility: isActive ? "inherit" : "hidden",');
     expect(workspaceView).toContain('pointerEvents: isActive ? "inherit" : "none",');
@@ -355,7 +356,8 @@ describe("DashboardView page layout contract", () => {
     expect(dashboardCss).toContain("bottom: 0;");
     expect(dashboardCss).toContain("left: 0;");
     expect(dashboardCss).toContain("z-index: 200;");
-    expect(dashboardView).toContain("TAB_GROUPING_ENTRY_ENABLED ? <GroupingStatusBar /> : null");
+    expect(appShell).toContain("<GroupingStatusBar />");
+    expect(dashboardView).not.toContain("<GroupingStatusBar />");
   });
 });
 

@@ -29,7 +29,7 @@ pub struct TabSweepJudgeError {
 }
 
 impl TabSweepJudgeError {
-    fn new(code: &'static str, detail: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &'static str, detail: impl Into<String>) -> Self {
         Self {
             code,
             detail: detail.into(),
@@ -41,12 +41,12 @@ impl TabSweepJudgeError {
     }
 }
 
-struct JudgeRegistration {
+pub(crate) struct JudgeRegistration {
     request_id: String,
 }
 
 impl JudgeRegistration {
-    fn register(
+    pub(crate) fn register(
         request_id: String,
         sender: oneshot::Sender<()>,
     ) -> Result<Self, TabSweepJudgeError> {

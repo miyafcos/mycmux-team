@@ -56,15 +56,17 @@ def test_ai_tab_lists_the_seven_declared_features() -> None:
         "セッションログ全文を送ります（トークン消費が大きい機能です）",
         "ailog 一括要約",
         "選択したセッションのログを順に送ります",
-        "ペイン再配置（準備中）",
-        "監査完了まで利用できません",
+        "ペイン再配置",
+        "画面末尾12行・作業フォルダ・親子関係から複数案を作ります。Jevは下で設定できます。",
     )
     for snippet in expected_copy:
         assert snippet in strings, f"Missing approved copy: {snippet}"
     assert "AutomationTab" not in text
     assert 'checked={replyDraftSuggestionsEnabled}' in text
     assert 'checked={autoPaneNamingEnabled}' in text
-    assert "unavailable" in text
+    assert "JevSettingsSection" in text
+    assert "ペイン再配置（準備中）" not in strings
+    assert "監査完了まで利用できません" not in strings
 
 
 def test_watchdog_settings_keep_the_existing_store_keys_and_setters() -> None:

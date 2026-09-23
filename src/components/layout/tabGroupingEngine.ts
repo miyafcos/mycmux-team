@@ -217,6 +217,7 @@ type LayoutIdentityPhase = "input" | "output";
 export function validateLayoutIdentity(
   workspaces: readonly Workspace[],
   phase: LayoutIdentityPhase = "input",
+  capacityBaseline: readonly Workspace[] = [],
 ): IdentityIssue[] {
   const workspaceIds = new Map<string, string[]>();
   const paneIds = new Map<string, string[]>();
@@ -259,7 +260,10 @@ export function validateLayoutIdentity(
         locations: [`${workspaceLocation}.gridTemplateId`],
       });
     }
-    if (splitColumns.length > 4) {
+    // Existing workspaces can be wider than the proposal editor. Preserve their
+    // capacity while still bounding every newly generated workspace.
+    const baseline = capacityBaseline.find((item) => item.id === workspace.id)?.splitColumns ?? [];
+    if (phase === "output" && splitColumns.length > Math.max(4, baseline.length)) {
       issues.push({
         kind: "layout",
         id: workspace.id,
@@ -271,7 +275,7 @@ export function validateLayoutIdentity(
       if (column.length === 0) {
         issues.push({ kind: "pane", id: "", locations: [`${workspaceLocation}.splitColumns[${columnIndex}]`] });
       }
-      if (column.length > 4) {
+      if (phase === "output" && column.length > Math.max(4, ...baseline.map((item) => item.length))) {
         issues.push({
           kind: "layout",
           id: workspace.id,
@@ -627,8 +631,13 @@ function tabIndex(workspaces: readonly Workspace[]): Map<string, { workspace: Wo
   return result;
 }
 
-function selectedTabId(workspaces: readonly Workspace[], activeSessionId: string | null): string | null {
-  if (!activeSessionId) return null;
+function selectedTabId(workspaces: readonly Workspace[], activeSessionId: string | null, activeWorkspaceId?: string | null): string | null {
+  if (!activeSessionId) {
+    // Dashboard/overlay focus can clear activePaneId. Follow a visible tab from
+    // the active workspace so applying does not land on an emptied source.
+    const pane = workspaces.find((item) => item.id === activeWorkspaceId)?.panes.find((item) => item.tabs.length > 0);
+    return pane?.activeTabId || pane?.tabs[0]?.id || null;
+  }
   for (const workspace of workspaces) {
     for (const itemPane of workspace.panes) {
       const found = itemPane.tabs.find((item) => item.sessionId === activeSessionId);
@@ -748,7 +757,7 @@ function compileGroupingPlanCore(
     if (!found) return { ok: false, errors: [`ペイン ${id} が見つかりません`], stale: [] };
     moved.set(id, structuredClone(found.tab));
   }
-  const preferredTabId = selectedTabId(current, context.activeSessionId);
+  const preferredTabId = selectedTabId(current, context.activeSessionId, context.activeWorkspaceId);
   const next = current.map((workspace) => pruneWorkspace({
     ...workspace,
     panes: workspace.panes.map((itemPane) => ({
@@ -825,7 +834,7 @@ function compileGroupingPlanCore(
     ...workspace,
     gridTemplateId: deriveGridTemplateId(workspace.splitColumns ?? []),
   }));
-  const outputIssues = validateLayoutIdentity(result, "output");
+  const outputIssues = validateLayoutIdentity(result, "output", current);
   if (outputIssues.length > 0) {
     return { ok: false, errors: outputIssues.map(identityIssueError), stale: [] };
   }
@@ -998,7 +1007,7 @@ function expectedResultErrors(
   const expectedNew = transaction.workspaces.filter((workspace) => !beforeIds.has(workspace.id)).map((workspace) => workspace.id);
   if (!sameIds(transaction.expected.newWorkspaceIds, expectedNew)) errors.push("new workspace metricsが再計算値と一致しません");
 
-  const activeTabId = selectedTabId(before, context.activeSessionId);
+  const activeTabId = selectedTabId(before, context.activeSessionId, context.activeWorkspaceId);
   const activeWasMoved = Boolean(activeTabId && targetIds.has(activeTabId));
   const activeLocation = activeTabId ? actualTabs[activeTabId] : undefined;
   const expectedFocus = {
@@ -1377,7 +1386,7 @@ export function createGroupingEngine(): GroupingEngine {
     try {
       deps.replaceWorkspaces(structuredClone(recompiled.transaction.workspaces));
       const actualLayout = deps.getWorkspaces();
-      const identityIssues = validateLayoutIdentity(actualLayout, "output");
+      const identityIssues = validateLayoutIdentity(actualLayout, "output", recompiled.transaction.workspaces);
       if (identityIssues.length > 0) {
         return rollback(identityIssues.map(identityIssueError));
       }
@@ -1486,6 +1495,17 @@ export function createGroupingEngine(): GroupingEngine {
         const reason = [...storedIssues, ...liveIssues].map(identityIssueError).join("; ");
         poison(deps);
         return { ok: false, kind: "restore_failed", reason };
+      }
+      // Moving panes never creates or replaces a terminal/browser session.
+      // Validate that invariant independently of the original layout capacity.
+      const identities = (workspaces: readonly Workspace[]) => JSON.stringify(workspaces.flatMap((workspace) => (
+        workspace.panes.flatMap((pane) => pane.tabs.map((tab) => (
+          JSON.stringify([tab.id, tab.sessionId, tab.type ?? "terminal"])
+        )))
+      )).sort());
+      if (identities(undoSnapshot.workspaces) !== identities(live.workspaces)) {
+        poison(deps);
+        return { ok: false, kind: "restore_failed", reason: "undo snapshot tab/session identities differ from the current layout" };
       }
       const expected = selectionPreservingSnapshot(
         undoSnapshot,

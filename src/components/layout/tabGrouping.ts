@@ -19,6 +19,7 @@ import { processStatusReasonForTab, readPaneTail } from "./socketCommands";
  */
 export const TAB_GROUPING_TAIL_LINES = 12;
 export const TAB_GROUPING_TAIL_CONCURRENCY = 4;
+export const TAB_GROUPING_WAIT_BUDGET_MS = 10_000;
 export const TAB_GROUPING_OPEN_EVENT = "mycmux:tab-grouping-open" as const;
 export const TAB_GROUPING_NAME_MAX = 20;
 export const TAB_GROUPING_MAX_COLUMNS = 4;
@@ -1228,37 +1229,64 @@ export interface GroupingAnalysisDependencies {
   judge: (prompt: string, requestId: string) => Promise<string>;
   requestId: () => string;
   onProgress?: (stage: GroupingAnalysisStage) => void;
+  now?: () => number;
 }
 
 export type GroupingAnalysisStage = "scanning" | "judging" | "validating" | "retrying";
 
-export const TAB_GROUPING_PROMPT_VERSION = "tab-grouping-v6";
+export const TAB_GROUPING_PROMPT_VERSION = "tab-grouping-v7";
+
+export interface GroupingAnalysisTimings {
+  totalMs: number;
+  scanMs: number;
+  judgeMs: number;
+  validationMs: number;
+  judgeRequests: number;
+}
 
 export interface GroupingAnalysisResult {
   scan: GroupingScan;
   parsed: ParseGroupingResult;
   retried: boolean;
   raw: string;
+  timings?: GroupingAnalysisTimings;
 }
 
 export async function runGroupingAnalysis(
   deps: GroupingAnalysisDependencies,
 ): Promise<GroupingAnalysisResult> {
+  const now = deps.now ?? (() => performance.now());
+  const startedAt = now();
+  let judgeMs = 0;
+  let validationMs = 0;
+  let judgeRequests = 0;
   deps.onProgress?.("scanning");
   const scan = await deps.scan();
+  const scanMs = Math.max(0, now() - startedAt);
+  const finish = (parsed: ParseGroupingResult, retried: boolean, raw: string): GroupingAnalysisResult => ({
+    scan, parsed, retried, raw,
+    timings: {
+      totalMs: Math.max(0, now() - startedAt),
+      scanMs, judgeMs, validationMs, judgeRequests,
+    },
+  });
+  const judge = async (prompt: string, requestId: string) => {
+    judgeRequests += 1;
+    const started = now();
+    try {
+      return await deps.judge(prompt, requestId);
+    } finally {
+      judgeMs += Math.max(0, now() - started);
+    }
+  };
   if (scan.tabs.length === 0) {
-    return {
-      scan,
-      parsed: {
-        status: "invalid",
-        reason: "再配置できる生きたターミナルがありません",
-        issues: [{ scope: "response", reason: "再配置できる生きたターミナルがありません" }],
-        raw: "",
-        validPlans: [],
-      },
-      retried: false,
+    return finish({
+      status: "invalid",
+      reason: "再配置できる生きたターミナルがありません",
+      issues: [{ scope: "response", reason: "再配置できる生きたターミナルがありません" }],
       raw: "",
-    };
+      validPlans: [],
+    }, false, "");
   }
   const allowed = scan.tabs.map((tab) => tab.id);
   const workspaceIds = scan.workspaceIds;
@@ -1266,11 +1294,19 @@ export async function runGroupingAnalysis(
   const names = scan.workspaces.map((workspace) => workspace.name);
   deps.onProgress?.("judging");
   const request = groupingPromptRequest(scan);
-  const firstRaw = await deps.judge(buildGroupingPrompt(scan, request.payload), firstId);
+  const firstRaw = await judge(buildGroupingPrompt(scan, request.payload), firstId);
   deps.onProgress?.("validating");
-  let parsed = parseGroupingOutput(firstRaw, allowed, workspaceIds, names, request.references);
+  const parse = (raw: string) => {
+    const started = now();
+    try {
+      return parseGroupingOutput(raw, allowed, workspaceIds, names, request.references);
+    } finally {
+      validationMs += Math.max(0, now() - started);
+    }
+  };
+  let parsed = parse(firstRaw);
   if (parsed.status === "ok") {
-    return { scan, parsed, retried: false, raw: firstRaw };
+    return finish(parsed, false, firstRaw);
   }
   const secondId = deps.requestId();
   deps.onProgress?.("retrying");
@@ -1281,8 +1317,8 @@ export async function runGroupingAnalysis(
     }
     return { ...issue, reason };
   });
-  const secondRaw = await deps.judge(buildGroupingPrompt(scan, request.payload, retryIssues), secondId);
+  const secondRaw = await judge(buildGroupingPrompt(scan, request.payload, retryIssues), secondId);
   deps.onProgress?.("validating");
-  parsed = parseGroupingOutput(secondRaw, allowed, workspaceIds, names, request.references);
-  return { scan, parsed, retried: true, raw: secondRaw };
+  parsed = parse(secondRaw);
+  return finish(parsed, true, secondRaw);
 }

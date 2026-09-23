@@ -5,6 +5,7 @@ import { useSettingsStore } from "../../../stores/settingsStore";
 import { aiSettingsStrings } from "../settingsStrings";
 import { checkboxLabelStyle, checkboxLabelStyleFor, dividerStyle, sectionHeadingStyle } from "../tabStyles";
 
+import { JevSettingsSection } from "./JevSettingsSection";
 import { ClaudeSkillsSection } from "./ClaudeSkillsSection";
 
 const CUSTOM_MODEL_VALUE = "__custom__";
@@ -193,10 +194,10 @@ export function AiTab() {
           label={aiSettingsStrings.features.tabRelayout.label}
           disclosure={aiSettingsStrings.features.tabRelayout.disclosure}
           enabled={enabled}
-          unavailable
         />
       </div>
 
+      <JevSettingsSection aiEnabled={enabled} />
       <div style={dividerStyle} />
       <ClaudeSkillsSection />
     </div>

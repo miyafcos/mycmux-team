@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { DEFAULT_JEV_SETTINGS, loadJevSettings, useJevSettingsStore } from "../stores/jevSettingsStore";
+import { JEV_GROUPING_VERSION, runJevGroupingAnalysis } from "../components/layout/jevGrouping";
 import {
   groupingPromptPayload,
   runGroupingAnalysis,
@@ -214,11 +216,12 @@ function productionDependencies(): GroupingPrecomputeDependencies {
     clearTimer: (timer) => clearTimeout(timer),
     getAiIdentity: () => {
       const state = useAiSettingsStore.getState();
+      const jev = useJevSettingsStore.getState();
       return {
         enabled: state.aiEnabled,
-        provider: state.aiProvider,
-        model: state.aiModel.trim(),
-        promptVersion: TAB_GROUPING_PROMPT_VERSION,
+        provider: jev.enabled ? "jev-openrouter" : state.aiProvider,
+        model: jev.enabled ? jev.model : state.aiModel.trim(),
+        promptVersion: jev.enabled ? `${JEV_GROUPING_VERSION}:${jev.revision}` : TAB_GROUPING_PROMPT_VERSION,
       };
     },
     getLayoutRevision: () => useWorkspaceListStore.getState().layoutRevision,
@@ -236,33 +239,35 @@ function productionDependencies(): GroupingPrecomputeDependencies {
       if (sessionId
         && state.volatileMetadata[sessionId] !== previous.volatileMetadata[sessionId]) listener();
     }),
-    subscribeAi: (listener) => useAiSettingsStore.subscribe((state, previous) => {
-      if (state.aiEnabled !== previous.aiEnabled
-        || state.aiProvider !== previous.aiProvider
-        || state.aiModel !== previous.aiModel) listener();
-    }),
+    subscribeAi: (listener) => {
+      const cli = useAiSettingsStore.subscribe((state, previous) => {
+        if (state.aiEnabled !== previous.aiEnabled || state.aiProvider !== previous.aiProvider || state.aiModel !== previous.aiModel) listener();
+      });
+      const jev = useJevSettingsStore.subscribe((state, previous) => {
+        if (state.enabled !== previous.enabled || state.model !== previous.model || state.revision !== previous.revision) listener();
+      });
+      return () => { cli(); jev(); };
+    },
     subscribeVisibility: (listener) => {
       if (typeof document === "undefined") return () => {};
       document.addEventListener("visibilitychange", listener);
       return () => document.removeEventListener("visibilitychange", listener);
     },
     scan: () => withScanTimeout(scanGroupingContext()),
-    analyze: (scan, judge, requestId) => runGroupingAnalysis({
+    analyze: (scan, judge, requestId) => (useJevSettingsStore.getState().enabled ? runJevGroupingAnalysis : runGroupingAnalysis)({
       scan: async () => scan,
       judge,
       requestId,
     }),
-    analyzeCurrent: (judge, requestId, onProgress) => runGroupingAnalysis({
+    analyzeCurrent: (judge, requestId, onProgress) => (useJevSettingsStore.getState().enabled ? runJevGroupingAnalysis : runGroupingAnalysis)({
       scan: () => withScanTimeout(scanGroupingContext()),
       judge,
       requestId,
       onProgress,
     }),
-    judge: (prompt, requestId) => invoke<string>("run_tab_sweep_judge", {
-      prompt,
-      requestId,
-      mode: "grouping",
-    }),
+    judge: (prompt, requestId) => useJevSettingsStore.getState().enabled
+      ? invoke<string>("run_jev_grouping_judge", { prompt, requestId })
+      : invoke<string>("run_tab_sweep_judge", { prompt, requestId, mode: "grouping" }),
     abort: (requestId) => invoke<boolean>("abort_tab_sweep_judge", { requestId }),
     readStorage: (key) => {
       try {
@@ -781,6 +786,10 @@ export function createGroupingPrecomputeCoordinator(
 let groupingPrecompute = createGroupingPrecomputeCoordinator(productionDependencies());
 
 export function startGroupingPrecomputeIfInterested(): boolean {
+  if (!useJevSettingsStore.getState().loaded) {
+    void loadJevSettings().then(() => groupingPrecompute.startIfInterested()).catch(() => undefined);
+    return false;
+  }
   return groupingPrecompute.startIfInterested();
 }
 
@@ -792,10 +801,11 @@ export function peekGroupingPrecompute(): GroupingPrecomputePeek {
   return groupingPrecompute.peek();
 }
 
-export function generateForegroundGroupingAnalysis(
+export async function generateForegroundGroupingAnalysis(
   force = false,
   onProgress?: (stage: GroupingAnalysisStage) => void,
 ): Promise<GroupingProductionResult> {
+  await loadJevSettings();
   return groupingPrecompute.generateForeground(force, onProgress);
 }
 
@@ -812,5 +822,6 @@ export function rememberGroupingAnalysis(
 
 export function __resetGroupingPrecomputeForTests(): void {
   groupingPrecompute.stop();
+  useJevSettingsStore.setState({ ...DEFAULT_JEV_SETTINGS, loaded: true, error: null });
   groupingPrecompute = createGroupingPrecomputeCoordinator(productionDependencies());
 }

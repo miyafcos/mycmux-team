@@ -37,6 +37,7 @@ import { TAB_RESTORE_CLOSED_EVENT, openTabSweepInDashboard } from "./tabSweep";
 import { openDashboardForActiveSession } from "./openDashboardForTab";
 import { DashboardView } from "../dashboard/DashboardView";
 import { GroupingFlightHost } from "./GroupingFlightHost";
+import { GroupingStatusBar } from "../dashboard/GroupingStatusBar";
 import { UI_DENSITY_TOKENS, useThemeStore, type UiDensity } from "../../stores/themeStore";
 import ErrorBoundary from "../common/ErrorBoundary";
 import { lightnessLiftFor, macQuietTextOverrides, macSurfaceOverrides } from "../../lib/theme/macSurfaces";
@@ -1289,6 +1290,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         </div>
 
         </div>
+        <GroupingStatusBar />
       </div>
       {/* Resident landing-flight layer: must stay a direct child of the themed
           root with data-cmux-overlay-root so OverlayShell isolation skips it. */}

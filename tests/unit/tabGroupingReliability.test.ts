@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildGroupingPrompt,
   parseGroupingOutput,
   runGroupingAnalysis,
   scanGroupingContext,
@@ -48,6 +49,61 @@ function scan(): GroupingScan {
   };
 }
 describe("grouping reliability", () => {
+  it("keeps multiple comparison plans instead of reducing choice to meet a time budget", () => {
+    const prompt = buildGroupingPrompt(scan());
+    expect(prompt).toContain("プランを2〜3件");
+    expect(prompt).toContain("切り口の異なる案");
+    expect(prompt).not.toContain("プランを1件だけ");
+  });
+
+  it("keeps scan, judge and total timings on a successful result", async () => {
+    let clock = 0;
+    const result = await runGroupingAnalysis({
+      now: () => clock,
+      scan: async () => { clock += 120; return scan(); },
+      judge: async () => { clock += 880; return JSON.stringify(response()); },
+      requestId: () => "timed",
+    });
+    expect(result.timings).toEqual({
+      totalMs: 1000, scanMs: 120, judgeMs: 880, validationMs: 0, judgeRequests: 1,
+    });
+    expect(result.parsed.status).toBe("ok");
+  });
+
+  it("includes both judge calls in retry timings without dropping the scan time", async () => {
+    let clock = 0;
+    let calls = 0;
+    const result = await runGroupingAnalysis({
+      now: () => clock,
+      scan: async () => { clock += 200; return scan(); },
+      judge: async () => {
+        clock += 500;
+        return ++calls === 1 ? "invalid" : JSON.stringify(response());
+      },
+      requestId: () => "retry-timed",
+    });
+    expect(result.timings).toEqual({
+      totalMs: 1200, scanMs: 200, judgeMs: 1000, validationMs: 0, judgeRequests: 2,
+    });
+    expect(result.retried).toBe(true);
+  });
+
+  it("repairs invalid output even when the first answer was slow", async () => {
+    let clock = 0;
+    let calls = 0;
+    const judge = vi.fn(async () => {
+      clock += 10_000;
+      return ++calls === 1 ? "invalid" : JSON.stringify(response());
+    });
+    const result = await runGroupingAnalysis({
+      now: () => clock, scan: async () => scan(), judge, requestId: () => "slow",
+    });
+    expect(result.parsed.status).toBe("ok");
+    expect(result.retried).toBe(true);
+    expect(judge).toHaveBeenCalledTimes(2);
+    expect(result.timings?.judgeMs).toBe(20_000);
+  });
+
   it("keeps all three 19-pane plans when their new names already exist", () => {
     const parsed = parseGroupingOutput(JSON.stringify(response()), ids, ["existing"], names);
     expect(parsed.status).toBe("ok");
