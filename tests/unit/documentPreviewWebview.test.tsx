@@ -99,11 +99,11 @@ describe("collectWebPaneTabs", () => {
 });
 
 describe("webPaneIdentity", () => {
-  it("rebuilds a preview when the file or the reload counter changes", () => {
+  it("rebuilds only when the file changes", () => {
     const base = { tabId: "t", presetId: DOCUMENT_PREVIEW_PRESET_ID, previewPath: "a.html", previewReload: 0 };
     expect(webPaneIdentity(base)).toBe(webPaneIdentity({ ...base }));
     expect(webPaneIdentity({ ...base, previewPath: "b.html" })).not.toBe(webPaneIdentity(base));
-    expect(webPaneIdentity({ ...base, previewReload: 1 })).not.toBe(webPaneIdentity(base));
+    expect(webPaneIdentity({ ...base, previewReload: 1 })).toBe(webPaneIdentity(base));
   });
 
   it("leaves a Web tab keyed on its preset alone", () => {

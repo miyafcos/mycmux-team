@@ -2,6 +2,7 @@ import ReactDOM from "react-dom/client";
 import { Profiler } from "react";
 import App from "./App";
 import { initializePerfDiagnostics } from "./lib/perfDiagnostics";
+import { installPerfTimeline } from "./lib/perfTimeline";
 import { recordReactCommit } from "./lib/paintStats";
 import { useToastStore } from "./stores/toastStore";
 import { IS_MAC } from "./lib/keybindings";
@@ -45,6 +46,8 @@ window.addEventListener("error", (e) => {
 // selection-copy listener still fires (preventDefault does not stop
 // propagation).
 window.addEventListener("contextmenu", (e) => e.preventDefault());
+
+installPerfTimeline();
 
 if (import.meta.env.DEV) {
   initializePerfDiagnostics();

@@ -74,6 +74,7 @@ import {
   rowDividerPinsMatch,
 } from "../../lib/layoutMetrics";
 import { focusController } from "../../lib/focusController";
+import { recordPerf } from "../../lib/perfTimeline";
 import { getTerminalBufferLines, getTerminalWriteCounter, hasTerminalBuffer } from "../terminal/XTermWrapper";
 import { useToastStore } from "../../stores/toastStore";
 import { dashboardStrings } from "../dashboard/dashboardStrings";
@@ -2648,6 +2649,8 @@ export function useWorkspacePersist() {
         const adopted = await takePendingAdoption(windowLabel());
         if (!disposed && !windowClosing && adopted.length > 0) {
           adoptWorkspaceConfigs(adopted);
+          recordPerf("dock.adopted", windowLabel());
+          requestAnimationFrame(() => requestAnimationFrame(() => recordPerf("dock.main.painted", windowLabel())));
         }
       } catch (err) {
         console.warn("[persist] Failed to adopt workspaces from another window:", err);
@@ -2726,6 +2729,7 @@ export default function SocketListener() {
 /** Drag-only transfer. It preserves PTYs and targets the receiving window. */
 export async function transferWindowWorkspacesAndClose(toLabel: string): Promise<void> {
   if (toLabel === windowLabel() || windowClosing) return;
+  recordPerf("dock.return.request", windowLabel());
   windowClosing = true;
   try {
     await windowSaveInFlight;
@@ -2733,6 +2737,7 @@ export async function transferWindowWorkspacesAndClose(toLabel: string): Promise
     await publishWindowFragment(buildWindowFragment("transfer"));
     const workspaceIds = useWorkspaceListStore.getState().workspaces.map((workspace) => workspace.id);
     if (workspaceIds.length > 0) await releaseWorkspaces(windowLabel(), workspaceIds, toLabel);
+    recordPerf("dock.release.resolved", windowLabel());
     await setWindowCloseIntent(true);
     await getCurrentWindow().destroy();
   } catch (error) {

@@ -85,6 +85,7 @@ pub fn open_workspace_window(
         }
         ResolvedChildWindow::New(label) => label,
     };
+    crate::perf_timeline::mark("detach.rust.queued", Some(&label));
 
     // Queue *before* the window exists: the child asks for its adoption during
     // boot, so anything queued later would arrive after it decided it is empty.

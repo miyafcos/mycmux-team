@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { recordPerf } from "./lib/perfTimeline";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -36,7 +37,6 @@ import {
   prepareStartupSessionGate,
   waitForStartupSessionGate,
 } from "./lib/startupSessionGate";
-import AppShell from "./components/layout/AppShell";
 import DetachedPaneShell from "./components/layout/DetachedPaneShell";
 import { detachedWorkspaceForWindow } from "./lib/detachedPane";
 import ErrorBoundary from "./components/common/ErrorBoundary";
@@ -51,6 +51,9 @@ import { connectStallStore } from "./stores/stallStore";
 import { connectDispatchWatchdog } from "./stores/dispatchWatchdogStore";
 import { startAutoPaneNaming, stopAutoPaneNaming } from "./lib/autoPaneNaming";
 import { IS_MAC } from "./lib/keybindings";
+
+const loadAppShell = () => import("./components/layout/AppShell");
+const AppShell = lazy(loadAppShell);
 
 /** Longest a visible window waits for its first frames before it reveals anyway. */
 const REVEAL_FRAME_FALLBACK_MS = 250;
@@ -208,11 +211,11 @@ function App() {
 
   useEffect(() => {
     async function bootstrap() {
-      await Promise.all([persistLoaded, initDefaultShell()]);
+      await Promise.all([persistLoaded, initDefaultShell(), isMain ? loadAppShell() : Promise.resolve()]);
       await waitForSettingsHydration();
       const listStore = useWorkspaceListStore.getState();
       let launchCwd: string | null = null;
-      try {
+      if (isMain) try {
         launchCwd = await getLaunchCwd();
       } catch { /* ignore */ }
 
@@ -441,6 +444,7 @@ function App() {
       cancelAnimationFrame(rafB);
       if (frameFallback !== null) clearTimeout(frameFallback);
       try {
+        recordPerf("window.reveal.request", windowLabel());
         if (!isMain) {
           // Child windows are built hidden (open_child_window →
           // `.visible(false)`) and reveal themselves once they have painted.
@@ -448,16 +452,20 @@ function App() {
           // nothing in Phase 3a.
           const childWindow = getCurrentWindow();
           await childWindow.show();
+          recordPerf("window.visible", windowLabel());
           await childWindow.setFocus();
           setStartupMaskVisible(false);
+          requestAnimationFrame(() => requestAnimationFrame(() => recordPerf("workspace.first.frame", windowLabel())));
           return;
         }
         const { expected } = getStartupSessionGateSnapshot();
         const startupTimeoutMs = Math.min(12000, Math.max(1800, 700 + expected * 350));
         const gateCompletion = waitForStartupSessionGate(startupTimeoutMs);
         await revealMainWindow();
+        recordPerf("window.visible", windowLabel());
         if (cancelled) return;
         setStartupMaskVisible(false);
+        requestAnimationFrame(() => requestAnimationFrame(() => recordPerf("workspace.first.frame", windowLabel())));
         void gateCompletion.then((gateResult) => {
           if (gateResult.timedOut) {
             console.warn(`[startup] session gate timed out with ${gateResult.pending} sessions still pending`);
@@ -556,7 +564,9 @@ function App() {
       <ErrorBoundary>
         {detachedWorkspace
           ? <DetachedPaneShell workspace={detachedWorkspace} />
-          : <AppShell uiVariant={uiVariant} />}
+          : <Suspense fallback={<div style={{ width: "100%", height: "100%" }} />}>
+              <AppShell uiVariant={uiVariant} />
+            </Suspense>}
         <ToastHost />
       </ErrorBoundary>
       {startupMaskVisible && (

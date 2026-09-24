@@ -125,13 +125,18 @@ describe("ui_density persistence wiring", () => {
   });
 
   it("AppShell drives the density tokens", () => {
-    const source = readFileSync(
+    const shell = readFileSync(
       join(__dirname, "../../src/components/layout/AppShell.tsx"),
       "utf8",
     );
+    const source = readFileSync(
+      join(__dirname, "../../src/components/layout/themeVars.ts"),
+      "utf8",
+    );
+    expect(shell).toMatch(/buildThemeVars\(/);
+    expect(shell).toMatch(/uiFontScale/);
     expect(source).toMatch(/--cmux-line-height-ui/);
     expect(source).toMatch(/UI_DENSITY_TOKENS/);
-    expect(source).toMatch(/uiFontScale/);
     expect(source).toMatch(/Math\.max\(11,/);
   });
 });

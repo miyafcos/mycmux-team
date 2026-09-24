@@ -14,6 +14,7 @@ import { useWebPaneTranscriptStore } from "../../src/stores/webPaneTranscriptSto
 const apiMocks = vi.hoisted(() => ({
   createWebPane: vi.fn(),
   destroyWebPane: vi.fn(),
+  reloadPreviewWebPane: vi.fn(),
   updateWebPane: vi.fn(),
   WEB_PANE_SIGNIN_EVENT: "mycmux:web-pane-signin",
 }));
@@ -72,6 +73,7 @@ beforeEach(() => {
   eventMocks.listen.mockResolvedValue(eventMocks.unlisten);
   apiMocks.createWebPane.mockResolvedValue("web-pane-web-tab");
   apiMocks.destroyWebPane.mockResolvedValue(undefined);
+  apiMocks.reloadPreviewWebPane.mockResolvedValue(undefined);
   apiMocks.updateWebPane.mockResolvedValue(undefined);
   usePaneDragStore.setState({ item: null });
   useKeybindingStore.getState().resetAll();
@@ -88,6 +90,119 @@ afterEach(async () => {
 });
 
 describe("WebPaneController lifecycle", () => {
+  it("reloads changed HTML in its existing child webview", async () => {
+    vi.stubGlobal("__TAURI_INTERNALS__", {
+      convertFileSrc: (path: string) => `http://asset.localhost/${encodeURIComponent(path)}`,
+    });
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    }));
+    const workspace = workspaceWithWebTab();
+    const preview = workspace.panes[0].tabs[1];
+    preview.type = "browser";
+    preview.presetId = undefined;
+    preview.sourceKind = "html";
+    preview.previewPath = "C:/reports/report.html";
+    preview.htmlPath = preview.previewPath;
+    preview.reloadCounter = 0;
+    useWorkspaceListStore.setState({ workspaces: [workspace] });
+    const host = document.createElement("div");
+    host.dataset.webPaneHostTabId = preview.id;
+    host.getBoundingClientRect = () => ({ x: 0, y: 0, width: 800, height: 600 }) as DOMRect;
+    document.body.appendChild(host);
+    try {
+      await act(async () => root.render(<WebPaneController />));
+      await act(async () => {
+        frames.shift()?.(0);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(apiMocks.createWebPane).toHaveBeenCalledTimes(1);
+      useWorkspaceListStore.setState({ workspaces: [{ ...workspace, panes: [{
+        ...workspace.panes[0], tabs: [workspace.panes[0].tabs[0], { ...preview, reloadCounter: 1 }],
+      }] }] });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(apiMocks.reloadPreviewWebPane).toHaveBeenCalledExactlyOnceWith(preview.id);
+      expect(apiMocks.destroyWebPane).not.toHaveBeenCalled();
+      expect(apiMocks.createWebPane).toHaveBeenCalledTimes(1);
+    } finally { host.remove(); }
+  });
+
+  it("follows a resized host briefly and stops measuring after it settles", async () => {
+    vi.useFakeTimers();
+    let resize: ResizeObserverCallback | undefined;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { resize = callback; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
+      setTimeout(() => callback(performance.now()), 16));
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => clearTimeout(id));
+    const host = document.createElement("div");
+    host.dataset.webPaneHostTabId = "web-tab";
+    const terminal = document.createElement("div");
+    terminal.className = "xterm";
+    const cursor = document.createElement("textarea");
+    terminal.appendChild(cursor);
+    let width = 800;
+    const bounds = vi.spyOn(host, "getBoundingClientRect").mockImplementation(() => ({
+      x: 0, y: 0, width, height: 600,
+    }) as DOMRect);
+    document.body.appendChild(host);
+    try {
+      await act(async () => root.render(<WebPaneController />));
+      await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+      const settledReads = bounds.mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+      expect(bounds).toHaveBeenCalledTimes(settledReads);
+
+      document.body.appendChild(terminal);
+      await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+      const beforeOutput = bounds.mock.calls.length;
+      cursor.style.left = "4px";
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+      expect(bounds).toHaveBeenCalledTimes(beforeOutput);
+
+      const overlay = document.createElement("div");
+      overlay.className = "cmux-overlay-backdrop";
+      document.body.appendChild(overlay);
+      await act(async () => { await vi.advanceTimersByTimeAsync(80); });
+      expect(apiMocks.updateWebPane).toHaveBeenCalledWith(
+        "web-tab", null, false, expect.any(Array),
+      );
+      overlay.remove();
+      await act(async () => { await vi.advanceTimersByTimeAsync(80); });
+      expect(apiMocks.updateWebPane).toHaveBeenCalledWith(
+        "web-tab", { x: 0, y: 0, width: 800, height: 600 }, true, expect.any(Array),
+      );
+
+      width = 720;
+      await act(async () => {
+        resize?.([], {} as ResizeObserver);
+        await vi.advanceTimersByTimeAsync(80);
+      });
+      expect(apiMocks.updateWebPane).toHaveBeenCalledWith(
+        "web-tab", { x: 0, y: 0, width: 720, height: 600 }, true, expect.any(Array),
+      );
+      await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+      const resizedReads = bounds.mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+      expect(bounds).toHaveBeenCalledTimes(resizedReads);
+    } finally {
+      await act(async () => root.unmount());
+      terminal.remove();
+      host.remove();
+      vi.useRealTimers();
+    }
+  });
+
   it("destroys the native webview when its web tab leaves the workspace state", async () => {
     await act(async () => {
       root.render(<WebPaneController />);

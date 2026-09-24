@@ -53,6 +53,11 @@ export function destroyWebPane(tabId: string): Promise<void> {
   return invoke<void>("webpane_destroy", { tabId });
 }
 
+/** Refresh an existing document preview in its owning window. */
+export function reloadPreviewWebPane(tabId: string): Promise<void> {
+  return invoke<void>("webpane_reload_preview", { tabId });
+}
+
 /** Emitted on every navigation of a web pane, including the first load. */
 export const WEB_PANE_URL_EVENT = "mycmux:web-pane-url";
 /** Emitted around a sign-in window: the panes on that profile are gone meanwhile. */

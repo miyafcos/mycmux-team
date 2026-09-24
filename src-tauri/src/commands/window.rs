@@ -380,6 +380,7 @@ pub fn spawn_child_window(
     width: Option<f64>,
     height: Option<f64>,
 ) -> Result<(), String> {
+    crate::perf_timeline::mark("window.spawn.request", Some(&label));
     let app_handle = app.clone();
     let build_label = label;
     let post_handle = app.clone();
@@ -422,6 +423,7 @@ pub fn spawn_child_window(
 
             match builder.build() {
                 Ok(window) => {
+                    crate::perf_timeline::mark("window.child.built", Some(&build_label));
                     // Restate size and position in explicit logical units now that
                     // the window knows which monitor (and scale factor) it is on.
                     // The builder applies them before that is settled, which on a

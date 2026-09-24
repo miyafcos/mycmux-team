@@ -2,6 +2,7 @@ import { openWorkspaceWindow, type DetachedPaneOrigin } from "./ipc";
 import { detachedWorkspaceConfig } from "./detachedPane";
 import { windowLabel } from "./windowContext";
 import { focusController } from "./focusController";
+import { recordPerf } from "./perfTimeline";
 import { usePaneMetadataStore, useWorkspaceListStore } from "../stores/workspaceStore";
 import { evictTerminalCache } from "../components/terminal/terminalCache";
 import { toTransferConfig } from "../components/layout/SocketListener";
@@ -54,6 +55,7 @@ export async function tearOutWorkspaceToNewWindow(
     : serialized;
   if (!config || config.panes.length === 0) return null;
 
+  recordPerf("detach.request", workspaceId);
   const label = await openWorkspaceWindow({
     fromLabel: windowLabel(),
     workspaces: [config],
@@ -61,6 +63,7 @@ export async function tearOutWorkspaceToNewWindow(
     y: placement.y,
     ...(config.detached ? { width: 720, height: 520 } : {}),
   });
+  recordPerf("detach.open.resolved", label);
 
   // Only now does it leave this window: if opening the window failed, the
   // workspace (and its sessions) stay exactly where they were.
@@ -73,6 +76,7 @@ export async function tearOutWorkspaceToNewWindow(
     usePaneMetadataStore.getState().removeMetadata(sessionId);
   }
   useWorkspaceListStore.getState().removeWorkspace(workspaceId);
+  recordPerf("detach.source.removed", workspaceId);
 
   return label;
 }

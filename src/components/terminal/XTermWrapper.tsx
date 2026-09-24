@@ -139,6 +139,7 @@ import {
   stripTerminalMouseModeControlSequencesForSession,
 } from "./terminalMouseInputFilter";
 import { HTTP_LINK_REGEX, registerArtifactLinkProvider } from "./terminalLinkProvider";
+import { recordPerf } from "../../lib/perfTimeline";
 import { ANSI_KEYS, withAnsiContrastFloor } from "./terminalThemeColors";
 import { buildLaunchRequest, type TerminalLaunchParams } from "./terminalLaunchParams";
 import { TerminalAckCoalescer } from "../../lib/terminalAckCoalescer";
@@ -1515,14 +1516,20 @@ export default memo(function XTermWrapper({
       };
     };
 
+    let awaitingInputPaint = false;
+    let firstTerminalPaint = true;
     const registerRenderListener = (currentTerm: Terminal): void => {
       renderDisposable?.dispose();
-      if (!import.meta.env.DEV) {
-        renderDisposable = null;
-        return;
-      }
       renderDisposable = currentTerm.onRender(({ start, end }) => {
-        recordRender(start, end, currentTerm.rows, sessionId);
+        if (firstTerminalPaint) {
+          firstTerminalPaint = false;
+          recordPerf("terminal.first.paint", sessionId);
+        }
+        if (awaitingInputPaint) {
+          awaitingInputPaint = false;
+          recordPerf("terminal.input.painted", sessionId);
+        }
+        if (import.meta.env.DEV) recordRender(start, end, currentTerm.rows, sessionId);
       });
     };
 
@@ -1571,6 +1578,7 @@ export default memo(function XTermWrapper({
     const attachTerminalKeyHandler = (currentTerm: Terminal): void => {
       currentTerm.attachCustomKeyEventHandler((e: KeyboardEvent) => {
         if (e.type !== "keydown") return true;
+        recordPerf("terminal.keydown", sessionId);
 
         // Hand Ctrl+V to the browser's paste path instead of the PTY. Not on
         // macOS: there Control belongs to the shell — ⌃V is quoted-insert —
@@ -2661,6 +2669,8 @@ export default memo(function XTermWrapper({
         if (!inputData) return;
         if (!shouldAcceptTerminalInput(sessionId)) return;
         if (hasNonWheelInput) {
+          recordPerf("terminal.input.accepted", sessionId);
+          awaitingInputPaint = true;
           clearActiveTerminalNotification(sessionId);
           focusTerminalIfNeeded(currentTerm, sessionId);
         }

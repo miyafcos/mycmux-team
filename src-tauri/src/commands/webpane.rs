@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use base64::Engine;
@@ -8,9 +9,7 @@ use std::time::Duration;
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-#[cfg(target_os = "macos")]
-use tauri::webview::PageLoadEvent;
-use tauri::webview::{DownloadEvent, NewWindowResponse};
+use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent};
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Url, Webview, WebviewBuilder,
     WebviewUrl, Window,
@@ -238,6 +237,9 @@ const WEB_PANE_SIGNIN_LIVENESS_DELAY: Duration = Duration::from_secs(2);
 static WEB_PANE_PUSH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// webview label -> preset id, so sign-in knows which panes share a profile.
 static WEB_PANE_OPEN_PRESETS: OnceLock<DashMap<String, &'static str>> = OnceLock::new();
+/// The original file URL, not the current page URL (which a relative link can change).
+static WEB_PANE_PREVIEW_URLS: OnceLock<DashMap<String, Url>> = OnceLock::new();
+static WEB_PANE_PREVIEW_RELOAD_SERIAL: AtomicU64 = AtomicU64::new(0);
 static WEB_PANE_PUSH_RESULTS: OnceLock<
     DashMap<
         String,
@@ -566,6 +568,22 @@ fn open_presets() -> &'static DashMap<String, &'static str> {
     WEB_PANE_OPEN_PRESETS.get_or_init(DashMap::new)
 }
 
+fn preview_urls() -> &'static DashMap<String, Url> {
+    WEB_PANE_PREVIEW_URLS.get_or_init(DashMap::new)
+}
+
+fn preview_reload_url(original: &Url) -> Result<Url, String> {
+    let preview = preset_by_id("preview")?;
+    if !preset_keeps_url_inside_pane(preview, original) {
+        return Err("preview reload requires its original asset URL".to_string());
+    }
+    let mut url = original.clone();
+    let serial = WEB_PANE_PREVIEW_RELOAD_SERIAL.fetch_add(1, Ordering::Relaxed) + 1;
+    url.query_pairs_mut()
+        .append_pair("mycmux_preview_reload", &serial.to_string());
+    Ok(url)
+}
+
 fn preset_for_label(label: &str) -> Option<WebPanePreset> {
     let id = open_presets().get(label).map(|entry| *entry.value())?;
     preset_by_id(id).ok()
@@ -891,6 +909,7 @@ pub async fn webpane_create(
     visible: Option<bool>,
     initial_url: Option<String>,
 ) -> Result<String, String> {
+    crate::perf_timeline::mark("webpane.create.enter", Some(&tab_id));
     let label = webview_label(&tab_id)?;
     let bounds = bounds.validate()?;
     let forwarded_shortcuts = validate_forwarded_shortcuts(forwarded_shortcuts)?;
@@ -906,6 +925,9 @@ pub async fn webpane_create(
         // Re-assert the mapping: a sign-in run drops it while the webview is
         // being torn down, and push needs to know the service either way.
         open_presets().insert(label.clone(), preset_by_id(&preset_id)?.id);
+        if preset.id == "preview" && url.as_str() != "about:blank" {
+            preview_urls().insert(label.clone(), url.clone());
+        }
         webview
             .eval(shortcut_update_script(&forwarded_shortcuts)?)
             .map_err(|error| format!("failed to update web pane shortcuts: {error}"))?;
@@ -936,7 +958,7 @@ pub async fn webpane_create(
     let new_window_app = app.clone();
     let new_window_label = label.clone();
     let download_tab_id = tab_id.clone();
-    let builder = WebviewBuilder::new(label.clone(), WebviewUrl::External(url))
+    let builder = WebviewBuilder::new(label.clone(), WebviewUrl::External(url.clone()))
         .focused(false)
         .data_directory(profile_dir)
         .initialization_script(automation_initialization_script(preset.id == "browser")?)
@@ -976,6 +998,16 @@ pub async fn webpane_create(
     };
     let builder = builder
         .on_page_load(move |_webview, payload| {
+            if payload.url().as_str() != "about:blank" {
+                match payload.event() {
+                    PageLoadEvent::Started => {
+                        crate::perf_timeline::mark("webpane.load.started", Some(&page_load_tab_id))
+                    }
+                    PageLoadEvent::Finished => {
+                        crate::perf_timeline::mark("webpane.load.finished", Some(&page_load_tab_id))
+                    }
+                }
+            }
             // Started fires for redirects too. Only a completed top-level URL
             // is allowed to become the status bar's signed-in/out state.
             #[cfg(target_os = "macos")]
@@ -1026,13 +1058,19 @@ pub async fn webpane_create(
             LogicalSize::new(bounds.width, bounds.height),
         )
         .map_err(|error| format!("failed to create web pane: {error}"))?;
+    crate::perf_timeline::mark("webpane.child.created", Some(&tab_id));
     open_presets().insert(label.clone(), preset.id);
+    if preset.id == "preview" && url.as_str() != "about:blank" {
+        preview_urls().insert(label.clone(), url);
+    }
     if visible == Some(false) {
         park_webview(&webview)?;
+        crate::perf_timeline::mark("webpane.child.parked", Some(&tab_id));
     } else {
         webview
             .show()
             .map_err(|error| format!("failed to show web pane: {error}"))?;
+        crate::perf_timeline::mark("webpane.child.shown", Some(&tab_id));
     }
     Ok(label)
 }
@@ -1058,6 +1096,7 @@ pub async fn webpane_update(
     forwarded_shortcuts: Vec<String>,
     park: Option<bool>,
 ) -> Result<(), String> {
+    crate::perf_timeline::mark("webpane.update.enter", Some(&tab_id));
     let label = webview_label(&tab_id)?;
     let webview = app
         .get_webview(&label)
@@ -1082,13 +1121,16 @@ pub async fn webpane_update(
     set_webview_bounds(&webview, bounds)?;
     webview
         .show()
-        .map_err(|error| format!("failed to show web pane: {error}"))
+        .map_err(|error| format!("failed to show web pane: {error}"))?;
+    crate::perf_timeline::mark("webpane.update.shown", Some(&tab_id));
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn webpane_destroy(app: AppHandle, tab_id: String) -> Result<(), String> {
     let label = webview_label(&tab_id)?;
     open_presets().remove(&label);
+    preview_urls().remove(&label);
     if let Ok(mut state) = download_state().lock() {
         state.records.retain(|record| record.tab_id != tab_id);
         state.reserved.retain(|_, owner| owner != &tab_id);
@@ -2030,6 +2072,28 @@ pub async fn webpane_navigate(
         _ => return Err("web.navigate requires url or action back/forward/reload".to_string()),
     }
     Ok(serde_json::json!({ "tabId": tab_id, "accepted": true }))
+}
+
+#[tauri::command]
+pub async fn webpane_reload_preview(
+    caller: Webview,
+    app: AppHandle,
+    tab_id: String,
+) -> Result<(), String> {
+    // command_webview accepts the primary webview of either the main window or
+    // a detached window, and refuses a caller from any other child webview.
+    let webview = command_webview(&caller, &app, &tab_id, "webpane.reload_preview")?;
+    if preset_for_label(webview.label()).map(|preset| preset.id) != Some("preview") {
+        return Err("webpane.reload_preview requires a document preview".to_string());
+    }
+    let original = preview_urls()
+        .get(webview.label())
+        .map(|entry| entry.value().clone())
+        .ok_or_else(|| "webpane.reload_preview has no original file".to_string())?;
+    let url = preview_reload_url(&original)?;
+    webview
+        .navigate(url)
+        .map_err(|error| format!("webpane.reload_preview failed: {error}"))
 }
 
 fn validate_snapshot_max_bytes(max_bytes: usize) -> Result<(), String> {
@@ -3232,6 +3296,23 @@ assert.match(reply.error, /host changed/);
                 .starts_with("web pane url is outside the preset's allowed hosts:")
         );
         assert!(initial_webpane_url(preview, Some("file:///C:/report.html")).is_err());
+    }
+
+    #[test]
+    fn preview_reload_keeps_the_original_file_and_refuses_other_origins() {
+        let original: Url = PREVIEW_DOCUMENT.parse().unwrap();
+        let first = preview_reload_url(&original).unwrap();
+        let second = preview_reload_url(&original).unwrap();
+        assert_eq!(first.scheme(), original.scheme());
+        assert_eq!(first.host_str(), original.host_str());
+        assert_eq!(first.path(), original.path());
+        assert_ne!(first, second);
+        assert!(first.query().unwrap().contains("mycmux_preview_reload="));
+        for forbidden in ["about:blank", "file:///C:/report.html", "https://accounts.google.com/"] {
+            assert!(preview_reload_url(&forbidden.parse().unwrap()).is_err());
+        }
+        let mac: Url = "asset://localhost/Users/miyaz/report.html".parse().unwrap();
+        assert_eq!(preview_reload_url(&mac).unwrap().path(), mac.path());
     }
 
     #[test]

@@ -20,6 +20,7 @@ import { useUiStore } from "./uiStore";
 import { applyStructuralActivation } from "../lib/focusController";
 import { useToastStore } from "./toastStore";
 import { bump as bumpPaintStat } from "../lib/paintStats";
+import { recordPerf } from "../lib/perfTimeline";
 import { usePetSettingsStore } from "./petSettingsStore";
 import { buildWorkspaceRecord } from "./workspaceFactory";
 import {
@@ -423,6 +424,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
   setActiveWorkspace: (id) => {
     assertExternalLayoutMutationAllowed("workspace-action");
     const state = get();
+    recordPerf("workspace.switch.click", id);
     const workspace = state.workspaces.find((w) => w.id === id);
     if (workspace && state.activeWorkspaceId !== id) {
       bumpPaintStat("tab-switch");
@@ -454,6 +456,9 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     }
     applyStructuralActivation(nextActivePaneId);
     clearZoomIfMissingFromWorkspace(workspace);
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => requestAnimationFrame(() => recordPerf("workspace.switch.painted", id)));
+    }
   },
 
   renameWorkspace: (id, name) => {

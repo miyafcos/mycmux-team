@@ -19,6 +19,7 @@ mod open_with;
 #[cfg(target_os = "windows")]
 mod open_with_windows;
 mod pocket;
+mod perf_timeline;
 mod pty;
 mod session_retention;
 mod session_state;
@@ -379,6 +380,7 @@ pub fn run() {
         .manage(usage::UsageState::new())
         .manage(cli_accounts::login_watch::LoginRegistry::default())
         .invoke_handler(tauri::generate_handler![
+            perf_timeline::perf_timeline_read,
             claude_skills::claude_skills_status,
             claude_skills::claude_skills_install,
             commands::terminal::create_session,
@@ -484,6 +486,7 @@ pub fn run() {
             commands::webpane::webpane_read,
             commands::webpane::webpane_read_result,
             commands::webpane::webpane_navigate,
+            commands::webpane::webpane_reload_preview,
             commands::webpane::webpane_eval,
             commands::webpane::webpane_eval_result,
             commands::webpane::webpane_snapshot,
