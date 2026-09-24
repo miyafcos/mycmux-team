@@ -135,7 +135,7 @@ ChatGPT が送信を飲み、**Gemini は Flash・Grok は ファスト** に変
 - pane 経路は mycmux 側の `web.read` / `web.open --url --background` / `web.close` (feat/web-read) が入った版が要る。旧版は exit 4/7 になるので `--via cdp` に落とす。`--upload` はさらに `web.upload` (v0.66.0 以降) が要る
 - **`--upload` の実体**: サービス自身の隠し file input へ直接ファイルを載せる。OS のファイル選択ダイアログは開かない。file input がいつ DOM に生えるかはサービスで違う (2026-09-09 実測) — ChatGPT (`input#upload-files`) と Grok (`input[type=file]`) は読込時点で存在、Gemini は「アップロードとツール」を押すまで存在しない。セレクタは `engines.json` の `upload_input` / `upload_open`。**サービス側のプレビューにファイル名が出るまで待ってから送る** (出なければ送らず exit 3) ので、「添付したつもりで中身が届いていない引き継ぎ書」は送られない
 - ペインのログインはサービスごと (`web-profiles/google` = ChatGPT/Gemini・`web-profiles/grok` = Grok)。本番 mycmux は 2026-09-07 時点で 3 サービスともログイン済み (宮崎さん確認)。未ログインだと composer が出ず exit 3 になる。Gemini はログインなしでも答えるので、「Gemini が通った」だけではログイン状態の証拠にならない
-- **本番実射済み (2026-09-09)**: Gemini ask 39 秒で `ORACMUX-PROD-OK`、Grok は `--upload` つきで 44 秒。テスト機での 3 サービス往復は 9/7 (ChatGPT 74 秒 / Gemini 38 秒 / Grok 36 秒)。テスト機で検証するときは `WEBVIEW2_USER_DATA_FOLDER` が Web ペインのプロファイル分離を上書きする点に注意 (memory `reference-testmachine-webview-profile-override`)
+- テスト機で検証するときは `WEBVIEW2_USER_DATA_FOLDER` が Web ペインのプロファイル分離を上書きする点に注意 (memory `reference-testmachine-webview-profile-override`)
 - **モデルの取り違えは 2026-09-09 に実在した**: Gemini=Flash・Grok=ファストで動いていた。いまは ask が毎回直すが、**ChatGPT だけは会話中のペインで picker が見えない**ので `--tab` の再利用に注意
 - Gemini の Deep Research は UI から到達不可。Grok の DeepSearch は消滅 (Expert が最深)
 - ペイン (`web-profiles/google` / `grok`) と OracleChrome は別プロファイル。cdp 経路の `collect --latest` は同一アカウントが前提

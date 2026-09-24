@@ -17,10 +17,11 @@ export const KIND_COLORS: Record<DisplayAgentKind, AgentKindColor> = {
   // Hermes's own mark is monochrome; the gold is the brand colour its
   // banner uses, and it matches the chip tint in AgentIcons.tsx.
   "hermes": { fg: "#e3b341", bg: "rgba(198, 152, 26, 0.10)" },
+  "omp": { fg: "#c4a0f2", bg: "rgba(145, 92, 207, 0.12)" },
 };
 
 export function agentKindColor(kind: string | null | undefined): AgentKindColor | undefined {
-  if (kind === "claude" || kind === "codex" || kind === "claude-codex" || kind === "grok" || kind === "antigravity" || kind === "hermes") {
+  if (kind === "claude" || kind === "codex" || kind === "claude-codex" || kind === "grok" || kind === "antigravity" || kind === "hermes" || kind === "omp") {
     return KIND_COLORS[kind];
   }
   return undefined;

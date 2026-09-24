@@ -1,4 +1,4 @@
-export type DisplayAgentKind = "claude" | "codex" | "claude-codex" | "grok" | "antigravity" | "hermes";
+export type DisplayAgentKind = "claude" | "codex" | "claude-codex" | "grok" | "antigravity" | "hermes" | "omp";
 
 export const COMMAND_DISPLAY_KINDS: Record<string, DisplayAgentKind> = {
   agy: "antigravity",
@@ -8,6 +8,7 @@ export const COMMAND_DISPLAY_KINDS: Record<string, DisplayAgentKind> = {
   // Hermes is launched by full path (hermes.exe), so the basename is what
   // identifies it here -- the launchers set no MYCMUX_AGENT_KIND for it.
   hermes: "hermes",
+  omp: "omp",
 };
 
 /**
@@ -20,6 +21,7 @@ export const COMMAND_DISPLAY_KINDS: Record<string, DisplayAgentKind> = {
 export const LAUNCH_TARGET_DISPLAY_KINDS: Record<string, DisplayAgentKind> = {
   agy: "antigravity",
   hermes: "hermes",
+  omp: "omp",
 };
 
 export function resolveDisplayAgentKind(

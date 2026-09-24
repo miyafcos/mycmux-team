@@ -748,6 +748,38 @@ async fn handle_connection(
                             let _ = write_json_line(&mut writer, &response).await;
                             continue;
                         }
+                        if cmd == "app.open_paths" {
+                            let response = match args.get("paths").and_then(Value::as_array) {
+                                Some(paths) if paths.iter().all(Value::is_string) => {
+                                    let paths: Vec<String> = paths.iter()
+                                        .filter_map(Value::as_str)
+                                        .map(str::to_string)
+                                        .collect();
+                                    SocketResponse {
+                                        id,
+                                        result: serde_json::to_value(crate::open_with::queue_open_paths(&app, &paths)).ok(),
+                                        error: None,
+                                    }
+                                }
+                                _ => SocketResponse {
+                                    id,
+                                    result: None,
+                                    error: Some("app.open_paths requires a paths array of strings".into()),
+                                },
+                            };
+                            let _ = write_json_line(&mut writer, &response).await;
+                            continue;
+                        }
+                        if cmd == "app.activate" {
+                            crate::open_with::activate(&app);
+                            let response = SocketResponse {
+                                id,
+                                result: Some(serde_json::json!({})),
+                                error: None,
+                            };
+                            let _ = write_json_line(&mut writer, &response).await;
+                            continue;
+                        }
                         if cmd == "session.state_view" {
                             let response = match state_view_session_id(&args) {
                                 Ok(session_id) => {

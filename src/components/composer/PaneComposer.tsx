@@ -35,6 +35,7 @@ const TARGET_LABEL: Record<ComposerAgentLabelKind, string> = {
   "claude-codex": "claude-codex",
   codex: "Codex",
   grok: "Grok",
+  omp: "Oh My Pi",
   shell: "シェル",
 };
 

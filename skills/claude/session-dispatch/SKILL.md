@@ -24,7 +24,7 @@ metadata:
 | 依頼の型 | 振り先 |
 |---|---|
 | Q&A・相談・判断・軽微編集 (<10行/1-2ファイル)・skill/Git/MCP 操作 | 母艦のまま |
-| Codex ALWAYS 条件 (実装3+ファイル・新規100行超ほか delegation.md 参照) | codex 委譲 (従来どおり) |
+| Codex 委譲の条件 (実装3+ファイル・新規100行超ほか delegation.md 参照) | codex 委譲 (delegation.md の既定の実行先) |
 | 素材投入型 (パス束+検収/照合/修正反映) で現行作業と独立 | 新ペイン claude 1本 |
 | 一括・複数単位の重い依頼 (章・学年・科目・工程・検証観点) | **分割設計** (references/decompose-guide.md) → 新ペイン並列 (同時上限3)。納品物・作問・量産は分割案3〜5行を提示して GO / 内部作業は全自動+事後報告 |
 | 母艦が重い (compact 接近・長大化) ときに来た新規の重依頼 | 新ペインへ。母艦は司令塔に徹する |
@@ -44,7 +44,7 @@ metadata:
 | 機械検収が書けない (成果物が意味判断) | 裏ペイン | DONE 通知→ペイン温存、親検収後に close |
 
 - **可視 `--split` 横のタブはオプトイン制**。発動は2条件のみ: ①宮崎さんの明示指定 (「横に出して」「見たい」「画面に出して」等) ②親が見せる価値ありと判断したら **AskUserQuestion で確認し承認を得てから**。親の独断で split しない。split 時も --no-activate は維持し、対話終了後に親が手動 close
-- **`spawn-tab --detach` も `--split` と同格のオプトイン (既定禁止)** — 新しいタブに出る。長時間ジョブ保護はタブ閉じ前の確認ダイアログに任せる (2026-08-21 裁定・`--detach` 推奨は撤回)。CLI は暗黙 split を廃止済み: `--workspace/--anchor-pane/--direction` 単独・env 欠落はエラーで止まる (隣のタブへは落ちない)。応答 JSON の `placement` が `tab` であることを台帳に残す
+- **`spawn-tab --detach` も `--split` と同格のオプトイン (既定禁止)** — 新しいタブに出る。長時間ジョブ保護はタブ閉じ前の確認ダイアログに任せる (2026-08-21 裁定・`--detach` 推奨は撤回)。CLI は暗黙に split しない: `--workspace/--anchor-pane/--direction` 単独・env 欠落はエラーで止まる (隣のタブへは落ちない)。応答 JSON の `placement` が `tab` であることを台帳に残す
 - close は可逆: 子の全ログは `~/.claude/projects/` に常在し、resume パレットから復帰できる
 - 自動 close の条件は「**親が spec に書いた機械検収が PASS**」のみ (子の DONE 自己申告では閉じない)
 
@@ -55,7 +55,7 @@ metadata:
    (先にカードを宮崎さんと消化する)。自律完遂型 (判断カードが出ない見込みの機械作業) は続行可
 1. **spec 作成**: `~/.claude/dispatch/<YYMMDD>-<slug>/spec.md` を references/spec-template.md の型で書く。
    必須4点 (境界/完了条件/接続先/判断者) + DONE 契約 + **ask カード契約 (references/ask-card-contract.md)**。
-   effort・モデル指定は spec 本文に日本語で明記 (CLI フラグでは渡らない)
+   effort・モデルは `--prompt-file` の spawn では CLI から渡らず、子は既定の設定で立つ。spec の実行指定は記録として書き、実際の effort は子のヘッダーで確かめる (spec に深さを書いても思考量は変わらない)
 2. **spawn**:
    `python <resolved-mycmux-agent-cli> spawn --target claude --prompt-file <spec> --label <slug> --cwd <作業フォルダ> --no-activate`
    — 既定は裏ペイン。`--split` は宮崎さん指定 or AskUserQuestion 承認後のみ足す。spawn / spawn-tab はどちらも `--no-activate` を付け、`--activate` は付けない (前面を奪うと戻せない)。
@@ -65,7 +65,7 @@ metadata:
 3b. **watcher 起動 (自律完遂型は必須)**: spawn 直後に
    `python ~/.claude/skills/session-dispatch/scripts/dispatch_watch.py --slug <slug>` を
    **バックグラウンド実行** (Bash run_in_background)。DONE 検知→spec の機械検収→PASS なら
-   close-tab+台帳更新まで watcher が勝手にやる。FAIL/STALL/TIMEOUT は exit 非0 で通知が返る
+   close-tab+台帳更新まで watcher が勝手にやる。FAIL・TIMEOUT・TAB-GONE は exit 非0 で通知が返る。STALL (ログ停止 45 分) では終了せず、台帳に記録して監視を続ける (`--legacy-stall-exit` 指定時だけ exit 2)
 4. **回収**: watcher の verdict (`DONE-VERIFIED-CLOSED` なら完了) を確認。needs_review /
    watcher 無し運用は `dispatch_status.py` で突合し、**成果物を親が実体検証**
    (Test-Path / 行数 / diff / 実行出力)。DONE.md の自己申告は成果と見なさない
@@ -92,17 +92,8 @@ metadata:
   を見つけたら、人間向けカードを親が代作せず、子へ「ask を発行するか自分で判断して続行せよ」を send する
 - 委譲契約の正本は `~/cmux-for-linux-dev-master/docs/agent-integration.md`。矛盾したらそちらが勝つ
 
-## 見張り (dispatch_guard.py)
+## 見張り (dispatch_guard.py) — 2026-09-16 から停止中
 
+- 常駐の見張りは `~/.claude/dispatch/guard/DISABLED` がある間は動かない (ensure / run / once は何もせず終わる)。席の一覧は `/seats` で見る。STALL の子と `guard_pending: true` の送信は見張りが拾わないので、references/dispatch-guide.md の「STALL 時の介入」に沿って親が扱う。
 - spawn 前に `python -X utf8 ~/.claude/skills/session-dispatch/scripts/dispatch_preflight.py run --cwd <cwd> --spec <spec.md> --json` を実行する。exit 3 は必要な認証経路の不通で spawn を止める。settings.json は変更しない。
-- `python -X utf8 ~/.claude/skills/session-dispatch/scripts/dispatch_guard.py ensure` が常駐を起動する。doctor は生存、最終周期、対象、分類、通報数を JSON で返す。stop は協調停止を要求する。
-- 全 agent ペインを観測する。催促と AskUserQuestion の推奨選択は台帳 active の子だけ。承認は拒否して代替手段を指示する。手動ペインの質問・承認は通報だけ。ログインは操作せず blocked とする。
-- 人が書いた本文は送らない。`pending_sends.jsonl` の本文と入力改訂番号を確認し、別の入力があれば Enter を打たない。
-- dispatch_send の追加フィールド `delivered_confirmed` は、空の入力欄と状態遷移または子ログ増分の観測結果。`guard_pending: true` は見張りへの引き渡し。enter_sent と既存の返却値は従来どおり。配送不明時に本文を再送しない。
-- watcher の STALL は見張りへ 1 回引き渡し、DONE / TIMEOUT / lost まで監視する。既存節の STALL 即終了の記述は `--legacy-stall-exit` 指定時に適用する。TIMEOUT は exit 2。
-- lost は非 active だが CLOSED_STATUSES には含めない。blocked は人待ちとして active に残す。初回照合でペインが無い古い行は無音で lost にする。開始後に生存を観測したペインの消失は 2 周期で確定し、通報する。close-tab は送らない。
-- 通報カードは 1 周期最大 1 枚。複数件はまとめ、同じペイン・分類は 30 分間重複させない。記録は `~/.claude/dispatch/guard/` の state.json / guard.log / pending_sends.jsonl / escalations.jsonl と台帳 event。
-- guard.lock は PID と起動時刻を持つ通常ファイル。state.json の更新が 30 秒以上止まれば次の ensure が起動し直す。古いプロセスは所有権変更を検出して停止する。
-- 開発・検証中の起動は `ensure --dry-run`。分類と記録だけを行い、操作・通報・台帳変更はしない。実操作はカナリア子への `once --session <id>` だけ。既存プロセスの設定を ensure は変更しない。モード変更時は stop 後に停止を確認する。
-- 実機試験は mycmux の委譲元ペイン内で `python -X utf8 ~/.claude/skills/session-dispatch/scripts/dispatch_canary.py --scenario startup,askuser,draft` を実行する。結果は JSON と一時 cwd の result.json。--keep 以外は子ペインを閉じる。試験は最初の失敗で停止する。
-- RELAY_1 対応後の本番 run は母艦が最終検証で初めて起動する。
+- 人が書いた本文は送らない。send の返却値・台帳の lost / blocked・canary 試験は references/dispatch-guide.md。

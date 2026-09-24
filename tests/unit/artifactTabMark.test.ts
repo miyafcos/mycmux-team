@@ -61,7 +61,7 @@ describe("artifact tab marks", () => {
 
   it.each([
     ["claude", "Claude"], ["codex", "Codex"], ["claude-codex", "Hybrid"],
-    ["grok", "Grok"], ["antigravity", "Antigravity"], ["hermes", "Hermes"],
+    ["grok", "Grok"], ["antigravity", "Antigravity"], ["hermes", "Hermes"], ["omp", "Oh My Pi"],
   ])("preserves the %s agent mark and label", (kind, label) => {
     const tab: PaneTab = { id: "t", sessionId: "s", agentId: "a", type: "terminal", agentKind: kind, commandArgv: [kind === "antigravity" ? "agy" : kind] };
     expect(resolveTabMark(tab)).toEqual({ kind, label, color: tabMarkColor(kind as Parameters<typeof tabMarkColor>[0]) });

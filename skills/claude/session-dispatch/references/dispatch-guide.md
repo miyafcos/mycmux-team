@@ -118,7 +118,7 @@ spawn 直後に親が `python ~/.claude/skills/session-dispatch/scripts/dispatch
 - close 失敗 → `close_failed` とエラーを記録し `DONE-VERIFIED-CLOSE-FAILED` (exit 1)。`closed` にはしない
 - PASS + auto_close false → `DONE-VERIFIED-KEEP` (ペイン温存・exit 0)
 - FAIL or gate 無し → `DONE-NEEDS-REVIEW` (ペイン温存・exit 1 → 親が実体検収してから手動 close)
-- ログ停止 45分 → `STALL` (exit 2) / 180分 → `TIMEOUT` (exit 2) — どちらもペインは触らない
+- ログ停止 45分 → 台帳に `stall-handed-to-guard` を記録して監視を続ける (`--legacy-stall-exit` 指定時だけ `STALL` で exit 2) / 180分 → `TIMEOUT` (exit 2) / 台帳が lost → `TAB-GONE` (exit 2) — どれもペインは触らない
 - 結果詳細は `<dispatch-dir>/VERDICT.md`。台帳パスは env `DISPATCH_LEDGER` で差し替え可 (テスト用)
 - **fail-closed**: close-tab はこの dispatch の行が持つ `tab_session_id` にしか撃たない。
   台帳上すでにクローズ集合なら `CONFIG-ERROR` (exit 3) で何もしない。同じ slug に active が
@@ -164,17 +164,11 @@ DONE.md の「検証手順」を母艦が実行して初めて done。子の「�
 - 引継ぎ書コピペ起動 49 本 = 手動分散の既存実績。本 skill はその自動化
 - 分析レポート: `~/reports/_quick/2026-07/セッション実測分析_—_パターン分類とタブ自動スポーン構想_0730-0242.html`
 
-## 見張り (dispatch_guard.py)
+## 見張り (dispatch_guard.py) — 2026-09-16 から停止中
 
+- 常駐の見張りは `~/.claude/dispatch/guard/DISABLED` がある間は動かない (`dispatch_guard.py` の ensure / run / once は何もせず exit 0。doctor と stop は動く)。席の一覧は `/seats` で見る。
 - spawn 前に `python -X utf8 ~/.claude/skills/session-dispatch/scripts/dispatch_preflight.py run --cwd <cwd> --spec <spec.md> --json` を実行する。exit 3 は必要な認証経路の不通で spawn を止める。settings.json は変更しない。
-- `python -X utf8 ~/.claude/skills/session-dispatch/scripts/dispatch_guard.py ensure` が常駐を起動する。doctor は生存、最終周期、対象、分類、通報数を JSON で返す。stop は協調停止を要求する。
-- 全 agent ペインを観測する。催促と AskUserQuestion の推奨選択は台帳 active の子だけ。承認は拒否して代替手段を指示する。手動ペインの質問・承認は通報だけ。ログインは操作せず blocked とする。
-- 人が書いた本文は送らない。`pending_sends.jsonl` の本文と入力改訂番号を確認し、別の入力があれば Enter を打たない。
-- dispatch_send の追加フィールド `delivered_confirmed` は、空の入力欄と状態遷移または子ログ増分の観測結果。`guard_pending: true` は見張りへの引き渡し。enter_sent と既存の返却値は従来どおり。配送不明時に本文を再送しない。
-- watcher の STALL は見張りへ 1 回引き渡し、DONE / TIMEOUT / lost まで監視する。既存節の STALL 即終了の記述は `--legacy-stall-exit` 指定時に適用する。TIMEOUT は exit 2。
-- lost は非 active だが CLOSED_STATUSES には含めない。blocked は人待ちとして active に残す。初回照合でペインが無い古い行は無音で lost にする。開始後に生存を観測したペインの消失は 2 周期で確定し、通報する。close-tab は送らない。
-- 通報カードは 1 周期最大 1 枚。複数件はまとめ、同じペイン・分類は 30 分間重複させない。記録は `~/.claude/dispatch/guard/` の state.json / guard.log / pending_sends.jsonl / escalations.jsonl と台帳 event。
-- guard.lock は PID と起動時刻を持つ通常ファイル。state.json の更新が 30 秒以上止まれば次の ensure が起動し直す。古いプロセスは所有権変更を検出して停止する。
-- 開発・検証中の起動は `ensure --dry-run`。分類と記録だけを行い、操作・通報・台帳変更はしない。実操作はカナリア子への `once --session <id>` だけ。既存プロセスの設定を ensure は変更しない。モード変更時は stop 後に停止を確認する。
+- 人が書いた本文は送らない。
+- dispatch_send の追加フィールド `delivered_confirmed` は、空の入力欄と状態遷移または子ログ増分の観測結果。`guard_pending: true` は見張りへの引き渡しの印で、停止中は誰も拾わない。配送不明時に本文を再送せず、現状を読み直す。
+- lost は非 active だが CLOSED_STATUSES には含めない。blocked は人待ちとして active に残す。
 - 実機試験は mycmux の委譲元ペイン内で `python -X utf8 ~/.claude/skills/session-dispatch/scripts/dispatch_canary.py --scenario startup,askuser,draft` を実行する。結果は JSON と一時 cwd の result.json。--keep 以外は子ペインを閉じる。試験は最初の失敗で停止する。
-- RELAY_1 対応後の本番 run は母艦が最終検証で初めて起動する。

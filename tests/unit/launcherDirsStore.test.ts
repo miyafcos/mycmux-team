@@ -118,6 +118,19 @@ describe("launcher settings interactions", () => {
     await act(async () => { input().dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key })); });
   };
 
+  it("draws the catalog icons for omp, Hermes and Browser rows", () => {
+    const rows = [...container.querySelectorAll("label")];
+    for (const [name, selector] of [
+      ["Oh My Pi", 'svg rect[fill="#915ccf"]'],
+      ["Hermes", "img"],
+      ["Browser", "svg circle"],
+    ]) {
+      const row = rows.find((item) => item.textContent?.includes(name));
+      expect(row, `${name} row`).toBeDefined();
+      expect(row?.querySelector(selector), `${name} icon`).not.toBeNull();
+    }
+  });
+
   it("shows saved candidates, scan results and test scheduling status, then registers the selected label", async () => {
     const path = "C:/Work Root/client/project";
     const saved = { ...data, doc: { ...data.doc, rules: [{ id: "r1", type: "session-cwd", section: "anken", enabled: true, mode: "suggest" }],

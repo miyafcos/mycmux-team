@@ -9,6 +9,10 @@ case "${MSYSTEM:-}:$__MYCMUX_UNAME" in
   *:Linux) __MYCMUX_PLATFORM=linux ;;
   *) __MYCMUX_PLATFORM=other ;;
 esac
+__MYCMUX_OMP_COMMAND="omp"
+if [ "$__MYCMUX_PLATFORM" = windows ]; then
+  __MYCMUX_OMP_COMMAND="$HOME/AppData/Local/omp/omp.exe"
+fi
 
 __mycmux_is_windows_shell() {
   [ "$__MYCMUX_PLATFORM" = "windows" ]
@@ -856,6 +860,10 @@ __add_launch_spec_to_cmd() {
       [ -n "$__MYCMUX_LAUNCH_MODEL" ] && extra="$extra --model $__MYCMUX_LAUNCH_MODEL"
       [ -n "$__MYCMUX_LAUNCH_EFFORT" ] && extra="$extra --effort $__MYCMUX_LAUNCH_EFFORT"
       ;;
+    omp|omp.exe)
+      [ -n "$__MYCMUX_LAUNCH_MODEL" ] && extra="$extra --model $__MYCMUX_LAUNCH_MODEL"
+      [ -n "$__MYCMUX_LAUNCH_EFFORT" ] && extra="$extra --thinking $__MYCMUX_LAUNCH_EFFORT"
+      ;;
     *)
       printf '%s' "$cmd"
       return 0
@@ -1055,6 +1063,8 @@ __spec_models_for() {
         "Gemini 3.8 Flash (Low)|gemini-3.8-flash-low" \
         "Claude Opus 4.6 (Thinking)|claude-opus-4-6-thinking" \
         "Claude Sonnet 4.6 (Thinking)|claude-sonnet-4-6" ;;
+    omp)
+      printf '%s\n' "Astra (6 flagship)|openai-codex/gpt-6-astra" "Sol (6)|openai-codex/gpt-6-sol" "Luna (6 light)|openai-codex/gpt-6-luna" ;;
     # grok はモデル ID 一覧を公開しておらず、fcc backend はアカウント次第。
     # 一覧を持たず「入力する」で受ける。
     grok|claude-codex-open) : ;;
@@ -1071,13 +1081,14 @@ __spec_efforts_for() {
         *) printf '%s\n' low medium high xhigh max ultra ;;
       esac ;;
     grok|agy) printf '%s\n' low medium high ;;
+    omp) printf '%s\n' low medium high xhigh max ;;
   esac
   return 0
 }
 
 __spec_has_target() {
   case "$1" in
-    claude|codex|claude-codex|claude-codex-open|grok|agy|hermes) return 0 ;;
+    claude|codex|claude-codex|claude-codex-open|grok|agy|hermes|omp) return 0 ;;
   esac
   return 1
 }
@@ -1190,6 +1201,9 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
       ;;
     hermes)
       cmd="$HOME/AppData/Local/hermes/bin/hermes.exe"
+      ;;
+    omp)
+      cmd="$__MYCMUX_OMP_COMMAND --allow-home"
       ;;
     claude-resume)
       cmd="claude --allow-dangerously-skip-permissions --permission-mode auto --resume"
@@ -1702,6 +1716,7 @@ if [ -z "$cmd" ]; then
     "claude-codex (Open Models)"
     "Antigravity (agy)"
     "Hermes"
+    "Oh My Pi"
     "ChatGPT (Web)"
     "Gemini (Web)"
     "Grok (Web)"
@@ -1729,6 +1744,7 @@ if [ -z "$cmd" ]; then
     "claude-codex-open"
     "agy"
     ""
+    "omp"
     "" "" "" "" "" ""
     "" "" "" ""
     ""
@@ -1743,6 +1759,7 @@ if [ -z "$cmd" ]; then
     "claude-codex --backend fcc"
     "agy"
     "$HOME/AppData/Local/hermes/bin/hermes.exe"
+    "$__MYCMUX_OMP_COMMAND --allow-home"
     "__web_chatgpt__"
     "__web_gemini__"
     "__web_grok__"
@@ -1829,7 +1846,7 @@ if [ -z "$cmd" ]; then
         fi
         break
         ;;
-      slash) selected=17; break ;;
+      slash) selected=18; break ;;
       # → / m はこの行の model と effort を選んでから起動する。Enter と数字キーは
       # 触っていない — 従来どおり CLI の既定で即起動する。
       right)
@@ -1853,6 +1870,8 @@ if [ -z "$cmd" ]; then
                 5) selected=14 ;;
                 6) selected=15 ;;
                 7) selected=16 ;;
+                8) selected=17 ;;
+                9) selected=18 ;;
                 *) selected=0 ;;
               esac
             else

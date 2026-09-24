@@ -3,21 +3,14 @@ import type { CSSProperties } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { useLauncherDirsStore } from "../../../stores/launcherDirsStore";
-import { AGENT_CATALOG } from "../../../lib/agentCatalog";
 import { revealInExplorer } from "../../../lib/ipc";
 import type { LauncherDirSection } from "../../../lib/ipc";
 import { RULE_TYPES, formatCandidate, readLastScan, readRule, ruleForm, ruleId, ruleSummary, ruleTypeLabel, ruleTypeNote, validateRuleForm } from "../../../lib/launcherDirsModel";
 import type { LauncherRule, RuleForm, RuleMode } from "../../../lib/launcherDirsModel";
-import { dirSections, middleEllipsis, shortLabel } from "../../workspace/launcherModel";
+import { dirSections, launchItems, middleEllipsis } from "../../workspace/launcherModel";
 import { AgentKindIcon } from "../../icons/AgentIcons";
 import { checkboxLabelStyle, dialogButtonStyle, dividerStyle, sectionHeadingStyle } from "../tabStyles";
 import { launcherTabStrings as T } from "./launcherTabStrings";
-
-const ICON_FOR: Record<string, string> = {
-  claude: "claude", codex: "codex", "claude-codex": "claude-codex",
-  grok: "grok", agy: "antigravity", "web-chatgpt": "codex", "web-gemini": "gemini",
-  "web-grok": "grok", "web-claude": "claude", "web-notebooklm": "notebooklm",
-};
 
 const smallButton: CSSProperties = {
   ...dialogButtonStyle, padding: "3px 7px", fontSize: "var(--cmux-font-size-xs)",
@@ -182,6 +175,7 @@ export function LauncherTab() {
   const store = useLauncherDirsStore();
   const { view, load, loading } = store;
   const sections = useMemo(() => dirSections(view), [view]);
+  const items = useMemo(() => launchItems(), []);
   const [errorArea, setErrorArea] = useState<"folders" | "candidates" | "rules" | "details">("folders");
   const [localError, setLocalError] = useState<string | null>(null);
   const [editingRule, setEditingRule] = useState<RuleForm | null>(null);
@@ -251,10 +245,10 @@ export function LauncherTab() {
   return (
     <div style={{ fontSize: "var(--cmux-font-size-sm)", minWidth: 0 }}>
       <div style={sectionHeadingStyle}>{T.launchHeading}</div>
-      {AGENT_CATALOG.filter((entry) => entry.kind === "agent").map((entry) => row(entry.target, shortLabel(entry), ICON_FOR[entry.target], entry.label))}
+      {items.filter((entry) => entry.kind === "agent").map((entry) => row(entry.target, entry.short, entry.iconKind, entry.label))}
       <div style={dividerStyle} />
       <div style={sectionHeadingStyle}>{T.webHeading}</div>
-      {AGENT_CATALOG.filter((entry) => entry.kind === "web").map((entry) => row(entry.target, shortLabel(entry), ICON_FOR[entry.target]))}
+      {items.filter((entry) => entry.kind === "web").map((entry) => row(entry.target, entry.short, entry.iconKind))}
       <div style={dividerStyle} />
       {row("resume", T.resumeRow, undefined, T.resumeNote)}
 

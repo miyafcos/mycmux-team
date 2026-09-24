@@ -326,7 +326,7 @@ PTY の生スクロールバックはディスクへ保存されます (`%APPDAT
 
 新しいタブやペインを開くと、そのペイン自体が起動メニュー (ランチャーペイン) になります。v0.62.0 で、端末の中で動く文字メニューから React のペインに置き換えました (実装は `src/components/workspace/LauncherPane.tsx`)。
 
-起動処理そのものは従来どおり `~/.mycmux/bin/launcher.sh` / `launcher.ps1` が行います。ペインは「何を起動するか」を環境変数 (`MYCMUX_LAUNCH_TARGET` ほか) に載せて渡すだけです。この 2 本はアプリが起動時に書き出すので、手で編集すると上書きされます。文字メニュー (19 項目・[付録 B](#付録-b-ランチャー項目全一覧)) はこの 2 本の中に残っていて、`MYCMUX_LAUNCH_TARGET` を渡さずにスクリプトを直接読み込んだときに出ます。
+起動処理そのものは従来どおり `~/.mycmux/bin/launcher.sh` / `launcher.ps1` が行います。ペインは「何を起動するか」を環境変数 (`MYCMUX_LAUNCH_TARGET` ほか) に載せて渡すだけです。この 2 本はアプリが起動時に書き出すので、手で編集すると上書きされます。文字メニュー (22 項目・[付録 B](#付録-b-ランチャー項目全一覧)) はこの 2 本の中に残っていて、`MYCMUX_LAUNCH_TARGET` を渡さずにスクリプトを直接読み込んだときに出ます。
 
 ### 起動メニューの 5 セクション
 
@@ -372,11 +372,11 @@ Google は埋め込み webview からの OAuth を仕様として拒むことが
 - **自動で登録する** — 「自動登録」ブロックのルール 4 種 (git リポジトリ / ファイル更新 / 動かした場所 / セッションで触れた) は、それぞれ「候補にする」か「自動で登録する」かを選べます。自動の行は右端に印 (`●09/05` = セッションで触れた、`09/05` = リポジトリやファイルの更新) が付き、次の走査で条件から外れると消えます。残したい行は「固定」で手動に昇格します。走査は起動 15 秒後と 3 時間おき、または「今すぐ走査」です。新規インストール時は「git リポジトリ (ホーム直下)」と「動かした場所」の 2 本が候補モードで入っています。
 - **旧ファイルからの移行** — 以前の `~/.mycmux/launch-roots.txt` があれば初回に自動で取り込みます。以後は逆にアプリがこのファイルを書き出すので (bash 経路の `d` / `a` キー用)、手で編集する必要はありません。外部で書き換えられた行は次の読み込みで取り込みます。
 
-文字メニュー (項目 17〜19・[付録 B](#付録-b-ランチャー項目全一覧)) も今も同じ一覧を読みます。**最近使った** は直近 8 件 (`~/.mycmux/launch-dirs-mru.txt`) で、ランチャーペインで選んだフォルダもここに記録されます。**フォルダを辿る** は実フォルダを 1 階層ずつ探索して「✓ ここに決定」で確定、**Home** はホームディレクトリへ移ります。
+文字メニュー (項目 20〜22・[付録 B](#付録-b-ランチャー項目全一覧)) も今も同じ一覧を読みます。**最近使った** は直近 8 件 (`~/.mycmux/launch-dirs-mru.txt`) で、ランチャーペインで選んだフォルダもここに記録されます。**フォルダを辿る** は実フォルダを 1 階層ずつ探索して「✓ ここに決定」で確定、**Home** はホームディレクトリへ移ります。
 
-### 対応エージェントは 4 種 + agy
+### 対応エージェントとランチャーの対象
 
-`claude` / `codex` / `claude-codex` / `grok` の 4 種は同格で、ランチャー・再開・セッション ID の払い出し・状態検知・アイコンまで同じ扱いです。Antigravity (`agy`) はランチャー項目と任意コマンド起動で使えますが、`--target` の対象ではありません (委譲は `spawn-tab -- agy -i …` の経路)。状態: 配信済み (Grok Build の正式追加は v0.40.0)。旧 Gemini 枠は v0.18.0 で Antigravity に置き換えました。
+`claude` / `codex` / `claude-codex` / `grok` の 4 種は、再開・セッション ID の払い出し・状態検知に対応します。Antigravity (`agy`)、Hermes、Oh My Pi (`omp`) もランチャーと `spawn --target` で新規起動できますが、mycmux はこれらのセッションファイルを追跡せず、再開や handoff の対象にはしません。旧 Gemini 枠は v0.18.0 で Antigravity に置き換えました。
 
 セッション ID の採番方式はエージェントごとに違います。claude と grok は起動前に `--session-id` を注入して対応表を直接書き、codex と claude-codex は `--session-id` フラグがないため起動後にログをポーリングして事後に推測します (2 秒間隔・120 秒でタイムアウト・候補がちょうど 1 件のときだけ採用)。対応表は `~/.mycmux/pane-sessions/<id>.txt` に `<kind>:<session_id>` の形で入ります。
 
@@ -1062,7 +1062,7 @@ Rust コマンドは 144 件 / 31 ファイルで、`lib.rs` の `generate_handl
 
 ## 付録 B ランチャー項目全一覧
 
-この一覧は `launcher.sh` / `launcher.ps1` に残っている文字メニュー (`MYCMUX_LAUNCH_TARGET` を渡さずに直接読み込んだときに出る) のものです。mycmux のランチャーペインは [6 章](#6-エージェントを起動する)の 5 セクションで、番号キーはありません。番号は launcher.sh 基準です。launcher.ps1 では 17〜19 がありません (合計 16 項目)。
+この一覧は `launcher.sh` / `launcher.ps1` に残っている文字メニュー (`MYCMUX_LAUNCH_TARGET` を渡さずに直接読み込んだときに出る) のものです。mycmux のランチャーペインは [6 章](#6-エージェントを起動する)の 5 セクションで、番号キーはありません。番号は launcher.sh 基準です。launcher.ps1 では 20〜22 がありません (合計 19 項目)。
 
 | # | ラベル | コマンド | ps1 との差 |
 | ---: | --- | --- | --- |
@@ -1072,23 +1072,26 @@ Rust コマンドは 144 件 / 31 ファイルで、`lib.rs` の `generate_handl
 | 4 | `Grok Build` | `grok --no-alt-screen --permission-mode auto` | 同一 |
 | 5 | `claude-codex (Open Models)` | `claude-codex --backend fcc` | 同一 (ランチャーペインには出ない・FCC だけのプロファイル) |
 | 6 | `Antigravity (agy)` | `agy` | 同一 |
-| 7 | `ChatGPT (Web)` | 疑似コマンド `__web_chatgpt__` → `web-open --preset chatgpt --replace-anchor` | 同一 |
-| 8 | `Gemini (Web)` | 疑似コマンド `__web_gemini__` | 同一 |
-| 9 | `Grok (Web)` | 疑似コマンド `__web_grok__` | 同一 |
-| 10 | `Claude.ai (Web)` | 疑似コマンド `__web_claude__` | 同一 |
-| 11 | `NotebookLM (Web)` | 疑似コマンド `__web_notebooklm__` | 同一 |
-| 12 | `Claude Code (resume)` | `claude --allow-dangerously-skip-permissions --permission-mode auto --resume` | 同一 |
-| 13 | `Codex (resume)` | `codex resume --no-alt-screen` | 同一 |
-| 14 | `claude-codex (resume)` | `claude-codex --resume` | 同一 |
-| 15 | `Grok Build (resume)` | `grok --no-alt-screen --resume` | 同一 |
-| 16 | `Custom...` | プロンプトを出して自由入力 | 同一 |
-| 17 | `Change directory (開発)...` | 開発の一覧 (`~/.mycmux/launch-roots.txt` = 設定 → ランチャー の台帳からアプリが書き出す派生ファイル) | ps1 に無し |
-| 18 | `Change directory (案件)...` | 案件の一覧 (同上・`案件:` で始まる行) | ps1 に無し |
-| 19 | `Change directory (最近・フォルダを辿る)...` | ディレクトリ選択のトップ画面 | ps1 に無し |
+| 7 | `Hermes` | `$HOME/AppData/Local/hermes/bin/hermes.exe` | ps1 は `%LOCALAPPDATA%\hermes\bin\hermes.exe` |
+| 8 | `Oh My Pi` | Windows Git Bash は `$HOME/AppData/Local/omp/omp.exe --allow-home`、Mac は `omp --allow-home` | ps1 は `%LOCALAPPDATA%\omp\omp.exe --allow-home` |
+| 9 | `ChatGPT (Web)` | 疑似コマンド `__web_chatgpt__` → `web-open --preset chatgpt --replace-anchor` | 同一 |
+| 10 | `Gemini (Web)` | 疑似コマンド `__web_gemini__` | 同一 |
+| 11 | `Grok (Web)` | 疑似コマンド `__web_grok__` | 同一 |
+| 12 | `Claude.ai (Web)` | 疑似コマンド `__web_claude__` | 同一 |
+| 13 | `NotebookLM (Web)` | 疑似コマンド `__web_notebooklm__` | 同一 |
+| 14 | `Browser (Web)` | 疑似コマンド `__web_browser__` | 同一 |
+| 15 | `Claude Code (resume)` | `claude --allow-dangerously-skip-permissions --permission-mode auto --resume` | 同一 |
+| 16 | `Codex (resume)` | `codex resume --no-alt-screen` | 同一 |
+| 17 | `claude-codex (resume)` | `claude-codex --resume` | 同一 |
+| 18 | `Grok Build (resume)` | `grok --no-alt-screen --resume` | 同一 |
+| 19 | `Custom...` | プロンプトを出して自由入力 | 同一 |
+| 20 | `Change directory (開発)...` | 開発の一覧 (`~/.mycmux/launch-roots.txt` = 設定 → ランチャー の台帳からアプリが書き出す派生ファイル) | ps1 に無し |
+| 21 | `Change directory (案件)...` | 案件の一覧 (同上・`案件:` で始まる行) | ps1 に無し |
+| 22 | `Change directory (最近・フォルダを辿る)...` | ディレクトリ選択のトップ画面 | ps1 に無し |
 
-Web ペインの 5 項目はプロセスではないので eval されません。ソケット経由で本体に Web ペインを頼み、失敗したら理由を必ず表示します (黙って戻ると「押しても何も起きない」に見えるため)。
+Web ペインの 6 項目はプロセスではないので eval されません。ソケット経由で本体に Web ペインを頼み、失敗したら理由を必ず表示します (黙って戻ると「押しても何も起きない」に見えるため)。
 
-launcher.ps1 の各項目 (`Antigravity (agy)`・Web ペイン 5 項目・`Custom...` を除く) は `RequiredCommand` を持ち、PATH に無ければ起動せず `  <command> was not found on PATH.` と表示して戻ります。環境変数 `MYCMUX_LAUNCH_TARGET` でメニューを飛ばして直接起動もできます (launcher.sh は 28 キー / launcher.ps1 は 26 キー)。値は `claude` `claude-resume` `codex` `codex-resume` `grok` `grok-resume` `claude-codex` `claude-codex-resume` `claude-codex-open` `fcc` `fcc-claude` `custom` `chatgpt` `web-chatgpt` `web-gemini` `gemini-web` `web-grok` `grok-web` `web-claude` `claude-web` `claude-ai` `web-notebooklm` `notebooklm` `gemini` `agy` `antigravity` `aider` `shell` です (末尾 2 つは launcher.sh のみ)。`gemini` は Web ペインではなく Antigravity CLI を指したままです (Web 版は `web-gemini`)。
+launcher.ps1 の各項目 (`Antigravity (agy)`・Hermes・Oh My Pi・Web ペイン 6 項目・`Custom...` を除く) は `RequiredCommand` を持ち、PATH に無ければ起動せず `  <command> was not found on PATH.` と表示して戻ります。環境変数 `MYCMUX_LAUNCH_TARGET` でメニューを飛ばして直接起動もできます (launcher.sh は 31 キー / launcher.ps1 は 29 キー)。値は `claude` `claude-resume` `codex` `codex-resume` `grok` `grok-resume` `claude-codex` `claude-codex-resume` `claude-codex-open` `fcc` `fcc-claude` `custom` `chatgpt` `web-chatgpt` `web-gemini` `gemini-web` `web-grok` `grok-web` `web-claude` `claude-web` `claude-ai` `web-notebooklm` `notebooklm` `web-browser` `gemini` `agy` `antigravity` `hermes` `omp` `aider` `shell` です (末尾 2 つは launcher.sh のみ)。`gemini` は Web ペインではなく Antigravity CLI を指したままです (Web 版は `web-gemini`)。
 
 メニューを出さずに直接起動する経路がもう 2 系統あります。mycmux が spawn や復元のときに環境変数で指示するもので、人が手で使うものではありません。
 
@@ -1128,7 +1131,7 @@ bootstrap の文言は `Handoff from previous session. Read "<MYCMUX_HANDOFF_PRO
 | 12 | `send` | `--session` (必須)、`--text`、`--enter` \| `--key` (`enter`/`esc`/`tab`/`up`/`down`/`left`/`right`/`ctrl-c`/`space`/`backspace`)、`--expect-epoch`、`--expect-attention-id`、`--expect-revision`、`--expect-input-revision` (期待値の 3 つ — attention id / session revision / input revision — は全部指定するか全部省く)。`--text` / `--enter` / `--key` の少なくとも 1 つが必須 |
 | 13 | `read` | `--session` (必須)、`--lines` |
 
-`spawn` / `spawn-tab` の `--target` に渡せるのは `claude` / `codex` / `claude-codex` / `grok` / `shell` の 5 種、`declare-tab --target` は `claude` / `codex` / `grok` の 3 種です。`spawn` の起動モード 4 つ (`--prompt` \| `--prompt-file` \| `--handoff-from-session` \| `--resume-session`) は相互排他で、`--handoff-from-kind` は `--handoff-from-session` とセットでだけ使えます。`spawn-tab --detach` は呼び出し元タブと同居させず新しいタブを開きますが、タブ閉じの確認ダイアログが既に長時間ペインを守っているので推奨はしません。
+`spawn` / `spawn-tab` の `--target` に渡せるのは `claude` / `codex` / `claude-codex` / `grok` / `agy` / `hermes` / `omp` / `shell` / `web` の 9 種、`declare-tab --target` は `claude` / `codex` / `grok` の 3 種です。`spawn` の起動モード 4 つ (`--prompt` \| `--prompt-file` \| `--handoff-from-session` \| `--resume-session`) は相互排他で、`--handoff-from-kind` は `--handoff-from-session` とセットでだけ使えます。`spawn-tab --detach` は呼び出し元タブと同居させず新しいタブを開きますが、タブ閉じの確認ダイアログが既に長時間ペインを守っているので推奨はしません。
 
 ---
 

@@ -40,10 +40,10 @@ def prompt_dir() -> Path:
 # "web" is not an agent: it opens a web tab (no PTY, no process). It shares the
 # spawn command because where a tab lands is the same question either way.
 # Every launchable row of src/lib/agentCatalog.ts, plus the two non-agent
-# targets. agy and hermes are agents mycmux keeps no session file for, which
+# targets. agy, hermes, and omp are agents mycmux keeps no session file for, which
 # is why they are absent from AGENT_KINDS but startable all the same.
 AGENT_TARGETS = (
-    "claude", "codex", "claude-codex", "grok", "agy", "hermes", "shell", "web",
+    "claude", "codex", "claude-codex", "grok", "agy", "hermes", "omp", "shell", "web",
 )
 AGENT_KINDS = ("claude", "codex", "claude-codex", "grok")
 

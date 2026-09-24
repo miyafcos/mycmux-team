@@ -40,7 +40,7 @@ const SHELL_TARGET = { command: "bash" };
 let container: HTMLDivElement;
 let root: Root;
 
-function render(target: { command: string; agentKind?: string } = CLAUDE_TARGET) {
+function render(target: { command: string; agentKind?: string; launchEnv?: Record<string, string> } = CLAUDE_TARGET) {
   act(() => {
     root.render(<PaneComposer sessionId={SESSION} target={target} />);
   });
@@ -103,6 +103,19 @@ describe("pane composer send", () => {
     // Nothing may reach the PTY queue directly: that is the path that merges.
     expect(mocks.chunkedWrite).not.toHaveBeenCalled();
     expect(mocks.enqueueSessionWrite).not.toHaveBeenCalled();
+  });
+
+  it("labels omp and leaves its TUI input line alone on focus", () => {
+    act(() => observeSessionInput(SESSION, "pending"));
+    render({ command: "powershell.exe", launchEnv: { MYCMUX_LAUNCH_TARGET: "omp" } });
+    act(() => textarea().focus());
+    expect(textarea().getAttribute("aria-label")).toContain("Oh My Pi");
+    expect(mocks.handleSocketCommand).not.toHaveBeenCalled();
+    type("one\ntwo");
+    pressEnter();
+    expect(mocks.handleSocketCommand).toHaveBeenCalledWith("pane.send_text", expect.objectContaining({
+      text: "\x1b[200~one\ntwo\x1b[201~", enter: true,
+    }));
   });
 
   it("moves a shell's pending input line through the same route as the send", async () => {

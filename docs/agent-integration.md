@@ -125,7 +125,7 @@ python C:/Users/miyaz/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py answ
 ### Antigravity (agy) の可視 spawn (2026-07-16 追加)
 
 Gemini CLI は 2026-06-18 に個人アカウント向け終了 (実測: `IneligibleTierError`)。後継は
-`agy` (Antigravity CLI)。`spawn --target` は claude/codex 系のみなので、agy は
+`agy` (Antigravity CLI)。`spawn --target agy` は新規起動に使えます。初期プロンプトを位置引数で渡す場合は、
 **spawn-tab の任意コマンド argv 経路**で可視ペインを立てる:
 
 ```
@@ -149,6 +149,14 @@ python scripts/mycmux_agent_cli.py spawn-tab --label agy -- env NO_COLOR=1 agy -
   try/finally で必ず元の値へ復元する。加えて `terminal.rs::inject_no_color_for_agy` が、launcher を
   経由せず `command="gemini"` 等を直接 spawn するビルトインエージェント経路
   (`src/lib/agents.ts`) 向けの防御として同じ処理を担う
+
+### Oh My Pi (omp) の新規起動
+
+Oh My Pi はランチャーの「Oh My Pi」と `python scripts/mycmux_agent_cli.py spawn --target omp` で新規起動できます。Windows のランチャーは `%LOCALAPPDATA%\omp\omp.exe` を使います。Mac の `launcher.sh` は PATH 上の `omp` に落ちます。モデルは `--model`、思考レベルは `--thinking` で渡します。
+
+`spawn --target omp` の prompt / resume / handoff とセッション複製は未対応です。初期プロンプトが必要な場合は `python scripts/mycmux_agent_cli.py spawn-tab -- omp.exe "指示内容"` のように位置引数で渡します。PATH に `omp.exe` が無い Windows 環境では実体のフルパスを指定します。mycmux の再起動後、Oh My Pi のペインは Hermes と同じく起動メニューに戻ります。
+
+両ランチャーは `--allow-home` を付けます。これが無いとホームで起動したときに Oh My Pi が一時フォルダへ移るためです。入力欄は bracketed paste と Enter で送信します。
 
 ### Grok Build (grok) の可視 spawn (2026-08-15 追加)
 
@@ -187,7 +195,7 @@ python scripts/mycmux_agent_cli.py spawn --target grok --prompt-file <spec.md>
 2. **委譲の関門**: `src/components/layout/socketCommands.ts` の `isAgentKind()` —
    ここを通さないと `pane.spawn` が `unsupported pane.spawn target` で弾かれる
 3. **CLI**: `scripts/mycmux_agent_cli.py` の `AGENT_TARGETS` / `AGENT_KINDS`、および
-   `declare-tab --target` (**別ハードコードなので忘れやすい**)
+   `declare-tab --target` (**別ハードコードなので忘れやすい**)。宣言タブの起動対象は `launchDeclaredTab` が対応する種類だけにする
 4. **ランチャー**: `src-tauri/src/launcher.ps1` (Windows 本命) と `launcher.sh`。
    メニュー項目・`$LaunchTargets` / `MYCMUX_LAUNCH_TARGET` の case・handoff 分岐・resume 分岐・
    セッションID注入。**両ファイルともインデックス直書きがあるので既存項目の番号を全部振り直す**
@@ -208,7 +216,7 @@ python scripts/mycmux_agent_cli.py spawn --target grok --prompt-file <spec.md>
    数字キー割当を**行文字列レベルで固定**している。`tests/unit/agentDisplayKind.test.ts` は
    `COMMAND_DISPLAY_KINDS` を `toEqual` で丸ごと固定。`tests/test_no_agent_kind_in_stall_path.py` の
    `FORBIDDEN` にも名前を足す (停滞判定はエージェント非依存が契約なので、`promptShape.ts` /
-   `stallVerdict.ts` にはエージェント名を書かない)
+   `stallVerdict.ts` にはエージェント名を書かない)。禁止語の検査は原則として部分一致なので、`prompt` のように短い名前を含む一般語がある場合は単語境界で調べる
 9. **アカウント/使用量**: `CliProvider` / `cli_accounts/` / `usage/` / `PROVIDER_ORDER` を同時に追加し、
    登録・切替・使用量とログイン staging の全経路を確認する
 

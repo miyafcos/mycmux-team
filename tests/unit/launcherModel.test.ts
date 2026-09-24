@@ -113,6 +113,16 @@ describe("launcher launch rows", () => {
     expect(targets).not.toContain("claude-codex-open");
   });
 
+  it("offers Oh My Pi immediately after Hermes in new launches", () => {
+    const items = launchItems();
+    const hermes = items.findIndex((item) => item.target === "hermes");
+    expect(hermes).toBeGreaterThanOrEqual(0);
+    expect(items[hermes + 1]).toMatchObject({
+      target: "omp", label: "Oh My Pi", short: "Oh My Pi", iconKind: "omp",
+    });
+    expect(items[hermes + 2]?.target).toBe("web-chatgpt");
+  });
+
   it("gives every row a mark to draw", () => {
     for (const item of launchItems()) {
       expect(item.iconKind, `${item.target} has no icon kind`).not.toBe("");

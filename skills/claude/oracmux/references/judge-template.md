@@ -29,7 +29,7 @@ confidence: 高 / 中 / 低 — 低いとき、人が確認すべき点を 1 行
 
 ## 規律
 
-- 回答の引用は短く (1 文)。全文は `council.md` にある
+- 回答の引用は論点が分かる最小限にとどめる。全文は `council.md` にある
 - 「A が言っているから」は根拠にならない。一次資料 (コード・仕様・実測) で裏づける。裏づけが取れない主張は【要確認】
 - Oracle (ChatGPT Pro) と母艦の意見が割れたら、宮崎さんへ両論併記で上げる (memory `feedback-fable-bokan-oracle-consult`)
 - 判定を書いたら、必要なら `quick_html.py --md <run>/council.md` を再実行して HTML を更新する

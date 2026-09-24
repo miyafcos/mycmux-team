@@ -131,14 +131,26 @@ describe("resolveSpawnPlan", () => {
       .toThrow("pane.spawn prompt requires a target mycmux tracks sessions for");
   });
 
-  // agy and hermes are launcher rows with no session file of their own. They
+  // agy, hermes, and omp are launcher rows with no session file of their own. They
   // launch like any other agent and are refused by everything that addresses a
   // previous session by id.
   it("launches a catalog agent mycmux keeps no session identity for", () => {
-    const plan = resolveSpawnPlan({ target: "hermes" });
-    expect(plan.mode).toBe("launch");
-    expect(plan.launchEnv).toEqual({ MYCMUX_LAUNCH_TARGET: "hermes" });
-    expect(plan.paneOptions).toEqual({ agentId: "shell-starter", launchEnv: plan.launchEnv });
+    for (const target of ["hermes", "omp"]) {
+      const plan = resolveSpawnPlan({ target });
+      expect(plan.mode).toBe("launch");
+      expect(plan.launchEnv).toEqual({ MYCMUX_LAUNCH_TARGET: target });
+      expect(plan.paneOptions).toEqual({ agentId: "shell-starter", launchEnv: plan.launchEnv });
+      expect(plan.paneOptions.agentKind).toBeUndefined();
+    }
+  });
+
+  it("carries Oh My Pi model and thinking level through spawn", () => {
+    const plan = resolveSpawnPlan({ target: "omp", model: "openai-codex/gpt-6-sol", effort: "xhigh" });
+    expect(plan.launchEnv).toEqual({
+      MYCMUX_LAUNCH_TARGET: "omp",
+      MYCMUX_LAUNCH_MODEL: "openai-codex/gpt-6-sol",
+      MYCMUX_LAUNCH_EFFORT: "xhigh",
+    });
     expect(plan.paneOptions.agentKind).toBeUndefined();
   });
 

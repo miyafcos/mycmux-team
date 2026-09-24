@@ -25,7 +25,7 @@ AI agent terminal workspace built with Tauri v2 + React + xterm.js.
 ### Features — Implemented
 - [terminal-core.md](features/implemented/terminal-core.md) — xterm.js, PTY, WebGL, resize, scrollback
 - [workspaces-and-layout.md](features/implemented/workspaces-and-layout.md) — Workspaces, grid templates, splitting, tabs-per-pane
-- [agents.md](features/implemented/agents.md) — Launcher catalog (claude, codex, claude-codex, grok, agy) and legacy agent definitions
+- [agents.md](features/implemented/agents.md) — Launcher catalog (claude, codex, claude-codex, grok, agy, hermes, omp) and legacy agent definitions
 - [theming.md](features/implemented/theming.md) — 30 bundled themes (9 light), 3 recommendations, runtime switching
 - [persistence.md](features/implemented/persistence.md) — JSON storage, save/load flow, what persists
 - [notifications.md](features/implemented/notifications.md) — Approval badges, notification panel, tab aggregation; historical flash notes

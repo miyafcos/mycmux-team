@@ -158,13 +158,24 @@ pub fn release_window_role(app: &AppHandle, label: &str) {
     }
 }
 
-/// Bring the main window back after macOS hid it (its close button and ⌘W
-/// hide rather than close, so the panes in it keep running).
-#[cfg(target_os = "macos")]
+/// Reveal and focus the main window for native file-open and activation requests.
+/// On macOS this also brings back a window hidden by its close button or Cmd+W.
 pub fn show_main_window(app: &AppHandle) {
     let app_handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Some(window) = app_handle.get_window("main") {
+            #[cfg(target_os = "windows")]
+            if let Some(webview) = app_handle.get_webview_window("main") {
+                if let Ok(hwnd) = webview.hwnd() {
+                    unsafe {
+                        use windows::Win32::UI::WindowsAndMessaging::{IsIconic, ShowWindow, SW_RESTORE};
+                        let hwnd = windows::Win32::Foundation::HWND(hwnd.0);
+                        if IsIconic(hwnd).as_bool() {
+                            let _ = ShowWindow(hwnd, SW_RESTORE);
+                        }
+                    }
+                }
+            }
             let _ = window.show();
             let _ = window.set_focus();
             if let Some(webview_window) = app_handle.get_webview_window("main") {
@@ -489,6 +500,12 @@ pub fn handle_app_run_event(app: &AppHandle, event: tauri::RunEvent) {
         // Native termination (including macOS Cmd+Q) may skip ExitRequested.
         // The shared latch also makes Exit after ExitRequested harmless.
         tauri::RunEvent::Exit => (0, Some(0)),
+        // Finder Open With and files delivered during app launch.
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Opened { urls } => {
+            crate::open_with::queue_opened_urls(app, &urls);
+            return;
+        }
         // Clicking the Dock icon with every window closed: on macOS the app
         // keeps running with no window (closing the main window hides it), so
         // this is how the user asks for it back.

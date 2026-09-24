@@ -26,6 +26,13 @@ describe("resolveDisplayAgentKind", () => {
     }
   });
 
+  it("maps Oh My Pi by command basename and launch target", () => {
+    for (const command of ["omp", "omp.exe", "C:\\Users\\me\\AppData\\Local\\omp\\omp.exe", "/usr/local/bin/omp"]) {
+      expect(resolveDisplayAgentKind(undefined, [command])).toBe("omp");
+    }
+    expect(resolveDisplayAgentKind(undefined, ["powershell.exe"], "omp")).toBe("omp");
+  });
+
   it("falls back to the launch target for rows the catalog gives no session kind", () => {
     // agy and Hermes are started through the launcher shell, so the PTY command
     // is powershell/bash and MYCMUX_LAUNCH_TARGET is the only identification left.
@@ -59,12 +66,12 @@ describe("resolveDisplayAgentKind", () => {
 
 describe("LAUNCH_TARGET_DISPLAY_KINDS", () => {
   it("declares the launcher targets that carry no session kind", () => {
-    expect(LAUNCH_TARGET_DISPLAY_KINDS).toEqual({ agy: "antigravity", hermes: "hermes" });
+    expect(LAUNCH_TARGET_DISPLAY_KINDS).toEqual({ agy: "antigravity", hermes: "hermes", omp: "omp" });
   });
 });
 
 describe("COMMAND_DISPLAY_KINDS", () => {
   it("declares the display-only command mapping", () => {
-    expect(COMMAND_DISPLAY_KINDS).toEqual({ agy: "antigravity", claude: "claude", codex: "codex", grok: "grok", hermes: "hermes" });
+    expect(COMMAND_DISPLAY_KINDS).toEqual({ agy: "antigravity", claude: "claude", codex: "codex", grok: "grok", hermes: "hermes", omp: "omp" });
   });
 });

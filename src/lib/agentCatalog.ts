@@ -88,6 +88,13 @@ const AGY_MODELS: readonly ModelChoice[] = [
   { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)" },
 ];
 
+const OMP_MODELS: readonly ModelChoice[] = [
+  { value: "openai-codex/gpt-6-astra", label: "Astra (6 flagship)" },
+  { value: "openai-codex/gpt-6-sol", label: "Sol (6)" },
+  { value: "openai-codex/gpt-6-luna", label: "Luna (6 light)" },
+];
+const OMP_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
 const NO_CHOICES: readonly ModelChoice[] = [];
 const NO_EFFORTS: readonly string[] = [];
 
@@ -161,6 +168,14 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     kind: "agent",
     models: NO_CHOICES,
     efforts: NO_EFFORTS,
+  },
+  {
+    target: "omp",
+    label: "Oh My Pi",
+    kind: "agent",
+    cli: "omp",
+    models: OMP_MODELS,
+    efforts: OMP_EFFORTS,
   },
   // Web rows open a child webview, not a PTY, so they carry no launch flags.
   // They stay in the catalog because the contract test walks this list against

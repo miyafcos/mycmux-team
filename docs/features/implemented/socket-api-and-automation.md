@@ -93,7 +93,7 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 | resume | `resumeSessionId` | `MYCMUX_RESUME` + `MYCMUX_SESSION_ID` で resume 起動 |
 | launch / shell | なし | `MYCMUX_LAUNCH_TARGET=<target>` で新規起動。`target: "shell"` は `shell-starter` の起動メニュー |
 
-共通引数: `target` (claude / codex / claude-codex / grok / shell / web、必須)、`workspaceId`、`anchorPaneId`、`direction` (right / down)、`cwd`、`label`、`activate` (`pane.spawn` は既定 true、`pane.spawn_tab` は既定 false)。
+共通引数: `target` (カタログの agent 行すべて、agy・hermes・omp を含む。ほかに shell / web。必須)、`workspaceId`、`anchorPaneId`、`direction` (right / down)、`cwd`、`label`、`activate` (`pane.spawn` は既定 true、`pane.spawn_tab` は既定 false)。
 
 env 構築は純関数 `resolveSpawnPlan` に分離してあり、`tests/unit/socketCommands.test.ts` で単体テストしています。
 

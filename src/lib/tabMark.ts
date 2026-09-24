@@ -75,6 +75,7 @@ const AGENT_MARK_LABELS: Record<DisplayAgentKind, string> = {
   "grok": "Grok",
   "antigravity": "Antigravity",
   "hermes": "Hermes",
+  "omp": "Oh My Pi",
 };
 
 export function tabMarkColor(kind: TabMarkKind): AgentKindColor {

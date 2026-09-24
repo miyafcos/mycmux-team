@@ -509,6 +509,7 @@ const AGENT_KIND_LABELS: Record<string, string> = {
   "grok": "Grok Build",
   "antigravity": "Antigravity",
   "hermes": "Hermes",
+  "omp": "Oh My Pi",
 };
 
 export function resolveActiveAgentLabel(

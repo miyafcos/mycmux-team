@@ -264,6 +264,14 @@ def test_declare_tab_defaults_origin_to_agent() -> None:
     )
 
 
+def test_declare_tab_rejects_untracked_omp_target() -> None:
+    with pytest.raises(SystemExit) as error:
+        request_for_declare_tab(
+            ["--session", PANE_SESSION_ID, "--label", "Oh My Pi", "--target", "omp"]
+        )
+    assert error.value.code == 2
+
+
 def test_declare_tab_forwards_explicit_human_origin_and_intent() -> None:
     assert request_for_declare_tab(
         [

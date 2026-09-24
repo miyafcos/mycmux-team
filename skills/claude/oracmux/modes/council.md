@@ -12,7 +12,7 @@ fusion (Claude+Codex+agy の CLI 合議) の Web 版。価値は**訓練系統�
 ## 動き
 
 1. brief を 1 本作り (読者＝ChatGPT / Gemini / Grok)、NDA ガードを通す
-2. 各エンジンを `ask --run-dir <run> --via cdp` の**別プロセス**で 2 秒ずらして起動 (同じ OracleChrome に 3 タブ)
+2. 各エンジンを `ask --run-dir <run>` の**別プロセス**で 2 秒ずらして起動する。経路は `--via` で選ぶ (既定 pane = 呼び出し元タブの裏ペイン、`--via cdp` = 同じ OracleChrome に 3 タブ)
 3. 30 秒おきに `progress.json` を集めて 1 行ログ (`chatgpt=answer_streaming(1200c) gemini=done(900c) grok=waiting_answer(0c)`)
 4. 全レーン終了後 `council.md` (回収状況の表 + 各回答 + judge 欄) と HTML (`quick_html.py`) を書く
 

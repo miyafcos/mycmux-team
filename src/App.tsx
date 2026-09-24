@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import {
   useWorkspaceListStore,
   usePaneMetadataStore
@@ -17,7 +18,9 @@ import {
   revealMainWindow,
   readAgentSessionMappings,
   getTerminalConfig,
+  takePendingOpenPaths,
 } from "./lib/ipc";
+import { OPEN_PATHS_EVENT, openPathsInMainWindow } from "./lib/openWithPaths";
 import { isMainWindow, windowLabel, useWindowRole } from "./lib/windowContext";
 import { installChildWindowDevHook } from "./lib/multiWindowDev";
 import { useUiStore } from "./stores/uiStore";
@@ -168,6 +171,29 @@ function App() {
 
   useWorkspacePersist();
   useAgentDormancy(ready && hasRole);
+
+  useEffect(() => {
+    if (!ready || !isMain) return;
+    let live = true;
+    let unlisten: (() => void) | undefined;
+    let drainTail: Promise<void> = Promise.resolve();
+    const drain = () => {
+      drainTail = drainTail.then(async () => {
+        if (!live) return;
+        const paths = await takePendingOpenPaths();
+        await openPathsInMainWindow(paths);
+      }).catch((error) => {
+        if (live) useToastStore.getState().pushToast(`Failed to receive file-open request: ${String(error)}`, "error");
+      });
+    };
+    void listen(OPEN_PATHS_EVENT, drain).then((unsubscribe) => {
+      if (!live) unsubscribe();
+      else { unlisten = unsubscribe; drain(); }
+    }).catch((error) => {
+      if (live) useToastStore.getState().pushToast(`Failed to listen for file-open requests: ${String(error)}`, "error");
+    });
+    return () => { live = false; unlisten?.(); };
+  }, [ready, isMain]);
 
   useEffect(() => {
     if (!ready || !hasRole) return;

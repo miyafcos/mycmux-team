@@ -487,6 +487,10 @@ export async function previewArtifactUriForSessionV2(
   return invoke<PreviewArtifactInfo>("preview_artifact_uri_for_session_v2", { sessionId, uri } satisfies ArtifactUriArgs);
 }
 
+export async function takePendingOpenPaths(): Promise<string[]> {
+  return invoke<string[]>("take_pending_open_paths");
+}
+
 export async function readEditableArtifact(sourcePath: string): Promise<EditableArtifactSource> {
   return invoke<EditableArtifactSource>("read_editable_artifact", { sourcePath } satisfies SourcePathArgs);
 }

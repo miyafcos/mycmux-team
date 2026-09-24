@@ -34,6 +34,21 @@ describe("resolveComposerTarget", () => {
     expect(resolveComposerTarget({ command: "pwsh.exe", processTitle: "C:/bin/codex.exe" })).toBe("codex");
   });
 
+  it("routes exact omp launch targets and executable names through Claude paste", () => {
+    const launched = { command: "powershell.exe", launchEnv: { MYCMUX_LAUNCH_TARGET: "omp" } };
+    const executable = { command: "C:/Users/me/AppData/Local/omp/omp.exe" };
+    for (const input of [launched, executable]) {
+      expect(resolveComposerTarget(input)).toBe("claude");
+      expect(resolveComposerAgentLabelKind(input)).toBe("omp");
+      expect(startsAsAgentTui(input)).toBe(true);
+      expect(buildComposerPayload({ text: "one\ntwo", target: resolveComposerTarget(input) })).toEqual({
+        body: `${PASTE_START}one\ntwo${PASTE_END}`, submitKey: "\r", foldedNewlines: false,
+      });
+    }
+    expect(resolveComposerTarget({ command: "prompt.exe" })).toBe("shell");
+    expect(resolveComposerAgentLabelKind({ command: "powershell.exe" })).toBe("shell");
+  });
+
   it("treats an ordinary shell as a shell", () => {
     expect(resolveComposerTarget({ command: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" })).toBe("shell");
     expect(startsAsAgentTui({ command: "powershell.exe" })).toBe(false);

@@ -183,6 +183,32 @@ def test_catalog_labels_match_the_launcher_menu() -> None:
         )
 
 
+def test_omp_uses_the_installer_path_only_in_windows_git_bash() -> None:
+    sh = read(LAUNCHER_SH)
+    assert 'cmd="$__MYCMUX_OMP_COMMAND --allow-home"' in sh
+    assert '"$__MYCMUX_OMP_COMMAND --allow-home"' in sh
+    ps1 = read(LAUNCHER_PS1)
+    assert 'New-MycmuxOption "Oh My Pi" @("$env:LOCALAPPDATA\\omp\\omp.exe", "--allow-home") $null "omp"' in ps1
+
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash is not available")
+    header = read(LAUNCHER_SH).split("\n__mycmux_is_windows_shell()", 1)[0]
+    for fake_uname, msystem, expected in (
+        ("MINGW64_NT", "MINGW64", "/c/Users/me/AppData/Local/omp/omp.exe"),
+        ("Darwin", "", "omp"),
+        ("Linux", "", "omp"),
+    ):
+        script = f'uname() {{ printf "%s" "{fake_uname}"; }}\n{header}\nprintf "%s\\n" "$__MYCMUX_OMP_COMMAND"\n'
+        result = subprocess.run(
+            [bash, "-s"], input=script, capture_output=True, text=True, encoding="utf-8",
+            env={"PATH": os.environ.get("PATH", ""), "HOME": "/c/Users/me", "MSYSTEM": msystem},
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected
+
+
 def test_every_catalog_cli_has_a_translation_arm_in_both_launchers() -> None:
     """A new agent without an arm would silently ignore its model and effort."""
     ps1 = read(LAUNCHER_PS1)
@@ -229,8 +255,8 @@ $fn = $ast.FindAll({
 if ($fn.Count -ne 1) { throw "New-MycmuxModelChoice not found" }
 Invoke-Expression $fn[0].Extent.Text
 $want = @(
-  "ClaudeModels","CodexModels","AgyModels",
-  "ClaudeEfforts","CodexEfforts","ShortEfforts","LaunchSpecCatalog"
+  "ClaudeModels","CodexModels","AgyModels","OmpModels",
+  "ClaudeEfforts","CodexEfforts","ShortEfforts","OmpEfforts","LaunchSpecCatalog"
 )
 foreach ($a in $ast.FindAll({
   param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst]
@@ -374,6 +400,10 @@ PARITY_CASES = [
     ("codex-positional", "codex resume --no-alt-screen --last", "gpt-5.6-sol", "max"),
     ("grok", "grok --no-alt-screen --permission-mode auto", "grok-4", "high"),
     ("agy", "agy", "gemini-3.1-pro-high", "high"),
+    ("omp", "omp --allow-home", "openai-codex/gpt-6-sol", "xhigh"),
+    ("omp-astra-max", "omp --allow-home", "openai-codex/gpt-6-astra", "max"),
+    ("omp-exe", "C:/Users/me/AppData/Local/omp/omp.exe --allow-home", "openai-codex/gpt-6-sol", "xhigh"),
+    ("omp-default", "omp --allow-home", "", ""),
     ("claude-codex", "claude-codex --backend gpt", "gpt-5.6-sol", "max"),
     # An OpenRouter model reaches claude-codex only in the gateway spelling,
     # slashes and all (a bare "grok-4.3" is routed to codex and refused).
@@ -524,6 +554,10 @@ def test_a_launch_spec_translates_to_the_flags_each_cli_documents() -> None:
     assert by_id["codex-positional"].endswith("resume --no-alt-screen --last")
     assert "--reasoning-effort high" in by_id["grok"]
     assert by_id["agy"] == "agy --model gemini-3.1-pro-high --effort high"
+    assert by_id["omp"] == "omp --model openai-codex/gpt-6-sol --thinking xhigh --allow-home"
+    assert by_id["omp-astra-max"] == "omp --model openai-codex/gpt-6-astra --thinking max --allow-home"
+    assert by_id["omp-exe"] == "C:/Users/me/AppData/Local/omp/omp.exe --model openai-codex/gpt-6-sol --thinking xhigh --allow-home"
+    assert by_id["omp-default"] == "omp --allow-home"
     assert by_id["claude-codex"].startswith("claude-codex --model gpt-5.6-sol --effort max ")
     assert by_id["accept-128"].startswith(f"claude --model {'a' * 128} --effort high ")
     assert by_id["claude-codex-gateway"].startswith(
@@ -569,6 +603,7 @@ def test_a_model_that_could_be_read_as_a_flag_is_dropped(case_id: str) -> None:
 # Efforts: 1 default, 2 low, 3 medium, 4 high, 5 xhigh, 6 max, 7 ultra
 # (Luna has no ultra; its type-in row is 7).
 MENU_CASES = [
+    ("omp-sol-xhigh", "omp", "35", ["3", "5"], [], "openai-codex/gpt-6-sol|xhigh"),
     ("digits", "codex", "64", ["6", "4"], [], "gpt-5.6-terra|high"),
     (
         "arrows",
@@ -672,7 +707,7 @@ foreach ($f in $ast.FindAll({
 }
 if ($found -ne $wantFunctions.Count) { throw "expected $($wantFunctions.Count) functions, ran $found" }
 
-$wantVars = @("ClaudeModels","CodexModels","AgyModels","ClaudeEfforts","CodexEfforts","ShortEfforts","LaunchSpecCatalog")
+$wantVars = @("ClaudeModels","CodexModels","AgyModels","OmpModels","ClaudeEfforts","CodexEfforts","ShortEfforts","OmpEfforts","LaunchSpecCatalog")
 foreach ($a in $ast.FindAll({
   param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst]
 }, $true)) {

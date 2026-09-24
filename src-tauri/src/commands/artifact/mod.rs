@@ -106,7 +106,7 @@ fn is_allowed_external_artifact_path(path: &Path) -> bool {
     path.is_absolute() && path.is_file()
 }
 
-fn is_previewable_artifact(path: &Path) -> bool {
+pub(crate) fn is_previewable_artifact(path: &Path) -> bool {
     matches!(
         path.extension()
             .and_then(|extension| extension.to_str())
@@ -145,7 +145,7 @@ fn is_previewable_artifact(path: &Path) -> bool {
     )
 }
 
-fn artifact_source_kind(path: &Path) -> Option<&'static str> {
+pub(crate) fn artifact_source_kind(path: &Path) -> Option<&'static str> {
     match path
         .extension()
         .and_then(|extension| extension.to_str())

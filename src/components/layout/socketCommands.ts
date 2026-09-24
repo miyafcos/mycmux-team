@@ -41,7 +41,7 @@ import {
 
 type SocketArgs = Record<string, unknown> | null | undefined;
 // Every launchable catalog row, not only the four kinds mycmux tracks a
-// session identity for: `agy` and `hermes` are agents the launcher starts and
+// session identity for: `agy`, `hermes`, and `omp` are agents the launcher starts and
 // keeps no session file for, and they were unreachable from the socket while
 // this was typed as AgentSessionKind (2026-09-16).
 type SpawnTarget = string;
@@ -164,7 +164,7 @@ function agentIdForSpawnTarget(target: SpawnTarget): string {
 
 /**
  * The session identity mycmux keeps for this target, when it keeps one. `agy`
- * and `hermes` launch fine and have none, so everything that writes an
+ * `hermes` and `omp` launch fine and have none, so everything that writes an
  * agentKind has to tolerate undefined rather than assume the target is one.
  */
 function trackedKind(target: SpawnTarget): AgentSessionKind | undefined {
@@ -758,7 +758,7 @@ async function resolveHandoffPromptPath(args: SocketArgs): Promise<string | unde
 
   const { crsmCreateHandoff } = await import("../../lib/ipc");
   // A handoff carries a conversation between agents; a shell has none to carry,
-  // a web tab is not an agent at all, and agy / hermes keep no session file for
+  // a web tab is not an agent at all, and agy / hermes / omp keep no session file for
   // the other side to read.
   const target = requireTrackedKind(spawnTarget(args), "handoff");
   const handoffFromKind = optionalAgentKind(

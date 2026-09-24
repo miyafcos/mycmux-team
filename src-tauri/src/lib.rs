@@ -15,6 +15,9 @@ mod events;
 mod history;
 mod livebrief;
 mod launcher_dirs;
+mod open_with;
+#[cfg(target_os = "windows")]
+mod open_with_windows;
 mod pocket;
 mod pty;
 mod session_retention;
@@ -276,12 +279,28 @@ pub fn run() {
 
     let _single_instance_guard = match single_instance::acquire(test_profile::name()) {
         Ok(Some(guard)) => Some(guard),
-        Ok(None) => return,
+        Ok(None) => {
+            let paths = open_with::paths_from_args(
+                std::env::args(),
+                &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            );
+            if let Err(error) = open_with::forward_to_running_instance(&paths) {
+                crate::diag_warn!("open-with", "Failed to forward launch request: {error}");
+            }
+            return;
+        }
         Err(error) => {
             crate::diag_warn!("mycmux", "{error}");
             return;
         }
     };
+
+    let initial_open_paths = open_with::paths_from_args(
+        std::env::args(),
+        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    );
+    #[cfg(target_os = "windows")]
+    open_with_windows::register_in_background(test_profile::name());
 
     // Strip ephemeral env vars inherited from the parent shell so they do not
     // leak into spawned PTY child processes (would auto-resume sessions).
@@ -351,6 +370,7 @@ pub fn run() {
                 .build(),
         )
         .manage(state)
+        .manage(open_with::PendingOpenPaths::with_paths(initial_open_paths))
         .manage(socket::SocketState {
             pending_requests: Arc::new(dashmap::DashMap::new()),
             next_id: std::sync::atomic::AtomicUsize::new(1),
@@ -378,6 +398,7 @@ pub fn run() {
             commands::agent_prompts::agent_prompt_try_answer,
             commands::agent_prompts::agent_prompt_is_current_launch,
             commands::artifact::preview_artifact_uri_for_session_v2,
+            open_with::take_pending_open_paths,
             commands::artifact::read_editable_artifact,
             commands::artifact::save_editable_artifact,
             commands::terminal::get_terminal_config,

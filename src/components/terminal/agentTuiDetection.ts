@@ -32,6 +32,7 @@ export const AGENT_TUI_COMMAND_NAMES: ReadonlySet<string> = new Set([
   "codex",
   "grok",
   "agy",
+  "omp",
 ]);
 
 /**

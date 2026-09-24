@@ -593,6 +593,9 @@ function Add-MycmuxLaunchSpecToCommandArray {
   } elseif ($leaf -eq "agy") {
     if ($model) { $extra += @("--model", $model) }
     if ($effort) { $extra += @("--effort", $effort) }
+  } elseif ($leaf -eq "omp") {
+    if ($model) { $extra += @("--model", $model) }
+    if ($effort) { $extra += @("--thinking", $effort) }
   } else {
     return $Command
   }
@@ -793,6 +796,7 @@ $Options = @(
   # Gemini CLI was sunset for individual accounts on 2026-06-18; agy (Antigravity CLI) replaces it
   New-MycmuxOption "Antigravity (agy)" @("agy") $null "agy"
   New-MycmuxOption "Hermes" @("$env:LOCALAPPDATA\hermes\bin\hermes.exe") $null "hermes"
+  New-MycmuxOption "Oh My Pi" @("$env:LOCALAPPDATA\omp\omp.exe", "--allow-home") $null "omp"
   # Not processes: these open a web tab through the socket, handled before exec.
   New-MycmuxOption "ChatGPT (Web)" @("__web_chatgpt__") $null
   New-MycmuxOption "Gemini (Web)" @("__web_gemini__") $null
@@ -838,9 +842,15 @@ $AgyModels = @(
   New-MycmuxModelChoice "Claude Opus 4.6 (Thinking)" "claude-opus-4-6-thinking"
   New-MycmuxModelChoice "Claude Sonnet 4.6 (Thinking)" "claude-sonnet-4-6"
 )
+$OmpModels = @(
+  New-MycmuxModelChoice "Astra (6 flagship)" "openai-codex/gpt-6-astra"
+  New-MycmuxModelChoice "Sol (6)" "openai-codex/gpt-6-sol"
+  New-MycmuxModelChoice "Luna (6 light)" "openai-codex/gpt-6-luna"
+)
 $ClaudeEfforts = @("low", "medium", "high", "xhigh", "max")
 $CodexEfforts = @("low", "medium", "high", "xhigh", "max", "ultra")
 $ShortEfforts = @("low", "medium", "high")
+$OmpEfforts = @("low", "medium", "high", "xhigh", "max")
 
 $LaunchSpecCatalog = @{
   "claude" = [pscustomobject]@{ Models = $ClaudeModels; Efforts = $ClaudeEfforts }
@@ -853,6 +863,7 @@ $LaunchSpecCatalog = @{
   "agy" = [pscustomobject]@{ Models = $AgyModels; Efforts = $ShortEfforts }
   # hermes picks provider+model with `hermes model`; mycmux passes no flags.
   "hermes" = [pscustomobject]@{ Models = @(); Efforts = @() }
+  "omp" = [pscustomobject]@{ Models = $OmpModels; Efforts = $OmpEfforts }
 }
 
 # claude-codex's model menu is its installed model table, not a list kept here:
@@ -954,23 +965,24 @@ $LaunchTargets = @{
   "gemini" = $Options[5]
   "antigravity" = $Options[5]
   "hermes" = $Options[6]
-  "chatgpt" = $Options[7]
-  "web-chatgpt" = $Options[7]
-  "web-gemini" = $Options[8]
-  "gemini-web" = $Options[8]
-  "web-grok" = $Options[9]
-  "grok-web" = $Options[9]
-  "web-claude" = $Options[10]
-  "claude-web" = $Options[10]
-  "claude-ai" = $Options[10]
-  "web-notebooklm" = $Options[11]
-  "notebooklm" = $Options[11]
-  "web-browser" = $Options[12]
-  "claude-resume" = $Options[13]
-  "codex-resume" = $Options[14]
-  "claude-codex-resume" = $Options[15]
-  "grok-resume" = $Options[16]
-  "custom" = $Options[17]
+  "omp" = $Options[7]
+  "chatgpt" = $Options[8]
+  "web-chatgpt" = $Options[8]
+  "web-gemini" = $Options[9]
+  "gemini-web" = $Options[9]
+  "web-grok" = $Options[10]
+  "grok-web" = $Options[10]
+  "web-claude" = $Options[11]
+  "claude-web" = $Options[11]
+  "claude-ai" = $Options[11]
+  "web-notebooklm" = $Options[12]
+  "notebooklm" = $Options[12]
+  "web-browser" = $Options[13]
+  "claude-resume" = $Options[14]
+  "codex-resume" = $Options[15]
+  "claude-codex-resume" = $Options[16]
+  "grok-resume" = $Options[17]
+  "custom" = $Options[18]
 }
 
 function Invoke-MycmuxCustomCommand {

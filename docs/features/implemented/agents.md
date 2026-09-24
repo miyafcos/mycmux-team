@@ -17,7 +17,7 @@ An "agent" is a command definition that determines what process runs in a termin
 | `aider` | Aider | `aider` | `A` | `#94e2d5` |
 
 Defined in `src/lib/agents.ts`; `gemini` and `aider` remain legacy definitions, not supported launcher choices.
-The launch catalog tracks `claude` / `codex` / `claude-codex` / `grok`, plus untracked `agy`. claude-codex's model chips are read from its installed `models.json` (`claude_codex_model_choices`). `claude-codex-open` (the FCC-only profile) is left to the launchers' own text menu; the React launcher and the socket/CLI spawn no longer offer it.
+The launch catalog tracks `claude` / `codex` / `claude-codex` / `grok`, plus untracked `agy` / `hermes` / `omp`. claude-codex's model chips are read from its installed `models.json` (`claude_codex_model_choices`). `claude-codex-open` (the FCC-only profile) is left to the launchers' own text menu; the React launcher and the socket/CLI spawn no longer offer it.
 New tabs use the React `LauncherPane` (v0.62.0); its directory sections are configured in Settings → Launcher (v0.64.0), and its five Web services are listed in `agentCatalog.ts`.
 
 ## AgentDefinition Type

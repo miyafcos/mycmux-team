@@ -1,19 +1,19 @@
 {
   "pack_version": "1.0.0",
-  "generated_at": "2026-09-23T13:54:24.708500+00:00",
+  "generated_at": "2026-09-24T05:35:10.824797+00:00",
   "cli": {
     "path": "scripts/mycmux_agent_cli.py",
-    "sha256": "78a33d663de14642cc36a2e9dd1ae8440035abd26f3d319558b0cdcc255aeb99"
+    "sha256": "5be003ffab99350ae17018742aa1f58c6f0ba5fb700057c7c3afa4eba29c69ee"
   },
   "skills": [
     {
       "name": "session-dispatch",
       "files": {
-        "SKILL.md": "d0d5941aa934f1bba2a896256d2c81c775e96535fdcd6c17c3cf3a753bf5dff6",
+        "SKILL.md": "3f728d66e2690dacac2fa26b3f75d987caa9ef14b1ed06805f9e8bfe28a9b1a4",
         "references/ask-card-contract.md": "a69c38ecf9c89c2fa905a6d95c74017b6b9ec1606a3595b84b5a005f78fccd2a",
         "references/decompose-guide.md": "622ebcb21b6e7774a8da991775a94557e0d2176b066a703deee5917a94f76f85",
-        "references/dispatch-guide.md": "d80658b1fb8d27315afffbc6dae9bf1de8f83a1d92ba4261e119dfe9d87ac082",
-        "references/spec-template.md": "a919326d45b30df1366f0e2fa2da6a9bc8cd620893ca62f8405767b291ec266b",
+        "references/dispatch-guide.md": "7bc026b5746a19459ed75115c141d0a0270780da7809225f340352f1132689b4",
+        "references/spec-template.md": "53acab90a2742c0c4755d6f27f4739e698933077d9bd7efb4f6ca76d47ea4104",
         "scripts/dispatch-child-guard.py": "91badcf06154a67ad6ae404481a7490ad88b59bfa9683a5f697fad29d51a79d9",
         "scripts/dispatch_canary.py": "2b6ec2221886e3002ba881f6347e8bba812641da277e0cd18ea0b2870e482bd1",
         "scripts/dispatch_guard.py": "2356fa186467051a177ff024badf233261286867c766d6f044a0714d841bd5db",
@@ -68,18 +68,18 @@
       "name": "oracmux",
       "files": {
         ".packignore": "823240ab4ea0e2405e761c47850015df4e3b6a6bdd7d3ec96ded65c37de7bb62",
-        "SKILL.md": "8d3c26c6f76f61cadd06133c900986ed2a759d32fd35eb7b267af57e267ece5f",
+        "SKILL.md": "fedff92a7a3635f4fbf293a62f5e5e0c8e40d78aba6e26c772a594720343120a",
         "modes/ask.md": "954522b8032827413d2a5142364aa8003fdfb0493986c132a0e2e9f59e8da401",
         "modes/collect.md": "2342b3d602359da43670815192b143e640560c28a8087301810351e063b4fa1a",
-        "modes/council.md": "f8f125aa66d1f41adf5e125695945ded94e53b908ecbb203fecaeaa02b3b7685",
+        "modes/council.md": "b07d6a3ae3e21711a32850ba058e97795566b558fc318bf5246ad2489106f586",
         "modes/doctor.md": "a247f40f62caf534ce26f2c3f9c550d4407d8ca139502ea6905c46a0354433d2",
         "modes/followup.md": "95dce6d63de4defa05480531651a0a5036ef53a238021b277a91408156b6cdaf",
-        "modes/push.md": "ac48e42c1ca832c01720c5dcd129530d399f6f04e6ec663200ef856ffe234f4d",
+        "modes/push.md": "09104ede6ceed2293c53ae92d41b77152aea79964006f452de06a6ee3302cd01",
         "modes/smoke.md": "fba0637edb4185fb7dad605c821469761f9b210f9969bee67c19d90501af3e35",
         "references/app-side-web-read-spec.md": "f0fbc64b9e3f304c5d3b751b912cba910b96dd71e0b72aaa1a0003c4c1711a7c",
         "references/brief-template.md": "6580dcc69e037ff9e721ac8e3ef48ba7376cf513d73c63b076f79b789dd74fc1",
         "references/engine-notes.md": "0de31857ce1e32a1750202a6002ea4d82ea0a115ebda80104c06c06d0790ad39",
-        "references/judge-template.md": "baefcb248c079b8ca9742e5527d467188d1a7f113e96e72a44b815ba455132f8",
+        "references/judge-template.md": "434181bb82fe008312ca39326478d2a65542429a4cb81932b84c27b3a6128321",
         "scripts/engines.json": "4b5a5e7dc39b34d4089376f1a3626cfd39ba676e8527969ada7a15d9823e49b2",
         "scripts/guard.example.json": "5a6048ee2b608c748d074180a88ad1973e5d7e031604b6a135b55e01ba1eb434",
         "scripts/oracmux.py": "b1b0193838ecbe16e6adb5043546dcac713e12e52f1b1e7d1512c571a137aeca",

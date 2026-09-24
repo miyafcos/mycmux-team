@@ -32,6 +32,8 @@ describe("startsAsAgentTui", () => {
     expect(startsAsAgentTui("pwsh", ["-Command", "claude"])).toBe(true);
     expect(startsAsAgentTui("C:\\bin\\agy.exe", [])).toBe(true);
     expect(startsAsAgentTui("pwsh", ["-Command", "agy"])).toBe(true);
+    expect(startsAsAgentTui("C:\\Users\\me\\AppData\\Local\\omp\\omp.exe", [])).toBe(true);
+    expect(startsAsAgentTui("pwsh", ["-Command", "omp.exe"])).toBe(true);
   });
 
   // A pane opened from the launcher menu or the New Workspace dialog runs a

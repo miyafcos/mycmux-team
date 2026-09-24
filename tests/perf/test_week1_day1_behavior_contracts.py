@@ -15,6 +15,7 @@ EXPECTED_LAUNCHER_OPTIONS = [
     "claude-codex (Open Models)",
     "Antigravity (agy)",
     "Hermes",
+    "Oh My Pi",
     "ChatGPT (Web)",
     "Gemini (Web)",
     "Grok (Web)",
@@ -39,6 +40,7 @@ EXPECTED_LAUNCHER_COMMANDS = [
     "claude-codex --backend fcc",
     "agy",
     "$HOME/AppData/Local/hermes/bin/hermes.exe",
+    "$__MYCMUX_OMP_COMMAND --allow-home",
     "__web_chatgpt__",
     "__web_gemini__",
     "__web_grok__",
@@ -90,12 +92,13 @@ def test_launcher_order_matches_current_contract() -> None:
         "claude-codex --backend fcc",
     ):
         assert command in EXPECTED_LAUNCHER_COMMANDS
-    # Two entries were removed on 2026-08-29 and one added, so the menu went
-    # from 16 to 15 and every index after Grok Build shifted by one.
-    assert_contains(launcher, "slash) selected=17", "src-tauri/src/launcher.sh")
+    # Oh My Pi follows Hermes, shifting the Web, resume, and Custom rows by one.
+    assert_contains(launcher, "slash) selected=18", "src-tauri/src/launcher.sh")
     assert_contains(launcher, "5) selected=14", "src-tauri/src/launcher.sh")
     assert_contains(launcher, "6) selected=15", "src-tauri/src/launcher.sh")
     assert_contains(launcher, "7) selected=16", "src-tauri/src/launcher.sh")
+    assert_contains(launcher, "8) selected=17", "src-tauri/src/launcher.sh")
+    assert_contains(launcher, "9) selected=18", "src-tauri/src/launcher.sh")
     # The (dangerous) entries were retired on 2026-08-15; they must not come back
     # into the menu, and no launch target may point at them.
     for retired in ("Claude Code (dangerous)", "Codex (dangerous)", "claude-codex (dangerous)"):

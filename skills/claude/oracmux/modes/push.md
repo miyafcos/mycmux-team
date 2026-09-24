@@ -18,8 +18,8 @@ mycmux 内 (`MYCMUX_TERM_PROGRAM=mycmux`) 限定。実体は `mycmux_agent_cli.p
 
 1. `--dry-run` で brief と push コマンドを確認 (256 KB 上限・NDA ガード)
 2. push 後は「載せた。送るのは宮崎さん」と 1 行報告して止まる。`--send` は宮崎さんの明示があるときだけ
-3. 回答を取り込むときは `collect --engine <engine> --latest` (または `--url`、ペインのステータスバーの URL)
-   → `answer.md` / `transcript.md`。ペインには読み戻し API が無い (2026-09-07)
+3. 回答を取り込むときは `collect --engine <engine>` (引数なしでそのサービスの最新の Web ペインを読む。特定のペインは `--tab <tabId>`、会話 URL からは `--url`)
+   → `answer.md` / `transcript.md`。`--latest` は OracleChrome (cdp) の履歴を読むので、ペインで続けた会話の回収には使わない
 
 ## 注意
 

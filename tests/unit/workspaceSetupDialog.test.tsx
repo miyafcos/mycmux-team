@@ -106,6 +106,7 @@ describe("WorkspaceSetup", () => {
       "Grok Build",
       "Antigravity (agy)",
       "Hermes",
+      "Oh My Pi",
     ]);
     // Web rows need a webview, not a PTY, so the dialog must not offer them.
     expect(labels.some((label) => label?.includes("(Web)"))).toBe(false);

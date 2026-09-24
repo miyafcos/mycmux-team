@@ -159,6 +159,15 @@ export function HermesAgentIcon({ size = 12 }: Pick<AgentIconProps, "size">) {
   );
 }
 
+export function OmpAgentIcon({ size = 12, ...props }: AgentIconProps) {
+  return (
+    <svg {...iconProps(size)} {...props}>
+      <rect width="24" height="24" rx="5" fill="#915ccf" />
+      <path d="M5 8h14M8.5 8v9.5M15.5 8v7.5c0 1.4.6 2 2 2" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export function HybridAgentIcon({ size = 12 }: Pick<AgentIconProps, "size">) {
   const overlapSize = Math.max(1, Math.round(size * 0.68));
   return (
@@ -263,6 +272,7 @@ const chipStyles: Record<string, CSSProperties> = {
   gemini: { background: "rgba(155,114,203,.12)", borderColor: "rgba(155,114,203,.30)" },
   notebooklm: { background: "rgba(66,133,244,.10)", borderColor: "rgba(66,133,244,.30)" },
   hermes: { background: "rgba(198,152,26,.12)", borderColor: "rgba(198,152,26,.32)" },
+  omp: { background: "rgba(145,92,207,.12)", borderColor: "rgba(145,92,207,.32)" },
 };
 
 export function AgentKindIcon({ kind, size = 14, chip = true }: AgentKindIconProps) {
@@ -284,6 +294,8 @@ export function AgentKindIcon({ kind, size = 14, chip = true }: AgentKindIconPro
           ? BrowserAgentIcon
         : kind === "hermes"
           ? HermesAgentIcon
+        : kind === "omp"
+          ? OmpAgentIcon
         : kind === "html"
           ? HtmlArtifactIcon
         : kind === "markdown"
