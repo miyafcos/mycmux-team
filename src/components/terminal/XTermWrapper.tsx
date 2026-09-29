@@ -1,0 +1,3347 @@
+﻿import { memo, useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { TerminalRendererBudget } from "./terminalRendererBudget";
+import { recordTerminalFlowReceive, startTerminalFlowWrite, finishTerminalFlowWrite, recordTerminalFlowRender } from "../../lib/terminalFlowTrace";
+import { useTerminalObservationStore } from "../../stores/terminalObservationStore";
+import { Terminal } from "@xterm/xterm";
+import { SgrLightRewriter } from "./sgrLightTheme";
+import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { SearchAddon } from "@xterm/addon-search";
+import { focusController } from "../../lib/focusController";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebglAddon } from "@xterm/addon-webgl";
+import "@xterm/xterm/css/xterm.css";
+import { open } from "@tauri-apps/plugin-shell";
+import { emit } from "@tauri-apps/api/event";
+import {
+  createSession,
+  ackFrontendData,
+  getSessionInputRevision,
+  getSessionScrollback,
+  hasPersistedScrollback,
+  isSessionAlive,
+  setFrontendVisible,
+  resizeSession,
+  onPtyExit,
+  getTerminalConfig,
+  openPathWithDefaultApp,
+} from "../../lib/ipc";
+import type { FrontendDataBatch } from "../../lib/ipc";
+import {
+  TERMINAL_SNAPSHOT_MAX_WRAPPED_LINES,
+  TERMINAL_SNAPSHOT_SCAN_MULTIPLIER,
+} from "./terminalBufferConstants";
+import { useDashboardViewStore } from "../../stores/dashboardViewStore";
+import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
+import { useWorkspaceListStore } from "../../stores/workspaceListStore";
+import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
+import { useKeybindingStore } from "../../stores/keybindingStore";
+import { IS_MAC } from "../../lib/keybindings";
+import { useSettingsStore } from "../../stores/settingsStore";
+import { LightDarkColorAdaptController, shouldAdaptLightColorsForPane } from "../../lib/lightDarkColorAdapt";
+import { colorWithOpacity } from "../../lib/theme/colorPrimitives";
+import { resolveEffectiveTerminalRenderer } from "../../stores/settingsMigration";
+import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
+import { useToastStore } from "../../stores/toastStore";
+import { useDeferredUnmount } from "../../hooks/useDeferredUnmount";
+import { observeSessionInput } from "../../lib/inputLineDraft";
+import { getTranscriptUserPrompts, type TranscriptPrompt } from "../../lib/livebrief";
+import { TerminalTurnChip } from "./TerminalTurnChip";
+import {
+  getTurnMarkData,
+  noteRestoreBoundaryTurn,
+  noteTurnInput,
+  reanchorTurnMarks,
+  seedTurnMarkSnapshots,
+  snapshotTurnMarksForReset,
+  TURN_MARKS_EVENT,
+} from "./terminalTurnMarkers";
+import { startsAsAgentTui } from "./agentTuiDetection";
+import { TerminalTranscriptPanel } from "./TerminalTranscriptPanel";
+import { terminalPaneStrings } from "../workspace/terminalPaneStrings";
+import {
+  buildTurnListRows,
+  createTurnChipVisibilityController,
+  resolveTranscriptTurnAction,
+  resolveTurnChipState,
+  resolveTurnJump,
+  TURN_CHIP_EXIT_MS,
+  viewportIsAtBottom,
+  type TranscriptTurnIntent,
+  type TranscriptTurnRequestPayload,
+  type TurnChipMode,
+  type TurnChipVisibilityController,
+  type TurnListRow,
+} from "./terminalTurnChipState";
+import {
+  createRepaintHoldController,
+  REPAINT_HOLD_SETTLE_MS,
+  resolveRepaintHoldDeadline,
+  shouldHoldRepaint,
+} from "./terminalViewportStability";
+import {
+  restoreTurnMarksFromBufferOnJump,
+  restoreTurnMarksFromTranscript,
+} from "./turnMarkRestore";
+import type { IDisposable, ITheme } from "@xterm/xterm";
+import {
+  readLiveTerminalAppearance,
+  resolveTerminalAppearance,
+  useCompositionStore,
+} from "../../stores/compositionStore";
+import { markStartupSessionSettled } from "../../lib/startupSessionGate";
+import {
+  TERMINAL_BATCH_RETAINED_MAX_BYTES,
+  trimOldestBatchesToByteCap,
+} from "../../lib/terminalBatchQueue";
+import {
+  type CachedTerm,
+  type PendingFrontendBatch,
+  bumpTerminalWriteCounter,
+  cacheOrDisposeOnUnmount,
+  chunkedWrite,
+  enqueueSessionWrite,
+  getTerminalOutputDecoder,
+  liveTerms,
+  planTerminalScrollbackRecovery,
+  registerTerminalCacheEvictionCleanup,
+  rememberTerminalRawTail,
+  replaceTerminalRawTail,
+  resetTerminalOutputDecoder,
+  sliceBatchAfterScrollbackOffset,
+  stashDeferredTerminalBatches,
+  takeDeferredTerminalBatches,
+  termCache,
+  terminalInitialReplayMarkers,
+  terminalRawTailBySession,
+  terminalScrollbackResyncNeeded,
+  terminalSizeCache,
+} from "./terminalCache";
+import {
+  resolveScrollbackRestorePolicy,
+  shouldFinalizePersistedInitialReplay,
+} from "./scrollbackRestorePolicy";
+import {
+  clearActiveTerminalNotification,
+  focusTerminalIfNeeded,
+  hasTerminalLiveOutput,
+  isPlainTerminalInputEvent,
+  markTerminalHasLiveOutput,
+  registerTerminalFocusSync,
+  registerTerminalWheelFocusGuard,
+  shouldAcceptTerminalInput,
+} from "./terminalFocusHelpers";
+import { disposeSelectionCopyListener, registerSelectionCopyListener } from "./terminalSelectionCopy";
+import {
+  attachTerminalWheelScroll,
+  createTerminalMouseModeControlFilter,
+  filterTerminalMouseInputSequences,
+  filterWheelFocusInputSequences,
+  stripTerminalMouseModeControlSequences,
+  stripTerminalMouseModeControlSequencesForSession,
+} from "./terminalMouseInputFilter";
+import { HTTP_LINK_REGEX, registerArtifactLinkProvider } from "./terminalLinkProvider";
+import { recordPerf } from "../../lib/perfTimeline";
+import { ANSI_KEYS, withAnsiContrastFloor } from "./terminalThemeColors";
+import { buildLaunchRequest, type TerminalLaunchParams } from "./terminalLaunchParams";
+import { TerminalAckCoalescer } from "../../lib/terminalAckCoalescer";
+import {
+  findApprovalPromptDetail,
+  resolveWaitingTransition,
+  scanForApproval,
+} from "../../lib/approvalScan";
+import {
+  ASK_QUESTION_TAIL_LINES,
+  ingestAskQuestionLines,
+  useAskQuestionStore,
+} from "../../stores/askQuestionStore";
+import {
+  askQuestionAttentionId,
+  clearAskQuestionEvidence,
+  hasPublishedAskQuestionEvidence,
+  publishAskQuestionEvidence,
+  publishedAskQuestionAttentionId,
+  releaseAskQuestionEvidence,
+} from "../../lib/askQuestionEvidence";
+import { scanRateLimit } from "../../lib/rateLimitScan";
+import { observeTerminalVisibility } from "../../lib/terminalVisibilityTracker";
+import { cancelTerminalResync, requestTerminalResync } from "./terminalResyncScheduler";
+import {
+  bump as bumpPaintStat,
+  recordApprovalScan,
+  recordCursorBlink,
+  recordPtyBatch,
+  recordRender,
+  recordRenderer,
+  recordResync,
+  recordTerminalWriteCallback,
+  recordTerminalWriteStart,
+  recordWebglContextLoss,
+  recordWriteParsed,
+  recordXtermFocus,
+  recordXtermMounted,
+  recordXtermUnmounted,
+  terminalWriteByteLength,
+} from "../../lib/paintStats";
+import {
+  recordPtyBatchForRecording,
+  registerPtyReplayTarget,
+} from "../../lib/ptyReplay";
+
+export { evictTerminalCache, getTerminalWriteCounter } from "./terminalCache";
+export { allowInactiveTerminalPointerFocus } from "./terminalFocusHelpers";
+
+export const WORKING_INDICATOR_PATTERNS: readonly RegExp[] = [
+  /esc to interrupt/i,
+];
+
+// TUI input echo counts as output, so typing may keep the indicator active briefly.
+const ACTIVITY_WINDOW_MS = 7000;
+
+// Notification sound via Web Audio API — short gentle chime
+let _audioCtx: AudioContext | null = null;
+function playNotificationSound() {
+  try {
+    if (!_audioCtx) _audioCtx = new AudioContext();
+    const ctx = _audioCtx;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = 880; // A5
+    osc.type = "sine";
+    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.3);
+  } catch {
+    // Audio not available — silent fallback
+  }
+}
+
+interface XTermWrapperProps {
+  workspaceId: string;
+  sessionId: string;
+  command: string;
+  args?: string[];
+  agentId?: string;
+  agentKind?: "claude" | "codex" | "claude-codex" | "grok";
+  onExit?: () => void;
+  theme?: ITheme;
+  fontSize?: number;
+  fontFamily?: string;
+  onZoomToggle?: () => void;
+  onUrlClick?: (url: string) => void;
+  onArtifactLinkClick?: (uri: string, screenPos: { x: number; y: number }) => void;
+  cwd?: string;
+  launchEnv?: Record<string, string>;
+  initialReplay?: string[];
+}
+
+const terminalVisibilityUpdates = new Map<string, Promise<void>>();
+const TURN_LIST_PROMPT_CACHE_MS = 30_000;
+const TURN_LIST_PROMPT_RETRY_MS = 500;
+const TURN_LIST_PROMPT_RETRY_MAX = 5;
+const turnListPromptCache = new Map<string, { fetchedAt: number; prompts: TranscriptPrompt[] }>();
+
+function tabIdForSession(sessionId: string): string | null {
+  for (const workspace of useWorkspaceListStore.getState().workspaces) {
+    for (const pane of workspace.panes) {
+      const tab = pane.tabs.find((candidate) => candidate.sessionId === sessionId);
+      if (tab) return tab.id;
+    }
+  }
+  return null;
+}
+
+function applyTranscriptTurnPayload(sessionId: string, payload: TranscriptTurnRequestPayload): boolean {
+  const tabId = tabIdForSession(sessionId);
+  if (!tabId) return false;
+  // Queue only: the in-pane transcript answers it. Leaving for the Dashboard is
+  // now something the reader asks for, not something a turn jump does to them.
+  return useDashboardViewStore.getState().queueTranscriptTurnRequest(tabId, payload);
+}
+
+function applyTranscriptTurn(sessionId: string, intent: TranscriptTurnIntent): boolean {
+  const payload = resolveTranscriptTurnAction(intent, { tabId: tabIdForSession(sessionId) });
+  if (!payload) return false;
+  return applyTranscriptTurnPayload(sessionId, payload);
+}
+
+function queueTerminalVisibilityUpdate(sessionId: string, visible: boolean): void {
+  const previous = terminalVisibilityUpdates.get(sessionId) ?? Promise.resolve();
+  const next = previous
+    .catch(() => {})
+    .then(() => setFrontendVisible(sessionId, visible));
+  terminalVisibilityUpdates.set(sessionId, next);
+  void next
+    .catch((error) => {
+      console.warn(`[XTermWrapper] Failed to update frontend visibility for ${sessionId}:`, error);
+    })
+    .finally(() => {
+      if (terminalVisibilityUpdates.get(sessionId) === next) {
+        terminalVisibilityUpdates.delete(sessionId);
+      }
+    });
+}
+
+function buildThemeFromConfig(
+  cfg: { background: string; foreground: string; ansi: string[] },
+  selectionBackground: string | undefined,
+): ITheme {
+  const theme: ITheme = {
+    background: cfg.background,
+    foreground: cfg.foreground,
+    cursor: cfg.foreground,
+    selectionBackground,
+  };
+  for (let i = 0; i < ANSI_KEYS.length && i < cfg.ansi.length; i++) {
+    (theme as Record<string, string>)[ANSI_KEYS[i] as string] = cfg.ansi[i];
+  }
+  return theme;
+}
+
+export function withTerminalOpacity(theme: ITheme, opacity: number, mediaActive: boolean): ITheme {
+  return {
+    ...theme,
+    // xterm measures contrast against RGB even when alpha is zero. Keep the
+    // theme background as that reference while CSS paints the media beneath.
+    background: colorWithOpacity(theme.background, mediaActive ? 0 : opacity),
+  };
+}
+
+// The single place an ITheme is prepared for xterm. Every path that assigns
+// options.theme goes through here so the wallpaper-mode ANSI floor and the
+// transparent background with theme RGB can never be skipped.
+function resolveTerminalTheme(theme: ITheme, opacity: number, mediaActive: boolean): ITheme {
+  return withTerminalOpacity(withAnsiContrastFloor(theme, mediaActive), opacity, mediaActive);
+}
+
+// The contrast policy itself lives in compositionStore so live updates, cached
+// reattach and cold init cannot drift apart. Media backgrounds retain the
+// theme RGB reference, so xterm can correct truecolor as well as ANSI text.
+
+function resolveEffectiveTerminalRendererFromStores(): "webgl" | "dom" {
+  const setting = useSettingsStore.getState().terminalRenderer;
+  const { mediaActive, terminalOpacity } = readLiveTerminalAppearance();
+  return resolveEffectiveTerminalRenderer(setting, mediaActive, terminalOpacity);
+}
+
+// Cache terminal config globally - fetched once, reused across all panes
+const sgrLightRewriters = new WeakMap<Terminal, SgrLightRewriter>();
+
+let cachedConfig: { theme: ITheme; fontSize: number; fontFamily: string; windowsBuildNumber: number | null } | null = null;
+let configPromise: Promise<void> | null = null;
+
+const TERMINAL_SNAPSHOT_MAX_LINE_CHARS = 8192;
+const CODING_AGENT_HINT_PATTERN = /\b(?:ctrl|cmd|alt|shift)\+[\w?]+/gi;
+
+// v0.7.1 diag: per-session aggregated write stats flushed every 1 s on console.
+type DiagWriteStats = {
+  writes: number;
+  bytes: number;
+  webgl: "on" | "fallback" | "never";
+  webglLostAt: number | null;
+  replays: number;
+  replayLines: number;
+};
+const diagWriteStats = new Map<string, DiagWriteStats>();
+registerTerminalCacheEvictionCleanup((sessionId) => {
+  diagWriteStats.delete(sessionId);
+});
+
+function diagStatsFor(sessionId: string): DiagWriteStats {
+  let stats = diagWriteStats.get(sessionId);
+  if (!stats) {
+    stats = { writes: 0, bytes: 0, webgl: "never", webglLostAt: null, replays: 0, replayLines: 0 };
+    diagWriteStats.set(sessionId, stats);
+  }
+  return stats;
+}
+
+type WebglRendererState = {
+  addon: WebglAddon;
+  contextLossDisposable: IDisposable;
+};
+
+const webglRendererBudget = new TerminalRendererBudget<Terminal>();
+const acceptParkedTerminalKey = () => true;
+
+// Keep this closure outside the mount effect: a parked cache entry must not
+// retain that effect's container, observers or React callbacks.
+function rendererDisposer(sessionId: string, term: Terminal): () => void {
+  return () => disposeWebglRenderer(sessionId, term, false);
+}
+
+const webglRendererStates = new WeakMap<Terminal, WebglRendererState>();
+const webglRendererFailures = new WeakSet<Terminal>();
+/**
+ * How long a terminal stays on the DOM renderer after losing its GPU context,
+ * and how many times it tries to get back.
+ *
+ * A context is lost when the system takes the GPU process down — under memory
+ * pressure on a Mac that happens to a healthy app — and it comes back a moment
+ * later. Treating the first loss as final left that pane drawing through the
+ * DOM renderer for the rest of the session, which is exactly the pane the
+ * reader is watching. Backing off keeps a genuinely broken context from
+ * thrashing.
+ */
+const WEBGL_RETRY_DELAYS_MS = [2_000, 8_000, 30_000];
+const webglRetryCounts = new WeakMap<Terminal, number>();
+const webglRetryTimers = new WeakMap<Terminal, ReturnType<typeof setTimeout>>();
+
+function cancelWebglRetry(term: Terminal): void {
+  const timer = webglRetryTimers.get(term);
+  if (timer === undefined) return;
+  clearTimeout(timer);
+  webglRetryTimers.delete(term);
+}
+
+function scheduleWebglRetry(sessionId: string, term: Terminal): void {
+  const attempt = webglRetryCounts.get(term) ?? 0;
+  const delay = WEBGL_RETRY_DELAYS_MS[attempt];
+  if (delay === undefined) return;
+  webglRetryCounts.set(term, attempt + 1);
+  cancelWebglRetry(term);
+  webglRetryTimers.set(term, setTimeout(() => {
+    webglRetryTimers.delete(term);
+    if (!webglRendererFailures.has(term)) return;
+    webglRendererFailures.delete(term);
+    console.info(`[XTermWrapper] retrying the WebGL renderer for ${sessionId} (attempt ${attempt + 1})`);
+    enableWebglRenderer(sessionId, term);
+  }, delay));
+}
+
+function disposeWebglRenderer(
+  sessionId: string,
+  term: Terminal,
+  fallback: boolean,
+  contextLost = false,
+): void {
+  webglRendererBudget.forget(term);
+  const rendererState = webglRendererStates.get(term);
+  if (rendererState) {
+    webglRendererStates.delete(term);
+    try {
+      rendererState.contextLossDisposable.dispose();
+    } catch {
+      // Continue disposing the addon so the DOM fallback still takes effect.
+    }
+    try {
+      rendererState.addon.dispose();
+    } catch (error) {
+      console.warn(`[XTermWrapper] Failed to dispose WebGL renderer for ${sessionId}:`, error);
+    }
+  }
+
+  const stats = diagStatsFor(sessionId);
+  stats.webgl = fallback ? "fallback" : "never";
+  recordRenderer(sessionId, "dom");
+  if (contextLost) {
+    webglRendererFailures.add(term);
+    stats.webglLostAt = Date.now();
+    recordWebglContextLoss(sessionId);
+    scheduleWebglRetry(sessionId, term);
+  } else {
+    cancelWebglRetry(term);
+  }
+}
+
+function enableWebglRenderer(sessionId: string, term: Terminal): void {
+  if (webglRendererFailures.has(term)) {
+    diagStatsFor(sessionId).webgl = "fallback";
+    recordRenderer(sessionId, "dom");
+    return;
+  }
+  if (webglRendererStates.has(term)) {
+    webglRendererBudget.touch(term);
+    diagStatsFor(sessionId).webgl = "on";
+    return;
+  }
+
+  webglRendererBudget.reserve(term, rendererDisposer(sessionId, term));
+  let addon: WebglAddon | null = null;
+  let contextLossDisposable: IDisposable | null = null;
+  try {
+    addon = new WebglAddon();
+    contextLossDisposable = addon.onContextLoss(() => {
+      if (webglRendererStates.get(term)?.addon !== addon) return;
+      disposeWebglRenderer(sessionId, term, true, true);
+    });
+    webglRendererStates.set(term, { addon, contextLossDisposable });
+    term.loadAddon(addon);
+    if (webglRendererStates.get(term)?.addon === addon) {
+      diagStatsFor(sessionId).webgl = "on";
+      recordRenderer(sessionId, "webgl");
+      // It came back; a later loss gets the full budget again.
+      webglRetryCounts.delete(term);
+    }
+  } catch (error) {
+    webglRendererBudget.forget(term);
+    if (webglRendererStates.get(term)?.addon === addon) {
+      webglRendererStates.delete(term);
+    }
+    try {
+      contextLossDisposable?.dispose();
+    } catch {
+      // Continue with addon disposal and the DOM fallback.
+    }
+    try {
+      addon?.dispose();
+    } catch {
+      // The DOM fallback below remains usable even if partial addon cleanup fails.
+    }
+    webglRendererFailures.add(term);
+    diagStatsFor(sessionId).webgl = "fallback";
+    recordRenderer(sessionId, "dom");
+    console.warn(`[XTermWrapper] WebGL unavailable for ${sessionId}; using DOM renderer:`, error);
+  }
+}
+
+function applyTerminalRenderer(
+  sessionId: string,
+  term: Terminal,
+  renderer: "webgl" | "dom",
+): void {
+  if (renderer === "webgl") {
+    enableWebglRenderer(sessionId, term);
+  } else {
+    webglRendererFailures.delete(term);
+    disposeWebglRenderer(sessionId, term, false);
+  }
+}
+
+// Flush per-session write stats once per second. Idle sessions are skipped.
+// Debug builds only — `import.meta.env.DEV` is statically false in production,
+// so Vite drops this interval (and its per-second console spam) entirely.
+if (typeof window !== "undefined" && import.meta.env.DEV) {
+  window.setInterval(() => {
+    for (const [sid, s] of diagWriteStats) {
+      if (s.writes === 0 && s.replays === 0 && s.webglLostAt === null) continue;
+      console.log(
+        `[mycmux-diag xterm:${sid}] writes/s=${s.writes} bytes/s=${s.bytes} webgl=${s.webgl} replays=${s.replays} replay_lines=${s.replayLines}`,
+      );
+      s.writes = 0;
+      s.bytes = 0;
+      s.replays = 0;
+      s.replayLines = 0;
+    }
+  }, 1000);
+}
+const DEFAULT_TERMINAL_LINE_HEIGHT = 1.35;
+
+function resolveTerminalLineHeight(): number {
+  return useThemeStore.getState().lineHeight ?? DEFAULT_TERMINAL_LINE_HEIGHT;
+}
+
+function cleanTerminalSnapshotLine(text: string): string {
+  return text
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/\x1b\].*?\x07/g, "")
+    .replace(/[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]/g, "")
+    .trim();
+}
+
+function hasHighReplacementCharRatio(text: string): boolean {
+  if (text.length === 0) return false;
+  const replacements = [...text].filter((char) => char === "\uFFFD").length;
+  return replacements / [...text].length > 0.3;
+}
+
+type TerminalBufferLineOptions = {
+  excludeInitialReplay?: boolean;
+};
+
+export function hasTerminalBuffer(sessionId: string): boolean {
+  return liveTerms.has(sessionId) || termCache.has(sessionId);
+}
+
+export function hasMountedTerminal(sessionId: string): boolean {
+  return liveTerms.has(sessionId);
+}
+
+/** Read the last N non-empty logical lines of a pane's xterm buffer, ANSI/control-char stripped. */
+export function getTerminalBufferLines(
+  sessionId: string,
+  maxLines: number,
+  options: TerminalBufferLineOptions = {},
+): string[] {
+  const term = liveTerms.get(sessionId) ?? termCache.get(sessionId)?.term;
+  if (!term || maxLines <= 0) return [];
+  const hasLiveOutput = hasTerminalLiveOutput(sessionId);
+  if (options.excludeInitialReplay && !hasLiveOutput) return [];
+  try {
+    const buf = term.buffer.active;
+    const bottom = buf.length - 1;
+    if (bottom < 0) return [];
+    const result: string[] = [];
+    const replayMarker = options.excludeInitialReplay ? terminalInitialReplayMarkers.get(sessionId) : undefined;
+    const replayBoundary = replayMarker && replayMarker.line >= 0 ? replayMarker.line : 0;
+    const minLineIndex = Math.max(
+      replayBoundary,
+      bottom - maxLines * TERMINAL_SNAPSHOT_SCAN_MULTIPLIER,
+    );
+
+    let lineIndex = bottom;
+    while (lineIndex >= minLineIndex && result.length < maxLines) {
+      let firstLineIndex = lineIndex;
+      let wrappedRows = 0;
+      while (
+        firstLineIndex > minLineIndex &&
+        wrappedRows < TERMINAL_SNAPSHOT_MAX_WRAPPED_LINES &&
+        buf.getLine(firstLineIndex)?.isWrapped
+      ) {
+        firstLineIndex--;
+        wrappedRows++;
+      }
+
+      let logicalLine = "";
+      for (let i = firstLineIndex; i <= lineIndex; i++) {
+        const lineObj = buf.getLine(i);
+        if (!lineObj) continue;
+        const nextIsWrapped = i < lineIndex && Boolean(buf.getLine(i + 1)?.isWrapped);
+        const part = lineObj.translateToString(!nextIsWrapped);
+        const remaining = TERMINAL_SNAPSHOT_MAX_LINE_CHARS - logicalLine.length;
+        if (remaining > 0) {
+          logicalLine += part.slice(0, remaining);
+        }
+      }
+
+      const text = cleanTerminalSnapshotLine(logicalLine);
+      if (text.length > 0 && !hasHighReplacementCharRatio(text)) {
+        result.push(text);
+      }
+
+      lineIndex = firstLineIndex - 1;
+    }
+    return result.reverse();
+  } catch {
+    return [];
+  }
+}
+function isShortcutHintLine(line: string): boolean {
+  const shortcutCount = (line.match(CODING_AGENT_HINT_PATTERN) ?? []).length;
+  return (
+    shortcutCount >= 2
+    || /shift\+enter/i.test(line)
+    || /enter\s+(?:to|=)\s*(?:send|submit|continue|confirm)/i.test(line)
+    || /esc\s+to\s+(?:interrupt|cancel)/i.test(line)
+  );
+}
+
+function getShiftEnterSequence(command: string, processTitle?: string): string {
+  const commandParts = command.split(/[\\/]/);
+  const commandName = commandParts[commandParts.length - 1]
+    ?.replace(/\.exe$/i, "")
+    .toLowerCase();
+  const processParts = processTitle?.split(/[\\/]/);
+  const processName = processParts?.[processParts.length - 1]
+    ?.replace(/\.exe$/i, "")
+    .toLowerCase();
+  if (commandName === "codex" || processName === "codex") {
+    return "\x1b[13;2u";
+  }
+  return "\x1b[200~\n\x1b[201~";
+}
+
+function ensureConfigLoaded(): Promise<void> {
+  if (cachedConfig) return Promise.resolve();
+  if (configPromise) return configPromise;
+  configPromise = getTerminalConfig()
+    .then((cfg) => {
+      // Ghostty/native terminals use physical pixels; xterm.js in a webview uses CSS pixels.
+      // Scale up: values below 12 are physical-pixel sizes (e.g. Ghostty font-size = 9)
+      // and need to be multiplied to look correct in the webview.
+      const rawSize = cfg.font_size;
+      const scaled = rawSize < 12 ? Math.round(rawSize * 1.6) : rawSize;
+      const fontSize = Math.max(14, scaled);
+      cachedConfig = {
+        theme: buildThemeFromConfig(
+          cfg,
+          useThemeStore.getState().theme.terminal.selectionBackground,
+        ),
+        fontSize,
+        fontFamily: `'${cfg.font_family}', monospace`,
+        windowsBuildNumber: cfg.windows_build_number,
+      };
+    })
+    .catch(() => {
+      cachedConfig = null;
+      configPromise = null;
+    });
+  return configPromise;
+}
+
+export const TERMINAL_SEARCH_EVENT = "mycmux:terminal-search";
+
+export default memo(function XTermWrapper({
+  workspaceId,
+  sessionId,
+  command,
+  args = [],
+  agentId,
+  agentKind,
+  onExit,
+  theme,
+  fontSize,
+  fontFamily,
+  onZoomToggle,
+  onUrlClick,
+  onArtifactLinkClick,
+  cwd,
+  launchEnv,
+  initialReplay,
+}: XTermWrapperProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const searchAddonRef = useRef<SearchAddon | null>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+  const isAtBottomRef = useRef(true);
+  const syncResizeRef = useRef<(force?: boolean) => void>(() => {});
+  const settingsResizeTimerRef = useRef<number | null>(null);
+  // Latest-value mirror of the PTY launch parameters. The terminal effect below
+  // is keyed on [sessionId] alone (adding these would respawn the terminal on
+  // every metadata update), so anything it reads *after* its first synchronous
+  // pass — above all the async attach — must go through this ref instead of the
+  // frozen closure. See terminalLaunchParams.ts for the failure it prevents.
+  //
+  // Refreshed during render rather than in an effect on purpose: the attach path
+  // can resume from an in-flight promise between a commit and the passive-effect
+  // flush, and that gap is exactly the race this ref exists to close. Safe here
+  // because the values are derived from store state that never rolls back, and
+  // this component is rendered without Suspense/transitions.
+  const launchParamsRef = useRef<TerminalLaunchParams>({
+    command,
+    args,
+    cwd,
+    launchEnv,
+  });
+  launchParamsRef.current = { command, args, cwd, launchEnv };
+
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [turnChip, setTurnChip] = useState<{
+    index: number;
+    total: number;
+    label: string;
+    canPrev: boolean;
+    canNext: boolean;
+    mode: TurnChipMode;
+  } | null>(null);
+  const [chipWanted, setChipWanted] = useState(false);
+  // Observable from outside (E2E / CDP): why the chip is or is not eligible.
+  const [turnChipDiag, setTurnChipDiag] = useState<{ marks: number; buffer: string; mode: string }>({ marks: 0, buffer: "", mode: "" });
+  const lastBufferTypeRef = useRef<string | null>(null);
+  const [turnListRows, setTurnListRows] = useState<TurnListRow[]>([]);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const openSearch = useCallback(() => {
+    focusController.request("programmatic", { sessionId, focus: false });
+    setIsSearchOpen(true);
+    searchInputRef.current?.focus();
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (isSearchOpen) searchInputRef.current?.focus();
+  }, [isSearchOpen]);
+
+  useEffect(() => {
+    const handleSearchRequest = (event: Event) => {
+      if ((event as CustomEvent<{ sessionId?: string }>).detail?.sessionId === sessionId) openSearch();
+    };
+    window.addEventListener(TERMINAL_SEARCH_EVENT, handleSearchRequest);
+    return () => window.removeEventListener(TERMINAL_SEARCH_EVENT, handleSearchRequest);
+  }, [sessionId, openSearch]);
+  const turnChipRafRef = useRef<number | null>(null);
+  const lastTurnChipRef = useRef<typeof turnChip>(null);
+  const refreshTurnChipRef = useRef<() => void>(() => {});
+  const turnListRequestRef = useRef(0);
+  const turnChipVisibilityRef = useRef<TurnChipVisibilityController | null>(null);
+  const turnListOpenRef = useRef(false);
+  const [transcriptPanelOpen, setTranscriptPanelOpen] = useState(false);
+  const turnListRetryTimerRef = useRef<number | null>(null);
+  const chipWantedRef = useRef(false);
+  const turnChipExitMsRef = useRef<number | null>(null);
+  if (turnChipExitMsRef.current == null) {
+    turnChipExitMsRef.current =
+      typeof window !== "undefined"
+        && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+        ? 0
+        : TURN_CHIP_EXIT_MS;
+  }
+  const { mounted: turnChipMounted, closing: turnChipLeaving } = useDeferredUnmount(
+    chipWanted,
+    turnChipExitMsRef.current,
+  );
+  const hasTurnTranscript = startsAsAgentTui(command, args, agentId, agentKind, launchEnv);
+
+  const refreshTurnChip = useCallback(() => {
+    if (turnChipRafRef.current != null) return;
+    turnChipRafRef.current = requestAnimationFrame(() => {
+      turnChipRafRef.current = null;
+      const hideChip = (immediate: boolean): void => {
+        if (immediate && lastTurnChipRef.current !== null) {
+          lastTurnChipRef.current = null;
+          setTurnChip(null);
+        }
+        if (chipWantedRef.current) {
+          chipWantedRef.current = false;
+          setChipWanted(false);
+        }
+      };
+      const currentTerm = termRef.current;
+      if (!currentTerm) {
+        hideChip(true);
+        setTurnChipDiag((prev) => (
+          prev.marks === 0 && prev.buffer === "" && prev.mode === ""
+            ? prev
+            : { marks: 0, buffer: "", mode: "" }
+        ));
+        lastBufferTypeRef.current = null;
+        return;
+      }
+      const buf = currentTerm.buffer.active;
+      // Read the real position here rather than trusting the last onScroll: a
+      // cached terminal re-attached while scrolled up never fires onScroll, and
+      // the visibility timers must not depend on event ordering with the rAF.
+      isAtBottomRef.current = buf.viewportY >= buf.baseY;
+      // Only a real normal<->alternate flip discards the look-back history. The
+      // first refresh after mount / session switch must not, or it would eat the
+      // wheel intent that triggered it.
+      const previousBufferType = lastBufferTypeRef.current;
+      lastBufferTypeRef.current = buf.type;
+      if (previousBufferType !== null && previousBufferType !== buf.type) {
+        turnChipVisibilityRef.current?.reset({ preserveIntent: true });
+      }
+      const marks = getTurnMarkData(sessionId);
+      const state = resolveTurnChipState({
+        marks,
+        viewportY: buf.viewportY,
+        isAtBottom: isAtBottomRef.current,
+        bufferType: buf.type,
+        hasTranscript: hasTurnTranscript,
+      });
+      const mode = state?.mode ?? "";
+      setTurnChipDiag((prev) => (
+        prev.marks === marks.length && prev.buffer === buf.type && prev.mode === mode
+          ? prev
+          : { marks: marks.length, buffer: buf.type, mode }
+      ));
+      const visible = turnChipVisibilityRef.current?.setAtBottom(isAtBottomRef.current) ?? false;
+      if (!state) {
+        hideChip(true);
+        return;
+      }
+      const next = {
+        ...state,
+        label: state.mode === "transcript"
+          ? (marks[marks.length - 1]?.label ?? "")
+          : (marks[state.index]?.label ?? ""),
+      };
+      const prev = lastTurnChipRef.current;
+      const same = Boolean(
+        prev &&
+        prev.index === next.index &&
+        prev.total === next.total &&
+        prev.label === next.label &&
+        prev.canPrev === next.canPrev &&
+        prev.canNext === next.canNext &&
+        prev.mode === next.mode,
+      );
+      lastTurnChipRef.current = next;
+      if (!visible) {
+        hideChip(false);
+        return;
+      }
+      if (!chipWantedRef.current) {
+        chipWantedRef.current = true;
+        setChipWanted(true);
+        setTurnChip(next);
+        return;
+      }
+      if (same) return;
+      setTurnChip(next);
+    });
+  }, [hasTurnTranscript, sessionId]);
+  refreshTurnChipRef.current = refreshTurnChip;
+
+  const runTurnJump = useCallback((
+    intent: { kind: "step"; direction: -1 | 1 } | { kind: "mark"; markIndex: number },
+  ) => {
+    const currentTerm = termRef.current;
+    const mode = lastTurnChipRef.current?.mode ?? "scroll";
+    const restored = restoreTurnMarksFromBufferOnJump(sessionId, currentTerm, mode);
+    const marks = getTurnMarkData(sessionId);
+    // From the live tail, the first ▲ should land on the newest newly found
+    // turn instead of asking the step resolver for a mark before index zero.
+    const resolvedIntent = restored > 0 && intent.kind === "step" && intent.direction === -1
+      ? { kind: "mark" as const, markIndex: marks.length - 1 }
+      : intent;
+    const action = resolveTurnJump(resolvedIntent, {
+      marks,
+      mode,
+      viewportY: currentTerm?.buffer.active.viewportY ?? 0,
+      chipIndex: lastTurnChipRef.current?.index ?? null,
+      tabId: tabIdForSession(sessionId),
+    });
+    if (action.kind === "dashboard") {
+      // Nothing in the buffer to move to: read the turn here rather than
+      // sending the person to the Dashboard for it.
+      if (applyTranscriptTurnPayload(sessionId, action.payload)) setTranscriptPanelOpen(true);
+      return;
+    }
+    if (!currentTerm || action.kind === "none") return;
+    if (action.kind === "scroll-to-line") currentTerm.scrollToLine(action.line);
+    else currentTerm.scrollToBottom();
+    refreshTurnChip();
+  }, [refreshTurnChip, sessionId]);
+
+  const jumpTurn = useCallback((direction: -1 | 1) => {
+    runTurnJump({ kind: "step", direction });
+  }, [runTurnJump]);
+
+  const jumpTurnToMark = useCallback((markIndex: number) => {
+    runTurnJump({ kind: "mark", markIndex });
+  }, [runTurnJump]);
+
+  const jumpTurnByLabel = useCallback((label: string) => {
+    if (applyTranscriptTurn(sessionId, { kind: "row", label })) setTranscriptPanelOpen(true);
+  }, [sessionId]);
+
+  const openTranscriptPanel = useCallback(() => setTranscriptPanelOpen(true), []);
+  const closeTranscriptPanel = useCallback(() => setTranscriptPanelOpen(false), []);
+
+  const openTranscriptDashboard = useCallback(() => {
+    const tabId = tabIdForSession(sessionId);
+    const payload = resolveTranscriptTurnAction({ kind: "hint" }, { tabId });
+    if (!tabId || !payload) return;
+    useDashboardViewStore.getState().openTranscriptTurnRequest(tabId, payload);
+  }, [sessionId]);
+
+  const openTurnList = useCallback(() => {
+    const marks = getTurnMarkData(sessionId);
+    const cached = turnListPromptCache.get(sessionId);
+    const now = Date.now();
+    if (cached && cached.prompts.length > 0 && now - cached.fetchedAt < TURN_LIST_PROMPT_CACHE_MS) {
+      setTurnListRows(buildTurnListRows(marks, cached.prompts));
+      return;
+    }
+    if (cached?.prompts.length === 0) turnListPromptCache.delete(sessionId);
+
+    setTurnListRows(buildTurnListRows(marks, []));
+    const request = turnListRequestRef.current + 1;
+    turnListRequestRef.current = request;
+    if (turnListRetryTimerRef.current !== null) {
+      window.clearTimeout(turnListRetryTimerRef.current);
+      turnListRetryTimerRef.current = null;
+    }
+    const fetchPrompts = (retryCount: number): void => {
+      void getTranscriptUserPrompts(sessionId, 200)
+        .catch((): TranscriptPrompt[] => [])
+        .then((prompts) => {
+          if (turnListRequestRef.current !== request) return;
+          if (prompts.length > 0) {
+            turnListPromptCache.set(sessionId, { fetchedAt: Date.now(), prompts });
+          } else {
+            turnListPromptCache.delete(sessionId);
+          }
+          const latestMarks = getTurnMarkData(sessionId);
+          const listMarks = latestMarks.length > 0 ? latestMarks : marks;
+          setTurnListRows(buildTurnListRows(listMarks, prompts));
+          if (
+            prompts.length === 0
+            && listMarks.length === 0
+            && turnListOpenRef.current
+            && retryCount < TURN_LIST_PROMPT_RETRY_MAX
+          ) {
+            turnListRetryTimerRef.current = window.setTimeout(() => {
+              turnListRetryTimerRef.current = null;
+              fetchPrompts(retryCount + 1);
+            }, TURN_LIST_PROMPT_RETRY_MS);
+          }
+        });
+    };
+    fetchPrompts(0);
+  }, [sessionId]);
+
+  useEffect(() => {
+    isAtBottomRef.current = true;
+    turnListRequestRef.current += 1;
+    chipWantedRef.current = false;
+    lastTurnChipRef.current = null;
+    lastBufferTypeRef.current = null;
+    turnListOpenRef.current = false;
+    if (turnListRetryTimerRef.current !== null) {
+      window.clearTimeout(turnListRetryTimerRef.current);
+      turnListRetryTimerRef.current = null;
+    }
+    setChipWanted(false);
+    setTurnChip(null);
+    setTurnListRows([]);
+    setTurnChipDiag({ marks: 0, buffer: "", mode: "" });
+    const controller = createTurnChipVisibilityController({
+      onChange: () => refreshTurnChipRef.current(),
+    });
+    turnChipVisibilityRef.current = controller;
+    const onTurnMarks = (event: Event): void => {
+      const markedSession = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
+      if (markedSession && markedSession !== sessionId) return;
+      if (turnListOpenRef.current) {
+        const prompts = turnListPromptCache.get(sessionId)?.prompts ?? [];
+        setTurnListRows(buildTurnListRows(getTurnMarkData(sessionId), prompts));
+      }
+      refreshTurnChipRef.current();
+    };
+    window.addEventListener(TURN_MARKS_EVENT, onTurnMarks);
+    return () => {
+      turnListRequestRef.current += 1;
+      window.removeEventListener(TURN_MARKS_EVENT, onTurnMarks);
+      controller.dispose();
+      if (turnChipVisibilityRef.current === controller) {
+        turnChipVisibilityRef.current = null;
+      }
+      if (turnChipRafRef.current != null) {
+        cancelAnimationFrame(turnChipRafRef.current);
+        turnChipRafRef.current = null;
+      }
+      if (turnListRetryTimerRef.current !== null) {
+        window.clearTimeout(turnListRetryTimerRef.current);
+        turnListRetryTimerRef.current = null;
+      }
+    };
+  }, [sessionId]);
+
+  useEffect(() => {
+    refreshTurnChipRef.current();
+  }, [hasTurnTranscript]);
+
+  const storeTheme = useThemeStore((s) => s.theme);
+  const isLightThemeRef = useRef(storeTheme.colorScheme === "light");
+  isLightThemeRef.current = storeTheme.colorScheme === "light";
+  const storeFontSize = useThemeStore((s) => s.fontSize);
+  const storeFontFamily = useThemeStore((s) => s.fontFamily);
+  const storeLineHeight = useThemeStore((s) => s.lineHeight);
+  const storeTerminalOpacity = useThemeStore((s) => s.themeTweaks.background.terminalOpacity);
+  const terminalRenderer = useSettingsStore((s) => s.terminalRenderer);
+  const colorAdaptCommands = useSettingsStore((s) => s.colorAdaptCommands);
+  const colorAdaptCommandsRef = useRef(colorAdaptCommands);
+  colorAdaptCommandsRef.current = colorAdaptCommands;
+  const processTitle = usePaneMetadataStore((s) => s.volatileMetadata[sessionId]?.processTitle);
+  const processTitleRef = useRef(processTitle);
+  processTitleRef.current = processTitle;
+  const colorAdapterRef = useRef(new LightDarkColorAdaptController());
+  const previousTerminalRendererRef = useRef(terminalRenderer);
+  // Primitive selectors only. Subscribing to the wallpaper cache object here
+  // meant every percent of a download re-rendered every mounted terminal;
+  // AppShell publishes the single boolean instead.
+  const mediaBackgroundActive = useCompositionStore((s) => s.mediaActive);
+  const { terminalOpacity, minimumContrastRatio } = resolveTerminalAppearance({
+    mediaActive: mediaBackgroundActive,
+    isLight: storeTheme.colorScheme === "light",
+    terminalOpacity: storeTerminalOpacity,
+  });
+  // Single source of truth: is this tab the currently-focused terminal?
+  // Used for scroll-to-bottom-on-activate.
+  const isActivePane = useUiStore((s) => s.activePaneId === sessionId);
+  const previousIsActivePaneRef = useRef(isActivePane);
+
+  // Dynamically update terminal theme and font size
+  useEffect(() => {
+    if (!termRef.current) return;
+    bumpPaintStat("settings", sessionId);
+    termRef.current.options.theme = resolveTerminalTheme(storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
+    termRef.current.options.minimumContrastRatio = minimumContrastRatio;
+    termRef.current.options.fontSize = storeFontSize;
+    termRef.current.options.fontFamily = storeFontFamily;
+    termRef.current.options.lineHeight = storeLineHeight;
+    if (settingsResizeTimerRef.current !== null) {
+      window.clearTimeout(settingsResizeTimerRef.current);
+    }
+    settingsResizeTimerRef.current = window.setTimeout(() => {
+      settingsResizeTimerRef.current = null;
+      syncResizeRef.current(true);
+    }, 60);
+    return () => {
+      if (settingsResizeTimerRef.current !== null) {
+        window.clearTimeout(settingsResizeTimerRef.current);
+        settingsResizeTimerRef.current = null;
+      }
+    };
+  }, [storeTheme, storeFontSize, storeFontFamily, storeLineHeight, terminalOpacity, mediaBackgroundActive, minimumContrastRatio]);
+
+  // Return an activated tab to the live tail only if it is already following it.
+  // Asked of the buffer rather than isAtBottomRef: the ref is refreshed on a
+  // rAF, so immediately after the refit above it can still answer for the
+  // previous frame.
+  useEffect(() => {
+    if (previousIsActivePaneRef.current !== isActivePane) {
+      bumpPaintStat("focus-change", sessionId);
+      previousIsActivePaneRef.current = isActivePane;
+    }
+    const currentTerm = termRef.current;
+    if (currentTerm) {
+      // Keep inactive panes from continuously dirtying their renderer layer.
+      currentTerm.options.cursorBlink = isActivePane;
+      recordCursorBlink(sessionId, isActivePane);
+    }
+    if (isActivePane && currentTerm) {
+      setTimeout(() => {
+        syncResizeRef.current(true);
+        const activeTerm = termRef.current;
+        if (activeTerm && viewportIsAtBottom(activeTerm.buffer.active)) {
+          activeTerm.scrollToBottom();
+        }
+        refreshTurnChipRef.current();
+      }, 50);
+    }
+  }, [isActivePane]);
+
+  useEffect(() => {
+    const rendererSettingChanged = previousTerminalRendererRef.current !== terminalRenderer;
+    previousTerminalRendererRef.current = terminalRenderer;
+    if (termRef.current) {
+      if (rendererSettingChanged) {
+        bumpPaintStat("settings", sessionId);
+      }
+      applyTerminalRenderer(
+        sessionId,
+        termRef.current,
+        resolveEffectiveTerminalRenderer(
+          terminalRenderer,
+          mediaBackgroundActive,
+          terminalOpacity,
+        ),
+      );
+    }
+  }, [sessionId, terminalRenderer, mediaBackgroundActive, terminalOpacity]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const wheelScrollContainer: HTMLElement = container;
+    recordPerf("xterm.mount.enter", sessionId);
+
+    let disposed = false;
+    let termDisposed = false;
+    let resizeObserver: ResizeObserver | null = null;
+    let resizeTimers: ReturnType<typeof setTimeout>[] = [];
+    let refreshTimers: ReturnType<typeof setTimeout>[] = [];
+    let unlistenExit: (() => void) | null = null;
+    let writeParsedDisposable: { dispose: () => void } | null = null;
+    let renderDisposable: { dispose: () => void } | null = null;
+    let turnChipFirstRenderDisposable: IDisposable | null = null;
+    let scrollDisposable: { dispose: () => void } | null = null;
+    let dataDisposable: { dispose: () => void } | null = null;
+    let binaryDisposable: { dispose: () => void } | null = null;
+    let titleDisposable: { dispose: () => void } | null = null;
+    let artifactLinkProviderDisposable: { dispose: () => void } | null = null;
+    let term: Terminal | null = null;
+    let fitAddon: FitAddon | null = null;
+    let removeCompositionGuard: (() => void) | null = null;
+    let removePaintFocusListeners: (() => void) | null = null;
+    let removeFocusSync: (() => void) | null = null;
+    let removeWheelFocusGuard: (() => void) | null = null;
+    let removeWheelScrollGuard: (() => void) | null = null;
+    let removePtyReplayTarget: (() => void) | null = null;
+    let idleFlush: ReturnType<typeof setTimeout> | null = null;
+    let backgroundScanThrottle: ReturnType<typeof setTimeout> | null = null;
+    let outputActivityTimer: ReturnType<typeof setTimeout> | null = null;
+    let backgroundScanResync = false;
+    let scanInFlight = false;
+    let scanPending = false;
+    let startupSettleTimeout: ReturnType<typeof setTimeout> | null = null;
+    let startupSettled = false;
+    let sessionStarted = false;
+    let coldPersistedRestore = false;
+    let lastLogLine = "";
+    let approvalAbsentStreak = 0;
+    let rateLimitAbsentStreak = 0;
+    let rateLimitVisible = false;
+    let visibleAskAttentionId: string | null = null;
+    let lastScanSignature: string | null = null;
+    let isImeComposing = false;
+    let resizePendingDuringComposition = false;
+    const forceWheelMouseReport = startsAsAgentTui(command, args, agentId, agentKind, launchEnv);
+    // An agent TUI owns the mouse *and* keeps its prompt on the bottom row.
+    // Both behaviours key off the same launch predicate; the alias is here so
+    // the viewport code does not read as if it were about wheel events.
+    const isAgentTuiPane = forceWheelMouseReport;
+    const repaintHold = createRepaintHoldController({ isStale: () => disposed });
+    let lastSizeChangeAt: number | null = null;
+    let repaintHoldTimer: ReturnType<typeof setTimeout> | null = null;
+    let repaintHoldSettleTimer: ReturnType<typeof setTimeout> | null = null;
+    let repaintHoldWriteDisposable: IDisposable | null = null;
+    let repaintHoldFrame: number | null = null;
+    let releaseResizeHold: (() => void) | null = null;
+    let resizeHoldStartedAt = 0;
+    let outputDecoder = getTerminalOutputDecoder(sessionId);
+    let replayOutputDecoder = new TextDecoder();
+    let replayMouseModeFilter = createTerminalMouseModeControlFilter();
+    const diagStats = diagStatsFor(sessionId);
+    const pendingBatches: PendingFrontendBatch[] = takeDeferredTerminalBatches(sessionId);
+    let writingBatch = false;
+    let currentPendingBatch: PendingFrontendBatch | null = null;
+    let frontendChannelReady = false;
+    let replayActive = false;
+    let scrollbackSyncInFlight: Promise<boolean> | null = null;
+    let lastSynchronizedScrollbackEnd = 0;
+    let recoveryRedrawTimer: ReturnType<typeof setTimeout> | null = null;
+    let recoveryRedrawDelayResolve: (() => void) | null = null;
+    let recoveryRedrawInFlight: Promise<boolean> | null = null;
+    let pendingDrainTimer: ReturnType<typeof setTimeout> | null = null;
+    let frontendVisible: boolean | null = null;
+    let terminalPaintedVisible: boolean | null = null;
+    const ackCoalescer = new TerminalAckCoalescer(({ generation, seq, bytes }) => (
+      ackFrontendData(sessionId, generation, seq, bytes)
+    ));
+    let stopVisibilityTracking: (() => void) | null = null;
+    let containerVisibilityMemo:
+      | {
+        sampledAt: number;
+        displayed: boolean;
+        painted: boolean;
+        paintedInWindow: boolean;
+        writableSize: boolean;
+      }
+      | null = null;
+    // Set when the pane stopped painting only because the window went behind
+    // something. Read once by the resync that follows the window coming back.
+    let parkedByWindowOnly = false;
+    let lastObservedWidth = -1;
+    let lastObservedHeight = -1;
+    const cachedSize = terminalSizeCache.get(sessionId);
+    let lastSentCols = cachedSize?.cols ?? -1;
+    let lastSentRows = cachedSize?.rows ?? -1;
+
+    const clearResizeTimer = (): void => {
+      for (const timer of resizeTimers) {
+        clearTimeout(timer);
+      }
+      resizeTimers = [];
+    };
+
+    const clearRefreshTimers = (): void => {
+      for (const timer of refreshTimers) {
+        clearTimeout(timer);
+      }
+      refreshTimers = [];
+    };
+
+    const clearPendingDrainTimer = (): void => {
+      if (!pendingDrainTimer) return;
+      clearTimeout(pendingDrainTimer);
+      pendingDrainTimer = null;
+    };
+
+    const clearScanTimers = (): void => {
+      if (startupSettleTimeout) {
+        clearTimeout(startupSettleTimeout);
+        startupSettleTimeout = null;
+      }
+      if (idleFlush) {
+        clearTimeout(idleFlush);
+        idleFlush = null;
+      }
+      if (backgroundScanThrottle) {
+        clearTimeout(backgroundScanThrottle);
+        backgroundScanThrottle = null;
+      }
+    };
+
+    const setOutputActive = (active: boolean): void => {
+      const current = usePaneMetadataStore.getState().volatileMetadata[sessionId]?.outputActive === true;
+      if (current === active) return;
+      usePaneMetadataStore.getState().setVolatileMetadata(sessionId, { outputActive: active });
+    };
+
+    const noteOutputActivity = (): void => {
+      setOutputActive(true);
+      if (outputActivityTimer) clearTimeout(outputActivityTimer);
+      outputActivityTimer = setTimeout(() => {
+        outputActivityTimer = null;
+        setOutputActive(false);
+      }, ACTIVITY_WINDOW_MS);
+    };
+
+    const settleStartupSession = (): void => {
+      if (startupSettled) {
+        return;
+      }
+      startupSettled = true;
+      if (startupSettleTimeout) {
+        clearTimeout(startupSettleTimeout);
+        startupSettleTimeout = null;
+      }
+      markStartupSessionSettled(sessionId);
+    };
+
+    const rememberContainerSize = (): boolean => {
+      const rect = container.getBoundingClientRect();
+      const width = Math.round(rect.width);
+      const height = Math.round(rect.height);
+      if (width === lastObservedWidth && height === lastObservedHeight) {
+        return false;
+      }
+      lastObservedWidth = width;
+      lastObservedHeight = height;
+      return true;
+    };
+
+    const refreshVisibleRows = (currentTerm: Terminal): void => {
+      if (disposed || termDisposed || currentTerm.rows <= 0 || !isContainerWritable()) return;
+      try {
+        currentTerm.refresh(0, Math.max(0, currentTerm.rows - 1));
+      } catch {
+        // Terminal was disposed between scheduling and refresh.
+      }
+    };
+
+    const scheduleFullRefresh = (
+      currentTerm: Terminal,
+      delays: readonly number[] = [0, 48, 160],
+    ): void => {
+      clearRefreshTimers();
+      for (const delay of delays) {
+        const timer = setTimeout(() => {
+          refreshTimers = refreshTimers.filter((entry) => entry !== timer);
+          refreshVisibleRows(currentTerm);
+        }, delay);
+        refreshTimers.push(timer);
+      }
+    };
+
+    const clearResizeHoldWatchers = (): void => {
+      if (repaintHoldTimer !== null) {
+        clearTimeout(repaintHoldTimer);
+        repaintHoldTimer = null;
+      }
+      if (repaintHoldSettleTimer !== null) {
+        clearTimeout(repaintHoldSettleTimer);
+        repaintHoldSettleTimer = null;
+      }
+      repaintHoldWriteDisposable?.dispose();
+      repaintHoldWriteDisposable = null;
+      if (repaintHoldFrame !== null) {
+        cancelAnimationFrame(repaintHoldFrame);
+        repaintHoldFrame = null;
+      }
+    };
+
+    // Reveal the pane again. The viewport needs no correction here: fit() already
+    // put a reader who was following the live end back on it, and the repaint we
+    // waited for is what closes the blank rows underneath.
+    const endResizeHold = (): void => {
+      clearResizeHoldWatchers();
+      const release = releaseResizeHold;
+      releaseResizeHold = null;
+      release?.();
+    };
+
+    /**
+     * Cover the window between the local reflow and the shell's repaint at the
+     * new size.
+     *
+     * The repaint is several kilobytes split across writes, so the pane is
+     * revealed once writes have been quiet for REPAINT_HOLD_SETTLE_MS and the
+     * frame after that has been painted -- not on the first write, which would
+     * show the repaint half finished. A pane whose process never answers, or one
+     * streaming output continuously, is revealed at the deadline instead.
+     */
+    const beginResizeHold = (currentTerm: Terminal): void => {
+      clearResizeHoldWatchers();
+      const now = Date.now();
+      const deadline = resolveRepaintHoldDeadline({
+        now,
+        holdStartedAt: resizeHoldStartedAt,
+        hasOutstandingHold: releaseResizeHold !== null,
+      });
+      if (!releaseResizeHold) {
+        releaseResizeHold = repaintHold.acquire(currentTerm.element ?? null);
+        resizeHoldStartedAt = now;
+      }
+      const revealAfterNextFrame = (): void => {
+        if (repaintHoldFrame !== null) return;
+        repaintHoldFrame = requestAnimationFrame(() => {
+          repaintHoldFrame = null;
+          endResizeHold();
+        });
+      };
+      // The deadline reveals directly rather than waiting for a frame: rAF is
+      // suspended while the window is hidden or occluded, and a backstop that
+      // can itself be suspended is not a backstop.
+      repaintHoldTimer = setTimeout(() => {
+        repaintHoldTimer = null;
+        endResizeHold();
+      }, Math.max(0, deadline - now));
+      repaintHoldWriteDisposable = currentTerm.onWriteParsed(() => {
+        if (repaintHoldFrame !== null) return;
+        const settleAt = Math.min(Date.now() + REPAINT_HOLD_SETTLE_MS, deadline);
+        if (repaintHoldSettleTimer !== null) clearTimeout(repaintHoldSettleTimer);
+        repaintHoldSettleTimer = setTimeout(() => {
+          repaintHoldSettleTimer = null;
+          revealAfterNextFrame();
+        }, Math.max(0, settleAt - Date.now()));
+      });
+    };
+
+    const fitAndSyncResize = (currentTerm: Terminal, currentFitAddon: FitAddon, force = false): void => {
+      if (disposed || termDisposed || !isContainerWritable()) return;
+      if (isImeComposing) {
+        resizePendingDuringComposition = true;
+        return;
+      }
+
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      const containerSizeChanged = rememberContainerSize();
+      if (!force && !containerSizeChanged) return;
+
+      // Read the live buffer rather than isAtBottomRef: that ref only moves on
+      // the scroll event, so a resize arriving before the event lands would see
+      // a stale answer and drop the reader somewhere up the scrollback.
+      const wasPinnedToBottom = viewportIsAtBottom(currentTerm.buffer.active);
+
+      try {
+        currentFitAddon.fit();
+        bumpPaintStat("resize", sessionId);
+      } catch {
+        return;
+      }
+
+      // fit() reflows the wrapped lines, which moves viewportY. A viewport that
+      // was following the live end has to be put back; one the reader had
+      // scrolled up to is left exactly where they left it.
+      if (wasPinnedToBottom) currentTerm.scrollToBottom();
+
+      if (currentTerm.cols <= 0 || currentTerm.rows <= 0) return;
+      const nextCols = currentTerm.cols;
+      const nextRows = currentTerm.rows;
+      const terminalSizeChanged = nextCols !== lastSentCols || nextRows !== lastSentRows;
+
+      if (!terminalSizeChanged) {
+        if (force || containerSizeChanged) {
+          scheduleFullRefresh(currentTerm);
+        }
+        return;
+      }
+
+      // Decided before lastSent* moves. The hold covers the gap between the
+      // reflow fit() just performed and the repaint the shell sends back at the
+      // new size; it is taken in the same synchronous pass as that fit, so the
+      // browser never paints the half-moved frame.
+      const sizeChangedAt = Date.now();
+      if (sessionStarted && shouldHoldRepaint({
+        isAgentTuiPane,
+        previous: { cols: lastSentCols, rows: lastSentRows },
+        next: { cols: nextCols, rows: nextRows },
+        msSinceLastSizeChange: lastSizeChangeAt === null
+          ? null
+          : sizeChangedAt - lastSizeChangeAt,
+      })) {
+        beginResizeHold(currentTerm);
+      }
+      lastSizeChangeAt = sizeChangedAt;
+
+      lastSentCols = nextCols;
+      lastSentRows = nextRows;
+      terminalSizeCache.set(sessionId, { cols: nextCols, rows: nextRows });
+      if (sessionStarted) {
+        resizeSession(sessionId, nextCols, nextRows)
+          .then(() => scheduleFullRefresh(currentTerm, [16, 80, 200]))
+          .catch((error) => {
+            console.error(error);
+            scheduleFullRefresh(currentTerm, [16, 120]);
+          });
+      } else {
+        scheduleFullRefresh(currentTerm);
+      }
+    };
+
+    syncResizeRef.current = (force = false) => {
+      if (!term || !fitAddon) return;
+      fitAndSyncResize(term, fitAddon, force);
+    };
+
+    const scheduleResize = (currentTerm: Terminal, currentFitAddon: FitAddon, delay: number, force = false): void => {
+      if (isImeComposing) {
+        resizePendingDuringComposition = true;
+        return;
+      }
+      const timer = setTimeout(() => {
+        resizeTimers = resizeTimers.filter((entry) => entry !== timer);
+        fitAndSyncResize(currentTerm, currentFitAddon, force);
+      }, delay);
+      resizeTimers.push(timer);
+    };
+
+    const scheduleResizeBurst = (currentTerm: Terminal, currentFitAddon: FitAddon): void => {
+      clearResizeTimer();
+      scheduleResize(currentTerm, currentFitAddon, 24, true);
+      scheduleResize(currentTerm, currentFitAddon, 100, true);
+      scheduleResize(currentTerm, currentFitAddon, 240, true);
+    };
+
+    const registerResizeObserver = (currentTerm: Terminal, currentFitAddon: FitAddon): void => {
+      resizeObserver?.disconnect();
+      resizeObserver = new ResizeObserver(() => {
+        invalidateContainerVisibilityMemo();
+        refreshFrontendVisible();
+        refreshTerminalPaintedVisible();
+        if (isContainerWritable()) {
+          scheduleResizeBurst(currentTerm, currentFitAddon);
+          if (
+            (pendingBatches.length > 0 || terminalScrollbackResyncNeeded.has(sessionId))
+            && canWritePendingBatches()
+          ) {
+            void pumpTerminalWrites();
+          }
+        } else {
+          clearResizeTimer();
+          clearRefreshTimers();
+        }
+      });
+      resizeObserver.observe(container);
+    };
+
+    const registerScrollListener = (currentTerm: Terminal): void => {
+      scrollDisposable?.dispose();
+      scrollDisposable = currentTerm.onScroll(() => {
+        if (termDisposed) return;
+        isAtBottomRef.current = viewportIsAtBottom(currentTerm.buffer.active);
+        refreshTurnChipRef.current();
+      });
+    };
+
+    const registerPaintFocusListeners = (currentTerm: Terminal): void => {
+      removePaintFocusListeners?.();
+      const textarea = currentTerm.textarea;
+      if (!textarea) {
+        removePaintFocusListeners = null;
+        return;
+      }
+      const handleFocusChange = (): void => {
+        bumpPaintStat("focus-change", sessionId);
+        recordXtermFocus(sessionId, textarea === document.activeElement);
+      };
+      textarea.addEventListener("focus", handleFocusChange);
+      textarea.addEventListener("blur", handleFocusChange);
+      recordXtermFocus(sessionId, textarea === document.activeElement);
+      removePaintFocusListeners = () => {
+        textarea.removeEventListener("focus", handleFocusChange);
+        textarea.removeEventListener("blur", handleFocusChange);
+      };
+    };
+
+    let awaitingInputPaint = false;
+    let firstTerminalPaint = true;
+    const registerRenderListener = (currentTerm: Terminal): void => {
+      renderDisposable?.dispose();
+      renderDisposable = currentTerm.onRender(({ start, end }) => {
+        recordTerminalFlowRender(sessionId);
+        if (firstTerminalPaint) {
+          firstTerminalPaint = false;
+          recordPerf("terminal.first.paint", sessionId);
+        }
+        if (awaitingInputPaint) {
+          awaitingInputPaint = false;
+          recordPerf("terminal.input.painted", sessionId);
+        }
+        if (import.meta.env.DEV) recordRender(start, end, currentTerm.rows, sessionId);
+      });
+    };
+
+    const refreshTurnChipAfterFirstRender = (currentTerm: Terminal): void => {
+      turnChipFirstRenderDisposable?.dispose();
+      let disposable: IDisposable | null = null;
+      disposable = currentTerm.onRender(() => {
+        disposable?.dispose();
+        if (turnChipFirstRenderDisposable === disposable) {
+          turnChipFirstRenderDisposable = null;
+        }
+        refreshTurnChipRef.current();
+      });
+      turnChipFirstRenderDisposable = disposable;
+    };
+
+    const registerCompositionGuard = (currentTerm: Terminal, currentFitAddon: FitAddon): void => {
+      removeCompositionGuard?.();
+      const textarea = currentTerm.textarea;
+      if (!textarea) {
+        removeCompositionGuard = null;
+        return;
+      }
+
+      const handleCompositionStart = (): void => {
+        isImeComposing = true;
+        resizePendingDuringComposition = false;
+        clearResizeTimer();
+      };
+      const handleCompositionEnd = (): void => {
+        isImeComposing = false;
+        if (resizePendingDuringComposition) {
+          resizePendingDuringComposition = false;
+          scheduleResize(currentTerm, currentFitAddon, 80, true);
+        }
+      };
+
+      textarea.addEventListener("compositionstart", handleCompositionStart);
+      textarea.addEventListener("compositionend", handleCompositionEnd);
+      removeCompositionGuard = () => {
+        textarea.removeEventListener("compositionstart", handleCompositionStart);
+        textarea.removeEventListener("compositionend", handleCompositionEnd);
+      };
+    };
+
+    const attachTerminalKeyHandler = (currentTerm: Terminal): void => {
+      currentTerm.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+        if (e.type !== "keydown") return true;
+        recordPerf("terminal.keydown", sessionId);
+
+        // Hand Ctrl+V to the browser's paste path instead of the PTY. Not on
+        // macOS: there Control belongs to the shell — ⌃V is quoted-insert —
+        // and pasting is ⌘V, which never reaches this branch anyway.
+        if (e.key === "v" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && !IS_MAC) {
+          return false;
+        }
+
+        if (e.isComposing || e.key === "Process" || e.keyCode === 229) {
+          return true;
+        }
+
+
+        if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
+          if (!shouldAcceptTerminalInput(sessionId)) return false;
+          const processTitle = usePaneMetadataStore.getState().volatileMetadata[sessionId]?.processTitle;
+          enqueueSessionWrite(
+            sessionId,
+            getShiftEnterSequence(launchParamsRef.current.command, processTitle),
+          );
+          return false;
+        }
+
+        if (isPlainTerminalInputEvent(e)) {
+          e.stopPropagation();
+          return true;
+        }
+
+        const keybindingStore = useKeybindingStore.getState();
+        const actions = keybindingStore.getActionsForEvent(e);
+
+        if (actions.length > 0) {
+          // Actions handled inline here must NOT also reach AppShell's
+          // window-level keydown dispatcher, or they fire twice. For toggle
+          // actions (pane.zoom.toggle) the second fire cancels the first,
+          // leaving the shortcut dead in terminal panes. Returning false only
+          // tells xterm to skip PTY forwarding — it does NOT stop DOM
+          // propagation — so we stop it explicitly here. Other matched actions
+          // fall through to `return false` below and intentionally keep
+          // bubbling to AppShell, which is their sole handler.
+          if (actions.includes("terminal.search")) {
+            e.preventDefault();
+            e.stopPropagation();
+            openSearch();
+            return false;
+          }
+
+          if (actions.includes("pane.zoom.toggle")) {
+            e.preventDefault();
+            e.stopPropagation();
+            onZoomToggle?.();
+            return false;
+          }
+
+          return false;
+        }
+
+        return true;
+      });
+    };
+
+    const publishScreenScanEvidence = (
+      attention: "approval" | "rate_limited" | "none",
+      detail: string | null,
+      attentionId: string | null,
+      resync: boolean,
+    ): void => {
+      void emit("mycmux:session-state-evidence", {
+        session_id: sessionId,
+        attention,
+        attention_id: attentionId,
+        detail,
+        observed_at: Date.now(),
+        confidence: 0.7,
+        stale_after: 30_000,
+        complete: true,
+        resync,
+      }).catch((error) => {
+        if (import.meta.env.DEV) {
+          console.warn("[mycmux-diag] failed to publish screen scan evidence", error);
+        }
+      });
+    };
+
+    const runScan = async (allowDetached = false, resync = false): Promise<void> => {
+      if (!term || termDisposed || (!allowDetached && disposed)) return;
+      const scanStartedAt = import.meta.env.DEV ? performance.now() : null;
+      let buf;
+      try {
+        buf = term.buffer.active;
+      } catch {
+        return;
+      }
+
+      const bottom = buf.length - 1;
+      const top = Math.max(0, bottom - 15);
+      const scanLines: string[] = [];
+      let lastNonEmpty = "";
+      for (let i = top; i <= bottom; i++) {
+        const lineObj = buf.getLine(i);
+        if (!lineObj) continue;
+        const text = lineObj
+          .translateToString(true)
+          .replace(/\x1b\[[0-9;]*m/g, "")
+          .trim();
+        if (text.length > 0) {
+          scanLines.push(text);
+          lastNonEmpty = text;
+        }
+      }
+      const observedAt = Date.now();
+      let askScreen: ReturnType<typeof ingestAskQuestionLines> = null;
+      if (agentKind === "claude" || agentKind === "claude-codex") {
+        try {
+          const observedInputRevision = await getSessionInputRevision(sessionId);
+          askScreen = ingestAskQuestionLines(
+            sessionId,
+            getTerminalBufferLines(
+              sessionId,
+              ASK_QUESTION_TAIL_LINES,
+              { excludeInitialReplay: true },
+            ),
+            observedAt,
+            observedInputRevision,
+          );
+        } catch {
+          useAskQuestionStore.getState().clearScreen(sessionId, "read_failure", observedAt);
+        }
+      } else {
+        useAskQuestionStore.getState().clearScreen(sessionId, null, observedAt);
+      }
+      const nextAskAttentionId = askScreen
+        ? askQuestionAttentionId(sessionId, askScreen)
+        : null;
+      const publishedAskAttentionId = publishedAskQuestionAttentionId(sessionId);
+      if (visibleAskAttentionId === null && publishedAskAttentionId !== null) {
+        visibleAskAttentionId = publishedAskAttentionId;
+      }
+      const canonicalAttention = useSessionAttentionStore.getState().attentionBySession[sessionId];
+      const canonicalAskMismatch = nextAskAttentionId !== null && canonicalAttention
+        ? canonicalAttention.attentionId !== nextAskAttentionId || canonicalAttention.kind !== "input"
+        : false;
+      const askAttentionChanged = nextAskAttentionId !== visibleAskAttentionId
+        || canonicalAskMismatch;
+      const scanSignature = scanLines.join("\n");
+      const scanUnchanged = (
+        scanSignature === lastScanSignature
+        && !askAttentionChanged
+        && approvalAbsentStreak === 0
+        && rateLimitAbsentStreak === 0
+      );
+      lastScanSignature = scanSignature;
+      if (scanUnchanged) return;
+      const workingPatternVisible = scanLines.some((line) => (
+        WORKING_INDICATOR_PATTERNS.some((pattern) => pattern.test(line))
+      ));
+      const previousWorkingPatternVisible =
+        usePaneMetadataStore.getState().volatileMetadata[sessionId]?.workingPatternVisible === true;
+      if (workingPatternVisible !== previousWorkingPatternVisible) {
+        usePaneMetadataStore.getState().setVolatileMetadata(sessionId, { workingPatternVisible });
+      }
+      const isNoiseLine =
+        /\d+k?\s+tokens/i.test(lastNonEmpty) ||
+        /access \d+/i.test(lastNonEmpty) ||
+        /past research/i.test(lastNonEmpty) ||
+        /http:\/\/localhost/i.test(lastNonEmpty) ||
+        isShortcutHintLine(lastNonEmpty) ||
+        /^\s*[\u2500-\u257F]+\s*$/.test(lastNonEmpty) ||
+        lastNonEmpty.length < 3;
+      const logChanged = lastNonEmpty !== lastLogLine;
+      if (!isNoiseLine && logChanged) {
+        lastLogLine = lastNonEmpty;
+        usePaneMetadataStore.getState().setMetadata(sessionId, {
+          lastLogLine: lastNonEmpty,
+        });
+      }
+
+      bumpPaintStat("scan", sessionId);
+      const rateLimit = scanRateLimit(scanLines.join("\n"));
+      const approvalPatternId = scanForApproval(scanLines);
+      const askWasPublished = nextAskAttentionId !== null
+        && hasPublishedAskQuestionEvidence(sessionId, nextAskAttentionId);
+      const prevStatus = usePaneMetadataStore.getState().metadata[sessionId]?.agentStatus;
+      if (rateLimit.kind === "limit-reached") {
+        if (visibleAskAttentionId !== null) {
+          releaseAskQuestionEvidence(sessionId);
+          visibleAskAttentionId = null;
+        }
+        const newlyVisible = !rateLimitVisible;
+        rateLimitVisible = true;
+        rateLimitAbsentStreak = 0;
+        if (newlyVisible) {
+          publishScreenScanEvidence(
+            "rate_limited",
+            rateLimit.evidence,
+            `rate-limit:${sessionId}:${rateLimit.evidence}`,
+            resync,
+          );
+        }
+      } else if (rateLimitVisible) {
+        rateLimitAbsentStreak += 1;
+        if (rateLimitAbsentStreak >= 2) {
+          rateLimitVisible = false;
+          rateLimitAbsentStreak = 0;
+          publishScreenScanEvidence("none", null, null, resync);
+        }
+      }
+      if (rateLimit.kind === "limit-reached") {
+        if (scanStartedAt !== null) recordApprovalScan(performance.now() - scanStartedAt, sessionId);
+        return;
+      }
+      if (askScreen) {
+        const published = await publishAskQuestionEvidence(
+          sessionId,
+          askScreen,
+          observedAt,
+          canonicalAttention
+            ? { attentionId: canonicalAttention.attentionId, kind: canonicalAttention.kind }
+            : undefined,
+        );
+        if (published || askWasPublished) {
+          visibleAskAttentionId = nextAskAttentionId;
+        }
+      } else if (visibleAskAttentionId !== null) {
+        if (approvalPatternId > 0) {
+          publishScreenScanEvidence(
+            "approval",
+            findApprovalPromptDetail(scanLines, approvalPatternId),
+            `screen:${sessionId}:${approvalPatternId}:${observedAt}`,
+            resync,
+          );
+          releaseAskQuestionEvidence(sessionId);
+          visibleAskAttentionId = null;
+        } else {
+          const cleared = await clearAskQuestionEvidence(sessionId, observedAt);
+          if (cleared || !hasPublishedAskQuestionEvidence(sessionId, visibleAskAttentionId)) {
+            visibleAskAttentionId = null;
+          }
+        }
+      }
+      const waitingPatternId = approvalPatternId > 0
+        ? approvalPatternId
+        : askScreen
+          ? 5
+          : 0;
+      const transition = resolveWaitingTransition(
+        { waiting: prevStatus === "waiting", absentStreak: approvalAbsentStreak },
+        waitingPatternId,
+      );
+      approvalAbsentStreak = transition.absentStreak;
+      if (waitingPatternId > 0) {
+        if (prevStatus !== "waiting" && !askScreen) {
+          publishScreenScanEvidence(
+            "approval",
+            findApprovalPromptDetail(scanLines, approvalPatternId),
+            `screen:${sessionId}:${approvalPatternId}:${observedAt}`,
+            resync,
+          );
+        }
+        usePaneMetadataStore.getState().setMetadata(sessionId, {
+          agentStatus: "waiting",
+        });
+        const activePaneId = useUiStore.getState().activePaneId;
+        if (activePaneId !== sessionId && useSettingsStore.getState().notificationsEnabled) {
+          const didNotify = usePaneMetadataStore.getState().notifyWaiting(sessionId, waitingPatternId);
+          if (didNotify && useSettingsStore.getState().notificationSoundEnabled) {
+            playNotificationSound();
+          }
+        }
+      } else if (transition.clear) {
+        if (prevStatus === "waiting") {
+          publishScreenScanEvidence("none", null, null, resync);
+          usePaneMetadataStore.getState().clearAgentStatus(sessionId);
+        }
+      }
+      if (scanStartedAt !== null) recordApprovalScan(performance.now() - scanStartedAt, sessionId);
+    };
+
+    const requestBackgroundScan = (resync = false): void => {
+      backgroundScanResync ||= resync;
+      if (scanInFlight) {
+        scanPending = true;
+        return;
+      }
+      scanInFlight = true;
+      const scanWasResync = backgroundScanResync;
+      backgroundScanResync = false;
+      void runScan(true, scanWasResync).finally(() => {
+        scanInFlight = false;
+        if (scanPending && !disposed) {
+          scanPending = false;
+          requestBackgroundScan();
+        }
+      });
+    };
+
+    const scheduleBackgroundScan = (resync = false): void => {
+      if (!term) return;
+      backgroundScanResync ||= resync;
+      if (!backgroundScanThrottle) {
+        backgroundScanThrottle = setTimeout(() => {
+          backgroundScanThrottle = null;
+          requestBackgroundScan();
+        }, 300);
+      }
+      if (idleFlush) clearTimeout(idleFlush);
+      idleFlush = setTimeout(() => {
+        idleFlush = null;
+        requestBackgroundScan();
+      }, 200);
+    };
+
+    const batchDataToBytes = (data: FrontendDataBatch["data"]): Uint8Array => {
+      if (data instanceof Uint8Array) return data;
+      if (data instanceof ArrayBuffer) return new Uint8Array(data);
+      return new Uint8Array(data);
+    };
+
+    const ackBatch = (batch: FrontendDataBatch): void => {
+      ackCoalescer.enqueue({
+        generation: batch.generation,
+        seq: batch.seq,
+        bytes: batch.bytes,
+      });
+    };
+
+    const ackPendingBatch = (pending: PendingFrontendBatch): void => {
+      if (pending.acked) return;
+      pending.acked = true;
+      ackBatch(pending.batch);
+    };
+
+    const enforcePendingBatchCap = (): void => {
+      const trimmed = trimOldestBatchesToByteCap(
+        pendingBatches,
+        TERMINAL_BATCH_RETAINED_MAX_BYTES,
+      );
+      if (!trimmed.needsScrollbackResync) return;
+      pendingBatches.splice(0, pendingBatches.length, ...trimmed.retained);
+      terminalScrollbackResyncNeeded.add(sessionId);
+      for (const pending of trimmed.dropped) {
+        ackPendingBatch(pending);
+      }
+    };
+
+    const invalidateContainerVisibilityMemo = (): void => {
+      containerVisibilityMemo = null;
+    };
+
+    const readContainerVisibilitySnapshot = (): {
+      displayed: boolean;
+      painted: boolean;
+      paintedInWindow: boolean;
+      writableSize: boolean;
+    } => {
+      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      if (containerVisibilityMemo && now - containerVisibilityMemo.sampledAt < 16) {
+        return containerVisibilityMemo;
+      }
+      let displayed = container.isConnected;
+      // `paintedInWindow` answers the layout question alone — would this pane be
+      // on screen if the window were? The window's own state is folded in
+      // afterwards, so the two reasons a pane stops painting stay separable.
+      let paintedInWindow = displayed;
+      let current: HTMLElement | null = container;
+      while (current && (displayed || paintedInWindow)) {
+        const style = window.getComputedStyle(current);
+        if (style.display === "none") {
+          displayed = false;
+          paintedInWindow = false;
+          break;
+        }
+        if (style.visibility === "hidden" || style.visibility === "collapse") {
+          paintedInWindow = false;
+        }
+        current = current.parentElement;
+      }
+      const rect = container.getBoundingClientRect();
+      const snapshot = {
+        displayed,
+        painted: paintedInWindow && document.visibilityState !== "hidden",
+        paintedInWindow,
+        writableSize: rect.width > 0 && rect.height > 0,
+      };
+      containerVisibilityMemo = { sampledAt: now, ...snapshot };
+      return snapshot;
+    };
+
+    const isContainerPainted = (): boolean => {
+      return readContainerVisibilitySnapshot().painted;
+    };
+
+    const hasWritableTerminalSize = (): boolean => {
+      return readContainerVisibilitySnapshot().writableSize;
+    };
+
+    const isContainerWritable = (): boolean => {
+      return isContainerPainted() && hasWritableTerminalSize();
+    };
+
+    // The window sitting behind another app is the one "not painting" that must
+    // stay cheap: the pane keeps its box and its place, and the reader will be
+    // looking straight at it again. On macOS that happens on every Cmd-Tab, and
+    // it used to cost each visible pane a full scrollback round trip. Every
+    // other reason (a background pane, a zero-sized box, a detached container)
+    // still parks the stream the old way.
+    const isParkedByWindowOnly = (): boolean => {
+      const snapshot = readContainerVisibilitySnapshot();
+      return !snapshot.painted && snapshot.paintedInWindow && snapshot.writableSize;
+    };
+
+    // Read-only twin of rememberContainerSize: it must not consume the
+    // "changed" signal that fitAndSyncResize reads.
+    const containerSizeMatchesLastFit = (): boolean => {
+      const rect = container.getBoundingClientRect();
+      return Math.round(rect.width) === lastObservedWidth
+        && Math.round(rect.height) === lastObservedHeight;
+    };
+
+    const canWritePendingBatches = (): boolean => {
+      return Boolean(
+        frontendChannelReady
+        && term
+        && !termDisposed
+        && isContainerWritable()
+      );
+    };
+
+    const schedulePendingWriteDrain = (delay = 80): void => {
+      if (disposed || termDisposed || pendingDrainTimer) return;
+      pendingDrainTimer = setTimeout(() => {
+        pendingDrainTimer = null;
+        refreshFrontendVisible();
+        refreshTerminalPaintedVisible();
+        if (term && fitAddon && isContainerWritable()) {
+          fitAndSyncResize(term, fitAddon, true);
+        }
+        if (pendingBatches.length === 0 && !terminalScrollbackResyncNeeded.has(sessionId)) return;
+        if (canWritePendingBatches()) {
+          void pumpTerminalWrites();
+        } else if (isContainerWritable()) {
+          schedulePendingWriteDrain(120);
+        }
+      }, delay);
+    };
+
+    const terminalHoldsFocus = (): boolean => {
+      const textarea = term?.textarea;
+      return Boolean(textarea && textarea === document.activeElement);
+    };
+
+    const runFrontendResync = (): void | Promise<void> => {
+      if (disposed || termDisposed || !term || !fitAddon) return;
+      if (!isContainerWritable()) return;
+      // The three-step refit burst exists for the ConPTY resize/repaint gap: the
+      // shell needs a moment to answer at a new size. A window coming back from
+      // behind another app is not a resize — the box is the same one the last
+      // fit measured — so refitting it three times only burns frames. A pane
+      // that did change size while the window was away still gets the burst.
+      const skipRefit = parkedByWindowOnly && containerSizeMatchesLastFit();
+      parkedByWindowOnly = false;
+      if (skipRefit) {
+        clearResizeTimer();
+      } else {
+        scheduleResizeBurst(term, fitAddon);
+      }
+      // The repaint count stays at three: WebKit hands the layer back over
+      // several frames, and a single refresh can land before the surface is
+      // there. Repaints are local to the pane; the refit was the costly half.
+      scheduleFullRefresh(term, [0, 48, 160]);
+      if (pendingBatches.length > 0 || terminalScrollbackResyncNeeded.has(sessionId)) {
+        if (canWritePendingBatches()) {
+          return pumpTerminalWrites();
+        }
+        if (isContainerWritable()) {
+          schedulePendingWriteDrain();
+        }
+      }
+    };
+
+    const scheduleFrontendResync = (options: { stagger?: boolean } = {}): void => {
+      if (disposed || termDisposed || !term || !fitAddon) return;
+      refreshFrontendVisible();
+      refreshTerminalPaintedVisible();
+      if (!isContainerWritable()) {
+        cancelTerminalResync(sessionId);
+        clearResizeTimer();
+        clearRefreshTimers();
+        return;
+      }
+      if (options.stagger) {
+        // Every mounted pane wakes in the same tick when the window returns.
+        // Let the pane the reader is in catch up first and space the rest out.
+        requestTerminalResync(sessionId, terminalHoldsFocus(), runFrontendResync);
+        return;
+      }
+      void runFrontendResync();
+    };
+
+    const setFrontendVisibleIfChanged = (visible: boolean): boolean => {
+      if (frontendVisible === visible) return false;
+      frontendVisible = visible;
+      queueTerminalVisibilityUpdate(sessionId, visible);
+      return true;
+    };
+
+    const refreshFrontendVisible = (): boolean => {
+      return setFrontendVisibleIfChanged(Boolean(term && !termDisposed && isContainerWritable()));
+    };
+
+    const refreshTerminalPaintedVisible = (): boolean => {
+      const visible = Boolean(term && !termDisposed && isContainerWritable());
+      if (terminalPaintedVisible === visible) return false;
+      terminalPaintedVisible = visible;
+      return true;
+    };
+
+    const handleFrontendVisibilitySignal = (): void => {
+      invalidateContainerVisibilityMemo();
+      const frontendChanged = refreshFrontendVisible();
+      const paintChanged = refreshTerminalPaintedVisible();
+      if (frontendChanged && !frontendVisible) {
+        // A pane parked only because the window went behind something keeps its
+        // batches: replaying those on return is one incremental write, where a
+        // resync is a 256 KB round trip for every pane at once.
+        parkedByWindowOnly = isParkedByWindowOnly();
+        if (!parkedByWindowOnly) terminalScrollbackResyncNeeded.add(sessionId);
+        clearResizeTimer();
+        clearRefreshTimers();
+      }
+      const shouldResync =
+        (frontendVisible && (frontendChanged || pendingBatches.length > 0))
+        || (terminalPaintedVisible && paintChanged);
+      if (shouldResync) {
+        // Returning retained views rejoin the renderer LRU as well as the
+        // output flow; a context evicted while hidden can become WebGL again.
+        if (term) applyTerminalRenderer(sessionId, term, resolveEffectiveTerminalRendererFromStores());
+        scheduleFrontendResync({ stagger: true });
+      }
+    };
+
+    const handleTerminalLayoutSignal = (event: Event): void => {
+      const detail = (event as CustomEvent<{ workspaceId?: string }>).detail;
+      if (detail?.workspaceId && detail.workspaceId !== workspaceId) return;
+      invalidateContainerVisibilityMemo();
+      refreshFrontendVisible();
+      refreshTerminalPaintedVisible();
+      scheduleFrontendResync();
+    };
+
+    const startVisibilityObserver = (): void => {
+      stopVisibilityTracking?.();
+      stopVisibilityTracking = observeTerminalVisibility(
+        container,
+        workspaceId,
+        handleFrontendVisibilitySignal,
+        () => handleTerminalLayoutSignal(new CustomEvent("mycmux:terminal-layout-change", { detail: { workspaceId } })),
+      );
+    };
+
+    const stopVisibilityObserver = (): void => {
+      stopVisibilityTracking?.();
+      stopVisibilityTracking = null;
+    };
+
+    const writeTerminalOutput = (
+      output: string | Uint8Array,
+      watchdogMs = 2000,
+    ): Promise<void> => {
+      return new Promise((resolve) => {
+        if (!term || termDisposed) {
+          resolve();
+          return;
+        }
+        const measuredBytes = terminalWriteByteLength(output);
+        const writeMeasurement = recordTerminalWriteStart(sessionId, measuredBytes);
+        const flowWrite = startTerminalFlowWrite(sessionId, output);
+        let callbackObserved = false;
+        let settled = false;
+        const watchdog = window.setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          resolve();
+          // xterm has already accepted the bytes when write() returns. Resolve
+          // before the backend's 5s ACK timeout so a busy renderer cannot force
+          // an otherwise lossless stream into AutoConsume/resync mode.
+        }, watchdogMs);
+        const finish = (): void => {
+          if (!callbackObserved) {
+            callbackObserved = true;
+            recordTerminalWriteCallback(writeMeasurement);
+            finishTerminalFlowWrite(flowWrite);
+          }
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(watchdog);
+          resolve();
+        };
+        try {
+          const colorAdaptEnabled = shouldAdaptLightColorsForPane(
+            launchParamsRef.current.command,
+            processTitleRef.current,
+            colorAdaptCommandsRef.current,
+          );
+          const displayOutput = typeof output === "string"
+            ? colorAdapterRef.current.transform(output, colorAdaptEnabled)
+            : output;
+          const rewrittenOutput = typeof displayOutput === "string"
+            ? sgrLightRewriters.get(term)!.transform(displayOutput, isLightThemeRef.current)
+            : displayOutput;
+          term.write(rewrittenOutput, finish);
+        } catch {
+          finish();
+        }
+      });
+    };
+
+    const scheduleTuiRecoveryRedraw = (): Promise<boolean> => {
+      if (recoveryRedrawInFlight) return recoveryRedrawInFlight;
+      const request = (async (): Promise<boolean> => {
+        if (!forceWheelMouseReport || !term || termDisposed) return false;
+        await new Promise<void>((resolve) => {
+          recoveryRedrawDelayResolve = resolve;
+          recoveryRedrawTimer = setTimeout(() => {
+            recoveryRedrawTimer = null;
+            recoveryRedrawDelayResolve = null;
+            resolve();
+          }, 16);
+        });
+        if (disposed || termDisposed || !term) return false;
+        const cols = term.cols;
+        const rows = term.rows;
+        if (cols <= 0 || rows <= 0) return false;
+        const temporaryRows = rows > 2 ? rows - 1 : rows + 1;
+        try {
+          await resizeSession(sessionId, cols, temporaryRows);
+          await resizeSession(sessionId, cols, rows);
+          return true;
+        } catch (error) {
+          if (import.meta.env.DEV) {
+            console.warn("[mycmux-diag xterm] failed to request TUI redraw", error);
+          }
+          return false;
+        }
+      })().finally(() => {
+        if (recoveryRedrawInFlight === request) {
+          recoveryRedrawInFlight = null;
+        }
+      });
+      recoveryRedrawInFlight = request;
+      return request;
+    };
+
+    const hasMeaningfulTerminalScreen = (): boolean => {
+      if (!term || termDisposed) return false;
+      try {
+        const buffer = term.buffer.active;
+        const bottom = buffer.length - 1;
+        const top = Math.max(0, bottom - Math.max(1, term.rows));
+        for (let index = bottom; index >= top; index -= 1) {
+          if (buffer.getLine(index)?.translateToString(true).trim()) return true;
+        }
+      } catch {
+        return false;
+      }
+      return false;
+    };
+
+    const replayTruncatedTailIntoEmptyTerminal = async (scrollback: Uint8Array): Promise<void> => {
+      if (!term || termDisposed || hasMeaningfulTerminalScreen()) return;
+      // Acquired inside the try: a leaked hold would pin the reference count
+      // above zero for the rest of this mount and leave the pane hidden.
+      let releaseHold: (() => void) | null = null;
+      try {
+        releaseHold = repaintHold.acquire(term.element ?? null);
+        colorAdapterRef.current.reset();
+        const replayTerm = term;
+        snapshotTurnMarksForReset(sessionId, replayTerm);
+        sgrLightRewriters.get(term)?.reset();
+        term.reset();
+        outputDecoder = resetTerminalOutputDecoder(sessionId);
+        const replayText = outputDecoder.decode(scrollback, { stream: true });
+        bumpPaintStat("resync", sessionId);
+        const resyncStartedAt = import.meta.env.DEV ? performance.now() : null;
+        backgroundScanResync = true;
+        recordPerf("xterm.backend-replay.enter", sessionId);
+        await writeTerminalOutput(stripTerminalMouseModeControlSequences(replayText), 8000);
+        recordPerf("xterm.backend-replay.done", sessionId);
+        reanchorTurnMarks(sessionId, replayTerm);
+        if (resyncStartedAt !== null) {
+          recordResync(scrollback.byteLength, performance.now() - resyncStartedAt, sessionId);
+        }
+      } finally {
+        releaseHold?.();
+      }
+    };
+
+    const performBackendScrollbackSync = async (): Promise<boolean> => {
+      if (!canWritePendingBatches()) return false;
+      const knownTail = terminalRawTailBySession.get(sessionId);
+      let scrollbackSnapshot: Awaited<ReturnType<typeof getSessionScrollback>>;
+      try {
+        scrollbackSnapshot = await getSessionScrollback(sessionId);
+      } catch {
+        return false;
+      }
+      // Visibility can change while the IPC request is in flight. Never reset
+      // or write into a terminal that became hidden in that interval.
+      invalidateContainerVisibilityMemo();
+      if (disposed || termDisposed || !term || !canWritePendingBatches()) return false;
+      const scrollback = new Uint8Array(scrollbackSnapshot.data);
+      if (scrollback.byteLength === 0) {
+        replaceTerminalRawTail(sessionId, scrollback);
+        lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;
+        return true;
+      }
+      const recoveryPlan = planTerminalScrollbackRecovery(
+        scrollback,
+        scrollbackSnapshot.startOffset,
+        scrollbackSnapshot.endOffset,
+        lastSynchronizedScrollbackEnd,
+        knownTail,
+      );
+      const replay = recoveryPlan.data;
+      if (replay.byteLength === 0) {
+        if (recoveryPlan.action === "skip-truncated") {
+          // This ring no longer contains the VT state that produced the
+          // current xterm buffer. Preserve the last coherent screen and ask
+          // Codex to repaint instead of replaying an arbitrary byte suffix.
+          outputDecoder = resetTerminalOutputDecoder(sessionId);
+          const redrawn = await scheduleTuiRecoveryRedraw();
+          await replayTruncatedTailIntoEmptyTerminal(scrollback);
+          if (!redrawn) {
+            // A truncated raw VT ring cannot reconstruct the old screen. Do
+            // not wedge the live stream by retrying the same 256 KB snapshot
+            // every 160 ms; advance to its end and resume new output.
+            if (import.meta.env.DEV) {
+              console.warn(`[mycmux-diag xterm:${sessionId}] truncated recovery redraw unavailable; resuming live output`);
+            }
+          }
+        }
+        replaceTerminalRawTail(sessionId, scrollback);
+        lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;
+        return true;
+      }
+      if (!canWritePendingBatches()) return false;
+      const replacesVisibleBuffer = recoveryPlan.action === "replace"
+        || recoveryPlan.action === "initial-replay";
+      let releaseHold: (() => void) | null = null;
+      const replayTerm = term;
+      try {
+        // Everything that can throw -- resetting the buffer, snapshotting the
+        // turn marks, decoding -- sits inside the try that releases the hold. A
+        // leaked hold would keep the reference count above zero for the rest of
+        // this mount and leave the pane hidden with output still flowing in.
+        if (replacesVisibleBuffer) {
+          releaseHold = repaintHold.acquire(term.element ?? null);
+          colorAdapterRef.current.reset();
+          snapshotTurnMarksForReset(sessionId, term);
+          sgrLightRewriters.get(term)?.reset();
+          term.reset();
+          outputDecoder = resetTerminalOutputDecoder(sessionId);
+        }
+        const replayText = outputDecoder.decode(replay, { stream: true });
+        bumpPaintStat("resync", sessionId);
+        const resyncStartedAt = import.meta.env.DEV ? performance.now() : null;
+        backgroundScanResync = true;
+        recordPerf("xterm.backend-replay.enter", sessionId);
+        await writeTerminalOutput(
+          stripTerminalMouseModeControlSequences(replayText),
+          replacesVisibleBuffer ? 8000 : 2000,
+        );
+        recordPerf("xterm.backend-replay.done", sessionId);
+        const finalizePersistedReplay = shouldFinalizePersistedInitialReplay(
+          coldPersistedRestore,
+          recoveryPlan.action,
+        );
+        if (finalizePersistedReplay) {
+          if (replayTerm.buffer.active.type === "alternate") {
+            await writeTerminalOutput("\x1b[?1049l\x1b[?25h\x1b[0m\r\n", 2000);
+          }
+          terminalInitialReplayMarkers.get(sessionId)?.dispose();
+          const replayMarker = replayTerm.registerMarker(0);
+          if (replayMarker) {
+            terminalInitialReplayMarkers.set(sessionId, replayMarker);
+          }
+        }
+        reanchorTurnMarks(sessionId, replayTerm);
+        if (finalizePersistedReplay && getTurnMarkData(sessionId).length === 0) {
+          noteRestoreBoundaryTurn(sessionId);
+          // Everything above the boundary was drawn, not typed here. Put the
+          // turns back by matching the transcript once the redraw settles.
+          void restoreTurnMarksFromTranscript(sessionId);
+        }
+        if (resyncStartedAt !== null) {
+          recordResync(replay.byteLength, performance.now() - resyncStartedAt, sessionId);
+        }
+      } finally {
+        releaseHold?.();
+      }
+      replaceTerminalRawTail(sessionId, scrollback);
+      lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;
+      if (disposed || termDisposed || !term) return false;
+      if (!canWritePendingBatches()) return false;
+      markTerminalHasLiveOutput(sessionId);
+      bumpTerminalWriteCounter(sessionId);
+      scheduleFullRefresh(term, [0, 48, 160]);
+      return true;
+    };
+
+    const syncBackendScrollbackToTerminal = (): Promise<boolean> => {
+      if (scrollbackSyncInFlight) return scrollbackSyncInFlight;
+      const request = performBackendScrollbackSync().finally(() => {
+        if (scrollbackSyncInFlight === request) {
+          scrollbackSyncInFlight = null;
+        }
+      });
+      scrollbackSyncInFlight = request;
+      return request;
+    };
+
+    const syncDroppedBatchScrollbackIfNeeded = async (): Promise<void> => {
+      if (!terminalScrollbackResyncNeeded.has(sessionId)) return;
+      if (!canWritePendingBatches()) return;
+      terminalScrollbackResyncNeeded.delete(sessionId);
+      const synchronized = await syncBackendScrollbackToTerminal();
+      if (!synchronized) {
+        terminalScrollbackResyncNeeded.add(sessionId);
+      }
+    };
+
+    async function pumpTerminalWrites(): Promise<void> {
+      if (writingBatch) return;
+      writingBatch = true;
+      try {
+        await syncDroppedBatchScrollbackIfNeeded();
+        if (terminalScrollbackResyncNeeded.has(sessionId)) {
+          schedulePendingWriteDrain(160);
+          return;
+        }
+        while (pendingBatches.length > 0) {
+          const pending = pendingBatches.shift()!;
+          const { batch } = pending;
+          if (!term || termDisposed) {
+            ackPendingBatch(pending);
+            continue;
+          }
+          if (terminalScrollbackResyncNeeded.has(sessionId)) {
+            ackPendingBatch(pending);
+            continue;
+          }
+          if (!canWritePendingBatches()) {
+            if (!isContainerWritable() && !isParkedByWindowOnly()) {
+              terminalScrollbackResyncNeeded.add(sessionId);
+              ackPendingBatch(pending);
+              continue;
+            }
+            ackPendingBatch(pending);
+            pendingBatches.unshift(pending);
+            if (isContainerWritable()) {
+              schedulePendingWriteDrain();
+            }
+            break;
+          }
+          try {
+            currentPendingBatch = pending;
+            clearPendingDrainTimer();
+            settleStartupSession();
+            if (batch.scrollbackStart > lastSynchronizedScrollbackEnd) {
+              terminalScrollbackResyncNeeded.add(sessionId);
+              continue;
+            }
+            const fullChunk = batchDataToBytes(batch.data);
+            const chunk = sliceBatchAfterScrollbackOffset(
+              batch,
+              fullChunk,
+              lastSynchronizedScrollbackEnd,
+            );
+            if (chunk.byteLength === 0) {
+              continue;
+            }
+            if (chunk.byteLength > 0 && !hasTerminalLiveOutput(sessionId)) {
+              markTerminalHasLiveOutput(sessionId);
+            }
+            const decodedText = outputDecoder.decode(chunk, { stream: true });
+            const displayText = stripTerminalMouseModeControlSequencesForSession(sessionId, decodedText);
+            // PTY output is a stateful byte stream. Do not rewrite its text or
+            // cursor sequences: they were emitted against the original widths.
+            // The write helper only changes non-printing SGR color parameters
+            // for configured commands immediately before xterm rendering.
+            const output = displayText;
+            if (import.meta.env.DEV) {
+              diagStats.writes += 1;
+              diagStats.bytes += new Blob([output]).size;
+            }
+            bumpTerminalWriteCounter(sessionId);
+            bumpPaintStat("pty-batch", sessionId);
+            await writeTerminalOutput(output);
+            rememberTerminalRawTail(sessionId, chunk);
+            lastSynchronizedScrollbackEnd = Math.max(
+              lastSynchronizedScrollbackEnd,
+              batch.scrollbackEnd,
+            );
+          } finally {
+            ackPendingBatch(pending);
+            if (currentPendingBatch === pending) currentPendingBatch = null;
+          }
+        }
+      } finally {
+        writingBatch = false;
+        if (
+          pendingBatches.length > 0
+          && !terminalScrollbackResyncNeeded.has(sessionId)
+          && canWritePendingBatches()
+        ) {
+          void pumpTerminalWrites();
+        } else if (
+          (pendingBatches.length > 0 || terminalScrollbackResyncNeeded.has(sessionId))
+          && isContainerWritable()
+        ) {
+          schedulePendingWriteDrain(160);
+        }
+      }
+    }
+
+    removePtyReplayTarget = registerPtyReplayTarget(sessionId, {
+      begin: () => {
+        if (!term || termDisposed || disposed) {
+          throw new Error(`PTY replay target ${sessionId} is not ready`);
+        }
+        if (
+          replayActive
+          || writingBatch
+          || currentPendingBatch
+          || pendingBatches.length > 0
+          || scrollbackSyncInFlight
+          || terminalScrollbackResyncNeeded.has(sessionId)
+        ) {
+          throw new Error(`PTY replay target ${sessionId} is not quiescent`);
+        }
+        replayOutputDecoder = new TextDecoder();
+        replayMouseModeFilter = createTerminalMouseModeControlFilter();
+        colorAdapterRef.current.reset();
+        sgrLightRewriters.get(term)?.reset();
+        term.reset();
+        replayActive = true;
+      },
+      write: async (data) => {
+        if (!replayActive) throw new Error(`PTY replay target ${sessionId} stopped`);
+        recordPtyBatch(data.byteLength, sessionId);
+        bumpPaintStat("pty-batch", sessionId);
+        const decodedText = replayOutputDecoder.decode(data, { stream: true });
+        await writeTerminalOutput(replayMouseModeFilter(decodedText));
+      },
+      end: async () => {
+        replayActive = false;
+        terminalScrollbackResyncNeeded.add(sessionId);
+        if (canWritePendingBatches()) {
+          await pumpTerminalWrites();
+        }
+      },
+    });
+
+    const enqueueFrontendBatch = (batch: FrontendDataBatch): void => {
+      recordTerminalFlowReceive(sessionId, batch.bytes, batch.resync);
+      if (replayActive) {
+        terminalScrollbackResyncNeeded.add(sessionId);
+        ackBatch(batch);
+        return;
+      }
+      // Replayed scrollback is historical output — only live batches count as
+      // agent activity for the working indicator.
+      noteOutputActivity();
+      recordPtyBatch(batch.bytes, sessionId);
+      recordPtyBatchForRecording(sessionId, {
+        generation: batch.generation,
+        seq: batch.seq,
+        resync: batch.resync,
+        scrollbackStart: batch.scrollbackStart,
+        scrollbackEnd: batch.scrollbackEnd,
+        data: batchDataToBytes(batch.data),
+      });
+      if (batch.resync) {
+        terminalScrollbackResyncNeeded.add(sessionId);
+      }
+      if (!isContainerWritable() && !isParkedByWindowOnly()) {
+        terminalScrollbackResyncNeeded.add(sessionId);
+        ackBatch(batch);
+        return;
+      }
+      // Parked by the window alone: keep the bytes. They are ACKed below
+      // without being written, so the backend's in-flight window keeps moving
+      // while the queue holds the catch-up. enforcePendingBatchCap bounds it
+      // and falls back to a scrollback resync past the cap.
+      const pending: PendingFrontendBatch = { batch, acked: false };
+      pendingBatches.push(pending);
+      enforcePendingBatchCap();
+      if (scrollbackSyncInFlight) {
+        ackPendingBatch(pending);
+        return;
+      }
+      if (canWritePendingBatches()) {
+        void pumpTerminalWrites();
+      } else {
+        ackPendingBatch(pending);
+        if (isContainerWritable()) {
+          schedulePendingWriteDrain();
+        }
+      }
+    };
+
+    const attachFrontendChannel = async (cols: number, rows: number): Promise<void> => {
+      // Read the launch parameters at attach time, not at effect-setup time:
+      // the resume env (MYCMUX_AGENT_KIND / MYCMUX_SESSION_ID / MYCMUX_RESUME)
+      // can land between this effect's first pass and the actual spawn.
+      const launch = buildLaunchRequest(launchParamsRef.current);
+      await createSession(
+        sessionId,
+        launch.command,
+        launch.args,
+        cols,
+        rows,
+        enqueueFrontendBatch,
+        launch.cwd,
+        launch.env,
+      );
+      frontendChannelReady = true;
+      if (cols > 0 && rows > 0) {
+        lastSentCols = cols;
+        lastSentRows = rows;
+        terminalSizeCache.set(sessionId, { cols, rows });
+        void resizeSession(sessionId, cols, rows).catch((error) => {
+          console.error("[XTermWrapper] Failed to sync backend size after attach:", error);
+        });
+      }
+      // createSession replaces the backend channel and resets visibility to
+      // true. Force the actual CSS visibility back into the backend after the
+      // attach, even when the local boolean was already false before it.
+      frontendVisible = null;
+      refreshFrontendVisible();
+      terminalScrollbackResyncNeeded.add(sessionId);
+      await syncDroppedBatchScrollbackIfNeeded();
+      scheduleFrontendResync();
+    };
+
+    const registerScanListener = (currentTerm: Terminal): void => {
+      writeParsedDisposable?.dispose();
+      writeParsedDisposable = currentTerm.onWriteParsed(() => {
+        if (disposed) return;
+        recordWriteParsed(sessionId);
+        scheduleBackgroundScan();
+      });
+    };
+
+    // Tauri's unlisten throws (reading 'handlerId' of undefined) when the
+    // listener is already gone, and its rejection reaches the app as an error
+    // toast. Docking a detached pane back by drag reached that state: the
+    // desired end — no listener — is the same either way, so drop the handle
+    // first and let a late unregister be a no-op.
+    const releaseExitListener = (unlisten: (() => void) | null): void => {
+      if (!unlisten) return;
+      try {
+        const result = unlisten() as unknown;
+        if (result && typeof (result as Promise<void>).catch === "function") {
+          void (result as Promise<void>).catch((error) => {
+            if (import.meta.env.DEV) console.debug(`[mycmux-diag xterm:${sessionId}] exit unlisten ignored`, error);
+          });
+        }
+      } catch (error) {
+        if (import.meta.env.DEV) console.debug(`[mycmux-diag xterm:${sessionId}] exit unlisten ignored`, error);
+      }
+    };
+
+    const registerExitListener = async (): Promise<void> => {
+      const nextUnlisten = await onPtyExit(sessionId, () => {
+        if (disposed || !sessionStarted) return;
+        onExit?.();
+      });
+      if (disposed) {
+        releaseExitListener(nextUnlisten);
+        return;
+      }
+      const previous = unlistenExit;
+      unlistenExit = nextUnlisten;
+      releaseExitListener(previous);
+    };
+
+    const registerInputListeners = (currentTerm: Terminal): void => {
+      dataDisposable?.dispose();
+      binaryDisposable?.dispose();
+      titleDisposable?.dispose();
+
+      dataDisposable = currentTerm.onData((data) => {
+        const { data: inputData, hasNonWheelInput } = filterWheelFocusInputSequences(
+          sessionId,
+          filterTerminalMouseInputSequences(data),
+        );
+        if (!inputData) return;
+        if (!shouldAcceptTerminalInput(sessionId)) return;
+        if (hasNonWheelInput) {
+          recordPerf("terminal.input.accepted", sessionId);
+          awaitingInputPaint = true;
+          clearActiveTerminalNotification(sessionId);
+          focusTerminalIfNeeded(currentTerm, sessionId);
+        }
+        noteTurnInput(sessionId, inputData, lastSynchronizedScrollbackEnd);
+        observeSessionInput(sessionId, inputData);
+        chunkedWrite(sessionId, inputData);
+        if (hasNonWheelInput) {
+          try {
+            window.dispatchEvent(
+              new CustomEvent("mycmux:keystroke", { detail: { sessionId, data: inputData } }),
+            );
+          } catch {
+            // Ignore dispatch failures; the input-probe event is non-critical.
+          }
+        }
+      });
+
+      binaryDisposable = currentTerm.onBinary((data) => {
+        const { data: inputData, hasNonWheelInput } = filterWheelFocusInputSequences(
+          sessionId,
+          filterTerminalMouseInputSequences(data),
+        );
+        if (!inputData) return;
+        if (!shouldAcceptTerminalInput(sessionId)) return;
+        if (hasNonWheelInput) {
+          clearActiveTerminalNotification(sessionId);
+          focusTerminalIfNeeded(currentTerm, sessionId);
+        }
+        noteTurnInput(sessionId, inputData, lastSynchronizedScrollbackEnd);
+        enqueueSessionWrite(sessionId, inputData);
+      });
+
+      titleDisposable = currentTerm.onTitleChange((title) => {
+        if (termDisposed || !title) return;
+        usePaneMetadataStore.getState().setVolatileMetadata(sessionId, { processTitle: title });
+      });
+    };
+
+    const cacheCurrentTerminal = (): void => {
+      const currentSearchAddon = searchAddonRef.current;
+      if (term && term.element && fitAddon && currentSearchAddon) {
+        // Parsed buffer and renderer share a bounded lifetime. Moving back
+        // to this terminal reuses its context instead of allocating another.
+        cancelWebglRetry(term);
+        term.attachCustomKeyEventHandler(acceptParkedTerminalKey);
+        const element = term.element;
+        if (element.parentNode === container) {
+          container.removeChild(element);
+        }
+        // Route through cacheOrDisposeOnUnmount so an active-tab close (which
+        // evicted the cache slot while this Terminal was still mounted) disposes
+        // the Terminal instead of leaking it into termCache forever (FE-N1).
+        const outcome = cacheOrDisposeOnUnmount(sessionId, {
+          term,
+          fitAddon,
+          searchAddon: currentSearchAddon,
+          xtermElement: element,
+          unlistenExit: null,
+          scrollbackEnd: lastSynchronizedScrollbackEnd,
+          disposeRenderer: rendererDisposer(sessionId, term),
+        });
+        if (outcome === "disposed") {
+          termDisposed = true;
+        }
+        return;
+      }
+      if (term) {
+        termDisposed = true;
+        disposeWebglRenderer(sessionId, term, false);
+        term.dispose();
+      }
+    };
+
+    const registerArtifactLinks = (currentTerm: Terminal): void => {
+      artifactLinkProviderDisposable?.dispose();
+      artifactLinkProviderDisposable = registerArtifactLinkProvider(currentTerm, sessionId, (uri, event) => {
+        if (onArtifactLinkClick) {
+          onArtifactLinkClick(uri, { x: event.clientX, y: event.clientY });
+        } else if (onUrlClick) {
+          onUrlClick(uri);
+        } else {
+          openPathWithDefaultApp(uri).catch(err => console.error("Failed to open local artifact:", err));
+        }
+      }, () => usePaneMetadataStore.getState().metadata[sessionId]?.cwd ?? launchParamsRef.current.cwd);
+    };
+
+    const cleanup = (): void => {
+      colorAdapterRef.current.reset();
+      invalidateContainerVisibilityMemo();
+      clearResizeTimer();
+      clearRefreshTimers();
+      clearPendingDrainTimer();
+      // Release before the Terminal is cached: an element parked at opacity 0
+      // would come back invisible on the next attach.
+      clearResizeHoldWatchers();
+      releaseResizeHold?.();
+      releaseResizeHold = null;
+      if (recoveryRedrawTimer) {
+        clearTimeout(recoveryRedrawTimer);
+        recoveryRedrawTimer = null;
+      }
+      recoveryRedrawDelayResolve?.();
+      recoveryRedrawDelayResolve = null;
+      clearScanTimers();
+      if (outputActivityTimer) {
+        clearTimeout(outputActivityTimer);
+        outputActivityTimer = null;
+      }
+      setOutputActive(false);
+      stopVisibilityObserver();
+      frontendChannelReady = false;
+      setFrontendVisibleIfChanged(false);
+      resizeObserver?.disconnect();
+      resizeObserver = null;
+      disposed = true;
+      writeParsedDisposable?.dispose();
+      writeParsedDisposable = null;
+      renderDisposable?.dispose();
+      renderDisposable = null;
+      turnChipFirstRenderDisposable?.dispose();
+      turnChipFirstRenderDisposable = null;
+      scrollDisposable?.dispose();
+      scrollDisposable = null;
+      dataDisposable?.dispose();
+      dataDisposable = null;
+      binaryDisposable?.dispose();
+      binaryDisposable = null;
+      titleDisposable?.dispose();
+      titleDisposable = null;
+      artifactLinkProviderDisposable?.dispose();
+      artifactLinkProviderDisposable = null;
+      removeCompositionGuard?.();
+      removeCompositionGuard = null;
+      removePaintFocusListeners?.();
+      removePaintFocusListeners = null;
+      removeFocusSync?.();
+      removeFocusSync = null;
+      removeWheelFocusGuard?.();
+      removeWheelFocusGuard = null;
+      removeWheelScrollGuard?.();
+      removeWheelScrollGuard = null;
+      removePtyReplayTarget?.();
+      removePtyReplayTarget = null;
+      disposeSelectionCopyListener(term);
+      const exitListener = unlistenExit;
+      unlistenExit = null;
+      releaseExitListener(exitListener);
+      cacheCurrentTerminal();
+      if (term && liveTerms.get(sessionId) === term) {
+        liveTerms.delete(sessionId);
+        useTerminalObservationStore.getState().markUnobserved(sessionId);
+      }
+      recordXtermUnmounted(sessionId);
+      if (pendingBatches.length > 0) {
+        const carry = pendingBatches.splice(0, pendingBatches.length);
+        if (termDisposed) {
+          for (const pending of carry) {
+            ackPendingBatch(pending);
+          }
+        } else {
+          stashDeferredTerminalBatches(sessionId, carry, (pending) => {
+            ackPendingBatch(pending);
+          });
+        }
+      }
+      if (currentPendingBatch) ackPendingBatch(currentPendingBatch);
+      ackCoalescer.flushAndDispose();
+      if (sessionStarted && !termDisposed && !terminalRawTailBySession.has(sessionId)) {
+        terminalRawTailBySession.set(sessionId, new Uint8Array());
+      }
+      searchAddonRef.current = null;
+      termRef.current = null;
+      fitAddonRef.current = null;
+      syncResizeRef.current = () => {};
+    };
+
+    const attachCachedTerminal = (cached: CachedTerm): void => {
+      releaseExitListener(cached.unlistenExit ?? null);
+      termCache.delete(sessionId);
+      container.appendChild(cached.xtermElement);
+      // Defence in depth: a repaint hold belongs to the mount that took it, so
+      // one left outstanding by the previous mount must never make this pane
+      // come back invisible.
+      cached.xtermElement.style.opacity = "";
+      registerRenderListener(cached.term);
+      invalidateContainerVisibilityMemo();
+      term = cached.term;
+      fitAddon = cached.fitAddon;
+      sessionStarted = true;
+      liveTerms.set(sessionId, cached.term);
+      useTerminalObservationStore.getState().markObserved(sessionId);
+      recordXtermMounted(sessionId);
+      applyTerminalRenderer(sessionId, cached.term, resolveEffectiveTerminalRendererFromStores());
+      termRef.current = cached.term;
+      fitAddonRef.current = cached.fitAddon;
+      searchAddonRef.current = cached.searchAddon;
+      lastSynchronizedScrollbackEnd = cached.scrollbackEnd ?? 0;
+      // Same resolver as the live-update effect and cold init, read fresh:
+      // a reattach can land after the wallpaper or the solid toggle moved.
+      const attachAppearance = readLiveTerminalAppearance();
+      cached.term.options.theme = resolveTerminalTheme(
+        useThemeStore.getState().theme.terminal,
+        attachAppearance.terminalOpacity,
+        attachAppearance.mediaActive,
+      );
+      cached.term.options.minimumContrastRatio = attachAppearance.minimumContrastRatio;
+      cached.term.options.fontSize = storeFontSize;
+      cached.term.options.fontFamily = storeFontFamily;
+      cached.term.options.lineHeight = storeLineHeight;
+      cached.term.options.cursorBlink = useUiStore.getState().activePaneId === sessionId;
+      recordCursorBlink(sessionId, cached.term.options.cursorBlink === true);
+      cached.term.options.altClickMovesCursor = false;
+      registerScrollListener(cached.term);
+      registerCompositionGuard(cached.term, cached.fitAddon);
+      registerPaintFocusListeners(cached.term);
+      registerSelectionCopyListener(cached.term, sessionId);
+      removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, cached.term, sessionId, forceWheelMouseReport);
+      removeWheelFocusGuard = registerTerminalWheelFocusGuard(cached.term, sessionId);
+      removeFocusSync = registerTerminalFocusSync(cached.term, sessionId);
+      attachTerminalKeyHandler(cached.term);
+      registerInputListeners(cached.term);
+      registerScanListener(cached.term);
+      registerArtifactLinks(cached.term);
+      void registerExitListener();
+      setTimeout(() => {
+        if (disposed || termDisposed) return;
+        // The refit re-pins a pane that was following the live end; one the
+        // reader had scrolled up in keeps its place, including across a tab or
+        // workspace switch.
+        fitAndSyncResize(cached.term, cached.fitAddon, true);
+        scheduleFrontendResync();
+        refreshTurnChipRef.current();
+      }, 30);
+      registerResizeObserver(cached.term, cached.fitAddon);
+      startVisibilityObserver();
+      scheduleFrontendResync();
+    };
+
+    const cached = termCache.get(sessionId);
+    if (cached) {
+      if (import.meta.env.DEV) {
+        console.log(`[mycmux-diag xterm:${sessionId}] cache_hit`);
+      }
+      attachCachedTerminal(cached);
+      void attachFrontendChannel(cached.term.cols, cached.term.rows).catch((err) => {
+        console.error("[XTermWrapper] Failed to reattach session:", err);
+        useToastStore.getState().pushToast("Terminal reattach failed", "error");
+      });
+      return cleanup;
+    }
+    if (import.meta.env.DEV) {
+      console.log(`[mycmux-diag xterm:${sessionId}] cache_miss`);
+    }
+
+    async function init(): Promise<void> {
+      if (disposed) return;
+      let sessionAlive = true;
+      let persistedScrollback = false;
+      try {
+        sessionAlive = await isSessionAlive(sessionId);
+        if (!sessionAlive) {
+          persistedScrollback = await hasPersistedScrollback(sessionId);
+        }
+      } catch {
+        persistedScrollback = false;
+      }
+      // A tab can close or leave the mounted LRU while these IPC reads wait.
+      // Do not allocate a terminal after its only cleanup has already run.
+      if (disposed) return;
+      const restorePolicy = resolveScrollbackRestorePolicy({
+        isSessionAlive: sessionAlive,
+        hasPersistedScrollback: persistedScrollback,
+        isAgentTab: hasTurnTranscript,
+        initialReplay,
+      });
+      coldPersistedRestore = restorePolicy.usePersistedScrollback;
+      if (!restorePolicy.usePersistedScrollback) {
+        // Persist snapshots are bottom-relative to the raw ring. The 160-line
+        // fallback and a fresh PTY cannot place them, so drop the seed rather
+        // than reanchor against the wrong buffer later.
+        seedTurnMarkSnapshots(sessionId, []);
+      }
+      const cfg = cachedConfig;
+      // Everything above this line awaited IPC. Re-resolve from the live stores
+      // rather than from the values this effect closed over at mount, or a
+      // wallpaper that finished downloading (or a solid/glass toggle) during
+      // the wait would be baked out of the terminal being created.
+      const liveThemeState = useThemeStore.getState();
+      const initAppearance = readLiveTerminalAppearance();
+      const initTheme = resolveTerminalTheme(
+        theme ?? liveThemeState.theme.terminal,
+        initAppearance.terminalOpacity,
+        initAppearance.mediaActive,
+      );
+      const baseFontSize = fontSize ?? storeFontSize ?? cfg?.fontSize ?? 14;
+      const baseFontFamily = fontFamily ?? storeFontFamily ?? cfg?.fontFamily ?? DEFAULT_TERMINAL_FONT_FAMILY;
+      const initFontSize = baseFontSize;
+      const initFontFamily = baseFontFamily;
+
+      const windowsBuildNumber = cfg?.windowsBuildNumber ?? undefined;
+
+      term = new Terminal({
+        cursorBlink: useUiStore.getState().activePaneId === sessionId,
+        cursorStyle: "block",
+        fontSize: initFontSize,
+        fontFamily: initFontFamily,
+        fontWeight: 500,
+        fontWeightBold: 700,
+        letterSpacing: 0,
+        lineHeight: resolveTerminalLineHeight(),
+        rescaleOverlappingGlyphs: true,
+        customGlyphs: true,
+        theme: initTheme,
+        allowTransparency: true,
+        allowProposedApi: true,
+        altClickMovesCursor: false,
+        macOptionClickForcesSelection: true,
+        scrollback: 5000,
+        smoothScrollDuration: 0,
+        rightClickSelectsWord: true,
+        minimumContrastRatio: initAppearance.minimumContrastRatio,
+        ...(windowsBuildNumber !== undefined
+          ? { windowsPty: { backend: "conpty", buildNumber: windowsBuildNumber } }
+          : {}),
+      });
+      const sgrLightRewriter = new SgrLightRewriter();
+      sgrLightRewriters.set(term, sgrLightRewriter);
+      term.loadAddon({
+        activate() {},
+        dispose() { sgrLightRewriter.reset(); },
+      });
+      termRef.current = term;
+
+      fitAddon = new FitAddon();
+      fitAddonRef.current = fitAddon;
+      const searchAddon = new SearchAddon();
+      searchAddonRef.current = searchAddon;
+      const unicode11Addon = new Unicode11Addon();
+
+      term.loadAddon(fitAddon);
+      term.loadAddon(searchAddon);
+      term.loadAddon(unicode11Addon);
+      term.unicode.activeVersion = "11";
+      term.loadAddon(new WebLinksAddon((_e, uri) => {
+        if (onUrlClick) {
+          onUrlClick(uri);
+        } else {
+          open(uri).catch(err => console.error("Failed to open URL:", err));
+        }
+      }, { urlRegex: HTTP_LINK_REGEX }));
+      registerArtifactLinks(term);
+
+      registerRenderListener(term);
+      term.open(container!);
+      recordPerf("xterm.mount.opened", sessionId);
+      refreshTurnChipAfterFirstRender(term);
+      invalidateContainerVisibilityMemo();
+      liveTerms.set(sessionId, term);
+      useTerminalObservationStore.getState().markObserved(sessionId);
+      recordXtermMounted(sessionId);
+      recordCursorBlink(sessionId, term.options.cursorBlink === true);
+      applyTerminalRenderer(sessionId, term, resolveEffectiveTerminalRendererFromStores());
+      if (restorePolicy.initialReplay && restorePolicy.initialReplay.length > 0) {
+        recordPerf("xterm.replay.enter", sessionId);
+        const replayText = restorePolicy.initialReplay.join("\r\n");
+        const displayReplay = replayText;
+        const replayBytes = new Blob([displayReplay]).size;
+        diagStats.replays += 1;
+        diagStats.replayLines += restorePolicy.initialReplay.length;
+        if (import.meta.env.DEV) {
+          console.log(
+            `[mycmux-diag xterm:${sessionId}] initial_replay lines=${restorePolicy.initialReplay.length} bytes=${replayBytes} source=initialReplay`,
+          );
+        }
+        const replayTerm = term;
+        await new Promise<void>((resolve) => {
+          const output = `${stripTerminalMouseModeControlSequences(displayReplay)}\r\n`;
+          const measuredBytes = terminalWriteByteLength(output);
+          const writeMeasurement = recordTerminalWriteStart(sessionId, measuredBytes);
+          const colorAdaptEnabled = shouldAdaptLightColorsForPane(
+            launchParamsRef.current.command,
+            processTitleRef.current,
+            colorAdaptCommandsRef.current,
+          );
+          const adaptedOutput = colorAdapterRef.current.transform(output, colorAdaptEnabled);
+          const rewrittenOutput = sgrLightRewriter.transform(adaptedOutput, isLightThemeRef.current);
+          replayTerm.write(rewrittenOutput, () => {
+            recordTerminalWriteCallback(writeMeasurement);
+            resolve();
+          });
+        });
+        recordPerf("xterm.replay.done", sessionId);
+        bumpTerminalWriteCounter(sessionId);
+        scheduleFullRefresh(replayTerm, [0, 48, 160]);
+        if (disposed || termDisposed || !term) return;
+        terminalInitialReplayMarkers.get(sessionId)?.dispose();
+        const replayMarker = replayTerm.registerMarker(0);
+        if (replayMarker) {
+          terminalInitialReplayMarkers.set(sessionId, replayMarker);
+        }
+        noteRestoreBoundaryTurn(sessionId);
+        void restoreTurnMarksFromTranscript(sessionId);
+      }
+      registerScrollListener(term);
+      registerCompositionGuard(term, fitAddon);
+      registerPaintFocusListeners(term);
+      registerSelectionCopyListener(term, sessionId);
+      removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, term, sessionId, forceWheelMouseReport);
+      removeWheelFocusGuard = registerTerminalWheelFocusGuard(term, sessionId);
+      removeFocusSync = registerTerminalFocusSync(term, sessionId);
+      attachTerminalKeyHandler(term);
+
+      // OSC 9988: mycmux HTML sidetab. Payload = file URL or absolute path.
+      // The TerminalPane listener consumes "mycmux:html-out" and opens/reloads
+      // a browser tab in the same pane. Returning true suppresses xterm display.
+      term.parser.registerOscHandler(9988, (payload) => {
+        try {
+          window.dispatchEvent(
+            new CustomEvent("mycmux:html-out", {
+              detail: { paneSessionId: sessionId, payload },
+            }),
+          );
+        } catch {
+          // non-critical
+        }
+        return true;
+      });
+
+      registerInputListeners(term);
+
+      registerScanListener(term);
+      await registerExitListener();
+
+      if (disposed || !term || !fitAddon) {
+        return;
+      }
+
+      fitAndSyncResize(term, fitAddon, true);
+      const cols = term.cols;
+      const rows = term.rows;
+      lastSentCols = cols;
+      lastSentRows = rows;
+      terminalSizeCache.set(sessionId, { cols, rows });
+
+      try {
+        registerResizeObserver(term, fitAddon);
+        startVisibilityObserver();
+        await attachFrontendChannel(cols, rows);
+        if (disposed || termDisposed) return;
+        sessionStarted = true;
+        startupSettleTimeout = setTimeout(() => {
+          settleStartupSession();
+        }, 250);
+      } catch (err) {
+        settleStartupSession();
+        console.error("[XTermWrapper] Failed to create session:", err);
+        term.writeln(`\r\n\x1b[31mFailed to start: ${err}\x1b[0m`);
+      }
+
+      if (!cfg && !fontSize && !fontFamily) {
+        ensureConfigLoaded().then(() => {
+          if (disposed || termDisposed || !term || !cachedConfig) return;
+          term.options.fontSize = fontSize ?? storeFontSize ?? cachedConfig.fontSize;
+          term.options.fontFamily = fontFamily ?? storeFontFamily ?? cachedConfig.fontFamily;
+          term.options.lineHeight = resolveTerminalLineHeight();
+          if (fitAddon) {
+            fitAndSyncResize(term, fitAddon, true);
+          }
+        });
+      }
+    }
+
+    void init();
+
+    return cleanup;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
+
+  const searchDecorations = useMemo(() => {
+    const match = storeTheme.terminal.selectionBackground;
+    const active = storeTheme.chrome.accent;
+    return {
+      matchBackground: match,
+      matchBorder: active,
+      matchOverviewRuler: active,
+      activeMatchBackground: active,
+      activeMatchBorder: active,
+      activeMatchColorOverviewRuler: active,
+    };
+  }, [storeTheme]);
+
+  const handleSearchChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setSearchQuery(val);
+    if (val && searchAddonRef.current) {
+      searchAddonRef.current.findNext(val, { decorations: searchDecorations });
+    } else if (searchAddonRef.current) {
+      searchAddonRef.current.clearDecorations();
+    }
+  }, [searchDecorations]);
+
+  const handleSearchKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      if (e.shiftKey) {
+        searchAddonRef.current?.findPrevious(searchQuery);
+      } else {
+        searchAddonRef.current?.findNext(searchQuery);
+      }
+    } else if (e.key === "Escape") {
+      setIsSearchOpen(false);
+      setSearchQuery("");
+      searchAddonRef.current?.clearDecorations();
+      containerRef.current?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")?.focus();
+    }
+  }, [searchQuery]);
+
+  const closeSearch = useCallback(() => {
+    setIsSearchOpen(false);
+    setSearchQuery("");
+    searchAddonRef.current?.clearDecorations();
+    containerRef.current?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")?.focus();
+  }, []);
+
+  const noteLookBackIntent = useCallback(() => {
+    turnChipVisibilityRef.current?.noteLookBackIntent();
+    refreshTurnChipRef.current();
+  }, []);
+
+  useEffect(() => setTranscriptPanelOpen(false), [sessionId]);
+
+  const setTurnListOpen = useCallback((open: boolean) => {
+    turnListOpenRef.current = open;
+    if (!open && turnListRetryTimerRef.current !== null) {
+      window.clearTimeout(turnListRetryTimerRef.current);
+      turnListRetryTimerRef.current = null;
+    }
+    turnChipVisibilityRef.current?.setPinned(open);
+    refreshTurnChipRef.current();
+  }, []);
+
+  return (
+    <div
+      style={{ position: "relative", width: "100%", height: "100%" }}
+      data-turn-marks={turnChipDiag.marks}
+      data-turn-buffer={turnChipDiag.buffer || undefined}
+      data-turn-mode={turnChipDiag.mode || undefined}
+      // Wheel-up is the look-back intent even when the app owns the mouse and
+      // the viewport cannot move (Claude Code, codex); see TURN_CHIP_INTENT_HOLD_MS.
+      onWheelCapture={(event) => {
+        if (event.deltaY < 0) noteLookBackIntent();
+      }}
+    >
+      {turnChipMounted && turnChip && (
+        <TerminalTurnChip
+          key={sessionId}
+          index={turnChip.index}
+          total={turnChip.total}
+          label={turnChip.label}
+          canPrev={turnChip.canPrev}
+          canNext={turnChip.canNext}
+          rows={turnListRows}
+          onPrev={() => jumpTurn(-1)}
+          onNext={() => jumpTurn(1)}
+          onJump={jumpTurnToMark}
+          onJumpLabel={jumpTurnByLabel}
+          onListOpen={openTurnList}
+          onListVisibilityChange={setTurnListOpen}
+          onHover={noteLookBackIntent}
+          leaving={turnChipLeaving}
+          mode={turnChip.mode}
+          onOpenPanel={turnChip.mode === "transcript" ? openTranscriptPanel : undefined}
+        />
+      )}
+      {transcriptPanelOpen && (
+        <TerminalTranscriptPanel
+          sessionId={sessionId}
+          tabId={tabIdForSession(sessionId)}
+          agentKind={agentKind ?? "none"}
+          onClose={closeTranscriptPanel}
+          onOpenDashboard={openTranscriptDashboard}
+        />
+      )}
+      {isSearchOpen && (
+        <div style={{
+          position: "absolute",
+          top: 8,
+          right: 16,
+          zIndex: 50,
+          background: "var(--cmux-surface, var(--cmux-bg, #1a1a1a))",
+          border: "1px solid var(--cmux-border, #333)",
+          borderRadius: 6,
+          padding: "4px 8px",
+          display: "flex",
+          gap: 8,
+          alignItems: "center",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
+          color: "var(--cmux-text, #ededed)",
+          fontFamily: "var(--cmux-font-ui)",
+          fontSize: 12
+        }}>
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            onChange={handleSearchChange}
+            onKeyDown={handleSearchKeyDown}
+            placeholder={terminalPaneStrings.searchPlaceholder}
+            style={{
+              background: "transparent",
+              border: "none",
+              color: "inherit",
+              outline: "none",
+              fontFamily: "inherit",
+              fontSize: "inherit",
+              width: 150
+            }}
+          />
+          <button onClick={() => searchAddonRef.current?.findPrevious(searchQuery)} style={searchBtnStyle}>^</button>
+          <button onClick={() => searchAddonRef.current?.findNext(searchQuery)} style={searchBtnStyle}>v</button>
+          <button onClick={closeSearch} style={searchBtnStyle}>x</button>
+        </div>
+      )}
+      <div
+        ref={containerRef}
+        style={{
+          width: "100%",
+          height: "100%",
+          overflow: "hidden",
+          position: "relative",
+          contain: "strict",
+          background: "var(--cmux-terminal-bg, var(--cmux-bg, #0a0a0a))",
+        }}
+      >
+      </div>
+    </div>
+  );
+});
+
+const searchBtnStyle = {
+  background: "transparent",
+  border: "none",
+  color: "inherit",
+  cursor: "pointer",
+  padding: "0 4px",
+  opacity: 0.7,
+  fontFamily: "inherit"
+};

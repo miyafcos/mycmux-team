@@ -1,0 +1,1876 @@
+import { create } from "zustand";
+import { getTabDisplayLabel } from "../lib/tabDisplayLabel";
+import { v4 as uuid } from "uuid";
+import type { ArtifactSourceKind, Pane, PaneTab, GridTemplateId, SuppressedAgentSession, Workspace } from "../types";
+import { isDeclaredTab, partitionTabsForRestore, type RestorablePaneTab } from "../lib/tabLifecycle";
+import type { PaneConfig } from "../lib/ipc";
+import { agentIdForSessionKind } from "../lib/agentSessionConfig";
+import { getGridTemplate } from "../lib/gridTemplates";
+import { getDefaultAgent } from "../lib/agents";
+import { sourceKindFromPath, sourceKindLabel } from "../lib/artifactSourceKind";
+import {
+  buildLaunchSpecEnv,
+  getCatalogEntry,
+  SHELL_TARGET,
+  type PaneLaunchSpec,
+} from "../lib/agentCatalog";
+import { makeSessionId } from "../lib/constants";
+import { portableSessionId } from "../lib/detachedPane";
+import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../lib/layoutColumns";
+import type { SplitInsertHint } from "../lib/layoutMetrics";
+import { useWorkspaceListStore } from "./workspaceListStore";
+import { usePaneMetadataStore } from "./paneMetadataStore";
+import { useUiStore } from "./uiStore";
+import { rewriteTabAgentSession, type TabAgentSessionRewrite } from "../lib/tabAgentSessionRewrite";
+import { seedTurnMarkSnapshots } from "../components/terminal/terminalTurnMarkers";
+import { applyStructuralActivation } from "../lib/focusController";
+import { onlineStrings } from "../components/online/onlineStrings";
+import { bump as bumpPaintStat } from "../lib/paintStats";
+import {
+  applyActiveTabFields,
+  clearPinIfMissing,
+  resolveMergeActiveTabId,
+  withPinnedTabFirst,
+} from "../lib/paneTabState";
+
+export { clearPinIfMissing, resolveMergeActiveTabId, withPinnedTabFirst } from "../lib/paneTabState";
+
+/**
+ * Workspace Layout Store - Manages panes within workspaces
+ * Handles pane CRUD and layout (splitColumns)
+ */
+
+function makeTab(
+  workspaceId: string,
+  paneId: string,
+  agentId: string,
+  type: PaneTab["type"] = "terminal",
+  options?: Partial<Pick<PaneTab, "id" | "sessionId" | "label" | "labelSource" | "displayName" | "displayNameSource" | "presetId" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "turnMarks" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "sourceMtimeMs" | "isDirty" | "reloadCounter" | "lifecycle" | "origin" | "declaredPrompt" | "declaredTarget">>,
+): PaneTab {
+  const tabId = options?.id ?? uuid();
+  return {
+    id: tabId,
+    sessionId: options?.sessionId ?? makeSessionId(workspaceId, `${paneId}-${tabId}`),
+    agentId,
+    label: options?.label,
+    labelSource: options?.labelSource,
+    displayName: options?.displayName,
+    displayNameSource: options?.displayNameSource,
+    type,
+    presetId: options?.presetId,
+    cwd: options?.cwd,
+    lastProcess: options?.lastProcess,
+    claudeSessionId: options?.claudeSessionId,
+    agentKind: options?.agentKind,
+    agentSessionId: options?.agentSessionId,
+    suppressedAgentSessions: options?.suppressedAgentSessions,
+    launchEnv: options?.launchEnv,
+    initialPrompt: options?.initialPrompt,
+    commandArgv: options?.commandArgv,
+    ephemeral: options?.ephemeral,
+    terminalSnapshot: options?.terminalSnapshot,
+    turnMarks: options?.turnMarks,
+    htmlPath: options?.htmlPath,
+    sourcePath: options?.sourcePath,
+    sourceKind: options?.sourceKind,
+    previewPath: options?.previewPath,
+    sourceMtimeMs: options?.sourceMtimeMs,
+    isDirty: options?.isDirty,
+    reloadCounter: options?.reloadCounter,
+    lifecycle: options?.lifecycle,
+    origin: options?.origin,
+    declaredPrompt: options?.declaredPrompt,
+    declaredTarget: options?.declaredTarget,
+  };
+}
+
+function normalizeRestoredAgentId(
+  agentId: string | null | undefined,
+): string {
+  return agentId || getDefaultAgent().id;
+}
+
+function restoreSuppressedAgentSessions(
+  values: PaneConfig["suppressed_agent_sessions"],
+): SuppressedAgentSession[] | undefined {
+  if (!values || values.length === 0) return undefined;
+  return values.map((value) => ({
+    agentKind: value.agent_kind,
+    agentSessionId: value.agent_session_id,
+    claudeSessionId: value.claude_session_id ?? undefined,
+  }));
+}
+
+interface BuildPanesResult {
+  panes: Pane[];
+  splitColumns: string[][];
+}
+
+type SplitInsertDirection = "left" | "right" | "up" | "down";
+
+function buildPanes(
+  workspaceId: string,
+  gridTemplateId: GridTemplateId,
+  paneSpecs?: Record<number, PaneLaunchSpec>,
+): BuildPanesResult {
+  const template = getGridTemplate(gridTemplateId);
+  const defaultAgentId = getDefaultAgent().id;
+  const panes: Pane[] = [];
+  const splitColumns: string[][] = [];
+
+  // Column-major fill: iterate columns first, then rows within each column
+  let paneIndex = 0;
+  for (let c = 0; c < template.cols; c++) {
+    const col: string[] = [];
+    for (let r = 0; r < template.rows; r++) {
+      if (paneIndex < template.paneCount) {
+        const paneId = uuid();
+        const spec = paneSpecs?.[paneIndex];
+        // Everything but a plain shell starts through the launcher, which reads
+        // the target out of launchEnv — the same path pane.spawn already uses.
+        const agentId = spec?.target === SHELL_TARGET ? SHELL_TARGET : defaultAgentId;
+        const launchEnv = buildLaunchSpecEnv(spec);
+        // A pane with nothing picked used to drop into the launcher's own
+        // ANSI menu inside the PTY. It opens the React picker instead; a
+        // chosen target (or a plain shell) still starts its process straight
+        // away, so only the undecided pane changes.
+        const tabType = launchEnv || spec?.target === SHELL_TARGET ? "terminal" : "launcher";
+        const tab = makeTab(
+          workspaceId,
+          paneId,
+          agentId,
+          tabType,
+          launchEnv
+            ? { launchEnv, agentKind: getCatalogEntry(spec?.target)?.agentKind }
+            : undefined,
+        );
+        panes.push({
+          id: paneId,
+          agentId,
+          sessionId: tab.sessionId,
+          tabs: [tab],
+          activeTabId: tab.id,
+        });
+        col.push(paneId);
+        paneIndex++;
+      }
+    }
+    if (col.length > 0) {
+      splitColumns.push(col);
+    }
+  }
+
+  return { panes, splitColumns };
+}
+
+function cloneSplitColumns(workspace: Workspace): string[][] {
+  const columns = workspace.splitColumns && workspace.splitColumns.length > 0
+    ? workspace.splitColumns
+    : [workspace.panes.map((pane) => pane.id)];
+  return reconcileSplitColumnsForPanes(
+    normalizeWorkspaceSplitColumns(columns.map((col) => [...col])),
+    workspace.panes.map((pane) => pane.id),
+  );
+}
+
+function normalizeWorkspaceSplitColumns(columns: string[][]): string[][] {
+  return normalizeReadableSplitColumns(columns);
+}
+
+function removePaneIdFromColumns(columns: string[][], paneId: string): string[][] {
+  return columns
+    .map((col) => col.filter((id) => id !== paneId))
+    .filter((col) => col.length > 0);
+}
+
+/**
+ * Which pane the new one was cut from, and on which side. The layout alone
+ * cannot recover this: a pane inserted between two others looks the same
+ * whether it came from the left neighbour or the right one, and guessing wrong
+ * halves the wrong pane.
+ */
+function splitInsertHint(
+  columns: string[][],
+  targetPaneId: string,
+  insertedPaneId: string,
+  direction: SplitInsertDirection,
+): SplitInsertHint | undefined {
+  return columns.some((column) => column.includes(targetPaneId))
+    ? {
+      insertedPaneId,
+      sourcePaneId: targetPaneId,
+      side: direction === "right" || direction === "down" ? "after" : "before",
+    }
+    : undefined;
+}
+
+function insertPaneIdIntoColumns(
+  columns: string[][],
+  targetPaneId: string,
+  insertedPaneId: string,
+  direction: SplitInsertDirection,
+): string[][] | null {
+  const next = columns.map((col) => [...col]);
+  const colIdx = next.findIndex((col) => col.includes(targetPaneId));
+  if (colIdx === -1) return null;
+
+  if (direction === "left" || direction === "right") {
+    next.splice(direction === "left" ? colIdx : colIdx + 1, 0, [insertedPaneId]);
+    return next;
+  }
+
+  const rowIdx = next[colIdx].indexOf(targetPaneId);
+  if (rowIdx === -1) return null;
+  next[colIdx].splice(direction === "up" ? rowIdx : rowIdx + 1, 0, insertedPaneId);
+  return next;
+}
+
+function makePaneFromTab(paneId: string, tab: PaneTab): Pane {
+  return {
+    id: paneId,
+    agentId: tab.agentId,
+    sessionId: tab.sessionId,
+    tabs: [tab],
+    activeTabId: tab.id,
+    cwd: tab.cwd,
+    lastProcess: tab.lastProcess,
+    claudeSessionId: tab.claudeSessionId,
+    agentKind: tab.agentKind,
+    agentSessionId: tab.agentSessionId,
+    suppressedAgentSessions: tab.suppressedAgentSessions,
+    launchEnv: tab.launchEnv,
+  };
+}
+
+function activeSessionIdForPane(pane: Pane | undefined): string | null {
+  if (!pane) return null;
+  const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0];
+  return activeTab?.sessionId ?? pane.sessionId ?? null;
+}
+
+function removeTabFromPane(pane: Pane, tabId: string): Pane | null {
+  const remaining = pane.tabs.filter((tab) => tab.id !== tabId);
+  if (remaining.length === 0) return null;
+  const preferredActiveId = pane.activeTabId === tabId
+    ? remaining[remaining.length - 1].id
+    : pane.activeTabId;
+  const activeTab = remaining.find((tab) => tab.id === preferredActiveId) ?? remaining[0];
+  return clearPinIfMissing(applyActiveTabFields({ ...pane, tabs: remaining }, activeTab));
+}
+
+interface DetachedTabPanes {
+  panes: Pane[];
+  /** True when the tab was the pane's last one, so the pane itself is gone. */
+  removedSourcePane: boolean;
+}
+
+/**
+ * Pull one tab out of its pane, dropping the pane entirely when that tab was
+ * the last one. Every move-a-tab-elsewhere action starts here.
+ */
+function detachTabFromPanes(panes: Pane[], sourcePaneId: string, tabId: string): DetachedTabPanes {
+  let removedSourcePane = false;
+  const nextPanes = panes.flatMap((pane) => {
+    if (pane.id !== sourcePaneId) return [pane];
+    const updated = removeTabFromPane(pane, tabId);
+    if (!updated) {
+      removedSourcePane = true;
+      return [];
+    }
+    return [updated];
+  });
+  return { panes: nextPanes, removedSourcePane };
+}
+
+/** A workspace that just lost its last pane to another workspace is discarded. */
+function removeWorkspaceIfEmpty(
+  listStore: { removeWorkspace: (workspaceId: string) => void },
+  workspaceId: string,
+  remainingPanes: Pane[],
+): void {
+  if (remainingPanes.length === 0) {
+    listStore.removeWorkspace(workspaceId);
+  }
+}
+
+function appendTabsToPane(pane: Pane, tabs: PaneTab[], activeTabId: string): Pane {
+  const nextTabs = [...pane.tabs, ...tabs];
+  const activeTab = nextTabs.find((tab) => tab.id === activeTabId) ?? tabs[0] ?? nextTabs[0];
+  return applyActiveTabFields({ ...pane, tabs: nextTabs }, activeTab);
+}
+
+function moveTabsToNewWorkspaceInStore(
+  sourceWorkspaceId: string,
+  sourcePaneId: string,
+  tabIds: readonly string[],
+  anchorTabId: string,
+  targetWorkspaceId: string,
+  workspaceName: string,
+  options?: { activate?: boolean },
+): boolean {
+  const listStore = useWorkspaceListStore.getState();
+  const sourceWorkspace = listStore.getWorkspace(sourceWorkspaceId);
+  if (!sourceWorkspace) return false;
+
+  const sourcePane = sourceWorkspace.panes.find((pane) => pane.id === sourcePaneId);
+  if (!sourcePane) return false;
+
+  const requestedTabIds = new Set(tabIds);
+  const movedTabs = sourcePane.tabs.filter((tab) => requestedTabIds.has(tab.id));
+  if (movedTabs.length === 0) return false;
+
+  let sourcePanes = sourceWorkspace.panes;
+  let removedSourcePane = false;
+  for (const tab of movedTabs) {
+    const detached = detachTabFromPanes(sourcePanes, sourcePaneId, tab.id);
+    sourcePanes = detached.panes;
+    removedSourcePane ||= detached.removedSourcePane;
+  }
+  const sourceSplitColumns = removedSourcePane
+    ? removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId)
+    : undefined;
+  const activeTabId = movedTabs.some((tab) => tab.id === anchorTabId)
+    ? anchorTabId
+    : movedTabs[0].id;
+  const newPane = appendTabsToPane(
+    makePaneFromTab(uuid(), movedTabs[0]),
+    movedTabs.slice(1),
+    activeTabId,
+  );
+
+  listStore._updateWorkspacePanes(
+    sourceWorkspaceId,
+    sourcePanes,
+    sourceSplitColumns ? normalizeWorkspaceSplitColumns(sourceSplitColumns) : sourceSplitColumns,
+    removedSourcePane,
+  );
+  listStore.createWorkspace(
+    workspaceName,
+    "1x1",
+    [newPane],
+    [[newPane.id]],
+    { id: targetWorkspaceId, activate: options?.activate },
+  );
+  removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
+  return true;
+}
+
+function isBrowserOnlyPane(pane: Pane): boolean {
+  return pane.tabs.length > 0 && pane.tabs.every((tab) => tab.type === "browser");
+}
+
+export interface BrowserPreviewInfo {
+  previewPath: string;
+  sourcePath?: string;
+  sourceKind?: ArtifactSourceKind;
+  sourceMtimeMs?: number | null;
+}
+
+function normalizeBrowserPath(path: string): string {
+  return path.replace(/\\/g, "/");
+}
+
+// Kept exported here because this is where callers have always imported it
+// from; the table itself lives in lib/artifactSourceKind.ts.
+export { sourceKindFromPath };
+
+function normalizeBrowserPreviewInfo(info: string | BrowserPreviewInfo): Required<BrowserPreviewInfo> {
+  if (typeof info === "string") {
+    const path = normalizeBrowserPath(info);
+    return {
+      previewPath: path,
+      sourcePath: path,
+      sourceKind: sourceKindFromPath(path),
+      // A bare path carries no timestamp, so this preview reloads as it
+      // always did.
+      sourceMtimeMs: null,
+    };
+  }
+  const previewPath = normalizeBrowserPath(info.previewPath);
+  const sourcePath = normalizeBrowserPath(info.sourcePath ?? info.previewPath);
+  return {
+    previewPath,
+    sourcePath,
+    sourceKind: info.sourceKind ?? sourceKindFromPath(sourcePath),
+    sourceMtimeMs: info.sourceMtimeMs ?? null,
+  };
+}
+
+function browserTabKey(tab: PaneTab): string | undefined {
+  return tab.sourcePath ?? tab.previewPath ?? tab.htmlPath;
+}
+
+function confirmDiscardBrowserChanges(tab: PaneTab): boolean {
+  if (!tab.isDirty) return true;
+  const label = getTabDisplayLabel(tab);
+  return window.confirm(`${label} has unsaved edits. Discard them and reload?`);
+}
+
+function makeBrowserTab(
+  workspaceId: string,
+  paneId: string,
+  agentId: string,
+  info: Required<BrowserPreviewInfo>,
+): PaneTab {
+  const fileLeaf = info.sourcePath.split(/[\\/]/).pop() || "artifact";
+  const labelPrefix = sourceKindLabel(info.sourceKind);
+  return makeTab(workspaceId, paneId, agentId, "browser", {
+    htmlPath: info.previewPath,
+    sourcePath: info.sourcePath,
+    sourceKind: info.sourceKind,
+    previewPath: info.previewPath,
+    sourceMtimeMs: info.sourceMtimeMs,
+    isDirty: false,
+    reloadCounter: 0,
+    label: `${labelPrefix} ${fileLeaf}`,
+  });
+}
+
+/**
+ * Whether opening `info` again has to throw the frame away.
+ *
+ * Clicking the same path twice used to re-read and re-lay-out the whole
+ * document, which on a 13 MB report is seconds of a frozen pane for a file
+ * that did not change. A file system that will not answer for its own
+ * timestamps reloads as it always did.
+ */
+export function browserTabNeedsReload(tab: PaneTab, info?: Required<BrowserPreviewInfo>): boolean {
+  if (!info) return true;
+  if (tab.isDirty) return true;
+  if (info.sourceMtimeMs == null || tab.sourceMtimeMs == null) return true;
+  if (info.sourceMtimeMs !== tab.sourceMtimeMs) return true;
+  return tab.previewPath !== info.previewPath || tab.sourcePath !== info.sourcePath;
+}
+
+function bumpBrowserTabReloadCounter(tab: PaneTab, info?: Required<BrowserPreviewInfo>): PaneTab {
+  return {
+    ...tab,
+    htmlPath: info?.previewPath ?? tab.htmlPath,
+    sourcePath: info?.sourcePath ?? tab.sourcePath,
+    sourceKind: info?.sourceKind ?? tab.sourceKind,
+    previewPath: info?.previewPath ?? tab.previewPath,
+    sourceMtimeMs: info?.sourceMtimeMs ?? tab.sourceMtimeMs,
+    isDirty: false,
+    reloadCounter: browserTabNeedsReload(tab, info)
+      ? (tab.reloadCounter ?? 0) + 1
+      : tab.reloadCounter ?? 0,
+  };
+}
+
+interface TerminalLaunchOptions {
+  agentId?: string;
+  label?: string;
+  labelSource?: PaneTab["labelSource"];
+  displayName?: string;
+  displayNameSource?: "auto";
+  cwd?: string;
+  agentKind?: PaneTab["agentKind"];
+  agentSessionId?: string;
+  launchEnv?: Record<string, string>;
+  /** Ownership metadata for dashboard grouping; socket spawns carry the caller's lineage. */
+  origin?: PaneTab["origin"];
+  initialPrompt?: string;
+  commandArgv?: string[];
+  /** Keep the tab out of layout persistence (see `PaneTab.ephemeral`). */
+  ephemeral?: boolean;
+  activate?: boolean;
+  /** Socket callers may activate a background workspace internally, but never
+   * replace the tab currently visible to the operator or retarget the keyboard. */
+  activationSource?: "human" | "socket";
+}
+
+interface DeclaredTabOptions {
+  label: string;
+  declaredPrompt?: string;
+  declaredTarget?: string;
+  origin?: PaneTab["origin"];
+}
+
+interface DeclaredLaunchOptions {
+  /** Socket callers must not replace the tab currently visible to the operator. */
+  activationSource?: "human" | "socket";
+}
+
+interface WebTabOptions {
+  presetId: string;
+  label: string;
+  activate?: boolean;
+  background?: boolean;
+  initialUrl?: string;
+}
+
+interface WorkspaceLayoutState {
+  // Pane operations
+  removePaneFromWorkspace: (workspaceId: string, paneId: string) => void;
+  addPaneToWorkspace: (
+    workspaceId: string,
+    afterPaneId: string,
+    direction: "right" | "down",
+    agentId?: string
+  ) => void;
+  addPaneToWorkspaceWithOptions: (
+    workspaceId: string,
+    afterPaneId: string,
+    direction: "right" | "down",
+    options: TerminalLaunchOptions,
+  ) => void;
+  
+  // Tab operations
+  addTabToPane: (workspaceId: string, paneId: string, agentId?: string, type?: PaneTab["type"]) => void;
+  addTabToPaneWithOptions: (
+    workspaceId: string,
+    paneId: string,
+    options: TerminalLaunchOptions,
+  ) => void;
+  addWebTabToPane: (workspaceId: string, paneId: string, options: WebTabOptions) => void;
+  declareTab: (workspaceId: string, paneId: string, options: DeclaredTabOptions) => PaneTab | null;
+  launchDeclaredTab: (
+    workspaceId: string,
+    paneId: string,
+    tabId: string,
+    options?: DeclaredLaunchOptions,
+  ) => RestorablePaneTab | null;
+  /**
+   * Open a browser tab rendering the given local HTML file in a right-side
+   * preview pane. Reuse the workspace preview pane and reload existing tabs.
+   */
+  openOrReloadHtmlPreviewPane: (workspaceId: string, sourcePaneId: string, info: string | BrowserPreviewInfo) => void;
+  openOnlinePanel: (workspaceId: string, sourcePaneId: string) => void;
+  setBrowserTabDirty: (workspaceId: string, paneId: string, tabId: string, isDirty: boolean) => void;
+  refreshBrowserTabPreview: (workspaceId: string, paneId: string, tabId: string, info: BrowserPreviewInfo) => void;
+  removeTabFromPane: (workspaceId: string, paneId: string, tabId: string) => void;
+  setActivePaneTab: (workspaceId: string, paneId: string, tabId: string) => void;
+  setTabDisplayName: (workspaceId: string, paneId: string, tabId: string, name: string | undefined) => void;
+  setTabLabel: (
+    workspaceId: string,
+    paneId: string,
+    tabId: string,
+    label: string | undefined,
+    source?: "user" | "ai",
+  ) => void;
+  /**
+   * Toggle the pane's single pinned tab. Pinning never changes `activeTabId`
+   * (pinning must not steal focus); it only moves the tab to index 0 and makes
+   * it win the drag-merge active-tab contest.
+   */
+  togglePaneTabPin: (workspaceId: string, paneId: string, tabId: string) => void;
+  /**
+   * Drag reorder inside one pane's tab strip. `insertIndex` is a slot measured
+   * against the pane's *current* tabs array (0..tabs.length): the tab lands
+   * before the tab currently at that slot, so dropping a tab on its own slot
+   * (or the one right after it) is a no-op. `activeTabId` never changes —
+   * reordering must not switch which terminal is displayed.
+   *
+   * Pinned-tab rules (pin means 先頭固定, `tabs[0]`):
+   * - a non-pinned tab can never take slot 0 while a live pin exists; it
+   *   clamps to slot 1
+   * - dragging the pinned tab itself off the head unpins it. Pinning is a user
+   *   toggle, and physically dragging that tab elsewhere is the same explicit
+   *   choice, so the move wins over the pin instead of being silently refused.
+   *   Dropping it back on slot 0 keeps the pin.
+   */
+  reorderPaneTab: (
+    workspaceId: string,
+    paneId: string,
+    tabId: string,
+    insertIndex: number,
+  ) => void;
+  setTabAgentId: (workspaceId: string, paneId: string, tabId: string, agentId: string) => void;
+  /**
+   * Self-healing clear for a downgraded restore: find the tab whose
+   * `sessionId` matches the terminal session that just downgraded (across
+   * all workspaces/panes, since the caller only has the PTY session_id) and
+   * drop its stale claudeSessionId / agentKind / agentSessionId so the same
+   * "agent-restore-downgraded" warning cannot recur on the next launch.
+   * No-ops while the pane reports agentStatus === "waiting" (live-session
+   * safety valve — see the v0.13.4 しおり消失 postmortem). Returns false only
+   * when that guard skipped the clear.
+   */
+  clearTabAgentSessionBySessionId: (terminalSessionId: string) => boolean;
+  /**
+   * Fallback-downgrade companion to the clear above: the restore resumed a
+   * different (recovered) conversation id, so rewrite the tab's persisted
+   * markers to that id instead of leaving them on the dead original.
+   */
+  repointTabAgentSessionBySessionId: (
+    terminalSessionId: string,
+    kind: string,
+    fallbackSessionId: string,
+  ) => void;
+  moveTabToPane: (
+    sourceWorkspaceId: string,
+    sourcePaneId: string,
+    tabId: string,
+    targetWorkspaceId: string,
+    targetPaneId: string,
+  ) => void;
+  moveTabToSplit: (
+    sourceWorkspaceId: string,
+    sourcePaneId: string,
+    tabId: string,
+    targetWorkspaceId: string,
+    targetPaneId: string,
+    direction: SplitInsertDirection,
+  ) => void;
+  movePaneToPane: (
+    sourceWorkspaceId: string,
+    sourcePaneId: string,
+    targetWorkspaceId: string,
+    targetPaneId: string,
+  ) => void;
+  insertRestoredPaneToSplit: (
+    workspaceId: string, targetPaneId: string, pane: Pane, direction: SplitInsertDirection,
+  ) => boolean;
+  movePaneToSplit: (
+    sourceWorkspaceId: string,
+    sourcePaneId: string,
+    targetWorkspaceId: string,
+    targetPaneId: string,
+    direction: SplitInsertDirection,
+  ) => void;
+  movePaneToPosition: (
+    workspaceId: string,
+    paneId: string,
+    toColumn: number,
+    toRow: number,
+  ) => string[][] | null;
+  moveTabToNewWorkspace: (
+    sourceWorkspaceId: string,
+    sourcePaneId: string,
+    tabId: string,
+    targetWorkspaceId: string,
+    workspaceName: string,
+    options?: { activate?: boolean },
+  ) => boolean;
+  moveTabsToNewWorkspace: (
+    sourceWorkspaceId: string,
+    sourcePaneId: string,
+    tabIds: readonly string[],
+    anchorTabId: string,
+    targetWorkspaceId: string,
+    workspaceName: string,
+    options?: { activate?: boolean },
+  ) => boolean;
+  movePaneToNewWorkspace: (
+    sourceWorkspaceId: string,
+    sourcePaneId: string,
+    targetWorkspaceId: string,
+    workspaceName: string,
+    options?: { activate?: boolean },
+  ) => boolean;
+  
+  // Helper to build initial panes for new workspace
+  buildInitialPanes: (
+    workspaceId: string,
+    gridTemplateId: GridTemplateId,
+    paneSpecs?: Record<number, PaneLaunchSpec>
+  ) => BuildPanesResult;
+
+  restorePanes: (
+    workspaceId: string,
+    configs: PaneConfig[],
+    savedSplitColumns: number[][] | null,
+    gridTemplateId: GridTemplateId,
+  ) => BuildPanesResult;
+}
+
+export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
+  buildInitialPanes: (workspaceId, gridTemplateId, paneSpecs) => {
+    return buildPanes(workspaceId, gridTemplateId, paneSpecs);
+  },
+
+  restorePanes: (workspaceId, configs, savedSplitColumns, gridTemplateId) => {
+    const defaultAgentId = getDefaultAgent().id;
+    const paneByConfigIndex = new Map<number, Pane>();
+    const occupiedSessionIds = new Set(
+      useWorkspaceListStore.getState().workspaces.flatMap((workspace) =>
+        workspace.panes.flatMap((pane) => pane.tabs.map((tab) => tab.sessionId))),
+    );
+    const panes = configs.map((pc, configIndex): Pane | null => {
+      const paneId = pc.pane_id ?? uuid();
+      const tabs = pc.tabs && pc.tabs.length > 0
+          ? pc.tabs.map((tabConfig) => {
+            const restoredTabType = tabConfig.type as PaneTab["type"] | null | undefined;
+            const isDeclaredRestoredTab = tabConfig.lifecycle === "declared";
+            const isWebRestoredTab = restoredTabType === "web" || restoredTabType === "browser";
+            const tabClaudeSessionId = isDeclaredRestoredTab || isWebRestoredTab
+              ? undefined
+              : tabConfig.claude_session_id ?? undefined;
+            const tabAgentKind = isDeclaredRestoredTab || isWebRestoredTab
+              ? undefined
+              : tabConfig.agent_kind
+                ?? (tabClaudeSessionId ? "claude" : undefined);
+            const tabAgentSessionId = isDeclaredRestoredTab || isWebRestoredTab
+              ? undefined
+              : tabConfig.agent_session_id
+                ?? tabClaudeSessionId;
+            const tabAgentId = normalizeRestoredAgentId(
+              tabConfig.agent_id || pc.agent_id,
+            ) || defaultAgentId;
+            const tab = makeTab(
+              workspaceId,
+              paneId,
+              tabAgentId,
+              restoredTabType ?? "terminal",
+              {
+                id: tabConfig.tab_id ?? undefined,
+                sessionId: portableSessionId(tabConfig.session_id, occupiedSessionIds),
+                label: restoredTabType === "online"
+                  ? onlineStrings.panelTitle
+                  : tabConfig.label ?? tabConfig.preset_id ?? undefined,
+                labelSource: restoredTabType === "online"
+                  ? undefined
+                  : tabConfig.label_source ?? undefined,
+                displayName: tabConfig.display_name ?? undefined,
+                displayNameSource: tabConfig.display_name_source ?? undefined,
+                presetId: tabConfig.preset_id ?? undefined,
+                htmlPath: tabConfig.html_path ?? undefined,
+                sourcePath: tabConfig.source_path ?? undefined,
+                sourceKind: tabConfig.source_kind ?? undefined,
+                previewPath: tabConfig.preview_path ?? undefined,
+                cwd: isWebRestoredTab ? undefined : tabConfig.cwd ?? pc.cwd ?? undefined,
+                claudeSessionId: tabClaudeSessionId,
+                agentKind: tabAgentKind,
+                agentSessionId: tabAgentSessionId,
+                suppressedAgentSessions: isDeclaredRestoredTab || isWebRestoredTab
+                  ? undefined
+                  : restoreSuppressedAgentSessions(tabConfig.suppressed_agent_sessions),
+                launchEnv: isWebRestoredTab ? undefined : tabConfig.launch_env ?? pc.launch_env ?? undefined,
+                terminalSnapshot: isDeclaredRestoredTab || isWebRestoredTab ? undefined : tabConfig.terminal_snapshot ?? undefined,
+                turnMarks: isDeclaredRestoredTab || isWebRestoredTab ? undefined : tabConfig.turn_marks ?? undefined,
+                lifecycle: tabConfig.lifecycle ?? undefined,
+                origin: tabConfig.origin
+                  ? { kind: tabConfig.origin.kind, parentTabId: tabConfig.origin.parent_tab_id ?? undefined }
+                  : undefined,
+                declaredPrompt: tabConfig.declared_prompt ?? undefined,
+                declaredTarget: tabConfig.declared_target ?? undefined,
+              },
+            );
+            occupiedSessionIds.add(tab.sessionId);
+            if (!isDeclaredRestoredTab && tab.turnMarks && tab.turnMarks.length > 0) {
+              seedTurnMarkSnapshots(tab.sessionId, tab.turnMarks);
+            }
+            return tab;
+          })
+        : [makeTab(workspaceId, paneId, normalizeRestoredAgentId(pc.agent_id) || defaultAgentId, "terminal", {
+            label: pc.label ?? undefined,
+            cwd: pc.cwd ?? undefined,
+            launchEnv: pc.launch_env ?? undefined,
+          })];
+      const partition = partitionTabsForRestore(tabs);
+      if (partition.quarantined.length > 0) {
+        console.warn(`[restore] quarantined ${partition.quarantined.length} tab(s) with an unknown lifecycle`);
+      }
+      const quarantinedIds = new Set(partition.quarantined.map((tab) => tab.id));
+      const hydratedTabs = tabs.filter((tab) => !quarantinedIds.has(tab.id));
+      const activeTab = hydratedTabs.find((tab) => tab.id === pc.active_tab_id) ?? hydratedTabs[0];
+      if (!activeTab) return null;
+      const activeTabDeclared = isDeclaredTab(activeTab);
+      const agentId = activeTab?.agentId || normalizeRestoredAgentId(pc.agent_id) || defaultAgentId;
+      const pane = withPinnedTabFirst({
+        id: paneId,
+        agentId,
+        sessionId: activeTab.sessionId,
+        tabs: hydratedTabs,
+        activeTabId: activeTab.id,
+        label: pc.label ?? undefined,
+        cwd: activeTab.cwd ?? pc.cwd ?? undefined,
+        claudeSessionId: activeTabDeclared
+          ? undefined
+          : activeTab.claudeSessionId,
+        agentKind: activeTabDeclared
+          ? undefined
+          : activeTab.agentKind,
+        agentSessionId: activeTabDeclared
+          ? undefined
+          : activeTab.agentSessionId,
+        suppressedAgentSessions: activeTabDeclared
+          ? undefined
+          : activeTab.suppressedAgentSessions,
+        launchEnv: activeTab.launchEnv ?? pc.launch_env ?? undefined,
+        pinnedTabId: hydratedTabs.some((tab) => tab.id === pc.pinned_tab_id)
+          ? pc.pinned_tab_id ?? undefined
+          : undefined,
+      });
+      paneByConfigIndex.set(configIndex, pane);
+      return pane;
+    }).filter((pane): pane is Pane => pane !== null);
+
+    let splitColumns: string[][];
+    if (savedSplitColumns && savedSplitColumns.length > 0) {
+      splitColumns = savedSplitColumns
+        .map((col) => col
+          .map((idx) => paneByConfigIndex.get(idx)?.id)
+          .filter((id): id is string => id !== undefined))
+        .filter((col) => col.length > 0);
+    } else {
+      // Column-major fallback from grid template
+      const template = getGridTemplate(gridTemplateId);
+      splitColumns = [];
+      let idx = 0;
+      for (let c = 0; c < template.cols && idx < panes.length; c++) {
+        const col: string[] = [];
+        for (let r = 0; r < template.rows && idx < panes.length; r++) {
+          col.push(panes[idx].id);
+          idx++;
+        }
+        if (col.length > 0) splitColumns.push(col);
+      }
+      // Panes beyond the template get their own column instead of being pushed
+      // into the last one. gridTemplateId only records the template picked when
+      // the workspace was created — splitting panes never updates it — so a
+      // workspace can legitimately be "1x1" with five panes. Appending to the
+      // last column collapsed every one of them into a single stack on restore.
+      for (; idx < panes.length; idx++) {
+        splitColumns.push([panes[idx].id]);
+      }
+    }
+
+    return {
+      panes,
+      splitColumns: normalizeReadableSplitColumns(splitColumns),
+    };
+  },
+
+  removePaneFromWorkspace: (workspaceId, paneId) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+    if (workspace.panes.length <= 1) return; // never remove last pane
+
+    const uiState = useUiStore.getState();
+    if (uiState.zoomedPaneId === paneId) {
+      uiState.setZoomedPaneId(null);
+    }
+
+    const newPanes = workspace.panes.filter((p) => p.id !== paneId);
+
+    // Update splitColumns if present
+    let newSplitColumns = workspace.splitColumns;
+    if (newSplitColumns) {
+      newSplitColumns = newSplitColumns
+        .map((col) => col.filter((id) => id !== paneId))
+        .filter((col) => col.length > 0);
+    }
+
+    useWorkspaceListStore.getState()._updateWorkspacePanes(
+      workspaceId,
+      newPanes,
+      newSplitColumns ? normalizeWorkspaceSplitColumns(newSplitColumns) : newSplitColumns,
+      true,
+    );
+  },
+
+  addPaneToWorkspace: (workspaceId, afterPaneId, direction, agentId) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    // Always use default agent for new split panes (unless explicitly specified)
+    const agId = agentId ?? getDefaultAgent().id;
+    const paneId = uuid();
+    // Nothing was picked for this split, so it opens the launcher rather
+    // than a PTY nobody has told what to run.
+    const tab = makeTab(workspaceId, paneId, agId, "launcher");
+    const newPane: Pane = {
+      id: paneId,
+      agentId: agId,
+      sessionId: tab.sessionId,
+      tabs: [tab],
+      activeTabId: tab.id,
+    };
+    const newPanes = [...workspace.panes, newPane];
+
+    // Initialize splitColumns if not present (single column with all panes)
+    const existingColumns = cloneSplitColumns(workspace);
+    // A missing anchor leaves the columns alone; _updateWorkspacePanes then
+    // appends the new pane to the last column.
+    const newSplitColumns = insertPaneIdIntoColumns(existingColumns, afterPaneId, paneId, direction)
+      ?? existingColumns;
+
+    useWorkspaceListStore.getState()._updateWorkspacePanes(
+      workspaceId,
+      newPanes,
+      normalizeWorkspaceSplitColumns(newSplitColumns),
+      true,
+      splitInsertHint(existingColumns, afterPaneId, paneId, direction),
+    );
+    applyStructuralActivation(newPane.sessionId);
+  },
+
+  addPaneToWorkspaceWithOptions: (workspaceId, afterPaneId, direction, options) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    const agId = options.agentId ?? getDefaultAgent().id;
+    const paneId = uuid();
+    const tab = makeTab(workspaceId, paneId, agId, "terminal", {
+      label: options.label,
+      labelSource: options.labelSource,
+      displayName: options.displayName,
+      displayNameSource: options.displayNameSource,
+      cwd: options.cwd,
+      agentKind: options.agentKind,
+      agentSessionId: options.agentSessionId,
+      launchEnv: options.launchEnv,
+      origin: options.origin,
+      initialPrompt: options.initialPrompt,
+      commandArgv: options.commandArgv,
+      ephemeral: options.ephemeral,
+    });
+    const newPane: Pane = {
+      id: paneId,
+      agentId: agId,
+      sessionId: tab.sessionId,
+      label: options.label,
+      cwd: options.cwd,
+      agentKind: options.agentKind,
+      agentSessionId: options.agentSessionId,
+      launchEnv: options.launchEnv,
+      tabs: [tab],
+      activeTabId: tab.id,
+    };
+    const newPanes = [...workspace.panes, newPane];
+    const existingColumns = cloneSplitColumns(workspace);
+    const newSplitColumns = insertPaneIdIntoColumns(existingColumns, afterPaneId, paneId, direction)
+      ?? existingColumns;
+
+    useWorkspaceListStore.getState()._updateWorkspacePanes(
+      workspaceId,
+      newPanes,
+      normalizeWorkspaceSplitColumns(newSplitColumns),
+      true,
+      splitInsertHint(existingColumns, afterPaneId, paneId, direction),
+    );
+    if (options.activate !== false && options.activationSource !== "socket") {
+      applyStructuralActivation(newPane.sessionId);
+    }
+  },
+
+  openOnlinePanel: (workspaceId, sourcePaneId) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+    const sourcePane = workspace.panes.find((pane) => pane.id === sourcePaneId) ?? workspace.panes[0];
+    if (!sourcePane) return;
+
+    const existingPane = workspace.panes.find((pane) =>
+      pane.tabs.some((tab) => tab.type === "online"),
+    );
+    const existingTab = existingPane?.tabs.find((tab) => tab.type === "online");
+    if (existingPane && existingTab) {
+      const normalizedTab = { ...existingTab, label: onlineStrings.panelTitle };
+      const newPanes = workspace.panes.map((pane) =>
+        pane.id === existingPane.id
+          ? applyActiveTabFields(
+              { ...pane, tabs: pane.tabs.map((tab) => tab.id === existingTab.id ? normalizedTab : tab) },
+              normalizedTab,
+            )
+          : pane,
+      );
+      useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+      applyStructuralActivation(existingTab.sessionId);
+      useUiStore.getState().setZoomedPaneId(null);
+      return;
+    }
+
+    const paneId = uuid();
+    const onlineTab = makeTab(workspaceId, paneId, sourcePane.agentId, "online", {
+      label: onlineStrings.panelTitle,
+    });
+    const onlinePane: Pane = {
+      id: paneId,
+      agentId: onlineTab.agentId,
+      sessionId: onlineTab.sessionId,
+      tabs: [onlineTab],
+      activeTabId: onlineTab.id,
+    };
+    const baseColumns = cloneSplitColumns(workspace);
+    const nextSplitColumns =
+      insertPaneIdIntoColumns(baseColumns, sourcePane.id, onlinePane.id, "right")
+      ?? [...baseColumns, [onlinePane.id]];
+    useWorkspaceListStore.getState()._updateWorkspacePanes(
+      workspaceId,
+      [...workspace.panes, onlinePane],
+      normalizeWorkspaceSplitColumns(nextSplitColumns),
+      true,
+      splitInsertHint(baseColumns, sourcePane.id, onlinePane.id, "right"),
+    );
+    applyStructuralActivation(onlineTab.sessionId);
+    useUiStore.getState().setZoomedPaneId(null);
+  },
+
+  addTabToPane: (workspaceId, paneId, agentId, type = "terminal") => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    const newPanes = workspace.panes.map((p) => {
+      if (p.id !== paneId) return p;
+      const agId = agentId ?? p.agentId;
+      const tab = makeTab(workspaceId, paneId, agId, type);
+      applyStructuralActivation(tab.sessionId);
+      return {
+        ...p,
+        tabs: [...p.tabs, tab],
+        activeTabId: tab.id,
+        sessionId: tab.sessionId,
+      };
+    });
+
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+  },
+
+  addWebTabToPane: (workspaceId, paneId, options) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    let activatedSessionId: string | undefined;
+    const newPanes = workspace.panes.map((pane) => {
+      if (pane.id !== paneId) return pane;
+      const tab = makeTab(workspaceId, paneId, "web", "web", {
+        label: options.label,
+        presetId: options.presetId,
+      });
+      tab.webBackground = options.background;
+      tab.webInitialUrl = options.initialUrl;
+      activatedSessionId = tab.sessionId;
+      return appendTabsToPane(pane, [tab], options.activate === false ? pane.activeTabId : tab.id);
+    });
+
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+    if (options.activate !== false) applyStructuralActivation(activatedSessionId);
+  },
+
+  addTabToPaneWithOptions: (workspaceId, paneId, options) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    const targetPane = workspace.panes.find((pane) => pane.id === paneId);
+    if (!targetPane) return;
+
+    const agentId = options.agentId ?? targetPane.agentId;
+    const tab = makeTab(workspaceId, paneId, agentId, "terminal", {
+      label: options.label,
+      labelSource: options.labelSource,
+      displayName: options.displayName,
+      displayNameSource: options.displayNameSource,
+      cwd: options.cwd,
+      agentKind: options.agentKind,
+      agentSessionId: options.agentSessionId,
+      launchEnv: options.launchEnv,
+      origin: options.origin,
+      initialPrompt: options.initialPrompt,
+      commandArgv: options.commandArgv,
+      ephemeral: options.ephemeral,
+    });
+    const isVisibleWorkspace = useWorkspaceListStore.getState().activeWorkspaceId === workspaceId;
+    const shouldActivateTab = options.activate !== false
+      && (options.activationSource !== "socket" || !isVisibleWorkspace);
+    const newPanes = workspace.panes.map((pane) => {
+      if (pane.id !== paneId) return pane;
+      const nextPane = appendTabsToPane(
+        pane,
+        [tab],
+        shouldActivateTab ? tab.id : pane.activeTabId,
+      );
+      // The handoff environment and cwd belong to the new tab only. Keeping
+      // the pane fallback unchanged prevents an older sibling tab from
+      // inheriting one-shot handoff variables when the user switches back.
+      return {
+        ...nextPane,
+        cwd: pane.cwd,
+        lastProcess: pane.lastProcess,
+        launchEnv: pane.launchEnv,
+      };
+    });
+
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+    if (shouldActivateTab && options.activationSource !== "socket") {
+      applyStructuralActivation(tab.sessionId);
+    }
+  },
+
+  declareTab: (workspaceId, paneId, options) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    const pane = workspace?.panes.find((candidate) => candidate.id === paneId);
+    if (!workspace || !pane || !options.label.trim()) return null;
+    const tab = makeTab(workspaceId, paneId, pane.agentId, "terminal", {
+      label: options.label.trim(),
+      claudeSessionId: undefined,
+      agentKind: undefined,
+      agentSessionId: undefined,
+      suppressedAgentSessions: undefined,
+      terminalSnapshot: undefined,
+      lifecycle: "declared",
+      declaredPrompt: options.declaredPrompt,
+      declaredTarget: options.declaredTarget,
+      origin: options.origin,
+    });
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, workspace.panes.map((candidate) => (
+      candidate.id === paneId ? { ...candidate, tabs: [...candidate.tabs, tab] } : candidate
+    )));
+    return tab;
+  },
+
+  launchDeclaredTab: (workspaceId, paneId, tabId, options = {}) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    const pane = workspace?.panes.find((candidate) => candidate.id === paneId);
+    const declared = pane?.tabs.find((candidate) => candidate.id === tabId);
+    if (!workspace || !pane || !declared || !isDeclaredTab(declared)) return null;
+    const target = declared.declaredTarget === "claude" || declared.declaredTarget === "codex"
+      ? declared.declaredTarget
+      : undefined;
+    const launched: RestorablePaneTab = {
+      id: declared.id,
+      sessionId: declared.sessionId,
+      agentId: target ? agentIdForSessionKind(target) ?? declared.agentId : declared.agentId,
+      label: declared.label,
+      type: "terminal",
+      cwd: declared.cwd,
+      agentKind: target,
+      origin: declared.origin,
+      initialPrompt: declared.declaredPrompt,
+    };
+    const shouldActivateTab = options.activationSource !== "socket"
+      || useWorkspaceListStore.getState().activeWorkspaceId !== workspaceId;
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, workspace.panes.map((candidate) => {
+      if (candidate.id !== paneId) return candidate;
+      const nextPane = { ...candidate, tabs: candidate.tabs.map((tab) => tab.id === tabId ? launched : tab) };
+      return shouldActivateTab ? applyActiveTabFields(nextPane, launched) : nextPane;
+    }));
+    return launched;
+  },
+
+  openOrReloadHtmlPreviewPane: (workspaceId, sourcePaneId, previewInfo) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    const info = normalizeBrowserPreviewInfo(previewInfo);
+    const key = info.sourcePath;
+    const sourcePane = workspace.panes.find((p) => p.id === sourcePaneId) ?? workspace.panes[0];
+    if (!sourcePane) return;
+
+    const previewPane = workspace.panes.find(isBrowserOnlyPane);
+    const existingPreviewTab = previewPane?.tabs.find(
+      (tab) => tab.type === "browser" && browserTabKey(tab) === key,
+    );
+
+    if (previewPane && existingPreviewTab) {
+      if (!confirmDiscardBrowserChanges(existingPreviewTab)) return;
+      const updatedTab = bumpBrowserTabReloadCounter(existingPreviewTab, info);
+      const newPanes = workspace.panes.map((pane) => {
+        if (pane.id !== previewPane.id) return pane;
+        return applyActiveTabFields({
+          ...pane,
+          tabs: pane.tabs.map((tab) => tab.id === updatedTab.id ? updatedTab : tab),
+        }, updatedTab);
+      });
+      useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+      applyStructuralActivation(updatedTab.sessionId);
+      useUiStore.getState().setZoomedPaneId(null);
+      return;
+    }
+
+    const existingMixedPane = workspace.panes.find(
+      (pane) => !isBrowserOnlyPane(pane)
+        && pane.tabs.some((tab) => tab.type === "browser" && browserTabKey(tab) === key),
+    );
+    const existingMixedTab = existingMixedPane?.tabs.find(
+      (tab) => tab.type === "browser" && browserTabKey(tab) === key,
+    );
+    if (existingMixedTab && !confirmDiscardBrowserChanges(existingMixedTab)) return;
+    const tabToOpen = existingMixedTab ? bumpBrowserTabReloadCounter(existingMixedTab, info) : null;
+
+    if (previewPane) {
+      const openedTab = tabToOpen
+        ?? makeBrowserTab(workspaceId, previewPane.id, previewPane.agentId, info);
+      const newPanes = workspace.panes.flatMap((pane) => {
+        if (existingMixedPane && existingMixedTab && pane.id === existingMixedPane.id) {
+          const nextPane = removeTabFromPane(pane, existingMixedTab.id);
+          return nextPane ? [nextPane] : [];
+        }
+        if (pane.id !== previewPane.id) return [pane];
+        return [appendTabsToPane(pane, [openedTab], openedTab.id)];
+      });
+      useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+      applyStructuralActivation(openedTab.sessionId);
+      useUiStore.getState().setZoomedPaneId(null);
+      return;
+    }
+
+    const paneId = uuid();
+    const openedTab = tabToOpen
+      ?? makeBrowserTab(workspaceId, paneId, sourcePane.agentId, info);
+    const newPreviewPane: Pane = {
+      id: paneId,
+      agentId: openedTab.agentId,
+      sessionId: openedTab.sessionId,
+      tabs: [openedTab],
+      activeTabId: openedTab.id,
+    };
+    const newPanes = workspace.panes.flatMap((pane) => {
+      if (existingMixedPane && existingMixedTab && pane.id === existingMixedPane.id) {
+        const nextPane = removeTabFromPane(pane, existingMixedTab.id);
+        return nextPane ? [nextPane] : [];
+      }
+      return [pane];
+    }).concat(newPreviewPane);
+    const baseColumns = cloneSplitColumns(workspace);
+    const nextSplitColumns =
+      insertPaneIdIntoColumns(baseColumns, sourcePane.id, newPreviewPane.id, "right")
+      ?? [...baseColumns, [newPreviewPane.id]];
+
+    useWorkspaceListStore.getState()._updateWorkspacePanes(
+      workspaceId,
+      newPanes,
+      normalizeWorkspaceSplitColumns(nextSplitColumns),
+      true,
+      splitInsertHint(baseColumns, sourcePane.id, newPreviewPane.id, "right"),
+    );
+    applyStructuralActivation(openedTab.sessionId);
+    useUiStore.getState().setZoomedPaneId(null);
+  },
+  setBrowserTabDirty: (workspaceId, paneId, tabId, isDirty) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+    const currentTab = workspace.panes
+      .find((pane) => pane.id === paneId)
+      ?.tabs.find((tab) => tab.id === tabId);
+    if (!currentTab || currentTab.type !== "browser" || (currentTab.isDirty ?? false) === isDirty) {
+      return;
+    }
+
+    const newPanes = workspace.panes.map((pane) => {
+      if (pane.id !== paneId) return pane;
+      return {
+        ...pane,
+        tabs: pane.tabs.map((tab) =>
+          tab.id === tabId && tab.type === "browser" ? { ...tab, isDirty } : tab
+        ),
+      };
+    });
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+  },
+  refreshBrowserTabPreview: (workspaceId, paneId, tabId, previewInfo) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    const info = normalizeBrowserPreviewInfo(previewInfo);
+    const newPanes = workspace.panes.map((pane) => {
+      if (pane.id !== paneId) return pane;
+      const nextTabs = pane.tabs.map((tab) =>
+        tab.id === tabId && tab.type === "browser"
+          ? bumpBrowserTabReloadCounter(tab, info)
+          : tab
+      );
+      const activeTab = nextTabs.find((tab) => tab.id === pane.activeTabId) ?? nextTabs[0];
+      return activeTab ? applyActiveTabFields({ ...pane, tabs: nextTabs }, activeTab) : pane;
+    });
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+  },
+  removeTabFromPane: (workspaceId, paneId, tabId) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    let removedPane = false;
+    let nextActivePaneId: string | null | undefined;
+    const currentActivePaneId = useUiStore.getState().activePaneId;
+    const sourcePaneIndex = workspace.panes.findIndex((pane) => pane.id === paneId);
+    const newPanes = workspace.panes.flatMap((p) => {
+      if (p.id !== paneId) return [p];
+      const removedTab = p.tabs.find((t) => t.id === tabId);
+      const removedActiveTarget = Boolean(
+        currentActivePaneId
+        && removedTab
+        && (removedTab.sessionId === currentActivePaneId || p.sessionId === currentActivePaneId),
+      );
+      const remaining = p.tabs.filter((t) => t.id !== tabId);
+      if (remaining.length === 0) {
+        if (workspace.panes.length <= 1) {
+          return [p];
+        }
+        removedPane = true;
+        return [];
+      }
+      const newActiveId = p.activeTabId === tabId ? remaining[remaining.length - 1].id : p.activeTabId;
+      const activeTab = remaining.find((t) => t.id === newActiveId) ?? remaining[0];
+      if (removedActiveTarget) {
+        nextActivePaneId = activeTab.sessionId;
+      }
+      return [clearPinIfMissing(applyActiveTabFields({ ...p, tabs: remaining }, activeTab))];
+    });
+
+    const nextSplitColumns = removedPane && workspace.splitColumns
+      ? workspace.splitColumns
+          .map((col) => col.filter((id) => id !== paneId))
+          .filter((col) => col.length > 0)
+      : undefined;
+
+    useWorkspaceListStore.getState()._updateWorkspacePanes(
+      workspaceId,
+      newPanes,
+      nextSplitColumns ? normalizeWorkspaceSplitColumns(nextSplitColumns) : nextSplitColumns,
+      removedPane,
+    );
+    if (nextActivePaneId === undefined && removedPane) {
+      const removedSourcePaneWasActive = Boolean(
+        currentActivePaneId
+        && workspace.panes[sourcePaneIndex]
+        && (
+          workspace.panes[sourcePaneIndex].sessionId === currentActivePaneId
+          || workspace.panes[sourcePaneIndex].tabs.some((tab) => tab.sessionId === currentActivePaneId)
+        ),
+      );
+      if (removedSourcePaneWasActive) {
+        const fallbackPane = newPanes[Math.min(Math.max(sourcePaneIndex, 0), newPanes.length - 1)] ?? newPanes[0];
+        nextActivePaneId = activeSessionIdForPane(fallbackPane);
+      }
+    }
+    if (nextActivePaneId !== undefined) {
+      applyStructuralActivation(nextActivePaneId);
+    }
+  },
+
+  moveTabToPane: (sourceWorkspaceId, sourcePaneId, tabId, targetWorkspaceId, targetPaneId) => {
+    const listStore = useWorkspaceListStore.getState();
+    const sourceWorkspace = listStore.getWorkspace(sourceWorkspaceId);
+    const targetWorkspace = listStore.getWorkspace(targetWorkspaceId);
+    if (!sourceWorkspace || !targetWorkspace) return;
+
+    const sourcePane = sourceWorkspace.panes.find((pane) => pane.id === sourcePaneId);
+    const targetPane = targetWorkspace.panes.find((pane) => pane.id === targetPaneId);
+    const tab = sourcePane?.tabs.find((candidate) => candidate.id === tabId);
+    if (!sourcePane || !targetPane || !tab) return;
+
+    if (sourceWorkspaceId === targetWorkspaceId && sourcePaneId === targetPaneId) {
+      const newPanes = sourceWorkspace.panes.map((pane) =>
+        pane.id === sourcePaneId ? applyActiveTabFields(pane, tab) : pane,
+      );
+      listStore._updateWorkspacePanes(sourceWorkspaceId, newPanes);
+      return;
+    }
+
+    if (sourceWorkspaceId === targetWorkspaceId) {
+      let removedSourcePane = false;
+      const newPanes = sourceWorkspace.panes.flatMap((pane) => {
+        if (pane.id === sourcePaneId) {
+          const updated = removeTabFromPane(pane, tabId);
+          if (!updated) {
+            removedSourcePane = true;
+            return [];
+          }
+          return [updated];
+        }
+        if (pane.id === targetPaneId) {
+          return [appendTabsToPane(pane, [tab], resolveMergeActiveTabId(pane, tab.id))];
+        }
+        return [pane];
+      });
+      const nextSplitColumns = removedSourcePane
+        ? removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId)
+        : undefined;
+      listStore._updateWorkspacePanes(
+        sourceWorkspaceId,
+        newPanes,
+        nextSplitColumns ? normalizeWorkspaceSplitColumns(nextSplitColumns) : nextSplitColumns,
+        removedSourcePane,
+      );
+      return;
+    }
+
+    const { panes: sourcePanes, removedSourcePane } = detachTabFromPanes(
+      sourceWorkspace.panes,
+      sourcePaneId,
+      tabId,
+    );
+    const targetPanes = targetWorkspace.panes.map((pane) =>
+      pane.id === targetPaneId
+        ? appendTabsToPane(pane, [tab], resolveMergeActiveTabId(pane, tab.id))
+        : pane,
+    );
+
+    const sourceSplitColumns = removedSourcePane
+      ? removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId)
+      : undefined;
+    listStore._updateWorkspacePanes(
+      sourceWorkspaceId,
+      sourcePanes,
+      sourceSplitColumns ? normalizeWorkspaceSplitColumns(sourceSplitColumns) : sourceSplitColumns,
+      removedSourcePane,
+    );
+    listStore._updateWorkspacePanes(targetWorkspaceId, targetPanes);
+    removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
+  },
+
+  moveTabToSplit: (sourceWorkspaceId, sourcePaneId, tabId, targetWorkspaceId, targetPaneId, direction) => {
+    const listStore = useWorkspaceListStore.getState();
+    const sourceWorkspace = listStore.getWorkspace(sourceWorkspaceId);
+    const targetWorkspace = listStore.getWorkspace(targetWorkspaceId);
+    if (!sourceWorkspace || !targetWorkspace) return;
+
+    const sourcePane = sourceWorkspace.panes.find((pane) => pane.id === sourcePaneId);
+    const targetPane = targetWorkspace.panes.find((pane) => pane.id === targetPaneId);
+    const tab = sourcePane?.tabs.find((candidate) => candidate.id === tabId);
+    if (!sourcePane || !targetPane || !tab) return;
+    if (sourceWorkspaceId === targetWorkspaceId && sourcePaneId === targetPaneId && sourcePane.tabs.length <= 1) return;
+
+    const newPane = makePaneFromTab(uuid(), tab);
+
+    if (sourceWorkspaceId === targetWorkspaceId) {
+      const { panes: panesAfterSource, removedSourcePane } = detachTabFromPanes(
+        sourceWorkspace.panes,
+        sourcePaneId,
+        tabId,
+      );
+      if (!panesAfterSource.some((pane) => pane.id === targetPaneId)) return;
+      const baseColumns = removedSourcePane
+        ? removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId)
+        : cloneSplitColumns(sourceWorkspace);
+      const nextSplitColumns = insertPaneIdIntoColumns(baseColumns, targetPaneId, newPane.id, direction);
+      if (!nextSplitColumns) return;
+      listStore._updateWorkspacePanes(
+        sourceWorkspaceId,
+        [...panesAfterSource, newPane],
+        normalizeWorkspaceSplitColumns(nextSplitColumns),
+        true,
+        splitInsertHint(baseColumns, targetPaneId, newPane.id, direction),
+      );
+      return;
+    }
+
+    const { panes: sourcePanes, removedSourcePane } = detachTabFromPanes(
+      sourceWorkspace.panes,
+      sourcePaneId,
+      tabId,
+    );
+    const targetColumns = insertPaneIdIntoColumns(
+      cloneSplitColumns(targetWorkspace),
+      targetPaneId,
+      newPane.id,
+      direction,
+    );
+    if (!targetColumns) return;
+
+    const sourceSplitColumns = removedSourcePane
+      ? removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId)
+      : undefined;
+    listStore._updateWorkspacePanes(
+      sourceWorkspaceId,
+      sourcePanes,
+      sourceSplitColumns ? normalizeWorkspaceSplitColumns(sourceSplitColumns) : sourceSplitColumns,
+      removedSourcePane,
+    );
+    listStore._updateWorkspacePanes(
+      targetWorkspaceId,
+      [...targetWorkspace.panes, newPane],
+      normalizeWorkspaceSplitColumns(targetColumns),
+      true,
+      splitInsertHint(cloneSplitColumns(targetWorkspace), targetPaneId, newPane.id, direction),
+    );
+    removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
+  },
+
+  movePaneToPosition: (workspaceId, paneId, toColumn, toRow) => {
+    const listStore = useWorkspaceListStore.getState();
+    const workspace = listStore.getWorkspace(workspaceId);
+    if (!workspace || !workspace.panes.some((pane) => pane.id === paneId)) return null;
+
+    const nextSplitColumns = removePaneIdFromColumns(cloneSplitColumns(workspace), paneId);
+    const columnIndex = Number.isInteger(toColumn)
+      && toColumn >= 0
+      && toColumn < nextSplitColumns.length
+      ? toColumn
+      : nextSplitColumns.length;
+
+    if (columnIndex === nextSplitColumns.length) {
+      nextSplitColumns.push([paneId]);
+    } else {
+      const targetColumn = nextSplitColumns[columnIndex];
+      const rowIndex = Number.isInteger(toRow) && toRow >= 0 && toRow <= targetColumn.length
+        ? toRow
+        : targetColumn.length;
+      targetColumn.splice(rowIndex, 0, paneId);
+    }
+
+    const normalizedSplitColumns = reconcileSplitColumnsForPanes(
+      normalizeWorkspaceSplitColumns(nextSplitColumns),
+      workspace.panes.map((pane) => pane.id),
+    );
+    listStore._updateWorkspacePanes(
+      workspaceId,
+      workspace.panes,
+      normalizedSplitColumns,
+    );
+    return normalizedSplitColumns;
+  },
+
+  movePaneToPane: (sourceWorkspaceId, sourcePaneId, targetWorkspaceId, targetPaneId) => {
+    const listStore = useWorkspaceListStore.getState();
+    const sourceWorkspace = listStore.getWorkspace(sourceWorkspaceId);
+    const targetWorkspace = listStore.getWorkspace(targetWorkspaceId);
+    if (!sourceWorkspace || !targetWorkspace) return;
+
+    const sourcePane = sourceWorkspace.panes.find((pane) => pane.id === sourcePaneId);
+    const targetPane = targetWorkspace.panes.find((pane) => pane.id === targetPaneId);
+    if (!sourcePane || !targetPane) return;
+    if (sourceWorkspaceId === targetWorkspaceId && sourcePaneId === targetPaneId) return;
+
+    if (sourceWorkspaceId === targetWorkspaceId) {
+      const newPanes = sourceWorkspace.panes.flatMap((pane) => {
+        if (pane.id === sourcePaneId) return [];
+        if (pane.id === targetPaneId) {
+          return [appendTabsToPane(
+            pane,
+            sourcePane.tabs,
+            resolveMergeActiveTabId(pane, sourcePane.activeTabId),
+          )];
+        }
+        return [pane];
+      });
+      const nextSplitColumns = removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId);
+      listStore._updateWorkspacePanes(
+        sourceWorkspaceId,
+        newPanes,
+        normalizeWorkspaceSplitColumns(nextSplitColumns),
+        true,
+      );
+      return;
+    }
+
+    const sourcePanes = sourceWorkspace.panes.filter((pane) => pane.id !== sourcePaneId);
+    const sourceSplitColumns = removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId);
+    const targetPanes = targetWorkspace.panes.map((pane) =>
+      pane.id === targetPaneId
+        ? appendTabsToPane(
+            pane,
+            sourcePane.tabs,
+            resolveMergeActiveTabId(pane, sourcePane.activeTabId),
+          )
+        : pane,
+    );
+    listStore._updateWorkspacePanes(
+      sourceWorkspaceId,
+      sourcePanes,
+      normalizeWorkspaceSplitColumns(sourceSplitColumns),
+      true,
+    );
+    listStore._updateWorkspacePanes(targetWorkspaceId, targetPanes);
+    removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
+  },
+
+  insertRestoredPaneToSplit: (workspaceId, targetPaneId, pane, direction) => {
+    const listStore = useWorkspaceListStore.getState();
+    const workspace = listStore.getWorkspace(workspaceId);
+    if (!workspace || workspace.panes.some((existing) => existing.id === pane.id)) return false;
+    const baseColumns = cloneSplitColumns(workspace);
+    const columns = insertPaneIdIntoColumns(baseColumns, targetPaneId, pane.id, direction);
+    if (!columns) return false;
+    listStore._updateWorkspacePanes(
+      workspaceId,
+      [...workspace.panes, pane],
+      normalizeWorkspaceSplitColumns(columns),
+      true,
+      splitInsertHint(baseColumns, targetPaneId, pane.id, direction),
+    );
+    return true;
+  },
+
+  movePaneToSplit: (sourceWorkspaceId, sourcePaneId, targetWorkspaceId, targetPaneId, direction) => {
+    const listStore = useWorkspaceListStore.getState();
+    const sourceWorkspace = listStore.getWorkspace(sourceWorkspaceId);
+    const targetWorkspace = listStore.getWorkspace(targetWorkspaceId);
+    if (!sourceWorkspace || !targetWorkspace) return;
+
+    const sourcePane = sourceWorkspace.panes.find((pane) => pane.id === sourcePaneId);
+    const targetPane = targetWorkspace.panes.find((pane) => pane.id === targetPaneId);
+    if (!sourcePane || !targetPane) return;
+    if (sourceWorkspaceId === targetWorkspaceId && sourcePaneId === targetPaneId) return;
+
+    if (sourceWorkspaceId === targetWorkspaceId) {
+      const baseColumns = removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId);
+      const nextSplitColumns = insertPaneIdIntoColumns(baseColumns, targetPaneId, sourcePaneId, direction);
+      if (!nextSplitColumns) return;
+      listStore._updateWorkspacePanes(
+        sourceWorkspaceId,
+        sourceWorkspace.panes,
+        normalizeWorkspaceSplitColumns(nextSplitColumns),
+        true,
+        splitInsertHint(baseColumns, targetPaneId, sourcePaneId, direction),
+      );
+      return;
+    }
+
+    const sourcePanes = sourceWorkspace.panes.filter((pane) => pane.id !== sourcePaneId);
+    const sourceSplitColumns = removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId);
+    const targetColumns = insertPaneIdIntoColumns(
+      cloneSplitColumns(targetWorkspace),
+      targetPaneId,
+      sourcePaneId,
+      direction,
+    );
+    if (!targetColumns) return;
+
+    listStore._updateWorkspacePanes(
+      sourceWorkspaceId,
+      sourcePanes,
+      normalizeWorkspaceSplitColumns(sourceSplitColumns),
+      true,
+    );
+    listStore._updateWorkspacePanes(
+      targetWorkspaceId,
+      [...targetWorkspace.panes, sourcePane],
+      normalizeWorkspaceSplitColumns(targetColumns),
+      true,
+      splitInsertHint(cloneSplitColumns(targetWorkspace), targetPaneId, sourcePaneId, direction),
+    );
+    removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
+  },
+
+  moveTabToNewWorkspace: (sourceWorkspaceId, sourcePaneId, tabId, targetWorkspaceId, workspaceName, options) => {
+    return moveTabsToNewWorkspaceInStore(
+      sourceWorkspaceId,
+      sourcePaneId,
+      [tabId],
+      tabId,
+      targetWorkspaceId,
+      workspaceName,
+      options,
+    );
+  },
+
+  moveTabsToNewWorkspace: (
+    sourceWorkspaceId,
+    sourcePaneId,
+    tabIds,
+    anchorTabId,
+    targetWorkspaceId,
+    workspaceName,
+    options,
+  ) => {
+    return moveTabsToNewWorkspaceInStore(
+      sourceWorkspaceId,
+      sourcePaneId,
+      tabIds,
+      anchorTabId,
+      targetWorkspaceId,
+      workspaceName,
+      options,
+    );
+  },
+
+  movePaneToNewWorkspace: (sourceWorkspaceId, sourcePaneId, targetWorkspaceId, workspaceName, options) => {
+    const listStore = useWorkspaceListStore.getState();
+    const sourceWorkspace = listStore.getWorkspace(sourceWorkspaceId);
+    if (!sourceWorkspace) return false;
+
+    const sourcePane = sourceWorkspace.panes.find((pane) => pane.id === sourcePaneId);
+    if (!sourcePane) return false;
+
+    const sourcePanes = sourceWorkspace.panes.filter((pane) => pane.id !== sourcePaneId);
+    const sourceSplitColumns = removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId);
+
+    listStore._updateWorkspacePanes(
+      sourceWorkspaceId,
+      sourcePanes,
+      normalizeWorkspaceSplitColumns(sourceSplitColumns),
+      true,
+    );
+    listStore.createWorkspace(
+      workspaceName,
+      "1x1",
+      [sourcePane],
+      [[sourcePane.id]],
+      { id: targetWorkspaceId, activate: options?.activate },
+    );
+    removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
+    return true;
+  },
+
+  setActivePaneTab: (workspaceId, paneId, tabId) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+    const pane = workspace.panes.find((candidate) => candidate.id === paneId);
+    const activeSessionId = useUiStore.getState().activePaneId;
+    const shouldBumpFocusRevision = Boolean(
+      pane
+      && pane.activeTabId !== tabId
+      && pane.tabs.some((tab) => tab.id === tabId)
+      && useWorkspaceListStore.getState().activeWorkspaceId === workspaceId
+      && (
+        activeSessionId === null
+        || pane.sessionId === activeSessionId
+        || pane.tabs.some((tab) => tab.sessionId === activeSessionId)
+      ),
+    );
+    if (pane && pane.activeTabId !== tabId && pane.tabs.some((tab) => tab.id === tabId)) {
+      bumpPaintStat("tab-switch");
+    }
+
+    const newPanes = workspace.panes.map((p) => {
+      if (p.id !== paneId) return p;
+      const tab = p.tabs.find((t) => t.id === tabId);
+      if (!tab) return p;
+      return applyActiveTabFields(p, tab);
+    });
+
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+    if (shouldBumpFocusRevision) {
+      useUiStore.getState().bumpFocusRevision();
+    }
+  },
+
+  setTabDisplayName: (workspaceId, paneId, tabId, name) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+    let changed = false;
+    const panes = workspace.panes.map(pane => pane.id !== paneId ? pane : {
+      ...pane, tabs: pane.tabs.map(tab => {
+        if (tab.id !== tabId || tab.displayName === name) return tab;
+        changed = true;
+        return { ...tab, displayName: name, displayNameSource: name ? "auto" as const : undefined };
+      }),
+    });
+    if (changed) useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, panes);
+  },
+
+  setTabLabel: (workspaceId, paneId, tabId, label, source = "user") => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    const normalizedLabel = label?.trim() === "" || label === undefined ? undefined : label.trim();
+    const nextLabelSource = normalizedLabel === undefined ? undefined : source;
+    let didChange = false;
+    const newPanes = workspace.panes.map((pane) => {
+      if (pane.id !== paneId) return pane;
+      const tabs = pane.tabs.map((tab) => {
+        if (tab.id !== tabId) return tab;
+        if (tab.label === normalizedLabel && tab.labelSource === nextLabelSource) return tab;
+        didChange = true;
+        return {
+          ...tab,
+          label: normalizedLabel,
+          labelSource: nextLabelSource,
+        };
+      });
+      return {
+        ...pane,
+        tabs,
+      };
+    });
+
+    if (!didChange) return;
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+  },
+
+  togglePaneTabPin: (workspaceId, paneId, tabId) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    let didChange = false;
+    const newPanes = workspace.panes.map((pane) => {
+      if (pane.id !== paneId) return pane;
+      if (!pane.tabs.some((tab) => tab.id === tabId)) return pane;
+      didChange = true;
+      const nextPinned = pane.pinnedTabId === tabId ? undefined : tabId;
+      return withPinnedTabFirst({ ...pane, pinnedTabId: nextPinned });
+    });
+
+    if (!didChange) return;
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+  },
+
+  reorderPaneTab: (workspaceId, paneId, tabId, insertIndex) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    let didChange = false;
+    const newPanes = workspace.panes.map((pane) => {
+      if (pane.id !== paneId) return pane;
+      const fromIndex = pane.tabs.findIndex((tab) => tab.id === tabId);
+      if (fromIndex === -1) return pane;
+
+      const hasLivePin = pane.pinnedTabId !== undefined
+        && pane.tabs.some((tab) => tab.id === pane.pinnedTabId);
+      const isPinnedTab = hasLivePin && pane.pinnedTabId === tabId;
+      // The pinned tab owns slot 0, so every other tab starts at slot 1.
+      const lowestSlot = hasLivePin && !isPinnedTab ? 1 : 0;
+      const slot = Math.min(Math.max(insertIndex, lowestSlot), pane.tabs.length);
+      // Slots are measured with the dragged tab still in the array; removing it
+      // first shifts every slot after it one to the left.
+      const toIndex = slot > fromIndex ? slot - 1 : slot;
+      if (toIndex === fromIndex) return pane;
+
+      const tabs = pane.tabs.filter((tab) => tab.id !== tabId);
+      tabs.splice(toIndex, 0, pane.tabs[fromIndex]);
+      didChange = true;
+      const pinnedTabId = isPinnedTab && toIndex !== 0 ? undefined : pane.pinnedTabId;
+      // Belt and braces: the clamp above already keeps a live pin at slot 0.
+      return withPinnedTabFirst({ ...pane, tabs, pinnedTabId });
+    });
+
+    if (!didChange) return;
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+  },
+
+  setTabAgentId: (workspaceId, paneId, tabId, agentId) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    const newPanes = workspace.panes.map((pane) => {
+      if (pane.id !== paneId) return pane;
+      const tabs = pane.tabs.map((tab) =>
+        tab.id === tabId
+          ? {
+              ...tab,
+              agentId,
+              claudeSessionId: undefined,
+              agentKind: undefined,
+              agentSessionId: undefined,
+            }
+          : tab,
+      );
+      const activeTab = tabs.find((tab) => tab.id === pane.activeTabId) ?? tabs[0];
+      return {
+        ...pane,
+        tabs,
+        agentId: activeTab.agentId,
+      };
+    });
+
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+  },
+
+  clearTabAgentSessionBySessionId: (terminalSessionId) => {
+    // Safety valve (v0.13.4 しおり消失 lesson): "waiting" is proof the agent
+    // is alive, so never destroy markers while the pane reports it — a stale
+    // validation failure must not outrank a live-session signal. Worst case
+    // of skipping is one more downgrade warning on the next launch.
+    const agentStatus =
+      usePaneMetadataStore.getState().metadata[terminalSessionId]?.agentStatus;
+    if (agentStatus === "waiting") return false;
+    applyTabAgentSessionRewrite(terminalSessionId, { type: "clear" });
+    return true;
+  },
+
+  repointTabAgentSessionBySessionId: (terminalSessionId, kind, fallbackSessionId) => {
+    applyTabAgentSessionRewrite(terminalSessionId, {
+      type: "repoint",
+      kind,
+      fallbackSessionId,
+    });
+  },
+}));
+
+function applyTabAgentSessionRewrite(
+  terminalSessionId: string,
+  rewrite: TabAgentSessionRewrite,
+): void {
+  const listStore = useWorkspaceListStore.getState();
+  for (const workspace of listStore.workspaces) {
+    const { panes, didChange } = rewriteTabAgentSession(
+      workspace.panes,
+      terminalSessionId,
+      rewrite,
+    );
+    if (didChange) {
+      listStore._updateWorkspacePanes(workspace.id, panes);
+    }
+  }
+}

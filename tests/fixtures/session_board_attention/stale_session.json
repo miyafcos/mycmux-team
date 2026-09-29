@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "snap-20260830T120000-bd2613a94ec8",
+  "generated_at": "2026-08-30T12:00:00.000Z",
+  "source_watermark": 0,
+  "coverage": {
+    "state": "partial",
+    "expected_sessions": 1,
+    "observed_sessions": 1,
+    "stale_sessions": 1,
+    "failed_probes": 0,
+    "status_untracked_sessions": 0
+  },
+  "items": [
+    {
+      "attention_id": "incident-6d659fefd75a3dbd",
+      "incident_group_id": "observation-coverage:stale",
+      "kind": "stale_session",
+      "severity": "advisory",
+      "requires_human_action": true,
+      "actor": "human",
+      "summary": "Presence is stale for 1 session",
+      "why_now": "The current attention count may be based on outdated presence.",
+      "next_action": {
+        "type": "run_collection",
+        "label": "Refresh session observations",
+        "target": "presence"
+      },
+      "affected_lane_ids": [
+        "lane-stale"
+      ],
+      "evidence_refs": [
+        "session:session-lane-stale"
+      ],
+      "first_seen_at": "2026-08-30T11:55:00.000Z",
+      "last_changed_at": "2026-08-30T11:55:00.000Z",
+      "freshness": "stale",
+      "rank": 1
+    }
+  ]
+}

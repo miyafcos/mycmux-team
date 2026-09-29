@@ -1,0 +1,454 @@
+/**
+ * Small shared pieces for the AI log dashboard: section frames, tables, chips
+ * and the three empty states.
+ *
+ * Every control here is a plain left-click button. The dashboard deliberately
+ * has no context menu — right click is not a supported input in this app.
+ */
+
+import { useState, type CSSProperties, type JSX, type ReactNode } from "react";
+
+import { formatCount, formatMoney, formatTokens, formatTokensFull } from "../../lib/ailog";
+import type { SeriesPaint } from "./modelColors";
+
+function hatchId(color: string): string {
+  return `ailog-hatch-${color.replace(/^#/, "").toLowerCase()}`;
+}
+
+function hatchStroke(color: string): string {
+  const match = /^#([0-9a-f]{6})$/i.exec(color);
+  if (!match) return color;
+  const channels = [0, 2, 4].map((index) => Math.round(parseInt(match[1].slice(index, index + 2), 16) * 0.65));
+  return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** SVG fill: muted paints use a colour-derived diagonal hatch pattern. */
+export function paintFill(paint: SeriesPaint): string {
+  return paint.tone === "muted" ? `url(#${hatchId(paint.color)})` : paint.color;
+}
+
+/** HTML swatch background; CSS cannot reference an SVG pattern by document ID. */
+export function paintSwatchBackground(paint: SeriesPaint): string {
+  return paint.tone === "muted"
+    ? `repeating-linear-gradient(135deg, ${paint.color} 0 4px, ${hatchStroke(paint.color)} 4px 5px)`
+    : paint.color;
+}
+
+/** SVG defs for the distinct muted paints used by one chart. */
+export function ChartHatchDefs({ paints }: { paints: SeriesPaint[] }): JSX.Element | null {
+  const muted = new Map<string, SeriesPaint>();
+  for (const paint of paints) {
+    if (paint.tone === "muted") muted.set(hatchId(paint.color), paint);
+  }
+  if (muted.size === 0) return null;
+  return (
+    <defs>
+      {[...muted.entries()].map(([id, paint]) => (
+        <pattern key={id} id={id} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+          <rect width="6" height="6" fill={paint.color} />
+          <line x1="0" y1="0" x2="0" y2="6" stroke={hatchStroke(paint.color)} strokeWidth="1" />
+        </pattern>
+      ))}
+    </defs>
+  );
+}
+
+export const cardStyle: CSSProperties = {
+  background: "var(--cmux-surface)",
+  border: "1px solid var(--cmux-border)",
+  borderRadius: "var(--cmux-radius-lg)",
+  padding: "14px 16px 16px",
+};
+
+export const noteStyle: CSSProperties = {
+  fontSize: "var(--cmux-font-size-xs)",
+  lineHeight: 1.5,
+  color: "var(--cmux-text-tertiary)",
+};
+
+export const subtleButtonStyle: CSSProperties = {
+  border: "1px solid var(--cmux-border)",
+  borderRadius: 5,
+  background: "var(--cmux-hover)",
+  color: "var(--cmux-text)",
+  padding: "4px 9px",
+  fontSize: "var(--cmux-font-size-xs)",
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+};
+
+export const tableActionButtonStyle: CSSProperties = {
+  width: "100%",
+  minWidth: 0,
+  padding: 0,
+  border: 0,
+  background: "transparent",
+  color: "var(--cmux-accent)",
+  font: "inherit",
+  textAlign: "left",
+  textDecoration: "underline",
+  textUnderlineOffset: 2,
+  cursor: "pointer",
+};
+
+export function Section({
+  title,
+  subtitle,
+  actions,
+  children,
+  id,
+}: {
+  title: string;
+  subtitle?: ReactNode;
+  actions?: ReactNode;
+  children: ReactNode;
+  id?: string;
+}) {
+  return (
+    <section id={id} style={{ ...cardStyle, minWidth: 0, scrollMarginTop: 12 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+          marginBottom: 10,
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <h2 style={{ margin: 0, fontSize: "var(--cmux-font-size-md)", fontWeight: 700, color: "var(--cmux-text)" }}>{title}</h2>
+          {subtitle ? <div style={{ ...noteStyle, marginTop: 3 }}>{subtitle}</div> : null}
+        </div>
+        {actions ? <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{actions}</div> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+export function Chip({
+  children,
+  tone = "neutral",
+  title,
+}: {
+  children: ReactNode;
+  tone?: "neutral" | "accent" | "warn";
+  title?: string;
+}) {
+  const color =
+    tone === "accent"
+      ? "var(--cmux-accent)"
+      : tone === "warn"
+        ? "var(--cmux-usage-warn)"
+        : "var(--cmux-text-secondary)";
+  return (
+    <span
+      title={title}
+      style={{
+        padding: "2px 7px",
+        borderRadius: 999,
+        background: "var(--cmux-hover)",
+        border: "1px solid var(--cmux-border-hairline)",
+        color,
+        fontSize: "var(--cmux-font-size-xs)",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** Toggle rendered as a row of buttons (no select element, no context menu). */
+export function ButtonGroup<T extends string | number>({
+  options,
+  value,
+  onChange,
+  ariaLabel,
+  roleLabel = ariaLabel,
+}: {
+  options: { value: T; label: string; title?: string }[];
+  value: T;
+  onChange: (value: T) => void;
+  ariaLabel: string;
+  /** Visible counterpart to the group name; ariaLabel alone is not enough context. */
+  roleLabel?: string;
+}) {
+  return (
+    <div role="group" aria-label={ariaLabel} style={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+      <span style={{ alignSelf: "center", color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)", whiteSpace: "nowrap" }}>{roleLabel}:</span>
+      {options.map((option) => {
+        const active = option.value === value;
+        return (
+          <button
+            key={String(option.value)}
+            type="button"
+            title={option.title}
+            aria-pressed={active}
+            onClick={() => onChange(option.value)}
+            style={{
+              ...subtleButtonStyle,
+              padding: "3px 8px",
+              fontSize: "var(--cmux-font-size-xs)",
+              background: active ? "var(--cmux-accent)" : "var(--cmux-hover)",
+              color: active ? "var(--cmux-on-accent)" : "var(--cmux-text-secondary)",
+              borderColor: active ? "var(--cmux-accent)" : "var(--cmux-border)",
+            }}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** A locally named table scroller; the page itself never gains horizontal overflow. */
+export function VScrollBox({ children, maxHeight, label }: { children: ReactNode; maxHeight?: number; label?: string }) {
+  return (
+    <div role={label ? "region" : undefined} aria-label={label} tabIndex={label ? 0 : undefined} style={{ overflow: "auto", maxHeight, minWidth: 0 }}>
+      {children}
+    </div>
+  );
+}
+
+export const tableStyle: CSSProperties = {
+  borderCollapse: "collapse",
+  width: "100%",
+  fontSize: "var(--cmux-font-size-xs)",
+  fontVariantNumeric: "tabular-nums",
+  tableLayout: "fixed",
+};
+
+export const thStyle: CSSProperties = {
+  textAlign: "right",
+  padding: "5px 8px",
+  color: "var(--cmux-text-tertiary)",
+  fontWeight: 600,
+  fontSize: "var(--cmux-font-size-xs)",
+  borderBottom: "1px solid var(--cmux-border)",
+  whiteSpace: "normal",
+  overflowWrap: "anywhere",
+  lineHeight: 1.25,
+  verticalAlign: "bottom",
+};
+
+export const thLeftStyle: CSSProperties = { ...thStyle, textAlign: "left" };
+
+export const tdStyle: CSSProperties = {
+  textAlign: "right",
+  padding: "5px 8px",
+  color: "var(--cmux-text)",
+  borderBottom: "1px solid var(--cmux-border-hairline)",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+};
+
+export const tdLeftStyle: CSSProperties = {
+  ...tdStyle,
+  textAlign: "left",
+  whiteSpace: "normal",
+  overflowWrap: "anywhere",
+};
+
+/**
+ * SessionTable only. Rows are virtualized at a fixed height
+ * (`useVirtualRows` + tests/unit/sessionTableRowHeight.test.ts pins 31 / 39 / 50px).
+ * Wrapping would change row height and break the virtual window. Full text stays on `title`.
+ */
+export const tdClipStyle: CSSProperties = {
+  ...tdStyle,
+  textAlign: "left",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};
+
+export function ThCell({ main, sub, title }: { main: string; sub?: string; title?: string }) {
+  return (
+    <th scope="col" style={thStyle} title={title ?? (sub ? `${main} ${sub}` : main)}>
+      <div>{main}</div>
+      {sub ? (
+        <div style={{ color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)" }}>{sub}</div>
+      ) : null}
+    </th>
+  );
+}
+
+export type NumKind = "tokens" | "count" | "money";
+
+export function Num({
+  value,
+  kind = "tokens",
+  bare = false,
+  title,
+}: {
+  value: number;
+  kind?: NumKind;
+  bare?: boolean;
+  title?: string;
+}): JSX.Element {
+  let text: string;
+  if (kind === "money") text = formatMoney(value);
+  else if (kind === "count") text = formatCount(value);
+  else {
+    text = formatTokens(value);
+    if (bare) text = text.replace(/ tok$/, "");
+  }
+  const tooltip = title ?? (kind === "tokens" ? formatTokensFull(value) : undefined);
+  return (
+    <span title={tooltip} style={{ fontVariantNumeric: "tabular-nums" }}>
+      {text}
+    </span>
+  );
+}
+
+export function ShareBar({ pct, title }: { pct: number; title?: string }) {
+  const width = Math.max(0, Math.min(100, Number.isFinite(pct) ? pct : 0));
+  return (
+    <span
+      title={title}
+      aria-hidden="true"
+      style={{
+        display: "inline-block",
+        width: 46,
+        height: 5,
+        borderRadius: 3,
+        background: "var(--cmux-hover)",
+        overflow: "hidden",
+        verticalAlign: "middle",
+      }}
+    >
+      <span style={{ display: "block", width: `${width}%`, height: "100%", background: "var(--cmux-accent)" }} />
+    </span>
+  );
+}
+
+export type EmptyStateKind = "not-indexed" | "no-data" | "error";
+
+/**
+ * The three states the dashboard must be able to show without pretending to
+ * have data: never indexed, indexed but nothing in this range, and a failed
+ * call. An error is never rendered as an empty table.
+ */
+export function EmptyState({
+  kind,
+  title,
+  message,
+  onPrimary,
+  primaryLabel,
+  busy = false,
+}: {
+  kind: EmptyStateKind;
+  title?: string;
+  message?: string | null;
+  onPrimary?: () => void;
+  primaryLabel?: string;
+  busy?: boolean;
+}) {
+  const copy: Record<EmptyStateKind, { title: string; body: string; action: string }> = {
+    "not-indexed": {
+      title: "記録をまだ取り込んでいません",
+      body: "Claude、Codex、Grok の記録を取り込むと、ここに集計が出ます。初回は数十秒かかります。",
+      action: "記録を取り込む",
+    },
+    "no-data": {
+      title: "この期間の記録なし",
+      body: "期間を広げるか、再インデックスで最新の記録を取り込んでください。",
+      action: "再インデックス",
+    },
+    error: {
+      title: "読み込み失敗",
+      body: "この表示を更新できませんでした。技術情報を確認して再試行してください。",
+      action: "再試行",
+    },
+  };
+  const entry = copy[kind];
+  return (
+    <div
+      role="status"
+      style={{
+        ...cardStyle,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "flex-start",
+        gap: 8,
+        borderStyle: kind === "error" ? "solid" : "dashed",
+        borderColor: kind === "error" ? "var(--cmux-red)" : "var(--cmux-border)",
+      }}
+    >
+      <div style={{ fontSize: "var(--cmux-font-size-sm)", fontWeight: 700, color: kind === "error" ? "var(--cmux-red)" : "var(--cmux-text)" }}>
+        {title ?? entry.title}
+      </div>
+      <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", lineHeight: 1.6 }}>{entry.body}</div>
+      {message ? (
+        <details style={{ maxWidth: "100%" }}>
+          <summary style={{ cursor: "pointer", fontSize: "var(--cmux-font-size-xs)" }}>技術情報</summary>
+          <pre
+            style={{
+              margin: "6px 0 0",
+              maxWidth: "100%",
+              maxHeight: 140,
+              overflow: "auto",
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
+              fontSize: "var(--cmux-font-size-xs)",
+              color: "var(--cmux-text-secondary)",
+              background: "var(--cmux-hover)",
+              borderRadius: 6,
+              padding: "6px 8px",
+            }}
+          >
+            {message}
+          </pre>
+        </details>
+      ) : null}
+      {onPrimary ? (
+        <button type="button" disabled={busy} onClick={onPrimary} style={{ ...subtleButtonStyle, opacity: busy ? 0.5 : 1 }}>
+          {busy ? "実行中…" : (primaryLabel ?? entry.action)}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+export function SkeletonBlock({ height = 90, label }: { height?: number; label: string }) {
+  return (
+    <div
+      aria-label={label}
+      role="status"
+      style={{
+        height,
+        borderRadius: 8,
+        background: "var(--cmux-hover)",
+        opacity: 0.6,
+      }}
+    />
+  );
+}
+
+/** Keeps previous data visible while its replacement is loading. */
+export function RefreshingBlock({ busy, children }: { busy: boolean; children: ReactNode }) {
+  return (
+    <div aria-busy={busy} data-ailog-refreshing={busy ? "true" : "false"} style={{ minWidth: 0 }}>
+      {busy ? (
+        <div role="status" aria-live="polite" style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)" }}>
+          <span>更新中…</span>
+          <span aria-hidden="true" style={{ display: "block", flex: 1, maxWidth: 72, height: 3, borderRadius: 999, background: "var(--cmux-accent)", opacity: 0.8 }} />
+        </div>
+      ) : null}
+      <div style={{ opacity: busy ? 0.55 : 1, transition: "opacity var(--cmux-motion-fast) var(--cmux-ease)" }}>{children}</div>
+    </div>
+  );
+}
+
+/** A closed details block that does not mount its contents until opened. */
+export function DeferredDetails({ id, summary, subtitle, children }: { id?: string; summary: string; subtitle?: ReactNode; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details id={id} onToggle={(event) => setOpen(event.currentTarget.open)} style={{ ...cardStyle, padding: 0 }}>
+      <summary style={{ cursor: "pointer", padding: "14px 16px", color: "var(--cmux-text)", fontSize: "var(--cmux-font-size-md)", fontWeight: 700 }}>{summary}</summary>
+      {open ? <div style={{ padding: "0 16px 16px" }}>{subtitle ? <div style={{ ...noteStyle, marginBottom: 10 }}>{subtitle}</div> : null}{children}</div> : null}
+    </details>
+  );
+}

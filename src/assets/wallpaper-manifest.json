@@ -1,0 +1,93 @@
+{
+  "packTag": "wallpapers-v1",
+  "wallpapers": [
+    {
+      "id": "dark_city",
+      "filename": "dark_city.webp",
+      "bytes": 361836,
+      "sha256": "1e404573029885490c46d88e55528e37415f86b86349e037149c51dfd58371e5",
+      "width": 2278,
+      "height": 1556
+    },
+    {
+      "id": "jellyfish",
+      "filename": "jellyfish.webp",
+      "bytes": 409998,
+      "sha256": "1180f90552c344c94032fdddd6a5a9c1560539be74283318713eabe453d0fa05",
+      "width": 2048,
+      "height": 1536
+    },
+    {
+      "id": "koi",
+      "filename": "koi.webp",
+      "bytes": 248140,
+      "sha256": "77f65fe28dbf897201b993b0b254ed511608be9684027c3e162ef0136dbc1de4",
+      "width": 2048,
+      "height": 1536
+    },
+    {
+      "id": "leafy",
+      "filename": "leafy.webp",
+      "bytes": 349572,
+      "sha256": "aafc47e2f5c80997f77e7e2412bca0d3567a06d1a5d5b44b60174e569b822010",
+      "width": 2048,
+      "height": 1536
+    },
+    {
+      "id": "red_rock",
+      "filename": "red_rock.webp",
+      "bytes": 504430,
+      "sha256": "bd855455b07f0ac1757bd8927bfaa456cfd1a66ed6ab7fd3945738b0e6a1bc77",
+      "width": 2048,
+      "height": 1536
+    },
+    {
+      "id": "thanksgiving",
+      "filename": "thanksgiving.webp",
+      "bytes": 791714,
+      "sha256": "125f49ffc78db66559a70e5854f06a16450f272a031e774329d3ed3f844c591a",
+      "width": 2048,
+      "height": 1536
+    },
+    {
+      "id": "marble",
+      "filename": "marble.webp",
+      "bytes": 167844,
+      "sha256": "d28e9ae1acf4c89cfbcde2377d61802e497ccbd4cd7bbcfd7ebf334a91e1e192",
+      "width": 2356,
+      "height": 1538
+    },
+    {
+      "id": "pink_city",
+      "filename": "pink_city.webp",
+      "bytes": 102572,
+      "sha256": "f56b57e848d8ee85145aab660a56252fb0af967b257ff784a881dac93ac03397",
+      "width": 2356,
+      "height": 1538
+    },
+    {
+      "id": "snowy",
+      "filename": "snowy.webp",
+      "bytes": 413870,
+      "sha256": "053ed5ba9b27bac73e3544d5a2678e64efaffd2f5c41b62eafb8db314f8193b1",
+      "width": 2356,
+      "height": 1538
+    },
+    {
+      "id": "winter",
+      "filename": "winter.webp",
+      "bytes": 2505820,
+      "sha256": "f3f2926984b86d455eabc7668d0d4d94f522451374e90e9fec0da5c73e26a76d",
+      "width": 4549,
+      "height": 3252
+    },
+    {
+      "id": "pride",
+      "filename": "pride.webp",
+      "bytes": 73406,
+      "sha256": "7c48646e02ce30c4e75bf146afe135553147c6f6e9b778048fe5d28b169581e6",
+      "width": 3072,
+      "height": 2304
+    }
+  ]
+}

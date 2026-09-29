@@ -1,0 +1,66 @@
+import type { Pane, PaneTab } from "../types";
+import type { PaneMetadata, PaneVolatileMetadata } from "../stores/paneMetadataStore";
+import { getTabDisplayLabel } from "./tabDisplayLabel";
+import { deriveDisplayStatus } from "./notificationStatus";
+
+export interface PaneCloseVictim {
+  sessionId: string;
+  label: string;
+  reason: "working" | "agent";
+}
+
+export function collectPaneCloseVictims(
+  panes: readonly Pane[],
+  metadataBySession: Record<string, PaneMetadata | undefined>,
+  volatileMetadataBySession: Record<string, PaneVolatileMetadata | undefined> = {},
+): PaneCloseVictim[] {
+  return panes.flatMap((pane) => pane.tabs.flatMap((tab) => {
+    const metadata = metadataBySession[tab.sessionId];
+    const volatileMetadata = volatileMetadataBySession[tab.sessionId];
+    const reason = deriveVictimReason(tab, metadata, volatileMetadata);
+    if (!reason) return [];
+    return [{
+      sessionId: tab.sessionId,
+      label: getTabDisplayLabel(tab, tab.id === pane.activeTabId, metadataBySession, volatileMetadataBySession),
+      reason,
+    }];
+  }));
+}
+
+/** Live agent tabs that would be terminated by closing the supplied panes. */
+export function collectLiveAgentTabs(
+  panes: readonly Pane[],
+  metadataBySession: Record<string, PaneMetadata | undefined>,
+  volatileMetadataBySession: Record<string, PaneVolatileMetadata | undefined> = {},
+): PaneCloseVictim[] {
+  return panes.flatMap((pane) => pane.tabs.flatMap((tab) => {
+    const metadata = metadataBySession[tab.sessionId];
+    const agentKind = metadata?.agentKind ?? tab.agentKind;
+    if (!agentKind || metadata?.processIsShell === true) return [];
+    return [{
+      sessionId: tab.sessionId,
+      label: getTabDisplayLabel(tab, tab.id === pane.activeTabId, metadataBySession, volatileMetadataBySession),
+      reason: "agent" as const,
+    }];
+  }));
+}
+
+function deriveVictimReason(
+  tab: PaneTab,
+  metadata: PaneMetadata | undefined,
+  volatileMetadata: PaneVolatileMetadata | undefined,
+): PaneCloseVictim["reason"] | null {
+  if (deriveDisplayStatus(metadata, volatileMetadata) === "working") return "working";
+  if (tab.agentKind || metadata?.agentKind || metadata?.processIsShell === false) return "agent";
+  return null;
+}
+
+export function paneCloseImpactMessage(victims: readonly PaneCloseVictim[]): string {
+  const listed = victims.slice(0, 5).map((victim) => `・${victim.label}`);
+  const remaining = victims.length - listed.length;
+  if (remaining > 0) listed.push(`ほか ${remaining} 件`);
+  return [
+    `稼働中のペインが ${victims.length} 個あります。閉じると、まとめて終了します。`,
+    ...listed,
+  ].join("\n");
+}

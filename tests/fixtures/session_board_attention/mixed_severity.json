@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "snap-20260830T120000-65dd43a8317a",
+  "generated_at": "2026-08-30T12:00:00.000Z",
+  "source_watermark": 4,
+  "coverage": {
+    "state": "partial",
+    "expected_sessions": 8,
+    "observed_sessions": 8,
+    "stale_sessions": 4,
+    "failed_probes": 0,
+    "status_untracked_sessions": 4
+  },
+  "items": [
+    {
+      "attention_id": "incident-1b3bb9d6381c8505",
+      "incident_group_id": "worktree-isolation:repo-blocking",
+      "kind": "no_worktree_isolation",
+      "severity": "blocking",
+      "requires_human_action": true,
+      "actor": "human",
+      "summary": "1 lane lacks isolated writer worktrees for repo-blocking",
+      "why_now": "Writer attribution can become ambiguous before the next file change.",
+      "next_action": {
+        "type": "open_assignment_panel",
+        "label": "Assign isolated worktrees",
+        "target": "repo-blocking"
+      },
+      "affected_lane_ids": [
+        "lane-blocking"
+      ],
+      "evidence_refs": [
+        "event:1"
+      ],
+      "first_seen_at": "2026-08-30T11:58:00.000Z",
+      "last_changed_at": "2026-08-30T11:58:00.000Z",
+      "freshness": "fresh",
+      "rank": 1
+    },
+    {
+      "attention_id": "incident-a6d0507a7c722f60",
+      "incident_group_id": "delivery-verification:41af85857415",
+      "kind": "delivery_verification_failure",
+      "severity": "warning",
+      "requires_human_action": true,
+      "actor": "human",
+      "summary": "Verification failed for 3 deliveries across 3 lanes",
+      "why_now": "The latest delivery evidence is inconclusive: screen verification mismatch",
+      "next_action": {
+        "type": "open_delivery",
+        "label": "Inspect delivery evidence",
+        "target": "1"
+      },
+      "affected_lane_ids": [
+        "lane-delivery-1",
+        "lane-delivery-2",
+        "lane-delivery-3"
+      ],
+      "evidence_refs": [
+        "delivery:1",
+        "delivery:2",
+        "delivery:3",
+        "event:2",
+        "event:3",
+        "event:4"
+      ],
+      "first_seen_at": "2026-08-30T11:57:00.000Z",
+      "last_changed_at": "2026-08-30T11:57:00.000Z",
+      "freshness": "fresh",
+      "rank": 2
+    },
+    {
+      "attention_id": "incident-6d659fefd75a3dbd",
+      "incident_group_id": "observation-coverage:stale",
+      "kind": "stale_session",
+      "severity": "advisory",
+      "requires_human_action": true,
+      "actor": "human",
+      "summary": "Presence is stale for 4 sessions",
+      "why_now": "The current attention count may be based on outdated presence.",
+      "next_action": {
+        "type": "run_collection",
+        "label": "Refresh session observations",
+        "target": "presence"
+      },
+      "affected_lane_ids": [
+        "lane-stale-1",
+        "lane-stale-2",
+        "lane-stale-3",
+        "lane-stale-4"
+      ],
+      "evidence_refs": [
+        "session:session-lane-stale-1",
+        "session:session-lane-stale-2",
+        "session:session-lane-stale-3",
+        "session:session-lane-stale-4"
+      ],
+      "first_seen_at": "2026-08-30T11:55:00.000Z",
+      "last_changed_at": "2026-08-30T11:55:00.000Z",
+      "freshness": "stale",
+      "rank": 3
+    }
+  ]
+}

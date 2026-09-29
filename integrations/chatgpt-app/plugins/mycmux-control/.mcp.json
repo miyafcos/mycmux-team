@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "mycmux-control": {
+      "cwd": ".",
+      "command": "python",
+      "args": [
+        "./server/mycmux_control_server.py"
+      ],
+      "env_vars": [
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PATH",
+        "MYCMUX_AGENT_CLI",
+        "MYCMUX_REPO_ROOT",
+        "MYCMUX_CHATGPT_STATE_DIR"
+      ],
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 30
+    }
+  }
+}

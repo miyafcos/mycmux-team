@@ -1,0 +1,225 @@
+:root {
+  font-family: Inter, "Segoe UI", "Yu Gothic UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --cmux-overlay-full-width: 100%;
+  --cmux-overlay-full-height: 100%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-width: 1180px;
+  min-height: 760px;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+button,
+summary {
+  font: inherit;
+}
+
+.grouping-live-mock {
+  position: relative;
+  min-height: 100%;
+  color: var(--cmux-text);
+  background:
+    radial-gradient(circle at 78% -12%, color-mix(in srgb, var(--cmux-accent) 14%, transparent), transparent 38%),
+    var(--cmux-bg);
+}
+
+.grouping-live-mock__topbar {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 40;
+  height: 64px;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--cmux-border);
+  background: color-mix(in srgb, var(--cmux-surface) 92%, transparent);
+  backdrop-filter: blur(16px);
+}
+
+.grouping-live-mock__brand {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.grouping-live-mock__brand strong {
+  font-size: 17px;
+  letter-spacing: 0.02em;
+}
+
+.grouping-live-mock__brand span {
+  color: var(--cmux-text-secondary);
+  font-size: 12px;
+}
+
+.grouping-live-mock__theme-controls,
+.grouping-live-mock__controls {
+  display: flex;
+  gap: 8px;
+}
+
+.grouping-live-mock__button {
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 1px solid var(--cmux-border);
+  border-radius: 7px;
+  color: var(--cmux-text);
+  background: var(--cmux-surface-raised);
+  cursor: pointer;
+}
+
+.grouping-live-mock__button:hover {
+  border-color: var(--cmux-accent);
+}
+
+.grouping-live-mock__button.is-active {
+  color: var(--cmux-on-accent);
+  border-color: var(--cmux-accent);
+  background: var(--cmux-accent);
+}
+
+.grouping-live-mock__guide {
+  position: fixed;
+  z-index: 30;
+  left: 18px;
+  top: 82px;
+  bottom: 18px;
+  width: 316px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  border: 1px solid var(--cmux-border);
+  border-radius: 10px;
+  background: var(--cmux-surface-raised);
+  box-shadow: var(--cmux-shadow-dialog);
+}
+
+.grouping-live-mock__eyebrow {
+  margin: 0;
+  color: var(--cmux-accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.grouping-live-mock__guide h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.35;
+}
+
+.grouping-live-mock__guide-copy {
+  min-height: 235px;
+}
+
+.grouping-live-mock__guide-copy ul {
+  margin: 14px 0;
+  padding-left: 20px;
+  color: var(--cmux-text-secondary);
+  line-height: 1.65;
+}
+
+.grouping-live-mock__next {
+  margin: 0;
+  padding: 11px 12px;
+  border-left: 3px solid var(--cmux-accent);
+  color: var(--cmux-text);
+  background: color-mix(in srgb, var(--cmux-accent) 8%, var(--cmux-surface));
+  line-height: 1.5;
+}
+
+.grouping-live-mock__guide-footer {
+  margin-top: auto;
+  display: grid;
+  gap: 10px;
+}
+
+.grouping-live-mock__status {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--cmux-border);
+  color: var(--cmux-text-secondary);
+  font-size: 11px;
+}
+
+.grouping-live-mock__status strong {
+  color: var(--cmux-usage-ok);
+}
+
+.grouping-live-mock__instructions {
+  color: var(--cmux-text-secondary);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.grouping-live-mock__instructions summary {
+  color: var(--cmux-text);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.grouping-live-mock__instructions ol {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.grouping-live-mock__dashboard-frame {
+  position: fixed;
+  z-index: 1;
+  left: 350px;
+  top: 78px;
+  right: 18px;
+  bottom: 18px;
+  border: 1px solid var(--cmux-border-hairline);
+  border-radius: 12px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--cmux-border) 32%, transparent) 1px, transparent 1px),
+    linear-gradient(color-mix(in srgb, var(--cmux-border) 22%, transparent) 1px, transparent 1px),
+    var(--cmux-surface);
+  background-size: 64px 64px;
+}
+
+html[data-live-mock="MYCMUX_GROUPING_LIVE_MOCK"] > body > .cmux-overlay-backdrop {
+  position: fixed !important;
+  z-index: 20 !important;
+  inset: 82px 22px 22px 354px !important;
+  padding: 0 !important;
+  background: transparent !important;
+  backdrop-filter: none !important;
+}
+
+html[data-live-mock="MYCMUX_GROUPING_LIVE_MOCK"] > body > .cmux-overlay-backdrop .cmux-overlay-panel {
+  max-width: none !important;
+  max-height: none !important;
+}
+
+@media (max-height: 840px) {
+  .grouping-live-mock__guide {
+    padding: 16px;
+    gap: 10px;
+  }
+
+  .grouping-live-mock__guide h1 {
+    font-size: 20px;
+  }
+
+  .grouping-live-mock__guide-copy {
+    min-height: 200px;
+  }
+}

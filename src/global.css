@@ -1,0 +1,1705 @@
+/* Bundled terminal typeface. -------------------------------------------------
+   The font is shipped rather than named, because that is what makes the
+   terminal grid hold. UDEV Gothic advances a halfwidth glyph 0.5em and a
+   fullwidth one 1.0em, so one CJK cell is exactly two ASCII cells. Every
+   monospace face macOS ships advances halfwidth at 0.6em instead (Menlo and SF
+   Mono both), which leaves roughly 3px of slack per fullwidth character and
+   pulls Japanese tables and box drawing out of alignment. Measured on the Mac
+   on 2026-09-10: none of the families the presets named were installed there --
+   not UDEV Gothic, JetBrains Mono, Consolas, BIZ UDGothic nor MS Gothic -- so
+   every preset fell through to Menlo plus Hiragino Sans at a ratio of 1.661.
+   Licensed under the SIL Open Font License 1.1; see assets/fonts/OFL.txt. */
+@font-face {
+  font-family: "UDEV Gothic NF";
+  src: url("./assets/fonts/UDEVGothicNF-Regular.woff") format("woff");
+  font-weight: 400;
+  font-style: normal;
+  /* `block`, not `swap`: the WebGL renderer bakes a glyph atlas from whichever
+     face is resolved at first paint, and a swap after that point leaves the
+     atlas holding fallback metrics for the rest of the session. */
+  font-display: block;
+}
+
+@font-face {
+  font-family: "UDEV Gothic NF";
+  src: url("./assets/fonts/UDEVGothicNF-Bold.woff") format("woff");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
+:root {
+  --cmux-bg: #0a0a0a;
+  --cmux-bg-solid: #0a0a0a;
+  --cmux-surface-solid: #161616;
+  --cmux-sidebar: #1E1E1E;
+  --cmux-popover: #262626;
+  --cmux-accent: #0A84FF;
+  /* Accent tuned for text: AppShell re-derives it per theme so glyphs keep the
+     AA floor against the chrome background. Fills/borders use --cmux-accent. */
+  --cmux-accent-text: #0A84FF;
+  --cmux-border: rgba(255, 255, 255, 0.1);
+  --cmux-border-hairline: rgba(255, 255, 255, 0.07);
+  --cmux-text: rgba(255, 255, 255, 0.9);
+  --cmux-text-secondary: rgba(255, 255, 255, 0.6);
+  --cmux-text-tertiary: rgba(255, 255, 255, 0.3);
+  /* --cmux-text-dim is the legacy alias used by older surfaces; new low-emphasis
+     text should prefer --cmux-text-tertiary unless a softer legacy match is needed. */
+  --cmux-text-dim: rgba(255, 255, 255, 0.42);
+  --cmux-title-bg: #111111;
+  --cmux-surface: #161616;
+  --cmux-surface-raised: #1f1f1f;
+  --cmux-terminal-bg: #0a0a0a;
+  --cmux-hover: rgba(255, 255, 255, 0.06);
+  --cmux-selected: rgba(255, 255, 255, 0.08);
+  --cmux-red: #ff5555;
+  --cmux-yellow: #f5c542;
+  /* Boot ground: the inline script in index.html overrides these on
+     documentElement from the last known theme before React mounts. */
+  --cmux-boot-bg: #0a0a0a;
+  --cmux-boot-fg: #ededed;
+  --cmux-on-accent: #ffffff;
+  --cmux-on-working: #ffffff;
+  --cmux-on-waiting: #0a0a0a;
+  --cmux-on-done: #0a0a0a;
+  --cmux-on-error: #ffffff;
+  --cmux-on-stall: #ffffff;
+  --cmux-backdrop: rgba(0, 0, 0, 0.55);
+  --cmux-blur-overlay: blur(10px) saturate(1.2);
+  --cmux-motion-fast: 120ms;
+  --cmux-motion-base: 160ms;
+  --cmux-motion-slow: 240ms;
+  --cmux-ease: cubic-bezier(0.2, 0, 0, 1);
+  --cmux-edge-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --cmux-font-size-xs: 11px;
+  --cmux-font-size-sm: 12px;
+  --cmux-font-size-md: 13px;
+  /* UI chrome line-height, driven by the density setting (AppShell overrides
+     per uiDensity). "normal" keeps the historical look for "standard". */
+  --cmux-line-height-ui: normal;
+  /* UI chrome. The Japanese faces are named explicitly because the generic
+     sans-serif fallback differs per platform; on macOS this resolves to
+     Hiragino Sans, the best Japanese UI face the system ships. */
+  --cmux-font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", Meiryo, Roboto, sans-serif;
+  --cmux-dash-ui-font: var(--cmux-font-ui);
+  --cmux-dash-body-font: var(--cmux-font-mono);
+  --cmux-dash-font-size: var(--cmux-font-size-sm);
+  --cmux-dash-line-height: var(--cmux-line-height-ui);
+  /* "UDEV Gothic NF" is the bundled face declared above, so this resolves to
+     the same glyphs on every platform. The rest is a safety net for a build
+     whose font assets failed to load. */
+  --cmux-font-mono: "UDEV Gothic NF", "UDEV Gothic", ui-monospace, SFMono-Regular, "JetBrains Mono", Consolas, monospace;
+  --cmux-focus-ring: color-mix(in srgb, var(--cmux-accent) 45%, transparent);
+  --cmux-dnd-tab: #38bdf8;
+  --cmux-dnd-pane: #f59e0b;
+  --cmux-usage-ok: #3eb86b;
+  --cmux-usage-warn: #f5a623;
+  --cmux-usage-danger: #ff3b30;
+  --cmux-shadow-menu: var(--cmux-edge-highlight), 0 4px 12px rgba(0, 0, 0, 0.5);
+  --cmux-shadow-popover: var(--cmux-edge-highlight), 0 4px 16px rgba(0,0,0,0.4);
+  --cmux-shadow-dropdown: var(--cmux-edge-highlight), 0 10px 24px rgba(0, 0, 0, 0.32);
+  --cmux-shadow-dialog: var(--cmux-edge-highlight), 0 2px 8px rgba(0,0,0,0.24), 0 18px 60px rgba(0,0,0,0.45);
+  --cmux-shadow-palette: var(--cmux-edge-highlight), 0 2px 8px rgba(0,0,0,0.24), 0 24px 70px rgba(0,0,0,0.45);
+  --cmux-shadow-pane-menu: var(--cmux-edge-highlight), 0 4px 12px rgba(0,0,0,0.2);
+  --cmux-shadow-dnd:
+    0 14px 34px rgba(0, 0, 0, 0.36),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --cmux-shadow-dnd-strong:
+    0 16px 38px rgba(0, 0, 0, 0.42),
+    0 0 24px color-mix(in srgb, var(--pane-dnd-color) 22%, transparent);
+  --cmux-shadow-dnd-label: 0 6px 18px rgba(0, 0, 0, 0.34);
+  --cmux-space-1: 2px;
+  --cmux-space-2: 4px;
+  --cmux-space-3: 6px;
+  --cmux-space-4: 8px;
+  --cmux-space-5: 10px;
+  --cmux-space-6: 12px;
+  --cmux-space-7: 16px;
+  --cmux-radius-sm: 4px;
+  --cmux-radius-md: 6px;
+  --cmux-radius-lg: 8px;
+  /* Dashboard card geometry (mock 2026-08-11): cards sit on a 10px radius and
+     every state pill is a full round. */
+  --cmux-radius-card: 10px;
+  --cmux-radius-pill: 999px;
+  /* "止まってるかも" (noUpdate). The other four states reuse --status-*; this is
+     the only state without one, so it gets its own hue instead of the warning
+     yellow it used to borrow. */
+  --cmux-status-stall: #b48ead;
+  --sash-size: 4px !important;
+
+  --status-working: #3b82f6;
+  --status-waiting: #f59e0b;
+  --status-done:    #10b981;
+  --status-error:   #ef4444;
+  --notification-color: #f59e0b;
+
+  /* Keep chrome text and icons crisp. Readability comes from the panel surface
+     and explicit borders instead of multi-layer glow effects. */
+  --cmux-chrome-icon-shadow: none;
+  --cmux-chrome-text-shadow: none;
+  --cmux-overlay-z: 1000;
+  --cmux-overlay-z-top: 9999;
+  --cmux-overlay-gutter: 16px;
+  --cmux-overlay-full-width: min(1680px, calc(100vw - 48px));
+  --cmux-overlay-full-height: calc(100vh - 48px);
+  --cmux-overlay-wide-width: min(1280px, calc(100vw - 48px));
+  --cmux-overlay-wide-height: min(900px, calc(100vh - 64px));
+  --cmux-overlay-dialog-width: min(920px, calc(100vw - 32px));
+  --cmux-overlay-dialog-height: min(640px, calc(100vh - 80px));
+  --cmux-overlay-radius: 10px;
+}
+
+@keyframes cmux-overlay-backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes cmux-overlay-panel-in {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes cmux-overlay-backdrop-out {
+  to { opacity: 0; }
+}
+
+@keyframes cmux-overlay-panel-out {
+  to {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+}
+
+.cmux-overlay-backdrop {
+  background: var(--cmux-backdrop);
+  backdrop-filter: var(--cmux-blur-overlay);
+  animation: cmux-overlay-backdrop-in var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-overlay-panel {
+  transform-origin: top center;
+  box-shadow: var(--cmux-edge-highlight);
+  animation: cmux-overlay-panel-in var(--cmux-motion-base) var(--cmux-ease);
+}
+
+.cmux-popover-panel {
+  transform-origin: top center;
+  box-shadow: var(--cmux-edge-highlight);
+  animation: cmux-overlay-panel-in var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+/* See-through mode: for a settings tab whose controls change what is behind
+   the dialog. The scrim and blur come off so the terminal shows, and the panel
+   itself fades until it is hovered or focused — adjust a control, move the
+   pointer off, and the result is on the real terminal. Without this the dialog
+   covers the very thing being adjusted and had to be closed to see it. */
+.cmux-overlay-backdrop[data-see-through="true"] {
+  background: transparent;
+  backdrop-filter: none;
+}
+
+.cmux-overlay-panel[data-see-through="true"] {
+  opacity: 0.26;
+  transition: opacity var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-overlay-panel[data-see-through="true"]:hover,
+.cmux-overlay-panel[data-see-through="true"]:focus-within {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cmux-overlay-panel[data-see-through="true"] {
+    transition: none;
+  }
+}
+
+.cmux-overlay-backdrop.is-closing {
+  animation: cmux-overlay-backdrop-out var(--cmux-motion-fast) var(--cmux-ease);
+  animation-fill-mode: forwards;
+  pointer-events: none;
+}
+
+.cmux-overlay-panel.is-closing,
+.cmux-popover-panel.is-closing {
+  animation: cmux-overlay-panel-out var(--cmux-motion-fast) var(--cmux-ease);
+  animation-fill-mode: forwards;
+  pointer-events: none;
+}
+
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--cmux-bg);
+  color: var(--cmux-text);
+  line-height: var(--cmux-line-height-ui);
+  font-family: var(--cmux-dash-ui-font);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* macOS draws text through CoreText, which applies almost no hinting, and
+   `-webkit-font-smoothing: antialiased` forces greyscale antialiasing on top
+   of that and thins every glyph further. Windows ignores the property and
+   draws through DirectWrite, which hints and thickens. Photographed side by
+   side on 2026-09-10 at 1x, the same tokens read as solid text on Windows and
+   as faint grey on the Mac -- the section headings at --cmux-text-tertiary
+   were close to invisible. Letting CoreText render at its own weight is the
+   whole fix; the property stays on elsewhere, where WebKitGTK wants it. */
+:root[data-platform="mac"] #root {
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+}
+
+.cmux-pill {
+  background: color-mix(in srgb, var(--cmux-text) 18%, transparent);
+  color: var(--cmux-text);
+  border-radius: 9999px;
+  /* Efeito Capsule */
+  padding: var(--cmux-space-1) var(--cmux-space-4);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Sidebar tab item: show close button on hover */
+div:hover>.tab-close-btn {
+  opacity: 1 !important;
+}
+
+div:focus-within > .tab-close-btn,
+.tab-close-btn:focus-visible {
+  opacity: 1 !important;
+}
+
+.tab-close-btn {
+  transition: opacity var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.tab-close-btn:hover {
+  color: var(--cmux-text) !important;
+}
+
+/* Icons in chrome stay flat so thin strokes remain crisp over translucent UI. */
+.cmux-title-btn svg,
+.pane-action-btn svg,
+.pane-tab-pill svg {
+  filter: var(--cmux-chrome-icon-shadow);
+}
+
+/* Title bar text + pane tab labels use the same flat treatment. The
+   [data-cmux-brand] selector went with the TERMINAL word it styled. */
+[data-tauri-drag-region] > span,
+.pane-tab-label {
+  text-shadow: var(--cmux-chrome-text-shadow);
+}
+
+/* Scrollbars.
+
+   Only the all-tabs dropdown had ever been styled, so every other scrollable
+   surface fell back to the engine default. On the Mac that is a permanently
+   drawn bar: measured beside a pane at 10px wide and 900px tall in
+   rgb(55, 58, 61), against a terminal ground of rgb(17, 19, 20) — brighter and
+   wider than the split seam next to it, and the loudest piece of chrome in the
+   window after the text itself.
+
+   The gutter keeps its width so the bar stays as easy to grab as it was; the
+   thumb is drawn inset with a transparent border, so what the eye sees is a
+   hairline that darkens under the pointer. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--cmux-text) 16%, transparent) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--cmux-text) 16%, transparent);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--cmux-text) 30%, transparent);
+  background-clip: padding-box;
+}
+
+/* xterm.js overrides for crisp rendering */
+.xterm {
+  padding: 0;
+  background: transparent;
+}
+
+.xterm-viewport {
+  overflow-y: hidden !important;
+  background: transparent !important;
+}
+
+/* Pane action buttons */
+.pane-action-btn {
+  background: none;
+  border: none;
+  color: var(--cmux-text-tertiary);
+  cursor: pointer;
+  padding: 3px;
+  display: flex;
+  align-items: center;
+  /* radius-md, not sm: at 4px the hover fill read as a square behind a round
+     glyph. 6px against an 18px button is the proportion macOS uses for a
+     toolbar control, and the fill stops competing with the icon. */
+  border-radius: var(--cmux-radius-md);
+  transition: color var(--cmux-motion-fast) var(--cmux-ease), background var(--cmux-motion-fast) var(--cmux-ease), transform var(--cmux-motion-fast) var(--cmux-ease);
+}
+.pane-action-btn:hover {
+  color: var(--cmux-text);
+  background: var(--cmux-hover);
+}
+
+/* Same control as .pane-action-btn, one band away, and it was carrying half
+   the radius: 3px against 6px. The comment on that rule applies here word for
+   word -- a tight corner makes the hover fill read as a square behind a round
+   icon -- and two rows of icon buttons that round differently is the kind of
+   thing you feel before you can name it. */
+.cmux-title-btn {
+  border-radius: var(--cmux-radius-md);
+  transition: background var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease), transform var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-title-btn:hover {
+  background: var(--cmux-hover) !important;
+  color: var(--cmux-text-secondary) !important;
+}
+
+.cmux-title-btn.cmux-title-btn--close:hover {
+  background: color-mix(in srgb, var(--cmux-red) 22%, transparent) !important;
+  color: var(--cmux-red) !important;
+}
+
+.cmux-menu-item {
+  transition: background var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-menu-item:hover:not(:disabled) {
+  background: var(--cmux-hover) !important;
+}
+
+.cmux-workspace-item {
+  border: 1px solid transparent;
+  transition: background var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease), border-color var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-workspace-item:hover:not([data-active-workspace="true"]) {
+  background: var(--cmux-hover) !important;
+  color: var(--cmux-text) !important;
+  border-color: var(--cmux-border);
+}
+
+.tab-workspace-item {
+  transition: background var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease), border-color var(--cmux-motion-fast) var(--cmux-ease), box-shadow var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.tab-workspace-item:hover:not([data-active-workspace="true"]) {
+  background: var(--cmux-hover) !important;
+  color: var(--cmux-text) !important;
+}
+
+.tab-new-workspace-btn {
+  transition: background var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease), transform var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.tab-new-workspace-btn:hover:not([data-pane-drag-active="true"]) {
+  background: var(--cmux-hover) !important;
+  color: var(--cmux-text-secondary) !important;
+}
+
+.cmux-title-btn:active:not(:disabled),
+.pane-action-btn:active:not(:disabled),
+.tab-new-workspace-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.cmux-notification-item {
+  transition: background var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-notification-item:hover {
+  background: var(--cmux-hover) !important;
+}
+
+.cmux-notification-dismiss {
+  transition:
+    background var(--cmux-motion-fast) var(--cmux-ease),
+    color var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-notification-dismiss:hover {
+  background: var(--cmux-hover) !important;
+  color: var(--cmux-text) !important;
+}
+
+.pane-tabbar {
+  background: var(--pane-tabbar-bg, var(--cmux-surface-raised)) !important;
+  box-shadow: var(--cmux-edge-highlight);
+  container-type: inline-size;
+}
+
+/* The all-tabs dropdown necessarily floats over pane borders and neighbouring
+   tab bars, so it needs an overlay scrollbar instead of the chunky default
+   gutter that read as a stray line against the pane edge. */
+.pane-tab-menu {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--cmux-text) 22%, transparent) transparent;
+}
+
+.pane-tab-menu::-webkit-scrollbar {
+  width: 10px;
+}
+
+.pane-tab-menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.pane-tab-menu::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--cmux-text) 18%, transparent);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+.pane-tab-menu::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--cmux-text) 30%, transparent);
+  background-clip: padding-box;
+}
+
+.pane-tab-menu-row {
+  transition: background var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.pane-tab-menu-row:hover,
+.pane-tab-menu-row:focus-visible {
+  background: var(--cmux-hover) !important;
+}
+
+.pane-tab-pill {
+  border-right-color: var(--cmux-border-hairline) !important;
+  transition: background var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+/* The colour bar sits above the tab bar's own hairline rather than on it, so
+   an agent tab shows two lines a pixel apart. Pulling the pill down to cover
+   the hairline was tried and reverted on 2026-09-11: the tab strip clips at
+   overflow-y hidden, so the overhang is cut and the bar renders 1px instead
+   of 2 -- measured, y=71 coloured and y=72 still grey. The hairline is also
+   the bar's own edge across its whole width, which is a line worth having;
+   a browser tab reads the same way. Left as it is. */
+.pane-tab-pill.has-agent-kind {
+  border-bottom: 2px solid color-mix(in srgb, var(--agent-kind-color) 55%, transparent) !important;
+}
+
+.pane-tab-pill.has-agent-kind.is-active {
+  border-bottom-color: color-mix(in srgb, var(--agent-kind-color) 85%, transparent) !important;
+}
+
+.agent-kind-label-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--agent-kind-color);
+  flex: 0 0 6px;
+}
+
+.agent-kind-badge {
+  min-width: 52px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--agent-kind-fg);
+  background: var(--agent-kind-bg);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: normal;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.pane-tab-pill:hover {
+  background: var(--cmux-hover) !important;
+}
+
+.pane-tab-pill.is-active {
+  background: color-mix(in srgb, var(--cmux-accent) 10%, var(--cmux-selected)) !important;
+}
+
+/* Compact/micro-mode active label: transparent so the accent underline and bold
+   label carry the active signal without a full-width colored bar. */
+.pane-tab-compact,
+.pane-tab-compact:hover,
+.pane-tab-compact.is-active {
+  background: transparent !important;
+  border-right: none !important;
+}
+
+/* Pinned tab. Declared after .pane-tab-compact so it outranks the earlier
+   !important backgrounds on .pane-tab-pill / .pane-tab-pill.is-active. */
+.pane-tab-pill.is-pinned {
+  background: color-mix(in srgb, var(--cmux-accent) 12%, transparent) !important;
+  box-shadow: inset 2px 0 0 var(--cmux-accent);
+  border-right: 1px solid color-mix(in srgb, var(--cmux-accent) 45%, var(--cmux-border)) !important;
+}
+
+.pane-tab-pill.is-pinned.is-active {
+  background: color-mix(in srgb, var(--cmux-accent) 18%, var(--cmux-selected)) !important;
+}
+
+.pane-tab-pill.pane-tab-chip,
+.pane-tab-pill.pane-tab-chip:hover {
+  background: transparent !important;
+  border-right: none !important;
+}
+
+.pane-tab-chip-face {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--cmux-border-hairline);
+  border-radius: 7px;
+  background: var(--cmux-hover);
+  transition: background var(--cmux-motion-fast) var(--cmux-ease), border-color var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.pane-tab-chip.has-agent-kind .pane-tab-chip-face {
+  border-color: color-mix(in srgb, var(--agent-kind-color) 30%, var(--cmux-border-hairline));
+  background: color-mix(in srgb, var(--agent-kind-color) 8%, transparent);
+}
+
+.pane-tab-chip:hover .pane-tab-chip-face {
+  background: var(--cmux-selected);
+}
+
+.pane-tab-chip.has-agent-kind:hover .pane-tab-chip-face {
+  background: color-mix(in srgb, var(--agent-kind-color) 16%, transparent);
+}
+
+.pane-tab-chip.is-pinned .pane-tab-chip-face {
+  border-color: var(--cmux-accent);
+  box-shadow: 0 0 0 1px var(--cmux-accent);
+}
+
+.pane-tab-chip.is-savepoint-write-target .pane-tab-chip-face {
+  box-shadow: 0 0 0 2px var(--cmux-accent);
+}
+
+.pane-tab-chip-pin-badge {
+  position: absolute;
+  top: 4px;
+  right: 1px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--cmux-surface-raised);
+  color: var(--cmux-accent-text);
+  pointer-events: none;
+}
+
+.pane-tab-chip-preview {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  max-width: 200px;
+  padding: 0 10px 0 7px;
+  overflow: hidden;
+  white-space: nowrap;
+  border: 1px solid var(--cmux-border);
+  border-radius: 14px;
+  background: var(--cmux-surface-raised);
+  box-shadow: var(--cmux-shadow-pane-menu);
+  pointer-events: none;
+  z-index: 5;
+  animation: cmux-chip-preview-in var(--cmux-motion-base) var(--cmux-ease);
+}
+
+.pane-tab-chip-preview.is-left {
+  transform-origin: right center;
+}
+
+@keyframes cmux-chip-preview-in {
+  from { opacity: 0; max-width: 26px; }
+  to { opacity: 1; max-width: 200px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pane-tab-chip-preview { animation: none; }
+}
+
+.pane-tab-pin-btn {
+  opacity: 0;
+  transition: opacity var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.pane-tab-pill:hover .pane-tab-pin-btn,
+.pane-tab-pill.is-active .pane-tab-pin-btn,
+.pane-tab-pin-btn:focus-visible,
+.pane-tab-pin-btn.is-pinned {
+  opacity: 1;
+}
+
+.pane-tab-pin-btn.is-pinned,
+.pane-tab-menu-pin-btn.is-pinned {
+  color: var(--cmux-accent-text);
+}
+
+.pane-tab-restore-badge.is-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--cmux-accent) 58%, var(--cmux-border));
+  border-radius: 999px;
+  color: var(--cmux-accent-text);
+  line-height: 1;
+  width: auto;
+  padding: 0 5px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ui-cmux .pane-tab-label {
+  font-family: var(--cmux-font-mono) !important;
+}
+
+.pane-tab-label.is-deferred-restore {
+  opacity: 0.72;
+}
+
+.xterm-screen {
+  background: transparent;
+}
+
+.xterm .xterm-screen canvas {
+  background: transparent !important;
+}
+
+/* WebKitGTK font rendering improvements */
+.xterm-rows {
+  font-variant-ligatures: none;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+
+/* Same reason as #root above: on macOS this thins terminal glyphs that are
+   already light. Only reaches the DOM renderer -- the WebGL one bakes its own
+   atlas and ignores CSS text properties. */
+:root[data-platform="mac"] .xterm-rows {
+  -webkit-font-smoothing: auto;
+}
+
+
+/* Keep a thin visible divider and accent it on hover */
+/* The sash paints the pane backdrop, not the raw wallpaper: a bare gap reads
+   as a bright seam between panes on every wallpaper lighter than the theme. */
+[class*="sash"] {
+  background: var(--cmux-bg) !important;
+}
+
+[class*="sash"]::before {
+  /* Hairline, not border. The panes on either side already separate themselves
+     by surface lightness — measured on the Mac, 24,27,29 against 17,19,20 —
+     and a seam drawn brighter than both of them is a third thing competing
+     with the two it sits between. macOS leaves a split alone until the pointer
+     is on it, which the hover rule below already does. */
+  background: var(--cmux-border-hairline) !important;
+  transition: background var(--cmux-motion-fast) var(--cmux-ease);
+}
+[class*="sash"]:hover::before,
+[class*="sash"][class*="active"]::before {
+  background: var(--cmux-accent) !important;
+}
+
+.cmux-status-dot {
+  transition: background var(--cmux-motion-base) var(--cmux-ease);
+}
+
+@keyframes cmux-badge-pop {
+  from { transform: scale(0.5); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.cmux-badge-pop {
+  animation: cmux-badge-pop var(--cmux-motion-base) var(--cmux-ease);
+}
+
+@keyframes cmux-spin {
+  to { transform: rotate(360deg); }
+}
+
+.cmux-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-top-color: currentColor;
+  animation: cmux-spin 0.8s linear infinite;
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+/* Notification pulse — gentle breathing for panes needing attention.
+   Opacity rather than border-color: a colour animation is painted on the CPU,
+   and this ring spans the whole pane, so every frame repainted a pane-sized
+   area for as long as the notification stood. Opacity is composited, and the
+   ring is the only thing the pseudo-element draws, so it looks the same. */
+@keyframes notificationPulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+
+/* Japanese IME composition styling */
+.xterm .composition-view {
+  background: var(--cmux-surface) !important;
+  color: var(--cmux-text) !important;
+  border: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  outline: 1px solid color-mix(in srgb, var(--cmux-accent) 60%, transparent);
+  box-sizing: content-box !important;
+  letter-spacing: 0 !important;
+  pointer-events: none;
+}
+
+/* Active pane border overlay — uses ::after pseudo-element to avoid
+   Allotment's overflow:hidden clipping on .splitViewView wrappers. */
+.terminal-pane-border::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+  /* A 2px accent line drawn around the whole pane is a Windows convention.
+     macOS marks the focused surface with a thin ring and a soft spread just
+     outside it, which reads as depth rather than as a frame somebody drew. The
+     width is fixed at 1px so the transition animates colour and glow alone:
+     animating border-width made the edge step a pixel part-way through the
+     fade, which is visible on every pane click. */
+  border: 1px solid var(--pane-border-color, transparent);
+  box-shadow: var(--pane-focus-glow, none);
+  transition:
+    border-color 0.15s var(--cmux-ease),
+    box-shadow 0.15s var(--cmux-ease);
+}
+
+.cmux-terminal-grid-fit [class*="splitView"],
+.cmux-terminal-grid-fit [class*="splitViewContainer"],
+.cmux-terminal-grid-fit [class*="splitViewView"] {
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+.cmux-terminal-grid-fit {
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden !important;
+}
+
+.cmux-terminal-grid-fit [class*="splitViewContainer"] {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* A zoomed pane must escape Allotment's pane-level clipping so the app-wide
+   AppShell background remains continuous behind the enlarged terminal. */
+[class*="splitView"]:has(.terminal-pane-border[data-pane-zoomed="true"]) {
+  overflow: visible !important;
+}
+
+/* While a pane is zoomed, hide the underlying layout instead of letting its
+   translucent panels show through as a shadow behind the zoomed terminal. */
+[data-cmux-zoom-active="true"] [data-cmux-hide-during-pane-zoom="true"],
+[data-cmux-zoom-active="true"] .terminal-pane-border:not([data-pane-zoomed="true"]),
+[data-cmux-zoom-active="true"] [class*="sash"] {
+  visibility: hidden !important;
+}
+
+/* Persistent notification border. Active panes keep the active accent border. */
+.terminal-pane-border.has-notification:not([data-active-pane="true"])::after {
+  border-width: 2px;
+  border-color: var(--notification-color);
+  animation: notificationPulse 2.5s ease-in-out infinite;
+  will-change: opacity;
+}
+
+.terminal-pane-border.has-notification[data-active-pane="true"]::after {
+  animation: none;
+}
+
+/* The pane composer's send affordance appears only once there is text to send. */
+@keyframes cmux-composer-send-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Pane/tab drag-and-drop affordances */
+@keyframes paneDragGhostFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes paneDropPreviewPulse {
+  0%, 100% {
+    opacity: 0.78;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pane-dnd-color) 54%, transparent);
+  }
+  50% {
+    opacity: 1;
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--pane-dnd-color) 78%, transparent),
+      0 0 24px color-mix(in srgb, var(--pane-dnd-color) 24%, transparent);
+  }
+}
+
+.pane-drag-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1000;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(320px, calc(100vw - 32px));
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--pane-dnd-color) 58%, var(--cmux-border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--cmux-surface) 92%, black);
+  color: var(--cmux-text);
+  box-shadow: var(--cmux-shadow-dnd);
+  pointer-events: none;
+  user-select: none;
+  animation: paneDragGhostFadeIn 0.12s ease-out;
+  transition: border-color 0.14s ease, background 0.14s ease, box-shadow 0.14s ease;
+}
+
+.pane-drag-ghost--tab {
+  --pane-dnd-color: var(--cmux-dnd-tab);
+}
+
+.pane-drag-ghost--pane {
+  --pane-dnd-color: var(--cmux-dnd-pane);
+  padding: 10px 12px;
+}
+
+.pane-drag-ghost--savepoint {
+  --pane-dnd-color: var(--cmux-accent);
+  align-items: flex-start;
+  max-width: min(420px, calc(100vw - 32px));
+}
+
+.pane-drag-ghost--savepoint .pane-drag-ghost-label {
+  flex: 0 1 112px;
+  max-width: 112px;
+}
+
+.pane-drag-ghost--savepoint .pane-drag-ghost-meta {
+  min-width: 0;
+  flex: 1 1 240px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.pane-drag-ghost.is-droppable {
+  border-color: color-mix(in srgb, var(--pane-dnd-color) 82%, white);
+  background: color-mix(in srgb, var(--pane-dnd-color) 14%, var(--cmux-surface));
+  box-shadow: var(--cmux-shadow-dnd-strong);
+}
+
+.pane-drag-ghost-tab-mark {
+  width: 18px;
+  height: 12px;
+  border-radius: 4px 4px 2px 2px;
+  border: 1px solid color-mix(in srgb, var(--cmux-dnd-tab) 75%, white);
+  border-bottom-width: 3px;
+  background: color-mix(in srgb, var(--cmux-dnd-tab) 18%, transparent);
+  flex-shrink: 0;
+}
+
+.pane-drag-ghost-pane-mark {
+  display: grid;
+  grid-template-columns: repeat(2, 9px);
+  grid-template-rows: repeat(2, 7px);
+  gap: 3px;
+  padding: 2px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--cmux-dnd-pane) 65%, white);
+  background: color-mix(in srgb, var(--cmux-dnd-pane) 14%, transparent);
+  flex-shrink: 0;
+}
+
+.pane-drag-ghost-pane-mark span {
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--cmux-dnd-pane) 72%, transparent);
+}
+
+.pane-drag-ghost-savepoint-mark {
+  width: 16px;
+  height: 20px;
+  flex-shrink: 0;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 72%, 0 100%);
+  background: color-mix(in srgb, var(--cmux-accent) 74%, var(--cmux-surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cmux-accent) 78%, white);
+}
+
+.pane-drag-ghost-label {
+  min-width: 0;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.pane-drag-ghost-meta {
+  color: var(--cmux-text-tertiary);
+  font-size: 11px;
+  font-family: var(--cmux-font-mono);
+  flex-shrink: 0;
+}
+
+.pane-drop-preview {
+  position: absolute;
+  z-index: 30;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--pane-dnd-color) 82%, white);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--pane-dnd-color) 16%, transparent);
+  animation: paneDropPreviewPulse 0.9s ease-in-out infinite;
+}
+
+.pane-drop-preview__label,
+.pane-drop-result__label {
+  max-width: calc(100% - 18px);
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--pane-dnd-color) 70%, white);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--cmux-bg) 86%, var(--pane-dnd-color));
+  color: var(--cmux-text);
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--cmux-font-mono);
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: var(--cmux-shadow-dnd-label);
+}
+
+.pane-drop-preview--source-tab,
+.pane-drop-preview--attach-tab {
+  --pane-dnd-color: var(--cmux-dnd-tab);
+}
+
+.pane-drop-preview--source-pane {
+  --pane-dnd-color: var(--cmux-dnd-pane);
+}
+
+.pane-drop-preview--center {
+  inset: 8px;
+}
+
+.pane-drop-preview--center.pane-drop-preview--attach-tab {
+  inset: 10px 12px auto 12px;
+  height: 34px;
+  border-bottom-width: 3px;
+  background: color-mix(in srgb, var(--cmux-dnd-tab) 20%, transparent);
+}
+
+.pane-drop-preview--left,
+.pane-drop-preview--right {
+  top: 8px;
+  bottom: 8px;
+  width: min(26%, 160px);
+}
+
+.pane-drop-preview--left {
+  left: 8px;
+}
+
+.pane-drop-preview--right {
+  right: 8px;
+}
+
+.pane-drop-preview--up,
+.pane-drop-preview--down {
+  left: 8px;
+  right: 8px;
+  height: min(26%, 120px);
+}
+
+.pane-drop-preview--up {
+  top: 8px;
+}
+
+.pane-drop-preview--down {
+  bottom: 8px;
+}
+
+.pane-drop-preview--split {
+  border-style: dashed;
+}
+
+/*
+ * The pane/tab drag result, drawn over the layout at the size the drop will
+ * actually produce. Fixed, because a left/right split claims a whole column and
+ * a pane cannot paint outside its own box. It does not pulse: a still frame is
+ * easier to aim at than a breathing one.
+ */
+.pane-drop-result {
+  position: fixed;
+  z-index: 990;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid color-mix(in srgb, var(--pane-dnd-color) 82%, white);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--pane-dnd-color) 16%, transparent);
+  box-shadow: var(--cmux-shadow-dnd);
+  /* Only the move between zones is animated — the frame itself stays put. */
+  transition: left 80ms ease, top 80ms ease, width 80ms ease, height 80ms ease;
+}
+
+/* Dashed = a new tab gets cut; solid = the drop joins the tab under it. */
+.pane-drop-result--split {
+  border-style: dashed;
+}
+
+.pane-drop-result--merge {
+  border-style: solid;
+}
+
+.pane-drop-result--source-tab {
+  --pane-dnd-color: var(--cmux-dnd-tab);
+}
+
+.pane-drop-result--source-pane {
+  --pane-dnd-color: var(--cmux-dnd-pane);
+}
+
+.pane-tab-pill.is-savepoint-write-target {
+  box-shadow: inset 0 -3px 0 var(--cmux-accent);
+  animation: savepointTabWriteTarget 0.85s ease-in-out infinite;
+}
+
+.savepoint-write-preview {
+  position: absolute;
+  z-index: 31;
+  left: 18px;
+  right: 18px;
+  bottom: 16px;
+  min-height: 42px;
+  box-sizing: border-box;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 0 13px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--cmux-accent) 74%, var(--cmux-border));
+  border-radius: 8px;
+  color: var(--cmux-text);
+  background: color-mix(in srgb, var(--cmux-surface) 91%, var(--cmux-accent));
+  box-shadow:
+    0 8px 24px color-mix(in srgb, black 24%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--cmux-accent) 10%, transparent);
+  animation:
+    savepointWriteTargetIn 150ms ease-out both,
+    savepointWriteTargetGlow 1.35s ease-in-out 150ms infinite;
+}
+
+.savepoint-write-preview__prompt {
+  color: var(--cmux-accent-text);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.savepoint-write-preview__label {
+  min-width: 0;
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.savepoint-write-preview__caret {
+  width: 2px;
+  height: 17px;
+  flex: 0 0 2px;
+  border-radius: 1px;
+  background: var(--cmux-accent);
+  animation: savepointWriteCaretBlink 0.72s steps(1, end) infinite;
+}
+
+.pane-handoff-drop-chip {
+  position: absolute;
+  z-index: 32;
+  bottom: clamp(44px, 14%, 92px);
+  left: 50%;
+  max-width: calc(100% - 24px);
+  box-sizing: border-box;
+  transform: translateX(-50%);
+  pointer-events: auto;
+  padding: 8px 14px;
+  border: 1px solid color-mix(in srgb, var(--cmux-accent) 70%, var(--cmux-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--cmux-accent) 12%, var(--cmux-surface));
+  color: var(--cmux-text);
+  box-shadow:
+    0 8px 24px color-mix(in srgb, black 22%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--cmux-accent) 10%, transparent);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.pane-handoff-drop-chip.is-active {
+  border-color: color-mix(in srgb, var(--cmux-accent) 88%, white);
+  background: color-mix(in srgb, var(--cmux-accent) 22%, var(--cmux-surface));
+  box-shadow: var(--cmux-shadow-dnd-strong);
+}
+
+/* The conversation history, read over the pane it belongs to. Sits above the
+   turn chip so the chip that opened it stays reachable underneath. */
+.terminal-transcript-panel {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  width: min(72ch, calc(100% - 32px));
+  box-sizing: border-box;
+  border: 1px solid var(--cmux-border);
+  border-radius: 6px;
+  background: var(--cmux-surface);
+  color: var(--cmux-text);
+  box-shadow: var(--cmux-shadow-menu);
+  overflow: hidden;
+}
+
+.terminal-transcript-panel__head {
+  display: flex;
+  align-items: center;
+  gap: var(--cmux-space-2);
+  padding: var(--cmux-space-2) var(--cmux-space-3);
+  border-bottom: 1px solid var(--cmux-border);
+  font-size: var(--cmux-font-size-xs);
+}
+
+.terminal-transcript-panel__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-transcript-panel__link,
+.terminal-transcript-panel__close {
+  border: 0;
+  background: transparent;
+  color: var(--cmux-text-secondary);
+  cursor: pointer;
+  font-size: var(--cmux-font-size-xs);
+}
+
+.terminal-transcript-panel__link:hover,
+.terminal-transcript-panel__close:hover {
+  color: var(--cmux-text);
+}
+
+.terminal-transcript-panel__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.terminal-turn-chip {
+  position: absolute;
+  top: 8px;
+  left: 16px;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: var(--cmux-space-2);
+  max-width: min(42ch, calc(100% - 32px));
+  box-sizing: border-box;
+  padding: var(--cmux-space-2) var(--cmux-space-3);
+  border: 1px solid var(--cmux-border);
+  border-radius: 6px;
+  background: var(--cmux-surface);
+  color: var(--cmux-text);
+  box-shadow: var(--cmux-shadow-menu);
+  font-size: var(--cmux-font-size-xs);
+  line-height: 1.35;
+  pointer-events: auto;
+  opacity: 1;
+  transform: translateY(0);
+  /* The turn chip appears and leaves on its own, without the pointer asking,
+     so it takes the slow step rather than the one used for hover feedback. */
+  transition: opacity var(--cmux-motion-slow) var(--cmux-ease),
+    transform var(--cmux-motion-slow) var(--cmux-ease);
+}
+
+.terminal-turn-chip.is-leaving {
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-turn-chip {
+    transition: none;
+  }
+}
+
+.terminal-turn-chip__meta {
+  flex: 0 0 auto;
+  color: var(--cmux-accent);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.terminal-turn-chip__label {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 42ch;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--cmux-text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.terminal-turn-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 51;
+  min-width: 260px;
+  max-width: 480px;
+  max-height: 40vh;
+  margin-top: var(--cmux-space-2);
+  overflow-y: auto;
+  border: 1px solid var(--cmux-border);
+  border-radius: var(--cmux-radius-lg);
+  background: var(--cmux-surface-raised);
+  box-shadow: var(--cmux-shadow-menu);
+  font-size: inherit;
+}
+
+.terminal-turn-list__row {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: var(--cmux-space-2) var(--cmux-space-3);
+  overflow: hidden;
+  border: 0;
+  border-left: 2px solid transparent;
+  background: transparent;
+  color: var(--cmux-text);
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.terminal-turn-list__row:hover:not(.is-unreachable),
+.terminal-turn-list__row:focus-visible:not(.is-unreachable) {
+  background: var(--cmux-hover);
+}
+
+.terminal-turn-list__row.is-current {
+  border-left-color: var(--cmux-accent);
+}
+
+.terminal-turn-list__row.is-unreachable {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Still clickable, but the click leaves the terminal for the dashboard: the
+   scrollback no longer holds this turn. Dimmer than a row that scrolls in
+   place, but not as dim as one that cannot be reached at all. */
+.terminal-turn-list__row.is-elsewhere {
+  border-left-color: var(--cmux-border);
+  opacity: 0.75;
+}
+
+.terminal-turn-list__empty {
+  padding: var(--cmux-space-2) var(--cmux-space-3);
+  color: var(--cmux-text-secondary);
+}
+
+.terminal-turn-chip__nav {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--cmux-space-1);
+}
+
+.terminal-turn-chip__nav button {
+  min-width: 22px;
+  height: 22px;
+  margin: 0;
+  padding: 0 var(--cmux-space-2);
+  border: 1px solid var(--cmux-border);
+  border-radius: 4px;
+  background: var(--cmux-bg);
+  color: var(--cmux-text);
+  font-size: var(--cmux-font-size-xs);
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.terminal-turn-chip__nav button:hover:not(:disabled) {
+  background: var(--cmux-hover);
+}
+
+.terminal-turn-chip__nav button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.terminal-turn-chip.is-transcript {
+  flex-wrap: wrap;
+}
+
+.terminal-turn-chip__hint {
+  flex: 1 0 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--cmux-text-tertiary);
+  font: inherit;
+  font-size: var(--cmux-font-size-xs);
+  line-height: 1.35;
+  min-height: 24px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.terminal-turn-chip__hint:hover {
+  text-decoration: underline;
+  background: var(--cmux-hover);
+}
+
+@keyframes savepointWriteTargetIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes savepointWriteTargetGlow {
+  0%, 100% { border-color: color-mix(in srgb, var(--cmux-accent) 58%, var(--cmux-border)); }
+  50% { border-color: color-mix(in srgb, var(--cmux-accent) 92%, white); }
+}
+
+@keyframes savepointWriteCaretBlink {
+  0%, 48% { opacity: 1; }
+  49%, 100% { opacity: 0; }
+}
+
+@keyframes savepointTabWriteTarget {
+  0%, 100% { box-shadow: inset 0 -3px 0 var(--cmux-accent); }
+  50% {
+    box-shadow:
+      inset 0 -3px 0 var(--cmux-accent),
+      inset 0 0 0 1px color-mix(in srgb, var(--cmux-accent) 46%, transparent);
+  }
+}
+
+.savepoint-drop-preview {
+  --pane-dnd-color: var(--cmux-accent);
+  position: absolute;
+  z-index: 31;
+  top: 44px;
+  left: 9px;
+  right: 9px;
+  height: 34px;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--cmux-accent) 82%, white);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--cmux-accent) 16%, transparent);
+  animation: paneDropPreviewPulse 0.9s ease-in-out infinite;
+}
+
+.savepoint-drop-preview--right {
+  top: 44px;
+  bottom: 9px;
+  left: auto;
+  right: 9px;
+  width: min(28%, 180px);
+  height: auto;
+}
+
+.savepoint-drop-preview--down {
+  top: auto;
+  bottom: 9px;
+  height: min(24%, 120px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pane-drop-preview,
+  .savepoint-drop-preview,
+  .savepoint-write-preview,
+  .savepoint-write-preview__caret,
+  .pane-tab-pill.is-savepoint-write-target {
+    animation: none;
+  }
+
+  .pane-drop-result {
+    transition: none;
+  }
+}
+
+/* Accessibility: keyboard focus indicator.
+   Several components set outline:"none" as an inline style (AgentSelector's
+   <select>, OnlinePanel's search input, etc.) with no compensating focus
+   style, so keyboard-only/screen-magnifier users can't tell which control has
+   focus. :focus-visible only fires for keyboard focus (not mouse clicks),
+   so this adds no ring on click; !important is required to beat those
+   inline overrides. */
+button:focus-visible,
+[role="button"]:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible,
+/* Fourteen scroll regions, menu rows and card bodies are div/span with a
+   tabIndex, so the list above never reached them and they were the only
+   things a keyboard could land on with nothing to show for it. Elements
+   held at tabindex="-1" are focused by script (menus, dialogs) and are not
+   stops on the tab ring, so they stay out. */
+[tabindex]:not([tabindex="-1"]):focus-visible {
+  outline: 2px solid var(--cmux-accent) !important;
+  outline-offset: 1px !important;
+}
+
+/* xterm.js keeps a hidden/off-screen textarea to capture keyboard input —
+   it must never show a focus ring. */
+.xterm textarea:focus-visible,
+.xterm-helper-textarea:focus-visible {
+  outline: none !important;
+}
+
+/* Accessibility: Reduced Motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@keyframes cmux-usage-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* Tab-strip drag reorder marker. A zero-width flex item carries the line so
+   inserting it between pills never reflows the strip; the line itself is
+   painted by the pseudo-element and can overhang both pill edges. */
+.pane-tab-drop-indicator {
+  position: relative;
+  flex: 0 0 0;
+  width: 0;
+  align-self: stretch;
+  pointer-events: none;
+}
+
+.pane-tab-drop-indicator::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: -1px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--cmux-accent);
+  transition: opacity var(--cmux-motion-fast) var(--cmux-ease);
+  animation: cmux-tab-drop-indicator-in var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+@keyframes cmux-tab-drop-indicator-in {
+  from { opacity: 0; transform: scaleY(0.4); }
+  to { opacity: 1; transform: scaleY(1); }
+}
+
+/* Workspace colors — the sidebar's Chrome-tab-group style picker.
+   The raw palette value is only ever painted as a small accent (the swatch
+   itself, the 3px row bar, the title bar dot); every surface derived from it
+   goes through color-mix() against the chrome tokens, so the theme's contrast
+   guarantees survive on both dark and light chrome. */
+/* Fixed 5-wide grid so the nine choices always land as a tidy 5 + 4, instead
+   of reflowing with the menu width. */
+.workspace-color-swatches {
+  display: grid;
+  grid-template-columns: repeat(5, 18px);
+  gap: var(--cmux-space-3);
+  padding: var(--cmux-space-2) var(--cmux-space-6) var(--cmux-space-3);
+  justify-content: start;
+}
+
+.workspace-color-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--cmux-text) 22%, transparent);
+  background: var(--workspace-swatch-color, transparent);
+  cursor: pointer;
+  flex-shrink: 0;
+  /* 0.12s is --cmux-motion-fast to the millisecond, so only the curve was
+     ever different: CSS `ease` is symmetric where the app decelerates. */
+  transition:
+    transform var(--cmux-motion-fast) var(--cmux-ease),
+    box-shadow var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.workspace-color-swatch:hover {
+  transform: scale(1.12);
+}
+
+.workspace-color-swatch[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--cmux-popover), 0 0 0 3px var(--cmux-text);
+}
+
+/* "なし" reads as an empty swatch with a strike through it. */
+.workspace-color-swatch--none {
+  background:
+    linear-gradient(
+      to bottom right,
+      transparent calc(50% - 1px),
+      color-mix(in srgb, var(--cmux-text) 55%, transparent) calc(50% - 1px),
+      color-mix(in srgb, var(--cmux-text) 55%, transparent) calc(50% + 1px),
+      transparent calc(50% + 1px)
+    );
+}
+
+/* Title bar dot marking the active workspace's color. */
+.workspace-color-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--workspace-swatch-color, transparent);
+}
+
+/* ===== Dashboard (2026-08-12 mock parity) =====
+   Hover lives in CSS, not in React state: re-rendering a 100-row list on every
+   pointer move is how the board used to stutter. The rows carry inline styles
+   (state colour is data-driven), so the hover rule needs !important to win over
+   them — and it only repaints the three non-rail edges, because the 3px left
+   rail is the state signal and must never turn accent. */
+.cmux-dash-row:hover {
+  border-top-color: var(--cmux-accent) !important;
+  border-right-color: var(--cmux-accent) !important;
+  border-bottom-color: var(--cmux-accent) !important;
+}
+
+/* "自動更新中" heartbeat. */
+.cmux-dash-ping {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--status-done);
+  animation: cmux-dash-ping 1.6s ease-in-out infinite;
+}
+
+@keyframes cmux-dash-ping {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cmux-dash-ping {
+    animation: none;
+  }
+}

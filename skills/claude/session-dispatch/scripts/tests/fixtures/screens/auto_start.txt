@@ -1,0 +1,1 @@
+Enable auto mode? [y/n]

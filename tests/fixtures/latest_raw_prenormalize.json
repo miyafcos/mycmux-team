@@ -1,0 +1,19 @@
+{
+  "version": "0.9.5",
+  "notes": "See the assets to download this version and install manually",
+  "pub_date": "2026-07-08T11:01:30.707Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUdC9VamZoSzBrZHpMQmlyY2t0MzhkdHlQNDFKcWtPakpYK2RmN0MxZkdZREZSd09qd1Q5eTBSRkptbkc1L3NsaHlkY2JVT1FvK0hUV2QyQktTN2cvZmpQblk4blBjRFFvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzNTA4NDgxCWZpbGU6bXljbXV4XzAuOS41X3g2NF9lbi1VUy5tc2kKbytaSDN4dXg1RkNOOG1JT3l6eEVMVXM2Y0kzQnlMNXhrckhIaTQ5Z2VFUlR2K1J1V3NmQkhIenVINFB6c0ZkV1REYUxHTVBUY1hUTXNFUjBBT1dQQnc9PQo=",
+      "url": "https://github.com/miyafcos/mycmux/releases/download/v0.9.5/mycmux_0.9.5_x64_en-US.msi"
+    },
+    "windows-x86_64-msi": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUdC9VamZoSzBrZHpMQmlyY2t0MzhkdHlQNDFKcWtPakpYK2RmN0MxZkdZREZSd09qd1Q5eTBSRkptbkc1L3NsaHlkY2JVT1FvK0hUV2QyQktTN2cvZmpQblk4blBjRFFvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzNTA4NDgxCWZpbGU6bXljbXV4XzAuOS41X3g2NF9lbi1VUy5tc2kKbytaSDN4dXg1RkNOOG1JT3l6eEVMVXM2Y0kzQnlMNXhrckhIaTQ5Z2VFUlR2K1J1V3NmQkhIenVINFB6c0ZkV1REYUxHTVBUY1hUTXNFUjBBT1dQQnc9PQo=",
+      "url": "https://github.com/miyafcos/mycmux/releases/download/v0.9.5/mycmux_0.9.5_x64_en-US.msi"
+    },
+    "windows-x86_64-nsis": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUdC9VamZoSzBrZDF2SGIzam0zbTR2blgrenZPY3JVTTFQeTVrUnkvWHJId1ZVN2s1TEJuSXRReGU4dHM5SVV0dTd0NDROdG13Y2wrMXZodjJvLzhVZTBFWnhpL3dvaHdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzNTA4NDgxCWZpbGU6bXljbXV4XzAuOS41X3g2NC1zZXR1cC5leGUKZHRpTUtVa3ZDdE01UVVhMUxma1NndWo5c2swOFkxUUtMQ2JodGVmQjRab0hNUXBOb242UDdlZm5QSUFSbGxZMG55MkNwQkp5SjgrZ3lHQ2RwVSt4QlE9PQo=",
+      "url": "https://github.com/miyafcos/mycmux/releases/download/v0.9.5/mycmux_0.9.5_x64-setup.exe"
+    }
+  }
+}

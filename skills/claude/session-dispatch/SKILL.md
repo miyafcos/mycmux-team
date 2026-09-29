@@ -1,0 +1,102 @@
+---
+name: session-dispatch
+description: "母艦で受けた依頼を「母艦継続 / 新ペインの新鮮な Claude セッション / 並列N本」へ振り分け、\nspec 生成→mycmux spawn→台帳記録→完了回収→close-tab まで回す。mycmux 内\n(MYCMUX_TERM_PROGRAM=mycmux) 限定。"
+metadata:
+  triggers:
+    - "新ペインでやって"
+    - "分散して"
+    - "並列で回して"
+    - "別セッションで"
+    - "セッション分けて"
+    - "手が空いてるやつにやらせて"
+  exclusions:
+    - "git worktree の並列開発=bunshin"
+  auto_apply: "素材投入型の重い独立依頼 / 章・科目単位で割れる一括作業 / 母艦のコンテキストが\n重いときの新規重タスク。"
+---
+
+# session-dispatch — セッション分散ディスパッチ (L1)
+
+目的: コンテキスト限界に近づく前に、独立した重作業を新鮮なフルセッション (可視ペイン) へ流す。
+便益 = 要約劣化ゼロの品質維持・並列スループット・母艦の軽さ (2026-07-30 実測 816 本の分析が根拠)。
+
+## 判定表 (依頼受領時に3秒で)
+
+| 依頼の型 | 振り先 |
+|---|---|
+| Q&A・相談・判断・軽微編集 (<10行/1-2ファイル)・skill/Git/MCP 操作 | 母艦のまま |
+| Codex 委譲の条件 (実装3+ファイル・新規100行超ほか delegation.md 参照) | codex 委譲 (delegation.md の既定の実行先) |
+| 素材投入型 (パス束+検収/照合/修正反映) で現行作業と独立 | 新ペイン claude 1本 |
+| 一括・複数単位の重い依頼 (章・学年・科目・工程・検証観点) | **分割設計** (references/decompose-guide.md) → 新ペイン並列 (同時上限3)。納品物・作問・量産は分割案3〜5行を提示して GO / 内部作業は全自動+事後報告 |
+| 母艦が重い (compact 接近・長大化) ときに来た新規の重依頼 | 新ペインへ。母艦は司令塔に徹する |
+| 「どこまでやったっけ」系で、この先に重作業が続く | 母艦で現状整理 → 作業本体を spec 化して新ペイン |
+| 軽い読み調査・その場の検証 | 母艦直 (サブエージェント・ペインにしない) |
+| 素材大量の走査・分類・抽出 (MCP 不要) | codex ペイン (luna は明示起動 `spawn-tab --no-activate -- powershell -NoLogo -NoExit -Command "codex --model gpt-6-luna -c model_reasoning_effort=max -c features.fast_mode=false"`。素の `spawn --target codex` は config 既定 = gpt-6-sol xhigh (2026-09-23) で立つ) |
+| MCP 必須素材・日本語プロースの fan-out | Agent tool `model:'opus'` 明示 (無指定は agent-model-guard hook が遮断) |
+
+非 mycmux セッション (cron 等) では spawn 不可 → Agent tool / Workflow で代替する。
+
+## 表示形態と寿命 (既定=裏ペイン。横のタブは利用者の指定か確認承認後のみ — 2026-08-11 裁定)
+
+| 型 | 形態 | 完了時 |
+|---|---|---|
+| 自律完遂型 (機械検収コマンドを spec に書ける: 照合・変換・量産・調査・整備) | **裏ペイン** (--no-activate) | watcher が自動検収 PASS → **自動 close** |
+| 対話往復が見込まれる (owner_judgment / 仕様が緩く ask 多発見込み) | **裏ペイン** (--no-activate)。往復は ask カードで回す | DONE/ask 消化後、親検収して close |
+| 機械検収が書けない (成果物が意味判断) | 裏ペイン | DONE 通知→ペイン温存、親検収後に close |
+
+- **可視 `--split` 横のタブはオプトイン制**。発動は2条件のみ: ①利用者の明示指定 (「横に出して」「見たい」「画面に出して」等) ②親が見せる価値ありと判断したら **AskUserQuestion で確認し承認を得てから**。親の独断で split しない。split 時も --no-activate は維持し、対話終了後に親が手動 close
+- **`spawn-tab --detach` も `--split` と同格のオプトイン (既定禁止)** — 新しいタブに出る。長時間ジョブ保護はタブ閉じ前の確認ダイアログに任せる (2026-08-21 裁定・`--detach` 推奨は撤回)。CLI は暗黙に split しない: `--workspace/--anchor-pane/--direction` 単独・env 欠落はエラーで止まる (隣のタブへは落ちない)。応答 JSON の `placement` が `tab` であることを台帳に残す
+- close は可逆: 子の全ログは `~/.claude/projects/` に常在し、resume パレットから復帰できる
+- 自動 close の条件は「**親が spec に書いた機械検収が PASS**」のみ (子の DONE 自己申告では閉じない)
+
+## 手順 (詳細・台帳スキーマ: references/dispatch-guide.md)
+
+0. **WIP gate (spawn 前に必ず)**: `python ~/.claude/ops/ops_common.py list --asks` で pending の
+   判断カードを確認。**pending ask が3件以上、または最古が実働10分超なら、人間判断を要し得る新規 dispatch を保留**
+   (先にカードを利用者と消化する)。自律完遂型 (判断カードが出ない見込みの機械作業) は続行可
+1. **spec 作成**: `~/.claude/dispatch/<YYMMDD>-<slug>/spec.md` を references/spec-template.md の型で書く。
+   必須4点 (境界/完了条件/接続先/判断者) + DONE 契約 + **ask カード契約 (references/ask-card-contract.md)**。
+   effort・モデルは `--prompt-file` の spawn では CLI から渡らず、子は既定の設定で立つ。spec の実行指定は記録として書き、実際の effort は子のヘッダーで確かめる (spec に深さを書いても思考量は変わらない)
+2. **spawn**:
+   `python <resolved-mycmux-agent-cli> spawn --target claude --prompt-file <spec> --label <slug> --cwd <作業フォルダ> --no-activate`
+   — 既定は裏ペイン。`--split` は利用者の指定 or AskUserQuestion 承認後のみ足す。spawn / spawn-tab はどちらも `--no-activate` を付け、`--activate` は付けない (前面を奪うと戻せない)。
+   応答 JSON を台帳に記録
+3. **台帳記録**: `scripts/dispatch_ledger.py append --slug <YYMMDD-名前> --status open --json '<spawn応答+dir/cwd>'`
+   (手書き `>>` 追記は禁止 — パス中の `\` で行が壊れる。slug は日付必須・キーは snake)
+3b. **watcher 起動 (自律完遂型は必須)**: spawn 直後に
+   `python ~/.claude/skills/session-dispatch/scripts/dispatch_watch.py --slug <slug>` を
+   **バックグラウンド実行** (Bash run_in_background)。DONE 検知→spec の機械検収→PASS なら
+   close-tab+台帳更新まで watcher が勝手にやる。FAIL・TIMEOUT・TAB-GONE は exit 非0 で通知が返る。STALL (ログ停止 45 分) では終了せず、台帳に記録して監視を続ける (`--legacy-stall-exit` 指定時だけ exit 2)
+4. **回収**: watcher の verdict (`DONE-VERIFIED-CLOSED` なら完了) を確認。needs_review /
+   watcher 無し運用は `dispatch_status.py` で突合し、**成果物を親が実体検証**
+   (Test-Path / 行数 / diff / 実行出力)。DONE.md の自己申告は成果と見なさない
+4b. **判断カードの回収**: カードは母艦ターン開始時に自動注入される (ask-inject.py)。回答は
+   `python ~/.claude/ops/ops_common.py answer-ask <id> --text "<回答>"` の**1コマンドのみ**
+   (状態を読んで本文→読み直して Enter 1 回→子の再開観測→resolved)。手動 send+done に分けない。
+   exit 3 = 何も書いていない (カードは pending に戻る。子が落ち着いてから打ち直す)、exit 4 = Enter は確認・再開は未観測
+   (打ち直すと観測だけする)、exit 5 = 届いたか不明 (自動では送り直さない。子の入力欄を見て、届いていれば
+   `--mark-delivered`、届いていなければ入力欄の本文を消してから `--resend`)。**カード単体で答えられない
+   低品質カードは利用者に出さず子へ契約違反を差し戻す**。却下は `dismiss <id> --reason <分類>`
+5. **片付け**: 自動 close 済み (`DONE-VERIFIED-CLOSED`) なら不要。needs_review を親検収で
+   通したら `close-tab --session <当該dispatch行の tab_session_id>` → `dispatch_ledger.py update
+   --slug <slug> --spawn-ts <ts> --status closed`。横のタブは対話終了時点で親が close
+
+## 鉄則
+
+- spawn は可逆 (close-tab で戻せる) → 確認なしで自動実行し事後報告。同時 dispatch は 3 本まで
+- 子への追加指示は **`scripts/dispatch_send.py --slug <slug> --text ...`** (状態検査・本文投入・安定確認後の Enter 1回まで一括)。別コマンドで Enter を後追いしない。Enter 要求済み (`enter_sent: true`) は再送防止のため exit 0。配送未確認なら JSON の `warning` を確認し、本文も自動再送しない。配送の観測は `result: observed_delivered` で判断する
+- **close-tab / send は「その dispatch の行が持つ tab_session_id」だけに撃つ**。同じ slug が
+  別日に2本あるとき、台帳の後勝ちマージで旧ペインへ撃つのが過去の事故経路 (2026-08-13 修正)
+- **`--session` / `--anchor-session` に渡すのは PTY `session_id` だけ** (spawn 応答の `sessionId` = 台帳の `tab_session_id`、または `mycmux_bridge.py list` の `session_id`)。`tab.id`・`pane.id`・`workspace.id` を渡さない。`--resume-session` / `--handoff-from-session` だけは agent 側の `claude_session_id` を取る
+- **resume に失敗した席 (画面に `Session ID … is already in use`) へ催促・再送をしない**。復帰は mycmux-bridge と同じ手順: `close-tab --session <その PTY session_id>` → 同じタブで生きている兄弟ペインの PTY を `--anchor-session` に `spawn-tab --anchor-session <兄弟の PTY session_id> --target claude --resume-session <claude_session_id> --no-activate` → `read` で履歴が戻ってから send。台帳は古い行を closed にし、新しい spawn 応答を append する (同一性は (slug, tab_session_id))
+- pane.read は表示中ペインの renderer buffer、背景ペインでは PTY scrollback を headless xterm で再生した画面を返す (transcript ではない)。完了検知は DONE.md / セッション JSONL 増分 / 成果物 mtime で行い、canonical state は `mycmux_agent_cli.py status --session <id>` で読む
+- 状態は常に外部化 (spec / DONE / 成果物ファイル)。「子の画面を見ないと分からない」状態を作らない
+- **子は人間に生ログを読ませない**。走行中の判断は ask カード (契約=references/ask-card-contract.md)、
+  それ以外は DONE の「要判断」。**黙って止まるのは契約違反** — idle なのに DONE も ask も無い子 (silent blocker)
+  を見つけたら、人間向けカードを親が代作せず、子へ「ask を発行するか自分で判断して続行せよ」を send する
+- 委譲契約の正本は `~/cmux-for-linux-dev-master/docs/agent-integration.md`。矛盾したらそちらが勝つ
+
+## 見張り (dispatch_guard.py) — 2026-09-16 から停止中
+
+- 常駐の見張りは `~/.claude/dispatch/guard/DISABLED` がある間は動かない (ensure / run / once は何もせず終わる)。席の一覧は `/seats` で見る。STALL の子と `guard_pending: true` の送信は見張りが拾わないので、references/dispatch-guide.md の「STALL 時の介入」に沿って親が扱う。
+- spawn 前に `python -X utf8 ~/.claude/skills/session-dispatch/scripts/dispatch_preflight.py run --cwd <cwd> --spec <spec.md> --json` を実行する。exit 3 は必要な認証経路の不通で spawn を止める。settings.json は変更しない。
+- 人が書いた本文は送らない。send の返却値・台帳の lost / blocked・canary 試験は references/dispatch-guide.md。

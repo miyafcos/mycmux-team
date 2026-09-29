@@ -1,0 +1,19 @@
+{
+  "_comment": "oracmux NDA guard. markers_* block the send unless --allow-markers; deny_roots block unconditionally (fill with client folders that must never leave the PC).",
+  "markers_ja": [
+    "社外秘",
+    "部外秘",
+    "取扱注意",
+    "機密",
+    "極秘",
+    "関係者外秘"
+  ],
+  "markers_ascii": [
+    "NDA",
+    "CONFIDENTIAL",
+    "DO NOT DISTRIBUTE",
+    "INTERNAL ONLY"
+  ],
+  "deny_roots": [],
+  "max_total_chars": 200000
+}

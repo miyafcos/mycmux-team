@@ -1,0 +1,5 @@
+const { _replaceWorkspaces } = somethingElse;
+const mutate = somethingElse._restoreGroupingLayout;
+
+_replaceWorkspaces(next);
+mutate(next, selection);

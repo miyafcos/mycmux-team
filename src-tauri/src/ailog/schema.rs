@@ -1,0 +1,275 @@
+//! SQLite schema for the AI log index.
+
+use rusqlite::Connection;
+
+/// Retained for compatibility with databases created before additive
+/// migrations. New schema extensions must not use this value: the AI log may
+/// be large enough that a cache rebuild is an unacceptable surprise.
+pub const USER_VERSION: i32 = 2;
+
+const DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS source_file (
+  path           TEXT PRIMARY KEY,
+  kind           TEXT NOT NULL,
+  size_bytes     INTEGER NOT NULL,
+  mtime_ns       INTEGER NOT NULL,
+  parsed_bytes   INTEGER NOT NULL,
+  parsed_lines   INTEGER NOT NULL,
+  session_id     TEXT,
+  last_indexed   INTEGER NOT NULL,
+  parse_error    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS session (
+  kind           TEXT NOT NULL,
+  session_id     TEXT NOT NULL,
+  cwd            TEXT,
+  project_key    TEXT,
+  project_label  TEXT,
+  git_branch     TEXT,
+  ai_title       TEXT,
+  first_prompt   TEXT,
+  slug           TEXT,
+  entrypoint     TEXT,
+  origin         TEXT,
+  is_sidechain   INTEGER NOT NULL DEFAULT 0,
+  agent_names    TEXT,
+  cli_version    TEXT,
+  plan_type      TEXT,
+  started_at     INTEGER,
+  ended_at       INTEGER,
+  wall_ms        INTEGER,
+  active_ms      INTEGER,
+  turn_count     INTEGER NOT NULL DEFAULT 0,
+  user_msg_count INTEGER NOT NULL DEFAULT 0,
+  compact_count  INTEGER NOT NULL DEFAULT 0,
+  cost_usd       REAL NOT NULL DEFAULT 0,
+  primary_model  TEXT,
+  model_count    INTEGER NOT NULL DEFAULT 0,
+  work_tags      TEXT,
+  goal_key       TEXT,
+  goal_cluster   TEXT,
+  goal_summary   TEXT,
+  read_chars     INTEGER NOT NULL DEFAULT 0,
+  exec_chars     INTEGER NOT NULL DEFAULT 0,
+  write_chars    INTEGER NOT NULL DEFAULT 0,
+  fetch_chars    INTEGER NOT NULL DEFAULT 0,
+  other_chars    INTEGER NOT NULL DEFAULT 0,
+  prompt_chars   INTEGER NOT NULL DEFAULT 0,
+  read_files     INTEGER NOT NULL DEFAULT 0,
+  written_files  INTEGER NOT NULL DEFAULT 0,
+  ends_on_tool   INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (kind, session_id)
+);
+CREATE INDEX IF NOT EXISTS ix_session_started ON session(started_at);
+CREATE INDEX IF NOT EXISTS ix_session_project ON session(project_key, started_at);
+
+CREATE TABLE IF NOT EXISTS turn (
+  kind           TEXT NOT NULL,
+  session_id     TEXT NOT NULL,
+  seq            INTEGER NOT NULL,
+  request_id     TEXT,
+  ts             INTEGER NOT NULL,
+  model          TEXT,
+  model_family   TEXT,
+  model_variant  TEXT,
+  effort         TEXT,
+  service_tier   TEXT,
+  input_tokens          INTEGER NOT NULL DEFAULT 0,
+  output_tokens         INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+  cache_write_5m_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+  reasoning_tokens      INTEGER NOT NULL DEFAULT 0,
+  duration_ms    INTEGER,
+  tool_calls     INTEGER NOT NULL DEFAULT 0,
+  tool_errors    INTEGER NOT NULL DEFAULT 0,
+  cost_usd       REAL NOT NULL DEFAULT 0,
+  ingest_cost_usd  REAL NOT NULL DEFAULT 0,
+  generate_cost_usd REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (kind, session_id, seq)
+);
+CREATE INDEX IF NOT EXISTS ix_turn_ts ON turn(ts);
+CREATE INDEX IF NOT EXISTS ix_turn_model ON turn(model, ts);
+CREATE INDEX IF NOT EXISTS ix_turn_family ON turn(model_family, ts);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_turn_request ON turn(kind, session_id, request_id);
+
+CREATE TABLE IF NOT EXISTS tool_event (
+  kind        TEXT NOT NULL,
+  session_id  TEXT NOT NULL,
+  seq         INTEGER NOT NULL,
+  ts          INTEGER NOT NULL,
+  name        TEXT NOT NULL,
+  is_error    INTEGER NOT NULL DEFAULT 0,
+  target      TEXT,
+  call_id     TEXT,
+  turn_key    TEXT,
+  PRIMARY KEY (kind, session_id, seq)
+);
+CREATE INDEX IF NOT EXISTS ix_tool_name ON tool_event(name, ts);
+CREATE INDEX IF NOT EXISTS ix_tool_call ON tool_event(kind, session_id, call_id);
+CREATE INDEX IF NOT EXISTS ix_tool_turn ON tool_event(kind, session_id, turn_key);
+
+CREATE TABLE IF NOT EXISTS file_touch (
+  kind        TEXT NOT NULL,
+  session_id  TEXT NOT NULL,
+  path        TEXT NOT NULL,
+  edit_count  INTEGER NOT NULL DEFAULT 0,
+  read_count  INTEGER NOT NULL DEFAULT 0,
+  first_ts    INTEGER,
+  last_ts     INTEGER,
+  PRIMARY KEY (kind, session_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS rework (
+  kind              TEXT NOT NULL,
+  session_id        TEXT NOT NULL,
+  tool_error_count  INTEGER NOT NULL DEFAULT 0,
+  tool_call_count   INTEGER NOT NULL DEFAULT 0,
+  tool_error_rate   REAL NOT NULL DEFAULT 0,
+  correction_count  INTEGER NOT NULL DEFAULT 0,
+  max_file_edits    INTEGER NOT NULL DEFAULT 0,
+  churn_files       INTEGER NOT NULL DEFAULT 0,
+  retry_bash        INTEGER NOT NULL DEFAULT 0,
+  abandoned         INTEGER NOT NULL DEFAULT 0,
+  score             REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (kind, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS summary (
+  kind         TEXT NOT NULL,
+  session_id   TEXT NOT NULL,
+  created_at   INTEGER NOT NULL,
+  model_used   TEXT,
+  findings     TEXT,
+  rework_note  TEXT,
+  cost_note    TEXT,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  goal_summary TEXT,
+  goal_cluster TEXT,
+  summary TEXT,
+  cluster TEXT,
+  model TEXT,
+  outcome TEXT,
+  confidence TEXT,
+  rework_category TEXT,
+  prompt_version INTEGER,
+  parse_error TEXT,
+  PRIMARY KEY (kind, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS digest (
+  kind           TEXT NOT NULL DEFAULT 'all',
+  date           TEXT NOT NULL,
+  created_at     INTEGER NOT NULL,
+  prompt_version INTEGER NOT NULL,
+  model_used     TEXT,
+  json           TEXT,
+  parse_error    TEXT,
+  PRIMARY KEY (kind, date)
+);
+
+CREATE TABLE IF NOT EXISTS price (
+  model            TEXT PRIMARY KEY,
+  input_per_mtok   REAL NOT NULL,
+  output_per_mtok  REAL NOT NULL,
+  cache_read_per_mtok REAL NOT NULL,
+  cache_write_5m_per_mtok REAL NOT NULL,
+  cache_write_1h_per_mtok REAL NOT NULL,
+  source           TEXT,
+  updated_at       INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS index_state (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);
+"#;
+
+/// Apply base DDL and additive columns. This routine never drops data and
+/// deliberately does not inspect or modify `PRAGMA user_version`.
+pub fn init(conn: &Connection) -> Result<(), String> {
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .map_err(|err| format!("set journal_mode: {err}"))?;
+    conn.pragma_update(None, "synchronous", "NORMAL")
+        .map_err(|err| format!("set synchronous: {err}"))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|err| format!("set busy_timeout: {err}"))?;
+
+    conn.execute_batch(DDL)
+        .map_err(|err| format!("apply schema: {err}"))?;
+    ensure_f3_columns(conn)?;
+
+    crate::ailog::price::seed_defaults(conn)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+
+    #[test]
+    fn init_preserves_existing_rows() {
+        let conn = Connection::open_in_memory().expect("memory database");
+        super::init(&conn).expect("schema");
+        conn.execute("INSERT INTO session(kind, session_id, first_prompt, origin) VALUES ('codex', 'internal', '[mycmux-ailog-summarizer] input', 'unknown')", []).expect("session");
+        super::init(&conn).expect("repeat schema migration");
+        let origin: String = conn
+            .query_row(
+                "SELECT origin FROM session WHERE session_id='internal'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("origin");
+        assert_eq!(origin, "unknown");
+    }
+}
+
+/// F3 was reserved in the v2 schema, so upgrade its placeholder columns
+/// without bumping `user_version` (which would force a full re-index).
+fn ensure_f3_columns(conn: &Connection) -> Result<(), String> {
+    for (table, column) in [
+        ("session", "goal_summary"),
+        ("session", "goal_cluster"),
+        ("summary", "goal_summary"),
+        ("summary", "goal_cluster"),
+        ("summary", "summary"),
+        ("summary", "cluster"),
+        ("summary", "model"),
+        ("summary", "outcome"),
+        ("summary", "confidence"),
+        ("summary", "rework_category"),
+        ("summary", "prompt_version"),
+        ("summary", "parse_error"),
+        ("summary", "attempt_count"),
+        ("summary", "last_error_at"),
+        ("summary", "error_kind"),
+        ("summary", "last_ok_at"),
+    ] {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .map_err(|err| format!("inspect {table}: {err}"))?;
+        let present = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|err| format!("read {table} columns: {err}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("collect {table} columns: {err}"))?
+            .iter()
+            .any(|name| name == column);
+        if !present {
+            let ty = if column == "prompt_version"
+                || column == "attempt_count"
+                || column == "last_error_at"
+                || column == "last_ok_at"
+            {
+                "INTEGER"
+            } else {
+                "TEXT"
+            };
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])
+                .map_err(|err| format!("add {table}.{column}: {err}"))?;
+        }
+    }
+    Ok(())
+}

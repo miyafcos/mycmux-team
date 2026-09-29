@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# Build Apple Silicon release bundles locally.
+#
+# By default this deliberately produces an unsigned build, matching CI. A local
+# developer with a keychain identity can opt in without editing tauri.conf.json:
+#   APPLE_SIGNING_IDENTITY="Developer ID Application: Example" ./scripts/build-mac.sh
+# Updater artifacts are produced only when TAURI_SIGNING_PRIVATE_KEY is set.
+# That key is unrelated to Apple code signing -- it signs the .app.tar.gz the
+# updater downloads -- and asking for it unconditionally aborts the build on any
+# machine that does not hold it. This one does not: the key lives on the Windows
+# box, where its password is sealed with DPAPI and cannot be read here.
+
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+cd "$REPO_ROOT"
+
+# Expanded as ${arr[@]+"${arr[@]}"} below, not as "${arr[@]}": macOS ships bash
+# 3.2, where `set -u` treats an empty array expansion as an unbound variable and
+# aborts. Signing therefore failed with "SIGNING_ARGS[@]: unbound variable" in
+# exactly the case the array exists to serve -- an identity being present.
+SIGNING_ARGS=(--no-sign)
+if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+  SIGNING_ARGS=()
+  echo "Using APPLE_SIGNING_IDENTITY from the environment."
+else
+  echo "APPLE_SIGNING_IDENTITY is unset; building without Apple code signing."
+fi
+
+# `--bundles app`, not `app,dmg`. Tauri's dmg bundler shells out to a vendored
+# create-dmg, which drives Finder over AppleScript to place the icons. Any
+# environment without permission to script Finder -- a CI runner, an SSH
+# session, a terminal that has not been granted Automation access -- fails that
+# step, and create-dmg turns it into `exit 64` while Tauri reports only
+# "failed to run bundle_dmg.sh". The window layout it buys is cosmetic; what
+# actually makes a .dmg installable is the Applications symlink, and hdiutil
+# lays that down without touching Finder at all.
+# Pick the signing key up from ~/.tauri and the Keychain when the caller has
+# not supplied one, so a release from this machine does not need the operator to
+# export anything by hand. `mac-signing-key.sh set` puts the password there once.
+UPDATER_KEY_PATH="${TAURI_SIGNING_KEY_PATH:-$HOME/.tauri/mycmux-updater.key}"
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" && -f "$UPDATER_KEY_PATH" ]]; then
+  if KEY_PASSWORD=$("$SCRIPT_DIR/mac-signing-key.sh" get 2>/dev/null); then
+    export TAURI_SIGNING_PRIVATE_KEY
+    TAURI_SIGNING_PRIVATE_KEY=$(cat "$UPDATER_KEY_PATH")
+    export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$KEY_PASSWORD"
+    echo "Signing key loaded from $UPDATER_KEY_PATH (password from the Keychain)."
+  else
+    echo "Found $UPDATER_KEY_PATH but no password in the Keychain."
+    echo "Run ./scripts/mac-signing-key.sh set to enable updater artifacts."
+  fi
+fi
+
+if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+  UPDATER_ARTIFACTS=true
+  echo "Building updater artifacts (.app.tar.gz and its signature)."
+else
+  UPDATER_ARTIFACTS=false
+  echo "No signing key available; skipping updater artifacts."
+fi
+
+# Universal by default: one artifact that runs on both architectures. The 30MB
+# against 14MB is paid once, and it removes a per-release decision -- which
+# build did this version ship, were both uploaded -- that produced two feed
+# incidents on 2026-09-05, each from assets that were only partly in place.
+# MYCMUX_TARGET=aarch64-apple-darwin still builds the smaller one for local use.
+TARGET="${MYCMUX_TARGET:-universal-apple-darwin}"
+echo "Target: $TARGET"
+
+npm run tauri -- build \
+  --target "$TARGET" \
+  --bundles app \
+  --config "{\"bundle\":{\"createUpdaterArtifacts\":$UPDATER_ARTIFACTS}}" \
+  ${SIGNING_ARGS[@]+"${SIGNING_ARGS[@]}"}
+
+BUNDLE_DIR="src-tauri/target/$TARGET/release/bundle"
+APP="$BUNDLE_DIR/macos/mycmux.app"
+VERSION=$(node -p "require('./package.json').version")
+case "$TARGET" in
+  universal-apple-darwin) ARCH_SUFFIX="universal" ;;
+  x86_64-apple-darwin)    ARCH_SUFFIX="x64" ;;
+  *)                      ARCH_SUFFIX="aarch64" ;;
+esac
+DMG="$BUNDLE_DIR/dmg/mycmux_${VERSION}_${ARCH_SUFFIX}.dmg"
+
+if [[ ! -d "$APP" ]]; then
+  echo "expected $APP to exist after the build" >&2
+  exit 1
+fi
+
+# Sign before the .dmg is assembled so the copy inside it carries the signature
+# too. Skipped when a real Apple identity was supplied, because Tauri already
+# signed with it above.
+#
+# This is for TCC, not Gatekeeper. The ad-hoc signature --no-sign leaves behind
+# carries no certificate, so macOS pins every privacy grant to the exact binary
+# hash and each rebuild makes the app ask for Desktop, Documents, Downloads and
+# network volumes all over again. See the header of
+# mac-local-signing-identity.sh for the measurement behind this.
+if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+  if ! "$SCRIPT_DIR/mac-local-signing-identity.sh" sign "$APP"; then
+    echo "warning: local signing failed. The bundle keeps its ad-hoc signature," >&2
+    echo "         so macOS will re-ask for privacy permissions after updates." >&2
+  fi
+fi
+
+# Repack the updater archive from the *signed* bundle.
+#
+# Tauri writes mycmux.app.tar.gz during the build, which is before the signing
+# step above, so the archive it produced holds a bundle with no
+# Contents/_CodeSignature in it. The updater unpacks that archive straight over
+# /Applications/mycmux.app, so pressing "check for updates" replaced a signed
+# app with an unsigned one and every privacy grant went with it -- which is what
+# made macOS ask for screen recording and the rest again after each update.
+# Verified against the v0.70.0 asset on 2026-09-11: seven entries, no
+# _CodeSignature among them.
+#
+# Repacking here also produces the archive on a machine that cannot reach the
+# updater key at all (the password lives in a Keychain an SSH session cannot
+# read), which is the case this release is built from. The signature is made
+# separately, against this file.
+UPDATER_TARBALL="$BUNDLE_DIR/macos/mycmux.app.tar.gz"
+if [[ "$UPDATER_ARTIFACTS" == "true" || -n "${MYCMUX_PACK_UPDATER:-}" ]]; then
+  rm -f "$UPDATER_TARBALL" "$UPDATER_TARBALL.sig"
+  # gzip -n so the archive does not carry a timestamp; two builds of the same
+  # tree then produce the same bytes and a mismatch means a real difference.
+  tar -C "$BUNDLE_DIR/macos" -cf - mycmux.app | gzip -n > "$UPDATER_TARBALL"
+  if tar -tzf "$UPDATER_TARBALL" | grep -q "_CodeSignature"; then
+    echo "Updater archive repacked from the signed bundle."
+  else
+    echo "warning: the updater archive carries no signature; an update from it" >&2
+    echo "         will make macOS ask for every privacy permission again." >&2
+  fi
+fi
+
+STAGING=$(mktemp -d)
+cleanup() { [[ -n "${STAGING:-}" && -d "$STAGING" ]] && rm -r "$STAGING"; }
+trap cleanup EXIT
+
+cp -R "$APP" "$STAGING/"
+ln -s /Applications "$STAGING/Applications"
+
+mkdir -p "$(dirname "$DMG")"
+hdiutil create \
+  -volname "mycmux" \
+  -srcfolder "$STAGING" \
+  -ov \
+  -format UDZO \
+  "$DMG" >/dev/null
+
+echo
+echo "Built:"
+echo "  $APP"
+echo "  $DMG"
+if [[ -f "$BUNDLE_DIR/macos/mycmux.app.tar.gz" ]]; then
+  echo "  $BUNDLE_DIR/macos/mycmux.app.tar.gz (updater)"
+fi

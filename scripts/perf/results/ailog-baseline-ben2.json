@@ -1,0 +1,101 @@
+﻿{
+    "schema_version":  1,
+    "generated_at":  "2026-08-17T00:40:55.5958029+09:00",
+    "repo_root":  "C:\\Users\\miyaz\\cmux-for-linux-dev-master",
+    "repo_git":  {
+                     "branch":  "master",
+                     "commit":  "60fb073d8f17dab9fb88897bc13cf77fc13e5958",
+                     "status_short":  [
+
+                                      ],
+                     "error":  "warning: could not open directory \u0027pytest-cache-files-ueu0ljs1/\u0027: Permission denied"
+                 },
+    "ailog":  {
+                  "db_path":  "C:\\Users\\miyaz\\.mycmux\\ailog.db",
+                  "query_only":  1,
+                  "scenarios":  [
+                                    {
+                                        "name":  "30d_overview_breakdown_sessions",
+                                        "reports":  [
+                                                        {
+                                                            "name":  "overview",
+                                                            "timings":  {
+                                                                            "sqlMs":  1090,
+                                                                            "rowsScanned":  213123,
+                                                                            "buildMs":  532,
+                                                                            "path":  "raw"
+                                                                        }
+                                                        },
+                                                        {
+                                                            "name":  "breakdown",
+                                                            "timings":  {
+                                                                            "sqlMs":  651,
+                                                                            "rowsScanned":  142064,
+                                                                            "buildMs":  52,
+                                                                            "path":  "raw"
+                                                                        }
+                                                        },
+                                                        {
+                                                            "name":  "sessions",
+                                                            "timings":  {
+                                                                            "sqlMs":  585,
+                                                                            "rowsScanned":  1898,
+                                                                            "buildMs":  0,
+                                                                            "path":  "raw"
+                                                                        }
+                                                        }
+                                                    ]
+                                    },
+                                    {
+                                        "name":  "90d_overview_breakdown_sessions",
+                                        "reports":  [
+                                                        {
+                                                            "name":  "overview",
+                                                            "timings":  {
+                                                                            "sqlMs":  1576,
+                                                                            "rowsScanned":  319740,
+                                                                            "buildMs":  807,
+                                                                            "path":  "raw"
+                                                                        }
+                                                        },
+                                                        {
+                                                            "name":  "breakdown",
+                                                            "timings":  {
+                                                                            "sqlMs":  993,
+                                                                            "rowsScanned":  241776,
+                                                                            "buildMs":  84,
+                                                                            "path":  "raw"
+                                                                        }
+                                                        },
+                                                        {
+                                                            "name":  "sessions",
+                                                            "timings":  {
+                                                                            "sqlMs":  942,
+                                                                            "rowsScanned":  4118,
+                                                                            "buildMs":  0,
+                                                                            "path":  "raw"
+                                                                        }
+                                                        }
+                                                    ]
+                                    },
+                                    {
+                                        "name":  "30d_efficiency",
+                                        "reports":  [
+                                                        {
+                                                            "name":  "efficiency",
+                                                            "timings":  {
+                                                                            "sqlMs":  937,
+                                                                            "rowsScanned":  251664,
+                                                                            "buildMs":  782,
+                                                                            "path":  "raw"
+                                                                        }
+                                                        }
+                                                    ]
+                                    }
+                                ]
+              },
+    "notes":  [
+                  "AILog measurements use SQLITE_OPEN_READ_ONLY and PRAGMA query_only=ON.",
+                  "This scenario does not activate a UI window or send input."
+              ]
+}

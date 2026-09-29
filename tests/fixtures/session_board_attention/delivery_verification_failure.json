@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "snap-20260830T120000-40f9488236ab",
+  "generated_at": "2026-08-30T12:00:00.000Z",
+  "source_watermark": 1,
+  "coverage": {
+    "state": "complete",
+    "expected_sessions": 1,
+    "observed_sessions": 1,
+    "stale_sessions": 0,
+    "failed_probes": 0,
+    "status_untracked_sessions": 0
+  },
+  "items": [
+    {
+      "attention_id": "incident-a6d0507a7c722f60",
+      "incident_group_id": "delivery-verification:41af85857415",
+      "kind": "delivery_verification_failure",
+      "severity": "warning",
+      "requires_human_action": true,
+      "actor": "human",
+      "summary": "Verification failed for 1 delivery across 1 lane",
+      "why_now": "The latest delivery evidence is inconclusive: screen verification mismatch",
+      "next_action": {
+        "type": "open_delivery",
+        "label": "Inspect delivery evidence",
+        "target": "1"
+      },
+      "affected_lane_ids": [
+        "lane-delivery"
+      ],
+      "evidence_refs": [
+        "delivery:1",
+        "event:1"
+      ],
+      "first_seen_at": "2026-08-30T11:57:00.000Z",
+      "last_changed_at": "2026-08-30T11:57:00.000Z",
+      "freshness": "fresh",
+      "rank": 1
+    }
+  ]
+}

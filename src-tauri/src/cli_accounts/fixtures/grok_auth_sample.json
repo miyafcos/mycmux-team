@@ -1,0 +1,14 @@
+{
+  "https://auth.x.ai::00000000-0000-4000-8000-000000000000": {
+    "key": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJncm9rLXVzZXItYSIsInRpZXIiOiJzdXBlcmdyb2sifQ.",
+    "refresh_token": "fixture-refresh-token-not-real",
+    "expires_at": "2026-08-20T12:00:00Z",
+    "auth_mode": "oauth",
+    "user_id": "grok-user-a",
+    "principal_id": "principal-a",
+    "team_id": "team-a",
+    "email": "grok@example.test",
+    "oidc_issuer": "https://auth.x.ai",
+    "oidc_client_id": "fixture-client-id"
+  }
+}

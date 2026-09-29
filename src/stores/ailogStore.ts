@@ -1,0 +1,1194 @@
+/**
+ * State for the AI log dashboard: the selected range, the filters, and the
+ * usage reports the panel draws from.
+ *
+ * Loading rules that matter:
+ * - SQL reports are cached per resolved period and effective filters.
+ * - A stale response (the user changed the range mid-flight) is dropped by its
+ *   resource generation and cache-key guard rather than overwriting newer data.
+ * - Errors are surfaced, never swallowed into an empty table.
+ */
+
+import { create } from "zustand";
+import { quarantineTerminalPersistentStorageError } from "../lib/workspacePersistenceCoordinator";
+
+import {
+  ailogGetUsdJpyRate,
+  ailogOverview,
+  ailogModels,
+  ailogModelHandoffs,
+  ailogBreakdown,
+  ailogPivot,
+  ailogIndexCancel,
+  ailogIndexStart,
+  ailogIndexStatus,
+  ailogSummarizeCancel,
+  ailogSummarizeStart,
+  ailogSummarizeStatus,
+  ailogReworkRankings,
+  ailogSeries,
+  ailogSessionDetail,
+  ailogSessions,
+  ailogSessionSummarize,
+  ailogSessionTranscript,
+  ailogSetUsdJpyRate,
+  ailogUsageRhythm,
+  buildRange,
+  configureUsdJpyRate,
+  DEFAULT_USD_JPY_RATE,
+  emptyFilters,
+  errorMessage,
+  type AilogRange,
+  type AilogGranularity,
+  type BreakdownReport,
+  type IndexProgress,
+  type IndexStatus,
+  type SummarizeProgress,
+  type SummarizeStatus,
+  type ModelsReport,
+  type HandoffsReport,
+  type Overview,
+  type SeriesReport,
+  type SessionDetail,
+  type TranscriptReport,
+  type SessionsReport,
+  type RangePreset,
+  type SeriesGroupBy,
+  type SummaryRangePreset,
+  type UsageBucket,
+  type UsageRhythmReport,
+  type PivotAxis,
+  type PivotReport,
+  type ReworkRankingsReport,
+  type Totals,
+  granularityFromSeriesAxis,
+} from "../lib/ailog";
+import type { UsageMetric } from "../components/ailog/usageModel";
+import { nextPivotAxes } from "../components/ailog/crossTableModel";
+
+export const SESSION_PAGE_SIZE = 100;
+
+export type SessionSort = "cost" | "rework" | "recent" | "turns";
+export type BreakdownDimension = "project" | "branch" | "effort" | "origin" | "title" | "agent";
+
+export interface Async<T> {
+  data: T | null;
+  loading: boolean;
+  error: string | null;
+  loadedAt: number | null;
+}
+
+export interface JobState<S, P> {
+  status: S | null;
+  progress: P | null;
+  statusError: string | null;
+  actionError: string | null;
+  dismissedError: string | null;
+  eventsAvailable: boolean;
+}
+
+export function jobBackgroundError<S extends { running: boolean; lastError: string | null }>(job: JobState<S, unknown>): string | null {
+  const { status, dismissedError } = job;
+  return !status?.running && status?.lastError && status.lastError !== dismissedError ? status.lastError : null;
+}
+
+export function jobDisplayError<S extends { running: boolean; lastError: string | null }>(job: JobState<S, unknown>): string | null {
+  return job.actionError ?? job.statusError ?? jobBackgroundError(job);
+}
+
+export interface AilogSelectionPart { key: string; label: string; }
+export interface AilogSelection {
+  model?: AilogSelectionPart;
+  project?: AilogSelectionPart;
+}
+
+interface AilogState {
+  // --- range / filters ---
+  preset: RangePreset;
+  customFrom: string;
+  customTo: string;
+  /** Stable instant used to turn a relative preset into a cacheable from/to pair. */
+  rangeAnchor: number;
+  summaryPreset: SummaryRangePreset;
+  excludeSynthetic: boolean;
+  includeSidechain: boolean;
+  granularity: AilogGranularity;
+  usageSeriesAxis: SeriesGroupBy;
+  pivotRowBy: PivotAxis;
+  pivotColBy: PivotAxis;
+  sessionSort: SessionSort;
+  sessionPage: number;
+  sessionQuery: string;
+  sessionAppliedQuery: string;
+  sessionAppliedSort: SessionSort;
+  sessionAppliedPage: number;
+  selection: AilogSelection | null;
+  breakdownDimension: BreakdownDimension;
+
+  // --- data ---
+  overview: Overview | null;
+  /** Adjacent, equal-length prior period. Missing data is non-fatal. */
+  previousTotals: Totals | null;
+  previousTotalsStatus: "idle" | "loading" | "ready" | "error";
+  series: SeriesReport | null;
+  models: ModelsReport | null;
+  projects: BreakdownReport | null;
+  breakdown: BreakdownReport | null;
+  /** Scoped to the breakdown section; see `refreshBreakdown`. */
+  breakdownError: string | null;
+  breakdownLoading: boolean;
+  sessions: SessionsReport | null;
+  sessionLoading: boolean;
+  sessionError: string | null;
+  detail: SessionDetail | null;
+  detailKey: { kind: string; sessionId: string } | null;
+  transcript: TranscriptReport | null;
+  transcriptLoading: boolean;
+  transcriptError: string | null;
+  sessionSummarizing: boolean;
+  sessionSummarizeError: string | null;
+
+  // --- status ---
+  loading: boolean;
+  loadedAt: number | null;
+  dashboardError: string | null;
+  detailLoading: boolean;
+  detailError: string | null;
+  index: JobState<IndexStatus, IndexProgress>;
+  summarize: JobState<SummarizeStatus, SummarizeProgress>;
+  usageMetric: UsageMetric;
+  usageStack: "absolute" | "share";
+  usageBucket: UsageBucket;
+  usageSeries: SeriesReport | null;
+  usageRhythm: UsageRhythmReport | null;
+  usageLoading: boolean;
+  usageError: string | null;
+  reworkRankings: ReworkRankingsReport | null;
+  reworkRankingsLoading: boolean;
+  reworkRankingsError: string | null;
+  /** True only while the "つまずいた場所" block is mounted. */
+  reworkRankingsOpen: boolean;
+  handoffs: HandoffsReport | null;
+  handoffsLoading: boolean;
+  handoffsError: string | null;
+  /** True only while the handoffs block is mounted. */
+  handoffsOpen: boolean;
+  pivot: PivotReport | null;
+  pivotLoading: boolean;
+  pivotError: string | null;
+  /** Latest usage-surface load duration, measured in the renderer. */
+  lastLoadMs: number | null;
+  /** Yen per USD used by formatMoney. Backend costs stay in USD. */
+  usdJpyRate: number;
+
+  // --- actions ---
+  setPreset: (preset: RangePreset) => void;
+  setCustomRange: (from: string, to: string) => void;
+  setUsageMetric: (metric: UsageMetric) => void;
+  setUsageStack: (stack: "absolute" | "share") => void;
+  setUsageBucket: (bucket: UsageBucket) => void;
+  setUsageSeriesAxis: (axis: SeriesGroupBy) => void;
+  setPivotRowBy: (axis: PivotAxis) => void;
+  setPivotColBy: (axis: PivotAxis) => void;
+  refreshUsage: (options?: { force?: boolean }) => Promise<void>;
+  refreshReworkRankings: (options?: { force?: boolean }) => Promise<void>;
+  setReworkRankingsOpen: (open: boolean) => void;
+  refreshModelHandoffs: (options?: { force?: boolean }) => Promise<void>;
+  setHandoffsOpen: (open: boolean) => void;
+  refreshPivot: (options?: { force?: boolean }) => Promise<void>;
+  /** Fetches the usage surface (series, dashboard, breakdown, pivot). Never starts LLM work. */
+  loadUsage: (options?: { force?: boolean }) => Promise<void>;
+  setSummaryPreset: (preset: SummaryRangePreset) => void;
+  setExcludeSynthetic: (value: boolean) => void;
+  setIncludeSidechain: (value: boolean) => void;
+  setGranularity: (value: AilogGranularity) => void;
+  setSessionSort: (value: SessionSort) => void;
+  setSessionPage: (value: number) => void;
+  setSessionQuery: (value: string) => void;
+  setSelection: (selection: AilogSelection | null) => void;
+  setBreakdownDimension: (value: BreakdownDimension) => void;
+  currentRange: () => AilogRange | null;
+  refresh: (options?: { force?: boolean }) => Promise<void>;
+  refreshBreakdown: (options?: { force?: boolean }) => Promise<void>;
+  refreshSessions: () => Promise<void>;
+  openDetail: (kind: string, sessionId: string) => Promise<void>;
+  loadTranscript: (kind: string, sessionId: string) => Promise<void>;
+  summarizeSession: (kind: string, sessionId: string) => Promise<void>;
+  closeDetail: () => void;
+  setUsdJpyRate: (rate: number) => void;
+  loadUsdJpyRate: () => Promise<void>;
+  dismissIndexError: () => void;
+  dismissSummarizeError: () => void;
+  setIndexEventsAvailable: (available: boolean) => void;
+  setSummarizeEventsAvailable: (available: boolean) => void;
+  refreshIndexStatus: () => Promise<void>;
+  applyIndexProgress: (progress: IndexProgress) => void;
+  startIndex: (full: boolean) => Promise<void>;
+  cancelIndex: () => Promise<void>;
+  refreshSummarizeStatus: () => Promise<void>;
+  applySummarizeProgress: (progress: SummarizeProgress) => void;
+  startSummarize: (force?: boolean) => Promise<void>;
+  cancelSummarize: () => Promise<void>;
+}
+
+let refreshSeq = 0;
+let detailSeq = 0;
+let transcriptSeq = 0;
+let breakdownSeq = 0;
+let usageSeq = 0;
+let reworkSeq = 0;
+let handoffSeq = 0;
+let pivotSeq = 0;
+let sessionSeq = 0;
+let cacheEpoch = 0;
+
+type UsageData = { series: SeriesReport; rhythm: UsageRhythmReport };
+
+interface CachedResource<T> {
+  value?: T;
+  pending?: Promise<T>;
+  generation: number;
+}
+
+interface PeriodCache {
+  overview: CachedResource<Overview>;
+  models: CachedResource<ModelsReport>;
+  handoffs: CachedResource<HandoffsReport>;
+  usage: Map<string, CachedResource<UsageData>>;
+  breakdown: Map<BreakdownDimension, CachedResource<BreakdownReport>>;
+  pivot: Map<string, CachedResource<PivotReport>>;
+}
+
+interface CacheContext {
+  key: string;
+  range: AilogRange;
+  filters: ReturnType<typeof emptyFilters>;
+  granularity: AilogGranularity;
+}
+
+const periodCache = new Map<string, PeriodCache>();
+const previousTotalsCache = new Map<string, CachedResource<Totals>>();
+const reworkRankingsCache = new Map<string, CachedResource<ReworkRankingsReport>>();
+
+function resource<T>(): CachedResource<T> {
+  return { generation: 0 };
+}
+
+function periodEntry(key: string): PeriodCache {
+  let entry = periodCache.get(key);
+  if (!entry) {
+    entry = {
+      overview: resource<Overview>(),
+      models: resource<ModelsReport>(),
+      handoffs: resource<HandoffsReport>(),
+      usage: new Map(),
+      breakdown: new Map(),
+      pivot: new Map(),
+    };
+    periodCache.set(key, entry);
+  }
+  return entry;
+}
+
+function mapResource<K, T>(map: Map<K, CachedResource<T>>, key: K): CachedResource<T> {
+  let entry = map.get(key);
+  if (!entry) {
+    entry = resource<T>();
+    map.set(key, entry);
+  }
+  return entry;
+}
+
+function previousTotalsResource(key: string): CachedResource<Totals> {
+  let entry = previousTotalsCache.get(key);
+  if (!entry) {
+    entry = resource<Totals>();
+    previousTotalsCache.set(key, entry);
+  }
+  return entry;
+}
+
+function reworkRankingsResource(key: string): CachedResource<ReworkRankingsReport> {
+  let entry = reworkRankingsCache.get(key);
+  if (!entry) {
+    entry = resource<ReworkRankingsReport>();
+    reworkRankingsCache.set(key, entry);
+  }
+  return entry;
+}
+
+/**
+ * Requests one resource at most once per cache key. A forced refresh advances
+ * the per-resource generation, so an older response cannot replace it.
+ */
+function fetchOnce<T>(entry: CachedResource<T>, load: () => Promise<T>, force = false): { promise: Promise<T>; pending: boolean } {
+  if (!force && entry.value !== undefined) return { promise: Promise.resolve(entry.value), pending: false };
+  if (!force && entry.pending) return { promise: entry.pending, pending: true };
+  const generation = ++entry.generation;
+  const pending = load().then(
+    (value) => {
+      if (entry.generation === generation) entry.value = value;
+      return value;
+    },
+    (error) => {
+      throw error;
+    },
+  ).finally(() => {
+    if (entry.generation === generation) entry.pending = undefined;
+  });
+  entry.pending = pending;
+  return { promise: pending, pending: true };
+}
+
+function resolvedRangeForKey(
+  preset: RangePreset,
+  customFrom: string,
+  customTo: string,
+  anchor: number,
+): { from: number; to: number } | null {
+  const custom = buildRange(preset, customFrom, customTo);
+  if (!custom) return null;
+  if (preset === "custom") return { from: custom.from!, to: custom.to! };
+  const quantizedAnchor = Math.floor(anchor / 300_000) * 300_000;
+  const day = 86_400_000;
+  const from = preset === "7d" ? quantizedAnchor - 7 * day
+    : preset === "30d" ? quantizedAnchor - 30 * day
+      : preset === "90d" ? quantizedAnchor - 90 * day
+        : preset === "ytd" ? Date.UTC(new Date(quantizedAnchor).getUTCFullYear(), 0, 1)
+          : Number.MIN_SAFE_INTEGER;
+  return { from, to: quantizedAnchor };
+}
+
+function cacheContext(state: Pick<AilogState, "preset" | "customFrom" | "customTo" | "rangeAnchor" | "includeSidechain" | "selection" | "granularity" | "usageSeriesAxis">): CacheContext | null {
+  const range = buildRange(state.preset, state.customFrom, state.customTo);
+  const resolvedRange = resolvedRangeForKey(state.preset, state.customFrom, state.customTo, state.rangeAnchor);
+  if (!range || !resolvedRange) return null;
+  const filters = selectionFilters(
+    { ...emptyFilters(), includeSidechain: state.includeSidechain },
+    state.selection,
+  );
+  const key = JSON.stringify({
+    from: resolvedRange.from,
+    to: resolvedRange.to,
+    includeSidechain: state.includeSidechain,
+    granularity: state.granularity,
+    usageSeriesAxis: state.usageSeriesAxis,
+    filters: {
+      kinds: [...filters.kinds].sort(),
+      models: [...filters.models].sort(),
+      projects: [...filters.projects].sort(),
+      branches: [...filters.branches].sort(),
+      efforts: [...filters.efforts].sort(),
+      origins: [...filters.origins].sort(),
+      minCost: filters.minCost ?? null,
+      query: filters.query ?? null,
+    },
+  });
+  // Send the anchor a relative preset is measured from, not the instants it
+  // resolves to. Every report resolves the preset against its own clock, so two
+  // calls a millisecond apart used to cover different windows — and the usage
+  // panels, which compare their range against the overview's, could never agree
+  // and showed "no records" over full data. Passing from/to instead would work
+  // too, but an explicit bound outranks a preset by contract and would relabel
+  // the named period as a custom one.
+  const requestRange: AilogRange = state.preset === "custom"
+    ? range
+    : { preset: state.preset, anchor: resolvedRange.to };
+  return { key, range: requestRange, filters, granularity: state.granularity };
+}
+
+function isCurrentContext(get: () => AilogState, key: string): boolean {
+  return cacheContext(get())?.key === key;
+}
+
+function clearAilogCaches(): void {
+  periodCache.clear();
+  previousTotalsCache.clear();
+  reworkRankingsCache.clear();
+}
+
+/**
+ * Drop cached SQL reports and in-flight generations. A response that started
+ * before this call must not land as the post-invalidation picture.
+ */
+export function invalidateAilogCaches(): void {
+  cacheEpoch += 1;
+  refreshSeq += 1;
+  breakdownSeq += 1;
+  usageSeq += 1;
+  reworkSeq += 1;
+  handoffSeq += 1;
+  pivotSeq += 1;
+  sessionSeq += 1;
+  clearAilogCaches();
+}
+
+function dropReworkRankingsCache(): void {
+  reworkRankingsCache.clear();
+  reworkSeq += 1;
+}
+
+function dropHandoffsCache(): void {
+  for (const entry of periodCache.values()) {
+    entry.handoffs = resource();
+  }
+  handoffSeq += 1;
+}
+
+function handoffsResetIfContextChanged(
+  current: AilogState,
+  next: Pick<AilogState, "preset" | "customFrom" | "customTo" | "rangeAnchor" | "includeSidechain" | "selection" | "granularity" | "usageSeriesAxis">,
+): Partial<AilogState> {
+  const currentKey = cacheContext(current)?.key ?? null;
+  const nextKey = cacheContext(next)?.key ?? null;
+  if (nextKey === currentKey || nextKey === null) return {};
+  return {
+    handoffs: null,
+    handoffsError: null,
+    handoffsLoading: false,
+  };
+}
+
+function reworkContextKey(
+  state: Pick<AilogState, "preset" | "customFrom" | "customTo" | "rangeAnchor" | "includeSidechain" | "selection">,
+): string | null {
+  return reworkRankingsContext(state)?.key ?? null;
+}
+
+/** Keep the on-screen ranking until the resolved period/filters actually change. */
+function reworkResetIfContextChanged(
+  current: AilogState,
+  next: Pick<AilogState, "preset" | "customFrom" | "customTo" | "rangeAnchor" | "includeSidechain" | "selection">,
+): Partial<AilogState> {
+  const currentKey = reworkContextKey(current);
+  const nextKey = reworkContextKey(next);
+  if (nextKey === currentKey || nextKey === null) return {};
+  return {
+    reworkRankings: null,
+    reworkRankingsError: null,
+    reworkRankingsLoading: false,
+    previousTotals: null,
+    previousTotalsStatus: "loading",
+  };
+}
+
+function previousRange(range: { from: number; to: number }): AilogRange {
+  const length = range.to - range.from + 1;
+  return { from: range.from - length, to: range.from - 1 };
+}
+
+function previousTotalsKey(range: AilogRange, filters: ReturnType<typeof emptyFilters>): string {
+  return JSON.stringify({
+    range,
+    filters: {
+      kinds: [...filters.kinds].sort(),
+      models: [...filters.models].sort(),
+      projects: [...filters.projects].sort(),
+      branches: [...filters.branches].sort(),
+      efforts: [...filters.efforts].sort(),
+      origins: [...filters.origins].sort(),
+      includeSidechain: filters.includeSidechain,
+      minCost: filters.minCost ?? null,
+      query: filters.query ?? null,
+    },
+  });
+}
+
+/**
+ * Rankings do not depend on series axis / granularity, so they live on a
+ * narrower key than the dashboard cache. Changing the chart grouping must
+ * not refetch this report.
+ */
+function reworkRankingsContext(
+  state: Pick<AilogState, "preset" | "customFrom" | "customTo" | "rangeAnchor" | "includeSidechain" | "selection">,
+): { key: string; range: AilogRange; filters: ReturnType<typeof emptyFilters> } | null {
+  const range = buildRange(state.preset, state.customFrom, state.customTo);
+  const resolvedRange = resolvedRangeForKey(state.preset, state.customFrom, state.customTo, state.rangeAnchor);
+  if (!range || !resolvedRange) return null;
+  const filters = selectionFilters(
+    { ...emptyFilters(), includeSidechain: state.includeSidechain },
+    state.selection,
+  );
+  return {
+    key: JSON.stringify({
+      from: resolvedRange.from,
+      to: resolvedRange.to,
+      includeSidechain: state.includeSidechain,
+      filters: {
+        kinds: [...filters.kinds].sort(),
+        models: [...filters.models].sort(),
+        projects: [...filters.projects].sort(),
+        branches: [...filters.branches].sort(),
+        efforts: [...filters.efforts].sort(),
+        origins: [...filters.origins].sort(),
+        minCost: filters.minCost ?? null,
+        query: filters.query ?? null,
+      },
+    }),
+    range,
+    filters,
+  };
+}
+
+/**
+ * A selection the backend can honour: model families and project labels are
+ * both real filter inputs on every `ailog_*` query. Work tags are not, so a tag
+ * selection never claims to have narrowed the aggregates.
+ */
+export function isServerFilterable(
+  selection: AilogSelection | null,
+): boolean {
+  return Boolean(selection?.model || selection?.project);
+}
+
+export function selectionFilters<T extends { models: string[]; projects: string[] }>(
+  filters: T,
+  selection: AilogSelection | null,
+): T {
+  if (!isServerFilterable(selection) || !selection) return filters;
+  let out = filters;
+  if (selection.model) out = { ...out, models: [selection.model.key] };
+  if (selection.project) out = { ...out, projects: [selection.project.key] };
+  return out;
+}
+
+const initialState = {
+  preset: "30d" as RangePreset,
+  customFrom: "",
+  customTo: "",
+  rangeAnchor: Date.now(),
+  summaryPreset: "7d" as SummaryRangePreset,
+  excludeSynthetic: true,
+  includeSidechain: false,
+  granularity: "raw" as const,
+  usageSeriesAxis: "model_raw" as SeriesGroupBy,
+  pivotRowBy: "project" as PivotAxis,
+  pivotColBy: "model_raw" as PivotAxis,
+  sessionSort: "rework" as SessionSort,
+  sessionPage: 0,
+  sessionQuery: "",
+  sessionAppliedQuery: "",
+  sessionAppliedSort: "rework" as SessionSort,
+  sessionAppliedPage: 0,
+  selection: null,
+  breakdownDimension: "project" as BreakdownDimension,
+  overview: null,
+  previousTotals: null,
+  previousTotalsStatus: "idle" as const,
+  series: null,
+  models: null,
+  projects: null,
+  breakdown: null,
+  breakdownError: null,
+  breakdownLoading: false,
+  sessions: null,
+  sessionLoading: false,
+  sessionError: null,
+  detail: null,
+  detailKey: null,
+  transcript: null,
+  transcriptLoading: false,
+  transcriptError: null,
+  sessionSummarizing: false,
+  sessionSummarizeError: null,
+  loading: false,
+  loadedAt: null,
+  dashboardError: null,
+  detailLoading: false,
+  detailError: null,
+  index: { status: null, progress: null, statusError: null, actionError: null, dismissedError: null, eventsAvailable: true },
+  summarize: { status: null, progress: null, statusError: null, actionError: null, dismissedError: null, eventsAvailable: true },
+  // Fresh input/output is the default: measured in total tokens the picture is
+  // 95% cache reads, which answers a different question than "how much did I
+  // actually put through a model".
+  usageMetric: "ioTokens" as UsageMetric,
+  usageStack: "absolute" as "absolute" | "share",
+  usageBucket: "day" as UsageBucket,
+  usageSeries: null,
+  usageRhythm: null,
+  usageLoading: false,
+  usageError: null,
+  reworkRankings: null,
+  reworkRankingsLoading: false,
+  reworkRankingsError: null,
+  reworkRankingsOpen: false,
+  handoffs: null,
+  handoffsLoading: false,
+  handoffsError: null,
+  handoffsOpen: false,
+  pivot: null,
+  pivotLoading: false,
+  pivotError: null,
+  lastLoadMs: null,
+  usdJpyRate: DEFAULT_USD_JPY_RATE,
+};
+
+export const useAilogStore = create<AilogState>((set, get) => ({
+  ...initialState,
+
+  setUsdJpyRate: (rate) => {
+    const next = configureUsdJpyRate(rate);
+    set({ usdJpyRate: next });
+    void ailogSetUsdJpyRate(next).catch((error) => {
+      quarantineTerminalPersistentStorageError(error);
+    });
+  },
+  loadUsdJpyRate: async () => {
+    try {
+      const rate = configureUsdJpyRate(await ailogGetUsdJpyRate());
+      set({ usdJpyRate: rate });
+    } catch {
+      set({ usdJpyRate: configureUsdJpyRate(DEFAULT_USD_JPY_RATE) });
+    }
+  },
+
+  setPreset: (preset) => {
+    const current = get();
+    if (current.preset === preset) return;
+    const next = { ...current, preset, selection: null };
+    set({
+      preset,
+      sessionPage: 0,
+      selection: null,
+      previousTotals: null,
+      previousTotalsStatus: "idle",
+      ...reworkResetIfContextChanged(current, next),
+      ...handoffsResetIfContextChanged(current, next),
+    });
+  },
+
+  setCustomRange: (customFrom, customTo) => {
+    const current = get();
+    if (current.preset === "custom" && current.customFrom === customFrom && current.customTo === customTo) return;
+    const next = { ...current, customFrom, customTo, preset: "custom" as const };
+    set({
+      customFrom,
+      customTo,
+      preset: "custom",
+      sessionPage: 0,
+      previousTotals: null,
+      previousTotalsStatus: "idle",
+      ...reworkResetIfContextChanged(current, next),
+      ...handoffsResetIfContextChanged(current, next),
+    });
+  },
+
+  setSummaryPreset: (summaryPreset) => {
+    set({ summaryPreset });
+    void get().refreshSummarizeStatus();
+  },
+
+  setExcludeSynthetic: (excludeSynthetic) => set({ excludeSynthetic }),
+  setIncludeSidechain: (includeSidechain) => {
+    const current = get();
+    if (current.includeSidechain === includeSidechain) return;
+    set({
+      includeSidechain,
+      sessionPage: 0,
+      ...reworkResetIfContextChanged(current, { ...current, includeSidechain }),
+      ...handoffsResetIfContextChanged(current, { ...current, includeSidechain }),
+    });
+  },
+  setGranularity: (granularity) => {
+    const current = get();
+    set({
+      granularity,
+      previousTotals: null,
+      previousTotalsStatus: "idle",
+      ...handoffsResetIfContextChanged(current, { ...current, granularity }),
+    });
+  },
+  setUsageSeriesAxis: (usageSeriesAxis) => {
+    const current = get();
+    const granularity = granularityFromSeriesAxis(usageSeriesAxis);
+    set({
+      usageSeriesAxis,
+      granularity,
+      previousTotals: null,
+      previousTotalsStatus: "idle",
+      ...handoffsResetIfContextChanged(current, { ...current, usageSeriesAxis, granularity }),
+    });
+  },
+  setPivotRowBy: (rowBy) => {
+    const next = nextPivotAxes({ rowBy: get().pivotRowBy, colBy: get().pivotColBy }, { rowBy });
+    set({ pivotRowBy: next.rowBy, pivotColBy: next.colBy, pivot: null, pivotError: null });
+    void get().refreshPivot();
+  },
+  setPivotColBy: (colBy) => {
+    const next = nextPivotAxes({ rowBy: get().pivotRowBy, colBy: get().pivotColBy }, { colBy });
+    set({ pivotRowBy: next.rowBy, pivotColBy: next.colBy, pivot: null, pivotError: null });
+    void get().refreshPivot();
+  },
+  setSessionSort: (sessionSort) => {
+    set({ sessionSort, sessionPage: 0 });
+    void get().refreshSessions();
+  },
+  setSessionPage: (sessionPage) => {
+    set({ sessionPage: Math.max(0, sessionPage) });
+    void get().refreshSessions();
+  },
+  setSessionQuery: (sessionQuery) => set({ sessionQuery, sessionPage: 0 }),
+  setSelection: (selection) => {
+    const current = get();
+    const nextSelection = selection && (selection.model || selection.project) ? selection : null;
+    set({
+      selection: nextSelection,
+      sessionPage: 0,
+      overview: null,
+      previousTotals: null,
+      previousTotalsStatus: "idle",
+      series: null,
+      models: null,
+      projects: null,
+      breakdown: null,
+      sessions: null,
+      usageSeries: null,
+      usageRhythm: null,
+      pivot: null,
+      loading: true,
+      ...reworkResetIfContextChanged(current, { ...current, selection: nextSelection }),
+      ...handoffsResetIfContextChanged(current, { ...current, selection: nextSelection }),
+    });
+  },
+  setBreakdownDimension: (breakdownDimension) => {
+    set({ breakdownDimension, breakdown: null, breakdownError: null });
+  },
+
+  currentRange: () => {
+    const { preset, customFrom, customTo } = get();
+    return buildRange(preset, customFrom, customTo);
+  },
+
+  refresh: async (options = {}) => {
+    const context = cacheContext(get());
+    if (!context) return;
+    const mySeq = ++refreshSeq;
+    const entry = periodEntry(context.key);
+    const cached = fetchOnce(
+      entry.overview,
+      () => ailogOverview(context.range, context.filters),
+      options.force,
+    );
+    if (cached.pending) set({ loading: true, dashboardError: null });
+    try {
+      const overview = await cached.promise;
+      if (mySeq !== refreshSeq || !isCurrentContext(get, context.key)) return;
+      set({
+        overview,
+        previousTotalsStatus: get().preset === "all" ? "idle" : "loading",
+        loading: false,
+        loadedAt: Date.now(),
+        dashboardError: null,
+      });
+
+      // The overview is the useful first paint. Models and the paged session
+      // list are independent, below-the-fold reports and must not hold it up.
+      const models = fetchOnce(
+        entry.models,
+        () => ailogModels(context.range, context.filters, {
+          granularity: context.granularity,
+          bucket: "day",
+        }),
+        options.force,
+      );
+      void models.promise.then((report) => {
+        if (mySeq !== refreshSeq || !isCurrentContext(get, context.key)) return;
+        set({ models: report });
+      }).catch(() => {
+        // The overview and the dedicated usage reports stay usable if this
+        // optional work-tag/model detail fails.
+      });
+      void get().refreshSessions();
+
+      if (get().preset === "all") {
+        set({ previousTotals: null, previousTotalsStatus: "idle" });
+        return;
+      }
+
+      const priorRange = previousRange(overview.range);
+      const previous = fetchOnce(
+        previousTotalsResource(previousTotalsKey(priorRange, context.filters)),
+        async () => (await ailogOverview(priorRange, context.filters)).totals,
+        options.force,
+      );
+      void previous.promise.then((previousTotals) => {
+        if (mySeq !== refreshSeq || !isCurrentContext(get, context.key)) return;
+        set({ previousTotals, previousTotalsStatus: "ready" });
+      }).catch(() => {
+        if (mySeq !== refreshSeq || !isCurrentContext(get, context.key)) return;
+        // Prior-period context adds interpretation, never a fatal dependency.
+        set({ previousTotals: null, previousTotalsStatus: "error" });
+      });
+    } catch (error) {
+      if (mySeq !== refreshSeq || !isCurrentContext(get, context.key)) return;
+      // Keep the last successful picture visible while naming the failed
+      // refresh. A transient section failure must not blank unrelated evidence.
+      set({
+        loading: false,
+        dashboardError: errorMessage(error),
+      });
+    }
+  },
+
+  refreshBreakdown: async (options = {}) => {
+    const context = cacheContext(get());
+    if (!context) return;
+    const dimension = get().breakdownDimension;
+    const mySeq = ++breakdownSeq;
+    const cached = fetchOnce(
+      mapResource(periodEntry(context.key).breakdown, dimension),
+      () => ailogBreakdown(context.range, context.filters, dimension),
+      options.force,
+    );
+    if (cached.pending) set({ breakdownLoading: true, breakdownError: null });
+    try {
+      const breakdown = await cached.promise;
+      if (mySeq !== breakdownSeq || get().breakdownDimension !== dimension || !isCurrentContext(get, context.key)) return;
+      set({ breakdown, breakdownLoading: false, breakdownError: null });
+    } catch (error) {
+      if (mySeq !== breakdownSeq || !isCurrentContext(get, context.key)) return;
+      // Scoped to the breakdown section. The global `error` is reserved for
+      // `refresh()`, which fetches every report at once: setting it here
+      // replaced the whole dashboard with a failure screen even though the
+      // overview, series and model tables had all loaded fine.
+      set({ breakdownLoading: false, breakdownError: errorMessage(error), breakdown: null });
+    }
+  },
+
+  refreshSessions: async () => {
+    const context = cacheContext(get());
+    if (!context) return;
+    const { sessionQuery, sessionSort, sessionPage } = get();
+    const query = sessionQuery.trim();
+    const requestKey = JSON.stringify({
+      context: context.key,
+      query,
+      sort: sessionSort,
+      page: sessionPage,
+    });
+    const isCurrentRequest = () => {
+      const state = get();
+      return requestKey === JSON.stringify({
+        context: cacheContext(state)?.key ?? null,
+        query: state.sessionQuery.trim(),
+        sort: state.sessionSort,
+        page: state.sessionPage,
+      });
+    };
+    const mySeq = ++sessionSeq;
+    set({ sessionLoading: true, sessionError: null });
+    try {
+      const sessions = await ailogSessions(
+        context.range,
+        { ...context.filters, query: query || null },
+        {
+          sort: sessionSort,
+          limit: SESSION_PAGE_SIZE,
+          offset: sessionPage * SESSION_PAGE_SIZE,
+        },
+      );
+      if (mySeq !== sessionSeq || !isCurrentRequest()) return;
+      set({ sessions, sessionAppliedQuery: query, sessionAppliedSort: sessionSort, sessionAppliedPage: sessionPage, sessionLoading: false, sessionError: null });
+    } catch (error) {
+      if (mySeq !== sessionSeq || !isCurrentRequest()) return;
+      set({
+        sessionLoading: false,
+        sessionError: errorMessage(error),
+      });
+    }
+  },
+
+  loadUsage: async (options = {}) => {
+    const startedAt = performance.now();
+    try {
+      // The dashboard owns the useful first paint. Let it take the two-report
+      // backend semaphore before below-the-fold series/pivot work starts.
+      await get().refresh(options);
+      const tasks: Array<Promise<void>> = [
+        get().refreshUsage(options),
+        get().refreshBreakdown(options),
+        get().refreshPivot(options),
+      ];
+      if (get().reworkRankingsOpen) {
+        tasks.push(get().refreshReworkRankings({ force: options.force }));
+      } else if (options.force) {
+        dropReworkRankingsCache();
+        set({ reworkRankings: null, reworkRankingsError: null, reworkRankingsLoading: false });
+      }
+      if (get().handoffsOpen) {
+        tasks.push(get().refreshModelHandoffs({ force: options.force }));
+      } else if (options.force) {
+        dropHandoffsCache();
+        set({ handoffs: null, handoffsError: null, handoffsLoading: false });
+      }
+      await Promise.all(tasks);
+    } finally {
+      set({ lastLoadMs: performance.now() - startedAt });
+    }
+  },
+
+  openDetail: async (kind, sessionId) => {
+    const mySeq = ++detailSeq;
+    transcriptSeq += 1;
+    set({ detailLoading: true, detailError: null, detailKey: { kind, sessionId }, detail: null, transcript: null, transcriptLoading: false, transcriptError: null, sessionSummarizeError: null });
+    try {
+      const detail = await ailogSessionDetail(kind, sessionId);
+      if (mySeq !== detailSeq) return;
+      set({ detail, detailLoading: false });
+    } catch (error) {
+      if (mySeq !== detailSeq) return;
+      set({ detailLoading: false, detailError: errorMessage(error) });
+    }
+  },
+
+  loadTranscript: async (kind, sessionId) => {
+    const mySeq = ++transcriptSeq;
+    set({ transcriptLoading: true, transcriptError: null });
+    try {
+      const transcript = await ailogSessionTranscript(kind, sessionId);
+      if (mySeq !== transcriptSeq) return;
+      set({ transcript, transcriptLoading: false });
+    } catch (error) {
+      if (mySeq !== transcriptSeq) return;
+      set({ transcriptLoading: false, transcriptError: errorMessage(error) });
+    }
+  },
+
+  summarizeSession: async (kind, sessionId) => {
+    if (get().sessionSummarizing) return;
+    const startedWithoutDetail = get().detailKey === null;
+    const isCurrentDetail = () => {
+      const detailKey = get().detailKey;
+      return detailKey?.kind === kind && detailKey.sessionId === sessionId;
+    };
+    set({ sessionSummarizing: true, sessionSummarizeError: null });
+    try {
+      await ailogSessionSummarize(kind, sessionId);
+      await Promise.all([
+        isCurrentDetail() ? get().openDetail(kind, sessionId) : Promise.resolve(),
+        get().refreshSummarizeStatus(),
+      ]);
+      if (startedWithoutDetail || isCurrentDetail()) set({ sessionSummarizing: false });
+    } catch (error) {
+      if (startedWithoutDetail || isCurrentDetail()) set({ sessionSummarizing: false, sessionSummarizeError: errorMessage(error) });
+    }
+  },
+
+  closeDetail: () => {
+    detailSeq += 1;
+    transcriptSeq += 1;
+    set({ detail: null, detailKey: null, detailError: null, detailLoading: false, transcript: null, transcriptLoading: false, transcriptError: null, sessionSummarizing: false, sessionSummarizeError: null });
+  },
+
+  dismissIndexError: () => set((state) => ({ index: { ...state.index, dismissedError: state.index.status?.lastError ?? null, actionError: null, statusError: null } })),
+  dismissSummarizeError: () => set((state) => ({ summarize: { ...state.summarize, dismissedError: state.summarize.status?.lastError ?? null, actionError: null, statusError: null } })),
+  setIndexEventsAvailable: (eventsAvailable) => set((state) => ({ index: { ...state.index, eventsAvailable } })),
+  setSummarizeEventsAvailable: (eventsAvailable) => set((state) => ({ summarize: { ...state.summarize, eventsAvailable } })),
+
+  refreshIndexStatus: async () => {
+    try {
+      const indexStatus = await ailogIndexStatus();
+      set((state) => ({ index: { ...state.index, status: indexStatus, statusError: null } }));
+    } catch (error) {
+      set((state) => ({ index: { ...state.index, statusError: errorMessage(error) } }));
+    }
+  },
+
+  applyIndexProgress: (indexProgress) => {
+    set((state) => ({ index: { ...state.index, progress: indexProgress } }));
+    if (indexProgress.phase === "done") {
+      invalidateAilogCaches();
+      void get().refreshIndexStatus();
+    }
+  },
+
+  startIndex: async (full) => {
+    set((state) => ({ index: { ...state.index, actionError: null, dismissedError: null, progress: null } }));
+    try {
+      const result = await ailogIndexStart(full);
+      if (result.alreadyRunning) {
+        set((state) => ({ index: { ...state.index, actionError: "インデックス処理はすでに実行中です" } }));
+      }
+      await get().refreshIndexStatus();
+    } catch (error) {
+      set((state) => ({ index: { ...state.index, actionError: errorMessage(error) } }));
+    }
+  },
+
+  cancelIndex: async () => {
+    try {
+      await ailogIndexCancel();
+      await get().refreshIndexStatus();
+    } catch (error) {
+      set((state) => ({ index: { ...state.index, actionError: errorMessage(error) } }));
+    }
+  },
+
+  refreshSummarizeStatus: async () => {
+    try {
+      const summarizeStatus = await ailogSummarizeStatus({ preset: get().summaryPreset });
+      set((state) => ({ summarize: { ...state.summarize, status: summarizeStatus, statusError: null } }));
+    } catch (error) {
+      set((state) => ({ summarize: { ...state.summarize, statusError: errorMessage(error) } }));
+    }
+  },
+
+  applySummarizeProgress: (summarizeProgress) => {
+    set((state) => ({ summarize: { ...state.summarize, progress: summarizeProgress } }));
+    if (summarizeProgress.phase === "done") {
+      invalidateAilogCaches();
+      void get().refreshSummarizeStatus();
+    }
+  },
+
+  startSummarize: async (force = false) => {
+    set((state) => ({ summarize: { ...state.summarize, actionError: null, dismissedError: null, progress: null } }));
+    try {
+      const result = await ailogSummarizeStart(undefined, force, { preset: get().summaryPreset });
+      if (result.alreadyRunning) set((state) => ({ summarize: { ...state.summarize, actionError: "インデックスまたは要約処理がすでに実行中です" } }));
+      await get().refreshSummarizeStatus();
+    } catch (error) {
+      set((state) => ({ summarize: { ...state.summarize, actionError: errorMessage(error) } }));
+    }
+  },
+
+  cancelSummarize: async () => {
+    try {
+      await ailogSummarizeCancel();
+      await get().refreshSummarizeStatus();
+    } catch (error) {
+      set((state) => ({ summarize: { ...state.summarize, actionError: errorMessage(error) } }));
+    }
+  },
+
+  setUsageMetric: (usageMetric) => set({ usageMetric }),
+  setUsageStack: (usageStack) => set({ usageStack }),
+  setUsageBucket: (usageBucket) => set({ usageBucket }),
+
+  refreshPivot: async (options = {}) => {
+    const context = cacheContext(get());
+    if (!context) return;
+    const mySeq = ++pivotSeq;
+    const rowBy = get().pivotRowBy;
+    const colBy = get().pivotColBy;
+    const cached = fetchOnce(
+      mapResource(periodEntry(context.key).pivot, `${rowBy}:${colBy}`),
+      () => ailogPivot(context.range, context.filters, { rowBy, colBy }),
+      options.force,
+    );
+    if (cached.pending) set({ pivotLoading: true, pivotError: null });
+    try {
+      const pivot = await cached.promise;
+      if (mySeq !== pivotSeq || get().pivotRowBy !== rowBy || get().pivotColBy !== colBy || !isCurrentContext(get, context.key)) return;
+      set({ pivot, pivotLoading: false, pivotError: null });
+    } catch (error) {
+      if (mySeq !== pivotSeq || !isCurrentContext(get, context.key)) return;
+      set({ pivotLoading: false, pivotError: errorMessage(error), pivot: null });
+    }
+  },
+
+  /**
+   * Loaded only when the "つまずいた場所" block mounts. Failures stay in
+   * `reworkRankingsError` so the rest of the usage surface keeps rendering.
+   */
+  setReworkRankingsOpen: (reworkRankingsOpen) => set({ reworkRankingsOpen }),
+  setHandoffsOpen: (handoffsOpen) => set({ handoffsOpen }),
+
+  refreshReworkRankings: async (options = {}) => {
+    const context = reworkRankingsContext(get());
+    if (!context) return;
+    const epoch = cacheEpoch;
+    const mySeq = ++reworkSeq;
+    const cached = fetchOnce(
+      reworkRankingsResource(context.key),
+      () => ailogReworkRankings(context.range, context.filters),
+      options.force,
+    );
+    if (cached.pending) set({ reworkRankingsLoading: true, reworkRankingsError: null });
+    try {
+      const reworkRankings = await cached.promise;
+      if (epoch !== cacheEpoch || mySeq !== reworkSeq || reworkRankingsContext(get())?.key !== context.key) return;
+      set({ reworkRankings, reworkRankingsLoading: false, reworkRankingsError: null });
+    } catch (error) {
+      if (epoch !== cacheEpoch || mySeq !== reworkSeq || reworkRankingsContext(get())?.key !== context.key) return;
+      set({ reworkRankingsLoading: false, reworkRankingsError: errorMessage(error), reworkRankings: null });
+    }
+  },
+
+  /**
+   * Loaded only when the handoffs block mounts. Failures stay in
+   * `handoffsError` so the rest of the usage surface keeps rendering.
+   */
+  refreshModelHandoffs: async (options = {}) => {
+    const context = cacheContext(get());
+    if (!context) return;
+    const epoch = cacheEpoch;
+    const mySeq = ++handoffSeq;
+    const cached = fetchOnce(
+      periodEntry(context.key).handoffs,
+      () => ailogModelHandoffs(context.range, context.filters, {
+        granularity: context.granularity,
+        bucket: "day",
+      }),
+      options.force,
+    );
+    if (cached.pending) set({ handoffsLoading: true, handoffsError: null });
+    try {
+      const handoffs = await cached.promise;
+      if (epoch !== cacheEpoch || mySeq !== handoffSeq || !isCurrentContext(get, context.key)) return;
+      set({ handoffs, handoffsLoading: false, handoffsError: null });
+    } catch (error) {
+      if (epoch !== cacheEpoch || mySeq !== handoffSeq || !isCurrentContext(get, context.key)) return;
+      set({ handoffsLoading: false, handoffsError: errorMessage(error), handoffs: null });
+    }
+  },
+
+  /**
+   * The usage tab is deliberately independent of `refresh()`: it must render
+   * from SQL aggregates alone, so a failure in any other report cannot blank
+   * it, and its own failure is scoped to `usageError`.
+   */
+  refreshUsage: async (options = {}) => {
+    const context = cacheContext(get());
+    if (!context) return;
+    const mySeq = ++usageSeq;
+    const bucket = get().usageBucket;
+    const groupBy = get().usageSeriesAxis;
+    const cached = fetchOnce(
+      mapResource(periodEntry(context.key).usage, `${bucket}:${groupBy}`),
+      async (): Promise<UsageData> => {
+        const [series, rhythm] = await Promise.all([
+          ailogSeries(context.range, context.filters, { bucket, groupBy }),
+          ailogUsageRhythm(context.range, context.filters),
+        ]);
+        return { series, rhythm };
+      },
+      options.force,
+    );
+    if (cached.pending) set({ usageLoading: true, usageError: null });
+    try {
+      const { series: usageSeries, rhythm: usageRhythm } = await cached.promise;
+      if (mySeq !== usageSeq || !isCurrentContext(get, context.key)) return;
+      set({ usageSeries, usageRhythm, usageLoading: false, usageError: null });
+    } catch (error) {
+      if (mySeq !== usageSeq || !isCurrentContext(get, context.key)) return;
+      set({ usageSeries: null, usageRhythm: null, usageLoading: false, usageError: errorMessage(error) });
+    }
+  },
+}));
+
+export function __resetAilogStoreForTests(): void {
+  configureUsdJpyRate(DEFAULT_USD_JPY_RATE);
+  clearAilogCaches();
+  cacheEpoch = 0;
+  refreshSeq = 0;
+  detailSeq = 0;
+  transcriptSeq = 0;
+  breakdownSeq = 0;
+  usageSeq = 0;
+  reworkSeq = 0;
+  handoffSeq = 0;
+  pivotSeq = 0;
+  sessionSeq = 0;
+  useAilogStore.setState({ ...initialState });
+}

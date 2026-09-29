@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "snap-20260830T120000-f6d2054a1e31",
+  "generated_at": "2026-08-30T12:00:00.000Z",
+  "source_watermark": 10,
+  "coverage": {
+    "state": "complete",
+    "expected_sessions": 10,
+    "observed_sessions": 10,
+    "stale_sessions": 0,
+    "failed_probes": 0,
+    "status_untracked_sessions": 0
+  },
+  "items": [
+    {
+      "attention_id": "incident-ab155686692257b6",
+      "incident_group_id": "worktree-isolation:repo-duplicate",
+      "kind": "no_worktree_isolation",
+      "severity": "blocking",
+      "requires_human_action": true,
+      "actor": "human",
+      "summary": "10 lanes lack isolated writer worktrees for repo-duplicate",
+      "why_now": "Writer attribution can become ambiguous before the next file change.",
+      "next_action": {
+        "type": "open_assignment_panel",
+        "label": "Assign isolated worktrees",
+        "target": "repo-duplicate"
+      },
+      "affected_lane_ids": [
+        "lane-01",
+        "lane-02",
+        "lane-03",
+        "lane-04",
+        "lane-05",
+        "lane-06",
+        "lane-07",
+        "lane-08",
+        "lane-09",
+        "lane-10"
+      ],
+      "evidence_refs": [
+        "event:1",
+        "event:2",
+        "event:3",
+        "event:4",
+        "event:5",
+        "event:6",
+        "event:7",
+        "event:8",
+        "event:9",
+        "event:10"
+      ],
+      "first_seen_at": "2026-08-30T11:41:00.000Z",
+      "last_changed_at": "2026-08-30T11:50:00.000Z",
+      "freshness": "fresh",
+      "rank": 1
+    }
+  ]
+}

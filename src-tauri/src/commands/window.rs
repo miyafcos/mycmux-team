@@ -1,0 +1,778 @@
+use std::collections::HashSet;
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter, Manager, State};
+
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{POINT, RECT};
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetCursorPos, GetWindowRect, SetForegroundWindow, SetWindowPos, ShowWindow, HWND_TOP,
+    SWP_SHOWWINDOW, SW_SHOWNORMAL,
+};
+
+use crate::AppState;
+
+/// Whether a window rectangle overlaps any monitor at all.
+///
+/// A window that overlaps nothing is unreachable: it cannot be clicked, dragged
+/// or closed, and on macOS nothing brings it back on its own. That gap is real
+/// even though the case that prompted this was not one -- a window found at
+/// x=-1920 on 2026-09-10 turned out to be sitting on a second display at that
+/// origin, not stranded. What remains true is that the rescue existed only for
+/// Windows, so a Mac that loses the display a window is on has no way back.
+///
+/// Rectangles are half-open: touching edges do not count as overlapping, which
+/// is what puts a window flush against the left edge of a monitor on-screen
+/// rather than one pixel outside it.
+pub(crate) fn rect_overlaps_any_monitor(
+    rect: (i32, i32, i32, i32),
+    monitors: &[(i32, i32, i32, i32)],
+) -> bool {
+    let (left, top, right, bottom) = rect;
+    monitors.iter().any(|&(m_left, m_top, m_right, m_bottom)| {
+        left < m_right && right > m_left && top < m_bottom && bottom > m_top
+    })
+}
+
+/// Brings the window back onto a display if it is stranded off every monitor.
+///
+/// Tauri's own geometry rather than Win32: this is the path macOS takes, where
+/// the frontend reveal flow does not fire and the Windows-only rescue below
+/// never runs. Centring is the recovery — a window overlapping no monitor is by
+/// definition somewhere the operator cannot reach. A window on a second display
+/// overlaps that display and is left alone.
+pub(crate) fn recenter_if_offscreen(window: &tauri::WebviewWindow) {
+    let (Ok(position), Ok(size), Ok(monitors)) = (
+        window.outer_position(),
+        window.outer_size(),
+        window.available_monitors(),
+    ) else {
+        return;
+    };
+    if monitors.is_empty() {
+        return;
+    }
+
+    let width = i32::try_from(size.width).unwrap_or(i32::MAX);
+    let height = i32::try_from(size.height).unwrap_or(i32::MAX);
+    let rect = (
+        position.x,
+        position.y,
+        position.x.saturating_add(width),
+        position.y.saturating_add(height),
+    );
+    let bounds: Vec<(i32, i32, i32, i32)> = monitors
+        .iter()
+        .map(|monitor| {
+            let origin = monitor.position();
+            let extent = monitor.size();
+            (
+                origin.x,
+                origin.y,
+                origin
+                    .x
+                    .saturating_add(i32::try_from(extent.width).unwrap_or(i32::MAX)),
+                origin
+                    .y
+                    .saturating_add(i32::try_from(extent.height).unwrap_or(i32::MAX)),
+            )
+        })
+        .collect();
+
+    if !rect_overlaps_any_monitor(rect, &bounds) {
+        let _ = window.center();
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_window_bounds(window: &tauri::WebviewWindow) {
+    if let Ok(hwnd) = window.hwnd() {
+        let native_hwnd = windows::Win32::Foundation::HWND(hwnd.0);
+        let mut rect = RECT::default();
+        let actual_rect = unsafe { GetWindowRect(native_hwnd, &mut rect) };
+
+        if actual_rect.is_ok() {
+            let width = rect.right - rect.left;
+            let height = rect.bottom - rect.top;
+
+            if width < 400 || height < 300 {
+                unsafe {
+                    let _ = ShowWindow(native_hwnd, SW_SHOWNORMAL);
+                    let _ = SetWindowPos(native_hwnd, HWND_TOP, 120, 80, 1400, 900, SWP_SHOWWINDOW);
+                    let _ = SetForegroundWindow(native_hwnd);
+                }
+            }
+
+            if let Ok(monitors) = window.available_monitors() {
+                let overlaps_monitor = monitors.iter().any(|monitor| {
+                    let position = monitor.position();
+                    let size = monitor.size();
+                    let monitor_left = position.x;
+                    let monitor_top = position.y;
+                    let monitor_right =
+                        monitor_left.saturating_add(i32::try_from(size.width).unwrap_or(i32::MAX));
+                    let monitor_bottom =
+                        monitor_top.saturating_add(i32::try_from(size.height).unwrap_or(i32::MAX));
+
+                    rect.left < monitor_right
+                        && rect.right > monitor_left
+                        && rect.top < monitor_bottom
+                        && rect.bottom > monitor_top
+                });
+
+                if !monitors.is_empty() && !overlaps_monitor {
+                    unsafe {
+                        let _ = ShowWindow(native_hwnd, SW_SHOWNORMAL);
+                        let _ =
+                            SetWindowPos(native_hwnd, HWND_TOP, 120, 80, 1400, 900, SWP_SHOWWINDOW);
+                        let _ = SetForegroundWindow(native_hwnd);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Both take `tauri::Window`: a window that hosts a web pane carries a second
+// webview and stops being a `WebviewWindow`, and that argument type then
+// rejects the call ("current webview is not a WebviewWindow"). The label is
+// all these need.
+#[tauri::command]
+pub fn claim_leader(window: tauri::Window, state: State<'_, AppState>) -> bool {
+    state.window_registry.claim_leader(window.label())
+}
+
+#[tauri::command(async)]
+pub fn release_leader(window: tauri::Window) {
+    release_window_role(window.app_handle(), window.label());
+}
+
+pub fn release_window_role(app: &AppHandle, label: &str) {
+    if let Some(state) = app.try_state::<AppState>() {
+        if state.window_registry.release_leader(label) {
+            let _ = app.emit(crate::window_registry::WINDOW_REGISTRY_CHANGED_EVENT,
+                state.window_registry.revision());
+        }
+    }
+}
+
+/// Reveal and focus the main window for native file-open and activation requests.
+/// On macOS this also brings back a window hidden by its close button or Cmd+W.
+pub fn show_main_window(app: &AppHandle) {
+    let app_handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(window) = app_handle.get_window("main") {
+            #[cfg(target_os = "windows")]
+            if let Some(webview) = app_handle.get_webview_window("main") {
+                if let Ok(hwnd) = webview.hwnd() {
+                    unsafe {
+                        use windows::Win32::UI::WindowsAndMessaging::{IsIconic, ShowWindow, SW_RESTORE};
+                        let hwnd = windows::Win32::Foundation::HWND(hwnd.0);
+                        if IsIconic(hwnd).as_bool() {
+                            let _ = ShowWindow(hwnd, SW_RESTORE);
+                        }
+                    }
+                }
+            }
+            let _ = window.show();
+            let _ = window.set_focus();
+            if let Some(webview_window) = app_handle.get_webview_window("main") {
+                recenter_if_offscreen(&webview_window);
+            }
+        }
+    });
+}
+
+#[tauri::command]
+pub fn reveal_main_window(app: AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    app.run_on_main_thread(move || {
+        if let Some(window) = app_handle.get_webview_window("main") {
+            let _ = window.show();
+            #[cfg(target_os = "windows")]
+            ensure_window_bounds(&window);
+            recenter_if_offscreen(&window);
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// Label prefix for every non-main window. It has to stay in sync with the
+/// capability glob in `capabilities/default.json` (`"mycmux-w*"`): a window
+/// whose label falls outside that glob gets zero permissions, so every
+/// `invoke` from it fails silently-ish (see the child boot probe in App.tsx).
+pub const CHILD_WINDOW_LABEL_PREFIX: &str = "mycmux-w";
+
+const CHILD_WINDOW_DEFAULT_WIDTH: f64 = 1200.0;
+const CHILD_WINDOW_DEFAULT_HEIGHT: f64 = 800.0;
+const CHILD_WINDOW_MIN_WIDTH: f64 = 600.0;
+const CHILD_WINDOW_MIN_HEIGHT: f64 = 400.0;
+
+/// Deterministic, reused child-window labels: `mycmux-w1`, `mycmux-w2`, … and
+/// always the *lowest free* index. Reuse (rather than a monotonic counter)
+/// keeps `WindowConfig.id` stable across restarts once Phase 3d persists window
+/// layout, and keeps the label set small enough to reason about.
+///
+/// Pure so it can be unit-tested without a Tauri app handle.
+pub fn next_child_window_label(existing: &[String]) -> String {
+    let used: HashSet<u32> = existing
+        .iter()
+        .filter_map(|label| child_window_index(label))
+        .collect();
+
+    let mut candidate = 1u32;
+    while used.contains(&candidate) {
+        candidate += 1;
+    }
+    format!("{CHILD_WINDOW_LABEL_PREFIX}{candidate}")
+}
+
+/// `mycmux-w7` → `Some(7)`; anything else (including `main`, `mycmux-w`,
+/// `mycmux-w0`, `mycmux-w07`, `mycmux-w1x`) → `None`. Only canonical decimal
+/// indices count as taken, so a hand-crafted label can never wedge the
+/// allocator.
+fn child_window_index(label: &str) -> Option<u32> {
+    let rest = label.strip_prefix(CHILD_WINDOW_LABEL_PREFIX)?;
+    if rest.is_empty() || rest.starts_with('0') || !rest.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    rest.parse::<u32>().ok().filter(|index| *index >= 1)
+}
+
+/// A caller-supplied label must stay inside the capability glob, otherwise the
+/// new window would come up permission-less.
+pub fn is_valid_child_window_label(label: &str) -> bool {
+    child_window_index(label).is_some()
+}
+
+/// Grace period before Rust force-reveals a child window the frontend never
+/// revealed itself. Long enough for a normal boot (frontend shows itself after
+/// first paint), short enough that a broken window is not invisible for long.
+const CHILD_WINDOW_REVEAL_FALLBACK_MS: u64 = 6000;
+
+fn schedule_child_window_reveal_fallback(app: AppHandle, label: String) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(
+            CHILD_WINDOW_REVEAL_FALLBACK_MS,
+        ));
+        let Some(window) = app.get_window(&label) else {
+            return; // closed in the meantime
+        };
+        if window.is_visible().unwrap_or(true) {
+            return; // frontend revealed it normally
+        }
+        crate::diag_warn!(
+            "window",
+            "child window {label} never revealed itself — forcing show (capability issue?)"
+        );
+        let _ = window.show();
+    });
+}
+
+/// Keep a torn-out window fully on the monitor it was dropped on. Dropping near
+/// the right or bottom edge is the normal way to detach, and without this the
+/// window opens half off-screen with its title band out of reach.
+///
+/// Pure geometry so the clamp itself is unit-tested (`clamp_window_origin`).
+pub fn clamp_window_origin(
+    monitor: (f64, f64, f64, f64),
+    origin: (f64, f64),
+    size: (f64, f64),
+) -> (f64, f64) {
+    let (mx, my, mw, mh) = monitor;
+    let max_x = (mx + mw - size.0).max(mx);
+    let max_y = (my + mh - size.1).max(my);
+    (origin.0.clamp(mx, max_x), origin.1.clamp(my, max_y))
+}
+
+fn clamp_to_monitor<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> (f64, f64) {
+    // The drop point decides the monitor; falling back to the window's current
+    // one keeps a multi-monitor drop on the screen the user dropped it on.
+    let monitor = window
+        .app_handle()
+        .monitor_from_point(x, y)
+        .ok()
+        .flatten()
+        .or_else(|| window.current_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return (x, y);
+    };
+    let scale = monitor.scale_factor();
+    let position = monitor.position().to_logical::<f64>(scale);
+    let size = monitor.size().to_logical::<f64>(scale);
+    clamp_window_origin(
+        (position.x, position.y, size.width, size.height),
+        (x, y),
+        (width, height),
+    )
+}
+
+/// Outcome of label allocation: either the label is free and the caller must
+/// build the window, or a window already carries it and was revealed instead.
+pub enum ResolvedChildWindow {
+    New(String),
+    Existing(String),
+}
+
+/// Resolve the label a new child window should take: the caller's request
+/// (validated against the capability glob) or the lowest free index.
+pub fn resolve_child_window_label(
+    app: &AppHandle,
+    label: Option<String>,
+) -> Result<ResolvedChildWindow, String> {
+    let existing: Vec<String> = app.webview_windows().keys().cloned().collect();
+    let label = match label {
+        Some(requested) => {
+            if !is_valid_child_window_label(&requested) {
+                return Err(format!(
+                    "invalid child window label {requested:?} (must be {CHILD_WINDOW_LABEL_PREFIX}<n>)"
+                ));
+            }
+            requested
+        }
+        None => next_child_window_label(&existing),
+    };
+
+    // `get_window`, not `get_webview_window`: a child that already shows a web
+    // pane is a multi-webview window and would otherwise read as absent.
+    if let Some(window) = app.get_window(&label) {
+        // Idempotent: asking for a label that is already open just reveals it.
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(ResolvedChildWindow::Existing(label));
+    }
+
+    Ok(ResolvedChildWindow::New(label))
+}
+
+/// Post the actual window construction to the main thread (tao forbids
+/// building windows off it on Windows/macOS). Fire-and-forget by design: like
+/// `reveal_main_window`, blocking on the result from a sync command would
+/// deadlock the very event loop that has to run the closure.
+///
+/// The hop through a worker thread is what makes that posting real. Both
+/// callers are sync commands (the allowlist in
+/// `tests/test_command_sync_contract.py` names them), so they already run on
+/// the main thread, and wry's `run_on_main_thread` executes inline when it is
+/// called from there. Building a webview inline means creating it inside the WebView2
+/// IPC callback: `build()` then waits for the controller while the message
+/// loop it needs is still inside our call stack, so the app freezes with an
+/// empty, invisible window on screen (reproduced twice on a test machine,
+/// 2026-09-11). Handing the closure to a thread makes `run_on_main_thread`
+/// post a user event that the event loop runs after the command returns.
+///
+/// Shared by `open_child_window` (Phase 3a dev hook) and
+/// `open_workspace_window` (Phase 3b tear-out) so both windows get identical
+/// chrome, the reveal fallback and the merge-back-on-destroy hook.
+pub fn spawn_child_window(
+    app: &AppHandle,
+    label: String,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<(), String> {
+    crate::perf_timeline::mark("window.spawn.request", Some(&label));
+    let app_handle = app.clone();
+    let build_label = label;
+    let post_handle = app.clone();
+    std::thread::spawn(move || {
+        let _ = post_handle.run_on_main_thread(move || {
+            let mut builder = tauri::WebviewWindowBuilder::new(
+                &app_handle,
+                &build_label,
+                tauri::WebviewUrl::default(),
+            )
+            .title("mycmux")
+            // macOS: a decorated window, so the Accessibility API reports a
+            // standard window that window managers (Magnet and the like) can
+            // move and resize. Elsewhere the in-app TitleBar keeps drawing the
+            // controls on an undecorated window, as the main window does.
+            .decorations(cfg!(target_os = "macos"))
+            .resizable(true)
+            // Revealed by the frontend after first paint (App.tsx), mirroring the
+            // main window's hidden-until-ready startup.
+            .visible(false)
+            .min_inner_size(CHILD_WINDOW_MIN_WIDTH, CHILD_WINDOW_MIN_HEIGHT)
+            .inner_size(
+                width.unwrap_or(CHILD_WINDOW_DEFAULT_WIDTH),
+                height.unwrap_or(CHILD_WINDOW_DEFAULT_HEIGHT),
+            );
+
+            // The same Overlay title bar as the main window
+            // (tauri.macos.conf.json), so the native bar never doubles the
+            // in-app one.
+            #[cfg(target_os = "macos")]
+            {
+                builder = builder
+                    .title_bar_style(tauri::TitleBarStyle::Overlay)
+                    .hidden_title(true);
+            }
+
+            if let (Some(x), Some(y)) = (x, y) {
+                builder = builder.position(x, y);
+            }
+
+            match builder.build() {
+                Ok(window) => {
+                    crate::perf_timeline::mark("window.child.built", Some(&build_label));
+                    // Restate size and position in explicit logical units now that
+                    // the window knows which monitor (and scale factor) it is on.
+                    // The builder applies them before that is settled, which on a
+                    // 150% display produced a window of the wrong size in the wrong
+                    // place: 720x520 asked, 585x696 measured (2026-09-12).
+                    let size = (
+                        width.unwrap_or(CHILD_WINDOW_DEFAULT_WIDTH),
+                        height.unwrap_or(CHILD_WINDOW_DEFAULT_HEIGHT),
+                    );
+                    let _ = window.set_size(tauri::LogicalSize::new(size.0, size.1));
+                    if let (Some(x), Some(y)) = (x, y) {
+                        let (x, y) = clamp_to_monitor(&window, x, y, size.0, size.1);
+                        let _ = window.set_position(tauri::LogicalPosition::new(x, y));
+                    }
+                    // Per-window taskbar button needs its own icon (mirrors lib.rs
+                    // doing this for "main").
+                    if let Some(icon) = app_handle.default_window_icon().cloned() {
+                        let _ = window.set_icon(icon);
+                    }
+                    // Safety net for the failure mode the JS boot probe exists to
+                    // report: if the capability glob ever stops covering this
+                    // label, the frontend cannot show its own window either (that
+                    // is an IPC call too), and the hard error UI would render into
+                    // a window nobody can see. Reveal it from Rust if the frontend
+                    // has not done so itself.
+                    schedule_child_window_reveal_fallback(app_handle.clone(), build_label.clone());
+
+
+                }
+                Err(err) => {
+                    crate::diag_warn!("window", "failed to open child window {build_label}: {err}");
+                }
+            }
+        });
+    });
+    Ok(())
+}
+
+/// Phase 3a: open an additional app window. It boots the same frontend bundle;
+/// every main-window-only singleton (persistence, socket handling, quit path,
+/// updater) is gated behind `isMainWindow()` on the JS side.
+///
+/// Sync + `run_on_main_thread` mirrors `reveal_main_window`: the command body
+/// itself only allocates a label (cheap, no blocking work — see
+/// `tests/test_command_sync_contract.py`), and the actual window construction
+/// is posted to the main thread.
+#[tauri::command]
+pub fn open_child_window(
+    app: AppHandle,
+    label: Option<String>,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<String, String> {
+    match resolve_child_window_label(&app, label)? {
+        ResolvedChildWindow::Existing(label) => Ok(label),
+        ResolvedChildWindow::New(label) => {
+            spawn_child_window(&app, label.clone(), x, y, width, height)?;
+            Ok(label)
+        }
+    }
+}
+
+/// Window closure, explicit exit/restart and native loop termination share cleanup.
+pub fn handle_app_run_event(app: &AppHandle, event: tauri::RunEvent) {
+    let (live_windows, code) = match event {
+        tauri::RunEvent::ExitRequested { code, api, .. } => {
+            let live_windows = app.webview_windows().len();
+            if code.is_none() && live_windows != 0 {
+                api.prevent_exit();
+                return;
+            }
+            (live_windows, code)
+        }
+        // Native termination (including macOS Cmd+Q) may skip ExitRequested.
+        // The shared latch also makes Exit after ExitRequested harmless.
+        tauri::RunEvent::Exit => (0, Some(0)),
+        // Finder Open With and files delivered during app launch.
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Opened { urls } => {
+            crate::open_with::queue_opened_urls(app, &urls);
+            return;
+        }
+        // Clicking the Dock icon with every window closed: on macOS the app
+        // keeps running with no window (closing the main window hides it), so
+        // this is how the user asks for it back.
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } => {
+            if !has_visible_windows {
+                show_main_window(app);
+            }
+            return;
+        }
+        _ => return,
+    };
+    let state = app.state::<AppState>();
+    if !state.window_registry.begin_shutdown(live_windows, code) { return; }
+    // Before anything is torn down: an exit that never reached a window (the
+    // Dock's Quit, a logout) leaves data.json at its last autosave, so fill in
+    // whatever a window still holds and the file has not seen.
+    crate::commands::quit::fill_in_unsaved_workspaces(app);
+    if let Some(dir) = state.scrollback_dir.get() {
+        if let Err(error) = state.session_manager.flush_all_scrollbacks(dir) {
+            crate::diag_warn!("scrollback", "shutdown flush failed: {error}");
+        }
+    }
+    state.session_manager.kill_all();
+    state.hook_service.revoke_all();
+}
+
+#[tauri::command]
+pub fn quit_app(app: AppHandle) -> Result<(), String> {
+    if !app.webview_windows().is_empty() {
+        return Err("Cannot quit while a window is still alive".to_string());
+    }
+    // Cleanup is centralized in the runtime exit hook, including this path.
+    app.exit(0);
+    Ok(())
+}
+
+pub const WINDOW_DRAG_EVENT: &str = "mycmux://window-drag";
+
+/// A cursor position sampled while the window manager is moving a window.
+#[derive(Clone, serde::Serialize)]
+pub struct WindowDragSample {
+    /// Screen position in logical pixels, the space PointerEvent.screenX uses.
+    pub x: f64,
+    pub y: f64,
+    /// The button came up: the move is over and any drop can be committed.
+    pub done: bool,
+}
+
+/// Follows the cursor while the window manager moves a window.
+///
+/// Handing the move to the OS is the only way the edge snap is the real one —
+/// an app cannot reproduce Windows' own, and a hand-rolled imitation reads as
+/// wrong however closely it is tuned. But once the OS owns the drag no pointer
+/// events reach the page, so the app goes blind and cannot tell that a
+/// detached window is being dropped back into the main one.
+///
+/// Chromium settles this the same way: it runs the OS move loop for the tab
+/// tear-out window and polls the cursor alongside it to drive its own merge
+/// preview. This is that poll.
+///
+/// Returns whether the poll is running. Where it is not, the caller keeps
+/// moving the window from pointer events as it always did: that loses the OS
+/// snap, but keeps the drop-back-into-the-main-window gesture, which is the
+/// worse of the two to lose.
+#[tauri::command]
+pub async fn watch_window_drag(window: tauri::Window) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let scale = window.scale_factor().map_err(|error| error.to_string())?;
+        // ponytail: a 16ms poll, which is what the preview needs to keep up.
+        // A WM_MOVING hook would be event-driven but needs a subclassed window
+        // proc, and tao owns that.
+        std::thread::spawn(move || loop {
+            let mut point = POINT::default();
+            let read = unsafe { GetCursorPos(&mut point) }.is_ok();
+            let held = unsafe { GetAsyncKeyState(i32::from(VK_LBUTTON.0)) } as u16 & 0x8000 != 0;
+            if read {
+                let _ = window.emit(
+                    WINDOW_DRAG_EVENT,
+                    WindowDragSample {
+                        x: f64::from(point.x) / scale,
+                        y: f64::from(point.y) / scale,
+                        done: !held,
+                    },
+                );
+            }
+            if !held {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        });
+        return Ok(true);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // ponytail: no cursor poll on macOS - it needs Core Graphics, which is
+        // not a dependency here yet. Until it is, the page keeps moving the
+        // window itself there.
+        let _ = window;
+        Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn labels(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn a_drop_near_the_edge_still_opens_on_screen() {
+        let monitor = (0.0, 0.0, 1707.0, 1067.0);
+        let size = (720.0, 520.0);
+        // Inside the monitor the drop point is used as-is.
+        assert_eq!(clamp_window_origin(monitor, (300.0, 200.0), size), (300.0, 200.0));
+        // Past the right/bottom edge the window slides back into view.
+        assert_eq!(clamp_window_origin(monitor, (1576.0, 900.0), size), (987.0, 547.0));
+        // Negative coordinates land back at the monitor origin.
+        assert_eq!(clamp_window_origin(monitor, (-200.0, -50.0), size), (0.0, 0.0));
+        // A second monitor to the right keeps its own origin.
+        assert_eq!(
+            clamp_window_origin((1707.0, 0.0, 1707.0, 1067.0), (3500.0, 10.0), size),
+            (2694.0, 10.0),
+        );
+    }
+
+    #[test]
+    fn a_window_larger_than_the_monitor_pins_to_its_origin() {
+        let monitor = (0.0, 0.0, 600.0, 400.0);
+        assert_eq!(clamp_window_origin(monitor, (200.0, 200.0), (1200.0, 800.0)), (0.0, 0.0));
+    }
+
+    #[test]
+    fn first_child_window_label_is_w1() {
+        assert_eq!(next_child_window_label(&[]), "mycmux-w1");
+        assert_eq!(next_child_window_label(&labels(&["main"])), "mycmux-w1");
+    }
+
+    #[test]
+    fn allocation_walks_up_from_one() {
+        assert_eq!(
+            next_child_window_label(&labels(&["main", "mycmux-w1"])),
+            "mycmux-w2"
+        );
+        assert_eq!(
+            next_child_window_label(&labels(&["main", "mycmux-w1", "mycmux-w2"])),
+            "mycmux-w3"
+        );
+    }
+
+    #[test]
+    fn labels_are_reused_at_the_lowest_free_index() {
+        // w1 was closed — the next window takes its slot back instead of
+        // growing the counter forever.
+        assert_eq!(
+            next_child_window_label(&labels(&["main", "mycmux-w2", "mycmux-w3"])),
+            "mycmux-w1"
+        );
+        assert_eq!(
+            next_child_window_label(&labels(&["main", "mycmux-w1", "mycmux-w3"])),
+            "mycmux-w2"
+        );
+    }
+
+    #[test]
+    fn ordering_does_not_matter() {
+        assert_eq!(
+            next_child_window_label(&labels(&["mycmux-w3", "mycmux-w1", "main", "mycmux-w2"])),
+            "mycmux-w4"
+        );
+    }
+
+    #[test]
+    fn malformed_labels_never_wedge_the_allocator() {
+        assert_eq!(
+            next_child_window_label(&labels(&[
+                "mycmux-w",
+                "mycmux-w0",
+                "mycmux-w01",
+                "mycmux-w1x",
+                "mycmux-wa",
+                "devtools",
+            ])),
+            "mycmux-w1"
+        );
+    }
+
+    #[test]
+    fn only_canonical_child_labels_are_accepted_from_callers() {
+        assert!(is_valid_child_window_label("mycmux-w1"));
+        assert!(is_valid_child_window_label("mycmux-w42"));
+        assert!(!is_valid_child_window_label("main"));
+        assert!(!is_valid_child_window_label("mycmux-w"));
+        assert!(!is_valid_child_window_label("mycmux-w0"));
+        assert!(!is_valid_child_window_label("mycmux-w01"));
+        assert!(!is_valid_child_window_label("mycmux-w1x"));
+        assert!(!is_valid_child_window_label("other-w1"));
+    }
+
+    #[test]
+    fn child_labels_stay_inside_the_capability_glob() {
+        // capabilities/default.json: "windows": ["main", "mycmux-w*"]
+        for existing in [
+            vec![],
+            labels(&["mycmux-w1"]),
+            labels(&["mycmux-w1", "mycmux-w2"]),
+        ] {
+            let label = next_child_window_label(&existing);
+            assert!(label.starts_with(CHILD_WINDOW_LABEL_PREFIX), "{label}");
+            assert!(is_valid_child_window_label(&label), "{label}");
+        }
+    }
+    #[test]
+    fn a_window_inside_the_only_monitor_is_left_alone() {
+        let monitors = [(0, 0, 1920, 1080)];
+        assert!(rect_overlaps_any_monitor((100, 80, 1500, 980), &monitors));
+    }
+
+    #[test]
+    fn a_window_one_screen_to_the_left_overlaps_nothing() {
+        // What unplugging a second display leaves behind: the window keeps the
+        // old monitor's origin, which no remaining monitor covers.
+        let monitors = [(0, 0, 1920, 1080)];
+        assert!(!rect_overlaps_any_monitor((-1920, 0, 0, 1080), &monitors));
+    }
+
+    #[test]
+    fn the_same_rect_is_reachable_while_that_display_is_still_attached() {
+        // The distinction the check has to make, and the one that caught out a
+        // reading of the Mac on 2026-09-10: those coordinates look stranded
+        // until the second monitor at the same origin is counted.
+        let monitors = [(0, 0, 1920, 1080), (-1920, 0, 0, 1080)];
+        assert!(rect_overlaps_any_monitor((-1920, 0, 0, 1080), &monitors));
+    }
+
+    #[test]
+    fn a_window_half_off_an_edge_still_counts_as_reachable() {
+        // Partly visible is still draggable, so it must not be recentred: doing
+        // so would yank windows the operator deliberately parked at an edge.
+        let monitors = [(0, 0, 1920, 1080)];
+        assert!(rect_overlaps_any_monitor((-200, 0, 1000, 900), &monitors));
+    }
+
+    #[test]
+    fn a_window_on_a_second_monitor_is_reachable() {
+        let monitors = [(0, 0, 1920, 1080), (1920, 0, 3840, 1080)];
+        assert!(rect_overlaps_any_monitor((2000, 100, 3000, 900), &monitors));
+    }
+
+    #[test]
+    fn touching_edges_do_not_count_as_overlap() {
+        // Half-open rectangles: a window whose right edge is the monitor's left
+        // edge shows nothing at all.
+        let monitors = [(0, 0, 1920, 1080)];
+        assert!(!rect_overlaps_any_monitor((-800, 0, 0, 600), &monitors));
+    }
+
+    #[test]
+    fn no_monitors_means_no_claim_either_way() {
+        assert!(!rect_overlaps_any_monitor((0, 0, 100, 100), &[]));
+    }
+}

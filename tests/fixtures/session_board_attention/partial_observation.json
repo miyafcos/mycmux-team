@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "snap-20260830T120000-5826a79d98ea",
+  "generated_at": "2026-08-30T12:00:00.000Z",
+  "source_watermark": 0,
+  "coverage": {
+    "state": "partial",
+    "expected_sessions": 2,
+    "observed_sessions": 1,
+    "stale_sessions": 0,
+    "failed_probes": 1,
+    "status_untracked_sessions": 0
+  },
+  "items": [
+    {
+      "attention_id": "incident-3099dbe4781258b9",
+      "incident_group_id": "observation-coverage:unobserved",
+      "kind": "observation_incomplete",
+      "severity": "warning",
+      "requires_human_action": true,
+      "actor": "human",
+      "summary": "Only 1 of 2 expected sessions were observed",
+      "why_now": "Actionable incident counts cannot be confirmed with missing probes.",
+      "next_action": {
+        "type": "run_collection",
+        "label": "Refresh session observations",
+        "target": "presence"
+      },
+      "affected_lane_ids": [
+        "lane-unobserved"
+      ],
+      "evidence_refs": [
+        "session:session-lane-unobserved"
+      ],
+      "first_seen_at": "2026-08-30T11:45:00.000Z",
+      "last_changed_at": "2026-08-30T12:00:00.000Z",
+      "freshness": "stale",
+      "rank": 1
+    }
+  ]
+}

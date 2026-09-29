@@ -1,0 +1,48 @@
+# mode: doctor — 前提点検と復旧
+
+```
+python ~/.claude/skills/oracmux/scripts/oracmux.py doctor [--json] [--deep] [--engines a,b] [--chrome] [--no-web] [--up] [--switch-to-chat]
+```
+
+既定は pane 経路の点検 (数秒)。`--chrome` を付けると OracleChrome 経路 (oracle / cdp) も 3 サイトを開いて点検する (30〜40 秒)。
+
+**`--deep` は engines.json のセレクタを実 DOM と突き合わせる** (数十秒・**Web ターンは消費しない**)。
+ペインが無いサービスは裏ペインを開いて調べ、開いたぶんだけ閉じる (利用者のペインは残す)。
+pytest はソケットの手前で止まるので、**サービス側の画面変更を安く検知できるのはこれだけ**。
+
+| `--deep` が見るもの | 判定 |
+|---|---|
+| `composer` / `mode_label` が実 DOM に居るか | 0 件なら **DRIFT** (exit 4)。engines.json を実物を見て直す |
+| `send` / `assistant` の件数 | 参考表示。空の会話では 0 が正常なので落とさない |
+| 添付が成立するか | file input が無ければ `upload_open` を押して生えるか確かめる。生えなければ **DRIFT** |
+| **引き継ぎ書が composer に入るか** | 本物と同じ**末尾フェンス付き**の文面を入れて、送信ボタンが出るかを見る (0 ターン・確認後に消す)。出なければ **DRIFT**。`web.push` が拒まれて `web.type` で入った場合は `fill: WARN` で理由を出す (oracmux は自力で直すが、mycmux 側の `web.push` は壊れたまま) |
+| **いまどのモデルが選ばれているか** | picker のラベルをそのまま出す。ChatGPT は**新規チャット画面でのみ**読める (会話中の「モデルを切り替える」は再試行ボタンで picker ではない) |
+
+初回実行 (2026-09-09) で ChatGPT の `model-switcher-dropdown-button` 消滅・Gemini の Flash 化・Grok の ファスト 化を検知した。
+DRIFT を直したら `smoke` で実射して確認する (`modes/smoke.md`)。
+
+**ask はモデルを自分で直すので、`--deep` は点検用**。重い相談の前に叩くと、セレクタのズレを 0 円で見つけられる (ask が picker を見つけられなければ 1 ターンも使わず exit 3 になる)。
+
+| 行 | 見るもの | ok の条件 |
+|---|---|---|
+| mycmux | `MYCMUX_TERM_PROGRAM`・ソケット (`web-list`)・開いている Web ペイン (background / active) | socket=ok |
+| chatgpt / gemini / grok (pane) | そのサービスの Web ペインを `web.read` して signedOut / composer / generating / ターン数 | `ok` = ログイン済みで composer あり。`no_tab` = 開いていない (異常ではない。ask が裏ペインを開く) |
+| chrome (`--chrome`) | `http://127.0.0.1:9222/json/version`・oracle セッション (`~/.oracle/sessions/*/meta.json`) | alive=True・alive セッション 0 本 |
+| chatgpt / gemini / grok (chrome) | 実ページを開いて login 導線・captcha・composer・枠切れ文言・モードラベル | `ok — logged in, composer available` |
+
+exit: 0 = ソケット ok で全サービスが ok か no_tab / 3 = サインアウト・captcha・枠切れのサービスあり / 7 = mycmux ソケット不通 (または --chrome で Chrome 落ち) / 1 = その他 (composer 不在・プローブ例外)。
+
+## 復旧表
+
+| 症状 | 原因 | 手 |
+|---|---|---|
+| pane `not_logged_in` | ペインがサインアウト | 利用者に「ペインの『別の窓でログイン』でログインしてください」と 1 行報告。代わりにログインしない |
+| pane `mycmux_down` / exit 7 | mycmux 外・ソケットトークン不一致 | mycmux 内で叩く。外なら `--via cdp` |
+| pane `composer_absent` | ページ読込中・モーダル | 数十秒後に再点検。続くならペインを閉じて開き直す (`web-close` → ask が開く) |
+| chrome `not_logged_in` / `captcha` | OracleChrome のログイン切れ | `oracle-chrome show` で窓を出して報告。済んだら `oracle-chrome hide` |
+| chrome chatgpt `limit` | ChatGPT Work の週次上限 | `doctor --chrome --switch-to-chat` |
+| chrome alive=False | OracleChrome 落ち | `doctor --chrome --up` |
+| chrome `debugger socket is dead` | HTTP は応えるが CDP の実体が死んでいる (stale target)。**oracle はここで `Unexpected server response: 404` を出して 50 秒後に落ちる** | `oracle status` で走行中が無いことを確かめてから `oracle-chrome down` → `up`。急ぐなら `--via pane` (Chrome 不要) |
+| `fill: FAIL` | 引き継ぎ書が composer に入らない (セレクタは合っているのに editor が受け取らない) | 利用者へ 1 行報告。ペインに手で貼れば送れる。mycmux 側 `web.push` の修正が要る |
+| oracle session alive=True | 誰かの consult が走行中 (cdp/oracle 経路のみ影響) | 待つか `--force` |
+| oracle session zombie=True | kill された CLI の残骸 | `~/.oracle/sessions/<id>` を `~/.oracle/zombie-quarantine/` へ移動 (削除しない) |

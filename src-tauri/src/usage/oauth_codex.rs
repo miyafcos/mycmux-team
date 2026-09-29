@@ -1,0 +1,509 @@
+use super::util::{epoch_to_rfc3339, normalize_pct, number_field, number_to_i64, truncate};
+use crate::usage::reset_tickets::{self, CodexCredit, ResetTicketOutcome, ResetTicketOutcomeKind};
+use crate::usage::WindowStat;
+use reqwest::header::{ACCEPT, USER_AGENT};
+use serde_json::Value;
+use std::{env, fs, path::PathBuf};
+
+#[derive(Clone, Debug)]
+pub struct CodexUsage {
+    pub five_hour: Option<WindowStat>,
+    pub seven_day: Option<WindowStat>,
+    pub reset_count: Option<u32>,
+    pub usage_url: String,
+}
+
+impl CodexUsage {
+    pub fn has_usage(&self) -> bool {
+        self.five_hour.is_some() || self.seven_day.is_some()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CodexCredentials {
+    access_token: String,
+    account_id: Option<String>,
+}
+
+pub async fn fetch() -> Result<CodexUsage, String> {
+    let credentials = load_credentials()?;
+    fetch_with_token(
+        &reqwest::Client::new(),
+        &credentials.access_token,
+        credentials.account_id.as_deref(),
+    )
+    .await
+    .map_err(|(_, error)| error)
+}
+
+pub async fn fetch_with_token(
+    client: &reqwest::Client,
+    access_token: &str,
+    account_id: Option<&str>,
+) -> Result<CodexUsage, (Option<u16>, String)> {
+    let credentials = CodexCredentials {
+        access_token: access_token.to_string(),
+        account_id: account_id.map(str::to_string),
+    };
+    let urls = usage_urls();
+    let mut errors = Vec::new();
+
+    for url in urls {
+        match fetch_from_url(&client, &credentials, &url).await {
+            Ok(mut usage) => {
+                usage.usage_url = url;
+                return Ok(usage);
+            }
+            Err((status, error)) => errors.push((status, format!("{url}: {error}"))),
+        }
+    }
+
+    let status = errors.iter().find_map(|(status, _)| *status);
+    Err((
+        status,
+        format!(
+            "Codex rate-limit endpoint unavailable: {}",
+            errors
+                .into_iter()
+                .map(|(_, error)| error)
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ),
+    ))
+}
+
+async fn fetch_from_url(
+    client: &reqwest::Client,
+    credentials: &CodexCredentials,
+    url: &str,
+) -> Result<CodexUsage, (Option<u16>, String)> {
+    let mut request = client
+        .get(url)
+        .bearer_auth(&credentials.access_token)
+        .header(USER_AGENT, "CodexBar")
+        .header(ACCEPT, "application/json");
+
+    if let Some(account_id) = credentials
+        .account_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        request = request.header("ChatGPT-Account-Id", account_id);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|error| (None, format!("network error: {error}")))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| (None, format!("response read failed: {error}")))?;
+
+    if !status.is_success() {
+        return Err((Some(status.as_u16()), http_error(status.as_u16(), &body)));
+    }
+
+    let value: Value = serde_json::from_str(&body)
+        .map_err(|error| (None, format!("JSON parse failed: {error}")))?;
+    parse_usage(&value).ok_or_else(|| (None, "rate-limit windows missing in response".to_string()))
+}
+
+fn load_credentials() -> Result<CodexCredentials, String> {
+    let path = auth_path()?;
+    let contents = fs::read_to_string(&path)
+        .map_err(|error| format!("Codex auth.json not readable: {error}"))?;
+    let value: Value = serde_json::from_str(&contents)
+        .map_err(|error| format!("Codex auth.json parse failed: {error}"))?;
+    let tokens = value
+        .get("tokens")
+        .ok_or_else(|| "Codex auth.json contains no ChatGPT OAuth tokens".to_string())?;
+    let access_token = string_field(tokens, &["access_token", "accessToken"])
+        .or_else(|| string_field(tokens, &["id_token", "idToken"]))
+        .ok_or_else(|| "Codex access token missing. Run `codex` to re-authenticate.".to_string())?;
+    let account_id = string_field(tokens, &["account_id", "accountId"]);
+
+    Ok(CodexCredentials {
+        access_token,
+        account_id,
+    })
+}
+
+fn auth_path() -> Result<PathBuf, String> {
+    let root = env::var("CODEX_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+        .ok_or_else(|| "Home directory not found for Codex auth.json".to_string())?;
+    Ok(root.join("auth.json"))
+}
+
+pub fn usage_urls() -> Vec<String> {
+    let mut urls = Vec::new();
+    if let Some(configured_base) = read_chatgpt_base_url() {
+        push_unique(&mut urls, resolve_usage_url(&configured_base));
+        push_unique(
+            &mut urls,
+            "https://chatgpt.com/backend-api/wham/usage".to_string(),
+        );
+    } else {
+        push_unique(
+            &mut urls,
+            "https://chatgpt.com/backend-api/wham/usage".to_string(),
+        );
+        push_unique(&mut urls, "https://chatgpt.com/api/codex/usage".to_string());
+    }
+    urls
+}
+
+fn read_chatgpt_base_url() -> Option<String> {
+    let root = env::var("CODEX_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))?;
+    let contents = fs::read_to_string(root.join("config.toml")).ok()?;
+    for line in contents.lines() {
+        let trimmed = line.split('#').next().unwrap_or("").trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "chatgpt_base_url" {
+            continue;
+        }
+        let value = value.trim().trim_matches('"').trim_matches('\'').trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn resolve_usage_url(base_url: &str) -> String {
+    let mut normalized = base_url.trim().trim_end_matches('/').to_string();
+    if normalized.is_empty() {
+        normalized = "https://chatgpt.com/backend-api".to_string();
+    }
+    if (normalized.starts_with("https://chatgpt.com")
+        || normalized.starts_with("https://chat.openai.com"))
+        && !normalized.contains("/backend-api")
+    {
+        normalized.push_str("/backend-api");
+    }
+    if normalized.contains("/backend-api") {
+        format!("{normalized}/wham/usage")
+    } else {
+        format!("{normalized}/api/codex/usage")
+    }
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+fn parse_usage(value: &Value) -> Option<CodexUsage> {
+    let rate_limit = value
+        .get("rate_limit")
+        .or_else(|| value.get("rateLimit"))
+        .or_else(|| value.get("rate_limits"))
+        .or_else(|| value.get("rateLimits"))
+        .unwrap_or(value);
+    let primary = parse_window(rate_limit, &["primary_window", "primaryWindow", "primary"]);
+    let secondary = parse_window(
+        rate_limit,
+        &["secondary_window", "secondaryWindow", "secondary"],
+    );
+    let (five_hour, seven_day) = normalize_windows(primary, secondary);
+
+    if five_hour.is_none() && seven_day.is_none() {
+        return None;
+    }
+
+    Some(CodexUsage {
+        five_hour,
+        seven_day,
+        reset_count: reset_tickets::codex_count(value),
+        usage_url: String::new(),
+    })
+}
+
+pub fn reset_url(usage_url: &str) -> String {
+    usage_url.trim_end_matches("/usage").to_string() + "/rate-limit-reset-credits"
+}
+
+fn with_usage_headers(
+    mut request: reqwest::RequestBuilder,
+    access_token: &str,
+    account_id: Option<&str>,
+) -> reqwest::RequestBuilder {
+    request = request
+        .bearer_auth(access_token)
+        .header(USER_AGENT, "CodexBar")
+        .header(ACCEPT, "application/json");
+    if let Some(id) = account_id.filter(|id| !id.is_empty()) {
+        request = request.header("ChatGPT-Account-Id", id);
+    }
+    request
+}
+
+pub async fn fetch_credits_at(
+    client: &reqwest::Client,
+    usage_url: &str,
+    access_token: &str,
+    account_id: Option<&str>,
+) -> Result<Vec<CodexCredit>, String> {
+    let response = with_usage_headers(client.get(reset_url(usage_url)), access_token, account_id)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|_| "network".to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+    let value: Value = response.json().await.map_err(|_| "JSON".to_string())?;
+    reset_tickets::parse_codex_credits(&value).ok_or_else(|| "credits missing".to_string())
+}
+
+pub async fn consume_at(
+    client: &reqwest::Client,
+    usage_url: &str,
+    access_token: &str,
+    account_id: Option<&str>,
+    request_id: &str,
+    credit_id: Option<&str>,
+) -> ResetTicketOutcome {
+    let mut body = serde_json::json!({"redeem_request_id":request_id});
+    if let Some(id) = credit_id {
+        body["credit_id"] = Value::String(id.to_string());
+    }
+    let consume_url =
+        usage_url.trim_end_matches("/usage").to_string() + "/rate-limit-reset-credits/consume";
+    let response = with_usage_headers(client.post(consume_url), access_token, account_id)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .timeout(std::time::Duration::from_secs(10))
+        .json(&body)
+        .send()
+        .await;
+    let Ok(response) = response else {
+        return ResetTicketOutcome::new(ResetTicketOutcomeKind::Unconfirmed);
+    };
+    let status = response.status().as_u16();
+    let body = response.text().await.unwrap_or_default();
+    reset_tickets::map_codex_outcome(status, &body)
+}
+
+#[derive(Clone, Debug)]
+struct ParsedWindow {
+    stat: WindowStat,
+    window_seconds: Option<i64>,
+}
+
+fn parse_window(root: &Value, keys: &[&str]) -> Option<ParsedWindow> {
+    let window = keys.iter().find_map(|key| root.get(*key))?;
+    if window.is_null() {
+        return None;
+    }
+    let pct = number_field(
+        window,
+        &[
+            "used_percent",
+            "usedPercent",
+            "utilization",
+            "percent",
+            "pct",
+        ],
+    )?;
+    let resets_at = reset_field(window).unwrap_or_default();
+    let window_seconds = number_field(window, &["limit_window_seconds", "limitWindowSeconds"])
+        .map(|value| value.round() as i64)
+        .or_else(|| {
+            number_field(window, &["window_minutes", "windowMinutes"])
+                .map(|value| (value * 60.0).round() as i64)
+        });
+
+    Some(ParsedWindow {
+        stat: WindowStat {
+            pct: normalize_pct(pct),
+            resets_at,
+        },
+        window_seconds,
+    })
+}
+
+fn normalize_windows(
+    primary: Option<ParsedWindow>,
+    secondary: Option<ParsedWindow>,
+) -> (Option<WindowStat>, Option<WindowStat>) {
+    match (primary, secondary) {
+        (Some(primary), Some(secondary)) => match (role(&primary), role(&secondary)) {
+            (WindowRole::Weekly, WindowRole::Session)
+            | (WindowRole::Weekly, WindowRole::Unknown) => {
+                (Some(secondary.stat), Some(primary.stat))
+            }
+            _ => (Some(primary.stat), Some(secondary.stat)),
+        },
+        (Some(primary), None) => match role(&primary) {
+            WindowRole::Weekly => (None, Some(primary.stat)),
+            WindowRole::Session | WindowRole::Unknown => (Some(primary.stat), None),
+        },
+        (None, Some(secondary)) => match role(&secondary) {
+            WindowRole::Session | WindowRole::Unknown => (Some(secondary.stat), None),
+            WindowRole::Weekly => (None, Some(secondary.stat)),
+        },
+        (None, None) => (None, None),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowRole {
+    Session,
+    Weekly,
+    Unknown,
+}
+
+fn role(window: &ParsedWindow) -> WindowRole {
+    match window.window_seconds {
+        Some(18_000) => WindowRole::Session,
+        Some(604_800) => WindowRole::Weekly,
+        _ => WindowRole::Unknown,
+    }
+}
+
+fn string_field(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn reset_field(value: &Value) -> Option<String> {
+    for key in ["reset_at", "resetAt", "resets_at", "resetsAt"] {
+        if let Some(raw) = value.get(key) {
+            if let Some(number) = number_to_i64(raw) {
+                return Some(epoch_to_rfc3339(number));
+            }
+            if let Some(text) = raw.as_str() {
+                return Some(text.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn http_error(status: u16, body: &str) -> String {
+    let cleaned = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if cleaned.is_empty() {
+        return format!("HTTP {status}");
+    }
+    format!("HTTP {status}: {}", truncate(&cleaned, 300))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn consume_sends_exact_request_to_fake_server() {
+        let (base, received) = reset_tickets::fake_http_once(r#"{"code":"reset"}"#).await;
+        let usage_url = format!("{base}/backend-api/wham/usage");
+        let outcome = consume_at(
+            &reqwest::Client::new(),
+            &usage_url,
+            "synthetic-token",
+            Some("account-1"),
+            "request-1",
+            Some("credit-1"),
+        )
+        .await;
+        assert_eq!(outcome.kind, ResetTicketOutcomeKind::Reset);
+        let request = received.await.unwrap();
+        let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+        let lower = headers.to_ascii_lowercase();
+        assert!(
+            headers.starts_with("POST /backend-api/wham/rate-limit-reset-credits/consume HTTP/1.1")
+        );
+        assert!(lower.contains("authorization: bearer synthetic-token"));
+        assert!(lower.contains("chatgpt-account-id: account-1"));
+        assert!(lower.contains("user-agent: codexbar"));
+        assert!(lower.contains("content-type: application/json"));
+        assert!(lower.contains("accept: application/json"));
+        assert_eq!(
+            serde_json::from_str::<Value>(body).unwrap(),
+            json!({
+                "redeem_request_id": "request-1", "credit_id": "credit-1"
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn consume_without_details_omits_credit_id() {
+        let (base, received) =
+            reset_tickets::fake_http_once(r#"{"code":"nothing_to_reset"}"#).await;
+        let usage_url = format!("{base}/api/codex/usage");
+        let outcome = consume_at(
+            &reqwest::Client::new(),
+            &usage_url,
+            "synthetic-token",
+            None,
+            "request-2",
+            None,
+        )
+        .await;
+        assert_eq!(outcome.kind, ResetTicketOutcomeKind::NothingToReset);
+        let request = received.await.unwrap();
+        let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+        assert!(headers.starts_with("POST /api/codex/rate-limit-reset-credits/consume HTTP/1.1"));
+        assert_eq!(
+            serde_json::from_str::<Value>(body).unwrap(),
+            json!({"redeem_request_id":"request-2"})
+        );
+    }
+
+    /// The shape the endpoint returned on 2026-09-14: one weekly window
+    /// (`limit_window_seconds` 604800) and no secondary window. `used_percent`
+    /// is a whole percent, so 1 is one percent, not a fraction to scale.
+    #[test]
+    fn weekly_only_response_keeps_one_percent_as_one_percent() {
+        let usage = parse_usage(&json!({
+            "plan_type": "pro",
+            "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "primary_window": {
+                    "used_percent": 1,
+                    "limit_window_seconds": 604800,
+                    "reset_after_seconds": 559240,
+                    "reset_at": 1789949732
+                },
+                "secondary_window": null
+            }
+        }))
+        .unwrap();
+        assert!(usage.five_hour.is_none());
+        let seven_day = usage.seven_day.unwrap();
+        assert_eq!(seven_day.pct, 1.0);
+        assert_eq!(seven_day.resets_at, "2026-09-21T00:15:32+00:00");
+    }
+
+    #[test]
+    fn session_and_weekly_windows_are_told_apart_by_length() {
+        let usage = parse_usage(&json!({
+            "rate_limit": {
+                "primary_window": { "used_percent": 100, "limit_window_seconds": 604800 },
+                "secondary_window": { "used_percent": 0.5, "limit_window_seconds": 18000 }
+            }
+        }))
+        .unwrap();
+        assert_eq!(usage.five_hour.map(|stat| stat.pct), Some(0.5));
+        assert_eq!(usage.seven_day.map(|stat| stat.pct), Some(100.0));
+    }
+}

@@ -1,0 +1,115 @@
+﻿{
+    "schema_version":  1,
+    "generated_at":  "2026-05-02T20:50:36.7333607+09:00",
+    "repo_root":  "C:\\Users\\miyaz\\cmux-for-linux-dev-master",
+    "repo_git":  {
+                     "branch":  "master",
+                     "commit":  "1c1f97bae3c79f3b147e24d0a31f9484f0eb764b",
+                     "status_short":  [
+                                          " M src-tauri/src/buddy/commands.rs",
+                                          " M src-tauri/src/buddy/environment.rs",
+                                          " M src-tauri/src/buddy/session_log.rs",
+                                          " M src-tauri/src/commands/fs.rs",
+                                          " M src-tauri/src/commands/mod.rs",
+                                          " M src-tauri/src/commands/window.rs",
+                                          " M src-tauri/src/launcher.sh",
+                                          " M src-tauri/src/lib.rs",
+                                          " M src-tauri/src/pty/manager.rs",
+                                          " M src-tauri/src/pty/osc7.rs",
+                                          " M src-tauri/src/pty/path_norm.rs",
+                                          " M src-tauri/src/remote/mod.rs",
+                                          " M src-tauri/src/remote/qr.rs",
+                                          " M src-tauri/src/remote/ws_handler.rs",
+                                          " M src-tauri/src/socket.rs",
+                                          " M src-tauri/src/terminal_config.rs",
+                                          " M src/components/layout/AppShell.tsx",
+                                          " M src/components/layout/SocketListener.tsx",
+                                          " M src/components/layout/TabBar.tsx",
+                                          " M src/components/workspace/PaneStarter.tsx",
+                                          " M src/components/workspace/TerminalPane.tsx",
+                                          " M src/lib/ipc.ts",
+                                          " M src/lib/keybindings.ts",
+                                          " M src/stores/workspaceLayoutStore.ts",
+                                          " M src/types/workspace.ts",
+                                          "?? docs/performance/",
+                                          "?? scripts/perf/",
+                                          "?? src-tauri/src/commands/crsm.rs",
+                                          "?? src/components/CommandPalette/",
+                                          "?? tests/"
+                                      ]
+                 },
+    "app":  {
+                "product_name":  "mycmux",
+                "identifier":  "com.miyazaki.mycmux",
+                "config_path":  "C:\\Users\\miyaz\\cmux-for-linux-dev-master\\src-tauri\\tauri.conf.json"
+            },
+    "data_json_candidates":  [
+                                 {
+                                     "path":  "C:\\Users\\miyaz\\AppData\\Roaming\\com.miyazaki.mycmux\\data.json",
+                                     "exists":  true
+                                 },
+                                 {
+                                     "path":  "C:\\Users\\miyaz\\AppData\\Roaming\\mycmux\\data.json",
+                                     "exists":  false
+                                 }
+                             ],
+    "target_process":  {
+                           "timestamp":  "2026-05-02T20:50:36.8123269+09:00",
+                           "pid":  48352,
+                           "process_name":  "mycmux",
+                           "path":  "C:\\Users\\miyaz\\mycmux-app\\mycmux.exe",
+                           "sha256":  "CA0D8C060B35FE89E97ECACAE4F230CC5FD559932588917B35D8F17ED1461019",
+                           "total_processor_seconds":  62.796875,
+                           "working_set_bytes":  56643584,
+                           "private_memory_bytes":  27967488,
+                           "main_window_handle":  724760,
+                           "responding":  true,
+                           "start_time":  "2026-05-02T20:11:28.6837643+09:00"
+                       },
+    "measurements":  [
+                         {
+                             "label":  "cpu_10s_increment",
+                             "kind":  "process_delta",
+                             "duration_seconds":  10.007,
+                             "cpu_delta_seconds":  0.5,
+                             "cpu_percent_one_core":  4.996,
+                             "cpu_percent_all_cores":  0.312,
+                             "working_set_delta_bytes":  561152,
+                             "working_set_before_bytes":  56082432,
+                             "working_set_after_bytes":  56643584,
+                             "private_memory_before_bytes":  27963392,
+                             "private_memory_after_bytes":  27967488,
+                             "before":  {
+                                            "timestamp":  "2026-05-02T20:50:26.5811073+09:00",
+                                            "pid":  48352,
+                                            "process_name":  "mycmux",
+                                            "path":  "C:\\Users\\miyaz\\mycmux-app\\mycmux.exe",
+                                            "sha256":  "CA0D8C060B35FE89E97ECACAE4F230CC5FD559932588917B35D8F17ED1461019",
+                                            "total_processor_seconds":  62.296875,
+                                            "working_set_bytes":  56082432,
+                                            "private_memory_bytes":  27963392,
+                                            "main_window_handle":  724760,
+                                            "responding":  true,
+                                            "start_time":  "2026-05-02T20:11:28.6837643+09:00"
+                                        },
+                             "after":  {
+                                           "timestamp":  "2026-05-02T20:50:36.6760804+09:00",
+                                           "pid":  48352,
+                                           "process_name":  "mycmux",
+                                           "path":  "C:\\Users\\miyaz\\mycmux-app\\mycmux.exe",
+                                           "sha256":  "CA0D8C060B35FE89E97ECACAE4F230CC5FD559932588917B35D8F17ED1461019",
+                                           "total_processor_seconds":  62.796875,
+                                           "working_set_bytes":  56643584,
+                                           "private_memory_bytes":  27967488,
+                                           "main_window_handle":  724760,
+                                           "responding":  true,
+                                           "start_time":  "2026-05-02T20:11:28.6837643+09:00"
+                                       }
+                         }
+                     ],
+    "notes":  [
+                  "Default CPU sample is a 10 second TotalProcessorTime delta.",
+                  "Ctrl+P probes use SendKeys and a fixed settle window; verify visually when recording official before values.",
+                  "Scroll probe sends PageDown repeatedly to the active window."
+              ]
+}

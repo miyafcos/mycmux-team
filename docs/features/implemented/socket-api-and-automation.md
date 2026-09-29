@@ -1,0 +1,149 @@
+# Socket API & Automation
+
+## 概要
+
+mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受け、ポート番号を `~/.mycmux/mycmux.port` に書き出します。外部プロセスはこのポートに改行区切りの JSON を1行送るとペイン操作を実行でき、結果が JSON 1行で返ります。ループバック以外からの接続は `socket.rs` 側で拒否し、さらに**全リクエストにトークンが必要**です (下記「認証」)。
+
+主な用途は、ペイン内で動く Claude Code / Codex からの mycmux 操作です。「続きの実装を別エージェントにやらせたい」とき、エージェント自身が可視の新ペインを開いて相手を起動できます (v0.14.17)。
+
+## プロトコル
+
+```
+リクエスト:  {"cmd": "pane.spawn", "args": {...}, "token": "<64桁hex>"}\n
+レスポンス:  {"id": 0, "result": {...}, "error": null}\n
+認証失敗:    {"ok": false, "error": "unauthorized"}\n   ← 直後に切断
+```
+
+| 層 | 実装 |
+| --- | --- |
+| TCP 待ち受け | `src-tauri/src/socket.rs` (`start_socket_listener`) — リクエストを `socket-request` イベントとしてフロントエンドへ橋渡し。応答待ちは30秒でタイムアウト |
+| コマンド処理 | `src/components/layout/socketCommands.ts` (`handleSocketCommand`) — `SocketListener.tsx` がイベントを受けて呼び出す |
+| ポート発見 | `~/.mycmux/mycmux.port` |
+| トークン | `~/.mycmux/mycmux.token` (起動ごとに再生成) |
+| CLI | `scripts/mycmux_agent_cli.py` (Python 標準ライブラリのみ) |
+
+### 版と能力の照会 (2026-09-25 追加)
+
+`system.version` は、認証を通ったあとに Rust が直接答えます (フロントエンドの準備を待ちません)。応答は `app_version`・`api` (`major: 1`、`minor: 0`)・`status_protocol`・`hook_protocol`・`commands`・`capabilities` です。`commands` には Rust が答える名前とフロントエンドの名前が入り、`e2e.*` は e2e ビルドのときだけ入ります。宣言する能力は `state_view.input_revision_nullable`、`send.enter.single`、`spawn.launch_spec.all_modes`、`launch.kind_env`、`agent.hooks.status` です。
+
+`session.state_view` の各行は `input_revision` のキーを必ず持ちます。値は 0 以上の整数か `null` です。`null` は入力の数えがないこと (PTY が生きていない行など) を表し、0 とは違います。送信の期待値には使えません。CLI の `status` (`--session` なし) と、プロンプト・引き継ぎ・再開に `--model` または `--effort` を付けた `spawn` / `spawn-tab` は先に `system.version` を問い、能力が足りなければ操作せずに止まります。古い mycmux が `Unknown socket command: system.version` を返したときは `the running mycmux predates capability reporting` と出して止まります。`hooks-status` も `agent.hooks.status` 能力を確かめてから照会します。それ以外の CLI コマンドは 1 回の接続で済みます。
+
+`pane.send_text` の Enter は 1 回だけ書きます。画面から受理を確認できないときは `outcome: "unknown"` と `enterWritten: true` を返し、自動で押し直しません。CLI の `send --enter` は exit 1 と再送禁止の警告を出します。`pane.spawn` / `pane.spawn_tab` は `launchSpec` に要求値・渡した値・`observed: false` を返します。適用できない target や再開の組み合わせはペインを作る前に拒否します。
+
+### hook の導入状態
+
+`agent.hooks.status` は Rust が直接答える読み取り専用コマンドです。返り値は `version: 2` と `providers` の配列で、各行に `provider`、`enabled`、`state`、必要なら `reason` を持ちます。照会はファイルや実行中の hook モードを変更しません。入切を変える socket コマンドはありません。状態と操作の詳細は [エージェント連携](./agent-integrations.md) を参照してください。
+
+## 認証 (2026-08-09 追加)
+
+ループバックは**認可の境界ではない** — 同じ PC 上のどのユーザーセッションのどのプロセスからも届くため、従来はローカルの任意プロセスが pane spawn / send_text / close を叩けました。そのためローカルソケットにもトークン認証を入れています。
+
+- mycmux は起動のたびに 32 バイト乱数を hex 化した**プロセス固有トークン**を `~/.mycmux/mycmux.token` へ書き出す (ポートファイルより先に書く)。前回起動のトークンは使えない
+- 呼び出し側は毎リクエストの JSON トップレベルに `"token": "<ファイルの中身>"` を入れる。`status.subscribe` / `status.snapshot` のフィードフレームも同じ
+- 検証は定数時間比較 (`socket.rs` の `validate_token`)。不一致・欠落なら `{"ok":false,"error":"unauthorized"}` を返して即切断する。`token` フィールドは検証後に取り除かれ、フロントエンドにもログにも渡らない
+- 拒否は diag.log に記録するが、リトライループで 1MB ログを潰さないよう**60秒に1行 + 抑止件数**にまとめる
+- **逃げ道**: 未対応の外部ツールがある場合は、mycmux を `MYCMUX_SOCKET_AUTH=off` の環境で起動すると認証を無効化できる (起動時に diag.log へ警告を残し、紛らわしい古いトークンファイルは削除する)
+- 同梱の消費者 (`scripts/mycmux_agent_cli.py`・`scripts/status_feed_probe.py`・`scripts/mycmux_doctor_lite.py`) はトークンファイルがあれば自動で添付し、無ければ従来どおり素で送る (旧バージョンの mycmux とも話せる)
+
+## 主な実装済みコマンド
+
+| コマンド | 引数 | 動き |
+| --- | --- | --- |
+| `workspace.list` | なし | ワークスペース一覧と active ID |
+| `workspace.select` | `workspaceId` | ワークスペース切替 |
+| `workspace.rename` | `workspaceId`, `name` | ワークスペース名変更 |
+| `workspace.new` | `name`、`cwd?`、`gridTemplateId?` | 背景にワークスペースを新設し `{workspaceId, name, panes[], foregroundChanged}` を返す |
+| `workspace.close` | `workspaceId` | 背景ワークスペースを閉じる（PTY kill・scrollback 削除・復元履歴の記録）。active は拒否 |
+| `pane.list` | `workspaceId` (省略時 active) | タブとペインの一覧 (sessionId 含む) |
+| `pane.spawn` | 下記 | 新タブを可視で立ち上げ、`{workspaceId, paneId, sessionId, mode}` を返す |
+| `pane.spawn_tab` | `anchorSessionId`、起動引数 | 既存タブ内に新ペインを追加 |
+| `pane.list_all` | なし | 全ワークスペースのタブ一覧 |
+| `pane.activate_tab` / `pane.close_tab` / `pane.rename_tab` | `sessionId` 等 | ペインの選択・終了・改名 |
+| `web.open` / `web.list` / `web.focus` / `web.push` | `presetId`、`tabId` 等 | サービス Web ペインの操作 |
+| `web.read` / `web.close` | `tabId` (`web.read` は `presetId`、`anchorSessionId` でも指定可) | 会話を JSON で取得 / Web ペインを閉じる |
+| `web.navigate` | T + url または action (back/forward/reload) | URL移動・履歴移動・再読み込み |
+| `web.wait` | T + state、selector?、timeoutMs?、intervalMs? | 読み込み・DOM静止・要素出現を待ち、期限では ready:false |
+| `web.eval` | T + script、timeoutMs? | async 関数本体の評価結果を JSON で返す（512 KB） |
+| `web.snapshot` | T + mode? (ax/text)、maxBytes? | AX-lite の nodes / ref または本文を取得 |
+| `web.find` | T + text?、role?、selector?、exact?、limit? | 可視要素を検索して nodes / ref を取得 |
+| `web.click` | T + ref または selector または x,y、button?、clickCount?、trusted? | 要素をクリック |
+| `web.type` | T + ref または selector、text、mode?、submit?、trusted? | input / textarea / contenteditable へ置換・追記 |
+| `web.key` | T + key、code?、modifiers?、ref?、trusted? | キー入力を送る |
+| `web.scroll` | T + ref? または selector?、deltaX?、deltaY? | スクロール容器またはページを移動 |
+| `web.upload` | T + ref または selector、paths、mode?、trusted? | ファイル入力またはドロップ（合計25 MB） |
+| `web.screenshot` | T + path?、clip? | PNGを保存して path / width / height / dpr を返す（Windows先行） |
+| `web.downloads` | T | URL・path・success・finishedAt を取得 |
+| `web.dialogs` | T + clear? | browser の自動応答ダイアログ記録を取得・消去 |
+| `pane.send_text` | `sessionId`, `text`, `enter?` | 既存ペインの端末へ入力を送る |
+| `pane.read` | `sessionId`, `lines?` (既定80、最大400) | 既存ペインの画面末尾を読む |
+
+新コマンドの `T` は `{tabId?, presetId?, anchorSessionId?}`。tabId 優先、指定がなければ対象ワークスペース内の最新プリセット候補を使う。`trusted` と screenshot は Windows 先行（macOSは段2）。
+
+`web.open` は `url` (既存プリセットはHTTPS、browserはHTTPSまたはlocalhost / 127.0.0.1のHTTP) と `background: true` (フォーカス維持、`replaceAnchor` と併用不可) に対応。`web.list` は `background` / `active` を返す。
+
+一覧・ワークスペース操作には snake_case の別名 (`list_workspaces` など) もあります。全コマンドは `socketCommands.ts` の dispatcher と `mycmux_agent_cli.py` の parser が正本です。
+`status.subscribe` / `status.snapshot` は `socket.rs` が直接扱う状態フィードで、PTY 生出力のストリーミングとは別です。
+
+### `workspace.new` の作成と起動
+
+既定で active ワークスペースを動かしません。前面を変えるフラグも用意していません（`dbfabc76` の契約）。
+例外はワークスペースが 0 個で active ID が null のときだけで、最初のワークスペースを表示し、応答の `foregroundChanged` が true になります。
+新ワークスペースの1枚目は起動メニューの仮タブです（`gridTemplateId` 指定時はそのグリッドの枚数）。
+タブ1枚・launcher ペイン1枚の未使用状態なら、最初の端末用 `pane.spawn` がそのタブを使い切り、メニューは残りません。応答の `replacedLauncherPane: true` が置き換え、`false` が既存の分割経路を示します。Web ターゲットは従来どおりタブを増やします。その際、`addPaneToWorkspace` と `addWebTabToPane` が全体の active タブを動かすので、`pane.spawn` は前後で UI の active タブ・focus 対象を退避して復元します（`web.open` と同じ扱い。2026-09-11 にこの復元漏れを修正）。
+背景ワークスペースでも `startBackgroundTabSession` で PTY が起動します。起動に失敗した場合は追加ペインを外し、元の起動メニューを残します。
+
+`workspace.close` は確認ダイアログを持たない代わりに、active なワークスペースを拒否します。人が見ているワークスペースを閉じる操作は画面の ✕ から行います。
+背景ワークスペースを閉じると PTY を終了し、scrollback を削除します。復元可能なペインは `Ctrl+Shift+T` の復元履歴に入り、`undoRecorded` が記録件数を返します。
+
+### `pane.spawn` の起動モード (Web 分岐を先に判定、端末は上から優先)
+
+| モード | 引数 | 動き |
+| --- | --- | --- |
+| web | `target: "web"`、`preset` または `presetId` | PTY を作らずサービス Web ペインを開く |
+| handoff | `handoffFromSessionId` (+`handoffFromKind`) | 既存セッションの履歴から `crsm handoff` で引き継ぎ書を生成し、`MYCMUX_HANDOFF_*` env で起動 |
+| prompt | `promptFile` (+`fromSessionId`, `fromKind`) | 指定した指示書ファイルをそのまま `MYCMUX_HANDOFF_PROMPT_FILE` として起動。`fromSessionId` 省略時は `"external"` を補う (空だと `terminal.rs` の `sanitize_launch_env` が handoff env を剥がすため) |
+| resume | `resumeSessionId` | `MYCMUX_RESUME` + `MYCMUX_SESSION_ID` で resume 起動 |
+| launch / shell | なし | `MYCMUX_LAUNCH_TARGET=<target>` で新規起動。`target: "shell"` は `shell-starter` の起動メニュー |
+
+共通引数: `target` (カタログの agent 行すべて、agy・hermes・omp を含む。ほかに shell / web。必須)、`workspaceId`、`anchorPaneId`、`direction` (right / down)、`cwd`、`label`、`activate` (`pane.spawn` は既定 true、`pane.spawn_tab` は既定 false)。
+
+env 構築は純関数 `resolveSpawnPlan` に分離してあり、`tests/unit/socketCommands.test.ts` で単体テストしています。
+
+## 安全設計
+
+- ループバック限定 + プロセス固有トークン (上記「認証」)。GUI パレットで人間ができる操作を、トークンを読める呼び出し元にだけ開放している
+- `MYCMUX_LAUNCH_TARGET` と、New Workspace ダイアログが同じ経路で渡す `MYCMUX_LAUNCH_MODEL` / `MYCMUX_LAUNCH_EFFORT` は ephemeral env ガード (lib.rs 起動時 `remove_var` / `terminal.rs` の `sanitize_launch_env` / SocketListener の永続化フィルタ、契約テスト `tests/test_ephemeral_env_keys_contract.py`) に登録済み。data.json に残さず、起動時の一時値が再起動時に再利用されるのを防ぐ
+- model / effort の値はコマンドラインに載るので、`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` に合うものだけを通す (先頭を英数字に固定してフラグ偽装を封じる)。検証は GUI 側 (`src/lib/agentCatalog.ts`) とランチャー2本の両方に置き、ランチャーは読んだ直後に env から消す
+- `pane.send_text` は生の端末入力。CLI ヘルプにも「対象 sessionId を確認してから使う」旨を明記
+
+## CLI 使用例
+
+```bash
+python scripts/mycmux_agent_cli.py version
+python scripts/mycmux_agent_cli.py hooks-status
+python scripts/mycmux_agent_cli.py panes
+python scripts/mycmux_agent_cli.py workspace-new --name hermes-lane
+python scripts/mycmux_agent_cli.py spawn --split --workspace <id> --target codex --no-activate
+python scripts/mycmux_agent_cli.py workspace-close --workspace <id>
+python scripts/mycmux_agent_cli.py spawn --target codex --prompt "指示書の内容"   # アクティブなペインは移動しない。切り替えるときは --activate
+python scripts/mycmux_agent_cli.py spawn --target codex --split --prompt "..."   # 分割タブで開く
+python scripts/mycmux_agent_cli.py spawn --target claude --handoff-from-session <ID>
+python scripts/mycmux_agent_cli.py read --session <sessionId> --lines 120
+python scripts/mycmux_agent_cli.py send --session <sessionId> --text "続けて" --enter
+```
+
+`--prompt` の本文は `~/.mycmux/agent-prompts/<UTC時刻>-<乱数>.md` に保存してから `promptFile` として送ります。
+
+### CLI `spawn` の配置既定 (2026-07-15 変更)
+
+`spawn` はペイン内から呼ぶと (`MYCMUX_PANE_SESSION_ID` 検出) **既定で `pane.spawn_tab`** に送り、呼び出し元タブの新ペインとして、アクティブなペインを移動せずに立ち上がります (呼び出し元との親子関係がペイン並びで見える)。`--activate` で新しいペインへ切り替えます。従来のタブ分割にするのは `--split` 明示のみ (2026-08-21 以降)。`--direction` / `--anchor-pane` / `--workspace` は `--split` と併用必須で、単独指定はエラー。ペイン外 (env なし) からの実行もエラーになり、暗黙に新タブへ落ちることはありません (`--split` を付ければ可)。応答 JSON に `placement` (`tab` / `pane`) が付きます。`pane.spawn` の `activate` 既定値は true のままです。
+
+### 運用ノート (2026-07-15 実機検証より)
+
+- CLI は stdout/stderr を UTF-8 に reconfigure してから print する (cp932 コンソールでペイン内容の「⚠」等により UnicodeEncodeError で落ちる実害があった)
+- `--target shell` は起動メニューを開く。現行の新規ペインは React ランチャーで、bash メニューは互換経路。`send` は PTY のある端末ペインを選び、送信前に状態を確認する
+- `pane.read` は端末バッファの末尾を読む。宣言だけのペインや未知の sessionId はエラーになる
+
+## 未実装 (cmux 参照からの候補)
+
+`pane.close` / `pane.focus`、`notify.*`、`theme.*`、PTY 出力のストリーミング購読。同名コマンドは未実装です。ペイン単位の終了・選択は既存の `pane.close_tab` / `pane.activate_tab` を利用できます。

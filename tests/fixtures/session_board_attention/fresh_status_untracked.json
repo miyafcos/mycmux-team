@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "snap-20260830T120000-93a7be291c36",
+  "generated_at": "2026-08-30T12:00:00.000Z",
+  "source_watermark": 0,
+  "coverage": {
+    "state": "complete",
+    "expected_sessions": 10,
+    "observed_sessions": 10,
+    "stale_sessions": 0,
+    "failed_probes": 0,
+    "status_untracked_sessions": 8
+  },
+  "items": []
+}

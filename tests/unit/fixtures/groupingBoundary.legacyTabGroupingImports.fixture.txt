@@ -1,0 +1,7 @@
+import { commitGroupingPlan as commit } from "./tabGrouping.ts";
+import * as grouping from "./tabGrouping";
+export { defaultCommitDependencies as dependencies } from "./tabGrouping";
+export * from "./tabGrouping.ts";
+void import("./tabGrouping");
+void commit;
+void grouping;

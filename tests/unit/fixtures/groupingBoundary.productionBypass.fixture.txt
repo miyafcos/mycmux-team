@@ -1,0 +1,4 @@
+import { workspaceGroupingMutationPort } from "../stores/workspaceListStore";
+
+workspaceGroupingMutationPort.replaceWorkspaces(next, "grouping-commit");
+workspaceGroupingMutationPort.restoreGroupingLayout(next, selection, "grouping-rollback");

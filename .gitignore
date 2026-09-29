@@ -1,0 +1,68 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+dist-cmux-ui/
+src-tauri/target/
+src-tauri/target-*/
+# A vendored crate built on its own (cargo --manifest-path) leaves these behind.
+src-tauri/crates/*/target/
+src-tauri/crates/*/Cargo.lock
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Editor directories
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Reference materials (not part of the project)
+cmux/
+.reference/
+BridgeSpace.deb
+
+# AI tool directories
+.agent/
+.agents/
+# ...except the plugin marketplace shipped with the ChatGPT integration, which
+# lives under a .agents directory by the plugin format's own convention.
+!integrations/chatgpt-app/.agents/
+!integrations/chatgpt-app/.agents/**
+.claude/
+.factory/
+.kilocode/
+.qwen/
+.serena/
+
+# Logs
+*.log
+npm-debug.log*
+tmp/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Python test cache
+.pytest_cache/
+__pycache__/
+
+# Tauri
+src-tauri/WixTools/
+src-tauri/target/
+*.dmg
+*.exe
+*.msi
+*.sig
+
+# Agent working dir (DONE markers, delegation scratch)
+.mycmux/

@@ -1,0 +1,59 @@
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+import SettingsDialog from "../../src/components/settings/SettingsDialog";
+
+function renderSettingsTab(initialTab: "ai" | "automation") {
+  return renderToStaticMarkup(
+    <SettingsDialog
+      initialTab={initialTab}
+      onClose={() => {}}
+      onOpenOnlinePanel={() => {}}
+    />,
+  );
+}
+
+describe("AI と自動化の設定", () => {
+  it("renders the AI-only feature list with provider-bound model selects", () => {
+    const html = renderSettingsTab("ai");
+
+    for (const text of [
+      "AI機能を有効にする",
+      "オフにするとAIを使う機能が止まります。材料からの表示名は利用できます。",
+      "使用する AI",
+      "モデル",
+      "カスタム…",
+      "この設定で動く機能",
+      "ペインの自動命名",
+      "返信案の準備",
+      "報告インボックスの要約",
+      "ペイン整理のAI判定",
+      "ailog セッション要約",
+      "ailog 一括要約",
+      "ペイン再配置 — Jev",
+      "OpenRouter APIキー",
+      "Jev設定を保存",
+      "案件登録・作業フォルダ・会話の題名から表示名を付けます (AI は使いません)",
+      "セッションログ全文を送ります（トークン消費が大きい機能です）",
+    ]) {
+      expect(html).toContain(text);
+    }
+
+    expect(html).toContain("自動");
+    expect(html).toContain("ボタンで実行");
+    expect(html.match(/<select/g)).toHaveLength(3);
+    expect(html).toContain('aria-label="Jevの接続先"');
+    expect(html).not.toContain("ペイン再配置（準備中）");
+    expect(html).not.toContain("委譲の見守り");
+  });
+
+  it("renders the separated automation tab", () => {
+    const html = renderSettingsTab("automation");
+
+    expect(html).toContain("自動化");
+    expect(html).toContain("委譲の見守り");
+    expect(html).toContain("見守りを有効にする");
+    expect(html).toContain("自律モード");
+    expect(html).toContain("休眠セッションの整理");
+    expect(html).not.toContain("この設定で動く機能");
+  });
+});

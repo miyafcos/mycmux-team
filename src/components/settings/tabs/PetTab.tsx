@@ -1,0 +1,297 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import PetSprite from "../../workspace/PetSprite";
+import { useDismissOnOutside } from "../../../hooks/useDismissOnOutside";
+import { listPets, listQuarantinedPets, quarantinePet, restorePet, type ListedPet, type QuarantinedPet } from "../../../lib/ipc";
+import { candidatesFromListedPets, resolvePet } from "../../../lib/pets";
+import { usePetSettingsStore } from "../../../stores/petSettingsStore";
+import { useWorkspaceListStore } from "../../../stores/workspaceListStore";
+import { dialogButtonStyle, dividerStyle, sectionHeadingStyle } from "../tabStyles";
+import { petSettingsStrings } from "../settingsStrings";
+import { PetGallerySection } from "./PetGallerySection";
+
+const hintStyle = {
+  margin: "-4px 0 10px",
+  color: "var(--cmux-text-dim)",
+  fontSize: 11,
+  lineHeight: 1.5,
+};
+
+const radioStyle = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "5px 0",
+  cursor: "pointer",
+  fontSize: 12,
+};
+
+export function PetTab() {
+  const displayMode = usePetSettingsStore((state) => state.petDisplayMode);
+  const newWorkspaceMode = usePetSettingsStore((state) => state.petNewWorkspaceMode);
+  const disabled = usePetSettingsStore((state) => state.petDisabled);
+  const fixedId = usePetSettingsStore((state) => state.petFixedId);
+  const pets = usePetSettingsStore((state) => state.pets);
+  const setDisplayMode = usePetSettingsStore((state) => state.setPetDisplayMode);
+  const setNewWorkspaceMode = usePetSettingsStore((state) => state.setPetNewWorkspaceMode);
+  const setDisabled = usePetSettingsStore((state) => state.setPetDisabled);
+  const setFixedId = usePetSettingsStore((state) => state.setPetFixedId);
+  const setPets = usePetSettingsStore((state) => state.setPets);
+  const workspaces = useWorkspaceListStore((state) => state.workspaces);
+  const setWorkspacePet = useWorkspaceListStore((state) => state.setWorkspacePet);
+  const [scanning, setScanning] = useState(false);
+  const [invalidPets, setInvalidPets] = useState<ListedPet[]>([]);
+  const [quarantinedPets, setQuarantinedPets] = useState<QuarantinedPet[]>([]);
+  const [candidateQuarantineId, setCandidateQuarantineId] = useState<string | null>(null);
+  const [pickerWorkspaceId, setPickerWorkspaceId] = useState<string | null>(null);
+  const requestId = useRef(0);
+  const pickerRef = useRef<HTMLDivElement | null>(null);
+
+  const enabledPets = useMemo(
+    () => pets.filter((pet) => !disabled.includes(pet.id)),
+    [disabled, pets],
+  );
+
+  const rescan = useCallback(async () => {
+    if (usePetSettingsStore.getState().petDisplayMode === "none") return;
+    const currentRequest = ++requestId.current;
+    setScanning(true);
+    try {
+      const [listed, quarantined] = await Promise.all([listPets(), listQuarantinedPets()]);
+      if (currentRequest === requestId.current && usePetSettingsStore.getState().petDisplayMode !== "none") {
+        const candidates = candidatesFromListedPets(listed);
+        setPets(candidates.candidates);
+        setInvalidPets(candidates.invalid);
+        setQuarantinedPets(quarantined);
+      }
+    } catch (error) {
+      console.warn("[pets] Failed to rescan pets:", error);
+    } finally {
+      if (currentRequest === requestId.current) setScanning(false);
+    }
+  }, [setPets]);
+
+  useEffect(() => {
+    if (displayMode !== "none") void rescan();
+    else setScanning(false);
+    return () => { requestId.current += 1; };
+  }, [displayMode, rescan]);
+
+  useDismissOnOutside(Boolean(pickerWorkspaceId), pickerRef, () => setPickerWorkspaceId(null), { preventDefaultOnEscape: true });
+
+  const toggleCandidate = (id: string) => {
+    const isDisabled = disabled.includes(id);
+    if (!isDisabled && enabledPets.length <= 1) return;
+    setDisabled(isDisabled ? disabled.filter((value) => value !== id) : [...disabled, id]);
+    if (!isDisabled && fixedId === id) setFixedId(enabledPets.find((pet) => pet.id !== id)?.id);
+  };
+
+  const nextPet = (currentId: string | undefined, random: boolean) => {
+    if (enabledPets.length === 0) return undefined;
+    if (random) {
+      const alternatives = enabledPets.filter((pet) => pet.id !== currentId);
+      const pool = alternatives.length > 0 ? alternatives : enabledPets;
+      return pool[Math.floor(Math.random() * pool.length)]?.id;
+    }
+    const index = enabledPets.findIndex((pet) => pet.id === currentId);
+    return enabledPets[(index + 1 + enabledPets.length) % enabledPets.length]?.id;
+  };
+
+  const quarantine = async (folder: string) => {
+    try {
+      await quarantinePet(folder);
+      await rescan();
+    } catch (error) {
+      console.warn("[pets] Failed to quarantine pet:", error);
+    }
+  };
+
+  const restore = async (folder: string) => {
+    try {
+      await restorePet(folder);
+      await rescan();
+    } catch (error) {
+      console.warn("[pets] Failed to restore pet:", error);
+    }
+  };
+
+  return (
+    <div>
+      <section>
+        <div style={sectionHeadingStyle}>{petSettingsStrings.displayTitle}</div>
+        <div style={hintStyle}>{petSettingsStrings.displayHint}</div>
+        {/* "both" (small pets on tab pills) is not implemented yet — do not offer it */}
+        {(["none", "ws"] as const).map((mode) => (
+          <label key={mode} style={radioStyle}>
+            <input type="radio" name="pet-display" checked={displayMode === mode} onChange={() => setDisplayMode(mode)} />
+            <span>{mode === "ws" ? petSettingsStrings.displayModeWs : petSettingsStrings.displayModeNone}</span>
+          </label>
+        ))}
+      </section>
+
+      {displayMode !== "none" && <>
+      <div style={dividerStyle} />
+      <section>
+        <div style={sectionHeadingStyle}>{petSettingsStrings.candidatesTitle}</div>
+        <div style={hintStyle}>{petSettingsStrings.candidatesHint}</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(132px, 100%), 1fr))", gap: 8 }}>
+          {pets.map((pet) => {
+            const enabled = !disabled.includes(pet.id);
+            const confirmingQuarantine = candidateQuarantineId === pet.id;
+            return (
+              <div
+                key={pet.id}
+                style={{
+                  border: `1px solid ${enabled ? "var(--cmux-accent)" : "var(--cmux-border)"}`,
+                  borderRadius: 7,
+                  background: enabled ? "color-mix(in srgb, var(--cmux-accent) 12%, transparent)" : "transparent",
+                  color: "var(--cmux-text)",
+                  minHeight: 94,
+                  position: "relative",
+                }}
+              >
+                <button
+                  type="button"
+                  aria-pressed={enabled}
+                  onClick={() => toggleCandidate(pet.id)}
+                  style={{
+                    border: 0,
+                    borderRadius: 7,
+                    background: "transparent",
+                    color: "inherit",
+                    cursor: enabled && enabledPets.length <= 1 ? "not-allowed" : "pointer",
+                    minHeight: 92,
+                    padding: 8,
+                    width: "100%",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: 4,
+                  }}
+                >
+                  <span style={{ display: "flex", marginRight: -8 }}><PetSprite atlasUrl={pet.atlasUrl} state="working" height={46} rows={pet.rows} /></span>
+                  <span style={{ fontSize: 12, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pet.name}</span>
+                  <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-dim)" }}>{pet.source === "bundled" ? petSettingsStrings.bundledSourceLabel : petSettingsStrings.externalSourceLabel}</span>
+                  <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-dim)" }}>8×{pet.rows}</span>
+                </button>
+                {pet.source === "external" && !confirmingQuarantine && (
+                  <button
+                    type="button"
+                    title={petSettingsStrings.petQuarantineAction}
+                    aria-label={petSettingsStrings.petQuarantineAction}
+                    onClick={() => setCandidateQuarantineId(pet.id)}
+                    style={{ position: "absolute", top: 4, right: 4, border: 0, borderRadius: 4, padding: "2px 5px", background: "var(--cmux-surface-raised)", color: "var(--cmux-text-dim)", cursor: "pointer", fontSize: 13, lineHeight: 1 }}
+                  >
+                    <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+                      <path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                )}
+                {confirmingQuarantine && (
+                  <div style={{ position: "absolute", inset: 0, zIndex: 1, display: "grid", alignContent: "center", gap: 6, padding: 8, borderRadius: 7, background: "var(--cmux-popover)", fontSize: "var(--cmux-font-size-xs)" }}>
+                    <span>{petSettingsStrings.petQuarantineHint}</span>
+                    <span style={{ display: "flex", gap: 4 }}>
+                      <button type="button" style={dialogButtonStyle} onClick={() => { setCandidateQuarantineId(null); void quarantine(pet.folder); }}>{petSettingsStrings.petQuarantineAction}</button>
+                      <button type="button" style={dialogButtonStyle} onClick={() => setCandidateQuarantineId(null)}>{petSettingsStrings.petPickerCancel}</button>
+                    </span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      <div style={dividerStyle} />
+      <section>
+        <div style={sectionHeadingStyle}>{petSettingsStrings.newWsTitle}</div>
+        {/* "choose" has no picker UI yet (falls back silently) — do not offer it */}
+        {(["random", "fixed"] as const).map((mode) => (
+          <label key={mode} style={radioStyle}>
+            <input type="radio" name="pet-new-workspace" checked={newWorkspaceMode === mode} onChange={() => setNewWorkspaceMode(mode)} />
+            <span>{mode === "random" ? petSettingsStrings.newWsRandom : petSettingsStrings.newWsFixed}</span>
+          </label>
+        ))}
+        {newWorkspaceMode === "fixed" && (
+          <select value={fixedId ?? ""} onChange={(event) => setFixedId(event.target.value || undefined)} style={{ marginTop: 6, maxWidth: "100%" }}>
+            {enabledPets.map((pet) => <option key={pet.id} value={pet.id}>{pet.name}</option>)}
+          </select>
+        )}
+      </section>
+
+      <div style={dividerStyle} />
+      <section>
+        <div style={sectionHeadingStyle}>{petSettingsStrings.importTitle}</div>
+        <div style={hintStyle}>{petSettingsStrings.importHint}</div>
+        <button type="button" style={dialogButtonStyle} onClick={() => void rescan()} disabled={scanning}>
+          {petSettingsStrings.rescanButton}
+        </button>
+      </section>
+
+      <div style={dividerStyle} />
+      <PetGallerySection installedIds={pets.map((pet) => pet.id)} onInstalled={rescan} />
+
+      {invalidPets.length > 0 && <>
+        <div style={dividerStyle} />
+        <section>
+          <div style={sectionHeadingStyle}>{petSettingsStrings.invalidTitle}</div>
+          <div style={hintStyle}>{petSettingsStrings.invalidHint}</div>
+          <div style={{ display: "grid", gap: 6 }}>
+            {invalidPets.map((pet) => <div key={pet.id} style={{ border: "1px solid var(--cmux-border)", borderRadius: 6, padding: "6px 8px", display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ minWidth: 0, flex: 1 }}><div style={{ fontSize: 12 }}>{pet.name}</div><div style={{ color: "var(--cmux-text-dim)", fontSize: "var(--cmux-font-size-xs)" }}>{pet.warning ?? "Unknown atlas format"}</div></div>
+              <button type="button" style={dialogButtonStyle} onClick={() => void quarantine(pet.folder)}>{petSettingsStrings.quarantineButton}</button>
+            </div>)}
+          </div>
+        </section>
+      </>}
+
+      {quarantinedPets.length > 0 && <>
+        <div style={dividerStyle} />
+        <section>
+          <div style={sectionHeadingStyle}>{petSettingsStrings.quarantinedTitle}</div>
+          <div style={hintStyle}>{petSettingsStrings.quarantinedHint}</div>
+          <div style={{ display: "grid", gap: 6 }}>
+            {quarantinedPets.map((pet) => <div key={pet.folder} style={{ border: "1px solid var(--cmux-border)", borderRadius: 6, padding: "6px 8px", display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ minWidth: 0, flex: 1 }}><div style={{ fontSize: 12 }}>{pet.name}</div><div style={{ color: "var(--cmux-text-dim)", fontSize: "var(--cmux-font-size-xs)" }}>{pet.warning ?? (pet.rows ? `8×${pet.rows}` : "Unknown atlas format")}</div></div>
+              <button type="button" style={dialogButtonStyle} onClick={() => void restore(pet.folder)}>{petSettingsStrings.restoreButton}</button>
+            </div>)}
+          </div>
+        </section>
+      </>}
+
+      <div style={dividerStyle} />
+      <section>
+        <div style={sectionHeadingStyle}>{petSettingsStrings.assignTitle}</div>
+        <div style={hintStyle}>{petSettingsStrings.assignHint}</div>
+        <div style={{ display: "grid", gap: 7 }}>
+          {workspaces.map((workspace) => {
+            const pet = workspace.pet ? resolvePet(pets, workspace.pet) : undefined;
+            return (
+              <div key={workspace.id} ref={pickerWorkspaceId === workspace.id ? pickerRef : undefined} style={{ border: "1px solid var(--cmux-border)", borderRadius: 6, padding: "6px 8px", display: "flex", alignItems: "center", gap: 8, minWidth: 0, position: "relative" }}>
+                <span style={{ display: "flex", marginRight: -8 }}><PetSprite atlasUrl={(pet ?? resolvePet(pets, undefined)).atlasUrl} state="resting" height={26} /></span>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{workspace.name}</span>
+                <span style={{ maxWidth: 108, fontSize: 11, color: "var(--cmux-text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pet?.name ?? "-"}</span>
+                <button type="button" style={dialogButtonStyle} onClick={() => setWorkspacePet(workspace.id, nextPet(workspace.pet, true))}>{petSettingsStrings.rerollButton}</button>
+                <button type="button" style={dialogButtonStyle} aria-haspopup="dialog" aria-expanded={pickerWorkspaceId === workspace.id} onClick={() => setPickerWorkspaceId((current) => current === workspace.id ? null : workspace.id)}>{petSettingsStrings.changeButton}</button>
+                {pickerWorkspaceId === workspace.id && (
+                  <div className="cmux-popover-panel" role="dialog" aria-label={petSettingsStrings.petPickerTitle} style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 10, width: 250, maxWidth: "calc(100vw - 32px)", padding: 8, display: "grid", gap: 8, background: "var(--cmux-popover)", border: "1px solid var(--cmux-border)", borderRadius: 7, boxShadow: "var(--cmux-shadow-popover)" }}>
+                    <div style={{ fontSize: 12, fontWeight: 700 }}>{petSettingsStrings.petPickerTitle}</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
+                      {enabledPets.map((candidate) => (
+                        <button key={candidate.id} type="button" title={candidate.name} onClick={() => { setWorkspacePet(workspace.id, candidate.id); setPickerWorkspaceId(null); }} style={{ border: `1px solid ${candidate.id === workspace.pet ? "var(--cmux-accent)" : "var(--cmux-border)"}`, borderRadius: 5, padding: 4, background: "transparent", color: "var(--cmux-text)", cursor: "pointer", display: "grid", justifyItems: "center", gap: 2, minWidth: 0 }}>
+                          <PetSprite atlasUrl={candidate.atlasUrl} state="resting" height={30} rows={candidate.rows} />
+                          <span style={{ width: "100%", fontSize: "var(--cmux-font-size-xs)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{candidate.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <button type="button" style={{ ...dialogButtonStyle, justifySelf: "end" }} onClick={() => setPickerWorkspaceId(null)}>{petSettingsStrings.petPickerCancel}</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </section>
+      </>}
+    </div>
+  );
+}

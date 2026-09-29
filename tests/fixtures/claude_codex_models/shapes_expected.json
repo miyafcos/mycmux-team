@@ -1,0 +1,4 @@
+[
+  { "value": "anthropic/gateway/fcc/open_router/a/b", "label": "b" },
+  { "value": "anthropic/gateway/fcc/open_router/x-ai/", "label": "open_router/x-ai/" }
+]

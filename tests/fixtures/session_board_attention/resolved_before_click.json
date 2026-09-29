@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "snap-20260830T120000-d825a7340b2a",
+  "generated_at": "2026-08-30T12:00:00.000Z",
+  "source_watermark": 1,
+  "coverage": {
+    "state": "complete",
+    "expected_sessions": 2,
+    "observed_sessions": 2,
+    "stale_sessions": 0,
+    "failed_probes": 0,
+    "status_untracked_sessions": 0
+  },
+  "items": [
+    {
+      "attention_id": "incident-709481554a85627f",
+      "incident_group_id": "file-lease-conflict:repo-resolved:src/shared.py",
+      "kind": "file_lease_conflict",
+      "severity": "blocking",
+      "requires_human_action": false,
+      "actor": "system",
+      "summary": "Resolved: Write leases overlap across 2 lanes",
+      "why_now": "This incident resolved at 2026-08-30T11:59:59.000Z; the selected view is no longer actionable.",
+      "next_action": {
+        "type": "dismiss_resolved",
+        "label": "Close resolved item",
+        "target": "file-lease-conflict:repo-resolved:src/shared.py"
+      },
+      "affected_lane_ids": [
+        "lane-resolved-a",
+        "lane-resolved-b"
+      ],
+      "evidence_refs": [
+        "event:1"
+      ],
+      "first_seen_at": "2026-08-30T11:55:00.000Z",
+      "last_changed_at": "2026-08-30T11:59:59.000Z",
+      "freshness": "fresh",
+      "rank": 1
+    }
+  ]
+}

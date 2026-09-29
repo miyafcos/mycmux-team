@@ -1,0 +1,7 @@
+☐  ☑ Colour  ☑ Size  ✔ Submit  ▶
+Review your answers
+▪ Pick a colour → ☑ Green
+▪ Pick a size   → ☑ Large
+Ready to submit your answers?
+❯ 1. Submit answers
+  2. Cancel

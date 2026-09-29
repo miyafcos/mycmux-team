@@ -1,0 +1,87 @@
+﻿{
+    "schema_version":  1,
+    "generated_at":  "2026-07-30T09:19:24.0727051+09:00",
+    "repo_root":  "C:\\Users\\miyaz\\cmux-for-linux-dev-master",
+    "repo_git":  {
+                     "branch":  "master",
+                     "commit":  "f57b544475b842ea65f7acb3478ffafe6c45c7ce",
+                     "status_short":  [
+
+                                      ],
+                     "error":  "warning: could not open directory \u0027pytest-cache-files-ueu0ljs1/\u0027: Permission denied"
+                 },
+    "app":  {
+                "product_name":  "mycmux",
+                "identifier":  "com.miyazaki.mycmux",
+                "config_path":  "C:\\Users\\miyaz\\cmux-for-linux-dev-master\\src-tauri\\tauri.conf.json"
+            },
+    "data_json_candidates":  [
+                                 {
+                                     "path":  "C:\\Users\\miyaz\\AppData\\Roaming\\com.miyazaki.mycmux\\data.json",
+                                     "exists":  true
+                                 },
+                                 {
+                                     "path":  "C:\\Users\\miyaz\\AppData\\Roaming\\mycmux\\data.json",
+                                     "exists":  false
+                                 }
+                             ],
+    "target_process":  {
+                           "timestamp":  "2026-07-30T09:19:24.1957098+09:00",
+                           "pid":  53176,
+                           "process_name":  "mycmux",
+                           "path":  "C:\\Users\\miyaz\\AppData\\Local\\mycmux\\mycmux.exe",
+                           "sha256":  "046C29F6A8D8B8546D01AF908E16A9E741019F6EE1E3EFECCB3256557A876063",
+                           "total_processor_seconds":  192.28125,
+                           "working_set_bytes":  52043776,
+                           "private_memory_bytes":  29220864,
+                           "main_window_handle":  31660332,
+                           "responding":  true,
+                           "start_time":  "2026-07-30T04:01:02.5204132+09:00"
+                       },
+    "measurements":  [
+                         {
+                             "label":  "cpu_60s_increment",
+                             "kind":  "process_delta",
+                             "duration_seconds":  60.013,
+                             "cpu_delta_seconds":  0.5625,
+                             "cpu_percent_one_core":  0.937,
+                             "cpu_percent_all_cores":  0.059,
+                             "working_set_delta_bytes":  364544,
+                             "working_set_before_bytes":  51679232,
+                             "working_set_after_bytes":  52043776,
+                             "private_memory_before_bytes":  28684288,
+                             "private_memory_after_bytes":  29220864,
+                             "before":  {
+                                            "timestamp":  "2026-07-30T09:18:23.7816579+09:00",
+                                            "pid":  53176,
+                                            "process_name":  "mycmux",
+                                            "path":  "C:\\Users\\miyaz\\AppData\\Local\\mycmux\\mycmux.exe",
+                                            "sha256":  "046C29F6A8D8B8546D01AF908E16A9E741019F6EE1E3EFECCB3256557A876063",
+                                            "total_processor_seconds":  191.71875,
+                                            "working_set_bytes":  51679232,
+                                            "private_memory_bytes":  28684288,
+                                            "main_window_handle":  31660332,
+                                            "responding":  true,
+                                            "start_time":  "2026-07-30T04:01:02.5204132+09:00"
+                                        },
+                             "after":  {
+                                           "timestamp":  "2026-07-30T09:19:23.9753709+09:00",
+                                           "pid":  53176,
+                                           "process_name":  "mycmux",
+                                           "path":  "C:\\Users\\miyaz\\AppData\\Local\\mycmux\\mycmux.exe",
+                                           "sha256":  "046C29F6A8D8B8546D01AF908E16A9E741019F6EE1E3EFECCB3256557A876063",
+                                           "total_processor_seconds":  192.28125,
+                                           "working_set_bytes":  52043776,
+                                           "private_memory_bytes":  29220864,
+                                           "main_window_handle":  31660332,
+                                           "responding":  true,
+                                           "start_time":  "2026-07-30T04:01:02.5204132+09:00"
+                                       }
+                         }
+                     ],
+    "notes":  [
+                  "Default CPU sample is a 10 second TotalProcessorTime delta.",
+                  "Ctrl+P probes use SendKeys and a fixed settle window; verify visually when recording official before values.",
+                  "Scroll probe sends PageDown repeatedly to the active window."
+              ]
+}

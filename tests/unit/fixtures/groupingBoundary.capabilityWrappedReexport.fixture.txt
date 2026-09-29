@@ -1,0 +1,7 @@
+import { workspaceGroupingMutationCapability } from "./workspaceGroupingMutationCapability.internal";
+
+export const bag = { workspaceGroupingMutationCapability };
+export function leak() {
+  return workspaceGroupingMutationCapability;
+}
+export default { workspaceGroupingMutationCapability };

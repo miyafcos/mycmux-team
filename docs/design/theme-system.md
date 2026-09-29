@@ -1,0 +1,153 @@
+# Theme System
+
+Updated 2026-08-11 (theme picker restoration). Source of truth:
+`src/components/theme/themeDefinitions.ts`.
+
+## ThemeDefinition Structure
+
+```typescript
+interface ThemeDefinition {
+  id: string;
+  name: string;            // Japanese display name (真夜中, 極夜, ...)
+  group: ThemeGroup;       // "calm-dark" | "vivid-dark" | "light"
+  description: string;
+  colorScheme: "dark" | "light";
+  terminal: TerminalColors; // 20 fields: bg/fg/cursor/selection + 16 ANSI
+  chrome: {
+    background: string;
+    surface: string;
+    border: string;
+    text: string;
+    textMuted: string;
+    textDim: string;
+    accent: string;
+    hover: string;
+    selected: string;
+    danger: string;
+  };
+  status: { working; waiting; done; error };
+  notification: string;
+}
+```
+
+Themes are authored as `ThemeDraft`s (a subset) and completed by
+`completeTheme()`, which:
+
+- derives `colorScheme` from the group,
+- **clamps `textMuted`/`textDim` to a WCAG AA 4.5:1 floor** against
+  `chrome.background` (`applyContrastFloor` / `resolveDimColor` in
+  `colorContrast.ts`),
+- fills `hover`/`selected`/`danger`/`status`/`notification` defaults per scheme.
+
+## Bundled Themes (30)
+
+30 themes in three groups: 静かな暗色 (calm-dark), 個性の強い暗色
+(vivid-dark), 明るい配色 (light, 9 themes). Default: `mayonaka` (真夜中).
+Legacy ids (e.g. `yoru-cafe`, `midnight`-era names) are mapped by
+`THEME_ALIASES` in `resolveThemeId()`.
+
+`RECOMMENDED_THEMES` is a curated shortlist of 3 entries (石墨 / 極夜 / 月白:
+two dark, one light) shown first in the picker; the rest stay behind
+「すべてのテーマを表示」. Entries carry a use-case reason and are guarded by
+`tests/unit/themeRecommendations.test.ts` (id lock, 2 dark + 1 light,
+AA-safe accent text).
+
+## Picker UI
+
+`src/components/theme/ThemePicker.tsx`, mounted directly inside the quick
+settings section at the top of `AppearanceTab` (the advanced disclosure below
+it hosts `ThemeTweakPanel` without a topSlot). Recommended cards are
+always visible; the full 30-theme list expands per group. It is a
+`radiogroup` with roving focus (arrow keys / Home / End).
+
+Selection flow:
+
+```
+ThemePicker.onSelect(theme)
+  → themeStore.setTheme(id)      // clean switch: color tweaks dropped,
+                                 // background tweaks kept; previous
+                                 // themeId+tweaks saved as a snapshot
+  → toast (only when tweaks were discarded) with an undo action
+  → restoreThemeSnapshot()       // undo: full round-trip
+```
+
+Do not remove the picker wiring: the original regression (30 themes defined,
+`setTheme()` with zero callers after `ThemeSwitcher.tsx` was deleted) is
+guarded by `tests/unit/themeRecommendations.test.ts`.
+
+## Runtime Application
+
+`AppShell.tsx` builds `themeVars` (the single conversion point) and spreads it
+on the root element: chrome colors, derived tokens (`--cmux-accent-text`,
+`--cmux-yellow`, shadows, on-colors), density tokens, and `colorScheme`.
+`XTermWrapper` consumes `theme.terminal` via `resolveTerminalTheme()`
+which pre-applies an ANSI contrast floor (`terminalThemeColors.ts`) for media
+backgrounds, alongside xterm's `minimumContrastRatio` guard for ANSI and truecolor.
+
+### Solid fill vs glass
+
+`ThemeBackgroundSettings.solidSurfaces` (default `false`) is the quick-settings
+checkbox 「背景をテーマ色で塗りつぶす」. Composition lives in
+`resolveCompositionPolicy`:
+
+- glass (`solidSurfaces: false`) and a wallpaper actually on disk
+  (`isWallpaperPaintable`): chrome / terminal / raised alphas follow
+  `panelOpacity` / `terminalOpacity`.
+- solid fill, no wallpaper, or a preset that has not downloaded yet: every
+  alpha is 1. The wallpaper layer may still be painted underneath; it is fully
+  covered.
+
+The answer has one producer. AppShell computes
+`resolveEffectiveMediaActive(background, cache)` once per render — a wallpaper
+on disk that the user has not asked to paint over — and publishes it through
+`stores/compositionStore.ts`; every other surface reads the boolean. Terminals
+subscribe with a primitive selector (`useCompositionStore(s => s.mediaActive)`)
+rather than to the wallpaper cache, so a download's percent ticks cannot
+re-render them, and they re-read it immediately before `new Terminal()` because
+cold init awaits IPC first. The contrast policy travels the same way:
+`resolveMinimumContrastRatio` (light media 5.5 / opaque light 4.5 / dark 7) is the
+single rule for live updates, cached reattach and cold init. With media active,
+`withTerminalOpacity` sends the theme background RGB with alpha 0 to xterm:
+CSS still paints the wallpaper, while xterm measures against the theme RGB
+instead of transparent black. This is a theme-color floor, not a guarantee
+against every wallpaper pixel. Light media uses headroom because its actual
+backdrop is the wallpaper composite: Geppaku + Monterey + frosted measured
+3.95:1 with a 4.5 request and 5.53:1 with 5.5. Dark themes retain native dim behavior.
+Light themes now rewrite streamed SGR 2 to ANSI 90 before xterm parses it, avoiding dim alpha.
+SGR 22 also restores the default foreground (39); extended-color arguments remain intact.
+Live output and scrollback replay share a bounded streaming filter; dark themes pass through.
+Wiring is guarded by `tests/unit/compositionWiring.test.tsx`.
+
+The dashboard is still painted solid (`--cmux-bg-solid`); glass there is a
+separate decision, not covered by this checkbox.
+
+Persistence: `settings.theme_id` + `settings.theme_tweaks` in `data.json`
+(save + two hydrate sites in `SocketListener.tsx` — main window and child
+window; update BOTH when adding fields).
+
+## Fine-tuning vs. Themes
+
+`ThemeTweakPanel` ("選んだテーマの微調整") overlays per-key color tweaks on the
+selected theme (`applyThemeTweaks`). The dark/light preset toggle applies a
+tweak preset — it does not change `themeId`. `setTheme` is the only clean
+switch.
+
+## Out of Scope (decided 2026-08-11)
+
+`BrowserPane`'s injected editor CSS stays light-fixed on purpose: it renders a
+document-editing surface (white paper on a desk, Word-like). Making it follow
+dark themes would produce "black paper", which is a worse defect. Do not
+theme it.
+
+## Contrast Contracts
+
+- Every bundled light theme keeps terminal foreground at 7:1 against the
+  terminal background. Its non-black ANSI colors and cursor meet 4.5:1.
+- Light-theme status colors meet 4.5:1 against both `chrome.background` and
+  `chrome.surface`; borders meet 1.6:1, accents meet 3:1, and the two chrome
+  surfaces remain at least 1.15:1 apart.
+- `tests/unit/themeContrast.test.ts` — WCAG floors across all 30 themes
+  (text/muted/dim/accent-text vs chrome bg; terminal fg/bg ≥ 7; on-colors;
+  ANSI ratchet).
+- `tests/unit/tokenContract.test.ts` — every `var(--cmux-*)` reference must
+  be defined in `global.css` `:root`; `themeVars` keys ⊆ `:root` keys.

@@ -1,0 +1,1196 @@
+from __future__ import annotations
+
+from copy import deepcopy
+import importlib.util
+import io
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+
+BRIDGE_SCRIPT = (
+    Path(__file__).parents[1] / "skills" / "claude" / "mycmux-bridge" / "scripts" / "mycmux_bridge.py"
+)
+
+spec = importlib.util.spec_from_file_location("mycmux_bridge", BRIDGE_SCRIPT)
+assert spec is not None and spec.loader is not None
+bridge_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bridge_module)
+
+Bridge = bridge_module.Bridge
+BridgeError = bridge_module.BridgeError
+scan_ask_question = bridge_module.scan_ask_question
+
+SESSION_ID = "pty-session-a"
+OTHER_SESSION_ID = "pty-session-b"
+
+
+def pane_list_all(*, duplicate_label: bool = False) -> dict[str, Any]:
+    tabs = [
+        {
+            "id": "tab-a",
+            "sessionId": SESSION_ID,
+            "label": "worker",
+            "agentId": "claude-codex",
+            "agentKind": "claude-codex",
+            "agentSessionId": "agent-a",
+            "claudeSessionId": "claude-a",
+            "type": "terminal",
+        }
+    ]
+    if duplicate_label:
+        tabs.append(
+            {
+                "id": "tab-b",
+                "sessionId": OTHER_SESSION_ID,
+                "label": "worker",
+                "agentId": "codex",
+                "agentKind": "codex",
+                "agentSessionId": "agent-b",
+                "type": "terminal",
+            }
+        )
+    return {
+        "activeWorkspaceId": "workspace-a",
+        "panes": [
+            {
+                "workspaceId": "workspace-a",
+                "workspaceName": "Main",
+                "id": "pane-a",
+                "label": "Agents",
+                "tabs": tabs,
+            }
+        ],
+    }
+
+
+def state_entry(
+    *,
+    session_id: str = SESSION_ID,
+    epoch: int = 7,
+    revision: int = 11,
+    input_revision: int = 5,
+    lifecycle: str = "alive",
+    activity: str = "idle",
+    attention: str = "none",
+    attention_id: str | None = None,
+    health: str = "fresh",
+) -> dict[str, Any]:
+    return {
+        "session_id": session_id,
+        "input_revision": input_revision,
+        "view": {
+            "session_id": session_id,
+            "session_epoch": epoch,
+            "session_revision": revision,
+            "lifecycle": lifecycle,
+            "activity": activity,
+            "attention": {"kind": attention, "attention_id": attention_id},
+            "health": health,
+        },
+        "ui_state": "waiting" if attention != "none" else activity,
+    }
+
+
+def state_response(**kwargs: Any) -> dict[str, Any]:
+    return {"sessions": [state_entry(**kwargs)]}
+
+
+class ScriptedTransport:
+    def __init__(
+        self,
+        *,
+        states: list[dict[str, Any]] | None = None,
+        screens: list[list[str]] | None = None,
+        duplicate_label: bool = False,
+    ) -> None:
+        self.states = states or [state_response()]
+        self.auto_input_revision = states is None
+        self.screens = screens or [["ready"]]
+        self.duplicate_label = duplicate_label
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.state_index = 0
+        self.screen_index = 0
+
+    def __call__(self, cmd: str, args: dict[str, Any]) -> Any:
+        self.calls.append((cmd, deepcopy(args)))
+        if cmd == "pane.list_all":
+            return pane_list_all(duplicate_label=self.duplicate_label)
+        if cmd == "session.state_view":
+            value = self.states[min(self.state_index, len(self.states) - 1)]
+            self.state_index += 1
+            result = deepcopy(value)
+            if self.auto_input_revision:
+                result["sessions"][0]["input_revision"] += len(send_calls(self))
+            return result
+        if cmd == "pane.read":
+            value = self.screens[min(self.screen_index, len(self.screens) - 1)]
+            self.screen_index += 1
+            return {"sessionId": args["sessionId"], "lines": deepcopy(value)}
+        if cmd == "pane.send_text":
+            if args.get("key"):
+                return {"ok": True, "confirmed": True, "sent": True}
+            return {"sent": True, "unverified": True}
+        raise AssertionError(f"unexpected command: {cmd}")
+
+
+def make_bridge(transport: ScriptedTransport, *, observations: int = 2) -> Bridge:
+    return Bridge(
+        transport,
+        sleep=lambda _seconds: None,
+        observations=observations,
+        poll_seconds=0,
+    )
+
+
+def send_calls(transport: ScriptedTransport) -> list[dict[str, Any]]:
+    return [args for cmd, args in transport.calls if cmd == "pane.send_text"]
+
+
+def test_list_normalizes_all_tabs_with_canonical_status() -> None:
+    transport = ScriptedTransport(
+        states=[
+            {
+                "sessions": [
+                    state_entry(),
+                    state_entry(
+                        session_id=OTHER_SESSION_ID,
+                        lifecycle="exited",
+                        activity="unknown",
+                        health="stale",
+                    ),
+                ]
+            }
+        ],
+        duplicate_label=True,
+    )
+
+    result = make_bridge(transport).list_tabs()
+
+    assert result["source"] == "mycmux"
+    assert [item["session_id"] for item in result["sessions"]] == [
+        SESSION_ID,
+        OTHER_SESSION_ID,
+    ]
+    first = result["sessions"][0]
+    assert first == {
+        "source": "mycmux",
+        "workspace": {"id": "workspace-a", "name": "Main"},
+        "pane": {"id": "pane-a", "label": "Agents"},
+        "tab": {"id": "tab-a", "type": "terminal"},
+        "session_id": SESSION_ID,
+        "label": "worker",
+        "agent_kind": "claude-codex",
+        "agent_id": "claude-codex",
+        "agent_session_id": "agent-a",
+        "claude_session_id": "claude-a",
+        "lifecycle": "alive",
+        "activity": "idle",
+        "attention": "none",
+        "attention_id": None,
+        "health": "fresh",
+        "input_revision": 5,
+        "send_status": "candidate",
+        "send_reason": "",
+        "ui_state": "idle",
+    }
+
+
+def test_read_requires_exact_pty_session_and_caps_snapshot() -> None:
+    lines = [f"line-{index}" for index in range(400)]
+    transport = ScriptedTransport(screens=[lines])
+
+    result = make_bridge(transport).read(SESSION_ID, 999)
+
+    assert result["lines"] == lines
+    assert result["metadata"] == {
+        "kind": "logical_screen_snapshot",
+        "transcript": False,
+        "max_lines": 400,
+    }
+    pane_read = next(args for cmd, args in transport.calls if cmd == "pane.read")
+    assert pane_read["lines"] == 400
+    with pytest.raises(BridgeError, match="exactly once"):
+        make_bridge(transport).read("pane-a")
+
+
+def test_target_resolution_uses_control_label_not_display_name() -> None:
+    class NamedTransport(ScriptedTransport):
+        def __call__(self, command: str, args: dict[str, Any]) -> dict[str, Any]:
+            if command == "pane.list_all":
+                result = pane_list_all()
+                result["panes"][0]["tabs"][0]["display_name"] = "toolx review"
+                return result
+            return super().__call__(command, args)
+
+    bridge = make_bridge(NamedTransport())
+    assert bridge.resolve_target(session_id=None, target="worker") == SESSION_ID
+    with pytest.raises(BridgeError, match="matched 0"):
+        bridge.resolve_target(session_id=None, target="toolx review")
+
+
+def test_target_resolution_rejects_zero_and_duplicate_labels() -> None:
+    bridge = make_bridge(ScriptedTransport())
+    with pytest.raises(BridgeError, match="matched 0"):
+        bridge.resolve_target(session_id=None, target="missing")
+
+    duplicate = make_bridge(ScriptedTransport(duplicate_label=True))
+    with pytest.raises(BridgeError, match="matched 2"):
+        duplicate.resolve_target(session_id=None, target="worker")
+
+
+def test_send_rejects_stale_unknown_and_degraded_without_writes() -> None:
+    for entry in (
+        state_response(lifecycle="exited"),
+        state_response(lifecycle="unknown"),
+        state_response(health="degraded"),
+    ):
+        transport = ScriptedTransport(states=[entry])
+        with pytest.raises(BridgeError):
+            make_bridge(transport).send("hello", session_id=SESSION_ID)
+        assert send_calls(transport) == []
+
+
+def test_send_text_draft_enter_once_residue_clears_and_state_transitions() -> None:
+    text = "bridge delivery probe"
+    transport = ScriptedTransport(
+        states=[
+            state_response(revision=10, input_revision=5),
+            state_response(revision=10, input_revision=5),
+            state_response(revision=10, input_revision=6),
+            state_response(revision=10, input_revision=6),
+            state_response(revision=10, input_revision=6),
+            state_response(revision=10, input_revision=6),
+            state_response(revision=11, input_revision=7, activity="running_silent"),
+        ],
+        screens=[
+            ["prompt>"],
+            ["prompt>"],
+            [f"prompt> {text}"],
+            [f"prompt> {text}"],
+            [f"prompt> {text}"],
+            ["processing"],
+        ],
+    )
+
+    result = make_bridge(transport).send(text, session_id=SESSION_ID)
+
+    assert result["result"] == "observed_delivered"
+    writes = send_calls(transport)
+    assert [write.get("key") for write in writes] == [None, "enter"]
+    assert writes[0]["text"] == text
+    assert writes[0]["enter"] is False
+    assert writes[1]["text"] == ""
+    assert writes[1]["enter"] is False
+    assert writes[0]["expectedAttentionId"] is None
+    assert writes[1]["expectedAttentionId"] is None
+    assert writes[0]["expectedInputRevision"] == 5
+    assert writes[1]["expectedInputRevision"] == 6
+
+
+def test_send_binds_enter_revision_to_its_own_text_write() -> None:
+    text = "bridge revision probe"
+    transport = ScriptedTransport(
+        states=[
+            state_response(revision=10, input_revision=5),
+            state_response(revision=10, input_revision=5),
+            state_response(revision=10, input_revision=6),
+            state_response(revision=10, input_revision=6),
+            state_response(revision=10, input_revision=99),
+            state_response(revision=10, input_revision=99),
+        ],
+        screens=[
+            ["prompt>"],
+            ["prompt>"],
+            [f"prompt> {text}"],
+            [f"prompt> {text}"],
+            [f"prompt> {text}"],
+        ],
+    )
+
+    result = make_bridge(transport).send(text, session_id=SESSION_ID)
+
+    assert result["result"] == "prompt_changed"
+    writes = send_calls(transport)
+    assert [write.get("key") for write in writes] == [None]
+
+
+@pytest.mark.parametrize(
+    ("screens", "expected"),
+    [
+        ([["prompt>"], ["prompt>"], ["prompt>"], ["prompt>"]], "draft_not_observed"),
+        ([["prompt>"], ["prompt>"], ["unrelated output"], ["unrelated output"]], "screen_changed_ambiguously"),
+    ],
+)
+def test_send_never_enters_when_draft_is_not_stably_visible(
+    screens: list[list[str]], expected: str
+) -> None:
+    transport = ScriptedTransport(screens=screens)
+
+    result = make_bridge(transport).send("hello", session_id=SESSION_ID)
+
+    assert result["result"] == expected
+    assert [write.get("key") for write in send_calls(transport)] == [None]
+
+
+def test_send_does_not_treat_existing_output_as_a_new_draft() -> None:
+    transport = ScriptedTransport(
+        screens=[
+            ["previous: hello", "PS>"],
+            ["previous: hello", "PS>"],
+            ["previous: hello", "PS>"],
+            ["previous: hello", "PS>"],
+        ]
+    )
+
+    result = make_bridge(transport).send("hello", session_id=SESSION_ID)
+
+    assert result["result"] == "draft_not_observed"
+    assert result["enter_sent"] is False
+    assert [write.get("key") for write in send_calls(transport)] == [None]
+
+
+def test_send_refuses_prompt_change_before_enter_without_extra_key() -> None:
+    text = "hello"
+    transport = ScriptedTransport(
+        screens=[
+            ["prompt>"],
+            ["prompt>"],
+            [f"prompt> {text}"],
+            [f"prompt> {text}"],
+            ["different screen"],
+        ]
+    )
+
+    result = make_bridge(transport).send(text, session_id=SESSION_ID)
+
+    assert result["result"] == "prompt_changed"
+    assert [write.get("key") for write in send_calls(transport)] == [None]
+
+
+def test_send_classifies_residue_without_second_enter() -> None:
+    text = "hello"
+    transport = ScriptedTransport(
+        states=[
+            state_response(revision=10, input_revision=5),
+            state_response(revision=10, input_revision=5),
+            state_response(revision=10, input_revision=6),
+            state_response(revision=10, input_revision=6),
+            state_response(revision=10, input_revision=6),
+            state_response(revision=10, input_revision=7),
+            state_response(revision=11, input_revision=7, activity="running_silent"),
+            state_response(revision=11, input_revision=7, activity="running_silent"),
+        ],
+        screens=[
+            ["PS>"],
+            ["PS>"],
+            [f"PS> {text}"],
+            [f"PS> {text}"],
+            [f"PS> {text}"],
+            [f"PS> {text}"],
+            [f"PS> {text}"],
+        ],
+    )
+
+    result = make_bridge(transport).send(text, session_id=SESSION_ID)
+
+    assert result["result"] == "residue_remains"
+    assert result["enter_sent"] is True
+    assert [write.get("key") for write in send_calls(transport)] == [None, "enter"]
+
+
+def test_send_rejects_epoch_change_after_enter() -> None:
+    text = "hello"
+    transport = ScriptedTransport(
+        states=[
+            *[state_response(epoch=7, revision=10, input_revision=5 + (index >= 2) + (index >= 5))
+              for index in range(5)],
+            *[state_response(epoch=8, revision=11, input_revision=7) for _ in range(2)],
+        ],
+        screens=[
+            ["prompt>"],
+            ["prompt>"],
+            [f"prompt> {text}"],
+            [f"prompt> {text}"],
+            [f"prompt> {text}"],
+            ["processing"],
+        ],
+    )
+
+    result = make_bridge(transport).send(text, session_id=SESSION_ID)
+
+    assert result["result"] == "verification_unavailable"
+    assert result["enter_sent"] is True
+    assert [write.get("key") for write in send_calls(transport)] == [None, "enter"]
+
+
+SINGLE_ASK = [
+    "────────────────────────",
+    "☐ Fruit",
+    "Pick a fruit",
+    "❯ 1. Apple",
+    "2. Banana",
+    "3. Type something.",
+    "────────────────────────",
+    "4. Chat about this",
+    "Enter to select · ↑/↓ to navigate · Esc to cancel",
+]
+TABBED_FIRST = [
+    "────────────────────────",
+    "☐  ☐ Colour  ☐ Size  ✔ Submit  ▶",
+    "Pick a colour",
+    "❯ 1. Red",
+    "2. Green",
+    "3. Type something.",
+    "────────────────────────",
+    "4. Chat about this",
+    "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+]
+TABBED_SECOND = [
+    "────────────────────────",
+    "☐  ☑ Colour  ☐ Size  ✔ Submit  ▶",
+    "Pick a size",
+    "❯ 1. Small",
+    "2. Large",
+    "3. Type something.",
+    "────────────────────────",
+    "4. Chat about this",
+    "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+]
+REVIEW = [
+    "────────────────────────",
+    "☐  ☑ Colour  ☑ Size  ✔ Submit  ▶",
+    "Review your answers",
+    "● Pick a colour",
+    "→ Green",
+    "● Pick a size",
+    "→ Large",
+    "Ready to submit your answers?",
+    "❯ 1. Submit answers",
+    "2. Cancel",
+]
+REVIEW_MULTI = [
+    "────────────────────────",
+    "☐  ☑ Toppings  ✔ Submit  ▶",
+    "Review your answers",
+    "● Pick toppings",
+    "→ Cheese, Onion",
+    "Ready to submit your answers?",
+    "❯ 1. Submit answers",
+    "2. Cancel",
+]
+MULTI_START = [
+    "────────────────────────",
+    "☐  ☐ Toppings  ✔ Submit  ▶",
+    "Pick toppings",
+    "❯ 1. [ ] Cheese",
+    "2. [ ] Bacon",
+    "3. [ ] Onion",
+    "4. [ ] Type something",
+    "Submit",
+    "────────────────────────",
+    "5. Chat about this",
+    "Enter to select · ↑/↓ to navigate · Esc to cancel",
+]
+MULTI_TOGGLED_1 = [line.replace("1. [ ] Cheese", "1. [✔] Cheese") for line in MULTI_START]
+MULTI_TOGGLED_3 = [line.replace("3. [ ] Onion", "3. [✔] Onion") for line in MULTI_TOGGLED_1]
+MULTI_DOWN_1 = [line.replace("❯ 1. [✔]", "1. [✔]").replace("2. [ ]", "❯ 2. [ ]") for line in MULTI_TOGGLED_3]
+MULTI_DOWN_2 = [line.replace("❯ 2. [ ]", "2. [ ]").replace("3. [✔]", "❯ 3. [✔]") for line in MULTI_DOWN_1]
+MULTI_DOWN_3 = [line.replace("❯ 3. [✔]", "3. [✔]").replace("4. [ ]", "❯ 4. [ ]") for line in MULTI_DOWN_2]
+MULTI_DOWN_4 = [
+    "4. [ ] Type something"
+    if line == "❯ 4. [ ] Type something"
+    else "❯ Submit"
+    if line == "Submit"
+    else line
+    for line in MULTI_DOWN_3
+]
+
+
+class AskTransport(ScriptedTransport):
+    def __init__(
+        self,
+        screens: list[list[str]],
+        *,
+        attention: str = "input",
+        states: list[dict[str, Any]] | None = None,
+        close_after_writes: int | None = None,
+    ) -> None:
+        super().__init__(
+            states=states or [state_response(attention=attention, attention_id="ask-a")],
+            screens=screens,
+        )
+        self.close_after_writes = close_after_writes
+
+    def __call__(self, cmd: str, args: dict[str, Any]) -> Any:
+        if (
+            cmd == "session.state_view"
+            and self.close_after_writes is not None
+            and len(send_calls(self)) >= self.close_after_writes
+        ):
+            self.calls.append((cmd, deepcopy(args)))
+            return state_response(revision=12)
+        return super().__call__(cmd, args)
+
+
+def test_ask_parser_rejects_unstructured_screen() -> None:
+    assert scan_ask_question(["ordinary shell output"]) is None
+
+
+def test_ask_parser_accepts_measured_symbols_and_spaced_tab_labels() -> None:
+    screen = [
+        "────────────────────────",
+        "☐  ☐ Output format  ☐ Density  ✔ Submit  ▶",
+        "Choose output format",
+        "❯ 1. Markdown",
+        "2. Plain text",
+        "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+    ]
+
+    parsed = scan_ask_question(screen)
+
+    assert parsed is not None
+    assert parsed["kind"] == "tabbed"
+    assert [tab["label"] for tab in parsed["tabs"]] == ["Output format", "Density"]
+
+
+def test_ask_parser_joins_wrapped_question_and_rejects_stale_footer() -> None:
+    wrapped = [
+        "────────────────────────",
+        "☐ Fixture",
+        "Which deployment target should",
+        "we use for production?",
+        "❯ 1. Linux",
+        "2. Windows",
+        "Enter to select · ↑/↓ to navigate · Esc to cancel",
+    ]
+    parsed = scan_ask_question(wrapped)
+    assert parsed is not None
+    assert parsed["question"] == "Which deployment target should we use for production?"
+    assert scan_ask_question([*wrapped, "answer accepted", "$ "]) is None
+
+
+def test_ask_parser_does_not_treat_numbered_question_as_an_option() -> None:
+    screen = [
+        "────────────────────────",
+        "☐ Fixture",
+        "1. Which layout do you prefer?",
+        "❯ 1. Compact",
+        "2. Roomy",
+        "Enter to select · ↑/↓ to navigate · Esc to cancel",
+    ]
+
+    parsed = scan_ask_question(screen)
+
+    assert parsed is not None
+    assert parsed["question"] == "1. Which layout do you prefer?"
+    assert [option["label"] for option in parsed["options"]] == ["Compact", "Roomy"]
+
+
+def test_state_schema_requires_non_negative_input_revision() -> None:
+    invalid = state_response()
+    del invalid["sessions"][0]["input_revision"]
+    with pytest.raises(BridgeError, match="input revision"):
+        make_bridge(ScriptedTransport(states=[invalid])).status(SESSION_ID)
+
+
+def test_strict_state_accepts_null_input_revision_but_send_stays_unavailable() -> None:
+    state = state_response(input_revision=None, lifecycle="alive")
+    transport = ScriptedTransport(states=[state])
+    assert make_bridge(transport).status(SESSION_ID)["input_revision"] is None
+    with pytest.raises(BridgeError, match="input revision") as error:
+        make_bridge(transport).send("hello", session_id=SESSION_ID)
+    assert error.value.kind == "verification_unavailable"
+    assert not send_calls(transport)
+
+
+def test_strict_state_rejects_string_input_revision() -> None:
+    with pytest.raises(BridgeError, match="input revision"):
+        make_bridge(ScriptedTransport(states=[state_response(input_revision="0")])).status(SESSION_ID)
+
+
+def test_answer_ask_single_uses_one_digit_and_zero_enter_keys() -> None:
+    transport = AskTransport(
+        [SINGLE_ASK, SINGLE_ASK, ["done"], ["done"]],
+        states=[
+            state_response(attention="input", attention_id="ask-a", revision=10),
+            state_response(attention="input", attention_id="ask-a", revision=10),
+            state_response(attention="input", attention_id="ask-a", revision=11),
+            state_response(attention="input", attention_id="ask-a", revision=11),
+        ],
+    )
+
+    result = make_bridge(transport).answer_ask(SESSION_ID, {"Pick a fruit": 2})
+
+    assert result["result"] == "observed_delivered"
+    writes = send_calls(transport)
+    assert [(write["text"], write.get("key"), write["enter"]) for write in writes] == [
+        ("2", None, False)
+    ]
+    assert writes[0]["expectedInputRevision"] == 5
+
+
+def test_answer_ask_keeps_screen_bound_input_revision_when_reobservation_advances() -> None:
+    transport = AskTransport(
+        [SINGLE_ASK, SINGLE_ASK, ["done"], ["done"]],
+        states=[
+            state_response(attention="input", attention_id="ask-a", revision=10, input_revision=5),
+            state_response(attention="input", attention_id="ask-a", revision=10, input_revision=6),
+            state_response(attention="input", attention_id="ask-a", revision=11, input_revision=6),
+            state_response(attention="input", attention_id="ask-a", revision=11, input_revision=6),
+        ],
+    )
+
+    result = make_bridge(transport).answer_ask(SESSION_ID, {"Pick a fruit": 2})
+
+    assert result["result"] == "observed_delivered"
+    assert send_calls(transport)[0]["expectedInputRevision"] == 5
+
+
+def test_answer_ask_advances_input_revision_after_each_accepted_write() -> None:
+    transport = AskTransport(
+        [
+            TABBED_FIRST,
+            TABBED_FIRST,
+            TABBED_SECOND,
+            TABBED_SECOND,
+            REVIEW,
+            REVIEW,
+            ["done"],
+            ["done"],
+        ],
+        states=[
+            *[
+                state_response(
+                    attention="input",
+                    attention_id="ask-a",
+                    revision=10,
+                    input_revision=5 + min(index, 2),
+                )
+                for index in range(6)
+            ],
+            *[
+                state_response(
+                    attention="input",
+                    attention_id="ask-a",
+                    revision=11,
+                    input_revision=7,
+                )
+                for _ in range(6)
+            ],
+        ],
+    )
+
+    result = make_bridge(transport).answer_ask(
+        SESSION_ID,
+        {"Pick a colour": 2, "Pick a size": 2},
+    )
+
+    assert result["result"] == "observed_delivered"
+    assert [write["expectedInputRevision"] for write in send_calls(transport)] == [5, 6, 7]
+
+
+def test_answer_ask_accepts_approval_attention() -> None:
+    transport = AskTransport(
+        [SINGLE_ASK, SINGLE_ASK, ["done"], ["done"]],
+        attention="approval",
+        states=[
+            state_response(attention="approval", attention_id="ask-a", revision=10),
+            state_response(attention="approval", attention_id="ask-a", revision=10),
+            state_response(attention="approval", attention_id="ask-a", revision=11),
+            state_response(attention="approval", attention_id="ask-a", revision=11),
+        ],
+    )
+
+    result = make_bridge(transport).answer_ask(SESSION_ID, {"Pick a fruit": 2})
+
+    assert result["result"] == "observed_delivered"
+    assert [write["text"] for write in send_calls(transport)] == ["2"]
+
+
+def test_answer_ask_multiple_questions_uses_digits_only() -> None:
+    transport = AskTransport(
+        [
+            TABBED_FIRST,
+            TABBED_FIRST,
+            TABBED_SECOND,
+            TABBED_SECOND,
+            REVIEW,
+            REVIEW,
+            ["done"],
+            ["done"],
+        ],
+        states=[
+            *[state_response(attention="input", attention_id="ask-a", revision=10) for _ in range(6)],
+            *[state_response(attention="input", attention_id="ask-a", revision=11) for _ in range(6)],
+        ],
+    )
+
+    result = make_bridge(transport).answer_ask(
+        SESSION_ID,
+        {"Pick a colour": 2, "Pick a size": 2},
+    )
+
+    assert result["result"] == "observed_delivered"
+    writes = send_calls(transport)
+    assert [(write["text"], write.get("key"), write["enter"]) for write in writes] == [
+        ("2", None, False),
+        ("2", None, False),
+        ("1", None, False),
+    ]
+
+
+def test_answer_ask_never_resends_a_digit_while_screen_is_stale() -> None:
+    transport = AskTransport([TABBED_FIRST] * 8)
+
+    with pytest.raises(BridgeError, match="did not advance"):
+        make_bridge(transport, observations=5).answer_ask(
+            SESSION_ID,
+            {"Pick a colour": 2, "Pick a size": 2},
+        )
+
+    assert [write["text"] for write in send_calls(transport)] == ["2"]
+
+
+def test_answer_ask_rejects_mismatched_review_without_submission() -> None:
+    wrong_review = [line.replace("Green", "Red") for line in REVIEW]
+    transport = AskTransport(
+        [
+            TABBED_FIRST,
+            TABBED_FIRST,
+            TABBED_SECOND,
+            TABBED_SECOND,
+            wrong_review,
+        ]
+    )
+
+    with pytest.raises(BridgeError, match="review answers do not match"):
+        make_bridge(transport).answer_ask(
+            SESSION_ID,
+            {"Pick a colour": 2, "Pick a size": 2},
+        )
+
+    assert [write["text"] for write in send_calls(transport)] == ["2", "2"]
+
+
+def test_answer_ask_multiselect_uses_toggle_down_enter_review_sequence() -> None:
+    transport = AskTransport(
+        [
+            MULTI_START,
+            MULTI_START,
+            MULTI_START,
+            MULTI_TOGGLED_1,
+            MULTI_TOGGLED_1,
+            MULTI_TOGGLED_1,
+            MULTI_TOGGLED_3,
+            MULTI_TOGGLED_3,
+            MULTI_TOGGLED_3,
+            MULTI_DOWN_1,
+            MULTI_DOWN_1,
+            MULTI_DOWN_1,
+            MULTI_DOWN_2,
+            MULTI_DOWN_2,
+            MULTI_DOWN_2,
+            MULTI_DOWN_3,
+            MULTI_DOWN_3,
+            MULTI_DOWN_3,
+            MULTI_DOWN_4,
+            MULTI_DOWN_4,
+            MULTI_DOWN_4,
+            REVIEW_MULTI,
+            REVIEW_MULTI,
+            # After the review digit the seat drops to attention "none"; the
+            # bridge then reads the screen and accepts closure only once the
+            # question has left it, so the next reads must not show the review.
+            ["done"],
+            ["done"],
+        ],
+        states=[state_response(attention="input", attention_id="ask-a", revision=10)],
+        close_after_writes=8,
+    )
+
+    result = make_bridge(transport).answer_ask(
+        SESSION_ID,
+        {"Pick toppings": [1, 3]},
+    )
+
+    assert result["result"] == "observed_delivered"
+    writes = send_calls(transport)
+    assert [(write["text"], write.get("key"), write["enter"]) for write in writes] == [
+        ("1", None, False),
+        ("3", None, False),
+        ("", "down", False),
+        ("", "down", False),
+        ("", "down", False),
+        ("", "down", False),
+        ("", "enter", False),
+        ("1", None, False),
+    ]
+
+
+def test_answer_ask_multiselect_unchecks_unrequested_preselected_options() -> None:
+    preselected = [line.replace("2. [ ] Bacon", "2. [✔] Bacon") for line in MULTI_START]
+    unselected = [line.replace("2. [✔] Bacon", "2. [ ] Bacon") for line in preselected]
+    transport = AskTransport(
+        [
+            preselected,
+            preselected,
+            preselected,
+            unselected,
+            unselected,
+            unselected,
+            MULTI_TOGGLED_1,
+            MULTI_TOGGLED_1,
+            MULTI_TOGGLED_1,
+            MULTI_TOGGLED_3,
+            MULTI_TOGGLED_3,
+            MULTI_TOGGLED_3,
+            MULTI_DOWN_1,
+            MULTI_DOWN_1,
+            MULTI_DOWN_1,
+            MULTI_DOWN_2,
+            MULTI_DOWN_2,
+            MULTI_DOWN_2,
+            MULTI_DOWN_3,
+            MULTI_DOWN_3,
+            MULTI_DOWN_3,
+            MULTI_DOWN_4,
+            MULTI_DOWN_4,
+            MULTI_DOWN_4,
+            REVIEW_MULTI,
+            REVIEW_MULTI,
+            REVIEW_MULTI,
+            ["done"],
+            ["done"],
+        ],
+        states=[state_response(attention="input", attention_id="ask-a", revision=10)],
+        close_after_writes=9,
+    )
+
+    result = make_bridge(transport).answer_ask(
+        SESSION_ID,
+        {"Pick toppings": [1, 3]},
+    )
+
+    assert result["result"] == "observed_delivered"
+    assert [write["text"] for write in send_calls(transport)[:3]] == ["2", "1", "3"]
+
+
+def test_answer_ask_does_not_send_when_screen_is_unstructured() -> None:
+    transport = AskTransport([["ordinary shell output"]])
+
+    with pytest.raises(BridgeError, match="could not be parsed"):
+        make_bridge(transport).answer_ask(SESSION_ID, {"Pick a fruit": 1})
+
+    assert send_calls(transport) == []
+
+
+def test_token_never_appears_in_stdout_stderr_or_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secret = "super-secret-socket-token"
+
+    class ExplodingBridge:
+        def __init__(self, _request: Any) -> None:
+            raise RuntimeError(f"socket rejected token={secret}")
+
+    fake_cli = type("FakeCli", (), {"send_request": lambda *_args: None})
+    monkeypatch.setattr(bridge_module, "resolve_agent_cli", lambda: Path("C:/repo"))
+    monkeypatch.setattr(bridge_module, "load_agent_cli", lambda _repo: fake_cli)
+    monkeypatch.setattr(bridge_module, "Bridge", ExplodingBridge)
+
+    assert bridge_module.main(["list"]) == 1
+    captured = capsys.readouterr()
+    assert secret not in captured.out
+    assert secret not in captured.err
+    assert "mycmux request failed" in captured.err
+
+    error = BridgeError("verification_unavailable", "source checkout missing")
+    assert secret not in str(error)
+
+
+def test_list_keeps_live_and_exited_null_rows_and_ignores_unregistered_null():
+    transport = ScriptedTransport(states=[{"sessions": [
+        state_entry(),
+        state_entry(session_id=OTHER_SESSION_ID, lifecycle="exited", input_revision=None),
+        state_entry(session_id="unregistered-exited", lifecycle="exited", input_revision=None),
+    ]}], duplicate_label=True)
+    result = make_bridge(transport).list_tabs()
+    assert "result" not in result
+    live, exited = result["sessions"]
+    assert live["input_revision"] == 5
+    assert live["send_status"] == "candidate"
+    assert exited["input_revision"] is None
+    assert exited["send_status"] == "not_applicable"
+    assert not send_calls(transport)
+
+
+@pytest.mark.parametrize("value", [None, -1, True, False])
+def test_invalid_input_revision_is_displayed_but_never_sent(value):
+    transport = ScriptedTransport(states=[state_response(input_revision=value)])
+    result = make_bridge(transport).list_tabs()
+    assert result["sessions"][0]["input_revision"] is value
+    assert result["sessions"][0]["send_status"] == "unavailable"
+    with pytest.raises(BridgeError, match="input revision"):
+        make_bridge(transport).send("hello", session_id=SESSION_ID)
+    assert not send_calls(transport)
+
+
+@pytest.mark.parametrize("field", ["session_epoch", "session_revision"])
+@pytest.mark.parametrize("value", [None, -1, True, False])
+def test_invalid_canonical_expectations_never_write(field, value):
+    state = state_response()
+    state["sessions"][0]["view"][field] = value
+    transport = ScriptedTransport(states=[state])
+    bridge = make_bridge(transport)
+    assert bridge.list_tabs()["sessions"][0]["send_status"] == "unavailable"
+    result = bridge.send("hello", session_id=SESSION_ID)
+    assert result["result"] != "observed_delivered"
+    assert not send_calls(transport)
+
+
+@pytest.mark.parametrize("tab_type", ["launcher", "web", "declared"])
+def test_non_pty_tabs_are_listed_but_never_send_candidates(tab_type):
+    registry = pane_list_all()
+    registry["panes"][0]["tabs"].append({
+        "id": "launcher-tab", "sessionId": "launcher-session",
+        "type": tab_type, "label": "worker",
+    })
+    transport = ScriptedTransport(states=[{"sessions": [
+        state_entry(),
+        state_entry(session_id="launcher-session", input_revision=None),
+    ]}])
+    def request(cmd, args):
+        if cmd == "pane.list_all":
+            return deepcopy(registry)
+        return transport(cmd, args)
+    bridge = Bridge(request, sleep=lambda _seconds: None)
+    rows = bridge.list_tabs()["sessions"]
+    assert rows[1]["send_status"] == "not_applicable"
+    assert rows[1]["input_revision"] is None
+    assert bridge.resolve_target(session_id=None, target="worker") == SESSION_ID
+    with pytest.raises(BridgeError):
+        bridge.send("hello", session_id="launcher-session")
+    assert not send_calls(transport)
+
+
+@pytest.mark.parametrize("change", ["epoch", "input_revision"])
+def test_pre_text_reobservation_does_not_adopt_changed_target(change):
+    after = {"epoch": 8} if change == "epoch" else {"input_revision": 6}
+    transport = ScriptedTransport(states=[state_response(), state_response(**after)])
+    result = make_bridge(transport).send("hello", session_id=SESSION_ID)
+    assert result["result"] in {"stale_target", "prompt_changed"}
+    assert not send_calls(transport)
+
+
+@pytest.mark.parametrize(
+    ("prompt", "after", "kind"),
+    [
+        ("› ", ["› hello", "• response", "› Ask Codex to do anything", "... · Ready"], "Codex"),
+        ("PS> ", ["PS> hello", "output", "PS>"], "PowerShell"),
+        ("PS C:\\Users\\miyaz\\_work> ",
+         ["PS C:\\Users\\miyaz\\_work> hello", "output", "PS C:\\Users\\miyaz\\_work>"], "PowerShell"),
+        ("> ", ["> hello", "response", "> "], "Claude Code"),
+        ("❯ ", ["❯ hello", "response", "❯ "], "Claude Code"),
+        ("C:\\work> ", ["C:\\work> hello", "output", "C:\\work>"], "cmd"),
+        ("user@host:~/work$ ", ["user@host:~/work$ hello", "output", "user@host:~/work$"], "shell"),
+    ],
+)
+def test_send_ignores_echo_above_the_last_input_line(prompt, after, kind):
+    draft = [prompt + "hello"]
+    transport = ScriptedTransport(screens=[[prompt], [prompt], draft, draft, draft, after])
+
+    result = make_bridge(transport).send("hello", session_id=SESSION_ID)
+
+    assert result["result"] == "observed_delivered"
+    assert result["enter_sent"] is True
+    assert f"last {kind} input line 3: body absent" in result["detail"]
+    assert "canonical state unchanged" in result["detail"]
+    assert [write.get("key") for write in send_calls(transport)] == [None, "enter"]
+
+
+@pytest.mark.parametrize("prompt", ["› ", "> ", "PS> "])
+def test_send_reports_residue_in_current_input_and_never_repeats_enter(prompt):
+    draft = [prompt + "hello"]
+    transport = ScriptedTransport(screens=[[prompt], [prompt], draft, draft, draft, draft])
+
+    result = make_bridge(transport).send("hello", session_id=SESSION_ID)
+
+    assert result["result"] == "residue_remains"
+    assert result["enter_sent"] is True
+    assert "input line 1: body remains" in result["detail"]
+    assert [write.get("key") for write in send_calls(transport)] == [None, "enter"]
+
+
+@pytest.mark.parametrize("new_history", [False, True])
+def test_send_never_enters_when_text_is_only_output_and_not_in_input(new_history):
+    before = ["previous: hello", "PS>"]
+    after = ["previous: hello", "new output: hello", "PS>"] if new_history else before
+    transport = ScriptedTransport(screens=[before, before, after, after])
+
+    result = make_bridge(transport).send("hello", session_id=SESSION_ID)
+
+    assert result["result"] == "draft_not_observed"
+    assert result["enter_sent"] is False
+    assert [write.get("key") for write in send_calls(transport)] == [None]
+
+
+@pytest.mark.parametrize(
+    ("after", "expected", "fingerprint"),
+    [
+        (["output: hello"], "observed_delivered", "changed"),
+        (["composer: hello"], "residue_remains", "unchanged"),
+    ],
+)
+def test_send_uses_fingerprint_if_input_line_cannot_be_identified(after, expected, fingerprint):
+    draft = ["composer: hello"]
+    transport = ScriptedTransport(screens=[["composer:"], ["composer:"], draft, draft, draft, after])
+
+    result = make_bridge(transport).send("hello", session_id=SESSION_ID)
+
+    assert result["result"] == expected
+    assert result["enter_sent"] is True
+    assert f"input line not identified; post-Enter fingerprint {fingerprint}" in result["detail"]
+    assert [write.get("key") for write in send_calls(transport)] == [None, "enter"]
+
+
+@pytest.mark.parametrize("cleared", [False, True])
+def test_send_preserves_wrapped_input_detection(cleared):
+    draft = ["› line one", "  line two", "... · Ready"]
+    after = [*draft, "• response", "› Ask Codex to do anything"] if cleared else draft
+    transport = ScriptedTransport(screens=[["› "], ["› "], draft, draft, draft, after])
+
+    result = make_bridge(transport).send("line one\nline two", session_id=SESSION_ID)
+
+    assert result["result"] == ("observed_delivered" if cleared else "residue_remains")
+    assert result["enter_sent"] is True
+    assert [write.get("key") for write in send_calls(transport)] == [None, "enter"]
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected", "enter_sent"),
+    [
+        ({"sent": False, "reason": "input_revision"}, "write_failed", False),
+        ({"ok": False, "confirmed": False, "attempts": 1}, "observed_delivered", True),
+        (None, "observed_delivered", True),
+        (RuntimeError("transport disconnected"), "write_failed", True),
+        (OSError("response lost"), "write_failed", True),
+    ],
+)
+def test_send_distinguishes_rejected_enter_from_missing_confirmation(reply, expected, enter_sent):
+    class EnterReplyTransport(ScriptedTransport):
+        def __call__(self, cmd, args):
+            result = super().__call__(cmd, args)
+            if cmd == "pane.send_text" and args.get("key") == "enter":
+                if isinstance(reply, BaseException):
+                    raise reply
+                return reply
+            return result
+
+    draft = ["PS> hello"]
+    transport = EnterReplyTransport(screens=[["PS>"], ["PS>"], draft, draft, draft, ["PS>"]])
+
+    result = make_bridge(transport).send("hello", session_id=SESSION_ID)
+
+    assert result["result"] == expected
+    assert result["enter_sent"] is enter_sent
+    assert [write.get("key") for write in send_calls(transport)] == [None, "enter"]
+
+
+def test_send_cli_refusal_json_reports_enter_not_sent(monkeypatch, capsys):
+    transport = ScriptedTransport(states=[state_response(lifecycle="closed")])
+    fake_cli = type("FakeCli", (), {"send_request": transport})
+    monkeypatch.setattr(bridge_module, "resolve_agent_cli", lambda: Path("C:/repo"))
+    monkeypatch.setattr(bridge_module, "load_agent_cli", lambda _repo: fake_cli)
+
+    assert bridge_module.main(["send", "--session", SESSION_ID, "--text", "hello"]) == 1
+
+    result = json.loads(capsys.readouterr().err)
+    assert result["enter_sent"] is False
+    assert send_calls(transport) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "prompt", "after"),
+    [
+        ("Ready", "› ", ["› Ready", "• response", "› Ask Codex to do anything", "... · Ready"]),
+        ("hello", "PS> ", ["PS>", "hello"]),
+    ],
+)
+def test_send_does_not_treat_footer_or_output_below_input_as_residue(text, prompt, after):
+    draft = [prompt + text]
+    transport = ScriptedTransport(screens=[[prompt], [prompt], draft, draft, draft, after])
+
+    result = make_bridge(transport).send(text, session_id=SESSION_ID)
+
+    assert result["result"] == "observed_delivered"
+    assert result["enter_sent"] is True
+    assert [write.get("key") for write in send_calls(transport)] == [None, "enter"]
+
+
+def test_send_does_not_treat_output_below_empty_input_as_a_new_draft():
+    transport = ScriptedTransport(screens=[["PS>"], ["PS>"], ["PS>", "hello"], ["PS>", "hello"]])
+
+    result = make_bridge(transport).send("hello", session_id=SESSION_ID)
+
+    assert result["result"] == "draft_not_observed"
+    assert result["enter_sent"] is False
+    assert [write.get("key") for write in send_calls(transport)] == [None]
+
+
+# Captured Claude Code long-draft fixture from the D2 dispatch (2026-09-25).
+LONG_DRAFT_TEXT = "CANARY (live test of the new answer-ask; not a real decision, the card is not shown to the owner). Please do exactly this: 1) Enqueue ONE ask card per ask-card-contract.md from this pane (your MYCMUX_PANE_SESSION_ID), question 'CANARY: which word should you echo back?', options A=alpha and B=beta, recommended A, decision class scope_change, blocking reason 'canary test of answer-ask delivery'. 2) End your turn and wait. 3) When an answer arrives, reply with exactly one line: CANARY-RECEIVED followed by the first 40 characters of the answer. Do nothing else: no files, no other commands."
+LONG_DRAFT_SCREEN = "\u306e\u30b3\u30fc\u30c9\u3092\u8aad\u3093\u3067\u3044\u305f\u306e\u3067\u3001\u4f5c\u696d\u30c4\u30ea\u30fc\u306e\u30b3\u30fc\u30c9\u3092\u8aad\u3080\u3088\u3046\u306b\u5909\u3048\u307e\u3057\u305f\u3002\nDONE.md:\nC:\\Users\\miyaz\\.claude\\dispatch\\260925-mycmux-stage1-d4\\DONE.md\n\u5916\u306e\u30b9\u30af\u30ea\u30d7\u30c8 3 \u672c\u306e\u76f4\u3057\u6848\uff08\u76f4\u3057\u305f\u5199\u3057\u3068\u5dee\u5206\uff09:\nC:\\Users\\miyaz\\AppData\\Local\\Temp\\claude\\C--Users-miyaz--work-mycmux-stage1-26\n0925-claude-wt\\5b447efd-66bc-4d5c-a5bf-5e6b15a0fd3c\\scratchpad\\ext\\\n\u273b Saut\xe9ed for 27m 21s \xb7 done 6:24\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\u276f not shown to the owner). Please do exactly this: 1) Enqueue ONE ask card per\nask-card-contract.md from this pane (your MYCMUX_PANE_SESSION_ID), question\n'CANARY: which word should you echo back?', options A=alpha and B=beta,\nrecommended A, decision class scope_change, blocking reason 'canary test of\nanswer-ask delivery'. 2) End your turn and wait. 3) When an answer arrives,\nreply with exactly one line: CANARY-RECEIVED followed by the first 40\ncharacters of the answer. Do nothing else: no files, no other commands.\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nOpus 5.5 (1M context) (high) \u2502 ~\\_work\\mycmux_stage1_260925\\claude_wt \u2502 CTX\u2026\n5h 50%! (4h5m) \u2502 sess 27m (05:57\u301c) \u2502 sid 5b447 fd".splitlines()
+
+
+def long_draft_states():
+    return [
+        state_response(revision=10, input_revision=5),
+        state_response(revision=10, input_revision=5),
+        state_response(revision=10, input_revision=6),
+        state_response(revision=10, input_revision=6),
+        state_response(revision=10, input_revision=6),
+        state_response(revision=10, input_revision=6),
+        state_response(revision=11, input_revision=7, activity="running_silent"),
+    ]
+
+
+@pytest.mark.parametrize("draft_screen", [
+    LONG_DRAFT_SCREEN,
+    ["\u276f [Pasted Content 1026 chars]", "\u2500" * 50],
+    ["\u276f [Pasted text #1 +12 lines]", "\u2500" * 50],
+])
+def test_long_draft_or_paste_marker_reaches_one_enter(draft_screen):
+    transport = ScriptedTransport(
+        states=long_draft_states(),
+        screens=[["\u276f"], ["\u276f"], draft_screen, draft_screen, draft_screen, ["processing"]],
+    )
+    result = make_bridge(transport).send(LONG_DRAFT_TEXT, session_id=SESSION_ID)
+    assert result["result"] == "observed_delivered"
+    assert [write.get("key") for write in send_calls(transport)] == [None, "enter"]
+
+
+@pytest.mark.parametrize("draft_screen", [
+    ["\u276f " + LONG_DRAFT_TEXT[-100:-1] + "X", "\u2500" * 50],
+    ["\u276f " + LONG_DRAFT_TEXT[-39:], "\u2500" * 50],
+])
+def test_long_draft_rejects_wrong_or_too_short_visible_tail(draft_screen):
+    transport = ScriptedTransport(
+        screens=[["\u276f"], ["\u276f"], draft_screen, draft_screen],
+    )
+    result = make_bridge(transport).send(LONG_DRAFT_TEXT, session_id=SESSION_ID)
+    assert result["enter_sent"] is False
+    assert [write.get("key") for write in send_calls(transport)] == [None]
+
+
+def test_long_draft_refuses_input_revision_skipping_a_write():
+    transport = ScriptedTransport(
+        states=long_draft_states()[:2] + [state_response(revision=10, input_revision=7)] * 4,
+        screens=[["\u276f"], ["\u276f"], LONG_DRAFT_SCREEN, LONG_DRAFT_SCREEN],
+    )
+    result = make_bridge(transport).send(LONG_DRAFT_TEXT, session_id=SESSION_ID)
+    assert result["result"] == "prompt_changed"
+    assert [write.get("key") for write in send_calls(transport)] == [None]

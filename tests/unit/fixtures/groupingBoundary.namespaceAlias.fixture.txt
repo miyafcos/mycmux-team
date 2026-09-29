@@ -1,0 +1,4 @@
+import * as workspaceStore from "../stores/workspaceListStore";
+
+const restore = workspaceStore.useWorkspaceListStore.getState()._restoreGroupingLayout;
+restore(undefined as never);

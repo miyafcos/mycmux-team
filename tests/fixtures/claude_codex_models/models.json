@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 2,
+  "defaultBackend": "gpt",
+  "defaultModel": "gpt-6-astra",
+  "availableModels": ["gpt-6-astra"],
+  "backends": {
+    "fcc": {
+      "baseUrlPath": "/router/fcc",
+      "defaultModel": "open_router/deepseek/deepseek-v4-flash",
+      "availableModels": [
+        "open_router/deepseek/deepseek-v4-flash",
+        "open_router/x-ai/grok-4.3",
+        "open_router/x-ai/grok-4.20",
+        "ollama/huihui_ai/qwen3.5-abliterated:9b-Claude",
+        "fcc-default"
+      ],
+      "aliases": {
+        "fable": "open_router/deepseek/deepseek-v4-flash",
+        "opus": "open_router/x-ai/grok-4.3",
+        "sonnet": "open_router/x-ai/grok-4.20",
+        "haiku": "open_router/deepseek/deepseek-v4-flash",
+        "subagent": "open_router/deepseek/deepseek-v4-flash"
+      },
+      "display": {
+        "name": "Open Models (FCC)",
+        "fableName": "DeepSeek V4 Flash",
+        "opusName": "Grok 4.3",
+        "sonnetName": "  "
+      }
+    },
+    "gemini": {
+      "baseUrlPath": "/router",
+      "availableModels": ["gemini-3.5-flash"],
+      "aliases": { "fable": "gemini-3.5-flash" },
+      "display": { "fableName": "Gemini 3.5 Flash" }
+    },
+    "gpt": {
+      "baseUrlPath": "/router",
+      "defaultModel": "gpt-6-astra",
+      "availableModels": ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "bad id", ""],
+      "aliases": {
+        "fable": "gpt-6-astra",
+        "opus": "gpt-6-astra",
+        "sonnet": "gpt-5.6-terra",
+        "haiku": "gpt-5.6-luna",
+        "subagent": "gpt-6-astra"
+      },
+      "display": {
+        "name": "GPT-6 / GPT-5.6",
+        "fableName": "GPT-6 Astra",
+        "opusName": "GPT-6 Astra (opus row)",
+        "sonnetName": "GPT-5.6 Terra",
+        "haikuName": "GPT-5.6 Luna"
+      }
+    },
+    "claude": {
+      "baseUrlPath": "/router",
+      "availableModels": ["claude-opus-5", "claude-haiku-4-5"],
+      "aliases": { "opus": "claude-opus-5", "haiku": "claude-haiku-4-5" },
+      "display": { "opusName": "Claude Opus 5", "haikuName": "Claude Haiku 4.5" }
+    },
+    "fugu": {
+      "baseUrlPath": "/router",
+      "availableModels": ["fugu-ultra", "fugu", "fugu-ultra-20260615"],
+      "aliases": { "fable": "fugu-ultra", "haiku": "fugu" },
+      "display": { "fableName": "Fugu Ultra", "haikuName": "Fu\u001b[31mgu\n" }
+    },
+    "someday": {
+      "availableModels": ["not-offered"]
+    }
+  }
+}

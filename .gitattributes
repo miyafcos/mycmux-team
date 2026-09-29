@@ -1,0 +1,25 @@
+skills/claude/** text eol=lf
+scripts/install_claude_skills.py text eol=lf
+scripts/sync_claude_skills.py text eol=lf
+scripts/mycmux_agent_cli.py text eol=lf
+tests/test_claude_skills_pack_contract.py text eol=lf
+examples/claude-skills/** text eol=lf
+
+# Bundled font binaries: never line-ending converted.
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+
+# Shell scripts run on macOS and Linux; a stray CR breaks them.
+*.sh text eol=lf
+
+# include_str! embeds this stylesheet byte for byte, and a text_preview test
+# checks that no CR reaches the preview. With core.autocrlf a fresh Windows
+# worktree would check it out CRLF and fail that test (2026-09-21).
+src-tauri/src/commands/artifact/text_preview.css text eol=lf
+
+# The Grok hook tests include_str! these snapshots and compare bytes with the LF block the
+# app appends; a CRLF checkout failed observed_grok_fixture_dedupes_and_preserves_owner_bytes
+# in the v0.80.0 release worktree (2026-09-26). The real config they copy is LF.
+tests/fixtures/agent-hooks/*.toml text eol=lf

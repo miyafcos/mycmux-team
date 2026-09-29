@@ -1,0 +1,1580 @@
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
+
+use super::{HookMode, Provider};
+use crate::util::atomic_write::AtomicWrite;
+
+#[path = "grok_settings.rs"]
+mod grok_settings;
+
+const PROVIDERS: [Provider; 3] = [Provider::Claude, Provider::Codex, Provider::Grok];
+static INSTALL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum HookInstallState {
+    Installed,
+    Disabled,
+    Unavailable,
+    NeedsRepair { reason: RepairReason },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RepairReason {
+    Duplicate,
+    Missing,
+    HelperPath,
+    Untrusted,
+    UnknownShape,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderHookStatus {
+    pub provider: Provider,
+    pub enabled: bool,
+    #[serde(flatten)]
+    pub state: HookInstallState,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentHooksStatus {
+    pub version: u8,
+    pub providers: Vec<ProviderHookStatus>,
+}
+
+impl AgentHooksStatus {
+    pub fn modes(&self) -> BTreeMap<Provider, HookMode> {
+        self.providers
+            .iter()
+            .map(|entry| {
+                (
+                    entry.provider,
+                    if entry.state == HookInstallState::Installed {
+                        HookMode::Installed
+                    } else {
+                        HookMode::Unavailable
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
+pub const OWNERSHIP_MARKER: &str = "mycmux_managed";
+const GROK_BLOCK_START: &str = "# mycmux-managed-hooks:start";
+const GROK_BLOCK_END: &str = "# mycmux-managed-hooks:end";
+const HELPER_BYTES: &[u8] = include_bytes!("../../hooks/mycmux_hook.py");
+
+fn hook_python_command() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "python"
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "python3"
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HookInstallPaths {
+    pub claude_settings: PathBuf,
+    pub codex_hooks: PathBuf,
+    pub codex_config: PathBuf,
+    pub grok_config: PathBuf,
+    pub helper: PathBuf,
+    pub state: PathBuf,
+}
+
+impl HookInstallPaths {
+    pub fn discover() -> Result<Self, String> {
+        let home = dirs::home_dir().ok_or_else(|| "home directory is not available".to_string())?;
+        let runtime = crate::test_profile::runtime_dir()?;
+        let codex_home = std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".codex"));
+        let grok_home = std::env::var_os("GROK_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".grok"));
+        Ok(Self {
+            claude_settings: home.join(".claude").join("settings.json"),
+            codex_hooks: codex_home.join("hooks.json"),
+            codex_config: codex_home.join("config.toml"),
+            grok_config: grok_home.join("config.toml"),
+            helper: runtime.join("hooks").join("v1").join("mycmux_hook.py"),
+            state: runtime.join("agent-hooks-state.json"),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HookInstallOutcome {
+    pub enabled: bool,
+    pub modes: BTreeMap<Provider, HookMode>,
+    pub warnings: Vec<String>,
+}
+
+impl HookInstallOutcome {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            modes: [Provider::Claude, Provider::Codex, Provider::Grok]
+                .into_iter()
+                .map(|provider| (provider, HookMode::Unavailable))
+                .collect(),
+            warnings: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteStatus {
+    Changed,
+    Unchanged,
+}
+
+pub fn reconcile_default(explicit_enabled: Option<bool>) -> Result<HookInstallOutcome, String> {
+    let _guard = INSTALL_LOCK.lock().map_err(|e| e.to_string())?;
+    reconcile(&HookInstallPaths::discover()?, explicit_enabled)
+}
+
+pub fn status_default() -> Result<AgentHooksStatus, String> {
+    let _guard = INSTALL_LOCK.lock().map_err(|e| e.to_string())?;
+    status(&HookInstallPaths::discover()?)
+}
+
+pub fn set_default(provider: Provider, enabled: bool) -> Result<AgentHooksStatus, String> {
+    let _guard = INSTALL_LOCK.lock().map_err(|e| e.to_string())?;
+    set_provider(&HookInstallPaths::discover()?, provider, enabled)
+}
+
+pub fn reconcile(
+    paths: &HookInstallPaths,
+    explicit_enabled: Option<bool>,
+) -> Result<HookInstallOutcome, String> {
+    let (_, mut flags) = read_enabled(&paths.state)?;
+    if let Some(enabled) = explicit_enabled {
+        for value in flags.values_mut() {
+            *value = enabled;
+        }
+    }
+    let mut outcome = HookInstallOutcome::new(flags.values().any(|enabled| *enabled));
+    for provider in PROVIDERS {
+        let enabled = flags[&provider];
+        if let Err(error) = update_provider(paths, provider, enabled) {
+            outcome.warnings.push(format!(
+                "{} hook reconciliation: {error}",
+                provider.as_str()
+            ));
+        }
+    }
+    if explicit_enabled.is_some() {
+        save_enabled(&paths.state, &flags)?;
+    }
+    let snapshot = status_with_flags(paths, &flags);
+    outcome.modes = snapshot.modes();
+    for entry in snapshot.providers {
+        if let HookInstallState::NeedsRepair { reason } = entry.state {
+            outcome.warnings.push(format!(
+                "{} hooks need repair: {reason:?}",
+                entry.provider.as_str()
+            ));
+        }
+    }
+    Ok(outcome)
+}
+
+fn read_enabled(path: &Path) -> Result<(Option<Vec<u8>>, BTreeMap<Provider, bool>), String> {
+    let original = read_optional(path)?;
+    let mut flags: BTreeMap<_, _> = PROVIDERS.into_iter().map(|p| (p, true)).collect();
+    if let Some(bytes) = &original {
+        let value: Value =
+            serde_json::from_slice(bytes).map_err(|_| "invalid hook install state".to_string())?;
+        let object = value.as_object().ok_or("invalid hook install state")?;
+        if object
+            .get("version")
+            .is_some_and(|version| !version.is_u64())
+        {
+            return Err("invalid hook install state version".into());
+        }
+        match object.get("version").and_then(Value::as_u64) {
+            Some(2) => {
+                let providers = object
+                    .get("providers")
+                    .and_then(Value::as_object)
+                    .ok_or("invalid hook providers state")?;
+                for provider in PROVIDERS {
+                    if let Some(entry) = providers.get(provider.as_str()) {
+                        flags.insert(
+                            provider,
+                            entry
+                                .get("enabled")
+                                .and_then(Value::as_bool)
+                                .ok_or("invalid provider enabled state")?,
+                        );
+                    }
+                }
+            }
+            None | Some(1) if !object.contains_key("providers") => {
+                let enabled = object
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or("invalid legacy hook state")?;
+                for value in flags.values_mut() {
+                    *value = enabled;
+                }
+            }
+            _ => return Err("unsupported hook install state version".into()),
+        }
+    }
+    Ok((original, flags))
+}
+
+fn enabled_bytes(flags: &BTreeMap<Provider, bool>) -> Result<Vec<u8>, String> {
+    let providers: Map<String, Value> = flags
+        .iter()
+        .map(|(p, enabled)| (p.as_str().into(), json!({"enabled": enabled})))
+        .collect();
+    let mut bytes = serde_json::to_vec_pretty(&json!({"version": 2, "providers": providers}))
+        .map_err(|e| e.to_string())?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+fn save_enabled(path: &Path, flags: &BTreeMap<Provider, bool>) -> Result<(), String> {
+    write_if_changed(path, &enabled_bytes(flags)?, || Ok(())).map(|_| ())
+}
+
+pub fn set_provider(
+    paths: &HookInstallPaths,
+    provider: Provider,
+    enabled: bool,
+) -> Result<AgentHooksStatus, String> {
+    let (original, mut flags) = read_enabled(&paths.state)?;
+    // Validate and update the selected provider before remembering the preference.
+    // Unsupported settings must not change either the preference or helper.
+    update_provider(paths, provider, enabled)?;
+    flags.insert(provider, enabled);
+    let bytes = enabled_bytes(&flags)?;
+    if original.as_deref() != Some(bytes.as_slice()) {
+        write_if_unchanged(&paths.state, original.as_deref(), &bytes, || Ok(()))?;
+    }
+    Ok(status_with_flags(paths, &flags))
+}
+
+fn update_provider(
+    paths: &HookInstallPaths,
+    provider: Provider,
+    enabled: bool,
+) -> Result<(), String> {
+    // Preflight all of the settings, including unrelated events, before any write.
+    read_groups(paths, provider).map_err(|reason| {
+        format!(
+            "{} hooks: {reason:?}; settings were not changed",
+            provider.as_str()
+        )
+    })?;
+    if enabled {
+        write_if_changed(&paths.helper, HELPER_BYTES, || Ok(()))?;
+    }
+    match provider {
+        Provider::Grok => update_grok_config(&paths.grok_config, enabled, &paths.helper, || Ok(())),
+        Provider::Claude | Provider::Codex => update_json_hooks_with_helper(
+            if provider == Provider::Claude {
+                &paths.claude_settings
+            } else {
+                &paths.codex_hooks
+            },
+            &paths.helper,
+            provider,
+            &provider_events(provider),
+            enabled,
+            || Ok(()),
+        ),
+    }
+    .map(|_| ())
+}
+
+#[derive(Debug)]
+enum ReadFailure {
+    Unavailable,
+    UnknownShape,
+}
+
+fn read_groups(
+    paths: &HookInstallPaths,
+    provider: Provider,
+) -> Result<Vec<(String, Value)>, ReadFailure> {
+    let path = match provider {
+        Provider::Claude => &paths.claude_settings,
+        Provider::Codex => &paths.codex_hooks,
+        Provider::Grok => &paths.grok_config,
+    };
+    let bytes = read_optional(path)
+        .map_err(|_| ReadFailure::Unavailable)?
+        .unwrap_or_default();
+    if provider == Provider::Grok {
+        let text = std::str::from_utf8(&bytes).map_err(|_| ReadFailure::UnknownShape)?;
+        return grok_settings::parse(text)
+            .map(|parsed| parsed.groups)
+            .map_err(|_| ReadFailure::UnknownShape);
+    }
+    let root = if bytes.is_empty() && !path.exists() {
+        json!({})
+    } else {
+        serde_json::from_slice::<Value>(&bytes).map_err(|_| ReadFailure::UnknownShape)?
+    };
+    let root = root.as_object().ok_or(ReadFailure::UnknownShape)?;
+    let Some(hooks) = root.get("hooks") else {
+        return Ok(Vec::new());
+    };
+    let hooks = hooks.as_object().ok_or(ReadFailure::UnknownShape)?;
+    let mut result = Vec::new();
+    for (event, groups) in hooks {
+        for group in groups.as_array().ok_or(ReadFailure::UnknownShape)? {
+            let handlers = group
+                .get("hooks")
+                .and_then(Value::as_array)
+                .ok_or(ReadFailure::UnknownShape)?;
+            if handlers.iter().any(|handler| !handler.is_object()) {
+                return Err(ReadFailure::UnknownShape);
+            }
+            result.push((event.clone(), group.clone()));
+        }
+    }
+    Ok(result)
+}
+
+pub fn status(paths: &HookInstallPaths) -> Result<AgentHooksStatus, String> {
+    let (_, flags) = read_enabled(&paths.state)?;
+    Ok(status_with_flags(paths, &flags))
+}
+
+fn status_with_flags(
+    paths: &HookInstallPaths,
+    flags: &BTreeMap<Provider, bool>,
+) -> AgentHooksStatus {
+    AgentHooksStatus {
+        version: 2,
+        providers: PROVIDERS
+            .into_iter()
+            .map(|provider| ProviderHookStatus {
+                provider,
+                enabled: flags[&provider],
+                state: inspect_provider(paths, provider, flags[&provider]),
+            })
+            .collect(),
+    }
+}
+
+fn inspect_provider(
+    paths: &HookInstallPaths,
+    provider: Provider,
+    enabled: bool,
+) -> HookInstallState {
+    use HookInstallState::*;
+    let repair = |reason| NeedsRepair { reason };
+    if !enabled {
+        return Disabled;
+    }
+    let groups = match read_groups(paths, provider) {
+        Ok(groups) => groups,
+        Err(ReadFailure::Unavailable) => return Unavailable,
+        Err(ReadFailure::UnknownShape) => return repair(RepairReason::UnknownShape),
+    };
+    let owned: Vec<_> = groups
+        .iter()
+        .filter(|(_, group)| is_managed_group(group, provider))
+        .collect();
+    let events = provider_events(provider);
+    if events.iter().any(|(event, _)| {
+        owned
+            .iter()
+            .filter(|(name, _)| name.as_str() == *event)
+            .count()
+            > 1
+    }) {
+        return repair(RepairReason::Duplicate);
+    }
+    if events
+        .iter()
+        .any(|(event, _)| !owned.iter().any(|(name, _)| name.as_str() == *event))
+    {
+        return repair(RepairReason::Missing);
+    }
+    for (event, kind) in events {
+        let expected = managed_group(&paths.helper, provider, kind);
+        let (_, group) = owned.iter().find(|(name, _)| name == event).unwrap();
+        let handlers = group["hooks"].as_array().unwrap();
+        if handlers.len() != 1 || handlers[0]["command"] != expected["hooks"][0]["command"] {
+            return repair(RepairReason::HelperPath);
+        }
+    }
+    if read_optional(&paths.helper).ok().flatten().as_deref() != Some(HELPER_BYTES) {
+        return repair(RepairReason::HelperPath);
+    }
+    if provider == Provider::Codex
+        && !codex_hooks_are_trusted(&paths.codex_hooks, &paths.codex_config).unwrap_or(false)
+    {
+        return repair(RepairReason::Untrusted);
+    }
+    Installed
+}
+
+fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("failed to read {}: {error}", path.display())),
+    }
+}
+
+fn provider_events(provider: Provider) -> Vec<(&'static str, &'static str)> {
+    match provider {
+        Provider::Claude => vec![
+            ("UserPromptSubmit", "turn_active"),
+            ("PermissionRequest", "attention_required"),
+            ("Notification", "attention_required"),
+            ("PreToolUse", "pre_tool_use"),
+            ("PostToolUse", "turn_active"),
+            ("Stop", "turn_ended"),
+            ("SessionEnd", "session_terminated"),
+        ],
+        Provider::Codex => vec![
+            ("UserPromptSubmit", "turn_active"),
+            ("PermissionRequest", "attention_required"),
+            ("Stop", "turn_ended"),
+            ("SessionEnd", "session_terminated"),
+        ],
+        Provider::Grok => vec![
+            ("UserPromptSubmit", "turn_active"),
+            ("Notification", "attention_required"),
+            ("Stop", "turn_ended"),
+            ("StopFailure", "failed"),
+            ("SessionEnd", "session_terminated"),
+        ],
+    }
+}
+
+fn managed_group(helper: &Path, provider: Provider, event_kind: &str) -> Value {
+    let helper = helper.to_string_lossy().replace('\\', "/");
+    let python = hook_python_command();
+    json!({
+        "hooks": [{
+            "type": "command",
+            "command": format!("{python} \"{helper}\" --provider {} --event-kind {event_kind}", provider.as_str()),
+            "timeout": 1,
+            "statusMessage": "mycmux lifecycle observation",
+            (OWNERSHIP_MARKER): true,
+        }]
+    })
+}
+
+fn is_managed_group(group: &Value, provider: Provider) -> bool {
+    group
+        .as_object()
+        .and_then(|object| object.get("hooks"))
+        .and_then(Value::as_array)
+        .is_some_and(|handlers| {
+            !handlers.is_empty()
+                && handlers.iter().all(|handler| {
+                    // Claude Code can drop unknown handler keys when rewriting settings.
+                    let command_matches =
+                        handler.get("type").and_then(Value::as_str) == Some("command")
+                            && handler.get("command").and_then(Value::as_str).is_some_and(
+                                |command| {
+                                    command.contains("mycmux_hook.py")
+                                        && command
+                                            .split_whitespace()
+                                            .zip(command.split_whitespace().skip(1))
+                                            .any(|(flag, value)| {
+                                                flag == "--provider" && value == provider.as_str()
+                                            })
+                                },
+                            );
+                    command_matches
+                        || handler.get(OWNERSHIP_MARKER).and_then(Value::as_bool) == Some(true)
+                })
+        })
+}
+
+fn merge_install(
+    root: &mut Value,
+    provider: Provider,
+    groups: &[(&str, Value)],
+) -> Result<(), String> {
+    let object = root
+        .as_object_mut()
+        .ok_or_else(|| "settings root must be a JSON object".to_string())?;
+    let hooks = object.entry("hooks").or_insert_with(|| json!({}));
+    let hooks = hooks
+        .as_object_mut()
+        .ok_or_else(|| "settings hooks must be a JSON object".to_string())?;
+    for (event, managed) in groups {
+        let existing = hooks
+            .entry((*event).to_string())
+            .or_insert_with(|| json!([]));
+        let existing = existing
+            .as_array_mut()
+            .ok_or_else(|| format!("settings hooks.{event} must be an array"))?;
+        if provider == Provider::Codex {
+            if let Some(index) = existing
+                .iter()
+                .position(|group| is_managed_group(group, provider))
+            {
+                existing[index] = managed.clone();
+                let mut cursor = 0;
+                existing.retain(|group| {
+                    let keep = cursor == index || !is_managed_group(group, provider);
+                    cursor += 1;
+                    keep
+                });
+            } else {
+                existing.push(managed.clone());
+            }
+        } else {
+            existing.retain(|group| !is_managed_group(group, provider));
+            existing.push(managed.clone());
+        }
+    }
+    Ok(())
+}
+
+fn merge_uninstall(root: &mut Value, provider: Provider) -> Result<(), String> {
+    let object = root
+        .as_object_mut()
+        .ok_or_else(|| "settings root must be a JSON object".to_string())?;
+    let Some(hooks) = object.get_mut("hooks") else {
+        return Ok(());
+    };
+    let hooks = hooks
+        .as_object_mut()
+        .ok_or_else(|| "settings hooks must be a JSON object".to_string())?;
+    let events: Vec<String> = hooks.keys().cloned().collect();
+    for event in events {
+        let Some(groups) = hooks.get_mut(&event).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        groups.retain(|group| !is_managed_group(group, provider));
+        if groups.is_empty() {
+            hooks.remove(&event);
+        }
+    }
+    Ok(())
+}
+
+fn update_json_hooks_with_helper<F>(
+    path: &Path,
+    helper: &Path,
+    provider: Provider,
+    events: &[(&str, &str)],
+    install: bool,
+    before_replace: F,
+) -> Result<WriteStatus, String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    let original = read_optional(path)?;
+    if original.is_none() && !install {
+        return Ok(WriteStatus::Unchanged);
+    }
+    let mut root = match original.as_deref() {
+        Some(bytes) => serde_json::from_slice(bytes)
+            .map_err(|error| format!("invalid JSON in {}: {error}", path.display()))?,
+        None => json!({}),
+    };
+    let before = root.clone();
+    if install {
+        let groups: Vec<_> = events
+            .iter()
+            .map(|(event, event_kind)| {
+                let mut group = managed_group(helper, provider, event_kind);
+                if provider == Provider::Claude {
+                    match *event {
+                        "PreToolUse" => {
+                            group["matcher"] = json!("AskUserQuestion|Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit|WebFetch|WebSearch|Agent|Skill");
+                        }
+                        "PostToolUse" => group["matcher"] = json!("AskUserQuestion"),
+                        _ => {}
+                    }
+                }
+                (*event, group)
+            })
+            .collect();
+        merge_install(&mut root, provider, &groups)?;
+    } else {
+        merge_uninstall(&mut root, provider)?;
+    }
+    if root == before {
+        return Ok(WriteStatus::Unchanged);
+    }
+    let mut next = serde_json::to_vec_pretty(&root).map_err(|error| error.to_string())?;
+    next.push(b'\n');
+    write_if_unchanged(path, original.as_deref(), &next, before_replace)
+}
+
+fn update_grok_config<F>(
+    path: &Path,
+    install: bool,
+    helper: &Path,
+    before_replace: F,
+) -> Result<WriteStatus, String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    let original = read_optional(path)?;
+    if original.is_none() && !install {
+        return Ok(WriteStatus::Unchanged);
+    }
+    let current = original
+        .as_deref()
+        .map(|bytes| String::from_utf8(bytes.to_vec()))
+        .transpose()
+        .map_err(|error| format!("invalid UTF-8 in {}: {error}", path.display()))?
+        .unwrap_or_default();
+    let without_managed = remove_grok_block(&current)?;
+    let next = if install {
+        append_grok_block(&without_managed, helper)
+    } else {
+        without_managed
+    };
+    grok_settings::parse(&next)?;
+    if next == current {
+        return Ok(WriteStatus::Unchanged);
+    }
+    write_if_unchanged(path, original.as_deref(), next.as_bytes(), before_replace)
+}
+
+fn remove_grok_block(current: &str) -> Result<String, String> {
+    Ok(grok_settings::parse(current)?.without_managed(current))
+}
+
+fn append_grok_block(current: &str, helper: &Path) -> String {
+    let helper = helper.to_string_lossy().replace('\\', "/");
+    let python = hook_python_command();
+    let mut next = current.to_string();
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push_str(GROK_BLOCK_START);
+    next.push('\n');
+    for (event, event_kind) in provider_events(Provider::Grok) {
+        next.push_str(&format!(
+            "[[hooks.{event}]]\n  [[hooks.{event}.hooks]]\n  type = \"command\"\n  command = '{python} \"{helper}\" --provider grok --event-kind {event_kind}'\n  timeout = 1\n  statusMessage = \"mycmux lifecycle observation\"\n  {OWNERSHIP_MARKER} = true\n\n"
+        ));
+    }
+    next.push_str(GROK_BLOCK_END);
+    next.push('\n');
+    next
+}
+
+fn write_if_changed<F>(path: &Path, next: &[u8], before_replace: F) -> Result<WriteStatus, String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    let original = read_optional(path)?;
+    if original.as_deref() == Some(next) {
+        return Ok(WriteStatus::Unchanged);
+    }
+    write_if_unchanged(path, original.as_deref(), next, before_replace)
+}
+
+fn write_if_unchanged<F>(
+    path: &Path,
+    original: Option<&[u8]>,
+    next: &[u8],
+    before_replace: F,
+) -> Result<WriteStatus, String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    before_replace()?;
+    let live = read_optional(path)?;
+    if live.as_deref() != original {
+        return Err(format!("concurrent edit detected at {}", path.display()));
+    }
+    AtomicWrite::new(
+        "temporary hook settings",
+        "Failed to replace hook settings atomically",
+    )
+    .create_parents()
+    .write_bytes(path, next)?;
+    Ok(WriteStatus::Changed)
+}
+
+fn codex_hooks_are_trusted(hooks_path: &Path, config_path: &Path) -> Result<bool, String> {
+    let hooks_bytes = match fs::read(hooks_path) {
+        Ok(value) => value,
+        Err(_) => return Ok(false),
+    };
+    let hooks: Value = serde_json::from_slice(&hooks_bytes)
+        .map_err(|error| format!("invalid JSON in {}: {error}", hooks_path.display()))?;
+    let config = match fs::read_to_string(config_path) {
+        Ok(value) => value,
+        Err(_) => return Ok(false),
+    };
+    let trusted = parse_codex_trust(&config);
+    let Some(events) = hooks.get("hooks").and_then(Value::as_object) else {
+        return Ok(false);
+    };
+    let source = hooks_path.to_string_lossy();
+    let mut found = false;
+    for (event, groups) in events {
+        let Some(groups) = groups.as_array() else {
+            continue;
+        };
+        for (group_index, group) in groups.iter().enumerate() {
+            if !is_managed_group(group, Provider::Codex) {
+                continue;
+            }
+            let Some(handlers) = group.get("hooks").and_then(Value::as_array) else {
+                return Ok(false);
+            };
+            for (handler_index, handler) in handlers.iter().enumerate() {
+                found = true;
+                let key = format!(
+                    "{}:{}:{group_index}:{handler_index}",
+                    source,
+                    snake_case_event(event)
+                );
+                let expected = codex_trusted_hash(event, group, handler)?;
+                if trusted.get(&key) != Some(&expected) {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn parse_codex_trust(config: &str) -> BTreeMap<String, String> {
+    let mut result = BTreeMap::new();
+    let mut section: Option<String> = None;
+    for line in config.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("[hooks.state.") && trimmed.ends_with(']') {
+            let raw = &trimmed[13..trimmed.len() - 1];
+            section = raw
+                .strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+                .or_else(|| {
+                    raw.strip_prefix('"')
+                        .and_then(|value| value.strip_suffix('"'))
+                })
+                .map(str::to_string);
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            section = None;
+            continue;
+        }
+        if let (Some(key), Some(value)) = (
+            section.as_ref(),
+            trimmed
+                .strip_prefix("trusted_hash")
+                .and_then(|value| value.trim_start().strip_prefix('='))
+                .map(str::trim)
+                .and_then(|value| value.strip_prefix('"'))
+                .and_then(|value| value.strip_suffix('"')),
+        ) {
+            result.insert(key.clone(), value.to_string());
+        }
+    }
+    result
+}
+
+fn snake_case_event(event: &str) -> String {
+    let mut result = String::new();
+    for (index, character) in event.chars().enumerate() {
+        if character.is_ascii_uppercase() {
+            if index > 0 {
+                result.push('_');
+            }
+            result.push(character.to_ascii_lowercase());
+        } else {
+            result.push(character);
+        }
+    }
+    result
+}
+
+#[derive(Serialize)]
+struct CanonicalCodexHandler<'a> {
+    #[serde(rename = "async")]
+    asynchronous: bool,
+    command: &'a str,
+    #[serde(rename = "statusMessage", skip_serializing_if = "Option::is_none")]
+    status_message: Option<&'a str>,
+    timeout: u64,
+    #[serde(rename = "type")]
+    kind: &'a str,
+}
+
+fn codex_trusted_hash(event: &str, group: &Value, handler: &Value) -> Result<String, String> {
+    let handler = handler
+        .as_object()
+        .ok_or_else(|| "Codex handler must be an object".to_string())?;
+    let canonical_handler = CanonicalCodexHandler {
+        asynchronous: handler
+            .get("async")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        command: required_json_text(handler, "command")?,
+        status_message: handler.get("statusMessage").and_then(Value::as_str),
+        timeout: handler.get("timeout").and_then(Value::as_u64).unwrap_or(60),
+        kind: required_json_text(handler, "type")?,
+    };
+    let mut canonical = Map::new();
+    canonical.insert("event_name".into(), Value::String(snake_case_event(event)));
+    canonical.insert(
+        "hooks".into(),
+        Value::Array(vec![
+            serde_json::to_value(canonical_handler).map_err(|error| error.to_string())?
+        ]),
+    );
+    if let Some(matcher) = group.get("matcher") {
+        canonical.insert("matcher".into(), matcher.clone());
+    }
+    let bytes = serde_json::to_vec(&Value::Object(canonical)).map_err(|error| error.to_string())?;
+    Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
+}
+
+fn required_json_text<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a str, String> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("Codex handler is missing {key}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_paths(dir: &Path) -> HookInstallPaths {
+        HookInstallPaths {
+            claude_settings: dir.join(".claude/settings.json"),
+            codex_hooks: dir.join(".codex/hooks.json"),
+            codex_config: dir.join(".codex/config.toml"),
+            grok_config: dir.join(".grok/config.toml"),
+            helper: dir.join(".mycmux/hooks/v1/mycmux_hook.py"),
+            state: dir.join(".mycmux/agent-hooks-state.json"),
+        }
+    }
+
+    fn fixture(helper: &Path) -> String {
+        // The supplied snapshot is data only; every test redirects its helper into its fixture root.
+        include_str!("../../../tests/fixtures/agent-hooks/grok_config_260925.toml")
+            .replace(
+                "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py",
+                &helper.to_string_lossy().replace('\\', "/"),
+            )
+            .replace("python \"", &format!("{} \"", hook_python_command()))
+    }
+
+    fn repair(reason: RepairReason) -> HookInstallState {
+        HookInstallState::NeedsRepair { reason }
+    }
+
+    #[test]
+    fn observed_grok_fixture_dedupes_and_preserves_owner_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = temp_paths(dir.path());
+        let input = fixture(&paths.helper);
+        let parsed = grok_settings::parse(&input).unwrap();
+        assert_eq!(parsed.groups.len(), 25);
+        let owner = format!(
+            "{}{}",
+            input.split("[[hooks.").next().unwrap(),
+            input
+                .split("[models]")
+                .nth(1)
+                .map(|s| format!("[models]{}", s.split(GROK_BLOCK_START).next().unwrap()))
+                .unwrap()
+        );
+        assert_eq!(remove_grok_block(&input).unwrap(), owner);
+        fs::create_dir_all(paths.grok_config.parent().unwrap()).unwrap();
+        fs::write(&paths.grok_config, &input).unwrap();
+        assert_eq!(
+            inspect_provider(&paths, Provider::Grok, true),
+            repair(RepairReason::Duplicate)
+        );
+        set_provider(&paths, Provider::Grok, true).unwrap();
+        let cleaned = fs::read_to_string(&paths.grok_config).unwrap();
+        assert_eq!(cleaned, append_grok_block(&owner, &paths.helper));
+        let expected =
+            include_str!("../../../tests/fixtures/agent-hooks/grok_config_260925.cleaned.toml")
+                .replace(
+                    "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py",
+                    &paths.helper.to_string_lossy().replace('\\', "/"),
+                )
+                .replace("python \"", &format!("{} \"", hook_python_command()));
+        assert_eq!(cleaned, expected);
+        assert_eq!(remove_grok_block(&cleaned).unwrap(), owner);
+        let groups = grok_settings::parse(&cleaned).unwrap().groups;
+        assert_eq!(groups.len(), 5);
+        for (event, _) in provider_events(Provider::Grok) {
+            assert_eq!(groups.iter().filter(|(name, _)| name == event).count(), 1);
+        }
+        assert_eq!(
+            inspect_provider(&paths, Provider::Grok, true),
+            HookInstallState::Installed
+        );
+        assert_eq!(
+            update_grok_config(&paths.grok_config, true, &paths.helper, || panic!(
+                "idempotent install wrote settings"
+            ))
+            .unwrap(),
+            WriteStatus::Unchanged
+        );
+        // Grok rewrites the same tables without our marker comments.
+        let normalized = cleaned
+            .lines()
+            .filter(|line| !line.starts_with("# mycmux-managed-hooks:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(&paths.grok_config, normalized).unwrap();
+        set_provider(&paths, Provider::Grok, true).unwrap();
+        assert_eq!(fs::read_to_string(&paths.grok_config).unwrap(), cleaned);
+        set_provider(&paths, Provider::Grok, false).unwrap();
+        assert_eq!(fs::read_to_string(&paths.grok_config).unwrap(), owner);
+        assert_eq!(fs::read(&paths.helper).unwrap(), HELPER_BYTES);
+    }
+
+    #[test]
+    fn grok_disable_removes_unmarked_copies_but_keeps_foreign_and_mixed_groups() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = temp_paths(dir.path());
+        let foreign =
+            "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = 'command'\ncommand = 'user.py'\n\n";
+        let mixed = "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\nmycmux_managed = true\n[[hooks.Stop.hooks]]\ntype = 'command'\ncommand = 'keep.py'\n\n";
+        let input = fixture(&paths.helper)
+            .replace(GROK_BLOCK_START, "")
+            .replace(GROK_BLOCK_END, "");
+        let with_foreign = format!("{foreign}{mixed}{input}");
+        let cleaned = remove_grok_block(&with_foreign).unwrap();
+        assert!(cleaned.starts_with(&format!("{foreign}{mixed}")));
+        assert_eq!(grok_settings::parse(&cleaned).unwrap().groups.len(), 2);
+        // A marker is not permission to delete the owner's content inside it.
+        assert_eq!(
+            remove_grok_block(&format!("{GROK_BLOCK_START}\n{foreign}{GROK_BLOCK_END}\n")).unwrap(),
+            foreign
+        );
+    }
+
+    #[test]
+    fn grok_unknown_shapes_are_reported_and_never_written() {
+        for input in [
+            "hooks = { Stop = [] }\n",
+            "hooks.Stop = []\n",
+            "[hooks]\nStop = []\n",
+            "[[hooks.Stop]]\nhooks = [{type='command', mycmux_managed=true}]\n",
+            "[[hooks.Stop]]\nhooks.command = 'user.py'\n",
+            "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\nmycmux_managed = true\n[hooks.Stop.hooks.extra]\na=1\n",
+            "not valid TOML",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = temp_paths(dir.path());
+            fs::create_dir_all(paths.grok_config.parent().unwrap()).unwrap();
+            fs::write(&paths.grok_config, input).unwrap();
+            assert_eq!(inspect_provider(&paths, Provider::Grok, true), repair(RepairReason::UnknownShape), "{input}");
+            for enabled in [true, false] {
+                assert!(set_provider(&paths, Provider::Grok, enabled).is_err());
+                assert_eq!(fs::read_to_string(&paths.grok_config).unwrap(), input);
+                assert!(!paths.state.exists());
+                assert!(!paths.helper.exists());
+            }
+        }
+    }
+
+    #[test]
+    fn grok_preserves_crlf_multiline_owner_strings_and_detects_concurrent_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grok.toml");
+        let owner = "[models]\r\nvalue = '''\r\n# mycmux-managed-hooks:start\r\n[[hooks.Stop]]\r\n'''\r\n# owner comment\r\n";
+        fs::write(&path, owner).unwrap();
+        update_grok_config(&path, true, &helper(), || Ok(())).unwrap();
+        let installed = fs::read_to_string(&path).unwrap();
+        assert!(installed.starts_with(owner));
+        assert_eq!(remove_grok_block(&installed).unwrap(), owner);
+        assert!(update_grok_config(&path, false, &helper(), || {
+            fs::write(&path, "owner = true\n").unwrap();
+            Ok(())
+        })
+        .unwrap_err()
+        .contains("concurrent edit"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "owner = true\n");
+    }
+
+    #[test]
+    fn per_provider_disable_survives_startup_and_legacy_state_migrates() {
+        for legacy in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = temp_paths(dir.path());
+            fs::create_dir_all(paths.state.parent().unwrap()).unwrap();
+            fs::write(&paths.state, format!("{{\"enabled\":{legacy}}}")).unwrap();
+            assert!(status(&paths)
+                .unwrap()
+                .providers
+                .iter()
+                .all(|entry| entry.enabled == legacy));
+            set_provider(&paths, Provider::Grok, !legacy).unwrap();
+            let value: Value = serde_json::from_slice(&fs::read(&paths.state).unwrap()).unwrap();
+            assert_eq!(value["version"], 2);
+            assert_eq!(value["providers"]["claude"]["enabled"], legacy);
+            assert_eq!(value["providers"]["codex"]["enabled"], legacy);
+            assert_eq!(value["providers"]["grok"]["enabled"], !legacy);
+            reconcile(&paths, None).unwrap();
+            let snapshot = status(&paths).unwrap();
+            for entry in snapshot.providers {
+                if !entry.enabled {
+                    assert_eq!(entry.state, HookInstallState::Disabled);
+                }
+            }
+            assert_eq!(
+                grok_settings::parse(&fs::read_to_string(&paths.grok_config).unwrap_or_default())
+                    .unwrap()
+                    .groups
+                    .len(),
+                if legacy { 0 } else { 5 }
+            );
+        }
+    }
+
+    #[test]
+    fn status_is_read_only_and_reports_missing_path_untrusted_and_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = temp_paths(dir.path());
+        assert!(status(&paths)
+            .unwrap()
+            .providers
+            .iter()
+            .all(|entry| entry.state == repair(RepairReason::Missing)));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+        set_provider(&paths, Provider::Codex, true).unwrap();
+        assert_eq!(
+            inspect_provider(&paths, Provider::Codex, true),
+            repair(RepairReason::Untrusted)
+        );
+        let mut hooks: Value =
+            serde_json::from_slice(&fs::read(&paths.codex_hooks).unwrap()).unwrap();
+        hooks["hooks"]["Stop"][0]["hooks"][0]["command"] =
+            json!("python /old/mycmux_hook.py --provider codex --event-kind turn_ended");
+        fs::write(&paths.codex_hooks, serde_json::to_vec(&hooks).unwrap()).unwrap();
+        assert_eq!(
+            inspect_provider(&paths, Provider::Codex, true),
+            repair(RepairReason::HelperPath)
+        );
+        let before =
+            [&paths.codex_hooks, &paths.helper, &paths.state].map(|path| fs::read(path).unwrap());
+        status(&paths).unwrap();
+        let after =
+            [&paths.codex_hooks, &paths.helper, &paths.state].map(|path| fs::read(path).unwrap());
+        assert_eq!(before, after);
+        fs::create_dir_all(&paths.claude_settings).unwrap();
+        assert_eq!(
+            inspect_provider(&paths, Provider::Claude, true),
+            HookInstallState::Unavailable
+        );
+    }
+
+    #[test]
+    fn codex_repair_keeps_group_index_and_trust_and_owner_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = temp_paths(dir.path());
+        let owner = json!({"hooks": [{"type": "command", "command": "user.py"}]});
+        let mut root = json!({"hooks": {}});
+        for (event, kind) in provider_events(Provider::Codex) {
+            root["hooks"][event] = json!([
+                owner.clone(),
+                managed_group(&paths.helper, Provider::Codex, kind),
+                owner.clone()
+            ]);
+        }
+        fs::create_dir_all(paths.codex_hooks.parent().unwrap()).unwrap();
+        fs::write(&paths.codex_hooks, serde_json::to_vec(&root).unwrap()).unwrap();
+        let mut config = String::new();
+        for (event, _) in provider_events(Provider::Codex) {
+            let group = &root["hooks"][event][1];
+            config.push_str(&format!(
+                "[hooks.state.'{}:{}:1:0']\ntrusted_hash = \"{}\"\n",
+                paths.codex_hooks.display(),
+                snake_case_event(event),
+                codex_trusted_hash(event, group, &group["hooks"][0]).unwrap()
+            ));
+        }
+        fs::write(&paths.codex_config, &config).unwrap();
+        set_provider(&paths, Provider::Codex, true).unwrap();
+        let after: Value = serde_json::from_slice(&fs::read(&paths.codex_hooks).unwrap()).unwrap();
+        assert_eq!(after, root);
+        assert_eq!(
+            inspect_provider(&paths, Provider::Codex, true),
+            HookInstallState::Installed
+        );
+        assert_eq!(fs::read_to_string(&paths.codex_config).unwrap(), config);
+        set_provider(&paths, Provider::Codex, false).unwrap();
+        let after: Value = serde_json::from_slice(&fs::read(&paths.codex_hooks).unwrap()).unwrap();
+        for (event, _) in provider_events(Provider::Codex) {
+            assert_eq!(after["hooks"][event], json!([owner.clone(), owner.clone()]));
+        }
+    }
+
+    fn helper() -> PathBuf {
+        PathBuf::from("C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py")
+    }
+
+    #[test]
+    fn malformed_state_never_enables_or_changes_provider_settings() {
+        for state in [
+            "{",
+            "null",
+            "{\"version\":3}",
+            "{\"version\":\"2\",\"enabled\":true}",
+            "{\"version\":2,\"providers\":{\"grok\":{\"enabled\":null}}}",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = temp_paths(dir.path());
+            fs::create_dir_all(paths.state.parent().unwrap()).unwrap();
+            fs::write(&paths.state, state).unwrap();
+            assert!(status(&paths).is_err());
+            assert!(set_provider(&paths, Provider::Grok, true).is_err());
+            assert!(reconcile(&paths, None).is_err());
+            assert_eq!(fs::read_to_string(&paths.state).unwrap(), state);
+            assert!(!paths.helper.exists());
+            assert!(!paths.grok_config.exists());
+            assert!(!paths.claude_settings.exists());
+            assert!(!paths.codex_hooks.exists());
+        }
+    }
+
+    #[test]
+    fn json_status_reports_duplicate_missing_and_unknown_shape_without_writes() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = temp_paths(dir.path());
+            set_provider(&paths, provider, true).unwrap();
+            let path = if provider == Provider::Claude {
+                &paths.claude_settings
+            } else {
+                &paths.codex_hooks
+            };
+            let installed: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            let mut duplicate = installed.clone();
+            let group = duplicate["hooks"]["Stop"][0].clone();
+            duplicate["hooks"]["Stop"]
+                .as_array_mut()
+                .unwrap()
+                .push(group);
+            let mut missing = installed.clone();
+            missing["hooks"].as_object_mut().unwrap().remove("Stop");
+            for (value, reason) in [
+                (duplicate, RepairReason::Duplicate),
+                (missing, RepairReason::Missing),
+                (json!({"hooks": []}), RepairReason::UnknownShape),
+            ] {
+                let bytes = serde_json::to_vec(&value).unwrap();
+                fs::write(path, &bytes).unwrap();
+                assert_eq!(inspect_provider(&paths, provider, true), repair(reason));
+                if reason == RepairReason::UnknownShape {
+                    assert!(set_provider(&paths, provider, true).is_err());
+                    assert!(set_provider(&paths, provider, false).is_err());
+                }
+                assert_eq!(fs::read(path).unwrap(), bytes);
+            }
+        }
+    }
+
+    #[test]
+    fn grok_legacy_commands_need_no_markers_and_quoted_owner_keys_stay_identical() {
+        let owner =
+            "['cli'] # owner\ninstaller  =  'internal'\n\n[\"models\"]\ndefault='model' # owner\n";
+        let installed = append_grok_block(owner, &helper())
+            .replace(GROK_BLOCK_START, "")
+            .replace(GROK_BLOCK_END, "")
+            .replace("  mycmux_managed = true\n", "");
+        assert_eq!(grok_settings::parse(&installed).unwrap().groups.len(), 5);
+        let remaining = remove_grok_block(&installed).unwrap();
+        assert!(remaining.starts_with(owner));
+        assert!(remaining[owner.len()..].trim().is_empty());
+    }
+
+    #[test]
+    fn merge_preserves_user_groups_order_and_unrelated_keys() {
+        let user_a = json!({"matcher": "a", "hooks": [{"type": "command", "command": "a"}]});
+        let user_b = json!({"matcher": "b", "hooks": [{"type": "command", "command": "b"}]});
+        let mut root =
+            json!({"theme": "dark", "hooks": {"Stop": [user_a.clone(), user_b.clone()]}});
+        merge_install(
+            &mut root,
+            Provider::Claude,
+            &[(
+                "Stop",
+                managed_group(&helper(), Provider::Claude, "turn_ended"),
+            )],
+        )
+        .unwrap();
+        assert_eq!(root["theme"], "dark");
+        assert_eq!(root["hooks"]["Stop"][0], user_a);
+        assert_eq!(root["hooks"]["Stop"][1], user_b);
+        assert!(is_managed_group(
+            &root["hooks"]["Stop"][2],
+            Provider::Claude
+        ));
+    }
+
+    #[test]
+    fn install_is_idempotent_and_replaces_only_managed_groups() {
+        let managed = managed_group(&helper(), Provider::Claude, "turn_ended");
+        let mut root =
+            json!({"hooks": {"Stop": [managed.clone(), {"hooks": [{"command": "user"}]}]}});
+        merge_install(&mut root, Provider::Claude, &[("Stop", managed.clone())]).unwrap();
+        merge_install(&mut root, Provider::Claude, &[("Stop", managed)]).unwrap();
+        let groups = root["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(groups.len(), 2);
+        assert!(!is_managed_group(&groups[0], Provider::Claude));
+        assert!(is_managed_group(&groups[1], Provider::Claude));
+    }
+
+    fn legacy_group(provider: Provider, event_kind: &str, backslashes: bool) -> Value {
+        let mut group = managed_group(&helper(), provider, event_kind);
+        let handler = group["hooks"][0].as_object_mut().unwrap();
+        handler.remove(OWNERSHIP_MARKER);
+        if backslashes {
+            let command = handler["command"].as_str().unwrap().replace('/', "\\");
+            handler.insert("command".into(), Value::String(command));
+        }
+        group
+    }
+
+    #[test]
+    fn legacy_groups_are_replaced_and_install_is_idempotent() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            for backslashes in [false, true] {
+                let mut root = json!({"theme": "dark", "hooks": {}});
+                let managed: Vec<_> = provider_events(provider)
+                    .into_iter()
+                    .map(|(event, event_kind)| {
+                        let legacy = legacy_group(provider, event_kind, backslashes);
+                        assert!(is_managed_group(&legacy, provider));
+                        root["hooks"][event] = json!(vec![legacy; 5]);
+                        (event, managed_group(&helper(), provider, event_kind))
+                    })
+                    .collect();
+                merge_install(&mut root, provider, &managed).unwrap();
+                for (event, group) in &managed {
+                    assert_eq!(root["hooks"][*event], json!([group]));
+                }
+                assert_eq!(root["theme"], "dark");
+                let once = root.clone();
+                merge_install(&mut root, provider, &managed).unwrap();
+                assert_eq!(root, once);
+            }
+        }
+    }
+
+    #[test]
+    fn foreign_helpers_and_provider_mismatches_are_preserved() {
+        let foreign = json!({"hooks": [{
+            "type": "command",
+            "command": "python other_hook.py --provider claude"
+        }]});
+        let mismatch = legacy_group(Provider::Codex, "turn_ended", false);
+        let prefix = json!({"hooks": [{
+            "type": "command",
+            "command": "python mycmux_hook.py --provider claude-other"
+        }]});
+        let original = json!({"hooks": {"Stop": [foreign, mismatch, prefix]}});
+        let mut root = original.clone();
+        for group in root["hooks"]["Stop"].as_array().unwrap() {
+            assert!(!is_managed_group(group, Provider::Claude));
+        }
+        let managed = managed_group(&helper(), Provider::Claude, "turn_ended");
+        merge_install(&mut root, Provider::Claude, &[("Stop", managed.clone())]).unwrap();
+        let mut expected = original.clone();
+        expected["hooks"]["Stop"]
+            .as_array_mut()
+            .unwrap()
+            .push(managed);
+        assert_eq!(root, expected);
+        merge_uninstall(&mut root, Provider::Claude).unwrap();
+        assert_eq!(root, original);
+    }
+
+    #[test]
+    fn marker_only_groups_are_still_recognized() {
+        let marked = json!({"hooks": [{(OWNERSHIP_MARKER): true}]});
+        assert!(is_managed_group(&marked, Provider::Claude));
+        let mut root = json!({"hooks": {"Stop": [marked.clone()]}});
+        let managed = managed_group(&helper(), Provider::Claude, "turn_ended");
+        merge_install(&mut root, Provider::Claude, &[("Stop", managed.clone())]).unwrap();
+        assert_eq!(root["hooks"]["Stop"], json!([managed]));
+        root["hooks"]["Stop"] = json!([marked]);
+        merge_uninstall(&mut root, Provider::Claude).unwrap();
+        assert_eq!(root, json!({"hooks": {}}));
+    }
+
+    #[test]
+    fn uninstall_removes_legacy_groups_for_only_the_selected_provider() {
+        for backslashes in [false, true] {
+            let legacy = legacy_group(Provider::Claude, "turn_ended", backslashes);
+            let other = legacy_group(Provider::Codex, "turn_ended", backslashes);
+            let mut root = json!({"theme": "dark", "hooks": {
+                "Stop": [legacy.clone(), other.clone()],
+                "SessionEnd": [legacy]
+            }});
+            merge_uninstall(&mut root, Provider::Claude).unwrap();
+            assert_eq!(root, json!({"theme": "dark", "hooks": {"Stop": [other]}}));
+            merge_uninstall(&mut root, Provider::Codex).unwrap();
+            assert_eq!(root, json!({"theme": "dark", "hooks": {}}));
+        }
+    }
+
+    #[test]
+    fn ownership_requires_every_handler_and_a_nonempty_group() {
+        let legacy = legacy_group(Provider::Claude, "turn_ended", false);
+        let handler = legacy["hooks"][0].clone();
+        let marked = json!({(OWNERSHIP_MARKER): true});
+        let mixed_owned = json!({"hooks": [handler.clone(), marked]});
+        assert!(is_managed_group(&mixed_owned, Provider::Claude));
+        let foreign =
+            json!({"type": "command", "command": "python other_hook.py --provider claude"});
+        let other_provider = legacy_group(Provider::Codex, "turn_ended", false);
+        for group in [
+            json!({"hooks": []}),
+            json!({"hooks": [handler.clone(), foreign]}),
+            json!({"hooks": [handler, other_provider["hooks"][0].clone()]}),
+            json!({"hooks": [{"type": "prompt", "command": "mycmux_hook.py --provider claude"}]}),
+            json!({"hooks": [{"type": "command"}]}),
+            json!({"hooks": [null]}),
+            json!({"hooks": {}}),
+            json!({}),
+            Value::Null,
+        ] {
+            assert!(!is_managed_group(&group, Provider::Claude), "{group}");
+        }
+    }
+
+    #[test]
+    fn managed_hooks_use_the_platform_python_command() {
+        let managed = managed_group(&helper(), Provider::Claude, "turn_ended");
+        let command = managed["hooks"][0]["command"].as_str().unwrap();
+        let grok = append_grok_block("", &helper());
+
+        #[cfg(target_os = "windows")]
+        let expected = "python ";
+        #[cfg(not(target_os = "windows"))]
+        let expected = "python3 ";
+
+        assert!(command.starts_with(expected));
+        assert!(grok.contains(&format!("command = '{expected}")));
+    }
+
+    #[test]
+    fn uninstall_restores_prior_state_and_keeps_lookalikes() {
+        let lookalike = json!({"hooks": [{"type": "command", "command": "python mycmux_hook.py"}]});
+        let original = json!({"theme": "dark", "hooks": {"Stop": [lookalike.clone()]}});
+        let mut root = original.clone();
+        merge_install(
+            &mut root,
+            Provider::Claude,
+            &[
+                (
+                    "Stop",
+                    managed_group(&helper(), Provider::Claude, "turn_ended"),
+                ),
+                (
+                    "SessionEnd",
+                    managed_group(&helper(), Provider::Claude, "session_terminated"),
+                ),
+            ],
+        )
+        .unwrap();
+        merge_uninstall(&mut root, Provider::Claude).unwrap();
+        assert_eq!(root, original);
+    }
+
+    #[test]
+    fn concurrent_edit_is_detected_without_clobbering() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(&path, b"{\"hooks\":{}}\n").unwrap();
+        let error = update_json_hooks_with_helper(
+            &path,
+            &helper(),
+            Provider::Claude,
+            &[("Stop", "turn_ended")],
+            true,
+            || {
+                fs::write(&path, b"{\"owner_edit\":true}\n").unwrap();
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("concurrent edit detected"));
+        assert_eq!(fs::read(&path).unwrap(), b"{\"owner_edit\":true}\n");
+    }
+
+    #[test]
+    fn semantic_no_change_skips_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut root = json!({});
+        merge_install(
+            &mut root,
+            Provider::Claude,
+            &[(
+                "Stop",
+                managed_group(&helper(), Provider::Claude, "turn_ended"),
+            )],
+        )
+        .unwrap();
+        fs::write(&path, serde_json::to_vec_pretty(&root).unwrap()).unwrap();
+        let status = update_json_hooks_with_helper(
+            &path,
+            &helper(),
+            Provider::Claude,
+            &[("Stop", "turn_ended")],
+            true,
+            || panic!("no-op update reached replace hook"),
+        )
+        .unwrap();
+        assert_eq!(status, WriteStatus::Unchanged);
+    }
+
+    #[test]
+    fn codex_hash_matches_observed_local_contract() {
+        let session = json!({
+            "matcher": "^startup$",
+            "hooks": [{
+                "type": "command",
+                "command": "python C:/Users/miyaz/.codex/hooks/scripts/hooks_dispatch.py --event=SessionStart",
+                "timeout": 5,
+                "statusMessage": "Codex session starting"
+            }]
+        });
+        assert_eq!(
+            codex_trusted_hash("SessionStart", &session, &session["hooks"][0]).unwrap(),
+            "sha256:56e50007a77111b5e461a15043c592e30cad02b53e067f6472a515c778c99f9d"
+        );
+    }
+
+    #[test]
+    fn codex_untrusted_hooks_select_existing_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = HookInstallPaths {
+            claude_settings: dir.path().join(".claude/settings.json"),
+            codex_hooks: dir.path().join(".codex/hooks.json"),
+            codex_config: dir.path().join(".codex/config.toml"),
+            grok_config: dir.path().join(".grok/config.toml"),
+            helper: dir.path().join(".mycmux/hooks/v1/mycmux_hook.py"),
+            state: dir.path().join(".mycmux/agent-hooks-state.json"),
+        };
+        fs::create_dir_all(paths.codex_config.parent().unwrap()).unwrap();
+        fs::write(&paths.codex_config, b"[hooks.state]\n").unwrap();
+        let outcome = reconcile(&paths, Some(true)).unwrap();
+        assert_eq!(outcome.modes[&Provider::Codex], HookMode::Unavailable);
+        assert_eq!(outcome.modes[&Provider::Claude], HookMode::Installed);
+        assert_eq!(outcome.modes[&Provider::Grok], HookMode::Installed);
+    }
+
+    #[test]
+    fn grok_block_round_trip_preserves_owner_config() {
+        let owner = "model = \"grok-code-fast-1\"\n";
+        let installed = append_grok_block(owner, &helper());
+        assert!(installed.contains("[[hooks.StopFailure]]"));
+        assert_eq!(remove_grok_block(&installed).unwrap(), owner);
+    }
+
+    #[test]
+    fn claude_tool_hooks_merge_with_matchers_and_preserve_user_handlers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let user = json!({"matcher": "Bash|PowerShell|Agent|Skill", "hooks": [{"type": "command", "command": "user.py"}]});
+        let original = json!({"theme": "dark", "hooks": {
+            "PreToolUse": [user.clone()], "PostToolUse": [user.clone()]
+        }});
+        fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+        let events = provider_events(Provider::Claude);
+        assert_eq!(events.len(), 7);
+        assert!(events.contains(&("PreToolUse", "pre_tool_use")));
+        assert!(events.contains(&("PostToolUse", "turn_active")));
+        for expected_status in [WriteStatus::Changed, WriteStatus::Unchanged] {
+            assert_eq!(
+                update_json_hooks_with_helper(
+                    &path,
+                    &helper(),
+                    Provider::Claude,
+                    &events,
+                    true,
+                    || Ok(())
+                )
+                .unwrap(),
+                expected_status
+            );
+            let installed: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(installed["theme"], "dark");
+            assert_eq!(installed["hooks"].as_object().unwrap().len(), 7);
+            for (event, kind) in &events {
+                let groups = installed["hooks"][*event].as_array().unwrap();
+                let question = matches!(*event, "PreToolUse" | "PostToolUse");
+                assert_eq!(groups.len(), if question { 2 } else { 1 });
+                if question {
+                    assert_eq!(groups[0], user);
+                }
+                let managed = groups.last().unwrap();
+                assert!(is_managed_group(managed, Provider::Claude));
+                assert_eq!(
+                    managed["matcher"].as_str(),
+                    match *event {
+                        "PreToolUse" => Some("AskUserQuestion|Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit|WebFetch|WebSearch|Agent|Skill"),
+                        "PostToolUse" => Some("AskUserQuestion"),
+                        _ => None,
+                    }
+                );
+                assert!(managed["hooks"][0]["command"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(&format!("--provider claude --event-kind {kind}")));
+            }
+        }
+        // Upgrade the old question-only group without accumulating managed groups.
+        let mut installed: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let mut old_pre = managed_group(&helper(), Provider::Claude, "attention_required");
+        old_pre["matcher"] = json!("AskUserQuestion");
+        installed["hooks"]["PreToolUse"][1] = old_pre;
+        fs::write(&path, serde_json::to_vec(&installed).unwrap()).unwrap();
+        update_json_hooks_with_helper(&path, &helper(), Provider::Claude, &events, true, || Ok(()))
+            .unwrap();
+        let upgraded: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let pre_groups = upgraded["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre_groups.len(), 2);
+        assert_eq!(pre_groups[0], user);
+        assert_eq!(pre_groups[1]["matcher"], "AskUserQuestion|Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit|WebFetch|WebSearch|Agent|Skill");
+        assert!(pre_groups[1]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .ends_with("--provider claude --event-kind pre_tool_use"));
+        update_json_hooks_with_helper(&path, &helper(), Provider::Claude, &[], false, || Ok(()))
+            .unwrap();
+        let removed: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(removed, original);
+    }
+
+    #[test]
+    fn question_notification_events_follow_provider_contracts() {
+        assert!(provider_events(Provider::Claude).contains(&("Notification", "attention_required")));
+        assert!(provider_events(Provider::Grok).contains(&("Notification", "attention_required")));
+        assert!(!provider_events(Provider::Codex)
+            .iter()
+            .any(|(event, _)| *event == "Notification"));
+        assert!(
+            provider_events(Provider::Codex).contains(&("PermissionRequest", "attention_required"))
+        );
+    }
+}

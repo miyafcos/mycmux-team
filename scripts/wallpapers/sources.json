@@ -1,0 +1,49 @@
+{
+  "packTag": "wallpapers-v1",
+  "wallpapers": [
+    {
+      "id": "dark_city",
+      "source": "src/assets/warp-themes/dark_city_bg.webp"
+    },
+    {
+      "id": "jellyfish",
+      "source": "src/assets/warp-themes/jellyfish_bg.webp"
+    },
+    {
+      "id": "koi",
+      "source": "src/assets/warp-themes/koi_bg.webp"
+    },
+    {
+      "id": "leafy",
+      "source": "src/assets/warp-themes/leafy_bg.webp"
+    },
+    {
+      "id": "red_rock",
+      "source": "src/assets/warp-themes/red_rock_bg.webp"
+    },
+    {
+      "id": "thanksgiving",
+      "source": "src/assets/warp-themes/thanksgiving_bg.webp"
+    },
+    {
+      "id": "marble",
+      "source": "src/assets/warp-themes/marble_bg.webp"
+    },
+    {
+      "id": "pink_city",
+      "source": "src/assets/warp-themes/pink_city_bg.webp"
+    },
+    {
+      "id": "snowy",
+      "source": "src/assets/warp-themes/snowy_bg.webp"
+    },
+    {
+      "id": "winter",
+      "source": "src/assets/warp-themes/winter_bg.webp"
+    },
+    {
+      "id": "pride",
+      "source": "src/assets/warp-themes/pride_bg.webp"
+    }
+  ]
+}

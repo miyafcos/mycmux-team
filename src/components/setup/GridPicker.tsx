@@ -1,0 +1,40 @@
+import type { GridTemplateId } from "../../types";
+import { GRID_TEMPLATES } from "../../lib/gridTemplates";
+import GridPreview from "./GridPreview";
+import { setupStrings } from "./setupStrings";
+
+interface GridPickerProps {
+  selected: GridTemplateId;
+  onSelect: (id: GridTemplateId) => void;
+}
+
+const DISPLAY_ORDER: GridTemplateId[] = [
+  "1x1", "2x1", "3x1", "4x1", "2x2", "3x2", "1x2", "2x3",
+];
+
+export default function GridPicker({ selected, onSelect }: GridPickerProps) {
+  return (
+    <div>
+      <div
+        style={{
+          fontSize: 12,
+          color: "var(--cmux-text-tertiary)",
+          marginBottom: 8,
+          fontFamily: "var(--cmux-font-ui)",
+        }}
+      >
+        {setupStrings.layout}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {DISPLAY_ORDER.map((id) => (
+          <GridPreview
+            key={id}
+            template={GRID_TEMPLATES[id]}
+            selected={id === selected}
+            onClick={() => onSelect(id)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}

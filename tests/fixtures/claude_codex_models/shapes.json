@@ -1,0 +1,18 @@
+{
+  "backends": {
+    "gpt": { "availableModels": "gpt-string-not-a-list" },
+    "claude": [ { "availableModels": ["claude-inside-an-array"] } ],
+    "fugu": { "AvailableModels": ["fugu-wrong-case-key"] },
+    "fcc": {
+      "availableModels": [
+        "open_router/a/b",
+        "open_router/x-ai/",
+        "open_router/kKimi",
+        42,
+        null
+      ],
+      "aliases": [ { "fable": "open_router/a/b" } ],
+      "display": { "FableName": "Wrong-case display key" }
+    }
+  }
+}

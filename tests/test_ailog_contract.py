@@ -1,0 +1,391 @@
+"""Contract tests for the AI log analytics command surface.
+
+Two things must stay true for the module to remain safe to call from the UI:
+
+1. Every `ailog_*` command is `#[tauri::command(async)]`. Each one opens SQLite
+   and reads from disk, so a sync variant would block the main thread — and
+   would force an entry into `test_command_sync_contract.py`'s allowlist, which
+   this module is designed never to need.
+2. Every command is registered in `lib.rs`'s `invoke_handler`. A command that
+   compiles but is not wired up fails only at runtime, from the frontend.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+RUST_SRC_ROOT = REPO_ROOT / "src-tauri" / "src"
+AILOG_COMMANDS = RUST_SRC_ROOT / "commands" / "ailog.rs"
+AILOG_MODULE = RUST_SRC_ROOT / "ailog"
+LIB_RS = RUST_SRC_ROOT / "lib.rs"
+
+def contains_ignoring_layout(haystack: str, needle: str) -> bool:
+    """Match a Rust snippet without pinning rustfmt's line breaks.
+
+    These assertions care that a construct exists, not where the formatter chose
+    to wrap it. Comparing with every whitespace run removed keeps the intent and
+    stops a reformat from turning a passing contract into a red one.
+    """
+    return _squeeze(needle) in _squeeze(haystack)
+
+
+def _squeeze(text: str) -> str:
+    return re.sub(r"\s+", "", text)
+
+
+COMMAND_ATTR_RE = re.compile(r"#\s*\[\s*tauri::command(?:\((?P<args>[^\]]*)\))?\s*\]")
+FN_RE = re.compile(r"(?m)^\s*pub\s+(?P<async>async\s+)?fn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+# Every command named in the F1 spec, plus the argument-shape sanity checks.
+EXPECTED_COMMANDS = {
+    "ailog_index_start",
+    "ailog_index_cancel",
+    "ailog_index_status",
+    "ailog_summarize_start",
+    "ailog_summarize_cancel",
+    "ailog_summarize_status",
+    "ailog_digest_generate",
+    "ailog_overview",
+    "ailog_series",
+    "ailog_breakdown",
+    "ailog_pivot",
+    "ailog_sessions",
+    "ailog_session_detail",
+    "ailog_session_transcript",
+    "ailog_session_summarize",
+    "ailog_models",
+    "ailog_model_handoffs",
+    "ailog_efficiency",
+    "ailog_rework_rankings",
+    "ailog_usage_rhythm",
+    "ailog_get_prices",
+    "ailog_set_price",
+    "ailog_get_usd_jpy_rate",
+    "ailog_set_usd_jpy_rate",
+}
+
+
+def read(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def iter_ailog_commands() -> list[tuple[str, bool]]:
+    """Return `(name, is_async)` for every `#[tauri::command]` in ailog.rs."""
+    text = read(AILOG_COMMANDS)
+    attrs = list(COMMAND_ATTR_RE.finditer(text))
+    commands: list[tuple[str, bool]] = []
+    for index, attr in enumerate(attrs):
+        next_start = attrs[index + 1].start() if index + 1 < len(attrs) else len(text)
+        fn = FN_RE.search(text, attr.end(), next_start)
+        assert fn is not None, (
+            f"commands/ailog.rs: #[tauri::command] at offset {attr.start()} "
+            "is not followed by a public function"
+        )
+        args = attr.group("args") or ""
+        is_async = "async" in {part.strip() for part in args.split(",")} or bool(fn.group("async"))
+        commands.append((fn.group("name"), is_async))
+    return commands
+
+
+def test_every_ailog_command_is_async() -> None:
+    commands = iter_ailog_commands()
+    assert commands, "no #[tauri::command] found in commands/ailog.rs"
+
+    sync_commands = sorted(name for name, is_async in commands if not is_async)
+    assert not sync_commands, (
+        "ailog commands must be #[tauri::command(async)] — they all open SQLite and "
+        "read from disk. Sync offenders: " + ", ".join(sync_commands)
+    )
+
+
+def test_expected_commands_exist() -> None:
+    found = {name for name, _ in iter_ailog_commands()}
+    missing = EXPECTED_COMMANDS - found
+    assert not missing, "missing ailog commands: " + ", ".join(sorted(missing))
+
+
+def test_every_ailog_command_is_registered_in_the_invoke_handler() -> None:
+    lib_text = read(LIB_RS)
+    handler_start = lib_text.find("invoke_handler(tauri::generate_handler![")
+    assert handler_start != -1, "lib.rs has no invoke_handler"
+    handler_end = lib_text.find("])", handler_start)
+    assert handler_end != -1, "lib.rs invoke_handler is not terminated"
+    handler = lib_text[handler_start:handler_end]
+
+    unregistered = [
+        name
+        for name, _ in iter_ailog_commands()
+        if f"commands::ailog::{name}" not in handler
+    ]
+    assert not unregistered, (
+        "ailog commands defined but not registered in lib.rs invoke_handler: "
+        + ", ".join(sorted(unregistered))
+    )
+
+
+def test_module_is_declared() -> None:
+    assert "pub mod ailog;" in read(LIB_RS), "lib.rs must declare `pub mod ailog;`"
+    assert "pub mod ailog;" in read(RUST_SRC_ROOT / "commands" / "mod.rs"), (
+        "commands/mod.rs must declare `pub mod ailog;`"
+    )
+
+
+def test_module_files_exist() -> None:
+    """The spec's file layout is part of the contract, not an accident."""
+    expected = [
+        "mod.rs",
+        "schema.rs",
+        "index.rs",
+        "parse_claude.rs",
+        "parse_codex.rs",
+        "metrics.rs",
+        "price.rs",
+        "query.rs",
+        "summarize.rs",
+        "digest.rs",
+    ]
+    missing = [name for name in expected if not (AILOG_MODULE / name).is_file()]
+    assert not missing, "missing ailog module files: " + ", ".join(missing)
+
+
+def test_costs_are_labelled_as_estimates() -> None:
+    """Every aggregation response must carry the price provenance.
+
+    The operator is on flat-rate plans, so a bare dollar figure would be read
+    as a bill. `price_source` plus `price_coverage` tells the UI how much of
+    the token volume has a known metered-equivalent cost.
+    """
+    query_text = read(AILOG_MODULE / "query.rs")
+    for field in ("price_source", "price_coverage", "cost_note"):
+        assert f"pub {field}:" in query_text, f"query.rs must expose `{field}`"
+
+
+def test_legacy_unpriced_banner_text_is_absent_from_source() -> None:
+    """The zero-configuration policy must not leave a reachable old warning."""
+    source_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (REPO_ROOT / "src").rglob("*.*")
+        if path.is_file() and path.suffix in {".ts", ".tsx", ".css"}
+    )
+    for legacy in ("公表料率が登録されていない", "単価未設定:", "$0 で計上"):
+        assert legacy not in source_text, f"legacy price warning remains in src/: {legacy}"
+
+
+def test_unknown_models_are_never_priced_by_substitution() -> None:
+    """`price.rs` must not fall back to a neighbouring model's rate."""
+    price_text = read(AILOG_MODULE / "price.rs")
+    assert "fn cost_for_turn" in price_text
+    # The `None` price arm has to return an empty split rather than a default
+    # rate; catching this here keeps a later "helpful" refactor honest.
+    assert "let Some(price) = price else {" in price_text, (
+        "cost_for_turn must return a zero split for an unpriced model"
+    )
+    assert "return CostSplit::default();" in price_text
+
+
+def test_summarizer_cancellation_tracks_every_parallel_child() -> None:
+    """A two-worker pass must drain a shared child registry, not one slot."""
+    text = read(AILOG_COMMANDS)
+    summary_text = read(AILOG_MODULE / "summarize.rs")
+    assert "children: summarize::ChildRegistry" in text
+    assert contains_ignoring_layout(text, "std::mem::take(&mut *state.children")
+    assert contains_ignoring_layout(text, "for (_, child) in children")
+    assert contains_ignoring_layout(summary_text, "let worker_children = children.clone();")
+    assert "let local_child" not in summary_text
+
+
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_PUB_FIELD_RE = re.compile(
+    r"(?P<attrs>(?:#\s*\[[\s\S]*?\]\s*)*)pub(?:\s*\([^)]*\))?\s+"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:"
+)
+
+
+def _ailog_deserialize_sources() -> list[Path]:
+    return sorted(AILOG_MODULE.glob("*.rs")) + [AILOG_COMMANDS]
+
+
+def _skip_ws_and_comments(text: str, index: int) -> int:
+    length = len(text)
+    while index < length:
+        if text[index] in " \t\r\n":
+            index += 1
+            continue
+        if text.startswith("//", index):
+            newline = text.find("\n", index)
+            index = length if newline == -1 else newline + 1
+            continue
+        if text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            index = length if end == -1 else end + 2
+            continue
+        break
+    return index
+
+
+def _parse_bracket_attr(text: str, start: int) -> tuple[str, int] | None:
+    """Parse `# [ ... ]` starting at `#`. Returns (inner, next_index)."""
+    index = _skip_ws_and_comments(text, start)
+    if not text.startswith("#", index):
+        return None
+    index = _skip_ws_and_comments(text, index + 1)
+    if index >= len(text) or text[index] != "[":
+        return None
+    depth = 0
+    for cursor in range(index, len(text)):
+        char = text[cursor]
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                return text[index + 1 : cursor], cursor + 1
+    return None
+
+
+def _parse_paren_list(text: str, open_paren: int) -> tuple[str, int] | None:
+    if open_paren >= len(text) or text[open_paren] != "(":
+        return None
+    depth = 0
+    for cursor in range(open_paren, len(text)):
+        char = text[cursor]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_paren + 1 : cursor], cursor + 1
+    return None
+
+
+def _struct_body(text: str, after_name: int) -> str | None:
+    index = _skip_ws_and_comments(text, after_name)
+    if index < len(text) and text[index] == "<":
+        depth = 0
+        for cursor in range(index, len(text)):
+            if text[cursor] == "<":
+                depth += 1
+            elif text[cursor] == ">":
+                depth -= 1
+                if depth == 0:
+                    index = _skip_ws_and_comments(text, cursor + 1)
+                    break
+        else:
+            return None
+    if text.startswith("where", index):
+        brace = text.find("{", index)
+        if brace == -1:
+            return None
+        index = brace
+    if index >= len(text) or text[index] != "{":
+        return None
+    depth = 0
+    for cursor in range(index, len(text)):
+        char = text[cursor]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[index + 1 : cursor]
+    return None
+
+
+def _iter_deserialize_structs(text: str) -> list[tuple[str, str, str]]:
+    """Return `(name, attr_blob, body)` for each Deserialize struct."""
+    found: list[tuple[str, str, str]] = []
+    index = 0
+    while True:
+        start = text.find("#[", index)
+        if start == -1:
+            return found
+        parsed = _parse_bracket_attr(text, start)
+        if parsed is None:
+            index = start + 2
+            continue
+        inner, after_attr = parsed
+        squeezed = _squeeze(inner)
+        if not squeezed.startswith("derive(") or "Deserialize" not in squeezed:
+            index = after_attr
+            continue
+
+        attrs = [inner]
+        cursor = after_attr
+        while True:
+            cursor = _skip_ws_and_comments(text, cursor)
+            nxt = _parse_bracket_attr(text, cursor)
+            if nxt is None:
+                break
+            more, cursor = nxt
+            attrs.append(more)
+
+        cursor = _skip_ws_and_comments(text, cursor)
+        if text.startswith("pub", cursor):
+            after_vis = _skip_ws_and_comments(text, cursor + 3)
+            if after_vis < len(text) and text[after_vis] == "(":
+                listed = _parse_paren_list(text, after_vis)
+                if listed is None:
+                    index = after_attr
+                    continue
+                cursor = _skip_ws_and_comments(text, listed[1])
+            else:
+                cursor = after_vis
+        if not text.startswith("struct", cursor):
+            index = after_attr
+            continue
+        cursor = _skip_ws_and_comments(text, cursor + len("struct"))
+        name_match = _IDENT_RE.match(text, cursor)
+        if name_match is None:
+            index = after_attr
+            continue
+        name = name_match.group(0)
+        body = _struct_body(text, name_match.end())
+        if body is None:
+            index = after_attr
+            continue
+        found.append((name, "\n".join(attrs), body))
+        index = after_attr
+    return found
+
+
+def _field_has_serde_rename_or_alias(field_attrs: str) -> bool:
+    squeezed = _squeeze(field_attrs)
+    return "rename=" in squeezed or "alias=" in squeezed
+
+
+def _underscore_pub_fields_missing_rename(body: str) -> list[str]:
+    missing: list[str] = []
+    for match in _PUB_FIELD_RE.finditer(body):
+        name = match.group("name")
+        if "_" not in name:
+            continue
+        if _field_has_serde_rename_or_alias(match.group("attrs")):
+            continue
+        missing.append(name)
+    return missing
+
+
+def test_deserialized_structs_use_camel_case() -> None:
+    """Frontend IPC payloads are camelCase; snake_case-only structs drop them.
+
+    A Deserialize struct with a multi-word `pub` field and no `rename_all =
+    "camelCase"` (and no per-field rename/alias) will silently default that
+    field. rustfmt wrapping of attributes must not hide or invent offenders.
+    """
+    offenders: list[str] = []
+    for path in _ailog_deserialize_sources():
+        for name, attr_blob, body in _iter_deserialize_structs(read(path)):
+            missing = _underscore_pub_fields_missing_rename(body)
+            if not missing:
+                continue
+            if contains_ignoring_layout(attr_blob, 'rename_all = "camelCase"'):
+                continue
+            offenders.append(f"{path.name}::{name} ({', '.join(missing)})")
+    assert not offenders, (
+        "Deserialize structs with multi-word pub fields must use "
+        'rename_all = "camelCase" or a per-field serde rename/alias. '
+        "Offenders: " + "; ".join(offenders)
+    )

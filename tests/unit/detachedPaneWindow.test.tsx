@@ -1,0 +1,308 @@
+// @vitest-environment jsdom
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  close: vi.fn(async () => {}),
+  setTitle: vi.fn(async () => {}),
+  terminal: vi.fn(),
+  browser: vi.fn(),
+  webController: vi.fn(),
+  emit: vi.fn(async () => {}),
+  listen: vi.fn(),
+  invoke: vi.fn(async () => true),
+  startDragging: vi.fn(async () => {}),
+  setPosition: vi.fn(async () => {}),
+  outerPosition: vi.fn(async () => ({ x: 300, y: 150 })),
+  scaleFactor: vi.fn(async () => 1.5),
+  confirmPaneClose: vi.fn(async () => true),
+  killSession: vi.fn(async () => {}),
+  discardAndClose: vi.fn(async () => {}),
+  evictTerminalCache: vi.fn(),
+}));
+vi.mock("@tauri-apps/api/event", () => ({ emit: mocks.emit, listen: mocks.listen }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    label: "child", close: mocks.close, setTitle: mocks.setTitle,
+    startDragging: mocks.startDragging, setPosition: mocks.setPosition,
+    outerPosition: mocks.outerPosition, scaleFactor: mocks.scaleFactor,
+  }),
+}));
+vi.mock("../../src/lib/paneCloseConfirmation", () => ({ confirmPaneClose: mocks.confirmPaneClose }));
+vi.mock("../../src/lib/focusController", () => ({ focusController: { request: vi.fn() } }));
+vi.mock("../../src/lib/paneCloseLifecycle", () => ({ beforePaneClose: vi.fn() }));
+vi.mock("../../src/lib/ipc", () => ({ killSession: mocks.killSession }));
+vi.mock("../../src/components/layout/SocketListener", () => ({ discardWindowWorkspacesAndClose: mocks.discardAndClose }));
+vi.mock("../../src/components/terminal/XTermWrapper", () => ({
+  default: (props: { sessionId: string }) => { mocks.terminal(props); return <div data-terminal-session={props.sessionId} />; },
+  evictTerminalCache: mocks.evictTerminalCache,
+}));
+vi.mock("../../src/components/workspace/BrowserPane", () => ({
+  default: (props: { htmlPath: string }) => { mocks.browser(props); return <div data-browser-path={props.htmlPath} />; },
+}));
+vi.mock("../../src/components/workspace/WebPaneController", () => ({
+  default: () => { mocks.webController(); return null; },
+  // The shell asks this which previews are drawn by a child webview, so it
+  // knows whether to mount the controller that places one.
+  isChildWebviewPreview: (tab: { type?: string; sourceKind?: string; previewPath?: string }) =>
+    tab.type === "browser" && tab.sourceKind === "html" && Boolean(tab.previewPath),
+}));
+vi.mock("../../src/components/workspace/WebPaneStatusBar", () => ({
+  default: (props: { tabId: string }) => <div data-web-status-tab-id={props.tabId} />,
+}));
+vi.mock("../../src/components/workspace/LauncherPane", () => ({ default: () => <div data-launcher-content="true" /> }));
+vi.mock("../../src/components/workspace/TerminalPane", () => ({ buildLaunchArgs: (_command: string, args: string[]) => args }));
+vi.mock("../../src/components/layout/AppShell", () => ({ buildThemeVars: () => ({}) }));
+
+import DetachedPaneShell from "../../src/components/layout/DetachedPaneShell";
+import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
+import type { DetachedWorkspace } from "../../src/lib/detachedPane";
+
+function workspace(type: "terminal" | "launcher" | "browser" | "web" = "terminal"): DetachedWorkspace {
+  const tab = { id: "tab", sessionId: "pty-original-pane-tab", agentId: "shell", label: "Session", type, ...(type === "browser" ? { htmlPath: "C:/preview.pdf", sourceKind: "pdf" as const } : {}),
+    ...(type === "web" ? { presetId: "browser" } : {}) };
+  return { id: "transfer", name: "Transfer", gridTemplateId: "1x1", status: "running", createdAt: 0,
+    detached: true, panes: [{ id: "pane", agentId: tab.agentId, sessionId: tab.sessionId, activeTabId: tab.id, tabs: [tab] }] };
+}
+
+afterEach(() => { vi.clearAllMocks(); vi.unstubAllGlobals(); });
+
+describe("DetachedPaneShell", () => {
+  it.each(["terminal", "browser", "web"] as const)(
+    "hands a %s window's move to the OS and relays the cursor back", async (type) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let relay: ((event: { payload: { x: number; y: number; done: boolean } }) => void) | null = null;
+    const unlisten = vi.fn();
+    mocks.listen.mockImplementation(async (_event: string, handler: never) => {
+      relay = handler;
+      return unlisten;
+    });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const pointer = (node: Element, kind: string, x: number, y: number) => {
+      const event = new MouseEvent(kind, { bubbles: true, button: 0, screenX: x, screenY: y });
+      Object.defineProperty(event, "pointerId", { value: 7 });
+      node.dispatchEvent(event);
+    };
+    try {
+      await act(async () => root.render(<DetachedPaneShell workspace={workspace(type)} />));
+      const band = host.querySelector("[data-detached-pane-shell]")!.children[0] as HTMLElement;
+
+      // The close button inside the band is not a drag handle.
+      await act(async () => pointer(band.querySelector("button")!, "pointerdown", 220, 110));
+      expect(mocks.startDragging).not.toHaveBeenCalled();
+
+      await act(async () => pointer(band, "pointerdown", 220, 110));
+      // The window manager moves the window, so its own edge snap is the real
+      // one; the backend poll is what keeps this page aware of the drag.
+      expect(mocks.invoke).toHaveBeenCalledWith("watch_window_drag");
+      expect(mocks.startDragging).toHaveBeenCalledTimes(1);
+      expect(mocks.emit.mock.calls.map((call: unknown[]) => (call[1] as { phase: string }).phase))
+        .toEqual(["start"]);
+
+      await act(async () => relay?.({ payload: { x: 280, y: 150, done: false } }));
+      expect(mocks.emit).toHaveBeenLastCalledWith("mycmux://detached-drag", expect.objectContaining({
+        label: "child", workspaceId: "transfer", sessionId: "pty-original-pane-tab", tabId: "tab",
+        screenX: 280, screenY: 150, phase: "move",
+      }));
+
+      // The button coming up ends the drag and releases the relay.
+      await act(async () => relay?.({ payload: { x: 300, y: 160, done: true } }));
+      expect(mocks.emit).toHaveBeenLastCalledWith("mycmux://detached-drag", expect.objectContaining({
+        screenX: 300, screenY: 160, phase: "end",
+      }));
+      expect(unlisten).toHaveBeenCalledTimes(1);
+
+      // Samples that arrive after the end are ignored.
+      const settled = mocks.emit.mock.calls.length;
+      await act(async () => relay?.({ payload: { x: 400, y: 200, done: false } }));
+      expect(mocks.emit.mock.calls.length).toBe(settled);
+      expect(mocks.close).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+  it("treats a click on the band as a click, not a drop", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let relay: ((event: { payload: { x: number; y: number; done: boolean } }) => void) | null = null;
+    mocks.listen.mockImplementation(async (_event: string, handler: never) => {
+      relay = handler;
+      return vi.fn();
+    });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<DetachedPaneShell workspace={workspace()} />));
+      const band = host.querySelector("[data-detached-pane-shell]")!.children[0] as HTMLElement;
+      const press = new MouseEvent("pointerdown", { bubbles: true, button: 0, screenX: 220, screenY: 110 });
+      Object.defineProperty(press, "pointerId", { value: 7 });
+      await act(async () => { band.dispatchEvent(press); });
+
+      // The button comes up two pixels away: the window overlapping the main
+      // one must not count that as dropping it back in.
+      await act(async () => relay?.({ payload: { x: 222, y: 111, done: true } }));
+      expect(mocks.emit).toHaveBeenLastCalledWith("mycmux://detached-drag",
+        expect.objectContaining({ phase: "cancel" }));
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+  it("moves the window itself where the backend cannot follow the cursor", async () => {
+    // macOS has no cursor poll yet. Losing the OS snap there is acceptable;
+    // losing the drop-back-into-the-main-window gesture is not.
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let nextFrame: FrameRequestCallback | null = null;
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => { nextFrame = callback; return 1; }));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn(() => { nextFrame = null; }));
+    mocks.invoke.mockResolvedValueOnce(false);
+    mocks.listen.mockImplementation(async () => vi.fn());
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const pointer = (node: Element, kind: string, x: number, y: number) => {
+      const event = new MouseEvent(kind, { bubbles: true, button: 0, screenX: x, screenY: y });
+      Object.defineProperty(event, "pointerId", { value: 7 });
+      node.dispatchEvent(event);
+    };
+    try {
+      await act(async () => root.render(<DetachedPaneShell workspace={workspace()} />));
+      const band = host.querySelector("[data-detached-pane-shell]")!.children[0] as HTMLElement;
+      band.setPointerCapture = vi.fn();
+      band.hasPointerCapture = () => true;
+      band.releasePointerCapture = vi.fn();
+
+      await act(async () => pointer(band, "pointerdown", 220, 110));
+      expect(mocks.startDragging).not.toHaveBeenCalled();
+      await act(async () => pointer(band, "pointermove", 280, 150));
+      await act(async () => { nextFrame?.(0); });
+      // Grabbed at 220,110 with the window at 200,100: the offset is 20,10.
+      expect(mocks.setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: 260, y: 140 }));
+      expect(mocks.emit).toHaveBeenLastCalledWith("mycmux://detached-drag",
+        expect.objectContaining({ screenX: 280, screenY: 150, phase: "move" }));
+
+      await act(async () => pointer(band, "pointerup", 300, 160));
+      expect(mocks.emit).toHaveBeenLastCalledWith("mycmux://detached-drag",
+        expect.objectContaining({ screenX: 300, screenY: 160, phase: "end" }));
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+  it.each(["terminal", "launcher", "browser", "web"] as const)("renders only the band and %s content", async (type) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<DetachedPaneShell workspace={workspace(type)} />));
+      const shell = host.querySelector("[data-detached-pane-shell]")!;
+      const band = shell.children[0] as HTMLElement;
+      expect(band.style.height).toBe("30px");
+      expect(band.hasAttribute("data-tauri-drag-region")).toBe(false);
+      expect(band.textContent).toContain("Session");
+      // × closes the pane; the way back is dragging the band onto a tab strip.
+      expect(band.querySelectorAll("button")).toHaveLength(1);
+      expect(band.querySelector("button")!.textContent).toBe("×");
+      expect(band.querySelector("button")!.getAttribute("aria-label")).toBe("このペインを閉じる");
+      expect(shell.children).toHaveLength(2);
+      if (type === "terminal") {
+        expect(host.querySelector("[data-terminal-session]")?.getAttribute("data-terminal-session")).toBe("pty-original-pane-tab");
+        expect(mocks.browser).not.toHaveBeenCalled();
+      } else {
+        expect(mocks.terminal).not.toHaveBeenCalled();
+        if (type === "browser") {
+          expect(host.querySelector("[data-browser-path]")?.getAttribute("data-browser-path")).toBe("C:/preview.pdf");
+          expect(mocks.browser).toHaveBeenCalledWith(expect.objectContaining({
+            htmlPath: "C:/preview.pdf", previewPath: "C:/preview.pdf", sourceKind: "pdf",
+            reloadKey: 0, isDirty: false,
+          }));
+        } else if (type === "web") {
+          expect(mocks.webController).toHaveBeenCalled();
+          expect(host.querySelector("[data-web-pane-host-tab-id]")?.getAttribute("data-web-pane-host-tab-id")).toBe("tab");
+          expect(host.querySelector("[data-web-pane-preset-id]")?.getAttribute("data-web-pane-preset-id")).toBe("browser");
+          expect(host.querySelector("[data-web-status-tab-id]")).not.toBeNull();
+        } else {
+          expect(host.querySelector("[data-launcher-content]")).not.toBeNull();
+        }
+      }
+      await act(async () => band.querySelector("button")!.click());
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(mocks.confirmPaneClose).toHaveBeenCalledTimes(1);
+      // A launcher tab holds no PTY, so there is nothing to kill for it.
+      if (type === "terminal" || type === "browser") expect(mocks.killSession).toHaveBeenCalledWith("pty-original-pane-tab");
+      else expect(mocks.killSession).not.toHaveBeenCalled();
+      expect(mocks.discardAndClose).toHaveBeenCalledTimes(1);
+      // Closing the pane must not hand it back: that is what the drag is for.
+      expect(mocks.close).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
+  it.each(["html", "office"] as const)("preserves %s preview props and edit callbacks", async (sourceKind) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const dirty = vi.spyOn(useWorkspaceLayoutStore.getState(), "setBrowserTabDirty").mockImplementation(() => {});
+    const saved = vi.spyOn(useWorkspaceLayoutStore.getState(), "refreshBrowserTabPreview").mockImplementation(() => {});
+    const value = workspace("browser");
+    Object.assign(value.panes[0].tabs[0], {
+      sourcePath: "C:/source.docx", sourceKind, previewPath: "C:/preview.html",
+      reloadCounter: 3, isDirty: true,
+    });
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<DetachedPaneShell workspace={value} />));
+      const props = mocks.browser.mock.calls.at(-1)![0];
+      expect(props).toMatchObject({
+        sourcePath: "C:/source.docx", sourceKind, previewPath: "C:/preview.html", reloadKey: 3, isDirty: true,
+      });
+      props.onDirtyChange(false);
+      props.onSaved({ previewPath: "C:/saved.html", sourcePath: "C:/source.docx" });
+      expect(dirty).toHaveBeenCalledWith("transfer", "pane", "tab", false);
+      expect(saved).toHaveBeenCalledWith("transfer", "pane", "tab", {
+        previewPath: "C:/saved.html", sourcePath: "C:/source.docx", sourceKind,
+      });
+      expect(mocks.terminal).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      dirty.mockRestore();
+      saved.mockRestore();
+    }
+  });
+
+  it("does not launch a terminal for a browser tab missing its path", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const value = workspace("browser");
+    delete value.panes[0].tabs[0].htmlPath;
+    const root = createRoot(document.createElement("div"));
+    try {
+      await act(async () => root.render(<DetachedPaneShell workspace={value} />));
+      expect(mocks.browser).not.toHaveBeenCalled();
+      expect(mocks.terminal).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it("names the undecorated window after the pane", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<DetachedPaneShell workspace={workspace()} />));
+      expect(mocks.setTitle).toHaveBeenCalledWith("Session");
+      expect(document.title).toBe("Session");
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+});
