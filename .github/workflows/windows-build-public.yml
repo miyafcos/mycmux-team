@@ -1,0 +1,132 @@
+name: Public Windows build
+on:
+  push:
+    branches:
+      - ci/windows-build-0805-260930
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: "Public export commit to build (40 hexadecimal characters)"
+        required: true
+        type: string
+      source_tree:
+        description: "Expected public export tree (40 hexadecimal characters)"
+        required: true
+        type: string
+      version:
+        description: "Release version, for example 0.80.5"
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: public-windows-build
+  cancel-in-progress: false
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      SOURCE_COMMIT: ${{ inputs.source_commit || '6a07f965ef68372cfe973d0d7827f0ccf030e321' }}
+      SOURCE_TREE: ${{ inputs.source_tree || 'dc0ac9c2baaf151c1b71d813cf26eff72af01b47' }}
+      RELEASE_VERSION: ${{ inputs.version || '0.80.5' }}
+      CARGO_BUILD_JOBS: "2"
+      PYTHONIOENCODING: utf-8
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Validate inputs and use LF source files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SOURCE_COMMIT -notmatch '^[0-9a-f]{40}$') { throw 'Invalid source commit' }
+          if ($env:SOURCE_TREE -notmatch '^[0-9a-f]{40}$') { throw 'Invalid source tree' }
+          if ($env:RELEASE_VERSION -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid version' }
+          git config --global core.autocrlf false
+          if ($LASTEXITCODE) { throw 'Cannot configure checkout line endings' }
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_commit || '6a07f965ef68372cfe973d0d7827f0ccf030e321' }}
+          persist-credentials: false
+      - name: Verify source and RAM
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((git rev-parse HEAD).Trim() -ne $env:SOURCE_COMMIT) { throw 'Source commit mismatch' }
+          if ((git rev-parse 'HEAD^{tree}').Trim() -ne $env:SOURCE_TREE) { throw 'Source tree mismatch' }
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($packageVersion -ne $env:RELEASE_VERSION -or $tauriVersion -ne $env:RELEASE_VERSION) { throw 'Version mismatch' }
+          $taskOs = Get-CimInstance Win32_OperatingSystem
+          $freeRam = $taskOs.FreePhysicalMemory / 1MB
+          Write-Output ("Free RAM: {0:N2} GiB" -f $freeRam)
+          if ($freeRam -lt 5.2) { throw 'Windows build RAM gate failed' }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.0"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.98.0"
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+      - name: Restore locked Node dependencies
+        shell: pwsh
+        run: npm ci
+      - name: Native Windows Rust verification
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path cloud-output | Out-Null
+          & python -X utf8 scripts/run_windows_tests.py 2>&1 | Tee-Object -FilePath cloud-output/rust-final.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows Rust verification failed' }
+      - name: Build Windows bundles without updater private keys
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cloudConfigPath = Join-Path $pwd 'cloud-updater-config.json'
+          [System.IO.File]::WriteAllText($cloudConfigPath, '{"bundle":{"createUpdaterArtifacts":false}}', [System.Text.UTF8Encoding]::new($false))
+          & npm run tauri -- build --bundles nsis,msi --config $cloudConfigPath 2>&1 | Tee-Object -FilePath cloud-output/windows-build.log
+          if ($LASTEXITCODE -ne 0) { throw 'Windows bundle build failed' }
+          if ((git diff HEAD --name-only)) { throw 'Tracked source changed during build' }
+      - name: Collect artifacts and source receipt
+        shell: python
+        run: |
+          from pathlib import Path
+          import hashlib, json, os, shutil, subprocess
+          version=os.environ["RELEASE_VERSION"]
+          root=Path("src-tauri/target/release")
+          out=Path("cloud-output")
+          sources=[root/"mycmux.exe",root/"bundle/nsis"/("mycmux_"+version+"_x64-setup.exe"),root/"bundle/msi"/("mycmux_"+version+"_x64_en-US.msi")]
+          records=[]
+          for source in sources:
+              assert source.is_file(),source
+              target=out/source.name
+              shutil.copy2(source,target)
+              hash_state=hashlib.sha256()
+              with target.open("rb") as f:
+                  for chunk in iter(lambda: f.read(1024*1024),b""):
+                      hash_state.update(chunk)
+              digest=hash_state.hexdigest()
+              records.append({"name":target.name,"size":target.stat().st_size,"sha256":digest})
+          receipt={"version":version,"public_source_commit":os.environ["SOURCE_COMMIT"],"public_source_tree":os.environ["SOURCE_TREE"],"rust_exit_code":0,"build_exit_code":0,"assets":records,"updater_signing":"deferred to local existing key"}
+          expected=json.dumps(receipt,ensure_ascii=True,indent=2)+"\n"
+          target=out/"cloud-build-receipt.json"
+          target.write_bytes(expected.encode("utf-8"))
+          assert target.read_bytes().decode("utf-8")==expected
+      - name: Verify executable version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((Get-Item cloud-output/mycmux.exe).VersionInfo.ProductVersion -ne $env:RELEASE_VERSION) { throw 'Executable ProductVersion mismatch' }
+      - name: Save build output as a draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildTag = 'windows-build-' + $env:GITHUB_RUN_ID
+          $files = @(Get-ChildItem -LiteralPath cloud-output -File | ForEach-Object { $_.FullName })
+          & gh release create $buildTag @files --repo $env:GITHUB_REPOSITORY --draft --target $env:SOURCE_COMMIT --title ("Windows build " + $env:RELEASE_VERSION) --notes 'Unsigned build output. Source receipt and native test logs included. Local updater signing and final publication remain separate.'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot retain draft build output' }
