@@ -1,0 +1,27 @@
+name: Windows capacity probe
+on:
+  push:
+    branches:
+      - ci/windows-capacity-0805-260930
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  capacity:
+    runs-on: windows-2022
+    timeout-minutes: 5
+    steps:
+      - name: Check Windows build capacity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $taskOs = Get-CimInstance Win32_OperatingSystem
+          $capacity = [ordered]@{
+            runner = 'windows-2022'
+            total_ram_gb = [math]::Round($taskOs.TotalVisibleMemorySize / 1MB, 2)
+            free_ram_gb = [math]::Round($taskOs.FreePhysicalMemory / 1MB, 2)
+            free_disk_gb = [math]::Round((Get-PSDrive -Name C).Free / 1GB, 2)
+          }
+          $capacity | ConvertTo-Json -Compress | Write-Output
+          if ($capacity.free_ram_gb -lt 5.2) { throw 'Windows build RAM gate failed (requires 5.2 GiB)' }
+          Write-Output 'WINDOWS_CAPACITY_PASS'
