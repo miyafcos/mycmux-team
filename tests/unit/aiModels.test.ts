@@ -86,3 +86,17 @@ describe("modelForProviderSwitch", () => {
     expect(modelForProviderSwitch("claude-code", "internal-eval-build")).toBe("internal-eval-build");
   });
 });
+
+describe("current model presets", () => {
+  it("offers current models while preserving the configured defaults and legacy presets", () => {
+    for (const model of ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"]) {
+      expect(classifyModelForProvider("codex", model)).toBe("preset");
+    }
+    for (const model of ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5"]) {
+      expect(classifyModelForProvider("claude-code", model)).toBe("preset");
+    }
+    for (const provider of AI_PROVIDERS) {
+      expect(new Set(provider.presets.map(p => p.id)).size).toBe(provider.presets.length);
+    }
+  });
+});

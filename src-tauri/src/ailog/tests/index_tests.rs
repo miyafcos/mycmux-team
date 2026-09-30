@@ -791,7 +791,7 @@ fn grok_indexes_updates_only_and_uses_provider_cost() {
     assert_eq!(session.3, 1);
     assert_eq!(session.4, "hello world");
     assert_eq!(session.5, 1);
-    assert_eq!(session.6, "grok-4.6-build");
+    assert_eq!(session.6, "grok-4.6");
     assert!((session.7 - 0.12345).abs() < 1e-12);
 
     let turn: (i64, i64, i64, i64, i64, f64) = conn

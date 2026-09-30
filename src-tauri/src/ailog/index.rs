@@ -2121,7 +2121,6 @@ pub fn recompute_session(
     struct TurnCost {
         seq: i64,
         model: Option<String>,
-        family: Option<String>,
         input: i64,
         output: i64,
         cache_read: i64,
@@ -2136,7 +2135,7 @@ pub fn recompute_session(
     {
         let mut stmt = tx
             .prepare(
-                "SELECT seq, model, model_family, input_tokens, output_tokens, \
+                "SELECT seq, model, input_tokens, output_tokens, \
                  cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, \
                  cost_usd, ingest_cost_usd, generate_cost_usd \
                  FROM turn WHERE kind = ?1 AND session_id = ?2",
@@ -2147,15 +2146,14 @@ pub fn recompute_session(
                 Ok(TurnCost {
                     seq: row.get(0)?,
                     model: row.get(1)?,
-                    family: row.get(2)?,
-                    input: row.get(3)?,
-                    output: row.get(4)?,
-                    cache_read: row.get(5)?,
-                    write_5m: row.get(6)?,
-                    write_1h: row.get(7)?,
-                    stored_cost: row.get(8)?,
-                    stored_ingest: row.get(9)?,
-                    stored_generate: row.get(10)?,
+                    input: row.get(2)?,
+                    output: row.get(3)?,
+                    cache_read: row.get(4)?,
+                    write_5m: row.get(5)?,
+                    write_1h: row.get(6)?,
+                    stored_cost: row.get(7)?,
+                    stored_ingest: row.get(8)?,
+                    stored_generate: row.get(9)?,
                 })
             })
             .map_err(|err| format!("scan turns: {err}"))?;
@@ -2171,7 +2169,7 @@ pub fn recompute_session(
         let split = if kind == KIND_GROK {
             // Grok's provider-reported aggregate is already authoritative. It
             // was stored by apply_chunk; do not replace it with the local
-            // token-price table, which has no Grok row.
+            // token-price table. This also preserves historical model costs.
             let stored_total = turn.stored_ingest + turn.stored_generate;
             if stored_total.abs() > f64::EPSILON || turn.stored_cost.abs() <= f64::EPSILON {
                 price::CostSplit {
@@ -2188,8 +2186,10 @@ pub fn recompute_session(
             let price = turn
                 .model
                 .as_deref()
-                .and_then(|model| prices.lookup(model))
-                .map(|row| row.price);
+                .and_then(|model| prices.price_for_input(
+                    model,
+                    turn.input + turn.cache_read + turn.write_5m + turn.write_1h,
+                ));
             price::cost_for_turn(
                 price.as_ref(),
                 turn.input,
@@ -2200,12 +2200,16 @@ pub fn recompute_session(
             )
         };
         total_cost += split.total();
-        if let Some(family) = &turn.family {
-            families.insert(family.clone());
-            *per_family.entry(family.clone()).or_insert(0.0) += split.total();
+        // Families are derived data. Refresh them while repricing so a newly
+        // recognized model is fixed in existing sessions and all rollups too.
+        let normalized = turn.model.as_deref().map(price::normalize);
+        if let Some(id) = &normalized {
+            families.insert(id.family.clone());
+            *per_family.entry(id.family.clone()).or_insert(0.0) += split.total();
         }
         tx.execute(
-            "UPDATE turn SET cost_usd = ?3, ingest_cost_usd = ?4, generate_cost_usd = ?5 \
+            "UPDATE turn SET cost_usd = ?3, ingest_cost_usd = ?4, generate_cost_usd = ?5, \
+             model_family = ?7, model_variant = ?8 \
              WHERE kind = ?1 AND session_id = ?2 AND seq = ?6",
             params![
                 kind,
@@ -2213,7 +2217,9 @@ pub fn recompute_session(
                 split.total(),
                 split.ingest,
                 split.generate,
-                turn.seq
+                turn.seq,
+                normalized.as_ref().map(|id| &id.family),
+                normalized.as_ref().and_then(|id| id.variant.as_deref()),
             ],
         )
         .map_err(|err| format!("update turn cost: {err}"))?;

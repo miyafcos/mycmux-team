@@ -167,13 +167,13 @@ export const USAGE_AXES: UsageAxis[] = [
   {
     value: "model_raw",
     label: "モデル",
-    hint: "実際に選んだモデル。gpt-5.6 の sol / terra / luna を分けて見ます",
+    hint: "実際に選んだモデル。GPT の Astra / Sol / Luna などを分けて見ます",
     series: true,
   },
   {
     value: "model",
     label: "シリーズ",
-    hint: "sol / terra / luna をまとめた括り (gpt-5.6, opus-5)",
+    hint: "モデルのシリーズでまとめた括り (gpt-6, gpt-6.1, opus-5.5)",
     series: true,
   },
   { value: "provider", label: "会社", hint: "Anthropic / OpenAI / xAI / Google / ローカル", series: true },

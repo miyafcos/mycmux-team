@@ -67,6 +67,9 @@ pub struct ClaudeUsage {
     pub model_windows: Vec<NamedWindow>,
     pub reset_tickets: Option<ResetTickets>,
     pub reset_status: Option<ClaudeStatus>,
+    /// The body was a JSON object with at least one field. Claude Code treats
+    /// anything else as an in-band error, not as an answer (`cedar_ember` `Je`).
+    pub answered: bool,
 }
 
 impl ClaudeUsage {
@@ -142,7 +145,7 @@ pub async fn claim_at(
     grant_id: &str,
     request_id: &str,
 ) -> reset_tickets::ResetTicketOutcome {
-    use reset_tickets::{ResetTicketOutcome, ResetTicketOutcomeKind};
+    use reset_tickets::{ResetStep, ResetTicketOutcome, ResetTicketOutcomeKind};
     let url = format!(
         "{}/api/organizations/{org}/reset_rate_limits",
         base.trim_end_matches('/')
@@ -163,7 +166,7 @@ pub async fn claim_at(
         .send()
         .await;
     let Ok(response) = response else {
-        return ResetTicketOutcome::new(ResetTicketOutcomeKind::Unconfirmed);
+        return ResetTicketOutcome::at(ResetTicketOutcomeKind::Unconfirmed, ResetStep::Claim, None);
     };
     let status = response.status().as_u16();
     let body = response.text().await.unwrap_or_default();
@@ -182,6 +185,7 @@ fn parse_usage(value: &Value) -> ClaudeUsage {
             .as_ref()
             .map(|status| reset_tickets::claude_tickets(status, Utc::now())),
         reset_status,
+        answered: value.as_object().is_some_and(|fields| !fields.is_empty()),
     }
 }
 

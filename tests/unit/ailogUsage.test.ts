@@ -272,7 +272,7 @@ describe("daily stack", () => {
 
   it("propagates tone from a slice to its stack rect", () => {
     const model = buildUsageModel(
-      [bucket(AUG13, [group("claude-opus-5", { input: 1 })])],
+      [bucket(AUG13, [group("claude-opus-5-5", { input: 1 })])],
       "ioTokens",
     );
     const [rect] = layoutStack(model.days[0], model.max, "absolute");

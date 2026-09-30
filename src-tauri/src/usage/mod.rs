@@ -53,6 +53,9 @@ pub struct UsageState {
     pub cooldowns: tokio::sync::Mutex<HashMap<String, Cooldown>>,
     pub profile_usage_cache: tokio::sync::Mutex<HashMap<String, CachedWindows>>,
     pub reset_credit_details: tokio::sync::Mutex<HashMap<String, reset_tickets::CachedCredits>>,
+    /// Per profile, the Claude status block a press falls back to when its own
+    /// status check fails (see `claude_press_status`).
+    pub reset_claude_status: tokio::sync::Mutex<reset_tickets::ClaudeStatusMemory>,
     pub reset_unsettled: tokio::sync::Mutex<HashMap<String, reset_tickets::UnsettledReset>>,
     pub codex_usage_urls: tokio::sync::Mutex<HashMap<String, String>>,
     pub reset_in_flight: std::sync::Mutex<HashSet<String>>,
@@ -81,6 +84,7 @@ impl UsageState {
             cooldowns: tokio::sync::Mutex::new(HashMap::new()),
             profile_usage_cache: tokio::sync::Mutex::new(HashMap::new()),
             reset_credit_details: tokio::sync::Mutex::new(HashMap::new()),
+            reset_claude_status: tokio::sync::Mutex::new(Default::default()),
             reset_unsettled: tokio::sync::Mutex::new(HashMap::new()),
             codex_usage_urls: tokio::sync::Mutex::new(HashMap::new()),
             reset_in_flight: std::sync::Mutex::new(HashSet::new()),

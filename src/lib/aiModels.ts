@@ -36,6 +36,9 @@ export const AI_PROVIDERS: readonly AiProviderDef[] = [
     cli: "codex",
     defaultModel: "gpt-5.6-luna",
     presets: [
+      { id: "gpt-6.1-sol", note: "最新・標準" },
+      { id: "gpt-6-sol", note: "旧世代・標準" },
+      { id: "gpt-6-luna", note: "最新・高速" },
       { id: "gpt-6-astra", note: "最上位・最高コスト" },
       { id: "gpt-5.6-luna", note: "既定・高速" },
       { id: "gpt-5.6-terra", note: "標準" },
@@ -49,6 +52,9 @@ export const AI_PROVIDERS: readonly AiProviderDef[] = [
     defaultModel: "claude-haiku-4-5-20251001",
     presets: [
       { id: "claude-haiku-4-5-20251001", note: "高速" },
+      { id: "claude-sonnet-5-5", note: "最新・標準" },
+      { id: "claude-opus-5-5", note: "最新・高精度" },
+      { id: "claude-fable-5-1", note: "最新・最上位" },
       { id: "claude-sonnet-5", note: "標準" },
       { id: "claude-opus-5", note: "高精度・高コスト" },
       { id: "claude-fable-5", note: "高精度・高コスト" },

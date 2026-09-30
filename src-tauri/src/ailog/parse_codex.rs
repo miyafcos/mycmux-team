@@ -642,9 +642,13 @@ fn handle_token_count(
         return;
     }
 
-    let raw_input = num(&last, "input_tokens");
-    let cached = num(&last, "cached_input_tokens");
-    let uncached = (raw_input - cached).max(0);
+    let raw_input = num(&last, "input_tokens").max(0);
+    let cached = num(&last, "cached_input_tokens").max(0).min(raw_input);
+    let cache_write = num(&last, "cache_write_input_tokens")
+        .max(0).min(raw_input - cached);
+    // Both cache reads and writes are subsets of input_tokens. Store each
+    // category once; GPT-5.6+ gives writes a separate published rate.
+    let uncached = raw_input - cached - cache_write;
 
     if let Some(rate_limits) = payload.get("rate_limits") {
         if let Some(plan) = rate_limits.get("plan_type").and_then(Value::as_str) {
@@ -662,8 +666,8 @@ fn handle_token_count(
         output_tokens: num(&last, "output_tokens"),
         cache_read_tokens: cached,
         // Codex reports a single cache-write counter with no TTL split; it is
-        // stored in the 5-minute column and priced at the input rate.
-        cache_write_5m_tokens: num(&last, "cache_write_input_tokens"),
+        // stored in the 5-minute column and priced at the model's write rate.
+        cache_write_5m_tokens: cache_write,
         cache_write_1h_tokens: 0,
         reasoning_tokens: num(&last, "reasoning_output_tokens"),
         reported_cost_usd: None,

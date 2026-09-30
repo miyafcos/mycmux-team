@@ -224,6 +224,30 @@ describe("after the command answers", () => {
     );
   });
 
+  it("names a rate limit as one, and points only a Claude row with nothing pending at claude.ai", () => {
+    const claude = resetTicketOutcomeMessage(row(), claudeTickets, outcome("rate_limited"));
+    expect(claude).toEqual({
+      tone: "warn",
+      text: "サーバーの回数制限で受け付けられませんでした。何も使われていません。少し待ってからもう一度押してください。急ぐときは、同じアカウントで開いた claude.ai (ブラウザ) からも使える場合があります。",
+    });
+    const codex = resetTicketOutcomeMessage(row({ provider: "codex" }), codexTickets, outcome("rate_limited"));
+    expect(codex.text).toContain("何も使われていません");
+    expect(codex.text).not.toContain("claude.ai");
+    // After an unconfirmed press the earlier request may still land, so using
+    // the ticket from the browser as well could spend a second one.
+    const retry = resetTicketOutcomeMessage(
+      row(),
+      claudeTickets,
+      outcome("rate_limited", { retry_of_unconfirmed: true }),
+    );
+    expect(retry.text).toContain("前回の操作が通ったかは、まだ分かりません。");
+    expect(retry.text).not.toContain("claude.ai");
+    for (const message of [claude, codex, retry]) {
+      expect(message.text).toContain("回数制限");
+      expect(message.text).not.toContain("混み合");
+    }
+  });
+
   it("never claims nothing was spent when the result is unknown", () => {
     const text = resetTicketOutcomeMessage(row(), claudeTickets, outcome("unconfirmed")).text;
     expect(text).not.toContain("何も使われていません");
