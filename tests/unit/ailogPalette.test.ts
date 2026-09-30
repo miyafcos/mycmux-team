@@ -9,6 +9,7 @@ import {
   PROVIDER_HUE,
   TIER_LADDER,
   UNTIERED_POLICY,
+  resolveFamily,
   categoricalPaint,
   modelPaint,
   providerOf,
@@ -40,19 +41,20 @@ function expectedNear(actual: string, expected: string): void {
 }
 
 const measured = [
-  ["fable-5", "#a63b11", "#8b523f"], ["opus-5", "#b15232", "#976352"],
-  ["sonnet-5", "#ba674c", "#a37566"], ["haiku-4.5", "#c37c65", "#ae8679"],
-  ["gpt-6-astra", "#2460b7", "#456492"], ["gpt-5.6-sol", "#376dbc", "#53709a"],
-  ["gpt-5.6-terra", "#497ac1", "#617ba2"], ["gpt-5.6-luna", "#5b86c7", "#6f87aa"],
-  ["gpt-5.5", "#6c92cb", "#7d92b2"], ["grok-4.6", "#a55b96", "#936b8a"],
+  ["fable-5.1", "#a73a15", "#8b5240"], ["opus-5.5", "#b15233", "#976353"],
+  ["sonnet-5.5", "#bb674d", "#a27567"], ["haiku-4.5", "#c37c66", "#af8679"],
+  ["gpt-6-astra", "#2460b8", "#456492"], ["gpt-6.1-sol", "#497ac1", "#617ba2"],
+  ["gpt-6-luna", "#6d92ca", "#7c92b3"], ["grok-4.7", "#a55b98", "#946a8b"],
+  ["gemini-3.8-flash", "#00755a", "#426e5f"], ["gemini-3.5-flash-lite", "#4ba488", "#709c8c"],
 ] as const;
 
 // Providers intentionally drawn in NEUTRAL rather than a company hue.
 const HUELESS_PROVIDERS = new Set(["local", "other"]);
 
 const legacyForRung: Record<string, string> = {
-  "gpt-5.5": "gpt-5.4",
-  "fable-5": "mythos-5", "opus-5": "opus-4.8", "sonnet-5": "sonnet-4.6", "grok-4.6": "grok-4.6-build",
+  "fable-5.1": "fable-5", "opus-5.5": "opus-5", "sonnet-5.5": "sonnet-5",
+  "gpt-6.1-sol": "gpt-6-sol", "gpt-6-luna": "gpt-5.6-luna", "grok-4.7": "grok-4.6",
+  "gemini-3.8-flash": "gemini-3.7-flash", "gemini-3.5-flash-lite": "gemini-3.1-flash-lite",
 };
 
 function mutedForRung(rung: string): string {
@@ -104,11 +106,10 @@ describe("ailog OKLCH palette", () => {
   });
 
   it("E: keeps the ten simultaneous core series distinguishable, including CVD transforms", () => {
-    const core = [...TIER_LADDER.anthropic, ...TIER_LADDER.openai, ...TIER_LADDER.xai].map((rung) => modelPaint(rung).color);
+    const core = Object.values(TIER_LADDER).flat().map((rung) => modelPaint(rung).color);
     const minPairwise = (colors: readonly string[]) => Math.min(...colors.flatMap((color, index) => colors.slice(index + 1).map((other) => deltaEok(color, other))));
     expect(minPairwise(core)).toBeGreaterThanOrEqual(0.035);
-    // Gemini is intentionally excluded: it is not priced/stemmed and measured
-    // too close to the core under tritan/protan transformations. Local is neutral.
+    expect(core).toHaveLength(10); // Includes all four cloud providers.
     for (const matrix of [
       [[0.152286, 1.052583, -0.204868], [0.114503, 0.786281, 0.099216], [-0.003882, -0.048116, 1.051998]],
       [[0.367322, 0.860646, -0.227968], [0.280085, 0.672501, 0.047413], [-0.011820, 0.042940, 0.968881]],
@@ -126,7 +127,7 @@ describe("ailog OKLCH palette", () => {
       expectedNear(mutedForRung(rung), muted);
     }
     expectedNear(seriesPaint("google", "provider").color, "#008f6f");
-    expectedNear(modelPaint("gemini-untiered").color, "#528674");
+    expectedNear(modelPaint("gemini-untiered").color, "#709c8c");
   });
 
   it("I: mirrors price.rs prices, stems, and provider strings", () => {
@@ -139,9 +140,10 @@ describe("ailog OKLCH palette", () => {
     const stemsBlock = /const FAMILY_STEMS:[\s\S]*?= &\[([\s\S]*?)\n\];/.exec(price)?.[1] ?? "";
     const displayFamilies = [...stemsBlock.matchAll(/\("[^"]+", "([^"]+)"\)/g)].map((match) => match[1]);
     for (const family of displayFamilies) {
-      expect(ladderModels.has(family) || allLadderModels.some((model) => model.startsWith(`${family}-`)) || Object.hasOwn(LEGACY_FAMILIES, family)).toBe(true);
+      expect(ladderModels.has(family) || allLadderModels.some((model) => model.startsWith(`${family}-`)) || Object.hasOwn(LEGACY_FAMILIES, family) || Object.hasOwn(FAMILY_REPRESENTATIVE, family), family).toBe(true);
     }
-    expect(FAMILY_STEMS).toHaveLength(displayFamilies.length);
+    const rustStems = [...stemsBlock.matchAll(/\("([^"]+)", "([^"]+)"\)/g)].map(match => [match[1], match[2]]);
+    expect(FAMILY_STEMS).toEqual(rustStems);
     const providerBlock = /provider_prefixes: &\[([\s\S]*?)\],/.exec(price)?.[1] ?? "";
     expect(providerBlock).not.toBe("");
     const asStrBlock = /pub const fn as_str[\s\S]*?match self \{([\s\S]*?)\n        \}/.exec(price)?.[1] ?? "";
@@ -159,9 +161,9 @@ describe("ailog OKLCH palette", () => {
     expect(seriesPaint("mycmux", "project")).toEqual(seriesPaint("mycmux", "project"));
     expect(modelPaint("claude-opus-5").color).toBe(modelPaint("opus-5").color);
     expect(modelPaint("claude-opus-5[1m]").color).toBe(modelPaint("opus-5").color);
-    expect(hexToOklch(modelPaint("gpt-5.6-sol").color).L).toBeLessThan(hexToOklch(modelPaint("gpt-5.6-terra").color).L);
-    expect(hexToOklch(modelPaint("claude-fable-5").color).L).toBeLessThan(hexToOklch(modelPaint("opus-5").color).L);
-    expect(modelPaint("opus-4.8")).toEqual({ color: mutedForRung("opus-5"), tone: "muted" });
+    expect(hexToOklch(modelPaint("gpt-6.1-sol").color).L).toBeLessThan(hexToOklch(modelPaint("gpt-6-luna").color).L);
+    expect(hexToOklch(modelPaint("claude-fable-5-1").color).L).toBeLessThan(hexToOklch(modelPaint("opus-5.5").color).L);
+    expect(modelPaint("opus-4.8")).toEqual({ color: mutedForRung("opus-5.5"), tone: "muted" });
     expect(providerOf("grok-4.6")).toBe("xai");
     const unlisted = modelPaint("claude-totally-new-model");
     expect(unlisted).toEqual(UNTIERED_POLICY === "neutral" ? { color: NEUTRAL_COLOR, tone: "neutral" } : { color: mutedForRung("haiku-4.5"), tone: "muted" });
@@ -184,19 +186,43 @@ describe("ailog OKLCH palette", () => {
   });
 
   it("M: resolves collapsed families and every tier rung as solid model series", () => {
-    expect(seriesPaint("gpt-5.6", "model")).toEqual({ color: modelPaint("gpt-5.6-terra").color, tone: "solid" });
-    expect(seriesPaint("opus-5", "model")).toEqual({ color: modelPaint("claude-opus-5").color, tone: "solid" });
-    expect(FAMILY_REPRESENTATIVE).toEqual({ "gpt-6": "gpt-6-astra", "gpt-5.6": "gpt-5.6-terra" });
+    expect(seriesPaint("gpt-5.6", "model")).toEqual(modelPaint("gpt-5.6-terra"));
+    expect(seriesPaint("gpt-6.1", "model")).toEqual(modelPaint("gpt-6.1-sol"));
+    expect(seriesPaint("opus-5.5", "model")).toEqual({ color: modelPaint("claude-opus-5-5").color, tone: "solid" });
+    expect(FAMILY_REPRESENTATIVE).toEqual({ "gpt-6": "gpt-6-astra", "gpt-6.1": "gpt-6.1-sol", "gpt-5.6": "gpt-5.6-terra" });
     const rungs = Object.values(TIER_LADDER).flat();
     expect(rungs).toHaveLength(10);
     for (const rung of rungs) expect(seriesPaint(rung, "model").tone, rung).not.toBe("muted");
+  });
+
+  it("resolves current snapshots and does not assign future Claude versions to older families", () => {
+    for (const [raw, family] of [
+      ["claude-fable-5-1", "fable-5.1"], ["claude-opus-5-5[1m]", "opus-5.5"],
+      ["claude-sonnet-5-5-20260928", "sonnet-5.5"], ["gpt-6.1-sol", "gpt-6.1"],
+      ["claude-opus-5-7", "claude-opus-5-7"], ["gemini-3.8-flash-20260901", "gemini-3.8-flash"],
+    ]) expect(resolveFamily(raw)).toBe(family);
+    for (const [raw, provider] of [["gpt-6.1", "openai"], ["opus-5.5", "anthropic"], ["grok-4.7", "xai"], ["gemini-3.8-flash", "google"]]) {
+      expect(providerOf(raw)).toBe(provider);
+    }
+  });
+
+  it("keeps snapshot colors stable and future named variants visibly untiered", () => {
+    for (const [snapshot, base] of [
+      ["gpt-6.1-sol-2026-09-22", "gpt-6.1-sol"],
+      ["gpt-6[astra]", "gpt-6-astra"],
+      ["gpt-5.6-sol-20260901", "gpt-5.6-sol"],
+      ["claude-opus-5-5-20260922[1m]", "claude-opus-5-5"],
+    ]) expect(modelPaint(snapshot)).toEqual(modelPaint(base));
+    for (const model of ["gpt-6.1-nova", "claude-opus-5-5-future", "gemini-3.8-flash-image"]) {
+      expect(modelPaint(model).tone, model).toBe("muted");
+    }
   });
 
   it("N: renders hue-less providers and local/flat model names as neutral", () => {
     for (const provider of HUELESS_PROVIDERS) {
       expect(seriesPaint(provider, "provider")).toEqual({ color: NEUTRAL_COLOR, tone: "neutral" });
     }
-    for (const model of ["ollama/llama3", "fugu-ultra", "fugu/ultra"]) {
+    for (const model of ["ollama/llama3", "fugu-ultra", "fugu/ultra", "gpt-6-luna/local"]) {
       expect(modelPaint(model)).toEqual({ color: NEUTRAL_COLOR, tone: "neutral" });
     }
     expect(providerOf("ollama/llama3")).toBeNull();

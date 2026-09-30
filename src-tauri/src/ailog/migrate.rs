@@ -5,7 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::ailog::price::{PriceTable, DEFAULT_PRICES};
 
 const VERSION: i64 = 2;
-const PRICE_CATALOG_VERSION: &str = "2";
+const PRICE_CATALOG_VERSION: &str = "3";
 
 pub fn apply(conn: &Connection) -> Result<(), String> {
     let current = conn
@@ -86,11 +86,13 @@ fn apply_price_catalog(conn: &Connection) -> Result<(), String> {
     let tx = conn
         .unchecked_transaction()
         .map_err(|err| format!("begin price catalog: {err}"))?;
+    crate::ailog::price::seed_defaults(&tx)?;
+    let now = chrono::Utc::now().timestamp_millis();
     for (model, price) in DEFAULT_PRICES {
         tx.execute(
             "UPDATE price SET input_per_mtok = ?2, output_per_mtok = ?3, \
              cache_read_per_mtok = ?4, cache_write_5m_per_mtok = ?5, \
-             cache_write_1h_per_mtok = ?6 \
+             cache_write_1h_per_mtok = ?6, updated_at = ?7 \
              WHERE model = ?1 AND source = 'default'",
             params![
                 model,
@@ -99,6 +101,7 @@ fn apply_price_catalog(conn: &Connection) -> Result<(), String> {
                 price.cache_read,
                 price.cache_write_5m,
                 price.cache_write_1h,
+                now,
             ],
         )
         .map_err(|err| format!("update default price {model}: {err}"))?;
@@ -109,6 +112,17 @@ fn apply_price_catalog(conn: &Connection) -> Result<(), String> {
         [],
     )
     .map_err(|err| format!("bump price generation: {err}"))?;
+    // Before catalog v3 the Codex parser left cache writes inside ordinary
+    // input as well. Correct known legacy caches exactly once, without
+    // rereading/removing source logs or touching Claude's disjoint counters.
+    if matches!(current.as_deref(), Some("1" | "2")) {
+        tx.execute(
+            "UPDATE turn SET input_tokens = MAX(0, input_tokens - \
+             cache_write_5m_tokens - cache_write_1h_tokens) \
+             WHERE kind = ?1 AND (cache_write_5m_tokens > 0 OR cache_write_1h_tokens > 0)",
+            params![crate::ailog::KIND_CODEX],
+        ).map_err(|err| format!("correct legacy Codex cache writes: {err}"))?;
+    }
     let prices = PriceTable::load(&tx)?;
     crate::ailog::index::reprice_all_in_transaction(&tx, &prices)?;
     tx.execute(

@@ -93,20 +93,24 @@ pub struct Price {
 
 impl Price {
     const fn anthropic(input: f64, output: f64) -> Self {
-        // Anthropic publishes cache rates as multiples of the base input rate:
-        // reads ~0.1x, 5-minute writes 1.25x, 1-hour writes 2x.
+        Self::anthropic_cached(input, output, 0.1)
+    }
+
+    const fn anthropic_cached(input: f64, output: f64, read_multiplier: f64) -> Self {
+        // New generations publish their own read discount; write TTLs remain
+        // 1.25x / 2x. Never infer a new model's read rate from its predecessor.
         Self {
             input,
             output,
-            cache_read: input * 0.1,
+            cache_read: input * read_multiplier,
             cache_write_5m: input * 1.25,
             cache_write_1h: input * 2.0,
         }
     }
 
     const fn openai(input: f64, output: f64, cache_read: f64) -> Self {
-        // OpenAI bills a cache write as ordinary input (no write premium), so
-        // both write columns mirror the input rate.
+        // Legacy OpenAI models, and Gemini text input, use ordinary input
+        // rates for ingestion. Gemini's separate cache storage is not included.
         Self {
             input,
             output,
@@ -115,38 +119,66 @@ impl Price {
             cache_write_1h: input,
         }
     }
+
+    const fn openai_cached(input: f64, output: f64, cache_read: f64) -> Self {
+        // GPT-5.6 and later publish a separate 1.25x cache-write rate. The
+        // reported write counter has no TTL split, so both columns use it.
+        Self {
+            cache_write_5m: input * 1.25,
+            cache_write_1h: input * 1.25,
+            ..Self::openai(input, output, cache_read)
+        }
+    }
 }
 
 /// Reference rates, keyed by the most specific name that has its own price.
 ///
-/// Anthropic rows: model list cached 2026-06-24 (Claude API reference).
-/// OpenAI rows: GPT-5.6 Sol/Terra/Luna lineup recorded 2026-08-10;
-/// terra/luna corrected and gpt-5.5 / gpt-5.4 added 2026-08-18
-/// (independent aggregator cross-check + cache-read = 10% of input).
-/// GPT-6 Astra: official OpenAI documentation verified by dispatch spec 2026-09-05.
+/// Verified 2026-09-30 against official first-party USD/MTok pricing:
+/// - https://platform.claude.com/docs/en/about-claude/pricing
+/// - https://developers.openai.com/api/docs/pricing
+/// - https://ai.google.dev/gemini-api/docs/pricing
+/// Standard text-token rates. GPT-5.6 Sol's current promotion is included;
+/// Gemini 3.6/3.7/3.8 Flash's promotion runs through 2026-12-31. Audio,
+/// cache storage, tool fees, regional uplifts and nonstandard tiers are excluded.
+/// Grok Build retains its provider-reported costs instead of a catalog rate.
 pub const DEFAULT_PRICES: &[(&str, Price)] = &[
-    // --- Anthropic -------------------------------------------------------
+    ("fable-5.1", Price::anthropic_cached(10.0, 50.0, 0.025)),
+    ("mythos-5.1", Price::anthropic_cached(10.0, 50.0, 0.025)),
+    ("opus-5.5", Price::anthropic_cached(4.0, 20.0, 0.05)),
+    ("sonnet-5.5", Price::anthropic(2.0, 10.0)),
     ("fable-5", Price::anthropic(10.0, 50.0)),
     ("mythos-5", Price::anthropic(10.0, 50.0)),
     ("opus-5", Price::anthropic(5.0, 25.0)),
     ("opus-4.8", Price::anthropic(5.0, 25.0)),
     ("opus-4.7", Price::anthropic(5.0, 25.0)),
     ("opus-4.6", Price::anthropic(5.0, 25.0)),
-    ("sonnet-5", Price::anthropic(3.0, 15.0)),
+    ("sonnet-5", Price::anthropic(2.0, 10.0)),
     ("sonnet-4.6", Price::anthropic(3.0, 15.0)),
     ("haiku-4.5", Price::anthropic(1.0, 5.0)),
-    // --- OpenAI (Codex) --------------------------------------------------
-    ("gpt-6-astra", Price::openai(10.0, 50.0, 1.00)),
-    ("gpt-5.6-sol", Price::openai(5.0, 30.0, 0.50)),
-    ("gpt-5.6-terra", Price::openai(2.0, 12.0, 0.20)),
-    ("gpt-5.6-luna", Price::openai(0.20, 1.20, 0.02)),
+    ("gpt-6-astra", Price::openai_cached(10.0, 50.0, 1.0)),
+    ("gpt-6.1-sol", Price::openai_cached(2.0, 10.0, 0.10)),
+    ("gpt-6-sol", Price::openai_cached(2.0, 10.0, 0.20)),
+    ("gpt-6-luna", Price::openai_cached(0.10, 0.50, 0.01)),
+    ("gpt-5.6-sol", Price::openai_cached(4.0, 20.0, 0.40)),
+    ("gpt-5.6-terra", Price::openai_cached(2.0, 12.0, 0.20)),
+    ("gpt-5.6-luna", Price::openai_cached(0.20, 1.20, 0.02)),
     ("gpt-5.5", Price::openai(5.0, 30.0, 0.50)),
-    ("gpt-5.4", Price::openai(2.50, 15.00, 0.25)),
+    ("gpt-5.4", Price::openai(2.50, 15.0, 0.25)),
+    ("gemini-3.8-flash", Price::openai(0.75, 3.75, 0.075)),
+    ("gemini-3.7-flash", Price::openai(0.75, 3.75, 0.075)),
+    ("gemini-3.6-flash", Price::openai(0.75, 3.75, 0.075)),
+    ("gemini-3.5-flash", Price::openai(1.50, 9.0, 0.15)),
+    ("gemini-3.5-flash-lite", Price::openai(0.30, 2.50, 0.03)),
+    ("gemini-3.1-flash-lite", Price::openai(0.25, 1.50, 0.025)),
 ];
 
 /// Stem -> display family. Longest matching stem wins; a raw string that
 /// matches no stem is left completely alone (spec §4.4: never guess).
 const FAMILY_STEMS: &[(&str, &str)] = &[
+    ("claude-fable-5-1", "fable-5.1"),
+    ("claude-mythos-5-1", "mythos-5.1"),
+    ("claude-opus-5-5", "opus-5.5"),
+    ("claude-sonnet-5-5", "sonnet-5.5"),
     ("claude-fable-5", "fable-5"),
     ("claude-mythos-5", "mythos-5"),
     ("claude-mythos-preview", "mythos-preview"),
@@ -162,9 +194,19 @@ const FAMILY_STEMS: &[(&str, &str)] = &[
     ("claude-sonnet-4-5", "sonnet-4.5"),
     ("claude-sonnet-4-0", "sonnet-4.0"),
     ("claude-haiku-4-5", "haiku-4.5"),
+    ("gpt-6.1", "gpt-6.1"),
     ("gpt-6", "gpt-6"),
     ("gpt-5.6", "gpt-5.6"),
     ("gpt-5.5", "gpt-5.5"),
+    ("gpt-5.4", "gpt-5.4"),
+    ("grok-4.7", "grok-4.7"),
+    ("grok-4.6", "grok-4.6"),
+    ("gemini-3.8-flash", "gemini-3.8-flash"),
+    ("gemini-3.7-flash", "gemini-3.7-flash"),
+    ("gemini-3.6-flash", "gemini-3.6-flash"),
+    ("gemini-3.5-flash", "gemini-3.5-flash"),
+    ("gemini-3.5-flash-lite", "gemini-3.5-flash-lite"),
+    ("gemini-3.1-flash-lite", "gemini-3.1-flash-lite"),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,7 +233,12 @@ pub fn normalize(raw: &str) -> ModelId {
         let variant_ok = rest.is_empty()
             || rest.starts_with('-')
             || (rest.starts_with('[') && rest.ends_with(']'));
-        if !variant_ok {
+        // A numeric suffix can be a snapshot date, but an unregistered
+        // Claude version (e.g. -5-7) must never collapse into an older model.
+        let unknown_version = rest.strip_prefix('-').is_some_and(|suffix| {
+            suffix.as_bytes().first().is_some_and(u8::is_ascii_digit) && !is_catalog_suffix(rest)
+        });
+        if !variant_ok || unknown_version {
             continue;
         }
         if best.map_or(true, |(prev, _)| stem.len() > prev.len()) {
@@ -362,7 +409,57 @@ impl PriceTable {
                 return Some(row);
             }
         }
-        self.rows.get(&id.family)
+        // Only documented context qualifiers and snapshot dates inherit a
+        // family rate. An unknown named variant is a coverage gap, not the
+        // base model (e.g. gpt-5.5-pro must not get gpt-5.5's price).
+        if id
+            .variant
+            .as_deref()
+            .is_none_or(|variant| variant == "1m" || is_snapshot_date(variant))
+        {
+            if let Some(row) = self.rows.get(&id.family) {
+                return Some(row);
+            }
+        }
+        // A dated GPT tier has two suffixes (sol + date). Match the longest
+        // catalog name, and accept only a snapshot/context suffix after it.
+        self.rows
+            .values()
+            .filter(|row| {
+                id.raw
+                    .strip_prefix(&row.model)
+                    .is_some_and(is_catalog_suffix)
+            })
+            .max_by_key(|row| row.model.len())
+    }
+
+    /// Resolve the published long-context standard rate for supported GPT
+    /// models. User overrides already describe the operator's chosen rate.
+    pub fn price_for_input(&self, raw: &str, context_tokens: i64) -> Option<Price> {
+        let row = self.lookup(raw)?;
+        let mut price = row.price;
+        if row.source == "default"
+            && context_tokens > 272_000
+            && matches!(
+                row.model.as_str(),
+                "gpt-6-astra"
+                    | "gpt-6.1-sol"
+                    | "gpt-6-sol"
+                    | "gpt-6-luna"
+                    | "gpt-5.6-sol"
+                    | "gpt-5.6-terra"
+                    | "gpt-5.6-luna"
+                    | "gpt-5.5"
+                    | "gpt-5.4"
+            )
+        {
+            price.input *= 2.0;
+            price.cache_read *= 2.0;
+            price.cache_write_5m *= 2.0;
+            price.cache_write_1h *= 2.0;
+            price.output *= 1.5;
+        }
+        Some(price)
     }
 
     /// `"default" | "user" | "mixed"` describing where the rates came from.
@@ -381,6 +478,27 @@ impl PriceTable {
             _ => "default".to_string(),
         }
     }
+}
+
+/// A suffix that changes the snapshot/context, not the model's price tier.
+fn is_catalog_suffix(suffix: &str) -> bool {
+    if suffix == "[1m]" {
+        return true;
+    }
+    suffix.strip_prefix('-').is_some_and(is_snapshot_date)
+}
+
+fn is_snapshot_date(value: &str) -> bool {
+    let value = value.strip_suffix("[1m]").unwrap_or(value);
+    (value.len() == 8 && value.bytes().all(|b| b.is_ascii_digit()))
+        || (value.len() == 10
+            && value.bytes().enumerate().all(|(i, b)| {
+                if i == 4 || i == 7 {
+                    b == b'-'
+                } else {
+                    b.is_ascii_digit()
+                }
+            }))
 }
 
 fn is_local_model(raw: &str, normalized: &str) -> bool {

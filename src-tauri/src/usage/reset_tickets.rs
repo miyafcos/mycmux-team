@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ResetTickets {
@@ -48,6 +50,9 @@ pub struct ResetTicketOutcome {
     pub resets_left: Option<u32>,
     pub weekly_resets_at: Option<String>,
     pub retry_of_unconfirmed: bool,
+    /// For the `reset_ticket_use` log line only; the page never sees it.
+    #[serde(skip)]
+    pub trace: ResetTrace,
 }
 
 impl ResetTicketOutcome {
@@ -57,7 +62,169 @@ impl ResetTicketOutcome {
             resets_left: None,
             weekly_resets_at: None,
             retry_of_unconfirmed: false,
+            trace: ResetTrace::default(),
         }
+    }
+
+    /// An outcome decided by one request, and the HTTP status it failed with.
+    pub fn at(kind: ResetTicketOutcomeKind, step: ResetStep, http_status: Option<u16>) -> Self {
+        let mut outcome = Self::new(kind);
+        outcome.trace.step = Some(step);
+        outcome.trace.http_status = http_status;
+        outcome
+    }
+}
+
+/// The request that decided a Claude press.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResetStep {
+    /// `/api/oauth/profile`, asked only when the token's owner is not cached.
+    Profile,
+    /// The status check (`/api/oauth/usage?cedar_ember=1`) just before the claim.
+    Status,
+    /// The claim (`reset_rate_limits`).
+    Claim,
+}
+
+impl ResetStep {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Profile => "profile",
+            Self::Status => "status",
+            Self::Claim => "claim",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResetTrace {
+    pub step: Option<ResetStep>,
+    /// The HTTP status that request failed with, when it answered with one.
+    pub http_status: Option<u16>,
+    /// The status check failed and the claim went out on the remembered status.
+    pub remembered_status: bool,
+}
+
+/// The status block the last successful usage fetch returned for a Claude row
+/// (the poll's or a press's own check), with the owner of the token that asked.
+#[derive(Clone, Debug)]
+pub struct RememberedClaudeStatus {
+    pub account_uuid: String,
+    pub organization_uuid: Option<String>,
+    pub status: ClaudeStatus,
+    /// When the fetch that returned it was sent.
+    pub asked_at_ms: i64,
+}
+
+/// When a request that can tell `ClaudeStatusMemory` something was sent: its
+/// place in the order of such requests, and the wall clock for the age limit.
+/// The order decides which answer is newer; wall-clock milliseconds can tie
+/// and can step backwards.
+#[derive(Clone, Copy, Debug)]
+pub struct StatusAsk {
+    pub seq: u64,
+    pub at_ms: i64,
+}
+
+impl StatusAsk {
+    /// Taken just before the request is sent.
+    pub fn now() -> Self {
+        Self { seq: next_status_seq(), at_ms: Utc::now().timestamp_millis() }
+    }
+}
+
+pub fn next_status_seq() -> u64 {
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Per profile, the Claude status a press falls back to when its own status
+/// check fails.
+#[derive(Default)]
+pub struct ClaudeStatusMemory {
+    entries: HashMap<String, RememberedClaudeStatus>,
+    /// The newest request whose answer was taken (kept or cleared).
+    answered_seq: HashMap<String, u64>,
+    /// Taken when a claim that may have spent the grant got its answer.
+    claim_seq: HashMap<String, u64>,
+}
+
+impl ClaudeStatusMemory {
+    /// Keep what a successful usage fetch returned, as Claude Code keeps its
+    /// last answer. A block saying `unavailable` is a failed answer, so the
+    /// previous one stays; a missing block is an answer and clears it. An
+    /// answer to a request sent before a newer one was answered writes
+    /// nothing, and neither does one sent before a claim got its answer: it
+    /// may describe the grant before that claim spent it.
+    pub fn remember(
+        &mut self,
+        profile_id: &str,
+        account_uuid: &str,
+        organization_uuid: Option<&str>,
+        status: Option<&ClaudeStatus>,
+        ask: StatusAsk,
+    ) {
+        let older = |seen: &HashMap<String, u64>| {
+            seen.get(profile_id).is_some_and(|&seq| ask.seq < seq)
+        };
+        if older(&self.claim_seq) || older(&self.answered_seq) {
+            return;
+        }
+        match status {
+            Some(status) if !status.eligible
+                && status.ineligible_reason.as_deref() == Some("unavailable") => return,
+            Some(status) => {
+                self.entries.insert(profile_id.to_string(), RememberedClaudeStatus {
+                    account_uuid: account_uuid.to_string(),
+                    organization_uuid: organization_uuid.map(str::to_string),
+                    status: status.clone(),
+                    asked_at_ms: ask.at_ms,
+                });
+            }
+            None => {
+                self.entries.remove(profile_id);
+            }
+        }
+        self.answered_seq.insert(profile_id.to_string(), ask.seq);
+    }
+
+    /// A claim that may have spent the grant (any answer but 429) got its
+    /// answer; `seq` is taken after that answer arrived. The remembered status
+    /// predates the claim, so it goes, and so does any answer to a request
+    /// sent before `seq`.
+    pub fn claim_answered(&mut self, profile_id: &str, seq: u64) {
+        self.claim_seq.insert(profile_id.to_string(), seq);
+        self.entries.remove(profile_id);
+    }
+
+    /// The remembered status a failed check may fall back to: same account and
+    /// organization, asked at most `max_age_ms` ago, and offering a grant to
+    /// use now.
+    pub fn usable(
+        &self,
+        profile_id: &str,
+        account_uuid: &str,
+        organization_uuid: Option<&str>,
+        now: DateTime<Utc>,
+        max_age_ms: i64,
+    ) -> Option<ClaudeStatus> {
+        let entry = self.entries.get(profile_id)?;
+        let fresh = now.timestamp_millis().saturating_sub(entry.asked_at_ms) <= max_age_ms;
+        (entry.account_uuid == account_uuid
+            && entry.organization_uuid.as_deref() == organization_uuid
+            && fresh
+            && claude_next_grant(&entry.status, now).is_some())
+            .then(|| entry.status.clone())
+    }
+
+    #[cfg(test)]
+    pub fn get(&self, profile_id: &str) -> Option<&RememberedClaudeStatus> {
+        self.entries.get(profile_id)
+    }
+
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 }
 
@@ -364,16 +531,16 @@ pub fn codex_tickets(available: u32, details: Option<&CachedCredits>) -> ResetTi
 pub fn map_claude_outcome(status: u16, body: &str) -> ResetTicketOutcome {
     use ResetTicketOutcomeKind::*;
     if status == 429 {
-        return ResetTicketOutcome::new(RateLimited);
+        return ResetTicketOutcome::at(RateLimited, ResetStep::Claim, Some(status));
     }
     if status == 401 || status == 403 {
-        return ResetTicketOutcome::new(AuthError);
+        return ResetTicketOutcome::at(AuthError, ResetStep::Claim, Some(status));
     }
     if status != 200 {
-        return ResetTicketOutcome::new(Unconfirmed);
+        return ResetTicketOutcome::at(Unconfirmed, ResetStep::Claim, Some(status));
     }
     let Ok(value) = serde_json::from_str::<Value>(body) else {
-        return ResetTicketOutcome::new(Unconfirmed);
+        return ResetTicketOutcome::at(Unconfirmed, ResetStep::Claim, None);
     };
     let kind = match value.get("result").and_then(Value::as_str) {
         Some("reset") => Reset,
@@ -399,6 +566,7 @@ pub fn map_claude_outcome(status: u16, body: &str) -> ResetTicketOutcome {
             None
         },
         retry_of_unconfirmed: false,
+        trace: ResetTrace { step: Some(ResetStep::Claim), ..ResetTrace::default() },
     }
 }
 
@@ -711,6 +879,78 @@ mod tests {
             Some("2026-10-03T00:00:00Z")
         );
     }
+    #[test]
+    fn status_memory_keeps_the_last_answer_until_a_claim_may_have_spent_it() {
+        let status = |block: serde_json::Value| {
+            parse_claude_status(&serde_json::json!({ "cedar_ember": block })).unwrap()
+        };
+        let usable = status(serde_json::json!({
+            "eligible": true, "at_limit": true, "next_grant_id": "grant-a",
+            "grants": [{"id": "grant-a", "resets_left": 3, "usable_now": true}],
+        }));
+        let unavailable = status(serde_json::json!({
+            "eligible": false, "ineligible_reason": "unavailable",
+        }));
+        let surface = status(serde_json::json!({
+            "eligible": false, "ineligible_reason": "surface",
+        }));
+        let now = Utc::now();
+        // Requests in the order they were sent; the clock only ages them.
+        let ask = |seq: u64| StatusAsk { seq, at_ms: now.timestamp_millis() - 60_000 };
+        let usable_for = |memory: &ClaudeStatusMemory, account: &str, org: Option<&str>| {
+            memory.usable("p", account, org, now, 600_000).is_some()
+        };
+
+        let mut memory = ClaudeStatusMemory::default();
+        memory.remember("p", "account-a", Some("org-a"), Some(&usable), ask(10));
+        assert!(usable_for(&memory, "account-a", Some("org-a")));
+        assert!(!usable_for(&memory, "account-b", Some("org-a")), "another account");
+        assert!(!usable_for(&memory, "account-a", Some("org-b")), "another organization");
+        assert!(!usable_for(&memory, "account-a", None), "an owner without an organization");
+        assert!(memory.usable("p", "account-a", Some("org-a"), now, 59_999).is_none(), "too old");
+        assert!(memory.usable("q", "account-a", Some("org-a"), now, 600_000).is_none());
+
+        memory.remember("p", "account-a", Some("org-a"), Some(&unavailable), ask(11));
+        assert!(usable_for(&memory, "account-a", Some("org-a")),
+            "an `unavailable` block is a failed answer and keeps the last one");
+        memory.remember("p", "account-a", Some("org-a"), Some(&surface), ask(13));
+        assert!(memory.get("p").is_some_and(|entry| !entry.status.eligible));
+        assert!(!usable_for(&memory, "account-a", Some("org-a")), "a real answer replaces it");
+        memory.remember("p", "account-a", Some("org-a"), Some(&usable), ask(12));
+        assert!(!usable_for(&memory, "account-a", Some("org-a")),
+            "an answer to a request sent before the kept one arrived late and is older");
+        memory.remember("p", "account-a", Some("org-a"), None, ask(14));
+        assert!(memory.is_empty(), "a missing block is an answer and clears it");
+        memory.remember("p", "account-a", Some("org-a"), Some(&usable), ask(12));
+        assert!(memory.is_empty(), "a late older answer does not undo a newer clear either");
+
+        memory.remember("p", "account-a", Some("org-a"), Some(&usable), ask(20));
+        memory.claim_answered("p", 25);
+        assert!(memory.is_empty(), "a claim that may have spent the grant drops it");
+        memory.remember("p", "account-a", Some("org-a"), Some(&usable), ask(24));
+        assert!(memory.is_empty(),
+            "a request sent before the claim's answer must not bring the spent grant back");
+        memory.remember("p", "account-a", Some("org-a"), Some(&usable), ask(26));
+        assert!(usable_for(&memory, "account-a", Some("org-a")), "a later request is news");
+        assert!(next_status_seq() < next_status_seq(), "the order only moves forward");
+    }
+
+    #[test]
+    fn trace_stays_off_the_wire_and_names_the_claim() {
+        let traced = map_claude_outcome(429, "{}");
+        assert_eq!(traced.trace.step, Some(ResetStep::Claim));
+        assert_eq!(traced.trace.http_status, Some(429));
+        assert!(!traced.trace.remembered_status);
+        let wire = serde_json::to_value(&traced).unwrap();
+        let mut keys: Vec<_> = wire.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["kind", "resets_left", "retry_of_unconfirmed", "weekly_resets_at"]);
+        let answered = map_claude_outcome(200, r#"{"result":"reset"}"#);
+        assert_eq!(answered.trace.step, Some(ResetStep::Claim));
+        assert_eq!(answered.trace.http_status, None);
+        assert_eq!(map_claude_outcome(500, "{}").trace.http_status, Some(500));
+    }
+
     #[test]
     fn outcome_and_validation() {
         assert_eq!(

@@ -235,7 +235,9 @@ export function resetTicketOutcomeMessage(
     case "rate_limited":
       return {
         tone: "warn",
-        text: "混み合っているため受け付けられませんでした。何も使われていません。少し待ってからもう一度押してください。",
+        text: `サーバーの回数制限で受け付けられませんでした。何も使われていません。少し待ってからもう一度押してください。${
+          row.provider === "claude" ? "急ぐときは、同じアカウントで開いた claude.ai (ブラウザ) からも使える場合があります。" : ""
+        }`,
       };
     case "auth_error":
       return {
@@ -300,10 +302,12 @@ function retryOutcomeMessage(row: Row, outcome: ResetTicketOutcome): ResetTicket
         tone: "warn",
         text: `${name} の前回の操作がまだ処理中かもしれません。使用量を取り直しています。1 分ほどたっても戻っていなければ、もう一度押してください。`,
       };
+    // No pointer to claude.ai here: the earlier request may still go through,
+    // and a second use from the browser would spend a second ticket.
     case "rate_limited":
       return {
         tone: "warn",
-        text: `混み合っているため受け付けられませんでした。${EARLIER_UNKNOWN}少し待ってからもう一度押してください (前回と同じ要求として送ります)。`,
+        text: `サーバーの回数制限で受け付けられませんでした。${EARLIER_UNKNOWN}少し待ってからもう一度押してください (前回と同じ要求として送ります)。`,
       };
     case "auth_error":
       return {

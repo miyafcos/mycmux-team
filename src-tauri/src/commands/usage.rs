@@ -13,7 +13,7 @@ use crate::usage::{
     ProfileUsage, UsageRowState, UsageState, USAGE_CACHE_TTL_MS,
 };
 use crate::usage::reset_tickets::{self, ResetTickets, CachedCredits, UnsettledReset};
-use crate::usage::reset_tickets::{ResetTicketOutcome, ResetTicketOutcomeKind};
+use crate::usage::reset_tickets::{ResetStep, ResetTicketOutcome, ResetTicketOutcomeKind};
 use tauri::Manager;
 
 const COOLDOWN_BASE_MS: i64 = 300_000;
@@ -32,6 +32,11 @@ const MAX_FETCH_PER_ROUND: usize = 12;
 /// (180s) old; the ceiling keeps a wake from sleep from passing hours-old
 /// figures off as current.
 const DEFERRED_STALE_MAX_MS: i64 = 600_000;
+/// How old a remembered Claude status may be and still carry a press whose
+/// own status check failed. A local bound, not Claude Code's (which keeps a
+/// usable offer for as long as its limit lasts): the poll renews the status
+/// every 180s, so an older one means several polls in a row have failed.
+const REMEMBERED_STATUS_MAX_MS: i64 = 600_000;
 const ERROR_FOREIGN_TOKEN: &str = "usage.error.foreign_token";
 const ERROR_LIVE_TOKEN_FOREIGN: &str = "usage.error.live_token_foreign";
 const ERROR_RATE_LIMITED: &str = "usage.error.rate_limited";
@@ -396,11 +401,18 @@ pub async fn use_reset_ticket(
         CliProvider::Codex => "codex",
         CliProvider::Grok => "grok",
     };
-    crate::usage::log_oauth_failure(
-        &app, "reset_ticket_use",
-        &format!("profile={} provider={} outcome={}",
-            row.profile_id, provider, kind.as_str().unwrap_or("unavailable")),
-    );
+    let mut detail = format!("profile={} provider={} outcome={}",
+        row.profile_id, provider, kind.as_str().unwrap_or("unavailable"));
+    if let Some(step) = outcome.trace.step {
+        detail.push_str(&format!(" step={}", step.as_str()));
+    }
+    if let Some(status) = outcome.trace.http_status {
+        detail.push_str(&format!(" http={status}"));
+    }
+    if outcome.trace.remembered_status {
+        detail.push_str(" status=remembered");
+    }
+    crate::usage::log_oauth_failure(&app, "reset_ticket_use", &detail);
     Ok(outcome)
 }
 
@@ -456,6 +468,29 @@ async fn claim_claude_ticket(
     started_at_ms: i64,
     endpoints: &ResetEndpoints<'_>,
 ) -> ResetTicketOutcome {
+    let outcome = claim_claude_press(state, row, source, request_id, started_at_ms, endpoints)
+        .await;
+    // One decision for the whole press. A press that asked the server anything
+    // may have changed what the row should show, so its numbers are dropped
+    // for the refresh that follows every press. When the deciding request got
+    // 429 nothing changed, and dropping them would only send that refresh into
+    // the same limit.
+    if outcome.trace.step.is_some() && outcome.trace.http_status != Some(429) {
+        stale_reset_usage(state, &row.profile_id).await;
+    }
+    outcome
+}
+
+/// Every outcome decided after a request carries that request in
+/// `trace.step`; `claim_claude_ticket` relies on it.
+async fn claim_claude_press(
+    state: &UsageState,
+    row: &PlannedRow,
+    source: &str,
+    request_id: &str,
+    started_at_ms: i64,
+    endpoints: &ResetEndpoints<'_>,
+) -> ResetTicketOutcome {
     use ResetTicketOutcomeKind::*;
     let Ok(tokens) = credentials::claude_tokens(source) else {
         return ResetTicketOutcome::new(TokenStale);
@@ -468,13 +503,14 @@ async fn claim_claude_ticket(
         credentials::TokenPlan::NeedsRelogin => return ResetTicketOutcome::new(AuthError),
         _ => return ResetTicketOutcome::new(TokenStale),
     }
-    let owner = if let Some(owner) = token_owner::cached_owner(&tokens.access_token)
-        .filter(|owner| owner.organization_uuid.is_some()) {
+    let cached = token_owner::cached_owner(&tokens.access_token)
+        .filter(|owner| owner.organization_uuid.is_some());
+    let asked_profile = cached.is_none();
+    let owner = if let Some(owner) = cached {
         OwnerCheck::Owner(owner)
     } else {
         let result = token_owner::fetch_claude_token_owner_at(&state.http,
             &tokens.access_token, endpoints.claude_profile_url).await;
-        stale_reset_usage(state, &row.profile_id).await;
         if let OwnerCheck::Owner(owner) = &result {
             token_owner::remember_owner(&tokens.access_token, owner);
         }
@@ -482,23 +518,34 @@ async fn claim_claude_ticket(
     };
     let owner = match owner {
         OwnerCheck::Owner(owner) => owner,
-        OwnerCheck::Rejected { .. } => return ResetTicketOutcome::new(AuthError),
-        OwnerCheck::RateLimited { .. } => return ResetTicketOutcome::new(RateLimited),
-        OwnerCheck::Unavailable => return ResetTicketOutcome::new(Unavailable),
+        OwnerCheck::Rejected { status } => {
+            return ResetTicketOutcome::at(AuthError, ResetStep::Profile, Some(status));
+        }
+        OwnerCheck::RateLimited { .. } => {
+            return ResetTicketOutcome::at(RateLimited, ResetStep::Profile, Some(429));
+        }
+        OwnerCheck::Unavailable => return ResetTicketOutcome::at(Unavailable, ResetStep::Profile, None),
     };
-    if row.identity_key.as_deref().is_some_and(|identity| identity != owner.account_uuid) {
-        return ResetTicketOutcome::new(OwnerMismatch);
+    let mut outcome = if row.identity_key.as_deref()
+        .is_some_and(|identity| identity != owner.account_uuid) {
+        ResetTicketOutcome::new(OwnerMismatch)
+    } else {
+        let key = format!("claude:{}", owner.account_uuid);
+        let reuse = live_unsettled(state, &key, &owner.account_uuid).await;
+        let request_id = reuse
+            .as_ref()
+            .map_or(request_id, |entry| entry.request_id.as_str());
+        let mut outcome = claim_claude_verified(
+            state, row, &tokens.access_token, &owner, &key, request_id,
+            reuse.as_ref(), started_at_ms, endpoints,
+        ).await;
+        outcome.retry_of_unconfirmed = reuse.is_some();
+        outcome
+    };
+    // Decided by what the profile said (another account, a bad organization).
+    if asked_profile && outcome.trace.step.is_none() {
+        outcome.trace.step = Some(ResetStep::Profile);
     }
-    let key = format!("claude:{}", owner.account_uuid);
-    let reuse = live_unsettled(state, &key, &owner.account_uuid).await;
-    let request_id = reuse
-        .as_ref()
-        .map_or(request_id, |entry| entry.request_id.as_str());
-    let mut outcome = claim_claude_verified(
-        state, row, &tokens.access_token, &owner, &key, request_id,
-        reuse.as_ref(), started_at_ms, endpoints,
-    ).await;
-    outcome.retry_of_unconfirmed = reuse.is_some();
     outcome
 }
 
@@ -519,29 +566,31 @@ async fn claim_claude_verified(
         .filter(|org| reset_tickets::valid_org_uuid(org)) else {
         return ResetTicketOutcome::new(Unavailable);
     };
+    let ask = reset_tickets::StatusAsk::now();
     let checked = oauth_claude::fetch_with_token_status_at(&state.http,
         access_token, endpoints.claude_usage_url).await;
-    stale_reset_usage(state, &row.profile_id).await;
-    let status = match checked {
-        Ok(usage) => usage.reset_status,
-        Err((Some(401 | 403), _)) => return ResetTicketOutcome::new(AuthError),
-        Err((Some(429), _)) => return ResetTicketOutcome::new(RateLimited),
-        Err(_) => return ResetTicketOutcome::new(Unavailable),
+    let (status, failed_check) = match claude_press_status(state, row, owner, checked, ask).await {
+        Ok(found) => found,
+        Err(outcome) => return outcome,
     };
-    let Some(status) = status else {
-        return ResetTicketOutcome::new(Unavailable);
+    // Decided here without another request, so the status check is the
+    // deciding request, with what it got (a 429, when the status is the
+    // remembered one).
+    let decided = |kind| {
+        let mut outcome = failed_check.clone()
+            .unwrap_or_else(|| ResetTicketOutcome::at(kind, ResetStep::Status, None));
+        outcome.kind = kind;
+        outcome.trace.remembered_status = failed_check.is_some();
+        outcome
     };
-    if !status.eligible && status.ineligible_reason.as_deref() == Some("unavailable") {
-        return ResetTicketOutcome::new(Unavailable);
-    }
     let now = Utc::now();
     let tickets = reset_tickets::claude_tickets(&status, now);
     if tickets.available == 0 {
         state.reset_unsettled.lock().await.remove(key);
-        return ResetTicketOutcome::new(NoTicket);
+        return decided(NoTicket);
     }
     if tickets.blocked_reason == Some(reset_tickets::ResetTicketBlockedReason::Cooldown) {
-        return ResetTicketOutcome::new(Cooldown);
+        return decided(Cooldown);
     }
     let Some(grant_id) = reset_tickets::claude_next_grant(&status, now) else {
         let kind = if tickets.blocked_reason
@@ -550,21 +599,83 @@ async fn claim_claude_verified(
         } else {
             Unavailable
         };
-        return ResetTicketOutcome::new(kind);
+        return decided(kind);
     };
     if reuse.is_some_and(|entry| entry.target_id.as_deref() != Some(grant_id)) {
         state.reset_unsettled.lock().await.remove(key);
-        return ResetTicketOutcome::new(OfferChanged);
+        return decided(OfferChanged);
     }
     let Some(claim_http) = state.reset_http.as_ref() else {
-        return ResetTicketOutcome::new(Unavailable);
+        return decided(Unavailable);
     };
-    let outcome = oauth_claude::claim_at(claim_http, endpoints.claude_base, access_token,
+    let mut outcome = oauth_claude::claim_at(claim_http, endpoints.claude_base, access_token,
         org, grant_id, request_id).await;
-    stale_reset_usage(state, &row.profile_id).await;
+    outcome.trace.remembered_status = failed_check.is_some();
+    // A 429 left the grant as it was; any other answer may have spent it.
+    if outcome.kind != RateLimited {
+        state.reset_claude_status.lock().await
+            .claim_answered(&row.profile_id, reset_tickets::next_status_seq());
+    }
     settle_reset(state, key, &owner.account_uuid, request_id, Some(grant_id), reuse,
         started_at_ms, &outcome).await;
     outcome
+}
+
+/// The status a press goes out on and, when it is the remembered one, what the
+/// failed check got.
+///
+/// When the check just before the claim fails, Claude Code keeps its previous
+/// answer and claims on it (`cedar_ember` 2.1.283: `xt` restores the last
+/// answer, `ar` then claims its grant), and an offer confirmed away from a
+/// limit is claimed with no second check at all (`or`). The claim carries the
+/// grant and request ids, and the reasons it can come back with include
+/// `not_next_grant`, `unknown_grant`, `expired`, `not_limited`, `cooldown` and
+/// `already_used` (`zn`), so the server decides again.
+///
+/// The check is likeliest to fail right when a ticket is wanted: at a limit,
+/// every Claude Code session on the account asks `/api/oauth/usage` for its
+/// own status (2026-09-29: seven sessions hit the weekly limit within 17
+/// seconds, both presses that followed were refused with 429, and so was the
+/// poll's own usage fetch between them). So a failed check falls back to the
+/// status last seen for the same account and organization, but only when that
+/// status offers a grant to use now; otherwise the check's own failure is the
+/// answer. 401/403 and a block that is missing from a real answer are
+/// answers, not failures.
+async fn claude_press_status(
+    state: &UsageState,
+    row: &PlannedRow,
+    owner: &token_owner::TokenOwner,
+    checked: Result<oauth_claude::ClaudeUsage, (Option<u16>, String)>,
+    ask: reset_tickets::StatusAsk,
+) -> Result<(reset_tickets::ClaudeStatus, Option<ResetTicketOutcome>), ResetTicketOutcome> {
+    use ResetTicketOutcomeKind::*;
+    let organization = owner.organization_uuid.as_deref();
+    let failed = match checked {
+        Ok(usage) if !usage.answered => ResetTicketOutcome::at(Unavailable, ResetStep::Status, None),
+        Ok(usage) => {
+            state.reset_claude_status.lock().await.remember(&row.profile_id,
+                &owner.account_uuid, organization, usage.reset_status.as_ref(), ask);
+            match usage.reset_status {
+                Some(status) if !status.eligible
+                    && status.ineligible_reason.as_deref() == Some("unavailable") => {
+                    ResetTicketOutcome::at(Unavailable, ResetStep::Status, None)
+                }
+                Some(status) => return Ok((status, None)),
+                None => return Err(ResetTicketOutcome::at(Unavailable, ResetStep::Status, None)),
+            }
+        }
+        Err((Some(status @ (401 | 403)), _)) => {
+            return Err(ResetTicketOutcome::at(AuthError, ResetStep::Status, Some(status)));
+        }
+        Err((Some(429), _)) => ResetTicketOutcome::at(RateLimited, ResetStep::Status, Some(429)),
+        Err((status, _)) => ResetTicketOutcome::at(Unavailable, ResetStep::Status, status),
+    };
+    let remembered = state.reset_claude_status.lock().await.usable(&row.profile_id,
+        &owner.account_uuid, organization, Utc::now(), REMEMBERED_STATUS_MAX_MS);
+    match remembered {
+        Some(status) => Ok((status, Some(failed))),
+        None => Err(failed),
+    }
 }
 
 async fn claim_codex_ticket(
@@ -1032,11 +1143,19 @@ async fn fetch_claude_profile(
         let (status, detail) = match claude_owner_gate(row.identity_key.as_deref(), row.is_active, row.registered, &check) {
             OwnerGate::Proceed => {
                 stagger_before_fetch(fetch_count).await;
+                let ask = reset_tickets::StatusAsk::now();
                 match oauth_claude::fetch_with_token_status(&state.http, &access_token).await {
                     Ok(usage) => {
                         if let Some(reason) = usage.reset_status.as_ref().filter(|status| !status.eligible)
                             .and_then(|status| status.ineligible_reason.as_deref()) {
                             log_reset_ineligible_once(app, reason);
+                        }
+                        if let OwnerCheck::Owner(owner) = &check {
+                            if usage.answered {
+                                state.reset_claude_status.lock().await.remember(&row.profile_id,
+                                    &owner.account_uuid, owner.organization_uuid.as_deref(),
+                                    usage.reset_status.as_ref(), ask);
+                            }
                         }
                         return successful_fetch(state, row, usage.five_hour, usage.seven_day,
                             usage.seven_day_sonnet, usage.seven_day_opus, usage.model_windows,
@@ -2374,6 +2493,349 @@ mod tests {
         let requests = received.await.unwrap();
         assert_eq!(requests.len(), 3);
         assert!(requests[2].starts_with("POST "));
+    }
+
+    async fn remember_status(state: &UsageState, account: &str, org: &str, body: &str,
+        age_ms: i64) {
+        let value: serde_json::Value = serde_json::from_str(body).unwrap();
+        let ask = reset_tickets::StatusAsk {
+            seq: reset_tickets::next_status_seq(),
+            at_ms: Utc::now().timestamp_millis() - age_ms,
+        };
+        state.reset_claude_status.lock().await.remember("reset-profile", account, Some(org),
+            reset_tickets::parse_claude_status(&value).as_ref(), ask);
+        assert!(state.reset_claude_status.lock().await.get("reset-profile").is_some());
+    }
+
+    fn cache_owner(token: &str) {
+        token_owner::remember_owner(token, &TokenOwner {
+            account_uuid: "account-a".into(), email: None,
+            organization_uuid: Some("org-a".into()),
+        });
+    }
+
+    fn cache_numbers(cache: &mut std::collections::HashMap<String, CachedWindows>) {
+        cache.insert("reset-profile".into(), CachedWindows {
+            five_hour: None,
+            seven_day: Some(crate::usage::WindowStat { pct: 100.0, resets_at: "later".into() }),
+            seven_day_sonnet: None, seven_day_opus: None, model_windows: Vec::new(),
+            reset_tickets: None, fetched_at_ms: Utc::now().timestamp_millis(), invalidated: false,
+        });
+    }
+
+    const RATE_LIMITED_BODY: &str =
+        r#"{"error":{"type":"rate_limit_error","message":"Rate limited. Please try again later."}}"#;
+
+    #[tokio::test]
+    async fn claude_failed_check_claims_on_the_remembered_status() {
+        let unavailable = serde_json::json!({"cedar_ember": {
+            "eligible": false, "ineligible_reason": "unavailable"
+        }}).to_string();
+        // Claude Code's `Je` calls a fieldless or non-object body a failed
+        // fetch (an in-band error), not an answer.
+        let cases = [
+            ("rate-limited", 429, RATE_LIMITED_BODY.to_string()),
+            ("server-error", 503, "{}".to_string()),
+            ("unreadable", 200, "not-json".to_string()),
+            ("fieldless", 200, "{}".to_string()),
+            ("non-object", 200, "[]".to_string()),
+            ("unavailable-block", 200, unavailable),
+        ];
+        for (name, status, body) in cases {
+            let (base, received) = reset_tickets::fake_http_sequence(vec![
+                (200, owner_body("org-a")),
+                (status, body),
+                (200, r#"{"result":"reset","resets_left":5}"#.into()),
+            ]).await;
+            let profile = format!("{base}/profile");
+            let usage = format!("{base}/usage");
+            let state = UsageState::new();
+            remember_status(&state, "account-a", "org-a",
+                &claude_status("grant-a", serde_json::json!({})), 60_000).await;
+            let outcome = use_reset_ticket_inner(&state, &reset_row(CliProvider::Claude),
+                Ok(claude_source(&format!("remembered-{name}"))), "request-a", None,
+                &endpoints(&base, &profile, &usage, None)).await.unwrap();
+            assert_eq!(outcome.kind, ResetTicketOutcomeKind::Reset, "{name}");
+            assert_eq!(outcome.resets_left, Some(5), "{name}");
+            assert_eq!(outcome.trace.step, Some(ResetStep::Claim), "{name}");
+            assert!(outcome.trace.remembered_status, "{name}");
+            assert!(state.reset_claude_status.lock().await.is_empty(),
+                "{name}: a spent grant must not carry another press");
+            let requests = received.await.unwrap();
+            assert_eq!(requests.len(), 3, "{name}");
+            assert!(requests[1].starts_with("GET /usage "), "{name}");
+            assert_eq!(request_body(&requests[2]), serde_json::json!({
+                "program": "cedar_ember", "grant_id": "grant-a", "request_id": "request-a"
+            }), "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn claude_unreachable_check_claims_on_the_remembered_status() {
+        let (base, received) = reset_tickets::fake_http_sequence(vec![
+            (200, r#"{"result":"reset","resets_left":5}"#.into()),
+        ]).await;
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let unreachable = format!("http://{}/usage", closed.local_addr().unwrap());
+        drop(closed);
+        let profile = format!("{base}/profile");
+        let state = UsageState::new();
+        cache_owner("remembered-unreachable");
+        remember_status(&state, "account-a", "org-a",
+            &claude_status("grant-a", serde_json::json!({})), 60_000).await;
+        let outcome = use_reset_ticket_inner(&state, &reset_row(CliProvider::Claude),
+            Ok(claude_source("remembered-unreachable")), "request-a", None,
+            &endpoints(&base, &profile, &unreachable, None)).await.unwrap();
+        assert_eq!(outcome.kind, ResetTicketOutcomeKind::Reset);
+        assert!(outcome.trace.remembered_status);
+        let requests = received.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("POST /api/organizations/org-a/reset_rate_limits "));
+    }
+
+    #[tokio::test]
+    async fn claude_failed_check_without_a_usable_remembered_status_sends_nothing() {
+        let usable = claude_status("grant-a", serde_json::json!({}));
+        let not_usable = claude_status("grant-a", serde_json::json!({"grants": [{
+            "id": "grant-a", "resets_left": 1, "usable_now": false, "use_requires_limit": true
+        }]}));
+        let cases = [
+            ("nothing-remembered", None),
+            ("other-account", Some(("account-b", "org-a", usable.as_str(), 60_000))),
+            ("other-organization", Some(("account-a", "org-b", usable.as_str(), 60_000))),
+            ("too-old", Some((
+                "account-a", "org-a", usable.as_str(), REMEMBERED_STATUS_MAX_MS + 1,
+            ))),
+            ("not-usable", Some(("account-a", "org-a", not_usable.as_str(), 60_000))),
+        ];
+        for (name, remembered) in cases {
+            let (base, received) = reset_tickets::fake_http_sequence(vec![
+                (429, RATE_LIMITED_BODY.into()),
+            ]).await;
+            let profile = format!("{base}/profile");
+            let usage = format!("{base}/usage");
+            let state = UsageState::new();
+            let row = reset_row(CliProvider::Claude);
+            let token = format!("unremembered-{name}");
+            cache_owner(&token);
+            if let Some((account, org, body, age_ms)) = remembered {
+                remember_status(&state, account, org, body, age_ms).await;
+            }
+            cache_numbers(&mut *state.profile_usage_cache.lock().await);
+            let outcome = use_reset_ticket_inner(&state, &row, Ok(claude_source(&token)),
+                "request-a", None, &endpoints(&base, &profile, &usage, None)).await.unwrap();
+            assert_eq!(outcome.kind, ResetTicketOutcomeKind::RateLimited, "{name}");
+            assert_eq!(outcome.trace.step, Some(ResetStep::Status), "{name}");
+            assert_eq!(outcome.trace.http_status, Some(429), "{name}");
+            assert!(!outcome.trace.remembered_status, "{name}");
+            assert!(cached_profile_windows(&state, &row.profile_id,
+                Utc::now().timestamp_millis()).await.is_some(),
+                "{name}: a 429 must not drop the row's numbers");
+            let requests = received.await.unwrap();
+            assert_eq!(requests.len(), 1, "{name}");
+            assert!(requests[0].starts_with("GET /usage "), "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn claude_answers_from_the_check_are_not_replaced_by_the_remembered_status() {
+        for (name, status, body, expected) in [
+            ("unauthorized", 401, "{}".to_string(), ResetTicketOutcomeKind::AuthError),
+            ("forbidden", 403, "{}".to_string(), ResetTicketOutcomeKind::AuthError),
+            ("no-block", 200, r#"{"cedar_ember":null}"#.to_string(),
+                ResetTicketOutcomeKind::Unavailable),
+        ] {
+            let (base, received) = reset_tickets::fake_http_sequence(vec![(status, body)]).await;
+            let profile = format!("{base}/profile");
+            let usage = format!("{base}/usage");
+            let state = UsageState::new();
+            let token = format!("answered-{name}");
+            cache_owner(&token);
+            remember_status(&state, "account-a", "org-a",
+                &claude_status("grant-a", serde_json::json!({})), 60_000).await;
+            let outcome = use_reset_ticket_inner(&state, &reset_row(CliProvider::Claude),
+                Ok(claude_source(&token)), "request-a", None,
+                &endpoints(&base, &profile, &usage, None)).await.unwrap();
+            assert_eq!(outcome.kind, expected, "{name}");
+            assert_eq!(outcome.trace.step, Some(ResetStep::Status), "{name}");
+            assert!(!outcome.trace.remembered_status, "{name}");
+            let requests = received.await.unwrap();
+            assert_eq!(requests.len(), 1, "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn claude_missing_block_forgets_the_remembered_status() {
+        let (base, received) = reset_tickets::fake_http_sequence(vec![
+            (200, r#"{"cedar_ember":null}"#.into()),
+        ]).await;
+        let profile = format!("{base}/profile");
+        let usage = format!("{base}/usage");
+        let state = UsageState::new();
+        cache_owner("forget-on-missing-block");
+        remember_status(&state, "account-a", "org-a",
+            &claude_status("grant-a", serde_json::json!({})), 60_000).await;
+        let outcome = use_reset_ticket_inner(&state, &reset_row(CliProvider::Claude),
+            Ok(claude_source("forget-on-missing-block")), "request-a", None,
+            &endpoints(&base, &profile, &usage, None)).await.unwrap();
+        assert_eq!(outcome.kind, ResetTicketOutcomeKind::Unavailable);
+        assert!(state.reset_claude_status.lock().await.is_empty());
+        assert_eq!(received.await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn claude_claim_429_keeps_the_status_for_the_next_press() {
+        let (base, received) = reset_tickets::fake_http_sequence(vec![
+            (200, claude_status("grant-a", serde_json::json!({}))),
+            (429, RATE_LIMITED_BODY.into()),
+            (429, RATE_LIMITED_BODY.into()),
+            (200, r#"{"result":"reset","resets_left":4}"#.into()),
+        ]).await;
+        let profile = format!("{base}/profile");
+        let usage = format!("{base}/usage");
+        let urls = endpoints(&base, &profile, &usage, None);
+        let state = UsageState::new();
+        let row = reset_row(CliProvider::Claude);
+        cache_owner("claim-rate-limited");
+        cache_numbers(&mut *state.profile_usage_cache.lock().await);
+        let first = use_reset_ticket_inner(&state, &row, Ok(claude_source("claim-rate-limited")),
+            "request-a", None, &urls).await.unwrap();
+        assert_eq!(first.kind, ResetTicketOutcomeKind::RateLimited);
+        assert_eq!(first.trace.step, Some(ResetStep::Claim));
+        assert_eq!(first.trace.http_status, Some(429));
+        assert!(!first.trace.remembered_status);
+        assert!(state.reset_unsettled.lock().await.is_empty());
+        assert!(state.reset_claude_status.lock().await.get(&row.profile_id).is_some());
+        assert!(cached_profile_windows(&state, &row.profile_id,
+            Utc::now().timestamp_millis()).await.is_some(),
+            "the check succeeded but the claim got 429: nothing changed, keep the numbers");
+        let second = use_reset_ticket_inner(&state, &row, Ok(claude_source("claim-rate-limited")),
+            "request-b", None, &urls).await.unwrap();
+        assert_eq!(second.kind, ResetTicketOutcomeKind::Reset);
+        assert!(second.trace.remembered_status);
+        assert!(cached_profile_windows(&state, &row.profile_id,
+            Utc::now().timestamp_millis()).await.is_none(),
+            "a reset changes the numbers, so the refresh must fetch them");
+        let requests = received.await.unwrap();
+        assert_eq!(requests.len(), 4);
+        assert!(requests[0].starts_with("GET /usage "));
+        assert_eq!(request_body(&requests[1])["request_id"], "request-a");
+        assert!(requests[2].starts_with("GET /usage "));
+        assert_eq!(request_body(&requests[3]), serde_json::json!({
+            "program": "cedar_ember", "grant_id": "grant-a", "request_id": "request-b"
+        }));
+    }
+
+    #[tokio::test]
+    async fn claude_owner_lookup_429_keeps_the_rows_numbers() {
+        let (base, received) = reset_tickets::fake_http_sequence(vec![
+            (429, RATE_LIMITED_BODY.into()),
+        ]).await;
+        let profile = format!("{base}/profile");
+        let usage = format!("{base}/usage");
+        let state = UsageState::new();
+        let row = reset_row(CliProvider::Claude);
+        cache_numbers(&mut *state.profile_usage_cache.lock().await);
+        let outcome = use_reset_ticket_inner(&state, &row, Ok(claude_source("owner-rate-limited")),
+            "request-a", None, &endpoints(&base, &profile, &usage, None)).await.unwrap();
+        assert_eq!(outcome.kind, ResetTicketOutcomeKind::RateLimited);
+        assert_eq!(outcome.trace.step, Some(ResetStep::Profile));
+        assert_eq!(outcome.trace.http_status, Some(429));
+        assert!(cached_profile_windows(&state, &row.profile_id,
+            Utc::now().timestamp_millis()).await.is_some());
+        let requests = received.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("GET /profile "));
+    }
+
+    #[tokio::test]
+    async fn claude_remembered_offer_decided_locally_after_a_429_keeps_the_rows_numbers() {
+        let (base, received) = reset_tickets::fake_http_sequence(vec![
+            (429, RATE_LIMITED_BODY.into()),
+        ]).await;
+        let profile = format!("{base}/profile");
+        let usage = format!("{base}/usage");
+        let state = UsageState::new();
+        let row = reset_row(CliProvider::Claude);
+        cache_owner("remembered-offer-changed");
+        remember_status(&state, "account-a", "org-a",
+            &claude_status("grant-b", serde_json::json!({})), 60_000).await;
+        state.reset_unsettled.lock().await.insert("claude:account-a".into(), UnsettledReset {
+            identity: "account-a".into(), request_id: "first-id".into(),
+            target_id: Some("grant-a".into()), started_at_ms: Utc::now().timestamp_millis(),
+        });
+        cache_numbers(&mut *state.profile_usage_cache.lock().await);
+        let outcome = use_reset_ticket_inner(&state, &row,
+            Ok(claude_source("remembered-offer-changed")), "second-id", None,
+            &endpoints(&base, &profile, &usage, None)).await.unwrap();
+        assert_eq!(outcome.kind, ResetTicketOutcomeKind::OfferChanged);
+        assert_eq!(outcome.trace.step, Some(ResetStep::Status));
+        assert_eq!(outcome.trace.http_status, Some(429));
+        assert!(outcome.trace.remembered_status);
+        assert!(cached_profile_windows(&state, &row.profile_id,
+            Utc::now().timestamp_millis()).await.is_some(),
+            "only a 429 came back, so the refresh must not be sent into it");
+        let requests = received.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests.iter().all(|request| !request.starts_with("POST")));
+    }
+
+    #[tokio::test]
+    async fn claude_owner_found_then_check_429_keeps_the_rows_numbers() {
+        let (base, received) = reset_tickets::fake_http_sequence(vec![
+            (200, owner_body("org-a")),
+            (429, RATE_LIMITED_BODY.into()),
+        ]).await;
+        let profile = format!("{base}/profile");
+        let usage = format!("{base}/usage");
+        let state = UsageState::new();
+        let row = reset_row(CliProvider::Claude);
+        cache_numbers(&mut *state.profile_usage_cache.lock().await);
+        let outcome = use_reset_ticket_inner(&state, &row,
+            Ok(claude_source("owner-found-check-rate-limited")), "request-a", None,
+            &endpoints(&base, &profile, &usage, None)).await.unwrap();
+        assert_eq!(outcome.kind, ResetTicketOutcomeKind::RateLimited);
+        assert_eq!(outcome.trace.step, Some(ResetStep::Status));
+        assert!(cached_profile_windows(&state, &row.profile_id,
+            Utc::now().timestamp_millis()).await.is_some());
+        assert_eq!(received.await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn claude_press_that_asked_drops_the_rows_numbers_unless_429() {
+        use ResetTicketOutcomeKind::*;
+        // (name, owner cached, responses, expected outcome, numbers kept)
+        let cases: Vec<(&str, bool, Vec<(u16, String)>, ResetTicketOutcomeKind, bool)> = vec![
+            ("no-ticket", true,
+                vec![(200, claude_status("grant-a", serde_json::json!({"grants": []})))],
+                NoTicket, false),
+            ("other-account", false,
+                vec![(200, owner_body("org-a").replace("account-a", "account-z"))],
+                OwnerMismatch, false),
+            ("no-request", true, vec![], OwnerMismatch, true),
+        ];
+        for (name, owner_cached, responses, expected, kept) in cases {
+            let (base, received) = reset_tickets::fake_http_sequence(responses).await;
+            let profile = format!("{base}/profile");
+            let usage = format!("{base}/usage");
+            let state = UsageState::new();
+            let mut row = reset_row(CliProvider::Claude);
+            let token = format!("drops-numbers-{name}");
+            if owner_cached {
+                cache_owner(&token);
+            }
+            if name == "no-request" {
+                row.identity_key = Some("account-y".into());
+            }
+            cache_numbers(&mut *state.profile_usage_cache.lock().await);
+            let outcome = use_reset_ticket_inner(&state, &row, Ok(claude_source(&token)),
+                "request-a", None, &endpoints(&base, &profile, &usage, None)).await.unwrap();
+            assert_eq!(outcome.kind, expected, "{name}");
+            assert_eq!(cached_profile_windows(&state, &row.profile_id,
+                Utc::now().timestamp_millis()).await.is_some(), kept, "{name}");
+            let requests = received.await.unwrap();
+            assert!(requests.iter().all(|request| !request.starts_with("POST")), "{name}");
+        }
     }
 
     #[tokio::test]

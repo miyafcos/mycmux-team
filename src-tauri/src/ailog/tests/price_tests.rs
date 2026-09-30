@@ -73,7 +73,7 @@ fn price_lookup_walks_raw_then_variant_then_family() {
     // Codex tiers are priced individually even though they share a family.
     let sol = table.lookup("gpt-5.6-sol").expect("sol priced");
     let terra = table.lookup("gpt-5.6-terra").expect("terra priced");
-    assert_eq!(sol.price.input, 5.0);
+    assert_eq!(sol.price.input, 4.0);
     assert_eq!(terra.price.input, 2.0);
     assert!(sol.price.input > terra.price.input);
 
@@ -292,4 +292,266 @@ fn coverage_counts_priced_local_and_flat_but_not_internal_or_unknown() {
     // 600 covered out of 1100 cost-bearing tokens; the 400 internal tokens
     // stay out of the denominator.
     assert!((coverage.covered_token_ratio - 600.0 / 1100.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn current_generations_have_their_own_published_rates() {
+    let table = PriceTable::from_defaults();
+    for (raw, family, input, output, read, write) in [
+        ("claude-fable-5-1", "fable-5.1", 10.0, 50.0, 0.25, 12.5),
+        ("claude-mythos-5-1", "mythos-5.1", 10.0, 50.0, 0.25, 12.5),
+        ("claude-opus-5-5", "opus-5.5", 4.0, 20.0, 0.2, 5.0),
+        ("claude-sonnet-5-5", "sonnet-5.5", 2.0, 10.0, 0.2, 2.5),
+        ("gpt-6.1-sol", "gpt-6.1", 2.0, 10.0, 0.1, 2.5),
+        ("gpt-6-sol", "gpt-6", 2.0, 10.0, 0.2, 2.5),
+        ("gpt-6-luna", "gpt-6", 0.1, 0.5, 0.01, 0.125),
+        ("gpt-5.6-sol", "gpt-5.6", 4.0, 20.0, 0.4, 5.0),
+        ("claude-sonnet-5", "sonnet-5", 2.0, 10.0, 0.2, 2.5),
+        (
+            "gemini-3.8-flash",
+            "gemini-3.8-flash",
+            0.75,
+            3.75,
+            0.075,
+            0.75,
+        ),
+        (
+            "gemini-3.5-flash-lite",
+            "gemini-3.5-flash-lite",
+            0.3,
+            2.5,
+            0.03,
+            0.3,
+        ),
+    ] {
+        assert_eq!(price::normalize(raw).family, family, "{raw}");
+        let p = table.lookup(raw).expect(raw).price;
+        assert_eq!(p.input, input, "{raw}");
+        assert_eq!(p.output, output, "{raw}");
+        assert!((p.cache_read - read).abs() < 1e-12, "{raw}");
+        assert_eq!(p.cache_write_5m, write, "{raw}");
+    }
+}
+
+#[test]
+fn snapshots_and_context_qualifiers_resolve_but_future_versions_do_not_inherit_prices() {
+    let table = PriceTable::from_defaults();
+    for (alias, base) in [
+        ("claude-opus-5-5[1m]", "claude-opus-5-5"),
+        ("claude-sonnet-5-5-20260928", "claude-sonnet-5-5"),
+        ("gpt-6.1[sol]", "gpt-6.1-sol"),
+        ("gpt-6.1-sol-2026-09-22", "gpt-6.1-sol"),
+        ("gemini-3.8-flash-20260901", "gemini-3.8-flash"),
+    ] {
+        assert_eq!(
+            table.lookup(alias).unwrap().price,
+            table.lookup(base).unwrap().price
+        );
+    }
+    for raw in [
+        "claude-opus-5-7",
+        "claude-fable-5-2",
+        "claude-sonnet-5-55",
+        "gpt-6.1-nova",
+        "gpt-5.5-pro",
+        "gpt-5.5-future",
+        "gemini-3.8-flash-image",
+    ] {
+        assert!(
+            table.lookup(raw).is_none(),
+            "must not substitute a price for {raw}"
+        );
+    }
+    assert_eq!(
+        price::normalize("claude-opus-5-7").family,
+        "claude-opus-5-7"
+    );
+}
+
+#[test]
+fn long_context_rates_use_total_input_and_respect_the_boundary() {
+    let table = PriceTable::from_defaults();
+    let short = table.price_for_input("gpt-6.1-sol", 272_000).unwrap();
+    let long = table.price_for_input("gpt-6.1-sol", 272_001).unwrap();
+    assert_eq!(short.input, 2.0);
+    assert_eq!(long.input, 4.0);
+    assert_eq!(long.cache_read, 0.2);
+    assert_eq!(long.cache_write_5m, 5.0);
+    assert_eq!(long.output, 15.0);
+    assert_eq!(
+        table
+            .price_for_input("claude-opus-5-5", 500_000)
+            .unwrap()
+            .input,
+        4.0
+    );
+    assert_eq!(table.classify("grok-4.7"), ModelClass::Reported);
+    assert_eq!(table.provider("grok-4.7"), ModelProvider::Xai);
+}
+
+#[test]
+fn codex_cache_writes_are_disjoint_from_ordinary_input() {
+    let text = concat!(
+        r#"{"type":"turn_context","payload":{"model":"gpt-6.1-sol"}}"#,
+        "\n",
+        r#"{"timestamp":"2026-09-30T00:00:01Z","ordinal":1,"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"cached_input_tokens":600,"cache_write_input_tokens":300,"output_tokens":200,"reasoning_output_tokens":100},"total_token_usage":{"total_tokens":1200}}}}"#,
+        "\n",
+    );
+    let parsed = crate::ailog::parse_codex::parse_chunk(text, "cache-write");
+    let turn = &parsed.sessions["cache-write"].turns[0];
+    assert_eq!(turn.input_tokens, 100);
+    assert_eq!(turn.cache_read_tokens, 600);
+    assert_eq!(turn.cache_write_5m_tokens, 300);
+    let table = PriceTable::from_defaults();
+    let p = table.lookup(turn.model.as_deref().unwrap()).unwrap().price;
+    let split = price::cost_for_turn(
+        Some(&p),
+        turn.input_tokens,
+        turn.output_tokens,
+        turn.cache_read_tokens,
+        turn.cache_write_5m_tokens,
+        0,
+    );
+    assert!((split.total() - 0.00301).abs() < 1e-12);
+}
+
+#[test]
+fn upgrading_v2_rebuilds_existing_families_costs_and_rollups_once() {
+    use rusqlite::{params, Connection};
+    let conn = Connection::open_in_memory().unwrap();
+    crate::ailog::schema::init(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO index_state(key,value) VALUES ('price_catalog_version','2')",
+        [],
+    )
+    .unwrap();
+    // Emulate an old cache with no row for a newly supported model.
+    conn.execute("DELETE FROM price WHERE model='fable-5.1'", [])
+        .unwrap();
+    conn.execute("UPDATE price SET input_per_mtok=7, output_per_mtok=9, cache_read_per_mtok=0.7, cache_write_5m_per_mtok=8.75, cache_write_1h_per_mtok=8.75, source='user', updated_at=111 WHERE model='gpt-6.1-sol'", []).unwrap();
+    for (kind, id, model, family, input, output, read, write, cost) in [
+        (
+            "claude",
+            "claude-current",
+            "claude-opus-5-5",
+            "opus-5",
+            100,
+            200,
+            600,
+            300,
+            99.0,
+        ),
+        (
+            "codex",
+            "codex-current",
+            "gpt-6.1-sol",
+            "gpt-6.1-sol",
+            400,
+            200,
+            600,
+            300,
+            99.0,
+        ),
+        (
+            "codex",
+            "long-context",
+            "gpt-6-luna",
+            "gpt-6",
+            10,
+            100,
+            272_001,
+            0,
+            99.0,
+        ),
+        (
+            "grok",
+            "reported",
+            "grok-4.7-build",
+            "grok-4.7-build",
+            10,
+            10,
+            0,
+            0,
+            2.5,
+        ),
+    ] {
+        conn.execute("INSERT INTO session(kind,session_id,started_at,ended_at,user_msg_count) VALUES (?1,?2,1800000000000,1800000000001,3)", params![kind,id]).unwrap();
+        conn.execute("INSERT INTO turn(kind,session_id,seq,ts,model,model_family,input_tokens,output_tokens,cache_read_tokens,cache_write_5m_tokens,cost_usd) VALUES (?1,?2,0,1800000000000,?3,?4,?5,?6,?7,?8,?9)", params![kind,id,model,family,input,output,read,write,cost]).unwrap();
+    }
+    conn.execute("INSERT INTO summary(kind,session_id,created_at,summary) VALUES ('claude','claude-current',0,'preserved summary')", []).unwrap();
+    crate::ailog::migrate::apply(&conn).unwrap();
+    let prices = PriceTable::load(&conn).unwrap();
+    assert_eq!(
+        prices.lookup("claude-fable-5-1").unwrap().price.cache_read,
+        0.25
+    );
+    assert_eq!(
+        prices
+            .price_for_input("gpt-6.1-sol", 500_000)
+            .unwrap()
+            .input,
+        7.0
+    );
+    let user = prices.lookup("gpt-6.1-sol").unwrap();
+    assert_eq!(user.source, "user");
+    assert_eq!(user.updated_at, 111);
+    for (kind, id, family, input, expected) in [
+        ("claude", "claude-current", "opus-5.5", 100, 0.00602),
+        ("codex", "codex-current", "gpt-6.1", 100, 0.005545),
+        ("codex", "long-context", "gpt-6", 10, 0.00551702),
+        ("grok", "reported", "grok-4.7", 10, 2.5),
+    ] {
+        let row: (String, i64, f64) = conn.query_row("SELECT model_family,input_tokens,cost_usd FROM turn WHERE kind=?1 AND session_id=?2", params![kind,id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(row.0, family, "{id}");
+        assert_eq!(row.1, input, "{id}");
+        assert!(
+            (row.2 - expected).abs() < 1e-10,
+            "{id}: {} vs {expected}",
+            row.2
+        );
+        let session: (String, f64, i64) = conn.query_row("SELECT primary_model,cost_usd,user_msg_count FROM session WHERE kind=?1 AND session_id=?2", params![kind,id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(session.0, family);
+        assert!((session.1 - expected).abs() < 1e-10);
+        assert_eq!(session.2, 3);
+        let rolled: f64 = conn
+            .query_row(
+                "SELECT SUM(cost_usd) FROM rollup_turn_session_day WHERE kind=?1 AND session_id=?2",
+                params![kind, id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!((rolled - expected).abs() < 1e-10, "rollup {id}");
+    }
+    let before: String = conn
+        .query_row(
+            "SELECT value FROM index_state WHERE key='price_generation'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    crate::ailog::migrate::apply(&conn).unwrap();
+    let after: String = conn
+        .query_row(
+            "SELECT value FROM index_state WHERE key='price_generation'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(before, after);
+    let input: i64 = conn
+        .query_row(
+            "SELECT input_tokens FROM turn WHERE session_id='codex-current'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(input, 100, "cache writes must be corrected only once");
+    let summary: String = conn
+        .query_row(
+            "SELECT summary FROM summary WHERE session_id='claude-current'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(summary, "preserved summary");
 }

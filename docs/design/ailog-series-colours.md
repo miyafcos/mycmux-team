@@ -22,12 +22,12 @@ OKLCH の色相角で定義する。ブランド由来の HSL 色相とは値が
 
 | 会社 | 色 | OKLCH h | 参考 |
 |---|---|---|---|
-| Anthropic | コーラル | 39 | `#D97757` = HSL 14.8 / OKLCH 38.8 |
+| Anthropic | コーラル | 38 | `#D97757` = HSL 14.8 / OKLCH 38.8 |
 | OpenAI | ブルー | 258 | `#5e9eff` (エージェント種別の Codex 色) = OKLCH 258.5 |
-| xAI | マゼンタ | 335 | |
-| Google | ティール | 170 | 実データはまだ無い (後述) |
+| xAI | マゼンタ | 334 | |
+| Google | ティール | 170 | Gemini のカタログ・モデル分類に対応 |
 
-4色相はおよそ 80° 間隔で散っている。
+4色相は、現行10系列の識別性を同時に検証して定めている。
 
 OpenAI がブルーなのは、サイドバーで見慣れた Codex の色に揃えるため。**xAI がバイオレット (296)
 ではなくマゼンタなのは、バイオレットがこのブルーから 46° しか離れず、1型で ΔE 0.019、2型で
@@ -56,10 +56,10 @@ OpenAI がブルーなのは、サイドバーで見慣れた Codex の色に揃
 段は `TIER_LADDER` にハードコードする。名前からの自動推定はしない。
 
 ```
-anthropic: fable-5 > opus-5 > sonnet-5 > haiku-4.5          (4段)
-openai:    gpt-6-astra > gpt-5.6-sol > gpt-5.6-terra
-           > gpt-5.6-luna > gpt-5.5                          (5段)
-xai:       grok-4.6                                          (1段)
+anthropic: fable-5.1 > opus-5.5 > sonnet-5.5 > haiku-4.5 (4 rungs)
+openai:    gpt-6-astra > gpt-6.1-sol > gpt-6-luna          (3 rungs)
+xai:       grok-4.7                                      (1 rung)
+google:    gemini-3.8-flash > gemini-3.5-flash-lite         (2 rungs)
 ```
 
 同じティアの旧世代 (`opus-4.8`、`gpt-5.4` など) は段を増やさず、`LEGACY_FAMILIES` で親段に紐づけて
@@ -94,33 +94,24 @@ CSS の `repeating-linear-gradient` で同じ見た目を作る (CSS から SVG 
 会社軸に最淡段を使ってはいけない。その会社の最下位モデル (haiku / gpt-5.5) と同色になり、
 かつ段数の違う会社どうしで明度が揃わなくなる。
 
-## 識別性の実測 (2026-08-21 当時のモデル構成)
+## 識別性の実測 (2026-09-30)
 
-同時に並ぶ10系列 (Anthropic 4 + OpenAI 5 + xAI 1) のペアワイズ最小 OKLab ΔE:
+現行の10系列 (Anthropic 4 + OpenAI 3 + xAI 1 + Google 2) の最小 OKLab ΔE:
 
-| 視覚 | 最小 ΔE | 最悪ペア |
+| 視覚 | 最小 ΔE | 床 |
 |---|---|---|
-| 正常 | 0.041 | gpt-5.5 vs gpt-5.4 |
-| 1型 (protan) | 0.038 | gpt-5.5 vs gpt-5.4 |
-| 2型 (deutan) | 0.041 | gpt-5.6-sol vs gpt-5.6-terra |
-| 3型 (tritan) | 0.035 | gpt-5.6-sol vs gpt-5.6-terra |
+| 正常 | 0.0548 | 0.035 |
+| 1型 (protan) | 0.0466 | 0.025 |
+| 2型 (deutan) | 0.0592 | 0.025 |
+| 3型 (tritan) | 0.0390 | 0.025 |
 
-最悪ペアが**すべて同一会社の隣接段**になっている。会社どうしの分離は十分に取れていて、残る制約は
-段の刻みの細かさだけ、という状態。これも段数上限5の裏付けになっている。
+Google も同じ床で機械検証する。旧世代は対応する現行段の muted で表示する。
+段数の上限、コントラスト、色相、明度の検査基準は維持する。
 
-### 既知の限界
+### 取り込みの範囲
 
-**OpenAI (258) と Google (170) は3型で ΔE 0.015** まで接近する。ΔE 床のテストは
-core-3 (Anthropic / OpenAI / xAI) にのみ課しており、Google は含めない。
-
-これは `gemini-*` が `DEFAULT_PRICES` にも `FAMILY_STEMS` にも存在せず、実データに現れないため。
-Antigravity (`agy`) のログには**トークン usage が記録されていない** (`~/.gemini/antigravity-cli/`
-の transcript.jsonl にトップレベルキーとして `usage` も `*_tokens` も無い) ので、ailog は現在
-Gemini の使用量を集計できない。Google の色相枠は将来の取り込みに備えた定義にとどまる。
-
-**Gemini を実際に集計できるようになったら、この節の限界を解消すること。** 4社が 80° 間隔で
-埋まっているので、Google をどこかへ動かすには他社も一緒に動かすことになる。5社目を足すときも同じ。
-そのときは色相の再配置を全社まとめて計算し直し、core を4社に広げて床を課すこと。
+Gemini は既存の対応ログ形式にモデル名と使用量が記録された場合の分類・単価・配色に対応する。
+Gemini CLI / Antigravity 固有ログの直接取り込みは未実装。トークン量が無い記録から使用量は推定しない。
 
 ## 契約テスト
 
