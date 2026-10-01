@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[cfg(target_os = "windows")]
@@ -217,8 +217,16 @@ const CHILD_WINDOW_MIN_HEIGHT: f64 = 400.0;
 ///
 /// Pure so it can be unit-tested without a Tauri app handle.
 pub fn next_child_window_label(existing: &[String]) -> String {
+    next_child_window_label_avoiding_reserved(existing, &HashSet::new())
+}
+
+fn next_child_window_label_avoiding_reserved(
+    existing: &[String],
+    reserved: &HashSet<String>,
+) -> String {
     let used: HashSet<u32> = existing
         .iter()
+        .chain(reserved.iter())
         .filter_map(|label| child_window_index(label))
         .collect();
 
@@ -317,9 +325,77 @@ fn clamp_to_monitor<R: tauri::Runtime>(
 
 /// Outcome of label allocation: either the label is free and the caller must
 /// build the window, or a window already carries it and was revealed instead.
+#[derive(Debug)]
 pub enum ResolvedChildWindow {
-    New(String),
+    New(ChildWindowLabelReservation),
     Existing(String),
+}
+
+/// Per-app reservations, shared with the asynchronous construction task.
+#[derive(Default)]
+pub(crate) struct ChildWindowLabelReservations {
+    reserved: Arc<Mutex<HashSet<String>>>,
+}
+
+impl ChildWindowLabelReservations {
+    pub(crate) fn resolve(
+        &self,
+        live_labels: impl FnOnce() -> Vec<String>,
+        requested: Option<String>,
+    ) -> Result<ResolvedChildWindow, String> {
+        if let Some(label) = requested.as_deref() {
+            if !is_valid_child_window_label(label) {
+                return Err(format!(
+                    "invalid child window label {label:?} (must be {CHILD_WINDOW_LABEL_PREFIX}<n>)"
+                ));
+            }
+        }
+        let mut reserved = self.reserved.lock()
+            .map_err(|_| "Child window label reservations are poisoned".to_string())?;
+        // Snapshot the in-memory window map under the same lock as allocation.
+        // A build cannot release its reservation between this snapshot and insert.
+        let existing = live_labels();
+        let label = match requested {
+            Some(label) if existing.contains(&label) => {
+                return Ok(ResolvedChildWindow::Existing(label));
+            }
+            Some(label) if reserved.contains(&label) => {
+                return Err(format!("Child window {label} is still being created"));
+            }
+            Some(label) => label,
+            None => next_child_window_label_avoiding_reserved(&existing, &reserved),
+        };
+        reserved.insert(label.clone());
+        Ok(ResolvedChildWindow::New(ChildWindowLabelReservation {
+            label,
+            reserved: Arc::clone(&self.reserved),
+        }))
+    }
+}
+
+/// Dropping a build task releases its label, including scheduling/build failures.
+#[derive(Debug)]
+pub struct ChildWindowLabelReservation {
+    label: String,
+    reserved: Arc<Mutex<HashSet<String>>>,
+}
+
+impl ChildWindowLabelReservation {
+    pub(crate) fn label(&self) -> &str {
+        &self.label
+    }
+}
+
+impl Drop for ChildWindowLabelReservation {
+    fn drop(&mut self) {
+        self.reserved.lock().unwrap_or_else(|error| error.into_inner())
+            .remove(&self.label);
+    }
+}
+
+/// Every OS window counts, including windows with web panes or previews.
+pub(crate) fn all_window_labels(app: &AppHandle) -> Vec<String> {
+    app.windows().keys().cloned().collect()
 }
 
 /// Resolve the label a new child window should take: the caller's request
@@ -328,29 +404,18 @@ pub fn resolve_child_window_label(
     app: &AppHandle,
     label: Option<String>,
 ) -> Result<ResolvedChildWindow, String> {
-    let existing: Vec<String> = app.webview_windows().keys().cloned().collect();
-    let label = match label {
-        Some(requested) => {
-            if !is_valid_child_window_label(&requested) {
-                return Err(format!(
-                    "invalid child window label {requested:?} (must be {CHILD_WINDOW_LABEL_PREFIX}<n>)"
-                ));
-            }
-            requested
+    let state = app.state::<AppState>();
+    let resolved = state.window_registry.child_window_labels
+        .resolve(|| all_window_labels(app), label)?;
+    // Only explicit labels can resolve to an existing window. UI calls happen
+    // after the reservation lock is released to avoid event-loop reentrancy.
+    if let ResolvedChildWindow::Existing(label) = &resolved {
+        if let Some(window) = app.get_window(label) {
+            let _ = window.show();
+            let _ = window.set_focus();
         }
-        None => next_child_window_label(&existing),
-    };
-
-    // `get_window`, not `get_webview_window`: a child that already shows a web
-    // pane is a multi-webview window and would otherwise read as absent.
-    if let Some(window) = app.get_window(&label) {
-        // Idempotent: asking for a label that is already open just reveals it.
-        let _ = window.show();
-        let _ = window.set_focus();
-        return Ok(ResolvedChildWindow::Existing(label));
     }
-
-    Ok(ResolvedChildWindow::New(label))
+    Ok(resolved)
 }
 
 /// Post the actual window construction to the main thread (tao forbids
@@ -374,18 +439,18 @@ pub fn resolve_child_window_label(
 /// chrome, the reveal fallback and the merge-back-on-destroy hook.
 pub fn spawn_child_window(
     app: &AppHandle,
-    label: String,
+    reservation: ChildWindowLabelReservation,
     x: Option<f64>,
     y: Option<f64>,
     width: Option<f64>,
     height: Option<f64>,
 ) -> Result<(), String> {
-    crate::perf_timeline::mark("window.spawn.request", Some(&label));
+    crate::perf_timeline::mark("window.spawn.request", Some(reservation.label()));
     let app_handle = app.clone();
-    let build_label = label;
+    let build_label = reservation.label().to_string();
     let post_handle = app.clone();
-    std::thread::spawn(move || {
-        let _ = post_handle.run_on_main_thread(move || {
+    std::thread::Builder::new().spawn(move || {
+        let posted = post_handle.run_on_main_thread(move || {
             let mut builder = tauri::WebviewWindowBuilder::new(
                 &app_handle,
                 &build_label,
@@ -421,7 +486,10 @@ pub fn spawn_child_window(
                 builder = builder.position(x, y);
             }
 
-            match builder.build() {
+            let built = builder.build();
+            // Success is already in the OS window map; failure frees the slot.
+            drop(reservation);
+            match built {
                 Ok(window) => {
                     crate::perf_timeline::mark("window.child.built", Some(&build_label));
                     // Restate size and position in explicit logical units now that
@@ -458,7 +526,10 @@ pub fn spawn_child_window(
                 }
             }
         });
-    });
+        if let Err(err) = posted {
+            crate::diag_warn!("window", "failed to schedule child window creation: {err}");
+        }
+    }).map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -481,8 +552,9 @@ pub fn open_child_window(
 ) -> Result<String, String> {
     match resolve_child_window_label(&app, label)? {
         ResolvedChildWindow::Existing(label) => Ok(label),
-        ResolvedChildWindow::New(label) => {
-            spawn_child_window(&app, label.clone(), x, y, width, height)?;
+        ResolvedChildWindow::New(reservation) => {
+            let label = reservation.label().to_string();
+            spawn_child_window(&app, reservation, x, y, width, height)?;
             Ok(label)
         }
     }
@@ -492,7 +564,7 @@ pub fn open_child_window(
 pub fn handle_app_run_event(app: &AppHandle, event: tauri::RunEvent) {
     let (live_windows, code) = match event {
         tauri::RunEvent::ExitRequested { code, api, .. } => {
-            let live_windows = app.webview_windows().len();
+            let live_windows = all_window_labels(app).len();
             if code.is_none() && live_windows != 0 {
                 api.prevent_exit();
                 return;
@@ -540,7 +612,7 @@ pub fn handle_app_run_event(app: &AppHandle, event: tauri::RunEvent) {
 
 #[tauri::command]
 pub fn quit_app(app: AppHandle) -> Result<(), String> {
-    if !app.webview_windows().is_empty() {
+    if !all_window_labels(&app).is_empty() {
         return Err("Cannot quit while a window is still alive".to_string());
     }
     // Cleanup is centralized in the runtime exit hook, including this path.
@@ -621,6 +693,104 @@ mod tests {
 
     fn labels(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    fn reserve(
+        allocator: &ChildWindowLabelReservations,
+        live: &[String],
+        requested: Option<&str>,
+    ) -> ChildWindowLabelReservation {
+        match allocator.resolve(|| live.to_vec(), requested.map(str::to_string)).unwrap() {
+            ResolvedChildWindow::New(reservation) => reservation,
+            ResolvedChildWindow::Existing(label) => panic!("unexpected existing window {label}"),
+        }
+    }
+
+    #[test]
+    fn allocation_avoids_both_live_and_reserved_labels() {
+        let live = labels(&["main", "mycmux-w1", "mycmux-w3"]);
+        let reserved = labels(&["mycmux-w2", "mycmux-w5"]).into_iter().collect();
+        assert_eq!(next_child_window_label_avoiding_reserved(&live, &reserved), "mycmux-w4");
+    }
+
+    #[test]
+    fn allocation_counts_a_web_pane_window_missing_from_the_webview_list() {
+        let webview_labels = labels(&["main"]);
+        let all_os_labels = labels(&["main", "mycmux-w1"]);
+        assert_eq!(next_child_window_label(&webview_labels), "mycmux-w1");
+        let allocator = ChildWindowLabelReservations::default();
+        let reservation = reserve(&allocator, &all_os_labels, None);
+        assert_eq!(reservation.label(), "mycmux-w2");
+    }
+
+    #[test]
+    fn dropping_a_failed_build_reservation_makes_its_label_reusable() {
+        let allocator = ChildWindowLabelReservations::default();
+        let failed_build = reserve(&allocator, &[], None);
+        let other_build = reserve(&allocator, &[], None);
+        assert_eq!(failed_build.label(), "mycmux-w1");
+        assert_eq!(other_build.label(), "mycmux-w2");
+        drop(failed_build);
+        assert_eq!(reserve(&allocator, &[], None).label(), "mycmux-w1");
+    }
+
+    #[test]
+    fn a_successful_build_stays_taken_after_its_reservation_is_released() {
+        let allocator = ChildWindowLabelReservations::default();
+        let built = reserve(&allocator, &[], None);
+        let live = vec![built.label().to_string()];
+        drop(built);
+        assert_eq!(reserve(&allocator, &live, None).label(), "mycmux-w2");
+    }
+
+    #[test]
+    fn a_dropped_main_thread_task_releases_its_reservation() {
+        let allocator = ChildWindowLabelReservations::default();
+        let reservation = reserve(&allocator, &[], None);
+        let task = move || drop(reservation);
+        // A failed main-thread post drops the closure without executing it.
+        drop(task);
+        assert_eq!(reserve(&allocator, &[], None).label(), "mycmux-w1");
+    }
+
+    #[test]
+    fn concurrent_requests_reserve_distinct_labels_before_either_window_exists() {
+        let allocator = Arc::new(ChildWindowLabelReservations::default());
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let threads: Vec<_> = (0..2).map(|_| {
+            let allocator = Arc::clone(&allocator);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                reserve(&allocator, &[], None)
+            })
+        }).collect();
+        // Retain both guards until after joining, so neither slot is freed early.
+        let reservations: Vec<_> = threads.into_iter().map(|thread| thread.join().unwrap()).collect();
+        let mut selected: Vec<_> = reservations.iter().map(|guard| guard.label()).collect();
+        selected.sort();
+        assert_eq!(selected, ["mycmux-w1", "mycmux-w2"]);
+    }
+
+    #[test]
+    fn only_an_explicit_label_can_resolve_to_an_existing_window() {
+        let allocator = ChildWindowLabelReservations::default();
+        let live = labels(&["main", "mycmux-w1"]);
+        assert!(matches!(
+            allocator.resolve(|| live.clone(), Some("mycmux-w1".to_string())).unwrap(),
+            ResolvedChildWindow::Existing(label) if label == "mycmux-w1"
+        ));
+        assert_eq!(reserve(&allocator, &live, None).label(), "mycmux-w2");
+    }
+
+    #[test]
+    fn an_explicit_in_flight_label_cannot_start_a_second_build() {
+        let allocator = ChildWindowLabelReservations::default();
+        let first = reserve(&allocator, &[], Some("mycmux-w1"));
+        assert!(allocator.resolve(|| vec![], Some("mycmux-w1".to_string())).is_err());
+        assert_eq!(reserve(&allocator, &[], None).label(), "mycmux-w2");
+        drop(first);
+        assert_eq!(reserve(&allocator, &[], Some("mycmux-w1")).label(), "mycmux-w1");
     }
 
     #[test]

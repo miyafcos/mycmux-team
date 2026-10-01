@@ -1745,7 +1745,6 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
   const [applyErrors, setApplyErrors] = useState<string[]>([]);
   const [applied, setApplied] = useState<LayoutTransaction | null>(null);
   const [reviewApplied, setReviewApplied] = useState(false);
-  const [undoDismissed, setUndoDismissed] = useState(false);
   const [ticket, setTicket] = useState<GroupingTicket | null>(null);
   const [preparedPlan, setPreparedPlan] = useState<GroupingPlan | null>(null);
   const [preparedLayoutRevision, setPreparedLayoutRevision] = useState<number | null>(null);
@@ -2101,7 +2100,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     setAnalyzing(false);
     setReviewApplied(true);
     setMode("confirm");
-    setStatus(tabGroupingStrings.undoAppliedUnknown);
+    setStatus("");
   }, [cancelJudge, intent, open, resetTransientUi]);
 
   useEffect(() => {
@@ -2260,9 +2259,8 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
       setApplyErrors([]);
       setApplied(result.commit.transaction);
       setReviewApplied(true);
-      setUndoDismissed(false);
       setHighlightMoved(true);
-      setStatus(tabGroupingStrings.undoApplied(result.commit.report.moved.length));
+      setStatus("");
       const draft = landingDraftRef.current;
       landingDraftRef.current = null;
       const expected = result.commit.transaction.expected;
@@ -3373,12 +3371,20 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
               {status !== tabGroupingStrings.ticketInvalidated && applyErrors.length > 0
                 ? ` / ${applyErrors.join(" / ")}`
                 : ""}
+              {durabilityMessage ? (
+                <div data-durability={durabilityStatus}>{durabilityMessage}</div>
+              ) : null}
             </div>
           </div>
           <div className="cmux-tab-grouping-actions">
-            {undo && undoDismissed ? (
-              <button type="button" className="cmux-tab-grouping-button" onClick={() => setUndoDismissed(false)}>
-                {tabGroupingStrings.recallUndo}
+            {canReviewUndo ? (
+              <button type="button" className="cmux-tab-grouping-button" onClick={undoGrouping}>
+                {tabGroupingStrings.undo}
+              </button>
+            ) : null}
+            {canReviewApplied ? (
+              <button type="button" className="cmux-tab-grouping-button" onClick={() => { setReviewApplied(true); setMode("confirm"); }}>
+                {tabGroupingStrings.undoReview}
               </button>
             ) : null}
             {previousStep ? (
@@ -3425,26 +3431,6 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
             )}
           </div>
         </footer>
-        {undo && !undoDismissed ? (
-          <div className={`cmux-tab-grouping-undo${canReviewUndo ? "" : " is-expired"}`} data-undo-revision={undo.recordId}>
-            <span>{canReviewUndo ? (undo.report ? tabGroupingStrings.undoApplied(undo.report.movedTabCount) : tabGroupingStrings.undoAppliedUnknown) : (undo.expireReason ?? tabGroupingStrings.undoExpired)}</span>
-            {undo.report && undo.report.emptyWorkspaceIds.length > 0 ? (
-              <span>{tabGroupingStrings.emptyWorkspaces(undo.report.emptyWorkspaceIds.length)} {tabGroupingStrings.notDeleted}</span>
-            ) : null}
-            {durabilityMessage ? (
-              <span className="cmux-tab-grouping-note" data-durability={durabilityStatus}>{durabilityMessage}</span>
-            ) : null}
-            <div className="cmux-tab-grouping-actions">
-              <button type="button" className="cmux-tab-grouping-button" disabled={!canReviewUndo} onClick={undoGrouping}>
-                {tabGroupingStrings.undo}
-              </button>
-              <button type="button" className="cmux-tab-grouping-button" disabled={!canReviewApplied} onClick={() => { setReviewApplied(true); setMode("confirm"); }}>
-                {tabGroupingStrings.undoReview}
-              </button>
-              <button type="button" className="cmux-tab-grouping-button is-ghost" aria-label={tabGroupingStrings.undoDismissLabel} onClick={() => setUndoDismissed(true)}>×</button>
-            </div>
-          </div>
-        ) : null}
       </div>
     </OverlayShell>
     </GroupingEvidenceContext.Provider>

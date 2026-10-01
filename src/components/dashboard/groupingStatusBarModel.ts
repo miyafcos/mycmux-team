@@ -12,10 +12,7 @@ export interface GroupingStatusBarOptions {
 export type GroupingStatusActionId =
   | "copy_diagnostics"
   | "inspect_layout"
-  | "restart_app"
-  | "undo"
-  | "review_changes"
-  | "dismiss";
+  | "restart_app";
 
 export interface GroupingStatusAction {
   id: GroupingStatusActionId;
@@ -50,7 +47,7 @@ export interface GroupingDiagnosticDurability {
 }
 
 interface StatusBarViewBase {
-  kind: "poisoned" | "undo_available" | "undo_expired" | "durability_warning";
+  kind: "poisoned" | "durability_warning";
   message: string;
   warning: string | null;
   actions: GroupingStatusAction[];
@@ -63,7 +60,7 @@ export interface PoisonedStatusBarView extends StatusBarViewBase {
 
 export type GroupingStatusBarView =
   | PoisonedStatusBarView
-  | (StatusBarViewBase & { kind: "undo_available" | "undo_expired" | "durability_warning" });
+  | (StatusBarViewBase & { kind: "durability_warning" });
 
 const action = (
   id: GroupingStatusActionId,
@@ -125,31 +122,6 @@ export function selectGroupingStatusBarView(
           tabs: options.tabCount,
         },
       },
-    };
-  }
-
-  if (runtime.undo?.status === "available") {
-    return {
-      kind: "undo_available",
-      message: tabGroupingStrings.statusUndoAvailable,
-      warning: durabilityWarning,
-      actions: [
-        action("undo", tabGroupingStrings.statusUndo),
-        action("review_changes", tabGroupingStrings.undoReview),
-        action("dismiss", tabGroupingStrings.statusDismiss),
-      ],
-    };
-  }
-
-  if (runtime.undo?.status === "expired") {
-    return {
-      kind: "undo_expired",
-      message: runtime.undo.expireReason ?? tabGroupingStrings.undoExpired,
-      warning: durabilityWarning,
-      actions: [
-        action("undo", tabGroupingStrings.statusUndo, false),
-        action("dismiss", tabGroupingStrings.statusDismiss),
-      ],
     };
   }
 

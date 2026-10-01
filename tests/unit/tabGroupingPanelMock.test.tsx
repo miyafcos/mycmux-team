@@ -363,6 +363,20 @@ function button(label: string): HTMLButtonElement {
   return match;
 }
 
+function footerAction(label: string): HTMLButtonElement {
+  const match = [...document.querySelectorAll<HTMLButtonElement>(".cmux-tab-grouping-footer .cmux-tab-grouping-actions button")]
+    .find((item) => item.textContent?.trim() === label);
+  if (!match) throw new Error(`footer action not found: ${label}`);
+  return match;
+}
+
+function expectNoPostApplyNotice() {
+  expect(document.querySelector(".cmux-tab-grouping-undo")).toBeNull();
+  expect(document.body.textContent).not.toContain("再配置を適用しました");
+  expect(document.body.textContent).not.toContain("元に戻せません");
+  expect(document.querySelectorAll(".cmux-tab-grouping-footer .cmux-tab-grouping-actions button.is-ghost")).toHaveLength(0);
+}
+
 async function click(element: HTMLElement) {
   await act(async () => {
     element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1489,6 +1503,9 @@ describe("TabGroupingPanel mounted interaction", () => {
     expect(document.querySelectorAll('.cmux-tab-grouping-chip.is-moved[data-grouping-side="after"][role="button"]')).toHaveLength(beforeApply.length);
     expect(document.body.textContent).not.toContain(tabGroupingStrings.sideBySideNoMoves);
     expect(document.body.textContent).toContain(tabGroupingStrings.undo);
+    expectNoPostApplyNotice();
+    expect(footerAction(tabGroupingStrings.undo).disabled).toBe(false);
+    expect(footerAction(tabGroupingStrings.undoReview).disabled).toBe(false);
 
     await act(async () => root?.render(<TabGroupingPanel open={false} visible={false} onClose={onClose} />));
     await settle();
@@ -1496,9 +1513,11 @@ describe("TabGroupingPanel mounted interaction", () => {
     await settle();
     expect(lineSet()).toEqual(beforeApply);
     expect(document.querySelectorAll('.cmux-tab-grouping-chip.is-moved[data-grouping-side="after"][role="button"]')).toHaveLength(beforeApply.length);
+    expectNoPostApplyNotice();
   });
 
   it("restores a decoration-free zero-move map after Undo", async () => {
+    const undoCall = vi.spyOn(groupingBoundary, "undo");
     const zeroMoveDomSnapshot = (scope: ParentNode) => ({
       chipClassSets: [...scope.querySelectorAll<HTMLElement>(".cmux-tab-grouping-chip")].map((element) => ({
         tabId: element.dataset.tabId,
@@ -1529,7 +1548,13 @@ describe("TabGroupingPanel mounted interaction", () => {
     await act(async () => committed.durability);
     await settle();
     expect(document.querySelectorAll("path.cmux-tab-grouping-line").length).toBeGreaterThan(0);
-    await click(button(tabGroupingStrings.undo));
+    const undoButton = footerAction(tabGroupingStrings.undo);
+    expect(undoButton.disabled).toBe(false);
+    expect(undoButton.tabIndex).toBe(0);
+    undoButton.focus();
+    expect(document.activeElement).toBe(undoButton);
+    await click(undoButton);
+    expect(undoCall).toHaveBeenCalledTimes(1);
     await settle();
     expect(structuralUndoSignature(useWorkspaceListStore.getState().workspaces)).toBe(originalSignature);
     expect(document.querySelectorAll("path.cmux-tab-grouping-line, path.cmux-tab-grouping-line-halo, .cmux-tab-grouping-movebadge, .cmux-tab-grouping-line-start, .cmux-tab-grouping-line-arrow")).toHaveLength(0);
@@ -1540,7 +1565,7 @@ describe("TabGroupingPanel mounted interaction", () => {
     expect(zeroMoveDomSnapshot(restoredAfterMap)).toEqual(preApplyCurrentSnapshot);
   });
 
-  it("reviews the applied layout side by side from the runtime Undo bar", async () => {
+  it("reviews the applied layout side by side from the footer action", async () => {
     await mountPanel();
     await openConfirm();
     const appliedTransaction = preparedTransaction();
@@ -1551,7 +1576,13 @@ describe("TabGroupingPanel mounted interaction", () => {
     await act(async () => committed.durability);
     await settle();
     expect(useGroupingRuntimeStore.getState().undo?.status).toBe("available");
-    await click(button(tabGroupingStrings.undoReview));
+    const reviewButton = footerAction(tabGroupingStrings.undoReview);
+    expect(reviewButton.disabled).toBe(false);
+    expect(reviewButton.tabIndex).toBe(0);
+    reviewButton.focus();
+    expect(document.activeElement).toBe(reviewButton);
+    await click(reviewButton);
+    expectNoPostApplyNotice();
     expect(document.querySelector(".cmux-tab-grouping-sidebyside")).not.toBeNull();
     const undo = useGroupingRuntimeStore.getState().undo;
     expect(undo?.status).toBe("available");
@@ -1566,7 +1597,7 @@ describe("TabGroupingPanel mounted interaction", () => {
     }
   });
 
-  it("shows only actionable pending and failed durability states in the undo bar", async () => {
+  it("shows pending, failed, and deferred durability in the footer and hides saved or idle states", async () => {
     setRuntimeUndo("available");
     await mountPanel();
     const durabilityBase = {
@@ -1581,7 +1612,7 @@ describe("TabGroupingPanel mounted interaction", () => {
       durability: { status: "pending", ...durabilityBase } as never,
     }));
     await settle();
-    expect(document.querySelector('[data-durability="pending"]')?.textContent)
+    expect(document.querySelector('.cmux-tab-grouping-footer [data-durability="pending"]')?.textContent)
       .toBe(tabGroupingStrings.durabilityPending);
 
     await act(async () => useGroupingRuntimeStore.setState({
@@ -1594,7 +1625,14 @@ describe("TabGroupingPanel mounted interaction", () => {
       } as never,
     }));
     await settle();
-    expect(document.querySelector('[data-durability="failed"]')?.textContent)
+    expect(document.querySelector('.cmux-tab-grouping-footer [data-durability="failed"]')?.textContent)
+      .toBe(tabGroupingStrings.statusDurabilityWarning);
+
+    await act(async () => useGroupingRuntimeStore.setState({
+      durability: { status: "deferred", ...durabilityBase, reason: "not_leader" } as never,
+    }));
+    await settle();
+    expect(document.querySelector('.cmux-tab-grouping-footer [data-durability="deferred"]')?.textContent)
       .toBe(tabGroupingStrings.statusDurabilityWarning);
 
     await act(async () => useGroupingRuntimeStore.setState({
@@ -1652,28 +1690,38 @@ describe("TabGroupingPanel mounted interaction", () => {
     expect(document.querySelector('[role="status"]')?.textContent).toBe(tabGroupingStrings.ticketInvalidated);
   });
 
-  it("keeps the runtime Undo bar when a fresh comparison starts", async () => {
+  it("keeps footer undo and review actions without a notice when a fresh comparison starts", async () => {
     setRuntimeUndo("available");
     await mountPanel();
-    expect(document.querySelector(".cmux-tab-grouping-undo")).not.toBeNull();
+    expect(footerAction(tabGroupingStrings.undo).disabled).toBe(false);
+    expect(footerAction(tabGroupingStrings.undoReview).disabled).toBe(false);
+    expectNoPostApplyNotice();
     await click(button(tabGroupingStrings.analyzeAgain));
-    expect(document.querySelector(".cmux-tab-grouping-undo")).not.toBeNull();
-    expect(document.body.textContent).toContain(tabGroupingStrings.undoApplied(3));
+    expect(footerAction(tabGroupingStrings.undo).disabled).toBe(false);
+    expect(footerAction(tabGroupingStrings.undoReview).disabled).toBe(false);
+    expectNoPostApplyNotice();
   });
 
-  it("keeps the runtime report after an unmount and remount", async () => {
+  it("keeps the runtime report and footer actions without showing post-apply notices after a remount", async () => {
     const emptyWorkspaceMessage = `${tabGroupingStrings.emptyWorkspaces(2)} ${tabGroupingStrings.notDeleted}`;
     setRuntimeUndo("available", { movedTabCount: 4, emptyWorkspaceIds: ["wsA", "wsB"] });
     await mountPanel();
-    expect(document.body.textContent).toContain(tabGroupingStrings.undoApplied(4));
-    expect(document.body.textContent).toContain(emptyWorkspaceMessage);
+    const record = useGroupingRuntimeStore.getState().undo;
+    expectNoPostApplyNotice();
+    expect(document.body.textContent).not.toContain(emptyWorkspaceMessage);
+    expect(footerAction(tabGroupingStrings.undo).disabled).toBe(false);
+    expect(footerAction(tabGroupingStrings.undoReview).disabled).toBe(false);
 
     await act(async () => root?.unmount());
     root = null;
     await mountPanel();
 
-    expect(document.body.textContent).toContain(tabGroupingStrings.undoApplied(4));
-    expect(document.body.textContent).toContain(emptyWorkspaceMessage);
+    expectNoPostApplyNotice();
+    expect(document.body.textContent).not.toContain(emptyWorkspaceMessage);
+    expect(footerAction(tabGroupingStrings.undo).disabled).toBe(false);
+    expect(footerAction(tabGroupingStrings.undoReview).disabled).toBe(false);
+    expect(useGroupingRuntimeStore.getState().undo).toBe(record);
+    expect(record?.report).toMatchObject({ movedTabCount: 4, emptyWorkspaceIds: ["wsA", "wsB"] });
   });
 
   it("does not render the empty-workspace line when the runtime report has no empty workspaces", async () => {
@@ -1701,14 +1749,17 @@ describe("TabGroupingPanel mounted interaction", () => {
     expect(useGroupingRuntimeStore.getState().undo?.status).toBe("available");
     expect(button(tabGroupingStrings.undoReview).disabled).toBe(false);
     expect(button(tabGroupingStrings.undo).disabled).toBe(false);
-    expect(document.querySelector(".cmux-tab-grouping-undo")?.classList.contains("is-expired")).toBe(false);
+    expectNoPostApplyNotice();
   });
 
-  it("disables review after Undo expires", async () => {
-    setRuntimeUndo("expired");
+  it.each(["expired", null] as const)("hides footer undo and review without notices when undo status is %s", async (status) => {
+    if (status) setRuntimeUndo(status);
     await mountPanel();
-    expect(button(tabGroupingStrings.undoReview).disabled).toBe(true);
-    expect(document.querySelector(".cmux-tab-grouping-undo")?.classList.contains("is-expired")).toBe(true);
+    const labels = [...document.querySelectorAll(".cmux-tab-grouping-footer .cmux-tab-grouping-actions button")]
+      .map((item) => item.textContent?.trim());
+    expect(labels).not.toContain(tabGroupingStrings.undo);
+    expect(labels).not.toContain(tabGroupingStrings.undoReview);
+    expectNoPostApplyNotice();
   });
 
   it("writes four dark and four light snapshots plus a comparison index", async () => {

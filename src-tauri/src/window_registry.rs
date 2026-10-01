@@ -84,6 +84,7 @@ pub struct WindowRegistry {
     assignments: DashMap<String, String>,
     fragments: DashMap<String, WindowFragment>,
     pending_adoptions: DashMap<String, Vec<Value>>,
+    pub(crate) child_window_labels: crate::commands::window::ChildWindowLabelReservations,
     revision: AtomicU64,
     leader: std::sync::Mutex<Option<String>>,
     closing: std::sync::Mutex<std::collections::HashSet<String>>,
@@ -379,7 +380,7 @@ impl WindowRegistry {
     }
 
     /// Known windows that no longer exist (`live_labels` comes from
-    /// `app.webview_windows()`), excluding main itself.
+    /// `commands::window::all_window_labels`), excluding main itself.
     pub fn orphan_windows(&self, live_labels: &[String]) -> Vec<String> {
         self.known_windows()
             .into_iter()

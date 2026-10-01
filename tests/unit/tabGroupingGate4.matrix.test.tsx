@@ -653,6 +653,9 @@ describe("A. 4 scenarios end-to-end", () => {
     await runScenario("S1");
     expect(latestCommit().commit.ok).toBe(true);
     expect(useGroupingRuntimeStore.getState().undo?.status).toBe("available");
+    expect(panel().querySelector(".cmux-tab-grouping-undo")).toBeNull();
+    expect(panel().textContent).not.toContain("再配置を適用しました");
+    expect(panel().textContent).not.toContain("元に戻せません");
   });
 
   it("[G4-02] completes S2 last-tab pointer move and apply", { timeout: 10_000 }, async () => {
@@ -1168,11 +1171,13 @@ describe("F. single apply, rollback, undo, and durability", () => {
     expect(document.body.textContent).toContain("適用");
   });
 
-  it("[G4-51] exposes one global undo generation and removes it after use", { timeout: 10_000 }, async () => {
+  it("[G4-51] exposes one undo generation in the panel footer and removes it after use", { timeout: 10_000 }, async () => {
     await mountAndApply();
-    await mountStatusBar();
-    expect(button(tabGroupingStrings.undo).disabled).toBe(false);
-    await click(button(tabGroupingStrings.undo));
+    const undo = button(tabGroupingStrings.undo);
+    expect(undo.closest(".cmux-tab-grouping-footer .cmux-tab-grouping-actions")).not.toBeNull();
+    expect(undo.disabled).toBe(false);
+    await click(undo);
+    expect(boundaryHarness.undone).toHaveLength(1);
     expect(useGroupingRuntimeStore.getState().undo?.status).not.toBe("available");
     expect([...document.querySelectorAll("button")].some((item) => item.textContent?.trim() === tabGroupingStrings.undo)).toBe(false);
   });
@@ -1432,16 +1437,17 @@ describe("H. widths 959, 960, and 961", () => {
 });
 
 describe("I. external review reopen", () => {
-  it("[G4-70] dispatches exactly one review intent from visible status action", { timeout: 10_000 }, async () => {
+  it("[G4-70] leaves no status bar or review event after a saved apply", { timeout: 10_000 }, async () => {
     await runScenario("S1");
     await mountStatusBar();
     const intents: unknown[] = [];
     const listener = (event: Event) => intents.push((event as CustomEvent).detail);
     window.addEventListener(TAB_GROUPING_OPEN_EVENT, listener);
-    await click(button(tabGroupingStrings.undoReview));
-    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
+    expect(document.querySelector(".cmux-grouping-status-bar")).toBeNull();
+    expect([...document.querySelectorAll("button")].some((item) => item.textContent?.trim() === tabGroupingStrings.undoReview)).toBe(false);
     window.removeEventListener(TAB_GROUPING_OPEN_EVENT, listener);
-    expect(intents).toEqual([{ intent: "review" }]);
+    expect(intents).toEqual([]);
+    expect(useGroupingRuntimeStore.getState().undo?.status).toBe("available");
   });
 
   it("[G4-71] opens review through direct props without a new analysis", { timeout: 10_000 }, async () => {
@@ -1451,7 +1457,9 @@ describe("I. external review reopen", () => {
     await mountPanel(vi.fn(), "review");
     expect(runGroupingAnalysis).not.toHaveBeenCalled();
     expect(panel().querySelector(".cmux-tab-grouping-body.is-confirm")).not.toBeNull();
-    expect(document.body.textContent).toContain(tabGroupingStrings.undoAppliedUnknown);
+    expect(panel().textContent).not.toContain("再配置を適用しました");
+    const review = button(tabGroupingStrings.undoReview);
+    expect(review.closest(".cmux-tab-grouping-footer .cmux-tab-grouping-actions")).not.toBeNull();
   });
 
   it("[G4-72] preserves the rendered move-line tab set across an independent review mount", { timeout: 10_000 }, async () => {

@@ -4,10 +4,29 @@ import {
   selectGroupingStatusBarView,
   type GroupingStatusBarOptions,
 } from "../../src/components/dashboard/groupingStatusBarModel";
-import type { GroupingRuntimeState } from "../../src/stores/groupingRuntimeStore";
+import type { GroupingRuntimeState, GroupingUndoRecord } from "../../src/stores/groupingRuntimeStore";
 import type { Sha256 } from "../../src/lib/persistentLayoutProjection";
 
 const signature = "c".repeat(64) as Sha256;
+const durabilityBase = {
+  requestId: "persist-1",
+  layoutRevision: 12,
+  signature,
+  snapshotDigest: signature,
+  leaderGeneration: 1,
+};
+const undo: GroupingUndoRecord = {
+  recordId: "status-bar-undo",
+  schemaVersion: 1,
+  snapshot: { schemaVersion: 1, workspaces: [], selection: { activeWorkspaceId: null, activeSessionId: null, lastActivePaneByWorkspace: {} } },
+  report: { movedTabCount: 3, affectedWorkspaceIds: [], emptyWorkspaceIds: [], appliedAt: 1 },
+  appliedLayoutSignature: signature,
+  expectedStructuralSignature: signature,
+  committedLayoutRevision: 11,
+  createdAt: 1_800_000_000_000,
+  status: "available",
+  expireReason: null,
+};
 const options: GroupingStatusBarOptions = {
   appVersion: "0.57.0",
   layoutRevision: 12,
@@ -20,14 +39,16 @@ function runtime(overrides: Partial<GroupingRuntimeState> = {}): GroupingRuntime
   return {
     boundaryToken: {},
     schemaVersion: 1,
-    persistentSchema: { loadedSchemaVersion: 1, migrationComplete: true },
+    persistentSchema: { loadedSchemaVersion: 1, migrationComplete: true, schemaEpoch: 1 },
     transitionDepth: 0,
     transitionEpoch: 0,
     transitionSource: null,
+    transitionFrames: [],
     operation: null,
     poisoned: false,
     diagnostic: null,
     undo: null,
+    focusIntent: null,
     durability: { status: "idle" },
     ...overrides,
   };
@@ -39,11 +60,10 @@ describe("grouping status bar model", () => {
       poisoned: true,
       durability: {
         status: "failed",
-        requestId: "persist-secret",
-        layoutRevision: 12,
-        signature,
+        ...durabilityBase,
         errorCode: "persistence_failed",
         retryScheduled: true,
+        failureGeneration: 1,
         ...({ message: "SECRET_CANARY_E02 raw persistence error" } as object),
       },
       diagnostic: {
@@ -57,16 +77,7 @@ describe("grouping status bar model", () => {
         errors: ["restore verification failed with RAW TERMINAL SECRET and RAW PROMPT SECRET"],
         ...({ terminalContent: "RAW TERMINAL SECRET", prompt: "RAW PROMPT SECRET" } as object),
       },
-      undo: {
-        recordId: "status-bar-poison-undo",
-        schemaVersion: 1,
-        snapshot: { schemaVersion: 1, workspaces: [], selection: { activeWorkspaceId: null, activeSessionId: null, lastActivePaneByWorkspace: {} } },
-        expectedStructuralSignature: signature,
-        committedLayoutRevision: 11,
-        createdAt: 1_800_000_000_000,
-        status: "available",
-        expireReason: null,
-      },
+      undo,
     });
 
     const view = selectGroupingStatusBarView(state, options);
@@ -90,37 +101,43 @@ describe("grouping status bar model", () => {
     });
   });
 
-  it("models available, expired, and absent undo states without recomputing signatures", () => {
-    const undo = {
-      recordId: "status-bar-undo",
-      schemaVersion: 1 as const,
-      snapshot: { schemaVersion: 1 as const, workspaces: [], selection: { activeWorkspaceId: null, activeSessionId: null, lastActivePaneByWorkspace: {} } },
-      expectedStructuralSignature: signature,
-      committedLayoutRevision: 11,
-      createdAt: 1_800_000_000_000,
-      status: "available" as const,
-      expireReason: null,
-    };
+  it.each(["idle", "pending", "saved"] as const)("hides available undo with %s durability", (status) => {
+    const durability: GroupingRuntimeState["durability"] = status === "idle"
+      ? { status }
+      : { status, ...durabilityBase };
+    expect(selectGroupingStatusBarView(runtime({ undo, durability }), options)).toBeNull();
+  });
 
+  it("hides expired and absent undo without recomputing signatures", () => {
+    expect(selectGroupingStatusBarView(runtime({
+      undo: { ...undo, status: "expired", expireReason: "layout changed" },
+      durability: { status: "saved", ...durabilityBase },
+    }), options)).toBeNull();
+    expect(selectGroupingStatusBarView(runtime(), options)).toBeNull();
+  });
+
+  it.each(["available", "expired", null] as const)("shows failed durability with undo status %s", (status) => {
+    expect(selectGroupingStatusBarView(runtime({
+      undo: status ? { ...undo, status, expireReason: status === "expired" ? "layout changed" : null } : null,
+      durability: {
+        status: "failed",
+        ...durabilityBase,
+        errorCode: "persistence_failed",
+        retryScheduled: true,
+        failureGeneration: 1,
+      },
+    }), options)).toEqual({
+      kind: "durability_warning",
+      message: "再配置は適用されましたが、ディスクへの保存を確認できません。アプリを終了せず、再保存を待ってください。",
+      warning: null,
+      actions: [],
+    });
+  });
+
+  it("shows deferred durability even while undo is available", () => {
     expect(selectGroupingStatusBarView(runtime({
       undo,
-      durability: {
-        status: "deferred",
-        requestId: "persist-1",
-        layoutRevision: 12,
-        signature,
-        reason: "not_leader",
-      },
-    }), options)).toMatchObject({
-      kind: "undo_available",
-      warning: "再配置は適用されましたが、ディスクへの保存を確認できません。アプリを終了せず、再保存を待ってください。",
-      actions: [{ id: "undo", enabled: true }, { id: "review_changes" }, { id: "dismiss" }],
-    });
-    expect(selectGroupingStatusBarView(runtime({ undo: { ...undo, status: "expired", expireReason: "layout changed" } }), options)).toMatchObject({
-      kind: "undo_expired",
-      message: "layout changed",
-      actions: [{ id: "undo", enabled: false }, { id: "dismiss" }],
-    });
-    expect(selectGroupingStatusBarView(runtime(), options)).toBeNull();
+      durability: { status: "deferred", ...durabilityBase, reason: "not_leader" },
+    }), options)).toMatchObject({ kind: "durability_warning", warning: null, actions: [] });
   });
 });

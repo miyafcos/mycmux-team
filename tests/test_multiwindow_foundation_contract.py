@@ -133,7 +133,7 @@ def test_quit_app_is_unreachable_from_a_child_window_close() -> None:
     window_rs = read_repo_text(WINDOW_RS)
     quit_start = window_rs.index("pub fn quit_app(")
     quit_body = window_rs[quit_start:window_rs.index("#[cfg(test)]", quit_start)]
-    guard = quit_body.index("if !app.webview_windows().is_empty()")
+    guard = quit_body.index("if !all_window_labels(&app).is_empty()")
     refusal = quit_body.index("return Err(", guard)
     calls = [match.start() for match in re.finditer(r"app\.exit\(0\)", window_rs)]
     assert len(calls) == 1
@@ -398,7 +398,7 @@ def test_registry_reclaims_workspaces_from_a_destroyed_window() -> None:
     handler = commands[start:end]
     assert handler.index("take_close_intent(label)") < handler.index("forget_window(label)") < handler.index("} else {") < handler.index("reclaim_destroyed_window(app, label)")
     crash = commands[end:]
-    assert "app.webview_windows()" in crash
+    assert "all_window_labels(app)" in crash
     assert "rescue_target(label, &live)" in crash
     assert "release_all(label, &target)" in crash
     assert "MAIN_WINDOW_LABEL" not in crash

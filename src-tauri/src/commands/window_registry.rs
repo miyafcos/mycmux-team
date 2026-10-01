@@ -13,7 +13,9 @@
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::commands::window::{resolve_child_window_label, spawn_child_window, ResolvedChildWindow};
+use crate::commands::window::{
+    all_window_labels, resolve_child_window_label, spawn_child_window, ResolvedChildWindow,
+};
 use crate::db::storage::{self, AppSettings};
 use crate::window_registry::{
     workspace_config_ids, WindowAdoptPayload, WindowFragment,
@@ -67,7 +69,7 @@ pub fn open_workspace_window(
         return Err("every workspace handed to open_workspace_window needs an id".to_string());
     }
 
-    let label = match resolve_child_window_label(&app, label)? {
+    let reservation = match resolve_child_window_label(&app, label)? {
         // An existing window still adopts: the queue is drained by the
         // `window-adopt` listener that every window registers.
         ResolvedChildWindow::Existing(label) => {
@@ -83,14 +85,15 @@ pub fn open_workspace_window(
             emit_registry_changed(&app, state.window_registry.revision());
             return Ok(label);
         }
-        ResolvedChildWindow::New(label) => label,
+        ResolvedChildWindow::New(reservation) => reservation,
     };
+    let label = reservation.label().to_string();
     crate::perf_timeline::mark("detach.rust.queued", Some(&label));
 
     // Queue *before* the window exists: the child asks for its adoption during
     // boot, so anything queued later would arrive after it decided it is empty.
     state.window_registry.queue_adoption(&label, workspaces);
-    if let Err(err) = spawn_child_window(&app, label.clone(), x, y, width, height) {
+    if let Err(err) = spawn_child_window(&app, reservation, x, y, width, height) {
         // Never strand the workspaces (and their live sessions) in a queue no
         // window will ever drain.
         let orphaned = state.window_registry.take_pending_adoption(&label);
@@ -216,7 +219,7 @@ pub fn handle_window_destroyed(app: &AppHandle, label: &str) {
 /// Crash-only rescue: no close request completed, so preserve live sessions.
 pub fn reclaim_destroyed_window(app: &AppHandle, label: &str) {
     let Some(state) = app.try_state::<AppState>() else { return; };
-    let live: Vec<String> = app.webview_windows().keys().cloned().collect();
+    let live = all_window_labels(app);
     let target = state.window_registry.rescue_target(label, &live);
     if let Some(target) = target {
         let moved = state.window_registry.release_all(label, &target);

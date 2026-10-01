@@ -152,7 +152,7 @@ function seedScenario(): void {
 }
 
 function readGuideStep(): GuideStep {
-  if (document.querySelector(".cmux-tab-grouping-undo")) return 3;
+  if (useGroupingRuntimeStore.getState().undo?.status === "available") return 3;
   const current = document.querySelector<HTMLElement>('.cmux-tab-grouping-step[aria-current="step"]');
   if (current?.textContent?.includes("2")) return 1;
   if (current?.textContent?.includes("3")) return 2;
@@ -252,7 +252,6 @@ async function pinAndMeasureMoveEndpoints(): Promise<void> {
   if (!panelBody) throw new Error("The Panel body is missing for endpoint measurement.");
   const occluders = [
     document.querySelector<HTMLElement>(".cmux-tab-grouping-footer")?.getBoundingClientRect(),
-    document.querySelector<HTMLElement>(".cmux-tab-grouping-undo")?.getBoundingClientRect(),
   ].filter((rect): rect is DOMRect => Boolean(rect));
   for (const arrow of arrows) {
     const rect = arrow.getBoundingClientRect();
@@ -425,7 +424,7 @@ function LiveMockApp() {
     void goToConfirmationStep()
       .then(() => pinAndMeasureMoveEndpoints())
       .then(() => clickEnabledButton("適用"))
-      .then(() => waitFor(() => document.querySelector(".cmux-tab-grouping-undo") ? true : null))
+      .then(() => waitFor(() => findEnabledButton(tabGroupingStrings.undo)))
       .then(() => pinAndMeasureMoveEndpoints())
       .then(
         () => {

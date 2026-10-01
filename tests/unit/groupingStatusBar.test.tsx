@@ -4,50 +4,52 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { GroupingRuntimeState, GroupingUndoRecord } from "../../src/stores/groupingRuntimeStore";
+import type { Sha256 } from "../../src/lib/persistentLayoutProjection";
+
 const mocks = vi.hoisted(() => ({
-  undo: vi.fn(),
-  runtime: {
-    undo: {
-      recordId: "status-undo-1",
-      createdAt: 1,
-      status: "available",
-    } as { recordId: string; createdAt: number; status: "available" | "expired" } | null,
-    durability: { status: "idle" } as { status: string; requestId?: string },
-  },
-  view: {
-    kind: "undo_available",
-    message: "再配置を適用しました",
-    warning: null,
-    actions: [{ id: "undo", label: "元に戻す", enabled: true }],
-  } as {
-    kind: "undo_available" | "undo_expired" | "poisoned" | "durability_warning";
-    message: string;
-    warning: string | null;
-    actions: Array<{ id: "undo" | "dismiss" | "review_changes"; label: string; enabled: boolean }>;
-  },
+  runtime: {} as GroupingRuntimeState,
+  relaunch: vi.fn(),
+  writeText: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/app", () => ({
   getVersion: vi.fn(() => new Promise<string>(() => {})),
 }));
-vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: vi.fn() }));
-vi.mock("../../src/components/layout/groupingBoundary", () => ({
-  groupingBoundary: { undo: mocks.undo },
-}));
+vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: mocks.relaunch }));
 vi.mock("../../src/stores/groupingRuntimeStore", () => ({
   useGroupingRuntimeStore: () => mocks.runtime,
 }));
 vi.mock("../../src/stores/workspaceListStore", () => ({
   useWorkspaceListStore: () => ({ workspaces: [], layoutRevision: 0 }),
 }));
-vi.mock("../../src/components/dashboard/groupingStatusBarModel", () => ({
-  selectGroupingStatusBarView: () => mocks.view,
-}));
 
 import { GroupingStatusBar } from "../../src/components/dashboard/GroupingStatusBar";
-import { useDashboardViewStore } from "../../src/stores/dashboardViewStore";
+import { tabGroupingStrings } from "../../src/components/dashboard/dashboardStrings";
 import { acquireGroupingPanelOpen } from "../../src/components/layout/groupingPanelPresence";
-import { TAB_GROUPING_OPEN_EVENT } from "../../src/components/layout/tabGrouping";
+
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+const signature = "c".repeat(64) as Sha256;
+const durabilityBase = {
+  requestId: "persist-1",
+  layoutRevision: 1,
+  signature,
+  snapshotDigest: signature,
+  leaderGeneration: 1,
+};
+const undo: GroupingUndoRecord = {
+  recordId: "status-undo-1",
+  schemaVersion: 1,
+  snapshot: { schemaVersion: 1, workspaces: [], selection: { activeWorkspaceId: null, activeSessionId: null, lastActivePaneByWorkspace: {} } },
+  report: { movedTabCount: 3, affectedWorkspaceIds: [], emptyWorkspaceIds: [], appliedAt: 1 },
+  appliedLayoutSignature: signature,
+  expectedStructuralSignature: signature,
+  committedLayoutRevision: 1,
+  createdAt: 1,
+  status: "available",
+  expireReason: null,
+};
 
 let container: HTMLDivElement;
 let root: Root;
@@ -57,14 +59,22 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  mocks.undo.mockReset();
-  mocks.runtime.undo = { recordId: "status-undo-1", createdAt: 1, status: "available" };
-  mocks.runtime.durability = { status: "idle" };
-  mocks.view = {
-    kind: "undo_available",
-    message: "再配置を適用しました",
-    warning: null,
-    actions: [{ id: "undo", label: "元に戻す", enabled: true }],
+  mocks.relaunch.mockReset();
+  mocks.writeText.mockReset();
+  mocks.runtime = {
+    boundaryToken: {},
+    schemaVersion: 1,
+    persistentSchema: { loadedSchemaVersion: 1, migrationComplete: true, schemaEpoch: 1 },
+    transitionDepth: 0,
+    transitionEpoch: 0,
+    transitionSource: null,
+    transitionFrames: [],
+    operation: null,
+    poisoned: false,
+    diagnostic: null,
+    undo: structuredClone(undo),
+    focusIntent: null,
+    durability: { status: "saved", ...durabilityBase },
   };
   releasePanel = null;
 });
@@ -74,130 +84,124 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
-describe("GroupingStatusBar undo diagnostics", () => {
-  it("warns through the existing diagnostic channel when undo returns a typed failure", () => {
-    const failure = {
-      ok: false as const,
-      kind: "post_undo_failed" as const,
-      layoutReverted: true as const,
-      reason: "persistence exploded",
-    };
-    mocks.undo.mockReturnValue(failure);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-
+describe("GroupingStatusBar post-apply visibility", () => {
+  it.each(["idle", "pending", "saved"] as const)("renders nothing after apply with %s durability", (status) => {
+    mocks.runtime.durability = status === "idle" ? { status } : { status, ...durabilityBase };
+    const record = mocks.runtime.undo;
     act(() => root.render(<GroupingStatusBar />));
-    const before = container.textContent;
-    const button = container.querySelector("button");
-    expect(button?.textContent).toBe("元に戻す");
-    act(() => button?.click());
 
-    expect(warn).toHaveBeenCalledWith("[mycmux] tab grouping undo failed", failure);
-    expect(container.textContent).toBe(before);
+    expect(container.childElementCount).toBe(0);
+    expect(container.textContent).toBe("");
+    expect(mocks.runtime.undo).toBe(record);
   });
 
-  it("suppresses undo views only while the grouping panel is open", () => {
+  it("renders nothing after undo expires or its record is cleared", () => {
+    mocks.runtime.undo = { ...undo, status: "expired", expireReason: tabGroupingStrings.undoExpired };
     act(() => root.render(<GroupingStatusBar />));
-    expect(container.querySelector(".cmux-grouping-status-bar")?.getAttribute("data-kind")).toBe("undo_available");
+    expect(container.childElementCount).toBe(0);
 
-    act(() => {
-      releasePanel = acquireGroupingPanelOpen();
-    });
-    expect(container.querySelector(".cmux-grouping-status-bar")).toBeNull();
+    mocks.runtime.undo = null;
+    act(() => root.render(<GroupingStatusBar />));
+    expect(container.childElementCount).toBe(0);
+  });
+
+  it("stays hidden while the panel opens and closes without changing the undo record", () => {
+    const record = mocks.runtime.undo;
+    act(() => root.render(<GroupingStatusBar />));
+    act(() => { releasePanel = acquireGroupingPanelOpen(); });
+    act(() => root.render(<GroupingStatusBar />));
+    expect(container.childElementCount).toBe(0);
 
     act(() => releasePanel?.());
     releasePanel = null;
-    expect(container.querySelector(".cmux-grouping-status-bar")?.getAttribute("data-kind")).toBe("undo_available");
+    act(() => root.render(<GroupingStatusBar />));
+    expect(container.childElementCount).toBe(0);
+    expect(mocks.runtime.undo).toBe(record);
   });
 
-  it.each(["poisoned", "durability_warning"] as const)("keeps %s visible while the panel is open", (kind) => {
-    mocks.view = { kind, message: kind, warning: null, actions: [] };
+  it.each(["failed", "deferred"] as const)("keeps %s persistence warnings visible with available undo and an open panel", (status) => {
+    mocks.runtime.durability = status === "failed"
+      ? { status, ...durabilityBase, errorCode: "persistence_failed", retryScheduled: true, failureGeneration: 1 }
+      : { status, ...durabilityBase, reason: "not_leader" };
+    const record = mocks.runtime.undo;
     act(() => {
       releasePanel = acquireGroupingPanelOpen();
       root.render(<GroupingStatusBar />);
     });
-    expect(container.querySelector(".cmux-grouping-status-bar")?.getAttribute("data-kind")).toBe(kind);
-  });
 
-  it("suppresses undo_expired and tolerates disposing the presence token twice", () => {
-    mocks.view = { kind: "undo_expired", message: "expired", warning: null, actions: [] };
-    act(() => {
-      releasePanel = acquireGroupingPanelOpen();
-      root.render(<GroupingStatusBar />);
-    });
-    expect(container.querySelector(".cmux-grouping-status-bar")).toBeNull();
+    const bar = container.querySelector(".cmux-grouping-status-bar");
+    expect(bar?.getAttribute("data-kind")).toBe("durability_warning");
+    expect(bar?.getAttribute("role")).toBe("status");
+    expect(bar?.textContent).toBe(tabGroupingStrings.statusDurabilityWarning);
+    expect(bar?.querySelector("button")).toBeNull();
+    expect(mocks.runtime.undo).toBe(record);
 
-    act(() => {
-      releasePanel?.();
-      releasePanel?.();
-    });
+    act(() => releasePanel?.());
     releasePanel = null;
-    expect(container.querySelector(".cmux-grouping-status-bar")?.getAttribute("data-kind")).toBe("undo_expired");
+    act(() => root.render(<GroupingStatusBar />));
+    expect(container.querySelector(".cmux-grouping-status-bar")?.textContent)
+      .toBe(tabGroupingStrings.statusDurabilityWarning);
+
+    mocks.runtime.durability = { status: "saved", ...durabilityBase };
+    act(() => root.render(<GroupingStatusBar />));
+    expect(container.childElementCount).toBe(0);
+    expect(mocks.runtime.undo).toBe(record);
   });
 
-  it("dismisses only the current view key, then resurfaces the preserved undo and executes it", () => {
-    const undoRecord = mocks.runtime.undo;
-    mocks.view = {
-      kind: "undo_available",
-      message: "再配置を適用しました",
-      warning: null,
-      actions: [
-        { id: "undo", label: "元に戻す", enabled: true },
-        { id: "dismiss", label: "閉じる", enabled: true },
-      ],
+  it("keeps the permanent poison alert, persistence warning, and diagnostic actions operational", () => {
+    mocks.runtime.poisoned = true;
+    mocks.runtime.diagnostic = {
+      code: "rollback_failed",
+      occurredAt: 1,
+      layoutRevision: 1,
+      operation: "undo",
+      errors: ["private details"],
     };
-    mocks.undo.mockReturnValue({ ok: true });
-
-    act(() => root.render(<GroupingStatusBar />));
-    const dismiss = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent === "閉じる");
-    expect(dismiss).toBeDefined();
-    act(() => dismiss?.click());
-
-    expect(container.querySelector(".cmux-grouping-status-bar")).toBeNull();
-    expect(mocks.runtime.undo).toBe(undoRecord);
-    expect(mocks.undo).not.toHaveBeenCalled();
-
-    mocks.runtime.durability = { status: "pending", requestId: "persist-2" };
-    act(() => root.render(<GroupingStatusBar />));
-
-    expect(container.querySelector(".cmux-grouping-status-bar")?.getAttribute("data-kind"))
-      .toBe("undo_available");
-    expect(mocks.runtime.undo).toBe(undoRecord);
-    const undo = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent === "元に戻す");
-    expect(undo).toBeDefined();
-    act(() => undo?.click());
-    expect(mocks.undo).toHaveBeenCalledTimes(1);
-  });
-
-  it.each([true, false])("opens the applied-layout review with dashboard open=%s", async (open) => {
-    useDashboardViewStore.setState({ open });
-    mocks.view = {
-      kind: "undo_available",
-      message: "再配置を適用しました",
-      warning: null,
-      actions: [{ id: "review_changes", label: "変更内容を見る", enabled: true }],
+    mocks.runtime.durability = {
+      status: "failed",
+      ...durabilityBase,
+      errorCode: "persistence_failed",
+      retryScheduled: false,
+      failureGeneration: 1,
     };
-    const events: Event[] = [];
-    const listener = (event: Event) => events.push(event);
-    window.addEventListener(TAB_GROUPING_OPEN_EVENT, listener);
-    try {
-      act(() => root.render(<GroupingStatusBar />));
-      const review = [...container.querySelectorAll("button")]
-        .find((button) => button.textContent === "変更内容を見る");
-      expect(review).toBeDefined();
-      await act(async () => {
-        review?.click();
-        await new Promise((resolve) => window.setTimeout(resolve, 0));
-      });
-      expect(useDashboardViewStore.getState().open).toBe(true);
-      expect(events).toHaveLength(1);
-      expect(events[0]).toBeInstanceOf(CustomEvent);
-      expect((events[0] as CustomEvent).detail).toEqual({ intent: "review" });
-    } finally {
-      window.removeEventListener(TAB_GROUPING_OPEN_EVENT, listener);
-    }
+    vi.stubGlobal("navigator", { clipboard: { writeText: mocks.writeText } });
+    act(() => {
+      releasePanel = acquireGroupingPanelOpen();
+      root.render(<GroupingStatusBar />);
+    });
+
+    const bar = container.querySelector(".cmux-grouping-status-bar");
+    expect(bar?.getAttribute("data-kind")).toBe("poisoned");
+    expect(bar?.getAttribute("role")).toBe("alert");
+    expect(bar?.textContent).toContain(tabGroupingStrings.statusPoisoned);
+    expect(bar?.textContent).toContain(tabGroupingStrings.statusDurabilityWarning);
+    const buttons = [...container.querySelectorAll("button")];
+    expect(buttons.map((button) => button.textContent)).toEqual([
+      tabGroupingStrings.statusCopyDiagnostics,
+      tabGroupingStrings.statusInspectLayout,
+      tabGroupingStrings.statusRestartApp,
+    ]);
+    expect(buttons.every((button) => !button.disabled && button.tabIndex === 0)).toBe(true);
+
+    act(() => buttons[0].click());
+    expect(mocks.writeText).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(mocks.writeText.mock.calls[0][0])).toMatchObject({ errors: ["rollback_failed:1"] });
+
+    const minimap = document.createElement("div");
+    minimap.className = "cmux-minimap-panel";
+    const focusTarget = document.createElement("button");
+    minimap.appendChild(focusTarget);
+    container.appendChild(minimap);
+    minimap.scrollIntoView = vi.fn();
+    act(() => buttons[1].click());
+    expect(minimap.scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+    expect(document.activeElement).toBe(focusTarget);
+
+    act(() => buttons[2].click());
+    expect(mocks.relaunch).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".cmux-grouping-status-bar")?.getAttribute("role")).toBe("alert");
   });
 });

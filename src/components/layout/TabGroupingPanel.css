@@ -10,8 +10,7 @@
 }
 
 .cmux-tab-grouping-header,
-.cmux-tab-grouping-footer,
-.cmux-tab-grouping-undo {
+.cmux-tab-grouping-footer {
   display: flex;
   flex: none;
   align-items: center;
@@ -20,8 +19,7 @@
   padding: var(--cmux-space-6) var(--cmux-space-7);
 }
 
-.cmux-tab-grouping-footer,
-.cmux-tab-grouping-undo {
+.cmux-tab-grouping-footer {
   border-bottom: 0;
   border-top: 1px solid var(--cmux-border);
   justify-content: space-between;
@@ -722,14 +720,6 @@ button.cmux-tab-grouping-chip {
   background: color-mix(in srgb, var(--cmux-bg) 80%, transparent);
   color: var(--cmux-text);
   font-size: var(--cmux-font-size-sm);
-}
-
-.cmux-tab-grouping-undo {
-  border-left: 3px solid var(--cmux-usage-ok);
-}
-
-.cmux-tab-grouping-undo.is-expired {
-  border-left-color: var(--cmux-yellow);
 }
 
 .cmux-tab-grouping-footer-left {

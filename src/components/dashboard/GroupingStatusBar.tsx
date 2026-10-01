@@ -1,14 +1,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import { groupingBoundary } from "../layout/groupingBoundary";
-import {
-  getGroupingPanelOpen,
-  subscribeGroupingPanelOpen,
-} from "../layout/groupingPanelPresence";
-import { TAB_GROUPING_OPEN_EVENT } from "../layout/tabGrouping";
-import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 import { useGroupingRuntimeStore } from "../../stores/groupingRuntimeStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import {
@@ -21,12 +14,6 @@ export function GroupingStatusBar() {
   const runtime = useGroupingRuntimeStore();
   const workspaceState = useWorkspaceListStore();
   const [appVersion, setAppVersion] = useState("unknown");
-  const [dismissedKey, setDismissedKey] = useState<string | null>(null);
-  const panelOpen = useSyncExternalStore(
-    subscribeGroupingPanelOpen,
-    getGroupingPanelOpen,
-    () => false,
-  );
 
   useEffect(() => {
     void getVersion().then(setAppVersion).catch(() => {});
@@ -47,17 +34,9 @@ export function GroupingStatusBar() {
     });
   }, [appVersion, runtime, workspaceState.layoutRevision, workspaceState.workspaces]);
 
-  const durabilityRequestId = "requestId" in runtime.durability ? runtime.durability.requestId : "none";
-  const viewKey = `${view?.kind ?? "hidden"}:${runtime.undo?.createdAt ?? "none"}:${runtime.undo?.status ?? "none"}:${runtime.durability.status}:${durabilityRequestId}`;
-  if (!view || dismissedKey === viewKey) return null;
-  if (panelOpen && (view.kind === "undo_available" || view.kind === "undo_expired")) return null;
+  if (!view) return null;
 
   const runAction = (id: GroupingStatusActionId) => {
-    if (id === "undo") {
-      const result = groupingBoundary.undo();
-      if (!result.ok) console.warn("[mycmux] tab grouping undo failed", result);
-      return;
-    }
     if (id === "copy_diagnostics" && view.kind === "poisoned") {
       void navigator.clipboard?.writeText(JSON.stringify(view.diagnosticPayload, null, 2));
       return;
@@ -66,23 +45,11 @@ export function GroupingStatusBar() {
       void relaunch();
       return;
     }
-    if (id === "dismiss") {
-      setDismissedKey(viewKey);
-      return;
-    }
     if (id === "inspect_layout") {
       const minimap = document.querySelector<HTMLElement>(".cmux-minimap-panel");
       minimap?.scrollIntoView({ block: "nearest" });
       (minimap?.querySelector<HTMLElement>("button, [tabindex]") ?? minimap)?.focus();
       return;
-    }
-    if (id === "review_changes") {
-      if (useDashboardViewStore.getState().open) {
-        window.dispatchEvent(new CustomEvent(TAB_GROUPING_OPEN_EVENT, { detail: { intent: "review" } }));
-      } else {
-        useDashboardViewStore.getState().openView();
-        window.setTimeout(() => window.dispatchEvent(new CustomEvent(TAB_GROUPING_OPEN_EVENT, { detail: { intent: "review" } })), 0);
-      }
     }
   };
 
