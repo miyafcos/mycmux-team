@@ -69,7 +69,8 @@ def test_the_socket_close_route_is_the_only_unconfirmed_one() -> None:
     assert "killSession(" not in close
     assert 'await import("../../lib/workspaceClose")' in close
     assert "await closeWorkspaceAfterConfirmation(workspaceId)" in close
-    # Preserve the four existing direct kill sites; workspace.close adds none.
+    # All three spawn rollbacks kill their PTY; workspace.close adds no direct kill.
     assert re.findall(r"killSession\(([^)]*)\)", source) == [
-        "newTab.sessionId", "anchorTab.sessionId", "sessionId", "tab.sessionId",
+        "newTab.sessionId", "newTab.sessionId", "newTab.sessionId",
+        "anchorTab.sessionId", "sessionId", "tab.sessionId",
     ]

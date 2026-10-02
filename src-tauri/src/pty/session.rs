@@ -115,7 +115,7 @@ struct FrontendDataBatch {
 }
 
 impl FrontendDataBatch {
-    fn into_wire(self) -> Vec<u8> {
+    fn into_wire(&self) -> Vec<u8> {
         let mut frame = Vec::with_capacity(FRONTEND_DATA_FRAME_HEADER_BYTES + self.data.len());
         frame.extend_from_slice(b"MCX1");
         frame.extend_from_slice(&(u32::from(self.resync)).to_le_bytes());
@@ -316,7 +316,7 @@ impl FrontendFlow {
         }
     }
 
-    fn send_batch(&self, batch: FrontendDataBatch) -> Result<(), FlowSendError> {
+    fn send_batch(&self, batch: &FrontendDataBatch) -> Result<(), FlowSendError> {
         let data_channel = {
             let st = self.inner.lock().map_err(|_| FlowSendError::Closed)?;
             if st.closing {
@@ -377,6 +377,34 @@ impl FrontendFlow {
         }
         if acked || st.inflight_bytes <= FRONTEND_LOW_WATER_BYTES {
             self.notify.notify_waiters();
+        }
+    }
+
+    /// A failed post is transient. Only release this reservation: earlier
+    /// successful batches can still be acknowledged, and the next send resyncs.
+    fn retry_failed(&self, generation: u64, seq: u64) {
+        let Ok(mut st) = self.inner.lock() else {
+            return;
+        };
+        if generation != st.generation || st.closing {
+            return;
+        }
+        if let Some(index) = st.inflight.iter().position(|item| {
+            item.generation == generation && item.seq == seq
+        }) {
+            if let Some(item) = st.inflight.remove(index) {
+                st.inflight_bytes = st.inflight_bytes.saturating_sub(item.bytes);
+            }
+        }
+        st.dropped_since_send = true;
+        self.notify.notify_waiters();
+    }
+
+    fn handle_send_result(&self, generation: u64, seq: u64, result: &Result<(), FlowSendError>) {
+        match result {
+            Err(FlowSendError::Disconnected) => self.retry_failed(generation, seq),
+            Err(FlowSendError::Replaced) => self.cancel(generation, seq),
+            Ok(()) | Err(FlowSendError::Closed) => {}
         }
     }
 
@@ -450,9 +478,34 @@ impl FrontendFlow {
     }
 }
 
+#[derive(Default)]
+struct SessionExitState {
+    exited: AtomicBool,
+    reported: AtomicBool,
+}
+
+impl SessionExitState {
+    fn mark_exited(&self) {
+        self.exited.store(true, Ordering::Release);
+    }
+
+    fn has_exited(&self) -> bool {
+        self.exited.load(Ordering::Acquire)
+    }
+
+    fn report_once(&self, report: impl FnOnce()) -> bool {
+        if !self.has_exited() || self.reported.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        report();
+        true
+    }
+}
+
 pub struct PtySession {
     id: String,
     child: Mutex<Box<dyn Child + Send + Sync>>,
+    exit_state: Arc<SessionExitState>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     // Input is enqueued here and drained in FIFO order by a dedicated writer
     // thread. The Tauri command thread only does a non-blocking enqueue, so a
@@ -612,6 +665,8 @@ impl PtySession {
         let scrollback_dirty = Arc::new(AtomicBool::new(false));
         let last_output_at = Arc::new(AtomicU64::new(0));
         let session_epoch = next_session_epoch();
+        let exit_state = Arc::new(SessionExitState::default());
+        let reader_exit_state = exit_state.clone();
         let broadcast_tx_clone = broadcast_tx.clone();
         let sb_clone = scrollback.clone();
         let sb_end_clone = scrollback_end.clone();
@@ -678,9 +733,11 @@ impl PtySession {
         let forwarder_sid = session_id.clone();
         tauri::async_runtime::spawn(async move {
             use std::sync::atomic::Ordering;
-            let mut carry: Option<FrontendChunk> = None;
+            let mut carry: VecDeque<FrontendChunk> = VecDeque::with_capacity(2);
+            let mut send_error_log = crate::watchdog::RateLimit::default();
+            let mut drop_log = crate::watchdog::OutputDropLog::default();
             loop {
-                let first_chunk = match carry.take() {
+                let first_chunk = match carry.pop_front() {
                     Some(chunk) => chunk,
                     None => match frontend_rx.recv().await {
                         Some(chunk) => chunk,
@@ -699,10 +756,14 @@ impl PtySession {
                 let mut scrollback_end = first_chunk.scrollback_end;
 
                 while batch.len() < FRONTEND_BATCH_MAX_BYTES {
-                    match frontend_rx.try_recv() {
+                    let received = match carry.pop_front() {
+                        Some(chunk) => Ok(chunk),
+                        None => frontend_rx.try_recv(),
+                    };
+                    match received {
                         Ok(chunk) => {
                             if chunk.scrollback_start != scrollback_end {
-                                carry = Some(chunk);
+                                carry.push_front(chunk);
                                 break;
                             }
                             record_flow(
@@ -724,6 +785,9 @@ impl PtySession {
                 let reserve_trace = flow_start();
                 let permit = forwarder_flow.reserve(batch_len).await;
                 record_flow(&forwarder_sid, FlowStage::Reserve, reserve_trace, batch_len);
+                if let Some(transition) = drop_log.transition(matches!(&permit, FlowPermit::AutoConsume), Instant::now()) {
+                    crate::watchdog::log_with_memory(format!("[pty] session={forwarder_sid} {transition}"));
+                }
                 match permit {
                     FlowPermit::Closed => break,
                     FlowPermit::AutoConsume => {
@@ -752,7 +816,8 @@ impl PtySession {
                             data: batch,
                         };
                         let send_trace = flow_start();
-                        let sent = forwarder_flow.send_batch(msg);
+                        let sent = forwarder_flow.send_batch(&msg);
+                        forwarder_flow.handle_send_result(generation, seq, &sent);
                         record_flow(&forwarder_sid, FlowStage::Channel, send_trace, batch_len);
                         match sent {
                             Ok(()) => {
@@ -777,10 +842,31 @@ impl PtySession {
                                     send_trace,
                                     batch_len,
                                 );
-                                forwarder_flow.cancel(generation, seq);
-                                metrics_forwarder
+                                let errors = metrics_forwarder
                                     .channel_send_errors
-                                    .fetch_add(1, Ordering::Relaxed);
+                                    .fetch_add(1, Ordering::Relaxed) + 1;
+                                if send_error_log.allow_at(Instant::now()) {
+                                    let reason = if matches!(sent, Err(FlowSendError::Disconnected)) {
+                                        "disconnected"
+                                    } else {
+                                        "replaced"
+                                    };
+                                    crate::watchdog::log_with_memory(format!(
+                                        "[pty] send failed session={forwarder_sid} reason={reason} generation={generation} seq={seq} errors={errors}"
+                                    ));
+                                }
+                                if matches!(sent, Err(FlowSendError::Disconnected)) {
+                                    // Keep the bytes even if no further PTY output arrives.
+                                    // A fresh reservation carries the resync flag and sequence.
+                                    carry.push_front(FrontendChunk {
+                                        data: msg.data,
+                                        scrollback_start,
+                                        scrollback_end,
+                                        trace_token: None,
+                                    });
+                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                    continue;
+                                }
                             }
                         }
                     }
@@ -953,13 +1039,15 @@ impl PtySession {
                     Err(_) => break,
                 }
             }
-            let exit_event = events::pty_exit_event(&sid);
-            let _ = handle.emit(&exit_event, ());
+            // The monitor owns both the event and state-store report, so EOF
+            // and child polling cannot produce duplicate exit notifications.
+            reader_exit_state.mark_exited();
         });
 
         Ok(Self {
             id: session_id,
             child: Mutex::new(child),
+            exit_state,
             master: Mutex::new(pair.master),
             write_tx,
             write_pending_bytes,
@@ -1116,6 +1204,36 @@ impl PtySession {
         child.kill().map_err(|e| format!("Kill failed: {e}"))
     }
 
+    /// ConPTY may keep its output pipe open after the direct child has exited.
+    pub fn poll_exited(&self) -> bool {
+        if !self.exit_state.has_exited() {
+            if let Ok(mut child) = self.child.lock() {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    self.exit_state.mark_exited();
+                }
+            }
+        }
+        self.exit_state.has_exited()
+    }
+
+    pub fn report_exit_once(
+        &self,
+        app_handle: &AppHandle,
+        state_store: &crate::session_state::SessionStateStore,
+    ) {
+        self.exit_state.report_once(|| {
+            state_store.ingest(
+                self.id.clone(),
+                crate::session_state::Evidence::socket_lifecycle(
+                    crate::session_state::unix_epoch_millis(),
+                    self.session_epoch,
+                    crate::session_state::Lifecycle::Exited,
+                ),
+            );
+            let _ = app_handle.emit(&events::pty_exit_event(&self.id), ());
+        });
+    }
+
     pub fn process_id(&self) -> Option<u32> {
         if let Ok(child) = self.child.lock() {
             child.process_id()
@@ -1207,6 +1325,48 @@ impl Drop for PtySession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exit_is_reported_once_after_eof_or_child_exit() {
+        let state = SessionExitState::default();
+        let reports = AtomicUsize::new(0);
+        assert!(!state.report_once(|| {
+            reports.fetch_add(1, Ordering::SeqCst);
+        }));
+        state.mark_exited(); // Reader EOF.
+        assert!(state.report_once(|| {
+            reports.fetch_add(1, Ordering::SeqCst);
+        }));
+        state.mark_exited(); // A later child poll observes the same exit.
+        assert!(!state.report_once(|| {
+            reports.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(reports.load(Ordering::SeqCst), 1);
+        // Recreating the same id gets a new state and may report its own exit.
+        let next = SessionExitState::default();
+        next.mark_exited();
+        assert!(next.report_once(|| {
+            reports.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(reports.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn concurrent_exit_reporters_claim_only_one_report() {
+        let state = SessionExitState::default();
+        state.mark_exited();
+        let reports = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    state.report_once(|| {
+                        reports.fetch_add(1, Ordering::SeqCst);
+                    });
+                });
+            }
+        });
+        assert_eq!(reports.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn preload_scrollback_rebases_offsets_at_zero() {
@@ -1410,6 +1570,63 @@ mod tests {
 
         assert_eq!(seq1, 1);
         assert_eq!(flow_snapshot(&flow), (1, 3, 0, 0, true, 0));
+    }
+
+    #[tokio::test]
+    async fn a_single_failed_channel_send_retries_attached_with_resync() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let seen = attempts.clone();
+        let channel = Channel::new(move |_| {
+            if seen.fetch_add(1, Ordering::Relaxed) == 0 {
+                Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "one failed post").into())
+            } else {
+                Ok(())
+            }
+        });
+        let flow = FrontendFlow::new(channel);
+        let (generation, seq, resync) = expect_send_with_resync(flow.reserve(3).await);
+        let mut batch = FrontendDataBatch {
+            generation, seq, resync, scrollback_start: 0, scrollback_end: 3, data: b"abc".to_vec(),
+        };
+        let result = flow.send_batch(&batch);
+        assert!(matches!(result, Err(FlowSendError::Disconnected)));
+        flow.handle_send_result(generation, seq, &result);
+        assert_eq!(flow_snapshot(&flow), (1, 2, 0, 0, true, 0));
+        let (generation, seq, resync) = expect_send_with_resync(flow.reserve(3).await);
+        assert_eq!((generation, seq, resync), (1, 2, true));
+        batch.generation = generation;
+        batch.seq = seq;
+        batch.resync = resync;
+        let result = flow.send_batch(&batch);
+        assert!(result.is_ok());
+        flow.handle_send_result(generation, seq, &result);
+        flow.ack(generation, seq, 3);
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+        assert!(!expect_send_with_resync(flow.reserve(1).await).2);
+    }
+
+    #[tokio::test]
+    async fn a_failed_send_does_not_release_other_inflight_batches_or_a_new_generation() {
+        let flow = FrontendFlow::new(test_channel());
+        let (generation, first) = expect_send(flow.reserve(10).await);
+        let (_, second) = expect_send(flow.reserve(20).await);
+        flow.handle_send_result(generation, second, &Err(FlowSendError::Disconnected));
+        assert_eq!(flow_snapshot(&flow), (1, 3, 10, 1, true, 0));
+        flow.ack(generation, first, 10);
+        flow.replace_channel(test_channel()).unwrap();
+        flow.handle_send_result(generation, second, &Err(FlowSendError::Disconnected));
+        flow.handle_send_result(generation, second, &Err(FlowSendError::Replaced));
+        assert_eq!(flow_snapshot(&flow), (2, 1, 0, 0, true, 0));
+        assert!(!expect_send_with_resync(flow.reserve(1).await).2);
+    }
+
+    #[tokio::test]
+    async fn replaced_send_still_cancels_its_matching_generation() {
+        let flow = FrontendFlow::new(test_channel());
+        let (generation, seq) = expect_send(flow.reserve(10).await);
+        flow.handle_send_result(generation, seq, &Err(FlowSendError::Replaced));
+        assert_eq!(flow_snapshot(&flow), (1, 2, 0, 0, false, FRONTEND_STALE_TIMEOUTS));
+        assert_auto_consume(flow.reserve(1).await);
     }
 
     #[tokio::test]

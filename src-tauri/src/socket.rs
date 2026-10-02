@@ -44,7 +44,7 @@ const FRONTEND_SOCKET_COMMAND_NAMES: &[&str] = &[
     "workspace.new", "new_workspace", "workspace.close", "close_workspace",
     "pane.list", "list_panes", "pane.list_all", "list_all_panes",
     "pane.spawn", "pane.spawn_tab", "pane.declare_tab", "pane.launch_declared",
-    "pane.activate_tab", "pane.restore_activation", "pane.close_tab", "pane.close_tabs",
+    "pane.start_tab", "pane.activate_tab", "pane.restore_activation", "pane.close_tab", "pane.close_tabs",
     "pane.rename_tab", "pane.send_text", "pane.read", "pane.move",
     "web.open", "web.list", "web.focus", "web.navigate", "web.wait",
     "web.eval", "web.snapshot", "web.find", "web.click", "web.type",
@@ -1177,6 +1177,7 @@ mod tests {
         assert!(commands.contains(&serde_json::json!("agent.hooks.status")));
         assert!(!commands.contains(&serde_json::json!("agent.hooks.set")));
         assert!(commands.contains(&serde_json::json!("pane.spawn")));
+        assert!(commands.contains(&serde_json::json!("pane.start_tab")));
         assert!(payload["capabilities"].as_array().unwrap().contains(
             &serde_json::json!("state_view.input_revision_nullable")
         ));

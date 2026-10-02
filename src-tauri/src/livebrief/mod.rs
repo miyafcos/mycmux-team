@@ -452,7 +452,9 @@ fn keep_last_picture(previous: Option<&SessionSnapshot>, next: SessionSnapshot) 
     let Some(previous) = previous else { return next };
     let session_changed = session_identity_changed(&previous.brief.binding, &next.brief.binding);
     if previous.brief.telemetry_health == "ended" && !session_changed {
-        return previous.clone();
+        let mut kept = previous.clone();
+        kept.brief.binding.pty_input_revision = next.brief.binding.pty_input_revision;
+        return kept;
     }
     if previous.brief.telemetry_health != "live" && previous.brief.telemetry_health != "ended" {
         return next;
@@ -502,15 +504,14 @@ fn brief_changed(old: &LiveSessionBrief, new: &LiveSessionBrief) -> bool {
         || old.telemetry != new.telemetry
 }
 
-/// Bindings match when everything except `source_revision` is equal;
-/// `source_revision` is only known after the transcript has been re-read.
+/// Transcript identity excludes source and input revisions. Input changes
+/// still reach the brief for intervention guards, without resetting the tail.
 fn binding_matches(prior: &LiveBinding, next: &LiveBinding) -> bool {
     prior.pty_session_id == next.pty_session_id
         && prior.agent_session_id == next.agent_session_id
         && prior.agent_kind == next.agent_kind
         && prior.pty_instance_id == next.pty_instance_id
         && prior.pty_generation == next.pty_generation
-        && prior.pty_input_revision == next.pty_input_revision
 }
 
 fn reuses_prior_snapshot(prior: Option<&SessionSnapshot>, path: &Path, metadata: &std::fs::Metadata, binding: &LiveBinding) -> bool {
@@ -564,6 +565,18 @@ fn transcript_path_decision(prior: Option<&SessionSnapshot>, binding: &LiveBindi
     }
 }
 
+/// A revision-only update must be published, but retains all read/reducer
+/// state and the transcript's source revision. An exact reuse still returns None.
+fn refresh_input_revision(prior: Option<&SessionSnapshot>, binding: &LiveBinding) -> Option<SessionSnapshot> {
+    let prior = prior?;
+    if prior.brief.binding.pty_input_revision == binding.pty_input_revision { return None; }
+    let mut snapshot = prior.clone();
+    snapshot.brief.binding.pty_input_revision = binding.pty_input_revision;
+    snapshot.brief.last_successful_read_at = Some(unix_ms());
+    snapshot.brief.updated_at = unix_ms();
+    Some(snapshot)
+}
+
 fn refresh_bound_transcript(
     prior: Option<&SessionSnapshot>,
     binding: &LiveBinding,
@@ -575,7 +588,7 @@ fn refresh_bound_transcript(
     mut locate: impl FnMut(&str, &str) -> Option<PathBuf>,
 ) -> Option<SessionSnapshot> {
     match transcript_path_decision(prior, binding) {
-        TranscriptPathDecision::Unchanged => None,
+        TranscriptPathDecision::Unchanged => refresh_input_revision(prior, binding),
         TranscriptPathDecision::Cached(path) => {
             match apply_known_transcript_path(
                 prior,
@@ -587,7 +600,7 @@ fn refresh_bound_transcript(
                 history_branch,
                 AdvanceFailAction::Rediscover,
             ) {
-                PathApply::Unchanged => None,
+                PathApply::Unchanged => refresh_input_revision(prior, binding),
                 PathApply::Ready(snapshot) => Some(snapshot),
                 PathApply::Unavailable => {
                     Some(unavailable_snapshot(binding.clone(), "unavailable", service_epoch))
@@ -640,7 +653,7 @@ fn refresh_discovered_transcript(
         history_branch,
         AdvanceFailAction::Bootstrap,
     ) {
-        PathApply::Unchanged => None,
+        PathApply::Unchanged => refresh_input_revision(prior, binding),
         PathApply::Ready(snapshot) => Some(snapshot),
         PathApply::Unavailable | PathApply::Rediscover => {
             Some(unavailable_snapshot(binding.clone(), "unavailable", service_epoch))
@@ -710,6 +723,7 @@ const MISSING_TRANSCRIPT_TTL: Duration = Duration::from_secs(30);
 #[derive(Default)]
 struct MissingTranscripts {
     seen: HashMap<(String, String), Instant>,
+    paths: HashMap<(String, String), (PathBuf, Instant)>,
 }
 
 impl MissingTranscripts {
@@ -738,7 +752,8 @@ fn missing_transcripts() -> &'static Mutex<MissingTranscripts> {
     MISSING.get_or_init(Mutex::default)
 }
 
-/// `locate_transcript` without the walks that would find nothing again.
+/// Remember found paths by (kind, id), as well as recent misses. A removed
+/// path is rediscovered; a reused PTY binding can reuse a still-existing path.
 fn locate_transcript_cached(kind: &str, session_id: &str) -> Option<PathBuf> {
     locate_with_miss_cache(kind, session_id, Instant::now(), locate_transcript)
 }
@@ -749,19 +764,29 @@ fn locate_with_miss_cache(
     now: Instant,
     locate: impl FnOnce(&str, &str) -> Option<PathBuf>,
 ) -> Option<PathBuf> {
-    // The walk runs outside the lock: it touches the filesystem, and every
-    // other pane's poll would queue behind it.
-    {
-        let missing = missing_transcripts().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if missing.suppressed(kind, session_id, now) {
-            return None;
-        }
+    // Filesystem operations stay outside the cache lock.
+    let key = (kind.to_string(), session_id.to_string());
+    let cached = {
+        let mut cache = missing_transcripts().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if cache.suppressed(kind, session_id, now) { return None; }
+        cache.paths.get_mut(&key).map(|(path, used_at)| { *used_at = now; path.clone() })
+    };
+    if let Some(path) = cached {
+        if path.is_file() { return Some(path); }
     }
     let found = locate(kind, session_id);
-    missing_transcripts()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .record(kind, session_id, found.is_some(), now);
+    let mut cache = missing_transcripts().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.record(kind, session_id, found.is_some(), now);
+    if let Some(path) = &found {
+        // Bound memory over long pane churn; eviction only costs a future walk.
+        if cache.paths.len() >= 512 && !cache.paths.contains_key(&key) {
+            let oldest = cache.paths.iter().min_by_key(|(_, (_, at))| *at).map(|(key, _)| key.clone());
+            if let Some(oldest) = oldest { cache.paths.remove(&oldest); }
+        }
+        cache.paths.insert(key, (path.clone(), now));
+    } else {
+        cache.paths.remove(&key);
+    }
     found
 }
 
@@ -1712,6 +1737,31 @@ mod tests {
     }
 
     #[test]
+    fn found_transcript_paths_are_cached_by_kind_and_id_and_rediscovered_if_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old.jsonl");
+        let new = dir.path().join("new.jsonl");
+        std::fs::write(&old, b"transcript").unwrap();
+        let id = Uuid::new_v4().to_string();
+        let walks = Cell::new(0);
+        let moved = Cell::new(false);
+        let locate = |_: &str, _: &str| {
+            walks.set(walks.get() + 1);
+            Some(if moved.get() { new.clone() } else { old.clone() })
+        };
+        let start = Instant::now();
+        assert_eq!(locate_with_miss_cache("codex", &id, start, &locate), Some(old.clone()));
+        assert_eq!(locate_with_miss_cache("codex", &id, start + Duration::from_secs(1), &locate), Some(old.clone()));
+        assert_eq!(walks.get(), 1);
+        assert_eq!(locate_with_miss_cache("claude", &id, start, &locate), Some(old.clone()));
+        assert_eq!(walks.get(), 2, "the kind is part of the key");
+        std::fs::rename(&old, &new).unwrap();
+        moved.set(true);
+        assert_eq!(locate_with_miss_cache("codex", &id, start + Duration::from_secs(2), &locate), Some(new));
+        assert_eq!(walks.get(), 3, "a missing path is rediscovered");
+    }
+
+    #[test]
     fn a_suppressed_transcript_lookup_never_reaches_the_walk() {
         let start = Instant::now();
         let walks = std::cell::Cell::new(0u32);
@@ -1832,7 +1882,7 @@ mod tests {
         assert!(merged.brief.prompt_hash.is_none());
 
         // Already ended: kept as-is rather than rebuilt on every tick.
-        let again = keep_last_picture(Some(&merged), unavailable_snapshot(test_binding(), "unlinked", "epoch"));
+        let again = keep_last_picture(Some(&merged), unavailable_snapshot(gone_binding.clone(), "unlinked", "epoch"));
         assert_eq!(again.brief.telemetry_health, "ended");
         assert_eq!(again.events.len(), 1);
         assert!(!brief_changed(&merged.brief, &again.brief));
@@ -1893,6 +1943,7 @@ mod tests {
         let kept = keep_last_picture(Some(&ended_a), unavailable_snapshot(revision_only, "unlinked", "epoch"));
         assert!(kept.brief.telemetry.is_some());
         assert_eq!(kept.brief.binding.agent_session_id, "agent-1");
+        assert_eq!(kept.brief.binding.pty_input_revision, test_binding().pty_input_revision + 1);
 
         let mut generation_changed = test_binding();
         generation_changed.pty_generation += 1;
@@ -2139,6 +2190,38 @@ mod tests {
         assert_eq!(calls.get(), 2);
         assert_eq!(missing.brief.telemetry_health, "unavailable");
         assert!(user_message_texts(&missing).is_empty());
+    }
+
+    #[test]
+    fn input_revision_changes_advance_the_existing_tail_without_a_glob_or_rebootstrap() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = "agent-1";
+        let path = dir.path().join(format!("rollout-{session_id}.jsonl"));
+        std::fs::write(&path, codex_user_line("first")).unwrap();
+        let calls = Cell::new(0);
+        let visited = Cell::new(0);
+        let mut binding = test_binding();
+        let first = poll_transcript(None, &binding, "codex", session_id, dir.path(), &calls, &visited).unwrap();
+        let offset = first.cursor.read_offset;
+        let source_revision = first.brief.binding.source_revision;
+        binding.pty_input_revision += 1;
+        let revision_only = poll_transcript(Some(&first), &binding, "codex", session_id, dir.path(), &calls, &visited).unwrap();
+        assert_eq!(calls.get(), 1, "no discovery for input alone");
+        assert_eq!(revision_only.cursor.read_offset, offset);
+        assert_eq!(revision_only.brief.binding.source_revision, source_revision);
+        assert_eq!(revision_only.brief.binding.pty_input_revision, binding.pty_input_revision);
+        assert_eq!(user_message_texts(&revision_only), vec!["first".to_string()]);
+        append_codex_line(&path, "second");
+        binding.pty_input_revision += 1;
+        let advanced = poll_transcript(Some(&revision_only), &binding, "codex", session_id, dir.path(), &calls, &visited).unwrap();
+        assert_eq!(calls.get(), 1, "append with a new input revision still tails");
+        assert_eq!(visited.get(), 1);
+        assert!(advanced.cursor.read_offset > offset);
+        assert!(advanced.brief.binding.source_revision > source_revision);
+        assert_eq!(advanced.brief.binding.pty_input_revision, binding.pty_input_revision);
+        assert_eq!(user_message_texts(&advanced), vec!["first".to_string(), "second".to_string()]);
+        assert_eq!(advanced.brief.event_seq, revision_only.brief.event_seq + 1);
+        assert!(poll_transcript(Some(&advanced), &binding, "codex", session_id, dir.path(), &calls, &visited).is_none());
     }
 
     #[test]

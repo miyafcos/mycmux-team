@@ -1,6 +1,8 @@
 import type { AgentSessionKind, Pane, PaneTab, Workspace } from "../types";
 import { usePaneMetadataStore, type PaneMetadata } from "./paneMetadataStore";
 import { useWorkspaceListStore } from "./workspaceListStore";
+import { getTabDisplayLabel } from "../lib/tabDisplayLabel";
+import { scheduleClosedPaneLeftoverCheck } from "../lib/paneLeftoverNotifications";
 
 const CLOSED_PANE_LIMIT = 10;
 
@@ -21,6 +23,8 @@ export interface ClosedPaneOrigin {
 }
 
 export interface ClosedPaneEntry {
+  /** Original PTY identity, distinct from the agent conversation id. */
+  paneSessionId?: string;
   cwd: string | null;
   label: string | null;
   labelSource?: "user" | "ai";
@@ -108,7 +112,17 @@ function resolveOrigin(pane: Pane, origin?: ClosedPaneOrigin): Pick<
   return workspaceName ? { workspaceId, workspaceName } : { workspaceId };
 }
 
+function scheduleClosedPaneProcesses(pane: Pane): void {
+  const metadata = usePaneMetadataStore.getState();
+  const tabs = pane.tabs.length > 0 ? pane.tabs : [{ sessionId: pane.sessionId, agentId: pane.agentId, label: pane.label, type: "terminal" as const }];
+  scheduleClosedPaneLeftoverCheck(tabs.filter((tab) => tab.type === undefined || tab.type === "terminal").map((tab) => ({
+    paneSessionId: tab.sessionId,
+    label: getTabDisplayLabel(tab, true, metadata.metadata, metadata.volatileMetadata),
+  })));
+}
+
 export function pushClosedPane(pane: Pane, origin?: ClosedPaneOrigin): void {
+  scheduleClosedPaneProcesses(pane);
   const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0];
   const metadata = usePaneMetadataStore.getState().metadata;
   const activeMetadata = activeTab ? metadata[activeTab.sessionId] : undefined;
@@ -117,6 +131,7 @@ export function pushClosedPane(pane: Pane, origin?: ClosedPaneOrigin): void {
   const agentSession = resolveClosedAgentSession(pane, activeTab, metadata);
 
   pushClosedEntry({
+    paneSessionId: activeTab?.sessionId ?? pane.sessionId,
     cwd: firstNonEmpty(activeMetadata?.cwd, paneMetadata?.cwd, activeTab?.cwd, pane.cwd),
     label: firstNonEmpty(activeTab?.label, pane.label),
     ...(activeTab?.labelSource ? { labelSource: activeTab.labelSource } : {}),
@@ -130,7 +145,14 @@ export function pushClosedPane(pane: Pane, origin?: ClosedPaneOrigin): void {
 export function pushClosedTab(pane: Pane, tab: PaneTab, origin?: ClosedPaneOrigin): void {
   const metadata = usePaneMetadataStore.getState().metadata;
   const agentSession = resolveClosedAgentSession(pane, tab, metadata);
+  if (isRestorableTab(tab)) {
+    scheduleClosedPaneLeftoverCheck([{
+      paneSessionId: tab.sessionId,
+      label: getTabDisplayLabel(tab, true, metadata, usePaneMetadataStore.getState().volatileMetadata),
+    }]);
+  }
   pushClosedEntry({
+    paneSessionId: tab.sessionId,
     cwd: firstNonEmpty(
       tab.cwd,
       metadata[tab.sessionId]?.cwd,
@@ -216,6 +238,8 @@ export function pushClosedWorkspace(
   workspace: Workspace,
   activeSessionId?: string | null,
 ): number {
+  // The notification checks every closed terminal, independently of the undo cap.
+  for (const pane of workspace.panes) scheduleClosedPaneProcesses(pane);
   const selection = selectClosedWorkspaceTabs(workspace, activeSessionId);
   const origin: ClosedPaneOrigin = { workspaceId: workspace.id, workspaceName: workspace.name };
   for (const { pane, tab } of selection) {
@@ -234,4 +258,8 @@ export function popClosedPane(): ClosedPaneEntry | null {
 
 export function getClosedPaneCount(): number {
   return closedPanes.length;
+}
+
+export function getClosedPaneEntries(): readonly ClosedPaneEntry[] {
+  return closedPanes.map((entry) => ({ ...entry }));
 }

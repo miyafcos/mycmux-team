@@ -3,6 +3,25 @@ use super::*;
 const EPOCH: u64 = 100;
 const STALE_AFTER: u64 = 30_000;
 
+#[test]
+fn exited_epoch_is_not_revived_by_reattach_or_late_output() {
+    let store = SessionStateStore::new();
+    store.ingest("session", lifecycle(1, EPOCH, Lifecycle::Alive));
+    let exited = store.ingest("session", lifecycle(2, EPOCH, Lifecycle::Exited));
+    for evidence in [
+        lifecycle(3, EPOCH, Lifecycle::Alive),
+        Evidence::last_output(4, EPOCH, OutputOrigin::Pty),
+        Evidence::monitor_status(5, EPOCH, MonitorStatus::Working, None),
+        Evidence::work_done(6, EPOCH, "agent".into(), "shell".into()),
+        lifecycle(7, EPOCH, Lifecycle::Exited),
+    ] {
+        assert_eq!(store.ingest("session", evidence), exited);
+    }
+    let recreated = store.ingest("session", lifecycle(8, EPOCH + 1, Lifecycle::Alive));
+    assert_eq!(recreated.lifecycle, Lifecycle::Alive);
+    assert_eq!(recreated.session_epoch, Some(EPOCH + 1));
+}
+
 fn screen(
     observed_at: u64,
     epoch: u64,

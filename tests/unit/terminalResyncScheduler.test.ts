@@ -6,6 +6,7 @@ import {
   requestTerminalResync,
   resetTerminalResyncScheduler,
   TERMINAL_RESYNC_STAGGER_MS,
+  TERMINAL_RESYNC_TIMEOUT_MS,
 } from "../../src/components/terminal/terminalResyncScheduler";
 
 beforeEach(() => {
@@ -67,6 +68,34 @@ describe("terminal resync scheduler", () => {
     release?.();
     await vi.advanceTimersByTimeAsync(TERMINAL_RESYNC_STAGGER_MS);
     expect(order).toEqual(["slow:start", "next"]);
+  });
+
+  it("runs the next pane after the deadline even if its predecessor never settles", async () => {
+    const next = vi.fn();
+    requestTerminalResync("hung", false, () => new Promise<void>(() => {}));
+    requestTerminalResync("next", false, next);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(TERMINAL_RESYNC_TIMEOUT_MS - 1);
+    expect(next).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1 + TERMINAL_RESYNC_STAGGER_MS);
+    expect(next).toHaveBeenCalledOnce();
+    expect(pendingTerminalResyncSessions()).toEqual([]);
+  });
+
+  it("a late completion cannot unlock the next pane before it finishes", async () => {
+    let releaseOld!: () => void;
+    let releaseNext!: () => void;
+    const last = vi.fn();
+    requestTerminalResync("old", false, () => new Promise<void>((resolve) => { releaseOld = resolve; }));
+    requestTerminalResync("next", false, () => new Promise<void>((resolve) => { releaseNext = resolve; }));
+    requestTerminalResync("last", false, last);
+    await vi.advanceTimersByTimeAsync(TERMINAL_RESYNC_TIMEOUT_MS + TERMINAL_RESYNC_STAGGER_MS);
+    releaseOld();
+    await vi.advanceTimersByTimeAsync(TERMINAL_RESYNC_STAGGER_MS);
+    expect(last).not.toHaveBeenCalled();
+    releaseNext();
+    await vi.advanceTimersByTimeAsync(TERMINAL_RESYNC_STAGGER_MS);
+    expect(last).toHaveBeenCalledOnce();
   });
 
   it("keeps one pass per pane, and drops a pane that went away", async () => {

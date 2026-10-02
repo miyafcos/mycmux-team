@@ -15,6 +15,10 @@ import {
 import { agentIdForSessionKind } from "../../lib/agentSessionConfig";
 import { requiresLauncherDispatch } from "../../lib/launcherDispatch";
 import { buildSpawnLaunchEnv } from "../../lib/spawnLaunchEnv";
+import { consumeHandoffLaunchEnv } from "../../lib/handoffLaunchEnv";
+import { buildTerminalPaneLaunch } from "../../lib/terminalPaneLaunch";
+import { otherWindowWorkspaces, requestPeerTabStart, serializeOtherWindowPanes, type TabStartResult } from "../../lib/socketTabWindows";
+import type { TerminalLaunchRequest } from "../terminal/terminalLaunchParams";
 import { isDeclaredTab, isRestorableTab, type RestorablePaneTab } from "../../lib/tabLifecycle";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
@@ -743,10 +747,7 @@ export function serializePaneForSocket(
 }
 
 export async function startBackgroundTabSession(tab: RestorablePaneTab, pane: Pane): Promise<void> {
-  const [{ getAgent, getDefaultAgent }, { ackFrontendData, createSession }] = await Promise.all([
-    import("../../lib/agents"),
-    import("../../lib/ipc"),
-  ]);
+  const { getAgent, getDefaultAgent } = await import("../../lib/agents");
   const launchEnv: Record<string, string> = {
     ...(tab.launchEnv ?? buildSpawnLaunchEnv(pane.launchEnv)),
     MYCMUX_PANE_SESSION_ID: tab.sessionId,
@@ -762,23 +763,81 @@ export async function startBackgroundTabSession(tab: RestorablePaneTab, pane: Pa
     launchEnv.__CMUX_LAUNCHER_DONE = "1";
   }
 
+  await attachBackgroundTabSession(tab, {
+    command, args: commandArgs, cwd: tab.cwd ?? pane.cwd, env: launchEnv,
+  });
+}
+
+async function attachBackgroundTabSession(
+  tab: RestorablePaneTab, launch: TerminalLaunchRequest,
+): Promise<void> {
+  const { createSession, setFrontendVisible } = await import("../../lib/ipc");
+  const { getCurrentSessionEpoch } = await import("../../lib/attachEpoch");
+  const expectedEpoch = getCurrentSessionEpoch(tab.sessionId) + 1;
   await createSession(
     tab.sessionId,
-    command,
-    commandArgs,
+    launch.command,
+    launch.args,
     80,
     24,
-    (batch) => {
-      void ackFrontendData(tab.sessionId, batch.generation, batch.seq, batch.bytes)
-        .catch((error) => {
-          if (import.meta.env.DEV) {
-            console.warn(`[mycmux-diag socket] headless PTY ack failed: ${tab.sessionId}`, error);
-          }
-        });
-    },
-    tab.cwd ?? pane.cwd,
-    launchEnv,
+    // Headless output lives in scrollback. No renderer consumed this batch.
+    () => {},
+    launch.cwd,
+    launch.env,
   );
+  // A renderer may have attached while startup was pending. Never hide its
+  // newer attachment; an ambiguous epoch is safe because we do not ACK here.
+  if (getCurrentSessionEpoch(tab.sessionId) === expectedEpoch) {
+    void setFrontendVisible(tab.sessionId, false).catch(() => {});
+  }
+  if (launch.env?.MYCMUX_HANDOFF?.trim()) consumeHandoffLaunchEnv(tab.sessionId);
+}
+
+async function startTab(args: SocketArgs, allowPeer = true): Promise<TabStartResult> {
+  const sessionId = socketArgString(args, "sessionId", "session_id");
+  if (!sessionId) throw new Error("pane.start_tab requires sessionId");
+  const [{ useWorkspaceListStore }, agents, ipc] = await Promise.all([
+    import("../../stores/workspaceStore"),
+    import("../../lib/agents"),
+    import("../../lib/ipc"),
+  ]);
+  const localWorkspaces = useWorkspaceListStore.getState().workspaces;
+  if (allowPeer && !findTabBySessionId(localWorkspaces, sessionId)) {
+    const peers = otherWindowWorkspaces(await ipc.getWindowFragments(), new Set(localWorkspaces.map((ws) => ws.id)));
+    const owner = peers.find(({ workspace }) => workspace.panes.some((pane) =>
+      pane.tabs?.some((tab) => tab.session_id === sessionId),
+    ));
+    if (owner) return requestPeerTabStart(owner.windowLabel, sessionId);
+  }
+  const findTarget = () => {
+    const target = findTabBySessionId(useWorkspaceListStore.getState().workspaces, sessionId);
+    if (!target) throw new Error("pane.start_tab session not found");
+    if (!isTerminalLocation(target)) throw new Error("pane.start_tab requires a terminal tab");
+    if (!isRestorableTab(target.tab)) {
+      throw new Error("pane.start_tab requires a restorable tab; use pane.launch_declared for declared tabs");
+    }
+    return { ...target, tab: target.tab };
+  };
+  findTarget();
+  const [running, snapshot] = await Promise.all([
+    ipc.listRunningSessionIds(), ipc.getSessionStatusSnapshot(),
+  ]);
+  // A close or tab rewrite can land while the backend snapshots are in flight.
+  const target = findTarget();
+  if (running.includes(sessionId) || snapshotSession(snapshot, sessionId)?.status.lifecycle === "alive") {
+    return { started: false, reason: "already_running", sessionId };
+  }
+  const launch = buildTerminalPaneLaunch(target.pane, target.tab, agents);
+  await attachBackgroundTabSession(target.tab, {
+    command: launch.launchCommand, args: launch.launchArgs,
+    cwd: launch.paneCwd, env: launch.launchEnv,
+  });
+  return { started: true, sessionId };
+}
+
+/** Peer requests execute against the owning window's store and never route again. */
+export function startLocalTabSession(sessionId: string): Promise<TabStartResult> {
+  return startTab({ sessionId }, false);
 }
 
 function isKnownPaneSession(workspaces: Workspace[], sessionId: string): boolean {
@@ -946,6 +1005,8 @@ async function spawnPane(args: SocketArgs) {
     try {
       await startBackgroundTabSession(newTab, updatedPane);
     } catch (error) {
+      const { killSession } = await import("../../lib/ipc");
+      await killSession(newTab.sessionId).catch(() => {});
       rollbackNewTabs();
       throw error;
     }
@@ -1100,6 +1161,8 @@ async function spawnTab(args: SocketArgs) {
     try {
       await startBackgroundTabSession(newTab, updatedPane);
     } catch (error) {
+      const { killSession } = await import("../../lib/ipc");
+      await killSession(newTab.sessionId).catch(() => {});
       rollbackNewTabs();
       throw error;
     }
@@ -1826,6 +1889,7 @@ async function closeTabs(args: SocketArgs) {
     : [];
   if (tabIds.length === 0) throw new Error("pane.close_tabs requires tabIds");
   const { usePaneMetadataStore, useUiStore, useWorkspaceListStore } = await import("../../stores/workspaceStore");
+  const { pushClosedTab } = await import("../../stores/closedPaneStore");
   const before = useWorkspaceListStore.getState().workspaces;
   const selected = new Set(tabIds);
   for (const workspace of before) {
@@ -1852,7 +1916,6 @@ async function closeTabs(args: SocketArgs) {
   const closedOwners = summary.closed
     .map((tabId) => ownerByTabId.get(tabId))
     .filter((owner): owner is NonNullable<typeof owner> => owner !== undefined);
-  const { pushClosedTab } = await import("../../stores/closedPaneStore");
   for (const { workspace, pane, tab } of closedOwners) {
     pushClosedTab(pane, tab, { workspaceId: workspace.id, workspaceName: workspace.name });
   }
@@ -2479,6 +2542,7 @@ export const SOCKET_COMMAND_NAMES = [
   "pane.spawn_tab",
   "pane.declare_tab",
   "pane.launch_declared",
+  "pane.start_tab",
   "pane.activate_tab",
   "pane.restore_activation",
   "pane.close_tab",
@@ -2602,6 +2666,10 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
 
     case "pane.list_all":
     case "list_all_panes": {
+      const { getWindowFragments } = await import("../../lib/ipc");
+      const peers = otherWindowWorkspaces(
+        await getWindowFragments(), new Set(workspaceState.workspaces.map((ws) => ws.id)),
+      );
       const activePaneId = useUiStore.getState().activePaneId;
       const paneMetadata = usePaneMetadataStore.getState().metadata;
       const { liveTerms } = await import("../terminal/terminalCache");
@@ -2621,16 +2689,22 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
         activeWorkspaceId: workspaceState.activeWorkspaceId,
         activePaneId,
         activeSessionId: activePaneId,
-        workspaces: workspaceState.workspaces.map((workspace) => ({
-          workspaceId: workspace.id,
-          workspaceName: workspace.name,
-          ...serializeWorkspaceLayoutForSocket(workspace),
-        })),
-        panes: workspaceState.workspaces.flatMap((workspace) =>
-          workspace.panes.map((pane) =>
-            serializePaneForSocket(pane, serializationContext, workspace)
-          )
-        ),
+        workspaces: [
+          ...workspaceState.workspaces.map((workspace) => ({
+            workspaceId: workspace.id,
+            workspaceName: workspace.name,
+            ...serializeWorkspaceLayoutForSocket(workspace),
+          })),
+          ...peers.map(({ workspace, windowLabel }) => ({
+            workspaceId: workspace.id, workspaceName: workspace.name, windowLabel,
+          })),
+        ],
+        panes: [
+          ...workspaceState.workspaces.flatMap((workspace) =>
+            workspace.panes.map((pane) => serializePaneForSocket(pane, serializationContext, workspace))
+          ),
+          ...serializeOtherWindowPanes(peers),
+        ],
       };
     }
 
@@ -2642,6 +2716,8 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
       return declareTab(args);
     case "pane.launch_declared":
       return launchDeclared(args);
+    case "pane.start_tab":
+      return startTab(args);
     case "pane.activate_tab":
       return activateTab(args);
     case "pane.restore_activation":

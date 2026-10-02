@@ -1058,6 +1058,8 @@ pub async fn webpane_create(
             LogicalSize::new(bounds.width, bounds.height),
         )
         .map_err(|error| format!("failed to create web pane: {error}"))?;
+    #[cfg(windows)]
+    crate::watchdog::register_process_failed(&webview);
     crate::perf_timeline::mark("webpane.child.created", Some(&tab_id));
     open_presets().insert(label.clone(), preset.id);
     if preset.id == "preview" && url.as_str() != "about:blank" {

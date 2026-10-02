@@ -374,7 +374,9 @@ describe("groupingMeasuredMoveLines", () => {
   it("keeps the five-pixel painted detour boundary inside obstacle filtering", () => {
     const line = moveLine("target");
     const target = { left: 120, top: 40, width: 80, height: 20 };
-    expect(() => groupingMeasuredMoveLines({
+    // The paint-boundary blocker closes the last detour, so no route is drawn.
+    // Since 2026-10-02 that falls back to the direct line instead of throwing.
+    const measured = groupingMeasuredMoveLines({
       lines: [line],
       fromRects: new Map([[line.tabId, { left: 0, top: 40, width: 40, height: 20 }]]),
       toRects: new Map([[line.tabId, target]]),
@@ -385,8 +387,42 @@ describe("groupingMeasuredMoveLines", () => {
       ]),
       workspaceRects: new Map([[line.toWorkspaceId, { left: 20, top: 20, width: 300, height: 200 }]]),
       orientation: "horizontal",
-    })).toThrow("No collision-free grouping move route is available");
+    });
+    expect(measured).toHaveLength(1);
+    expect(measured[0].routePoints).toBeNull();
+    expect(measured[0].destinationRect).toEqual(target);
   });
+
+  it.each(["horizontal", "vertical"] as const)(
+    "draws the direct line instead of throwing when every %s detour is blocked",
+    (orientation) => {
+      // 2026-10-02: "No collision-free grouping move route is available" escaped the
+      // move-line measurement and stopped the whole dashboard after a proposal.
+      const moved = moveLine("moved");
+      const other = moveLine("other");
+      const source = { left: 0, top: 0, width: 40, height: 20 };
+      const target = { left: 200, top: 200, width: 80, height: 20 };
+      const input = {
+        lines: [moved, other],
+        fromRects: new Map([[moved.tabId, source], [other.tabId, { left: 0, top: 60, width: 40, height: 20 }]]),
+        toRects: new Map([[moved.tabId, target], [other.tabId, { left: 200, top: 260, width: 80, height: 20 }]]),
+        afterChipRects: new Map([
+          [moved.tabId, target],
+          [other.tabId, { left: 200, top: 260, width: 80, height: 20 }],
+          ["everything", { left: -1000, top: -1000, width: 3000, height: 3000 }],
+        ]),
+        workspaceRects: new Map([[moved.toWorkspaceId, { left: 180, top: 180, width: 300, height: 200 }]]),
+        orientation,
+      };
+      let measured: ReturnType<typeof groupingMeasuredMoveLines> = [];
+      expect(() => { measured = groupingMeasuredMoveLines(input); }).not.toThrow();
+      expect(measured.map((line) => line.tabId)).toEqual(["moved", "other"]);
+      for (const line of measured) {
+        expect(line.routePoints).toBeNull();
+        expect(line.destinationRect).toEqual(input.toRects.get(line.tabId));
+      }
+    },
+  );
 
   it("routes an upper destination around an already reserved lower lead-in", () => {
     const upper = moveLine("upper", "shared");

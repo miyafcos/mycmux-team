@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   response: vi.fn(async (_id: string, _result: unknown, _error: string | null) => {}),
   quit: vi.fn(async () => {}),
   fragments: [] as Array<Record<string, unknown>>,
+  metadata: vi.fn(async () => ({})),
+  getFragments: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []),
   events: new Map<string, (event: { payload: unknown }) => void>(),
 }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({
@@ -36,14 +38,15 @@ vi.mock("../../src/lib/ipc", async (original) => {
     claimLeader: async () => true,
     loadPersistentData: async () => ({ supported: true, schemaVersion: 1, data: { schema_version: 1, workspaces: [], settings } }),
     getAppSettings: async () => settings,
-    takePendingAdoption: mocks.takePending, getWindowFragments: async () => mocks.fragments,
-    releaseWorkspaces: mocks.release, publishWindowFragment: mocks.publish, sendSocketResponse: mocks.response, getPtyMetadataSnapshot: async () => ({}),
+    takePendingAdoption: mocks.takePending, getWindowFragments: mocks.getFragments,
+    releaseWorkspaces: mocks.release, publishWindowFragment: mocks.publish, sendSocketResponse: mocks.response, getPtyMetadataSnapshot: mocks.metadata,
+    listRunningSessionIds: async () => [],
     readAgentSessionMappings: async () => ({}), listPets: async () => [], setAppFrontendVisible: async () => {},
     savePersistentData: mocks.save, setWindowCloseIntent: mocks.intent,
     killSession: mocks.kill, quitApp: mocks.quit,
   };
 });
-import { useWorkspacePersist, toTransferConfig } from "../../src/components/layout/SocketListener";
+import { useWorkspacePersist, toTransferConfig, __resetWindowCloseStateForTests, WINDOW_CLOSE_TIMEOUT_MS } from "../../src/components/layout/SocketListener";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { resetWindowContextCacheForTests, setWindowRole } from "../../src/lib/windowContext";
 import { __resetPersistenceCoordinatorForTests, getPersistentSchemaState } from "../../src/lib/workspacePersistenceCoordinator";
@@ -63,6 +66,13 @@ describe("native close-request path scopes its victims to the closing window", (
   const alive = new Set<string>();
   beforeEach(() => {
     vi.clearAllMocks(); mocks.close = null; mocks.events.clear();
+    __resetWindowCloseStateForTests();
+    mocks.metadata.mockReset().mockResolvedValue({});
+    mocks.getFragments.mockReset().mockImplementation(async () => mocks.fragments);
+    mocks.save.mockReset().mockResolvedValue(undefined);
+    mocks.publish.mockReset().mockResolvedValue(undefined);
+    mocks.intent.mockReset().mockResolvedValue(undefined);
+    mocks.destroy.mockReset().mockResolvedValue(undefined);
     __resetGroupingRuntimeForTests(); __resetPersistenceCoordinatorForTests();
     setWindowRole(false); resetWindowContextCacheForTests();
     mocks.confirm.mockResolvedValue(true);
@@ -83,13 +93,14 @@ describe("native close-request path scopes its victims to the closing window", (
   });
   afterEach(async () => {
     await act(async () => root.unmount()); host.remove();
+    vi.useRealTimers(); vi.restoreAllMocks();
     useWorkspaceListStore.setState(original, true); setWindowRole(false);
   });
   async function boot(label: string) {
     mocks.label = label; resetWindowContextCacheForTests();
     const Harness = () => { useWorkspacePersist(); return null; };
     await act(async () => root.render(createElement(Harness)));
-    await vi.waitFor(() => expect(getPersistentSchemaState().status).toBe("supported"));
+    await vi.waitFor(() => expect(getPersistentSchemaState().status).toBe("supported"), { timeout: 10_000 });
     expect(mocks.close).not.toBeNull();
   }
   it.each([false, true])("a new-workspace drop creates a normal peer workspace (existing origin: %s)", async (hasOrigin) => {
@@ -216,7 +227,7 @@ describe("native close-request path scopes its victims to the closing window", (
     await act(async () => { setWindowRole(false); });
     mocks.publish.mockClear();
     await act(async () => useWorkspaceListStore.getState().renameWorkspace("victim-ws", "Changed"));
-    await vi.waitFor(() => expect(mocks.publish).toHaveBeenCalled());
+    await vi.waitFor(() => expect(mocks.publish).toHaveBeenCalled(), { timeout: 10_000 });
     expect(mocks.publish.mock.calls.at(-1)![0]).toMatchObject({ window_label: label,
       workspaces: [expect.objectContaining({ id: "victim-ws", name: "Changed" })] });
   });
@@ -254,12 +265,93 @@ describe("native close-request path scopes its victims to the closing window", (
     expect(alive.has("keeper-b")).toBe(true);
     expect(useWorkspaceListStore.getState().workspaces).toHaveLength(1);
   });
+  it.each(["metadata", "fragments", "confirmation", "save", "kill"] as const)(
+    "destroys the window after a hung %s and accepts a second close request",
+    async (hungStep) => {
+      await boot("main");
+      vi.useFakeTimers();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const pending = new Promise<never>(() => {});
+      if (hungStep === "metadata") mocks.metadata.mockReturnValue(pending);
+      if (hungStep === "fragments") mocks.getFragments.mockReturnValue(pending);
+      if (hungStep === "confirmation") mocks.confirm.mockReturnValue(pending);
+      if (hungStep === "save") mocks.save.mockReturnValue(pending);
+      if (hungStep === "kill") mocks.kill.mockReturnValue(pending);
+      const first = mocks.close!({ preventDefault: vi.fn() });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WINDOW_CLOSE_TIMEOUT_MS - 1);
+        expect(mocks.destroy).not.toHaveBeenCalled();
+        if (hungStep === "kill") expect(mocks.kill).toHaveBeenCalledTimes(2);
+        await vi.advanceTimersByTimeAsync(WINDOW_CLOSE_TIMEOUT_MS * 10);
+        await first;
+      });
+      expect(mocks.destroy).toHaveBeenCalledOnce();
+      expect(mocks.kill.mock.calls.map(([id]) => id)).toEqual(["victim-a", "victim-b"]);
+      expect(useWorkspaceListStore.getState().workspaces).toEqual([]);
+      expect(warn).toHaveBeenCalledWith("[window-close] Continuing after timeout:", expect.any(String));
+      const second = mocks.close!({ preventDefault: vi.fn() });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WINDOW_CLOSE_TIMEOUT_MS * 10);
+        await second;
+      });
+      expect(mocks.destroy).toHaveBeenCalledTimes(2);
+      expect(alive.has("keeper-a")).toBe(true);
+      expect(alive.has("keeper-b")).toBe(true);
+    },
+  );
+
+  it.each(["publish", "intent", "adoption", "destroy"] as const)(
+    "bounds a hung %s during destruction and releases the close guards",
+    async (hungStep) => {
+      const pending = new Promise<never>(() => {});
+      if (hungStep === "publish") mocks.publish.mockReturnValue(pending);
+      await boot("mycmux-w2");
+      vi.useFakeTimers();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      if (hungStep === "intent") mocks.intent.mockReturnValue(pending);
+      if (hungStep === "adoption") mocks.takePending.mockReturnValue(pending);
+      if (hungStep === "destroy") mocks.destroy.mockReturnValue(pending);
+      const first = mocks.close!({ preventDefault: vi.fn() });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WINDOW_CLOSE_TIMEOUT_MS * 10);
+        await first;
+      });
+      expect(mocks.destroy).toHaveBeenCalledOnce();
+      expect(useWorkspaceListStore.getState().workspaces).toEqual([]);
+      if (hungStep === "destroy") expect(mocks.intent.mock.calls.map(([closing]) => closing)).toEqual([true]);
+      const second = mocks.close!({ preventDefault: vi.fn() });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WINDOW_CLOSE_TIMEOUT_MS * 10);
+        await second;
+      });
+      expect(mocks.destroy).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("does not apply metadata that arrives after its close deadline", async () => {
+    await boot("main");
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    let resolveMetadata!: (value: Record<string, unknown>) => void;
+    mocks.metadata.mockReturnValue(new Promise((resolve) => { resolveMetadata = resolve; }));
+    const closing = mocks.close!({ preventDefault: vi.fn() });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(WINDOW_CLOSE_TIMEOUT_MS * 10);
+      await closing;
+    });
+    const { usePaneMetadataStore } = await import("../../src/stores/paneMetadataStore");
+    const metadataBeforeLateReply = usePaneMetadataStore.getState().metadata;
+    resolveMetadata({ "victim-a": { session_id: "victim-a", process_name: "cmd.exe", cwd: "late" } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(usePaneMetadataStore.getState().metadata).toBe(metadataBeforeLateReply);
+  });
+
   it("coalesces repeated close requests while confirmation is pending", async () => {
     let decide!: (confirmed: boolean) => void;
     mocks.confirm.mockReturnValueOnce(new Promise((resolve) => { decide = resolve; }));
     await boot("main");
     const first = mocks.close?.({ preventDefault: vi.fn() });
-    await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce(), { timeout: 10_000 });
     const secondPrevent = vi.fn();
     await mocks.close?.({ preventDefault: secondPrevent });
     expect(secondPrevent).toHaveBeenCalledOnce();

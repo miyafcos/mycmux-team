@@ -7,6 +7,7 @@ import type { Pane, PaneTab, Workspace } from "../../src/types";
 
 const ipcMocks = vi.hoisted(() => ({
   ackFrontendData: vi.fn(() => Promise.resolve()),
+  setFrontendVisible: vi.fn(() => Promise.resolve()),
   createSession: vi.fn(() => Promise.resolve()),
 }));
 
@@ -145,7 +146,7 @@ describe("pane.spawn_tab activation", () => {
       bytes: number;
     }) => void;
     onData({ generation: 2, seq: 3, bytes: 4 });
-    expect(ipcMocks.ackFrontendData).toHaveBeenCalledWith(result.sessionId, 2, 3, 4);
+    expect(ipcMocks.ackFrontendData).not.toHaveBeenCalled();
   });
 
   it("keeps the displayed tab and reports that activate did not move the foreground", async () => {

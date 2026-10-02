@@ -30,6 +30,7 @@ import { usePaneMetadataStore } from "../stores/paneMetadataStore";
 import { useToastStore } from "../stores/toastStore";
 import { applyLayoutMutation, layoutStructureRevision } from "../lib/layoutMutation";
 import { resolveMinimapDropZone } from "../components/dashboard/minimapModel";
+import { beginNativePaneDrag, usesNativePaneDrag, beginNativeGroupDrag, usesNativeGroupDrag } from "../lib/tearout/pointerDrag";
 import { moveMinimapItemToNewWorkspace } from "../components/dashboard/minimapWorkspaceActions";
 import {
   TEAR_OUT_DRAG_THRESHOLD_PX,
@@ -599,6 +600,23 @@ export function usePaneDragSource() {
     const targetElement = event.target as HTMLElement;
     const interactiveAncestor = targetElement.closest("button, input, textarea, select, [data-dnd-ignore='true']");
     if (interactiveAncestor && !(item.surface === "minimap" && interactiveAncestor === event.currentTarget)) return;
+
+    if (item.kind === "tab" && usesNativePaneDrag(item)) {
+      beginNativePaneDrag(event.nativeEvent, event.currentTarget, item, {
+        suppress: (value) => { suppressClickRef.current = value; },
+        resolve: (x, y) => usePaneDragStore.getState().setTarget(resolveDropTargetAtPoint(x, y, item)),
+        commit: () => commitPaneDragDrop(item, usePaneDragStore.getState().target),
+      });
+      return;
+    }
+    if (item.kind === "pane" && usesNativeGroupDrag(item)) {
+      beginNativeGroupDrag(event.nativeEvent, event.currentTarget, item, {
+        suppress: (value) => { suppressClickRef.current = value; },
+        resolve: (x, y) => usePaneDragStore.getState().setTarget(resolveDropTargetAtPoint(x, y, item)),
+        commit: () => commitPaneDragDrop(item, usePaneDragStore.getState().target),
+      });
+      return;
+    }
 
     const sourceElement = event.currentTarget;
     const pointerId = event.pointerId;

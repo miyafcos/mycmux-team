@@ -278,7 +278,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("hooks-status", help="Read agent hook installation status")
     status = subparsers.add_parser("status", help="Read canonical session state")
-    status.add_argument("--session")
+    status_scope = status.add_mutually_exclusive_group()
+    status_scope.add_argument("--session")
+    status_scope.add_argument(
+        "--include-not-started", action="store_true",
+        help="Also list terminal tabs that have no canonical PTY record",
+    )
     subparsers.add_parser("version", help="Read the running mycmux version and capabilities")
 
     spawn = subparsers.add_parser(
@@ -335,6 +340,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="agent",
         help="Declaration origin (default: agent)",
     )
+
+    start_tab = subparsers.add_parser(
+        "start-tab", help="Start an existing terminal tab without changing the foreground",
+    )
+    start_tab.add_argument("--session", required=True)
 
     activate_tab = subparsers.add_parser(
         "activate-tab",
@@ -702,6 +712,8 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         optional_arg(args, "declaredPrompt", namespace.prompt)
         optional_arg(args, "declaredTarget", namespace.target)
         return "pane.declare_tab", args
+    if namespace.subcommand == "start-tab":
+        return "pane.start_tab", {"sessionId": namespace.session}
     if namespace.subcommand == "activate-tab":
         return "pane.activate_tab", {"sessionId": namespace.session}
     if namespace.subcommand == "restore-activation":
@@ -959,6 +971,71 @@ def validate_status_result(result: Any, expected_session: str | None) -> Any:
     return result
 
 
+def collect_not_started(
+    result: Any, canonical_ids: set[str], expected_session: str | None = None,
+) -> list[dict[str, str]]:
+    """Project known tab fields; absence of a PTY is not a lifecycle value."""
+    if not isinstance(result, dict) or not isinstance(result.get("panes"), list):
+        raise RuntimeError("mycmux returned an invalid pane.list_all schema")
+    not_started: list[dict[str, str]] = []
+    for pane in result["panes"]:
+        if not isinstance(pane, dict) or not isinstance(pane.get("tabs"), list):
+            raise RuntimeError("mycmux returned an invalid pane.list_all pane")
+        for tab in pane["tabs"]:
+            if not isinstance(tab, dict):
+                raise RuntimeError("mycmux returned an invalid pane.list_all tab")
+            if tab.get("type") not in (None, "terminal"):
+                continue
+            session_id = tab.get("sessionId")
+            if not isinstance(session_id, str) or not session_id:
+                raise RuntimeError("mycmux returned an invalid pane.list_all session id")
+            if session_id in canonical_ids or (
+                expected_session is not None and session_id != expected_session
+            ):
+                continue
+            entry = {"session_id": session_id}
+            fields = {
+                "tab_id": tab.get("id"),
+                "workspace_id": pane.get("workspaceId"),
+                "workspace_name": pane.get("workspaceName"),
+                "label": tab.get("label"),
+                "agent_kind": tab.get("agentKind"),
+                "agent_session_id": tab.get("agentSessionId") or tab.get("claudeSessionId"),
+            }
+            entry.update({key: value for key, value in fields.items()
+                          if isinstance(value, str) and value})
+            not_started.append(entry)
+    return not_started
+
+
+def resolve_status_result(result: Any, namespace: argparse.Namespace) -> Any:
+    # Validate every canonical record before treating an empty match as restored.
+    validated = validate_status_result(result, None)
+    canonical_ids = {entry["session_id"] for entry in validated["sessions"]}
+    if namespace.session is not None and namespace.session not in canonical_ids:
+        not_started = collect_not_started(
+            send_request("pane.list_all", {}), canonical_ids, namespace.session,
+        )
+        if not_started:
+            print(
+                f"session {namespace.session} has a pane but no PTY yet "
+                f"(restored, not started); use start-tab --session {namespace.session} "
+                "to start it in place",
+                file=sys.stderr,
+            )
+            return {"sessions": [], "not_started": not_started}
+        try:
+            validate_status_result(validated, namespace.session)
+        except RuntimeError as exc:
+            raise RuntimeError(f"{exc} (no pane and no PTY)") from exc
+    validated = validate_status_result(validated, namespace.session)
+    if namespace.include_not_started:
+        return {**validated, "not_started": collect_not_started(
+            send_request("pane.list_all", {}), canonical_ids,
+        )}
+    return validated
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     # Windows consoles often default to cp932; pane content can contain any
     # Unicode, so force UTF-8 output instead of crashing on print.
@@ -978,7 +1055,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             result = send_request(cmd, args)
         if namespace.subcommand == "status":
-            result = validate_status_result(result, namespace.session)
+            result = resolve_status_result(result, namespace)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1

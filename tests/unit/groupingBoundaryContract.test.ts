@@ -635,6 +635,12 @@ describe("grouping production boundary contract", () => {
       "src/components/layout/tabGroupingEngine.ts -> call replaceWorkspaces",
       "src/hooks/usePaneDragSource.ts -> call _replaceWorkspaces",
       "src/hooks/usePaneDragSource.ts -> call _replaceWorkspaces",
+      // Native single-tab handoffs and their undo retain the store's mutation gate.
+      "src/lib/tearout/runtime.ts -> call _replaceWorkspaces",
+      "src/lib/tearout/runtime.ts -> call _replaceWorkspaces",
+      "src/lib/tearout/runtime.ts -> call _replaceWorkspaces",
+      "src/lib/tearout/runtime.ts -> call _replaceWorkspaces",
+      "src/lib/tearout/runtime.ts -> call _replaceWorkspaces",
       "src/lib/workspaceRestore.ts -> call _replaceWorkspaces",
     ]);
   }, 120_000);

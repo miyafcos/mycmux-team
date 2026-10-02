@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use sysinfo::{Pid, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 use super::adapter::normalize;
 use super::{sha256_hex, unix_ms, LiveBriefService, LiveSessionBrief};
@@ -135,8 +135,8 @@ fn validate_reply_text(text: &str) -> Result<(), String> {
 fn prove_current_agent_ownership(service: &LiveBriefService, brief: &LiveSessionBrief) -> Option<String> {
     let (_, _, root_pid) = service.manager().intervention_observation(&brief.binding.pty_session_id)?;
     let root_pid = root_pid?;
-    let mut system = System::new_all();
-    system.refresh_all();
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
     let mut descendant_found = false;
     for process in system.processes().values() {
         if process.name().to_string_lossy().to_ascii_lowercase().contains(&brief.binding.agent_kind) && is_descendant(process.pid(), Pid::from_u32(root_pid), &system) { descendant_found = true; break; }
@@ -147,10 +147,22 @@ fn prove_current_agent_ownership(service: &LiveBriefService, brief: &LiveSession
     None
 }
 
-fn is_descendant(mut child: Pid, root: Pid, system: &System) -> bool {
-    while let Some(process) = system.process(child) {
+fn is_descendant(child: Pid, root: Pid, system: &System) -> bool {
+    is_descendant_with(child, root, |pid| {
+        system.process(pid).map(|process| (process.parent(), process.start_time()))
+    })
+}
+
+fn is_descendant_with(mut child: Pid, root: Pid, mut lookup: impl FnMut(Pid) -> Option<(Option<Pid>, u64)>) -> bool {
+    let mut visited = HashSet::new();
+    for _ in 0..64 {
+        if !visited.insert(child) { return false; }
+        let Some((parent, child_started)) = lookup(child) else { return false; };
         if child == root { return true; }
-        let Some(parent) = process.parent() else { return false; };
+        let Some(parent) = parent else { return false; };
+        let Some((_, parent_started)) = lookup(parent) else { return false; };
+        // A newer parent is a recycled PID, not evidence of ownership.
+        if parent_started > child_started { return false; }
         child = parent;
     }
     false
@@ -174,6 +186,37 @@ fn append_audit(record: &AuditRecord<'_>, stage: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn ancestry(child: u32, root: u32, rows: &[(u32, Option<u32>, u64)]) -> bool {
+        is_descendant_with(Pid::from_u32(child), Pid::from_u32(root), |pid| {
+            rows.iter().find(|(id, _, _)| *id == pid.as_u32())
+                .map(|(_, parent, start)| (parent.map(Pid::from_u32), *start))
+        })
+    }
+
+    #[test]
+    fn descendant_walk_returns_false_on_cycles_missing_parents_and_reused_pids() {
+        let cycle = [(23112, Some(444), 1), (444, Some(56876), 1),
+            (56876, Some(33636), 1), (33636, Some(23112), 1)];
+        for child in [23112, 444, 56876, 33636] {
+            assert!(!ancestry(child, 99, &cycle));
+        }
+        assert!(!ancestry(1, 99, &[(1, Some(1), 1)]));
+        assert!(!ancestry(1, 99, &[(1, Some(2), 1), (2, Some(1), 1)]));
+        assert!(!ancestry(3, 1, &[(3, Some(2), 1)]));
+        assert!(!ancestry(3, 1, &[(3, Some(1), 1), (1, None, 2)]));
+    }
+
+    #[test]
+    fn descendant_walk_accepts_normal_trees_and_bounds_the_depth() {
+        let tree = [(1, None, 1), (2, Some(1), 2), (3, Some(2), 3)];
+        assert!(ancestry(3, 1, &tree));
+        assert!(ancestry(1, 1, &tree));
+        assert!(!ancestry(2, 3, &tree));
+        let chain: Vec<_> = (1..=100).map(|id| (id, (id > 1).then_some(id - 1), u64::from(id))).collect();
+        assert!(ancestry(60, 1, &chain));
+        assert!(!ancestry(100, 1, &chain));
+    }
+
     #[test]
     fn reply_rejects_every_control_character() { for bad in ["x\n", "x\r", "x\0", "x\u{1b}", "x\u{3}", "x\u{7f}", "x\u{80}"] { assert!(validate_reply_text(bad).is_err(), "{bad:?}"); } }
     #[test]
