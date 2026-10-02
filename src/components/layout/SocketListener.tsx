@@ -6,6 +6,7 @@ import { useEffect, useRef } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listenForDetachedDock, takeDetachedPlacements, DETACHED_DOCK_REQUEST_EVENT } from "../../stores/detachedDockStore";
+import { installTearoutRuntime } from "../../lib/tearout/runtime";
 import { listen } from "@tauri-apps/api/event";
 import {
   useWorkspaceListStore,
@@ -20,6 +21,7 @@ import {
   readAgentSessionMappings,
   setAppFrontendVisible,
   getPtyMetadataSnapshot,
+  listRunningSessionIds,
   killSession,
   setWindowCloseIntent,
   sendSocketResponse,
@@ -93,7 +95,8 @@ import {
   filterConflictingAgentMappings,
   resolvePersistedSelection,
 } from "../../lib/sessionRestoreSafety";
-import { handleSocketCommand } from "./socketCommands";
+import { handleSocketCommand, startLocalTabSession } from "./socketCommands";
+import { listenForPeerTabStarts } from "../../lib/socketTabWindows";
 import { IS_MAC } from "../../lib/keybindings";
 import { handleWorkOrderSpawnRequest, type SpawnRequest } from "../../lib/workOrderBridge";
 import { isMainWindow, windowLabel, hasWindowRole, setWindowRole, subscribeWindowRole } from "../../lib/windowContext";
@@ -231,7 +234,7 @@ interface AgentSessionLocation {
 
 export interface AgentSessionDedupeConflict {
   key: string;
-  reason: "active" | "self-owned" | "order";
+  reason: "live" | "active" | "self-owned" | "order";
   winner: AgentSessionLocation;
   loser: AgentSessionLocation;
 }
@@ -533,6 +536,7 @@ export function applyMappingsToConfig(
 interface SerializePersistentWorkspaceSetOptions {
   sourceWorkspaces: readonly WorkspaceSerializationSource[];
   agentMappings?: Record<string, AgentSessionMapping>;
+  liveSessionIds?: ReadonlySet<string>;
   windowFragments?: readonly WindowFragment[];
   preferredSelection: {
     workspaceId?: string | null;
@@ -572,6 +576,7 @@ export function serializePersistentWorkspaceSet(
     persistedSelection.workspaceId,
     persistedSelection.paneId,
     persistedSelection.tabId,
+    options.liveSessionIds,
   );
   return {
     ...dedupeResult,
@@ -863,6 +868,7 @@ export function dedupeAgentSessionsInConfigs(
   activeWorkspaceId: string | null | undefined,
   activePaneId: string | null | undefined,
   activeTabId: string | null | undefined,
+  liveSessionIds?: ReadonlySet<string>,
 ): AgentSessionDedupeResult {
   const configs = inputConfigs.map(clearJunkAgentSessionsInConfig);
   const winningCandidateIds = new Set<string>();
@@ -870,6 +876,7 @@ export function dedupeAgentSessionsInConfigs(
   const candidates: Array<{
     candidateId: string;
     key: string;
+    isLive: boolean;
     isActive: boolean;
     selfOwned: boolean;
     order: number;
@@ -888,6 +895,7 @@ export function dedupeAgentSessionsInConfigs(
         candidates.push({
           candidateId: `${workspaceIndex}:${paneIndex}:pane`,
           key,
+          isLive: liveSessionIds?.has(pane.session_id ?? "") ?? false,
           isActive: isActivePane,
           selfOwned: false,
           order: order++,
@@ -908,6 +916,7 @@ export function dedupeAgentSessionsInConfigs(
         candidates.push({
           candidateId: `${workspaceIndex}:${paneIndex}:${tabIndex}`,
           key,
+          isLive: liveSessionIds?.has(tab.session_id ?? "") ?? false,
           isActive: isActiveTab || isPaneActiveTab,
           selfOwned: tab.tab_id === declaredAgentSessionId(tab),
           order: order++,
@@ -925,7 +934,8 @@ export function dedupeAgentSessionsInConfigs(
   const candidateById = new Map(candidates.map((candidate) => [candidate.candidateId, candidate]));
   candidates
     .sort((a, b) =>
-      Number(b.isActive) - Number(a.isActive)
+      Number(b.isLive) - Number(a.isLive)
+      || Number(b.isActive) - Number(a.isActive)
       || Number(b.selfOwned) - Number(a.selfOwned)
       || a.order - b.order,
     )
@@ -941,11 +951,13 @@ export function dedupeAgentSessionsInConfigs(
     const winner = winnerByKey.get(key);
     const loser = candidateById.get(candidateId);
     if (!winner || !loser) return;
-    const reason = winner.isActive !== loser.isActive
-      ? "active"
-      : winner.selfOwned !== loser.selfOwned
-        ? "self-owned"
-        : "order";
+    const reason = winner.isLive !== loser.isLive
+      ? "live"
+      : winner.isActive !== loser.isActive
+        ? "active"
+        : winner.selfOwned !== loser.selfOwned
+          ? "self-owned"
+          : "order";
     conflicts.push({ key, reason, winner: winner.location, loser: loser.location });
   };
 
@@ -1649,7 +1661,7 @@ async function hydrateChildWindow(): Promise<void> {
 }
 
 /** This window's current workspaces, in the shape `data.json` stores. */
-function buildWindowFragment(purpose: "save" | "transfer" = "save"): WindowFragment {
+export function buildWindowFragment(purpose: "save" | "transfer" = "save"): WindowFragment {
   const state = useWorkspaceListStore.getState();
   const uiState = useUiStore.getState();
   const activeSessionId = uiState.activePaneId;
@@ -1675,6 +1687,10 @@ function buildWindowFragment(purpose: "save" | "transfer" = "save"): WindowFragm
 }
 
 export function useWorkspacePersist() {
+  useEffect(() => installTearoutRuntime({
+    serialize: toTransferConfig,
+    publish: () => publishWindowFragment(buildWindowFragment("transfer")),
+  }), []);
   const hasSidebar = useWorkspaceListStore(
     (state) => detachedWorkspaceForWindow(state.workspaces, isMainWindow()) === null,
   );
@@ -1921,6 +1937,7 @@ export function useWorkspacePersist() {
       agentMappings: Record<string, AgentSessionMapping> = {},
       windowFragments: WindowFragment[] = [],
       sourceWorkspaces?: readonly WorkspaceSerializationSource[],
+      liveSessionIds?: ReadonlySet<string>,
     ) => {
       const state = useWorkspaceListStore.getState();
       const uiState = useUiStore.getState();
@@ -1964,6 +1981,7 @@ export function useWorkspacePersist() {
       const serialized = serializePersistentWorkspaceSet({
         sourceWorkspaces: sourceWorkspaces ?? state.workspaces,
         agentMappings,
+        liveSessionIds,
         windowFragments,
         preferredSelection: {
           workspaceId: activeWorkspaceId,
@@ -2059,13 +2077,20 @@ export function useWorkspacePersist() {
           } catch (err) {
             console.warn("[persist] Failed to read other windows' workspaces:", err);
           }
+          let liveSessionIds: ReadonlySet<string> = new Set();
+          try {
+            liveSessionIds = new Set(await listRunningSessionIds());
+            if (disposed || windowClosing) return request ? null : false;
+          } catch (err) {
+            console.warn("[persist] Failed to list running session ids:", err);
+          }
           const agentMappings = cachedAgentMappings;
           const buildCurrentSnapshot = () => {
-            const snapshot = buildSnapshot(agentMappings, windowFragments);
+            const snapshot = buildSnapshot(agentMappings, windowFragments, undefined, liveSessionIds);
             return snapshot;
           };
           const snapshotToSave = request
-            ? buildSnapshot(agentMappings, windowFragments, request.snapshot.workspaces)
+            ? buildSnapshot(agentMappings, windowFragments, request.snapshot.workspaces, liveSessionIds)
             : buildCurrentSnapshot();
           if (!isPersistenceWriteAllowed()) {
             return request ? null : false;
@@ -2674,6 +2699,8 @@ export function useWorkspacePersist() {
   }, []);
 
   useEffect(() => {
+    // Explicit starts for other windows must use that window's live tab data.
+    const unlistenPeerStart = listenForPeerTabStarts(startLocalTabSession);
     // Rust broadcasts; only the elected executor runs a request.
     const unlisten = listen<SocketRequestPayload>("socket-request", async (event) => {
       if (!isLeader.current) return;
@@ -2689,6 +2716,7 @@ export function useWorkspacePersist() {
 
     return () => {
       unlisten.then((f) => f()).catch(() => {});
+      unlistenPeerStart.then((f) => f()).catch(() => {});
     };
   }, []);
 

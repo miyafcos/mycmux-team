@@ -9,6 +9,7 @@ const productionRaceMocks = vi.hoisted(() => ({
   closeHandler: null as null | ((event: { preventDefault: () => void }) => Promise<void>),
   confirm: vi.fn(),
   getPtyMetadataSnapshot: vi.fn(),
+  listRunningSessionIds: vi.fn(async () => [] as string[]),
   getWindowFragments: vi.fn(),
   listPets: vi.fn(),
   loadPersistentData: vi.fn(),
@@ -46,8 +47,10 @@ vi.mock("../../src/lib/ipc", async (importOriginal) => {
     setWindowCloseIntent: vi.fn(async () => {}),
     takePendingAdoption: vi.fn(async () => []),
     killSession: vi.fn(async () => {}),
+    discardSessionScrollback: vi.fn(async () => {}),
     publishWindowFragment: vi.fn(async () => {}),
     getPtyMetadataSnapshot: productionRaceMocks.getPtyMetadataSnapshot,
+    listRunningSessionIds: productionRaceMocks.listRunningSessionIds,
     getWindowFragments: productionRaceMocks.getWindowFragments,
     listPets: productionRaceMocks.listPets,
     loadPersistentData: productionRaceMocks.loadPersistentData,
@@ -107,6 +110,7 @@ describe("SocketListener production autosave subscriptions", () => {
     productionRaceMocks.claimLeader.mockResolvedValue(true);
     productionRaceMocks.confirm.mockResolvedValue(false);
     productionRaceMocks.getPtyMetadataSnapshot.mockResolvedValue({});
+    productionRaceMocks.listRunningSessionIds.mockReset().mockResolvedValue([]);
     productionRaceMocks.getWindowFragments.mockResolvedValue([]);
     productionRaceMocks.listPets.mockResolvedValue([]);
     productionRaceMocks.onCloseRequested.mockImplementation(async (handler) => {
@@ -126,6 +130,54 @@ describe("SocketListener production autosave subscriptions", () => {
     host?.remove();
     root = null;
     host = null;
+  });
+
+  it("refreshes live PTYs on every save and falls back with one warning when the IPC fails", async () => {
+    const source: Workspace = {
+      id: "live-workspace", name: "Live", gridTemplateId: "1x1", status: "running", createdAt: 1,
+      panes: [{ id: "live-pane", sessionId: "cold-pty", agentId: "codex", activeTabId: "cold-tab", tabs: [
+        { id: "cold-tab", sessionId: "cold-pty", agentId: "codex", type: "terminal", agentKind: "codex", agentSessionId: "conversation" },
+        { id: "live-tab", sessionId: "live-pty", agentId: "codex", type: "terminal", agentKind: "codex", agentSessionId: "conversation" },
+      ] }],
+    };
+    productionRaceMocks.readAgentSessionMappings.mockResolvedValue({});
+    productionRaceMocks.loadPersistentData.mockResolvedValue({
+      supported: true, schemaVersion: 1,
+      data: { schema_version: 1, workspaces: [], settings: { theme_id: "default" } },
+    });
+    const Harness = () => { useWorkspacePersist(); return null; };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => root?.render(createElement(Harness)));
+    await vi.waitFor(() => expect(getPersistentSchemaState().status).toBe("supported"));
+    useWorkspaceListStore.setState({ workspaces: [source], activeWorkspaceId: source.id });
+    productionRaceMocks.listRunningSessionIds.mockResolvedValueOnce(["live-pty"]);
+    const snapshot = { workspaces: [source] };
+    const signature = "a".repeat(64) as Sha256;
+    await act(async () => {
+      await requestImmediatePersist({ requestId: "live-first", revision: 1, signature, snapshot, snapshotDigest: hashCanonical(snapshot) });
+    });
+    expect(productionRaceMocks.listRunningSessionIds).toHaveBeenCalledTimes(1);
+    const first = productionRaceMocks.savePersistentData.mock.calls.at(-1)![0];
+    expect(first.workspaces[0].panes[0].tabs[1].agent_session_id).toBe("conversation");
+    expect(first.workspaces[0].panes[0].tabs[0].agent_session_id).toBeNull();
+
+    const error = new Error("running ids unavailable");
+    productionRaceMocks.listRunningSessionIds.mockRejectedValueOnce(error);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await act(async () => {
+        await requestImmediatePersist({ requestId: "live-fallback", revision: 2, signature, snapshot, snapshotDigest: hashCanonical(snapshot) });
+      });
+      expect(productionRaceMocks.listRunningSessionIds).toHaveBeenCalledTimes(2);
+      const fallback = productionRaceMocks.savePersistentData.mock.calls.at(-1)![0];
+      expect(fallback.workspaces[0].panes[0].tabs[0].agent_session_id).toBe("conversation");
+      expect(fallback.workspaces[0].panes[0].tabs[1].agent_session_id).toBeNull();
+      expect(warn.mock.calls.filter(([message]) => message === "[persist] Failed to list running session ids:")).toEqual([["[persist] Failed to list running session ids:", error]]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("schedules once after transition exit and never after cleanup", () => {

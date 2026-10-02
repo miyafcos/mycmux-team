@@ -8,6 +8,7 @@ import type { Pane, PaneTab, Workspace } from "../../src/types";
 const ipcMocks = vi.hoisted(() => ({
   ackFrontendData: vi.fn(() => Promise.resolve()),
   createSession: vi.fn(() => Promise.resolve()),
+  killSession: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("../../src/lib/ipc", () => ipcMocks);
@@ -61,6 +62,7 @@ function currentPane(): Pane {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  ipcMocks.createSession.mockReset().mockResolvedValue(undefined);
   useWorkspaceListStore.setState({
     workspaces: [workspace()],
     activeWorkspaceId: workspaceId,
@@ -70,6 +72,20 @@ beforeEach(() => {
 });
 
 describe("pane.spawn_tab rollback", () => {
+  it.each(["pane.spawn_tab", "pane.spawn"])("preserves the conflict text and rolls back %s without a toast", async (command) => {
+    const error = 'AGENT_SESSION_ALREADY_RUNNING:{"kind":"codex","agentSessionId":"conversation","ownerSessionId":"owner"}';
+    ipcMocks.createSession.mockRejectedValueOnce(error);
+    useWorkspaceListStore.setState({ activeWorkspaceId: null });
+    const { __resetToastStoreForTests, useToastStore } = await import("../../src/stores/toastStore");
+    __resetToastStoreForTests();
+    await expect(handleSocketCommand(command, command === "pane.spawn_tab"
+      ? { anchorSessionId: originalSessionId, commandArgv: ["codex", "resume", "11111111-2222-3333-4444-555555555555"] }
+      : { workspaceId, target: "codex", resumeSessionId: "conversation", activate: false })).rejects.toBe(error);
+    expect(currentWorkspace().panes).toHaveLength(2);
+    expect(currentPane().tabs).toHaveLength(1);
+    expect(useToastStore.getState().toasts).toEqual([]);
+  });
+
   it("removes the appended tab when the PTY fails to start", async () => {
     ipcMocks.createSession.mockRejectedValueOnce(new Error("pty boom"));
 
@@ -77,6 +93,8 @@ describe("pane.spawn_tab rollback", () => {
       anchorSessionId: originalSessionId,
       commandArgv: ["cmd.exe"],
     })).rejects.toThrow("pty boom");
+
+    expect(ipcMocks.killSession).toHaveBeenCalledExactlyOnceWith(expect.any(String));
 
     // An orphan tab with no PTY would silently start the stale spec the next
     // time somebody clicked it.
@@ -107,6 +125,7 @@ describe("pane.spawn_tab rollback", () => {
     expect(currentPane().tabs).toHaveLength(1);
     expect(currentPane().tabs[0].id).toBe(originalTabId);
     expect(ipcMocks.createSession).not.toHaveBeenCalled();
+    expect(ipcMocks.killSession).not.toHaveBeenCalled();
   });
 
   it("keeps the tab when the spawn succeeds", async () => {
@@ -117,6 +136,7 @@ describe("pane.spawn_tab rollback", () => {
 
     expect(currentPane().tabs).toHaveLength(2);
     expect(currentPane().tabs[1].id).toBe(result.tabId);
+    expect(ipcMocks.killSession).not.toHaveBeenCalled();
   });
 });
 

@@ -38,6 +38,9 @@ import {
   waitForStartupSessionGate,
 } from "./lib/startupSessionGate";
 import DetachedPaneShell from "./components/layout/DetachedPaneShell";
+import NativePaneShell, { TearoutSourceGap } from "./components/layout/NativePaneShell";
+import { isTearoutChild, markTearoutChildReady } from "./lib/tearout/runtime";
+import { usesNativePaneShell } from "./lib/tearout/feature";
 import { detachedWorkspaceForWindow } from "./lib/detachedPane";
 import ErrorBoundary from "./components/common/ErrorBoundary";
 import ToastHost from "./components/common/ToastHost";
@@ -171,6 +174,7 @@ function App() {
   const detachedWorkspace = useWorkspaceListStore(
     (state) => detachedWorkspaceForWindow(state.workspaces, isMain),
   );
+  const nativeTearoutEnabled = useSettingsStore((state) => state.nativePaneTearoutEnabled);
 
   useWorkspacePersist();
   useAgentDormancy(ready && hasRole);
@@ -446,6 +450,11 @@ function App() {
       try {
         recordPerf("window.reveal.request", windowLabel());
         if (!isMain) {
+          if (isTearoutChild()) {
+            setStartupMaskVisible(false);
+            await markTearoutChildReady();
+            return;
+          }
           // Child windows are built hidden (open_child_window →
           // `.visible(false)`) and reveal themselves once they have painted.
           // There is no startup session gate to wait for: a child restores
@@ -562,12 +571,13 @@ function App() {
   return (
     <div style={{ position: "relative", width: "100vw", height: "100vh", background: "var(--cmux-boot-bg, #0a0a0a)" }}>
       <ErrorBoundary>
-        {detachedWorkspace
+        {usesNativePaneShell(isTearoutChild(), detachedWorkspace !== null, nativeTearoutEnabled) ? <NativePaneShell /> : detachedWorkspace
           ? <DetachedPaneShell workspace={detachedWorkspace} />
           : <Suspense fallback={<div style={{ width: "100%", height: "100%" }} />}>
               <AppShell uiVariant={uiVariant} />
             </Suspense>}
         <ToastHost />
+        <TearoutSourceGap />
       </ErrorBoundary>
       {startupMaskVisible && (
         <div

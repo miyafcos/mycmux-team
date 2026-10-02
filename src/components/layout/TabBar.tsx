@@ -28,6 +28,7 @@ import {
 import TabItem from "./TabItem";
 import { useStallStore } from "../../stores/stallStore";
 import { tearOutWorkspaceToNewWindow } from "../../lib/workspaceTearOut";
+import { beginNativeWorkspaceDrag, usesNativeWorkspaceDrag } from "../../lib/tearout/pointerDrag";
 import { isOutsideWindowViewport } from "../../lib/windowEdge";
 import { TearOutBanner } from "../workspace/PaneDragOverlay";
 import { paneDndStrings } from "../workspace/paneDndStrings";
@@ -415,6 +416,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
   const startY = useRef(0);
   const startX = useRef(0);
   const dragging = useRef(false);
+  const nativeWorkspaceDragging = useRef(false);
   const pointerIdRef = useRef<number | null>(null);
   const dragElRef = useRef<HTMLElement | null>(null);
   const tearOutTraceRef = useRef<TearOutDragTrace | null>(null);
@@ -428,6 +430,35 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
     if (target.tagName === "BUTTON" || target.tagName === "INPUT" || target.closest("button, input")) return;
+    const workspaceId = workspaces[index]?.id;
+    if (workspaceId && usesNativeWorkspaceDrag(workspaceId)) {
+      nativeWorkspaceDragging.current = true;
+      let destination = index;
+      beginNativeWorkspaceDrag(e.nativeEvent, e.currentTarget as HTMLElement, workspaceId, {
+        suppress: value => {
+          dragging.current = value;
+          if (value) setDragIndex(index);
+          else {
+            nativeWorkspaceDragging.current = false;
+            setDragIndex(null); setDropIndex(null);
+          }
+        },
+        resolve: (_x, y) => {
+          destination = 0;
+          for (let i = 0; i < itemRefs.current.length; i++) {
+            const rect = itemRefs.current[i]?.getBoundingClientRect();
+            if (rect && y > rect.top + rect.height / 2) destination = i + 1;
+          }
+          destination = Math.min(destination, useWorkspaceListStore.getState().workspaces.length - 1);
+          setDropIndex(destination === index ? null : destination);
+        },
+        commit: () => {
+          const sourceIndex = useWorkspaceListStore.getState().workspaces.findIndex(workspace => workspace.id === workspaceId);
+          if (sourceIndex >= 0 && sourceIndex !== destination) reorder(sourceIndex, destination);
+        },
+      });
+      return;
+    }
     startY.current = e.clientY;
     startX.current = e.clientX;
     dragging.current = false;
@@ -442,9 +473,10 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
       sink: (measurement) => usePaneDragStore.getState().setTearOutMeasurement(measurement),
     });
     setDragIndex(index);
-  }, [paneDragActive, workspaces]);
+  }, [paneDragActive, workspaces, reorder]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    if (nativeWorkspaceDragging.current) return;
     if (paneDragActive) return;
     if (dragIndex === null) return;
     if (!dragging.current) {
@@ -491,6 +523,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
   }, [dragIndex, paneDragActive, workspaces.length]);
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    if (nativeWorkspaceDragging.current) return;
     if (paneDragActive) return;
     const trace = tearOutTraceRef.current;
     trace?.pointerEvent("pointerup", tearOutPointerSample(e.nativeEvent));
@@ -552,6 +585,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
 
   useEffect(() => {
     const up = (event: PointerEvent) => {
+      if (nativeWorkspaceDragging.current) return;
       if (dragIndex !== null) {
         tearOutTraceRef.current?.pointerEvent("pointerup", tearOutPointerSample(event));
         tearOutTraceRef.current?.transition("cancelled", "window pointerup fallback cleared the drag");
@@ -603,6 +637,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
   return (
     <div
       data-tauri-drag-region
+      data-dnd-workspace-sidebar="true"
       style={{
         width: "100%",
         height: "100%",

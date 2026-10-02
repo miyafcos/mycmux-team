@@ -711,3 +711,172 @@ def test_real_cli_send_returns_nonzero_for_structured_failure(
     assert result.returncode == 1
     assert json.loads(result.stdout) == failure
     assert result.stderr == ""
+
+
+
+def _canonical_state(session_id: str = "running", lifecycle: str = "alive") -> dict:
+    return {"server_epoch": "epoch", "sessions": [{
+        "session_id": session_id, "input_revision": 0, "ui_state": "idle",
+        "view": {
+            "session_id": session_id, "session_epoch": 1, "session_revision": 2,
+            "lifecycle": lifecycle, "activity": "idle",
+            "attention": {"kind": "none", "attention_id": None}, "health": "fresh",
+        },
+    }]}
+
+
+def _pane_list(tabs: list[dict]) -> dict:
+    return {"panes": [{"workspaceId": "background", "workspaceName": "Other window",
+                       "tabs": tabs}]}
+
+
+def _reply(result: object) -> dict:
+    return {"id": 0, "result": result, "error": None}
+
+
+@pytest.mark.parametrize("tab_type", ["terminal", None])
+def test_status_finds_restored_tab_without_a_canonical_record(tmp_path: Path, tab_type: str | None) -> None:
+    restored = {"sessionId": "restored", "id": "saved-tab", "label": "Lane B",
+                "agentKind": "codex", "agentSessionId": "conversation"}
+    if tab_type is not None:
+        restored["type"] = tab_type
+    result, requests = _run_with_replies(tmp_path, ["status", "--session", "restored"], [
+        _reply({"sessions": []}), _reply(_pane_list([restored])),
+    ])
+    assert result.returncode == 0
+    assert requests == [{"cmd": "session.state_view", "args": {"session_id": "restored"}},
+                        {"cmd": "pane.list_all", "args": {}}]
+    assert json.loads(result.stdout) == {"sessions": [], "not_started": [{
+        "session_id": "restored", "tab_id": "saved-tab", "workspace_id": "background",
+        "workspace_name": "Other window", "label": "Lane B", "agent_kind": "codex",
+        "agent_session_id": "conversation",
+    }]}
+    assert result.stderr == (
+        "session restored has a pane but no PTY yet (restored, not started); "
+        "use start-tab --session restored to start it in place\n"
+    )
+
+
+def test_status_not_started_omits_unknown_fields_and_keeps_legacy_identity(tmp_path: Path) -> None:
+    panes = {"panes": [{"tabs": [{"type": "terminal", "sessionId": "restored",
+                                  "label": None, "agentKind": None,
+                                  "claudeSessionId": "legacy-conversation"}]}]}
+    result, _ = _run_with_replies(tmp_path, ["status", "--session", "restored"], [
+        _reply({"sessions": []}), _reply(panes),
+    ])
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {"sessions": [], "not_started": [{
+        "session_id": "restored", "agent_session_id": "legacy-conversation",
+    }]}
+
+
+@pytest.mark.parametrize("tabs", [[], [{"sessionId": "other", "type": "terminal"}],
+                                  [{"sessionId": "gone", "type": "web"}],
+                                  [{"sessionId": "gone", "type": "launcher"}]])
+def test_status_missing_from_both_sources_keeps_error_exit_and_adds_suffix(tmp_path: Path, tabs: list[dict]) -> None:
+    result, requests = _run_with_replies(tmp_path, ["status", "--session", "gone"], [
+        _reply({"sessions": []}), _reply(_pane_list(tabs)),
+    ])
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == "session.state_view did not return exactly one session: gone (no pane and no PTY)\n"
+    assert requests[-1] == {"cmd": "pane.list_all", "args": {}}
+
+
+def test_status_include_not_started_appends_only_tabs_without_canonical_records(tmp_path: Path) -> None:
+    state = _canonical_state("running")
+    state["sessions"].extend(_canonical_state("exited", "exited")["sessions"])
+    panes = _pane_list([
+        {"sessionId": "running", "id": "running-tab", "type": "terminal"},
+        {"sessionId": "exited", "id": "exited-tab", "type": "terminal"},
+        {"sessionId": "restored", "id": "restored-tab", "type": "terminal"},
+        {"sessionId": "web", "id": "web-tab", "type": "web"},
+        {"sessionId": "launcher", "type": "launcher"},
+        {"sessionId": "browser", "type": "browser"},
+    ])
+    panes["panes"].append({"workspaceId": "second-window", "workspaceName": "Second window",
+                           "tabs": [{"sessionId": "second-restored", "type": "terminal"}]})
+    result, requests = _run_with_replies(tmp_path, ["status", "--include-not-started"], [
+        _reply({"capabilities": ["state_view.input_revision_nullable"]}), _reply(state), _reply(panes),
+    ])
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert json.loads(result.stdout) == {**state, "not_started": [
+        {"session_id": "restored", "tab_id": "restored-tab", "workspace_id": "background",
+         "workspace_name": "Other window"},
+        {"session_id": "second-restored", "workspace_id": "second-window", "workspace_name": "Second window"},
+    ]}
+    assert requests == [{"cmd": "system.version", "args": {}},
+                        {"cmd": "session.state_view", "args": {}},
+                        {"cmd": "pane.list_all", "args": {}}]
+
+
+@pytest.mark.parametrize("argv", [["status"], ["status", "--session", "running"]])
+@pytest.mark.parametrize("lifecycle", ["alive", "exited", "orphaned", "unknown"])
+def test_status_existing_output_is_byte_for_byte_unchanged(tmp_path: Path, argv: list[str], lifecycle: str) -> None:
+    state = _canonical_state(lifecycle=lifecycle)
+    replies = [_reply(state)]
+    if argv == ["status"]:
+        replies.insert(0, _reply({"capabilities": ["state_view.input_revision_nullable"]}))
+    result, requests = _run_with_replies(tmp_path, argv, replies)
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert result.stdout == json.dumps(state, ensure_ascii=False) + "\n"
+    assert all(request["cmd"] != "pane.list_all" for request in requests)
+
+
+@pytest.mark.parametrize("failure", ["bad_lifecycle", "duplicate", "bad_schema"])
+def test_status_rejects_invalid_canonical_data_before_consulting_panes(tmp_path: Path, failure: str) -> None:
+    state = _canonical_state()
+    if failure == "bad_lifecycle":
+        state["sessions"][0]["view"]["lifecycle"] = "not_started"
+    elif failure == "duplicate":
+        state["sessions"].append(state["sessions"][0])
+    else:
+        state = {"sessions": None}
+    result, requests = _run_with_replies(tmp_path, ["status", "--session", "restored"], [_reply(state)])
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert len(requests) == 1 and requests[0]["cmd"] == "session.state_view"
+    assert "no pane and no PTY" not in result.stderr
+
+
+def test_status_does_not_call_a_failed_pane_query_a_gone_session(tmp_path: Path) -> None:
+    result, _ = _run_with_replies(tmp_path, ["status", "--session", "restored"], [
+        _reply({"sessions": []}), {"id": 1, "result": None, "error": "Frontend not ready"},
+    ])
+    assert result.returncode == 1
+    assert result.stderr == "Frontend not ready\n"
+    assert result.stdout == ""
+
+
+def test_start_tab_cli_maps_the_session_and_prints_the_socket_result(tmp_path: Path) -> None:
+    started = {"started": True, "sessionId": "restored"}
+    result, requests = _run_with_replies(tmp_path, ["start-tab", "--session", "restored"], [_reply(started)])
+    assert result.returncode == 0
+    assert requests == [{"cmd": "pane.start_tab", "args": {"sessionId": "restored"}}]
+    assert result.stdout == json.dumps(started) + "\n"
+    assert result.stderr == ""
+
+
+def test_start_tab_cli_requires_session_argument(tmp_path: Path) -> None:
+    result = _run_cli(tmp_path, ["start-tab"])
+    assert result.returncode == 2
+    assert "--session" in result.stderr
+
+
+def test_start_tab_cli_preserves_already_running_result(tmp_path: Path) -> None:
+    running = {"started": False, "reason": "already_running", "sessionId": "restored"}
+    result, _ = _run_with_replies(tmp_path, ["start-tab", "--session", "restored"], [_reply(running)])
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == running
+
+
+def test_start_tab_cli_preserves_backend_conflict_text(tmp_path: Path) -> None:
+    error = 'AGENT_SESSION_ALREADY_RUNNING:{"kind":"codex","agentSessionId":"conversation","ownerSessionId":"owner"}'
+    result, _ = _run_with_replies(tmp_path, ["start-tab", "--session", "restored"], [
+        {"id": 0, "result": None, "error": error},
+    ])
+    assert result.returncode == 1
+    assert result.stderr == error + "\n"
+    assert result.stdout == ""

@@ -128,6 +128,16 @@ pub fn start_monitor(
             let mapped_session_owners = mapped_agent_session_owners(&agent_mappings);
 
             for (session_id, pid_opt) in pids.iter().cloned() {
+                // Poll even without a PID or usable CWD. Retain the PTY for
+                // reattach, but never publish live metadata after its exit.
+                if let Some(session) = manager.get(&session_id) {
+                    if session.poll_exited() {
+                        session.report_exit_once(&app_handle, &session_state_store);
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
                 if let Some(pid) = pid_opt {
                     let Some((session_epoch, last_output_at)) =
                         manager.session_observation(&session_id)

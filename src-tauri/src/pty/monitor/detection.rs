@@ -670,7 +670,7 @@ pub(super) use crate::util::ids::is_uuid_like;
 /// `codex resume <uuid>`). This is pane-exact, unlike the mtime-newest
 /// `detect_*_session_id(cwd)` scan which cross-contaminates panes that share
 /// a CWD (multiple agents in ~ all get whichever session wrote last).
-pub(super) fn session_id_from_args(args: &[String], allow_bare_uuid: bool) -> Option<String> {
+pub(crate) fn session_id_from_args(args: &[String], allow_bare_uuid: bool) -> Option<String> {
     let forks_session = args
         .iter()
         .any(|arg| arg.eq_ignore_ascii_case("--fork-session"));

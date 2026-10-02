@@ -33,6 +33,16 @@ fn create_or_reattach<S, T>(
     Ok(CreateDisposition::Spawned)
 }
 
+fn session_is_running<S>(
+    sessions: &DashMap<String, S>,
+    session_id: &str,
+    poll_exited: impl FnOnce(&S) -> bool,
+) -> bool {
+    sessions
+        .get(session_id)
+        .is_some_and(|session| !poll_exited(session.value()))
+}
+
 pub struct SessionManager {
     sessions: DashMap<String, PtySession>,
     create_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
@@ -321,6 +331,11 @@ impl SessionManager {
         self.sessions.get(session_id)
     }
 
+    /// True only while a tracked PTY's child has not exited.
+    pub fn is_running(&self, session_id: &str) -> bool {
+        session_is_running(&self.sessions, session_id, PtySession::poll_exited)
+    }
+
     /// True if a PTY for this session_id is still tracked (i.e. `create()`
     /// would take the reattach branch above instead of spawning a new
     /// process). Uses the same lookup as the reattach check at the top of
@@ -351,6 +366,37 @@ mod tests {
     fn is_alive_is_false_for_unknown_session() {
         let manager = SessionManager::new();
         assert!(!manager.is_alive("nonexistent-session"));
+    }
+
+    #[test]
+    fn is_running_distinguishes_missing_live_and_retained_exited_sessions() {
+        use std::sync::atomic::AtomicBool;
+        let manager = SessionManager::new();
+        assert!(!manager.is_running("missing"));
+
+        let sessions = DashMap::new();
+        sessions.insert("session".to_string(), AtomicBool::new(false));
+        let running = || {
+            session_is_running(&sessions, "session", |exited| exited.load(Ordering::Acquire))
+        };
+        assert!(running());
+        sessions
+            .get("session")
+            .unwrap()
+            .store(true, Ordering::Release);
+        assert!(!running());
+        assert!(sessions.contains_key("session")); // Still available for reattach.
+        let disposition = create_or_reattach(
+            &sessions,
+            "session".to_string(),
+            (),
+            |_, ()| Ok(()),
+            |()| panic!("an exited session must never auto-respawn"),
+        )
+        .unwrap();
+        assert_eq!(disposition, CreateDisposition::Reattached);
+        sessions.remove("session");
+        assert!(!running());
     }
 
     #[test]

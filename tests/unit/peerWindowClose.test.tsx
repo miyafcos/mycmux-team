@@ -38,6 +38,7 @@ vi.mock("../../src/lib/ipc", async (original) => {
     getAppSettings: async () => settings,
     takePendingAdoption: mocks.takePending, getWindowFragments: async () => mocks.fragments,
     releaseWorkspaces: mocks.release, publishWindowFragment: mocks.publish, sendSocketResponse: mocks.response, getPtyMetadataSnapshot: async () => ({}),
+    listRunningSessionIds: async () => [],
     readAgentSessionMappings: async () => ({}), listPets: async () => [], setAppFrontendVisible: async () => {},
     savePersistentData: mocks.save, setWindowCloseIntent: mocks.intent,
     killSession: mocks.kill, quitApp: mocks.quit,

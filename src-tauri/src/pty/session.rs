@@ -450,9 +450,34 @@ impl FrontendFlow {
     }
 }
 
+#[derive(Default)]
+struct SessionExitState {
+    exited: AtomicBool,
+    reported: AtomicBool,
+}
+
+impl SessionExitState {
+    fn mark_exited(&self) {
+        self.exited.store(true, Ordering::Release);
+    }
+
+    fn has_exited(&self) -> bool {
+        self.exited.load(Ordering::Acquire)
+    }
+
+    fn report_once(&self, report: impl FnOnce()) -> bool {
+        if !self.has_exited() || self.reported.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        report();
+        true
+    }
+}
+
 pub struct PtySession {
     id: String,
     child: Mutex<Box<dyn Child + Send + Sync>>,
+    exit_state: Arc<SessionExitState>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     // Input is enqueued here and drained in FIFO order by a dedicated writer
     // thread. The Tauri command thread only does a non-blocking enqueue, so a
@@ -612,6 +637,8 @@ impl PtySession {
         let scrollback_dirty = Arc::new(AtomicBool::new(false));
         let last_output_at = Arc::new(AtomicU64::new(0));
         let session_epoch = next_session_epoch();
+        let exit_state = Arc::new(SessionExitState::default());
+        let reader_exit_state = exit_state.clone();
         let broadcast_tx_clone = broadcast_tx.clone();
         let sb_clone = scrollback.clone();
         let sb_end_clone = scrollback_end.clone();
@@ -953,13 +980,15 @@ impl PtySession {
                     Err(_) => break,
                 }
             }
-            let exit_event = events::pty_exit_event(&sid);
-            let _ = handle.emit(&exit_event, ());
+            // The monitor owns both the event and state-store report, so EOF
+            // and child polling cannot produce duplicate exit notifications.
+            reader_exit_state.mark_exited();
         });
 
         Ok(Self {
             id: session_id,
             child: Mutex::new(child),
+            exit_state,
             master: Mutex::new(pair.master),
             write_tx,
             write_pending_bytes,
@@ -1116,6 +1145,36 @@ impl PtySession {
         child.kill().map_err(|e| format!("Kill failed: {e}"))
     }
 
+    /// ConPTY may keep its output pipe open after the direct child has exited.
+    pub fn poll_exited(&self) -> bool {
+        if !self.exit_state.has_exited() {
+            if let Ok(mut child) = self.child.lock() {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    self.exit_state.mark_exited();
+                }
+            }
+        }
+        self.exit_state.has_exited()
+    }
+
+    pub fn report_exit_once(
+        &self,
+        app_handle: &AppHandle,
+        state_store: &crate::session_state::SessionStateStore,
+    ) {
+        self.exit_state.report_once(|| {
+            state_store.ingest(
+                self.id.clone(),
+                crate::session_state::Evidence::socket_lifecycle(
+                    crate::session_state::unix_epoch_millis(),
+                    self.session_epoch,
+                    crate::session_state::Lifecycle::Exited,
+                ),
+            );
+            let _ = app_handle.emit(&events::pty_exit_event(&self.id), ());
+        });
+    }
+
     pub fn process_id(&self) -> Option<u32> {
         if let Ok(child) = self.child.lock() {
             child.process_id()
@@ -1207,6 +1266,48 @@ impl Drop for PtySession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exit_is_reported_once_after_eof_or_child_exit() {
+        let state = SessionExitState::default();
+        let reports = AtomicUsize::new(0);
+        assert!(!state.report_once(|| {
+            reports.fetch_add(1, Ordering::SeqCst);
+        }));
+        state.mark_exited(); // Reader EOF.
+        assert!(state.report_once(|| {
+            reports.fetch_add(1, Ordering::SeqCst);
+        }));
+        state.mark_exited(); // A later child poll observes the same exit.
+        assert!(!state.report_once(|| {
+            reports.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(reports.load(Ordering::SeqCst), 1);
+        // Recreating the same id gets a new state and may report its own exit.
+        let next = SessionExitState::default();
+        next.mark_exited();
+        assert!(next.report_once(|| {
+            reports.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(reports.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn concurrent_exit_reporters_claim_only_one_report() {
+        let state = SessionExitState::default();
+        state.mark_exited();
+        let reports = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    state.report_once(|| {
+                        reports.fetch_add(1, Ordering::SeqCst);
+                    });
+                });
+            }
+        });
+        assert_eq!(reports.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn preload_scrollback_rebases_offsets_at_zero() {

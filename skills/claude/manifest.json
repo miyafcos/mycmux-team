@@ -1,15 +1,15 @@
 {
   "pack_version": "1.0.0",
-  "generated_at": "2026-09-29T03:32:27.210501+00:00",
+  "generated_at": "2026-10-02T10:59:48.550005+00:00",
   "cli": {
     "path": "scripts/mycmux_agent_cli.py",
-    "sha256": "290f0bc5faf1d6f2969eaa49762ce39d2175949a4241924654058722c3a8e398"
+    "sha256": "90c57b1116dd4ecfeb564dd9cc04c4db834de6e001132225c0895324b544a41f"
   },
   "skills": [
     {
       "name": "session-dispatch",
       "files": {
-        "SKILL.md": "6ecf633533638a05da4068f754982838f66901b4326c307feca1c4f480787c97",
+        "SKILL.md": "b82e0638043c5727cff1ab13c1fab6c2030fbd0060c13234694d77716020aff2",
         "references/ask-card-contract.md": "19278a16e88f0830a26078901059ab7398ac6a2516501873af61e7741194a710",
         "references/decompose-guide.md": "9ed36f210540aa1dd5fbe40d268f1623ff316b6b054ed5a8a1c72078a5a0f8e7",
         "references/dispatch-guide.md": "7bc026b5746a19459ed75115c141d0a0270780da7809225f340352f1132689b4",
@@ -60,7 +60,7 @@
     {
       "name": "mycmux-bridge",
       "files": {
-        "SKILL.md": "651e42a82d541b636c16b692f6b2f54ccae705f4e2c211d19eabcd6cf461bd8e",
+        "SKILL.md": "f8013e59f6b985a3eb2b955a14400753d6b645ae1fc7922ba5e5449ae805d85b",
         "scripts/mycmux_bridge.py": "fc633d8acdf5b648245486d02552c26d9073e6910f06f58a75060061cff820c5",
         "scripts/mycmux_bridge_support.py": "8868c3489b001ee6c82c85b600573ec26385c4b8424dc3f20c7990b4755839b0"
       }
@@ -77,7 +77,7 @@
         "modes/followup.md": "95dce6d63de4defa05480531651a0a5036ef53a238021b277a91408156b6cdaf",
         "modes/push.md": "aeb6334dba236782a41b2e23dae0b33fcbcd56e0b96fa9fa8f1b6da5d4d4af46",
         "modes/smoke.md": "fba0637edb4185fb7dad605c821469761f9b210f9969bee67c19d90501af3e35",
-        "references/app-side-web-read-spec.md": "da1990be0785b85a3e8dbca684bbe8eac04a81fce893320c8f38f374d9a1a6be",
+        "references/app-side-web-read-spec.md": "57347eff04d28fe33d77b14358b7442c8ab7e9b05acf81169a74c1784125944f",
         "references/brief-template.md": "9aee57b412ac90fbaa7567ac0225321be96be4e932c20861588e0eb322683af1",
         "references/engine-notes.md": "d1bc45cacb2b77988c9b40da0733000f02c7ee00e4ba59785fb3594e76b09d6a",
         "references/judge-template.md": "5cc50cd00d35405d0f2450fe090ae9545ead33f427f4b476e01c220714a4efaf",

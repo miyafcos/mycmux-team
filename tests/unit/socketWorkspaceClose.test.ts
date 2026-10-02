@@ -84,6 +84,25 @@ describe("workspace.close", () => {
     });
   });
 
+  it("removes the workspace before awaiting scrollback cleanup", async () => {
+    let finishCleanup!: () => void;
+    ipc.removeWorkspaceScrollback.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      finishCleanup = resolve;
+    }));
+    const closing = close();
+    await vi.waitFor(() => expect(ipc.removeWorkspaceScrollback).toHaveBeenCalled(), { timeout: 10_000 });
+    // A concurrent spawn cannot find the workspace once cleanup has started.
+    expect(useWorkspaceListStore.getState().getWorkspace("background")).toBeUndefined();
+    await expect(handleSocketCommand("pane.spawn", {
+      workspaceId: "background", target: "shell",
+    })).rejects.toThrow(/workspace not found/);
+    expect(ipc.killSession).toHaveBeenCalledExactlyOnceWith("background-session");
+    finishCleanup();
+    expect(await closing).toMatchObject({
+      closedPanes: 1, closedTabs: 1, killedSessions: 1, undoRecorded: 1,
+    });
+  });
+
   it("refuses the active workspace without side effects", async () => {
     await expect(close({ workspaceId: "foreground" })).rejects.toThrow(/refuses the active workspace/);
     expect(useWorkspaceListStore.getState().workspaces).toHaveLength(2);

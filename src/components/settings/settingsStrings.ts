@@ -76,6 +76,7 @@ export const notificationSettingsStrings = {
   toastSystemLabel: "システム・接続",
   toastFailureAlwaysShownHint: "失敗・エラーは通知設定に関わらず常に表示します。",
   layoutTitle: "レイアウト",
+  nativePaneTearoutLabel: "ペインの切り離しを新しい動きにする (試験中)",
   splitRightLabel: "「右に分割」ボタンを表示",
   splitDownLabel: "「下に分割」ボタンを表示",
   groupingApplyAnimationLabel: "ペイン再配置の適用時に動きを表示",

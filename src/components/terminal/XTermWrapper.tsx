@@ -1,5 +1,6 @@
 ﻿import { memo, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { TerminalRendererBudget } from "./terminalRendererBudget";
+import { hasTearoutSessionAttachment, markTearoutSessionAttached } from "../../lib/tearout/sessionAttachment";
 import { recordTerminalFlowReceive, startTerminalFlowWrite, finishTerminalFlowWrite, recordTerminalFlowRender } from "../../lib/terminalFlowTrace";
 import { useTerminalObservationStore } from "../../stores/terminalObservationStore";
 import { Terminal } from "@xterm/xterm";
@@ -15,6 +16,7 @@ import { open } from "@tauri-apps/plugin-shell";
 import { emit } from "@tauri-apps/api/event";
 import {
   createSession,
+  SessionClosedError,
   ackFrontendData,
   getSessionInputRevision,
   getSessionScrollback,
@@ -43,6 +45,10 @@ import { colorWithOpacity } from "../../lib/theme/colorPrimitives";
 import { resolveEffectiveTerminalRenderer } from "../../stores/settingsMigration";
 import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
 import { useToastStore } from "../../stores/toastStore";
+import { openWatchdogSession } from "../../stores/dispatchWatchdogStore";
+import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
+import { agentSessionAlreadyRunningNotice, findAgentSessionOwner, parseAgentSessionAlreadyRunning } from "../../lib/agentResumeConflict";
+import { consumeHandoffLaunchEnv } from "../../lib/handoffLaunchEnv";
 import { useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { observeSessionInput } from "../../lib/inputLineDraft";
 import { getTranscriptUserPrompts, type TranscriptPrompt } from "../../lib/livebrief";
@@ -217,6 +223,35 @@ function playNotificationSound() {
   } catch {
     // Audio not available — silent fallback
   }
+}
+
+export const PTY_EXIT_NOTICE = "\r\n\x1b[2m[プロセスは終了しました。このペインを閉じるか、新しいペインを開いてください]\x1b[0m\r\n";
+
+export function reportAgentSessionAlreadyRunning(error: unknown, write: (notice: string) => void): boolean {
+  const conflict = parseAgentSessionAlreadyRunning(error);
+  if (!conflict) return false;
+  const owner = findAgentSessionOwner(useWorkspaceListStore.getState().workspaces, conflict.ownerSessionId);
+  write(agentSessionAlreadyRunningNotice(owner ? undefined : conflict.ownerSessionId));
+  if (owner) {
+    const metadata = usePaneMetadataStore.getState();
+    const label = getTabDisplayLabel(owner.tab, true, metadata.metadata, metadata.volatileMetadata);
+    useToastStore.getState().pushToast(
+      `この会話は「${owner.workspace.name} / ${label}」で動いています`,
+      "warning",
+      { label: "そのペインを開く", run: () => openWatchdogSession(conflict.ownerSessionId) },
+    );
+  }
+  return true;
+}
+
+export function createPtyExitReporter(write: (notice: string) => void, onExit?: () => void): () => void {
+  let reported = false;
+  return () => {
+    if (reported) return;
+    reported = true;
+    write(PTY_EXIT_NOTICE);
+    onExit?.();
+  };
 }
 
 interface XTermWrapperProps {
@@ -1151,6 +1186,8 @@ export default memo(function XTermWrapper({
     let startupSettleTimeout: ReturnType<typeof setTimeout> | null = null;
     let startupSettled = false;
     let sessionStarted = false;
+    let sessionExitPending = false;
+    const reportSessionExit = createPtyExitReporter((notice) => term?.write(notice), onExit);
     let coldPersistedRestore = false;
     let lastLogLine = "";
     let approvalAbsentStreak = 0;
@@ -2621,8 +2658,11 @@ export default memo(function XTermWrapper({
         enqueueFrontendBatch,
         launch.cwd,
         launch.env,
+        hasTearoutSessionAttachment(sessionId),
       );
+      if (launch.env?.MYCMUX_HANDOFF?.trim()) consumeHandoffLaunchEnv(sessionId);
       frontendChannelReady = true;
+      markTearoutSessionAttached(sessionId);
       if (cols > 0 && rows > 0) {
         lastSentCols = cols;
         lastSentRows = rows;
@@ -2671,8 +2711,9 @@ export default memo(function XTermWrapper({
 
     const registerExitListener = async (): Promise<void> => {
       const nextUnlisten = await onPtyExit(sessionId, () => {
-        if (disposed || !sessionStarted) return;
-        onExit?.();
+        if (disposed || termDisposed) return;
+        sessionExitPending = true;
+        if (sessionStarted) reportSessionExit();
       });
       if (disposed) {
         releaseExitListener(nextUnlisten);
@@ -2887,6 +2928,7 @@ export default memo(function XTermWrapper({
       term = cached.term;
       fitAddon = cached.fitAddon;
       sessionStarted = true;
+      if (sessionExitPending) reportSessionExit();
       liveTerms.set(sessionId, cached.term);
       useTerminalObservationStore.getState().markObserved(sessionId);
       recordXtermMounted(sessionId);
@@ -2943,6 +2985,7 @@ export default memo(function XTermWrapper({
       }
       attachCachedTerminal(cached);
       void attachFrontendChannel(cached.term.cols, cached.term.rows).catch((err) => {
+        if (err instanceof SessionClosedError || disposed || termDisposed) return;
         console.error("[XTermWrapper] Failed to reattach session:", err);
         useToastStore.getState().pushToast("Terminal reattach failed", "error");
       });
@@ -3148,13 +3191,17 @@ export default memo(function XTermWrapper({
         await attachFrontendChannel(cols, rows);
         if (disposed || termDisposed) return;
         sessionStarted = true;
+        if (sessionExitPending) reportSessionExit();
         startupSettleTimeout = setTimeout(() => {
           settleStartupSession();
         }, 250);
       } catch (err) {
         settleStartupSession();
-        console.error("[XTermWrapper] Failed to create session:", err);
-        term.writeln(`\r\n\x1b[31mFailed to start: ${err}\x1b[0m`);
+        if (err instanceof SessionClosedError || disposed || termDisposed) return;
+        if (!reportAgentSessionAlreadyRunning(err, (notice) => term!.write(notice))) {
+          console.error("[XTermWrapper] Failed to create session:", err);
+          term.writeln(`\r\n\x1b[31mFailed to start: ${err}\x1b[0m`);
+        }
       }
 
       if (!cfg && !fontSize && !fontFamily) {

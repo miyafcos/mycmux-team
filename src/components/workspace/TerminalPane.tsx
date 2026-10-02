@@ -14,9 +14,10 @@ import {
 import { open } from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
 import ErrorBoundary from "../common/ErrorBoundary";
-import type { AgentSessionKind, Pane, PaneTab } from "../../types";
+import type { Pane, PaneTab } from "../../types";
 import { isDeclaredTab, isRestorableTab } from "../../lib/tabLifecycle";
 import { useRetainedViews } from "../../lib/retainedViews";
+import { hasTearoutSessionAttachment, useTearoutAttachmentRevision } from "../../lib/tearout/sessionAttachment";
 import { recordPerf } from "../../lib/perfTimeline";
 import PaneTabBar from "./PaneTabBar";
 import { paneDndStrings } from "./paneDndStrings";
@@ -33,7 +34,6 @@ import {
 } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
-import { requiresLauncherDispatch } from "../../lib/launcherDispatch";
 import { killSession, previewArtifactUriForSessionV2, type SaveEditableArtifactResult } from "../../lib/ipc";
 import { openPathWithDefaultApp, revealPathInExplorer } from "../../lib/ipc";
 import { isArtifactPreviewUri, isDirectoryLikeUri } from "../terminal/terminalLinkProvider";
@@ -48,7 +48,7 @@ import { onlineStrings } from "../online/onlineStrings";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { PaneComposer } from "../composer/PaneComposer";
 import { isStartupSessionPending, subscribeStartupSessionGate } from "../../lib/startupSessionGate";
-import { buildLaunchArgs } from "../../lib/terminalLaunchArgs";
+import { buildTerminalPaneLaunch } from "../../lib/terminalPaneLaunch";
 export { buildLaunchArgs } from "../../lib/terminalLaunchArgs";
 
 interface TerminalPaneProps {
@@ -58,16 +58,6 @@ interface TerminalPaneProps {
   onSplitRight?: () => void;
   onSplitDown?: () => void;
   retainedTabLimit?: number;
-}
-
-function resolveSavedAgentSession(tab: PaneTab): { kind: AgentSessionKind; sessionId: string } | null {
-  if (tab.agentKind && tab.agentSessionId) {
-    return { kind: tab.agentKind, sessionId: tab.agentSessionId };
-  }
-  if (tab.claudeSessionId) {
-    return { kind: "claude", sessionId: tab.claudeSessionId };
-  }
-  return null;
 }
 
 function isTerminalTab(tab: PaneTab | undefined): tab is PaneTab {
@@ -197,58 +187,10 @@ function getDocumentSelectionText(): string {
 }
 
 function useTerminalPaneLaunch(pane: Pane, activeTab: PaneTab | undefined) {
-  // Resolve CWD from pane/tab static data (metadata CWD handled by PTY monitor internally)
-  const paneCwd = activeTab?.cwd ?? pane.cwd;
-  const resolvedAgentId = activeTab?.agentId;
-  const launchThroughLauncher = Boolean(
-    activeTab
-    && !activeTab.commandArgv?.length
-    && requiresLauncherDispatch(activeTab.launchEnv ?? pane.launchEnv),
+  return useMemo(
+    () => buildTerminalPaneLaunch(pane, activeTab, { getAgent, getDefaultAgent }),
+    [activeTab, pane.cwd, pane.launchEnv],
   );
-  const agent = resolvedAgentId
-    ? (launchThroughLauncher ? getDefaultAgent() : getAgent(resolvedAgentId) ?? getDefaultAgent())
-    : null;
-  const savedAgentSession = useMemo(
-    () => activeTab ? resolveSavedAgentSession(activeTab) : null,
-    [activeTab],
-  );
-  const launchCommand = activeTab?.commandArgv?.[0] ?? agent?.command ?? "";
-  const launchArgs = useMemo(
-    () => activeTab?.commandArgv?.length
-      ? activeTab.commandArgv.slice(1)
-      : agent
-      ? buildLaunchArgs(
-          agent.command,
-          agent.args,
-          resolvedAgentId,
-          savedAgentSession,
-          activeTab?.id,
-          activeTab?.cwd ?? paneCwd,
-          activeTab?.initialPrompt,
-        )
-      : [],
-    [agent, resolvedAgentId, savedAgentSession, activeTab, paneCwd],
-  );
-  const launchEnv = useMemo(() => {
-    if (!activeTab) return undefined;
-    const env: Record<string, string> = {
-      ...(activeTab.launchEnv ?? pane.launchEnv ?? {}),
-      MYCMUX_PANE_SESSION_ID: activeTab.sessionId,
-      MYCMUX_TAB_ID: activeTab.id,
-    };
-    if (launchThroughLauncher || resolvedAgentId === "shell-starter") {
-      env.__CMUX_LAUNCHER_DONE = "1";
-    }
-    if (savedAgentSession && !env.MYCMUX_HANDOFF) {
-      env.MYCMUX_AGENT_KIND = savedAgentSession.kind;
-      env.MYCMUX_SESSION_ID = savedAgentSession.sessionId;
-      env.MYCMUX_RESUME = savedAgentSession.kind;
-    } else if (resolvedAgentId === "claude-code") {
-      env.MYCMUX_AGENT_KIND = "claude";
-    }
-    return env;
-  }, [activeTab, launchThroughLauncher, pane.launchEnv, resolvedAgentId, savedAgentSession]);
-  return { paneCwd, resolvedAgentId, agent, savedAgentSession, launchCommand, launchArgs, launchEnv };
 }
 
 type RetainedTerminalSessionProps = Pick<ComponentProps<typeof XTermWrapper>,
@@ -764,8 +706,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   }, [artifactLinkPopover, reportArtifactActionFailure]);
 
   const { paneCwd, resolvedAgentId, agent, savedAgentSession, launchCommand, launchArgs, launchEnv } = useTerminalPaneLaunch(pane, activeTab);
+  useTearoutAttachmentRevision();
   const retainedTabIds = useRetainedViews(
-    activeTab && isTerminalTab(activeTab) && isRestorableTab(activeTab) && agent ? [activeTab.id] : [],
+    // Every transported live session must attach before the group is acknowledged.
+    [...(activeTab && isTerminalTab(activeTab) && isRestorableTab(activeTab) && agent ? [activeTab.id] : []),
+      ...pane.tabs.filter(tab => hasTearoutSessionAttachment(tab.sessionId)).map(tab => tab.id)],
     pane.tabs.filter(tab => isTerminalTab(tab) && isRestorableTab(tab)).map(tab => ({ id: tab.id, cost: 1 })),
     retainedTabLimit, retainedTabLimit,
   );

@@ -22,6 +22,7 @@ describe("public socket command table", () => {
       } else ts.forEachChild(node, visit);
     }
     visit(file);
+    expect(SOCKET_COMMAND_NAMES).toContain("pane.start_tab");
     expect(SOCKET_COMMAND_NAMES.length).toBeGreaterThan(0);
     expect(new Set(SOCKET_COMMAND_NAMES).size).toBe(SOCKET_COMMAND_NAMES.length);
     expect(cases.sort()).toEqual([...SOCKET_COMMAND_NAMES].sort());
