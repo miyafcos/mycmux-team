@@ -1,7 +1,7 @@
 import ReactDOM from "react-dom/client";
 import { Profiler } from "react";
 import App from "./App";
-import { initializePerfDiagnostics } from "./lib/perfDiagnostics";
+import { initializePerfDiagnostics, initializeRendererHeartbeat } from "./lib/perfDiagnostics";
 import { installPerfTimeline } from "./lib/perfTimeline";
 import { recordReactCommit } from "./lib/paintStats";
 import { useToastStore } from "./stores/toastStore";
@@ -49,6 +49,7 @@ window.addEventListener("contextmenu", (e) => e.preventDefault());
 
 installPerfTimeline();
 
+initializeRendererHeartbeat();
 if (import.meta.env.DEV) {
   initializePerfDiagnostics();
 }

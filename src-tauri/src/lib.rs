@@ -9,6 +9,7 @@ mod claude_skills;
 mod commands;
 mod db;
 mod diag;
+mod watchdog;
 mod dispatch;
 #[cfg(feature = "e2e")]
 mod e2e;
@@ -27,6 +28,7 @@ mod session_state;
 mod socket;
 mod status_feed;
 mod test_profile;
+mod tearout;
 pub mod terminal_config;
 pub mod usage;
 mod util;
@@ -378,6 +380,7 @@ pub fn run() {
                 .build(),
         )
         .manage(state)
+        .manage(tearout::TearoutState::default())
         .manage(open_with::PendingOpenPaths::with_paths(initial_open_paths))
         .manage(socket::SocketState {
             pending_requests: Arc::new(dashmap::DashMap::new()),
@@ -405,7 +408,7 @@ pub fn run() {
             commands::terminal::has_persisted_scrollback,
             commands::terminal::remove_workspace_scrollback,
             commands::terminal::discard_session_scrollback,
-            commands::terminal::kill_session,
+            watchdog::kill_session,
             commands::agent_prompts::agent_prompt_try_answer,
             commands::agent_prompts::agent_prompt_is_current_launch,
             commands::artifact::preview_artifact_uri_for_session_v2,
@@ -414,6 +417,7 @@ pub fn run() {
             commands::artifact::save_editable_artifact,
             commands::terminal::get_terminal_config,
             commands::terminal::get_pty_metadata_snapshot,
+            commands::terminal::list_running_session_ids,
             commands::terminal::get_session_output_snapshot,
             commands::terminal::is_directory,
             commands::terminal::get_launch_cwd,
@@ -446,6 +450,8 @@ pub fn run() {
             agent_titles::agent_session_titles,
             commands::tab_sweep::run_tab_sweep_judge,
             commands::tab_sweep::abort_tab_sweep_judge,
+            commands::pane_leftovers::list_pane_leftover_processes,
+            commands::pane_leftovers::stop_pane_leftover_process,
             commands::next_action::run_next_action_judge,
             commands::next_action::abort_next_action_judge,
             commands::dispatch::dispatch_scan,
@@ -533,6 +539,25 @@ pub fn run() {
             commands::quit::quit_prepared,
             commands::quit::quit_saved,
             commands::window::watch_window_drag,
+            tearout::tearout_warm,
+            tearout::tearout_child_ready,
+            tearout::tearout_take_spare,
+            tearout::tearout_release_spare,
+            tearout::tearout_show,
+            tearout::tearout_start_move,
+            tearout::tearout_synthetic_sample,
+            watchdog::report_renderer_heartbeat,
+            tearout::tearout_settle,
+            tearout::tearout_preview,
+            tearout::tearout_alpha,
+            tearout::tearout_retire,
+            tearout::tearout_prepare,
+            tearout::tearout_phase,
+            tearout::tearout_forget,
+            tearout::tearout_cancel_move,
+            tearout::tearout_attach,
+            tearout::log::tearout_log_record,
+            tearout::tearout_restore_geometry,
             commands::window_registry::open_workspace_window,
             commands::window_registry::publish_window_fragment,
             commands::window_registry::take_pending_adoption,
@@ -583,6 +608,7 @@ pub fn run() {
             use tauri::Manager;
 
             let app_handle = app.handle().clone();
+            watchdog::start(app_handle.clone());
             if let Some(profile) = test_profile::name() {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_title(&format!("mycmux — TEST ({profile})"));
@@ -699,6 +725,8 @@ pub fn run() {
             socket::start_socket_listener(app_handle.clone());
             // Configure startup window appearance; shutdown belongs to the runtime hook.
             if let Some(main_window) = app.get_webview_window("main") {
+                #[cfg(windows)]
+                watchdog::register_process_failed(main_window.as_ref());
                 if let Some(icon) = app.default_window_icon().cloned() {
                     let _ = main_window.set_icon(icon);
                 }
@@ -747,6 +775,7 @@ pub fn run() {
                 if let Some(state) = window.try_state::<AppState>() {
                     state.livebrief_service.unsubscribe(window.label());
                     commands::window_registry::handle_window_destroyed(window.app_handle(), window.label());
+                    tearout::release_idle_after_destroy(window.app_handle(), window.label());
                 }
             }
         })

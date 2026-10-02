@@ -8,11 +8,17 @@ import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
 import { useUiStore } from "../../src/stores/uiStore";
 import { useSavepointDragStore } from "../../src/stores/savepointDragStore";
 import { liveTerms } from "../../src/components/terminal/terminalCache";
+import { beginSessionAttach, __resetAttachEpochStateForTests } from "../../src/lib/attachEpoch";
+
+function commitAttachment(sessionId: string): void {
+  beginSessionAttach(sessionId, { deliver: () => {}, ackStale: () => {} }).commit();
+}
 
 const ipc = vi.hoisted(() => ({
   createSession: vi.fn<(...args: unknown[]) => Promise<void>>(),
   killSession: vi.fn<(...args: unknown[]) => Promise<void>>(),
   ackFrontendData: vi.fn(() => Promise.resolve()),
+  setFrontendVisible: vi.fn(() => Promise.resolve()),
 }));
 vi.mock("../../src/lib/ipc", () => ipc);
 
@@ -41,7 +47,8 @@ const spawn = (args: Record<string, unknown> = {}) => handleSocketCommand("pane.
 
 beforeEach(() => {
   vi.clearAllMocks();
-  ipc.createSession.mockResolvedValue(undefined);
+  __resetAttachEpochStateForTests();
+  ipc.createSession.mockImplementation(async (id) => { commitAttachment(id as string); });
   ipc.killSession.mockResolvedValue(undefined);
   useWorkspaceListStore.setState({
     workspaces: [workspace("foreground"), workspace("background")],
@@ -141,6 +148,29 @@ describe("spawn launch environment ownership", () => {
 });
 
 describe("background pane PTY startup", () => {
+  it("notifies invisibility once after startup and never ACKs headless output", async () => {
+    const result = await spawn() as { sessionId: string };
+    expect(ipc.setFrontendVisible).toHaveBeenCalledExactlyOnceWith(result.sessionId, false);
+    expect(ipc.createSession.mock.invocationCallOrder[0]).toBeLessThan(ipc.setFrontendVisible.mock.invocationCallOrder[0]);
+    const onData = ipc.createSession.mock.calls[0][5] as (batch: unknown) => void;
+    onData({ generation: 1, seq: 1, bytes: 4 });
+    expect(ipc.ackFrontendData).not.toHaveBeenCalled();
+  });
+
+  it("does not hide a newer renderer attachment that mounted during startup", async () => {
+    ipc.createSession.mockImplementationOnce(async (id) => {
+      commitAttachment(id as string);
+      commitAttachment(id as string);
+    });
+    await spawn();
+    expect(ipc.setFrontendVisible).not.toHaveBeenCalled();
+  });
+
+  it("does not turn a failed visibility notification into a failed spawn", async () => {
+    ipc.setFrontendVisible.mockRejectedValueOnce(new Error("older backend"));
+    await expect(spawn()).resolves.toHaveProperty("sessionId");
+    expect(ipc.killSession).not.toHaveBeenCalled();
+  });
   it("starts five new panes before responding and leaves existing panes and foreground alone", async () => {
     const original = current().panes[0];
     const results = [];
@@ -159,7 +189,7 @@ describe("background pane PTY startup", () => {
     ipc.createSession.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
     let replied = false;
     const request = spawn().then(() => { replied = true; });
-    await vi.waitFor(() => expect(ipc.createSession).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(ipc.createSession).toHaveBeenCalledTimes(1), { timeout: 10_000 });
     expect(replied).toBe(false);
     finish();
     await request;

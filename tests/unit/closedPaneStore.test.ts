@@ -78,6 +78,7 @@ describe("closed tab restore identity", () => {
     pushClosedTab(pane, tab);
 
     expect(popClosedPane()).toEqual({
+      paneSessionId: "session-active",
       cwd: "C:\\work\\project",
       label: null,
       agentKind: "codex",

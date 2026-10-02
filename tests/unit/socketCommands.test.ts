@@ -10,6 +10,7 @@ import {
   serializePaneForSocket,
 } from "../../src/components/layout/socketCommands";
 import { liveTerms } from "../../src/components/terminal/terminalCache";
+import * as ipc from "../../src/lib/ipc";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
 import { useUiStore } from "../../src/stores/uiStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
@@ -985,6 +986,7 @@ describe("pane socket responses", () => {
   });
 
   it("lists panes across every workspace with their owning workspace", async () => {
+    vi.spyOn(ipc, "getWindowFragments").mockResolvedValueOnce([]);
     const workspaceA = socketWorkspace("workspace-a", "Workspace A", "pane-a", [{
       id: "tab-a",
       sessionId: "session-a",

@@ -1,4 +1,5 @@
 mod agent_restore;
+mod agent_session_guard;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,6 +13,7 @@ use crate::util::ids::is_uuid_like;
 use crate::AppState;
 
 pub(crate) use agent_restore::can_restore_agent_session;
+use agent_session_guard::{metadata_conversation, requested_conversation, Conversation, LaunchClaim, Owner};
 use agent_restore::{
     ensure_claude_project_trusted, last_claude_effort, validate_agent_restore_request,
 };
@@ -66,6 +68,46 @@ pub fn get_pty_metadata_snapshot(state: State<'_, AppState>) -> HashMap<String, 
 }
 
 #[tauri::command(async)]
+pub fn list_running_session_ids(state: State<'_, AppState>) -> Vec<String> {
+    running_session_ids(&state)
+}
+
+fn running_session_ids(state: &AppState) -> Vec<String> {
+    state
+        .session_manager
+        .iter_pids()
+        .into_iter()
+        .map(|(id, _)| id)
+        .filter(|id| state.session_manager.is_running(id))
+        .collect()
+}
+
+fn running_conversation_owners(state: &AppState) -> Vec<Owner> {
+    let running_ids = running_session_ids(state);
+    let mappings = crate::commands::session_mapping::agent_mappings_for_ids(&running_ids);
+    let mut owners = Vec::new();
+    for session_id in running_ids {
+        if let Some(metadata) = state.metadata_store.get(&session_id) {
+            if let Some(conversation) = metadata_conversation(
+                metadata.agent_kind.as_deref(),
+                metadata.agent_session_id.as_deref(),
+                metadata.claude_session_id.as_deref(),
+            ) {
+                owners.push(Owner { session_id: session_id.clone(), conversation, is_running: true });
+            }
+        }
+        if let Some(mapping) = mappings.get(&session_id) {
+            if let Some(conversation) = mapping.agent_kind.as_deref()
+                .and_then(|kind| Conversation::new(kind, &mapping.session_id))
+            {
+                owners.push(Owner { session_id, conversation, is_running: true });
+            }
+        }
+    }
+    owners
+}
+
+#[tauri::command(async)]
 pub fn get_session_output_snapshot(state: State<'_, AppState>) -> HashMap<String, Option<u64>> {
     state.session_manager.last_output_snapshot()
 }
@@ -102,6 +144,21 @@ pub fn create_session(
     // and re-emit "agent-restore-downgraded" for sessions that were never
     // being restored in the first place.
     let reattach = state.session_manager.is_alive(&session_id);
+    // Guard before restore recovery, mapping writes, trust writes or spawn.
+    // Keep the claim in scope through every success/error return from create.
+    let _launch_claim = if reattach {
+        None
+    } else if let Some(request) = requested_conversation(&requested_command, &args, &env_map) {
+        match LaunchClaim::acquire(request, &session_id, || running_conversation_owners(&state)) {
+            Ok(claim) => Some(claim),
+            Err(error) => {
+                crate::diag::warn("launch", &error);
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
     if !reattach {
         inherit_claude_resume_effort(&args, &mut env_map, cwd.as_deref(), last_claude_effort);
     }
@@ -310,6 +367,13 @@ pub fn create_session(
         }
     }
     write_launch_session_mapping(&session_id, &env_map);
+    // Explicit argv resumes need an identity immediately too: the monitor may
+    // not have observed this new PTY when a subsequent create checks owners.
+    if !reattach && !env_map.contains_key("MYCMUX_SESSION_ID") {
+        if let Some(request) = requested_conversation(&requested_command, &args, &env_map) {
+            write_session_mapping_file(&session_id, &request.kind, &request.agent_session_id)?;
+        }
+    }
     let command = if restore_notice {
         wrap_restore_notice(&command, &mut args)
     } else {

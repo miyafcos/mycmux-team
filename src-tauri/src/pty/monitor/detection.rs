@@ -10,39 +10,73 @@ pub(super) fn is_system_process(name: &str) -> bool {
     )
 }
 
-/// Follow the newest child chain to find the foreground process PID,
-/// skipping system processes like conhost.
+/// Index live parent-child relationships, rejecting reused parent PIDs.
 pub(super) fn build_child_index(sys: &System) -> HashMap<Pid, Vec<Pid>> {
+    build_child_index_with(
+        sys.processes()
+            .iter()
+            .map(|(pid, process)| (*pid, process.parent(), process.start_time())),
+        |pid| sys.process(pid).map(|process| process.start_time()),
+    )
+}
+
+fn build_child_index_with<I, F>(processes: I, mut start_time: F) -> HashMap<Pid, Vec<Pid>>
+where
+    I: IntoIterator<Item = (Pid, Option<Pid>, u64)>,
+    F: FnMut(Pid) -> Option<u64>,
+{
     let mut child_index: HashMap<Pid, Vec<Pid>> = HashMap::new();
-    for (pid, process) in sys.processes() {
-        if let Some(parent) = process.parent() {
-            child_index.entry(parent).or_default().push(*pid);
+    for (pid, parent, child_started_at) in processes {
+        if let Some(parent) = parent.filter(|parent| {
+            start_time(*parent)
+                .is_some_and(|parent_started_at| parent_started_at <= child_started_at)
+        }) {
+            child_index.entry(parent).or_default().push(pid);
         }
     }
     child_index
 }
 
+const MAX_FOREGROUND_PROCESS_DEPTH: usize = 64;
+
+/// Follow the highest-PID child chain, skipping system and missing processes.
 pub(super) fn deepest_child_pid(
     sys: &System,
     child_index: &HashMap<Pid, Vec<Pid>>,
     pid: Pid,
 ) -> Pid {
-    let next_child = child_index
-        .get(&pid)
-        .into_iter()
-        .flatten()
-        .filter(|child_pid| {
-            sys.process(**child_pid)
-                .map(|process| !is_system_process(&process.name().to_string_lossy()))
-                .unwrap_or(false)
-        })
-        .max_by_key(|child_pid| child_pid.as_u32())
-        .copied();
+    deepest_child_pid_with(child_index, pid, |child_pid| {
+        sys.process(child_pid)
+            .is_some_and(|process| !is_system_process(&process.name().to_string_lossy()))
+    })
+}
 
-    match next_child {
-        Some(child_pid) => deepest_child_pid(sys, child_index, child_pid),
-        None => pid,
+/// Bound traversal even if equal start timestamps leave a cycle in the index.
+fn deepest_child_pid_with<F>(
+    child_index: &HashMap<Pid, Vec<Pid>>,
+    pid: Pid,
+    mut is_foreground_candidate: F,
+) -> Pid
+where
+    F: FnMut(Pid) -> bool,
+{
+    let mut current = pid;
+    let mut visited = HashSet::from([pid]);
+    for _ in 0..MAX_FOREGROUND_PROCESS_DEPTH {
+        let next_child = child_index
+            .get(&current)
+            .into_iter()
+            .flatten()
+            .filter(|child_pid| is_foreground_candidate(**child_pid))
+            .max_by_key(|child_pid| child_pid.as_u32())
+            .copied();
+        let Some(next_child) = next_child else { break };
+        if !visited.insert(next_child) {
+            break;
+        }
+        current = next_child;
     }
+    current
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -65,6 +99,7 @@ struct AgentDescendantCandidate {
     pid: Pid,
     depth: usize,
     source: AgentDetectionSource,
+    has_session_id: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -579,7 +614,18 @@ where
     detected
 }
 
+fn is_agent_helper_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase().replace('\\', "/");
+    let leaf = lower.rsplit('/').next().unwrap_or(&lower);
+    let leaf = leaf.strip_suffix(".exe").unwrap_or(leaf);
+    matches!(leaf, "codex-code-mode-host" | "node_repl" | "node_repl.js")
+        || lower.contains("/openai/codex/runtimes/cua_node/")
+}
+
 fn agent_kind_from_executable_name(name: &str) -> Option<DetectedAgentKind> {
+    if is_agent_helper_path(name) {
+        return None;
+    }
     let lower_name = name.to_ascii_lowercase();
     if lower_name.contains("claude-codex") {
         return Some(DetectedAgentKind::ClaudeCodex);
@@ -600,13 +646,17 @@ fn agent_kind_from_executable_name(name: &str) -> Option<DetectedAgentKind> {
 /// Prompts routinely include arbitrary filesystem paths (including `.claude`),
 /// so later arguments must never participate in agent identity detection.
 pub(super) fn classify_interpreter_cmdline(args: &[String]) -> Option<DetectedAgentKind> {
+    if args.iter().take(2).any(|arg| is_agent_helper_path(arg)) {
+        return None;
+    }
     let interpreter = args.first()?.to_ascii_lowercase();
     let interpreter_leaf = interpreter
         .rsplit(['/', '\\'])
         .next()
-        .unwrap_or(&interpreter)
-        .strip_suffix(".exe")
         .unwrap_or(&interpreter);
+    let interpreter_leaf = interpreter_leaf
+        .strip_suffix(".exe")
+        .unwrap_or(interpreter_leaf);
     if !matches!(interpreter_leaf, "node" | "bun") {
         return None;
     }
@@ -631,19 +681,30 @@ fn agent_detection_from_process(
     pid: Pid,
 ) -> Option<(DetectedAgentKind, AgentDetectionSource)> {
     let process = sys.process(pid)?;
-    let name = process.name().to_string_lossy();
-    if is_system_process(&name) || is_shell_process(&name) {
+    classify_agent_process(&process.name().to_string_lossy(), || {
+        process
+            .cmd()
+            .iter()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect()
+    })
+}
+
+fn classify_agent_process<F>(
+    name: &str,
+    args: F,
+) -> Option<(DetectedAgentKind, AgentDetectionSource)>
+where
+    F: FnOnce() -> Vec<String>,
+{
+    if is_system_process(name) || is_shell_process(name) || is_agent_helper_path(name) {
         return None;
     }
-    if let Some(kind) = agent_kind_from_executable_name(&name) {
+    if let Some(kind) = agent_kind_from_executable_name(name) {
         return Some((kind, AgentDetectionSource::ExecutableName));
     }
-    let args = process
-        .cmd()
-        .iter()
-        .map(|arg| arg.to_string_lossy().to_string())
-        .collect::<Vec<String>>();
-    classify_interpreter_cmdline(&args).map(|kind| (kind, AgentDetectionSource::InterpreterScript))
+    classify_interpreter_cmdline(&args())
+        .map(|kind| (kind, AgentDetectionSource::InterpreterScript))
 }
 
 pub(super) fn agent_kind_from_process(sys: &System, pid: Pid) -> Option<DetectedAgentKind> {
@@ -670,7 +731,7 @@ pub(super) use crate::util::ids::is_uuid_like;
 /// `codex resume <uuid>`). This is pane-exact, unlike the mtime-newest
 /// `detect_*_session_id(cwd)` scan which cross-contaminates panes that share
 /// a CWD (multiple agents in ~ all get whichever session wrote last).
-pub(super) fn session_id_from_args(args: &[String], allow_bare_uuid: bool) -> Option<String> {
+pub(crate) fn session_id_from_args(args: &[String], allow_bare_uuid: bool) -> Option<String> {
     let forks_session = args
         .iter()
         .any(|arg| arg.eq_ignore_ascii_case("--fork-session"));
@@ -736,29 +797,41 @@ pub(super) fn collect_explicit_agent_session_ids(sys: &System) -> HashSet<String
 pub(super) fn find_agent_descendant(
     sys: &System,
     child_index: &HashMap<Pid, Vec<Pid>>,
-    shell_pid: Pid,
+    root_pid: Pid,
 ) -> Option<(DetectedAgentKind, Pid)> {
-    let deepest_pid = deepest_child_pid(sys, child_index, shell_pid);
+    find_agent_descendant_with(child_index, root_pid, |pid| {
+        let (kind, source) = agent_detection_from_process(sys, pid)?;
+        let has_session_id =
+            session_id_from_agent_args(sys, pid, kind == DetectedAgentKind::Codex).is_some();
+        Some((kind, source, has_session_id))
+    })
+}
+
+/// The process lookup is injected so root identity and wrapper traversal can be
+/// tested without launching agents or depending on the host process table.
+fn find_agent_descendant_with<F>(
+    child_index: &HashMap<Pid, Vec<Pid>>,
+    root_pid: Pid,
+    mut detect: F,
+) -> Option<(DetectedAgentKind, Pid)>
+where
+    F: FnMut(Pid) -> Option<(DetectedAgentKind, AgentDetectionSource, bool)>,
+{
     let mut candidates = Vec::new();
     let mut visited: HashSet<Pid> = HashSet::new();
-    let mut stack = child_index
-        .get(&shell_pid)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|pid| (pid, 1usize))
-        .collect::<Vec<_>>();
+    let mut stack = vec![(root_pid, 0usize)];
 
     while let Some((pid, depth)) = stack.pop() {
         if !visited.insert(pid) {
             continue;
         }
-        if let Some((kind, source)) = agent_detection_from_process(sys, pid) {
+        if let Some((kind, source, has_session_id)) = detect(pid) {
             candidates.push(AgentDescendantCandidate {
                 kind,
                 pid,
                 depth,
                 source,
+                has_session_id,
             });
         }
         if let Some(children) = child_index.get(&pid) {
@@ -766,29 +839,275 @@ pub(super) fn find_agent_descendant(
         }
     }
 
-    select_agent_descendant(&candidates, deepest_pid)
+    select_agent_descendant(&candidates, child_index)
         .map(|candidate| (candidate.kind, candidate.pid))
 }
 
 fn select_agent_descendant(
     candidates: &[AgentDescendantCandidate],
-    deepest_pid: Pid,
+    child_index: &HashMap<Pid, Vec<Pid>>,
 ) -> Option<AgentDescendantCandidate> {
-    candidates
+    use std::cmp::Reverse;
+
+    // Identity comes from the nearest agent, never from the foreground tool.
+    let nearest = candidates.iter().copied().min_by_key(|candidate| {
+        (
+            candidate.depth,
+            Reverse(candidate.source),
+            Reverse(candidate.has_session_id),
+            candidate.pid.as_u32(),
+        )
+    })?;
+    if nearest.source == AgentDetectionSource::ExecutableName {
+        return Some(nearest);
+    }
+
+    // Only an interpreter wrapper may resolve to a same-kind implementation.
+    // Stop at native executables and at other agent kinds: their tools (including
+    // same-kind exec children) must not replace the pane's main agent.
+    let by_pid: HashMap<_, _> = candidates
         .iter()
-        .copied()
-        .find(|candidate| candidate.pid == deepest_pid)
-        .or_else(|| {
-            candidates
-                .iter()
-                .copied()
-                .max_by_key(|candidate| (candidate.source, candidate.depth, candidate.pid.as_u32()))
-        })
+        .map(|candidate| (candidate.pid, *candidate))
+        .collect();
+    let mut implementations = vec![nearest];
+    let mut visited = HashSet::from([nearest.pid]);
+    let mut stack = child_index.get(&nearest.pid).cloned().unwrap_or_default();
+    while let Some(pid) = stack.pop() {
+        if !visited.insert(pid) {
+            continue;
+        }
+        if let Some(candidate) = by_pid.get(&pid) {
+            if candidate.kind != nearest.kind {
+                continue;
+            }
+            implementations.push(*candidate);
+            if candidate.source == AgentDetectionSource::ExecutableName {
+                continue;
+            }
+        }
+        if let Some(children) = child_index.get(&pid) {
+            stack.extend(children.iter().copied());
+        }
+    }
+    implementations.into_iter().min_by_key(|candidate| {
+        (
+            Reverse(candidate.source),
+            Reverse(candidate.has_session_id),
+            candidate.depth,
+            candidate.pid.as_u32(),
+        )
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn child_index_from_edges(edges: &[(u32, u32)]) -> HashMap<Pid, Vec<Pid>> {
+        let mut index = HashMap::<Pid, Vec<Pid>>::new();
+        for (parent, child) in edges {
+            index
+                .entry(Pid::from_u32(*parent))
+                .or_default()
+                .push(Pid::from_u32(*child));
+        }
+        index
+    }
+
+    fn timed_child_index(rows: &[(u32, Option<u32>, u64)]) -> HashMap<Pid, Vec<Pid>> {
+        build_child_index_with(
+            rows.iter().map(|(pid, parent, started_at)| {
+                (Pid::from_u32(*pid), parent.map(Pid::from_u32), *started_at)
+            }),
+            |pid| {
+                rows.iter()
+                    .find(|(row_pid, _, _)| *row_pid == pid.as_u32())
+                    .map(|(_, _, started_at)| *started_at)
+            },
+        )
+    }
+
+    #[test]
+    fn foreground_traversal_returns_from_the_observed_e12_cycle() {
+        let index =
+            child_index_from_edges(&[(23112, 444), (444, 56876), (56876, 33636), (33636, 23112)]);
+        let mut checks = 0;
+        let foreground = deepest_child_pid_with(&index, Pid::from_u32(23112), |_| {
+            checks += 1;
+            true
+        });
+        assert_eq!(foreground, Pid::from_u32(33636));
+        assert_eq!(checks, 4);
+    }
+
+    #[test]
+    fn foreground_traversal_stops_on_self_and_two_process_cycles() {
+        let index = child_index_from_edges(&[(42, 42)]);
+        assert_eq!(
+            deepest_child_pid_with(&index, Pid::from_u32(42), |_| true),
+            Pid::from_u32(42)
+        );
+        let index = child_index_from_edges(&[(10, 20), (20, 10)]);
+        assert_eq!(
+            deepest_child_pid_with(&index, Pid::from_u32(10), |_| true),
+            Pid::from_u32(20)
+        );
+        assert_eq!(
+            deepest_child_pid_with(&index, Pid::from_u32(20), |_| true),
+            Pid::from_u32(10)
+        );
+    }
+
+    #[test]
+    fn foreground_traversal_reaches_the_leaf_just_below_and_at_the_depth_limit() {
+        for depth in [
+            MAX_FOREGROUND_PROCESS_DEPTH - 1,
+            MAX_FOREGROUND_PROCESS_DEPTH,
+        ] {
+            let edges = (0..depth as u32)
+                .map(|pid| (pid, pid + 1))
+                .collect::<Vec<_>>();
+            let index = child_index_from_edges(&edges);
+            assert_eq!(
+                deepest_child_pid_with(&index, Pid::from_u32(0), |_| true),
+                Pid::from_u32(depth as u32)
+            );
+        }
+    }
+
+    #[test]
+    fn foreground_traversal_bounds_a_chain_beyond_the_depth_limit() {
+        let edges = (0..MAX_FOREGROUND_PROCESS_DEPTH as u32 + 10)
+            .map(|pid| (pid, pid + 1))
+            .collect::<Vec<_>>();
+        let index = child_index_from_edges(&edges);
+        let mut checks = 0;
+        let foreground = deepest_child_pid_with(&index, Pid::from_u32(0), |_| {
+            checks += 1;
+            true
+        });
+        assert_eq!(
+            foreground,
+            Pid::from_u32(MAX_FOREGROUND_PROCESS_DEPTH as u32)
+        );
+        assert_eq!(checks, MAX_FOREGROUND_PROCESS_DEPTH);
+    }
+
+    #[test]
+    fn foreground_traversal_keeps_the_maximum_non_system_live_child_rule() {
+        let names = HashMap::from([
+            (10, "claude.exe"),
+            (20, "powershell.exe"),
+            (30, "node.exe"),
+            (99, "conhost.exe"),
+        ]);
+        for edges in [
+            vec![(1, 10), (1, 20), (1, 99), (1, 1000), (20, 30)],
+            vec![(20, 30), (1, 1000), (1, 99), (1, 20), (1, 10)],
+        ] {
+            let index = child_index_from_edges(&edges);
+            let foreground = deepest_child_pid_with(&index, Pid::from_u32(1), |pid| {
+                names
+                    .get(&pid.as_u32())
+                    .is_some_and(|name| !is_system_process(name))
+            });
+            assert_eq!(foreground, Pid::from_u32(30));
+        }
+        let only_missing = child_index_from_edges(&[(1, 999)]);
+        assert_eq!(
+            deepest_child_pid_with(&only_missing, Pid::from_u32(1), |_| false),
+            Pid::from_u32(1)
+        );
+        assert_eq!(
+            deepest_child_pid_with(&HashMap::new(), Pid::from_u32(1), |_| true),
+            Pid::from_u32(1)
+        );
+    }
+
+    #[test]
+    fn child_index_rejects_missing_and_reused_parents_but_keeps_equal_start_times() {
+        let index = timed_child_index(&[
+            (10, None, 200),
+            (20, Some(10), 100), // The process with the parent's reused PID is newer.
+            (30, Some(10), 200), // Equality must be allowed, as in live_parent.
+            (40, Some(10), 201),
+            (50, Some(999), 300), // The parent is no longer in the process table.
+        ]);
+        assert_eq!(
+            index[&Pid::from_u32(10)],
+            vec![Pid::from_u32(30), Pid::from_u32(40)]
+        );
+        assert!(!index.contains_key(&Pid::from_u32(999)));
+        assert_eq!(index.len(), 1);
+    }
+
+    #[test]
+    fn child_index_breaks_the_e12_reused_parent_edge_at_the_source() {
+        let index = timed_child_index(&[
+            (23112, Some(33636), 100),
+            (444, Some(23112), 150),
+            (56876, Some(444), 200),
+            (33636, Some(56876), 250),
+        ]);
+        assert!(!index.contains_key(&Pid::from_u32(33636)));
+        assert_eq!(index.len(), 3);
+        assert_eq!(
+            deepest_child_pid_with(&index, Pid::from_u32(23112), |_| true),
+            Pid::from_u32(33636)
+        );
+    }
+
+    #[test]
+    fn equal_timestamp_cycles_are_still_bounded_after_index_construction() {
+        let index = timed_child_index(&[(10, Some(20), 100), (20, Some(10), 100)]);
+        assert_eq!(index.len(), 2);
+        assert_eq!(
+            deepest_child_pid_with(&index, Pid::from_u32(10), |_| true),
+            Pid::from_u32(20)
+        );
+    }
+
+    #[test]
+    fn valid_parent_index_preserves_b4_agent_identity_and_foreground_choices() {
+        for (case, (processes, kind, expected_agent)) in agent_tree_cases().into_iter().enumerate()
+        {
+            let rows = processes
+                .iter()
+                .map(|process| {
+                    (
+                        process.pid,
+                        (process.parent != 0).then_some(process.parent),
+                        100,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let index = timed_child_index(&rows);
+            let root = processes
+                .iter()
+                .find(|process| process.parent == 0)
+                .unwrap();
+            let selected = find_agent_descendant_with(&index, Pid::from_u32(root.pid), |pid| {
+                let process = processes
+                    .iter()
+                    .find(|process| process.pid == pid.as_u32())?;
+                let (kind, source) = classify_agent_process(process.name, || process.args.clone())?;
+                Some((
+                    kind,
+                    source,
+                    session_id_from_args(&process.args, kind == DetectedAgentKind::Codex).is_some(),
+                ))
+            });
+            assert_eq!(selected, Some((kind, Pid::from_u32(expected_agent))));
+            assert_eq!(selected, detect_fixture(&processes));
+            let foreground = deepest_child_pid_with(&index, Pid::from_u32(root.pid), |pid| {
+                processes
+                    .iter()
+                    .find(|process| process.pid == pid.as_u32())
+                    .is_some_and(|process| !is_system_process(process.name))
+            });
+            assert_eq!(foreground, Pid::from_u32([30, 50, 60, 70, 50][case]));
+        }
+    }
 
     #[test]
     fn interpreter_classification_ignores_prompt_paths() {
@@ -837,15 +1156,18 @@ mod tests {
             pid: Pid::from_u32(20),
             depth: 2,
             source: AgentDetectionSource::InterpreterScript,
+            has_session_id: false,
         };
         let codex_child = AgentDescendantCandidate {
             kind: DetectedAgentKind::Codex,
             pid: Pid::from_u32(30),
             depth: 3,
             source: AgentDetectionSource::ExecutableName,
+            has_session_id: false,
         };
+        let children = HashMap::from([(node_with_codex_script.pid, vec![codex_child.pid])]);
         let selected =
-            select_agent_descendant(&[node_with_codex_script, codex_child], codex_child.pid).unwrap();
+            select_agent_descendant(&[node_with_codex_script, codex_child], &children).unwrap();
         assert_eq!(selected.kind, DetectedAgentKind::Codex);
         assert_eq!(selected.pid, codex_child.pid);
     }
@@ -857,17 +1179,327 @@ mod tests {
             pid: Pid::from_u32(10),
             depth: 1,
             source: AgentDetectionSource::ExecutableName,
+            has_session_id: false,
         };
         let deep_interpreter = AgentDescendantCandidate {
             kind: DetectedAgentKind::Claude,
             pid: Pid::from_u32(40),
             depth: 4,
             source: AgentDetectionSource::InterpreterScript,
+            has_session_id: false,
         };
         let selected =
-            select_agent_descendant(&[shallow_executable, deep_interpreter], Pid::from_u32(99))
+            select_agent_descendant(&[shallow_executable, deep_interpreter], &HashMap::new())
                 .unwrap();
         assert_eq!(selected.kind, DetectedAgentKind::Codex);
+    }
+
+    const CODEX_SESSION: &str = "401caf0d-c8d1-4c12-b0d4-ed291d41d356";
+
+    struct FixtureProcess {
+        pid: u32,
+        parent: u32,
+        name: &'static str,
+        args: Vec<String>,
+    }
+
+    fn fixture_process(pid: u32, parent: u32, name: &'static str, args: &[&str]) -> FixtureProcess {
+        FixtureProcess {
+            pid,
+            parent,
+            name,
+            args: std::iter::once(name)
+                .chain(args.iter().copied())
+                .map(str::to_string)
+                .collect(),
+        }
+    }
+
+    fn detect_fixture(processes: &[FixtureProcess]) -> Option<(DetectedAgentKind, Pid)> {
+        let mut children = HashMap::<Pid, Vec<Pid>>::new();
+        for process in processes {
+            children
+                .entry(Pid::from_u32(process.parent))
+                .or_default()
+                .push(Pid::from_u32(process.pid));
+        }
+        let root = processes
+            .iter()
+            .find(|process| process.parent == 0)
+            .unwrap();
+        find_agent_descendant_with(&children, Pid::from_u32(root.pid), |pid| {
+            let process = processes
+                .iter()
+                .find(|process| process.pid == pid.as_u32())?;
+            let (kind, source) = classify_agent_process(process.name, || process.args.clone())?;
+            Some((
+                kind,
+                source,
+                session_id_from_args(&process.args, kind == DetectedAgentKind::Codex).is_some(),
+            ))
+        })
+    }
+
+    fn agent_tree_cases() -> Vec<(Vec<FixtureProcess>, DetectedAgentKind, u32)> {
+        vec![
+            // T1: a restored Claude root owns its MCP tools.
+            (
+                vec![
+                    fixture_process(10, 0, "claude.exe", &[]),
+                    fixture_process(20, 10, "cmd.exe", &[]),
+                    fixture_process(30, 20, "node.exe", &[r"C:\tools\oracle-mcp.js"]),
+                ],
+                DetectedAgentKind::Claude,
+                10,
+            ),
+            // T2: persistent bash and PowerShell tools do not hide the root.
+            (
+                vec![
+                    fixture_process(10, 0, "claude.exe", &[]),
+                    fixture_process(20, 10, "bash.exe", &[]),
+                    fixture_process(30, 20, "bash.exe", &[]),
+                    fixture_process(40, 10, "cmd.exe", &[]),
+                    fixture_process(50, 40, "powershell.exe", &[]),
+                ],
+                DetectedAgentKind::Claude,
+                10,
+            ),
+            // T3: Claude's headless Codex child cannot take over its identity.
+            (
+                vec![
+                    fixture_process(10, 0, "bash.exe", &[]),
+                    fixture_process(20, 10, "cmd.exe", &[]),
+                    fixture_process(30, 20, "claude.exe", &[]),
+                    fixture_process(40, 30, "bash.exe", &[]),
+                    fixture_process(50, 40, "node.exe", &[r"C:\tools\codex.js"]),
+                    fixture_process(60, 50, "codex.exe", &["exec", CODEX_SESSION]),
+                ],
+                DetectedAgentKind::Claude,
+                30,
+            ),
+            // T4: unwrap Codex once, retaining the executable's resume id.
+            (
+                vec![
+                    fixture_process(10, 0, "powershell.exe", &[]),
+                    fixture_process(20, 10, "node.exe", &[r"C:\tools\codex.js"]),
+                    fixture_process(30, 20, "codex.exe", &["resume", CODEX_SESSION]),
+                    fixture_process(40, 30, "codex-code-mode-host.exe", &[]),
+                    fixture_process(
+                        50,
+                        30,
+                        "node.exe",
+                        &[r"C:\OpenAI\Codex\runtimes\cua_node\agent.js"],
+                    ),
+                    fixture_process(60, 30, "python.exe", &[]),
+                    fixture_process(70, 30, "node_repl.exe", &[]),
+                ],
+                DetectedAgentKind::Codex,
+                30,
+            ),
+            // T5: Codex's headless Claude child cannot take over its identity.
+            (
+                vec![
+                    fixture_process(10, 0, "powershell.exe", &[]),
+                    fixture_process(20, 10, "node.exe", &[r"C:\tools\codex.js"]),
+                    fixture_process(30, 20, "codex.exe", &[]),
+                    fixture_process(40, 30, "powershell.exe", &[]),
+                    fixture_process(50, 40, "claude.exe", &["-p", "prompt"]),
+                ],
+                DetectedAgentKind::Codex,
+                30,
+            ),
+        ]
+    }
+
+    #[test]
+    fn root_and_nearest_agent_trees_t1_through_t5() {
+        for (index, (processes, kind, pid)) in agent_tree_cases().into_iter().enumerate() {
+            assert_eq!(
+                detect_fixture(&processes),
+                Some((kind, Pid::from_u32(pid))),
+                "T{}",
+                index + 1
+            );
+        }
+    }
+
+    #[test]
+    fn normal_shell_roots_keep_claude_codex_and_no_agent_detection_t6() {
+        let claude = vec![
+            fixture_process(10, 0, "powershell.exe", &[]),
+            fixture_process(20, 10, "claude.exe", &[]),
+        ];
+        let codex = vec![
+            fixture_process(10, 0, "powershell.exe", &[]),
+            fixture_process(20, 10, "node.exe", &[r"C:\tools\codex.js"]),
+            fixture_process(30, 20, "codex.exe", &[]),
+        ];
+        let shell = vec![fixture_process(10, 0, "powershell.exe", &[])];
+        assert_eq!(
+            detect_fixture(&claude),
+            Some((DetectedAgentKind::Claude, Pid::from_u32(20)))
+        );
+        assert_eq!(
+            detect_fixture(&codex),
+            Some((DetectedAgentKind::Codex, Pid::from_u32(30)))
+        );
+        assert_eq!(detect_fixture(&shell), None);
+    }
+
+    #[test]
+    fn sibling_pid_and_iteration_order_do_not_change_agent_identity_t7() {
+        for (processes, kind, pid) in agent_tree_cases() {
+            let mut swapped: Vec<_> = processes
+                .into_iter()
+                .map(|mut process| {
+                    process.pid = 1000 - process.pid;
+                    if process.parent != 0 {
+                        process.parent = 1000 - process.parent;
+                    }
+                    process
+                })
+                .collect();
+            swapped.reverse();
+            assert_eq!(
+                detect_fixture(&swapped),
+                Some((kind, Pid::from_u32(1000 - pid)))
+            );
+        }
+    }
+
+    #[test]
+    fn selected_codex_executable_supplies_exact_resume_id_and_mapping_kind() {
+        let (processes, _, _) = agent_tree_cases().swap_remove(3);
+        let (kind, pid) = detect_fixture(&processes).unwrap();
+        let selected = processes
+            .iter()
+            .find(|process| process.pid == pid.as_u32())
+            .unwrap();
+        let exact_rollout_id = session_id_from_args(&selected.args, true);
+        assert_eq!(exact_rollout_id.as_deref(), Some(CODEX_SESSION));
+        let (mapping_kind, mapping_id, _) = codex_agent_metadata_fields(exact_rollout_id, None);
+        assert_eq!(mapping_kind.as_deref(), Some("codex"));
+        assert_eq!(mapping_id.as_deref(), Some(CODEX_SESSION));
+        assert!(mapping_kind_is_grounded_for_pane(
+            &HashMap::new(),
+            "pane",
+            mapping_kind.as_deref().unwrap(),
+            kind
+        ));
+        assert!(should_write_agent_session_mapping(
+            &HashMap::new(),
+            "pane",
+            mapping_kind.as_deref().unwrap(),
+            mapping_id.as_deref().unwrap()
+        ));
+    }
+
+    #[test]
+    fn auxiliary_processes_are_never_agent_candidates() {
+        for name in [
+            "codex-code-mode-host.exe",
+            "CODEX-CODE-MODE-HOST",
+            "node_repl.exe",
+            "node_repl",
+        ] {
+            assert_eq!(
+                classify_agent_process(name, || vec![name.to_string()]),
+                None,
+                "{name}"
+            );
+        }
+        for args in [
+            vec![
+                r"C:\OpenAI\Codex\runtimes\cua_node\node.exe",
+                r"C:\tools\app.js",
+            ],
+            vec!["node.exe", r"C:\OpenAI\Codex\runtimes\cua_node\agent.js"],
+            vec!["node", "/opt/OpenAI/Codex/runtimes/cua_node/agent.js"],
+            vec!["node.exe", r"C:\tools\codex\node_repl.js"],
+        ] {
+            let args = args.into_iter().map(str::to_string).collect::<Vec<_>>();
+            assert_eq!(classify_interpreter_cmdline(&args), None, "{args:?}");
+        }
+        let helpers = vec![
+            fixture_process(10, 0, "powershell.exe", &[]),
+            fixture_process(20, 10, "codex-code-mode-host.exe", &[]),
+            fixture_process(
+                30,
+                10,
+                "node.exe",
+                &[r"C:\OpenAI\Codex\runtimes\cua_node\agent.js"],
+            ),
+            fixture_process(40, 10, "node_repl.exe", &[]),
+        ];
+        assert_eq!(detect_fixture(&helpers), None);
+    }
+
+    #[test]
+    fn wrappers_do_not_cross_other_kinds_or_unrelated_branches() {
+        let different_kind = vec![
+            fixture_process(10, 0, "powershell.exe", &[]),
+            fixture_process(20, 10, "node.exe", &[r"C:\tools\claude\cli.js"]),
+            fixture_process(30, 20, "codex.exe", &[]),
+            fixture_process(40, 30, "claude.exe", &[]),
+        ];
+        assert_eq!(
+            detect_fixture(&different_kind),
+            Some((DetectedAgentKind::Claude, Pid::from_u32(20)))
+        );
+        let unrelated_branch = vec![
+            fixture_process(10, 0, "powershell.exe", &[]),
+            fixture_process(20, 10, "node.exe", &[r"C:\tools\claude\cli.js"]),
+            fixture_process(30, 10, "cmd.exe", &[]),
+            fixture_process(40, 30, "claude.exe", &[]),
+        ];
+        assert_eq!(
+            detect_fixture(&unrelated_branch),
+            Some((DetectedAgentKind::Claude, Pid::from_u32(20)))
+        );
+    }
+
+    #[test]
+    fn native_codex_does_not_unwrap_into_a_same_kind_exec_child() {
+        let processes = vec![
+            fixture_process(10, 0, "powershell.exe", &[]),
+            fixture_process(20, 10, "node.exe", &[r"C:\tools\codex.js"]),
+            fixture_process(30, 20, "codex.exe", &["resume", CODEX_SESSION]),
+            fixture_process(40, 30, "codex.exe", &["exec", "prompt"]),
+        ];
+        assert_eq!(
+            detect_fixture(&processes),
+            Some((DetectedAgentKind::Codex, Pid::from_u32(30)))
+        );
+    }
+
+    #[test]
+    fn interpreter_implementation_with_a_session_id_wins_over_its_wrapper() {
+        let processes = vec![
+            fixture_process(10, 0, "powershell.exe", &[]),
+            fixture_process(20, 10, "node.exe", &[r"C:\tools\claude\wrapper.js"]),
+            fixture_process(
+                30,
+                20,
+                "node.exe",
+                &[r"C:\tools\claude\cli.js", "--session-id", CODEX_SESSION],
+            ),
+        ];
+        assert_eq!(
+            detect_fixture(&processes),
+            Some((DetectedAgentKind::Claude, Pid::from_u32(30)))
+        );
+    }
+
+    #[test]
+    fn unix_node_paths_still_classify_real_agent_scripts() {
+        let args = vec![
+            "/usr/bin/node".to_string(),
+            "/opt/codex/bin/codex.js".to_string(),
+        ];
+        assert_eq!(
+            classify_interpreter_cmdline(&args),
+            Some(DetectedAgentKind::Codex)
+        );
     }
 
     #[test]

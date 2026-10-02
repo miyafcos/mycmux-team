@@ -51,10 +51,21 @@ ResizeObserver on container
 
 ## Process Exit
 
-When the reader thread returns `Ok(0)` or an error:
-1. Rust emits `pty-exit-{session_id}` event
-2. `XTermWrapper` receives `onPtyExit()` and invokes `onExit` if supplied
-3. Current `TerminalPane` supplies no `onExit` callback or Restart overlay; open a new launcher tab to start a fresh process
+Rust records exit when the reader reaches EOF (`Ok(0)`) or an error, or when
+`Child::try_wait()` observes the direct child's exit. Child polling covers
+Windows ConPTY pipes that remain open after the process ends.
+
+1. The existing monitor polls each tracked PTY on every tick (10 seconds while
+   visible, 20 seconds while hidden). An atomic guard reports the exit once:
+   it ingests `Lifecycle::Exited` with the PTY epoch and emits `pty-exit-{session_id}`.
+2. `XTermWrapper` writes one dim notice per session start:
+   `[プロセスは終了しました。このペインを閉じるか、新しいペインを開いてください]`,
+   then invokes `onExit` if supplied.
+3. The PTY and its last screen remain available for reattach until the user
+   closes the tab. Reattach does not revive its lifecycle; only a new PTY epoch
+   can do that. `is_alive` still means tracked, while `is_running` excludes exits.
+4. There is no automatic restart or Restart overlay. Open a new launcher tab
+   to start a fresh process.
 
 ## Config Detection
 
@@ -75,3 +86,7 @@ See [config-detection.md](config-detection.md) for detection details.
 - Config loaded once, cached globally
 - Background approval scanning throttled to 300ms
 - Only the active terminal tab mounts `XTermWrapper`; inactive tabs keep backend PTYs and can reuse cached terminals/scrollback on reattach
+
+## ペイン掃除
+
+[ペイン掃除](tab-sweep.md)で、終了済みのペインや、ペインの外で動き続けているプロセスを確認できます。

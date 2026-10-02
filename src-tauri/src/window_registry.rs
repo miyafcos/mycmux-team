@@ -213,6 +213,21 @@ impl WindowRegistry {
             .unwrap_or(0)
     }
 
+    /// Tear-out receipts remove only their escrow, leaving unrelated handoffs.
+    pub fn remove_pending_adoption(&self, label: &str, ids: &[String]) {
+        if let Some(mut pending) = self.pending_adoptions.get_mut(label) {
+            pending.retain(|config| workspace_config_id(config).is_none_or(|id| !ids.contains(&id)));
+        }
+        for id in ids {
+            let published = self.fragment(label).is_some_and(|fragment|
+                workspace_config_ids(&fragment.workspaces).contains(id));
+            if !published {
+                self.assignments.remove_if(id, |_, owner| owner == label);
+            }
+        }
+        self.bump();
+    }
+
     /// Store a window's latest view and re-derive ownership from it. Ownership
     /// is re-derived (rather than merged) so a workspace that left this window
     /// stops being attributed to it even if the move itself was lost.

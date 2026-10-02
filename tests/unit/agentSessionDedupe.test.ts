@@ -5,6 +5,7 @@ import {
   collectWorkspaceConfigSessionIds,
   dedupeAgentSessionsInConfigs,
   reportAgentSessionDedupeConflicts,
+  serializePersistentWorkspaceSet,
   toConfig,
   type AgentSessionDedupeConflict,
 } from "../../src/components/layout/SocketListener";
@@ -129,6 +130,45 @@ describe("collectWorkspaceConfigSessionIds", () => {
 });
 
 describe("dedupeAgentSessionsInConfigs", () => {
+  it("keeps the later live codex tab in the 10/2 duplicate-resume scenario", () => {
+    const pane = paneConfig("pane", "earlier", "codex", "conversation");
+    pane.tabs![0].session_id = "earlier-pty";
+    pane.tabs!.push({ ...pane.tabs![0], tab_id: "later", session_id: "later-pty" });
+    const input = workspaceConfig([pane]);
+    const result = dedupeAgentSessionsInConfigs([input], "workspace", "pane", "earlier", new Set(["later-pty"]));
+    const [earlier, later] = result.configs[0].panes[0].tabs!;
+    expect(later.agent_session_id).toBe("conversation");
+    expect(earlier.agent_session_id).toBeNull();
+    expect(earlier.suppressed_agent_sessions).toEqual([{
+      agent_kind: "codex", agent_session_id: "conversation", claude_session_id: null,
+    }]);
+    expect(result.conflicts[0].reason).toBe("live");
+    expect(input.panes[0].tabs![0].agent_session_id).toBe("conversation");
+    const startup = dedupeAgentSessionsInConfigs([input], "workspace", "pane", "earlier");
+    expect(startup.configs[0].panes[0].tabs![0].agent_session_id).toBe("conversation");
+  });
+
+  it("passes live PTY ids through the persistence builder and handles tab-less panes", () => {
+    const source: Workspace = {
+      id: "workspace", name: "Workspace", gridTemplateId: "1x1", status: "running", createdAt: 1,
+      panes: [{ id: "pane", agentId: "codex", sessionId: "cold-pty", activeTabId: "cold", tabs: [
+        { id: "cold", sessionId: "cold-pty", agentId: "codex", type: "terminal", agentKind: "codex", agentSessionId: "conversation" },
+        { id: "live", sessionId: "live-pty", agentId: "codex", type: "terminal", agentKind: "codex", agentSessionId: "conversation" },
+      ] }],
+    };
+    const serialized = serializePersistentWorkspaceSet({ sourceWorkspaces: [source], preferredSelection: { workspaceId: "workspace", paneId: "pane", tabId: "cold" }, liveSessionIds: new Set(["live-pty"]) });
+    expect(serialized.configs[0].panes[0].tabs![1].agent_session_id).toBe("conversation");
+    expect(serialized.conflicts[0].reason).toBe("live");
+
+    const cold = paneConfig("cold", "cold-tab", "codex");
+    const live = paneConfig("live", "live-tab", "codex");
+    cold.tabs = []; live.tabs = [];
+    cold.session_id = "cold-pty"; live.session_id = "live-pty";
+    const legacy = dedupeAgentSessionsInConfigs([workspaceConfig([cold, live])], "workspace", "cold", null, new Set(["live-pty"]));
+    expect(legacy.configs[0].panes[0].agent_session_id).toBeNull();
+    expect(legacy.configs[0].panes[1].agent_session_id).toBe("shared-session");
+  });
+
   it("does not apply pane-level resume identity to an active declared tab", () => {
     const declared = paneConfig("pane-declared", "tab-declared");
     Object.assign(declared.tabs![0], {

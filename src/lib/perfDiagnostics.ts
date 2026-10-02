@@ -1,3 +1,6 @@
+import { invoke } from "@tauri-apps/api/core";
+import { liveTerms, termCache } from "../components/terminal/terminalCache";
+
 const LONG_TASK_WARNING_THRESHOLD_MS = 200;
 const LONG_TASK_WARNING_THROTTLE_MS = 5_000;
 const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -127,4 +130,76 @@ export function initializePerfDiagnostics(): () => void {
     clearHeartbeat(heartbeatId);
     return noop;
   }
+}
+
+
+const RENDERER_HEARTBEAT_INTERVAL_MS = 30_000;
+let rendererHeartbeatCleanup: (() => void) | null = null;
+
+/** Lightweight production diagnostics; the verbose DEV diagnostics stay separate. */
+export function initializeRendererHeartbeat(): () => void {
+  if (rendererHeartbeatCleanup) return rendererHeartbeatCleanup;
+  if (typeof document === "undefined") return noop;
+
+  let longTasks = 0;
+  let maxLongTaskMs = 0;
+  let observer: PerformanceObserver | null = null;
+  try {
+    const Observer = globalThis.PerformanceObserver;
+    if (typeof Observer === "function" && Observer.supportedEntryTypes.includes("longtask")) {
+      observer = new Observer((list) => {
+        try {
+          for (const entry of list.getEntries()) {
+            if (!isFiniteNumber(entry.duration) || entry.duration <= 50) continue;
+            longTasks += 1;
+            maxLongTaskMs = Math.max(maxLongTaskMs, entry.duration);
+          }
+        } catch {
+          // A diagnostics callback must never interrupt rendering.
+        }
+      });
+      observer.observe({ entryTypes: ["longtask"] });
+    }
+  } catch {
+    try { observer?.disconnect(); } catch { /* optional diagnostics */ }
+    observer = null;
+  }
+
+  let heartbeatId: ReturnType<typeof globalThis.setInterval>;
+  try {
+    heartbeatId = globalThis.setInterval(() => {
+      try {
+        const heap = globalThis.performance ? readHeapSnapshot(globalThis.performance) : null;
+        const heartbeat = {
+          heapUsedMib: heap ? heap.usedJSHeapSize / BYTES_PER_MIB : null,
+          longTasks,
+          maxLongTaskMs,
+          xtermCount: new Set([...liveTerms.keys(), ...termCache.keys()]).size,
+          pendingInvokes: 0,
+          visibility: document.visibilityState,
+          focus: document.hasFocus(),
+        };
+        longTasks = 0;
+        maxLongTaskMs = 0;
+        // Never serialize on the reply: even a hung invoke must not silence us.
+        void invoke<void>("report_renderer_heartbeat", { heartbeat }).catch(noop);
+      } catch {
+        // Older backends can lack the command, and metrics are optional.
+      }
+    }, RENDERER_HEARTBEAT_INTERVAL_MS);
+  } catch {
+    try { observer?.disconnect(); } catch { /* optional diagnostics */ }
+    return noop;
+  }
+
+  let disposed = false;
+  rendererHeartbeatCleanup = () => {
+    if (disposed) return;
+    disposed = true;
+    clearHeartbeat(heartbeatId);
+    try { observer?.disconnect(); } catch { /* optional diagnostics */ }
+    rendererHeartbeatCleanup = null;
+  };
+  import.meta.hot?.dispose(rendererHeartbeatCleanup);
+  return rendererHeartbeatCleanup;
 }

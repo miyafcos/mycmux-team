@@ -30,7 +30,7 @@ metadata:
 | 母艦が重い (compact 接近・長大化) ときに来た新規の重依頼 | 新ペインへ。母艦は司令塔に徹する |
 | 「どこまでやったっけ」系で、この先に重作業が続く | 母艦で現状整理 → 作業本体を spec 化して新ペイン |
 | 軽い読み調査・その場の検証 | 母艦直 (サブエージェント・ペインにしない) |
-| 素材大量の走査・分類・抽出 (MCP 不要) | codex ペイン (luna は明示起動 `spawn-tab --no-activate -- powershell -NoLogo -NoExit -Command "codex --model gpt-6-luna -c model_reasoning_effort=max -c features.fast_mode=false"`。素の `spawn --target codex` は config 既定 = gpt-6-sol xhigh (2026-09-23) で立つ) |
+| 素材大量の走査・分類・抽出 (MCP 不要) | codex ペイン (`gpt-6.1-sol` max を明示起動 `spawn-tab --no-activate -- powershell -NoLogo -NoExit -Command "codex --model gpt-6.1-sol -c model_reasoning_effort=max -c features.fast_mode=false"`。素の `spawn --target codex` は config 既定 = gpt-6.1-sol/high (2026-10-02 実測) で立ち max にならないので、委譲では使わない) |
 | MCP 必須素材・日本語プロースの fan-out | Agent tool `model:'opus'` 明示 (無指定は agent-model-guard hook が遮断) |
 
 非 mycmux セッション (cron 等) では spawn 不可 → Agent tool / Workflow で代替する。
@@ -88,6 +88,7 @@ metadata:
   別日に2本あるとき、台帳の後勝ちマージで旧ペインへ撃つのが過去の事故経路 (2026-08-13 修正)
 - **`--session` / `--anchor-session` に渡すのは PTY `session_id` だけ** (spawn 応答の `sessionId` = 台帳の `tab_session_id`、または `mycmux_bridge.py list` の `session_id`)。`tab.id`・`pane.id`・`workspace.id` を渡さない。`--resume-session` / `--handoff-from-session` だけは agent 側の `claude_session_id` を取る
 - **resume に失敗した席 (画面に `Session ID … is already in use`) へ催促・再送をしない**。復帰は mycmux-bridge と同じ手順: `close-tab --session <その PTY session_id>` → 同じタブで生きている兄弟ペインの PTY を `--anchor-session` に `spawn-tab --anchor-session <兄弟の PTY session_id> --target claude --resume-session <claude_session_id> --no-activate` → `read` で履歴が戻ってから send。台帳は古い行を closed にし、新しい spawn 応答を append する (同一性は (slug, tab_session_id))
+- **再起動のあとの立て直し (2026-10-02)**: mycmux や PC の再起動のあと、台帳の席は `status --session <tab_session_id>` で確かめる。`not_started` が返ったら、その席は復元済みでまだ起動していないだけなので、`start-tab --session <tab_session_id>` で起こす (同じペインで同じ会話を再開し、台帳の行はそのまま)。新しい席は立てない (9/24 は「席が消えた」と読んで同じ指示書の席を 2 つ作り、10/2 は同じ会話の席が 2 つできた)。`spawn-tab --resume-session` が `AGENT_SESSION_ALREADY_RUNNING` で失敗したら、JSON の `ownerSessionId` の席を使う。`(no pane and no PTY)` のエラーのときだけ、席が本当に無い
 - pane.read は表示中ペインの renderer buffer、背景ペインでは PTY scrollback を headless xterm で再生した画面を返す (transcript ではない)。完了検知は DONE.md / セッション JSONL 増分 / 成果物 mtime で行い、canonical state は `mycmux_agent_cli.py status --session <id>` で読む
 - 状態は常に外部化 (spec / DONE / 成果物ファイル)。「子の画面を見ないと分からない」状態を作らない
 - **子は人間に生ログを読ませない**。走行中の判断は ask カード (契約=references/ask-card-contract.md)、

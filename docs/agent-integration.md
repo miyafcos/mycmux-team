@@ -43,6 +43,19 @@ python scripts/mycmux_agent_cli.py spawn --target <claude|codex> --prompt-file <
 別ワークスペースで走らせるときは `python scripts/mycmux_agent_cli.py workspace-new --name <name>` で新設します。
 応答の `workspaceId` を使い、`python scripts/mycmux_agent_cli.py spawn --split --workspace <id> --target codex --no-activate` で起動します。
 
+#### After a mycmux restart
+
+Restored terminal tabs have no PTY until they are shown. If a tab still holds
+the requested session, `status --session <id>` returns `sessions: []` with a
+`not_started` entry instead of reporting that the session is gone. Use
+`status --include-not-started` to include these tabs in the full status list.
+
+Run `start-tab --session <id>` to resume the same conversation in the same tab
+without changing the foreground. Do not spawn another tab for a conversation
+that an existing tab already holds. If `spawn-tab --resume-session <id>` fails
+with `AGENT_SESSION_ALREADY_RUNNING`, use the owner tab identified by
+`ownerSessionId` in the error JSON.
+
 #### Web 操作
 
 基本ループは `open --background → wait → snapshot → find/click/type → wait → snapshot/eval → close`。
@@ -291,3 +304,7 @@ CLI は `MYCMUX_AGENT_CLI` → ホームの導入先 → スクリプトがあ�
 5. 個人用の委譲ルールは任意で整備する。既存の rules や Codex の AGENTS.md は installer の変更対象にしない
 6. openai-codex プラグイン (`claude plugin list` で `codex@openai-codex`) が**入っていない**こと
    — 入っていると `codex:codex-rescue` が自己推薦して裏バックグラウンドジョブが復活する
+
+### 稼働中の会話の重複起動
+
+同じ種類・会話 ID が別の PTY で稼働中、または起動処理中の場合、再開や ID 指定の起動は `AGENT_SESSION_ALREADY_RUNNING:` で始まるエラーで拒否します。続く JSON の `kind` はエージェント種類、`agentSessionId` は会話 ID、`ownerSessionId` は稼働中の mycmux PTY session ID です。呼出元は別のペインを起動せず、`ownerSessionId` に対応する既存のペインを使ってください。分岐起動 (`--fork-session` / `MYCMUX_RESUME_FORK=1`) は対象外です。

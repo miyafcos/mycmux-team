@@ -1,4 +1,5 @@
 import { useSettingsStore } from "../../../stores/settingsStore";
+import { supportsNativePaneTearout } from "../../../lib/tearout/feature";
 import { notificationSettingsStrings } from "../settingsStrings";
 import { checkboxLabelStyle, checkboxLabelStyleFor, sectionHeadingStyle } from "../tabStyles";
 
@@ -24,6 +25,8 @@ export function NotificationsLayoutTab() {
   const setGroupingApplyAnimationEnabled = useSettingsStore((s) => s.setGroupingApplyAnimationEnabled);
   const paneComposerEnabled = useSettingsStore((s) => s.paneComposerEnabled);
   const setPaneComposerEnabled = useSettingsStore((s) => s.setPaneComposerEnabled);
+  const nativePaneTearoutEnabled = useSettingsStore((s) => s.nativePaneTearoutEnabled);
+  const setNativePaneTearoutEnabled = useSettingsStore((s) => s.setNativePaneTearoutEnabled);
 
   return (
     <div>
@@ -84,6 +87,13 @@ export function NotificationsLayoutTab() {
       </div>
 
       <div style={{ ...sectionHeadingStyle, marginTop: 20 }}>{notificationSettingsStrings.layoutTitle}</div>
+      {supportsNativePaneTearout() && (
+        <label style={checkboxLabelStyle}>
+          <input type="checkbox" checked={nativePaneTearoutEnabled}
+            onChange={(e) => setNativePaneTearoutEnabled(e.target.checked)} />
+          <span>{notificationSettingsStrings.nativePaneTearoutLabel}</span>
+        </label>
+      )}
       <label style={checkboxLabelStyle}>
         <input
           type="checkbox"

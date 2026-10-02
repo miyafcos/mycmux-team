@@ -128,6 +128,16 @@ pub fn start_monitor(
             let mapped_session_owners = mapped_agent_session_owners(&agent_mappings);
 
             for (session_id, pid_opt) in pids.iter().cloned() {
+                // Poll even without a PID or usable CWD. Retain the PTY for
+                // reattach, but never publish live metadata after its exit.
+                if let Some(session) = manager.get(&session_id) {
+                    if session.poll_exited() {
+                        session.report_exit_once(&app_handle, &session_state_store);
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
                 if let Some(pid) = pid_opt {
                     let Some((session_epoch, last_output_at)) =
                         manager.session_observation(&session_id)
@@ -165,9 +175,7 @@ pub fn start_monitor(
                             .checked_mul(1_000)
                             .and_then(|value| i64::try_from(value).ok())
                     });
-                    let foreground_agent = agent_kind_from_process(&sys, fg_pid)
-                        .map(|kind| (kind, fg_pid))
-                        .or_else(|| find_agent_descendant(&sys, &child_index, shell_pid));
+                    let foreground_agent = find_agent_descendant(&sys, &child_index, shell_pid);
                     let agent_active = foreground_agent.is_some();
                     if let Some((DetectedAgentKind::Codex, agent_pid)) = foreground_agent {
                         if let Some(agent_started_at) = sys.process(agent_pid).and_then(|process| {
@@ -226,7 +234,7 @@ pub fn start_monitor(
                         .get(&session_id)
                         .and_then(|m| m.git_branch.clone());
 
-                    // Detect coding-agent session IDs only while that agent is foreground.
+                    // Detect session IDs for the root's nearest agent, including its wrappers.
                     // When an agent exits, preserve the last ID in backend metadata; the
                     // frontend clears it when the foreground process returns to a shell.
                     match foreground_agent {

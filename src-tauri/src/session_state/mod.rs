@@ -457,6 +457,13 @@ pub fn reduce(previous: &SessionView, evidence: &Evidence) -> SessionView {
         view.session_epoch = evidence.session_epoch;
     }
 
+    // Exit is terminal within a PTY epoch. A late create/reattach completion
+    // or buffered output must not revive a process already reported exited.
+    // A new epoch was reset above, so dormancy can still recreate the same id.
+    if view.lifecycle == Lifecycle::Exited {
+        return view;
+    }
+
     let before = view.clone();
     match &evidence.signal {
         EvidenceSignal::MonitorStatus { status } => {

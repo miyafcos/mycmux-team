@@ -5,6 +5,7 @@ vi.mock("../../src/components/terminal/XTermWrapper", () => ({
 import { toConfig } from "../../src/components/layout/SocketListener";
 import { serializePaneForSocket, handleSocketCommand } from "../../src/components/layout/socketCommands";
 import { restoreWorkspaceConfigs } from "../../src/lib/workspaceRestore";
+import * as ipc from "../../src/lib/ipc";
 import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { pushClosedTab, popClosedPane } from "../../src/stores/closedPaneStore";
@@ -44,6 +45,7 @@ describe("persistent display names and control labels", () => {
     });
   });
   it("exposes display_name read-only alongside the original label through list_all", async () => {
+    vi.spyOn(ipc, "getWindowFragments").mockResolvedValueOnce([]);
     const ws = workspace(); useWorkspaceListStore.getState()._replaceWorkspaces([ws]);
     const context = { activeSessionId: null, metadata: {}, processMetadata: {}, processMetadataAvailable: false,
       lastOutputBySession: {}, isTerminalMounted: () => false };

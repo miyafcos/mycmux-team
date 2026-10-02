@@ -10,6 +10,7 @@ const ipc = vi.hoisted(() => ({
   createSession: vi.fn<(...args: unknown[]) => Promise<void>>(),
   killSession: vi.fn<(...args: unknown[]) => Promise<void>>(),
   ackFrontendData: vi.fn(() => Promise.resolve()),
+  setFrontendVisible: vi.fn(() => Promise.resolve()),
 }));
 vi.mock("../../src/lib/ipc", () => ipc);
 vi.mock("../../src/components/workspace/webPaneApi", () => ({

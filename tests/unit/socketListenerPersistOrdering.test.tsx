@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const orderingMocks = vi.hoisted(() => ({
   claimLeader: vi.fn(),
   getPtyMetadataSnapshot: vi.fn(),
+  listRunningSessionIds: vi.fn(async () => [] as string[]),
   getWindowFragments: vi.fn(),
   listPets: vi.fn(),
   loadPersistentData: vi.fn(),
@@ -46,6 +47,7 @@ vi.mock("../../src/lib/ipc", async (importOriginal) => {
     killSession: vi.fn(async () => {}),
     publishWindowFragment: vi.fn(async () => {}),
     getPtyMetadataSnapshot: orderingMocks.getPtyMetadataSnapshot,
+    listRunningSessionIds: orderingMocks.listRunningSessionIds,
     getWindowFragments: orderingMocks.getWindowFragments,
     listPets: orderingMocks.listPets,
     loadPersistentData: orderingMocks.loadPersistentData,

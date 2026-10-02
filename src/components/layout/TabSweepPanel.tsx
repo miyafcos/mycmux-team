@@ -2,6 +2,7 @@ import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
 import { invoke } from "@tauri-apps/api/core";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { OverlayShell } from "../common/OverlayShell";
+import { PaneLeftoverProcesses } from "./PaneLeftoverProcesses";
 import {
   applySweep,
   applyVerdictSelection,
@@ -549,6 +550,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
               );
             })}
           </div>
+          <PaneLeftoverProcesses active={open && !closing} />
         </div>
 
         <footer style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 16px", borderTop: "1px solid var(--cmux-border)" }}>

@@ -41,6 +41,7 @@ export function detachedDockTarget(
   point: Pick<DetachedDragPayload, "screenX" | "screenY">,
   geometry: DockGeometry,
   doc: Document = document,
+  previousTarget: DockTarget | null = null,
 ): DockTarget | null {
   const x = point.screenX - geometry.x / geometry.scale;
   const y = point.screenY - geometry.y / geometry.scale;
@@ -54,17 +55,19 @@ export function detachedDockTarget(
   const workspaceId = pane?.dataset.dndWorkspaceId;
   const paneId = pane?.dataset.dndPaneId;
   if (!pane || !workspaceId || !paneId) return null;
+  const previousZone = previousTarget?.kind === "pane-zone"
+    && previousTarget.workspaceId === workspaceId && previousTarget.paneId === paneId ? previousTarget.zone : "center";
   if (strip) {
     const spans = Array.from(strip.querySelectorAll<HTMLElement>("[data-tab-id]"))
       .map((tab) => tab.getBoundingClientRect());
     return { kind: "tab-index", workspaceId, paneId, index: resolveTabInsertionIndex(spans, x) };
   }
   return { kind: "pane-zone", workspaceId, paneId,
-    zone: resolvePaneDropZone(pane.getBoundingClientRect(), x, y) };
+    zone: resolvePaneDropZone(pane.getBoundingClientRect(), x, y, previousZone) };
 }
 
 interface DetachedDockState {
-  active: { label: string; workspaceId: string } | null;
+  active: { label: string; workspaceId: string; nativeSingleTab?: boolean } | null;
   target: DockTarget | null;
   setTarget: (target: DockTarget | null) => void;
   clear: () => void;
