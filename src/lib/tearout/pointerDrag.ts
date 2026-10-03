@@ -7,7 +7,6 @@ import { outsideTearoutStrip } from "./model";
 import { tearoutTab, tearoutPane, tearoutWorkspace, canRegrabTearoutTab, canRegrabTearoutPane, regrabTearoutWindow } from "./runtime";
 import { TearoutRecord } from "./record";
 import { windowLabel } from "../windowContext";
-import { afterTearoutFrame } from "./macFrame";
 
 export function usesNativePaneDrag(item: PaneDragItem): boolean {
   if (!nativePaneTearoutEnabled(useSettingsStore.getState().nativePaneTearoutEnabled)
@@ -49,10 +48,7 @@ function beginNativeRegionDrag(event: PointerEvent, element: HTMLElement,
   let record: TearoutRecord | null = null;
   let dragging = false;
   let handed = false;
-  let cancelFrame: (() => void) | null = null;
-  let latest: { x: number; y: number } | null = null;
   const cleanup = () => {
-    cancelFrame?.(); cancelFrame = null; latest = null;
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
     window.removeEventListener("pointercancel", cancel);
@@ -99,14 +95,8 @@ function beginNativeRegionDrag(event: PointerEvent, element: HTMLElement,
         });
       return;
     }
-    latest = { x: next.clientX, y: next.clientY };
-    if (!cancelFrame) cancelFrame = afterTearoutFrame(() => {
-      cancelFrame = null;
-      const point = latest; latest = null;
-      if (!point || handed) return;
-      usePaneDragStore.getState().moveDrag(point);
-      callbacks.resolve(point.x, point.y);
-    });
+    usePaneDragStore.getState().moveDrag({ x: next.clientX, y: next.clientY });
+    callbacks.resolve(next.clientX, next.clientY);
   }
   function up(next: PointerEvent) {
     if (next.pointerId !== event.pointerId || handed) return;
@@ -141,10 +131,7 @@ export function beginNativeWorkspaceDrag(event: PointerEvent, element: HTMLEleme
   let record: TearoutRecord | null = null;
   let dragging = false;
   let handed = false;
-  let cancelFrame: (() => void) | null = null;
-  let latest: { x: number; y: number } | null = null;
   const cleanup = () => {
-    cancelFrame?.(); cancelFrame = null; latest = null;
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
     window.removeEventListener("pointercancel", cancel);
@@ -178,12 +165,7 @@ export function beginNativeWorkspaceDrag(event: PointerEvent, element: HTMLEleme
         });
       return;
     }
-    latest = { x: next.clientX, y: next.clientY };
-    if (!cancelFrame) cancelFrame = afterTearoutFrame(() => {
-      cancelFrame = null;
-      const point = latest; latest = null;
-      if (point && !handed) callbacks.resolve(point.x, point.y);
-    });
+    callbacks.resolve(next.clientX, next.clientY);
   }
   function up(next: PointerEvent) {
     if (next.pointerId !== event.pointerId || handed) return;

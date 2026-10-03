@@ -1,4 +1,4 @@
-import { memo, useLayoutEffect, useMemo, useRef } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePaneDragStore, type PaneDropZone } from "../../stores/paneDragStore";
 import { useDetachedDockStore } from "../../stores/detachedDockStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
@@ -12,6 +12,7 @@ const RESULT_INSET = 3;
 
 export default memo(function PaneDragOverlay() {
   const item = usePaneDragStore((state) => state.item);
+  const pointer = usePaneDragStore((state) => state.pointer);
   const target = usePaneDragStore((state) => state.target);
   // A detached window being dragged back lands the same way, so it gets the
   // same frame. Its pointer lives in another window, hence no ghost here.
@@ -19,34 +20,23 @@ export default memo(function PaneDragOverlay() {
     state.target?.kind === "pane-zone" ? state.target : null);
   const dockSource = useDetachedDockStore((state) => state.active?.nativeSingleTab ? "tab" : "pane");
   const ghostRef = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    const ghost = ghostRef.current;
-    if (!ghost || !item) return;
-    // Measure once on mount/resize; cursor updates only write a compositor transform.
-    let width = ghost.offsetWidth, height = ghost.offsetHeight;
-    let frame = 0;
-    const paint = () => {
-      frame = 0;
-      const pointer = usePaneDragStore.getState().pointer;
-      if (!pointer) return;
-      const x = Math.min(GHOST_OFFSET, window.innerWidth - GHOST_PAD - width - pointer.x);
-      const y = Math.min(GHOST_OFFSET, window.innerHeight - GHOST_PAD - height - pointer.y);
-      ghost.style.transform = `translate3d(${pointer.x + x}px, ${pointer.y + y}px, 0)`;
-    };
-    const queue = () => { if (!frame) frame = window.requestAnimationFrame(paint); };
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
-      width = ghost.offsetWidth; height = ghost.offsetHeight; queue();
-    });
-    observer?.observe(ghost);
-    paint();
-    const stop = usePaneDragStore.subscribe((state, previous) => {
-      // Both drag paths publish from rAF; paint in that frame, without another frame of lag.
-      if (state.pointer !== previous.pointer) paint();
-    });
-    return () => { stop(); observer?.disconnect(); if (frame) window.cancelAnimationFrame(frame); };
-  }, [item, target?.kind === "new-window"]);
+  const [offset, setOffset] = useState({ x: GHOST_OFFSET, y: GHOST_OFFSET });
 
-  if (!item) {
+  useLayoutEffect(() => {
+    if (!pointer || !ghostRef.current) return;
+    const { offsetWidth: width, offsetHeight: height } = ghostRef.current;
+    let x = GHOST_OFFSET;
+    let y = GHOST_OFFSET;
+    if (pointer.x + x + width + GHOST_PAD > window.innerWidth) {
+      x = Math.min(GHOST_OFFSET, window.innerWidth - GHOST_PAD - width - pointer.x);
+    }
+    if (pointer.y + y + height + GHOST_PAD > window.innerHeight) {
+      y = Math.min(GHOST_OFFSET, window.innerHeight - GHOST_PAD - height - pointer.y);
+    }
+    setOffset((prev) => (prev.x === x && prev.y === y ? prev : { x, y }));
+  }, [pointer]);
+
+  if (!item || !pointer) {
     return dockZone
       ? <PaneDropResultFrame
           workspaceId={dockZone.workspaceId}
@@ -95,7 +85,9 @@ export default memo(function PaneDragOverlay() {
       <div
         ref={ghostRef}
         className={className}
-        style={{ willChange: "transform" }}
+        style={{
+          transform: `translate3d(${pointer.x + offset.x}px, ${pointer.y + offset.y}px, 0)`,
+        }}
       >
         {isTabDrag ? (
           <span className="pane-drag-ghost-tab-mark" />

@@ -4,7 +4,6 @@ import { flushSync } from "react-dom";
 import { create } from "zustand";
 import { nativePaneTearoutEnabled, isMacTearoutPlatform } from "./feature";
 import { afterTearoutFrame } from "./macFrame";
-import { startTearoutFrames, finishTearoutFrames, disposeTearoutFrames } from "./frameMetrics";
 import { expectTearoutAttachments } from "./sessionAttachment";
 import { restoreTearoutSource, restoreTearoutGroup, removeTearoutTab, nativeDropAllowed, type Rect } from "./model";
 import { detachedOriginForDrag, detachedWorkspaceConfig, isTransferableTab, type DetachedReturnTarget } from "../detachedPane";
@@ -72,8 +71,6 @@ function nativeTarget(sample: NativeSample): DockTarget | null {
 }
 
 function handleNativeSample(sample: NativeSample): void {
-  if (sample.phase === "end") finishTearoutFrames(sample.id);
-  else startTearoutFrames(sample.id);
   activeTearoutRecords.get(sample.id)?.native(sample);
   if (sample.phase === "end") {
     cancelSampleFrame?.();
@@ -415,7 +412,6 @@ export function installTearoutRuntime(value: Adapter): () => void {
   });
   return () => {
     stop();
-    disposeTearoutFrames();
     cancelSampleFrame?.();
     cancelSampleFrame = null; pendingSample = null;
     preview?.feedback.clear();

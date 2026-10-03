@@ -6,7 +6,6 @@ mod native;
 #[cfg(target_os = "macos")]
 #[path = "macos.rs"]
 mod native;
-mod performance;
 mod transfer;
 
 use std::{
@@ -90,8 +89,6 @@ pub struct MoveState {
     receiver_epoch: AtomicU64,
     preview_revision: AtomicU64,
     region_count: AtomicU64,
-    pacing: Mutex<performance::SamplePacer>,
-    metrics: performance::NativeMetrics,
 }
 
 /// Exercise the real receiver and opacity path without moving the user's pointer.
@@ -108,9 +105,6 @@ pub async fn tearout_synthetic_sample(
     escaped: bool,
     source_label: Option<String>,
     region_count: Option<usize>,
-    diagnostics: Option<bool>,
-    legacy_samples: Option<bool>,
-    recorder: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     if !crate::test_profile::is_active() {
         return Err("tearout_synthetic_requires_test_profile".into());
@@ -129,9 +123,6 @@ pub async fn tearout_synthetic_sample(
             escaped,
             source_label,
             region_count,
-            diagnostics,
-            legacy_samples,
-            recorder,
         );
         Err("Native pane tear-out is Windows-only".into())
     }
@@ -153,16 +144,12 @@ pub async fn tearout_synthetic_sample(
                 client_y,
                 &phase,
                 escaped,
-                diagnostics.unwrap_or(false),
-                legacy_samples.unwrap_or(false),
-                recorder.unwrap_or(true),
             )
         })
         .await
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = (diagnostics, legacy_samples, recorder);
         if phase == "identity" && label.starts_with("mycmux-w") {
             return on_ui(&app, move |app| native::window_identity(&app, &label)).await;
         }
@@ -742,10 +729,7 @@ pub async fn tearout_retire(
     })
     .await?;
     if let Some(record) = record {
-        if log::tearout_log_record(record.docked().into())
-            .await
-            .is_err()
-        {
+        if log::tearout_log_record(record.docked()).await.is_err() {
             eprintln!("[tearout] log write failed after dock");
         }
     }

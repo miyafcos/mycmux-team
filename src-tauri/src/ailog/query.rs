@@ -383,6 +383,7 @@ pub struct PriceCoverage {
 
 #[derive(Default)]
 pub(crate) struct PriceCoverageAcc {
+    classes: HashMap<String, ModelClass>,
     priced: (BTreeSet<String>, i64),
     local: (BTreeSet<String>, i64),
     internal: (BTreeSet<String>, i64),
@@ -403,8 +404,17 @@ impl PriceCoverageAcc {
         prices: &PriceTable,
     ) {
         let class = model
-            .map(|model| prices.classify(model))
+            .map(|model| {
+                *self
+                    .classes
+                    .entry(model.to_string())
+                    .or_insert_with(|| prices.classify(model))
+            })
             .unwrap_or(ModelClass::Unknown);
+        self.add_classified_tokens(model, tokens, class);
+    }
+
+    fn add_classified_tokens(&mut self, model: Option<&str>, tokens: i64, class: ModelClass) {
         let target = match class {
             ModelClass::Priced => &mut self.priced,
             ModelClass::Local => &mut self.local,
@@ -476,6 +486,7 @@ fn parse_json_array(value: Option<&str>) -> Vec<String> {
 
 /// One pass over the turn rows, producing everything the reports need.
 struct Pass {
+    rework_summary: Option<ReworkSummary>,
     totals: TokenAcc,
     sessions: BTreeMap<SessionKey, SessionAcc>,
     by_provider: BTreeMap<String, TokenAcc>,
@@ -496,6 +507,7 @@ struct Pass {
 
 fn run_pass(turns: &[TurnRecord], prices: &PriceTable) -> Pass {
     let mut pass = Pass {
+        rework_summary: None,
         totals: TokenAcc::default(),
         sessions: BTreeMap::new(),
         by_provider: BTreeMap::new(),
@@ -617,10 +629,7 @@ where
 
     let mut ordered_keys: Vec<&SessionKey> = keys.iter().collect();
     ordered_keys.sort_unstable();
-    let sum: f64 = ordered_keys
-        .into_iter()
-        .filter_map(&mut value_for)
-        .sum();
+    let sum: f64 = ordered_keys.into_iter().filter_map(&mut value_for).sum();
     sum / keys.len() as f64
 }
 
@@ -642,11 +651,13 @@ mod stable_rework_tests {
         let first = HashSet::from([a.clone(), b.clone(), c.clone()]);
         let second = HashSet::from([c, b, a]);
 
-        let average = |keys: &HashSet<SessionKey>| {
-            stable_avg_rework(keys, |key| values.get(key).copied())
-        };
+        let average =
+            |keys: &HashSet<SessionKey>| stable_avg_rework(keys, |key| values.get(key).copied());
         assert_eq!(average(&first).to_bits(), average(&second).to_bits());
-        assert_eq!(average(&first).to_bits(), ((1.0_f64 + 1.0 + 1.0e16) / 3.0).to_bits());
+        assert_eq!(
+            average(&first).to_bits(),
+            ((1.0_f64 + 1.0 + 1.0e16) / 3.0).to_bits()
+        );
     }
 }
 
@@ -693,9 +704,18 @@ impl<'de> Deserialize<'de> for ReportTimings {
         let path = match stored.path.as_str() {
             "raw" => "raw",
             "rollup" => "rollup",
-            value => return Err(serde::de::Error::custom(format!("unknown report path: {value}"))),
+            value => {
+                return Err(serde::de::Error::custom(format!(
+                    "unknown report path: {value}"
+                )))
+            }
         };
-        Ok(Self { sql_ms: stored.sql_ms, rows_scanned: stored.rows_scanned, build_ms: stored.build_ms, path })
+        Ok(Self {
+            sql_ms: stored.sql_ms,
+            rows_scanned: stored.rows_scanned,
+            build_ms: stored.build_ms,
+            path,
+        })
     }
 }
 
@@ -896,26 +916,18 @@ fn rework_summary(
     if sessions.is_empty() {
         return Ok(ReworkSummary::default());
     }
-    let requested = std::iter::repeat("(?, ?)")
-        .take(sessions.len())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        "WITH requested(kind, session_id) AS (VALUES {requested}) \
+    preserve_session_variable_limit(conn, sessions.len(), true)?;
+    let requested = session_keys_json(sessions.keys())?;
+    let sql = "WITH requested(kind, session_id) AS \
+         (SELECT json_extract(value,'$[0]'), json_extract(value,'$[1]') FROM json_each(?1)) \
          SELECT COALESCE(SUM(r.tool_error_count), 0), COALESCE(SUM(r.tool_call_count), 0), \
                 COALESCE(SUM(r.correction_count), 0), COALESCE(SUM(r.churn_files), 0), \
                 COALESCE(SUM(r.abandoned <> 0), 0), \
                 COALESCE(AVG(COALESCE(r.score, 0.0)), 0.0) \
          FROM requested q LEFT JOIN rework r \
-         ON r.kind = q.kind AND r.session_id = q.session_id"
-    );
-    let mut params = Vec::with_capacity(sessions.len() * 2);
-    for (kind, session_id) in sessions.keys() {
-        params.push(SqlValue::Text(kind.clone()));
-        params.push(SqlValue::Text(session_id.clone()));
-    }
+         ON r.kind = q.kind AND r.session_id = q.session_id";
     let (errors, calls, correction_hits, churn_files, abandoned_sessions, avg_score) = conn
-        .query_row(&sql, params_from_iter(params.iter()), |row| {
+        .query_row(sql, [requested], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, i64>(1)?,
@@ -1149,9 +1161,9 @@ fn overview_from_pass(
     resolved: ResolvedRange,
     label: String,
     prices: Arc<PriceTable>,
-    pass: Pass,
-    previous: Pass,
-    internal_pass: Pass,
+    pass: &Pass,
+    previous: &Pass,
+    internal_pass: &Pass,
     timings: ReportTimings,
     started: Instant,
 ) -> Result<Overview, String> {
@@ -1178,8 +1190,14 @@ fn overview_from_pass(
         models: pass.by_family.len() as i64,
     };
 
-    let previous_rework = rework_summary(conn, &previous.sessions)?;
-    let current_rework = rework_summary(conn, &pass.sessions)?;
+    let previous_rework = match &previous.rework_summary {
+        Some(summary) => summary.clone(),
+        None => rework_summary(conn, &previous.sessions)?,
+    };
+    let current_rework = match &pass.rework_summary {
+        Some(summary) => summary.clone(),
+        None => rework_summary(conn, &pass.sessions)?,
+    };
 
     let compare_previous = ComparePrevious {
         sessions_pct: pct_change(sessions_count as f64, previous.sessions.len() as f64),
@@ -1321,9 +1339,9 @@ fn overview_raw(
         resolved,
         label,
         prices,
-        pass,
-        previous,
-        internal_pass,
+        &pass,
+        &previous,
+        &internal_pass,
         timings,
         started,
     )
@@ -2033,6 +2051,7 @@ fn measured_hybrid_rows(
 
 fn empty_pass() -> Pass {
     Pass {
+        rework_summary: None,
         totals: TokenAcc::default(),
         sessions: BTreeMap::new(),
         by_provider: BTreeMap::new(),
@@ -2057,13 +2076,27 @@ fn empty_pass() -> Pass {
 /// companion `hydrate_aggregate_sessions` query below.
 fn run_aggregate_pass(rows: &[AggregateRow], prices: &PriceTable) -> Pass {
     let mut pass = empty_pass();
+    let mut identities: HashMap<&str, (String, ModelClass)> = HashMap::new();
     for row in rows {
         let key = (row.kind.clone(), row.session_id.clone());
         pass.totals.add_aggregate(row);
-        pass.price_coverage.add_model_tokens(
+        let (provider, class) = row
+            .model
+            .as_deref()
+            .map(|model| {
+                let identity = identities.entry(model).or_insert_with(|| {
+                    (
+                        prices.provider(model).as_str().to_string(),
+                        prices.classify(model),
+                    )
+                });
+                (identity.0.clone(), identity.1)
+            })
+            .unwrap_or_else(|| ("other".to_string(), ModelClass::Unknown));
+        pass.price_coverage.add_classified_tokens(
             row.model.as_deref(),
             row.input + row.output + row.cache_read + row.cache_write,
-            prices,
+            class,
         );
         let entry = pass
             .sessions
@@ -2083,16 +2116,6 @@ fn run_aggregate_pass(rows: &[AggregateRow], prices: &PriceTable) -> Pass {
             });
         entry.tokens.add_aggregate(row);
 
-        let provider = row
-            .model
-            .as_deref()
-            .map(|model| prices.provider(model).as_str().to_string())
-            .unwrap_or_else(|| "other".to_string());
-        let class = row
-            .model
-            .as_deref()
-            .map(|model| prices.classify(model))
-            .unwrap_or(ModelClass::Unknown);
         pass.by_provider
             .entry(provider.clone())
             .or_default()
@@ -2145,15 +2168,62 @@ fn run_aggregate_pass(rows: &[AggregateRow], prices: &PriceTable) -> Pass {
     pass
 }
 
-fn hydrate_aggregate_sessions(
+/// JSON binding must preserve the old report domain, including its exact
+/// too-many-variables error response. Check the live connection's limit without
+/// changing it; only the unsupported case constructs the original SQL program.
+fn preserve_session_variable_limit(
     conn: &Connection,
-    sessions: &mut BTreeMap<SessionKey, SessionAcc>,
+    count: usize,
+    rework: bool,
 ) -> Result<(), String> {
-    if sessions.is_empty() {
+    // SAFETY: this live borrowed connection owns the handle; negative newLimit
+    // queries SQLite's current limit and does not alter connection state.
+    let limit = unsafe {
+        rusqlite::ffi::sqlite3_limit(
+            conn.handle(),
+            rusqlite::ffi::SQLITE_LIMIT_VARIABLE_NUMBER,
+            -1,
+        )
+    }
+    .max(0) as usize;
+    if count.saturating_mul(2) <= limit {
         return Ok(());
     }
+    let sql = if rework {
+        legacy_rework_sql(count)
+    } else {
+        legacy_session_sql(count)
+    };
+    let label = if rework {
+        "aggregate rework"
+    } else {
+        "prepare aggregate sessions"
+    };
+    conn.prepare(&sql)
+        .map(|_| ())
+        .map_err(|err| format!("{label}: {err}"))
+}
+
+fn legacy_rework_sql(count: usize) -> String {
     let requested = std::iter::repeat("(?, ?)")
-        .take(sessions.len())
+        .take(count)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "WITH requested(kind, session_id) AS (VALUES {requested}) \
+         SELECT COALESCE(SUM(r.tool_error_count), 0), COALESCE(SUM(r.tool_call_count), 0), \
+                COALESCE(SUM(r.correction_count), 0), COALESCE(SUM(r.churn_files), 0), \
+                COALESCE(SUM(r.abandoned <> 0), 0), \
+                COALESCE(AVG(COALESCE(r.score, 0.0)), 0.0) \
+         FROM requested q LEFT JOIN rework r \
+         ON r.kind = q.kind AND r.session_id = q.session_id"
+    );
+    sql
+}
+
+fn legacy_session_sql(count: usize) -> String {
+    let requested = std::iter::repeat("(?, ?)")
+        .take(count)
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
@@ -2164,16 +2234,53 @@ fn hydrate_aggregate_sessions(
            FROM requested q JOIN session s ON s.kind = q.kind AND s.session_id = q.session_id \
            LEFT JOIN rework r ON r.kind = s.kind AND r.session_id = s.session_id"
     );
-    let mut params = Vec::with_capacity(sessions.len() * 2);
-    for (kind, session_id) in sessions.keys() {
-        params.push(SqlValue::Text(kind.clone()));
-        params.push(SqlValue::Text(session_id.clone()));
+    sql
+}
+
+/// Keep the SQL program small even for tens of thousands of session keys.
+/// JSON values are bound, not interpolated, and retain the BTreeMap key order.
+fn session_keys_json<'a>(keys: impl Iterator<Item = &'a SessionKey>) -> Result<String, String> {
+    serde_json::to_string(&keys.collect::<Vec<_>>())
+        .map_err(|err| format!("encode aggregate sessions: {err}"))
+}
+
+fn hydrate_aggregate_sessions(
+    conn: &Connection,
+    sessions: &mut BTreeMap<SessionKey, SessionAcc>,
+    with_titles: bool,
+    with_tags: bool,
+) -> Result<BTreeSet<SessionKey>, String> {
+    let mut has_titles = BTreeSet::new();
+    if sessions.is_empty() {
+        return Ok(has_titles);
     }
+    preserve_session_variable_limit(conn, sessions.len(), false)?;
+    let requested = session_keys_json(sessions.keys())?;
+    let title_columns = if with_titles {
+        "s.ai_title, s.first_prompt"
+    } else {
+        "NULL, NULL"
+    };
+    let tag_column = if with_tags { "s.work_tags" } else { "NULL" };
+    let title_flag = if !with_titles && !with_tags {
+        "s.ai_title IS NOT NULL OR s.first_prompt IS NOT NULL"
+    } else {
+        "0"
+    };
+    let sql = format!(
+        "WITH requested(kind, session_id) AS \
+         (SELECT json_extract(value,'$[0]'), json_extract(value,'$[1]') FROM json_each(?1)) \
+         SELECT s.kind, s.session_id, s.project_label, {title_columns}, {tag_column}, \
+                s.user_msg_count, COALESCE(s.wall_ms, 0), COALESCE(s.active_ms, 0), \
+                COALESCE(r.score, 0), COALESCE(s.ends_on_tool, 0), {title_flag} \
+           FROM requested q JOIN session s ON s.kind = q.kind AND s.session_id = q.session_id \
+           LEFT JOIN rework r ON r.kind = s.kind AND r.session_id = s.session_id"
+    );
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|err| format!("prepare aggregate sessions: {err}"))?;
     let rows = stmt
-        .query_map(params_from_iter(params.iter()), |row| {
+        .query_map([requested], |row| {
             Ok((
                 (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
                 row.get::<_, Option<String>>(2)?,
@@ -2185,6 +2292,7 @@ fn hydrate_aggregate_sessions(
                 row.get::<_, i64>(8)?,
                 row.get::<_, f64>(9)?,
                 row.get::<_, i64>(10)? != 0,
+                row.get::<_, i64>(11)? != 0,
             ))
         })
         .map_err(|err| format!("query aggregate sessions: {err}"))?;
@@ -2200,7 +2308,11 @@ fn hydrate_aggregate_sessions(
             active_ms,
             rework,
             abandoned,
+            has_title,
         ) = row.map_err(|err| format!("read aggregate session: {err}"))?;
+        if has_title {
+            has_titles.insert(key.clone());
+        }
         if let Some(session) = sessions.get_mut(&key) {
             session.project_label = project_label;
             session.ai_title = ai_title;
@@ -2213,7 +2325,106 @@ fn hydrate_aggregate_sessions(
             session.abandoned = abandoned;
         }
     }
+    Ok(has_titles)
+}
+
+/// The overview emits 20 titles and one winning title per project. Do not
+/// materialize every large first prompt just to discard all the other titles.
+fn hydrate_overview_sessions(
+    conn: &Connection,
+    sessions: &mut BTreeMap<SessionKey, SessionAcc>,
+) -> Result<(), String> {
+    let has_titles = hydrate_aggregate_sessions(conn, sessions, false, false)?;
+    let selected = {
+        let mut titles: Vec<_> = sessions
+            .iter()
+            .filter(|(key, _)| has_titles.contains(*key))
+            .collect();
+        // Stable ordering and strict winner comparison match overview_from_pass.
+        titles.sort_by(|a, b| {
+            b.1.tokens
+                .cost
+                .partial_cmp(&a.1.tokens.cost)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut selected: BTreeSet<SessionKey> = titles
+            .iter()
+            .take(20)
+            .map(|(key, _)| (*key).clone())
+            .collect();
+        let mut projects: BTreeMap<&str, (&SessionKey, f64)> = BTreeMap::new();
+        for (key, session) in sessions.iter() {
+            if !has_titles.contains(key) {
+                continue;
+            }
+            let Some(project) = session.project_label.as_deref() else {
+                continue;
+            };
+            if projects
+                .get(project)
+                .map_or(true, |(_, cost)| session.tokens.cost > *cost)
+            {
+                projects.insert(project, (key, session.tokens.cost));
+            }
+        }
+        selected.extend(projects.values().map(|(key, _)| (*key).clone()));
+        selected
+    };
+    if selected.is_empty() {
+        return Ok(());
+    }
+    let requested = session_keys_json(selected.iter())?;
+    let mut stmt = conn
+        .prepare(
+            "WITH requested(kind, session_id) AS \
+         (SELECT json_extract(value,'$[0]'), json_extract(value,'$[1]') FROM json_each(?1)) \
+         SELECT s.kind,s.session_id,s.ai_title,s.first_prompt FROM requested q \
+         JOIN session s ON s.kind=q.kind AND s.session_id=q.session_id",
+        )
+        .map_err(|err| format!("prepare overview titles: {err}"))?;
+    let rows = stmt
+        .query_map([requested], |row| {
+            Ok((
+                (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })
+        .map_err(|err| format!("query overview titles: {err}"))?;
+    for row in rows {
+        let (key, ai_title, first_prompt) =
+            row.map_err(|err| format!("read overview title: {err}"))?;
+        if let Some(session) = sessions.get_mut(&key) {
+            session.ai_title = ai_title;
+            session.first_prompt = first_prompt;
+        }
+    }
     Ok(())
+}
+
+/// Only totals and unique session keys feed prior-period/internal comparisons.
+/// Preserve row addition order without building unused model/tag accumulators.
+fn comparison_pass(rows: &[AggregateRow]) -> Pass {
+    let mut pass = empty_pass();
+    for row in rows {
+        pass.totals.add_aggregate(row);
+        pass.sessions
+            .entry((row.kind.clone(), row.session_id.clone()))
+            .or_insert_with(|| SessionAcc {
+                project_label: None,
+                ai_title: None,
+                first_prompt: None,
+                tags: Vec::new(),
+                user_msgs: 0,
+                wall_ms: 0,
+                active_ms: 0,
+                rework: 0.0,
+                abandoned: false,
+                families: BTreeSet::new(),
+                tokens: TokenAcc::default(),
+            });
+    }
+    pass
 }
 
 fn fill_tag_model_from_aggregates(pass: &mut Pass, rows: &[AggregateRow]) {
@@ -2246,15 +2457,9 @@ pub fn overview(
     filters: &Filters,
     now_ms: i64,
 ) -> Result<Overview, String> {
-    super::report_cache::report(
-        conn,
-        range,
-        filters,
-        "overview",
-        &[],
-        now_ms,
-        || overview_fresh(conn, range, filters, now_ms),
-    )
+    super::report_cache::report(conn, range, filters, "overview", &[], now_ms, || {
+        overview_fresh(conn, range, filters, now_ms)
+    })
 }
 
 fn overview_fresh(
@@ -2272,8 +2477,9 @@ fn overview_fresh(
     else {
         return overview_raw(conn, range, filters, now_ms);
     };
-    let mut pass = run_aggregate_pass(&current_rows, &prices);
-    hydrate_aggregate_sessions(conn, &mut pass.sessions)?;
+    let mut current = run_aggregate_pass(&current_rows, &prices);
+    drop(current_rows);
+    hydrate_overview_sessions(conn, &mut current.sessions)?;
 
     let span = (resolved.to - resolved.from).max(0);
     let previous_range = ResolvedRange {
@@ -2283,8 +2489,8 @@ fn overview_fresh(
     let previous = if let Some(rows) =
         measured_hybrid_rows(conn, &previous_range, filters, &mut timings, true, true)?
     {
-        let mut pass = run_aggregate_pass(&rows, &prices);
-        hydrate_aggregate_sessions(conn, &mut pass.sessions)?;
+        let pass = comparison_pass(&rows);
+        preserve_session_variable_limit(conn, pass.sessions.len(), false)?;
         pass
     } else {
         let turns = measured_turns(conn, &previous_range, filters, false, &mut timings)?;
@@ -2301,7 +2507,7 @@ fn overview_fresh(
         false,
         false,
     )? {
-        run_aggregate_pass(&rows, &prices)
+        comparison_pass(&rows)
     } else {
         let turns = measured_turns(conn, &resolved, &internal_filters, false, &mut timings)?;
         run_pass(&turns, &prices)
@@ -2311,9 +2517,9 @@ fn overview_fresh(
         resolved,
         label,
         prices,
-        pass,
-        previous,
-        internal_pass,
+        &current,
+        &previous,
+        &internal_pass,
         timings,
         started,
     )
@@ -2801,8 +3007,7 @@ fn breakdown_fresh(
         .into_iter()
         .map(|(key, acc)| {
             let session_keys = sessions.get(&key).cloned().unwrap_or_default();
-            let rework =
-                stable_avg_rework(&session_keys, |item| session_rework.get(item).copied());
+            let rework = stable_avg_rework(&session_keys, |item| session_rework.get(item).copied());
             BreakdownRow {
                 key,
                 sessions: session_keys.len() as i64,
@@ -2923,7 +3128,12 @@ fn series_group_from(label: String, acc: Option<&TokenAcc>, sessions: i64) -> Se
     }
 }
 
-fn sort_cost_then_key(left_cost: f64, left_key: &str, right_cost: f64, right_key: &str) -> std::cmp::Ordering {
+fn sort_cost_then_key(
+    left_cost: f64,
+    left_key: &str,
+    right_cost: f64,
+    right_key: &str,
+) -> std::cmp::Ordering {
     right_cost
         .partial_cmp(&left_cost)
         .unwrap_or(std::cmp::Ordering::Equal)
@@ -2989,12 +3199,18 @@ impl PivotAcc {
             .entry((row_key.clone(), col_key.clone()))
             .or_default()
             .insert(session.clone());
-        self.rows.entry(row_key.clone()).or_default().add_aggregate(row);
+        self.rows
+            .entry(row_key.clone())
+            .or_default()
+            .add_aggregate(row);
         self.row_sessions
             .entry(row_key)
             .or_default()
             .insert(session.clone());
-        self.cols.entry(col_key.clone()).or_default().add_aggregate(row);
+        self.cols
+            .entry(col_key.clone())
+            .or_default()
+            .add_aggregate(row);
         self.col_sessions
             .entry(col_key)
             .or_default()
@@ -3013,14 +3229,30 @@ impl PivotAcc {
     ) -> PivotReport {
         let mut col_keys: Vec<String> = self.cols.keys().cloned().collect();
         col_keys.sort_by(|left, right| {
-            let left_cost = self.cols.get(left).map(|acc| report_cost(acc.cost)).unwrap_or(0.0);
-            let right_cost = self.cols.get(right).map(|acc| report_cost(acc.cost)).unwrap_or(0.0);
+            let left_cost = self
+                .cols
+                .get(left)
+                .map(|acc| report_cost(acc.cost))
+                .unwrap_or(0.0);
+            let right_cost = self
+                .cols
+                .get(right)
+                .map(|acc| report_cost(acc.cost))
+                .unwrap_or(0.0);
             sort_cost_then_key(left_cost, left, right_cost, right)
         });
         let mut row_keys: Vec<String> = self.rows.keys().cloned().collect();
         row_keys.sort_by(|left, right| {
-            let left_cost = self.rows.get(left).map(|acc| report_cost(acc.cost)).unwrap_or(0.0);
-            let right_cost = self.rows.get(right).map(|acc| report_cost(acc.cost)).unwrap_or(0.0);
+            let left_cost = self
+                .rows
+                .get(left)
+                .map(|acc| report_cost(acc.cost))
+                .unwrap_or(0.0);
+            let right_cost = self
+                .rows
+                .get(right)
+                .map(|acc| report_cost(acc.cost))
+                .unwrap_or(0.0);
             sort_cost_then_key(left_cost, left, right_cost, right)
         });
 
@@ -3395,7 +3627,7 @@ fn work_tag_rows(pass: &Pass) -> Vec<WorkTagRow> {
 fn models_report_from_pass(
     options: &ModelsOptions,
     prices: &PriceTable,
-    pass: Pass,
+    pass: &Pass,
     series: Vec<ModelSeriesBucket>,
     range: RangeOut,
     timings: ReportTimings,
@@ -3482,6 +3714,28 @@ pub fn models(
     options: &ModelsOptions,
     now_ms: i64,
 ) -> Result<ModelsReport, String> {
+    let tx = if conn.is_autocommit() {
+        Some(
+            conn.unchecked_transaction()
+                .map_err(|error| error.to_string())?,
+        )
+    } else {
+        None
+    };
+    let report = models_fresh(conn, range, filters, options, now_ms)?;
+    if let Some(tx) = tx {
+        tx.commit().map_err(|error| error.to_string())?;
+    }
+    Ok(report)
+}
+
+fn models_fresh(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    options: &ModelsOptions,
+    now_ms: i64,
+) -> Result<ModelsReport, String> {
     let started = Instant::now();
     let mut timings = ReportTimings::default();
     let (resolved, label) = range.resolve(now_ms);
@@ -3493,16 +3747,12 @@ pub fn models(
     };
     if let Some(rows) = measured_hybrid_rows(conn, &resolved, filters, &mut timings, true, true)? {
         let mut pass = run_aggregate_pass(&rows, &prices);
-        hydrate_aggregate_sessions(conn, &mut pass.sessions)?;
+        hydrate_aggregate_sessions(conn, &mut pass.sessions, false, true)?;
         fill_tag_model_from_aggregates(&mut pass, &rows);
-        let series = model_series_from_aggregates(
-            &rows,
-            &options.granularity,
-            &options.bucket,
-            &prices,
-        );
+        let series =
+            model_series_from_aggregates(&rows, &options.granularity, &options.bucket, &prices);
         return Ok(models_report_from_pass(
-            options, &prices, pass, series, range_out, timings, started,
+            options, &prices, &pass, series, range_out, timings, started,
         ));
     }
 
@@ -3510,7 +3760,7 @@ pub fn models(
     let pass = run_pass(&turns, &prices);
     let series = model_series_from_turns(&turns, &options.granularity, &options.bucket, &prices);
     Ok(models_report_from_pass(
-        options, &prices, pass, series, range_out, timings, started,
+        options, &prices, &pass, series, range_out, timings, started,
     ))
 }
 
@@ -3651,10 +3901,7 @@ fn top_range_models(tokens_by_model: &BTreeMap<String, i64>) -> (Vec<String>, i6
     (models, tokens_by_model.len() as i64)
 }
 
-fn apply_range_models(
-    row: &mut SessionRow,
-    tokens_by_model: Option<&BTreeMap<String, i64>>,
-) {
+fn apply_range_models(row: &mut SessionRow, tokens_by_model: Option<&BTreeMap<String, i64>>) {
     let empty = BTreeMap::new();
     let (models, count) = top_range_models(tokens_by_model.unwrap_or(&empty));
     row.range_models = models;
@@ -3881,31 +4128,34 @@ fn sessions_raw(
         .map_err(|err| format!("prepare session page: {err}"))?;
     let result_rows = stmt
         .query_map(params_from_iter(params.iter()), |row| {
-            Ok((SessionRow {
-                kind: row.get(0)?,
-                session_id: row.get(1)?,
-                title: display_title(row.get(2)?, row.get(19)?, row.get(3)?),
-                project_label: row.get(4)?,
-                git_branch: row.get(5)?,
-                origin: row.get(6)?,
-                primary_model: row.get(7)?,
-                model_count: row.get(8)?,
-                range_models: Vec::new(),
-                range_model_count: 0,
-                is_sidechain: row.get::<_, i64>(9)? != 0,
-                work_tags: parse_json_array(row.get::<_, Option<String>>(10)?.as_deref()),
-                started_at: row.get(11)?,
-                ended_at: row.get(12)?,
-                wall_ms: row.get(13)?,
-                active_ms: row.get(14)?,
-                turn_count: row.get(15)?,
-                user_msg_count: row.get(16)?,
-                compact_count: row.get(17)?,
-                cost_usd: row.get(18)?,
-                rework_score: row.get(21)?,
-                goal_summary: row.get(19)?,
-                goal_cluster: row.get(20)?,
-            }, row.get::<_, i64>(22)?))
+            Ok((
+                SessionRow {
+                    kind: row.get(0)?,
+                    session_id: row.get(1)?,
+                    title: display_title(row.get(2)?, row.get(19)?, row.get(3)?),
+                    project_label: row.get(4)?,
+                    git_branch: row.get(5)?,
+                    origin: row.get(6)?,
+                    primary_model: row.get(7)?,
+                    model_count: row.get(8)?,
+                    range_models: Vec::new(),
+                    range_model_count: 0,
+                    is_sidechain: row.get::<_, i64>(9)? != 0,
+                    work_tags: parse_json_array(row.get::<_, Option<String>>(10)?.as_deref()),
+                    started_at: row.get(11)?,
+                    ended_at: row.get(12)?,
+                    wall_ms: row.get(13)?,
+                    active_ms: row.get(14)?,
+                    turn_count: row.get(15)?,
+                    user_msg_count: row.get(16)?,
+                    compact_count: row.get(17)?,
+                    cost_usd: row.get(18)?,
+                    rework_score: row.get(21)?,
+                    goal_summary: row.get(19)?,
+                    goal_cluster: row.get(20)?,
+                },
+                row.get::<_, i64>(22)?,
+            ))
         })
         .map_err(|err| format!("run session page: {err}"))?;
     let page = result_rows
@@ -3914,13 +4164,12 @@ fn sessions_raw(
     let mut total = page.first().map(|(_, total)| *total).unwrap_or(0);
     let mut rows: Vec<SessionRow> = page.into_iter().map(|(row, _)| row).collect();
     if rows.is_empty() && options.offset > 0 {
-        let total_sql = format!("WITH {search_cte}eligible AS ({eligible}) SELECT COUNT(*) FROM eligible");
+        let total_sql =
+            format!("WITH {search_cte}eligible AS ({eligible}) SELECT COUNT(*) FROM eligible");
         total = conn
-            .query_row(
-                &total_sql,
-                params_from_iter(base_params.iter()),
-                |row| row.get(0),
-            )
+            .query_row(&total_sql, params_from_iter(base_params.iter()), |row| {
+                row.get(0)
+            })
             .map_err(|err| format!("count sessions after empty page: {err}"))?;
     }
     fill_raw_range_models(conn, &mut rows, resolved.from, resolved.to)?;
@@ -5587,4 +5836,219 @@ pub fn set_price(conn: &mut Connection, entry: &PriceEntry) -> Result<usize, Str
     tx.commit()
         .map_err(|err| format!("commit price update: {err}"))?;
     Ok(count)
+}
+
+#[cfg(test)]
+mod round2_query_tests {
+    use super::*;
+    use rusqlite::params;
+
+    fn source() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::ailog::schema::init(&conn).unwrap();
+        conn
+    }
+
+    fn session(cost: f64) -> SessionAcc {
+        SessionAcc {
+            project_label: None,
+            ai_title: None,
+            first_prompt: None,
+            tags: Vec::new(),
+            user_msgs: 0,
+            wall_ms: 0,
+            active_ms: 0,
+            rework: 0.0,
+            abandoned: false,
+            families: BTreeSet::new(),
+            tokens: TokenAcc {
+                cost,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn narrow_title_hydration_preserves_ties_empty_titles_and_project_winners() {
+        let conn = source();
+        let mut original = empty_pass();
+        for i in 0..45 {
+            let id = format!("{i:02}-quoted-\"-\\-[]");
+            let project = if i < 5 {
+                "small-project"
+            } else {
+                "large-project"
+            };
+            let ai_title = if i == 2 {
+                Some(String::new())
+            } else if i % 3 == 0 {
+                Some(format!("title-{i}"))
+            } else {
+                None
+            };
+            let prompt = if i % 7 == 0 {
+                None
+            } else {
+                Some(format!("prompt-{i}-{}", "x".repeat(32 * 1024)))
+            };
+            conn.execute(
+                "INSERT INTO session(kind,session_id,project_label,ai_title,first_prompt,work_tags,user_msg_count,wall_ms,active_ms,ends_on_tool) VALUES ('codex',?1,?2,?3,?4,'[\"tag\"]',3,1000,900,0)",
+                params![id,project,ai_title,prompt],
+            ).unwrap();
+            original
+                .sessions
+                .insert(("codex".into(), id), session((i / 2 + 1) as f64));
+        }
+        let mut narrow = empty_pass();
+        narrow.sessions = original.sessions.clone();
+        hydrate_aggregate_sessions(&conn, &mut original.sessions, true, false).unwrap();
+        hydrate_overview_sessions(&conn, &mut narrow.sessions).unwrap();
+        let retained = narrow
+            .sessions
+            .values()
+            .filter(|s| s.ai_title.is_some() || s.first_prompt.is_some())
+            .count();
+        assert!(
+            retained <= 22,
+            "only the emitted titles and project winners may retain prompt text"
+        );
+        assert!(
+            original
+                .sessions
+                .values()
+                .filter(|s| s.ai_title.is_some() || s.first_prompt.is_some())
+                .count()
+                > retained
+        );
+        let prices = Arc::new(PriceTable::default());
+        let prior = empty_pass();
+        let internal = empty_pass();
+        original.rework_summary = Some(ReworkSummary::default());
+        narrow.rework_summary = Some(ReworkSummary::default());
+        let make = |pass: &Pass| {
+            let report = overview_from_pass(
+                &conn,
+                ResolvedRange { from: 0, to: 100 },
+                "custom".into(),
+                prices.clone(),
+                pass,
+                &prior,
+                &internal,
+                ReportTimings::default(),
+                Instant::now(),
+            )
+            .unwrap();
+            let mut value = serde_json::to_value(report).unwrap();
+            value.as_object_mut().unwrap().remove("timings");
+            value
+        };
+        assert_eq!(make(&narrow), make(&original));
+        assert_eq!(
+            narrow
+                .sessions
+                .get(&("codex".into(), "02-quoted-\"-\\-[]".into()))
+                .unwrap()
+                .ai_title,
+            None
+        );
+        // Empty titles remain candidates when they actually win the emitted set.
+        let mut only_empty = empty_pass();
+        only_empty
+            .sessions
+            .insert(("codex".into(), "02-quoted-\"-\\-[]".into()), session(1.0));
+        hydrate_overview_sessions(&conn, &mut only_empty.sessions).unwrap();
+        assert_eq!(
+            only_empty.sessions.values().next().unwrap().ai_title,
+            Some(String::new())
+        );
+    }
+
+    #[test]
+    fn bound_session_keys_preserve_sqlite_rework_aggregation_and_quoted_ids() {
+        let conn = source();
+        let mut sessions: BTreeMap<SessionKey, SessionAcc> = BTreeMap::new();
+        for i in 0..36 {
+            let id = format!("{i:02}-'\"-\\-[]");
+            let score = match i % 3 {
+                0 => 1e16,
+                1 => 1.0,
+                _ => -1e16,
+            };
+            conn.execute("INSERT INTO rework(kind,session_id,score,tool_error_count,tool_call_count,correction_count,churn_files,abandoned) VALUES ('codex',?1,?2,1,3,2,4,?3)",params![id,score,i%2]).unwrap();
+            sessions.insert(("codex".into(), id), session(0.0));
+        }
+        sessions.insert(("codex".into(), "missing-rework".into()), session(0.0));
+        let values = std::iter::repeat("(?,?)")
+            .take(sessions.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql=format!("WITH requested(kind,session_id) AS (VALUES {values}) SELECT COALESCE(SUM(r.tool_error_count),0),COALESCE(SUM(r.tool_call_count),0),COALESCE(SUM(r.correction_count),0),COALESCE(SUM(r.churn_files),0),COALESCE(SUM(r.abandoned<>0),0),COALESCE(AVG(COALESCE(r.score,0.0)),0.0) FROM requested q LEFT JOIN rework r ON r.kind=q.kind AND r.session_id=q.session_id");
+        let keys: Vec<_> = sessions
+            .keys()
+            .flat_map(|(kind, id)| [kind.clone(), id.clone()])
+            .collect();
+        let expected = conn
+            .query_row(&sql, params_from_iter(keys.iter()), |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, f64>(5)?,
+                ))
+            })
+            .unwrap();
+        let actual = rework_summary(&conn, &sessions).unwrap();
+        assert_eq!(
+            actual.tool_error_rate,
+            expected.0 as f64 / expected.1 as f64
+        );
+        assert_eq!(actual.correction_hits, expected.2);
+        assert_eq!(actual.churn_files, expected.3);
+        assert_eq!(actual.abandoned_sessions, expected.4);
+        assert_eq!(actual.avg_score.to_bits(), expected.5.to_bits());
+    }
+    #[test]
+    fn legacy_session_variable_limit_errors_remain_identical() {
+        let conn = source();
+        // Only this in-memory fixture has its variable limit lowered.
+        unsafe {
+            rusqlite::ffi::sqlite3_limit(
+                conn.handle(),
+                rusqlite::ffi::SQLITE_LIMIT_VARIABLE_NUMBER,
+                32,
+            );
+        }
+        let mut sessions: BTreeMap<SessionKey, SessionAcc> = (0..18)
+            .map(|i| (("codex".to_owned(), format!("session-{i}")), session(0.0)))
+            .collect();
+        let expected_session = format!(
+            "prepare aggregate sessions: {}",
+            conn.prepare(&legacy_session_sql(sessions.len()))
+                .err().unwrap()
+        );
+        let expected_rework = format!(
+            "aggregate rework: {}",
+            conn.prepare(&legacy_rework_sql(sessions.len()))
+                .err().unwrap()
+        );
+        assert!(expected_session.contains("too many SQL variables"));
+        assert!(expected_rework.contains("too many SQL variables"));
+        assert_eq!(
+            hydrate_aggregate_sessions(&conn, &mut sessions, false, false).unwrap_err(),
+            expected_session
+        );
+        assert_eq!(
+            hydrate_aggregate_sessions(&conn, &mut sessions, false, true).unwrap_err(),
+            expected_session
+        );
+        assert_eq!(
+            rework_summary(&conn, &sessions).unwrap_err(),
+            expected_rework
+        );
+        sessions.retain(|(_, id), _| id == "session-0");
+        assert!(hydrate_aggregate_sessions(&conn, &mut sessions, false, true).is_ok());
+        assert!(rework_summary(&conn, &sessions).is_ok());
+    }
 }

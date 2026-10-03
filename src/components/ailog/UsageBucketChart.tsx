@@ -6,7 +6,7 @@
  * rather than skipped: a quiet week has to look like a quiet week.
  */
 
-import { useState } from "react";
+import { memo, useEffect, useState } from "react";
 
 import { useElementWidth } from "../../hooks/useElementWidth";
 import { formatMoney, type PriceCoverage, type SeriesGroupBy, type UsageBucket } from "../../lib/ailog";
@@ -31,7 +31,7 @@ const HEIGHT = 168;
 const GAP = 2;
 const AXIS_WIDTH = 52;
 
-export function UsageBucketChart({
+export const UsageBucketChart = memo(function UsageBucketChart({
   model,
   metric,
   mode,
@@ -58,6 +58,10 @@ export function UsageBucketChart({
 }) {
   const { ref: widthRef, width: measured } = useElementWidth();
   const [selectedBucket, setSelectedBucket] = useState<number | null>(null);
+  // A warm range switch keeps the SVG mounted; retain the former selection reset.
+  const firstBucket = model.days[0]?.bucket;
+  const lastBucket = model.days[model.days.length - 1]?.bucket;
+  useEffect(() => { setSelectedBucket(null); }, [firstBucket, lastBucket, bucket]);
   if (model.days.length === 0) {
     return <div style={noteStyle}>この期間に記録がありません。期間を広げるか、再インデックスしてください。</div>;
   }
@@ -187,4 +191,4 @@ export function UsageBucketChart({
       </div>
     </div>
   );
-}
+});

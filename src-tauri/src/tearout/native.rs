@@ -1,7 +1,6 @@
 use super::geometry::{self, ReceiverCandidate, Rect};
 use super::{unix_ms, Approval, MoveState, Reveal, TearoutState, WindowGeometry};
 use serde::Serialize;
-use std::time::{Duration, Instant};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -310,9 +309,6 @@ pub(super) fn synthetic_sample(
     client_y: f64,
     phase: &str,
     escaped: bool,
-    diagnostics: bool,
-    legacy_samples: bool,
-    recorder: bool,
 ) -> Result<serde_json::Value, String> {
     let window = app
         .get_window(&label)
@@ -331,15 +327,6 @@ pub(super) fn synthetic_sample(
             .or_insert_with(|| {
                 let shared = Arc::new(MoveState::default());
                 shared.synthetic.store(true, Ordering::Release);
-                shared.metrics.probe.store(diagnostics, Ordering::Release);
-                shared
-                    .metrics
-                    .legacy
-                    .store(legacy_samples, Ordering::Release);
-                shared
-                    .metrics
-                    .enabled
-                    .store(recorder || diagnostics, Ordering::Release);
                 shared.alpha.store(255, Ordering::Release);
                 shared.applied_alpha.store(255, Ordering::Release);
                 shared
@@ -353,10 +340,8 @@ pub(super) fn synthetic_sample(
         }
         shared
     };
-    start_probe(app, &shared, id.clone(), label.clone(), recorder);
     let at = unix_ms();
     let sequence = shared.sample_count.fetch_add(1, Ordering::AcqRel);
-    shared.metrics.poll(None);
     let first = sequence == 0;
     let previous_receiver;
     {
@@ -382,20 +367,6 @@ pub(super) fn synthetic_sample(
         }
     }
     let approval = shared.approval.lock().map_err(|e| e.to_string())?.clone();
-    let allowed = shared.pacing.lock().map_err(|e| e.to_string())?.allow(
-        at,
-        receiver.as_deref(),
-        client_x,
-        client_y,
-        first || phase == "end",
-        approval.is_some(),
-        legacy_samples,
-    );
-    if !allowed {
-        return Ok(serde_json::json!({ "approval": approval,
-            "alpha_calls": shared.alpha_calls.load(Ordering::Acquire), "payload_bytes": 0,
-            "recipients": 0 }));
-    }
     let position = window.outer_position().map_err(|e| e.to_string())?;
     let size = window.inner_size().map_err(|e| e.to_string())?;
     let sample = Sample {
@@ -434,27 +405,17 @@ pub(super) fn synthetic_sample(
     let bytes = serde_json::to_vec(&sample)
         .map_err(|e| e.to_string())?
         .len();
-    let emit_at = Instant::now();
     let recipients = emit_sample(
         app,
         &sample,
         previous_receiver.as_deref(),
         first || phase == "end",
     );
-    shared
-        .metrics
-        .emit(emit_at.elapsed().as_secs_f64() * 1000.0, recipients);
     let result = serde_json::json!({ "approval": approval,
         "alpha_calls": shared.alpha_calls.load(Ordering::Acquire), "payload_bytes": bytes,
-        "recipients": recipients, "diagnostics": if phase == "end" { Some(shared.metrics.summary()) } else { None } });
+        "recipients": recipients });
     if phase == "end" {
         shared.closed.store(true, Ordering::Release);
-        if recorder && !shared.metrics.probe_started.load(Ordering::Acquire) {
-            let summary = shared.metrics.summary();
-            let log_id = id.clone();
-            let log_label = sample.label.clone();
-            std::thread::spawn(move || super::log::native_summary(log_id, log_label, summary));
-        }
         app.state::<TearoutState>()
             .moves
             .lock()
@@ -462,82 +423,6 @@ pub(super) fn synthetic_sample(
             .remove(&id);
     }
     Ok(result)
-}
-
-fn start_probe(
-    app: &AppHandle,
-    shared: &Arc<MoveState>,
-    id: String,
-    label: String,
-    recorder: bool,
-) {
-    if !shared.metrics.probe.load(Ordering::Acquire)
-        || shared.metrics.probe_started.swap(true, Ordering::AcqRel)
-    {
-        return;
-    }
-    let app = app.clone();
-    let shared = shared.clone();
-    std::thread::spawn(move || {
-        let started = Instant::now();
-        while !shared.closed.load(Ordering::Acquire) && started.elapsed().as_secs() < 300 {
-            // At most one marker may wait in the UI queue. Never build a backlog.
-            if !shared.metrics.probe_pending.swap(true, Ordering::AcqRel) {
-                let queued = Instant::now();
-                let marker = shared.clone();
-                if app
-                    .run_on_main_thread(move || {
-                        marker.metrics.wait(queued.elapsed().as_secs_f64() * 1000.0);
-                        marker.metrics.probe_pending.store(false, Ordering::Release);
-                    })
-                    .is_err()
-                {
-                    shared.metrics.probe_pending.store(false, Ordering::Release);
-                }
-            } else {
-                shared.metrics.probe_skipped.fetch_add(1, Ordering::Relaxed);
-            }
-            std::thread::sleep(Duration::from_millis(4));
-        }
-        let deadline = Instant::now();
-        while shared.metrics.probe_pending.load(Ordering::Acquire)
-            && deadline.elapsed().as_secs() < 1
-        {
-            std::thread::sleep(Duration::from_millis(4));
-        }
-        if recorder {
-            super::log::native_summary(id, label, shared.metrics.summary());
-        }
-    });
-}
-
-/// A test profile can opt into the expensive main-thread probe for real drags.
-/// Ordinary recording keeps the probe off; no settings/env/safety contract changes.
-fn configure_metrics(shared: &MoveState) {
-    if !crate::test_profile::is_active() {
-        return;
-    }
-    let Ok(root) = crate::test_profile::runtime_dir() else {
-        return;
-    };
-    let Ok(bytes) = std::fs::read(root.join("tearout-diagnostics.json")) else {
-        return;
-    };
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return;
-    };
-    shared.metrics.probe.store(
-        value["main_thread_probe"].as_bool().unwrap_or(false),
-        Ordering::Release,
-    );
-    shared.metrics.legacy.store(
-        value["legacy_samples"].as_bool().unwrap_or(false),
-        Ordering::Release,
-    );
-    shared.metrics.enabled.store(
-        value["recorder"].as_bool().unwrap_or(true),
-        Ordering::Release,
-    );
 }
 
 fn mark_escape(shared: &MoveState) {
@@ -566,7 +451,6 @@ pub fn start(
     if ACTIVE_MOVE.with(|active| active.borrow().is_some()) {
         return Err("tearout_move_busy".into());
     }
-    configure_metrics(&shared);
     window.set_focusable(false).map_err(|e| e.to_string())?;
     let hwnd = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
     let reference = Arc::into_raw(shared.clone()) as usize;
@@ -588,16 +472,7 @@ pub fn start(
     let handle = hwnd.0 as usize;
     let mut foreground = unsafe { GetForegroundWindow() }.0 as usize;
     let was_held = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 };
-    start_probe(
-        &app,
-        &shared,
-        id.clone(),
-        label.clone(),
-        shared.metrics.enabled.load(Ordering::Acquire),
-    );
     let polling = shared.clone();
-    let initial_cursor = cursor().unwrap_or_default();
-    let anchor = (initial_cursor.x - position.x, initial_cursor.y - position.y);
     std::thread::spawn(move || {
         let begin = std::time::Instant::now();
         let mut opacity = 255;
@@ -621,20 +496,7 @@ pub fn start(
             }
             // Do not restore/destroy a window while its OS move loop still owns it.
             let done = exited || failed && !entered || !was_held || !entered && !held;
-            let scan_at = Instant::now();
             let hit = receiver_at(&app, &label, point);
-            polling
-                .metrics
-                .poll(Some(scan_at.elapsed().as_secs_f64() * 1000.0));
-            if entered && polling.metrics.enabled.load(Ordering::Relaxed) {
-                let mut rect = RECT::default();
-                if unsafe { GetWindowRect(HWND(handle as *mut _), &mut rect) }.is_ok() {
-                    polling.metrics.lag(
-                        ((point.x - rect.left - anchor.0) as f64)
-                            .hypot((point.y - rect.top - anchor.1) as f64),
-                    );
-                }
-            }
             let receiver = hit.as_ref().map(|(label, _, _)| label.clone());
             let previous = polling
                 .receiver
@@ -708,68 +570,39 @@ pub fn start(
             let lifecycle =
                 done || previous_started != Some(started) || focus_stolen != previous_focus_stolen;
             previous_started = Some(started);
-            let sample = Sample {
-                id: id.clone(),
-                label: label.clone(),
-                sequence: polling.sample_count.fetch_add(1, Ordering::AcqRel),
-                source: source.clone(),
-                region_count: polling.region_count.load(Ordering::Acquire) as usize,
-                receiver_epoch: polling.receiver_epoch.load(Ordering::Acquire),
-                x: point.x,
-                y: point.y,
-                phase: if done { "end" } else { "move" },
-                at: unix_ms(),
-                escaped,
-                receiver,
-                client_x: hit.as_ref().map(|(_, x, _)| *x).unwrap_or(-1.0),
-                client_y: hit.as_ref().map(|(_, _, y)| *y).unwrap_or(-1.0),
-                approval,
-                native_started_at: (started != 0).then_some(started),
-                error: failed.then_some("tearout_native_move_failed"),
-                scale: unsafe { GetDpiForWindow(HWND(handle as *mut _)) }.max(96) as f64 / 96.0,
-                monitor: monitor_name(point),
-                focus_stolen,
-                esc_at: match polling.escaped_at.load(Ordering::Acquire) {
-                    0 => None,
-                    at => Some(at),
+            emit_sample(
+                &app,
+                &Sample {
+                    id: id.clone(),
+                    label: label.clone(),
+                    sequence: polling.sample_count.fetch_add(1, Ordering::AcqRel),
+                    source: source.clone(),
+                    region_count: polling.region_count.load(Ordering::Acquire) as usize,
+                    receiver_epoch: polling.receiver_epoch.load(Ordering::Acquire),
+                    x: point.x,
+                    y: point.y,
+                    phase: if done { "end" } else { "move" },
+                    at: unix_ms(),
+                    escaped,
+                    receiver,
+                    client_x: hit.as_ref().map(|(_, x, _)| *x).unwrap_or(-1.0),
+                    client_y: hit.as_ref().map(|(_, _, y)| *y).unwrap_or(-1.0),
+                    approval,
+                    native_started_at: (started != 0).then_some(started),
+                    error: failed.then_some("tearout_native_move_failed"),
+                    scale: unsafe { GetDpiForWindow(HWND(handle as *mut _)) }.max(96) as f64 / 96.0,
+                    monitor: monitor_name(point),
+                    focus_stolen,
+                    esc_at: match polling.escaped_at.load(Ordering::Acquire) {
+                        0 => None,
+                        at => Some(at),
+                    },
+                    original,
                 },
-                original,
-            };
-            let approved = polling
-                .approval
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_some();
-            let allowed = polling
-                .pacing
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .allow(
-                    sample.at,
-                    sample.receiver.as_deref(),
-                    sample.client_x,
-                    sample.client_y,
-                    lifecycle,
-                    approved,
-                    polling.metrics.legacy.load(Ordering::Acquire),
-                );
-            if allowed {
-                let emit_at = Instant::now();
-                let delivered = emit_sample(&app, &sample, previous.as_deref(), lifecycle);
-                polling
-                    .metrics
-                    .emit(emit_at.elapsed().as_secs_f64() * 1000.0, delivered);
-            }
+                previous.as_deref(),
+                lifecycle,
+            );
             if done {
-                if polling.metrics.enabled.load(Ordering::Acquire)
-                    && !polling.metrics.probe_started.load(Ordering::Acquire)
-                {
-                    super::log::native_summary(
-                        id.clone(),
-                        label.clone(),
-                        polling.metrics.summary(),
-                    );
-                }
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(8));
