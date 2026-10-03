@@ -497,6 +497,8 @@ pub fn spawn_child_window(
                 Ok(window) => {
                     #[cfg(windows)]
                     crate::watchdog::register_process_failed(window.as_ref());
+                    #[cfg(target_os = "macos")]
+                    crate::watchdog::register_mac_process_failed(window.as_ref());
                     crate::perf_timeline::mark("window.child.built", Some(&build_label));
                     // Restate size and position in explicit logical units now that
                     // the window knows which monitor (and scale factor) it is on.
