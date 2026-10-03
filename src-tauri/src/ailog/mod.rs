@@ -26,6 +26,7 @@ pub mod parse_grok;
 pub mod price;
 pub mod project_rules;
 pub mod query;
+pub mod report_cache;
 pub mod rollup;
 pub mod schema;
 pub mod summarize;
@@ -177,6 +178,8 @@ pub struct Filters {
     pub include_sidechain: bool,
     pub min_cost: Option<f64>,
     pub query: Option<String>,
+    /// Renderer-only snapshot preference; never a SQL predicate.
+    pub report_cache: Option<report_cache::CacheMode>,
 }
 
 impl Default for Filters {
@@ -191,6 +194,7 @@ impl Default for Filters {
             include_sidechain: false,
             min_cost: None,
             query: None,
+            report_cache: None,
         }
     }
 }

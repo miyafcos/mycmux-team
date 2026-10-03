@@ -67,8 +67,12 @@ export function applyInputToDraft(draft: InputLineDraft, data: string): InputLin
         continue;
       }
       if (isPrintable(character)) {
-        text += character;
-        if (text.length > MAX_DRAFT_LENGTH) clean = false;
+        if (text.length + character.length > MAX_DRAFT_LENGTH) {
+          // Once truncated, backspaces cannot make the mirror trustworthy.
+          clean = false;
+        } else {
+          text += character;
+        }
         continue;
       }
       clean = false;

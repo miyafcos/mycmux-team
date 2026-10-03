@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { startTearoutFrames, finishTearoutFrames } from "./frameMetrics";
 import type { DockTarget } from "../../stores/detachedDockStore";
 
 export type TearoutResult = "kept_window" | "docked" | "esc_cancelled" | "failed_restored" | "reordered" | "cancelled_before_tearout";
@@ -25,6 +26,7 @@ export class TearoutRecord {
   private data: RecordData;
   constructor(public readonly id: string, paneId: string, source: string, downAt: number,
     grabbedKind: RecordData["grabbed_kind"] = "pane", paneCount = 1) {
+    startTearoutFrames(id);
     this.data = { drag_id: id, pane_id: paneId, source_window: source, switch_on: true, down_at: downAt,
       grabbed_kind: grabbedKind, pane_count: paneCount,
       outside_at: null, shown_at: null, visible_at: null, native_started_at: null, hover_started_at: null,
@@ -48,11 +50,13 @@ export class TearoutRecord {
   error(code: TearoutError): void { if (!this.data.errors.includes(code)) this.data.errors.push(code); }
   identity(equal: boolean | null): void { this.data.session_id_equal = equal; }
   forRetire(target: DockTarget): RecordData {
+    finishTearoutFrames(this.id);
     return { ...this.data, result: "docked", destination: destination(target) };
   }
   async finish(result: TearoutResult, target: DockTarget | null = null, identity: boolean | null = this.data.session_id_equal): Promise<void> {
     if (this.written) return;
     this.written = true;
+    finishTearoutFrames(this.id);
     this.data.result = result; this.data.destination = destination(target);
     this.data.session_id_equal = identity; this.data.layout_done_at = Date.now();
     if (this.data.released_at == null) this.data.released_at = this.data.layout_done_at;

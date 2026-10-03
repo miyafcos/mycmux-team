@@ -507,8 +507,8 @@ impl StatusFeed {
 }
 
 #[tauri::command(async)]
-pub fn get_session_status_snapshot(state: tauri::State<'_, crate::AppState>) -> SnapshotPayload {
-    state.status_feed.frontend_snapshot()
+pub async fn get_session_status_snapshot(state: tauri::State<'_, crate::AppState>) -> Result<SnapshotPayload, String> {
+    Ok(state.status_feed.frontend_snapshot())
 }
 
 pub struct StatusSubscription {

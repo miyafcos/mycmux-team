@@ -109,7 +109,7 @@ pub fn open_workspace_window(
 /// subscription. Main merges the non-main fragments into its `data.json`
 /// snapshot — children never call `save_persistent_data`.
 #[tauri::command(async)]
-pub fn publish_window_fragment(
+pub async fn publish_window_fragment(
     state: State<'_, AppState>,
     fragment: WindowFragment,
 ) -> Result<(), String> {
@@ -125,7 +125,7 @@ pub fn publish_window_fragment(
 }
 
 #[tauri::command(async)]
-pub fn take_pending_adoption(
+pub async fn take_pending_adoption(
     state: State<'_, AppState>,
     label: String,
 ) -> Result<Vec<Value>, String> {
@@ -134,7 +134,7 @@ pub fn take_pending_adoption(
 
 /// Hand workspaces from one window to another (merge-back on child close).
 #[tauri::command(async)]
-pub fn release_workspaces(
+pub async fn release_workspaces(
     app: AppHandle,
     state: State<'_, AppState>,
     from_label: String,
@@ -169,7 +169,7 @@ pub fn release_workspaces(
 /// Read by main's `buildSnapshot` so `data.json` keeps every window's
 /// workspaces (one missing there is gone on the next launch).
 #[tauri::command(async)]
-pub fn get_window_fragments(state: State<'_, AppState>) -> Result<Vec<WindowFragment>, String> {
+pub async fn get_window_fragments(state: State<'_, AppState>) -> Result<Vec<WindowFragment>, String> {
     Ok(state.window_registry.fragments())
 }
 
@@ -177,9 +177,11 @@ pub fn get_window_fragments(state: State<'_, AppState>) -> Result<Vec<WindowFrag
 /// leader path reads the same file through `load_persistent_data`; this is the
 /// same load with the workspace list left behind.
 #[tauri::command(async)]
-pub fn get_app_settings(app_handle: AppHandle) -> Result<WindowSettings, String> {
-    let data = storage::load(&app_handle)?;
-    Ok(WindowSettings { settings: data.settings, schema_version: data.schema_version })
+pub async fn get_app_settings(app_handle: AppHandle) -> Result<WindowSettings, String> {
+    crate::util::task::run_blocking("get_app_settings", move || {
+        let data = storage::load(&app_handle)?;
+        Ok(WindowSettings { settings: data.settings, schema_version: data.schema_version })
+    }).await
 }
 
 #[derive(serde::Serialize)]
@@ -197,12 +199,13 @@ pub struct WindowSettings {
 /// that argument fails with "current webview is not a WebviewWindow" — which
 /// left a detached web pane window impossible to close or dock.
 #[tauri::command(async)]
-pub fn set_window_close_intent(
+pub async fn set_window_close_intent(
     window: tauri::Window,
     state: State<'_, AppState>,
     closing: bool,
-) {
+) -> Result<(), String> {
     state.window_registry.set_close_intent(window.label(), closing);
+    Ok(())
 }
 
 pub fn handle_window_destroyed(app: &AppHandle, label: &str) {

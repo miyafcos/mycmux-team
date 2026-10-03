@@ -39,6 +39,8 @@ BLOCKING_BODY_TOKENS = [
     "::metadata(",
     "Command::new",
     "sysinfo",
+    "rusqlite",
+    "std::thread::sleep",
     "ZipArchive",
     "quick_xml",
     "spawn_blocking",
@@ -54,6 +56,8 @@ class TauriCommand:
     path: Path
     line: int
     is_async: bool
+    has_async_attribute: bool
+    is_async_fn: bool
     body: str
 
 
@@ -84,31 +88,63 @@ def function_body(text: str, fn_start: int, search_end: int) -> str:
     raise AssertionError(f"unterminated function body near line {line_number(text, fn_start)}")
 
 
-def iter_tauri_commands() -> list[TauriCommand]:
+def commands_from_text(path: Path, text: str) -> list[TauriCommand]:
     commands: list[TauriCommand] = []
-    for path in sorted(RUST_SRC_ROOT.rglob("*.rs")):
-        text = read_repo_text(path)
-        attrs = list(COMMAND_ATTR_RE.finditer(text))
-        for index, attr in enumerate(attrs):
-            next_attr_start = attrs[index + 1].start() if index + 1 < len(attrs) else len(text)
-            fn = FN_RE.search(text, attr.end(), next_attr_start)
-            assert fn is not None, (
-                f"{path.relative_to(REPO_ROOT)}:{line_number(text, attr.start())}: "
-                "found #[tauri::command] without a following public function"
-            )
-
-            args = attr.group("args") or ""
-            is_async = "async" in {part.strip() for part in args.split(",")} or bool(fn.group("async"))
-            commands.append(
-                TauriCommand(
-                    name=fn.group("name"),
-                    path=path,
-                    line=line_number(text, fn.start()),
-                    is_async=is_async,
-                    body=function_body(text, fn.start(), next_attr_start),
-                )
-            )
+    attrs = list(COMMAND_ATTR_RE.finditer(text))
+    for index, attr in enumerate(attrs):
+        next_attr_start = attrs[index + 1].start() if index + 1 < len(attrs) else len(text)
+        fn = FN_RE.search(text, attr.end(), next_attr_start)
+        assert fn is not None, (
+            f"{path}:{line_number(text, attr.start())}: "
+            "found #[tauri::command] without a following public function"
+        )
+        args = attr.group("args") or ""
+        has_async_attribute = "async" in {part.strip() for part in args.split(",")}
+        is_async_fn = bool(fn.group("async"))
+        commands.append(TauriCommand(
+            name=fn.group("name"), path=path, line=line_number(text, fn.start()),
+            is_async=has_async_attribute or is_async_fn,
+            has_async_attribute=has_async_attribute, is_async_fn=is_async_fn,
+            body=function_body(text, fn.start(), next_attr_start),
+        ))
     return commands
+
+
+def iter_tauri_commands() -> list[TauriCommand]:
+    return [command for path in sorted(RUST_SRC_ROOT.rglob("*.rs"))
+            for command in commands_from_text(path, read_repo_text(path))]
+
+
+def blocking_attribute_sync_commands(commands: list[TauriCommand]) -> list[TauriCommand]:
+    return [command for command in commands
+            if command.has_async_attribute and not command.is_async_fn
+            and any(token in command.body for token in BLOCKING_BODY_TOKENS)]
+
+
+def test_async_attribute_cannot_hide_a_blocking_synchronous_function() -> None:
+    offenders = blocking_attribute_sync_commands(iter_tauri_commands())
+    assert not offenders, "; ".join(
+        f"{command.path.relative_to(REPO_ROOT)}:{command.line} {command.name}: "
+        "move blocking work into run_blocking and use async fn"
+        for command in offenders
+    )
+
+
+def test_all_async_attribute_commands_are_real_async_functions() -> None:
+    commands = iter_tauri_commands()
+    offenders = [command.name for command in commands
+                 if command.has_async_attribute and not command.is_async_fn]
+    assert not offenders, offenders
+
+
+def test_blocking_attribute_scanner_distinguishes_attributes_from_async_functions() -> None:
+    for token in ["std::fs::read", "sysinfo::System", "Command::new", "rusqlite::Connection"]:
+        source = f"#[tauri::command(async)]\npub fn bad() {{ {token}(); }}\n"
+        source += f"#[tauri::command]\npub async fn good() {{ {token}(); }}\n"
+        source += "#[tauri::command(async)]\npub fn cheap() { 1 }\n"
+        commands = commands_from_text(Path("fixture.rs"), source)
+        assert [command.name for command in blocking_attribute_sync_commands(commands)] == ["bad"]
+        assert [command.is_async_fn for command in commands] == [False, True, False]
 
 
 def test_sync_tauri_commands_are_allowlisted_and_cheap() -> None:
@@ -119,7 +155,7 @@ def test_sync_tauri_commands_are_allowlisted_and_cheap() -> None:
 
     assert not unexpected_sync, (
         "Sync #[tauri::command] functions must be consciously allowlisted or moved to "
-        "#[tauri::command(async)]. Unexpected sync commands: "
+        "an async fn with blocking work offloaded. Unexpected sync commands: "
         + ", ".join(sorted(unexpected_sync))
     )
     assert not stale_allowlist, (
@@ -138,7 +174,7 @@ def test_sync_tauri_commands_are_allowlisted_and_cheap() -> None:
 
     assert not offenders, (
         "Allowlisted sync #[tauri::command] functions must stay cheap. Use "
-        "#[tauri::command(async)] for blocking work, or extend the allowlist consciously "
+        "an async fn with run_blocking for blocking work, or extend the allowlist consciously "
         "with a narrow justification. Offenders: "
         + "; ".join(offenders)
     )

@@ -1,5 +1,5 @@
 import { useSettingsStore } from "../../../stores/settingsStore";
-import { supportsNativePaneTearout } from "../../../lib/tearout/feature";
+import { supportsNativePaneTearout, isMacTearoutPlatform } from "../../../lib/tearout/feature";
 import { notificationSettingsStrings } from "../settingsStrings";
 import { checkboxLabelStyle, checkboxLabelStyleFor, sectionHeadingStyle } from "../tabStyles";
 
@@ -91,7 +91,7 @@ export function NotificationsLayoutTab() {
         <label style={checkboxLabelStyle}>
           <input type="checkbox" checked={nativePaneTearoutEnabled}
             onChange={(e) => setNativePaneTearoutEnabled(e.target.checked)} />
-          <span>{notificationSettingsStrings.nativePaneTearoutLabel}</span>
+          <span>{isMacTearoutPlatform() ? "Mac\u306e\u7a93\u306e\u5207\u308a\u96e2\u3057\u3092\u65b0\u3057\u3044\u52d5\u304d\u306b\u3059\u308b (\u8a66\u9a13\u4e2d)" : notificationSettingsStrings.nativePaneTearoutLabel}</span>
         </label>
       )}
       <label style={checkboxLabelStyle}>

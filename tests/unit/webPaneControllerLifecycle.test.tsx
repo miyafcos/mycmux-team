@@ -90,6 +90,23 @@ afterEach(async () => {
 });
 
 describe("WebPaneController lifecycle", () => {
+  it("observes DOM only while at least one web pane exists", async () => {
+    const observe = vi.fn(); const disconnect = vi.fn();
+    vi.stubGlobal("MutationObserver", class {
+      observe = observe;
+      disconnect = disconnect;
+    });
+    useWorkspaceListStore.setState({ workspaces: [] });
+    await act(async () => root.render(<WebPaneController />));
+    expect(observe).not.toHaveBeenCalled();
+    const workspace = workspaceWithWebTab();
+    await act(async () => useWorkspaceListStore.setState({ workspaces: [workspace] }));
+    expect(observe).toHaveBeenCalledOnce();
+    await act(async () => useWorkspaceListStore.setState({ workspaces: [] }));
+    expect(disconnect).toHaveBeenCalledOnce();
+    await act(async () => useWorkspaceListStore.setState({ workspaces: [workspace] }));
+    expect(observe).toHaveBeenCalledTimes(2);
+  });
   it("reloads changed HTML in its existing child webview", async () => {
     vi.stubGlobal("__TAURI_INTERNALS__", {
       convertFileSrc: (path: string) => `http://asset.localhost/${encodeURIComponent(path)}`,

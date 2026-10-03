@@ -12,7 +12,7 @@ LIB = ROOT / "src-tauri/src/lib.rs"
 
 
 def function_body(source: str, name: str) -> str:
-    match = re.search(rf"\bfn\s+{name}\s*\(", source)
+    match = re.search(rf"\bfn\s+{name}(?:<[^>{{}}]+>)?\s*\(", source)
     assert match, name
     start = source.index("{", match.end())
     depth = 0
@@ -54,12 +54,13 @@ def test_setup_registers_main_webview_and_starts_the_watchdog() -> None:
     )
 
 
-def test_process_failed_registration_only_logs_and_uses_the_existing_native_webview() -> None:
+def test_process_failed_registration_only_enqueues_recovery_and_uses_the_existing_native_webview() -> None:
     source = WATCHDOG.read_text(encoding="utf-8")
     assert re.search(r"#\[cfg\(windows\)\]\s*pub\(crate\) fn register_process_failed", source)
     body = function_body(source, "register_process_failed")
     for required in (".with_webview(", "ProcessFailedEventHandler::create", ".add_ProcessFailed(",
-                     "ProcessFailedKind(", "ExitCode(", "window=", "webview=", "log_with_memory("):
+                     "ProcessFailedKind(", "ExitCode(", "window=", "webview=", "log_with_memory(",
+                     "queue_renderer_failure("):
         assert required in body
     for forbidden in (".reload(", ".navigate(", ".build(", ".recv(", "std::fs", "diag::log("):
         assert forbidden not in body
@@ -88,6 +89,7 @@ def test_kill_session_registration_times_the_whole_existing_command_on_the_same_
     body = function_body(source, "measured_kill_session")
     call = "crate::commands::terminal::kill_session(state, session_id.clone())"
     assert body.index("Instant::now()") < body.index(call) < body.index("start.elapsed()")
+    assert call + ".await" in body
     assert "spawn_blocking" not in body
     assert "use measured_kill_session as kill_session;" in source
     assert "use __cmd__measured_kill_session as __cmd__kill_session;" in source

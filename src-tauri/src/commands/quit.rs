@@ -71,15 +71,17 @@ impl QuitCoordinator {
 
 /// Answered by every window once its fragment is published.
 #[tauri::command(async)]
-pub fn quit_prepared(window: tauri::Window, state: State<'_, QuitCoordinator>) {
+pub async fn quit_prepared(window: tauri::Window, state: State<'_, QuitCoordinator>) -> Result<(), String> {
     state.note_prepared(window.label());
+    Ok(())
 }
 
 /// Answered by the window that owns `data.json` once the file is written.
 #[tauri::command(async)]
-pub fn quit_saved(state: State<'_, QuitCoordinator>) {
+pub async fn quit_saved(state: State<'_, QuitCoordinator>) -> Result<(), String> {
     state.note_saved();
     crate::perf_timeline::mark("quit.saved.ack", None);
+    Ok(())
 }
 
 fn wait_until(deadline: Instant, mut done: impl FnMut() -> bool) -> bool {
@@ -133,7 +135,7 @@ pub fn begin_quit(app: &AppHandle) {
 /// window still holds, and leaves everything else alone: a save that is
 /// seconds old is a far better outcome than replacing it with a snapshot
 /// assembled from fragments that may themselves be a moment behind.
-pub fn fill_in_unsaved_workspaces(app: &AppHandle) {
+pub fn fill_in_unsaved_workspaces(app: &AppHandle, deadline: Instant) {
     let Some(state) = app.try_state::<crate::AppState>() else {
         return;
     };
@@ -158,7 +160,7 @@ pub fn fill_in_unsaved_workspaces(app: &AppHandle) {
     if held.is_empty() {
         return;
     }
-    let result = crate::db::storage::update(app, move |disk| {
+    let result = crate::db::storage::update_for_shutdown(app, deadline, move |disk| {
         let known: HashSet<String> = disk
             .workspaces
             .iter()

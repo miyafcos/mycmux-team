@@ -2,6 +2,8 @@ pub mod ailog;
 mod agent_titles;
 mod agent_transcript;
 mod agent_state;
+mod agent_adapters;
+mod codex_app_server;
 mod attention;
 mod ai;
 mod cli_accounts;
@@ -9,6 +11,7 @@ mod claude_skills;
 mod commands;
 mod db;
 mod diag;
+mod shutdown;
 mod watchdog;
 mod dispatch;
 #[cfg(feature = "e2e")]
@@ -356,7 +359,7 @@ pub fn run() {
         window_registry: window_registry::WindowRegistry::new(),
     };
 
-    tauri::Builder::default()
+    let application = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -380,6 +383,7 @@ pub fn run() {
                 .build(),
         )
         .manage(state)
+        .manage(codex_app_server::CodexAppServerState::default())
         .manage(tearout::TearoutState::default())
         .manage(open_with::PendingOpenPaths::with_paths(initial_open_paths))
         .manage(socket::SocketState {
@@ -395,6 +399,12 @@ pub fn run() {
             claude_skills::claude_skills_install,
             commands::agent_hooks::agent_hooks_status,
             commands::agent_hooks::agent_hooks_set,
+            agent_adapters::agent_adapter_capabilities,
+            codex_app_server::codex_app_server_set_enabled,
+            codex_app_server::codex_app_server_start,
+            codex_app_server::codex_app_server_command,
+            codex_app_server::codex_app_server_status,
+            codex_app_server::codex_app_server_close,
             commands::terminal::create_session,
             commands::terminal::write_to_session,
             commands::terminal::get_session_input_revision,
@@ -609,6 +619,7 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             watchdog::start(app_handle.clone());
+            watchdog::main_webview_created();
             if let Some(profile) = test_profile::name() {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_title(&format!("mycmux — TEST ({profile})"));
@@ -780,6 +791,9 @@ pub fn run() {
             }
         })
         .build(tauri::generate_context!())
-        .expect("error while building tauri application")
-        .run(commands::window::handle_app_run_event);
+        .expect("error while building tauri application");
+    // Tauri creates configured windows on Ready, immediately before setup.
+    // Measure run-to-setup so main construction is covered without replacing it.
+    watchdog::begin_main_webview_creation();
+    application.run(commands::window::handle_app_run_event);
 }

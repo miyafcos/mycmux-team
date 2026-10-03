@@ -12,6 +12,7 @@ mod perf_tests;
 mod pivot_tests;
 mod price_tests;
 mod query_compat_tests;
+mod report_cache_tests;
 mod rule_check_tests;
 mod rollup_tests;
 mod usage_series_tests;

@@ -22,6 +22,7 @@ import type { TerminalLaunchRequest } from "../terminal/terminalLaunchParams";
 import { isDeclaredTab, isRestorableTab, type RestorablePaneTab } from "../../lib/tabLifecycle";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
+import { resolveTabMark, tabMarkSource } from "../../lib/tabMark";
 import { paneContainsSession, workspaceContainsSession } from "../../stores/workspaceListStore";
 import {
   DEFAULT_LAYOUT_SIZE,
@@ -712,6 +713,8 @@ export function serializePaneForSocket(
       const tabMetadata = metadata[tab.sessionId];
       const process = processMetadata[tab.sessionId];
       const screenObserved = isTerminalMounted(tab.sessionId);
+      const ptyAlive = process !== undefined;
+      const mark = resolveTabMark(tab, process?.live_agent_kind, ptyAlive);
       return {
         id: tab.id,
         sessionId: tab.sessionId,
@@ -721,6 +724,9 @@ export function serializePaneForSocket(
         cwd: tab.cwd,
         agentId: tab.agentId,
         agentKind: tab.agentKind,
+        displayKind: mark?.kind ?? null,
+        liveAgentKind: ptyAlive ? process?.live_agent_kind ?? null : null,
+        markSource: tabMarkSource(tab, ptyAlive),
         claudeSessionId: tab.claudeSessionId,
         agentSessionId: tab.agentSessionId,
         lifecycle: tab.lifecycle,
@@ -730,7 +736,7 @@ export function serializePaneForSocket(
         agentStatusAt: tabMetadata?.agentStatusAt ?? null,
         agentStatusStale: !screenObserved,
         processStatus: process?.process_status ?? null,
-        // This is the foreground process start time, not an activity observation.
+        // Stable selected-agent (or foreground fallback) start time, not activity.
         processStatusAt: process?.process_status_at ?? null,
         lastOutputAt: lastOutputBySession[tab.sessionId] ?? null,
         processStatusReason: processStatusReasonForTab(
@@ -2703,7 +2709,7 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
           ...workspaceState.workspaces.flatMap((workspace) =>
             workspace.panes.map((pane) => serializePaneForSocket(pane, serializationContext, workspace))
           ),
-          ...serializeOtherWindowPanes(peers),
+          ...serializeOtherWindowPanes(peers, processSnapshot.metadata),
         ],
       };
     }

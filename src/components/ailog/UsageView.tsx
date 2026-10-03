@@ -10,7 +10,7 @@ import { SessionTable } from "./SessionTable";
 import { SummaryCards } from "./SummaryCards";
 import { UsageBucketChart } from "./UsageBucketChart";
 import { UsageModelTable } from "./UsageModelTable";
-import { UsageRhythm } from "./UsageRhythm";
+import { UsageRhythmDetails } from "./UsageRhythmDetails";
 import { ReworkRankings } from "./ReworkRankings";
 import { UsageTotals } from "./UsageTotals";
 import { WorkTagTable } from "./WorkTagTable";
@@ -37,7 +37,8 @@ export const UsageView = memo(function UsageView(props: {
   const seriesMatchesOverview = Boolean(p.series && p.overview
     && p.series.range.from === p.overview.range.from
     && p.series.range.to === p.overview.range.to);
-  const usageReady = Boolean(p.series && p.rhythm && seriesMatchesOverview && !p.usageLoading && !p.usageError);
+  const usageReady = Boolean(p.series && seriesMatchesOverview
+    && p.series.groupBy === p.seriesAxis && p.series.bucket === p.bucket);
   const projectSel = p.selection?.project;
   const modelSel = p.selection?.model;
   const previousTotals = useAilogStore((state) => state.previousTotals);
@@ -59,7 +60,8 @@ export const UsageView = memo(function UsageView(props: {
   if (p.noData && !p.selection) return <EmptyState kind={p.neverIndexed ? "not-indexed" : "no-data"} onPrimary={p.onStartIndex} busy={p.running} />;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+    <div aria-busy={p.loading || p.usageLoading} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {p.usageError && usageReady ? <div role="alert" style={{ ...noteStyle, color: "var(--cmux-red)" }}>推移を更新できませんでした。保存済みの集計を表示しています。<details><summary>技術情報</summary>{p.usageError}</details></div> : null}
       {p.error ? <div role="alert" style={{ ...noteStyle, color: "var(--cmux-red)" }}>一部の集計を更新できませんでした。直前の値を表示しています。<details><summary>技術情報</summary>{p.error}</details></div> : null}
       {p.overview ? <AilogOrientation overview={p.overview} series={usageReady ? p.series : null} sessions={p.sessions} sessionLoading={p.sessionLoading} sessionError={p.sessionError} metric={p.metric} preset={p.preset} previousTotals={previousTotals} previousTotalsStatus={p.previousTotalsStatus} breakdownLabel={breakdownLabel} running={p.running} onStartIndex={p.onStartIndex} onOpenDetail={p.onOpenDetail} /> : null}
       {projectSel || modelSel ? (
@@ -82,7 +84,7 @@ export const UsageView = memo(function UsageView(props: {
         />
       ) : null}
       <Section id="ailog-overview" title="この期間" subtitle={p.metric === "costUsd" ? "この期間の記録と前期間からの変化です。価格情報のある記録から計算した参考値で、請求額ではありません。円額は設定した為替レートでの換算です。" : "この期間の記録と前期間からの変化です。コスト相当ではなく、実際に処理した量で並べています。"}>
-        {p.usageError ? <EmptyState kind="error" message={p.usageError} onPrimary={p.onRetryUsage} /> : !usageReady ? (p.usageLoading ? <SkeletonBlock height={120} label="集計を読み込み中" /> : <EmptyState kind="no-data" />) : (
+        {p.usageError && !usageReady ? <EmptyState kind="error" message={p.usageError} onPrimary={p.onRetryUsage} /> : !usageReady ? (p.usageLoading ? <SkeletonBlock height={120} label="集計を読み込み中" /> : <EmptyState kind="no-data" />) : (
           <>
             <ButtonGroup ariaLabel="指標" roleLabel="指標" value={p.metric} onChange={p.onMetric} options={USAGE_METRICS.map((entry) => ({ value: entry.id, label: entry.label, title: entry.hint }))} />
             <div style={{ marginTop: 12 }}><UsageTotals report={p.series!} metric={p.metric} preset={p.preset} totals={p.overview!.totals} previousTotals={previousTotals} turnFilterActive={Boolean(modelSel)} /></div>
@@ -126,8 +128,8 @@ export const UsageView = memo(function UsageView(props: {
       <Section id="ailog-compare" title={`${groupingLabel}別`} subtitle="選んだ分類ごとの内訳です。">
         {p.usageError ? (
           <EmptyState kind="error" message={p.usageError} onPrimary={p.onRetryUsage} />
-        ) : p.series && seriesMatchesOverview && !p.usageLoading ? (
-          <UsageModelTable report={p.series} metric={p.metric} excludeSynthetic={p.excludeSynthetic} selection={p.selection} onSelect={p.onSelect} />
+        ) : usageReady ? (
+          <UsageModelTable report={p.series!} metric={p.metric} excludeSynthetic={p.excludeSynthetic} selection={p.selection} onSelect={p.onSelect} />
         ) : p.usageLoading ? (
           <SkeletonBlock height={160} label="集計を読み込み中" />
         ) : (
@@ -157,11 +159,11 @@ export const UsageView = memo(function UsageView(props: {
         <div style={{ marginBottom: 10 }}>
           <ButtonGroup ariaLabel="内訳" roleLabel="内訳" value={p.breakdownDimension} onChange={p.onBreakdownDimension} options={[{ value: "project", label: "案件" }, { value: "branch", label: "ブランチ" }, { value: "effort", label: "推論の深さ" }, { value: "origin", label: "起動元" }, { value: "title", label: "主題" }, { value: "agent", label: "エージェント" }]} />
         </div>
-        {p.breakdownError ? <EmptyState kind="error" message={p.breakdownError} onPrimary={p.onRefreshBreakdown} /> : breakdownMatchesOverview ? <ProjectTable report={p.breakdown!} overview={p.overview!} selection={p.selection} onSelect={p.onSelect} dimensionLabel={breakdownLabel} projectMode={p.breakdownDimension === "project"} /> : p.breakdownLoading || p.breakdown ? <SkeletonBlock height={120} label="内訳を更新中" /> : null}
+        {p.breakdownError && !breakdownMatchesOverview ? <EmptyState kind="error" message={p.breakdownError} onPrimary={p.onRefreshBreakdown} /> : breakdownMatchesOverview ? <ProjectTable report={p.breakdown!} overview={p.overview!} selection={p.selection} onSelect={p.onSelect} dimensionLabel={breakdownLabel} projectMode={p.breakdownDimension === "project"} /> : p.breakdownLoading || p.breakdown ? <SkeletonBlock height={120} label="内訳を更新中" /> : null}
       </Section>
       <Section id="ailog-sessions" title="セッション一覧" subtitle="検索と並び替えは、この一覧だけを更新します。概要やグラフはそのまま残ります。">{p.sessions ? <SessionTable report={p.sessions} sort={p.sessionSort} appliedSort={p.sessionAppliedSort} onSort={p.onSessionSort} page={p.sessionPage} appliedPage={p.sessionAppliedPage} onPage={p.onSessionPage} pageSize={SESSION_PAGE_SIZE} onOpenDetail={p.onOpenDetail} activeKey={p.detailKey} query={p.sessionQuery} appliedQuery={p.sessionAppliedQuery} onQuery={p.onSessionQuery} onRetry={p.onRetrySessions} loading={p.sessionLoading} error={p.sessionError} modelFilterActive={Boolean(modelSel)} /> : null}</Section>
       <DeferredDetails summary={`稼働リズム（${usageMetricInfo(rhythmMetric).label}）`} subtitle={`${rhythmMetric !== p.metric ? `選択中の「${usageMetricInfo(p.metric).label}」は稼働リズム未対応のため、入出力トークンを表示します。` : ""}選択中の期間と絞り込みに追随します。稼働日の分母だけは、期間内の最初の記録日から最後の記録日までです。`}>
-        {p.rhythm ? <UsageRhythm report={p.rhythm} metric={rhythmMetric} /> : null}
+        <UsageRhythmDetails metric={rhythmMetric} />
       </DeferredDetails>
     </div>
   );

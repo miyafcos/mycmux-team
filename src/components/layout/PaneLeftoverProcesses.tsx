@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm } from "../../lib/appConfirmation";
 import { agentCloseDialogOptions } from "../../lib/agentCloseDialog";
 import {
   formatProcessStartedAt,

@@ -4,8 +4,10 @@ use crate::commands::terminal::can_restore_agent_session;
 use crate::db::storage::{self, PaneConfig, PaneTabConfig, PersistentData, PersistentDataEnvelope};
 
 #[tauri::command(async)]
-pub fn load_persistent_data(app_handle: AppHandle) -> Result<PersistentDataEnvelope, String> {
-    load_persistent_data_for(&app_handle)
+pub async fn load_persistent_data(app_handle: AppHandle) -> Result<PersistentDataEnvelope, String> {
+    crate::util::task::run_blocking("load_persistent_data", move || {
+        load_persistent_data_for(&app_handle)
+    }).await
 }
 
 fn load_persistent_data_for<T: storage::PersistentDataTarget + ?Sized>(
@@ -22,16 +24,18 @@ fn load_persistent_data_for<T: storage::PersistentDataTarget + ?Sized>(
 }
 
 #[tauri::command(async)]
-pub fn save_persistent_data(
+pub async fn save_persistent_data(
     app_handle: AppHandle,
     mut data: PersistentData,
 ) -> Result<(), storage::PersistentStorageError> {
-    crate::perf_timeline::mark("store.save.enter", None);
-    attach_detached_window_frames(&app_handle, &mut data);
-    let live = live_workspace_ids(&app_handle);
-    let result = save_persistent_data_for(&app_handle, data, &live);
-    crate::perf_timeline::mark("store.save.done", None);
-    result
+    crate::util::task::run_blocking_result("save_persistent_data", move || {
+        crate::perf_timeline::mark("store.save.enter", None);
+        attach_detached_window_frames(&app_handle, &mut data);
+        let live = live_workspace_ids(&app_handle);
+        let result = save_persistent_data_for(&app_handle, data, &live);
+        crate::perf_timeline::mark("store.save.done", None);
+        result
+    }).await
 }
 
 /// Record where each detached workspace's window sits, so the next launch can

@@ -18,6 +18,7 @@ const PREVIEW_ARTIFACT_EXTENSION_REGEX = new RegExp(
   "i",
 );
 const ARTIFACT_LINK_CONTEXT_LINES = 16;
+const ARTIFACT_LINK_CONTEXT_CHARS = 4096;
 const ARTIFACT_LINK_MAX_WRAPPED_LINES = 64;
 const ARTIFACT_LINK_MAX_HARD_CONTINUATION_LINES = 4;
 /// A row that hard-wrapped filled nearly all of its width, whether it wrapped at
@@ -706,10 +707,33 @@ export function registerArtifactLinkProvider(
     }
     lastLineIndex = Math.min(buffer.length - 1, lastLineIndex + ARTIFACT_LINK_CONTEXT_LINES);
 
+    // Keep a whole-row window around the queried row, including joiners.
+    // Typical paths still span soft/hard wraps, without scanning distant output.
+    const lower = firstLineIndex;
+    const upper = lastLineIndex;
+    firstLineIndex = targetLineIndex;
+    lastLineIndex = targetLineIndex;
+    let contextChars = Math.min(ARTIFACT_LINK_CONTEXT_CHARS,
+      buffer.getLine(targetLineIndex)?.translateToString(false).length ?? 0);
+    let beforeDone = firstLineIndex === lower;
+    let afterDone = lastLineIndex === upper;
+    while (!beforeDone || !afterDone) {
+      if (!beforeDone) {
+        const size = (buffer.getLine(firstLineIndex - 1)?.translateToString(false).length ?? 0) + 1;
+        if (contextChars + size > ARTIFACT_LINK_CONTEXT_CHARS) beforeDone = true;
+        else { firstLineIndex--; contextChars += size; beforeDone = firstLineIndex === lower; }
+      }
+      if (!afterDone) {
+        const size = (buffer.getLine(lastLineIndex + 1)?.translateToString(false).length ?? 0) + 1;
+        if (contextChars + size > ARTIFACT_LINK_CONTEXT_CHARS) afterDone = true;
+        else { lastLineIndex++; contextChars += size; afterDone = lastLineIndex === upper; }
+      }
+    }
+
     let candidateScanTail = "";
     let hasCandidate = false;
     for (let lineIndex = firstLineIndex; lineIndex <= lastLineIndex; lineIndex++) {
-      const scanText = `${candidateScanTail}${buffer.getLine(lineIndex)?.translateToString(true) ?? ""}`;
+      const scanText = `${candidateScanTail}${(buffer.getLine(lineIndex)?.translateToString(true) ?? "").slice(0, ARTIFACT_LINK_CONTEXT_CHARS)}`;
       if (hasArtifactLinkCandidate(scanText)) {
         hasCandidate = true;
         break;
@@ -728,8 +752,8 @@ export function registerArtifactLinkProvider(
       const line = buffer.getLine(lineIndex);
       const isCurrentLineWrapped = Boolean(line?.isWrapped);
       const nextIsWrapped = Boolean(buffer.getLine(lineIndex + 1)?.isWrapped);
-      const rawLineText = line?.translateToString(false) ?? "";
-      const nextLineText = buffer.getLine(lineIndex + 1)?.translateToString(true) ?? "";
+      const rawLineText = (line?.translateToString(false) ?? "").slice(0, ARTIFACT_LINK_CONTEXT_CHARS);
+      const nextLineText = (buffer.getLine(lineIndex + 1)?.translateToString(true) ?? "").slice(0, ARTIFACT_LINK_CONTEXT_CHARS);
       const writtenExtent = measureWrittenLineExtent(line, rawLineText);
       const writtenLineText = rawLineText.slice(0, writtenExtent.textLength);
       let lineText = nextIsWrapped
