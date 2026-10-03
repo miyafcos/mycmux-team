@@ -15,14 +15,14 @@ static CLOCK: OnceLock<Instant> = OnceLock::new();
 static LOG_QUEUE: OnceLock<SyncSender<String>> = OnceLock::new();
 static FAILURES: OnceLock<SyncSender<RendererFailure>> = OnceLock::new();
 static MAIN_CREATION: OnceLock<Instant> = OnceLock::new();
-static RENDERER: OnceLock<Mutex<RendererWatch>> = OnceLock::new();
+static RENDERERS: OnceLock<Mutex<RendererWatches>> = OnceLock::new();
 
 fn clock_ms() -> u64 {
     CLOCK.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
-fn renderer() -> &'static Mutex<RendererWatch> {
-    RENDERER.get_or_init(|| Mutex::new(RendererWatch::new(clock_ms())))
+fn renderers() -> &'static Mutex<RendererWatches> {
+    RENDERERS.get_or_init(|| Mutex::new(RendererWatches::default()))
 }
 
 /// Nonblocking even on a WebView2 callback. The queue is bounded so diagnostic
@@ -95,6 +95,7 @@ impl ReloadBudget {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn recover_renderers(
     app: &AppHandle,
     budgets: &mut HashMap<String, ReloadBudget>,
@@ -360,23 +361,36 @@ impl RendererWatch {
     }
 }
 
+/// A hidden tear-out spare has a live renderer of its own. Its heartbeat
+/// must not conceal a hung main UI (or a hung, visible child window).
+#[derive(Default)]
+struct RendererWatches {
+    views: HashMap<String, RendererWatch>,
+}
+
+impl RendererWatches {
+    fn heartbeat(&mut self, label: &str, heartbeat: &RendererHeartbeat, now_ms: u64) -> Vec<String> {
+        self.views.entry(label.to_string()).or_insert_with(|| RendererWatch::new(now_ms))
+            .heartbeat(heartbeat, now_ms).into_iter()
+            .map(|line| format!("{line} webview={label}")).collect()
+    }
+
+    fn poll(&mut self, now_ms: u64, exists: impl Fn(&str) -> bool) -> Vec<String> {
+        self.views.retain(|label, _| exists(label));
+        self.views.iter_mut().filter_map(|(label, watch)|
+            watch.poll(now_ms).map(|line| format!("{line} webview={label}"))).collect()
+    }
+}
+
 #[tauri::command]
-pub async fn report_renderer_heartbeat(heartbeat: RendererHeartbeat) -> Result<(), String> {
-    if heartbeat
-        .heap_used_mib
-        .is_some_and(|value| !value.is_finite() || value < 0.0)
-        || !heartbeat.max_long_task_ms.is_finite()
-        || heartbeat.max_long_task_ms < 0.0
-    {
+pub async fn report_renderer_heartbeat(caller: tauri::Webview, heartbeat: RendererHeartbeat) -> Result<(), String> {
+    if heartbeat.heap_used_mib.is_some_and(|value| !value.is_finite() || value < 0.0)
+        || !heartbeat.max_long_task_ms.is_finite() || heartbeat.max_long_task_ms < 0.0 {
         return Err("invalid renderer heartbeat measurements".to_string());
     }
-    let lines = renderer()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .heartbeat(&heartbeat, clock_ms());
-    for line in lines {
-        log_with_memory(line);
-    }
+    let lines = renderers().lock().unwrap_or_else(|p| p.into_inner())
+        .heartbeat(caller.label(), &heartbeat, clock_ms());
+    for line in lines { log_with_memory(line); }
     Ok(())
 }
 
@@ -425,7 +439,8 @@ pub(crate) fn start(app: AppHandle) {
     }
     let (failure_queue, failure_receiver) = mpsc::sync_channel(128);
     let _ = FAILURES.set(failure_queue);
-    let _ = renderer();
+    renderers().lock().unwrap_or_else(|p| p.into_inner()).views
+        .entry("main".to_string()).or_insert_with(|| RendererWatch::new(clock_ms()));
     if let Err(error) = std::thread::Builder::new()
         .name("mycmux-watchdog".to_string())
         .spawn(move || {
@@ -440,13 +455,8 @@ pub(crate) fn start(app: AppHandle) {
                 main.poll("main thread", now_ms, &mut lines);
                 runtime.poll("tokio", now_ms, &mut lines);
                 blocking.poll("blocking pool", now_ms, &mut lines);
-                if let Some(line) = renderer()
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .poll(now_ms)
-                {
-                    lines.push(line);
-                }
+                lines.extend(renderers().lock().unwrap_or_else(|p| p.into_inner())
+                    .poll(now_ms, |label| app.get_webview(label).is_some()));
                 recover_renderers(&app, &mut recoveries, failure_receiver.try_iter(), now_ms, &mut lines);
                 lines.extend(receiver.try_iter());
                 if !lines.is_empty() {
@@ -593,8 +603,254 @@ pub(crate) fn register_process_failed(webview: &tauri::Webview) {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn register_process_failed(_webview: &tauri::Webview) {}
+
+/// Mac recovery gives each webview its own retry budget, matching Windows.
+/// The callback itself performs no reload, native getter, disk I/O or PTY work.
+#[cfg(target_os = "macos")]
+fn queue_renderer_failure(webview: String, kind: i32) {
+    if let Some(queue) = FAILURES.get() {
+        if queue.try_send(RendererFailure { webview, kind }).is_err() {
+            log_with_memory("[webkit] recovery queue full; reload not scheduled".into());
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct MacReloadBudget {
+    budget: ReloadBudget,
+    pending: VecDeque<RendererFailure>,
+}
+
+#[cfg(target_os = "macos")]
+impl MacReloadBudget {
+    fn failed(&mut self, failure: RendererFailure) {
+        if let Some(existing) = self.pending.iter_mut().find(|item| item.webview == failure.webview) {
+            existing.kind = failure.kind;
+        } else if failure.webview.starts_with("web-pane-") {
+            self.pending.push_back(failure);
+        } else {
+            // A shared process can take down both the app and a web pane.
+            // Restore the control UI first without multiplying the budget.
+            self.pending.push_front(failure);
+        }
+    }
+
+    fn poll(&mut self, now_ms: u64) -> Option<(String, RecoveryDecision)> {
+        let failure = self.pending.front()?;
+        self.budget.failed(failure.kind);
+        let decision = match self.budget.poll(now_ms) {
+            Some(decision) => decision,
+            None => {
+                // An exhausted budget consumes even later repeated failures.
+                // Do not carry those across the ten-minute window as a retry.
+                if self.budget.pending.is_none() { self.pending.clear(); }
+                return None;
+            }
+        };
+        let label = self.pending.pop_front()?.webview;
+        if matches!(decision, RecoveryDecision::GiveUp { .. }) {
+            self.pending.clear();
+        }
+        Some((label, decision))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn recover_renderers(
+    app: &AppHandle,
+    budgets: &mut HashMap<String, MacReloadBudget>,
+    failures: impl Iterator<Item = RendererFailure>,
+    now_ms: u64,
+    lines: &mut Vec<String>,
+) {
+    for failure in failures {
+        if app.get_webview(&failure.webview).is_some() {
+            budgets.entry(failure.webview.clone()).or_default().failed(failure);
+        }
+    }
+    budgets.retain(|label, _| app.get_webview(label).is_some());
+    for recovery in budgets.values_mut() {
+        recovery.pending.retain(|failure| app.get_webview(&failure.webview).is_some());
+        match recovery.poll(now_ms) {
+            Some((label, RecoveryDecision::Reload { attempt, kind })) => {
+                if let Some(view) = app.get_webview(&label) {
+                    // The dedicated watchdog worker dispatches this reload.
+                    // Existing PTYs are reattached by ID, never recreated here.
+                    let result = view.reload();
+                    lines.push(format!(
+                        "[webkit] renderer reload webview={label} kind={kind} attempt={attempt}/{MAX_RELOADS} success={} error={:?}",
+                        result.is_ok(), result.err().map(|error| error.to_string())
+                    ));
+                }
+            }
+            Some((label, RecoveryDecision::GiveUp { kind })) => lines.push(format!(
+                "[webkit] renderer recovery give up webview={label} kind={kind} limit={MAX_RELOADS}/10min"
+            )),
+            None => {}
+        }
+    }
+}
+
+/// Tauri does not expose wry's on_web_content_process_terminate builder hook.
+/// Chain the existing delegate method instead of replacing its navigation,
+/// permission or download delegate. Associated strings belong to the native
+/// webview and are released by objc on deallocation; no pointer registry leaks.
+#[cfg(target_os = "macos")]
+mod mac_process_failed {
+    use super::{log_with_memory, queue_renderer_failure};
+    use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
+    use objc2_foundation::NSString;
+    use std::ffi::c_void;
+    use std::sync::OnceLock;
+
+    type Terminated = unsafe extern "C-unwind" fn(&AnyObject, Sel, &AnyObject);
+    static ORIGINAL: OnceLock<Terminated> = OnceLock::new();
+    static LABEL_KEY: u8 = 0;
+
+    // These public objc runtime functions require no new dependency/feature.
+    extern "C" {
+        fn objc_setAssociatedObject(object: *const AnyObject, key: *const c_void,
+            value: *const AnyObject, policy: usize);
+        fn objc_getAssociatedObject(object: *const AnyObject, key: *const c_void) -> *const AnyObject;
+    }
+
+    unsafe extern "C-unwind" fn terminated(delegate: &AnyObject, selector: Sel, view: &AnyObject) {
+        // Preserve wry's original callback, including a future handler it sets.
+        if let Some(original) = ORIGINAL.get() {
+            unsafe { original(delegate, selector, view) };
+        }
+        let value = unsafe { objc_getAssociatedObject(view, (&LABEL_KEY as *const u8).cast()) };
+        if value.is_null() { return; }
+        // Only this module stores NSString under this private association key.
+        let text = unsafe { &*(value as *const NSString) }.to_string();
+        let Some((window, label)) = text.split_once('\n') else { return; };
+        log_with_memory(format!(
+            "[webkit] ProcessFailed kind=Some(1) exit_code=None window={window} webview={label} event=webViewWebContentProcessDidTerminate"
+        ));
+        queue_renderer_failure(label.to_string(), 1);
+    }
+
+    pub(super) unsafe fn register(view: &AnyObject, window: &str, label: &str) -> Result<(), String> {
+        let delegate: Option<&AnyObject> = unsafe { objc2::msg_send![view, navigationDelegate] };
+        let delegate = delegate.ok_or_else(|| "WKWebView has no navigation delegate".to_string())?;
+        let class: &AnyClass = delegate.class();
+        // wry names its ObjC classes with module_path and the crate version.
+        // This exact registered name matches the pinned Cargo.lock dependency.
+        if class.name().to_bytes() != b"wry::wkwebview::class::wry_navigation_delegate::WryNavigationDelegate0.54.4" {
+            return Err(format!("unexpected navigation delegate {}", class.name().to_string_lossy()));
+        }
+        let method = class.instance_method(objc2::sel!(webViewWebContentProcessDidTerminate:))
+            .ok_or_else(|| "wry termination callback is missing".to_string())?;
+        if method.arguments_count() != 3 {
+            return Err("unexpected wry termination callback signature".into());
+        }
+        if ORIGINAL.get().is_none() {
+            // All registrations and WebKit callbacks execute on the main
+            // thread. Publish the original before installing our callback.
+            let original: Terminated = unsafe { std::mem::transmute(method.implementation()) };
+            let _ = ORIGINAL.set(original);
+            let hook: Imp = unsafe { std::mem::transmute(terminated as Terminated) };
+            unsafe { method.set_implementation(hook) };
+        }
+        let value = NSString::from_str(&format!("{window}\n{label}"));
+        // OBJC_ASSOCIATION_RETAIN_NONATOMIC = 1. Main-thread-only access, and
+        // objc owns the retained string until this exact WKWebView is freed.
+        unsafe { objc_setAssociatedObject(view, (&LABEL_KEY as *const u8).cast(),
+            &*value as *const NSString as *const AnyObject, 1) };
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn register_process_failed(webview: &tauri::Webview) {
+    let window = webview.window().label().to_string();
+    let label = webview.label().to_string();
+    let posted = label.clone();
+    if let Err(error) = crate::mac_webview::with_webview(webview, move |platform| {
+        let view = unsafe { &*(platform.inner() as *const objc2::runtime::AnyObject) };
+        if let Err(error) = unsafe { mac_process_failed::register(view, &window, &posted) } {
+            log_with_memory(format!("[webkit] ProcessFailed registration failed window={window} webview={posted}: {error}"));
+        }
+    }) {
+        log_with_memory(format!("[webkit] ProcessFailed registration post failed webview={label}: {error}"));
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) use register_process_failed as register_mac_process_failed;
+
+#[cfg(all(test, target_os = "macos"))]
+mod mac_tests {
+    use super::*;
+
+    fn failure(label: &str) -> RendererFailure {
+        RendererFailure { webview: label.into(), kind: 1 }
+    }
+
+    #[test]
+    fn web_pane_failures_never_use_the_main_ui_budget_or_cooldown() {
+        let mut budgets = HashMap::<String, MacReloadBudget>::new();
+        for at in [0, 60_000, 120_000] {
+            let web = budgets.entry("web-pane-a".into()).or_default();
+            web.failed(failure("web-pane-a"));
+            assert!(matches!(web.poll(at), Some((_, RecoveryDecision::Reload { .. }))));
+        }
+        let main = budgets.entry("main".into()).or_default();
+        main.failed(failure("main"));
+        assert_eq!(main.poll(120_001), Some(("main".into(), RecoveryDecision::Reload { attempt: 1, kind: 1 })));
+        main.failed(failure("main"));
+        assert!(main.poll(120_002).is_none());
+        let other = budgets.entry("web-pane-b".into()).or_default();
+        other.failed(failure("web-pane-b"));
+        assert_eq!(other.poll(120_002), Some(("web-pane-b".into(), RecoveryDecision::Reload { attempt: 1, kind: 1 })));
+    }
+
+    #[test]
+    fn reparenting_keeps_the_webview_failure_and_budget() {
+        let mut budgets = HashMap::<String, MacReloadBudget>::new();
+        let label = "web-pane-moving";
+        budgets.entry(label.into()).or_default().failed(failure(label));
+        // A window change does not change the identity used by the worker.
+        assert_eq!(budgets.get_mut(label).unwrap().poll(0), Some((label.into(), RecoveryDecision::Reload { attempt: 1, kind: 1 })));
+        budgets.get_mut(label).unwrap().failed(failure(label));
+        assert_eq!(budgets.get_mut(label).unwrap().poll(60_000), Some((label.into(), RecoveryDecision::Reload { attempt: 2, kind: 1 })));
+    }
+
+    #[test]
+    fn duplicate_callbacks_coalesce_and_closed_views_do_not_use_a_retry() {
+        let mut window = MacReloadBudget::default();
+        for _ in 0..1000 { window.failed(failure("main")); }
+        window.failed(failure("web-pane-closed"));
+        assert_eq!(window.pending.len(), 2);
+        window.pending.retain(|event| event.webview != "web-pane-closed");
+        assert!(matches!(window.poll(0), Some((_, RecoveryDecision::Reload { attempt: 1, .. }))));
+        assert!(window.poll(60_000).is_none());
+        assert_eq!(window.budget.attempts.len(), 1);
+    }
+
+    #[test]
+    fn windows_recover_independently_and_give_up_does_not_retry_by_itself() {
+        let mut first = MacReloadBudget::default();
+        let mut second = MacReloadBudget::default();
+        for at in [0, 60_000, 120_000] {
+            first.failed(failure("main"));
+            assert!(first.poll(at).is_some());
+        }
+        first.failed(failure("main"));
+        assert!(matches!(first.poll(120_001), Some((_, RecoveryDecision::GiveUp { .. }))));
+        second.failed(failure("child"));
+        assert!(matches!(second.poll(120_001), Some((_, RecoveryDecision::Reload { attempt: 1, .. }))));
+        first.failed(failure("main"));
+        assert!(first.poll(180_000).is_none());
+        assert!(first.pending.is_empty());
+        assert!(first.poll(600_000).is_none());
+        first.failed(failure("main"));
+        assert!(matches!(first.poll(600_000), Some((_, RecoveryDecision::Reload { attempt: 3, .. }))));
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -723,6 +979,60 @@ mod tests {
         assert!(lines.is_empty());
     }
 
+    #[test]
+    fn shared_legacy_heartbeat_masks_silence_but_per_view_watches_do_not() {
+        let mut legacy = RendererWatch::new(0);
+        let mut watches = RendererWatches::default();
+        watches.heartbeat("main", &heartbeat(), 0);
+        for now in (30_000..=120_000).step_by(30_000) {
+            legacy.heartbeat(&heartbeat(), now);
+            watches.heartbeat("mycmux-w1", &heartbeat(), now);
+            assert!(legacy.poll(now).is_none());
+        }
+        assert!(watches.poll(119_999, |_| true).is_empty());
+        assert_eq!(watches.poll(120_000, |_| true), vec!["[watchdog] renderer silent webview=main"]);
+    }
+
+    #[test]
+    fn per_view_renderer_metrics_keep_the_existing_prefix_and_rate_limits() {
+        let mut watches = RendererWatches::default();
+        for label in ["main", "mycmux-w1"] {
+            let lines = watches.heartbeat(label, &heartbeat(), 0);
+            assert_eq!(lines.len(), 1);
+            assert!(lines[0].starts_with("[renderer] heap_used_mib=64.0 "));
+            assert!(lines[0].ends_with(&format!(" webview={label}")));
+            assert!(watches.heartbeat(label, &heartbeat(), 30_000).is_empty());
+            assert_eq!(watches.heartbeat(label, &heartbeat(), 600_000).len(), 1);
+        }
+    }
+
+    #[test]
+    fn a_spare_heartbeat_cannot_conceal_a_silent_main_renderer() {
+        let mut watches = RendererWatches::default();
+        watches.heartbeat("main", &heartbeat(), 0);
+        for now in (30_000..=120_000).step_by(30_000) {
+            watches.heartbeat("mycmux-w1", &heartbeat(), now);
+        }
+        assert_eq!(watches.poll(120_000, |_| true), vec!["[watchdog] renderer silent webview=main"]);
+        assert!(watches.poll(130_000, |_| true).is_empty());
+        let back = watches.heartbeat("main", &heartbeat(), 135_000);
+        assert_eq!(back[0], "[watchdog] renderer back after 135s webview=main");
+        assert!(watches.heartbeat("mycmux-w1", &heartbeat(), 135_000).is_empty());
+    }
+    #[test]
+    fn a_live_main_heartbeat_cannot_conceal_a_silent_child_renderer() {
+        let mut watches = RendererWatches::default();
+        watches.heartbeat("mycmux-w2", &heartbeat(), 0);
+        watches.heartbeat("main", &heartbeat(), 120_000);
+        assert_eq!(watches.poll(120_000, |_| true), vec!["[watchdog] renderer silent webview=mycmux-w2"]);
+    }
+    #[test]
+    fn destroyed_renderers_are_pruned_without_false_silence() {
+        let mut watches = RendererWatches::default();
+        watches.heartbeat("closed", &heartbeat(), 0);
+        assert!(watches.poll(120_000, |_| false).is_empty());
+        assert!(watches.views.is_empty());
+    }
     #[test]
     fn a_renderer_is_silent_after_two_minutes_and_logs_its_return_once() {
         let mut watch = RendererWatch::new(0);

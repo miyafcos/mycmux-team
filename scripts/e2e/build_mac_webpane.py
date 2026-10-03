@@ -1,27 +1,28 @@
-"""Build an M1-only test bundle on the Mac; never signs/publishes an updater."""
+"""Build an M3-only test bundle on the Mac; never signs/publishes an updater."""
 import argparse
 import hashlib
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+match = re.fullmatch(r'mycmux-wt-mac-([a-z0-9]+)-261003', ROOT.name)
+assert match, ROOT
+SEAT = match.group(1)
 parser = argparse.ArgumentParser()
 parser.add_argument('--user', action='store_true', help='Build without e2e hooks for a physical acceptance test')
 args = parser.parse_args()
 mode = 'touch' if args.user else 'e2e'
-match = re.fullmatch(r'mycmux-wt-mac-([a-z0-9]+)-261003', ROOT.name)
-assert match, ROOT
-SEAT = match.group(1)
+assert ROOT.parent == Path('/Users/edu/Developer'), ROOT
 assert sys.platform == 'darwin'
 HEAD = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
 assert not subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=ROOT, text=True).strip()
-OUT = ROOT / 'tmp' / f'tearout-{SEAT}'
+OUT = ROOT / f'tmp/webpane-{SEAT}'
 OUT.mkdir(parents=True, exist_ok=True)
 stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
 config = {'identifier': f'com.miyazaki.mycmux.test.{SEAT}' if args.user else f'com.miyazaki.mycmux.e2e.{SEAT}', 'bundle': {'createUpdaterArtifacts': False},
