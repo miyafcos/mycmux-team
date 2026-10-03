@@ -810,7 +810,7 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         "schedulePendingWriteDrain();",
         "scheduleFrontendResync();",
         "pendingBatches.length > 0 || terminalScrollbackResyncNeeded.has(sessionId)",
-        "const synchronized = await syncBackendScrollbackToTerminal();",
+        "const synchronized = await scrollbackRetry.run(syncBackendScrollbackToTerminal);",
         "planTerminalScrollbackRecovery(",
         "scrollbackSnapshot.startOffset,",
             'recoveryPlan.action === "skip-truncated"',
@@ -830,6 +830,21 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         "scheduleFullRefresh(replayTerm, [0, 48, 160]);",
     ]:
         assert_contains(terminal_sources, snippet, "src/components/terminal/*")
+
+    # A failed pull is bounded independently from the ACK/layout safeguards.
+    assert "const SCROLLBACK_RETRY_MAX_FAILURES = 6;" in xterm_wrapper
+    retry_class = xterm_wrapper.split("export class TerminalScrollbackRetry {", 1)[1].split(
+        "function tabIdForSession", 1,
+    )[0]
+    assert "this.failures >= SCROLLBACK_RETRY_MAX_FAILURES || this.now() < this.retryAt" in retry_class
+    assert "SCROLLBACK_RETRY_BASE_MS * 2 ** (this.failures - 1)" in retry_class
+    assert "const synchronized = await sync().catch(() => false);" in retry_class
+    assert "if (synchronized) this.reset();" in retry_class
+    assert "if (delay !== null) schedulePendingWriteDrain(delay);" in xterm_wrapper
+    frontend_resync = xterm_wrapper.split("const runFrontendResync = ", 1)[1].split(
+        "const scheduleFrontendResync = ", 1,
+    )[0]
+    assert "scrollbackRetry.reset();" in frontend_resync
 
     # xterm.write already renders parsed output. A second pair of full visible
     # row refreshes per PTY batch starves wheel input during streaming.
@@ -906,7 +921,8 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
     assert_contains(ipc, "export async function getSessionScrollback(sessionId: string): Promise<ScrollbackSnapshot>", "src/lib/ipc.ts")
     assert_contains(ipc, "startOffset: number;", "src/lib/ipc.ts")
     assert_contains(ipc, "endOffset: number;", "src/lib/ipc.ts")
-    assert_contains(terminal_commands, "pub fn get_session_scrollback(", "src-tauri/src/commands/terminal.rs")
+    assert_contains(terminal_commands, "pub async fn get_session_scrollback(", "src-tauri/src/commands/terminal.rs")
+    assert_contains(terminal_commands, 'run_blocking("get_session_scrollback", move || {', "src-tauri/src/commands/terminal.rs")
     assert_contains(manager, "pub fn get_scrollback(&self, session_id: &str) -> Result<Vec<u8>, String>", "src-tauri/src/pty/manager.rs")
     assert_contains(lib_rs, "commands::terminal::get_session_scrollback", "src-tauri/src/lib.rs")
 
@@ -915,14 +931,23 @@ def test_streaming_last_log_updates_do_not_rearm_workspace_autosave() -> None:
     socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
     metadata_store = read_repo_text("src/stores/paneMetadataStore.ts")
 
-    assert "const unsubMeta = usePaneMetadataStore.subscribe((state, previousState) => {" in socket_listener
-    assert """if (state.metadata !== previousState.metadata) {
-        markDirty();
-        agentMappingsDirty = true;
-      }""" in socket_listener
-    # High-frequency fields must be destructured out of `metadataFields` so the
-    # autosave subscription above (which only watches `state.metadata`) never
-    # rearms on streaming output.
+    comparator = socket_listener.split("export function persistedPaneMetadataChanged(", 1)[1].split(
+        "export function subscribePersistedPaneMetadata(", 1,
+    )[0]
+    assert 'const fields = ["cwd", "agentKind", "agentSessionId", "claudeSessionId"] as const;' in comparator
+    assert "new Set([...Object.keys(next), ...Object.keys(previous)])" in comparator
+    assert "next[sessionId]?.[field] !== previous[sessionId]?.[field]" in comparator
+    subscription = socket_listener.split("export function subscribePersistedPaneMetadata(", 1)[1].split(
+        "function persistTurnMarksForTab(", 1,
+    )[0]
+    assert "if (persistedPaneMetadataChanged(state.metadata, previousState.metadata)) request();" in subscription
+    assert """const unsubMeta = subscribePersistedPaneMetadata(() => {
+      markDirty();
+      agentMappingsDirty = true;
+    });""" in socket_listener
+    assert "const unsubMeta = subscribePersistedPaneMetadata(markDirty);" in socket_listener
+    # The subscription compares exactly the four persisted fields. Streaming
+    # fields also stay out of metadataFields, preserving the existing slices.
     assert """const {
       lastLogLine,
       processTitle,
@@ -939,8 +964,8 @@ def test_streaming_last_log_updates_do_not_rearm_workspace_autosave() -> None:
             lastLogAt: nextLastLogAt,
           }
         : state;""" in metadata_store
-    # lastLogAt / volatileMetadata ride in their own slices for the same reason
-    # lastLog does: the autosave subscription above only watches `state.metadata`.
+    # lastLogAt / volatileMetadata remain separate; neither participates in the
+    # four-field comparator used by both saving and fragment publication.
     assert "lastLogAt: Record<string, number>;" in metadata_store
     assert "volatileMetadata: Record<string, PaneVolatileMetadata>;" in metadata_store
 

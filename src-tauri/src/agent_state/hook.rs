@@ -250,6 +250,19 @@ impl HookService {
         }
     }
 
+    /// Queue lifecycle cleanup without waiting for the hook worker. It stays
+    /// ordered behind already accepted hooks; terminal teardown can proceed.
+    pub fn queue_session_drain(&self, terminal_session_id: &str) {
+        let (reply, _response) = mpsc::channel();
+        if self.sender.try_send(Work::DrainSession {
+            terminal_session_id: terminal_session_id.to_string(),
+            at: self.elapsed_millis(),
+            reply,
+        }).is_err() {
+            self.metrics.queue_dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     pub fn drain_session(&self, terminal_session_id: &str) {
         let (reply, response) = mpsc::channel();
         if self
@@ -1634,6 +1647,27 @@ mod tests {
         assert!(!bucket.allow(0));
         assert!((0..20).all(|_| bucket.allow(1_000)));
         assert!(!bucket.allow(1_000));
+    }
+
+    #[test]
+    fn queued_session_drain_never_waits_for_a_worker_reply_and_counts_full_queues() {
+        let (sender, receiver) = mpsc::sync_channel::<Work>(1);
+        let metrics = Arc::new(HookMetrics::default());
+        let service = HookService {
+            app_instance_id: AppInstanceId::try_new("nonwaiting-drain").unwrap(),
+            started: Instant::now(), sender, metrics: metrics.clone(),
+        };
+        // No worker runs: an implementation waiting for a reply would time out.
+        service.queue_session_drain("terminal-a");
+        service.queue_session_drain("terminal-b");
+        assert_eq!(metrics.snapshot().queue_dropped, 1);
+        match receiver.try_recv().unwrap() {
+            Work::DrainSession { terminal_session_id, reply, .. } => {
+                assert_eq!(terminal_session_id, "terminal-a");
+                assert!(reply.send(()).is_err(), "no response is awaited");
+            }
+            _ => panic!("expected lifecycle drain"),
+        }
     }
 
     #[test]

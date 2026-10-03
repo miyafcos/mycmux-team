@@ -76,6 +76,8 @@ interface SettingsState {
   showSplitRightButton: boolean;
   /** Windows pane tear-out experiment; opt-in and effective without restart. */
   nativePaneTearoutEnabled: boolean;
+  /** macOS stays on the legacy route until explicitly enabled on a test Mac. */
+  macNativePaneTearoutEnabled: boolean;
   /**
    * Launcher rows the operator has switched off. Values are catalog targets
    * ("claude", "web-gemini") and the section keys "dev" / "anken" / "resume".
@@ -92,6 +94,8 @@ interface SettingsState {
   paneComposerEnabled: boolean;
   /** Deliberately off until an operator explicitly enables declared-tab launch. */
   declaredLaunchEnabled: boolean;
+  /** Independent Codex stdio trial; never changes the ordinary launcher. */
+  codexAppServerExperimentEnabled: boolean;
   /** AI-generated next-action drafts are opt-in; machine suggestions stay available. */
   replyDraftSuggestionsEnabled: boolean;
   /** Automatic AI naming only touches unnamed or AI-named tabs. */
@@ -121,6 +125,7 @@ interface SettingsState {
   setDispatchWatchdogNotify: (v: boolean) => void;
   setPaneComposerEnabled: (v: boolean) => void;
   setDeclaredLaunchEnabled: (v: boolean) => void;
+  setCodexAppServerExperimentEnabled: (v: boolean) => void;
   setReplyDraftSuggestionsEnabled: (v: boolean) => void;
   setAutoPaneNamingEnabled: (v: boolean) => void;
   setAppearanceAdvancedOpen: (v: boolean) => void;
@@ -148,6 +153,7 @@ export const useSettingsStore = create<SettingsState>()(
       // On by default since 0.81.0 (owner's decision 2026-10-02). Windows only;
       // the settings switch stays as the way back to the previous drag.
       nativePaneTearoutEnabled: true,
+      macNativePaneTearoutEnabled: false,
       launcherHiddenIds: [],
       groupingApplyAnimationEnabled: true,
       dispatchWatchdogEnabled: true,
@@ -156,6 +162,7 @@ export const useSettingsStore = create<SettingsState>()(
       dispatchWatchdogNotify: true,
       paneComposerEnabled: true,
       declaredLaunchEnabled: false,
+      codexAppServerExperimentEnabled: false,
       replyDraftSuggestionsEnabled: false,
       autoPaneNamingEnabled: true,
       aiFeatureSettingsDataJsonMigrationComplete: false,
@@ -173,7 +180,8 @@ export const useSettingsStore = create<SettingsState>()(
       setHideSessionsWithoutUserMessages: (v) => set({ hideSessionsWithoutUserMessages: v }),
       setShowSplitDownButton: (v) => set({ showSplitDownButton: v }),
       setShowSplitRightButton: (v) => set({ showSplitRightButton: v }),
-      setNativePaneTearoutEnabled: (v) => set({ nativePaneTearoutEnabled: v }),
+      setNativePaneTearoutEnabled: (v) => set({ nativePaneTearoutEnabled: v,
+        ...(typeof navigator !== "undefined" && /^Mac/i.test(navigator.platform) ? { macNativePaneTearoutEnabled: v } : {}) }),
       setLauncherHiddenIds: (v) => set({ launcherHiddenIds: v }),
       setGroupingApplyAnimationEnabled: (v) => set({ groupingApplyAnimationEnabled: v }),
       setDispatchWatchdogEnabled: (v) => set({ dispatchWatchdogEnabled: v }),
@@ -182,6 +190,7 @@ export const useSettingsStore = create<SettingsState>()(
       setDispatchWatchdogNotify: (v) => set({ dispatchWatchdogNotify: v }),
       setPaneComposerEnabled: (v) => set({ paneComposerEnabled: v }),
       setDeclaredLaunchEnabled: (v) => set({ declaredLaunchEnabled: v }),
+      setCodexAppServerExperimentEnabled: (v) => set({ codexAppServerExperimentEnabled: v }),
       setReplyDraftSuggestionsEnabled: (v) => {
         useAiSettingsStore.getState().setPersistedReplyDraftSuggestionsEnabled(v);
         set({ replyDraftSuggestionsEnabled: v });
@@ -195,6 +204,15 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: "mycmux-settings",
       version: SETTINGS_STORE_VERSION,
+      merge: (persisted, current) => {
+        const merged = { ...current, ...(persisted as Partial<SettingsState> | undefined) };
+        // Older Mac installs carry the Windows-default true field. It is not
+        // consent to the Mac experiment; only the new explicit marker is.
+        if (typeof navigator !== "undefined" && /^Mac/i.test(navigator.platform)) {
+          merged.nativePaneTearoutEnabled = merged.macNativePaneTearoutEnabled === true;
+        }
+        return merged;
+      },
       migrate: (persistedState, persistedVersion) => (
         migratePersistedSettings(persistedState, persistedVersion) as SettingsState
       ),

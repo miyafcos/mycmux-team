@@ -8,10 +8,9 @@ import {
 } from "../../lib/attentionPresentation";
 import { useShallow } from "zustand/react/shallow";
 import type { Pane, PaneTab } from "../../types";
-import { getAgent, getDefaultAgent } from "../../lib/agents";
+import { getDefaultAgent } from "../../lib/agents";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
-import { resolveDisplayAgentKind } from "../../lib/agentDisplayKind";
-import { resolveTabMark, type TabMark } from "../../lib/tabMark";
+import { resolveTabMark, tabMarkSource, type TabMark } from "../../lib/tabMark";
 import { crsmCreateHandoff, duplicateAgentSession } from "../../lib/ipc";
 import {
   buildClonedDuplicateSessionPaneOptions,
@@ -514,9 +513,10 @@ const AGENT_KIND_LABELS: Record<string, string> = {
 
 export function resolveActiveAgentLabel(
   agentId: string | undefined,
-  agentKind: string | undefined,
+  agentKind: string | null | undefined,
   fallbackName?: string,
 ): string {
+  if (agentKind === null) return "シェル";
   return AGENT_KIND_LABELS[agentKind ?? ""]
     ?? AGENT_LABELS[agentId ?? ""]
     ?? fallbackName
@@ -639,7 +639,7 @@ function TabStatusIndicatorDot({ indicator }: { indicator: TabStatusIndicator })
 
 function TabAgentIcon({ mark, indicator }: { mark: TabMark; indicator: TabStatusIndicator }) {
   return (
-    <span style={{ position: "relative", display: "inline-flex", width: 14, height: 14, flexShrink: 0 }}>
+    <span data-mark-source={mark.source} style={{ position: "relative", display: "inline-flex", width: 14, height: 14, flexShrink: 0, opacity: mark.dormant ? 0.45 : 1 }}>
       <AgentKindIcon kind={mark.kind} size={14} />
       {indicator && (
         <span
@@ -813,7 +813,8 @@ function PaneTabListMenu({
     const isTabActive = tab.id === pane.activeTabId;
     const declared = isDeclaredTab(tab);
     const tabMeta = metadataBySession[tab.sessionId];
-    const rowMark = resolveTabMark(tab, tabMeta?.agentKind);
+    const rowLive = volatileMetadataBySession[tab.sessionId];
+    const rowMark = resolveTabMark(tab, rowLive?.liveAgentKind, rowLive?.ptyAlive === true);
     const status = deriveDisplayStatus(tabMeta, volatileMetadataBySession[tab.sessionId]);
     const label = getTabDisplayLabel(tab, isTabActive);
     const attention = attentionBySession[tab.sessionId];
@@ -892,7 +893,7 @@ function PaneTabListMenu({
           }}
         />
         {rowMark && (
-          <AgentKindIcon kind={rowMark.kind} size={14} />
+          <span style={{ opacity: rowMark.dormant ? 0.45 : 1 }}><AgentKindIcon kind={rowMark.kind} size={14} /></span>
         )}
         {rowMark && (
           <span
@@ -900,6 +901,7 @@ function PaneTabListMenu({
             style={{
               "--agent-kind-fg": rowMark.color.fg,
               "--agent-kind-bg": rowMark.color.bg,
+              opacity: rowMark.dormant ? 0.45 : 1,
             } as AgentKindStyle}
           >
             {rowMark.label}
@@ -1152,21 +1154,12 @@ export default memo(function PaneTabBar({
     publishIdentityKey ? state.publishedSessionIds[publishIdentityKey] === true : false,
   );
   const activeStatus: EffectiveStatus = deriveDisplayStatus(activeMeta, activeVolatileMeta);
-  const activeMark = activeTab ? resolveTabMark(activeTab, activeMeta?.agentKind) : null;
-  // The agent label names what is *running*, so it stays on the agent kind: a
-  // Web tab has no process and keeps the pane's own agent label.
-  const activeAgentKind = resolveDisplayAgentKind(
-    activeMeta?.agentKind ?? activeTab?.agentKind,
-    activeTab?.commandArgv,
-    activeTab?.launchEnv?.MYCMUX_LAUNCH_TARGET,
-  );
-  const activeAgentLabel = activeTab
-    ? resolveActiveAgentLabel(
-        activeTab.agentId,
-        activeAgentKind ?? undefined,
-        getAgent(activeTab.agentId)?.name,
-      )
-    : "シェル";
+  const activeMark = activeTab ? resolveTabMark(activeTab, activeVolatileMeta?.liveAgentKind, activeVolatileMeta?.ptyAlive === true) : null;
+  // Heading and icon share the same authority; a live null cannot fall back
+  // to the launcher's saved agentId.
+  const activeAgentLabel = activeTab?.type === "web" || activeTab?.type === "browser"
+    ? activeMark?.label ?? "シェル"
+    : resolveActiveAgentLabel(activeTab?.agentId, activeMark?.kind ?? null);
   const paneDragLabel = activeTab ? getTabDisplayLabel(activeTab, true, metadataBySession, volatileMetadataBySession) : activeAgentLabel;
 
   useEffect(() => {
@@ -1510,8 +1503,8 @@ export default memo(function PaneTabBar({
   const previewRight = previewChipRect && previewBarRect
     ? previewChipRect.right - previewBarRect.left
     : 0;
-  const previewMeta = previewTab ? metadataBySession[previewTab.sessionId] : undefined;
-  const previewMark = previewTab ? resolveTabMark(previewTab, previewMeta?.agentKind) : null;
+  const previewLive = previewTab ? volatileMetadataBySession[previewTab.sessionId] : undefined;
+  const previewMark = previewTab ? resolveTabMark(previewTab, previewLive?.liveAgentKind, previewLive?.ptyAlive === true) : null;
   const showsInlinePinControl = shouldShowInlinePinControl(renderMode);
   const isActiveTabPinned = activeTab !== undefined && activeTab.id === pane.pinnedTabId;
   const paneActions = (
@@ -1826,7 +1819,7 @@ export default memo(function PaneTabBar({
           const declared = isDeclaredTab(tab);
           const tabMeta = metadataBySession[tab.sessionId];
           const tabVolatileMeta = volatileMetadataBySession[tab.sessionId];
-          const tabMark = resolveTabMark(tab, tabMeta?.agentKind);
+          const tabMark = resolveTabMark(tab, tabVolatileMeta?.liveAgentKind, tabVolatileMeta?.ptyAlive === true);
           const tabNotificationCount = tabMeta?.notificationCount ?? 0;
           const tabEffectiveStatus = deriveDisplayStatus(tabMeta, tabVolatileMeta);
           const canonicalAttention = attentionBySession[tab.sessionId];
@@ -1883,6 +1876,8 @@ export default memo(function PaneTabBar({
             )}
             <div
               data-tab-id={tab.id}
+              data-mark-kind={tabMark?.kind ?? ""}
+              data-mark-source={tabMarkSource(tab, tabVolatileMeta?.ptyAlive === true)}
               data-savepoint-drop-workspace-id={workspaceId}
               data-savepoint-drop-pane-id={pane.id}
               data-savepoint-drop-tab-id={tab.id}
@@ -2204,6 +2199,8 @@ export default memo(function PaneTabBar({
       {usesCompactTabs && activeTab && (
         <>
           <div
+            data-mark-kind={activeMark?.kind ?? ""}
+            data-mark-source={activeTab ? tabMarkSource(activeTab, activeVolatileMeta?.ptyAlive === true) : "saved"}
             className={"pane-tab-pill is-active pane-tab-compact" + (activeMark ? " has-agent-kind" : "")}
             onPointerDown={(event) => {
               if (!isEditingActiveTab && event.button === MIDDLE_MOUSE_BUTTON) {

@@ -9,7 +9,11 @@ def text(path: str) -> str:
 
 def test_resume_guard_precedes_all_launch_side_effects_and_skips_reattach() -> None:
     terminal = text("src-tauri/src/commands/terminal.rs")
-    create = terminal[terminal.index("pub fn create_session("):terminal.index("pub(crate) fn prepare_spawn_command(")]
+    wrapper = terminal[terminal.index("pub async fn create_session("):terminal.index("fn create_session_blocking(")]
+    assert 'run_blocking("create_session", move || {' in wrapper
+    assert "create_session_blocking(app_handle, state, session_id, command, args, cols, rows, on_data, cwd, env)" in wrapper
+    assert "}).await" in wrapper
+    create = terminal[terminal.index("fn create_session_blocking("):terminal.index("pub(crate) fn prepare_spawn_command(")]
     guard = create.index("LaunchClaim::acquire")
     assert "let _launch_claim = if reattach {\n        None" in create[:guard]
     for mutation in ["remove_session_mapping_file(", "std::fs::create_dir_all(", "ensure_claude_project_trusted(", "write_launch_session_mapping(", "state.session_manager.create("]:
@@ -19,8 +23,9 @@ def test_resume_guard_precedes_all_launch_side_effects_and_skips_reattach() -> N
 
 def test_running_ids_command_is_registered_async_without_expanding_sync_allowlist() -> None:
     terminal = text("src-tauri/src/commands/terminal.rs")
-    assert "#[tauri::command(async)]\npub fn list_running_session_ids" in terminal
-    assert "state.session_manager.is_running(id)" in terminal
+    assert "#[tauri::command(async)]\npub async fn list_running_session_ids" in terminal
+    assert 'run_blocking("list_running_session_ids", move || Ok(running_session_ids_for(&manager))).await' in terminal
+    assert "manager.is_running(id)" in terminal
     assert "commands::terminal::list_running_session_ids," in text("src-tauri/src/lib.rs")
     assert 'invoke<string[]>("list_running_session_ids")' in text("src/lib/ipc.ts")
 

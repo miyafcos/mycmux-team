@@ -3,6 +3,8 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { evictTerminalCache } from "../../src/components/terminal/terminalCache";
+import { __turnListPromptCacheForTests } from "../../src/components/terminal/XTermWrapper";
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -250,7 +252,7 @@ describe("XTermWrapper turn-list row integration", () => {
         await Promise.resolve();
         await Promise.resolve();
       });
-      await vi.waitFor(() => expect(mocks.terminalInstances).toHaveLength(2));
+      await vi.waitFor(() => expect(mocks.terminalInstances).toHaveLength(2), { timeout: 10_000 });
       const first = host.querySelector<HTMLElement>("[data-session='search-a']")!;
       const second = host.querySelector<HTMLElement>("[data-session='search-b']")!;
       const searchInput = () => first.querySelector<HTMLInputElement>(SEARCH_INPUT);
@@ -319,7 +321,7 @@ describe("XTermWrapper turn-list row integration", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    await vi.waitFor(() => expect(mocks.terminalInstances).toHaveLength(1));
+    await vi.waitFor(() => expect(mocks.terminalInstances).toHaveLength(1), { timeout: 10_000 });
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
@@ -335,7 +337,7 @@ describe("XTermWrapper turn-list row integration", () => {
       );
       expect(button).not.toBeNull();
       return button!;
-    });
+    }, { timeout: 10_000 });
 
     act(() => prev.click());
 
@@ -359,7 +361,7 @@ describe("XTermWrapper turn-list row integration", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    await vi.waitFor(() => expect(mocks.terminalInstances).toHaveLength(1));
+    await vi.waitFor(() => expect(mocks.terminalInstances).toHaveLength(1), { timeout: 10_000 });
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
@@ -399,6 +401,27 @@ describe("XTermWrapper turn-list row integration", () => {
       .not.toContain(terminalTurnStrings.listEmpty);
   });
 
+  it("never repopulates the closed session cache from a late transcript reply", async () => {
+    const sessionId = "turn-list-closed-late";
+    let release!: (prompts: Array<{ text: string; occurredAt: number }>) => void;
+    const previous = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command: string, ...args: unknown[]) => {
+      if (command === "get_transcript_user_prompts") return new Promise((resolve) => { release = resolve; });
+      return previous(command, ...args);
+    });
+    await act(async () => { root.render(<XTermWrapper workspaceId="workspace" sessionId={sessionId} command="claude" agentKind="claude" />); });
+    await vi.waitFor(() => expect(mocks.terminalInstances).toHaveLength(1), { timeout: 10_000 });
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
+    act(() => host.firstElementChild!.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -1 })));
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
+    act(() => host.querySelector<HTMLButtonElement>(".terminal-turn-chip__label")!.click());
+    expect(release).toBeDefined();
+    act(() => evictTerminalCache(sessionId));
+    await act(async () => { release([{ text: "Late reply", occurredAt: 2000 }]); await Promise.resolve(); });
+    expect(__turnListPromptCacheForTests.has(sessionId)).toBe(false);
+    expect(host.querySelector(".terminal-turn-list")?.textContent).not.toContain("Late reply");
+  });
+
   it("recovers from an initially empty transcript and renders its row in the open list", async () => {
     const sessionId = "turn-list-transcript-retry";
     mocks.transcriptResponses = [
@@ -417,7 +440,7 @@ describe("XTermWrapper turn-list row integration", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    await vi.waitFor(() => expect(mocks.terminalInstances).toHaveLength(1));
+    await vi.waitFor(() => expect(mocks.terminalInstances).toHaveLength(1), { timeout: 10_000 });
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });

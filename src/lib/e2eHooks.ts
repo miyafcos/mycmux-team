@@ -7,6 +7,11 @@
  * commit the drag loop runs, the stores the components read — so a check
  * exercises the shipped code path rather than a test double.
  */
+import { tearOutWorkspaceToNewWindow } from "./workspaceTearOut";
+import { tearoutTab, tearoutPane, tearoutWorkspace, regrabTearoutWindow, isTearoutChild } from "./tearout/runtime";
+import { activeTearoutRecords } from "./tearout/record";
+import { useSettingsStore } from "../stores/settingsStore";
+import { readPaneTail, handleSocketCommand } from "../components/layout/socketCommands";
 import { commitPaneDragDrop } from "../hooks/usePaneDragSource";
 import { getTearOutDiagnosticEvents } from "./tearOutDiagnostics";
 import { isMainWindow, windowLabel } from "./windowContext";
@@ -163,8 +168,14 @@ export function installE2eHooks(): void {
     windowLabel,
     isMainWindow,
     detachTab,
+    legacyDrop: commitPaneDragDrop,
+    tearOutWorkspaceToNewWindow,
+    readPaneTail,
+    handleSocketCommand,
+    nativeTearout: { tearoutTab, tearoutPane, tearoutWorkspace, regrabTearoutWindow, isTearoutChild, records: activeTearoutRecords },
     tearOutEvents: getTearOutDiagnosticEvents,
     stores: {
+      settings: useSettingsStore,
       workspaceList: useWorkspaceListStore,
       layout: useWorkspaceLayoutStore,
       paneMetadata: usePaneMetadataStore,

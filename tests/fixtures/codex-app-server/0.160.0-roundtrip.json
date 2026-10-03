@@ -1,0 +1,545 @@
+{
+  "version": 1,
+  "cliVersion": "0.160.0",
+  "startedAt": "2026-10-03T02:03:32.609615+00:00",
+  "operationId": "d05fabd1-aabc-44fb-9714-8e4a1db8d17a",
+  "events": [
+    {
+      "at": "2026-10-03T02:03:32.738859+00:00",
+      "direction": "send",
+      "id": "initialize",
+      "method": "initialize",
+      "threadId": null,
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:33.020973+00:00",
+      "direction": "receive",
+      "id": "initialize",
+      "method": null,
+      "threadId": null,
+      "turnId": null,
+      "accepted": true
+    },
+    {
+      "at": "2026-10-03T02:03:33.020973+00:00",
+      "direction": "send",
+      "id": null,
+      "method": "initialized",
+      "threadId": null,
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:33.020973+00:00",
+      "direction": "send",
+      "id": "thread:start",
+      "method": "thread/start",
+      "threadId": null,
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:33.022023+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "configWarning",
+      "threadId": null,
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:33.022571+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "remoteControl/status/changed",
+      "threadId": null,
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:34.648609+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "account/updated",
+      "threadId": null,
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:34.901729+00:00",
+      "direction": "receive",
+      "id": "thread:start",
+      "method": null,
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null,
+      "accepted": true
+    },
+    {
+      "at": "2026-10-03T02:03:34.901729+00:00",
+      "direction": "send",
+      "id": "send:d05fabd1-aabc-44fb-9714-8e4a1db8d17a",
+      "method": "turn/start",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:34.901729+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "thread/started",
+      "threadId": null,
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:34.902258+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "warning",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:34.902258+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "warning",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:34.902258+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:34.902258+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:34.902258+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:34.902258+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:34.902583+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:34.902583+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:34.902583+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:34.902583+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:34.902583+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:34.940876+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:34.945131+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:34.983684+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:35.002742+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:35.007986+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:35.086805+00:00",
+      "direction": "receive",
+      "id": "send:d05fabd1-aabc-44fb-9714-8e4a1db8d17a",
+      "method": null,
+      "threadId": null,
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3",
+      "accepted": true
+    },
+    {
+      "at": "2026-10-03T02:03:35.086805+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "thread/status/changed",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:35.086805+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "turn/started",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3",
+      "status": "inProgress"
+    },
+    {
+      "at": "2026-10-03T02:03:35.557607+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:35.724127+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:35.859815+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:37.260024+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "hook/started",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:37.260024+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "hook/started",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:38.572669+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "mcpServer/startupStatus/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:42.274514+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "hook/completed",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:42.274514+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "hook/completed",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:42.274514+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "hook/started",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:42.988745+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "hook/completed",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:42.989761+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "item/started",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:42.989761+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "item/completed",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:45.347187+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "item/started",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:46.234271+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "item/completed",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:46.235522+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "item/started",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:46.235522+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "item/agentMessage/delta",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:46.268835+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "item/agentMessage/delta",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:46.268835+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "item/agentMessage/delta",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:46.304107+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "item/agentMessage/delta",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:46.335199+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "item/agentMessage/delta",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:46.370587+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "item/agentMessage/delta",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:46.545473+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "item/completed",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:46.571901+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "thread/tokenUsage/updated",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:46.571901+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "account/rateLimits/updated",
+      "threadId": null,
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:46.572910+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "hook/started",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:46.572910+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "hook/started",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:46.572910+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "hook/started",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:47.991313+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "hook/completed",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:47.991313+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "hook/completed",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:47.991313+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "hook/completed",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3"
+    },
+    {
+      "at": "2026-10-03T02:03:47.991313+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "thread/status/changed",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": null
+    },
+    {
+      "at": "2026-10-03T02:03:47.991313+00:00",
+      "direction": "receive",
+      "id": null,
+      "method": "turn/completed",
+      "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+      "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3",
+      "status": "completed"
+    }
+  ],
+  "success": true,
+  "userAgent": "mycmux_openai_probe/0.160.0 (Windows 10.0.26200; x86_64) dumb (mycmux_openai_probe; 0.1.0)",
+  "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
+  "configuration": {
+    "requested": {
+      "cwd": "C:\\Users\\miyaz\\mycmux-wt-next-s5-261003",
+      "ephemeral": true
+    },
+    "effective": {
+      "model": "gpt-6.1-sol",
+      "effort": "max",
+      "serviceTier": null,
+      "cwd": "C:\\Users\\miyaz\\mycmux-wt-next-s5-261003"
+    }
+  },
+  "requestId": "send:d05fabd1-aabc-44fb-9714-8e4a1db8d17a",
+  "turnId": "01a0ff80-a07b-7af0-a96d-6e26f3eb77c3",
+  "accepted": true,
+  "tokenUsage": {
+    "total": {
+      "totalTokens": 26680,
+      "inputTokens": 26639,
+      "cachedInputTokens": 0,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 41,
+      "reasoningOutputTokens": 29
+    },
+    "last": {
+      "totalTokens": 26680,
+      "inputTokens": 26639,
+      "cachedInputTokens": 0,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 41,
+      "reasoningOutputTokens": 29
+    },
+    "modelContextWindow": 258400
+  },
+  "turnStatus": "completed",
+  "started": true,
+  "completed": true,
+  "reply": "MYCMUX_O2_OK",
+  "toolItems": [],
+  "ownedProcessExit": 0,
+  "finishedAt": "2026-10-03T02:03:49.419419+00:00"
+}

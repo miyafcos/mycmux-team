@@ -552,6 +552,8 @@ export interface PtyMetadata {
   process_status_at?: number;
   last_output_at?: number;
   agent_active: boolean;
+  /** Rust always sends null for absence; optional for older queued payloads. */
+  live_agent_kind?: string | null;
   claude_session_id?: string;
   agent_kind?: AgentSessionKind;
   agent_session_id?: string;

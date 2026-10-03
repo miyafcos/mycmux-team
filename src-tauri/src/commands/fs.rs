@@ -17,16 +17,20 @@ pub struct ResolvedLocalPathLink {
 /// Cross-platform; mycmux ships on Windows so that path is the one
 /// exercised in production.
 #[tauri::command(async)]
-pub fn reveal_in_explorer(path: String) -> Result<(), String> {
-    reveal_path_in_os_file_manager(Path::new(&path))
+pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
+    crate::util::task::run_blocking("reveal_in_explorer", move || {
+        reveal_path_in_os_file_manager(Path::new(&path))
+    }).await
 }
 
 /// Open a file with the OS default application. For directories this is a
 /// no-op in spirit (the UI hides this menu item for dirs). Cross-platform;
 /// Windows delegates to Explorer so local files use the registered default app.
 #[tauri::command(async)]
-pub fn open_with_default(path: String) -> Result<(), String> {
-    open_path_with_default_app_impl(Path::new(&path))
+pub async fn open_with_default(path: String) -> Result<(), String> {
+    crate::util::task::run_blocking("open_with_default", move || {
+        open_path_with_default_app_impl(Path::new(&path))
+    }).await
 }
 
 #[tauri::command(async)]

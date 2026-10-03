@@ -165,8 +165,13 @@ export function getHeadlessBufferLines(
 
     if (!entry || !canReplayDelta || !sizeMatches) {
       if (entry) disposeEntry(sessionId, entry);
+      // Evict before admission; busy entries must never be disposed mid-write.
+      if (headlessBufferCache.size >= HEADLESS_BUFFER_CACHE_LIMIT) {
+        const oldestIdle = [...headlessBufferCache.entries()].find(([, candidate]) => !candidate.busy);
+        if (oldestIdle) disposeEntry(oldestIdle[0], oldestIdle[1]);
+      }
       entry = createCacheEntry(wanted);
-      headlessBufferCache.set(sessionId, entry);
+      if (headlessBufferCache.size < HEADLESS_BUFFER_CACHE_LIMIT) headlessBufferCache.set(sessionId, entry);
     } else {
       touchEntry(sessionId, entry);
     }
@@ -179,7 +184,8 @@ export function getHeadlessBufferLines(
       entry.endOffset = snapshot.endOffset;
       const lines = getBufferLines(entry.terminal, maxLines);
       entry.busy = false;
-      touchEntry(sessionId, entry);
+      if (headlessBufferCache.get(sessionId) === entry) touchEntry(sessionId, entry);
+      else entry.terminal.dispose(); // All cache slots were busy; this replay is temporary.
       evictOverflow();
       return lines;
     } catch (error) {
@@ -190,6 +196,8 @@ export function getHeadlessBufferLines(
     }
   });
 }
+
+export function __headlessBufferCacheSizeForTests(): number { return headlessBufferCache.size; }
 
 export function __resetHeadlessBufferCacheForTests(): void {
   for (const [sessionId, entry] of headlessBufferCache) disposeEntry(sessionId, entry);

@@ -362,14 +362,14 @@ fn turn_tokens(turn: &TurnRecord) -> i64 {
     turn.input + turn.output + turn.cache_read + turn.cache_write
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PriceClassCoverage {
     pub models: Vec<String>,
     pub tokens: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PriceCoverage {
     pub priced: PriceClassCoverage,
@@ -654,7 +654,7 @@ mod stable_rework_tests {
 // Shared response pieces
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RangeOut {
     pub from: i64,
@@ -674,6 +674,29 @@ pub struct ReportTimings {
     pub rows_scanned: u64,
     pub build_ms: u64,
     pub path: &'static str,
+}
+
+// Deserialize the path into an owned string before mapping to known static
+// values. Deriving over &'static str would require a borrowed 'static input
+// and prevent reports from implementing DeserializeOwned.
+impl<'de> Deserialize<'de> for ReportTimings {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct StoredTimings {
+            sql_ms: u64,
+            rows_scanned: u64,
+            build_ms: u64,
+            path: String,
+        }
+        let stored = StoredTimings::deserialize(d)?;
+        let path = match stored.path.as_str() {
+            "raw" => "raw",
+            "rollup" => "rollup",
+            value => return Err(serde::de::Error::custom(format!("unknown report path: {value}"))),
+        };
+        Ok(Self { sql_ms: stored.sql_ms, rows_scanned: stored.rows_scanned, build_ms: stored.build_ms, path })
+    }
 }
 
 impl Default for ReportTimings {
@@ -724,7 +747,7 @@ pub fn log_report_timings(report: &str, timings: ReportTimings) {
     ));
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Totals {
     pub sessions: i64,
@@ -742,7 +765,7 @@ pub struct Totals {
     pub models: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComparePrevious {
     pub sessions_pct: Option<f64>,
@@ -751,7 +774,7 @@ pub struct ComparePrevious {
     pub rework_pct: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelRow {
     pub model: String,
@@ -781,7 +804,7 @@ pub struct ModelRow {
     pub model_class: ModelClass,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EffortRow {
     pub effort: String,
@@ -792,7 +815,7 @@ pub struct EffortRow {
     pub avg_turn_ms: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectRow {
     pub project_label: String,
@@ -802,7 +825,7 @@ pub struct ProjectRow {
     pub top_title: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TitleRow {
     pub title: String,
@@ -813,7 +836,7 @@ pub struct TitleRow {
     pub rework_score: f64,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReworkSummary {
     pub avg_score: f64,
@@ -823,16 +846,18 @@ pub struct ReworkSummary {
     pub abandoned_sessions: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexFreshness {
     pub last_indexed_at: i64,
     pub stale_files: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Overview {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<super::report_cache::SnapshotInfo>,
     pub range: RangeOut,
     pub totals: Totals,
     pub compare_previous: ComparePrevious,
@@ -851,7 +876,7 @@ pub struct Overview {
     pub cost_note: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExcludedInternal {
     pub sessions: i64,
@@ -1238,6 +1263,7 @@ fn overview_from_pass(
     let timings = finish_timings(timings, started);
     log_report_timings("overview", timings);
     Ok(Overview {
+        cache: None,
         range: RangeOut {
             from: resolved.from,
             to: resolved.to,
@@ -1356,7 +1382,7 @@ mod camel_case_ipc_tests {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesGroup {
     pub group: String,
@@ -1373,7 +1399,7 @@ pub struct SeriesGroup {
     pub cost_usd: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesBucket {
     pub bucket: i64,
@@ -1383,9 +1409,11 @@ pub struct SeriesBucket {
     pub groups: Vec<SeriesGroup>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<super::report_cache::SnapshotInfo>,
     pub range: RangeOut,
     pub bucket: String,
     pub group_by: String,
@@ -1862,6 +1890,7 @@ fn series_day_none_report(
         })
         .collect();
     SeriesReport {
+        cache: None,
         range,
         bucket: options.bucket.clone(),
         group_by: options.group_by.clone(),
@@ -2217,6 +2246,23 @@ pub fn overview(
     filters: &Filters,
     now_ms: i64,
 ) -> Result<Overview, String> {
+    super::report_cache::report(
+        conn,
+        range,
+        filters,
+        "overview",
+        &[],
+        now_ms,
+        || overview_fresh(conn, range, filters, now_ms),
+    )
+}
+
+fn overview_fresh(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    now_ms: i64,
+) -> Result<Overview, String> {
     let started = Instant::now();
     let mut timings = ReportTimings::default();
     let (resolved, label) = range.resolve(now_ms);
@@ -2370,6 +2416,7 @@ fn aggregate_series_report(
         })
         .collect();
     SeriesReport {
+        cache: None,
         range,
         bucket: options.bucket.clone(),
         group_by: options.group_by.clone(),
@@ -2451,6 +2498,7 @@ fn aggregate_breakdown_report(
             .then_with(|| a.key.cmp(&b.key))
     });
     BreakdownReport {
+        cache: None,
         range,
         dimension: dimension.to_string(),
         rows: breakdown_rows,
@@ -2463,6 +2511,24 @@ fn aggregate_breakdown_report(
 }
 
 pub fn series(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    options: &SeriesOptions,
+    now_ms: i64,
+) -> Result<SeriesReport, String> {
+    super::report_cache::report(
+        conn,
+        range,
+        filters,
+        "series",
+        &[&options.bucket, &options.group_by],
+        now_ms,
+        || series_fresh(conn, range, filters, options, now_ms),
+    )
+}
+
+fn series_fresh(
     conn: &Connection,
     range: &Range,
     filters: &Filters,
@@ -2575,6 +2641,7 @@ pub fn series(
     let timings = finish_timings(timings, started);
     log_report_timings("series", timings);
     Ok(SeriesReport {
+        cache: None,
         range: RangeOut {
             from: resolved.from,
             to: resolved.to,
@@ -2594,7 +2661,7 @@ pub fn series(
 // ailog_breakdown
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BreakdownRow {
     pub key: String,
@@ -2610,9 +2677,11 @@ pub struct BreakdownRow {
     pub avg_rework: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BreakdownReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<super::report_cache::SnapshotInfo>,
     pub range: RangeOut,
     pub dimension: String,
     pub rows: Vec<BreakdownRow>,
@@ -2626,6 +2695,24 @@ pub struct BreakdownReport {
 }
 
 pub fn breakdown(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    dimension: &str,
+    now_ms: i64,
+) -> Result<BreakdownReport, String> {
+    super::report_cache::report(
+        conn,
+        range,
+        filters,
+        "breakdown",
+        &[dimension],
+        now_ms,
+        || breakdown_fresh(conn, range, filters, dimension, now_ms),
+    )
+}
+
+fn breakdown_fresh(
     conn: &Connection,
     range: &Range,
     filters: &Filters,
@@ -2745,6 +2832,7 @@ pub fn breakdown(
     let timings = finish_timings(timings, started);
     log_report_timings("breakdown", timings);
     Ok(BreakdownReport {
+        cache: None,
         range: RangeOut {
             from: resolved.from,
             to: resolved.to,
@@ -2780,7 +2868,7 @@ impl Default for PivotOptions {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PivotRow {
     pub key: String,
@@ -2788,9 +2876,11 @@ pub struct PivotRow {
     pub cells: Vec<SeriesGroup>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PivotReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<super::report_cache::SnapshotInfo>,
     pub range: RangeOut,
     pub row_by: String,
     pub col_by: String,
@@ -2976,6 +3066,7 @@ impl PivotAcc {
             })
             .collect();
         PivotReport {
+            cache: None,
             range,
             row_by: options.row_by.clone(),
             col_by: options.col_by.clone(),
@@ -2996,6 +3087,24 @@ impl PivotAcc {
 }
 
 pub fn pivot(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    options: &PivotOptions,
+    now_ms: i64,
+) -> Result<PivotReport, String> {
+    super::report_cache::report(
+        conn,
+        range,
+        filters,
+        "pivot",
+        &[&options.row_by, &options.col_by],
+        now_ms,
+        || pivot_fresh(conn, range, filters, options, now_ms),
+    )
+}
+
+fn pivot_fresh(
     conn: &Connection,
     range: &Range,
     filters: &Filters,

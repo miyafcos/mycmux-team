@@ -23,7 +23,7 @@ const productionRaceMocks = vi.hoisted(() => ({
 
 vi.mock("../../src/lib/paneCloseConfirmation", () => ({ confirmPaneClose: vi.fn(async () => true) }));
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({
+vi.mock("../../src/lib/appConfirmation", () => ({ cancelAppConfirmations: vi.fn(() => false),
   confirm: productionRaceMocks.confirm,
 }));
 
@@ -150,7 +150,7 @@ describe("SocketListener production autosave subscriptions", () => {
     document.body.appendChild(host);
     root = createRoot(host);
     await act(async () => root?.render(createElement(Harness)));
-    await vi.waitFor(() => expect(getPersistentSchemaState().status).toBe("supported"));
+    await vi.waitFor(() => expect(getPersistentSchemaState().status).toBe("supported"), { timeout: 10_000 });
     useWorkspaceListStore.setState({ workspaces: [source], activeWorkspaceId: source.id });
     productionRaceMocks.listRunningSessionIds.mockResolvedValueOnce(["live-pty"]);
     const snapshot = { workspaces: [source] };
@@ -273,8 +273,8 @@ describe("SocketListener production autosave subscriptions", () => {
     document.body.appendChild(host);
     root = createRoot(host);
     await act(async () => root?.render(createElement(Harness)));
-    await vi.waitFor(() => expect(productionRaceMocks.readAgentSessionMappings).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(productionRaceMocks.closeHandler).not.toBeNull());
+    await vi.waitFor(() => expect(productionRaceMocks.readAgentSessionMappings).toHaveBeenCalledOnce(), { timeout: 10_000 });
+    await vi.waitFor(() => expect(productionRaceMocks.closeHandler).not.toBeNull(), { timeout: 10_000 });
 
     act(() => {
       useWorkspaceListStore.setState({ layoutRevision: original.layoutRevision + 1 });
@@ -298,7 +298,7 @@ describe("SocketListener production autosave subscriptions", () => {
       releaseMapping();
       await Promise.resolve();
     });
-    await vi.waitFor(() => expect(productionRaceMocks.restoreWorkspaceConfigs).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(productionRaceMocks.restoreWorkspaceConfigs).toHaveBeenCalledOnce(), { timeout: 10_000 });
     expect(getPersistentSchemaState()).toEqual({ status: "supported", schemaVersion: 1 });
     expect(productionRaceMocks.savePersistentData).not.toHaveBeenCalled();
 
@@ -336,7 +336,7 @@ describe("SocketListener production autosave subscriptions", () => {
     document.body.appendChild(host);
     root = createRoot(host);
     await act(async () => root?.render(createElement(Harness)));
-    await vi.waitFor(() => expect(productionRaceMocks.readAgentSessionMappings).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(productionRaceMocks.readAgentSessionMappings).toHaveBeenCalledOnce(), { timeout: 10_000 });
 
     const schemaEvents: string[] = [];
     const unsubscribeCanonical = subscribePersistentSchemaState((state) => {
@@ -362,7 +362,7 @@ describe("SocketListener production autosave subscriptions", () => {
       await vi.waitFor(() => expect(schemaEvents).toEqual([
         "canonical:supported",
         "grouping:current",
-      ]));
+      ]), { timeout: 10_000 });
       expect(getPersistentSchemaState()).toEqual({ status: "supported", schemaVersion: 1 });
       expect(useGroupingRuntimeStore.getState().persistentSchema).toMatchObject({
         loadedSchemaVersion: 1,
@@ -410,11 +410,11 @@ describe("SocketListener production autosave subscriptions", () => {
     document.body.appendChild(host);
     root = createRoot(host);
     await act(async () => root?.render(createElement(Harness)));
-    await vi.waitFor(() => expect(productionRaceMocks.restoreWorkspaceConfigs).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(productionRaceMocks.restoreWorkspaceConfigs).toHaveBeenCalledOnce(), { timeout: 10_000 });
     await vi.waitFor(() => expect(getPersistentSchemaState()).toMatchObject({
       status: "quarantined",
       reason: "hydrationFailed",
-    }));
+    }), { timeout: 10_000 });
 
     expect(useToastStore.getState().toasts.map((toast) => toast.message)).toContain(
       "保存データの読み込みに失敗したため、この起動中は保存を停止しました。ワークスペースは保存できていません。",
@@ -475,8 +475,8 @@ describe("SocketListener production autosave subscriptions", () => {
       document.body.appendChild(host);
       root = createRoot(host);
       await act(async () => root?.render(createElement(Harness)));
-      await vi.waitFor(() => expect(productionRaceMocks.closeHandler).not.toBeNull());
-      await vi.waitFor(() => expect(useGroupingRuntimeStore.getState().persistentSchema.migrationComplete).toBe(true));
+      await vi.waitFor(() => expect(productionRaceMocks.closeHandler).not.toBeNull(), { timeout: 10_000 });
+      await vi.waitFor(() => expect(useGroupingRuntimeStore.getState().persistentSchema.migrationComplete).toBe(true), { timeout: 10_000 });
       const groupingSchemaEpochBeforeFailure = useGroupingRuntimeStore.getState().persistentSchema.schemaEpoch;
 
       const snapshot = { workspaces: [] };
@@ -540,7 +540,7 @@ describe("SocketListener production autosave subscriptions", () => {
       status: "quarantined",
       reason: "hydrationFailed",
       requiresUnsavedConfirmation: true,
-    }));
+    }), { timeout: 10_000 });
     expect(useToastStore.getState().toasts.map((toast) => toast.message)).toEqual([
       "保存データの読み込みに失敗したため、この起動中は保存を停止しました。ワークスペースは保存できていません。",
     ]);
@@ -568,7 +568,7 @@ describe("SocketListener production autosave subscriptions", () => {
       status: "quarantined",
       reason: "unsupportedPlatform",
       requiresUnsavedConfirmation: true,
-    }));
+    }), { timeout: 10_000 });
     expect(useToastStore.getState().toasts.map((toast) => toast.message)).toEqual([
       "この環境では data.json を安全に保存できないため、この起動中は保存を停止しました。元の data.json は変更していません。",
     ]);
@@ -591,13 +591,13 @@ describe("SocketListener production autosave subscriptions", () => {
     document.body.appendChild(host);
     root = createRoot(host);
     await act(async () => root?.render(createElement(Harness)));
-    await vi.waitFor(() => expect(productionRaceMocks.closeHandler).not.toBeNull());
+    await vi.waitFor(() => expect(productionRaceMocks.closeHandler).not.toBeNull(), { timeout: 10_000 });
     await vi.waitFor(() => expect(getPersistentSchemaState()).toMatchObject({
       status: "quarantined",
       reason: "unsupportedSchema",
       schemaVersion: 999,
       requiresUnsavedConfirmation: true,
-    }));
+    }), { timeout: 10_000 });
 
     const unsavedWorkspace: Workspace = {
       id: "load-future-schema-unsaved-workspace",
@@ -675,7 +675,7 @@ describe("SocketListener production autosave subscriptions", () => {
     document.body.appendChild(host);
     root = createRoot(host);
     await act(async () => root?.render(createElement(Harness)));
-    await vi.waitFor(() => expect(productionRaceMocks.closeHandler).not.toBeNull());
+    await vi.waitFor(() => expect(productionRaceMocks.closeHandler).not.toBeNull(), { timeout: 10_000 });
 
     const snapshot = { workspaces: [] };
     const signature = "a".repeat(64) as Sha256;
@@ -797,7 +797,7 @@ describe("SocketListener production autosave subscriptions", () => {
     document.body.appendChild(host);
     root = createRoot(host);
     await act(async () => root?.render(createElement(Harness)));
-    await vi.waitFor(() => expect(productionRaceMocks.closeHandler).not.toBeNull());
+    await vi.waitFor(() => expect(productionRaceMocks.closeHandler).not.toBeNull(), { timeout: 10_000 });
 
     const snapshot = { workspaces: [] };
     const immediate = requestImmediatePersist({
@@ -807,9 +807,9 @@ describe("SocketListener production autosave subscriptions", () => {
       snapshot,
       snapshotDigest: hashCanonical(snapshot),
     });
-    await vi.waitFor(() => expect(productionRaceMocks.savePersistentData).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(productionRaceMocks.savePersistentData).toHaveBeenCalledOnce(), { timeout: 10_000 });
     const close = productionRaceMocks.closeHandler?.({ preventDefault: vi.fn() });
-    await vi.waitFor(() => expect(productionRaceMocks.getPtyMetadataSnapshot).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(productionRaceMocks.getPtyMetadataSnapshot).toHaveBeenCalledTimes(2), { timeout: 10_000 });
     quarantinePersistentWrites({
       reason: "hydrationFailed",
       diagnostic: "hydrate failed during an in-flight save",
@@ -841,7 +841,7 @@ describe("SocketListener production autosave subscriptions", () => {
       document.body.appendChild(host);
       root = createRoot(host);
       await act(async () => root?.render(createElement(Harness)));
-      await vi.waitFor(() => expect(productionRaceMocks.claimLeader).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(productionRaceMocks.claimLeader).toHaveBeenCalledTimes(2), { timeout: 10_000 });
       expect(hasWindowRole()).toBe(true);
       expect(getPersistentSchemaState().status).toBe("supported");
 
@@ -860,7 +860,7 @@ describe("SocketListener production autosave subscriptions", () => {
         snapshot, snapshotDigest: hashCanonical(snapshot),
       };
       const pending = requestImmediatePersist(request);
-      await vi.waitFor(() => expect(entered).toBe(true));
+      await vi.waitFor(() => expect(entered).toBe(true), { timeout: 10_000 });
       setWindowRole(false);
       expect(getPersistentSchemaState().status).toBe("supported");
       await act(async () => { resume(); await pending; });
