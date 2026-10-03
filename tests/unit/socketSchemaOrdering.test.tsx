@@ -12,7 +12,7 @@ vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ label: moc
   onCloseRequested: async (handler: typeof mocks.close) => { mocks.close = handler; return () => {}; },
   destroy: vi.fn(async () => {}),
 }) }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: mocks.confirm }));
+vi.mock("../../src/lib/appConfirmation", () => ({ cancelAppConfirmations: vi.fn(() => false), confirm: mocks.confirm }));
 vi.mock("../../src/lib/paneCloseConfirmation", () => ({ confirmPaneClose: vi.fn(async () => true) }));
 vi.mock("../../src/lib/ipc", async (original) => ({
   ...await original<typeof import("../../src/lib/ipc")>(),

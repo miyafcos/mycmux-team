@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import { homeDir } from "@tauri-apps/api/path";
-import { confirm } from "@tauri-apps/plugin-dialog";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { confirm } from "../lib/appConfirmation";
 import {
   beginCliLogin,
   cancelCliLogin,
@@ -165,11 +164,8 @@ function offerSwitch(provider: CliProvider, profile: CliAccountProfile): void {
         if (switching) return;
         switching = true;
         void (async () => {
-          // This is a user click, not a delayed login event. Bring the parent
-          // forward before opening its native modal and read fresh pane state.
-          const currentWindow = getCurrentWindow();
-          await currentWindow.show();
-          await currentWindow.setFocus();
+          // The shared dialog handles foregrounding without waiting on IPC.
+          // Read the live pane state for this user click.
           const paneMetadataState = usePaneMetadataStore.getState();
           const accepted = await confirm(
             switchWarningText(

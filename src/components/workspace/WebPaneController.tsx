@@ -192,6 +192,7 @@ export default function WebPaneController() {
   const tabs = useMemo(() => collectWebPaneTabs(workspaces), [workspaces]);
   // File identity controls creation. The reload counter has its own effect so
   // opening changed contents keeps the same native child webview.
+  const hasWebPanes = tabs.length > 0;
   const tabsSignature = tabs
     .map((tab) => `${tab.tabId}:${webPaneIdentity(tab)}`)
     .sort()
@@ -347,6 +348,7 @@ export default function WebPaneController() {
   }, [workspaces, paneDragActive, savepointDragActive, readingTabIds]);
 
   useEffect(() => {
+    if (!hasWebPanes) return;
     let cancelled = false;
     let rafId = 0;
     let frameFallback: ReturnType<typeof setTimeout> | null = null;
@@ -530,7 +532,7 @@ export default function WebPaneController() {
       if (frameFallback !== null) clearTimeout(frameFallback);
       window.cancelAnimationFrame(rafId);
     };
-  }, [enqueue, forwardedShortcuts, shortcutsSignature]);
+  }, [enqueue, forwardedShortcuts, shortcutsSignature, hasWebPanes]);
 
   return null;
 }

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const headlessState = vi.hoisted(() => ({
+  holdWrites: false,
+  pendingWrites: [] as Array<() => void>,
   instances: [] as Array<{
     options: Record<string, unknown>;
     writes: Uint8Array[];
@@ -25,7 +27,8 @@ vi.mock("@xterm/headless/lib-headless/xterm-headless.mjs", () => {
 
     write(data: Uint8Array, callback?: () => void): void {
       this.writes.push(data.slice());
-      callback?.();
+      if (headlessState.holdWrites && callback) headlessState.pendingWrites.push(callback);
+      else callback?.();
     }
   }
 
@@ -34,15 +37,34 @@ vi.mock("@xterm/headless/lib-headless/xterm-headless.mjs", () => {
 
 import {
   __resetHeadlessBufferCacheForTests,
+  __headlessBufferCacheSizeForTests,
   getHeadlessBufferLines,
 } from "../../src/components/terminal/headlessBuffer";
 
 beforeEach(() => {
   __resetHeadlessBufferCacheForTests();
   headlessState.instances.length = 0;
+  headlessState.holdWrites = false;
+  headlessState.pendingWrites = [];
 });
 
 describe("headless terminal scrollback cache", () => {
+  it("keeps at most 12 cached terminals even when all slots are busy", async () => {
+    headlessState.holdWrites = true;
+    const requests = Array.from({ length: 14 }, (_, index) => getHeadlessBufferLines(
+      "busy-" + index, { data: new Uint8Array([index]), startOffset: 0, endOffset: 1 }, 80,
+    ));
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(__headlessBufferCacheSizeForTests()).toBe(12);
+    expect(headlessState.instances).toHaveLength(14);
+    expect(headlessState.instances.every((instance) => instance.dispose.mock.calls.length === 0)).toBe(true);
+    for (const release of headlessState.pendingWrites.splice(0)) release();
+    await Promise.all(requests);
+    expect(__headlessBufferCacheSizeForTests()).toBe(12);
+    expect(headlessState.instances.slice(12).every((instance) => instance.dispose.mock.calls.length === 1)).toBe(true);
+    __resetHeadlessBufferCacheForTests();
+    expect(headlessState.instances.every((instance) => instance.dispose.mock.calls.length === 1)).toBe(true);
+  });
   it("writes only the new byte range on the second read", async () => {
     await getHeadlessBufferLines(
       "session",

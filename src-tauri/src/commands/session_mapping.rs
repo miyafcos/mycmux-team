@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Read pane-session mapping files written by launcher.sh
@@ -87,20 +87,48 @@ fn mapping_storage_id(session_id: &str) -> &str {
     stable_tab_id_from_legacy_session_id(session_id).unwrap_or(session_id)
 }
 
+#[derive(Default)]
+struct LegacyMappingIndex {
+    stamp: Option<SystemTime>,
+    by_tab: HashMap<String, Vec<PathBuf>>,
+}
+
+/// A missing UUID uses an indexed lookup rather than re-enumerating every
+/// pane-session file. Directory mutations invalidate the bounded root cache.
+fn legacy_mapping_indexes() -> &'static Mutex<HashMap<PathBuf, Arc<LegacyMappingIndex>>> {
+    static INDEXES: OnceLock<Mutex<HashMap<PathBuf, Arc<LegacyMappingIndex>>>> = OnceLock::new();
+    INDEXES.get_or_init(Mutex::default)
+}
+
 fn unique_legacy_mapping_path(map_dir: &Path, tab_id: &str) -> Option<PathBuf> {
-    let suffix = format!("-{tab_id}.txt");
-    let candidates = std::fs::read_dir(map_dir)
-        .ok()?
-        .filter_map(Result::ok)
-        .filter_map(|entry| entry.file_type().ok()?.is_file().then_some(entry))
-        .filter(|entry| {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            name.starts_with("pty-") && name.ends_with(&suffix)
-        })
-        .map(|entry| entry.path())
-        .collect::<Vec<_>>();
-    (candidates.len() == 1).then(|| candidates.into_iter().next()).flatten()
+    let stamp = std::fs::metadata(map_dir).ok()?.modified().ok();
+    let cached = legacy_mapping_indexes().lock().unwrap_or_else(|p| p.into_inner())
+        .get(map_dir).filter(|index| stamp.is_some() && index.stamp == stamp).cloned();
+    let index = cached.unwrap_or_else(|| {
+        let mut index = LegacyMappingIndex { stamp, ..Default::default() };
+        if let Ok(entries) = std::fs::read_dir(map_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if let Some(id) = name.strip_suffix(".txt").and_then(stable_tab_id_from_legacy_session_id) {
+                    if entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                        index.by_tab.entry(id.to_string()).or_default().push(entry.path());
+                    }
+                }
+            }
+        }
+        // If it changed during the walk, do not cache an incomplete snapshot.
+        if std::fs::metadata(map_dir).ok().and_then(|m| m.modified().ok()) != stamp {
+            index.stamp = None;
+        }
+        let index = Arc::new(index);
+        let mut indexes = legacy_mapping_indexes().lock().unwrap_or_else(|p| p.into_inner());
+        if indexes.len() >= 16 && !indexes.contains_key(map_dir) { indexes.clear(); }
+        indexes.insert(map_dir.to_path_buf(), index.clone());
+        index
+    });
+    let candidates = index.by_tab.get(tab_id)?;
+    (candidates.len() == 1).then(|| candidates[0].clone())
 }
 
 fn read_valid_mapping(path: &Path) -> Option<AgentSessionMapping> {
@@ -154,6 +182,18 @@ fn hook_mappings() -> &'static Mutex<HashMap<PathBuf, AgentSessionMapping>> {
     MAPPINGS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Serialize one mapping's read/commit/provenance, while unrelated panes
+/// and the global hook table remain available during a drive flush.
+fn mapping_gate(path: &Path) -> Arc<Mutex<()>> {
+    static GATES: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
+    let mut gates = GATES.get_or_init(Mutex::default).lock().unwrap_or_else(|p| p.into_inner());
+    gates.retain(|_, gate| gate.strong_count() != 0);
+    if let Some(gate) = gates.get(path).and_then(Weak::upgrade) { return gate; }
+    let gate = Arc::new(Mutex::new(()));
+    gates.insert(path.to_path_buf(), Arc::downgrade(&gate));
+    gate
+}
+
 fn mapping_path(map_dir: &Path, session_id: &str) -> PathBuf {
     map_dir.join(format!("{}.txt", mapping_storage_id(session_id)))
 }
@@ -161,34 +201,51 @@ fn mapping_path(map_dir: &Path, session_id: &str) -> PathBuf {
 pub(crate) fn read_session_mapping_files_for_ids<I, S>(map_dir: &Path, session_ids: I) -> HashMap<String, AgentSessionMapping>
 where I: IntoIterator<Item = S>, S: AsRef<str>,
 {
-    let mut hooks = hook_mappings().lock().unwrap_or_else(|p| p.into_inner());
-    let mut mappings = read_session_mapping_files_unlocked(map_dir, session_ids);
-    for (id, mapping) in &mut mappings {
+    let mut mappings = HashMap::new();
+    for id in session_ids {
+        let id = id.as_ref();
+        if !is_safe_mapping_id(id) || mappings.contains_key(id) { continue; }
         let path = mapping_path(map_dir, id);
-        if let Some(hook) = hooks.get(&path) {
-            if hook.agent_kind == mapping.agent_kind && hook.session_id == mapping.session_id {
-                mapping.hook_confirmed = true;
-            } else {
-                // An external launcher has replaced this file for a new process.
-                hooks.remove(&path);
+        let gate = mapping_gate(&path);
+        let _guard = gate.lock().unwrap_or_else(|p| p.into_inner());
+        let mut read = read_session_mapping_files_unlocked(map_dir, [id]);
+        if let Some(mut mapping) = read.remove(id) {
+            let mut hooks = hook_mappings().lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(hook) = hooks.get(&path) {
+                if hook.agent_kind == mapping.agent_kind && hook.session_id == mapping.session_id {
+                    mapping.hook_confirmed = true;
+                } else { hooks.remove(&path); }
             }
+            mappings.insert(id.to_string(), mapping);
         }
     }
     mappings
 }
 
 pub(crate) fn clear_hook_session_mapping(map_dir: &Path, session_id: &str) {
-    hook_mappings().lock().unwrap_or_else(|p| p.into_inner()).remove(&mapping_path(map_dir, session_id));
+    let path = mapping_path(map_dir, session_id);
+    let gate = mapping_gate(&path);
+    let _guard = gate.lock().unwrap_or_else(|p| p.into_inner());
+    hook_mappings().lock().unwrap_or_else(|p| p.into_inner()).remove(&path);
 }
 
 pub(crate) fn write_hook_session_mapping(
     map_dir: &Path, terminal_session_id: &str, provider: &str, provider_session_id: &str,
 ) -> Result<(), &'static str> {
+    write_hook_session_mapping_with(map_dir, terminal_session_id, provider, provider_session_id, write_text_file_atomic)
+}
+
+fn write_hook_session_mapping_with(
+    map_dir: &Path, terminal_session_id: &str, provider: &str, provider_session_id: &str,
+    write: impl FnOnce(&Path, &str) -> Result<(), String>,
+) -> Result<(), &'static str> {
     if !is_safe_mapping_id(terminal_session_id) || !is_safe_mapping_id(provider_session_id) {
         return Err("malformed");
     }
     if !matches!(provider, "claude" | "codex" | "grok") { return Err("wrong_provider"); }
-    let mut hooks = hook_mappings().lock().unwrap_or_else(|p| p.into_inner());
+    let path = mapping_path(map_dir, terminal_session_id);
+    let gate = mapping_gate(&path);
+    let _guard = gate.lock().unwrap_or_else(|p| p.into_inner());
     let mappings = read_session_mapping_files_unlocked(map_dir, [terminal_session_id]);
     let existing = mappings.get(terminal_session_id);
     let kind = match existing.and_then(|mapping| mapping.agent_kind.as_deref()) {
@@ -197,12 +254,10 @@ pub(crate) fn write_hook_session_mapping(
         None => provider,
         _ => return Err("wrong_provider"),
     };
-    let path = mapping_path(map_dir, terminal_session_id);
     if existing.is_none_or(|mapping| mapping.session_id != provider_session_id) {
-        write_text_file_atomic(&path, &format!("{kind}:{provider_session_id}\n"))
-            .map_err(|_| "queue_dropped")?;
+        write(&path, &format!("{kind}:{provider_session_id}\n")).map_err(|_| "queue_dropped")?;
     }
-    hooks.insert(path, AgentSessionMapping {
+    hook_mappings().lock().unwrap_or_else(|p| p.into_inner()).insert(path, AgentSessionMapping {
         agent_kind: Some(kind.to_string()), session_id: provider_session_id.to_string(), hook_confirmed: true,
     });
     Ok(())
@@ -307,9 +362,10 @@ pub(crate) fn write_session_mapping_file_to_dir(
     {
         return Ok(());
     }
-    let hooks = hook_mappings().lock().unwrap_or_else(|p| p.into_inner());
     let path = mapping_path(map_dir, session_id);
-    if hooks.contains_key(&path) { return Ok(()); }
+    let gate = mapping_gate(&path);
+    let _guard = gate.lock().unwrap_or_else(|p| p.into_inner());
+    if hook_mappings().lock().unwrap_or_else(|p| p.into_inner()).contains_key(&path) { return Ok(()); }
     write_text_file_atomic(&path, &format!("{agent_kind}:{agent_session_id}\n"))?;
     Ok(())
 }
@@ -330,8 +386,9 @@ fn remove_session_mapping_file_from_dir(map_dir: &Path, session_id: &str) -> Res
         return Ok(());
     }
     let path = map_dir.join(format!("{}.txt", mapping_storage_id(session_id)));
-    let mut hooks = hook_mappings().lock().unwrap_or_else(|p| p.into_inner());
-    hooks.remove(&path);
+    let gate = mapping_gate(&path);
+    let _guard = gate.lock().unwrap_or_else(|p| p.into_inner());
+    hook_mappings().lock().unwrap_or_else(|p| p.into_inner()).remove(&path);
     match std::fs::remove_file(&path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -348,14 +405,70 @@ pub(crate) fn remove_session_mapping_file(session_id: &str) -> Result<(), String
 }
 
 #[tauri::command(async)]
-pub fn read_agent_session_mappings(
+pub async fn read_agent_session_mappings(
     session_ids: Vec<String>,
 ) -> HashMap<String, AgentSessionMapping> {
-    agent_mappings_for_ids(session_ids)
+    crate::util::task::run_blocking_value("read_agent_session_mappings", move || {
+        mapping_read_worker::read_agent_session_mappings(session_ids)
+    }).await
+}
+
+mod mapping_read_worker {
+    use super::{agent_mappings_for_ids, AgentSessionMapping, HashMap};
+
+    pub fn read_agent_session_mappings(session_ids: Vec<String>) -> HashMap<String, AgentSessionMapping> {
+        agent_mappings_for_ids(session_ids)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hook_fsync_releases_global_lock_but_stale_same_pane_monitor_cannot_overwrite() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        write_session_mapping_file_to_dir(dir.path(), "pane-a", "codex", "old").unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let dir = dir.path();
+            let hook = scope.spawn(move || write_hook_session_mapping_with(dir, "pane-a", "codex", "new", |path, contents| {
+                started_tx.send(()).unwrap();
+                release_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+                write_text_file_atomic(path, contents)
+            }));
+            started_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+            assert!(hook_mappings().try_lock().is_ok());
+            write_session_mapping_file_to_dir(dir, "pane-b", "codex", "unrelated").unwrap();
+            let monitor = scope.spawn(move || write_session_mapping_file_to_dir(dir, "pane-a", "codex", "old"));
+            release_tx.send(()).unwrap();
+            hook.join().unwrap().unwrap();
+            monitor.join().unwrap().unwrap();
+        });
+        let mappings = read_session_mapping_files_for_ids(dir.path(), ["pane-a", "pane-b"]);
+        assert_eq!(mappings["pane-a"].session_id, "new");
+        assert!(mappings["pane-a"].hook_confirmed);
+        assert_eq!(mappings["pane-b"].session_id, "unrelated");
+    }
+
+    #[test]
+    fn missing_mapping_ids_reuse_the_directory_index_and_mutations_invalidate_it() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let missing = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        assert!(read_session_mapping_files_for_ids(dir.path(), [missing]).is_empty());
+        let first = legacy_mapping_indexes().lock().unwrap().get(dir.path()).unwrap().clone();
+        for _ in 0..20 { assert!(read_session_mapping_files_for_ids(dir.path(), [missing]).is_empty()); }
+        let second = legacy_mapping_indexes().lock().unwrap().get(dir.path()).unwrap().clone();
+        assert!(Arc::ptr_eq(&first, &second), "a missing id must not enumerate pane-sessions again");
+        let legacy = dir.path().join(format!("pty-old-pane-{missing}.txt"));
+        std::fs::write(&legacy, "codex:restored\n").unwrap();
+        // Filesystem timestamp precision varies; force a distinct directory epoch.
+        #[cfg(unix)]
+        std::fs::File::open(dir.path()).unwrap().set_modified(SystemTime::now() + std::time::Duration::from_secs(2)).unwrap();
+        assert_eq!(read_session_mapping_files_for_ids(dir.path(), [missing])[missing].session_id, "restored");
+        assert!(dir.path().join(format!("{missing}.txt")).is_file());
+    }
     use super::*;
 
     #[test]

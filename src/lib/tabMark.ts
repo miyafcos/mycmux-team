@@ -12,14 +12,19 @@
  * badged "Codex".
  */
 import type { PaneTab } from "../types/workspace";
-import { resolveDisplayAgentKind, type DisplayAgentKind } from "./agentDisplayKind";
+import { normalizeDisplayAgentKind, resolveDisplayAgentKind, type DisplayAgentKind } from "./agentDisplayKind";
 import { agentKindColor, type AgentKindColor } from "./agentKindColors";
 
 /** Everything `AgentKindIcon` can draw: the agent kinds plus the Web-only vendors. */
 export type ArtifactMarkKind = "html" | "markdown" | "text" | "pdf" | "word" | "excel" | "powerpoint" | "office";
 export type TabMarkKind = DisplayAgentKind | "gemini" | "notebooklm" | "browser" | ArtifactMarkKind;
 
+export type MarkSource = "live" | "saved" | "preset";
+
 export interface TabMark {
+  source: MarkSource;
+  /** Saved marks describe a stopped or not yet started PTY. */
+  dormant: boolean;
   /** The `kind` AgentKindIcon dispatches on. */
   kind: TabMarkKind;
   /** Vendor name for the badge and the accessible name. */
@@ -34,6 +39,7 @@ export interface TabMark {
 export const WEB_PRESET_MARKS: Record<string, { kind: TabMarkKind; label: string }> = {
   browser: { kind: "browser", label: "ブラウザ" },
   chatgpt: { kind: "codex", label: "ChatGPT" },
+  dots: { kind: "codex", label: "ChatGPT dots" },
   gemini: { kind: "gemini", label: "Gemini" },
   grok: { kind: "grok", label: "Grok" },
   claude: { kind: "claude", label: "Claude" },
@@ -89,16 +95,20 @@ export type TabMarkInput = Pick<
   "type" | "presetId" | "agentKind" | "commandArgv" | "launchEnv" | "sourceKind" | "sourcePath"
 >;
 
-/**
- * `agentKind` overrides the tab's own field where live metadata knows better
- * (the PTY reports what actually launched); it is ignored for Web tabs, which
- * have no session to report one.
- */
-export function resolveTabMark(tab: TabMarkInput, agentKind?: string | null): TabMark | null {
+export function tabMarkSource(tab: TabMarkInput, ptyAlive: boolean): MarkSource {
+  return tab.type === "web" || tab.type === "browser" ? "preset" : ptyAlive ? "live" : "saved";
+}
+
+/** A running PTY uses only live identity, including an explicit null. */
+export function resolveTabMark(
+  tab: TabMarkInput,
+  liveAgentKind?: string | null,
+  ptyAlive = liveAgentKind !== undefined,
+): TabMark | null {
   if (tab.type === "web") {
     // An unknown preset still gets the globe: a Web tab is never mark-less.
     const preset = WEB_PRESET_MARKS[tab.presetId ?? ""] ?? WEB_PRESET_MARKS.browser;
-    return { ...preset, color: tabMarkColor(preset.kind) };
+    return { ...preset, color: tabMarkColor(preset.kind), source: "preset", dormant: false };
   }
   if (tab.type === "browser") {
     let kind: ArtifactMarkKind;
@@ -118,13 +128,15 @@ export function resolveTabMark(tab: TabMarkInput, agentKind?: string | null): Ta
     } else {
       return null;
     }
-    return { kind, label: ARTIFACT_MARK_LABELS[kind], color: tabMarkColor(kind) };
+    return { kind, label: ARTIFACT_MARK_LABELS[kind], color: tabMarkColor(kind), source: "preset", dormant: false };
   }
-  const kind = resolveDisplayAgentKind(
-    agentKind ?? tab.agentKind,
+  const kind = ptyAlive ? normalizeDisplayAgentKind(liveAgentKind) : resolveDisplayAgentKind(
+    tab.agentKind,
     tab.commandArgv,
     tab.launchEnv?.MYCMUX_LAUNCH_TARGET,
   );
   if (!kind) return null;
-  return { kind, label: AGENT_MARK_LABELS[kind], color: tabMarkColor(kind) };
+  return { kind, label: AGENT_MARK_LABELS[kind], color: tabMarkColor(kind),
+    source: tabMarkSource(tab, ptyAlive), dormant: !ptyAlive };
+
 }

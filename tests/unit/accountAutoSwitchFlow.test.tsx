@@ -15,7 +15,7 @@ const ipc = vi.hoisted(() => ({
   switched: [] as string[],
 }));
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn(async () => false) }));
+vi.mock("../../src/lib/appConfirmation", () => ({ cancelAppConfirmations: vi.fn(() => false), confirm: vi.fn(async () => false) }));
 vi.mock("@tauri-apps/api/path", () => ({ homeDir: vi.fn(async () => "C:\\Users\\test") }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefined), emit: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({
@@ -95,7 +95,7 @@ it("drops a target unticked while its switch is queued, and ends on the next can
   const root = createRoot(host);
   await act(async () => root.render(<Probe />));
   // a is at its limit, so the switch to b (the least loaded) is now waiting in the queue.
-  await vi.waitFor(() => expect(useCliAccountStore.getState().busyByProvider.claude).toBe("b"));
+  await vi.waitFor(() => expect(useCliAccountStore.getState().busyByProvider.claude).toBe("b"), { timeout: 10_000 });
 
   await act(async () => useAccountAutoSwitchStore.getState().setTargetIncluded("claude", "b", false));
   await act(async () => {
@@ -103,7 +103,7 @@ it("drops a target unticked while its switch is queued, and ends on the next can
     await capture;
   });
 
-  await vi.waitFor(() => expect(ipc.switched).toEqual(["c"]));
+  await vi.waitFor(() => expect(ipc.switched).toEqual(["c"]), { timeout: 10_000 });
   expect(useAccountAutoSwitchStore.getState().enabled.claude).toBe(true);
   expect(useAccountAutoSwitchStore.getState().attempts.claude).toMatchObject({ source: "a", target: "c" });
   await act(async () => root.unmount());

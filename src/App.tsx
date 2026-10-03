@@ -27,8 +27,7 @@ import { installChildWindowDevHook } from "./lib/multiWindowDev";
 import { useUiStore } from "./stores/uiStore";
 import { agentSessionIdentityKey } from "./stores/workspaceListStore";
 import { useSettingsStore } from "./stores/settingsStore";
-import { isShellProcess } from "./lib/notificationStatus";
-import { confirmAgentSessionClear } from "./lib/agentSessionClearGuard";
+import { applyPtyMetadata, connectLiveAgentHydration } from "./lib/liveAgentMetadata";
 import type { AgentSessionKind } from "./types";
 import {
   STARTUP_RESTORE_COMPLETE_EVENT,
@@ -258,59 +257,8 @@ function App() {
     // workspaceListStore (persisted via toConfig). Without the latter mirror,
     // toConfig only sees stale Pane.claudeSessionId and saves null, which is
     // why session restore was broken before v0.6.1.
-    const unlistenMeta = onPtyMetadata((meta) => {
-      const processIsShell = isShellProcess(meta.process_name ?? undefined);
-      const agentActive = meta.agent_active === true;
-      const paneMetadataStore = usePaneMetadataStore.getState();
-      const workspaceListStore = useWorkspaceListStore.getState();
-      const clearSuppressed = paneMetadataStore.metadata[meta.session_id]?.agentStatus === "waiting";
-      if (confirmAgentSessionClear(meta.session_id, processIsShell, agentActive, clearSuppressed)) {
-        paneMetadataStore.clearAgentSessionId(meta.session_id);
-        paneMetadataStore.clearClaudeSessionId(meta.session_id);
-        // Also clear the persisted Pane/Tab fields so the next save doesn't
-        // ressurect a stale agent session for a pane that's now back in shell.
-        workspaceListStore.setPaneAgentSessionFromMetadata(meta.session_id, null);
-      }
-      const sessionPayload = agentActive && (meta.claude_session_id || meta.agent_session_id)
-        ? {
-            claudeSessionId: meta.claude_session_id ?? undefined,
-            agentKind: (meta.agent_kind as AgentSessionKind | undefined) ?? undefined,
-            agentSessionId: meta.agent_session_id ?? undefined,
-          }
-        : null;
-      const sessionClaim = sessionPayload
-        ? workspaceListStore.setPaneAgentSessionFromMetadata(meta.session_id, sessionPayload)
-        : null;
-      const sessionClaimAccepted = sessionClaim?.accepted ?? true;
-      if (sessionClaim?.conflict) {
-        const currentMeta = paneMetadataStore.metadata[meta.session_id];
-        const currentMetaKey = agentSessionIdentityKey(
-          currentMeta?.agentKind,
-          currentMeta?.agentSessionId,
-          currentMeta?.claudeSessionId,
-        );
-        if (currentMetaKey === sessionClaim.conflict.key) {
-          paneMetadataStore.clearAgentSessionId(meta.session_id);
-          paneMetadataStore.clearClaudeSessionId(meta.session_id);
-        }
-      }
-      paneMetadataStore.setMetadata(meta.session_id, {
-        cwd: meta.cwd,
-        gitBranch: meta.git_branch,
-        processIsShell,
-        backendProcessStatus: meta.process_status,
-        claudeSessionId: sessionClaimAccepted && agentActive ? meta.claude_session_id ?? undefined : undefined,
-        agentKind: sessionClaimAccepted && agentActive ? meta.agent_kind ?? undefined : undefined,
-        agentSessionId: sessionClaimAccepted && agentActive ? meta.agent_session_id ?? undefined : undefined,
-      });
-      paneMetadataStore.setVolatileMetadata(meta.session_id, {
-        processTitle: meta.process_name ?? undefined,
-        backendLastOutputAt: meta.last_output_at,
-      });
-      // The workspace claim is intentionally applied before pane metadata.
-      // Otherwise a rejected duplicate can re-enter persistence via toConfig's
-      // paneMetadataStore fallback.
-    });
+    const unlistenMeta = onPtyMetadata(applyPtyMetadata);
+    const disconnectLiveAgentHydration = connectLiveAgentHydration(persistLoaded);
 
     // Work-done listener: backend detects a foreground process transition
     // from a working process (claude/node/python/…) back to a shell and
@@ -400,6 +348,7 @@ function App() {
       unlistenWorkDone.then((f) => f()).catch(() => {});
       unlistenAttention.then((f) => f()).catch(() => {});
       disconnectStallDetection();
+      disconnectLiveAgentHydration();
       unlistenDragDrop.then((f) => f()).catch(() => {});
       window.removeEventListener(STARTUP_RESTORE_COMPLETE_EVENT, refreshAgentSessionMappings);
       window.clearTimeout(mappingFallbackTimer);

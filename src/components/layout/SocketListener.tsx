@@ -1,9 +1,9 @@
 import { persistenceStrings } from "../../lib/persistenceStrings";
 import { confirmPaneClose } from "../../lib/paneCloseConfirmation";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
-import { evictTerminalCache } from "../terminal/terminalCache";
+import { evictTerminalCache, registerTerminalCacheEvictionCleanup } from "../terminal/terminalCache";
 import { useEffect, useRef } from "react";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { cancelAppConfirmations, confirm } from "../../lib/appConfirmation";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listenForDetachedDock, takeDetachedPlacements, DETACHED_DOCK_REQUEST_EVENT } from "../../stores/detachedDockStore";
 import { installTearoutRuntime } from "../../lib/tearout/runtime";
@@ -350,6 +350,28 @@ type TerminalSnapshotCacheEntry = {
 };
 
 const terminalSnapshotCache = new Map<string, TerminalSnapshotCacheEntry>();
+export const __terminalSnapshotCacheForTests = terminalSnapshotCache;
+registerTerminalCacheEvictionCleanup((sessionId) => terminalSnapshotCache.delete(sessionId));
+
+/** Compare only the metadata fields actually serialized into a workspace. */
+export function persistedPaneMetadataChanged(
+  next: ReturnType<typeof usePaneMetadataStore.getState>["metadata"],
+  previous: ReturnType<typeof usePaneMetadataStore.getState>["metadata"],
+): boolean {
+  if (next === previous) return false;
+  const fields = ["cwd", "agentKind", "agentSessionId", "claudeSessionId"] as const;
+  for (const sessionId of new Set([...Object.keys(next), ...Object.keys(previous)])) {
+    if (next[sessionId] === previous[sessionId]) continue;
+    if (fields.some((field) => next[sessionId]?.[field] !== previous[sessionId]?.[field])) return true;
+  }
+  return false;
+}
+
+export function subscribePersistedPaneMetadata(request: () => void): () => void {
+  return usePaneMetadataStore.subscribe((state, previousState) => {
+    if (persistedPaneMetadataChanged(state.metadata, previousState.metadata)) request();
+  });
+}
 
 function persistTurnMarksForTab(
   sessionId: string,
@@ -2342,7 +2364,7 @@ export function useWorkspacePersist() {
     });
 
     const promptAfterFinalSaveFailure = async (): Promise<"retry" | "quit-anyway"> => {
-      const retry = await waitForWindowClose(confirm(
+      const retry = await confirm(
         "The final workspace save failed. Retry saving before quitting?",
         {
           title: "mycmux workspace save failed",
@@ -2350,7 +2372,7 @@ export function useWorkspacePersist() {
           okLabel: "Retry",
           cancelLabel: "Quit anyway",
         },
-      ), "save failure confirmation");
+      );
       return retry ? "retry" : "quit-anyway";
     };
 
@@ -2369,14 +2391,9 @@ export function useWorkspacePersist() {
     );
 
     const markDirty = autosaveController.request;
-    const unsubMeta = usePaneMetadataStore.subscribe((state, previousState) => {
-      // lastLog is a high-frequency UI-only slice. It is intentionally absent
-      // from buildSnapshot, so terminal streaming must not keep resetting the
-      // workspace autosave debounce timer.
-      if (state.metadata !== previousState.metadata) {
-        markDirty();
-        agentMappingsDirty = true;
-      }
+    const unsubMeta = subscribePersistedPaneMetadata(() => {
+      markDirty();
+      agentMappingsDirty = true;
     });
     // Hydration may replace a terminal font stack this machine cannot render --
     // the Mac inherited `'MS Gothic', 'BIZ UDGothic', monospace` from the
@@ -2470,6 +2487,10 @@ export function useWorkspacePersist() {
         hideMainWindow();
         return;
       }
+      if (cancelAppConfirmations()) {
+        event.preventDefault();
+        return;
+      }
       if (closing || closePromptOpen) {
         event.preventDefault();
         return;
@@ -2499,7 +2520,7 @@ export function useWorkspacePersist() {
             if (error instanceof WindowCloseTimeoutError) throw error;
           }
           if (panes.length > 0
-            && !await waitForWindowClose(confirmPaneClose(panes, "window", { peerWindowCount }), "close confirmation")) return;
+            && !await confirmPaneClose(panes, "window", { peerWindowCount })) return;
         } finally {
           closePromptOpen = false;
         }
@@ -2524,7 +2545,7 @@ export function useWorkspacePersist() {
               && schemaStateBeforeSave.requiresUnsavedConfirmation)) {
             closePromptOpen = true;
             try {
-              if (await waitForWindowClose(confirmUnsavedQuarantineQuit(schemaStateBeforeSave), "unsaved workspace confirmation")) {
+              if (await confirmUnsavedQuarantineQuit(schemaStateBeforeSave)) {
                 shouldQuitAfterSave = true;
                 break;
               }
@@ -2552,7 +2573,7 @@ export function useWorkspacePersist() {
             || (schemaState.status === "quarantined" && schemaState.requiresUnsavedConfirmation)) {
             closePromptOpen = true;
             try {
-              if (await waitForWindowClose(confirmUnsavedQuarantineQuit(schemaState), "unsaved workspace confirmation")) {
+              if (await confirmUnsavedQuarantineQuit(schemaState)) {
                 shouldQuitAfterSave = true;
                 break;
               }
@@ -2680,9 +2701,7 @@ export function useWorkspacePersist() {
 
     const unsubList = useWorkspaceListStore.subscribe(markDirty);
     const unsubLayout = useWorkspaceLayoutStore.subscribe(markDirty);
-    const unsubMeta = usePaneMetadataStore.subscribe((state, previousState) => {
-      if (state.metadata !== previousState.metadata) markDirty();
-    });
+    const unsubMeta = subscribePersistedPaneMetadata(markDirty);
     const unsubUi = useUiStore.subscribe((state, previousState) => {
       if (
         state.activePaneId !== previousState.activePaneId

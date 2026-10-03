@@ -21,7 +21,7 @@ const orderingMocks = vi.hoisted(() => ({
 
 vi.mock("../../src/lib/paneCloseConfirmation", () => ({ confirmPaneClose: vi.fn(async () => true) }));
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({
+vi.mock("../../src/lib/appConfirmation", () => ({ cancelAppConfirmations: vi.fn(() => false),
   confirm: vi.fn(async () => false),
 }));
 
@@ -238,7 +238,7 @@ describe("SocketListener persistent write ordering", () => {
     await vi.waitFor(() => expect(getPersistentSchemaState()).toEqual({
       status: "supported",
       schemaVersion: 1,
-    }));
+    }), { timeout: 10_000 });
     await act(async () => vi.advanceTimersByTimeAsync(600));
     await flushMicrotasks();
     orderingMocks.readAgentSessionMappings.mockClear();

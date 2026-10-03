@@ -145,7 +145,7 @@ pub fn claim_leader(window: tauri::Window, state: State<'_, AppState>) -> bool {
 }
 
 #[tauri::command(async)]
-pub fn release_leader(window: tauri::Window) {
+pub async fn release_leader(window: tauri::Window) {
     release_window_role(window.app_handle(), window.label());
 }
 
@@ -486,7 +486,11 @@ pub fn spawn_child_window(
                 builder = builder.position(x, y);
             }
 
+            let creation_start = std::time::Instant::now();
             let built = builder.build();
+            crate::watchdog::record_webview_creation(
+                &build_label, &build_label, creation_start.elapsed(), built.is_ok(),
+            );
             // Success is already in the OS window map; failure frees the slot.
             drop(reservation);
             match built {
@@ -564,6 +568,10 @@ pub fn open_child_window(
 
 /// Window closure, explicit exit/restart and native loop termination share cleanup.
 pub fn handle_app_run_event(app: &AppHandle, event: tauri::RunEvent) {
+    // WM_ENDSESSION destroys tao's loop and arrives here as RunEvent::Exit.
+    // No disk I/O, hook reply wait or ConPTY destruction runs in this callback.
+    static CLEANUP: std::sync::OnceLock<crate::shutdown::Cleanup> = std::sync::OnceLock::new();
+    let exiting = matches!(&event, tauri::RunEvent::Exit);
     let (live_windows, code) = match event {
         tauri::RunEvent::ExitRequested { code, api, .. } => {
             let live_windows = all_window_labels(app).len();
@@ -598,18 +606,34 @@ pub fn handle_app_run_event(app: &AppHandle, event: tauri::RunEvent) {
         _ => return,
     };
     let state = app.state::<AppState>();
-    if !state.window_registry.begin_shutdown(live_windows, code) { return; }
-    // Before anything is torn down: an exit that never reached a window (the
-    // Dock's Quit, a logout) leaves data.json at its last autosave, so fill in
-    // whatever a window still holds and the file has not seen.
-    crate::commands::quit::fill_in_unsaved_workspaces(app);
-    if let Some(dir) = state.scrollback_dir.get() {
-        if let Err(error) = state.session_manager.flush_all_scrollbacks(dir) {
-            crate::diag_warn!("scrollback", "shutdown flush failed: {error}");
+    if state.window_registry.begin_shutdown(live_windows, code) {
+        let worker_app = app.clone();
+        match crate::shutdown::Cleanup::start(crate::shutdown::SHUTDOWN_BUDGET, move |deadline| {
+            let state = worker_app.state::<AppState>();
+            crate::commands::quit::fill_in_unsaved_workspaces(&worker_app, deadline);
+            if std::time::Instant::now() < deadline {
+                if let Some(dir) = state.scrollback_dir.get() {
+                    if let Err(error) = state.session_manager.flush_all_scrollbacks(dir) {
+                        crate::diag_warn!("scrollback", "shutdown flush failed: {error}");
+                    }
+                }
+            }
+            if std::time::Instant::now() < deadline { state.session_manager.kill_all(); }
+            if std::time::Instant::now() < deadline { state.hook_service.revoke_all(); }
+        }) {
+            Ok(cleanup) => { let _ = CLEANUP.set(cleanup); }
+            Err(error) => crate::watchdog::log_with_memory(format!("[shutdown] {error}")),
         }
     }
-    state.session_manager.kill_all();
-    state.hook_service.revoke_all();
+    // Explicit exit/updater restart is never vetoed. Keep the process alive
+    // only until this single deadline so the already-started worker can finish.
+    if exiting {
+        if let Some(cleanup) = CLEANUP.get() {
+            if !cleanup.wait() {
+                crate::watchdog::log_with_memory("[shutdown] cleanup budget exhausted".into());
+            }
+        }
+    }
 }
 
 #[tauri::command]

@@ -44,42 +44,53 @@ fn windows_build_number() -> Option<u32> {
 }
 
 #[tauri::command(async)]
-pub fn get_terminal_config() -> TerminalConfigPayload {
-    let cfg = crate::terminal_config::load();
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    TerminalConfigPayload {
-        font_family: cfg.font_family,
-        font_size: cfg.font_size,
-        shell,
-        background: rgb_hex(cfg.colors.background),
-        foreground: rgb_hex(cfg.colors.foreground),
-        ansi: cfg.colors.ansi.iter().map(|c| rgb_hex(*c)).collect(),
-        windows_build_number: windows_build_number(),
-    }
+pub async fn get_terminal_config() -> TerminalConfigPayload {
+    crate::util::task::run_blocking_value("get_terminal_config", move || {
+        let cfg = crate::terminal_config::load();
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        TerminalConfigPayload {
+            font_family: cfg.font_family,
+            font_size: cfg.font_size,
+            shell,
+            background: rgb_hex(cfg.colors.background),
+            foreground: rgb_hex(cfg.colors.foreground),
+            ansi: cfg.colors.ansi.iter().map(|c| rgb_hex(*c)).collect(),
+            windows_build_number: windows_build_number(),
+        }
+    }).await
 }
 
 #[tauri::command]
 pub fn get_pty_metadata_snapshot(state: State<'_, AppState>) -> HashMap<String, PtyMetadata> {
     state
-        .metadata_store
-        .iter()
-        .map(|entry| (entry.key().clone(), entry.value().clone()))
+        .session_manager
+        .iter_pids()
+        .into_iter()
+        .filter(|(id, _)| state.session_manager.is_running(id))
+        .map(|(id, _)| {
+            let metadata = state
+                .metadata_store
+                .get(&id)
+                .map(|entry| entry.clone())
+                .unwrap_or_else(|| PtyMetadata::unobserved(id.clone()));
+            (id, metadata)
+        })
         .collect()
 }
 
 #[tauri::command(async)]
-pub fn list_running_session_ids(state: State<'_, AppState>) -> Vec<String> {
-    running_session_ids(&state)
+pub async fn list_running_session_ids(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let manager = state.session_manager.clone();
+    crate::util::task::run_blocking("list_running_session_ids", move || Ok(running_session_ids_for(&manager))).await
 }
 
 fn running_session_ids(state: &AppState) -> Vec<String> {
-    state
-        .session_manager
-        .iter_pids()
-        .into_iter()
-        .map(|(id, _)| id)
-        .filter(|id| state.session_manager.is_running(id))
-        .collect()
+    running_session_ids_for(&state.session_manager)
+}
+
+fn running_session_ids_for(manager: &crate::pty::manager::SessionManager) -> Vec<String> {
+    manager.iter_pids().into_iter().map(|(id, _)| id)
+        .filter(|id| manager.is_running(id)).collect()
 }
 
 fn running_conversation_owners(state: &AppState) -> Vec<Owner> {
@@ -108,17 +119,37 @@ fn running_conversation_owners(state: &AppState) -> Vec<Owner> {
 }
 
 #[tauri::command(async)]
-pub fn get_session_output_snapshot(state: State<'_, AppState>) -> HashMap<String, Option<u64>> {
-    state.session_manager.last_output_snapshot()
+pub async fn get_session_output_snapshot(state: State<'_, AppState>) -> Result<HashMap<String, Option<u64>>, String> {
+    Ok(state.session_manager.last_output_snapshot())
 }
 
-// `(async)` runs this on a worker thread instead of the Tauri main (UI) thread.
-// The body does heavy synchronous filesystem work (recursive ~/.codex scan,
-// .claude.json rewrite, dir creation) that would otherwise freeze the UI every
-// time a session is added.
+// Filesystem, process creation and teardown belong to the blocking pool,
+// keeping both the UI thread and the async workers available for PTY output.
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
-pub fn create_session(
+pub async fn create_session(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    command: String,
+    args: Vec<String>,
+    cols: u16,
+    rows: u16,
+    on_data: Channel<InvokeResponseBody>,
+    cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
+) -> Result<(), String> {
+    // Capture owned handles; borrowed IPC State never crosses the worker boundary.
+    let worker_app = app_handle.clone();
+    let _ = state;
+    crate::util::task::run_blocking("create_session", move || {
+        let state = worker_app.state::<AppState>();
+        create_session_blocking(app_handle, state, session_id, command, args, cols, rows, on_data, cwd, env)
+    }).await
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_session_blocking(
     app_handle: AppHandle,
     state: State<'_, AppState>,
     session_id: String,
@@ -1071,18 +1102,21 @@ pub async fn write_to_session_guarded(
 }
 
 #[tauri::command(async)]
-pub fn is_session_alive(state: State<'_, AppState>, session_id: String) -> bool {
-    state.session_manager.is_alive(&session_id)
+pub async fn is_session_alive(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
+    Ok(state.session_manager.is_alive(&session_id))
 }
 
 #[tauri::command(async)]
-pub fn resize_session(
+pub async fn resize_session(
     state: State<'_, AppState>,
     session_id: String,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    state.session_manager.resize(&session_id, cols, rows)
+    let manager = state.session_manager.clone();
+    crate::util::task::run_blocking("resize_session", move || {
+        manager.resize(&session_id, cols, rows)
+    }).await
 }
 
 #[tauri::command]
@@ -1158,14 +1192,16 @@ pub async fn set_app_frontend_visible(
 }
 
 #[tauri::command(async)]
-pub fn get_session_scrollback(
+pub async fn get_session_scrollback(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Response, String> {
-    state
-        .session_manager
-        .get_scrollback_snapshot(&session_id)
-        .map(|snapshot| Response::new(snapshot.into_wire()))
+    let manager = state.session_manager.clone();
+    crate::util::task::run_blocking("get_session_scrollback", move || {
+        manager
+            .get_scrollback_snapshot(&session_id)
+            .map(|snapshot| Response::new(snapshot.into_wire()))
+    }).await
 }
 
 #[tauri::command(async)]
@@ -1173,10 +1209,11 @@ pub async fn has_persisted_scrollback(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<bool, String> {
-    Ok(state
-        .scrollback_dir
-        .get()
-        .is_some_and(|dir| crate::pty::scrollback_store::load(dir, &session_id).is_some()))
+    let dir = state.scrollback_dir.get().cloned();
+    crate::util::task::run_blocking("has_persisted_scrollback", move || {
+        Ok(dir.as_ref()
+            .is_some_and(|dir| crate::pty::scrollback_store::load(dir, &session_id).is_some()))
+    }).await
 }
 
 #[tauri::command(async)]
@@ -1185,11 +1222,14 @@ pub async fn remove_workspace_scrollback(
     workspace_id: String,
     session_ids: Vec<String>,
 ) -> Result<(), String> {
-    let Some(dir) = state.scrollback_dir.get() else {
-        return Ok(());
-    };
-    crate::pty::scrollback_store::remove_many(dir, &session_ids)
-        .map_err(|error| format!("Failed to remove scrollback for workspace {workspace_id}: {error}"))
+    let dir = state.scrollback_dir.get().cloned();
+    crate::util::task::run_blocking("remove_workspace_scrollback", move || {
+        let Some(dir) = dir.as_ref() else {
+            return Ok(());
+        };
+        crate::pty::scrollback_store::remove_many(dir, &session_ids)
+            .map_err(|error| format!("Failed to remove scrollback for workspace {workspace_id}: {error}"))
+    }).await
 }
 
 #[tauri::command(async)]
@@ -1197,64 +1237,76 @@ pub async fn discard_session_scrollback(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), String> {
-    let Some(dir) = state.scrollback_dir.get() else {
-        return Ok(());
-    };
-    crate::pty::scrollback_store::remove(dir, &session_id)
-        .map_err(|error| format!("Failed to discard scrollback for {session_id}: {error}"))
-}
-
-#[tauri::command(async)]
-pub fn kill_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
-    state.hook_service.drain_session(&session_id);
-    let session_epoch = state
-        .session_manager
-        .session_observation(&session_id)
-        .map(|(session_epoch, _)| session_epoch);
-    let kill_result = state.session_manager.kill(&session_id);
-    let remove_result = if let Some(dir) = state.scrollback_dir.get() {
+    let dir = state.scrollback_dir.get().cloned();
+    crate::util::task::run_blocking("discard_session_scrollback", move || {
+        let Some(dir) = dir.as_ref() else {
+            return Ok(());
+        };
         crate::pty::scrollback_store::remove(dir, &session_id)
-            .map_err(|error| format!("Failed to remove scrollback for {session_id}: {error}"))
-    } else {
+            .map_err(|error| format!("Failed to discard scrollback for {session_id}: {error}"))
+    }).await
+}
+
+#[tauri::command(async)]
+pub async fn kill_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
+    let hooks = state.hook_service.clone();
+    let manager = state.session_manager.clone();
+    let dir = state.scrollback_dir.get().cloned();
+    let session_state = state.session_state_store.clone();
+    hooks.queue_session_drain(&session_id);
+    crate::util::task::run_blocking("kill_session", move || {
+        let session_epoch = manager
+            .session_observation(&session_id)
+            .map(|(session_epoch, _)| session_epoch);
+        let kill_result = manager.kill(&session_id);
+        let remove_result = if let Some(dir) = dir.as_ref() {
+            crate::pty::scrollback_store::remove(dir, &session_id)
+                .map_err(|error| format!("Failed to remove scrollback for {session_id}: {error}"))
+        } else {
+            Ok(())
+        };
+        kill_result?;
+        remove_result?;
+        if let Some(session_epoch) = session_epoch {
+            session_state.ingest(
+                session_id,
+                crate::session_state::Evidence::socket_lifecycle(
+                    crate::session_state::unix_epoch_millis(),
+                    session_epoch,
+                    crate::session_state::Lifecycle::Exited,
+                ),
+            );
+        }
         Ok(())
-    };
-    kill_result?;
-    remove_result?;
-    if let Some(session_epoch) = session_epoch {
-        state.session_state_store.ingest(
-            session_id,
-            crate::session_state::Evidence::socket_lifecycle(
-                crate::session_state::unix_epoch_millis(),
-                session_epoch,
-                crate::session_state::Lifecycle::Exited,
-            ),
-        );
-    }
-    Ok(())
+    }).await
 }
 
 #[tauri::command(async)]
-pub fn is_directory(path: String) -> bool {
-    std::path::Path::new(&path).is_dir()
+pub async fn is_directory(path: String) -> bool {
+    crate::util::task::run_blocking_value("is_directory", move || {
+        std::path::Path::new(&path).is_dir()
+    }).await
 }
 
 #[tauri::command(async)]
-pub fn get_launch_cwd() -> Option<String> {
-    for arg in std::env::args().skip(1) {
-        if arg.starts_with('-') {
-            continue;
-        }
-        let path = std::path::Path::new(&arg);
-        if path.is_dir() {
-            if let Ok(canonical) = path.canonicalize() {
-                let s = canonical.to_string_lossy().to_string();
-                // Strip Windows UNC prefix (\\?\)
-                return Some(s.strip_prefix(r"\\?\").unwrap_or(&s).to_string());
+pub async fn get_launch_cwd() -> Option<String> {
+    crate::util::task::run_blocking_value("get_launch_cwd", move || {
+        for arg in std::env::args().skip(1) {
+            if arg.starts_with('-') {
+                continue;
             }
-            return Some(arg);
+            let path = std::path::Path::new(&arg);
+            if path.is_dir() {
+                if let Ok(canonical) = path.canonicalize() {
+                    let s = canonical.to_string_lossy().to_string();
+                    // Strip Windows UNC prefix (\\?\)
+                    return Some(s.strip_prefix(r"\\?\").unwrap_or(&s).to_string());
+                }
+                return Some(arg);
+            }
         }
-    }
-    None
+        None
+    }).await
 }
 
 #[cfg(test)]

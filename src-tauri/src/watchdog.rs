@@ -2,16 +2,19 @@
 //! the dedicated thread owns RAM sampling and disk I/O. Each layer has at most
 //! one outstanding probe, including while that layer is stalled.
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 static CLOCK: OnceLock<Instant> = OnceLock::new();
 static LOG_QUEUE: OnceLock<SyncSender<String>> = OnceLock::new();
+static FAILURES: OnceLock<SyncSender<RendererFailure>> = OnceLock::new();
+static MAIN_CREATION: OnceLock<Instant> = OnceLock::new();
 static RENDERER: OnceLock<Mutex<RendererWatch>> = OnceLock::new();
 
 fn clock_ms() -> u64 {
@@ -28,6 +31,120 @@ pub(crate) fn log_with_memory(line: String) {
     if let Some(queue) = LOG_QUEUE.get() {
         let _ = queue.try_send(line);
     }
+}
+
+const RELOAD_WINDOW_MS: u64 = 600_000;
+const RELOAD_SPACING_MS: u64 = 60_000;
+const MAX_RELOADS: usize = 3;
+
+struct RendererFailure {
+    webview: String,
+    kind: i32,
+}
+
+/// Only enqueue from the COM callback: rebuilding a view there can deadlock
+/// the window event loop. The watchdog thread dispatches the actual reload.
+#[cfg(windows)]
+fn queue_renderer_failure(webview: String, kind: i32) {
+    if let Some(queue) = FAILURES.get() {
+        if queue.try_send(RendererFailure { webview, kind }).is_err() {
+            log_with_memory("[webview2] recovery queue full; reload not scheduled".to_string());
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RecoveryDecision {
+    Reload { attempt: usize, kind: i32 },
+    GiveUp { kind: i32 },
+}
+
+#[derive(Default)]
+pub(crate) struct ReloadBudget {
+    attempts: VecDeque<u64>,
+    pending: Option<i32>,
+    gave_up: bool,
+}
+
+impl ReloadBudget {
+    pub(crate) fn failed(&mut self, kind: i32) {
+        self.pending = Some(kind);
+    }
+
+    pub(crate) fn poll(&mut self, now_ms: u64) -> Option<RecoveryDecision> {
+        let kind = self.pending?;
+        while self.attempts.front().is_some_and(|at| now_ms.saturating_sub(*at) >= RELOAD_WINDOW_MS) {
+            self.attempts.pop_front();
+        }
+        if self.attempts.len() >= MAX_RELOADS {
+            self.pending = None;
+            return if std::mem::replace(&mut self.gave_up, true) {
+                None
+            } else {
+                Some(RecoveryDecision::GiveUp { kind })
+            };
+        }
+        if self.attempts.back().is_some_and(|at| now_ms.saturating_sub(*at) < RELOAD_SPACING_MS) {
+            // Keep one pending failure so an early crash gets a delayed retry.
+            return None;
+        }
+        self.pending = None;
+        self.gave_up = false;
+        self.attempts.push_back(now_ms);
+        Some(RecoveryDecision::Reload { attempt: self.attempts.len(), kind })
+    }
+}
+
+fn recover_renderers(
+    app: &AppHandle,
+    budgets: &mut HashMap<String, ReloadBudget>,
+    failures: impl Iterator<Item = RendererFailure>,
+    now_ms: u64,
+    lines: &mut Vec<String>,
+) {
+    for failure in failures {
+        if app.get_webview(&failure.webview).is_some() {
+            budgets.entry(failure.webview).or_default().failed(failure.kind);
+        }
+    }
+    budgets.retain(|label, _| app.get_webview(label).is_some());
+    for (label, budget) in budgets.iter_mut() {
+        match budget.poll(now_ms) {
+            Some(RecoveryDecision::Reload { attempt, kind }) => {
+                if let Some(webview) = app.get_webview(label) {
+                    // No PTY operation: the reloaded frontend reattaches by ID.
+                    let result = webview.reload();
+                    lines.push(format!(
+                        "[webview2] renderer reload webview={label} kind={kind} attempt={attempt}/{MAX_RELOADS} success={} error={:?}",
+                        result.is_ok(), result.err().map(|error| error.to_string())
+                    ));
+                }
+            }
+            Some(RecoveryDecision::GiveUp { kind }) => lines.push(format!(
+                "[webview2] renderer recovery give up webview={label} kind={kind} limit={MAX_RELOADS}/10min"
+            )),
+            None => {}
+        }
+    }
+}
+
+pub(crate) fn begin_main_webview_creation() {
+    let _ = MAIN_CREATION.set(Instant::now());
+}
+
+pub(crate) fn main_webview_created() {
+    if let Some(start) = MAIN_CREATION.get() {
+        record_webview_creation("main", "main", start.elapsed(), true);
+    }
+}
+
+fn creation_line(window: &str, webview: &str, elapsed: Duration, success: bool) -> String {
+    let warning = if elapsed > Duration::from_secs(10) { " WARN slow creation" } else { "" };
+    format!("[webview2] creation window={window} webview={webview} elapsed_ms={} success={success}{warning}", elapsed.as_millis())
+}
+
+pub(crate) fn record_webview_creation(window: &str, webview: &str, elapsed: Duration, success: bool) {
+    log_with_memory(creation_line(window, webview, elapsed, success));
 }
 
 #[derive(Default)]
@@ -264,8 +381,8 @@ pub async fn report_renderer_heartbeat(heartbeat: RendererHeartbeat) -> Result<(
 }
 
 // Register this instead of terminal::kill_session solely to time the entire
-// existing command, including hook drain, ConPTY teardown and file cleanup.
-// It retains the existing async-command executor and does not move the work.
+// command, including the queued hook drain, ConPTY teardown and file cleanup.
+// The command itself moves blocking work to the blocking pool.
 #[tauri::command]
 pub async fn measured_kill_session(
     state: State<'_, crate::AppState>,
@@ -273,7 +390,7 @@ pub async fn measured_kill_session(
 ) -> Result<(), String> {
     static LIMITS: OnceLock<Mutex<(RateLimit, RateLimit)>> = OnceLock::new();
     let start = Instant::now();
-    let result = crate::commands::terminal::kill_session(state, session_id.clone());
+    let result = crate::commands::terminal::kill_session(state, session_id.clone()).await;
     let elapsed_ms = start.elapsed().as_millis();
     let should_log = {
         let mut limits = LIMITS
@@ -306,10 +423,13 @@ pub(crate) fn start(app: AppHandle) {
     if LOG_QUEUE.set(queue).is_err() {
         return;
     }
+    let (failure_queue, failure_receiver) = mpsc::sync_channel(128);
+    let _ = FAILURES.set(failure_queue);
     let _ = renderer();
     if let Err(error) = std::thread::Builder::new()
         .name("mycmux-watchdog".to_string())
         .spawn(move || {
+            let mut recoveries = HashMap::new();
             let mut main = Probe::new(3000);
             let mut runtime = Probe::new(2000);
             let mut blocking = Probe::new(2000);
@@ -327,6 +447,7 @@ pub(crate) fn start(app: AppHandle) {
                 {
                     lines.push(line);
                 }
+                recover_renderers(&app, &mut recoveries, failure_receiver.try_iter(), now_ms, &mut lines);
                 lines.extend(receiver.try_iter());
                 if !lines.is_empty() {
                     let ram =
@@ -409,6 +530,9 @@ fn free_ram_mib() -> Option<u64> {
 pub(crate) fn register_process_failed(webview: &tauri::Webview) {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         ICoreWebView2ProcessFailedEventArgs2, COREWEBVIEW2_PROCESS_FAILED_KIND,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED,
     };
     use webview2_com::ProcessFailedEventHandler;
     use windows_webview2::core::Interface;
@@ -418,6 +542,7 @@ pub(crate) fn register_process_failed(webview: &tauri::Webview) {
         webview.window().label(),
         webview.label()
     );
+    let webview_label = webview.label().to_string();
     let posted_label = label.clone();
     if let Err(error) = webview.with_webview(move |platform| {
         let event_label = posted_label.clone();
@@ -439,6 +564,13 @@ pub(crate) fn register_process_failed(webview: &tauri::Webview) {
             log_with_memory(format!(
                 "[webview2] ProcessFailed kind={kind:?} exit_code={exit_code:?} {event_label}"
             ));
+            if let Some(kind) = kind.filter(|kind| {
+                *kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED.0
+                    || *kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE.0
+                    || *kind == COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED.0
+            }) {
+                queue_renderer_failure(webview_label.clone(), kind);
+            }
             Ok(())
         }));
         let mut token = 0;
@@ -461,9 +593,60 @@ pub(crate) fn register_process_failed(webview: &tauri::Webview) {
     }
 }
 
+#[cfg(not(windows))]
+pub(crate) fn register_process_failed(_webview: &tauri::Webview) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reload_budget_keeps_early_failures_and_stops_after_three_attempts() {
+        let mut budget = ReloadBudget::default();
+        budget.failed(1);
+        assert_eq!(budget.poll(0), Some(RecoveryDecision::Reload { attempt: 1, kind: 1 }));
+        assert!(budget.poll(1).is_none());
+        budget.failed(2);
+        for at in [1, 10_000, 59_999] {
+            assert!(budget.poll(at).is_none());
+        }
+        assert_eq!(budget.poll(60_000), Some(RecoveryDecision::Reload { attempt: 2, kind: 2 }));
+        budget.failed(1);
+        assert!(budget.poll(119_999).is_none());
+        assert_eq!(budget.poll(120_000), Some(RecoveryDecision::Reload { attempt: 3, kind: 1 }));
+        budget.failed(2);
+        assert_eq!(budget.poll(120_001), Some(RecoveryDecision::GiveUp { kind: 2 }));
+        for at in [180_000, 599_999] {
+            budget.failed(1);
+            assert!(budget.poll(at).is_none());
+        }
+        assert!(budget.poll(600_000).is_none()); // No unsolicited retry after give-up.
+        budget.failed(2);
+        assert_eq!(budget.poll(600_000), Some(RecoveryDecision::Reload { attempt: 3, kind: 2 }));
+        assert_eq!(budget.attempts.len(), 3);
+    }
+
+    #[test]
+    fn reload_budgets_are_independent_for_each_webview() {
+        let mut budgets = HashMap::<String, ReloadBudget>::new();
+        for label in ["main", "child", "web-pane"] {
+            let budget = budgets.entry(label.to_string()).or_default();
+            budget.failed(1);
+            assert_eq!(budget.poll(0), Some(RecoveryDecision::Reload { attempt: 1, kind: 1 }));
+        }
+        budgets.get_mut("main").unwrap().failed(2);
+        assert!(budgets.get_mut("main").unwrap().poll(1).is_none());
+        assert!(budgets.get_mut("child").unwrap().poll(60_000).is_none());
+    }
+
+    #[test]
+    fn webview_creation_records_success_failure_and_warns_only_over_ten_seconds() {
+        let normal = creation_line("child", "pane", Duration::from_secs(10), true);
+        assert!(normal.contains("elapsed_ms=10000 success=true"));
+        assert!(!normal.contains("WARN"));
+        let slow = creation_line("child", "pane", Duration::from_millis(10_001), false);
+        assert!(slow.contains("elapsed_ms=10001 success=false WARN slow creation"));
+    }
 
     fn heartbeat() -> RendererHeartbeat {
         RendererHeartbeat {

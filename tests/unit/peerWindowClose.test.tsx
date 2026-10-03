@@ -265,7 +265,7 @@ describe("native close-request path scopes its victims to the closing window", (
     expect(alive.has("keeper-b")).toBe(true);
     expect(useWorkspaceListStore.getState().workspaces).toHaveLength(1);
   });
-  it.each(["metadata", "fragments", "confirmation", "save", "kill"] as const)(
+  it.each(["metadata", "fragments", "save", "kill"] as const)(
     "destroys the window after a hung %s and accepts a second close request",
     async (hungStep) => {
       await boot("main");
@@ -274,7 +274,6 @@ describe("native close-request path scopes its victims to the closing window", (
       const pending = new Promise<never>(() => {});
       if (hungStep === "metadata") mocks.metadata.mockReturnValue(pending);
       if (hungStep === "fragments") mocks.getFragments.mockReturnValue(pending);
-      if (hungStep === "confirmation") mocks.confirm.mockReturnValue(pending);
       if (hungStep === "save") mocks.save.mockReturnValue(pending);
       if (hungStep === "kill") mocks.kill.mockReturnValue(pending);
       const first = mocks.close!({ preventDefault: vi.fn() });
@@ -346,6 +345,19 @@ describe("native close-request path scopes its victims to the closing window", (
     expect(usePaneMetadataStore.getState().metadata).toBe(metadataBeforeLateReply);
   });
 
+  it("waits for a human answer beyond the IPC deadline and never destroys on a negative answer", async () => {
+    await boot("main");
+    vi.useFakeTimers();
+    let decide!: (value: boolean) => void;
+    mocks.confirm.mockReturnValueOnce(new Promise((resolve) => { decide = resolve; }));
+    const pending = mocks.close!({ preventDefault: vi.fn() });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(mocks.destroy).not.toHaveBeenCalled();
+    expect(mocks.kill).not.toHaveBeenCalled();
+    await act(async () => { decide(false); await pending; });
+    expect(mocks.destroy).not.toHaveBeenCalled();
+    expect(useWorkspaceListStore.getState().workspaces).toHaveLength(1);
+  });
   it("coalesces repeated close requests while confirmation is pending", async () => {
     let decide!: (confirmed: boolean) => void;
     mocks.confirm.mockReturnValueOnce(new Promise((resolve) => { decide = resolve; }));

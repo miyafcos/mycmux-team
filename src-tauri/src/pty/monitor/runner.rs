@@ -10,6 +10,7 @@ pub fn start_monitor(
     thread::spawn(move || {
         let mut sys = System::new();
         let mut last_metadata: HashMap<String, PtyMetadata> = HashMap::new();
+        let mut missing_live_agent_ticks: HashMap<String, u8> = HashMap::new();
         let mut detected_agent_sessions: HashMap<String, DetectedAgentCacheEntry> = HashMap::new();
         let mut failed_detected_agent_sessions: HashMap<String, FailedDetectedAgentCacheEntry> =
             HashMap::new();
@@ -169,12 +170,6 @@ pub fn start_monitor(
                     let shell_pid = Pid::from_u32(pid);
                     let fg_pid = deepest_child_pid(&sys, &child_index, shell_pid);
                     let process_name = get_foreground_process_name(&sys, fg_pid);
-                    let process_started_at = sys.process(fg_pid).and_then(|process| {
-                        process
-                            .start_time()
-                            .checked_mul(1_000)
-                            .and_then(|value| i64::try_from(value).ok())
-                    });
                     let foreground_agent = find_agent_descendant(&sys, &child_index, shell_pid);
                     let agent_active = foreground_agent.is_some();
                     if let Some((DetectedAgentKind::Codex, agent_pid)) = foreground_agent {
@@ -202,10 +197,13 @@ pub fn start_monitor(
                     let cwd_pid = foreground_agent
                         .map(|(_, agent_pid)| agent_pid)
                         .unwrap_or(fg_pid);
-                    let cwd = match get_process_cwd(&sys, shell_pid, cwd_pid) {
-                        Some(c) if !c.is_empty() => c,
-                        _ => continue,
-                    };
+                    // CWD access can fail without ending the PTY or its agent.
+                    // Keep reporting live identity; pause transcript scans until
+                    // a usable current or previous directory is available.
+                    let cwd = monitor_cwd(
+                        get_process_cwd(&sys, shell_pid, cwd_pid),
+                        last_metadata.get(&session_id).map(|meta| meta.cwd.as_str()),
+                    );
 
                     // Check if CWD changed (relative to the CWD the *current*
                     // git_branch was actually resolved for, not just the last
@@ -216,7 +214,8 @@ pub fn start_monitor(
                     // arrives while a request for the previous CWD is still
                     // in flight is not lost: it keeps looking "needed" every
                     // tick until a request actually gets queued for it.
-                    let needs_git_check = git_branch_cwd.get(&session_id) != Some(&cwd);
+                    let needs_git_check = !cwd.is_empty()
+                        && git_branch_cwd.get(&session_id) != Some(&cwd);
                     if needs_git_check && git_in_flight.insert(session_id.clone()) {
                         // RS-5: hand the (possibly slow) git invocation to the
                         // worker pool instead of blocking this loop — other
@@ -277,7 +276,8 @@ pub fn start_monitor(
                         &mapped_session_owners,
                         &session_id,
                     );
-                    let (agent_kind, agent_session_id, claude_session_id) = match foreground_agent {
+                    let session_agent = foreground_agent.filter(|_| !cwd.is_empty());
+                    let (agent_kind, agent_session_id, claude_session_id) = match session_agent {
                         Some((kind, agent_pid)) => match kind {
                             DetectedAgentKind::Claude | DetectedAgentKind::ClaudeCodex => {
                                 let exact = session_id_from_agent_args(&sys, agent_pid, false);
@@ -477,6 +477,11 @@ pub fn start_monitor(
                                     previous_claude_session_id.clone(),
                                 )
                             }
+                            DetectedAgentKind::Antigravity
+                            | DetectedAgentKind::Hermes
+                            | DetectedAgentKind::Omp => {
+                                preserved_agent_metadata_fields(previous_metadata)
+                            }
                             DetectedAgentKind::Grok => {
                                 // Grok always launches with an explicit --session-id, so the
                                 // pane mapping is authoritative. There is no per-session log
@@ -517,12 +522,44 @@ pub fn start_monitor(
                                 )
                             }
                         },
-                        None => (
-                            previous_agent_kind.clone(),
-                            previous_agent_session_id.clone(),
-                            previous_claude_session_id.clone(),
-                        ),
+                        None => preserved_agent_metadata_fields(previous_metadata),
                     };
+
+                    let observed_live_kind = foreground_agent.map(|(kind, _)| {
+                        if agent_kind.as_deref().is_some_and(|persisted| {
+                            mapping_kind_is_grounded_for_pane(
+                                &agent_mappings,
+                                &session_id,
+                                persisted,
+                                kind,
+                            )
+                        }) {
+                            agent_kind.clone().unwrap()
+                        } else {
+                            kind.display_kind().to_string()
+                        }
+                    });
+                    let live_agent_kind = observe_live_agent_kind(
+                        previous_metadata.and_then(|meta| meta.live_agent_kind.as_deref()),
+                        observed_live_kind,
+                        missing_live_agent_ticks
+                            .entry(session_id.clone())
+                            .or_default(),
+                    );
+                    // Agent tools can be the foreground shell; the selected agent
+                    // owns working/idle and the stable process timestamp.
+                    let status_pid = foreground_agent.map(|(_, pid)| pid).unwrap_or(fg_pid);
+                    let status_started_at = sys.process(status_pid).and_then(|process| {
+                        process
+                            .start_time()
+                            .checked_mul(1_000)
+                            .and_then(|value| i64::try_from(value).ok())
+                    });
+                    let (process_status, process_status_at) = process_status_from_observation(
+                        process_name.as_deref(),
+                        status_started_at,
+                        agent_active,
+                    );
 
                     if foreground_agent.is_none()
                         && process_name.as_deref().is_some_and(is_shell_process)
@@ -550,9 +587,8 @@ pub fn start_monitor(
                         (last_metadata.get(&session_id), process_name.as_ref())
                     {
                         if let Some(prev) = prev_meta.process_name.as_ref() {
-                            if !is_shell_process(prev)
-                                && is_shell_process(current)
-                                && prev != current
+                            if prev_meta.process_status.as_deref() == Some("working")
+                                && process_status.as_deref() == Some("idle")
                             {
                                 let evt = PtyWorkDone {
                                     session_id: session_id.clone(),
@@ -576,12 +612,10 @@ pub fn start_monitor(
                     if let (Some(kind), Some(current_agent_session_id)) =
                         (agent_kind.as_deref(), agent_session_id.as_deref())
                     {
-                        let process_identity_matches = foreground_agent.is_some_and(|(detected_kind, _)| {
-                            mapping_kind_is_grounded_for_pane(&agent_mappings, &session_id, kind, detected_kind)
-                        });
-                        if process_identity_matches && should_write_agent_session_mapping(
+                        if should_write_selected_agent_session_mapping(
                             &agent_mappings,
                             &session_id,
+                            foreground_agent.map(|(kind, _)| kind),
                             kind,
                             current_agent_session_id,
                         ) {
@@ -593,10 +627,6 @@ pub fn start_monitor(
                         }
                     }
 
-                    let (process_status, process_status_at) = process_status_from_observation(
-                        process_name.as_deref(),
-                        process_started_at,
-                    );
                     let status_changed = last_metadata
                         .get(&session_id)
                         .is_none_or(|old| old.process_status != process_status);
@@ -606,10 +636,10 @@ pub fn start_monitor(
                             Some("idle") => crate::session_state::MonitorStatus::Idle,
                             _ => crate::session_state::MonitorStatus::Unknown,
                         };
-                        let process = process_started_at.and_then(|started_at| {
+                        let process = status_started_at.and_then(|started_at| {
                             u64::try_from(started_at).ok().map(|started_at| {
                                 crate::session_state::ProcessIdentity {
-                                    pid: fg_pid.as_u32(),
+                                    pid: status_pid.as_u32(),
                                     started_at,
                                 }
                             })
@@ -635,6 +665,7 @@ pub fn start_monitor(
                         agent_active,
                         claude_session_id: claude_session_id.clone(),
                         agent_kind: agent_kind.clone(),
+                        live_agent_kind: live_agent_kind.clone(),
                         agent_session_id: agent_session_id.clone(),
                     };
 
@@ -648,6 +679,7 @@ pub fn start_monitor(
                                 || old.last_output_at != metadata.last_output_at
                                 || old.agent_active != agent_active
                                 || old.claude_session_id != claude_session_id
+                                || old.live_agent_kind != live_agent_kind
                                 || old.agent_kind != agent_kind
                                 || old.agent_session_id != agent_session_id
                         }
@@ -685,6 +717,7 @@ pub fn start_monitor(
                 }
             }
             last_metadata.retain(|k, _| active_keys.contains(k));
+            missing_live_agent_ticks.retain(|k, _| active_keys.contains(k));
             detected_agent_sessions.retain(|k, _| active_keys.contains(k));
             failed_detected_agent_sessions.retain(|k, _| active_keys.contains(k));
             pending_agent_session_switches.retain(|k, _| active_keys.contains(k));
@@ -702,14 +735,126 @@ pub fn start_monitor(
     });
 }
 
+fn monitor_cwd(current: Option<String>, previous: Option<&str>) -> String {
+    current
+        .filter(|cwd| !cwd.is_empty())
+        .or_else(|| previous.filter(|cwd| !cwd.is_empty()).map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// Publish absence on the second observation even if output and all other
+/// metadata stayed unchanged. Presence is always published immediately.
+fn observe_live_agent_kind(
+    previous: Option<&str>,
+    observed: Option<String>,
+    missing_ticks: &mut u8,
+) -> Option<String> {
+    if observed.is_some() {
+        *missing_ticks = 0;
+        return observed;
+    }
+    *missing_ticks = missing_ticks.saturating_add(1);
+    if *missing_ticks < 2 {
+        previous.map(str::to_string)
+    } else {
+        None
+    }
+}
+
 fn monitor_refresh_interval(frontend_visible: bool) -> Duration {
     Duration::from_secs(if frontend_visible { 10 } else { 20 })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::monitor_refresh_interval;
+    use super::{monitor_cwd, monitor_refresh_interval, observe_live_agent_kind};
+    use crate::pty::monitor::{detection::DetectedAgentKind, PtyMetadata};
     use std::time::Duration;
+
+    #[test]
+    fn missing_cwd_does_not_block_live_identity_or_scan_unrelated_transcripts() {
+        assert_eq!(monitor_cwd(None, Some("/previous")), "/previous");
+        assert_eq!(
+            monitor_cwd(Some(String::new()), Some("/previous")),
+            "/previous"
+        );
+        assert_eq!(
+            monitor_cwd(Some("/current".into()), Some("/previous")),
+            "/current"
+        );
+        let cwd = monitor_cwd(None, None);
+        assert!(cwd.is_empty());
+        let selected = Some(DetectedAgentKind::Claude);
+        assert!(selected.filter(|_| !cwd.is_empty()).is_none());
+        assert_eq!(selected.unwrap().display_kind(), "claude");
+        let mut missing = 0;
+        let held = observe_live_agent_kind(Some("claude"), None, &mut missing);
+        assert_eq!(
+            observe_live_agent_kind(held.as_deref(), None, &mut missing),
+            None
+        );
+    }
+
+    #[test]
+    fn two_absent_ticks_clear_live_identity_without_output_or_resume_changes_t6() {
+        let mut meta = PtyMetadata::unobserved("pane".into());
+        meta.live_agent_kind = Some("claude".into());
+        meta.agent_kind = Some("claude".into());
+        meta.agent_session_id = Some("restore".into());
+        meta.last_output_at = Some(1000);
+        let mut missing = 0;
+        let first = observe_live_agent_kind(meta.live_agent_kind.as_deref(), None, &mut missing);
+        assert_eq!(first.as_deref(), Some("claude"));
+        meta.live_agent_kind = first;
+        let second = observe_live_agent_kind(meta.live_agent_kind.as_deref(), None, &mut missing);
+        assert_ne!(second, meta.live_agent_kind);
+        meta.live_agent_kind = second;
+        let json = serde_json::to_value(&meta).unwrap();
+        assert!(json.get("live_agent_kind").unwrap().is_null());
+        assert_eq!(json["agent_kind"], "claude");
+        assert_eq!(json["agent_session_id"], "restore");
+        assert_eq!(meta.last_output_at, Some(1000));
+    }
+
+    #[test]
+    fn live_presence_resets_absence_confirmation_and_changes_immediately() {
+        let mut missing = 0;
+        assert_eq!(observe_live_agent_kind(None, None, &mut missing), None);
+        assert_eq!(
+            observe_live_agent_kind(None, Some("hermes".into()), &mut missing).as_deref(),
+            Some("hermes")
+        );
+        assert_eq!(missing, 0);
+        assert_eq!(
+            observe_live_agent_kind(Some("hermes"), None, &mut missing).as_deref(),
+            Some("hermes")
+        );
+        assert_eq!(
+            observe_live_agent_kind(Some("hermes"), Some("codex".into()), &mut missing).as_deref(),
+            Some("codex")
+        );
+        assert_eq!(missing, 0);
+        assert_eq!(
+            observe_live_agent_kind(Some("codex"), None, &mut missing).as_deref(),
+            Some("codex")
+        );
+        assert_eq!(
+            observe_live_agent_kind(Some("codex"), None, &mut missing),
+            None
+        );
+        for _ in 0..300 {
+            assert_eq!(observe_live_agent_kind(None, None, &mut missing), None);
+        }
+        assert_eq!(missing, u8::MAX);
+    }
+
+    #[test]
+    fn unobserved_running_pty_snapshots_have_explicit_null_live_identity() {
+        let json = serde_json::to_value(PtyMetadata::unobserved("pty-new".into())).unwrap();
+        assert_eq!(json["session_id"], "pty-new");
+        assert!(json.get("live_agent_kind").unwrap().is_null());
+        assert!(json.get("agent_kind").unwrap().is_null());
+    }
 
     #[test]
     fn refresh_interval_slows_only_when_frontend_is_hidden() {

@@ -434,6 +434,38 @@ mod tests {
     }
 
     #[test]
+    fn bounded_renderer_reloads_reattach_all_existing_sessions_without_spawning_or_losing_output() {
+        use crate::watchdog::{RecoveryDecision, ReloadBudget};
+        let sessions = DashMap::new();
+        for n in 0..20 {
+            sessions.insert(format!("pane-{n}"), (FakeSession::new(), format!("retained output {n}")));
+        }
+        let mut budget = ReloadBudget::default();
+        for (attempt, now) in [0, 60_000, 120_000].into_iter().enumerate() {
+            budget.failed(1);
+            assert_eq!(budget.poll(now), Some(RecoveryDecision::Reload { attempt: attempt + 1, kind: 1 }));
+            for n in 0..20 {
+                let disposition = create_or_reattach(
+                    &sessions, format!("pane-{n}"), (),
+                    |(session, output), ()| {
+                        session.reattach_count.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(output, &format!("retained output {n}"));
+                        Ok(())
+                    },
+                    |()| panic!("renderer recovery must not spawn a replacement PTY"),
+                ).unwrap();
+                assert_eq!(disposition, CreateDisposition::Reattached);
+            }
+        }
+        budget.failed(2);
+        assert_eq!(budget.poll(180_000), Some(RecoveryDecision::GiveUp { kind: 2 }));
+        assert_eq!(sessions.len(), 20);
+        for session in sessions.iter() {
+            assert_eq!(session.0.reattach_count.load(Ordering::SeqCst), 3);
+        }
+    }
+
+    #[test]
     fn missing_session_spawns_once_and_is_inserted() {
         let sessions = DashMap::new();
         let reattach_count = AtomicUsize::new(0);

@@ -76,7 +76,7 @@ describe("AI log store U0", () => {
       reason,
       ...(schemaVersion === undefined ? {} : { schemaVersion }),
       requiresUnsavedConfirmation: true,
-    }));
+    }), { timeout: 2_000 });
     expect(useAilogStore.getState().usdJpyRate).toBe(160);
   });
 
@@ -175,7 +175,7 @@ describe("AI log store U0", () => {
     const overviewCalls = invokeMock.mock.calls.filter(([command]) => command === "ailog_overview");
     expect(overviewCalls).toHaveLength(2);
     expect(overviewCalls[1]?.[1]).toMatchObject({ range: { from: 0, to: 99 } });
-    expect(useAilogStore.getState().previousTotals).toEqual(totals(10, 10));
+    await vi.waitFor(() => expect(useAilogStore.getState().previousTotals).toEqual(totals(10, 10)), { timeout: 2_000 });
   });
 
   it("does not fetch rework rankings from loadUsage and caches a later open", async () => {
@@ -348,7 +348,7 @@ describe("AI log store U0", () => {
     expect(useAilogStore.getState().sessionError).toContain("sessions unavailable");
   });
 
-  it("clears stale usage reports when their refresh fails", async () => {
+  it("scopes a series failure to the chart without clearing independent rhythm data", async () => {
     invokeMock.mockImplementation((command: string) => command === "ailog_series"
       ? Promise.reject(new Error("usage unavailable"))
       : {});
@@ -356,9 +356,128 @@ describe("AI log store U0", () => {
 
     await useAilogStore.getState().refreshUsage({ force: true });
 
-    expect(useAilogStore.getState().usageSeries).toBeNull();
-    expect(useAilogStore.getState().usageRhythm).toBeNull();
+    expect(useAilogStore.getState().usageSeries).toEqual({ old: true });
+    expect(useAilogStore.getState().usageRhythm).toEqual({ old: true });
     expect(useAilogStore.getState().usageError).toContain("usage unavailable");
+  });
+});
+
+describe("AI log report latency and cache boundaries", () => {
+  beforeEach(() => {
+    __resetAilogStoreForTests();
+    invokeMock.mockReset().mockImplementation((command: string) => command === "ailog_overview"
+      ? dashboard(100, 199, 30, 20).overview : {});
+  });
+  afterEach(__resetAilogStoreForTests);
+
+  const calls = (command: string) => invokeMock.mock.calls.filter(([name]) => name === command).length;
+
+  it("does not request hidden rhythm and does not let it hold the chart", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ailog_usage_rhythm") return new Promise(() => {});
+      if (command === "ailog_overview") return dashboard(100, 199, 30, 20).overview;
+      return {};
+    });
+    await useAilogStore.getState().loadUsage();
+    expect(calls("ailog_usage_rhythm")).toBe(0);
+    expect(useAilogStore.getState().usageLoading).toBe(false);
+    expect(useAilogStore.getState().usageSeries).toEqual({});
+  });
+
+  it("reuses period reports and session pages across chart grouping and bucket changes", async () => {
+    await useAilogStore.getState().loadUsage();
+    const overviewCount = calls("ailog_overview");
+    useAilogStore.getState().setUsageSeriesAxis("provider");
+    await useAilogStore.getState().loadUsage();
+    useAilogStore.getState().setUsageBucket("week");
+    await useAilogStore.getState().loadUsage();
+    expect(calls("ailog_overview")).toBe(overviewCount);
+    expect(calls("ailog_sessions")).toBe(1);
+    expect(calls("ailog_breakdown")).toBe(1);
+    expect(calls("ailog_pivot")).toBe(1);
+    expect(calls("ailog_series")).toBe(3);
+    expect(calls("ailog_models")).toBe(2); // raw and provider are different model reports
+    useAilogStore.getState().setUsageSeriesAxis("model_raw");
+    useAilogStore.getState().setUsageBucket("day");
+    await useAilogStore.getState().loadUsage();
+    expect(calls("ailog_series")).toBe(3);
+    expect(calls("ailog_models")).toBe(2);
+  });
+
+  it("uses cached reports when revisiting a period, but force and invalidation fetch new data", async () => {
+    await useAilogStore.getState().loadUsage();
+    useAilogStore.getState().setPreset("7d");
+    await useAilogStore.getState().loadUsage();
+    const count = invokeMock.mock.calls.length;
+    useAilogStore.getState().setPreset("30d");
+    await useAilogStore.getState().loadUsage();
+    expect(invokeMock.mock.calls).toHaveLength(count);
+    await useAilogStore.getState().loadUsage({ force: true });
+    expect(invokeMock.mock.calls.length).toBeGreaterThan(count);
+    const forcedCount = invokeMock.mock.calls.length;
+    invalidateAilogCaches();
+    await useAilogStore.getState().loadUsage();
+    expect(invokeMock.mock.calls.length).toBeGreaterThan(forcedCount);
+  });
+
+  it("caches rhythm independently of chart axes and keeps a rhythm error out of the chart", async () => {
+    await useAilogStore.getState().refreshUsageRhythm();
+    useAilogStore.getState().setUsageSeriesAxis("provider");
+    useAilogStore.getState().setUsageBucket("week");
+    await useAilogStore.getState().refreshUsageRhythm();
+    expect(calls("ailog_usage_rhythm")).toBe(1);
+    invokeMock.mockImplementation((command: string) => command === "ailog_usage_rhythm"
+      ? Promise.reject(new Error("rhythm unavailable")) : {});
+    await useAilogStore.getState().refreshUsageRhythm({ force: true });
+    expect(useAilogStore.getState().usageRhythmError).toContain("rhythm unavailable");
+    expect(useAilogStore.getState().usageError).toBeNull();
+    await useAilogStore.getState().refreshUsage();
+    expect(useAilogStore.getState().usageSeries).toEqual({});
+  });
+
+  it("refreshes rhythm after an update only while expanded", async () => {
+    useAilogStore.getState().setUsageRhythmOpen(true);
+    await useAilogStore.getState().loadUsage({ force: true });
+    expect(calls("ailog_usage_rhythm")).toBe(1);
+    useAilogStore.getState().setUsageRhythmOpen(false);
+    await useAilogStore.getState().loadUsage({ force: true });
+    expect(calls("ailog_usage_rhythm")).toBe(1);
+    expect(useAilogStore.getState().usageRhythm).toBeNull();
+    await useAilogStore.getState().refreshUsageRhythm();
+    expect(calls("ailog_usage_rhythm")).toBe(2);
+  });
+
+  it("shares an active forced request instead of repainting an older cached overview", async () => {
+    await useAilogStore.getState().refresh();
+    const next = deferred<unknown>();
+    invokeMock.mockImplementation((command: string) => command === "ailog_overview" ? next.promise : {});
+    const forced = useAilogStore.getState().refresh({ force: true });
+    const shared = useAilogStore.getState().refresh();
+    const fresh = dashboard(100, 199, 90, 50).overview;
+    next.resolve(fresh);
+    await Promise.all([forced, shared]);
+    expect(useAilogStore.getState().overview).toBe(fresh);
+  });
+
+  it("drops a late model grouping and late chart after their inputs change", async () => {
+    const oldModel = deferred<unknown>();
+    const oldSeries = deferred<unknown>();
+    invokeMock.mockImplementation((command: string, args: any) => {
+      if (command === "ailog_overview") return dashboard(100, 199, 30, 20).overview;
+      if (command === "ailog_models") return args.options.granularity === "raw" ? oldModel.promise : { fresh: true };
+      if (command === "ailog_series") return args.options.bucket === "day" ? oldSeries.promise : { fresh: true };
+      return {};
+    });
+    const old = useAilogStore.getState().loadUsage();
+    await useAilogStore.getState().refresh();
+    useAilogStore.getState().setUsageSeriesAxis("provider");
+    useAilogStore.getState().setUsageBucket("week");
+    await useAilogStore.getState().loadUsage();
+    oldModel.resolve({ stale: true });
+    oldSeries.resolve({ stale: true });
+    await old;
+    expect(useAilogStore.getState().models).toEqual({ fresh: true });
+    expect(useAilogStore.getState().usageSeries).toEqual({ fresh: true });
   });
 });
 
