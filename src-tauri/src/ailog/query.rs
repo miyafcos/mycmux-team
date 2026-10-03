@@ -362,14 +362,14 @@ fn turn_tokens(turn: &TurnRecord) -> i64 {
     turn.input + turn.output + turn.cache_read + turn.cache_write
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PriceClassCoverage {
     pub models: Vec<String>,
     pub tokens: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PriceCoverage {
     pub priced: PriceClassCoverage,
@@ -383,6 +383,7 @@ pub struct PriceCoverage {
 
 #[derive(Default)]
 pub(crate) struct PriceCoverageAcc {
+    classes: HashMap<String, ModelClass>,
     priced: (BTreeSet<String>, i64),
     local: (BTreeSet<String>, i64),
     internal: (BTreeSet<String>, i64),
@@ -403,8 +404,12 @@ impl PriceCoverageAcc {
         prices: &PriceTable,
     ) {
         let class = model
-            .map(|model| prices.classify(model))
+            .map(|model| *self.classes.entry(model.to_string()).or_insert_with(|| prices.classify(model)))
             .unwrap_or(ModelClass::Unknown);
+        self.add_classified_tokens(model, tokens, class);
+    }
+
+    fn add_classified_tokens(&mut self, model: Option<&str>, tokens: i64, class: ModelClass) {
         let target = match class {
             ModelClass::Priced => &mut self.priced,
             ModelClass::Local => &mut self.local,
@@ -476,6 +481,7 @@ fn parse_json_array(value: Option<&str>) -> Vec<String> {
 
 /// One pass over the turn rows, producing everything the reports need.
 struct Pass {
+    rework_summary: Option<ReworkSummary>,
     totals: TokenAcc,
     sessions: BTreeMap<SessionKey, SessionAcc>,
     by_provider: BTreeMap<String, TokenAcc>,
@@ -496,6 +502,7 @@ struct Pass {
 
 fn run_pass(turns: &[TurnRecord], prices: &PriceTable) -> Pass {
     let mut pass = Pass {
+        rework_summary: None,
         totals: TokenAcc::default(),
         sessions: BTreeMap::new(),
         by_provider: BTreeMap::new(),
@@ -654,7 +661,7 @@ mod stable_rework_tests {
 // Shared response pieces
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RangeOut {
     pub from: i64,
@@ -674,6 +681,29 @@ pub struct ReportTimings {
     pub rows_scanned: u64,
     pub build_ms: u64,
     pub path: &'static str,
+}
+
+// Deserialize the path into an owned string before mapping to known static
+// values. Deriving over &'static str would require a borrowed 'static input
+// and prevent reports from implementing DeserializeOwned.
+impl<'de> Deserialize<'de> for ReportTimings {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct StoredTimings {
+            sql_ms: u64,
+            rows_scanned: u64,
+            build_ms: u64,
+            path: String,
+        }
+        let stored = StoredTimings::deserialize(d)?;
+        let path = match stored.path.as_str() {
+            "raw" => "raw",
+            "rollup" => "rollup",
+            value => return Err(serde::de::Error::custom(format!("unknown report path: {value}"))),
+        };
+        Ok(Self { sql_ms: stored.sql_ms, rows_scanned: stored.rows_scanned, build_ms: stored.build_ms, path })
+    }
 }
 
 impl Default for ReportTimings {
@@ -724,7 +754,7 @@ pub fn log_report_timings(report: &str, timings: ReportTimings) {
     ));
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Totals {
     pub sessions: i64,
@@ -742,7 +772,7 @@ pub struct Totals {
     pub models: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComparePrevious {
     pub sessions_pct: Option<f64>,
@@ -751,7 +781,7 @@ pub struct ComparePrevious {
     pub rework_pct: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelRow {
     pub model: String,
@@ -781,7 +811,7 @@ pub struct ModelRow {
     pub model_class: ModelClass,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EffortRow {
     pub effort: String,
@@ -792,7 +822,7 @@ pub struct EffortRow {
     pub avg_turn_ms: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectRow {
     pub project_label: String,
@@ -802,7 +832,7 @@ pub struct ProjectRow {
     pub top_title: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TitleRow {
     pub title: String,
@@ -813,7 +843,7 @@ pub struct TitleRow {
     pub rework_score: f64,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReworkSummary {
     pub avg_score: f64,
@@ -823,16 +853,18 @@ pub struct ReworkSummary {
     pub abandoned_sessions: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexFreshness {
     pub last_indexed_at: i64,
     pub stale_files: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Overview {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<super::report_cache::SnapshotInfo>,
     pub range: RangeOut,
     pub totals: Totals,
     pub compare_previous: ComparePrevious,
@@ -851,7 +883,7 @@ pub struct Overview {
     pub cost_note: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExcludedInternal {
     pub sessions: i64,
@@ -1124,9 +1156,9 @@ fn overview_from_pass(
     resolved: ResolvedRange,
     label: String,
     prices: Arc<PriceTable>,
-    pass: Pass,
-    previous: Pass,
-    internal_pass: Pass,
+    pass: &Pass,
+    previous: &Pass,
+    internal_pass: &Pass,
     timings: ReportTimings,
     started: Instant,
 ) -> Result<Overview, String> {
@@ -1153,8 +1185,8 @@ fn overview_from_pass(
         models: pass.by_family.len() as i64,
     };
 
-    let previous_rework = rework_summary(conn, &previous.sessions)?;
-    let current_rework = rework_summary(conn, &pass.sessions)?;
+    let previous_rework = match &previous.rework_summary { Some(summary) => summary.clone(), None => rework_summary(conn, &previous.sessions)? };
+    let current_rework = match &pass.rework_summary { Some(summary) => summary.clone(), None => rework_summary(conn, &pass.sessions)? };
 
     let compare_previous = ComparePrevious {
         sessions_pct: pct_change(sessions_count as f64, previous.sessions.len() as f64),
@@ -1238,6 +1270,7 @@ fn overview_from_pass(
     let timings = finish_timings(timings, started);
     log_report_timings("overview", timings);
     Ok(Overview {
+        cache: None,
         range: RangeOut {
             from: resolved.from,
             to: resolved.to,
@@ -1295,9 +1328,9 @@ fn overview_raw(
         resolved,
         label,
         prices,
-        pass,
-        previous,
-        internal_pass,
+        &pass,
+        &previous,
+        &internal_pass,
         timings,
         started,
     )
@@ -1356,7 +1389,7 @@ mod camel_case_ipc_tests {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesGroup {
     pub group: String,
@@ -1373,7 +1406,7 @@ pub struct SeriesGroup {
     pub cost_usd: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesBucket {
     pub bucket: i64,
@@ -1383,9 +1416,11 @@ pub struct SeriesBucket {
     pub groups: Vec<SeriesGroup>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<super::report_cache::SnapshotInfo>,
     pub range: RangeOut,
     pub bucket: String,
     pub group_by: String,
@@ -1862,6 +1897,7 @@ fn series_day_none_report(
         })
         .collect();
     SeriesReport {
+        cache: None,
         range,
         bucket: options.bucket.clone(),
         group_by: options.group_by.clone(),
@@ -2004,6 +2040,7 @@ fn measured_hybrid_rows(
 
 fn empty_pass() -> Pass {
     Pass {
+        rework_summary: None,
         totals: TokenAcc::default(),
         sessions: BTreeMap::new(),
         by_provider: BTreeMap::new(),
@@ -2028,13 +2065,19 @@ fn empty_pass() -> Pass {
 /// companion `hydrate_aggregate_sessions` query below.
 fn run_aggregate_pass(rows: &[AggregateRow], prices: &PriceTable) -> Pass {
     let mut pass = empty_pass();
+    let mut identities: HashMap<&str, (String, ModelClass)> = HashMap::new();
     for row in rows {
         let key = (row.kind.clone(), row.session_id.clone());
         pass.totals.add_aggregate(row);
-        pass.price_coverage.add_model_tokens(
+        let (provider, class) = row.model.as_deref().map(|model| {
+            let identity = identities.entry(model).or_insert_with(||
+                (prices.provider(model).as_str().to_string(), prices.classify(model)));
+            (identity.0.clone(), identity.1)
+        }).unwrap_or_else(|| ("other".to_string(), ModelClass::Unknown));
+        pass.price_coverage.add_classified_tokens(
             row.model.as_deref(),
             row.input + row.output + row.cache_read + row.cache_write,
-            prices,
+            class,
         );
         let entry = pass
             .sessions
@@ -2054,16 +2097,6 @@ fn run_aggregate_pass(rows: &[AggregateRow], prices: &PriceTable) -> Pass {
             });
         entry.tokens.add_aggregate(row);
 
-        let provider = row
-            .model
-            .as_deref()
-            .map(|model| prices.provider(model).as_str().to_string())
-            .unwrap_or_else(|| "other".to_string());
-        let class = row
-            .model
-            .as_deref()
-            .map(|model| prices.classify(model))
-            .unwrap_or(ModelClass::Unknown);
         pass.by_provider
             .entry(provider.clone())
             .or_default()
@@ -2217,32 +2250,100 @@ pub fn overview(
     filters: &Filters,
     now_ms: i64,
 ) -> Result<Overview, String> {
+    super::report_cache::report(
+        conn,
+        range,
+        filters,
+        "overview",
+        &[],
+        now_ms,
+        || overview_fresh(conn, range, filters, now_ms),
+    )
+}
+
+struct SharedAggregatePass {
+    rows: Vec<AggregateRow>,
+    pass: Pass,
+}
+
+const MAX_SHARED_PASSES: usize = 8;
+const MAX_SHARED_ROWS: usize = 160_000;
+
+fn shared_aggregate_pass(
+    conn: &Connection,
+    range: &ResolvedRange,
+    filters: &Filters,
+    prices: &PriceTable,
+    timings: &mut ReportTimings,
+) -> Result<Option<Arc<SharedAggregatePass>>, String> {
+    static CACHE: OnceLock<Mutex<Vec<(String, Arc<SharedAggregatePass>)>>> = OnceLock::new();
+    // Readiness is not represented by report_revision (legacy user_version can change).
+    if !rollup_is_eligible(filters) || !matches!(rollup::ready(conn), Ok(true))
+        || hybrid_days(range).1.is_none() {
+        return Ok(None);
+    }
+    let mut effective = filters.clone();
+    effective.report_cache = None;
+    let revision = super::report_cache::fingerprint(conn);
+    // In-memory/legacy databases have no persistent identity and never share.
+    let key = revision.as_ref().and_then(|revision| conn.path().filter(|path| !path.is_empty())
+        .map(|path| format!("{path}:{revision}:{}", turn_cache_key(range, &effective, false))));
+    let mut cache = CACHE.get_or_init(|| Mutex::new(Vec::new()))
+        .lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(key) = &key {
+        if let Some(index) = cache.iter().position(|(stored, _)| stored == key) {
+            let hit = cache.remove(index);
+            let result = hit.1.clone();
+            cache.push(hit);
+            timings.path = "rollup";
+            return Ok(Some(result));
+        }
+    }
+    let Some(rows) = measured_hybrid_rows(conn, range, &effective, timings, true, true)? else {
+        return Ok(None);
+    };
+    let mut pass = run_aggregate_pass(&rows, prices);
+    hydrate_aggregate_sessions(conn, &mut pass.sessions)?;
+    fill_tag_model_from_aggregates(&mut pass, &rows);
+    pass.rework_summary = Some(rework_summary(conn, &pass.sessions)?);
+    let result = Arc::new(SharedAggregatePass { rows, pass });
+    if let Some(key) = key.filter(|_| revision == super::report_cache::fingerprint(conn)) {
+        if result.rows.len() <= MAX_SHARED_ROWS {
+            while cache.len() >= MAX_SHARED_PASSES ||
+                cache.iter().map(|(_,entry)| entry.rows.len()).sum::<usize>() + result.rows.len() > MAX_SHARED_ROWS {
+                cache.remove(0);
+            }
+            cache.push((key, result.clone()));
+        }
+    }
+    Ok(Some(result))
+}
+
+fn overview_fresh(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    now_ms: i64,
+) -> Result<Overview, String> {
     let started = Instant::now();
     let mut timings = ReportTimings::default();
     let (resolved, label) = range.resolve(now_ms);
     let prices = cached_prices(conn)?;
-    let Some(current_rows) =
-        measured_hybrid_rows(conn, &resolved, filters, &mut timings, true, true)?
-    else {
+    let Some(current) = shared_aggregate_pass(conn, &resolved, filters, &prices, &mut timings)? else {
         return overview_raw(conn, range, filters, now_ms);
     };
-    let mut pass = run_aggregate_pass(&current_rows, &prices);
-    hydrate_aggregate_sessions(conn, &mut pass.sessions)?;
 
     let span = (resolved.to - resolved.from).max(0);
     let previous_range = ResolvedRange {
         from: resolved.from - span,
         to: resolved.from,
     };
-    let previous = if let Some(rows) =
-        measured_hybrid_rows(conn, &previous_range, filters, &mut timings, true, true)?
-    {
-        let mut pass = run_aggregate_pass(&rows, &prices);
-        hydrate_aggregate_sessions(conn, &mut pass.sessions)?;
-        pass
-    } else {
+    let previous_shared = shared_aggregate_pass(conn, &previous_range, filters, &prices, &mut timings)?;
+    let previous_raw;
+    let previous = if let Some(shared) = &previous_shared { &shared.pass } else {
         let turns = measured_turns(conn, &previous_range, filters, false, &mut timings)?;
-        run_pass(&turns, &prices)
+        previous_raw = run_pass(&turns, &prices);
+        &previous_raw
     };
 
     let mut internal_filters = filters.clone();
@@ -2265,9 +2366,9 @@ pub fn overview(
         resolved,
         label,
         prices,
-        pass,
+        &current.pass,
         previous,
-        internal_pass,
+        &internal_pass,
         timings,
         started,
     )
@@ -2370,6 +2471,7 @@ fn aggregate_series_report(
         })
         .collect();
     SeriesReport {
+        cache: None,
         range,
         bucket: options.bucket.clone(),
         group_by: options.group_by.clone(),
@@ -2451,6 +2553,7 @@ fn aggregate_breakdown_report(
             .then_with(|| a.key.cmp(&b.key))
     });
     BreakdownReport {
+        cache: None,
         range,
         dimension: dimension.to_string(),
         rows: breakdown_rows,
@@ -2463,6 +2566,24 @@ fn aggregate_breakdown_report(
 }
 
 pub fn series(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    options: &SeriesOptions,
+    now_ms: i64,
+) -> Result<SeriesReport, String> {
+    super::report_cache::report(
+        conn,
+        range,
+        filters,
+        "series",
+        &[&options.bucket, &options.group_by],
+        now_ms,
+        || series_fresh(conn, range, filters, options, now_ms),
+    )
+}
+
+fn series_fresh(
     conn: &Connection,
     range: &Range,
     filters: &Filters,
@@ -2575,6 +2696,7 @@ pub fn series(
     let timings = finish_timings(timings, started);
     log_report_timings("series", timings);
     Ok(SeriesReport {
+        cache: None,
         range: RangeOut {
             from: resolved.from,
             to: resolved.to,
@@ -2594,7 +2716,7 @@ pub fn series(
 // ailog_breakdown
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BreakdownRow {
     pub key: String,
@@ -2610,9 +2732,11 @@ pub struct BreakdownRow {
     pub avg_rework: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BreakdownReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<super::report_cache::SnapshotInfo>,
     pub range: RangeOut,
     pub dimension: String,
     pub rows: Vec<BreakdownRow>,
@@ -2626,6 +2750,24 @@ pub struct BreakdownReport {
 }
 
 pub fn breakdown(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    dimension: &str,
+    now_ms: i64,
+) -> Result<BreakdownReport, String> {
+    super::report_cache::report(
+        conn,
+        range,
+        filters,
+        "breakdown",
+        &[dimension],
+        now_ms,
+        || breakdown_fresh(conn, range, filters, dimension, now_ms),
+    )
+}
+
+fn breakdown_fresh(
     conn: &Connection,
     range: &Range,
     filters: &Filters,
@@ -2745,6 +2887,7 @@ pub fn breakdown(
     let timings = finish_timings(timings, started);
     log_report_timings("breakdown", timings);
     Ok(BreakdownReport {
+        cache: None,
         range: RangeOut {
             from: resolved.from,
             to: resolved.to,
@@ -2780,7 +2923,7 @@ impl Default for PivotOptions {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PivotRow {
     pub key: String,
@@ -2788,9 +2931,11 @@ pub struct PivotRow {
     pub cells: Vec<SeriesGroup>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PivotReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<super::report_cache::SnapshotInfo>,
     pub range: RangeOut,
     pub row_by: String,
     pub col_by: String,
@@ -2976,6 +3121,7 @@ impl PivotAcc {
             })
             .collect();
         PivotReport {
+            cache: None,
             range,
             row_by: options.row_by.clone(),
             col_by: options.col_by.clone(),
@@ -2996,6 +3142,24 @@ impl PivotAcc {
 }
 
 pub fn pivot(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    options: &PivotOptions,
+    now_ms: i64,
+) -> Result<PivotReport, String> {
+    super::report_cache::report(
+        conn,
+        range,
+        filters,
+        "pivot",
+        &[&options.row_by, &options.col_by],
+        now_ms,
+        || pivot_fresh(conn, range, filters, options, now_ms),
+    )
+}
+
+fn pivot_fresh(
     conn: &Connection,
     range: &Range,
     filters: &Filters,
@@ -3286,7 +3450,7 @@ fn work_tag_rows(pass: &Pass) -> Vec<WorkTagRow> {
 fn models_report_from_pass(
     options: &ModelsOptions,
     prices: &PriceTable,
-    pass: Pass,
+    pass: &Pass,
     series: Vec<ModelSeriesBucket>,
     range: RangeOut,
     timings: ReportTimings,
@@ -3373,6 +3537,19 @@ pub fn models(
     options: &ModelsOptions,
     now_ms: i64,
 ) -> Result<ModelsReport, String> {
+    let tx = if conn.is_autocommit() { Some(conn.unchecked_transaction().map_err(|error| error.to_string())?) } else { None };
+    let report = models_fresh(conn, range, filters, options, now_ms)?;
+    if let Some(tx) = tx { tx.commit().map_err(|error| error.to_string())?; }
+    Ok(report)
+}
+
+fn models_fresh(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    options: &ModelsOptions,
+    now_ms: i64,
+) -> Result<ModelsReport, String> {
     let started = Instant::now();
     let mut timings = ReportTimings::default();
     let (resolved, label) = range.resolve(now_ms);
@@ -3382,18 +3559,15 @@ pub fn models(
         to: resolved.to,
         label,
     };
-    if let Some(rows) = measured_hybrid_rows(conn, &resolved, filters, &mut timings, true, true)? {
-        let mut pass = run_aggregate_pass(&rows, &prices);
-        hydrate_aggregate_sessions(conn, &mut pass.sessions)?;
-        fill_tag_model_from_aggregates(&mut pass, &rows);
+    if let Some(shared) = shared_aggregate_pass(conn, &resolved, filters, &prices, &mut timings)? {
         let series = model_series_from_aggregates(
-            &rows,
+            &shared.rows,
             &options.granularity,
             &options.bucket,
             &prices,
         );
         return Ok(models_report_from_pass(
-            options, &prices, pass, series, range_out, timings, started,
+            options, &prices, &shared.pass, series, range_out, timings, started,
         ));
     }
 
@@ -3401,7 +3575,7 @@ pub fn models(
     let pass = run_pass(&turns, &prices);
     let series = model_series_from_turns(&turns, &options.granularity, &options.bucket, &prices);
     Ok(models_report_from_pass(
-        options, &prices, pass, series, range_out, timings, started,
+        options, &prices, &pass, series, range_out, timings, started,
     ))
 }
 

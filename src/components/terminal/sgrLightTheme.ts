@@ -54,7 +54,10 @@ export class SgrLightRewriter {
   }
 
   transform(chunk: string, light: boolean): string {
-    return light ? this.push(chunk) : this.scan(this.flushPending() + chunk, false);
+    if (light) return this.push(chunk);
+    const input = this.flushPending() + chunk;
+    this.scan(input, false);
+    return input;
   }
 
   push(chunk: string): string {
@@ -68,21 +71,29 @@ export class SgrLightRewriter {
     for (let i = 0; i < input.length;) {
       const char = input[i];
       if (this.controlString) {
-        output += char;
-        if ((this.controlString === "osc" && char === "\x07")
-          || (this.stringEscape && char === "\\")) this.controlString = null;
-        this.stringEscape = char === "\x1b";
-        i += 1;
+        let end = this.stringEscape && char === "\\" ? i + 1 : -1;
+        const st = input.indexOf("\x1b\\", i);
+        if (end < 0 && st >= 0) end = st + 2;
+        if (this.controlString === "osc") {
+          const bell = input.indexOf("\x07", i);
+          if (bell >= 0 && (end < 0 || bell + 1 < end)) end = bell + 1;
+        }
+        const next = end < 0 ? input.length : end;
+        if (rewrite) output += input.slice(i, next);
+        this.stringEscape = end < 0 && input[next - 1] === "\x1b";
+        if (end >= 0) this.controlString = null;
+        i = next;
         continue;
       }
       if (char !== "\x1b") {
-        output += char;
-        i += 1;
+        const escape = input.indexOf("\x1b", i);
+        const next = escape < 0 ? input.length : escape;
+        if (rewrite) output += input.slice(i, next);
+        i = next;
         continue;
       }
       if (i + 1 === input.length) {
         if (rewrite) this.pending = char;
-        else output += char;
         break;
       }
       const next = input[i + 1];
@@ -90,7 +101,7 @@ export class SgrLightRewriter {
         if (next === "]") this.controlString = "osc";
         else if ("PX^_".includes(next)) this.controlString = "st";
         this.stringEscape = false;
-        output += input.slice(i, i + 2);
+        if (rewrite) output += input.slice(i, i + 2);
         i += 2;
         continue;
       }
@@ -99,17 +110,17 @@ export class SgrLightRewriter {
       if (end === input.length) {
         const tail = input.slice(i);
         if (rewrite && tail.length <= 64) this.pending = tail;
-        else output += tail;
+        else if (rewrite) output += tail;
         break;
       }
       // An unexpected control byte cancels this candidate; process it normally.
       if (!/[\x40-\x7e]/.test(input[end])) {
-        output += input.slice(i, end);
+        if (rewrite) output += input.slice(i, end);
         i = end;
         continue;
       }
       const sequence = input.slice(i, end + 1);
-      output += rewrite && input[end] === "m" ? rewriteSequence(sequence) : sequence;
+      if (rewrite) output += input[end] === "m" ? rewriteSequence(sequence) : sequence;
       i = end + 1;
     }
     return output;

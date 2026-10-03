@@ -56,8 +56,11 @@ function beginNativeRegionDrag(event: PointerEvent, element: HTMLElement,
     window.removeEventListener("blur", cancel);
     try { if (element.hasPointerCapture(event.pointerId)) element.releasePointerCapture(event.pointerId); } catch { /* Unmounted source. */ }
     document.body.style.cursor = "";
-    usePaneDragStore.getState().clearDrag();
-    window.setTimeout(() => callbacks.suppress(false), 0);
+    try {
+      usePaneDragStore.getState().clearDrag();
+    } finally {
+      window.setTimeout(() => callbacks.suppress(false), 0);
+    }
   };
   function move(next: PointerEvent) {
     if (next.pointerId !== event.pointerId || handed) return;
@@ -97,9 +100,12 @@ function beginNativeRegionDrag(event: PointerEvent, element: HTMLElement,
   }
   function up(next: PointerEvent) {
     if (next.pointerId !== event.pointerId || handed) return;
-    if (dragging) { callbacks.resolve(next.clientX, next.clientY); callbacks.commit(); }
-    cleanup();
-    void record?.finish("reordered").catch((error) => console.warn("[tearout] log failed", error));
+    try {
+      if (dragging) { callbacks.resolve(next.clientX, next.clientY); callbacks.commit(); }
+    } finally {
+      cleanup();
+      void record?.finish("reordered").catch((error) => console.warn("[tearout] log failed", error));
+    }
   }
   function cancel() {
     if (handed) return;
@@ -163,9 +169,12 @@ export function beginNativeWorkspaceDrag(event: PointerEvent, element: HTMLEleme
   }
   function up(next: PointerEvent) {
     if (next.pointerId !== event.pointerId || handed) return;
-    if (dragging) { callbacks.resolve(next.clientX, next.clientY); callbacks.commit(); }
-    cleanup();
-    void record?.finish("reordered").catch(error => console.warn("[tearout] log failed", error));
+    try {
+      if (dragging) { callbacks.resolve(next.clientX, next.clientY); callbacks.commit(); }
+    } finally {
+      cleanup();
+      void record?.finish("reordered").catch(error => console.warn("[tearout] log failed", error));
+    }
   }
   function cancel() {
     if (handed) return;

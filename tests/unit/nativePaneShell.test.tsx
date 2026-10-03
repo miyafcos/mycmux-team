@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   close: vi.fn(async () => {}),
 }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ startDragging: vi.fn() }) }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: mocks.confirm }));
+vi.mock("../../src/lib/appConfirmation", () => ({ cancelAppConfirmations: vi.fn(() => false), confirm: mocks.confirm }));
 vi.mock("../../src/lib/ipc", () => ({ getWindowFragments: mocks.fragments }));
 vi.mock("../../src/lib/windowContext", () => ({ windowLabel: () => "mycmux-native" }));
 vi.mock("../../src/stores/paneMetadataStore", () => ({

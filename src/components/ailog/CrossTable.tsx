@@ -63,7 +63,8 @@ export function CrossTable({
         <ButtonGroup ariaLabel="行軸" roleLabel="行" value={rowBy} onChange={onRowBy} options={PIVOT_AXES} />
         <ButtonGroup ariaLabel="列軸" roleLabel="列" value={colBy} onChange={onColBy} options={PIVOT_AXES} />
       </div>
-      {error ? (
+      {error && report ? <EmptyState kind="error" message={error} onPrimary={onRetry} /> : null}
+      {error && !report ? (
         <EmptyState kind="error" message={error} onPrimary={onRetry} />
       ) : !report || !folded ? (
         loading ? null : <EmptyState kind="no-data" />

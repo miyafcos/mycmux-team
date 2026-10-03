@@ -163,6 +163,18 @@ describe("CrossTable", () => {
     expect(html).not.toMatch(/>合計<\/th>[\s\S]*?>3</);
   });
 
+  it("retains a saved table alongside a failed update and retry action", () => {
+    const html = renderToStaticMarkup(
+      <CrossTable report={source} metric="costUsd" rowBy="project" colBy="model"
+        loading={false} error="latest unavailable" selection={null} onRetry={() => {}}
+        onRowBy={() => {}} onColBy={() => {}} onSelect={() => {}} />,
+    );
+    expect(html).toContain("latest unavailable");
+    expect(html).toContain("alpha");
+    expect(html).toContain("<table");
+    expect(html).toContain("<button");
+  });
+
   it("paints cells with a theme token mix instead of a raw hex", () => {
     const html = renderToStaticMarkup(
       <CrossTable

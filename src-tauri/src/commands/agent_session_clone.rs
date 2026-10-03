@@ -44,11 +44,13 @@ fn duplicate_agent_session_in_home(kind: &str, session_id: &str, resolved_cwd: &
 }
 
 #[tauri::command(async)]
-pub fn duplicate_agent_session(kind: String, session_id: String, cwd: Option<String>) -> Result<DuplicateAgentSessionResult, String> {
-    let resolved_cwd = crate::commands::terminal::resolve_launch_cwd(cwd.as_deref())
-        .ok_or_else(|| "Failed to resolve launch working directory".to_string())?;
-    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    duplicate_agent_session_in_home(&kind, &session_id, &resolved_cwd, &home)
+pub async fn duplicate_agent_session(kind: String, session_id: String, cwd: Option<String>) -> Result<DuplicateAgentSessionResult, String> {
+    crate::util::task::run_blocking("duplicate_agent_session", move || {
+        let resolved_cwd = crate::commands::terminal::resolve_launch_cwd(cwd.as_deref())
+            .ok_or_else(|| "Failed to resolve launch working directory".to_string())?;
+        let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
+        duplicate_agent_session_in_home(&kind, &session_id, &resolved_cwd, &home)
+    }).await
 }
 
 #[cfg(test)]

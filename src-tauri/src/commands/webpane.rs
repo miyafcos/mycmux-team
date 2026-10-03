@@ -110,6 +110,19 @@ const WEB_PANE_PRESETS: &[WebPanePreset] = &[
         }),
         launchable: true,
     },
+    // Official "Create your dot" link: https://openai.com/index/introducing-dots/ (2026-10-03).
+    WebPanePreset {
+        id: "dots",
+        label: "ChatGPT dots",
+        url: "https://chatgpt.com/dots",
+        profile_dir: "google",
+        allowed_hosts: &["chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com"],
+        signed_out_patterns: &["chatgpt.com/auth/", "auth.openai.com", "auth0.openai.com"],
+        // This is the human Web UI. Its DOM/API is not a verified automation adapter.
+        composer: None,
+        reader: None,
+        launchable: true,
+    },
     WebPanePreset {
         id: "gemini",
         label: "Gemini",
@@ -1051,13 +1064,17 @@ pub async fn webpane_create(
             open_in_os_browser(&new_window_app, url.as_str());
             NewWindowResponse::Deny
         });
-    let webview = window
+    let creation_start = std::time::Instant::now();
+    let created = window
         .add_child(
             builder,
             LogicalPosition::new(bounds.x, bounds.y),
             LogicalSize::new(bounds.width, bounds.height),
-        )
-        .map_err(|error| format!("failed to create web pane: {error}"))?;
+        );
+    crate::watchdog::record_webview_creation(
+        window.label(), &label, creation_start.elapsed(), created.is_ok(),
+    );
+    let webview = created.map_err(|error| format!("failed to create web pane: {error}"))?;
     #[cfg(windows)]
     crate::watchdog::register_process_failed(&webview);
     crate::perf_timeline::mark("webpane.child.created", Some(&tab_id));
@@ -3179,7 +3196,7 @@ assert.match(reply.error, /host changed/);
 
     #[test]
     fn preset_registry_is_generic_and_resolves_every_service() {
-        assert_eq!(WEB_PANE_PRESETS.len(), 7);
+        assert_eq!(WEB_PANE_PRESETS.len(), 8);
         for id in ["chatgpt", "gemini", "grok", "claude", "notebooklm"] {
             let preset = preset_by_id(id).unwrap();
             assert!(!preset.label.is_empty(), "{id}");
@@ -3202,7 +3219,7 @@ assert.match(reply.error, /host changed/);
     fn google_services_share_one_profile_so_one_login_covers_them() {
         // The point of the shared folder: signing in to Google once has to be
         // enough for every service that federates through it.
-        for id in ["chatgpt", "gemini", "claude", "notebooklm"] {
+        for id in ["chatgpt", "dots", "gemini", "claude", "notebooklm"] {
             assert_eq!(preset_by_id(id).unwrap().profile_dir, "google", "{id}");
         }
         // Grok signs in through X, so it keeps its own.
@@ -3331,6 +3348,19 @@ assert.match(reply.error, /host changed/);
                 other.id
             );
         }
+    }
+
+    #[test]
+    fn dots_uses_the_official_url_without_claiming_a_dom_control_api() {
+        let dots = preset_by_id("dots").unwrap();
+        assert_eq!(dots.url, "https://chatgpt.com/dots");
+        assert_eq!(dots.profile_dir, preset_by_id("chatgpt").unwrap().profile_dir);
+        assert!(dots.launchable);
+        assert!(dots.composer.is_none());
+        assert!(dots.reader.is_none());
+        assert!(launchable_presets().iter().any(|preset| preset.id == "dots"));
+        assert!(preset_keeps_url_inside_pane(dots, &dots.url.parse().unwrap()));
+        assert!(!preset_keeps_url_inside_pane(dots, &"https://example.test/".parse().unwrap()));
     }
 
     #[test]

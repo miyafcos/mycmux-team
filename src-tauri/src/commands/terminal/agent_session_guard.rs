@@ -100,7 +100,12 @@ struct Conflict {
     owner_session_id: String,
 }
 
-type ClaimTable = Mutex<HashMap<Conversation, String>>;
+#[derive(Default)]
+struct Claims {
+    owners: HashMap<Conversation, String>,
+    revision: u64,
+}
+type ClaimTable = Mutex<Claims>;
 static LAUNCH_CLAIMS: OnceLock<ClaimTable> = OnceLock::new();
 
 /// Pure decision over a PTY snapshot and the claims held by pending creates.
@@ -124,7 +129,7 @@ fn find_conflict(
     })
 }
 
-/// The table lock covers the live-owner check and claim insertion together.
+/// A revision validates the owner snapshot gathered outside the table lock.
 /// The RAII claim survives all launch work and is released on every return path.
 pub(super) struct LaunchClaim<'a> {
     table: &'a ClaimTable,
@@ -136,10 +141,10 @@ impl LaunchClaim<'static> {
     pub fn acquire(
         request: Conversation,
         requester: &str,
-        owners: impl FnOnce() -> Vec<Owner>,
+        owners: impl FnMut() -> Vec<Owner>,
     ) -> Result<Self, String> {
         acquire_claim(
-            LAUNCH_CLAIMS.get_or_init(|| Mutex::new(HashMap::new())),
+            LAUNCH_CLAIMS.get_or_init(|| Mutex::new(Claims::default())),
             request,
             requester,
             owners,
@@ -151,35 +156,39 @@ fn acquire_claim<'a>(
     table: &'a ClaimTable,
     request: Conversation,
     requester: &str,
-    owners: impl FnOnce() -> Vec<Owner>,
+    owners: impl FnMut() -> Vec<Owner>,
 ) -> Result<LaunchClaim<'a>, String> {
-    let mut claims = table
-        .lock()
-        .map_err(|error| format!("Failed to lock launch claims: {error}"))?;
-    if let Some(conflict) = find_conflict(&request, requester, &owners(), &claims) {
-        return Err(format!(
-            "{CONFLICT_PREFIX}{}",
-            serde_json::to_string(&conflict).unwrap()
-        ));
+    let mut owners = owners;
+    loop {
+        let revision = table.lock()
+            .map_err(|error| format!("Failed to lock launch claims: {error}"))?.revision;
+        // PTY polling and mapping-file reads must never hold LAUNCH_CLAIMS.
+        let live_owners = owners();
+        let mut claims = table.lock()
+            .map_err(|error| format!("Failed to lock launch claims: {error}"))?;
+        if claims.revision != revision {
+            // A create may have finished and released its claim since our
+            // snapshot. Re-read its now-live PTY before allowing another resume.
+            continue;
+        }
+        if let Some(conflict) = find_conflict(&request, requester, &live_owners, &claims.owners) {
+            return Err(format!("{CONFLICT_PREFIX}{}", serde_json::to_string(&conflict).unwrap()));
+        }
+        let owns_claim = !claims.owners.contains_key(&request);
+        if owns_claim {
+            claims.owners.insert(request.clone(), requester.to_string());
+            claims.revision = claims.revision.wrapping_add(1);
+        }
+        return Ok(LaunchClaim { table, conversation: request, owns_claim });
     }
-    let owns_claim = !claims.contains_key(&request);
-    if owns_claim {
-        claims.insert(request.clone(), requester.to_string());
-    }
-    Ok(LaunchClaim {
-        table,
-        conversation: request,
-        owns_claim,
-    })
 }
 
 impl Drop for LaunchClaim<'_> {
     fn drop(&mut self) {
         if self.owns_claim {
-            self.table
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .remove(&self.conversation);
+            let mut claims = self.table.lock().unwrap_or_else(|error| error.into_inner());
+            claims.owners.remove(&self.conversation);
+            claims.revision = claims.revision.wrapping_add(1);
         }
     }
 }
@@ -349,16 +358,16 @@ mod tests {
 
     #[test]
     fn launch_claim_blocks_second_create_and_preserves_own_id_reattach() {
-        let table = Mutex::new(HashMap::new());
+        let table = Mutex::new(Claims::default());
         let first = acquire_claim(&table, request("codex"), "first", Vec::new).unwrap();
         let error = acquire_claim(&table, request("CODEX"), "second", Vec::new)
             .err()
             .unwrap();
         assert_eq!(error, format!("{CONFLICT_PREFIX}{{\"kind\":\"codex\",\"agentSessionId\":\"{AGENT_ID}\",\"ownerSessionId\":\"first\"}}"));
         drop(acquire_claim(&table, request("codex"), "first", Vec::new).unwrap());
-        assert_eq!(table.lock().unwrap().len(), 1);
+        assert_eq!(table.lock().unwrap().owners.len(), 1);
         drop(first);
-        assert!(table.lock().unwrap().is_empty());
+        assert!(table.lock().unwrap().owners.is_empty());
         assert!(acquire_claim(&table, request("codex"), "second", Vec::new).is_ok());
     }
 
@@ -393,7 +402,7 @@ mod tests {
 
     #[test]
     fn a_second_thread_cannot_claim_the_pending_conversation() {
-        let table = Mutex::new(HashMap::new());
+        let table = Mutex::new(Claims::default());
         let first = acquire_claim(&table, request("grok"), "first", Vec::new).unwrap();
         std::thread::scope(|scope| {
             let second =
@@ -405,14 +414,65 @@ mod tests {
     }
 
     #[test]
+    fn stale_owner_snapshot_is_retried_after_a_claim_becomes_a_live_session() {
+        let table = Mutex::new(Claims::default());
+        let (snapshot_tx, snapshot_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let table_ref = &table;
+            let reads_ref = &reads;
+            let second = scope.spawn(move || acquire_claim(table_ref, request("codex"), "second", || {
+                if reads_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    snapshot_tx.send(()).unwrap();
+                    resume_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+                    Vec::new() // Captured before first finished spawning.
+                } else {
+                    vec![Owner { session_id: "first".into(), conversation: request("codex"), is_running: true }]
+                }
+            }).err());
+            snapshot_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+            assert!(table.try_lock().is_ok(), "owner enumeration must be outside the table lock");
+            let first = acquire_claim(&table, request("codex"), "first", Vec::new).unwrap();
+            drop(first); // Its PTY is live, but its pending claim has gone.
+            resume_tx.send(()).unwrap();
+            assert!(second.join().unwrap().unwrap().contains("first"));
+        });
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn simultaneous_empty_snapshots_allow_only_one_pending_resume() {
+        let table = Mutex::new(Claims::default());
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let attempts: Vec<_> = ["one", "two"].into_iter().map(|id| {
+                let table = &table;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let mut first_read = true;
+                    acquire_claim(table, request("grok"), id, || {
+                        if first_read { first_read = false; barrier.wait(); }
+                        Vec::new()
+                    })
+                })
+            }).collect();
+            let claims: Vec<_> = attempts.into_iter().map(|thread| thread.join().unwrap()).collect();
+            assert_eq!(claims.iter().filter(|claim| claim.is_ok()).count(), 1);
+            assert_eq!(claims.iter().filter(|claim| claim.is_err()).count(), 1);
+        });
+        assert!(table.lock().unwrap().owners.is_empty());
+    }
+
+    #[test]
     fn launch_claim_is_released_when_launch_returns_an_error() {
         fn failed_launch(table: &ClaimTable) -> Result<(), String> {
             let _claim = acquire_claim(table, request("claude"), "first", Vec::new)?;
             Err("spawn failed".to_string())
         }
-        let table = Mutex::new(HashMap::new());
+        let table = Mutex::new(Claims::default());
         assert_eq!(failed_launch(&table), Err("spawn failed".to_string()));
-        assert!(table.lock().unwrap().is_empty());
+        assert!(table.lock().unwrap().owners.is_empty());
         assert!(acquire_claim(&table, request("claude"), "next", Vec::new).is_ok());
     }
 }

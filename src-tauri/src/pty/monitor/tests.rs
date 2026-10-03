@@ -29,6 +29,7 @@
             last_output_at: Some(1_725_000_000_123),
             agent_active: true,
             claude_session_id,
+            live_agent_kind: agent_kind.clone(),
             agent_kind,
             agent_session_id,
         };
@@ -51,16 +52,16 @@
     #[test]
     fn process_status_timestamp_uses_the_stable_os_process_start_time() {
         let (status, status_at) =
-            process_status_from_observation(Some("codex.exe"), Some(100));
+            process_status_from_observation(Some("codex.exe"), Some(100), true);
         assert_eq!(status.as_deref(), Some("working"));
         assert_eq!(status_at, Some(100));
 
         let (idle_status, idle_at) =
-            process_status_from_observation(Some("pwsh.exe"), Some(300));
+            process_status_from_observation(Some("pwsh.exe"), Some(300), false);
         assert_eq!(idle_status.as_deref(), Some("idle"));
         assert_eq!(idle_at, Some(300));
 
-        assert_eq!(process_status_from_observation(None, None), (None, None));
+        assert_eq!(process_status_from_observation(None, None, false), (None, None));
     }
 
     #[test]
@@ -69,7 +70,7 @@
             [("codex.exe", "working"), ("pwsh.exe", "idle")]
         {
             let (status, status_at) =
-                process_status_from_observation(Some(process_name), Some(500));
+                process_status_from_observation(Some(process_name), Some(500), process_name == "codex.exe");
             assert_eq!(status.as_deref(), Some(expected_status));
             assert_eq!(status_at, Some(500));
         }
@@ -82,10 +83,12 @@
             let first = process_status_from_observation(
                 Some("codex.exe"),
                 Some(process_started_at),
+                true,
             );
             let after_restart = process_status_from_observation(
                 Some("codex.exe"),
                 Some(process_started_at),
+                true,
             );
             let (status, status_at) = first;
             assert_eq!(status.as_deref(), Some("working"));

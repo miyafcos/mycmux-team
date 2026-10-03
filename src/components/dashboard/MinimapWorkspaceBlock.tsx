@@ -1,4 +1,5 @@
 import { useMemo, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
+import { useShallow } from "zustand/react/shallow";
 import type { DashboardDisplayState } from "./dashboardModel";
 import { buildMinimapModel, minimapWorkspaceStrip } from "./minimapModel";
 import { MinimapPaneCell } from "./MinimapPaneCell";
@@ -80,6 +81,11 @@ export function MinimapWorkspaceBlock({ workspace, selectedTabId, selectedTabIds
   // subscription here would re-render the whole minimap on that cadence. The
   // panel clock re-renders us instead, and the snapshot reference is a memo
   // dependency so a genuinely new snapshot still rebuilds the model.
+  // Subscribe only to identity changes; PTY output still rides the panel clock.
+  const liveMarks = usePaneMetadataStore(useShallow(state => workspace.panes.flatMap(pane =>
+    pane.tabs.map(tab => JSON.stringify([tab.sessionId,
+      state.volatileMetadata[tab.sessionId]?.liveAgentKind,
+      state.volatileMetadata[tab.sessionId]?.ptyAlive])))));
   const volatileMetadata = usePaneMetadataStore.getState().volatileMetadata;
   // CTX% is snapshotted on the panel clock (same 30s tick as elapsed age) so
   // livebrief updates do not re-render the whole minimap every second.
@@ -93,7 +99,7 @@ export function MinimapWorkspaceBlock({ workspace, selectedTabId, selectedTabIds
       }
       return buildMinimapModel(workspace, { activePaneId, metadataBySession: volatileMetadata, contextPctBySession });
     },
-    [activePaneId, volatileMetadata, workspace, now],
+    [activePaneId, liveMarks, volatileMetadata, workspace, now],
   );
   const strip = useMemo(() => minimapWorkspaceStrip(model, displayStateByTabId), [displayStateByTabId, model]);
   const hiddenTicks = strip.tabCount - MINIMAP_STRIP_MAX_TICKS;
@@ -117,7 +123,7 @@ export function MinimapWorkspaceBlock({ workspace, selectedTabId, selectedTabIds
             return <i
               key={entry.tabId}
               className={`cmux-minimap-strip-tick is-${entry.activity}`}
-              style={tickColor ? { "--minimap-agent": tickColor } as CSSProperties : undefined}
+              style={tickColor ? { "--minimap-agent": tickColor, opacity: entry.mark?.dormant ? 0.45 : 1 } as CSSProperties : undefined}
             />;
           })}
           {hiddenTicks > 0 ? <em className="cmux-minimap-strip-overflow">{`+${hiddenTicks}`}</em> : null}

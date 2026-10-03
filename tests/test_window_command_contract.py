@@ -166,7 +166,7 @@ def test_window_commands_never_take_a_webview_window_argument() -> None:
             )
 
     registry = read_repo_text("src-tauri/src/commands/window_registry.rs")
-    start = registry.index("pub fn release_workspaces(")
-    body = registry[start:registry.index("pub fn get_window_fragments", start)]
+    start = registry.index("pub async fn release_workspaces(")
+    body = registry[start:registry.index("pub async fn get_window_fragments", start)]
     assert "app.get_webview_window(" not in body, "release_workspaces must not refuse a receiver that hosts a web pane"
     assert "app.get_window(&to_label).is_none()" in body
