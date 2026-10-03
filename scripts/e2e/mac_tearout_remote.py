@@ -1,4 +1,4 @@
-"""S4-only remote commands; no shell interpolation of source or test text."""
+"""M1-only remote commands; no shell interpolation of source or test text."""
 from __future__ import annotations
 
 import base64
@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REMOTE = "/Users/edu/Developer/mycmux-wt-next-s4-261003"
+REMOTE = "/Users/edu/Developer/mycmux-wt-mac-m1-261003"
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "edumac-mini"]
 
 
@@ -23,7 +23,7 @@ from pathlib import Path
 import subprocess
 base = Path('/Users/edu/Developer/mycmux')
 wt = Path({REMOTE!r})
-rev = 'b6a0574a04863a9ecc325d04c39c37d2538934e1'
+rev = '8071722ea0546544d56ec177ef323c33f6331e8f'
 subprocess.run(['git', 'cat-file', '-e', rev], cwd=base, check=True)
 if not wt.exists():
     subprocess.run(['git', 'worktree', 'add', '--detach', str(wt), rev], cwd=base, check=True)
@@ -37,7 +37,7 @@ print(Path('/Users/edu/Developer/macq-e2e/build.sh').read_text())
 from pathlib import Path
 import subprocess
 wt = Path({REMOTE!r})
-out = wt / 'tmp/tearout-s4'
+out = wt / 'tmp/tearout-m1'
 out.mkdir(parents=True, exist_ok=True)
 source = out / 'spike.swift'
 source.write_text({source!r}, encoding='utf-8')

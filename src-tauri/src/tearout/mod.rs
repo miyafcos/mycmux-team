@@ -162,7 +162,6 @@ pub async fn tearout_synthetic_sample(
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = (diagnostics, legacy_samples, recorder);
         if phase == "identity" && label.starts_with("mycmux-w") {
             return on_ui(&app, move |app| native::window_identity(&app, &label)).await;
         }
@@ -182,6 +181,9 @@ pub async fn tearout_synthetic_sample(
                 client_y,
                 &phase,
                 escaped,
+                diagnostics.unwrap_or(false),
+                legacy_samples.unwrap_or(false),
+                recorder.unwrap_or(true),
             )
         })
         .await
@@ -361,6 +363,8 @@ pub async fn tearout_warm(
             {
                 return Ok(());
             }
+            #[cfg(target_os = "macos")]
+            native::capture_mouse_down(true);
             app.state::<crate::AppState>()
                 .window_registry
                 .set_close_intent(reservation.label(), true);
@@ -484,6 +488,12 @@ pub async fn tearout_release_spare(
     state: State<'_, TearoutState>,
 ) -> Result<(), String> {
     state.spare_generation.fetch_add(1, Ordering::AcqRel);
+    #[cfg(target_os = "macos")]
+    on_ui(&app, |_| {
+        native::capture_mouse_down(false);
+        Ok(())
+    })
+    .await?;
     let label = state
         .spare
         .lock()

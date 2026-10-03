@@ -15,7 +15,7 @@ export function afterTearoutFrame(callback: () => void,
     callback();
   };
   frame = window.requestAnimationFrame(finish);
-  if (isMacTearoutPlatform(platform)) timer = window.setTimeout(finish, 40);
+  if (isMacTearoutPlatform(platform)) timer = window.setTimeout(finish, 16);
   return () => {
     done = true;
     if (timer !== null) window.clearTimeout(timer);
