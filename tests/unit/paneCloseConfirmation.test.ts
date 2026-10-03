@@ -5,7 +5,7 @@ const confirmDialog = vi.fn(async () => true);
 const mockedStore = vi.hoisted(() => ({
   metadata: {} as Record<string, { processIsShell?: boolean; outputActive?: boolean }>,
 }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: confirmDialog }));
+vi.mock("../../src/lib/appConfirmation", () => ({ cancelAppConfirmations: vi.fn(() => false), confirm: confirmDialog }));
 vi.mock("../../src/stores/paneMetadataStore", () => ({
   usePaneMetadataStore: { getState: () => mockedStore },
 }));

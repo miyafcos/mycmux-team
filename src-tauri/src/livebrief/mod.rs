@@ -157,6 +157,28 @@ struct ServiceState {
     last_refresh_finished_at: Option<std::time::Instant>,
 }
 
+/// The refresh flag is a lease: it must be released even if parsing or a
+/// publisher panics, including while poisoning the service-state mutex.
+struct RefreshInProgress(Arc<Mutex<ServiceState>>);
+
+impl RefreshInProgress {
+    fn acquire(state: &Arc<Mutex<ServiceState>>) -> Option<Self> {
+        let mut current = state.lock().unwrap_or_else(|p| p.into_inner());
+        if current.refresh_in_progress
+            || current.last_refresh_finished_at.is_some_and(|at| at.elapsed() <= Duration::from_millis(500)) {
+            return None;
+        }
+        current.refresh_in_progress = true;
+        Some(Self(state.clone()))
+    }
+}
+
+impl Drop for RefreshInProgress {
+    fn drop(&mut self) {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).refresh_in_progress = false;
+    }
+}
+
 #[derive(Clone)]
 pub struct LiveBriefService {
     manager: Arc<SessionManager>,
@@ -228,15 +250,7 @@ impl LiveBriefService {
     }
 
     fn refresh_all(&self) {
-        {
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.refresh_in_progress
-                || state.last_refresh_finished_at.is_some_and(|at| at.elapsed() <= Duration::from_millis(500))
-            {
-                return;
-            }
-            state.refresh_in_progress = true;
-        }
+        self.refresh_all_with(|| {
         crate::perf_timeline::mark("livebrief.refresh.enter", None);
         let session_ids: Vec<String> = self.manager.iter_pids().into_iter().map(|(id, _)| id).collect();
         let mappings = agent_mappings_for_ids(session_ids.iter().map(String::as_str));
@@ -281,9 +295,14 @@ impl LiveBriefService {
             state.sessions.insert(session_id, snapshot);
         }
         state.sessions.retain(|session_id, _| session_ids.contains(session_id));
-        state.refresh_in_progress = false;
         state.last_refresh_finished_at = Some(std::time::Instant::now());
         crate::perf_timeline::mark("livebrief.refresh.done", None);
+        });
+    }
+
+    fn refresh_all_with(&self, refresh: impl FnOnce()) {
+        let Some(_refresh_guard) = RefreshInProgress::acquire(&self.state) else { return; };
+        refresh();
     }
 
     /// Rebuild one session. `None` means the cached snapshot is still exact —
@@ -1290,6 +1309,33 @@ pub async fn send_intervention(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn refresh_panic_releases_the_flag_and_a_subsequent_refresh_finishes() {
+        use super::*;
+        let service = LiveBriefService::new(Arc::new(SessionManager::new()), crate::pty::monitor::new_metadata_store());
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| service.refresh_all_with(|| {
+            let _state = service.state.lock().unwrap();
+            panic!("intentional refresh panic while state is locked");
+        }))).is_err());
+        assert!(!service.state.lock().unwrap_or_else(|p| p.into_inner()).refresh_in_progress);
+        service.refresh_all();
+        let state = service.state.lock().unwrap_or_else(|p| p.into_inner());
+        assert!(!state.refresh_in_progress);
+        assert!(state.last_refresh_finished_at.is_some());
+    }
+
+    #[test]
+    fn refresh_guard_excludes_concurrent_refreshes_and_releases_on_early_return() {
+        use super::*;
+        let state = Arc::new(Mutex::new(ServiceState::default()));
+        let first = RefreshInProgress::acquire(&state).unwrap();
+        std::thread::scope(|scope| {
+            assert!(scope.spawn(|| RefreshInProgress::acquire(&state).is_none()).join().unwrap());
+        });
+        drop(first);
+        assert!(RefreshInProgress::acquire(&state).is_some());
+        assert!(!state.lock().unwrap().refresh_in_progress);
+    }
     use super::*;
     use std::cell::Cell;
     use std::io::Write;

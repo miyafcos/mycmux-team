@@ -194,11 +194,11 @@ def test_every_launchable_preset_has_a_launcher_entry_and_no_other_preset_does()
     """
     presets = registered_presets()
     assert sorted(presets) == [
-        "browser", "chatgpt", "claude", "gemini", "grok", "notebooklm", "preview",
+        "browser", "chatgpt", "claude", "dots", "gemini", "grok", "notebooklm", "preview",
     ], sorted(presets)
     launchable = sorted(preset for preset, offered in presets.items() if offered)
     internal = sorted(preset for preset, offered in presets.items() if not offered)
-    assert launchable == ["browser", "chatgpt", "claude", "gemini", "grok", "notebooklm"], launchable
+    assert launchable == ["browser", "chatgpt", "claude", "dots", "gemini", "grok", "notebooklm"], launchable
     assert internal == ["preview"], internal
 
     shell = read("src-tauri/src/launcher.sh")

@@ -7,6 +7,7 @@ import { outsideTearoutStrip } from "./model";
 import { tearoutTab, tearoutPane, tearoutWorkspace, canRegrabTearoutTab, canRegrabTearoutPane, regrabTearoutWindow } from "./runtime";
 import { TearoutRecord } from "./record";
 import { windowLabel } from "../windowContext";
+import { afterTearoutFrame } from "./macFrame";
 
 export function usesNativePaneDrag(item: PaneDragItem): boolean {
   if (!nativePaneTearoutEnabled(useSettingsStore.getState().nativePaneTearoutEnabled)
@@ -48,7 +49,10 @@ function beginNativeRegionDrag(event: PointerEvent, element: HTMLElement,
   let record: TearoutRecord | null = null;
   let dragging = false;
   let handed = false;
+  let cancelFrame: (() => void) | null = null;
+  let latest: { x: number; y: number } | null = null;
   const cleanup = () => {
+    cancelFrame?.(); cancelFrame = null; latest = null;
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
     window.removeEventListener("pointercancel", cancel);
@@ -56,8 +60,11 @@ function beginNativeRegionDrag(event: PointerEvent, element: HTMLElement,
     window.removeEventListener("blur", cancel);
     try { if (element.hasPointerCapture(event.pointerId)) element.releasePointerCapture(event.pointerId); } catch { /* Unmounted source. */ }
     document.body.style.cursor = "";
-    usePaneDragStore.getState().clearDrag();
-    window.setTimeout(() => callbacks.suppress(false), 0);
+    try {
+      usePaneDragStore.getState().clearDrag();
+    } finally {
+      window.setTimeout(() => callbacks.suppress(false), 0);
+    }
   };
   function move(next: PointerEvent) {
     if (next.pointerId !== event.pointerId || handed) return;
@@ -92,14 +99,23 @@ function beginNativeRegionDrag(event: PointerEvent, element: HTMLElement,
         });
       return;
     }
-    usePaneDragStore.getState().moveDrag({ x: next.clientX, y: next.clientY });
-    callbacks.resolve(next.clientX, next.clientY);
+    latest = { x: next.clientX, y: next.clientY };
+    if (!cancelFrame) cancelFrame = afterTearoutFrame(() => {
+      cancelFrame = null;
+      const point = latest; latest = null;
+      if (!point || handed) return;
+      usePaneDragStore.getState().moveDrag(point);
+      callbacks.resolve(point.x, point.y);
+    });
   }
   function up(next: PointerEvent) {
     if (next.pointerId !== event.pointerId || handed) return;
-    if (dragging) { callbacks.resolve(next.clientX, next.clientY); callbacks.commit(); }
-    cleanup();
-    void record?.finish("reordered").catch((error) => console.warn("[tearout] log failed", error));
+    try {
+      if (dragging) { callbacks.resolve(next.clientX, next.clientY); callbacks.commit(); }
+    } finally {
+      cleanup();
+      void record?.finish("reordered").catch((error) => console.warn("[tearout] log failed", error));
+    }
   }
   function cancel() {
     if (handed) return;
@@ -125,7 +141,10 @@ export function beginNativeWorkspaceDrag(event: PointerEvent, element: HTMLEleme
   let record: TearoutRecord | null = null;
   let dragging = false;
   let handed = false;
+  let cancelFrame: (() => void) | null = null;
+  let latest: { x: number; y: number } | null = null;
   const cleanup = () => {
+    cancelFrame?.(); cancelFrame = null; latest = null;
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
     window.removeEventListener("pointercancel", cancel);
@@ -159,13 +178,21 @@ export function beginNativeWorkspaceDrag(event: PointerEvent, element: HTMLEleme
         });
       return;
     }
-    callbacks.resolve(next.clientX, next.clientY);
+    latest = { x: next.clientX, y: next.clientY };
+    if (!cancelFrame) cancelFrame = afterTearoutFrame(() => {
+      cancelFrame = null;
+      const point = latest; latest = null;
+      if (point && !handed) callbacks.resolve(point.x, point.y);
+    });
   }
   function up(next: PointerEvent) {
     if (next.pointerId !== event.pointerId || handed) return;
-    if (dragging) { callbacks.resolve(next.clientX, next.clientY); callbacks.commit(); }
-    cleanup();
-    void record?.finish("reordered").catch(error => console.warn("[tearout] log failed", error));
+    try {
+      if (dragging) { callbacks.resolve(next.clientX, next.clientY); callbacks.commit(); }
+    } finally {
+      cleanup();
+      void record?.finish("reordered").catch(error => console.warn("[tearout] log failed", error));
+    }
   }
   function cancel() {
     if (handed) return;

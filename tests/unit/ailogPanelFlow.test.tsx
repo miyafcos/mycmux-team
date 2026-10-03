@@ -116,6 +116,7 @@ vi.mock("../../src/lib/ailog", async (importOriginal) => ({
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { AiLogPanel as renderPanel, bucketInputRange } from "../../src/components/ailog/AiLogPanel";
+import { UsageView } from "../../src/components/ailog/UsageView";
 import { WorkTagTable } from "../../src/components/ailog/WorkTagTable";
 import type { ModelsReport } from "../../src/lib/ailog";
 import {
@@ -296,7 +297,7 @@ describe("AI log panel single-view flow", () => {
     indexProgressHandler!(doneProgress);
     await settle();
     expect(ailogSeries).toHaveBeenCalled();
-    expect(ailogUsageRhythm).toHaveBeenCalled();
+    expect(ailogUsageRhythm).not.toHaveBeenCalled();
     expect(ailogOverview).toHaveBeenCalled();
     expect(ailogModels).toHaveBeenCalled();
     expect(ailogBreakdown).toHaveBeenCalled();
@@ -309,7 +310,7 @@ describe("AI log panel single-view flow", () => {
 
   it("loads usage reports on open and keeps LLM endpoints behind explicit actions", () => {
     expect(ailogSeries).toHaveBeenCalledOnce();
-    expect(ailogUsageRhythm).toHaveBeenCalledOnce();
+    expect(ailogUsageRhythm).not.toHaveBeenCalled();
     expect(ailogOverview).toHaveBeenCalled();
     expect(ailogModels).toHaveBeenCalledOnce();
     expect(ailogBreakdown).toHaveBeenCalledOnce();
@@ -326,7 +327,7 @@ describe("AI log panel single-view flow", () => {
     useAilogStore.getState().setUsageBucket("week"); renderAndFlush();
     await settle();
     expect(ailogSeries).toHaveBeenCalledOnce();
-    expect(ailogUsageRhythm).toHaveBeenCalledOnce();
+    expect(ailogUsageRhythm).not.toHaveBeenCalled();
     clearLoaders();
     useAilogStore.getState().setSessionSort("recent");
     useAilogStore.getState().setSessionPage(1);
@@ -358,7 +359,23 @@ describe("AI log panel single-view flow", () => {
     expect(collect(latest).some((element) => (element.props?.style as { opacity?: number } | undefined)?.opacity === 0.55)).toBe(false);
   });
 
-  it("lets the overview finish before starting below-the-fold reports", async () => {
+  it("renders the visible graph when the independent rhythm report has not loaded", () => {
+    const group = { group: "gpt-6.1-sol", turns: 1, sessions: 1, input: 10, output: 2, cacheRead: 0, cacheWrite: 0, costUsd: 1 };
+    useAilogStore.setState({
+      overview: { ...emptyOverview, totals: { ...emptyOverview.totals, sessions: 1, turns: 1 } } as any,
+      usageSeries: { range: emptyOverview.range, bucket: "day", groupBy: "model_raw", buckets: [{ ...group, bucket: 0, groups: [group] }], priceCoverage: emptyOverview.priceCoverage } as any,
+      usageRhythm: null, usageLoading: false, usageError: null, loading: false,
+      models: null, breakdown: null, pivot: null, sessions: null, previousTotals: null,
+    });
+    latest = harness.render();
+    const usage = childByName(latest, "UsageView");
+    const html = renderToStaticMarkup(createElement(UsageView, usage.props as any));
+    expect(html).toContain('role="group"');
+    expect(html).toContain("gpt-6.1-sol");
+    expect(ailogUsageRhythm).not.toHaveBeenCalled();
+  });
+
+  it("starts overview and chart before lower tables without waiting for hidden rhythm", async () => {
     clearLoaders();
     let finishOverview: ((value: any) => void) | undefined;
     vi.mocked(ailogOverview).mockImplementationOnce(() => new Promise((resolve) => { finishOverview = resolve; }));
@@ -366,7 +383,8 @@ describe("AI log panel single-view flow", () => {
     const load = useAilogStore.getState().loadUsage({ force: true });
     await Promise.resolve();
     expect(ailogOverview).toHaveBeenCalledOnce();
-    expect(ailogSeries).not.toHaveBeenCalled();
+    expect(ailogSeries).toHaveBeenCalledOnce();
+    expect(ailogUsageRhythm).not.toHaveBeenCalled();
     expect(ailogBreakdown).not.toHaveBeenCalled();
     expect(ailogPivot).not.toHaveBeenCalled();
 
@@ -375,6 +393,37 @@ describe("AI log panel single-view flow", () => {
     expect(ailogSeries).toHaveBeenCalledOnce();
     expect(ailogBreakdown).toHaveBeenCalledOnce();
     expect(ailogPivot).toHaveBeenCalledOnce();
+  });
+
+  it("revalidates saved aggregates when reopening even inside the auto-index cooldown", async () => {
+    clearLoaders();
+    panelOpen = false;
+    renderAndFlush();
+    panelOpen = true;
+    renderAndFlush();
+    await settle();
+    expect(ailogSeries).toHaveBeenCalledOnce();
+    expect(vi.mocked(ailogSeries).mock.calls[0]?.[1]).toMatchObject({ reportCache: "prefer" });
+    expect(ailogIndexStart).toHaveBeenCalledOnce();
+    expect(ailogSummarizeStart).not.toHaveBeenCalled();
+    expect(ailogDigestGenerate).not.toHaveBeenCalled();
+  });
+
+  it("renders saved chart data while its newest report is pending", () => {
+    const group = { group: "gpt-6.1-sol", turns: 1, sessions: 1, input: 123, output: 234,
+      cacheRead: 0, cacheWrite: 0, costUsd: 1 };
+    const overview = { ...emptyOverview, totals: { ...emptyOverview.totals, sessions: 1, turns: 1, input: 123, output: 234 } };
+    const series = { range: overview.range, bucket: "day", groupBy: "model_raw",
+      buckets: [{ bucket: 0, turns: 1, sessions: 1, costUsd: 1, groups: [group] }],
+      priceSource: "test", priceCoverage: overview.priceCoverage, costNote: "" };
+    useAilogStore.setState({ overview, usageSeries: series as any, loading: true, usageLoading: true, breakdown: null, pivot: null });
+    latest = harness.render();
+    const usage = childByName(latest, "UsageView");
+    const html = renderToStaticMarkup(createElement(UsageView, usage.props as any));
+    expect(html).toContain('aria-busy="true"');
+    expect(html).toContain("gpt-6.1-sol");
+    expect(html).toContain("357");
+    expect(html).not.toContain("\u96c6\u8a08\u3092\u8aad\u307f\u8fbc\u307f\u4e2d");
   });
 
   it("shows the header refresh state while usage reports reload", () => {
@@ -412,6 +461,14 @@ describe("AI log panel single-view flow", () => {
 
     await useAilogStore.getState().loadTranscript("codex", "s-lazy");
     expect(ailogSessionTranscript).toHaveBeenCalledOnce();
+  });
+
+  it("retries a cached session page with a fresh backend request", async () => {
+    vi.mocked(ailogSessions).mockClear();
+    const usage = childByName(latest, "UsageView");
+    (usage.props!.onRetrySessions as () => void)();
+    await settle();
+    expect(ailogSessions).toHaveBeenCalledOnce();
   });
 
   it("refreshes session search without reloading the overview", async () => {

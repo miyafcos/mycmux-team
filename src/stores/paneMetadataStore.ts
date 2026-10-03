@@ -31,7 +31,10 @@ export interface PaneMetadata {
 export type PaneVolatileMetadata = Pick<
   PaneMetadata,
   "processTitle" | "backendLastOutputAt" | "outputActive" | "workingPatternVisible"
->;
+> & {
+  liveAgentKind?: string | null;
+  ptyAlive?: boolean;
+};
 
 export interface PaneMetadataState {
   metadata: Record<string, PaneMetadata>;
@@ -49,6 +52,7 @@ export interface PaneMetadataState {
   lastLogAt: Record<string, number>;
   setMetadata: (sessionId: string, data: Partial<PaneMetadata>) => void;
   setVolatileMetadata: (sessionId: string, data: Partial<PaneVolatileMetadata>) => void;
+  setLiveAgent: (sessionId: string, liveAgentKind: string | null, ptyAlive: boolean) => void;
   clearAgentStatus: (sessionId: string) => void;
   clearClaudeSessionId: (sessionId: string) => void;
   clearAgentSessionId: (sessionId: string) => void;
@@ -202,6 +206,17 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
         [sessionId]: { ...previous, ...filtered },
       },
     };
+  }),
+
+  // Null is an observation, not a missing partial-update field. Never write
+  // live identity into the low-frequency persistence slice.
+  setLiveAgent: (sessionId, liveAgentKind, ptyAlive) => set((state) => {
+    const previous = state.volatileMetadata[sessionId];
+    if (previous?.liveAgentKind === liveAgentKind && previous?.ptyAlive === ptyAlive) return state;
+    return { volatileMetadata: {
+      ...state.volatileMetadata,
+      [sessionId]: { ...previous, liveAgentKind, ptyAlive },
+    } };
   }),
 
   clearAgentStatus: (sessionId) => set((state) => {

@@ -74,6 +74,7 @@ fn codex_session_file_matches(path: &Path, session_id: &str) -> bool {
 const CODEX_SESSION_INDEX_TTL: Duration = Duration::from_secs(5);
 
 struct CodexSessionIndex {
+    sessions_dir: PathBuf,
     built_at: Instant,
     candidates: HashMap<String, Vec<PathBuf>>,
     file_count: usize,
@@ -111,6 +112,7 @@ fn build_codex_session_index(sessions_dir: &Path) -> CodexSessionIndex {
     let mut file_count = 0;
     index_codex_sessions_dir(sessions_dir, &mut candidates, &mut file_count);
     CodexSessionIndex {
+        sessions_dir: sessions_dir.to_path_buf(),
         built_at: Instant::now(),
         candidates,
         file_count,
@@ -133,26 +135,35 @@ fn codex_session_candidates(
     sessions_dir: &Path,
     session_id: &str,
 ) -> (Vec<PathBuf>, bool, usize, u128) {
-    let index = CODEX_SESSION_INDEX.get_or_init(|| Mutex::new(None));
-    let mut index = index.lock().unwrap_or_else(|error| error.into_inner());
-    let refresh_started = Instant::now();
-    let cache_hit = index
-        .as_ref()
-        .is_some_and(|cached| cached.built_at.elapsed() < CODEX_SESSION_INDEX_TTL);
-    if !cache_hit {
-        *index = Some(build_codex_session_index(sessions_dir));
-    }
-    let index = index.as_ref().expect("Codex session index was populated");
-    (
-        index
-            .candidates
-            .get(session_id)
-            .cloned()
-            .unwrap_or_default(),
-        cache_hit,
-        index.file_count,
-        refresh_started.elapsed().as_millis(),
+    static REBUILD: Mutex<()> = Mutex::new(());
+    codex_session_candidates_with(
+        CODEX_SESSION_INDEX.get_or_init(|| Mutex::new(None)), &REBUILD,
+        sessions_dir, session_id, build_codex_session_index,
     )
+}
+
+fn codex_session_candidates_with(
+    index: &Mutex<Option<CodexSessionIndex>>, rebuild: &Mutex<()>,
+    sessions_dir: &Path, session_id: &str,
+    build: impl FnOnce(&Path) -> CodexSessionIndex,
+) -> (Vec<PathBuf>, bool, usize, u128) {
+    let started = Instant::now();
+    let cached = |index: &Option<CodexSessionIndex>| index.as_ref().filter(|cached| {
+        cached.sessions_dir == sessions_dir && cached.built_at.elapsed() < CODEX_SESSION_INDEX_TTL
+    }).map(|cached| (
+        cached.candidates.get(session_id).cloned().unwrap_or_default(), true,
+        cached.file_count, started.elapsed().as_millis(),
+    ));
+    if let Some(hit) = cached(&index.lock().unwrap_or_else(|p| p.into_inner())) { return hit; }
+    // Only cache misses queue behind the rebuild gate. The index itself stays
+    // available while walking the disk; concurrent misses reuse the new result.
+    let _rebuild = rebuild.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(hit) = cached(&index.lock().unwrap_or_else(|p| p.into_inner())) { return hit; }
+    let built = build(sessions_dir);
+    let result = (built.candidates.get(session_id).cloned().unwrap_or_default(), false,
+        built.file_count, started.elapsed().as_millis());
+    *index.lock().unwrap_or_else(|p| p.into_inner()) = Some(built);
+    result
 }
 
 fn codex_session_exists_in_dir(sessions_dir: &Path, session_id: &str) -> bool {
@@ -502,6 +513,45 @@ pub(super) fn ensure_claude_project_trusted(cwd: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_index_build_keeps_the_cache_lock_available_and_cold_callers_share_it() {
+        use super::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let id = "11111111-2222-3333-4444-555555555555";
+        let log = dir.path().join(format!("rollout-{id}.jsonl"));
+        std::fs::write(&log, "{}\n").unwrap();
+        let index = Mutex::new(None);
+        let rebuild = Mutex::new(());
+        let builds = AtomicUsize::new(0);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let index_ref = &index;
+            let rebuild_ref = &rebuild;
+            let builds_ref = &builds;
+            let root = dir.path();
+            let first = scope.spawn(move || codex_session_candidates_with(index_ref, rebuild_ref, root, id, |root| {
+                builds_ref.fetch_add(1, Ordering::SeqCst);
+                started_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                build_codex_session_index(root)
+            }));
+            started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(index.try_lock().is_ok(), "recursive walk must not hold the cache lock");
+            let second = scope.spawn(|| codex_session_candidates_with(&index, &rebuild, dir.path(), id, |root| {
+                builds.fetch_add(1, Ordering::SeqCst);
+                build_codex_session_index(root)
+            }));
+            release_tx.send(()).unwrap();
+            assert_eq!(first.join().unwrap().0, vec![log.clone()]);
+            assert_eq!(second.join().unwrap().0, vec![log.clone()]);
+        });
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
+        // Separate roots must never share candidates, even with the same id.
+        let other = tempfile::tempdir().unwrap();
+        assert!(codex_session_candidates_with(&index, &rebuild, other.path(), id, build_codex_session_index).0.is_empty());
+    }
     use super::*;
 
     #[test]

@@ -81,7 +81,8 @@ describe("native group entry boundaries", () => {
     mocks.workspace.mockImplementationOnce(async () => { expect(captured).toBe(false); });
     beginNativeWorkspaceDrag(pointer("pointerdown", 50, 50), row, "source", callbacks);
     window.dispatchEvent(pointer("pointermove", 50, 150));
-    expect(callbacks.resolve).toHaveBeenCalledWith(50, 150); expect(mocks.workspace).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(callbacks.resolve).toHaveBeenCalledWith(50, 150), { timeout: 1000 });
+    expect(mocks.workspace).not.toHaveBeenCalled();
     window.dispatchEvent(pointer("pointermove", 212, 150)); expect(mocks.workspace).not.toHaveBeenCalled();
     window.dispatchEvent(pointer("pointermove", 212.1, 150));
     window.dispatchEvent(pointer("pointermove", 240, 150)); await Promise.resolve();

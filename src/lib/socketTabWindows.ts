@@ -1,6 +1,7 @@
 import { v4 as uuid } from "uuid";
-import type { WindowFragment, WorkspaceConfig } from "./ipc";
+import type { PtyMetadataSnapshot, WindowFragment, WorkspaceConfig } from "./ipc";
 import { windowLabel } from "./windowContext";
+import { resolveTabMark, tabMarkSource } from "./tabMark";
 
 const START_TAB_EVENT = "mycmux://socket-start-tab";
 const START_TAB_RESULT_EVENT = "mycmux://socket-start-tab-result";
@@ -32,18 +33,30 @@ export function otherWindowWorkspaces(
 }
 
 /** Only publish identities and fields actually supplied by the owning window. */
-export function serializeOtherWindowPanes(entries: ReturnType<typeof otherWindowWorkspaces>) {
+export function serializeOtherWindowPanes(entries: ReturnType<typeof otherWindowWorkspaces>, processes: PtyMetadataSnapshot = {}) {
   return entries.flatMap(({ windowLabel, workspace }) => workspace.panes.map((pane) => ({
     windowLabel, workspaceId: workspace.id, workspaceName: workspace.name,
     id: pane.pane_id ?? undefined, label: pane.label ?? undefined,
     cwd: pane.cwd ?? undefined, agentId: pane.agent_id,
     agentKind: pane.agent_kind ?? undefined, activeTabId: pane.active_tab_id ?? undefined,
-    tabs: (pane.tabs ?? []).filter((tab) => Boolean(tab.session_id)).map((tab) => ({
+    tabs: (pane.tabs ?? []).filter((tab) => Boolean(tab.session_id)).map((tab) => {
+      const process = processes[tab.session_id!];
+      const ptyAlive = process !== undefined;
+      const markTab = {
+        type: tab.type ?? undefined, presetId: tab.preset_id ?? undefined,
+        agentKind: tab.agent_kind ?? undefined,
+        sourceKind: tab.source_kind ?? undefined, sourcePath: tab.source_path ?? undefined,
+      };
+      const mark = resolveTabMark(markTab, process?.live_agent_kind, ptyAlive);
+      return {
       id: tab.tab_id ?? undefined, sessionId: tab.session_id!, type: tab.type ?? undefined,
       label: tab.label ?? undefined, cwd: tab.cwd ?? undefined, agentId: tab.agent_id,
       agentKind: tab.agent_kind ?? undefined, agentSessionId: tab.agent_session_id ?? undefined,
+      displayKind: mark?.kind ?? null,
+      liveAgentKind: ptyAlive ? process?.live_agent_kind ?? null : null,
+      markSource: tabMarkSource(markTab, ptyAlive),
       claudeSessionId: tab.claude_session_id ?? undefined, lifecycle: tab.lifecycle ?? undefined,
-    })),
+    }; }),
   })));
 }
 

@@ -56,6 +56,8 @@ export function MinimapTabChip({ chip, workspaceId, paneId, selected, open, colu
     type="button"
     className={`cmux-minimap-chip${selected ? " is-selected" : ""}${open && !selected ? " is-open" : ""}${isBundleSelected ? " is-bundle-selected" : ""}${isGroupPulse ? " is-group-pulse" : ""}${chip.declared ? " is-declared" : ""}${needsAnswer ? " is-waiting" : ""}${collapsed ? " is-collapsed" : " is-expanded"}${isDragSource ? " is-drag-source" : ""}`}
     data-minimap-tab={chip.tabId}
+    data-mark-kind={chip.mark?.kind ?? ""}
+    data-mark-source={chip.mark?.source}
     data-dashboard-open={open || undefined}
     data-dashboard-active={selected || undefined}
     data-declared={chip.declared || undefined}
@@ -75,8 +77,8 @@ export function MinimapTabChip({ chip, workspaceId, paneId, selected, open, colu
     style={open && !selected && columnColor ? { outlineColor: columnColor } : undefined}
   >
     {collapsed ? null : <span className="cmux-minimap-meta" aria-hidden="true">
-      {chip.declared ? null : agentColor ? <span className="cmux-minimap-agent-dot" style={{ background: agentColor }} /> : null}
-      {agentSegment ? <span className="cmux-minimap-agent">{agentSegment}</span> : null}
+      {chip.declared ? null : agentColor ? <span className="cmux-minimap-agent-dot" style={{ background: agentColor, opacity: chip.mark?.dormant ? 0.45 : 1 }} /> : null}
+      {agentSegment ? <span className="cmux-minimap-agent" style={{ opacity: chip.mark?.dormant ? 0.45 : 1 }}>{agentSegment}</span> : null}
       {chip.declared ? null : statusDot}
       {needsAnswer ? <span className="cmux-minimap-question">返答待ち</span> : null}
       {chip.contextPct == null ? null : <span className="cmux-minimap-ctx" data-minimap-ctx={chip.tabId}>{Math.round(chip.contextPct)}%</span>}

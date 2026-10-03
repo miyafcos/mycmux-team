@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm } from "../../lib/appConfirmation";
 import { CliLoginProgress } from "../common/CliLoginProgress";
 import { useCliAccountStore } from "../../stores/cliAccountStore";
 import { useCliLoginStore } from "../../stores/cliLoginStore";

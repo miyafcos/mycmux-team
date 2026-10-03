@@ -154,7 +154,11 @@ def test_quit_app_is_unreachable_from_a_child_window_close() -> None:
     live = veto.start()
     prevent = lifecycle.index("api.prevent_exit();")
     latch = lifecycle.index("begin_shutdown(live_windows, code)")
-    assert "if !state.window_registry.begin_shutdown(live_windows, code) { return; }" in lifecycle
+    assert "if state.window_registry.begin_shutdown(live_windows, code) {" in lifecycle
+    worker = lifecycle.index("Cleanup::start(crate::shutdown::SHUTDOWN_BUDGET, move |deadline| {")
+    assert latch < worker < lifecycle.index("fill_in_unsaved_workspaces(&worker_app, deadline)")
+    assert lifecycle.count("Cleanup::start(") == 1
+    assert "if exiting {" in lifecycle and "cleanup.wait()" in lifecycle
     registry = read_repo_text("src-tauri/src/window_registry.rs")
     shutdown = registry[registry.index("pub fn begin_shutdown("):registry.index("pub fn rescue_target(")]
     assert "(code.is_some() || live_windows == 0) && self.shutdown_started" in shutdown
@@ -458,6 +462,6 @@ def test_close_intent_serializes_with_incoming_drag_handoffs() -> None:
     body = registry[start:end]
     assert body.index("self.closing.lock()") < body.index("closing.contains(to_label)") < body.index("self.release_workspaces(") < body.index("drop(closing)")
     commands = read_repo_text(WINDOW_REGISTRY_COMMANDS_RS)
-    start = commands.index("pub fn release_workspaces(")
+    start = commands.index("pub async fn release_workspaces(")
     assert commands.index("app.get_window(&to_label).is_none()", start) < commands.index("release_to_open_window", start)
     # Frontend adoption-before-victim-enumeration is exercised by peerWindowClose.
