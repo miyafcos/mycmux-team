@@ -1,4 +1,4 @@
-"""Build an M1-only test bundle on the Mac; never signs/publishes an updater."""
+"""Build an M3-only test bundle on the Mac; never signs/publishes an updater."""
 import argparse
 import hashlib
 import json
@@ -14,14 +14,14 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--user', action='store_true', help='Build without e2e hooks for a physical acceptance test')
 args = parser.parse_args()
 mode = 'touch' if args.user else 'e2e'
-assert str(ROOT) == '/Users/edu/Developer/mycmux-wt-mac-m1-261003', ROOT
+assert str(ROOT) == '/Users/edu/Developer/mycmux-wt-mac-m3-261003', ROOT
 assert sys.platform == 'darwin'
 HEAD = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
 assert not subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=ROOT, text=True).strip()
-OUT = ROOT / 'tmp/tearout-m1'
+OUT = ROOT / 'tmp/webpane-m3'
 OUT.mkdir(parents=True, exist_ok=True)
 stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-config = {'identifier': 'com.miyazaki.mycmux.test.m1' if args.user else 'com.miyazaki.mycmux.e2e.m1', 'bundle': {'createUpdaterArtifacts': False},
+config = {'identifier': 'com.miyazaki.mycmux.test.m3' if args.user else 'com.miyazaki.mycmux.e2e.m3', 'bundle': {'createUpdaterArtifacts': False},
           'build': {'beforeBuildCommand': 'node node_modules/vite/bin/vite.js build --configLoader runner --emptyOutDir false'}}
 env = dict(os.environ)
 env['PATH'] = '/opt/homebrew/opt/node@24/bin:/opt/homebrew/opt/rustup/bin:' + str(Path.home() / '.cargo/bin') + ':/opt/homebrew/bin:' + env.get('PATH', '')
@@ -44,7 +44,7 @@ with log.open('wb') as stream:
 result = {'head': HEAD, 'exit': process.returncode, 'command': command, 'log': str(log), 'mode': mode}
 if process.returncode == 0:
     source = ROOT / 'src-tauri/target/aarch64-apple-darwin/release/bundle/macos/mycmux.app'
-    bundle = OUT / f'mycmux-m1-{mode}-{HEAD[:8]}-{stamp}.app'
+    bundle = OUT / f'mycmux-m3-{mode}-{HEAD[:8]}-{stamp}.app'
     assert not bundle.exists(), bundle
     shutil.copytree(source, bundle, symlinks=True)
     result['bundle'] = str(bundle)

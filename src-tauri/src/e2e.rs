@@ -54,6 +54,8 @@ pub async fn dispatch(
         "e2e.dialog" => dialog(app, args).await,
         "e2e.snapshot" => snapshot(app, args).await,
         "e2e.native_eval" => native_eval(app, args).await,
+        "e2e.renderer" => renderer_action(app, args).await,
+        "e2e.pty" => pty_snapshot(app, args).await,
         _ => Err(format!("unknown e2e command {cmd}")),
     };
     match result {
@@ -603,6 +605,62 @@ async fn native_eval(app: &AppHandle, args: &Value) -> Result<Value, String> {
 #[cfg(not(target_os = "macos"))]
 async fn native_eval(_app: &AppHandle, _args: &Value) -> Result<Value, String> {
     Err("native eval is Mac-only".into())
+}
+
+/// Read the actual Rust-owned PTY even when no frontend can answer.
+async fn pty_snapshot(app: &AppHandle, args: &Value) -> Result<Value, String> {
+    let session = required_str(args, "session_id")?.to_string();
+    let manager = app.state::<crate::AppState>().session_manager.clone();
+    off_main(MAX_WAIT, move || {
+        let bytes = manager.get_scrollback(&session)?;
+        let (epoch, _, pid) = manager.intervention_observation(&session)
+            .ok_or_else(|| "PTY disappeared".to_string())?;
+        Ok(json!({"sessionId": session, "pid": pid, "epoch": epoch,
+            "running": manager.is_running(&session),
+            "tail": String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(8192)..])}))
+    }).await
+}
+
+/// The private PID selector is restricted to feature=e2e plus --profile.
+/// Signal only the process returned by this exact test WKWebView, never a
+/// process-name search (other users/seats have their own WebKit processes).
+#[cfg(target_os = "macos")]
+async fn renderer_action(app: &AppHandle, args: &Value) -> Result<Value, String> {
+    use objc2::runtime::AnyObject;
+    let label = required_str(args, "label")?.to_string();
+    let action = required_str(args, "action")?.to_string();
+    if !matches!(action.as_str(), "inspect" | "crash" | "reload") {
+        return Err("renderer action must be inspect, crash or reload".into());
+    }
+    let webview = app.get_webview(&label).ok_or_else(|| format!("no webview {label}"))?;
+    if action == "reload" {
+        webview.reload().map_err(|error| error.to_string())?;
+        return Ok(json!({"label":label,"action":action}));
+    }
+    let (tx, rx) = oneshot::channel();
+    webview.with_webview(move |platform| {
+        let view = unsafe { &*(platform.inner() as *const AnyObject) };
+        let supported: bool = unsafe { objc2::msg_send![view, respondsToSelector: objc2::sel!(_webProcessIdentifier)] };
+        let result = if !supported {
+            Err("WKWebView has no test process identifier selector".to_string())
+        } else {
+            let pid: i32 = unsafe { objc2::msg_send![view, _webProcessIdentifier] };
+            if pid <= 1 || pid == std::process::id() as i32 {
+                Err(format!("refusing invalid renderer PID {pid}"))
+            } else if action == "crash" && unsafe { libc::kill(pid, libc::SIGKILL) } != 0 {
+                Err(std::io::Error::last_os_error().to_string())
+            } else {
+                Ok(json!({"label":label,"action":action,"pid":pid}))
+            }
+        };
+        let _ = tx.send(result);
+    }).map_err(|error| error.to_string())?;
+    from_main(rx).await?
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn renderer_action(_app: &AppHandle, _args: &Value) -> Result<Value, String> {
+    Err("renderer process injection is Mac-only".into())
 }
 
 #[cfg(test)]
