@@ -22,6 +22,7 @@ import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
 import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useUiStore } from "../../src/stores/uiStore";
 import { restoreTearoutSource, removeTearoutTab } from "../../src/lib/tearout/model";
+import { evictTerminalCache } from "../../src/components/terminal/terminalCache";
 import { buildWindowFragment, toTransferConfig } from "../../src/components/layout/SocketListener";
 import type { Workspace } from "../../src/types";
 import type { WorkspaceConfig } from "../../src/lib/ipc";
@@ -329,11 +330,18 @@ describe("Mac uses the same live transfer state", () => {
     useSettingsStore.setState({ nativePaneTearoutEnabled: true, macNativePaneTearoutEnabled: true });
     stop = installTearoutRuntime({ serialize: toTransferConfig, publish: async () => {} });
     mocks.escape = escaped;
+    const baseInvoke = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command: string, args: any) => {
+      if (command === "tearout_start_move") expect(evictTerminalCache).not.toHaveBeenCalled();
+      return baseInvoke(command, args);
+    });
     const before = useWorkspaceListStore.getState().workspaces;
     await tearoutTab(item, gap, { x: 10, y: 10 });
     expect(useWorkspaceListStore.getState().workspaces).toEqual(escaped ? before : []);
     const delivery = mocks.emitTo.mock.calls.find(([, event]) => event.endsWith("tearout-delivery"))![2];
     expect(delivery.configs[0].panes[0].tabs[0].session_id).toBe("pty-original");
+    if (escaped) expect(evictTerminalCache).not.toHaveBeenCalled();
+    else expect(evictTerminalCache).toHaveBeenCalledWith("pty-original", { preserveInputQueue: true });
     expect(mocks.invoke.mock.calls.some(([command]) => command === "create_session")).toBe(false);
     expect(mocks.invoke.mock.calls.filter(([command, args]) => command === "tearout_phase" && args.phase === "rolled_back")).toHaveLength(escaped ? 1 : 0);
     useSettingsStore.setState({ macNativePaneTearoutEnabled: false });

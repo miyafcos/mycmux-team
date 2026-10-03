@@ -14,7 +14,7 @@ describe("WKWebView tear-out frame waits", () => {
   it("continues once when an occluded Mac page never receives a frame", async () => {
     const done = vi.fn();
     afterTearoutFrame(done, "MacIntel");
-    await vi.advanceTimersByTimeAsync(39);
+    await vi.advanceTimersByTimeAsync(15);
     expect(done).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(done).toHaveBeenCalledTimes(1);

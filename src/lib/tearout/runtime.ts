@@ -667,7 +667,10 @@ async function tearoutGroup(item: TransferItem, gap: Rect, offset: { x: number; 
       }
       useTearoutStore.setState({ gap, gapLabel: item.label });
     });
-    for (const tab of movedTabs) { evictTerminalCache(tab.sessionId); focusController.clearSession(tab.sessionId); }
+    for (const tab of movedTabs) {
+      if (!isMacTearoutPlatform()) evictTerminalCache(tab.sessionId);
+      focusController.clearSession(tab.sessionId);
+    }
     published = adapter.publish();
     delivery = send(label, [config], undefined, undefined, deliveryToken, selectedSession).then(async (token) => {
       if (!restore) {
@@ -694,6 +697,15 @@ async function tearoutGroup(item: TransferItem, gap: Rect, offset: { x: number; 
     useTearoutStore.setState({ gap: null });
     localMoving = false;
     activeTearoutRecords.delete(id);
+    if (isMacTearoutPlatform() && !restore) {
+      const owned = new Set(useWorkspaceListStore.getState().workspaces
+        .flatMap(workspace => workspace.panes.flatMap(pane => pane.tabs.map(tab => tab.sessionId))));
+      // Docking back into this WebView may already have reused the source
+      // terminals. Do not evict their live input queues or mark them for disposal.
+      for (const tab of movedTabs) {
+        if (!owned.has(tab.sessionId)) evictTerminalCache(tab.sessionId, { preserveInputQueue: true });
+      }
+    }
     await record.finish(result, destination, identity).catch((error) => console.warn("[tearout] log failed", error));
     if (prepared) await invoke("tearout_forget", { id });
     if (nativePaneTearoutEnabled(useSettingsStore.getState().nativePaneTearoutEnabled)) {

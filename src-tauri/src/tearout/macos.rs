@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::{
     cell::RefCell,
     sync::{atomic::Ordering, Arc},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -233,6 +233,82 @@ fn original(window: &tauri::Window) -> Result<WindowGeometry, String> {
     })
 }
 
+fn start_probe(
+    app: &AppHandle,
+    shared: &Arc<MoveState>,
+    id: String,
+    label: String,
+    recorder: bool,
+) {
+    if !shared.metrics.probe.load(Ordering::Acquire)
+        || shared.metrics.probe_started.swap(true, Ordering::AcqRel)
+    {
+        return;
+    }
+    let app = app.clone();
+    let shared = shared.clone();
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        while !shared.closed.load(Ordering::Acquire) && started.elapsed().as_secs() < 300 {
+            // At most one marker may wait in the UI queue. Never build a backlog.
+            if !shared.metrics.probe_pending.swap(true, Ordering::AcqRel) {
+                let queued = Instant::now();
+                let marker = shared.clone();
+                if app
+                    .run_on_main_thread(move || {
+                        marker.metrics.wait(queued.elapsed().as_secs_f64() * 1000.0);
+                        marker.metrics.probe_pending.store(false, Ordering::Release);
+                    })
+                    .is_err()
+                {
+                    shared.metrics.probe_pending.store(false, Ordering::Release);
+                }
+            } else {
+                shared.metrics.probe_skipped.fetch_add(1, Ordering::Relaxed);
+            }
+            std::thread::sleep(Duration::from_millis(4));
+        }
+        let deadline = Instant::now();
+        while shared.metrics.probe_pending.load(Ordering::Acquire)
+            && deadline.elapsed().as_secs() < 1
+        {
+            std::thread::sleep(Duration::from_millis(4));
+        }
+        if recorder {
+            super::log::native_summary(id, label, shared.metrics.summary());
+        }
+    });
+}
+
+/// A test profile can opt into the expensive main-thread probe for real drags.
+/// Ordinary recording keeps the probe off; no settings/env/safety contract changes.
+fn configure_metrics(shared: &MoveState) {
+    if !crate::test_profile::is_active() {
+        return;
+    }
+    let Ok(root) = crate::test_profile::runtime_dir() else {
+        return;
+    };
+    let Ok(bytes) = std::fs::read(root.join("tearout-diagnostics.json")) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return;
+    };
+    shared.metrics.probe.store(
+        value["main_thread_probe"].as_bool().unwrap_or(false),
+        Ordering::Release,
+    );
+    shared.metrics.legacy.store(
+        value["legacy_samples"].as_bool().unwrap_or(false),
+        Ordering::Release,
+    );
+    shared.metrics.enabled.store(
+        value["recorder"].as_bool().unwrap_or(true),
+        Ordering::Release,
+    );
+}
+
 fn mark_escape(shared: &MoveState) {
     shared.escaped.store(true, Ordering::Release);
     let _ = shared
@@ -272,8 +348,10 @@ fn sample(
     failed: bool,
     original: WindowGeometry,
     focus_stolen: bool,
+    scan_ms: Option<f64>,
 ) -> Result<serde_json::Value, String> {
     let at = unix_ms();
+    shared.metrics.poll(scan_ms);
     let sequence = shared.sample_count.fetch_add(1, Ordering::AcqRel);
     let receiver = hit.as_ref().map(|(label, _, _)| label.clone());
     let previous = {
@@ -312,6 +390,22 @@ fn sample(
                 shared.alpha_calls.fetch_add(1, Ordering::AcqRel);
             }
         }
+    }
+    // Match Windows display-rate pacing. Receiver edges, Esc and release are
+    // sent immediately, and opacity restoration is never behind this gate.
+    let allowed = shared.pacing.lock().map_err(|e| e.to_string())?.allow(
+        at,
+        hit.as_ref().map(|(label, _, _)| label.as_str()),
+        hit.as_ref().map(|(_, x, _)| *x).unwrap_or(-1.0),
+        hit.as_ref().map(|(_, _, y)| *y).unwrap_or(-1.0),
+        sequence == 0 || done,
+        approval.is_some(),
+        shared.metrics.legacy.load(Ordering::Acquire),
+    );
+    if !allowed {
+        return Ok(serde_json::json!({ "approval": approval,
+            "alpha_calls": shared.alpha_calls.load(Ordering::Acquire),
+            "payload_bytes": 0, "recipients": 0 }));
     }
     let scale = window
         .as_ref()
@@ -354,15 +448,28 @@ fn sample(
     let bytes = serde_json::to_vec(&notification)
         .map_err(|e| e.to_string())?
         .len();
+    let emit_at = Instant::now();
     let recipients = emit_sample(
         app,
         &notification,
         previous.as_deref(),
         sequence == 0 || done,
     );
+    shared
+        .metrics
+        .emit(emit_at.elapsed().as_secs_f64() * 1000.0, recipients);
     let result = serde_json::json!({ "approval": approval, "alpha_calls": shared.alpha_calls.load(Ordering::Acquire),
-        "payload_bytes": bytes, "recipients": recipients });
+        "payload_bytes": bytes, "recipients": recipients,
+        "diagnostics": if done { Some(shared.metrics.summary()) } else { None } });
     if done {
+        if shared.metrics.enabled.load(Ordering::Acquire)
+            && !shared.metrics.probe_started.load(Ordering::Acquire)
+        {
+            let summary = shared.metrics.summary();
+            let log_id = id.to_owned();
+            let log_label = label.to_owned();
+            std::thread::spawn(move || super::log::native_summary(log_id, log_label, summary));
+        }
         app.state::<TearoutState>()
             .moves
             .lock()
@@ -412,6 +519,14 @@ pub fn start(
     let original = original(&window)?;
     shared.alpha.store(255, Ordering::Release);
     shared.applied_alpha.store(255, Ordering::Release);
+    configure_metrics(&shared);
+    start_probe(
+        app,
+        &shared,
+        id.clone(),
+        label.to_owned(),
+        shared.metrics.enabled.load(Ordering::Acquire),
+    );
     shared.started_at.store(unix_ms(), Ordering::Release);
     // App-local synthetic samples drive the real transfer/preview path in e2e;
     // an ordinary no-button release still settles immediately in shipped builds.
@@ -461,7 +576,17 @@ pub fn start(
                 );
                 if let Ok(native) = unsafe { ns_window(&window) } {
                     unsafe {
-                        let _: () = msg_send![native, setFrameOrigin: origin];
+                        let actual: NSRect = msg_send![native, frame];
+                        let scale: f64 = msg_send![native, backingScaleFactor];
+                        shared.metrics.lag(
+                            ((actual.origin.x - origin.x).powi(2)
+                                + (actual.origin.y - origin.y).powi(2))
+                            .sqrt()
+                                * scale,
+                        );
+                        if actual.origin != origin {
+                            let _: () = msg_send![native, setFrameOrigin: origin];
+                        }
                     }
                 } else {
                     failed = true;
@@ -472,7 +597,9 @@ pub fn start(
         if escaped {
             mark_escape(&shared);
         }
+        let scan_at = Instant::now();
         let hit = receiver_at(&handle, &moving, point);
+        let scan_ms = scan_at.elapsed().as_secs_f64() * 1000.0;
         if sample(
             &handle,
             &move_id,
@@ -485,6 +612,7 @@ pub fn start(
             failed,
             original,
             stolen.get(),
+            Some(scan_ms),
         )
         .is_err()
         {
@@ -501,6 +629,7 @@ pub fn start(
                 true,
                 original,
                 stolen.get(),
+                None,
             );
             stop(&move_id);
         } else if done {
@@ -531,6 +660,9 @@ pub(super) fn synthetic_sample(
     client_y: f64,
     phase: &str,
     escaped: bool,
+    diagnostics: bool,
+    legacy_samples: bool,
+    recorder: bool,
 ) -> Result<serde_json::Value, String> {
     let window = app
         .get_window(&label)
@@ -561,6 +693,16 @@ pub(super) fn synthetic_sample(
     if !shared.synthetic.load(Ordering::Acquire) {
         return Err("tearout_synthetic_live_move".into());
     }
+    shared.metrics.probe.store(diagnostics, Ordering::Release);
+    shared
+        .metrics
+        .legacy
+        .store(legacy_samples, Ordering::Release);
+    shared
+        .metrics
+        .enabled
+        .store(recorder || diagnostics, Ordering::Release);
+    start_probe(app, &shared, id.clone(), label.clone(), recorder);
     if escaped {
         mark_escape(&shared);
     }
@@ -576,6 +718,7 @@ pub(super) fn synthetic_sample(
         false,
         original(&window)?,
         false,
+        None,
     )
 }
 

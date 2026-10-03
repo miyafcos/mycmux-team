@@ -162,7 +162,6 @@ pub async fn tearout_synthetic_sample(
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = (diagnostics, legacy_samples, recorder);
         if phase == "identity" && label.starts_with("mycmux-w") {
             return on_ui(&app, move |app| native::window_identity(&app, &label)).await;
         }
@@ -182,6 +181,9 @@ pub async fn tearout_synthetic_sample(
                 client_y,
                 &phase,
                 escaped,
+                diagnostics.unwrap_or(false),
+                legacy_samples.unwrap_or(false),
+                recorder.unwrap_or(true),
             )
         })
         .await
