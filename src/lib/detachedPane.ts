@@ -16,6 +16,56 @@ export function portableSessionId(
 }
 
 
+/** Optional schema-1 ownership extension; kept here with the window restore
+ * code so the i4 change does not alter unrelated IPC declarations. */
+export interface SavedWindowGroup {
+  label: string;
+  decorated?: boolean;
+  native_tearout?: boolean;
+  frame?: WorkspaceConfig["window_frame"];
+  active_workspace_id?: string | null;
+  active_pane_id?: string | null;
+  active_tab_id?: string | null;
+}
+export type SavedWindowWorkspace = WorkspaceConfig & { window_group?: SavedWindowGroup | null };
+export interface SavedWindow {
+  label?: string;
+  configs: SavedWindowWorkspace[];
+  group?: SavedWindowGroup;
+  frame?: WorkspaceConfig["window_frame"];
+}
+
+/** Old unmarked workspaces remain in main; old detached panes stay separate.
+ * Repeated partitioning is pure and stable, and duplicate IDs are not revived. */
+export function partitionSavedWindows(configs: readonly WorkspaceConfig[]): {
+  main: WorkspaceConfig[]; windows: SavedWindow[];
+} {
+  const main: WorkspaceConfig[] = [], groups = new Map<string, SavedWindow>();
+  const legacy: SavedWindow[] = [], seen = new Set<string>();
+  for (const config of configs as readonly SavedWindowWorkspace[]) {
+    if (seen.has(config.id)) continue;
+    seen.add(config.id);
+    const group = config.window_group;
+    const label = group?.label;
+    const validChild = typeof label === "string" && /^mycmux-w[1-9]\d*$/.test(label)
+      && Number(label.slice("mycmux-w".length)) <= 0xffffffff;
+    if (validChild) {
+      let saved = groups.get(label!);
+      if (!saved) {
+        saved = { label, configs: [], group: group!, frame: group?.frame ?? config.window_frame };
+        groups.set(label!, saved);
+      }
+      saved.configs.push(config);
+    } else if (label !== "main" && config.detached) {
+      legacy.push({ configs: [config], frame: config.window_frame });
+    } else {
+      main.push(config);
+    }
+  }
+  // Reserve recorded labels before unnamed legacy windows allocate free ones.
+  return { main, windows: [...groups.values(), ...legacy] };
+}
+
 export type DetachedWorkspace = Workspace & Pick<WorkspaceConfig, "detached" | "detached_from">;
 
 export function detachedMetadata(source: object | undefined): Pick<WorkspaceConfig, "detached" | "detached_from"> {

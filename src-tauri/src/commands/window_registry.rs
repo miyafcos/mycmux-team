@@ -14,7 +14,8 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::commands::window::{
-    all_window_labels, resolve_child_window_label, spawn_child_window, ResolvedChildWindow,
+    all_window_labels, resolve_child_window_label, reserve_child_window_label,
+    restore_child_window_frame, spawn_child_window, spawn_child_window_with_restore, ResolvedChildWindow,
 };
 use crate::db::storage::{self, AppSettings};
 use crate::window_registry::{
@@ -35,6 +36,20 @@ fn emit_adopt(app: &AppHandle, payload: WindowAdoptPayload) {
             "failed to notify {target} about adopted workspaces: {err}"
         );
     }
+}
+
+/// Only a complete saved owner group uses the quiet restore path. Ordinary
+/// live handovers retain their existing reveal/focus behavior.
+fn saved_window_decoration(label: Option<&str>, workspaces: &[Value]) -> Option<bool> {
+    let label = label?;
+    if workspaces.is_empty() || !workspaces.iter().all(|workspace|
+        workspace["window_group"]["label"].as_str() == Some(label)) { return None; }
+    Some(workspaces[0]["window_group"]["decorated"].as_bool().unwrap_or(cfg!(target_os = "macos")))
+}
+
+fn workspaces_native_kind(workspaces: &[Value], decorated: Option<bool>) -> bool {
+    workspaces.first().and_then(|workspace| workspace["window_group"]["native_tearout"].as_bool())
+        .unwrap_or(cfg!(target_os = "macos") && decorated == Some(false))
 }
 
 /// Open a new window that will adopt `workspaces` on boot.
@@ -64,15 +79,25 @@ pub fn open_workspace_window(
     if workspaces.is_empty() {
         return Err("open_workspace_window requires at least one workspace".to_string());
     }
+    let native = workspaces_native_kind(&workspaces, saved_window_decoration(label.as_deref(), &workspaces));
     let workspace_ids = workspace_config_ids(&workspaces);
     if workspace_ids.len() != workspaces.len() {
         return Err("every workspace handed to open_workspace_window needs an id".to_string());
     }
 
-    let reservation = match resolve_child_window_label(&app, label)? {
+    let restoring = saved_window_decoration(label.as_deref(), &workspaces);
+    let resolved = if restoring.is_some() {
+        reserve_child_window_label(&app, label)?
+    } else {
+        resolve_child_window_label(&app, label)?
+    };
+    let reservation = match resolved {
         // An existing window still adopts: the queue is drained by the
         // `window-adopt` listener that every window registers.
         ResolvedChildWindow::Existing(label) => {
+            if restoring.is_some() {
+                restore_child_window_frame(&app, &label, x, y, width, height, restoring);
+            }
             state.window_registry.queue_adoption(&label, workspaces);
             emit_adopt(
                 &app,
@@ -93,7 +118,13 @@ pub fn open_workspace_window(
     // Queue *before* the window exists: the child asks for its adoption during
     // boot, so anything queued later would arrive after it decided it is empty.
     state.window_registry.queue_adoption(&label, workspaces);
-    if let Err(err) = spawn_child_window(&app, reservation, x, y, width, height) {
+    let spawned = if restoring.is_some() {
+        spawn_child_window_with_restore(&app, reservation, x, y, width, height, restoring,
+            Some(native))
+    } else {
+        spawn_child_window(&app, reservation, x, y, width, height)
+    };
+    if let Err(err) = spawned {
         // Never strand the workspaces (and their live sessions) in a queue no
         // window will ever drain.
         let orphaned = state.window_registry.take_pending_adoption(&label);
@@ -236,4 +267,31 @@ pub fn reclaim_destroyed_window(app: &AppHandle, label: &str) {
     }
     state.window_registry.forget_window(label);
     emit_registry_changed(app, state.window_registry.revision());
+}
+
+#[cfg(test)]
+mod saved_window_tests {
+    use super::{saved_window_decoration, workspaces_native_kind};
+    use serde_json::json;
+
+    #[test]
+    fn undecorated_native_and_ordinary_windows_keep_distinct_saved_kinds() {
+        let ordinary = json!({"window_group":{"label":"mycmux-w1","decorated":false,"native_tearout":false}});
+        let native = json!({"window_group":{"label":"mycmux-w1","decorated":false,"native_tearout":true}});
+        assert!(!workspaces_native_kind(&[ordinary], Some(false)));
+        assert!(workspaces_native_kind(&[native], Some(false)));
+        assert!(!workspaces_native_kind(&[], Some(true)));
+    }
+
+    #[test]
+    fn restore_style_requires_a_complete_group_and_keeps_native_chrome() {
+        let native = json!({"id":"a", "window_group":{"label":"mycmux-w2","decorated":false}});
+        let normal = json!({"id":"b", "window_group":{"label":"mycmux-w2","decorated":true}});
+        assert_eq!(saved_window_decoration(Some("mycmux-w2"), &[native.clone(), native.clone()]), Some(false));
+        assert_eq!(saved_window_decoration(Some("mycmux-w2"), &[normal]), Some(true));
+        assert_eq!(saved_window_decoration(Some("mycmux-w1"), &[native.clone()]), None);
+        assert_eq!(saved_window_decoration(None, &[native]), None);
+        assert_eq!(saved_window_decoration(Some("mycmux-w2"), &[json!({"id":"legacy"})]), None);
+        assert_eq!(saved_window_decoration(Some("mycmux-w2"), &[]), None);
+    }
 }

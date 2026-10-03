@@ -45,6 +45,99 @@ import {
 } from "../workspace/webPaneCommandQueue";
 
 type SocketArgs = Record<string, unknown> | null | undefined;
+type SpawnCommand = "pane.spawn" | "pane.spawn_tab";
+const PEER_SPAWN_EVENT = "mycmux://socket-spawn";
+const PEER_SPAWN_RESULT_EVENT = "mycmux://socket-spawn-result";
+const PEER_SPAWN_TIMEOUT_MS = 20_000;
+interface PeerSpawnRequest {
+  requestId: string; targetWindow: string; replyWindow: string;
+  cmd: SpawnCommand; args: SocketArgs;
+}
+interface PeerSpawnResponse { requestId: string; ownerWindow: string; result?: unknown; error?: string }
+
+/** Find the caller in live local state first, then in peer fragments. Never
+ * fall back to the operator's active window for a supplied but missing caller. */
+export function spawnWindowForRequest(
+  cmd: SpawnCommand, args: SocketArgs, own: readonly Workspace[],
+  fragments: readonly import("../../lib/ipc").WindowFragment[], ownLabel: string,
+): string {
+  const anchor = socketArgString(args, "anchorSessionId", "anchor_session_id");
+  const workspaceId = socketArgString(args, "workspaceId", "workspace_id");
+  if (!anchor && !workspaceId) return ownLabel;
+  if (own.some((workspace) => anchor ? workspaceContainsSession(workspace, anchor) : workspace.id === workspaceId)) return ownLabel;
+  const owners = new Set(fragments.filter((fragment) => fragment.window_label !== ownLabel)
+    .filter((fragment) => fragment.workspaces.some((workspace) => anchor
+      ? workspace.panes.some((pane) => pane.session_id === anchor || pane.tabs?.some((tab) => tab.session_id === anchor))
+      : workspace.id === workspaceId)).map((fragment) => fragment.window_label));
+  if (owners.size > 1) throw new Error(`${cmd} caller has conflicting window owners`);
+  if (owners.size === 1) return [...owners][0];
+  throw new Error(anchor ? `${cmd} anchor session not found` : `workspace not found: ${workspaceId}`);
+}
+
+export async function requestPeerSpawn(targetWindow: string, cmd: SpawnCommand, args: SocketArgs): Promise<unknown> {
+  const { emitTo, listen } = await import("@tauri-apps/api/event");
+  const { windowLabel } = await import("../../lib/windowContext");
+  const replyWindow = windowLabel(), requestId = crypto.randomUUID();
+  let resolve!: (result: unknown) => void, reject!: (error: unknown) => void;
+  const response = new Promise<unknown>((done, fail) => { resolve = done; reject = fail; });
+  const unlisten = await listen<PeerSpawnResponse>(PEER_SPAWN_RESULT_EVENT, ({ payload }) => {
+    if (payload.requestId !== requestId || payload.ownerWindow !== targetWindow) return;
+    if (payload.error !== undefined) reject(new Error(payload.error));
+    else resolve(payload.result);
+  }, { target: { kind: "Window", label: replyWindow } });
+  const timer = setTimeout(() => reject(new Error(`${cmd} owner window did not respond`)), PEER_SPAWN_TIMEOUT_MS);
+  try {
+    const [, result] = await Promise.all([
+      emitTo(targetWindow, PEER_SPAWN_EVENT, { requestId, targetWindow, replyWindow, cmd, args } satisfies PeerSpawnRequest), response,
+    ]);
+    return result;
+  } finally { clearTimeout(timer); unlisten(); }
+}
+
+/** Each window runs only its own targeted requests after hydration. Recheck
+ * the live caller so a transfer or close during routing cannot spawn elsewhere. */
+export async function listenForPeerSpawns(ready: () => Promise<void> = async () => {}) {
+  const events = await import("@tauri-apps/api/event");
+  const { windowLabel } = await import("../../lib/windowContext");
+  const label = windowLabel(), seen = new Set<string>();
+  return events.listen<PeerSpawnRequest>(PEER_SPAWN_EVENT, async ({ payload }) => {
+    if (payload.targetWindow !== label || !payload.requestId || !payload.replyWindow
+      || (payload.cmd !== "pane.spawn" && payload.cmd !== "pane.spawn_tab") || seen.has(payload.requestId)) return;
+    seen.add(payload.requestId);
+    let response: PeerSpawnResponse;
+    try {
+      await ready();
+      const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
+      spawnWindowForRequest(payload.cmd, payload.args, useWorkspaceListStore.getState().workspaces, [], label);
+      const result = payload.cmd === "pane.spawn" ? await spawnPane(payload.args) : await spawnTab(payload.args);
+      response = { requestId: payload.requestId, ownerWindow: label, result };
+    } catch (error) {
+      response = { requestId: payload.requestId, ownerWindow: label, error: error instanceof Error ? error.message : String(error) };
+    }
+    if (seen.size > 128) seen.delete(seen.values().next().value!);
+    await events.emitTo(payload.replyWindow, PEER_SPAWN_RESULT_EVENT, response);
+  }, { target: { kind: "Window", label } });
+}
+
+async function dispatchSpawn(cmd: SpawnCommand, args: SocketArgs): Promise<unknown> {
+  const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
+  const { windowLabel } = await import("../../lib/windowContext");
+  const local = () => cmd === "pane.spawn" ? spawnPane(args) : spawnTab(args);
+  const label = windowLabel();
+  try {
+    spawnWindowForRequest(cmd, args, useWorkspaceListStore.getState().workspaces, [], label);
+    return local();
+  } catch (error) {
+    let fragments;
+    try {
+      const { getWindowFragments } = await import("../../lib/ipc");
+      fragments = await getWindowFragments();
+    } catch { throw error; }
+    // Local state can change during the IPC read. Its latest state wins.
+    const target = spawnWindowForRequest(cmd, args, useWorkspaceListStore.getState().workspaces, fragments, label);
+    return target === label ? local() : requestPeerSpawn(target, cmd, args);
+  }
+}
 // Every launchable catalog row, not only the four kinds mycmux tracks a
 // session identity for: `agy`, `hermes`, and `omp` are agents the launcher starts and
 // keeps no session file for, and they were unreachable from the socket while
@@ -900,6 +993,7 @@ async function spawnPane(args: SocketArgs) {
         workspaceContainsSession(candidate, callerSessionId),
       )?.id
     : undefined;
+  if (callerSessionId && !callerWorkspaceId) throw new Error("pane.spawn anchor session not found");
   const workspaceId = socketArgString(args, "workspaceId", "workspace_id")
     ?? callerWorkspaceId
     ?? workspaceState.activeWorkspaceId
@@ -1117,7 +1211,8 @@ async function spawnTab(args: SocketArgs) {
   const current = findPaneBySessionId(
     useWorkspaceListStore.getState().workspaces,
     anchorSessionId,
-  ) ?? owner;
+  );
+  if (!current) throw new Error("pane.spawn_tab anchor session not found");
   const { workspace, pane } = current;
   const anchorTabId = pane.tabs.find((tab) => tab.sessionId === anchorSessionId)?.id;
   const beforeTabIds = new Set(pane.tabs.map((tab) => tab.id));
@@ -2715,9 +2810,8 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
     }
 
     case "pane.spawn":
-      return spawnPane(args);
     case "pane.spawn_tab":
-      return spawnTab(args);
+      return dispatchSpawn(cmd as SpawnCommand, args);
     case "pane.declare_tab":
       return declareTab(args);
     case "pane.launch_declared":
