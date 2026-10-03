@@ -236,7 +236,7 @@ function clearDetourRoute(
   sourcePane: GroupingLineRect | null,
   destinationPane: GroupingLineRect | null,
   routeVariant = 0,
-): readonly GroupingLinePoint[] {
+): readonly GroupingLinePoint[] | null {
   const endpoints = lineEndpoints(from, to, orientation);
   const alternateRoute = routeVariant === 1;
   const start = alternateRoute
@@ -338,7 +338,9 @@ function clearDetourRoute(
       }
     }
   }
-  throw new Error("No collision-free grouping move route is available");
+  // Dense panels can leave no clear detour. A line that crosses a chip is better
+  // than a thrown error, which took down the whole dashboard (2026-10-02).
+  return null;
 }
 
 function anchorInsideRect(anchor: GroupingLineRect, rect: GroupingLineRect): boolean {
@@ -547,27 +549,33 @@ export function groupingMeasuredMoveLines(input: GroupingMeasureInput): Measured
       : end.anchor.top === toRect.top && end.anchor.left + end.anchor.width / 2 === toRect.left + toRect.width / 2;
     const mainBlocked = cubicCrossesObstacles(fromRect, end.anchor, input.orientation, routeObstacles);
     const continuous = Boolean(end.leadIn) || anchorReachesDestination;
+    const directLine: MeasuredGroupingMoveLine = {
+      ...line,
+      fromRect,
+      toRect: end.anchor,
+      destinationRect: toRect,
+      leadIn: end.leadIn,
+      routePoints: null,
+    };
     let measuredLine: MeasuredGroupingMoveLine;
     if (!mainBlocked && continuous) {
-      measuredLine = { ...line, fromRect, toRect: end.anchor, destinationRect: toRect, leadIn: end.leadIn, routePoints: null };
+      measuredLine = directLine;
     } else {
-      measuredLine = {
-        ...line,
+      const routePoints = clearDetourRoute(
         fromRect,
         toRect,
-        destinationRect: toRect,
-        leadIn: null,
-        routePoints: clearDetourRoute(
-          fromRect,
-          toRect,
-          input.orientation,
-          routeObstacles,
-          sourcePaneRect,
-          destinationPaneRect,
-          routeVariant,
-        ),
-      };
-      detourVariantsByDestination.set(line.toWorkspaceId, routeVariant + 1);
+        input.orientation,
+        routeObstacles,
+        sourcePaneRect,
+        destinationPaneRect,
+        routeVariant,
+      );
+      if (routePoints) {
+        measuredLine = { ...line, fromRect, toRect, destinationRect: toRect, leadIn: null, routePoints };
+        detourVariantsByDestination.set(line.toWorkspaceId, routeVariant + 1);
+      } else {
+        measuredLine = directLine;
+      }
     }
     measuredByTabId.set(line.tabId, measuredLine);
     const occupied = occupiedRoutesByDestination.get(line.toWorkspaceId) ?? [];

@@ -121,6 +121,7 @@ mod runner;
 mod transcripts;
 
 use detection::*;
+pub(crate) use detection::session_id_from_args;
 use codex_rollout::*;
 use git_branch::*;
 pub use runner::start_monitor;

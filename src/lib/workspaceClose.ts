@@ -54,10 +54,12 @@ export async function closeWorkspaceAfterConfirmation(
       killedSessionIds.push(tab.sessionId);
     }
   }
+  // Remove synchronously with the kill snapshot so a spawn cannot add an
+  // unaccounted-for tab while scrollback cleanup is pending.
+  useWorkspaceListStore.getState().removeWorkspace(workspaceId);
   await removeWorkspaceScrollback(workspaceId, killedSessionIds).catch((err) =>
     console.warn("[mycmux] removeWorkspaceScrollback failed", workspaceId, err),
   );
-  useWorkspaceListStore.getState().removeWorkspace(workspaceId);
   return {
     closed: true,
     name: ws.name,

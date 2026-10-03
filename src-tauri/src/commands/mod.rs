@@ -18,6 +18,7 @@ pub mod pet_gallery;
 pub mod session_mapping;
 pub mod shell;
 pub mod tab_sweep;
+pub mod pane_leftovers;
 pub mod jev;
 pub mod terminal;
 pub mod usage;

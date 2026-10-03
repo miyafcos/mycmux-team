@@ -74,6 +74,8 @@ interface SettingsState {
   // column splits are the primary flow, but the button is toggleable
   // for symmetry with the split-down button.
   showSplitRightButton: boolean;
+  /** Windows pane tear-out experiment; opt-in and effective without restart. */
+  nativePaneTearoutEnabled: boolean;
   /**
    * Launcher rows the operator has switched off. Values are catalog targets
    * ("claude", "web-gemini") and the section keys "dev" / "anken" / "resume".
@@ -110,6 +112,7 @@ interface SettingsState {
   setHideSessionsWithoutUserMessages: (v: boolean) => void;
   setShowSplitDownButton: (v: boolean) => void;
   setShowSplitRightButton: (v: boolean) => void;
+  setNativePaneTearoutEnabled: (v: boolean) => void;
   setLauncherHiddenIds: (v: string[]) => void;
   setGroupingApplyAnimationEnabled: (v: boolean) => void;
   setDispatchWatchdogEnabled: (v: boolean) => void;
@@ -142,6 +145,9 @@ export const useSettingsStore = create<SettingsState>()(
       hideSessionsWithoutUserMessages: true,
       showSplitDownButton: false,
       showSplitRightButton: true,
+      // On by default since 0.81.0 (owner's decision 2026-10-02). Windows only;
+      // the settings switch stays as the way back to the previous drag.
+      nativePaneTearoutEnabled: true,
       launcherHiddenIds: [],
       groupingApplyAnimationEnabled: true,
       dispatchWatchdogEnabled: true,
@@ -167,6 +173,7 @@ export const useSettingsStore = create<SettingsState>()(
       setHideSessionsWithoutUserMessages: (v) => set({ hideSessionsWithoutUserMessages: v }),
       setShowSplitDownButton: (v) => set({ showSplitDownButton: v }),
       setShowSplitRightButton: (v) => set({ showSplitRightButton: v }),
+      setNativePaneTearoutEnabled: (v) => set({ nativePaneTearoutEnabled: v }),
       setLauncherHiddenIds: (v) => set({ launcherHiddenIds: v }),
       setGroupingApplyAnimationEnabled: (v) => set({ groupingApplyAnimationEnabled: v }),
       setDispatchWatchdogEnabled: (v) => set({ dispatchWatchdogEnabled: v }),

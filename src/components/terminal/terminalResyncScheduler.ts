@@ -12,6 +12,8 @@
 export const TERMINAL_RESYNC_COLLECT_MS = 0;
 /** Gap between one pane finishing its catch-up and the next one starting. */
 export const TERMINAL_RESYNC_STAGGER_MS = 32;
+/** Longer than the terminal replay watchdog (8 seconds). */
+export const TERMINAL_RESYNC_TIMEOUT_MS = 10_000;
 
 type ResyncTask = () => void | Promise<void>;
 
@@ -50,9 +52,14 @@ function drain(): void {
   } catch {
     result = undefined;
   }
-  void Promise.resolve(result)
+  let deadline: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<void>((resolve) => {
+    deadline = setTimeout(resolve, TERMINAL_RESYNC_TIMEOUT_MS);
+  });
+  void Promise.race([Promise.resolve(result), timeout])
     .catch(() => {})
     .finally(() => {
+      clearTimeout(deadline);
       running = false;
       scheduleDrain(TERMINAL_RESYNC_STAGGER_MS);
     });

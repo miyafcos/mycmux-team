@@ -85,7 +85,16 @@ interface BeginCliLoginArgs {
 }
 interface LoginIdArgs { loginId: string }
 
+// Lifecycle tails also include kills so a later create cannot overtake a close.
 const sessionCreateTails = new Map<string, Promise<void>>();
+const sessionKillGenerations = new Map<string, number>();
+
+export class SessionClosedError extends Error {
+  constructor(sessionId: string) {
+    super(`Session closed before start: ${sessionId}`);
+    this.name = "SessionClosedError";
+  }
+}
 
 export interface DispatchEntry {
   slug: string;
@@ -305,9 +314,14 @@ export async function createSession(
   onData: (batch: FrontendDataBatch) => void,
   cwd?: string,
   env?: Record<string, string>,
+  reattachOnly = false,
 ): Promise<void> {
+  const generation = sessionKillGenerations.get(sessionId) ?? 0;
   const previous = sessionCreateTails.get(sessionId) ?? Promise.resolve();
   const operation = previous.catch(() => {}).then(async () => {
+    if ((sessionKillGenerations.get(sessionId) ?? 0) !== generation) {
+      throw new SessionClosedError(sessionId);
+    }
     let staleNoticeCount = 0;
     const attach = beginSessionAttach(sessionId, {
       deliver: onData,
@@ -342,6 +356,9 @@ export async function createSession(
       );
     }
     try {
+      if (reattachOnly) {
+        await invoke<void>("tearout_attach", { sessionId, onData: channel });
+      } else {
       await invoke<void>("create_session", {
         sessionId,
         command,
@@ -352,6 +369,7 @@ export async function createSession(
         cwd: cwd ?? null,
         env: env ?? null,
       } satisfies CreateSessionArgs);
+      }
       attach.commit();
     } catch (err) {
       attach.fail();
@@ -449,7 +467,19 @@ export async function resizeSession(
 }
 
 export async function killSession(sessionId: string): Promise<void> {
-  return invoke<void>("kill_session", { sessionId } satisfies SessionIdArgs);
+  sessionKillGenerations.set(sessionId, (sessionKillGenerations.get(sessionId) ?? 0) + 1);
+  const previous = sessionCreateTails.get(sessionId) ?? Promise.resolve();
+  const operation = previous.catch(() => {}).then(() =>
+    invoke<void>("kill_session", { sessionId } satisfies SessionIdArgs),
+  );
+  sessionCreateTails.set(sessionId, operation);
+  try {
+    await operation;
+  } finally {
+    if (sessionCreateTails.get(sessionId) === operation) {
+      sessionCreateTails.delete(sessionId);
+    }
+  }
 }
 
 export async function removeWorkspaceScrollback(workspaceId: string, sessionIds: string[]): Promise<void> {
@@ -570,6 +600,10 @@ export interface SessionStatusChangedPayload extends FeedSessionPayload {
 
 export async function getPtyMetadataSnapshot(): Promise<PtyMetadataSnapshot> {
   return invoke<PtyMetadataSnapshot>("get_pty_metadata_snapshot");
+}
+
+export async function listRunningSessionIds(): Promise<string[]> {
+  return invoke<string[]>("list_running_session_ids");
 }
 
 export async function getSessionOutputSnapshot(): Promise<SessionOutputSnapshot> {
@@ -1124,6 +1158,8 @@ export interface PaneTabConfig {
 
 export interface PaneConfig {
   pane_id?: string | null;
+  /** Runtime PTY identity for tab-less configs during save-time dedupe. */
+  session_id?: string | null;
   agent_id: string;
   label: string | null;
   cwd?: string | null;

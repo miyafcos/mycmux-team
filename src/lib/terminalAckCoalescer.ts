@@ -16,16 +16,24 @@ function sendWithTimeout(
   onRequestSettled: () => void,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("terminal ACK timed out")), ACK_SEND_TIMEOUT_MS);
-    void send(ack).then(
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      onRequestSettled();
+    };
+    const timeout = setTimeout(() => {
+      finish();
+      reject(new Error("terminal ACK timed out"));
+    }, ACK_SEND_TIMEOUT_MS);
+    void Promise.resolve().then(() => send(ack)).then(
       () => {
-        clearTimeout(timeout);
-        onRequestSettled();
+        finish();
         resolve();
       },
       (error) => {
-        clearTimeout(timeout);
-        onRequestSettled();
+        finish();
         reject(error);
       },
     );

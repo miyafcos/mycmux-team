@@ -63,6 +63,7 @@ vi.mock("../../src/components/terminal/XTermWrapper", async () => {
 
 import TerminalPane, { buildLaunchArgs } from "../../src/components/workspace/TerminalPane";
 import { prepareStartupSessionGate } from "../../src/lib/startupSessionGate";
+import { expectTearoutAttachments, markTearoutSessionAttached } from "../../src/lib/tearout/sessionAttachment";
 import PaneDragOverlay from "../../src/components/workspace/PaneDragOverlay";
 
 let container: HTMLDivElement;
@@ -134,6 +135,24 @@ afterEach(async () => {
 });
 
 describe("TerminalPane declared restore boundary", () => {
+  it("attaches every transported session before acknowledgement, then returns to the retention budget", async () => {
+    const tabs: PaneTab[] = ["one", "two", "three", "four"].map(id => ({
+      id, sessionId: `moving-${id}`, agentId: "shell-starter", type: "terminal",
+    }));
+    const workspace = workspaceWith([{ ...paneWith(tabs[3]), tabs }]);
+    const receipt = expectTearoutAttachments(tabs.map(tab => tab.sessionId));
+    try {
+      await renderPanes(workspace);
+      expect([...container.querySelectorAll("[data-xterm-session]")].map(el => el.getAttribute("data-xterm-session")).sort())
+        .toEqual(tabs.map(tab => tab.sessionId).sort());
+      for (const tab of tabs) markTearoutSessionAttached(tab.sessionId);
+      await receipt.ready;
+    } finally { await act(async () => receipt.dispose()); }
+    await renderPanes(workspace);
+    expect(container.querySelectorAll("[data-xterm-session]")).toHaveLength(2);
+    expect(container.querySelector(`[data-xterm-session="${tabs[3].sessionId}"]`)).not.toBeNull();
+  });
+
   it.each([
     { name: "terminal", type: "terminal", declared: false, expected: true },
     { name: "browser", type: "browser", declared: false, expected: false },

@@ -18,6 +18,7 @@ export default memo(function PaneDragOverlay() {
   // same frame. Its pointer lives in another window, hence no ghost here.
   const dockZone = useDetachedDockStore((state) =>
     state.target?.kind === "pane-zone" ? state.target : null);
+  const dockSource = useDetachedDockStore((state) => state.active?.nativeSingleTab ? "tab" : "pane");
   const ghostRef = useRef<HTMLDivElement>(null);
   const [offset, setOffset] = useState({ x: GHOST_OFFSET, y: GHOST_OFFSET });
 
@@ -41,7 +42,7 @@ export default memo(function PaneDragOverlay() {
           workspaceId={dockZone.workspaceId}
           paneId={dockZone.paneId}
           zone={dockZone.zone}
-          source="pane"
+          source={dockSource}
         />
       : null;
   }

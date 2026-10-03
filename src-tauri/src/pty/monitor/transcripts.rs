@@ -372,6 +372,30 @@ pub(super) fn codex_session_meta(path: &std::path::Path) -> Option<(String, Stri
         return None;
     };
     let payload = value.get("payload")?;
+    // Newer child/exec rollouts may share the main pane's CWD. They are not
+    // interactive pane identities, even when their mtime wins the scan.
+    let source = payload.get("source");
+    let child_or_exec_source = source.is_some_and(|source| {
+        matches!(source.as_str(), Some("subagent" | "exec"))
+            || source
+                .as_object()
+                .is_some_and(|source| source.contains_key("subagent"))
+    });
+    if child_or_exec_source
+        || payload
+            .get("parent_thread_id")
+            .is_some_and(|parent| !parent.is_null())
+        || payload
+            .get("thread_source")
+            .and_then(|source| source.as_str())
+            == Some("subagent")
+        || payload
+            .get("originator")
+            .and_then(|originator| originator.as_str())
+            == Some("codex_exec")
+    {
+        return None;
+    }
     let id = payload.get("id").and_then(|id| id.as_str())?;
     let cwd = payload.get("cwd").and_then(|cwd| cwd.as_str())?;
     if id.trim().is_empty() {
@@ -519,6 +543,167 @@ pub(super) fn detect_codex_session_id(
         &mut best,
     );
     best.map(|(id, _)| id)
+}
+
+#[cfg(test)]
+mod codex_identity_tests {
+    use super::*;
+    use serde_json::{json, Value};
+    use std::fs::File;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    fn write_rollout(
+        dir: &std::path::Path,
+        name: &str,
+        extra: Value,
+        modified: u64,
+    ) -> std::path::PathBuf {
+        let path = dir.join(format!("{name}.jsonl"));
+        let mut payload =
+            json!({"id": name, "cwd": "C:\\work", "source": "cli", "originator": "codex-tui"});
+        for (key, value) in extra.as_object().unwrap() {
+            payload[key] = value.clone();
+        }
+        let line = json!({"type": "session_meta", "payload": payload}).to_string();
+        std::fs::write(&path, format!("{line}\n")).unwrap();
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(UNIX_EPOCH + Duration::from_secs(modified))
+            .unwrap();
+        path
+    }
+
+    fn child_and_exec_headers() -> Vec<Value> {
+        vec![
+            json!({"source": "subagent"}),
+            json!({"source": {"subagent": {"thread_spawn": {"parent_thread_id": "main", "depth": 1}}}}),
+            json!({"parent_thread_id": "main"}),
+            json!({"thread_source": "subagent"}),
+            json!({"originator": "codex_exec", "thread_source": "user"}),
+            json!({"source": "exec"}),
+        ]
+    }
+
+    #[test]
+    fn codex_meta_excludes_child_and_exec_rollout_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        for (index, extra) in child_and_exec_headers().into_iter().enumerate() {
+            let path = write_rollout(dir.path(), &format!("child-{index}"), extra, 1_700_000_001);
+            assert_eq!(codex_session_meta(&path), None, "{index}");
+            assert_eq!(
+                codex_session_id_for_cwd(&path, &normalize_cwd_key(r"C:\work")),
+                None,
+                "{index}"
+            );
+        }
+        let path = write_rollout(
+            dir.path(),
+            "main",
+            json!({"parent_thread_id": null}),
+            1_700_000_000,
+        );
+        assert_eq!(
+            codex_session_meta(&path),
+            Some(("main".to_string(), r"C:\work".to_string()))
+        );
+    }
+
+    #[test]
+    fn newer_subagent_and_exec_rollouts_never_replace_main_in_same_cwd_t8() {
+        let dir = tempfile::tempdir().unwrap();
+        let day = dir.path().join("2026/10/02");
+        std::fs::create_dir_all(&day).unwrap();
+        write_rollout(&day, "main", json!({}), 1_700_000_000);
+        for (index, extra) in child_and_exec_headers().into_iter().enumerate() {
+            write_rollout(
+                &day,
+                &format!("newer-child-{index}"),
+                extra,
+                1_700_000_010 + index as u64,
+            );
+        }
+        let cwd_key = normalize_cwd_key(r"c:/work/");
+        let mut best = None;
+        visit_codex_sessions_dir(dir.path(), &cwd_key, None, &HashSet::new(), &mut best);
+        assert_eq!(best.as_ref().map(|(id, _)| id.as_str()), Some("main"));
+
+        let mut excluded_best = None;
+        visit_codex_sessions_dir(
+            dir.path(),
+            &cwd_key,
+            None,
+            &HashSet::from(["main".to_string()]),
+            &mut excluded_best,
+        );
+        assert!(excluded_best.is_none());
+    }
+
+    #[test]
+    fn codex_scans_with_only_child_or_exec_rollouts_return_none() {
+        let dir = tempfile::tempdir().unwrap();
+        for (index, extra) in child_and_exec_headers().into_iter().enumerate() {
+            write_rollout(
+                dir.path(),
+                &format!("child-{index}"),
+                extra,
+                1_700_000_010 + index as u64,
+            );
+        }
+        let mut best = None;
+        visit_codex_sessions_dir(
+            dir.path(),
+            &normalize_cwd_key(r"C:\work"),
+            None,
+            &HashSet::new(),
+            &mut best,
+        );
+        assert!(best.is_none());
+    }
+
+    #[test]
+    fn codex_scans_keep_cwd_creation_floor_and_exclusion_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        write_rollout(dir.path(), "older-main", json!({}), 1_700_000_000);
+        write_rollout(
+            dir.path(),
+            "newer-main",
+            json!({"originator": "codex-cli"}),
+            1_700_000_010,
+        );
+        write_rollout(
+            dir.path(),
+            "other-cwd",
+            json!({"cwd": "C:\\elsewhere"}),
+            1_700_000_020,
+        );
+        let cwd_key = normalize_cwd_key(r"C:\work");
+        let mut best = None;
+        visit_codex_sessions_dir(dir.path(), &cwd_key, None, &HashSet::new(), &mut best);
+        assert_eq!(best.as_ref().map(|(id, _)| id.as_str()), Some("newer-main"));
+        let mut excluded_best = None;
+        visit_codex_sessions_dir(
+            dir.path(),
+            &cwd_key,
+            None,
+            &HashSet::from(["newer-main".to_string()]),
+            &mut excluded_best,
+        );
+        assert_eq!(
+            excluded_best.as_ref().map(|(id, _)| id.as_str()),
+            Some("older-main")
+        );
+        let mut after_floor = None;
+        visit_codex_sessions_dir(
+            dir.path(),
+            &cwd_key,
+            Some(std::time::SystemTime::now() + Duration::from_secs(60)),
+            &HashSet::new(),
+            &mut after_floor,
+        );
+        assert!(after_floor.is_none());
+    }
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@ import { useEffect, useRef } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listenForDetachedDock, takeDetachedPlacements, DETACHED_DOCK_REQUEST_EVENT } from "../../stores/detachedDockStore";
+import { installTearoutRuntime } from "../../lib/tearout/runtime";
 import { listen } from "@tauri-apps/api/event";
 import {
   useWorkspaceListStore,
@@ -20,6 +21,7 @@ import {
   readAgentSessionMappings,
   setAppFrontendVisible,
   getPtyMetadataSnapshot,
+  listRunningSessionIds,
   killSession,
   setWindowCloseIntent,
   sendSocketResponse,
@@ -93,7 +95,8 @@ import {
   filterConflictingAgentMappings,
   resolvePersistedSelection,
 } from "../../lib/sessionRestoreSafety";
-import { handleSocketCommand } from "./socketCommands";
+import { handleSocketCommand, startLocalTabSession } from "./socketCommands";
+import { listenForPeerTabStarts } from "../../lib/socketTabWindows";
 import { IS_MAC } from "../../lib/keybindings";
 import { handleWorkOrderSpawnRequest, type SpawnRequest } from "../../lib/workOrderBridge";
 import { isMainWindow, windowLabel, hasWindowRole, setWindowRole, subscribeWindowRole } from "../../lib/windowContext";
@@ -231,7 +234,7 @@ interface AgentSessionLocation {
 
 export interface AgentSessionDedupeConflict {
   key: string;
-  reason: "active" | "self-owned" | "order";
+  reason: "live" | "active" | "self-owned" | "order";
   winner: AgentSessionLocation;
   loser: AgentSessionLocation;
 }
@@ -533,6 +536,7 @@ export function applyMappingsToConfig(
 interface SerializePersistentWorkspaceSetOptions {
   sourceWorkspaces: readonly WorkspaceSerializationSource[];
   agentMappings?: Record<string, AgentSessionMapping>;
+  liveSessionIds?: ReadonlySet<string>;
   windowFragments?: readonly WindowFragment[];
   preferredSelection: {
     workspaceId?: string | null;
@@ -572,6 +576,7 @@ export function serializePersistentWorkspaceSet(
     persistedSelection.workspaceId,
     persistedSelection.paneId,
     persistedSelection.tabId,
+    options.liveSessionIds,
   );
   return {
     ...dedupeResult,
@@ -863,6 +868,7 @@ export function dedupeAgentSessionsInConfigs(
   activeWorkspaceId: string | null | undefined,
   activePaneId: string | null | undefined,
   activeTabId: string | null | undefined,
+  liveSessionIds?: ReadonlySet<string>,
 ): AgentSessionDedupeResult {
   const configs = inputConfigs.map(clearJunkAgentSessionsInConfig);
   const winningCandidateIds = new Set<string>();
@@ -870,6 +876,7 @@ export function dedupeAgentSessionsInConfigs(
   const candidates: Array<{
     candidateId: string;
     key: string;
+    isLive: boolean;
     isActive: boolean;
     selfOwned: boolean;
     order: number;
@@ -888,6 +895,7 @@ export function dedupeAgentSessionsInConfigs(
         candidates.push({
           candidateId: `${workspaceIndex}:${paneIndex}:pane`,
           key,
+          isLive: liveSessionIds?.has(pane.session_id ?? "") ?? false,
           isActive: isActivePane,
           selfOwned: false,
           order: order++,
@@ -908,6 +916,7 @@ export function dedupeAgentSessionsInConfigs(
         candidates.push({
           candidateId: `${workspaceIndex}:${paneIndex}:${tabIndex}`,
           key,
+          isLive: liveSessionIds?.has(tab.session_id ?? "") ?? false,
           isActive: isActiveTab || isPaneActiveTab,
           selfOwned: tab.tab_id === declaredAgentSessionId(tab),
           order: order++,
@@ -925,7 +934,8 @@ export function dedupeAgentSessionsInConfigs(
   const candidateById = new Map(candidates.map((candidate) => [candidate.candidateId, candidate]));
   candidates
     .sort((a, b) =>
-      Number(b.isActive) - Number(a.isActive)
+      Number(b.isLive) - Number(a.isLive)
+      || Number(b.isActive) - Number(a.isActive)
       || Number(b.selfOwned) - Number(a.selfOwned)
       || a.order - b.order,
     )
@@ -941,11 +951,13 @@ export function dedupeAgentSessionsInConfigs(
     const winner = winnerByKey.get(key);
     const loser = candidateById.get(candidateId);
     if (!winner || !loser) return;
-    const reason = winner.isActive !== loser.isActive
-      ? "active"
-      : winner.selfOwned !== loser.selfOwned
-        ? "self-owned"
-        : "order";
+    const reason = winner.isLive !== loser.isLive
+      ? "live"
+      : winner.isActive !== loser.isActive
+        ? "active"
+        : winner.selfOwned !== loser.selfOwned
+          ? "self-owned"
+          : "order";
     conflicts.push({ key, reason, winner: winner.location, loser: loser.location });
   };
 
@@ -1167,7 +1179,7 @@ function mirrorPtyMetadataForPersistence(meta: PtyMetadata): void {
 }
 
 async function flushPtyMetadataSnapshotForPersistence(): Promise<void> {
-  const snapshot = await getPtyMetadataSnapshot();
+  const snapshot = await waitForWindowClose(getPtyMetadataSnapshot(), "PTY metadata");
   for (const meta of Object.values(snapshot)) {
     mirrorPtyMetadataForPersistence(meta);
   }
@@ -1377,6 +1389,37 @@ export function toTransferConfig(ws: WorkspaceSerializationSource): WorkspaceCon
     throw new Error("This workspace contains tabs that cannot be transferred");
   }
   return toConfig(ws, {}, "transfer");
+}
+
+export const WINDOW_CLOSE_TIMEOUT_MS = 4_000;
+
+class WindowCloseTimeoutError extends Error {}
+
+async function waitForWindowClose<T>(pending: Promise<T>, step: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      pending,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          const error = new WindowCloseTimeoutError(`${step} timed out after ${WINDOW_CLOSE_TIMEOUT_MS}ms`);
+          console.warn("[window-close] Continuing after timeout:", error.message);
+          reject(error);
+        }, WINDOW_CLOSE_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
+async function continueWindowCloseAfterTimeout<T>(pending: Promise<T>, step: string, fallback: T): Promise<T> {
+  try {
+    return await waitForWindowClose(pending, step);
+  } catch (error) {
+    if (!(error instanceof WindowCloseTimeoutError)) throw error;
+    return fallback;
+  }
 }
 
 let windowClosing = false;
@@ -1649,7 +1692,7 @@ async function hydrateChildWindow(): Promise<void> {
 }
 
 /** This window's current workspaces, in the shape `data.json` stores. */
-function buildWindowFragment(purpose: "save" | "transfer" = "save"): WindowFragment {
+export function buildWindowFragment(purpose: "save" | "transfer" = "save"): WindowFragment {
   const state = useWorkspaceListStore.getState();
   const uiState = useUiStore.getState();
   const activeSessionId = uiState.activePaneId;
@@ -1675,6 +1718,10 @@ function buildWindowFragment(purpose: "save" | "transfer" = "save"): WindowFragm
 }
 
 export function useWorkspacePersist() {
+  useEffect(() => installTearoutRuntime({
+    serialize: toTransferConfig,
+    publish: () => publishWindowFragment(buildWindowFragment("transfer")),
+  }), []);
   const hasSidebar = useWorkspaceListStore(
     (state) => detachedWorkspaceForWindow(state.workspaces, isMainWindow()) === null,
   );
@@ -1921,6 +1968,7 @@ export function useWorkspacePersist() {
       agentMappings: Record<string, AgentSessionMapping> = {},
       windowFragments: WindowFragment[] = [],
       sourceWorkspaces?: readonly WorkspaceSerializationSource[],
+      liveSessionIds?: ReadonlySet<string>,
     ) => {
       const state = useWorkspaceListStore.getState();
       const uiState = useUiStore.getState();
@@ -1964,6 +2012,7 @@ export function useWorkspacePersist() {
       const serialized = serializePersistentWorkspaceSet({
         sourceWorkspaces: sourceWorkspaces ?? state.workspaces,
         agentMappings,
+        liveSessionIds,
         windowFragments,
         preferredSelection: {
           workspaceId: activeWorkspaceId,
@@ -2059,13 +2108,20 @@ export function useWorkspacePersist() {
           } catch (err) {
             console.warn("[persist] Failed to read other windows' workspaces:", err);
           }
+          let liveSessionIds: ReadonlySet<string> = new Set();
+          try {
+            liveSessionIds = new Set(await listRunningSessionIds());
+            if (disposed || windowClosing) return request ? null : false;
+          } catch (err) {
+            console.warn("[persist] Failed to list running session ids:", err);
+          }
           const agentMappings = cachedAgentMappings;
           const buildCurrentSnapshot = () => {
-            const snapshot = buildSnapshot(agentMappings, windowFragments);
+            const snapshot = buildSnapshot(agentMappings, windowFragments, undefined, liveSessionIds);
             return snapshot;
           };
           const snapshotToSave = request
-            ? buildSnapshot(agentMappings, windowFragments, request.snapshot.workspaces)
+            ? buildSnapshot(agentMappings, windowFragments, request.snapshot.workspaces, liveSessionIds)
             : buildCurrentSnapshot();
           if (!isPersistenceWriteAllowed()) {
             return request ? null : false;
@@ -2164,7 +2220,8 @@ export function useWorkspacePersist() {
     };
 
     const sync = async (force = false): Promise<boolean> => {
-      return syncBound(force);
+      const pending = syncBound(force);
+      return closing ? waitForWindowClose(pending, "final save") : pending;
     };
 
     function scheduleSync(delayMs = 500): void {
@@ -2285,7 +2342,7 @@ export function useWorkspacePersist() {
     });
 
     const promptAfterFinalSaveFailure = async (): Promise<"retry" | "quit-anyway"> => {
-      const retry = await confirm(
+      const retry = await waitForWindowClose(confirm(
         "The final workspace save failed. Retry saving before quitting?",
         {
           title: "mycmux workspace save failed",
@@ -2293,7 +2350,7 @@ export function useWorkspacePersist() {
           okLabel: "Retry",
           cancelLabel: "Quit anyway",
         },
-      );
+      ), "save failure confirmation");
       return retry ? "retry" : "quit-anyway";
     };
 
@@ -2418,40 +2475,47 @@ export function useWorkspacePersist() {
         return;
       }
       event.preventDefault();
-      closePromptOpen = true;
-      try {
-        await flushPtyMetadataSnapshotForPersistence();
-      } catch (err) {
-        console.warn("[persist] Failed to refresh pty metadata before close prompt:", err);
-      }
-      const panes = useWorkspaceListStore.getState().workspaces.flatMap((workspace) => workspace.panes);
-      closePromptOpen = true;
-      try {
-        // Closing a window is not closing a workspace: what happens to the
-        // work in it depends on whether another window stays open.
-        const peerWindowCount = await getWindowFragments()
-          .then((fragments) => new Set(fragments
-            .map((fragment) => fragment.window_label)
-            .filter((label) => label && label !== windowLabel())).size)
-          .catch(() => 0);
-        if (panes.length > 0
-          && !await confirmPaneClose(panes, "window", { peerWindowCount })) return;
-      } finally {
-        closePromptOpen = false;
-      }
-
-      closing = true;
-      if (debounceTimer) {
-        clearTimeout(debounceTimer);
-        debounceTimer = null;
-      }
-      clearSaveRetry();
       let shouldQuitAfterSave = false;
       try {
+        closePromptOpen = true;
+        try {
+          await flushPtyMetadataSnapshotForPersistence();
+        } catch (err) {
+          if (err instanceof WindowCloseTimeoutError) throw err;
+          console.warn("[persist] Failed to refresh pty metadata before close prompt:", err);
+        }
+        const panes = useWorkspaceListStore.getState().workspaces.flatMap((workspace) => workspace.panes);
+        closePromptOpen = true;
+        try {
+          // Closing a window is not closing a workspace: what happens to the
+          // work in it depends on whether another window stays open.
+          let peerWindowCount = 0;
+          try {
+            const fragments = await waitForWindowClose(getWindowFragments(), "peer windows");
+            peerWindowCount = new Set(fragments
+              .map((fragment) => fragment.window_label)
+              .filter((label) => label && label !== windowLabel())).size;
+          } catch (error) {
+            if (error instanceof WindowCloseTimeoutError) throw error;
+          }
+          if (panes.length > 0
+            && !await waitForWindowClose(confirmPaneClose(panes, "window", { peerWindowCount }), "close confirmation")) return;
+        } finally {
+          closePromptOpen = false;
+        }
+
+        closePromptOpen = false;
+        closing = true;
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+          debounceTimer = null;
+        }
+        clearSaveRetry();
         while (true) {
           try {
             await flushPtyMetadataSnapshotForPersistence();
           } catch (err) {
+            if (err instanceof WindowCloseTimeoutError) throw err;
             console.warn("[persist] Failed to flush pty metadata snapshot:", err);
           }
           const schemaStateBeforeSave = getPersistentSchemaState();
@@ -2460,12 +2524,13 @@ export function useWorkspacePersist() {
               && schemaStateBeforeSave.requiresUnsavedConfirmation)) {
             closePromptOpen = true;
             try {
-              if (await confirmUnsavedQuarantineQuit(schemaStateBeforeSave)) {
+              if (await waitForWindowClose(confirmUnsavedQuarantineQuit(schemaStateBeforeSave), "unsaved workspace confirmation")) {
                 shouldQuitAfterSave = true;
                 break;
               }
               return;
             } catch (err) {
+              if (err instanceof WindowCloseTimeoutError) throw err;
               console.warn("[persist] Failed to show unsaved workspace prompt:", err);
               return;
             } finally {
@@ -2487,12 +2552,13 @@ export function useWorkspacePersist() {
             || (schemaState.status === "quarantined" && schemaState.requiresUnsavedConfirmation)) {
             closePromptOpen = true;
             try {
-              if (await confirmUnsavedQuarantineQuit(schemaState)) {
+              if (await waitForWindowClose(confirmUnsavedQuarantineQuit(schemaState), "unsaved workspace confirmation")) {
                 shouldQuitAfterSave = true;
                 break;
               }
               return;
             } catch (err) {
+              if (err instanceof WindowCloseTimeoutError) throw err;
               console.warn("[persist] Failed to show unsaved workspace prompt:", err);
               return;
             } finally {
@@ -2509,6 +2575,7 @@ export function useWorkspacePersist() {
           try {
             choice = await promptAfterFinalSaveFailure();
           } catch (err) {
+            if (err instanceof WindowCloseTimeoutError) throw err;
             console.warn("[persist] Failed to show final save failure prompt:", err);
             return;
           } finally {
@@ -2519,16 +2586,29 @@ export function useWorkspacePersist() {
             break;
           }
         }
-      } finally {
-        if (shouldQuitAfterSave) {
-          try {
-            await closeWindowWorkspacesAndDestroy();
-          } catch (error) {
-            closing = false;
-            console.warn("[window-close] Failed to close this window:", error);
+      } catch (error) {
+        if (error instanceof WindowCloseTimeoutError) {
+          // An unanswered close operation must not permanently disable the X.
+          closing = true;
+          if (debounceTimer) {
+            clearTimeout(debounceTimer);
+            debounceTimer = null;
           }
+          clearSaveRetry();
+          shouldQuitAfterSave = true;
         } else {
+          console.warn("[window-close] Failed to prepare this window:", error);
+        }
+      } finally {
+        try {
+          if (shouldQuitAfterSave) {
+            await closeWindowWorkspacesAndDestroy();
+          }
+        } catch (error) {
+          console.warn("[window-close] Failed to close this window:", error);
+        } finally {
           closing = false;
+          closePromptOpen = false;
         }
       }
     });
@@ -2674,6 +2754,8 @@ export function useWorkspacePersist() {
   }, []);
 
   useEffect(() => {
+    // Explicit starts for other windows must use that window's live tab data.
+    const unlistenPeerStart = listenForPeerTabStarts(startLocalTabSession);
     // Rust broadcasts; only the elected executor runs a request.
     const unlisten = listen<SocketRequestPayload>("socket-request", async (event) => {
       if (!isLeader.current) return;
@@ -2689,6 +2771,7 @@ export function useWorkspacePersist() {
 
     return () => {
       unlisten.then((f) => f()).catch(() => {});
+      unlistenPeerStart.then((f) => f()).catch(() => {});
     };
   }, []);
 
@@ -2755,11 +2838,12 @@ export async function transferWindowWorkspacesAndClose(toLabel: string): Promise
 export async function closeWindowWorkspacesAndDestroy(): Promise<void> {
   windowClosing = true;
   try {
-    await windowSaveInFlight;
-    await windowPublishInFlight;
-    await setWindowCloseIntent(true);
-    // Handoffs committed before close intent belong to this window too.
-    const pending = await takePendingAdoption(windowLabel());
+    await continueWindowCloseAfterTimeout(windowSaveInFlight, "pending save", undefined);
+    await continueWindowCloseAfterTimeout(windowPublishInFlight, "pending publish", undefined);
+    await continueWindowCloseAfterTimeout(setWindowCloseIntent(true), "close intent", undefined);
+    // Handoffs committed before close intent belong to this window too. A late
+    // read after the deadline must not repopulate a window already destroyed.
+    const pending = await continueWindowCloseAfterTimeout(takePendingAdoption(windowLabel()), "pending adoption", []);
     if (pending.length > 0) adoptWorkspaceConfigs(pending);
     const workspaces = [...useWorkspaceListStore.getState().workspaces];
     const sessions = new Set<string>();
@@ -2770,18 +2854,30 @@ export async function closeWindowWorkspacesAndDestroy(): Promise<void> {
         for (const tab of pane.tabs) if (tabHasPty(tab)) sessions.add(tab.sessionId);
       }
     }
+    const kills = await Promise.allSettled([...sessions].map((sessionId) =>
+      waitForWindowClose(Promise.resolve().then(() => killSession(sessionId)), `kill ${sessionId}`),
+    ));
+    // Keep the existing failure contract: a definite kill failure leaves the
+    // window open for a retry. An unanswered kill no longer blocks all others.
+    const failed = kills.find((result) => result.status === "rejected"
+      && !(result.reason instanceof WindowCloseTimeoutError));
+    if (failed?.status === "rejected") throw failed.reason;
     for (const sessionId of sessions) {
-      await killSession(sessionId);
       evictTerminalCache(sessionId);
       focusController.clearSession(sessionId);
       usePaneMetadataStore.getState().removeMetadata(sessionId);
     }
     for (const workspace of workspaces) useWorkspaceListStore.getState().removeWorkspace(workspace.id);
-    await getCurrentWindow().destroy();
+    await waitForWindowClose(getCurrentWindow().destroy(), "destroy window");
   } catch (error) {
-    windowClosing = false;
-    await setWindowCloseIntent(false).catch(() => {});
+    // A timed-out destroy may still finish later. Keep its explicit-close
+    // intent so the registry does not misclassify it as a crash and rescue it.
+    if (!(error instanceof WindowCloseTimeoutError)) {
+      await waitForWindowClose(setWindowCloseIntent(false), "clear close intent").catch(() => {});
+    }
     throw error;
+  } finally {
+    windowClosing = false;
   }
 }
 

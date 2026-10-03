@@ -95,16 +95,45 @@ describe("TerminalAckCoalescer", () => {
     expect(send).toHaveBeenCalledWith({ generation: 3, seq: 5, bytes: 50 });
   });
 
-  it("bounds unresolved invokes per generation", async () => {
+  it("releases timed-out attempts so a new ACK in the same generation can be sent", async () => {
     vi.useFakeTimers();
-    const send = vi.fn(() => new Promise<void>(() => {}));
+    const send = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>(() => {}))
+      .mockImplementationOnce(() => new Promise<void>(() => {}))
+      .mockResolvedValue(undefined);
     const queue = new TerminalAckCoalescer(send);
-
     queue.enqueue({ generation: 5, seq: 1, bytes: 4 });
-    await vi.advanceTimersByTimeAsync(1200);
-    await vi.advanceTimersByTimeAsync(5000);
-
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1000 + 50);
     expect(send).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1000);
+    queue.enqueue({ generation: 5, seq: 2, bytes: 8 });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(send).toHaveBeenLastCalledWith({ generation: 5, seq: 2, bytes: 8 });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(send).toHaveBeenCalledTimes(3);
+    queue.flushAndDispose();
+  });
+
+  it("a late invoke completion does not release another live attempt", async () => {
+    vi.useFakeTimers();
+    let resolveOld!: () => void;
+    let resolveCurrent!: () => void;
+    const send = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveOld = resolve; }))
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveCurrent = resolve; }))
+      .mockResolvedValue(undefined);
+    const queue = new TerminalAckCoalescer(send);
+    queue.enqueue({ generation: 5, seq: 1, bytes: 4 });
+    await vi.advanceTimersByTimeAsync(1050);
+    queue.enqueue({ generation: 5, seq: 2, bytes: 8 });
+    resolveOld();
+    await vi.advanceTimersByTimeAsync(32);
+    expect(send).toHaveBeenCalledTimes(2);
+    resolveCurrent();
+    await vi.advanceTimersByTimeAsync(32);
+    expect(send).toHaveBeenLastCalledWith({ generation: 5, seq: 2, bytes: 8 });
     queue.flushAndDispose();
   });
 });

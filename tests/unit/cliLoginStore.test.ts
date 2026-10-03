@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   beginCliLogin: vi.fn(),
@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   usageFetch: vi.fn(() => Promise.resolve()),
   pushToast: vi.fn(),
   confirmDialog: vi.fn(() => Promise.resolve(false)),
+  show: vi.fn(() => Promise.resolve()),
+  setFocus: vi.fn(() => Promise.resolve()),
   homeDir: vi.fn(() => Promise.resolve("C:\\Users\\test")),
 }));
 
@@ -23,6 +25,10 @@ vi.mock("../../src/lib/ipc", async (importOriginal) => {
 });
 vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: mocks.confirmDialog }));
 vi.mock("@tauri-apps/api/path", () => ({ homeDir: mocks.homeDir }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({
+  show: mocks.show, setFocus: mocks.setFocus,
+}) }));
+afterEach(() => { vi.restoreAllMocks(); });
 vi.mock("../../src/stores/usageStore", () => ({
   useUsageStore: { getState: () => ({ fetch: mocks.usageFetch }) },
 }));
@@ -217,7 +223,36 @@ describe("cliLoginStore events", () => {
     expect(useCliLoginStore.getState().byProvider.claude).toBeNull();
     // The provider must already be free when the switch offer appears, or
     // switchTo would refuse it.
-    expect(mocks.confirmDialog).toHaveBeenCalled();
+    expect(mocks.confirmDialog).not.toHaveBeenCalled();
+    expect(mocks.setFocus).not.toHaveBeenCalled();
+    expect(mocks.pushToast).toHaveBeenCalledWith(
+      expect.stringContaining("A"), "warning",
+      expect.objectContaining({ label: "切り替える", run: expect.any(Function) }),
+      undefined, 60_000,
+    );
+  });
+
+  it("brings the window forward before a clicked switch confirmation and coalesces double clicks", async () => {
+    await startClaudeLogin();
+    const switchTo = vi.spyOn(useCliAccountStore.getState(), "switchTo").mockResolvedValue(null);
+    mocks.confirmDialog.mockResolvedValueOnce(true);
+    await useCliLoginStore.getState().handleCompleted({ login_id: loginId, profile, updated_existing: false });
+    const action = mocks.pushToast.mock.calls.find((call) => call[2]?.label === "切り替える")![2];
+    action.run(); action.run();
+    await vi.waitFor(() => expect(switchTo).toHaveBeenCalledExactlyOnceWith("claude", profile.id), { timeout: 10_000 });
+    expect(mocks.confirmDialog).toHaveBeenCalledOnce();
+    expect(mocks.show.mock.invocationCallOrder[0]).toBeLessThan(mocks.setFocus.mock.invocationCallOrder[0]);
+    expect(mocks.setFocus.mock.invocationCallOrder[0]).toBeLessThan(mocks.confirmDialog.mock.invocationCallOrder[0]);
+  });
+
+  it("leaves the account unchanged when the clicked switch confirmation is declined", async () => {
+    await startClaudeLogin();
+    const switchTo = vi.spyOn(useCliAccountStore.getState(), "switchTo").mockResolvedValue(null);
+    await useCliLoginStore.getState().handleCompleted({ login_id: loginId, profile, updated_existing: false });
+    const action = mocks.pushToast.mock.calls.find((call) => call[2]?.label === "切り替える")![2];
+    action.run();
+    await vi.waitFor(() => expect(mocks.confirmDialog).toHaveBeenCalledOnce(), { timeout: 10_000 });
+    expect(switchTo).not.toHaveBeenCalled();
   });
 
   it("says the registration was updated when the profile already existed", async () => {

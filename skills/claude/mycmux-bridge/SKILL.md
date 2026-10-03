@@ -59,6 +59,13 @@ python "~/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py" answer-ask --se
 - 復帰手順: ①その席を `mycmux_agent_cli.py close-tab --session <PTY session_id>` で閉じる。②同じタブで生きている兄弟ペインの PTY `session_id` を `--anchor-session` にして `mycmux_agent_cli.py spawn-tab --anchor-session <兄弟の PTY session_id> --target claude --resume-session <claude_session_id> --no-activate` を実行する (閉じた席を anchor にしない)。③`read` で会話の履歴が戻ったことを確認してから send する。`already in use` が画面に残る間は送らない。
 - 前面を奪わない。spawn / spawn-tab は `--no-activate` を付ける。`--activate` は付けない。
 
+## mycmux や PC を再起動したあとの席 (2026-10-02)
+
+- 再起動のあと、mycmux はペインを全部復元するが、PTY は表示したときに起動する。まだ起動していないペインに `mycmux_agent_cli.py status --session <PTY session_id>` を撃つと、`sessions` が空で `not_started` にそのペインが入った JSON が返る (終了コード 0)。これは「席が消えた」ではない。
+- そのペインは `mycmux_agent_cli.py start-tab --session <PTY session_id>` で起こす。前面は変わらず、同じペインが保存済みの会話を再開する。`read` で会話の履歴が戻ったことを確かめてから send する。
+- 同じ会話・同じ指示書の席を新しく立てない (2026-09-24 と 10-02 に、同じ会話の席が 2 つでき、古い席があとから自動で再開した)。`spawn-tab --resume-session` が `AGENT_SESSION_ALREADY_RUNNING:{"kind":…,"agentSessionId":…,"ownerSessionId":…}` で失敗したら、その会話は `ownerSessionId` の席で動いている。新しい席は作られないので、その席を使う。
+- 席が本当に無いのは、`status --session` のエラーが `(no pane and no PTY)` で終わるときだけ。
+
 ## AskUserQuestion 契約
 
 正本は `<mycmux-repository>/docs/adr/0003-askuserquestion-input-contract.md`。

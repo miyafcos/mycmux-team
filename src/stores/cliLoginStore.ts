@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { homeDir } from "@tauri-apps/api/path";
 import { confirm } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   beginCliLogin,
   cancelCliLogin,
@@ -153,25 +154,46 @@ function closeLoginTab(sessionId: string): void {
   }
 }
 
-async function offerSwitch(provider: CliProvider, profile: CliAccountProfile): Promise<void> {
-  const paneMetadataState = usePaneMetadataStore.getState();
-  const metadata = paneMetadataState.metadata;
-  const accepted = await confirm(
-    switchWarningText(
-      runningAgentCounts(metadata)[provider],
-      provider,
-      profile.label,
-      runningAgentPaneDetails(metadata, provider, paneMetadataState.volatileMetadata),
-    ),
+function offerSwitch(provider: CliProvider, profile: CliAccountProfile): void {
+  let switching = false;
+  useToastStore.getState().pushToast(
+    `「${profile.label}」に切り替えられます。`,
+    "warning",
     {
-      title: "このアカウントに今すぐ切り替えますか？",
-      kind: "warning",
-      okLabel: "切り替える",
-      cancelLabel: "あとで",
+      label: "切り替える",
+      run: () => {
+        if (switching) return;
+        switching = true;
+        void (async () => {
+          // This is a user click, not a delayed login event. Bring the parent
+          // forward before opening its native modal and read fresh pane state.
+          const currentWindow = getCurrentWindow();
+          await currentWindow.show();
+          await currentWindow.setFocus();
+          const paneMetadataState = usePaneMetadataStore.getState();
+          const accepted = await confirm(
+            switchWarningText(
+              runningAgentCounts(paneMetadataState.metadata)[provider],
+              provider,
+              profile.label,
+              runningAgentPaneDetails(paneMetadataState.metadata, provider, paneMetadataState.volatileMetadata),
+            ),
+            {
+              title: "このアカウントに今すぐ切り替えますか？",
+              kind: "warning",
+              okLabel: "切り替える",
+              cancelLabel: "あとで",
+            },
+          );
+          if (accepted) await useCliAccountStore.getState().switchTo(provider, profile.id);
+        })().catch((error) => {
+          useToastStore.getState().pushToast(cliAccountMessage(error), "error");
+        }).finally(() => { switching = false; });
+      },
     },
-  ).catch(() => false);
-  if (!accepted) return;
-  await useCliAccountStore.getState().switchTo(provider, profile.id);
+    undefined,
+    60_000,
+  );
 }
 
 export const useCliLoginStore = create<CliLoginState>((set, get) => {
@@ -275,7 +297,7 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
       // Release before offering the switch: `switchTo` refuses to run while the
       // provider is busy.
       finalize(provider, { closeTab: true });
-      await offerSwitch(provider, payload.profile);
+      offerSwitch(provider, payload.profile);
     },
 
     handleFailed: (payload) => {

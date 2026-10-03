@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
+const LOG_GENERATIONS: usize = 5;
 static WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Append one already-formatted line to `~/.mycmux/diag.log`.
@@ -104,13 +105,21 @@ fn log_to_dir(dir: &Path, line: &str) -> io::Result<()> {
     fs::create_dir_all(dir)?;
 
     let path = dir.join("diag.log");
-    let rotated = dir.join("diag.log.1");
     if fs::metadata(&path)
         .map(|metadata| metadata.len() > MAX_LOG_BYTES)
         .unwrap_or(false)
     {
-        let _ = fs::remove_file(&rotated);
-        fs::rename(&path, &rotated)?;
+        let oldest = dir.join(format!("diag.log.{LOG_GENERATIONS}"));
+        if oldest.exists() {
+            fs::remove_file(oldest)?;
+        }
+        for generation in (1..LOG_GENERATIONS).rev() {
+            let previous = dir.join(format!("diag.log.{generation}"));
+            if previous.exists() {
+                fs::rename(previous, dir.join(format!("diag.log.{}", generation + 1)))?;
+            }
+        }
+        fs::rename(&path, dir.join("diag.log.1"))?;
     }
 
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
@@ -187,6 +196,23 @@ mod tests {
             format_panic_report(&panic_payload_text(caught.as_ref()), Some("src/lib.rs:1:1")),
             "[panic] at src/lib.rs:1:1: hook formatting 2"
         );
+    }
+
+    #[test]
+    fn rotation_keeps_five_generations_in_newest_to_oldest_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join(".mycmux");
+        fs::create_dir_all(&dir).unwrap();
+        for round in 0..7u8 {
+            fs::write(dir.join("diag.log"), vec![b'a' + round; (MAX_LOG_BYTES + 1) as usize]).unwrap();
+            log_to_home(temp.path(), "next generation").unwrap();
+        }
+        for generation in 1..=super::LOG_GENERATIONS {
+            assert_eq!(fs::read(dir.join(format!("diag.log.{generation}"))).unwrap(),
+                vec![b'a' + (7 - generation) as u8; (MAX_LOG_BYTES + 1) as usize]);
+        }
+        assert!(!dir.join("diag.log.6").exists());
+        assert!(fs::read_to_string(dir.join("diag.log")).unwrap().ends_with("next generation\n"));
     }
 
     #[test]

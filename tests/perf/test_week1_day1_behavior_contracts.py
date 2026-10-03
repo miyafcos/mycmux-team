@@ -214,15 +214,23 @@ def test_resume_and_handoff_environment_contract_remains_wired() -> None:
         assert_not_contains(launcher, snippet, "src-tauri/src/launcher.sh")
         assert_not_contains(launcher_ps1, snippet, "src-tauri/src/launcher.ps1")
 
+    assert_contains(terminal_pane, "buildTerminalPaneLaunch", "src/components/workspace/TerminalPane.tsx")
+    launch_builder = read_repo_text("src/lib/terminalPaneLaunch.ts")
+    assert_contains(launch_builder, "resolveSavedAgentSession", "src/lib/terminalPaneLaunch.ts")
+    assert_contains(
+        launch_builder,
+        "buildTerminalPaneLaunchEnv(pane, activeTab, launchThroughLauncher, savedAgentSession)",
+        "src/lib/terminalPaneLaunch.ts",
+    )
+    launch_env = read_repo_text("src/lib/terminalPaneLaunchEnv.ts")
     for snippet in [
-        "resolveSavedAgentSession",
         "MYCMUX_PANE_SESSION_ID",
         "MYCMUX_TAB_ID",
         "MYCMUX_AGENT_KIND",
         "MYCMUX_SESSION_ID",
         "MYCMUX_RESUME",
     ]:
-        assert_contains(terminal_pane, snippet, "src/components/workspace/TerminalPane.tsx")
+        assert_contains(launch_env, snippet, "src/lib/terminalPaneLaunchEnv.ts")
 
     for snippet in [
         "crsmCreateHandoff",
