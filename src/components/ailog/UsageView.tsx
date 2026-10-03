@@ -31,7 +31,9 @@ export const UsageView = memo(function UsageView(props: {
 }) {
   const p = props;
   const [highlight, setHighlight] = useState<string | null>(null);
-  const model = useMemo(() => p.series ? buildUsageModel(p.series.buckets, p.metric, undefined, p.bucket, p.series.groupBy) : null, [p.series, p.metric, p.bucket]);
+  // USD data can keep its identity; converted SVG labels still follow the rate.
+  const usdJpyRate = useAilogStore((state) => state.usdJpyRate);
+  const model = useMemo(() => p.series ? buildUsageModel(p.series.buckets, p.metric, undefined, p.bucket, p.series.groupBy) : null, [p.series, p.metric, p.bucket, usdJpyRate]);
   const groupingLabel = groupByLabel(p.series?.groupBy ?? p.seriesAxis);
   const unit = bucketNoun(p.bucket);
   const seriesMatchesOverview = Boolean(p.series && p.overview
@@ -115,7 +117,7 @@ export const UsageView = memo(function UsageView(props: {
               <ButtonGroup ariaLabel="表示" roleLabel="表示" value={p.stack} onChange={p.onStack} options={[{ value: "absolute", label: "実数" }, { value: "share", label: "構成比" }]} />
               <ButtonGroup ariaLabel="まとめ方" roleLabel="まとめ方" value={p.seriesAxis} onChange={p.onSeriesAxis} options={SERIES_AXES.map((axis) => ({ value: axis.value, label: axis.label, title: axis.hint }))} />
             </div>
-            {model && isStackable(p.metric) ? <UsageBucketChart model={model} metric={p.metric} mode={p.stack} highlight={highlight} onHighlight={setHighlight} onPickDay={p.onPickDay} groupBy={p.series!.groupBy} bucket={p.bucket} priceCoverage={p.series!.priceCoverage} /> : <div style={noteStyle}>セッション数は分類間で重複するため、この積み上げグラフでは表示しません。分類別の値は下の内訳表で確認できます。</div>}
+            {model && isStackable(p.metric) ? <UsageBucketChart model={model} metric={p.metric} mode={p.stack} highlight={highlight} onHighlight={setHighlight} onPickDay={p.onPickDay} groupBy={p.series!.groupBy} bucket={p.bucket} priceCoverage={p.series!.priceCoverage} contextKey={`${p.series!.range.from}:${p.series!.range.to}:${p.series!.groupBy}`} /> : <div style={noteStyle}>セッション数は分類間で重複するため、この積み上げグラフでは表示しません。分類別の値は下の内訳表で確認できます。</div>}
           </>
         ) : p.usageError ? (
           <EmptyState kind="error" message={p.usageError} onPrimary={p.onRetryUsage} />
