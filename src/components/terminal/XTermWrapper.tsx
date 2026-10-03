@@ -109,6 +109,8 @@ import {
   enqueueSessionWrite,
   getTerminalOutputDecoder,
   liveTerms,
+  isTerminalBufferReady,
+  markTerminalBufferReady,
   planTerminalScrollbackRecovery,
   registerTerminalCacheEvictionCleanup,
   rememberTerminalRawTail,
@@ -636,8 +638,9 @@ type TerminalBufferLineOptions = {
   excludeInitialReplay?: boolean;
 };
 
-export function hasTerminalBuffer(sessionId: string): boolean {
-  return liveTerms.has(sessionId) || termCache.has(sessionId);
+export function hasTerminalBuffer(sessionId: string, requireParsed = false): boolean {
+  const term = liveTerms.get(sessionId) ?? termCache.get(sessionId)?.term;
+  return Boolean(term && (!requireParsed || isTerminalBufferReady(term)));
 }
 
 export function hasMountedTerminal(sessionId: string): boolean {
@@ -2259,6 +2262,7 @@ export default memo(function XTermWrapper({
           resolve();
           return;
         }
+        const writeTerm = term;
         const measuredBytes = terminalWriteByteLength(output);
         const writeMeasurement = recordTerminalWriteStart(sessionId, measuredBytes);
         const flowWrite = startTerminalFlowWrite(sessionId, output);
@@ -2295,7 +2299,11 @@ export default memo(function XTermWrapper({
           const rewrittenOutput = typeof displayOutput === "string"
             ? sgrLightRewriters.get(term)!.transform(displayOutput, isLightThemeRef.current)
             : displayOutput;
-          term.write(rewrittenOutput, finish);
+          writeTerm.write(rewrittenOutput, () => {
+            // A timeout or thrown write is not proof that xterm parsed the bytes.
+            markTerminalBufferReady(writeTerm);
+            finish();
+          });
         } catch {
           finish();
         }
@@ -2399,6 +2407,8 @@ export default memo(function XTermWrapper({
       if (scrollback.byteLength === 0) {
         replaceTerminalRawTail(sessionId, scrollback);
         lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;
+        // An actual empty backend snapshot is authoritative too.
+        markTerminalBufferReady(term);
         return true;
       }
       const recoveryPlan = planTerminalScrollbackRecovery(
@@ -3187,6 +3197,7 @@ export default memo(function XTermWrapper({
           const adaptedOutput = colorAdapterRef.current.transform(output, colorAdaptEnabled);
           const rewrittenOutput = sgrLightRewriter.transform(adaptedOutput, isLightThemeRef.current);
           replayTerm.write(rewrittenOutput, () => {
+            markTerminalBufferReady(replayTerm);
             recordTerminalWriteCallback(writeMeasurement);
             resolve();
           });
