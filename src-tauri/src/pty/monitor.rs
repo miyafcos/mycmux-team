@@ -31,15 +31,39 @@ pub struct PtyMetadata {
     pub agent_active: bool,
     pub claude_session_id: Option<String>,
     pub agent_kind: Option<String>,
+    /// Current display identity. Serialized as null when no agent is present.
+    pub live_agent_kind: Option<String>,
     pub agent_session_id: Option<String>,
+}
+
+impl PtyMetadata {
+    /// A running PTY can precede its first monitor/OSC observation. It must
+    /// still appear in snapshots, with explicit absence rather than a saved mark.
+    pub(crate) fn unobserved(session_id: String) -> Self {
+        Self {
+            session_id,
+            cwd: String::new(),
+            git_branch: None,
+            process_name: None,
+            process_status: None,
+            process_status_at: None,
+            last_output_at: None,
+            agent_active: false,
+            claude_session_id: None,
+            agent_kind: None,
+            live_agent_kind: None,
+            agent_session_id: None,
+        }
+    }
 }
 
 fn process_status_from_observation(
     process_name: Option<&str>,
     process_started_at: Option<i64>,
+    agent_active: bool,
 ) -> (Option<String>, Option<i64>) {
     let status = process_name.map(|name| {
-        if is_shell_process(name) {
+        if !agent_active && is_shell_process(name) {
             "idle".to_string()
         } else {
             "working".to_string()
@@ -73,6 +97,16 @@ pub type MetadataStore = Arc<DashMap<String, PtyMetadata>>;
 
 pub fn new_metadata_store() -> MetadataStore {
     Arc::new(DashMap::new())
+}
+
+fn preserved_agent_metadata_fields(
+    previous: Option<&PtyMetadata>,
+) -> (Option<String>, Option<String>, Option<String>) {
+    (
+        previous.and_then(|meta| meta.agent_kind.clone()),
+        previous.and_then(|meta| meta.agent_session_id.clone()),
+        previous.and_then(|meta| meta.claude_session_id.clone()),
+    )
 }
 
 fn codex_agent_metadata_fields(

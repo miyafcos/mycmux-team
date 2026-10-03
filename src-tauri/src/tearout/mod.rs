@@ -3,6 +3,9 @@ mod geometry;
 pub mod log;
 #[cfg(target_os = "windows")]
 mod native;
+#[cfg(target_os = "macos")]
+#[path = "macos.rs"]
+mod native;
 mod transfer;
 
 use std::{
@@ -106,7 +109,7 @@ pub async fn tearout_synthetic_sample(
     if !crate::test_profile::is_active() {
         return Err("tearout_synthetic_requires_test_profile".into());
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = (
             app,
@@ -125,6 +128,31 @@ pub async fn tearout_synthetic_sample(
     }
     #[cfg(target_os = "windows")]
     {
+        if !matches!(phase.as_str(), "move" | "end") || !label.starts_with("mycmux-w") {
+            return Err("tearout_synthetic_sample_invalid".into());
+        }
+        let source = source_label.unwrap_or_else(|| window.label().to_owned());
+        on_ui(&app, move |app| {
+            native::synthetic_sample(
+                &app,
+                id,
+                label,
+                source,
+                region_count.unwrap_or(1),
+                receiver,
+                client_x,
+                client_y,
+                &phase,
+                escaped,
+            )
+        })
+        .await
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if phase == "identity" && label.starts_with("mycmux-w") {
+            return on_ui(&app, move |app| native::window_identity(&app, &label)).await;
+        }
         if !matches!(phase.as_str(), "move" | "end") || !label.starts_with("mycmux-w") {
             return Err("tearout_synthetic_sample_invalid".into());
         }
@@ -253,12 +281,12 @@ pub async fn tearout_cancel_move(
         .cloned()
     {
         shared.cancelled.store(true, Ordering::Release);
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         {
             native::cancel(&app, &label)?;
         }
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = (app, label);
     }
@@ -274,7 +302,10 @@ pub async fn on_ui<T: Send + 'static>(
     let (send, receive) = tokio::sync::oneshot::channel();
     let handle = app.clone();
     app.run_on_main_thread(move || {
-        let _ = send.send(action(handle));
+        #[cfg(target_os = "macos")]
+        native::defer(move || { let _ = send.send(action(handle)); });
+        #[cfg(not(target_os = "macos"))]
+        { let _ = send.send(action(handle)); }
     })
     .map_err(|e| e.to_string())?;
     receive.await.map_err(|e| e.to_string())?
@@ -285,12 +316,12 @@ pub async fn tearout_warm(
     app: AppHandle,
     state: State<'_, TearoutState>,
 ) -> Result<Option<String>, String> {
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = (app, state);
         return Ok(None);
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         if let Some((label, _)) = state.spare.lock().map_err(|e| e.to_string())?.as_ref() {
             return Ok(Some(label.clone()));
@@ -340,6 +371,7 @@ pub async fn tearout_warm(
                     .set_close_intent(reservation.label(), false);
                 e.to_string()
             })?;
+            crate::watchdog::register_process_failed(window.as_ref());
             window
                 .set_size(tauri::LogicalSize::new(720.0, 520.0))
                 .map_err(|e| e.to_string())?;
@@ -483,12 +515,12 @@ pub async fn tearout_show(
     offset_x: f64,
     offset_y: f64,
 ) -> Result<Reveal, String> {
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = (app, label, offset_x, offset_y);
         Err("Native pane tear-out is Windows-only".into())
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         on_ui(&app, move |app| {
             native::reveal(&app, &label, offset_x, offset_y)
@@ -505,12 +537,12 @@ pub async fn tearout_start_move(
     id: String,
     region_count: Option<usize>,
 ) -> Result<(), String> {
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = (app, window, label, id, region_count);
         Err("Native pane tear-out is Windows-only".into())
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         let shared = Arc::new(MoveState::default());
         shared
@@ -714,12 +746,12 @@ pub async fn tearout_retire(
 
 #[tauri::command]
 pub async fn tearout_settle(app: AppHandle, label: String) -> Result<(), String> {
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = (app, label);
         Ok(())
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         on_ui(&app, move |app| {
             if let Some(window) = app.get_window(&label) {
@@ -757,7 +789,7 @@ pub async fn tearout_restore_geometry(
                     geometry.height.max(1),
                 ))
                 .map_err(|e| e.to_string())?;
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
             native::set_alpha(&window, 255)?;
             window.set_focusable(true).map_err(|e| e.to_string())?;
         }

@@ -202,6 +202,7 @@ pub fn init(conn: &Connection) -> Result<(), String> {
     ensure_f3_columns(conn)?;
 
     crate::ailog::price::seed_defaults(conn)?;
+    crate::ailog::report_cache::init_source_revision(conn)?;
     Ok(())
 }
 

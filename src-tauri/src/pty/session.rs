@@ -937,6 +937,7 @@ impl PtySession {
                                             agent_active: old.agent_active,
                                             claude_session_id: old.claude_session_id.clone(),
                                             agent_kind: old.agent_kind.clone(),
+                                            live_agent_kind: old.live_agent_kind.clone(),
                                             agent_session_id: old.agent_session_id.clone(),
                                         },
                                         None => PtyMetadata {
@@ -950,6 +951,7 @@ impl PtySession {
                                             agent_active: false,
                                             claude_session_id: None,
                                             agent_kind: None,
+                                            live_agent_kind: None,
                                             agent_session_id: None,
                                         },
                                     };

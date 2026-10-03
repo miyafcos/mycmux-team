@@ -42,7 +42,10 @@ fn a_zero_offset_still_buckets_in_utc() {
     // The same two instants are one UTC day, which is exactly the behaviour
     // that used to file 17% of turns under the previous date.
     let last_of_the_12th = AUG13_JST - 1;
-    assert_eq!(query::bucket_start_at(last_of_the_12th, "day", 0), AUG12_UTC);
+    assert_eq!(
+        query::bucket_start_at(last_of_the_12th, "day", 0),
+        AUG12_UTC
+    );
     assert_eq!(query::bucket_start_at(AUG13_JST, "day", 0), AUG12_UTC);
 }
 
@@ -278,10 +281,17 @@ fn hour_and_weekday_slots_cover_the_full_cycle() {
     let report = rhythm_of(&conn);
     assert_eq!(report.by_hour.len(), 24);
     assert_eq!(report.by_weekday.len(), 7);
-    assert!(report.by_hour.iter().enumerate().all(|(i, s)| s.slot == i as i64));
+    assert!(report
+        .by_hour
+        .iter()
+        .enumerate()
+        .all(|(i, s)| s.slot == i as i64));
 
-    let busy: Vec<&usage::RhythmSlot> =
-        report.by_hour.iter().filter(|slot| slot.turns > 0).collect();
+    let busy: Vec<&usage::RhythmSlot> = report
+        .by_hour
+        .iter()
+        .filter(|slot| slot.turns > 0)
+        .collect();
     assert_eq!(busy.len(), 1);
     assert_eq!(busy[0].slot, 9);
     assert_eq!(busy[0].io, 11);
@@ -326,7 +336,10 @@ fn the_busiest_day_is_picked_per_metric() {
     }
 
     let report = rhythm_of(&conn);
-    assert_eq!(report.busiest_io.as_ref().map(|day| day.day), Some(AUG13_JST));
+    assert_eq!(
+        report.busiest_io.as_ref().map(|day| day.day),
+        Some(AUG13_JST)
+    );
     assert_eq!(
         report.busiest_total.as_ref().map(|day| day.day),
         Some(AUG13_JST)
@@ -338,4 +351,168 @@ fn the_busiest_day_is_picked_per_metric() {
         .expect("second day present");
     assert_eq!(second.turns, 5);
     assert_eq!(second.io, 60);
+}
+
+#[test]
+fn hourly_fold_matches_legacy_sql_for_filtered_partial_windows() {
+    let fixture = Fixture::new();
+    let conn = fixture.conn();
+    for (session, seq, ts, input) in [
+        ("A", 0, AUG13_JST - 1, 100),
+        ("A", 1, AUG13_JST, 110),
+        ("A", 2, AUG13_JST + HOUR, 120),
+        ("A", 3, AUG13_JST + HOUR + 1, 130),
+        ("B", 0, AUG13_JST + DAY + 9 * HOUR, 140),
+        ("C", 0, AUG13_JST + 10 * HOUR, 150),
+        ("D", 0, AUG13_JST + 11 * HOUR, 160),
+        ("B", 1, AUG13_JST + 3 * DAY, 170),
+    ] {
+        turn_at(&conn, session, seq, ts, input, 10);
+    }
+    conn.execute("UPDATE session SET project_label='project', project_key='project', git_branch='main', first_prompt='needle', cost_usd=1 WHERE session_id='A'", []).unwrap();
+    conn.execute("UPDATE session SET is_sidechain=1 WHERE session_id='C'", [])
+        .unwrap();
+    conn.execute(
+        "UPDATE session SET origin='ailog-internal' WHERE session_id='D'",
+        [],
+    )
+    .unwrap();
+    conn.execute("UPDATE turn SET effort='high' WHERE session_id='A'", [])
+        .unwrap();
+    let range = Range {
+        from: Some(AUG13_JST - 1),
+        to: Some(AUG13_JST + DAY + 9 * HOUR),
+        preset: None,
+        anchor: None,
+    };
+    let mut cases = vec![Filters::default()];
+    cases.push(Filters {
+        include_sidechain: true,
+        ..Filters::default()
+    });
+    cases.push(Filters {
+        origins: vec!["ailog-internal".into()],
+        ..Filters::default()
+    });
+    cases.push(Filters {
+        models: vec!["opus-5".into()],
+        ..Filters::default()
+    });
+    cases.push(Filters {
+        projects: vec!["project".into()],
+        ..Filters::default()
+    });
+    cases.push(Filters {
+        branches: vec!["main".into()],
+        ..Filters::default()
+    });
+    cases.push(Filters {
+        efforts: vec!["high".into()],
+        ..Filters::default()
+    });
+    cases.push(Filters {
+        query: Some("needle".into()),
+        ..Filters::default()
+    });
+    cases.push(Filters {
+        min_cost: Some(0.5),
+        ..Filters::default()
+    });
+    cases.push(Filters {
+        kinds: vec![KIND_CODEX.into()],
+        ..Filters::default()
+    });
+    let shift = JST_MIN * 60_000;
+    for filters in cases {
+        let report = usage::rhythm(&conn, &range, &filters, NOW).unwrap();
+        let (resolved, _) = range.resolve(NOW);
+        let (where_sql, params) = query::shared_where(&resolved, &filters);
+        let source = format!("FROM turn t JOIN session s ON s.kind=t.kind AND s.session_id=t.session_id WHERE {where_sql}");
+        let total_sql = format!("SELECT COUNT(*), COALESCE(SUM(t.input_tokens),0), COALESCE(SUM(t.output_tokens),0), COALESCE(SUM(t.cache_read_tokens),0), COALESCE(SUM(t.cache_write_5m_tokens+t.cache_write_1h_tokens),0), COALESCE(SUM(t.cost_usd),0) {source}");
+        let expected = conn
+            .query_row(&total_sql, rusqlite::params_from_iter(params.iter()), |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, f64>(5)?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(
+            (
+                report.totals.turns,
+                report.totals.input,
+                report.totals.output,
+                report.totals.cache_read,
+                report.totals.cache_write,
+                report.totals.cost_usd
+            ),
+            expected
+        );
+        let io = "t.input_tokens+t.output_tokens";
+        let total = "t.input_tokens+t.output_tokens+t.cache_read_tokens+t.cache_write_5m_tokens+t.cache_write_1h_tokens";
+        let days_sql = format!("SELECT (t.ts+{shift})/{DAY} AS d, COUNT(*), SUM({io}), SUM({total}), SUM(t.cost_usd) {source} GROUP BY d ORDER BY d");
+        let mut stmt = conn.prepare(&days_sql).unwrap();
+        let expected_days = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), |r| {
+                Ok((
+                    r.get::<_, i64>(0)? * DAY - shift,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, f64>(4)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            report
+                .days
+                .iter()
+                .map(|d| (d.day, d.turns, d.io, d.total, d.cost_usd))
+                .collect::<Vec<_>>(),
+            expected_days
+        );
+        for (expression, slots, cycle) in [
+            (
+                format!("((t.ts+{shift})/{HOUR})%24"),
+                &report.by_hour,
+                24usize,
+            ),
+            (
+                format!("((t.ts+{shift})/{DAY}+4)%7"),
+                &report.by_weekday,
+                7usize,
+            ),
+        ] {
+            let sql = format!("SELECT {expression} AS slot, COUNT(*), SUM({io}), SUM({total}) {source} GROUP BY slot");
+            let mut stmt = conn.prepare(&sql).unwrap();
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(params.iter()), |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                    ))
+                })
+                .unwrap();
+            let mut expected = vec![(0, 0, 0); cycle];
+            for row in rows {
+                let (slot, turns, io, total) = row.unwrap();
+                expected[slot.rem_euclid(cycle as i64) as usize] = (turns, io, total);
+            }
+            assert_eq!(
+                slots
+                    .iter()
+                    .map(|s| (s.turns, s.io, s.total))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
 }

@@ -85,6 +85,30 @@ pub(super) enum DetectedAgentKind {
     Claude = 2,
     ClaudeCodex = 3,
     Grok = 4,
+    Antigravity = 5,
+    Hermes = 6,
+    Omp = 7,
+}
+
+impl DetectedAgentKind {
+    pub(super) fn display_kind(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::ClaudeCodex => "claude-codex",
+            Self::Codex => "codex",
+            Self::Grok => "grok",
+            Self::Antigravity => "antigravity",
+            Self::Hermes => "hermes",
+            Self::Omp => "omp",
+        }
+    }
+
+    pub(super) fn is_restorable(self) -> bool {
+        matches!(
+            self,
+            Self::Claude | Self::ClaudeCodex | Self::Codex | Self::Grok
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -470,6 +494,19 @@ pub(super) fn should_write_agent_session_mapping(
     !mapping_matches_agent_session(mappings, pty_session_key, agent_kind, agent_session_id)
 }
 
+/// Gate every monitor mapping write on the agent selected from this PTY's root.
+pub(super) fn should_write_selected_agent_session_mapping(
+    mappings: &HashMap<String, AgentSessionMapping>,
+    pane: &str,
+    selected_kind: Option<DetectedAgentKind>,
+    mapping_kind: &str,
+    session_id: &str,
+) -> bool {
+    selected_kind
+        .is_some_and(|kind| mapping_kind_is_grounded_for_pane(mappings, pane, mapping_kind, kind))
+        && should_write_agent_session_mapping(mappings, pane, mapping_kind, session_id)
+}
+
 pub(super) fn preferred_known_agent_session_id(
     exact_session_id: Option<String>,
     mappings: &HashMap<String, AgentSessionMapping>,
@@ -627,19 +664,17 @@ fn agent_kind_from_executable_name(name: &str) -> Option<DetectedAgentKind> {
         return None;
     }
     let lower_name = name.to_ascii_lowercase();
-    if lower_name.contains("claude-codex") {
-        return Some(DetectedAgentKind::ClaudeCodex);
+    let leaf = lower_name.rsplit(['/', '\\']).next()?;
+    match leaf.strip_suffix(".exe").unwrap_or(leaf) {
+        "claude-codex" => Some(DetectedAgentKind::ClaudeCodex),
+        "claude" => Some(DetectedAgentKind::Claude),
+        "codex" => Some(DetectedAgentKind::Codex),
+        "grok" => Some(DetectedAgentKind::Grok),
+        "agy" => Some(DetectedAgentKind::Antigravity),
+        "hermes" => Some(DetectedAgentKind::Hermes),
+        "omp" => Some(DetectedAgentKind::Omp),
+        _ => None,
     }
-    if lower_name.contains("claude") {
-        return Some(DetectedAgentKind::Claude);
-    }
-    if lower_name.contains("codex") {
-        return Some(DetectedAgentKind::Codex);
-    }
-    if lower_name.contains("grok") {
-        return Some(DetectedAgentKind::Grok);
-    }
-    None
 }
 
 /// Classify node/bun only from its executable and script-path arguments.
@@ -660,20 +695,26 @@ pub(super) fn classify_interpreter_cmdline(args: &[String]) -> Option<DetectedAg
     if !matches!(interpreter_leaf, "node" | "bun") {
         return None;
     }
-    let script_path = args.get(1)?.to_ascii_lowercase();
-    if script_path.contains("@openai/codex")
-        || script_path.contains("/codex")
-        || script_path.contains("\\codex")
-    {
-        return Some(DetectedAgentKind::Codex);
+    let script_path = args.get(1)?.to_ascii_lowercase().replace('\\', "/");
+    // Match complete script leaves or known package entry points, never a
+    // directory or arbitrary prefix containing an agent's name.
+    let leaf = script_path.rsplit('/').next()?;
+    let parent = script_path.rsplit('/').nth(1).unwrap_or("");
+    match leaf {
+        "codex.js" => Some(DetectedAgentKind::Codex),
+        "claude.js" => Some(DetectedAgentKind::Claude),
+        "claude-codex.js" => Some(DetectedAgentKind::ClaudeCodex),
+        "grok.js" => Some(DetectedAgentKind::Grok),
+        "agy.js" => Some(DetectedAgentKind::Antigravity),
+        "hermes.js" => Some(DetectedAgentKind::Hermes),
+        "omp.js" => Some(DetectedAgentKind::Omp),
+        "cli.js" if matches!(parent, "claude" | "claude-code") => Some(DetectedAgentKind::Claude),
+        "cli.js" if parent == "claude-codex" => Some(DetectedAgentKind::ClaudeCodex),
+        // The wrapper fixture represents the supported Claude launcher wrapper.
+        "wrapper.js" if parent == "claude" => Some(DetectedAgentKind::Claude),
+        "cli.js" if parent == "grok" => Some(DetectedAgentKind::Grok),
+        _ => None,
     }
-    if script_path.contains("claude-codex") {
-        return Some(DetectedAgentKind::ClaudeCodex);
-    }
-    if script_path.contains("claude") {
-        return Some(DetectedAgentKind::Claude);
-    }
-    None
 }
 
 fn agent_detection_from_process(
@@ -789,6 +830,9 @@ pub(super) fn collect_explicit_agent_session_ids(sys: &System) -> HashSet<String
         .keys()
         .filter_map(|pid| {
             let kind = agent_kind_from_process(sys, *pid)?;
+            if !kind.is_restorable() {
+                return None;
+            }
             session_id_from_agent_args(sys, *pid, kind == DetectedAgentKind::Codex)
         })
         .collect()
@@ -1539,6 +1583,162 @@ mod tests {
             None, None, None, &HashSet::new(), |kind, _| { assert_eq!(kind, "claude-codex"); false }, || None,
         ).unwrap();
         assert_eq!(fresh.agent_kind, "claude-codex");
+    }
+
+    #[test]
+    fn exact_agent_executable_leaves_reject_substring_matches() {
+        for (name, kind) in [
+            ("CLAUDE.EXE", DetectedAgentKind::Claude),
+            ("/usr/bin/codex", DetectedAgentKind::Codex),
+            (r"C:\tools\claude-codex.exe", DetectedAgentKind::ClaudeCodex),
+            ("grok", DetectedAgentKind::Grok),
+            ("agy.exe", DetectedAgentKind::Antigravity),
+            ("hermes", DetectedAgentKind::Hermes),
+            ("omp.exe", DetectedAgentKind::Omp),
+        ] {
+            assert_eq!(
+                classify_agent_process(name, Vec::new),
+                Some((kind, AgentDetectionSource::ExecutableName))
+            );
+        }
+        for name in [
+            "my-claude.exe",
+            "codex-tool.exe",
+            "grokking.exe",
+            "agy-helper",
+            "hermes-server",
+            "omp-worker.exe",
+            r"C:\codex\other.exe",
+            "/claude/node",
+        ] {
+            assert_eq!(classify_agent_process(name, Vec::new), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn known_script_paths_use_complete_components() {
+        for (script, kind) in [
+            (
+                "/opt/node_modules/@anthropic-ai/claude-code/cli.js",
+                DetectedAgentKind::Claude,
+            ),
+            (
+                r"C:\npm\node_modules\@openai\codex\bin\codex.js",
+                DetectedAgentKind::Codex,
+            ),
+            ("/tools/claude-codex/cli.js", DetectedAgentKind::ClaudeCodex),
+            ("/tools/grok/cli.js", DetectedAgentKind::Grok),
+            ("/tools/agy.js", DetectedAgentKind::Antigravity),
+            ("/tools/hermes.js", DetectedAgentKind::Hermes),
+            ("/tools/omp.js", DetectedAgentKind::Omp),
+        ] {
+            let args = vec!["/usr/bin/node".into(), script.into()];
+            assert_eq!(classify_interpreter_cmdline(&args), Some(kind), "{script}");
+        }
+        for script in [
+            "/opt/codex/app.js",
+            "/claude/report.js",
+            "/claude-helper/cli.js",
+            "/grok-tool/cli.js",
+            "/codex-server.js",
+            "/OpenAI/Codex/runtimes/cua_node/codex.js",
+            "/node_modules/@openai/codex-tools/cli.js",
+            "/hermes-worker.js",
+        ] {
+            assert_eq!(
+                classify_interpreter_cmdline(&["bun.exe".into(), script.into()]),
+                None,
+                "{script}"
+            );
+        }
+    }
+
+    #[test]
+    fn display_only_agents_own_the_root_but_never_resume_or_map_t9() {
+        for (name, kind) in [
+            ("agy.exe", DetectedAgentKind::Antigravity),
+            ("hermes.exe", DetectedAgentKind::Hermes),
+            ("omp.exe", DetectedAgentKind::Omp),
+        ] {
+            let processes = vec![
+                fixture_process(10, 0, "bash.exe", &[]),
+                fixture_process(20, 10, name, &[]),
+                fixture_process(30, 20, "codex.exe", &["exec", CODEX_SESSION]),
+            ];
+            assert_eq!(detect_fixture(&processes), Some((kind, Pid::from_u32(20))));
+            assert!(!kind.is_restorable());
+            assert!(!should_write_selected_agent_session_mapping(
+                &HashMap::new(),
+                "pane",
+                Some(kind),
+                "codex",
+                CODEX_SESSION
+            ));
+        }
+        let fresh = PtyMetadata::unobserved("pane".into());
+        assert_eq!(
+            preserved_agent_metadata_fields(Some(&fresh)),
+            (None, None, None)
+        );
+        let mut previous = fresh;
+        previous.agent_kind = Some("claude".into());
+        previous.agent_session_id = Some("resume".into());
+        assert_eq!(
+            preserved_agent_metadata_fields(Some(&previous)),
+            (Some("claude".into()), Some("resume".into()), None)
+        );
+    }
+
+    #[test]
+    fn child_codex_mapping_cannot_replace_the_selected_claude_t3() {
+        let (processes, _, _) = agent_tree_cases().swap_remove(2);
+        let (selected, _) = detect_fixture(&processes).unwrap();
+        let mappings = HashMap::from([(
+            "pane".into(),
+            AgentSessionMapping {
+                hook_confirmed: false,
+                agent_kind: Some("claude".into()),
+                session_id: "parent".into(),
+            },
+        )]);
+        assert!(!should_write_selected_agent_session_mapping(
+            &mappings,
+            "pane",
+            Some(selected),
+            "codex",
+            CODEX_SESSION
+        ));
+        assert!(!should_write_selected_agent_session_mapping(
+            &mappings, "pane", None, "claude", "parent"
+        ));
+        assert!(!should_write_selected_agent_session_mapping(
+            &mappings,
+            "pane",
+            Some(selected),
+            "claude",
+            "parent"
+        ));
+        assert!(should_write_selected_agent_session_mapping(
+            &mappings,
+            "pane",
+            Some(selected),
+            "claude",
+            "successor"
+        ));
+        assert_eq!(mappings["pane"].session_id, "parent");
+    }
+
+    #[test]
+    fn claude_root_tools_keep_working_and_the_root_timestamp_t2() {
+        let (processes, _, _) = agent_tree_cases().swap_remove(1);
+        let (selected, root) = detect_fixture(&processes).unwrap();
+        assert_eq!(root, Pid::from_u32(10));
+        for tool in ["powershell.exe", "bash.exe", "cmd.exe"] {
+            let (status, at) =
+                process_status_from_observation(Some(tool), Some(1000), selected.is_restorable());
+            assert_eq!(status.as_deref(), Some("working"));
+            assert_eq!(at, Some(1000));
+        }
     }
 
     #[test]

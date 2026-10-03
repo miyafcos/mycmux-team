@@ -4,7 +4,7 @@ import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
 import { isDeclaredTab } from "../../lib/tabLifecycle";
 import { resolveTabMark, type TabMark } from "../../lib/tabMark";
 import type { Pane, PaneTab, Workspace } from "../../types";
-import type { PaneMetadata } from "../../stores/paneMetadataStore";
+import type { PaneMetadata, PaneVolatileMetadata } from "../../stores/paneMetadataStore";
 
 export interface MinimapChip {
   tabId: string;
@@ -171,7 +171,7 @@ export function minimapWorkspaceStrip(
 }
 
 function chip(tab: PaneTab, pane: Pane, index: number, ctx: MinimapModelContext): MinimapChip {
-  const metadata = ((ctx.metadataBySession ?? {}) as Record<string, PaneMetadata | undefined>)[tab.sessionId];
+  const metadata = ((ctx.metadataBySession ?? {}) as Record<string, (PaneMetadata & PaneVolatileMetadata) | undefined>)[tab.sessionId];
   return {
     tabId: tab.id,
     sessionId: tab.sessionId,
@@ -184,7 +184,7 @@ function chip(tab: PaneTab, pane: Pane, index: number, ctx: MinimapModelContext)
     lastOutputAt: metadata?.backendLastOutputAt,
     contextPct: ctx.contextPctBySession?.[tab.sessionId],
     typeGlyph: typeGlyph(tab.type),
-    mark: resolveTabMark(tab, metadata?.agentKind),
+    mark: resolveTabMark(tab, metadata?.liveAgentKind, metadata?.ptyAlive === true),
     displayState: ctx.displayStateByTabId?.[tab.id],
     isActiveTab: tab.id === pane.activeTabId,
     isPinned: tab.id === pane.pinnedTabId,

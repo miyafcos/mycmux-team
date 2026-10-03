@@ -98,10 +98,6 @@ export function registerSelectionCopyListener(currentTerm: Terminal, sessionId: 
   let lastNonEmptySelection = "";
   const selectionDisposable = currentTerm.onSelectionChange(() => {
     selectionDirty = true;
-    const selectedText = currentTerm.getSelection();
-    if (selectedText) {
-      lastNonEmptySelection = selectedText;
-    }
   });
 
   const readSelectionForCopy = (): string => {
@@ -141,6 +137,8 @@ export function registerSelectionCopyListener(currentTerm: Terminal, sessionId: 
     if (copyTimer !== null) {
       window.clearTimeout(copyTimer);
     }
+    // Snapshot only at the copy gesture, before later output can clear it.
+    lastNonEmptySelection = currentTerm.getSelection();
     copyTimer = window.setTimeout(() => {
       copyTimer = null;
       copySelectedText();
@@ -156,6 +154,7 @@ export function registerSelectionCopyListener(currentTerm: Terminal, sessionId: 
     if (copyTimer !== null) {
       window.clearTimeout(copyTimer);
     }
+    lastNonEmptySelection = currentTerm.getSelection();
     copyTimer = window.setTimeout(() => {
       copyTimer = null;
       selectionDirty = false;

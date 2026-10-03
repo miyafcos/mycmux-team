@@ -1312,6 +1312,9 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
     web-claude|claude-web|claude-ai)
       cmd="__web_claude__"
       ;;
+    web-dots)
+      cmd="__web_dots__"
+      ;;
     web-browser)
       cmd="__web_browser__"
       ;;
@@ -1799,6 +1802,7 @@ if [ -z "$cmd" ]; then
     "Change directory (開発)..."
     "Change directory (案件)..."
     "Change directory (最近・フォルダを辿る)..."
+    "ChatGPT dots (Web)"
   )
 
   # options / commands と同じ並び。model / effort を取れる行だけ target を持つ
@@ -1817,6 +1821,7 @@ if [ -z "$cmd" ]; then
     "" "" "" ""
     ""
     "" "" ""
+    ""
   )
 
   commands=(
@@ -1842,6 +1847,7 @@ if [ -z "$cmd" ]; then
     "__dir_dev__"
     "__dir_anken__"
     "__dir__"
+    "__web_dots__"
   )
 
   selected=0
@@ -1870,7 +1876,7 @@ if [ -z "$cmd" ]; then
   # 1 を返したときだけ呼び出し側が break して cmd を eval する。
   __try_selected_menu_command() {
     case "${commands[$selected]}" in
-      __web_chatgpt__|__web_gemini__|__web_grok__|__web_claude__|__web_notebooklm__|__web_browser__)
+      __web_chatgpt__|__web_gemini__|__web_grok__|__web_claude__|__web_notebooklm__|__web_browser__|__web_dots__)
         # 実処理は __open_web_tab (MYCMUX_LAUNCH_TARGET と共有)。
         # ここはメニューを畳んで結果を返すだけ。
         tput cnorm >&$__CMUX_MENU_FD 2>/dev/null
@@ -1999,7 +2005,7 @@ fi
 # MYCMUX_LAUNCH_TARGET=web-* で来た場合。Web ペインはプロセスではないので eval せず、
 # ここで開いてシェルに戻る (メニュー経由の場合は既に処理済みでここには来ない)。
 case "$cmd" in
-  __web_chatgpt__|__web_gemini__|__web_grok__|__web_claude__|__web_notebooklm__|__web_browser__)
+  __web_chatgpt__|__web_gemini__|__web_grok__|__web_claude__|__web_notebooklm__|__web_browser__|__web_dots__)
     __open_web_tab_from_pseudo_command "$cmd"
     cmd=""
     ;;

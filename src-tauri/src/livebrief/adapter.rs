@@ -86,6 +86,7 @@ pub enum UserMessageKind {
 #[derive(Clone, Debug)]
 pub struct AgentAdapter {
     kind: String,
+    provider_kind: String,
     open_questions: HashMap<String, String>,
     open_tools: HashMap<String, (String, Option<String>)>,
     seen_native_ids: HashSet<String>,
@@ -103,6 +104,7 @@ impl AgentAdapter {
     /// `claude-codex` writes the very same transcript shape as `claude`, so it
     /// is normalised here instead of being threaded through every decoder.
     pub fn new(kind: &str) -> Result<Self, String> {
+        let provider_kind = kind.to_owned();
         let kind = match kind {
             "claude" | "claude-codex" => "claude",
             "codex" => "codex",
@@ -111,6 +113,7 @@ impl AgentAdapter {
         };
         Ok(Self {
             kind: kind.to_string(),
+            provider_kind,
             open_questions: HashMap::new(),
             open_tools: HashMap::new(),
             seen_native_ids: HashSet::new(),
@@ -123,6 +126,11 @@ impl AgentAdapter {
             last_codex_total: None,
             last_telemetry_delta: None,
         })
+    }
+
+    /// The transcript format may be normalized; the product capability identity stays distinct.
+    pub fn capabilities(&self) -> crate::agent_adapters::AdapterCapabilities {
+        crate::agent_adapters::legacy_capabilities(&self.provider_kind).expect("registered transcript adapter")
     }
 
     pub fn take_telemetry_delta(&mut self) -> Option<TelemetryDelta> {

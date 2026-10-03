@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({ invoke: vi.fn(), confirm: vi.fn() }));
 vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
   ...await importOriginal<typeof import("@tauri-apps/api/core")>(), invoke: mocks.invoke,
 }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: mocks.confirm }));
+vi.mock("../../src/lib/appConfirmation", () => ({ cancelAppConfirmations: vi.fn(() => false), confirm: mocks.confirm }));
 
 import { __resetPaneLeftoverNotificationsForTests } from "../../src/lib/paneLeftoverNotifications";
 import { PaneLeftoverProcesses } from "../../src/components/layout/PaneLeftoverProcesses";

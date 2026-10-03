@@ -803,23 +803,27 @@ pub async fn ailog_set_price(entry: query::PriceEntry) -> Result<SetPriceResult,
 // ---------------------------------------------------------------------------
 
 #[tauri::command(async)]
-pub fn ailog_get_usd_jpy_rate(app_handle: AppHandle) -> Result<f64, String> {
-    let data = crate::db::storage::load(&app_handle)?;
-    Ok(crate::db::storage::sanitize_ailog_usd_jpy_rate(
-        data.settings.ailog_usd_jpy_rate,
-    ))
+pub async fn ailog_get_usd_jpy_rate(app_handle: AppHandle) -> Result<f64, String> {
+    crate::util::task::run_blocking("ailog_get_usd_jpy_rate", move || {
+        let data = crate::db::storage::load(&app_handle)?;
+        Ok(crate::db::storage::sanitize_ailog_usd_jpy_rate(
+            data.settings.ailog_usd_jpy_rate,
+        ))
+    }).await
 }
 
 #[tauri::command(async)]
-pub fn ailog_set_usd_jpy_rate(
+pub async fn ailog_set_usd_jpy_rate(
     app_handle: AppHandle,
     rate: f64,
 ) -> Result<f64, crate::db::storage::PersistentStorageError> {
-    let sanitized = crate::db::storage::sanitize_ailog_usd_jpy_rate(rate);
-    crate::db::storage::update(&app_handle, |data| {
-        data.settings.ailog_usd_jpy_rate = sanitized;
-    })?;
-    Ok(sanitized)
+    crate::util::task::run_blocking_result("ailog_set_usd_jpy_rate", move || {
+        let sanitized = crate::db::storage::sanitize_ailog_usd_jpy_rate(rate);
+        crate::db::storage::update(&app_handle, |data| {
+            data.settings.ailog_usd_jpy_rate = sanitized;
+        })?;
+        Ok(sanitized)
+    }).await
 }
 
 #[cfg(test)]

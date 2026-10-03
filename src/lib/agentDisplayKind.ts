@@ -24,20 +24,29 @@ export const LAUNCH_TARGET_DISPLAY_KINDS: Record<string, DisplayAgentKind> = {
   omp: "omp",
 };
 
+/** Recognize only display kinds; unknown persisted strings are not evidence. */
+export function normalizeDisplayAgentKind(kind: string | null | undefined): DisplayAgentKind | null {
+  if (kind === "agy") return "antigravity";
+  return kind === "claude" || kind === "codex" || kind === "claude-codex"
+    || kind === "grok" || kind === "antigravity" || kind === "hermes" || kind === "omp"
+    ? kind : null;
+}
+
 export function resolveDisplayAgentKind(
   agentKind: string | null | undefined,
   commandArgv?: readonly string[] | null,
   launchTarget?: string | null,
 ): DisplayAgentKind | null {
-  if (agentKind === "claude" || agentKind === "codex" || agentKind === "claude-codex" || agentKind === "grok") {
-    return agentKind;
-  }
+  const knownKind = normalizeDisplayAgentKind(agentKind);
+  if (knownKind) return knownKind;
 
   const command = commandArgv?.[0]
     ?.replace(/^.*[\\/]/, "")
     .replace(/\.exe$/i, "")
     .toLowerCase();
-  const fromCommand = command ? COMMAND_DISPLAY_KINDS[command] ?? null : null;
+  const fromCommand = command && Object.prototype.hasOwnProperty.call(COMMAND_DISPLAY_KINDS, command)
+    ? COMMAND_DISPLAY_KINDS[command] : null;
   if (fromCommand) return fromCommand;
-  return launchTarget ? LAUNCH_TARGET_DISPLAY_KINDS[launchTarget] ?? null : null;
+  return launchTarget && Object.prototype.hasOwnProperty.call(LAUNCH_TARGET_DISPLAY_KINDS, launchTarget)
+    ? LAUNCH_TARGET_DISPLAY_KINDS[launchTarget] : null;
 }

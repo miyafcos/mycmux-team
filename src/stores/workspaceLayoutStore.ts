@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { confirm } from "../lib/appConfirmation";
 import { getTabDisplayLabel } from "../lib/tabDisplayLabel";
 import { v4 as uuid } from "uuid";
 import type { ArtifactSourceKind, Pane, PaneTab, GridTemplateId, SuppressedAgentSession, Workspace } from "../types";
@@ -400,10 +401,27 @@ function browserTabKey(tab: PaneTab): string | undefined {
   return tab.sourcePath ?? tab.previewPath ?? tab.htmlPath;
 }
 
-function confirmDiscardBrowserChanges(tab: PaneTab): boolean {
-  if (!tab.isDirty) return true;
+const pendingBrowserReloads = new WeakMap<PaneTab, () => void>();
+const confirmedBrowserReloads = new WeakSet<PaneTab>();
+
+function confirmDiscardBrowserChanges(tab: PaneTab, workspaceId: string, resume: () => void): boolean {
+  if (!tab.isDirty || confirmedBrowserReloads.has(tab)) return true;
+  const pending = pendingBrowserReloads.has(tab);
+  pendingBrowserReloads.set(tab, resume);
+  if (pending) return false;
   const label = getTabDisplayLabel(tab);
-  return window.confirm(`${label} has unsaved edits. Discard them and reload?`);
+  void confirm(`${label} has unsaved edits. Discard them and reload?`, {
+    title: "未保存の編集", okLabel: "再読み込み", cancelLabel: "キャンセル", kind: "warning",
+  }).then((accepted) => {
+    // Re-enter using the latest tree, and only if the exact edited tab survives.
+    const stillCurrent = useWorkspaceListStore.getState().getWorkspace(workspaceId)
+      ?.panes.some((pane) => pane.tabs.includes(tab));
+    if (!accepted || !stillCurrent) return;
+    confirmedBrowserReloads.add(tab);
+    try { pendingBrowserReloads.get(tab)?.(); }
+    finally { confirmedBrowserReloads.delete(tab); }
+  }).catch(() => {}).finally(() => pendingBrowserReloads.delete(tab));
+  return false;
 }
 
 function makeBrowserTab(
@@ -1153,7 +1171,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     );
 
     if (previewPane && existingPreviewTab) {
-      if (!confirmDiscardBrowserChanges(existingPreviewTab)) return;
+      if (!confirmDiscardBrowserChanges(existingPreviewTab, workspaceId, () => useWorkspaceLayoutStore.getState().openOrReloadHtmlPreviewPane(workspaceId, sourcePaneId, info))) return;
       const updatedTab = bumpBrowserTabReloadCounter(existingPreviewTab, info);
       const newPanes = workspace.panes.map((pane) => {
         if (pane.id !== previewPane.id) return pane;
@@ -1175,7 +1193,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     const existingMixedTab = existingMixedPane?.tabs.find(
       (tab) => tab.type === "browser" && browserTabKey(tab) === key,
     );
-    if (existingMixedTab && !confirmDiscardBrowserChanges(existingMixedTab)) return;
+    if (existingMixedTab && !confirmDiscardBrowserChanges(existingMixedTab, workspaceId, () => useWorkspaceLayoutStore.getState().openOrReloadHtmlPreviewPane(workspaceId, sourcePaneId, info))) return;
     const tabToOpen = existingMixedTab ? bumpBrowserTabReloadCounter(existingMixedTab, info) : null;
 
     if (previewPane) {

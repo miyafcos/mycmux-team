@@ -1,4 +1,4 @@
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm } from "./appConfirmation";
 import type { Pane } from "../types";
 import { usePaneMetadataStore } from "../stores/paneMetadataStore";
 import { collectLiveAgentTabs, collectPaneCloseVictims, paneCloseImpactMessage } from "./paneCloseImpact";

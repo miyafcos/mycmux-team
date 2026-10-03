@@ -30,6 +30,7 @@ EXPECTED_LAUNCHER_OPTIONS = [
     "Change directory (開発)...",
     "Change directory (案件)...",
     "Change directory (最近・フォルダを辿る)...",
+    "ChatGPT dots (Web)",
 ]
 
 EXPECTED_LAUNCHER_COMMANDS = [
@@ -55,6 +56,7 @@ EXPECTED_LAUNCHER_COMMANDS = [
     "__dir_dev__",
     "__dir_anken__",
     "__dir__",
+    "__web_dots__",
 ]
 
 

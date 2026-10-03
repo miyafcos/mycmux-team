@@ -170,6 +170,7 @@ import {
   releaseAskQuestionEvidence,
 } from "../../lib/askQuestionEvidence";
 import { scanRateLimit } from "../../lib/rateLimitScan";
+import { scanAskQuestion } from "../../lib/askQuestionScan";
 import { observeTerminalVisibility } from "../../lib/terminalVisibilityTracker";
 import { cancelTerminalResync, requestTerminalResync } from "./terminalResyncScheduler";
 import {
@@ -278,6 +279,54 @@ const TURN_LIST_PROMPT_CACHE_MS = 30_000;
 const TURN_LIST_PROMPT_RETRY_MS = 500;
 const TURN_LIST_PROMPT_RETRY_MAX = 5;
 const turnListPromptCache = new Map<string, { fetchedAt: number; prompts: TranscriptPrompt[] }>();
+export const __turnListPromptCacheForTests = turnListPromptCache;
+registerTerminalCacheEvictionCleanup((sessionId) => turnListPromptCache.delete(sessionId));
+
+/** Only a complete question screen needs the backend revision safety check. */
+export async function scanTerminalAskQuestion(
+  sessionId: string,
+  source: readonly string[] | (() => readonly string[]),
+  observedAt: number,
+  readRevision = getSessionInputRevision,
+) {
+  const readLines = typeof source === "function" ? source : () => source;
+  const lines = readLines();
+  if (!scanAskQuestion(lines)) return ingestAskQuestionLines(sessionId, lines, observedAt);
+  const observedInputRevision = await readRevision(sessionId);
+  // Revision precedes the accepted screen snapshot, as in the original path.
+  return ingestAskQuestionLines(sessionId, readLines(), observedAt, observedInputRevision);
+}
+
+const SCROLLBACK_RETRY_BASE_MS = 160;
+const SCROLLBACK_RETRY_MAX_FAILURES = 6;
+
+/** Stop a broken session from pulling the same scrollback forever. */
+export class TerminalScrollbackRetry {
+  private failures = 0;
+  private retryAt = 0;
+  constructor(private readonly now: () => number = () => Date.now()) {}
+
+  reset(): void {
+    this.failures = 0;
+    this.retryAt = 0;
+  }
+
+  delay(): number | null {
+    return this.failures >= SCROLLBACK_RETRY_MAX_FAILURES
+      ? null : Math.max(SCROLLBACK_RETRY_BASE_MS, this.retryAt - this.now());
+  }
+
+  async run(sync: () => Promise<boolean>): Promise<boolean> {
+    if (this.failures >= SCROLLBACK_RETRY_MAX_FAILURES || this.now() < this.retryAt) return false;
+    const synchronized = await sync().catch(() => false);
+    if (synchronized) this.reset();
+    else {
+      this.failures += 1;
+      this.retryAt = this.now() + SCROLLBACK_RETRY_BASE_MS * 2 ** (this.failures - 1);
+    }
+    return synchronized;
+  }
+}
 
 function tabIdForSession(sessionId: string): string | null {
   for (const workspace of useWorkspaceListStore.getState().workspaces) {
@@ -951,6 +1000,15 @@ export default memo(function XTermWrapper({
     if (!tabId || !payload) return;
     useDashboardViewStore.getState().openTranscriptTurnRequest(tabId, payload);
   }, [sessionId]);
+
+  useEffect(() => registerTerminalCacheEvictionCleanup((closedSessionId) => {
+    if (closedSessionId !== sessionId) return;
+    turnListRequestRef.current += 1;
+    if (turnListRetryTimerRef.current !== null) {
+      window.clearTimeout(turnListRetryTimerRef.current);
+      turnListRetryTimerRef.current = null;
+    }
+  }), [sessionId]);
 
   const openTurnList = useCallback(() => {
     const marks = getTurnMarkData(sessionId);
@@ -1747,17 +1805,10 @@ export default memo(function XTermWrapper({
       let askScreen: ReturnType<typeof ingestAskQuestionLines> = null;
       if (agentKind === "claude" || agentKind === "claude-codex") {
         try {
-          const observedInputRevision = await getSessionInputRevision(sessionId);
-          askScreen = ingestAskQuestionLines(
-            sessionId,
-            getTerminalBufferLines(
-              sessionId,
-              ASK_QUESTION_TAIL_LINES,
-              { excludeInitialReplay: true },
-            ),
-            observedAt,
-            observedInputRevision,
-          );
+          askScreen = await scanTerminalAskQuestion(sessionId, () =>
+            disposed || termDisposed ? [] : getTerminalBufferLines(
+              sessionId, ASK_QUESTION_TAIL_LINES, { excludeInitialReplay: true },
+            ), observedAt);
         } catch {
           useAskQuestionStore.getState().clearScreen(sessionId, "read_failure", observedAt);
         }
@@ -2085,6 +2136,7 @@ export default memo(function XTermWrapper({
     };
 
     const runFrontendResync = (): void | Promise<void> => {
+      scrollbackRetry.reset();
       if (disposed || termDisposed || !term || !fitAddon) return;
       if (!isContainerWritable()) return;
       // The three-step refit burst exists for the ConPTY resize/repaint gap: the
@@ -2454,11 +2506,17 @@ export default memo(function XTermWrapper({
       return request;
     };
 
+    const scrollbackRetry = new TerminalScrollbackRetry();
+    const scheduleScrollbackRetry = (): void => {
+      const delay = scrollbackRetry.delay();
+      if (delay !== null) schedulePendingWriteDrain(delay);
+    };
+
     const syncDroppedBatchScrollbackIfNeeded = async (): Promise<void> => {
       if (!terminalScrollbackResyncNeeded.has(sessionId)) return;
       if (!canWritePendingBatches()) return;
       terminalScrollbackResyncNeeded.delete(sessionId);
-      const synchronized = await syncBackendScrollbackToTerminal();
+      const synchronized = await scrollbackRetry.run(syncBackendScrollbackToTerminal);
       if (!synchronized) {
         terminalScrollbackResyncNeeded.add(sessionId);
       }
@@ -2470,7 +2528,7 @@ export default memo(function XTermWrapper({
       try {
         await syncDroppedBatchScrollbackIfNeeded();
         if (terminalScrollbackResyncNeeded.has(sessionId)) {
-          schedulePendingWriteDrain(160);
+          scheduleScrollbackRetry();
           return;
         }
         while (pendingBatches.length > 0) {
@@ -2553,7 +2611,8 @@ export default memo(function XTermWrapper({
           (pendingBatches.length > 0 || terminalScrollbackResyncNeeded.has(sessionId))
           && isContainerWritable()
         ) {
-          schedulePendingWriteDrain(160);
+          if (terminalScrollbackResyncNeeded.has(sessionId)) scheduleScrollbackRetry();
+          else schedulePendingWriteDrain(160);
         }
       }
     }

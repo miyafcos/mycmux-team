@@ -157,62 +157,64 @@ fn usable_login_path(reported: &str, current: &str) -> Option<String> {
 }
 
 #[tauri::command(async)]
-pub fn get_default_shell() -> DefaultShellInfo {
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(shell) = std::env::var("SHELL") {
-            if std::path::Path::new(&shell).exists() && is_bash_like_shell_path(&shell) {
-                let shell = prefer_wrapper_bash(&shell);
-                let args = if shell.to_ascii_lowercase().ends_with("bash.exe") {
-                    vec!["-i".to_string()]
-                } else {
-                    vec![]
-                };
+pub async fn get_default_shell() -> DefaultShellInfo {
+    crate::util::task::run_blocking_value("get_default_shell", move || {
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(shell) = std::env::var("SHELL") {
+                if std::path::Path::new(&shell).exists() && is_bash_like_shell_path(&shell) {
+                    let shell = prefer_wrapper_bash(&shell);
+                    let args = if shell.to_ascii_lowercase().ends_with("bash.exe") {
+                        vec!["-i".to_string()]
+                    } else {
+                        vec![]
+                    };
+                    return DefaultShellInfo {
+                        command: shell,
+                        args,
+                    };
+                }
+            }
+            // Git Bash
+            let git_bash = "C:\\Program Files\\Git\\bin\\bash.exe";
+            if std::path::Path::new(git_bash).exists() {
                 return DefaultShellInfo {
-                    command: shell,
-                    args,
+                    command: git_bash.to_string(),
+                    args: vec!["-i".to_string()],
                 };
             }
-        }
-        // Git Bash
-        let git_bash = "C:\\Program Files\\Git\\bin\\bash.exe";
-        if std::path::Path::new(git_bash).exists() {
-            return DefaultShellInfo {
-                command: git_bash.to_string(),
-                args: vec!["-i".to_string()],
-            };
-        }
-        // PowerShell
-        let pwsh = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
-        if std::path::Path::new(pwsh).exists() {
-            return DefaultShellInfo {
-                command: pwsh.to_string(),
-                args: vec![],
-            };
-        }
-        // cmd.exe fallback
-        DefaultShellInfo {
-            command: std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string()),
-            args: vec![],
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        if let Ok(shell) = std::env::var("SHELL") {
-            if std::path::Path::new(&shell).exists() {
+            // PowerShell
+            let pwsh = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+            if std::path::Path::new(pwsh).exists() {
                 return DefaultShellInfo {
-                    command: shell,
+                    command: pwsh.to_string(),
                     args: vec![],
                 };
             }
+            // cmd.exe fallback
+            DefaultShellInfo {
+                command: std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string()),
+                args: vec![],
+            }
         }
 
-        DefaultShellInfo {
-            command: "/bin/bash".to_string(),
-            args: vec![],
+        #[cfg(not(target_os = "windows"))]
+        {
+            if let Ok(shell) = std::env::var("SHELL") {
+                if std::path::Path::new(&shell).exists() {
+                    return DefaultShellInfo {
+                        command: shell,
+                        args: vec![],
+                    };
+                }
+            }
+
+            DefaultShellInfo {
+                command: "/bin/bash".to_string(),
+                args: vec![],
+            }
         }
-    }
+    }).await
 }
 
 #[cfg(test)]

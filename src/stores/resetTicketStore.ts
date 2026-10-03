@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm } from "../lib/appConfirmation";
 import { claimResetTicket, type ProfileUsage } from "../lib/ipc";
 import {
   resetTicketBlockedMessage, resetTicketConfirm, resetTicketInvokeErrorMessage,

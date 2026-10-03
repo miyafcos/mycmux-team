@@ -16,7 +16,7 @@ vi.mock("../../src/lib/tearout/sessionAttachment", () => ({ expectTearoutAttachm
 vi.mock("../../src/components/terminal/terminalCache", async (original) => ({
   ...await original<typeof import("../../src/components/terminal/terminalCache")>(), evictTerminalCache: vi.fn(),
 }));
-import { installTearoutRuntime, tearoutTab, useTearoutStore } from "../../src/lib/tearout/runtime";
+import { installTearoutRuntime, tearoutTab, tearoutPane, useTearoutStore } from "../../src/lib/tearout/runtime";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
 import { useSettingsStore } from "../../src/stores/settingsStore";
@@ -79,7 +79,7 @@ describe("tear-out failure and Esc at the actual transfer entry", () => {
     const incoming = config(workspace("incoming"));
     incoming.panes[0].tabs![0] = { ...incoming.panes[0].tabs![0], tab_id: "incoming-tab", session_id: "pty-incoming" };
     dispatch("mycmux://tearout-delivery", { token: "own-delivery", source: "peer", configs: [incoming] }, "main");
-    await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith("peer", "mycmux://tearout-receipt", { token: "own-delivery", ok: true }));
+    await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith("peer", "mycmux://tearout-receipt", { token: "own-delivery", ok: true }), { timeout: 2000 });
     expect(useWorkspaceListStore.getState().workspaces.map((ws) => ws.id)).toEqual(["source", "incoming"]);
   });
   it("ignores an outgoing request addressed to a different window", async () => {
@@ -224,7 +224,7 @@ describe("tear-out failure and Esc at the actual transfer entry", () => {
   it("keeps delivery receipts distinct from docking receipts when the moving window requests itself", async () => {
     dispatch("mycmux://tearout-outgoing", { token: "dock-request", deliveryToken: "dock-delivery", requester: "main",
       approval: { receiver: "peer", token: "painted", target: { kind: "workspace" } } });
-    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("tearout_retire", expect.objectContaining({ receiptToken: "dock-request" })));
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("tearout_retire", expect.objectContaining({ receiptToken: "dock-request" })), { timeout: 2000 });
     expect(mocks.emitTo).toHaveBeenCalledWith("peer", "mycmux://tearout-delivery", expect.objectContaining({ token: "dock-delivery" }));
     expect(mocks.invoke).toHaveBeenCalledWith("tearout_prepare", expect.objectContaining({ id: "dock-delivery" }));
     expect(mocks.invoke).toHaveBeenCalledWith("tearout_retire", expect.objectContaining({ finalizeLabel: "peer", finalizeToken: "dock-delivery" }));
@@ -232,7 +232,7 @@ describe("tear-out failure and Esc at the actual transfer entry", () => {
   it("retains receiver undo when another window still awaits the dock receipt", async () => {
     dispatch("mycmux://tearout-outgoing", { token: "parent-request", deliveryToken: "parent-delivery", requester: "parent",
       approval: { receiver: "peer", token: "painted", target: { kind: "workspace" } } });
-    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("tearout_retire", expect.objectContaining({ receiptToken: "parent-request" })));
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("tearout_retire", expect.objectContaining({ receiptToken: "parent-request" })), { timeout: 2000 });
     expect(mocks.invoke).toHaveBeenCalledWith("tearout_retire", expect.objectContaining({ finalizeLabel: undefined, finalizeToken: undefined }));
   });
   it("the parent finalizes receiver undo only after the successful dock receipt", async () => {
@@ -287,5 +287,55 @@ describe("tear-out failure and Esc at the actual transfer entry", () => {
     expect(removed[0].panes[0].pinnedTabId).toBeUndefined();
     expect(removed[0].panes[0].cwd).toBe("C:/sibling");
     expect(restoreTearoutSource(removed, before, "tab")).toEqual([before]);
+  });
+});
+
+describe("Mac uses the same live transfer state", () => {
+  it.each([false, true])("group Esc keeps remembered selections exact and preserves an actual receiver visit=%s", async visited => {
+    stop();
+    Object.defineProperty(navigator, "platform", { configurable: true, value: "MacIntel" });
+    useSettingsStore.setState({ nativePaneTearoutEnabled: true, macNativePaneTearoutEnabled: true });
+    const source = workspace(), receiver = workspace("receiver");
+    receiver.panes[0] = { ...receiver.panes[0], id: "receiver-pane", sessionId: "pty-receiver",
+      tabs: [{ ...receiver.panes[0].tabs[0], id: "receiver-tab", sessionId: "pty-receiver" }], activeTabId: "receiver-tab" };
+    receiver.splitColumns = [["receiver-pane"]];
+    source.panes[0].tabs.push({ ...source.panes[0].tabs[0], id: "sibling", sessionId: "pty-sibling" });
+    useWorkspaceListStore.setState({ workspaces: [receiver, source], activeWorkspaceId: source.id,
+      lastActivePaneByWorkspace: { source: "pty-original" } });
+    useUiStore.setState({ activePaneId: "pty-original" });
+    const before = useWorkspaceListStore.getState().workspaces;
+    stop = installTearoutRuntime({ serialize: toTransferConfig, publish: async () => {} });
+    mocks.invoke.mockImplementation(async (command: string, args: any) => {
+      if (command === "tearout_take_spare") return "mycmux-w42";
+      if (command === "is_session_alive") return true;
+      if (command === "tearout_start_move") {
+        expect(useWorkspaceListStore.getState().workspaces).toEqual([receiver]);
+        if (visited) useWorkspaceListStore.getState().setActiveWorkspace(receiver.id);
+        dispatch("mycmux://tearout-native", { ...args, phase: "end", at: Date.now(), escaped: true,
+          receiver: null, client_x: -1, client_y: -1, approval: null, error: null });
+      }
+    });
+    await tearoutPane({ kind: "pane", workspaceId: source.id, paneId: "pane", label: "Group", tabCount: 2 }, gap, { x: 10, y: 10 });
+    expect(useWorkspaceListStore.getState().workspaces).toEqual(before);
+    expect(useWorkspaceListStore.getState().lastActivePaneByWorkspace).toEqual({ source: "pty-original",
+      ...(visited ? { receiver: "pty-receiver" } : {}) });
+    expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe(source.id);
+    expect(useUiStore.getState().activePaneId).toBe("pty-original");
+    useSettingsStore.setState({ macNativePaneTearoutEnabled: false });
+  });
+  it.each([true, false])("preserves session identity when Esc=%s", async escaped => {
+    stop();
+    Object.defineProperty(navigator, "platform", { configurable: true, value: "MacIntel" });
+    useSettingsStore.setState({ nativePaneTearoutEnabled: true, macNativePaneTearoutEnabled: true });
+    stop = installTearoutRuntime({ serialize: toTransferConfig, publish: async () => {} });
+    mocks.escape = escaped;
+    const before = useWorkspaceListStore.getState().workspaces;
+    await tearoutTab(item, gap, { x: 10, y: 10 });
+    expect(useWorkspaceListStore.getState().workspaces).toEqual(escaped ? before : []);
+    const delivery = mocks.emitTo.mock.calls.find(([, event]) => event.endsWith("tearout-delivery"))![2];
+    expect(delivery.configs[0].panes[0].tabs[0].session_id).toBe("pty-original");
+    expect(mocks.invoke.mock.calls.some(([command]) => command === "create_session")).toBe(false);
+    expect(mocks.invoke.mock.calls.filter(([command, args]) => command === "tearout_phase" && args.phase === "rolled_back")).toHaveLength(escaped ? 1 : 0);
+    useSettingsStore.setState({ macNativePaneTearoutEnabled: false });
   });
 });

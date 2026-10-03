@@ -23,7 +23,7 @@ vi.mock("../../src/lib/ipc", async (importOriginal) => {
     listCliAccounts: mocks.listCliAccounts,
   };
 });
-vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: mocks.confirmDialog }));
+vi.mock("../../src/lib/appConfirmation", () => ({ cancelAppConfirmations: vi.fn(() => false), confirm: mocks.confirmDialog }));
 vi.mock("@tauri-apps/api/path", () => ({ homeDir: mocks.homeDir }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({
   show: mocks.show, setFocus: mocks.setFocus,
@@ -232,7 +232,7 @@ describe("cliLoginStore events", () => {
     );
   });
 
-  it("brings the window forward before a clicked switch confirmation and coalesces double clicks", async () => {
+  it("uses the shared dialog for a clicked switch confirmation and coalesces double clicks", async () => {
     await startClaudeLogin();
     const switchTo = vi.spyOn(useCliAccountStore.getState(), "switchTo").mockResolvedValue(null);
     mocks.confirmDialog.mockResolvedValueOnce(true);
@@ -241,8 +241,8 @@ describe("cliLoginStore events", () => {
     action.run(); action.run();
     await vi.waitFor(() => expect(switchTo).toHaveBeenCalledExactlyOnceWith("claude", profile.id), { timeout: 10_000 });
     expect(mocks.confirmDialog).toHaveBeenCalledOnce();
-    expect(mocks.show.mock.invocationCallOrder[0]).toBeLessThan(mocks.setFocus.mock.invocationCallOrder[0]);
-    expect(mocks.setFocus.mock.invocationCallOrder[0]).toBeLessThan(mocks.confirmDialog.mock.invocationCallOrder[0]);
+    expect(mocks.show).not.toHaveBeenCalled();
+    expect(mocks.setFocus).not.toHaveBeenCalled();
   });
 
   it("leaves the account unchanged when the clicked switch confirmation is declined", async () => {
