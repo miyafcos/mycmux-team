@@ -5,7 +5,19 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// Windows lock names must distinguish the profile's actual data file. Scope
+/// tags keep the default file distinct from a user profile named "default".
+#[cfg(any(windows, test))]
+fn data_mutex_name(profile: Option<&str>, test_pid: Option<u32>) -> String {
+    let scope = profile.map(|name| format!("profile-{}", name.to_ascii_lowercase()))
+        .unwrap_or_else(|| "default".to_string());
+    match test_pid {
+        Some(pid) => format!("Local\\miyazaki-{}-data-json-test-{scope}-{pid}", env!("CARGO_PKG_NAME")),
+        None => format!("Local\\miyazaki-{}-data-json-scope-{scope}", env!("CARGO_PKG_NAME")),
+    }
+}
 
 #[cfg(target_os = "windows")]
 mod interprocess_data_lock {
@@ -29,24 +41,19 @@ mod interprocess_data_lock {
     }
 
     pub(super) fn mutex_name() -> String {
-        #[cfg(test)]
-        {
-            return format!(
-                "Local\\miyazaki-{}-data-json-test-{}",
-                env!("CARGO_PKG_NAME"),
-                std::process::id()
-            );
-        }
-        #[cfg(not(test))]
-        format!("Local\\miyazaki-{}-data-json", env!("CARGO_PKG_NAME"))
+        super::data_mutex_name(crate::test_profile::name(), if cfg!(test) { Some(std::process::id()) } else { None })
     }
 
     pub fn acquire() -> Result<DataLockGuard, String> {
+        acquire_with_timeout(std::time::Duration::from_millis(LOCK_TIMEOUT_MS.into()))
+    }
+
+    pub fn acquire_with_timeout(timeout: std::time::Duration) -> Result<DataLockGuard, String> {
         let name = mutex_name();
         let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
         let handle = unsafe { CreateMutexW(None, false, PCWSTR(wide_name.as_ptr())) }
             .map_err(|error| format!("Failed to create data-file mutex: {error}"))?;
-        let wait_result = unsafe { WaitForSingleObject(handle, LOCK_TIMEOUT_MS) };
+        let wait_result = unsafe { WaitForSingleObject(handle, timeout.as_millis().min(u128::from(LOCK_TIMEOUT_MS)) as u32) };
 
         if wait_result == WAIT_OBJECT_0 || wait_result == WAIT_ABANDONED {
             return Ok(DataLockGuard(handle));
@@ -92,6 +99,10 @@ mod interprocess_data_lock {
     }
 
     fn acquire_at(runtime_dir: &Path) -> Result<DataLockGuard, String> {
+        acquire_at_with_timeout(runtime_dir, LOCK_TIMEOUT)
+    }
+
+    pub(super) fn acquire_at_with_timeout(runtime_dir: &Path, timeout: Duration) -> Result<DataLockGuard, String> {
         fs::create_dir_all(runtime_dir)
             .map_err(|error| format!("Failed to create data-file lock directory: {error}"))?;
         // Nothing is ever written into this file — it exists only to carry
@@ -117,16 +128,19 @@ mod interprocess_data_lock {
             {
                 return Err(format!("Failed to acquire data-file lock: {error}"));
             }
-            if started.elapsed() >= LOCK_TIMEOUT {
+            if started.elapsed() >= timeout {
                 return Err("Timed out waiting for data-file lock".to_string());
             }
-            thread::sleep(LOCK_RETRY_INTERVAL);
+            thread::sleep(LOCK_RETRY_INTERVAL.min(timeout.saturating_sub(started.elapsed())));
         }
     }
 
     pub fn acquire() -> Result<DataLockGuard, String> {
-        let runtime_dir = crate::test_profile::runtime_dir()?;
-        acquire_at(&runtime_dir)
+        acquire_with_timeout(LOCK_TIMEOUT)
+    }
+
+    pub fn acquire_with_timeout(timeout: Duration) -> Result<DataLockGuard, String> {
+        acquire_at_with_timeout(&crate::test_profile::runtime_dir()?, timeout)
     }
 
     #[cfg(test)]
@@ -1113,6 +1127,33 @@ where
     update_while_locked(target, updater)
 }
 
+fn save_lock_until(lock: &Mutex<()>, deadline: Instant) -> Result<std::sync::MutexGuard<'_, ()>, PersistentStorageError> {
+    loop {
+        match lock.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(error)) => return Err(PersistentStorageError::storage(format!("Failed to lock data file: {error}"))),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() { return Err(PersistentStorageError::storage("Timed out waiting for shutdown data-file lock")); }
+        std::thread::sleep(Duration::from_millis(5).min(remaining));
+    }
+}
+
+/// Ordinary autosaves keep their 30-second interprocess timeout. Only the
+/// last-chance exit writer abandons lock contention after at most 100 ms.
+pub(crate) fn update_for_shutdown<T, F>(target: &T, deadline: Instant, updater: F) -> Result<(), PersistentStorageError>
+where T: PersistentDataTarget + ?Sized, F: FnOnce(&mut PersistentData),
+{
+    ensure_persistence_write_platform_supported()?;
+    let lock_deadline = deadline.min(Instant::now() + Duration::from_millis(100));
+    let _guard = save_lock_until(save_lock(), lock_deadline)?;
+    let _process_guard = interprocess_data_lock::acquire_with_timeout(lock_deadline.saturating_duration_since(Instant::now()))
+        .map_err(PersistentStorageError::from)?;
+    if Instant::now() >= deadline { return Err(PersistentStorageError::storage("Shutdown save budget expired")); }
+    update_while_locked(target, updater)
+}
+
 fn update_while_locked<T, F>(target: &T, updater: F) -> Result<(), PersistentStorageError>
 where
     T: PersistentDataTarget + ?Sized,
@@ -1164,6 +1205,63 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn profile_mutex_names_are_distinct_and_case_equivalent_windows_paths_share_a_lock() {
+        use super::*;
+        let names: std::collections::HashSet<_> = [None, Some("default"), Some("one"), Some("two")]
+            .into_iter().map(|profile| data_mutex_name(profile, None)).collect();
+        assert_eq!(names.len(), 4);
+        assert_eq!(data_mutex_name(Some("Test"), None), data_mutex_name(Some("test"), None));
+        assert_ne!(data_mutex_name(Some("test"), None), data_mutex_name(Some("test"), Some(123)));
+    }
+
+    #[test]
+    fn shutdown_save_abandons_an_inprocess_mutex_held_by_another_thread_without_writing() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.json");
+        let original = br#"{"schema_version":999,"canary":"unchanged"}"#;
+        fs::write(&path, original).unwrap();
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let owner = std::thread::spawn(move || {
+            let _guard = save_lock().lock().unwrap();
+            held_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        });
+        held_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let started = Instant::now();
+        let result = update_for_shutdown(path.as_path(), started + Duration::from_millis(60), |_| panic!("must not update"));
+        release_tx.send(()).unwrap();
+        owner.join().unwrap();
+        assert!(result.unwrap_err().to_string().contains("Timed out"));
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_interprocess_lock_uses_a_short_timeout_while_normal_acquire_remains_available() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let root = dir.path();
+            let owner = scope.spawn(move || {
+                let _guard = interprocess_data_lock::acquire_for_runtime_dir(root).unwrap();
+                held_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            });
+            held_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            let started = Instant::now();
+            assert!(interprocess_data_lock::acquire_at_with_timeout(root, Duration::from_millis(35)).is_err());
+            assert!(started.elapsed() < Duration::from_millis(500));
+            release_tx.send(()).unwrap();
+            owner.join().unwrap();
+            assert!(interprocess_data_lock::acquire_for_runtime_dir(root).is_ok());
+        });
+    }
     use super::*;
 
     #[test]

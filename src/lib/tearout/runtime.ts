@@ -2,7 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { flushSync } from "react-dom";
 import { create } from "zustand";
-import { nativePaneTearoutEnabled } from "./feature";
+import { nativePaneTearoutEnabled, isMacTearoutPlatform } from "./feature";
+import { afterTearoutFrame } from "./macFrame";
+import { startTearoutFrames, finishTearoutFrames, disposeTearoutFrames } from "./frameMetrics";
 import { expectTearoutAttachments } from "./sessionAttachment";
 import { restoreTearoutSource, restoreTearoutGroup, removeTearoutTab, nativeDropAllowed, type Rect } from "./model";
 import { detachedOriginForDrag, detachedWorkspaceConfig, isTransferableTab, type DetachedReturnTarget } from "../detachedPane";
@@ -56,7 +58,7 @@ let localMoving = false;
 const approvedDrops = new Map<string, DockTarget>();
 let preview: { id: string; label: string; epoch: number; feedback: TearoutPreview; target: DockTarget | null } | null = null;
 let pendingSample: NativeSample | null = null;
-let sampleFrame = 0;
+let cancelSampleFrame: (() => void) | null = null;
 let previewRevision = 0;
 
 function nativeTarget(sample: NativeSample): DockTarget | null {
@@ -70,16 +72,18 @@ function nativeTarget(sample: NativeSample): DockTarget | null {
 }
 
 function handleNativeSample(sample: NativeSample): void {
+  if (sample.phase === "end") finishTearoutFrames(sample.id);
+  else startTearoutFrames(sample.id);
   activeTearoutRecords.get(sample.id)?.native(sample);
   if (sample.phase === "end") {
-    if (sampleFrame) window.cancelAnimationFrame(sampleFrame);
-    sampleFrame = 0; pendingSample = null;
+    cancelSampleFrame?.();
+    cancelSampleFrame = null; pendingSample = null;
     applyNativeSample(sample);
     return;
   }
   pendingSample = sample;
-  if (!sampleFrame) sampleFrame = window.requestAnimationFrame(() => {
-    sampleFrame = 0;
+  if (!cancelSampleFrame) cancelSampleFrame = afterTearoutFrame(() => {
+    cancelSampleFrame = null;
     const latest = pendingSample; pendingSample = null;
     if (latest) applyNativeSample(latest);
   });
@@ -100,7 +104,7 @@ function applyNativeSample(sample: NativeSample): void {
         flushSync(() => useDetachedDockStore.setState({ active: target ? { label: sample.label, workspaceId: "", nativeSingleTab: true } : null, target }));
       },
       // The frame mounts inside rAF, so the next rAF follows its first paint.
-      afterPaint: (callback) => window.requestAnimationFrame(callback),
+      afterPaint: (callback) => { afterTearoutFrame(callback); },
       approve: (value, target) => {
         revision = ++previewRevision; token = value;
         return invoke<boolean>("tearout_preview", { id: sample.id, token: value, target, revision, epoch });
@@ -385,13 +389,17 @@ export function installTearoutRuntime(value: Adapter): () => void {
     }, ownWindow),
     listen<{ token: string; ack: string; source: string }>(REVOKE, ({ payload }) => { void receiveRevoke(payload); }, ownWindow),
     listen<{ token: string }>(FINALIZE, ({ payload }) => incoming.delete(payload.token), ownWindow),
-    listen<boolean>(PREFERENCE, ({ payload }) => {
-      if (useSettingsStore.getState().nativePaneTearoutEnabled !== payload)
-        useSettingsStore.setState({ nativePaneTearoutEnabled: payload });
+    listen<boolean | { mac: true; enabled: boolean }>(PREFERENCE, ({ payload }) => {
+      if (typeof payload === "boolean") {
+        if (useSettingsStore.getState().nativePaneTearoutEnabled !== payload)
+          useSettingsStore.setState({ nativePaneTearoutEnabled: payload });
+      } else if (isMacTearoutPlatform()) {
+        useSettingsStore.setState({ nativePaneTearoutEnabled: payload.enabled, macNativePaneTearoutEnabled: payload.enabled });
+      }
     }),
   ];
   listenersReady = Promise.all(registered).then(() => {});
-  let preference = useSettingsStore.getState().nativePaneTearoutEnabled;
+  let preference = nativePaneTearoutEnabled(useSettingsStore.getState().nativePaneTearoutEnabled);
   const warm = () => {
     if (nativePaneTearoutEnabled(preference) && !isMainWindow()) return;
     void invoke(nativePaneTearoutEnabled(preference) ? "tearout_warm" : "tearout_release_spare")
@@ -399,15 +407,17 @@ export function installTearoutRuntime(value: Adapter): () => void {
   };
   if (nativePaneTearoutEnabled(preference)) warm();
   const stop = useSettingsStore.subscribe((state) => {
-    if (state.nativePaneTearoutEnabled === preference) return;
-    preference = state.nativePaneTearoutEnabled;
-    void emit(PREFERENCE, preference).catch((error) => console.warn("[tearout] preference failed", error));
+    const enabled = nativePaneTearoutEnabled(state.nativePaneTearoutEnabled);
+    if (enabled === preference) return;
+    preference = enabled;
+    void emit(PREFERENCE, isMacTearoutPlatform() ? { mac: true, enabled: preference } : preference).catch((error) => console.warn("[tearout] preference failed", error));
     warm();
   });
   return () => {
     stop();
-    if (sampleFrame) window.cancelAnimationFrame(sampleFrame);
-    sampleFrame = 0; pendingSample = null;
+    disposeTearoutFrames();
+    cancelSampleFrame?.();
+    cancelSampleFrame = null; pendingSample = null;
     preview?.feedback.clear();
     preview = null;
     for (const result of registered) void result.then((unlisten) => unlisten()).catch(() => {});
@@ -565,13 +575,16 @@ async function tearoutGroup(item: TransferItem, gap: Rect, offset: { x: number; 
         try {
           flushSync(() => {
             const list = useWorkspaceListStore.getState();
+            // Mac's temporary fallback workspace must not gain a remembered
+            // selection merely because rollback activates the source again.
+            const macRemembered = isMacTearoutPlatform() ? { ...list.lastActivePaneByWorkspace } : null;
             list._replaceWorkspaces(item.kind === "tab" ? restoreTearoutSource(list.workspaces, source, tab!.id, sourceIndex)
               : restoreTearoutGroup(list.workspaces, source, movedPanes.map(pane => pane.id), sourceIndex));
             if (sourceSelection.workspace) list.setActiveWorkspace(sourceSelection.workspace);
             useUiStore.getState().setActivePaneId(sourceSelection.session);
             useUiStore.getState().setZoomedPaneId(sourceSelection.zoom);
             useWorkspaceListStore.setState(state => {
-              const lastActivePaneByWorkspace = { ...state.lastActivePaneByWorkspace };
+              const lastActivePaneByWorkspace = { ...(macRemembered ?? state.lastActivePaneByWorkspace) };
               if (sourceSelection.lastActive) lastActivePaneByWorkspace[source.id] = sourceSelection.lastActive;
               else delete lastActivePaneByWorkspace[source.id];
               return { lastActivePaneByWorkspace };

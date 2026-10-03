@@ -1,22 +1,21 @@
 //! Usage rhythm: absolute totals, active days, streaks, and the shape of a
 //! working day.
 //!
-//! Everything here is a `GROUP BY` executed inside SQLite, so the ~400k `turn`
-//! rows never materialise in process memory the way [`super::query::series`]
-//! does. That is what makes this surface answerable over the full history in
-//! well under a second, and it is the reason the usage tab keeps working when
-//! the summariser subprocess is unavailable: no LLM, no child process, no
-//! network is involved in producing any number on this page.
+//! One filtered day/hour GROUP BY supplies every rhythm view. Only those
+//! compact buckets are materialised, and totals/days/weekdays are folded from
+//! the same snapshot instead of scanning the complete turn range four times.
+//! No LLM, child process or network is involved.
 //!
 //! Token semantics match the rest of ailog: `total` is
 //! `input + output + cache_read + cache_write`, and reasoning tokens are
 //! excluded because both providers already count them inside `output`
 //! (see [`super::price::cost_for_turn`]).
 
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 use rusqlite::{params_from_iter, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ailog::query::{
     index_freshness, log_report_timings, shared_where, IndexFreshness, RangeOut, ReportTimings,
@@ -26,13 +25,7 @@ use crate::ailog::{Filters, Range};
 
 const DAY_MS: i64 = 86_400_000;
 
-/// `input + output + cache_read + cache_write_5m + cache_write_1h`.
-const TOTAL_TOKENS_SQL: &str = "t.input_tokens + t.output_tokens + t.cache_read_tokens \
-     + t.cache_write_5m_tokens + t.cache_write_1h_tokens";
-const IO_TOKENS_SQL: &str = "t.input_tokens + t.output_tokens";
-const FROM_SQL: &str = "FROM turn t JOIN session s ON s.kind = t.kind AND s.session_id = t.session_id";
-
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RhythmTotals {
     pub turns: i64,
@@ -47,7 +40,7 @@ pub struct RhythmTotals {
     pub cost_usd: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RhythmDay {
     /// Start of the local day, as a UTC epoch-millisecond timestamp, so it can
@@ -62,7 +55,7 @@ pub struct RhythmDay {
 /// One hour-of-day (0-23) or weekday (0 = Sunday) slot. Always emitted for the
 /// full cycle, including slots with no activity, so the shape of the week is
 /// not distorted by dropped entries.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RhythmSlot {
     pub slot: i64,
@@ -71,7 +64,7 @@ pub struct RhythmSlot {
     pub total: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreakInfo {
     /// Consecutive active days ending at [`Self::current_through_day`] — which
@@ -83,9 +76,11 @@ pub struct StreakInfo {
     pub longest_end_day: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageRhythmReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<super::report_cache::SnapshotInfo>,
     pub range: RangeOut,
     /// Minutes east of UTC used to cut days. Returned so the UI can label the
     /// axis honestly instead of assuming a timezone.
@@ -114,94 +109,99 @@ pub fn rhythm(
     filters: &Filters,
     now_ms: i64,
 ) -> Result<UsageRhythmReport, String> {
+    super::report_cache::report(
+        conn,
+        range,
+        filters,
+        "rhythm",
+        &[],
+        now_ms,
+        || rhythm_fresh(conn, range, filters, now_ms),
+    )
+}
+
+fn rhythm_fresh(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    now_ms: i64,
+) -> Result<UsageRhythmReport, String> {
     let started = Instant::now();
     let (resolved, label) = range.resolve(now_ms);
     let (where_sql, params) = shared_where(&resolved, filters);
     let shift = DAY_BOUNDARY_OFFSET_MIN * 60_000;
 
-    // --- totals ------------------------------------------------------------
-    let totals_sql = format!(
-        "SELECT COUNT(*), COALESCE(SUM(t.input_tokens),0), COALESCE(SUM(t.output_tokens),0), \
+    let sql = format!(
+        "SELECT (t.ts + {shift}) / {DAY_MS} AS d, \
+         ((t.ts + {shift}) / 3600000) % 24 AS h, COUNT(*), \
+         COALESCE(SUM(t.input_tokens),0), COALESCE(SUM(t.output_tokens),0), \
          COALESCE(SUM(t.cache_read_tokens),0), \
          COALESCE(SUM(t.cache_write_5m_tokens + t.cache_write_1h_tokens),0), \
-         COALESCE(SUM(t.cost_usd),0) {FROM_SQL} WHERE {where_sql}"
-    );
-    let totals = conn
-        .query_row(&totals_sql, params_from_iter(params.iter()), |row| {
-            let input: i64 = row.get(1)?;
-            let output: i64 = row.get(2)?;
-            let cache_read: i64 = row.get(3)?;
-            let cache_write: i64 = row.get(4)?;
-            Ok(RhythmTotals {
-                turns: row.get(0)?,
-                input,
-                output,
-                cache_read,
-                cache_write,
-                total: input + output + cache_read + cache_write,
-                io: input + output,
-                cost_usd: row.get(5)?,
-            })
-        })
-        .map_err(|err| format!("usage totals: {err}"))?;
-
-    // --- per local day -----------------------------------------------------
-    let days_sql = format!(
-        "SELECT (t.ts + {shift}) / {DAY_MS} AS d, COUNT(*), \
-         COALESCE(SUM({IO_TOKENS_SQL}),0), COALESCE(SUM({TOTAL_TOKENS_SQL}),0), \
-         COALESCE(SUM(t.cost_usd),0) {FROM_SQL} WHERE {where_sql} GROUP BY d ORDER BY d"
+         COALESCE(SUM(t.cost_usd),0) \
+         FROM turn t JOIN session s ON s.kind=t.kind AND s.session_id=t.session_id \
+         WHERE {where_sql} GROUP BY d, h ORDER BY d, h"
     );
     let mut stmt = conn
-        .prepare(&days_sql)
-        .map_err(|err| format!("prepare usage days: {err}"))?;
-    let day_rows = stmt
+        .prepare(&sql)
+        .map_err(|err| format!("prepare usage buckets: {err}"))?;
+    let rows = stmt
         .query_map(params_from_iter(params.iter()), |row| {
-            let index: i64 = row.get(0)?;
+            let input: i64 = row.get(3)?;
+            let output: i64 = row.get(4)?;
+            let cache_read: i64 = row.get(5)?;
+            let cache_write: i64 = row.get(6)?;
             Ok((
-                index,
-                RhythmDay {
-                    day: index * DAY_MS - shift,
-                    turns: row.get(1)?,
-                    io: row.get(2)?,
-                    total: row.get(3)?,
-                    cost_usd: row.get(4)?,
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                RhythmTotals {
+                    turns: row.get(2)?,
+                    input,
+                    output,
+                    cache_read,
+                    cache_write,
+                    total: input + output + cache_read + cache_write,
+                    io: input + output,
+                    cost_usd: row.get(7)?,
                 },
             ))
         })
-        .map_err(|err| format!("run usage days: {err}"))?;
-
-    let mut indices: Vec<i64> = Vec::new();
-    let mut days: Vec<RhythmDay> = Vec::new();
-    for row in day_rows {
-        let (index, day) = row.map_err(|err| format!("usage day row: {err}"))?;
-        indices.push(index);
-        days.push(day);
+        .map_err(|err| format!("run usage buckets: {err}"))?;
+    let mut totals = RhythmTotals::default();
+    let mut daily = BTreeMap::<i64, RhythmDay>::new();
+    let mut by_hour = empty_slots(24);
+    let mut by_weekday = empty_slots(7);
+    for row in rows {
+        let (index, hour, bucket) = row.map_err(|err| format!("usage bucket row: {err}"))?;
+        totals.turns += bucket.turns;
+        totals.input += bucket.input;
+        totals.output += bucket.output;
+        totals.cache_read += bucket.cache_read;
+        totals.cache_write += bucket.cache_write;
+        totals.total += bucket.total;
+        totals.io += bucket.io;
+        totals.cost_usd += bucket.cost_usd;
+        let day = daily.entry(index).or_insert_with(|| RhythmDay {
+            day: index * DAY_MS - shift,
+            turns: 0,
+            io: 0,
+            total: 0,
+            cost_usd: 0.0,
+        });
+        day.turns += bucket.turns;
+        day.io += bucket.io;
+        day.total += bucket.total;
+        day.cost_usd += bucket.cost_usd;
+        for slot in [
+            &mut by_hour[hour.rem_euclid(24) as usize],
+            &mut by_weekday[(index + 4).rem_euclid(7) as usize],
+        ] {
+            slot.turns += bucket.turns;
+            slot.io += bucket.io;
+            slot.total += bucket.total;
+        }
     }
-
-    // --- hour of day / weekday --------------------------------------------
-    let by_hour = slots(
-        conn,
-        &format!(
-            "SELECT ((t.ts + {shift}) / 3600000) % 24 AS slot, COUNT(*), \
-             COALESCE(SUM({IO_TOKENS_SQL}),0), COALESCE(SUM({TOTAL_TOKENS_SQL}),0) \
-             {FROM_SQL} WHERE {where_sql} GROUP BY slot"
-        ),
-        &params,
-        24,
-        "usage hours",
-    )?;
-    // Epoch day 0 was a Thursday, so +4 rotates the cycle to Sunday = 0.
-    let by_weekday = slots(
-        conn,
-        &format!(
-            "SELECT ((t.ts + {shift}) / {DAY_MS} + 4) % 7 AS slot, COUNT(*), \
-             COALESCE(SUM({IO_TOKENS_SQL}),0), COALESCE(SUM({TOTAL_TOKENS_SQL}),0) \
-             {FROM_SQL} WHERE {where_sql} GROUP BY slot"
-        ),
-        &params,
-        7,
-        "usage weekdays",
-    )?;
+    let indices: Vec<i64> = daily.keys().copied().collect();
+    let days: Vec<RhythmDay> = daily.into_values().collect();
 
     let index_freshness = index_freshness(conn);
     let sql_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
@@ -237,6 +237,7 @@ pub fn rhythm(
     log_report_timings("usage_rhythm", timings);
 
     Ok(UsageRhythmReport {
+        cache: None,
         range: RangeOut {
             from: resolved.from,
             to: resolved.to,
@@ -259,43 +260,16 @@ pub fn rhythm(
     })
 }
 
-/// Run a slot aggregation and pad it to the full cycle so callers can index by
-/// slot without holes.
-fn slots(
-    conn: &Connection,
-    sql: &str,
-    params: &[rusqlite::types::Value],
-    cycle: i64,
-    context: &str,
-) -> Result<Vec<RhythmSlot>, String> {
-    let mut out: Vec<RhythmSlot> = (0..cycle)
+/// Pad the complete cycle so callers can index slots without holes.
+fn empty_slots(cycle: i64) -> Vec<RhythmSlot> {
+    (0..cycle)
         .map(|slot| RhythmSlot {
             slot,
             turns: 0,
             io: 0,
             total: 0,
         })
-        .collect();
-    let mut stmt = conn
-        .prepare(sql)
-        .map_err(|err| format!("prepare {context}: {err}"))?;
-    let rows = stmt
-        .query_map(params_from_iter(params.iter()), |row| {
-            Ok(RhythmSlot {
-                slot: row.get(0)?,
-                turns: row.get(1)?,
-                io: row.get(2)?,
-                total: row.get(3)?,
-            })
-        })
-        .map_err(|err| format!("run {context}: {err}"))?;
-    for row in rows {
-        let row = row.map_err(|err| format!("{context} row: {err}"))?;
-        if let Some(slot) = out.get_mut(row.slot.rem_euclid(cycle) as usize) {
-            *slot = row;
-        }
-    }
-    Ok(out)
+        .collect()
 }
 
 /// Longest and current run of consecutive active days.

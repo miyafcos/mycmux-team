@@ -53,7 +53,7 @@ const FRONTEND_SOCKET_COMMAND_NAMES: &[&str] = &[
 ];
 const RUST_SOCKET_COMMAND_NAMES: &[&str] = &[
     "system.version", "status.subscribe", "status.snapshot", "launch.issue_hook_cap",
-    "app.open_paths", "app.activate", "session.state_view", "agent.hooks.status",
+    "app.open_paths", "app.activate", "session.state_view", "agent.hooks.status", "agent.capabilities",
 ];
 #[cfg(feature = "e2e")]
 const E2E_SOCKET_COMMAND_NAMES: &[&str] = &[
@@ -81,6 +81,7 @@ fn system_version_payload() -> Value {
             "spawn.launch_spec.all_modes",
             "launch.kind_env",
             "agent.hooks.status",
+            "agent.capabilities.v1",
         ],
     })
 }
@@ -839,6 +840,14 @@ async fn handle_connection(
                             let _ = write_json_line(&mut writer, &response).await;
                             continue;
                         }
+                        if cmd == "agent.capabilities" {
+                            let adapters = app.state::<crate::codex_app_server::CodexAppServerState>();
+                            let response = SocketResponse {
+                                id, result: Some(crate::agent_adapters::snapshot(&adapters).await), error: None,
+                            };
+                            let _ = write_json_line(&mut writer, &response).await;
+                            continue;
+                        }
                         if cmd == "agent.hooks.status" {
                             let response = match crate::commands::agent_hooks::agent_hooks_status().await {
                                 Ok(snapshot) => SocketResponse {
@@ -1186,6 +1195,7 @@ mod tests {
             "spawn.launch_spec.all_modes",
             "launch.kind_env",
             "agent.hooks.status",
+            "agent.capabilities.v1",
         ] {
             assert!(payload["capabilities"]
                 .as_array()

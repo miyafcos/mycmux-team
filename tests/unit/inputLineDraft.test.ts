@@ -83,6 +83,13 @@ describe("input line draft", () => {
   it("stops mirroring past the draft cap", () => {
     const draft = typed("x".repeat(4001));
     expect(draft.clean).toBe(false);
+    expect(draft.text.length).toBeLessThanOrEqual(4000);
+    const more = applyInputToDraft(draft, "x".repeat(100_000));
+    expect(more.text.length).toBeLessThanOrEqual(4000);
+    expect(restorableText(more)).toBeNull();
+    const erased = applyInputToDraft(more, DELETE.repeat(4000));
+    expect(erased.clean).toBe(false);
+    expect(applyInputToDraft(erased, "\rnext")).toMatchObject({ text: "next", clean: true });
   });
 
   it("keeps a typed line restorable after a focus-out report", () => {

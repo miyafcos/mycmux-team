@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Deterministic classification rules for model names. These constants are the
 /// single source of truth for the zero-configuration price policy.
@@ -43,7 +43,7 @@ pub struct ModelClassRules {
     pub provider_prefixes: &'static [(&'static str, ModelProvider)],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelClass {
     Priced,
@@ -57,7 +57,7 @@ pub enum ModelClass {
 /// Company inferred from a recorded model name. This is deliberately separate
 /// from [`ModelClass`]: an unpriced `gpt-*` model is still OpenAI, while an
 /// arbitrary slash-delimited local model has no cloud provider.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelProvider {
     Anthropic,

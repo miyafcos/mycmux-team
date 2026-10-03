@@ -23,7 +23,7 @@ const cases: [ArtifactSourceKind, string, ArtifactMarkKind, string][] = [
 
 describe("artifact tab marks", () => {
   it.each(cases)("resolves %s %s to %s with label %s", (sourceKind, path, kind, label) => {
-    expect(resolveTabMark(artifact(sourceKind, path))).toEqual({ kind, label, color: ARTIFACT_MARK_COLORS[kind] });
+    expect(resolveTabMark(artifact(sourceKind, path))).toEqual({ kind, label, color: ARTIFACT_MARK_COLORS[kind], source: "preset", dormant: false });
     expect(resolveTabMark(artifact(sourceKind, path), "codex")?.kind).toBe(kind);
   });
 
@@ -64,7 +64,7 @@ describe("artifact tab marks", () => {
     ["grok", "Grok"], ["antigravity", "Antigravity"], ["hermes", "Hermes"], ["omp", "Oh My Pi"],
   ])("preserves the %s agent mark and label", (kind, label) => {
     const tab: PaneTab = { id: "t", sessionId: "s", agentId: "a", type: "terminal", agentKind: kind, commandArgv: [kind === "antigravity" ? "agy" : kind] };
-    expect(resolveTabMark(tab)).toEqual({ kind, label, color: tabMarkColor(kind as Parameters<typeof tabMarkColor>[0]) });
+    expect(resolveTabMark(tab)).toEqual({ kind, label, color: tabMarkColor(kind as Parameters<typeof tabMarkColor>[0]), source: "saved", dormant: true });
     expect(resolveTabMark({ ...tab, sourceKind: "pdf" })).toEqual(resolveTabMark(tab));
     expect(resolveTabMark(tab, "codex")).toMatchObject({ kind: "codex", label: "Codex" });
   });

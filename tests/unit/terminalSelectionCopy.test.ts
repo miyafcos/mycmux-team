@@ -103,7 +103,7 @@ function createSelectionHarness() {
   let selectionChange: (() => void) | null = null;
   const term = {
     element: termElement,
-    getSelection: () => selection,
+    getSelection: vi.fn(() => selection),
     onSelectionChange: (listener: () => void) => {
       selectionChange = listener;
       return { dispose: vi.fn() };
@@ -181,6 +181,18 @@ describe("terminal selection auto-copy", () => {
     await Promise.resolve();
   };
 
+  it("does not stringify during 1000 selection changes and snapshots at the copy gesture", async () => {
+    const harness = registerHarness();
+    harness.setSelection("selected");
+    for (let i = 0; i < 1000; i++) harness.fireSelectionChange();
+    expect(harness.term.getSelection).not.toHaveBeenCalled();
+    harness.dispatchWindow("pointerup", new TestPointerEvent("pointerup", { button: 0 }));
+    expect(harness.term.getSelection).toHaveBeenCalledOnce();
+    harness.setSelection("");
+    await flushCopyTimer();
+    expect(writeText).toHaveBeenCalledWith("selected");
+    expect(harness.term.getSelection).toHaveBeenCalledTimes(2);
+  });
   it("does not copy or toast a two-character selection", async () => {
     const harness = registerHarness();
     harness.setSelection("ab");

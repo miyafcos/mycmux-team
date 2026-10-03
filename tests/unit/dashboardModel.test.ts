@@ -114,6 +114,7 @@ describe("dashboard model", () => {
   it("builds card status and unobserved state", () => {
     const [built] = cards({
       metadataBySession: { "s-1": { cwd: "C:/repo", agentKind: "codex" } },
+      volatileMetadataBySession: { "s-1": { liveAgentKind: "codex", ptyAlive: true } },
       lastLogBySession: { "s-1": "ready" },
       lastLogAtBySession: { "s-1": now - 1 },
       hasTerminalBuffer: () => false,

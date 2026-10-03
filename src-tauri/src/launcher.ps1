@@ -829,6 +829,8 @@ $Options = @(
   New-MycmuxOption "claude-codex (resume)" @("claude-codex", "--resume") "claude-codex"
   New-MycmuxOption "Grok Build (resume)" @("grok", "--no-alt-screen", "--resume") "grok"
   New-MycmuxOption "Custom..." @("__custom__") $null
+  # Append so every existing agent/resume shortcut keeps its index.
+  New-MycmuxOption "ChatGPT dots (Web)" @("__web_dots__") $null
 )
 
 function New-MycmuxModelChoice {
@@ -1003,6 +1005,7 @@ $LaunchTargets = @{
   "claude-codex-resume" = $Options[16]
   "grok-resume" = $Options[17]
   "custom" = $Options[18]
+  "web-dots" = $Options[19]
 }
 
 function Invoke-MycmuxCustomCommand {
@@ -1077,6 +1080,10 @@ function Invoke-MycmuxOption {
 
   # One arm per pseudo command on purpose: a menu entry with no arm is a dead
   # button, and tests/test_web_pane_contract.py checks these pair up by name.
+  if ($Option.Command[0] -eq "__web_dots__") {
+    Invoke-MycmuxWebTab "dots"
+    return
+  }
   if ($Option.Command[0] -eq "__web_chatgpt__") {
     Invoke-MycmuxWebTab "chatgpt"
     return

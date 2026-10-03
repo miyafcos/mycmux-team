@@ -1,5 +1,5 @@
 /** The one-surface AI log dashboard. Navigation never starts LLM work. */
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { OverlayShell } from "../common/OverlayShell";
@@ -9,6 +9,7 @@ import { useAilogStore } from "../../stores/ailogStore";
 import { jobDisplayError, useAilogJobStore } from "../../stores/useAilogJobStore";
 import { useAiSettingsStore } from "../../stores/aiSettingsStore";
 import { aiSettingsStrings } from "../settings/settingsStrings";
+import { ReportCacheStatus } from "./ReportCacheStatus";
 import { IndexBadge } from "./IndexBadge";
 import { PanelMenu } from "./PanelMenu";
 import { RangeBar } from "./RangeBar";
@@ -30,6 +31,7 @@ export function bucketInputRange(day: number, bucket: UsageBucket): { from: stri
 
 export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPanelProps) {
   const [detailOpen, setDetailOpen] = useState(false);
+  const opened = useRef(false);
   const store = useAilogStore(useShallow((state) => ({
     preset: state.preset, customFrom: state.customFrom, customTo: state.customTo,
     summaryPreset: state.summaryPreset, excludeSynthetic: state.excludeSynthetic,
@@ -78,8 +80,10 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
   useEffect(() => () => { store.closeDetail(); }, [store.closeDetail]);
 
   const refreshUsageSurface = useCallback(async (force = false): Promise<void> => {
-    if (!open) return;
-    await store.loadUsage({ force });
+    if (!open) { opened.current = false; return; }
+    const revalidate = !opened.current;
+    opened.current = true;
+    await store.loadUsage({ force, revalidate });
   }, [open, store.loadUsage]);
 
   useLayoutEffect(() => {
@@ -103,6 +107,7 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
   const applySessionQuery = useCallback((value: string) => { store.setSessionQuery(value); void store.refreshSessions(); }, [store.refreshSessions, store.setSessionQuery]);
   const retryUsage = useCallback(() => void store.refreshUsage({ force: true }), [store.refreshUsage]);
   const retryPivot = useCallback(() => void store.refreshPivot({ force: true }), [store.refreshPivot]);
+  const retrySessions = useCallback(() => void store.refreshSessions({ force: true }), [store.refreshSessions]);
   const pickUsageDay = useCallback((day: number) => {
     const range = bucketInputRange(day, store.usageBucket);
     store.setCustomRange(range.from, range.to);
@@ -128,6 +133,7 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
           {store.overview ? `${store.overview.range.label} · ${store.overview.totals.sessions.toLocaleString("ja-JP")} セッション${visibleBusy ? " · 直前の集計を表示したまま更新中…" : ""}` : visibleBusy ? "集計を読み込み中…" : "—"}
           {import.meta.env.DEV && store.lastLoadMs !== null ? ` · ${store.lastLoadMs.toFixed(0)}ms` : ""}
         </div>
+        <ReportCacheStatus />
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flexWrap: "wrap" }}>
         <IndexBadge />
@@ -139,7 +145,7 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
       <RangeBar preset={store.preset} customFrom={store.customFrom} customTo={store.customTo} onPreset={store.setPreset} onCustomRange={store.setCustomRange} overview={store.overview} usageRhythm={store.usageRhythm} onRefresh={activeLoad} loading={visibleBusy} excludeSynthetic={store.excludeSynthetic} onExcludeSynthetic={store.setExcludeSynthetic} includeSidechain={store.includeSidechain} onIncludeSidechain={store.setIncludeSidechain} usdJpyRate={store.usdJpyRate} onUsdJpyRate={store.setUsdJpyRate} />
       {indexError ? <div role="alert" style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-red)", overflowWrap: "anywhere" }}>新しい記録を取り込めませんでした。表示中の集計は前回分です。 <button type="button" onClick={startIndex} style={subtleButtonStyle}>再試行</button> <button type="button" onClick={dismissIndexError} style={subtleButtonStyle}>閉じる</button><details><summary>技術情報</summary>{indexError}</details></div> : null}
       {summarizeError ? <div role="alert" style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-red)", overflowWrap: "anywhere" }}>要約を更新できませんでした。 <button type="button" onClick={startSummarize} style={subtleButtonStyle}>再試行</button> <button type="button" onClick={dismissSummarizeError} style={subtleButtonStyle}>閉じる</button><details><summary>技術情報</summary>{summarizeError}</details></div> : null}
-      <UsageView overview={store.overview} previousTotalsStatus={store.previousTotalsStatus} models={store.models} sessions={store.sessions} series={store.usageSeries} rhythm={store.usageRhythm} loading={store.loading} usageLoading={store.usageLoading} usageError={store.usageError} error={store.dashboardError} statusPending={statusPending} neverIndexed={neverIndexed} noData={noData} running={running} preset={store.preset} metric={store.usageMetric} stack={store.usageStack} bucket={store.usageBucket} seriesAxis={store.usageSeriesAxis} excludeSynthetic={store.excludeSynthetic} selection={store.selection} breakdownDimension={store.breakdownDimension} breakdown={store.breakdown} breakdownError={store.breakdownError} breakdownLoading={store.breakdownLoading} pivot={store.pivot} pivotRowBy={store.pivotRowBy} pivotColBy={store.pivotColBy} pivotLoading={store.pivotLoading} pivotError={store.pivotError} sessionSort={store.sessionSort} sessionPage={store.sessionPage} sessionQuery={store.sessionQuery} sessionAppliedQuery={store.sessionAppliedQuery} sessionAppliedSort={store.sessionAppliedSort} sessionAppliedPage={store.sessionAppliedPage} sessionLoading={store.sessionLoading} sessionError={store.sessionError} detailKey={store.detailKey} onRefresh={activeLoad} onRetryUsage={retryUsage} onStartIndex={startIndex} onMetric={store.setUsageMetric} onStack={store.setUsageStack} onBucket={store.setUsageBucket} onSeriesAxis={store.setUsageSeriesAxis} onPickDay={pickUsageDay} onSelect={store.setSelection} onBreakdownDimension={store.setBreakdownDimension} onRefreshBreakdown={refreshBreakdown} onPivotRowBy={store.setPivotRowBy} onPivotColBy={store.setPivotColBy} onRetryPivot={retryPivot} onSessionSort={store.setSessionSort} onSessionPage={store.setSessionPage} onSessionQuery={applySessionQuery} onRetrySessions={store.refreshSessions} onOpenDetail={openDetail} />
+      <UsageView overview={store.overview} previousTotalsStatus={store.previousTotalsStatus} models={store.models} sessions={store.sessions} series={store.usageSeries} rhythm={store.usageRhythm} loading={store.loading} usageLoading={store.usageLoading} usageError={store.usageError} error={store.dashboardError} statusPending={statusPending} neverIndexed={neverIndexed} noData={noData} running={running} preset={store.preset} metric={store.usageMetric} stack={store.usageStack} bucket={store.usageBucket} seriesAxis={store.usageSeriesAxis} excludeSynthetic={store.excludeSynthetic} selection={store.selection} breakdownDimension={store.breakdownDimension} breakdown={store.breakdown} breakdownError={store.breakdownError} breakdownLoading={store.breakdownLoading} pivot={store.pivot} pivotRowBy={store.pivotRowBy} pivotColBy={store.pivotColBy} pivotLoading={store.pivotLoading} pivotError={store.pivotError} sessionSort={store.sessionSort} sessionPage={store.sessionPage} sessionQuery={store.sessionQuery} sessionAppliedQuery={store.sessionAppliedQuery} sessionAppliedSort={store.sessionAppliedSort} sessionAppliedPage={store.sessionAppliedPage} sessionLoading={store.sessionLoading} sessionError={store.sessionError} detailKey={store.detailKey} onRefresh={activeLoad} onRetryUsage={retryUsage} onStartIndex={startIndex} onMetric={store.setUsageMetric} onStack={store.setUsageStack} onBucket={store.setUsageBucket} onSeriesAxis={store.setUsageSeriesAxis} onPickDay={pickUsageDay} onSelect={store.setSelection} onBreakdownDimension={store.setBreakdownDimension} onRefreshBreakdown={refreshBreakdown} onPivotRowBy={store.setPivotRowBy} onPivotColBy={store.setPivotColBy} onRetryPivot={retryPivot} onSessionSort={store.setSessionSort} onSessionPage={store.setSessionPage} onSessionQuery={applySessionQuery} onRetrySessions={retrySessions} onOpenDetail={openDetail} />
     </div></div>
     {detailOpen ? <OverlayShell open={detailOpen} onClose={closeDetail} size="wide" layer="top" ariaLabel="セッション詳細">{store.detailError ? <EmptyState kind="error" message={store.detailError} onPrimary={() => store.detailKey ? void store.openDetail(store.detailKey.kind, store.detailKey.sessionId) : undefined} primaryLabel="再試行" /> : store.detailLoading ? <div style={{ padding: 16 }}><SkeletonBlock height={120} label="詳細を読み込み中" /></div> : store.detail ? <div style={{ padding: 16, overflowY: "auto" }}><SessionDetailView detail={store.detail} transcript={store.transcript} transcriptLoading={store.transcriptLoading} transcriptError={store.transcriptError} sessionSummarizing={store.sessionSummarizing} sessionSummarizeError={store.sessionSummarizeError} aiDisabledReason={aiDisabledReason} onSummarize={() => runExplicitLlm("summarizeSession", () => store.summarizeSession(store.detail!.session.kind, store.detail!.session.sessionId))} onLoadTranscript={() => store.detailKey ? void store.loadTranscript(store.detailKey.kind, store.detailKey.sessionId) : undefined} onClose={closeDetail} /></div> : null}</OverlayShell> : null}
   </OverlayShell>;

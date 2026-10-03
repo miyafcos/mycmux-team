@@ -102,7 +102,7 @@ include!("online_publish/lifecycle.rs");
 include!("online_publish/publish.rs");
 
 #[tauri::command(async)]
-pub fn publish_savepoint(
+pub async fn publish_savepoint(
     app: tauri::AppHandle,
     cwd: String,
     agent_kind: Option<SavepointAgentKind>,
@@ -112,46 +112,48 @@ pub fn publish_savepoint(
     next_step: Option<String>,
     window_label: Option<String>,
 ) -> Result<PublishSavepointResult, String> {
-    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    let agent_kind = agent_kind.unwrap_or(SavepointAgentKind::Claude);
-    let session_id = match agent_kind {
-        SavepointAgentKind::Claude => agent_session_id.as_deref().or(claude_session_id.as_deref()),
-        SavepointAgentKind::Codex => agent_session_id.as_deref(),
-    };
-    let transcript_root = match agent_kind {
-        SavepointAgentKind::Claude => home.join(".claude").join("projects"),
-        SavepointAgentKind::Codex => home.join(".codex").join("sessions"),
-    };
-    // Multi-window: the progress stream belongs to the window that started
-    // the publish. Broadcasting it made every open window animate the same
-    // savepoint. `window_label` is optional so the socket/CLI callers (which
-    // have no window) keep the broadcast behaviour.
-    let mut emit_progress = |payload: PublishProgressPayload| match window_label.as_deref() {
-        Some(label) => {
-            let _ = app.emit_to(label, PUBLISH_PROGRESS_EVENT, payload);
-        }
-        None => {
-            let _ = app.emit(PUBLISH_PROGRESS_EVENT, payload);
-        }
-    };
-    publish_savepoint_impl(
-        &crate::test_profile::runtime_dir_from(home.clone()).join("savepoint.json"),
-        &home,
-        &transcript_root,
-        agent_kind,
-        &cwd,
-        session_id,
-        summary.as_deref(),
-        next_step.as_deref(),
-        PublishMode::Current,
-        Utc::now(),
-        &mut emit_progress,
-    )
+    crate::util::task::run_blocking("publish_savepoint", move || {
+        let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
+        let agent_kind = agent_kind.unwrap_or(SavepointAgentKind::Claude);
+        let session_id = match agent_kind {
+            SavepointAgentKind::Claude => agent_session_id.as_deref().or(claude_session_id.as_deref()),
+            SavepointAgentKind::Codex => agent_session_id.as_deref(),
+        };
+        let transcript_root = match agent_kind {
+            SavepointAgentKind::Claude => home.join(".claude").join("projects"),
+            SavepointAgentKind::Codex => home.join(".codex").join("sessions"),
+        };
+        // Multi-window: the progress stream belongs to the window that started
+        // the publish. Broadcasting it made every open window animate the same
+        // savepoint. `window_label` is optional so the socket/CLI callers (which
+        // have no window) keep the broadcast behaviour.
+        let mut emit_progress = |payload: PublishProgressPayload| match window_label.as_deref() {
+            Some(label) => {
+                let _ = app.emit_to(label, PUBLISH_PROGRESS_EVENT, payload);
+            }
+            None => {
+                let _ = app.emit(PUBLISH_PROGRESS_EVENT, payload);
+            }
+        };
+        publish_savepoint_impl(
+            &crate::test_profile::runtime_dir_from(home.clone()).join("savepoint.json"),
+            &home,
+            &transcript_root,
+            agent_kind,
+            &cwd,
+            session_id,
+            summary.as_deref(),
+            next_step.as_deref(),
+            PublishMode::Current,
+            Utc::now(),
+            &mut emit_progress,
+        )
+    }).await
 }
 
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
-pub fn finalize_savepoint(
+pub async fn finalize_savepoint(
     app: tauri::AppHandle,
     cwd: String,
     agent_kind: Option<SavepointAgentKind>,
@@ -162,41 +164,43 @@ pub fn finalize_savepoint(
     closed_reason: Option<SavepointCloseReason>,
     window_label: Option<String>,
 ) -> Result<PublishSavepointResult, String> {
-    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    let agent_kind = agent_kind.unwrap_or(SavepointAgentKind::Claude);
-    let session_id = match agent_kind {
-        SavepointAgentKind::Claude => agent_session_id.as_deref().or(claude_session_id.as_deref()),
-        SavepointAgentKind::Codex => agent_session_id.as_deref(),
-    };
-    let transcript_root = match agent_kind {
-        SavepointAgentKind::Claude => home.join(".claude").join("projects"),
-        SavepointAgentKind::Codex => home.join(".codex").join("sessions"),
-    };
-    // Multi-window: the progress stream belongs to the window that started
-    // the publish. Broadcasting it made every open window animate the same
-    // savepoint. `window_label` is optional so the socket/CLI callers (which
-    // have no window) keep the broadcast behaviour.
-    let mut emit_progress = |payload: PublishProgressPayload| match window_label.as_deref() {
-        Some(label) => {
-            let _ = app.emit_to(label, PUBLISH_PROGRESS_EVENT, payload);
-        }
-        None => {
-            let _ = app.emit(PUBLISH_PROGRESS_EVENT, payload);
-        }
-    };
-    publish_savepoint_impl(
-        &crate::test_profile::runtime_dir_from(home.clone()).join("savepoint.json"),
-        &home,
-        &transcript_root,
-        agent_kind,
-        &cwd,
-        session_id,
-        summary.as_deref(),
-        next_step.as_deref(),
-        PublishMode::Final(closed_reason.unwrap_or(SavepointCloseReason::Manual)),
-        Utc::now(),
-        &mut emit_progress,
-    )
+    crate::util::task::run_blocking("finalize_savepoint", move || {
+        let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
+        let agent_kind = agent_kind.unwrap_or(SavepointAgentKind::Claude);
+        let session_id = match agent_kind {
+            SavepointAgentKind::Claude => agent_session_id.as_deref().or(claude_session_id.as_deref()),
+            SavepointAgentKind::Codex => agent_session_id.as_deref(),
+        };
+        let transcript_root = match agent_kind {
+            SavepointAgentKind::Claude => home.join(".claude").join("projects"),
+            SavepointAgentKind::Codex => home.join(".codex").join("sessions"),
+        };
+        // Multi-window: the progress stream belongs to the window that started
+        // the publish. Broadcasting it made every open window animate the same
+        // savepoint. `window_label` is optional so the socket/CLI callers (which
+        // have no window) keep the broadcast behaviour.
+        let mut emit_progress = |payload: PublishProgressPayload| match window_label.as_deref() {
+            Some(label) => {
+                let _ = app.emit_to(label, PUBLISH_PROGRESS_EVENT, payload);
+            }
+            None => {
+                let _ = app.emit(PUBLISH_PROGRESS_EVENT, payload);
+            }
+        };
+        publish_savepoint_impl(
+            &crate::test_profile::runtime_dir_from(home.clone()).join("savepoint.json"),
+            &home,
+            &transcript_root,
+            agent_kind,
+            &cwd,
+            session_id,
+            summary.as_deref(),
+            next_step.as_deref(),
+            PublishMode::Final(closed_reason.unwrap_or(SavepointCloseReason::Manual)),
+            Utc::now(),
+            &mut emit_progress,
+        )
+    }).await
 }
 
 #[cfg(test)]

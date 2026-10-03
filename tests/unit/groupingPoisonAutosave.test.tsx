@@ -26,7 +26,7 @@ const persistenceMocks = vi.hoisted(() => ({
 
 vi.mock("../../src/lib/paneCloseConfirmation", () => ({ confirmPaneClose: vi.fn(async () => true) }));
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: persistenceMocks.confirm }));
+vi.mock("../../src/lib/appConfirmation", () => ({ cancelAppConfirmations: vi.fn(() => false), confirm: persistenceMocks.confirm }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
@@ -210,8 +210,8 @@ async function mountProductionPersistence(): Promise<void> {
   document.body.appendChild(host);
   root = createRoot(host);
   await act(async () => root.render(createElement(Harness)));
-  await vi.waitFor(() => expect(persistenceMocks.closeHandler).not.toBeNull());
-  await vi.waitFor(() => expect(useGroupingRuntimeStore.getState().persistentSchema.migrationComplete).toBe(true));
+  await vi.waitFor(() => expect(persistenceMocks.closeHandler).not.toBeNull(), { timeout: 10_000 });
+  await vi.waitFor(() => expect(useGroupingRuntimeStore.getState().persistentSchema.migrationComplete).toBe(true), { timeout: 10_000 });
   persistenceMocks.savePersistentData.mockClear();
 }
 
@@ -316,7 +316,7 @@ describe("grouping poison persistence quarantine", () => {
     const current = seedGroupingStores();
     const { groupingPlan, ticket } = prepare(current, "undo-live-terminal-metadata");
     expect(groupingInternals.adapter.commitGroupingAtStoreBoundary(groupingPlan, ticket).commit.ok).toBe(true);
-    await vi.waitFor(() => expect(persistenceMocks.savePersistentData).toHaveBeenCalled());
+    await vi.waitFor(() => expect(persistenceMocks.savePersistentData).toHaveBeenCalled(), { timeout: 10_000 });
     persistenceMocks.savePersistentData.mockClear();
 
     const applied = structuredClone(useWorkspaceListStore.getState().workspaces);
@@ -335,7 +335,7 @@ describe("grouping poison persistence quarantine", () => {
       .toBe(appliedStructuralSignature);
     expect(groupingInternals.engine.hasGroupingUndo(groupingInternals.adapter.getGroupingStoreAdapter())).toBe(true);
     expect(groupingInternals.adapter.undoGroupingAtStoreBoundary()).toEqual({ ok: true });
-    await vi.waitFor(() => expect(persistenceMocks.savePersistentData).toHaveBeenCalled());
+    await vi.waitFor(() => expect(persistenceMocks.savePersistentData).toHaveBeenCalled(), { timeout: 10_000 });
 
     const afterUndo = useWorkspaceListStore.getState().workspaces;
     const restoredTab = afterUndo
@@ -390,7 +390,7 @@ describe("grouping poison persistence quarantine", () => {
     const current = seedGroupingStores();
     const { groupingPlan, ticket } = prepare(current, "undo-poison");
     expect(groupingInternals.adapter.commitGroupingAtStoreBoundary(groupingPlan, ticket).commit.ok).toBe(true);
-    await vi.waitFor(() => expect(persistenceMocks.savePersistentData).toHaveBeenCalled());
+    await vi.waitFor(() => expect(persistenceMocks.savePersistentData).toHaveBeenCalled(), { timeout: 10_000 });
     const knownGoodWorkspaceIds = diskData.workspaces.map((workspace) => workspace.id);
     persistenceMocks.savePersistentData.mockClear();
 

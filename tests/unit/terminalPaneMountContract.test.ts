@@ -37,8 +37,13 @@ describe("terminal tab mount contract", () => {
   });
 
   it("captures input revision before scanning AskUserQuestion independently from approval detection", () => {
-    const revisionIndex = xtermWrapperSource.indexOf("await getSessionInputRevision(sessionId)");
-    const scanIndex = xtermWrapperSource.indexOf("ingestAskQuestionLines(", revisionIndex);
+    const scanSource = xtermWrapperSource;
+    const revisionIndex = scanSource.indexOf("await readRevision(sessionId)");
+    const scanIndex = scanSource.indexOf("ingestAskQuestionLines(", revisionIndex);
+    expect(scanSource).toContain("readRevision = getSessionInputRevision");
+    expect(scanSource.indexOf("if (!scanAskQuestion(lines))")).toBeLessThan(revisionIndex);
+    expect(scanSource.slice(scanIndex)).toContain("readLines(), observedAt, observedInputRevision");
+    expect(xtermWrapperSource).toContain("await scanTerminalAskQuestion(sessionId, () =>");
 
     expect(revisionIndex).toBeGreaterThan(-1);
     expect(scanIndex).toBeGreaterThan(revisionIndex);

@@ -7,7 +7,7 @@ import type { CliAccountProfile, CliAccountsSnapshot, CliProvider } from "../../
 // 設定 → アカウント・使用量, rendered with the real stores. Only the Tauri
 // boundary is mocked, so this checks how the pieces are put together.
 const ipc = vi.hoisted(() => ({ snapshot: null as unknown }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn(async () => false) }));
+vi.mock("../../src/lib/appConfirmation", () => ({ cancelAppConfirmations: vi.fn(() => false), confirm: vi.fn(async () => false) }));
 vi.mock("@tauri-apps/api/path", () => ({ homeDir: vi.fn(async () => "C:\\Users\\test") }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefined), emit: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({

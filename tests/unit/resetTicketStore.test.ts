@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ResetTicketOutcome, ResetTickets } from "../../src/lib/resetTickets";
 import { createResetTicketStore } from "../../src/stores/resetTicketStore";
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn() }));
+vi.mock("../../src/lib/appConfirmation", () => ({ cancelAppConfirmations: vi.fn(() => false), confirm: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), Channel: class {} }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 

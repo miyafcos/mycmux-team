@@ -685,104 +685,124 @@ include!("online/join.rs");
 include!("online/lifecycle.rs");
 
 #[tauri::command(async)]
-pub fn list_online_savepoints() -> Result<Vec<OnlineSavepointEntry>, String> {
-    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    list_online_savepoints_from_config(&savepoint_config_path(&home), &home)
+pub async fn list_online_savepoints() -> Result<Vec<OnlineSavepointEntry>, String> {
+    crate::util::task::run_blocking("list_online_savepoints", move || {
+        let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
+        list_online_savepoints_from_config(&savepoint_config_path(&home), &home)
+    }).await
 }
 
 #[tauri::command(async)]
-pub fn list_trashed_online_savepoints() -> Result<Vec<OnlineSavepointEntry>, String> {
-    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    list_trashed_online_savepoints_from_config(&savepoint_config_path(&home), &home)
+pub async fn list_trashed_online_savepoints() -> Result<Vec<OnlineSavepointEntry>, String> {
+    crate::util::task::run_blocking("list_trashed_online_savepoints", move || {
+        let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
+        list_trashed_online_savepoints_from_config(&savepoint_config_path(&home), &home)
+    }).await
 }
 
 #[tauri::command(async)]
-pub fn get_savepoint_storage_settings() -> Result<SavepointStorageSettings, String> {
-    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    get_savepoint_storage_settings_from_config(&savepoint_config_path(&home), &home)
+pub async fn get_savepoint_storage_settings() -> Result<SavepointStorageSettings, String> {
+    crate::util::task::run_blocking("get_savepoint_storage_settings", move || {
+        let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
+        get_savepoint_storage_settings_from_config(&savepoint_config_path(&home), &home)
+    }).await
 }
 
 #[tauri::command(async)]
-pub fn join_savepoint_summary(bundle_dir: String) -> Result<JoinSavepointSummary, String> {
-    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    join_savepoint_summary_from_config(
-        Path::new(&bundle_dir),
-        &savepoint_config_path(&home),
-        &home,
-    )
+pub async fn join_savepoint_summary(bundle_dir: String) -> Result<JoinSavepointSummary, String> {
+    crate::util::task::run_blocking("join_savepoint_summary", move || {
+        let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
+        join_savepoint_summary_from_config(
+            Path::new(&bundle_dir),
+            &savepoint_config_path(&home),
+            &home,
+        )
+    }).await
 }
 
 #[tauri::command(async)]
-pub fn join_savepoint_full(bundle_dir: String) -> Result<JoinSavepointFull, String> {
-    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    join_savepoint_full_from_config(
-        Path::new(&bundle_dir),
-        &savepoint_config_path(&home),
-        &home,
-        &home.join(".claude").join("projects"),
-    )
+pub async fn join_savepoint_full(bundle_dir: String) -> Result<JoinSavepointFull, String> {
+    crate::util::task::run_blocking("join_savepoint_full", move || {
+        let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
+        join_savepoint_full_from_config(
+            Path::new(&bundle_dir),
+            &savepoint_config_path(&home),
+            &home,
+            &home.join(".claude").join("projects"),
+        )
+    }).await
 }
 
 #[tauri::command(async)]
-pub fn toggle_savepoint_pin(bundle_dir: String) -> Result<ToggleSavepointPinResult, String> {
-    let _publish_guard = super::online_publish::PUBLISH_LOCK
-        .lock()
-        .map_err(|_| "Savepoint publisher lock is unavailable".to_string())?;
-    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    let config = load_config(&savepoint_config_path(&home))?;
-    let local_dir = local_savepoint_dir(&config, &home)?;
-    let (_, bundle_dir, _, _, _) = resolve_active_savepoint(&local_dir, Path::new(&bundle_dir))?;
-    toggle_savepoint_pin_at(&bundle_dir)
+pub async fn toggle_savepoint_pin(bundle_dir: String) -> Result<ToggleSavepointPinResult, String> {
+    crate::util::task::run_blocking("toggle_savepoint_pin", move || {
+        let _publish_guard = super::online_publish::PUBLISH_LOCK
+            .lock()
+            .map_err(|_| "Savepoint publisher lock is unavailable".to_string())?;
+        let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
+        let config = load_config(&savepoint_config_path(&home))?;
+        let local_dir = local_savepoint_dir(&config, &home)?;
+        let (_, bundle_dir, _, _, _) = resolve_active_savepoint(&local_dir, Path::new(&bundle_dir))?;
+        toggle_savepoint_pin_at(&bundle_dir)
+    }).await
 }
 
 #[tauri::command(async)]
-pub fn delete_online_savepoint(bundle_dir: String) -> Result<(), String> {
-    let _publish_guard = super::online_publish::PUBLISH_LOCK
-        .lock()
-        .map_err(|_| "Savepoint publisher lock is unavailable".to_string())?;
-    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    let config = load_config(&savepoint_config_path(&home))?;
-    let online_dir = local_savepoint_dir(&config, &home)?;
-    trash_online_savepoint_at(
-        &online_dir,
-        Path::new(&bundle_dir),
-        &Utc::now().to_rfc3339(),
-        SavepointTrashReason::Manual,
-    )
-    .map(|_| ())
+pub async fn delete_online_savepoint(bundle_dir: String) -> Result<(), String> {
+    crate::util::task::run_blocking("delete_online_savepoint", move || {
+        let _publish_guard = super::online_publish::PUBLISH_LOCK
+            .lock()
+            .map_err(|_| "Savepoint publisher lock is unavailable".to_string())?;
+        let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
+        let config = load_config(&savepoint_config_path(&home))?;
+        let online_dir = local_savepoint_dir(&config, &home)?;
+        trash_online_savepoint_at(
+            &online_dir,
+            Path::new(&bundle_dir),
+            &Utc::now().to_rfc3339(),
+            SavepointTrashReason::Manual,
+        )
+        .map(|_| ())
+    }).await
 }
 
 #[tauri::command(async)]
-pub fn restore_online_savepoint(bundle_dir: String, trash_id: String) -> Result<(), String> {
-    let _publish_guard = super::online_publish::PUBLISH_LOCK
-        .lock()
-        .map_err(|_| "Savepoint publisher lock is unavailable".to_string())?;
-    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    let config = load_config(&savepoint_config_path(&home))?;
-    let online_dir = local_savepoint_dir(&config, &home)?;
-    restore_online_savepoint_at(&online_dir, Path::new(&bundle_dir), &trash_id).map(|_| ())
+pub async fn restore_online_savepoint(bundle_dir: String, trash_id: String) -> Result<(), String> {
+    crate::util::task::run_blocking("restore_online_savepoint", move || {
+        let _publish_guard = super::online_publish::PUBLISH_LOCK
+            .lock()
+            .map_err(|_| "Savepoint publisher lock is unavailable".to_string())?;
+        let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
+        let config = load_config(&savepoint_config_path(&home))?;
+        let online_dir = local_savepoint_dir(&config, &home)?;
+        restore_online_savepoint_at(&online_dir, Path::new(&bundle_dir), &trash_id).map(|_| ())
+    }).await
 }
 
 #[tauri::command(async)]
-pub fn purge_online_savepoint(bundle_dir: String, trash_id: String) -> Result<(), String> {
-    let _publish_guard = super::online_publish::PUBLISH_LOCK
-        .lock()
-        .map_err(|_| "Savepoint publisher lock is unavailable".to_string())?;
-    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    let config = load_config(&savepoint_config_path(&home))?;
-    let online_dir = local_savepoint_dir(&config, &home)?;
-    purge_online_savepoint_at(&online_dir, Path::new(&bundle_dir), &trash_id)
+pub async fn purge_online_savepoint(bundle_dir: String, trash_id: String) -> Result<(), String> {
+    crate::util::task::run_blocking("purge_online_savepoint", move || {
+        let _publish_guard = super::online_publish::PUBLISH_LOCK
+            .lock()
+            .map_err(|_| "Savepoint publisher lock is unavailable".to_string())?;
+        let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
+        let config = load_config(&savepoint_config_path(&home))?;
+        let online_dir = local_savepoint_dir(&config, &home)?;
+        purge_online_savepoint_at(&online_dir, Path::new(&bundle_dir), &trash_id)
+    }).await
 }
 
 #[tauri::command(async)]
-pub fn cleanup_online_savepoints() -> Result<CleanupOnlineSavepointsResult, String> {
-    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    cleanup_online_savepoints_from_config(
-        &savepoint_config_path(&home),
-        &home,
-        Utc::now(),
-        SystemTime::now(),
-    )
+pub async fn cleanup_online_savepoints() -> Result<CleanupOnlineSavepointsResult, String> {
+    crate::util::task::run_blocking("cleanup_online_savepoints", move || {
+        let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
+        cleanup_online_savepoints_from_config(
+            &savepoint_config_path(&home),
+            &home,
+            Utc::now(),
+            SystemTime::now(),
+        )
+    }).await
 }
 
 #[cfg(test)]

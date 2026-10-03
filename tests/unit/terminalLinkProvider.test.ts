@@ -136,6 +136,23 @@ function createLinkProviderHarness(
 }
 
 describe("terminal local file path links", () => {
+  it("limits a long wrapped paragraph to 4096 nearby characters without changing the local link", async () => {
+    const rows: HarnessLine[] = Array.from({ length: 80 }, () => ({ text: "noise ".repeat(20), isWrapped: true }));
+    rows[10] = { text: "C:/far/report.txt " + "noise ".repeat(16), isWrapped: true };
+    rows[40] = { text: "C:/near/report.txt " + "noise ".repeat(16), isWrapped: true };
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) => candidates.map((candidate) =>
+      candidate.startsWith("C:/near/report.txt") ? { existingPrefix: "C:/near/report.txt", isDir: false } : null));
+    const harness = createLinkProviderHarness(rows);
+    try {
+      const links = await harness.provideLinks(41);
+      expect(links?.map((link) => link.text)).toContain("C:/near/report.txt");
+      expect(mockedResolveLocalPathLinks.mock.calls.flatMap(([candidates]) => candidates)
+        .some((candidate) => candidate.includes("C:/far/"))).toBe(false);
+      expect(links?.find((link) => link.text === "C:/near/report.txt")?.range).toEqual({
+        start: { x: 1, y: 41 }, end: { x: 18, y: 41 },
+      });
+    } finally { harness.dispose(); }
+  });
   beforeEach(() => {
     mockedResolveLocalPathLinks.mockReset();
     mockedHomeDir.mockReset();
