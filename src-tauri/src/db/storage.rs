@@ -286,8 +286,31 @@ pub struct WindowFrameConfig {
     pub height: f64,
 }
 
+/// Optional window ownership added without changing schema 1. Older readers
+/// ignore it and can still open every workspace in their main window.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WindowGroupConfig {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decorated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_tearout: Option<bool>,
+    // New frames use the inner size accepted by Tauri's window builder. The
+    // legacy window_frame remains an outer frame for downgrade compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<WindowFrameConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_pane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_tab_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_group: Option<WindowGroupConfig>,
     #[serde(default)]
     pub detached: Option<bool>,
     #[serde(default)]
@@ -1685,6 +1708,42 @@ mod tests {
 
     /// The sidebar's workspace grouping color lives only in data.json — if it
     /// stopped round-tripping here every group would silently reset on restart.
+    #[test]
+    fn legacy_schema_one_workspaces_do_not_require_window_groups() {
+        let old = serde_json::json!({"id":"old","name":"Old","grid_template_id":"1x1","panes":[],"created_at":1});
+        let workspace: WorkspaceConfig = serde_json::from_value(old).unwrap();
+        assert!(workspace.window_group.is_none());
+        let wire = serde_json::to_value(workspace).unwrap();
+        assert!(wire.get("window_group").is_none());
+        assert_eq!(CURRENT_SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn unknown_ownership_extension_is_ignored_by_a_legacy_workspace_reader() {
+        #[derive(Serialize, Deserialize)]
+        struct LegacyWorkspace {
+            id: String, name: String, grid_template_id: String,
+            panes: Vec<PaneConfig>, created_at: u64,
+        }
+        let input = serde_json::json!({
+            "id":"new","name":"New","grid_template_id":"1x1","panes":[{
+                "pane_id":"p","agent_id":"shell-starter","label":"shell","tabs":[{
+                    "tab_id":"t","agent_id":"shell-starter","type":"terminal","label":"preserved"
+                }]
+            }],"created_at":1,
+            "window_group":{"label":"mycmux-w1","frame":{"x":120.0,"y":140.0,"width":800.0,"height":600.0}}
+        });
+        let old: LegacyWorkspace = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(old.panes[0].tabs.as_ref().unwrap()[0].tab_id.as_deref(), Some("t"));
+        let downgraded: WorkspaceConfig = serde_json::from_value(serde_json::to_value(old).unwrap()).unwrap();
+        assert!(downgraded.window_group.is_none());
+        assert_eq!(downgraded.id, "new");
+        let mut current: WorkspaceConfig = serde_json::from_value(input).unwrap();
+        let first = serde_json::to_value(&current).unwrap();
+        for _ in 0..6 { current = serde_json::from_value(serde_json::to_value(current).unwrap()).unwrap(); }
+        assert_eq!(serde_json::to_value(current).unwrap(), first);
+    }
+
     #[test]
     fn workspace_color_round_trip() {
         // r##"…"## because the hex color puts a `"#` sequence inside the literal.

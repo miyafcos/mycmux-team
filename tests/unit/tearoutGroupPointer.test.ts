@@ -51,7 +51,8 @@ describe("native group entry boundaries", () => {
   it("OFF, macOS and an ineligible session retain the original entry", () => {
     useSettingsStore.setState({ nativePaneTearoutEnabled: false });
     expect(usesNativeGroupDrag(item)).toBe(false); expect(usesNativeWorkspaceDrag("source")).toBe(false);
-    useSettingsStore.setState({ nativePaneTearoutEnabled: true });
+    // macOS with its own switch off (the Mac default is on since 0.83.0).
+    useSettingsStore.setState({ nativePaneTearoutEnabled: true, macNativePaneTearoutEnabled: false });
     Object.defineProperty(navigator, "platform", { configurable: true, value: "MacIntel" });
     expect(usesNativeGroupDrag(item)).toBe(false); expect(usesNativeWorkspaceDrag("source")).toBe(false);
     Object.defineProperty(navigator, "platform", { configurable: true, value: "Win32" });

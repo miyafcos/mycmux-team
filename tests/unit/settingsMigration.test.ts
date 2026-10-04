@@ -124,7 +124,7 @@ describe("settings persistence migration", () => {
     });
   });
 
-  it.each([6, 7])("does not migrate settings at version %i", (version) => {
+  it.each([7, 8])("does not migrate settings at version %i", (version) => {
     const persisted = { terminalRenderer: "dom", notificationsEnabled: true };
     expect(migratePersistedSettings(persisted, version)).toBe(persisted);
   });
@@ -145,6 +145,29 @@ describe("settings persistence migration", () => {
       dispatchStallMinutes: 45,
       dispatchWatchdogNotify: true,
     });
+  });
+
+  it("switches the Mac tear-out on once for Mac settings saved before version 7", () => {
+    // 0.82.0 saved its experimental default (off) for every Mac install.
+    const saved = { macNativePaneTearoutEnabled: false, nativePaneTearoutEnabled: false, notificationsEnabled: true };
+    expect(migratePersistedSettings(saved, 6, "Macintosh; Intel Mac OS X", "MacIntel")).toMatchObject({
+      macNativePaneTearoutEnabled: true,
+      notificationsEnabled: true,
+    });
+    expect(migratePersistedSettings({ notificationsEnabled: true }, 0, "Macintosh; Intel Mac OS X", "MacIntel"))
+      .toMatchObject({ macNativePaneTearoutEnabled: true });
+  });
+
+  it("keeps a Mac off chosen at version 7 and leaves Windows settings alone", () => {
+    const chosenOff = { macNativePaneTearoutEnabled: false };
+    expect(migratePersistedSettings(chosenOff, SETTINGS_STORE_VERSION, "Macintosh; Intel Mac OS X", "MacIntel"))
+      .toBe(chosenOff);
+    expect(migratePersistedSettings(
+      { macNativePaneTearoutEnabled: false, nativePaneTearoutEnabled: false },
+      6,
+      "Windows NT 10.0",
+      "Win32",
+    )).toMatchObject({ macNativePaneTearoutEnabled: false, nativePaneTearoutEnabled: false });
   });
 });
 

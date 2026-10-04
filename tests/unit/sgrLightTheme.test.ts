@@ -101,7 +101,9 @@ describe("XTermWrapper stream wiring", () => {
     expect(source).toContain('isLightThemeRef.current = storeTheme.colorScheme === "light";');
     expect(source).toContain('sgrLightRewriters.get(term)!.transform(displayOutput, isLightThemeRef.current)');
     expect(source).toContain('sgrLightRewriter.transform(adaptedOutput, isLightThemeRef.current)');
-    expect(source).toContain('term.write(rewrittenOutput, finish);');
+    expect(source).toContain('const writeTerm = term;');
+    expect(source).toContain('writeTerm.write(rewrittenOutput, () => {');
+    expect(source).toContain('markTerminalBufferReady(writeTerm);');
     expect(source).toContain('replayTerm.write(rewrittenOutput, () => {');
   });
   it("keeps one instance per Terminal across cached mounts and resets via public addon disposal", () => {

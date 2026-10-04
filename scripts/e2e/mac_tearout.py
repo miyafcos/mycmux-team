@@ -1,4 +1,4 @@
-"""37 sequential S4 Mac cases; fresh profiles and app-local synthetic input.
+"""37 sequential M1 Mac cases; fresh profiles and app-local synthetic input.
 
 No physical pointer/key injection, production app manipulation or file deletion.
 The same stores, drag entry, live serializers, native opacity and receipt path as
@@ -21,7 +21,10 @@ from pathlib import Path
 from mycmux_e2e import App
 
 ROOT = Path(__file__).resolve().parents[2]
-OUT = ROOT / 'tmp/tearout-s4'
+match = re.fullmatch(r'mycmux-wt-mac-([a-z0-9]+)-261003', ROOT.name)
+assert match, ROOT
+SEAT = match.group(1)
+OUT = ROOT / 'tmp' / f'tearout-{SEAT}'
 STATE = r"""
 const h=window.__mycmuxE2E, list=h.stores.workspaceList.getState(), ui=h.stores.ui.getState();
 return {workspaces:list.workspaces,activeWorkspace:list.activeWorkspaceId,activeSession:ui.activePaneId,
@@ -37,13 +40,40 @@ def wait(app, callback, what, timeout=20):
     return app.wait_until(callback, timeout, what, 0.05)
 
 
+def instrument(app, label):
+    js(app, r"""
+if(window.__m1IPC) return true;
+window.__m1IPC=[];
+const original=window.fetch;
+window.fetch=function(input,options) {
+  const url=typeof input==='string'?input:input.url, at=Date.now(), began=performance.now();
+  const command=url.startsWith('ipc://')?new URL(url).pathname.slice(1):null;
+  const result=original.call(this,input,options);
+  if(command&&/^(tearout_|publish_window_fragment|is_session_alive|plugin:event)/.test(decodeURIComponent(command))) {
+    const rows=window.__m1IPC;
+    if(rows.length<4096) {
+      let args={};
+      try { args=JSON.parse(typeof options?.body==='string'?options.body:new TextDecoder().decode(options?.body)); } catch {}
+      const row={command:decodeURIComponent(command),at,ms:null,phase:args.phase??null,event:args.event??null};
+      rows.push(row);
+      result.then(()=>{row.ms=performance.now()-began;},()=>{row.ms=performance.now()-began;});
+    }
+  }
+  return result;
+};
+return true;
+""", label)
+
+
 def launch(app, out):
     assert not app.runtime_dir.exists(), app.runtime_dir
     assert str(app.bundle.resolve()).startswith(str(OUT.resolve()) + '/'), app.bundle
     env = {key: value for key, value in os.environ.items() if not key.startswith(('MYCMUX_', 'CLAUDE'))}
     env['MYCMUX_PROFILE_ACTIVATION'] = 'accessory'
-    with (out / 'launch.log').open('wb') as stream:
-        subprocess.Popen([str(app.binary), '--profile', app.profile], env=env, stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
+    log = str(out / 'launch.log')
+    subprocess.run(['open', '-n', '-g', '-a', str(app.bundle),
+        '--env', 'MYCMUX_PROFILE_ACTIVATION=accessory', '--stdout', log, '--stderr', log,
+        '--args', '--profile', app.profile], env=env, check=True)
     wait(app, app._socket_ready, 'test socket', 45)
     wait(app, lambda: js(app, 'return !!window.__mycmuxE2E?.nativeTearout;'), 'test-only hooks', 30)
     assert js(app, 'return await window.__TAURI_INTERNALS__.invoke("get_test_profile");') == app.profile
@@ -67,23 +97,23 @@ def stop(app):
 
 
 def fixture(app, regions, enabled):
-    workspace = app.call('workspace.new', {'name': 'S4-source', 'grid': '1x1', 'cwd': str(ROOT)})
+    workspace = app.call('workspace.new', {'name': 'M1-source', 'grid': '1x1', 'cwd': str(ROOT)})
     source_id = workspace['workspaceId']
     source = next(item for item in app.workspaces() if item['id'] == source_id)
     anchor = source['panes'][0]['tabs'][0]['sessionId']
     for index in range(regions * 2):
         spawned = app.call('pane.spawn_tab', {'anchorSessionId': anchor, 'activate': False,
-            'label': f'S4-clock-{index}', 'commandArgv': ['/bin/sh', '-c',
-                'i=0; while :; do i=$((i+1)); printf "S4CLOCK %s %s\\n" "$$" "$i"; sleep 0.1; done']})
+            'label': f'M1-clock-{index}', 'commandArgv': ['/bin/sh', '-c',
+                'i=0; while :; do i=$((i+1)); printf "M1CLOCK %s %s\\n" "$$" "$i"; sleep 0.1; done']})
         anchor = spawned.get('sessionId', anchor)
     result = js(app, f"""
 const h=window.__mycmuxE2E, list=h.stores.workspaceList.getState();
 h.stores.settings.getState().setNativePaneTearoutEnabled({str(enabled).lower()});
 const source=list.getWorkspace({json.dumps(source_id)}), all=source.panes.flatMap(p=>p.tabs);
 const tabs=all.filter(t=>t.type==='terminal'), launcher=all.find(t=>t.type==='launcher');
-if(tabs.length!=={regions*2}||!launcher) throw new Error('S4 live fixture missing');
+if(tabs.length!=={regions*2}||!launcher) throw new Error('M1 live fixture missing');
 const receiverPane={{...source.panes[0],id:crypto.randomUUID(),tabs:[launcher],activeTabId:launcher.id,sessionId:launcher.sessionId}};
-const receiver=list.createWorkspace('S4-receiver','1x1',[receiverPane],[[receiverPane.id]],{{activate:false}});
+const receiver=list.createWorkspace('M1-receiver','1x1',[receiverPane],[[receiverPane.id]],{{activate:false}});
 const panes=Array.from({{length:{regions}}},(_,i)=>({{...source.panes[0],id:i===0?source.panes[0].id:crypto.randomUUID(),
   tabs:tabs.slice(i*2,i*2+2),activeTabId:tabs[i*2+1].id,sessionId:tabs[i*2+1].sessionId,pinnedTabId:tabs[i*2].id}}));
 const arranged={{...source,panes,splitColumns:panes.map(p=>[p.id]),columnWidths:{regions}===1?[1]:[.35,.65],
@@ -100,7 +130,7 @@ def clocks(app, tabs, label):
     result = {}
     for tab in tabs:
         lines = js(app, f'return await window.__mycmuxE2E.readPaneTail({json.dumps(tab["sessionId"])},120,true);', label)
-        matches = [re.search(r'S4CLOCK (\d+) (\d+)', line) for line in lines]
+        matches = [re.search(r'M1CLOCK (\d+) (\d+)', line) for line in lines]
         values = [(match.group(1), int(match.group(2))) for match in matches if match]
         assert values, (tab['id'], lines[-5:])
         result[tab['id']] = {'session': tab['sessionId'], 'pid': values[-1][0], 'clock': values[-1][1]}
@@ -153,6 +183,19 @@ def assert_layout(state, source, receiver, tabs, case):
                 assert pane.get('pinnedTabId') == moved[0]['id'], pane
 
 
+def live_clocks(app, tabs, label, before):
+    # The fixture writes every 100ms. A fast transfer can finish before the
+    # next write, so wait for actual progress without relaxing ID/PID checks.
+    def progressed():
+        after = clocks(app, tabs, label)
+        for tab in tabs:
+            key = tab['id']
+            assert after[key]['session'] == before[key]['session'], (before, after)
+            assert after[key]['pid'] == before[key]['pid'], (before, after)
+        return after if all(after[tab['id']]['clock'] > before[tab['id']]['clock'] for tab in tabs) else None
+    return wait(app, progressed, 'same PTYs continue their output clocks', 8)
+
+
 def hosts(app, tabs):
     fragments = js(app, 'return await window.__TAURI_INTERNALS__.invoke("get_window_fragments");')
     answer = {tab['id']: [] for tab in tabs}
@@ -173,12 +216,12 @@ const send=(type,el,x,y)=>el.dispatchEvent(new PointerEvent(type,{{bubbles:true,
 let el,x,y,endX,endY;
 if(kind==='workspace') {{
   el=[...document.querySelectorAll('[data-dnd-workspace-target-id]')].find(el=>el.dataset.dndWorkspaceTargetId===source.id);
-  if(!el) throw new Error('S4 workspace row missing');
+  if(!el) throw new Error('M1 workspace row missing');
   const r=el.getBoundingClientRect(), sidebar=el.closest('[data-dnd-workspace-sidebar=true]').getBoundingClientRect();
   x=r.left+8;y=r.top+r.height*.5;endX=sidebar.right+13;endY=y;
 }} else {{
   const region=[...document.querySelectorAll('[data-dnd-pane-id]')].find(el=>el.dataset.dndPaneId===source.panes.at(-1).id);
-  if(!region) throw new Error('S4 region missing');
+  if(!region) throw new Error('M1 region missing');
   const strip=region.querySelector('.pane-tabbar'), r=strip.getBoundingClientRect();
   y=r.top+r.height*.5;endY=r.bottom+13;
   if(kind==='pane'||entry==='pill') {{
@@ -189,7 +232,7 @@ if(kind==='workspace') {{
       const hit=document.elementFromPoint(x,y);
       if(hit&&hit.closest('.pane-tabbar')===strip&&!hit.closest('button,input,textarea,select,[data-tab-id]')) {{el=hit;break;}}
     }}
-    if(!el) throw new Error('S4 group whitespace missing');
+    if(!el) throw new Error('M1 group whitespace missing');
   }}
   endX=x;
 }}
@@ -213,7 +256,7 @@ def moving_window(app, tabs, source='main'):
 def identity(app, label):
     try:
         return js(app, 'return await window.__TAURI_INTERNALS__.invoke("tearout_synthetic_sample",' + json.dumps({
-            'id': 's4-identity', 'label': label, 'receiver': None, 'clientX': -1, 'clientY': -1,
+            'id': 'm1-identity', 'label': label, 'receiver': None, 'clientX': -1, 'clientY': -1,
             'phase': 'identity', 'escaped': False}) + ');')['window_number']
     except Exception:
         return None
@@ -269,20 +312,21 @@ def run_case(app, case, out):
     arranged = fixture(app, case['regions'], not case.get('off'))
     source, receiver = arranged['source'], arranged['receiver']
     before_state = js(app, STATE)
+    instrument(app, 'main')
     all_tabs = [tab for pane in source['panes'] for tab in pane['tabs']]
     tabs = all_tabs[-1:] if case['kind'] == 'pane' else source['panes'][-1]['tabs'] if case['kind'] == 'tab' else all_tabs
     before = clocks(app, tabs, 'main')
     if case.get('off'):
         # Exercise the legacy production commit directly; the new switch must
         # neither create a spare nor record a native transaction while OFF.
-        item = {'kind': 'tab', 'workspaceId': source['id'], 'paneId': source['panes'][-1]['id'], 'tabId': tabs[-1]['id'], 'label': 'S4'} if case['kind'] == 'pane' else {
-            'kind': 'pane', 'workspaceId': source['id'], 'paneId': source['panes'][-1]['id'], 'label': 'S4', 'tabCount': len(tabs)}
+        item = {'kind': 'tab', 'workspaceId': source['id'], 'paneId': source['panes'][-1]['id'], 'tabId': tabs[-1]['id'], 'label': 'M1'} if case['kind'] == 'pane' else {
+            'kind': 'pane', 'workspaceId': source['id'], 'paneId': source['panes'][-1]['id'], 'label': 'M1', 'tabCount': len(tabs)}
         if case['kind'] == 'workspace':
             js(app, f'return await window.__mycmuxE2E.tearOutWorkspaceToNewWindow({json.dumps(source["id"])},{{x:700,y:300}});')
         else:
             js(app, f'window.__mycmuxE2E.legacyDrop({json.dumps(item)},{{kind:"new-window",screenX:700,screenY:300}});return true;')
         moving = moving_window(app, tabs)
-        after = clocks(app, tabs, moving['label'])
+        after = live_clocks(app, tabs, moving['label'], before)
         assert_live(before, after)
         assert js(app, 'return window.__mycmuxE2E.nativeTearout.records.size;') == 0
         return {'initial': initial, 'before': before, 'after': after, 'legacy_label': moving['label']}
@@ -290,9 +334,10 @@ def run_case(app, case, out):
     pointer_start(app, source, case['kind'], tabs)
     moving = moving_window(app, tabs)
     label = moving['label']
+    instrument(app, label)
     window_number = identity(app, label)
     assert window_number is not None
-    during = clocks(app, tabs, label)
+    during = live_clocks(app, tabs, label, before)
     assert_live(before, during)
     selected_session = tabs[-1]['sessionId']
     read_writes = lambda: js(app, 'return window.__mycmuxE2E.terminals.writes.get(' + json.dumps(selected_session) + ')??0;', label)
@@ -330,7 +375,7 @@ def run_case(app, case, out):
         observed_state = js(app, STATE)
         (out / 'esc-state.json').write_text(json.dumps({'before': before_state, 'after': observed_state}, indent=2) + '\n', encoding='utf-8')
         assert observed_state == before_state, 'Esc did not restore the complete source state'
-    after = clocks(app, tabs, expected_label)
+    after = live_clocks(app, tabs, expected_label, before)
     final_state = js(app, STATE, expected_label)
     assert_layout(final_state, source, receiver, tabs, case)
     # Read the same subset after an individual-pill regrab.
@@ -343,7 +388,12 @@ def run_case(app, case, out):
     assert record['native_started_at'] is None, 'synthetic sample mislabeled as physical OS dragging'
     if name == 'keep': app.snapshot(out / 'kept.png', label)
     elif point: app.snapshot(out / 'docked.png')
-    return {'initial': initial, 'before': before, 'during': during, 'after': after, 'source_state': before_state, 'final_state': final_state, 'writes_before': writes_before, 'writes_during': writes_during, 'native_window_number': window_number, 'probe': probe, 'record': record, 'windows': app.windows()}
+    windows = app.windows()
+    present = {row['label'] for row in windows}
+    ipc_labels = {owner, expected_label}
+    ipc = {label: js(app, 'return window.__m1IPC??[];', label) for label in ipc_labels if label in present}
+    unavailable_ipc_windows = sorted(ipc_labels - present)
+    return {'initial': initial, 'before': before, 'during': during, 'after': after, 'source_state': before_state, 'final_state': final_state, 'writes_before': writes_before, 'writes_during': writes_during, 'native_window_number': window_number, 'probe': probe, 'record': record, 'ipc': ipc, 'unavailable_ipc_windows': unavailable_ipc_windows, 'windows': windows}
 
 
 def main():
@@ -351,7 +401,7 @@ def main():
     parser.add_argument('--bundle', type=Path, required=True)
     parser.add_argument('--case', type=int)
     args = parser.parse_args()
-    assert sys.platform == 'darwin' and str(ROOT) == '/Users/edu/Developer/mycmux-wt-next-s4-261003'
+    assert sys.platform == 'darwin'
     bundle = args.bundle.resolve()
     assert OUT.resolve() in bundle.parents and bundle.is_dir(), bundle
     stamp = datetime.now(timezone.utc).strftime('%m%d%H%M%S')
@@ -362,7 +412,7 @@ def main():
         'bundle': str(bundle), 'results': [], 'total': 37}
     for index, case in enumerate(cases()):
         if args.case is not None and index != args.case: continue
-        profile = f's4n{stamp}{index:02}'
+        profile = f'{SEAT}n{stamp}{index:02}'
         out = run / f'{index:02}'
         out.mkdir()
         app = App(profile, bundle)
