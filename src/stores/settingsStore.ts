@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { syncedPersist } from "./syncedPersist";
 import {
   migratePersistedSettings,
   resolveDefaultTerminalRenderer,
@@ -132,7 +132,7 @@ interface SettingsState {
 }
 
 export const useSettingsStore = create<SettingsState>()(
-  persist(
+  syncedPersist(
     (set) => ({
       notificationsEnabled: true,
       notificationSoundEnabled: true,
@@ -153,7 +153,10 @@ export const useSettingsStore = create<SettingsState>()(
       // On by default since 0.81.0 (owner's decision 2026-10-02). Windows only;
       // the settings switch stays as the way back to the previous drag.
       nativePaneTearoutEnabled: true,
-      macNativePaneTearoutEnabled: false,
+      // The Mac's own switch: on by default since 0.83.0 (owner's decision
+      // 2026-10-04). Mac installs saved before settings version 7 are switched
+      // on once by the migration (settingsMigration.ts).
+      macNativePaneTearoutEnabled: true,
       launcherHiddenIds: [],
       groupingApplyAnimationEnabled: true,
       dispatchWatchdogEnabled: true,

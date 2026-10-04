@@ -6,6 +6,7 @@ import { nativePaneTearoutEnabled, isMacTearoutPlatform } from "./feature";
 import { afterTearoutFrame } from "./macFrame";
 import { startTearoutFrames, finishTearoutFrames, disposeTearoutFrames } from "./frameMetrics";
 import { expectTearoutAttachments } from "./sessionAttachment";
+import { installMacTearoutPrewarm } from "./macPrewarm";
 import { restoreTearoutSource, restoreTearoutGroup, removeTearoutTab, nativeDropAllowed, type Rect } from "./model";
 import { detachedOriginForDrag, detachedWorkspaceConfig, isTransferableTab, type DetachedReturnTarget } from "../detachedPane";
 import { restoreWorkspaceConfigs } from "../workspaceRestore";
@@ -14,6 +15,7 @@ import { isSessionAlive, type WorkspaceConfig } from "../ipc";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { applyExternalStoreUpdate } from "../../stores/syncedPersist";
 import { useUiStore } from "../../stores/uiStore";
 import { evictTerminalCache } from "../../components/terminal/terminalCache";
 import { focusController } from "../focusController";
@@ -24,7 +26,11 @@ import type { PaneDragItem } from "../../stores/paneDragStore";
 import type { Workspace } from "../../types";
 
 declare global { interface Window { __MYCMUX_TEAROUT_WINDOW__?: boolean } }
-export const isTearoutChild = (): boolean => globalThis.window?.__MYCMUX_TEAROUT_WINDOW__ === true;
+type RestoredWindow = Window & { __MYCMUX_RESTORED_WINDOW__?: boolean };
+const isRestoredWindow = (): boolean => (globalThis.window as RestoredWindow | undefined)?.__MYCMUX_RESTORED_WINDOW__ === true;
+// A restored child uses the same paint-ready startup gate, then resumes its
+// original native/ordinary window behavior without taking foreground focus.
+export const isTearoutChild = (): boolean => globalThis.window?.__MYCMUX_TEAROUT_WINDOW__ === true || isRestoredWindow();
 export const useTearoutStore = create<{ gap: Rect | null; gapLabel: string }>(() => ({ gap: null, gapLabel: "" }));
 
 const DELIVERY = "mycmux://tearout-delivery";
@@ -46,7 +52,8 @@ export interface NativeSample {
   esc_at: number | null; original: { x: number; y: number; width: number; height: number };
   source?: string; region_count?: number; receiver_epoch?: number;
 }
-interface Adapter { serialize: (workspace: Workspace) => WorkspaceConfig; publish: () => Promise<void> }
+interface Adapter {
+  hydrated?: Promise<void>; serialize: (workspace: Workspace) => WorkspaceConfig; publish: () => Promise<void> }
 let adapter: Adapter | null = null;
 let listenersReady: Promise<void> = Promise.resolve();
 const receipts = new Map<string, (receipt: Receipt) => void>();
@@ -214,7 +221,15 @@ async function receive(delivery: Delivery): Promise<void> {
       approvedDrops.delete(delivery.approval.token);
     }
     const expected = sessions(delivery.configs);
-    if (!(await Promise.all(expected.map(isSessionAlive))).every(Boolean)) throw new Error("tearout_session_not_alive");
+    const alive = Promise.all(expected.map((id) => isSessionAlive(id)));
+    // A synchronous restore failure can bypass checkAlive; retain its rejection handler.
+    void alive.catch(() => {});
+    // Mac may render/reattach while this read-only check is in flight. Receipt
+    // still requires both live existing PTYs and successful attachments.
+    const checkAlive = async () => {
+      if (!(await alive).every(Boolean)) throw new Error("tearout_session_not_alive");
+    };
+    if (!isMacTearoutPlatform()) await checkAlive();
     if (entry.revoked) return;
     flushSync(() => {
       const configs = delivery.placement?.kind === "workspace"
@@ -235,7 +250,11 @@ async function receive(delivery: Delivery): Promise<void> {
       useWorkspaceLayoutStore.getState().setActivePaneTab(workspace.id, pane.id, firstId);
       useUiStore.getState().setActivePaneId(selected?.session_id ?? pane.sessionId);
     });
-    await timeout(attachment.ready, 5000, "tearout_attachment_timeout");
+    if (isMacTearoutPlatform()) {
+      await Promise.all([checkAlive(), timeout(attachment.ready, 5000, "tearout_attachment_timeout")]);
+    } else {
+      await timeout(attachment.ready, 5000, "tearout_attachment_timeout");
+    }
     if (entry.revoked) return;
     const ownedIds = useWorkspaceListStore.getState().workspaces.flatMap((ws) => ws.panes.flatMap((pane) => pane.tabs.map((tab) => tab.sessionId)));
     if (!expected.every((id) => ownedIds.includes(id))) throw new Error("tearout_session_identity_changed");
@@ -375,6 +394,7 @@ async function dockOutgoing(request: DockRequest): Promise<void> {
 }
 
 export function installTearoutRuntime(value: Adapter): () => void {
+  let live = true, hydrated = value.hydrated === undefined;
   adapter = value;
   // The default Any target also hears emitTo for other windows. Transfers and
   // their acknowledgements must stay with the addressed window's store.
@@ -392,20 +412,27 @@ export function installTearoutRuntime(value: Adapter): () => void {
     listen<boolean | { mac: true; enabled: boolean }>(PREFERENCE, ({ payload }) => {
       if (typeof payload === "boolean") {
         if (useSettingsStore.getState().nativePaneTearoutEnabled !== payload)
-          useSettingsStore.setState({ nativePaneTearoutEnabled: payload });
+          applyExternalStoreUpdate(useSettingsStore, { nativePaneTearoutEnabled: payload });
       } else if (isMacTearoutPlatform()) {
-        useSettingsStore.setState({ nativePaneTearoutEnabled: payload.enabled, macNativePaneTearoutEnabled: payload.enabled });
+        applyExternalStoreUpdate(useSettingsStore, { nativePaneTearoutEnabled: payload.enabled, macNativePaneTearoutEnabled: payload.enabled });
       }
     }),
   ];
   listenersReady = Promise.all(registered).then(() => {});
+  const stopPrewarm = isTearoutChild() ? () => {} : installMacTearoutPrewarm(() => localMoving || incoming.size > 0);
   let preference = nativePaneTearoutEnabled(useSettingsStore.getState().nativePaneTearoutEnabled);
   const warm = () => {
+    if (!hydrated) return;
     if (nativePaneTearoutEnabled(preference) && !isMainWindow()) return;
     void invoke(nativePaneTearoutEnabled(preference) ? "tearout_warm" : "tearout_release_spare")
       .catch((error) => console.warn("[tearout] spare maintenance failed", error));
   };
   if (nativePaneTearoutEnabled(preference)) warm();
+  void value.hydrated?.then(() => {
+    if (!live) return;
+    hydrated = true;
+    if (nativePaneTearoutEnabled(preference)) warm();
+  });
   const stop = useSettingsStore.subscribe((state) => {
     const enabled = nativePaneTearoutEnabled(state.nativePaneTearoutEnabled);
     if (enabled === preference) return;
@@ -414,7 +441,8 @@ export function installTearoutRuntime(value: Adapter): () => void {
     warm();
   });
   return () => {
-    stop();
+    live = false;
+    stop(); stopPrewarm();
     disposeTearoutFrames();
     cancelSampleFrame?.();
     cancelSampleFrame = null; pendingSample = null;
@@ -425,8 +453,18 @@ export function installTearoutRuntime(value: Adapter): () => void {
 }
 
 export async function markTearoutChildReady(): Promise<void> {
-  await listenersReady;
-  await invoke("tearout_child_ready");
+  const restored = isRestoredWindow();
+  // Clear before the first await: App's pending paint must use the original
+  // shell kind as soon as its startup mask is removed.
+  if (restored) delete (window as RestoredWindow).__MYCMUX_RESTORED_WINDOW__;
+  try {
+    await listenersReady;
+    if (restored) await invoke("plugin:window|show");
+    await invoke("tearout_child_ready");
+  } catch (error) {
+    if (restored) (window as RestoredWindow).__MYCMUX_RESTORED_WINDOW__ = true;
+    throw error;
+  }
 }
 
 export function canRegrabTearoutTab(item: Extract<PaneDragItem, { kind: "tab" }>): boolean {
@@ -568,8 +606,15 @@ async function tearoutGroup(item: TransferItem, gap: Rect, offset: { x: number; 
     if (restore) return restore;
     restore = (async () => {
       // Destroy this new child's webview before the original channel reattaches.
-      if (label) await invoke("tearout_retire", { label });
-      if (prepared) await invoke("tearout_phase", { id, phase: "rolled_back" });
+      if (isMacTearoutPlatform()) {
+        await Promise.all([
+          label ? invoke("tearout_retire", { label }) : Promise.resolve(),
+          prepared ? invoke("tearout_phase", { id, phase: "rolled_back" }) : Promise.resolve(),
+        ]);
+      } else {
+        if (label) await invoke("tearout_retire", { label });
+        if (prepared) await invoke("tearout_phase", { id, phase: "rolled_back" });
+      }
       if (removed) {
         const attachment = expectTearoutAttachments(sessions([config]));
         try {
@@ -667,7 +712,10 @@ async function tearoutGroup(item: TransferItem, gap: Rect, offset: { x: number; 
       }
       useTearoutStore.setState({ gap, gapLabel: item.label });
     });
-    for (const tab of movedTabs) { evictTerminalCache(tab.sessionId); focusController.clearSession(tab.sessionId); }
+    for (const tab of movedTabs) {
+      if (!isMacTearoutPlatform()) evictTerminalCache(tab.sessionId);
+      focusController.clearSession(tab.sessionId);
+    }
     published = adapter.publish();
     delivery = send(label, [config], undefined, undefined, deliveryToken, selectedSession).then(async (token) => {
       if (!restore) {
@@ -694,6 +742,10 @@ async function tearoutGroup(item: TransferItem, gap: Rect, offset: { x: number; 
     useTearoutStore.setState({ gap: null });
     localMoving = false;
     activeTearoutRecords.delete(id);
+    // Mac also reuses its parked renderer after a kept window is regrabbed.
+    // The normal cache LRU (12) and session-close eviction still bound its life;
+    // cached renderers own no workspace and have no mounted input listeners.
+    // Windows retains its original eager eviction above.
     await record.finish(result, destination, identity).catch((error) => console.warn("[tearout] log failed", error));
     if (prepared) await invoke("tearout_forget", { id });
     if (nativePaneTearoutEnabled(useSettingsStore.getState().nativePaneTearoutEnabled)) {

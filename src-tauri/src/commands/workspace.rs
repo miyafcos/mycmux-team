@@ -38,41 +38,61 @@ pub async fn save_persistent_data(
     }).await
 }
 
-/// Record where each detached workspace's window sits, so the next launch can
-/// open it there. The owning window is the only one that knows its own frame,
-/// and the frontend cannot read another window's — so the save path asks the
-/// registry who owns the workspace and measures that window here.
+/// The registry is the authority for ownership, including normal child
+/// windows and workspaces currently waiting for adoption. Read each native
+/// frame once, outside the storage lock, and keep the legacy outer frame too.
 fn attach_detached_window_frames(app_handle: &AppHandle, data: &mut PersistentData) {
     use tauri::Manager;
-
-    let Some(state) = app_handle.try_state::<crate::AppState>() else {
-        return;
-    };
-    for workspace in &mut data.workspaces {
-        if workspace.detached != Some(true) {
-            workspace.window_frame = None;
-            continue;
+    let Some(state) = app_handle.try_state::<crate::AppState>() else { return; };
+    let mut groups = std::collections::HashMap::new();
+    let mut outer_frames = std::collections::HashMap::new();
+    for label in state.window_registry.known_windows() {
+        let selection = state.window_registry.fragment(&label);
+        let mut group = storage::WindowGroupConfig {
+            label: label.clone(), frame: None, decorated: None,
+            native_tearout: selection.as_ref().and_then(|fragment| fragment.workspaces.iter()
+                .find_map(|workspace| workspace["window_native_tearout"].as_bool())),
+            active_workspace_id: selection.as_ref().and_then(|row| row.active_workspace_id.clone()),
+            active_pane_id: selection.as_ref().and_then(|row| row.active_pane_id.clone()),
+            active_tab_id: selection.as_ref().and_then(|row| row.active_tab_id.clone()),
+        };
+        if let Some(window) = app_handle.get_window(&label) {
+            group.decorated = window.is_decorated().ok();
+            if let (Ok(scale), Ok(position), Ok(inner), Ok(outer)) = (
+                window.scale_factor(), window.outer_position(), window.inner_size(), window.outer_size(),
+            ) {
+                let position = position.to_logical::<f64>(scale);
+                let inner = inner.to_logical::<f64>(scale);
+                let outer = outer.to_logical::<f64>(scale);
+                group.frame = Some(storage::WindowFrameConfig {
+                    x: position.x, y: position.y, width: inner.width, height: inner.height,
+                });
+                outer_frames.insert(label.clone(), storage::WindowFrameConfig {
+                    x: position.x, y: position.y, width: outer.width, height: outer.height,
+                });
+            }
         }
-        let Some(label) = state.window_registry.window_for_workspace(&workspace.id) else {
-            continue; // Keep whatever frame the caller carried over.
+        groups.insert(label, group);
+    }
+    apply_saved_window_groups(data, &state.window_registry, &groups, &outer_frames);
+}
+
+fn apply_saved_window_groups(
+    data: &mut PersistentData,
+    registry: &crate::window_registry::WindowRegistry,
+    groups: &std::collections::HashMap<String, storage::WindowGroupConfig>,
+    outer_frames: &std::collections::HashMap<String, storage::WindowFrameConfig>,
+) {
+    for workspace in &mut data.workspaces {
+        let Some(label) = registry.window_for_workspace(&workspace.id) else { continue; };
+        if let Some(group) = groups.get(&label) {
+            workspace.window_group = Some(group.clone());
+        }
+        workspace.window_frame = if label == crate::window_registry::MAIN_WINDOW_LABEL {
+            None
+        } else {
+            outer_frames.get(&label).cloned().or_else(|| workspace.window_frame.clone())
         };
-        let Some(window) = app_handle.get_window(&label) else {
-            continue;
-        };
-        let Ok(scale) = window.scale_factor() else {
-            continue;
-        };
-        let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size()) else {
-            continue;
-        };
-        let position = position.to_logical::<f64>(scale);
-        let size = size.to_logical::<f64>(scale);
-        workspace.window_frame = Some(storage::WindowFrameConfig {
-            x: position.x,
-            y: position.y,
-            width: size.width,
-            height: size.height,
-        });
     }
 }
 
@@ -433,6 +453,71 @@ mod tests {
             "created_at": 0,
         }))
         .expect("workspace config fixture")
+    }
+
+    #[test]
+    fn saved_groups_follow_real_registry_ownership_and_include_normal_children() {
+        use crate::window_registry::{WindowFragment, WindowRegistry};
+        let registry = WindowRegistry::new();
+        let mut data = PersistentData::default();
+        data.workspaces = vec![workspace_config("main-ws"), workspace_config("a"), workspace_config("b")];
+        for (label, ids) in [("main", vec!["main-ws"]), ("mycmux-w2", vec!["a", "b"])] {
+            registry.publish_fragment(WindowFragment {
+                window_label: label.into(),
+                workspaces: ids.iter().map(|id| serde_json::to_value(workspace_config(id)).unwrap()).collect(),
+                ..Default::default()
+            });
+        }
+        let inner = storage::WindowFrameConfig { x: 120.0, y: 140.0, width: 800.0, height: 600.0 };
+        let outer = storage::WindowFrameConfig { height: 628.0, ..inner.clone() };
+        let groups = HashMap::from([
+            ("main".into(), storage::WindowGroupConfig { label: "main".into(), frame: None, decorated: Some(true), native_tearout: Some(false),
+                active_workspace_id: Some("main-ws".into()), active_pane_id: None, active_tab_id: None }),
+            ("mycmux-w2".into(), storage::WindowGroupConfig { label: "mycmux-w2".into(), frame: Some(inner.clone()), decorated: Some(false), native_tearout: Some(true),
+                active_workspace_id: Some("b".into()), active_pane_id: Some("b-pane".into()), active_tab_id: Some("b-tab".into()) }),
+        ]);
+        let frames = HashMap::from([("mycmux-w2".into(), outer.clone())]);
+        apply_saved_window_groups(&mut data, &registry, &groups, &frames);
+        let first = serde_json::to_value(&data).unwrap();
+        for _ in 0..6 { apply_saved_window_groups(&mut data, &registry, &groups, &frames); }
+        assert_eq!(serde_json::to_value(&data).unwrap(), first);
+        assert!(data.workspaces[0].window_frame.is_none());
+        for workspace in &data.workspaces[1..] {
+            let group = workspace.window_group.as_ref().unwrap();
+            assert_eq!(group.label, "mycmux-w2");
+            assert_eq!(group.active_workspace_id.as_deref(), Some("b"));
+            assert_eq!(group.frame.as_ref(), Some(&inner));
+            assert_eq!(workspace.window_frame.as_ref(), Some(&outer));
+            assert_ne!(workspace.detached, Some(true));
+        }
+        registry.queue_adoption("main", vec![serde_json::to_value(workspace_config("a")).unwrap()]);
+        apply_saved_window_groups(&mut data, &registry, &groups, &frames);
+        assert_eq!(data.workspaces[1].window_group.as_ref().unwrap().label, "main");
+        assert!(data.workspaces[1].window_frame.is_none());
+    }
+
+    #[test]
+    fn saved_window_groups_survive_six_real_save_load_cycles_in_schema_one() {
+        let _serial = storage::persistence_test_lock();
+        storage::reset_quarantined_schema_for_test();
+        let _reset = SchemaLatchReset;
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("data.json");
+        let mut data = PersistentData::default();
+        data.workspaces = vec![serde_json::from_value(serde_json::json!({
+            "id":"child","name":"Child","grid_template_id":"1x1","panes":[],"created_at":1,
+            "window_group":{"label":"mycmux-w2","frame":{"x":-1000.0,"y":80.0,"width":800.0,"height":600.0},"active_workspace_id":"child"}
+        })).unwrap()];
+        save_persistent_data_for(path.as_path(), data, &HashSet::new()).unwrap();
+        let first = std::fs::read(&path).unwrap();
+        for _ in 0..6 {
+            let envelope = load_persistent_data_for(path.as_path()).unwrap();
+            assert_eq!(envelope.schema_version, 1);
+            let data = envelope.data.unwrap();
+            assert_eq!(data.workspaces[0].window_group.as_ref().unwrap().label, "mycmux-w2");
+            save_persistent_data_for(path.as_path(), data, &HashSet::new()).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), first);
+        }
     }
 
     #[test]
