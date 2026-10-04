@@ -1,4 +1,4 @@
-//! Nonmodal AppKit tear-out: keep WebKit/PTY work running while dragging.
+//! AppKit WindowServer handoff using the original mouse-down; nonmodal fallback.
 //! No global event injection, activation, new permissions or modal Tao reentry.
 use super::{geometry, unix_ms, Approval, MoveState, Reveal, TearoutState, WindowGeometry};
 use block2::RcBlock;
@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::{
     cell::RefCell,
     sync::{atomic::Ordering, Arc},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -24,6 +24,8 @@ struct Active {
 }
 thread_local! {
     static ACTIVE: RefCell<Option<Active>> = const { RefCell::new(None) };
+    static MOUSE_MONITOR: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
+    static MOUSE_DOWN: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
 }
 
 /// A zero-delay native timer runs outside Tao's handler mutex. In particular,
@@ -53,6 +55,64 @@ fn cursor() -> NSPoint {
 fn held() -> bool {
     let buttons: usize = unsafe { msg_send![class!(NSEvent), pressedMouseButtons] };
     buttons & 1 != 0
+}
+
+/// Installed before the enabled source can receive a mouse-down. Retain the
+/// actual NSEvent unchanged, rather than constructing one from a DOM pointer.
+/// This monitor is app-local, observes only down/up, and never consumes either.
+pub(super) fn capture_mouse_down(enabled: bool) {
+    if !enabled {
+        MOUSE_DOWN.with(|slot| slot.borrow_mut().take());
+        if let Some(monitor) = MOUSE_MONITOR.with(|slot| slot.borrow_mut().take()) {
+            unsafe {
+                let _: () = msg_send![class!(NSEvent), removeMonitor: &*monitor];
+            }
+        }
+        return;
+    }
+    if MOUSE_MONITOR.with(|slot| slot.borrow().is_some()) {
+        return;
+    }
+    let block = RcBlock::new(move |event: *mut AnyObject| -> *mut AnyObject {
+        if let Some(event_ref) = unsafe { event.as_ref() } {
+            let kind: usize = unsafe { msg_send![event_ref, type] };
+            MOUSE_DOWN.with(|slot| {
+                *slot.borrow_mut() = if kind == 1 {
+                    unsafe { Retained::retain(event) }
+                } else {
+                    None
+                };
+            });
+        }
+        event
+    });
+    let monitor: Retained<AnyObject> = unsafe {
+        msg_send![class!(NSEvent),
+            addLocalMonitorForEventsMatchingMask: (1usize << 1) | (1usize << 2), handler: &*block]
+    };
+    MOUSE_MONITOR.with(|slot| *slot.borrow_mut() = Some(monitor));
+}
+
+fn original_down_matches(kind: usize, actual: isize, expected: isize, age: f64) -> bool {
+    kind == 1 && expected > 0 && actual == expected && (0.0..=Duration::from_millis(300).as_secs_f64()).contains(&age)
+}
+
+fn original_down(app: &AppHandle, source: &str) -> Option<Retained<AnyObject>> {
+    if !held() {
+        return None;
+    }
+    let window = app.get_window(source)?;
+    let native = unsafe { ns_window(&window).ok()? };
+    let expected: isize = unsafe { msg_send![native, windowNumber] };
+    MOUSE_DOWN.with(|slot| {
+        let event = slot.borrow_mut().take()?;
+        let actual: isize = unsafe { msg_send![&*event, windowNumber] };
+        let kind: usize = unsafe { msg_send![&*event, type] };
+        let stamp: f64 = unsafe { msg_send![&*event, timestamp] };
+        let info: Retained<AnyObject> = unsafe { msg_send![class!(NSProcessInfo), processInfo] };
+        let uptime: f64 = unsafe { msg_send![&*info, systemUptime] };
+        original_down_matches(kind, actual, expected, uptime - stamp).then_some(event)
+    })
 }
 
 fn origin_under_pointer(point: NSPoint, width: f64, height: f64, x: f64, y: f64) -> NSPoint {
@@ -233,6 +293,82 @@ fn original(window: &tauri::Window) -> Result<WindowGeometry, String> {
     })
 }
 
+fn start_probe(
+    app: &AppHandle,
+    shared: &Arc<MoveState>,
+    id: String,
+    label: String,
+    recorder: bool,
+) {
+    if !shared.metrics.probe.load(Ordering::Acquire)
+        || shared.metrics.probe_started.swap(true, Ordering::AcqRel)
+    {
+        return;
+    }
+    let app = app.clone();
+    let shared = shared.clone();
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        while !shared.closed.load(Ordering::Acquire) && started.elapsed().as_secs() < 300 {
+            // At most one marker may wait in the UI queue. Never build a backlog.
+            if !shared.metrics.probe_pending.swap(true, Ordering::AcqRel) {
+                let queued = Instant::now();
+                let marker = shared.clone();
+                if app
+                    .run_on_main_thread(move || {
+                        marker.metrics.wait(queued.elapsed().as_secs_f64() * 1000.0);
+                        marker.metrics.probe_pending.store(false, Ordering::Release);
+                    })
+                    .is_err()
+                {
+                    shared.metrics.probe_pending.store(false, Ordering::Release);
+                }
+            } else {
+                shared.metrics.probe_skipped.fetch_add(1, Ordering::Relaxed);
+            }
+            std::thread::sleep(Duration::from_millis(4));
+        }
+        let deadline = Instant::now();
+        while shared.metrics.probe_pending.load(Ordering::Acquire)
+            && deadline.elapsed().as_secs() < 1
+        {
+            std::thread::sleep(Duration::from_millis(4));
+        }
+        if recorder {
+            super::log::native_summary(id, label, shared.metrics.summary());
+        }
+    });
+}
+
+/// A test profile can opt into the expensive main-thread probe for real drags.
+/// Ordinary recording keeps the probe off; no settings/env/safety contract changes.
+fn configure_metrics(shared: &MoveState) {
+    if !crate::test_profile::is_active() {
+        return;
+    }
+    let Ok(root) = crate::test_profile::runtime_dir() else {
+        return;
+    };
+    let Ok(bytes) = std::fs::read(root.join("tearout-diagnostics.json")) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return;
+    };
+    shared.metrics.probe.store(
+        value["main_thread_probe"].as_bool().unwrap_or(false),
+        Ordering::Release,
+    );
+    shared.metrics.legacy.store(
+        value["legacy_samples"].as_bool().unwrap_or(false),
+        Ordering::Release,
+    );
+    shared.metrics.enabled.store(
+        value["recorder"].as_bool().unwrap_or(true),
+        Ordering::Release,
+    );
+}
+
 fn mark_escape(shared: &MoveState) {
     shared.escaped.store(true, Ordering::Release);
     let _ = shared
@@ -272,8 +408,10 @@ fn sample(
     failed: bool,
     original: WindowGeometry,
     focus_stolen: bool,
+    scan_ms: Option<f64>,
 ) -> Result<serde_json::Value, String> {
     let at = unix_ms();
+    shared.metrics.poll(scan_ms);
     let sequence = shared.sample_count.fetch_add(1, Ordering::AcqRel);
     let receiver = hit.as_ref().map(|(label, _, _)| label.clone());
     let previous = {
@@ -312,6 +450,22 @@ fn sample(
                 shared.alpha_calls.fetch_add(1, Ordering::AcqRel);
             }
         }
+    }
+    // Match Windows display-rate pacing. Receiver edges, Esc and release are
+    // sent immediately, and opacity restoration is never behind this gate.
+    let allowed = shared.pacing.lock().map_err(|e| e.to_string())?.allow(
+        at,
+        hit.as_ref().map(|(label, _, _)| label.as_str()),
+        hit.as_ref().map(|(_, x, _)| *x).unwrap_or(-1.0),
+        hit.as_ref().map(|(_, _, y)| *y).unwrap_or(-1.0),
+        sequence == 0 || done,
+        approval.is_some(),
+        shared.metrics.legacy.load(Ordering::Acquire),
+    );
+    if !allowed {
+        return Ok(serde_json::json!({ "approval": approval,
+            "alpha_calls": shared.alpha_calls.load(Ordering::Acquire),
+            "payload_bytes": 0, "recipients": 0 }));
     }
     let scale = window
         .as_ref()
@@ -354,15 +508,28 @@ fn sample(
     let bytes = serde_json::to_vec(&notification)
         .map_err(|e| e.to_string())?
         .len();
+    let emit_at = Instant::now();
     let recipients = emit_sample(
         app,
         &notification,
         previous.as_deref(),
         sequence == 0 || done,
     );
+    shared
+        .metrics
+        .emit(emit_at.elapsed().as_secs_f64() * 1000.0, recipients);
     let result = serde_json::json!({ "approval": approval, "alpha_calls": shared.alpha_calls.load(Ordering::Acquire),
-        "payload_bytes": bytes, "recipients": recipients });
+        "payload_bytes": bytes, "recipients": recipients,
+        "diagnostics": if done { Some(shared.metrics.summary()) } else { None } });
     if done {
+        if shared.metrics.enabled.load(Ordering::Acquire)
+            && !shared.metrics.probe_started.load(Ordering::Acquire)
+        {
+            let summary = shared.metrics.summary();
+            let log_id = id.to_owned();
+            let log_label = label.to_owned();
+            std::thread::spawn(move || super::log::native_summary(log_id, log_label, summary));
+        }
         app.state::<TearoutState>()
             .moves
             .lock()
@@ -382,6 +549,7 @@ fn stop(id: &str) {
         }
     });
     if let Some(active) = active {
+        MOUSE_DOWN.with(|slot| slot.borrow_mut().take());
         unsafe {
             let _: () = msg_send![&*active.timer, invalidate];
             let _: () = msg_send![class!(NSEvent), removeMonitor: &*active.monitor];
@@ -409,9 +577,18 @@ pub fn start(
     let window = app
         .get_window(label)
         .ok_or("tearout_moving_window_missing")?;
+    let moving_pointer = unsafe { ns_window(&window)? } as *const AnyObject as usize;
     let original = original(&window)?;
     shared.alpha.store(255, Ordering::Release);
     shared.applied_alpha.store(255, Ordering::Release);
+    configure_metrics(&shared);
+    start_probe(
+        app,
+        &shared,
+        id.clone(),
+        label.to_owned(),
+        shared.metrics.enabled.load(Ordering::Acquire),
+    );
     shared.started_at.store(unix_ms(), Ordering::Release);
     // App-local synthetic samples drive the real transfer/preview path in e2e;
     // an ordinary no-button release still settles immediately in shipped builds.
@@ -419,11 +596,15 @@ pub fn start(
         shared.synthetic.store(true, Ordering::Release);
         return Ok(());
     }
+    // Apple's API returns immediately. The polling timer continues receiver
+    // discovery, alpha restoration and release/Esc detection even when AppKit
+    // omits mouse-up. Only the WindowServer moves a handed-off window.
+    let down = original_down(app, &source);
+    let handed_off = down.is_some();
     let before_focus = focus_snapshot();
-    let moving_pointer = unsafe { ns_window(&window)? } as *const AnyObject as usize;
     let stolen = std::cell::Cell::new(false);
     let start_point = cursor();
-    let start_frame: NSRect = unsafe { msg_send![ns_window(&window)?, frame] };
+    let start_frame: NSRect = unsafe { msg_send![moving_pointer as *const AnyObject, frame] };
     let keys = shared.clone();
     let key_block = RcBlock::new(move |event: *mut AnyObject| -> *mut AnyObject {
         if let Some(event_ref) = unsafe { event.as_ref() } {
@@ -461,7 +642,17 @@ pub fn start(
                 );
                 if let Ok(native) = unsafe { ns_window(&window) } {
                     unsafe {
-                        let _: () = msg_send![native, setFrameOrigin: origin];
+                        let actual: NSRect = msg_send![native, frame];
+                        let scale: f64 = msg_send![native, backingScaleFactor];
+                        shared.metrics.lag(
+                            ((actual.origin.x - origin.x).powi(2)
+                                + (actual.origin.y - origin.y).powi(2))
+                            .sqrt()
+                                * scale,
+                        );
+                        if !handed_off && actual.origin != origin {
+                            let _: () = msg_send![native, setFrameOrigin: origin];
+                        }
                     }
                 } else {
                     failed = true;
@@ -472,7 +663,9 @@ pub fn start(
         if escaped {
             mark_escape(&shared);
         }
+        let scan_at = Instant::now();
         let hit = receiver_at(&handle, &moving, point);
+        let scan_ms = scan_at.elapsed().as_secs_f64() * 1000.0;
         if sample(
             &handle,
             &move_id,
@@ -485,6 +678,7 @@ pub fn start(
             failed,
             original,
             stolen.get(),
+            Some(scan_ms),
         )
         .is_err()
         {
@@ -501,6 +695,7 @@ pub fn start(
                 true,
                 original,
                 stolen.get(),
+                None,
             );
             stop(&move_id);
         } else if done {
@@ -517,6 +712,17 @@ pub fn start(
         let _: () = msg_send![&*run_loop, addTimer: &*timer, forMode: &*mode];
     }
     ACTIVE.with(|slot| *slot.borrow_mut() = Some(Active { id, timer, monitor }));
+    if let Some(down) = down {
+        let event_number: isize = unsafe { msg_send![&*down, eventNumber] };
+        let event_window: isize = unsafe { msg_send![&*down, windowNumber] };
+        let began = Instant::now();
+        unsafe {
+            let _: () = msg_send![moving_pointer as *const AnyObject, performWindowDragWithEvent: &*down];
+        }
+        eprintln!("[tearout] mac_drag_handoff mode=window_server original_event=true event_number={event_number} source_window={event_window} elapsed_ms={:.3}", began.elapsed().as_secs_f64() * 1000.0);
+    } else {
+        eprintln!("[tearout] mac_drag_handoff mode=timer original_event=false reason=no_held_source_mouse_down");
+    }
     Ok(())
 }
 
@@ -531,6 +737,9 @@ pub(super) fn synthetic_sample(
     client_y: f64,
     phase: &str,
     escaped: bool,
+    diagnostics: bool,
+    legacy_samples: bool,
+    recorder: bool,
 ) -> Result<serde_json::Value, String> {
     let window = app
         .get_window(&label)
@@ -561,6 +770,16 @@ pub(super) fn synthetic_sample(
     if !shared.synthetic.load(Ordering::Acquire) {
         return Err("tearout_synthetic_live_move".into());
     }
+    shared.metrics.probe.store(diagnostics, Ordering::Release);
+    shared
+        .metrics
+        .legacy
+        .store(legacy_samples, Ordering::Release);
+    shared
+        .metrics
+        .enabled
+        .store(recorder || diagnostics, Ordering::Release);
+    start_probe(app, &shared, id.clone(), label.clone(), recorder);
     if escaped {
         mark_escape(&shared);
     }
@@ -576,12 +795,28 @@ pub(super) fn synthetic_sample(
         false,
         original(&window)?,
         false,
+        None,
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tearout_mac_handoff_rejects_wrong_windows_releases_and_stale_events() {
+        assert!(original_down_matches(1, 42, 42, 0.2));
+        for (kind, actual, expected, age) in [
+            (2, 42, 42, 0.2),
+            (1, 43, 42, 0.2),
+            (1, 0, 0, 0.2),
+            (1, 42, 42, -0.1),
+            (1, 42, 42, 0.301),
+            (1, 42, 42, 300.1),
+            (1, 42, 42, f64::NAN),
+        ] {
+            assert!(!original_down_matches(kind, actual, expected, age));
+        }
+    }
     #[test]
     fn tearout_mac_focus_observation_flags_activation_and_unexpected_key_windows() {
         assert!(focus_changed((false, 0), (true, 2), 2));

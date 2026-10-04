@@ -1,0 +1,102 @@
+import type { StateCreator, StoreMutatorIdentifier } from "zustand/vanilla";
+import { persist, type PersistOptions, type PersistStorage, type StorageValue } from "zustand/middleware";
+
+// Snapshots must have the same contents as the JSON on disk: no actions or
+// shared object references, and no differences caused by object key order.
+function snapshot(state: unknown): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(state)) as Record<string, unknown>;
+}
+
+function equal(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length
+      && a.every((value, index) => equal(value, b[index]));
+  }
+  const left = a as Record<string, unknown>, right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length
+    && keys.every((key) => Object.prototype.hasOwnProperty.call(right, key) && equal(left[key], right[key]));
+}
+
+/** The existing persist wire format, with field patches and cross-window hydration. */
+export function syncedPersist<
+  T,
+  Mps extends [StoreMutatorIdentifier, unknown][] = [],
+  Mcs extends [StoreMutatorIdentifier, unknown][] = [],
+  U = T,
+>(
+  initializer: StateCreator<T, [...Mps, ["zustand/persist", unknown]], Mcs>,
+  options: PersistOptions<T, U>,
+): StateCreator<T, Mps, [["zustand/persist", U], ...Mcs]> {
+  return (set, get, api) => {
+    let target: Window, local: Storage;
+    try {
+      target = window;
+      local = target.localStorage;
+    } catch {
+      // Retain Zustand's unavailable-storage behavior (including SSR).
+      return persist(initializer, options)(set, get, api);
+    }
+
+    const project = (state: T) => snapshot(options.partialize ? options.partialize(state) : state);
+    let baseline: Record<string, unknown> = {};
+    const storage: PersistStorage<U> = {
+      getItem(name) {
+        const raw = local.getItem(name);
+        const value = raw === null ? null : JSON.parse(raw) as StorageValue<U>;
+        // A migration writes before its completion callback. Compare it with
+        // the old serialized state so the existing migrate/version contract stays intact.
+        if (value) baseline = snapshot(value.state);
+        return value;
+      },
+      setItem(name, value) {
+        const next = snapshot(value.state);
+        const changed = [...new Set([...Object.keys(baseline), ...Object.keys(next)])]
+          .filter((key) => !equal(baseline[key], next[key]));
+        const raw = local.getItem(name);
+        const latest = raw === null ? null : JSON.parse(raw) as StorageValue<U>;
+        if (!changed.length && (!latest || latest.version === value.version)) return;
+        const merged = latest ? { ...latest.state } as Record<string, unknown> : { ...next };
+        for (const key of changed) {
+          if (Object.prototype.hasOwnProperty.call(next, key)) merged[key] = next[key];
+          else delete merged[key];
+        }
+        const saved = { ...latest, state: merged, version: value.version };
+        // Content equality also avoids writes when another window already
+        // saved this change; rehydration itself never starts a write loop.
+        if (!latest || !equal(latest, saved)) local.setItem(name, JSON.stringify(saved));
+        // The local store can still be stale. Using merged here would make its
+        // next unrelated edit appear to change the foreign fields back again.
+        baseline = next;
+      },
+      removeItem: (name) => local.removeItem(name),
+    };
+
+    const state = persist(initializer, {
+      ...options,
+      storage,
+      onRehydrateStorage(current) {
+        baseline = project(current);
+        const after = options.onRehydrateStorage?.(current);
+        return (hydrated, error) => {
+          if (hydrated !== undefined) baseline = project(hydrated);
+          after?.(hydrated, error);
+        };
+      },
+    })(set, get, api);
+    // Covers skipHydration and unavailable/corrupt stored data too.
+    baseline = project(state);
+    const persistence = api as typeof api & { persist: { rehydrate(): void | Promise<void> } };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== options.name || (event.storageArea && event.storageArea !== local)) return;
+      // Read the current value, rather than an older queued event's newValue.
+      // Zustand 5 hydrates through its original set(), bypassing persistence.
+      void persistence.persist.rehydrate();
+    };
+    target.addEventListener("storage", onStorage);
+    import.meta.hot?.dispose(() => target.removeEventListener("storage", onStorage));
+    return state;
+  };
+}

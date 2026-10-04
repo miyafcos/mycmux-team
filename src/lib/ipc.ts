@@ -13,6 +13,7 @@ import type { AgentSessionKind, ArtifactSourceKind, ThemeTweaks, TurnMarkPersist
 import type { OnlineSavepointEntry } from "../components/online/onlineSavepoints";
 import { markSessionFrontendActivity } from "./agentDormancy";
 import { windowLabel, hasWindowRole, setWindowRole } from "./windowContext";
+import { macPrewarmAttachGuard, macPrewarmSessionOwned } from "./tearout/sessionAttachment";
 import type { ResetTickets, ResetTicketOutcome } from "./resetTickets";
 
 export { getCurrentSessionEpoch, type FrontendDataBatch };
@@ -317,11 +318,19 @@ export async function createSession(
   reattachOnly = false,
 ): Promise<void> {
   const generation = sessionKillGenerations.get(sessionId) ?? 0;
+  const prewarmGuard = typeof navigator !== "undefined" && /^Mac/i.test(navigator.platform)
+    ? macPrewarmAttachGuard(sessionId) : null;
   const previous = sessionCreateTails.get(sessionId) ?? Promise.resolve();
   const operation = previous.catch(() => {}).then(async () => {
     if ((sessionKillGenerations.get(sessionId) ?? 0) !== generation) {
       throw new SessionClosedError(sessionId);
     }
+    // Recheck the actual source ownership when a queued Mac prewarm reaches
+    // the backend. A destination may already own the channel by this point.
+    // Windows retains the established create/reattach ordering unchanged.
+    if (typeof navigator !== "undefined" && /^Mac/i.test(navigator.platform)
+      && !macPrewarmSessionOwned(sessionId)) throw new SessionClosedError(sessionId);
+    if (prewarmGuard && !prewarmGuard()) throw new SessionClosedError(sessionId);
     let staleNoticeCount = 0;
     const attach = beginSessionAttach(sessionId, {
       deliver: onData,

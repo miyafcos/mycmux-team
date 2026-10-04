@@ -12,6 +12,8 @@ mod commands;
 mod db;
 mod diag;
 mod shutdown;
+#[cfg(target_os = "macos")]
+mod mac_webview;
 mod watchdog;
 mod dispatch;
 #[cfg(feature = "e2e")]
@@ -738,6 +740,8 @@ pub fn run() {
             if let Some(main_window) = app.get_webview_window("main") {
                 #[cfg(windows)]
                 watchdog::register_process_failed(main_window.as_ref());
+                #[cfg(target_os = "macos")]
+                watchdog::register_mac_process_failed(main_window.as_ref());
                 if let Some(icon) = app.default_window_icon().cloned() {
                     let _ = main_window.set_icon(icon);
                 }

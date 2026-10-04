@@ -25,6 +25,17 @@ export interface CachedTerm {
 
 export const termCache = new Map<string, CachedTerm>();
 export const liveTerms = new Map<string, Terminal>();
+// Read authority belongs to this exact parsed Terminal, never just a session ID.
+// A retained hidden mount can attach its PTY without parsing any output.
+const readableTerminalBuffers = new WeakSet<Terminal>();
+
+export function markTerminalBufferReady(term: Terminal): void {
+  readableTerminalBuffers.add(term);
+}
+
+export function isTerminalBufferReady(term: Terminal): boolean {
+  return readableTerminalBuffers.has(term);
+}
 export const terminalSizeCache = new Map<string, { cols: number; rows: number }>();
 export const terminalWriteCounters = new Map<string, number>();
 export const terminalDeferredBatches = new Map<string, PendingFrontendBatch[]>();
