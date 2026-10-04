@@ -25,7 +25,12 @@ def test_mac_backend_is_separate_and_windows_module_stays_gated():
 def test_mac_consent_is_not_inherited_from_the_existing_windows_default():
     settings = read('src/stores/settingsStore.ts')
     assert 'nativePaneTearoutEnabled: true' in settings
-    assert 'macNativePaneTearoutEnabled: false' in settings
+    # On by default on the Mac since 0.83.0 (owner's decision 2026-10-04); the
+    # 0.82.0 default off saved on every Mac is switched on once at version 7.
+    assert 'macNativePaneTearoutEnabled: true' in settings
+    migration = read('src/stores/settingsMigration.ts')
+    assert 'export const SETTINGS_STORE_VERSION = 7;' in migration
+    assert 'if (persistedVersion < 7 && /^Mac/i.test(platform)) {' in migration
     assert 'merged.nativePaneTearoutEnabled = merged.macNativePaneTearoutEnabled === true' in settings
     feature = read('src/lib/tearout/feature.ts')
     assert 'macEnabled === true' in feature

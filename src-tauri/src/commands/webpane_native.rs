@@ -1,11 +1,15 @@
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
-#[cfg(any(not(windows), test))]
+#[cfg(target_os = "macos")]
+#[path = "webpane_native_mac.rs"]
+mod mac;
+
+#[cfg(any(all(not(windows), not(target_os = "macos")), test))]
 const SCREENSHOT_UNSUPPORTED: &str = "web.screenshot is not supported on this platform yet";
-#[cfg(any(not(windows), test))]
+#[cfg(any(all(not(windows), not(target_os = "macos")), test))]
 const TRUSTED_INPUT_UNSUPPORTED: &str = "trusted input is not supported on this platform yet";
-#[cfg(any(not(windows), test))]
+#[cfg(any(all(not(windows), not(target_os = "macos")), test))]
 const FILE_INPUT_UNSUPPORTED: &str = "native file input is not supported on this platform yet";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -104,7 +108,14 @@ pub async fn webpane_screenshot(
             ))
             .await
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let budget = NativeBudget::new("web.screenshot", budget_ms, command);
+        budget
+            .run(mac::screenshot(&app, tab_id, path, clip, &budget))
+            .await
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (app, tab_id, path, clip, budget_ms, command);
         Err(SCREENSHOT_UNSUPPORTED.to_string())
@@ -134,7 +145,14 @@ pub async fn webpane_input_trusted(
             ))
             .await
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let budget = NativeBudget::new(action.command_name(), budget_ms, command);
+        budget
+            .run(mac::input_trusted(&app, tab_id, action, &budget))
+            .await
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (app, tab_id, action, budget_ms, command);
         Err(TRUSTED_INPUT_UNSUPPORTED.to_string())
@@ -171,7 +189,21 @@ pub async fn webpane_set_file_input(
             ))
             .await
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let budget = NativeBudget::new("web.upload", budget_ms, command);
+        budget
+            .run(mac::set_file_input(
+                &app,
+                tab_id,
+                selector,
+                paths,
+                expected_generation,
+                &budget,
+            ))
+            .await
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (
             app,
@@ -186,7 +218,7 @@ pub async fn webpane_set_file_input(
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 impl WebPaneTrustedInput {
     pub(super) fn expected_generation(&self) -> Option<u64> {
         match self {
@@ -219,19 +251,19 @@ impl WebPaneTrustedInput {
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 const CDP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 const NATIVE_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 #[derive(Clone)]
 pub(super) struct NativeBudget {
     command: String,
     deadline: tokio::time::Instant,
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 impl NativeBudget {
     fn new(default_command: &str, budget_ms: Option<u64>, command: Option<String>) -> Self {
         let duration = budget_ms
@@ -274,7 +306,7 @@ impl NativeBudget {
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 pub(super) fn screenshot_path(
     home: &std::path::Path,
     tab_id: &str,
@@ -300,7 +332,7 @@ pub(super) fn screenshot_path(
     Ok(path)
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 pub(super) fn write_screenshot(path: &std::path::Path, png: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
@@ -310,7 +342,7 @@ pub(super) fn write_screenshot(path: &std::path::Path, png: &[u8]) -> Result<(),
     std::fs::write(path, png).map_err(|error| format!("failed to write screenshot: {error}"))
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 pub(super) fn png_dimensions(png: &[u8]) -> Result<(u32, u32), String> {
     if png.len() < 33
         || &png[..8] != b"\x89PNG\r\n\x1a\n"

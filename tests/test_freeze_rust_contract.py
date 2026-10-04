@@ -69,7 +69,7 @@ def test_process_failed_registration_only_enqueues_recovery_and_uses_the_existin
 def test_renderer_heartbeat_keeps_the_shared_name_schema_and_async_contract() -> None:
     source = WATCHDOG.read_text(encoding="utf-8")
     assert re.search(
-        r"#\[tauri::command\]\s*pub async fn report_renderer_heartbeat\(heartbeat: RendererHeartbeat\)"
+        r"#\[tauri::command\]\s*pub async fn report_renderer_heartbeat\(caller: tauri::Webview, heartbeat: RendererHeartbeat\)"
         r"\s*-> Result<\(\), String>", source,
     )
     fields = re.search(

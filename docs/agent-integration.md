@@ -92,12 +92,12 @@ ref は同一文書内で有効（hash 遷移では維持・ページ遷移と r
 
 close / focus は `--tab` のみ（`--preset` 不可）。それ以外の操作コマンドの `--tab` は `--preset` に置き換えられる。プリセット指定では呼出元のワークスペース内の最新候補を使う。
 JS の click/type/key/upload は合成イベントで、キーの既定動作は best effort。
-`--trusted` と screenshot は Windows 先行（native レーンとの合流後）。macOS は段2で、未対応時は明示エラーになる。
+`--trusted` と screenshot は Windows と macOS で使える（macOS は v0.83.0 から。WKWebView の撮影と、WKWebView へ直接渡す入力で動き、本物のカーソルは動かさず、アクセシビリティの許可も要らない。`web-upload --trusted` はファイル選択の画面を出さずに添付する）。ほかの OS では明示エラーになる。
 browser の confirm は true、prompt は既定値で自動応答する。既存サービスのネイティブダイアログは維持する。
 ダウンロード先は `~/.mycmux/handoff/web/<presetId>/downloads/`、同名ファイルは `-2`、`-3` と採番する。
 
 実機検証は、母艦がテスト機を起動した後に `python scripts/verify_web_automation.py --runtime-dir <test-runtime-dir>` を実行する。
-このディレクトリにはテスト機の `mycmux.port` / `mycmux.token` が必要。Windowsではscreenshotとtrusted操作の検証が必須で、未対応の応答もFAILになる。`--skip-screenshot` は非Windowsのみ指定できる。
+このディレクトリにはテスト機の `mycmux.port` / `mycmux.token` が必要。Windowsではscreenshotとtrusted操作の検証が必須で、未対応の応答もFAILになる。`--skip-screenshot` は非Windowsのみ指定できる。macOS の撮影・trusted 操作・添付の実機検証は、e2e 用ビルド（別の識別子）で `scripts/e2e/mac_webpane.py` を使う。
 
 ### claude-codex 用 mycmux bridge
 
