@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { applyAutomaticStoreUpdate, syncedPersist } from "./syncedPersist";
 import {
   migratePersistedSettings,
   resolveDefaultTerminalRenderer,
@@ -103,6 +103,8 @@ interface SettingsState {
   /** Provenance marker: compatibility booleans below are no longer legacy input. */
   aiFeatureSettingsDataJsonMigrationComplete: boolean;
   appearanceAdvancedOpen: boolean;
+  hydrateAiFeatureSettings: (state: Pick<SettingsState, "autoPaneNamingEnabled" | "replyDraftSuggestionsEnabled">
+    & Partial<Pick<SettingsState, "aiFeatureSettingsDataJsonMigrationComplete">>) => void;
   setNotificationsEnabled: (v: boolean) => void;
   setNotificationSoundEnabled: (v: boolean) => void;
   setToastAiActivityEnabled: (v: boolean) => void;
@@ -132,8 +134,8 @@ interface SettingsState {
 }
 
 export const useSettingsStore = create<SettingsState>()(
-  persist(
-    (set) => ({
+  syncedPersist(
+    (set, _get, api) => ({
       notificationsEnabled: true,
       notificationSoundEnabled: true,
       // Off by default: the auto-naming and auto-sweep runs announce results
@@ -153,7 +155,10 @@ export const useSettingsStore = create<SettingsState>()(
       // On by default since 0.81.0 (owner's decision 2026-10-02). Windows only;
       // the settings switch stays as the way back to the previous drag.
       nativePaneTearoutEnabled: true,
-      macNativePaneTearoutEnabled: false,
+      // The Mac's own switch: on by default since 0.83.0 (owner's decision
+      // 2026-10-04). Mac installs saved before settings version 7 are switched
+      // on once by the migration (settingsMigration.ts).
+      macNativePaneTearoutEnabled: true,
       launcherHiddenIds: [],
       groupingApplyAnimationEnabled: true,
       dispatchWatchdogEnabled: true,
@@ -167,6 +172,7 @@ export const useSettingsStore = create<SettingsState>()(
       autoPaneNamingEnabled: true,
       aiFeatureSettingsDataJsonMigrationComplete: false,
       appearanceAdvancedOpen: false,
+      hydrateAiFeatureSettings: (state) => applyAutomaticStoreUpdate(api, state),
       setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
       setNotificationSoundEnabled: (v) => set({ notificationSoundEnabled: v }),
       setToastAiActivityEnabled: (v) => set({ toastAiActivityEnabled: v }),
@@ -221,5 +227,5 @@ export const useSettingsStore = create<SettingsState>()(
 );
 
 export function markAiFeatureSettingsDataJsonMigrationComplete(): void {
-  useSettingsStore.setState({ aiFeatureSettingsDataJsonMigrationComplete: true });
+  applyAutomaticStoreUpdate(useSettingsStore, { aiFeatureSettingsDataJsonMigrationComplete: true });
 }

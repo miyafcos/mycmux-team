@@ -296,7 +296,7 @@ pub fn clamp_window_origin(
 }
 
 fn clamp_to_monitor<R: tauri::Runtime>(
-    window: &tauri::WebviewWindow<R>,
+    window: &tauri::Window<R>,
     x: f64,
     y: f64,
     width: f64,
@@ -369,6 +369,8 @@ impl ChildWindowLabelReservations {
         Ok(ResolvedChildWindow::New(ChildWindowLabelReservation {
             label,
             reserved: Arc::clone(&self.reserved),
+            restored_decoration: None,
+            restored_native: None,
         }))
     }
 }
@@ -378,6 +380,8 @@ impl ChildWindowLabelReservations {
 pub struct ChildWindowLabelReservation {
     label: String,
     reserved: Arc<Mutex<HashSet<String>>>,
+    restored_decoration: Option<bool>,
+    restored_native: Option<bool>,
 }
 
 impl ChildWindowLabelReservation {
@@ -418,6 +422,49 @@ pub fn resolve_child_window_label(
     Ok(resolved)
 }
 
+/// Restoration reserves a label without revealing or focusing a ready spare.
+pub(crate) fn reserve_child_window_label(
+    app: &AppHandle,
+    label: Option<String>,
+) -> Result<ResolvedChildWindow, String> {
+    app.state::<AppState>().window_registry.child_window_labels
+        .resolve(|| all_window_labels(app), label)
+}
+
+/// A completely offscreen saved window may have no current monitor. Always
+/// pick a connected monitor before restoring its logical outer origin.
+fn clamp_saved_window_origin<R: tauri::Runtime>(
+    window: &tauri::Window<R>, x: f64, y: f64, width: f64, height: f64,
+) -> (f64, f64) {
+    let monitor = window.app_handle().monitor_from_point(x, y).ok().flatten()
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| window.primary_monitor().ok().flatten())
+        .or_else(|| window.available_monitors().ok()?.into_iter().next());
+    let Some(monitor) = monitor else { return (x, y); };
+    let scale = monitor.scale_factor();
+    let position = monitor.position().to_logical::<f64>(scale);
+    let size = monitor.size().to_logical::<f64>(scale);
+    clamp_window_origin((position.x, position.y, size.width, size.height), (x, y), (width, height))
+}
+
+/// Reused native spares need the saved inner size as well as the outer origin.
+pub(crate) fn restore_child_window_frame(
+    app: &AppHandle, label: &str, x: Option<f64>, y: Option<f64>,
+    width: Option<f64>, height: Option<f64>, decorated: Option<bool>,
+) {
+    let Some(window) = app.get_window(label) else { return; };
+    if let Some(decorated) = decorated {
+        let _ = window.set_decorations(decorated);
+    }
+    let size = (width.unwrap_or(CHILD_WINDOW_DEFAULT_WIDTH), height.unwrap_or(CHILD_WINDOW_DEFAULT_HEIGHT));
+    let _ = window.set_size(tauri::LogicalSize::new(size.0, size.1));
+    if let (Some(x), Some(y)) = (x, y) {
+        let (x, y) = clamp_saved_window_origin(&window, x, y, size.0, size.1);
+        let _ = window.set_position(tauri::LogicalPosition::new(x, y));
+    }
+    let _ = window.show();
+}
+
 /// Post the actual window construction to the main thread (tao forbids
 /// building windows off it on Windows/macOS). Fire-and-forget by design: like
 /// `reveal_main_window`, blocking on the result from a sync command would
@@ -445,6 +492,8 @@ pub fn spawn_child_window(
     width: Option<f64>,
     height: Option<f64>,
 ) -> Result<(), String> {
+    let restored_decoration = reservation.restored_decoration;
+    let restored_native = reservation.restored_native.unwrap_or(false);
     crate::perf_timeline::mark("window.spawn.request", Some(reservation.label()));
     let app_handle = app.clone();
     let build_label = reservation.label().to_string();
@@ -472,6 +521,17 @@ pub fn spawn_child_window(
                 height.unwrap_or(CHILD_WINDOW_DEFAULT_HEIGHT),
             );
 
+            // Saved ownership only: live/new child construction keeps its defaults.
+            if let Some(decorated) = restored_decoration {
+                builder = builder.decorations(decorated).focused(false);
+                if restored_native { builder = builder.min_inner_size(240.0, 160.0); }
+                builder = builder.initialization_script(if !restored_native {
+                    "window.__MYCMUX_RESTORED_WINDOW__ = true;"
+                } else {
+                    "window.__MYCMUX_RESTORED_WINDOW__ = true; window.__MYCMUX_TEAROUT_WINDOW__ = true;"
+                });
+            }
+
             // The same Overlay title bar as the main window
             // (tauri.macos.conf.json), so the native bar never doubles the
             // in-app one.
@@ -497,6 +557,8 @@ pub fn spawn_child_window(
                 Ok(window) => {
                     #[cfg(windows)]
                     crate::watchdog::register_process_failed(window.as_ref());
+                    #[cfg(target_os = "macos")]
+                    crate::watchdog::register_mac_process_failed(window.as_ref());
                     crate::perf_timeline::mark("window.child.built", Some(&build_label));
                     // Restate size and position in explicit logical units now that
                     // the window knows which monitor (and scale factor) it is on.
@@ -509,7 +571,11 @@ pub fn spawn_child_window(
                     );
                     let _ = window.set_size(tauri::LogicalSize::new(size.0, size.1));
                     if let (Some(x), Some(y)) = (x, y) {
-                        let (x, y) = clamp_to_monitor(&window, x, y, size.0, size.1);
+                        let (x, y) = if restored_decoration.is_some() {
+                            clamp_saved_window_origin(&window.as_ref().window(), x, y, size.0, size.1)
+                        } else {
+                            clamp_to_monitor(&window.as_ref().window(), x, y, size.0, size.1)
+                        };
                         let _ = window.set_position(tauri::LogicalPosition::new(x, y));
                     }
                     // Per-window taskbar button needs its own icon (mirrors lib.rs
@@ -537,6 +603,17 @@ pub fn spawn_child_window(
         }
     }).map_err(|error| error.to_string())?;
     Ok(())
+}
+
+/// Saved native windows keep their original chrome and skip startup focus.
+pub(crate) fn spawn_child_window_with_restore(
+    app: &AppHandle, mut reservation: ChildWindowLabelReservation,
+    x: Option<f64>, y: Option<f64>, width: Option<f64>, height: Option<f64>,
+    restored_decoration: Option<bool>, restored_native: Option<bool>,
+) -> Result<(), String> {
+    reservation.restored_decoration = restored_decoration;
+    reservation.restored_native = restored_native;
+    spawn_child_window(app, reservation, x, y, width, height)
 }
 
 /// Phase 3a: open an additional app window. It boots the same frontend bundle;

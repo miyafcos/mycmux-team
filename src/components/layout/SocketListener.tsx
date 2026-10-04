@@ -95,12 +95,12 @@ import {
   filterConflictingAgentMappings,
   resolvePersistedSelection,
 } from "../../lib/sessionRestoreSafety";
-import { handleSocketCommand, startLocalTabSession } from "./socketCommands";
+import { handleSocketCommand, listenForPeerSpawns, startLocalTabSession } from "./socketCommands";
 import { listenForPeerTabStarts } from "../../lib/socketTabWindows";
 import { IS_MAC } from "../../lib/keybindings";
 import { handleWorkOrderSpawnRequest, type SpawnRequest } from "../../lib/workOrderBridge";
 import { isMainWindow, windowLabel, hasWindowRole, setWindowRole, subscribeWindowRole } from "../../lib/windowContext";
-import { detachedMetadata, detachedWorkspaceForWindow, isTransferableTab } from "../../lib/detachedPane";
+import { detachedMetadata, detachedWorkspaceForWindow, isTransferableTab, partitionSavedWindows, type SavedWindow, type SavedWindowWorkspace } from "../../lib/detachedPane";
 import { mergeWindowFragmentWorkspaces } from "../../lib/windowFragments";
 import {
   filterAlreadyRestoredConfigs,
@@ -1485,40 +1485,33 @@ function hideMainWindow(): void {
 /** Default frame for a detached window whose saved frame is missing. */
 const DETACHED_WINDOW_FALLBACK = { x: 120, y: 120, width: 720, height: 520 };
 
-/**
- * Put every workspace that was in its own window last time back into one.
- *
- * The window takes the frame the save path recorded for it, so a torn-out pane
- * comes back where the user left it. If a window cannot be opened the
- * workspace is not lost: it lands in this window instead, as an ordinary
- * workspace, with the detached mark cleared so it no longer points at a pane
- * that is not there.
- */
-async function reopenDetachedWindows(configs: WorkspaceConfig[]): Promise<void> {
+/** Reopen whole window groups. A failed group is adopted into this window
+ * once, retaining all its workspaces instead of dropping or splitting them. */
+export async function reopenSavedWindows(windows: readonly SavedWindow[]): Promise<void> {
   const stranded: WorkspaceConfig[] = [];
-  for (const [index, config] of configs.entries()) {
-    const frame = config.window_frame ?? null;
+  for (const [index, saved] of windows.entries()) {
+    const frame = saved.frame;
     const cascade = index * 28;
+    const finite = (value: number | undefined, fallback: number) =>
+      typeof value === "number" && Number.isFinite(value) ? value : fallback;
     try {
       await openWorkspaceWindow({
-        fromLabel: windowLabel(),
-        workspaces: [config],
-        x: frame?.x ?? DETACHED_WINDOW_FALLBACK.x + cascade,
-        y: frame?.y ?? DETACHED_WINDOW_FALLBACK.y + cascade,
-        width: frame?.width ?? DETACHED_WINDOW_FALLBACK.width,
-        height: frame?.height ?? DETACHED_WINDOW_FALLBACK.height,
+        fromLabel: windowLabel(), label: saved.label, workspaces: saved.configs,
+        x: finite(frame?.x, DETACHED_WINDOW_FALLBACK.x + cascade),
+        y: finite(frame?.y, DETACHED_WINDOW_FALLBACK.y + cascade),
+        width: Math.max((saved.group?.native_tearout ?? saved.group?.decorated === false) ? 240 : 600, finite(frame?.width, DETACHED_WINDOW_FALLBACK.width)),
+        height: Math.max((saved.group?.native_tearout ?? saved.group?.decorated === false) ? 160 : 400, finite(frame?.height, DETACHED_WINDOW_FALLBACK.height)),
       });
     } catch (error) {
-      console.warn("[persist] Failed to reopen a detached window:", error);
-      stranded.push({ ...config, detached: false, detached_from: null, window_frame: null });
+      console.warn("[persist] Failed to reopen a saved window:", error);
+      stranded.push(...saved.configs.map((config) => ({
+        ...config, detached: false, detached_from: null, window_frame: null, window_group: null,
+      })));
     }
   }
   if (stranded.length > 0) {
     adoptWorkspaceConfigs(stranded);
-    useToastStore.getState().pushToast(
-      persistenceStrings.detachedWindowFallback(stranded.length),
-      "warning",
-    );
+    useToastStore.getState().pushToast(persistenceStrings.detachedWindowFallback(stranded.length), "warning");
   }
 }
 
@@ -1537,18 +1530,23 @@ function adoptWorkspaceConfigs(configs: WorkspaceConfig[]): string[] {
   // A deliberate new-workspace drop overrides any remembered pane origin.
   const placed = restorable.map((cfg) => placementByWorkspaceId[cfg.id]?.kind === "workspace"
     ? { ...cfg, detached_from: undefined } : cfg);
-  const { restoredWorkspaceIds } = restoreWorkspaceConfigs(placed, {
+  const group = !hadWorkspaces ? (placed[0] as SavedWindowWorkspace | undefined)?.window_group : undefined;
+  const { restoredWorkspaceIds, activePaneSessionId } = restoreWorkspaceConfigs(placed, {
     dockDetached, placementByWorkspaceId,
+    activeWorkspaceId: group?.active_workspace_id,
+    activePaneId: group?.active_pane_id,
+    activeTabId: group?.active_tab_id,
   });
 
   // Only an empty window auto-selects. A merge-back into a working main window
   // must not yank the user off whatever they were looking at.
-  const firstAdoptedId = restoredWorkspaceIds[0];
+  const firstAdoptedId = restoredWorkspaceIds.find((id) => id === group?.active_workspace_id)
+    ?? restoredWorkspaceIds[0];
   if (!hadWorkspaces && firstAdoptedId) {
     const listStore = useWorkspaceListStore.getState();
     listStore.setActiveWorkspace(firstAdoptedId);
     focusController.request("programmatic", {
-      sessionId: listStore.getWorkspace(firstAdoptedId)?.panes[0]?.sessionId ?? null,
+      sessionId: activePaneSessionId ?? listStore.getWorkspace(firstAdoptedId)?.panes[0]?.sessionId ?? null,
       focus: false,
     });
   }
@@ -1662,7 +1660,7 @@ export function hydrateAiSettingsFromDataJson(settings: Pick<
   });
   // These runtime compatibility keys are still consumed by existing UI and
   // automation code, but data.json is now the source of truth.
-  useSettingsStore.setState({
+  useSettingsStore.getState().hydrateAiFeatureSettings({
     autoPaneNamingEnabled: resolved.autoPaneNamingEnabled,
     replyDraftSuggestionsEnabled: resolved.replyDraftSuggestionsEnabled,
     ...(!resolved.migrationNeeded
@@ -1731,7 +1729,13 @@ export function buildWindowFragment(purpose: "save" | "transfer" = "save"): Wind
   return {
     window_label: windowLabel(),
     workspaces: state.workspaces
-      .map((workspace) => purpose === "transfer" ? toTransferConfig(workspace) : toConfig(workspace))
+      .map((workspace) => {
+        const config = purpose === "transfer" ? toTransferConfig(workspace) : toConfig(workspace);
+        // Fragment-only metadata: Rust records it in the optional saved group.
+        // Undecorated Windows children can use either shell, so chrome alone
+        // cannot identify their original window kind.
+        return isMainWindow() ? config : { ...config, window_native_tearout: globalThis.window?.__MYCMUX_TEAROUT_WINDOW__ === true };
+      })
       .filter((config) => config.panes.length > 0),
     active_workspace_id: activeWorkspace?.id ?? null,
     active_pane_id: activePane?.id ?? null,
@@ -1741,6 +1745,7 @@ export function buildWindowFragment(purpose: "save" | "transfer" = "save"): Wind
 
 export function useWorkspacePersist() {
   useEffect(() => installTearoutRuntime({
+    hydrated: persistLoaded,
     serialize: toTransferConfig,
     publish: () => publishWindowFragment(buildWindowFragment("transfer")),
   }), []);
@@ -1887,8 +1892,8 @@ export function useWorkspacePersist() {
             // them in this list would restore them as ordinary workspaces in
             // the sidebar — which is what used to happen, and why a torn-out
             // pane never came back as a window (2026-09-17).
-            const restoredConfigs = restoredDedupe.configs.filter((cfg) => !cfg.detached);
-            const detachedConfigs = restoredDedupe.configs.filter((cfg) => cfg.detached);
+            const savedWindows = partitionSavedWindows(restoredDedupe.configs);
+            const restoredConfigs = savedWindows.main;
             reportAgentSessionDedupeConflicts(restoredDedupe.conflicts);
             discardDedupeLoserScrollbacks(restoredDedupe.discardScrollbackSessionIds);
             const startupRestoreTargetWorkspaceCount = restoredConfigs.filter(workspaceConfigHasRestorableAgentSession).length;
@@ -1939,8 +1944,8 @@ export function useWorkspacePersist() {
                 focus: false,
               });
             }
-            if (detachedConfigs.length > 0) {
-              void reopenDetachedWindows(detachedConfigs);
+            if (savedWindows.windows.length > 0) {
+              await reopenSavedWindows(savedWindows.windows);
             }
           }
           });
@@ -2327,6 +2332,15 @@ export function useWorkspacePersist() {
     const registryDirty = listen(WINDOW_REGISTRY_CHANGED_EVENT, () => {
       if (isLeader.current) markDirty();
     });
+    // Native move/resize events use an Any subscription deliberately: the
+    // leader also saves peer frames, even when no workspace content changed.
+    const frameDirty = () => {
+      if (!isLeader.current) return;
+      lastWrittenSnapshot = null;
+      markDirty();
+    };
+    const unlistenMove = listen("tauri://move", frameDirty);
+    const unlistenResize = listen("tauri://resize", frameDirty);
 
     // Quitting (⌘Q on macOS) runs in two steps so nothing is lost on the way
     // out: every window publishes what it holds, then the window that owns
@@ -2647,6 +2661,8 @@ export function useWorkspacePersist() {
       unregisterPersistenceLeader();
       unsubscribeRole();
       void registryDirty.then((stop) => stop()).catch(() => {});
+      void unlistenMove.then((stop) => stop()).catch(() => {});
+      void unlistenResize.then((stop) => stop()).catch(() => {});
       void unlistenPrepareQuit.then((stop) => stop()).catch(() => {});
       void unlistenSaveQuit.then((stop) => stop()).catch(() => {});
       if (debounceTimer) clearTimeout(debounceTimer);
@@ -2775,6 +2791,10 @@ export function useWorkspacePersist() {
   useEffect(() => {
     // Explicit starts for other windows must use that window's live tab data.
     const unlistenPeerStart = listenForPeerTabStarts(startLocalTabSession);
+    const unlistenPeerSpawn = listenForPeerSpawns(async () => {
+      await persistLoaded;
+      if (windowClosing) throw new Error("spawn owner window is closing");
+    });
     // Rust broadcasts; only the elected executor runs a request.
     const unlisten = listen<SocketRequestPayload>("socket-request", async (event) => {
       if (!isLeader.current) return;
@@ -2791,6 +2811,7 @@ export function useWorkspacePersist() {
     return () => {
       unlisten.then((f) => f()).catch(() => {});
       unlistenPeerStart.then((f) => f()).catch(() => {});
+      unlistenPeerSpawn.then((f) => f()).catch(() => {});
     };
   }, []);
 
