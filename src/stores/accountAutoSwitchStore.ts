@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { syncedPersist } from "./syncedPersist";
 import type { CliProvider } from "../lib/ipc";
 import { AUTO_SWITCH_COOLDOWN_MS, chooseAutoSwitch } from "../lib/accountAutoSwitch";
 import { PROVIDER_ORDER, PROVIDER_TITLE } from "../lib/cliAccounts";
@@ -34,7 +34,7 @@ export function excludedTargetsFor(state: Pick<AutoSwitchState, "excludedTargets
   return Array.isArray(list) ? list.filter((id): id is string => typeof id === "string") : [];
 }
 
-export const useAccountAutoSwitchStore = create<AutoSwitchState>()(persist((set, get) => ({
+export const useAccountAutoSwitchStore = create<AutoSwitchState>()(syncedPersist((set, get) => ({
   enabled: { claude: false, codex: false, grok: false },
   excludedTargets: { claude: [], codex: [], grok: [] },
   attempts: {},

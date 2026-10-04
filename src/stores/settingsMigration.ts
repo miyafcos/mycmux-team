@@ -1,5 +1,5 @@
 // Migration baseline: export const SETTINGS_STORE_VERSION = 5;
-export const SETTINGS_STORE_VERSION = 6;
+export const SETTINGS_STORE_VERSION = 7;
 
 export type TerminalRenderer = "auto" | "webgl" | "dom";
 
@@ -26,6 +26,7 @@ export function migratePersistedSettings(
   persistedState: unknown,
   persistedVersion: number,
   userAgent = typeof navigator !== "undefined" ? navigator.userAgent : "",
+  platform = typeof navigator !== "undefined" ? navigator.platform : "",
 ): unknown {
   if (
     persistedVersion >= SETTINGS_STORE_VERSION
@@ -104,6 +105,15 @@ export function migratePersistedSettings(
   }
   if (persistedVersion < 6 && typeof migrated.appearanceAdvancedOpen !== "boolean") {
     migrated.appearanceAdvancedOpen = false;
+  }
+  // Version 7 (0.83.0, owner's decision 2026-10-04): the new tear-out is on by
+  // default on the Mac as well. 0.82.0 saved its experimental default (off) for
+  // every Mac install, so an off saved before this version is that default, not
+  // a choice: switch it on once. Turning it off again is saved at version 7 and
+  // kept. The store's merge mirrors it into nativePaneTearoutEnabled. The Mac is
+  // told by navigator.platform, as in lib/tearout/feature.ts.
+  if (persistedVersion < 7 && /^Mac/i.test(platform)) {
+    migrated.macNativePaneTearoutEnabled = true;
   }
   return migrated;
 }

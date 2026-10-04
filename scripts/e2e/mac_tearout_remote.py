@@ -1,12 +1,17 @@
-"""S4-only remote commands; no shell interpolation of source or test text."""
+"""M1-only remote commands; no shell interpolation of source or test text."""
 from __future__ import annotations
 
 import base64
+import re
 import subprocess
 import sys
 from pathlib import Path
 
-REMOTE = "/Users/edu/Developer/mycmux-wt-next-s4-261003"
+ROOT = Path(__file__).resolve().parents[2]
+match = re.fullmatch(r"mycmux-wt-(?:mac-)?([a-z0-9]+)-261003", ROOT.name)
+assert match, ROOT
+SEAT = match.group(1)
+REMOTE = f"/Users/edu/Developer/mycmux-wt-mac-{SEAT}-261003"
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "edumac-mini"]
 
 
@@ -23,7 +28,7 @@ from pathlib import Path
 import subprocess
 base = Path('/Users/edu/Developer/mycmux')
 wt = Path({REMOTE!r})
-rev = 'b6a0574a04863a9ecc325d04c39c37d2538934e1'
+rev = {subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()!r}
 subprocess.run(['git', 'cat-file', '-e', rev], cwd=base, check=True)
 if not wt.exists():
     subprocess.run(['git', 'worktree', 'add', '--detach', str(wt), rev], cwd=base, check=True)
@@ -37,12 +42,12 @@ print(Path('/Users/edu/Developer/macq-e2e/build.sh').read_text())
 from pathlib import Path
 import subprocess
 wt = Path({REMOTE!r})
-out = wt / 'tmp/tearout-s4'
+out = wt / 'tmp' / 'tearout-{SEAT}'
 out.mkdir(parents=True, exist_ok=True)
 source = out / 'spike.swift'
 source.write_text({source!r}, encoding='utf-8')
 subprocess.run(['swiftc', str(source), '-o', str(out / 'spike')], cwd=wt, check=True)
-p = subprocess.run([str(out / 'spike')], cwd=wt, capture_output=True, text=True, timeout=25)
+p = subprocess.run(['/usr/bin/lockf', '-k', '-t', '7200', '/Users/edu/.mycmux-gui-e2e.lock', str(out / 'spike')], cwd=wt, capture_output=True, text=True, timeout=25)
 (out / 'spike.log').write_text(p.stdout + p.stderr, encoding='utf-8')
 print(p.stdout)
 print(p.stderr[-3000:])

@@ -6,7 +6,8 @@ describe("native pane tear-out switch", () => {
   it("keeps the legacy route when off and requires explicit Mac consent and retains the Windows route", () => {
     expect(nativePaneTearoutEnabled(false, "Win32")).toBe(false);
     expect(nativePaneTearoutEnabled(true, "Win32")).toBe(true);
-    expect(nativePaneTearoutEnabled(true, "MacIntel")).toBe(false);
+    // The Mac follows its own switch (on by default since 0.83.0), not the Windows one.
+    expect(nativePaneTearoutEnabled(true, "MacIntel", false)).toBe(false);
     expect(nativePaneTearoutEnabled(true, "Linux x86_64")).toBe(false);
     expect(supportsNativePaneTearout("MacIntel")).toBe(true);
     expect(nativePaneTearoutEnabled(true, "MacIntel", true)).toBe(true);
@@ -15,7 +16,7 @@ describe("native pane tear-out switch", () => {
   it("exposes the common receiver in existing detached Windows windows only while opted in", () => {
     expect(usesNativePaneShell(false, true, true, "Win32")).toBe(true);
     expect(usesNativePaneShell(false, true, false, "Win32")).toBe(false);
-    expect(usesNativePaneShell(false, true, true, "MacIntel")).toBe(false);
+    expect(usesNativePaneShell(false, true, true, "MacIntel", false)).toBe(false);
     expect(usesNativePaneShell(false, true, true, "MacIntel", true)).toBe(true);
     expect(usesNativePaneShell(false, false, true, "Win32")).toBe(false);
   });

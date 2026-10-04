@@ -13,10 +13,26 @@ afterEach(() => {
 });
 
 describe("separate Mac consent for native tear-out", () => {
-  it("does not interpret a pre-0.82 Mac's Windows-default true as consent", async () => {
+  it("is on by default on the Mac since 0.83.0 (owner's decision 2026-10-04)", () => {
+    expect(useSettingsStore.getInitialState().macNativePaneTearoutEnabled).toBe(true);
+  });
+  it("switches a Mac saved by 0.82.0 (its experimental default off) on once", async () => {
     platform("MacIntel");
-    useSettingsStore.setState({ macNativePaneTearoutEnabled: false });
-    localStorage.setItem("mycmux-settings", JSON.stringify({ state: { nativePaneTearoutEnabled: true }, version: 0 }));
+    useSettingsStore.setState({ macNativePaneTearoutEnabled: false, nativePaneTearoutEnabled: false });
+    localStorage.setItem("mycmux-settings", JSON.stringify({
+      state: { nativePaneTearoutEnabled: false, macNativePaneTearoutEnabled: false }, version: 6,
+    }));
+    await useSettingsStore.persist.rehydrate();
+    const state = useSettingsStore.getState();
+    expect(state.macNativePaneTearoutEnabled).toBe(true);
+    expect(state.nativePaneTearoutEnabled).toBe(true);
+    expect(nativePaneTearoutEnabled(state.nativePaneTearoutEnabled)).toBe(true);
+  });
+  it("keeps a Mac off chosen after the version 7 migration", async () => {
+    platform("MacIntel");
+    localStorage.setItem("mycmux-settings", JSON.stringify({
+      state: { nativePaneTearoutEnabled: true, macNativePaneTearoutEnabled: false }, version: 7,
+    }));
     await useSettingsStore.persist.rehydrate();
     const state = useSettingsStore.getState();
     expect(state.macNativePaneTearoutEnabled).toBe(false);
@@ -37,6 +53,8 @@ describe("separate Mac consent for native tear-out", () => {
   it("retains the Windows default and its persisted OFF route", async () => {
     platform("Win32");
     expect(useSettingsStore.getInitialState().nativePaneTearoutEnabled).toBe(true);
+    // The Windows switch never writes the Mac's own field.
+    useSettingsStore.setState({ macNativePaneTearoutEnabled: false });
     useSettingsStore.getState().setNativePaneTearoutEnabled(false);
     await useSettingsStore.persist.rehydrate();
     expect(useSettingsStore.getState().nativePaneTearoutEnabled).toBe(false);
