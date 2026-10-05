@@ -206,7 +206,7 @@ pub async fn open_path_with_default_app(uri: String) -> Result<(), String> {
 /// (parent opened with the file selected); directories are opened directly.
 /// Cross-platform; mycmux ships on Windows so that path is the one exercised
 /// in production.
-fn reveal_path_in_os_file_manager(path: &Path) -> Result<(), String> {
+pub(super) fn reveal_path_in_os_file_manager(path: &Path) -> Result<(), String> {
     let uri = path.to_string_lossy().into_owned();
     if !path.exists() {
         let message = format!("path does not exist: {uri}");
