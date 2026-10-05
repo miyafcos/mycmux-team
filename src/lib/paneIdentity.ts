@@ -27,6 +27,7 @@ export function clipIdentityName(text: string, limit = 20): string {
 }
 export const isToolIdentifier = (tab: Pick<PaneEvidence, "label" | "labelSource">) =>
   tab.labelSource !== "user" && /^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+$/.test(tab.label ?? "");
+const meaningfulIdentityToken = (token: string) => !/^\d+$/.test(normalizeIdentityText(token));
 const stop = new Set("make send gate fix review bokan dev test wt master main sol astra luna claude codex site hero the and".split(" "));
 const UNNAMED_SEGMENTS = new Set(["資料", "標準版"]);
 const kana = Object.fromEntries(
@@ -110,8 +111,8 @@ export function resolvePaneIdentities(input: PaneIdentityInput): PaneIdentityRes
   const score = (text: string, e: Entry) => {
     const normalized = normalizeIdentityText(text);
     const ascii = text.normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, " ").replace(/u/g, "");
-    const ident = e.identity.reduce((n, t) => n + ((t.length >= 2 && normalized.includes(normalizeIdentityText(t))) || (romaji.get(t) && ascii.includes(romaji.get(t)!)) ? weight(t) : 0), 0);
-    return ident <= 0 ? 0 : ident + 0.5 * e.facets.reduce((n, t) => n + (normalized.includes(normalizeIdentityText(t)) ? weight(t) : 0), 0);
+    const ident = e.identity.reduce((n, t) => n + ((t.length >= 2 && meaningfulIdentityToken(t) && normalized.includes(normalizeIdentityText(t))) || (romaji.get(t) && ascii.includes(romaji.get(t)!)) ? weight(t) : 0), 0);
+    return ident <= 0 ? 0 : ident + 0.5 * e.facets.reduce((n, t) => n + (meaningfulIdentityToken(t) && normalized.includes(normalizeIdentityText(t)) ? weight(t) : 0), 0);
   };
   const best = (text: string) => {
     const ranked = entries.map(e => ({ e, s: score(text, e) })).sort((a, b) => b.s - a.s);
@@ -122,6 +123,7 @@ export function resolvePaneIdentities(input: PaneIdentityInput): PaneIdentityRes
     const ranked = input.workspaces.map(w => {
       const name = normalizeIdentityText(w.name);
       const part = (tokens: string[]) => tokens.reduce((sum, t) => {
+        if (!meaningfulIdentityToken(t)) return sum;
         const k = normalizeIdentityText(t);
         for (let n = k.length; n >= 2; n--) if (name.includes(k.slice(0, n))) return sum + weight(t) * n / k.length;
         return sum;
@@ -190,7 +192,7 @@ export function resolvePaneIdentities(input: PaneIdentityInput): PaneIdentityRes
     if (resolved.get(tab.id)!.e) continue;
     const homed = entries.filter(e => homes.get(e.key) === tab.workspaceId);
     const text = normalizeIdentityText((tab.sessionTitle ?? "") + " " + (tab.taskTitle ?? ""));
-    if (homed.length === 1 && homed[0].tokens.some(t => t.length >= 2 && text.includes(normalizeIdentityText(t)))) resolved.set(tab.id, { e: homed[0], reason: "workspace_name" });
+    if (homed.length === 1 && homed[0].tokens.some(t => t.length >= 2 && meaningfulIdentityToken(t) && text.includes(normalizeIdentityText(t)))) resolved.set(tab.id, { e: homed[0], reason: "workspace_name" });
   }
   const stripTokens = (text: string, e: Entry | null) => {
     let out = text;

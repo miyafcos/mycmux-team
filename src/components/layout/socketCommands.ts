@@ -33,7 +33,6 @@ import {
   normalizeReadableSplitColumns,
   reconcileSplitColumnsForPanes,
 } from "../../lib/layoutColumns";
-import { applyLayoutMutation } from "../../lib/layoutMutation";
 import { collectPaneCloseVictims } from "../../lib/paneCloseImpact";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -1940,104 +1939,45 @@ async function closeTab(args: SocketArgs) {
   const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
   const sessionId = socketArgString(args, "sessionId", "session_id");
   if (!sessionId) throw new Error("pane.close_tab requires sessionId");
-
-  let owner: { workspace: Workspace; pane: Pane; tab: Pane["tabs"][number] } | null = null;
-  for (const workspace of useWorkspaceListStore.getState().workspaces) {
-    for (const pane of workspace.panes) {
-      const tab = pane.tabs.find((candidate) => candidate.sessionId === sessionId);
-      if (tab) {
-        owner = { workspace, pane, tab };
-        break;
-      }
-    }
-    if (owner) break;
-  }
+  const owner = useWorkspaceListStore.getState().workspaces.flatMap(workspace =>
+    workspace.panes.flatMap(pane => pane.tabs.map(tab => ({ workspace, pane, tab }))))
+    .find(candidate => candidate.tab.sessionId === sessionId);
   if (!owner) throw new Error("pane.close_tab session not found");
-
   const { workspace, pane, tab } = owner;
   if (tab.type !== "terminal") throw new Error("pane.close_tab requires a terminal tab");
-  if (pane.tabs.length === 1 && workspace.panes.length === 1) {
-    throw new Error("refusing to close the last tab of the last pane");
-  }
-
-  const { pushClosedTab } = await import("../../stores/closedPaneStore");
-  pushClosedTab(pane, tab);
-  const [
-    { evictTerminalCache },
-    { killSession },
-    { usePaneMetadataStore, useWorkspaceLayoutStore },
-  ] = await Promise.all([
-    import("../terminal/XTermWrapper"),
-    import("../../lib/ipc"),
-    import("../../stores/workspaceStore"),
-  ]);
-  evictTerminalCache(sessionId);
-  killSession(sessionId).catch((err) =>
-    console.warn("[mycmux] killSession failed", sessionId, err),
-  );
-  usePaneMetadataStore.getState().removeMetadata(sessionId);
-  useWorkspaceLayoutStore.getState().removeTabFromPane(workspace.id, pane.id, tab.id);
+  const { closePaneOperation } = await import("../../lib/paneCloseOperation");
+  const result = await closePaneOperation({ kind: "tab", workspaceId: workspace.id, paneId: pane.id, tabId: tab.id }, "cli");
+  requireClosedResult(result);
   return { workspaceId: workspace.id, paneId: pane.id, tabId: tab.id };
 }
 
-/**
- * Applies one close-tabs layout mutation. If every pane in a multi-pane
- * workspace becomes empty, cleanup retains one empty pane for the workspace.
- */
+function requireClosedResult(result: import("../../lib/paneCloseOperation").PaneCloseResult): void {
+  if (result.status === "closed") return;
+  if (result.reason === "last") throw new Error("refusing to close the last tab of the last pane");
+  if (result.status === "failed") throw new Error("pane close termination failed: " + String(result.error));
+  if (result.status === "pending") throw new Error("pane close termination pending; the pane remains visible");
+  throw new Error("pane close target unavailable: " + (result.reason ?? result.status));
+}
+
+/** Explicit automation keeps its existing confirmation-free bulk-close policy. */
 async function closeTabs(args: SocketArgs) {
   const tabIds = Array.isArray(args?.tabIds)
     ? args.tabIds.filter((value): value is string => typeof value === "string" && value.length > 0)
     : [];
   if (tabIds.length === 0) throw new Error("pane.close_tabs requires tabIds");
-  const { usePaneMetadataStore, useUiStore, useWorkspaceListStore } = await import("../../stores/workspaceStore");
-  const { pushClosedTab } = await import("../../stores/closedPaneStore");
-  const before = useWorkspaceListStore.getState().workspaces;
+  const { usePaneMetadataStore, useWorkspaceListStore } = await import("../../stores/workspaceStore");
   const selected = new Set(tabIds);
-  for (const workspace of before) {
-    if (workspace.panes.length !== 1) continue;
-    const [onlyPane] = workspace.panes;
-    if (onlyPane.tabs.length > 0 && onlyPane.tabs.every((tab) => selected.has(tab.id))) {
-      throw new Error("refusing to close the last tab of the last pane");
-    }
-  }
-  const ownerByTabId = new Map(before.flatMap((workspace) => workspace.panes.flatMap((pane) => (
-    pane.tabs.map((tab) => [tab.id, { workspace, pane, tab }] as const)
-  ))));
-  const selectedPanes = before.flatMap((workspace) => workspace.panes.map((pane) => ({
-    ...pane,
-    tabs: pane.tabs.filter((tab) => selected.has(tab.id)),
-  }))).filter((pane) => pane.tabs.length > 0);
-  const victims = collectPaneCloseVictims(selectedPanes, usePaneMetadataStore.getState().metadata);
-  if (victims.length > 0) console.warn(`[pane.close_tabs] closing ${victims.length} active/agent tab(s)`);
-  const { workspaces, summary } = applyLayoutMutation(before, {
-    kind: "close-tabs",
-    operationId: crypto.randomUUID(),
-    tabIds,
-  }, 0);
-  const closedOwners = summary.closed
-    .map((tabId) => ownerByTabId.get(tabId))
-    .filter((owner): owner is NonNullable<typeof owner> => owner !== undefined);
-  for (const { workspace, pane, tab } of closedOwners) {
-    pushClosedTab(pane, tab, { workspaceId: workspace.id, workspaceName: workspace.name });
-  }
-  const focusedSessionId = useUiStore.getState().activePaneId;
-  const killedFocusedSession = closedOwners.some(({ tab }) => (
-    tab.type === "terminal" && !isDeclaredTab(tab) && tab.sessionId === focusedSessionId
-  ));
-  useWorkspaceListStore.getState()._replaceWorkspaces(workspaces);
-  if (killedFocusedSession) useUiStore.getState().bumpFocusRevision();
-  const liveOwners = closedOwners.filter(({ tab }) => tab.type === "terminal" && !isDeclaredTab(tab));
-  if (liveOwners.length === 0) return { ...summary, victims };
-  const [{ evictTerminalCache }, { killSession }] = await Promise.all([
-    import("../terminal/terminalCache"),
-    import("../../lib/ipc"),
-  ]);
-  for (const { tab } of liveOwners) {
-    evictTerminalCache(tab.sessionId);
-    usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
-    void killSession(tab.sessionId).catch((error) => console.warn("[mycmux] killSession failed", tab.sessionId, error));
-  }
-  return { ...summary, victims };
+  const panes = useWorkspaceListStore.getState().workspaces.flatMap(workspace =>
+    workspace.panes.map(pane => ({ ...pane, tabs: pane.tabs.filter(tab => selected.has(tab.id)) })))
+    .filter(pane => pane.tabs.length > 0);
+  const metadata = usePaneMetadataStore.getState();
+  const victims = collectPaneCloseVictims(panes, metadata.metadata, metadata.volatileMetadata);
+  const { closePaneOperation } = await import("../../lib/paneCloseOperation");
+  const result = await closePaneOperation({ kind: "tabs", tabIds }, "cli", {
+    commitBulkLayout: workspaces => useWorkspaceListStore.getState()._replaceWorkspaces(workspaces),
+  });
+  requireClosedResult(result);
+  return { ...result.summary, victims };
 }
 
 async function renameTab(args: SocketArgs) {

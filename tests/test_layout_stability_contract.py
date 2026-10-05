@@ -607,6 +607,7 @@ def test_active_pane_id_follows_surviving_tab_after_close() -> None:
 
 def test_pane_tab_rename_double_click_does_not_steal_focus() -> None:
     pane_tab_bar = read_repo_text("src/components/workspace/PaneTabBar.tsx")
+    rename_editor = read_repo_text("src/components/workspace/PaneTabRenameEditor.tsx")
 
     for snippet in [
         "const suppressNextTabClick = useCallback(() => {",
@@ -619,13 +620,19 @@ def test_pane_tab_rename_double_click_does_not_steal_focus() -> None:
         "startEditingTab(tab.id, label);",
         "onClick={(event) => {\n                if (event.detail >= 2) {",
         "if (isEditingTab || focusController.shouldSuppressTabClick() || shouldSuppressClick()) {",
-        "onPointerDown={(e) => e.stopPropagation()}",
-        "onMouseDown={(e) => e.stopPropagation()}",
-        "onDoubleClick={(e) => e.stopPropagation()}",
-        'WebkitUserSelect: "text",',
+        "<PaneTabRenameEditor",
+        "if (pendingTabClickRef.current !== null) clearTimeout(pendingTabClickRef.current);",
     ]:
         assert_contains(pane_tab_bar, snippet, "src/components/workspace/PaneTabBar.tsx")
 
+    for snippet in [
+        "onPointerDown={event => event.stopPropagation()}",
+        "onMouseDown={event => event.stopPropagation()}",
+        "onDoubleClick={event => event.stopPropagation()}",
+        'userSelect: "text"',
+        "if (event.nativeEvent.isComposing) return;",
+    ]:
+        assert_contains(rename_editor, snippet, "src/components/workspace/PaneTabRenameEditor.tsx")
     assert "if (shouldSuppressClick()) {" not in pane_tab_bar
 
 

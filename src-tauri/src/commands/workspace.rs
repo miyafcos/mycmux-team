@@ -49,7 +49,7 @@ fn attach_detached_window_frames(app_handle: &AppHandle, data: &mut PersistentDa
     for label in state.window_registry.known_windows() {
         let selection = state.window_registry.fragment(&label);
         let mut group = storage::WindowGroupConfig {
-            label: label.clone(), frame: None, decorated: None,
+            label: label.clone(), frame: None, decorated: None, maximized: None,
             native_tearout: selection.as_ref().and_then(|fragment| fragment.workspaces.iter()
                 .find_map(|workspace| workspace["window_native_tearout"].as_bool())),
             active_workspace_id: selection.as_ref().and_then(|row| row.active_workspace_id.clone()),
@@ -70,6 +70,14 @@ fn attach_detached_window_frames(app_handle: &AppHandle, data: &mut PersistentDa
                 outer_frames.insert(label.clone(), storage::WindowFrameConfig {
                     x: position.x, y: position.y, width: outer.width, height: outer.height,
                 });
+            }
+            #[cfg(target_os = "windows")]
+            if group.native_tearout == Some(true) {
+                if let Ok((inner, outer, true)) = crate::tearout::saved_native_frame(&window) {
+                    group.maximized = Some(true);
+                    group.frame = Some(inner);
+                    outer_frames.insert(label.clone(), outer);
+                }
             }
         }
         groups.insert(label, group);
@@ -471,9 +479,9 @@ mod tests {
         let inner = storage::WindowFrameConfig { x: 120.0, y: 140.0, width: 800.0, height: 600.0 };
         let outer = storage::WindowFrameConfig { height: 628.0, ..inner.clone() };
         let groups = HashMap::from([
-            ("main".into(), storage::WindowGroupConfig { label: "main".into(), frame: None, decorated: Some(true), native_tearout: Some(false),
+            ("main".into(), storage::WindowGroupConfig { label: "main".into(), frame: None, decorated: Some(true), native_tearout: Some(false), maximized: None,
                 active_workspace_id: Some("main-ws".into()), active_pane_id: None, active_tab_id: None }),
-            ("mycmux-w2".into(), storage::WindowGroupConfig { label: "mycmux-w2".into(), frame: Some(inner.clone()), decorated: Some(false), native_tearout: Some(true),
+            ("mycmux-w2".into(), storage::WindowGroupConfig { label: "mycmux-w2".into(), frame: Some(inner.clone()), decorated: Some(false), native_tearout: Some(true), maximized: Some(true),
                 active_workspace_id: Some("b".into()), active_pane_id: Some("b-pane".into()), active_tab_id: Some("b-tab".into()) }),
         ]);
         let frames = HashMap::from([("mycmux-w2".into(), outer.clone())]);
@@ -485,6 +493,7 @@ mod tests {
         for workspace in &data.workspaces[1..] {
             let group = workspace.window_group.as_ref().unwrap();
             assert_eq!(group.label, "mycmux-w2");
+            assert_eq!(group.maximized, Some(true));
             assert_eq!(group.active_workspace_id.as_deref(), Some("b"));
             assert_eq!(group.frame.as_ref(), Some(&inner));
             assert_eq!(workspace.window_frame.as_ref(), Some(&outer));

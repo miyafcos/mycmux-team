@@ -18,7 +18,7 @@ export interface PaneCloseConfirmOptions {
 
 export async function confirmPaneClose(
   panes: readonly Pane[],
-  scope: "pane" | "workspace" | "window",
+  scope: "tab" | "pane" | "workspace" | "window",
   options: PaneCloseConfirmOptions = {},
 ): Promise<boolean> {
   const metadata = usePaneMetadataStore.getState().metadata;
@@ -28,9 +28,11 @@ export async function confirmPaneClose(
   // A pane holding nothing live closes unprompted, the way it always has.
   // A workspace never did: it asked every time, and it keeps asking even when
   // no tab looks busy, because the close takes every pane in it.
-  if (victims.length === 0 && scope === "pane") return true;
+  if (victims.length === 0 && (scope === "pane" || scope === "tab")) return true;
 
-  const body = scope === "pane" && liveAgentTabs.length > 0
+  const body = scope === "tab"
+    ? `「${victims[0].label}」は稼働中です。このペインを閉じて終了しますか？`
+    : scope === "pane" && liveAgentTabs.length > 0
     ? `このタブには実行中のエージェントペインが ${liveAgentTabs.length} 件あります。まとめて閉じますか？`
     : victims.length > 0
       ? paneCloseImpactMessage(victims)
@@ -46,8 +48,8 @@ export async function confirmPaneClose(
     : `${body}${outcome}`;
 
   return confirm(named, {
-    ...(scope === "pane"
-      ? agentCloseDialogOptions("このタブを閉じます")
+    ...((scope === "pane" || scope === "tab")
+      ? agentCloseDialogOptions(scope === "tab" ? "このペインを閉じます" : "このタブを閉じます")
       : {
           title: scope === "window"
             ? peers > 0 ? "このウィンドウを閉じます" : "mycmux を終了します"
