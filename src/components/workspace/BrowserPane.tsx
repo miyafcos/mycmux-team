@@ -1,6 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-shell";
 import type { ArtifactSourceKind } from "../../types";
 import {
   openWithDefault,
@@ -14,8 +13,6 @@ import { useThemeStore } from "../../stores/themeStore";
 import {
   applyMarkdownPreviewAppearance,
   buildMarkdownPreviewSrcDoc,
-  classifyPreviewLink,
-  findAnchorElement,
   type MarkdownPreviewAppearance,
 } from "../../lib/markdownPreviewDocument";
 import { markdownPreviewMonoFont, markdownPreviewPalette } from "../../lib/markdownPreviewTheme";
@@ -23,7 +20,10 @@ import {
   rendersThemedSrcDoc,
   resolveBrowserIframeSources,
 } from "../../lib/browserPanePreview";
+import { installPreviewLinkHandler } from "../../lib/previewLinks";
 import { isChildWebviewPreview } from "./WebPaneController";
+import HtmlReviewDraftBar from "./HtmlReviewDraftBar";
+import { supportsHtmlReviewDraft } from "../../lib/htmlReviewDraft";
 import ArtifactEditorToolbar, {
   type ArtifactEditorCommand,
   type ArtifactEditorCommandValue,
@@ -753,63 +753,27 @@ function BrowserPaneImpl({
       }
     };
     doc.addEventListener("keydown", forwardShortcut, true);
+    const detachPreviewLinks = installPreviewLinkHandler(doc, {
+      allowLocalDocuments: !isEditing && rendersThemedSrcDoc(sourceKind),
+      openLocal: (path) => {
+        const openLocalPath = onOpenLocalPathRef.current;
+        if (openLocalPath) openLocalPath(path);
+        else revealInExplorer(path).catch((caught) => {
+          setError(caught instanceof Error ? caught.message : String(caught));
+        });
+      },
+      onError: (caught) => setError(caught instanceof Error ? caught.message : String(caught)),
+    });
 
     if (!isEditing) {
       const previewDoc = doc;
       const cleanups: Array<() => void> = [
         () => previewDoc.removeEventListener("keydown", forwardShortcut, true),
+        detachPreviewLinks,
       ];
 
-      // A rendered document has no scripts of its own, and the frame cannot
-      // navigate anywhere useful: every link is answered here instead.
       if (rendersThemedSrcDoc(sourceKind)) {
         applyMarkdownPreviewAppearance(previewDoc, appearanceRef.current);
-        const reportFailure = (caught: unknown) => {
-          setError(caught instanceof Error ? caught.message : String(caught));
-        };
-        const activateLink = (event: MouseEvent) => {
-          const anchor = findAnchorElement(event.target);
-          if (!anchor) return;
-          // Even a link that leads nowhere must not move the frame itself.
-          event.preventDefault();
-          event.stopPropagation();
-          const action = classifyPreviewLink(anchor);
-          switch (action.kind) {
-            case "fragment": {
-              const target = action.id
-                ? previewDoc.getElementById(action.id)
-                  ?? previewDoc.getElementsByName(action.id)[0]
-                  ?? null
-                : previewDoc.documentElement;
-              target?.scrollIntoView({ block: "start" });
-              break;
-            }
-            case "local": {
-              const openLocalPath = onOpenLocalPathRef.current;
-              if (openLocalPath) {
-                openLocalPath(action.path);
-              } else {
-                revealInExplorer(action.path).catch(reportFailure);
-              }
-              break;
-            }
-            case "external":
-              open(action.url).catch(reportFailure);
-              break;
-            case "none":
-              break;
-          }
-        };
-        const activateMiddleClick = (event: MouseEvent) => {
-          if (event.button !== 1) return;
-          activateLink(event);
-        };
-        previewDoc.addEventListener("click", activateLink, true);
-        previewDoc.addEventListener("auxclick", activateMiddleClick, true);
-        cleanups.push(() => {
-          previewDoc.removeEventListener("click", activateLink, true);
-          previewDoc.removeEventListener("auxclick", activateMiddleClick, true);
-        });
       }
 
       inputCleanupRef.current = () => {
@@ -834,6 +798,7 @@ function BrowserPaneImpl({
     doc.addEventListener("cut", markDirty);
     doc.addEventListener("paste", markDirty);
     inputCleanupRef.current = () => {
+      detachPreviewLinks();
       doc.removeEventListener("keydown", forwardShortcut, true);
       doc.removeEventListener("selectionchange", rememberSelection);
       doc.removeEventListener("keyup", rememberSelection);
@@ -1038,6 +1003,15 @@ function BrowserPaneImpl({
         onOpenSource={handleOpenSource}
         onCommand={handleCommand}
       />
+      {showsChildWebview && tabId && supportsHtmlReviewDraft() && (
+        <HtmlReviewDraftBar
+          key={`${tabId}:${resolvedPreviewPath}`}
+          tabId={tabId}
+          sourcePath={sourcePath ?? resolvedPreviewPath}
+          previewPath={resolvedPreviewPath}
+          reloadKey={`${reloadKey}:${localReloadKey}`}
+        />
+      )}
       {error && (
         <div
           style={{

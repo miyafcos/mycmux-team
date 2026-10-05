@@ -119,6 +119,29 @@ describe("useUsageStore", () => {
     expect(useUsageStore.getState().lastError).toBeNull();
   });
 
+  it("keeps loading until the newest request finishes and clears it on failure", async () => {
+    const first = deferred<AccountUsageReport>();
+    const second = deferred<AccountUsageReport>();
+    mockedGetAccountUsage.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const firstCall = useUsageStore.getState().fetch();
+    const secondCall = useUsageStore.getState().fetch();
+    expect(useUsageStore.getState().loading).toBe(true);
+    first.resolve(makeReport([]));
+    await firstCall;
+    expect(useUsageStore.getState().loading).toBe(true);
+    second.reject(new Error("temporarily offline"));
+    await secondCall;
+    expect(useUsageStore.getState().loading).toBe(false);
+  });
+
+  it("requests current metadata only for an explicit user refresh", async () => {
+    mockedGetAccountUsage.mockResolvedValue(makeReport([]));
+    await useUsageStore.getState().fetch();
+    expect(mockedGetAccountUsage).toHaveBeenLastCalledWith();
+    await useUsageStore.getState().fetch(true);
+    expect(mockedGetAccountUsage).toHaveBeenLastCalledWith(true);
+  });
+
   it("replaces the row list outright rather than merging", async () => {
     mockedGetAccountUsage.mockResolvedValueOnce(makeReport([makeRow("a", 12), makeRow("b", 30)]));
     await useUsageStore.getState().fetch();

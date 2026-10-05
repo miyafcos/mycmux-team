@@ -8,7 +8,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: async (name: string, callback:
   return () => callbacks.delete(callback);
 }, emit: async () => {}, emitTo: mocks.emitTo }));
 vi.mock("../../src/lib/windowContext", () => ({ windowLabel: () => "main", isMainWindow: () => true }));
-vi.mock("../../src/lib/tearout/sessionAttachment", () => ({ expectTearoutAttachments: () => ({ ready: Promise.resolve(), dispose: () => {} }) }));
+vi.mock("../../src/lib/tearout/sessionAttachment", () => ({ rememberTearoutDormantSessions: vi.fn(), expectTearoutAttachments: () => ({ ready: Promise.resolve(), dispose: () => {} }) }));
 vi.mock("../../src/components/terminal/terminalCache", async (original) => ({
   ...await original<typeof import("../../src/components/terminal/terminalCache")>(), evictTerminalCache: vi.fn(),
 }));
