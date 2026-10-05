@@ -1,3 +1,5 @@
+import { beginGroupingTrace } from "../../lib/groupingDiagnostics";
+
 export const GROUPING_DIAGRAM_FLIGHT_MS = 160;
 export const GROUPING_DIAGRAM_COMMIT_PROGRESS = 0.5;
 export const GROUPING_DIAGRAM_PATH_SAMPLES = 16;
@@ -24,6 +26,7 @@ export interface GroupingApplyAnimationCallbacks<T> {
   commitSucceeded: (outcome: T) => boolean;
   shouldReverse: (outcome: T) => boolean;
   onFinished: (outcome: T) => void;
+  onError?: (error: unknown) => void;
 }
 
 export type GroupingApplyAnimationStarter<T> = (
@@ -216,6 +219,11 @@ export function startGroupingApplyAnimation<T>(
   let commitIssued = false;
   let outcome: T | undefined;
   let finished = false;
+  const trace = beginGroupingTrace();
+  trace.mark("apply");
+  let finishReason: "frame" | "timer" | "cancelled" = "frame";
+  let seamTimer: ReturnType<typeof setTimeout> | null = null;
+  let finishTimer: ReturnType<typeof setTimeout> | null = null;
 
   for (const item of items) {
     item.sourceElement.style.opacity = "0";
@@ -245,7 +253,10 @@ export function startGroupingApplyAnimation<T>(
     currentPhase = "finished";
     if (frame !== null) cancelFrame(frame);
     frame = null;
+    if (seamTimer !== null) clearTimeout(seamTimer);
+    if (finishTimer !== null) clearTimeout(finishTimer);
     restore();
+    trace.finish(finishReason);
     options.onFinished(outcome);
   };
 
@@ -283,30 +294,50 @@ export function startGroupingApplyAnimation<T>(
       render(progress);
       if (progress <= 0) finish();
     }
-    if (!finished) frame = requestFrame(tick);
+    if (!finished) frame = requestFrame(guardedTick);
   };
 
-  render(0);
-  frame = requestFrame(tick);
-
-  return {
-    settleImmediately: () => {
-      if (finished) return;
+  const fail = (error: unknown) => {
+    if (finished) return;
+    finished = true;
+    currentPhase = "finished";
+    if (frame !== null) cancelFrame(frame);
+    frame = null;
+    if (seamTimer !== null) clearTimeout(seamTimer);
+    if (finishTimer !== null) clearTimeout(finishTimer);
+    restore();
+    trace.finish("error");
+    options.onError?.(error);
+  };
+  const settle = () => {
+    if (finished) return;
+    try {
       if (!commitIssued) issueCommit(startedAt ?? performance.now());
       if (outcome === undefined) return;
       if (options.shouldReverse(outcome)) render(0);
       else if (options.commitSucceeded(outcome)) render(1);
       else render(reverseFrom || seamProgress, 0);
       finish();
-    },
-    cancel: () => {
-      if (finished) return;
-      finished = true;
-      currentPhase = "finished";
-      if (frame !== null) cancelFrame(frame);
-      frame = null;
-      restore();
-    },
+    } catch (error) { fail(error); }
+  };
+  const guardedTick: FrameRequestCallback = timestamp => {
+    try { tick(timestamp); } catch (error) { fail(error); }
+  };
+  render(0);
+  frame = requestFrame(guardedTick);
+  // Occluded WebViews may never schedule a frame. Timers share the same
+  // once-only guards as rAF, including a stalled reverse flight.
+  seamTimer = setTimeout(() => {
+    if (finished) return;
+    try { issueCommit(performance.now()); } catch (error) { fail(error); }
+  }, durationMs * seamProgress);
+  finishTimer = setTimeout(() => { finishReason = "timer"; settle(); }, durationMs * 2);
+
+  return {
+    settleImmediately: settle,
+    // Applying is already authorized. Leaving its view settles the transaction,
+    // rather than abandoning a committed flight without its completion callback.
+    cancel: () => { finishReason = "cancelled"; settle(); },
     phase: () => currentPhase,
   };
 }

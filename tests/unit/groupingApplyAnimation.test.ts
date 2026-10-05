@@ -165,3 +165,59 @@ describe("grouping apply diagram animation", () => {
     expect(harness.frames).toHaveLength(0);
   });
 });
+
+describe("grouping flight bounded settlement", () => {
+  it("commits and finishes once even when no frame arrives", () => {
+    vi.useFakeTimers();
+    try {
+      const harness = frameHarness(), commit = vi.fn(() => ({ ok: true })), finished = vi.fn();
+      const item = animationItem();
+      const controller = startGroupingApplyAnimation({ items: [item], requestFrame: harness.requestFrame,
+        cancelFrame: harness.cancelFrame, onCommit: commit, commitSucceeded: value => value.ok,
+        shouldReverse: value => !value.ok, onFinished: finished });
+      vi.advanceTimersByTime(1000);
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(finished).toHaveBeenCalledTimes(1);
+      expect(controller?.phase()).toBe("finished");
+      expect(item.sourceElement.style.opacity).toBe("");
+      controller?.cancel(); controller?.settleImmediately(); harness.runAt(2000);
+      expect(commit).toHaveBeenCalledTimes(1); expect(finished).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+  it("settles a reverse when frames stop after the commit seam", () => {
+    vi.useFakeTimers();
+    try {
+      const harness = frameHarness(), commit = vi.fn(() => ({ ok: false })), finished = vi.fn();
+      const controller = startGroupingApplyAnimation({ items: [animationItem()], requestFrame: harness.requestFrame,
+        cancelFrame: harness.cancelFrame, onCommit: commit, commitSucceeded: value => value.ok,
+        shouldReverse: value => !value.ok, onFinished: finished });
+      harness.runAt(0); harness.runAt(80);
+      vi.advanceTimersByTime(1000);
+      expect(commit).toHaveBeenCalledTimes(1); expect(finished).toHaveBeenCalledTimes(1);
+      expect(controller?.phase()).toBe("finished");
+    } finally { vi.useRealTimers(); }
+  });
+  it("cancellation completes the authorized apply and releases hidden elements", () => {
+    const harness = frameHarness(), commit = vi.fn(() => ({ ok: true })), finished = vi.fn();
+    const item = animationItem();
+    const controller = startGroupingApplyAnimation({ items: [item], requestFrame: harness.requestFrame,
+      cancelFrame: harness.cancelFrame, onCommit: commit, commitSucceeded: value => value.ok,
+      shouldReverse: value => !value.ok, onFinished: finished });
+    controller?.cancel(); controller?.cancel();
+    expect(commit).toHaveBeenCalledTimes(1); expect(finished).toHaveBeenCalledTimes(1);
+    expect(item.sourceElement.style.opacity).toBe("");
+  });
+  it("cleans up and reports a thrown callback exactly once", () => {
+    vi.useFakeTimers();
+    try {
+      const harness = frameHarness(), commit = vi.fn((): { ok: boolean } => { throw new Error("failure"); });
+      const item = animationItem(), error = vi.fn();
+      const controller = startGroupingApplyAnimation({ items: [item], requestFrame: harness.requestFrame,
+        cancelFrame: harness.cancelFrame, onCommit: commit, commitSucceeded: value => value.ok,
+        shouldReverse: value => !value.ok, onFinished: vi.fn(), onError: error });
+      vi.advanceTimersByTime(1000); controller?.settleImmediately();
+      expect(commit).toHaveBeenCalledTimes(1); expect(error).toHaveBeenCalledTimes(1);
+      expect(controller?.phase()).toBe("finished"); expect(item.sourceElement.style.opacity).toBe("");
+    } finally { vi.useRealTimers(); }
+  });
+});
