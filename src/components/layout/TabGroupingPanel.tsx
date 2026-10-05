@@ -1,3 +1,4 @@
+import { beginGroupingTrace } from "../../lib/groupingDiagnostics";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
 import { identitiesForScan } from "../../lib/paneEvidence";
 import { displayNameForWorkspace } from "../../lib/paneIdentity";
@@ -12,6 +13,7 @@ import { useUiStore } from "../../stores/uiStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { layoutStructureRevision } from "../../lib/layoutMutation";
 import {
+  cancelForegroundGroupingAnalysis,
   generateForegroundGroupingAnalysis,
   markGroupingInterest,
   peekGroupingPrecompute,
@@ -1523,6 +1525,7 @@ function GroupingSideBySide({
       commitSucceeded: callbacks.commitSucceeded,
       shouldReverse: callbacks.shouldReverse,
       onFinished: finish,
+      onError: error => finish({ kind: "throw", error }),
     });
     if (!controller) {
       if (landingDraftRef) landingDraftRef.current = null;
@@ -1878,6 +1881,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
 
   const cancelJudge = useCallback(() => {
     analyzeGenerationRef.current += 1;
+    cancelForegroundGroupingAnalysis();
   }, []);
 
   const resetTransientUi = useCallback(() => {
@@ -2203,6 +2207,8 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
       setStatus(tabGroupingStrings.applyZeroMoves);
       return;
     }
+    const applyTrace = beginGroupingTrace();
+    applyTrace.mark("prepare");
     applyInFlightRef.current = true;
     setApplyingPreview({
       before: structuredClone(useWorkspaceListStore.getState().workspaces),
@@ -2212,12 +2218,14 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     setStatus(tabGroupingStrings.applying);
     const commit = (): GroupingCommitAttempt => {
       try {
+        applyTrace.mark("apply");
         return { kind: "result", result: groupingBoundary.commit(edited, ticket) };
       } catch (error) {
         return { kind: "throw", error };
       }
     };
     const finish = (attempt: GroupingCommitAttempt) => {
+      applyTrace.finish(attempt.kind === "result" && attempt.result.commit.ok ? "applied" : "error");
       setApplyingPreview(null);
       if (attempt.kind === "throw") {
         const message = attempt.error instanceof Error ? attempt.error.message : String(attempt.error);

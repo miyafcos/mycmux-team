@@ -26,6 +26,9 @@ import {
   usageColor,
 } from "../../lib/accountRows";
 import { CliLoginProgress } from "../common/CliLoginProgress";
+import { AccountSubscriptionDetails } from "../common/AccountSubscriptionDetails";
+import { subscriptionTitle } from "../../lib/accountSubscription";
+import { accountLimitLabel, groupAccountRows, type AccountPanelGroup } from "../../lib/accountAvailability";
 import { useCliAccountStore } from "../../stores/cliAccountStore";
 import { useCliLoginStore } from "../../stores/cliLoginStore";
 import { usePaneMetadataStore } from "../../stores/paneMetadataStore";
@@ -127,7 +130,7 @@ export function AccountsPanel({
             color: "var(--cmux-text-tertiary)",
           }}
         >
-          更新 {formatUpdatedAt(generatedAt)}
+          一覧取得 {formatUpdatedAt(generatedAt)}
         </span>
       </header>
 
@@ -143,8 +146,8 @@ export function AccountsPanel({
         </div>
       ) : (
         <div>
-          {rows.map((row) => (
-            <AccountRow key={row.profile_id} row={row} onClose={onClose} />
+          {groupAccountRows(rows).map((group) => (
+            <AccountGroup key={group.id} group={group} onClose={onClose} />
           ))}
         </div>
       )}
@@ -194,6 +197,57 @@ export function AccountsPanel({
 
       <Footer onOpenUsageSettings={onOpenUsageSettings} />
     </div>
+  );
+}
+
+function AccountGroup({
+  group,
+  onClose,
+}: {
+  group: AccountPanelGroup;
+  onClose: () => void;
+}) {
+  const [expanded, setExpanded] = useState(!group.collapsible);
+  const contentId = `accounts-group-${group.id}`;
+  const color = group.id === "limited" ? "var(--cmux-usage-danger)"
+    : group.id === "near_limit" ? "var(--cmux-usage-warn)" : "var(--cmux-text-secondary)";
+  const headingStyle = {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--cmux-space-2)",
+    width: "100%",
+    padding: "var(--cmux-space-2) var(--cmux-space-5)",
+    border: 0,
+    borderBottom: "1px solid var(--cmux-border-hairline)",
+    background: "var(--cmux-surface)",
+    color,
+    font: "inherit",
+    fontSize: "var(--cmux-font-size-xs)",
+    fontWeight: 700,
+    textAlign: "left" as const,
+  };
+  return (
+    <section data-account-group={group.id} aria-label={group.label}>
+      {group.collapsible ? (
+        <button type="button" aria-expanded={expanded} aria-controls={contentId}
+          onClick={() => setExpanded((value) => !value)}
+          style={{ ...headingStyle, cursor: "pointer" }}>
+          <span aria-hidden="true">{expanded ? "▾" : "▸"}</span>
+          <span>{group.label}</span>
+          <span>{group.rows.length}件</span>
+          <span style={{ marginLeft: "auto", fontWeight: 400 }}>{expanded ? "閉じる" : "表示"}</span>
+        </button>
+      ) : (
+        <div style={headingStyle}>
+          <span>{group.label}</span><span>{group.rows.length}件</span>
+        </div>
+      )}
+      <div id={contentId} hidden={!expanded}>
+        {expanded && group.rows.map((row) => (
+          <AccountRow key={row.profile_id} row={row} onClose={onClose} />
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -291,6 +345,7 @@ function AccountRow({
     if (result && result.warnings.length === 0) onClose();
   };
 
+  const limitLabel = accountLimitLabel(row);
   const message = rowMessage(row);
   const staleNote = staleWindowsNote(row);
   const windows = displayWindows(row);
@@ -337,6 +392,13 @@ function AccountRow({
         opacity: disabled && !row.is_active ? 0.6 : 1,
       }}
     >
+      {limitLabel && (
+        <span data-account-limit="true" style={{ fontSize: "var(--cmux-font-size-xs)",
+          color: limitLabel.includes("残量わずか") || limitLabel.includes("一部モデル")
+            ? "var(--cmux-usage-warn)" : "var(--cmux-usage-danger)" }}>
+          {limitLabel}
+        </span>
+      )}
       <span
         style={{
           display: "flex",
@@ -378,6 +440,7 @@ function AccountRow({
         )}
         {row.plan && (
           <span
+            title={subscriptionTitle(row)}
             style={{
               flexShrink: 0,
               fontSize: "var(--cmux-font-size-xs)",
@@ -483,6 +546,9 @@ function AccountRow({
         </span>
       )}
     </button>
+      <div style={{ padding: "0 var(--cmux-space-5) var(--cmux-space-3)" }}>
+        <AccountSubscriptionDetails row={row} />
+      </div>
       {tickets && (
         <button
           data-reset-ticket-chip="true"
@@ -624,6 +690,11 @@ function UsageBar({
 function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
   const loginByProvider = useCliLoginStore((state) => state.byProvider);
   const startLogin = useCliLoginStore((state) => state.start);
+  const usageLoading = useUsageStore((state) => state.loading);
+  const cliLoading = useCliAccountStore((state) => state.loading);
+  const fetchUsage = useUsageStore((state) => state.fetch);
+  const fetchAccounts = useCliAccountStore((state) => state.fetch);
+  const refreshing = usageLoading || cliLoading;
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -666,6 +737,8 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
           style={{
             position: "relative",
             display: "flex",
+            flex: 1,
+            minWidth: 0,
             gap: "var(--cmux-space-2)",
           }}
         >
@@ -675,7 +748,7 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
             disabled={loginInProgress}
             aria-haspopup="menu"
             aria-expanded={addMenuOpen}
-            style={{ ...panelButtonStyle, opacity: loginInProgress ? 0.6 : 1 }}
+            style={{ ...panelButtonStyle, opacity: loginInProgress ? 0.6 : 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
           >
             {loginEntry
               ? loginEntry.stage === "waiting"
@@ -733,6 +806,16 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
             </div>
           )}
         </div>
+        <div style={{ display: "flex", flexShrink: 0, gap: "var(--cmux-space-2)" }}>
+        <button
+          type="button"
+          disabled={refreshing}
+          onClick={() => void Promise.all([fetchAccounts(), fetchUsage(true)])}
+          title="使用量・プラン・取得可能な契約日を再確認します。1分以内の取得結果や、再試行待ちの情報は再利用します。"
+          style={{ ...panelButtonStyle, opacity: refreshing ? 0.6 : 1, whiteSpace: "nowrap" }}
+        >
+          {refreshing ? "取得中…" : "再取得"}
+        </button>
         <button
           type="button"
           onClick={onOpenUsageSettings}
@@ -740,6 +823,7 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
         >
           ⚙ 詳細
         </button>
+        </div>
       </div>
     </footer>
   );

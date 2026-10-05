@@ -24,16 +24,18 @@ def test_close_routes_use_shared_impact_confirmation() -> None:
     workspace_view = (REPO_ROOT / "src/components/workspace/WorkspaceView.tsx").read_text(encoding="utf-8")
     app_shell = (REPO_ROOT / "src/components/layout/AppShell.tsx").read_text(encoding="utf-8")
 
-    # Route 1: the pane's own close button.
-    assert PANE_CLOSE.search(workspace_view)
-    # Route 2: the `pane.close` keybinding. Route 3: closing a workspace.
-    assert PANE_CLOSE.search(app_shell)
+    # UI close entries now delegate to the same guarded transaction.
+    terminal = (REPO_ROOT / "src/components/workspace/TerminalPane.tsx").read_text(encoding="utf-8")
+    operation = (REPO_ROOT / "src/lib/paneCloseOperation.ts").read_text(encoding="utf-8")
+    for source in (workspace_view, app_shell, terminal):
+        assert "closePaneOperation(" in source
+        assert '"ui"' in source
+        assert "killSession(" not in source
+    assert "await confirmPaneClose(" in operation
+    assert "readPlan(op.target, op)" in operation
+    assert operation.index("await confirmPaneClose(") < operation.index("await killSession(")
+    assert "Promise.allSettled" in operation
     assert WORKSPACE_CLOSE.search(app_shell)
-
-    assert "killSession(tab.sessionId)" in workspace_view
-    # The workspace kill loop moved to the shared helper on 2026-09-11;
-    # the pane.close keybinding remains guarded in AppShell.
-    assert app_shell.count("killSession(tab.sessionId)") >= 1
     workspace_close = (REPO_ROOT / "src/lib/workspaceClose.ts").read_text(encoding="utf-8")
     assert "killSession(" in workspace_close
     assert "await closeWorkspaceAfterConfirmation(id)" in app_shell
@@ -47,14 +49,16 @@ def test_confirmation_is_imported_where_the_kills_happen() -> None:
         "src/components/layout/AppShell.tsx",
     ):
         source = (REPO_ROOT / relative).read_text(encoding="utf-8")
-        assert "paneCloseConfirmation" in source, relative
+        assert "paneCloseOperation" in source, relative
+    operation = (REPO_ROOT / "src/lib/paneCloseOperation.ts").read_text(encoding="utf-8")
+    assert "paneCloseConfirmation" in operation
 
 
 def test_workspace_close_still_confirms_with_nothing_running() -> None:
     """A workspace close asked every time before this guard existed, and the
     pane rule (skip the prompt when no tab looks busy) must not erase that."""
     source = (REPO_ROOT / "src/lib/paneCloseConfirmation.ts").read_text(encoding="utf-8")
-    assert 'victims.length === 0 && scope === "pane"' in source
+    assert 'victims.length === 0 && (scope === "pane" || scope === "tab")' in source
 
 
 def test_the_socket_close_route_is_the_only_unconfirmed_one() -> None:
@@ -72,5 +76,5 @@ def test_the_socket_close_route_is_the_only_unconfirmed_one() -> None:
     # All three spawn rollbacks kill their PTY; workspace.close adds no direct kill.
     assert re.findall(r"killSession\(([^)]*)\)", source) == [
         "newTab.sessionId", "newTab.sessionId", "newTab.sessionId",
-        "anchorTab.sessionId", "sessionId", "tab.sessionId",
+        "anchorTab.sessionId",
     ]

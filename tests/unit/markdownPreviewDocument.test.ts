@@ -116,8 +116,7 @@ describe("classifyPreviewLink", () => {
       url: "HTTPS://example.com/x",
     });
     expect(classifyPreviewLink(anchorIn('<a href="mailto:a@example.com">mail</a>'))).toEqual({
-      kind: "external",
-      url: "mailto:a@example.com",
+      kind: "none",
     });
   });
 

@@ -260,7 +260,7 @@ pub fn is_valid_child_window_label(label: &str) -> bool {
 /// first paint), short enough that a broken window is not invisible for long.
 const CHILD_WINDOW_REVEAL_FALLBACK_MS: u64 = 6000;
 
-fn schedule_child_window_reveal_fallback(app: AppHandle, label: String) {
+fn schedule_child_window_reveal_fallback(app: AppHandle, label: String, native_restore: bool) {
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(
             CHILD_WINDOW_REVEAL_FALLBACK_MS,
@@ -275,6 +275,18 @@ fn schedule_child_window_reveal_fallback(app: AppHandle, label: String) {
             "window",
             "child window {label} never revealed itself — forcing show (capability issue?)"
         );
+        #[cfg(target_os = "windows")]
+        if native_restore {
+            let posted = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Some(window) = posted.get_window(&label) {
+                    let _ = crate::tearout::reveal_restored_fallback(&window);
+                }
+            });
+            return;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = native_restore;
         let _ = window.show();
     });
 }
@@ -371,6 +383,7 @@ impl ChildWindowLabelReservations {
             reserved: Arc::clone(&self.reserved),
             restored_decoration: None,
             restored_native: None,
+            restored_maximized: None,
         }))
     }
 }
@@ -382,6 +395,7 @@ pub struct ChildWindowLabelReservation {
     reserved: Arc<Mutex<HashSet<String>>>,
     restored_decoration: Option<bool>,
     restored_native: Option<bool>,
+    restored_maximized: Option<bool>,
 }
 
 impl ChildWindowLabelReservation {
@@ -450,9 +464,18 @@ fn clamp_saved_window_origin<R: tauri::Runtime>(
 /// Reused native spares need the saved inner size as well as the outer origin.
 pub(crate) fn restore_child_window_frame(
     app: &AppHandle, label: &str, x: Option<f64>, y: Option<f64>,
-    width: Option<f64>, height: Option<f64>, decorated: Option<bool>,
+    width: Option<f64>, height: Option<f64>, decorated: Option<bool>, maximized: Option<bool>,
 ) {
     let Some(window) = app.get_window(label) else { return; };
+    #[cfg(target_os = "windows")]
+    if let Some(maximized) = maximized {
+        let _ = crate::tearout::restore_native_frame(&window, x.unwrap_or(120.0), y.unwrap_or(80.0),
+            width.unwrap_or(CHILD_WINDOW_DEFAULT_WIDTH), height.unwrap_or(CHILD_WINDOW_DEFAULT_HEIGHT), maximized);
+        return;
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = maximized;
+
     if let Some(decorated) = decorated {
         let _ = window.set_decorations(decorated);
     }
@@ -494,6 +517,7 @@ pub fn spawn_child_window(
 ) -> Result<(), String> {
     let restored_decoration = reservation.restored_decoration;
     let restored_native = reservation.restored_native.unwrap_or(false);
+    let restored_maximized = reservation.restored_maximized.unwrap_or(false);
     crate::perf_timeline::mark("window.spawn.request", Some(reservation.label()));
     let app_handle = app.clone();
     let build_label = reservation.label().to_string();
@@ -523,7 +547,12 @@ pub fn spawn_child_window(
 
             // Saved ownership only: live/new child construction keeps its defaults.
             if let Some(decorated) = restored_decoration {
-                builder = builder.decorations(decorated).focused(false);
+                builder = builder.decorations(decorated);
+                // Only restored Windows native windows use the marker-free path.
+                #[cfg(target_os = "windows")]
+                { builder = builder.focused(restored_native); }
+                #[cfg(not(target_os = "windows"))]
+                { builder = builder.focused(false); }
                 if restored_native { builder = builder.min_inner_size(240.0, 160.0); }
                 builder = builder.initialization_script(if !restored_native {
                     "window.__MYCMUX_RESTORED_WINDOW__ = true;"
@@ -578,6 +607,13 @@ pub fn spawn_child_window(
                         };
                         let _ = window.set_position(tauri::LogicalPosition::new(x, y));
                     }
+                    #[cfg(target_os = "windows")]
+                    if restored_decoration.is_some() && restored_native {
+                        // First paint will reveal directly in the saved state.
+                        let _ = crate::tearout::prepare_restored_window(&window.as_ref().window(), restored_maximized);
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    let _ = restored_maximized;
                     // Per-window taskbar button needs its own icon (mirrors lib.rs
                     // doing this for "main").
                     if let Some(icon) = app_handle.default_window_icon().cloned() {
@@ -589,7 +625,10 @@ pub fn spawn_child_window(
                     // is an IPC call too), and the hard error UI would render into
                     // a window nobody can see. Reveal it from Rust if the frontend
                     // has not done so itself.
-                    schedule_child_window_reveal_fallback(app_handle.clone(), build_label.clone());
+                    schedule_child_window_reveal_fallback(
+                        app_handle.clone(), build_label.clone(),
+                        restored_decoration.is_some() && restored_native,
+                    );
 
 
                 }
@@ -609,10 +648,11 @@ pub fn spawn_child_window(
 pub(crate) fn spawn_child_window_with_restore(
     app: &AppHandle, mut reservation: ChildWindowLabelReservation,
     x: Option<f64>, y: Option<f64>, width: Option<f64>, height: Option<f64>,
-    restored_decoration: Option<bool>, restored_native: Option<bool>,
+    restored_decoration: Option<bool>, restored_native: Option<bool>, restored_maximized: Option<bool>,
 ) -> Result<(), String> {
     reservation.restored_decoration = restored_decoration;
     reservation.restored_native = restored_native;
+    reservation.restored_maximized = restored_maximized;
     spawn_child_window(app, reservation, x, y, width, height)
 }
 
@@ -687,6 +727,8 @@ pub fn handle_app_run_event(app: &AppHandle, event: tauri::RunEvent) {
         let worker_app = app.clone();
         match crate::shutdown::Cleanup::start(crate::shutdown::SHUTDOWN_BUDGET, move |deadline| {
             let state = worker_app.state::<AppState>();
+            #[cfg(target_os = "macos")]
+            crate::settings_flush::flush_at_exit(&worker_app, deadline);
             crate::commands::quit::fill_in_unsaved_workspaces(&worker_app, deadline);
             if std::time::Instant::now() < deadline {
                 if let Some(dir) = state.scrollback_dir.get() {
