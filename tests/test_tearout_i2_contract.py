@@ -28,7 +28,10 @@ def test_new_children_only_use_fresh_reservations():
     backend = read("src-tauri/src/tearout/mod.rs")
     assert "resolve_child_window_label(&app, None)" in backend
     assert "ResolvedChildWindow::New(r)" in backend
-    assert re.search(r"\.visible\(false\)\s*\.focused\(false\)", backend)
+    warm = backend.split("pub async fn tearout_warm(", 1)[1].split("pub async fn tearout_child_ready(", 1)[0]
+    assert ".visible(false)" in warm
+    assert '#[cfg(target_os = "windows")]\n            let builder = builder.focused(true);' in warm
+    assert '#[cfg(target_os = "macos")]\n            let builder = builder.focused(false);' in warm
     assert "set_close_intent(&label, true)" in backend
 
 
@@ -75,7 +78,9 @@ def test_existing_drop_zone_geometry_is_reused():
     assert "resolvePaneDropZone(pane.getBoundingClientRect(), x, y, previousZone)" in dock
     assert "detachedDockTarget(" in runtime
     assert "ClientToScreen" in native and "GetDpiForWindow" in native
-    assert "SW_SHOWNOACTIVATE" in native and "SetLayeredWindowAttributes" in native
+    assert "SW_SHOWNOACTIVATE" not in native
+    assert "WS_EX_NOACTIVATE" in native and "quiet_show(&window, false)" in native
+    assert "SetLayeredWindowAttributes" in native
 
 
 def test_live_transfer_attachment_has_no_spawn_branch():
