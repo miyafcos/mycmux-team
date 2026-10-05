@@ -1,3 +1,7 @@
+// @vitest-environment jsdom
+vi.mock("@tauri-apps/api/core", async original => ({ ...await original<typeof import("@tauri-apps/api/core")>(), invoke: vi.fn(async () => undefined) }));
+vi.mock("@tauri-apps/api/event", () => ({ emitTo: vi.fn(async () => {}) }));
+import * as tearoutRuntime from "../../src/lib/tearout/runtime";
 import * as terminalCache from "../../src/components/terminal/terminalCache";
 import { focusController } from "../../src/lib/focusController";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,7 +26,11 @@ function workspace(): Workspace {
     panes: [{ id: "pane", agentId: terminal.agentId, sessionId: pdf.sessionId, activeTabId: pdf.id,
       pinnedTabId: pdf.id, tabs: [terminal, pdf] }], splitColumns: [["pane"]], columnWidths: [2], rowHeightsPerCol: [[3]] };
 }
-beforeEach(() => useWorkspaceListStore.getState()._replaceWorkspaces([]));
+beforeEach(() => {
+  useWorkspaceListStore.getState()._replaceWorkspaces([]);
+  vi.spyOn(tearoutRuntime, "waitForTearoutReceiver").mockResolvedValue();
+  vi.spyOn(tearoutRuntime, "sendTearoutWorkspaces").mockResolvedValue("receipt");
+});
 afterEach(() => { vi.restoreAllMocks(); useWorkspaceListStore.getState()._replaceWorkspaces([]); });
 
 describe("browser window transfer", () => {

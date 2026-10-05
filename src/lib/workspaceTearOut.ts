@@ -1,11 +1,22 @@
-import { openWorkspaceWindow, type DetachedPaneOrigin } from "./ipc";
+import { invoke } from "@tauri-apps/api/core";
+import { emitTo } from "@tauri-apps/api/event";
+import { flushSync } from "react-dom";
+import { openWorkspaceWindow, publishWindowFragment, type DetachedPaneOrigin } from "./ipc";
 import { detachedWorkspaceConfig } from "./detachedPane";
 import { windowLabel } from "./windowContext";
 import { focusController } from "./focusController";
 import { recordPerf } from "./perfTimeline";
 import { usePaneMetadataStore, useWorkspaceListStore } from "../stores/workspaceStore";
 import { evictTerminalCache } from "../components/terminal/terminalCache";
-import { toTransferConfig } from "../components/layout/SocketListener";
+import { waitForTearoutReceiver, sendTearoutWorkspaces, visitTearoutLocation } from "./tearout/runtime";
+import { beginTearoutOperation, restoringTearoutOperation, endTearoutOperation } from "./tearout/operation";
+import { liveTransferSessions, terminalTransferSessions } from "./tearout/transferSessions";
+import { expectTearoutAttachments, rememberTearoutDormantSessions } from "./tearout/sessionAttachment";
+import { recoveryProgress, recoveryFinished, recoveryFailed, recoveryBusy } from "./tearout/recoveryNotice";
+import { useToastStore } from "../stores/toastStore";
+import { useUiStore } from "../stores/uiStore";
+import { restoreTearoutGroup } from "./tearout/model";
+import { toTransferConfig, buildWindowFragment } from "../components/layout/SocketListener";
 import type { Workspace } from "../types";
 
 /**
@@ -39,6 +50,8 @@ export interface TearOutPlacement {
   x?: number;
   y?: number;
   detachedFrom?: DetachedPaneOrigin;
+  /** Restore the layout captured before constructing a temporary transfer workspace. */
+  restoreSource?: () => void;
 }
 
 export async function tearOutWorkspaceToNewWindow(
@@ -55,28 +68,80 @@ export async function tearOutWorkspaceToNewWindow(
     : serialized;
   if (!config || config.panes.length === 0) return null;
 
-  recordPerf("detach.request", workspaceId);
-  const label = await openWorkspaceWindow({
-    fromLabel: windowLabel(),
-    workspaces: [config],
-    x: placement.x,
-    y: placement.y,
-    ...(config.detached ? { width: 720, height: 520 } : {}),
+
+  if (!beginTearoutOperation()) { recoveryBusy(); throw new Error("tearout_move_busy"); }
+  const index = listStore.workspaces.findIndex(ws => ws.id === workspaceId);
+  const selection = { workspace: listStore.activeWorkspaceId, session: useUiStore.getState().activePaneId,
+    zoom: useUiStore.getState().zoomedPaneId };
+  const restoreSource = placement.restoreSource ?? (() => {
+    flushSync(() => {
+      const current = useWorkspaceListStore.getState();
+      if (!current.workspaces.includes(workspace)) current._replaceWorkspaces(restoreTearoutGroup(current.workspaces, workspace, workspace.panes.map(pane => pane.id), index));
+      useWorkspaceListStore.setState({ activeWorkspaceId: selection.workspace });
+      useUiStore.setState({ activePaneId: selection.session, zoomedPaneId: selection.zoom });
+    });
   });
-  recordPerf("detach.open.resolved", label);
-
-  // Only now does it leave this window: if opening the window failed, the
-  // workspace (and its sessions) stay exactly where they were.
-  for (const sessionId of sessionIdsInWorkspace(workspace)) {
-    evictTerminalCache(sessionId);
-    focusController.clearSession(sessionId);
-    // The new window owns these sessions now. Leaving their metadata behind
-    // keeps counting their notifications in a window that can no longer show
-    // them — the bell lights up over a panel that lists nothing.
-    usePaneMetadataStore.getState().removeMetadata(sessionId);
+  const id = crypto.randomUUID();
+  let label: string | undefined, prepared = false, removed = false, retrying = false, liveSessions: string[] = [];
+  const name = workspace.panes.flatMap(pane => pane.tabs).map(tab => tab.label).filter(Boolean).join("\u3001") || workspace.name;
+  const location = "\u5143\u306e\u30ef\u30fc\u30af\u30b9\u30da\u30fc\u30b9\u306e\u30bf\u30d6";
+  const confirm = async () => {
+    if (!removed && !placement.restoreSource) return;
+    rememberTearoutDormantSessions(terminalTransferSessions([config]), liveSessions);
+    const attachments = expectTearoutAttachments(liveSessions);
+    try {
+      restoreSource();
+      await new Promise<void>((resolve, reject) => {
+        const timer = window.setTimeout(() => reject(new Error("tearout_restore_attachment_timeout")), 5000);
+        attachments.ready.then(() => { window.clearTimeout(timer); resolve(); }, error => { window.clearTimeout(timer); reject(error); });
+      });
+      await publishWindowFragment(buildWindowFragment("transfer"));
+    } finally { attachments.dispose(); }
+  };
+  try {
+    liveSessions = await liveTransferSessions([config]);
+    recordPerf("detach.request", workspaceId);
+    label = await openWorkspaceWindow({ fromLabel: windowLabel(), workspaces: [config], x: placement.x, y: placement.y,
+      deferredAdoption: true, ...(config.detached ? { width: 720, height: 520 } : {}) });
+    await waitForTearoutReceiver(label);
+    await invoke("tearout_prepare", { id, receiver: label, configs: [config] }); prepared = true;
+    await invoke("tearout_phase", { id, phase: "shown" });
+    await invoke("tearout_phase", { id, phase: "committed" });
+    for (const sessionId of sessionIdsInWorkspace(workspace)) {
+      evictTerminalCache(sessionId); focusController.clearSession(sessionId);
+    }
+    removed = true; flushSync(() => useWorkspaceListStore.getState().removeWorkspace(workspaceId));
+    await publishWindowFragment(buildWindowFragment("transfer"));
+    const token = await sendTearoutWorkspaces(label, [config], liveSessions, selection.session);
+    await invoke("tearout_phase", { id, phase: "received" });
+    await invoke("tearout_phase", { id, phase: "cleaned" });
+    // A finalization failure cannot undo an already acknowledged owner.
+    void emitTo(label, "mycmux://tearout-finalize", { token }).catch(() => {});
+    for (const sessionId of sessionIdsInWorkspace(workspace)) usePaneMetadataStore.getState().removeMetadata(sessionId);
+    recordPerf("detach.source.removed", workspaceId);
+    return label;
+  } catch (error) {
+    restoringTearoutOperation();
+    const progress = recoveryProgress(name, location);
+    const reason = error instanceof Error ? error.message : String(error);
+    const recover = async () => {
+      if (label) await invoke("tearout_retire", { label });
+      if (prepared && !retrying) await invoke("tearout_phase", { id, phase: "rolled_back" });
+      await confirm();
+    };
+    const visit = () => visitTearoutLocation(selection.workspace ?? workspaceId, selection.session);
+    const failed = (restoreError: unknown) => recoveryFailed(name, location,
+      restoreError instanceof Error ? restoreError.message : String(restoreError), () => {
+        if (!beginTearoutOperation()) { recoveryBusy(); return; }
+        retrying = true;
+        void recover().then(() => recoveryFinished(name, location), failed).finally(endTearoutOperation);
+      }, visit);
+    try { await recover(); recoveryFinished(name, location, reason, undefined, visit); }
+    catch (restoreError) { failed(restoreError); }
+    finally { useToastStore.getState().dismissToast(progress); }
+    throw Object.assign(error instanceof Error ? error : new Error(reason), { notified: true });
+  } finally {
+    endTearoutOperation();
+    if (prepared) await invoke("tearout_forget", { id }).catch(() => {});
   }
-  useWorkspaceListStore.getState().removeWorkspace(workspaceId);
-  recordPerf("detach.source.removed", workspaceId);
-
-  return label;
 }

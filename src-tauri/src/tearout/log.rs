@@ -30,6 +30,8 @@ pub enum Outcome {
     FailedRestored,
     Reordered,
     CancelledBeforeTearout,
+    RejectedBusy,
+    RestoreFailed,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -42,6 +44,7 @@ pub enum ErrorCode {
     DockFailed,
     RollbackFailed,
     UnexpectedFailure,
+    MoveBusy,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -85,6 +88,14 @@ pub struct DragRecord {
     highlighted_at: Option<u64>,
     receiver_window: Option<String>,
     released_at: Option<u64>,
+    #[serde(default)]
+    released: bool,
+    #[serde(default)]
+    failure_reason: Option<String>,
+    #[serde(default)]
+    failure_phase: Option<String>,
+    #[serde(default)]
+    failed_session_ids: Vec<String>,
     esc_at: Option<u64>,
     layout_done_at: u64,
     result: Outcome,
@@ -134,6 +145,11 @@ fn line(mut record: DragRecord, profile: &str) -> Result<Vec<u8>, String> {
         .scale
         .filter(|scale| scale.is_finite() && *scale > 0.0 && *scale <= 16.0);
     record.errors.truncate(8);
+    record.failure_reason = record.failure_reason.map(|reason| identifier(&reason));
+    record.failure_phase = record.failure_phase.map(|phase| identifier(&phase));
+    record.failed_session_ids.truncate(256);
+    record.failed_session_ids = record.failed_session_ids.into_iter().map(|id| identifier(&id)).collect();
+    record.released = record.released_at.is_some();
     let mut value = serde_json::to_value(record).map_err(|e| e.to_string())?;
     value["profile"] = serde_json::Value::String(identifier(profile));
     value["recorded_at"] = serde_json::json!(super::unix_ms());
@@ -363,6 +379,25 @@ mod tests {
             .to_string_lossy()
             .starts_with("tearout-performance")));
         assert!(!dir.path().join("tearout-log.jsonl").exists());
+    }
+    #[test]
+    fn recovery_diagnostics_keep_missing_release_unmeasured_and_accept_old_records() {
+        let mut value = serde_json::to_value(record()).unwrap();
+        value["released_at"] = serde_json::Value::Null;
+        value["result"] = serde_json::json!("rejected_busy");
+        value["failure_reason"] = serde_json::json!("tearout_move_busy");
+        value["failure_phase"] = serde_json::json!("restoring");
+        value["failed_session_ids"] = serde_json::json!(["pty-running"]);
+        let typed: DragRecord = serde_json::from_value(value).unwrap();
+        let logged: serde_json::Value = serde_json::from_slice(&line(typed, "s6test").unwrap()).unwrap();
+        assert!(logged["released_at"].is_null());
+        assert_eq!(logged["released"], false);
+        assert_eq!(logged["failure_phase"], "restoring");
+        assert_eq!(logged["failed_session_ids"][0], "pty-running");
+        let old = serde_json::to_value(record()).unwrap();
+        let mut old = old.as_object().unwrap().clone();
+        for key in ["released", "failure_reason", "failure_phase", "failed_session_ids"] { old.remove(key); }
+        assert!(serde_json::from_value::<DragRecord>(serde_json::Value::Object(old)).is_ok());
     }
     #[test]
     fn performance_storage_has_a_hard_cap_without_deleting_evidence() {

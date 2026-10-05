@@ -30,7 +30,12 @@ def test_i4_restoration_is_quiet_and_preserves_live_child_defaults():
     assert '.decorations(cfg!(target_os = "macos"))' in constructor
     assert '.min_inner_size(CHILD_WINDOW_MIN_WIDTH, CHILD_WINDOW_MIN_HEIGHT)' in constructor
     assert 'if let Some(decorated) = restored_decoration' in constructor
-    assert 'builder.decorations(decorated).focused(false)' in constructor
+    assert 'builder = builder.decorations(decorated);' in constructor
+    assert '#[cfg(target_os = "windows")]\n                { builder = builder.focused(restored_native); }' in constructor
+    assert '#[cfg(not(target_os = "windows"))]\n                { builder = builder.focused(false); }' in constructor
+    assert 'prepare_restored_window' in constructor
+    assert 'restore_native_frame' in restore
+    assert 'set_focusable' not in constructor and 'set_focusable' not in restore
     assert 'if restored_native { builder = builder.min_inner_size(240.0, 160.0); }' in constructor
     assert 'builder.initialization_script(if !restored_native {' in constructor
     assert 'window.__MYCMUX_RESTORED_WINDOW__ = true;' in constructor
