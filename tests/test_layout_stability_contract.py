@@ -607,6 +607,7 @@ def test_active_pane_id_follows_surviving_tab_after_close() -> None:
 
 def test_pane_tab_rename_double_click_does_not_steal_focus() -> None:
     pane_tab_bar = read_repo_text("src/components/workspace/PaneTabBar.tsx")
+    rename_editor = read_repo_text("src/components/workspace/PaneTabRenameEditor.tsx")
 
     for snippet in [
         "const suppressNextTabClick = useCallback(() => {",
@@ -619,13 +620,19 @@ def test_pane_tab_rename_double_click_does_not_steal_focus() -> None:
         "startEditingTab(tab.id, label);",
         "onClick={(event) => {\n                if (event.detail >= 2) {",
         "if (isEditingTab || focusController.shouldSuppressTabClick() || shouldSuppressClick()) {",
-        "onPointerDown={(e) => e.stopPropagation()}",
-        "onMouseDown={(e) => e.stopPropagation()}",
-        "onDoubleClick={(e) => e.stopPropagation()}",
-        'WebkitUserSelect: "text",',
+        "<PaneTabRenameEditor",
+        "if (pendingTabClickRef.current !== null) clearTimeout(pendingTabClickRef.current);",
     ]:
         assert_contains(pane_tab_bar, snippet, "src/components/workspace/PaneTabBar.tsx")
 
+    for snippet in [
+        "onPointerDown={event => event.stopPropagation()}",
+        "onMouseDown={event => event.stopPropagation()}",
+        "onDoubleClick={event => event.stopPropagation()}",
+        'userSelect: "text"',
+        "if (event.nativeEvent.isComposing) return;",
+    ]:
+        assert_contains(rename_editor, snippet, "src/components/workspace/PaneTabRenameEditor.tsx")
     assert "if (shouldSuppressClick()) {" not in pane_tab_bar
 
 
@@ -775,8 +782,8 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         "const syncBackendScrollbackToTerminal = (): Promise<boolean> => {",
         "let scrollbackSyncInFlight: Promise<boolean> | null = null;",
         "let frontendChannelReady = false;",
-        "scrollbackSnapshot = await getSessionScrollback(sessionId);",
-        "if (disposed || termDisposed || !term || !canWritePendingBatches()) return false;",
+        'scrollbackSnapshot = await withTerminalDeadline(getSessionScrollback(sessionId), "get_session_scrollback");',
+        "if (generation !== pumpGeneration || disposed || termDisposed || !term || !canWritePendingBatches()) return false;",
         "const tailStart = findLastSubarray(scrollback, knownTail);",
         "sliceBatchAfterScrollbackOffset(",
         "lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;",
@@ -810,12 +817,12 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         "schedulePendingWriteDrain();",
         "scheduleFrontendResync();",
         "pendingBatches.length > 0 || terminalScrollbackResyncNeeded.has(sessionId)",
-        "const synchronized = await scrollbackRetry.run(syncBackendScrollbackToTerminal);",
+        "const synchronized = await scrollbackRetry.run(syncBackendScrollbackToTerminal,",
         "planTerminalScrollbackRecovery(",
         "scrollbackSnapshot.startOffset,",
-            'recoveryPlan.action === "skip-truncated"',
-            "const redrawn = await scheduleTuiRecoveryRedraw();",
-            "await replayTruncatedTailIntoEmptyTerminal(scrollback);",
+            'recoveryPlan.action === "rebuild-truncated"',
+            "void scheduleTuiRecoveryRedraw();",
+            "await buildTerminalRecoveryFrame(scrollback, scrollbackSnapshot.startOffset, term.cols, term.rows);",
             'recoveryPlan.action === "initial-replay"',
             "const replacesVisibleBuffer = recoveryPlan.action",
         "if (!synchronized) {",
@@ -857,16 +864,19 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
 
     assert "await ackPendingBatch(pending)" not in xterm_wrapper
     truncated_recovery = xterm_wrapper.split(
-        'if (recoveryPlan.action === "skip-truncated") {', 1
+        'if (recoveryPlan.action === "rebuild-truncated") {', 1
     )[1].split("replaceTerminalRawTail(sessionId, scrollback);", 1)[0]
     assert "terminalScrollbackResyncNeeded.add(sessionId);" not in truncated_recovery
-    assert "return false;" not in truncated_recovery
+    assert "generation !== pumpGeneration" in truncated_recovery
+    assert "finally { releaseHold(); unfreeze(); }" in truncated_recovery
+    assert truncated_recovery.index("await buildTerminalRecoveryFrame") < truncated_recovery.index("freezeTerminalScreen")
+    assert 'recoveryPlan.action === "skip-truncated"' not in xterm_wrapper
     recovery_redraw = xterm_wrapper.split(
         "const scheduleTuiRecoveryRedraw = (): Promise<boolean> => {", 1
     )[1].split("const performBackendScrollbackSync", 1)[0]
     assert "!forceWheelMouseReport" in recovery_redraw
-    assert "const hasMeaningfulTerminalScreen = (): boolean => {" in xterm_wrapper
-    assert "if (!term || termDisposed || hasMeaningfulTerminalScreen()) return;" in xterm_wrapper
+    assert 'withTerminalDeadline(getSessionScrollback(sessionId), "get_session_scrollback")' in xterm_wrapper
+    assert "() => generation === pumpGeneration && canWritePendingBatches()" in xterm_wrapper
 
     snapshot_fn = xterm_wrapper.split("const readContainerVisibilitySnapshot = ", 1)[1].split(
         "const isContainerPainted = (): boolean => {",
@@ -911,12 +921,12 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
     assert "terminalScrollbackResyncNeeded.add(sessionId);" in xterm_wrapper
     assert "pendingBatches.length > 0 || terminalScrollbackResyncNeeded.has(sessionId)" in xterm_wrapper
     assert "frontendVisible = null;" in xterm_wrapper
-    assert "queueTerminalVisibilityUpdate(sessionId, visible);" in xterm_wrapper
+    assert "queueTerminalVisibilityUpdate(sessionId, visible, ownedChannelId);" in xterm_wrapper
 
     replay_write = xterm_wrapper.index("await writeTerminalOutput(")
     replay_tail = xterm_wrapper.index("replaceTerminalRawTail(sessionId, scrollback);", replay_write)
-    replay_disposed = xterm_wrapper.index("if (disposed || termDisposed || !term) return false;", replay_write)
-    assert replay_write < replay_tail < replay_disposed
+    replay_disposed = xterm_wrapper.index("if (generation !== pumpGeneration || disposed || termDisposed) return false;", replay_write)
+    assert replay_write < replay_disposed < replay_tail
 
     assert_contains(ipc, "export async function getSessionScrollback(sessionId: string): Promise<ScrollbackSnapshot>", "src/lib/ipc.ts")
     assert_contains(ipc, "startOffset: number;", "src/lib/ipc.ts")

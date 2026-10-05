@@ -1,6 +1,7 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { clampMenuPosition } from "../../lib/menuPosition";
+import { PaneTabRenameEditor } from "./PaneTabRenameEditor";
 import {
   ATTENTION_REASON_COLOR,
   ATTENTION_REASON_LABEL,
@@ -288,7 +289,7 @@ export function resolveChipPreviewDirection(
 }
 
 export function shouldStartRenameOnDoubleClick(presentation: PaneTabPresentation): boolean {
-  return presentation === "pill";
+  return presentation === "pill" || presentation === "chip";
 }
 
 /**
@@ -523,21 +524,6 @@ export function resolveActiveAgentLabel(
     ?? "シェル";
 }
 
-const tabRenameInputStyle: CSSProperties = {
-  background: "var(--cmux-selected)",
-  border: "1px solid var(--cmux-accent)",
-  borderRadius: 4,
-  padding: "1px 4px",
-  fontSize: "inherit",
-  fontFamily: "inherit",
-  color: "inherit",
-  outline: "none",
-  flex: 1,
-  width: "100%",
-  minWidth: 0,
-  userSelect: "text",
-  WebkitUserSelect: "text",
-};
 
 const paneTabContextMenuStyle: CSSProperties = {
   position: "fixed",
@@ -765,6 +751,7 @@ function PaneTabListMenu({
   onSelectTab,
   onRemoveTab,
   onTogglePin,
+  onRenameTab,
   onLaunchDeclaredTab,
   onCloseMenu,
 }: {
@@ -778,6 +765,7 @@ function PaneTabListMenu({
   onSelectTab?: (tabId: string) => void;
   onRemoveTab?: (tabId: string) => void;
   onTogglePin: (tabId: string) => void;
+  onRenameTab: (tabId: string, label: string) => void;
   onLaunchDeclaredTab: (tabId: string) => void;
   onCloseMenu: () => void;
 }) {
@@ -834,6 +822,7 @@ function PaneTabListMenu({
       <div
         key={tab.id}
         className="pane-tab-menu-row"
+        data-menu-tab-id={tab.id}
         role="menuitem"
         tabIndex={0}
         title={detail ?? label}
@@ -843,6 +832,10 @@ function PaneTabListMenu({
           unreadLabel,
           detail,
         ].filter(Boolean).join(": ")}
+        onContextMenu={event => {
+          event.preventDefault(); event.stopPropagation();
+          onRenameTab(tab.id, label); onCloseMenu();
+        }}
         onClick={() => {
           onSelectTab?.(tab.id);
           if (declared) onLaunchDeclaredTab(tab.id);
@@ -947,6 +940,21 @@ function PaneTabListMenu({
             未復元
           </span>
         )}
+        <button
+          type="button"
+          className="pane-action-btn pane-tab-menu-rename-btn"
+          title={paneTabMenuStrings.rename}
+          aria-label={paneTabMenuStrings.rename}
+          onPointerDown={event => event.stopPropagation()}
+          onClick={event => {
+            event.stopPropagation();
+            onRenameTab(tab.id, label);
+            onCloseMenu();
+          }}
+          style={{ padding: 3, flexShrink: 0 }}
+        >
+          {"\u270e"}
+        </button>
         <button
           className={`pane-action-btn pane-tab-menu-pin-btn${isPinned ? " is-pinned" : ""}`}
           type="button"
@@ -1089,8 +1097,7 @@ export default memo(function PaneTabBar({
   const [previewTabId, setPreviewTabId] = useState<string | null>(null);
   const previewTimerRef = useRef<number | null>(null);
   const [editValue, setEditValue] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-  const skipNextBlurCommitRef = useRef(false);
+  const pendingTabClickRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [contextMenu, setContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const contextTriggerRef = useRef<HTMLElement | null>(null);
@@ -1279,14 +1286,9 @@ export default memo(function PaneTabBar({
     }
   }, [addPaneToWorkspaceWithOptions, pane.cwd, pane.id, workspaceId]);
 
-  useEffect(() => {
-    if (!editingTabId) return;
-    const timeoutId = window.setTimeout(() => {
-      inputRef.current?.focus();
-      inputRef.current?.select();
-    }, 0);
-    return () => window.clearTimeout(timeoutId);
-  }, [editingTabId]);
+  useEffect(() => () => {
+    if (pendingTabClickRef.current !== null) clearTimeout(pendingTabClickRef.current);
+  }, []);
 
   useDismissOnOutside(Boolean(contextMenu), contextMenuRef, (reason) => {
     setContextMenu(null);
@@ -1403,7 +1405,9 @@ export default memo(function PaneTabBar({
 
   const startEditingTab = useCallback((tabId: string, label: string) => {
     setContextMenu(null);
-    skipNextBlurCommitRef.current = false;
+    if (pendingTabClickRef.current !== null) clearTimeout(pendingTabClickRef.current);
+    pendingTabClickRef.current = null;
+    setAllTabsOpen(false);
     setEditingTabId(tabId);
     setEditValue(label);
   }, []);
@@ -1461,6 +1465,7 @@ export default memo(function PaneTabBar({
   const activeTabIndex = pane.tabs.findIndex((t) => t.id === pane.activeTabId);
   const activeTabLabel = activeTab ? displayTabLabel(activeTab, true) : "";
   const isEditingActiveTab = activeTab ? editingTabId === activeTab.id : false;
+  const editingTab = pane.tabs.find(tab => tab.id === editingTabId);
   const activeNotificationCount = activeMeta?.notificationCount ?? 0;
   const activeUnreadCategory = activeTab
     && isAttentionUnseen(activeTab.id, activeAttention, seenAttentionByTab)
@@ -1850,7 +1855,7 @@ export default memo(function PaneTabBar({
           const presentation = resolvePaneTabPresentation(tab.id, pane.activeTabId);
           const isChip = presentation === "chip";
           const canRenameOnDoubleClick = shouldStartRenameOnDoubleClick(presentation);
-          const isEditingTab = !isChip && editingTabId === tab.id;
+          const isEditingTab = editingTabId === tab.id;
           const isSavepointDropTarget = savepointDropTabId === tab.id;
           const canDuplicateSession = Boolean(tabMeta?.agentKind && tabMeta.agentSessionId);
           const isDuplicatingSession = duplicatingTabIds.has(tab.id);
@@ -1934,7 +1939,6 @@ export default memo(function PaneTabBar({
               onContextMenu={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                if (declared) return;
                 contextTriggerRef.current = e.currentTarget;
                 setContextMenu({ tabId: tab.id, x: e.clientX, y: e.clientY });
               }}
@@ -1953,10 +1957,21 @@ export default memo(function PaneTabBar({
                   event.stopPropagation();
                   return;
                 }
-                onSelectTab?.(tab.id);
-                if (declared) handleLaunchDeclaredTab(tab.id);
+                if (isTabActive && !declared) return;
+                if (pendingTabClickRef.current !== null) clearTimeout(pendingTabClickRef.current);
+                // A double-click rename must not select or launch on its first click.
+                pendingTabClickRef.current = setTimeout(() => {
+                  pendingTabClickRef.current = null;
+                  onSelectTab?.(tab.id);
+                  if (declared) handleLaunchDeclaredTab(tab.id);
+                }, 250);
               }}
               onKeyDown={(event) => {
+                if (event.currentTarget === event.target && event.key === "F2") {
+                  event.preventDefault(); event.stopPropagation();
+                  startEditingTab(tab.id, label);
+                  return;
+                }
                 if (event.currentTarget !== event.target || !isTabActivationKey(event.key)) return;
                 event.preventDefault();
                 onSelectTab?.(tab.id);
@@ -2052,38 +2067,6 @@ export default memo(function PaneTabBar({
                 </span>
               )}
               {/* label */}
-              {isEditingTab ? (
-                <input
-                  ref={inputRef}
-                  value={editValue}
-                  onChange={(e) => setEditValue(e.target.value)}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onBlur={() => {
-                    if (skipNextBlurCommitRef.current) {
-                      skipNextBlurCommitRef.current = false;
-                      return;
-                    }
-                    commitTabLabel(tab);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      commitTabLabel(tab);
-                    }
-                    if (e.key === "Escape") {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      skipNextBlurCommitRef.current = true;
-                      setEditingTabId(null);
-                    }
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                  onDoubleClick={(e) => e.stopPropagation()}
-                  style={tabRenameInputStyle}
-                />
-              ) : (
                 <span
                   className={`pane-tab-label${showDeferredRestore ? " is-deferred-restore" : ""}`}
                   style={{
@@ -2100,7 +2083,7 @@ export default memo(function PaneTabBar({
                 >
                   {declared ? `＋ ${label}（まだ）` : label}
                 </span>
-              )}
+
               {/* Always mounted (opacity-hidden until hover/focus/pinned/active)
                   so the overflow ResizeObserver measures a stable width. */}
               <button
@@ -2187,6 +2170,7 @@ export default memo(function PaneTabBar({
               onSelectTab={onSelectTab}
               onRemoveTab={onRemoveTab}
               onTogglePin={handleToggleTabPin}
+              onRenameTab={startEditingTab}
               onLaunchDeclaredTab={handleLaunchDeclaredTab}
               onCloseMenu={() => setAllTabsOpen(false)}
             />
@@ -2242,12 +2226,18 @@ export default memo(function PaneTabBar({
             onContextMenu={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              if (activeTabDeclared) return;
               contextTriggerRef.current = e.currentTarget;
               setContextMenu({ tabId: activeTab.id, x: e.clientX, y: e.clientY });
             }}
-            onClick={() => {
-              if (activeTabDeclared) handleLaunchDeclaredTab(activeTab.id);
+            onClick={(event) => {
+              if (event.detail >= 2 || isEditingActiveTab) return;
+              if (activeTabDeclared) {
+                if (pendingTabClickRef.current !== null) clearTimeout(pendingTabClickRef.current);
+                pendingTabClickRef.current = setTimeout(() => {
+                  pendingTabClickRef.current = null;
+                  handleLaunchDeclaredTab(activeTab.id);
+                }, 250);
+              }
             }}
             title={attentionDetail(activeAttention) ?? activeTabLabel}
             aria-label={[
@@ -2285,38 +2275,6 @@ export default memo(function PaneTabBar({
                 <PinIcon size={12} filled />
               </span>
             )}
-            {isEditingActiveTab ? (
-              <input
-                ref={inputRef}
-                value={editValue}
-                onChange={(e) => setEditValue(e.target.value)}
-                onPointerDown={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-                onBlur={() => {
-                  if (skipNextBlurCommitRef.current) {
-                    skipNextBlurCommitRef.current = false;
-                    return;
-                  }
-                  commitTabLabel(activeTab);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    commitTabLabel(activeTab);
-                  }
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    skipNextBlurCommitRef.current = true;
-                    setEditingTabId(null);
-                  }
-                }}
-                onClick={(e) => e.stopPropagation()}
-                onDoubleClick={(e) => e.stopPropagation()}
-                style={tabRenameInputStyle}
-              />
-            ) : (
               <span
                 className="pane-tab-label"
                 style={{
@@ -2333,7 +2291,7 @@ export default memo(function PaneTabBar({
               >
                 {activeTabDeclared ? `＋ ${activeTabLabel}（まだ）` : activeTabLabel}
               </span>
-            )}
+
             {showsInlinePinControl && (
               <button
                 type="button"
@@ -2399,6 +2357,7 @@ export default memo(function PaneTabBar({
                 onSelectTab={onSelectTab}
                 onRemoveTab={onRemoveTab}
                 onTogglePin={handleToggleTabPin}
+                onRenameTab={startEditingTab}
                 onLaunchDeclaredTab={handleLaunchDeclaredTab}
                 onCloseMenu={() => setAllTabsOpen(false)}
               />
@@ -2529,6 +2488,17 @@ export default memo(function PaneTabBar({
         </div>
       )}
       </div>
+      {editingTab && (
+        <PaneTabRenameEditor
+          key={editingTab.id}
+          label={displayTabLabel(editingTab, editingTab.id === pane.activeTabId)}
+          value={editValue}
+          anchor={tabPillRefs.current.get(editingTab.id)?.getBoundingClientRect() ?? barRef.current?.getBoundingClientRect()}
+          onChange={setEditValue}
+          onSave={() => commitTabLabel(editingTab)}
+          onCancel={() => setEditingTabId(null)}
+        />
+      )}
       {contextMenu && (
         <div
           ref={contextMenuRef}

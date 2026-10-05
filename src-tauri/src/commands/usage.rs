@@ -15,6 +15,7 @@ use crate::usage::{
 use crate::usage::reset_tickets::{self, ResetTickets, CachedCredits, UnsettledReset};
 use crate::usage::reset_tickets::{ResetStep, ResetTicketOutcome, ResetTicketOutcomeKind};
 use tauri::Manager;
+use crate::usage::subscription::{self, CachedSubscription, SubscriptionSource};
 
 const COOLDOWN_BASE_MS: i64 = 300_000;
 const COOLDOWN_MAX_MS: i64 = 1_800_000;
@@ -165,6 +166,7 @@ fn profile_usage(
         label: row.label.clone(),
         email: row.email.clone(),
         plan: row.plan.clone(),
+        subscription: None,
         registered: row.registered,
         is_active: row.is_active,
         needs_relogin: row.needs_relogin,
@@ -773,7 +775,13 @@ async fn claim_codex_verified(
 pub async fn get_account_usage(
     app: tauri::AppHandle,
     state: tauri::State<'_, UsageState>,
+    refresh_metadata: Option<bool>,
 ) -> Result<AccountUsageReport, String> {
+    let refresh_metadata = if refresh_metadata == Some(true) {
+        let now = Utc::now().timestamp_millis();
+        let mut last = state.last_metadata_refresh_at_ms.lock().await;
+        if now.saturating_sub(*last) >= 60_000 { *last = now; true } else { false }
+    } else { false };
     let default_dir = app
         .path()
         .app_data_dir()
@@ -781,6 +789,7 @@ pub async fn get_account_usage(
     let base = crate::test_profile::app_data_dir_from(default_dir);
     let accounts = crate::cli_accounts::list_resolved(&base)?;
     let rows = planned_rows(&accounts.profiles, &accounts.live);
+    prepare_subscription_cache(&state, &rows).await;
     let priority = std::mem::take(&mut *state.deferred_priority.lock().await);
     let mut output = Vec::with_capacity(rows.len());
     let mut deferred_ids = Vec::new();
@@ -792,11 +801,13 @@ pub async fn get_account_usage(
         let row = rows[index].clone();
         if let Some(owner) = &row.foreign_owner {
             state.profile_usage_cache.lock().await.remove(&row.profile_id);
+            state.account_subscriptions.lock().await.remove(&row.profile_id);
             output.push((index, foreign_token_usage(&row, owner.email.clone(), true)));
             continue;
         }
         let now_ms = Utc::now().timestamp_millis();
-        if let Some(cached) = cached_profile_windows(&state, &row.profile_id, now_ms).await {
+        if let Some(cached) = cached_profile_windows(&state, &row.profile_id, now_ms).await
+            .filter(|cached| !refresh_metadata || now_ms.saturating_sub(cached.fetched_at_ms) < 60_000) {
             output.push((
                 index,
                 with_windows(profile_usage(&row, UsageRowState::Ok, None, None), cached),
@@ -878,6 +889,7 @@ pub async fn get_account_usage(
                     &source,
                     &cooldown_key,
                     fetch_count,
+                    refresh_metadata,
                 )
                 .await
             }
@@ -890,6 +902,7 @@ pub async fn get_account_usage(
                     &source,
                     &cooldown_key,
                     fetch_count,
+                    refresh_metadata,
                 )
                 .await
             }
@@ -932,8 +945,19 @@ pub async fn get_account_usage(
     }
     *state.deferred_priority.lock().await = deferred_ids;
     output.sort_by_key(|(index, _)| *index);
+    let subscriptions = state.account_subscriptions.lock().await;
     Ok(AccountUsageReport {
-        accounts: output.into_iter().map(|(_, usage)| usage).collect(),
+        accounts: output.into_iter().map(|(index, mut usage)| {
+            if !matches!(usage.error_code.as_deref(), Some(ERROR_FOREIGN_TOKEN | ERROR_LIVE_TOKEN_FOREIGN)) {
+                if let Some(info) = subscriptions.get(&usage.profile_id)
+                    .filter(|cached| subscription_belongs_to_row(cached, &rows[index]))
+                    .and_then(|cached| cached.info.as_ref()) {
+                    if info.plan.is_some() { usage.plan = info.plan.clone(); }
+                    usage.subscription = Some(info.clone());
+                }
+            }
+            usage
+        }).collect(),
         generated_at: Utc::now().to_rfc3339(),
     })
 }
@@ -1051,6 +1075,7 @@ async fn foreign_claude_usage(
     row: &PlannedRow, owner: TokenOwner, snapshot: bool,
 ) -> FetchResult {
     state.profile_usage_cache.lock().await.remove(&row.profile_id);
+    state.account_subscriptions.lock().await.remove(&row.profile_id);
     crate::usage::log_oauth_failure(app, "claude_token_owner_mismatch", &format!(
         "profile={} claimed={} owner={} active={}", row.profile_id,
         row.identity_key.as_deref().unwrap_or("").chars().take(8).collect::<String>(),
@@ -1077,6 +1102,7 @@ async fn fetch_claude_profile(
     source: &str,
     cooldown_key: &str,
     fetch_count: &mut usize,
+    refresh_metadata: bool,
 ) -> FetchResult {
     let tokens = match credentials::claude_tokens(source) {
         Ok(tokens) => tokens,
@@ -1133,7 +1159,24 @@ async fn fetch_claude_profile(
         }
     };
     loop {
+        if refresh_metadata { token_owner::request_profile_refresh(&access_token); }
         let check = match token_owner::cached_owner(&access_token) {
+            Some(owner) if *fetch_count + 1 < MAX_FETCH_PER_ROUND && token_owner::claim_profile_refresh(&access_token) => {
+                stagger_before_fetch(fetch_count).await;
+                match token_owner::fetch_claude_token_owner(&state.http, &access_token).await {
+                    OwnerCheck::Owner(fresh) => OwnerCheck::Owner(fresh),
+                    failure => {
+                        let retry_after = match failure {
+                            OwnerCheck::RateLimited { retry_after_secs } => retry_after_secs,
+                            _ => None,
+                        };
+                        token_owner::defer_profile_refresh(&access_token, retry_after);
+                        // The token's already verified identity remains valid. An optional
+                        // metadata outage must not stop usage or trigger re-login.
+                        OwnerCheck::Owner(owner)
+                    }
+                }
+            }
             Some(owner) => OwnerCheck::Owner(owner),
             None => {
                 stagger_before_fetch(fetch_count).await;
@@ -1142,6 +1185,12 @@ async fn fetch_claude_profile(
         };
         let (status, detail) = match claude_owner_gate(row.identity_key.as_deref(), row.is_active, row.registered, &check) {
             OwnerGate::Proceed => {
+                if let Some(info) = token_owner::cached_subscription(&access_token) {
+                    let mut table = state.account_subscriptions.lock().await;
+                    if let Some(cached) = matching_subscription(&mut table, row) {
+                        cached.info = Some(info);
+                    }
+                }
                 stagger_before_fetch(fetch_count).await;
                 let ask = reset_tickets::StatusAsk::now();
                 match oauth_claude::fetch_with_token_status(&state.http, &access_token).await {
@@ -1314,6 +1363,7 @@ async fn fetch_codex_profile(
     source: &str,
     cooldown_key: &str,
     fetch_count: &mut usize,
+    refresh_metadata: bool,
 ) -> FetchResult {
     let tokens = match credentials::codex_tokens(source) {
         Ok(tokens) => tokens,
@@ -1400,6 +1450,8 @@ async fn fetch_codex_profile(
                 .await;
         let (status, detail) = match outcome {
             Ok(usage) => {
+                update_codex_subscription(state, row, &usage, &access_token,
+                    tokens.account_id.as_deref(), fetch_count, refresh_metadata).await;
                 state.codex_usage_urls.lock().await.insert(
                     row.profile_id.clone(), usage.usage_url.clone());
                 let tickets = codex_reset_tickets(state, row, &usage, &access_token,
@@ -1446,6 +1498,92 @@ async fn fetch_codex_profile(
             Err(result) => return result,
         };
     }
+}
+
+fn subscription_belongs_to_row(cached: &CachedSubscription, row: &PlannedRow) -> bool {
+    row.identity_key.as_deref().is_some_and(|id| !id.trim().is_empty())
+        && cached.identity_key == row.identity_key
+}
+
+fn matching_subscription<'a>(
+    table: &'a mut std::collections::HashMap<String, CachedSubscription>,
+    row: &PlannedRow,
+) -> Option<&'a mut CachedSubscription> {
+    table.get_mut(&row.profile_id).filter(|cached| subscription_belongs_to_row(cached, row))
+}
+
+async fn prepare_subscription_cache(state: &UsageState, rows: &[PlannedRow]) {
+    let mut table = state.account_subscriptions.lock().await;
+    table.retain(|id, cached| rows.iter().any(|row| {
+        row.profile_id == *id && subscription_belongs_to_row(cached, row)
+    }));
+    for row in rows.iter().filter(|row| {
+        row.identity_key.as_deref().is_some_and(|id| !id.trim().is_empty())
+    }) {
+        table.entry(row.profile_id.clone()).or_insert_with(|| CachedSubscription {
+            identity_key: row.identity_key.clone(), ..Default::default()
+        });
+    }
+}
+
+fn apply_subscription_result(
+    table: &mut std::collections::HashMap<String, CachedSubscription>,
+    row: &PlannedRow,
+    result: Result<subscription::AccountSubscription, (Option<u16>, Option<u64>)>,
+    now: i64,
+) {
+    // An earlier account's response cannot replace or defer the current owner.
+    let Some(cached) = matching_subscription(table, row) else { return };
+    match result {
+        Ok(info) => { cached.info = Some(info); cached.last_attempt_failed = false; }
+        Err((_, retry_after)) => {
+            cached.last_attempt_failed = true;
+            if let Some(retry_after) = retry_after {
+                let retry_ms = i64::try_from(retry_after).unwrap_or(i64::MAX).saturating_mul(1000);
+                cached.next_check_at_ms = cached.next_check_at_ms.max(now.saturating_add(retry_ms));
+            }
+        }
+    }
+}
+
+async fn update_codex_subscription(
+    state: &UsageState, row: &PlannedRow, usage: &oauth_codex::CodexUsage,
+    access_token: &str, account_id: Option<&str>, fetch_count: &mut usize,
+    refresh_metadata: bool,
+) {
+    let now = Utc::now().timestamp_millis();
+    let client = state.reset_http.as_ref();
+    let url = account_id.and_then(|id| subscription::codex_subscription_url(&usage.usage_url, id));
+    {
+        let mut table = state.account_subscriptions.lock().await;
+        let Some(cached) = matching_subscription(&mut table, row) else { return };
+        let since_attempt = now.saturating_sub(
+            cached.next_check_at_ms.saturating_sub(subscription::SUBSCRIPTION_CACHE_TTL_MS));
+        if refresh_metadata && !cached.last_attempt_failed && since_attempt >= 60_000 {
+            cached.next_check_at_ms = 0;
+        }
+        if let Some(plan) = &usage.plan {
+            let previous_plan = cached.last_usage_plan.as_ref()
+                .or_else(|| cached.info.as_ref().and_then(|info| info.plan.as_ref()));
+            let changed = previous_plan.is_some_and(|last| last != plan);
+            cached.last_usage_plan = Some(plan.clone());
+            if changed || cached.info.is_none()
+                || cached.info.as_ref().is_some_and(|info| info.source == SubscriptionSource::CodexUsage) {
+                cached.info = Some(subscription::codex_usage(plan.clone(), Utc::now().to_rfc3339()));
+                if changed && !cached.last_attempt_failed { cached.next_check_at_ms = 0; }
+            }
+        }
+        if client.is_none() || url.is_none() || *fetch_count >= MAX_FETCH_PER_ROUND || now < cached.next_check_at_ms {
+            return;
+        }
+        // Reserve before awaiting the network so concurrent polls cannot duplicate it.
+        cached.next_check_at_ms = now + subscription::SUBSCRIPTION_CACHE_TTL_MS;
+    }
+    stagger_before_fetch(fetch_count).await;
+    let result = subscription::fetch_codex_at(client.unwrap(), url.unwrap(),
+        access_token, account_id.unwrap()).await;
+    apply_subscription_result(&mut *state.account_subscriptions.lock().await,
+        row, result, now);
 }
 
 async fn codex_reset_tickets(state: &UsageState, row: &PlannedRow, usage: &oauth_codex::CodexUsage,
@@ -3422,13 +3560,151 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn codex_plan_downgrade_clears_paid_dates_without_bypassing_failed_billing_backoff() {
+        let state = UsageState::new();
+        let row = reset_row(CliProvider::Codex);
+        let info = subscription::codex_subscription(&serde_json::json!({
+            "plan_type":"pro", "will_renew":true, "active_until":"2026-11-01T00:00:00Z"
+        }), "previous-check".into()).unwrap();
+        let retry_at = Utc::now().timestamp_millis() + 1_800_000;
+        state.account_subscriptions.lock().await.insert(row.profile_id.clone(), CachedSubscription {
+            identity_key: row.identity_key.clone(),
+            info: Some(info), next_check_at_ms: retry_at, last_usage_plan: Some("pro".into()),
+            last_attempt_failed: true,
+        });
+        let usage = oauth_codex::CodexUsage { five_hour: None, seven_day: None,
+            plan: Some("free".into()), reset_count: None,
+            usage_url: "https://example.test/backend-api/wham/usage".into() };
+        let mut count = 0;
+        update_codex_subscription(&state, &row, &usage, "synthetic-token", Some("acct-a"),
+            &mut count, true).await;
+        let table = state.account_subscriptions.lock().await;
+        let cached = &table[&row.profile_id];
+        assert_eq!(cached.info.as_ref().unwrap().plan.as_deref(), Some("free"));
+        assert!(cached.info.as_ref().unwrap().renews_at.is_none());
+        assert!(cached.info.as_ref().unwrap().ends_at.is_none());
+        assert_eq!(cached.next_check_at_ms, retry_at);
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn first_codex_usage_plan_replaces_an_older_paid_contract_without_bypassing_backoff() {
+        let state = UsageState::new();
+        let row = reset_row(CliProvider::Codex);
+        let info = subscription::codex_subscription(&serde_json::json!({
+            "plan_type":"pro", "will_renew":true, "active_until":"2026-11-01T00:00:00Z"
+        }), "previous-check".into()).unwrap();
+        let retry_at = Utc::now().timestamp_millis() + 1_800_000;
+        state.account_subscriptions.lock().await.insert(row.profile_id.clone(), CachedSubscription {
+            identity_key: row.identity_key.clone(),
+            info: Some(info), next_check_at_ms: retry_at, last_usage_plan: None,
+            last_attempt_failed: true,
+        });
+        let usage = oauth_codex::CodexUsage { five_hour: None, seven_day: None,
+            plan: Some("free".into()), reset_count: None,
+            usage_url: "https://example.test/backend-api/wham/usage".into() };
+        let mut count = 0;
+        update_codex_subscription(&state, &row, &usage, "synthetic-token", Some("acct-a"),
+            &mut count, true).await;
+        let table = state.account_subscriptions.lock().await;
+        let cached = &table[&row.profile_id];
+        assert_eq!(cached.info.as_ref().unwrap().plan.as_deref(), Some("free"));
+        assert!(cached.info.as_ref().unwrap().renews_at.is_none());
+        assert!(cached.info.as_ref().unwrap().ends_at.is_none());
+        assert_eq!(cached.last_usage_plan.as_deref(), Some("free"));
+        assert_eq!(cached.next_check_at_ms, retry_at);
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn unavailable_codex_billing_preserves_the_last_successful_contract_timestamp() {
+        let state = UsageState::new();
+        let row = reset_row(CliProvider::Codex);
+        let info = subscription::codex_subscription(&serde_json::json!({
+            "plan_type":"pro", "will_renew":false, "active_until":"2026-11-01T00:00:00Z"
+        }), "previous-check".into()).unwrap();
+        state.account_subscriptions.lock().await.insert(row.profile_id.clone(), CachedSubscription {
+            identity_key: row.identity_key.clone(),
+            info: Some(info.clone()), next_check_at_ms: i64::MAX,
+            last_usage_plan: Some("pro".into()), last_attempt_failed: true,
+        });
+        let usage = oauth_codex::CodexUsage { five_hour: None, seven_day: None,
+            plan: Some("pro".into()), reset_count: None,
+            usage_url: "https://example.test/backend-api/wham/usage".into() };
+        let mut count = 0;
+        update_codex_subscription(&state, &row, &usage, "synthetic-token", Some("acct-a"),
+            &mut count, true).await;
+        assert_eq!(state.account_subscriptions.lock().await[&row.profile_id].info, Some(info));
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn live_account_changes_drop_previous_subscription_and_late_responses() {
+        let state = UsageState::new();
+        let mut previous = reset_row(CliProvider::Codex);
+        previous.profile_id = "live:codex".into();
+        previous.registered = false;
+        previous.is_active = true;
+        let mut current = previous.clone();
+        current.identity_key = Some("acct-b".into());
+        let prior_info = subscription::codex_subscription(&serde_json::json!({
+            "plan_type":"pro", "will_renew":true, "active_until":"2026-11-01T00:00:00Z"
+        }), "previous-owner-check".into()).unwrap();
+        prepare_subscription_cache(&state, &[previous.clone()]).await;
+        apply_subscription_result(&mut *state.account_subscriptions.lock().await,
+            &previous, Ok(prior_info.clone()), 1000);
+        prepare_subscription_cache(&state, &[current.clone()]).await;
+        let usage = oauth_codex::CodexUsage { five_hour: None, seven_day: None,
+            plan: Some("pro".into()), reset_count: None,
+            usage_url: "https://example.test/backend-api/wham/usage".into() };
+        let mut count = 0;
+        update_codex_subscription(&state, &previous, &usage, "synthetic-token",
+            Some("acct-a"), &mut count, false).await;
+        let mut table = state.account_subscriptions.lock().await;
+        apply_subscription_result(&mut table, &previous, Ok(prior_info), 2000);
+        apply_subscription_result(&mut table, &previous, Err((Some(429), Some(1800))), 2000);
+        let cached = &table[&current.profile_id];
+        assert_eq!(cached.identity_key, current.identity_key);
+        assert!(cached.info.is_none());
+        assert!(!cached.last_attempt_failed);
+        assert_eq!(cached.next_check_at_ms, 0);
+        assert_eq!(count, 0);
+        let current_info = subscription::codex_usage("pro".into(), "current-owner-check".into());
+        apply_subscription_result(&mut table, &current, Ok(current_info.clone()), 3000);
+        assert_eq!(table[&current.profile_id].info, Some(current_info));
+    }
+
+    #[tokio::test]
+    async fn subscription_cache_retains_known_rows_and_drops_unknown_or_removed_owners() {
+        let state = UsageState::new();
+        let known = reset_row(CliProvider::Claude);
+        prepare_subscription_cache(&state, &[known.clone()]).await;
+        let info = subscription::claude_profile(&serde_json::json!({
+            "organization":{"organization_type":"claude_pro"}
+        }), "verified-check".into());
+        apply_subscription_result(&mut *state.account_subscriptions.lock().await,
+            &known, Ok(info.clone()), 1000);
+        prepare_subscription_cache(&state, &[known.clone()]).await;
+        assert_eq!(state.account_subscriptions.lock().await[&known.profile_id].info, Some(info));
+        for identity_key in [None, Some(String::new())] {
+            let mut unknown = known.clone();
+            unknown.identity_key = identity_key;
+            prepare_subscription_cache(&state, &[unknown]).await;
+            assert!(state.account_subscriptions.lock().await.is_empty());
+        }
+        prepare_subscription_cache(&state, &[known]).await;
+        prepare_subscription_cache(&state, &[]).await;
+        assert!(state.account_subscriptions.lock().await.is_empty());
+    }
+
+    #[tokio::test]
     async fn codex_details_use_round_budget_and_cache() {
         let (base, request) = reset_tickets::fake_http_once(r#"{"credits":[{"id":"credit-1","status":"available","expires_at":"2026-10-22T00:00:00Z","title":"Full"}]}"#).await;
         let state = UsageState::new();
         let row = PlannedRow { profile_id: "p".into(), provider: CliProvider::Codex, label: "P".into(),
             email: None, plan: None, identity_key: None, registered: true, is_active: false,
             needs_relogin: false, foreign_owner: None };
-        let usage = oauth_codex::CodexUsage { five_hour: None, seven_day: None, reset_count: Some(1),
+        let usage = oauth_codex::CodexUsage { five_hour: None, seven_day: None, plan: None, reset_count: Some(1),
             usage_url: format!("{base}/backend-api/wham/usage") };
         let mut count = 0;
         let tickets = codex_reset_tickets(&state, &row, &usage, "synthetic-token", None, &mut count).await.unwrap();

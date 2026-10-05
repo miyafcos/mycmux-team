@@ -2,6 +2,7 @@ import type { Pane, PaneTab } from "../types";
 import type { PaneMetadata, PaneVolatileMetadata } from "../stores/paneMetadataStore";
 import { getTabDisplayLabel } from "./tabDisplayLabel";
 import { deriveDisplayStatus } from "./notificationStatus";
+import { isDeclaredTab } from "./tabLifecycle";
 
 export interface PaneCloseVictim {
   sessionId: string;
@@ -36,7 +37,7 @@ export function collectLiveAgentTabs(
   return panes.flatMap((pane) => pane.tabs.flatMap((tab) => {
     const metadata = metadataBySession[tab.sessionId];
     const agentKind = metadata?.agentKind ?? tab.agentKind;
-    if (!agentKind || metadata?.processIsShell === true) return [];
+    if (!agentKind || !deriveVictimReason(tab, metadata, volatileMetadataBySession[tab.sessionId])) return [];
     return [{
       sessionId: tab.sessionId,
       label: getTabDisplayLabel(tab, tab.id === pane.activeTabId, metadataBySession, volatileMetadataBySession),
@@ -50,6 +51,8 @@ function deriveVictimReason(
   metadata: PaneMetadata | undefined,
   volatileMetadata: PaneVolatileMetadata | undefined,
 ): PaneCloseVictim["reason"] | null {
+  if ((tab.type !== undefined && tab.type !== "terminal") || isDeclaredTab(tab)
+    || volatileMetadata?.ptyAlive === false || metadata?.processIsShell === true) return null;
   if (deriveDisplayStatus(metadata, volatileMetadata) === "working") return "working";
   if (tab.agentKind || metadata?.agentKind || metadata?.processIsShell === false) return "agent";
   return null;

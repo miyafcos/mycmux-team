@@ -450,10 +450,18 @@ impl FrontendFlow {
         Ok((old_channel_id, new_channel_id))
     }
 
-    fn set_visible(&self, visible: bool) {
+    #[cfg(test)]
+    fn set_visible(&self, visible: bool) { self.set_visible_for_channel(visible, None); }
+
+    fn generation(&self) -> u64 {
+        self.inner.lock().map(|st| st.generation).unwrap_or(0)
+    }
+
+    fn set_visible_for_channel(&self, visible: bool, channel_id: Option<u32>) {
         let Ok(mut st) = self.inner.lock() else {
             return;
         };
+        if channel_id.is_some_and(|id| id != st.data_channel.id()) { return; }
         st.visible = visible;
         if visible {
             st.stale_timeouts = 0;
@@ -1081,8 +1089,10 @@ impl PtySession {
         self.frontend_flow.ack(generation, seq, bytes);
     }
 
-    pub fn set_frontend_visible(&self, visible: bool) {
-        self.frontend_flow.set_visible(visible);
+    pub fn frontend_generation(&self) -> u64 { self.frontend_flow.generation() }
+
+    pub fn set_frontend_visible(&self, visible: bool, channel_id: Option<u32>) {
+        self.frontend_flow.set_visible_for_channel(visible, channel_id);
     }
 
     pub fn write(&self, data: &[u8]) -> Result<(), String> {
@@ -1757,6 +1767,23 @@ mod tests {
             assert_eq!(pending.load(Ordering::Acquire), 3);
         }
         assert_eq!(pending.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn stale_visibility_cannot_hide_a_new_channel_generation() {
+        let old = test_channel();
+        let old_id = old.id();
+        let flow = FrontendFlow::new(old);
+        let fresh = test_channel();
+        let fresh_id = fresh.id();
+        flow.replace_channel(fresh).unwrap();
+        assert_eq!(flow.generation(), 2);
+        flow.set_visible_for_channel(false, Some(old_id));
+        assert!(flow.inner.lock().unwrap().visible);
+        flow.set_visible_for_channel(false, Some(fresh_id));
+        assert!(!flow.inner.lock().unwrap().visible);
+        flow.set_visible_for_channel(true, Some(old_id));
+        assert!(!flow.inner.lock().unwrap().visible);
     }
 
     #[tokio::test]

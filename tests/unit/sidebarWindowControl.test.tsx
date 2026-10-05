@@ -3,7 +3,8 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(async (_command: string, _args?: unknown) => "mycmux-w3") }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()), invoke: mocks.invoke }));
 import TabBar from "../../src/components/layout/TabBar";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { useDetachedDockStore } from "../../src/stores/detachedDockStore";

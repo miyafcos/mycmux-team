@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import { DEFAULT_JEV_SETTINGS, loadJevSettings, useJevSettingsStore } from "../stores/jevSettingsStore";
+import { boundedGroupingWait } from "./groupingWaits";
+import { beginGroupingTrace } from "./groupingDiagnostics";
+export const GROUPING_FOREGROUND_TIMEOUT_MS = 60_000;
+export const GROUPING_JEV_REPLY_TIMEOUT_MS = 30_000;
+import { DEFAULT_JEV_SETTINGS, abandonJevSettingsLoad, loadJevSettings, useJevSettingsStore } from "../stores/jevSettingsStore";
 import { EVIDENCE_GROUPING_VERSION, runEvidenceGroupingAnalysis, readEvidenceScan } from "../components/layout/evidenceGrouping";
 import {
   groupingPromptPayload,
@@ -59,6 +63,7 @@ type PendingRecord = {
   progressStage: GroupingAnalysisStage | null;
   progressListeners: Set<(stage: GroupingAnalysisStage) => void>;
   promise: Promise<GroupingProductionResult>;
+  controller: AbortController;
 };
 
 export type GroupingPrecomputeMetrics = {
@@ -324,6 +329,7 @@ export function createGroupingPrecomputeCoordinator(
 
   const abortPending = () => {
     generation += 1;
+    if (pending?.mode === "foreground") pending.controller.abort();
     const requestId = pending?.activeRequestId;
     if (requestId) void dependencies.abort(requestId).catch(() => {});
   };
@@ -545,12 +551,14 @@ export function createGroupingPrecomputeCoordinator(
       progressStage: null,
       progressListeners: new Set(onProgress ? [onProgress] : []),
       promise,
+      controller: new AbortController(),
     };
     pending = record;
 
     void (async () => {
       try {
         const judge = async (prompt: string, requestId: string) => {
+            if (mode === "foreground" && record.controller.signal.aborted) throw new Error("cancelled");
             const latest = currentIdentity();
             // A background run is speculative: if anything moved under it, the
             // work is wasted and it should stop. A foreground run is a person
@@ -577,7 +585,8 @@ export function createGroupingPrecomputeCoordinator(
               metrics.foregroundGenerations += 1;
             }
             record.activeRequestId = requestId;
-            return dependencies.judge(prompt, requestId);
+            return boundedGroupingWait(dependencies.judge(prompt, requestId), GROUPING_JEV_REPLY_TIMEOUT_MS,
+              mode === "foreground" ? record.controller.signal : undefined);
         };
         const nextRequestId = () => `grouping-${dependencies.now()}-${Math.random().toString(36).slice(2, 10)}`;
         const reportProgress = (stage: GroupingAnalysisStage) => {
@@ -586,7 +595,8 @@ export function createGroupingPrecomputeCoordinator(
         };
         const result = mode === "background"
           ? await dependencies.analyze(scan as GroupingScan, judge, nextRequestId)
-          : await dependencies.analyzeCurrent(judge, nextRequestId, reportProgress);
+          : await boundedGroupingWait(dependencies.analyzeCurrent(judge, nextRequestId, reportProgress),
+            GROUPING_FOREGROUND_TIMEOUT_MS, record.controller.signal);
         const resultFingerprints = fingerprints ?? groupingFingerprints(result.scan);
         resolvePending(publish(
           result,
@@ -597,6 +607,7 @@ export function createGroupingPrecomputeCoordinator(
           mode,
         ));
       } catch (error) {
+        if (record.activeRequestId) void dependencies.abort(record.activeRequestId).catch(() => {});
         rejectPending(error);
       } finally {
         record.activeRequestId = null;
@@ -750,6 +761,11 @@ export function createGroupingPrecomputeCoordinator(
       quietWaitStartedAt = null;
       clearScheduled();
     },
+    cancelForeground: () => {
+      if (pending?.mode !== "foreground") return;
+      abortPending();
+      pending = null;
+    },
     getMetrics: (): GroupingPrecomputeMetrics => ({ ...metrics }),
     stop: () => {
       deactivate(true);
@@ -798,12 +814,36 @@ export function peekGroupingPrecompute(): GroupingPrecomputePeek {
   return groupingPrecompute.peek();
 }
 
+let foregroundWait: AbortController | null = null;
+export function cancelForegroundGroupingAnalysis(): void {
+  foregroundWait?.abort();
+  foregroundWait = null;
+  abandonJevSettingsLoad();
+  groupingPrecompute.cancelForeground();
+}
+
 export async function generateForegroundGroupingAnalysis(
   force = false,
   onProgress?: (stage: GroupingAnalysisStage) => void,
 ): Promise<GroupingProductionResult> {
-  await loadJevSettings();
-  return groupingPrecompute.generateForeground(force, onProgress);
+  const controller = new AbortController();
+  const trace = beginGroupingTrace();
+  foregroundWait = controller;
+  try {
+    trace.mark("settings");
+    await boundedGroupingWait(loadJevSettings(), 5_000, controller.signal);
+    if (controller.signal.aborted) throw new Error("cancelled");
+    const result = await boundedGroupingWait(groupingPrecompute.generateForeground(force, stage => {
+      trace.mark(stage === "judging" ? "jev" : stage === "scanning" ? "scan" : "prepare");
+      onProgress?.(stage);
+    }), GROUPING_FOREGROUND_TIMEOUT_MS, controller.signal);
+    trace.finish("shown");
+    return result;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "";
+    trace.finish(reason === "timeout" ? "timeout" : reason === "cancelled" ? "cancelled" : "error");
+    throw error;
+  } finally { if (foregroundWait === controller) foregroundWait = null; }
 }
 
 export function requestGroupingPrecomputeRefresh(): void {

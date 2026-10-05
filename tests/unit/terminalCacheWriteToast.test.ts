@@ -16,7 +16,9 @@ import {
 import { __resetToastStoreForTests, useToastStore } from "../../src/stores/toastStore";
 
 const mockedWriteToSession = vi.mocked(writeToSession);
+const originalPushToast = useToastStore.getState().pushToast;
 let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+let pushToastSpy: ReturnType<typeof vi.spyOn>;
 
 async function flushPromises(): Promise<void> {
   for (let i = 0; i < 10; i += 1) {
@@ -41,12 +43,15 @@ describe("enqueueSessionWrite failure toast", () => {
     mockedWriteToSession.mockReset();
     consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     __resetToastStoreForTests();
+    pushToastSpy = vi.spyOn(useToastStore.getState(), "pushToast");
   });
 
   afterEach(() => {
     for (const sessionId of Array.from(termCache.keys())) {
       evictTerminalCache(sessionId);
     }
+    pushToastSpy.mockRestore();
+    useToastStore.setState({ pushToast: originalPushToast });
     consoleErrorSpy.mockRestore();
     __resetToastStoreForTests();
     vi.useRealTimers();
@@ -64,27 +69,31 @@ describe("enqueueSessionWrite failure toast", () => {
       "Terminal input failed to send",
     ]);
 
+    expect(pushToastSpy).toHaveBeenCalledTimes(1);
+    const id = useToastStore.getState().toasts[0].id;
+
     vi.advanceTimersByTime(3000);
     vi.setSystemTime(1_003_000);
 
     enqueueSessionWrite("session-a", "c");
     await flushPromises();
+    expect(pushToastSpy).toHaveBeenCalledTimes(2);
+    expect(useToastStore.getState().toasts[0].id).toBe(id);
 
     expect(useToastStore.getState().toasts.map((toast) => toast.message)).toEqual([
-      "Terminal input failed to send",
       "Terminal input failed to send",
     ]);
   });
 
-  it("debounces write failure toasts independently per session", async () => {
+  it("debounces per session while coalescing identical visible write failure toasts", async () => {
     mockedWriteToSession.mockRejectedValue(new Error("backend gone"));
 
     enqueueSessionWrite("session-c", "c");
     enqueueSessionWrite("session-d", "d");
     await flushPromises();
+    expect(pushToastSpy).toHaveBeenCalledTimes(2);
 
     expect(useToastStore.getState().toasts.map((toast) => toast.message)).toEqual([
-      "Terminal input failed to send",
       "Terminal input failed to send",
     ]);
   });

@@ -182,7 +182,7 @@ describe("grouping precompute coordinator", () => {
 
     harness.emitPty();
     harness.dirtyLayout();
-    await vi.advanceTimersByTimeAsync(GROUPING_PTY_QUIET_MS);
+    await vi.advanceTimersByTimeAsync(10_000);
 
     expect(harness.abort).not.toHaveBeenCalled();
 
@@ -572,13 +572,17 @@ describe("precompute start that waits for the Jev settings", () => {
     useJevSettingsStore.setState({ loaded: false });
     answerSettingsRead(async () => settings);
     const failure = new TypeError("Illegal invocation");
-    vi.stubGlobal("setTimeout", () => { throw failure; });
+    const nativeTimer = globalThis.setTimeout.bind(globalThis);
+    vi.stubGlobal("setTimeout", (callback: () => void, delay: number) => {
+      if (delay === 5_000) return nativeTimer(callback, delay);
+      throw failure;
+    });
 
     expect(startGroupingPrecomputeIfInterested()).toBe(false);
 
     await vi.waitFor(() => {
       expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("grouping precompute start threw"), failure);
-    });
+    }, { timeout: 1_000 });
     expect(useJevSettingsStore.getState().loaded).toBe(true);
     await nextTurnOfTheEventLoop();
     expect(unhandled).not.toHaveBeenCalled();
@@ -597,8 +601,34 @@ describe("precompute start that waits for the Jev settings", () => {
         "[mycmux] grouping precompute could not load the Jev settings; the panel carries on without precomputed plans",
         failure,
       );
-    });
+    }, { timeout: 1_000 });
     await nextTurnOfTheEventLoop();
     expect(unhandled).not.toHaveBeenCalled();
+  });
+});
+
+describe("foreground deadline and cancellation", () => {
+  afterEach(() => { vi.useRealTimers(); });
+  it("expires a lost frontend analysis reply", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    harness.analyzeCurrent.mockImplementationOnce(() => new Promise(() => {}));
+    const result = harness.coordinator.generateForeground(true);
+    const failed = expect(result).rejects.toThrow("timeout");
+    await vi.advanceTimersByTimeAsync(60_001); await failed;
+    harness.coordinator.stop();
+  });
+  it("reopens with a fresh scan and rejects abandoned results", async () => {
+    const harness = createHarness();
+    let complete!: (value: typeof mockGroupingAnalysis) => void;
+    harness.analyzeCurrent.mockImplementationOnce(() => new Promise(done => { complete = done; }));
+    const old = harness.coordinator.generateForeground(true);
+    const cancelled = expect(old).rejects.toThrow("cancelled");
+    harness.coordinator.cancelForeground(); await cancelled;
+    const fresh = await harness.coordinator.generateForeground(true);
+    complete(structuredClone(mockGroupingAnalysis));
+    expect(fresh.kind).toBe("ready");
+    expect(harness.analyzeCurrent).toHaveBeenCalledTimes(2);
+    harness.coordinator.stop();
   });
 });
