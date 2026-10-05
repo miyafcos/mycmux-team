@@ -75,6 +75,7 @@ pub fn open_workspace_window(
     y: Option<f64>,
     width: Option<f64>,
     height: Option<f64>,
+    deferred_adoption: Option<bool>,
 ) -> Result<String, String> {
     if workspaces.is_empty() {
         return Err("open_workspace_window requires at least one workspace".to_string());
@@ -85,7 +86,12 @@ pub fn open_workspace_window(
         return Err("every workspace handed to open_workspace_window needs an id".to_string());
     }
 
+    let deferred = deferred_adoption.unwrap_or(false);
     let restoring = saved_window_decoration(label.as_deref(), &workspaces);
+    // Only the saved Windows native branch has the new placement contract.
+    let maximized = if cfg!(target_os = "windows") && restoring.is_some() && native {
+        Some(workspaces[0]["window_group"]["maximized"].as_bool().unwrap_or(false))
+    } else { None };
     let resolved = if restoring.is_some() {
         reserve_child_window_label(&app, label)?
     } else {
@@ -96,17 +102,19 @@ pub fn open_workspace_window(
         // `window-adopt` listener that every window registers.
         ResolvedChildWindow::Existing(label) => {
             if restoring.is_some() {
-                restore_child_window_frame(&app, &label, x, y, width, height, restoring);
+                restore_child_window_frame(&app, &label, x, y, width, height, restoring, maximized);
             }
-            state.window_registry.queue_adoption(&label, workspaces);
-            emit_adopt(
-                &app,
-                WindowAdoptPayload {
-                    from_label,
-                    to_label: label.clone(),
-                    workspace_ids,
-                },
-            );
+            if !deferred {
+                state.window_registry.queue_adoption(&label, workspaces);
+                emit_adopt(
+                    &app,
+                    WindowAdoptPayload {
+                        from_label,
+                        to_label: label.clone(),
+                        workspace_ids,
+                    },
+                );
+            }
             emit_registry_changed(&app, state.window_registry.revision());
             return Ok(label);
         }
@@ -117,18 +125,20 @@ pub fn open_workspace_window(
 
     // Queue *before* the window exists: the child asks for its adoption during
     // boot, so anything queued later would arrive after it decided it is empty.
-    state.window_registry.queue_adoption(&label, workspaces);
+    if !deferred { state.window_registry.queue_adoption(&label, workspaces); }
     let spawned = if restoring.is_some() {
         spawn_child_window_with_restore(&app, reservation, x, y, width, height, restoring,
-            Some(native))
+            Some(native), maximized)
     } else {
         spawn_child_window(&app, reservation, x, y, width, height)
     };
     if let Err(err) = spawned {
         // Never strand the workspaces (and their live sessions) in a queue no
         // window will ever drain.
-        let orphaned = state.window_registry.take_pending_adoption(&label);
-        state.window_registry.queue_adoption(&from_label, orphaned);
+        if !deferred {
+            let orphaned = state.window_registry.take_pending_adoption(&label);
+            state.window_registry.queue_adoption(&from_label, orphaned);
+        }
         emit_registry_changed(&app, state.window_registry.revision());
         return Err(err);
     }
