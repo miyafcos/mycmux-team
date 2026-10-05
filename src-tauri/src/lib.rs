@@ -12,6 +12,7 @@ mod commands;
 mod db;
 mod diag;
 mod shutdown;
+mod settings_flush;
 #[cfg(target_os = "macos")]
 mod mac_webview;
 mod watchdog;
@@ -393,6 +394,7 @@ pub fn run() {
             next_id: std::sync::atomic::AtomicUsize::new(1),
         })
         .manage(commands::quit::QuitCoordinator::new())
+        .manage(settings_flush::PreferenceWrites::default())
         .manage(usage::UsageState::new())
         .manage(cli_accounts::login_watch::LoginRegistry::default())
         .invoke_handler(tauri::generate_handler![
@@ -550,6 +552,7 @@ pub fn run() {
             commands::window::quit_app,
             commands::quit::quit_prepared,
             commands::quit::quit_saved,
+            settings_flush::note_preference_write,
             commands::window::watch_window_drag,
             tearout::tearout_warm,
             tearout::tearout_child_ready,

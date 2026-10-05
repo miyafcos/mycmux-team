@@ -687,6 +687,8 @@ pub fn handle_app_run_event(app: &AppHandle, event: tauri::RunEvent) {
         let worker_app = app.clone();
         match crate::shutdown::Cleanup::start(crate::shutdown::SHUTDOWN_BUDGET, move |deadline| {
             let state = worker_app.state::<AppState>();
+            #[cfg(target_os = "macos")]
+            crate::settings_flush::flush_at_exit(&worker_app, deadline);
             crate::commands::quit::fill_in_unsaved_workspaces(&worker_app, deadline);
             if std::time::Instant::now() < deadline {
                 if let Some(dir) = state.scrollback_dir.get() {

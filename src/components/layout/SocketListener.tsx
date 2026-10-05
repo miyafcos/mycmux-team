@@ -1660,7 +1660,7 @@ export function hydrateAiSettingsFromDataJson(settings: Pick<
   });
   // These runtime compatibility keys are still consumed by existing UI and
   // automation code, but data.json is now the source of truth.
-  useSettingsStore.setState({
+  useSettingsStore.getState().hydrateAiFeatureSettings({
     autoPaneNamingEnabled: resolved.autoPaneNamingEnabled,
     replyDraftSuggestionsEnabled: resolved.replyDraftSuggestionsEnabled,
     ...(!resolved.migrationNeeded
