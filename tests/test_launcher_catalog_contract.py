@@ -199,7 +199,9 @@ def test_omp_uses_the_installer_path_only_in_windows_git_bash() -> None:
         ("Darwin", "", "omp"),
         ("Linux", "", "omp"),
     ):
-        script = f'uname() {{ printf "%s" "{fake_uname}"; }}\n{header}\nprintf "%s\\n" "$__MYCMUX_OMP_COMMAND"\n'
+        # Git Bash assigns MSYSTEM during startup, including when the child
+        # environment passed an empty value. Set the simulated OS afterwards.
+        script = f'MSYSTEM={shlex.quote(msystem)}\nuname() {{ printf "%s" "{fake_uname}"; }}\n{header}\nprintf "%s\\n" "$__MYCMUX_OMP_COMMAND"\n'
         result = subprocess.run(
             [bash, "-s"], input=script, capture_output=True, text=True, encoding="utf-8",
             env={"PATH": os.environ.get("PATH", ""), "HOME": "/c/Users/me", "MSYSTEM": msystem},

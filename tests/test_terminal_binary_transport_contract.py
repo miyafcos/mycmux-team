@@ -20,7 +20,8 @@ def test_pty_output_and_scrollback_use_raw_binary_frames() -> None:
     assert 'frame.extend_from_slice(b"MCS1")' in session
     assert "Response::new(snapshot.into_wire())" in terminal_commands
     assert "Channel<FrontendDataBatch>" not in session
-    assert "new Channel<ArrayBuffer>()" in ipc
+    assert "new PtyOutputChannel()" in ipc
+    assert "extends Channel<ArrayBuffer>" in read_repo_text("src/lib/ptyOutputChannel.ts")
     assert "decodeFrontendDataBatch(frame)" in ipc
     assert 'invoke<ArrayBuffer>("get_session_scrollback"' in ipc
     assert "DATA_HEADER_BYTES = 40" in wire

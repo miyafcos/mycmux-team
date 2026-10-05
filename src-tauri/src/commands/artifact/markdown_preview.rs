@@ -656,6 +656,8 @@ fn resolve_target(raw: &str, kind: TargetKind, base_dir: Option<&Path>) -> Targe
         Some(scheme) => match scheme.as_str() {
             "http" | "https" => Target::Keep(cleaned),
             "mailto" if kind == TargetKind::Href => Target::Keep(cleaned),
+            "mzopen" if kind == TargetKind::Href
+                && crate::commands::webpane::retains_preview_mzopen_href(&cleaned) => Target::Keep(cleaned),
             "data" if kind == TargetKind::ImageSrc && is_image_data_url(&cleaned) => {
                 Target::Keep(cleaned)
             }
@@ -1667,6 +1669,21 @@ mod tests {
         // HTML block, so it stays text: what must not exist is the link.
         assert!(!html.contains("href=\"javascript"));
         assert!(!html.contains("onerror"));
+    }
+
+    #[test]
+    fn mzopen_anchors_survive_sanitization_without_loading_network_targets() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"C:/reports/file.txt");
+        let url = format!("mzopen:b64.{encoded}");
+        let html = render(&format!("[location]({url})\n\n<img src=\"{url}\">\n"));
+        assert!(html.contains(&format!("href=\"{url}\"")));
+        assert!(!html.contains(&format!("src=\"{url}\"")));
+        for path in ["../file.txt", "C:/a/../file.txt", "shell:Downloads"] {
+            let url = format!("mzopen:b64.{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path));
+            assert!(!render(&format!("[blocked]({url})")).contains("href="));
+        }
+        assert!(!render("[blocked](mzopen:b64.broken!)").contains("href="));
     }
 
     #[test]

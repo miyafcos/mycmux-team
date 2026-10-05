@@ -59,6 +59,7 @@ export type PreviewLinkAction =
   | { kind: "fragment"; id: string }
   | { kind: "local"; path: string }
   | { kind: "external"; url: string }
+  | { kind: "reveal"; url: string }
   | { kind: "none" };
 
 /**
@@ -95,6 +96,15 @@ export function classifyPreviewLink(anchor: Element): PreviewLinkAction {
     }
     return { kind: "fragment", id };
   }
-  if (/^(?:https?|mailto):/i.test(href)) return { kind: "external", url: href };
+  if (href.length > 16384 || /[\u0000-\u001f\u007f]/.test(href)) return { kind: "none" };
+  if (/^mzopen:b64\.[A-Za-z0-9_-]+$/.test(href)) return { kind: "reveal", url: href };
+  if (/^https?:\/\//i.test(href) && !href.includes("\\")) {
+    try {
+      const url = new URL(href);
+      if (url.hostname && url.hostname !== "asset.localhost" && url.hostname !== "mycmux-preview-link.invalid") {
+        return { kind: "external", url: href };
+      }
+    } catch { /* Malformed URLs cannot leave the document. */ }
+  }
   return { kind: "none" };
 }

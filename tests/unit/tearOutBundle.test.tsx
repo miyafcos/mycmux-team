@@ -166,7 +166,7 @@ describe("tab-bundle tear-out", () => {
     expect(tearOutMocks.tearOutWorkspaceToNewWindow).toHaveBeenCalledTimes(1);
     expect(tearOutMocks.tearOutWorkspaceToNewWindow).toHaveBeenCalledWith(
       "workspace-detached",
-      { x: 460, y: 580 },
+      expect.objectContaining({ x: 460, y: 580, restoreSource: expect.any(Function) }),
     );
     expect(getWorkspace("workspace-detached").panes[0].tabs.map((item) => item.id)).toEqual(["one", "three"]);
   });
@@ -234,10 +234,11 @@ describe("single-tab content-only tear-out", () => {
       window.dispatchEvent(pointer("pointerup", -50, 10, 500, 600));
       await Promise.resolve();
     });
-    expect(tearOutMocks.tearOutWorkspaceToNewWindow).toHaveBeenCalledWith("workspace-detached", {
+    expect(tearOutMocks.tearOutWorkspaceToNewWindow).toHaveBeenCalledWith("workspace-detached", expect.objectContaining({
       x: 460, y: 580,
       detachedFrom: { workspace_id: "source", pane_id: "source-pane", tab_id: "three", index: 2, column: 0, row: 0, column_size: 2 },
-    });
+      restoreSource: expect.any(Function),
+    }));
     expect(getWorkspace("workspace-detached").panes[0].tabs.map((tab) => tab.id)).toEqual(["three"]);
     expect(getWorkspace("source").panes[0].tabs.map((tab) => tab.id)).toEqual(["one", "two", "four"]);
   });
