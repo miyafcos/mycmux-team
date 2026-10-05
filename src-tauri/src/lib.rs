@@ -559,6 +559,7 @@ pub fn run() {
             tearout::tearout_start_move,
             tearout::tearout_synthetic_sample,
             watchdog::report_renderer_heartbeat,
+            commands::grouping_diagnostics::log_grouping_operation,
             tearout::tearout_settle,
             tearout::tearout_preview,
             tearout::tearout_alpha,
