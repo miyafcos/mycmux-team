@@ -356,14 +356,13 @@ export type TerminalScrollbackRecoveryPlan =
   | { action: "append"; data: Uint8Array }
   | { action: "initial-replay"; data: Uint8Array }
   | { action: "replace"; data: Uint8Array }
-  | { action: "skip-truncated"; data: Uint8Array };
+  | { action: "rebuild-truncated"; data: Uint8Array };
 
 /**
  * Raw PTY scrollback is a byte ring, not a VT terminal-state snapshot. A ring
  * whose startOffset is greater than zero can begin inside UTF-8 or a control
- * sequence, so it must never be replayed into a reset terminal. Prefer the
- * exact absolute cursor, then a remembered suffix, and only rebuild when the
- * snapshot still starts at process byte zero.
+ * sequence. Prefer an exact delta; if the ring has passed our cursor, parse it
+ * in an offscreen terminal and install the prepared frame atomically.
  */
 export function planTerminalScrollbackRecovery(
   scrollback: Uint8Array,
@@ -399,7 +398,7 @@ export function planTerminalScrollbackRecovery(
       data: scrollback,
     };
   }
-  return { action: "skip-truncated", data: new Uint8Array() };
+  return { action: "rebuild-truncated", data: scrollback };
 }
 
 export function sliceBatchAfterScrollbackOffset(

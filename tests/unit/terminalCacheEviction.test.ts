@@ -223,8 +223,8 @@ describe("terminal scrollback cursor recovery", () => {
       204,
       0,
     );
-    expect(plan.action).toBe("skip-truncated");
-    expect(plan.data.byteLength).toBe(0);
+    expect(plan.action).toBe("rebuild-truncated");
+    expect([...plan.data]).toEqual([0x5b, 0x32, 0x4a, 0x41]);
   });
 
   it("allows a full rebuild only when scrollback starts at process byte zero", () => {
