@@ -63,9 +63,94 @@ pub fn accepts_preview_revision(current: u64, proposed: u64) -> bool {
     proposed >= current
 }
 
+/// Physical monitor bounds and work area; scale converts the reserved band.
+#[derive(Clone, Copy, Debug)]
+pub struct MonitorArea { pub bounds: Rect, pub work: Rect, pub scale: f64 }
+
+pub fn initial_logical_size(width: f64, height: f64, work: Rect, scale: f64) -> (f64, f64) {
+    let scale = scale.max(0.01);
+    let clamp = |value: f64, fallback: f64, minimum: f64, available: f64| {
+        let value = if value.is_finite() && value > 0.0 { value } else { fallback };
+        value.clamp(minimum, (available / scale * 0.9).max(minimum))
+    };
+    (clamp(width, 720.0, 240.0, work.width), clamp(height, 520.0, 160.0, work.height))
+}
+
+pub fn moved_for_dock(start: (f64, f64), point: (f64, f64), scale: f64) -> bool {
+    (point.0 - start.0).hypot(point.1 - start.1) / scale.max(0.01) >= 9.0
+}
+
+/// Shared edges are excluded only along the segment occupied by the neighbor.
+pub fn snap_edge_reserved(x: f64, y: f64, monitors: &[MonitorArea]) -> bool {
+    let Some((index, monitor)) = monitors.iter().enumerate().find(|(_, monitor)| contains(monitor.bounds, x, y)) else {
+        return false;
+    };
+    let b = monitor.bounds;
+    let w = monitor.work;
+    let band = 24.0 * monitor.scale;
+    let neighbors: Vec<Rect> = monitors.iter().enumerate().filter(|(i, _)| *i != index)
+        .map(|(_, monitor)| monitor.bounds).collect();
+    let vertical = |r: &Rect| y >= r.y && y < r.y + r.height;
+    let horizontal = |r: &Rect| x >= r.x && x < r.x + r.width;
+    let touches = |a: f64, b: f64| (a - b).abs() < 1.0;
+    (x < w.x + band && !neighbors.iter().any(|r| touches(r.x + r.width, b.x) && vertical(r)))
+        || (x >= w.x + w.width - band && !neighbors.iter().any(|r| touches(r.x, b.x + b.width) && vertical(r)))
+        || (y < w.y + band && !neighbors.iter().any(|r| touches(r.y + r.height, b.y) && horizontal(r)))
+        || (y >= w.y + w.height - band && !neighbors.iter().any(|r| touches(r.y, b.y + b.height) && horizontal(r)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn initial_size_preserves_logical_pixels_and_caps_the_destination_work_area() {
+        let work = Rect { width: 2560.0, height: 1520.0, ..Rect::default() };
+        assert_eq!(initial_logical_size(600.0, 400.0, work, 1.25), (600.0, 400.0));
+        assert_eq!(initial_logical_size(600.0, 400.0, work, 2.0), (600.0, 400.0));
+        assert_eq!(initial_logical_size(5000.0, 5000.0, work, 2.0), (1152.0, 684.0));
+        assert_eq!(initial_logical_size(10.0, 10.0, work, 1.0), (240.0, 160.0));
+        assert_eq!(initial_logical_size(f64::NAN, f64::INFINITY, work, 1.0), (720.0, 520.0));
+    }
+
+    #[test]
+    fn nine_logical_pixels_gate_docking_without_delaying_native_movement() {
+        assert!(!moved_for_dock((10.0, 20.0), (10.0, 20.0), 1.5));
+        assert!(!moved_for_dock((10.0, 20.0), (23.0, 20.0), 1.5));
+        assert!(moved_for_dock((10.0, 20.0), (23.5, 20.0), 1.5));
+        assert!(moved_for_dock((10.0, 20.0), (1.0, 20.0), 1.0));
+    }
+
+    #[test]
+    fn only_exterior_work_area_edges_reserve_24_logical_pixels() {
+        let main = MonitorArea { bounds: Rect { width: 2560.0, height: 1600.0, ..Rect::default() },
+            work: Rect { width: 2560.0, height: 1520.0, ..Rect::default() }, scale: 1.25 };
+        let above = MonitorArea { bounds: Rect { x: 232.0, y: -1440.0, width: 3440.0, height: 1440.0 },
+            work: Rect { x: 232.0, y: -1440.0, width: 3440.0, height: 1440.0 }, scale: 1.0 };
+        let monitors = [main, above];
+        for (x, y) in [(0.0, 500.0), (29.0, 500.0), (2559.0, 500.0), (1000.0, 1490.0),
+            (100.0, 0.0), (1000.0, -1440.0), (3671.0, -500.0), (3000.0, -1.0)] {
+            assert!(snap_edge_reserved(x, y, &monitors), "exterior {x},{y}");
+        }
+        for (x, y) in [(30.0, 500.0), (2529.0, 500.0), (1000.0, 1489.0),
+            (232.0, 0.0), (1000.0, 0.0), (1000.0, -1.0), (1000.0, -1416.0)] {
+            assert!(!snap_edge_reserved(x, y, &monitors), "shared or interior {x},{y}");
+        }
+    }
+
+    #[test]
+    fn a_side_neighbor_excludes_only_its_shared_segment() {
+        let main = MonitorArea { bounds: Rect { width: 1000.0, height: 1000.0, ..Rect::default() },
+            work: Rect { width: 1000.0, height: 900.0, ..Rect::default() }, scale: 2.0 };
+        let right = MonitorArea { bounds: Rect { x: 1000.0, y: 200.0, width: 500.0, height: 500.0 },
+            work: Rect { x: 1000.0, y: 200.0, width: 500.0, height: 500.0 }, scale: 1.0 };
+        assert!(snap_edge_reserved(999.0, 199.0, &[main, right]));
+        assert!(!snap_edge_reserved(999.0, 200.0, &[main, right]));
+        assert!(!snap_edge_reserved(999.0, 699.0, &[main, right]));
+        assert!(snap_edge_reserved(999.0, 700.0, &[main, right]));
+        assert!(!snap_edge_reserved(1000.0, 400.0, &[main, right]));
+        assert!(!snap_edge_reserved(5000.0, 400.0, &[main, right]));
+    }
+
     #[test]
     fn frontmost_excludes_self_and_obeys_occlusion_and_visibility() {
         let r = Rect { width: 300.0, height: 200.0, ..Rect::default() };
