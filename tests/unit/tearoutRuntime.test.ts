@@ -2,27 +2,30 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ listeners: new Map<string, Set<(event: { payload: any }) => void>>(),
   targets: new WeakMap<Function, string>(), broadcastTargetedDelivery: false,
-  attachmentReady: null as Promise<void> | null, invoke: vi.fn(), emitTo: vi.fn(), failShow: false, failReceipt: false, escape: true }));
+  attachments: vi.fn(), attachmentReady: null as Promise<void> | null, invoke: vi.fn(), emitTo: vi.fn(), failShow: false, failReceipt: false, failNativeListen: false, escape: true }));
 vi.mock("@tauri-apps/api/core", async (original) => ({ ...await original<typeof import("@tauri-apps/api/core")>(), invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: async (event: string, callback: (event: { payload: any }) => void, options?: { target: { kind: string; label: string } }) => {
+    if (event === "mycmux://tearout-native" && mocks.failNativeListen) throw new Error("tearout_native_listener_failed");
     if (options?.target.kind === "Window") mocks.targets.set(callback, options.target.label);
     const callbacks = mocks.listeners.get(event) ?? new Set(); callbacks.add(callback); mocks.listeners.set(event, callbacks);
     return () => { callbacks.delete(callback); };
   }, emit: async () => {}, emitTo: mocks.emitTo,
 }));
 vi.mock("../../src/lib/windowContext", () => ({ windowLabel: () => "main", isMainWindow: () => true }));
-vi.mock("../../src/lib/tearout/sessionAttachment", () => ({ expectTearoutAttachments: () => ({ ready: mocks.attachmentReady ?? Promise.resolve(), dispose: () => {} }) }));
+vi.mock("../../src/lib/tearout/sessionAttachment", () => ({ expectTearoutAttachments: (ids: string[]) => { mocks.attachments(ids); return { ready: mocks.attachmentReady ?? Promise.resolve(), dispose: () => {} }; }, rememberTearoutDormantSessions: vi.fn() }));
 vi.mock("../../src/components/terminal/terminalCache", async (original) => ({
   ...await original<typeof import("../../src/components/terminal/terminalCache")>(), evictTerminalCache: vi.fn(),
 }));
-import { installTearoutRuntime, tearoutTab, tearoutPane, useTearoutStore, isTearoutChild, markTearoutChildReady } from "../../src/lib/tearout/runtime";
+import { installTearoutRuntime, tearoutTab, tearoutPane, useTearoutStore, isTearoutChild, markTearoutChildReady, visitTearoutLocation, regrabTearoutWindow } from "../../src/lib/tearout/runtime";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
 import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useUiStore } from "../../src/stores/uiStore";
 import { restoreTearoutSource, removeTearoutTab } from "../../src/lib/tearout/model";
 import { evictTerminalCache } from "../../src/components/terminal/terminalCache";
+import { tearoutOperationBusy, endTearoutOperation } from "../../src/lib/tearout/operation";
+import { activeTearoutRecords } from "../../src/lib/tearout/record";
 import { buildWindowFragment, toTransferConfig } from "../../src/components/layout/SocketListener";
 import type { Workspace } from "../../src/types";
 import type { WorkspaceConfig } from "../../src/lib/ipc";
@@ -46,7 +49,7 @@ function config(ws: Workspace): WorkspaceConfig {
 }
 let stop: () => void;
 beforeEach(() => {
-  mocks.listeners.clear(); vi.clearAllMocks(); mocks.failShow = false; mocks.failReceipt = false; mocks.escape = true;
+  mocks.listeners.clear(); vi.clearAllMocks(); mocks.failShow = false; mocks.failReceipt = false; mocks.failNativeListen = false; mocks.escape = true;
   mocks.broadcastTargetedDelivery = false; mocks.attachmentReady = null;
   Object.defineProperty(navigator, "platform", { configurable: true, value: "Win32" });
   useSettingsStore.setState({ nativePaneTearoutEnabled: true });
@@ -418,7 +421,8 @@ it("reveals restored children after listeners without taking focus, then keeps t
     expect(restored.__MYCMUX_RESTORED_WINDOW__).toBeUndefined();
     expect(isTearoutChild()).toBe(native);
   }
-  expect(mocks.invoke.mock.calls.filter(([command]) => command === "plugin:window|show")).toHaveLength(2);
+  expect(mocks.invoke.mock.calls.filter(([command]) => command === "plugin:window|show")).toHaveLength(1);
+  expect(mocks.invoke.mock.calls.filter(([command]) => command === "tearout_child_ready")).toHaveLength(2);
   expect(mocks.invoke.mock.calls.some(([command]) => command.includes("focus"))).toBe(false);
   delete restored.__MYCMUX_TEAROUT_WINDOW__;
 });
@@ -456,4 +460,159 @@ it("does not create a spare for a runtime closed while restoration is pending", 
   stop = installTearoutRuntime({ serialize: config, publish: async () => {}, hydrated: ready });
   stop(); hydrated(); await ready; await Promise.resolve();
   expect(mocks.invoke.mock.calls.some(([command]) => command === "tearout_warm")).toBe(false);
+});
+
+it.each(["MacIntel", "Win32"])("passes source logical size only on Windows (%s)", async platform => {
+  Object.defineProperty(navigator, "platform", { configurable: true, value: platform });
+  useSettingsStore.setState({ macNativePaneTearoutEnabled: true });
+  const pane = document.createElement("div");
+  pane.dataset.dndPaneId = "pane"; pane.dataset.dndWorkspaceId = "source";
+  pane.getBoundingClientRect = () => ({ width: 654, height: 432 } as DOMRect);
+  document.body.append(pane);
+  try {
+    await tearoutTab(item, gap, { x: 10, y: 10 });
+    const args = mocks.invoke.mock.calls.find(([command]) => command === "tearout_show")![1];
+    expect(args).toEqual({ label: "mycmux-w42", offsetX: 10, offsetY: 10,
+      ...(platform === "Win32" ? { logicalWidth: 654, logicalHeight: 432 } : {}) });
+  } finally { pane.remove(); }
+});
+
+it("keeps the original Mac restored-child reveal order for both shell kinds", async () => {
+  Object.defineProperty(navigator, "platform", { configurable: true, value: "MacIntel" });
+  const restored = window as Window & { __MYCMUX_RESTORED_WINDOW__?: boolean };
+  for (const native of [false, true]) {
+    mocks.invoke.mockClear();
+    restored.__MYCMUX_RESTORED_WINDOW__ = true; window.__MYCMUX_TEAROUT_WINDOW__ = native;
+    await markTearoutChildReady();
+    expect(mocks.invoke.mock.calls.map(([command]) => command)).toEqual(["plugin:window|show", "tearout_child_ready"]);
+  }
+  delete window.__MYCMUX_TEAROUT_WINDOW__;
+});
+
+// T1-T3: source runtime state, serialized lifecycle and recovery are separate.
+describe("mixed-session transfer reliability", () => {
+  it.each([true, false])("waits only for running sessions, Esc=%s", async escaped => {
+    const source = workspace();
+    source.panes[0].tabs.push(
+      { id: "declared", sessionId: "pty-declared", agentId: "shell", type: "terminal", lifecycle: "declared" },
+      { id: "stopped", sessionId: "pty-stopped", agentId: "shell", type: "terminal" },
+      { id: "hidden", sessionId: "pty-hidden", agentId: "shell", type: "terminal" },
+      { id: "launcher", sessionId: "pty-launcher", agentId: "shell", type: "launcher" });
+    useWorkspaceListStore.setState({ workspaces: [source] });
+    const base = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command: string, args: any) => command === "is_session_alive"
+      ? Promise.resolve(["pty-original", "pty-hidden"].includes(args.sessionId)) : base(command, args));
+    mocks.escape = escaped;
+    stop(); stop = installTearoutRuntime({ serialize: toTransferConfig, publish: async () => {} });
+    await tearoutPane({ kind: "pane", workspaceId: source.id, paneId: "pane", label: "Mixed", tabCount: 5 }, gap, { x: 10, y: 10 });
+    const delivery = mocks.emitTo.mock.calls.find(([, event]) => event.endsWith("tearout-delivery"))![2];
+    expect(delivery.liveSessions).toEqual(["pty-original", "pty-hidden"]);
+    expect(delivery.configs[0].panes[0].tabs.find((tab: any) => tab.tab_id === "declared").lifecycle).toBe("declared");
+    if (escaped) expect(mocks.attachments).toHaveBeenCalledWith(["pty-original", "pty-hidden"]);
+    expect(mocks.attachments.mock.calls.every(([ids]) => !ids.includes("pty-stopped") && !ids.includes("pty-declared"))).toBe(true);
+    expect(mocks.invoke.mock.calls.some(([cmd]) => cmd === "create_session")).toBe(false);
+    expect(useWorkspaceListStore.getState().workspaces).toEqual(escaped ? [source] : []);
+  });
+  it("accepts passive sessions without treating them as dead running PTYs", async () => {
+    const incoming = toTransferConfig(workspace("mixed-incoming"));
+    incoming.panes[0].tabs![0].tab_id = "incoming-live";
+    incoming.panes[0].tabs![0].session_id = "pty-incoming-live";
+    incoming.panes[0].tabs!.push({ tab_id: "incoming-declared", session_id: "pty-declared", agent_id: "shell", lifecycle: "declared" },
+      { tab_id: "incoming-stopped", session_id: "pty-stopped", agent_id: "shell" });
+    dispatch("mycmux://tearout-delivery", { token: "mixed-receive", source: "peer", configs: [incoming], liveSessions: ["pty-incoming-live"] }, "main");
+    await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith("peer", "mycmux://tearout-receipt", { token: "mixed-receive", ok: true }), { timeout: 2000 });
+    expect(mocks.attachments).toHaveBeenCalledWith(["pty-incoming-live"]);
+    expect(mocks.invoke.mock.calls.filter(([cmd]) => cmd === "is_session_alive").map(([, args]) => args.sessionId)).toEqual(["pty-incoming-live"]);
+  });
+  it("rejects a second start during recovery with a reason and no synthetic release", async () => {
+    let attached = () => {};
+    mocks.attachmentReady = new Promise<void>(resolve => { attached = resolve; });
+    const first = tearoutTab(item, gap, { x: 10, y: 10 });
+    await vi.waitFor(() => expect(mocks.attachments).toHaveBeenCalled(), { timeout: 2000 });
+    const during = useWorkspaceListStore.getState().workspaces;
+    await expect(tearoutTab(item, gap, { x: 10, y: 10 })).rejects.toThrow("tearout_move_busy");
+    expect(useWorkspaceListStore.getState().workspaces).toEqual(during);
+    const rejected = mocks.invoke.mock.calls.filter(([cmd]) => cmd === "tearout_log_record").map(([, args]) => args.record).find(row => row.result === "rejected_busy");
+    try { expect(rejected).toMatchObject({ failure_reason: "tearout_move_busy", failure_phase: "restoring", released_at: null, released: false }); }
+    finally { attached(); await first; }
+  });
+  it("does not claim restoration before attachment and shows a retry on failure", async () => {
+    const { useToastStore } = await import("../../src/stores/toastStore");
+    useToastStore.setState({ toasts: [] });
+    let fail = (_error: Error) => {};
+    mocks.attachmentReady = new Promise<void>((_, reject) => { fail = reject; });
+    const first = tearoutTab(item, gap, { x: 10, y: 10 });
+    await vi.waitFor(() => expect(mocks.attachments).toHaveBeenCalled(), { timeout: 2000 });
+    expect(useToastStore.getState().toasts.some(toast => toast.message.includes("\u623b\u3057\u3066\u3044\u307e\u3059"))).toBe(true);
+    expect(useToastStore.getState().toasts.some(toast => toast.message.includes("\u623b\u3057\u307e\u3057\u305f"))).toBe(false);
+    fail(new Error("tearout_restore_attachment_timeout")); await first;
+    const notice = useToastStore.getState().toasts.find(toast => toast.kind === "error")!;
+    expect(notice.message).toContain("\u5143\u306e");
+    expect(notice.actions?.some(action => action.label.includes("\u3084\u308a\u76f4\u3059"))).toBe(true);
+    expect(notice.message).not.toMatch(/pty-|tearout_|rollback/);
+    expect(mocks.invoke.mock.calls.filter(([cmd]) => cmd === "tearout_log_record").at(-1)![1].record).toMatchObject({
+      result: "restore_failed", session_id_equal: false, failure_phase: "restoring",
+      failure_reason: "tearout_restore_attachment_timeout", failed_session_ids: ["pty-original"],
+    });
+  });
+});
+
+it("visits the affected hidden tab and clears an unrelated zoom", () => {
+  const target = workspace("target");
+  target.panes[0].id = "target-pane";
+  target.panes[0].tabs[0] = { id: "visible", agentId: "shell", sessionId: "pty-visible", type: "terminal" };
+  target.panes[0].tabs.push({ id: "affected", agentId: "shell", sessionId: "pty-affected", type: "terminal" });
+  target.panes[0].activeTabId = "visible"; target.panes[0].sessionId = "pty-visible";
+  useWorkspaceListStore.setState({ workspaces: [workspace(), target], activeWorkspaceId: "source" });
+  useUiStore.setState({ zoomedPaneId: "pane" });
+  visitTearoutLocation("target", "pty-affected");
+  expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe("target");
+  expect(useWorkspaceListStore.getState().getWorkspace("target")?.panes[0].activeTabId).toBe("affected");
+  expect(useUiStore.getState()).toMatchObject({ activePaneId: "pty-affected", zoomedPaneId: null });
+});
+
+it("releases the regrab operation when registering its native listener fails", async () => {
+  mocks.failNativeListen = true;
+  try {
+    await expect(regrabTearoutWindow()).rejects.toThrow("tearout_native_listener_failed");
+    expect(tearoutOperationBusy()).toBe(false);
+    expect(activeTearoutRecords.size).toBe(0);
+    expect(useWorkspaceListStore.getState().workspaces).toEqual([workspace()]);
+    const diagnostic = mocks.invoke.mock.calls.filter(([cmd]) => cmd === "tearout_log_record").at(-1)?.[1].record;
+    expect(diagnostic).toMatchObject({ failure_reason: "tearout_native_listener_failed", failure_phase: "preparing", released_at: null, released: false });
+  } finally { endTearoutOperation(); activeTearoutRecords.clear(); }
+});
+
+it.each(["dead-session", "publish-failure"])("keeps failed dock retry visible until %s is resolved", async failure => {
+  const { useToastStore } = await import("../../src/stores/toastStore");
+  useToastStore.setState({ toasts: [] });
+  const publish = vi.fn().mockResolvedValue(undefined);
+  stop(); stop = installTearoutRuntime({ serialize: config, publish });
+  mocks.failReceipt = true;
+  let reject = (_error: Error) => {};
+  mocks.attachmentReady = new Promise<void>((_, fail) => { reject = fail; });
+  dispatch("mycmux://tearout-outgoing", { token: "retry-request", deliveryToken: "retry-delivery", requester: "parent",
+    approval: { receiver: "peer", token: "painted", target: { kind: "workspace" } } });
+  await vi.waitFor(() => expect(mocks.attachments).toHaveBeenCalled(), { timeout: 2000 });
+  reject(new Error("tearout_restore_attachment_timeout"));
+  await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith("parent", "mycmux://tearout-receipt", expect.objectContaining({ token: "retry-request", ok: false })), { timeout: 2000 });
+  endTearoutOperation();
+  const initialPublishes = publish.mock.calls.length;
+  const failed = useToastStore.getState().toasts.find(toast => toast.actions?.some(a => a.label.includes("\u4ed8\u3051\u76f4\u3057")))!;
+  expect(failed.message).toContain("keep title");
+  expect(failed.message).not.toMatch(/pty-|tearout_/);
+  mocks.attachmentReady = Promise.resolve();
+  if (failure === "dead-session") mocks.invoke.mockImplementation(async command => command === "is_session_alive" ? false : undefined);
+  else publish.mockRejectedValueOnce(new Error("tearout_publish_failed"));
+  failed.actions![0].run();
+  await vi.waitFor(() => expect(tearoutOperationBusy()).toBe(false), { timeout: 2000 });
+  expect(useToastStore.getState().toasts.some(toast => toast.message.includes("\u623b\u3057\u307e\u3057\u305f"))).toBe(false);
+  expect(useToastStore.getState().toasts.filter(toast => toast.actions?.some(a => a.label.includes("\u4ed8\u3051\u76f4\u3057")))).toHaveLength(2);
+  expect(useWorkspaceListStore.getState().workspaces).toEqual([workspace()]);
+  const retry = useToastStore.getState().toasts.at(-1)!;
+  mocks.invoke.mockImplementation(async command => command === "is_session_alive" ? true : undefined);
+  retry.actions![0].run();
+  await vi.waitFor(() => expect(useToastStore.getState().toasts.some(toast => toast.message.includes("\u623b\u3057\u307e\u3057\u305f"))).toBe(true), { timeout: 2000 });
+  expect(publish).toHaveBeenCalledTimes(initialPublishes + (failure === "dead-session" ? 1 : 2));
+  await vi.waitFor(() => expect(tearoutOperationBusy()).toBe(false), { timeout: 2000 });
 });

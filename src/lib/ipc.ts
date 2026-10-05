@@ -1058,6 +1058,8 @@ export interface OpenWorkspaceWindowOptions extends OpenChildWindowOptions {
   fromLabel: string;
   /** Serialized workspaces — the same shape `save_persistent_data` stores. */
   workspaces: WorkspaceConfig[];
+  /** The source retains ownership until an addressed receiver acknowledges. */
+  deferredAdoption?: boolean;
 }
 
 /**
@@ -1071,6 +1073,7 @@ export async function openWorkspaceWindow(
   return invoke<string>("open_workspace_window", {
     fromLabel: options.fromLabel,
     workspaces: options.workspaces,
+    ...(options.deferredAdoption ? { deferredAdoption: true } : {}),
     label: options.label ?? null,
     x: options.x ?? null,
     y: options.y ?? null,
