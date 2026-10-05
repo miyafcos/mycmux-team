@@ -7,9 +7,7 @@ import {
   useUiStore,
   usePaneMetadataStore,
 } from "../../stores/workspaceStore";
-import { killSession } from "../../lib/ipc";
 import { isMainWindow } from "../../lib/windowContext";
-import { evictTerminalCache } from "../terminal/XTermWrapper";
 import { attachGlobalFontZoom } from "../terminal/terminalMouseInputFilter";
 import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from "../../lib/constants";
 import { sidebarStrings } from "../../lib/sidebarStrings";
@@ -50,8 +48,7 @@ import {
 import { useEffectiveMediaActive } from "../../stores/compositionStore";
 import { focusController } from "../../lib/focusController";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
-import { tabHasPty } from "../../lib/tabLifecycle";
-import { beforePaneClose } from "../../lib/paneCloseLifecycle";
+import { closePaneOperation } from "../../lib/paneCloseOperation";
 import { confirmPaneClose } from "../../lib/paneCloseConfirmation";
 import { closeWorkspaceAfterConfirmation } from "../../lib/workspaceClose";
 import {
@@ -473,7 +470,6 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const addPaneToWorkspace = useWorkspaceLayoutStore((s) => s.addPaneToWorkspace);
   const addPaneToWorkspaceWithOptions = useWorkspaceLayoutStore((s) => s.addPaneToWorkspaceWithOptions);
   const openOnlinePanel = useWorkspaceLayoutStore((s) => s.openOnlinePanel);
-  const removePaneFromWorkspace = useWorkspaceLayoutStore((s) => s.removePaneFromWorkspace);
   const addTabToPane = useWorkspaceLayoutStore((s) => s.addTabToPane);
   const setActivePaneTab = useWorkspaceLayoutStore((s) => s.setActivePaneTab);
   const togglePaneTabPin = useWorkspaceLayoutStore((s) => s.togglePaneTabPin);
@@ -903,40 +899,19 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         }
 
         case "pane.close": {
-          const activeWs = ws.find((w) => w.id === aid);
-          const activePane = activeWs?.panes.find((p) => paneMatchesSession(p, apid));
-          if (activeWs && activePane && activeWs.panes.length > 1) {
-            void (async () => {
-              if (!await confirmPaneClose([activePane], "pane")) return;
-              const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(activeWs.id);
-              const currentPane = currentWorkspace?.panes.find((pane) => pane.id === activePane.id);
-              if (!currentWorkspace || !currentPane || currentWorkspace.panes.length <= 1) return;
-              if (currentPane.tabs.map((tab) => tab.sessionId).join("\0") !== activePane.tabs.map((tab) => tab.sessionId).join("\0")
-                && !await confirmPaneClose([currentPane], "pane")) return;
-              beforePaneClose(currentPane);
-              for (const tab of currentPane.tabs) {
-                if (!tabHasPty(tab)) continue;
-                evictTerminalCache(tab.sessionId);
-                killSession(tab.sessionId).catch((err) =>
-                  console.warn("[mycmux] killSession failed", tab.sessionId, err),
-                );
-                usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
-              }
-              removePaneFromWorkspace(currentWorkspace.id, currentPane.id);
-              // Focus a remaining pane after close
-              const remaining = currentWorkspace.panes.filter((p) => p.id !== currentPane.id);
-              if (remaining.length > 0) {
-                const neighbor =
-                  findPaneInDirection(apid!, "right", remaining) ||
-                  findPaneInDirection(apid!, "down", remaining) ||
-                  findPaneInDirection(apid!, "left", remaining) ||
-                  findPaneInDirection(apid!, "up", remaining) ||
-                  remaining[0].sessionId;
-                focusController.request("keyboard", { sessionId: neighbor, focus: true });
-              } else {
-                focusController.request("keyboard", { sessionId: null, focus: false });
-              }
-            })();
+          const activeWs = ws.find(w => w.id === aid);
+          const activePane = activeWs?.panes.find(p => paneMatchesSession(p, apid));
+          if (activeWs && activePane) {
+            void closePaneOperation({ kind: "pane", workspaceId: activeWs.id, paneId: activePane.id }, "ui").then(result => {
+              if (result.status !== "closed") return;
+              const remaining = useWorkspaceListStore.getState().getWorkspace(activeWs.id)?.panes ?? [];
+              const neighbor = findPaneInDirection(apid!, "right", remaining)
+                || findPaneInDirection(apid!, "down", remaining)
+                || findPaneInDirection(apid!, "left", remaining)
+                || findPaneInDirection(apid!, "up", remaining)
+                || remaining[0]?.sessionId;
+              focusController.request("keyboard", { sessionId: neighbor ?? null, focus: Boolean(neighbor) });
+            });
           }
           break;
         }
@@ -1050,7 +1025,6 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     addPaneToWorkspace,
     addPaneToWorkspaceWithOptions,
     restoreClosedPane,
-    removePaneFromWorkspace,
     addTabToPane,
     setActivePaneTab,
     togglePaneTabPin,
