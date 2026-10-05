@@ -86,6 +86,10 @@ pub fn open_workspace_window(
     }
 
     let restoring = saved_window_decoration(label.as_deref(), &workspaces);
+    // Only the saved Windows native branch has the new placement contract.
+    let maximized = if cfg!(target_os = "windows") && restoring.is_some() && native {
+        Some(workspaces[0]["window_group"]["maximized"].as_bool().unwrap_or(false))
+    } else { None };
     let resolved = if restoring.is_some() {
         reserve_child_window_label(&app, label)?
     } else {
@@ -96,7 +100,7 @@ pub fn open_workspace_window(
         // `window-adopt` listener that every window registers.
         ResolvedChildWindow::Existing(label) => {
             if restoring.is_some() {
-                restore_child_window_frame(&app, &label, x, y, width, height, restoring);
+                restore_child_window_frame(&app, &label, x, y, width, height, restoring, maximized);
             }
             state.window_registry.queue_adoption(&label, workspaces);
             emit_adopt(
@@ -120,7 +124,7 @@ pub fn open_workspace_window(
     state.window_registry.queue_adoption(&label, workspaces);
     let spawned = if restoring.is_some() {
         spawn_child_window_with_restore(&app, reservation, x, y, width, height, restoring,
-            Some(native))
+            Some(native), maximized)
     } else {
         spawn_child_window(&app, reservation, x, y, width, height)
     };

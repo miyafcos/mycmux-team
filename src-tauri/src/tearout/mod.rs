@@ -25,11 +25,15 @@ pub struct TearoutState {
     spare_generation: AtomicU64,
     moves: Mutex<HashMap<String, Arc<MoveState>>>,
     transfers: Mutex<HashMap<String, transfer::Transfer>>,
+    #[cfg(target_os = "windows")]
+    restored_windows: Mutex<HashMap<String, bool>>,
 }
 
 /// An idle spare must not keep the app alive or receive crash-rescued work.
 pub fn release_idle_after_destroy(app: &AppHandle, dying: &str) {
     let state = app.state::<TearoutState>();
+    #[cfg(target_os = "windows")]
+    if let Ok(mut restored) = state.restored_windows.lock() { restored.remove(dying); }
     let label = state
         .spare
         .lock()
@@ -84,6 +88,10 @@ pub struct MoveState {
     observer_removed: AtomicBool,
     started_at: AtomicU64,
     synthetic: AtomicBool,
+    moved: AtomicBool,
+    dragged: AtomicBool,
+    synthetic_origin: Mutex<Option<(f64, f64)>>,
+    original: Mutex<Option<WindowGeometry>>,
     applied_alpha: AtomicU8,
     alpha_calls: AtomicU64,
     sample_count: AtomicU64,
@@ -368,7 +376,7 @@ pub async fn tearout_warm(
             app.state::<crate::AppState>()
                 .window_registry
                 .set_close_intent(reservation.label(), true);
-            let window = tauri::WebviewWindowBuilder::new(
+            let builder = tauri::WebviewWindowBuilder::new(
                 &app,
                 reservation.label(),
                 tauri::WebviewUrl::default(),
@@ -377,11 +385,16 @@ pub async fn tearout_warm(
             .decorations(false)
             .resizable(true)
             .visible(false)
-            .focused(false)
             .inner_size(720.0, 520.0)
             .min_inner_size(240.0, 160.0)
-            .initialization_script("window.__MYCMUX_TEAROUT_WINDOW__ = true;")
-            .build()
+            .initialization_script("window.__MYCMUX_TEAROUT_WINDOW__ = true;");
+            // Windows must not retain tao's MARKER_DONT_FOCUS after first reveal.
+            // Quiet first show is handled natively while the window is hidden.
+            #[cfg(target_os = "windows")]
+            let builder = builder.focused(true);
+            #[cfg(target_os = "macos")]
+            let builder = builder.focused(false);
+            let window = builder.build()
             .map_err(|e| {
                 app.state::<crate::AppState>()
                     .window_registry
@@ -392,6 +405,8 @@ pub async fn tearout_warm(
             window
                 .set_size(tauri::LogicalSize::new(720.0, 520.0))
                 .map_err(|e| e.to_string())?;
+            #[cfg(target_os = "windows")]
+            native::watch_normal_insets(&window.as_ref().window())?;
             if let Some(icon) = app.default_window_icon().cloned() {
                 let _ = window.set_icon(icon);
             }
@@ -452,9 +467,23 @@ pub async fn tearout_warm(
 
 #[tauri::command]
 pub async fn tearout_child_ready(
+    app: AppHandle,
     window: tauri::Window,
     state: State<'_, TearoutState>,
 ) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let maximized = state.restored_windows.lock().map_err(|e| e.to_string())?.remove(window.label());
+        if let Some(maximized) = maximized {
+            let label = window.label().to_owned();
+            on_ui(&app, move |app| {
+                let window = app.get_window(&label).ok_or("Restored window disappeared")?;
+                native::quiet_show(&window, maximized)
+            }).await?;
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = app;
     if let Some((label, ready)) = state.spare.lock().map_err(|e| e.to_string())?.as_mut() {
         if label == window.label() {
             *ready = true;
@@ -537,18 +566,27 @@ pub async fn tearout_show(
     label: String,
     offset_x: f64,
     offset_y: f64,
+    logical_width: Option<f64>,
+    logical_height: Option<f64>,
 ) -> Result<Reveal, String> {
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        let _ = (app, label, offset_x, offset_y);
+        let _ = (app, label, offset_x, offset_y, logical_width, logical_height);
         Err("Native pane tear-out is Windows-only".into())
     }
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
         on_ui(&app, move |app| {
+            native::reveal(&app, &label, offset_x, offset_y,
+                logical_width.unwrap_or(720.0), logical_height.unwrap_or(520.0))
+        }).await
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (logical_width, logical_height);
+        on_ui(&app, move |app| {
             native::reveal(&app, &label, offset_x, offset_y)
-        })
-        .await
+        }).await
     }
 }
 
@@ -782,6 +820,9 @@ pub async fn tearout_settle(app: AppHandle, label: String) -> Result<(), String>
         on_ui(&app, move |app| {
             if let Some(window) = app.get_window(&label) {
                 native::set_alpha(&window, 255)?;
+                #[cfg(target_os = "windows")]
+                window.set_focus().map_err(|e| e.to_string())?;
+                #[cfg(target_os = "macos")]
                 window.set_focusable(true).map_err(|e| e.to_string())?;
             }
             Ok(())
@@ -796,6 +837,39 @@ pub struct WindowGeometry {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+    #[cfg(target_os = "windows")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<SavedPlacement>,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct SavedPlacement {
+    pub flags: u32,
+    pub show_cmd: u32,
+    pub min_position: [i32; 2],
+    pub max_position: [i32; 2],
+    pub normal: [i32; 4],
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn prepare_restored_window(window: &tauri::Window, maximized: bool) -> Result<(), String> {
+    native::watch_normal_insets(window)?;
+    window.app_handle().state::<TearoutState>().restored_windows.lock().map_err(|e| e.to_string())?
+        .insert(window.label().to_owned(), maximized);
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn saved_native_frame(window: &tauri::Window) -> Result<(crate::db::storage::WindowFrameConfig,
+    crate::db::storage::WindowFrameConfig, bool), String> {
+    native::saved_normal_frame(window)
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn restore_native_frame(window: &tauri::Window, x: f64, y: f64, width: f64, height: f64,
+    maximized: bool) -> Result<(), String> {
+    native::restore_saved_frame(window, x, y, width, height, maximized)
 }
 
 #[tauri::command]
@@ -806,6 +880,13 @@ pub async fn tearout_restore_geometry(
 ) -> Result<(), String> {
     on_ui(&app, move |app| {
         if let Some(window) = app.get_window(&label) {
+            #[cfg(target_os = "windows")]
+            {
+                native::restore_geometry(&window, geometry)?;
+                native::set_alpha(&window, 255)?;
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
             window
                 .set_position(tauri::PhysicalPosition::new(geometry.x, geometry.y))
                 .map_err(|e| e.to_string())?;
@@ -818,6 +899,7 @@ pub async fn tearout_restore_geometry(
             #[cfg(any(target_os = "windows", target_os = "macos"))]
             native::set_alpha(&window, 255)?;
             window.set_focusable(true).map_err(|e| e.to_string())?;
+            }
         }
         Ok(())
     })

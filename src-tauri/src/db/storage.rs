@@ -295,6 +295,8 @@ pub struct WindowGroupConfig {
     pub decorated: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_tearout: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximized: Option<bool>,
     // New frames use the inner size accepted by Tauri's window builder. The
     // legacy window_frame remains an outer frame for downgrade compatibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1969,5 +1971,55 @@ mod tests {
         assert!(legacy.source_path.is_none());
         assert!(legacy.source_kind.is_none());
         assert!(legacy.preview_path.is_none());
+    }
+}
+
+#[cfg(test)]
+mod maximized_window_compatibility_tests {
+    use super::{WindowFrameConfig, WindowGroupConfig};
+    use serde::{Deserialize, Serialize};
+
+    // The exact v0.83.0 window group, without the new optional field.
+    #[derive(Serialize, Deserialize)]
+    struct OldWindowGroup {
+        label: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decorated: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        native_tearout: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        frame: Option<WindowFrameConfig>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        active_workspace_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        active_pane_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        active_tab_id: Option<String>,
+    }
+
+    #[test]
+    fn old_window_group_defaults_maximized_and_round_trips_without_new_field() {
+        let old = r#"{"label":"mycmux-w2","decorated":false,"native_tearout":true,"frame":{"x":10,"y":20,"width":400,"height":300},"active_workspace_id":"ws","active_pane_id":"pane","active_tab_id":"tab"}"#;
+        let new: WindowGroupConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(new.maximized, None);
+        let serialized = serde_json::to_string(&new).unwrap();
+        assert!(!serialized.contains("maximized"));
+        let old_again: OldWindowGroup = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(serde_json::to_value(old_again).unwrap(), serde_json::from_str::<serde_json::Value>(old).unwrap());
+    }
+
+    #[test]
+    fn maximized_group_survives_new_round_trip_and_old_reader_ignores_only_the_flag() {
+        let input = r#"{"label":"mycmux-w2","decorated":false,"native_tearout":true,"maximized":true,"frame":{"x":10,"y":20,"width":400,"height":300},"active_workspace_id":"ws","active_pane_id":"pane","active_tab_id":"tab"}"#;
+        let new: WindowGroupConfig = serde_json::from_str(input).unwrap();
+        let serialized = serde_json::to_string(&new).unwrap();
+        let new_again: WindowGroupConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(new, new_again);
+        assert_eq!(new_again.maximized, Some(true));
+        let old: OldWindowGroup = serde_json::from_str(&serialized).unwrap();
+        let downgraded: WindowGroupConfig = serde_json::from_str(&serde_json::to_string(&old).unwrap()).unwrap();
+        let mut expected = new;
+        expected.maximized = None;
+        assert_eq!(downgraded, expected);
     }
 }
