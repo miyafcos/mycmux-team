@@ -2,7 +2,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const invokeMock = vi.hoisted(() => vi.fn());
-vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invokeMock(...args) }));
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()), invoke: (...args: unknown[]) => invokeMock(...args) }));
 vi.mock("../../src/stores/ailogStore", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/stores/ailogStore")>();
   // Only the React subscription is adapted for SSR; transitions are executed

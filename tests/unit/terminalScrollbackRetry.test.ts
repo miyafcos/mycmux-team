@@ -1,6 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import { TerminalScrollbackRetry } from "../../src/components/terminal/XTermWrapper";
 describe("scrollback retry state", () => {
+  it("does not spend the failure budget after visibility loss or an older generation's completion", async () => {
+    let now = 0;
+    const retry = new TerminalScrollbackRetry(() => now);
+    for (let n = 0; n < 10; n++) { await retry.run(async () => false, () => false); now += 10_000; }
+    expect(retry.delay()).toBe(160);
+    let finish!: (value: boolean) => void;
+    const old = retry.run(() => new Promise(resolve => { finish = resolve; }));
+    retry.reset(); finish(false); await old;
+    expect(retry.delay()).toBe(160);
+    await retry.run(async () => false); now += 160;
+    await retry.run(async () => false); expect(retry.delay()).toBe(320);
+  });
   it("backs off, admits six attempts, then stops until a visibility resync", async () => {
     let now = 0;
     const retry = new TerminalScrollbackRetry(() => now);

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { createSession, killSession, SessionClosedError } from "../../src/lib/ipc";
+import { createSession, killSession, SessionClosedError, getCurrentSessionEpoch } from "../../src/lib/ipc";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -21,6 +21,30 @@ beforeEach(() => {
 });
 
 describe("session create/kill ordering", () => {
+  it("does not commit a background attach epoch over the visible renderer", async () => {
+    await start("background-race");
+    const epoch = getCurrentSessionEpoch("background-race");
+    await createSession("background-race", "shell", [], 80, 24, () => {}, undefined, undefined, false,
+      { backgroundOnly: true, reason: "background" });
+    expect(getCurrentSessionEpoch("background-race")).toBe(epoch);
+    expect(vi.mocked(invoke).mock.calls.at(-1)?.[1]).toMatchObject({ backgroundOnly: true });
+  });
+
+  it("releases the create tail after a lost IPC and ignores its late completion", async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = deferred();
+      vi.mocked(invoke).mockImplementationOnce(() => pending.promise);
+      const creating = start("lost-create");
+      const rejected = expect(creating).rejects.toThrow("Terminal IPC timed out");
+      await vi.advanceTimersByTimeAsync(8_000); await rejected;
+      expect(getCurrentSessionEpoch("lost-create")).toBe(0);
+      await start("lost-create"); const fresh = getCurrentSessionEpoch("lost-create");
+      pending.resolve(); await Promise.resolve();
+      expect(getCurrentSessionEpoch("lost-create")).toBe(fresh);
+      expect(calls()).toEqual(["create_session", "create_session"]);
+    } finally { vi.useRealTimers(); }
+  });
   it("waits for an in-flight create before invoking kill", async () => {
     const pending = deferred();
     vi.mocked(invoke).mockImplementationOnce(() => pending.promise);

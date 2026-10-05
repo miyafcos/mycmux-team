@@ -9,8 +9,15 @@ const mocks = vi.hoisted(() => ({
   fragments: vi.fn<() => Promise<Array<{ window_label: string }>>>(),
   confirm: vi.fn(async (_body: string, _options: Record<string, unknown>) => true),
   close: vi.fn(async () => {}),
+  minimize: vi.fn(async () => {}), toggle: vi.fn(async () => {}),
+  maximized: false, resize: (() => {}) as () => void,
+  regrab: vi.fn(async (_record: unknown, onEnd?: (sample: { moved: boolean }) => void) => { onEnd?.({ moved: false }); }),
 }));
-vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ startDragging: vi.fn() }) }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ startDragging: vi.fn(async () => {}),
+  minimize: mocks.minimize, toggleMaximize: mocks.toggle, isMaximized: async () => mocks.maximized,
+  listen: async () => () => {},
+  onResized: async (callback: () => void) => { mocks.resize = callback; return () => {}; }, onMoved: async () => () => {},
+}) }));
 vi.mock("../../src/lib/appConfirmation", () => ({ cancelAppConfirmations: vi.fn(() => false), confirm: mocks.confirm }));
 vi.mock("../../src/lib/ipc", () => ({ getWindowFragments: mocks.fragments }));
 vi.mock("../../src/lib/windowContext", () => ({ windowLabel: () => "mycmux-native" }));
@@ -25,14 +32,20 @@ vi.mock("../../src/components/layout/themeVars", () => ({ buildThemeVars: () => 
 vi.mock("../../src/components/workspace/WorkspaceView", () => ({ default: () => null }));
 vi.mock("../../src/components/workspace/PaneDragOverlay", () => ({ default: () => null }));
 vi.mock("../../src/components/layout/SocketListener", () => ({ closeWindowWorkspacesAndDestroy: mocks.close }));
-vi.mock("../../src/lib/tearout/runtime", () => ({ useTearoutStore: vi.fn(), regrabTearoutWindow: vi.fn() }));
+vi.mock("../../src/lib/tearout/runtime", () => ({ useTearoutStore: vi.fn(), regrabTearoutWindow: mocks.regrab }));
 
+import { useSettingsStore } from "../../src/stores/settingsStore";
+import { titleBarStrings } from "../../src/components/layout/titleBarStrings";
+import { tearoutStrings } from "../../src/components/layout/tearoutStrings";
 const { default: NativePaneShell } = await import("../../src/components/layout/NativePaneShell");
 let root: Root;
 let container: HTMLDivElement;
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.clearAllMocks();
+  mocks.maximized = false;
+  Object.defineProperty(navigator, "platform", { configurable: true, value: "Win32" });
+  useSettingsStore.setState({ nativePaneTearoutEnabled: true });
   mocks.confirm.mockResolvedValue(true);
   mocks.fragments.mockResolvedValue([{ window_label: "main" }, { window_label: "mycmux-native" }]);
   mocks.panes = [{ id: "pane", agentId: "shell", activeTabId: "a", tabs: [
@@ -50,7 +63,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 async function close() {
-  await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+  await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(button => button.getAttribute("aria-label") === tearoutStrings.close)!.click());
 }
 
 describe("native pane window close confirmation", () => {
@@ -76,7 +89,7 @@ describe("native pane window close confirmation", () => {
     mocks.confirm.mockResolvedValue(false);
     await close();
     expect(mocks.close).not.toHaveBeenCalled();
-    expect(container.querySelector<HTMLButtonElement>("button")!.disabled).toBe(false);
+    expect(Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(button => button.getAttribute("aria-label") === tearoutStrings.close)!.disabled).toBe(false);
   });
   it("does not mislabel an unknown peer count as quitting the app", async () => {
     mocks.fragments.mockRejectedValue(new Error("registry unavailable"));
@@ -94,5 +107,55 @@ describe("native pane window close confirmation", () => {
     expect(mocks.fragments).not.toHaveBeenCalled();
     expect(mocks.confirm).not.toHaveBeenCalled();
     expect(mocks.close).toHaveBeenCalledOnce();
+  });
+});
+
+function band() { return container.querySelector<HTMLElement>("[data-native-pane-band]")!; }
+function press(x = 30, y = 10) {
+  const event = new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: x, clientY: y });
+  Object.defineProperty(event, "pointerId", { value: 1 });
+  band().dispatchEvent(event);
+}
+describe("Windows native band controls and immediate OS movement", () => {
+  it("shares the title bar controls and invokes minimize and maximize", async () => {
+    const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>("button"));
+    expect(buttons.map(button => button.getAttribute("aria-label")))
+      .toEqual([titleBarStrings.minimize, titleBarStrings.maximize, tearoutStrings.close]);
+    expect(buttons.every(button => button.classList.contains("cmux-title-btn"))).toBe(true);
+    await act(async () => { buttons[0].click(); buttons[1].click(); });
+    expect(mocks.minimize).toHaveBeenCalledOnce(); expect(mocks.toggle).toHaveBeenCalledOnce();
+    mocks.maximized = true;
+    await act(async () => mocks.resize());
+    expect(buttons[1].getAttribute("aria-label")).toBe(titleBarStrings.restore);
+    expect(buttons[1].querySelector("path")).not.toBeNull();
+  });
+  it("starts Windows movement on pointerdown and toggles on an unmoved second press", async () => {
+    await act(async () => press());
+    expect(mocks.regrab).toHaveBeenCalledOnce();
+    await act(async () => press());
+    expect(mocks.regrab).toHaveBeenCalledOnce(); expect(mocks.toggle).toHaveBeenCalledOnce();
+  });
+  it("supports a native double-click event without a preceding move", async () => {
+    await act(async () => band().dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+    expect(mocks.toggle).toHaveBeenCalledOnce();
+  });
+  it("never toggles after a moved gesture, and buttons never start dragging", async () => {
+    mocks.regrab.mockImplementationOnce(async (_record, onEnd) => { onEnd?.({ moved: true }); });
+    await act(async () => press());
+    await act(async () => band().dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+    expect(mocks.toggle).not.toHaveBeenCalled();
+    const event = new MouseEvent("pointerdown", { bubbles: true, button: 0 });
+    await act(async () => container.querySelector("button")!.dispatchEvent(event));
+    expect(mocks.regrab).toHaveBeenCalledOnce();
+  });
+  it.each([["MacIntel", true], ["Win32", false]] as const)("keeps the old band on %s with enabled=%s", async (platform, enabled) => {
+    Object.defineProperty(navigator, "platform", { configurable: true, value: platform });
+    useSettingsStore.setState({ nativePaneTearoutEnabled: enabled, macNativePaneTearoutEnabled: true });
+    await act(async () => root.render(<NativePaneShell />));
+    expect(container.querySelectorAll("button")).toHaveLength(1);
+    await act(async () => press());
+    expect(mocks.regrab).not.toHaveBeenCalled();
+    await act(async () => band().dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+    expect(mocks.toggle).not.toHaveBeenCalled();
   });
 });

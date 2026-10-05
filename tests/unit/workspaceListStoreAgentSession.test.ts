@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __resetLiveAgentSessionConflictReporterForTests,
   useWorkspaceListStore,
@@ -172,21 +172,42 @@ describe("setPaneAgentSessionFromMetadata", () => {
     expect(updated.suppressedAgentSessions).toEqual(parked.suppressedAgentSessions);
   });
 
-  it("notifies again when the same live conflict is resolved and later recurs", () => {
+  it("reports resolved live conflicts again before and after the actionless notice is dismissed", () => {
     const targetPayload = {
       agentKind: "claude" as const,
       agentSessionId: "shared-session",
       claudeSessionId: "shared-session",
     };
-    useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata("terminal-target", targetPayload);
-    expect(useToastStore.getState().toasts).toHaveLength(1);
+    const claim = () => useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata("terminal-target", targetPayload);
+    const resolve = () => {
+      useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata("terminal-owner", null);
+      expect(claim().accepted).toBe(true);
+      useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata("terminal-target", null);
+      useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata("terminal-owner", targetPayload);
+    };
+    const originalPush = useToastStore.getState().pushToast;
+    const push = vi.spyOn(useToastStore.getState(), "pushToast");
+    try {
+      expect(claim().accepted).toBe(false);
+      expect(claim().accepted).toBe(false);
+      expect(push).toHaveBeenCalledTimes(1);
+      expect(useToastStore.getState().toasts).toHaveLength(1);
+      const firstToastId = useToastStore.getState().toasts[0].id;
 
-    useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata("terminal-owner", null);
-    useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata("terminal-target", targetPayload);
-    useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata("terminal-target", null);
-    useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata("terminal-owner", targetPayload);
-    useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata("terminal-target", targetPayload);
+      resolve();
+      expect(claim().accepted).toBe(false);
+      expect(push).toHaveBeenCalledTimes(2);
+      expect(useToastStore.getState().toasts.map(toast => toast.id)).toEqual([firstToastId]);
 
-    expect(useToastStore.getState().toasts).toHaveLength(2);
+      resolve();
+      useToastStore.getState().dismissToast(firstToastId);
+      expect(claim().accepted).toBe(false);
+      expect(push).toHaveBeenCalledTimes(3);
+      expect(useToastStore.getState().toasts).toHaveLength(1);
+      expect(useToastStore.getState().toasts[0].id).not.toBe(firstToastId);
+    } finally {
+      push.mockRestore();
+      useToastStore.setState({ pushToast: originalPush });
+    }
   });
 });

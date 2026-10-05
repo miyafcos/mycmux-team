@@ -10,7 +10,8 @@ type UsageState = {
   generatedAt: string | null;
   lastError: string | null;
   lastFetchedAt: number | null;
-  fetch: () => Promise<void>;
+  loading: boolean;
+  fetch: (refreshMetadata?: boolean) => Promise<void>;
 };
 
 function errorMessage(error: unknown): string {
@@ -29,11 +30,13 @@ export const useUsageStore = create<UsageState>((set) => ({
   generatedAt: null,
   lastError: null,
   lastFetchedAt: null,
+  loading: false,
 
-  fetch: async () => {
+  fetch: async (refreshMetadata = false) => {
     const mySeq = ++accountsSeq;
+    set({ loading: true });
     try {
-      const report = await getAccountUsage();
+      const report = await (refreshMetadata ? getAccountUsage(true) : getAccountUsage());
       if (mySeq !== accountsSeq) {
         return;
       }
@@ -45,6 +48,7 @@ export const useUsageStore = create<UsageState>((set) => ({
         generatedAt: report.generated_at,
         lastError: null,
         lastFetchedAt: Date.now(),
+        loading: false,
       });
     } catch (error) {
       if (mySeq !== accountsSeq) {
@@ -52,7 +56,7 @@ export const useUsageStore = create<UsageState>((set) => ({
       }
       // Stale-while-error: the whole call failed, so keep the last known-good
       // rows on screen and surface only the error.
-      set({ lastError: errorMessage(error), lastFetchedAt: Date.now() });
+      set({ lastError: errorMessage(error), lastFetchedAt: Date.now(), loading: false });
     }
   },
 }));
@@ -64,5 +68,6 @@ export function __resetUsageStoreForTests(): void {
     generatedAt: null,
     lastError: null,
     lastFetchedAt: null,
+    loading: false,
   });
 }

@@ -16,7 +16,8 @@ vi.mock("../../src/components/layout/evidenceGrouping", async (importActual) => 
   return { ...actual, runEvidenceGroupingAnalysis: harness.runGroupingAnalysis };
 });
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => true) }));
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()), invoke: vi.fn(async () => true) }));
 vi.mock("../../src/components/layout/tabGrouping", async (importActual) => {
   const actual = await importActual<typeof import("../../src/components/layout/tabGrouping")>();
   return { ...actual, runGroupingAnalysis: vi.fn(async () => analysisHarness.value) };
@@ -801,7 +802,7 @@ describe("TabGroupingPanel editable after map", () => {
     expect(document.querySelector(".cmux-tab-grouping-body.is-confirm")).not.toBeNull();
   });
 
-  it("routes the review CustomEvent through the button while a plain event analyzes normally", async () => {
+  it("routes review to the legacy panel and a plain event to the overview", async () => {
     const undo = {
       recordId: "review-event-1",
       schemaVersion: 1,
@@ -838,6 +839,9 @@ describe("TabGroupingPanel editable after map", () => {
     vi.mocked(runGroupingAnalysis).mockClear();
     await act(async () => window.dispatchEvent(new Event(TAB_GROUPING_OPEN_EVENT)));
     await settle();
+    expect(runGroupingAnalysis).not.toHaveBeenCalled();
+    expect(document.querySelector("[data-work-overview]")).not.toBeNull();
+    await click(button("前の 3 案で並べ直す"));
     expect(runGroupingAnalysis).toHaveBeenCalledTimes(1);
   });
 });
