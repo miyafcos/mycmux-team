@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import { create } from "zustand";
 import { nativePaneTearoutEnabled, isMacTearoutPlatform } from "./feature";
 import { afterTearoutFrame } from "./macFrame";
+import { sourceLogicalExtent, windowsNativeBand } from "./windowBehavior";
 import { startTearoutFrames, finishTearoutFrames, disposeTearoutFrames } from "./frameMetrics";
 import { expectTearoutAttachments } from "./sessionAttachment";
 import { installMacTearoutPrewarm } from "./macPrewarm";
@@ -50,7 +51,7 @@ export interface NativeSample {
   native_started_at: number | null; error: string | null;
   scale: number; monitor: string | null; focus_stolen: boolean;
   esc_at: number | null; original: { x: number; y: number; width: number; height: number };
-  source?: string; region_count?: number; receiver_epoch?: number;
+  source?: string; region_count?: number; receiver_epoch?: number; moved?: boolean;
 }
 interface Adapter {
   hydrated?: Promise<void>; serialize: (workspace: Workspace) => WorkspaceConfig; publish: () => Promise<void> }
@@ -459,8 +460,13 @@ export async function markTearoutChildReady(): Promise<void> {
   if (restored) delete (window as RestoredWindow).__MYCMUX_RESTORED_WINDOW__;
   try {
     await listenersReady;
-    if (restored) await invoke("plugin:window|show");
-    await invoke("tearout_child_ready");
+    if (restored && /^Win/i.test(navigator.platform) && window.__MYCMUX_TEAROUT_WINDOW__ === true) {
+      // The backend reveals a saved native child directly in its saved state.
+      await invoke("tearout_child_ready");
+    } else {
+      if (restored) await invoke("plugin:window|show");
+      await invoke("tearout_child_ready");
+    }
   } catch (error) {
     if (restored) (window as RestoredWindow).__MYCMUX_RESTORED_WINDOW__ = true;
     throw error;
@@ -480,7 +486,7 @@ export function canRegrabTearoutPane(item: Extract<PaneDragItem, { kind: "pane" 
 }
 
 /** A complete native child moves itself; it never consumes another spare. */
-export async function regrabTearoutWindow(record?: TearoutRecord): Promise<void> {
+export async function regrabTearoutWindow(record?: TearoutRecord, onEnd?: (sample: NativeSample) => void): Promise<void> {
   const label = windowLabel();
   const workspaces = useWorkspaceListStore.getState().workspaces;
   if (workspaces.length !== 1) throw new Error("tearout_regrab_shape_unsupported");
@@ -497,6 +503,7 @@ export async function regrabTearoutWindow(record?: TearoutRecord): Promise<void>
   stop = await listen<NativeSample>("mycmux://tearout-native", ({ payload }) => {
     if (payload.id !== id || payload.phase !== "end" || ended) return;
     ended = true;
+    onEnd?.(payload);
     record!.native(payload);
     void (async () => {
       if (!payload.escaped && !payload.error && payload.approval) await requestDock(label, payload.approval, record);
@@ -566,6 +573,10 @@ async function tearoutGroup(item: TransferItem, gap: Rect, offset: { x: number; 
       columnWidths: [1], rowHeightsPerCol: [[1]], columnDividerPins: [], rowDividerPinsPerCol: [[]] }
     : { ...source, id: crypto.randomUUID(), panes: [{ ...pane, id: crypto.randomUUID(), tabs: [tab!],
       activeTabId: tab!.id, sessionId: tab!.sessionId }], splitColumns: undefined };
+  const sourceElement = Array.from(document.querySelectorAll<HTMLElement>("[data-dnd-pane-id]"))
+    .find(element => element.dataset.dndPaneId === pane.id && element.dataset.dndWorkspaceId === source.id);
+  const logicalExtent = sourceLogicalExtent(item.kind, sourceElement?.getBoundingClientRect() ?? null,
+    { width: window.innerWidth, height: window.innerHeight });
   const serialized = adapter.serialize(transfer);
   const origin = item.kind === "tab" ? detachedOriginForDrag(source, item) : undefined;
   const config = item.kind === "tab" ? origin && detachedWorkspaceConfig(serialized, origin)
@@ -686,7 +697,9 @@ async function tearoutGroup(item: TransferItem, gap: Rect, offset: { x: number; 
       void finish(payload).catch((error) => console.warn("[tearout] rollback failed", error));
     }, { target: { kind: "Window", label: windowLabel() } });
     failure = "show_failed";
-    record.revealed(await invoke<Reveal>("tearout_show", { label, offsetX: offset.x, offsetY: offset.y }));
+    record.revealed(await invoke<Reveal>("tearout_show", { label, offsetX: offset.x, offsetY: offset.y,
+      ...(windowsNativeBand(useSettingsStore.getState().nativePaneTearoutEnabled)
+        ? { logicalWidth: logicalExtent.width, logicalHeight: logicalExtent.height } : {}) }));
     await invoke("tearout_phase", { id, phase: "shown" });
     checkCancelled();
     await invoke("tearout_phase", { id, phase: "committed" });
