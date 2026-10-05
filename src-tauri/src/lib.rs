@@ -34,6 +34,7 @@ mod socket;
 mod status_feed;
 mod test_profile;
 mod tearout;
+mod snap_layouts;
 pub mod terminal_config;
 pub mod usage;
 mod util;
@@ -396,6 +397,7 @@ pub fn run() {
         .manage(usage::UsageState::new())
         .manage(cli_accounts::login_watch::LoginRegistry::default())
         .invoke_handler(tauri::generate_handler![
+            snap_layouts::snap_layouts_update,
             perf_timeline::perf_timeline_read,
             claude_skills::claude_skills_status,
             claude_skills::claude_skills_install,
@@ -787,6 +789,8 @@ pub fn run() {
         .on_window_event(|window, event| {
             use tauri::Manager;
             if matches!(event, tauri::WindowEvent::Destroyed) {
+                #[cfg(target_os = "windows")]
+                snap_layouts::window_destroyed(window.label());
                 if let Some(state) = window.try_state::<AppState>() {
                     state.livebrief_service.unsubscribe(window.label());
                     commands::window_registry::handle_window_destroyed(window.app_handle(), window.label());
