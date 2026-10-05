@@ -418,7 +418,8 @@ it("reveals restored children after listeners without taking focus, then keeps t
     expect(restored.__MYCMUX_RESTORED_WINDOW__).toBeUndefined();
     expect(isTearoutChild()).toBe(native);
   }
-  expect(mocks.invoke.mock.calls.filter(([command]) => command === "plugin:window|show")).toHaveLength(2);
+  expect(mocks.invoke.mock.calls.filter(([command]) => command === "plugin:window|show")).toHaveLength(1);
+  expect(mocks.invoke.mock.calls.filter(([command]) => command === "tearout_child_ready")).toHaveLength(2);
   expect(mocks.invoke.mock.calls.some(([command]) => command.includes("focus"))).toBe(false);
   delete restored.__MYCMUX_TEAROUT_WINDOW__;
 });
@@ -456,4 +457,31 @@ it("does not create a spare for a runtime closed while restoration is pending", 
   stop = installTearoutRuntime({ serialize: config, publish: async () => {}, hydrated: ready });
   stop(); hydrated(); await ready; await Promise.resolve();
   expect(mocks.invoke.mock.calls.some(([command]) => command === "tearout_warm")).toBe(false);
+});
+
+it.each(["MacIntel", "Win32"])("passes source logical size only on Windows (%s)", async platform => {
+  Object.defineProperty(navigator, "platform", { configurable: true, value: platform });
+  useSettingsStore.setState({ macNativePaneTearoutEnabled: true });
+  const pane = document.createElement("div");
+  pane.dataset.dndPaneId = "pane"; pane.dataset.dndWorkspaceId = "source";
+  pane.getBoundingClientRect = () => ({ width: 654, height: 432 } as DOMRect);
+  document.body.append(pane);
+  try {
+    await tearoutTab(item, gap, { x: 10, y: 10 });
+    const args = mocks.invoke.mock.calls.find(([command]) => command === "tearout_show")![1];
+    expect(args).toEqual({ label: "mycmux-w42", offsetX: 10, offsetY: 10,
+      ...(platform === "Win32" ? { logicalWidth: 654, logicalHeight: 432 } : {}) });
+  } finally { pane.remove(); }
+});
+
+it("keeps the original Mac restored-child reveal order for both shell kinds", async () => {
+  Object.defineProperty(navigator, "platform", { configurable: true, value: "MacIntel" });
+  const restored = window as Window & { __MYCMUX_RESTORED_WINDOW__?: boolean };
+  for (const native of [false, true]) {
+    mocks.invoke.mockClear();
+    restored.__MYCMUX_RESTORED_WINDOW__ = true; window.__MYCMUX_TEAROUT_WINDOW__ = native;
+    await markTearoutChildReady();
+    expect(mocks.invoke.mock.calls.map(([command]) => command)).toEqual(["plugin:window|show", "tearout_child_ready"]);
+  }
+  delete window.__MYCMUX_TEAROUT_WINDOW__;
 });

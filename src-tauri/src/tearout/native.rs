@@ -3,9 +3,9 @@ use super::{unix_ms, Approval, MoveState, Reveal, TearoutState, WindowGeometry};
 use serde::Serialize;
 use std::time::{Duration, Instant};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
-    sync::{atomic::Ordering, Arc},
+    sync::{atomic::Ordering, Arc, Mutex, OnceLock},
 };
 use tauri::{AppHandle, Emitter, Manager};
 use windows::Win32::{
@@ -23,7 +23,9 @@ use windows::Win32::{
             GetTopWindow, GetWindow, GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindowVisible,
             PostMessageW, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowsHookExW,
             ShowWindow, UnhookWindowsHookEx, GWL_EXSTYLE, GW_HWNDNEXT, HHOOK, LWA_ALPHA,
-            SW_SHOWNOACTIVATE, WH_KEYBOARD, WM_CANCELMODE, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE,
+            GetWindowPlacement, SetWindowPlacement, SetWindowPos, SW_MAXIMIZE, SW_SHOWNORMAL,
+            SWP_NOACTIVATE, SWP_NOZORDER, WINDOWPLACEMENT, WINDOWPLACEMENT_FLAGS, GetClientRect, IsZoomed,
+            WPF_RESTORETOMAXIMIZED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, HCBT_ACTIVATE, WH_CBT, WH_KEYBOARD, WM_CANCELMODE, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE,
             WM_KEYDOWN, WM_NCDESTROY, WS_EX_LAYERED,
         },
     },
@@ -31,7 +33,20 @@ use windows::Win32::{
 
 pub fn cursor() -> Result<POINT, String> {
     let mut p = POINT::default();
-    unsafe { GetCursorPos(&mut p) }.map_err(|e| e.to_string())?;
+    if let Err(error) = unsafe { GetCursorPos(&mut p) } {
+        // Explicit test-profile input for a non-input hidden desktop. Never
+        // synthesize a cursor in the live application or move the real pointer.
+        if crate::test_profile::is_active() {
+            if let Ok(root) = crate::test_profile::runtime_dir() {
+                if let Ok(bytes) = std::fs::read(root.join("tearout-test-cursor.json")) {
+                    if let Ok(point) = serde_json::from_slice::<[i32; 2]>(&bytes) {
+                        return Ok(POINT { x: point[0], y: point[1] });
+                    }
+                }
+            }
+        }
+        return Err(error.to_string());
+    }
     Ok(p)
 }
 
@@ -40,6 +55,8 @@ pub fn reveal(
     label: &str,
     offset_x: f64,
     offset_y: f64,
+    logical_width: f64,
+    logical_height: f64,
 ) -> Result<Reveal, String> {
     let window = app.get_window(label).ok_or("Prepared window disappeared")?;
     let point = cursor()?;
@@ -47,25 +64,21 @@ pub fn reveal(
         .monitor_from_point(point.x as f64, point.y as f64)
         .map_err(|e| e.to_string())?;
     let scale = monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0);
+    let work = monitor_area(point, scale).map(|m| m.work).unwrap_or(Rect { width: 800.0 * scale, height: 600.0 * scale, ..Rect::default() });
+    let (width, height) = geometry::initial_logical_size(logical_width, logical_height, work, scale);
     window
         .set_position(tauri::PhysicalPosition::new(
-            point.x - (offset_x.clamp(0.0, 680.0) * scale).round() as i32,
+            point.x - (offset_x.clamp(0.0, (width - 40.0).max(0.0)) * scale).round() as i32,
             point.y - (offset_y.clamp(0.0, 30.0) * scale).round() as i32,
         ))
         .map_err(|e| e.to_string())?;
     window
-        .set_size(tauri::LogicalSize::new(720.0, 520.0))
+        .set_size(tauri::PhysicalSize::new((width * scale).round() as u32, (height * scale).round() as u32))
         .map_err(|e| e.to_string())?;
-    window.set_focusable(false).map_err(|e| e.to_string())?;
     let foreground = unsafe { GetForegroundWindow() };
     let shown_at = unix_ms();
-    window.show().map_err(|e| e.to_string())?;
+    quiet_show(&window, false)?;
     let handle = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
-    // ShowWindow returns previous visibility, not success; verify it below.
-    let _ = unsafe { ShowWindow(handle, SW_SHOWNOACTIVATE) };
-    if !unsafe { IsWindowVisible(handle) }.as_bool() {
-        return Err("Window did not become visible".into());
-    }
     Ok(Reveal {
         shown_at,
         visible_at: unix_ms(),
@@ -79,6 +92,216 @@ pub fn reveal(
             false,
         ),
     })
+}
+
+
+thread_local! {
+    static QUIET_SHOW_TARGET: Cell<usize> = const { Cell::new(0) };
+}
+
+unsafe extern "system" fn quiet_activation(code: i32, target: WPARAM, data: LPARAM) -> LRESULT {
+    if code == HCBT_ACTIVATE as i32 && QUIET_SHOW_TARGET.with(|quiet| quiet.get() == target.0) {
+        return LRESULT(1);
+    }
+    unsafe { CallNextHookEx(None, code, target, data) }
+}
+
+/// Scoped to this UI thread and this hidden window's first synchronous show.
+/// Explicit ShowWindow activation is vetoed without persisting tao's
+/// MARKER_DONT_FOCUS or changing attributes during a later native move.
+struct QuietShowActivation {
+    hook: HHOOK,
+    previous: usize,
+}
+
+impl QuietShowActivation {
+    fn new(handle: HWND) -> Result<Self, String> {
+        let hook = unsafe { SetWindowsHookExW(WH_CBT, Some(quiet_activation), None, GetCurrentThreadId()) }
+            .map_err(|e| e.to_string())?;
+        let previous = QUIET_SHOW_TARGET.with(|quiet| quiet.replace(handle.0 as usize));
+        Ok(Self { hook, previous })
+    }
+}
+
+impl Drop for QuietShowActivation {
+    fn drop(&mut self) {
+        QUIET_SHOW_TARGET.with(|quiet| quiet.set(self.previous));
+        let _ = unsafe { UnhookWindowsHookEx(self.hook) };
+    }
+}
+
+/// No tao flag change after the hidden window's first quiet reveal.
+pub(super) fn quiet_show(window: &tauri::Window, maximized: bool) -> Result<(), String> {
+    let handle = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
+    if !unsafe { IsWindowVisible(handle) }.as_bool() {
+        let _activation = QuietShowActivation::new(handle)?;
+        let style = unsafe { GetWindowLongPtrW(handle, GWL_EXSTYLE) };
+        unsafe { SetWindowLongPtrW(handle, GWL_EXSTYLE, style | WS_EX_NOACTIVATE.0 as isize) };
+        if maximized {
+            let _ = unsafe { ShowWindow(handle, SW_MAXIMIZE) };
+        }
+        let shown = window.show().map_err(|e| e.to_string());
+        // Tao normally rewrites the style during show. Also clear explicitly
+        // if WM_SHOWWINDOW already made its cached visibility flag current.
+        let style = unsafe { GetWindowLongPtrW(handle, GWL_EXSTYLE) };
+        unsafe { SetWindowLongPtrW(handle, GWL_EXSTYLE, style & !(WS_EX_NOACTIVATE.0 as isize)) };
+        shown?;
+    }
+    if !unsafe { IsWindowVisible(handle) }.as_bool() {
+        return Err("Window did not become visible".into());
+    }
+    Ok(())
+}
+
+fn monitor_area(point: POINT, scale: f64) -> Option<geometry::MonitorArea> {
+    let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFOEXW::default();
+    info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+    if !unsafe { GetMonitorInfoW(monitor, &mut info.monitorInfo) }.as_bool() { return None; }
+    let rect = |r: RECT| Rect { x: r.left as f64, y: r.top as f64,
+        width: (r.right - r.left) as f64, height: (r.bottom - r.top) as f64 };
+    Some(geometry::MonitorArea { bounds: rect(info.monitorInfo.rcMonitor), work: rect(info.monitorInfo.rcWork), scale })
+}
+
+fn monitor_areas(app: &AppHandle) -> Vec<geometry::MonitorArea> {
+    app.available_monitors().unwrap_or_default().into_iter().filter_map(|monitor| {
+        let p = monitor.position();
+        let size = monitor.size();
+        monitor_area(POINT { x: p.x + size.width as i32 / 2, y: p.y + size.height as i32 / 2 }, monitor.scale_factor())
+    }).collect()
+}
+
+fn placement(window: &tauri::Window) -> Result<WINDOWPLACEMENT, String> {
+    let handle = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
+    let mut value = WINDOWPLACEMENT { length: std::mem::size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
+    unsafe { GetWindowPlacement(handle, &mut value) }.map_err(|e| e.to_string())?;
+    Ok(value)
+}
+
+fn geometry(window: &tauri::Window) -> Result<WindowGeometry, String> {
+    let position = window.outer_position().map_err(|e| e.to_string())?;
+    let size = window.inner_size().map_err(|e| e.to_string())?;
+    let p = placement(window)?;
+    Ok(WindowGeometry { x: position.x, y: position.y, width: size.width, height: size.height,
+        placement: Some(super::SavedPlacement { flags: p.flags.0, show_cmd: p.showCmd,
+            min_position: [p.ptMinPosition.x, p.ptMinPosition.y], max_position: [p.ptMaxPosition.x, p.ptMaxPosition.y],
+            normal: [p.rcNormalPosition.left, p.rcNormalPosition.top, p.rcNormalPosition.right, p.rcNormalPosition.bottom] }) })
+}
+
+pub(super) fn restore_geometry(window: &tauri::Window, original: WindowGeometry) -> Result<(), String> {
+    // The OS move loop may already have restored Esc, including an arranged
+    // (snapped) state. Do not issue another show-state command in that case.
+    if geometry(window)? == original { return Ok(()); }
+    let handle = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
+    if let Some(p) = original.placement {
+        let native = WINDOWPLACEMENT { length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+            flags: WINDOWPLACEMENT_FLAGS(p.flags), showCmd: p.show_cmd,
+            ptMinPosition: POINT { x: p.min_position[0], y: p.min_position[1] },
+            ptMaxPosition: POINT { x: p.max_position[0], y: p.max_position[1] },
+            rcNormalPosition: RECT { left: p.normal[0], top: p.normal[1], right: p.normal[2], bottom: p.normal[3] } };
+        // Esc intentionally restores the exact OS placement; no tao geometry
+        // setter may clear the cached MAXIMIZED flag or rewrite layered style.
+        unsafe { SetWindowPlacement(handle, &native) }.map_err(|e| e.to_string())
+    } else {
+        let mut rect = RECT { right: original.width as i32, bottom: original.height as i32, ..Default::default() };
+        adjust_normal_rect(handle, &mut rect)?;
+        unsafe { SetWindowPos(handle, None, original.x, original.y, rect.right - rect.left,
+            rect.bottom - rect.top, SWP_NOZORDER | SWP_NOACTIVATE) }.map_err(|e| e.to_string())
+    }
+}
+
+static NORMAL_INSETS: OnceLock<Mutex<HashMap<usize, (i32, i32)>>> = OnceLock::new();
+
+fn read_normal_insets(handle: HWND) -> Result<(i32, i32), String> {
+    let mut outer = RECT::default();
+    let mut client = RECT::default();
+    unsafe { GetWindowRect(handle, &mut outer) }.map_err(|e| e.to_string())?;
+    unsafe { GetClientRect(handle, &mut client) }.map_err(|e| e.to_string())?;
+    Ok(((outer.right - outer.left) - (client.right - client.left),
+        (outer.bottom - outer.top) - (client.bottom - client.top)))
+}
+
+/// Keep actual normal-frame insets across OS maximize, resize and DPI changes.
+/// The event handler reads geometry only; it never changes a window attribute.
+pub(super) fn watch_normal_insets(window: &tauri::Window) -> Result<(), String> {
+    let handle = window.hwnd().map_err(|e| e.to_string())?.0 as usize;
+    let cache = NORMAL_INSETS.get_or_init(|| Mutex::new(HashMap::new()));
+    {
+        let mut cache = cache.lock().map_err(|e| e.to_string())?;
+        if cache.contains_key(&handle) { return Ok(()); }
+        cache.insert(handle, read_normal_insets(HWND(handle as *mut _))?);
+    }
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            if let Ok(mut cache) = cache.lock() { cache.remove(&handle); }
+        } else if matches!(event, tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }) {
+            let hwnd = HWND(handle as *mut _);
+            if !unsafe { IsZoomed(hwnd) }.as_bool() && !unsafe { IsIconic(hwnd) }.as_bool() {
+                if let (Ok(insets), Ok(mut cache)) = (read_normal_insets(hwnd), cache.lock()) { cache.insert(handle, insets); }
+            }
+        }
+    });
+    Ok(())
+}
+
+fn adjust_normal_rect(handle: HWND, rect: &mut RECT) -> Result<(), String> {
+    let cache = NORMAL_INSETS.get_or_init(|| Mutex::new(HashMap::new()));
+    let insets = if !unsafe { IsZoomed(handle) }.as_bool() && !unsafe { IsIconic(handle) }.as_bool() {
+        let insets = read_normal_insets(handle)?;
+        cache.lock().map_err(|e| e.to_string())?.insert(handle.0 as usize, insets);
+        insets
+    } else {
+        *cache.lock().map_err(|e| e.to_string())?.get(&(handle.0 as usize)).ok_or("tearout_normal_insets_missing")?
+    };
+    rect.right += insets.0;
+    rect.bottom += insets.1;
+    Ok(())
+}
+
+pub(super) fn saved_normal_frame(window: &tauri::Window) -> Result<(crate::db::storage::WindowFrameConfig,
+    crate::db::storage::WindowFrameConfig, bool), String> {
+    let p = placement(window)?;
+    let handle = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let rect = p.rcNormalPosition;
+    let area = monitor_area(POINT { x: (rect.left + rect.right) / 2, y: (rect.top + rect.bottom) / 2 }, scale);
+    // WINDOWPLACEMENT uses work-area coordinates for a top-level non-tool window.
+    let offset = if unsafe { GetWindowLongPtrW(handle, GWL_EXSTYLE) } & WS_EX_TOOLWINDOW.0 as isize == 0 {
+        area.map(|a| (a.work.x - a.bounds.x, a.work.y - a.bounds.y)).unwrap_or_default()
+    } else { (0.0, 0.0) };
+    let mut border = RECT::default();
+    adjust_normal_rect(handle, &mut border)?;
+    let outer = crate::db::storage::WindowFrameConfig {
+        x: (rect.left as f64 + offset.0) / scale, y: (rect.top as f64 + offset.1) / scale,
+        width: (rect.right - rect.left) as f64 / scale, height: (rect.bottom - rect.top) as f64 / scale };
+    let inner = crate::db::storage::WindowFrameConfig { width: (outer.width - (border.right - border.left) as f64 / scale).max(1.0),
+        height: (outer.height - (border.bottom - border.top) as f64 / scale).max(1.0), ..outer.clone() };
+    let maximized = unsafe { IsZoomed(handle) }.as_bool() || unsafe { IsIconic(handle) }.as_bool() && p.flags.0 & WPF_RESTORETOMAXIMIZED.0 != 0;
+    Ok((inner, outer, maximized))
+}
+
+pub(super) fn restore_saved_frame(window: &tauri::Window, x: f64, y: f64, width: f64, height: f64, maximized: bool) -> Result<(), String> {
+    let handle = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
+    if !unsafe { IsWindowVisible(handle) }.as_bool() {
+        // A reused spare is already painted. Its hidden geometry may use tao;
+        // displayed native windows must use WINDOWPLACEMENT below instead.
+        window.set_position(tauri::LogicalPosition::new(x, y)).map_err(|e| e.to_string())?;
+        window.set_size(tauri::LogicalSize::new(width, height)).map_err(|e| e.to_string())?;
+        return quiet_show(window, maximized);
+    }
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let mut rect = RECT { right: (width * scale).round() as i32, bottom: (height * scale).round() as i32, ..Default::default() };
+    adjust_normal_rect(handle, &mut rect)?;
+    let origin = POINT { x: (x * scale).round() as i32, y: (y * scale).round() as i32 };
+    let area = monitor_area(origin, scale);
+    let offset = area.map(|a| (a.work.x - a.bounds.x, a.work.y - a.bounds.y)).unwrap_or_default();
+    let left = origin.x - offset.0 as i32;
+    let top = origin.y - offset.1 as i32;
+    let p = WINDOWPLACEMENT { length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+        showCmd: if maximized { SW_MAXIMIZE.0 as u32 } else { SW_SHOWNORMAL.0 as u32 },
+        rcNormalPosition: RECT { left, top, right: left + rect.right - rect.left, bottom: top + rect.bottom - rect.top },
+        ..Default::default() };
+    unsafe { SetWindowPlacement(handle, &p) }.map_err(|e| e.to_string())
 }
 
 #[derive(Clone, Serialize)]
@@ -105,6 +328,7 @@ struct Sample {
     focus_stolen: bool,
     esc_at: Option<u64>,
     original: WindowGeometry,
+    moved: bool,
 }
 
 fn mycmux_handles(app: &AppHandle) -> Vec<usize> {
@@ -219,7 +443,8 @@ pub fn cancel(app: &AppHandle, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn receiver_at(app: &AppHandle, moving: &str, point: POINT) -> Option<(String, f64, f64)> {
+fn receiver_at(app: &AppHandle, moving: &str, point: POINT, monitors: &[geometry::MonitorArea]) -> Option<(String, f64, f64)> {
+    if geometry::snap_edge_reserved(point.x as f64, point.y as f64, monitors) { return None; }
     let handles: HashMap<usize, String> = app
         .windows()
         .into_iter()
@@ -353,6 +578,19 @@ pub(super) fn synthetic_sample(
         }
         shared
     };
+    let target_window = receiver.as_deref().and_then(|label| app.get_window(label)).unwrap_or(window.clone());
+    let target_handle = HWND(target_window.hwnd().map_err(|e| e.to_string())?.0);
+    let target_scale = unsafe { GetDpiForWindow(target_handle) }.max(96) as f64 / 96.0;
+    let mut point = POINT { x: (client_x * target_scale).round() as i32, y: (client_y * target_scale).round() as i32 };
+    if !unsafe { ClientToScreen(target_handle, &mut point) }.as_bool() { return Err("tearout_synthetic_coordinate_failed".into()); }
+    let point_pair = (point.x as f64, point.y as f64);
+    let start = *shared.synthetic_origin.lock().map_err(|e| e.to_string())?.get_or_insert(point_pair);
+    if source != label || geometry::moved_for_dock(start, point_pair, target_scale) { shared.moved.store(true, Ordering::Release); }
+    let receiver = if shared.moved.load(Ordering::Acquire) && !geometry::snap_edge_reserved(point_pair.0, point_pair.1, &monitor_areas(app)) { receiver } else { None };
+    let original = {
+        let mut original = shared.original.lock().map_err(|e| e.to_string())?;
+        *original.get_or_insert(geometry(&window)?)
+    };
     start_probe(app, &shared, id.clone(), label.clone(), recorder);
     let at = unix_ms();
     let sequence = shared.sample_count.fetch_add(1, Ordering::AcqRel);
@@ -397,7 +635,6 @@ pub(super) fn synthetic_sample(
             "recipients": 0 }));
     }
     let position = window.outer_position().map_err(|e| e.to_string())?;
-    let size = window.inner_size().map_err(|e| e.to_string())?;
     let sample = Sample {
         id: id.clone(),
         label,
@@ -424,12 +661,8 @@ pub(super) fn synthetic_sample(
         monitor: None,
         focus_stolen: false,
         esc_at: escaped.then_some(at),
-        original: WindowGeometry {
-            x: position.x,
-            y: position.y,
-            width: size.width,
-            height: size.height,
-        },
+        original,
+        moved: shared.moved.load(Ordering::Acquire),
     };
     let bytes = serde_json::to_vec(&sample)
         .map_err(|e| e.to_string())?
@@ -556,18 +789,13 @@ pub fn start(
 ) -> Result<(), String> {
     let window = app.get_window(label).ok_or("Moving window disappeared")?;
     let position = window.outer_position().map_err(|e| e.to_string())?;
-    let size = window.inner_size().map_err(|e| e.to_string())?;
-    let original = WindowGeometry {
-        x: position.x,
-        y: position.y,
-        width: size.width,
-        height: size.height,
-    };
+    let original = geometry(&window)?;
+    let monitors = monitor_areas(app);
+    let initial_scale = window.scale_factor().map_err(|e| e.to_string())?;
     if ACTIVE_MOVE.with(|active| active.borrow().is_some()) {
         return Err("tearout_move_busy".into());
     }
     configure_metrics(&shared);
-    window.set_focusable(false).map_err(|e| e.to_string())?;
     let hwnd = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
     let reference = Arc::into_raw(shared.clone()) as usize;
     if !unsafe { SetWindowSubclass(hwnd, Some(observe), SUBCLASS_ID, reference) }.as_bool() {
@@ -622,7 +850,12 @@ pub fn start(
             // Do not restore/destroy a window while its OS move loop still owns it.
             let done = exited || failed && !entered || !was_held || !entered && !held;
             let scan_at = Instant::now();
-            let hit = receiver_at(&app, &label, point);
+            if entered && (point.x != initial_cursor.x || point.y != initial_cursor.y) {
+                polling.dragged.store(true, Ordering::Release);
+            }
+            if source != label || geometry::moved_for_dock((initial_cursor.x as f64, initial_cursor.y as f64),
+                (point.x as f64, point.y as f64), initial_scale) { polling.moved.store(true, Ordering::Release); }
+            let hit = if polling.moved.load(Ordering::Acquire) { receiver_at(&app, &label, point, &monitors) } else { None };
             polling
                 .metrics
                 .poll(Some(scan_at.elapsed().as_secs_f64() * 1000.0));
@@ -734,6 +967,7 @@ pub fn start(
                     at => Some(at),
                 },
                 original,
+                moved: polling.dragged.load(Ordering::Acquire),
             };
             let approved = polling
                 .approval
@@ -787,4 +1021,27 @@ pub fn start(
         }
     }
     Ok(())
+}
+
+
+#[cfg(test)]
+mod escape_tests {
+    use super::*;
+
+    #[test]
+    fn escape_snapshot_equality_includes_show_state_and_normal_rectangle() {
+        let original = WindowGeometry { x: 10, y: 20, width: 640, height: 480,
+            placement: Some(super::super::SavedPlacement { flags: 0, show_cmd: 1,
+                min_position: [-1, -1], max_position: [-1, -1], normal: [10, 20, 666, 509] }) };
+        assert!(original == original);
+        let mut current = original;
+        current.x += 1;
+        assert!(current != original);
+        current = original;
+        current.placement.as_mut().unwrap().show_cmd = 3;
+        assert!(current != original);
+        current = original;
+        current.placement.as_mut().unwrap().normal[0] += 1;
+        assert!(current != original);
+    }
 }
