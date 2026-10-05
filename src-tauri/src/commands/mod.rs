@@ -34,3 +34,4 @@ pub mod webpane;
 pub mod webpane_native;
 #[cfg(windows)]
 mod webpane_native_win;
+pub mod grouping_diagnostics;

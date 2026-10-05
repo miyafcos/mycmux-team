@@ -110,3 +110,16 @@ describe("pure pane identities", () => {
     expect(elapsed).toBeLessThan(10);
   });
 });
+
+describe("numeric registry evidence", () => {
+  it("does not resolve a project or its home from years embedded in dates", () => {
+    const registry = Array.from({ length: 12 }, (_, index) => ({
+      section: "案件", label: index === 0 ? "北斗大学/2026" : "サンプル" + index,
+      path: "C:/registry/" + index,
+    }));
+    const result = resolvePaneIdentities({ registry, workspaces: [{ id: "w", name: "20261001" }],
+      tabs: [{ id: "t", workspaceId: "w", cwd: "C:/reports/instructor_sourcing_20261001", label: "調達" }] });
+    expect(result.tabs.get("t")?.project).toBeNull();
+    expect(result.homes.size).toBe(0);
+  });
+});

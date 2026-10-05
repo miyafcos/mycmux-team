@@ -206,7 +206,8 @@ def test_grouping_mode_is_wired_without_closing_tabs() -> None:
     # it is still declared rather than pinning it to the sealed value.
     assert "export const TAB_GROUPING_ENTRY_ENABLED" in button
     assert "tabGroupingStrings.buttonLabel" in button
-    assert 'buttonLabel: "ペイン再配置"' in strings
+    assert 'buttonLabel: "整理"' in strings
+    assert "WorkOverview" in button
     assert "deps.replaceWorkspaces(" in read("src/components/layout/tabGroupingEngine.ts") and "_restoreGroupingLayout(" in read("src/components/layout/groupingStoreAdapter.ts")
     assert "moveTabToPane" not in grouping
     engine = read("src/components/layout/tabGroupingEngine.ts")
