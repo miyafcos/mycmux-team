@@ -1047,7 +1047,12 @@ pub async fn webpane_create(
             // site in place of the file. The link is not swallowed: it goes to
             // the operator's own browser, where a page from a report belongs.
             if preset.id == "preview" {
-                open_in_os_browser(&new_window_app, url.as_str());
+                // A profile-only recorder keeps acceptance runs off the owner's desktop.
+                match record_preview_link("legacy-os-open", url.as_str()) {
+                    Ok(false) => open_in_os_browser(&new_window_app, url.as_str()),
+                    Ok(true) => {},
+                    Err(error) => eprintln!("[preview-link] recorder failed: {error}"),
+                }
                 return NewWindowResponse::Deny;
             }
             if preset.id == "browser" {
@@ -1094,6 +1099,29 @@ pub async fn webpane_create(
         crate::perf_timeline::mark("webpane.child.shown", Some(&tab_id));
     }
     Ok(label)
+}
+
+fn preview_link_recording_enabled(profile_active: bool, value: Option<&str>) -> bool {
+    profile_active && value == Some("1")
+}
+
+/// Never enabled by an environment variable alone in a production instance.
+/// Recording failures are returned so callers fail closed instead of opening a window.
+fn record_preview_link(kind: &str, target: &str) -> Result<bool, String> {
+    if !preview_link_recording_enabled(
+        crate::test_profile::is_active(),
+        std::env::var("MYCMUX_PREVIEW_LINK_RECORD").ok().as_deref(),
+    ) {
+        return Ok(false);
+    }
+    use std::io::Write;
+    let path = crate::test_profile::runtime_dir()?.join("preview-link-opens.jsonl");
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)
+        .map_err(|error| format!("preview link recorder: {error}"))?;
+    let line = serde_json::to_string(&serde_json::json!({ "kind": kind, "target": target }))
+        .map_err(|error| error.to_string())?;
+    writeln!(file, "{line}").map_err(|error| format!("preview link recorder: {error}"))?;
+    Ok(true)
 }
 
 fn open_in_os_browser(app: &AppHandle, url: &str) {
