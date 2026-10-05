@@ -1440,7 +1440,18 @@ export interface NamedWindowStat {
 
 export type UsageRowState = "ok" | "wait_for_cli" | "cooldown" | "needs_relogin" | "unsupported" | "error";
 
+export interface AccountSubscription {
+  plan: string | null;
+  source: "claude_profile" | "codex_usage" | "codex_subscription";
+  checked_at: string;
+  started_at: string | null;
+  renews_at: string | null;
+  ends_at: string | null;
+  will_renew: boolean | null;
+}
+
 export interface ProfileUsage {
+  subscription?: AccountSubscription | null;
   token_owner_email?: string | null;
   profile_id: string;
   provider: CliProvider;
@@ -1467,8 +1478,10 @@ export interface AccountUsageReport {
   generated_at: string;
 }
 
-export async function getAccountUsage(): Promise<AccountUsageReport> {
-  return invoke<AccountUsageReport>("get_account_usage");
+export async function getAccountUsage(refreshMetadata = false): Promise<AccountUsageReport> {
+  return refreshMetadata
+    ? invoke<AccountUsageReport>("get_account_usage", { refreshMetadata: true })
+    : invoke<AccountUsageReport>("get_account_usage");
 }
 
 export async function claimResetTicket(profileId: string, requestId: string, expectedEmail: string | null): Promise<ResetTicketOutcome> {
