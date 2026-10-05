@@ -63,7 +63,7 @@ vi.mock("../../src/components/terminal/XTermWrapper", async () => {
 
 import TerminalPane, { buildLaunchArgs } from "../../src/components/workspace/TerminalPane";
 import { prepareStartupSessionGate } from "../../src/lib/startupSessionGate";
-import { expectTearoutAttachments, markTearoutSessionAttached } from "../../src/lib/tearout/sessionAttachment";
+import { expectTearoutAttachments, markTearoutSessionAttached, rememberTearoutDormantSessions } from "../../src/lib/tearout/sessionAttachment";
 import PaneDragOverlay from "../../src/components/workspace/PaneDragOverlay";
 
 let container: HTMLDivElement;
@@ -481,4 +481,15 @@ describe("detached docking preview rendering", () => {
       expect(container.querySelector(".pane-drop-result")).toBeNull();
     } finally { await act(async () => useDetachedDockStore.getState().clear()); }
   });
+});
+
+it("does not mount or launch a transferred stopped terminal until explicitly started", async () => {
+  const tab: PaneTab = { id: "stopped-move", sessionId: "pty-stopped-move", agentId: "shell-starter", type: "terminal" };
+  rememberTearoutDormantSessions([tab.sessionId], []);
+  await renderPanes(workspaceWith([paneWith(tab)]));
+  expect(mocks.xtermMount).not.toHaveBeenCalled();
+  expect(container.querySelector("[data-dormant-transfer-placeholder] button")).not.toBeNull();
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-dormant-transfer-placeholder] button")!.click());
+  expect(mocks.xtermMount).toHaveBeenCalledOnce();
+  expect(mocks.xtermMount.mock.calls[0][0].sessionId).toBe(tab.sessionId);
 });

@@ -148,10 +148,10 @@ describe("spawn launch environment ownership", () => {
 });
 
 describe("background pane PTY startup", () => {
-  it("notifies invisibility once after startup and never ACKs headless output", async () => {
+  it("starts invisibly in the backend without touching another renderer or ACKing", async () => {
     const result = await spawn() as { sessionId: string };
-    expect(ipc.setFrontendVisible).toHaveBeenCalledExactlyOnceWith(result.sessionId, false);
-    expect(ipc.createSession.mock.invocationCallOrder[0]).toBeLessThan(ipc.setFrontendVisible.mock.invocationCallOrder[0]);
+    expect(ipc.setFrontendVisible).not.toHaveBeenCalled();
+    expect(ipc.createSession.mock.calls[0][9]).toEqual({ backgroundOnly: true, reason: "background" });
     const onData = ipc.createSession.mock.calls[0][5] as (batch: unknown) => void;
     onData({ generation: 1, seq: 1, bytes: 4 });
     expect(ipc.ackFrontendData).not.toHaveBeenCalled();

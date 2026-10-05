@@ -7,6 +7,8 @@ import { outsideTearoutStrip } from "./model";
 import { tearoutTab, tearoutPane, tearoutWorkspace, canRegrabTearoutTab, canRegrabTearoutPane, regrabTearoutWindow } from "./runtime";
 import { TearoutRecord } from "./record";
 import { windowLabel } from "../windowContext";
+import { tearoutOperationBusy, tearoutOperationPhase } from "./operation";
+import { recoveryBusy } from "./recoveryNotice";
 import { afterTearoutFrame } from "./macFrame";
 
 export function usesNativePaneDrag(item: PaneDragItem): boolean {
@@ -73,6 +75,10 @@ function beginNativeRegionDrag(event: PointerEvent, element: HTMLElement,
       dragging = true;
       record = new TearoutRecord(crypto.randomUUID(), item.kind === "tab" ? item.tabId : item.paneId, windowLabel(), downAt,
         item.kind === "tab" ? "pane" : "tab", item.kind === "tab" ? 1 : item.tabCount);
+      if (tearoutOperationBusy()) {
+        handed = true; record.error("move_busy"); record.failure("tearout_move_busy", tearoutOperationPhase());
+        recoveryBusy(); cleanup(); void record.finish("rejected_busy", null, null).catch(() => {}); return;
+      }
       callbacks.suppress(true);
       try { element.setPointerCapture(event.pointerId); } catch { /* Window listeners remain active. */ }
       document.body.style.cursor = "grabbing";
@@ -94,8 +100,9 @@ function beginNativeRegionDrag(event: PointerEvent, element: HTMLElement,
       void (item.kind === "tab" ? tearoutTab(item, gap, offset, record!) : tearoutPane(item, gap, offset, record!))
         .catch((error) => {
           record!.error("unexpected_failure");
+          record!.failure(error instanceof Error ? error.message : String(error), "starting");
           void record!.finish("failed_restored").catch(() => {});
-          console.warn("[tearout] pane transfer failed", error);
+
         });
       return;
     }
@@ -161,6 +168,10 @@ export function beginNativeWorkspaceDrag(event: PointerEvent, element: HTMLEleme
       dragging = true;
       const count = useWorkspaceListStore.getState().getWorkspace(workspaceId)?.panes.reduce((count, pane) => count + pane.tabs.length, 0) ?? 0;
       record = new TearoutRecord(crypto.randomUUID(), workspaceId, windowLabel(), downAt, "workspace", count);
+      if (tearoutOperationBusy()) {
+        handed = true; record.error("move_busy"); record.failure("tearout_move_busy", tearoutOperationPhase());
+        recoveryBusy(); cleanup(); void record.finish("rejected_busy", null, null).catch(() => {}); return;
+      }
       callbacks.suppress(true);
       try { element.setPointerCapture(event.pointerId); } catch { /* Window listeners remain active. */ }
       document.body.style.cursor = "grabbing";
@@ -173,8 +184,9 @@ export function beginNativeWorkspaceDrag(event: PointerEvent, element: HTMLEleme
       void tearoutWorkspace(workspaceId, gap, { x: event.clientX - grip.x, y: event.clientY - grip.y }, record!)
         .catch(error => {
           record!.error("unexpected_failure");
+          record!.failure(error instanceof Error ? error.message : String(error), "starting");
           void record!.finish("failed_restored").catch(() => {});
-          console.warn("[tearout] workspace transfer failed", error);
+
         });
       return;
     }

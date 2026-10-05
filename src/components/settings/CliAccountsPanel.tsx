@@ -2,6 +2,8 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { confirm } from "../../lib/appConfirmation";
 import { CliLoginProgress } from "../common/CliLoginProgress";
 import { useCliAccountStore } from "../../stores/cliAccountStore";
+import { useUsageStore } from "../../stores/usageStore";
+import { AccountSubscriptionDetails } from "../common/AccountSubscriptionDetails";
 import { useCliLoginStore } from "../../stores/cliLoginStore";
 import { useToastStore } from "../../stores/toastStore";
 import { usePaneMetadataStore } from "../../stores/paneMetadataStore";
@@ -320,6 +322,8 @@ function ProfileRow({
   possiblyActive: boolean;
   candidatePosition?: number;
 }) {
+  const latestUsage = useUsageStore((state) => state.accounts.find((row) => row.profile_id === profile.id));
+  const displayedPlan = latestUsage?.subscription?.plan ?? latestUsage?.plan ?? profile.plan;
   const busyProfileId = useCliAccountStore((state) => state.busyByProvider[profile.provider]);
   const switchTo = useCliAccountStore((state) => state.switchTo);
   const remove = useCliAccountStore((state) => state.remove);
@@ -442,10 +446,11 @@ function ProfileRow({
           {profile.needs_relogin && <StateTag color="var(--cmux-usage-warn)">要再ログイン</StateTag>}
         </span>
         <span style={{ color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {[profile.email, profile.plan, `登録: ${formatDate(profile.captured_at)}`, formatLastSwitched(profile.last_switched_at)]
+          {[profile.email, displayedPlan, `登録: ${formatDate(profile.captured_at)}`, formatLastSwitched(profile.last_switched_at)]
             .filter(Boolean)
             .join(" · ")}
         </span>
+        {latestUsage && <AccountSubscriptionDetails row={latestUsage} />}
       </div>
 
       <span style={{ display: "flex", gap: "var(--cmux-space-2)", flexShrink: 0 }}>
