@@ -870,9 +870,7 @@ export async function startBackgroundTabSession(tab: RestorablePaneTab, pane: Pa
 async function attachBackgroundTabSession(
   tab: RestorablePaneTab, launch: TerminalLaunchRequest,
 ): Promise<void> {
-  const { createSession, setFrontendVisible } = await import("../../lib/ipc");
-  const { getCurrentSessionEpoch } = await import("../../lib/attachEpoch");
-  const expectedEpoch = getCurrentSessionEpoch(tab.sessionId) + 1;
+  const { createSession } = await import("../../lib/ipc");
   await createSession(
     tab.sessionId,
     launch.command,
@@ -883,12 +881,9 @@ async function attachBackgroundTabSession(
     () => {},
     launch.cwd,
     launch.env,
+    false,
+    { backgroundOnly: true, reason: "background" },
   );
-  // A renderer may have attached while startup was pending. Never hide its
-  // newer attachment; an ambiguous epoch is safe because we do not ACK here.
-  if (getCurrentSessionEpoch(tab.sessionId) === expectedEpoch) {
-    void setFrontendVisible(tab.sessionId, false).catch(() => {});
-  }
   if (launch.env?.MYCMUX_HANDOFF?.trim()) consumeHandoffLaunchEnv(tab.sessionId);
 }
 

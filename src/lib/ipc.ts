@@ -1,4 +1,6 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { PtyOutputChannel } from "./ptyOutputChannel";
+import { withTerminalDeadline, TERMINAL_ATTACH_TIMEOUT_MS } from "./terminalDeadline";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   beginSessionAttach,
@@ -36,11 +38,13 @@ interface CreateSessionArgs {
   cols: number;
   rows: number;
   onData: Channel<ArrayBuffer>;
+  backgroundOnly?: boolean;
+  attachReason?: string;
   cwd: string | null;
   env: Record<string, string> | null;
 }
 interface AckFrontendDataArgs extends SessionIdArgs { generation: number; seq: number; bytes: number }
-interface SetFrontendVisibleArgs extends SessionIdArgs { visible: boolean }
+interface SetFrontendVisibleArgs extends SessionIdArgs { visible: boolean; channelId?: number }
 interface SetAppFrontendVisibleArgs { visible: boolean }
 interface WriteToSessionArgs extends SessionIdArgs { data: string }
 interface ResizeSessionArgs extends SessionIdArgs { cols: number; rows: number }
@@ -89,6 +93,17 @@ interface LoginIdArgs { loginId: string }
 // Lifecycle tails also include kills so a later create cannot overtake a close.
 const sessionCreateTails = new Map<string, Promise<void>>();
 const sessionKillGenerations = new Map<string, number>();
+const activePtyChannels = new Map<string, PtyOutputChannel>();
+
+export function getSessionChannelId(sessionId: string): number | undefined {
+  return activePtyChannels.get(sessionId)?.id;
+}
+
+export interface SessionAttachOptions {
+  reason?: "mount" | "channel-stall" | "write-stall" | "background";
+  backgroundOnly?: boolean;
+  stillOwned?: () => boolean;
+}
 
 export class SessionClosedError extends Error {
   constructor(sessionId: string) {
@@ -316,6 +331,7 @@ export async function createSession(
   cwd?: string,
   env?: Record<string, string>,
   reattachOnly = false,
+  options: SessionAttachOptions = {},
 ): Promise<void> {
   const generation = sessionKillGenerations.get(sessionId) ?? 0;
   const prewarmGuard = typeof navigator !== "undefined" && /^Mac/i.test(navigator.platform)
@@ -331,6 +347,19 @@ export async function createSession(
     if (typeof navigator !== "undefined" && /^Mac/i.test(navigator.platform)
       && !macPrewarmSessionOwned(sessionId)) throw new SessionClosedError(sessionId);
     if (prewarmGuard && !prewarmGuard()) throw new SessionClosedError(sessionId);
+    if (options.stillOwned && !options.stillOwned()) throw new SessionClosedError(sessionId);
+    if (options.backgroundOnly) {
+      // Starting a headless PTY is not a renderer attachment. In particular it
+      // must not commit an epoch that silences an already mounted renderer.
+      const channel = new PtyOutputChannel();
+      try {
+        await withTerminalDeadline(invoke<void>("create_session", {
+          sessionId, command, args, cols, rows, onData: channel,
+          cwd: cwd ?? null, env: env ?? null, backgroundOnly: true, attachReason: "background",
+        } satisfies CreateSessionArgs), "background create_session", TERMINAL_ATTACH_TIMEOUT_MS);
+      } finally { channel.dispose(); }
+      return;
+    }
     let staleNoticeCount = 0;
     const attach = beginSessionAttach(sessionId, {
       deliver: onData,
@@ -350,10 +379,14 @@ export async function createSession(
         staleNoticeCount += 1;
       },
     });
-    const channel = new Channel<ArrayBuffer>();
+    const channel = new PtyOutputChannel();
 
     channel.onmessage = (frame) => {
       try {
+        if (channel.consumeGap()) {
+          const view = new DataView(frame);
+          view.setUint32(4, view.getUint32(4, true) | 1, true);
+        }
         attach.ingest(decodeFrontendDataBatch(frame));
       } catch (error) {
         console.error("[mycmux] Invalid PTY data frame:", error);
@@ -366,9 +399,9 @@ export async function createSession(
     }
     try {
       if (reattachOnly) {
-        await invoke<void>("tearout_attach", { sessionId, onData: channel });
+        await withTerminalDeadline(invoke<void>("tearout_attach", { sessionId, onData: channel }), "tearout_attach", TERMINAL_ATTACH_TIMEOUT_MS);
       } else {
-      await invoke<void>("create_session", {
+      await withTerminalDeadline(invoke<void>("create_session", {
         sessionId,
         command,
         args,
@@ -377,11 +410,17 @@ export async function createSession(
         onData: channel,
         cwd: cwd ?? null,
         env: env ?? null,
-      } satisfies CreateSessionArgs);
+        attachReason: options.reason ?? "mount",
+      } satisfies CreateSessionArgs), "create_session", TERMINAL_ATTACH_TIMEOUT_MS);
       }
+      if (options.stillOwned && !options.stillOwned()) throw new SessionClosedError(sessionId);
+      const previousChannel = activePtyChannels.get(sessionId);
+      activePtyChannels.set(sessionId, channel);
       attach.commit();
+      previousChannel?.dispose();
     } catch (err) {
       attach.fail();
+      channel.dispose();
       throw err;
     }
   });
@@ -404,8 +443,12 @@ export async function ackFrontendData(
   return invoke<void>("ack_frontend_data", { sessionId, generation, seq, bytes } satisfies AckFrontendDataArgs);
 }
 
-export async function setFrontendVisible(sessionId: string, visible: boolean): Promise<void> {
-  return invoke<void>("set_frontend_visible", { sessionId, visible } satisfies SetFrontendVisibleArgs);
+export async function setFrontendVisible(
+  sessionId: string, visible: boolean, channelId = getSessionChannelId(sessionId),
+): Promise<void> {
+  return withTerminalDeadline(invoke<void>("set_frontend_visible", {
+    sessionId, visible, ...(channelId === undefined ? {} : { channelId }),
+  } satisfies SetFrontendVisibleArgs), "set_frontend_visible");
 }
 
 export async function setAppFrontendVisible(visible: boolean): Promise<void> {
@@ -472,11 +515,13 @@ export async function resizeSession(
   cols: number,
   rows: number,
 ): Promise<void> {
-  return invoke<void>("resize_session", { sessionId, cols, rows } satisfies ResizeSessionArgs);
+  return withTerminalDeadline(invoke<void>("resize_session", { sessionId, cols, rows } satisfies ResizeSessionArgs), "resize_session");
 }
 
 export async function killSession(sessionId: string): Promise<void> {
   sessionKillGenerations.set(sessionId, (sessionKillGenerations.get(sessionId) ?? 0) + 1);
+  activePtyChannels.get(sessionId)?.dispose();
+  activePtyChannels.delete(sessionId);
   const previous = sessionCreateTails.get(sessionId) ?? Promise.resolve();
   const operation = previous.catch(() => {}).then(() =>
     invoke<void>("kill_session", { sessionId } satisfies SessionIdArgs),

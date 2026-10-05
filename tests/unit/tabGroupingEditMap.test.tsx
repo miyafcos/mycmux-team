@@ -16,7 +16,8 @@ vi.mock("../../src/components/layout/evidenceGrouping", async (importActual) => 
   return { ...actual, runEvidenceGroupingAnalysis: harness.runGroupingAnalysis };
 });
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => true) }));
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()), invoke: vi.fn(async () => true) }));
 vi.mock("../../src/components/layout/tabGrouping", async (importActual) => {
   const actual = await importActual<typeof import("../../src/components/layout/tabGrouping")>();
   return { ...actual, runGroupingAnalysis: vi.fn(async () => analysisHarness.value) };
