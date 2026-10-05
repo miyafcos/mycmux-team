@@ -11,6 +11,7 @@ import { DashboardButton } from "../dashboard/DashboardButton";
 import { AccountsButton } from "./AccountsButton";
 import { onlineStrings } from "../online/onlineStrings";
 import { titleBarStrings } from "./titleBarStrings";
+import { WindowControls } from "./WindowControls";
 import { resolveWorkspaceColor } from "../../lib/workspaceColors";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { useAccountsPolling } from "../../hooks/useAccountsPolling";
@@ -89,24 +90,6 @@ export default function TitleBar({
     isSettingsOpen,
     OVERLAY_EXIT_MS,
   );
-  const [isMaximized, setIsMaximized] = useState(false);
-
-  useEffect(() => {
-    const win = getCurrentWindow();
-    win.isMaximized().then(setIsMaximized).catch(() => {});
-    // Track maximize state via both resize and move events
-    const unlistenResize = win.onResized(() => {
-      win.isMaximized().then(setIsMaximized).catch(() => {});
-    });
-    const unlistenMove = win.onMoved(() => {
-      win.isMaximized().then(setIsMaximized).catch(() => {});
-    });
-    return () => {
-      unlistenResize.then((f) => f());
-      unlistenMove.then((f) => f());
-    };
-  }, []);
-
   // Manual double-click detection for drag region compatibility
   const lastClickRef = useRef(0);
   const handleTitleBarClick = () => {
@@ -118,10 +101,6 @@ export default function TitleBar({
       lastClickRef.current = now;
     }
   };
-
-  const handleMinimize = () => getCurrentWindow().minimize().catch(console.error);
-  const handleMaximize = () => getCurrentWindow().toggleMaximize().catch(console.error);
-  const handleClose = () => getCurrentWindow().close().catch(console.error);
 
   const groupMinWidth = 100;
 
@@ -336,72 +315,7 @@ export default function TitleBar({
         </div>
         {/* macOS provides native window controls (traffic lights) via the
             Overlay title bar, so the custom ones are Windows/Linux only */}
-        {!IS_MAC && (
-          <>
-            <button
-              onClick={handleMinimize}
-              title={titleBarStrings.minimize}
-              className="cmux-title-btn"
-              style={{
-                background: "none",
-                border: "none",
-                color: "var(--cmux-text-secondary)",
-                cursor: "pointer",
-                padding: "3px 6px",
-                display: "flex",
-                alignItems: "center",
-              }}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <line x1="5" y1="12" x2="19" y2="12"></line>
-              </svg>
-            </button>
-            <button
-              onClick={handleMaximize}
-              title={isMaximized ? titleBarStrings.restore : titleBarStrings.maximize}
-              className="cmux-title-btn"
-              style={{
-                background: "none",
-                border: "none",
-                color: "var(--cmux-text-secondary)",
-                cursor: "pointer",
-                padding: "3px 6px",
-                display: "flex",
-                alignItems: "center",
-              }}
-            >
-              {isMaximized ? (
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="5" y="7" width="12" height="12" rx="1"></rect>
-                  <path d="M7 7V6a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-1"></path>
-                </svg>
-              ) : (
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="4" y="4" width="16" height="16" rx="1"></rect>
-                </svg>
-              )}
-            </button>
-            <button
-              onClick={handleClose}
-              title={titleBarStrings.close}
-              style={{
-                background: "none",
-                border: "none",
-                color: "var(--cmux-text-secondary)",
-                cursor: "pointer",
-                padding: "3px 6px",
-                display: "flex",
-                alignItems: "center",
-              }}
-              className="cmux-title-btn cmux-title-btn--close"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <line x1="18" y1="6" x2="6" y2="18"></line>
-                <line x1="6" y1="6" x2="18" y2="18"></line>
-              </svg>
-            </button>
-          </>
-        )}
+        {!IS_MAC && <WindowControls />}
       </div>
     </div>
   );
