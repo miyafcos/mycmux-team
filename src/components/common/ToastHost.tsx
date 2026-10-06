@@ -46,7 +46,7 @@ export default function ToastHost() {
             role={toast.kind === "error" ? "alert" : "status"}
             style={{
               display: "grid",
-              gridTemplateColumns: actions.length > 0 ? "18px minmax(0, 1fr) auto auto" : "18px minmax(0, 1fr) auto",
+              gridTemplateColumns: "18px minmax(0, 1fr) auto",
               gap: 10,
               alignItems: "center",
               width: "100%",
@@ -67,7 +67,7 @@ export default function ToastHost() {
             <Icon size={16} color={color} aria-hidden="true" />
             <span style={{ overflowWrap: "anywhere" }}>{toast.message}</span>
             {actions.length > 0 ? (
-              <span style={{ display: "flex", gap: 6 }}>
+              <span style={{ gridColumn: "2 / -1", gridRow: 2, display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {actions.map((action) => (
                   <button
                     key={action.label}
@@ -79,6 +79,7 @@ export default function ToastHost() {
                     }}
                     style={{
                       height: 26,
+                      flexShrink: 0,
                       padding: "0 10px",
                       border: "1px solid var(--cmux-border)",
                       borderRadius: 5,

@@ -216,6 +216,14 @@ describe("terminal scrollback cursor recovery", () => {
     expect([...plan.data]).toEqual([4, 5]);
   });
 
+  it("does not mistake a repeated suffix for overlap after the absolute cursor was evicted", () => {
+    const ring = new TextEncoder().encode("NEW retained output\r\nsame padding\r\n");
+    const remembered = new TextEncoder().encode("same padding\r\n");
+    const plan = planTerminalScrollbackRecovery(ring, 400_000, 400_000 + ring.length, 10_000, remembered);
+    expect(plan.action).toBe("rebuild-truncated");
+    expect(plan.data).toEqual(ring);
+  });
+
   it("never treats a truncated raw VT ring as a complete terminal snapshot", () => {
     const plan = planTerminalScrollbackRecovery(
       new Uint8Array([0x5b, 0x32, 0x4a, 0x41]),
@@ -223,8 +231,8 @@ describe("terminal scrollback cursor recovery", () => {
       204,
       0,
     );
-    expect(plan.action).toBe("skip-truncated");
-    expect(plan.data.byteLength).toBe(0);
+    expect(plan.action).toBe("rebuild-truncated");
+    expect([...plan.data]).toEqual([0x5b, 0x32, 0x4a, 0x41]);
   });
 
   it("allows a full rebuild only when scrollback starts at process byte zero", () => {

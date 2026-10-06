@@ -9,7 +9,7 @@ mod adapter;
 pub(crate) mod hook_tests;
 mod excerpt;
 pub(crate) mod excerpt_ja;
-mod intervene;
+pub(crate) mod intervene;
 mod reducer;
 mod telemetry;
 
@@ -810,13 +810,15 @@ fn locate_with_miss_cache(
 }
 
 fn locate_transcript(kind: &str, session_id: &str) -> Option<PathBuf> {
-    let root = match kind {
+    let root = if crate::test_profile::is_active() {
+        crate::test_profile::agent_projects_dir(kind)?
+    } else { match kind {
         "claude" => crate::ailog::claude_root()?,
         "claude-codex" => crate::ailog::claude_codex_root()?,
         "codex" => crate::ailog::codex_root()?,
         "grok" => grok_root()?,
         _ => return None,
-    };
+    }};
     let pattern = match kind {
         "claude" | "claude-codex" => format!("{}/**/{}.jsonl", root.display(), session_id),
         "codex" => format!("{}/**/*{}.jsonl", root.display(), session_id),

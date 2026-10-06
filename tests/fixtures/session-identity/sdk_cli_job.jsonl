@@ -1,0 +1,37 @@
+{"type": "attachment", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external"}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "promptSource": "sdk", "userType": "external", "message": {"role": "user", "content": "fixture human input"}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "cli", "isSidechain": false, "promptSource": "typed", "userType": "external", "message": {"role": "user", "content": "fixture human input"}}
+{"type": "user", "entrypoint": "cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "cli", "isSidechain": false, "userType": "external", "toolUseResult": {}, "message": {"role": "user", "content": [{"type": "tool_result", "text": "fixture human input"}]}}
+{"type": "user", "entrypoint": "cli", "isSidechain": false, "promptSource": "system", "userType": "external", "message": {"role": "user", "content": "<task-notification>fixture</task-notification>"}}

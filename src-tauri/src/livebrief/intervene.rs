@@ -153,7 +153,7 @@ fn is_descendant(child: Pid, root: Pid, system: &System) -> bool {
     })
 }
 
-fn is_descendant_with(mut child: Pid, root: Pid, mut lookup: impl FnMut(Pid) -> Option<(Option<Pid>, u64)>) -> bool {
+pub(crate) fn is_descendant_with(mut child: Pid, root: Pid, mut lookup: impl FnMut(Pid) -> Option<(Option<Pid>, u64)>) -> bool {
     let mut visited = HashSet::new();
     for _ in 0..64 {
         if !visited.insert(child) { return false; }

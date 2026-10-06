@@ -46,3 +46,21 @@ export function buildLaunchRequest(params: TerminalLaunchParams): TerminalLaunch
     env: params.launchEnv || undefined,
   };
 }
+
+export function buildAgentRecoveryLaunch(params: TerminalLaunchParams, kind: string, sessionId: string, fresh: boolean): TerminalLaunchParams {
+  const env: Record<string, string> = { ...params.launchEnv, MYCMUX_AGENT_KIND: kind, MYCMUX_SESSION_ID: sessionId, MYCMUX_RESUME: kind };
+  const leaf = params.command.replace(/\\/g, "/").split("/").pop()?.toLowerCase().replace(/\.exe$/, "");
+  let args = [...params.args];
+  if (leaf === "claude" || leaf === "grok" || leaf === "codex") {
+    args = args.filter((arg, index, all) => !["--resume", "--session-id"].includes(arg)
+      && !["--resume", "--session-id"].includes(all[index - 1])
+      && !arg.startsWith("--resume=") && !arg.startsWith("--session-id="));
+    if (leaf === "codex" && args[0] === "resume") args = args.slice(2);
+    if (leaf === "codex") { if (!fresh) args.unshift("resume", sessionId); }
+    else args.push(fresh ? "--session-id" : "--resume", sessionId);
+  } else {
+    // The existing launcher owns shell quoting and provider-specific options.
+    env.MYCMUX_LAUNCH_TARGET = kind;
+  }
+  return { ...params, args, launchEnv: env };
+}
