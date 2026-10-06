@@ -8,8 +8,9 @@ vi.mock("../../src/lib/tearout/runtime", () => ({
   canRegrabTearoutTab: mocks.canRegrab, regrabTearoutWindow: mocks.regrab,
 }));
 vi.mock("../../src/lib/tearout/record", () => ({ TearoutRecord: class {
-  outside() {} error() {} async finish() {}
+  outside() {} error() {} failure() {} async finish() {}
 } }));
+import { beginTearoutOperation, restoringTearoutOperation, endTearoutOperation } from "../../src/lib/tearout/operation";
 import { usePaneDragSource } from "../../src/hooks/usePaneDragSource";
 import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
@@ -102,4 +103,20 @@ describe("real drag entry routing", () => {
     for (const [x, y] of [[88, 120], [412, 120], [200, 88], [200, 148]]) expect(outsideTearoutStrip(x, y, r)).toBe(false);
     for (const [x, y] of [[87.9, 120], [412.1, 120], [200, 87.9], [200, 148.1]]) expect(outsideTearoutStrip(x, y, r)).toBe(true);
   });
+});
+
+it("rejects repeated greater-than-nine-pixel starts while the source is restoring", async () => {
+  const before = useWorkspaceListStore.getState().workspaces;
+  expect(beginTearoutOperation()).toBe(true); restoringTearoutOperation();
+  try {
+    for (let index = 0; index < 9; index++) await act(async () => {
+      source.dispatchEvent(pointer("pointerdown", 10, 10));
+      window.dispatchEvent(pointer("pointermove", 10, 62));
+      window.dispatchEvent(pointer("pointerup", 10, 62));
+    });
+    expect(mocks.transfer).not.toHaveBeenCalled();
+    expect(mocks.regrab).not.toHaveBeenCalled();
+    expect(useWorkspaceListStore.getState().workspaces).toEqual(before);
+    expect(usePaneDragStore.getState().item).toBeNull();
+  } finally { endTearoutOperation(); }
 });
