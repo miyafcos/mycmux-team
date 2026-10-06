@@ -79,6 +79,7 @@ pub struct HookMetricsSnapshot {
     pub rejected_invalid_cap: u64,
     pub rejected_stale_launch: u64,
     pub rejected_wrong_provider: u64,
+    pub rejected_subagent_active_after_terminal: u64,
     pub queue_dropped: u64,
 }
 
@@ -89,6 +90,7 @@ struct HookMetrics {
     rejected_invalid_cap: AtomicU64,
     rejected_stale_launch: AtomicU64,
     rejected_wrong_provider: AtomicU64,
+    rejected_subagent_active_after_terminal: AtomicU64,
     queue_dropped: AtomicU64,
 }
 
@@ -100,6 +102,7 @@ impl HookMetrics {
             rejected_invalid_cap: self.rejected_invalid_cap.load(Ordering::Relaxed),
             rejected_stale_launch: self.rejected_stale_launch.load(Ordering::Relaxed),
             rejected_wrong_provider: self.rejected_wrong_provider.load(Ordering::Relaxed),
+            rejected_subagent_active_after_terminal: self.rejected_subagent_active_after_terminal.load(Ordering::Relaxed),
             queue_dropped: self.queue_dropped.load(Ordering::Relaxed),
         }
     }
@@ -770,7 +773,8 @@ impl Worker {
             MonotonicTime::new(received_at),
             source_event_id,
             payload_hash,
-        );
+        )
+        .with_agent_id(parsed.agent_id);
         let result = {
             let ledger = match self.ledger.as_mut() {
                 Ok(value) => value,
@@ -852,6 +856,13 @@ impl Worker {
                 reason: RejectionReason::StaleLaunch,
                 ..
             }) => self.reject(id, "stale_launch", false),
+            Ok(PersistedReconcileOutcome::Rejected {
+                reason: RejectionReason::SubagentActiveAfterTerminal,
+                ..
+            }) => {
+                self.metrics.rejected_subagent_active_after_terminal.fetch_add(1, Ordering::Relaxed);
+                self.reject(id, "subagent_active_after_terminal", false)
+            }
             Ok(PersistedReconcileOutcome::Rejected { .. }) => self.reject(id, "malformed", false),
             Err(_) => self.reject(id, "queue_dropped", true),
         }
@@ -936,11 +947,19 @@ struct ObserveBody {
     launch_id: Option<String>,
     pane_id: Option<String>,
     provider: Option<Provider>,
+    agent_id: Option<String>,
 }
 
 impl ObserveBody {
     fn parse(value: &Value) -> Result<Self, &'static str> {
         let object = value.as_object().ok_or("malformed")?;
+        let agent_id = optional_string(object, "agent_id")?;
+        if agent_id.as_deref().is_some_and(|value| {
+            value.len() > 128
+                || !value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        }) {
+            return Err("malformed");
+        }
         Ok(Self {
             event_kind: parse_state(required_string(object, "event_kind")?).ok_or("malformed")?,
             provider_session_id: required_string(object, "provider_session_id")?.to_string(),
@@ -949,6 +968,7 @@ impl ObserveBody {
             terminal_session_id: optional_string(object, "terminal_session_id")?,
             launch_id: optional_string(object, "launch_id")?,
             pane_id: optional_string(object, "pane_id")?,
+            agent_id,
             provider: optional_string(object, "provider")?
                 .map(|value| parse_provider(&value).ok_or("wrong_provider"))
                 .transpose()?,
@@ -1803,4 +1823,63 @@ mod tests {
         assert_eq!(mapping["terminal-a"].session_id, "provider-session-a");
         assert!(mapping["terminal-a"].hook_confirmed);
     }
+
+    #[test]
+    fn subagent_activity_after_stop_preserves_attention_mapping_and_counts_rejection() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut worker = worker();
+        let state = SessionStateStore::new();
+        worker.session_state = Some(state.clone());
+        worker.mapping_dir = Some(dir.path().to_path_buf());
+        let grant = issue(&mut worker, "terminal-a", Provider::Claude);
+        assert!(worker.handle(1, &grant.hook_cap, "hook.observe", body("turn_active", "root-start"), 1).ok);
+        assert!(worker.handle(2, &grant.hook_cap, "hook.observe", body("turn_ended", "root-stop"), 2).ok);
+        let previous = state.current_view("terminal-a").unwrap();
+        assert_eq!(previous.attention.kind, AttentionKind::Done);
+        let mappings = session_mapping::read_session_mapping_files_for_ids(dir.path(), ["terminal-a"]);
+        let mut child = body("turn_active", "child-skill");
+        child["provider_turn_id"] = json!("different-tool-use-id");
+        child["agent_id"] = json!("agent-fork_1");
+        let response = worker.handle(3, &grant.hook_cap, "hook.observe", child, 3);
+        assert_eq!(response.reason, Some("subagent_active_after_terminal"));
+        assert_eq!(response.retryable, Some(false));
+        assert_eq!(state.current_view("terminal-a").unwrap(), previous);
+        let after = session_mapping::read_session_mapping_files_for_ids(dir.path(), ["terminal-a"]);
+        assert_eq!(after["terminal-a"].session_id, mappings["terminal-a"].session_id);
+        assert_eq!(after["terminal-a"].agent_kind, mappings["terminal-a"].agent_kind);
+        assert_eq!(after["terminal-a"].hook_confirmed, mappings["terminal-a"].hook_confirmed);
+        assert_eq!(worker.metrics.snapshot().rejected_subagent_active_after_terminal, 1);
+
+        let mut root = body("turn_active", "root-continues");
+        root["provider_turn_id"] = json!("root-continuation-tool");
+        assert!(worker.handle(4, &grant.hook_cap, "hook.observe", root, 4).ok);
+        assert_eq!(state.current_view("terminal-a").unwrap().attention.kind, AttentionKind::None);
+    }
+
+    #[test]
+    fn child_approval_resumes_and_optional_agent_id_is_validated() {
+        let mut worker = worker();
+        let state = SessionStateStore::new();
+        worker.session_state = Some(state.clone());
+        let grant = issue(&mut worker, "terminal-a", Provider::Claude);
+        let mut waiting = body("attention_required", "child-approval");
+        waiting["agent_id"] = json!("agent-1");
+        assert!(worker.handle(1, &grant.hook_cap, "hook.observe", waiting, 1).ok);
+        assert_eq!(state.current_view("terminal-a").unwrap().attention.kind, AttentionKind::Input);
+        let mut active = body("turn_active", "child-resumes");
+        active["agent_id"] = json!("agent-1");
+        assert!(worker.handle(2, &grant.hook_cap, "hook.observe", active, 2).ok);
+        assert_eq!(state.current_view("terminal-a").unwrap().attention.kind, AttentionKind::None);
+        for invalid in [json!(""), json!(" "), json!("agent/1"), json!("agent.1"), json!("a".repeat(129)), json!(42), json!([]), json!("\u{00e9}")] {
+            let mut input = body("turn_active", "invalid-agent");
+            input["agent_id"] = invalid;
+            assert_eq!(worker.handle(3, &grant.hook_cap, "hook.observe", input, 3).reason, Some("malformed"));
+        }
+        for (index, valid) in [json!(null), json!("a".repeat(128)), json!("agent-1_A")].into_iter().enumerate() {
+            let mut input = body("turn_active", &format!("valid-agent-{index}"));
+            input["agent_id"] = valid;
+            assert!(worker.handle(4, &grant.hook_cap, "hook.observe", input, 4).ok);
+        }
+    }
+
 }

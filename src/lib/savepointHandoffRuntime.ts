@@ -63,31 +63,34 @@ export async function commitSavepointPaste(
   bundleDir: string,
   target: SavepointPasteDropTarget,
   preparingToastId?: string,
-): Promise<void> {
+  isCurrent: () => boolean = () => true,
+): Promise<boolean> {
   let openingToastId = preparingToastId;
   try {
+    if (!isCurrent()) return false;
     const initialTarget = revalidateLiveAgentTarget(target);
     if (!initialTarget) {
       useToastStore.getState().pushToast(onlineStrings.dragDropTargetGone, "warning");
-      return;
+      return false;
     }
     if (isApprovalWaiting(initialTarget.sessionId)) {
       useToastStore.getState().pushToast(onlineStrings.dragDropApprovalBlocked, "warning");
-      return;
+      return false;
     }
     openingToastId ??= useToastStore
       .getState()
       .pushToast(onlineStrings.dragDropPreparingDraft, "info");
 
     const joined = await joinSavepointSummary(bundleDir);
+    if (!isCurrent()) return false;
     const latestTarget = revalidateLiveAgentTarget(initialTarget);
     if (!latestTarget) {
       useToastStore.getState().pushToast(onlineStrings.dragDropTargetGone, "warning");
-      return;
+      return false;
     }
     if (isApprovalWaiting(latestTarget.sessionId)) {
       useToastStore.getState().pushToast(onlineStrings.dragDropApprovalBlocked, "warning");
-      return;
+      return false;
     }
 
     useWorkspaceListStore.getState().setActiveWorkspace(latestTarget.workspaceId);
@@ -100,12 +103,13 @@ export async function commitSavepointPaste(
 
     if (!(await waitForSessionAlive(latestTarget.sessionId))) {
       useToastStore.getState().pushToast(onlineStrings.dragDropTargetNotReady, "warning");
-      return;
+      return false;
     }
+    if (!isCurrent()) return false;
     const readyTarget = revalidateLiveAgentTarget(latestTarget);
     if (!readyTarget || isApprovalWaiting(readyTarget.sessionId)) {
       useToastStore.getState().pushToast(onlineStrings.dragDropTargetGone, "warning");
-      return;
+      return false;
     }
 
     const draft = sanitizeSavepointHandoffDraft(onlineStrings.joinPrompt(joined.handoff_path));
@@ -122,12 +126,14 @@ export async function commitSavepointPaste(
         : onlineStrings.dragDropPasted,
       joined.cwd_missing ? "warning" : "info",
     );
+    return true;
   } catch (error) {
     console.error("[mycmux] failed to paste dropped savepoint", error);
     useToastStore.getState().pushToast(
       onlineStrings.dragDropErrorPrefix + String(error),
       "error",
     );
+    return false;
   } finally {
     if (openingToastId) useToastStore.getState().dismissToast(openingToastId);
   }

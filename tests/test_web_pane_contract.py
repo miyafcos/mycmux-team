@@ -117,9 +117,9 @@ def test_web_tab_never_falls_through_to_terminal_rendering() -> None:
     web_branch = pane.index('activeTab?.type === "web"')
     terminal_branch = pane.index("<RetainedTerminalSession", web_branch)
     assert web_branch < terminal_branch
-    assert "activeTab && isTerminalTab(activeTab) && isRestorableTab(activeTab) && agent" in pane
-    assert "pane.tabs.filter(tab => isTerminalTab(tab) && isRestorableTab(tab))" in pane
-    assert "pane.tabs.filter(tab => retainedTabIds.includes(tab.id))" in pane
+    assert "activeTab && isTerminalTab(activeTab) && isRestorableTab(activeTab) && !isTearoutSessionDormant(activeTab.sessionId) && agent" in pane
+    assert "pane.tabs.filter(tab => isTerminalTab(tab) && isRestorableTab(tab) && !isTearoutSessionDormant(tab.sessionId))" in pane
+    assert "pane.tabs.filter(tab => retainedTabIds.includes(tab.id) && !isTearoutSessionDormant(tab.sessionId))" in pane
     assert "visible={tab.id === activeTab?.id}" in pane
 
 

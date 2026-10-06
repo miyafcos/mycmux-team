@@ -1,4 +1,4 @@
-import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
+import { closePaneOperation } from "../../lib/paneCloseOperation";
 import {
   memo,
   useCallback,
@@ -17,12 +17,12 @@ import ErrorBoundary from "../common/ErrorBoundary";
 import type { Pane, PaneTab } from "../../types";
 import { isDeclaredTab, isRestorableTab } from "../../lib/tabLifecycle";
 import { useRetainedViews } from "../../lib/retainedViews";
-import { hasTearoutSessionAttachment, useTearoutAttachmentRevision } from "../../lib/tearout/sessionAttachment";
+import { hasTearoutSessionAttachment, useTearoutAttachmentRevision, isTearoutSessionDormant, startDormantTearoutSession, tearoutAttachmentGeneration } from "../../lib/tearout/sessionAttachment";
 import { recordPerf } from "../../lib/perfTimeline";
 import PaneTabBar from "./PaneTabBar";
 import { paneDndStrings } from "./paneDndStrings";
 import { terminalPaneStrings } from "./terminalPaneStrings";
-import XTermWrapper, { evictTerminalCache, hasTerminalBuffer } from "../terminal/XTermWrapper";
+import XTermWrapper, { hasTerminalBuffer } from "../terminal/XTermWrapper";
 import BrowserPane from "./BrowserPane";
 import WebPaneStatusBar from "./WebPaneStatusBar";
 import LauncherPane from "./LauncherPane";
@@ -34,16 +34,16 @@ import {
 } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
-import { killSession, previewArtifactUriForSessionV2, type SaveEditableArtifactResult } from "../../lib/ipc";
+import { previewArtifactUriForSessionV2, type SaveEditableArtifactResult } from "../../lib/ipc";
 import { openPathWithDefaultApp, revealPathInExplorer } from "../../lib/ipc";
 import { isArtifactPreviewUri, isDirectoryLikeUri } from "../terminal/terminalLinkProvider";
 import { focusController } from "../../lib/focusController";
 import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
 import { usePaneDragStore } from "../../stores/paneDragStore";
+import { useDetachedDockStore } from "../../stores/detachedDockStore";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { resolveLiveSavepointTargetKind, savepointTargetLabel } from "../../lib/savepointHandoff";
 import { resolvePaneHandoffEligibility } from "../../lib/paneHandoff";
-import { pushClosedTab } from "../../stores/closedPaneStore";
 import { onlineStrings } from "../online/onlineStrings";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { PaneComposer } from "../composer/PaneComposer";
@@ -248,6 +248,8 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       ? s.target
       : null,
   );
+  const detachedHandoffTarget = useDetachedDockStore(state => state.target?.kind === "handoff"
+    && state.target.workspaceId === workspaceId && state.target.paneId === pane.id ? state.target : null);
   const savepointDropTarget = useSavepointDragStore((state) =>
     state.target?.mode !== "export"
       && state.target?.workspaceId === workspaceId
@@ -330,7 +332,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const clearNotification = usePaneMetadataStore((s) => s.clearNotification);
 
   const addTabToPane = useWorkspaceLayoutStore((s) => s.addTabToPane);
-  const removeTabFromPane = useWorkspaceLayoutStore((s) => s.removeTabFromPane);
   const setActivePaneTab = useWorkspaceLayoutStore((s) => s.setActivePaneTab);
   const openOrReloadHtmlPreviewPane = useWorkspaceLayoutStore((s) => s.openOrReloadHtmlPreviewPane);
   const setBrowserTabDirty = useWorkspaceLayoutStore((s) => s.setBrowserTabDirty);
@@ -498,34 +499,10 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   }, [workspaceId, pane.id, addTabToPane]);
 
   const handleRemoveTab = useCallback((tabId: string) => {
-    const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-    const p = ws?.panes.find((x) => x.id === pane.id);
-    const tab = p?.tabs.find((t) => t.id === tabId);
-    if (tab?.type === "browser" && tab.isDirty) {
-      const label = getTabDisplayLabel(tab);
-      if (!window.confirm(`${label} has unsaved edits. Close it anyway?`)) {
-        return;
-      }
-    }
-    if (isTerminalTab(tab)) {
-      // Record the tab-pill × close so Ctrl+Shift+T can bring it back. One
-      // per-tab entry covers both routes: closing a tab of a multi-tab pane,
-      // and closing a pane's last tab (which drops the pane) — either way the
-      // entry carries that tab's own cwd / agent identity. Skipped when
-      // removeTabFromPane would refuse the removal (last tab of the last pane),
-      // so we never offer to reopen a tab that is still on screen.
-      if (p && ws && (p.tabs.length > 1 || ws.panes.length > 1)) {
-        pushClosedTab(p, tab, { workspaceId, workspaceName: ws.name });
-      }
-      evictTerminalCache(tab.sessionId);
-      killSession(tab.sessionId).catch((err) =>
-        console.warn("[mycmux] killSession failed", tab.sessionId, err),
-      );
-      usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
-    }
-    removeTabFromPane(workspaceId, pane.id, tabId);
-    focusController.focusPaneSoon(pane.id);
-  }, [workspaceId, pane.id, removeTabFromPane]);
+    void closePaneOperation({ kind: "tab", workspaceId, paneId: pane.id, tabId }, "ui").then(result => {
+      if (result.status === "closed") focusController.focusPaneSoon(pane.id);
+    });
+  }, [workspaceId, pane.id]);
 
   const handleSelectTab = useCallback((tabId: string) => {
     recordPerf("pane.select.click", tabId);
@@ -709,9 +686,9 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   useTearoutAttachmentRevision();
   const retainedTabIds = useRetainedViews(
     // Every transported live session must attach before the group is acknowledged.
-    [...(activeTab && isTerminalTab(activeTab) && isRestorableTab(activeTab) && agent ? [activeTab.id] : []),
+    [...(activeTab && isTerminalTab(activeTab) && isRestorableTab(activeTab) && !isTearoutSessionDormant(activeTab.sessionId) && agent ? [activeTab.id] : []),
       ...pane.tabs.filter(tab => hasTearoutSessionAttachment(tab.sessionId)).map(tab => tab.id)],
-    pane.tabs.filter(tab => isTerminalTab(tab) && isRestorableTab(tab)).map(tab => ({ id: tab.id, cost: 1 })),
+    pane.tabs.filter(tab => isTerminalTab(tab) && isRestorableTab(tab) && !isTearoutSessionDormant(tab.sessionId)).map(tab => ({ id: tab.id, cost: 1 })),
     retainedTabLimit, retainedTabLimit,
   );
   useLayoutEffect(() => {
@@ -729,6 +706,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       data-dnd-workspace-id={workspaceId}
       data-dnd-pane-id={pane.id}
       data-savepoint-drop-pane="true"
+      data-tearout-handoff-active={detachedHandoffTarget ? "true" : undefined}
       data-active-pane={isActive && !isZoomed ? "true" : undefined}
       data-pane-zoomed={isZoomed ? "true" : undefined}
       tabIndex={-1}
@@ -799,7 +777,8 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         </div>
       )}
 
-      <div style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative", background: "transparent" }}>
+      <div data-dnd-handoff-surface={isTerminalTab(activeTab) ? "true" : undefined}
+        style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative", background: "transparent" }}>
         {activeTab?.type === "online" ? (
           <ErrorBoundary>
             <OnlinePanel workspaceId={workspaceId} paneId={pane.id} />
@@ -851,10 +830,15 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
             まだ起動していません
           </div>
         ) : null}
-        {pane.tabs.filter(tab => retainedTabIds.includes(tab.id))
+        {activeTab && !isDeclaredTab(activeTab) && isTearoutSessionDormant(activeTab.sessionId) && (
+          <div data-dormant-transfer-placeholder="true" style={{ display: "grid", placeItems: "center", height: "100%" }}>
+            <button onClick={() => startDormantTearoutSession(activeTab.sessionId)}>{"\u3053\u306e\u30da\u30a4\u30f3\u3092\u8d77\u52d5\u3059\u308b"}</button>
+          </div>
+        )}
+        {pane.tabs.filter(tab => retainedTabIds.includes(tab.id) && !isTearoutSessionDormant(tab.sessionId))
           .sort((left, right) => Number(right.id === activeTab?.id) - Number(left.id === activeTab?.id)).map(tab => (
           <RetainedTerminalSession
-            key={tab.sessionId}
+            key={`${tab.sessionId}:${tearoutAttachmentGeneration(tab.sessionId)}`}
             pane={pane}
             tab={tab}
             workspaceId={workspaceId}
@@ -881,13 +865,13 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
             接続中…
           </div>
         )}
-        {paneHandoffEligibility && (
+        {(paneHandoffEligibility || detachedHandoffTarget) && (
           <div
-            className={`pane-handoff-drop-chip${handoffDropTarget ? " is-active" : ""}`}
+            className={`pane-handoff-drop-chip${handoffDropTarget || detachedHandoffTarget ? " is-active" : ""}`}
             data-dnd-handoff-target="true"
           >
             {paneDndStrings.handoffDropChip(
-              savepointTargetLabel(paneHandoffEligibility.targetAgentKind),
+              savepointTargetLabel(detachedHandoffTarget?.targetAgentKind ?? paneHandoffEligibility!.targetAgentKind),
             )}
           </div>
         )}

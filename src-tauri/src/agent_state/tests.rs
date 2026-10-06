@@ -722,3 +722,62 @@ fn caller_result_and_acknowledgement_are_recorded_without_clearing_reservation()
     assert_eq!(record.native_notification_emitted_at, Some(100));
     assert_eq!(record.acknowledged_at, Some(120));
 }
+
+
+#[test]
+fn subagent_new_tool_id_cannot_reopen_any_completed_root_state() {
+    for terminal in [NormalizedState::TurnEnded, NormalizedState::Cancelled,
+        NormalizedState::SessionTerminated, NormalizedState::ProcessExited] {
+        let launch = launch("pane-a", 1);
+        let mut reconciler = Reconciler::new();
+        reconciler.register_launch(launch.clone(), HookMode::Installed);
+        reconciler.ingest(observation(&launch, "root-turn", NormalizedState::TurnActive,
+            ObservationSource::Hook, 100, "root-start"));
+        reconciler.ingest(observation(&launch, "root-turn", terminal,
+            ObservationSource::Hook, 200, "root-stop"));
+        let previous = reconciler.canonical_for(&launch).unwrap().clone();
+        let child = observation(&launch, "different-tool-id", NormalizedState::TurnActive,
+            ObservationSource::Hook, 300, "child-skill").with_agent_id(Some("child-1".into()));
+        assert!(matches!(reconciler.ingest(child), ReconcileOutcome::Rejected {
+            reason: RejectionReason::SubagentActiveAfterTerminal, canonical: Some(ref current)
+        } if *current == previous));
+        assert_eq!(reconciler.canonical_for(&launch), Some(&previous));
+    }
+}
+
+#[test]
+fn subagent_resume_after_approval_and_root_continuation_are_preserved() {
+    let launch = launch("pane-a", 1);
+    let mut reconciler = Reconciler::new();
+    reconciler.register_launch(launch.clone(), HookMode::Installed);
+    let waiting = observation(&launch, "approval", NormalizedState::AttentionRequired,
+        ObservationSource::Hook, 100, "child-wait").with_agent_id(Some("child-1".into()));
+    reconciler.ingest(waiting);
+    let active = observation(&launch, "child-tool-id", NormalizedState::TurnActive,
+        ObservationSource::Hook, 200, "child-resume").with_agent_id(Some("child-1".into()));
+    assert!(matches!(reconciler.ingest(active), ReconcileOutcome::Accepted(_)));
+    assert_eq!(reconciler.canonical_for(&launch).unwrap().state, NormalizedState::TurnActive);
+    reconciler.ingest(observation(&launch, "root-stop", NormalizedState::TurnEnded,
+        ObservationSource::Hook, 300, "root-stop"));
+    let root = observation(&launch, "root-continuation", NormalizedState::TurnActive,
+        ObservationSource::Hook, 400, "root-continue");
+    assert_eq!(root.agent_id(), None);
+    assert!(matches!(reconciler.ingest(root), ReconcileOutcome::Accepted(_)));
+    assert_eq!(reconciler.canonical_for(&launch).unwrap().state, NormalizedState::TurnActive);
+}
+
+#[test]
+fn subagent_metadata_does_not_change_identity_and_new_launch_is_not_blocked() {
+    let first = launch("pane-a", 1);
+    let mut reconciler = Reconciler::new();
+    reconciler.register_launch(first.clone(), HookMode::Installed);
+    reconciler.ingest(observation(&first, "root-turn", NormalizedState::TurnEnded,
+        ObservationSource::Hook, 100, "root-stop"));
+    let next = launch("pane-a", 2);
+    reconciler.register_launch(next.clone(), HookMode::Installed);
+    let root = observation(&next, "new-turn", NormalizedState::TurnActive,
+        ObservationSource::Hook, 200, "new-start");
+    let child = root.clone().with_agent_id(Some("child-1".into()));
+    assert_eq!(child.identity(), root.identity());
+    assert!(matches!(reconciler.ingest(child), ReconcileOutcome::Accepted(_)));
+}

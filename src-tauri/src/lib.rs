@@ -12,6 +12,7 @@ mod commands;
 mod db;
 mod diag;
 mod shutdown;
+mod settings_flush;
 #[cfg(target_os = "macos")]
 mod mac_webview;
 mod watchdog;
@@ -34,6 +35,7 @@ mod socket;
 mod status_feed;
 mod test_profile;
 mod tearout;
+mod snap_layouts;
 pub mod terminal_config;
 pub mod usage;
 mod util;
@@ -393,9 +395,11 @@ pub fn run() {
             next_id: std::sync::atomic::AtomicUsize::new(1),
         })
         .manage(commands::quit::QuitCoordinator::new())
+        .manage(settings_flush::PreferenceWrites::default())
         .manage(usage::UsageState::new())
         .manage(cli_accounts::login_watch::LoginRegistry::default())
         .invoke_handler(tauri::generate_handler![
+            snap_layouts::snap_layouts_update,
             perf_timeline::perf_timeline_read,
             claude_skills::claude_skills_status,
             claude_skills::claude_skills_install,
@@ -550,6 +554,7 @@ pub fn run() {
             commands::window::quit_app,
             commands::quit::quit_prepared,
             commands::quit::quit_saved,
+            settings_flush::note_preference_write,
             commands::window::watch_window_drag,
             tearout::tearout_warm,
             tearout::tearout_child_ready,
@@ -559,6 +564,7 @@ pub fn run() {
             tearout::tearout_start_move,
             tearout::tearout_synthetic_sample,
             watchdog::report_renderer_heartbeat,
+            commands::grouping_diagnostics::log_grouping_operation,
             tearout::tearout_settle,
             tearout::tearout_preview,
             tearout::tearout_alpha,
@@ -787,6 +793,8 @@ pub fn run() {
         .on_window_event(|window, event| {
             use tauri::Manager;
             if matches!(event, tauri::WindowEvent::Destroyed) {
+                #[cfg(target_os = "windows")]
+                snap_layouts::window_destroyed(window.label());
                 if let Some(state) = window.try_state::<AppState>() {
                     state.livebrief_service.unsubscribe(window.label());
                     commands::window_registry::handle_window_destroyed(window.app_handle(), window.label());

@@ -499,7 +499,7 @@ fn link_up(escaped: &str) -> String {
     while index < bytes.len() {
         let found = match bytes[index] {
             // A drive can be spelled `h:` as easily as `http:`.
-            b'h' | b'H' => web_link_at(escaped, index).or_else(|| local_link_at(escaped, index)),
+            b'h' | b'H' | b'm' | b'M' => web_link_at(escaped, index).or_else(|| local_link_at(escaped, index)),
             byte if byte == b'/' || byte.is_ascii_alphabetic() => local_link_at(escaped, index),
             _ => None,
         };
@@ -524,12 +524,17 @@ fn web_link_at(escaped: &str, index: usize) -> Option<Link> {
         return None;
     }
     let rest = &escaped[index..];
-    if !(starts_with_ignore_ascii_case(rest, "http://")
-        || starts_with_ignore_ascii_case(rest, "https://"))
+    let is_mzopen = rest.starts_with("mzopen:");
+    if !is_mzopen
+        && !(starts_with_ignore_ascii_case(rest, "http://")
+            || starts_with_ignore_ascii_case(rest, "https://"))
     {
         return None;
     }
     let target = trim_link_tail(take_while(rest, is_url_char));
+    if is_mzopen && !crate::commands::webpane::retains_preview_mzopen_href(target) {
+        return None;
+    }
     // `https://` on its own is a word about addresses, not an address.
     if is_scheme_only(target) {
         return None;
@@ -1068,6 +1073,18 @@ mod tests {
         assert!(pre.contains("<a href=\"https://example.com/c\">https://example.com/c</a>]"));
         assert!(pre.contains("<a href=\"https://example.com/d\">https://example.com/d</a>. "));
         assert!(pre.contains("<a href=\"https://example.com/e\">https://example.com/e</a>、"));
+    }
+
+    #[test]
+    fn valid_mzopen_addresses_become_links_without_existence_probes() {
+        use base64::Engine;
+        let encode = |path: &str| format!("mzopen:b64.{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path));
+        let uri = encode("C:/reports/file.txt");
+        let html = render(&format!("location {uri}.\n"));
+        assert!(pre_of(&html).contains(&format!("<a href=\"{uri}\">{uri}</a>.")));
+        for invalid in ["mzopen:b64.A".to_string(), format!("{uri}="), encode("relative/file.txt"), encode("C:/a/../file.txt")] {
+            assert!(!body_of(&render(&invalid)).contains("href=\"mzopen:"));
+        }
     }
 
     #[test]
