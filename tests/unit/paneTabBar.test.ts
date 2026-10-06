@@ -572,8 +572,8 @@ describe("pane tab chip presentation", () => {
     expect(resolveChipPreviewDirection(200, 0, 400, 200)).toBe("right");
   });
 
-  it("allows rename only from a full pill", () => {
+  it("allows rename from both a full pill and an inactive chip", () => {
     expect(shouldStartRenameOnDoubleClick("pill")).toBe(true);
-    expect(shouldStartRenameOnDoubleClick("chip")).toBe(false);
+    expect(shouldStartRenameOnDoubleClick("chip")).toBe(true);
   });
 });

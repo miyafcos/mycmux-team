@@ -12,7 +12,8 @@ import {
 import BrowserPane from "../../src/components/workspace/BrowserPane";
 import type { PaneTab, Workspace } from "../../src/types";
 
-vi.mock("@tauri-apps/api/core", () => ({
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()),
   convertFileSrc: (path: string) => `http://asset.localhost/${encodeURIComponent(path)}`,
   invoke: vi.fn(),
 }));

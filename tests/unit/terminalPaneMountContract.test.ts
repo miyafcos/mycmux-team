@@ -26,8 +26,8 @@ describe("terminal tab mount contract", () => {
   it("bounds retained renderers to visited restorable tabs", () => {
     expect(terminalPaneSource).toContain("retainedTabLimit = 2");
     expect(terminalPaneSource).toContain("isRestorableTab(activeTab)");
-    expect(terminalPaneSource).toContain("pane.tabs.filter(tab => retainedTabIds.includes(tab.id))");
-    expect(terminalPaneSource).toContain("key={tab.sessionId}");
+    expect(terminalPaneSource).toContain("pane.tabs.filter(tab => retainedTabIds.includes(tab.id) && !isTearoutSessionDormant(tab.sessionId))");
+    expect(terminalPaneSource).toContain("key={`${tab.sessionId}:${tearoutAttachmentGeneration(tab.sessionId)}`}");
   });
 
   it("resynchronizes backend scrollback when the active renderer attaches", () => {
