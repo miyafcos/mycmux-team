@@ -3,7 +3,8 @@ import { listen, emitTo } from "@tauri-apps/api/event";
 import { getCurrentWindow, getAllWindows } from "@tauri-apps/api/window";
 import { useWorkspaceListStore } from "./workspaceListStore";
 import { resolveTabInsertionIndex } from "./paneDragStore";
-import { resolvePaneDropZone } from "../lib/paneHandoff";
+import { resolvePaneDropZone, type PaneHandoffEndpoint } from "../lib/paneHandoff";
+import { resolvePaneHandoffContext, type PaneHandoffPinnedTarget } from "../lib/paneHandoffRuntime";
 import type { DetachedReturnTarget } from "../lib/detachedPane";
 import { WINDOW_REGISTRY_CHANGED_EVENT } from "../lib/ipc";
 
@@ -33,6 +34,7 @@ export interface WindowDragSample {
   done: boolean;
 }
 export type DockTarget =
+  | ({ kind: "handoff"; workspaceId: string; paneId: string } & PaneHandoffPinnedTarget)
   | { kind: "tab-index"; workspaceId: string; paneId: string; index: number }
   | Extract<DetachedReturnTarget, { kind: "pane-zone" | "workspace" }>;
 export interface DockGeometry { x: number; y: number; scale: number }
@@ -42,6 +44,7 @@ export function detachedDockTarget(
   geometry: DockGeometry,
   doc: Document = document,
   previousTarget: DockTarget | null = null,
+  handoffSource: PaneHandoffEndpoint | null = null,
 ): DockTarget | null {
   const x = point.screenX - geometry.x / geometry.scale;
   const y = point.screenY - geometry.y / geometry.scale;
@@ -62,8 +65,13 @@ export function detachedDockTarget(
       .map((tab) => tab.getBoundingClientRect());
     return { kind: "tab-index", workspaceId, paneId, index: resolveTabInsertionIndex(spans, x) };
   }
-  return { kind: "pane-zone", workspaceId, paneId,
-    zone: resolvePaneDropZone(pane.getBoundingClientRect(), x, y, previousZone) };
+  const zone = resolvePaneDropZone(pane.getBoundingClientRect(), x, y, previousZone);
+  if (zone === "center" && element?.closest('[data-dnd-handoff-surface="true"]')) {
+    const context = resolvePaneHandoffContext(handoffSource, workspaceId, paneId);
+    if (context) return { kind: "handoff", workspaceId, paneId, tabId: context.pasteTarget.tabId,
+      sessionId: context.pasteTarget.sessionId, targetAgentKind: context.pasteTarget.targetKind };
+  }
+  return { kind: "pane-zone", workspaceId, paneId, zone };
 }
 
 interface DetachedDockState {
@@ -82,7 +90,9 @@ export const useDetachedDockStore = create<DetachedDockState>((set, get) => ({
       && previous.workspaceId === target.workspaceId
       && previous.paneId === target.paneId
       && ((previous.kind === "tab-index" && target.kind === "tab-index" && previous.index === target.index)
-        || (previous.kind === "pane-zone" && target.kind === "pane-zone" && previous.zone === target.zone)))) return;
+        || (previous.kind === "pane-zone" && target.kind === "pane-zone" && previous.zone === target.zone)
+        || (previous.kind === "handoff" && target.kind === "handoff" && previous.tabId === target.tabId
+          && previous.sessionId === target.sessionId && previous.targetAgentKind === target.targetAgentKind)))) return;
     set({ target });
   },
   clear: () => {
@@ -158,7 +168,7 @@ export function listenForDetachedDock(): () => void {
       useDetachedDockStore.getState().setTarget(target);
       if (payload.phase !== "end") return;
       clear();
-      if (!target) return;
+      if (!target || target.kind === "handoff") return;
       // Record placement before the source publishes and releases its workspace.
       const placement: DetachedReturnTarget = target.kind === "tab-index"
         ? { ...target, kind: "pane" } : target;

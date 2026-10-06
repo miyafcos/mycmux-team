@@ -13,6 +13,7 @@ use super::session::{PtySession, ScrollbackSnapshot};
 #[derive(Debug, PartialEq, Eq)]
 enum CreateDisposition {
     Reattached,
+    BackgroundExisting,
     Spawned,
 }
 
@@ -20,10 +21,12 @@ fn create_or_reattach<S, T>(
     sessions: &DashMap<String, S>,
     session_id: String,
     resource: T,
+    background_only: bool,
     reattach: impl FnOnce(&S, T) -> Result<(), String>,
     spawn: impl FnOnce(T) -> Result<S, String>,
 ) -> Result<CreateDisposition, String> {
     if let Some(session) = sessions.get(&session_id) {
+        if background_only { return Ok(CreateDisposition::BackgroundExisting); }
         reattach(session.value(), resource)?;
         return Ok(CreateDisposition::Reattached);
     }
@@ -43,9 +46,29 @@ fn session_is_running<S>(
         .is_some_and(|session| !poll_exited(session.value()))
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct TrustedAgentIdentity {
+    pub kind: String,
+    pub session_id: String,
+    pub agent_pid: u32,
+    pub agent_started_at: u64,
+    pub from_hook: bool,
+}
+
+struct RequestedConversation {
+    kind: String, id: String, created_at: Instant, agent_seen: bool,
+}
+
+fn requested_launch_is_pending(agent_seen: bool, elapsed: std::time::Duration) -> bool {
+    !agent_seen && elapsed < std::time::Duration::from_secs(10)
+}
+
 pub struct SessionManager {
     sessions: DashMap<String, PtySession>,
     create_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    requested_conversations: DashMap<String, RequestedConversation>,
+    trusted_agent_identities: DashMap<String, TrustedAgentIdentity>,
+    conversation_history: DashMap<String, Vec<String>>,
 }
 
 impl SessionManager {
@@ -53,6 +76,9 @@ impl SessionManager {
         Self {
             sessions: DashMap::new(),
             create_locks: Mutex::new(HashMap::new()),
+            requested_conversations: DashMap::new(),
+            trusted_agent_identities: DashMap::new(),
+            conversation_history: DashMap::new(),
         }
     }
 
@@ -94,6 +120,8 @@ impl SessionManager {
         env: Option<std::collections::HashMap<String, String>>,
         metadata_store: MetadataStore,
         scrollback_dir: Option<&Path>,
+        background_only: bool,
+        attach_origin: &str,
     ) -> Result<(), String> {
         #[cfg(debug_assertions)]
         let new_channel_id = data_channel.id().to_string();
@@ -104,9 +132,15 @@ impl SessionManager {
         create_or_reattach(
             &self.sessions,
             session_id.clone(),
-            data_channel,
+            data_channel, background_only,
             |session, data_channel| {
+                // A background start races with mounting/clicking in another
+                // window. Existing PTYs keep their renderer's channel and epoch.
                 let replaced_channel_ids = session.replace_data_channel(data_channel)?;
+                crate::watchdog::log_with_memory(format!(
+                    "[pty] frontend attach session={session_id} {attach_origin} generation={} old_channel={} new_channel={}",
+                    session.frontend_generation(), replaced_channel_ids.0, replaced_channel_ids.1
+                ));
                 #[cfg(debug_assertions)]
                 {
                     let age_ms = session.created_at.elapsed().as_millis();
@@ -141,7 +175,9 @@ impl SessionManager {
                     "[mycmux-diag manager] create_session id={} kind=new channel_id={}",
                     session_id, new_channel_id
                 );
-                PtySession::spawn(
+                self.requested_conversations.remove(&session_id);
+                self.trusted_agent_identities.remove(&session_id);
+                let session = PtySession::spawn(
                     session_id.clone(),
                     command,
                     args,
@@ -154,13 +190,50 @@ impl SessionManager {
                     metadata_store,
                     Instant::now(),
                     preload,
-                )
+                )?;
+                if background_only { session.set_frontend_visible(false, None); }
+                Ok(session)
             },
         )
         .inspect_err(|error| {
             crate::diag_warn!("pty", "create session {session_id} failed: {error}");
         })?;
         Ok(())
+    }
+
+    pub(crate) fn remember_requested_conversation(&self, pty: &str, kind: &str, id: &str) {
+        self.requested_conversations.entry(pty.to_string()).or_insert_with(|| RequestedConversation { kind: kind.to_string(), id: id.to_string(), created_at: Instant::now(), agent_seen: self.trusted_agent_identities.contains_key(pty) });
+    }
+
+    pub(crate) fn requested_conversation(&self, pty: &str) -> Option<(String, String)> {
+        self.sessions.contains_key(pty).then(|| self.requested_conversations.get(pty).map(|v| (v.kind.clone(), v.id.clone()))).flatten()
+    }
+
+    pub(crate) fn pending_requested_conversation(&self, pty: &str) -> Option<(String, String)> {
+        self.requested_conversations.get(pty).filter(|value| requested_launch_is_pending(value.agent_seen, value.created_at.elapsed()))
+            .map(|value| (value.kind.clone(), value.id.clone()))
+    }
+
+    pub(crate) fn note_agent_seen(&self, pty: &str) {
+        if let Some(mut value) = self.requested_conversations.get_mut(pty) { value.agent_seen = true; }
+    }
+
+    pub(crate) fn trusted_agent_identity(&self, pty: &str) -> Option<TrustedAgentIdentity> {
+        self.sessions.contains_key(pty).then(|| self.trusted_agent_identities.get(pty).map(|v| v.clone())).flatten()
+    }
+
+    pub(crate) fn conversation_history(&self, pty: &str) -> Vec<String> {
+        self.conversation_history.get(pty).map(|ids| ids.clone()).unwrap_or_default()
+    }
+
+    pub(crate) fn remember_agent_identity(&self, pty: &str, identity: TrustedAgentIdentity) {
+        if !self.sessions.contains_key(pty) { return; }
+        self.note_agent_seen(pty);
+        let mut history = self.conversation_history.entry(pty.to_string()).or_default();
+        if !history.contains(&identity.session_id) { history.push(identity.session_id.clone()); }
+        if history.len() > 32 { history.remove(0); }
+        drop(history);
+        if self.sessions.contains_key(pty) { self.trusted_agent_identities.insert(pty.to_string(), identity); }
     }
 
     pub fn write(&self, session_id: &str, data: &[u8]) -> Result<(), String> {
@@ -210,9 +283,9 @@ impl SessionManager {
         }
     }
 
-    pub fn set_frontend_visible(&self, session_id: &str, visible: bool) {
+    pub fn set_frontend_visible(&self, session_id: &str, visible: bool, channel_id: Option<u32>) {
         if let Some(session) = self.sessions.get(session_id) {
-            session.set_frontend_visible(visible);
+            session.set_frontend_visible(visible, channel_id);
         }
     }
 
@@ -255,6 +328,8 @@ impl SessionManager {
     }
 
     pub fn kill(&self, session_id: &str) -> Result<(), String> {
+        self.requested_conversations.remove(session_id);
+        self.trusted_agent_identities.remove(session_id);
         if let Some((_, session)) = self.sessions.remove(session_id) {
             session.kill()?;
             self.prune_create_lock_if_idle(session_id);
@@ -272,6 +347,8 @@ impl SessionManager {
             .collect();
 
         for key in keys {
+            self.requested_conversations.remove(&key);
+            self.trusted_agent_identities.remove(&key);
             if let Some((_, session)) = self.sessions.remove(&key) {
                 let _ = session.kill();
                 self.prune_create_lock_if_idle(&key);
@@ -286,6 +363,8 @@ impl SessionManager {
             .map(|entry| entry.key().clone())
             .collect();
         for key in keys {
+            self.requested_conversations.remove(&key);
+            self.trusted_agent_identities.remove(&key);
             if let Some((_, session)) = self.sessions.remove(&key) {
                 let _ = session.kill();
                 self.prune_create_lock_if_idle(&key);
@@ -389,7 +468,7 @@ mod tests {
         let disposition = create_or_reattach(
             &sessions,
             "session".to_string(),
-            (),
+            (), false,
             |_, ()| Ok(()),
             |()| panic!("an exited session must never auto-respawn"),
         )
@@ -397,6 +476,22 @@ mod tests {
         assert_eq!(disposition, CreateDisposition::Reattached);
         sessions.remove("session");
         assert!(!running());
+    }
+
+    #[test]
+    fn repeated_background_starts_do_not_replace_an_existing_frontend() {
+        let sessions = DashMap::new();
+        sessions.insert("visible".to_string(), FakeSession::new());
+        for _ in 0..50 {
+            let disposition = create_or_reattach(
+                &sessions, "visible".to_string(), (), true,
+                |_, ()| panic!("background startup must not take the renderer channel"),
+                |()| panic!("background startup must not respawn the existing PTY"),
+            ).unwrap();
+            assert_eq!(disposition, CreateDisposition::BackgroundExisting);
+        }
+        assert_eq!(sessions.get("visible").unwrap().reattach_count.load(Ordering::SeqCst), 0);
+        assert_eq!(sessions.len(), 1);
     }
 
     #[test]
@@ -408,7 +503,7 @@ mod tests {
         let disposition = create_or_reattach(
             &sessions,
             "session".to_string(),
-            (),
+            (), false,
             |session, ()| {
                 session.reattach_count.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -446,7 +541,7 @@ mod tests {
             assert_eq!(budget.poll(now), Some(RecoveryDecision::Reload { attempt: attempt + 1, kind: 1 }));
             for n in 0..20 {
                 let disposition = create_or_reattach(
-                    &sessions, format!("pane-{n}"), (),
+                    &sessions, format!("pane-{n}"), (), false,
                     |(session, output), ()| {
                         session.reattach_count.fetch_add(1, Ordering::SeqCst);
                         assert_eq!(output, &format!("retained output {n}"));
@@ -474,7 +569,7 @@ mod tests {
         let disposition = create_or_reattach(
             &sessions,
             "session".to_string(),
-            (),
+            (), false,
             |_, ()| {
                 reattach_count.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -491,4 +586,14 @@ mod tests {
         assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
         assert!(sessions.contains_key("session"));
     }
+    #[test]
+    fn si_t1_launch_request_bridges_startup_but_never_reclaims_a_shell_after_agent_exit() {
+        use std::time::Duration;
+        assert!(requested_launch_is_pending(false, Duration::ZERO));
+        assert!(requested_launch_is_pending(false, Duration::from_secs(9)));
+        assert!(!requested_launch_is_pending(false, Duration::from_secs(10)));
+        assert!(!requested_launch_is_pending(true, Duration::ZERO));
+        assert!(!requested_launch_is_pending(true, Duration::from_secs(9)));
+    }
+
 }

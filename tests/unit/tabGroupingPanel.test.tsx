@@ -37,7 +37,7 @@ describe("TabGroupingButton", () => {
   it("exposes the dashboard entry in Japanese", () => {
     const html = renderToStaticMarkup(<TabGroupingButton />);
     expect(html).toContain(tabGroupingStrings.buttonLabel);
-    expect(html).toContain("tab-grouping-panel");
+    expect(html).toContain("work-overview-panel");
   });
 });
 

@@ -1,13 +1,23 @@
 import type { StateCreator, StoreApi, StoreMutatorIdentifier } from "zustand/vanilla";
 import { persist, type PersistOptions, type PersistStorage, type StorageValue } from "zustand/middleware";
+import { invoke } from "@tauri-apps/api/core";
+import { isMainWindow } from "../lib/windowContext";
 
 const externalUpdates = new WeakMap<object, (update: () => void) => void>();
 
+type StoreUpdate<T> = T | Partial<T> | ((state: T) => T | Partial<T>);
+
 /** A preference receipt already has an owning writer; update only this window's copy. */
-export function applyExternalStoreUpdate<T>(store: Pick<StoreApi<T>, "setState">, state: Partial<T>): void {
+export function applyExternalStoreUpdate<T>(store: Pick<StoreApi<T>, "setState">, state: StoreUpdate<T>): void {
   const apply = externalUpdates.get(store.setState);
   if (apply) apply(() => store.setState(state));
   else store.setState(state);
+}
+
+/** Only main persists automatic changes; explicit user actions keep their normal setters. */
+export function applyAutomaticStoreUpdate<T>(store: Pick<StoreApi<T>, "setState">, state: StoreUpdate<T>): void {
+  if (isMainWindow()) store.setState(state);
+  else applyExternalStoreUpdate(store, state);
 }
 
 // Snapshots must have the same contents as the JSON on disk: no actions or
@@ -52,6 +62,7 @@ export function syncedPersist<
     const project = (state: T) => snapshot(options.partialize ? options.partialize(state) : state);
     let baseline: Record<string, unknown> = {};
     let external = false;
+    let hydrating = false;
     const storage: PersistStorage<U> = {
       getItem(name) {
         const raw = local.getItem(name);
@@ -63,7 +74,7 @@ export function syncedPersist<
       },
       setItem(name, value) {
         const next = snapshot(value.state);
-        if (external) {
+        if (external || (hydrating && !isMainWindow())) {
           baseline = next;
           return;
         }
@@ -80,7 +91,22 @@ export function syncedPersist<
         const saved = { ...latest, state: merged, version: value.version };
         // Content equality also avoids writes when another window already
         // saved this change; rehydration itself never starts a write loop.
-        if (!latest || !equal(latest, saved)) local.setItem(name, JSON.stringify(saved));
+        if (!latest || !equal(latest, saved)) {
+          local.setItem(name, JSON.stringify(saved));
+          // macOS localStorage returns before WebKit commits its SQLite file.
+          // Report only the fields this window wrote; the native exit worker
+          // waits for these values on disk, without becoming another writer.
+          if (typeof navigator !== "undefined" && /^Mac/i.test(navigator.platform)
+            && "__TAURI_INTERNALS__" in target) {
+            const patch: Record<string, unknown> = {}, removed: string[] = [];
+            for (const key of changed) {
+              if (Object.prototype.hasOwnProperty.call(next, key)) patch[key] = next[key];
+              else removed.push(key);
+            }
+            void invoke("note_preference_write", { name, patch, removed, version: value.version ?? 0 })
+              .catch((error) => console.warn("[settings-flush] Could not report a preference write:", error));
+          }
+        }
         // The local store can still be stale. Using merged here would make its
         // next unrelated edit appear to change the foreign fields back again.
         baseline = next;
@@ -92,9 +118,11 @@ export function syncedPersist<
       ...options,
       storage,
       onRehydrateStorage(current) {
+        hydrating = true;
         baseline = project(current);
         const after = options.onRehydrateStorage?.(current);
         return (hydrated, error) => {
+          hydrating = false;
           if (hydrated !== undefined) baseline = project(hydrated);
           after?.(hydrated, error);
         };

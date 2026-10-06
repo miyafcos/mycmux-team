@@ -1,4 +1,6 @@
 mod hook;
+mod hook_source;
+pub(crate) use hook_source::is_noninteractive_agent;
 mod ledger;
 mod model;
 mod reconciler;

@@ -669,6 +669,7 @@ describe("pane socket responses", () => {
   });
 
   it("reports live victims and bumps focus once when a focused session is killed", async () => {
+    vi.spyOn(ipc, "killSession").mockResolvedValue(undefined);
     const focused: PaneTab = {
       id: "focused-tab",
       sessionId: "focused-session",

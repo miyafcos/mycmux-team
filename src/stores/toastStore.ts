@@ -40,6 +40,7 @@ const TOAST_AUTO_DISMISS_MS = 8000;
 export const TOAST_UNDO_DISMISS_MS = 20000;
 const TOAST_LIMIT = 3;
 const toastDismissTimers = new Map<string, ReturnType<typeof globalThis.setTimeout>>();
+const toastDismissDeadlines = new Map<string, number>();
 
 function createToastId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `toast-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -51,6 +52,11 @@ function clearToastTimer(id: string): void {
     globalThis.clearTimeout(timer);
     toastDismissTimers.delete(id);
   }
+  toastDismissDeadlines.delete(id);
+}
+
+function getToastActions(toast: Pick<Toast, "action" | "actions">): ToastAction[] {
+  return (toast.actions ?? (toast.action ? [toast.action] : [])).slice(0, 2);
 }
 
 function resolveToastCategory(kind: ToastKind, category?: ToastCategory): ToastCategory {
@@ -71,34 +77,52 @@ function isToastCategoryEnabled(category: ToastCategory): boolean {
 export const useToastStore = create<ToastState>((set, get) => ({
   toasts: [],
   pushToast: (message, kind = "error", action, actions, durationMs, requestedCategory) => {
-    const id = createToastId();
     const category = resolveToastCategory(kind, requestedCategory);
-    if (!isToastCategoryEnabled(category)) return id;
+    if (!isToastCategoryEnabled(category)) return createToastId();
+    const nextActions = getToastActions({ action, actions });
+    // Each action toast owns a distinct operation, even when its text and labels match.
+    const existing = nextActions.length === 0 ? get().toasts.find((toast) =>
+      toast.kind === kind && toast.message === message && getToastActions(toast).length === 0,
+    ) : undefined;
+    const id = existing?.id ?? createToastId();
+    // A shorter repeat must not reduce an actionless notice's remaining time.
+    const dismissAt = Math.max(toastDismissDeadlines.get(id) ?? 0, Date.now() + (durationMs ?? TOAST_AUTO_DISMISS_MS));
     const toast: Toast = {
       id,
       message,
       kind,
       category,
-      createdAt: Date.now(),
+      createdAt: existing?.createdAt ?? Date.now(),
       action,
       actions: actions?.slice(0, 2),
     };
 
     set((state) => {
-      const nextToasts = [...state.toasts, toast].slice(-TOAST_LIMIT);
+      const nextToasts = existing
+        ? state.toasts.map((item) => item.id === id ? toast : item)
+        : [...state.toasts, toast];
+      while (nextToasts.length > TOAST_LIMIT) {
+        const withoutActions = nextToasts.findIndex((item) => getToastActions(item).length === 0);
+        nextToasts.splice(withoutActions === -1 ? 0 : withoutActions, 1);
+      }
       const visibleIds = new Set(nextToasts.map((item) => item.id));
-      for (const existing of state.toasts) {
-        if (!visibleIds.has(existing.id)) {
-          clearToastTimer(existing.id);
+      for (const previous of state.toasts) {
+        if (!visibleIds.has(previous.id)) {
+          clearToastTimer(previous.id);
         }
       }
       return { toasts: nextToasts };
     });
 
-    const timer = globalThis.setTimeout(() => {
-      get().dismissToast(id);
-    }, durationMs ?? TOAST_AUTO_DISMISS_MS);
-    toastDismissTimers.set(id, timer);
+    // An incoming plain notice can itself be evicted when all three visible notices have actions.
+    if (get().toasts.some((item) => item.id === id)) {
+      clearToastTimer(id);
+      const timer = globalThis.setTimeout(() => {
+        get().dismissToast(id);
+      }, dismissAt - Date.now());
+      toastDismissTimers.set(id, timer);
+      toastDismissDeadlines.set(id, dismissAt);
+    }
 
     return id;
   },

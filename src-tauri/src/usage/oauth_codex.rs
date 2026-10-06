@@ -9,6 +9,7 @@ use std::{env, fs, path::PathBuf};
 pub struct CodexUsage {
     pub five_hour: Option<WindowStat>,
     pub seven_day: Option<WindowStat>,
+    pub plan: Option<String>,
     pub reset_count: Option<u32>,
     pub usage_url: String,
 }
@@ -220,13 +221,15 @@ fn parse_usage(value: &Value) -> Option<CodexUsage> {
     );
     let (five_hour, seven_day) = normalize_windows(primary, secondary);
 
-    if five_hour.is_none() && seven_day.is_none() {
+    let plan = super::subscription::plan_name(value.get("plan_type"));
+    if five_hour.is_none() && seven_day.is_none() && plan.is_none() {
         return None;
     }
 
     Some(CodexUsage {
         five_hour,
         seven_day,
+        plan,
         reset_count: reset_tickets::codex_count(value),
         usage_url: String::new(),
     })
@@ -492,6 +495,16 @@ mod tests {
         let seven_day = usage.seven_day.unwrap();
         assert_eq!(seven_day.pct, 1.0);
         assert_eq!(seven_day.resets_at, "2026-09-21T00:15:32+00:00");
+    }
+
+    #[test]
+    fn free_or_new_plan_is_kept_even_when_no_usage_windows_are_available() {
+        for plan in ["free", "future_plan"] {
+            let usage = parse_usage(&json!({"plan_type": plan, "rate_limit": null})).unwrap();
+            assert_eq!(usage.plan.as_deref(), Some(plan));
+            assert!(!usage.has_usage());
+        }
+        assert!(parse_usage(&json!({"plan_type": null})).is_none());
     }
 
     #[test]
