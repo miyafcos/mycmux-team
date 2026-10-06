@@ -1192,6 +1192,18 @@ div:focus-within > .tab-close-btn,
   animation: savepointWriteCaretBlink 0.72s steps(1, end) infinite;
 }
 
+/* A handoff returns the source, so its frame covers the receiving terminal. */
+.terminal-pane-border[data-tearout-handoff-active="true"]::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border: 2px dashed var(--cmux-accent);
+  border-radius: var(--cmux-radius-sm);
+  box-shadow: inset 0 0 18px color-mix(in srgb, var(--cmux-accent) 22%, transparent);
+  pointer-events: none;
+  z-index: 31;
+}
+
 .pane-handoff-drop-chip {
   position: absolute;
   z-index: 32;

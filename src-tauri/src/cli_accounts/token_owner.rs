@@ -27,14 +27,64 @@ pub fn token_key(access_token: &str) -> String {
     hex::encode(Sha256::digest(access_token.as_bytes()))
 }
 
-fn owners() -> &'static Mutex<HashMap<String, TokenOwner>> {
-    static OWNERS: OnceLock<Mutex<HashMap<String, TokenOwner>>> = OnceLock::new();
+#[derive(Clone)]
+struct CachedProfile {
+    owner: TokenOwner,
+    subscription: Option<crate::usage::subscription::AccountSubscription>,
+    checked_at: Instant,
+    refresh_after: Duration,
+    last_attempt_failed: bool,
+}
+
+fn owners() -> &'static Mutex<HashMap<String, CachedProfile>> {
+    static OWNERS: OnceLock<Mutex<HashMap<String, CachedProfile>>> = OnceLock::new();
     OWNERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub fn cached_owner(access_token: &str) -> Option<TokenOwner> {
     owners().lock().unwrap_or_else(|error| error.into_inner())
-        .get(&token_key(access_token)).cloned()
+        .get(&token_key(access_token)).map(|profile| profile.owner.clone())
+}
+
+pub fn profile_refresh_due(access_token: &str) -> bool {
+    owners().lock().unwrap_or_else(|error| error.into_inner())
+        .get(&token_key(access_token)).is_none_or(|profile| profile.checked_at.elapsed() >= profile.refresh_after)
+}
+
+/// Reserve an optional metadata refresh before awaiting I/O; concurrent polls reuse it.
+pub fn claim_profile_refresh(access_token: &str) -> bool {
+    let mut cache = owners().lock().unwrap_or_else(|error| error.into_inner());
+    let Some(profile) = cache.get_mut(&token_key(access_token)) else { return false };
+    if profile.checked_at.elapsed() < profile.refresh_after { return false; }
+    profile.checked_at = Instant::now();
+    profile.refresh_after = Duration::from_millis(crate::usage::subscription::SUBSCRIPTION_CACHE_TTL_MS as u64);
+    profile.last_attempt_failed = true;
+    true
+}
+
+/// A deliberate refresh can shorten a successful cache, never a failed request's backoff.
+pub fn request_profile_refresh(access_token: &str) {
+    if let Some(profile) = owners().lock().unwrap_or_else(|error| error.into_inner())
+        .get_mut(&token_key(access_token)) {
+        if !profile.last_attempt_failed && profile.checked_at.elapsed() >= Duration::from_secs(60) {
+            profile.refresh_after = Duration::ZERO;
+        }
+    }
+}
+
+pub fn defer_profile_refresh(access_token: &str, retry_after_secs: Option<u64>) {
+    if let Some(profile) = owners().lock().unwrap_or_else(|error| error.into_inner())
+        .get_mut(&token_key(access_token)) {
+        profile.checked_at = Instant::now();
+        profile.last_attempt_failed = true;
+        profile.refresh_after = Duration::from_secs(retry_after_secs.unwrap_or(0)
+            .max(crate::usage::subscription::SUBSCRIPTION_CACHE_TTL_MS as u64 / 1000));
+    }
+}
+
+pub fn cached_subscription(access_token: &str) -> Option<crate::usage::subscription::AccountSubscription> {
+    owners().lock().unwrap_or_else(|error| error.into_inner())
+        .get(&token_key(access_token)).and_then(|profile| profile.subscription.clone())
 }
 
 pub fn remember_owner(access_token: &str, owner: &TokenOwner) {
@@ -43,7 +93,18 @@ pub fn remember_owner(access_token: &str, owner: &TokenOwner) {
     if cache.len() >= 256 {
         cache.clear();
     }
-    cache.insert(token_key(access_token), owner.clone());
+    cache.entry(token_key(access_token)).and_modify(|profile| {
+        if profile.owner != *owner {
+            profile.owner = owner.clone();
+            profile.subscription = None;
+            profile.last_attempt_failed = false;
+            profile.checked_at = Instant::now();
+            profile.refresh_after = Duration::ZERO;
+        }
+    }).or_insert_with(|| CachedProfile { owner: owner.clone(), subscription: None,
+        checked_at: Instant::now(),
+        refresh_after: Duration::ZERO,
+        last_attempt_failed: false });
 }
 
 pub fn parse_profile_body(body: &str) -> Option<TokenOwner> {
@@ -92,7 +153,19 @@ pub async fn fetch_claude_token_owner_at(
     let Ok(body) = response.text().await else {
         return OwnerCheck::Unavailable;
     };
-    classify_profile_response(status, retry_after_secs, &body)
+    let result = classify_profile_response(status, retry_after_secs, &body);
+    if let OwnerCheck::Owner(owner) = &result {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
+            let info = crate::usage::subscription::claude_profile(&value, chrono::Utc::now().to_rfc3339());
+            let mut cache = owners().lock().unwrap_or_else(|error| error.into_inner());
+            if cache.len() >= 256 { cache.clear(); }
+            cache.insert(token_key(access_token), CachedProfile { owner: owner.clone(),
+                subscription: Some(info), checked_at: Instant::now(),
+                refresh_after: Duration::from_millis(crate::usage::subscription::SUBSCRIPTION_CACHE_TTL_MS as u64),
+                last_attempt_failed: false });
+        }
+    }
+    result
 }
 
 pub async fn claude_token_owner(client: &reqwest::Client, access_token: &str) -> OwnerCheck {
@@ -217,8 +290,69 @@ mod tests {
         assert!(cached_owner(token).is_none());
         remember_owner(token, &owner());
         assert_eq!(cached_owner(token), Some(owner()));
+        assert!(profile_refresh_due(token));
         // A hit never needs a runtime or a network request.
         assert_eq!(claude_token_owner_blocking(token), OwnerCheck::Owner(owner()));
+    }
+
+    #[test]
+    fn expired_metadata_and_failed_refresh_keep_verified_identity_and_subscription() {
+        let token = "profile-expiry-unique-synthetic";
+        remember_owner(token, &owner());
+        let info = crate::usage::subscription::claude_profile(
+            &serde_json::json!({"organization":{"organization_type":"claude_free"}}), "checked".into());
+        {
+            let mut cache = owners().lock().unwrap_or_else(|error| error.into_inner());
+            let cached = cache.get_mut(&token_key(token)).unwrap();
+            cached.subscription = Some(info.clone());
+            cached.checked_at = Instant::now() - Duration::from_millis(
+                crate::usage::subscription::SUBSCRIPTION_CACHE_TTL_MS as u64);
+        }
+        assert!(profile_refresh_due(token));
+        assert_eq!(cached_owner(token), Some(owner()));
+        assert_eq!(cached_subscription(token), Some(info.clone()));
+        defer_profile_refresh(token, Some(1800));
+        assert!(!profile_refresh_due(token));
+        assert_eq!(cached_subscription(token), Some(info));
+        request_profile_refresh(token);
+        assert!(!profile_refresh_due(token));
+    }
+
+    #[test]
+    fn manual_refresh_can_expire_a_successful_cache_after_one_minute() {
+        let token = "manual-profile-refresh-unique-synthetic";
+        remember_owner(token, &owner());
+        {
+            let mut cache = owners().lock().unwrap_or_else(|error| error.into_inner());
+            let cached = cache.get_mut(&token_key(token)).unwrap();
+            cached.subscription = Some(crate::usage::subscription::claude_profile(
+                &serde_json::json!({"organization":{"organization_type":"claude_pro"}}), "checked".into()));
+            cached.refresh_after = Duration::from_millis(crate::usage::subscription::SUBSCRIPTION_CACHE_TTL_MS as u64);
+        }
+        request_profile_refresh(token);
+        assert!(!profile_refresh_due(token));
+        owners().lock().unwrap_or_else(|error| error.into_inner())
+            .get_mut(&token_key(token)).unwrap().checked_at = Instant::now() - Duration::from_secs(61);
+        request_profile_refresh(token);
+        assert!(profile_refresh_due(token));
+        assert!(claim_profile_refresh(token));
+        assert!(!claim_profile_refresh(token));
+        request_profile_refresh(token);
+        assert!(!profile_refresh_due(token));
+        assert_eq!(cached_owner(token), Some(owner()));
+    }
+
+    #[tokio::test]
+    async fn profile_fetch_keeps_fresh_plan_when_the_owner_is_remembered_again() {
+        let (base, request) = crate::usage::reset_tickets::fake_http_once(
+            r#"{"account":{"uuid":"owner-test"},"organization":{"organization_type":"claude_free"}}"#).await;
+        let token = "profile-plan-preserve-unique-synthetic";
+        let check = fetch_claude_token_owner_at(&reqwest::Client::new(), token, &base).await;
+        let OwnerCheck::Owner(owner) = check else { panic!("profile rejected") };
+        remember_owner(token, &owner);
+        assert_eq!(cached_subscription(token).unwrap().plan.as_deref(), Some("free"));
+        assert!(cached_owner(token).is_some());
+        assert!(request.await.unwrap().starts_with("GET / "));
     }
 
     #[test]

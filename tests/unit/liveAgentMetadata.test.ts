@@ -273,3 +273,12 @@ describe("live agent marks and restoration authority", () => {
       .toMatchObject({ displayKind: "codex", liveAgentKind: null, markSource: "preset" });
   });
 });
+
+it("SI display-only scans cannot rewrite saved tab or metadata fallback identities", () => {
+  applyPtyMetadata(metadata({ agent_session_trusted: true }));
+  applyPtyMetadata(metadata({ agent_session_trusted: false, agent_session_id: B, claude_session_id: B }));
+  expect(tab()).toMatchObject({ agentSessionId: A, claudeSessionId: A });
+  expect(usePaneMetadataStore.getState().metadata["pty-main"]).toMatchObject({ agentSessionId: A, claudeSessionId: A });
+  const saved = toConfig(useWorkspaceListStore.getState().workspaces[0]);
+  expect(saved.panes[0].tabs?.[0]).toMatchObject({ agent_session_id: A, claude_session_id: A });
+});

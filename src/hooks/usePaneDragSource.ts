@@ -10,23 +10,21 @@ import { useWorkspaceLayoutStore } from "../stores/workspaceLayoutStore";
 import { useWorkspaceListStore } from "../stores/workspaceListStore";
 import { useSavepointDragStore } from "../stores/savepointDragStore";
 import { focusController } from "../lib/focusController";
-import { publishSavepoint, type DetachedPaneOrigin } from "../lib/ipc";
+import type { DetachedPaneOrigin } from "../lib/ipc";
 import { detachedOriginForDrag, isTransferableTab } from "../lib/detachedPane";
 import { isOutsideWindowViewport } from "../lib/windowEdge";
+import { captureLegacyTearoutSource } from "../lib/tearout/legacySource";
+import { tearoutOperationBusy } from "../lib/tearout/operation";
+import { recoveryBusy } from "../lib/tearout/recoveryNotice";
 import { tearOutWorkspaceToNewWindow } from "../lib/workspaceTearOut";
 import {
   isPaneDropTargetEligible,
   prioritizePaneHandoffDropTarget,
   resolvePaneDropZone,
-  resolvePaneHandoffEligibility,
 } from "../lib/paneHandoff";
-import {
-  commitSavepointPaste,
-  resolveLiveAgentTarget,
-} from "../lib/savepointHandoffRuntime";
-import { onlineStrings } from "../components/online/onlineStrings";
+import { capturePaneHandoffSource, resolvePaneHandoffContext as resolveHandoffContext,
+  commitPaneHandoffContext } from "../lib/paneHandoffRuntime";
 import { paneDndStrings } from "../components/workspace/paneDndStrings";
-import { usePaneMetadataStore } from "../stores/paneMetadataStore";
 import { useToastStore } from "../stores/toastStore";
 import { applyLayoutMutation, layoutStructureRevision } from "../lib/layoutMutation";
 import { resolveMinimapDropZone } from "../components/dashboard/minimapModel";
@@ -70,43 +68,8 @@ function getFocusSessionId(item: PaneDragItem): string | null {
   return activeTab?.sessionId ?? pane.sessionId;
 }
 
-function resolvePaneHandoffContext(
-  item: PaneDragItem,
-  targetWorkspaceId: string,
-  targetPaneId: string,
-) {
-  if (item.kind === "tab-bundle") return null;
-  const listState = useWorkspaceListStore.getState();
-  const sourceWorkspace = listState.getWorkspace(item.workspaceId);
-  const sourcePane = sourceWorkspace?.panes.find((pane) => pane.id === item.paneId);
-  const targetWorkspace = listState.getWorkspace(targetWorkspaceId);
-  const targetPane = targetWorkspace?.panes.find((pane) => pane.id === targetPaneId);
-  if (!sourcePane || !targetPane) return null;
-
-  const sourceTab = item.kind === "tab"
-    ? sourcePane.tabs.find((tab) => tab.id === item.tabId)
-    : (sourcePane.tabs.find((tab) => tab.id === sourcePane.activeTabId) ?? sourcePane.tabs[0]);
-  const targetTab = targetPane.tabs.find((tab) => tab.id === targetPane.activeTabId)
-    ?? targetPane.tabs[0];
-  const metadata = usePaneMetadataStore.getState().metadata;
-  const eligibility = resolvePaneHandoffEligibility(
-    {
-      workspaceId: item.workspaceId,
-      paneId: item.paneId,
-      tab: sourceTab,
-      metadata: sourceTab ? metadata[sourceTab.sessionId] : undefined,
-    },
-    {
-      workspaceId: targetWorkspaceId,
-      paneId: targetPaneId,
-      tab: targetTab,
-      metadata: targetTab ? metadata[targetTab.sessionId] : undefined,
-    },
-  );
-  if (!eligibility || !targetTab) return null;
-  const pasteTarget = resolveLiveAgentTarget(targetWorkspaceId, targetPaneId, targetTab.id);
-  if (!pasteTarget || pasteTarget.targetKind !== eligibility.targetAgentKind) return null;
-  return { eligibility, pasteTarget };
+function resolvePaneHandoffContext(item: PaneDragItem, targetWorkspaceId: string, targetPaneId: string) {
+  return resolveHandoffContext(capturePaneHandoffSource(item), targetWorkspaceId, targetPaneId);
 }
 
 export function canDropTarget(item: PaneDragItem, target: PaneDropTarget): boolean {
@@ -322,35 +285,9 @@ function commitMinimapPaneDrop(
   }
 }
 
-async function commitPaneHandoff(
-  item: PaneDragItem,
-  target: Extract<PaneDropTarget, { kind: "handoff" }>,
-): Promise<void> {
-  const context = resolvePaneHandoffContext(item, target.workspaceId, target.paneId);
-  if (!context) {
-    useToastStore.getState().pushToast(onlineStrings.dragDropTargetGone, "warning");
-    return;
-  }
-
-  const openingToastId = useToastStore
-    .getState()
-    .pushToast(onlineStrings.dragDropPreparingDraft, "info");
-  try {
-    const published = await publishSavepoint({
-      cwd: context.eligibility.sourceCwd,
-      agentKind: context.eligibility.publishAgentKind,
-      agentSessionId: context.eligibility.sourceAgentSessionId,
-    });
-    await commitSavepointPaste(published.bundle_dir, context.pasteTarget, openingToastId);
-  } catch (error) {
-    console.error("[mycmux] failed to publish pane handoff", error);
-    useToastStore.getState().pushToast(
-      onlineStrings.dragDropErrorPrefix + String(error),
-      "error",
-    );
-  } finally {
-    useToastStore.getState().dismissToast(openingToastId);
-  }
+async function commitPaneHandoff(item: PaneDragItem,
+  target: Extract<PaneDropTarget, { kind: "handoff" }>): Promise<void> {
+  await commitPaneHandoffContext(resolvePaneHandoffContext(item, target.workspaceId, target.paneId));
 }
 
 function moveDragItemToNewWorkspace(
@@ -396,6 +333,7 @@ function tearOutMovedWorkspace(
   target: Extract<PaneDropTarget, { kind: "new-window" }>,
   trace: TearOutDragTrace | null,
   detachedFrom?: DetachedPaneOrigin,
+  restoreSource?: (transferId: string) => void,
 ): void {
   // If opening the window fails the workspace simply stays here — nothing to
   // undo and no PTY session is lost.
@@ -405,6 +343,7 @@ function tearOutMovedWorkspace(
     x: target.screenX - 40,
     y: target.screenY - 20,
     ...(detachedFrom ? { detachedFrom } : {}),
+    ...(restoreSource ? { restoreSource: () => restoreSource(workspaceId) } : {}),
   }).then((label) => {
     if (!label) {
       trace?.failed("transfer-failed", "workspace transfer returned no destination window");
@@ -419,7 +358,7 @@ function tearOutMovedWorkspace(
     trace?.failed("create-failed", String(error));
     clearTearOutMeasurementAfterDelay();
     console.error("[multiwindow] drag tear-out failed", error);
-    useToastStore.getState().pushToast("新しいウィンドウを開けませんでした", "error");
+    if (!(error as { notified?: boolean })?.notified) useToastStore.getState().pushToast("新しいウィンドウを開けませんでした", "error");
   });
 }
 
@@ -430,6 +369,8 @@ export function commitPaneDragDrop(
 ): void {
   if (!target || !canDropTarget(item, target)) return;
 
+  if (target.kind === "new-window" && tearoutOperationBusy()) { recoveryBusy(); return; }
+  const restoreSource = target.kind === "new-window" ? captureLegacyTearoutSource(item) : undefined;
   const focusSessionId = getFocusSessionId(item);
   const detachedFrom = target.kind === "new-window"
     ? detachedOriginForDrag(useWorkspaceListStore.getState().getWorkspace(item.workspaceId), item)
@@ -454,7 +395,7 @@ export function commitPaneDragDrop(
         clearTearOutMeasurementAfterDelay();
         return;
       }
-      tearOutMovedWorkspace(workspaceId, focusSessionId, target, trace, detachedFrom);
+      tearOutMovedWorkspace(workspaceId, focusSessionId, target, trace, detachedFrom, restoreSource);
     }
     return;
   }
@@ -493,7 +434,7 @@ export function commitPaneDragDrop(
     if (target.kind === "new-window") {
       // Dropped outside the window: the fresh workspace immediately tears out
       // to a new OS window at the drop point.
-      tearOutMovedWorkspace(workspaceId, focusSessionId, target, trace, detachedFrom);
+      tearOutMovedWorkspace(workspaceId, focusSessionId, target, trace, detachedFrom, restoreSource);
       return;
     }
     useWorkspaceListStore.getState().setActiveWorkspace(workspaceId);

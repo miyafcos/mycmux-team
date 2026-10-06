@@ -88,8 +88,10 @@ def test_mapping_ipc_reads_only_through_its_blocking_worker() -> None:
     source = text("src-tauri/src/commands/session_mapping.rs")
     body = function_body(source, "read_agent_session_mappings")
     assert 'run_blocking_value("read_agent_session_mappings", move || {' in body
-    assert "mapping_read_worker::read_agent_session_mappings(session_ids)" in body
+    assert "mapping_read_worker::read_agent_session_mappings(session_ids, &manager)" in body
     assert "}).await" in body
     worker = source.split("mod mapping_read_worker {", 1)[1].split("#[cfg(test)]", 1)[0]
     assert "pub fn read_agent_session_mappings(" in worker
-    assert "agent_mappings_for_ids(session_ids)" in worker
+    assert "manager.trusted_agent_identity(&pane)" in worker
+    assert "manager.requested_conversation(&pane)" in worker
+    assert "agent_mappings_for_ids(session_ids)" not in worker

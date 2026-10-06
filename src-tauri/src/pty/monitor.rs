@@ -34,6 +34,7 @@ pub struct PtyMetadata {
     /// Current display identity. Serialized as null when no agent is present.
     pub live_agent_kind: Option<String>,
     pub agent_session_id: Option<String>,
+    pub agent_session_trusted: bool,
 }
 
 impl PtyMetadata {
@@ -53,6 +54,7 @@ impl PtyMetadata {
             agent_kind: None,
             live_agent_kind: None,
             agent_session_id: None,
+            agent_session_trusted: false,
         }
     }
 }
@@ -155,7 +157,8 @@ mod runner;
 mod transcripts;
 
 use detection::*;
-pub(crate) use detection::session_id_from_args;
+pub(crate) use detection::{session_id_from_args, agent_kind_from_process, build_child_index,
+    find_agent_descendant, session_id_from_agent_args, DetectedAgentKind};
 use codex_rollout::*;
 use git_branch::*;
 pub use runner::start_monitor;

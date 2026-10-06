@@ -1,0 +1,20 @@
+.html-review-draft { flex: 0 1 auto; min-height: 30px; max-height: 46%; overflow: auto; color: var(--cmux-text); background: var(--cmux-surface, #202025); border-bottom: 1px solid var(--cmux-border); font-size: 12px; }
+.html-review-draft.is-open { flex: 0 0 256px; height: 256px; }
+.html-review-draft__heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 5px 10px; }
+.html-review-draft button { border: 1px solid var(--cmux-border); border-radius: 5px; background: var(--cmux-bg-solid, #16161b); color: inherit; padding: 5px 8px; cursor: pointer; text-align: left; }
+.html-review-draft button:disabled { opacity: .5; cursor: default; }
+.html-review-draft button:focus-visible { outline: 2px solid var(--cmux-accent); outline-offset: 1px; }
+.html-review-draft__heading span, .html-review-draft small { color: var(--cmux-text-secondary); }
+.html-review-draft__body { padding: 0 10px 8px; display: grid; gap: 6px; }
+.html-review-draft__search { display: flex; gap: 6px; }
+.html-review-draft input, .html-review-draft textarea { min-width: 0; box-sizing: border-box; border: 1px solid var(--cmux-border); border-radius: 5px; background: var(--cmux-bg-solid, #16161b); color: inherit; font: inherit; padding: 5px 7px; }
+.html-review-draft input { flex: 1; width: 0; }
+.html-review-draft textarea { display: block; width: 100%; height: 48px; resize: vertical; margin: 5px 0; }
+.html-review-draft__targets { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; max-height: 120px; overflow: auto; }
+.html-review-draft__targets button { width: 100%; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.html-review-draft__selected { display: grid; grid-template-columns: minmax(50px, 100px) minmax(0, 1fr); gap: 10px; }
+.html-review-draft__selected img { width: 100%; max-height: 90px; object-fit: contain; background: white; }
+.html-review-draft__selected strong { display: block; overflow-wrap: anywhere; }
+.html-review-draft p { margin: 0; overflow-wrap: anywhere; }
+.html-review-draft [role="alert"] { color: var(--status-error, #e67a85); }
+.html-review-draft small { display: block; }

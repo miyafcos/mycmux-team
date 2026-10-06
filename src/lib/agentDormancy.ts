@@ -184,6 +184,23 @@ function normalizeDormancyScreenLine(line: string): string {
   return line;
 }
 
+function findClaudeInputFooterStart(lines: readonly string[], screenStart: number): number | null {
+  const isInputRule = (line: string): boolean => /^\s*\u2500{4,}\s*$/u.test(line);
+  // A footer belongs to the current screen only when matching full-width rules
+  // enclose a Claude input prompt. A lone rule, body table or shell prompt cannot
+  // establish the boundary. Search backwards so earlier conversation is retained.
+  for (let lower = lines.length - 1; lower >= screenStart; lower -= 1) {
+    if (!isInputRule(lines[lower])) continue;
+    let upper = lower - 1;
+    while (upper >= screenStart && !isInputRule(lines[upper])) upper -= 1;
+    if (upper < screenStart || lines[upper].trim() !== lines[lower].trim()) continue;
+    let prompt = upper + 1;
+    while (prompt < lower && !lines[prompt].trim()) prompt += 1;
+    if (prompt < lower && /^\s*\u276f(?:\s|$)/u.test(lines[prompt])) return lower + 1;
+  }
+  return null;
+}
+
 export async function fingerprintDormancySemanticState(
   lines: readonly string[],
   screenTailLines: number = DORMANCY_SCREEN_TAIL_LINES,
@@ -191,9 +208,14 @@ export async function fingerprintDormancySemanticState(
   if (lines.length === 0) return null;
   const tailCount = Math.max(0, Math.trunc(screenTailLines));
   const screenStart = Math.max(0, lines.length - tailCount);
-  const semanticState = lines.map((line, index) => (
+  const footerStart = findClaudeInputFooterStart(lines, screenStart);
+  const semanticLines = lines.slice(0, footerStart ?? lines.length).map((line, index) => (
     index < screenStart ? line : normalizeDormancyScreenLine(line)
-  )).join("\u0000");
+  ));
+  // One marker also ignores footer row-count changes, including wrapped status
+  // lines. Working evidence is still checked separately against the raw screen.
+  if (footerStart !== null) semanticLines.push("<claude-input-footer>");
+  const semanticState = semanticLines.join("\u0000");
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(semanticState));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }

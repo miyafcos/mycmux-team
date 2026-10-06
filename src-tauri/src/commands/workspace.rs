@@ -31,6 +31,16 @@ pub async fn save_persistent_data(
     crate::util::task::run_blocking_result("save_persistent_data", move || {
         crate::perf_timeline::mark("store.save.enter", None);
         attach_detached_window_frames(&app_handle, &mut data);
+        {
+            use tauri::Manager;
+            if let Some(state) = app_handle.try_state::<crate::AppState>() {
+                canonicalize_live_agent_sessions(&mut data, |session| {
+                    state.session_manager.trusted_agent_identity(session)
+                        .map(|identity| (identity.kind, identity.session_id))
+                        .or_else(|| state.session_manager.requested_conversation(session))
+                });
+            }
+        }
         let live = live_workspace_ids(&app_handle);
         let result = save_persistent_data_for(&app_handle, data, &live);
         crate::perf_timeline::mark("store.save.done", None);
@@ -49,7 +59,7 @@ fn attach_detached_window_frames(app_handle: &AppHandle, data: &mut PersistentDa
     for label in state.window_registry.known_windows() {
         let selection = state.window_registry.fragment(&label);
         let mut group = storage::WindowGroupConfig {
-            label: label.clone(), frame: None, decorated: None,
+            label: label.clone(), frame: None, decorated: None, maximized: None,
             native_tearout: selection.as_ref().and_then(|fragment| fragment.workspaces.iter()
                 .find_map(|workspace| workspace["window_native_tearout"].as_bool())),
             active_workspace_id: selection.as_ref().and_then(|row| row.active_workspace_id.clone()),
@@ -70,6 +80,14 @@ fn attach_detached_window_frames(app_handle: &AppHandle, data: &mut PersistentDa
                 outer_frames.insert(label.clone(), storage::WindowFrameConfig {
                     x: position.x, y: position.y, width: outer.width, height: outer.height,
                 });
+            }
+            #[cfg(target_os = "windows")]
+            if group.native_tearout == Some(true) {
+                if let Ok((inner, outer, true)) = crate::tearout::saved_native_frame(&window) {
+                    group.maximized = Some(true);
+                    group.frame = Some(inner);
+                    outer_frames.insert(label.clone(), outer);
+                }
             }
         }
         groups.insert(label, group);
@@ -282,6 +300,25 @@ fn sanitize_pane_agent_sessions(pane: &mut PaneConfig) {
     }
 }
 
+/// Current PTY launch/argv/self-hook identity also protects close snapshots and
+/// peer fragments from persisting a display-only transcript scan.
+fn canonicalize_live_agent_sessions(data: &mut PersistentData, mut identity: impl FnMut(&str) -> Option<(String, String)>) {
+    for workspace in &mut data.workspaces {
+        for pane in &mut workspace.panes {
+            let Some(tabs) = pane.tabs.as_mut() else { continue; };
+            for tab in tabs {
+                if tab.r#type.as_deref().is_some_and(|kind| kind != "terminal") { continue; }
+                let Some((kind, id)) = tab.session_id.as_deref().and_then(&mut identity) else { continue; };
+                tab.claude_session_id = (kind == "claude").then(|| id.clone());
+                tab.agent_kind = Some(kind.clone());
+                tab.agent_session_id = Some(id);
+                if let Some(agent_id) = agent_id_for_kind(Some(&kind)) { tab.agent_id = agent_id.to_string(); }
+            }
+            sync_pane_from_active_tab(pane);
+        }
+    }
+}
+
 fn sanitize_agent_sessions(data: &mut PersistentData) {
     for workspace in &mut data.workspaces {
         for pane in &mut workspace.panes {
@@ -471,9 +508,9 @@ mod tests {
         let inner = storage::WindowFrameConfig { x: 120.0, y: 140.0, width: 800.0, height: 600.0 };
         let outer = storage::WindowFrameConfig { height: 628.0, ..inner.clone() };
         let groups = HashMap::from([
-            ("main".into(), storage::WindowGroupConfig { label: "main".into(), frame: None, decorated: Some(true), native_tearout: Some(false),
+            ("main".into(), storage::WindowGroupConfig { label: "main".into(), frame: None, decorated: Some(true), native_tearout: Some(false), maximized: None,
                 active_workspace_id: Some("main-ws".into()), active_pane_id: None, active_tab_id: None }),
-            ("mycmux-w2".into(), storage::WindowGroupConfig { label: "mycmux-w2".into(), frame: Some(inner.clone()), decorated: Some(false), native_tearout: Some(true),
+            ("mycmux-w2".into(), storage::WindowGroupConfig { label: "mycmux-w2".into(), frame: Some(inner.clone()), decorated: Some(false), native_tearout: Some(true), maximized: Some(true),
                 active_workspace_id: Some("b".into()), active_pane_id: Some("b-pane".into()), active_tab_id: Some("b-tab".into()) }),
         ]);
         let frames = HashMap::from([("mycmux-w2".into(), outer.clone())]);
@@ -485,6 +522,7 @@ mod tests {
         for workspace in &data.workspaces[1..] {
             let group = workspace.window_group.as_ref().unwrap();
             assert_eq!(group.label, "mycmux-w2");
+            assert_eq!(group.maximized, Some(true));
             assert_eq!(group.active_workspace_id.as_deref(), Some("b"));
             assert_eq!(group.frame.as_ref(), Some(&inner));
             assert_eq!(workspace.window_frame.as_ref(), Some(&outer));
@@ -577,4 +615,23 @@ mod tests {
         );
         assert_eq!(disk.settings.font_size, 19);
     }
+    #[test]
+    fn si_t2_canonical_save_overrides_scanned_identity_and_preserves_unstarted_tabs() {
+        let mut data = PersistentData::default();
+        data.workspaces = vec![serde_json::from_value(serde_json::json!({
+            "id":"workspace", "name":"Workspace", "grid_template_id":"1x1", "created_at":0,
+            "panes":[{"pane_id":"pane", "agent_id":"claude-code", "label":null, "cwd":null,
+                "active_tab_id":"tab-a", "agent_session_id":"scanned-x", "agent_kind":"claude",
+                "tabs":[{"tab_id":"tab-a", "session_id":"pty-a", "agent_id":"claude-code", "label":null,
+                    "agent_kind":"claude", "agent_session_id":"scanned-x", "claude_session_id":"scanned-x"},
+                    {"tab_id":"tab-b", "session_id":"not-started", "agent_id":"claude-code", "label":null,
+                    "agent_kind":"claude", "agent_session_id":"saved-b"}]}]
+        })).unwrap()];
+        canonicalize_live_agent_sessions(&mut data, |session| (session == "pty-a").then(|| ("claude".into(), "trusted-a".into())));
+        let pane = &data.workspaces[0].panes[0];
+        assert_eq!(pane.agent_session_id.as_deref(), Some("trusted-a"));
+        assert_eq!(pane.tabs.as_ref().unwrap()[0].claude_session_id.as_deref(), Some("trusted-a"));
+        assert_eq!(pane.tabs.as_ref().unwrap()[1].agent_session_id.as_deref(), Some("saved-b"));
+    }
+
 }

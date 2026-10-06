@@ -9,7 +9,8 @@ const mocks = vi.hoisted(() => ({
   holdDetailSession: vi.fn((_sessionId: string) => mocks.releaseHold),
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()), invoke: vi.fn(async () => null) }));
 
 vi.mock("../../src/stores/liveBriefStore", async (importActual) => {
   const actual = await importActual<typeof import("../../src/stores/liveBriefStore")>();
