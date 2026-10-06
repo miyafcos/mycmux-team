@@ -13,7 +13,7 @@ use crate::util::ids::is_uuid_like;
 use crate::AppState;
 
 pub(crate) use agent_restore::can_restore_agent_session;
-use agent_session_guard::{metadata_conversation, requested_conversation, Conversation, LaunchClaim, Owner};
+use agent_session_guard::{owner_conversation, requested_conversation, Conversation, LaunchClaim, Owner};
 use agent_restore::{
     ensure_claude_project_trusted, last_claude_effort, validate_agent_restore_request,
 };
@@ -93,26 +93,82 @@ fn running_session_ids_for(manager: &crate::pty::manager::SessionManager) -> Vec
         .filter(|id| manager.is_running(id)).collect()
 }
 
+#[tauri::command(async)]
+pub async fn get_agent_conversation_owner(state: State<'_, AppState>, kind: String, agent_session_id: String) -> Result<Option<String>, String> {
+    let manager = state.session_manager.clone();
+    let metadata = state.metadata_store.clone();
+    let request = Conversation::new(&kind, &agent_session_id).ok_or("Invalid conversation")?;
+    crate::util::task::run_blocking("get_agent_conversation_owner", move || {
+        Ok(conversation_owners_for(&manager, &metadata).into_iter()
+            .find(|owner| owner.conversation == request).map(|owner| owner.session_id))
+    }).await
+}
+
 fn running_conversation_owners(state: &AppState) -> Vec<Owner> {
-    let running_ids = running_session_ids(state);
-    let mappings = crate::commands::session_mapping::agent_mappings_for_ids(&running_ids);
-    let mut owners = Vec::new();
-    for session_id in running_ids {
-        if let Some(metadata) = state.metadata_store.get(&session_id) {
-            if let Some(conversation) = metadata_conversation(
-                metadata.agent_kind.as_deref(),
-                metadata.agent_session_id.as_deref(),
-                metadata.claude_session_id.as_deref(),
-            ) {
-                owners.push(Owner { session_id: session_id.clone(), conversation, is_running: true });
-            }
+    conversation_owners_for(&state.session_manager, &state.metadata_store)
+}
+
+// Only PTY roots and descendants need command lines for ownership checks.
+fn owner_commandline_pids(children: &HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>, roots: &[sysinfo::Pid]) -> Vec<sysinfo::Pid> {
+    let mut selected = std::collections::HashSet::new();
+    let mut pending = roots.to_vec();
+    while let Some(pid) = pending.pop() {
+        if !selected.insert(pid) { continue; }
+        if let Some(descendants) = children.get(&pid) {
+            pending.extend(descendants.iter().copied());
         }
-        if let Some(mapping) = mappings.get(&session_id) {
-            if let Some(conversation) = mapping.agent_kind.as_deref()
-                .and_then(|kind| Conversation::new(kind, &mapping.session_id))
-            {
-                owners.push(Owner { session_id, conversation, is_running: true });
+    }
+    selected.into_iter().collect()
+}
+
+fn conversation_owners_for(manager: &crate::pty::manager::SessionManager, _metadata: &crate::pty::monitor::MetadataStore) -> Vec<Owner> {
+    use crate::pty::monitor::{agent_kind_from_process, build_child_index, find_agent_descendant, session_id_from_agent_args};
+    use sysinfo::{Pid, System, ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
+    let ptys = manager.iter_pids();
+    let mut sys = System::new();
+    // Parent links and creation times are cheap. Reading every Windows command
+    // line can exceed the terminal attach deadline on a busy computer.
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    let roots: Vec<_> = ptys.iter().filter_map(|(_, root)| root.map(Pid::from_u32)).collect();
+    let selected = owner_commandline_pids(&build_child_index(&sys), &roots);
+    if !selected.is_empty() {
+        sys.refresh_processes_specifics(ProcessesToUpdate::Some(&selected), true,
+            ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet));
+    }
+    let children = build_child_index(&sys);
+    let mut owners = Vec::new();
+    for (session_id, root) in ptys {
+        if !manager.is_running(&session_id) { continue; }
+        let agent = root.and_then(|root| find_agent_descendant(&sys, &children, Pid::from_u32(root)));
+        let Some((kind, pid)) = agent else {
+            if let Some((kind, id)) = manager.pending_requested_conversation(&session_id) {
+                if let Some(conversation) = Conversation::new(&kind, &id) {
+                    owners.push(Owner { session_id, conversation, is_running: true });
+                }
             }
+            continue;
+        };
+        manager.note_agent_seen(&session_id);
+        if !kind.is_restorable() { continue; }
+        let Some(process) = sys.process(pid) else { continue; };
+        let arguments: Vec<_> = process.cmd().iter().map(|v| v.to_string_lossy()).collect();
+        if arguments.iter().any(|v| matches!(v.as_ref(), "-p" | "--print" | "--exec")) { continue; }
+        let requested = manager.requested_conversation(&session_id)
+            .filter(|(requested_kind, _)| requested_kind == kind.display_kind() || (requested_kind == "claude-codex" && kind.display_kind() == "claude"))
+            .and_then(|(kind, id)| Conversation::new(&kind, &id));
+        let verified_hook = manager.trusted_agent_identity(&session_id)
+            .filter(|identity| identity.from_hook && identity.agent_pid == pid.as_u32()
+                && identity.agent_started_at == process.start_time()
+                && agent_kind_from_process(&sys, pid).is_some_and(|kind| kind.display_kind() == identity.kind
+                    || (kind.display_kind() == "claude" && identity.kind == "claude-codex")))
+            .and_then(|identity| Conversation::new(&identity.kind, &identity.session_id));
+        let effective_kind = requested.as_ref().map(|v| v.kind.as_str()).filter(|value|
+            *value == kind.display_kind() || (*value == "claude-codex" && kind.display_kind() == "claude"))
+            .unwrap_or(kind.display_kind());
+        let argv = session_id_from_agent_args(&sys, pid, kind.display_kind() == "codex")
+            .and_then(|id| Conversation::new(effective_kind, &id));
+        if let Some(conversation) = owner_conversation(true, requested, argv, verified_hook, None, None) {
+            owners.push(Owner { session_id, conversation, is_running: true });
         }
     }
     owners
@@ -128,6 +184,7 @@ pub async fn get_session_output_snapshot(state: State<'_, AppState>) -> Result<H
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
 pub async fn create_session(
+    caller: tauri::Webview,
     app_handle: AppHandle,
     state: State<'_, AppState>,
     session_id: String,
@@ -138,13 +195,21 @@ pub async fn create_session(
     on_data: Channel<InvokeResponseBody>,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
+    background_only: Option<bool>,
+    attach_reason: Option<String>,
+    restore_confirmed: Option<bool>,
 ) -> Result<(), String> {
+    let reason = match attach_reason.as_deref() {
+        Some("channel-stall" | "write-stall" | "background") => attach_reason.as_deref().unwrap(),
+        _ => "mount",
+    };
+    let attach_origin = format!("window={} reason={reason}", caller.label());
     // Capture owned handles; borrowed IPC State never crosses the worker boundary.
     let worker_app = app_handle.clone();
     let _ = state;
     crate::util::task::run_blocking("create_session", move || {
         let state = worker_app.state::<AppState>();
-        create_session_blocking(app_handle, state, session_id, command, args, cols, rows, on_data, cwd, env)
+        create_session_blocking(app_handle, state, session_id, command, args, cols, rows, on_data, cwd, env, background_only.unwrap_or(false), attach_origin, restore_confirmed.unwrap_or(false))
     }).await
 }
 
@@ -160,6 +225,9 @@ fn create_session_blocking(
     on_data: Channel<InvokeResponseBody>,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
+    background_only: bool,
+    attach_origin: String,
+    restore_confirmed: bool,
 ) -> Result<(), String> {
     crate::perf_timeline::mark("session.create.enter", Some(&session_id));
     let requested_command = command;
@@ -190,6 +258,15 @@ fn create_session_blocking(
     } else {
         None
     };
+    if !reattach && !restore_confirmed {
+        if let Some(request) = requested_conversation(&requested_command, &args, &env_map) {
+            let history = state.session_manager.conversation_history(&session_id);
+            if let Some(choice) = agent_restore::unattended_restore_choice(&request.kind, &request.agent_session_id,
+                cwd.as_deref(), env_map.get("MYCMUX_TAB_ID").map(String::as_str), &history) {
+                return Err(format!("AGENT_RESTORE_CHOICE_REQUIRED:{}", serde_json::to_string(&choice).unwrap()));
+            }
+        }
+    }
     if !reattach {
         inherit_claude_resume_effort(&args, &mut env_map, cwd.as_deref(), last_claude_effort);
     }
@@ -410,6 +487,7 @@ fn create_session_blocking(
     } else {
         command
     };
+    let launch_conversation = requested_conversation(&requested_command, &args, &env_map);
     state.session_manager.create(
         session_id.clone(),
         &command,
@@ -422,7 +500,14 @@ fn create_session_blocking(
         Some(env_map),
         state.metadata_store.clone(),
         state.scrollback_dir.get().map(PathBuf::as_path),
+        background_only,
+        &attach_origin,
     )?;
+    if !reattach {
+        if let Some(request) = launch_conversation {
+            state.session_manager.remember_requested_conversation(&session_id, &request.kind, &request.agent_session_id);
+        }
+    }
     crate::perf_timeline::mark("session.create.done", Some(&session_id));
     if let Some((session_epoch, _)) = state.session_manager.session_observation(&session_id) {
         state.session_state_store.ingest(
@@ -1138,10 +1223,11 @@ pub fn set_frontend_visible(
     state: State<'_, AppState>,
     session_id: String,
     visible: bool,
+    channel_id: Option<u32>,
 ) -> Result<(), String> {
     state
         .session_manager
-        .set_frontend_visible(&session_id, visible);
+        .set_frontend_visible(&session_id, visible, channel_id);
     Ok(())
 }
 
@@ -1312,6 +1398,24 @@ pub async fn get_launch_cwd() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn si_t1_owner_commandline_refresh_excludes_foreign_processes_and_handles_cycles() {
+        use sysinfo::Pid;
+        let pid = Pid::from_u32;
+        let children = HashMap::from([
+            (pid(1), vec![pid(2)]),
+            (pid(2), vec![pid(3)]),
+            (pid(3), vec![pid(1), pid(4)]),
+            (pid(99), vec![pid(100)]),
+        ]);
+        let mut selected: Vec<_> = owner_commandline_pids(&children, &[pid(1), pid(1)])
+            .into_iter().map(Pid::as_u32).collect();
+        selected.sort_unstable();
+        assert_eq!(selected, vec![1, 2, 3, 4]);
+        assert_eq!(owner_commandline_pids(&children, &[pid(42)]), vec![pid(42)]);
+    }
+
 
     fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs

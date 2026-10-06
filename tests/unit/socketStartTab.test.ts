@@ -103,7 +103,7 @@ describe("pane.start_tab", () => {
       80, 24, expect.any(Function), "C:/tab", {
         KEEP: "inherited", MYCMUX_PANE_SESSION_ID: "restored-pty", MYCMUX_TAB_ID: "restored-tab",
         MYCMUX_AGENT_KIND: "codex", MYCMUX_SESSION_ID: "saved-conversation", MYCMUX_RESUME: "codex",
-      },
+      }, false, { backgroundOnly: true, reason: "background" },
     );
     expect(foreground()).toEqual(before);
     expect(useWorkspaceListStore.getState().workspaces).toBe(workspaces);
@@ -122,6 +122,7 @@ describe("pane.start_tab", () => {
     expect(ipc.createSession).toHaveBeenCalledExactlyOnceWith(
       restored.sessionId, uiLaunch.launchCommand, uiLaunch.launchArgs, 80, 24,
       expect.any(Function), uiLaunch.paneCwd, uiLaunch.launchEnv,
+      false, { backgroundOnly: true, reason: "background" },
     );
   });
 
@@ -197,6 +198,7 @@ describe("existing spawn launch requests", () => {
       fresh.sessionId, fresh.commandArgv?.[0] ?? agent.command,
       fresh.commandArgv?.length ? fresh.commandArgv.slice(1) : agent.args,
       80, 24, expect.any(Function), "C:/pane", expectedEnv,
+      false, { backgroundOnly: true, reason: "background" },
     );
   });
 });

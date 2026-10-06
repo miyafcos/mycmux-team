@@ -92,6 +92,20 @@ pub(super) fn metadata_conversation(
     }
 }
 
+// Selection seam for the recorded false-owner regression tests.
+pub(super) fn owner_conversation(
+    agent_running: bool,
+    requested: Option<Conversation>,
+    argv: Option<Conversation>,
+    verified_hook: Option<Conversation>,
+    metadata: Option<Conversation>,
+    mapping: Option<Conversation>,
+) -> Option<Conversation> {
+    let _ = (metadata, mapping);
+    if !agent_running { return None; }
+    verified_hook.or(argv).or(requested)
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Conflict {
@@ -475,4 +489,33 @@ mod tests {
         assert!(table.lock().unwrap().owners.is_empty());
         assert!(acquire_claim(&table, request("claude"), "next", Vec::new).is_ok());
     }
+    #[test]
+    fn si_t1_recorded_four_false_owner_pairs_do_not_block_eight_resumes() {
+        let cases = [
+            ("ac8117ab-bdf7-4552-8288-07c40306d265", "73dc5b4c-45fd-4754-9836-0da5111b3ea5"),
+            ("f833112d-380b-4eb6-be26-00bbe3af32ad", "0b6471b2-f73f-4a8f-a7c4-ab928ae26078"),
+            ("f833112d-380b-4eb6-be26-00bbe3af32ad", "b7dc1d0b-c0ee-4ebf-9aae-5400dba67d68"),
+            ("9353eaa0-805a-48a8-a744-80736c066a55", "8cf9e45f-e105-44d0-b2d2-80f42f23c6a2"),
+        ];
+        for (actual, stolen) in cases {
+            for _ in 0..2 {
+                let actual = Conversation::new("claude", actual).unwrap();
+                let stolen = Conversation::new("claude", stolen).unwrap();
+                let selected = owner_conversation(true, Some(actual.clone()), Some(actual), None, Some(stolen.clone()), Some(stolen.clone()));
+                let owners: Vec<_> = selected.into_iter().map(|conversation| Owner {
+                    session_id: "false-owner".into(), conversation, is_running: true,
+                }).collect();
+                assert!(find_conflict(&stolen, "requester", &owners, &HashMap::new()).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn si_t1_verified_hook_wins_over_frozen_argv_and_shell_is_not_an_owner() {
+        let a = request("claude");
+        let b = Conversation::new("claude", "new-session").unwrap();
+        assert_eq!(owner_conversation(true, Some(a.clone()), Some(a.clone()), Some(b.clone()), None, None), Some(b));
+        assert_eq!(owner_conversation(false, Some(a.clone()), Some(a.clone()), Some(a.clone()), Some(a.clone()), Some(a)), None);
+    }
+
 }

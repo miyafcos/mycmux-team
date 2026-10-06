@@ -416,18 +416,24 @@ pub(crate) fn remove_session_mapping_file(session_id: &str) -> Result<(), String
 
 #[tauri::command(async)]
 pub async fn read_agent_session_mappings(
+    state: tauri::State<'_, crate::AppState>,
     session_ids: Vec<String>,
-) -> HashMap<String, AgentSessionMapping> {
-    crate::util::task::run_blocking_value("read_agent_session_mappings", move || {
-        mapping_read_worker::read_agent_session_mappings(session_ids)
-    }).await
+) -> Result<HashMap<String, AgentSessionMapping>, String> {
+    let manager = state.session_manager.clone();
+    Ok(crate::util::task::run_blocking_value("read_agent_session_mappings", move || {
+        mapping_read_worker::read_agent_session_mappings(session_ids, &manager)
+    }).await)
 }
 
 mod mapping_read_worker {
-    use super::{agent_mappings_for_ids, AgentSessionMapping, HashMap};
+    use super::{AgentSessionMapping, HashMap};
 
-    pub fn read_agent_session_mappings(session_ids: Vec<String>) -> HashMap<String, AgentSessionMapping> {
-        agent_mappings_for_ids(session_ids)
+    pub fn read_agent_session_mappings(session_ids: Vec<String>, manager: &crate::pty::manager::SessionManager) -> HashMap<String, AgentSessionMapping> {
+        session_ids.into_iter().filter_map(|pane| {
+            let identity = manager.trusted_agent_identity(&pane).map(|identity| (identity.kind, identity.session_id))
+                .or_else(|| manager.requested_conversation(&pane));
+            identity.map(|(kind, id)| (pane, AgentSessionMapping { agent_kind: Some(kind), session_id: id, hook_confirmed: false }))
+        }).collect()
     }
 }
 

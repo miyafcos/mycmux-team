@@ -96,6 +96,7 @@ import {
   resolvePersistedSelection,
 } from "../../lib/sessionRestoreSafety";
 import { handleSocketCommand, listenForPeerSpawns, startLocalTabSession } from "./socketCommands";
+import { listenForOverviewNavigation } from "../../lib/workOverviewNavigation";
 import { listenForPeerTabStarts } from "../../lib/socketTabWindows";
 import { IS_MAC } from "../../lib/keybindings";
 import { handleWorkOrderSpawnRequest, type SpawnRequest } from "../../lib/workOrderBridge";
@@ -1164,7 +1165,8 @@ function mirrorPtyMetadataForPersistence(meta: PtyMetadata): void {
     paneMetadataStore.clearClaudeSessionId(meta.session_id);
     workspaceListStore.setPaneAgentSessionFromMetadata(meta.session_id, null);
   }
-  const sessionPayload = agentActive && (meta.claude_session_id || meta.agent_session_id)
+  const resumeActive = meta.agent_session_trusted !== false && agentActive;
+  const sessionPayload = resumeActive && (meta.claude_session_id || meta.agent_session_id)
     ? {
         claudeSessionId: meta.claude_session_id ?? undefined,
         agentKind: meta.agent_kind ?? undefined,
@@ -1191,9 +1193,9 @@ function mirrorPtyMetadataForPersistence(meta: PtyMetadata): void {
     cwd: meta.cwd,
     gitBranch: meta.git_branch,
     processIsShell,
-    claudeSessionId: sessionClaimAccepted && agentActive ? meta.claude_session_id ?? undefined : undefined,
-    agentKind: sessionClaimAccepted && agentActive ? meta.agent_kind ?? undefined : undefined,
-    agentSessionId: sessionClaimAccepted && agentActive ? meta.agent_session_id ?? undefined : undefined,
+    claudeSessionId: sessionClaimAccepted && resumeActive ? meta.claude_session_id ?? undefined : undefined,
+    agentKind: sessionClaimAccepted && resumeActive ? meta.agent_kind ?? undefined : undefined,
+    agentSessionId: sessionClaimAccepted && resumeActive ? meta.agent_session_id ?? undefined : undefined,
   });
   paneMetadataStore.setVolatileMetadata(meta.session_id, {
     processTitle: meta.process_name ?? undefined,
@@ -1660,7 +1662,7 @@ export function hydrateAiSettingsFromDataJson(settings: Pick<
   });
   // These runtime compatibility keys are still consumed by existing UI and
   // automation code, but data.json is now the source of truth.
-  useSettingsStore.setState({
+  useSettingsStore.getState().hydrateAiFeatureSettings({
     autoPaneNamingEnabled: resolved.autoPaneNamingEnabled,
     replyDraftSuggestionsEnabled: resolved.replyDraftSuggestionsEnabled,
     ...(!resolved.migrationNeeded
@@ -2790,6 +2792,7 @@ export function useWorkspacePersist() {
 
   useEffect(() => {
     // Explicit starts for other windows must use that window's live tab data.
+    const unlistenPeerOverview = listenForOverviewNavigation();
     const unlistenPeerStart = listenForPeerTabStarts(startLocalTabSession);
     const unlistenPeerSpawn = listenForPeerSpawns(async () => {
       await persistLoaded;
@@ -2810,6 +2813,7 @@ export function useWorkspacePersist() {
 
     return () => {
       unlisten.then((f) => f()).catch(() => {});
+      unlistenPeerOverview.then((f) => f()).catch(() => {});
       unlistenPeerStart.then((f) => f()).catch(() => {});
       unlistenPeerSpawn.then((f) => f()).catch(() => {});
     };

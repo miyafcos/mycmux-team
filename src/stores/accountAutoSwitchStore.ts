@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { syncedPersist } from "./syncedPersist";
+import { applyAutomaticStoreUpdate, syncedPersist } from "./syncedPersist";
 import type { CliProvider } from "../lib/ipc";
 import { AUTO_SWITCH_COOLDOWN_MS, chooseAutoSwitch } from "../lib/accountAutoSwitch";
 import { PROVIDER_ORDER, PROVIDER_TITLE } from "../lib/cliAccounts";
@@ -34,7 +34,7 @@ export function excludedTargetsFor(state: Pick<AutoSwitchState, "excludedTargets
   return Array.isArray(list) ? list.filter((id): id is string => typeof id === "string") : [];
 }
 
-export const useAccountAutoSwitchStore = create<AutoSwitchState>()(syncedPersist((set, get) => ({
+export const useAccountAutoSwitchStore = create<AutoSwitchState>()(syncedPersist((set, get, api) => ({
   enabled: { claude: false, codex: false, grok: false },
   excludedTargets: { claude: [], codex: [], grok: [] },
   attempts: {},
@@ -72,11 +72,11 @@ export const useAccountAutoSwitchStore = create<AutoSwitchState>()(syncedPersist
       if (previous && Date.now() - previous.at < AUTO_SWITCH_COOLDOWN_MS) continue;
       const report = (message: string, warning = false) => {
         if (get().status[provider] === message) return;
-        set((state) => ({ status: { ...state.status, [provider]: message } }));
+        applyAutomaticStoreUpdate(api, (state) => ({ status: { ...state.status, [provider]: message } }));
         useToastStore.getState().pushToast(`${PROVIDER_TITLE[provider]}: ${message}`, warning ? "warning" : "info");
       };
       if (previous?.source === planned.source.profile_id) {
-        get().setEnabled(provider, false);
+        applyAutomaticStoreUpdate(api, (state) => ({ enabled: { ...state.enabled, [provider]: false } }));
         report("切り替えたあとも同じアカウントが上限のままでした。自動切り替えをオフにします。", true);
         continue;
       }
@@ -103,7 +103,7 @@ export const useAccountAutoSwitchStore = create<AutoSwitchState>()(syncedPersist
           if (latest?.source.profile_id !== current.source.profile_id || latest.target?.id !== target.id) return false;
           // Recorded before the IPC call so an interrupted switch still counts as
           // an attempt; a finished one restamps it. Time queued never counts.
-          set((state) => ({ attempts: { ...state.attempts, [provider]: {
+          applyAutomaticStoreUpdate(api, (state) => ({ attempts: { ...state.attempts, [provider]: {
             source: current.source.profile_id, target: target.id, at: Date.now(),
           } } }));
           started = true;
@@ -113,15 +113,15 @@ export const useAccountAutoSwitchStore = create<AutoSwitchState>()(syncedPersist
         if (!result) {
           // Cancelled in the queue before it started: nothing failed.
           if (!started) continue;
-          get().setEnabled(provider, false);
+          applyAutomaticStoreUpdate(api, (state) => ({ enabled: { ...state.enabled, [provider]: false } }));
           report("アカウントの切り替えに失敗しました。自動切り替えをオフにします。", true);
         } else if (result.warnings.length) {
-          get().setEnabled(provider, false);
+          applyAutomaticStoreUpdate(api, (state) => ({ enabled: { ...state.enabled, [provider]: false } }));
           report("切り替えは終わりましたが警告が出ました。自動切り替えをオフにします。", true);
         } else {
           // Restart the cooldown from the finished switch: the IPC call and the
           // refresh after it take time too, and none of it may shorten the rest.
-          set((state) => ({ attempts: { ...state.attempts, [provider]: {
+          applyAutomaticStoreUpdate(api, (state) => ({ attempts: { ...state.attempts, [provider]: {
             source: current.source.profile_id, target: target.id, at: Date.now(),
           } } }));
           report(`「${target.label}」に切り替えました。新しく起動するセッションから反映されます。`);

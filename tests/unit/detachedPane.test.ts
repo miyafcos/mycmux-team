@@ -1,3 +1,7 @@
+// @vitest-environment jsdom
+vi.mock("@tauri-apps/api/core", async original => ({ ...await original<typeof import("@tauri-apps/api/core")>(), invoke: vi.fn(async () => undefined) }));
+vi.mock("@tauri-apps/api/event", () => ({ emitTo: vi.fn(async () => {}) }));
+import * as tearoutRuntime from "../../src/lib/tearout/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/components/terminal/XTermWrapper", () => ({
@@ -32,6 +36,8 @@ function restore(configs: PaneConfig[]) {
 }
 
 beforeEach(() => {
+  vi.spyOn(tearoutRuntime, "waitForTearoutReceiver").mockResolvedValue();
+  vi.spyOn(tearoutRuntime, "sendTearoutWorkspaces").mockResolvedValue("receipt");
   useWorkspaceListStore.getState()._replaceWorkspaces([]);
 });
 

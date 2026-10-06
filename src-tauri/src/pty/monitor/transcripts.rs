@@ -65,13 +65,26 @@ pub(super) fn newest_jsonl_candidates_in_dir(
     candidates
 }
 
+fn transcript_cli_candidate(path: &std::path::Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else { return false; };
+    for line in std::io::BufReader::new(file).lines().take(64).map_while(Result::ok) {
+        let Ok(row) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
+        if let Some(entrypoint) = row.get("entrypoint").and_then(|v| v.as_str()) {
+            return entrypoint == "cli";
+        }
+    }
+    // Older provider logs omit entrypoint. They remain display-only scan candidates.
+    true
+}
+
 pub(super) fn newest_jsonl_session_id_for_cwd_in_dir(
     project_dir: &std::path::Path,
     cwd: &str,
     min_created: Option<std::time::SystemTime>,
     excluded_session_ids: &HashSet<String>,
 ) -> Option<String> {
-    let candidates = newest_jsonl_candidates_in_dir(project_dir, min_created);
+    let candidates: Vec<_> = newest_jsonl_candidates_in_dir(project_dir, min_created).into_iter()
+        .filter(|(_, path, _)| transcript_cli_candidate(path)).collect();
     let newest = candidates
         .iter()
         .find(|(id, _, _)| !excluded_session_ids.contains(id))
@@ -105,12 +118,8 @@ pub(super) fn detect_claude_session_id(
     min_created: Option<std::time::SystemTime>,
     excluded_session_ids: &HashSet<String>,
 ) -> Option<String> {
-    if crate::test_profile::is_active() {
-        return None;
-    }
-    let home = dirs::home_dir()?;
     let mangled = super::super::path_norm::claude_project_key(cwd);
-    let project_dir = home.join(".claude").join("projects").join(&mangled);
+    let project_dir = crate::test_profile::agent_projects_dir("claude")?.join(&mangled);
     if !project_dir.exists() {
         return None;
     }
@@ -132,16 +141,8 @@ pub(super) fn detect_claude_codex_session_id(
     min_created: Option<std::time::SystemTime>,
     excluded_session_ids: &HashSet<String>,
 ) -> Option<String> {
-    if crate::test_profile::is_active() {
-        return None;
-    }
-    let home = dirs::home_dir()?;
     let mangled = super::super::path_norm::claude_project_key(cwd);
-    let project_dir = home
-        .join(".claude-codex")
-        .join("config")
-        .join("projects")
-        .join(&mangled);
+    let project_dir = crate::test_profile::agent_projects_dir("claude-codex")?.join(&mangled);
     if !project_dir.exists() {
         return None;
     }
@@ -245,17 +246,8 @@ pub(super) fn claude_family_transcript_path(
     if !is_uuid_like(session_id) {
         return None;
     }
-    let home = dirs::home_dir()?;
     let mangled = super::super::path_norm::claude_project_key(cwd);
-    let project_dir = match agent_kind {
-        "claude" => home.join(".claude").join("projects").join(mangled),
-        "claude-codex" => home
-            .join(".claude-codex")
-            .join("config")
-            .join("projects")
-            .join(mangled),
-        _ => return None,
-    };
+    let project_dir = crate::test_profile::agent_projects_dir(agent_kind)?.join(mangled);
     Some(project_dir.join(format!("{session_id}.jsonl")))
 }
 
@@ -280,9 +272,6 @@ impl TranscriptActivityTracker {
         session_id: &str,
         now: std::time::SystemTime,
     ) -> Option<(std::time::SystemTime, std::time::SystemTime)> {
-        if crate::test_profile::is_active() {
-            return None;
-        }
         let path = claude_family_transcript_path(kind, cwd, session_id)?;
         let metadata = std::fs::metadata(&path).ok()?;
         Some(self.observe(&path, &metadata, now))

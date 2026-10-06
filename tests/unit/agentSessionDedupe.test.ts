@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __resetAgentSessionDedupeReporterForTests,
   collectLiveTerminalSessionIds,
@@ -388,20 +388,37 @@ describe("dedupeAgentSessionsInConfigs", () => {
     ]);
   });
 
-  it("reports a continuing conflict once and reports it again after resolution", () => {
+  it("reports resolved recurrences even while the identical actionless notice is still visible", () => {
     const conflict: AgentSessionDedupeConflict = {
       key: "claude:shared-session",
       reason: "active",
       winner: { workspaceId: "workspace", paneId: "pane-a", tabId: "tab-a" },
       loser: { workspaceId: "workspace", paneId: "pane-b", tabId: "tab-b" },
     };
-    reportAgentSessionDedupeConflicts([conflict]);
-    reportAgentSessionDedupeConflicts([conflict]);
-    expect(useToastStore.getState().toasts).toHaveLength(1);
+    const originalPush = useToastStore.getState().pushToast;
+    const push = vi.spyOn(useToastStore.getState(), "pushToast");
+    try {
+      reportAgentSessionDedupeConflicts([conflict]);
+      reportAgentSessionDedupeConflicts([conflict]);
+      expect(push).toHaveBeenCalledTimes(1);
+      expect(useToastStore.getState().toasts).toHaveLength(1);
+      const firstToastId = useToastStore.getState().toasts[0].id;
 
-    reportAgentSessionDedupeConflicts([]);
-    reportAgentSessionDedupeConflicts([conflict]);
-    expect(useToastStore.getState().toasts).toHaveLength(2);
+      reportAgentSessionDedupeConflicts([]);
+      reportAgentSessionDedupeConflicts([conflict]);
+      expect(push).toHaveBeenCalledTimes(2);
+      expect(useToastStore.getState().toasts.map(toast => toast.id)).toEqual([firstToastId]);
+
+      reportAgentSessionDedupeConflicts([]);
+      useToastStore.getState().dismissToast(firstToastId);
+      reportAgentSessionDedupeConflicts([conflict]);
+      expect(push).toHaveBeenCalledTimes(3);
+      expect(useToastStore.getState().toasts).toHaveLength(1);
+      expect(useToastStore.getState().toasts[0].id).not.toBe(firstToastId);
+    } finally {
+      push.mockRestore();
+      useToastStore.setState({ pushToast: originalPush });
+    }
   });
 
   it("round-trips a parked identity without making it restorable", () => {
