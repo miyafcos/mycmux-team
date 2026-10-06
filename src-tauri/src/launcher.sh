@@ -150,19 +150,15 @@ __mycmux_with_hook_cap() {
   __mycmux_ensure_dispatch_guard
   local capability=""
   capability="$(__mycmux_issue_hook_cap "$provider")" || capability=""
-  if [ -n "$capability" ]; then
-    if [ -n "$launch_kind" ]; then
-      MYCMUX_HOOK_CAP="$capability" MYCMUX_LAUNCH_KIND="$launch_kind" "$@"
-    else
-      env -u MYCMUX_LAUNCH_KIND MYCMUX_HOOK_CAP="$capability" "$@"
-    fi
-  else
-    if [ -n "$launch_kind" ]; then
-      env -u MYCMUX_HOOK_CAP MYCMUX_LAUNCH_KIND="$launch_kind" "$@"
-    else
-      env -u MYCMUX_HOOK_CAP -u MYCMUX_LAUNCH_KIND "$@"
-    fi
-  fi
+  # MSYS env can orphan a Windows shim when its exec/fork parent exits.
+  # A Bash subshell scopes the capability without breaking PTY ancestry or
+  # changing the calling shell's environment.
+  (
+    unset MYCMUX_HOOK_CAP MYCMUX_LAUNCH_KIND
+    [ -z "$capability" ] || export MYCMUX_HOOK_CAP="$capability"
+    [ -z "$launch_kind" ] || export MYCMUX_LAUNCH_KIND="$launch_kind"
+    "$@"
+  )
 }
 
 __mycmux_codex_with_pane() {

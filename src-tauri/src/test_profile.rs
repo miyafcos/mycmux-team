@@ -62,6 +62,17 @@ fn runtime_dir_for(profile: Option<&str>, home: PathBuf) -> PathBuf {
     }
 }
 
+/// Profiles use only their own synthetic transcript tree; production keeps the provider's layout.
+pub(crate) fn agent_projects_dir(kind: &str) -> Option<PathBuf> {
+    if is_active() { return Some(runtime_dir().ok()?.join("transcripts").join(kind).join("projects")); }
+    let home = dirs::home_dir()?;
+    match kind {
+        "claude" => Some(home.join(".claude").join("projects")),
+        "claude-codex" => Some(home.join(".claude-codex").join("config").join("projects")),
+        _ => None,
+    }
+}
+
 pub fn runtime_dir() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or_else(|| "home directory is not available".to_string())?;
     Ok(runtime_dir_from(home))

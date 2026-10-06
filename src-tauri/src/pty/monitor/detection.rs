@@ -11,7 +11,7 @@ pub(super) fn is_system_process(name: &str) -> bool {
 }
 
 /// Index live parent-child relationships, rejecting reused parent PIDs.
-pub(super) fn build_child_index(sys: &System) -> HashMap<Pid, Vec<Pid>> {
+pub(crate) fn build_child_index(sys: &System) -> HashMap<Pid, Vec<Pid>> {
     build_child_index_with(
         sys.processes()
             .iter()
@@ -80,7 +80,7 @@ where
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum DetectedAgentKind {
+pub(crate) enum DetectedAgentKind {
     Codex = 1,
     Claude = 2,
     ClaudeCodex = 3,
@@ -91,7 +91,7 @@ pub(super) enum DetectedAgentKind {
 }
 
 impl DetectedAgentKind {
-    pub(super) fn display_kind(self) -> &'static str {
+    pub(crate) fn display_kind(self) -> &'static str {
         match self {
             Self::Claude => "claude",
             Self::ClaudeCodex => "claude-codex",
@@ -103,7 +103,7 @@ impl DetectedAgentKind {
         }
     }
 
-    pub(super) fn is_restorable(self) -> bool {
+    pub(crate) fn is_restorable(self) -> bool {
         matches!(
             self,
             Self::Claude | Self::ClaudeCodex | Self::Codex | Self::Grok
@@ -130,10 +130,14 @@ struct AgentDescendantCandidate {
 pub(super) struct AgentSessionAttribution {
     pub(super) agent_kind: &'static str,
     pub(super) session_id: String,
-    hook_confirmed: bool,
+    pub(super) hook_confirmed: bool,
 }
 
 impl AgentSessionAttribution {
+    pub(super) fn verified(agent_kind: &'static str, session_id: String) -> Self {
+        Self { agent_kind, session_id, hook_confirmed: true }
+    }
+
     pub(super) fn new(agent_kind: &'static str, session_id: String) -> Self {
         Self {
             agent_kind,
@@ -397,6 +401,29 @@ where
     previous_session_id.map(|session_id| AgentSessionAttribution::new(previous_kind, session_id))
 }
 
+/// Ownership is remembered for this app instance, including after a pane/process exits.
+#[derive(Default)]
+pub(super) struct ConversationOwnershipHistory {
+    owners: HashMap<String, HashSet<String>>,
+    abandoned: HashMap<String, HashSet<String>>,
+}
+
+impl ConversationOwnershipHistory {
+    pub(super) fn remember(&mut self, id: &str, owner: &str) {
+        self.owners.entry(id.to_string()).or_default().insert(owner.to_string());
+    }
+    pub(super) fn abandon(&mut self, pane: &str, id: &str) {
+        self.abandoned.entry(pane.to_string()).or_default().insert(id.to_string());
+    }
+    pub(super) fn exclusions(&self, pane: &str) -> HashSet<String> {
+        self.owners.iter().filter(|(_, owners)| owners.iter().any(|owner| owner != pane))
+            .map(|(id, _)| id.clone()).chain(self.abandoned.get(pane).into_iter().flatten().cloned()).collect()
+    }
+    pub(super) fn abandoned(&self, pane: &str, id: &str) -> bool {
+        self.abandoned.get(pane).is_some_and(|ids| ids.contains(id))
+    }
+}
+
 /// One tick of "hold" recorded before a pane's pinned session id may move.
 pub(super) struct PendingSessionSwitch {
     pub(super) agent_pid: Pid,
@@ -447,7 +474,7 @@ pub(super) fn confirm_agent_session_switch(
             switched_from: None,
         };
     }
-    let confirmed = pending.get(pty_session_key).is_some_and(|entry| {
+    let confirmed = proposed.hook_confirmed || pending.get(pty_session_key).is_some_and(|entry| {
         entry.agent_pid == agent_pid
             && entry.from_session_id == pinned.session_id
             && entry.to_session_id == proposed.session_id
@@ -748,7 +775,7 @@ where
         .map(|kind| (kind, AgentDetectionSource::InterpreterScript))
 }
 
-pub(super) fn agent_kind_from_process(sys: &System, pid: Pid) -> Option<DetectedAgentKind> {
+pub(crate) fn agent_kind_from_process(sys: &System, pid: Pid) -> Option<DetectedAgentKind> {
     agent_detection_from_process(sys, pid).map(|(kind, _)| kind)
 }
 
@@ -811,7 +838,7 @@ pub(crate) fn session_id_from_args(args: &[String], allow_bare_uuid: bool) -> Op
         .map(|arg| arg.to_string())
 }
 
-pub(super) fn session_id_from_agent_args(
+pub(crate) fn session_id_from_agent_args(
     sys: &System,
     agent_pid: Pid,
     allow_bare_uuid: bool,
@@ -838,7 +865,7 @@ pub(super) fn collect_explicit_agent_session_ids(sys: &System) -> HashSet<String
         .collect()
 }
 
-pub(super) fn find_agent_descendant(
+pub(crate) fn find_agent_descendant(
     sys: &System,
     child_index: &HashMap<Pid, Vec<Pid>>,
     root_pid: Pid,

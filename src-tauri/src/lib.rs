@@ -356,10 +356,10 @@ pub fn run() {
         frontend_visible: Arc::new(AtomicBool::new(true)),
         metadata_store: metadata_store.clone(),
         livebrief_service: livebrief::LiveBriefService::new(
-            session_manager,
+            session_manager.clone(),
             metadata_store.clone(),
         ),
-        hook_service: agent_state::HookService::with_session_state(session_state_store),
+        hook_service: agent_state::HookService::with_session_manager(session_state_store, session_manager),
         window_registry: window_registry::WindowRegistry::new(),
     };
 
@@ -434,6 +434,7 @@ pub fn run() {
             commands::terminal::get_terminal_config,
             commands::terminal::get_pty_metadata_snapshot,
             commands::terminal::list_running_session_ids,
+            commands::terminal::get_agent_conversation_owner,
             commands::terminal::get_session_output_snapshot,
             commands::terminal::is_directory,
             commands::terminal::get_launch_cwd,

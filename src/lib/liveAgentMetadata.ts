@@ -3,6 +3,7 @@ import { usePaneMetadataStore } from "../stores/paneMetadataStore";
 import { agentSessionIdentityKey, useWorkspaceListStore } from "../stores/workspaceListStore";
 import { confirmAgentSessionClear } from "./agentSessionClearGuard";
 import { isShellProcess } from "./notificationStatus";
+import { connectAgentResumeOwnerNavigation } from "./agentResumeOwner";
 import { normalizeDisplayAgentKind } from "./agentDisplayKind";
 import type { AgentSessionKind } from "../types";
 
@@ -39,6 +40,7 @@ export async function hydrateLiveAgents(
  * Watching ownership also covers native tearout/dock without changing its protocol.
  */
 export function connectLiveAgentHydration(loaded: Promise<unknown>): () => void {
+  const stopOwnerNavigation = connectAgentResumeOwnerNavigation();
   let alive = true;
   let ready = false;
   let queued = false;
@@ -90,6 +92,7 @@ export function connectLiveAgentHydration(loaded: Promise<unknown>): () => void 
   void loaded.then(() => { ready = true; schedule(); });
   return () => {
     alive = false;
+    stopOwnerNavigation();
     unsubscribe();
     for (const unlisten of exits.values()) unlisten();
     exits.clear();
@@ -104,7 +107,7 @@ export function applyPtyMetadata(meta: PtyMetadata): void {
   const processIsShell = agentActive ? false : foregroundIsShell;
   setLiveObservation(meta.session_id, meta.live_agent_kind ?? null, true);
   // Display identity never depends on winning a persistence/session-id claim.
-  const resumeActive = agentActive && (meta.agent_kind === "claude" || meta.agent_kind === "claude-codex"
+  const resumeActive = meta.agent_session_trusted !== false && agentActive && (meta.agent_kind === "claude" || meta.agent_kind === "claude-codex"
     || meta.agent_kind === "codex" || meta.agent_kind === "grok")
     && (meta.live_agent_kind === undefined || liveKind === meta.agent_kind);
   const paneMetadataStore = usePaneMetadataStore.getState();

@@ -43,7 +43,10 @@ def test_ai_command_building_is_centralized() -> None:
             # PTY launch/restore forwards the user's saved model; it does not
             # select a model for the application's internal AI calls.
             is_saved_pty_model = relative == "commands/terminal.rs" and token == '"--model"'
-            assert token not in source or is_ai_module or is_saved_pty_model, f"{path}: centralized AI command token {token}"
+            # Hook attribution parses provider argv and skips option values;
+            # it does not construct an AI command or select a model.
+            is_provider_argv_parse = relative == "agent_state/hook_source.rs" and token == '"--model"'
+            assert token not in source or is_ai_module or is_saved_pty_model or is_provider_argv_parse, f"{path}: centralized AI command token {token}"
 
 
 def test_sql_model_literals_are_forbidden() -> None:

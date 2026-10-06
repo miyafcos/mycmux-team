@@ -15,6 +15,8 @@ use crate::session_state::{
 
 use super::*;
 use crate::commands::session_mapping;
+use super::hook_source::{self, HookSource};
+type SourceVerifier = Arc<dyn Fn(&str, &str, u32) -> HookSource + Send + Sync>;
 
 pub const HOOK_PROTOCOL_MAJOR: u64 = 1;
 pub const HOOK_PROTOCOL_MINOR: u64 = 0;
@@ -80,6 +82,8 @@ pub struct HookMetricsSnapshot {
     pub rejected_stale_launch: u64,
     pub rejected_wrong_provider: u64,
     pub rejected_subagent_active_after_terminal: u64,
+    pub child_observations: u64,
+    pub unverified_observations: u64,
     pub queue_dropped: u64,
 }
 
@@ -91,6 +95,8 @@ struct HookMetrics {
     rejected_stale_launch: AtomicU64,
     rejected_wrong_provider: AtomicU64,
     rejected_subagent_active_after_terminal: AtomicU64,
+    child_observations: AtomicU64,
+    unverified_observations: AtomicU64,
     queue_dropped: AtomicU64,
 }
 
@@ -103,6 +109,8 @@ impl HookMetrics {
             rejected_stale_launch: self.rejected_stale_launch.load(Ordering::Relaxed),
             rejected_wrong_provider: self.rejected_wrong_provider.load(Ordering::Relaxed),
             rejected_subagent_active_after_terminal: self.rejected_subagent_active_after_terminal.load(Ordering::Relaxed),
+            child_observations: self.child_observations.load(Ordering::Relaxed),
+            unverified_observations: self.unverified_observations.load(Ordering::Relaxed),
             queue_dropped: self.queue_dropped.load(Ordering::Relaxed),
         }
     }
@@ -118,14 +126,18 @@ pub struct HookService {
 
 impl HookService {
     pub fn new() -> Self {
-        Self::start(None)
+        Self::start(None, None)
     }
 
     pub fn with_session_state(session_state: SessionStateStore) -> Self {
-        Self::start(Some(session_state))
+        Self::start(Some(session_state), None)
     }
 
-    fn start(session_state: Option<SessionStateStore>) -> Self {
+    pub fn with_session_manager(session_state: SessionStateStore, manager: Arc<crate::pty::manager::SessionManager>) -> Self {
+        Self::start(Some(session_state), Some(manager))
+    }
+
+    fn start(session_state: Option<SessionStateStore>, manager: Option<Arc<crate::pty::manager::SessionManager>>) -> Self {
         let app_instance_id =
             AppInstanceId::try_new(random_hex(16)).expect("random id is nonempty");
         let (sender, receiver) = mpsc::sync_channel(HOOK_QUEUE_CAPACITY);
@@ -135,7 +147,13 @@ impl HookService {
         std::thread::Builder::new()
             .name("mycmux-hook-worker".to_string())
             .spawn(move || {
-                Worker::new(worker_app_instance, worker_metrics, session_state).run(receiver)
+                let mut worker = Worker::new(worker_app_instance, worker_metrics, session_state);
+                if let Some(manager) = manager {
+                    let verifier_manager = manager.clone();
+                    worker.source_verifier = Arc::new(move |pty, provider, sender| hook_source::classify_source(&verifier_manager, pty, provider, sender));
+                    worker.session_manager = Some(manager);
+                }
+                worker.run(receiver)
             })
             .expect("failed to start hook worker");
         Self {
@@ -416,6 +434,8 @@ struct Worker {
     answered_prompts: HashSet<(TerminalSessionId, String)>,
     session_state: Option<SessionStateStore>,
     mapping_dir: Option<std::path::PathBuf>,
+    source_verifier: SourceVerifier,
+    session_manager: Option<Arc<crate::pty::manager::SessionManager>>,
     reconciler: Reconciler,
     ledger: Result<Ledger, String>,
     global_rate: TokenBucket,
@@ -437,6 +457,8 @@ impl Worker {
             answered_prompts: HashSet::new(),
             session_state,
             mapping_dir: session_mapping::session_mapping_dir(),
+            source_verifier: Arc::new(|_, _, _| HookSource::Unverified),
+            session_manager: None,
             reconciler: Reconciler::new(),
             ledger: Ledger::open().map_err(|error| error.to_string()),
             global_rate: TokenBucket::new(200, 200),
@@ -455,6 +477,8 @@ impl Worker {
             answered_prompts: HashSet::new(),
             session_state: None,
             mapping_dir: None,
+            source_verifier: Arc::new(|_, _, pid| HookSource::OwnAgent { pid, started_at: 1 }),
+            session_manager: None,
             reconciler: Reconciler::new(),
             ledger: Ledger::from_connection(rusqlite::Connection::open_in_memory().unwrap())
                 .map_err(|error| error.to_string()),
@@ -732,6 +756,20 @@ impl Worker {
         if !session_mapping::is_safe_mapping_id(&parsed.provider_session_id) {
             return self.reject(id, "malformed", false);
         }
+        let source = parsed.sender_pid.map(|pid| (self.source_verifier)(
+            record.launch.terminal_session_id().as_str(), record.launch.provider().as_str(), pid,
+        )).unwrap_or(HookSource::Unverified);
+        let (source_pid, source_started_at) = match source {
+            HookSource::OwnAgent { pid, started_at } => (pid, started_at),
+            HookSource::Child => {
+                self.metrics.child_observations.fetch_add(1, Ordering::Relaxed);
+                return HookWireResponse::success(id, json!({"accepted": false, "child_observation": true}));
+            }
+            HookSource::Unverified => {
+                self.metrics.unverified_observations.fetch_add(1, Ordering::Relaxed);
+                return HookWireResponse::success(id, json!({"accepted": false, "unverified_source": true}));
+            }
+        };
         // Reject a mapping/provider conflict before persisting canonical events
         // or ingesting attention evidence. The writer checks again under its lock.
         if record.state == CapabilityState::Active {
@@ -834,6 +872,9 @@ impl Worker {
                 if let Err(reason) = mapping_result {
                     return self.reject(id, reason, reason == "queue_dropped");
                 }
+                if is_current_session {
+                    self.remember_verified_identity(hook_cap, &mapping_session_id, source_pid, source_started_at);
+                }
                 self.metrics.accepted.fetch_add(1, Ordering::Relaxed);
                 HookWireResponse::success(
                     id,
@@ -849,6 +890,9 @@ impl Worker {
             }) => {
                 if let Err(reason) = self.sync_mapping(hook_cap, &mapping_session_id, &mapping_event_id, parsed.event_kind, false) {
                     return self.reject(id, reason, reason == "queue_dropped");
+                }
+                if self.capabilities.get(hook_cap).is_some_and(|record| record.last_mapping_session.as_deref() == Some(mapping_session_id.as_str())) {
+                    self.remember_verified_identity(hook_cap, &mapping_session_id, source_pid, source_started_at);
                 }
                 HookWireResponse::success(id, json!({ "deduplicated": true }))
             },
@@ -866,6 +910,20 @@ impl Worker {
             Ok(PersistedReconcileOutcome::Rejected { .. }) => self.reject(id, "malformed", false),
             Err(_) => self.reject(id, "queue_dropped", true),
         }
+    }
+
+    fn remember_verified_identity(&self, cap: &str, session_id: &str, pid: u32, started_at: u64) {
+        let Some(manager) = &self.session_manager else { return; };
+        let Some(record) = self.capabilities.get(cap) else { return; };
+        if record.state != CapabilityState::Active { return; }
+        let pty = record.launch.terminal_session_id().as_str();
+        let provider = record.launch.provider().as_str();
+        let kind = manager.requested_conversation(pty).map(|v| v.0)
+            .filter(|kind| kind == provider || (provider == "claude" && kind == "claude-codex"))
+            .unwrap_or_else(|| provider.to_string());
+        manager.remember_agent_identity(pty, crate::pty::manager::TrustedAgentIdentity {
+            kind, session_id: session_id.to_string(), agent_pid: pid, agent_started_at: started_at, from_hook: true,
+        });
     }
 
     fn sync_mapping(&mut self, cap: &str, session_id: &str, event_id: &str, state: NormalizedState, accepted: bool) -> Result<(), &'static str> {
@@ -948,6 +1006,7 @@ struct ObserveBody {
     pane_id: Option<String>,
     provider: Option<Provider>,
     agent_id: Option<String>,
+    sender_pid: Option<u32>,
 }
 
 impl ObserveBody {
@@ -969,6 +1028,10 @@ impl ObserveBody {
             launch_id: optional_string(object, "launch_id")?,
             pane_id: optional_string(object, "pane_id")?,
             agent_id,
+            sender_pid: match object.get("sender_pid") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(value.as_u64().filter(|pid| *pid > 0 && *pid <= u32::MAX as u64).ok_or("malformed")? as u32),
+            },
             provider: optional_string(object, "provider")?
                 .map(|value| parse_provider(&value).ok_or("wrong_provider"))
                 .transpose()?,
@@ -1095,6 +1158,7 @@ mod tests {
             "provider_session_id": "provider-session-a",
             "provider_turn_id": "turn-a",
             "source_event_id": source,
+            "sender_pid": 1,
         })
     }
 
@@ -1755,7 +1819,7 @@ mod tests {
         worker.mapping_dir = Some(dir.path().to_path_buf());
         let grant = issue(&mut worker, "terminal-a", Provider::Codex);
         let input = |session: &str, turn: &str, event: &str, state: &str| json!({
-            "event_kind":state, "provider_session_id":session, "provider_turn_id":turn, "source_event_id":event,
+            "event_kind":state, "provider_session_id":session, "provider_turn_id":turn, "source_event_id":event, "sender_pid":1,
         });
         let old = input("old", "turn-old", "event-old", "turn_active");
         assert!(worker.handle(1, &grant.hook_cap, "hook.observe", old.clone(), 1).ok);
@@ -1879,6 +1943,56 @@ mod tests {
             let mut input = body("turn_active", &format!("valid-agent-{index}"));
             input["agent_id"] = valid;
             assert!(worker.handle(4, &grant.hook_cap, "hook.observe", input, 4).ok);
+        }
+    }
+
+    #[test]
+    fn si_t2_missing_pid_cannot_mutate_mapping_or_attention() {
+        let mut worker = worker();
+        let directory = tempfile::tempdir().unwrap();
+        worker.mapping_dir = Some(directory.path().to_path_buf());
+        let state = SessionStateStore::new();
+        worker.session_state = Some(state.clone());
+        let grant = issue(&mut worker, "terminal-a", Provider::Claude);
+        let mut event = body("turn_active", "legacy-event");
+        event.as_object_mut().unwrap().remove("sender_pid");
+        let response = worker.handle(1, &grant.hook_cap, "hook.observe", event, 1);
+        assert!(response.ok);
+        assert!(session_mapping::read_session_mapping_files_for_ids(directory.path(), ["terminal-a"]).is_empty());
+        assert!(state.current_view("terminal-a").is_none());
+    }
+
+    #[test]
+    fn si_t2_b_child_active_and_ended_are_counted_without_mapping_identity_or_attention_changes() {
+        for provider in [Provider::Claude, Provider::Codex, Provider::Grok] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut worker = worker();
+            worker.source_verifier = Arc::new(|_, _, sender| {
+                if sender == 1 { HookSource::OwnAgent { pid: 20, started_at: 10 } } else { HookSource::Child }
+            });
+            let state = SessionStateStore::new();
+            worker.session_state = Some(state.clone());
+            worker.mapping_dir = Some(dir.path().to_path_buf());
+            let grant = issue(&mut worker, "terminal-a", provider);
+            let mut root = body("turn_ended", "root-done");
+            root["provider"] = json!(provider.as_str());
+            assert!(worker.handle(1, &grant.hook_cap, "hook.observe", root, 1).ok);
+            let before = state.current_view("terminal-a").unwrap();
+            let mapping = fs::read(dir.path().join("terminal-a.txt")).unwrap();
+            let identity = worker.capabilities[&grant.hook_cap].last_mapping_session.clone();
+            for (index, event) in ["turn_active", "turn_ended"].into_iter().enumerate() {
+                let mut child = body(event, event);
+                child["provider"] = json!(provider.as_str());
+                child["provider_session_id"] = json!("child-conversation-x");
+                child["sender_pid"] = json!(2);
+                let response = worker.handle(index as u64 + 2, &grant.hook_cap, "hook.observe", child, 3);
+                assert!(response.ok);
+                assert_eq!(response.result.unwrap()["accepted"], false);
+                assert_eq!(state.current_view("terminal-a").unwrap(), before);
+                assert_eq!(fs::read(dir.path().join("terminal-a.txt")).unwrap(), mapping);
+                assert_eq!(worker.capabilities[&grant.hook_cap].last_mapping_session, identity);
+            }
+            assert_eq!(worker.metrics.snapshot().child_observations, 2);
         }
     }
 
