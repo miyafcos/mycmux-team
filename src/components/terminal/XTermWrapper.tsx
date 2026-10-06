@@ -16,6 +16,8 @@ import { open } from "@tauri-apps/plugin-shell";
 import { emit } from "@tauri-apps/api/event";
 import {
   createSession,
+  getAgentConversationOwner,
+  killSession,
   getSessionChannelId,
   type SessionAttachOptions,
   SessionClosedError,
@@ -156,7 +158,11 @@ import {
 import { HTTP_LINK_REGEX, registerArtifactLinkProvider } from "./terminalLinkProvider";
 import { recordPerf } from "../../lib/perfTimeline";
 import { ANSI_KEYS, withAnsiContrastFloor } from "./terminalThemeColors";
-import { buildLaunchRequest, type TerminalLaunchParams } from "./terminalLaunchParams";
+import { buildLaunchRequest, buildAgentRecoveryLaunch, type TerminalLaunchParams } from "./terminalLaunchParams";
+import { createAgentResumeRecovery } from "../../lib/agentResumeRecovery";
+import { parseAgentRestoreChoice } from "../../lib/agentRestoreChoice";
+import { agentResumeOwnerLocation, openAgentResumeOwner } from "../../lib/agentResumeOwner";
+import { AgentResumeRecoveryPanel, resumeRecoveryStrings, type ResumeRecoveryModel } from "./AgentResumeRecoveryPanel";
 import { TerminalAckCoalescer } from "../../lib/terminalAckCoalescer";
 import {
   findApprovalPromptDetail,
@@ -814,6 +820,15 @@ export default memo(function XTermWrapper({
   });
   launchParamsRef.current = { command, args, cwd, launchEnv };
 
+  const [resumeRecovery, setResumeRecovery] = useState<ResumeRecoveryModel | null>(null);
+  const [resumeConfirmation, setResumeConfirmation] = useState<{ working: boolean; hidden: boolean } | null>(null);
+  const [resumeBusy, setResumeBusy] = useState(false);
+  const [resumeError, setResumeError] = useState(false);
+  const resumeConfirmationRef = useRef<((yes: boolean) => void) | null>(null);
+  const resumeActionsRef = useRef({
+    openOwner: () => {}, takeover: () => {}, fresh: () => {},
+    original: (_id: string) => {}, saved: () => {},
+  });
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [turnChip, setTurnChip] = useState<{
@@ -2716,6 +2731,15 @@ export default memo(function XTermWrapper({
       }
     };
 
+    let recoveryLaunch: TerminalLaunchParams | null = null;
+    let restoreConfirmed = false;
+    let disposeResumeRecovery: (() => void) | null = null;
+    const clearResumeRecovery = (): void => {
+      disposeResumeRecovery?.();
+      disposeResumeRecovery = null;
+      resumeConfirmationRef.current?.(false);
+      resumeConfirmationRef.current = null;
+    };
     const attachFrontendChannel = async (
       cols: number, rows: number, reason: SessionAttachOptions["reason"] = "mount",
     ): Promise<void> => {
@@ -2723,7 +2747,7 @@ export default memo(function XTermWrapper({
       // Read the launch parameters at attach time, not at effect-setup time:
       // the resume env (MYCMUX_AGENT_KIND / MYCMUX_SESSION_ID / MYCMUX_RESUME)
       // can land between this effect's first pass and the actual spawn.
-      const launch = buildLaunchRequest(launchParamsRef.current);
+      const launch = recoveryLaunch ? buildLaunchRequest(recoveryLaunch) : buildLaunchRequest(launchParamsRef.current);
       await createSession(
         sessionId,
         launch.command,
@@ -2737,7 +2761,7 @@ export default memo(function XTermWrapper({
         launch.cwd,
         launch.env,
         reason === "mount" && hasTearoutSessionAttachment(sessionId),
-        { reason, stillOwned: () => generation === pumpGeneration && !disposed && !termDisposed },
+        { reason, restoreConfirmed, stillOwned: () => generation === pumpGeneration && !disposed && !termDisposed },
       );
       if (generation !== pumpGeneration || disposed || termDisposed) return;
       ownedChannelId = getSessionChannelId(sessionId);
@@ -2761,6 +2785,119 @@ export default memo(function XTermWrapper({
       terminalScrollbackResyncNeeded.add(sessionId);
       await syncDroppedBatchScrollbackIfNeeded();
       scheduleFrontendResync();
+    };
+
+    const restartAgent = async (kind: string, id: string, fresh: boolean, confirmed = false): Promise<void> => {
+      if (disposed || termDisposed || !term) return;
+      setResumeBusy(true);
+      setResumeError(false);
+      recoveryLaunch = buildAgentRecoveryLaunch(recoveryLaunch ?? launchParamsRef.current, kind, id, fresh);
+      restoreConfirmed = confirmed;
+      try {
+        await attachFrontendChannel(term.cols, term.rows);
+        if (disposed || termDisposed) return;
+        sessionStarted = true;
+        sessionExitPending = false;
+        try {
+          if (fresh) {
+          usePaneMetadataStore.getState().clearAgentSessionId(sessionId);
+          usePaneMetadataStore.getState().clearClaudeSessionId(sessionId);
+          useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata(sessionId, null);
+        }
+        useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata(sessionId, {
+          agentKind: kind as import("../../types").AgentSessionKind, agentSessionId: id, claudeSessionId: kind === "claude" ? id : undefined,
+          });
+        } catch (error) {
+          // A renderer subscriber cannot undo an already-created PTY/channel.
+          console.warn("[XTermWrapper] Recovery marker observer failed:", error);
+        }
+        setResumeRecovery(null);
+        setResumeConfirmation(null);
+        term.focus();
+      } catch (error) {
+        handleResumeBlock(error);
+        throw error;
+      } finally {
+        if (!disposed) setResumeBusy(false);
+      }
+    };
+    const performResumeAction = (action: () => Promise<void>): void => {
+      setResumeError(false);
+      void action().then(() => {
+        if (frontendChannelReady && !disposed) clearResumeRecovery();
+      }).catch(error => {
+        if (disposed) return;
+        console.warn("[XTermWrapper] Agent recovery failed:", error);
+        setResumeError(true);
+      });
+    };
+    const handleResumeBlock = (error: unknown): boolean => {
+      const conflict = parseAgentSessionAlreadyRunning(error);
+      const choice = parseAgentRestoreChoice(error);
+      if (!conflict && !choice) return false;
+      clearResumeRecovery();
+      setResumeError(false);
+      setResumeConfirmation(null);
+      if (conflict) {
+        let peerOwnerVisible = false;
+        let current = true;
+        const ownerVisible = () => peerOwnerVisible || findAgentSessionOwner(useWorkspaceListStore.getState().workspaces, conflict.ownerSessionId) !== null;
+        const refreshOwnerVisibility = async (): Promise<void> => {
+          const location = await agentResumeOwnerLocation(conflict.ownerSessionId);
+          if (disposed || !current) return;
+          peerOwnerVisible = location !== null;
+          setResumeRecovery(model => model?.type === "conflict" ? { ...model, hiddenOwner: !ownerVisible(), owner: location } : model);
+        };
+        void refreshOwnerVisibility().catch(error => console.warn("[resume] Owner window snapshot unavailable:", error));
+        setResumeRecovery({ type: "conflict", hiddenOwner: !ownerVisible() });
+        const controller = createAgentResumeRecovery(conflict, {
+          ownerPresent: async () => (await getAgentConversationOwner(conflict.kind, conflict.agentSessionId)) === conflict.ownerSessionId,
+          ownerVisible,
+          ownerWorking: () => useSessionAttentionStore.getState().attentionBySession[conflict.ownerSessionId]?.uiState === "working"
+            || usePaneMetadataStore.getState().metadata[conflict.ownerSessionId]?.agentStatus === "working",
+          openOwner: () => { performResumeAction(() => openAgentResumeOwner(conflict.ownerSessionId)); },
+          confirmStop: (working, hidden) => new Promise(resolve => {
+            if (disposed) { resolve(false); return; }
+            resumeConfirmationRef.current = resolve;
+            setResumeConfirmation({ working, hidden });
+          }),
+          stopOwner: killSession,
+          resume: () => restartAgent(conflict.kind, conflict.agentSessionId, false),
+          fresh: () => restartAgent(conflict.kind, crypto.randomUUID(), true),
+          reopened: () => useToastStore.getState().pushToast(resumeRecoveryStrings.reopened, "info"),
+        });
+        const timer = window.setInterval(() => {
+          if (!disposed) {
+            setResumeRecovery(current => current?.type === "conflict" ? { ...current, hiddenOwner: !ownerVisible() } : current);
+            void refreshOwnerVisibility().catch(error => console.warn("[resume] Owner window snapshot unavailable:", error));
+            performResumeAction(controller.ownerEnded);
+          }
+        }, 2000);
+        let exitUnlisten: (() => void) | null = null;
+        void onPtyExit(conflict.ownerSessionId, () => performResumeAction(controller.ownerEnded)).then(unlisten => {
+          if (current) exitUnlisten = unlisten; else unlisten();
+        }).catch(error => console.warn("[XTermWrapper] Owner exit listener unavailable:", error));
+        disposeResumeRecovery = () => {
+          current = false;
+          controller.dispose();
+          window.clearInterval(timer);
+          exitUnlisten?.();
+        };
+        resumeActionsRef.current = {
+          openOwner: () => performResumeAction(controller.openOwner),
+          takeover: () => performResumeAction(controller.takeover),
+          fresh: () => performResumeAction(controller.fresh), original: () => {}, saved: () => {},
+        };
+      } else if (choice) {
+        setResumeRecovery({ type: "restore", choice });
+        resumeActionsRef.current = {
+          openOwner: () => {}, takeover: () => {},
+          fresh: () => performResumeAction(() => restartAgent(choice.kind, crypto.randomUUID(), true)),
+          original: id => performResumeAction(() => restartAgent(choice.kind, id, false)),
+          saved: () => performResumeAction(() => restartAgent(choice.kind, choice.agentSessionId, false, true)),
+        };
+      }
+      return true;
     };
 
     const recoverFrontendStream = (reason: "channel-stall" | "write-stall"): Promise<void> => {
@@ -2937,6 +3074,8 @@ export default memo(function XTermWrapper({
     };
 
     const cleanup = (): void => {
+      clearResumeRecovery();
+      resumeActionsRef.current = { openOwner: () => {}, takeover: () => {}, fresh: () => {}, original: () => {}, saved: () => {} };
       stopStreamHealth?.();
       stopStreamHealth = null;
       pumpGeneration += 1;
@@ -3100,6 +3239,7 @@ export default memo(function XTermWrapper({
       attachCachedTerminal(cached);
       void attachFrontendChannel(cached.term.cols, cached.term.rows).catch((err) => {
         if (err instanceof SessionClosedError || disposed || termDisposed) return;
+        if (handleResumeBlock(err)) return;
         console.error("[XTermWrapper] Failed to reattach session:", err);
         useToastStore.getState().pushToast("Terminal reattach failed", "error");
       });
@@ -3313,7 +3453,7 @@ export default memo(function XTermWrapper({
       } catch (err) {
         settleStartupSession();
         if (err instanceof SessionClosedError || disposed || termDisposed) return;
-        if (!reportAgentSessionAlreadyRunning(err, (notice) => term!.write(notice))) {
+        if (!handleResumeBlock(err)) {
           console.error("[XTermWrapper] Failed to create session:", err);
           term.writeln(`\r\n\x1b[31mFailed to start: ${err}\x1b[0m`);
         }
@@ -3412,6 +3552,19 @@ export default memo(function XTermWrapper({
         if (event.deltaY < 0) noteLookBackIntent();
       }}
     >
+      {resumeRecovery && <AgentResumeRecoveryPanel
+        model={resumeRecovery} confirmation={resumeConfirmation} busy={resumeBusy} error={resumeError}
+        onOpenOwner={() => resumeActionsRef.current.openOwner()}
+        onTakeover={() => resumeActionsRef.current.takeover()}
+        onFresh={() => resumeActionsRef.current.fresh()}
+        onOriginal={id => resumeActionsRef.current.original(id)}
+        onSaved={() => resumeActionsRef.current.saved()}
+        onConfirm={yes => {
+          resumeConfirmationRef.current?.(yes);
+          resumeConfirmationRef.current = null;
+          setResumeConfirmation(null);
+        }}
+      />}
       {turnChipMounted && turnChip && (
         <TerminalTurnChip
           key={sessionId}

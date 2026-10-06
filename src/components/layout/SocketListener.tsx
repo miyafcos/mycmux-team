@@ -1165,7 +1165,8 @@ function mirrorPtyMetadataForPersistence(meta: PtyMetadata): void {
     paneMetadataStore.clearClaudeSessionId(meta.session_id);
     workspaceListStore.setPaneAgentSessionFromMetadata(meta.session_id, null);
   }
-  const sessionPayload = agentActive && (meta.claude_session_id || meta.agent_session_id)
+  const resumeActive = meta.agent_session_trusted !== false && agentActive;
+  const sessionPayload = resumeActive && (meta.claude_session_id || meta.agent_session_id)
     ? {
         claudeSessionId: meta.claude_session_id ?? undefined,
         agentKind: meta.agent_kind ?? undefined,
@@ -1192,9 +1193,9 @@ function mirrorPtyMetadataForPersistence(meta: PtyMetadata): void {
     cwd: meta.cwd,
     gitBranch: meta.git_branch,
     processIsShell,
-    claudeSessionId: sessionClaimAccepted && agentActive ? meta.claude_session_id ?? undefined : undefined,
-    agentKind: sessionClaimAccepted && agentActive ? meta.agent_kind ?? undefined : undefined,
-    agentSessionId: sessionClaimAccepted && agentActive ? meta.agent_session_id ?? undefined : undefined,
+    claudeSessionId: sessionClaimAccepted && resumeActive ? meta.claude_session_id ?? undefined : undefined,
+    agentKind: sessionClaimAccepted && resumeActive ? meta.agent_kind ?? undefined : undefined,
+    agentSessionId: sessionClaimAccepted && resumeActive ? meta.agent_session_id ?? undefined : undefined,
   });
   paneMetadataStore.setVolatileMetadata(meta.session_id, {
     processTitle: meta.process_name ?? undefined,

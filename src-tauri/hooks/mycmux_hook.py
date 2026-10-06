@@ -56,7 +56,7 @@ def _first_text(payload: dict[str, Any], *keys: str) -> str | None:
     return None
 
 
-def _identity(payload: dict[str, Any], provider: str, event_kind: str) -> dict[str, str] | None:
+def _identity(payload: dict[str, Any], provider: str, event_kind: str) -> dict[str, Any] | None:
     provider_session_id = _first_text(
         payload,
         "session_id",
@@ -98,6 +98,8 @@ def _identity(payload: dict[str, Any], provider: str, event_kind: str) -> dict[s
         "source_event_id": source_event_id,
         "provider": provider,
     }
+    # Use the helper's actual PID, never a value supplied by hook stdin.
+    body["sender_pid"] = os.getpid()
     # Main-thread hooks have no agent_id. Preserve valid child identity as
     # metadata without changing the existing turn or event identity.
     agent_id = payload.get("agent_id")

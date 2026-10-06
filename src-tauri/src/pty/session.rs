@@ -947,6 +947,7 @@ impl PtySession {
                                             agent_kind: old.agent_kind.clone(),
                                             live_agent_kind: old.live_agent_kind.clone(),
                                             agent_session_id: old.agent_session_id.clone(),
+                                            agent_session_trusted: old.agent_session_trusted,
                                         },
                                         None => PtyMetadata {
                                             session_id: sid.clone(),
@@ -961,6 +962,7 @@ impl PtySession {
                                             agent_kind: None,
                                             live_agent_kind: None,
                                             agent_session_id: None,
+                                            agent_session_trusted: false,
                                         },
                                     };
                                     metadata_store.insert(sid.clone(), meta.clone());
