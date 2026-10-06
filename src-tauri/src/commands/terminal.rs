@@ -128,6 +128,7 @@ pub async fn get_session_output_snapshot(state: State<'_, AppState>) -> Result<H
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
 pub async fn create_session(
+    caller: tauri::Webview,
     app_handle: AppHandle,
     state: State<'_, AppState>,
     session_id: String,
@@ -138,13 +139,20 @@ pub async fn create_session(
     on_data: Channel<InvokeResponseBody>,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
+    background_only: Option<bool>,
+    attach_reason: Option<String>,
 ) -> Result<(), String> {
+    let reason = match attach_reason.as_deref() {
+        Some("channel-stall" | "write-stall" | "background") => attach_reason.as_deref().unwrap(),
+        _ => "mount",
+    };
+    let attach_origin = format!("window={} reason={reason}", caller.label());
     // Capture owned handles; borrowed IPC State never crosses the worker boundary.
     let worker_app = app_handle.clone();
     let _ = state;
     crate::util::task::run_blocking("create_session", move || {
         let state = worker_app.state::<AppState>();
-        create_session_blocking(app_handle, state, session_id, command, args, cols, rows, on_data, cwd, env)
+        create_session_blocking(app_handle, state, session_id, command, args, cols, rows, on_data, cwd, env, background_only.unwrap_or(false), attach_origin)
     }).await
 }
 
@@ -160,6 +168,8 @@ fn create_session_blocking(
     on_data: Channel<InvokeResponseBody>,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
+    background_only: bool,
+    attach_origin: String,
 ) -> Result<(), String> {
     crate::perf_timeline::mark("session.create.enter", Some(&session_id));
     let requested_command = command;
@@ -422,6 +432,8 @@ fn create_session_blocking(
         Some(env_map),
         state.metadata_store.clone(),
         state.scrollback_dir.get().map(PathBuf::as_path),
+        background_only,
+        &attach_origin,
     )?;
     crate::perf_timeline::mark("session.create.done", Some(&session_id));
     if let Some((session_epoch, _)) = state.session_manager.session_observation(&session_id) {
@@ -1138,10 +1150,11 @@ pub fn set_frontend_visible(
     state: State<'_, AppState>,
     session_id: String,
     visible: bool,
+    channel_id: Option<u32>,
 ) -> Result<(), String> {
     state
         .session_manager
-        .set_frontend_visible(&session_id, visible);
+        .set_frontend_visible(&session_id, visible, channel_id);
     Ok(())
 }
 

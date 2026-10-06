@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { syncedPersist } from "./syncedPersist";
+import { applyAutomaticStoreUpdate, syncedPersist } from "./syncedPersist";
 import {
   migratePersistedSettings,
   resolveDefaultTerminalRenderer,
@@ -103,6 +103,8 @@ interface SettingsState {
   /** Provenance marker: compatibility booleans below are no longer legacy input. */
   aiFeatureSettingsDataJsonMigrationComplete: boolean;
   appearanceAdvancedOpen: boolean;
+  hydrateAiFeatureSettings: (state: Pick<SettingsState, "autoPaneNamingEnabled" | "replyDraftSuggestionsEnabled">
+    & Partial<Pick<SettingsState, "aiFeatureSettingsDataJsonMigrationComplete">>) => void;
   setNotificationsEnabled: (v: boolean) => void;
   setNotificationSoundEnabled: (v: boolean) => void;
   setToastAiActivityEnabled: (v: boolean) => void;
@@ -133,7 +135,7 @@ interface SettingsState {
 
 export const useSettingsStore = create<SettingsState>()(
   syncedPersist(
-    (set) => ({
+    (set, _get, api) => ({
       notificationsEnabled: true,
       notificationSoundEnabled: true,
       // Off by default: the auto-naming and auto-sweep runs announce results
@@ -170,6 +172,7 @@ export const useSettingsStore = create<SettingsState>()(
       autoPaneNamingEnabled: true,
       aiFeatureSettingsDataJsonMigrationComplete: false,
       appearanceAdvancedOpen: false,
+      hydrateAiFeatureSettings: (state) => applyAutomaticStoreUpdate(api, state),
       setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
       setNotificationSoundEnabled: (v) => set({ notificationSoundEnabled: v }),
       setToastAiActivityEnabled: (v) => set({ toastAiActivityEnabled: v }),
@@ -224,5 +227,5 @@ export const useSettingsStore = create<SettingsState>()(
 );
 
 export function markAiFeatureSettingsDataJsonMigrationComplete(): void {
-  useSettingsStore.setState({ aiFeatureSettingsDataJsonMigrationComplete: true });
+  applyAutomaticStoreUpdate(useSettingsStore, { aiFeatureSettingsDataJsonMigrationComplete: true });
 }

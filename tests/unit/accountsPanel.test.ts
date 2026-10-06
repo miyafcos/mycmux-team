@@ -450,3 +450,70 @@ describe("reset dates are marked the same way on every row", () => {
     expect(html).toContain("取得 ");
   });
 });
+
+describe("contract information in the account panel", () => {
+  it("keeps contract dates visible for the active account without enabling a switch", () => {
+    const markup = renderPanel(usageRow({
+      is_active: true, provider: "codex", plan: "prolite",
+      subscription: { plan: "prolite", source: "codex_subscription",
+        checked_at: "2026-10-05T12:00:00Z", started_at: null,
+        renews_at: null, ends_at: "2026-10-20T12:00:00Z", will_renew: false },
+    }));
+    const holder = document.createElement("div");
+    holder.innerHTML = markup;
+    expect(holder.querySelector<HTMLButtonElement>("[data-account-switch]")!.disabled).toBe(true);
+    expect(holder.querySelector("[data-account-subscription]")!.textContent)
+      .toContain("有料期間終了 2026/10/20");
+    expect(holder.querySelector("[data-account-switch] [data-account-subscription]")).toBeNull();
+  });
+
+  it("identifies unavailable contract dates and offers an independent refresh action", () => {
+    const markup = renderPanel(usageRow());
+    expect(markup).toContain("契約更新日・終了日：未取得");
+    expect(markup).toContain("プラン未確認");
+    expect(markup).toContain("一覧取得");
+    expect(markup).toContain("再取得");
+  });
+});
+
+describe("account availability in the panel", () => {
+  it("shows usable candidates above blocked accounts and expands limits on demand", async () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const blocked = usageRow({ profile_id: "blocked", email: "blocked@example.test",
+      seven_day: stat(100, "2026-10-12T00:00:00Z") });
+    const available = usageRow({ profile_id: "available", email: "available@example.test",
+      seven_day: stat(20, "2026-10-12T00:00:00Z") });
+    try {
+      await act(async () => {
+        root.render(createElement(AccountsPanel, {
+          rows: [blocked, available], onClose: () => {}, onOpenUsageSettings: () => {},
+        }));
+      });
+      expect(Array.from(container.querySelectorAll("section[data-account-group]"))
+        .map((group) => group.getAttribute("data-account-group"))).toEqual(["available", "limited"]);
+      expect(container.textContent).toContain("available@example.test");
+      expect(container.textContent).not.toContain("blocked@example.test");
+      const toggle = container.querySelector<HTMLButtonElement>('[data-account-group="limited"] > button')!;
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      await act(async () => { toggle.click(); });
+      expect(toggle.getAttribute("aria-expanded")).toBe("true");
+      expect(container.textContent).toContain("blocked@example.test");
+      expect(container.textContent).toContain("週間制限");
+      expect(container.querySelector<HTMLButtonElement>('[data-account-group="limited"] [data-account-switch]')!.disabled).toBe(false);
+      await act(async () => { toggle.click(); });
+      expect(container.querySelector('[data-account-group="limited"] [data-account-switch]')).toBeNull();
+    } finally {
+      await act(async () => { root.unmount(); });
+    }
+  });
+
+  it("keeps a restricted active account visible with its weekly-limit label", () => {
+    const markup = renderPanel(usageRow({ is_active: true,
+      seven_day: stat(100, "2026-10-12T00:00:00Z") }));
+    expect(markup).toContain('data-account-group="active"');
+    expect(markup).toContain("anna@example.com");
+    expect(markup).toContain("週間制限");
+    expect(markup).toContain('data-account-switch="true"');
+  });
+});

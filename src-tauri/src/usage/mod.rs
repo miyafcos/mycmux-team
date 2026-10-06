@@ -5,6 +5,7 @@ pub mod oauth_codex;
 pub mod oauth_grok;
 pub mod refresh;
 pub mod reset_tickets;
+pub mod subscription;
 mod util;
 
 use serde::Serialize;
@@ -52,6 +53,8 @@ pub struct UsageState {
     pub refresh_lock: tokio::sync::Mutex<()>,
     pub cooldowns: tokio::sync::Mutex<HashMap<String, Cooldown>>,
     pub profile_usage_cache: tokio::sync::Mutex<HashMap<String, CachedWindows>>,
+    pub account_subscriptions: tokio::sync::Mutex<HashMap<String, subscription::CachedSubscription>>,
+    pub last_metadata_refresh_at_ms: tokio::sync::Mutex<i64>,
     pub reset_credit_details: tokio::sync::Mutex<HashMap<String, reset_tickets::CachedCredits>>,
     /// Per profile, the Claude status block a press falls back to when its own
     /// status check fails (see `claude_press_status`).
@@ -83,6 +86,8 @@ impl UsageState {
             refresh_lock: tokio::sync::Mutex::new(()),
             cooldowns: tokio::sync::Mutex::new(HashMap::new()),
             profile_usage_cache: tokio::sync::Mutex::new(HashMap::new()),
+            account_subscriptions: tokio::sync::Mutex::new(HashMap::new()),
+            last_metadata_refresh_at_ms: tokio::sync::Mutex::new(0),
             reset_credit_details: tokio::sync::Mutex::new(HashMap::new()),
             reset_claude_status: tokio::sync::Mutex::new(Default::default()),
             reset_unsettled: tokio::sync::Mutex::new(HashMap::new()),
@@ -139,6 +144,7 @@ pub struct ProfileUsage {
     pub label: String,
     pub email: Option<String>,
     pub plan: Option<String>,
+    pub subscription: Option<subscription::AccountSubscription>,
     pub registered: bool,
     pub is_active: bool,
     pub needs_relogin: bool,
@@ -201,6 +207,7 @@ mod tests {
             label: "label".into(),
             email: None,
             plan: None,
+            subscription: None,
             registered: true,
             is_active: false,
             needs_relogin: false,

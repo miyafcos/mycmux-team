@@ -91,13 +91,24 @@ def _identity(payload: dict[str, Any], provider: str, event_kind: str) -> dict[s
         "hook_event_id",
         "hookEventId",
     ) or f"hook:{digest}"
-    return {
+    body = {
         "event_kind": event_kind,
         "provider_session_id": provider_session_id,
         "provider_turn_id": provider_turn_id,
         "source_event_id": source_event_id,
         "provider": provider,
     }
+    # Main-thread hooks have no agent_id. Preserve valid child identity as
+    # metadata without changing the existing turn or event identity.
+    agent_id = payload.get("agent_id")
+    if (
+        isinstance(agent_id, str)
+        and 0 < len(agent_id) <= 128
+        and agent_id.isascii()
+        and all(char.isalnum() or char in "-_" for char in agent_id)
+    ):
+        body["agent_id"] = agent_id
+    return body
 
 
 def _exchange(stream: socket.socket, request: dict[str, Any], deadline: float) -> dict[str, Any] | None:

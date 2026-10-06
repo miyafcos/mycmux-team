@@ -31,3 +31,11 @@ describe("one metadata record per native gesture", () => {
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 });
+
+it("preserves an absent release as unmeasured and logs the recovery stage", async () => {
+  const record = new TearoutRecord("busy", "tab", "main", 10);
+  record.failure("tearout_move_busy", "restoring", ["pty-existing"]);
+  await record.finish("rejected_busy");
+  expect(mocks.invoke.mock.calls[0][1].record).toMatchObject({ released_at: null, released: false,
+    failure_reason: "tearout_move_busy", failure_phase: "restoring", failed_session_ids: ["pty-existing"] });
+});

@@ -143,6 +143,27 @@ impl Reconciler {
             );
         }
 
+        // Tool-use IDs can differ from the completed root turn's ID. A child
+        // tool hook must not create a new active root turn after completion.
+        // Root continuation and child activity during approval remain valid.
+        if observation.state() == NormalizedState::TurnActive
+            && observation.agent_id().is_some()
+            && runtime.current.as_ref().is_some_and(|current| {
+                matches!(
+                    current.state,
+                    NormalizedState::TurnEnded
+                        | NormalizedState::Cancelled
+                        | NormalizedState::SessionTerminated
+                        | NormalizedState::ProcessExited
+                )
+            })
+        {
+            return rejected(
+                RejectionReason::SubagentActiveAfterTerminal,
+                runtime.current.clone(),
+            );
+        }
+
         let turn_scope = TurnScope::from_identity(observation.identity());
         let turn = runtime.turns.entry(turn_scope.clone()).or_default();
         if observation.state() == NormalizedState::TurnActive

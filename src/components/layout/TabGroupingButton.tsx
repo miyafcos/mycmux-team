@@ -3,6 +3,7 @@ import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmo
 import { markGroupingInterest, startGroupingPrecomputeIfInterested } from "../../lib/groupingPrecompute";
 import { tabGroupingStrings } from "../dashboard/dashboardStrings";
 import { TAB_GROUPING_OPEN_EVENT } from "./tabGrouping";
+import { WorkOverview } from "../dashboard/WorkOverview";
 import { TabGroupingPanel } from "./TabGroupingPanel";
 
 /**
@@ -15,18 +16,20 @@ export const TAB_GROUPING_ENTRY_ENABLED = true;
 
 export function TabGroupingButton() {
   const [open, setOpen] = useState(false);
+  const [legacy, setLegacy] = useState(false);
   const [intent, setIntent] = useState<"review" | null>(null);
   const { mounted, closing } = useDeferredUnmount(open, OVERLAY_EXIT_MS);
   const openPanel = useCallback((nextIntent: "review" | null = null) => {
-    markGroupingInterest();
+    setLegacy(nextIntent === "review");
+    if (nextIntent === "review") markGroupingInterest();
     setIntent(nextIntent);
     setOpen(true);
   }, []);
   const closePanel = useCallback(() => setOpen(false), []);
 
   useEffect(() => {
-    startGroupingPrecomputeIfInterested();
-  }, []);
+    if (legacy) startGroupingPrecomputeIfInterested();
+  }, [legacy]);
 
   useEffect(() => {
     const handleOpen = (event: Event) => {
@@ -45,7 +48,7 @@ export function TabGroupingButton() {
         title={tabGroupingStrings.buttonLabel}
         aria-label={tabGroupingStrings.buttonLabel}
         aria-expanded={open}
-        aria-controls="tab-grouping-panel"
+        aria-controls={legacy ? "tab-grouping-panel" : "work-overview-panel"}
         onClick={() => openPanel()}
       >
         <svg aria-hidden="true" focusable="false" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -55,13 +58,14 @@ export function TabGroupingButton() {
         </svg>
         <span>{tabGroupingStrings.buttonLabel}</span>
       </button>
-      {mounted ? (
+      {mounted && !legacy ? <WorkOverview open={open} closing={closing} onClose={closePanel} onLegacy={() => { markGroupingInterest(); setLegacy(true); }} /> : null}
+      {mounted && legacy ? (
         <TabGroupingPanel
           open={open}
           visible={mounted}
           closing={closing}
           intent={intent}
-          onClose={closePanel}
+          onClose={() => setLegacy(false)}
         />
       ) : null}
     </div>

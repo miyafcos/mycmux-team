@@ -13,6 +13,7 @@ use super::session::{PtySession, ScrollbackSnapshot};
 #[derive(Debug, PartialEq, Eq)]
 enum CreateDisposition {
     Reattached,
+    BackgroundExisting,
     Spawned,
 }
 
@@ -20,10 +21,12 @@ fn create_or_reattach<S, T>(
     sessions: &DashMap<String, S>,
     session_id: String,
     resource: T,
+    background_only: bool,
     reattach: impl FnOnce(&S, T) -> Result<(), String>,
     spawn: impl FnOnce(T) -> Result<S, String>,
 ) -> Result<CreateDisposition, String> {
     if let Some(session) = sessions.get(&session_id) {
+        if background_only { return Ok(CreateDisposition::BackgroundExisting); }
         reattach(session.value(), resource)?;
         return Ok(CreateDisposition::Reattached);
     }
@@ -94,6 +97,8 @@ impl SessionManager {
         env: Option<std::collections::HashMap<String, String>>,
         metadata_store: MetadataStore,
         scrollback_dir: Option<&Path>,
+        background_only: bool,
+        attach_origin: &str,
     ) -> Result<(), String> {
         #[cfg(debug_assertions)]
         let new_channel_id = data_channel.id().to_string();
@@ -104,9 +109,15 @@ impl SessionManager {
         create_or_reattach(
             &self.sessions,
             session_id.clone(),
-            data_channel,
+            data_channel, background_only,
             |session, data_channel| {
+                // A background start races with mounting/clicking in another
+                // window. Existing PTYs keep their renderer's channel and epoch.
                 let replaced_channel_ids = session.replace_data_channel(data_channel)?;
+                crate::watchdog::log_with_memory(format!(
+                    "[pty] frontend attach session={session_id} {attach_origin} generation={} old_channel={} new_channel={}",
+                    session.frontend_generation(), replaced_channel_ids.0, replaced_channel_ids.1
+                ));
                 #[cfg(debug_assertions)]
                 {
                     let age_ms = session.created_at.elapsed().as_millis();
@@ -141,7 +152,7 @@ impl SessionManager {
                     "[mycmux-diag manager] create_session id={} kind=new channel_id={}",
                     session_id, new_channel_id
                 );
-                PtySession::spawn(
+                let session = PtySession::spawn(
                     session_id.clone(),
                     command,
                     args,
@@ -154,7 +165,9 @@ impl SessionManager {
                     metadata_store,
                     Instant::now(),
                     preload,
-                )
+                )?;
+                if background_only { session.set_frontend_visible(false, None); }
+                Ok(session)
             },
         )
         .inspect_err(|error| {
@@ -210,9 +223,9 @@ impl SessionManager {
         }
     }
 
-    pub fn set_frontend_visible(&self, session_id: &str, visible: bool) {
+    pub fn set_frontend_visible(&self, session_id: &str, visible: bool, channel_id: Option<u32>) {
         if let Some(session) = self.sessions.get(session_id) {
-            session.set_frontend_visible(visible);
+            session.set_frontend_visible(visible, channel_id);
         }
     }
 
@@ -389,7 +402,7 @@ mod tests {
         let disposition = create_or_reattach(
             &sessions,
             "session".to_string(),
-            (),
+            (), false,
             |_, ()| Ok(()),
             |()| panic!("an exited session must never auto-respawn"),
         )
@@ -397,6 +410,22 @@ mod tests {
         assert_eq!(disposition, CreateDisposition::Reattached);
         sessions.remove("session");
         assert!(!running());
+    }
+
+    #[test]
+    fn repeated_background_starts_do_not_replace_an_existing_frontend() {
+        let sessions = DashMap::new();
+        sessions.insert("visible".to_string(), FakeSession::new());
+        for _ in 0..50 {
+            let disposition = create_or_reattach(
+                &sessions, "visible".to_string(), (), true,
+                |_, ()| panic!("background startup must not take the renderer channel"),
+                |()| panic!("background startup must not respawn the existing PTY"),
+            ).unwrap();
+            assert_eq!(disposition, CreateDisposition::BackgroundExisting);
+        }
+        assert_eq!(sessions.get("visible").unwrap().reattach_count.load(Ordering::SeqCst), 0);
+        assert_eq!(sessions.len(), 1);
     }
 
     #[test]
@@ -408,7 +437,7 @@ mod tests {
         let disposition = create_or_reattach(
             &sessions,
             "session".to_string(),
-            (),
+            (), false,
             |session, ()| {
                 session.reattach_count.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -446,7 +475,7 @@ mod tests {
             assert_eq!(budget.poll(now), Some(RecoveryDecision::Reload { attempt: attempt + 1, kind: 1 }));
             for n in 0..20 {
                 let disposition = create_or_reattach(
-                    &sessions, format!("pane-{n}"), (),
+                    &sessions, format!("pane-{n}"), (), false,
                     |(session, output), ()| {
                         session.reattach_count.fetch_add(1, Ordering::SeqCst);
                         assert_eq!(output, &format!("retained output {n}"));
@@ -474,7 +503,7 @@ mod tests {
         let disposition = create_or_reattach(
             &sessions,
             "session".to_string(),
-            (),
+            (), false,
             |_, ()| {
                 reattach_count.fetch_add(1, Ordering::SeqCst);
                 Ok(())
