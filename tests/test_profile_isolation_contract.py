@@ -95,7 +95,13 @@ def test_profile_launcher_and_transcript_fallbacks_are_fail_closed() -> None:
     assert "update_launch_anken" not in launcher_sh
     assert "$localRuntimeDir = if ($env:MYCMUX_RUNTIME_DIR)" in launcher_ps1
     assert '"MYCMUX_TEST_PROFILE".to_string(), "1".to_string()' in terminal
-    assert transcripts.count("if crate::test_profile::is_active() {") >= 3
+    # Claude-family scans now use a profile-owned transcript root; Codex's
+    # fallback remains disabled in profiles. Neither route falls through home.
+    profile = read_repo_text("src-tauri/src/test_profile.rs")
+    assert 'crate::test_profile::agent_projects_dir("claude")?' in transcripts
+    assert 'crate::test_profile::agent_projects_dir("claude-codex")?' in transcripts
+    assert 'if crate::test_profile::is_active() {' in transcripts
+    assert 'runtime_dir().ok()?.join("transcripts").join(kind).join("projects")' in profile
 
 
 # test_profile_remote_binds_ephemeral_port_and_persists_the_bound_value used

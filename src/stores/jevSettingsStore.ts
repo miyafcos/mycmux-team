@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
+import { boundedGroupingWait } from "../lib/groupingWaits";
+
+export const JEV_SETTINGS_TIMEOUT_MS = 5_000;
 
 export const DEFAULT_JEV_MODEL = "typesafe/jev-1.13";
 export interface JevSettings {
@@ -16,6 +19,8 @@ export const useJevSettingsStore = create<JevSettingsState>(() => ({
   ...DEFAULT_JEV_SETTINGS, loaded: false, error: null,
 }));
 let loading: Promise<void> | null = null;
+let loadGeneration = 0;
+export function abandonJevSettingsLoad(): void { loadGeneration += 1; loading = null; }
 
 function accept(value: JevSettings): void {
   if (!value || typeof value.enabled !== "boolean" || typeof value.hasApiKey !== "boolean"
@@ -28,10 +33,14 @@ function accept(value: JevSettings): void {
 export async function loadJevSettings(): Promise<void> {
   if (useJevSettingsStore.getState().loaded) return;
   if (!loading) {
-    loading = invoke<JevSettings>("get_jev_settings").then(accept).catch((error: unknown) => {
-      useJevSettingsStore.setState({ error: jevErrorMessage(error) });
-      throw error;
-    }).finally(() => { loading = null; });
+    const generation = ++loadGeneration;
+    const promise = boundedGroupingWait(invoke<JevSettings>("get_jev_settings"), JEV_SETTINGS_TIMEOUT_MS)
+      .then(value => { if (generation === loadGeneration) accept(value); })
+      .catch((error: unknown) => {
+        if (generation === loadGeneration) useJevSettingsStore.setState({ error: jevErrorMessage(error) });
+        throw error;
+      }).finally(() => { if (loading === promise) loading = null; });
+    loading = promise;
   }
   return loading;
 }
@@ -39,6 +48,7 @@ export async function saveJevSettings(enabled: boolean, model: string, apiKey: s
   const value = await invoke<JevSettings>("save_jev_settings", {
     enabled, model: model.trim(), apiKey: apiKey.trim() || null,
   });
+  abandonJevSettingsLoad();
   accept(value);
 }
 export async function testJevConnection(model: string, apiKey: string): Promise<number> {

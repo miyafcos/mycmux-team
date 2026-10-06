@@ -1,0 +1,2 @@
+{"type": "attachment", "entrypoint": "sdk-cli", "isSidechain": false, "userType": "external"}
+{"type": "user", "entrypoint": "sdk-cli", "isSidechain": false, "promptSource": "sdk", "userType": "external", "message": {"role": "user", "content": "fixture human input"}}

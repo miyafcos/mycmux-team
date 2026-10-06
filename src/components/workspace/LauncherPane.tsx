@@ -28,6 +28,7 @@ import {
   type CrsmSessionEntry,
 } from "../../lib/ipc";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
+import { closePaneOperation } from "../../lib/paneCloseOperation";
 import { useUiStore } from "../../stores/uiStore";
 import { useLauncherDirsStore } from "../../stores/launcherDirsStore";
 import { useSettingsStore } from "../../stores/settingsStore";
@@ -336,7 +337,6 @@ export default function LauncherPane({
 
   const addTabToPaneWithOptions = useWorkspaceLayoutStore((s) => s.addTabToPaneWithOptions);
   const addWebTabToPane = useWorkspaceLayoutStore((s) => s.addWebTabToPane);
-  const removeTabFromPane = useWorkspaceLayoutStore((s) => s.removeTabFromPane);
 
   const setActivePaneId = useUiStore((s) => s.setActivePaneId);
 
@@ -470,8 +470,8 @@ export default function LauncherPane({
   }, [cursor]);
 
   const closeLauncherTab = useCallback(() => {
-    removeTabFromPane(workspaceId, paneId, tabId);
-  }, [removeTabFromPane, workspaceId, paneId, tabId]);
+    void closePaneOperation({ kind: "tab", workspaceId, paneId, tabId }, "ui");
+  }, [workspaceId, paneId, tabId]);
 
   const launchAgent = useCallback(
     (target: string, spec?: { model?: string; effort?: string }) => {
