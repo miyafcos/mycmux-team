@@ -2,9 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, memo, useRef, useStat
 import { Allotment, type AllotmentHandle } from "allotment";
 import "allotment/dist/style.css";
 import type { Pane, GridTemplateId } from "../../types";
-import { useWorkspaceLayoutStore, usePaneMetadataStore } from "../../stores/workspaceStore";
+import { useWorkspaceLayoutStore } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
-import { killSession } from "../../lib/ipc";
 import {
   reconcileSplitColumnsForPanes,
   reconcileStableLayoutColumnIdentities,
@@ -20,10 +19,7 @@ import {
 import { terminalLayoutSignatureOf } from "../../lib/terminalLayoutSignature";
 import { useRetainedViews } from "../../lib/retainedViews";
 import { focusController } from "../../lib/focusController";
-import { evictTerminalCache } from "../terminal/XTermWrapper";
-import { tabHasPty } from "../../lib/tabLifecycle";
-import { beforePaneClose } from "../../lib/paneCloseLifecycle";
-import { confirmPaneClose } from "../../lib/paneCloseConfirmation";
+import { closePaneOperation } from "../../lib/paneCloseOperation";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { useUiStore } from "../../stores/uiStore";
 import TerminalPane from "./TerminalPane";
@@ -112,7 +108,6 @@ export const TerminalGrid = memo(function TerminalGrid({
   panes,
   splitColumns,
 }: TerminalGridProps) {
-  const removePaneFromWorkspace = useWorkspaceLayoutStore((s) => s.removePaneFromWorkspace);
   const addPaneToWorkspace = useWorkspaceLayoutStore((s) => s.addPaneToWorkspace);
   const setWorkspaceLayoutMetrics = useWorkspaceListStore((s) => s.setWorkspaceLayoutMetrics);
   const workspace = useWorkspaceListStore((s) => s.getWorkspace(workspaceId));
@@ -128,40 +123,19 @@ export const TerminalGrid = memo(function TerminalGrid({
   const rowResetHandlersRef = useRef(new Map<string, () => void>());
 
   const handleClose = useCallback(async (paneId: string) => {
-    // Kill all PTY sessions — read fresh state to avoid stale closure
-    const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-    if (!ws || ws.panes.length <= 1) return;
-    const pane = ws.panes.find((p) => p.id === paneId);
-    if (!pane || !await confirmPaneClose([pane], "pane")) return;
-
-    // Re-read after the asynchronous confirmation so tabs added while it was
-    // open are not silently killed without being included in the warning.
+    const before = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    const paneIndex = before?.panes.findIndex(pane => pane.id === paneId) ?? 0;
+    const result = await closePaneOperation({ kind: "pane", workspaceId, paneId }, "ui");
+    if (result.status !== "closed") return;
     const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-    const currentPane = currentWorkspace?.panes.find((p) => p.id === paneId);
-    if (!currentWorkspace || !currentPane || currentWorkspace.panes.length <= 1) return;
-    if (currentPane.tabs.map((tab) => tab.sessionId).join("\0") !== pane.tabs.map((tab) => tab.sessionId).join("\0")
-      && !await confirmPaneClose([currentPane], "pane")) return;
-    {
-      beforePaneClose(currentPane);
-      for (const tab of currentPane.tabs) {
-        if (!tabHasPty(tab)) continue;
-        evictTerminalCache(tab.sessionId);
-        killSession(tab.sessionId).catch((err) =>
-          console.warn("[mycmux] killSession failed", tab.sessionId, err),
-        );
-        usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
-      }
-    }
-    const paneIndex = currentWorkspace.panes.findIndex((p) => p.id === paneId);
-    const remainingPanes = currentWorkspace.panes.filter((p) => p.id !== paneId);
-    const nextPane = remainingPanes[Math.min(Math.max(paneIndex, 0), remainingPanes.length - 1)] ?? remainingPanes[0];
-    const nextActiveTab = nextPane?.tabs.find((tab) => tab.id === nextPane.activeTabId) ?? nextPane?.tabs[0];
+    const remaining = currentWorkspace?.panes ?? [];
+    const nextPane = remaining[Math.min(Math.max(paneIndex, 0), remaining.length - 1)];
+    const nextActiveTab = nextPane?.tabs.find(tab => tab.id === nextPane.activeTabId) ?? nextPane?.tabs[0];
     focusController.request("programmatic", {
       sessionId: nextActiveTab?.sessionId ?? nextPane?.sessionId ?? null,
       focus: false,
     });
-    removePaneFromWorkspace(workspaceId, paneId);
-  }, [workspaceId, removePaneFromWorkspace]);
+  }, [workspaceId]);
 
   const handleSplitRight = useCallback((paneId: string) => {
     addPaneToWorkspace(workspaceId, paneId, "right");

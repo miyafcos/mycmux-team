@@ -23,6 +23,7 @@ pub fn start_monitor(
         let mut session_epochs: HashMap<String, u64> = HashMap::new();
         let mut codex_rollout_detector = CodexRolloutDetector::new();
         let mut transcript_activity = TranscriptActivityTracker::default();
+        let mut conversation_history = ConversationOwnershipHistory::default();
         // `None` until the first report. Seeding this with `Instant::now() - 60s`
         // would panic when mycmux starts within a minute of boot, because the
         // Windows Instant epoch is boot time.
@@ -117,16 +118,36 @@ pub fn start_monitor(
             // This prevents several --continue agents sharing a CWD from all
             // adopting the session that an exact --session-id process owns.
             let explicit_agent_session_ids = collect_explicit_agent_session_ids(&sys);
+            let process_panes: HashMap<_, _> = pids.iter().filter_map(|(pane, root)| {
+                let (_, pid) = find_agent_descendant(&sys, &child_index, Pid::from_u32((*root)?))?;
+                Some((pid, pane.clone()))
+            }).collect();
+            for pid in sys.processes().keys() {
+                let Some(kind) = agent_kind_from_process(&sys, *pid) else { continue; };
+                let Some(id) = session_id_from_agent_args(&sys, *pid, kind == DetectedAgentKind::Codex) else { continue; };
+                let owner = process_panes.get(pid).cloned().unwrap_or_else(|| format!("process:{}", pid.as_u32()));
+                conversation_history.remember(&id, &owner);
+            }
             let cached_agent_session_owners = reserve_cached_agent_session_ids(
                 &mut detected_agent_sessions,
                 &explicit_agent_session_ids,
             );
             let mut claimed_agent_session_ids = explicit_agent_session_ids;
 
-            let agent_mappings = crate::commands::session_mapping::agent_mappings_for_ids(
+            let mut agent_mappings = crate::commands::session_mapping::agent_mappings_for_ids(
                 pids.iter().map(|(session_id, _)| session_id.as_str()),
             );
+            for (pane, mapping) in &mut agent_mappings {
+                if mapping.hook_confirmed {
+                    mapping.hook_confirmed = manager.trusted_agent_identity(pane).is_some_and(|identity|
+                        identity.from_hook && process_panes.get(&Pid::from_u32(identity.agent_pid)) == Some(pane)
+                            && sys.process(Pid::from_u32(identity.agent_pid)).is_some_and(|process| process.start_time() == identity.agent_started_at));
+                }
+            }
             let mapped_session_owners = mapped_agent_session_owners(&agent_mappings);
+            for (id, owners) in &mapped_session_owners {
+                for pane in owners { conversation_history.remember(id, pane); }
+            }
 
             for (session_id, pid_opt) in pids.iter().cloned() {
                 // Poll even without a PID or usable CWD. Retain the PTY for
@@ -172,6 +193,7 @@ pub fn start_monitor(
                     let process_name = get_foreground_process_name(&sys, fg_pid);
                     let foreground_agent = find_agent_descendant(&sys, &child_index, shell_pid);
                     let agent_active = foreground_agent.is_some();
+                    if agent_active { manager.note_agent_seen(&session_id); }
                     if let Some((DetectedAgentKind::Codex, agent_pid)) = foreground_agent {
                         if let Some(agent_started_at) = sys.process(agent_pid).and_then(|process| {
                             process.start_time().checked_mul(1_000)
@@ -270,24 +292,31 @@ pub fn start_monitor(
                                 + Duration::from_secs(process.start_time().saturating_sub(30))
                         })
                     });
-                    let excluded_agent_session_ids = agent_session_id_exclusions_for_pane(
+                    let mut excluded_agent_session_ids = agent_session_id_exclusions_for_pane(
                         &claimed_agent_session_ids,
                         &cached_agent_session_owners,
                         &mapped_session_owners,
                         &session_id,
                     );
+                    excluded_agent_session_ids.extend(conversation_history.exclusions(&session_id));
                     let session_agent = foreground_agent.filter(|_| !cwd.is_empty());
                     let (agent_kind, agent_session_id, claude_session_id) = match session_agent {
                         Some((kind, agent_pid)) => match kind {
                             DetectedAgentKind::Claude | DetectedAgentKind::ClaudeCodex => {
-                                let exact = session_id_from_agent_args(&sys, agent_pid, false);
-                                let mapped = mapped_agent_session_attribution_for_pane(
+                                let exact = session_id_from_agent_args(&sys, agent_pid, false)
+                                    .filter(|id| !conversation_history.abandoned(&session_id, id));
+                                let verified = manager.trusted_agent_identity(&session_id).filter(|identity|
+                                    identity.from_hook && identity.agent_pid == agent_pid.as_u32()
+                                        && sys.process(agent_pid).is_some_and(|process| process.start_time() == identity.agent_started_at));
+                                let mapped = verified.map(|identity| AgentSessionAttribution::verified(
+                                    if identity.kind == "claude-codex" { "claude-codex" } else { "claude" }, identity.session_id,
+                                )).or_else(|| mapped_agent_session_attribution_for_pane(
                                     &agent_mappings,
                                     &session_id,
                                     kind,
                                     &excluded_agent_session_ids,
                                     exact.as_deref(),
-                                );
+                                ));
                                 let cached = cached_detected_agent_session_id(
                                     &detected_agent_sessions,
                                     &session_id,
@@ -312,7 +341,11 @@ pub fn start_monitor(
                                 // The identity this pane was pinned to before
                                 // any re-detection ran: the launcher mapping,
                                 // otherwise the id frozen into the agent's argv.
-                                let pinned_attribution = mapped.clone().or_else(|| {
+                                let pinned_attribution = if mapped.as_ref().is_some_and(|value| value.hook_confirmed) {
+                                    previous_session_id.clone().map(|id| AgentSessionAttribution::new(
+                                        if previous_agent_kind.as_deref() == Some("claude-codex") { "claude-codex" } else { "claude" }, id,
+                                    )).or_else(|| mapped.clone())
+                                } else { mapped.clone() }.or_else(|| {
                                     exact.clone().map(|id| {
                                         let pinned_kind = claude_process_kind_for(
                                             kind,
@@ -387,6 +420,8 @@ pub fn start_monitor(
                                     selection.switched_from.as_deref(),
                                     selection.attribution.as_ref(),
                                 ) {
+                                    conversation_history.abandon(&session_id, from);
+                                    conversation_history.remember(&to.session_id, &session_id);
                                     let diagnostic = format!(
                                         "[mycmux-diag monitor] agent session rollover pane={session_id} from={from} to={}",
                                         to.session_id
@@ -654,6 +689,25 @@ pub fn start_monitor(
                             ),
                         );
                     }
+                    // Persist only the launch request, process argv, or a verified self hook.
+                    // A transcript scan can still supply display identity without rewriting saved identity.
+                    let canonical_identity = foreground_agent.and_then(|(kind, pid)| {
+                        let process = sys.process(pid)?;
+                        let hook = manager.trusted_agent_identity(&session_id).filter(|identity|
+                            identity.from_hook && identity.agent_pid == pid.as_u32() && identity.agent_started_at == process.start_time());
+                        if hook.is_some() { return hook; }
+                        let requested = manager.requested_conversation(&session_id).filter(|(value, _)|
+                            value == kind.display_kind() || (value == "claude-codex" && kind == DetectedAgentKind::Claude));
+                        let id = session_id_from_agent_args(&sys, pid, kind == DetectedAgentKind::Codex)
+                            .or_else(|| requested.as_ref().map(|(_, id)| id.clone()))?;
+                        Some(crate::pty::manager::TrustedAgentIdentity {
+                            kind: requested.map(|(kind, _)| kind).unwrap_or_else(|| kind.display_kind().to_string()),
+                            session_id: id, agent_pid: pid.as_u32(), agent_started_at: process.start_time(), from_hook: false,
+                        })
+                    });
+                    let agent_session_trusted = canonical_identity.as_ref().is_some_and(|identity|
+                        agent_kind.as_deref() == Some(identity.kind.as_str()) && agent_session_id.as_deref() == Some(identity.session_id.as_str()));
+                    if let Some(identity) = canonical_identity { manager.remember_agent_identity(&session_id, identity); }
                     let metadata = PtyMetadata {
                         session_id: session_id.clone(),
                         cwd: cwd.clone(),
@@ -667,6 +721,7 @@ pub fn start_monitor(
                         agent_kind: agent_kind.clone(),
                         live_agent_kind: live_agent_kind.clone(),
                         agent_session_id: agent_session_id.clone(),
+                        agent_session_trusted,
                     };
 
                     let changed = match last_metadata.get(&session_id) {
@@ -682,6 +737,7 @@ pub fn start_monitor(
                                 || old.live_agent_kind != live_agent_kind
                                 || old.agent_kind != agent_kind
                                 || old.agent_session_id != agent_session_id
+                                || old.agent_session_trusted != agent_session_trusted
                         }
                         None => true,
                     };

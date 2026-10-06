@@ -17,7 +17,8 @@ vi.mock("../../src/components/layout/evidenceGrouping", async (importActual) => 
   return { ...actual, runEvidenceGroupingAnalysis: harness.runGroupingAnalysis };
 });
 
-vi.mock("@tauri-apps/api/core", () => ({
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()),
   invoke: vi.fn(async () => true),
 }));
 

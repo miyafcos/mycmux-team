@@ -16,6 +16,10 @@ import { open } from "@tauri-apps/plugin-shell";
 import { emit } from "@tauri-apps/api/event";
 import {
   createSession,
+  getAgentConversationOwner,
+  killSession,
+  getSessionChannelId,
+  type SessionAttachOptions,
   SessionClosedError,
   ackFrontendData,
   getSessionInputRevision,
@@ -29,6 +33,9 @@ import {
   openPathWithDefaultApp,
 } from "../../lib/ipc";
 import type { FrontendDataBatch } from "../../lib/ipc";
+import { withTerminalDeadline } from "../../lib/terminalDeadline";
+import { TerminalStreamHealth, terminalHealthMonitor } from "../../lib/terminalStreamHealth";
+import { buildTerminalRecoveryFrame, freezeTerminalScreen } from "./terminalRecoveryFrame";
 import {
   TERMINAL_SNAPSHOT_MAX_WRAPPED_LINES,
   TERMINAL_SNAPSHOT_SCAN_MULTIPLIER,
@@ -151,7 +158,11 @@ import {
 import { HTTP_LINK_REGEX, registerArtifactLinkProvider } from "./terminalLinkProvider";
 import { recordPerf } from "../../lib/perfTimeline";
 import { ANSI_KEYS, withAnsiContrastFloor } from "./terminalThemeColors";
-import { buildLaunchRequest, type TerminalLaunchParams } from "./terminalLaunchParams";
+import { buildLaunchRequest, buildAgentRecoveryLaunch, type TerminalLaunchParams } from "./terminalLaunchParams";
+import { createAgentResumeRecovery } from "../../lib/agentResumeRecovery";
+import { parseAgentRestoreChoice } from "../../lib/agentRestoreChoice";
+import { agentResumeOwnerWindow, openAgentResumeOwner } from "../../lib/agentResumeOwner";
+import { AgentResumeRecoveryPanel, resumeRecoveryStrings, type ResumeRecoveryModel } from "./AgentResumeRecoveryPanel";
 import { TerminalAckCoalescer } from "../../lib/terminalAckCoalescer";
 import {
   findApprovalPromptDetail,
@@ -306,9 +317,11 @@ const SCROLLBACK_RETRY_MAX_FAILURES = 6;
 export class TerminalScrollbackRetry {
   private failures = 0;
   private retryAt = 0;
+  private revision = 0;
   constructor(private readonly now: () => number = () => Date.now()) {}
 
   reset(): void {
+    this.revision += 1;
     this.failures = 0;
     this.retryAt = 0;
   }
@@ -318,9 +331,11 @@ export class TerminalScrollbackRetry {
       ? null : Math.max(SCROLLBACK_RETRY_BASE_MS, this.retryAt - this.now());
   }
 
-  async run(sync: () => Promise<boolean>): Promise<boolean> {
+  async run(sync: () => Promise<boolean>, countFailure: () => boolean = () => true): Promise<boolean> {
     if (this.failures >= SCROLLBACK_RETRY_MAX_FAILURES || this.now() < this.retryAt) return false;
+    const revision = this.revision;
     const synchronized = await sync().catch(() => false);
+    if (revision !== this.revision || !countFailure()) return synchronized;
     if (synchronized) this.reset();
     else {
       this.failures += 1;
@@ -354,11 +369,11 @@ function applyTranscriptTurn(sessionId: string, intent: TranscriptTurnIntent): b
   return applyTranscriptTurnPayload(sessionId, payload);
 }
 
-function queueTerminalVisibilityUpdate(sessionId: string, visible: boolean): void {
+function queueTerminalVisibilityUpdate(sessionId: string, visible: boolean, channelId: number): void {
   const previous = terminalVisibilityUpdates.get(sessionId) ?? Promise.resolve();
   const next = previous
     .catch(() => {})
-    .then(() => setFrontendVisible(sessionId, visible));
+    .then(() => setFrontendVisible(sessionId, visible, channelId));
   terminalVisibilityUpdates.set(sessionId, next);
   void next
     .catch((error) => {
@@ -805,6 +820,15 @@ export default memo(function XTermWrapper({
   });
   launchParamsRef.current = { command, args, cwd, launchEnv };
 
+  const [resumeRecovery, setResumeRecovery] = useState<ResumeRecoveryModel | null>(null);
+  const [resumeConfirmation, setResumeConfirmation] = useState<{ working: boolean; hidden: boolean } | null>(null);
+  const [resumeBusy, setResumeBusy] = useState(false);
+  const [resumeError, setResumeError] = useState(false);
+  const resumeConfirmationRef = useRef<((yes: boolean) => void) | null>(null);
+  const resumeActionsRef = useRef({
+    openOwner: () => {}, takeover: () => {}, fresh: () => {},
+    original: (_id: string) => {}, saved: () => {},
+  });
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [turnChip, setTurnChip] = useState<{
@@ -1276,6 +1300,11 @@ export default memo(function XTermWrapper({
     let replayMouseModeFilter = createTerminalMouseModeControlFilter();
     const diagStats = diagStatsFor(sessionId);
     const pendingBatches: PendingFrontendBatch[] = takeDeferredTerminalBatches(sessionId);
+    let pumpGeneration = 0;
+    let ownedChannelId: number | undefined;
+    const streamHealth = new TerminalStreamHealth();
+    let stopStreamHealth: (() => void) | null = null;
+    let recoveryInFlight: Promise<void> | null = null;
     let writingBatch = false;
     let currentPendingBatch: PendingFrontendBatch | null = null;
     let frontendChannelReady = false;
@@ -2190,7 +2219,7 @@ export default memo(function XTermWrapper({
     const setFrontendVisibleIfChanged = (visible: boolean): boolean => {
       if (frontendVisible === visible) return false;
       frontendVisible = visible;
-      queueTerminalVisibilityUpdate(sessionId, visible);
+      if (ownedChannelId !== undefined) queueTerminalVisibilityUpdate(sessionId, visible, ownedChannelId);
       return true;
     };
 
@@ -2263,6 +2292,7 @@ export default memo(function XTermWrapper({
           return;
         }
         const writeTerm = term;
+        const generation = pumpGeneration;
         const measuredBytes = terminalWriteByteLength(output);
         const writeMeasurement = recordTerminalWriteStart(sessionId, measuredBytes);
         const flowWrite = startTerminalFlowWrite(sessionId, output);
@@ -2302,6 +2332,7 @@ export default memo(function XTermWrapper({
           writeTerm.write(rewrittenOutput, () => {
             // A timeout or thrown write is not proof that xterm parsed the bytes.
             markTerminalBufferReady(writeTerm);
+            if (generation === pumpGeneration && !disposed && !termDisposed && writeTerm === term) streamHealth.applied();
             finish();
           });
         } catch {
@@ -2313,6 +2344,7 @@ export default memo(function XTermWrapper({
     const scheduleTuiRecoveryRedraw = (): Promise<boolean> => {
       if (recoveryRedrawInFlight) return recoveryRedrawInFlight;
       const request = (async (): Promise<boolean> => {
+        const generation = pumpGeneration;
         if (!forceWheelMouseReport || !term || termDisposed) return false;
         await new Promise<void>((resolve) => {
           recoveryRedrawDelayResolve = resolve;
@@ -2329,6 +2361,7 @@ export default memo(function XTermWrapper({
         const temporaryRows = rows > 2 ? rows - 1 : rows + 1;
         try {
           await resizeSession(sessionId, cols, temporaryRows);
+          if (generation !== pumpGeneration || disposed || !canWritePendingBatches()) return false;
           await resizeSession(sessionId, cols, rows);
           return true;
         } catch (error) {
@@ -2346,63 +2379,20 @@ export default memo(function XTermWrapper({
       return request;
     };
 
-    const hasMeaningfulTerminalScreen = (): boolean => {
-      if (!term || termDisposed) return false;
-      try {
-        const buffer = term.buffer.active;
-        const bottom = buffer.length - 1;
-        const top = Math.max(0, bottom - Math.max(1, term.rows));
-        for (let index = bottom; index >= top; index -= 1) {
-          if (buffer.getLine(index)?.translateToString(true).trim()) return true;
-        }
-      } catch {
-        return false;
-      }
-      return false;
-    };
-
-    const replayTruncatedTailIntoEmptyTerminal = async (scrollback: Uint8Array): Promise<void> => {
-      if (!term || termDisposed || hasMeaningfulTerminalScreen()) return;
-      // Acquired inside the try: a leaked hold would pin the reference count
-      // above zero for the rest of this mount and leave the pane hidden.
-      let releaseHold: (() => void) | null = null;
-      try {
-        releaseHold = repaintHold.acquire(term.element ?? null);
-        colorAdapterRef.current.reset();
-        const replayTerm = term;
-        snapshotTurnMarksForReset(sessionId, replayTerm);
-        sgrLightRewriters.get(term)?.reset();
-        term.reset();
-        outputDecoder = resetTerminalOutputDecoder(sessionId);
-        const replayText = outputDecoder.decode(scrollback, { stream: true });
-        bumpPaintStat("resync", sessionId);
-        const resyncStartedAt = import.meta.env.DEV ? performance.now() : null;
-        backgroundScanResync = true;
-        recordPerf("xterm.backend-replay.enter", sessionId);
-        await writeTerminalOutput(stripTerminalMouseModeControlSequences(replayText), 8000);
-        recordPerf("xterm.backend-replay.done", sessionId);
-        reanchorTurnMarks(sessionId, replayTerm);
-        if (resyncStartedAt !== null) {
-          recordResync(scrollback.byteLength, performance.now() - resyncStartedAt, sessionId);
-        }
-      } finally {
-        releaseHold?.();
-      }
-    };
-
     const performBackendScrollbackSync = async (): Promise<boolean> => {
+      const generation = pumpGeneration;
       if (!canWritePendingBatches()) return false;
       const knownTail = terminalRawTailBySession.get(sessionId);
       let scrollbackSnapshot: Awaited<ReturnType<typeof getSessionScrollback>>;
       try {
-        scrollbackSnapshot = await getSessionScrollback(sessionId);
+        scrollbackSnapshot = await withTerminalDeadline(getSessionScrollback(sessionId), "get_session_scrollback");
       } catch {
         return false;
       }
       // Visibility can change while the IPC request is in flight. Never reset
       // or write into a terminal that became hidden in that interval.
       invalidateContainerVisibilityMemo();
-      if (disposed || termDisposed || !term || !canWritePendingBatches()) return false;
+      if (generation !== pumpGeneration || disposed || termDisposed || !term || !canWritePendingBatches()) return false;
       const scrollback = new Uint8Array(scrollbackSnapshot.data);
       if (scrollback.byteLength === 0) {
         replaceTerminalRawTail(sessionId, scrollback);
@@ -2418,24 +2408,42 @@ export default memo(function XTermWrapper({
         lastSynchronizedScrollbackEnd,
         knownTail,
       );
+      if (recoveryPlan.action === "rebuild-truncated") {
+        const prepared = await buildTerminalRecoveryFrame(scrollback, scrollbackSnapshot.startOffset, term.cols, term.rows);
+        if (generation !== pumpGeneration || disposed || termDisposed || !canWritePendingBatches()) return false;
+        const unfreeze = await freezeTerminalScreen(term);
+        if (generation !== pumpGeneration || disposed || termDisposed || !term || !canWritePendingBatches()) {
+          unfreeze();
+          return false;
+        }
+        const releaseHold = repaintHold.acquire(term.element ?? null);
+        try {
+          colorAdapterRef.current.reset();
+          snapshotTurnMarksForReset(sessionId, term);
+          sgrLightRewriters.get(term)?.reset();
+          term.reset();
+          outputDecoder = prepared.decoder;
+          backgroundScanResync = true;
+          await writeTerminalOutput(stripTerminalMouseModeControlSequences(prepared.text), 8000);
+          if (generation !== pumpGeneration || disposed || termDisposed) return false;
+          reanchorTurnMarks(sessionId, term);
+          term.refresh(0, term.rows - 1);
+          await new Promise<void>(resolve => {
+            const timer = setTimeout(resolve, 80);
+            requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(); }));
+          });
+        } finally { releaseHold(); unfreeze(); }
+        if (generation !== pumpGeneration || disposed || termDisposed) return false;
+        replaceTerminalRawTail(sessionId, scrollback);
+        lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;
+        bumpTerminalWriteCounter(sessionId);
+        // Ask agent TUIs to restore state that predates the retained byte ring,
+        // without making a slow resize own the scrollback pump again.
+        void scheduleTuiRecoveryRedraw();
+        return true;
+      }
       const replay = recoveryPlan.data;
       if (replay.byteLength === 0) {
-        if (recoveryPlan.action === "skip-truncated") {
-          // This ring no longer contains the VT state that produced the
-          // current xterm buffer. Preserve the last coherent screen and ask
-          // Codex to repaint instead of replaying an arbitrary byte suffix.
-          outputDecoder = resetTerminalOutputDecoder(sessionId);
-          const redrawn = await scheduleTuiRecoveryRedraw();
-          await replayTruncatedTailIntoEmptyTerminal(scrollback);
-          if (!redrawn) {
-            // A truncated raw VT ring cannot reconstruct the old screen. Do
-            // not wedge the live stream by retrying the same 256 KB snapshot
-            // every 160 ms; advance to its end and resume new output.
-            if (import.meta.env.DEV) {
-              console.warn(`[mycmux-diag xterm:${sessionId}] truncated recovery redraw unavailable; resuming live output`);
-            }
-          }
-        }
         replaceTerminalRawTail(sessionId, scrollback);
         lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;
         return true;
@@ -2467,6 +2475,7 @@ export default memo(function XTermWrapper({
           stripTerminalMouseModeControlSequences(replayText),
           replacesVisibleBuffer ? 8000 : 2000,
         );
+        if (generation !== pumpGeneration || disposed || termDisposed) return false;
         recordPerf("xterm.backend-replay.done", sessionId);
         const finalizePersistedReplay = shouldFinalizePersistedInitialReplay(
           coldPersistedRestore,
@@ -2495,9 +2504,9 @@ export default memo(function XTermWrapper({
       } finally {
         releaseHold?.();
       }
+      if (generation !== pumpGeneration || disposed || termDisposed || !term) return false;
       replaceTerminalRawTail(sessionId, scrollback);
       lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;
-      if (disposed || termDisposed || !term) return false;
       if (!canWritePendingBatches()) return false;
       markTerminalHasLiveOutput(sessionId);
       bumpTerminalWriteCounter(sessionId);
@@ -2525,23 +2534,28 @@ export default memo(function XTermWrapper({
     const syncDroppedBatchScrollbackIfNeeded = async (): Promise<void> => {
       if (!terminalScrollbackResyncNeeded.has(sessionId)) return;
       if (!canWritePendingBatches()) return;
+      const generation = pumpGeneration;
       terminalScrollbackResyncNeeded.delete(sessionId);
-      const synchronized = await scrollbackRetry.run(syncBackendScrollbackToTerminal);
+      const synchronized = await scrollbackRetry.run(syncBackendScrollbackToTerminal,
+        () => generation === pumpGeneration && canWritePendingBatches());
+      if (generation !== pumpGeneration || disposed || termDisposed) return;
       if (!synchronized) {
         terminalScrollbackResyncNeeded.add(sessionId);
       }
     };
 
     async function pumpTerminalWrites(): Promise<void> {
-      if (writingBatch) return;
+      if (writingBatch || disposed || termDisposed) return;
+      const generation = pumpGeneration;
       writingBatch = true;
       try {
         await syncDroppedBatchScrollbackIfNeeded();
+        if (generation !== pumpGeneration || disposed || termDisposed) return;
         if (terminalScrollbackResyncNeeded.has(sessionId)) {
           scheduleScrollbackRetry();
           return;
         }
-        while (pendingBatches.length > 0) {
+        while (generation === pumpGeneration && pendingBatches.length > 0) {
           const pending = pendingBatches.shift()!;
           const { batch } = pending;
           if (!term || termDisposed) {
@@ -2599,6 +2613,7 @@ export default memo(function XTermWrapper({
             bumpTerminalWriteCounter(sessionId);
             bumpPaintStat("pty-batch", sessionId);
             await writeTerminalOutput(output);
+            if (generation !== pumpGeneration || disposed || termDisposed) return;
             rememberTerminalRawTail(sessionId, chunk);
             lastSynchronizedScrollbackEnd = Math.max(
               lastSynchronizedScrollbackEnd,
@@ -2610,6 +2625,7 @@ export default memo(function XTermWrapper({
           }
         }
       } finally {
+        if (generation !== pumpGeneration || disposed || termDisposed) return;
         writingBatch = false;
         if (
           pendingBatches.length > 0
@@ -2666,6 +2682,8 @@ export default memo(function XTermWrapper({
     });
 
     const enqueueFrontendBatch = (batch: FrontendDataBatch): void => {
+      if (disposed || termDisposed) { ackBatch(batch); return; }
+      streamHealth.received();
       recordTerminalFlowReceive(sessionId, batch.bytes, batch.resync);
       if (replayActive) {
         terminalScrollbackResyncNeeded.add(sessionId);
@@ -2713,22 +2731,41 @@ export default memo(function XTermWrapper({
       }
     };
 
-    const attachFrontendChannel = async (cols: number, rows: number): Promise<void> => {
+    let recoveryLaunch: TerminalLaunchParams | null = null;
+    let restoreConfirmed = false;
+    let disposeResumeRecovery: (() => void) | null = null;
+    const clearResumeRecovery = (): void => {
+      disposeResumeRecovery?.();
+      disposeResumeRecovery = null;
+      resumeConfirmationRef.current?.(false);
+      resumeConfirmationRef.current = null;
+    };
+    const attachFrontendChannel = async (
+      cols: number, rows: number, reason: SessionAttachOptions["reason"] = "mount",
+    ): Promise<void> => {
+      const generation = pumpGeneration;
       // Read the launch parameters at attach time, not at effect-setup time:
       // the resume env (MYCMUX_AGENT_KIND / MYCMUX_SESSION_ID / MYCMUX_RESUME)
       // can land between this effect's first pass and the actual spawn.
-      const launch = buildLaunchRequest(launchParamsRef.current);
+      const launch = recoveryLaunch ? buildLaunchRequest(recoveryLaunch) : buildLaunchRequest(launchParamsRef.current);
       await createSession(
         sessionId,
         launch.command,
         launch.args,
         cols,
         rows,
-        enqueueFrontendBatch,
+        (batch) => {
+          if (generation !== pumpGeneration || disposed) { ackBatch(batch); return; }
+          enqueueFrontendBatch(batch);
+        },
         launch.cwd,
         launch.env,
-        hasTearoutSessionAttachment(sessionId),
+        reason === "mount" && hasTearoutSessionAttachment(sessionId),
+        { reason, restoreConfirmed, stillOwned: () => generation === pumpGeneration && !disposed && !termDisposed },
       );
+      if (generation !== pumpGeneration || disposed || termDisposed) return;
+      ownedChannelId = getSessionChannelId(sessionId);
+      streamHealth.attached();
       if (launch.env?.MYCMUX_HANDOFF?.trim()) consumeHandoffLaunchEnv(sessionId);
       frontendChannelReady = true;
       markTearoutSessionAttached(sessionId);
@@ -2749,6 +2786,146 @@ export default memo(function XTermWrapper({
       await syncDroppedBatchScrollbackIfNeeded();
       scheduleFrontendResync();
     };
+
+    const restartAgent = async (kind: string, id: string, fresh: boolean, confirmed = false): Promise<void> => {
+      if (disposed || termDisposed || !term) return;
+      setResumeBusy(true);
+      setResumeError(false);
+      recoveryLaunch = buildAgentRecoveryLaunch(recoveryLaunch ?? launchParamsRef.current, kind, id, fresh);
+      restoreConfirmed = confirmed;
+      try {
+        await attachFrontendChannel(term.cols, term.rows);
+        if (disposed || termDisposed) return;
+        sessionStarted = true;
+        sessionExitPending = false;
+        try {
+          if (fresh) {
+          usePaneMetadataStore.getState().clearAgentSessionId(sessionId);
+          usePaneMetadataStore.getState().clearClaudeSessionId(sessionId);
+          useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata(sessionId, null);
+        }
+        useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata(sessionId, {
+          agentKind: kind as import("../../types").AgentSessionKind, agentSessionId: id, claudeSessionId: kind === "claude" ? id : undefined,
+          });
+        } catch (error) {
+          // A renderer subscriber cannot undo an already-created PTY/channel.
+          console.warn("[XTermWrapper] Recovery marker observer failed:", error);
+        }
+        setResumeRecovery(null);
+        setResumeConfirmation(null);
+        term.focus();
+      } catch (error) {
+        handleResumeBlock(error);
+        throw error;
+      } finally {
+        if (!disposed) setResumeBusy(false);
+      }
+    };
+    const performResumeAction = (action: () => Promise<void>): void => {
+      setResumeError(false);
+      void action().then(() => {
+        if (frontendChannelReady && !disposed) clearResumeRecovery();
+      }).catch(error => {
+        if (disposed) return;
+        console.warn("[XTermWrapper] Agent recovery failed:", error);
+        setResumeError(true);
+      });
+    };
+    const handleResumeBlock = (error: unknown): boolean => {
+      const conflict = parseAgentSessionAlreadyRunning(error);
+      const choice = parseAgentRestoreChoice(error);
+      if (!conflict && !choice) return false;
+      clearResumeRecovery();
+      setResumeError(false);
+      setResumeConfirmation(null);
+      if (conflict) {
+        let peerOwnerVisible = false;
+        const ownerVisible = () => peerOwnerVisible || findAgentSessionOwner(useWorkspaceListStore.getState().workspaces, conflict.ownerSessionId) !== null;
+        const refreshOwnerVisibility = async (): Promise<void> => {
+          peerOwnerVisible = (await agentResumeOwnerWindow(conflict.ownerSessionId)) !== null;
+          if (!disposed) setResumeRecovery(current => current?.type === "conflict" ? { ...current, hiddenOwner: !ownerVisible() } : current);
+        };
+        void refreshOwnerVisibility().catch(error => console.warn("[resume] Owner window snapshot unavailable:", error));
+        setResumeRecovery({ type: "conflict", hiddenOwner: !ownerVisible() });
+        const controller = createAgentResumeRecovery(conflict, {
+          ownerPresent: async () => (await getAgentConversationOwner(conflict.kind, conflict.agentSessionId)) === conflict.ownerSessionId,
+          ownerVisible,
+          ownerWorking: () => useSessionAttentionStore.getState().attentionBySession[conflict.ownerSessionId]?.uiState === "working"
+            || usePaneMetadataStore.getState().metadata[conflict.ownerSessionId]?.agentStatus === "working",
+          openOwner: () => { performResumeAction(() => openAgentResumeOwner(conflict.ownerSessionId)); },
+          confirmStop: (working, hidden) => new Promise(resolve => {
+            if (disposed) { resolve(false); return; }
+            resumeConfirmationRef.current = resolve;
+            setResumeConfirmation({ working, hidden });
+          }),
+          stopOwner: killSession,
+          resume: () => restartAgent(conflict.kind, conflict.agentSessionId, false),
+          fresh: () => restartAgent(conflict.kind, crypto.randomUUID(), true),
+          reopened: () => useToastStore.getState().pushToast(resumeRecoveryStrings.reopened, "info"),
+        });
+        const timer = window.setInterval(() => {
+          if (!disposed) {
+            setResumeRecovery(current => current?.type === "conflict" ? { ...current, hiddenOwner: !ownerVisible() } : current);
+            void refreshOwnerVisibility().catch(error => console.warn("[resume] Owner window snapshot unavailable:", error));
+            performResumeAction(controller.ownerEnded);
+          }
+        }, 2000);
+        let exitUnlisten: (() => void) | null = null;
+        let current = true;
+        void onPtyExit(conflict.ownerSessionId, () => performResumeAction(controller.ownerEnded)).then(unlisten => {
+          if (current) exitUnlisten = unlisten; else unlisten();
+        }).catch(error => console.warn("[XTermWrapper] Owner exit listener unavailable:", error));
+        disposeResumeRecovery = () => {
+          current = false;
+          controller.dispose();
+          window.clearInterval(timer);
+          exitUnlisten?.();
+        };
+        resumeActionsRef.current = {
+          openOwner: () => performResumeAction(controller.openOwner),
+          takeover: () => performResumeAction(controller.takeover),
+          fresh: () => performResumeAction(controller.fresh), original: () => {}, saved: () => {},
+        };
+      } else if (choice) {
+        setResumeRecovery({ type: "restore", choice });
+        resumeActionsRef.current = {
+          openOwner: () => {}, takeover: () => {},
+          fresh: () => performResumeAction(() => restartAgent(choice.kind, crypto.randomUUID(), true)),
+          original: id => performResumeAction(() => restartAgent(choice.kind, id, false)),
+          saved: () => performResumeAction(() => restartAgent(choice.kind, choice.agentSessionId, false, true)),
+        };
+      }
+      return true;
+    };
+
+    const recoverFrontendStream = (reason: "channel-stall" | "write-stall"): Promise<void> => {
+      if (recoveryInFlight) return recoveryInFlight;
+      if (disposed || termDisposed || !term || !isContainerWritable()) return Promise.resolve();
+      pumpGeneration += 1;
+      frontendChannelReady = false;
+      writingBatch = false;
+      scrollbackSyncInFlight = null;
+      recoveryRedrawInFlight = null;
+      clearPendingDrainTimer();
+      if (currentPendingBatch) ackPendingBatch(currentPendingBatch);
+      currentPendingBatch = null;
+      for (const pending of pendingBatches.splice(0)) ackPendingBatch(pending);
+      scrollbackRetry.reset();
+      terminalScrollbackResyncNeeded.add(sessionId);
+      const request = attachFrontendChannel(term.cols, term.rows, reason).finally(() => {
+        if (recoveryInFlight === request) recoveryInFlight = null;
+      });
+      recoveryInFlight = request;
+      return request;
+    };
+
+    stopStreamHealth = terminalHealthMonitor.watch({
+      sessionId, health: streamHealth, recover: recoverFrontendStream,
+      visible: () => {
+        invalidateContainerVisibilityMemo();
+        return !disposed && !termDisposed && !replayActive && Boolean(term) && isContainerWritable();
+      },
+    });
 
     const registerScanListener = (currentTerm: Terminal): void => {
       writeParsedDisposable?.dispose();
@@ -2895,6 +3072,11 @@ export default memo(function XTermWrapper({
     };
 
     const cleanup = (): void => {
+      clearResumeRecovery();
+      resumeActionsRef.current = { openOwner: () => {}, takeover: () => {}, fresh: () => {}, original: () => {}, saved: () => {} };
+      stopStreamHealth?.();
+      stopStreamHealth = null;
+      pumpGeneration += 1;
       colorAdapterRef.current.reset();
       invalidateContainerVisibilityMemo();
       clearResizeTimer();
@@ -3055,6 +3237,7 @@ export default memo(function XTermWrapper({
       attachCachedTerminal(cached);
       void attachFrontendChannel(cached.term.cols, cached.term.rows).catch((err) => {
         if (err instanceof SessionClosedError || disposed || termDisposed) return;
+        if (handleResumeBlock(err)) return;
         console.error("[XTermWrapper] Failed to reattach session:", err);
         useToastStore.getState().pushToast("Terminal reattach failed", "error");
       });
@@ -3268,7 +3451,7 @@ export default memo(function XTermWrapper({
       } catch (err) {
         settleStartupSession();
         if (err instanceof SessionClosedError || disposed || termDisposed) return;
-        if (!reportAgentSessionAlreadyRunning(err, (notice) => term!.write(notice))) {
+        if (!handleResumeBlock(err)) {
           console.error("[XTermWrapper] Failed to create session:", err);
           term.writeln(`\r\n\x1b[31mFailed to start: ${err}\x1b[0m`);
         }
@@ -3367,6 +3550,19 @@ export default memo(function XTermWrapper({
         if (event.deltaY < 0) noteLookBackIntent();
       }}
     >
+      {resumeRecovery && <AgentResumeRecoveryPanel
+        model={resumeRecovery} confirmation={resumeConfirmation} busy={resumeBusy} error={resumeError}
+        onOpenOwner={() => resumeActionsRef.current.openOwner()}
+        onTakeover={() => resumeActionsRef.current.takeover()}
+        onFresh={() => resumeActionsRef.current.fresh()}
+        onOriginal={id => resumeActionsRef.current.original(id)}
+        onSaved={() => resumeActionsRef.current.saved()}
+        onConfirm={yes => {
+          resumeConfirmationRef.current?.(yes);
+          resumeConfirmationRef.current = null;
+          setResumeConfirmation(null);
+        }}
+      />}
       {turnChipMounted && turnChip && (
         <TerminalTurnChip
           key={sessionId}

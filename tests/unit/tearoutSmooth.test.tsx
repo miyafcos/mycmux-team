@@ -8,7 +8,8 @@ vi.mock("../../src/lib/tearout/runtime", () => ({
   tearoutTab: mocks.transfer, tearoutPane: mocks.transfer, tearoutWorkspace: mocks.transfer,
   canRegrabTearoutTab: () => false, canRegrabTearoutPane: () => false, regrabTearoutWindow: vi.fn(),
 }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()), invoke: mocks.invoke }));
 vi.mock("../../src/lib/tearout/record", () => ({ TearoutRecord: class { outside() {} error() {} async finish() {} } }));
 import { beginNativePaneDrag, beginNativeWorkspaceDrag } from "../../src/lib/tearout/pointerDrag";
 import { FrameHistogram, startTearoutFrames, finishTearoutFrames, disposeTearoutFrames } from "../../src/lib/tearout/frameMetrics";

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::Engine;
 use std::time::Duration;
@@ -14,6 +14,13 @@ use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Url, Webview, WebviewBuilder,
     WebviewUrl, Window,
 };
+
+#[path = "webpane_preview_links.rs"]
+mod preview_links;
+
+pub(crate) fn retains_preview_mzopen_href(url: &str) -> bool {
+    preview_links::retains_mzopen_href(url)
+}
 
 /// How `web.push` reaches a service's message box. `None` on a preset means the
 /// service is readable in a pane but has no wired composer -- pushing to it is
@@ -971,10 +978,18 @@ pub async fn webpane_create(
     let new_window_app = app.clone();
     let new_window_label = label.clone();
     let download_tab_id = tab_id.clone();
+    let preview_click_gate = Arc::new(Mutex::new(preview_links::ClickGate::new()));
+    let preview_click_script = if preset.id == "preview" {
+        preview_click_gate.lock().map_err(|_| "preview click gate failed")?.script()
+    } else {
+        String::new()
+    };
+    let navigation_app = app.clone();
     let builder = WebviewBuilder::new(label.clone(), WebviewUrl::External(url.clone()))
         .focused(false)
         .data_directory(profile_dir)
         .initialization_script(automation_initialization_script(preset.id == "browser")?)
+        .initialization_script(preview_click_script)
         .on_navigation(move |url| {
             // Three answers, not two. A service pane follows its own site
             // wherever it goes, because that is what being signed in to it
@@ -985,6 +1000,23 @@ pub async fn webpane_create(
             // pane onto a web site, which would leave a document sitting where
             // the operator expects their own file.
             if preset.id == "preview" {
+                let click = preview_click_gate.lock().ok().and_then(|mut gate| {
+                    gate.consume(url, std::time::Instant::now())
+                });
+                if let Some(result) = click {
+                    match result {
+                        Ok(target) => {
+                            let app = navigation_app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(error) = preview_links::open(app, target).await {
+                                    eprintln!("[preview-link] {error}");
+                                }
+                            });
+                        }
+                        Err(error) => eprintln!("[preview-link] {error}"),
+                    }
+                    return false;
+                }
                 return url.as_str() == "about:blank"
                     || preset_keeps_url_inside_pane(preset, url);
             }
@@ -1042,12 +1074,9 @@ pub async fn webpane_create(
         // which is why "continue with Google" did nothing at all: the OAuth
         // popup was swallowed before it could be refused or shown.
         .on_new_window(move |url, _features| {
-            // A preview opens no second window of its own, whatever the
-            // document asks for -- not a popup, not a new tab, not another
-            // site in place of the file. The link is not swallowed: it goes to
-            // the operator's own browser, where a page from a report belongs.
+            // Only the private trusted-click transport opens preview links.
+            // A script's window.open, including one during a click, is denied.
             if preset.id == "preview" {
-                open_in_os_browser(&new_window_app, url.as_str());
                 return NewWindowResponse::Deny;
             }
             if preset.id == "browser" {
@@ -1094,6 +1123,29 @@ pub async fn webpane_create(
         crate::perf_timeline::mark("webpane.child.shown", Some(&tab_id));
     }
     Ok(label)
+}
+
+fn preview_link_recording_enabled(profile_active: bool, value: Option<&str>) -> bool {
+    profile_active && value == Some("1")
+}
+
+/// Never enabled by an environment variable alone in a production instance.
+/// Recording failures are returned so callers fail closed instead of opening a window.
+fn record_preview_link(kind: &str, target: &str) -> Result<bool, String> {
+    if !preview_link_recording_enabled(
+        crate::test_profile::is_active(),
+        std::env::var("MYCMUX_PREVIEW_LINK_RECORD").ok().as_deref(),
+    ) {
+        return Ok(false);
+    }
+    use std::io::Write;
+    let path = crate::test_profile::runtime_dir()?.join("preview-link-opens.jsonl");
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)
+        .map_err(|error| format!("preview link recorder: {error}"))?;
+    let line = serde_json::to_string(&serde_json::json!({ "kind": kind, "target": target }))
+        .map_err(|error| error.to_string())?;
+    writeln!(file, "{line}").map_err(|error| format!("preview link recorder: {error}"))?;
+    Ok(true)
 }
 
 fn open_in_os_browser(app: &AppHandle, url: &str) {
@@ -2066,6 +2118,17 @@ pub async fn webpane_navigate(
     url: Option<String>,
     action: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    // The sandboxed frame cannot run document scripts or invoke this itself.
+    // BrowserPane forwards a trusted anchor click from the primary app view.
+    if action.as_deref() == Some("preview-link") {
+        if caller.label() != caller.window().label() {
+            return Err("preview links require the primary app webview".into());
+        }
+        preview_links::throttle_primary(caller.label())?;
+        let target = url.ok_or("preview link requires a URL")?;
+        preview_links::open(app, target).await?;
+        return Ok(serde_json::json!({ "accepted": true }));
+    }
     let webview = command_webview(&caller, &app, &tab_id, "web.navigate")?;
     match (url, action.as_deref()) {
         (Some(url), None) => {

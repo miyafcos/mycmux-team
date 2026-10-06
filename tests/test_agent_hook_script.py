@@ -81,6 +81,8 @@ def test_refused_connection_is_fast_and_silent(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(("provider", "event_kind", "extra", "wire_kind"), [
     ("codex", "turn_ended", {}, "turn_ended"),
+    *[("claude", "pre_tool_use", {"tool_name": "Skill", "agent_id": agent_id}, "turn_active")
+      for agent_id in ("agent-1_A", "a" * 128, None, "", " ", "a" * 129, "agent/1", "agent.1", "\u00e9", 42, [], {})],
     *[("claude", "attention_required", {"notification_type": kind}, "attention_required") for kind in (
         "permission_prompt", "elicitation_dialog", "elicitation_url_dialog",
         "agent_needs_input", "future_notification", None,
@@ -134,7 +136,7 @@ def test_health_then_observe_reaches_the_socket(
     thread.start()
     result = run_hook(
         tmp_path,
-        json.dumps({"session_id": "session-a", "turn_id": "turn-a", "event_id": "event-a", **extra}),
+        json.dumps({"session_id": "session-a", "turn_id": "turn-a", "event_id": "event-a", "sender_pid": 0, **extra}),
         cap="secret-cap",
         provider=provider,
         event_kind=event_kind,
@@ -146,12 +148,17 @@ def test_health_then_observe_reaches_the_socket(
     assert_silent_success(result, "secret-cap")
     assert [request["cmd"] for request in requests] == ["hook.health", "hook.observe"]
     assert requests[0]["hook_cap"] == "secret-cap"
+    sender_pid = requests[1]["body"].pop("sender_pid")
+    assert isinstance(sender_pid, int) and sender_pid > 0
+    expected_agent = extra.get("agent_id")
+    agent_body = {"agent_id": expected_agent} if expected_agent in ("agent-1_A", "a" * 128) else {}
     assert requests[1]["body"] == {
         "event_kind": wire_kind,
         "provider_session_id": "session-a",
         "provider_turn_id": "turn-a",
         "source_event_id": "event-a",
         "provider": provider,
+        **agent_body,
     }
 
 

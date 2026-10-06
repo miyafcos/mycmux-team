@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAutoSweepRunner, type AutoSweepDependencies } from "../../src/components/layout/tabSweepAuto";
 import type { SweepReport, SweepTab } from "../../src/components/layout/tabSweep";
-import { TOAST_UNDO_DISMISS_MS } from "../../src/stores/toastStore";
+import { __resetToastStoreForTests, TOAST_UNDO_DISMISS_MS, useToastStore } from "../../src/stores/toastStore";
+import { useSettingsStore } from "../../src/stores/settingsStore";
 
 function tab(id: string, category: SweepTab["category"]): SweepTab {
   return {
@@ -100,12 +101,61 @@ describe("tab sweep auto", () => {
     await createAutoSweepRunner(deps).run();
     const actions = pushToast.mock.calls[0][2];
     actions[0].run();
-    await vi.waitFor(() => expect(restoreClosedTabs).toHaveBeenCalledWith(1));
+    await vi.waitFor(() => expect(restoreClosedTabs).toHaveBeenCalledWith(1), { timeout: 2000 });
 
     expect(applySweep).toHaveBeenCalledTimes(1);
     expect(restoreClosedTabs).toHaveBeenCalledWith(1);
     // Undo is the only safety net here, so its toast must outlive the default.
     expect(pushToast.mock.calls[0][3]).toBe(TOAST_UNDO_DISMISS_MS);
+  });
+
+  it("retains both undo operations for two same-count sweeps within twenty seconds", async () => {
+    vi.useFakeTimers();
+    __resetToastStoreForTests();
+    const previous = useSettingsStore.getState();
+    useSettingsStore.setState({ notificationsEnabled: true, toastAiActivityEnabled: true, toastUserActionEnabled: true });
+    try {
+      const firstRestore = vi.fn();
+      const secondRestore = vi.fn();
+      const sweep = (id: string, restoreClosedTabs: (count: number) => void) => createAutoSweepRunner(dependencies({
+        scanTabs: vi.fn(async () => report(tab(id, "DEAD"))),
+        applySweep: vi.fn(async () => ({ closed: 1, renamed: 0, skipped: [], errors: [] })),
+        pushToast: (message, kind, actions, durationMs, category) =>
+          useToastStore.getState().pushToast(message, kind, undefined, actions, durationMs, category),
+        restoreClosedTabs,
+      }));
+      await sweep("first", firstRestore).run();
+      const first = useToastStore.getState().toasts[0];
+      vi.advanceTimersByTime(1000);
+      await sweep("second", secondRestore).run();
+      const second = useToastStore.getState().toasts[1];
+      expect(useToastStore.getState().toasts).toHaveLength(2);
+      expect(second.id).not.toBe(first.id);
+      expect(second.message).toBe(first.message);
+      expect(second.actions!.map(action => action.label)).toEqual(first.actions!.map(action => action.label));
+      expect(second.actions![0].run).not.toBe(first.actions![0].run);
+      vi.advanceTimersByTime(18999);
+      expect(useToastStore.getState().toasts.map(toast => toast.id)).toEqual([first.id, second.id]);
+      first.actions![0].run();
+      expect(firstRestore).toHaveBeenCalledExactlyOnceWith(1);
+      expect(secondRestore).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(useToastStore.getState().toasts.some(toast => toast.id === first.id)).toBe(false);
+      expect(useToastStore.getState().toasts.some(toast => toast.id === second.id)).toBe(true);
+      useToastStore.getState().toasts.find(toast => toast.id === second.id)!.actions![0].run();
+      expect(firstRestore).toHaveBeenCalledExactlyOnceWith(1);
+      expect(secondRestore).toHaveBeenCalledExactlyOnceWith(1);
+      vi.advanceTimersByTime(1000);
+      expect(useToastStore.getState().toasts.some(toast => toast.id === second.id)).toBe(false);
+    } finally {
+      __resetToastStoreForTests();
+      useSettingsStore.setState({
+        notificationsEnabled: previous.notificationsEnabled,
+        toastAiActivityEnabled: previous.toastAiActivityEnabled,
+        toastUserActionEnabled: previous.toastUserActionEnabled,
+      });
+      vi.useRealTimers();
+    }
   });
 
   it("keeps the default toast lifetime when there is nothing to undo", async () => {

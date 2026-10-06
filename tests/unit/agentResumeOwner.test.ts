@@ -1,0 +1,29 @@
+import { describe, expect, it, vi } from "vitest";
+import { ownerWindowInFragments, agentResumeOwnerWindow, openAgentResumeOwner, connectAgentResumeOwnerNavigation } from "../../src/lib/agentResumeOwner";
+import type { WindowFragment } from "../../src/lib/ipc";
+import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+
+const mocks = vi.hoisted(() => ({ fragments: vi.fn(), emitTo: vi.fn(), show: vi.fn(), focus: vi.fn(), listen: vi.fn().mockResolvedValue(vi.fn()) }));
+vi.mock("../../src/lib/ipc", async original => ({ ...await original<typeof import("../../src/lib/ipc")>(), getWindowFragments: mocks.fragments }));
+vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({ WebviewWindow: { getByLabel: vi.fn(async () => ({ show: mocks.show, setFocus: mocks.focus })) } }));
+vi.mock("../../src/lib/windowContext", () => ({ windowLabel: () => "main" }));
+const peer = { window_label: "peer", pending: false, workspaces: [{ panes: [{ tabs: [{ session_id: "owner" }] }] }] } as unknown as WindowFragment;
+describe("SI owner navigation", () => {
+  it("distinguishes a hidden PTY from an owner in a peer window", async () => {
+    expect(ownerWindowInFragments([peer], "owner")).toBe("peer");
+    expect(ownerWindowInFragments([{ ...peer, pending: true }], "owner")).toBeNull();
+    expect(ownerWindowInFragments([peer], "hidden")).toBeNull();
+    useWorkspaceListStore.getState()._replaceWorkspaces([]); mocks.fragments.mockResolvedValue([peer]);
+    expect(await agentResumeOwnerWindow("owner")).toBe("peer");
+    await openAgentResumeOwner("owner");
+    expect(mocks.emitTo).toHaveBeenCalledWith("peer", "mycmux://agent-resume-open-owner", { sessionId: "owner" });
+    expect(mocks.show).toHaveBeenCalledOnce(); expect(mocks.focus).toHaveBeenCalledOnce();
+  });
+  it("binds navigation to the current webview and removes its listener", async () => {
+    const stop=connectAgentResumeOwnerNavigation();
+    await vi.waitFor(() => expect(mocks.listen).toHaveBeenCalled(), { timeout: 3000 });
+    expect(mocks.listen.mock.calls.at(-1)?.[2]).toEqual({ target: { kind: "Webview", label: "main" } });
+    stop();
+  });
+});

@@ -330,6 +330,7 @@ pub struct Observation {
     received_at: MonotonicTime,
     source_event_id: SourceEventId,
     provider_payload_hash: Option<PayloadHash>,
+    agent_id: Option<String>,
 }
 
 impl Observation {
@@ -346,7 +347,18 @@ impl Observation {
             received_at,
             source_event_id,
             provider_payload_hash,
+            agent_id: None,
         }
+    }
+
+    // Child identity describes an observation, not the root turn's identity.
+    pub fn with_agent_id(mut self, agent_id: Option<String>) -> Self {
+        self.agent_id = agent_id;
+        self
+    }
+
+    pub fn agent_id(&self) -> Option<&str> {
+        self.agent_id.as_deref()
     }
 
     pub fn identity(&self) -> &IdentityKey {
@@ -425,6 +437,7 @@ pub enum RejectionReason {
     ConflictingDuplicate,
     InvalidProcessObservation,
     ActiveAfterTerminal,
+    SubagentActiveAfterTerminal,
     NonTerminalAfterPaneClose,
 }
 

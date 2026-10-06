@@ -9,7 +9,8 @@ import ArtifactEditorToolbar from "../../src/components/workspace/ArtifactEditor
 import BrowserPane from "../../src/components/workspace/BrowserPane";
 import { rendersThemedSrcDoc, resolveBrowserIframeSources } from "../../src/lib/browserPanePreview";
 
-vi.mock("@tauri-apps/api/core", () => ({
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()),
   convertFileSrc: (path: string) => `http://asset.localhost/${path}`,
   invoke: vi.fn(),
 }));
