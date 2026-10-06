@@ -136,7 +136,7 @@ def test_health_then_observe_reaches_the_socket(
     thread.start()
     result = run_hook(
         tmp_path,
-        json.dumps({"session_id": "session-a", "turn_id": "turn-a", "event_id": "event-a", **extra}),
+        json.dumps({"session_id": "session-a", "turn_id": "turn-a", "event_id": "event-a", "sender_pid": 0, **extra}),
         cap="secret-cap",
         provider=provider,
         event_kind=event_kind,
@@ -148,6 +148,8 @@ def test_health_then_observe_reaches_the_socket(
     assert_silent_success(result, "secret-cap")
     assert [request["cmd"] for request in requests] == ["hook.health", "hook.observe"]
     assert requests[0]["hook_cap"] == "secret-cap"
+    sender_pid = requests[1]["body"].pop("sender_pid")
+    assert isinstance(sender_pid, int) and sender_pid > 0
     expected_agent = extra.get("agent_id")
     agent_body = {"agent_id": expected_agent} if expected_agent in ("agent-1_A", "a" * 128) else {}
     assert requests[1]["body"] == {

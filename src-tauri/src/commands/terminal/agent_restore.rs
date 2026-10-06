@@ -25,8 +25,7 @@ use crate::util::ids::is_uuid_like;
 
 /// Path of the Claude Code transcript for `session_id` under `cwd`.
 fn claude_session_path(cwd: &str, session_id: &str) -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    Some(claude_session_path_from_home(&home, cwd, session_id))
+    Some(crate::test_profile::agent_projects_dir("claude")?.join(claude_project_key(cwd)).join(format!("{session_id}.jsonl")))
 }
 
 fn claude_session_path_from_home(home: &Path, cwd: &str, session_id: &str) -> PathBuf {
@@ -264,10 +263,8 @@ fn grok_session_exists(session_id: &str) -> bool {
 }
 
 fn claude_session_exists(cwd: Option<&str>, session_id: &str) -> bool {
-    let Some(home) = dirs::home_dir() else {
-        return false;
-    };
-    claude_session_exists_in_projects_dir(&home.join(".claude").join("projects"), cwd, session_id)
+    let Some(projects) = crate::test_profile::agent_projects_dir("claude") else { return false; };
+    claude_session_exists_in_projects_dir(&projects, cwd, session_id)
 }
 
 /// Levels Claude Code takes on `--effort`. A transcript can also say `auto`,
@@ -289,7 +286,7 @@ pub(super) fn last_claude_effort(cwd: Option<&str>, session_id: &str) -> Option<
     if !is_uuid_like(session_id) {
         return None;
     }
-    let projects_dir = dirs::home_dir()?.join(".claude").join("projects");
+    let projects_dir = crate::test_profile::agent_projects_dir("claude")?;
     read_last_claude_effort(&find_claude_session_file(&projects_dir, cwd, session_id)?)
 }
 
@@ -383,6 +380,101 @@ fn reply_effort(line: &[u8]) -> ControlFlow<Option<String>> {
     )
 }
 
+fn interactive_user_text(text: &str) -> bool {
+    let text = text.trim_start();
+    !text.is_empty() && ![
+        "<command-name>", "<command-message>", "<local-command-stdout>", "<local-command-caveat>",
+        "<task-notification>", "<system-reminder>", "[Request interrupted",
+    ].iter().any(|prefix| text.starts_with(prefix))
+}
+
+fn interactive_cli_user(row: &serde_json::Value) -> bool {
+    if row["type"] != "user" || row["entrypoint"] != "cli"
+        || row["isSidechain"].as_bool() == Some(true) || row["isMeta"].as_bool() == Some(true)
+        || row.get("toolUseResult").is_some() { return false; }
+    let content = &row["message"]["content"];
+    content.as_str().is_some_and(interactive_user_text) || content.as_array().is_some_and(|blocks|
+        blocks.iter().any(|block| block["type"] == "image" || (block["type"] == "text"
+            && block["text"].as_str().is_some_and(interactive_user_text))))
+}
+
+fn unattended_sdk_transcript(path: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else { return false; };
+    let mut first_entrypoint = None;
+    for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(row) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
+        if first_entrypoint.is_none() {
+            first_entrypoint = row.get("entrypoint").and_then(|value| value.as_str()).map(str::to_string);
+        }
+        if first_entrypoint.as_deref().is_some_and(|entrypoint| entrypoint != "sdk-cli") { return false; }
+        if interactive_cli_user(&row) { return false; }
+    }
+    first_entrypoint.as_deref() == Some("sdk-cli")
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RestoreChoice {
+    kind: String,
+    agent_session_id: String,
+    candidates: Vec<String>,
+    candidate_details: Vec<RestoreCandidate>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RestoreCandidate {
+    agent_session_id: String,
+    title: String,
+    last_written_at: Option<u64>,
+}
+
+fn restore_candidate(path: &Path, id: &str) -> RestoreCandidate {
+    let mut title = "\u{5143}\u{306e}\u{4f1a}\u{8a71}".to_string();
+    if let Ok(file) = std::fs::File::open(path) {
+        for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+            let Ok(row) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
+            if !interactive_cli_user(&row) { continue; }
+            let content = &row["message"]["content"];
+            let text = content.as_str().map(str::to_string).unwrap_or_else(|| {
+                content.as_array().into_iter().flatten().filter_map(|block|
+                    (block["type"] == "text").then(|| block["text"].as_str()).flatten())
+                    .filter(|text| interactive_user_text(text)).collect::<Vec<_>>().join(" ")
+            });
+            let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            if text.is_empty() {
+                title = "\u{753b}\u{50cf}\u{306e}\u{3042}\u{308b}\u{4f1a}\u{8a71}".to_string();
+            } else {
+                title = text.chars().take(40).collect();
+                if text.chars().count() > 40 { title.push('\u{2026}'); }
+            }
+            break;
+        }
+    }
+    let last_written_at = path.metadata().ok().and_then(|meta| meta.modified().ok())
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64);
+    RestoreCandidate { agent_session_id: id.to_string(), title, last_written_at }
+}
+
+pub(super) fn unattended_restore_choice(kind: &str, id: &str, cwd: Option<&str>, tab_id: Option<&str>, history: &[String]) -> Option<RestoreChoice> {
+    if !matches!(kind, "claude" | "claude-codex") { return None; }
+    let projects = crate::test_profile::agent_projects_dir(kind)?;
+    let path = find_claude_session_file(&projects, cwd, id)?;
+    if !unattended_sdk_transcript(&path) { return None; }
+    let mut candidates = Vec::new();
+    let mut candidate_details = Vec::new();
+    for candidate in tab_id.into_iter().chain(history.iter().map(String::as_str)) {
+        if candidate == id || !is_uuid_like(candidate) || candidates.iter().any(|id| id == candidate) { continue; }
+        if let Some(path) = find_claude_session_file(&projects, cwd, candidate) {
+            if unattended_sdk_transcript(&path) { continue; }
+            candidates.push(candidate.to_string());
+            candidate_details.push(restore_candidate(&path, candidate));
+        }
+    }
+    Some(RestoreChoice { kind: kind.to_string(), agent_session_id: id.to_string(), candidates, candidate_details })
+}
+
 pub(crate) fn can_restore_agent_session(kind: &str, session_id: &str, cwd: Option<&str>) -> bool {
     match kind {
         "claude" => claude_session_exists(cwd, session_id),
@@ -452,6 +544,7 @@ fn normalize_claude_project_path(path: &str) -> String {
 }
 
 pub(super) fn ensure_claude_project_trusted(cwd: &str) -> Result<(), String> {
+    if crate::test_profile::is_active() { return Ok(()); }
     let Some(home) = dirs::home_dir() else {
         return Ok(());
     };
@@ -923,4 +1016,57 @@ mod tests {
 
         assert_eq!(read_last_claude_effort(&path), None);
     }
+    #[test]
+    fn si_t4_four_transcript_shapes_require_actual_interactive_user_input() {
+        let sdk = r#"{"type":"user","entrypoint":"sdk-cli","message":{"role":"user","content":"automatic job"}}"#;
+        let cli_reply = r#"{"type":"assistant","entrypoint":"cli","message":{"role":"assistant","content":"automatic resume output"}}"#;
+        let cli_input = r#"{"type":"user","entrypoint":"cli","isSidechain":false,"message":{"role":"user","content":"human continuation"}}"#;
+        let directory = tempfile::tempdir().unwrap();
+        for (name, rows, should_offer) in [
+            ("sdk_cli_ok_probe", vec![sdk], true),
+            ("sdk_cli_job", vec![sdk, cli_reply], true),
+            ("cli_interactive", vec![cli_input], false),
+            ("mixed_sdk_then_cli", vec![sdk, cli_reply, cli_input], false),
+        ] {
+            let file = directory.path().join(format!("{name}.jsonl"));
+            std::fs::write(&file, rows.join("\n") + "\n").unwrap();
+            assert_eq!(unattended_sdk_transcript(&file), should_offer, "{name}");
+        }
+        let file = directory.path().join("sidechain.jsonl");
+        std::fs::write(&file, format!("{sdk}\n{{\"type\":\"user\",\"entrypoint\":\"cli\",\"isSidechain\":true,\"message\":{{\"content\":\"child prompt\"}}}}\n")).unwrap();
+        assert!(unattended_sdk_transcript(&file));
+    }
+
+    #[test]
+    fn si_t4_all_four_evidence_fixtures_match_the_mothership_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixtures = [
+            ("sdk_cli_ok_probe", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/session-identity/sdk_cli_ok_probe.jsonl")), true),
+            ("sdk_cli_job", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/session-identity/sdk_cli_job.jsonl")), false),
+            ("cli_interactive", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/session-identity/cli_interactive.jsonl")), false),
+            ("mixed_sdk_then_cli", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/session-identity/mixed_sdk_then_cli.jsonl")), false),
+        ];
+        for (name, contents, expected) in fixtures {
+            let path = dir.path().join(format!("{name}.jsonl"));
+            std::fs::write(&path, contents).unwrap();
+            assert_eq!(unattended_sdk_transcript(&path), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn si_t4_restore_candidate_reads_human_preview_and_last_write_without_control_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("candidate.jsonl");
+        let control = serde_json::json!({"type":"user", "entrypoint":"cli", "isMeta":true,
+            "message":{"content":"private control text"}});
+        let human = serde_json::json!({"type":"user", "entrypoint":"cli",
+            "message":{"content":"A readable human prompt with more than forty characters for a preview"}});
+        std::fs::write(&path, format!("{control}\n{human}\n")).unwrap();
+        let candidate = restore_candidate(&path, "original");
+        assert_eq!(candidate.agent_session_id, "original");
+        assert_eq!(candidate.title, "A readable human prompt with more than f\u{2026}");
+        assert!(candidate.last_written_at.is_some());
+        assert!(!candidate.title.contains("private"));
+    }
+
 }

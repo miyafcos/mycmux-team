@@ -426,3 +426,151 @@ describe("rendered terminal tab", () => {
     })).toBe("fallback-tab");
   });
 });
+
+// The footer follows the NOTE.md fixture; the project path is a public-safe stand-in.
+const CLAUDE_INPUT_RULE = "\u2500".repeat(120);
+const MODERN_CLAUDE_FOOTER = [
+  "Opus 5.5 (1M context) (max) \u2502 ~\\_work\\sample_spec_v13_261002 \u2502 CTX 84%!! \u2502 $77.80 \u2502 \u00ab\u30d0\u30a4\u30c8\u30b7\u30d5\u30c8\u7ba1\u7406\u306e\u79fb\u884c\u00bb",
+  "5h 61%! (2h35m) \u2502 sess 3d20h (16:11\u301c) \u2502 sid 6603b909",
+  "-- INSERT -- \u23f5\u23f5 auto mode on (shift+tab to cycle) \u00b7 \u2190 4 agents \u00b7 1 feedback draft",
+];
+
+function claudeInputScreen(
+  footer: readonly string[] = MODERN_CLAUDE_FOOTER,
+  body = "The conversation is unchanged.",
+  input = "\u276f",
+): string[] {
+  return [body, "", CLAUDE_INPUT_RULE, input, CLAUDE_INPUT_RULE, ...footer];
+}
+
+describe("Claude input footer dormancy", () => {
+  it("D-T1a ignores the real three-line footer's clocks, context and cost", async () => {
+    const changed = [
+      MODERN_CLAUDE_FOOTER[0].replace("84%", "85%").replace("$77.80", "$78.01"),
+      MODERN_CLAUDE_FOOTER[1].replace("2h35m", "2h34m").replace("3d20h", "3d21h"),
+      MODERN_CLAUDE_FOOTER[2],
+    ];
+    expect(await fingerprintDormancySemanticState(claudeInputScreen(changed)))
+      .toBe(await fingerprintDormancySemanticState(claudeInputScreen()));
+  });
+
+  it("ignores future footer formats, modes, wrapping and added or removed rows", async () => {
+    const future = ["", "A completely new status layout", "clock 00:01", "agents 17", "drafts 2", ""];
+    const expected = await fingerprintDormancySemanticState(claudeInputScreen());
+    expect(await fingerprintDormancySemanticState(claudeInputScreen(future))).toBe(expected);
+    expect(await fingerprintDormancySemanticState(claudeInputScreen([]))).toBe(expected);
+  });
+
+  it("D-T1b preserves a one-character change in conversation text", async () => {
+    expect(await fingerprintDormancySemanticState(claudeInputScreen(undefined, "Result A")))
+      .not.toBe(await fingerprintDormancySemanticState(claudeInputScreen(undefined, "Result B")));
+  });
+
+  it("preserves input text and multiline input above the lower rule", async () => {
+    const empty = claudeInputScreen();
+    const typed = claudeInputScreen(undefined, undefined, "\u276f queued input");
+    const multiline = [...typed.slice(0, 4), "second input line", ...typed.slice(4)];
+    expect(await fingerprintDormancySemanticState(typed))
+      .not.toBe(await fingerprintDormancySemanticState(empty));
+    expect(await fingerprintDormancySemanticState(multiline))
+      .not.toBe(await fingerprintDormancySemanticState(typed));
+  });
+
+  it("does not mistake the upper input rule for the lower one", async () => {
+    const upperOnly = ["conversation", CLAUDE_INPUT_RULE, "\u276f", "output A"];
+    expect(await fingerprintDormancySemanticState(upperOnly))
+      .not.toBe(await fingerprintDormancySemanticState([...upperOnly.slice(0, -1), "output B"]));
+  });
+
+  it.each([
+    ["body", CLAUDE_INPUT_RULE, "body table", CLAUDE_INPUT_RULE, "output A"],
+    ["body", "\u250c\u2500\u2500\u2510", "\u2502 cell \u2502", "\u2514\u2500\u2500\u2518", "output A"],
+    ["body", CLAUDE_INPUT_RULE, "> a shell prompt", CLAUDE_INPUT_RULE, "output A"],
+    ["body", CLAUDE_INPUT_RULE, "\u276f", "\u2500".repeat(30), "output A"],
+  ])("preserves body rules, tables and non-Claude prompt frames: %j", async (...lines) => {
+    expect(await fingerprintDormancySemanticState(lines))
+      .not.toBe(await fingerprintDormancySemanticState([...lines.slice(0, -1), "output B"]));
+  });
+
+  it("keeps historic prompt frames outside the current screen semantic", async () => {
+    const current = Array.from({ length: 24 }, (_, i) => `current screen ${i}`);
+    expect(await fingerprintDormancySemanticState([...claudeInputScreen(["historic A"]), ...current]))
+      .not.toBe(await fingerprintDormancySemanticState([...claudeInputScreen(["historic B"]), ...current]));
+  });
+
+  it("respects a disabled screen tail", async () => {
+    expect(await fingerprintDormancySemanticState(claudeInputScreen(["footer A"]), 0))
+      .not.toBe(await fingerprintDormancySemanticState(claudeInputScreen(["footer B"]), 0));
+  });
+
+  it("D-T1c retains the baseline digest for an unframed Codex screen", async () => {
+    const codex = ["history", "Implemented the change.", "\u203a Find and fix a bug in @filename",
+      "  ? for shortcuts", "Context 72% used \u00b7 gpt-6.1-sol \u00b7 max"];
+    const baseline = "18ee7dacfb484b9ffba8e9ff9d686ae58dcb7014c71ffccf07be695e8c5da356";
+    expect(await fingerprintDormancySemanticState(codex)).toBe(baseline);
+    expect(await fingerprintDormancySemanticState(codex.map(line => line.replace("72%", "73%"))))
+      .toBe(baseline);
+  });
+
+  it("D-T1d retains all four legacy normalizers and the baseline digest", async () => {
+    const legacy = ["history",
+      "Opus 5 (high) | repo | CTX 36% | $12.18 | 3h39m | API 7.8m | PC",
+      "5h 12% | 7d 69%!", "CC 2.1.220 | sid 293817cf | SK 50"];
+    expect(await fingerprintDormancySemanticState(legacy))
+      .toBe("d77583ef0cce811f4496760062418c650191ec9278951079247c8e3141c9276d");
+    const codexA = ["Context 20% used \u00b7 remaining instructions"];
+    const codexB = ["Context 21% used \u00b7 remaining instructions"];
+    expect(await fingerprintDormancySemanticState(codexA))
+      .toBe(await fingerprintDormancySemanticState(codexB));
+    expect(await fingerprintDormancySemanticState(["Context 21% used \u00b7 changed instructions"]))
+      .not.toBe(await fingerprintDormancySemanticState(codexB));
+  });
+
+  it("D-T1e reaches dormancy after 61 minutes of minute-by-minute clock-only redraws", async () => {
+    let observation: ReturnType<typeof observeDormancyActivity> | undefined;
+    for (let minute = 0; minute <= 61; minute += 1) {
+      const footer = [MODERN_CLAUDE_FOOTER[0], `5h 61%! (${155 - minute}m) | sess ${minute}m | sid 6603b909`, MODERN_CLAUDE_FOOTER[2]];
+      const fingerprint = await fingerprintDormancySemanticState(claudeInputScreen(footer));
+      observation = observeDormancyActivity(observation, minute * 1_000, 100, fingerprint,
+        undefined, NOW + minute * 60_000);
+    }
+    const eligible = candidate({ processStatus: "working", processName: "claude.exe",
+      lastActivityAt: observation!.lastActivityAt });
+    expect(observation!.lastActivityAt).toBe(NOW);
+    expect(resolveDormantAction(eligible, NOW + 61 * 60_000)).toBe("kill");
+
+    const changed = observeDormancyActivity(observation, 62_000, 100,
+      await fingerprintDormancySemanticState(claudeInputScreen(undefined, "The conversation has changed.")),
+      undefined, NOW + 61 * 60_000);
+    expect(resolveDormantAction({ ...eligible, lastActivityAt: changed.lastActivityAt }, NOW + 61 * 60_000))
+      .toBe("none");
+  });
+
+  it.each([
+    ["visible", { visible: true }],
+    ["question/attention", { hasAttention: true }],
+    ["waiting for input", { agentStatus: "waiting" as const, agentStatusFresh: true }],
+    ["rate limited", { rateLimited: true }],
+  ])("D-T1e protects %s even with a stale clock-only screen", async (_name, protectedState) => {
+    const fingerprint = await fingerprintDormancySemanticState(claudeInputScreen());
+    const first = observeDormancyActivity(undefined, 0, 100, fingerprint, undefined, NOW);
+    const observed = observeDormancyActivity(first, 61_000, 100, fingerprint, undefined, NOW + 61 * 60_000);
+    expect(resolveDormantAction(candidate({ ...protectedState, lastActivityAt: observed.lastActivityAt }),
+      NOW + 61 * 60_000)).toBe("none");
+  });
+
+  it("D-T1e preserves working evidence in the raw footer before normalization", async () => {
+    const idle = claudeInputScreen();
+    const working = claudeInputScreen([...MODERN_CLAUDE_FOOTER, "Working (1m 2s \u00b7 esc to interrupt)"]);
+    expect(await fingerprintDormancySemanticState(working))
+      .toBe(await fingerprintDormancySemanticState(idle));
+    const now = NOW + 61 * 60_000;
+    const first = observeDormancyActivity(undefined, 0, 100,
+      await fingerprintDormancySemanticState(idle), undefined, NOW);
+    const observed = observeDormancyActivity(first, 61_000, 100,
+      await fingerprintDormancySemanticState(working), undefined, now);
+    expect(hasWorkingScreenEvidence(working)).toBe(true);
+    expect(resolveDormantAction(candidate({ screenWorking: hasWorkingScreenEvidence(working),
+      lastActivityAt: observed.lastActivityAt }), now)).toBe("none");
+  });
+});

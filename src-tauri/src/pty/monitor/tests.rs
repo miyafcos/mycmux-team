@@ -29,6 +29,7 @@
             last_output_at: Some(1_725_000_000_123),
             agent_active: true,
             claude_session_id,
+            agent_session_trusted: false,
             live_agent_kind: agent_kind.clone(),
             agent_kind,
             agent_session_id,
@@ -1202,7 +1203,7 @@
             crate::livebrief::hook_tests::assert_hook_rebind(kind, pty, || {
                 let response = runtime.block_on(service.handle_hook(1, grant.hook_cap, "hook.observe".into(), serde_json::json!({
                     "provider": provider.as_str(), "event_kind":"turn_active", "provider_session_id":"new-session",
-                    "provider_turn_id":"turn-new", "source_event_id":"source-new",
+                    "provider_turn_id":"turn-new", "source_event_id":"source-new", "sender_pid": 1,
                 })));
                 assert!(response.ok, "{:?}", response.reason);
                 let mut pending = HashMap::new();
@@ -1231,4 +1232,97 @@
                 read_session_mapping_files_for_ids(dir.path(), [pty]).remove(pty).unwrap()
             });
         }
+    }
+    #[test]
+    fn si_t2_no_hook_scan_must_not_adopt_sdk_cli_job() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("job.jsonl"),
+            r#"{"type":"user","entrypoint":"sdk-cli","cwd":"/shared","message":{"content":"job"}}"#).unwrap();
+        assert_eq!(detect_claude_session_id_in_dir(directory.path(), "/shared", None, &HashSet::new()), None);
+    }
+
+    #[test]
+    fn si_t2_verified_self_clear_switches_immediately_once() {
+        let a = AgentSessionAttribution::new("claude", "a".into());
+        let mappings = HashMap::from([("pane-a".to_string(), AgentSessionMapping {
+            agent_kind: Some("claude".into()), session_id: "b".into(), hook_confirmed: true,
+        })]);
+        let b = mapped_agent_session_attribution_for_pane(&mappings, "pane-a", DetectedAgentKind::Claude, &HashSet::new(), None).unwrap();
+        let mut pending = HashMap::new();
+        let selected = confirm_agent_session_switch(&mut pending, "pane-a", Pid::from_u32(20), Some(&a), Some(b.clone()));
+        assert_eq!(selected.switched_from.as_deref(), Some("a"));
+        assert_eq!(selected.attribution.as_ref().unwrap().session_id, "b");
+        for _ in 0..30 {
+            let selected = confirm_agent_session_switch(&mut pending, "pane-a", Pid::from_u32(20), Some(&b), Some(b.clone()));
+            assert!(selected.switched_from.is_none());
+        }
+    }
+
+    #[test]
+    fn si_t2_g_ownership_history_survives_pane_and_external_process_exit() {
+        let mut history = ConversationOwnershipHistory::default();
+        history.remember("conversation-b", "pane-b");
+        history.remember("external-c", "process:20");
+        for _ in 0..30 {
+            let exclusions = history.exclusions("pane-a");
+            assert!(exclusions.contains("conversation-b"));
+            assert!(exclusions.contains("external-c"));
+        }
+        assert!(!history.exclusions("pane-b").contains("conversation-b"));
+        history.abandon("pane-a", "conversation-a");
+        assert!(history.exclusions("pane-a").contains("conversation-a"));
+    }
+
+    #[test]
+    fn si_t2_a_and_c_self_hook_never_scans_and_clear_has_one_rollover_in_30_polls() {
+        let mut pending = HashMap::new();
+        let mut previous = AgentSessionAttribution::verified("claude", "conversation-a".into());
+        let mut rollovers = 0;
+        for expected in ["conversation-a", "conversation-b"] {
+            for _ in 0..30 {
+                let own = AgentSessionAttribution::verified("claude", expected.into());
+                let selected = select_claude_process_attribution(DetectedAgentKind::Claude, Some(own),
+                    Some("conversation-a".into()), Some("conversation-a".into()), Some("claude"),
+                    Some(previous.session_id.clone()), &HashSet::new(),
+                    |_, _| panic!("self-hook pane cannot read another transcript's silence"),
+                    || panic!("SDK X and external CLI Y must not even be scanned"));
+                let confirmed = confirm_agent_session_switch(&mut pending, "pane-a", Pid::from_u32(20), Some(&previous), selected);
+                rollovers += usize::from(confirmed.switched_from.is_some());
+                previous = confirmed.attribution.unwrap();
+                assert_eq!(previous.session_id, expected);
+            }
+            assert_eq!(rollovers, usize::from(expected == "conversation-b"));
+        }
+    }
+
+    #[test]
+    fn si_t2_d_and_g_recorded_unhooked_neighbors_cannot_be_adopted_after_exit() {
+        let directory = tempfile::tempdir().unwrap();
+        let a = "9353eaa0-805a-48a8-a744-80736c066a55";
+        let b = "0b6471b2-f73f-4a8f-a7c4-ab928ae26078";
+        let x = "8cf9e45f-e105-44d0-b2d2-80f42f23c6a2";
+        let mut history = ConversationOwnershipHistory::default();
+        history.remember(b, "pane-b");
+        history.remember(b, "process:outside-mycmux");
+        std::fs::write(directory.path().join(format!("{b}.jsonl")),
+            r#"{"type":"user","entrypoint":"cli","cwd":"/shared","message":{"content":"synthetic"}}"#).unwrap();
+        std::fs::write(directory.path().join(format!("{x}.jsonl")),
+            r#"{"type":"user","entrypoint":"sdk-cli","cwd":"/shared","message":{"content":"synthetic"}}"#).unwrap();
+        let mut pending = HashMap::new();
+        let pinned = AgentSessionAttribution::new("claude", a.into());
+        for _ in 0..30 {
+            // Neither live owner nor live process remains; history still excludes B.
+            let excluded = history.exclusions("pane-a");
+            let selected = select_claude_process_attribution(DetectedAgentKind::Claude, None,
+                Some(a.into()), None, Some("claude"), Some(a.into()), &excluded, |_, _| true,
+                || detect_claude_session_id_in_dir(directory.path(), "/shared", None, &excluded)
+                    .map(|id| AgentSessionAttribution::new("claude", id)));
+            let confirmed = confirm_agent_session_switch(&mut pending, "pane-a", Pid::from_u32(20), Some(&pinned), selected);
+            assert_eq!(confirmed.attribution.unwrap().session_id, a);
+            assert!(confirmed.switched_from.is_none());
+        }
+        // History is a scan exclusion, never an explicit resume refusal.
+        let selected = select_claude_process_attribution(DetectedAgentKind::Claude, None,
+            Some(b.into()), None, Some("claude"), None, &HashSet::new(), |_, _| false, || None).unwrap();
+        assert_eq!(selected.session_id, b);
     }

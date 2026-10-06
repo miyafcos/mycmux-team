@@ -40,6 +40,7 @@ interface CreateSessionArgs {
   onData: Channel<ArrayBuffer>;
   backgroundOnly?: boolean;
   attachReason?: string;
+  restoreConfirmed?: boolean;
   cwd: string | null;
   env: Record<string, string> | null;
 }
@@ -101,6 +102,7 @@ export function getSessionChannelId(sessionId: string): number | undefined {
 
 export interface SessionAttachOptions {
   reason?: "mount" | "channel-stall" | "write-stall" | "background";
+  restoreConfirmed?: boolean;
   backgroundOnly?: boolean;
   stillOwned?: () => boolean;
 }
@@ -417,6 +419,7 @@ export async function createSession(
         cwd: cwd ?? null,
         env: env ?? null,
         attachReason: options.reason ?? "mount",
+        ...(options.restoreConfirmed ? { restoreConfirmed: true } : {}),
       } satisfies CreateSessionArgs), "create_session", TERMINAL_ATTACH_TIMEOUT_MS);
       }
       if (options.stillOwned && !options.stillOwned()) throw new SessionClosedError(sessionId);
@@ -524,6 +527,10 @@ export async function resizeSession(
   return withTerminalDeadline(invoke<void>("resize_session", { sessionId, cols, rows } satisfies ResizeSessionArgs), "resize_session");
 }
 
+export async function getAgentConversationOwner(kind: string, agentSessionId: string): Promise<string | null> {
+  return invoke<string | null>("get_agent_conversation_owner", { kind, agentSessionId });
+}
+
 export async function killSession(sessionId: string): Promise<void> {
   sessionKillGenerations.set(sessionId, (sessionKillGenerations.get(sessionId) ?? 0) + 1);
   activePtyChannels.get(sessionId)?.retire();
@@ -617,6 +624,7 @@ export interface PtyMetadata {
   claude_session_id?: string;
   agent_kind?: AgentSessionKind;
   agent_session_id?: string;
+  agent_session_trusted?: boolean;
 }
 
 export type PtyMetadataSnapshot = Record<string, PtyMetadata>;

@@ -31,6 +31,16 @@ pub async fn save_persistent_data(
     crate::util::task::run_blocking_result("save_persistent_data", move || {
         crate::perf_timeline::mark("store.save.enter", None);
         attach_detached_window_frames(&app_handle, &mut data);
+        {
+            use tauri::Manager;
+            if let Some(state) = app_handle.try_state::<crate::AppState>() {
+                canonicalize_live_agent_sessions(&mut data, |session| {
+                    state.session_manager.trusted_agent_identity(session)
+                        .map(|identity| (identity.kind, identity.session_id))
+                        .or_else(|| state.session_manager.requested_conversation(session))
+                });
+            }
+        }
         let live = live_workspace_ids(&app_handle);
         let result = save_persistent_data_for(&app_handle, data, &live);
         crate::perf_timeline::mark("store.save.done", None);
@@ -287,6 +297,25 @@ fn sanitize_pane_agent_sessions(pane: &mut PaneConfig) {
         }
         pane.agent_kind = Some(kind);
         pane.agent_session_id = Some(session_id.to_string());
+    }
+}
+
+/// Current PTY launch/argv/self-hook identity also protects close snapshots and
+/// peer fragments from persisting a display-only transcript scan.
+fn canonicalize_live_agent_sessions(data: &mut PersistentData, mut identity: impl FnMut(&str) -> Option<(String, String)>) {
+    for workspace in &mut data.workspaces {
+        for pane in &mut workspace.panes {
+            let Some(tabs) = pane.tabs.as_mut() else { continue; };
+            for tab in tabs {
+                if tab.r#type.as_deref().is_some_and(|kind| kind != "terminal") { continue; }
+                let Some((kind, id)) = tab.session_id.as_deref().and_then(&mut identity) else { continue; };
+                tab.claude_session_id = (kind == "claude").then(|| id.clone());
+                tab.agent_kind = Some(kind.clone());
+                tab.agent_session_id = Some(id);
+                if let Some(agent_id) = agent_id_for_kind(Some(&kind)) { tab.agent_id = agent_id.to_string(); }
+            }
+            sync_pane_from_active_tab(pane);
+        }
     }
 }
 
@@ -586,4 +615,23 @@ mod tests {
         );
         assert_eq!(disk.settings.font_size, 19);
     }
+    #[test]
+    fn si_t2_canonical_save_overrides_scanned_identity_and_preserves_unstarted_tabs() {
+        let mut data = PersistentData::default();
+        data.workspaces = vec![serde_json::from_value(serde_json::json!({
+            "id":"workspace", "name":"Workspace", "grid_template_id":"1x1", "created_at":0,
+            "panes":[{"pane_id":"pane", "agent_id":"claude-code", "label":null, "cwd":null,
+                "active_tab_id":"tab-a", "agent_session_id":"scanned-x", "agent_kind":"claude",
+                "tabs":[{"tab_id":"tab-a", "session_id":"pty-a", "agent_id":"claude-code", "label":null,
+                    "agent_kind":"claude", "agent_session_id":"scanned-x", "claude_session_id":"scanned-x"},
+                    {"tab_id":"tab-b", "session_id":"not-started", "agent_id":"claude-code", "label":null,
+                    "agent_kind":"claude", "agent_session_id":"saved-b"}]}]
+        })).unwrap()];
+        canonicalize_live_agent_sessions(&mut data, |session| (session == "pty-a").then(|| ("claude".into(), "trusted-a".into())));
+        let pane = &data.workspaces[0].panes[0];
+        assert_eq!(pane.agent_session_id.as_deref(), Some("trusted-a"));
+        assert_eq!(pane.tabs.as_ref().unwrap()[0].claude_session_id.as_deref(), Some("trusted-a"));
+        assert_eq!(pane.tabs.as_ref().unwrap()[1].agent_session_id.as_deref(), Some("saved-b"));
+    }
+
 }
