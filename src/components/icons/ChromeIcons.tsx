@@ -61,3 +61,17 @@ export function AiLogIcon({ size = 12, ...props }: ChromeIconProps) {
     </svg>
   );
 }
+
+export function SkillsIcon({ size = 12, ...props }: ChromeIconProps) {
+  return (
+    <svg {...sharedProps(size)} {...props}>
+      <g transform="translate(0.6 0)">
+        <path d="M3 7H13.5V11.8C13.5 15.9 11.4 19.2 8.25 21.2C5.1 19.2 3 15.9 3 11.8Z" />
+        <path d="M16.1 16.4V4.6L17.4 2.4L18.7 4.6V16.4" />
+        <path d="M14.9 16.4H19.9" />
+        <path d="M17.4 16.4V20.2" />
+        <circle cx="17.4" cy="21.3" r="0.6" />
+      </g>
+    </svg>
+  );
+}

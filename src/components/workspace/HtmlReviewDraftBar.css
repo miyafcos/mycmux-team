@@ -18,3 +18,6 @@
 .html-review-draft p { margin: 0; overflow-wrap: anywhere; }
 .html-review-draft [role="alert"] { color: var(--status-error, #e67a85); }
 .html-review-draft small { display: block; }
+
+.html-review-draft__methods { display: flex; flex-wrap: wrap; gap: 6px; }
+.html-review-draft__targets small { margin-top: 3px; overflow: hidden; text-overflow: ellipsis; }
