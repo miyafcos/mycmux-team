@@ -4,8 +4,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { htmlReviewStrings as s, type HtmlReviewCapture } from "../../src/lib/htmlReviewDraft";
 
-const mocks = vi.hoisted(() => ({ searchHtmlReviewTargets: vi.fn(), captureHtmlReviewTarget: vi.fn(), validateHtmlReviewCapture: vi.fn(), writeText: vi.fn() }));
+const mocks = vi.hoisted(() => ({ searchHtmlReviewTargets: vi.fn(), captureHtmlReviewTarget: vi.fn(), readHtmlReviewSelection: vi.fn(), chooseHtmlReviewElement: vi.fn(), cancelHtmlReviewPicker: vi.fn(async () => {}), listen: vi.fn(async (..._args: unknown[]) => () => {}), validateHtmlReviewCapture: vi.fn(), writeText: vi.fn() }));
 vi.mock("../../src/lib/htmlReviewCapture", () => mocks);
+vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }));
 vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => `http://asset.localhost/${encodeURIComponent(path)}` }));
 import HtmlReviewDraftBar from "../../src/components/workspace/HtmlReviewDraftBar";
 
@@ -106,4 +107,42 @@ describe("review draft UI", () => {
     expect(button("button : Pay").disabled).toBe(true);
     expect(button("button : Pay").title).toBe(s.outside);
   });
+  it("uses a selected range and explains how to select when none exists", async () => {
+    mocks.readHtmlReviewSelection.mockResolvedValueOnce({ page: frame, node: null });
+    await click(s.open); await click(s.selection);
+    expect(container.textContent).toContain(s.noSelection);
+    expect(mocks.captureHtmlReviewTarget).not.toHaveBeenCalled();
+    mocks.readHtmlReviewSelection.mockResolvedValueOnce({ page: frame, node });
+    await click(s.selection);
+    expect(mocks.captureHtmlReviewTarget).toHaveBeenCalledExactlyOnceWith("preview", frame.url, "C:/fixture.html", frame, node);
+    expect(container.querySelector("img")).not.toBeNull();
+  });
+
+  it("captures the element chosen on screen and removes the choosing controls", async () => {
+    mocks.chooseHtmlReviewElement.mockResolvedValueOnce({ page: frame, node });
+    await click(s.open); await click(s.pick);
+    expect(mocks.captureHtmlReviewTarget).toHaveBeenCalledExactlyOnceWith("preview", frame.url, "C:/fixture.html", frame, node);
+    expect(container.querySelector("img")).not.toBeNull();
+    expect(container.textContent).not.toContain(s.cancelPick);
+  });
+  it.each(["close", "reload", "navigation", "Escape", "cancel"])("cleans up active picking on %s and discards a late result", async (action) => {
+    let resolve!: (value: unknown) => void;
+    mocks.chooseHtmlReviewElement.mockReturnValueOnce(new Promise(done => { resolve = done; }));
+    await click(s.open); await click(s.pick);
+    const [, , token, current] = mocks.chooseHtmlReviewElement.mock.calls[0];
+    if (action === "close") await click(s.close);
+    if (action === "reload") await act(async () => render("1"));
+    if (action === "navigation") {
+      const handler = mocks.listen.mock.calls[0][1] as (event: { payload: { tabId: string; url: string } }) => void;
+      await act(async () => handler({ payload: { tabId: "preview", url: "https://example.test/other" } }));
+    }
+    if (action === "Escape") await act(async () => container.querySelector("section")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    if (action === "cancel") await click(s.cancelPick);
+    expect(current()).toBe(false);
+    expect(mocks.cancelHtmlReviewPicker).toHaveBeenCalledWith("preview", token);
+    await act(async () => resolve({ page: frame, node }));
+    expect(mocks.captureHtmlReviewTarget).not.toHaveBeenCalled();
+    expect(container.querySelector("img")).toBeNull();
+  });
+
 });

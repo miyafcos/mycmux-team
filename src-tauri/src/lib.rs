@@ -8,6 +8,8 @@ mod attention;
 mod ai;
 mod cli_accounts;
 mod claude_skills;
+mod skills;
+mod agent_design;
 mod commands;
 mod db;
 mod diag;
@@ -402,6 +404,22 @@ pub fn run() {
             snap_layouts::snap_layouts_update,
             perf_timeline::perf_timeline_read,
             claude_skills::claude_skills_status,
+            skills::skills_cached,
+            skills::skills_refresh,
+            skills::skills_document,
+            skills::skills_folder,
+            skills::skills_preview,
+            skills::skills_locations,
+            skills::skills_diff,
+            skills::skills_export,
+            agent_design::agent_design_cached,
+            agent_design::agent_design_refresh,
+            agent_design::agent_design_document,
+            agent_design::agent_design_close,
+            agent_design::agent_design_scene,
+            agent_design::agent_design_set_hermes_home,
+            agent_design::agent_design_skills,
+            agent_design::agent_design_skill_read,
             claude_skills::claude_skills_install,
             commands::agent_hooks::agent_hooks_status,
             commands::agent_hooks::agent_hooks_set,

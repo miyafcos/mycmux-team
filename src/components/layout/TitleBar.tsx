@@ -7,6 +7,7 @@ import { formatShortcutLabel, IS_MAC } from "../../lib/keybindings";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import SettingsDialog, { type SettingsTabId } from "../settings/SettingsDialog";
 import { AiLogButton } from "../ailog/AiLogButton";
+import { AgentDesignButton } from "../agentDesign/AgentDesignButton";
 import { DashboardButton } from "../dashboard/DashboardButton";
 import { AccountsButton } from "./AccountsButton";
 import { onlineStrings } from "../online/onlineStrings";
@@ -282,6 +283,7 @@ export default function TitleBar({
           }}
         />
         <AiLogButton />
+        <AgentDesignButton />
         <DashboardButton />
         <div style={{ position: "relative" }}>
           <button

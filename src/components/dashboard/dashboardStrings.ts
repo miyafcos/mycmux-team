@@ -360,7 +360,7 @@ export const dashboardStrings = {
 } as const;
 
 export const tabGroupingStrings = {
-  buttonLabel: "整理",
+  buttonLabel: "ペイン再配置",
   buttonBusy: "再配置を分析中…",
   panelAriaLabel: "ペイン再配置",
   title: "ペイン再配置",

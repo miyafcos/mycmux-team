@@ -802,7 +802,7 @@ describe("TabGroupingPanel editable after map", () => {
     expect(document.querySelector(".cmux-tab-grouping-body.is-confirm")).not.toBeNull();
   });
 
-  it("routes review to the legacy panel and a plain event to the overview", async () => {
+  it("routes review to applied changes and a plain event directly to comparison", async () => {
     const undo = {
       recordId: "review-event-1",
       schemaVersion: 1,
@@ -839,9 +839,8 @@ describe("TabGroupingPanel editable after map", () => {
     vi.mocked(runGroupingAnalysis).mockClear();
     await act(async () => window.dispatchEvent(new Event(TAB_GROUPING_OPEN_EVENT)));
     await settle();
-    expect(runGroupingAnalysis).not.toHaveBeenCalled();
-    expect(document.querySelector("[data-work-overview]")).not.toBeNull();
-    await click(button("前の 3 案で並べ直す"));
     expect(runGroupingAnalysis).toHaveBeenCalledTimes(1);
+    expect(document.querySelector("[data-work-overview]")).toBeNull();
+    expect(document.querySelector("#tab-grouping-panel")).not.toBeNull();
   });
 });

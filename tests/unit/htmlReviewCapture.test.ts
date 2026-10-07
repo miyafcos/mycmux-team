@@ -14,7 +14,7 @@ const frame: ReviewFrame = {
 const node: WebPaneNode = { ref: "r1", tag: "button", role: "button", name: "Pay", rect: frame.rect, inViewport: true };
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.evalWebPane.mockResolvedValue({ tabId: "preview", value: frame });
+  mocks.evalWebPane.mockImplementation(async (_tabId: string, script: string) => ({ tabId: "preview", value: script.includes('"kind":"search"') ? { page: frame, nodes: [node] } : frame }));
   mocks.findWebPane.mockResolvedValue({ tabId: "preview", nodes: [node] });
   mocks.screenshotWebPane.mockResolvedValue({ tabId: "preview", path: "C:/review/shot.png", width: 150, height: 30, dpr: 1.5 });
 });
@@ -30,7 +30,7 @@ describe("capture transaction", () => {
     await expect(validateHtmlReviewCapture(capture, frame.url)).resolves.toBeUndefined();
   });
   it("refuses a page update while searching", async () => {
-    mocks.evalWebPane.mockResolvedValueOnce({ tabId: "preview", value: frame })
+    mocks.evalWebPane.mockResolvedValueOnce({ tabId: "preview", value: { page: frame, nodes: [node] } })
       .mockResolvedValueOnce({ tabId: "preview", value: { ...frame, mutationRevision: 1 } });
     await expect(searchHtmlReviewTargets("preview", frame.url, "Pay")).rejects.toThrow();
   });

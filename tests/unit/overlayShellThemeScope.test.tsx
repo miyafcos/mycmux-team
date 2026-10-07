@@ -92,6 +92,8 @@ describe("OverlayShell themed portal scope", () => {
       "src/components/layout/KeybindingsModal.tsx",
       "src/components/layout/TabSweepPanel.tsx",
       "src/components/ailog/AiLogPanel.tsx",
+      "src/components/skills/SkillsPanel.tsx",
+      "src/components/agentDesign/AgentDesignPanel.tsx",
     ];
     for (const relativePath of consumers) {
       const source = readFileSync(resolve(process.cwd(), relativePath), "utf8");

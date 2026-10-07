@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "categories": [
+    {
+      "id": "edu",
+      "name": "\u6559\u6750\u3065\u304f\u308a",
+      "color": "#5E5CE6",
+      "symbol": "book"
+    },
+    {
+      "id": "gate",
+      "name": "\u691c\u53ce\u30fb\u30b2\u30fc\u30c8",
+      "color": "#2FB36B",
+      "symbol": "checkmark.shield"
+    },
+    {
+      "id": "desk",
+      "name": "\u7a93\u53e3\u30fb\u3084\u308a\u53d6\u308a",
+      "color": "#F08A24",
+      "symbol": "envelope"
+    },
+    {
+      "id": "doc",
+      "name": "\u6587\u66f8\u30fb\u8868\u30fb\u30b9\u30e9\u30a4\u30c9",
+      "color": "#0A84FF",
+      "symbol": "doc.text"
+    },
+    {
+      "id": "viz",
+      "name": "\u898b\u305b\u65b9\u30fb\u767a\u4fe1",
+      "color": "#FF375F",
+      "symbol": "chart.bar"
+    },
+    {
+      "id": "scout",
+      "name": "\u8abf\u3079\u3082\u306e\u30fb\u76f8\u8ac7",
+      "color": "#BF5AF2",
+      "symbol": "magnifyingglass"
+    },
+    {
+      "id": "money",
+      "name": "\u4e8b\u52d9\u30fb\u304a\u91d1",
+      "color": "#C9A227",
+      "symbol": "yensign"
+    },
+    {
+      "id": "daily",
+      "name": "\u65e5\u3005\u306e\u307e\u3068\u3081",
+      "color": "#40B4E5",
+      "symbol": "sunrise"
+    },
+    {
+      "id": "dev",
+      "name": "\u5e2d\u3068\u6bb5\u53d6\u308a",
+      "color": "#20A39E",
+      "symbol": "terminal"
+    },
+    {
+      "id": "code",
+      "name": "\u30b3\u30fc\u30c9\u3068\u8a2d\u5b9a",
+      "color": "#64748B",
+      "symbol": "curlybraces"
+    },
+    {
+      "id": "operate",
+      "name": "PC \u3068\u30d6\u30e9\u30a6\u30b6\u306e\u64cd\u4f5c",
+      "color": "#A2845E",
+      "symbol": "cursorarrow"
+    },
+    {
+      "id": "misc",
+      "name": "\u66ae\u3089\u3057\u30fb\u8da3\u5473",
+      "color": "#9AA343",
+      "symbol": "heart"
+    },
+    {
+      "id": "unsorted",
+      "name": "\u672a\u5206\u985e",
+      "color": "#8E8E93",
+      "symbol": "questionmark.folder"
+    }
+  ],
+  "skills": {},
+  "aliases": {},
+  "hidden": []
+}

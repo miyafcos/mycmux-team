@@ -31,9 +31,31 @@ const boundarySource = [
   read("src/components/settings/tabs/UsageTab.tsx"),
   read("src/components/layout/TabSweepButton.tsx"),
   read("src/components/ailog/AiLogButton.tsx"),
+  read("src/components/skills/SkillsButton.tsx"),
+  read("src/components/skills/SkillsPanel.tsx"),
+  read("src/components/skills/SkillsView.tsx"),
+  read("src/components/skills/SkillDetail.tsx"),
+  read("src/components/skills/skills.css"),
+  read("src/components/agentDesign/AgentDesignButton.tsx"),
+  read("src/components/agentDesign/AgentDesignPanel.tsx"),
+  read("src/components/agentDesign/AgentDesignView.tsx"),
+  read("src/components/agentDesign/Overview.tsx"),
+  read("src/components/agentDesign/ReadingView.tsx"),
+  read("src/components/agentDesign/ComparisonView.tsx"),
+  read("src/components/agentDesign/InspectionView.tsx"),
+  read("src/components/agentDesign/ui.tsx"),
+  read("src/components/agentDesign/agentDesignStrings.ts"),
+  read("src/components/agentDesign/agentDesign.css"),
 ].join("\n");
 
 describe("UI quality Phase A contracts", () => {
+  it("keeps agent design Japanese on the 11px floor and its colours local", () => {
+    const css = read("src/components/agentDesign/agentDesign.css");
+    expect(css).not.toMatch(/font-size:\s*(?:[0-9]|10)px/);
+    expect(css).toContain("var(--cmux-font-size-xs)");
+    expect(css).toContain("--ad-layer-1:");
+    expect(css).not.toContain(":root");
+  });
   it("reachability #7 keeps PetTab Japanese text on the 11px token", () => {
     const petTab = read("src/components/settings/tabs/PetTab.tsx");
     expect(petTab).not.toMatch(/fontSize:\s*(?:10\b|["']10px["'])/);
@@ -121,7 +143,7 @@ describe("UI quality Phase A contracts", () => {
   it("uses monochrome SVG chrome icons instead of emoji glyphs", () => {
     expect(boundarySource).not.toMatch(/[\u270f\u2610\u{1f4c4}\u{1f9f9}\u{1f4ca}]/u);
 
-    for (const icon of ["PencilIcon", "TaskIcon", "DocumentIcon", "SweepIcon", "AiLogIcon"]) {
+    for (const icon of ["PencilIcon", "TaskIcon", "DocumentIcon", "SweepIcon", "AiLogIcon", "SkillsIcon"]) {
       expect(chromeIcons).toMatch(new RegExp(`export function ${icon}`));
     }
     expect(crsmPalette).toContain("<PencilIcon");
@@ -155,6 +177,21 @@ describe("UI quality Phase A contracts", () => {
       "src/components/CommandPalette/CrsmPalette.tsx",
       "src/components/CommandPalette/CrsmPalette.css",
       "src/components/layout/TabItem.tsx",
+      "src/components/skills/SkillsButton.tsx",
+      "src/components/skills/SkillsPanel.tsx",
+      "src/components/skills/SkillsView.tsx",
+      "src/components/skills/SkillDetail.tsx",
+      "src/components/skills/skills.css",
+      "src/components/agentDesign/AgentDesignButton.tsx",
+      "src/components/agentDesign/AgentDesignPanel.tsx",
+      "src/components/agentDesign/AgentDesignView.tsx",
+      "src/components/agentDesign/Overview.tsx",
+      "src/components/agentDesign/ReadingView.tsx",
+      "src/components/agentDesign/ComparisonView.tsx",
+      "src/components/agentDesign/InspectionView.tsx",
+      "src/components/agentDesign/ui.tsx",
+      "src/components/agentDesign/agentDesignStrings.ts",
+      "src/components/agentDesign/agentDesign.css",
       "src/components/layout/TabSweepPanel.tsx",
       "src/components/online/OnlinePanel.tsx",
       "src/components/settings/CliAccountsPanel.tsx",
