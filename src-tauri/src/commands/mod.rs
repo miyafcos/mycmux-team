@@ -1,6 +1,7 @@
 pub mod ailog;
 pub mod claude_codex_models;
 pub mod artifact;
+pub mod inbox;
 pub mod agent_session_clone;
 pub mod agent_hooks;
 pub mod agent_prompts;
@@ -35,3 +36,4 @@ pub mod webpane_native;
 #[cfg(windows)]
 mod webpane_native_win;
 pub mod grouping_diagnostics;
+pub mod terminal_diagnostics;

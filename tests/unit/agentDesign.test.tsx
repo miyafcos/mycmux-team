@@ -6,8 +6,9 @@ import { readFileSync } from "node:fs";
 import { agentDesignApi, type AgentDesignApi, type AgentDesignCatalog } from "../../src/lib/agentDesignApi";
 import type { SkillCatalog, SkillRow } from "../../src/lib/skillsApi";
 import { syntheticCatalog as fixture } from "../fixtures/agent_home/catalog";
-const mocks = vi.hoisted(() => ({ invoke: vi.fn(), choose: vi.fn(), launch: vi.fn() }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), choose: vi.fn(), launch: vi.fn(), listen: vi.fn(), stop: vi.fn(), handlers: new Map<string, (event: { payload: { workFolder: string } }) => void>() }));
+vi.mock("@tauri-apps/api/core", async original => ({ ...await original<typeof import("@tauri-apps/api/core")>(), invoke: mocks.invoke }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.choose, save: vi.fn() }));
 vi.mock("@tauri-apps/plugin-shell", () => ({ open: vi.fn() }));
 vi.mock("../../src/components/skills/skillLaunch", () => ({ startSkill: mocks.launch }));
@@ -23,6 +24,11 @@ let host: HTMLDivElement, root: Root, api: AgentDesignApi;
 const shelf: SkillCatalog = { generatedAt: fixture.generatedAt, categories: [], skills: [], hiddenCount: 0, newCount: 0 };
 beforeEach(() => {
   mocks.invoke.mockReset(); mocks.choose.mockReset(); mocks.launch.mockReset();
+  mocks.listen.mockReset(); mocks.stop.mockReset(); mocks.handlers.clear();
+  mocks.listen.mockImplementation(async (name: string, callback: (event: { payload: { workFolder: string } }) => void) => {
+    mocks.handlers.set(name, callback);
+    return () => { mocks.stop(); mocks.handlers.delete(name); };
+  });
   mocks.invoke.mockImplementation(async (command: string) => command.startsWith("agent_design_skill") ? shelf : fixture);
   api = { peek: () => fixture, cached: vi.fn(async () => fixture), refresh: vi.fn(async () => fixture),
     document: vi.fn(async id => ({ id, body: "# Synthetic document", fields: [], size: fixture.items[0].size, status: "present" })),
@@ -34,7 +40,7 @@ afterEach(() => { act(() => root.unmount()); document.body.replaceChildren(); })
 const button = (text: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === text)!;
 const key = async (value: string, target: Element | null = document.querySelector(".ad-view")) => { await act(async () => target!.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true }))); };
 const click = async (text: string) => { const b = button(text); expect(b).toBeTruthy(); await act(async () => b.click()); };
-async function view() { await act(async () => root.render(<AgentDesignView onClose={vi.fn()} api={api} initialCatalog={fixture} />)); }
+async function view() { await act(async () => root.render(<AgentDesignView onClose={vi.fn()} api={api} initialCatalog={fixture} initialView="overview" />)); }
 function setInput(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
   const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
   Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(element, value);
@@ -47,26 +53,26 @@ describe("agent design stage A", () => {
     expect(entry.title).toBe(s.title); expect(entry.querySelector("svg")?.getAttribute("width")).toBe("12");
     await act(async () => entry.click()); expect(document.querySelector("#agent-design-panel .ad-view")).toBeTruthy();
     expect(document.querySelector(".skills-panel")).toBeNull(); expect(entry.getAttribute("aria-expanded")).toBe("true");
-    expect(document.querySelectorAll(".ad-tabs button")).toHaveLength(4);
+    expect(document.querySelectorAll(".ad-tabs button")).toHaveLength(8);
     await act(async () => document.querySelector<HTMLButtonElement>('.ad-header button[aria-label="' + s.close + '"]')!.click());
     expect(entry.getAttribute("aria-expanded")).toBe("false");
-    const titlebar = readFileSync("src/components/layout/TitleBar.tsx", "utf8"); expect(titlebar).toMatch(/<AiLogButton\s*\/>\s*<AgentDesignButton\s*\/>\s*<DashboardButton\s*\/>/);
+    const titlebar = readFileSync("src/components/layout/TitleBar.tsx", "utf8"); expect(titlebar).toMatch(/<AiLogButton\s*\/>\s*<AgentDesignButton\s*\/>\s*<SkillsButton\s*\/>\s*<DashboardButton\s*\/>/);
   });
-  it("switches only the four implemented surfaces and preserves the service rail", async () => {
+  it("retains the four established surfaces and preserves the service rail", async () => {
     await view();
     for (const [index, id] of ["overview", "reading", "compare", "inspection"].entries()) {
-      await act(async () => document.querySelectorAll<HTMLButtonElement>(".ad-tabs button")[index].click());
+      await act(async () => document.querySelectorAll<HTMLButtonElement>(".ad-tabs button")[index + 1].click());
       expect(document.querySelector('[data-ad-view="' + id + '"]')).toBeTruthy();
       expect(document.querySelectorAll(".ad-service")).toHaveLength(3);
     }
-    expect(document.querySelector(".ad-tabs")?.textContent).not.toContain("履歴");
+    expect(document.querySelector(".ad-tabs")?.textContent).toContain("履歴");
   });
   it("distinguishes commented MCP headers and absent Hermes files from present entries", async () => {
     const hermes = { ...fixture.services[2], state: "present" as const };
     const data: AgentDesignCatalog = { ...fixture, services: [fixture.services[0], { ...fixture.services[1], stats: { ...fixture.services[1].stats, mcp: 4, mcpDisabled: 0, mcpCommented: 2 } }, hermes],
       items: [...fixture.items, { ...fixture.items[0], id: "hermes:soul", service: "hermes", displayName: "SOUL.md", path: hermes.root + "/SOUL.md", active: false, status: "absent" }] };
     api.cached = async () => data; api.refresh = async () => data;
-    await act(async () => root.render(<AgentDesignView onClose={vi.fn()} api={api} initialCatalog={data} />));
+    await act(async () => root.render(<AgentDesignView onClose={vi.fn()} api={api} initialCatalog={data} initialView="overview" />));
     await key("3");
     const mcp = document.querySelector('[data-ad-compare-row="10"]')!;
     expect(mcp.textContent).toContain(s.mcpCommented + " 2");
@@ -79,7 +85,7 @@ describe("agent design stage A", () => {
     const startedAt = new Date(2026, 9, 7, 17, 16, 17).toISOString();
     const data: AgentDesignCatalog = { ...fixture, services: fixture.services.map(a => a.id === "claude" ? { ...a, session: { ...a.session, file: "latest-start.jsonl", startedAt } } : a) };
     api.cached = async () => data; api.refresh = async () => data;
-    await act(async () => root.render(<AgentDesignView onClose={vi.fn()} api={api} initialCatalog={data} />));
+    await act(async () => root.render(<AgentDesignView onClose={vi.fn()} api={api} initialCatalog={data} initialView="overview" />));
     for (const surface of ["overview", "reading"]) {
       const origin = document.querySelector('[data-ad-view="' + surface + '"] .ad-amount .ad-session-origin');
       expect(origin?.textContent).toContain("10/7 17:16 " + s.sessionOrigin);
@@ -119,8 +125,8 @@ describe("agent design stage A", () => {
     expect(api.close).toHaveBeenCalledWith("claude:unusedListing", "Intentional explicit invocation", "/synthetic/home");
     expect(document.body.textContent).toContain(s.noFindings); expect(document.body.textContent).toContain(s.closed);
   });
-  it("shows stage C as an in-panel notice without changing source settings", async () => {
-    await view(); await key("4"); await click(s.proposal); expect(document.querySelector('[role="status"]')?.textContent).toContain(s.stageC);
+  it("shows the proposal as an in-panel explanation without changing source settings", async () => {
+    await view(); await key("4"); await click(s.proposal); expect(document.querySelector('[role="status"]')?.textContent).toContain("ここでは直す案を確認します");
     expect(api.close).not.toHaveBeenCalled(); expect(mocks.launch).not.toHaveBeenCalled();
   });
   it("displays unsupported settings and allowed documents through the same detail shape", async () => {
@@ -132,7 +138,7 @@ describe("agent design stage A", () => {
   it("labels unsupported hook shapes in Japanese without showing command arguments", async () => {
     const data: AgentDesignCatalog = { ...fixture, services: fixture.services.map(a => a.id === "claude" ? { ...a, hooks: [{ event: "TaskCompleted", matcher: "", script: "unsupported", source: "/synthetic/settings.json", line: null }] } : a) };
     api.cached = async () => data; api.refresh = async () => data;
-    await act(async () => root.render(<AgentDesignView onClose={vi.fn()} api={api} initialCatalog={data} />));
+    await act(async () => root.render(<AgentDesignView onClose={vi.fn()} api={api} initialCatalog={data} initialView="overview" />));
     await act(async () => document.querySelector<HTMLElement>('[data-ad-layer="6"]')!.click());
     expect(document.querySelector(".ad-hook-list")?.textContent).toContain(s.unsupported);
     expect(document.querySelector(".ad-hook-list")?.textContent).not.toContain("unsupported");
@@ -142,6 +148,64 @@ describe("agent design stage A", () => {
     api.refresh = async () => ({ ...fixture, closedCount: 3, findings: [] });
     await view(); await act(async () => resolve(fixture)); await key("4");
     expect(document.querySelectorAll(".ad-finding")).toHaveLength(0); expect(document.body.textContent).toContain("3");
+  });
+  it("keeps loading and manual refresh usable when native notification registration fails", async () => {
+    mocks.listen.mockRejectedValueOnce(new Error("Native event API unavailable"));
+    await view(); await new Promise<void>(resolve => setTimeout(resolve, 0));
+    expect(document.querySelector(".ad-view")).toBeTruthy();
+    expect(api.refresh).toHaveBeenCalledTimes(1);
+    await act(async () => document.querySelector<HTMLButtonElement>(`button[aria-label="${s.refresh}"]`)!.click());
+    expect(api.refresh).toHaveBeenCalledTimes(2);
+    await act(async () => root.render(<div />)); expect(mocks.stop).not.toHaveBeenCalled();
+  });
+  it("updates an open view from a socket refresh without starting another scan", async () => {
+    await view();
+    const updated = { ...fixture, findings: [], closedCount: 4 };
+    api.cached = vi.fn(async () => updated);
+    await act(async () => mocks.handlers.get("agent-design-refreshed")!({ payload: { workFolder: fixture.cwd } }));
+    await key("4");
+    expect(document.querySelectorAll(".ad-finding")).toHaveLength(0);
+    expect(document.querySelector('[role="status"]')?.textContent).toContain(s.refreshed);
+    expect(api.refresh).toHaveBeenCalledTimes(1);
+    expect(api.cached).toHaveBeenCalledWith(null);
+  });
+  it("updates the default mechanism from a socket refresh without another scan", async () => {
+    await act(async () => root.render(<AgentDesignView onClose={vi.fn()} api={api} initialCatalog={fixture} />));
+    expect(document.querySelector('[data-ad-view="mechanism"]')).toBeTruthy();
+    const updated = { ...fixture, generatedAt: "2026-10-08T04:05:06Z", items: fixture.items.map(item => item.id === "instructions" ? { ...item, displayName: "Refreshed public instruction" } : item) };
+    api.cached = vi.fn(async () => updated);
+    await act(async () => mocks.handlers.get("agent-design-refreshed")!({ payload: { workFolder: fixture.cwd } }));
+    expect(document.querySelector('[data-ad-view="mechanism"]')?.textContent).toContain("Refreshed public instruction");
+    expect(api.refresh).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[role="status"]')?.textContent).toContain(s.refreshed);
+  });
+  it("ignores completion in another folder and late cache or refresh results", async () => {
+    let cached!: (data: AgentDesignCatalog) => void, refreshed!: (data: AgentDesignCatalog) => void;
+    api.cached = vi.fn(() => new Promise<AgentDesignCatalog>(resolve => { cached = resolve; }));
+    api.refresh = vi.fn(() => new Promise<AgentDesignCatalog>(resolve => { refreshed = resolve; }));
+    await view();
+    const callback = mocks.handlers.get("agent-design-refreshed")!;
+    await act(async () => callback({ payload: { workFolder: "/synthetic/other-folder" } }));
+    expect(api.cached).toHaveBeenCalledTimes(1);
+    const updated = { ...fixture, findings: [], closedCount: 5 };
+    api.cached = vi.fn(async () => updated);
+    await act(async () => callback({ payload: { workFolder: fixture.cwd } }));
+    await act(async () => { cached(fixture); refreshed(fixture); });
+    await key("4"); expect(document.querySelectorAll(".ad-finding")).toHaveLength(0);
+    expect(document.body.textContent).toContain("5");
+  });
+  it("unsubscribes on closing and compares Windows folder spellings consistently", async () => {
+    const windows = { ...fixture, home: "C:/Users/example", cwd: "C:/Users/example", workFolder: "C:/Users/example" };
+    api.peek = () => windows; api.cached = vi.fn(async () => windows); api.refresh = vi.fn(async () => windows);
+    await view();
+    const callback = mocks.handlers.get("agent-design-refreshed")!;
+    api.cached = vi.fn(async () => ({ ...windows, findings: [] }));
+    await act(async () => callback({ payload: { workFolder: "c:\\USERS\\EXAMPLE\\" } }));
+    expect(api.cached).toHaveBeenCalledWith(null);
+    await act(async () => root.render(<div />)); expect(mocks.stop).toHaveBeenCalledTimes(1);
+    vi.mocked(api.cached).mockClear();
+    await act(async () => callback({ payload: { workFolder: windows.cwd } }));
+    expect(api.cached).not.toHaveBeenCalled();
   });
   it("changes the working folder and declared path scene without reading a conversation body", async () => {
     await view(); mocks.choose.mockResolvedValueOnce("/synthetic/project");
@@ -170,9 +234,10 @@ describe("agent design stage A", () => {
     const skill: SkillRow = { id: "sample", label: "Sample", description: "Synthetic", line: "Synthetic", kind: "own", plugin: null, category: "unsorted", symbol: null, glyph: "S", agents: ["claude", "codex"], aliases: [], curation: "manual", isNew: false, docPath: "/synthetic/sample/SKILL.md", calls: { claude: "/sample", codex: "$sample" }, usageCount: 0, usage: { claude: 0, codex: 0 }, lastUsedAt: null, body: "", triggers: null, modifiedAt: 0, fileSize: 100, codexRecorded: false };
     const data = { ...shelf, skills: [skill] };
     const readonly = { ...createReadOnlySkillsApi(), peek: () => data, cached: async () => data, refresh: async () => data,
+      openDocument: async () => ({ id: "sample", fields: [], status: "present", size: {bytes: 100, chars: 8, lines: 1}, body: "# Sample", html: "<h1>Sample</h1>" }),
       document: async () => ({ frontmatter: {}, body: "# Sample", html: "<h1>Sample</h1>", toc: [], lines: 1, size: 100, modifiedAt: 0 }),
       locations: async () => ({ id: "sample", duplicateCodex: false, codexCount: 1, items: [] }) };
-    await act(async () => root.render(<SkillsView readOnly api={readonly} initialCatalog={data} onClose={vi.fn()} />));
+    await act(async () => root.render(<SkillsView readOnly api={readonly} initialCatalog={data} initialSkillId="SAMPLE" onClose={vi.fn()} />));
     expect(document.querySelector(".skills-markdown h1")?.textContent).toBe("Sample");
     for (const label of [skillsStrings.startClaude, skillsStrings.startCodex, skillsStrings.share, skillsStrings.editor, skillsStrings.repair]) expect(button(label)).toBeUndefined();
     await act(async () => document.querySelector(".skills-panel")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true })));

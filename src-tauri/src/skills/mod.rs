@@ -41,6 +41,30 @@ fn snapshot() -> Result<Value, String> {
         serde_json::from_str(catalog::DEFAULTS).map_err(|e| e.to_string())?,
     ))
 }
+fn refresh_snapshot(
+    root: &Path,
+    directory: &Path,
+    snapshot: &Mutex<Option<Value>>,
+) -> Result<Value, String> {
+    let mut value = catalog::collect(
+        root,
+        &shared(root),
+        serde_json::from_str(catalog::DEFAULTS).map_err(|e| e.to_string())?,
+    );
+    value["schemaVersion"] = serde_json::json!(1);
+    let bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
+    // Publish the value decoded from the exact persisted bytes so timestamp
+    // precision is identical in the memory snapshot and the on-disk cache.
+    let value: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    let mut temporary = tempfile::NamedTempFile::new_in(directory).map_err(|e| e.to_string())?;
+    temporary
+        .write_all(&bytes)
+        .map_err(|e| e.to_string())?;
+    temporary.persist(directory.join("cache.json")).map_err(|e| e.to_string())?;
+    *snapshot.lock().map_err(|e| e.to_string())? = Some(value.clone());
+    Ok(value)
+}
 fn document(id: &str) -> Result<PathBuf, String> {
     let snapshot = snapshot()?;
     let row = snapshot["skills"]
@@ -82,30 +106,7 @@ pub async fn skills_refresh() -> Result<Value, String> {
     run_blocking("skills_refresh", move || {
         let root = home()?;
         let directory = cache_dir(&root)?;
-        let mut value = catalog::collect(
-            &root,
-            &shared(&root),
-            serde_json::from_str(catalog::DEFAULTS).map_err(|e| e.to_string())?,
-        );
-        value["schemaVersion"] = serde_json::json!(1);
-        *SNAPSHOT
-            .get_or_init(|| Mutex::new(None))
-            .lock()
-            .map_err(|e| e.to_string())? = Some(value.clone());
-        std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-        let mut temporary =
-            tempfile::NamedTempFile::new_in(&directory).map_err(|e| e.to_string())?;
-        temporary
-            .write_all(
-                serde_json::to_string(&value)
-                    .map_err(|e| e.to_string())?
-                    .as_bytes(),
-            )
-            .map_err(|e| e.to_string())?;
-        temporary
-            .persist(directory.join("cache.json"))
-            .map_err(|e| e.to_string())?;
-        Ok(value)
+        refresh_snapshot(&root, &directory, SNAPSHOT.get_or_init(|| Mutex::new(None)))
     })
     .await
 }

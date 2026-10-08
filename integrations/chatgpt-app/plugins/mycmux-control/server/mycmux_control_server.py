@@ -20,6 +20,8 @@ SUPPORTED_PROTOCOL_VERSION = "2025-06-18"
 DASHBOARD_URI = "ui://mycmux-control/dashboard-v1.html"
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_STATE_DIR = Path.home() / ".mycmux" / "chatgpt-bridge"
+SESSION_STATES = ("working", "waiting", "done", "idle", "unknown")
+ATTENTION_KINDS = ("none", "input", "approval", "rate_limited", "error", "done")
 ALLOWED_DIRECTIONS = {"mycmux_to_chatgpt", "chatgpt_to_mycmux"}
 ALLOWED_KINDS = {"checkpoint", "question", "answer", "instruction", "handoff", "evidence"}
 SENSITIVE_ENV_SUFFIXES = ("_API_KEY", "_ACCESS_TOKEN", "_AUTH_TOKEN", "_SECRET", "_PASSWORD")
@@ -299,6 +301,8 @@ class MycmuxClient:
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ToolFailure(f"mycmux CLI could not be executed: {exc}") from exc
         if completed.returncode != 0:
+            if "Frontend response timed out" in completed.stderr:
+                raise ToolFailure("mycmux CLI failed: Frontend response timed out")
             raise ToolFailure(f"mycmux CLI failed with exit code {completed.returncode}")
         try:
             result = json.loads(completed.stdout)
@@ -310,6 +314,9 @@ class MycmuxClient:
 
     def panes(self) -> dict[str, Any]:
         return self._run(["panes", "--all"])
+
+    def status(self) -> dict[str, Any]:
+        return self._run(["status"])
 
     @staticmethod
     def find_session(snapshot: dict[str, Any], session_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -366,19 +373,23 @@ class MycmuxControlService:
 
     def control_map(self) -> dict[str, Any]:
         snapshot = self.client.panes()
-        panes = [sanitize_pane(pane) for pane in snapshot.get("panes", [])]
+        sessions = sanitize_sessions(self.client.status())
+        sessions_by_id = {item["sessionId"]: item for item in sessions}
+        panes = [sanitize_pane(pane, sessions_by_id) for pane in snapshot.get("panes", [])]
         tabs = [tab for pane in panes for tab in pane.get("tabs", [])]
-        states = {"working": 0, "waiting": 0, "done": 0, "idle": 0, "unknown": 0}
+        # Canonical records include ended PTYs that no longer have a tab.
+        states = {state: 0 for state in SESSION_STATES}
+        attention = {kind: 0 for kind in ATTENTION_KINDS}
+        for session in sessions:
+            states[session["state"]] += 1
+            attention[session["attention"]["kind"]] += 1
+        tab_states = {state: 0 for state in SESSION_STATES}
         for tab in tabs:
-            state = (
-                tab.get("processStatus")
-                if tab.get("agentStatusStale")
-                else tab.get("agentStatus") or tab.get("processStatus")
-            ) or "unknown"
-            states[state if state in states else "unknown"] += 1
+            tab_states[tab["state"]] += 1
         bridge_state = self.store.snapshot()
         return {
             "source": "mycmux_registry",
+            "stateSource": "session.state_view",
             "observedAt": utc_now(),
             "activeWorkspaceId": snapshot.get("activeWorkspaceId"),
             "activePtySessionId": snapshot.get("activeSessionId") or snapshot.get("activePaneId"),
@@ -386,12 +397,17 @@ class MycmuxControlService:
                 "workspaceCount": len(snapshot.get("workspaces", [])),
                 "paneCount": len(panes),
                 "tabCount": len(tabs),
+                "sessionCount": len(sessions),
                 "states": states,
+                "attention": attention,
+                "tabStates": tab_states,
+                "missingStatusCount": sum(1 for tab in tabs if tab["stateSource"] == "unknown"),
                 "bindingCount": len(bridge_state["bindings"]),
                 "queuedMessageCount": sum(1 for item in bridge_state["messages"] if item.get("status") == "queued"),
             },
             "workspaces": [sanitize_workspace(item) for item in snapshot.get("workspaces", [])],
             "panes": panes,
+            "sessions": sessions,
             "bindings": [sanitize_binding(item) for item in bridge_state["bindings"]],
         }
 
@@ -465,27 +481,74 @@ def sanitize_workspace(workspace: dict[str, Any]) -> dict[str, Any]:
     return {key: workspace.get(key) for key in allowed if key in workspace}
 
 
-def sanitize_tab(tab: dict[str, Any]) -> dict[str, Any]:
-    allowed = (
-        "id",
-        "sessionId",
-        "label",
-        "agentKind",
-        "agentStatus",
-        "agentStatusStale",
-        "agentStatusAt",
-        "processStatus",
-        "processStatusAt",
-        "screenObserved",
-        "lastOutputAt",
-    )
-    return {key: tab.get(key) for key in allowed if key in tab}
+def sanitize_sessions(status: dict[str, Any]) -> list[dict[str, Any]]:
+    entries = status.get("sessions")
+    if not isinstance(entries, list):
+        raise ToolFailure("mycmux status is missing canonical sessions")
+    sessions: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ToolFailure("mycmux status has an invalid canonical session")
+        session_id = entry.get("session_id")
+        view = entry.get("view")
+        state = entry.get("ui_state")
+        if (
+            not isinstance(session_id, str) or not session_id
+            or not isinstance(view, dict) or view.get("session_id") != session_id
+            or state not in SESSION_STATES
+            or not isinstance(view.get("attention"), dict)
+            or view["attention"].get("kind") not in ATTENTION_KINDS
+        ):
+            raise ToolFailure("mycmux status has an invalid canonical session")
+        if session_id in seen:
+            raise ToolFailure("mycmux status has duplicate canonical sessions")
+        seen.add(session_id)
+        attention = view["attention"]
+        sessions.append({
+            "sessionId": session_id,
+            "state": state,
+            "stateSource": "session.state_view",
+            "attention": {
+                "kind": attention["kind"],
+                "attentionId": attention.get("attention_id"),
+            },
+            "stateView": {
+                key: view[key] for key in (
+                    "lifecycle", "activity", "health", "session_epoch", "session_revision"
+                ) if key in view
+            },
+        })
+    return sessions
 
 
-def sanitize_pane(pane: dict[str, Any]) -> dict[str, Any]:
+def sanitize_tab(
+    tab: dict[str, Any], sessions_by_id: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    allowed = ("id", "sessionId", "label", "agentKind")
+    sanitized = {key: tab.get(key) for key in allowed if key in tab}
+    session = sessions_by_id.get(tab.get("sessionId"))
+    state = session["state"] if session else "unknown"
+    sanitized.update({
+        "state": state,
+        "stateSource": "session.state_view" if session else "unknown",
+        "attention": session["attention"] if session else None,
+        "stateView": session["stateView"] if session else None,
+        # Compatibility aliases also use canonical state, never registry hints.
+        "agentStatus": state,
+        "agentStatusStale": False,
+    })
+    return sanitized
+
+
+def sanitize_pane(
+    pane: dict[str, Any], sessions_by_id: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     allowed = ("workspaceId", "workspaceName", "id", "active", "activeTabId")
     sanitized = {key: pane.get(key) for key in allowed if key in pane}
-    sanitized["tabs"] = [sanitize_tab(tab) for tab in pane.get("tabs", []) if isinstance(tab, dict)]
+    sanitized["tabs"] = [
+        sanitize_tab(tab, sessions_by_id) for tab in pane.get("tabs", []) if isinstance(tab, dict)
+    ]
     return sanitized
 
 
@@ -511,7 +574,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "get_control_map",
             "title": "Get mycmux control map",
-            "description": "List current mycmux workspaces, panes, tabs, status, stable IDs, and pairing counts without reading terminal contents.",
+            "description": "List current mycmux workspaces, panes, tabs, stable IDs, pairing counts, and canonical session states including input/approval attention, without reading terminal contents.",
             "inputSchema": no_input,
             "annotations": {"readOnlyHint": True, "openWorldHint": False, "destructiveHint": False},
         },

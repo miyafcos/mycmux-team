@@ -26,6 +26,8 @@ import {
   resolveWorkspaceColor,
 } from "../../lib/workspaceColors";
 import TabItem from "./TabItem";
+import { LiveTailSidebarConsumer, WorkspaceLiveTailList } from "./LiveTailList";
+import { useUiStore } from "../../stores/uiStore";
 import { useStallStore } from "../../stores/stallStore";
 import { tearOutWorkspaceToNewWindow } from "../../lib/workspaceTearOut";
 import { beginNativeWorkspaceDrag, usesNativeWorkspaceDrag } from "../../lib/tearout/pointerDrag";
@@ -191,6 +193,7 @@ interface WorkspaceTabEntryProps {
   ws: Workspace;
   wsIndex: number;
   active: boolean;
+  showLiveTails: boolean;
   dragIndex: number | null;
   dropIndex: number | null;
   paneDragActive: boolean;
@@ -238,6 +241,7 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
   ws,
   wsIndex,
   active,
+  showLiveTails,
   dragIndex,
   dropIndex,
   paneDragActive,
@@ -342,6 +346,7 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
   const isPaneDropHover = paneDragActive && hoverWorkspaceId === ws.id;
 
   return (
+    <>
     <div
       data-dnd-workspace-target-id={ws.id}
       ref={(el) => { itemRefs.current[wsIndex] = el; }}
@@ -381,11 +386,14 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
         onRename={(newName) => onRename(ws.id, newName)}
       />
     </div>
+    {showLiveTails && <WorkspaceLiveTailList workspace={ws} metadataBySession={metadataBySession} volatileMetadataBySession={volatileMetadataBySession} />}
+    </>
   );
 });
 
 export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseWorkspace }: TabBarProps) {
   const workspaces = useWorkspaceListStore((s) => s.workspaces);
+  const showLiveTails = useUiStore((s) => !s.sidebarCollapsed && s.zoomedPaneId === null);
   const activeId = useWorkspaceListStore((s) => s.activeWorkspaceId);
   const setActive = useWorkspaceListStore((s) => s.setActiveWorkspace);
   const reorder = useWorkspaceListStore((s) => s.reorderWorkspaces);
@@ -664,6 +672,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
         "--cmux-text-tertiary":  "color-mix(in srgb, var(--cmux-text) 58%, transparent)",
       } as React.CSSProperties}
     >
+      <LiveTailSidebarConsumer open={showLiveTails} />
       <div
         style={{
           // The pane tab bar is a 36px row plus its 1px rule, so 37 lands this
@@ -694,6 +703,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
               ws={ws}
               wsIndex={wsIndex}
               active={ws.id === activeId}
+              showLiveTails={showLiveTails}
               dragIndex={dragIndex}
               dropIndex={dropIndex}
               paneDragActive={paneDragActive}

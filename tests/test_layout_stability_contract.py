@@ -928,9 +928,11 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
     replay_disposed = xterm_wrapper.index("if (generation !== pumpGeneration || disposed || termDisposed) return false;", replay_write)
     assert replay_write < replay_disposed < replay_tail
 
-    assert_contains(ipc, "export async function getSessionScrollback(sessionId: string): Promise<ScrollbackSnapshot>", "src/lib/ipc.ts")
-    assert_contains(ipc, "startOffset: number;", "src/lib/ipc.ts")
-    assert_contains(ipc, "endOffset: number;", "src/lib/ipc.ts")
+    assert_contains(ipc, "export async function getSessionScrollback(\n  sessionId: string, since?: ScrollbackCursor,", "src/lib/ipc.ts")
+    assert_contains(ipc, "export interface ScrollbackSnapshot extends BinaryScrollbackSnapshot", "src/lib/ipc.ts")
+    wire = read_repo_text("src/lib/terminalWire.ts")
+    assert_contains(wire, "startOffset: number;", "src/lib/terminalWire.ts")
+    assert_contains(wire, "endOffset: number;", "src/lib/terminalWire.ts")
     assert_contains(terminal_commands, "pub async fn get_session_scrollback(", "src-tauri/src/commands/terminal.rs")
     assert_contains(terminal_commands, 'run_blocking("get_session_scrollback", move || {', "src-tauri/src/commands/terminal.rs")
     assert_contains(manager, "pub fn get_scrollback(&self, session_id: &str) -> Result<Vec<u8>, String>", "src-tauri/src/pty/manager.rs")

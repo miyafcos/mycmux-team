@@ -12,10 +12,14 @@ const mocks = vi.hoisted(() => ({
   bufferType: "alternate" as "normal" | "alternate",
   bufferLines: [] as string[],
   transcriptResponses: [] as Array<Array<{ text: string; occurredAt: number }>>,
+  stallWrites: false,
+  writeCallbacks: [] as Array<() => void>,
   terminalInstances: [] as Array<{
     dispose: ReturnType<typeof vi.fn>;
     scrollToLine: ReturnType<typeof vi.fn>;
     keyHandler?: (event: KeyboardEvent) => boolean;
+    write: ReturnType<typeof vi.fn>;
+    renderListeners: Set<(event: { start: number; end: number }) => void>;
   }>,
 }));
 
@@ -84,14 +88,21 @@ vi.mock("@xterm/xterm", () => {
     reset(): void {}
     scrollToBottom = vi.fn();
     scrollToLine = vi.fn();
-    write(_data: string | Uint8Array, callback?: () => void): void { callback?.(); }
+    write = vi.fn((_data: string | Uint8Array, callback?: () => void): void => {
+      if (callback && mocks.stallWrites) mocks.writeCallbacks.push(callback);
+      else callback?.();
+    });
     writeln(): void {}
     getSelection(): string { return ""; }
     hasSelection(): boolean { return false; }
     clearSelection(): void {}
     onBinary(): { dispose: () => void } { return disposable(); }
     onData(): { dispose: () => void } { return disposable(); }
-    onRender(): { dispose: () => void } { return disposable(); }
+    renderListeners = new Set<(event: { start: number; end: number }) => void>();
+    onRender(listener: (event: { start: number; end: number }) => void): { dispose: () => void } {
+      this.renderListeners.add(listener);
+      return { dispose: () => { this.renderListeners.delete(listener); } };
+    }
     onScroll(): { dispose: () => void } { return disposable(); }
     onSelectionChange(): { dispose: () => void } { return disposable(); }
     onTitleChange(): { dispose: () => void } { return disposable(); }
@@ -150,6 +161,7 @@ import { terminalTurnStrings } from "../../src/components/terminal/terminalTurnS
 import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useUiStore } from "../../src/stores/uiStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { TERMINAL_HISTORY_EVENT } from "../../src/components/terminal/TerminalHistoryEntry";
 
 // Built from the placeholder the component renders, so translating it does
 // not silently turn these reachability checks into no-ops.
@@ -190,6 +202,8 @@ beforeEach(() => {
   mocks.bufferType = "alternate";
   mocks.bufferLines = [];
   mocks.transcriptResponses = [];
+  mocks.stallWrites = false;
+  mocks.writeCallbacks = [];
   mocks.terminalInstances.length = 0;
   mocks.invoke.mockReset();
   vi.mocked(restoreTurnMarksAtLines).mockClear();
@@ -215,6 +229,8 @@ beforeEach(() => {
   useSettingsStore.setState({
     terminalRenderer: "dom",
     notificationsEnabled: false,
+    showTerminalHistoryButton: true,
+    terminalProgressDiagnosticsEnabled: false,
   });
   useUiStore.setState({ activePaneId: null, focusRevision: 0 });
   useWorkspaceListStore.setState({ workspaces: [], activeWorkspaceId: null });
@@ -231,6 +247,88 @@ afterEach(async () => {
 });
 
 describe("XTermWrapper turn-list row integration", () => {
+  async function mountProgressPane(sessionId: string): Promise<void> {
+    const pane = { id: `pane-${sessionId}`, sessionId, activeTabId: `tab-${sessionId}`, agentId: "shell",
+      tabs: [{ id: `tab-${sessionId}`, sessionId, agentId: "shell", type: "terminal" }] } as Pane;
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command: string, args: unknown) => {
+      if (command === "read_agent_session_mappings") return Promise.resolve({ [sessionId]: { agent_kind: "claude", session_id: "exact-a" } });
+      if (command === "get_session_scrollback") {
+        const snapshot = new ArrayBuffer(24); new Uint8Array(snapshot).set([0x4d, 0x43, 0x53, 0x31]);
+        return Promise.resolve(snapshot);
+      }
+      if (command === "get_live_briefs" || command === "get_live_events") return Promise.resolve([]);
+      return original(command, args);
+    });
+    useWorkspaceListStore.setState({ workspaces: [{ id: "workspace", name: "Fixture", panes: [pane] }] as Workspace[], activeWorkspaceId: "workspace" });
+    await act(async () => { root.render(<>
+      <PaneTabBar pane={pane} workspaceId="workspace" hasTerminalBuffer={() => true} />
+      <XTermWrapper workspaceId="workspace" sessionId={sessionId} command="powershell.exe" />
+    </>); });
+    await vi.waitFor(() => expect(mocks.invoke.mock.calls.some(([command]) => command === "create_session")).toBe(true));
+  }
+
+  function sendProgressOutput(sessionId: string, text: string): number {
+    const bytes = new TextEncoder().encode(text);
+    const frame = new ArrayBuffer(40 + bytes.length);
+    new Uint8Array(frame).set([0x4d, 0x43, 0x58, 0x31]);
+    const view = new DataView(frame);
+    view.setBigUint64(8, 1n, true); view.setBigUint64(16, 1n, true);
+    view.setBigUint64(32, BigInt(bytes.length), true); new Uint8Array(frame).set(bytes, 40);
+    const call = mocks.invoke.mock.calls.find(([command, args]) => command === "create_session" && args.sessionId === sessionId)!;
+    call[1].onData.onmessage(frame);
+    return bytes.length;
+  }
+
+  it.each([true, false])("P1 keeps the real wrapper attached and ACKing live output with history flag %s", async (enabled) => {
+    const sessionId = `history-live-${enabled}`;
+    useSettingsStore.setState({ showTerminalHistoryButton: enabled });
+    await mountProgressPane(sessionId);
+    const terminal = mocks.terminalInstances[0];
+    // Let the initial attach's existing resize bursts settle before measuring reading.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 280)); });
+    const mutations = () => mocks.invoke.mock.calls.filter(([command]) => ["create_session", "resize_session", "write_to_session", "kill_session"].includes(command)).length;
+    const before = mutations();
+    if (enabled) {
+      await act(async () => { host.querySelector<HTMLButtonElement>("[data-terminal-history-entry]")!.click(); });
+      expect(host.querySelector("[data-terminal-transcript-panel]")).not.toBeNull();
+    } else {
+      expect(host.querySelector("[data-terminal-history-entry]")).toBeNull();
+      await act(async () => { window.dispatchEvent(new CustomEvent(TERMINAL_HISTORY_EVENT, { detail: { sessionId } })); });
+      expect(host.querySelector("[data-terminal-transcript-panel]")).toBeNull();
+      expect(mocks.invoke.mock.calls.filter(([command]) => command === "read_agent_session_mappings")).toHaveLength(0);
+    }
+    await act(async () => { sendProgressOutput(sessionId, "synthetic live output\r\n"); });
+    await vi.waitFor(() => expect(terminal.write).toHaveBeenCalledWith("synthetic live output\r\n", expect.any(Function)));
+    await vi.waitFor(() => expect(mocks.invoke.mock.calls.some(([command]) => command === "ack_frontend_data")).toBe(true));
+    if (enabled) await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(host.querySelector("[data-terminal-transcript-panel]")).toBeNull();
+    expect(mutations()).toBe(before);
+    expect(mocks.terminalInstances).toHaveLength(1); expect(terminal.dispose).not.toHaveBeenCalled();
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === "record_terminal_progress")).toHaveLength(0);
+  });
+
+  it("P2 does not call a watchdog ACK parsed and observes the later parser/render callbacks", async () => {
+    const sessionId = "progress-stalled-parser";
+    useSettingsStore.setState({ terminalProgressDiagnosticsEnabled: true, showTerminalHistoryButton: false });
+    await mountProgressPane(sessionId);
+    mocks.stallWrites = true;
+    let end = 0;
+    await act(async () => { end = sendProgressOutput(sessionId, "private synthetic body\r\n"); });
+    await vi.waitFor(() => expect(mocks.writeCallbacks).toHaveLength(1));
+    const latest = () => mocks.invoke.mock.calls.filter(([command]) => command === "record_terminal_progress").at(-1)?.[1].records[0].sample;
+    await vi.waitFor(() => expect(latest()).toMatchObject({ receivedEnd: end, parsedEnd: null }), { timeout: 3_000 });
+    await vi.waitFor(() => expect(mocks.invoke.mock.calls.some(([command]) => command === "ack_frontend_data")).toBe(true), { timeout: 3_000 });
+    expect(latest().parsedEnd).toBeNull();
+    await act(async () => { mocks.writeCallbacks.shift()!(); });
+    await vi.waitFor(() => expect(latest()).toMatchObject({ parsedEnd: end }), { timeout: 3_000 });
+    const tick = latest().renderTick;
+    for (const listener of mocks.terminalInstances[0].renderListeners) listener({ start: 0, end: 23 });
+    await vi.waitFor(() => expect(latest().renderTick).toBeGreaterThan(tick), { timeout: 3_000 });
+    expect(JSON.stringify(latest())).not.toContain("private synthetic body");
+    expect(JSON.stringify(latest())).not.toContain(sessionId);
+  });
+
   it("reachability #5 opens only the requested terminal from header/menu, shares keyboard search and removes listeners", async () => {
     const panes = ["search-a", "search-b"].map((sessionId) => ({
       id: `pane-${sessionId}`, sessionId, activeTabId: `tab-${sessionId}`, agentId: "shell",

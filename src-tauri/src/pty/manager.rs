@@ -8,7 +8,7 @@ use tauri::AppHandle;
 
 use super::monitor::MetadataStore;
 use super::scrollback_store;
-use super::session::{PtySession, ScrollbackSnapshot};
+use super::session::{PtySession, ScrollbackCursor, ScrollbackSnapshot};
 
 #[derive(Debug, PartialEq, Eq)]
 enum CreateDisposition {
@@ -283,6 +283,10 @@ impl SessionManager {
         }
     }
 
+    pub fn progress_snapshot(&self, session_id: &str) -> Option<(u64, u64)> {
+        self.sessions.get(session_id)?.progress_snapshot()
+    }
+
     pub fn set_frontend_visible(&self, session_id: &str, visible: bool, channel_id: Option<u32>) {
         if let Some(session) = self.sessions.get(session_id) {
             session.set_frontend_visible(visible, channel_id);
@@ -297,12 +301,14 @@ impl SessionManager {
         Ok(session.get_scrollback())
     }
 
-    pub fn get_scrollback_snapshot(&self, session_id: &str) -> Result<ScrollbackSnapshot, String> {
+    pub fn get_scrollback_snapshot(
+        &self, session_id: &str, since: Option<&ScrollbackCursor>,
+    ) -> Result<ScrollbackSnapshot, String> {
         let session = self
             .sessions
             .get(session_id)
             .ok_or_else(|| format!("Session not found: {session_id}"))?;
-        Ok(session.get_scrollback_snapshot())
+        session.get_scrollback_snapshot_since(since)
     }
 
     pub fn flush_dirty_scrollbacks(&self, dir: &Path) -> Result<(), String> {

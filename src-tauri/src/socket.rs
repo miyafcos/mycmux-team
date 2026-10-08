@@ -39,10 +39,11 @@ const SOCKET_API_MINOR: u64 = 0;
 
 // Keep the frontend names in sync with SOCKET_COMMAND_NAMES in socketCommands.ts.
 const FRONTEND_SOCKET_COMMAND_NAMES: &[&str] = &[
-    "account.usage", "usage", "workspace.list", "list_workspaces",
+    "account.usage", "usage", "inbox.post", "workspace.list", "list_workspaces",
     "workspace.select", "select_workspace", "workspace.rename", "rename_workspace",
     "workspace.new", "new_workspace", "workspace.close", "close_workspace",
-    "pane.list", "list_panes", "pane.list_all", "list_all_panes",
+    "pane.list", "list_panes", "pane.list_all",
+    "pane.live_tails", "live_tails", "list_all_panes",
     "pane.spawn", "pane.spawn_tab", "pane.declare_tab", "pane.launch_declared",
     "pane.start_tab", "pane.activate_tab", "pane.restore_activation", "pane.close_tab", "pane.close_tabs",
     "pane.rename_tab", "pane.send_text", "pane.read", "pane.move",
@@ -54,6 +55,7 @@ const FRONTEND_SOCKET_COMMAND_NAMES: &[&str] = &[
 const RUST_SOCKET_COMMAND_NAMES: &[&str] = &[
     "system.version", "status.subscribe", "status.snapshot", "launch.issue_hook_cap",
     "app.open_paths", "app.activate", "session.state_view", "agent.hooks.status", "agent.capabilities",
+    "agent_design.refresh",
 ];
 #[cfg(feature = "e2e")]
 const E2E_SOCKET_COMMAND_NAMES: &[&str] = &[
@@ -251,6 +253,22 @@ fn classify_and_strip_credentials(parsed: &mut Value) -> CredentialRealm {
         (true, true) => CredentialRealm::Both,
         (false, true) => CredentialRealm::Hook(hook_cap),
         _ => CredentialRealm::Broad(token),
+    }
+}
+
+fn agent_capabilities_payload(mut snapshot: Value) -> Value {
+    snapshot["commands"] = serde_json::json!(RUST_SOCKET_COMMAND_NAMES);
+    snapshot
+}
+
+fn hook_realm_forbids(command: &str) -> bool {
+    command == "agent_design.refresh"
+}
+
+fn agent_design_refresh_response(id: usize, result: Result<Value, String>) -> SocketResponse {
+    match result {
+        Ok(value) => SocketResponse { id, result: Some(value), error: None },
+        Err(error) => SocketResponse { id, result: None, error: Some(error) },
     }
 }
 
@@ -720,6 +738,13 @@ async fn handle_connection(
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
+            if hook_realm_forbids(&command) {
+                let response = crate::agent_state::HookWireResponse::rejected(
+                    request_id, "unauthorized", false,
+                );
+                let _ = write_json_line(&mut writer, &response).await;
+                return;
+            }
             let body = parsed
                 .as_object_mut()
                 .and_then(|object| object.remove("body"))
@@ -840,10 +865,16 @@ async fn handle_connection(
                             let _ = write_json_line(&mut writer, &response).await;
                             continue;
                         }
+                        if cmd == "agent_design.refresh" {
+                            let result = crate::agent_design::socket_refresh(app.clone(), args).await;
+                            let response = agent_design_refresh_response(id, result);
+                            let _ = write_json_line(&mut writer, &response).await;
+                            continue;
+                        }
                         if cmd == "agent.capabilities" {
                             let adapters = app.state::<crate::codex_app_server::CodexAppServerState>();
                             let response = SocketResponse {
-                                id, result: Some(crate::agent_adapters::snapshot(&adapters).await), error: None,
+                                id, result: Some(agent_capabilities_payload(crate::agent_adapters::snapshot(&adapters).await)), error: None,
                             };
                             let _ = write_json_line(&mut writer, &response).await;
                             continue;
@@ -1206,6 +1237,39 @@ mod tests {
         assert!(!commands.iter().any(|name| name.as_str().unwrap().starts_with("e2e.")));
         #[cfg(feature = "e2e")]
         assert!(commands.contains(&serde_json::json!("e2e.eval")));
+    }
+
+    #[test]
+    fn agent_design_refresh_is_discoverable_without_changing_adapter_capabilities() {
+        let snapshot = serde_json::json!({"version": 1, "adapters": [{"agent": "codex"}]});
+        let payload = agent_capabilities_payload(snapshot.clone());
+        assert_eq!(payload["version"], snapshot["version"]);
+        assert_eq!(payload["adapters"], snapshot["adapters"]);
+        assert!(payload["commands"].as_array().unwrap().contains(&serde_json::json!("agent_design.refresh")));
+        assert!(system_version_payload()["commands"].as_array().unwrap().contains(&serde_json::json!("agent_design.refresh")));
+    }
+
+    #[test]
+    fn agent_design_refresh_refuses_pane_credentials_and_accepts_the_broad_realm() {
+        let mut narrow = serde_json::json!({"cmd": "agent_design.refresh", "hook_cap": "pane-only", "args": {"workFolder": null}});
+        assert!(matches!(classify_and_strip_credentials(&mut narrow), CredentialRealm::Hook(_)));
+        assert!(hook_realm_forbids(narrow["cmd"].as_str().unwrap()));
+        assert!(narrow.get("hook_cap").is_none());
+        let mut broad = serde_json::json!({"cmd": "agent_design.refresh", "token": "a".repeat(64)});
+        let CredentialRealm::Broad(token) = classify_and_strip_credentials(&mut broad) else { panic!("expected broad realm") };
+        assert!(enforcing_auth().authorize(token.as_deref()));
+        assert!(!broad_realm_forbids("agent_design.refresh"));
+        assert!(!enforcing_auth().authorize(Some("pane-only")));
+        assert!(!hook_realm_forbids("hook.status"));
+    }
+
+    #[test]
+    fn agent_design_refresh_socket_response_preserves_the_wire_envelope() {
+        let value = serde_json::json!({"accepted": true, "alreadyRunning": true});
+        assert_eq!(serde_json::to_value(agent_design_refresh_response(7, Ok(value.clone()))).unwrap(),
+            serde_json::json!({"id": 7, "result": value, "error": null}));
+        assert_eq!(serde_json::to_value(agent_design_refresh_response(8, Err("workFolderUnknown".into()))).unwrap(),
+            serde_json::json!({"id": 8, "result": null, "error": "workFolderUnknown"}));
     }
 
     fn attention_evidence(

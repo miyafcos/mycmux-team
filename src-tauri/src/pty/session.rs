@@ -45,7 +45,7 @@ const INPUT_QUEUE_MESSAGE_CAP: usize = 256;
 const INPUT_QUEUE_BYTE_CAP: usize = 512 * 1024;
 const INPUT_WRITE_CHUNK_BYTES: usize = 1024;
 const FRONTEND_DATA_FRAME_HEADER_BYTES: usize = 40;
-const SCROLLBACK_FRAME_HEADER_BYTES: usize = 24;
+const SCROLLBACK_FRAME_HEADER_BYTES: usize = 48;
 // v0.7.1 diag: report aggregated PTY metrics every 5 s on stderr.
 // Diagnostic-only; the consumer task is debug-build-gated, so this is unread in
 // release. Allow it explicitly to keep release warning-free.
@@ -135,10 +135,63 @@ struct FrontendChunk {
     trace_token: Option<FlowToken>,
 }
 
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrollbackCursor {
+    pub end_offset: u64,
+    pub session_epoch: u64,
+    pub size_revision: u64,
+}
+
+struct ScrollbackGeometry {
+    cols: u16,
+    rows: u16,
+    revision: u64,
+}
+
+impl ScrollbackGeometry {
+    fn new(cols: u16, rows: u16) -> Self { Self { cols, rows, revision: 0 } }
+
+    fn resize_with(
+        &mut self, cols: u16, rows: u16,
+        resize: impl FnOnce(u16, u16) -> Result<(), String>,
+    ) -> Result<(), String> {
+        resize(cols, rows)?;
+        if self.cols != cols || self.rows != rows {
+            self.cols = cols;
+            self.rows = rows;
+            self.revision = self.revision.saturating_add(1);
+        }
+        Ok(())
+    }
+}
+
 pub struct ScrollbackSnapshot {
     pub data: Vec<u8>,
     pub start_offset: u64,
     pub end_offset: u64,
+    pub cols: u16,
+    pub rows: u16,
+    pub session_epoch: u64,
+    pub size_revision: u64,
+    pub is_delta: bool,
+}
+
+fn scrollback_snapshot(
+    scrollback: &VecDeque<u8>, end_offset: u64, session_epoch: u64,
+    geometry: &ScrollbackGeometry, since: Option<&ScrollbackCursor>,
+) -> ScrollbackSnapshot {
+    let ring_start = end_offset.saturating_sub(scrollback.len() as u64);
+    let valid_cursor = since.filter(|cursor| cursor.session_epoch == session_epoch
+        && cursor.size_revision == geometry.revision
+        && cursor.end_offset >= ring_start && cursor.end_offset <= end_offset);
+    let start_offset = valid_cursor.map_or(ring_start, |cursor| cursor.end_offset);
+    let skip = (start_offset - ring_start) as usize;
+    ScrollbackSnapshot {
+        data: scrollback.range(skip..).copied().collect(), start_offset, end_offset,
+        cols: geometry.cols, rows: geometry.rows, session_epoch,
+        size_revision: geometry.revision, is_delta: valid_cursor.is_some(),
+    }
 }
 
 /// PTY output published to broadcast subscribers.
@@ -154,12 +207,44 @@ pub struct OutputChunk {
 impl ScrollbackSnapshot {
     pub(crate) fn into_wire(self) -> Vec<u8> {
         let mut frame = Vec::with_capacity(SCROLLBACK_FRAME_HEADER_BYTES + self.data.len());
-        frame.extend_from_slice(b"MCS1");
-        frame.extend_from_slice(&0u32.to_le_bytes());
+        frame.extend_from_slice(b"MCS2");
+        frame.extend_from_slice(&(u32::from(self.is_delta)).to_le_bytes());
         frame.extend_from_slice(&self.start_offset.to_le_bytes());
         frame.extend_from_slice(&self.end_offset.to_le_bytes());
+        frame.extend_from_slice(&self.session_epoch.to_le_bytes());
+        frame.extend_from_slice(&self.size_revision.to_le_bytes());
+        frame.extend_from_slice(&self.cols.to_le_bytes());
+        frame.extend_from_slice(&self.rows.to_le_bytes());
+        frame.extend_from_slice(&0u32.to_le_bytes());
         frame.extend_from_slice(&self.data);
         frame
+    }
+
+    // Production consumes these frames in terminalWire.ts; this decoder keeps
+    // Rust round-trip and legacy-layout checks against the same wire contract.
+    #[cfg(test)]
+    fn from_wire(frame: &[u8]) -> Result<Self, String> {
+        if frame.len() < 24 { return Err("Truncated scrollback frame".into()); }
+        let v2 = match &frame[..4] {
+            b"MCS1" => false, b"MCS2" => true,
+            _ => return Err("Invalid scrollback magic".into()),
+        };
+        let header = if v2 { SCROLLBACK_FRAME_HEADER_BYTES } else { 24 };
+        if frame.len() < header { return Err("Truncated scrollback frame".into()); }
+        let u64_at = |offset| u64::from_le_bytes(frame[offset..offset + 8].try_into().unwrap());
+        let start_offset = u64_at(8);
+        let end_offset = u64_at(16);
+        if end_offset.checked_sub(start_offset) != Some((frame.len() - header) as u64) {
+            return Err("Invalid scrollback byte range".into());
+        }
+        Ok(Self {
+            data: frame[header..].to_vec(), start_offset, end_offset,
+            cols: if v2 { u16::from_le_bytes(frame[40..42].try_into().unwrap()) } else { 80 },
+            rows: if v2 { u16::from_le_bytes(frame[42..44].try_into().unwrap()) } else { 24 },
+            session_epoch: if v2 { u64_at(24) } else { 0 },
+            size_revision: if v2 { u64_at(32) } else { 0 },
+            is_delta: v2 && u32::from_le_bytes(frame[4..8].try_into().unwrap()) & 1 != 0,
+        })
     }
 }
 
@@ -515,6 +600,7 @@ pub struct PtySession {
     child: Mutex<Box<dyn Child + Send + Sync>>,
     exit_state: Arc<SessionExitState>,
     master: Mutex<Box<dyn MasterPty + Send>>,
+    scrollback_geometry: Mutex<ScrollbackGeometry>,
     // Input is enqueued here and drained in FIFO order by a dedicated writer
     // thread. The Tauri command thread only does a non-blocking enqueue, so a
     // full conpty buffer can never stall the UI thread anymore.
@@ -1061,6 +1147,7 @@ impl PtySession {
             child: Mutex::new(child),
             exit_state,
             master: Mutex::new(pair.master),
+            scrollback_geometry: Mutex::new(ScrollbackGeometry::new(cols, rows)),
             write_tx,
             write_pending_bytes,
             writer_failed,
@@ -1092,6 +1179,13 @@ impl PtySession {
     }
 
     pub fn frontend_generation(&self) -> u64 { self.frontend_flow.generation() }
+
+    /// Content-free observation only: never copy the ring or advance flow/ACK.
+    pub fn progress_snapshot(&self) -> Option<(u64, u64)> {
+        let generation = self.frontend_generation();
+        let end = self.scrollback_end.load(Ordering::Relaxed);
+        (generation == self.frontend_generation()).then_some((generation, end))
+    }
 
     pub fn set_frontend_visible(&self, visible: bool, channel_id: Option<u32>) {
         self.frontend_flow.set_visible_for_channel(visible, channel_id);
@@ -1187,18 +1281,14 @@ impl PtySession {
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
-        let master = self
-            .master
-            .lock()
-            .map_err(|e| format!("Lock failed: {e}"))?;
-        master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| format!("Resize failed: {e}"))
+        // Lock geometry first in both resize and snapshot. Failed PTY resizes
+        // must not publish dimensions the PTY never accepted.
+        let mut geometry = self.scrollback_geometry.lock().map_err(|e| format!("Lock failed: {e}"))?;
+        let master = self.master.lock().map_err(|e| format!("Lock failed: {e}"))?;
+        geometry.resize_with(cols, rows, |cols, rows| {
+            master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+                .map_err(|e| format!("Resize failed: {e}"))
+        })
     }
 
     pub fn size(&self) -> Result<(u16, u16), String> {
@@ -1263,24 +1353,19 @@ impl PtySession {
             .unwrap_or_default()
     }
 
-    pub fn get_scrollback_snapshot(&self) -> ScrollbackSnapshot {
-        match self.scrollback.lock() {
-            Ok(scrollback) => {
-                let data: Vec<u8> = scrollback.iter().copied().collect();
-                let end_offset = self.scrollback_end.load(Ordering::Relaxed);
-                let start_offset = end_offset.saturating_sub(data.len() as u64);
-                ScrollbackSnapshot {
-                    data,
-                    start_offset,
-                    end_offset,
-                }
-            }
-            Err(_) => ScrollbackSnapshot {
-                data: Vec::new(),
-                start_offset: 0,
-                end_offset: 0,
-            },
-        }
+    pub fn get_scrollback_snapshot(&self) -> Result<ScrollbackSnapshot, String> {
+        self.get_scrollback_snapshot_since(None)
+    }
+
+    pub fn get_scrollback_snapshot_since(
+        &self, since: Option<&ScrollbackCursor>,
+    ) -> Result<ScrollbackSnapshot, String> {
+        let geometry = self.scrollback_geometry.lock().map_err(|e| format!("Lock failed: {e}"))?;
+        let scrollback = self.scrollback.lock().map_err(|e| format!("Lock failed: {e}"))?;
+        // The reader updates end_offset under the same scrollback lock, so the
+        // payload and its absolute byte range always describe one observation.
+        Ok(scrollback_snapshot(&scrollback, self.scrollback_end.load(Ordering::Relaxed),
+            self.session_epoch, &geometry, since))
     }
 
     pub fn flush_scrollback(&self, dir: &Path, force: bool) -> Result<bool, String> {
@@ -1293,7 +1378,10 @@ impl PtySession {
             return Ok(false);
         }
 
-        let snapshot = self.get_scrollback_snapshot();
+        let snapshot = self.get_scrollback_snapshot().map_err(|error| {
+            self.scrollback_dirty.store(true, Ordering::Release);
+            error
+        })?;
         let (start_offset, data) =
             super::scrollback_store::sanitize_ring_head(snapshot.start_offset, &snapshot.data);
         // Rewriting bytes that are already there buys nothing and costs a full
@@ -1750,11 +1838,12 @@ mod tests {
             data: vec![10, 11],
             start_offset: 40,
             end_offset: 42,
+            cols: 120, rows: 40, session_epoch: 17, size_revision: 0, is_delta: false,
         }
         .into_wire();
-        assert_eq!(&snapshot_frame[..4], b"MCS1");
+        assert_eq!(&snapshot_frame[..4], b"MCS2");
         assert_eq!(snapshot_frame.len(), SCROLLBACK_FRAME_HEADER_BYTES + 2);
-        assert_eq!(&snapshot_frame[24..], &[10, 11]);
+        assert_eq!(&snapshot_frame[48..], &[10, 11]);
     }
 
     #[test]
@@ -1852,5 +1941,93 @@ mod tests {
         let recovered = expect_send(flow.reserve(32).await);
         assert_eq!(recovered, (1, 3));
         assert_eq!(flow_snapshot(&flow), (1, 4, 32, 1, true, 0));
+    }
+}
+
+
+#[cfg(test)]
+mod scrollback_live_tail_tests {
+    use super::*;
+
+    #[test]
+    fn geometry_remembers_spawn_and_successful_resize_only() {
+        let mut geometry = ScrollbackGeometry::new(120, 40);
+        assert_eq!((geometry.cols, geometry.rows, geometry.revision), (120, 40, 0));
+        geometry.resize_with(180, 50, |cols, rows| {
+            assert_eq!((cols, rows), (180, 50));
+            Ok(())
+        }).unwrap();
+        assert_eq!((geometry.cols, geometry.rows, geometry.revision), (180, 50, 1));
+        assert!(geometry.resize_with(80, 24, |_, _| Err("failed".to_string())).is_err());
+        assert_eq!((geometry.cols, geometry.rows, geometry.revision), (180, 50, 1));
+        geometry.resize_with(180, 50, |_, _| Ok(())).unwrap();
+        assert_eq!(geometry.revision, 1);
+        geometry.resize_with(120, 40, |_, _| Ok(())).unwrap();
+        assert_eq!(geometry.revision, 2);
+    }
+
+    #[test]
+    fn snapshot_carries_geometry_epoch_and_slices_only_the_requested_suffix() {
+        let ring = VecDeque::from(vec![10, 11, 12, 13, 14]);
+        let geometry = ScrollbackGeometry::new(120, 40);
+        let snapshot = scrollback_snapshot(&ring, 105, 17, &geometry, None);
+        assert_eq!((snapshot.cols, snapshot.rows, snapshot.session_epoch, snapshot.size_revision), (120, 40, 17, 0));
+        assert_eq!((snapshot.start_offset, snapshot.end_offset, snapshot.is_delta), (100, 105, false));
+        let cursor = ScrollbackCursor { end_offset: 103, session_epoch: 17, size_revision: 0 };
+        let delta = scrollback_snapshot(&ring, 105, 17, &geometry, Some(&cursor));
+        assert_eq!(delta.data, vec![13, 14]);
+        assert_eq!((delta.start_offset, delta.end_offset, delta.is_delta), (103, 105, true));
+        let empty = scrollback_snapshot(&ring, 103, 17, &geometry, Some(&cursor));
+        assert!(empty.data.is_empty());
+        assert!(empty.is_delta);
+    }
+
+    #[test]
+    fn lost_cursor_changed_epoch_or_geometry_require_a_full_reset() {
+        let ring = VecDeque::from(vec![10, 11, 12]);
+        let geometry = ScrollbackGeometry::new(120, 40);
+        for cursor in [
+            ScrollbackCursor { end_offset: 99, session_epoch: 17, size_revision: 0 },
+            ScrollbackCursor { end_offset: 104, session_epoch: 17, size_revision: 0 },
+            ScrollbackCursor { end_offset: 102, session_epoch: 16, size_revision: 0 },
+            ScrollbackCursor { end_offset: 102, session_epoch: 17, size_revision: 1 },
+        ] {
+            let snapshot = scrollback_snapshot(&ring, 103, 17, &geometry, Some(&cursor));
+            assert_eq!(snapshot.data, vec![10, 11, 12]);
+            assert!(!snapshot.is_delta);
+            assert_eq!(snapshot.start_offset, 100);
+        }
+    }
+
+    #[test]
+    fn mcs2_frames_roundtrip_full_and_delta_metadata_and_legacy_mcs1() {
+        let ring = VecDeque::from(vec![65, 66, 67]);
+        let mut geometry = ScrollbackGeometry::new(120, 40);
+        geometry.resize_with(132, 45, |_, _| Ok(())).unwrap();
+        for cursor in [None, Some(ScrollbackCursor { end_offset: 102, session_epoch: 17, size_revision: 1 })] {
+            let snapshot = scrollback_snapshot(&ring, 103, 17, &geometry, cursor.as_ref());
+            let expected_data = snapshot.data.clone();
+            let expected_start = snapshot.start_offset;
+            let expected_delta = snapshot.is_delta;
+            let wire = snapshot.into_wire();
+            assert_eq!(&wire[..4], b"MCS2");
+            assert_eq!(wire.len(), SCROLLBACK_FRAME_HEADER_BYTES + expected_data.len());
+            let decoded = ScrollbackSnapshot::from_wire(&wire).unwrap();
+            assert_eq!(decoded.data, expected_data);
+            assert_eq!((decoded.start_offset, decoded.end_offset, decoded.is_delta), (expected_start, 103, expected_delta));
+            assert_eq!((decoded.cols, decoded.rows, decoded.session_epoch, decoded.size_revision), (132, 45, 17, 1));
+        }
+        let mut legacy = b"MCS1".to_vec();
+        legacy.extend_from_slice(&0u32.to_le_bytes());
+        legacy.extend_from_slice(&40u64.to_le_bytes());
+        legacy.extend_from_slice(&42u64.to_le_bytes());
+        legacy.extend_from_slice(&[10, 11]);
+        let decoded = ScrollbackSnapshot::from_wire(&legacy).unwrap();
+        assert_eq!(decoded.data, vec![10, 11]);
+        assert_eq!((decoded.start_offset, decoded.end_offset), (40, 42));
+        assert_eq!((decoded.cols, decoded.rows, decoded.session_epoch, decoded.size_revision, decoded.is_delta), (80, 24, 0, 0, false));
+        assert!(ScrollbackSnapshot::from_wire(&legacy[..23]).is_err());
+        legacy[0] = 0;
+        assert!(ScrollbackSnapshot::from_wire(&legacy).is_err());
     }
 }

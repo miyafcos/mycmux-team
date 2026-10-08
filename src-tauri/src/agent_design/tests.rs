@@ -2,6 +2,20 @@ use super::*;
 use std::collections::BTreeSet;
 
 #[test]
+fn v04_initial_flow_excludes_conditional_and_shadowed_instructions() {
+    let f = Fixture::new("both");
+    let c = f.catalog();
+    let flow = c.reading_flows.iter().find(|flow| flow.service == "claude").unwrap();
+    let initial = flow.steps.iter().find(|step| step.id == "instructions").unwrap();
+    assert!(!initial.item_ids.is_empty());
+    assert!(initial.item_ids.iter().all(|id| c.items.iter().any(|item| &item.id == id && item.active && item.read_timing == "always")));
+    let conditional = flow.steps.iter().find(|step| step.id == "conditional").unwrap();
+    assert!(!conditional.item_ids.is_empty());
+    assert!(initial.item_ids.iter().all(|id| !conditional.item_ids.contains(id)));
+    assert_eq!(flow.steps.len(), 12);
+}
+
+#[test]
 #[ignore = "manual read-only acceptance export; requires an explicit evidence directory"]
 fn export_acceptance_catalog() {
     let output = PathBuf::from(
@@ -134,6 +148,11 @@ impl Fixture {
 }
 fn service<'a>(c: &'a Catalog, id: &str) -> &'a Service {
     c.services.iter().find(|s| s.id == id).unwrap()
+}
+fn has_path(item: &Item, path: &Path) -> bool {
+    item.path
+        .as_deref()
+        .is_some_and(|p| safe::same_path(Path::new(p), path))
 }
 fn write(home: &Path, path: &str, text: &str) {
     let p = home.join(path);
@@ -854,6 +873,100 @@ fn readonly_skills_support_initial_listing_aliases_and_command_files() {
 }
 
 #[test]
+fn readonly_skills_use_live_usage_and_manual_shelf_without_a_snapshot() {
+    let f = Fixture::new("both");
+    let c = f.catalog();
+    write(f.home(), ".claude.json", r#"{"skillUsage":{"ReViEwEr":{"usageCount":11,"lastUsedAt":2000}}}"#);
+    write(f.home(), ".mycmux/skills/shelf.json", r##"{
+        "categories":[{"id":"sample-manual","name":"Sample manual","color":"#64748B","symbol":null}],
+        "skills":{"REVIEWER":{"category":"sample-manual","label":"Manual sample","symbol":null}}
+    }"##);
+    write(f.home(), ".mycmux/skills/shelf_auto.json", r#"{"skills":{"reviewer":{"category":"unsorted","label":"Automatic sample"}}}"#);
+    let ledger = json!({"sample-session":{"mtimeNs":chrono::Utc::now().timestamp_nanos_opt().unwrap(),"skills":["reviewer","reviewer"],"last":3000}});
+    write(f.home(), ".mycmux/skills/usage_codex.json", &ledger.to_string());
+    let shelf = skill_read::catalog(f.home(), &c);
+    let row = shelf["skills"].as_array().unwrap().iter().find(|r|r["id"]=="reviewer").unwrap();
+    assert_eq!(row["usage"], json!({"claude":11,"codex":1}));
+    assert_eq!(row["usageCount"], 12);
+    assert_eq!(row["lastUsedAt"].as_f64(), Some(3000.0));
+    assert_eq!(row["category"], "sample-manual");
+    assert_eq!(row["label"], "Manual sample");
+    assert_eq!(row["curation"], "manual");
+    assert_eq!(row["codexRecorded"], true);
+    assert!(!f.home().join(".mycmux/skills/cache.json").exists());
+    assert_eq!(row["body"], "");
+    assert!(shelf["categories"].as_array().unwrap().iter().any(|c| c["id"] == "sample-manual"));
+
+    // The design snapshot and an unrelated stage 1 cache can both be old.
+    write(f.home(), ".mycmux/skills/cache.json", r#"{"skills":[{"id":"reviewer","category":"stale","usageCount":999,"usage":{"claude":999,"codex":0}}]}"#);
+    write(f.home(), ".claude.json", r#"{"skillUsage":{"reviewer":{"usageCount":20}}}"#);
+    write(f.home(), ".mycmux/skills/shelf.json", r#"{"skills":{"reviewer":{"category":"code","label":"Updated sample"}}}"#);
+    let after = skill_read::catalog(f.home(), &c);
+    let updated = after["skills"].as_array().unwrap().iter().find(|r| r["id"] == "reviewer").unwrap();
+    assert_eq!(updated["usageCount"], 21);
+    assert_eq!(updated["usage"], json!({"claude":20,"codex":1}));
+    assert_eq!(updated["category"], "code");
+    assert_eq!(updated["label"], "Updated sample");
+    assert_eq!(safe::json(&f.home().join(".mycmux/skills/cache.json")).unwrap()["skills"][0]["usageCount"], 999);
+}
+
+#[test]
+#[ignore = "manual material parity; requires an explicit fixture home and Python reference"]
+fn readonly_skills_match_explicit_python_reference() {
+    let h = PathBuf::from(std::env::var_os("MYCMUX_SKILLS_REFERENCE_HOME").expect("explicit fixture home"));
+    assert!(h.is_absolute() && h.is_dir());
+    let c = collect(&h, &h, &h.join(".codex"), &h.join(".hermes"), &scheduled::Jobs::default(), (None, None));
+    let shelf = skill_read::catalog(&h, &c);
+    let expected = safe::json(&h.join("expected.json")).expect("Python reference rows");
+    let rows: Vec<_> = expected.as_array().unwrap().iter().map(|want| {
+        let row = shelf["skills"].as_array().unwrap().iter()
+            .find(|r| r["id"].as_str().unwrap().eq_ignore_ascii_case(want["id"].as_str().unwrap()))
+            .expect("registered reference skill");
+        json!({"id":want["id"],"usage":row["usage"],"usageCount":row["usageCount"],"category":row["category"]})
+    }).collect();
+    fs::write(h.join("actual.json"), serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
+    assert_eq!(json!(rows), expected);
+}
+
+#[test]
+fn portable_windows_memory_references_survive_open_completion_and_cache() {
+    let f = Fixture::new("both");
+    let mut c = f.catalog();
+    let mut memory = c.items.iter()
+        .find(|i| i.kind == "memoryIndex").unwrap().clone();
+    let path = r"C:\Users\runneradmin\AppData\Local\Temp\.tmpABC123\.claude\projects\C--Users-runneradmin-AppData-Local-Temp--tmpABC123\memory\MEMORY.md";
+    memory.id = format!("claude:memoryIndex:{path}");
+    memory.path = Some(path.into());
+    assert!(!memory.document_allowed);
+    let windows_id = memory.id.clone();
+    c.items.push(memory);
+    portable::complete(&mut c, f.home(), f.home());
+    scrub_catalog(&mut c);
+    let ids: BTreeSet<_> = c.items.iter().map(|i| i.id.as_str()).collect();
+    let references: Vec<_> = c.layers.iter()
+        .flat_map(|l| &l.item_ids)
+        .chain(c.reading_flows.iter().flat_map(|f| &f.steps).flat_map(|s| &s.item_ids))
+        .chain(c.compare_rows.iter().flat_map(|r| &r.cells).flat_map(|c| &c.item_ids))
+        .collect();
+    assert!(references.iter().all(|id| ids.contains(id.as_str())));
+    assert!(references.iter().any(|id| *id == &windows_id));
+    let before = serde_json::to_value(&c).unwrap();
+    let settings = c.items.iter().find(|i| i.kind == "settings").unwrap();
+    let opened = opened_document(f.home(), f.home(), &c, &settings.id).unwrap();
+    assert!(opened["body"].is_string());
+    portable::complete(&mut c, f.home(), f.home());
+    assert_eq!(serde_json::to_value(&c).unwrap(), before);
+    save(f.home(), &c).unwrap();
+    let saved: Value = serde_json::from_slice(
+        &fs::read(state_dir(f.home()).join("catalog.json")).unwrap(),
+    ).unwrap();
+    assert_eq!(saved, before);
+    let cached = cached(f.home(), f.home()).unwrap();
+    assert_eq!(serde_json::to_value(cached).unwrap(), before);
+    assert!(!saved.to_string().contains("CANARY_SECRET_7F3A"));
+}
+
+#[test]
 fn portable_catalog_contains_four_surfaces_and_matches_api_without_canaries() {
     for mode in ["claude_only", "codex_only", "both", "empty"] {
         let f = Fixture::new(mode);
@@ -1358,4 +1471,345 @@ fn claude_200_candidates_match_exhaustive_with_fewer_headers() {
     // Also verify the public folder-key entrypoint against the exhaustive
     // answer with the actual filesystem's creation timestamps.
     assert_eq!(records::latest_claude(&root, &cwd), exhaustive);
+}
+
+#[test]
+fn markdown_open_response_renders_frontmatter_structure_and_drops_active_content() {
+    let f = Fixture::new("both");
+    let raw = "---\r\npaths:\r\n  - src/**\r\n---\r\n# Heading\r\n\r\n- Item\r\n\r\n| A | B |\r\n|---|---|\r\n| One | Two |\r\n\r\n> Quote\r\n\r\n\x60\x60\x60rust\r\nlet value = 1;\r\n\x60\x60\x60\r\n\r\n[Link](https://example.test)\r\n\r\n<script>AD_SCRIPT_CANARY</script><img src=x onerror=\"AD_EVENT_CANARY\"><a href=\"javascript:AD_LINK_CANARY\" onclick=\"AD_CLICK_CANARY\">Blocked</a>\r\n";
+    write(f.home(), ".claude/CLAUDE.md", raw);
+    let c = f.catalog();
+    let id = &c.items.iter().find(|i| has_path(i, &f.home().join(".claude/CLAUDE.md"))).unwrap().id;
+    let response = opened_document(f.home(), f.home(), &c, id).unwrap();
+    assert_eq!(response["body"], raw);
+    assert_eq!(response["frontmatter"]["paths"], json!(["src/**"]));
+    assert_eq!(response["toc"], json!([{"level":1,"text":"Heading"}]));
+    let html = response["html"].as_str().unwrap();
+    for tag in ["<h1>", "<ul>", "<table>", "<blockquote>", "<pre><code>", "https://example.test"] {
+        assert!(html.contains(tag), "missing {tag}: {html}");
+    }
+    for marker in ["<script", "onerror", "onclick", "javascript:", "AD_SCRIPT_CANARY", "AD_EVENT_CANARY", "AD_LINK_CANARY", "AD_CLICK_CANARY", "|---|"] {
+        assert!(!html.contains(marker), "active content: {marker}");
+    }
+    assert_eq!(html, stage1_bridge::detail::markdown(frontmatter::split(raw).1));
+}
+
+#[test]
+fn markdown_open_does_not_grow_portable_documents_or_catalogue() {
+    let f = Fixture::new("both");
+    let mut c = f.catalog();
+    let before = serde_json::to_vec(&c).unwrap();
+    let before_documents = serde_json::to_vec(&c.documents).unwrap();
+    for item in c.items.iter().filter(|i| i.document_allowed) {
+        let response = opened_document(f.home(), f.home(), &c, &item.id).unwrap();
+        assert!(response["body"].is_string());
+    }
+    portable::complete(&mut c, f.home(), f.home());
+    assert_eq!(serde_json::to_vec(&c.documents).unwrap(), before_documents);
+    assert_eq!(serde_json::to_vec(&c).unwrap(), before);
+    for doc in c.documents.values() {
+        for name in ["html", "toc", "frontmatter"] {
+            assert!(doc.get(name).is_none(), "catalogue must not carry {name}");
+        }
+    }
+    println!("portable documents bytes before={} after={}; catalogue bytes before={} after={}; HTML keys=0",
+        before_documents.len(), serde_json::to_vec(&c.documents).unwrap().len(), before.len(), serde_json::to_vec(&c).unwrap().len());
+}
+
+#[test]
+fn markdown_open_preserves_non_markdown_and_private_document_contracts() {
+    let f = Fixture::new("both");
+    write(f.home(), ".claude/references/plain.txt", "plain <text>");
+    let c = f.catalog();
+    let item = c.items.iter().find(|i| has_path(i, &f.home().join(".claude/references/plain.txt"))).unwrap();
+    assert_eq!(opened_document(f.home(), f.home(), &c, &item.id).unwrap()["body"],"plain <text>");
+    assert!(document(f.home(), f.home(), &c, &item.id).unwrap()["body"].is_null());
+    let settings = c.items.iter().find(|i| i.kind == "settings").unwrap();
+    assert!(opened_document(f.home(), f.home(), &c, &settings.id).unwrap().get("html").is_none());
+    let mut forged = c.clone();
+    let item = forged.items.iter_mut().find(|i| i.document_allowed).unwrap();
+    let id = item.id.clone();
+    item.path = Some(f.home().join(".codex/auth.json").to_string_lossy().into());
+    assert!(opened_document(f.home(), f.home(), &forged, &id).is_err());
+}
+
+#[test]
+#[ignore = "manual read-only Markdown response export; explicit isolated input/output paths only"]
+fn export_markdown_acceptance_responses() {
+    let input = PathBuf::from(std::env::var_os("MYCMUX_MD_INPUT").expect("explicit isolated input"));
+    let output = PathBuf::from(std::env::var_os("MYCMUX_MD_OUTPUT").expect("explicit isolated output"));
+    assert!(input.is_absolute() && output.is_absolute() && !output.exists());
+    let manifest: Value = serde_json::from_slice(&fs::read(&input).unwrap()).unwrap();
+    let f = Fixture::new("both");
+    for entry in manifest.as_array().unwrap() {
+        let relative=entry["relative"].as_str().unwrap();
+        assert!([".claude/",".codex/",".hermes/",".agents/"].iter().any(|root|relative.starts_with(root)) && !relative.contains(".."));
+        write(f.home(),relative,entry["body"].as_str().unwrap());
+    }
+    let mut c=f.catalog();
+    let responses:Vec<_>=manifest.as_array().unwrap().iter().enumerate().filter(|(_,entry)|entry["supportOnly"]!=true).map(|(n,entry)| {
+        let path=f.home().join(entry["relative"].as_str().unwrap());
+        let kind=entry["kind"].as_str().unwrap_or("reference");let service=entry["service"].as_str().unwrap_or("claude");
+        let id=if let Some(item)=c.items.iter().find(|i|i.kind==kind && has_path(i,&path)){item.id.clone()}else{
+            let id=format!("acceptance-{n}");
+            c.items.push(Item{id:id.clone(),service:service.into(),layer:entry["layer"].as_u64().unwrap_or(7) as u8,display_name:safe::basename(&path),
+                path:Some(path.to_string_lossy().into()),kind:kind.into(),status:"present".into(),size:safe::size(&path,false),read_timing:"onDemand".into(),
+                evidence:"declaration".into(),modified_at:safe::modified(&path),fields:vec![],conditions:vec![],document_allowed:false,active:true});id
+        };
+        json!({"source":entry["source"],"relative":entry["relative"],"kind":kind,"service":service,"photo":entry["photo"],"document":opened_document(f.home(),f.home(),&c,&id).unwrap()})
+    }).collect();
+    fs::write(&output, serde_json::to_vec_pretty(&responses).unwrap()).unwrap();
+    println!("isolated real-input Markdown responses exported: {}", responses.len());
+}
+
+#[test]
+fn open_all_every_registered_type_including_hermes_has_content_or_specific_reason() {
+    let f=Fixture::new("both");
+    for (path,body) in [
+        (".hermes/config.yaml","model: example\napi_token: CANARY_SECRET_7F3A\n"),
+        (".hermes/SOUL.md","# Soul\nFull instruction.\n"),
+        (".hermes/memories/MEMORY.md","# Memories\nComplete index.\n"),
+        (".hermes/skills/example/SKILL.md","# Example\nUse this procedure.\n"),
+        (".hermes/cron/job.yaml","schedule: daily\n"),
+        (".claude/skills/reviewer/run.py","print('read only')\n"),
+        (".claude/skills/reviewer/.env","VISIBLE=CANARY_SECRET_7F3A\n"),
+        (".claude/jobs/job.json","{\"schedule\":\"daily\",\"token\":\"CANARY_SECRET_7F3A\"}"),
+    ] {write(f.home(),path,body);}
+    let c=f.catalog();let mut kinds=std::collections::BTreeSet::new();let mut opened=0;
+    for item in &c.items {
+        let response=full_content::opened(f.home(),f.home(),&c,&item.id,None,0).unwrap();
+        assert!(response["body"].is_string() || response["files"].as_array().is_some_and(|a|!a.is_empty()) || response["reason"].is_string(),"no explanation for {}",item.kind);
+        kinds.insert(item.kind.clone());opened+=1;
+    }
+    for kind in ["runtime","settings","settingsLocal","instruction","override","shadowedInstruction","rule","memoryIndex","memoryDirectory","skill","agent","command","mcp","plugins","skillListing","hooks","script","scheduled","privateCount","permissionRules","reference","cron"] {
+        assert!(kinds.contains(kind),"missing registered kind: {kind}");
+    }
+    let skill=c.items.iter().find(|i|has_path(i,&f.home().join(".claude/skills/reviewer/SKILL.md"))).unwrap();
+    let doc=full_content::opened(f.home(),f.home(),&c,&skill.id,None,0).unwrap();
+    assert!(doc["html"].is_string());
+    assert!(doc["files"].as_array().unwrap().iter().any(|v|v["name"]=="run.py"));
+    let file=full_content::opened(f.home(),f.home(),&c,&skill.id,Some("0/run.py"),0).unwrap();
+    assert_eq!(file["body"],"print('read only')\n");assert!(file.get("html").is_none());
+    let private=full_content::opened(f.home(),f.home(),&c,&skill.id,Some("0/.env"),0).unwrap();
+    assert!(!private.to_string().contains("CANARY_SECRET_7F3A"));
+    println!("C all-types registered_kinds={} opened={} skill_folder=PASS private_file=PASS",kinds.len(),opened);
+}
+#[test]
+fn open_all_reveal_returns_one_value_rechecks_revision_and_does_not_write_original() {
+    let f=Fixture::new("both");
+    let raw="{\r\n\"api_token\":\"CANARY_SECRET_7F3A\",\r\n\"password\":\"SECOND_PRIVATE_VALUE\",\r\n\"public\":\"hello\"\r\n}\r\n";
+    write(f.home(),".claude/settings.json",raw);let path=f.home().join(".claude/settings.json");
+    let before=fs::read(&path).unwrap();let modified=fs::metadata(&path).unwrap().modified().unwrap();
+    let c=f.catalog();let item=c.items.iter().find(|i|i.kind=="settings" && i.service=="claude").unwrap();
+    let doc=full_content::opened(f.home(),f.home(),&c,&item.id,None,0).unwrap();
+    assert!(!doc.to_string().contains("CANARY_SECRET_7F3A"));assert!(!doc.to_string().contains("SECOND_PRIVATE_VALUE"));
+    assert_eq!(doc["masks"].as_array().unwrap().len(),2);
+    let revision=doc["revision"].as_str().unwrap();
+    assert_eq!(full_content::reveal(f.home(),f.home(),&c,&item.id,doc["relative"].as_str(),0,revision).unwrap(),"CANARY_SECRET_7F3A");
+    assert_eq!(full_content::reveal(f.home(),f.home(),&c,&item.id,doc["relative"].as_str(),1,revision).unwrap(),"SECOND_PRIVATE_VALUE");
+    assert!(full_content::reveal(f.home(),f.home(),&c,&item.id,None,9,revision).is_err());
+    assert!(full_content::reveal(f.home(),f.home(),&c,&item.id,Some("0/../../.codex/auth.json"),0,revision).is_err());
+    assert_eq!(fs::read(&path).unwrap(),before);assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(),modified);
+    write(f.home(),".claude/settings.json","{\"token\":\"changed\"}");
+    assert_eq!(full_content::reveal(f.home(),f.home(),&c,&item.id,None,0,revision).unwrap_err(),"documentChanged");
+    println!("C reveal_one=PASS stale_revision=DENIED original_bytes=UNCHANGED original_mtime=UNCHANGED");
+}
+#[test]
+fn open_all_catalogue_portable_export_and_saved_cache_are_secret_free_and_do_not_grow_on_open() {
+    let f=Fixture::new("both");
+    write(f.home(),".claude/CLAUDE.md","# Instructions\napi_token = \"CANARY_SECRET_7F3A\"\n");
+    write(f.home(),".codex/config.toml","model = \"example\"\napi_token = \"CANARY_SECRET_7F3A\"\n");
+    let mut c=f.catalog();let before=serde_json::to_vec(&c).unwrap();let docs=serde_json::to_vec(&c.documents).unwrap();
+    assert!(!String::from_utf8(before.clone()).unwrap().contains("CANARY_SECRET_7F3A"));
+    for item in &c.items {let _=full_content::opened(f.home(),f.home(),&c,&item.id,None,0).unwrap();}
+    portable::complete(&mut c,f.home(),f.home());
+    assert_eq!(serde_json::to_vec(&c).unwrap(),before);assert_eq!(serde_json::to_vec(&c.documents).unwrap(),docs);
+    for doc in c.documents.values() {for field in ["html","masks","files","revision"] {assert!(doc.get(field).is_none());}}
+    save(f.home(),&c).unwrap();
+    let saved=fs::read_to_string(f.home().join(".mycmux/agent_design/catalog.json")).unwrap();
+    assert!(!saved.contains("CANARY_SECRET_7F3A"));
+    println!("C portable/export bytes before={} after={} documents before={} after={} secrets=0 expanded_content_fields=0 cache_secrets=0",before.len(),serde_json::to_vec(&c).unwrap().len(),docs.len(),serde_json::to_vec(&c.documents).unwrap().len());
+}
+#[test]
+fn open_all_limits_preserve_full_size_leading_text_and_specific_unavailable_reasons() {
+    let f=Fixture::new("both");let path=f.home().join(".claude/references/large.txt");
+    let raw="x".repeat(safe::DOCUMENT_LIMIT as usize+200);write(f.home(),".claude/references/large.txt",&raw);
+    let before=fs::metadata(&path).unwrap().modified().unwrap();
+    let read=full_content::read_text(&path).unwrap();assert!(read.truncated);assert_eq!(read.bytes,raw.len() as u64);assert_eq!(read.text.len(),safe::DOCUMENT_LIMIT as usize);
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(),before);
+    let c=f.catalog();let item=c.items.iter().find(|i|has_path(i,&path)).unwrap();
+    let doc=full_content::opened(f.home(),f.home(),&c,&item.id,None,0).unwrap();assert_eq!(doc["truncated"],true);assert_eq!(doc["size"]["bytes"],raw.len() as u64);
+    let missing=full_content::opened(f.home(),f.home(),&c,&item.id,Some("0/missing.md"),0).unwrap();assert_eq!(missing["reason"],"fileMissing");
+    fs::write(f.home().join(".claude/references/binary.bin"),[0,1,2]).unwrap();
+    assert_eq!(full_content::read_text(&f.home().join(".claude/references/binary.bin")).err().unwrap(),"binaryFile");
+    fs::write(f.home().join(".claude/references/invalid.txt"),[0xff,0x80]).unwrap();
+    assert_eq!(full_content::read_text(&f.home().join(".claude/references/invalid.txt")).err().unwrap(),"unsupportedEncoding");
+    println!("C >2MiB prefix_bytes={} total_bytes={} read_only=PASS missing/binary/encoding=SPECIFIC",read.text.len(),read.bytes);
+}
+#[test]
+fn open_all_directory_pagination_and_nested_private_files_are_navigable() {
+    let f=Fixture::new("both");
+    for n in 0..505 {write(f.home(),&format!(".claude/skills/reviewer/many/{n:03}.txt"),"public");}
+    write(f.home(),".claude/skills/reviewer/many/token-data","CANARY_SECRET_7F3A");
+    let c=f.catalog();let item=c.items.iter().find(|i|has_path(i,&f.home().join(".claude/skills/reviewer/SKILL.md"))).unwrap();
+    let first=full_content::opened(f.home(),f.home(),&c,&item.id,Some("0/many"),0).unwrap();
+    assert_eq!(first["fileCount"],506);assert_eq!(first["files"].as_array().unwrap().len(),500);assert_eq!(first["folder"],"0/many");
+    let second=full_content::opened(f.home(),f.home(),&c,&item.id,Some("0/many"),500).unwrap();assert_eq!(second["files"].as_array().unwrap().len(),6);assert_eq!(second["parent"],"0/");
+    let private=full_content::opened(f.home(),f.home(),&c,&item.id,Some("0/many/token-data"),0).unwrap();assert!(!private.to_string().contains("CANARY_SECRET_7F3A"));
+}
+
+#[test]
+fn open_all_mcp_and_declared_external_hook_files_are_exactly_scoped() {
+    let f=Fixture::new("both");
+    write(f.home(),"outside-hooks/run.py","print('declared source')\n");
+    write(f.home(),"outside-hooks/credentials.txt","CANARY_SECRET_7F3A");
+    let command=format!("python \"{}\"",f.home().join("outside-hooks/run.py").display());
+    write(f.home(),".claude/settings.json",&json!({"hooks":{"Stop":[{"hooks":[{"command":command}]}]}}).to_string());
+    write(f.home(),".claude.json","{\"mcpServers\":{\"sample\":{\"env\":{\"API_TOKEN\":\"CANARY_SECRET_7F3A\"}}}}");
+    let c=f.catalog();
+    let hooks=c.items.iter().find(|i|i.kind=="hooks" && i.service=="claude").unwrap();
+    let first=full_content::opened(f.home(),f.home(),&c,&hooks.id,None,0).unwrap();
+    let file=first["files"].as_array().unwrap().iter().find(|v|v["name"]=="run.py").unwrap();
+    let id=file["id"].as_str().unwrap();
+    let source=full_content::opened(f.home(),f.home(),&c,&hooks.id,Some(id),0).unwrap();
+    assert_eq!(source["body"],"print('declared source')\n");
+    let sibling=format!("{}/credentials.txt",id.split('/').next().unwrap());
+    assert!(full_content::opened(f.home(),f.home(),&c,&hooks.id,Some(&sibling),0).is_err());
+    let mcp=c.items.iter().find(|i|i.kind=="mcp" && i.service=="claude").unwrap();
+    let first=full_content::opened(f.home(),f.home(),&c,&mcp.id,None,0).unwrap();
+    let file=first["files"].as_array().unwrap().iter().find(|v|v["name"]==".claude.json").unwrap();
+    let config=full_content::opened(f.home(),f.home(),&c,&mcp.id,file["id"].as_str(),0).unwrap();
+    assert!(config["body"].as_str().unwrap().contains("mcpServers"));assert!(!config.to_string().contains("CANARY_SECRET_7F3A"));
+    println!("C MCP user config=PASS declared_hook=PASS undeclared_sibling=DENIED");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn open_all_scheduled_definition_keeps_reveal_ephemeral_and_source_unchanged() {
+    let f=Fixture::new("both");
+    let script=f.home().join(".claude/scripts/scheduled.py");
+    write(f.home(),".claude/scripts/scheduled.py","print('read only')\n");
+    let raw=format!("<plist><dict><key>Label</key><string>synthetic-job</string><key>ProgramArguments</key><array><string>python</string><string>{}</string><string>--token</string><string>CANARY_SECRET_7F3A</string></array><key>ApiToken</key><string>CANARY_SECRET_7F3A</string></dict></plist>",script.to_string_lossy());
+    write(f.home(),"Library/LaunchAgents/synthetic.plist",&raw);
+    let source=f.home().join("Library/LaunchAgents/synthetic.plist");
+    let before=fs::read(&source).unwrap();let mtime=fs::metadata(&source).unwrap().modified().unwrap();
+    let c=f.catalog();let item=c.items.iter().find(|i|i.service=="claude"&&i.kind=="scheduled").unwrap();
+    let doc=full_content::opened(f.home(),f.home(),&c,&item.id,None,0).unwrap();
+    assert!(!doc.to_string().contains("CANARY_SECRET_7F3A"));
+    assert!(!doc["masks"].as_array().unwrap().is_empty());
+    let values=doc["masks"].as_array().unwrap().iter().map(|mask|full_content::reveal(f.home(),f.home(),&c,&item.id,None,mask["index"].as_u64().unwrap() as usize,doc["revision"].as_str().unwrap()).unwrap()).collect::<Vec<_>>();
+    assert!(values.iter().any(|value|value=="CANARY_SECRET_7F3A"));
+    let folder=full_content::opened(f.home(),f.home(),&c,&item.id,Some("0/"),0).unwrap();
+    assert!(!folder.to_string().contains("CANARY_SECRET_7F3A"));
+    let mask=&folder["masks"].as_array().unwrap()[0];
+    assert!(full_content::reveal(f.home(),f.home(),&c,&item.id,Some("0/"),mask["index"].as_u64().unwrap() as usize,folder["revision"].as_str().unwrap()).unwrap().contains("CANARY_SECRET_7F3A"));
+    assert_eq!(fs::read(&source).unwrap(),before);assert_eq!(fs::metadata(&source).unwrap().modified().unwrap(),mtime);
+    println!("C scheduled default_secrets=0 reveal_one=PASS folder_reveal=PASS original_bytes=UNCHANGED original_mtime=UNCHANGED");
+}
+
+#[test]
+fn v04_skill_records_keep_units_window_and_source_unchanged() {
+    let f = Fixture::new("both");
+    let now = chrono::Utc::now().timestamp_millis() as f64;
+    write(f.home(), ".claude.json", &json!({"skillUsage":{"reviewer":{"usageCount":"7","lastUsedAt":now-1000.0}}}).to_string());
+    let ledger = json!({"one":{"mtimeNs":now*1_000_000.0,"last":now,"skills":["reviewer","reviewer","REVIEWER"]},"old":{"mtimeNs":(now-100.0*86400000.0)*1_000_000.0,"last":now,"skills":["reviewer"]}}).to_string();
+    write(f.home(), ".mycmux/skills/usage_codex.json", &ledger);
+    write(f.home(), ".mycmux/skills/cache.json", "{\"skills\":[{\"id\":\"reviewer\",\"usageCount\":999}]}");
+    let source = f.home().join(".mycmux/skills/usage_codex.json");
+    let mtime = fs::metadata(&source).unwrap().modified().unwrap();
+    let c = f.catalog();
+    let shelf = skill_read::catalog(f.home(), &c);
+    let row = shelf["skills"].as_array().unwrap().iter().find(|row| row["id"] == "reviewer").unwrap();
+    assert_eq!(row["usageRecords"]["claude"]["count"], 7);
+    assert_eq!(row["usageRecords"]["codex"]["count"], 1);
+    assert_eq!(row["usageRecords"]["codex"]["days"], 90);
+    assert_eq!(row["usageRecords"]["codex"]["lastAt"], now);
+    assert_eq!(row["usageRecords"]["sampledAt"], c.generated_at);
+    assert!(!row["places"].as_array().unwrap().is_empty());
+    assert!(row["places"].as_array().unwrap().iter().all(|place| place["bytes"].as_u64().is_some()));
+    assert_eq!(fs::read_to_string(source.clone()).unwrap(), ledger);
+    assert_eq!(fs::metadata(source).unwrap().modified().unwrap(), mtime);
+}
+
+#[test]
+fn v04_skill_records_missing_and_failed_are_not_zero_records() {
+    let f = Fixture::new("both");
+    write(f.home(), ".claude.json", "{}");
+    let c = f.catalog();
+    let find = |shelf: Value| shelf["skills"].as_array().unwrap().iter().find(|row| row["id"] == "reviewer").unwrap().clone();
+    let missing = find(skill_read::catalog(f.home(), &c));
+    assert_eq!(missing["usageRecords"]["claude"]["status"], "unavailable");
+    assert!(missing["usageRecords"]["claude"]["count"].is_null());
+    assert_eq!(missing["usageRecords"]["codex"]["status"], "unavailable");
+    write(f.home(), ".mycmux/skills/usage_codex.json", "{broken");
+    write(f.home(), ".claude.json", "{\"skillUsage\":{\"reviewer\":{\"usageCount\":\"bad\"}}}");
+    let failed = find(skill_read::catalog(f.home(), &c));
+    assert_eq!(failed["usageRecords"]["claude"]["status"], "failed");
+    assert_eq!(failed["usageRecords"]["codex"]["status"], "failed");
+    assert!(failed["usageRecords"]["claude"]["count"].is_null());
+    assert!(failed["usageRecords"]["codex"]["count"].is_null());
+}
+
+#[test]
+fn v04_closed_entries_are_scoped_masked_and_optional_for_old_catalogs() {
+    let f = Fixture::new("both");
+    let mut c = f.catalog();
+    let closed = Closed { schema_version: 1, revision: 2, closed: vec![Closure { id: "synthetic".into(), cwd: c.cwd.clone(), reason: "api_token = CANARY_SECRET_7F3A".into(), date: "2026-10-08T12:00:00+09:00".into(), closed_from: "pc".into() }, Closure { id: "other".into(), cwd: "/synthetic/other".into(), reason: "Other folder".into(), date: "2026-10-08T12:00:00+09:00".into(), closed_from: "pc".into() }] };
+    inspect::apply_closed(&mut c, &closed);
+    scrub_catalog(&mut c);
+    assert_eq!(c.closed_count, 1);
+    assert_eq!(c.closed_entries.as_ref().unwrap().len(), 1);
+    assert_eq!(c.closed_entries.as_ref().unwrap()[0].date, "2026-10-08T12:00:00+09:00");
+    assert!(!serde_json::to_string(&c).unwrap().contains("CANARY_SECRET_7F3A"));
+    let mut old = serde_json::to_value(c).unwrap();
+    old.as_object_mut().unwrap().remove("closedEntries");
+    let old: Catalog = serde_json::from_value(old).unwrap();
+    assert!(old.closed_entries.is_none());
+}
+
+#[test]
+fn integrated_skill_usage_keeps_v04_records_for_aliases_and_hidden_rows() {
+    let f = Fixture::new("both");
+    write(f.home(), ".codex/skills/review-helper/SKILL.md", "---\nname: review-helper\ndescription: Alias sample\n---\n# Alias sample\n");
+    write(f.home(), ".codex/skills/hidden-example/SKILL.md", "---\nname: hidden-example\ndescription: Hidden sample\n---\n# Hidden sample\n");
+    write(f.home(), ".claude.json", r#"{"skillUsage":{"ReViEwEr":{"usageCount":"7","lastUsedAt":2000},"review-helper":{"usageCount":2,"lastUsedAt":2500}}}"#);
+    write(f.home(), ".mycmux/skills/shelf.json", r##"{
+        "categories":[{"id":"integrated","name":"Integrated sample","color":"#64748B","symbol":null}],
+        "aliases":{"review-helper":"reviewer"},"hidden":["hidden-example"],
+        "skills":{"reviewer":{"category":"integrated","label":"Integrated sample"}}
+    }"##);
+    let now = chrono::Utc::now().timestamp_millis() as f64;
+    let ledger = json!({
+        "one":{"mtimeNs":now*1_000_000.0,"last":3000,"skills":["reviewer","reviewer","REVIEWER","hidden-example"]},
+        "two":{"mtimeNs":now*1_000_000.0,"last":4000,"skills":["review-helper"]}
+    }).to_string();
+    write(f.home(), ".mycmux/skills/usage_codex.json", &ledger);
+    let source = f.home().join(".mycmux/skills/usage_codex.json");
+    let before_mtime = fs::metadata(&source).unwrap().modified().unwrap();
+    let c = f.catalog();
+    let shelf = skill_read::catalog(f.home(), &c);
+    let row = shelf["skills"].as_array().unwrap().iter().find(|row| row["id"] == "reviewer").unwrap();
+    assert_eq!(row["category"], "integrated");
+    assert_eq!(row["label"], "Integrated sample");
+    assert_eq!(row["curation"], "manual");
+    assert_eq!(row["aliases"], json!(["review-helper"]));
+    assert_eq!(row["usage"], json!({"claude":9,"codex":2}));
+    assert_eq!(row["usageCount"], 11);
+    assert_eq!(row["usageRecords"]["claude"]["count"], row["usage"]["claude"]);
+    assert_eq!(row["usageRecords"]["codex"]["count"], row["usage"]["codex"]);
+    assert_eq!(row["usageRecords"]["codex"]["lastAt"], 4000.0);
+    assert_eq!(row["usageRecords"]["sampledAt"], c.generated_at);
+    assert!(row["places"].as_array().unwrap().iter().any(|place| place["path"].as_str().unwrap().contains("review-helper")));
+    assert!(row["places"].as_array().unwrap().iter().all(|place| place["bytes"].as_u64().is_some()));
+    assert_eq!(shelf["hiddenCount"], 1);
+    let hidden = &shelf["hiddenSkills"][0];
+    assert_eq!(hidden["id"], "hidden-example");
+    assert_eq!(hidden["usageRecords"]["codex"]["status"], "available");
+    assert_eq!(hidden["usageRecords"]["codex"]["count"], 1);
+    assert_eq!(hidden["body"], "");
+    assert!(!hidden["places"].as_array().unwrap().is_empty());
+    assert_eq!(row["body"], "");
+    assert!(!f.home().join(".mycmux/skills/cache.json").exists());
+    assert_eq!(fs::read_to_string(&source).unwrap(), ledger);
+    assert_eq!(fs::metadata(source).unwrap().modified().unwrap(), before_mtime);
 }

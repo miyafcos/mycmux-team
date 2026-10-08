@@ -1,10 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export interface SkillCategory { id: string; name: string; color: string; symbol: string | null }
+export interface SkillUsageRecord { status: "available" | "unavailable" | "failed"; count: number | null; lastAt: number | null; source: string; days?: number }
 export interface SkillRow {
   id: string; label: string; description: string; line: string; kind: string; plugin: string | null;
   category: string; symbol: string | null; glyph: string; agents: string[]; aliases: string[];
   duplicateCodex?: boolean; hasWrapper?: boolean;
+  usageRecords?: { sampledAt: string; claude: SkillUsageRecord; codex: SkillUsageRecord };
+  listedIn?: { claude: boolean | null; codex: boolean | null };
+  places?: { service: string; path: string; chars: number | null; lines: number | null; bytes: number | null; modifiedAt: number | null }[];
   curation: string; isNew: boolean; docPath: string | null; calls: Record<string, string>;
   usageCount: number; usage: { claude: number; codex: number }; lastUsedAt: number | null;
   body: string; triggers: string[] | string | null; modifiedAt: number; fileSize: number; codexRecorded: boolean;

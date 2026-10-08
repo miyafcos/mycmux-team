@@ -275,6 +275,9 @@ pub fn collect(catalog: &Catalog) -> Vec<Finding> {
 }
 pub fn apply_closed(catalog: &mut Catalog, closed: &Closed) {
     catalog.closed_revision = closed.revision;
+    catalog.closed_entries = Some(closed.closed.iter().filter(|entry| {
+        safe::normalized(Path::new(&entry.cwd)) == safe::normalized(Path::new(&catalog.cwd))
+    }).cloned().collect());
     catalog.closed_count = closed
         .closed
         .iter()

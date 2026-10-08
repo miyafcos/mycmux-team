@@ -28,16 +28,38 @@ pub fn canonical(path: &Path) -> PathBuf {
     dunce::canonicalize(path).unwrap_or_else(|_| path.to_owned())
 }
 pub fn normalized(path: &Path) -> String {
-    let s = canonical(path)
-        .to_string_lossy()
-        .replace('\\', "/")
-        .trim_end_matches('/')
-        .to_owned();
-    if cfg!(windows) {
+    normalized_spelling(&canonical(path).to_string_lossy())
+}
+fn windows_drive(path: &str) -> bool {
+    path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+        && path.as_bytes().get(1) == Some(&b':')
+}
+fn normalized_spelling(path: &str) -> String {
+    let mut s = path.replace('\\', "/");
+    // Canonicalization can fail for missing files or paths replayed on another OS.
+    // Compare ordinary and extended-length drive/UNC spellings the same way.
+    if let Some(rest) = s.strip_prefix("//?/") {
+        if rest.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("UNC/")) {
+            s = format!("//{}", &rest[4..]);
+        } else if windows_drive(rest) {
+            s = rest.to_owned();
+        }
+    }
+    while s.ends_with('/') && s.len() > 1 {
+        // A drive root must remain absolute, distinct from drive-relative C:.
+        if s.len() == 3 && windows_drive(&s) {
+            break;
+        }
+        s.pop();
+    }
+    if cfg!(windows) || windows_drive(&s) || s.starts_with("//") {
         s.to_lowercase()
     } else {
         s
     }
+}
+pub fn same_path(path: &Path, expected: &Path) -> bool {
+    normalized(path) == normalized(expected)
 }
 pub fn open(path: &Path) -> Result<File, String> {
     if private(path) || private(&canonical(path)) {
@@ -378,4 +400,82 @@ pub fn state_target(directory: &Path, name: &str) -> Result<PathBuf, String> {
     }
     fs::create_dir_all(directory).map_err(|_| "stateUnavailable".to_owned())?;
     Ok(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalized_windows_drive_spellings_share_one_key() {
+        for spelling in [
+            r"C:\Users\Fixture\CLAUDE.md",
+            "c:/users/fixture/CLAUDE.md/",
+            r"\\?\C:\Users\Fixture\CLAUDE.md",
+            "//?/C:/Users/Fixture/CLAUDE.md",
+        ] {
+            assert_eq!(normalized_spelling(spelling), "c:/users/fixture/claude.md");
+        }
+        assert_ne!(
+            normalized_spelling("C:/Users/Fixture/CLAUDE.md"),
+            normalized_spelling("D:/Users/Fixture/CLAUDE.md")
+        );
+    }
+
+    #[test]
+    fn normalized_windows_unc_spellings_share_one_key() {
+        for spelling in [
+            r"\\Server\Share\Folder\Note.md",
+            "//server/share/FOLDER/note.md/",
+            r"\\?\UNC\Server\Share\Folder\Note.md",
+            "//?/unc/server/share/folder/note.md",
+        ] {
+            assert_eq!(normalized_spelling(spelling), "//server/share/folder/note.md");
+        }
+        assert_ne!(
+            normalized_spelling("//server/share/folder/note.md"),
+            normalized_spelling("//server/other/folder/note.md")
+        );
+    }
+
+    #[test]
+    fn normalized_spellings_preserve_roots_and_unix_case() {
+        assert_eq!(normalized_spelling("/"), "/");
+        assert_eq!(normalized_spelling(r"C:\"), "c:/");
+        assert_eq!(normalized_spelling("C:////"), "c:/");
+        assert_ne!(normalized_spelling("C:/"), normalized_spelling("C:"));
+        assert_ne!(normalized_spelling("/"), normalized_spelling(""));
+        assert_eq!(
+            normalized_spelling("/Fixture/Note.md/"),
+            if cfg!(windows) {
+                "/fixture/note.md"
+            } else {
+                "/Fixture/Note.md"
+            }
+        );
+        assert_eq!(
+            normalized_spelling("/Fixture/Note.md") == normalized_spelling("/fixture/note.md"),
+            cfg!(windows)
+        );
+    }
+
+    #[test]
+    fn normalized_missing_windows_paths_keep_one_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let ordinary = if cfg!(windows) {
+            directory
+                .path()
+                .join("MYCMUX_MISSING_FIXTURE_0860")
+                .join("Note.md")
+        } else {
+            PathBuf::from(r"C:\MYCMUX_MISSING_FIXTURE_0860\Note.md")
+        };
+        let extended = PathBuf::from(format!(
+            r"\\?\{}",
+            ordinary.to_string_lossy().replace('/', "\\").to_uppercase()
+        ));
+        assert!(!ordinary.exists() && !extended.exists());
+        assert!(same_path(&ordinary, &extended));
+        assert!(!same_path(&ordinary, &ordinary.with_file_name("other.md")));
+    }
 }

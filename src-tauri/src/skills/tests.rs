@@ -5,11 +5,12 @@ use std::path::Path;
 
 fn fixture() -> (tempfile::TempDir, std::path::PathBuf) {
     let temp = tempfile::tempdir().unwrap();
-    let home = temp.path().join("home");
+    let root = if cfg!(windows) { temp.path().to_owned() } else { fs::canonicalize(temp.path()).unwrap() };
+    let home = root.join("home");
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/skills_home");
     let pocket = std::env::var_os("MYCMUX_POCKET_SOURCE");
     if let Some(pocket) = pocket {
-        let output = std::process::Command::new("python")
+        let output = std::process::Command::new(if cfg!(windows) { "python" } else { "python3" })
             .arg("-X")
             .arg("utf8")
             .arg(fixture.join("prepare_home.py"))
@@ -25,7 +26,7 @@ fn fixture() -> (tempfile::TempDir, std::path::PathBuf) {
             String::from_utf8_lossy(&output.stderr)
         );
     } else {
-        let output=std::process::Command::new("python").arg("-X").arg("utf8").arg("-c").arg("import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); from prepare_home import prepare; prepare(Path(sys.argv[2]))").arg(&fixture).arg(&home).output().unwrap();
+        let output=std::process::Command::new(if cfg!(windows) { "python" } else { "python3" }).arg("-X").arg("utf8").arg("-c").arg("import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); from prepare_home import prepare; prepare(Path(sys.argv[2]))").arg(&fixture).arg(&home).output().unwrap();
         assert!(
             output.status.success(),
             "{}",
@@ -275,4 +276,67 @@ fn frontmatter_live_optional_comparison_and_export() {
         );
         fs::write(output, serde_json::to_vec_pretty(&data).unwrap()).unwrap();
     }
+}
+
+#[test]
+fn usage_and_manual_keys_are_case_insensitive() {
+    let (_temp, home) = fixture();
+    fs::write(home.join(".claude.json"), json!({
+        "skillUsage":{"SAMPLE-REVIEW":{"usageCount":"9"},"OLD-NAME":{"usageCount":2}}
+    }).to_string()).unwrap();
+    let shared = home.join(".mycmux/skills");
+    let mut manual = catalog::read_json(&shared.join("shelf.json"));
+    manual["skills"] = json!({"SaMpLe-ReViEw":{"category":"code","label":"Case sample","symbol":null}});
+    fs::write(shared.join("shelf.json"), manual.to_string()).unwrap();
+    let shelf = collect(&home);
+    let row = shelf["skills"].as_array().unwrap().iter().find(|r|r["id"]=="sample-review").unwrap();
+    assert_eq!(row["usage"], json!({"claude":11,"codex":1}));
+    assert_eq!(row["usageCount"], 12);
+    assert_eq!(row["category"], "code");
+    assert_eq!(row["label"], "Case sample");
+    assert_eq!(row["symbol"], Value::Null);
+    assert_eq!(row["curation"], "manual");
+}
+
+#[test]
+fn codex_usage_includes_the_ninety_day_boundary_once_per_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let now_ms = 1_800_000_000_000_i64;
+    let cutoff_ms = now_ms - 90 * 86_400_000;
+    fs::write(temp.path().join("usage_codex.json"), json!({
+        "boundary":{"mtimeNs":cutoff_ms*1_000_000,"skills":["sample","sample"],"last":1200},
+        "recent":{"mtimeNs":(cutoff_ms+1)*1_000_000,"skills":["sample"],"last":1100},
+        "expired":{"mtimeNs":(cutoff_ms-1)*1_000_000,"skills":["sample"],"last":9999},
+        "missing-time":{"skills":["sample"],"last":9999}
+    }).to_string()).unwrap();
+    let (usage, recorded) = catalog::usage_at(temp.path(), now_ms as f64);
+    assert!(recorded);
+    assert_eq!(usage, json!({"sample":{"count":2,"last":1200.0}}));
+    assert!(!catalog::usage(&temp.path().join("absent")).1);
+}
+
+#[test]
+fn refreshing_rebuilds_memory_and_disk_from_current_shared_inputs() {
+    let (_temp, home) = fixture();
+    let shared = home.join(".mycmux/skills");
+    let snapshot = std::sync::Mutex::new(None);
+    let before = super::refresh_snapshot(&home, &shared, &snapshot).unwrap();
+    let row = |shelf: &Value| shelf["skills"].as_array().unwrap().iter()
+        .find(|r|r["id"]=="sample-review").unwrap().clone();
+    assert_eq!(row(&before)["usageCount"], 7);
+    fs::write(home.join(".claude.json"), json!({"skillUsage":{"sample-review":{"usageCount":20}}}).to_string()).unwrap();
+    let mut manual = catalog::read_json(&shared.join("shelf.json"));
+    manual["skills"]["sample-review"]["category"] = json!("code");
+    fs::write(shared.join("shelf.json"), manual.to_string()).unwrap();
+    let after = super::refresh_snapshot(&home, &shared, &snapshot).unwrap();
+    assert_eq!(row(&after)["usageCount"], 21);
+    assert_eq!(row(&after)["category"], "code");
+    assert_eq!(after["schemaVersion"], 1);
+    assert_eq!(*snapshot.lock().unwrap(), Some(after.clone()));
+    assert_eq!(catalog::read_json(&shared.join("cache.json")), after);
+    assert_ne!(row(&before), row(&after));
+    let blocked = home.join("blocked-cache-directory");
+    fs::write(&blocked, "a file cannot be a cache directory").unwrap();
+    assert!(super::refresh_snapshot(&home, &blocked, &snapshot).is_err());
+    assert_eq!(*snapshot.lock().unwrap(), Some(after));
 }

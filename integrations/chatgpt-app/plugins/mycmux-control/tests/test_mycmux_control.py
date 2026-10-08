@@ -71,6 +71,15 @@ snapshot = {
 
 if sys.argv[1:3] == ["panes", "--all"]:
     print(json.dumps(snapshot))
+elif sys.argv[1] == "status":
+    print(json.dumps({"sessions": [{
+        "session_id": "pty-workspace-pane-tab-1", "ui_state": "working", "input_revision": 0,
+        "view": {
+            "session_id": "pty-workspace-pane-tab-1", "session_epoch": 1, "session_revision": 1,
+            "lifecycle": "alive", "activity": "streaming", "health": "fresh",
+            "attention": {"kind": "none", "attention_id": None},
+        },
+    }]}))
 elif sys.argv[1] == "read":
     session = sys.argv[sys.argv.index("--session") + 1]
     lines = int(sys.argv[sys.argv.index("--lines") + 1])
@@ -151,9 +160,11 @@ class MycmuxClientTests(unittest.TestCase):
                 "MYCMUX_AGENT_CLI": "",
                 "MYCMUX_REPO_ROOT": "",
             }
+            # Model a cache outside any checkout even when TEMP is inside this worktree.
+            # Only the isolated USERPROFILE fixture contains an installed CLI.
             with mock.patch.object(control_server, "PLUGIN_ROOT", cached_plugin_root), mock.patch.dict(
                 os.environ, env, clear=False
-            ):
+            ), mock.patch.object(Path, "is_file", autospec=True, side_effect=lambda candidate: candidate == cli):
                 self.assertEqual(cli.resolve(), MycmuxClient._discover_cli().resolve())
 
     def test_read_validates_current_registry(self) -> None:
@@ -165,6 +176,19 @@ class MycmuxClientTests(unittest.TestCase):
             self.assertEqual("logical_screen_not_transcript", result["completeness"])
             with self.assertRaisesRegex(ToolFailure, "not present"):
                 client.read_screen("pty-missing", 80)
+
+    def test_status_reads_canonical_cli_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            client = MycmuxClient(write_fake_cli(Path(temporary)))
+            self.assertEqual("working", client.status()["sessions"][0]["ui_state"])
+
+    def test_timeout_error_retains_only_the_retry_marker(self) -> None:
+        client = MycmuxClient(Path(__file__))
+        response = subprocess.CompletedProcess([], 1, "", "Frontend response timed out PRIVATE_DETAIL")
+        with mock.patch.object(control_server.subprocess, "run", return_value=response):
+            with self.assertRaisesRegex(ToolFailure, "Frontend response timed out") as raised:
+                client.status()
+        self.assertNotIn("PRIVATE_DETAIL", str(raised.exception))
 
     def test_cli_child_does_not_inherit_tunnel_api_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -335,6 +359,7 @@ class SecureTunnelWrapperTests(unittest.TestCase):
                     str(script),
                     "-Mode",
                     "Validate",
+                    "-UseEnvironmentApiKey",
                     "-TunnelClientPath",
                     str(fake_client),
                     "-ProfileDir",
@@ -395,6 +420,248 @@ class SecureTunnelWrapperTests(unittest.TestCase):
             self.assertFalse(report["remoteAdminUiEnabled"])
             self.assertFalse(report["rawHttpLoggingEnabled"])
 
+
+def canonical_session(session_id: str, state: str, kind: str = "none") -> dict:
+    return {
+        "session_id": session_id,
+        "input_revision": 3,
+        "ui_state": state,
+        "view": {
+            "session_id": session_id,
+            "session_epoch": 2,
+            "session_revision": 4,
+            "lifecycle": "exited" if state == "done" else "alive",
+            "activity": "streaming" if state == "working" else "idle",
+            "attention": {"kind": kind, "attention_id": None if kind == "none" else "test-attention"},
+            "health": "fresh",
+        },
+    }
+
+
+class CanonicalStateTests(unittest.TestCase):
+    def service(self, root: Path, entries: list[dict], tabs: list[dict] | None = None):
+        client = mock.Mock(spec=MycmuxClient)
+        client.panes.return_value = {
+            "panes": [{"id": "test-pane", "tabs": tabs if tabs is not None else [{
+                "id": FAKE_TAB_ID, "sessionId": FAKE_SESSION_ID, "agentKind": "codex",
+                "agentStatus": "working", "processStatus": "working", "agentStatusStale": True,
+            }]}],
+            "workspaces": [],
+        }
+        client.status.return_value = {"sessions": entries}
+        return MycmuxControlService(client, BridgeStore(root / "state"))
+
+    def test_status_state_overrides_stale_registry_hints(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = self.service(Path(temporary), [canonical_session(FAKE_SESSION_ID, "done")])
+            result = service.call_tool("get_control_map", {})["structuredContent"]
+            tab = result["panes"][0]["tabs"][0]
+            self.assertEqual("done", tab["state"])
+            self.assertEqual("done", tab["agentStatus"])
+            self.assertFalse(tab["agentStatusStale"])
+            self.assertNotIn("processStatus", tab)
+            self.assertEqual("session.state_view", result["stateSource"])
+            self.assertEqual(1, result["summary"]["states"]["done"])
+            self.assertEqual(0, result["summary"]["states"]["working"])
+            service.client.status.assert_called_once_with()
+            service.client.panes.assert_called_once_with()
+
+    def test_missing_status_is_unknown_without_registry_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = self.service(Path(temporary), []).control_map()
+            tab = data["panes"][0]["tabs"][0]
+            self.assertEqual("unknown", tab["state"])
+            self.assertEqual("unknown", tab["agentStatus"])
+            self.assertEqual("unknown", tab["stateSource"])
+            self.assertIsNone(tab["attention"])
+            self.assertEqual(1, data["summary"]["missingStatusCount"])
+            self.assertEqual(1, data["summary"]["tabStates"]["unknown"])
+            self.assertEqual(0, sum(data["summary"]["states"].values()))
+
+    def test_structured_attention_identifies_questions_and_approvals(self) -> None:
+        entries = [canonical_session("test-input", "waiting", "input"), canonical_session("test-approval", "waiting", "approval")]
+        entries[0]["view"]["attention"]["prompt"] = "PRIVATE_TEXT_NOT_FOR_CONTROL_MAP"
+        entries[0]["agentSessionId"] = "PRIVATE_AGENT_SESSION"
+        tabs = [{"id": "tab-a", "sessionId": "test-input"}, {"id": "tab-b", "sessionId": "test-approval"}]
+        with tempfile.TemporaryDirectory() as temporary:
+            result = self.service(Path(temporary), entries, tabs).call_tool("get_control_map", {})["structuredContent"]
+            self.assertEqual(["input", "approval"], [tab["attention"]["kind"] for tab in result["panes"][0]["tabs"]])
+            self.assertEqual(1, result["summary"]["attention"]["input"])
+            self.assertEqual(1, result["summary"]["attention"]["approval"])
+            self.assertEqual(2, result["summary"]["states"]["waiting"])
+            self.assertNotIn("PRIVATE_", json.dumps(result))
+
+    def test_ended_sessions_without_tabs_remain_in_canonical_totals(self) -> None:
+        entries = [canonical_session(FAKE_SESSION_ID, "working"), canonical_session("ended-test", "done")]
+        with tempfile.TemporaryDirectory() as temporary:
+            data = self.service(Path(temporary), entries).control_map()
+            self.assertEqual(1, data["summary"]["tabCount"])
+            self.assertEqual(2, data["summary"]["sessionCount"])
+            self.assertEqual(1, data["summary"]["states"]["done"])
+            self.assertEqual(0, data["summary"]["tabStates"]["done"])
+            self.assertEqual(["working", "done"], [session["state"] for session in data["sessions"]])
+
+    def test_dashboard_uses_the_same_canonical_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = self.service(Path(temporary), [canonical_session(FAKE_SESSION_ID, "waiting", "approval")])
+            data = service.call_tool("open_mycmux_dashboard", {})["structuredContent"]
+            self.assertEqual("waiting", data["panes"][0]["tabs"][0]["agentStatus"])
+            self.assertFalse(data["panes"][0]["tabs"][0]["agentStatusStale"])
+            self.assertEqual("approval", data["panes"][0]["tabs"][0]["attention"]["kind"])
+
+    def test_unavailable_status_does_not_fall_back_to_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = self.service(Path(temporary), [])
+            service.client.status.side_effect = ToolFailure("status unavailable")
+            with self.assertRaisesRegex(ToolFailure, "status unavailable"):
+                service.control_map()
+
+    def test_invalid_or_ambiguous_status_fails_closed(self) -> None:
+        bad = canonical_session(FAKE_SESSION_ID, "working")
+        bad["view"]["session_id"] = "different-session"
+        scenarios = [
+            {"sessions": [bad]},
+            {"sessions": [canonical_session(FAKE_SESSION_ID, "working")] * 2},
+            {"sessions": [canonical_session(FAKE_SESSION_ID, "stale")]},
+            {},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            service = self.service(Path(temporary), [])
+            for status in scenarios:
+                with self.subTest(status=status):
+                    service.client.status.return_value = status
+                    with self.assertRaises(ToolFailure):
+                        service.control_map()
+
+
+@unittest.skipUnless(os.name == "nt", "PowerShell wrapper is Windows-specific")
+class FileKeyWrapperTests(unittest.TestCase):
+    def invoke(self, root: Path, mode: str, *arguments: str):
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        self.assertIsNotNone(powershell)
+        client = root / "fake-tunnel-client.cmd"
+        client.write_text('@echo off\r\nif "%1"=="--version" echo test-version\r\nexit /b 0\r\n', encoding="utf-8")
+        return subprocess.run([
+            powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+            str(PLUGIN_ROOT / "scripts" / "secure_mcp_tunnel.ps1"),
+            "-Mode", mode, "-TunnelClientPath", str(client),
+            "-ProfileDir", str(root / "profiles"), "-ApiKeyFile", str(root / "control-plane.key"),
+            *arguments,
+        ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, check=False)
+
+    def test_validate_uses_file_metadata_and_only_reports_reference(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="file key ") as temporary:
+            root = Path(temporary)
+            sentinel = os.urandom(20).hex()
+            key = root / "control-plane.key"
+            key.write_text(sentinel, encoding="utf-8")
+            with mock.patch.dict(os.environ, {"CONTROL_PLANE_API_KEY": os.urandom(20).hex()}):
+                result = self.invoke(root, "Validate")
+            self.assertEqual(0, result.returncode, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertTrue(data["apiKeyPresent"])
+            self.assertEqual("file:" + str(key), data["apiKeySource"])
+            self.assertNotIn(sentinel, result.stdout + result.stderr)
+
+    def test_missing_file_stops_before_run_or_doctor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            for mode in ("Run", "Doctor"):
+                with self.subTest(mode=mode):
+                    result = self.invoke(Path(temporary), mode)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn("Runtime key file missing", result.stderr)
+                    self.assertNotIn("test-version", result.stdout)
+
+    def test_existing_profile_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile = root / "profiles" / "mycmux-control.yaml"
+            profile.parent.mkdir()
+            original = b"# existing test profile\r\n"
+            profile.write_bytes(original)
+            result = self.invoke(root, "Init", "-TunnelId", "tunnel_TEST123")
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("Profile already exists", result.stderr)
+            self.assertEqual(original, profile.read_bytes())
+
+    def test_init_passes_reference_and_never_reads_key_value(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="file ref ") as temporary:
+            root = Path(temporary)
+            sentinel = os.urandom(20).hex()
+            key = root / "control-plane.key"
+            key.write_text(sentinel, encoding="utf-8")
+            driver = root / "fake_client.py"
+            recorded = root / "arguments.json"
+            driver.write_text(
+                "import json, sys\nfrom pathlib import Path\n"
+                f"Path({str(recorded)!r}).write_text(json.dumps(sys.argv[1:]), encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            client = root / "fake-tunnel-client.cmd"
+            client.write_text(f'@echo off\r\n"{sys.executable}" "{driver}" %*\r\n', encoding="utf-8")
+            powershell = shutil.which("powershell") or shutil.which("pwsh")
+            result = subprocess.run([
+                powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                str(PLUGIN_ROOT / "scripts" / "secure_mcp_tunnel.ps1"),
+                "-Mode", "Init", "-TunnelId", "tunnel_TEST123",
+                "-TunnelClientPath", str(client), "-ProfileDir", str(root / "profiles"),
+                "-ApiKeyFile", str(key),
+            ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, check=False)
+            self.assertEqual(0, result.returncode, result.stderr)
+            argv = json.loads(recorded.read_text(encoding="utf-8"))
+            self.assertEqual("file:" + str(key), argv[argv.index("--control-plane-api-key-ref") + 1])
+            mcp_command = argv[argv.index("--mcp-command") + 1]
+            self.assertNotIn("\\", mcp_command)
+            self.assertIn("mycmux_control_server.py", mcp_command)
+            self.assertNotIn(sentinel, result.stdout + result.stderr + json.dumps(argv))
+
+    def _init_with_fake_python(self, root: Path, with_windowless: bool):
+        bin_dir = root / "fakepython"
+        bin_dir.mkdir()
+        (bin_dir / "python.exe").write_bytes(b"")
+        if with_windowless:
+            (bin_dir / "pythonw.exe").write_bytes(b"")
+        driver = root / "fake_client.py"
+        recorded = root / "arguments.json"
+        driver.write_text(
+            "import json, sys\nfrom pathlib import Path\n"
+            f"Path({str(recorded)!r}).write_text(json.dumps(sys.argv[1:]), encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        client = root / "fake-tunnel-client.cmd"
+        client.write_text(f'@echo off\r\n"{sys.executable}" "{driver}" %*\r\n', encoding="utf-8")
+        key = root / "control-plane.key"
+        key.write_text("unused-test-value", encoding="utf-8")
+        env = dict(os.environ)
+        env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        self.assertIsNotNone(powershell)
+        result = subprocess.run([
+            powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+            str(PLUGIN_ROOT / "scripts" / "secure_mcp_tunnel.ps1"),
+            "-Mode", "Init", "-TunnelId", "tunnel_TEST123",
+            "-TunnelClientPath", str(client), "-ProfileDir", str(root / "profiles"),
+            "-ApiKeyFile", str(key),
+        ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, check=False, env=env)
+        self.assertEqual(0, result.returncode, result.stderr)
+        argv = json.loads(recorded.read_text(encoding="utf-8"))
+        return result, argv[argv.index("--mcp-command") + 1], bin_dir
+
+    def test_init_uses_windowless_python_next_to_python(self) -> None:
+        # A detached tunnel-client gives a console python.exe child its own window;
+        # closing it kills the MCP server (0xC000013A), so Init must pick pythonw.exe.
+        with tempfile.TemporaryDirectory() as temporary:
+            result, mcp_command, bin_dir = self._init_with_fake_python(Path(temporary), True)
+            expected = str(bin_dir / "pythonw.exe").replace("\\", "/")
+            self.assertTrue(mcp_command.replace('"', '').startswith(expected + ' '), mcp_command)
+            self.assertNotIn("pythonw.exe was not found", result.stderr)
+
+    def test_init_falls_back_to_python_and_says_so(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            result, mcp_command, bin_dir = self._init_with_fake_python(Path(temporary), False)
+            expected = str(bin_dir / "python.exe").replace("\\", "/")
+            self.assertTrue(mcp_command.replace('"', '').startswith(expected + ' '), mcp_command)
+            self.assertIn("pythonw.exe was not found", result.stderr)
 
 if __name__ == "__main__":
     unittest.main()
