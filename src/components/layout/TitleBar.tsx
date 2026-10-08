@@ -8,7 +8,9 @@ import { useKeybindingStore } from "../../stores/keybindingStore";
 import SettingsDialog, { type SettingsTabId } from "../settings/SettingsDialog";
 import { AiLogButton } from "../ailog/AiLogButton";
 import { AgentDesignButton } from "../agentDesign/AgentDesignButton";
+import { SkillsButton } from "../skills/SkillsButton";
 import { DashboardButton } from "../dashboard/DashboardButton";
+import { InboxButton } from "../inbox/InboxButton";
 import { AccountsButton } from "./AccountsButton";
 import { onlineStrings } from "../online/onlineStrings";
 import { titleBarStrings } from "./titleBarStrings";
@@ -284,7 +286,9 @@ export default function TitleBar({
         />
         <AiLogButton />
         <AgentDesignButton />
+        <SkillsButton />
         <DashboardButton />
+        <InboxButton />
         <div style={{ position: "relative" }}>
           <button
             onClick={() => {

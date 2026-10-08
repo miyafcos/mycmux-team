@@ -8,6 +8,7 @@ import { useVirtualRows } from "../../hooks/useVirtualRows";
 import { skillsApi, type SkillCatalog, type SkillRow } from "../../lib/skillsApi";
 import { searchSkills, type SkillMatch } from "./skillSearch";
 import { categoryTone, SkillSymbol } from "./symbolMap";
+import { SkillsExplorer } from "./SkillsExplorer";
 import { SkillDetail } from "./SkillDetail";
 import { SkillHighlight } from "./SkillHighlight";
 import { startSkill } from "./skillLaunch";
@@ -26,7 +27,8 @@ export interface SkillsViewProps {
   /** Stage A hosts inspect skills without starting, editing or exporting them. */
   readOnly?: boolean;
 }
-export function SkillsView({ initialSkillId = null, onClose, api = skillsApi, initialCatalog, readOnly = false }: SkillsViewProps) {
+export function SkillsView(props: SkillsViewProps) { return props.readOnly ? <SkillsExplorer {...props} /> : <ManagedSkillsView {...props} />; }
+function ManagedSkillsView({ initialSkillId = null, onClose, api = skillsApi, initialCatalog, readOnly = false }: SkillsViewProps) {
   const [catalog, setCatalog] = useState<SkillCatalog | null>(() => initialCatalog ?? api.peek());
   const [shelf, setShelf] = useState("all"); const [query, setQuery] = useState(""); const [agent, setAgent] = useState("all"); const [sort, setSort] = useState("usage");
   const [selected, setSelected] = useState<string | null>(initialSkillId); const [expanded, setExpanded] = useState(false); const [tab, setTab] = useState("content");

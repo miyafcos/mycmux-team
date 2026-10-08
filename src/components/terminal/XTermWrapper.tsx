@@ -71,6 +71,8 @@ import {
 } from "./terminalTurnMarkers";
 import { startsAsAgentTui } from "./agentTuiDetection";
 import { TerminalTranscriptPanel } from "./TerminalTranscriptPanel";
+import { useTerminalHistoryPanel } from "./useTerminalHistoryPanel";
+import { terminalProgressDiagnostics, type TerminalProgressViewport } from "../../lib/terminalProgressDiagnostics";
 import { terminalPaneStrings } from "../workspace/terminalPaneStrings";
 import {
   buildTurnListRows,
@@ -868,7 +870,11 @@ export default memo(function XTermWrapper({
   const turnListRequestRef = useRef(0);
   const turnChipVisibilityRef = useRef<TurnChipVisibilityController | null>(null);
   const turnListOpenRef = useRef(false);
-  const [transcriptPanelOpen, setTranscriptPanelOpen] = useState(false);
+  const { transcriptPanelOpen, setTranscriptPanelOpen, closeTranscriptPanel } = useTerminalHistoryPanel(sessionId);
+  const transcriptPanelOpenRef = useRef(transcriptPanelOpen);
+  transcriptPanelOpenRef.current = transcriptPanelOpen;
+  const progressViewportRef = useRef<(() => TerminalProgressViewport | null) | null>(null);
+  const progressDiagnosticsEnabled = useSettingsStore((state) => state.terminalProgressDiagnosticsEnabled);
   const turnListRetryTimerRef = useRef<number | null>(null);
   const chipWantedRef = useRef(false);
   const turnChipExitMsRef = useRef<number | null>(null);
@@ -1019,7 +1025,6 @@ export default memo(function XTermWrapper({
   }, [sessionId]);
 
   const openTranscriptPanel = useCallback(() => setTranscriptPanelOpen(true), []);
-  const closeTranscriptPanel = useCallback(() => setTranscriptPanelOpen(false), []);
 
   const openTranscriptDashboard = useCallback(() => {
     const tabId = tabIdForSession(sessionId);
@@ -1288,6 +1293,15 @@ export default memo(function XTermWrapper({
     // the viewport code does not read as if it were about wheel events.
     const isAgentTuiPane = forceWheelMouseReport;
     const repaintHold = createRepaintHoldController({ isStale: () => disposed });
+    let recoveryScreenOwners = 0;
+    const readProgressViewport = (): TerminalProgressViewport | null => {
+      if (disposed || termDisposed || !term) return null;
+      const buffer = term.buffer.active;
+      return { viewportY: buffer.viewportY, baseY: buffer.baseY,
+        alternate: buffer.type === "alternate", cols: term.cols, rows: term.rows,
+        overlayOwners: repaintHold.depth + recoveryScreenOwners + (transcriptPanelOpenRef.current ? 1 : 0) };
+    };
+    progressViewportRef.current = readProgressViewport;
     let lastSizeChangeAt: number | null = null;
     let repaintHoldTimer: ReturnType<typeof setTimeout> | null = null;
     let repaintHoldSettleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1665,6 +1679,7 @@ export default memo(function XTermWrapper({
       renderDisposable?.dispose();
       renderDisposable = currentTerm.onRender(({ start, end }) => {
         recordTerminalFlowRender(sessionId);
+        terminalProgressDiagnostics.render(sessionId);
         if (firstTerminalPaint) {
           firstTerminalPaint = false;
           recordPerf("terminal.first.paint", sessionId);
@@ -2285,6 +2300,8 @@ export default memo(function XTermWrapper({
     const writeTerminalOutput = (
       output: string | Uint8Array,
       watchdogMs = 2000,
+      progressEnd?: number,
+      progressGeneration?: number,
     ): Promise<void> => {
       return new Promise((resolve) => {
         if (!term || termDisposed) {
@@ -2296,6 +2313,7 @@ export default memo(function XTermWrapper({
         const measuredBytes = terminalWriteByteLength(output);
         const writeMeasurement = recordTerminalWriteStart(sessionId, measuredBytes);
         const flowWrite = startTerminalFlowWrite(sessionId, output);
+        const progressWrite = terminalProgressDiagnostics.startWrite(sessionId, progressEnd, progressGeneration);
         let callbackObserved = false;
         let settled = false;
         const watchdog = window.setTimeout(() => {
@@ -2332,7 +2350,10 @@ export default memo(function XTermWrapper({
           writeTerm.write(rewrittenOutput, () => {
             // A timeout or thrown write is not proof that xterm parsed the bytes.
             markTerminalBufferReady(writeTerm);
-            if (generation === pumpGeneration && !disposed && !termDisposed && writeTerm === term) streamHealth.applied();
+            if (generation === pumpGeneration && !disposed && !termDisposed && writeTerm === term) {
+              streamHealth.applied();
+              terminalProgressDiagnostics.finishWrite(sessionId, progressWrite);
+            }
             finish();
           });
         } catch {
@@ -2411,7 +2432,13 @@ export default memo(function XTermWrapper({
       if (recoveryPlan.action === "rebuild-truncated") {
         const prepared = await buildTerminalRecoveryFrame(scrollback, scrollbackSnapshot.startOffset, term.cols, term.rows);
         if (generation !== pumpGeneration || disposed || termDisposed || !canWritePendingBatches()) return false;
-        const unfreeze = await freezeTerminalScreen(term);
+        const releaseScreen = await freezeTerminalScreen(term);
+        recoveryScreenOwners += 1;
+        // Keep diagnostic bookkeeping in the screen release callback.
+        const unfreeze = (): void => {
+          recoveryScreenOwners -= 1;
+          releaseScreen();
+        };
         if (generation !== pumpGeneration || disposed || termDisposed || !term || !canWritePendingBatches()) {
           unfreeze();
           return false;
@@ -2424,7 +2451,7 @@ export default memo(function XTermWrapper({
           term.reset();
           outputDecoder = prepared.decoder;
           backgroundScanResync = true;
-          await writeTerminalOutput(stripTerminalMouseModeControlSequences(prepared.text), 8000);
+          await writeTerminalOutput(stripTerminalMouseModeControlSequences(prepared.text), 8000, scrollbackSnapshot.endOffset);
           if (generation !== pumpGeneration || disposed || termDisposed) return false;
           reanchorTurnMarks(sessionId, term);
           term.refresh(0, term.rows - 1);
@@ -2474,6 +2501,7 @@ export default memo(function XTermWrapper({
         await writeTerminalOutput(
           stripTerminalMouseModeControlSequences(replayText),
           replacesVisibleBuffer ? 8000 : 2000,
+          scrollbackSnapshot.endOffset,
         );
         if (generation !== pumpGeneration || disposed || termDisposed) return false;
         recordPerf("xterm.backend-replay.done", sessionId);
@@ -2612,7 +2640,7 @@ export default memo(function XTermWrapper({
             }
             bumpTerminalWriteCounter(sessionId);
             bumpPaintStat("pty-batch", sessionId);
-            await writeTerminalOutput(output);
+            await writeTerminalOutput(output, 2000, batch.scrollbackEnd, batch.generation);
             if (generation !== pumpGeneration || disposed || termDisposed) return;
             rememberTerminalRawTail(sessionId, chunk);
             lastSynchronizedScrollbackEnd = Math.max(
@@ -2685,6 +2713,7 @@ export default memo(function XTermWrapper({
       if (disposed || termDisposed) { ackBatch(batch); return; }
       streamHealth.received();
       recordTerminalFlowReceive(sessionId, batch.bytes, batch.resync);
+      terminalProgressDiagnostics.receive(sessionId, batch.generation, batch.scrollbackEnd);
       if (replayActive) {
         terminalScrollbackResyncNeeded.add(sessionId);
         ackBatch(batch);
@@ -3074,6 +3103,7 @@ export default memo(function XTermWrapper({
     };
 
     const cleanup = (): void => {
+      if (progressViewportRef.current === readProgressViewport) progressViewportRef.current = null;
       clearResumeRecovery();
       resumeActionsRef.current = { openOwner: () => {}, takeover: () => {}, fresh: () => {}, original: () => {}, saved: () => {} };
       stopStreamHealth?.();
@@ -3478,6 +3508,11 @@ export default memo(function XTermWrapper({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
+  useEffect(() => {
+    if (!progressDiagnosticsEnabled) return;
+    return terminalProgressDiagnostics.watch(sessionId, () => progressViewportRef.current?.() ?? null);
+  }, [sessionId, progressDiagnosticsEnabled]);
+
   const searchDecorations = useMemo(() => {
     const match = storeTheme.terminal.selectionBackground;
     const active = storeTheme.chrome.accent;
@@ -3527,8 +3562,6 @@ export default memo(function XTermWrapper({
     turnChipVisibilityRef.current?.noteLookBackIntent();
     refreshTurnChipRef.current();
   }, []);
-
-  useEffect(() => setTranscriptPanelOpen(false), [sessionId]);
 
   const setTurnListOpen = useCallback((open: boolean) => {
     turnListOpenRef.current = open;

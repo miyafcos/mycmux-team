@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Continue"
+﻿$ErrorActionPreference = "Continue"
 
 $global:MycmuxGrokExecutable = Get-Command grok -CommandType Application,ExternalScript -ErrorAction SilentlyContinue |
   Select-Object -First 1 -ExpandProperty Source
@@ -831,6 +831,7 @@ $Options = @(
   New-MycmuxOption "Custom..." @("__custom__") $null
   # Append so every existing agent/resume shortcut keeps its index.
   New-MycmuxOption "ChatGPT dots (Web)" @("__web_dots__") $null
+  New-MycmuxOption "Grok Bot (アプリ)" @("__app_grokbot__") $null
 )
 
 function New-MycmuxModelChoice {
@@ -1006,6 +1007,7 @@ $LaunchTargets = @{
   "grok-resume" = $Options[17]
   "custom" = $Options[18]
   "web-dots" = $Options[19]
+  "app-grokbot" = $Options[20]
 }
 
 function Invoke-MycmuxCustomCommand {
@@ -1066,6 +1068,37 @@ function Invoke-MycmuxWebTab {
   }
 }
 
+function Get-MycmuxGrokBotLaunchPath {
+  $protocol = "Registry::HKEY_CURRENT_USER\Software\Classes\grokbot"
+  if (Test-Path -LiteralPath $protocol) {
+    $registration = Get-ItemProperty -LiteralPath $protocol -Name "URL Protocol" -ErrorAction SilentlyContinue
+    if ($null -ne $registration) { return "grokbot://" }
+  }
+  if ($env:LOCALAPPDATA) {
+    $exe = Join-Path $env:LOCALAPPDATA "Programs\Grok Bot\Grok Bot.exe"
+    if (Test-Path -LiteralPath $exe -PathType Leaf) { return $exe }
+  }
+  return $null
+}
+
+function Invoke-MycmuxGrokBot {
+  $launchPath = Get-MycmuxGrokBotLaunchPath
+  if ($launchPath) {
+    try {
+      if ($launchPath -eq "grokbot://") {
+        Start-Process -FilePath $launchPath -ErrorAction Stop
+      } else {
+        Start-Process -FilePath $launchPath -ArgumentList "grokbot://" -ErrorAction Stop
+      }
+      Write-Host "Grok Bot を開きました (会話は Grok Bot の窓で)"
+      return
+    } catch {
+      # A stale registration or executable must still return to the shell.
+    }
+  }
+  Write-Host "Grok Bot が入っていません。https://x.ai/bot から入れてください"
+}
+
 function Invoke-MycmuxOption {
   param([Parameter(Mandatory = $true)]$Option)
 
@@ -1080,6 +1113,10 @@ function Invoke-MycmuxOption {
 
   # One arm per pseudo command on purpose: a menu entry with no arm is a dead
   # button, and tests/test_web_pane_contract.py checks these pair up by name.
+  if ($Option.Command[0] -eq "__app_grokbot__") {
+    Invoke-MycmuxGrokBot
+    return
+  }
   if ($Option.Command[0] -eq "__web_dots__") {
     Invoke-MycmuxWebTab "dots"
     return
@@ -1329,7 +1366,7 @@ while ($true) {
   }
 
   if ($key.KeyChar -eq "/") {
-    $selected = $Options.Count - 1
+    $selected = [Array]::IndexOf($Options, $LaunchTargets["custom"])
     break
   }
 

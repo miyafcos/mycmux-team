@@ -84,6 +84,20 @@ def test_local_socket_requires_a_token_from_every_caller() -> None:
         assert_contains(status_probe, snippet, "scripts/status_feed_probe.py")
 
 
+def test_agent_design_refresh_is_a_broad_realm_rust_command() -> None:
+    socket_rs = read_repo_text("src-tauri/src/socket.rs")
+    registry = function_slice(socket_rs, "const RUST_SOCKET_COMMAND_NAMES:", '#[cfg(feature = "e2e")]')
+    assert '"agent_design.refresh"' in registry
+    dispatch = function_slice(socket_rs, 'if cmd == "agent_design.refresh"', 'if cmd == "agent.capabilities"')
+    assert "crate::agent_design::socket_refresh(app.clone(), args).await" in dispatch
+    assert "app.emit" not in dispatch
+    assert 'snapshot["commands"] = serde_json::json!(RUST_SOCKET_COMMAND_NAMES);' in socket_rs
+    assert 'command == "agent_design.refresh"' in socket_rs
+    assert "if hook_realm_forbids(&command)" in socket_rs
+    assert socket_rs.index("if hook_realm_forbids(&command)") < socket_rs.index(".handle_hook(request_id, hook_cap, command, body)")
+    assert socket_rs.index("if !auth.authorize(provided_token.as_deref())") < socket_rs.index('if cmd == "agent_design.refresh"')
+
+
 def test_one_shot_tab_command_is_not_persisted() -> None:
     socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
     assert "command_argv" not in socket_listener
@@ -132,14 +146,31 @@ def test_human_activation_paths_remain_explicit() -> None:
         'focusController.request("tab-click", { sessionId: tab.sessionId, focus: true });',
         "src/components/workspace/TerminalPane.tsx",
     )
+    # Live-tail shares the dashboard's existing human navigation with the sidebar.
+    # Keep checking the caller and both activation intents after that extraction.
     dashboard_jump = function_slice(dashboard, "const jumpToCard = useCallback(", "  useEffect(() => {")
+    assert_contains(dashboard, 'import { jumpToPaneTab } from "../../lib/jumpToPaneTab";', "src/components/dashboard/DashboardView.tsx")
+    assert_contains(dashboard_jump, "jumpToPaneTab(card);", "src/components/dashboard/DashboardView.tsx")
+    assert dashboard_jump.index("jumpToPaneTab(card);") < dashboard_jump.index("onClose();")
+    navigation = read_repo_text("src/lib/jumpToPaneTab.ts")
+    human_jump = function_slice(navigation, "export function jumpToPaneTab(", "\n}")
     assert_contains(
-        dashboard_jump,
-        "useWorkspaceListStore.getState().setActiveWorkspace(card.workspaceId);",
-        "src/components/dashboard/DashboardView.tsx",
+        human_jump,
+        "useWorkspaceListStore.getState().setActiveWorkspace(workspaceId);",
+        "src/lib/jumpToPaneTab.ts",
     )
     assert_contains(
-        dashboard_jump,
-        'focusController.request("programmatic", { sessionId: card.tab.sessionId, focus: true });',
-        "src/components/dashboard/DashboardView.tsx",
+        human_jump,
+        "useWorkspaceLayoutStore.getState().setActivePaneTab(workspaceId, paneId, tab.id);",
+        "src/lib/jumpToPaneTab.ts",
+    )
+    assert_contains(
+        human_jump,
+        'focusController.request("programmatic", { sessionId: tab.sessionId, focus: true });',
+        "src/lib/jumpToPaneTab.ts",
+    )
+    assert_contains(
+        human_jump,
+        'focusController.request("programmatic", { sessionId: null, focus: false });',
+        "src/lib/jumpToPaneTab.ts",
     )

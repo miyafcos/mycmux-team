@@ -31,6 +31,7 @@ EXPECTED_LAUNCHER_OPTIONS = [
     "Change directory (案件)...",
     "Change directory (最近・フォルダを辿る)...",
     "ChatGPT dots (Web)",
+    "Grok Bot (アプリ)",
 ]
 
 EXPECTED_LAUNCHER_COMMANDS = [
@@ -57,6 +58,7 @@ EXPECTED_LAUNCHER_COMMANDS = [
     "__dir_anken__",
     "__dir__",
     "__web_dots__",
+    "__app_grokbot__",
 ]
 
 
@@ -84,6 +86,12 @@ def test_launcher_order_matches_current_contract() -> None:
 
     assert extract_shell_array(launcher, "options") == EXPECTED_LAUNCHER_OPTIONS
     assert extract_shell_array(launcher, "commands") == EXPECTED_LAUNCHER_COMMANDS
+    # PowerShell has no directory rows; all shared rows keep the same order.
+    ps_labels = re.findall(r'New-MycmuxOption\s+"([^"]+)"', launcher_ps1)
+    assert ps_labels == [
+        label for label, command in zip(EXPECTED_LAUNCHER_OPTIONS, EXPECTED_LAUNCHER_COMMANDS)
+        if not command.startswith("__dir_")
+    ]
     assert "restore.json" not in launcher
     assert_contains(launcher, "__ensure_fugu_env", "src-tauri/src/launcher.sh")
     assert_contains(launcher, "FUGU_API_KEY", "src-tauri/src/launcher.sh")

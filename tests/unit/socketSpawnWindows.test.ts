@@ -41,8 +41,9 @@ describe("caller-window spawn dispatch", () => {
   it.each(["anchorSessionId", "anchor_session_id"])("routes %s to the child's owner", (key) => {
     expect(spawnWindowForRequest("pane.spawn_tab", { [key]: "pty-caller" }, [], [peer()], "main")).toBe("mycmux-w2");
   });
-  it("prefers live local ownership over stale peer snapshots", () => {
-    expect(spawnWindowForRequest("pane.spawn", { anchorSessionId: "pty-caller" }, [own()], [peer()], "main")).toBe("main");
+  it("ignores its own stale snapshot and rejects a conflicting peer owner", () => {
+    expect(spawnWindowForRequest("pane.spawn", { anchorSessionId: "pty-caller" }, [own()], [peer("main")], "main")).toBe("main");
+    expect(() => spawnWindowForRequest("pane.spawn", { anchorSessionId: "pty-caller" }, [own()], [peer()], "main")).toThrow("conflicting");
   });
   it("fails closed for missing or conflicting callers and leaves implicit spawn local", () => {
     expect(() => spawnWindowForRequest("pane.spawn", { anchorSessionId: "gone" }, [own()], [peer()], "main")).toThrow("anchor session not found");
@@ -79,7 +80,8 @@ describe("caller-window spawn dispatch", () => {
     await listenForPeerSpawns();
     const listener = mocks.listeners.get(REQUEST)!;
     expect(listener.options).toEqual({ target: { kind: "Window", label: "mycmux-w2" } });
-    const payload = { requestId: "new", targetWindow: "mycmux-w2", replyWindow: "main", cmd: "pane.spawn_tab", args: {
+    const payload = { requestId: "new", targetWindow: "mycmux-w2", replyWindow: "main", cmd: "pane.spawn_tab",
+      expiresAt: Date.now() + 20_000, context: { command: "pane.spawn_tab", receivedAt: Date.now(), deadline: Date.now() + 25_000 }, args: {
       anchorSessionId: "pty-caller", commandArgv: ["echo", "child"], activate: false,
     } };
     await listener.fn({ payload: { ...payload, targetWindow: "mycmux-w3" } });
@@ -93,7 +95,8 @@ describe("caller-window spawn dispatch", () => {
     mocks.label = "mycmux-w2";
     useWorkspaceListStore.setState({ workspaces: [own()] });
     await listenForPeerSpawns(async () => { useWorkspaceListStore.setState({ workspaces: [] }); });
-    await mocks.listeners.get(REQUEST)!.fn({ payload: { requestId: "moved", targetWindow: "mycmux-w2", replyWindow: "main", cmd: "pane.spawn_tab", args: { anchorSessionId: "pty-caller" } } });
+    await mocks.listeners.get(REQUEST)!.fn({ payload: { requestId: "moved", targetWindow: "mycmux-w2", replyWindow: "main", cmd: "pane.spawn_tab",
+      expiresAt: Date.now() + 20_000, context: { command: "pane.spawn_tab", receivedAt: Date.now(), deadline: Date.now() + 25_000 }, args: { anchorSessionId: "pty-caller" } } });
     expect(mocks.createSession).not.toHaveBeenCalled();
     expect(mocks.emitTo).toHaveBeenCalledWith("main", RESULT, expect.objectContaining({ error: "pane.spawn_tab anchor session not found" }));
   });

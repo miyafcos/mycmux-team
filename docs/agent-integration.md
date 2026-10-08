@@ -135,6 +135,18 @@ python C:/Users/miyaz/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py answ
 - 未移行の外部ツールがあるときの逃げ道は、mycmux を `MYCMUX_SOCKET_AUTH=off` の環境で起動すること (全リクエストが無認証で通る。diag.log に警告が残る)
 - 詳細は `docs/features/implemented/socket-api-and-automation.md` の「認証」節
 
+### エージェント設計の読み直し (`agent_design.refresh`)
+
+ポケットなどから PC の共通目録を読み直す Rust 側の制御 API。要求例は `{"cmd":"agent_design.refresh","args":{"workFolder":null},"token":"<広いtoken>"}`。`args` はオブジェクト、`workFolder` は必須で `string|null`。null またはホームのフルパスはホームを指定する。それ以外は、このホームの `cache.json` の contexts にある作業フォルダのフルパスだけを受け付ける。
+
+受理時のソケットの返り値は `{"id":7,"result":{"accepted":true,"startedAt":"2026-10-07T12:00:00+00:00"},"error":null}`。startedAt は時差つき ISO 8601 の受付時刻。同じホーム・作業フォルダの読み直しが実行中なら `{"id":8,"result":{"accepted":true,"alreadyRunning":true},"error":null}` を返し、新しい読み手を起動しない。UI の読み直しも同じ処理を共有し、UI は完了した目録を待って表示する。
+
+受付の目安は100ms以内。会話・設定の解析、catalog.json/cache.json の原子的な書き込みはバックグラウンドで行い、受付の返事は完了を表さない。完了すると従来の目録と履歴を更新し、`agent-design-refreshed` に `{workFolder}` を通知する。失敗時は目録を成功扱いで更新せず、診断ログに記録する。ポケットは generatedAt の変化を確認する。
+
+認可は既存の `CredentialRealm::Broad`（`~/.mycmux/mycmux.token`、試験 profile ではその runtime dir）。`hook_cap` のペイン限定資格情報は `unauthorized`、広い token と hook_cap の同時指定は従来どおり `malformed`。この命令はホーム全体を読むためペイン限定の Hook realm に入れない。広い token の欠落・不一致は従来の `{"ok":false,"error":"unauthorized"}`。
+
+引数の形・型の誤りは `workFolderInvalid`、履歴にない・相対パスのフォルダは `workFolderUnknown`、既知でも現在開けないフォルダは `folderUnavailable`。ホームが取れない場合は `homeUnavailable`、受付状態が使えない場合は `stateUnavailable`。通常のエラーは `{"id":7,"result":null,"error":"workFolderUnknown"}` の形。`agent.capabilities` の既存 version/adapters を保ち、トップレベルの `commands` にこの命令を含む Rust 側の命令一覧を返す。`system.version.commands` にも載る。
+
 ### Antigravity (agy) の可視 spawn (2026-07-16 追加)
 
 Gemini CLI は 2026-06-18 に個人アカウント向け終了 (実測: `IneligibleTierError`)。後継は

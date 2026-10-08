@@ -120,6 +120,27 @@ describe("TerminalTranscriptPanel", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("lets another pane keep its Escape input while this history is open", async () => {
+    const onClose = await mountPanel();
+    const input = document.createElement("textarea"); document.body.append(input); input.focus();
+    const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    await act(async () => { input.dispatchEvent(escape); });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(escape.defaultPrevented).toBe(false);
+  });
+
+  it("closes only the focused history when two readers are mounted", async () => {
+    const first = vi.fn(), second = vi.fn();
+    const container = document.createElement("div"); document.body.replaceChildren(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<>
+      <TerminalTranscriptPanel sessionId={SESSION} tabId={TAB} onClose={first} />
+      <TerminalTranscriptPanel sessionId="pty-session-b" tabId="tab-b" onClose={second} />
+    </>); });
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(first).not.toHaveBeenCalled(); expect(second).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps its Dashboard link as an explicit way out", async () => {
     const onOpenDashboard = vi.fn();
     const container = document.createElement("div");

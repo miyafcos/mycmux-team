@@ -4,9 +4,8 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-// The stage 1 catalogue's source/placement reader, preview and sanitiser are
-// compiled here as a read-only bridge. Its collect()/listing() and write APIs
-// are never called from agent design.
+// Reuse stage 1's sources, usage and curation, preview and sanitiser. Its
+// collect()/listing() and write APIs are never called from agent design.
 use super::stage1_bridge as bridge;
 fn stage1_sources(
     home: &Path,
@@ -78,8 +77,8 @@ fn identity(path: &Path) -> Option<(String, Value, String)> {
     Some((id, fm, body.into()))
 }
 pub fn catalog(home: &Path, catalog: &Catalog) -> Value {
-    let old = safe::json(&home.join(".mycmux/skills/cache.json")).unwrap_or(Value::Null);
-    let mut rows: BTreeMap<String, Value> = BTreeMap::new();
+    let mut rows = BTreeMap::new();
+    let mut places: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     for doc in sources(home, catalog) {
         let Some((id, fm, _)) = identity(&doc.path) else {
             continue;
@@ -93,42 +92,23 @@ pub fn catalog(home: &Path, catalog: &Catalog) -> Value {
         } else {
             id
         };
-        let key = id.to_lowercase();
-        let cached = old["skills"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .chain(old["hiddenSkills"].as_array().into_iter().flatten())
-            .find(|r| {
-                r["id"]
-                    .as_str()
-                    .is_some_and(|s| s.eq_ignore_ascii_case(&id))
-            });
-        let row=rows.entry(key.clone()).or_insert_with(||{
-            let description=fm["description"].as_str().unwrap_or("");
-            json!({"id":key,"label":cached.and_then(|r|r["label"].as_str()).unwrap_or(&id),"description":description,"line":description.lines().next().unwrap_or(""),
-                "kind":doc.kind,"plugin":doc.plugin,"category":cached.and_then(|r|r["category"].as_str()).unwrap_or("unsorted"),
-                "symbol":cached.and_then(|r|r["symbol"].as_str()),"glyph":"S","agents":[],"aliases":[],"curation":"manual","isNew":false,
-                "docPath":doc.path,"calls":{},"usageCount":cached.and_then(|r|r["usageCount"].as_u64()).unwrap_or(0),
-                "usage":{"claude":0,"codex":0},"lastUsedAt":null,"body":"","triggers":null,
-                "modifiedAt":safe::modified(&doc.path).unwrap_or(0),"fileSize":safe::size(&doc.path,false).bytes.unwrap_or(0),"codexRecorded":false})
-        });
-        if let Some(agents) = row["agents"].as_array_mut() {
-            if !agents.iter().any(|a| a == &doc.agent) {
-                agents.push(json!(doc.agent));
-            }
+        bridge::catalog::add(&mut rows, &id, fm["description"].as_str().unwrap_or(""),
+            &doc.agent, &doc.kind, doc.plugin.as_deref(), Some(&doc.path));
+        if fm["metadata"].is_object() {
+            let row = rows.get_mut(&id.to_lowercase()).unwrap();
+            let mut metadata = fm["metadata"].clone();
+            bridge::catalog::merge(&mut metadata, &row.metadata);
+            row.metadata = metadata;
         }
-        row["calls"][&doc.agent] = json!(format!(
-            "{}{}",
-            if doc.agent == "claude" { "/" } else { "$" },
-            id
-        ));
-        if doc.agent == "claude" {
-            row["docPath"] = json!(doc.path);
-        }
+        let size = safe::size(&doc.path, true);
+        places.entry(id.to_lowercase()).or_default().push(json!({"service":doc.agent,"path":doc.path,
+            "chars":size.chars,"lines":size.lines,"bytes":size.bytes,"modifiedAt":safe::modified(&doc.path)}));
     }
-    let (_, _, claude_paths) = stage1_sources(home);
-    for service in &catalog.services {
+    let (_, commands, claude_paths) = stage1_sources(home);
+    for name in commands {
+        bridge::catalog::add(&mut rows, &name, "", "claude", "command", None, None);
+    }
+    for service in catalog.services.iter().filter(|s| s.id != "hermes") {
         for entry in &service.session.listing.entries {
             let key = entry.name.to_lowercase();
             let path = if service.id == "claude" {
@@ -148,33 +128,94 @@ pub fn catalog(home: &Path, catalog: &Catalog) -> Value {
                 "synced" => "plugin",
                 other => other,
             };
-            let row=rows.entry(key.clone()).or_insert_with(||json!({
-                "id":key,"label":entry.name,"description":"","line":"","kind":kind,"plugin":entry.plugin,
-                "category":"unsorted","symbol":null,"glyph":"S","agents":[],"aliases":[],"curation":"manual","isNew":false,
-                "docPath":path,"calls":{},"usageCount":0,"usage":{"claude":0,"codex":0},"lastUsedAt":null,
-                "body":"","triggers":null,"modifiedAt":path.as_ref().and_then(|p|safe::modified(p)).unwrap_or(0),
-                "fileSize":path.as_ref().and_then(|p|safe::size(p,false).bytes).unwrap_or(0),"codexRecorded":false
-            }));
-            if let Some(agents) = row["agents"].as_array_mut() {
-                if !agents.iter().any(|a| a == &service.id) {
-                    agents.push(json!(service.id));
+            bridge::catalog::add(&mut rows, &entry.name, "", &service.id, kind,
+                entry.plugin.as_deref(), path.as_deref());
+            if let Some((_, fm, _)) = path.as_deref().and_then(identity) {
+                if fm["metadata"].is_object() {
+                    let row = rows.get_mut(&key).unwrap();
+                    let mut metadata = fm["metadata"].clone();
+                    bridge::catalog::merge(&mut metadata, &row.metadata);
+                    row.metadata = metadata;
                 }
             }
-            row["calls"][&service.id] = json!(format!(
-                "{}{}",
-                if service.id == "claude" { "/" } else { "$" },
-                entry.name
-            ));
         }
     }
     let defaults: Value = serde_json::from_str(bridge::catalog::DEFAULTS).unwrap_or(Value::Null);
-    let categories = old["categories"].as_array().cloned().unwrap_or_else(|| {
-        defaults["categories"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-    });
-    json!({"generatedAt":catalog.generated_at,"categories":categories,"skills":rows.into_values().collect::<Vec<_>>(),"hiddenSkills":[],"hiddenCount":0,"newCount":0})
+    let mut value = bridge::catalog::decorate(home, &home.join(".mycmux/skills"), defaults, rows, false);
+    value["generatedAt"] = json!(catalog.generated_at);
+    let claude_path = home.join(".claude.json");
+    let codex_path = home.join(".mycmux/skills/usage_codex.json");
+    let claude = safe::json(&claude_path);
+    let codex_raw = safe::json(&codex_path);
+    let state = |path: &Path, value: &Option<Value>| {
+        if !path.exists() { "unavailable" }
+        else if safe::private(path) || safe::private(&safe::canonical(path)) || value.as_ref().is_none_or(|v| !v.is_object()) { "failed" }
+        else { "available" }
+    };
+    let claude_state = if claude.as_ref().is_some_and(|v| !v["skillUsage"].is_object()) { "unavailable" } else { state(&claude_path, &claude) };
+    let mut codex_state = state(&codex_path, &codex_raw);
+    let mut codex_usage = json!({});
+    if codex_state == "available" {
+        let cutoff = chrono::Utc::now().timestamp_millis() as f64 - 90.0 * 86400000.0;
+        for entry in codex_raw.as_ref().and_then(Value::as_object).into_iter().flat_map(|files| files.values()) {
+            let Some(mtime) = entry["mtimeNs"].as_f64().filter(|v| v.is_finite()) else { codex_state = "failed"; break; };
+            let Some(skills) = entry["skills"].as_array().filter(|names| names.iter().all(Value::is_string)) else { codex_state = "failed"; break; };
+            if mtime / 1_000_000.0 < cutoff { continue; }
+            let names: BTreeSet<_> = skills.iter().filter_map(Value::as_str).map(str::to_lowercase).collect();
+            for name in names {
+                let count = codex_usage[&name]["count"].as_u64().unwrap_or(0) + 1;
+                let last = [codex_usage[&name]["last"].as_f64(), entry["last"].as_f64()].into_iter().flatten().filter(|v| v.is_finite() && *v > 0.0).max_by(f64::total_cmp);
+                codex_usage[&name] = json!({"count":count,"last":last});
+            }
+        }
+    }
+    // Decorate both shelves after alias/hidden curation, retaining v04's units
+    // and missing/failed states without consulting or writing an old snapshot.
+    for field in ["skills", "hiddenSkills"] {
+        for row in value[field].as_array_mut().into_iter().flatten() {
+            let key = row["id"].as_str().unwrap_or("").to_owned();
+            let names: BTreeSet<_> = std::iter::once(key.clone())
+                .chain(row["aliases"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_lowercase))
+                .collect();
+            let entries: Vec<_> = claude.as_ref().and_then(|v| v["skillUsage"].as_object())
+                .into_iter().flatten().filter(|(name, _)| names.contains(&name.to_lowercase())).map(|(_, entry)| entry).collect();
+            let parsed_count: Option<u64> = entries.iter().map(|entry| entry["usageCount"].as_u64()
+                .or_else(|| entry["usageCount"].as_str().and_then(|value| value.parse::<u64>().ok())))
+                .try_fold(0_u64, |sum, count| sum.checked_add(count?));
+            let row_claude_state = if parsed_count.is_none() { "failed" } else { claude_state };
+            let count = parsed_count.unwrap_or(0);
+            let last_claude = if row_claude_state == "available" {
+                entries.iter().filter_map(|entry| entry["lastUsedAt"].as_f64())
+                    .filter(|value| value.is_finite() && *value > 0.0).max_by(f64::total_cmp)
+            } else { None };
+            let has_codex = row["agents"].as_array().is_some_and(|agents| agents.iter().any(|agent| agent == "codex"));
+            let count_codex = if has_codex { names.iter().map(|name| codex_usage[name.as_str()]["count"].as_u64().unwrap_or(0)).sum() } else { 0 };
+            let last_codex = if has_codex && codex_state == "available" {
+                names.iter().filter_map(|name| codex_usage[name.as_str()]["last"].as_f64())
+                    .filter(|value| value.is_finite() && *value > 0.0).max_by(f64::total_cmp)
+            } else { None };
+            row["places"] = json!(names.iter().flat_map(|name| places.get(name).into_iter().flatten()).collect::<Vec<_>>());
+            row["usageRecords"] = json!({"sampledAt":catalog.generated_at,"claude":{"status":row_claude_state,"count":if row_claude_state=="available" {Some(count)} else {None},"lastAt":last_claude,"source":"skillUsage"},"codex":{"status":codex_state,"count":if codex_state=="available" {Some(count_codex)} else {None},"lastAt":last_codex,"source":"usage_codex.json","days":90}});
+            row["usage"] = json!({"claude":count,"codex":count_codex});
+            row["usageCount"] = json!(count.saturating_add(count_codex));
+            row["lastUsedAt"] = json!([last_claude, last_codex].into_iter().flatten().max_by(f64::total_cmp));
+            row["codexRecorded"] = json!(codex_state == "available");
+            row["listedIn"] = json!({"claude":catalog.services.iter().find(|s|s.id=="claude").filter(|s| s.session.file.is_some() && s.session.listing.count.is_some()).map(|s|s.session.listing.entries.iter().any(|entry|names.contains(&entry.name.to_lowercase()))),"codex":catalog.services.iter().find(|s|s.id=="codex").filter(|s| s.session.file.is_some() && s.session.listing.count.is_some()).map(|s|s.session.listing.entries.iter().any(|entry|names.contains(&entry.name.to_lowercase())))});
+        }
+    }
+    super::redaction::scrub(&mut value);
+    value
+}
+pub(super) fn listed_source(home:&Path,catalog:&Catalog,path:&Path)->Option<String> {
+    sources(home,catalog).into_iter().find(|doc|safe::canonical(&doc.path)==safe::canonical(path)).map(|doc|doc.agent)
+}
+pub(super) fn content_item(home:&Path,catalog:&Catalog,id:&str)->Option<super::model::Item> {
+    let path=matching(home,catalog,id).into_iter().next()?;
+    if let Some(item)=catalog.items.iter().find(|i|i.path.as_deref().is_some_and(|p|safe::normalized(Path::new(p))==safe::normalized(&path))) {return Some(item.clone());}
+    let service=listed_source(home,catalog,&path).unwrap_or_else(||if path.starts_with(home.join(".claude")){"claude".into()}else{"codex".into()});
+    Some(super::model::Item {id:id.into(),service,layer:5,display_name:id.into(),path:Some(path.to_string_lossy().into()),
+        kind:if path.starts_with(home.join(".claude/commands")){"command"}else{"skill"}.into(),status:"present".into(),size:safe::size(&path,false),
+        read_timing:"onDemand".into(),evidence:"declaration".into(),modified_at:safe::modified(&path),fields:vec![],conditions:vec![],document_allowed:false,active:true})
 }
 fn matching(home: &Path, catalog: &Catalog, id: &str) -> Vec<PathBuf> {
     let mut paths: Vec<_> = sources(home, catalog)
@@ -279,7 +320,7 @@ pub fn read(
     match action {
         "document" => {
             use kuchikiki::traits::TendrilSink;
-            let text = safe::text(path, safe::DOCUMENT_LIMIT).ok_or("fileUnavailable")?;
+            let text = super::redaction::mask(&safe::text(path, safe::DOCUMENT_LIMIT).ok_or("fileUnavailable")?,false).body;
             let (fm, body) = frontmatter::split(&text);
             let html = bridge::detail::markdown(body);
             let tree = kuchikiki::parse_html().one(html.clone()).document_node;
@@ -319,8 +360,8 @@ pub fn read(
                 .get(right.ok_or("fileUnavailable")?)
                 .ok_or("fileUnavailable")?;
             Ok(bridge::detail::diff(
-                &safe::text(left, safe::DOCUMENT_LIMIT).ok_or("fileUnavailable")?,
-                &safe::text(right, safe::DOCUMENT_LIMIT).ok_or("fileUnavailable")?,
+                &super::redaction::mask(&safe::text(left, safe::DOCUMENT_LIMIT).ok_or("fileUnavailable")?,false).body,
+                &super::redaction::mask(&safe::text(right, safe::DOCUMENT_LIMIT).ok_or("fileUnavailable")?,false).body,
             ))
         }
         _ => Err("readOnly".into()),

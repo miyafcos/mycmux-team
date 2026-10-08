@@ -1281,11 +1281,12 @@ pub async fn set_app_frontend_visible(
 pub async fn get_session_scrollback(
     state: State<'_, AppState>,
     session_id: String,
+    since: Option<crate::pty::session::ScrollbackCursor>,
 ) -> Result<Response, String> {
     let manager = state.session_manager.clone();
     crate::util::task::run_blocking("get_session_scrollback", move || {
         manager
-            .get_scrollback_snapshot(&session_id)
+            .get_scrollback_snapshot(&session_id, since.as_ref())
             .map(|snapshot| Response::new(snapshot.into_wire()))
     }).await
 }

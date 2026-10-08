@@ -62,9 +62,9 @@ describe("other-window restored tabs", () => {
     mocks.emitTo.mockImplementation(async (window, event, request) => {
       expect(window).toBe("mycmux-w2");
       expect(event).toBe(REQUEST);
-      expect(request).toMatchObject({ sessionId: "peer-pty", replyWindow: "main" });
+      expect(request).toMatchObject({ cmd: "pane.start_tab", args: { sessionId: "peer-pty" }, targetWindow: "mycmux-w2", replyWindow: "main" });
       await mocks.listeners.get(RESULT)!({ payload: {
-        requestId: request.requestId, result: { started: true, sessionId: "peer-pty" },
+        requestId: request.requestId, ownerWindow: "mycmux-w2", result: { started: true, sessionId: "peer-pty" },
       } });
     });
     expect(await handleSocketCommand("pane.start_tab", { sessionId: "peer-pty" })).toEqual({
@@ -79,9 +79,9 @@ describe("other-window restored tabs", () => {
     const error = 'AGENT_SESSION_ALREADY_RUNNING:{"kind":"codex","agentSessionId":"peer-conversation","ownerSessionId":"owner"}';
     mocks.emitTo.mockImplementation(async (_window, _event, request) => {
       await mocks.listeners.get(RESULT)!({ payload: { requestId: "another-request", error: "ignore" } });
-      await mocks.listeners.get(RESULT)!({ payload: { requestId: request.requestId, error } });
+      await mocks.listeners.get(RESULT)!({ payload: { requestId: request.requestId, ownerWindow: "mycmux-w2", error } });
     });
-    await expect(requestPeerTabStart("mycmux-w2", "peer-pty")).rejects.toBe(error);
+    await expect(requestPeerTabStart("mycmux-w2", "peer-pty")).rejects.toThrow(error);
     expect(mocks.unlisten).toHaveBeenCalledOnce();
   });
 
@@ -98,17 +98,19 @@ describe("other-window restored tabs", () => {
   it("runs the owner's local start handler and sends the result to the caller", async () => {
     const start = vi.fn(async () => ({ started: false, reason: "already_running" as const, sessionId: "peer-pty" }));
     await listenForPeerTabStarts(start);
-    await mocks.listeners.get(REQUEST)!({ payload: { requestId: "request", sessionId: "peer-pty", replyWindow: "main" } });
+    await mocks.listeners.get(REQUEST)!({ payload: { requestId: "request", targetWindow: "main", cmd: "pane.start_tab", args: { sessionId: "peer-pty" }, replyWindow: "main",
+      expiresAt: Date.now() + 20_000, context: { command: "pane.start_tab", receivedAt: Date.now(), deadline: Date.now() + 25_000 } } });
     expect(start).toHaveBeenCalledExactlyOnceWith("peer-pty");
     expect(mocks.emitTo).toHaveBeenCalledExactlyOnceWith("main", RESULT, {
-      requestId: "request", result: { started: false, reason: "already_running", sessionId: "peer-pty" },
+      requestId: "request", ownerWindow: "main", result: { started: false, reason: "already_running", sessionId: "peer-pty" },
     });
   });
 
   it("preserves an owner-side launch error", async () => {
     const error = "pane.start_tab session not found";
     await listenForPeerTabStarts(async () => { throw new Error(error); });
-    await mocks.listeners.get(REQUEST)!({ payload: { requestId: "request", sessionId: "peer-pty", replyWindow: "main" } });
-    expect(mocks.emitTo).toHaveBeenCalledExactlyOnceWith("main", RESULT, { requestId: "request", error });
+    await mocks.listeners.get(REQUEST)!({ payload: { requestId: "request", targetWindow: "main", cmd: "pane.start_tab", args: { sessionId: "peer-pty" }, replyWindow: "main",
+      expiresAt: Date.now() + 20_000, context: { command: "pane.start_tab", receivedAt: Date.now(), deadline: Date.now() + 25_000 } } });
+    expect(mocks.emitTo).toHaveBeenCalledExactlyOnceWith("main", RESULT, { requestId: "request", ownerWindow: "main", error });
   });
 });

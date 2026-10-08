@@ -45,7 +45,9 @@ describe("XTermWrapper turn-chip lifecycle wiring", () => {
   });
 
   it("drops the reader when the pane switches session", () => {
-    expect(source).toContain("useEffect(() => setTranscriptPanelOpen(false), [sessionId]);");
+    expect(source).toContain("useTerminalHistoryPanel(sessionId)");
+    const historySource = readFileSync(new URL("../../src/components/terminal/useTerminalHistoryPanel.ts", import.meta.url), "utf8");
+    expect(historySource).toMatch(/useEffect\(\(\) => \{\s*setTranscriptPanelOpen\(false\);[\s\S]*?\}, \[sessionId\]\);/);
   });
 
   it("pins the chip while the history list is open", () => {

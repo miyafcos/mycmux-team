@@ -40,17 +40,46 @@ export interface AgentDesignCatalog {
   readingFlows: { service: AgentServiceId; steps: { id: string; stage: number; timing: string; chars: number | null; evidence: string; itemIds: string[]; hookScripts: string[] }[] }[];
   compareRows: { id: string; tag: string; cells: { service: AgentServiceId; state: string; itemIds: string[]; values: Record<string, number | null>; fields: DesignField[] }[] }[];
   documents: Record<string, DesignDocument>; closedRevision: number;
+  closedEntries?: { id: string; reason: string; closedAt: string; workFolder: string }[];
 }
-export interface DesignDocument { id: string; body: string | null; fields: DesignField[]; size: DesignSize; status: string }
+export interface DocumentMask { index: number; start: number; end: number; line: number; label: string }
+export interface DocumentFile { id: string; name: string; directory: boolean; bytes: number | null; private: boolean; reason: string | null }
+export interface DesignDocument {
+  id: string; body: string | null; fields: DesignField[]; size: DesignSize; status: string;
+  /** Present only on the on-open response, never in the portable catalogue. */
+  html?: string; frontmatter?: Record<string, unknown>; toc?: { level: number; text: string }[];
+  masks?: DocumentMask[]; files?: DocumentFile[]; fileCount?: number; fileOffset?: number;
+  nextOffset?: number | null; relative?: string | null; parent?: string | null; folder?: string;
+  path?: string | null; revision?: string; reason?: string | null; truncated?: boolean;
+}
 export interface DesignScene { itemIds: string[]; chars: number | null; evidence: string }
+export interface DesignAmountChange { key: string; before: number | null; after: number | null }
+export interface DesignHistoryChange {
+  id: string; itemId: string | null; service: AgentServiceId; layer: number; displayName: string; path: string | null;
+  kind: string; badge: string; source: string; at: string; beforeBytes: number | null; afterBytes: number | null;
+  amountChanges: DesignAmountChange[]; hash: string | null; subject: string | null; author: string | null;
+  linesAdded: number | null; linesDeleted: number | null;
+}
+export interface DesignHistory {
+  schemaVersion: number; snapshotCount: number; capturedAt: string | null; writing: boolean; warnings: string[];
+  changes: DesignHistoryChange[];
+  snapshots?: { id: string; capturedAt: string; catalogGeneratedAt: string; itemCount: number; services?: { service: string; state: string; itemCount: number }[] }[];
+}
+export interface DesignGitHistory { status: string; changes: DesignHistoryChange[] }
+export interface DesignHistoryDiff { mode: string; status: string; beforeBytes: number | null; afterBytes: number | null; truncated: boolean; lines: { kind: string; oldLine: number | null; newLine: number | null; text: string }[] }
 export interface AgentDesignApi {
   peek: (cwd?: string | null) => AgentDesignCatalog | null;
   cached: (cwd?: string | null) => Promise<AgentDesignCatalog | null>;
   refresh: (cwd?: string | null) => Promise<AgentDesignCatalog>;
-  document: (id: string, cwd?: string | null) => Promise<DesignDocument>;
+  document: (id: string, cwd?: string | null, relative?: string | null, offset?: number) => Promise<DesignDocument>;
+  reveal?: (id: string, cwd: string | null, relative: string | null, mask: number, revision: string) => Promise<string>;
   close: (id: string, reason: string, cwd?: string | null) => Promise<AgentDesignCatalog>;
   scene: (touchedPath: string, cwd?: string | null) => Promise<DesignScene>;
   setHermesHome: (path: string) => Promise<void>;
+  history?: (cwd?: string | null) => Promise<DesignHistory>;
+  historyPair?: (before: string, after: string, cwd?: string | null) => Promise<DesignHistoryChange[]>;
+  historyGit?: (id: string, cwd?: string | null) => Promise<DesignGitHistory>;
+  historyDiff?: (id: string, hash: string, cwd?: string | null) => Promise<DesignHistoryDiff>;
 }
 const snapshots = new Map<string, AgentDesignCatalog>();
 const versions = new Map<string, number>();
@@ -79,11 +108,43 @@ export const agentDesignApi: AgentDesignApi = {
     void promise.finally(() => { if (inFlight.get(key(cwd)) === promise) inFlight.delete(key(cwd)); }).catch(() => {});
     return promise;
   },
-  document: (id, cwd) => invoke("agent_design_document", { id, cwd: cwd ?? null }),
+  document: (id, cwd, relative, offset) => invoke("agent_design_document", { id, cwd: cwd ?? null,
+    ...(relative !== undefined ? { relative } : {}), ...(offset !== undefined ? { offset } : {}) }),
+  reveal: (id, cwd, relative, mask, revision) => invoke("agent_design_reveal", { id, cwd, relative, mask, revision }),
   close: async (id, reason, cwd) => {
     const data = await invoke<AgentDesignCatalog>("agent_design_close", { id, reason, cwd: cwd ?? null });
     keep(data, cwd); return data;
   },
   scene: (touchedPath, cwd) => invoke("agent_design_scene", { touchedPath, cwd: cwd ?? null }),
   setHermesHome: path => invoke("agent_design_set_hermes_home", { path }),
+  history: cwd => invoke("agent_design_history", { cwd: cwd ?? null }),
+  historyPair: (before, after, cwd) => invoke("agent_design_history_pair", { before, after, cwd: cwd ?? null }),
+  historyGit: (id, cwd) => invoke("agent_design_history_git", { id, cwd: cwd ?? null }),
+  historyDiff: (id, hash, cwd) => invoke("agent_design_history_diff", { id, hash, cwd: cwd ?? null }),
+};
+
+export interface AgentExportOptions { services: string[]; layers: number[]; documents: { id: string; sections: string[] | null }[] }
+export interface ExportDocument {
+  id: string; service: string; layer: number; label: string; path: string; sectioned: boolean; available: boolean; reason?: string | null;
+  sections: { id: string; label: string; chars: number }[];
+}
+export interface AgentExportPreview {
+  fingerprint: string; omissions: { kind: string; label: string; reason: string; count: number; path?: string }[];
+  hits: { kind: string; term: string; line: number }[]; documentCount: number; bytes: number;
+}
+export interface AgentDesignExportApi {
+  documents: (cwd?: string | null) => Promise<ExportDocument[]>;
+  recheck?: (id: string, cwd?: string | null) => Promise<ExportDocument>;
+  preview: (options: AgentExportOptions, cwd?: string | null) => Promise<AgentExportPreview>;
+  save: (options: AgentExportOptions, fingerprint: string, path: string, cwd?: string | null) => Promise<{ saved: boolean; path: string | null; preview: AgentExportPreview }>;
+  names: () => Promise<{ path: string; content: string }>;
+  saveNames: (content: string) => Promise<void>;
+}
+export const agentDesignExportApi: AgentDesignExportApi = {
+  documents: cwd => invoke("agent_design_export_documents", { cwd: cwd ?? null }),
+  recheck: (id, cwd) => invoke("agent_design_export_recheck", { id, cwd: cwd ?? null }),
+  preview: (options, cwd) => invoke("agent_design_export_preview", { options, cwd: cwd ?? null }),
+  save: (options, fingerprint, path, cwd) => invoke("agent_design_export_save", { options, fingerprint, path, cwd: cwd ?? null }),
+  names: () => invoke("agent_design_export_names"),
+  saveNames: content => invoke("agent_design_export_save_names", { content }),
 };

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import { ChatTranscript } from "../dashboard/ChatTranscript";
 import { holdDetailSession, useLiveBriefStore } from "../../stores/liveBriefStore";
@@ -30,6 +30,7 @@ export function TerminalTranscriptPanel({
   onClose,
   onOpenDashboard,
 }: TerminalTranscriptPanelProps) {
+  const panelRef = useRef<HTMLDivElement>(null);
   const detailEvents = useLiveBriefStore((state) => state.eventsBySession[sessionId]);
   const listEvents = useLiveBriefStore((state) => state.listEventsBySession[sessionId]);
   const dashboardOpen = useDashboardViewStore((state) => state.open);
@@ -45,16 +46,23 @@ export function TerminalTranscriptPanel({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape" && panelRef.current?.contains(document.activeElement)) {
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+      }
     };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [onClose]);
 
   return (
-    <div className="terminal-transcript-panel" data-terminal-transcript-panel="true">
+    <div ref={panelRef} className="terminal-transcript-panel" data-terminal-transcript-panel="true">
       <div className="terminal-transcript-panel__head">
         <span className="terminal-transcript-panel__title">{terminalTurnStrings.conversationHistory}</span>
+        <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-dim)" }}>
+          {terminalTurnStrings.recentHistory}
+        </span>
         {onOpenDashboard ? (
           <button type="button" className="terminal-transcript-panel__link" onClick={onOpenDashboard}>
             {terminalTurnStrings.openInDashboard}
@@ -63,6 +71,7 @@ export function TerminalTranscriptPanel({
         <button
           type="button"
           className="terminal-transcript-panel__close"
+          autoFocus
           aria-label={terminalTurnStrings.closePanel}
           title={terminalTurnStrings.closePanel}
           onClick={onClose}

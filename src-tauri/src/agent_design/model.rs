@@ -209,6 +209,8 @@ pub struct Catalog {
     pub documents: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub closed_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_entries: Option<Vec<Closure>>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

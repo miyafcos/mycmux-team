@@ -17,7 +17,9 @@ def test_pty_output_and_scrollback_use_raw_binary_frames() -> None:
     assert "Channel<InvokeResponseBody>" in session
     assert "InvokeResponseBody::Raw(batch.into_wire())" in session
     assert 'frame.extend_from_slice(b"MCX1")' in session
-    assert 'frame.extend_from_slice(b"MCS1")' in session
+    assert 'frame.extend_from_slice(b"MCS2")' in session
+    assert "SCROLLBACK_FRAME_HEADER_BYTES: usize = 48" in session
+    assert "since: Option<crate::pty::session::ScrollbackCursor>" in terminal_commands
     assert "Response::new(snapshot.into_wire())" in terminal_commands
     assert "Channel<FrontendDataBatch>" not in session
     assert "new PtyOutputChannel()" in ipc
@@ -26,6 +28,10 @@ def test_pty_output_and_scrollback_use_raw_binary_frames() -> None:
     assert 'invoke<ArrayBuffer>("get_session_scrollback"' in ipc
     assert "DATA_HEADER_BYTES = 40" in wire
     assert "SNAPSHOT_HEADER_BYTES = 24" in wire
+    assert "SNAPSHOT_V2_HEADER_BYTES = 48" in wire
+    assert "isV2 ? SNAPSHOT_V2_MAGIC : SNAPSHOT_MAGIC" in wire
+    assert "cursor.size_revision == geometry.revision" in session
+    assert "cursor.session_epoch == session_epoch" in session
 
 
 def test_terminal_input_and_frontend_backlog_are_bounded() -> None:

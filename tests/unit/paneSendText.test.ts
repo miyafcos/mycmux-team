@@ -21,7 +21,12 @@ const headlessBufferMocks = vi.hoisted(() => ({
 
 vi.mock("../../src/lib/ipc", () => ipcMocks);
 vi.mock("../../src/components/terminal/XTermWrapper", () => terminalBufferMocks);
-vi.mock("../../src/components/terminal/headlessBuffer", () => headlessBufferMocks);
+vi.mock("../../src/components/terminal/headlessBuffer", () => ({
+  ...headlessBufferMocks,
+  readHeadlessBufferLines: async (id: string, load: () => Promise<unknown>, lines: number, size: unknown) => (
+    headlessBufferMocks.getHeadlessBufferLines(id, await load(), lines, size)
+  ),
+}));
 
 const sessionId = "send-session";
 const observed995JapaneseText = "送信確認".repeat(248) + "確認";

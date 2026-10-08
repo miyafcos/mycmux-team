@@ -95,7 +95,7 @@ import {
   filterConflictingAgentMappings,
   resolvePersistedSelection,
 } from "../../lib/sessionRestoreSafety";
-import { handleSocketCommand, listenForPeerSpawns, startLocalTabSession } from "./socketCommands";
+import { handleSocketCommand, listenForPeerSocketCommands, listenForPeerSpawns, startLocalTabSession } from "./socketCommands";
 import { listenForPeerTabStarts } from "../../lib/socketTabWindows";
 import { IS_MAC } from "../../lib/keybindings";
 import { handleWorkOrderSpawnRequest, type SpawnRequest } from "../../lib/workOrderBridge";
@@ -2790,12 +2790,13 @@ export function useWorkspacePersist() {
   }, []);
 
   useEffect(() => {
-    // Explicit starts for other windows must use that window's live tab data.
-    const unlistenPeerStart = listenForPeerTabStarts(startLocalTabSession);
-    const unlistenPeerSpawn = listenForPeerSpawns(async () => {
+    const readyForPeerCommand = async () => {
       await persistLoaded;
-      if (windowClosing) throw new Error("spawn owner window is closing");
-    });
+      if (windowClosing) throw new Error("socket command owner window is closing");
+    };
+    const unlistenPeerStart = listenForPeerTabStarts(startLocalTabSession, readyForPeerCommand);
+    const unlistenPeerSpawn = listenForPeerSpawns(readyForPeerCommand);
+    const unlistenPeerCommand = listenForPeerSocketCommands(readyForPeerCommand);
     // Rust broadcasts; only the elected executor runs a request.
     const unlisten = listen<SocketRequestPayload>("socket-request", async (event) => {
       if (!isLeader.current) return;
@@ -2813,6 +2814,7 @@ export function useWorkspacePersist() {
       unlisten.then((f) => f()).catch(() => {});
       unlistenPeerStart.then((f) => f()).catch(() => {});
       unlistenPeerSpawn.then((f) => f()).catch(() => {});
+      unlistenPeerCommand.then((f) => f()).catch(() => {});
     };
   }, []);
 

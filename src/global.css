@@ -134,6 +134,16 @@
   --status-error:   #ef4444;
   --notification-color: #f59e0b;
 
+  /* Live-tail facts have their own theme-safe text and marker colours. */
+  --cmux-live-tail-progress: var(--status-done);
+  --cmux-live-tail-cmd: var(--status-working);
+  --cmux-live-tail-stale: var(--status-waiting);
+  --cmux-live-tail-frozen: var(--status-error);
+  --cmux-live-tail-error: var(--status-error);
+  --cmux-live-tail-unreadable: var(--cmux-text);
+  --cmux-live-tail-alive: var(--cmux-text);
+  --cmux-live-tail-flash: color-mix(in srgb, var(--cmux-live-tail-progress) 20%, transparent);
+
   /* Keep chrome text and icons crisp. Readability comes from the panel surface
      and explicit borders instead of multi-layer glow effects. */
   --cmux-chrome-icon-shadow: none;

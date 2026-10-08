@@ -94,6 +94,8 @@ export function ClaudeSkillsSection() {
             <tr><td style={{ padding: "var(--cmux-space-2)" }}>agent CLI</td><td>スキル共通の操作ツール</td><td><Chip state={status.cli.state} /></td></tr>
           </tbody>
         </table>
+        {status.cli.startup_update && status.cli.startup_update.state !== "latest" &&
+          <div role="status">{status.cli.startup_update.message}</div>}
         <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--cmux-space-4)" }}>
           {has("not-installed") && <button style={buttonStyle} disabled={busy} onClick={() => void run("not-installed", false)}>{strings.install}</button>}
           {has("outdated") && <button style={buttonStyle} disabled={busy} onClick={() => void run("outdated", false)}>{strings.update}</button>}

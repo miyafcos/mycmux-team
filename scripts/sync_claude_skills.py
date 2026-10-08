@@ -220,11 +220,32 @@ def live_view(root: Path, name: str) -> dict[str, bytes]:
     return result
 
 
+def known_cli_hashes(current: str) -> list[str]:
+    """Keep shipped hashes across regeneration; never derive them from live files."""
+    path = PACK / "manifest.json"
+    previous = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    if not isinstance(previous, dict) or not isinstance(previous.get("cli", {}), dict):
+        raise ValueError("invalid CLI hash history: expected a CLI entry")
+    cli = previous.get("cli", {})
+    known = cli.get("known_sha256", [])
+    if not isinstance(known, list):
+        raise ValueError("invalid CLI hash history: expected a list")
+    candidates = [*known, current]
+    if "sha256" in cli:
+        candidates.append(cli["sha256"])
+    if any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+           for value in candidates):
+        raise ValueError("invalid CLI hash history: expected lowercase SHA-256")
+    return sorted(set(candidates))
+
+
 def manifest() -> dict:
+    cli_sha = sha((ROOT / "scripts/mycmux_agent_cli.py").read_bytes(), "mycmux_agent_cli.py")
     return {
         "pack_version": VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "cli": {"path": "scripts/mycmux_agent_cli.py", "sha256": sha((ROOT / "scripts/mycmux_agent_cli.py").read_bytes(), "mycmux_agent_cli.py")},
+        "cli": {"path": "scripts/mycmux_agent_cli.py", "sha256": cli_sha,
+                "known_sha256": known_cli_hashes(cli_sha)},
         "skills": [{"name": name, "files": hashes(files(PACK / name))} for name in NAMES],
     }
 
