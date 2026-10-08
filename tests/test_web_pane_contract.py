@@ -270,6 +270,8 @@ def test_the_powershell_launch_target_table_points_at_the_right_rows() -> None:
         "claude-resume": "Claude Code (resume)",
         "grok-resume": "Grok Build (resume)",
         "custom": "Custom...",
+        "web-dots": "ChatGPT dots (Web)",
+        "app-grokbot": "Grok Bot (アプリ)",
     }
     for name, label in expected.items():
         assert name in targets, f"{name} has no launch target"
@@ -315,7 +317,7 @@ def test_spawn_tab_refuses_a_web_target_instead_of_opening_a_shell() -> None:
 def test_every_pseudo_command_in_a_launcher_has_a_dispatch_arm() -> None:
     """A menu entry that no dispatch handles is a dead button.
 
-    Pseudo commands (``__name__``) are not executables: picking one runs a
+    Pseudo commands (including ``__web_`` and ``__app_``) are not executables: picking one runs a
     handler, or the launcher tries to exec a program that does not exist. The
     ChatGPT entry shipped in v0.59.0 with a menu slot in both launchers but an
     arm in only the shell one, so the PowerShell launcher failed with
@@ -325,6 +327,7 @@ def test_every_pseudo_command_in_a_launcher_has_a_dispatch_arm() -> None:
     """
     shell = read("src-tauri/src/launcher.sh")
     shell_offered = set(re.findall(r'^\s*"(__\w+__)"\s*$', shell, re.MULTILINE))
+    assert {name for name in shell_offered if name.startswith("__app_")} == {"__app_grokbot__"}
     shell_handled: set[str] = set()
     # Two shapes count as handled: a case arm (``__name__)``, which may bundle
     # several names with ``|``) and a plain string comparison outside the case.
@@ -338,6 +341,7 @@ def test_every_pseudo_command_in_a_launcher_has_a_dispatch_arm() -> None:
 
     ps = read("src-tauri/src/launcher.ps1")
     ps_offered = set(re.findall(r'New-MycmuxOption\s+"[^"]+"\s+@\("(__\w+__)"', ps))
+    assert {name for name in ps_offered if name.startswith("__app_")} == {"__app_grokbot__"}
     ps_handled = set(re.findall(r'\$Option\.Command\[0\]\s+-eq\s+"(__\w+__)"', ps))
     assert ps_offered, "no pseudo commands found -- the pattern stopped matching"
     assert not (ps_offered - ps_handled), (

@@ -1,12 +1,20 @@
 mod closed_store;
+pub(crate) mod export;
+mod export_book;
+mod export_privacy;
+mod history;
 mod inspect;
 mod model;
 mod portable;
 mod readers;
+mod refresh;
+pub(crate) use refresh::socket_refresh;
 mod records;
 mod safe;
 mod scheduled;
 mod skill_read;
+mod full_content;
+mod redaction;
 #[allow(dead_code)]
 mod stage1_bridge;
 // Reuse stage 1's YAML/frontmatter reader without changing its source boundary.
@@ -303,6 +311,7 @@ pub(crate) fn collect(
         links: declared_links(home),
         findings: vec![],
         closed_count: 0,
+        closed_entries: Some(vec![]),
         warnings: vec![],
         layers: vec![],
         reading_flows: vec![],
@@ -329,7 +338,13 @@ pub(crate) fn collect(
     }
     portable::complete(&mut catalog, home, cwd);
     catalog.refresh_ms = start.elapsed().as_millis() as f64;
+    scrub_catalog(&mut catalog);
     catalog
+}
+fn scrub_catalog(catalog: &mut Catalog) {
+    let mut value=serde_json::to_value(&*catalog).unwrap_or_else(|_|panic!("catalogueSerializationFailed"));
+    redaction::scrub(&mut value);
+    *catalog=serde_json::from_value(value).unwrap_or_else(|_|panic!("catalogueRedactionSchemaFailed"));
 }
 #[derive(Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -353,9 +368,11 @@ fn cached(home: &Path, cwd: &Path) -> Option<Catalog> {
     if let Ok(closed) = closed_store::read(&state_dir(home)) {
         inspect::apply_closed(&mut catalog, &closed);
     }
+    scrub_catalog(&mut catalog);
     Some(catalog)
 }
 fn save(home: &Path, catalog: &Catalog) -> Result<(), String> {
+    let mut clean=catalog.clone();scrub_catalog(&mut clean);let catalog=&clean;
     let directory = state_dir(home);
     let mut cache = safe::json(&directory.join("cache.json"))
         .and_then(|v| serde_json::from_value::<Cache>(v).ok())
@@ -364,16 +381,23 @@ fn save(home: &Path, catalog: &Catalog) -> Result<(), String> {
     cache.contexts.retain(|c| {
         safe::normalized(Path::new(&c.cwd)) != safe::normalized(Path::new(&catalog.cwd))
     });
+    for context in &mut cache.contexts {scrub_catalog(context);}
     cache.contexts.insert(0, catalog.clone());
-    cache.contexts.truncate(8);
     cache.schema_version = 1;
-    while cache.contexts.len() > 1
-        && serde_json::to_vec(&cache)
-            .map_err(|_| "serializationFailed")?
-            .len()
-            > 32 * 1024 * 1024
+    while cache.contexts.len() > 8
+        || (cache.contexts.len() > 1
+            && serde_json::to_vec(&cache)
+                .map_err(|_| "serializationFailed")?
+                .len() > 32 * 1024 * 1024)
     {
-        cache.contexts.pop();
+        // The cache is newest first. Evict the oldest non-home context even
+        // when home is the oldest entry or only home and the new folder remain.
+        let home_key = safe::normalized(home);
+        let index = cache.contexts.iter().rposition(|context| {
+            safe::normalized(Path::new(&context.home)) != home_key
+                || safe::normalized(Path::new(&context.cwd)) != home_key
+        }).unwrap_or(cache.contexts.len() - 1);
+        cache.contexts.remove(index);
     }
     safe::write_json(&directory, "cache.json", &cache)?;
     safe::write_json(&directory, "catalog.json", catalog)
@@ -404,32 +428,43 @@ pub async fn agent_design_cached(cwd: Option<String>) -> Result<Option<Catalog>,
         {
             inspect::apply_closed(catalog, &closed);
         }
+        if let Some(catalog)=snapshot.as_mut(){scrub_catalog(catalog);}
         Ok(snapshot)
     })
     .await
 }
+fn refresh_catalog(
+    home: &Path,
+    cwd: &Path,
+    codex: &Path,
+    hermes: &Path,
+    versions: (Option<String>, Option<String>),
+) -> Result<Catalog, String> {
+    let start = Instant::now();
+    let jobs = scheduled::collect(home, &home.join(".claude"), codex);
+    let mut catalog = collect(home, cwd, codex, hermes, &jobs, versions);
+    catalog.refresh_ms = start.elapsed().as_millis() as f64;
+    let _guard = WRITE_LOCK.lock().map_err(|_| "stateUnavailable")?;
+    if let Some(closed) = safe::json(&state_dir(home).join("closed.json"))
+        .and_then(|v| serde_json::from_value::<Closed>(v).ok())
+    {
+        inspect::apply_closed(&mut catalog, &closed);
+    }
+    scrub_catalog(&mut catalog);
+    save(home, &catalog)?;
+    store(&catalog)?;
+    history::enqueue(home.to_owned(), catalog.clone());
+    Ok(catalog)
+}
+
 #[tauri::command]
 pub async fn agent_design_refresh(cwd: Option<String>) -> Result<Catalog, String> {
-    run_blocking("agent_design_refresh", move || {
-        let h = home()?;
-        let cwd = cwd_or_home(cwd, &h)?;
-        let cx = codex_root(&h);
-        let hm = hermes_root(&h);
-        let start = Instant::now();
-        let jobs = scheduled::collect(&h, &h.join(".claude"), &cx);
-        let mut catalog = collect(&h, &cwd, &cx, &hm, &jobs, versions(&h));
-        catalog.refresh_ms = start.elapsed().as_millis() as f64;
-        let _guard = WRITE_LOCK.lock().map_err(|_| "stateUnavailable")?;
-        if let Some(closed) = safe::json(&state_dir(&h).join("closed.json"))
-            .and_then(|v| serde_json::from_value::<Closed>(v).ok())
-        {
-            inspect::apply_closed(&mut catalog, &closed);
-        }
-        save(&h, &catalog)?;
-        store(&catalog)?;
-        Ok(catalog)
-    })
-    .await
+    let started = run_blocking("agent_design_refresh_start", move || {
+        let home = home()?;
+        let cwd = cwd_or_home(cwd, &home)?;
+        refresh::queue(home, cwd)
+    }).await?;
+    started.wait().await
 }
 fn snapshot_or_cached(home: &Path, cwd: &Path) -> Result<Catalog, String> {
     memory_snapshot(cwd)
@@ -495,21 +530,63 @@ pub(crate) fn document(
     if item.document_allowed && authorized(home, cwd, item) {
         let path = Path::new(item.path.as_deref().ok_or("itemUnavailable")?);
         let body = safe::text(path, safe::DOCUMENT_LIMIT).ok_or("documentUnavailable")?;
-        Ok(json!({"id":id,"body":body,"fields":[],"size":safe::size(path,true),"status":"present"}))
+        Ok(json!({"id":id,"body":redaction::mask(&body,false).body,"fields":[],"size":safe::size(path,true),"status":"present"}))
     } else if !item.fields.is_empty() || !item.document_allowed {
         Ok(json!({"id":id,"body":null,"fields":item.fields,"size":item.size,"status":item.status}))
     } else {
         Err("documentDenied".into())
     }
 }
+// Only the on-open response is decorated. portable::complete keeps using document().
+pub(crate) fn opened_document(home: &Path, cwd: &Path, catalog: &Catalog, id: &str) -> Result<Value, String> {
+    full_content::opened(home,cwd,catalog,id,None,0)
+}
 #[tauri::command]
-pub async fn agent_design_document(cwd: Option<String>, id: String) -> Result<Value, String> {
+pub async fn agent_design_document(cwd: Option<String>, id: String, relative: Option<String>, offset: Option<usize>) -> Result<Value, String> {
     run_blocking("agent_design_document", move || {
         let h = home()?;
         let cwd = cwd_or_home(cwd, &h)?;
-        document(&h, &cwd, &snapshot_or_cached(&h, &cwd)?, &id)
+        full_content::opened(&h, &cwd, &snapshot_or_cached(&h, &cwd)?, &id, relative.as_deref(), offset.unwrap_or(0))
     })
     .await
+}
+#[tauri::command]
+pub async fn agent_design_history(cwd: Option<String>) -> Result<history::History, String> {
+    run_blocking("agent_design_history", move || {
+        let h = home()?;
+        let cwd = cwd_or_home(cwd, &h)?;
+        history::timeline(&h, &cwd)
+    }).await
+}
+#[tauri::command]
+pub async fn agent_design_history_pair(cwd: Option<String>, before: String, after: String) -> Result<Vec<history::Change>, String> {
+    run_blocking("agent_design_history_pair", move || {
+        let h = home()?; let cwd = cwd_or_home(cwd, &h)?;
+        history::pair(&h, &cwd, &before, &after)
+    }).await
+}
+#[tauri::command]
+pub async fn agent_design_history_git(cwd: Option<String>, id: String) -> Result<history::GitHistory, String> {
+    run_blocking("agent_design_history_git", move || {
+        let h = home()?;
+        let cwd = cwd_or_home(cwd, &h)?;
+        history::git_history(&h, &cwd, &snapshot_or_cached(&h, &cwd)?, &id)
+    }).await
+}
+#[tauri::command]
+pub async fn agent_design_history_diff(cwd: Option<String>, id: String, hash: String) -> Result<history::HistoryDiff, String> {
+    run_blocking("agent_design_history_diff", move || {
+        let h = home()?;
+        let cwd = cwd_or_home(cwd, &h)?;
+        history::git_diff(&h, &cwd, &snapshot_or_cached(&h, &cwd)?, &id, &hash)
+    }).await
+}
+#[tauri::command]
+pub async fn agent_design_reveal(cwd: Option<String>, id: String, relative: Option<String>, mask: usize, revision: String) -> Result<String, String> {
+    run_blocking("agent_design_reveal", move || {
+        let h=home()?;let cwd=cwd_or_home(cwd,&h)?;
+        full_content::reveal(&h,&cwd,&snapshot_or_cached(&h,&cwd)?,&id,relative.as_deref(),mask,&revision)
+    }).await
 }
 #[tauri::command]
 pub async fn agent_design_close(
@@ -523,6 +600,7 @@ pub async fn agent_design_close(
         let _guard = WRITE_LOCK.lock().map_err(|_| "stateUnavailable")?;
         let mut catalog = snapshot_or_cached(&h, &cwd)?;
         inspect::save_close(&state_dir(&h), &mut catalog, &id, &reason)?;
+        scrub_catalog(&mut catalog);
         save(&h, &catalog)?;
         store(&catalog)?;
         Ok(catalog)
@@ -599,7 +677,7 @@ pub async fn agent_design_skills(cwd: Option<String>) -> Result<Value, String> {
         let h = home()?;
         let cwd = cwd_or_home(cwd, &h)?;
         let catalog = snapshot_or_cached(&h, &cwd)?;
-        Ok(skill_read::catalog(&h, &catalog))
+        let mut shelf=skill_read::catalog(&h,&catalog);redaction::scrub(&mut shelf);Ok(shelf)
     })
     .await
 }
@@ -616,7 +694,17 @@ pub async fn agent_design_skill_read(
         let h = home()?;
         let cwd = cwd_or_home(cwd, &h)?;
         let catalog = snapshot_or_cached(&h, &cwd)?;
-        skill_read::read(&h, &catalog, &action, &id, relative.as_deref(), left, right)
+        if action=="document" || action=="preview" {
+            let selected=if action=="preview" {relative.as_ref().map(|p|format!("0/{p}"))} else {relative.clone()};
+            let mut value=full_content::opened(&h,&cwd,&catalog,&id,selected.as_deref(),0)?;
+            value["designSize"]=value["size"].clone();value["size"]=value["designSize"]["bytes"].clone();
+            value["lines"]=value["designSize"]["lines"].clone();value["modifiedAt"]=json!(0);
+            if value["frontmatter"].is_null(){value["frontmatter"]=json!({});value["toc"]=json!([]);}
+            if action=="preview" {value["content"]=value["body"].clone();value["kind"]=json!(if value["html"].is_string(){"md"}else{"text"});}
+            return Ok(value);
+        }
+        let mut value=skill_read::read(&h,&catalog,&action,&id,relative.as_deref(),left,right)?;
+        redaction::scrub(&mut value);Ok(value)
     })
     .await
 }

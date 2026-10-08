@@ -9,6 +9,10 @@ param(
 
     [string]$ProfileDir = "$env:LOCALAPPDATA\mycmux-control\profiles",
 
+    [string]$ApiKeyFile = "$env:LOCALAPPDATA\mycmux-control\control-plane.key",
+
+    [switch]$UseEnvironmentApiKey,
+
     [ValidatePattern("^[A-Za-z0-9._-]+$")]
     [string]$ProfileName = "mycmux-control"
 )
@@ -35,8 +39,11 @@ function Get-ProfilePresent {
 }
 
 function Assert-ApiKeyReference {
-    if ([string]::IsNullOrWhiteSpace($env:CONTROL_PLANE_API_KEY)) {
-        throw "CONTROL_PLANE_API_KEY is not set. Store the runtime key in that environment variable; do not pass it on the command line."
+    if (-not $script:ApiKeyPresent) {
+        if ($UseEnvironmentApiKey) {
+            throw "CONTROL_PLANE_API_KEY is not set. Supply it in the process environment, never on the command line."
+        }
+        throw "Runtime key file missing: $script:ResolvedApiKeyFile. Ask the owner to save a Tunnels Read+Use key there with owner-only permissions; never pass its value on the command line."
     }
 }
 
@@ -50,6 +57,8 @@ function Invoke-TunnelClient {
 
 $TunnelClient = Get-FullPath -Path $TunnelClientPath
 $ResolvedProfileDir = Get-FullPath -Path $ProfileDir
+$ResolvedApiKeyFile = Get-FullPath -Path $ApiKeyFile
+$ApiKeyReference = if ($UseEnvironmentApiKey) { "env:CONTROL_PLANE_API_KEY" } else { "file:" + $ResolvedApiKeyFile }
 $PluginRoot = Get-FullPath -Path (Split-Path -Parent $PSScriptRoot)
 $ServerPath = Get-FullPath -Path (Join-Path $PluginRoot "server\mycmux_control_server.py")
 
@@ -62,9 +71,28 @@ if (-not (Test-Path -LiteralPath $ServerPath -PathType Leaf)) {
 
 $PythonCommand = Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1
 $PythonPath = Get-FullPath -Path $PythonCommand.Source
-$McpCommand = '"{0}" "{1}"' -f $PythonPath, $ServerPath
+# A detached tunnel-client has no console, so a console python.exe child gets a window of its own.
+# Closing that window ends the MCP server with 0xC000013A and tunnel-client shuts down with it.
+# Use the windowless pythonw.exe next to python.exe on Windows; fall back to python.exe and say so.
+$McpPythonPath = $PythonPath
+$McpPythonWindowless = $false
+if ($env:OS -eq "Windows_NT") {
+    $WindowlessPython = Join-Path (Split-Path -Parent $PythonPath) "pythonw.exe"
+    if (Test-Path -LiteralPath $WindowlessPython -PathType Leaf) {
+        $McpPythonPath = Get-FullPath -Path $WindowlessPython
+        $McpPythonWindowless = $true
+    } else {
+        [Console]::Error.WriteLine("pythonw.exe was not found next to $PythonPath; the MCP server will use python.exe, whose console window must stay open.")
+    }
+}
+# tunnel-client parses mcp-command with shell-style escaping; use forward slashes on Windows.
+$McpCommand = '"{0}" "{1}"' -f $McpPythonPath.Replace("\", "/"), $ServerPath.Replace("\", "/")
 $ProfilePresent = Get-ProfilePresent -Directory $ResolvedProfileDir -Name $ProfileName
-$ApiKeyPresent = -not [string]::IsNullOrWhiteSpace($env:CONTROL_PLANE_API_KEY)
+$ApiKeyPresent = if ($UseEnvironmentApiKey) {
+    -not [string]::IsNullOrWhiteSpace($env:CONTROL_PLANE_API_KEY)
+} else {
+    Test-Path -LiteralPath $ResolvedApiKeyFile -PathType Leaf
+}
 
 if ($Mode -in "Plan", "Init") {
     if ([string]::IsNullOrWhiteSpace($TunnelId) -or $TunnelId -notmatch "^tunnel_[A-Za-z0-9]+$") {
@@ -90,12 +118,14 @@ if ($Mode -eq "Validate") {
         tunnelClient = $TunnelClient
         tunnelClientVersion = $VersionOutput
         python = $PythonPath
+        mcpPython = $McpPythonPath
+        mcpPythonWindowless = $McpPythonWindowless
         mcpServer = $ServerPath
         profileDirectory = $ResolvedProfileDir
         profileName = $ProfileName
         profilePresent = $ProfilePresent
         apiKeyPresent = $ApiKeyPresent
-        apiKeySource = "env:CONTROL_PLANE_API_KEY"
+        apiKeySource = $ApiKeyReference
         healthListenAddress = "127.0.0.1:0"
         maxConcurrentMcpRequests = 1
     } | ConvertTo-Json -Depth 4 -Compress
@@ -112,7 +142,8 @@ if ($Mode -eq "Plan") {
         profileName = $ProfileName
         profilePresent = $ProfilePresent
         mcpCommand = $McpCommand
-        apiKeySource = "env:CONTROL_PLANE_API_KEY"
+        mcpPythonWindowless = $McpPythonWindowless
+        apiKeySource = $ApiKeyReference
         healthListenAddress = "127.0.0.1:0"
         maxConcurrentMcpRequests = 1
         remoteAdminUiEnabled = $false
@@ -122,6 +153,9 @@ if ($Mode -eq "Plan") {
 }
 
 if ($Mode -eq "Init") {
+    if ($ProfilePresent) {
+        throw "Profile already exists. Preserve it and use a new ProfileName for a new configuration."
+    }
     New-Item -ItemType Directory -Path $ResolvedProfileDir -Force | Out-Null
     $InitArguments = @(
         "init",
@@ -130,7 +164,7 @@ if ($Mode -eq "Init") {
         "--profile-dir", $ResolvedProfileDir,
         "--tunnel-id", $TunnelId,
         "--mcp-command", $McpCommand,
-        "--control-plane-api-key-ref", "env:CONTROL_PLANE_API_KEY",
+        "--control-plane-api-key-ref", $ApiKeyReference,
         "--health-listen-addr", "127.0.0.1:0"
     )
     $null = & $TunnelClient @InitArguments
@@ -143,19 +177,22 @@ if ($Mode -eq "Init") {
         tunnelId = $TunnelIdSuffix
         profileDirectory = $ResolvedProfileDir
         profileName = $ProfileName
-        apiKeySource = "env:CONTROL_PLANE_API_KEY"
+        apiKeySource = $ApiKeyReference
     } | ConvertTo-Json -Depth 3 -Compress
     exit 0
 }
 
 Assert-ApiKeyReference
+if (-not $ProfilePresent) {
+    throw "Profile is missing. Run Init with the tunnel ID supplied by the owner first."
+}
 
 if ($Mode -eq "Doctor") {
     Invoke-TunnelClient -Arguments @(
         "doctor",
         "--profile", $ProfileName,
         "--profile-dir", $ResolvedProfileDir,
-        "--control-plane.api-key", "env:CONTROL_PLANE_API_KEY",
+        "--control-plane.api-key", $ApiKeyReference,
         "--health.listen-addr", "127.0.0.1:0",
         "--mcp.max-concurrent-requests", "1",
         "--explain"
@@ -172,7 +209,7 @@ Invoke-TunnelClient -Arguments @(
     "run",
     "--profile", $ProfileName,
     "--profile-dir", $ResolvedProfileDir,
-    "--control-plane.api-key", "env:CONTROL_PLANE_API_KEY",
+    "--control-plane.api-key", $ApiKeyReference,
     "--health.listen-addr", "127.0.0.1:0",
     "--health.url-file", (Join-Path $RuntimeDir "health-url.txt"),
     "--pid.file", (Join-Path $RuntimeDir "tunnel-client.pid"),

@@ -25,6 +25,10 @@ export function NotificationsLayoutTab() {
   const setGroupingApplyAnimationEnabled = useSettingsStore((s) => s.setGroupingApplyAnimationEnabled);
   const paneComposerEnabled = useSettingsStore((s) => s.paneComposerEnabled);
   const setPaneComposerEnabled = useSettingsStore((s) => s.setPaneComposerEnabled);
+  const showTerminalHistoryButton = useSettingsStore((s) => s.showTerminalHistoryButton);
+  const setShowTerminalHistoryButton = useSettingsStore((s) => s.setShowTerminalHistoryButton);
+  const terminalProgressDiagnosticsEnabled = useSettingsStore((s) => s.terminalProgressDiagnosticsEnabled);
+  const setTerminalProgressDiagnosticsEnabled = useSettingsStore((s) => s.setTerminalProgressDiagnosticsEnabled);
   const nativePaneTearoutEnabled = useSettingsStore((s) => s.nativePaneTearoutEnabled);
   const setNativePaneTearoutEnabled = useSettingsStore((s) => s.setNativePaneTearoutEnabled);
 
@@ -123,6 +127,22 @@ export function NotificationsLayoutTab() {
       </div>
 
       <div style={{ ...sectionHeadingStyle, marginTop: 20 }}>{notificationSettingsStrings.terminalInputTitle}</div>
+      <label style={checkboxLabelStyle}>
+        <input type="checkbox" checked={showTerminalHistoryButton}
+          onChange={(e) => setShowTerminalHistoryButton(e.target.checked)} />
+        <span>{notificationSettingsStrings.terminalHistoryLabel}</span>
+      </label>
+      <div style={{ color: "var(--cmux-text-dim)", fontSize: 12, marginTop: 4 }}>
+        {notificationSettingsStrings.terminalHistoryHint}
+      </div>
+      <label style={checkboxLabelStyle}>
+        <input type="checkbox" checked={terminalProgressDiagnosticsEnabled}
+          onChange={(e) => setTerminalProgressDiagnosticsEnabled(e.target.checked)} />
+        <span>{notificationSettingsStrings.terminalProgressDiagnosticsLabel}</span>
+      </label>
+      <div style={{ color: "var(--cmux-text-dim)", fontSize: 12, marginTop: 4 }}>
+        {notificationSettingsStrings.terminalProgressDiagnosticsHint}
+      </div>
       <label style={checkboxLabelStyle}>
         <input
           type="checkbox"

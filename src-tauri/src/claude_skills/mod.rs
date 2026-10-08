@@ -1,6 +1,7 @@
 mod install;
 mod pack_rules;
 mod prereq;
+mod startup;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 include!(concat!(env!("OUT_DIR"), "/claude_skills_pack.rs"));
@@ -19,6 +20,7 @@ pub(super) struct Entry {
 #[derive(Deserialize)]
 pub(super) struct CliEntry {
     sha256: String,
+    known_sha256: Vec<String>,
 }
 #[derive(Serialize)]
 pub struct SkillStatus {
@@ -29,6 +31,7 @@ pub struct SkillStatus {
 #[derive(Serialize)]
 pub struct CliStatus {
     state: String,
+    startup_update: Option<startup::StartupUpdate>,
 }
 #[derive(Serialize)]
 pub struct PackStatus {
@@ -71,6 +74,7 @@ fn status_at(home: &Path, prereq: prereq::Prerequisites) -> Result<PackStatus, S
         .collect();
     let cli = CliStatus {
         state: install::cli_state(home, &manifest)?.into(),
+        startup_update: startup::last_update(),
     };
     Ok(PackStatus {
         pack_version: manifest.pack_version,
@@ -79,6 +83,9 @@ fn status_at(home: &Path, prereq: prereq::Prerequisites) -> Result<PackStatus, S
         prereq,
         home: home.to_string_lossy().into_owned(),
     })
+}
+pub fn update_cli_at_startup() {
+    startup::run();
 }
 #[tauri::command]
 pub async fn claude_skills_status() -> Result<PackStatus, String> {

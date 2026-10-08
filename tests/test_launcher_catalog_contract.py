@@ -40,6 +40,8 @@ LAUNCHER_ONLY_TARGETS = {
     "custom",
     "shell",
     "aider",
+    # External apps do not create a pane; the GUI supports agents/webviews only.
+    "app-grokbot",
     # Dropped from the dialog on 2026-09-18 (the open models are claude-codex
     # chips now), but kept as the launchers' own "claude-codex (Open Models)"
     # menu row and MYCMUX_LAUNCH_TARGET value for the FCC-only profile.

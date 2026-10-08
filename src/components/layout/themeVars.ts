@@ -2,7 +2,10 @@ import type { CSSProperties } from "react";
 import type { ThemeBackgroundSettings, ThemeDefinition } from "../../types";
 import { UI_DENSITY_TOKENS, type UiDensity } from "../../stores/themeStore";
 import { lightnessLiftFor, macQuietTextOverrides, macSurfaceOverrides } from "../../lib/theme/macSurfaces";
-import { isMediaBackgroundActive, resolveTheme, resolvedThemeToCssVars, type ResolvedTheme } from "../../lib/theme/resolveTheme";
+import { flattenOnto, isMediaBackgroundActive, resolveTheme, resolvedThemeToCssVars, type ResolvedTheme } from "../../lib/theme/resolveTheme";
+import { resolveAccentTextColor } from "../theme/colorContrast";
+import { compositeOver } from "../../lib/theme/oklab";
+import { DEFAULT_THEME_BACKGROUND } from "../../lib/themeBackgrounds";
 import { IS_MAC } from "../../lib/keybindings";
 
 // Colour derivation no longer lives here. `resolveTheme()` in
@@ -102,4 +105,31 @@ export function buildThemeVars(input: ThemeVarsInput): CSSProperties {
     ...macQuietTextCompensation(resolved, IS_MAC ? surfaceLift : 0),
     colorScheme: resolved.colorScheme,
   } as CSSProperties;
+}
+
+/** Additional fact tokens are scoped to the list, preserving the chrome contract. */
+export function buildLiveTailThemeVars(theme: ThemeDefinition): CSSProperties {
+  const { resolved, surfaces } = resolveTheme({
+    theme, background: { ...DEFAULT_THEME_BACKGROUND, solidSurfaces: true }, mediaActive: false,
+  });
+  const liveTailHosts = [surfaces.canvas, surfaces.surfaceLow, surfaces.surfaceRaised, surfaces.popover,
+    flattenOnto(resolved.hover, surfaces.surfaceLow)].map(host => {
+    // The dark ladder deliberately keeps these authored sRGB mix expressions.
+    const mix = /^color-mix\(in srgb, (#[\da-f]{6}) ([\d.]+)%, white\)$/i.exec(host);
+    return mix ? compositeOver(mix[1], Number(mix[2]) / 100, "#ffffff") : host;
+  });
+  const liveTailColor = (color: string) => liveTailHosts.reduce(
+    (current, host) => resolveAccentTextColor(current, theme.chrome.text, host), color,
+  );
+  const liveTailVars = {
+    "--cmux-live-tail-progress": liveTailColor(theme.status.done),
+    "--cmux-live-tail-cmd": liveTailColor(theme.status.working),
+    "--cmux-live-tail-stale": liveTailColor(theme.status.waiting),
+    "--cmux-live-tail-frozen": liveTailColor(theme.status.error),
+    "--cmux-live-tail-error": liveTailColor(theme.status.error),
+    "--cmux-live-tail-unreadable": liveTailColor(theme.chrome.textMuted),
+    "--cmux-live-tail-alive": liveTailColor(theme.chrome.textMuted),
+    "--cmux-live-tail-flash": "color-mix(in srgb, var(--cmux-live-tail-progress) 20%, transparent)",
+  };
+  return liveTailVars as CSSProperties;
 }

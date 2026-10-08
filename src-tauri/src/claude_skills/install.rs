@@ -28,7 +28,7 @@ fn normalized_bytes(path: &Path, data: &[u8]) -> Vec<u8> {
     }
     result
 }
-fn sha(path: &Path, data: &[u8]) -> String {
+pub(super) fn sha(path: &Path, data: &[u8]) -> String {
     hex::encode(Sha256::digest(normalized_bytes(path, data)))
 }
 fn read(path: &Path) -> Result<Vec<u8>, String> {
@@ -99,7 +99,7 @@ pub(super) fn state(dest: &Path, entry: &Entry, version: &str) -> &'static str {
         Err(_) => "locally-modified",
     }
 }
-fn cli_path(home: &Path) -> PathBuf {
+pub(super) fn cli_path(home: &Path) -> PathBuf {
     home.join(".mycmux/bin/mycmux_agent_cli.py")
 }
 pub(super) fn cli_state(home: &Path, manifest: &Manifest) -> Result<&'static str, String> {
@@ -113,7 +113,7 @@ pub(super) fn cli_state(home: &Path, manifest: &Manifest) -> Result<&'static str
         "outdated"
     })
 }
-fn reject_symlinks(home: &Path, path: &Path) -> Result<(), String> {
+pub(super) fn reject_symlinks(home: &Path, path: &Path) -> Result<(), String> {
     // Only the managed part below the home directory is inspected. Platform
     // ancestors are none of our business: macOS keeps temporary homes under
     // /var, which is itself a symlink to /private/var (measured 2026-09-07).
@@ -137,7 +137,7 @@ fn reject_symlinks(home: &Path, path: &Path) -> Result<(), String> {
     }
     Ok(())
 }
-fn canonical_write_bytes(path: &Path, data: &[u8]) -> Result<Vec<u8>, String> {
+pub(super) fn canonical_write_bytes(path: &Path, data: &[u8]) -> Result<Vec<u8>, String> {
     let data = normalized_bytes(path, data);
     if pack_rules::is_text(path) {
         let text = std::str::from_utf8(&data).map_err(|e| e.to_string())?;
@@ -164,13 +164,16 @@ fn write(home: &Path, path: &Path, data: &[u8]) -> Result<(), String> {
     }
     Ok(())
 }
-fn backup(path: &Path) -> Result<PathBuf, String> {
+pub(super) fn backup_path(path: &Path) -> Result<PathBuf, String> {
     let name = path
         .file_name()
         .ok_or("missing filename")?
         .to_string_lossy();
     let stamp = Utc::now().format("%Y%m%dT%H%M%S%6fZ");
-    let dest = path.with_file_name(format!("{name}.bak-{stamp}"));
+    Ok(path.with_file_name(format!("{name}.bak-{stamp}")))
+}
+fn backup(path: &Path) -> Result<PathBuf, String> {
+    let dest = backup_path(path)?;
     if fs::symlink_metadata(&dest).is_ok() {
         return Err(format!("backup already exists: {}", dest.display()));
     }
@@ -185,7 +188,7 @@ fn payload(name: &str, rel: &str) -> Result<&'static [u8], String> {
         .map(|(_, data)| *data)
         .ok_or_else(|| format!("missing embedded file: {key}"))
 }
-fn validate_pack(manifest: &Manifest) -> Result<(), String> {
+pub(super) fn validate_pack(manifest: &Manifest) -> Result<(), String> {
     let mut expected = BTreeSet::from(["manifest.json".to_string()]);
     for entry in &manifest.skills {
         if entry.name.is_empty()
@@ -221,6 +224,16 @@ fn validate_pack(manifest: &Manifest) -> Result<(), String> {
     canonical_write_bytes(Path::new("mycmux_agent_cli.py"), PACK_CLI)?;
     if sha(Path::new("mycmux_agent_cli.py"), PACK_CLI) != manifest.cli.sha256 {
         return Err("embedded CLI hash mismatch".into());
+    }
+    let known = &manifest.cli.known_sha256;
+    if !known.contains(&manifest.cli.sha256)
+        || known.windows(2).any(|pair| pair[0] >= pair[1])
+        || known.iter().any(|hash| {
+            hash.len() != 64
+                || !hash.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+    {
+        return Err("invalid embedded CLI hash history".into());
     }
     Ok(())
 }

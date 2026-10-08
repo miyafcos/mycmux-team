@@ -10,6 +10,7 @@ import {
 import {
   decodeFrontendDataBatch,
   decodeScrollbackSnapshot,
+  type BinaryScrollbackSnapshot,
 } from "./terminalWire";
 import type { AgentSessionKind, ArtifactSourceKind, ThemeTweaks, TurnMarkPersistSnapshot } from "../types";
 import type { OnlineSavepointEntry } from "../components/online/onlineSavepoints";
@@ -464,14 +465,20 @@ export async function setAppFrontendVisible(visible: boolean): Promise<void> {
   return invoke<void>("set_app_frontend_visible", { visible } satisfies SetAppFrontendVisibleArgs);
 }
 
-export interface ScrollbackSnapshot {
-  data: Uint8Array;
-  startOffset: number;
+export interface ScrollbackSnapshot extends BinaryScrollbackSnapshot {}
+
+export interface ScrollbackCursor {
   endOffset: number;
+  sessionEpoch: number;
+  sizeRevision: number;
 }
 
-export async function getSessionScrollback(sessionId: string): Promise<ScrollbackSnapshot> {
-  const frame = await invoke<ArrayBuffer>("get_session_scrollback", { sessionId } satisfies SessionIdArgs);
+export async function getSessionScrollback(
+  sessionId: string, since?: ScrollbackCursor,
+): Promise<ScrollbackSnapshot> {
+  const frame = await invoke<ArrayBuffer>("get_session_scrollback", {
+    sessionId, ...(since === undefined ? {} : { since }),
+  } satisfies SessionIdArgs & { since?: ScrollbackCursor });
   return decodeScrollbackSnapshot(frame);
 }
 

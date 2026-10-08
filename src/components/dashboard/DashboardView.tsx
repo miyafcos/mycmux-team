@@ -38,7 +38,8 @@ import {
   syncDashboardEvents,
   useLiveBriefStore,
 } from "../../stores/liveBriefStore";
-import { usePaneMetadataStore, useUiStore, useWorkspaceLayoutStore, useWorkspaceListStore } from "../../stores/workspaceStore";
+import { usePaneMetadataStore, useUiStore, useWorkspaceListStore } from "../../stores/workspaceStore";
+import { jumpToPaneTab } from "../../lib/jumpToPaneTab";
 import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { useStallStore } from "../../stores/stallStore";
 import { useWorkOrderStore } from "../../stores/workOrderStore";
@@ -923,15 +924,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     focusController.focusSessionSoon(useUiStore.getState().lastActivePaneId);
   }, [onClose]);
   const jumpToCard = useCallback((card: Pick<DashboardCardModel, "workspaceId" | "paneId" | "tab">) => {
-    const keepZoom = useUiStore.getState().zoomedPaneId !== null;
-    useWorkspaceListStore.getState().setActiveWorkspace(card.workspaceId);
-    useWorkspaceLayoutStore.getState().setActivePaneTab(card.workspaceId, card.paneId, card.tab.id);
-    if (keepZoom) useUiStore.getState().setZoomedPaneId(card.paneId);
-    if (card.tab.type === undefined || card.tab.type === "terminal") {
-      focusController.request("programmatic", { sessionId: card.tab.sessionId, focus: true });
-    } else {
-      focusController.request("programmatic", { sessionId: null, focus: false });
-    }
+    jumpToPaneTab(card);
     onClose();
   }, [onClose]);
   const jumpToTabId = useCallback((workspaceId: string, paneId: string, tabId: string) => {

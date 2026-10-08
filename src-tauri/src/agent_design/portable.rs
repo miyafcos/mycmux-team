@@ -124,12 +124,12 @@ pub fn complete(catalog: &mut Catalog, home: &Path, cwd: &Path) {
                             _ => None,
                         };
                         let kinds: &[&str] = match n {
-                            0 => &["settings", "settingsLocal"],
+                            0 => &["settings", "settingsLocal", "permissionRules"],
                             1 => &["instruction", "override", "shadowedInstruction", "rule"],
                             2 => &["memoryIndex"],
                             3 => &["skillListing"],
                             7 => &["rule"],
-                            8 => &["skill"],
+                            8 => &["skill", "command"],
                             9 => &["reference", "memoryDirectory"],
                             _ => &["hooks"],
                         };
@@ -162,6 +162,7 @@ pub fn complete(catalog: &mut Catalog, home: &Path, cwd: &Path) {
                                 .filter(|i| {
                                     i.service == s.id
                                         && kinds.contains(&i.kind.as_str())
+                                        && (n != 1 || (i.active && i.read_timing == "always"))
                                         && (n != 7 || i.read_timing == "conditional")
                                 })
                                 .map(|i| i.id.clone())

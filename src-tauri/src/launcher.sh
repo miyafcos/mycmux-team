@@ -1104,6 +1104,33 @@ __open_web_tab_from_pseudo_command() {
 }
 
 
+__open_grokbot_app() {
+  local opened=0
+  case "$__MYCMUX_PLATFORM" in
+    macos)
+      open -a "Grok Bot" >/dev/null 2>&1 && opened=1
+      ;;
+    linux)
+      xdg-open grokbot:// >/dev/null 2>&1 && opened=1
+      ;;
+    windows)
+      local exe="${LOCALAPPDATA//\\//}/Programs/Grok Bot/Grok Bot.exe"
+      # MSYS must not turn cmd/reg switches or the URI into filesystem paths.
+      if MSYS_NO_PATHCONV=1 reg.exe query 'HKCU\Software\Classes\grokbot' /v 'URL Protocol' >/dev/null 2>&1; then
+        MSYS_NO_PATHCONV=1 cmd.exe /c start "" grokbot:// >/dev/null 2>&1 && opened=1
+      elif [ -n "${LOCALAPPDATA:-}" ] && [ -f "$exe" ]; then
+        MSYS_NO_PATHCONV=1 cmd.exe /c start "" "$exe" grokbot:// >/dev/null 2>&1 && opened=1
+      fi
+      ;;
+  esac
+  if [ "$opened" -eq 1 ]; then
+    printf '%s\n' 'Grok Bot を開きました (会話は Grok Bot の窓で)'
+  else
+    printf '%s\n' 'Grok Bot が入っていません。https://x.ai/bot から入れてください'
+  fi
+  return 0
+}
+
 # --- 起動スペックの選択肢 -----------------------------------------------------
 # src/lib/agentCatalog.ts の AGENT_CATALOG と同じ内容。ズレは
 # tests/test_launcher_catalog_contract.py が機械検出する (GUI 側を台帳化したのは
@@ -1310,6 +1337,9 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
       ;;
     web-dots)
       cmd="__web_dots__"
+      ;;
+    app-grokbot)
+      cmd="__app_grokbot__"
       ;;
     web-browser)
       cmd="__web_browser__"
@@ -1799,6 +1829,7 @@ if [ -z "$cmd" ]; then
     "Change directory (案件)..."
     "Change directory (最近・フォルダを辿る)..."
     "ChatGPT dots (Web)"
+    "Grok Bot (アプリ)"
   )
 
   # options / commands と同じ並び。model / effort を取れる行だけ target を持つ
@@ -1817,6 +1848,7 @@ if [ -z "$cmd" ]; then
     "" "" "" ""
     ""
     "" "" ""
+    ""
     ""
   )
 
@@ -1844,6 +1876,7 @@ if [ -z "$cmd" ]; then
     "__dir_anken__"
     "__dir__"
     "__web_dots__"
+    "__app_grokbot__"
   )
 
   selected=0
@@ -1872,6 +1905,12 @@ if [ -z "$cmd" ]; then
   # 1 を返したときだけ呼び出し側が break して cmd を eval する。
   __try_selected_menu_command() {
     case "${commands[$selected]}" in
+      __app_grokbot__)
+        tput cnorm >&$__CMUX_MENU_FD 2>/dev/null
+        __close_menu_fd 2>/dev/null || true
+        __open_grokbot_app
+        return 2
+        ;;
       __web_chatgpt__|__web_gemini__|__web_grok__|__web_claude__|__web_notebooklm__|__web_browser__|__web_dots__)
         # 実処理は __open_web_tab (MYCMUX_LAUNCH_TARGET と共有)。
         # ここはメニューを畳んで結果を返すだけ。
@@ -2001,6 +2040,10 @@ fi
 # MYCMUX_LAUNCH_TARGET=web-* で来た場合。Web ペインはプロセスではないので eval せず、
 # ここで開いてシェルに戻る (メニュー経由の場合は既に処理済みでここには来ない)。
 case "$cmd" in
+  __app_grokbot__)
+    __open_grokbot_app
+    return 0 2>/dev/null || exit 0
+    ;;
   __web_chatgpt__|__web_gemini__|__web_grok__|__web_claude__|__web_notebooklm__|__web_browser__|__web_dots__)
     __open_web_tab_from_pseudo_command "$cmd"
     cmd=""

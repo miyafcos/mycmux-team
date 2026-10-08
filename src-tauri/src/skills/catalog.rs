@@ -365,13 +365,13 @@ pub fn short_line(description: &str) -> String {
     }
 }
 
-struct Row {
+pub(crate) struct Row {
     value: Value,
     documents: Vec<(u8, PathBuf)>,
-    metadata: Value,
+    pub(crate) metadata: Value,
     agents: BTreeSet<String>,
 }
-fn add(
+pub(crate) fn add(
     rows: &mut BTreeMap<String, Row>,
     name: &str,
     description: &str,
@@ -420,12 +420,15 @@ fn add(
 }
 
 pub fn usage(shared: &Path) -> (Value, bool) {
+    usage_at(shared, chrono::Utc::now().timestamp_millis() as f64)
+}
+pub(super) fn usage_at(shared: &Path, now_ms: f64) -> (Value, bool) {
     let path = shared.join("usage_codex.json");
     let exists = path.exists();
     let ledger = read_json(&path);
     let mut out = json!({});
     if let Some(files) = ledger.as_object() {
-        let cutoff = chrono::Utc::now().timestamp_millis() as f64 - 90.0 * 86400000.0;
+        let cutoff = now_ms - 90.0 * 86400000.0;
         for entry in files.values() {
             if entry["mtimeNs"].as_f64().unwrap_or(0.0) / 1_000_000.0 < cutoff {
                 continue;
@@ -450,18 +453,6 @@ pub fn usage(shared: &Path) -> (Value, bool) {
 }
 
 pub fn collect(home: &Path, shared: &Path, shipped: Value) -> Value {
-    let shipped = layer(shipped);
-    let manual = layer(read_json(&shared.join("shelf.json")));
-    let automatic = layer(read_json(&shared.join("shelf_auto.json")));
-    let mut settings = shipped.clone();
-    merge(&mut settings, &manual);
-    let mut categories = settings["categories"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    if !categories.iter().any(|c| c["id"] == "unsorted") {
-        categories.push(json!({"id":"unsorted","name":"\u{672a}\u{5206}\u{985e}","color":"#8E8E93","symbol":"questionmark.folder"}));
-    }
     let (docs, commands, claude_docs) = sources(home);
     let mut rows = BTreeMap::new();
     for document in docs {
@@ -530,6 +521,31 @@ pub fn collect(home: &Path, shared: &Path, shipped: Value) -> Value {
                 row.metadata = meta;
             }
         }
+    }
+    decorate(home, shared, shipped, rows, true)
+}
+
+/// Apply the shared usage, aliases and curation rules to already known sources.
+/// Read-only hosts pass false to keep bodies out of their catalogue and never
+/// scan transcripts or write the stage 1 snapshot.
+pub(crate) fn decorate(
+    home: &Path,
+    shared: &Path,
+    shipped: Value,
+    mut rows: BTreeMap<String, Row>,
+    include_body: bool,
+) -> Value {
+    let shipped = layer(shipped);
+    let manual = layer(read_json(&shared.join("shelf.json")));
+    let automatic = layer(read_json(&shared.join("shelf_auto.json")));
+    let mut settings = shipped.clone();
+    merge(&mut settings, &manual);
+    let mut categories = settings["categories"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if !categories.iter().any(|c| c["id"] == "unsorted") {
+        categories.push(json!({"id":"unsorted","name":"\u{672a}\u{5206}\u{985e}","color":"#8E8E93","symbol":"questionmark.folder"}));
     }
     let claude = read_json(&home.join(".claude.json"));
     let usage_claude: BTreeMap<_, _> = claude["skillUsage"]
@@ -714,7 +730,7 @@ pub fn collect(home: &Path, shared: &Path, shipped: Value) -> Value {
                 .len()
                 > 1
         );
-        row.value["hasWrapper"] = json!(row.documents.iter().any(|(_, path)| {
+        row.value["hasWrapper"] = json!(include_body && row.documents.iter().any(|(_, path)| {
             let value = text(path);
             let (_, body) = frontmatter::split(&value);
             body.trim_start()
@@ -729,14 +745,16 @@ pub fn collect(home: &Path, shared: &Path, shipped: Value) -> Value {
             .map(|p| p.to_string_lossy().into_owned()));
         row.value["triggers"] = row.metadata["triggers"].clone();
         row.value["codexRecorded"] = json!(codex_recorded);
+        row.value["body"] = json!("");
         if let Some(path) = path.filter(|p| !files::private_path(p)) {
-            let content = text(&path);
-            let (_, body) = frontmatter::split(&content);
-            row.value["body"] = json!(body);
+            if include_body {
+                let content = text(&path);
+                let (_, body) = frontmatter::split(&content);
+                row.value["body"] = json!(body);
+            }
             row.value["modifiedAt"] = json!(mtime(&path) * 1000.0);
             row.value["fileSize"] = json!(fs::metadata(&path).map(|m| m.len()).unwrap_or(0));
         } else {
-            row.value["body"] = json!("");
             row.value["modifiedAt"] = json!(0);
             row.value["fileSize"] = json!(0);
         }

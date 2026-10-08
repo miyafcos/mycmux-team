@@ -45,6 +45,52 @@ def test_manifest_covers_exact_files_and_cli():
     assert sync.check_manifest() == []
 
 
+def test_cli_history_covers_current_and_september_install():
+    cli = json.loads((PACK / "manifest.json").read_text(encoding="utf-8"))["cli"]
+    known = cli["known_sha256"]
+    assert known == sorted(set(known))
+    assert all(re.fullmatch(r"[0-9a-f]{64}", digest) for digest in known)
+    assert cli["sha256"] in known
+    # The unchanged 9/14-9/15 installer CLI that first exposed this failure.
+    assert "9f4a967ff3a60215d5deed823e3e350a4766488129a9e02a455dd26a9da01174" in known
+
+
+def test_manifest_regeneration_preserves_cli_hash_history(tmp_path, monkeypatch):
+    checkout = tmp_path / "checkout"
+    pack = checkout / "skills/claude"
+    shutil.copytree(PACK, pack)
+    cli = checkout / "scripts/mycmux_agent_cli.py"
+    cli.parent.mkdir()
+    cli.write_bytes(b"print('next distributed CLI')\n")
+    stored = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))
+    monkeypatch.setattr(sync, "ROOT", checkout)
+    monkeypatch.setattr(sync, "PACK", pack)
+    args = ["--write-manifest", "--home", str(tmp_path / "no-live")]
+    assert sync.main(args) == 0
+    regenerated = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))
+    expected = set(stored["cli"]["known_sha256"]) | {stored["cli"]["sha256"], sync.sha(cli.read_bytes(), cli)}
+    assert regenerated["cli"]["known_sha256"] == sorted(expected)
+    assert regenerated["cli"]["sha256"] == sync.sha(cli.read_bytes(), cli)
+    before = (pack / "manifest.json").read_bytes()
+    assert sync.main(args) == 0
+    assert (pack / "manifest.json").read_bytes() == before
+
+
+def test_manifest_migration_retains_previous_cli_hash(tmp_path, monkeypatch):
+    previous, current = "a" * 64, "b" * 64
+    (tmp_path / "manifest.json").write_text(json.dumps({"cli": {"sha256": previous}}), encoding="utf-8")
+    monkeypatch.setattr(sync, "PACK", tmp_path)
+    assert sync.known_cli_hashes(current) == [previous, current]
+
+
+@pytest.mark.parametrize("history", [["bad"], "bad", [None]])
+def test_invalid_cli_hash_history_is_refused(tmp_path, monkeypatch, history):
+    (tmp_path / "manifest.json").write_text(json.dumps({"cli": {"sha256": "a" * 64, "known_sha256": history}}), encoding="utf-8")
+    monkeypatch.setattr(sync, "PACK", tmp_path)
+    with pytest.raises(ValueError, match="invalid CLI hash history"):
+        sync.known_cli_hashes("b" * 64)
+
+
 def test_no_excluded_or_personal_content_and_utf8_lf():
     for path in PACK.rglob("*"):
         assert not sync.excluded(path.relative_to(PACK)), path

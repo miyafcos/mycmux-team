@@ -11,6 +11,11 @@ ChatGPT task with a mycmux Codex tab.
 ## Workflow
 
 1. Call `get_control_map` to identify the current workspace, pane, tab, and PTY session IDs.
+   Read `state` and `attention.kind` from `structuredContent`: `input` means a question/input
+   is waiting, and `approval` means approval is waiting. States come from canonical
+   `session.state_view`, joined by PTY session ID; a tab missing from status is `unknown`.
+   `summary.states` counts all canonical sessions (including ended PTYs without tabs);
+   `summary.tabStates` counts only listed tabs. Do not infer state from old registry hints.
 2. Call `open_mycmux_dashboard` when a visual dashboard helps the user inspect or select sessions.
 3. Call `read_session_screen` only for the exact PTY session ID returned by `get_control_map`.
 4. Call `pair_session` only after the user selects the target tab. Use the UI-generated

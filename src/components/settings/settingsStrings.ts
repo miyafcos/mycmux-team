@@ -82,6 +82,10 @@ export const notificationSettingsStrings = {
   groupingApplyAnimationLabel: "ペイン再配置の適用時に動きを表示",
   groupingApplyAnimationHint: "オフにすると、配置図から実画面への移動を省略して即時に切り替えます。Windows のアニメーション効果をオフにしている場合も動きません。",
   terminalInputTitle: "ターミナル入力",
+  terminalHistoryLabel: "「会話履歴を開く」ボタンを表示",
+  terminalHistoryHint: "このペインの会話の記録を読みます。表示は直近200件までです。閉じると端末に戻ります。",
+  terminalProgressDiagnosticsLabel: "端末の表示の進み具合を診断用に記録する",
+  terminalProgressDiagnosticsHint: "画面が崩れるときの調査に使います。本文・入力・名前・パスは記録しません。記録量には上限があります。通常はオフです。",
   paneComposerLabel: "ペインの下に入力欄を出す",
   paneComposerHint: "文字を選んで消す・書き直すといった編集ができる入力欄です。Enter で送信、Shift+Enter で改行。ペインが低いときは自動的に隠れます。",
 } as const;

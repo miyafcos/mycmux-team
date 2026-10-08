@@ -415,11 +415,22 @@ pub fn run() {
             agent_design::agent_design_cached,
             agent_design::agent_design_refresh,
             agent_design::agent_design_document,
+            agent_design::agent_design_history,
+            agent_design::agent_design_history_pair,
+            agent_design::agent_design_history_git,
+            agent_design::agent_design_history_diff,
+            agent_design::agent_design_reveal,
             agent_design::agent_design_close,
             agent_design::agent_design_scene,
             agent_design::agent_design_set_hermes_home,
             agent_design::agent_design_skills,
             agent_design::agent_design_skill_read,
+            agent_design::export::agent_design_export_documents,
+            agent_design::export::agent_design_export_recheck,
+            agent_design::export::agent_design_export_preview,
+            agent_design::export::agent_design_export_save,
+            agent_design::export::agent_design_export_names,
+            agent_design::export::agent_design_export_save_names,
             claude_skills::claude_skills_install,
             commands::agent_hooks::agent_hooks_status,
             commands::agent_hooks::agent_hooks_set,
@@ -439,6 +450,7 @@ pub fn run() {
             commands::terminal::set_frontend_visible,
             commands::terminal::set_app_frontend_visible,
             commands::terminal::get_session_scrollback,
+            commands::terminal_diagnostics::record_terminal_progress,
             commands::terminal::has_persisted_scrollback,
             commands::terminal::remove_workspace_scrollback,
             commands::terminal::discard_session_scrollback,
@@ -446,6 +458,9 @@ pub fn run() {
             commands::agent_prompts::agent_prompt_try_answer,
             commands::agent_prompts::agent_prompt_is_current_launch,
             commands::artifact::preview_artifact_uri_for_session_v2,
+            commands::inbox::inbox_post,
+            commands::inbox::inbox_recent,
+            commands::inbox::inbox_preview,
             open_with::take_pending_open_paths,
             commands::artifact::read_editable_artifact,
             commands::artifact::save_editable_artifact,
@@ -700,6 +715,7 @@ pub fn run() {
                 crate::diag_warn!("launcher", "failed to install launcher scripts: {err}");
             }
             if !test_profile::is_active() {
+                claude_skills::update_cli_at_startup();
                 commands::agent_hooks::install_at_startup(&state.hook_service);
             }
             warn_if_dual_install(&app_handle);

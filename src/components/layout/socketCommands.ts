@@ -1,6 +1,7 @@
 import {
   writeToSession,
   writeToSessionGuarded,
+  getWindowFragments,
   type PtyMetadataSnapshot,
   type SessionOutputSnapshot,
   type SessionStatusSnapshotPayload,
@@ -18,6 +19,10 @@ import { buildSpawnLaunchEnv } from "../../lib/spawnLaunchEnv";
 import { consumeHandoffLaunchEnv } from "../../lib/handoffLaunchEnv";
 import { buildTerminalPaneLaunch } from "../../lib/terminalPaneLaunch";
 import { otherWindowWorkspaces, requestPeerTabStart, serializeOtherWindowPanes, type TabStartResult } from "../../lib/socketTabWindows";
+import {
+  listenForPeerSocketCommandEvent, requestPeerSocketCommand,
+  type PeerSocketCommandRequest, type SocketArgs,
+} from "../../lib/socketCommandWindows";
 import type { TerminalLaunchRequest } from "../terminal/terminalLaunchParams";
 import { isDeclaredTab, isRestorableTab, type RestorablePaneTab } from "../../lib/tabLifecycle";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
@@ -35,6 +40,7 @@ import {
 } from "../../lib/layoutColumns";
 import { collectPaneCloseVictims } from "../../lib/paneCloseImpact";
 import { invoke } from "@tauri-apps/api/core";
+import { postInboxMessage } from "../../lib/inbox";
 
 import type { WebPaneBounds, WebPaneTarget, WebPaneTargetInfo, WebPaneWaitResult, WebPaneModifier, WebPaneNativeBudget } from "../workspace/webPaneApi";
 
@@ -43,99 +49,196 @@ import {
   withWebPaneCommandLock, type WebPaneCommandContext,
 } from "../workspace/webPaneCommandQueue";
 
-type SocketArgs = Record<string, unknown> | null | undefined;
 type SpawnCommand = "pane.spawn" | "pane.spawn_tab";
-const PEER_SPAWN_EVENT = "mycmux://socket-spawn";
-const PEER_SPAWN_RESULT_EVENT = "mycmux://socket-spawn-result";
-const PEER_SPAWN_TIMEOUT_MS = 20_000;
-interface PeerSpawnRequest {
-  requestId: string; targetWindow: string; replyWindow: string;
-  cmd: SpawnCommand; args: SocketArgs;
+const SPAWN_EVENTS = { request: "mycmux://socket-spawn", response: "mycmux://socket-spawn-result" };
+interface SocketTarget {
+  kind: "session" | "pane" | "tab" | "workspace";
+  id: string;
+  workspaceId?: string;
+  missingError: string;
 }
-interface PeerSpawnResponse { requestId: string; ownerWindow: string; result?: unknown; error?: string }
+class SocketTargetNotFound extends Error {}
 
-/** Find the caller in live local state first, then in peer fragments. Never
- * fall back to the operator's active window for a supplied but missing caller. */
+/** Only identifiers that choose an operation's location are routing anchors.
+ * Conversation ids, parentTabId and activation-restore tokens are not targets. */
+function socketCommandTargets(cmd: string, args: SocketArgs): SocketTarget[] {
+  const sessionId = socketArgString(args, "sessionId", "session_id");
+  const paneId = socketArgString(args, "paneId", "pane_id");
+  const tabId = socketArgString(args, "tabId", "tab_id");
+  const workspaceId = socketArgString(args, "workspaceId", "workspace_id", "id");
+  const explicitWorkspaceId = socketArgString(args, "workspaceId", "workspace_id");
+  const anchor = socketArgString(args, "anchorSessionId", "anchor_session_id");
+  const target = (kind: SocketTarget["kind"], id: string | undefined, missingError: string, scope?: string): SocketTarget[] =>
+    id ? [{ kind, id, missingError, workspaceId: scope }] : [];
+  if (["workspace.select", "select_workspace", "workspace.rename", "rename_workspace", "workspace.close", "close_workspace", "pane.list", "list_panes"].includes(cmd)) {
+    return target("workspace", workspaceId, `workspace not found: ${workspaceId}`);
+  }
+  if (cmd === "pane.spawn" || cmd === "pane.spawn_tab") {
+    const anchorPaneId = cmd === "pane.spawn" ? socketArgString(args, "anchorPaneId", "anchor_pane_id") : undefined;
+    return [
+      ...target("workspace", explicitWorkspaceId, `workspace not found: ${explicitWorkspaceId}`),
+      ...target("session", anchor, `${cmd} anchor session not found`, explicitWorkspaceId),
+      ...target("pane", anchorPaneId, `${cmd} anchor pane not found`, explicitWorkspaceId),
+    ];
+  }
+  if (cmd === "pane.close_tabs") {
+    const ids = Array.isArray(args?.tabIds) ? args.tabIds.filter((id): id is string => typeof id === "string" && id.length > 0) : [];
+    return [...new Set(ids)].flatMap(id => target("tab", id, `pane.close_tabs tab not found: ${id}`));
+  }
+  if (cmd === "pane.declare_tab") return paneId
+    ? target("pane", paneId, "pane.declare_tab requires paneId or sessionId")
+    : target("session", sessionId, "pane.declare_tab requires paneId or sessionId");
+  if (cmd === "pane.launch_declared") return socketArgString(args, "requestId", "request_id")
+    ? target("tab", tabId, "pane.launch_declared tab not found") : [];
+  if (cmd === "pane.move") {
+    if (Boolean(sessionId) === Boolean(paneId)) return [];
+    return [
+      ...target("workspace", explicitWorkspaceId, `workspace not found: ${explicitWorkspaceId}`),
+      ...target(paneId ? "pane" : "session", paneId ?? sessionId, `pane not found: ${paneId ?? sessionId}`, explicitWorkspaceId),
+    ];
+  }
+  if (["pane.read", "pane.send_text", "pane.close_tab", "pane.rename_tab", "pane.activate_tab", "pane.start_tab"].includes(cmd)) {
+    return target("session", sessionId, cmd === "pane.read" || cmd === "pane.send_text"
+      ? `${cmd} session is not a known pane` : `${cmd} session not found`);
+  }
+  if (cmd === "web.open") return target("session", anchor, "web.open anchor session not found");
+  if (cmd.startsWith("web.") && cmd !== "web.list" && SOCKET_COMMAND_NAMES.includes(cmd as SocketCommandName)) {
+    if (tabId) return target("tab", tabId, `${cmd === "web.read" || cmd === "web.focus" || cmd === "web.close" || cmd === "web.push" ? "" : cmd + " "}web tab not found: ${tabId}`);
+    if (cmd !== "web.focus" && cmd !== "web.close") return target("session", anchor, `${cmd} found no matching web tab in the target workspace`);
+  }
+  return [];
+}
+
+function ownsSocketTarget(target: SocketTarget, workspace: Workspace): boolean {
+  if (target.workspaceId && workspace.id !== target.workspaceId) return false;
+  if (target.kind === "workspace") return workspace.id === target.id;
+  return workspace.panes.some(pane => target.kind === "pane" ? pane.id === target.id
+    : target.kind === "session" ? paneContainsSession(pane, target.id)
+      : pane.tabs.some(tab => tab.id === target.id));
+}
+
+function fragmentOwnsSocketTarget(target: SocketTarget, workspace: import("../../lib/ipc").WorkspaceConfig): boolean {
+  if (target.workspaceId && workspace.id !== target.workspaceId) return false;
+  if (target.kind === "workspace") return workspace.id === target.id;
+  return workspace.panes.some(pane => target.kind === "pane" ? pane.pane_id === target.id
+    : target.kind === "session" ? pane.session_id === target.id || pane.tabs?.some(tab => tab.session_id === target.id)
+      : pane.tabs?.some(tab => tab.tab_id === target.id));
+}
+
+/** Ignore our own published snapshot, but never deduplicate two different
+ * owners by workspace id: a transfer in progress must fail closed. */
+export function socketCommandWindowsForRequest(
+  cmd: string, args: SocketArgs, own: readonly Workspace[],
+  fragments: readonly import("../../lib/ipc").WindowFragment[], ownLabel: string,
+): Map<string, SocketTarget[]> {
+  const groups = new Map<string, SocketTarget[]>();
+  for (const target of socketCommandTargets(cmd, args)) {
+    const owners = new Set<string>();
+    if (own.some(workspace => ownsSocketTarget(target, workspace))) owners.add(ownLabel);
+    for (const fragment of fragments) {
+      if (fragment.window_label !== ownLabel && fragment.workspaces.some(workspace => fragmentOwnsSocketTarget(target, workspace))) owners.add(fragment.window_label);
+    }
+    if (owners.size > 1) throw new Error(`${cmd} target has conflicting window owners`);
+    if (owners.size === 0) throw new SocketTargetNotFound(target.missingError);
+    const owner = [...owners][0];
+    groups.set(owner, [...(groups.get(owner) ?? []), target]);
+  }
+  if (cmd !== "pane.close_tabs" && groups.size > 1) throw new Error(`${cmd} targets belong to different windows`);
+  return groups;
+}
+
 export function spawnWindowForRequest(
   cmd: SpawnCommand, args: SocketArgs, own: readonly Workspace[],
   fragments: readonly import("../../lib/ipc").WindowFragment[], ownLabel: string,
 ): string {
-  const anchor = socketArgString(args, "anchorSessionId", "anchor_session_id");
-  const workspaceId = socketArgString(args, "workspaceId", "workspace_id");
-  if (!anchor && !workspaceId) return ownLabel;
-  if (own.some((workspace) => anchor ? workspaceContainsSession(workspace, anchor) : workspace.id === workspaceId)) return ownLabel;
-  const owners = new Set(fragments.filter((fragment) => fragment.window_label !== ownLabel)
-    .filter((fragment) => fragment.workspaces.some((workspace) => anchor
-      ? workspace.panes.some((pane) => pane.session_id === anchor || pane.tabs?.some((tab) => tab.session_id === anchor))
-      : workspace.id === workspaceId)).map((fragment) => fragment.window_label));
-  if (owners.size > 1) throw new Error(`${cmd} caller has conflicting window owners`);
-  if (owners.size === 1) return [...owners][0];
-  throw new Error(anchor ? `${cmd} anchor session not found` : `workspace not found: ${workspaceId}`);
+  return socketCommandWindowsForRequest(cmd, args, own, fragments, ownLabel).keys().next().value ?? ownLabel;
 }
 
 export async function requestPeerSpawn(targetWindow: string, cmd: SpawnCommand, args: SocketArgs): Promise<unknown> {
-  const { emitTo, listen } = await import("@tauri-apps/api/event");
-  const { windowLabel } = await import("../../lib/windowContext");
-  const replyWindow = windowLabel(), requestId = crypto.randomUUID();
-  let resolve!: (result: unknown) => void, reject!: (error: unknown) => void;
-  const response = new Promise<unknown>((done, fail) => { resolve = done; reject = fail; });
-  const unlisten = await listen<PeerSpawnResponse>(PEER_SPAWN_RESULT_EVENT, ({ payload }) => {
-    if (payload.requestId !== requestId || payload.ownerWindow !== targetWindow) return;
-    if (payload.error !== undefined) reject(new Error(payload.error));
-    else resolve(payload.result);
-  }, { target: { kind: "Window", label: replyWindow } });
-  const timer = setTimeout(() => reject(new Error(`${cmd} owner window did not respond`)), PEER_SPAWN_TIMEOUT_MS);
-  try {
-    const [, result] = await Promise.all([
-      emitTo(targetWindow, PEER_SPAWN_EVENT, { requestId, targetWindow, replyWindow, cmd, args } satisfies PeerSpawnRequest), response,
-    ]);
-    return result;
-  } finally { clearTimeout(timer); unlisten(); }
+  return requestPeerSocketCommand(targetWindow, cmd, args, webPaneCommandContext(cmd), { events: SPAWN_EVENTS });
 }
 
-/** Each window runs only its own targeted requests after hydration. Recheck
- * the live caller so a transfer or close during routing cannot spawn elsewhere. */
-export async function listenForPeerSpawns(ready: () => Promise<void> = async () => {}) {
-  const events = await import("@tauri-apps/api/event");
-  const { windowLabel } = await import("../../lib/windowContext");
-  const label = windowLabel(), seen = new Set<string>();
-  return events.listen<PeerSpawnRequest>(PEER_SPAWN_EVENT, async ({ payload }) => {
-    if (payload.targetWindow !== label || !payload.requestId || !payload.replyWindow
-      || (payload.cmd !== "pane.spawn" && payload.cmd !== "pane.spawn_tab") || seen.has(payload.requestId)) return;
-    seen.add(payload.requestId);
-    let response: PeerSpawnResponse;
-    try {
-      await ready();
-      const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
-      spawnWindowForRequest(payload.cmd, payload.args, useWorkspaceListStore.getState().workspaces, [], label);
-      const result = payload.cmd === "pane.spawn" ? await spawnPane(payload.args) : await spawnTab(payload.args);
-      response = { requestId: payload.requestId, ownerWindow: label, result };
-    } catch (error) {
-      response = { requestId: payload.requestId, ownerWindow: label, error: error instanceof Error ? error.message : String(error) };
-    }
-    if (seen.size > 128) seen.delete(seen.values().next().value!);
-    await events.emitTo(payload.replyWindow, PEER_SPAWN_RESULT_EVENT, response);
-  }, { target: { kind: "Window", label } });
+function executePeerSocketCommand(request: PeerSocketCommandRequest): Promise<unknown> {
+  return handleSocketCommand(request.cmd, request.args, request);
 }
 
-async function dispatchSpawn(cmd: SpawnCommand, args: SocketArgs): Promise<unknown> {
-  const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
-  const { windowLabel } = await import("../../lib/windowContext");
-  const local = () => cmd === "pane.spawn" ? spawnPane(args) : spawnTab(args);
+export function listenForPeerSpawns(ready: () => Promise<void> = async () => {}) {
+  return listenForPeerSocketCommandEvent(request => request.cmd === "pane.spawn" || request.cmd === "pane.spawn_tab", executePeerSocketCommand, ready, SPAWN_EVENTS);
+}
+
+export function listenForPeerSocketCommands(ready: () => Promise<void> = async () => {}) {
+  return listenForPeerSocketCommandEvent(request => SOCKET_COMMAND_NAMES.includes(request.cmd as SocketCommandName)
+    && socketCommandTargets(request.cmd, request.args).length > 0, executePeerSocketCommand, ready);
+}
+
+async function preflightCloseTabs(args: SocketArgs): Promise<void> {
+  const [{ preflightPaneClose }, { useWorkspaceListStore }, { windowLabel }] = await Promise.all([
+    import("../../lib/paneClosePreflight"), import("../../stores/workspaceStore"), import("../../lib/windowContext"),
+  ]);
+  const tabIds = socketCommandTargets("pane.close_tabs", args).map(target => target.id);
+  const workspaces = useWorkspaceListStore.getState().workspaces;
+  socketCommandWindowsForRequest("pane.close_tabs", args, workspaces, [], windowLabel());
+  const plan = preflightPaneClose(workspaces, { kind: "tabs", tabIds });
+  if (!plan.ok) requireClosedResult({ status: "refused", reason: plan.reason });
+}
+
+async function routeSocketCommand(cmd: string, args: SocketArgs, context: WebPaneCommandContext): Promise<{ result: unknown } | null> {
+  if (socketCommandTargets(cmd, args).length === 0) return null;
+  const [{ useWorkspaceListStore }, { windowLabel }] = await Promise.all([
+    import("../../stores/workspaceStore"), import("../../lib/windowContext"),
+  ]);
   const label = windowLabel();
+  let fragments: import("../../lib/ipc").WindowFragment[] = [];
   try {
-    spawnWindowForRequest(cmd, args, useWorkspaceListStore.getState().workspaces, [], label);
-    return local();
-  } catch (error) {
-    let fragments;
-    try {
-      const { getWindowFragments } = await import("../../lib/ipc");
-      fragments = await getWindowFragments();
-    } catch { throw error; }
-    // Local state can change during the IPC read. Its latest state wins.
-    const target = spawnWindowForRequest(cmd, args, useWorkspaceListStore.getState().workspaces, fragments, label);
-    return target === label ? local() : requestPeerSpawn(target, cmd, args);
+    const snapshot = await getWindowFragments();
+    if (!Array.isArray(snapshot)) throw new Error("window fragment registry unavailable");
+    fragments = snapshot;
   }
+  catch { /* A known local target still works if the fragment registry is unavailable.
+             A missing local target will fail below, never fall back to the foreground. */ }
+  let groups: Map<string, SocketTarget[]>;
+  try {
+    groups = socketCommandWindowsForRequest(cmd, args, useWorkspaceListStore.getState().workspaces, fragments, label);
+  } catch (error) {
+    if (cmd === "pane.launch_declared" && error instanceof SocketTargetNotFound) {
+      const { useSettingsStore } = await import("../../stores/settingsStore");
+      return { result: { ok: false, reason: useSettingsStore.getState().declaredLaunchEnabled ? "not-found" : "flag-disabled" } };
+    }
+    throw error;
+  }
+  if (groups.size === 1 && groups.has(label)) return null;
+  if (cmd === "pane.close_tabs" && groups.size > 1) {
+    // Resolve every id and check every owner's structural guard before the first
+    // kill. Termination remains sequential; this is not a distributed transaction.
+    for (const [owner, targets] of groups) {
+      const groupArgs = { tabIds: targets.map(target => target.id) };
+      if (owner === label) await preflightCloseTabs(groupArgs);
+      else await requestPeerSocketCommand(owner, cmd, groupArgs, context, { preflightOnly: true });
+    }
+    const results: Awaited<ReturnType<typeof closeTabs>>[] = [];
+    for (const [owner, targets] of groups) {
+      const groupArgs = { tabIds: targets.map(target => target.id) };
+      results.push(await (owner === label ? handleSocketCommand(cmd, groupArgs, {
+        context, expiresAt: context.deadline,
+      }) : requestPeerSocketCommand(owner, cmd, groupArgs, context)) as Awaited<ReturnType<typeof closeTabs>>);
+    }
+    return { result: {
+      moved: results.flatMap(result => result.moved ?? []),
+      closed: results.flatMap(result => result.closed ?? []),
+      skipped: results.flatMap(result => result.skipped ?? []),
+      removedPanes: results.flatMap(result => result.removedPanes ?? []),
+      retainedEmptyPanes: results.flatMap(result => result.retainedEmptyPanes ?? []),
+      removedColumns: results.reduce((count, result) => count + (result.removedColumns ?? 0), 0),
+      affectedWorkspaces: [...new Set(results.flatMap(result => result.affectedWorkspaces ?? []))],
+      staleRevision: results.some(result => result.staleRevision),
+      victims: results.flatMap(result => result.victims),
+    } };
+  }
+  const owner = groups.keys().next().value!;
+  return { result: await (cmd === "pane.spawn" || cmd === "pane.spawn_tab"
+    ? requestPeerSocketCommand(owner, cmd, args, context, { events: SPAWN_EVENTS })
+    : cmd === "pane.start_tab" ? requestPeerTabStart(owner, socketArgString(args, "sessionId", "session_id")!, context)
+      : requestPeerSocketCommand(owner, cmd, args, context)) };
 }
 // Every launchable catalog row, not only the four kinds mycmux tracks a
 // session identity for: `agy`, `hermes`, and `omp` are agents the launcher starts and
@@ -886,7 +989,7 @@ async function attachBackgroundTabSession(
   if (launch.env?.MYCMUX_HANDOFF?.trim()) consumeHandoffLaunchEnv(tab.sessionId);
 }
 
-async function startTab(args: SocketArgs, allowPeer = true): Promise<TabStartResult> {
+async function startTab(args: SocketArgs): Promise<TabStartResult> {
   const sessionId = socketArgString(args, "sessionId", "session_id");
   if (!sessionId) throw new Error("pane.start_tab requires sessionId");
   const [{ useWorkspaceListStore }, agents, ipc] = await Promise.all([
@@ -894,14 +997,6 @@ async function startTab(args: SocketArgs, allowPeer = true): Promise<TabStartRes
     import("../../lib/agents"),
     import("../../lib/ipc"),
   ]);
-  const localWorkspaces = useWorkspaceListStore.getState().workspaces;
-  if (allowPeer && !findTabBySessionId(localWorkspaces, sessionId)) {
-    const peers = otherWindowWorkspaces(await ipc.getWindowFragments(), new Set(localWorkspaces.map((ws) => ws.id)));
-    const owner = peers.find(({ workspace }) => workspace.panes.some((pane) =>
-      pane.tabs?.some((tab) => tab.session_id === sessionId),
-    ));
-    if (owner) return requestPeerTabStart(owner.windowLabel, sessionId);
-  }
   const findTarget = () => {
     const target = findTabBySessionId(useWorkspaceListStore.getState().workspaces, sessionId);
     if (!target) throw new Error("pane.start_tab session not found");
@@ -930,7 +1025,7 @@ async function startTab(args: SocketArgs, allowPeer = true): Promise<TabStartRes
 
 /** Peer requests execute against the owning window's store and never route again. */
 export function startLocalTabSession(sessionId: string): Promise<TabStartResult> {
-  return startTab({ sessionId }, false);
+  return startTab({ sessionId });
 }
 
 function isKnownPaneSession(workspaces: Workspace[], sessionId: string): boolean {
@@ -982,11 +1077,13 @@ async function spawnPane(args: SocketArgs) {
   // Falling straight back to activeWorkspaceId meant an agent sitting in a
   // background workspace split the pane the operator was working in.
   const callerSessionId = socketArgString(args, "anchorSessionId", "anchor_session_id");
+  const requestedAnchorId = socketArgString(args, "anchorPaneId", "anchor_pane_id");
   const callerWorkspaceId = callerSessionId
     ? workspaceState.workspaces.find((candidate) =>
         workspaceContainsSession(candidate, callerSessionId),
       )?.id
-    : undefined;
+    : requestedAnchorId ? workspaceState.workspaces.find(candidate =>
+        candidate.panes.some(pane => pane.id === requestedAnchorId))?.id : undefined;
   if (callerSessionId && !callerWorkspaceId) throw new Error("pane.spawn anchor session not found");
   const workspaceId = socketArgString(args, "workspaceId", "workspace_id")
     ?? callerWorkspaceId
@@ -995,9 +1092,9 @@ async function spawnPane(args: SocketArgs) {
   if (!workspaceId) throw new Error("pane.spawn requires an active workspace or workspaceId");
   const workspace = workspaceState.getWorkspace(workspaceId);
   if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
+  if (callerSessionId && !workspaceContainsSession(workspace, callerSessionId)) throw new Error("pane.spawn anchor session not found");
   if (workspace.panes.length === 0) throw new Error("pane.spawn requires a workspace with panes");
 
-  const requestedAnchorId = socketArgString(args, "anchorPaneId", "anchor_pane_id");
   const activeSessionId = useUiStore.getState().activePaneId;
   const anchorPane = requestedAnchorId
     ? workspace.panes.find((pane) => pane.id === requestedAnchorId)
@@ -1845,7 +1942,8 @@ async function launchDeclared(args: SocketArgs): Promise<DeclaredLaunchResult> {
   const tabId = socketArgString(args, "tabId", "tab_id");
   const requestId = socketArgString(args, "requestId", "request_id");
   if (!tabId || !requestId) throw new Error("pane.launch_declared requires tabId and requestId");
-  const cached = declaredLaunchRequests.get(requestId);
+  const cacheKey = JSON.stringify([tabId, requestId]);
+  const cached = declaredLaunchRequests.get(cacheKey);
   if (cached) return cached;
   const run = (async (): Promise<DeclaredLaunchResult> => {
     const { useSettingsStore } = await import("../../stores/settingsStore");
@@ -1871,16 +1969,16 @@ async function launchDeclared(args: SocketArgs): Promise<DeclaredLaunchResult> {
       pending: backgroundWorkspace,
     };
   })();
-  retainDeclaredLaunchRequest(requestId, run);
+  retainDeclaredLaunchRequest(cacheKey, run);
   void run.then(
     (result) => {
-      if (!result.ok && declaredLaunchRequests.get(requestId) === run) {
-        declaredLaunchRequests.delete(requestId);
+      if (!result.ok && declaredLaunchRequests.get(cacheKey) === run) {
+        declaredLaunchRequests.delete(cacheKey);
       }
     },
     () => {
-      if (declaredLaunchRequests.get(requestId) === run) {
-        declaredLaunchRequests.delete(requestId);
+      if (declaredLaunchRequests.get(cacheKey) === run) {
+        declaredLaunchRequests.delete(cacheKey);
       }
     },
   );
@@ -1968,6 +2066,8 @@ async function closeTabs(args: SocketArgs) {
   const metadata = usePaneMetadataStore.getState();
   const victims = collectPaneCloseVictims(panes, metadata.metadata, metadata.volatileMetadata);
   const { closePaneOperation } = await import("../../lib/paneCloseOperation");
+  const { windowLabel } = await import("../../lib/windowContext");
+  socketCommandWindowsForRequest("pane.close_tabs", args, useWorkspaceListStore.getState().workspaces, [], windowLabel());
   const result = await closePaneOperation({ kind: "tabs", tabIds }, "cli", {
     commitBulkLayout: workspaces => useWorkspaceListStore.getState()._replaceWorkspaces(workspaces),
   });
@@ -2045,12 +2145,21 @@ interface PaneSnapshot {
   targetMounted: boolean;
 }
 
-async function readPaneSnapshot(sessionId: string): Promise<PaneSnapshot> {
+function peerPaneNeedsHeadlessRead(
+  sessionId: string, workspaces: Workspace[], activeWorkspaceId: string | null,
+): boolean {
+  const target = findTabBySessionId(workspaces, sessionId);
+  if (!target) return false;
+  const displayedTab = target.pane.tabs.find(tab => tab.id === target.pane.activeTabId) ?? target.pane.tabs[0];
+  return target.workspace.id !== activeWorkspaceId || displayedTab?.id !== target.tab.id;
+}
+
+async function readPaneSnapshot(sessionId: string, preferHeadless = false): Promise<PaneSnapshot> {
   const { hasMountedTerminal } = await import("../terminal/XTermWrapper");
   const targetMounted = hasMountedTerminal(sessionId);
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    const read = readPaneTail(sessionId, SEND_CONFIRM_LINES, !targetMounted);
+    const read = readPaneTail(sessionId, SEND_CONFIRM_LINES, preferHeadless || !targetMounted);
     const deadline = new Promise<never>((_, reject) => {
       timeout = setTimeout(() => reject(new Error("pane snapshot timed out")), SEND_SNAPSHOT_TIMEOUT_MS);
     });
@@ -2065,6 +2174,7 @@ async function readPaneSnapshot(sessionId: string): Promise<PaneSnapshot> {
 async function waitForTypedTextToSettle(
   sessionId: string,
   before: PaneSnapshot,
+  preferHeadless: boolean,
 ): Promise<{ snapshot: string | null; settled: boolean; targetMounted: boolean }> {
   if (before.text === null) return { snapshot: null, settled: false, targetMounted: before.targetMounted };
 
@@ -2075,7 +2185,7 @@ async function waitForTypedTextToSettle(
   const polls = Math.ceil(SEND_TEXT_SETTLE_TIMEOUT_MS / SEND_CONFIRM_POLL_MS);
   for (let poll = 0; poll < polls; poll += 1) {
     await waitForSendConfirmationPoll();
-    const current = await readPaneSnapshot(sessionId);
+    const current = await readPaneSnapshot(sessionId, preferHeadless);
     targetMounted = current.targetMounted;
     if (current.text === null) continue;
     if (current.text !== before.text) observedEcho = true;
@@ -2090,6 +2200,7 @@ async function waitForPaneToAdvance(
   sessionId: string,
   beforeEnter: string,
   targetMountedAtStart: boolean,
+  preferHeadless: boolean,
 ): Promise<{ outcome: "advanced" | "unchanged" | "unavailable"; targetMounted: boolean }> {
   let readable = false;
   let unavailable = false;
@@ -2097,7 +2208,7 @@ async function waitForPaneToAdvance(
   const polls = Math.ceil(SEND_ENTER_CONFIRM_TIMEOUT_MS / SEND_CONFIRM_POLL_MS);
   for (let poll = 0; poll < polls; poll += 1) {
     await waitForSendConfirmationPoll();
-    const current = await readPaneSnapshot(sessionId);
+    const current = await readPaneSnapshot(sessionId, preferHeadless);
     targetMounted = current.targetMounted;
     if (current.text === null) {
       unavailable = true;
@@ -2239,7 +2350,9 @@ async function writePaneBytes(
   data: string,
   args: SocketArgs,
   expectedInputRevision?: number,
+  validateTarget: () => void = () => {},
 ): Promise<{ sent: false; reason: string } | null> {
+  validateTarget();
   const { expectedAttentionId, expectedSessionEpoch, expectedSessionRevision } = guardedWriteExpectations(args);
   if (
     expectedAttentionId === undefined
@@ -2269,7 +2382,7 @@ async function writePaneBytes(
   return result.sent ? null : { sent: false, reason: result.reason ?? "ambiguous" };
 }
 
-async function sendPaneText(args: SocketArgs) {
+async function sendPaneText(args: SocketArgs, expiresAt?: number, peerRequest = false) {
   const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
   const { recordRecentInputText } = await import("../../stores/recentInputStore");
   const { clearTurnDraft, noteTurnSubmit } = await import("../terminal/terminalTurnMarkers");
@@ -2298,7 +2411,17 @@ async function sendPaneText(args: SocketArgs) {
   if (!isKnownPaneSession(workspaces, sessionId)) {
     throw new Error("pane.send_text session is not a known pane");
   }
+  const validateTarget = () => {
+    if (expiresAt !== undefined && Date.now() >= expiresAt) throw new Error("pane.send_text owner request expired");
+    const live = useWorkspaceListStore.getState().workspaces;
+    const current = findTabBySessionId(live, sessionId);
+    if (!isKnownPaneSession(live, sessionId) || (target && current?.tab.id !== target.tab.id)) {
+      throw new Error("pane.send_text session is not a known pane");
+    }
+    if (current && isDeclaredTab(current.tab)) throw new Error("pane.send_text cannot target a declared tab");
+  };
   return serializePaneSend(sessionId, async () => {
+    validateTarget();
     const {
       expectedAttentionId,
       expectedSessionEpoch,
@@ -2317,7 +2440,7 @@ async function sendPaneText(args: SocketArgs) {
     const keyBytes = key === null ? "\r" : SEND_KEY_BYTES[key];
     const bytes = textValue.length + (enter || key !== null ? keyBytes.length : 0);
     if (!enter && key === null) {
-      const rejected = await writePaneBytes(sessionId, textValue, args, expectedInputRevision);
+      const rejected = await writePaneBytes(sessionId, textValue, args, expectedInputRevision, validateTarget);
       if (rejected) return rejected;
       return {
         sessionId,
@@ -2327,14 +2450,21 @@ async function sendPaneText(args: SocketArgs) {
       };
     }
 
-    const beforeText = await readPaneSnapshot(sessionId);
+    // A retained background xterm can be mounted and parsed but stop consuming
+    // live output. Choose the owner's backend before the first snapshot and keep
+    // that source for echo and Enter, so switching readers cannot confirm a send.
+    const verificationState = useWorkspaceListStore.getState();
+    const preferHeadless = peerRequest && peerPaneNeedsHeadlessRead(
+      sessionId, verificationState.workspaces, verificationState.activeWorkspaceId,
+    );
+    const beforeText = await readPaneSnapshot(sessionId, preferHeadless);
     let beforeEnter = beforeText.text;
     let canConfirm = beforeEnter !== null;
     let targetMounted = beforeText.targetMounted;
     if (textValue) {
-      const rejected = await writePaneBytes(sessionId, textValue, args, expectedInputRevision);
+      const rejected = await writePaneBytes(sessionId, textValue, args, expectedInputRevision, validateTarget);
       if (rejected) return rejected;
-      const settled = await waitForTypedTextToSettle(sessionId, beforeText);
+      const settled = await waitForTypedTextToSettle(sessionId, beforeText, preferHeadless);
       beforeEnter = settled.snapshot;
       canConfirm = settled.settled && beforeEnter !== null;
       targetMounted = settled.targetMounted;
@@ -2344,7 +2474,7 @@ async function sendPaneText(args: SocketArgs) {
     if (guarded && textValue) inputRevision = inputRevision === undefined ? undefined : inputRevision + 1;
 
     if (!canConfirm || beforeEnter === null) {
-      const rejected = await writePaneBytes(sessionId, keyBytes, args, inputRevision);
+      const rejected = await writePaneBytes(sessionId, keyBytes, args, inputRevision, validateTarget);
       if (rejected) return rejected;
       if (textValue) {
         recordRecentInputText(sessionId, textValue);
@@ -2363,14 +2493,14 @@ async function sendPaneText(args: SocketArgs) {
       };
     }
 
-    const rejected = await writePaneBytes(sessionId, keyBytes, args, inputRevision);
+    const rejected = await writePaneBytes(sessionId, keyBytes, args, inputRevision, validateTarget);
     if (rejected) return rejected;
     if (textValue) {
       recordRecentInputText(sessionId, textValue);
       noteTurnSubmit(sessionId, turnLabelFrom(textValue));
       clearTurnDraft(sessionId);
     }
-    const advance = await waitForPaneToAdvance(sessionId, beforeEnter, targetMounted);
+    const advance = await waitForPaneToAdvance(sessionId, beforeEnter, targetMounted, preferHeadless);
     targetMounted = advance.targetMounted;
     if (advance.outcome === "advanced") {
       return { sessionId, bytes, ok: true, confirmed: true, attempts: 1 };
@@ -2391,11 +2521,12 @@ async function sendPaneText(args: SocketArgs) {
   });
 }
 
-async function readPane(args: SocketArgs) {
+async function readPane(args: SocketArgs, peerRequest = false) {
   const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
   const sessionId = socketArgString(args, "sessionId", "session_id");
   if (!sessionId) throw new Error("pane.read requires sessionId");
-  const workspaces = useWorkspaceListStore.getState().workspaces;
+  const workspaceState = useWorkspaceListStore.getState();
+  const workspaces = workspaceState.workspaces;
   const target = findTabBySessionId(workspaces, sessionId);
   if (target && isDeclaredTab(target.tab)) {
     throw new Error("pane.read cannot target a declared tab");
@@ -2403,7 +2534,8 @@ async function readPane(args: SocketArgs) {
   if (!isKnownPaneSession(workspaces, sessionId)) {
     throw new Error("pane.read session is not a known pane");
   }
-  return { sessionId, lines: await readPaneTail(sessionId, args?.lines) };
+  const preferHeadless = peerRequest && peerPaneNeedsHeadlessRead(sessionId, workspaces, workspaceState.activeWorkspaceId);
+  return { sessionId, lines: await readPaneTail(sessionId, args?.lines, preferHeadless) };
 }
 
 export async function readPaneTail(
@@ -2418,22 +2550,25 @@ export async function readPaneTail(
     return getTerminalBufferLines(sessionId, clampPaneReadLines(lines));
   }
 
-  const [{ getSessionScrollback }, { getHeadlessBufferLines }, { terminalSizeCache }] = await Promise.all([
+  const [{ getSessionScrollback }, { readHeadlessBufferLines }, { terminalSizeCache }] = await Promise.all([
     import("../../lib/ipc"),
     import("../terminal/headlessBuffer"),
     import("../terminal/terminalCache"),
   ]);
-  let snapshot;
-  try {
-    snapshot = await getSessionScrollback(sessionId);
-  } catch {
-    throw new Error("no terminal buffer for session");
-  }
-  if (snapshot.data.byteLength === 0) throw new Error("no terminal buffer for session");
-  // Render at the size the pane really has: a TUI frame drawn for a wide pane
-  // and replayed into a narrower headless terminal comes out garbled, which the
-  // AskUserQuestion preflight then refuses to answer.
-  return getHeadlessBufferLines(sessionId, snapshot, clampPaneReadLines(lines), terminalSizeCache.get(sessionId));
+  return readHeadlessBufferLines(sessionId, async (since) => {
+    let snapshot;
+    try {
+      snapshot = since === undefined
+        ? await getSessionScrollback(sessionId)
+        : await getSessionScrollback(sessionId, since);
+    } catch {
+      throw new Error("no terminal buffer for session");
+    }
+    // An empty delta means the parsed screen is unchanged; an empty full ring
+    // still has no screen to read, preserving the existing error contract.
+    if (snapshot.data.byteLength === 0 && !snapshot.isDelta) throw new Error("no terminal buffer for session");
+    return snapshot;
+  }, clampPaneReadLines(lines), terminalSizeCache.get(sessionId));
 }
 
 async function movePane(args: SocketArgs) {
@@ -2562,6 +2697,7 @@ async function closeWorkspace(args: SocketArgs) {
 export const SOCKET_COMMAND_NAMES = [
   "account.usage",
   "usage",
+  "inbox.post",
   "workspace.list",
   "list_workspaces",
   "workspace.select",
@@ -2575,6 +2711,8 @@ export const SOCKET_COMMAND_NAMES = [
   "pane.list",
   "list_panes",
   "pane.list_all",
+  "pane.live_tails",
+  "live_tails",
   "list_all_panes",
   "pane.spawn",
   "pane.spawn_tab",
@@ -2611,14 +2749,35 @@ export const SOCKET_COMMAND_NAMES = [
 ] as const;
 type SocketCommandName = (typeof SOCKET_COMMAND_NAMES)[number];
 
-export async function handleSocketCommand(cmd: string, args: SocketArgs): Promise<unknown> {
-  const context = webPaneCommandContext(cmd);
+export async function handleSocketCommand(
+  cmd: string, args: SocketArgs,
+  execution?: Pick<PeerSocketCommandRequest, "context" | "expiresAt" | "preflightOnly">,
+): Promise<unknown> {
+  const context = execution
+    ? { ...execution.context, deadline: Math.min(execution.context.deadline, execution.expiresAt) }
+    : webPaneCommandContext(cmd);
+  if (!execution) {
+    const routed = await routeSocketCommand(cmd, args, context);
+    if (routed) return routed.result;
+  }
   const { usePaneMetadataStore, useUiStore, useWorkspaceListStore } = await import(
     "../../stores/workspaceStore"
   );
+  if (execution) {
+    if (Date.now() >= execution.expiresAt) throw new Error(`${cmd} owner request expired`);
+    const { windowLabel } = await import("../../lib/windowContext");
+    socketCommandWindowsForRequest(cmd, args, useWorkspaceListStore.getState().workspaces, [], windowLabel());
+    if (execution.preflightOnly) {
+      if (cmd !== "pane.close_tabs") throw new Error("unsupported peer preflight command");
+      await preflightCloseTabs(args);
+      return {};
+    }
+  }
   const workspaceState = useWorkspaceListStore.getState();
 
   switch (cmd as SocketCommandName) {
+    case "inbox.post":
+      return postInboxMessage(args);
     // Read-only: the account usage report mycmux already fetches for the Usage
     // tab. Exposed over the socket so an agent can see how much room each
     // registered CLI account has left without touching the credential store.
@@ -2746,9 +2905,15 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
       };
     }
 
+    case "pane.live_tails":
+    case "live_tails": {
+      const { getLiveTailsForApi } = await import("../../stores/liveTailStore");
+      return getLiveTailsForApi();
+    }
+
     case "pane.spawn":
     case "pane.spawn_tab":
-      return dispatchSpawn(cmd as SpawnCommand, args);
+      return cmd === "pane.spawn" ? spawnPane(args) : spawnTab(args);
     case "pane.declare_tab":
       return declareTab(args);
     case "pane.launch_declared":
@@ -2766,9 +2931,9 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
     case "pane.rename_tab":
       return renameTab(args);
     case "pane.send_text":
-      return sendPaneText(args);
+      return sendPaneText(args, execution?.expiresAt, execution !== undefined);
     case "pane.read":
-      return readPane(args);
+      return readPane(args, execution !== undefined);
     case "pane.move":
       return movePane(args);
     case "web.open":

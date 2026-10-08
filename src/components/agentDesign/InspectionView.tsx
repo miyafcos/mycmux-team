@@ -1,40 +1,41 @@
-import { useState } from "react";
-import { CircleAlert, CircleHelp, Eye, Check, FolderOpen } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Check, FolderOpen } from "lucide-react";
 import type { AgentDesignApi, AgentDesignCatalog, DesignFinding } from "../../lib/agentDesignApi";
-import { agentDesignStrings as s, number, chars } from "./agentDesignStrings";
+import { agentDesignStrings as s, chars, number } from "./agentDesignStrings";
 import { Fields, ServiceMark } from "./ui";
+import { dateTime } from "./presentation";
 export function visibleFindings(catalog: AgentDesignCatalog, query: string) { return catalog.findings.filter(f => !query || (s.findingTitles[f.kind] + " " + f.names.join(" ") + " " + f.service).toLowerCase().includes(query.toLowerCase())); }
 export function InspectionView({ catalog, api, query, selectedId, setSelectedId, update, notify, openItem, onSkill }: {
   catalog: AgentDesignCatalog; api: AgentDesignApi; query: string; selectedId: string | null; setSelectedId: (id: string) => void; update: (c: AgentDesignCatalog) => void;
-  notify: (n: string) => void; openItem: (id: string) => void; onSkill: (id?: string) => void;
+  notify: (n: string) => void; openItem: (id: string, line?: number) => void; onSkill: (id?: string) => void;
 }) {
   const [closing, setClosing] = useState<string | null>(null); const [reason, setReason] = useState(""); const [saving, setSaving] = useState(false); const [candidates, setCandidates] = useState<string[]>([]);
-  const findings = visibleFindings(catalog, query); const selected = findings.find(f => f.id === selectedId) ?? findings[0];
+  const [filter, setFilter] = useState("all"); const [severity, setSeverity] = useState("all"); const [showClosed, setShowClosed] = useState(false); const [candidateQuery, setCandidateQuery] = useState(""); const [proposal, setProposal] = useState(false);
+  const epoch = useRef(0);
+  useEffect(() => { epoch.current++; setClosing(null); setCandidates([]); return () => { epoch.current++; }; }, [catalog.cwd]);
+  const findings = visibleFindings(catalog, query).filter(f => (filter === "all" || f.service === filter) && (severity === "all" || f.severity === severity));
+  const selected = findings.find(f => f.id === selectedId) ?? findings[0];
   const begin = (f: DesignFinding) => { setSelectedId(f.id); setClosing(f.id); setReason(""); };
   const close = async () => {
     if (!closing || !reason.trim()) return;
-    setSaving(true);
-    try { update(await api.close(closing, reason, catalog.cwd)); setClosing(null); notify(s.closed); }
-    catch { notify(s.closeError); } finally { setSaving(false); }
+    const token = epoch.current; setSaving(true);
+    try { const result = await api.close(closing, reason, catalog.cwd); if (token === epoch.current) { update(result); setClosing(null); notify(s.closed); } }
+    catch { if (token === epoch.current) notify(s.closeError); } finally { if (token === epoch.current) setSaving(false); }
   };
-  return <div className="ad-split ad-inspection" data-ad-view="inspection"><main className="ad-main"><p className="ad-intro">{s.inspectHelp}</p>
-    <div className="ad-inspect-counts">{["repair", "decide", "watch"].map(level => <span key={level} className="ad-chip">{s[level as "repair" | "decide" | "watch"]} {number(findings.filter(f => f.severity === level).length)}</span>)}<span className="ad-muted">{s.closedCount} {number(catalog.closedCount)}</span></div>
-    <div className="ad-findings" role="listbox" aria-label={s.inspectTitle} tabIndex={0}>{findings.map(f => {
-      const Icon = f.severity === "repair" ? CircleAlert : f.severity === "decide" ? CircleHelp : Eye;
-      return <article key={f.id} data-ad-finding={f.id} role="option" aria-selected={selected?.id === f.id} tabIndex={-1} className={"ad-finding " + f.severity + (selected?.id === f.id ? " selected" : "")} onClick={() => setSelectedId(f.id)}>
-        <Icon size={18} /><div><strong>{s.findingTitles[f.kind] ?? s.unsupported}</strong><p>{number(f.count)} / {chars(f.chars)}{f.names.length > 0 && " / " + f.names.slice(0, 3).join(" · ")}</p>
-          <span className={"ad-severity " + f.severity}>{s[f.severity as "repair" | "decide" | "watch"]}</span><span className="ad-chip"><ServiceMark id={f.service} size={12} />{f.service} / {s.layerNames[f.layer]}</span></div>
-        <div className="ad-finding-actions"><button onClick={event => { event.stopPropagation(); setSelectedId(f.id); notify(s.stageC); }}>{s.proposal}</button><button onClick={event => { event.stopPropagation(); begin(f); }}><Check size={12} />{s.closeIntentional}</button></div>
-      </article>;
-    })}{!findings.length && <div className="ad-empty"><Check size={28} /><p>{s.noFindings}</p></div>}</div>
-  </main><aside className="ad-detail">{selected ? <><h2>{s.findingTitles[selected.kind] ?? s.unsupported}</h2><p className="ad-muted"><ServiceMark id={selected.service} /> {number(selected.count)} / {chars(selected.chars)}</p>
-    <h3>{s.evidenceFiles}</h3><div className="ad-evidence">{selected.evidence.map((e, index) => <article key={index}><strong>{s.ruleNames[e.rule] ?? s.source}</strong>
-      {e.path && <code className="ad-path">{e.path}{e.line != null && ":" + e.line}</code>}{e.record && <code className="ad-path">{e.record}</code>}<Fields fields={e.fields} /></article>)}</div>
-    <h3>{s.unknowns}</h3>{selected.unknowns.length ? selected.unknowns.map(code => <p key={code}>{s.uncertaintyNames[code] ?? s.unknown}</p>) : <p className="ad-muted">{s.noUncertainty}</p>}
-    <h3>{s.proposalText}</h3><p>{s.proposals[selected.proposal] ?? s.stageC}</p>
-    <div className="ad-actions"><button className="primary" onClick={() => notify(s.stageC)}>{s.proposal}</button><button onClick={() => { if (selected.itemIds[0]) openItem(selected.itemIds[0]); else onSkill(selected.names[0]); }}><FolderOpen size={13} />{s.open}</button><button onClick={() => begin(selected)}>{s.closeIntentional}</button></div>
-    {selected.kind === "unusedListing" && <section className="ad-candidates"><h3>{s.candidateSkills}</h3><p>{s.selectedCandidates} {number(candidates.length)}</p><div>{selected.names.map(name => <label key={name}><input type="checkbox" checked={candidates.includes(name)} onChange={event => setCandidates(previous => event.target.checked ? [...previous, name] : previous.filter(n => n !== name))} /><code>{name}</code><button onClick={() => onSkill(name)}>{s.open}</button></label>)}</div></section>}
-    {closing === selected.id && <form className="ad-close-form" onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setClosing(null); } }} onSubmit={event => { event.preventDefault(); void close(); }}><label>{s.reason}<textarea autoFocus aria-label={s.reason} value={reason} onChange={event => setReason(event.target.value)} placeholder={s.reasonPlaceholder} maxLength={1000} /></label>
-      <button type="submit" disabled={saving || !reason.trim()}>{s.saveClose}</button><button type="button" onClick={() => setClosing(null)}>{s.cancel}</button></form>}
-  </> : <p className="ad-muted">{s.noFindings}</p>}</aside></div>;
+  const evidenceItem = (path: string | null) => catalog.items.find(item => item.path && path && item.path.replace(/\\/g, "/") === path.replace(/\\/g, "/"));
+  const listing = catalog.services.find(service => service.id === selected?.service)?.session;
+  return <div className="ad-split ad-inspection" data-ad-view="inspection"><main className="ad-main"><h2>全サービスの点検</h2><p className="ad-intro">{s.inspectHelp} 左のサービス選択にかかわらず、この表は全サービスを対象にします。</p>
+    <div className="ad-actions"><label>サービス <select aria-label="点検するサービス" value={filter} onChange={e => setFilter(e.target.value)}><option value="all">全サービス</option>{catalog.services.map(service => <option key={service.id} value={service.id}>{service.displayName}</option>)}</select></label><label>種類 <select aria-label="指摘の種類" value={severity} onChange={e => setSeverity(e.target.value)}><option value="all">全種類</option>{["repair", "decide", "watch"].map(level => <option key={level} value={level}>{s[level as "repair"]}</option>)}</select></label><button aria-pressed={showClosed} onClick={() => setShowClosed(!showClosed)}>{showClosed ? "開いている指摘" : "閉じた指摘"} {number(catalog.closedCount)} 件</button></div>
+    <div className="ad-inspect-counts">{["repair", "decide", "watch"].map(level => <span key={level} className="ad-chip">{s[level as "repair"]} {number(findings.filter(f => f.severity === level).length)} 件</span>)}</div>
+    {showClosed ? <section><h3>閉じた理由と日時</h3><p>「意図した設定として閉じる」は、ファイルの変更を行わず、点検の一覧から外す記録です。</p>{catalog.closedEntries ? catalog.closedEntries.length ? <table className="ad-dense-table"><thead><tr><th>指摘</th><th>理由</th><th>閉じた日時・場所</th></tr></thead><tbody>{catalog.closedEntries.map(entry => <tr key={entry.id}><td><code>{entry.id}</code></td><td>{entry.reason}</td><td>{dateTime(entry.closedAt)}<code className="ad-path">{entry.workFolder}</code></td></tr>)}</tbody></table> : <p>この作業場所で閉じた指摘はありません。</p> : <p>この目録には理由と日時がありません。読み直して再確認できます。</p>}</section> : <table className="ad-dense-table ad-findings" role="listbox" aria-label={s.inspectTitle} tabIndex={0}><thead><tr><th>指摘・種類</th><th>サービス・層</th><th>件数・量</th><th>対象</th><th>確認</th></tr></thead><tbody>{findings.map(f => <tr key={f.id} data-ad-finding={f.id} role="option" aria-selected={selected?.id === f.id} tabIndex={-1} className={selected?.id === f.id ? "selected" : ""} onClick={() => { setSelectedId(f.id); setProposal(false); }}><th><button onClick={() => setSelectedId(f.id)}>{s.findingTitles[f.kind] ?? s.unsupported}</button><small>{s[f.severity as "repair"]}</small></th><td><ServiceMark id={f.service} />{f.service}<small>{s.layerNames[f.layer]}</small></td><td>{number(f.count)} 件{f.chars != null && <small>{chars(f.chars)}</small>}</td><td>{f.names.slice(0, 3).join(" · ")}{f.names.length > 3 && " ほか"}</td><td><button onClick={event => { event.stopPropagation(); setSelectedId(f.id); setProposal(true); }}>{s.proposal}</button><button onClick={event => { event.stopPropagation(); begin(f); }}>{s.closeIntentional}</button></td></tr>)}</tbody></table>}
+    {!showClosed && !findings.length && <p>{s.noFindings}</p>}
+  </main><aside className="ad-detail">{selected && !showClosed ? <><h2>{s.findingTitles[selected.kind] ?? s.unsupported}</h2><p className="ad-muted"><ServiceMark id={selected.service} /> {number(selected.count)} 件{selected.chars != null && " · " + chars(selected.chars)}</p>
+    <h3>{s.evidenceFiles}</h3><div className="ad-evidence">{selected.evidence.map((e, index) => { const item = evidenceItem(e.path); return <article key={index}><strong>{s.ruleNames[e.rule] ?? s.source}</strong>{e.path && <code className="ad-path">{e.path}{e.line != null && ":" + e.line}</code>}
+      {item && <button data-ad-open={item.id} onClick={() => openItem(item.id, e.line ?? undefined)}>根拠の本文{e.line != null && " " + e.line + " 行目"}を開く</button>}{e.record && <code className="ad-path">{e.record}</code>}<Fields fields={e.fields} /></article>; })}</div>
+    <h3>この指摘だけでは分からないこと</h3>{selected.unknowns.length ? selected.unknowns.map(code => <p key={code}>{s.uncertaintyNames[code] ?? "記録の範囲では判断できません"}</p>) : <p className="ad-muted">{s.noUncertainty}</p>}
+    <h3>{s.proposalText}</h3><p>{s.proposals[selected.proposal] ?? "対象の本文と設定を確認してください。"}</p>{proposal && <p role="status">ここでは直す案を確認します。設定を書き換える操作はありません。</p>}
+    <div className="ad-actions"><button onClick={() => setProposal(true)}>{s.proposal}</button><button onClick={() => { if (selected.itemIds[0]) openItem(selected.itemIds[0]); else onSkill(selected.names[0]); }}><FolderOpen size={13} />{s.open}</button><button onClick={() => begin(selected)}>{s.closeIntentional}</button></div>
+    {selected.kind === "unusedListing" && <section className="ad-candidates"><h3>{s.candidateSkills}</h3><p>採用した会話 {dateTime(listing?.startedAt)} の一覧です。本文の読取・成功は未収集。記録なしは未使用を意味しません。</p><label>候補を探す <input aria-label="候補を探す" value={candidateQuery} onChange={e => setCandidateQuery(e.target.value)} /></label><p>{s.selectedCandidates} {number(candidates.filter(name => selected.names.includes(name)).length)} 本</p><table className="ad-dense-table"><thead><tr><th>選択・名前</th><th>説明の量</th><th>記録</th><th>本文</th></tr></thead><tbody>{selected.names.filter(name => name.toLowerCase().includes(candidateQuery.toLowerCase())).map(name => { const entry = listing?.listing.entries.find(e => e.name === name); return <tr key={name}><td><label><input type="checkbox" checked={candidates.includes(name)} onChange={event => setCandidates(previous => event.target.checked ? [...previous, name] : previous.filter(n => n !== name))} /><code>{name}</code></label></td><td>{entry ? chars(entry.chars) : "量は未取得"}</td><td>{entry?.usageRecorded === true ? "記録あり" : entry?.usageRecorded === false ? "記録なし" : "未収集"}<small>最後の日は未収集</small></td><td><button onClick={() => onSkill(name)}>スキルのページ</button></td></tr>; })}</tbody></table></section>}
+    {closing === selected.id && <form className="ad-close-form" onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setClosing(null); } }} onSubmit={event => { event.preventDefault(); void close(); }}><label>{s.reason}<textarea autoFocus aria-label={s.reason} value={reason} onChange={event => setReason(event.target.value)} placeholder={s.reasonPlaceholder} maxLength={1000} /></label><button type="submit" disabled={saving || !reason.trim()}><Check size={13} />{s.saveClose}</button><button type="button" onClick={() => setClosing(null)}>{s.cancel}</button></form>}
+  </> : <p className="ad-muted">{showClosed ? "閉じた指摘の理由は左の表に表示しています。" : s.noFindings}</p>}</aside></div>;
 }

@@ -79,6 +79,19 @@ describe("Claude Code skills settings", () => {
     await click(state === "not-installed" ? "導入" : "更新");
     expect(api.claudeSkillsInstall).toHaveBeenCalledWith([], false);
   });
+  it.each([
+    ["updated", "起動時に制御 API の CLI を同梱の最新版へ更新しました。旧版の控え: cli.py.bak-stamp"],
+    ["locally-modified", "制御 API の CLI はローカル改変または未確認の版のため、起動時の自動更新を見送りました。"],
+    ["unmanaged", "制御 API の CLI の導入記録がないか壊れているため、起動時の自動更新を見送りました。"],
+    ["not-installed", "制御 API の CLI の置き場所がないため、起動時の自動更新は行いませんでした。"],
+    ["error", "起動時の制御 API の CLI 自動更新を見送りました: backup failed"],
+  ] as const)("shows the startup CLI result when %s without initiating an install", async (state, message) => {
+    const value = status();
+    value.cli.startup_update = { state, message, backup: state === "updated" ? "cli.py.bak-stamp" : null };
+    await render(value);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(message);
+    expect(api.claudeSkillsInstall).not.toHaveBeenCalled();
+  });
   it("shows missing prerequisites and their installation guidance", async () => {
     const value = status();
     value.prereq.claude = { found: false, detail: "missing claude" };

@@ -7,6 +7,9 @@ import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { OverlayShell } from "../../src/components/common/OverlayShell";
+import { HistoryView } from "../../src/components/agentDesign/HistoryView";
+import { syntheticCatalog } from "../fixtures/agent_home/catalog";
+import type { AgentDesignApi } from "../../src/lib/agentDesignApi";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -56,6 +59,31 @@ afterEach(() => {
 });
 
 describe("OverlayShell themed portal scope", () => {
+  it("keeps the export surface inside the agent design themed shell", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/components/agentDesign/ExportView.tsx"), "utf8");
+    const css = readFileSync(resolve(process.cwd(), "src/components/agentDesign/export.css"), "utf8");
+    const view = readFileSync(resolve(process.cwd(), "src/components/agentDesign/AgentDesignView.tsx"), "utf8");
+    expect(view).toContain("<ExportView");
+    expect(source).toContain('className="ad-export"');
+    expect(source).not.toContain("createPortal");
+    expect(css).toContain("var(--cmux-font-size-xs)");
+    expect(css).toContain("var(--cmux-border-hairline)");
+    expect(css).not.toMatch(/(^|\\n)\\s*(body|html|:root)/);
+  });
+  it.each(themeCases)("keeps history under the shared $name portal", async ({ values, fontFamily }) => {
+    for (const [name, value] of Object.entries(values)) themedRoot.style.setProperty(name, value);
+    themedRoot.style.fontFamily = fontFamily;
+    const api = { history: async () => ({ schemaVersion: 1, snapshotCount: 1, capturedAt: null, writing: false, warnings: [], changes: [] }) } as unknown as AgentDesignApi;
+    await act(async () => root.render(<OverlayShell open onClose={() => {}} ariaLabel="history theme">
+      <HistoryView catalog={syntheticCatalog} serviceId="claude" api={api} query="" />
+    </OverlayShell>));
+    const portal = document.querySelector<HTMLElement>("[data-cmux-overlay-root]");
+    const panel = document.querySelector<HTMLElement>(".cmux-overlay-panel");
+    expect(document.querySelector('[data-ad-view="history"]')?.closest(".cmux-overlay-panel")).toBe(panel);
+    expect(portal?.parentElement).toBe(themedRoot);
+    for (const name of Object.keys(values)) expect(getComputedStyle(panel!).getPropertyValue(name)).toBe(values[name as keyof typeof values]);
+    expect(getComputedStyle(panel!).fontFamily).toBe(fontFamily);
+  });
   it.each(themeCases)("inherits $name variables, typography, and stacking", ({ values, fontFamily }) => {
     for (const [name, value] of Object.entries(values)) themedRoot.style.setProperty(name, value);
     themedRoot.style.setProperty("--cmux-overlay-z", "1000");

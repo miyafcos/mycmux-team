@@ -92,6 +92,10 @@ interface SettingsState {
   dispatchStallMinutes: number;
   dispatchWatchdogNotify: boolean;
   paneComposerEnabled: boolean;
+  /** Persistent explicit entry into the exact pane's conversation history. */
+  showTerminalHistoryButton: boolean;
+  /** Content-free terminal progress logging; no polling or writes by default. */
+  terminalProgressDiagnosticsEnabled: boolean;
   /** Deliberately off until an operator explicitly enables declared-tab launch. */
   declaredLaunchEnabled: boolean;
   /** Independent Codex stdio trial; never changes the ordinary launcher. */
@@ -126,6 +130,8 @@ interface SettingsState {
   setDispatchStallMinutes: (v: number) => void;
   setDispatchWatchdogNotify: (v: boolean) => void;
   setPaneComposerEnabled: (v: boolean) => void;
+  setShowTerminalHistoryButton: (v: boolean) => void;
+  setTerminalProgressDiagnosticsEnabled: (v: boolean) => void;
   setDeclaredLaunchEnabled: (v: boolean) => void;
   setCodexAppServerExperimentEnabled: (v: boolean) => void;
   setReplyDraftSuggestionsEnabled: (v: boolean) => void;
@@ -166,6 +172,8 @@ export const useSettingsStore = create<SettingsState>()(
       dispatchStallMinutes: 45,
       dispatchWatchdogNotify: true,
       paneComposerEnabled: true,
+      showTerminalHistoryButton: true,
+      terminalProgressDiagnosticsEnabled: false,
       declaredLaunchEnabled: false,
       codexAppServerExperimentEnabled: false,
       replyDraftSuggestionsEnabled: false,
@@ -195,6 +203,8 @@ export const useSettingsStore = create<SettingsState>()(
       setDispatchStallMinutes: (v) => set({ dispatchStallMinutes: v }),
       setDispatchWatchdogNotify: (v) => set({ dispatchWatchdogNotify: v }),
       setPaneComposerEnabled: (v) => set({ paneComposerEnabled: v }),
+      setShowTerminalHistoryButton: (v) => set({ showTerminalHistoryButton: v }),
+      setTerminalProgressDiagnosticsEnabled: (v) => set({ terminalProgressDiagnosticsEnabled: v }),
       setDeclaredLaunchEnabled: (v) => set({ declaredLaunchEnabled: v }),
       setCodexAppServerExperimentEnabled: (v) => set({ codexAppServerExperimentEnabled: v }),
       setReplyDraftSuggestionsEnabled: (v) => {

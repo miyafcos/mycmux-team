@@ -213,7 +213,7 @@ fn file_mtime_ms(path: &Path) -> Option<u64> {
         .map(|since| since.as_millis() as u64)
 }
 
-fn preview_info_for_artifact(
+pub(crate) fn preview_info_for_artifact(
     session_id: &str,
     path: &Path,
     allow_external: bool,

@@ -170,6 +170,7 @@ export const PANE_CLICK_IGNORED_TARGET_SELECTOR = [
   // The composer's padding and badge are part of the input, not the terminal:
   // hitting them must not hand the keyboard back to xterm mid-tap.
   "[data-composer-session]",
+  "[data-terminal-transcript-panel]",
 ].join(",");
 
 function shouldIgnorePaneClickActivationTarget(target: EventTarget | null): boolean {

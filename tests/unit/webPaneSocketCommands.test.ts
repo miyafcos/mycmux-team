@@ -34,6 +34,10 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: tauriMocks.invoke,
   Channel: class {},
 }));
+vi.mock("../../src/lib/ipc", async original => ({
+  ...await original<typeof import("../../src/lib/ipc")>(),
+  getWindowFragments: async () => [],
+}));
 
 function terminalTab(id: string, sessionId: string): PaneTab {
   return { id, sessionId, agentId: "shell-starter", type: "terminal" };

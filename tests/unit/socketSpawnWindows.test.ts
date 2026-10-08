@@ -41,8 +41,9 @@ describe("caller-window spawn dispatch", () => {
   it.each(["anchorSessionId", "anchor_session_id"])("routes %s to the child's owner", (key) => {
     expect(spawnWindowForRequest("pane.spawn_tab", { [key]: "pty-caller" }, [], [peer()], "main")).toBe("mycmux-w2");
   });
-  it("prefers live local ownership over stale peer snapshots", () => {
-    expect(spawnWindowForRequest("pane.spawn", { anchorSessionId: "pty-caller" }, [own()], [peer()], "main")).toBe("main");
+  it("ignores its own stale snapshot and rejects a conflicting peer owner", () => {
+    expect(spawnWindowForRequest("pane.spawn", { anchorSessionId: "pty-caller" }, [own()], [peer("main")], "main")).toBe("main");
+    expect(() => spawnWindowForRequest("pane.spawn", { anchorSessionId: "pty-caller" }, [own()], [peer()], "main")).toThrow("conflicting");
   });
   it("fails closed for missing or conflicting callers and leaves implicit spawn local", () => {
     expect(() => spawnWindowForRequest("pane.spawn", { anchorSessionId: "gone" }, [own()], [peer()], "main")).toThrow("anchor session not found");
@@ -73,27 +74,36 @@ describe("caller-window spawn dispatch", () => {
     await vi.advanceTimersByTimeAsync(20_000); await result;
     expect(mocks.unlisten).toHaveBeenCalledOnce();
   });
-  it("executes a targeted request once using the child's real store and PTY attachment", async () => {
+  it.each([
+    ["echo", "child"],
+    ["C:\\fixture-bin\\claude.cmd", "--session-id", "42a5a7ee-3ef5-4f95-81c1-5feb24095f33"],
+  ])("executes targeted argv %j once using the child's real store and PTY attachment", async (...commandArgv) => {
     mocks.label = "mycmux-w2";
     useWorkspaceListStore.setState({ workspaces: [own()], activeWorkspaceId: "child-workspace" });
     await listenForPeerSpawns();
     const listener = mocks.listeners.get(REQUEST)!;
     expect(listener.options).toEqual({ target: { kind: "Window", label: "mycmux-w2" } });
-    const payload = { requestId: "new", targetWindow: "mycmux-w2", replyWindow: "main", cmd: "pane.spawn_tab", args: {
-      anchorSessionId: "pty-caller", commandArgv: ["echo", "child"], activate: false,
+    const payload = { requestId: "new", targetWindow: "mycmux-w2", replyWindow: "main", cmd: "pane.spawn_tab",
+      expiresAt: Date.now() + 20_000, context: { command: "pane.spawn_tab", receivedAt: Date.now(), deadline: Date.now() + 25_000 }, args: {
+      anchorSessionId: "pty-caller", commandArgv, activate: false,
     } };
     await listener.fn({ payload: { ...payload, targetWindow: "mycmux-w3" } });
     expect(mocks.createSession).not.toHaveBeenCalled();
     await listener.fn({ payload }); await listener.fn({ payload });
     expect(mocks.createSession).toHaveBeenCalledOnce();
+    expect(mocks.createSession.mock.calls[0].slice(0, 3)).toEqual([
+      expect.any(String), commandArgv[0], commandArgv.slice(1),
+    ]);
     expect(useWorkspaceListStore.getState().workspaces[0].panes[0].tabs).toHaveLength(2);
+    expect(useWorkspaceListStore.getState().workspaces[0].panes[0].activeTabId).toBe("caller-tab");
     expect(mocks.emitTo).toHaveBeenCalledWith("main", RESULT, expect.objectContaining({ requestId: "new", ownerWindow: "mycmux-w2", result: expect.objectContaining({ workspaceId: "child-workspace" }) }));
   });
   it("rechecks ownership after hydration and propagates errors without spawning", async () => {
     mocks.label = "mycmux-w2";
     useWorkspaceListStore.setState({ workspaces: [own()] });
     await listenForPeerSpawns(async () => { useWorkspaceListStore.setState({ workspaces: [] }); });
-    await mocks.listeners.get(REQUEST)!.fn({ payload: { requestId: "moved", targetWindow: "mycmux-w2", replyWindow: "main", cmd: "pane.spawn_tab", args: { anchorSessionId: "pty-caller" } } });
+    await mocks.listeners.get(REQUEST)!.fn({ payload: { requestId: "moved", targetWindow: "mycmux-w2", replyWindow: "main", cmd: "pane.spawn_tab",
+      expiresAt: Date.now() + 20_000, context: { command: "pane.spawn_tab", receivedAt: Date.now(), deadline: Date.now() + 25_000 }, args: { anchorSessionId: "pty-caller" } } });
     expect(mocks.createSession).not.toHaveBeenCalled();
     expect(mocks.emitTo).toHaveBeenCalledWith("main", RESULT, expect.objectContaining({ error: "pane.spawn_tab anchor session not found" }));
   });

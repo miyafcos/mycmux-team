@@ -8,7 +8,7 @@ pub struct Jobs {
     pub codex: Option<u64>,
     pub codex_enabled: Option<u64>,
 }
-fn csv(text: &str) -> Vec<Vec<String>> {
+pub(super) fn csv(text: &str) -> Vec<Vec<String>> {
     let mut out = vec![];
     let mut row = vec![];
     let mut cell = String::new();

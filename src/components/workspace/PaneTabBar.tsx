@@ -60,6 +60,7 @@ import { paneTabMenuStrings, paneToolbarStrings, terminalPaneStrings } from "./t
 import { formatShortcutLabel } from "../../lib/keybindings";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { TERMINAL_SEARCH_EVENT } from "../terminal/XTermWrapper";
+import { TerminalHistoryEntry } from "../terminal/TerminalHistoryEntry";
 
 interface PaneTabBarProps {
   pane: Pane;
@@ -1514,6 +1515,8 @@ export default memo(function PaneTabBar({
   const isActiveTabPinned = activeTab !== undefined && activeTab.id === pane.pinnedTabId;
   const paneActions = (
     <>
+      <TerminalHistoryEntry sessionId={canSearchTerminal ? activeTab!.sessionId : null} visible={isVisible}
+        compact={renderMode !== "full" && renderMode !== "slim"} />
       {visibleActions.includes("new-tab") && (
         <button
           className="pane-action-btn"

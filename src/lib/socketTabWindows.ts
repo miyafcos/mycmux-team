@@ -1,19 +1,16 @@
-import { v4 as uuid } from "uuid";
 import type { PtyMetadataSnapshot, WindowFragment, WorkspaceConfig } from "./ipc";
 import { windowLabel } from "./windowContext";
 import { resolveTabMark, tabMarkSource } from "./tabMark";
+import { listenForPeerSocketCommandEvent, requestPeerSocketCommand } from "./socketCommandWindows";
+import { webPaneCommandContext } from "../components/workspace/webPaneCommandQueue";
 
-const START_TAB_EVENT = "mycmux://socket-start-tab";
-const START_TAB_RESULT_EVENT = "mycmux://socket-start-tab-result";
-const PEER_START_TIMEOUT_MS = 20_000;
+const START_TAB_EVENTS = { request: "mycmux://socket-start-tab", response: "mycmux://socket-start-tab-result" };
 
 export interface TabStartResult {
   started: boolean;
   reason?: "already_running";
   sessionId: string;
 }
-interface PeerStartRequest { requestId: string; sessionId: string; replyWindow: string }
-interface PeerStartResponse { requestId: string; result?: TabStartResult; error?: string }
 
 /** A live local workspace wins over a window's older published fragment. */
 export function otherWindowWorkspaces(
@@ -61,42 +58,20 @@ export function serializeOtherWindowPanes(entries: ReturnType<typeof otherWindow
 }
 
 /** Forward only this explicit start command; the owner builds from its live tab. */
-export async function requestPeerTabStart(targetWindow: string, sessionId: string): Promise<TabStartResult> {
-  const { emitTo, listen } = await import("@tauri-apps/api/event");
-  const requestId = uuid();
-  let resolve!: (result: TabStartResult) => void;
-  let reject!: (error: unknown) => void;
-  const response = new Promise<TabStartResult>((done, fail) => { resolve = done; reject = fail; });
-  const unlisten = await listen<PeerStartResponse>(START_TAB_RESULT_EVENT, ({ payload }) => {
-    if (payload.requestId !== requestId) return;
-    if (payload.error !== undefined) reject(payload.error);
-    else if (payload.result?.sessionId === sessionId && typeof payload.result.started === "boolean") {
-      resolve(payload.result);
-    } else reject(new Error("pane.start_tab returned an invalid owner-window response"));
-  });
-  const timer = setTimeout(() => reject(new Error("pane.start_tab owner window did not respond")), PEER_START_TIMEOUT_MS);
-  try {
-    const [, result] = await Promise.all([
-      emitTo(targetWindow, START_TAB_EVENT, { requestId, sessionId, replyWindow: windowLabel() } satisfies PeerStartRequest),
-      response,
-    ]);
-    return result;
-  } finally {
-    clearTimeout(timer);
-    unlisten();
+export async function requestPeerTabStart(
+  targetWindow: string, sessionId: string, context = webPaneCommandContext("pane.start_tab"),
+): Promise<TabStartResult> {
+  const result = await requestPeerSocketCommand(targetWindow, "pane.start_tab", { sessionId }, context, { events: START_TAB_EVENTS }) as TabStartResult;
+  if (result?.sessionId !== sessionId || typeof result.started !== "boolean") {
+    throw new Error("pane.start_tab returned an invalid owner-window response");
   }
+  return result;
 }
 
-export async function listenForPeerTabStarts(start: (sessionId: string) => Promise<TabStartResult>) {
-  const events = await import("@tauri-apps/api/event");
-  return events.listen<PeerStartRequest>(START_TAB_EVENT, async ({ payload }) => {
-    if (!payload.requestId || !payload.sessionId || !payload.replyWindow) return;
-    let response: PeerStartResponse;
-    try {
-      response = { requestId: payload.requestId, result: await start(payload.sessionId) };
-    } catch (error) {
-      response = { requestId: payload.requestId, error: error instanceof Error ? error.message : String(error) };
-    }
-    await events.emitTo(payload.replyWindow, START_TAB_RESULT_EVENT, response);
-  });
+export async function listenForPeerTabStarts(
+  start: (sessionId: string) => Promise<TabStartResult>, ready: () => Promise<void> = async () => {},
+) {
+  return listenForPeerSocketCommandEvent(request => request.cmd === "pane.start_tab"
+    && typeof request.args?.sessionId === "string" && Boolean(request.args.sessionId),
+  request => start(request.args!.sessionId as string), ready, START_TAB_EVENTS);
 }
