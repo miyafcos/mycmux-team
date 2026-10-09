@@ -432,7 +432,8 @@ describe("owner-window execution with real socket handlers", () => {
   });
   it("close_tab closes only the owner's requested tab and returns the existing identity keys", async () => {
     const owner = await connectOwner();
-    expect(await handleSocketCommand("pane.close_tab", { sessionId: "peer-target-pty" })).toEqual({ workspaceId: "peer-ws", paneId: "peer-pane", tabId: "peer-target-tab" });
+    expect(await handleSocketCommand("pane.close_tab", { sessionId: "peer-target-pty" })).toMatchObject({ workspaceId: "peer-ws", paneId: "peer-pane", tabId: "peer-target-tab",
+      kind: "terminal", closed: true, effect: "killed", hasPty: true, persistent: true, transferable: true, closeEffect: "kill", sendable: true, reason: null });
     expect(mocks.kill).toHaveBeenCalledExactlyOnceWith("peer-target-pty");
     expect(owner().workspaces[0].panes[0].tabs.map(tab => tab.sessionId)).toEqual(["peer-keeper-pty"]);
     expect(useWorkspaceListStore.getState().workspaces[0].panes[0].tabs).toHaveLength(2);

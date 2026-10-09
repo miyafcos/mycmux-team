@@ -856,8 +856,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     restore_activation.add_argument("--token", required=True, type=parse_json_object)
 
-    close_tab = subparsers.add_parser("close-tab", help="Close a terminal tab")
+    close_tab = subparsers.add_parser(
+        "close-tab", help="Close a tab of any kind",
+        description="Close a terminal, Web, document, launcher or online tab. Unsaved documents require --force.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='Result example:\n{"workspaceId":"w1","paneId":"p1","tabId":"t1","kind":"browser","hasPty":true,"persistent":false,"transferable":true,"closeEffect":"confirm_unsaved","sendable":false,"closed":false,"effect":"needs_confirmation","reason":"unsaved"}',
+    )
     close_tab.add_argument("--session", required=True)
+    close_tab.add_argument("--force", action="store_true", help="Discard unsaved document edits (default: false). Never bypasses the last-tab guard or kill failures.")
 
     rename = subparsers.add_parser("rename", help="Rename a terminal tab")
     rename.add_argument("--session", required=True)
@@ -1219,7 +1225,10 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     if namespace.subcommand == "restore-activation":
         return "pane.restore_activation", namespace.token
     if namespace.subcommand == "close-tab":
-        return "pane.close_tab", {"sessionId": namespace.session}
+        args = {"sessionId": namespace.session}
+        if namespace.force:
+            args["force"] = True
+        return "pane.close_tab", args
     if namespace.subcommand == "rename":
         return "pane.rename_tab", {
             "sessionId": namespace.session,

@@ -873,8 +873,9 @@ async fn handle_connection(
                         }
                         if cmd == "agent.capabilities" {
                             let adapters = app.state::<crate::codex_app_server::CodexAppServerState>();
+                            let dsh = app.state::<crate::dsh_acp::DshAcpState>();
                             let response = SocketResponse {
-                                id, result: Some(agent_capabilities_payload(crate::agent_adapters::snapshot(&adapters).await)), error: None,
+                                id, result: Some(agent_capabilities_payload(crate::agent_adapters::snapshot(&adapters, &dsh).await)), error: None,
                             };
                             let _ = write_json_line(&mut writer, &response).await;
                             continue;

@@ -12,6 +12,8 @@ import { termCache, type CachedTerm } from "../../src/components/terminal/termin
 import { commitPaneDragDrop } from "../../src/hooks/usePaneDragSource";
 import { tearOutWorkspaceToNewWindow } from "../../src/lib/workspaceTearOut";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { useSessionAttentionStore } from "../../src/stores/sessionAttentionStore";
+import { createPaneMoveRequest, executePaneMove } from "../../src/lib/paneMoveOperation";
 import { useUiStore } from "../../src/stores/uiStore";
 import { useToastStore } from "../../src/stores/toastStore";
 import type { Workspace } from "../../src/types";
@@ -75,4 +77,45 @@ it("retries failed legacy attachment with fresh live terminal cache entries", as
     expect(ids.every(id => !termCache.has(id))).toBe(true);
     expect(disposed).toHaveBeenCalledTimes(3);
   } finally { for (const id of ids) termCache.delete(id); }
+});
+
+
+describe("ordinary transport common move result", () => {
+  it("retains source ownership if the execution changes while the receiver boots", async () => {
+    const feed = (epoch: number) => useSessionAttentionStore.getState().applySnapshot({ server_epoch: "move-server", seq: epoch,
+      sessions: [{ session_id: "pty-one", session_revision: epoch, status: { session_epoch: epoch, lifecycle: "alive", ui_state: "working",
+        attention: { attention_id: null, kind: "none", detail: null, state_since: 0 } } }] });
+    useSessionAttentionStore.getState().resetForTests(); feed(7);
+    let ready!: () => void;
+    mocks.ready.mockReturnValue(new Promise<void>(resolve => { ready = resolve; }));
+    const original = useWorkspaceListStore.getState().workspaces;
+    const pending = executePaneMove(createPaneMoveRequest({ kind: "workspace", workspaceId: "source", label: "Source" }, { kind: "window" }));
+    try {
+      await vi.waitFor(() => expect(mocks.ready).toHaveBeenCalledOnce()); feed(8); ready();
+      expect(await pending).toMatchObject({ status: "failed", phase: "rolled_back", receipt: "pending", reason: expect.stringContaining("execution_changed") });
+      expect(useWorkspaceListStore.getState().workspaces).toEqual(original); expect(mocks.send).not.toHaveBeenCalled();
+    } finally { ready(); useSessionAttentionStore.getState().resetForTests(); }
+  });
+
+  it("does not report a received or cleaned move while its real receiver receipt is pending", async () => {
+    let received!: () => void;
+    mocks.send.mockReturnValue(new Promise<string>(resolve => { received = () => resolve("token"); }));
+    const request = createPaneMoveRequest({ kind: "workspace", workspaceId: "source", label: "Source" }, { kind: "window" });
+    let settled = false;
+    const pending = executePaneMove(request).then(result => { settled = true; return result; });
+    await vi.waitFor(() => expect(mocks.send).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    expect(mocks.invoke.mock.calls.some(([command, args]) => command === "tearout_phase" && args.phase === "received")).toBe(false);
+    received();
+    expect(await pending).toMatchObject({ operationId: request.operationId, status: "moved", phase: "cleaned", receipt: "acknowledged", destinationWindow: "child" });
+  });
+
+  it("reports a rejected receipt as rolled back and keeps the original display", async () => {
+    const original = useWorkspaceListStore.getState().workspaces;
+    mocks.send.mockRejectedValueOnce(new Error("receipt_rejected"));
+    const result = await executePaneMove(createPaneMoveRequest({ kind: "workspace", workspaceId: "source", label: "Source" }, { kind: "window" }));
+    expect(result).toMatchObject({ status: "failed", phase: "rolled_back", receipt: "pending", reason: "receipt_rejected" });
+    expect(useWorkspaceListStore.getState().workspaces).toEqual(original);
+    expect(mocks.invoke).toHaveBeenCalledWith("tearout_retire", { label: "child" });
+  });
 });

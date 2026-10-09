@@ -183,6 +183,9 @@ describe("isolated CLI login", () => {
     "cli_account.error.login_cancelled",
     "cli_account.error.login_already_running",
     "cli_account.error.login_session_not_found",
+    "cli_account.error.codex_login_file_missing",
+    "cli_account.error.codex_credentials_store_unsupported",
+    "cli_account.error.codex_config_unreadable",
   ] as const;
 
   it.each(LOGIN_CODES)("explains %s instead of falling back to the generic text", (code) => {
@@ -196,6 +199,14 @@ describe("isolated CLI login", () => {
     expect(loginIdentityMismatchMessage(null)).toBe(
       cliAccountMessage("cli_account.error.login_identity_mismatch"),
     );
+  });
+
+  it("explains Codex storage failures and the settings to check", () => {
+    expect(cliAccountMessage("cli_account.error.codex_login_file_missing")).toContain("ファイル以外");
+    const switchMessage = cliAccountMessage("cli_account.error.codex_credentials_store_unsupported");
+    expect(switchMessage).toContain("cli_auth_credentials_store");
+    expect(switchMessage).toContain("file");
+    expect(cliAccountMessage("cli_account.error.codex_config_unreadable")).toContain("config.toml");
   });
 
   it("labels the entry points and the login tab per provider and mode", () => {

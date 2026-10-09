@@ -628,6 +628,9 @@ pub struct AppSettings {
     pub pet_disabled: Vec<String>,
     #[serde(default)]
     pub pet_fixed_id: Option<String>,
+    /// Frontend-owned, versioned random cycle. Unknown bags remain repairable.
+    #[serde(default)]
+    pub pet_random_bag: Option<serde_json::Value>,
     /// Yen per US dollar used by the AI log money display. Unit prices stay
     /// in USD; the renderer multiplies at format time.
     #[serde(default = "default_ailog_usd_jpy_rate")]
@@ -661,6 +664,7 @@ impl Default for AppSettings {
             pet_new_ws_mode: default_pet_new_ws_mode(),
             pet_disabled: Vec::new(),
             pet_fixed_id: None,
+            pet_random_bag: None,
             ailog_usd_jpy_rate: default_ailog_usd_jpy_rate(),
             ailog_mirror_full_text_root: default_ailog_mirror_full_text_root(),
         }
@@ -1477,6 +1481,28 @@ mod tests {
         assert_eq!(settings.pet_new_ws_mode, "random");
         assert!(settings.pet_disabled.is_empty());
         assert!(settings.pet_fixed_id.is_none());
+        assert!(settings.pet_random_bag.is_none());
+    }
+
+    #[test]
+    fn pet_random_bag_and_legacy_random_mode_round_trip() {
+        let value = serde_json::json!({
+            "font_size": 14, "theme_id": "yoru-cafe", "pet_new_ws_mode": "random-repeat",
+            "pet_random_bag": {"version": 1, "candidates": ["clawd", "external:sample"], "remaining": ["external:sample"]}
+        });
+        let settings: AppSettings = serde_json::from_value(value.clone()).unwrap();
+        let saved = serde_json::to_value(settings).unwrap();
+        assert_eq!(saved["pet_new_ws_mode"], value["pet_new_ws_mode"]);
+        assert_eq!(saved["pet_random_bag"], value["pet_random_bag"]);
+    }
+
+    #[test]
+    fn unknown_pet_random_bag_does_not_block_settings_restore() {
+        let settings: AppSettings = serde_json::from_value(serde_json::json!({
+            "font_size": 14, "theme_id": "yoru-cafe", "pet_random_bag": {"version": 99}
+        })).unwrap();
+        assert_eq!(settings.pet_random_bag.unwrap()["version"], 99);
+        assert_eq!(settings.pet_new_ws_mode, "random");
     }
 
     #[test]

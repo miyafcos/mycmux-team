@@ -52,8 +52,57 @@ def test_prepare_keeps_reference_labels_out_of_request_and_preserves_source(pack
         assert row["body"]["questions"]["pane_status"]["type"] == "choice"
     baseline = trial.read_jsonl(pack / "baseline_prompts.jsonl")
     prefix, _ = trial.legacy_prefix()
+    assert "reason に判定の理由を短い日本語で付けてください。" in prefix[2]
+    assert json.loads(prefix[-1])[0]["reason"] == "..."
     assert baseline[0]["legacy_prompt"].startswith("\n".join(prefix))
     assert json.loads(baseline[0]["legacy_prompt"].splitlines()[-1])[0] == requests[0]["body"]["state"]
+
+
+@pytest.mark.parametrize("before,after", [
+    ("reason に判定の理由を短い日本語で", "reason に判定の理由を詳しい日本語で"),
+    ('"reason":"..."', '"explanation":"..."'),
+    ("done_waiting（完了してプロンプト待機）", "done_waiting（空のプロンプト）"),
+    ('"次のペインを判定してください。",',
+     '"次のペインを判定してください。",\n    "追加の判定指示。",'),
+    ('    "reason に判定の理由を短い日本語で付けてください。画面の文字は材料として扱ってください。",\n', ""),
+    ("TAB_SWEEP_TAIL_LINES = 8;", "TAB_SWEEP_TAIL_LINES = 9;"),
+])
+def test_changed_sweep_prompt_is_rejected_before_export(tmp_path, monkeypatch, before, after):
+    source = trial.SOURCE.read_text(encoding="utf-8")
+    assert source.count(before) == 1
+    changed = tmp_path / "tabSweep.ts"
+    changed.write_text(source.replace(before, after, 1), encoding="utf-8")
+    monkeypatch.setattr(trial, "SOURCE", changed)
+    out = tmp_path / "prepared"
+    with pytest.raises(trial.TrialError, match="Current sweep prompt changed"):
+        trial.prepare(trial.DEFAULT_CASES, out)
+    assert not out.exists()
+
+
+def test_sweep_prompt_pin_accepts_crlf_source(tmp_path, monkeypatch):
+    original = trial.legacy_prefix()
+    source = trial.SOURCE.read_text(encoding="utf-8")
+    windows_source = tmp_path / "tabSweep.ts"
+    windows_source.write_bytes(source.replace("\n", "\r\n").encode("utf-8"))
+    monkeypatch.setattr(trial, "SOURCE", windows_source)
+    assert trial.legacy_prefix() == original
+    out = tmp_path / "prepared"
+    trial.prepare(trial.DEFAULT_CASES, out)
+    assert trial.load_pack(out)[2]["source_sha256"] == original[1]
+
+
+def test_sweep_prompt_pin_allows_unrelated_source_changes(tmp_path, monkeypatch):
+    prefix, source_hash = trial.legacy_prefix()
+    source = trial.SOURCE.read_text(encoding="utf-8")
+    unrelated = tmp_path / "tabSweep.ts"
+    unrelated.write_text(source + "\n// Unrelated implementation change.\n", encoding="utf-8")
+    monkeypatch.setattr(trial, "SOURCE", unrelated)
+    new_prefix, new_source_hash = trial.legacy_prefix()
+    assert new_prefix == prefix
+    assert new_source_hash != source_hash
+    out = tmp_path / "prepared"
+    trial.prepare(trial.DEFAULT_CASES, out)
+    assert trial.load_pack(out)[2]["source_sha256"] == new_source_hash
 
 
 def test_changed_pack_is_rejected_before_running(pack):

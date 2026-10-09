@@ -633,8 +633,8 @@ describe("grouping production boundary contract", () => {
       "src/components/layout/groupingStoreAdapter.ts -> call _restoreGroupingLayout",
       "src/components/layout/socketCommands.ts -> call _replaceWorkspaces",
       "src/components/layout/tabGroupingEngine.ts -> call replaceWorkspaces",
-      "src/hooks/usePaneDragSource.ts -> call _replaceWorkspaces",
-      "src/hooks/usePaneDragSource.ts -> call _replaceWorkspaces",
+      // Same-window and minimap moves now share the executor's atomic mutation gate.
+      "src/lib/paneMoveOperation.ts -> call _replaceWorkspaces",
       // S6 rollback restores the pre-transfer layout through the same mutation gate.
       "src/lib/tearout/legacySource.ts -> call _replaceWorkspaces",
       // Native single-tab handoffs and their undo retain the store's mutation gate.

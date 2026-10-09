@@ -773,7 +773,7 @@ fn missing_transcripts() -> &'static Mutex<MissingTranscripts> {
 
 /// Remember found paths by (kind, id), as well as recent misses. A removed
 /// path is rediscovered; a reused PTY binding can reuse a still-existing path.
-fn locate_transcript_cached(kind: &str, session_id: &str) -> Option<PathBuf> {
+pub(crate) fn locate_transcript_cached(kind: &str, session_id: &str) -> Option<PathBuf> {
     locate_with_miss_cache(kind, session_id, Instant::now(), locate_transcript)
 }
 
@@ -874,6 +874,23 @@ fn bootstrap_transcript(
     service_epoch: &str,
 ) -> Result<SessionSnapshot, String> {
     bootstrap_transcript_with_history(path, kind, binding, service_epoch, None, None)
+}
+
+/// Bounded read for a saved conversation; never creates a PTY or a live binding.
+pub(crate) fn read_dormancy_record_events(path: &Path, kind: &str, session_id: &str, pty: &str, require_complete: bool) -> Result<LiveSessionEvents, String> {
+    let binding = LiveBinding {
+        pty_session_id: pty.into(), agent_session_id: session_id.into(), agent_kind: kind.into(),
+        pty_instance_id: "dormant-record".into(), pty_generation: 0, source_revision: 0, pty_input_revision: 0,
+    };
+    let snapshot = bootstrap_transcript(path, kind, &binding, "dormant-record")?;
+    let last_reply = snapshot.events.iter().rposition(|event| matches!(event.kind, SemanticEventKind::AgentMessage { .. }));
+    let last_input = snapshot.events.iter().rposition(|event| matches!(event.kind, SemanticEventKind::UserMessage { .. }));
+    if require_complete && (snapshot.brief.pending_input_kind.is_some()
+        || last_reply.is_none() || last_input.zip(last_reply).is_some_and(|(input, reply)| input > reply)) {
+        return Err("Conversation has no saved reply or is awaiting input".into());
+    }
+    Ok(LiveSessionEvents { pty_session_id: pty.into(), brief_revision: snapshot.brief.brief_revision,
+        telemetry_health: "ended".into(), events: snapshot.events.into_iter().collect() })
 }
 
 fn bootstrap_transcript_with_history(

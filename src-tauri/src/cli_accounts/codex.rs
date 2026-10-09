@@ -7,6 +7,7 @@ use serde_json::Value;
 use super::{
     atomic::write_atomic, snapshot::CodexSnapshot, CliLiveLogin, CliProvider,
     ERR_CODEX_IDENTITY_INVALID, ERR_CODEX_IDENTITY_UNREADABLE, ERR_LIVE_LOGIN_UNAVAILABLE,
+    ERR_CODEX_CONFIG_UNREADABLE, ERR_CODEX_CREDENTIALS_STORE_UNSUPPORTED,
     ERR_RESTORE_FAILED, ERR_SNAPSHOT_INVALID,
 };
 
@@ -25,6 +26,30 @@ impl CodexPaths {
         Ok(Self {
             auth: directory.join("auth.json"),
         })
+    }
+}
+
+/// Validate the config beside the resolved live auth file (including a custom
+/// CODEX_HOME). Missing config/key means the CLI's default file store. Never
+/// rewrite user config or guess the keyring's private service/format.
+pub fn ensure_file_credentials_store(paths: &CodexPaths) -> Result<(), String> {
+    let config = paths.auth.parent()
+        .ok_or_else(|| ERR_CODEX_CONFIG_UNREADABLE.to_string())?
+        .join("config.toml");
+    let text = match fs::read_to_string(config) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(ERR_CODEX_CONFIG_UNREADABLE.to_string()),
+    };
+    let document = toml_edit::Document::parse(&text)
+        .map_err(|_| ERR_CODEX_CONFIG_UNREADABLE.to_string())?;
+    match document.get("cli_auth_credentials_store") {
+        None => Ok(()),
+        Some(item) => match item.as_str() {
+            Some("file") => Ok(()),
+            Some(_) => Err(ERR_CODEX_CREDENTIALS_STORE_UNSUPPORTED.to_string()),
+            None => Err(ERR_CODEX_CONFIG_UNREADABLE.to_string()),
+        },
     }
 }
 
@@ -161,4 +186,68 @@ pub fn restore(paths: &CodexPaths, snapshot: &CodexSnapshot) -> Result<(), Strin
     }
     write_atomic(&paths.auth, snapshot.auth_text.as_bytes())
         .map_err(|_| ERR_RESTORE_FAILED.to_string())
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn absent_config_or_store_key_defaults_to_file() {
+        let dir = tempdir().unwrap();
+        let paths = CodexPaths { auth: dir.path().join("auth.json") };
+        assert_eq!(ensure_file_credentials_store(&paths), Ok(()));
+        for text in ["", "model = 'example'", "[profiles.example]\ncli_auth_credentials_store = 'keyring'\n"] {
+            fs::write(dir.path().join("config.toml"), text).unwrap();
+            assert_eq!(ensure_file_credentials_store(&paths), Ok(()));
+        }
+    }
+
+    #[test]
+    fn file_store_accepts_toml_quotes_comments_and_unrelated_tables() {
+        let dir = tempdir().unwrap();
+        let paths = CodexPaths { auth: dir.path().join("auth.json") };
+        for text in [
+            "cli_auth_credentials_store = \"file\" # explicit store\n[profiles.example]\nmodel = 'example'\n",
+            "'cli_auth_credentials_store' = 'file'\n",
+        ] {
+            fs::write(dir.path().join("config.toml"), text).unwrap();
+            assert_eq!(ensure_file_credentials_store(&paths), Ok(()));
+        }
+    }
+
+    #[test]
+    fn non_file_stores_are_refused_including_unknown_future_values() {
+        let dir = tempdir().unwrap();
+        let paths = CodexPaths { auth: dir.path().join("auth.json") };
+        for store in ["keyring", "auto", "ephemeral", "unknown"] {
+            let text = format!("cli_auth_credentials_store = \"{store}\"\n");
+            fs::write(dir.path().join("config.toml"), &text).unwrap();
+            assert_eq!(ensure_file_credentials_store(&paths).err().as_deref(),
+                Some(ERR_CODEX_CREDENTIALS_STORE_UNSUPPORTED));
+            assert_eq!(fs::read_to_string(dir.path().join("config.toml")).unwrap(), text);
+        }
+    }
+
+    #[test]
+    fn invalid_toml_or_store_type_cannot_silently_default_to_file() {
+        let dir = tempdir().unwrap();
+        let paths = CodexPaths { auth: dir.path().join("auth.json") };
+        for text in ["broken = [", "cli_auth_credentials_store = 1",
+            "cli_auth_credentials_store = ['file']", "[cli_auth_credentials_store]"] {
+            fs::write(dir.path().join("config.toml"), text).unwrap();
+            assert_eq!(ensure_file_credentials_store(&paths).err().as_deref(),
+                Some(ERR_CODEX_CONFIG_UNREADABLE));
+        }
+    }
+
+    #[test]
+    fn unreadable_config_cannot_silently_default_to_file() {
+        let dir = tempdir().unwrap();
+        let paths = CodexPaths { auth: dir.path().join("auth.json") };
+        fs::create_dir(dir.path().join("config.toml")).unwrap();
+        assert_eq!(ensure_file_credentials_store(&paths).err().as_deref(),
+            Some(ERR_CODEX_CONFIG_UNREADABLE));
+    }
 }

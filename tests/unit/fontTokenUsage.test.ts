@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -51,5 +51,41 @@ describe("font tokens", () => {
     const mono = css.match(/--cmux-font-mono:\s*([^;]+);/)?.[1] ?? "";
     expect(mono).toContain("UDEV Gothic NF");
     expect(mono).toContain("ui-monospace");
+  });
+});
+
+describe("bundled HackGen terminal font", () => {
+  const css = readFileSync(join(SRC, "global.css"), "utf8");
+  const faces = Array.from(css.matchAll(/@font-face\s*\{([^}]+)\}/g), (match) => match[1])
+    .filter((body) => /font-family:\s*"HackGen Console NF";/.test(body));
+
+  it("declares exactly the regular and bold faces", () => {
+    expect(faces).toHaveLength(2);
+  });
+
+  it("loads both HackGen weights before mounting the app", () => {
+    const main = readFileSync(join(SRC, "main.tsx"), "utf8");
+    const loads = main.match(/Promise\.all\(\[([\s\S]*?)\]\)/)?.[1];
+    expect(loads).toBeDefined();
+    for (const weight of [400, 700]) {
+      expect(loads).toContain(`document.fonts.load('${weight} 16px "HackGen Console NF"')`);
+    }
+    expect(main).toContain("void waitForBundledFonts().then(mount);");
+  });
+
+  it.each([
+    ["Regular", 400],
+    ["Bold", 700],
+  ] as const)("bundles the %s WOFF with blocking font display", (style, weight) => {
+    const filename = `HackGenConsoleNF-${style}.woff`;
+    const path = join(SRC, "assets", "fonts", filename);
+    expect(existsSync(path)).toBe(true);
+    expect(statSync(path).size).toBeGreaterThan(6_000_000);
+
+    const face = faces.find((body) => body.includes(`font-weight: ${weight};`));
+    expect(face).toBeDefined();
+    expect(face).toContain(`src: url("./assets/fonts/${filename}") format("woff");`);
+    expect(face).toContain("font-style: normal;");
+    expect(face).toContain("font-display: block;");
   });
 });

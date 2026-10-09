@@ -529,11 +529,17 @@ fn free_ram_mib() -> Option<u64> {
     }
 }
 
+/// Reuse the watchdog's OS probe on the blocking pool, without a new sampler.
+#[tauri::command(async)]
+pub async fn get_available_memory_mib() -> Result<Option<u64>, String> {
+    crate::util::task::run_blocking("get_available_memory_mib", || Ok(free_ram_mib())).await
+}
+
 #[cfg(not(windows))]
 fn free_ram_mib() -> Option<u64> {
     let mut system = sysinfo::System::new();
     system.refresh_memory();
-    Some(system.available_memory() / (1024 * 1024))
+    (system.total_memory() > 0).then(|| system.available_memory() / (1024 * 1024))
 }
 
 #[cfg(windows)]

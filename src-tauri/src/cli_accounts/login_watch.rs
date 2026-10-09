@@ -1,11 +1,11 @@
 //! Watches a staging directory until an isolated CLI login finishes.
 //!
 //! The CLI does not tell us when the browser round-trip completed - it just
-//! writes its credential file. Polling the staging directory is enough and
-//! costs nothing: the file is written once, a one-second poll is well inside
-//! human reaction time, and it avoids taking on a filesystem-notification
-//! dependency whose Windows directory watch races the directory we just
-//! created.
+//! writes identity and credentials. Files are polled on all platforms; Claude
+//! on macOS also needs one keychain read per tick once identity appears. A
+//! one-second poll is well inside human reaction time, and avoids taking on a
+//! filesystem-notification dependency whose Windows directory watch races the
+//! directory we just created.
 //!
 //! The watcher never touches live credentials, so it deliberately does *not*
 //! hold the mutation lock while polling - only `capture_staged` takes it, for
@@ -27,7 +27,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::{
     claude, codex, grok, live_sync::FileStamps, staging, CliAccountProfile, CliProvider,
-    ERR_LOGIN_CANCELLED, ERR_LOGIN_TIMEOUT,
+    ERR_CODEX_LOGIN_FILE_MISSING, ERR_LOGIN_CANCELLED, ERR_LOGIN_TIMEOUT,
 };
 
 /// Contract shared with the frontend. Renaming any of these breaks the UI.
@@ -175,6 +175,9 @@ pub struct WatchState {
     /// Identity and credential size seen last tick. A capture only happens when
     /// the next tick agrees with it.
     candidate: Option<(String, u64)>,
+    /// The CLI wrote identity before tokens. Keychain writes have no file
+    /// stamp, so keep reading every tick until tokens arrive or identity goes.
+    awaiting_credentials: Option<String>,
 }
 
 impl WatchState {
@@ -185,7 +188,7 @@ impl WatchState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TickOutcome {
-    /// Nothing usable yet, or waiting for the credential file to settle.
+    /// Nothing usable yet, or waiting for the credentials to settle.
     Idle,
     /// A login landed, but for a different account than the reauth target.
     /// Reported once and then ignored: the user can log in again with the right
@@ -198,23 +201,36 @@ pub enum TickOutcome {
     Ready,
 }
 
-fn watched_paths(provider: CliProvider, dir: &Path) -> Vec<PathBuf> {
+fn watched_paths(
+    provider: CliProvider,
+    dir: &Path,
+    claude_paths: &claude::ClaudePaths,
+) -> Vec<PathBuf> {
     match provider {
-        CliProvider::Claude => {
-            let paths = staging::claude_staging_paths(dir);
-            vec![paths.credentials, paths.claude_json]
-        }
+        CliProvider::Claude => match &claude_paths.store {
+            claude::CredentialStore::File => vec![
+                claude_paths.credentials.clone(),
+                claude_paths.claude_json.clone(),
+            ],
+            claude::CredentialStore::Keychain { .. } => vec![claude_paths.claude_json.clone()],
+        },
         CliProvider::Codex => vec![staging::codex_staging_paths(dir).auth],
         CliProvider::Grok => vec![staging::grok_staging_paths(dir).auth],
     }
 }
 
-/// Byte length of the file that actually carries the tokens. `None` when it is
-/// not there yet - capture would fail, and an absent file must never look like
-/// a settled one.
-fn credentials_len(provider: CliProvider, dir: &Path) -> Option<u64> {
+/// Byte length of the token store, reusing the Claude read from this tick.
+/// An absent or empty store must never look like settled credentials.
+fn credentials_len(
+    provider: CliProvider,
+    dir: &Path,
+    claude_credentials: &mut claude::CredentialsOnce<'_>,
+) -> Option<u64> {
     let path = match provider {
-        CliProvider::Claude => staging::claude_staging_paths(dir).credentials,
+        CliProvider::Claude => {
+            let len = claude_credentials.text()?.len() as u64;
+            return (len > 0).then_some(len);
+        }
         CliProvider::Codex => staging::codex_staging_paths(dir).auth,
         CliProvider::Grok => staging::grok_staging_paths(dir).auth,
     };
@@ -222,37 +238,53 @@ fn credentials_len(provider: CliProvider, dir: &Path) -> Option<u64> {
     (len > 0).then_some(len)
 }
 
-/// One poll of the staging directory. Pure with respect to everything except
-/// the filesystem, so the whole state machine is testable without a running
-/// app.
+/// One poll of the staging directory and its scoped credential store.
 ///
 /// The mtime gate is skipped while a candidate is pending: a CLI writes the
 /// credential file once, so the confirming observation happens on a tick where
-/// nothing moved. Requiring movement there would never let a login settle.
+/// nothing moved. Also skip it while identity is waiting for credentials: a
+/// later keychain write cannot advance a file stamp.
 pub fn poll_once(
     dir: &Path,
     provider: CliProvider,
     mode: &LoginMode,
     state: &mut WatchState,
 ) -> TickOutcome {
-    let watched = watched_paths(provider, dir);
+    poll_once_with_credentials(dir, provider, mode, state, &staging::NativeCredentials)
+}
+
+fn poll_once_with_credentials(
+    dir: &Path,
+    provider: CliProvider,
+    mode: &LoginMode,
+    state: &mut WatchState,
+    credentials: &dyn staging::StagingCredentials,
+) -> TickOutcome {
+    let claude_paths = credentials.claude_paths(dir);
+    let watched = watched_paths(provider, dir, &claude_paths);
     let watched_refs: Vec<&Path> = watched.iter().map(PathBuf::as_path).collect();
     let moved = state.stamps.changed(&watched_refs);
-    if !moved && state.candidate.is_none() {
+    if !moved && state.candidate.is_none() && state.awaiting_credentials.is_none() {
         return TickOutcome::Idle;
     }
 
+    let reader = |paths: &claude::ClaudePaths| credentials.read(paths);
+    let mut claude_credentials = claude::CredentialsOnce::with_reader(&claude_paths, &reader);
     let live = match provider {
-        CliProvider::Claude => claude::read_live_identity(&staging::claude_staging_paths(dir)),
+        CliProvider::Claude => {
+            claude::read_live_identity_reusing(&claude_paths, &mut claude_credentials)
+        }
         CliProvider::Codex => codex::read_live_identity(&staging::codex_staging_paths(dir)),
         CliProvider::Grok => grok::read_live_identity(&staging::grok_staging_paths(dir)),
     };
     let Some(identity) = live.identity_key else {
         state.candidate = None;
+        state.awaiting_credentials = None;
         return TickOutcome::Idle;
     };
     if provider == CliProvider::Grok && live.email.is_none() {
         state.candidate = None;
+        state.awaiting_credentials = None;
         return TickOutcome::Idle;
     }
     if mode
@@ -260,15 +292,18 @@ pub fn poll_once(
         .is_some_and(|expected| expected != identity)
     {
         state.candidate = None;
+        state.awaiting_credentials = None;
         return TickOutcome::Mismatch {
             email: live.email,
             identity_key: identity,
         };
     }
-    let Some(len) = credentials_len(provider, dir) else {
+    let Some(len) = credentials_len(provider, dir, &mut claude_credentials) else {
         state.candidate = None;
+        state.awaiting_credentials = Some(identity);
         return TickOutcome::Idle;
     };
+    state.awaiting_credentials = None;
 
     match state.candidate.replace((identity.clone(), len)) {
         Some((previous_identity, previous_len))
@@ -289,6 +324,35 @@ fn terminal_reason(cancelled: bool, elapsed: Duration) -> Option<&'static str> {
         return Some(ERR_LOGIN_TIMEOUT);
     }
     None
+}
+
+fn cleanup_if_terminal(
+    dir: &Path,
+    cancelled: bool,
+    elapsed: Duration,
+    credentials: &dyn staging::StagingCredentials,
+) -> Option<&'static str> {
+    let code = terminal_reason(cancelled, elapsed)?;
+    staging::cleanup_staging_with_credentials(dir, credentials);
+    Some(code)
+}
+
+pub(super) fn cleanup_login_if_terminal(
+    dir: &Path,
+    provider: CliProvider,
+    cancelled: bool,
+    elapsed: Duration,
+    credentials: &dyn staging::StagingCredentials,
+) -> Option<&'static str> {
+    // Check before cleanup removes the evidence. Cancellation keeps its code.
+    let missing_codex_auth = provider == CliProvider::Codex
+        && !staging::codex_staging_paths(dir).auth.is_file();
+    let code = cleanup_if_terminal(dir, cancelled, elapsed, credentials)?;
+    Some(if code == ERR_LOGIN_TIMEOUT && missing_codex_auth {
+        ERR_CODEX_LOGIN_FILE_MISSING
+    } else {
+        code
+    })
 }
 
 /// Everything one watcher needs. Mirrors the registry entry rather than
@@ -337,9 +401,13 @@ async fn run(app: &AppHandle, base: &Path, watch: &LoginWatch) {
     loop {
         tokio::time::sleep(POLL_INTERVAL).await;
 
-        if let Some(code) = terminal_reason(watch.cancel.load(Ordering::SeqCst), started.elapsed())
-        {
-            staging::cleanup_staging(&watch.dir);
+        if let Some(code) = cleanup_login_if_terminal(
+            &watch.dir,
+            watch.provider,
+            watch.cancel.load(Ordering::SeqCst),
+            started.elapsed(),
+            &staging::NativeCredentials,
+        ) {
             emit_failed(app, &watch.login_id, code);
             return;
         }
@@ -436,12 +504,243 @@ fn emit_failed(app: &AppHandle, login_id: &str, code: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use staging::test_support::{FakeKeychain, FileCredentials};
     use std::fs;
     use tempfile::tempdir;
 
     const CLAUDE_JSON: &str = include_str!("fixtures/claude_json_sample.json");
     const CREDS: &str = include_str!("fixtures/claude_credentials_sample.json");
     const CODEX: &str = include_str!("fixtures/codex_auth_sample.json");
+
+    #[test]
+    fn codex_missing_auth_timeout_explains_storage_and_cleans_staging() {
+        let base = tempdir().unwrap();
+        let dir = staging::create_staging_dir(base.path()).unwrap();
+        assert_eq!(cleanup_login_if_terminal(&dir, CliProvider::Codex, false,
+            LOGIN_TIMEOUT - Duration::from_secs(1), &FileCredentials), None);
+        assert!(dir.exists());
+        assert_eq!(cleanup_login_if_terminal(&dir, CliProvider::Codex, false,
+            LOGIN_TIMEOUT, &FileCredentials), Some(ERR_CODEX_LOGIN_FILE_MISSING));
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn codex_auth_present_keeps_the_general_timeout_code() {
+        let base = tempdir().unwrap();
+        let dir = staging::create_staging_dir(base.path()).unwrap();
+        fs::write(dir.join("auth.json"), "incomplete").unwrap();
+        assert_eq!(cleanup_login_if_terminal(&dir, CliProvider::Codex, false,
+            LOGIN_TIMEOUT, &FileCredentials), Some(ERR_LOGIN_TIMEOUT));
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn cancelling_codex_without_auth_keeps_the_cancellation_code() {
+        let base = tempdir().unwrap();
+        let dir = staging::create_staging_dir(base.path()).unwrap();
+        assert_eq!(cleanup_login_if_terminal(&dir, CliProvider::Codex, true,
+            LOGIN_TIMEOUT, &FileCredentials), Some(ERR_LOGIN_CANCELLED));
+        assert!(!dir.exists());
+    }
+
+    // Run the original file-based assertions on every host without consulting
+    // the real macOS keychain.
+    fn poll_once(
+        dir: &Path,
+        provider: CliProvider,
+        mode: &LoginMode,
+        state: &mut WatchState,
+    ) -> TickOutcome {
+        super::poll_once_with_credentials(dir, provider, mode, state, &FileCredentials)
+    }
+
+    fn keychain_poll(dir: &Path, state: &mut WatchState, keychain: &FakeKeychain) -> TickOutcome {
+        super::poll_once_with_credentials(dir, CliProvider::Claude, &LoginMode::New, state, keychain)
+    }
+
+    #[test]
+    fn keychain_login_settles_captures_and_removes_only_its_staging_service() {
+        let base = tempdir().unwrap();
+        let dir = staging::create_staging_dir(base.path()).unwrap();
+        let service = FakeKeychain::service(&dir);
+        let keychain = FakeKeychain::default();
+        keychain.insert(&service, CREDS);
+        keychain.insert("Claude Code-credentials", "live credentials");
+        keychain.insert("Claude Code", "other live item");
+        keychain.insert("Claude Code-credentials-16a22eae", "old orphan");
+        fs::write(dir.join(".claude.json"), CLAUDE_JSON).unwrap();
+        assert!(!dir.join(".credentials.json").exists());
+
+        let mut state = WatchState::new();
+        assert_eq!(keychain_poll(&dir, &mut state, &keychain), TickOutcome::Idle);
+        assert_eq!(keychain_poll(&dir, &mut state, &keychain), TickOutcome::Ready);
+        let (profile, updated) = staging::capture_staged_with_credentials(
+            base.path(), CliProvider::Claude, &dir, None, Some("claude-account-a"), &keychain,
+        ).unwrap();
+        assert!(!updated);
+        assert_eq!(profile.identity_key, "claude-account-a");
+        assert_eq!(profile.email.as_deref(), Some("a@example.test"));
+        let super::super::snapshot::StoredSnapshot::Claude(stored) =
+            super::super::snapshot::load(base.path(), &profile.id).unwrap() else {
+                panic!("expected Claude snapshot");
+            };
+        assert_eq!(stored.credentials_text, CREDS);
+        assert_eq!(super::super::registry::load(base.path()).unwrap().profiles[0].id, profile.id);
+        assert_eq!(keychain.reads(), vec![service.clone(); 3], "one read per tick, one per capture");
+
+        staging::cleanup_staging_with_credentials(&dir, &keychain);
+        assert!(!dir.exists());
+        assert!(!keychain.contains(&service));
+        assert_eq!(keychain.removed(), vec![service]);
+        assert!(keychain.contains("Claude Code-credentials"));
+        assert!(keychain.contains("Claude Code"));
+        assert!(keychain.contains("Claude Code-credentials-16a22eae"));
+    }
+
+    #[test]
+    fn keychain_credentials_arriving_after_identity_settle_without_a_file_change() {
+        let dir = tempdir().unwrap();
+        let keychain = FakeKeychain::default();
+        let service = FakeKeychain::service(dir.path());
+        let mut state = WatchState::new();
+        fs::write(dir.path().join(".claude.json"), CLAUDE_JSON).unwrap();
+
+        assert_eq!(keychain_poll(dir.path(), &mut state, &keychain), TickOutcome::Idle);
+        assert_eq!(state.awaiting_credentials.as_deref(), Some("claude-account-a"));
+        assert_eq!(keychain_poll(dir.path(), &mut state, &keychain), TickOutcome::Idle);
+        keychain.insert(&service, CREDS);
+        assert_eq!(keychain_poll(dir.path(), &mut state, &keychain), TickOutcome::Idle);
+        assert!(state.awaiting_credentials.is_none());
+        assert_eq!(keychain_poll(dir.path(), &mut state, &keychain), TickOutcome::Ready);
+        assert_eq!(keychain.reads(), vec![service; 4]);
+        assert!(!dir.path().join(".credentials.json").exists());
+    }
+
+    #[test]
+    fn a_growing_keychain_credential_restarts_the_two_tick_settle_window() {
+        let dir = tempdir().unwrap();
+        let keychain = FakeKeychain::default();
+        let service = FakeKeychain::service(dir.path());
+        let mut state = WatchState::new();
+        fs::write(dir.path().join(".claude.json"), CLAUDE_JSON).unwrap();
+        keychain.insert(&service, &CREDS[..20]);
+        assert_eq!(keychain_poll(dir.path(), &mut state, &keychain), TickOutcome::Idle);
+        keychain.insert(&service, CREDS);
+        assert_eq!(keychain_poll(dir.path(), &mut state, &keychain), TickOutcome::Idle);
+        assert_eq!(keychain_poll(dir.path(), &mut state, &keychain), TickOutcome::Ready);
+        assert_eq!(keychain.reads(), vec![service; 3]);
+    }
+
+    #[test]
+    fn a_timed_out_keychain_login_deletes_its_service_and_staging_directory() {
+        let base = tempdir().unwrap();
+        let dir = staging::create_staging_dir(base.path()).unwrap();
+        let keychain = FakeKeychain::default();
+        let service = FakeKeychain::service(&dir);
+        keychain.insert(&service, CREDS);
+
+        assert_eq!(cleanup_if_terminal(&dir, false, LOGIN_TIMEOUT - POLL_INTERVAL, &keychain), None);
+        assert!(dir.is_dir());
+        assert!(keychain.contains(&service));
+        assert_eq!(cleanup_if_terminal(&dir, false, LOGIN_TIMEOUT, &keychain), Some(ERR_LOGIN_TIMEOUT));
+        assert!(!dir.exists());
+        assert!(!keychain.contains(&service));
+        assert_eq!(keychain.removed(), vec![service]);
+        assert!(keychain.reads().is_empty());
+        assert!(super::super::registry::load(base.path()).unwrap().profiles.is_empty());
+    }
+
+    #[test]
+    fn a_cancelled_keychain_login_deletes_its_service_without_registering_an_account() {
+        let base = tempdir().unwrap();
+        let dir = staging::create_staging_dir(base.path()).unwrap();
+        let keychain = FakeKeychain::default();
+        let service = FakeKeychain::service(&dir);
+        keychain.insert(&service, CREDS);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let registry = LoginRegistry::default();
+        assert!(registry.try_insert(PendingLogin {
+            dir: dir.clone(), cancel: cancel.clone(), ..pending("keychain-cancel", CliProvider::Claude)
+        }));
+        assert!(registry.request_cancel("keychain-cancel"));
+
+        assert_eq!(cleanup_if_terminal(&dir, cancel.load(Ordering::SeqCst), LOGIN_TIMEOUT, &keychain), Some(ERR_LOGIN_CANCELLED));
+        assert!(!dir.exists());
+        assert!(!keychain.contains(&service));
+        assert_eq!(keychain.removed(), vec![service]);
+        assert!(super::super::registry::load(base.path()).unwrap().profiles.is_empty());
+    }
+
+    #[test]
+    fn file_backed_login_still_settles_captures_and_cleans_up() {
+        let base = tempdir().unwrap();
+        let dir = staging::create_staging_dir(base.path()).unwrap();
+        staged_claude(&dir, CLAUDE_JSON);
+        let mut state = WatchState::new();
+        assert_eq!(poll_once(&dir, CliProvider::Claude, &LoginMode::New, &mut state), TickOutcome::Idle);
+        assert_eq!(poll_once(&dir, CliProvider::Claude, &LoginMode::New, &mut state), TickOutcome::Ready);
+        let (profile, _) = staging::capture_staged_with_credentials(
+            base.path(), CliProvider::Claude, &dir, None, None, &FileCredentials,
+        ).unwrap();
+        assert_eq!(profile.identity_key, "claude-account-a");
+        staging::cleanup_staging_with_credentials(&dir, &FileCredentials);
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn keychain_mismatch_is_reported_once_until_identity_changes() {
+        let dir = tempdir().unwrap();
+        let keychain = FakeKeychain::default();
+        let service = FakeKeychain::service(dir.path());
+        let mode = LoginMode::Reauth { expected_identity_key: "claude-account-b".into() };
+        let mut state = WatchState::new();
+        keychain.insert(&service, CREDS);
+        write_stamped(dir.path().join(".claude.json"), CLAUDE_JSON);
+
+        assert!(matches!(super::poll_once_with_credentials(dir.path(), CliProvider::Claude, &mode, &mut state, &keychain), TickOutcome::Mismatch { .. }));
+        for _ in 0..3 {
+            assert_eq!(super::poll_once_with_credentials(dir.path(), CliProvider::Claude, &mode, &mut state, &keychain), TickOutcome::Idle);
+        }
+        assert_eq!(keychain.reads().len(), 1);
+        write_stamped(dir.path().join(".claude.json"), &CLAUDE_JSON.replace("claude-account-a", "claude-account-b"));
+        assert_eq!(super::poll_once_with_credentials(dir.path(), CliProvider::Claude, &mode, &mut state, &keychain), TickOutcome::Idle);
+        assert_eq!(super::poll_once_with_credentials(dir.path(), CliProvider::Claude, &mode, &mut state, &keychain), TickOutcome::Ready);
+    }
+
+    #[test]
+    fn losing_identity_stops_keychain_reads_until_identity_returns() {
+        let dir = tempdir().unwrap();
+        let keychain = FakeKeychain::default();
+        let service = FakeKeychain::service(dir.path());
+        let mut state = WatchState::new();
+        write_stamped(dir.path().join(".claude.json"), CLAUDE_JSON);
+        assert_eq!(keychain_poll(dir.path(), &mut state, &keychain), TickOutcome::Idle);
+        fs::remove_file(dir.path().join(".claude.json")).unwrap();
+        assert_eq!(keychain_poll(dir.path(), &mut state, &keychain), TickOutcome::Idle);
+        assert!(state.awaiting_credentials.is_none());
+        keychain.insert(&service, CREDS);
+        for _ in 0..3 {
+            assert_eq!(keychain_poll(dir.path(), &mut state, &keychain), TickOutcome::Idle);
+        }
+        assert_eq!(keychain.reads(), vec![service.clone()]);
+        write_stamped(dir.path().join(".claude.json"), CLAUDE_JSON);
+        assert_eq!(keychain_poll(dir.path(), &mut state, &keychain), TickOutcome::Idle);
+        assert_eq!(keychain_poll(dir.path(), &mut state, &keychain), TickOutcome::Ready);
+        assert_eq!(keychain.reads(), vec![service; 3]);
+    }
+
+    #[test]
+    fn an_empty_or_seeded_staging_config_does_not_read_keychain_credentials() {
+        let dir = tempdir().unwrap();
+        let keychain = FakeKeychain::default();
+        let mut state = WatchState::new();
+        assert_eq!(keychain_poll(dir.path(), &mut state, &keychain), TickOutcome::Idle);
+        write_stamped(dir.path().join(".claude.json"), r#"{"theme":"dark"}"#);
+        for _ in 0..3 {
+            assert_eq!(keychain_poll(dir.path(), &mut state, &keychain), TickOutcome::Idle);
+        }
+        assert!(keychain.reads().is_empty());
+    }
 
     /// Windows advances file timestamps on the ~15ms system tick, so writes a
     /// test performs microseconds apart can land on the same mtime. Stamping
@@ -616,7 +915,7 @@ mod tests {
             Some(ERR_LOGIN_CANCELLED)
         );
 
-        staging::cleanup_staging(&dir);
+        staging::cleanup_staging_with_credentials(&dir, &FileCredentials);
         assert!(!dir.exists());
         // Cancellation must not have registered anything.
         assert!(super::super::registry::load(base.path())

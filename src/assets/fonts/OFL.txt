@@ -130,3 +130,38 @@ INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
+
+================================================================================
+
+mycmux also bundles HackGen Console NF (v2.10.0) as an optional terminal typeface.
+
+Files:
+  HackGenConsoleNF-Regular.woff
+  HackGenConsoleNF-Bold.woff
+
+These are WOFF conversions of the upstream TrueType releases; no glyph, metric
+or name table was altered. HackGen Console NF is itself a composite, and every
+constituent carries its own copyright notice, reproduced here as recorded in
+the font's name table:
+
+  [Hack]
+  Copyright (c) 2018 Source Foundry Authors
+
+  [Gen Jyuu Gothic]
+  Copyright (c) 2015 JIKASEI FONT KOUBOU
+
+  [Nerd Fonts]
+  Copyright (c) 2014, Ryan L McIntyre (https://ryanlmcintyre.com).
+
+  [HackGen]
+  Copyright (c) 2019, Yuko OTAWARA
+
+Upstream project: https://github.com/yuru7/HackGen
+The upstream font licence notice is:
+
+Copyright (c) 2019, Yuko OTAWARA. with Reserved Font Name "白源", "HackGen"
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+The single SIL Open Font License 1.1 body reproduced above applies to both
+bundled font families. The licence is also available with a FAQ at:
+https://scripts.sil.org/OFL

@@ -68,14 +68,15 @@ def test_tab_sweep_ui_contract_covers_all_entry_points_and_safety_copy() -> None
     app_shell = read("src/components/layout/AppShell.tsx")
     palette = read("src/components/CommandPalette/CrsmPalette.tsx")
 
-    # Closing always goes through the manual channel: the AI judge proposes
-    # checkboxes, it is not a gate on the close button.
+    # The AI proposes checkboxes; closing waits for the person's selection.
     assert 'manualCloseCandidateTabIds' in panel
     assert 'closeCandidateTabIds' not in panel
     # The shortcut comes from the live binding now, so the sentence is split
     # around it. Both halves still have to be present: the point of the check is
     # that the panel tells the operator the close is undoable.
-    assert "閉じたペインは {reopenTabShortcut} で復元できます（会話も再開されます）" in panel
+    assert "閉じたペインの記録は {reopenTabShortcut} で復元できます。会話は再開できます。" in panel
+    assert "SWEEP_RESTORE_LIMIT_TEXT" in panel
+    assert "取り消しは記録の復元で、実行状態は戻りません。" in sweep
     # The model is a user setting now, so the disclosure is built in
     # tabSweep.ts. What must not regress is that it still says exactly what
     # leaves the machine.
@@ -86,7 +87,7 @@ def test_tab_sweep_ui_contract_covers_all_entry_points_and_safety_copy() -> None
     # One list with checkboxes — the numbered sections and their per-section
     # action buttons are gone, and so is the collapsed LOCKED list.
     assert 'type="checkbox"' in panel
-    assert "選択した${selectedCount}件を閉じる" in panel
+    assert '${autoReview ? "確認して" : "選択した"}${selectedCount}件を閉じる' in panel
     assert "① 即掃除できる" not in panel
     assert "② AI 判定候補" not in panel
     assert "④ 無名タブのラベル案" not in panel

@@ -7,6 +7,8 @@ import {
   type TerminalRenderer,
 } from "./settingsMigration";
 import { useAiSettingsStore } from "./aiSettingsStore";
+import type { DshRunRef } from "../lib/agentAdapterApi";
+import { DEFAULT_DORMANCY_PRESSURE_SETTINGS, normalizeDormancyPressureSettings, type DormancyPressureSettings } from "../lib/agentDormancy";
 
 export interface LegacyAiFeatureSettings {
   autoPaneNamingEnabled?: boolean;
@@ -87,6 +89,10 @@ interface SettingsState {
   launcherHiddenIds: string[];
   /** Diagram-flight animation shown before a grouping layout commit. */
   groupingApplyAnimationEnabled: boolean;
+  /** Opt-in compatibility path: close sweep suggestions without human review. */
+  autoSweepCloseWithoutConfirmation: boolean;
+  dormancyPressureSettings: DormancyPressureSettings;
+  dormancyAllowUnreadCompletion: boolean;
   dispatchWatchdogEnabled: boolean;
   dispatchWatchdogIntervalMinutes: number;
   dispatchStallMinutes: number;
@@ -100,6 +106,11 @@ interface SettingsState {
   declaredLaunchEnabled: boolean;
   /** Independent Codex stdio trial; never changes the ordinary launcher. */
   codexAppServerExperimentEnabled: boolean;
+  /** Independent ACP trial: paths and conversation references only. */
+  dshAcpExperimentEnabled: boolean;
+  dshAcpExecutablePath: string;
+  dshAcpHomePath: string;
+  dshAcpSavedRun: DshRunRef | null;
   /** AI-generated next-action drafts are opt-in; machine suggestions stay available. */
   replyDraftSuggestionsEnabled: boolean;
   /** Automatic AI naming only touches unnamed or AI-named tabs. */
@@ -125,6 +136,9 @@ interface SettingsState {
   setNativePaneTearoutEnabled: (v: boolean) => void;
   setLauncherHiddenIds: (v: string[]) => void;
   setGroupingApplyAnimationEnabled: (v: boolean) => void;
+  setAutoSweepCloseWithoutConfirmation: (v: boolean) => void;
+  setDormancyPressureSettings: (v: Partial<DormancyPressureSettings>) => void;
+  setDormancyAllowUnreadCompletion: (v: boolean) => void;
   setDispatchWatchdogEnabled: (v: boolean) => void;
   setDispatchWatchdogIntervalMinutes: (v: number) => void;
   setDispatchStallMinutes: (v: number) => void;
@@ -134,6 +148,10 @@ interface SettingsState {
   setTerminalProgressDiagnosticsEnabled: (v: boolean) => void;
   setDeclaredLaunchEnabled: (v: boolean) => void;
   setCodexAppServerExperimentEnabled: (v: boolean) => void;
+  setDshAcpExperimentEnabled: (v: boolean) => void;
+  setDshAcpExecutablePath: (v: string) => void;
+  setDshAcpHomePath: (v: string) => void;
+  setDshAcpSavedRun: (v: DshRunRef | null) => void;
   setReplyDraftSuggestionsEnabled: (v: boolean) => void;
   setAutoPaneNamingEnabled: (v: boolean) => void;
   setAppearanceAdvancedOpen: (v: boolean) => void;
@@ -167,6 +185,9 @@ export const useSettingsStore = create<SettingsState>()(
       macNativePaneTearoutEnabled: true,
       launcherHiddenIds: [],
       groupingApplyAnimationEnabled: true,
+      autoSweepCloseWithoutConfirmation: false,
+      dormancyPressureSettings: { ...DEFAULT_DORMANCY_PRESSURE_SETTINGS },
+      dormancyAllowUnreadCompletion: true,
       dispatchWatchdogEnabled: true,
       dispatchWatchdogIntervalMinutes: 10,
       dispatchStallMinutes: 45,
@@ -176,6 +197,10 @@ export const useSettingsStore = create<SettingsState>()(
       terminalProgressDiagnosticsEnabled: false,
       declaredLaunchEnabled: false,
       codexAppServerExperimentEnabled: false,
+      dshAcpExperimentEnabled: false,
+      dshAcpExecutablePath: "",
+      dshAcpHomePath: "",
+      dshAcpSavedRun: null,
       replyDraftSuggestionsEnabled: false,
       autoPaneNamingEnabled: true,
       aiFeatureSettingsDataJsonMigrationComplete: false,
@@ -198,6 +223,11 @@ export const useSettingsStore = create<SettingsState>()(
         ...(typeof navigator !== "undefined" && /^Mac/i.test(navigator.platform) ? { macNativePaneTearoutEnabled: v } : {}) }),
       setLauncherHiddenIds: (v) => set({ launcherHiddenIds: v }),
       setGroupingApplyAnimationEnabled: (v) => set({ groupingApplyAnimationEnabled: v }),
+      setAutoSweepCloseWithoutConfirmation: (v) => set({ autoSweepCloseWithoutConfirmation: v }),
+      setDormancyPressureSettings: (v) => set((state) => ({
+        dormancyPressureSettings: normalizeDormancyPressureSettings({ ...state.dormancyPressureSettings, ...v }),
+      })),
+      setDormancyAllowUnreadCompletion: (v) => set({ dormancyAllowUnreadCompletion: v }),
       setDispatchWatchdogEnabled: (v) => set({ dispatchWatchdogEnabled: v }),
       setDispatchWatchdogIntervalMinutes: (v) => set({ dispatchWatchdogIntervalMinutes: v }),
       setDispatchStallMinutes: (v) => set({ dispatchStallMinutes: v }),
@@ -207,6 +237,12 @@ export const useSettingsStore = create<SettingsState>()(
       setTerminalProgressDiagnosticsEnabled: (v) => set({ terminalProgressDiagnosticsEnabled: v }),
       setDeclaredLaunchEnabled: (v) => set({ declaredLaunchEnabled: v }),
       setCodexAppServerExperimentEnabled: (v) => set({ codexAppServerExperimentEnabled: v }),
+      setDshAcpExperimentEnabled: (v) => set({ dshAcpExperimentEnabled: v }),
+      setDshAcpExecutablePath: (v) => set({ dshAcpExecutablePath: v }),
+      setDshAcpHomePath: (v) => set({ dshAcpHomePath: v }),
+      setDshAcpSavedRun: (v) => set({ dshAcpSavedRun: v ? {
+        runId: v.runId, generation: v.generation, convId: v.convId, cwd: v.cwd,
+      } : null }),
       setReplyDraftSuggestionsEnabled: (v) => {
         useAiSettingsStore.getState().setPersistedReplyDraftSuggestionsEnabled(v);
         set({ replyDraftSuggestionsEnabled: v });
@@ -222,6 +258,7 @@ export const useSettingsStore = create<SettingsState>()(
       version: SETTINGS_STORE_VERSION,
       merge: (persisted, current) => {
         const merged = { ...current, ...(persisted as Partial<SettingsState> | undefined) };
+        merged.dormancyPressureSettings = normalizeDormancyPressureSettings(merged.dormancyPressureSettings ?? {});
         // Older Mac installs carry the Windows-default true field. It is not
         // consent to the Mac experiment; only the new explicit marker is.
         if (typeof navigator !== "undefined" && /^Mac/i.test(navigator.platform)) {

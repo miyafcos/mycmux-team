@@ -155,7 +155,38 @@ pub fn codex_app_server_capabilities(
     }
 }
 
-pub async fn snapshot(state: &crate::codex_app_server::CodexAppServerState) -> Value {
+pub fn dsh_acp_capabilities(current: &crate::dsh_acp::DshState) -> AdapterCapabilities {
+    let mut operations = std::collections::BTreeMap::new();
+    for (name, scope) in [
+        ("start", "Local wire fixtures enforce version/initialize/new and one owned root; live rc.2 ACP is unverified."),
+        ("send", "Local fixtures enforce expectedRun, one in-flight prompt and operation deduplication; submitted is not accepted or task done."),
+        ("readEvents", "Local fixtures enforce bounded captured ACP updates and cursor gaps; no screen or historical replay."),
+        ("interrupt", "Local fixtures enforce cancel notification followed by the same prompt's cancelled settlement; live cancellation is unverified."),
+    ] { operations.insert(name.into(), capability(CapabilityLevel::Enforced, scope)); }
+    operations.insert("resume".into(), capability(
+        if current.resume_supported { CapabilityLevel::Enforced }
+        else if current.executable_version.is_some() { CapabilityLevel::Unsupported }
+        else { CapabilityLevel::Unverified },
+        "When advertised, local fixtures validate inactive root ID/cwd via session/list before resume; no fresh fallback; live rc.2 unverified.",
+    ));
+    for name in ["fork", "steer"] {
+        operations.insert(name.into(), capability(CapabilityLevel::Unsupported, "Outside the dsh ACP experiment."));
+    }
+    operations.insert("usage".into(), capability(CapabilityLevel::Unverified, "Context updates do not certify total tokens, cost, quota or billing."));
+    AdapterCapabilities {
+        version: CAPABILITY_VERSION, agent: "dsh".into(), mode: "acpStdioExperiment".into(), enabled: current.enabled,
+        executable_version: current.executable_version.clone(), tested_executable_version: None,
+        required_executable_version: Some(crate::dsh_acp::PINNED_VERSION.into()),
+        tested_scope: vec![
+            "Rust fake-child/wire and UI contracts only; rc.2 trial verified CLI/headless, not ACP or Windows.".into(),
+            "History replay and native questions unsupported; one-shot permission choices use dedicated IPC.".into(),
+        ],
+        operations, configuration: ConfigurationObservation::default(),
+        sources: vec!["docs/adr/0016-dsh-acp-experiment.md".into(), "docs/agent-integration.md".into()],
+    }
+}
+
+pub async fn snapshot(state: &crate::codex_app_server::CodexAppServerState, dsh: &crate::dsh_acp::DshAcpState) -> Value {
     let current = state.snapshot().await;
     let mut adapters: Vec<_> = [
         "claude",
@@ -178,19 +209,39 @@ pub async fn snapshot(state: &crate::codex_app_server::CodexAppServerState) -> V
         current.cli_version,
         current.configuration,
     ));
+    adapters.push(dsh_acp_capabilities(&dsh.snapshot().await));
     json!({ "version": CAPABILITY_VERSION, "adapters": adapters })
 }
 
 #[tauri::command]
 pub async fn agent_adapter_capabilities(
     state: tauri::State<'_, crate::codex_app_server::CodexAppServerState>,
+    dsh: tauri::State<'_, crate::dsh_acp::DshAcpState>,
 ) -> Result<Value, String> {
-    Ok(snapshot(&state).await)
+    Ok(snapshot(&state, &dsh).await)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dsh_declaration_preserves_v1_operations_and_marks_live_acp_unverified() {
+        let mut current = crate::dsh_acp::DshState::default();
+        let declaration = dsh_acp_capabilities(&current);
+        assert_eq!(declaration.operations.len(), 8);
+        assert!(!declaration.enabled);
+        assert!(declaration.tested_executable_version.is_none());
+        assert_eq!(declaration.required_executable_version.as_deref(), Some("0.2.0-rc.2"));
+        assert_eq!(declaration.operations["resume"].level, CapabilityLevel::Unverified);
+        for operation in ["fork", "steer"] {
+            assert_eq!(declaration.operations[operation].level, CapabilityLevel::Unsupported);
+        }
+        assert_eq!(declaration.operations["usage"].level, CapabilityLevel::Unverified);
+        current.resume_supported = true;
+        assert_eq!(dsh_acp_capabilities(&current).operations["resume"].level, CapabilityLevel::Enforced);
+        assert!(declaration.tested_scope.iter().any(|scope| scope.contains("not ACP or Windows")));
+    }
 
     #[test]
     fn all_adapters_declare_exactly_the_eight_operations_and_unknown_versions() {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createAutoSweepRunner, type AutoSweepDependencies } from "../../src/components/layout/tabSweepAuto";
+import { createAutoSweepRunner, sweepReviewTargetIds, type AutoSweepDependencies } from "../../src/components/layout/tabSweepAuto";
 import type { SweepReport, SweepTab } from "../../src/components/layout/tabSweep";
 import { __resetToastStoreForTests, TOAST_UNDO_DISMISS_MS, useToastStore } from "../../src/stores/toastStore";
 import { useSettingsStore } from "../../src/stores/settingsStore";
@@ -41,11 +41,65 @@ function dependencies(overrides: Partial<AutoSweepDependencies> = {}): AutoSweep
     restoreClosedTabs: vi.fn(),
     openDetails: vi.fn(),
     requestId: () => "request",
+    confirmSweep: vi.fn(async (review) => sweepReviewTargetIds(review.plan)),
     ...overrides,
   };
 }
 
 describe("tab sweep auto", () => {
+  it("waits for human review before applying the judged candidates", async () => {
+    let approve!: (ids: string[]) => void;
+    const deps = dependencies({
+      scanTabs: vi.fn(async () => report(tab("done", "CANDIDATE"))),
+      invokeJudge: vi.fn(async () => '[{"id":"done","verdict":"done_waiting","reason":"作業が終わりました"}]'),
+      confirmSweep: vi.fn(() => new Promise((resolve) => { approve = resolve; })),
+    });
+    const pending = createAutoSweepRunner(deps).run();
+    await vi.waitFor(() => expect(deps.confirmSweep).toHaveBeenCalledTimes(1));
+    expect(deps.applySweep).not.toHaveBeenCalled();
+    expect(vi.mocked(deps.confirmSweep).mock.calls[0][0].verdicts[0].reason).toBe("作業が終わりました");
+    approve(["done"]);
+    await pending;
+    expect(deps.applySweep).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([true, false])("cancelling closes no panes even with AI enabled=%s", async (aiEnabled) => {
+    const deps = dependencies({
+      settings: () => ({ aiEnabled, aiProvider: "codex" }),
+      scanTabs: vi.fn(async () => report(tab("dead", "DEAD"))),
+      confirmSweep: vi.fn(async () => null),
+    });
+    expect(await createAutoSweepRunner(deps).run()).toMatchObject({ closed: 0, cancelled: true });
+    expect(deps.applySweep).not.toHaveBeenCalled();
+  });
+
+  it("keeps immediate closing behind the independent opt-in setting", async () => {
+    const deps = dependencies({
+      settings: () => ({ aiEnabled: true, aiProvider: "codex", autoSweepCloseWithoutConfirmation: true }),
+      scanTabs: vi.fn(async () => report(tab("dead", "DEAD"))),
+    });
+    await createAutoSweepRunner(deps).run();
+    expect(deps.confirmSweep).not.toHaveBeenCalled();
+    expect(deps.applySweep).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies only the displayed candidates left selected by the reviewer", async () => {
+    const deps = dependencies({
+      scanTabs: vi.fn(async () => report(tab("first", "DEAD"), tab("second", "DEAD"))),
+      confirmSweep: vi.fn(async () => ["second", "not-in-the-review"]),
+    });
+    await createAutoSweepRunner(deps).run();
+    expect(deps.applySweep).toHaveBeenCalledWith(expect.objectContaining({ closeDeadTabIds: ["second"] }));
+  });
+
+  it("a failed review host cannot fall through to closing DEAD panes", async () => {
+    const deps = dependencies({
+      scanTabs: vi.fn(async () => report(tab("dead", "DEAD"))),
+      confirmSweep: vi.fn(async () => { throw new Error("host disappeared"); }),
+    });
+    await createAutoSweepRunner(deps).run();
+    expect(deps.applySweep).not.toHaveBeenCalled();
+  });
   it("closes only DEAD tabs when AI is disabled", async () => {
     const applySweep = vi.fn(async () => ({ closed: 1, renamed: 0, skipped: [], errors: [] }));
     const deps = dependencies({

@@ -1,4 +1,5 @@
 import type { AgentSessionKind, Pane, PaneTab } from "../types";
+import type { SessionAttentionKind, WindowFragment } from "./ipc";
 
 // 2026-07-30 作者の裁定: 120 → 60。mycmux 再起動直後のワークスペース巡回で
 // 復活した claude/codex が RAM を占有する時間窓を半減する (localStorage
@@ -10,7 +11,27 @@ export const AGENT_DORMANCY_SETTINGS_EVENT = "mycmux:agent-dormancy-settings";
 export const DORMANCY_HISTORY_SCAN_LINES = 400;
 export const DORMANCY_SCREEN_TAIL_LINES = 24;
 
-export type DormantAction = "kill" | "evictCache" | "none";
+export type DormantAction = "kill" | "evictCache" | "saveTranscript" | "none";
+export type DormancyNotificationState = "none" | "completion_only" | "blocking";
+export const AGENT_DORMANT_LABEL = "休止中";
+export const AGENT_DORMANT_DESCRIPTION = "休止中・会話は再開できる (プロセスは終了している)";
+
+export function dormantAgentDescription(mark: { kind: string; dormant: boolean } | null | undefined): string | undefined {
+  return mark?.dormant && (mark.kind === "claude" || mark.kind === "codex") ? AGENT_DORMANT_DESCRIPTION : undefined;
+}
+
+export function classifyDormancyNotifications(input: {
+  attentionKind?: SessionAttentionKind;
+  unseenCompletion: boolean;
+  notificationCount: number;
+  workDoneCount: number;
+  waiting: boolean;
+  hasQuestion: boolean;
+}): DormancyNotificationState {
+  if (input.waiting || input.hasQuestion || input.notificationCount > 0
+    || (input.attentionKind && ["input", "approval", "error", "rate_limited"].includes(input.attentionKind))) return "blocking";
+  return input.unseenCompletion || input.workDoneCount > 0 ? "completion_only" : "none";
+}
 
 export interface DormantResumeIdentity {
   agentKind: "claude" | "codex";
@@ -32,6 +53,9 @@ export interface DormantSessionCandidate {
   screenWorking: boolean;
   lastActivityAt: number;
   thresholdMs: number;
+  notificationState?: DormancyNotificationState;
+  allowUnreadCompletion?: boolean;
+  completionTranscriptSaved?: boolean;
 }
 
 export interface DormancyObservation {
@@ -39,6 +63,102 @@ export interface DormancyObservation {
   processStatusAt: number | null;
   semanticFingerprint: string | null;
   lastActivityAt: number;
+}
+
+export interface DormancyPressureSettings {
+  enabled: boolean;
+  memoryPressureMiB: number;
+  severeMemoryMiB: number;
+  panePressureCount: number;
+  severePaneCount: number;
+  pressureIdleMinutes: number;
+  severeIdleMinutes: number;
+}
+
+export const DEFAULT_DORMANCY_PRESSURE_SETTINGS: Readonly<DormancyPressureSettings> = Object.freeze({
+  enabled: true,
+  memoryPressureMiB: 2048,
+  severeMemoryMiB: 1024,
+  panePressureCount: 40,
+  severePaneCount: 60,
+  pressureIdleMinutes: 15,
+  severeIdleMinutes: 5,
+});
+
+export interface DormancyPressureSample {
+  availableMemoryMiB: number | null;
+  paneCount: number;
+}
+
+/** Include other windows' published seats; the live local copy wins during moves. */
+export function countDormancySeats(
+  workspaces: readonly { id: string; panes: readonly { tabs: readonly Pick<PaneTab, "id">[] }[] }[],
+  fragments: readonly WindowFragment[] = [],
+): number {
+  const seenWorkspaces = new Set(workspaces.map((workspace) => workspace.id));
+  let count = workspaces.reduce((total, workspace) => total + workspace.panes.reduce((n, pane) => n + pane.tabs.length, 0), 0);
+  for (const fragment of fragments) {
+    for (const workspace of fragment.workspaces ?? []) {
+      if (seenWorkspaces.has(workspace.id)) continue;
+      seenWorkspaces.add(workspace.id);
+      count += workspace.panes.reduce((n, pane) => n + (pane.tabs?.length ?? 1), 0);
+    }
+  }
+  return count;
+}
+
+export type DormancyStage = "time_only" | "normal" | "pressure" | "severe";
+export interface DormancyDecision {
+  stage: DormancyStage;
+  thresholdMs: number;
+  action: DormantAction;
+  candidate: boolean;
+  requiresConfirmation: boolean;
+  memoryAvailable: boolean;
+}
+
+export function normalizeDormancyPressureSettings(input: Partial<DormancyPressureSettings>): DormancyPressureSettings {
+  const positive = (key: Exclude<keyof DormancyPressureSettings, "enabled">): number => {
+    const value = input[key];
+    return typeof value === "number" && Number.isFinite(value) && value >= 1
+      ? Math.round(value) : DEFAULT_DORMANCY_PRESSURE_SETTINGS[key];
+  };
+  const memoryPressureMiB = positive("memoryPressureMiB");
+  const panePressureCount = positive("panePressureCount");
+  const pressureIdleMinutes = positive("pressureIdleMinutes");
+  return {
+    enabled: typeof input.enabled === "boolean" ? input.enabled : true,
+    memoryPressureMiB,
+    severeMemoryMiB: Math.min(memoryPressureMiB, positive("severeMemoryMiB")),
+    panePressureCount,
+    severePaneCount: Math.max(panePressureCount, positive("severePaneCount")),
+    pressureIdleMinutes,
+    severeIdleMinutes: Math.min(pressureIdleMinutes, positive("severeIdleMinutes")),
+  };
+}
+
+/** Pure policy: pressure can propose an earlier stop, never authorize it. */
+export function evaluateDormancy(
+  session: DormantSessionCandidate,
+  now: number,
+  sample: DormancyPressureSample,
+  input: DormancyPressureSettings = DEFAULT_DORMANCY_PRESSURE_SETTINGS,
+): DormancyDecision {
+  const settings = normalizeDormancyPressureSettings(input);
+  const memory = sample.availableMemoryMiB;
+  const memoryAvailable = memory !== null && Number.isFinite(memory) && memory >= 0;
+  let stage: DormancyStage = "time_only";
+  if (settings.enabled && memoryAvailable) {
+    stage = memory! <= settings.severeMemoryMiB || sample.paneCount >= settings.severePaneCount ? "severe"
+      : memory! <= settings.memoryPressureMiB || sample.paneCount >= settings.panePressureCount ? "pressure" : "normal";
+  }
+  const thresholdMs = stage === "pressure" || stage === "severe"
+    ? Math.min(session.thresholdMs, (stage === "severe" ? settings.severeIdleMinutes : settings.pressureIdleMinutes) * 60_000)
+    : session.thresholdMs;
+  const action = resolveDormantAction({ ...session, thresholdMs }, now);
+  const candidate = action === "kill" || action === "saveTranscript";
+  return { stage, thresholdMs, action, candidate, memoryAvailable,
+    requiresConfirmation: candidate && (stage === "pressure" || stage === "severe") };
 }
 
 const frontendWriteAt = new Map<string, number>();
@@ -123,6 +243,12 @@ export function hasFreshAgentWork(
     && (candidate.agentStatus === "working" || candidate.agentStatus === "waiting");
 }
 
+export function hasBlockingDormancyAttention(candidate: DormantSessionCandidate): boolean {
+  if (candidate.notificationState === "blocking") return true;
+  if (candidate.notificationState === "completion_only") return candidate.allowUnreadCompletion !== true;
+  return candidate.hasAttention;
+}
+
 export function resolveDormantAction(
   candidate: DormantSessionCandidate,
   now: number,
@@ -131,14 +257,16 @@ export function resolveDormantAction(
     && (candidate.agentKind === "claude" || candidate.agentKind === "codex")
     && Boolean(candidate.resumeSessionId)
     && !candidate.visible
-    && !candidate.hasAttention
+    && !hasBlockingDormancyAttention(candidate)
     && !candidate.rateLimited
     && !candidate.screenWorking
     && !hasFreshAgentWork(candidate)
     && !isEffectivelyWorking(candidate)
     && now - candidate.lastActivityAt >= candidate.thresholdMs;
   if (!eligible) return "none";
-  return candidate.mounted ? "evictCache" : "kill";
+  if (candidate.mounted) return "evictCache";
+  if (candidate.notificationState === "completion_only" && !candidate.completionTranscriptSaved) return "saveTranscript";
+  return "kill";
 }
 
 export function shouldDormantSession(

@@ -12,6 +12,8 @@ import type { Pane, PaneTab } from "../../types";
 import { getDefaultAgent } from "../../lib/agents";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
 import { resolveTabMark, tabMarkSource, type TabMark } from "../../lib/tabMark";
+import { AGENT_DORMANT_LABEL, dormantAgentDescription } from "../../lib/agentDormancy";
+import { openDormantCompletionRecord } from "../../lib/dormantCompletion";
 import { crsmCreateHandoff, duplicateAgentSession } from "../../lib/ipc";
 import {
   buildClonedDuplicateSessionPaneOptions,
@@ -804,6 +806,7 @@ function PaneTabListMenu({
     const tabMeta = metadataBySession[tab.sessionId];
     const rowLive = volatileMetadataBySession[tab.sessionId];
     const rowMark = resolveTabMark(tab, rowLive?.liveAgentKind, rowLive?.ptyAlive === true);
+    const dormantDescription = declared ? undefined : dormantAgentDescription(rowMark);
     const status = deriveDisplayStatus(tabMeta, volatileMetadataBySession[tab.sessionId]);
     const label = getTabDisplayLabel(tab, isTabActive);
     const attention = attentionBySession[tab.sessionId];
@@ -826,10 +829,11 @@ function PaneTabListMenu({
         data-menu-tab-id={tab.id}
         role="menuitem"
         tabIndex={0}
-        title={detail ?? label}
+        title={dormantDescription ?? detail ?? label}
         aria-label={[
           label,
           rowMark?.label ?? null,
+          dormantDescription,
           unreadLabel,
           detail,
         ].filter(Boolean).join(": ")}
@@ -838,14 +842,14 @@ function PaneTabListMenu({
           onRenameTab(tab.id, label); onCloseMenu();
         }}
         onClick={() => {
-          onSelectTab?.(tab.id);
+          if (!openDormantCompletionRecord(tab, Boolean(dormantDescription))) onSelectTab?.(tab.id);
           if (declared) onLaunchDeclaredTab(tab.id);
           onCloseMenu();
         }}
         onKeyDown={(event) => {
           if (event.currentTarget !== event.target || !isTabActivationKey(event.key)) return;
           event.preventDefault();
-          onSelectTab?.(tab.id);
+          if (!openDormantCompletionRecord(tab, Boolean(dormantDescription))) onSelectTab?.(tab.id);
           if (declared) onLaunchDeclaredTab(tab.id);
           onCloseMenu();
         }}
@@ -899,6 +903,7 @@ function PaneTabListMenu({
             } as AgentKindStyle}
           >
             {rowMark.label}
+            {dormantDescription ? `・${AGENT_DORMANT_LABEL}` : ""}
           </span>
         )}
         <span style={{ flex: 1, minWidth: 0 }}>
@@ -1172,9 +1177,10 @@ export default memo(function PaneTabBar({
 
   useEffect(() => {
     if (!activeTab || !activeAttention?.attentionId) return;
+    if (dormantAgentDescription(activeMark) && useSessionAttentionStore.getState().dormantCompletionsBySession[activeTab.sessionId]) return;
     if (!shouldMarkAttentionSeen(isVisible, activeTab.id, activeAttention.attentionId)) return;
     useSessionAttentionStore.getState().markSeen(activeTab.id, activeAttention.attentionId);
-  }, [activeAttention?.attentionId, activeTab?.id, isVisible]);
+  }, [activeAttention?.attentionId, activeTab?.id, activeMark?.dormant, isVisible]);
 
   const displayTabLabel = useCallback(
     (tab: PaneTab, isTabActive: boolean) => getTabDisplayLabel(
@@ -1828,6 +1834,7 @@ export default memo(function PaneTabBar({
           const tabMeta = metadataBySession[tab.sessionId];
           const tabVolatileMeta = volatileMetadataBySession[tab.sessionId];
           const tabMark = resolveTabMark(tab, tabVolatileMeta?.liveAgentKind, tabVolatileMeta?.ptyAlive === true);
+          const dormantDescription = declared ? undefined : dormantAgentDescription(tabMark);
           const tabNotificationCount = tabMeta?.notificationCount ?? 0;
           const tabEffectiveStatus = deriveDisplayStatus(tabMeta, tabVolatileMeta);
           const canonicalAttention = attentionBySession[tab.sessionId];
@@ -1871,6 +1878,8 @@ export default memo(function PaneTabBar({
           );
           const tabTitle = declared
             ? declaredLaunchEnabled ? `${label} — まだ起動していません。クリックで起動` : `${label} — 起動は無効化中`
+            : dormantDescription
+            ? `${label} — ${dormantDescription}`
             : canonicalDetail
             ? `${label} — ${canonicalDetail}`
             : showDeferredRestore
@@ -1960,12 +1969,12 @@ export default memo(function PaneTabBar({
                   event.stopPropagation();
                   return;
                 }
-                if (isTabActive && !declared) return;
+                if (isTabActive && !declared && !dormantDescription) return;
                 if (pendingTabClickRef.current !== null) clearTimeout(pendingTabClickRef.current);
                 // A double-click rename must not select or launch on its first click.
                 pendingTabClickRef.current = setTimeout(() => {
                   pendingTabClickRef.current = null;
-                  onSelectTab?.(tab.id);
+                  if (!openDormantCompletionRecord(tab, Boolean(dormantDescription))) onSelectTab?.(tab.id);
                   if (declared) handleLaunchDeclaredTab(tab.id);
                 }, 250);
               }}
@@ -1977,13 +1986,13 @@ export default memo(function PaneTabBar({
                 }
                 if (event.currentTarget !== event.target || !isTabActivationKey(event.key)) return;
                 event.preventDefault();
-                onSelectTab?.(tab.id);
+                if (!openDormantCompletionRecord(tab, Boolean(dormantDescription))) onSelectTab?.(tab.id);
                 if (declared) handleLaunchDeclaredTab(tab.id);
               }}
               role="tab"
               aria-selected={isTabActive}
               tabIndex={0}
-              title={isChip ? undefined : tabTitle}
+              title={isChip ? dormantDescription : tabTitle}
               aria-label={[
                 tabTitle,
                 tabMark?.label ?? null,

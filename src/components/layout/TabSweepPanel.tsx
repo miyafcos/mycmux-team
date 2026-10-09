@@ -20,6 +20,7 @@ import {
   shortenCwdFromStart,
   splitSweepSelection,
   toggleSweepSelection,
+  SWEEP_RESTORE_LIMIT_TEXT,
   type SweepCategory,
   type SweepLockReason,
   type SweepReport,
@@ -31,12 +32,16 @@ import { useAiSettingsStore } from "../../stores/aiSettingsStore";
 import { aiSettingsStrings } from "../settings/settingsStrings";
 import { formatShortcutLabel } from "../../lib/keybindings";
 import { useKeybindingStore } from "../../stores/keybindingStore";
+import { sweepReviewTargetIds, type AutoSweepReview } from "./tabSweepAuto";
+import { AgentDormancyCandidates } from "./AgentDormancyCandidates";
 
 interface TabSweepPanelProps {
   open: boolean;
   visible: boolean;
   closing?: boolean;
   onClose: () => void;
+  autoReview?: AutoSweepReview | null;
+  onConfirmSweep?: (ids: readonly string[]) => void;
 }
 
 const lockReasonLabels: Record<SweepLockReason, string> = {
@@ -44,6 +49,7 @@ const lockReasonLabels: Record<SweepLockReason, string> = {
   recent_output: "5分以内に出力",
   active: "表示中",
   working: "作業中",
+  attention: "権限・質問・注意または作業中のため保護",
   buffer_unavailable: "画面を確認できない",
   not_at_prompt: "待機プロンプトを確認できない",
   unsupported_tab: "対象外のペイン",
@@ -179,7 +185,7 @@ function tabName(tab: SweepTab): string {
   return getTabDisplayLabel(tab);
 }
 
-export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSweepPanelProps) {
+export function TabSweepPanel({ open, visible, closing = false, onClose, autoReview = null, onConfirmSweep }: TabSweepPanelProps) {
   const verdictInputsRef = useRef(new Map<string, string>());
   const activeJudgeRequestRef = useRef<string | null>(null);
   const focusOnOpenRef = useRef(false);
@@ -238,8 +244,16 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
 
   useEffect(() => {
     if (!open || judging) return;
+    if (autoReview) {
+      setReport(autoReview.report);
+      setVerdicts(autoReview.verdicts);
+      setJudged(true);
+      setSelection(new Set(sweepReviewTargetIds(autoReview.plan)));
+      setStatus(autoReview.fallbackReason ?? "AI判定が完了しました。候補と理由を確認してください");
+      return;
+    }
     void rescan(true);
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, autoReview]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!open || scanning || !focusOnOpenRef.current) return;
@@ -291,7 +305,10 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [closing, open]);
 
-  const rows = useMemo(() => buildSweepRows(report), [report]);
+  const rows = useMemo(() => {
+    const allowed = autoReview ? new Set(sweepReviewTargetIds(autoReview.plan)) : null;
+    return buildSweepRows(report).map((row) => ({ ...row, selectable: row.selectable && (!allowed || allowed.has(row.tab.id)) }));
+  }, [report, autoReview]);
   const verdictById = useMemo(
     () => new Map(verdicts.map((verdict) => [verdict.id, verdict])),
     [verdicts],
@@ -408,6 +425,10 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
   const closeSelected = () => {
     const { deadIds, candidateIds } = splitSweepSelection(selection, rows);
     if (deadIds.length + candidateIds.length === 0) return;
+    if (autoReview) {
+      onConfirmSweep?.([...deadIds, ...candidateIds]);
+      return;
+    }
     void applyAndRefresh(
       // Candidates go through the manual channel: the two-scan safety check in
       // applySweep still runs, but no verdict is required to close them.
@@ -431,14 +452,14 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
     >
         <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--cmux-border)" }}>
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 14, fontWeight: 700 }}>ペイン掃除</div>
+            <div style={{ fontSize: 14, fontWeight: 700 }}>{autoReview ? "ペイン掃除・終了候補の確認" : "ペイン掃除"}</div>
             <div role="status" aria-live="polite" title={status} style={{ marginTop: 2, fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {judging ? `${judgeTargetCount}件を判定中 · ${judgeElapsedSeconds}秒経過` : status}
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, flex: "none" }}>
             <ActionButton
-              disabled={busy}
+              disabled={busy || Boolean(autoReview)}
               primary={rows.length === 0}
               onClick={() => void rescan(true)}
             >
@@ -449,6 +470,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
         </header>
 
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+          {autoReview ? null : <AgentDormancyCandidates />}
           {judgeErrorDetail ? (
             <details style={{ margin: "10px 16px 0", padding: "8px 10px", border: "1px solid var(--cmux-border)", borderRadius: 6, fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
               <summary style={{ cursor: "pointer" }}>エラーの詳細</summary>
@@ -506,6 +528,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
                       disabled={!selectable || busy}
                       aria-label={selectable
                         ? `${tabName(tab)}を閉じる対象にする`
+                        : autoReview && kind !== "LOCKED" ? `${tabName(tab)}は今回の終了候補ではありません`
                         : `${tabName(tab)}は${tab.lockReasons.map((reason) => lockReasonLabels[reason]).join("・")}のため閉じられません`}
                       onChange={(event) => setSelection(
                         (current) => toggleSweepSelection(current, tab.id, event.target.checked),
@@ -517,6 +540,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
                       scannedAt={scannedAt}
                       showActivity={kind !== "DEAD"}
                       detail={(
+                        <>
                         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 5, marginTop: 4 }}>
                           {kind === "DEAD" ? <span style={chipStyle}>プロセス終了済み</span> : null}
                           {kind === "LOCKED"
@@ -525,7 +549,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
                             ))
                             : null}
                           {verdict && verdict.verdict !== "unknown" ? (
-                            <span style={{ ...chipStyle, color: "var(--cmux-accent-text)" }}>{verdictLabels[verdict.verdict]}</span>
+                            <span style={{ ...chipStyle, color: "var(--cmux-accent-text)" }}>{verdictLabels[verdict.verdict]}{autoReview ? ` (${verdict.verdict})` : ""}</span>
                           ) : null}
                           {suggestedLabel ? (
                             <>
@@ -543,6 +567,17 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
                             </>
                           ) : null}
                         </div>
+                        {autoReview || verdict?.reason ? (
+                          <div style={{ marginTop: 4, fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
+                            理由: {verdict?.reason ?? (kind === "DEAD" ? "稼働中のプロセスがありません" : verdict?.verdict === "done_waiting" ? "5分以上出力がなく、入力待ちの画面をAIが完了待機と判定しました" : "AIが終了候補として選んでいません")}
+                          </div>
+                        ) : null}
+                        {autoReview && selectable ? (
+                          <div style={{ marginTop: 4, fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
+                            {kind === "DEAD" ? "ペインを閉じます。記録は残ります" : "プロセスを終了してペインを閉じます。記録は残ります"}
+                          </div>
+                        ) : null}
+                        </>
                       )}
                     />
                   </div>
@@ -560,7 +595,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
                 <ActionButton danger onClick={() => void cancelJudge()}>中止</ActionButton>
               ) : (
                 <ActionButton
-                  disabled={busy || judgeableCount === 0 || !aiEnabled}
+                  disabled={busy || Boolean(autoReview) || judgeableCount === 0 || !aiEnabled}
                   title={aiEnabled ? undefined : aiSettingsStrings.disabledReason}
                   onClick={() => void runJudge()}
                 >
@@ -572,9 +607,14 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
               {formatSweepAiNote("judge", aiProvider, aiModel, aiEnabled)}
             </div>
             <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
-              閉じたペインは {reopenTabShortcut} で復元できます（会話も再開されます）
+              閉じたペインの記録は {reopenTabShortcut} で復元できます。会話は再開できます。
+            </div>
+            <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
+              {SWEEP_RESTORE_LIMIT_TEXT}
             </div>
           </div>
+          <div style={{ display: "flex", gap: 6 }}>
+          {autoReview ? <ActionButton onClick={onClose}>キャンセル</ActionButton> : null}
           <ActionButton
             danger
             primary={selectedCount > 0}
@@ -582,8 +622,9 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
             ariaLabel={`選択した${selectedCount}件のペインを閉じる。${reopenTabShortcut}で復元できます`}
             onClick={closeSelected}
           >
-            {`選択した${selectedCount}件を閉じる`}
+            {`${autoReview ? "確認して" : "選択した"}${selectedCount}件を閉じる`}
           </ActionButton>
+          </div>
         </footer>
     </OverlayShell>
   );

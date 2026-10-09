@@ -11,7 +11,7 @@ import {
   type DetachedDragPayload,
   type WindowDragSample,
 } from "../../stores/detachedDockStore";
-import XTermWrapper, { evictTerminalCache } from "../terminal/XTermWrapper";
+import XTermWrapper from "../terminal/XTermWrapper";
 import LauncherPane from "../workspace/LauncherPane";
 import BrowserPane from "../workspace/BrowserPane";
 import WebPaneController, { isChildWebviewPreview } from "../workspace/WebPaneController";
@@ -19,17 +19,16 @@ import WebPaneStatusBar from "../workspace/WebPaneStatusBar";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
 import { buildLaunchArgs } from "../../lib/terminalLaunchArgs";
 import { buildThemeVars } from "./themeVars";
-import { discardWindowWorkspacesAndClose } from "./SocketListener";
+import { closeWindowWorkspacesAndDestroy } from "./SocketListener";
 import { useThemeStore } from "../../stores/themeStore";
 import { useUiStore } from "../../stores/uiStore";
-import { usePaneMetadataStore } from "../../stores/workspaceStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
-import { killSession, type SaveEditableArtifactResult } from "../../lib/ipc";
+import type { SaveEditableArtifactResult } from "../../lib/ipc";
 import { requiresLauncherDispatch } from "../../lib/launcherDispatch";
 import { focusController } from "../../lib/focusController";
-import { beforePaneClose } from "../../lib/paneCloseLifecycle";
 import { confirmPaneClose } from "../../lib/paneCloseConfirmation";
-import { isRestorableTab, tabHasPty } from "../../lib/tabLifecycle";
+import { isRestorableTab } from "../../lib/tabLifecycle";
+import { tearoutStrings } from "./tearoutStrings";
 import type { DetachedWorkspace } from "../../lib/detachedPane";
 
 /** The child uses App's persistence/show lifecycle, with only one pane on screen. */
@@ -38,6 +37,7 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
   const themeState = useThemeStore();
   const activeSessionId = useUiStore((state) => state.activePaneId);
   const [error, setError] = useState<string | null>(null);
+  const [closing, setClosing] = useState(false);
   const pane = workspace.panes[0];
   const tab = pane.tabs.find((candidate) => candidate.id === pane.activeTabId) ?? pane.tabs[0];
   const title = getTabDisplayLabel(tab);
@@ -260,19 +260,16 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
   // (Alt+F4, the taskbar) still hands the pane to main: an OS close means "put
   // this window away", not "end what is running in it".
   const closePane = async () => {
-    if (!await confirmPaneClose([pane], "pane")) return;
+    if (closing) return;
+    setClosing(true);
     try {
-      beforePaneClose(pane);
-      for (const candidate of pane.tabs) {
-        if (!tabHasPty(candidate)) continue;
-        evictTerminalCache(candidate.sessionId);
-        void killSession(candidate.sessionId).catch((reason) =>
-          console.warn("[mycmux] killSession failed", candidate.sessionId, reason));
-        usePaneMetadataStore.getState().removeMetadata(candidate.sessionId);
-      }
-      await discardWindowWorkspacesAndClose();
+      if (!await confirmPaneClose([pane], "pane")) return;
+      await closeWindowWorkspacesAndDestroy();
     } catch (reason) {
-      setError(String(reason));
+      setError(tearoutStrings.failed);
+      console.warn("[tearout] close failed", reason);
+    } finally {
+      setClosing(false);
     }
   };
 
@@ -294,6 +291,7 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
         </span>
         <button
           type="button"
+          disabled={closing}
           onClick={() => { void closePane(); }}
           aria-label="このペインを閉じる"
           title="このペインを閉じます（元の窓へ戻すには、この帯を掴んでタブのつまみ列へ）"

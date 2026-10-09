@@ -4,6 +4,7 @@ mod agent_transcript;
 mod agent_state;
 mod agent_adapters;
 mod codex_app_server;
+mod dsh_acp;
 mod attention;
 mod ai;
 mod cli_accounts;
@@ -390,6 +391,7 @@ pub fn run() {
         )
         .manage(state)
         .manage(codex_app_server::CodexAppServerState::default())
+        .manage(dsh_acp::DshAcpState::default())
         .manage(tearout::TearoutState::default())
         .manage(open_with::PendingOpenPaths::with_paths(initial_open_paths))
         .manage(socket::SocketState {
@@ -440,6 +442,15 @@ pub fn run() {
             codex_app_server::codex_app_server_command,
             codex_app_server::codex_app_server_status,
             codex_app_server::codex_app_server_close,
+            dsh_acp::dsh_acp_set_enabled,
+            dsh_acp::dsh_acp_start,
+            dsh_acp::dsh_acp_status,
+            dsh_acp::dsh_acp_read,
+            dsh_acp::dsh_acp_prompt,
+            dsh_acp::dsh_acp_cancel,
+            dsh_acp::dsh_acp_permission,
+            dsh_acp::dsh_acp_close_session,
+            dsh_acp::dsh_acp_stop_owned,
             commands::terminal::create_session,
             commands::terminal::write_to_session,
             commands::terminal::get_session_input_revision,
@@ -598,6 +609,9 @@ pub fn run() {
             tearout::tearout_start_move,
             tearout::tearout_synthetic_sample,
             watchdog::report_renderer_heartbeat,
+            watchdog::get_available_memory_mib,
+            commands::agent_dormancy::save_agent_dormancy_record,
+            commands::agent_dormancy::get_agent_dormancy_record,
             commands::grouping_diagnostics::log_grouping_operation,
             tearout::tearout_settle,
             tearout::tearout_preview,

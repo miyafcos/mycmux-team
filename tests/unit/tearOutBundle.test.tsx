@@ -13,7 +13,12 @@ import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import type { Pane, PaneTab, Workspace } from "../../src/types";
 
 const tearOutMocks = vi.hoisted(() => ({
-  tearOutWorkspaceToNewWindow: vi.fn(async () => "window-detached"),
+  performWorkspaceWindowMove: vi.fn(async (_request, execution) => {
+    execution.mark("committed", "window-detached");
+    execution.mark("received", "window-detached");
+    execution.mark("cleaned", "window-detached");
+    return execution.result("moved");
+  }),
 }));
 
 vi.mock("../../src/lib/workspaceTearOut", () => tearOutMocks);
@@ -163,10 +168,11 @@ describe("tab-bundle tear-out", () => {
   it("calls workspace tear-out for a minimap bundle new-window drop", async () => {
     await dragBundleToNewWindow();
 
-    expect(tearOutMocks.tearOutWorkspaceToNewWindow).toHaveBeenCalledTimes(1);
-    expect(tearOutMocks.tearOutWorkspaceToNewWindow).toHaveBeenCalledWith(
-      "workspace-detached",
-      expect.objectContaining({ x: 460, y: 580, restoreSource: expect.any(Function) }),
+    expect(tearOutMocks.performWorkspaceWindowMove).toHaveBeenCalledTimes(1);
+    expect(tearOutMocks.performWorkspaceWindowMove).toHaveBeenCalledWith(
+      expect.objectContaining({ source: expect.objectContaining({ workspaceId: "workspace-detached" }),
+        destination: expect.objectContaining({ kind: "window", x: 460, y: 580 }) }),
+      expect.any(Object), expect.objectContaining({ restoreSource: expect.any(Function) }),
     );
     expect(getWorkspace("workspace-detached").panes[0].tabs.map((item) => item.id)).toEqual(["one", "three"]);
   });
@@ -177,7 +183,7 @@ describe("tab-bundle tear-out", () => {
     expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe("source");
     expect(useUiStore.getState().focusRevision).toBe(0);
     expect(useWorkspaceListStore.getState().workspaces).toHaveLength(3);
-    expect(tearOutMocks.tearOutWorkspaceToNewWindow).toHaveBeenCalledTimes(1);
+    expect(tearOutMocks.performWorkspaceWindowMove).toHaveBeenCalledTimes(1);
   });
 
   it("returns false and performs no store write when no requested tab exists", () => {
@@ -234,11 +240,12 @@ describe("single-tab content-only tear-out", () => {
       window.dispatchEvent(pointer("pointerup", -50, 10, 500, 600));
       await Promise.resolve();
     });
-    expect(tearOutMocks.tearOutWorkspaceToNewWindow).toHaveBeenCalledWith("workspace-detached", expect.objectContaining({
-      x: 460, y: 580,
-      detachedFrom: { workspace_id: "source", pane_id: "source-pane", tab_id: "three", index: 2, column: 0, row: 0, column_size: 2 },
-      restoreSource: expect.any(Function),
-    }));
+    expect(tearOutMocks.performWorkspaceWindowMove).toHaveBeenCalledWith(expect.objectContaining({
+      source: expect.objectContaining({ workspaceId: "workspace-detached" }),
+      destination: expect.objectContaining({ kind: "window", x: 460, y: 580,
+        detachedFrom: { workspace_id: "source", pane_id: "source-pane", tab_id: "three", index: 2, column: 0, row: 0, column_size: 2 },
+      }),
+    }), expect.any(Object), expect.objectContaining({ restoreSource: expect.any(Function) }));
     expect(getWorkspace("workspace-detached").panes[0].tabs.map((tab) => tab.id)).toEqual(["three"]);
     expect(getWorkspace("source").panes[0].tabs.map((tab) => tab.id)).toEqual(["one", "two", "four"]);
   });
@@ -256,7 +263,7 @@ describe("single-tab content-only tear-out", () => {
       window.dispatchEvent(pointer("pointerup", -50, 10, 500, 600));
       await Promise.resolve();
     });
-    expect(tearOutMocks.tearOutWorkspaceToNewWindow).toHaveBeenCalledTimes(1);
+    expect(tearOutMocks.performWorkspaceWindowMove).toHaveBeenCalledTimes(1);
     expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe("source");
     expect(useUiStore.getState().focusRevision).toBe(0);
   });

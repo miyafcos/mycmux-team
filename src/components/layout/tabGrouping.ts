@@ -2,7 +2,9 @@
 import type { PtyMetadataSnapshot, SessionOutputSnapshot } from "../../lib/ipc";
 import { reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
-import { usePetSettingsStore } from "../../stores/petSettingsStore";
+import { petAssignmentSettings } from "../../stores/petSettingsStore";
+import { useWorkspaceListStore } from "../../stores/workspaceListStore";
+import { choosePetAssignment, petRandomFromSeed, planPetAssignments, type PetAssignmentSettings } from "../../lib/petAssignment";
 import type { Pane, PaneTab, Workspace } from "../../types";
 import { aiProviderDef, type AiProviderId } from "../../lib/aiModels";
 import { aiSettingsStrings } from "../settings/settingsStrings";
@@ -280,16 +282,19 @@ function cleanedTail(lines: readonly string[]): string[] {
 
 
 export function choosePetForNewWorkspace(): string | undefined {
-  const petSettings = usePetSettingsStore.getState();
-  const enabledPets = petSettings.pets.filter((pet) => !petSettings.petDisabled.includes(pet.id));
-  const fallbackPet = enabledPets[0]?.id ?? "clawd";
-  if (petSettings.petNewWorkspaceMode === "choose") return undefined;
-  if (petSettings.petNewWorkspaceMode === "fixed") {
-    return petSettings.petFixedId && enabledPets.some((pet) => pet.id === petSettings.petFixedId)
-      ? petSettings.petFixedId
-      : fallbackPet;
-  }
-  return enabledPets[Math.floor(Math.random() * enabledPets.length)]?.id ?? fallbackPet;
+  return choosePetAssignment(petAssignmentSettings(), useWorkspaceListStore.getState().workspaces.map((workspace) => workspace.pet)).petId;
+}
+
+/** Each new group gets its own stable choice; preview never consumes the bag. */
+export function petDefaultsForGrouping(
+  groups: readonly GroupingGroup[],
+  workspaces: readonly Workspace[],
+  settings: PetAssignmentSettings,
+  seed: string,
+): Record<string, { pet?: string }> {
+  const keys = groups.filter((group) => group.adopted && group.disposition === "reorganize" && group.destination.kind === "new_workspace").map((group) => group.groupId);
+  const plan = planPetAssignments(settings, workspaces.map((workspace) => workspace.pet), keys, petRandomFromSeed(seed));
+  return Object.fromEntries(keys.map((key) => [key, { pet: plan.pets[key] }]));
 }
 
 

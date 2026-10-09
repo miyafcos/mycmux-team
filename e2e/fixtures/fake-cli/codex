@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Model Codex credential store selection; no keyring is ever accessed."""
+
+import re
+import sys
+
+from support import fake_jwt, staging_dir, write_json
+
+
+def main() -> None:
+    directory = staging_dir("CODEX_HOME")
+    args = sys.argv[1:]
+    if not args or args[0] != "login":
+        raise RuntimeError("fake Codex only accepts login")
+    store = "file"
+    config = directory / "config.toml"
+    if config.is_file():
+        # Only the root string controlled by this fixture is modeled here.
+        # The product validates arbitrary TOML with toml_edit independently.
+        root = config.read_text().split("[", 1)[0]
+        for line in root.splitlines():
+            match = re.fullmatch(r"\s*cli_auth_credentials_store\s*=\s*(['\"])([^'\"]+)\1\s*(?:#.*)?", line)
+            if match:
+                store = match.group(2)
+    override = None
+    for index, arg in enumerate(args):
+        if arg in ("-c", "--config"):
+            key, value = args[index + 1].split("=", 1)
+            if key == "cli_auth_credentials_store":
+                override = value.strip("\"'")
+                store = override
+    write_json(directory / "invocation.json", {
+        "args": args, "store": store, "file_override": override == "file",
+    })
+    if store != "file":
+        return
+    write_json(directory / "auth.json", {
+        "OPENAI_API_KEY": None,
+        "auth_mode": "chatgpt",
+        "last_refresh": "2026-10-09T00:00:00Z",
+        "tokens": {
+            "access_token": "mycmux-e2e-dummy-codex-access",
+            "account_id": "fake-codex-account",
+            "id_token": fake_jwt({
+                "email": "codex@example.test", "exp": 4102444800,
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "fake-codex-account",
+                    "chatgpt_plan_type": "pro",
+                },
+            }),
+            "refresh_token": "mycmux-e2e-dummy-codex-refresh",
+        },
+    })
+
+
+if __name__ == "__main__":
+    main()

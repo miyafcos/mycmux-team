@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Model Claude identity-first login and the macOS config-scoped Keychain."""
+
+import getpass
+import hashlib
+import json
+import os
+import subprocess
+import sys
+
+from support import await_credentials_permission, staging_dir, write_json
+
+
+def main() -> None:
+    directory = staging_dir("CLAUDE_CONFIG_DIR")
+    write_json(directory / ".claude.json", {"oauthAccount": {
+        "accountUuid": "fake-claude-account",
+        "emailAddress": "claude@example.test",
+        "organizationUuid": "fake-claude-org",
+    }})
+    (directory / ".identity-ready").touch()
+    await_credentials_permission(directory)
+    credentials = {"claudeAiOauth": {
+        "accessToken": "mycmux-e2e-dummy-claude-access",
+        "refreshToken": "mycmux-e2e-dummy-claude-refresh",
+        "expiresAt": 4102444800000,
+        "refreshTokenExpiresAt": 4102444800000,
+        "scopes": ["user:profile", "user:inference"],
+        "subscriptionType": "max",
+        "rateLimitTier": "default_claude_max_5x",
+    }}
+    if sys.platform == "darwin":
+        # Hash the exact env string, without path normalization, like the CLI.
+        suffix = hashlib.sha256(os.environ["CLAUDE_CONFIG_DIR"].encode()).hexdigest()[:8]
+        service = "Claude Code-credentials-" + suffix
+        result = subprocess.run([
+            "/usr/bin/security", "add-generic-password", "-a", getpass.getuser(),
+            "-s", service, "-w", json.dumps(credentials),
+        ], timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        if result.returncode != 0:
+            error = result.stderr.strip()
+            write_json(directory / "invocation.json", {
+                "store": "keychain", "service": service,
+                "error_code": result.returncode, "error": error,
+            })
+            reason = ("login keychain locked: run from a GUI session"
+                      if result.returncode == 36 else "scoped dummy Keychain write failed")
+            print(reason + " (security exit " + str(result.returncode) + "): " + error,
+                  file=sys.stderr)
+            raise SystemExit(result.returncode)
+        write_json(directory / "invocation.json", {"store": "keychain", "service": service})
+    else:
+        write_json(directory / ".credentials.json", credentials)
+        write_json(directory / "invocation.json", {"store": "file"})
+
+
+if __name__ == "__main__":
+    main()

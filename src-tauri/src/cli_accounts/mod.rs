@@ -44,12 +44,16 @@ pub const ERR_CLAUDE_IDENTITY_UNREADABLE: &str = "cli_account.error.claude_ident
 pub const ERR_CLAUDE_IDENTITY_INVALID: &str = "cli_account.error.claude_identity_invalid";
 pub const ERR_CODEX_IDENTITY_UNREADABLE: &str = "cli_account.error.codex_identity_unreadable";
 pub const ERR_CODEX_IDENTITY_INVALID: &str = "cli_account.error.codex_identity_invalid";
+pub const ERR_CODEX_CREDENTIALS_STORE_UNSUPPORTED: &str =
+    "cli_account.error.codex_credentials_store_unsupported";
+pub const ERR_CODEX_CONFIG_UNREADABLE: &str = "cli_account.error.codex_config_unreadable";
 pub const ERR_GROK_IDENTITY_UNREADABLE: &str = "cli_account.error.grok_identity_unreadable";
 pub const ERR_GROK_IDENTITY_INVALID: &str = "cli_account.error.grok_identity_invalid";
 pub const ERR_GROK_AUTH_LOCK_TIMEOUT: &str = "cli_account.error.grok_auth_lock_timeout";
 pub const ERR_LOGIN_STAGING_FAILED: &str = "cli_account.error.login_staging_failed";
 pub const ERR_LOGIN_IDENTITY_MISMATCH: &str = "cli_account.error.login_identity_mismatch";
 pub const ERR_LOGIN_TIMEOUT: &str = "cli_account.error.login_timeout";
+pub const ERR_CODEX_LOGIN_FILE_MISSING: &str = "cli_account.error.codex_login_file_missing";
 pub const ERR_LOGIN_CANCELLED: &str = "cli_account.error.login_cancelled";
 pub const ERR_LOGIN_ALREADY_RUNNING: &str = "cli_account.error.login_already_running";
 pub const ERR_LOGIN_SESSION_NOT_FOUND: &str = "cli_account.error.login_session_not_found";
@@ -371,6 +375,20 @@ pub(crate) fn capture_account_with_grok(
             (snapshot::StoredSnapshot::Grok(stored), live)
         }
     };
+    save_captured_account(base, stored, live, label, lookup, unverified)
+}
+
+/// File-backed and keychain-backed staging share the same registration rules.
+/// The caller can capture with one credential read and pass those exact bytes.
+pub(super) fn save_captured_account(
+    base: &Path,
+    stored: snapshot::StoredSnapshot,
+    live: CliLiveLogin,
+    label: Option<String>,
+    lookup: OwnerLookup,
+    unverified: UnverifiedPolicy,
+) -> Result<CliAccountProfile, String> {
+    let provider = live.provider;
     let identity = live
         .identity_key
         .clone()
@@ -462,6 +480,11 @@ pub(crate) fn switch_account_with_grok(
     profile_id: &str,
     lookup: OwnerLookup,
 ) -> Result<CliSwitchResult, String> {
+    // Refuse before write-back, backup or registry changes: a keyring-backed
+    // CLI would ignore the auth.json we are about to restore.
+    if provider == CliProvider::Codex {
+        codex::ensure_file_credentials_store(codex_paths)?;
+    }
     let mut file = registry::load(base).map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())?;
     let target = file
         .profiles
@@ -985,3 +1008,6 @@ pub async fn resolve_cli_account_orphan(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod fake_cli_tests;

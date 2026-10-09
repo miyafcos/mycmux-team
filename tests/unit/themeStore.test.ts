@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  DEFAULT_TERMINAL_FONT_FAMILY,
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
   TERMINAL_FONT_PRESETS,
@@ -214,12 +215,38 @@ describe("solidSurfaces survives the load -> edit -> save -> load round trip", (
 });
 
 describe("terminal font presets", () => {
-  it("keeps only the approved ten presets", () => {
-    // Ten since 2026-09-10, when the macOS system stack was added. The two ids
-    // asserted absent below are removed presets that must not come back.
-    expect(TERMINAL_FONT_PRESETS).toHaveLength(10);
+  it("keeps only the approved eleven presets", () => {
+    // Eleven with bundled HackGen Console NF. The two ids asserted absent
+    // below are removed presets that must not come back.
+    expect(TERMINAL_FONT_PRESETS).toHaveLength(11);
     expect(TERMINAL_FONT_PRESETS.map((preset) => preset.id)).not.toContain(["mac", "style"].join("-"));
     expect(TERMINAL_FONT_PRESETS.map((preset) => preset.id)).not.toContain(["hg", "gothic", "m"].join("-"));
+  });
+
+  it("offers bundled HackGen second while keeping UDEV as the default", () => {
+    expect(DEFAULT_TERMINAL_FONT_FAMILY).toBe(
+      "'UDEV Gothic NF', 'BIZ UDGothic', ui-monospace, 'MS Gothic', monospace",
+    );
+    expect(TERMINAL_FONT_PRESETS[0]).toMatchObject({
+      id: "jetbrains-ja",
+      value: DEFAULT_TERMINAL_FONT_FAMILY,
+      recommendedLineHeight: 1.35,
+    });
+    expect(TERMINAL_FONT_PRESETS[1]).toMatchObject({
+      id: "hackgen-console",
+      label: "HackGen Console (同梱)",
+      value: "'HackGen Console NF', 'UDEV Gothic NF', 'BIZ UDGothic', ui-monospace, 'MS Gothic', monospace",
+      tags: ["コード", "同梱", "アイコン"],
+      recommendedLineHeight: 1.4,
+    });
+    expect(TERMINAL_FONT_PRESETS[1].value.split(",")[0]).toBe("'HackGen Console NF'");
+  });
+
+  it("preserves saved HackGen settings during hydration", () => {
+    const fontFamily = TERMINAL_FONT_PRESETS[1].value;
+    useThemeStore.getState().hydrateSettings({ fontFamily, lineHeight: 1.4 });
+
+    expect(useThemeStore.getState()).toMatchObject({ fontFamily, lineHeight: 1.4 });
   });
 
   it.each([

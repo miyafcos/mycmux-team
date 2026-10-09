@@ -153,7 +153,11 @@ pub async fn begin_cli_login(
         return Err(cli_accounts::ERR_LOGIN_ALREADY_RUNNING.to_string());
     }
 
-    let staging_dir = dir.display().to_string();
+    let staging_dir = if provider == CliProvider::Claude {
+        staging::claude_staging_config(&dir).0
+    } else {
+        dir.display().to_string()
+    };
     cli_accounts::login_watch::spawn(
         app.clone(),
         base,
@@ -167,11 +171,7 @@ pub async fn begin_cli_login(
         },
     );
 
-    let (command, args, env_key) = match provider {
-        CliProvider::Claude => ("claude", Vec::new(), "CLAUDE_CONFIG_DIR"),
-        CliProvider::Codex => ("codex", vec!["login".to_string()], "CODEX_HOME"),
-        CliProvider::Grok => ("grok", vec!["login".to_string()], "GROK_HOME"),
-    };
+    let (command, args, env_key) = staging::login_command(provider);
     Ok(CliLoginSession {
         login_id,
         provider,

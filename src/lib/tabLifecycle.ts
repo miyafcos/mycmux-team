@@ -1,4 +1,5 @@
 import type { PaneTab } from "../types/workspace";
+import { paneKindCapabilities } from "./paneKindCapabilities";
 
 export type DeclaredPaneTab = PaneTab & { lifecycle: "declared" };
 export type RestorablePaneTab = PaneTab & { lifecycle?: undefined };
@@ -33,7 +34,7 @@ export function isRestorableTab<T extends { lifecycle?: unknown }>(
  * likely belong here too.
  */
 export function tabHasPty(tab: { type?: string | null }): boolean {
-  return tab.type !== "web" && tab.type !== "launcher";
+  return paneKindCapabilities(tab).hasPty;
 }
 
 export function partitionTabsForRestore(tabs: PaneTab[]): {

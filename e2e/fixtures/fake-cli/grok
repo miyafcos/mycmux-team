@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Model Grok auth.json.lock and issuer-keyed auth.json."""
+
+import os
+import sys
+
+from support import await_credentials_permission, fake_jwt, staging_dir, write_json
+
+
+def main() -> None:
+    directory = staging_dir("GROK_HOME")
+    if sys.argv[1:] != ["login"]:
+        raise RuntimeError("fake Grok only accepts login")
+    lock = directory / "auth.json.lock"
+    descriptor = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        write_json(directory / "invocation.json", {"args": sys.argv[1:], "lock_acquired": True})
+        (directory / ".lock-ready").touch()
+        await_credentials_permission(directory)
+        write_json(directory / "auth.json", {
+            "https://auth.x.ai::00000000-0000-4000-8000-000000000001": {
+                "auth_mode": "oauth",
+                "coding_data_retention_opt_out": True,
+                "create_time": "2026-10-09T00:00:00Z",
+                "email": "grok@example.test",
+                "expires_at": 4102444800,
+                "first_name": "Example",
+                "key": fake_jwt({"tier": "supergrok", "exp": 4102444800}),
+                "oidc_client_id": "fake-grok-client",
+                "oidc_issuer": "https://auth.x.ai",
+                "principal_id": "fake-grok-principal",
+                "principal_type": "user",
+                "profile_image_asset_id": None,
+                "refresh_token": "mycmux-e2e-dummy-grok-refresh",
+                "team_id": "fake-grok-team",
+                "user_id": "fake-grok-user",
+            },
+        })
+    finally:
+        os.close(descriptor)
+        lock.unlink()
+
+
+if __name__ == "__main__":
+    main()

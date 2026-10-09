@@ -56,6 +56,26 @@ that an existing tab already holds. If `spawn-tab --resume-session <id>` fails
 with `AGENT_SESSION_ALREADY_RUNNING`, use the owner tab identified by
 `ownerSessionId` in the error JSON.
 
+#### ペインを閉じる
+
+`close-tab --session ID [--force]` / 制御 API `pane.close_tab` は全種類のペインを対象にする。
+指定は従来どおり `sessionId` (`session_id` も可)。`force` は boolean、既定 false。
+既存の `workspaceId` / `paneId` / `tabId` に、種類・能力・終了結果を追加して返す。
+通常の端末は kill の成功を待って `closed:true, effect:"killed"`、Web・資料・ランチャー・online は
+表示だけを閉じて `closed:true, effect:"hidden"`。まだ起動していない宣言ペインも `hidden`。
+未保存の資料は次の結果を返し、表示と編集内容を保持する。`--force` (`force:true`) で明示的に捨てて閉じる。
+
+```json
+{"workspaceId":"w1","paneId":"p1","tabId":"t1","kind":"browser","hasPty":true,"persistent":false,"transferable":true,"closeEffect":"confirm_unsaved","sendable":false,"closed":false,"effect":"needs_confirmation","reason":"unsaved"}
+```
+
+`hasPty` は既存の互換判定を保つため browser/online でも true。これらは端末送信に対応せず、
+保存対象でもない。`persistent` / `transferable` は ephemeral の除外も反映する。
+終了失敗や応答待ち、最後のタブの最後のペイン、存在しない ID は従来のエラーを返す。
+`force` でその保護は解除しない。単体終了の拡張は端末送信を拡張しない。
+`send` / `pane.send_text` は端末入力だけを扱い、非端末は書込み前に拒否する。
+一括の `pane.close_tabs` はこの単体終了の `force` 契約の対象外。
+
 #### Web 操作
 
 基本ループは `open --background → wait → snapshot → find/click/type → wait → snapshot/eval → close`。
@@ -210,6 +230,62 @@ python scripts/mycmux_agent_cli.py spawn --target grok --prompt-file <spec.md>
   切替と週間使用量表示は対応済み。CRSM パレットのフィルタは未対応で、grok ペインはここでは見えない。
 - 認証は SuperGrok / X Premium Plus のブラウザログイン (`grok login`)。未認証だと TUI が
   サインイン画面で止まる
+
+### DeepSeek Harness (dsh) の ACP 接続試験 (v0.88.0 候補・既定 OFF)
+
+設定 → AI の「DeepSeek Harness の接続試験を使う」で有効にする、設定画面だけの試験です。
+`dshAcpExperimentEnabled=false` が既定で、OFF の間は切替以外の試験面を出さず、状態の polling も起動もしません。
+保存した ON を読み戻しても自動で起動せず、「新しい会話に接続」か「保存した会話を再開」を押して接続します。
+通常のペイン種類、ランチャー、`pane.spawn` / `pane.send_text`、復元とダッシュボードには dsh を登録しません。
+これは設定で ACP を確かめる明示的な試験で、通常の可視ペインへの委譲を置き換えません。
+
+利用者が用意した実行可能な絶対パスを指定します。mycmux は取得・`npx`・`latest`・シェルへの代替起動を行いません。
+Windows の `.cmd` / `.bat` / `.ps1` は対象外です。`--version` の結果が **`0.2.0-rc.2` と完全一致**した場合だけ
+`dsh acp` (profile=acp) を起動します。DSH_HOME は省略可能な設定フォルダへの参照で、中身を mycmux が読み書きしません。
+dsh 本人の profile・モデル・認証の準備は接続前に済ませます。
+ACP の `agentInfo.version` は内部実装の版として別に表示し、実行ファイルの版確認の代わりに使いません。
+protocolVersion=1 と session/close の capability が必須で、不一致・欠落は未対応として停止します。
+
+mycmux が所有する stdio の子は一つ、root 会話は一つです。起動ごとに runId と generation を採番し、
+会話 ID (opaque な dsh の ID)、cwd と組にした `DshRunRef` を返します。送信・中断・permission・close・read は
+この参照を照合し、古い実行へは書きません。request ID は世代を越えて再利用しません。
+再開は list と resume の両 capability がある場合だけ、session/list の root ID/cwd を確かめて行います。
+再開不可を新しい会話へ黙って置き換えません。保存するのは会話参照だけで、過去の本文は読み戻しません。
+
+| 操作 | 専用 IPC | 返す事実と制限 |
+| --- | --- | --- |
+| 入切・状態 | `dsh_acp_set_enabled` / `dsh_acp_status` | OFF は session の操作と起動を拒否。状態照会と owned stop は後片付けのため許可 |
+| 新規・再開 | `dsh_acp_start` | 明示した path/cwd/DSH_HOME と任意の保存参照。所有済み・起動処理中の二重起動は拒否 |
+| 送信 | `dsh_acp_prompt` | text 一件、operationId と expectedRun が必須。同時に一件だけ。同じ ID/本文の再呼出は同じ receipt |
+| 読取 | `dsh_acp_read` | 捕捉した ACP update のみ。source、cursor、欠落を返す。端末画面ではない |
+| 権限の返答 | `dsh_acp_permission` | 自分の会話・pending prompt に結び付いた一回の allow/reject のみ。永続許可はしない |
+| ターン中断 | `dsh_acp_cancel` | pending がなければ no-op。通知の送信と、その prompt の cancelled settlement を分ける |
+| 会話 close | `dsh_acp_close_session` | close の返答を待つ。保存会話は消さず、process の stop は別 |
+| process stop | `dsh_acp_stop_owned` | healthy な会話は close を試し、owned child を止める。終了を確認できなければ process=unknown |
+
+prompt の `submittedAtMs` はローカルから書いた時刻です。ACP には独立した受理 receipt がないため
+`acceptedAtMs=null` のままです。`observedAtMs` は更新の観測、`settledAtMs` と stopReason は対応する prompt の返答で付けます。
+end_turn や静止は、仕事全体の完成・検収を表しません。close の返答だけでも pending prompt の完了にしません。
+返答喪失、timeout、EOF、不正 JSON、stdout のログ混入、256 KiB を越す行は outcome=unknown にし、自動で再送しません。
+unknown の実行は送信を拒否し、owned stop の終了を確認したあと明示的に接続し直します。終了が未確認の間は所有を保持し、別の子を起動しません。
+通常 RPC は10秒、prompt は120秒、中断は10秒以内に対応する settlement が必要です。
+
+`DshRead.historyAvailable=false` は新規・再開とも固定です。受けた更新だけを最大128件・本文合計64 KiBまで保持し、
+切捨てと cursor の欠落を明示します。tool の入力・設定の値・remote error・stderr を画面やログに渡さず、
+表示する本文では既知の資格情報の形を伏せます。API キー・OAuth token の入力欄と保存先は作りません。
+起動時に mycmux のペイン識別・hook capability、Claude/Codex の実行環境、資格情報を含む名前の環境変数を除きます。
+HOME は dsh 本人が設定を使うため維持します。dsh の子を通常の Codex ペインとして登録せず、既存の PID ancestry/hook の判定も変更しません。
+
+`agent.capabilities` の版と8操作 (start/resume/fork/send/steer/interrupt/readEvents/usage) は維持し、
+`dsh` / `acpStdioExperiment` の申告を加えます。start/send/readEvents/interrupt の enforced はローカル fixture で確かめた範囲だけです。
+resume は未接続なら unverified、capability 欠落なら unsupported、広告と list 照合ができた場合だけ fixture の範囲で enforced。
+fork・steer・履歴取得・native の一般質問は unsupported、使用量は unverified です。
+`testedExecutableVersion=null` のままで、実配布版の ACP と Windows の対応は認定していません。
+母艦の rc.2 記録は CLI の版と headless の MISSING_CREDENTIAL を確認したもので、ACP の正常ターンの証拠には使いません。
+
+戻すときはスイッチを OFF にします。設定画面を閉じたときも owned process を止めます。
+会話 ID/cwd の保存参照と dsh 本人の会話・認証ファイルは保持します。通常の Claude/Codex/Grok の経路は従来どおりです。
+設計の下書きは [ADR 0016](adr/0016-dsh-acp-experiment.md)。
 
 ### 新エージェントを登録するときのチェックリスト
 

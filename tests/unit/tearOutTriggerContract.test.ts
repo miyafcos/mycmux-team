@@ -31,7 +31,7 @@ describe("tear-out trigger contract", () => {
     expect(source).toContain("isOutsideWindowViewport(");
     expect(source).toContain("target = canDropTarget(dragItem, candidate) ? candidate : null;");
     expect(source).toContain("trace?.arm(pointer);");
-    expect(source).toContain("trace?.commitPending(workspaceId, focusSessionId);");
+    expect(source).toContain("trace?.commitPending(item.workspaceId, focusSessionId);");
     expect(source).toContain("trace?.windowCreateRequested();");
     expect(source).toContain("trace?.sourceDetached();");
     expect(source).toContain("trace?.committed();");

@@ -1,26 +1,51 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { SweepIcon } from "../icons/ChromeIcons";
 import { TAB_SWEEP_OPEN_EVENT } from "./tabSweep";
 import { TabSweepPanel } from "./TabSweepPanel";
-import { runAutoSweep } from "./tabSweepAuto";
+import { runAutoSweep, type AutoSweepReview, type ConfirmAutoSweep } from "./tabSweepAuto";
 
 /**
- * The primary path sweeps in the background. The panel remains available from
- * TAB_SWEEP_OPEN_EVENT as the detail view and recovery path.
+ * Judgment runs in the background; the existing panel owns human confirmation.
+ * TAB_SWEEP_OPEN_EVENT also opens the manual detail and recovery path.
  */
 export function TabSweepButton() {
   const [open, setOpen] = useState(false);
   const [running, setRunning] = useState(false);
+  const [review, setReview] = useState<AutoSweepReview | null>(null);
+  const resolveReviewRef = useRef<((ids: readonly string[] | null) => void) | null>(null);
+  const reviewHostActiveRef = useRef(true);
   const { mounted, closing } = useDeferredUnmount(open, OVERLAY_EXIT_MS);
 
   const openPanel = useCallback(() => setOpen(true), []);
-  const closePanel = useCallback(() => setOpen(false), []);
+  const finishReview = useCallback((ids: readonly string[] | null) => {
+    resolveReviewRef.current?.(ids);
+    resolveReviewRef.current = null;
+    setReview(null);
+    setOpen(false);
+  }, []);
+  const closePanel = useCallback(() => finishReview(null), [finishReview]);
+  const confirmSweep: ConfirmAutoSweep = useCallback((nextReview) => {
+    if (!reviewHostActiveRef.current) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      resolveReviewRef.current = resolve;
+      setReview(nextReview);
+      setOpen(true);
+    });
+  }, []);
+  useEffect(() => {
+    reviewHostActiveRef.current = true;
+    return () => {
+      reviewHostActiveRef.current = false;
+      resolveReviewRef.current?.(null);
+      resolveReviewRef.current = null;
+    };
+  }, []);
   const startAutoSweep = useCallback(() => {
     if (running) return;
     setRunning(true);
-    void runAutoSweep().finally(() => setRunning(false));
-  }, [running]);
+    void runAutoSweep(confirmSweep).catch(() => undefined).finally(() => setRunning(false));
+  }, [confirmSweep, running]);
 
   useEffect(() => {
     const handleOpen = () => openPanel();
@@ -48,6 +73,8 @@ export function TabSweepButton() {
         visible={mounted}
         closing={closing}
         onClose={closePanel}
+        autoReview={review}
+        onConfirmSweep={(ids) => finishReview(ids)}
       />
     </div>
   );

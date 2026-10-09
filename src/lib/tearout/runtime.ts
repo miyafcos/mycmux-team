@@ -33,6 +33,8 @@ import type { Workspace } from "../../types";
 import { capturePaneHandoffSource } from "../paneHandoffRuntime";
 import { onlineStrings } from "../../components/online/onlineStrings";
 import { installTearoutHandoff, publishTearoutHandoffDrag, requestTearoutHandoff, tearoutHandoffSource } from "./handoff";
+import { createPaneMoveRequest, executePaneMove, type PaneMoveRequest, type NativeMoveDestination,
+  type PaneMoveExecution, type PaneMoveOptions, type PaneMoveResult } from "../paneMoveOperation";
 
 declare global { interface Window { __MYCMUX_TEAROUT_WINDOW__?: boolean } }
 type RestoredWindow = Window & { __MYCMUX_RESTORED_WINDOW__?: boolean };
@@ -667,9 +669,23 @@ export function tearoutWorkspace(workspaceId: string, gap: Rect, offset: { x: nu
 }
 
 async function tearoutGroup(item: TransferItem, gap: Rect, offset: { x: number; y: number }, record?: TearoutRecord): Promise<void> {
+  const request = createPaneMoveRequest(item, { kind: "native-window", gap, offset }, undefined, record?.id);
+  const result = await executePaneMove(request, { record });
+  if (result.error !== undefined) throw result.error;
+  if (result.status === "refused") throw new Error(`tearout_${result.reason === "not_transferable" ? "source_unsupported" : result.reason}`);
+}
+
+/** Native transport; ownership checks and result shape belong to the executor. */
+export async function performNativePaneMove(
+  request: PaneMoveRequest<NativeMoveDestination>, execution: PaneMoveExecution, options: PaneMoveOptions,
+): Promise<PaneMoveResult> {
+  const item = request.source;
+  if (item.kind === "tab-bundle") return execution.result("refused", "invalid_destination");
+  const { gap, offset } = request.destination;
+  let record = options.record;
   if (!adapter) throw new Error("tearout_runtime_not_ready");
   if (tearoutOperationBusy()) {
-    record ??= new TearoutRecord(crypto.randomUUID(), item.kind === "tab" ? item.tabId : item.workspaceId, windowLabel(), Date.now());
+    record ??= new TearoutRecord(request.operationId, item.kind === "tab" ? item.tabId : item.workspaceId, windowLabel(), Date.now());
     record.error("move_busy"); record.failure("tearout_move_busy", tearoutOperationPhase());
     recoveryBusy(); await record.finish("rejected_busy", null, null);
     throw new Error("tearout_move_busy");
@@ -703,7 +719,7 @@ async function tearoutGroup(item: TransferItem, gap: Rect, offset: { x: number; 
   const config = item.kind === "tab" ? origin && detachedWorkspaceConfig(serialized, origin)
     : { ...serialized, detached: false, detached_from: null };
   if (!config) throw new Error("tearout_config_invalid");
-  record ??= new TearoutRecord(crypto.randomUUID(), item.kind === "tab" ? item.tabId : item.kind === "pane" ? pane.id : source.id,
+  record ??= new TearoutRecord(request.operationId, item.kind === "tab" ? item.tabId : item.kind === "pane" ? pane.id : source.id,
     windowLabel(), Date.now(), item.kind === "tab" ? "pane" : item.kind === "pane" ? "tab" : "workspace", movedTabs.length);
   record.transport(item.kind === "tab" ? "pane" : item.kind === "pane" ? "tab" : "workspace", movedTabs.length);
   record.outside(Date.now());
@@ -789,6 +805,7 @@ async function tearoutGroup(item: TransferItem, gap: Rect, offset: { x: number; 
           await adapter!.publish();
         } finally { attachment.dispose(); }
       }
+      execution.mark("rolled_back");
     })();
     void restore.then(() => {
       if (progress) useToastStore.getState().dismissToast(progress);
@@ -849,6 +866,7 @@ async function tearoutGroup(item: TransferItem, gap: Rect, offset: { x: number; 
         else if (payload.approval) {
           failure = "dock_failed";
           await requestDock(label!, payload.approval);
+          execution.mark("cleaned", payload.approval.receiver);
           result = "docked"; destination = payload.approval.target;
         }
         else {
@@ -887,6 +905,7 @@ async function tearoutGroup(item: TransferItem, gap: Rect, offset: { x: number; 
     if (!currentTabs || !movedTabs.every(tab => currentTabs.some(current => current.id === tab.id && current.sessionId === tab.sessionId && current.lifecycle === tab.lifecycle))
       || item.kind !== "tab" && currentTabs.length !== movedTabs.length) throw new Error("tearout_source_changed");
     await invoke("tearout_phase", { id, phase: "committed" });
+    execution.assertSource();
     flushSync(() => {
       removed = true;
       const list = useWorkspaceListStore.getState();
@@ -909,6 +928,7 @@ async function tearoutGroup(item: TransferItem, gap: Rect, offset: { x: number; 
       }
       useTearoutStore.setState({ gap, gapLabel: item.label });
     });
+    execution.mark("committed", label);
     for (const tab of movedTabs) {
       if (!isMacTearoutPlatform()) evictTerminalCache(tab.sessionId);
       focusController.clearSession(tab.sessionId);
@@ -917,7 +937,9 @@ async function tearoutGroup(item: TransferItem, gap: Rect, offset: { x: number; 
     delivery = send(label, [config], undefined, undefined, deliveryToken, selectedSession, liveSessions).then(async (token) => {
       if (!restore) {
         await invoke("tearout_phase", { id, phase: "received" });
+        execution.mark("received", label);
         await invoke("tearout_phase", { id, phase: "cleaned" });
+        execution.mark("cleaned", label);
       }
       return token;
     });
@@ -958,4 +980,7 @@ async function tearoutGroup(item: TransferItem, gap: Rect, offset: { x: number; 
       void invoke("tearout_warm").catch((error) => console.warn("[tearout] refill failed", error));
     }
   }
+  const outcome = result as TearoutResult;
+  return execution.result(outcome === "kept_window" || outcome === "docked" ? "moved"
+    : outcome === "esc_cancelled" || outcome === "handed_off" ? "returned" : "failed", failureReason ?? (outcome === "kept_window" || outcome === "docked" ? undefined : outcome));
 }

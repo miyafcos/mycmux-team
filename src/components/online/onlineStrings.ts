@@ -160,8 +160,8 @@ export const onlineStrings = {
   panelPublishButtonUpdate: "保存内容を更新",
   panelSessionNoId: "作業ID確定待ち",
   // --- local sessions: status & meta (v0.13.3) ---
-  badgeDormant: "未起動",
-  badgeDormantHint: "ペインは未起動ですが、保存済みの会話履歴から引き継ぎ記録を作成できます",
+  badgeDormant: "休止中",
+  badgeDormantHint: "休止中・会話は再開できる (プロセスは終了している)。保存済みの会話から引き継ぎ記録を作成できます",
   statusWorking: "実行中",
   statusWaiting: "入力待ち",
   statusIdle: "待機中",
@@ -175,5 +175,5 @@ export const onlineStrings = {
   panelLocalSessionsWorkingCountTitle: (count: number): string => `実行中 ${count}件`,
   panelLocalSessionsWaitingCountTitle: (count: number): string => `入力待ち ${count}件`,
   panelLocalSessionsCardOpenHint: "クリックしてこのペインへ移動します",
-  panelLocalSessionsCardOpenUnavailable: "ペインが未起動のため開けません",
+  panelLocalSessionsCardOpenUnavailable: "休止中・会話は再開できる (プロセスは終了している)",
 } as const;

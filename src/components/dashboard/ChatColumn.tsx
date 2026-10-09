@@ -1,4 +1,5 @@
-import type { PreviewArtifactInfo } from "../../lib/ipc";
+import { getAgentDormancyRecord, type PreviewArtifactInfo } from "../../lib/ipc";
+import { dormantAgentDescription, resolveDormantResumeIdentity } from "../../lib/agentDormancy";
 import type { LiveSessionBrief, SemanticEventEnvelope } from "../../lib/livebrief";
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { WebPaneTranscriptEntry } from "../../stores/webPaneTranscriptStore";
@@ -14,6 +15,7 @@ import { QuestionCard } from "./QuestionCard";
 import { stateLabels } from "./stateLabels";
 
 const EMPTY_OPTIMISTIC_MESSAGES: readonly DashboardOptimisticMessage[] = [];
+const EMPTY_EVENTS: readonly SemanticEventEnvelope[] = [];
 
 function useReducedMotion(): boolean {
   const getPreference = () => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
@@ -80,12 +82,30 @@ export function ChatColumn({
   detailLoaded?: boolean;
 }) {
   const sessionId = card.tab.sessionId;
+  const dormantDescription = card.neverStarted || card.telemetryHealth === "live" ? undefined : dormantAgentDescription(card.mark);
+  const savedRecord = useSessionAttentionStore((state) => state.dormantCompletionsBySession[sessionId]?.receipt);
+  const resumeIdentity = resolveDormantResumeIdentity(card.tab);
+  const recordKey = dormantDescription && savedRecord && resumeIdentity?.agentKind === savedRecord.agentKind
+    && resumeIdentity.resumeSessionId === savedRecord.agentSessionId ? `${sessionId}:${savedRecord.agentSessionId}:${savedRecord.savedAt}` : null;
+  const [record, setRecord] = useState<{ key: string; events: readonly SemanticEventEnvelope[]; error?: string } | null>(null);
+  useEffect(() => {
+    if (!recordKey || !savedRecord) return;
+    let cancelled = false;
+    void getAgentDormancyRecord(savedRecord).then((result) => {
+      if (!cancelled) setRecord({ key: recordKey, events: result.events });
+    }).catch((error) => {
+      if (!cancelled) setRecord({ key: recordKey, events: EMPTY_EVENTS, error: `保存した会話を開けませんでした: ${String(error)}` });
+    });
+    return () => { cancelled = true; };
+  }, [recordKey, savedRecord, sessionId]);
+  const recordLoaded = recordKey !== null && record?.key === recordKey;
+  const transcriptEvents = recordKey ? recordLoaded ? record.events : EMPTY_EVENTS : events;
   const optimisticMessages = useComposerStore((state) => state.dashboardOptimisticMessagesBySession[sessionId] ?? EMPTY_OPTIMISTIC_MESSAGES);
   const collapseOptimisticMessages = useComposerStore((state) => state.collapseDashboardOptimisticMessages);
   const requestOptimisticRetry = useComposerStore((state) => state.requestDashboardOptimisticRetry);
   const reducedMotion = useReducedMotion();
   const displayState = resolveDisplayState(card);
-  const eventOutputAt = events.reduce((latest, event) => (
+  const eventOutputAt = transcriptEvents.reduce((latest, event) => (
     event.kind.type === "agentMessage" || event.kind.type === "toolEnd" || event.kind.type === "error"
       ? Math.max(latest, event.occurredAt)
       : latest
@@ -104,11 +124,11 @@ export function ChatColumn({
   );
 
   useEffect(() => {
-    const transcriptMessages = events.flatMap((event) => (
+    const transcriptMessages = transcriptEvents.flatMap((event) => (
       event.kind.type === "userMessage" ? [{ text: event.kind.text, occurredAt: event.occurredAt }] : []
     ));
     if (transcriptMessages.length) collapseOptimisticMessages(sessionId, transcriptMessages);
-  }, [collapseOptimisticMessages, events, sessionId]);
+  }, [collapseOptimisticMessages, transcriptEvents, sessionId]);
 
   return <article
     data-dashboard-chat-column={card.tab.id}
@@ -153,7 +173,7 @@ export function ChatColumn({
           event.stopPropagation();
           useSessionAttentionStore.getState().clearDoneMark(card.tab.id);
         }}>{dashboardStrings.unmarkDoneButton}</button>}
-      <button type="button" className="cmux-dashboard-chat-header-action" title={dashboardStrings.jumpButtonTitle} onClick={(event) => { event.stopPropagation(); onJump(); }}>{dashboardStrings.jumpButtonTitle}</button>
+      <button type="button" className="cmux-dashboard-chat-header-action" title={dormantDescription ?? dashboardStrings.jumpButtonTitle} onClick={(event) => { event.stopPropagation(); onJump(); }}>{dormantDescription ? "会話を再開" : dashboardStrings.jumpButtonTitle}</button>
       <button
         type="button"
         data-dashboard-chat-column-pin={card.tab.id}
@@ -166,23 +186,26 @@ export function ChatColumn({
       <button type="button" data-dashboard-chat-column-close={card.tab.id} className="cmux-dashboard-chat-column-close" aria-label={`${card.label} を閉じる`} onClick={(event) => { event.stopPropagation(); onClose(); }}>×</button>
     </header>
     <div className="cmux-dashboard-chat-column-body">
+      {dormantDescription ? <p>{dormantDescription}</p> : null}
+      {recordKey && !recordLoaded ? <p role="status">保存した会話を読み込んでいます</p> : null}
+      {recordLoaded && record.error ? <p role="alert">{record.error}</p> : null}
       {webTranscript
         ? <WebTranscriptStatus entry={webTranscript} onRefresh={onRefreshWebTranscript} />
-        : card.telemetryHealth !== "live" && card.telemetryHealth !== "ended"
+        : !recordKey && card.telemetryHealth !== "live" && card.telemetryHealth !== "ended"
           ? <DashboardTelemetryFallback card={card} now={now} />
           : null}
       <ChatTranscript
-        events={events}
+        events={transcriptEvents}
         sessionId={card.tab.sessionId}
         tabId={card.tab.id}
         displayState={displayState}
         agentKind={card.agentKind ?? "none"}
         lastOutputAt={lastOutputAt}
-        telemetryHealth={card.telemetryHealth}
+        telemetryHealth={recordKey ? "ended" : card.telemetryHealth}
         targetEventId={active ? targetEventId : null}
         targetEventRequest={active ? targetEventRequest : 0}
         syntheticSource={active ? syntheticSource : null}
-        detailLoaded={detailLoaded}
+        detailLoaded={recordKey ? recordLoaded : detailLoaded}
         linkContext={{
           workspaceId: card.workspaceId,
           paneId: card.paneId,
@@ -204,7 +227,7 @@ export function ChatColumn({
           {message.state === "failed" ? <div className="cmux-dashboard-optimistic-retry"><span>{message.error ?? dashboardStrings.composerMessageFailed}</span><button type="button" onClick={() => requestOptimisticRetry(sessionId, message.id)}>{dashboardStrings.composerRetry}</button></div> : null}
         </div>)}
       </div> : null}
-      {!webTranscript && card.telemetryHealth !== "ended" ? <QuestionCard
+      {!webTranscript && !recordKey && card.telemetryHealth !== "ended" ? <QuestionCard
         brief={card.brief}
         events={events}
         targetLabel={`${card.workspace.name} › ${card.label}`}

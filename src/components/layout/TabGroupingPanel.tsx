@@ -11,6 +11,7 @@ import { useGroupingRuntimeStore } from "../../stores/groupingRuntimeStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
+import { petAssignmentSettings } from "../../stores/petSettingsStore";
 import { layoutStructureRevision } from "../../lib/layoutMutation";
 import {
   cancelForegroundGroupingAnalysis,
@@ -23,7 +24,7 @@ import { attentionCategory, useSessionAttentionStore } from "../../stores/sessio
 import type { Pane, PaneTab, Workspace } from "../../types";
 import { formatJudgeError, formatLastOutputAgeCompact } from "./tabSweep";
 import {
-  choosePetForNewWorkspace,
+  petDefaultsForGrouping,
   clonePlanForEdit,
   findTabLocation,
   planCardStats,
@@ -1757,10 +1758,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     allocationSeed: requestId(),
     createdAt: Date.now(),
   }));
-  const [newWorkspaceDefaults, setNewWorkspaceDefaults] = useState<{ pet: Workspace["pet"] } | null>(() => {
-    const pet = choosePetForNewWorkspace();
-    return pet === undefined ? null : { pet };
-  });
+  const [petDefaultsSettings, setPetDefaultsSettings] = useState(petAssignmentSettings);
   const aiProvider = useAiSettingsStore((state) => state.aiProvider);
   const aiEnabled = useAiSettingsStore((state) => state.aiEnabled);
   const jevEnabled = useJevSettingsStore((state) => state.enabled);
@@ -1781,6 +1779,9 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
   const editSession = selectedPlanId ? editedByPlan[selectedPlanId] ?? null : null;
   const edited = editSession?.plan
     ?? (selectedPlanId ? plans.find((plan) => plan.planId === selectedPlanId) ?? null : null);
+  const newWorkspaceDefaults = useMemo(() => edited
+    ? petDefaultsForGrouping(edited.groups, workspaces, petDefaultsSettings, analysisIdentity.allocationSeed)
+    : null, [edited, workspaces, petDefaultsSettings, analysisIdentity.allocationSeed]);
   const selectedGroup = edited?.groups.find((group) => group.groupId === selectedGroupId) ?? edited?.groups[0] ?? null;
   // Only block the plan controls while there is nothing to act on. Once a plan
   // is on screen -- including the local instant plan built before the judge is
@@ -1912,8 +1913,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     generatedAt: number,
   ) => {
     setAnalysisIdentity({ allocationSeed: requestId(), createdAt: Date.now() });
-    const pet = choosePetForNewWorkspace();
-    setNewWorkspaceDefaults(pet === undefined ? null : { pet });
+    setPetDefaultsSettings(petAssignmentSettings());
     resetTransientUi();
     setMode("compare");
     setScan(result.scan);

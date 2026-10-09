@@ -34,7 +34,8 @@ export function classifyPetTier(input: PetTierInput): PetTier {
     && input.now - input.attentionStateSince <= PET_OUTPUT_ACTIVE_WINDOW_MS
     && input.activity !== "idle") return "working";
   if (input.stallReason === "no_output" || input.stallReason === "silent" || input.stallReason === "pty_dead") return "resting";
-  if (input.outputActive || (input.backendLastOutputAt !== undefined
+  // Screen activity freezes on unmount; only backend timestamps survive it.
+  if ((input.observed && input.outputActive) || (input.backendLastOutputAt !== undefined
     && input.now - input.backendLastOutputAt <= PET_OUTPUT_ACTIVE_WINDOW_MS)) return "working";
   if (input.activity === "running_silent") return "working";
   return "resting";

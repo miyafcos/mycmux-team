@@ -231,7 +231,7 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
           agentKind: normalizeAgentKind(resolveTabMark(tab, volatileMetadata?.liveAgentKind, volatileMetadata?.ptyAlive === true)?.kind),
           mark: resolveTabMark(tab, volatileMetadata?.liveAgentKind, volatileMetadata?.ptyAlive === true),
           unobserved,
-          neverStarted: !isWebTab && !brief && unobserved && !lastActivityAt,
+          neverStarted: !isWebTab && !brief && unobserved && !lastActivityAt && !attention?.attentionId,
           brief,
           operationalState: brief?.operationalState,
           telemetryHealth: brief?.telemetryHealth,

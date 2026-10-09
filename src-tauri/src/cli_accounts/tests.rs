@@ -1140,3 +1140,75 @@ fn codex_and_grok_capture_switch_never_consult_claude_owner_lookup() {
         assert!(!cp.credentials.exists() && !cp.claude_json.exists());
     }
 }
+
+#[test]
+fn codex_switch_refuses_non_file_config_before_any_mutation() {
+    for (text, code) in [
+        ("cli_auth_credentials_store = 'keyring'", ERR_CODEX_CREDENTIALS_STORE_UNSUPPORTED),
+        ("cli_auth_credentials_store = 'auto'", ERR_CODEX_CREDENTIALS_STORE_UNSUPPORTED),
+        ("broken = [", ERR_CODEX_CONFIG_UNREADABLE),
+    ] {
+        let dir = tempdir().unwrap();
+        let cp = staging::test_support::FileCredentials;
+        let cp = staging::StagingCredentials::claude_paths(&cp, &dir.path().join("claude"));
+        let xp = CodexPaths { auth: dir.path().join("codex/auth.json") };
+        fs::create_dir_all(xp.auth.parent().unwrap()).unwrap();
+        fs::write(&xp.auth, CODEX).unwrap();
+        let target = capture_account(dir.path(), &cp, &xp, CliProvider::Codex,
+            None, &fixture_owner, UnverifiedPolicy::Refuse).unwrap();
+        let snapshot_path = snapshot::snapshot_dir(dir.path()).join(format!("{}.json", target.id));
+        let before_snapshot = fs::read(&snapshot_path).unwrap();
+        let before_registry = fs::read(registry::path(dir.path())).unwrap();
+        // Live credentials diverge from the saved account; an accidental
+        // write-back would create an orphan or overwrite its snapshot.
+        fs::write(&xp.auth, codex_fixture_for_identity("codex-account-b")).unwrap();
+        let before_live = fs::read(&xp.auth).unwrap();
+        let config = xp.auth.parent().unwrap().join("config.toml");
+        fs::write(&config, text).unwrap();
+        let result = switch_account(dir.path(), &cp, &xp, CliProvider::Codex,
+            &target.id, &fixture_owner);
+        assert_eq!(result.err().as_deref(), Some(code));
+        assert_eq!(fs::read(&xp.auth).unwrap(), before_live);
+        assert_eq!(fs::read(&snapshot_path).unwrap(), before_snapshot);
+        assert_eq!(fs::read(registry::path(dir.path())).unwrap(), before_registry);
+        assert_eq!(fs::read_to_string(config).unwrap(), text);
+        assert_eq!(fs::read_dir(snapshot::snapshot_dir(dir.path())).unwrap().count(), 1);
+        assert!(!snapshot::backup_root(dir.path()).exists());
+    }
+}
+
+#[test]
+fn codex_switch_with_file_store_restores_the_saved_account() {
+    for config in [None, Some("cli_auth_credentials_store = 'file'")] {
+        let dir = tempdir().unwrap();
+        let cp = staging::test_support::FileCredentials;
+        let cp = staging::StagingCredentials::claude_paths(&cp, &dir.path().join("claude"));
+        let xp = CodexPaths { auth: dir.path().join("auth.json") };
+        fs::write(&xp.auth, CODEX).unwrap();
+        let target = capture_account(dir.path(), &cp, &xp, CliProvider::Codex,
+            None, &fixture_owner, UnverifiedPolicy::Refuse).unwrap();
+        fs::write(&xp.auth, codex_fixture_for_identity("codex-account-b")).unwrap();
+        if let Some(text) = config {
+            fs::write(dir.path().join("config.toml"), text).unwrap();
+        }
+        let result = switch_account(dir.path(), &cp, &xp, CliProvider::Codex,
+            &target.id, &fixture_owner).unwrap();
+        assert_eq!(fs::read_to_string(&xp.auth).unwrap(), CODEX);
+        assert_eq!(codex::read_live_identity(&xp).identity_key.as_deref(), Some("codex-account-a"));
+        assert_eq!(registry::load(dir.path()).unwrap().active.codex.as_deref(), Some(target.id.as_str()));
+        assert!(result.warnings.contains(&WARN_UNREGISTERED_LIVE_LOGIN_SAVED.to_string()));
+    }
+}
+
+fn codex_fixture_for_identity(identity: &str) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    let mut value: serde_json::Value = serde_json::from_str(CODEX).unwrap();
+    let claims = serde_json::json!({
+        "email": "other-codex@example.test",
+        "https://api.openai.com/auth": {"chatgpt_account_id": identity},
+    });
+    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap());
+    value["tokens"]["id_token"] = serde_json::json!(format!("eyJhbGciOiJub25lIn0.{payload}."));
+    value["tokens"]["account_id"] = serde_json::json!(identity);
+    serde_json::to_string(&value).unwrap()
+}

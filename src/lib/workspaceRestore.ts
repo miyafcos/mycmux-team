@@ -151,6 +151,7 @@ export function restoreWorkspaceConfigs(
         createdAt: cfg.created_at,
         color: cfg.color ?? undefined,
         pet: cfg.pet ?? undefined,
+        restorePet: true,
         columnWidths: cfg.column_widths ?? undefined,
         rowHeightsPerCol: cfg.row_heights_per_col ?? undefined,
         // buildWorkspaceRecord validates these against the restored columns and

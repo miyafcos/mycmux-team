@@ -21,18 +21,18 @@ use super::{
 /// while Codex and Grok, which do use files, registered fine. Confirmed on the
 /// Mac on 2026-09-10: no credentials file, keychain item present.
 ///
-/// A staging directory is different. `CLAUDE_CONFIG_DIR` pointed somewhere else
-/// starts unauthenticated (measured: `Not logged in` even with the keychain
-/// item in place), and the CLI writes into that directory, so staging stays on
-/// files on every platform.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// An overridden `CLAUDE_CONFIG_DIR` uses a separate keychain service on macOS:
+/// `Claude Code-credentials-<first 8 hex digits of SHA-256(config dir)>`.
+/// It starts unauthenticated because that service is separate from the live
+/// one, not because the CLI switches to files. Confirmed on 2026-10-09.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum CredentialStore {
     File,
-    Keychain,
+    Keychain { service: String },
 }
 
 /// The keychain service Claude Code stores its credentials under.
-const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
+pub(super) const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
 /// `security` exits with errSecItemNotFound when the login keychain holds no
 /// item for the service. That is the logged-out state, not a malfunction:
@@ -67,18 +67,33 @@ pub enum CredentialsRead {
 /// restore the credentials of the account it just replaced.
 pub struct CredentialsOnce<'a> {
     paths: &'a ClaudePaths,
+    reader: &'a (dyn Fn(&ClaudePaths) -> CredentialsRead + Sync),
     value: Option<CredentialsRead>,
 }
 
 impl<'a> CredentialsOnce<'a> {
     pub fn new(paths: &'a ClaudePaths) -> Self {
-        Self { paths, value: None }
+        Self::with_reader(paths, &read_credentials_status)
+    }
+
+    /// One staging tick can substitute a credential backend without consulting
+    /// the real keychain, while retaining the same single-read guarantee.
+    pub(super) fn with_reader(
+        paths: &'a ClaudePaths,
+        reader: &'a (dyn Fn(&ClaudePaths) -> CredentialsRead + Sync),
+    ) -> Self {
+        Self {
+            paths,
+            reader,
+            value: None,
+        }
     }
 
     fn read(&mut self) -> &CredentialsRead {
         let paths = self.paths;
+        let reader = self.reader;
         self.value
-            .get_or_insert_with(|| read_credentials_status(paths))
+            .get_or_insert_with(|| reader(paths))
     }
 
     /// The credentials text, or `None` for both failures.
@@ -110,7 +125,9 @@ impl ClaudePaths {
             credentials: home.join(".claude").join(".credentials.json"),
             claude_json: home.join(".claude.json"),
             store: if cfg!(target_os = "macos") {
-                CredentialStore::Keychain
+                CredentialStore::Keychain {
+                    service: KEYCHAIN_SERVICE.to_string(),
+                }
             } else {
                 CredentialStore::File
             },
@@ -128,7 +145,7 @@ pub fn read_credentials(paths: &ClaudePaths) -> Option<String> {
 
 /// Same read, keeping "nothing stored" apart from "could not look".
 pub fn read_credentials_status(paths: &ClaudePaths) -> CredentialsRead {
-    match paths.store {
+    match &paths.store {
         CredentialStore::File => match fs::read_to_string(&paths.credentials) {
             Ok(text) => CredentialsRead::Found(text),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -136,14 +153,14 @@ pub fn read_credentials_status(paths: &ClaudePaths) -> CredentialsRead {
             }
             Err(_) => CredentialsRead::Unavailable,
         },
-        CredentialStore::Keychain => read_keychain_credentials(),
+        CredentialStore::Keychain { service } => read_keychain_credentials(service),
     }
 }
 
 #[cfg(target_os = "macos")]
-fn read_keychain_credentials() -> CredentialsRead {
+fn read_keychain_credentials(service: &str) -> CredentialsRead {
     let Ok(output) = std::process::Command::new("/usr/bin/security")
-        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
+        .args(["find-generic-password", "-s", service, "-w"])
         .output()
     else {
         return CredentialsRead::Unavailable;
@@ -166,7 +183,7 @@ fn read_keychain_credentials() -> CredentialsRead {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn read_keychain_credentials() -> CredentialsRead {
+fn read_keychain_credentials(_service: &str) -> CredentialsRead {
     // Only macOS has this store; the variant is unreachable elsewhere.
     CredentialsRead::Unavailable
 }
@@ -176,14 +193,14 @@ fn write_credentials<F>(paths: &ClaudePaths, text: &str, writer: &mut F) -> Resu
 where
     F: FnMut(&std::path::Path, &[u8]) -> Result<(), String>,
 {
-    match paths.store {
+    match &paths.store {
         CredentialStore::File => writer(&paths.credentials, text.as_bytes()),
-        CredentialStore::Keychain => write_keychain_credentials(text),
+        CredentialStore::Keychain { service } => write_keychain_credentials(service, text),
     }
 }
 
 #[cfg(target_os = "macos")]
-fn write_keychain_credentials(text: &str) -> Result<(), String> {
+fn write_keychain_credentials(service: &str, text: &str) -> Result<(), String> {
     use std::io::Write;
 
     let account = std::env::var("USER").unwrap_or_else(|_| "default".to_string());
@@ -209,7 +226,7 @@ fn write_keychain_credentials(text: &str) -> Result<(), String> {
             "add-generic-password",
             "-U",
             "-s",
-            KEYCHAIN_SERVICE,
+            service,
             "-a",
             &account,
             "-w",
@@ -241,29 +258,31 @@ fn write_keychain_credentials(text: &str) -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn write_keychain_credentials(_text: &str) -> Result<(), String> {
+fn write_keychain_credentials(_service: &str, _text: &str) -> Result<(), String> {
     Err(ERR_RESTORE_FAILED.to_string())
 }
 
 /// Removes the credentials, used to undo a half-finished restore.
 fn remove_credentials(paths: &ClaudePaths) {
-    match paths.store {
+    match &paths.store {
         CredentialStore::File => {
             let _ = fs::remove_file(&paths.credentials);
         }
-        CredentialStore::Keychain => remove_keychain_credentials(),
+        CredentialStore::Keychain { service } => remove_keychain_credentials(service),
     }
 }
 
 #[cfg(target_os = "macos")]
-fn remove_keychain_credentials() {
+pub(super) fn remove_keychain_credentials(service: &str) {
     let _ = std::process::Command::new("/usr/bin/security")
-        .args(["delete-generic-password", "-s", KEYCHAIN_SERVICE])
+        .args(["delete-generic-password", "-s", service])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status();
 }
 
 #[cfg(not(target_os = "macos"))]
-fn remove_keychain_credentials() {}
+pub(super) fn remove_keychain_credentials(_service: &str) {}
 
 fn field(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_string)
@@ -419,22 +438,35 @@ mod tests {
         // 2026-09-10 — no credentials file, keychain item present.
         let paths = ClaudePaths::resolve().expect("home dir");
         if cfg!(target_os = "macos") {
-            assert_eq!(paths.store, CredentialStore::Keychain);
+            assert_eq!(
+                paths.store,
+                CredentialStore::Keychain {
+                    service: KEYCHAIN_SERVICE.to_string()
+                }
+            );
         } else {
             assert_eq!(paths.store, CredentialStore::File);
         }
     }
 
     #[test]
-    fn a_staging_directory_is_files_on_every_platform() {
-        // A CLAUDE_CONFIG_DIR pointed away from home starts unauthenticated —
-        // measured as `Not logged in` with the keychain item in place — and the
-        // CLI writes into that directory, so the keychain is not involved even
-        // on macOS. Getting this backwards would have staging logins read the
-        // live account instead of the one being added.
+    fn a_staging_directory_uses_an_isolated_store_on_every_platform() {
         let dir = tempfile::tempdir().unwrap();
         let paths = crate::cli_accounts::staging::claude_staging_paths(dir.path());
-        assert_eq!(paths.store, CredentialStore::File);
+        if cfg!(target_os = "macos") {
+            let service = crate::cli_accounts::staging::claude_staging_service(
+                &dir.path().display().to_string(),
+            );
+            assert_eq!(paths.store, CredentialStore::Keychain { service });
+            assert_ne!(
+                paths.store,
+                CredentialStore::Keychain {
+                    service: KEYCHAIN_SERVICE.to_string()
+                }
+            );
+        } else {
+            assert_eq!(paths.store, CredentialStore::File);
+        }
     }
 
     #[test]
