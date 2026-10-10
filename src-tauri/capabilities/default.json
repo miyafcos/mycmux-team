@@ -1,8 +1,10 @@
 {
   "identifier": "default",
-  "description": "Capability for the main window and the mycmux-w* child windows",
-  "windows": ["main", "mycmux-w*"],
+  "description": "Local primary app webviews only, including detached workspace windows",
+  "local": true,
+  "webviews": ["main", "mycmux-w*"],
   "permissions": [
+    "app-local",
     "core:default",
     "core:window:default",
     "core:window:allow-show",

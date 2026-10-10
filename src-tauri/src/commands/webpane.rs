@@ -257,6 +257,8 @@ const WEB_PANE_SIGNIN_LIVENESS_DELAY: Duration = Duration::from_secs(2);
 static WEB_PANE_PUSH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// webview label -> preset id, so sign-in knows which panes share a profile.
 static WEB_PANE_OPEN_PRESETS: OnceLock<DashMap<String, &'static str>> = OnceLock::new();
+// Backend-authoritative shortcut registration; page state is untrusted.
+static WEB_PANE_FORWARDED_SHORTCUTS: OnceLock<DashMap<String, Vec<String>>> = OnceLock::new();
 /// The original file URL, not the current page URL (which a relative link can change).
 static WEB_PANE_PREVIEW_URLS: OnceLock<DashMap<String, Url>> = OnceLock::new();
 static WEB_PANE_PREVIEW_RELOAD_SERIAL: AtomicU64 = AtomicU64::new(0);
@@ -683,6 +685,111 @@ fn validate_forwarded_shortcuts(mut shortcuts: Vec<String>) -> Result<Vec<String
     Ok(shortcuts)
 }
 
+fn shortcut_registry() -> &'static DashMap<String, Vec<String>> {
+    WEB_PANE_FORWARDED_SHORTCUTS.get_or_init(DashMap::new)
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebPaneForwardedKey {
+    tab_id: String,
+    key: String,
+    code: String,
+    location: u8,
+    ctrl_key: bool,
+    alt_key: bool,
+    shift_key: bool,
+    meta_key: bool,
+    repeat: bool,
+    is_composing: bool,
+}
+
+fn physical_shortcut_key(code: &str) -> Option<String> {
+    let named = match code {
+        "ArrowLeft" => "arrowleft", "ArrowRight" => "arrowright",
+        "ArrowUp" => "arrowup", "ArrowDown" => "arrowdown",
+        "Backspace" => "backspace", "Delete" => "delete", "End" => "end",
+        "Enter" | "NumpadEnter" => "enter", "Escape" => "escape",
+        "Home" => "home", "Insert" => "insert", "Minus" => "-",
+        "PageDown" => "pagedown", "PageUp" => "pageup", "Space" => "space", "Tab" => "tab",
+        _ => "",
+    };
+    if !named.is_empty() { return Some(named.to_string()); }
+    if let Some(letter) = code.strip_prefix("Key").filter(|s| s.len() == 1 && s.as_bytes()[0].is_ascii_uppercase()) {
+        return Some(letter.to_ascii_lowercase());
+    }
+    if let Some(digit) = code.strip_prefix("Digit").or_else(|| code.strip_prefix("Numpad"))
+        .filter(|s| s.len() == 1 && s.as_bytes()[0].is_ascii_digit()) {
+        return Some(digit.to_string());
+    }
+    if let Some(number) = code.strip_prefix('F').and_then(|n| n.parse::<u8>().ok())
+        .filter(|n| (1..=24).contains(n)) {
+        return Some(format!("f{number}"));
+    }
+    None
+}
+
+fn forwarded_shortcut(payload: &WebPaneForwardedKey, is_mac: bool) -> String {
+    let key = if is_mac && payload.alt_key {
+        physical_shortcut_key(&payload.code).unwrap_or_else(|| payload.key.to_lowercase())
+    } else {
+        payload.key.to_lowercase()
+    };
+    let key = match key.as_str() { " " => "space", "esc" => "escape", _ => &key };
+    let mut parts = Vec::new();
+    if payload.ctrl_key { parts.push("ctrl"); }
+    if payload.alt_key { parts.push("alt"); }
+    if payload.shift_key { parts.push("shift"); }
+    if payload.meta_key { parts.push("meta"); }
+    parts.push(key);
+    parts.join("+")
+}
+
+fn authorize_forwarded_shortcut(
+    caller_label: &str,
+    registered: &[String],
+    payload: &WebPaneForwardedKey,
+    is_mac: bool,
+) -> Result<(), String> {
+    if webview_label(&payload.tab_id)?.as_str() != caller_label {
+        return Err("web pane shortcut came from the wrong webview".to_string());
+    }
+    if payload.key.is_empty() || payload.key.len() > 32 || payload.code.len() > 64
+        || payload.location > 3 || payload.is_composing || payload.key == "Process"
+        || payload.key.chars().any(char::is_control) || payload.code.chars().any(char::is_control) {
+        return Err("invalid web pane shortcut key".to_string());
+    }
+    let shortcut = forwarded_shortcut(payload, is_mac);
+    if !registered.contains(&shortcut) {
+        return Err("web pane shortcut is not registered".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn webpane_forward_shortcut(
+    caller: Webview,
+    ipc: crate::ipc_caller::IpcCaller,
+    payload: WebPaneForwardedKey,
+) -> Result<(), String> {
+    let result = (|| {
+        if !open_presets().contains_key(caller.label()) {
+            return Err("web pane shortcut caller is not registered".to_string());
+        }
+        let registered = shortcut_registry().get(caller.label())
+            .ok_or_else(|| "web pane shortcuts are not registered".to_string())?;
+        authorize_forwarded_shortcut(caller.label(), &registered, &payload, cfg!(target_os = "macos"))?;
+        // The fixed event goes only to the primary webview owning this child.
+        caller.app_handle().emit_to(
+            tauri::EventTarget::Webview { label: caller.window().label().to_string() },
+            WEB_PANE_KEYDOWN_EVENT,
+            payload,
+        ).map_err(|error| format!("failed to forward web pane shortcut: {error}"))
+    })();
+    if result.is_err() { ipc.log_denied(); }
+    result
+}
+
 fn shortcut_initialization_script(tab_id: &str, shortcuts: &[String]) -> Result<String, String> {
     let tab_id = serde_json::to_string(tab_id)
         .map_err(|error| format!("failed to serialize web pane tab id: {error}"))?;
@@ -690,8 +797,6 @@ fn shortcut_initialization_script(tab_id: &str, shortcuts: &[String]) -> Result<
         .map_err(|error| format!("failed to serialize web pane shortcuts: {error}"))?;
     let state_name = serde_json::to_string(WEB_PANE_SHORTCUT_STATE)
         .map_err(|error| format!("failed to serialize web pane shortcut state: {error}"))?;
-    let event_name = serde_json::to_string(WEB_PANE_KEYDOWN_EVENT)
-        .map_err(|error| format!("failed to serialize web pane shortcut event: {error}"))?;
     Ok(format!(
         r#"(() => {{
   const stateName = {state_name};
@@ -712,8 +817,7 @@ fn shortcut_initialization_script(tab_id: &str, shortcuts: &[String]) -> Result<
     if (!state.shortcuts.has(parts.join("+"))) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    void window.__TAURI_INTERNALS__.invoke("plugin:event|emit", {{
-      event: {event_name},
+    void window.__TAURI_INTERNALS__.invoke("webpane_forward_shortcut", {{
       payload: {{
         tabId: {tab_id},
         key: event.key,
@@ -743,6 +847,41 @@ fn shortcut_update_script(shortcuts: &[String]) -> Result<String, String> {
   if (state) state.shortcuts = new Set({shortcuts});
 }})();"#,
     ))
+}
+
+
+// Keep backend updates and restore-script queueing in the same map critical
+// section, so a page-load snapshot cannot overwrite a later live remap.
+fn update_shortcut_registration_with(
+    label: &str,
+    shortcuts: Vec<String>,
+    apply: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let script = shortcut_update_script(&shortcuts)?;
+    let mut registered = shortcut_registry().entry(label.to_string()).or_default();
+    apply(&script)?;
+    *registered = shortcuts;
+    Ok(())
+}
+
+fn restore_shortcut_registration_with(
+    label: &str,
+    apply: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let Some(registered) = shortcut_registry().get(label) else { return Ok(()); };
+    apply(&shortcut_update_script(&registered)?)
+}
+
+fn update_shortcut_registration(webview: &Webview, shortcuts: Vec<String>) -> Result<(), String> {
+    update_shortcut_registration_with(webview.label(), shortcuts, |script| {
+        webview.eval(script).map_err(|error| format!("failed to update web pane shortcuts: {error}"))
+    })
+}
+
+fn restore_shortcut_registration(webview: &Webview) -> Result<(), String> {
+    restore_shortcut_registration_with(webview.label(), |script| {
+        webview.eval(script).map_err(|error| format!("failed to restore web pane shortcuts: {error}"))
+    })
 }
 
 fn composer_push_script(
@@ -948,9 +1087,7 @@ pub async fn webpane_create(
         if preset.id == "preview" && url.as_str() != "about:blank" {
             preview_urls().insert(label.clone(), url.clone());
         }
-        webview
-            .eval(shortcut_update_script(&forwarded_shortcuts)?)
-            .map_err(|error| format!("failed to update web pane shortcuts: {error}"))?;
+        update_shortcut_registration(&webview, forwarded_shortcuts.clone())?;
         if visible == Some(false) {
             park_webview(&webview)?;
         } else {
@@ -1042,7 +1179,16 @@ pub async fn webpane_create(
         builder.data_store_identifier(identifier)
     };
     let builder = builder
-        .on_page_load(move |_webview, payload| {
+        .on_page_load(move |webview, payload| {
+            // Every new document runs creation-time initialization. Reapply the
+            // authoritative current set, including blank and preview documents.
+            if matches!(payload.event(), PageLoadEvent::Finished) {
+                if restore_shortcut_registration(&webview).is_err() {
+                    crate::diag::warn("web-pane-shortcuts", &format!(
+                        "webview={:?} registration=restore-failed", webview.label()
+                    ));
+                }
+            }
             if payload.url().as_str() != "about:blank" {
                 match payload.event() {
                     PageLoadEvent::Started => {
@@ -1110,6 +1256,7 @@ pub async fn webpane_create(
     crate::watchdog::register_mac_process_failed(&webview);
     crate::perf_timeline::mark("webpane.child.created", Some(&tab_id));
     open_presets().insert(label.clone(), preset.id);
+    shortcut_registry().insert(label.clone(), forwarded_shortcuts.clone());
     if preset.id == "preview" && url.as_str() != "about:blank" {
         preview_urls().insert(label.clone(), url);
     }
@@ -1175,9 +1322,7 @@ pub async fn webpane_update(
         .get_webview(&label)
         .ok_or_else(|| format!("web pane does not exist: {tab_id}"))?;
     let forwarded_shortcuts = validate_forwarded_shortcuts(forwarded_shortcuts)?;
-    webview
-        .eval(shortcut_update_script(&forwarded_shortcuts)?)
-        .map_err(|error| format!("failed to update web pane shortcuts: {error}"))?;
+    update_shortcut_registration(&webview, forwarded_shortcuts)?;
 
     if !visible {
         // A background tab keeps rendering off-screen; a plain inactive tab
@@ -1203,6 +1348,7 @@ pub async fn webpane_update(
 pub async fn webpane_destroy(app: AppHandle, tab_id: String) -> Result<(), String> {
     let label = webview_label(&tab_id)?;
     open_presets().remove(&label);
+    shortcut_registry().remove(&label);
     preview_urls().remove(&label);
     if let Ok(mut state) = download_state().lock() {
         state.records.retain(|record| record.tab_id != tab_id);
@@ -1220,6 +1366,7 @@ pub async fn webpane_destroy(app: AppHandle, tab_id: String) -> Result<(), Strin
 /// WebView2 profile; macOS reports that WKWebView can sign in directly.
 #[tauri::command]
 pub async fn webpane_signin(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     app: AppHandle,
     preset_id: String,
 ) -> Result<WebPaneSigninResult, String> {
@@ -1280,6 +1427,7 @@ async fn webpane_signin_windows(
     let tab_ids: Vec<String> = closing.iter().map(|(_, tab)| tab.clone()).collect();
     for (label, _) in &closing {
         open_presets().remove(label);
+        shortcut_registry().remove(label);
         if let Some(webview) = app.get_webview(label) {
             let _ = webview.close();
         }
@@ -1432,12 +1580,14 @@ pub async fn webpane_push(
 #[tauri::command]
 pub async fn webpane_push_result(
     caller: Webview,
+    ipc: crate::ipc_caller::IpcCaller,
     request_id: String,
     ok: bool,
     error: Option<String>,
 ) -> Result<(), String> {
     complete_evaluation(
         &caller,
+        &ipc,
         &WEB_PANE_PUSH_RESULTS,
         &request_id,
         "push",
@@ -1492,6 +1642,7 @@ pub async fn webpane_read(
 #[tauri::command]
 pub async fn webpane_read_result(
     caller: Webview,
+    ipc: crate::ipc_caller::IpcCaller,
     request_id: String,
     result: Option<WebPaneReadResult>,
     error: Option<String>,
@@ -1503,6 +1654,7 @@ pub async fn webpane_read_result(
     };
     complete_evaluation(
         &caller,
+        &ipc,
         &WEB_PANE_READ_RESULTS,
         &request_id,
         "read",
@@ -1547,6 +1699,19 @@ fn start_evaluation<T: Send + 'static>(
 
 fn complete_evaluation<T: Send + 'static>(
     caller: &Webview,
+    ipc: &crate::ipc_caller::IpcCaller,
+    pending: &'static PendingReplies<T>,
+    request_id: &str,
+    kind: &str,
+    payload: T,
+) -> Result<(), String> {
+    let result = complete_evaluation_for_label(caller.label(), pending, request_id, kind, payload);
+    if result.is_err() { ipc.log_denied(); }
+    result
+}
+
+fn complete_evaluation_for_label<T: Send + 'static>(
+    caller_label: &str,
     pending: &'static PendingReplies<T>,
     request_id: &str,
     kind: &str,
@@ -1557,7 +1722,7 @@ fn complete_evaluation<T: Send + 'static>(
         .get(request_id)
         .map(|entry| entry.value().0.clone())
         .ok_or_else(|| format!("unknown web pane {kind} request"))?;
-    if caller.label() != expected_label {
+    if caller_label != expected_label {
         return Err(format!(
             "web pane {kind} result came from the wrong webview"
         ));
@@ -1746,6 +1911,7 @@ pub async fn webpane_eval(
 #[tauri::command]
 pub async fn webpane_eval_result(
     caller: Webview,
+    ipc: crate::ipc_caller::IpcCaller,
     request_id: String,
     value: Option<serde_json::Value>,
     error: Option<String>,
@@ -1773,6 +1939,7 @@ pub async fn webpane_eval_result(
     };
     complete_evaluation(
         &caller,
+        &ipc,
         &WEB_PANE_EVAL_RESULTS,
         &request_id,
         "eval",
@@ -2342,6 +2509,7 @@ fn upload_files(paths: &[String]) -> Result<Vec<UploadFile>, String> {
 
 #[tauri::command]
 pub async fn webpane_upload(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     caller: Webview,
     app: AppHandle,
     tab_id: String,
@@ -3699,8 +3867,9 @@ assert.match(reply.error, /host changed/);
         assert!(script.contains("event.isComposing"));
         assert!(script.contains("event.keyCode === 229"));
         assert!(script.contains("state.shortcuts.has"));
-        assert!(script.contains("plugin:event|emit"));
-        assert!(script.contains(WEB_PANE_KEYDOWN_EVENT));
+        assert!(script.contains("webpane_forward_shortcut"));
+        assert!(!script.contains("plugin:event|emit"));
+        assert!(!script.contains(WEB_PANE_KEYDOWN_EVENT));
         assert!(script.contains("ctrl+alt+pagedown"));
         assert!(!script.contains("ctrl+c"));
     }
@@ -3770,4 +3939,105 @@ assert.match(reply.error, /host changed/);
         assert!(composer_push_script(chatgpt(), "push-result", None, false).is_err());
         assert!(composer_push_script(chatgpt(), "push-result", None, true).is_ok());
     }
+    fn forwarded_key() -> WebPaneForwardedKey {
+        WebPaneForwardedKey {
+            tab_id: "test".into(), key: "Tab".into(), code: "Tab".into(), location: 0,
+            ctrl_key: true, alt_key: false, shift_key: false, meta_key: false,
+            repeat: false, is_composing: false,
+        }
+    }
+
+    #[test]
+    fn shortcut_forwarding_accepts_registered_keys_and_binds_the_real_child() {
+        let registered = vec!["ctrl+tab".to_string()];
+        let payload = forwarded_key();
+        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &payload, false).is_ok());
+        assert!(authorize_forwarded_shortcut("web-pane-other", &registered, &payload, false).is_err());
+        assert!(authorize_forwarded_shortcut("main", &registered, &payload, false).is_err());
+        assert!(authorize_forwarded_shortcut("web-pane-test", &[], &payload, false).is_err());
+        let mut forged = payload.clone();
+        forged.tab_id = "other".into();
+        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &forged, false).is_err());
+    }
+
+    #[test]
+    fn shortcut_forwarding_rejects_unregistered_composing_and_malformed_keys() {
+        let registered = vec!["ctrl+tab".to_string()];
+        let payload = forwarded_key();
+        let mut invalid = payload.clone();
+        invalid.key = "r".into();
+        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &invalid, false).is_err());
+        invalid = payload.clone(); invalid.is_composing = true;
+        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &invalid, false).is_err());
+        invalid = payload.clone(); invalid.location = 4;
+        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &invalid, false).is_err());
+        invalid = payload.clone(); invalid.key = "\n".into();
+        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &invalid, false).is_err());
+        invalid = payload.clone(); invalid.code = "x".repeat(65);
+        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &invalid, false).is_err());
+        let mut object = serde_json::to_value(payload).unwrap();
+        object["event"] = "unexpected-event".into();
+        assert!(serde_json::from_value::<WebPaneForwardedKey>(object).is_err());
+    }
+
+    #[test]
+    fn shortcut_forwarding_preserves_mac_command_option_and_control_tab() {
+        let mut payload = forwarded_key();
+        let registered = vec!["ctrl+tab".into(), "meta+1".into(), "alt+meta+d".into()];
+        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &payload, true).is_ok());
+        payload.ctrl_key = false; payload.meta_key = true; payload.key = "1".into(); payload.code = "Digit1".into();
+        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &payload, true).is_ok());
+        payload.alt_key = true; payload.key = "∂".into(); payload.code = "KeyD".into();
+        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &payload, true).is_ok());
+        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &payload, false).is_err());
+    }
+
+    #[tokio::test]
+    async fn reply_authentication_does_not_consume_another_childs_pending_request() {
+        for kind in ["read", "push", "eval"] {
+            let pending: &'static PendingReplies<u8> = Box::leak(Box::new(OnceLock::new()));
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            pending.get_or_init(DashMap::new).insert("request-test".into(), ("web-pane-test".into(), sender));
+            assert!(complete_evaluation_for_label("web-pane-other", pending, "request-test", kind, 1).is_err());
+            assert!(pending.get().unwrap().contains_key("request-test"));
+            assert!(complete_evaluation_for_label("web-pane-test", pending, "unknown-request", kind, 1).is_err());
+            assert!(complete_evaluation_for_label("web-pane-test", pending, "request-test", kind, 2).is_ok());
+            assert_eq!(receiver.await.unwrap(), 2);
+            assert!(complete_evaluation_for_label("web-pane-test", pending, "request-test", kind, 3).is_err());
+        }
+    }
+
+
+    #[test]
+    fn document_load_restores_current_shortcuts_after_remap() {
+        let label = "web-pane-review-load";
+        let old = vec!["ctrl+tab".to_string()];
+        let current = vec!["ctrl+shift+pageup".to_string()];
+        let creation = shortcut_initialization_script("review-load", &old).unwrap();
+        update_shortcut_registration_with(label, old, |_| Ok(())).unwrap();
+        update_shortcut_registration_with(label, current.clone(), |_| Ok(())).unwrap();
+        for _event in ["navigation", "reload", "blank", "preview"] {
+            let mut restored = String::new();
+            restore_shortcut_registration_with(label, |script| { restored = script.to_string(); Ok(()) }).unwrap();
+            assert_eq!(restored, shortcut_update_script(&current).unwrap());
+            assert!(restored.contains("ctrl+shift+pageup"));
+            assert!(!restored.contains("ctrl+tab"));
+        }
+        assert!(creation.contains("ctrl+tab"));
+        shortcut_registry().remove(label);
+    }
+
+    #[test]
+    fn failed_shortcut_update_preserves_registration_and_destroy_has_no_restore() {
+        let label = "web-pane-review-restore-failure";
+        let current = vec!["ctrl+tab".to_string()];
+        update_shortcut_registration_with(label, current.clone(), |_| Ok(())).unwrap();
+        assert!(update_shortcut_registration_with(label, vec!["ctrl+shift+pageup".into()], |_| Err("fixture queue failure".into())).is_err());
+        restore_shortcut_registration_with(label, |script| {
+            assert_eq!(script, shortcut_update_script(&current).unwrap()); Ok(())
+        }).unwrap();
+        shortcut_registry().remove(label);
+        restore_shortcut_registration_with(label, |_| panic!("destroyed registration must not restore")).unwrap();
+    }
+
 }

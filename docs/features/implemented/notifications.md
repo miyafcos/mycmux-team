@@ -77,3 +77,13 @@ Triggers:
 `XTermWrapper` checks the active session ID and `notificationsEnabled`; ordinary output changes do not generate approval badges. `notificationSoundEnabled` controls the Web Audio chime.
 
 The title-bar bell and `NotificationPanel` were removed (2026-09-10): the panel duplicated a sweep the owner does per tab anyway, and a badge count never said what the session was waiting on. Waiting state now shows on the tab badges, and the cross-session view is the dashboard.
+
+## Completed notifications during dormancy
+
+`sessionAttentionStore` owns the canonical attention identity and per-pane read state. Blocking attention (input, approval, error, rate limit) and unresolved questions always protect a process from dormancy. Unknown legacy notifications also protect it.
+
+An unread completion alone may become dormant after its conversation transcript is durably saved. Before termination, the completion identity and saved-record receipt must also be written to local storage. Failure of either save keeps the process alive. Dormancy does not mark the completion seen or clear its completion count; exit updates, empty snapshots, and startup hydration preserve it. A new live process epoch, new work, or new blocking attention supersedes the old saved binding.
+
+Clicking a dormant completion opens its saved conversation in the existing dashboard. Viewing this record does not launch a process or mark the completion read. Explicit completion/read actions and the normal focus behavior after conversation resume retain their existing meaning. The pane controls, dashboard, and session list explain: **休止中・会話は再開できる (プロセスは終了している)**.
+
+See [ペインの休止](agent-dormancy.md) for the policy and the single settings/default/rollback table.

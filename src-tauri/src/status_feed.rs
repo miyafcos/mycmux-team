@@ -1,6 +1,6 @@
 use crate::session_state::{
-    derive_ui_state, Activity, Attention, Health, Lifecycle, ProcessIdentity, SessionStateStore,
-    SessionView, UiSessionState,
+    Activity, Attention, Health, Lifecycle, ProcessIdentity, ProjectedSession,
+    SessionStateRecordSnapshot, SessionStateSnapshot, SessionStateStore, SessionView, UiSessionState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,8 +28,8 @@ pub struct SessionStatus {
     pub ui_state: UiSessionState,
 }
 
-impl From<&SessionView> for SessionStatus {
-    fn from(view: &SessionView) -> Self {
+impl SessionStatus {
+    fn projected(view: &SessionView, ui_state: UiSessionState) -> Self {
         Self {
             session_epoch: view.session_epoch,
             lifecycle: view.lifecycle,
@@ -40,7 +40,7 @@ impl From<&SessionView> for SessionStatus {
             last_evidence_at: view.last_evidence_at,
             last_monitor_at: view.last_monitor_at,
             last_output_at: view.last_output_at,
-            ui_state: derive_ui_state(view),
+            ui_state,
         }
     }
 }
@@ -52,13 +52,25 @@ pub struct FeedSession {
     pub status: SessionStatus,
 }
 
-impl From<&SessionView> for FeedSession {
-    fn from(view: &SessionView) -> Self {
+impl FeedSession {
+    fn projected(view: &SessionView, ui_state: UiSessionState) -> Self {
         Self {
             session_id: view.session_id.clone(),
             session_revision: view.session_revision,
-            status: SessionStatus::from(view),
+            status: SessionStatus::projected(view, ui_state),
         }
+    }
+}
+
+impl From<&ProjectedSession> for FeedSession {
+    fn from(projected: &ProjectedSession) -> Self {
+        Self::projected(&projected.view, projected.ui_state)
+    }
+}
+
+impl From<&SessionStateRecordSnapshot> for FeedSession {
+    fn from(record: &SessionStateRecordSnapshot) -> Self {
+        Self::projected(&record.view, record.ui_state)
     }
 }
 
@@ -336,13 +348,11 @@ impl FeedInner {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn read_snapshot_payload(&self) -> SnapshotPayload {
-        let sessions = self
-            .store
-            .snapshot(None)
+    fn read_snapshot_payload(&self, snapshot: &SessionStateSnapshot) -> SnapshotPayload {
+        let sessions = snapshot
             .sessions
             .iter()
-            .map(|record| FeedSession::from(&record.view))
+            .map(FeedSession::from)
             .collect::<Vec<_>>();
         SnapshotPayload {
             server_epoch: self.server_epoch.clone(),
@@ -351,8 +361,8 @@ impl FeedInner {
         }
     }
 
-    fn snapshot_payload(&self) -> SnapshotPayload {
-        let snapshot = self.read_snapshot_payload();
+    fn snapshot_payload(&self, records: &SessionStateSnapshot) -> SnapshotPayload {
+        let snapshot = self.read_snapshot_payload(records);
         let mut published_revisions = self
             .published_revisions
             .lock()
@@ -366,7 +376,8 @@ impl FeedInner {
         snapshot
     }
 
-    fn publish(&self, view: SessionView) {
+    fn publish(&self, projected: ProjectedSession) {
+        let view = &projected.view;
         let _publish_guard = self
             .publish_gate
             .lock()
@@ -392,7 +403,7 @@ impl FeedInner {
             seq,
             session_id: view.session_id.clone(),
             session_revision: view.session_revision,
-            status: SessionStatus::from(&view),
+            status: SessionStatus::projected(view, projected.ui_state),
         };
         if let Some(app_handle) = self.app_handle.get() {
             let _ = app_handle.emit(SESSION_STATUS_CHANGED_EVENT, &event);
@@ -438,58 +449,64 @@ impl StatusFeed {
         let _ = self.inner.app_handle.set(app_handle);
     }
 
-    pub fn change_listener(&self) -> Arc<dyn Fn(SessionView) + Send + Sync> {
+    pub(crate) fn change_listener(&self) -> Arc<dyn Fn(ProjectedSession) + Send + Sync> {
         let inner: Weak<FeedInner> = Arc::downgrade(&self.inner);
-        Arc::new(move |view| {
+        Arc::new(move |projected| {
             if let Some(inner) = inner.upgrade() {
-                inner.publish(view);
+                inner.publish(projected);
             }
         })
     }
 
-    pub fn subscribe(&self) -> (StatusSubscription, StatusSnapshotEvent) {
-        let _publish_guard = self
-            .inner
-            .publish_gate
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let id = self
-            .inner
-            .next_subscriber_id
-            .fetch_add(1, Ordering::Relaxed);
-        let queue = Arc::new(SubscriberQueue::new(self.inner.queue_capacity));
-        let mut subscribers = self.inner.subscribers();
-        subscribers.retain(|_, subscriber| !subscriber.is_closed());
-        subscribers.insert(id, queue.clone());
-        drop(subscribers);
-        let snapshot = StatusSnapshotEvent::new(self.inner.snapshot_payload());
-        (
-            StatusSubscription {
-                id,
-                queue,
-                feed: Arc::downgrade(&self.inner),
+    fn with_snapshot<T>(&self, operation: impl FnOnce(&SessionStateSnapshot) -> T) -> T {
+        // Always enter the store gate first. Due deltas publish before we take
+        // the feed gate or claim the snapshot's revisions/sequence.
+        self.inner.store.with_reconciled_snapshot(
+            None,
+            |_| None,
+            |snapshot| {
+                let _publish_guard = self
+                    .inner
+                    .publish_gate
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                operation(&snapshot)
             },
-            snapshot,
         )
     }
 
+    pub fn subscribe(&self) -> (StatusSubscription, StatusSnapshotEvent) {
+        self.with_snapshot(|records| {
+            let id = self
+                .inner
+                .next_subscriber_id
+                .fetch_add(1, Ordering::Relaxed);
+            let queue = Arc::new(SubscriberQueue::new(self.inner.queue_capacity));
+            let mut subscribers = self.inner.subscribers();
+            subscribers.retain(|_, subscriber| !subscriber.is_closed());
+            subscribers.insert(id, queue.clone());
+            drop(subscribers);
+            let snapshot = StatusSnapshotEvent::new(self.inner.snapshot_payload(records));
+            (
+                StatusSubscription {
+                    id,
+                    queue,
+                    feed: Arc::downgrade(&self.inner),
+                },
+                snapshot,
+            )
+        })
+    }
+
     pub fn frontend_snapshot(&self) -> SnapshotPayload {
-        let _publish_guard = self
-            .inner
-            .publish_gate
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.inner.read_snapshot_payload()
+        self.with_snapshot(|records| self.inner.read_snapshot_payload(records))
     }
 
     pub fn resnapshot(&self, subscription: &StatusSubscription) -> SnapshotPayload {
-        let _publish_guard = self
-            .inner
-            .publish_gate
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        subscription.queue.reset_for_snapshot();
-        self.inner.snapshot_payload()
+        self.with_snapshot(|records| {
+            subscription.queue.reset_for_snapshot();
+            self.inner.snapshot_payload(records)
+        })
     }
 
     pub fn periodic_snapshot(&self, subscription: &StatusSubscription) -> StatusSnapshotEvent {
@@ -524,7 +541,7 @@ impl StatusSubscription {
     }
 
     #[cfg(test)]
-    fn pending_len(&self) -> usize {
+    pub(crate) fn pending_len(&self) -> usize {
         self.queue.pending_len()
     }
 }
@@ -545,7 +562,7 @@ mod tests {
     use crate::session_state::{Evidence, MonitorStatus, OutputOrigin};
 
     fn store_and_feed(capacity: usize) -> (SessionStateStore, StatusFeed) {
-        let store = SessionStateStore::new();
+        let store = SessionStateStore::with_clock(Arc::new(|| 1_000));
         let feed = StatusFeed::with_capacity(store.clone(), capacity);
         store.set_change_listener(feed.change_listener());
         (store, feed)
@@ -640,11 +657,17 @@ mod tests {
         let mut newer = SessionView::new("session-a");
         newer.session_revision = 2;
         newer.activity = Activity::Idle;
-        listener(newer);
+        listener(ProjectedSession {
+            view: newer,
+            ui_state: UiSessionState::Idle,
+        });
         let mut older = SessionView::new("session-a");
         older.session_revision = 1;
         older.activity = Activity::RunningSilent;
-        listener(older);
+        listener(ProjectedSession {
+            view: older,
+            ui_state: UiSessionState::Working,
+        });
 
         assert_eq!(subscription.pending_len(), 1);
         let StatusEvent::Changed(delta) = subscription.recv().await.unwrap() else {
@@ -664,7 +687,10 @@ mod tests {
         assert_eq!(snapshot.seq, 0);
         assert_eq!(snapshot.sessions[0].session_revision, 1);
 
-        feed.change_listener()(view);
+        feed.change_listener()(ProjectedSession {
+            view,
+            ui_state: UiSessionState::Idle,
+        });
         let (_subscription, snapshot_after_publish) = feed.subscribe();
         assert_eq!(snapshot_after_publish.snapshot.seq, 1);
     }
@@ -752,3 +778,11 @@ mod tests {
         ingest_status(&store, "session-a", 1, MonitorStatus::Idle);
     }
 }
+
+#[cfg(test)]
+#[path = "status_feed/quiet_expiry_tests.rs"]
+mod quiet_expiry_tests;
+
+#[cfg(test)]
+#[path = "status_feed/projection_tests.rs"]
+mod projection_tests;

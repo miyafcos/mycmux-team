@@ -25,6 +25,7 @@ fn load_persistent_data_for<T: storage::PersistentDataTarget + ?Sized>(
 
 #[tauri::command(async)]
 pub async fn save_persistent_data(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     app_handle: AppHandle,
     mut data: PersistentData,
 ) -> Result<(), storage::PersistentStorageError> {

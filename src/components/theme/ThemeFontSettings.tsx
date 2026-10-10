@@ -42,7 +42,7 @@ const FONT_PRESET_GROUPS: FontPresetGroup[] = [
     id: "code-standard",
     title: "コード・標準",
     detail: "普段使い。迷ったらここから",
-    presetIds: ["jetbrains-ja", "udev-gothic", "udev-gothic-35", "cascadia-biz", "consolas-meiryo"],
+    presetIds: ["jetbrains-ja", "hackgen-console", "udev-gothic", "udev-gothic-35", "cascadia-biz", "consolas-meiryo"],
   },
   {
     id: "ja-readable",

@@ -9,6 +9,7 @@ import { JevSettingsSection } from "./JevSettingsSection";
 import { ClaudeSkillsSection } from "./ClaudeSkillsSection";
 import { AgentIntegrationsSection } from "./AgentIntegrationsSection";
 import { CodexAppServerSection } from "./CodexAppServerSection";
+import { DshAcpSection } from "./DshAcpSection";
 
 const CUSTOM_MODEL_VALUE = "__custom__";
 const hintStyle = { marginTop: 4, fontSize: 11, lineHeight: 1.6, color: "var(--cmux-text-dim)" } as const;
@@ -204,6 +205,7 @@ export function AiTab() {
       <ClaudeSkillsSection />
       <AgentIntegrationsSection />
       <CodexAppServerSection />
+      <DshAcpSection />
     </div>
   );
 }

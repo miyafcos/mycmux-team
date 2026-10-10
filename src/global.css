@@ -28,6 +28,23 @@
   font-display: block;
 }
 
+/* Same font-display: block rationale as UDEV Gothic NF above. */
+@font-face {
+  font-family: "HackGen Console NF";
+  src: url("./assets/fonts/HackGenConsoleNF-Regular.woff") format("woff");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "HackGen Console NF";
+  src: url("./assets/fonts/HackGenConsoleNF-Bold.woff") format("woff");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
 :root {
   --cmux-bg: #0a0a0a;
   --cmux-bg-solid: #0a0a0a;

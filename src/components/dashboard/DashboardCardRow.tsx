@@ -2,6 +2,7 @@ import { memo } from "react";
 import type { CSSProperties } from "react";
 
 import { useLiveBriefStore } from "../../stores/liveBriefStore";
+import { AGENT_DORMANT_LABEL, dormantAgentDescription } from "../../lib/agentDormancy";
 import { useRecentInputStore } from "../../stores/recentInputStore";
 import { dashboardStrings } from "./dashboardStrings";
 import { firstLine } from "./attentionModel";
@@ -51,6 +52,7 @@ function CardRow({ card, selected, open, now, hideWorkspaceBadge, onSelect, onJu
   onJump: (card: DashboardCardModel) => void;
 }) {
   const state = resolveDisplayState(card);
+  const dormantDescription = card.neverStarted || card.telemetryHealth === "live" ? undefined : dormantAgentDescription(card.mark);
   const recentInput = useRecentInputStore((store) => store.recentBySession[card.tab.sessionId]);
   const listEvents = useLiveBriefStore((store) => store.listEventsBySession[card.tab.sessionId]);
   const instruction = card.latestInstruction
@@ -96,6 +98,7 @@ function CardRow({ card, selected, open, now, hideWorkspaceBadge, onSelect, onJu
       {preview ? <span className="cmux-dash-row-preview">{preview}</span> : null}
       <span className="cmux-dash-row-status">
         <span title={labels.tooltip} aria-label={labels.tooltip} style={statePillStyle(stateColor)}>{card.neverStarted ? dashboardStrings.stateNotStarted : labels.primary}</span>
+        {dormantDescription ? <span title={dormantDescription} aria-label={dormantDescription} style={statePillStyle("var(--cmux-text-tertiary)")}>{AGENT_DORMANT_LABEL}</span> : null}
         <span className="cmux-dash-row-activity">{labels.activityLabel}</span>
         {elapsedMinutes === null ? null : <span className="cmux-dash-row-elapsed">{dashboardStrings.elapsed(elapsedMinutes)}</span>}
       </span>

@@ -66,6 +66,7 @@ fn workspaces_native_kind(workspaces: &[Value], decorated: Option<bool>) -> bool
 /// (`tests/test_command_sync_contract.py`).
 #[tauri::command]
 pub fn open_workspace_window(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     app: AppHandle,
     state: State<'_, AppState>,
     from_label: String,

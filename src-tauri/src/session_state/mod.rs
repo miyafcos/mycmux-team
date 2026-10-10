@@ -1,7 +1,4 @@
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
-use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Listener};
 
@@ -473,6 +470,9 @@ pub fn reduce(previous: &SessionView, evidence: &Evidence) -> SessionView {
             view.last_monitor_at = evidence.observed_at;
             view.lifecycle = Lifecycle::Alive;
             view.process = evidence.process.clone().or(view.process);
+            let output_is_newer = *status == MonitorStatus::Idle
+                && evidence.session_epoch == view.session_epoch
+                && evidence.observed_at < view.last_output_at;
             view.activity = match status {
                 MonitorStatus::Working => {
                     if view.last_output_at > 0
@@ -483,6 +483,7 @@ pub fn reduce(previous: &SessionView, evidence: &Evidence) -> SessionView {
                         Activity::RunningSilent
                     }
                 }
+                MonitorStatus::Idle if output_is_newer => view.activity,
                 MonitorStatus::Idle => Activity::Idle,
                 MonitorStatus::Unknown => Activity::Unknown,
             };
@@ -491,9 +492,18 @@ pub fn reduce(previous: &SessionView, evidence: &Evidence) -> SessionView {
             } else {
                 Health::Fresh
             };
+            if output_is_newer {
+                // Same final evidence watermark as observing Idle then output,
+                // even when the worker accepted timestamp-only output first.
+                view.last_evidence_at = view.last_evidence_at.max(view.last_output_at);
+            }
         }
         EvidenceSignal::WorkDone { .. } => {
-            view.activity = Activity::Idle;
+            if evidence.session_epoch == view.session_epoch && evidence.observed_at < view.last_output_at {
+                view.last_evidence_at = view.last_evidence_at.max(view.last_output_at);
+            } else {
+                view.activity = Activity::Idle;
+            }
             view.lifecycle = Lifecycle::Alive;
             view.health = Health::Fresh;
         }
@@ -593,118 +603,9 @@ pub struct SessionStateSnapshot {
     pub sessions: Vec<SessionStateRecordSnapshot>,
 }
 
-#[derive(Debug, Clone)]
-struct SessionRecord {
-    view: SessionView,
-    recent_evidence: VecDeque<Evidence>,
-}
-
-type ChangeListener = Arc<dyn Fn(SessionView) + Send + Sync>;
-
-#[derive(Clone, Default)]
-pub struct SessionStateStore {
-    sessions: Arc<DashMap<String, SessionRecord>>,
-    change_listener: Arc<RwLock<Option<ChangeListener>>>,
-}
-
-impl SessionStateStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn set_change_listener(&self, listener: ChangeListener) {
-        let mut current = self
-            .change_listener
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *current = Some(listener);
-    }
-
-    pub fn ingest(&self, session_id: impl Into<String>, evidence: Evidence) -> SessionView {
-        let session_id = session_id.into();
-        let mut record = self
-            .sessions
-            .entry(session_id.clone())
-            .or_insert_with(|| SessionRecord {
-                view: SessionView::new(session_id),
-                recent_evidence: VecDeque::with_capacity(LEDGER_CAPACITY),
-            });
-        if record.recent_evidence.back() == Some(&evidence) {
-            return record.view.clone();
-        }
-        let previous_revision = record.view.session_revision;
-        record.view = reduce(&record.view, &evidence);
-        if record.recent_evidence.len() == LEDGER_CAPACITY {
-            record.recent_evidence.pop_front();
-        }
-        record.recent_evidence.push_back(evidence);
-        let view = record.view.clone();
-        let changed = view.session_revision != previous_revision;
-        drop(record);
-
-        if changed {
-            let listener = self
-                .change_listener
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
-            if let Some(listener) = listener {
-                listener(view.clone());
-            }
-        }
-        view
-    }
-
-    pub fn current_epoch(&self, session_id: &str) -> Option<u64> {
-        self.sessions
-            .get(session_id)
-            .and_then(|record| record.view.session_epoch)
-    }
-
-    pub fn current_view(&self, session_id: &str) -> Option<SessionView> {
-        self.sessions
-            .get(session_id)
-            .map(|record| record.view.clone())
-    }
-
-    pub fn with_current_view<T>(
-        &self,
-        session_id: &str,
-        operation: impl FnOnce(&SessionView) -> T,
-    ) -> Option<T> {
-        self.sessions
-            .get(session_id)
-            .map(|record| operation(&record.view))
-    }
-
-    pub fn snapshot(&self, session_id: Option<&str>) -> SessionStateSnapshot {
-        self.snapshot_with_input_revisions(session_id, |_| None)
-    }
-
-    pub fn snapshot_with_input_revisions(
-        &self,
-        session_id: Option<&str>,
-        input_revision_for: impl Fn(&str) -> Option<u64>,
-    ) -> SessionStateSnapshot {
-        // One clock for the whole snapshot, so two seats that fell quiet at
-        // the same moment are never read on different sides of the window.
-        let now = unix_epoch_millis();
-        let mut sessions: Vec<_> = self
-            .sessions
-            .iter()
-            .filter(|record| session_id.is_none_or(|id| record.key() == id))
-            .map(|record| SessionStateRecordSnapshot {
-                session_id: record.key().clone(),
-                input_revision: input_revision_for(record.key()),
-                view: record.view.clone(),
-                ui_state: derive_ui_state_at(&record.view, now),
-                recent_evidence: record.recent_evidence.iter().cloned().collect(),
-            })
-            .collect();
-        sessions.sort_by(|left, right| left.session_id.cmp(&right.session_id));
-        SessionStateSnapshot { sessions }
-    }
-}
+mod store;
+pub use store::SessionStateStore;
+pub(crate) use store::ProjectedSession;
 
 #[derive(Debug, Deserialize)]
 struct ScreenScanEvent {

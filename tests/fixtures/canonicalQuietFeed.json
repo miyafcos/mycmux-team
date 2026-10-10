@@ -1,0 +1,616 @@
+{
+  "initial": {
+    "event": "status.snapshot",
+    "kind": "event",
+    "seq": 21,
+    "server_epoch": "quiet-expiry-fixture",
+    "sessions": [
+      {
+        "session_id": "approval-peer",
+        "session_revision": 3,
+        "status": {
+          "activity": "streaming",
+          "attention": {
+            "attention_id": "attention-Approval",
+            "confidence": 1.0,
+            "detail": "protected original detail",
+            "kind": "approval",
+            "observed_at": 1000100,
+            "sources": [
+              "hook"
+            ],
+            "stale_after": 1030100,
+            "state_since": 1000100
+          },
+          "health": "fresh",
+          "last_evidence_at": 1000100,
+          "last_monitor_at": 1000000,
+          "last_output_at": 1000100,
+          "lifecycle": "alive",
+          "process": null,
+          "session_epoch": 1,
+          "ui_state": "waiting"
+        }
+      },
+      {
+        "session_id": "done-peer",
+        "session_revision": 3,
+        "status": {
+          "activity": "streaming",
+          "attention": {
+            "attention_id": "attention-Done",
+            "confidence": 1.0,
+            "detail": "protected original detail",
+            "kind": "done",
+            "observed_at": 1000100,
+            "sources": [
+              "hook"
+            ],
+            "stale_after": 1030100,
+            "state_since": 1000100
+          },
+          "health": "fresh",
+          "last_evidence_at": 1000100,
+          "last_monitor_at": 1000000,
+          "last_output_at": 1000100,
+          "lifecycle": "alive",
+          "process": null,
+          "session_epoch": 1,
+          "ui_state": "done"
+        }
+      },
+      {
+        "session_id": "error-peer",
+        "session_revision": 3,
+        "status": {
+          "activity": "streaming",
+          "attention": {
+            "attention_id": "attention-Error",
+            "confidence": 1.0,
+            "detail": "protected original detail",
+            "kind": "error",
+            "observed_at": 1000100,
+            "sources": [
+              "hook"
+            ],
+            "stale_after": 1030100,
+            "state_since": 1000100
+          },
+          "health": "fresh",
+          "last_evidence_at": 1000100,
+          "last_monitor_at": 1000000,
+          "last_output_at": 1000100,
+          "lifecycle": "alive",
+          "process": null,
+          "session_epoch": 1,
+          "ui_state": "waiting"
+        }
+      },
+      {
+        "session_id": "input-peer",
+        "session_revision": 3,
+        "status": {
+          "activity": "streaming",
+          "attention": {
+            "attention_id": "attention-Input",
+            "confidence": 1.0,
+            "detail": "protected original detail",
+            "kind": "input",
+            "observed_at": 1000100,
+            "sources": [
+              "hook"
+            ],
+            "stale_after": 1030100,
+            "state_since": 1000100
+          },
+          "health": "fresh",
+          "last_evidence_at": 1000100,
+          "last_monitor_at": 1000000,
+          "last_output_at": 1000100,
+          "lifecycle": "alive",
+          "process": null,
+          "session_epoch": 1,
+          "ui_state": "waiting"
+        }
+      },
+      {
+        "session_id": "keeper",
+        "session_revision": 1,
+        "status": {
+          "activity": "running_silent",
+          "attention": {
+            "attention_id": null,
+            "confidence": 0.0,
+            "detail": null,
+            "kind": "none",
+            "observed_at": 0,
+            "sources": [],
+            "stale_after": 30000,
+            "state_since": 0
+          },
+          "health": "fresh",
+          "last_evidence_at": 1000100,
+          "last_monitor_at": 1000100,
+          "last_output_at": 0,
+          "lifecycle": "alive",
+          "process": null,
+          "session_epoch": 1,
+          "ui_state": "working"
+        }
+      },
+      {
+        "session_id": "quiet-agent",
+        "session_revision": 2,
+        "status": {
+          "activity": "streaming",
+          "attention": {
+            "attention_id": null,
+            "confidence": 0.0,
+            "detail": null,
+            "kind": "none",
+            "observed_at": 0,
+            "sources": [],
+            "stale_after": 30000,
+            "state_since": 0
+          },
+          "health": "fresh",
+          "last_evidence_at": 1000100,
+          "last_monitor_at": 1000000,
+          "last_output_at": 1000100,
+          "lifecycle": "alive",
+          "process": null,
+          "session_epoch": 1,
+          "ui_state": "working"
+        }
+      },
+      {
+        "session_id": "quiet-shell",
+        "session_revision": 2,
+        "status": {
+          "activity": "streaming",
+          "attention": {
+            "attention_id": null,
+            "confidence": 0.0,
+            "detail": null,
+            "kind": "none",
+            "observed_at": 0,
+            "sources": [],
+            "stale_after": 30000,
+            "state_since": 0
+          },
+          "health": "fresh",
+          "last_evidence_at": 1000100,
+          "last_monitor_at": 1000000,
+          "last_output_at": 1000100,
+          "lifecycle": "alive",
+          "process": null,
+          "session_epoch": 1,
+          "ui_state": "working"
+        }
+      },
+      {
+        "session_id": "rate-limit-peer",
+        "session_revision": 3,
+        "status": {
+          "activity": "streaming",
+          "attention": {
+            "attention_id": "attention-RateLimited",
+            "confidence": 1.0,
+            "detail": "protected original detail",
+            "kind": "rate_limited",
+            "observed_at": 1000100,
+            "sources": [
+              "hook"
+            ],
+            "stale_after": 1030100,
+            "state_since": 1000100
+          },
+          "health": "fresh",
+          "last_evidence_at": 1000100,
+          "last_monitor_at": 1000000,
+          "last_output_at": 1000100,
+          "lifecycle": "alive",
+          "process": null,
+          "session_epoch": 1,
+          "ui_state": "waiting"
+        }
+      },
+      {
+        "session_id": "unknown-peer",
+        "session_revision": 1,
+        "status": {
+          "activity": "unknown",
+          "attention": {
+            "attention_id": null,
+            "confidence": 0.0,
+            "detail": null,
+            "kind": "none",
+            "observed_at": 0,
+            "sources": [],
+            "stale_after": 30000,
+            "state_since": 0
+          },
+          "health": "degraded",
+          "last_evidence_at": 1000100,
+          "last_monitor_at": 1000100,
+          "last_output_at": 0,
+          "lifecycle": "alive",
+          "process": null,
+          "session_epoch": 1,
+          "ui_state": "unknown"
+        }
+      }
+    ],
+    "v": 2
+  },
+  "initial_output_snapshot": {
+    "approval-peer": 1000100,
+    "done-peer": 1000100,
+    "error-peer": 1000100,
+    "input-peer": 1000100,
+    "keeper": null,
+    "quiet-agent": 1000100,
+    "quiet-shell": 1000100,
+    "rate-limit-peer": 1000100,
+    "unknown-peer": null
+  },
+  "origin_ms": 1000100,
+  "producer": "SessionStateStore + StatusFeed + asynchronous quiet worker",
+  "steps": [
+    {
+      "at": 1060099,
+      "frames": [],
+      "output_snapshot": {
+        "approval-peer": 1000100,
+        "done-peer": 1000100,
+        "error-peer": 1000100,
+        "input-peer": 1000100,
+        "keeper": null,
+        "quiet-agent": 1000100,
+        "quiet-shell": 1000100,
+        "rate-limit-peer": 1000100,
+        "unknown-peer": null
+      }
+    },
+    {
+      "at": 1060100,
+      "frames": [
+        {
+          "event": "status.changed",
+          "kind": "event",
+          "seq": 22,
+          "server_epoch": "quiet-expiry-fixture",
+          "session_id": "quiet-agent",
+          "session_revision": 3,
+          "status": {
+            "activity": "streaming",
+            "attention": {
+              "attention_id": null,
+              "confidence": 0.0,
+              "detail": null,
+              "kind": "none",
+              "observed_at": 0,
+              "sources": [],
+              "stale_after": 30000,
+              "state_since": 0
+            },
+            "health": "fresh",
+            "last_evidence_at": 1000100,
+            "last_monitor_at": 1000000,
+            "last_output_at": 1000100,
+            "lifecycle": "alive",
+            "process": null,
+            "session_epoch": 1,
+            "ui_state": "idle"
+          },
+          "v": 2
+        },
+        {
+          "event": "status.changed",
+          "kind": "event",
+          "seq": 23,
+          "server_epoch": "quiet-expiry-fixture",
+          "session_id": "quiet-shell",
+          "session_revision": 3,
+          "status": {
+            "activity": "streaming",
+            "attention": {
+              "attention_id": null,
+              "confidence": 0.0,
+              "detail": null,
+              "kind": "none",
+              "observed_at": 0,
+              "sources": [],
+              "stale_after": 30000,
+              "state_since": 0
+            },
+            "health": "fresh",
+            "last_evidence_at": 1000100,
+            "last_monitor_at": 1000000,
+            "last_output_at": 1000100,
+            "lifecycle": "alive",
+            "process": null,
+            "session_epoch": 1,
+            "ui_state": "idle"
+          },
+          "v": 2
+        }
+      ],
+      "output_snapshot": {
+        "approval-peer": 1000100,
+        "done-peer": 1000100,
+        "error-peer": 1000100,
+        "input-peer": 1000100,
+        "keeper": null,
+        "quiet-agent": 1000100,
+        "quiet-shell": 1000100,
+        "rate-limit-peer": 1000100,
+        "unknown-peer": null
+      }
+    },
+    {
+      "at": 1120100,
+      "frames": [],
+      "output_snapshot": {
+        "approval-peer": 1000100,
+        "done-peer": 1000100,
+        "error-peer": 1000100,
+        "input-peer": 1000100,
+        "keeper": null,
+        "quiet-agent": 1000100,
+        "quiet-shell": 1000100,
+        "rate-limit-peer": 1000100,
+        "unknown-peer": null
+      }
+    },
+    {
+      "at": 1300101,
+      "frames": [],
+      "output_snapshot": {
+        "approval-peer": 1000100,
+        "done-peer": 1000100,
+        "error-peer": 1000100,
+        "input-peer": 1000100,
+        "keeper": null,
+        "quiet-agent": 1000100,
+        "quiet-shell": 1000100,
+        "rate-limit-peer": 1000100,
+        "unknown-peer": null
+      }
+    },
+    {
+      "at": 1360101,
+      "frames": [],
+      "output_snapshot": {
+        "approval-peer": 1000100,
+        "done-peer": 1000100,
+        "error-peer": 1000100,
+        "input-peer": 1000100,
+        "keeper": null,
+        "quiet-agent": 1000100,
+        "quiet-shell": 1000100,
+        "rate-limit-peer": 1000100,
+        "unknown-peer": null
+      }
+    },
+    {
+      "at": 1360102,
+      "frames": [
+        {
+          "event": "status.changed",
+          "kind": "event",
+          "seq": 24,
+          "server_epoch": "quiet-expiry-fixture",
+          "session_id": "quiet-agent",
+          "session_revision": 4,
+          "status": {
+            "activity": "streaming",
+            "attention": {
+              "attention_id": null,
+              "confidence": 0.0,
+              "detail": null,
+              "kind": "none",
+              "observed_at": 0,
+              "sources": [],
+              "stale_after": 30000,
+              "state_since": 0
+            },
+            "health": "fresh",
+            "last_evidence_at": 1000100,
+            "last_monitor_at": 1000000,
+            "last_output_at": 1360102,
+            "lifecycle": "alive",
+            "process": null,
+            "session_epoch": 1,
+            "ui_state": "working"
+          },
+          "v": 2
+        },
+        {
+          "event": "status.changed",
+          "kind": "event",
+          "seq": 25,
+          "server_epoch": "quiet-expiry-fixture",
+          "session_id": "quiet-shell",
+          "session_revision": 4,
+          "status": {
+            "activity": "streaming",
+            "attention": {
+              "attention_id": null,
+              "confidence": 0.0,
+              "detail": null,
+              "kind": "none",
+              "observed_at": 0,
+              "sources": [],
+              "stale_after": 30000,
+              "state_since": 0
+            },
+            "health": "fresh",
+            "last_evidence_at": 1000100,
+            "last_monitor_at": 1000000,
+            "last_output_at": 1360102,
+            "lifecycle": "alive",
+            "process": null,
+            "session_epoch": 1,
+            "ui_state": "working"
+          },
+          "v": 2
+        }
+      ],
+      "output_snapshot": {
+        "approval-peer": 1000100,
+        "done-peer": 1000100,
+        "error-peer": 1000100,
+        "input-peer": 1000100,
+        "keeper": null,
+        "quiet-agent": 1360102,
+        "quiet-shell": 1360102,
+        "rate-limit-peer": 1000100,
+        "unknown-peer": null
+      }
+    },
+    {
+      "at": 1360103,
+      "frames": [
+        {
+          "event": "status.changed",
+          "kind": "event",
+          "seq": 26,
+          "server_epoch": "quiet-expiry-fixture",
+          "session_id": "quiet-agent",
+          "session_revision": 5,
+          "status": {
+            "activity": "streaming",
+            "attention": {
+              "attention_id": "attention-Approval",
+              "confidence": 1.0,
+              "detail": "protected original detail",
+              "kind": "approval",
+              "observed_at": 1360103,
+              "sources": [
+                "hook"
+              ],
+              "stale_after": 1390103,
+              "state_since": 1360103
+            },
+            "health": "fresh",
+            "last_evidence_at": 1360103,
+            "last_monitor_at": 1000000,
+            "last_output_at": 1360102,
+            "lifecycle": "alive",
+            "process": null,
+            "session_epoch": 1,
+            "ui_state": "waiting"
+          },
+          "v": 2
+        }
+      ],
+      "output_snapshot": {
+        "approval-peer": 1000100,
+        "done-peer": 1000100,
+        "error-peer": 1000100,
+        "input-peer": 1000100,
+        "keeper": null,
+        "quiet-agent": 1360102,
+        "quiet-shell": 1360102,
+        "rate-limit-peer": 1000100,
+        "unknown-peer": null
+      }
+    },
+    {
+      "at": 1360104,
+      "frames": [
+        {
+          "event": "status.changed",
+          "kind": "event",
+          "seq": 27,
+          "server_epoch": "quiet-expiry-fixture",
+          "session_id": "quiet-agent",
+          "session_revision": 6,
+          "status": {
+            "activity": "idle",
+            "attention": {
+              "attention_id": "attention-Approval",
+              "confidence": 1.0,
+              "detail": "protected original detail",
+              "kind": "approval",
+              "observed_at": 1360103,
+              "sources": [
+                "hook"
+              ],
+              "stale_after": 1390103,
+              "state_since": 1360103
+            },
+            "health": "fresh",
+            "last_evidence_at": 1360104,
+            "last_monitor_at": 1000000,
+            "last_output_at": 1360102,
+            "lifecycle": "exited",
+            "process": null,
+            "session_epoch": 1,
+            "ui_state": "waiting"
+          },
+          "v": 2
+        }
+      ],
+      "output_snapshot": {
+        "approval-peer": 1000100,
+        "done-peer": 1000100,
+        "error-peer": 1000100,
+        "input-peer": 1000100,
+        "keeper": null,
+        "quiet-agent": 1360102,
+        "quiet-shell": 1360102,
+        "rate-limit-peer": 1000100,
+        "unknown-peer": null
+      }
+    },
+    {
+      "at": 1360105,
+      "frames": [
+        {
+          "event": "status.changed",
+          "kind": "event",
+          "seq": 28,
+          "server_epoch": "quiet-expiry-fixture",
+          "session_id": "quiet-agent",
+          "session_revision": 7,
+          "status": {
+            "activity": "running_silent",
+            "attention": {
+              "attention_id": null,
+              "confidence": 0.0,
+              "detail": null,
+              "kind": "none",
+              "observed_at": 0,
+              "sources": [],
+              "stale_after": 30000,
+              "state_since": 0
+            },
+            "health": "fresh",
+            "last_evidence_at": 1360105,
+            "last_monitor_at": 1360105,
+            "last_output_at": 0,
+            "lifecycle": "alive",
+            "process": null,
+            "session_epoch": 2,
+            "ui_state": "working"
+          },
+          "v": 2
+        }
+      ],
+      "output_snapshot": {
+        "approval-peer": 1000100,
+        "done-peer": 1000100,
+        "error-peer": 1000100,
+        "input-peer": 1000100,
+        "keeper": null,
+        "quiet-agent": null,
+        "quiet-shell": 1360102,
+        "rate-limit-peer": 1000100,
+        "unknown-peer": null
+      }
+    }
+  ],
+  "trace_version": 1
+}

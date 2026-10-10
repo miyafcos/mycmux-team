@@ -71,7 +71,8 @@ pub async fn get_jev_settings(app: tauri::AppHandle) -> Result<JevSettings, Stri
     }).await.map_err(|_| "settings_storage".to_string())?
 }
 #[tauri::command]
-pub async fn save_jev_settings(app: tauri::AppHandle, enabled: bool, model: String, api_key: Option<String>) -> Result<JevSettings, String> {
+pub async fn save_jev_settings(
+    _trusted: crate::ipc_caller::TrustedAppCaller, app: tauri::AppHandle, enabled: bool, model: String, api_key: Option<String>) -> Result<JevSettings, String> {
     tauri::async_runtime::spawn_blocking(move || {
         validate_model(&model)?;
         let _guard = lock().lock().map_err(|_| "settings_storage")?;

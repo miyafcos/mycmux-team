@@ -107,6 +107,7 @@ import {
   restoreWorkspaceConfigs,
 } from "../../lib/workspaceRestore";
 import { isDeclaredTab, isRestorableTab, tabHasPty } from "../../lib/tabLifecycle";
+import { isPersistentTab } from "../../lib/paneKindCapabilities";
 import {
   capTurnMarkPersistSnapshots,
   getTurnMarkPersistSnapshot,
@@ -1221,12 +1222,10 @@ export function toConfig(
       // would revive a terminal pointed at nothing.
       const persistedTabs = purpose === "transfer"
         ? pane.tabs.filter(isTransferableTab)
-        : pane.tabs.filter((tab) => tab.type !== "browser" && !tab.ephemeral);
+        : pane.tabs.filter(isPersistentTab);
       if (persistedTabs.length === 0) return null;
-      const terminalTabs = persistedTabs.filter((tab) => tab.type !== "online");
-      if (terminalTabs.length === 0) return null;
-      const activeTab = terminalTabs.find((tab) => tab.id === pane.activeTabId) ?? terminalTabs[0];
-      return { pane, activeTab, persistedTabs: terminalTabs };
+      const activeTab = persistedTabs.find((tab) => tab.id === pane.activeTabId) ?? persistedTabs[0];
+      return { pane, activeTab, persistedTabs };
     })
     .filter((entry): entry is {
       pane: Workspace["panes"][number];
@@ -1701,6 +1700,7 @@ async function hydrateChildWindow(): Promise<void> {
     petNewWorkspaceMode: settings.pet_new_ws_mode,
     petDisabled: settings.pet_disabled,
     petFixedId: settings.pet_fixed_id ?? undefined,
+    petRandomBag: settings.pet_random_bag ?? undefined,
   });
   hydrateAiSettingsFromDataJson(settings);
   void loadPetCatalog();
@@ -1867,6 +1867,7 @@ export function useWorkspacePersist() {
             petNewWorkspaceMode: data.settings.pet_new_ws_mode,
             petDisabled: data.settings.pet_disabled,
             petFixedId: data.settings.pet_fixed_id ?? undefined,
+            petRandomBag: data.settings.pet_random_bag ?? undefined,
           });
           hydrateAiSettingsFromDataJson(data.settings);
           void loadPetCatalog();
@@ -2073,6 +2074,7 @@ export function useWorkspacePersist() {
           pet_new_ws_mode: petSettings.petNewWorkspaceMode,
           pet_disabled: petSettings.petDisabled,
           pet_fixed_id: petSettings.petFixedId ?? null,
+          pet_random_bag: petSettings.petRandomBag ?? null,
           ai_provider: aiSettings.aiProvider,
           ai_model: aiSettings.aiModel,
           ai_enabled: aiSettings.aiEnabled,
@@ -2452,6 +2454,7 @@ export function useWorkspacePersist() {
         || state.petNewWorkspaceMode !== previousState.petNewWorkspaceMode
         || state.petDisabled !== previousState.petDisabled
         || state.petFixedId !== previousState.petFixedId
+        || state.petRandomBag !== previousState.petRandomBag
       ) markDirty();
     });
     const unsubAi = useAiSettingsStore.subscribe((state, previousState) => {

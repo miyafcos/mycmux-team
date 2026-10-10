@@ -162,6 +162,8 @@ pub(crate) use detection::{session_id_from_args, agent_kind_from_process, build_
 use codex_rollout::*;
 use git_branch::*;
 pub use runner::start_monitor;
+#[cfg(test)]
+pub(crate) use runner::monitor_status_changed;
 use transcripts::*;
 
 

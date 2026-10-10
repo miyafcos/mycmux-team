@@ -662,9 +662,10 @@ pub fn start_monitor(
                         }
                     }
 
-                    let status_changed = last_metadata
-                        .get(&session_id)
-                        .is_none_or(|old| old.process_status != process_status);
+                    let status_changed = monitor_status_changed(
+                        last_metadata.get(&session_id),
+                        &process_status,
+                    );
                     if status_changed {
                         let status = match process_status.as_deref() {
                             Some("working") => crate::session_state::MonitorStatus::Working,
@@ -817,6 +818,15 @@ fn observe_live_agent_kind(
     }
 }
 
+/// The monitor emits status evidence only on a changed process classification.
+pub(crate) fn monitor_status_changed(
+    previous: Option<&PtyMetadata>,
+    process_status: &Option<String>,
+) -> bool {
+    let status_changed = previous.is_none_or(|old| old.process_status != *process_status);
+    status_changed
+}
+
 fn monitor_refresh_interval(frontend_visible: bool) -> Duration {
     Duration::from_secs(if frontend_visible { 10 } else { 20 })
 }
@@ -826,6 +836,46 @@ mod tests {
     use super::{monitor_cwd, monitor_refresh_interval, observe_live_agent_kind};
     use crate::pty::monitor::{detection::DetectedAgentKind, PtyMetadata};
     use std::time::Duration;
+
+    #[test]
+    fn quiet_review_qx3_real_shell_classifier_and_monitor_emit_gate() {
+        use crate::session_state::{Activity, Evidence, MonitorStatus, OutputOrigin, SessionStateStore, UiSessionState, QUIET_AFTER_MS};
+        use crate::status_feed::StatusFeed;
+        use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+        let output_at = 1_000_100;
+        for shell in ["zsh", "cmd.exe"] {
+            let clock = Arc::new(AtomicU64::new(output_at));
+            let read_clock = clock.clone();
+            let store = SessionStateStore::with_clock(Arc::new(move || read_clock.load(Ordering::SeqCst)));
+            let feed = StatusFeed::new(store.clone());
+            store.set_change_listener(feed.change_listener());
+            let (status, status_at) = super::super::process_status_from_observation(Some(shell), Some(100), false);
+            assert_eq!(status.as_deref(), Some("idle"));
+            assert_eq!(status_at, Some(100));
+            assert!(super::monitor_status_changed(None, &status));
+            let mut previous = PtyMetadata::unobserved("quiet-shell".into());
+            previous.process_name = Some(shell.into());
+            previous.process_status = status;
+            store.ingest("quiet-shell", Evidence::monitor_status(output_at - 100, 1, MonitorStatus::Idle, None));
+            store.ingest("quiet-shell", Evidence::last_output(output_at, 1, OutputOrigin::Pty));
+            for elapsed in [10_000, 59_999, 60_000, 120_000, 3_600_000] {
+                clock.store(output_at + elapsed, Ordering::SeqCst);
+                let (observed, _) = super::super::process_status_from_observation(Some(shell), Some(100), false);
+                let emit = super::monitor_status_changed(Some(&previous), &observed);
+                assert!(!emit, "unchanged real shell classification must not emit monitor Idle");
+                if emit {
+                    store.ingest("quiet-shell", Evidence::monitor_status(output_at + elapsed, 1, MonitorStatus::Idle, None));
+                }
+                let snapshot = feed.frontend_snapshot();
+                assert_eq!(snapshot.sessions[0].status.ui_state, if elapsed < QUIET_AFTER_MS { UiSessionState::Working } else { UiSessionState::Idle });
+                assert_eq!(store.current_view("quiet-shell").unwrap().activity, Activity::Streaming);
+                previous.process_status = observed;
+            }
+            let (working, _) = super::super::process_status_from_observation(Some(shell), Some(100), true);
+            assert_eq!(working.as_deref(), Some("working"));
+            assert!(super::monitor_status_changed(Some(&previous), &working));
+        }
+    }
 
     #[test]
     fn missing_cwd_does_not_block_live_identity_or_scan_unrelated_transcripts() {

@@ -527,6 +527,7 @@ fn save_editable_artifact_inner(
 
 #[tauri::command]
 pub async fn save_editable_artifact(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     source_path: String,
     source_kind: String,
     content: String,

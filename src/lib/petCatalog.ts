@@ -5,10 +5,11 @@ import { usePetSettingsStore } from "../stores/petSettingsStore";
 /** Load external atlases only after display has been enabled. */
 export async function loadPetCatalog(): Promise<void> {
   if (usePetSettingsStore.getState().petDisplayMode === "none") return;
+  const request = usePetSettingsStore.getState().beginPetCatalogLoad();
   try {
     const listed = await listPets();
     if (usePetSettingsStore.getState().petDisplayMode === "none") return;
-    usePetSettingsStore.getState().setPets(candidatesFromListedPets(listed).candidates);
+    usePetSettingsStore.getState().setPets(candidatesFromListedPets(listed).candidates, request);
   } catch (error) {
     console.warn("[pets] Failed to load pet catalog:", error);
   }

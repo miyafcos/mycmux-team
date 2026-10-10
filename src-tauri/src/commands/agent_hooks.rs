@@ -11,6 +11,7 @@ pub async fn agent_hooks_status() -> Result<AgentHooksStatus, String> {
 
 #[tauri::command]
 pub async fn agent_hooks_set(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     app: tauri::AppHandle,
     provider: Provider,
     enabled: bool,

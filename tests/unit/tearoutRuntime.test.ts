@@ -19,6 +19,8 @@ vi.mock("../../src/components/terminal/terminalCache", async (original) => ({
 }));
 import { installTearoutRuntime, tearoutTab, tearoutPane, useTearoutStore, isTearoutChild, markTearoutChildReady, visitTearoutLocation, regrabTearoutWindow } from "../../src/lib/tearout/runtime";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { useSessionAttentionStore } from "../../src/stores/sessionAttentionStore";
+import { createPaneMoveRequest, executePaneMove } from "../../src/lib/paneMoveOperation";
 import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
 import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useUiStore } from "../../src/stores/uiStore";
@@ -720,4 +722,35 @@ describe("handoff returns to the source snapshot", () => {
       expect(record.result).toBe(mode === "failed" || mode === "request-error" ? "handoff_failed" : "handed_off");
       expect(record.destination.kind).toBe("handoff");
     });
+});
+
+
+describe("native transport common move result", () => {
+  it("rejects a generation change during the commit command before removing source ownership", async () => {
+    const feed = (epoch: number) => useSessionAttentionStore.getState().applySnapshot({ server_epoch: "move-server", seq: epoch,
+      sessions: [{ session_id: "pty-original", session_revision: epoch, status: { session_epoch: epoch, lifecycle: "alive", ui_state: "working",
+        attention: { attention_id: null, kind: "none", detail: null, state_since: 0 } } }] });
+    useSessionAttentionStore.getState().resetForTests(); feed(7);
+    const original = useWorkspaceListStore.getState().workspaces;
+    const invoke = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation(async (command: string, args: any) => {
+      if (command === "tearout_phase" && args.phase === "committed") feed(8);
+      return invoke(command, args);
+    });
+    try {
+      const result = await executePaneMove(createPaneMoveRequest(item, { kind: "native-window", gap, offset: { x: 10, y: 10 } }));
+      expect(result).toMatchObject({ status: "failed", phase: "rolled_back", receipt: "pending", reason: expect.stringContaining("execution_changed") });
+      expect(useWorkspaceListStore.getState().workspaces).toEqual(original);
+      expect(mocks.invoke.mock.calls.some(([command]) => command === "tearout_start_move")).toBe(false);
+      expect(mocks.emitTo.mock.calls.some(([, event]) => event.endsWith("tearout-delivery"))).toBe(false);
+    } finally { useSessionAttentionStore.getState().resetForTests(); }
+  });
+
+  it("reports a kept native window as moved only after the real receiver receipt", async () => {
+    mocks.escape = false;
+    const request = createPaneMoveRequest(item, { kind: "native-window", gap, offset: { x: 10, y: 10 } });
+    expect(await executePaneMove(request)).toMatchObject({ operationId: request.operationId, status: "moved", phase: "cleaned",
+      receipt: "acknowledged", destinationWindow: "mycmux-w42" });
+    expect(mocks.invoke).toHaveBeenCalledWith("tearout_phase", { id: request.operationId, phase: "received" });
+  });
 });

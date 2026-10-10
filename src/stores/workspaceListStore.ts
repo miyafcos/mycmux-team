@@ -21,7 +21,8 @@ import { applyStructuralActivation } from "../lib/focusController";
 import { useToastStore } from "./toastStore";
 import { bump as bumpPaintStat } from "../lib/paintStats";
 import { recordPerf } from "../lib/perfTimeline";
-import { usePetSettingsStore } from "./petSettingsStore";
+import { petAssignmentSettings, usePetSettingsStore } from "./petSettingsStore";
+import { choosePetAssignment, drawPetAssignment, recordPetAssignmentPlan, updatePetAssignmentBag, type PetAssignmentBag } from "../lib/petAssignment";
 import { buildWorkspaceRecord } from "./workspaceFactory";
 import {
   assertExternalLayoutMutationAllowed,
@@ -222,20 +223,21 @@ interface CreateWorkspaceOptions {
   rowDividerPinsPerCol?: boolean[][];
   activate?: boolean;
   pet?: string;
+  /** Restore a saved assignment without consuming the saved cycle again. */
+  restorePet?: boolean;
 }
 
-function resolveNewWorkspacePet(options?: CreateWorkspaceOptions): string | undefined {
-  const petSettings = usePetSettingsStore.getState();
-  const enabledPets = petSettings.pets.filter((pet) => !petSettings.petDisabled.includes(pet.id));
-  const fallbackPet = enabledPets[0]?.id ?? "clawd";
-  const generatedPet = petSettings.petNewWorkspaceMode === "choose"
-    ? undefined
-    : petSettings.petNewWorkspaceMode === "fixed"
-      ? (petSettings.petFixedId && enabledPets.some((pet) => pet.id === petSettings.petFixedId)
-        ? petSettings.petFixedId
-        : fallbackPet)
-      : enabledPets[Math.floor(Math.random() * enabledPets.length)]?.id ?? fallbackPet;
-  return options && Object.prototype.hasOwnProperty.call(options, "pet") ? options.pet : generatedPet;
+function resolveNewWorkspacePet(workspaces: readonly Workspace[], options?: CreateWorkspaceOptions): { petId?: string; bag?: PetAssignmentBag } {
+  const settings = usePetSettingsStore.getState();
+  const assignmentSettings = petAssignmentSettings(settings);
+  const usedIds = workspaces.map((workspace) => workspace.pet);
+  if (options && Object.prototype.hasOwnProperty.call(options, "pet")) {
+    if (options.pet && settings.petCatalogLoaded && !settings.pets.some((pet) => pet.id === options.pet)) {
+      return drawPetAssignment(assignmentSettings.candidateIds, usedIds, assignmentSettings.bag);
+    }
+    return { petId: options.pet };
+  }
+  return choosePetAssignment(assignmentSettings, usedIds);
 }
 
 type WorkspaceListSet = (
@@ -262,19 +264,41 @@ function commitLayoutMutation(
   mutate: (state: WorkspaceListState) => Partial<WorkspaceListState>,
   source: LayoutMutationSource = "workspace-action",
   authorizedInternalMutation = false,
+  petAssignment?: { drawnBag?: PetAssignmentBag; preserve?: boolean },
 ): void {
   assertExternalLayoutMutationAllowed(source, authorizedInternalMutation);
+  let before: Workspace[] | undefined;
+  let after: Workspace[] | undefined;
   set((state) => {
     const patch = mutate(state);
     if (patch === state) return state;
     const nextWorkspaces = patch.workspaces ?? state.workspaces;
     if (nextWorkspaces === state.workspaces) return patch;
+    before = state.workspaces;
+    after = nextWorkspaces;
     if (persistentLayoutsEqualAtStoreBoundary(state.workspaces, nextWorkspaces)) return patch;
     return {
       ...patch,
       layoutRevision: (state.layoutRevision ?? 0) + 1,
     };
   });
+  if (before && after) {
+    const settings = usePetSettingsStore.getState();
+    if (petAssignment?.preserve) {
+      if (petAssignment.drawnBag) settings.setPetRandomBag(petAssignment.drawnBag);
+    } else {
+      const previousPets = new Map(before.map((workspace) => [workspace.id, workspace.pet]));
+      const assignmentsChanged = before.length !== after.length || after.some((workspace) => !previousPets.has(workspace.id) || previousPets.get(workspace.id) !== workspace.pet);
+      if (!assignmentsChanged && !petAssignment?.drawnBag) return;
+      settings.setPetRandomBag(updatePetAssignmentBag(
+        petAssignment?.drawnBag ?? settings.petRandomBag,
+        petAssignmentSettings(settings).candidateIds,
+        before,
+        after,
+        petAssignment?.drawnBag === undefined,
+      ));
+    }
+  }
 }
 
 /**
@@ -305,6 +329,8 @@ interface WorkspaceListState {
   /** Set (or clear, with undefined) the Chrome-tab-group style workspace color. */
   setWorkspaceColor: (id: string, color: string | undefined) => void;
   setWorkspacePet: (id: string, pet: string | undefined) => void;
+  rerollWorkspacePet: (id: string) => void;
+  reconcileWorkspacePets: () => void;
   setWorkspaceStatus: (id: string, status: Workspace["status"]) => void;
   reorderWorkspaces: (fromIndex: number, toIndex: number) => void;
   setWorkspaceLayoutMetrics: (
@@ -372,6 +398,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     const previousActiveWorkspaceId = get().activeWorkspaceId;
     const id = options?.id ?? uuid();
     const normalizedSplitColumns = normalizeSplitColumns(splitColumns, panes.map((pane) => pane.id));
+    const assignment = resolveNewWorkspacePet(get().workspaces, options);
     const workspace = buildWorkspaceRecord({
       id,
       name,
@@ -381,7 +408,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       status: "running",
       createdAt: options?.createdAt ?? Date.now(),
       color: options?.color,
-      pet: resolveNewWorkspacePet(options),
+      pet: assignment.petId,
       columnWidths: options?.columnWidths,
       rowHeightsPerCol: options?.rowHeightsPerCol,
       columnDividerPins: options?.columnDividerPins,
@@ -391,7 +418,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     commitLayoutMutation(set, (state) => ({
       workspaces: [...state.workspaces, workspace],
       activeWorkspaceId: options?.activate === false ? state.activeWorkspaceId : id,
-    }));
+    }), "workspace-action", false, { drawnBag: assignment.bag, preserve: options?.restorePet });
 
     if (options?.activate !== false && previousActiveWorkspaceId !== id) {
       useUiStore.getState().bumpFocusRevision();
@@ -485,6 +512,42 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     commitLayoutMutation(set, (state) => ({
       workspaces: state.workspaces.map((workspace) => workspace.id === id ? { ...workspace, pet } : workspace),
     }));
+  },
+
+  rerollWorkspacePet: (id) => {
+    const workspaces = get().workspaces;
+    const target = workspaces.find((workspace) => workspace.id === id);
+    if (!target) return;
+    const settings = petAssignmentSettings();
+    const alternatives = settings.candidateIds.filter((petId) => petId !== target.pet);
+    const assignment = drawPetAssignment(
+      alternatives.length > 0 ? alternatives : settings.candidateIds,
+      workspaces.filter((workspace) => workspace.id !== id).map((workspace) => workspace.pet),
+      settings.bag,
+    );
+    commitLayoutMutation(set, () => ({
+      workspaces: workspaces.map((workspace) => workspace.id === id ? { ...workspace, pet: assignment.petId } : workspace),
+    }), "workspace-action", false, { drawnBag: assignment.bag });
+  },
+
+  reconcileWorkspacePets: () => {
+    const settings = usePetSettingsStore.getState();
+    if (!settings.petCatalogLoaded) return;
+    const available = new Set(settings.pets.map((pet) => pet.id));
+    const workspaces = [...get().workspaces];
+    const assignmentSettings = petAssignmentSettings(settings);
+    let bag = assignmentSettings.bag;
+    let changed = false;
+    for (let index = 0; index < workspaces.length; index++) {
+      const workspace = workspaces[index];
+      if (!workspace.pet || available.has(workspace.pet)) continue;
+      const assignment = drawPetAssignment(assignmentSettings.candidateIds, workspaces.map((item) => item.pet), bag);
+      bag = assignment.bag;
+      workspaces[index] = { ...workspace, pet: assignment.petId };
+      changed = true;
+    }
+    if (changed) commitLayoutMutation(set, () => ({ workspaces }), "workspace-action", false, { drawnBag: bag });
+    else settings.setPetRandomBag(updatePetAssignmentBag(bag, assignmentSettings.candidateIds, workspaces, workspaces));
   },
 
   setWorkspaceStatus: (id, status) => {
@@ -581,11 +644,18 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
   },
 
   _replaceWorkspaces: (workspaces, source = "workspace-action", capability) => {
+    const before = get().workspaces;
+    const oldIds = new Set(before.map((workspace) => workspace.id));
+    const created = workspaces.filter((workspace) => !oldIds.has(workspace.id));
+    const drawnBag = source === "grouping-commit" && created.length > 0
+      ? recordPetAssignmentPlan(petAssignmentSettings(), before.map((workspace) => workspace.pet), created.map((workspace) => workspace.pet))
+      : undefined;
     commitLayoutMutation(
       set,
       () => ({ workspaces }),
       source,
       capability === workspaceGroupingMutationCapability,
+      { drawnBag },
     );
   },
 
@@ -711,3 +781,13 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
 }));
 // A throwing background listener must not stop the layout change that notified it half-way.
 isolateSubscribers(useWorkspaceListStore, "workspaceList");
+
+// A partial startup catalog cannot invalidate a saved external assignment.
+usePetSettingsStore.subscribe((state, previous) => {
+  if (state.pets !== previous.pets && state.petCatalogLoaded) {
+    useWorkspaceListStore.getState().reconcileWorkspacePets();
+  } else if (state.petDisabled !== previous.petDisabled) {
+    const workspaces = useWorkspaceListStore.getState().workspaces;
+    state.setPetRandomBag(updatePetAssignmentBag(state.petRandomBag, petAssignmentSettings(state).candidateIds, workspaces, workspaces));
+  }
+});

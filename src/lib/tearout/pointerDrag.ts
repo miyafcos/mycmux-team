@@ -12,6 +12,8 @@ import { recoveryBusy } from "./recoveryNotice";
 import { afterTearoutFrame } from "./macFrame";
 
 export function usesNativePaneDrag(item: PaneDragItem): boolean {
+  // Minimap chips describe an atomic layout edit; they do not carry a native
+  // window band through the OS move loop. Their moves still use the same contract.
   if (!nativePaneTearoutEnabled(useSettingsStore.getState().nativePaneTearoutEnabled)
     || item.kind !== "tab" || item.surface === "minimap") return false;
   const tab = useWorkspaceListStore.getState().getWorkspace(item.workspaceId)?.panes

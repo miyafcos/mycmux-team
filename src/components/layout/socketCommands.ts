@@ -25,6 +25,7 @@ import {
 } from "../../lib/socketCommandWindows";
 import type { TerminalLaunchRequest } from "../terminal/terminalLaunchParams";
 import { isDeclaredTab, isRestorableTab, type RestorablePaneTab } from "../../lib/tabLifecycle";
+import { paneKindCapabilities, paneTabKind, isPersistentTab, canTransferTab } from "../../lib/paneKindCapabilities";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
 import { resolveTabMark, tabMarkSource } from "../../lib/tabMark";
@@ -2037,11 +2038,19 @@ async function closeTab(args: SocketArgs) {
     .find(candidate => candidate.tab.sessionId === sessionId);
   if (!owner) throw new Error("pane.close_tab session not found");
   const { workspace, pane, tab } = owner;
-  if (tab.type !== "terminal") throw new Error("pane.close_tab requires a terminal tab");
   const { closePaneOperation } = await import("../../lib/paneCloseOperation");
-  const result = await closePaneOperation({ kind: "tab", workspaceId: workspace.id, paneId: pane.id, tabId: tab.id }, "cli");
-  requireClosedResult(result);
-  return { workspaceId: workspace.id, paneId: pane.id, tabId: tab.id };
+  const force = socketOptionalBoolean(args, "force") ?? false;
+  const result = await closePaneOperation({ kind: "tab", workspaceId: workspace.id, paneId: pane.id, tabId: tab.id }, "cli", { force });
+  if (result.status !== "needs_confirmation") requireClosedResult(result);
+  const capabilities = paneKindCapabilities(tab);
+  return {
+    workspaceId: workspace.id, paneId: pane.id, tabId: tab.id,
+    kind: paneTabKind(tab), ...capabilities, persistent: isPersistentTab(tab), transferable: canTransferTab(tab),
+    closed: result.status === "closed",
+    effect: result.status === "needs_confirmation" ? "needs_confirmation"
+      : capabilities.closeEffect === "kill" && !isDeclaredTab(tab) ? "killed" : "hidden",
+    reason: result.reason ?? null,
+  };
 }
 
 function requireClosedResult(result: import("../../lib/paneCloseOperation").PaneCloseResult): void {
@@ -2408,6 +2417,7 @@ async function sendPaneText(args: SocketArgs, expiresAt?: number, peerRequest = 
   if (target && isDeclaredTab(target.tab)) {
     throw new Error("pane.send_text cannot target a declared tab");
   }
+  if (target && !paneKindCapabilities(target.tab).sendable) throw new Error("pane.send_text requires a terminal tab");
   if (!isKnownPaneSession(workspaces, sessionId)) {
     throw new Error("pane.send_text session is not a known pane");
   }
@@ -2419,6 +2429,7 @@ async function sendPaneText(args: SocketArgs, expiresAt?: number, peerRequest = 
       throw new Error("pane.send_text session is not a known pane");
     }
     if (current && isDeclaredTab(current.tab)) throw new Error("pane.send_text cannot target a declared tab");
+    if (current && !paneKindCapabilities(current.tab).sendable) throw new Error("pane.send_text requires a terminal tab");
   };
   return serializePaneSend(sessionId, async () => {
     validateTarget();

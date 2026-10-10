@@ -212,7 +212,7 @@ describe("LayoutMinimapPanel", () => {
     const chip = container.querySelector<HTMLElement>("[data-minimap-tab='tab']")!;
     const name = container.querySelector<HTMLElement>(".cmux-minimap-workspace-name")!;
     expect(chip.querySelector(".cmux-minimap-label")?.textContent).toBe(longLabel);
-    expect(chip.title).toBe(longLabel);
+    expect(chip.title).toBe(`${longLabel}\n休止中・会話は再開できる (プロセスは終了している)`);
     expect(chip.getAttribute("aria-label")).toContain(`${longLabel} — `);
     expect(chip.getAttribute("aria-label")).toContain("ダブルクリックで元の画面に戻る");
     expect(chip.getAttribute("aria-label")).toContain("Alt+クリックでグループ選択");
@@ -1005,7 +1005,7 @@ describe("LayoutMinimapPanel", () => {
     await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]} displayStateByTabId={new Map()} selectedTabId={null} activePaneSessionId={null} onSelect={vi.fn()} />));
     const chip = container.querySelector<HTMLElement>("[data-minimap-tab='a']")!;
     expect(chip.querySelector(".cmux-minimap-age")).toBeNull();
-    expect(chip.title).toBe("a");
+    expect(chip.title).toBe("a\n休止中・会話は再開できる (プロセスは終了している)");
     // The chip names the vendor the same way the tab bar badge does.
     expect(chip.getAttribute("aria-label")).toContain("a — Codex・");
   });

@@ -62,7 +62,8 @@ async fn prewarm_claude_live(app: &AppHandle) {
 }
 
 #[tauri::command(async)]
-pub async fn capture_cli_account(app: AppHandle, provider: CliProvider, label: Option<String>) -> Result<CliAccountProfile, String> {
+pub async fn capture_cli_account(
+    _trusted: crate::ipc_caller::TrustedAppCaller, app: AppHandle, provider: CliProvider, label: Option<String>) -> Result<CliAccountProfile, String> {
     if provider == CliProvider::Claude {
         prewarm_claude_live(&app).await;
     }
@@ -70,7 +71,8 @@ pub async fn capture_cli_account(app: AppHandle, provider: CliProvider, label: O
 }
 
 #[tauri::command(async)]
-pub async fn switch_cli_account(app: AppHandle, provider: CliProvider, profile_id: String) -> Result<CliSwitchResult, String> {
+pub async fn switch_cli_account(
+    _trusted: crate::ipc_caller::TrustedAppCaller, app: AppHandle, provider: CliProvider, profile_id: String) -> Result<CliSwitchResult, String> {
     if crate::test_profile::is_active() {
         return Err("CLI account switching is disabled while a test profile is active".to_string());
     }
@@ -100,6 +102,7 @@ pub async fn rename_cli_account(app: AppHandle, profile_id: String, label: Strin
 
 #[tauri::command(async)]
 pub async fn begin_cli_login(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     app: AppHandle,
     provider: CliProvider,
     mode: CliLoginMode,
@@ -153,7 +156,11 @@ pub async fn begin_cli_login(
         return Err(cli_accounts::ERR_LOGIN_ALREADY_RUNNING.to_string());
     }
 
-    let staging_dir = dir.display().to_string();
+    let staging_dir = if provider == CliProvider::Claude {
+        staging::claude_staging_config(&dir).0
+    } else {
+        dir.display().to_string()
+    };
     cli_accounts::login_watch::spawn(
         app.clone(),
         base,
@@ -167,11 +174,7 @@ pub async fn begin_cli_login(
         },
     );
 
-    let (command, args, env_key) = match provider {
-        CliProvider::Claude => ("claude", Vec::new(), "CLAUDE_CONFIG_DIR"),
-        CliProvider::Codex => ("codex", vec!["login".to_string()], "CODEX_HOME"),
-        CliProvider::Grok => ("grok", vec!["login".to_string()], "GROK_HOME"),
-    };
+    let (command, args, env_key) = staging::login_command(provider);
     Ok(CliLoginSession {
         login_id,
         provider,

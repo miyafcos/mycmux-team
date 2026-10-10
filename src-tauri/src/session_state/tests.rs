@@ -5,7 +5,7 @@ const STALE_AFTER: u64 = 30_000;
 
 #[test]
 fn exited_epoch_is_not_revived_by_reattach_or_late_output() {
-    let store = SessionStateStore::new();
+    let store = SessionStateStore::with_clock(std::sync::Arc::new(|| 1_000));
     store.ingest("session", lifecycle(1, EPOCH, Lifecycle::Alive));
     let exited = store.ingest("session", lifecycle(2, EPOCH, Lifecycle::Exited));
     for evidence in [
@@ -380,7 +380,7 @@ fn screen_clear_removes_only_its_source() {
 
 #[test]
 fn evidence_ledger_is_bounded_and_sorted_by_session() {
-    let store = SessionStateStore::new();
+    let store = SessionStateStore::with_clock(std::sync::Arc::new(|| 1_000));
     for observed_at in 1..=40 {
         store.ingest(
             "session-b",
@@ -398,7 +398,7 @@ fn evidence_ledger_is_bounded_and_sorted_by_session() {
 
 #[test]
 fn snapshot_can_bind_each_session_to_its_pty_input_revision() {
-    let store = SessionStateStore::new();
+    let store = SessionStateStore::with_clock(std::sync::Arc::new(|| 1_000));
     store.ingest("session-a", lifecycle(1, EPOCH, Lifecycle::Alive));
     store.ingest("session-b", lifecycle(1, EPOCH, Lifecycle::Alive));
 
@@ -414,19 +414,19 @@ fn snapshot_can_bind_each_session_to_its_pty_input_revision() {
 
 #[test]
 fn current_view_guard_blocks_same_session_updates_until_operation_finishes() {
-    let store = SessionStateStore::new();
+    let store = SessionStateStore::with_clock(std::sync::Arc::new(|| 1_000));
     store.ingest("session-a", lifecycle(1, EPOCH, Lifecycle::Alive));
     let updating_store = store.clone();
 
     store.with_current_view("session-a", |_| {
         assert!(matches!(
-            updating_store.sessions.try_get_mut("session-a"),
+            updating_store.inner.sessions.try_get_mut("session-a"),
             dashmap::try_result::TryResult::Locked
         ));
     });
 
     assert!(matches!(
-        store.sessions.try_get_mut("session-a"),
+        store.inner.sessions.try_get_mut("session-a"),
         dashmap::try_result::TryResult::Present(_)
     ));
 }

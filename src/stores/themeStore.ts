@@ -66,6 +66,15 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
     recommendedLineHeight: 1.35,
   },
   {
+    id: "hackgen-console",
+    label: "HackGen Console (同梱)",
+    value: "'HackGen Console NF', 'UDEV Gothic NF', 'BIZ UDGothic', ui-monospace, 'MS Gothic', monospace",
+    sample: "Aa 0123 日本語",
+    description: "白源。Hack の英数字と源柔ゴシックの日本語、Nerd Fonts のアイコン入り。Mac の端末で使い慣れた人向け",
+    tags: ["コード", "同梱", "アイコン"],
+    recommendedLineHeight: 1.4,
+  },
+  {
     id: "udev-gothic",
     label: "UDEV Gothic",
     value: "'UDEV Gothic NF', 'UDEV Gothic', 'BIZ UDGothic', 'MS Gothic', monospace",

@@ -5,8 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PetTab } from "../../src/components/settings/tabs/PetTab";
 import { loadPetCatalog } from "../../src/lib/petCatalog";
 import { listPets, listQuarantinedPets } from "../../src/lib/ipc";
-import { bundledPet, type ListedPet } from "../../src/lib/pets";
+import { bundledPet, candidatesFromListedPets, type ListedPet } from "../../src/lib/pets";
 import { usePetSettingsStore } from "../../src/stores/petSettingsStore";
+import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { petSettingsStrings } from "../../src/components/settings/settingsStrings";
 
 vi.mock("../../src/lib/ipc", () => ({
   listPets: vi.fn(),
@@ -26,12 +28,16 @@ const external: ListedPet = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useWorkspaceListStore.setState(useWorkspaceListStore.getInitialState(), true);
   usePetSettingsStore.setState(usePetSettingsStore.getInitialState(), true);
   vi.mocked(listPets).mockResolvedValue([external]);
   vi.mocked(listQuarantinedPets).mockResolvedValue([]);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  useWorkspaceListStore.setState(useWorkspaceListStore.getInitialState(), true);
+  vi.unstubAllGlobals();
+});
 
 describe("pet display opt-in", () => {
   it("defaults new and missing settings to off and keeps clawd", () => {
@@ -65,6 +71,39 @@ describe("pet display opt-in", () => {
     resolve([external]);
     await pending;
     expect(usePetSettingsStore.getState().pets).toEqual([bundledPet]);
+  });
+  it("does not let an older catalog remove a newly installed workspace pet", async () => {
+    let resolve!: (pets: ListedPet[]) => void;
+    vi.mocked(listPets).mockReturnValue(new Promise((done) => { resolve = done; }));
+    usePetSettingsStore.getState().setPetDisplayMode("ws");
+    const pending = loadPetCatalog();
+    usePetSettingsStore.getState().setPets(candidatesFromListedPets([external]).candidates);
+    const workspace = useWorkspaceListStore.getState().createWorkspace("Saved", "1x1", [], [], { pet: external.id, activate: false });
+    resolve([]);
+    await pending;
+    expect(usePetSettingsStore.getState().pets.map((pet) => pet.id)).toContain(external.id);
+    expect(useWorkspaceListStore.getState().getWorkspace(workspace.id)?.pet).toBe(external.id);
+  });
+  it("offers the non-repeating default and the legacy random rollback in settings", async () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    usePetSettingsStore.getState().setPetDisplayMode("ws");
+    try {
+      await act(async () => root.render(createElement(PetTab)));
+      const radios = container.querySelectorAll<HTMLInputElement>('input[name="pet-new-workspace"]');
+      expect(radios).toHaveLength(3);
+      expect(radios[0].checked).toBe(true);
+      expect(container.textContent).toContain(petSettingsStrings.newWsRandom);
+      expect(container.textContent).toContain(petSettingsStrings.newWsRandomRepeat);
+      await act(async () => radios[1].click());
+      expect(usePetSettingsStore.getState().petNewWorkspaceMode).toBe("random-repeat");
+      expect(radios[1].checked).toBe(true);
+      expect(container.textContent).not.toContain(petSettingsStrings.newWsRandomHint);
+      await act(async () => radios[0].click());
+      expect(usePetSettingsStore.getState().petNewWorkspaceMode).toBe("random");
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
   it("opens settings without scanning or showing external pets; opt-in loads them", async () => {
     const container = document.createElement("div");

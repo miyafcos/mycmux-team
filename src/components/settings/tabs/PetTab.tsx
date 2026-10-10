@@ -38,6 +38,7 @@ export function PetTab() {
   const setPets = usePetSettingsStore((state) => state.setPets);
   const workspaces = useWorkspaceListStore((state) => state.workspaces);
   const setWorkspacePet = useWorkspaceListStore((state) => state.setWorkspacePet);
+  const rerollWorkspacePet = useWorkspaceListStore((state) => state.rerollWorkspacePet);
   const [scanning, setScanning] = useState(false);
   const [invalidPets, setInvalidPets] = useState<ListedPet[]>([]);
   const [quarantinedPets, setQuarantinedPets] = useState<QuarantinedPet[]>([]);
@@ -54,12 +55,13 @@ export function PetTab() {
   const rescan = useCallback(async () => {
     if (usePetSettingsStore.getState().petDisplayMode === "none") return;
     const currentRequest = ++requestId.current;
+    const catalogRequest = usePetSettingsStore.getState().beginPetCatalogLoad();
     setScanning(true);
     try {
       const [listed, quarantined] = await Promise.all([listPets(), listQuarantinedPets()]);
-      if (currentRequest === requestId.current && usePetSettingsStore.getState().petDisplayMode !== "none") {
+      if (currentRequest === requestId.current && catalogRequest === usePetSettingsStore.getState().petCatalogRequest && usePetSettingsStore.getState().petDisplayMode !== "none") {
         const candidates = candidatesFromListedPets(listed);
-        setPets(candidates.candidates);
+        setPets(candidates.candidates, catalogRequest);
         setInvalidPets(candidates.invalid);
         setQuarantinedPets(quarantined);
       }
@@ -83,17 +85,6 @@ export function PetTab() {
     if (!isDisabled && enabledPets.length <= 1) return;
     setDisabled(isDisabled ? disabled.filter((value) => value !== id) : [...disabled, id]);
     if (!isDisabled && fixedId === id) setFixedId(enabledPets.find((pet) => pet.id !== id)?.id);
-  };
-
-  const nextPet = (currentId: string | undefined, random: boolean) => {
-    if (enabledPets.length === 0) return undefined;
-    if (random) {
-      const alternatives = enabledPets.filter((pet) => pet.id !== currentId);
-      const pool = alternatives.length > 0 ? alternatives : enabledPets;
-      return pool[Math.floor(Math.random() * pool.length)]?.id;
-    }
-    const index = enabledPets.findIndex((pet) => pet.id === currentId);
-    return enabledPets[(index + 1 + enabledPets.length) % enabledPets.length]?.id;
   };
 
   const quarantine = async (folder: string) => {
@@ -204,11 +195,12 @@ export function PetTab() {
       <div style={dividerStyle} />
       <section>
         <div style={sectionHeadingStyle}>{petSettingsStrings.newWsTitle}</div>
+        {newWorkspaceMode === "random" && <div style={hintStyle}>{petSettingsStrings.newWsRandomHint}</div>}
         {/* "choose" has no picker UI yet (falls back silently) — do not offer it */}
-        {(["random", "fixed"] as const).map((mode) => (
+        {(["random", "random-repeat", "fixed"] as const).map((mode) => (
           <label key={mode} style={radioStyle}>
             <input type="radio" name="pet-new-workspace" checked={newWorkspaceMode === mode} onChange={() => setNewWorkspaceMode(mode)} />
-            <span>{mode === "random" ? petSettingsStrings.newWsRandom : petSettingsStrings.newWsFixed}</span>
+            <span>{mode === "random" ? petSettingsStrings.newWsRandom : mode === "random-repeat" ? petSettingsStrings.newWsRandomRepeat : petSettingsStrings.newWsFixed}</span>
           </label>
         ))}
         {newWorkspaceMode === "fixed" && (
@@ -270,7 +262,7 @@ export function PetTab() {
                 <span style={{ display: "flex", marginRight: -8 }}><PetSprite atlasUrl={(pet ?? resolvePet(pets, undefined)).atlasUrl} state="resting" height={26} /></span>
                 <span style={{ flex: 1, minWidth: 0, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{workspace.name}</span>
                 <span style={{ maxWidth: 108, fontSize: 11, color: "var(--cmux-text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pet?.name ?? "-"}</span>
-                <button type="button" style={dialogButtonStyle} onClick={() => setWorkspacePet(workspace.id, nextPet(workspace.pet, true))}>{petSettingsStrings.rerollButton}</button>
+                <button type="button" style={dialogButtonStyle} onClick={() => rerollWorkspacePet(workspace.id)}>{petSettingsStrings.rerollButton}</button>
                 <button type="button" style={dialogButtonStyle} aria-haspopup="dialog" aria-expanded={pickerWorkspaceId === workspace.id} onClick={() => setPickerWorkspaceId((current) => current === workspace.id ? null : workspace.id)}>{petSettingsStrings.changeButton}</button>
                 {pickerWorkspaceId === workspace.id && (
                   <div className="cmux-popover-panel" role="dialog" aria-label={petSettingsStrings.petPickerTitle} style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 10, width: 250, maxWidth: "calc(100vw - 32px)", padding: 8, display: "grid", gap: 8, background: "var(--cmux-popover)", border: "1px solid var(--cmux-border)", borderRadius: 7, boxShadow: "var(--cmux-shadow-popover)" }}>

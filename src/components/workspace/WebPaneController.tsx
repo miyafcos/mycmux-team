@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { usePaneDragStore } from "../../stores/paneDragStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
@@ -237,7 +238,7 @@ export default function WebPaneController() {
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
-    void listen<WebPaneForwardedKey>(WEB_PANE_KEYDOWN_EVENT, (event) => {
+    void getCurrentWebview().listen<WebPaneForwardedKey>(WEB_PANE_KEYDOWN_EVENT, (event) => {
       dispatchWebPaneKeydown(
         event.payload,
         forwardedShortcutsRef.current,

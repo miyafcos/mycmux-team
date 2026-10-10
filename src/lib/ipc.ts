@@ -1,4 +1,10 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
+export {
+  setDshExperimentEnabled, startDshExperiment, getDshExperimentStatus, readDshExperiment,
+  sendDshPrompt, cancelDshPrompt, answerDshPermission, closeDshSession, stopDshOwnedProcess,
+  type DshRunRef, type DshRead, type DshState, type DshDelivery,
+  type DshStartRequest, type DshPromptRequest, type DshPermissionAnswer,
+} from "./agentAdapterApi";
 import { PtyOutputChannel } from "./ptyOutputChannel";
 import { withTerminalDeadline, TERMINAL_ATTACH_TIMEOUT_MS } from "./terminalDeadline";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -636,6 +642,30 @@ export interface PtyMetadata {
 
 export type PtyMetadataSnapshot = Record<string, PtyMetadata>;
 export type SessionOutputSnapshot = Record<string, number | null>;
+
+/** Available physical memory in MiB; null means this environment cannot measure it. */
+export function getAvailableMemoryMiB(): Promise<number | null> {
+  return invoke<number | null>("get_available_memory_mib");
+}
+
+export interface DormancyRecordReceipt {
+  ptySessionId: string;
+  agentKind: "claude" | "codex";
+  agentSessionId: string;
+  ptyGeneration: number;
+  savedAt: number;
+  bytes: number;
+}
+
+export function saveAgentDormancyRecord(ptySessionId: string, agentKind: "claude" | "codex", agentSessionId: string): Promise<DormancyRecordReceipt> {
+  return invoke<DormancyRecordReceipt>("save_agent_dormancy_record", { ptySessionId, agentKind, agentSessionId });
+}
+
+export function getAgentDormancyRecord(receipt: DormancyRecordReceipt): Promise<import("./livebrief").LiveSessionEvents> {
+  return invoke<import("./livebrief").LiveSessionEvents>("get_agent_dormancy_record", {
+    ptySessionId: receipt.ptySessionId, agentKind: receipt.agentKind, agentSessionId: receipt.agentSessionId,
+  });
+}
 
 export type SessionAttentionKind = "none" | "input" | "approval" | "rate_limited" | "error" | "done";
 export type SessionUiState = "working" | "idle" | "waiting" | "done" | "unknown";
@@ -1306,9 +1336,10 @@ export interface AppSettings {
   ui_font_scale?: number;
   sidebar_width?: number;
   pet_display_mode?: "ws" | "both" | "none";
-  pet_new_ws_mode?: "random" | "choose" | "fixed";
+  pet_new_ws_mode?: "random" | "random-repeat" | "choose" | "fixed";
   pet_disabled?: string[];
   pet_fixed_id?: string | null;
+  pet_random_bag?: import("./petAssignment").PetAssignmentBag | null;
   ai_provider?: string;
   ai_model?: string;
   ai_enabled?: boolean;

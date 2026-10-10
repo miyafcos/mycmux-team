@@ -2,6 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AGENT_DORMANT_MINUTES_STORAGE_KEY,
   DEFAULT_AGENT_DORMANT_MINUTES,
+  DEFAULT_DORMANCY_PRESSURE_SETTINGS,
+  countDormancySeats,
+  classifyDormancyNotifications,
+  evaluateDormancy,
+  normalizeDormancyPressureSettings,
   fingerprintDormancySemanticState,
   hasFreshAgentWork,
   hasWorkingScreenEvidence,
@@ -19,6 +24,7 @@ import {
   shouldDormantSession,
   type DormantSessionCandidate,
 } from "../../src/lib/agentDormancy";
+import { matchesDormancyApproval } from "../../src/stores/agentDormancyStore";
 import type { PaneTab } from "../../src/types";
 
 const NOW = 10_000_000;
@@ -47,6 +53,114 @@ function candidate(overrides: Partial<DormantSessionCandidate> = {}): DormantSes
     ...overrides,
   };
 }
+
+describe("unread completion dormancy", () => {
+  const complete = { notificationState: "completion_only" as const, hasAttention: true, allowUnreadCompletion: true };
+  it("requires a saved transcript before an unread completion can stop its process", () => {
+    expect(resolveDormantAction(candidate(complete), NOW)).toBe("saveTranscript");
+    expect(shouldDormantSession(candidate(complete), NOW)).toBe(false);
+    expect(resolveDormantAction(candidate({ ...complete, completionTranscriptSaved: true }), NOW)).toBe("kill");
+  });
+  it("the opt-out preserves the old unread-completion protection", () => {
+    expect(resolveDormantAction(candidate({ ...complete, allowUnreadCompletion: false, completionTranscriptSaved: true }), NOW)).toBe("none");
+  });
+  it.each(["input", "approval", "error", "rate_limited"] as const)("%s remains protected alongside completion", (attentionKind) => {
+    const notificationState = classifyDormancyNotifications({ attentionKind, unseenCompletion: true,
+      notificationCount: 0, workDoneCount: 1, waiting: false, hasQuestion: false });
+    expect(notificationState).toBe("blocking");
+    expect(resolveDormantAction(candidate({ ...complete, notificationState, completionTranscriptSaved: true }), NOW)).toBe("none");
+  });
+  it.each([{ hasQuestion: true }, { notificationCount: 1 }, { waiting: true }])("questions and unknown notifications remain protected: %j", (guard) => {
+    expect(classifyDormancyNotifications({ unseenCompletion: true, notificationCount: 0,
+      workDoneCount: 1, waiting: false, hasQuestion: false, ...guard })).toBe("blocking");
+  });
+});
+
+describe("tiered dormancy policy", () => {
+  it("counts peer windows once and ignores a stale published copy of this workspace", () => {
+    const own = [{ id: "own", panes: [{ tabs: [{ id: "local" }] }] }];
+    const peer = { id: "peer", name: "peer", grid_template_id: "1x1", created_at: 1,
+      panes: [{ agent_id: "shell", label: null, tabs: Array.from({ length: 39 }, (_, i) => ({ agent_id: "shell", tab_id: `peer-${i}` })) }] };
+    expect(countDormancySeats(own, [
+      { window_label: "main", workspaces: [{ ...peer, id: "own" }] },
+      { window_label: "peer", workspaces: [peer] },
+      { window_label: "pending", pending: true, workspaces: [peer] },
+    ])).toBe(40);
+  });
+
+  it("legacy single-session peer panes still count as seats", () => {
+    expect(countDormancySeats([], [{ window_label: "peer", workspaces: [{ id: "peer", name: "peer",
+      grid_template_id: "1x1", created_at: 1, panes: [{ agent_id: "shell", label: null }] }] }])).toBe(1);
+  });
+  it.each([
+    ["normal retains sixty minutes", 3000, 30, 59, "normal", false, false],
+    ["normal reaches the existing timeout", 3000, 30, 60, "normal", true, false],
+    ["memory pressure proposes after fifteen minutes", 2048, 30, 15, "pressure", true, true],
+    ["seat count independently proposes", 3000, 40, 15, "pressure", true, true],
+    ["strong memory pressure proposes after five minutes", 1024, 30, 5, "severe", true, true],
+    ["strong seat pressure still only proposes", 3000, 60, 60, "severe", true, true],
+    ["unavailable memory falls back despite many seats", null, 100, 15, "time_only", false, false],
+    ["unavailable memory retains the existing timeout", null, 100, 60, "time_only", true, false],
+    ["invalid memory falls back", -1, 100, 15, "time_only", false, false],
+  ] as const)("%s", (_name, memory, paneCount, idleMinutes, stage, eligible, confirm) => {
+    expect(evaluateDormancy(candidate({ lastActivityAt: NOW - idleMinutes * 60_000 }), NOW,
+      { availableMemoryMiB: memory, paneCount })).toMatchObject({ stage, candidate: eligible, requiresConfirmation: confirm });
+  });
+
+  it.each([
+    { processStatus: "working" as const, processName: "compiler" },
+    { agentStatus: "working" as const, agentStatusFresh: true },
+    { agentStatus: "waiting" as const, agentStatusFresh: true },
+    { hasAttention: true },
+    { visible: true },
+    { screenWorking: true },
+    { rateLimited: true },
+    { resumeSessionId: null },
+    { processStatus: null },
+    { thresholdMs: 0 },
+  ])("strong pressure preserves the protection %j", (guard) => {
+    expect(evaluateDormancy(candidate(guard), NOW, { availableMemoryMiB: 0, paneCount: 100 }))
+      .toMatchObject({ stage: "severe", action: "none", candidate: false });
+  });
+
+  it("turning pressure off restores time-only behavior", () => {
+    expect(evaluateDormancy(candidate({ lastActivityAt: NOW - 15 * 60_000 }), NOW,
+      { availableMemoryMiB: 512, paneCount: 100 }, { ...DEFAULT_DORMANCY_PRESSURE_SETTINGS, enabled: false }))
+      .toMatchObject({ stage: "time_only", candidate: false, thresholdMs: THRESHOLD_MS });
+  });
+
+  it("pressure never extends a shorter user-selected timeout", () => {
+    expect(evaluateDormancy(candidate({ thresholdMs: 2 * 60_000 }), NOW, { availableMemoryMiB: 512, paneCount: 10 }))
+      .toMatchObject({ thresholdMs: 2 * 60_000, requiresConfirmation: true });
+  });
+
+  it("a mounted cache can be evicted but is not a process-stop candidate", () => {
+    expect(evaluateDormancy(candidate({ mounted: true }), NOW, { availableMemoryMiB: 512, paneCount: 10 }))
+      .toMatchObject({ action: "evictCache", candidate: false, requiresConfirmation: false });
+  });
+
+  it("invalid thresholds fall back and the severe tier stays within the pressure tier", () => {
+    expect(normalizeDormancyPressureSettings({ memoryPressureMiB: NaN, severeMemoryMiB: 4000,
+      panePressureCount: 80, severePaneCount: 2, pressureIdleMinutes: 3, severeIdleMinutes: 9 }))
+      .toMatchObject({ memoryPressureMiB: 2048, severeMemoryMiB: 2048, panePressureCount: 80,
+        severePaneCount: 80, pressureIdleMinutes: 3, severeIdleMinutes: 3 });
+  });
+});
+
+describe("dormancy approval binding", () => {
+  const target = { sessionId: "pty", resumeSessionId: "conversation", agentKind: "claude" as const,
+    lastActivityAt: 100, processStatusAt: 200 };
+  const approval = { ...target, label: "test", workspaceName: "test", idleMinutes: 15, stage: "pressure" as const, approvedAt: NOW };
+  it("accepts a fresh approval for the unchanged conversation", () => {
+    expect(matchesDormancyApproval(approval, target, NOW)).toBe(true);
+  });
+  it.each([{ resumeSessionId: "other" }, { lastActivityAt: 101 }, { processStatusAt: 201 }])("rejects a changed target %j", (change) => {
+    expect(matchesDormancyApproval(approval, { ...target, ...change }, NOW)).toBe(false);
+  });
+  it("does not carry an approval into a later sweep", () => {
+    expect(matchesDormancyApproval(approval, target, NOW + 60_001)).toBe(false);
+  });
+});
 
 describe("agent dormancy threshold", () => {
   it("uses the default minutes and disables at zero", () => {

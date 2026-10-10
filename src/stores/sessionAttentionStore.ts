@@ -7,12 +7,14 @@ import {
   type SessionStatusChangedPayload,
   type SessionStatusSnapshotPayload,
   type SessionUiState,
+  type DormancyRecordReceipt,
 } from "../lib/ipc";
 import { readSessionStatusSignals, type SessionStatusSignals } from "../lib/sessionStatusSignals";
 import type { PaneTab, Workspace } from "../types";
 
 export const SEEN_ATTENTION_STORAGE_KEY = "mycmux:seen-attention-by-tab";
 export const DONE_MARK_STORAGE_KEY = "mycmux:done-mark-by-tab";
+export const DORMANT_COMPLETIONS_STORAGE_KEY = "mycmux:dormant-completions";
 
 interface StorageLike {
   getItem: (key: string) => string | null;
@@ -29,6 +31,12 @@ export interface SessionAttention {
   uiState: SessionUiState;
   stateSince: number;
   occurrenceOrder: number;
+}
+
+export interface DormantCompletionRecord {
+  receipt: DormancyRecordReceipt;
+  tabIds: string[];
+  attention: SessionAttention;
 }
 
 export type AttentionCategory = "waiting" | "error" | "done";
@@ -56,6 +64,8 @@ interface SessionAttentionState {
   statusSignalsBySession: Record<string, SessionStatusSignals>;
   seenAttentionByTab: Map<string, string>;
   doneMarkByTab: Map<string, number>;
+  dormantCompletionsBySession: Record<string, DormantCompletionRecord>;
+  preserveDormantCompletion: (sessionId: string, tabIds: string[], receipt: DormancyRecordReceipt, expectedAttentionId: string | null) => boolean;
   nextOccurrenceOrder: number;
   serverEpoch: string | null;
   lastSeq: number;
@@ -74,6 +84,61 @@ function browserStorage(): StorageLike | null {
   } catch {
     return null;
   }
+}
+
+export function readDormantCompletions(storage: StorageLike | null = browserStorage()): Record<string, DormantCompletionRecord> {
+  try {
+    const parsed: unknown = JSON.parse(storage?.getItem(DORMANT_COMPLETIONS_STORAGE_KEY) ?? "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter(([id, value]) => {
+      const record = value as Partial<DormantCompletionRecord> | null;
+      const receipt = record?.receipt;
+      return receipt?.ptySessionId === id && (receipt.agentKind === "claude" || receipt.agentKind === "codex")
+        && typeof receipt.agentSessionId === "string" && receipt.agentSessionId.length > 0
+        && Number.isSafeInteger(receipt.bytes) && receipt.bytes > 0 && Number.isSafeInteger(receipt.savedAt)
+        && Number.isSafeInteger(receipt.ptyGeneration) && Array.isArray(record?.tabIds)
+        && record.tabIds.every((tabId) => typeof tabId === "string")
+        && record.attention?.kind === "done" && typeof record.attention.attentionId === "string"
+        && record.attention.sessionId === id;
+    })) as Record<string, DormantCompletionRecord>;
+  } catch { return {}; }
+}
+
+function persistDormantCompletions(records: Record<string, DormantCompletionRecord>): boolean {
+  try {
+    const storage = browserStorage();
+    if (!storage) return false;
+    storage.setItem(DORMANT_COMPLETIONS_STORAGE_KEY, JSON.stringify(records));
+    return true;
+  } catch { return false; }
+}
+
+type AttentionFeedState = Pick<SessionAttentionState, "attentionBySession" | "statusSignalsBySession" | "nextOccurrenceOrder">;
+function retainDormantCompletions(
+  next: AttentionFeedState,
+  previousRecords: Record<string, DormantCompletionRecord>,
+  payloads: FeedSessionPayload[],
+): AttentionFeedState & Pick<SessionAttentionState, "dormantCompletionsBySession"> {
+  const records = { ...previousRecords };
+  let changed = false;
+  for (const payload of payloads) {
+    const record = records[payload.session_id];
+    if (!record || (next.attentionBySession[payload.session_id]?.sessionRevision ?? 0) > payload.session_revision) continue;
+    if (payload.status.lifecycle === "alive" && (
+      payload.status.session_epoch !== record.attention.sessionEpoch || payload.status.ui_state === "working"
+      || (payload.status.attention.kind !== "none" && payload.status.attention.kind !== "done")
+      || (payload.status.attention.kind === "done" && payload.status.attention.attention_id !== record.attention.attentionId)
+    )) { delete records[payload.session_id]; changed = true; }
+  }
+  const attentionBySession = { ...next.attentionBySession };
+  for (const [sessionId, record] of Object.entries(records)) {
+    const current = attentionBySession[sessionId];
+    if (!current || current.kind === "none") attentionBySession[sessionId] = {
+      ...record.attention, sessionRevision: current?.sessionRevision ?? record.attention.sessionRevision,
+    };
+  }
+  if (changed) persistDormantCompletions(records);
+  return { ...next, attentionBySession, dormantCompletionsBySession: records };
 }
 
 export function readSeenAttention(storage: StorageLike | null = browserStorage()): Map<string, string> {
@@ -317,11 +382,13 @@ export function resolveNextAttentionTarget(
   return candidates[(currentIndex + 1) % candidates.length];
 }
 
+const initialDormantCompletions = readDormantCompletions();
 export const useSessionAttentionStore = create<SessionAttentionState>((set) => ({
-  attentionBySession: {},
+  attentionBySession: Object.fromEntries(Object.entries(initialDormantCompletions).map(([id, record]) => [id, record.attention])),
   statusSignalsBySession: {},
   seenAttentionByTab: readSeenAttention(),
   doneMarkByTab: readDoneMarks(),
+  dormantCompletionsBySession: initialDormantCompletions,
   nextOccurrenceOrder: 1,
   serverEpoch: null,
   lastSeq: 0,
@@ -338,7 +405,7 @@ export const useSessionAttentionStore = create<SessionAttentionState>((set) => (
       || left.session_id.localeCompare(right.session_id)
     ));
     for (const session of ordered) next = applyPayload(next, session);
-    return { ...next, serverEpoch: payload.server_epoch, lastSeq: payload.seq };
+    return { ...retainDormantCompletions(next, state.dormantCompletionsBySession, payload.sessions), serverEpoch: payload.server_epoch, lastSeq: payload.seq };
   }),
 
   applyChanged: (payload) => set((state) => {
@@ -348,11 +415,35 @@ export const useSessionAttentionStore = create<SessionAttentionState>((set) => (
       ? state
       : { attentionBySession: {}, statusSignalsBySession: {}, nextOccurrenceOrder: 1 };
     return {
-      ...applyPayload(base, payload),
+      ...retainDormantCompletions(applyPayload(base, payload), state.dormantCompletionsBySession, [payload]),
       serverEpoch: payload.server_epoch,
       lastSeq: payload.seq,
     };
   }),
+
+  preserveDormantCompletion: (sessionId, tabIds, receipt, expectedAttentionId) => {
+    let preserved = false;
+    set((state) => {
+      const current = state.attentionBySession[sessionId];
+      if (receipt.ptySessionId !== sessionId || receipt.bytes <= 0 || !Number.isFinite(receipt.bytes)
+        || !Number.isSafeInteger(receipt.savedAt) || !Number.isSafeInteger(receipt.ptyGeneration) || tabIds.length === 0
+        || (current && (current.uiState === "working" || !["none", "done"].includes(current.kind)))
+        || (expectedAttentionId !== null && current?.attentionId !== expectedAttentionId)
+        || (current?.sessionEpoch != null && current.sessionEpoch !== receipt.ptyGeneration)) return state;
+      const attention: SessionAttention = current?.kind === "done" && current.attentionId ? { ...current } : {
+        sessionId, sessionEpoch: receipt.ptyGeneration, attentionId: `dormant:${receipt.agentSessionId}:${receipt.savedAt}`,
+        kind: "done", detail: null, sessionRevision: current?.sessionRevision ?? 0, uiState: "done",
+        stateSince: receipt.savedAt, occurrenceOrder: state.nextOccurrenceOrder,
+      };
+      const records = { ...state.dormantCompletionsBySession, [sessionId]: { receipt, tabIds, attention } };
+      if (!persistDormantCompletions(records)) return state;
+      preserved = true;
+      return { dormantCompletionsBySession: records,
+        nextOccurrenceOrder: current?.kind === "done" ? state.nextOccurrenceOrder : state.nextOccurrenceOrder + 1,
+        attentionBySession: { ...state.attentionBySession, [sessionId]: attention } };
+    });
+    return preserved;
+  },
 
   markSeen: (tabId, attentionId) => set((state) => {
     if (state.seenAttentionByTab.get(tabId) === attentionId) return state;
@@ -378,13 +469,19 @@ export const useSessionAttentionStore = create<SessionAttentionState>((set) => (
     return { doneMarkByTab };
   }),
 
-  hydrateSeen: () => set({ seenAttentionByTab: readSeenAttention(), doneMarkByTab: readDoneMarks() }),
+  hydrateSeen: () => set((state) => {
+    const dormantCompletionsBySession = readDormantCompletions();
+    return { seenAttentionByTab: readSeenAttention(), doneMarkByTab: readDoneMarks(),
+      ...retainDormantCompletions({ attentionBySession: state.attentionBySession,
+        statusSignalsBySession: state.statusSignalsBySession, nextOccurrenceOrder: state.nextOccurrenceOrder }, dormantCompletionsBySession, []) };
+  }),
 
   resetForTests: () => set({
     attentionBySession: {},
     statusSignalsBySession: {},
     seenAttentionByTab: new Map(),
     doneMarkByTab: new Map(),
+    dormantCompletionsBySession: {},
     nextOccurrenceOrder: 1,
     serverEpoch: null,
     lastSeq: 0,

@@ -4,6 +4,10 @@ import { OverlayShell } from "../common/OverlayShell";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { inboxSenderLabel, inboxStrings, listInboxEntries, openInboxEntry, type InboxEntry } from "../../lib/inbox";
 
+// The panel buttons carry .cmux-title-btn but no inline reset, so the browser's
+// default grey fill and white bevel showed through and read as already pressed.
+const ghostButtonStyle = { background: "none", border: "none", color: "var(--cmux-text-secondary)", cursor: "pointer", padding: "3px 8px", fontSize: 12, display: "flex", alignItems: "center" } as const;
+
 function InboxPanel({ open, closing, onClose }: { open: boolean; closing: boolean; onClose: () => void }) {
   const [entries, setEntries] = useState<InboxEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,8 +33,8 @@ function InboxPanel({ open, closing, onClose }: { open: boolean; closing: boolea
         <strong>{inboxStrings.title}</strong>
         <div style={{ fontSize: 12, color: "var(--cmux-text-secondary)", marginTop: 4 }}>{inboxStrings.recent}</div>
       </div>
-      <button type="button" className="cmux-title-btn" disabled={loading || !open} onClick={() => setRefresh((value) => value + 1)}>{inboxStrings.refresh}</button>
-      <button type="button" className="cmux-title-btn" aria-label={inboxStrings.close} onClick={onClose}><X size={14} /></button>
+      <button type="button" className="cmux-title-btn" style={ghostButtonStyle} disabled={loading || !open} onClick={() => setRefresh((value) => value + 1)}>{inboxStrings.refresh}</button>
+      <button type="button" className="cmux-title-btn" style={ghostButtonStyle} aria-label={inboxStrings.close} onClick={onClose}><X size={14} /></button>
     </header>
     <div style={{ padding: 16, overflowY: "auto", minHeight: 0, color: "var(--cmux-text)" }}>
       {loading ? <p role="status">{inboxStrings.loading}</p> : error ? <p role="alert">{inboxStrings.failed}</p> :
@@ -43,7 +47,7 @@ function InboxPanel({ open, closing, onClose }: { open: boolean; closing: boolea
                 {inboxSenderLabel(entry.from)} · {entry.receivedAt ? new Date(entry.receivedAt).toLocaleString() : ""}
               </div>
             </div>
-            <button type="button" className="cmux-title-btn" disabled={!open} aria-label={entry.title + " " + inboxStrings.open} onClick={() => {
+            <button type="button" className="cmux-title-btn" style={ghostButtonStyle} disabled={!open} aria-label={entry.title + " " + inboxStrings.open} onClick={() => {
               onClose();
               void openInboxEntry(entry);
             }}>{inboxStrings.open}</button>

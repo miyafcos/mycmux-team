@@ -5,6 +5,7 @@ import { runUpdateCheck, type UpdatePhase } from "../../../lib/forcedAutoUpdater
 import { hasWindowRole, useWindowRole } from "../../../lib/windowContext";
 import { invoke } from "@tauri-apps/api/core";
 import { dialogButtonStyle, sectionHeadingStyle } from "../tabStyles";
+import bundledFontLicense from "../../../assets/fonts/OFL.txt?raw";
 
 type UpdateStatus = "idle" | "checking" | "latest" | "downloading" | "ready" | "error";
 
@@ -99,6 +100,33 @@ export function AppInfoTab() {
           {updateMsg}
         </div>
       )}
+
+      <section style={{ marginTop: 20 }}>
+        <div style={sectionHeadingStyle}>同梱フォントのライセンス</div>
+        <details style={{ fontSize: 12, color: "var(--cmux-text)" }}>
+          <summary style={{ cursor: "pointer" }}>
+            UDEV Gothic NF / HackGen Console NF (SIL Open Font License 1.1)
+          </summary>
+          <pre
+            style={{
+              maxHeight: 240,
+              overflow: "auto",
+              marginTop: 12,
+              padding: 12,
+              border: "1px solid var(--cmux-border)",
+              borderRadius: 6,
+              background: "var(--cmux-bg)",
+              fontFamily: "var(--cmux-font-mono)",
+              fontSize: 11,
+              lineHeight: 1.5,
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
+            }}
+          >
+            {bundledFontLicense}
+          </pre>
+        </details>
+      </section>
     </div>
   );
 }

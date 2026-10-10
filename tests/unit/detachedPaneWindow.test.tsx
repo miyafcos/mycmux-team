@@ -34,7 +34,7 @@ vi.mock("../../src/lib/paneCloseConfirmation", () => ({ confirmPaneClose: mocks.
 vi.mock("../../src/lib/focusController", () => ({ focusController: { request: vi.fn() } }));
 vi.mock("../../src/lib/paneCloseLifecycle", () => ({ beforePaneClose: vi.fn() }));
 vi.mock("../../src/lib/ipc", () => ({ killSession: mocks.killSession }));
-vi.mock("../../src/components/layout/SocketListener", () => ({ discardWindowWorkspacesAndClose: mocks.discardAndClose }));
+vi.mock("../../src/components/layout/SocketListener", () => ({ closeWindowWorkspacesAndDestroy: mocks.discardAndClose }));
 vi.mock("../../src/components/terminal/XTermWrapper", () => ({
   default: (props: { sessionId: string }) => { mocks.terminal(props); return <div data-terminal-session={props.sessionId} />; },
   evictTerminalCache: mocks.evictTerminalCache,
@@ -234,9 +234,8 @@ describe("DetachedPaneShell", () => {
       await act(async () => band.querySelector("button")!.click());
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
       expect(mocks.confirmPaneClose).toHaveBeenCalledTimes(1);
-      // A launcher tab holds no PTY, so there is nothing to kill for it.
-      if (type === "terminal" || type === "browser") expect(mocks.killSession).toHaveBeenCalledWith("pty-original-pane-tab");
-      else expect(mocks.killSession).not.toHaveBeenCalled();
+      // The shared operation owns termination; the shell never issues a second kill.
+      expect(mocks.killSession).not.toHaveBeenCalled();
       expect(mocks.discardAndClose).toHaveBeenCalledTimes(1);
       // Closing the pane must not hand it back: that is what the drag is for.
       expect(mocks.close).not.toHaveBeenCalled();

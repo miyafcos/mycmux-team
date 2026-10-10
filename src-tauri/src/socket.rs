@@ -439,13 +439,15 @@ fn stale_send_text_result(
     store: &crate::session_state::SessionStateStore,
     expectations: &SendTextExpectations,
 ) -> Option<Value> {
-    let Some(current_view) = store.current_view(&expectations.session_id) else {
+    let Some(current) = store.current_projection(&expectations.session_id) else {
         return Some(serde_json::json!({
             "sent": false,
             "reason": "unknown_session",
             "current": Value::Null,
         }));
     };
+
+    let current_view = &current.view;
 
     let reason = if expectations
         .session_epoch
@@ -472,7 +474,7 @@ fn stale_send_text_result(
     Some(serde_json::json!({
         "sent": false,
         "reason": reason,
-        "current": crate::status_feed::FeedSession::from(&current_view),
+        "current": crate::status_feed::FeedSession::from(&current),
     }))
 }
 
@@ -873,8 +875,9 @@ async fn handle_connection(
                         }
                         if cmd == "agent.capabilities" {
                             let adapters = app.state::<crate::codex_app_server::CodexAppServerState>();
+                            let dsh = app.state::<crate::dsh_acp::DshAcpState>();
                             let response = SocketResponse {
-                                id, result: Some(agent_capabilities_payload(crate::agent_adapters::snapshot(&adapters).await)), error: None,
+                                id, result: Some(agent_capabilities_payload(crate::agent_adapters::snapshot(&adapters, &dsh).await)), error: None,
                             };
                             let _ = write_json_line(&mut writer, &response).await;
                             continue;
@@ -1689,6 +1692,36 @@ mod tests {
         .unwrap();
         assert_eq!(future["reason"], "session_revision");
         assert_eq!(future["current"]["session_revision"], 1);
+    }
+
+    #[test]
+    fn stale_send_text_current_uses_the_store_projection_without_changing_acceptance_guards() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let output_at = 1_000_100;
+        let clock = Arc::new(AtomicU64::new(output_at));
+        let read_clock = clock.clone();
+        let store = SessionStateStore::with_clock(Arc::new(move || read_clock.load(Ordering::SeqCst)));
+        store.ingest("session-a", Evidence::last_output(output_at, 1, crate::session_state::OutputOrigin::Pty));
+        let before = store.current_view("session-a").unwrap();
+        clock.store(output_at + crate::session_state::QUIET_AFTER_MS, Ordering::SeqCst);
+        let mut expectations = SendTextExpectations {
+            session_id: "session-a".into(),
+            session_epoch: Some(2),
+            attention_id: None,
+            session_revision: None,
+        };
+        let stale = stale_send_text_result(&store, &expectations).unwrap();
+        assert_eq!(stale["reason"], "session_epoch");
+        assert_eq!(stale["current"]["status"]["ui_state"], "idle");
+        assert_eq!(stale["current"]["status"]["activity"], "streaming");
+        assert_eq!(stale["current"]["session_revision"], before.session_revision + 1);
+        expectations.session_epoch = Some(1);
+        for revision in [0, before.session_revision, before.session_revision + 1] {
+            expectations.session_revision = Some(revision);
+            assert!(stale_send_text_result(&store, &expectations).is_none());
+        }
+        expectations.session_revision = Some(before.session_revision + 2);
+        assert_eq!(stale_send_text_result(&store, &expectations).unwrap()["reason"], "session_revision");
     }
 
     #[tokio::test]

@@ -184,6 +184,7 @@ pub async fn get_session_output_snapshot(state: State<'_, AppState>) -> Result<H
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
 pub async fn create_session(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     caller: tauri::Webview,
     app_handle: AppHandle,
     state: State<'_, AppState>,
@@ -1098,6 +1099,7 @@ pub struct GuardedWriteResult {
 
 #[tauri::command]
 pub fn write_to_session(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     state: State<'_, AppState>,
     session_id: String,
     data: String,
@@ -1115,6 +1117,7 @@ pub async fn get_session_input_revision(
 
 #[tauri::command(async)]
 pub async fn write_to_session_guarded(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     state: State<'_, AppState>,
     session_id: String,
     data: String,

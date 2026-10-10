@@ -97,6 +97,7 @@ pub async fn claude_skills_status() -> Result<PackStatus, String> {
 }
 #[tauri::command]
 pub async fn claude_skills_install(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     names: Vec<String>,
     force: bool,
 ) -> Result<InstallResult, String> {
