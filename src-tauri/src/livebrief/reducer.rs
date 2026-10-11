@@ -24,6 +24,7 @@ pub struct LiveBriefReducer {
     task: Option<String>,
     latest_instruction: Option<String>,
     task_source_event_ids: Vec<String>,
+    naming: super::naming::NamingState,
     open_tools: Vec<(String, String, Option<String>, String)>,
     activity: Option<(String, String, String)>,
     checkpoint: Option<(String, Vec<String>)>,
@@ -34,7 +35,30 @@ pub struct LiveBriefReducer {
 }
 
 impl LiveBriefReducer {
-    pub fn new() -> Self { Self { task: None, latest_instruction: None, task_source_event_ids: Vec::new(), open_tools: Vec::new(), activity: None, checkpoint: None, pending: None, event_seq: 0, last_event_at: None, telemetry: TelemetryAccumulator::default() } }
+    pub fn new() -> Self { Self { task: None, latest_instruction: None, task_source_event_ids: Vec::new(), naming: Default::default(), open_tools: Vec::new(), activity: None, checkpoint: None, pending: None, event_seq: 0, last_event_at: None, telemetry: TelemetryAccumulator::default() } }
+
+    pub(crate) fn naming_source(&mut self, start: u64, end: u64, unknown: bool, pending: bool) { self.naming.source(start, end, unknown, pending); }
+    pub(crate) fn naming_evicted(&mut self, event: &SemanticEventEnvelope) { self.naming.evicted(event); }
+    pub(crate) fn naming_unknown(&mut self) { self.naming.unknown(); }
+    pub(crate) fn naming_retains(&self, id: &str) -> bool { self.naming.retains(id) }
+    pub(crate) fn naming_plan(&self) -> super::naming::NamingPlan { self.naming.plan() }
+
+    /// Replacement history must not retain old task text or billing, but omitted
+    /// current questions/tools still need their later resolutions to take effect.
+    pub fn inherit_open_work(&mut self, previous: &Self) {
+        self.open_tools = previous.open_tools.clone();
+        self.pending = previous.pending.clone();
+    }
+
+    pub fn retains_work_event(&self, event: &SemanticEventEnvelope) -> bool {
+        match &event.kind {
+            SemanticEventKind::Question { prompt_event_id, .. } =>
+                self.pending.as_ref().is_some_and(|pending| pending.0 == *prompt_event_id),
+            SemanticEventKind::ToolStart { call_id, .. } =>
+                self.open_tools.iter().any(|(id, _, _, _)| id == call_id),
+            _ => false,
+        }
+    }
 
     pub fn apply_telemetry(&mut self, delta: TelemetryDelta) {
         self.telemetry.apply(delta);
@@ -47,6 +71,10 @@ impl LiveBriefReducer {
     pub fn apply(&mut self, event: &SemanticEventEnvelope) {
         self.event_seq = self.event_seq.saturating_add(1);
         self.last_event_at = Some(event.occurred_at);
+        // Capture the proof before a mixed record resolves the open question.
+        let choice = matches!(&event.kind, SemanticEventKind::UserMessage {text, ..}
+            if self.pending.as_ref().is_some_and(|pending| pending.4.iter().any(|option| text == &option.id || text == &option.label)));
+        self.naming.observe(event, choice);
         match &event.kind {
             SemanticEventKind::UserMessage { kind, text, .. } => match kind {
                 UserMessageKind::TaskStart => { self.task = Some(text.clone()); self.latest_instruction = Some(text.clone()); self.task_source_event_ids = vec![event.event_id.clone()]; }
@@ -59,7 +87,10 @@ impl LiveBriefReducer {
                 // brief must keep showing the last thing actually asked for.
                 UserMessageKind::Answer | UserMessageKind::Ack => {}
             },
-            SemanticEventKind::ToolStart { call_id, tool, target } => self.open_tools.push((call_id.clone(), tool.clone(), target.clone(), event.event_id.clone())),
+            SemanticEventKind::ToolStart { call_id, tool, target } => {
+                self.open_tools.retain(|(id, _, _, _)| id != call_id);
+                self.open_tools.push((call_id.clone(), tool.clone(), target.clone(), event.event_id.clone()));
+            },
             SemanticEventKind::ToolEnd { call_id, tool, target, ok, summary } => {
                 self.open_tools.retain(|(open_id, _, _, _)| open_id != call_id);
                 self.activity = Some((tool.clone(), activity_text(tool, target.as_deref()), event.event_id.clone()));
@@ -85,13 +116,14 @@ impl LiveBriefReducer {
         });
         LiveSessionBrief {
             binding, task: self.task.clone(), latest_instruction: self.latest_instruction.clone(), task_source_event_ids: self.task_source_event_ids.clone(),
+            naming_source_event_ids: self.naming.user_ids(), naming_plan: Some(self.naming.plan()),
             activity_kind: activity.as_ref().map(|activity| activity.0.clone()), activity_text: activity.as_ref().map(|activity| activity.1.clone()), activity_source_event_id: activity.as_ref().map(|activity| activity.2.clone()),
             checkpoint: self.checkpoint.as_ref().map(|checkpoint| checkpoint.0.clone()), checkpoint_evidence_event_ids: self.checkpoint.as_ref().map(|checkpoint| checkpoint.1.clone()).unwrap_or_default(),
             pending_input_kind: pending.as_ref().map(|pending| pending.3.clone()), pending_prompt: pending.as_ref().map(|pending| pending.2.clone()), pending_options: pending.as_ref().map(|pending| pending.4.clone()).unwrap_or_default(),
             prompt_event_id: pending.as_ref().map(|pending| pending.0.clone()), prompt_hash,
             event_seq: self.event_seq, operational_state: if pending.is_some() { "needsHuman".to_string() } else if activity.is_some() { "running".to_string() } else { "ready".to_string() }, telemetry_health: health.to_string(),
             last_event_at: self.last_event_at, last_successful_read_at: Some(now), updated_at: now, service_epoch: service_epoch.to_string(), brief_revision: 0,
-            telemetry: self.telemetry.to_telemetry(),
+            autonomy: None, telemetry: self.telemetry.to_telemetry(),
         }
     }
 }
@@ -113,6 +145,24 @@ mod tests {
         reducer.apply(&event("b", SemanticEventKind::UserMessage { kind: UserMessageKind::TaskChange, text: "Change".to_string(), digest: String::new() }));
         reducer.apply(&event("c", SemanticEventKind::UserMessage { kind: UserMessageKind::Answer, text: "yes".to_string(), digest: String::new() }));
         assert_eq!(reducer.task.as_deref(), Some("Initial / Change"));
+    }
+    #[test]
+    fn naming_choice_proof_is_captured_before_resolution_without_reclassifying_answer() {
+        for (text, choice) in [("A", true), ("動画", true), ("A追加", false), ("追記A", false), ("動画を編集する", false)] {
+            let mut reducer = LiveBriefReducer::new();
+            reducer.apply(&event("task", SemanticEventKind::UserMessage {kind: UserMessageKind::TaskStart, text: "Initial".into(), digest: String::new()}));
+            reducer.apply(&event("q", SemanticEventKind::Question {prompt_event_id: "q".into(), provider_call_id: "call".into(), prompt: "Which?".into(),
+                kind: PendingInputKind::Choice, options: vec![PendingOption::new("A".into(), "動画".into(), String::new())]}));
+            reducer.apply(&event("answer", SemanticEventKind::UserMessage {kind: UserMessageKind::Answer, text: text.into(), digest: String::new()}));
+            reducer.apply(&event("resolved", SemanticEventKind::QuestionResolved {prompt_event_id: "q".into(), provider_call_id: "call".into()}));
+            let mark = reducer.naming_plan().latest_input.unwrap(); assert_eq!(mark.choice, choice); assert_eq!(mark.kind, UserMessageKind::Answer);
+            assert_eq!(reducer.latest_instruction.as_deref(), Some("Initial")); assert!(reducer.pending.is_none());
+        }
+        let mut reducer = LiveBriefReducer::new(); let label = "動画ではなく解説スライドを作る";
+        reducer.apply(&event("q", SemanticEventKind::Question {prompt_event_id: "q".into(), provider_call_id: "call".into(), prompt: "Which?".into(),
+            kind: PendingInputKind::Choice, options: vec![PendingOption::new("A".into(), label.into(), String::new())]}));
+        reducer.apply(&event("choice", SemanticEventKind::UserMessage {kind: UserMessageKind::Correction, text: label.into(), digest: String::new()}));
+        assert!(reducer.naming_plan().latest_input.unwrap().choice); assert_eq!(reducer.latest_instruction.as_deref(), Some(label));
     }
     #[test]
     fn latest_instruction_follows_task_changes_but_not_replies() {

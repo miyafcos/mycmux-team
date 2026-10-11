@@ -77,7 +77,7 @@ export function jevErrorMessage(error: unknown): string {
     invalid_response: "Jevの応答を検証できませんでした。再度お試しください。",
     invalid_request: "Jevに送るデータを準備できませんでした。",
     provider_error: "OpenRouterでエラーが発生しました。少し待って再度お試しください。",
-    jev_disabled: "設定 > AIでJevによるペイン再配置を有効にしてください。",
+    jev_disabled: "設定 > AIでJevによるタブ再配置を有効にしてください。",
     cancelled: "再配置の分析を中止しました。",
   };
   return messages[value] ?? "Jevに接続できませんでした。設定 > AIの接続テストで確認してください。";

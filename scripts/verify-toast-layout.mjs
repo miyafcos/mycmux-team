@@ -81,7 +81,7 @@ export const reset = () => { state.toasts = []; };
   const module = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString("base64")}`);
   return ["restore_attachment_timeout", "tearout_attachment_timeout", "tearout_publish_failed"].map(reason => {
     module.reset();
-    module.recoveryFailed("M1-clock-3", "\u300cM1-source\u300d\u306e\u5143\u306e\u30bf\u30d6", reason, () => {}, () => {});
+    module.recoveryFailed("M1-clock-3", "\u300cM1-source\u300d\u306e\u5143\u306e\u8868\u793a\u5834\u6240", reason, () => {}, () => {});
     return { reason, toasts: module.capture() };
   });
 }
@@ -140,11 +140,11 @@ import ToastHost from "./src/components/common/ToastHost";
 import { recoveryFailed } from "./src/lib/tearout/recoveryNotice";
 import { useToastStore } from "./src/stores/toastStore";
 import "./src/global.css";
-recoveryFailed("M1-clock-3", "\u300cM1-source\u300d\u306e\u5143\u306e\u30bf\u30d6", "restore_attachment_timeout", () => {}, () => {});
+recoveryFailed("M1-clock-3", "\u300cM1-source\u300d\u306e\u5143\u306e\u8868\u793a\u5834\u6240", "restore_attachment_timeout", () => {}, () => {});
 useToastStore.getState().pushToast(
-  "\u9577\u3044\u8aac\u660e\u306e\u901a\u77e5\u3067\u3059\u3002\u64cd\u4f5c\u306e\u7d50\u679c\u3092\u78ba\u8a8d\u3057\u3066\u304b\u3089\u3001\u5fc5\u8981\u306a\u5834\u5408\u306f\u4e0b\u306e\u30dc\u30bf\u30f3\u3067\u3082\u3046\u4e00\u5ea6\u8a66\u3057\u3066\u304f\u3060\u3055\u3044\u3002\u524d\u306e\u30da\u30a4\u30f3\u3068\u30bb\u30c3\u30b7\u30e7\u30f3\u306f\u4fdd\u6301\u3055\u308c\u3066\u3044\u307e\u3059\u3002\u78ba\u8a8d\u304c\u7d42\u308f\u308b\u307e\u3067\u304a\u5f85\u3061\u304f\u3060\u3055\u3044\u3002",
+  "\u9577\u3044\u8aac\u660e\u306e\u901a\u77e5\u3067\u3059\u3002\u64cd\u4f5c\u306e\u7d50\u679c\u3092\u78ba\u8a8d\u3057\u3066\u304b\u3089\u3001\u5fc5\u8981\u306a\u5834\u5408\u306f\u4e0b\u306e\u30dc\u30bf\u30f3\u3067\u3082\u3046\u4e00\u5ea6\u8a66\u3057\u3066\u304f\u3060\u3055\u3044\u3002\u524d\u306e\u30bf\u30d6\u3068\u30bb\u30c3\u30b7\u30e7\u30f3\u306f\u4fdd\u6301\u3055\u308c\u3066\u3044\u307e\u3059\u3002\u78ba\u8a8d\u304c\u7d42\u308f\u308b\u307e\u3067\u304a\u5f85\u3061\u304f\u3060\u3055\u3044\u3002",
   "warning", { label: "\u3053\u306e\u64cd\u4f5c\u3092\u3082\u3046\u4e00\u5ea6\u5b9f\u884c\u3059\u308b", run: () => {} });
-useToastStore.getState().pushToast("\u64cd\u4f5c\u306e\u306a\u3044\u901a\u5e38\u306e\u901a\u77e5\u3067\u3059\u3002\u30da\u30a4\u30f3\u306e\u72b6\u614b\u3092\u78ba\u8a8d\u3057\u307e\u3057\u305f\u3002", "info");
+useToastStore.getState().pushToast("\u64cd\u4f5c\u306e\u306a\u3044\u901a\u5e38\u306e\u901a\u77e5\u3067\u3059\u3002\u30bf\u30d6\u306e\u72b6\u614b\u3092\u78ba\u8a8d\u3057\u307e\u3057\u305f\u3002", "info");
 createRoot(document.getElementById("root")).render(React.createElement(ToastHost));
 window.__toastFixture = useToastStore;
 `;

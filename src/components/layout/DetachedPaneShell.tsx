@@ -11,25 +11,26 @@ import {
   type DetachedDragPayload,
   type WindowDragSample,
 } from "../../stores/detachedDockStore";
-import XTermWrapper, { evictTerminalCache } from "../terminal/XTermWrapper";
+import XTermWrapper from "../terminal/XTermWrapper";
 import LauncherPane from "../workspace/LauncherPane";
 import BrowserPane from "../workspace/BrowserPane";
 import WebPaneController, { isChildWebviewPreview } from "../workspace/WebPaneController";
 import WebPaneStatusBar from "../workspace/WebPaneStatusBar";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
 import { buildLaunchArgs } from "../../lib/terminalLaunchArgs";
+import { buildTerminalPaneLaunch } from "../../lib/terminalPaneLaunch";
 import { buildThemeVars } from "./themeVars";
-import { discardWindowWorkspacesAndClose } from "./SocketListener";
+import { closeWindowWorkspacesAndDestroy } from "./SocketListener";
 import { useThemeStore } from "../../stores/themeStore";
 import { useUiStore } from "../../stores/uiStore";
-import { usePaneMetadataStore } from "../../stores/workspaceStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
-import { killSession, type SaveEditableArtifactResult } from "../../lib/ipc";
+import type { SaveEditableArtifactResult } from "../../lib/ipc";
 import { requiresLauncherDispatch } from "../../lib/launcherDispatch";
-import { focusController } from "../../lib/focusController";
-import { beforePaneClose } from "../../lib/paneCloseLifecycle";
+import { focusController, registerFocusReturnOwner } from "../../lib/focusController";
+import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { confirmPaneClose } from "../../lib/paneCloseConfirmation";
-import { isRestorableTab, tabHasPty } from "../../lib/tabLifecycle";
+import { isRestorableTab } from "../../lib/tabLifecycle";
+import { tearoutStrings } from "./tearoutStrings";
 import type { DetachedWorkspace } from "../../lib/detachedPane";
 
 /** The child uses App's persistence/show lifecycle, with only one pane on screen. */
@@ -38,8 +39,22 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
   const themeState = useThemeStore();
   const activeSessionId = useUiStore((state) => state.activePaneId);
   const [error, setError] = useState<string | null>(null);
+  const [closing, setClosing] = useState(false);
   const pane = workspace.panes[0];
   const tab = pane.tabs.find((candidate) => candidate.id === pane.activeTabId) ?? pane.tabs[0];
+  const registerFocusOwner = useCallback((root: HTMLDivElement | null) => {
+    if (!root) return;
+    return registerFocusReturnOwner(root, {
+      isLive: () => {
+        const state = useWorkspaceListStore.getState();
+        const live = state.workspaces.find(ws => ws.id === workspace.id);
+        const livePane = live?.panes.find(candidate => candidate.id === pane.id);
+        return state.activeWorkspaceId === workspace.id
+          && livePane?.activeTabId === tab.id && livePane.tabs.some(candidate => candidate.id === tab.id && candidate.sessionId === tab.sessionId);
+      },
+      fallback: () => root.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea") ?? root.querySelector<HTMLButtonElement>("button"),
+    });
+  }, [workspace.id, pane.id, tab.id, tab.sessionId]);
   const title = getTabDisplayLabel(tab);
   const setBrowserTabDirty = useWorkspaceLayoutStore((state) => state.setBrowserTabDirty);
   const refreshBrowserTabPreview = useWorkspaceLayoutStore((state) => state.refreshBrowserTabPreview);
@@ -54,7 +69,14 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
     });
   }, [workspace.id, pane.id, tab.id, tab.sourceKind, refreshBrowserTabPreview]);
 
+  // The legacy calculation remains the ordinary-provider path. Only saved
+  // Codex panes use the shared reason and shell-to-launcher dispatch.
+  const codexLaunch = useMemo(() => tab.agentKind === "codex"
+    || (!tab.agentKind && !tab.claudeSessionId && tab.agentId === "codex")
+    ? buildTerminalPaneLaunch(pane, tab, { getAgent, getDefaultAgent }) : null, [pane, tab]);
   const launch = useMemo(() => {
+    if (codexLaunch) return { agent: codexLaunch.agent!, savedSession: codexLaunch.savedAgentSession,
+      args: codexLaunch.launchArgs, launchEnv: codexLaunch.launchEnv };
     const launchThroughLauncher = !tab.commandArgv?.length
       && requiresLauncherDispatch(tab.launchEnv ?? pane.launchEnv);
     const agent = launchThroughLauncher ? getDefaultAgent() : getAgent(tab.agentId) ?? getDefaultAgent();
@@ -78,7 +100,7 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
       launchEnv.MYCMUX_AGENT_KIND = "claude";
     }
     return { agent, savedSession, args, launchEnv };
-  }, [pane.cwd, pane.launchEnv, tab]);
+  }, [pane.cwd, pane.launchEnv, tab, codexLaunch]);
 
   const themeVars = useMemo(() => buildThemeVars({
     ...themeState,
@@ -260,24 +282,21 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
   // (Alt+F4, the taskbar) still hands the pane to main: an OS close means "put
   // this window away", not "end what is running in it".
   const closePane = async () => {
-    if (!await confirmPaneClose([pane], "pane")) return;
+    if (closing) return;
+    setClosing(true);
     try {
-      beforePaneClose(pane);
-      for (const candidate of pane.tabs) {
-        if (!tabHasPty(candidate)) continue;
-        evictTerminalCache(candidate.sessionId);
-        void killSession(candidate.sessionId).catch((reason) =>
-          console.warn("[mycmux] killSession failed", candidate.sessionId, reason));
-        usePaneMetadataStore.getState().removeMetadata(candidate.sessionId);
-      }
-      await discardWindowWorkspacesAndClose();
+      if (!await confirmPaneClose([pane], "pane")) return;
+      await closeWindowWorkspacesAndDestroy();
     } catch (reason) {
-      setError(String(reason));
+      setError(tearoutStrings.failed);
+      console.warn("[tearout] close failed", reason);
+    } finally {
+      setClosing(false);
     }
   };
 
   return (
-    <div data-detached-pane-shell="true" data-cmux-themed-root="true" style={{
+    <div ref={registerFocusOwner} data-detached-pane-shell="true" data-cmux-themed-root="true" style={{
       ...themeVars, width: "100vw", height: "100vh", display: "flex", flexDirection: "column",
       overflow: "hidden", background: "var(--cmux-bg-solid)", color: "var(--cmux-text)",
     }}>
@@ -294,9 +313,10 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
         </span>
         <button
           type="button"
+          disabled={closing}
           onClick={() => { void closePane(); }}
-          aria-label="このペインを閉じる"
-          title="このペインを閉じます（元の窓へ戻すには、この帯を掴んでタブのつまみ列へ）"
+          aria-label="このタブを閉じる"
+          title="このタブを閉じます（元の窓へ戻すには、この帯を掴んで相手のタブの見出しへ）"
           style={{
             height: 22, width: 22, display: "flex", alignItems: "center", justifyContent: "center",
             fontSize: 13, lineHeight: 1, color: "var(--cmux-text-secondary)", background: "transparent",
@@ -338,9 +358,9 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
             sessionId={tab.sessionId} isActive={activeSessionId === tab.sessionId} cwd={tab.cwd ?? pane.cwd} />
         ) : tab.type !== "browser" && isRestorableTab(tab) ? (
           <XTermWrapper key={tab.sessionId} workspaceId={workspace.id} sessionId={tab.sessionId}
-            command={tab.commandArgv?.[0] ?? launch.agent.command} args={launch.args} agentId={tab.agentId}
+            command={codexLaunch?.launchCommand ?? tab.commandArgv?.[0] ?? launch.agent.command} args={launch.args} agentId={tab.agentId}
             agentKind={launch.savedSession?.kind ?? tab.agentKind} cwd={tab.cwd ?? pane.cwd}
-            initialReplay={tab.terminalSnapshot} launchEnv={launch.launchEnv} />
+            initialReplay={tab.terminalSnapshot} launchEnv={launch.launchEnv} restoreReason={codexLaunch?.restoreReason} />
         ) : <div style={{ padding: 12, fontSize: 12 }}>まだ起動していません</div>}
       </div>
     </div>

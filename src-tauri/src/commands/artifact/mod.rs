@@ -527,6 +527,7 @@ fn save_editable_artifact_inner(
 
 #[tauri::command]
 pub async fn save_editable_artifact(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     source_path: String,
     source_kind: String,
     content: String,
@@ -829,11 +830,12 @@ mod tests {
     fn a_source_path_is_spelled_the_way_a_person_would_type_it() {
         // The path travels into the tab and onto the toolbar, so it must not
         // carry Windows' extended-length prefix (`\\?\C:\...`).
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap(); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let markdown_path = dir.path().join("report.md");
         std::fs::write(&markdown_path, "# ok\n").unwrap();
 
         let info = preview_info_for_artifact("session-1", &markdown_path, true).unwrap();
+        assert!(Path::new(&info.preview_path).starts_with(dir.path()), "preview output escaped its explicit fixture root: {}", info.preview_path);
         let (validated, _) = validate_editable_artifact_path(&markdown_path.to_string_lossy())
             .expect("the file is editable");
 

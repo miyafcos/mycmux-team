@@ -8,7 +8,7 @@ import type { Workspace } from "../../src/types";
 
 const mocks = vi.hoisted(() => ({ getSessionOutputSnapshot: vi.fn(), getPtyMetadataSnapshot: vi.fn(), getWindowFragments: vi.fn(), hasTerminalBuffer: vi.fn(), getTerminalBufferLines: vi.fn() }));
 vi.mock("../../src/lib/ipc", () => mocks);
-vi.mock("../../src/components/terminal/XTermWrapper", () => mocks);
+vi.mock("../../src/components/terminal/XTermWrapper", () => ({ ...mocks, isTerminalParsingCurrentOutput: (id: string) => mocks.hasTerminalBuffer(id, true) }));
 
 beforeEach(() => {
   vi.useFakeTimers(); vi.setSystemTime(1_800_000_000_000); vi.clearAllMocks(); disposeLiveTailObserver();
@@ -33,6 +33,10 @@ describe("pane.live_tails control API", () => {
       const result = await handleSocketCommand(command, {}) as { generatedAt: number; tabs: unknown[] };
       expect(result.generatedAt).toBe(Date.now());
       expect(result.tabs).toEqual([expect.objectContaining({ sessionId: "session", workspaceId: "workspace", workspaceName: "Sample Workspace", paneId: "pane", tabId: "tab", name: "Sample Seat", agentKind: "claude", fact: expect.objectContaining({ kind: "alive" }), rows: ["* Thinking\u2026 (1s \u00b7 \u2193 10 tokens)"], lastOutputAt: Date.now(), readable: true, observedAt: Date.now(), waitingForReply: false })]);
+      expect(Object.keys(result).sort()).toEqual(["generatedAt", "tabs"]);
+      expect(Object.keys(result.tabs[0] as object).sort()).toEqual([
+        "agentKind", "fact", "lastOutputAt", "name", "observedAt", "paneId", "readable", "rows", "sessionId", "tabId", "waitingForReply", "workspaceId", "workspaceName",
+      ]);
       expect(mocks.getTerminalBufferLines).toHaveBeenCalledTimes(1);
     });
   }

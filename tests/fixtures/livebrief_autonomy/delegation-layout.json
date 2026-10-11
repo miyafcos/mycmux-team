@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "workspaces": [
+    {
+      "id": "workspace-a",
+      "name": "First",
+      "grid_template_id": "2x1",
+      "created_at": 1,
+      "column_widths": [
+        0.4,
+        0.6
+      ],
+      "split_columns": [
+        [
+          0
+        ],
+        [
+          1
+        ]
+      ],
+      "panes": [
+        {
+          "pane_id": "pane-a",
+          "agent_id": "shell-starter",
+          "active_tab_id": "child",
+          "tabs": [
+            {
+              "tab_id": "child",
+              "session_id": "child-pty",
+              "agent_id": "shell-starter",
+              "type": "terminal",
+              "label": "child",
+              "cwd": "/work/child",
+              "delegated_by_tab_id": "parent",
+              "delegated_by_agent_session_id": "conversation-A",
+              "delegated_at": 1800000000000,
+              "declared_prompt": "continue"
+            },
+            {
+              "tab_id": "sibling",
+              "session_id": "sibling-pty",
+              "agent_id": "shell-starter",
+              "type": "terminal",
+              "label": "sibling",
+              "cwd": "/work/sibling"
+            }
+          ]
+        },
+        {
+          "pane_id": "pane-b",
+          "agent_id": "shell-starter",
+          "active_tab_id": "parent",
+          "tabs": [
+            {
+              "tab_id": "parent",
+              "session_id": "parent-pty",
+              "agent_id": "shell-starter",
+              "type": "terminal",
+              "label": "parent",
+              "cwd": "/work/parent"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "workspace-b",
+      "name": "Second",
+      "grid_template_id": "1x1",
+      "created_at": 2,
+      "panes": [
+        {
+          "pane_id": "pane-c",
+          "agent_id": "shell-starter",
+          "active_tab_id": "other",
+          "tabs": [
+            {
+              "tab_id": "other",
+              "session_id": "other-pty",
+              "agent_id": "shell-starter",
+              "type": "terminal",
+              "label": "other",
+              "cwd": "/work/other"
+            }
+          ]
+        }
+      ],
+      "column_widths": [
+        1
+      ],
+      "split_columns": [
+        [
+          0
+        ]
+      ]
+    }
+  ],
+  "settings": {
+    "font_size": 14,
+    "theme_id": "yoru-cafe"
+  },
+  "active_workspace_id": "workspace-a",
+  "active_pane_id": "pane-a",
+  "active_tab_id": "child"
+}

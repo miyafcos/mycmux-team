@@ -6,6 +6,7 @@ import type { Pane } from "../../src/types";
 
 const mocks = vi.hoisted(() => ({
   panes: [] as Pane[],
+  invoke: vi.fn(async (_command: string, _args?: unknown) => {}),
   fragments: vi.fn<() => Promise<Array<{ window_label: string }>>>(),
   confirm: vi.fn(async (_body: string, _options: Record<string, unknown>) => true),
   close: vi.fn(async () => {}),
@@ -13,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   maximized: false, resize: (() => {}) as () => void,
   regrab: vi.fn(async (_record: unknown, onEnd?: (sample: { moved: boolean }) => void) => { onEnd?.({ moved: false }); }),
 }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ startDragging: vi.fn(async () => {}),
   minimize: mocks.minimize, toggleMaximize: mocks.toggle, isMaximized: async () => mocks.maximized,
   listen: async () => () => {},
@@ -37,12 +39,15 @@ vi.mock("../../src/lib/tearout/runtime", () => ({ useTearoutStore: vi.fn(), regr
 import { useSettingsStore } from "../../src/stores/settingsStore";
 import { titleBarStrings } from "../../src/components/layout/titleBarStrings";
 import { tearoutStrings } from "../../src/components/layout/tearoutStrings";
+import * as operation from "../../src/lib/tearout/operation";
 const { default: NativePaneShell } = await import("../../src/components/layout/NativePaneShell");
 let root: Root;
 let container: HTMLDivElement;
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.clearAllMocks();
+  operation.endTearoutOperation();
+  mocks.regrab.mockImplementation(async (_record, onEnd) => { onEnd?.({ moved: false }); });
   mocks.maximized = false;
   Object.defineProperty(navigator, "platform", { configurable: true, value: "Win32" });
   useSettingsStore.setState({ nativePaneTearoutEnabled: true });
@@ -61,6 +66,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
+  operation.endTearoutOperation();
 });
 async function close() {
   await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(button => button.getAttribute("aria-label") === tearoutStrings.close)!.click());
@@ -157,5 +163,54 @@ describe("Windows native band controls and immediate OS movement", () => {
     expect(mocks.regrab).not.toHaveBeenCalled();
     await act(async () => band().dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
     expect(mocks.toggle).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("overlapping band presses (E1/E2/E4)", () => {
+  it.each(["Win32", "MacIntel"])("keeps the accepted %s move and ignores repeated presses", async (platform) => {
+    Object.defineProperty(navigator, "platform", { configurable: true, value: platform });
+    useSettingsStore.setState({ macNativePaneTearoutEnabled: true });
+    await act(async () => root.render(<NativePaneShell />));
+    let end: ((sample: { moved: boolean }) => void) | undefined;
+    mocks.regrab.mockImplementation(async (_record, onEnd) => { end = onEnd; });
+    const move = (x = 45) => {
+      const event = new MouseEvent("pointermove", { clientX: x, clientY: 10 });
+      Object.defineProperty(event, "pointerId", { value: 1 });
+      window.dispatchEvent(event);
+    };
+    await act(async () => { press(); if (platform === "MacIntel") move(); });
+    for (let i = 0; i < 3; i++) await act(async () => { press(); if (platform === "MacIntel") move(); });
+    expect(mocks.regrab).toHaveBeenCalledOnce();
+    expect(mocks.toggle).not.toHaveBeenCalled();
+    expect(container.querySelector("[role=alert]")).toBeNull();
+    expect(mocks.invoke.mock.calls.filter(([cmd, args]) => cmd === "tearout_log_record"
+      && (args as { record: { result: string } }).record.result === "rejected_busy")).toHaveLength(3);
+    await act(async () => end?.({ moved: true }));
+    await act(async () => { press(60); if (platform === "MacIntel") move(75); });
+    expect(mocks.regrab).toHaveBeenCalledTimes(2);
+  });
+  it("does not turn a captured moving refusal into a red failure after the owner ends", async () => {
+    const refusal = new operation.LocalTearoutRefusal("moving");
+    let reject = (_error: Error) => {};
+    mocks.regrab.mockImplementationOnce(() => new Promise((_, fail) => { reject = fail; }));
+    await act(async () => press());
+    await act(async () => reject(refusal));
+    expect(container.querySelector("[role=alert]")).toBeNull();
+    expect(mocks.toggle).not.toHaveBeenCalled();
+  });
+  it("shows a genuine band double-click maximize failure", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mocks.toggle.mockRejectedValueOnce(new Error("maximize failed"));
+    await act(async () => band().dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+    expect(container.querySelector("[role=alert]")).not.toBeNull();
+    warning.mockRestore();
+  });
+  it("still shows actual native start failures, including raw backend busy", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mocks.regrab.mockRejectedValueOnce(new Error("tearout_move_busy"));
+    await act(async () => press());
+    expect(container.querySelector("[role=alert]")).not.toBeNull();
+    warning.mockRestore();
   });
 });

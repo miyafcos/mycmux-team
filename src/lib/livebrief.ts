@@ -1,6 +1,56 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+/** Separate read-only archive transport; operational events are never merged. */
+export type ArchiveAgentKind = "claude" | "claude-codex" | "codex";
+export interface TranscriptDescriptor {
+  ptySessionId: string;
+  tabId: string;
+  expectedAgentKind: ArchiveAgentKind;
+  expectedAgentSessionId: string;
+}
+export interface ArchiveItem {
+  occurrenceId: string;
+  sourceStart: string;
+  sourceEnd: string;
+  slot: number;
+  kind: "user" | "assistant" | "toolCall" | "toolResult" | "question" | "boundary" | "attachment" | "diagnostic" | "source";
+  timestamp: number | null;
+  text: string;
+  bodyRef: string | null;
+  callId: string | null;
+  tool: string | null;
+  target: string | null;
+  aliases: string[];
+}
+export interface TranscriptPage {
+  readerId: string;
+  sourceGeneration: string;
+  snapshotEnd: string;
+  items: ArchiveItem[];
+  olderCursor: string | null;
+  newerCursor: string | null;
+  latestCursor: string | null;
+  scanContinuation: string | null;
+  reachedStart: boolean;
+  reachedFence: boolean;
+  diagnostics: { reason: string; sourceStart: string; sourceEnd: string }[];
+}
+export interface TranscriptBodyPage { text: string; cursor: string | null; sourceText: boolean; validationPending?: boolean }
+export const openTranscriptHistory = (request: TranscriptDescriptor): Promise<TranscriptPage> => invoke("open_transcript_history", { request });
+export const readTranscriptHistoryPage = (readerId: string, cursor: string, limit = 100): Promise<TranscriptPage> => invoke("read_transcript_history_page", { request: { readerId, cursor, limit } });
+export const refreshTranscriptHistoryTail = (readerId: string, afterCursor: string): Promise<TranscriptPage> => invoke("refresh_transcript_history_tail", { readerId, afterCursor });
+export const readTranscriptHistoryBody = (readerId: string, bodyRef: string, cursor: string | null = null): Promise<TranscriptBodyPage> => invoke("read_transcript_history_body", { readerId, bodyRef, cursor });
+export const closeTranscriptHistory = (readerId: string): Promise<void> => invoke("close_transcript_history", { readerId });
+export const heartbeatTranscriptHistory = (readerId: string): Promise<{hasNewBytes:boolean}> => invoke("heartbeat_transcript_history", { readerId });
+
+/** Success evidence is independent of semantic revisions and contains no text. */
+export interface LiveReadObservation {
+  ptySessionId:string; agentKind:string; agentSessionId:string; ptyInstanceId:string;
+  ptyGeneration:number; serviceEpoch:string; lastSuccessfulReadAt:number;
+}
+export const getLiveReadObservations=(ptySessionIds:readonly string[]):Promise<LiveReadObservation[]> => invoke("get_live_read_observations",{ptySessionIds:ptySessionIds.slice(0,60)});
+
 export type PendingInputKind = "yesNo" | "choice" | "permission" | "freeText" | "blocker";
 
 export interface PendingOption { id: string; label: string }
@@ -49,6 +99,9 @@ export interface LiveSessionBrief extends LiveBinding {
   /** 直近の「私の指示」原文。answer / ack では上書きされない (reducer.rs と同じ約束)。 */
   latestInstruction: string | null;
   taskSourceEventIds: string[];
+  /** 命名専用の直近4件。一般の task / latestInstruction の回答分類は変えない。 */
+  namingSourceEventIds?: string[];
+  namingPlan?: NamingPlan | null;
   activityKind: string | null;
   activityText: string | null;
   activitySourceEventId: string | null;
@@ -61,6 +114,9 @@ export interface LiveSessionBrief extends LiveBinding {
   promptHash: string | null;
   eventSeq: number;
   operationalState: string;
+  /** Transcript turn boundaries and work that can resume without human input. */
+  autonomy?: { turnState: "unknown" | "idle" | "active" | "complete"; openToolCount: number; armedBackgroundCount: number;
+    backgroundState?: "known" | "unknown"; pendingNotificationCount?: number; turnStartedAt?: number | null } | null;
   telemetryHealth: string;
   lastEventAt: number | null;
   lastSuccessfulReadAt: number | null;
@@ -71,6 +127,20 @@ export interface LiveSessionBrief extends LiveBinding {
 }
 
 export type UserMessageKind = "taskStart" | "taskChange" | "correction" | "answer" | "ack";
+
+/** Bounded, runtime-only proof from the native naming selector. */
+export interface NamingInputMark {
+  eventId: string; order: number; sourceByteStart: number; sourceByteEnd: number;
+  kind: UserMessageKind; choice: boolean; complete: boolean;
+}
+export interface NamingAllocation {
+  eventId: string; order: number; sourceRevision: number; sourceByteStart: number; sourceByteEnd: number;
+  role: "user" | "agent" | "read" | "write"; chars: number; complete: boolean; hash: string;
+}
+export interface NamingPlan {
+  latestInput: NamingInputMark | null; latestAgent: NamingAllocation | null; entries: NamingAllocation[];
+  coverage: { readStart: number; readEnd: number; sourceUnknown: boolean; countLoss: number | null; characterLoss: number | null };
+}
 
 /**
  * Mirrors `SemanticEventKind` in src-tauri/src/livebrief/adapter.rs. That enum

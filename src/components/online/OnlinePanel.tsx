@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, GripVertical, Inbox, Pin, RefreshCw, Trash2 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -13,7 +13,7 @@ import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { usePaneMetadataStore } from "../../stores/paneMetadataStore";
 import { useOnlineSavepointStore } from "../../stores/onlineSavepointStore";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
-import { focusController } from "../../lib/focusController";
+import { capturePaneFocusReturn, focusController } from "../../lib/focusController";
 import { onlineStrings } from "./onlineStrings";
 import {
   collectOpenAgentSessions,
@@ -88,12 +88,34 @@ function SavepointTransferDropTarget() {
 }
 
 export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const entryFocusReturnRef = useRef<{ node: HTMLElement; restore: ReturnType<typeof capturePaneFocusReturn> } | null>(null);
   const [entries, setEntries] = useState<OnlineSavepointEntry[]>([]);
   const [view, setView] = useState<SavepointListView>("active");
   const [query, setQuery] = useState("");
   const [selectedBundle, setSelectedBundle] = useState<string | null>(null);
+  const rememberEntryFocus = useCallback(() => {
+    const root = rootRef.current;
+    const active = root?.ownerDocument.activeElement;
+    if (root && active instanceof HTMLElement && root.contains(active) && active.closest(".online-sp-card")) {
+      entryFocusReturnRef.current?.restore.cancel();
+      entryFocusReturnRef.current = { node: active,
+        restore: capturePaneFocusReturn(root, null) };
+    }
+  }, []);
+  useEffect(() => () => entryFocusReturnRef.current?.restore.cancel(), []);
   const [armedDeleteBundle, setArmedDeleteBundle] = useState<string | null>(null);
   const [deletingBundle, setDeletingBundle] = useState<string | null>(null);
+  useLayoutEffect(() => {
+    const pending = entryFocusReturnRef.current;
+    if (pending && !pending.node.isConnected) {
+      pending.restore(pending.node);
+      entryFocusReturnRef.current = null;
+    } else if (!deletingBundle) {
+      pending?.restore.cancel();
+      entryFocusReturnRef.current = null;
+    }
+  }, [entries, selectedBundle, deletingBundle]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [joinNotice, setJoinNotice] = useState<string | null>(null);
@@ -349,6 +371,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
   }, []);
 
   const moveEntryToTrash = useCallback(async (entry: OnlineSavepointEntry) => {
+    rememberEntryFocus();
     setDeletingBundle(entry.bundle_dir);
     setError(null);
     try {
@@ -362,10 +385,11 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
     } finally {
       setDeletingBundle(null);
     }
-  }, [load]);
+  }, [load, rememberEntryFocus]);
 
   const restoreEntry = useCallback(async (entry: OnlineSavepointEntry) => {
     if (!entry.trash_id) return;
+    rememberEntryFocus();
     setDeletingBundle(entry.bundle_dir);
     setError(null);
     try {
@@ -380,7 +404,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
     } finally {
       setDeletingBundle(null);
     }
-  }, [load]);
+  }, [load, rememberEntryFocus]);
 
   const purgeEntry = useCallback(async (entry: OnlineSavepointEntry) => {
     if (!entry.trash_id) return;
@@ -388,6 +412,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
       setArmedDeleteBundle(entry.bundle_dir);
       return;
     }
+    rememberEntryFocus();
     setArmedDeleteBundle(null);
     setDeletingBundle(entry.bundle_dir);
     setError(null);
@@ -402,7 +427,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
     } finally {
       setDeletingBundle(null);
     }
-  }, [armedDeleteBundle, load]);
+  }, [armedDeleteBundle, load, rememberEntryFocus]);
 
   const receiveTransfer = useCallback(async () => {
     setReceivingTransfer(true);
@@ -440,6 +465,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
 
   return (
     <div
+      ref={rootRef}
       className="online-panel"
       data-savepoint-drop-cancel="true"
       data-savepoint-transfer-drop="true"

@@ -344,11 +344,11 @@ fn stop_guard(
         return Err("プロセスが入れ替わったため停止しません。再読み込みしてください。".to_string());
     }
     if pane_id.is_none_or(|id| id.trim().is_empty()) {
-        return Err("ペインから起動されたプロセスと確認できないため停止しません。".to_string());
+        return Err("タブから起動されたプロセスと確認できないため停止しません。".to_string());
     }
     if protected {
         return Err(
-            "mycmux 本体または動作中のペインにつながるプロセスは停止できません。".to_string(),
+            "mycmux 本体または動作中のタブにつながるプロセスは停止できません。".to_string(),
         );
     }
     Ok(())

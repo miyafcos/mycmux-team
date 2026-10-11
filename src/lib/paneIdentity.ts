@@ -1,6 +1,6 @@
 /** Pure evidence-based identities; no IPC, randomness, or clock. */
 export interface ProjectRegistration { section: string; label: string; path: string }
-export interface IdentityWorkspace { id: string; name: string }
+export interface IdentityWorkspace { id: string; name: string; nameSource?: "auto" }
 export interface PaneEvidence {
   id: string; workspaceId: string; label?: string | null; labelSource?: string | null;
   cwd: string; agentKind?: string; parentTabId?: string;
@@ -120,7 +120,7 @@ export function resolvePaneIdentities(input: PaneIdentityInput): PaneIdentityRes
   };
   const homes = new Map<string, string>(); const homeScores = new Map<string, number>();
   for (const e of entries) {
-    const ranked = input.workspaces.map(w => {
+    const ranked = input.workspaces.filter(w => w.nameSource !== "auto").map(w => {
       const name = normalizeIdentityText(w.name);
       const part = (tokens: string[]) => tokens.reduce((sum, t) => {
         if (!meaningfulIdentityToken(t)) return sum;

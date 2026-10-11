@@ -198,7 +198,7 @@ pub(super) fn prepare(catalog: &Catalog, options: &ExportOptions, names: &[Strin
         writeln!(html, "<section><h2>{}</h2><p>製品の版: {}</p>", text(&service.display_name, home), text(service.version.as_deref().unwrap_or("版は未取得"), home)).unwrap();
         writeln!(html, "<p>この目録で取得した項目が対象です。字数・行数を数えていない欄は省いています。今回の読取・実行の回数は未収集です。</p>").unwrap();
         if service.id != "hermes" {
-            if let Some(started) = &service.session.started_at { writeln!(html, "<p>採用した会話の開始: {}。この会話の初期記録だけを確認しています。</p>", text(started, home)).unwrap(); }
+            if let Some(started) = &service.session.started_at { writeln!(html, "<p>採用した会話の開始: {}。{}</p>", text(started, home), if service.session.listing.evidence.as_deref() == Some("estimated") { "一覧はこの会話を元にした今の設定を当てた推定です。" } else { "この会話の初期記録だけを確認しています。" }).unwrap(); }
         }
         for layer in 1..=7 {
             writeln!(html, "<section><h3>{layer} {}</h3>", LAYERS[layer - 1]).unwrap();
@@ -314,7 +314,7 @@ pub(super) fn prepare(catalog: &Catalog, options: &ExportOptions, names: &[Strin
     let mut finding_count = 0;
     for finding in catalog.findings.iter().filter(|f| options.services.contains(&f.service) && options.layers.contains(&f.layer) && f.layer != 4 && !f.kind.to_lowercase().contains("memory")) {
         finding_count += 1;
-        let kind = label(&finding.kind, &[("disabledPlugins","切ったプラグインが一覧に載る"),("unusedListing","使われた記録がないスキル"),("implicitHidden","一覧に載らないスキル"),("shadowedAgents","優先する指示"),("duplicate","同じ名前の複数の配置"),("brokenTarget","行き先のない入口")]);
+        let kind = label(&finding.kind, &[("disabledPlugins","切ったプラグインが一覧に載る"),("unusedListing","使われた記録がないスキル"),("implicitHidden","一覧に載らないスキル"),("shadowedAgents","優先する指示"),("duplicate","同じ名前の複数の配置"),("shadow","同じ名前の自作と同期が両方載っている"),("brokenTarget","行き先のない入口")]);
         let locations = finding.item_ids.iter().filter_map(|id| visible.iter().find(|i| &i.id == id)).filter_map(|i| i.path.as_ref()).map(|p| text(&p.replace('\\', "/"), home)).collect::<Vec<_>>().join("・");
         writeln!(html, "<p>{kind}: {} 件 / {}</p>", finding.count, if locations.is_empty() { "場所は未取得".into() } else { locations }).unwrap();
     }

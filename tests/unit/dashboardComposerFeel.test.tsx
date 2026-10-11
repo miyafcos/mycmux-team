@@ -4,12 +4,16 @@ import { act, createRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ handleSocketCommand: vi.fn() }));
+const mocks = vi.hoisted(() => ({ handleSocketCommand: vi.fn(), invoke: vi.fn(), mappings: vi.fn() }));
 
 vi.mock("../../src/components/layout/socketCommands", () => ({
   handleSocketCommand: mocks.handleSocketCommand,
 }));
 
+vi.mock("@tauri-apps/api/core",async(original)=>({...await original<typeof import("@tauri-apps/api/core")>(),invoke:mocks.invoke}));
+vi.mock("../../src/lib/ipc",async(original)=>({...await original<typeof import("../../src/lib/ipc")>(),readAgentSessionMappings:mocks.mappings}));
+
+import { useSettingsStore } from "../../src/stores/settingsStore";
 import { ChatColumn } from "../../src/components/dashboard/ChatColumn";
 import { ReplyComposer } from "../../src/components/dashboard/ReplyComposer";
 import type { DashboardCardModel } from "../../src/components/dashboard/dashboardModel";
@@ -83,6 +87,7 @@ function deferred<T>() {
 }
 
 const target = card();
+let archiveEvents:readonly SemanticEventEnvelope[]=[];
 const inputRef = createRef<HTMLTextAreaElement>();
 
 function FeelHarness({ events = [] }: { events?: readonly SemanticEventEnvelope[] }) {
@@ -132,7 +137,13 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  mocks.handleSocketCommand.mockReset();
+  mocks.handleSocketCommand.mockReset();mocks.invoke.mockReset();mocks.mappings.mockReset();
+  useSettingsStore.setState({conversationHistoryMode:"agent-wheel"});archiveEvents=[];
+  mocks.mappings.mockResolvedValue({"session-feel":{agent_kind:"codex",session_id:"exact-feel"}});
+  mocks.invoke.mockImplementation(async(cmd:string)=>{
+    const items=archiveEvents.flatMap((e,i)=>e.kind.type==="userMessage"?[{occurrenceId:`g:${i}`,sourceStart:String(i*100),sourceEnd:String((i+1)*100),slot:0,kind:"user",timestamp:e.occurredAt,text:e.kind.text,bodyRef:null,callId:null,tool:null,target:null,aliases:[]}]:[]);
+    if(cmd==="open_transcript_history"||cmd==="refresh_transcript_history_tail"||cmd==="read_transcript_history_page")return {readerId:"feel-reader",sourceGeneration:"g",snapshotEnd:String(items.length*100),items,olderCursor:null,newerCursor:`tail-${items.length}`,latestCursor:"latest",scanContinuation:null,reachedStart:true,reachedFence:true,diagnostics:[]};return null;
+  });
   resetComposerStore();
   useLiveBriefStore.getState().reset();
   usePaneDragStore.getState().clearDrag();
@@ -151,6 +162,7 @@ afterEach(async () => {
 });
 
 async function renderFeel(events: readonly SemanticEventEnvelope[] = []): Promise<HTMLTextAreaElement> {
+  archiveEvents=events;
   await act(async () => {
     root.render(<FeelHarness events={events} />);
     await Promise.resolve();
@@ -190,7 +202,8 @@ describe("dashboard optimistic composer feedback", () => {
     expect(message?.textContent).toContain("送信中");
   });
 
-  it("marks a successful send as sent and collapses it when the matching transcript arrives", async () => {
+  it.each(["agent-wheel","legacy"] as const)("marks a successful send as sent and collapses it when the matching transcript arrives (%s)", async mode => {
+    useSettingsStore.setState({conversationHistoryMode:mode});
     const pending = deferred<{ confirmed: boolean }>();
     mocks.handleSocketCommand.mockReturnValueOnce(pending.promise);
     const textarea = await renderFeel();
@@ -204,6 +217,7 @@ describe("dashboard optimistic composer feedback", () => {
     expect(container.querySelector<HTMLElement>("[data-dashboard-optimistic-message]")?.dataset.deliveryState).toBe("sent");
 
     await renderFeel([transcript("エコーを待つ")]);
+    if(mode!=="legacy")await act(async()=>{await vi.advanceTimersByTimeAsync(1500);});
     expect(container.querySelector("[data-dashboard-optimistic-message]")).toBeNull();
     expect(container.querySelectorAll(".cmux-dashboard-msg.is-user")).toHaveLength(1);
   });
@@ -253,4 +267,18 @@ describe("dashboard optimistic composer feedback", () => {
     expect(message?.dataset.optimisticMotion).toBeUndefined();
     expect(message?.classList.contains("is-optimistic-motion")).toBe(false);
   });
+  it("keeps the sent message until the default archive actually displays its exact echo",async()=>{
+    useSettingsStore.setState({conversationHistoryMode:"agent-wheel"});let echoed=false;
+    mocks.mappings.mockResolvedValue({"session-feel":{agent_kind:"codex",session_id:"00000000-0000-4000-8000-000000000001"}});
+    const archivePage=()=>({readerId:"composer-archive",sourceGeneration:"composer-g",snapshotEnd:echoed?"100":"0",items:echoed?[{occurrenceId:"composer-g:0",sourceStart:"0",sourceEnd:"100",slot:0,kind:"user",timestamp:NOW+1,text:"記録を待つ",bodyRef:null,callId:null,tool:null,target:null,aliases:[]}]:[],olderCursor:null,newerCursor:"tail",latestCursor:"latest",scanContinuation:null,reachedStart:true,reachedFence:true,diagnostics:[]});
+    mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"||c==="refresh_transcript_history_tail"||c==="read_transcript_history_page"?archivePage():null);
+    mocks.handleSocketCommand.mockResolvedValue({confirmed:true});const textarea=await renderFeel();
+    await input(textarea,"記録を待つ");await send(textarea);await renderFeel([transcript("記録を待つ")]);
+    expect(container.querySelector("[data-dashboard-optimistic-message]")).not.toBeNull();
+    await act(async()=>{echoed=true;await vi.advanceTimersByTimeAsync(1500);});
+    expect(container.querySelector("[data-dashboard-optimistic-message]")).toBeNull();expect(container.querySelectorAll("[data-archive-row] .cmux-dashboard-msg.is-user")).toHaveLength(1);
+    expect(mocks.handleSocketCommand).toHaveBeenCalledTimes(1);
+    expect(mocks.invoke.mock.calls.every(([c])=>String(c).includes("transcript_history"))).toBe(true);
+  });
+
 });

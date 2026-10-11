@@ -619,6 +619,7 @@ pub struct PtySession {
     scrollback_written: Mutex<Option<super::scrollback_store::ScrollbackFingerprint>>,
     last_output_at: Arc<AtomicU64>,
     session_epoch: u64,
+    observation_owner: super::monitor::ObservationOwner,
     frontend_flow: Arc<FrontendFlow>,
     pub created_at: Instant,
     #[allow(dead_code)]
@@ -759,6 +760,7 @@ impl PtySession {
         let scrollback_dirty = Arc::new(AtomicBool::new(false));
         let last_output_at = Arc::new(AtomicU64::new(0));
         let session_epoch = next_session_epoch();
+        let observation_owner = super::monitor::ObservationOwner::new(session_epoch, session_id.clone(), metadata_store.clone());
         let exit_state = Arc::new(SessionExitState::default());
         let reader_exit_state = exit_state.clone();
         let broadcast_tx_clone = broadcast_tx.clone();
@@ -981,6 +983,7 @@ impl PtySession {
         let handle = app_handle.clone();
         let metrics_reader = metrics.clone();
         let reader_flow = frontend_flow.clone();
+        let reader_owner = observation_owner.clone();
         thread::spawn(move || {
             use std::sync::atomic::Ordering;
             let mut buf = [0u8; 4096]; // 4KB — matches OS page size
@@ -1012,8 +1015,8 @@ impl PtySession {
                                 .trim_end_matches(['\n', '\r'])
                                 .trim_end_matches('/')
                                 .to_string();
-                            if !cwd.is_empty() {
-                                let prev = metadata_store.get(&sid).map(|m| m.clone());
+                            if !cwd.is_empty() { reader_owner.publish(|| {
+                                let prev = metadata_store.get(&sid).filter(|m| m.session_epoch == session_epoch).map(|m| m.clone());
                                 let should_emit = match &prev {
                                     Some(m) => m.cwd != cwd,
                                     None => true,
@@ -1022,6 +1025,7 @@ impl PtySession {
                                     let meta = match prev {
                                         Some(old) => PtyMetadata {
                                             session_id: sid.clone(),
+                                            session_epoch,
                                             cwd: cwd.clone(),
                                             git_branch: old.git_branch.clone(),
                                             process_name: old.process_name.clone(),
@@ -1034,9 +1038,12 @@ impl PtySession {
                                             live_agent_kind: old.live_agent_kind.clone(),
                                             agent_session_id: old.agent_session_id.clone(),
                                             agent_session_trusted: old.agent_session_trusted,
+                                            observed_at: old.observed_at,
+                                            agent_started_at: old.agent_started_at,
                                         },
                                         None => PtyMetadata {
                                             session_id: sid.clone(),
+                                            session_epoch,
                                             cwd: cwd.clone(),
                                             git_branch: None,
                                             process_name: None,
@@ -1049,12 +1056,14 @@ impl PtySession {
                                             live_agent_kind: None,
                                             agent_session_id: None,
                                             agent_session_trusted: false,
+                                            observed_at: None,
+                                            agent_started_at: None,
                                         },
                                     };
                                     metadata_store.insert(sid.clone(), meta.clone());
                                     let _ = handle.emit("pty_metadata", meta);
                                 }
-                            }
+                            }); }
                         }
 
                         #[cfg(debug_assertions)]
@@ -1161,6 +1170,7 @@ impl PtySession {
             scrollback_written: Mutex::new(None),
             last_output_at,
             session_epoch,
+            observation_owner,
             frontend_flow,
             created_at,
             metrics,
@@ -1334,7 +1344,7 @@ impl PtySession {
                     crate::session_state::Lifecycle::Exited,
                 ),
             );
-            let _ = app_handle.emit(&events::pty_exit_event(&self.id), ());
+            let _ = app_handle.emit(&events::pty_exit_event(&self.id), serde_json::json!({ "session_epoch": self.session_epoch }));
         });
     }
 
@@ -1412,6 +1422,8 @@ impl PtySession {
         read_last_output_at(&self.last_output_at)
     }
 
+    pub(crate) fn observation_owner(&self) -> super::monitor::ObservationOwner { self.observation_owner.clone() }
+
     pub fn session_epoch(&self) -> u64 {
         self.session_epoch
     }
@@ -1419,6 +1431,7 @@ impl PtySession {
 
 impl Drop for PtySession {
     fn drop(&mut self) {
+        self.observation_owner.retire();
         self.frontend_flow.close();
         let _ = self.kill();
     }
@@ -2029,5 +2042,37 @@ mod scrollback_live_tail_tests {
         assert!(ScrollbackSnapshot::from_wire(&legacy[..23]).is_err());
         legacy[0] = 0;
         assert!(ScrollbackSnapshot::from_wire(&legacy).is_err());
+    }
+}
+
+#[cfg(test)]
+impl PtySession {
+    pub(crate) fn fixture_owner(id: &str, pid: u32, age: Duration, store: MetadataStore) -> Self {
+        #[derive(Debug, Clone)]
+        struct FixtureChild(u32);
+        impl portable_pty::ChildKiller for FixtureChild {
+            fn kill(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> { Box::new(self.clone()) }
+        }
+        impl Child for FixtureChild {
+            fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> { Ok(None) }
+            fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> { Ok(portable_pty::ExitStatus::with_exit_code(0)) }
+            fn process_id(&self) -> Option<u32> { Some(self.0) }
+            #[cfg(windows)]
+            fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> { None }
+        }
+        let (write_tx, _) = mpsc::channel(1);
+        let session_epoch = next_session_epoch();
+        Self {
+            id: id.into(), child: Mutex::new(Box::new(FixtureChild(pid))), master: Mutex::new(native_pty_system().openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 }).unwrap().master),
+            exit_state: Arc::new(SessionExitState::default()), scrollback_geometry: Mutex::new(ScrollbackGeometry::new(80, 24)),
+            write_tx, write_pending_bytes: Arc::new(AtomicUsize::new(0)), writer_failed: Arc::new(AtomicBool::new(false)),
+            input_gate: Mutex::new(()), input_revision: AtomicU64::new(0), broadcast: broadcast::channel(1).0,
+            scrollback: Arc::new(Mutex::new(VecDeque::new())), scrollback_end: Arc::new(AtomicU64::new(0)),
+            scrollback_dirty: Arc::new(AtomicBool::new(false)), scrollback_flush_gate: Mutex::new(()), scrollback_written: Mutex::new(None),
+            last_output_at: Arc::new(AtomicU64::new(0)), session_epoch, observation_owner: super::monitor::ObservationOwner::new(session_epoch, id.into(), store),
+            frontend_flow: Arc::new(FrontendFlow::new(Channel::new(|_| Ok(())))), created_at: Instant::now() - age,
+            metrics: Arc::new(PtyMetrics::default()),
+        }
     }
 }

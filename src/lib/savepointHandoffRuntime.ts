@@ -36,6 +36,7 @@ export function resolveLiveAgentTarget(
     tabId: tab.id,
     sessionId: tab.sessionId,
     targetKind,
+    agentSessionId: metadata?.agentSessionId,
   };
 }
 
@@ -43,7 +44,10 @@ function revalidateLiveAgentTarget(
   target: SavepointPasteDropTarget,
 ): SavepointPasteDropTarget | null {
   const latest = resolveLiveAgentTarget(target.workspaceId, target.paneId, target.tabId);
-  return latest?.sessionId === target.sessionId ? latest : null;
+  // Re-resolution is only a check. Never replace the original recipient pin
+  // with a supported replacement agent on the same terminal.
+  return latest?.sessionId === target.sessionId && latest.targetKind === target.targetKind
+    && (!target.agentSessionId || latest.agentSessionId === target.agentSessionId) ? target : null;
 }
 
 function isApprovalWaiting(sessionId: string): boolean {
@@ -68,7 +72,12 @@ export async function commitSavepointPaste(
   let openingToastId = preparingToastId;
   try {
     if (!isCurrent()) return false;
-    const initialTarget = revalidateLiveAgentTarget(target);
+    // Direct savepoint drops have no publication await before this point;
+    // capture their known conversation here too. Pane handoffs already carry
+    // the conversation captured before publishSavepoint.
+    const pinnedTarget = { ...target, agentSessionId: target.agentSessionId
+      ?? resolveLiveAgentTarget(target.workspaceId, target.paneId, target.tabId)?.agentSessionId };
+    const initialTarget = revalidateLiveAgentTarget(pinnedTarget);
     if (!initialTarget) {
       useToastStore.getState().pushToast(onlineStrings.dragDropTargetGone, "warning");
       return false;
@@ -83,7 +92,7 @@ export async function commitSavepointPaste(
 
     const joined = await joinSavepointSummary(bundleDir);
     if (!isCurrent()) return false;
-    const latestTarget = revalidateLiveAgentTarget(initialTarget);
+    const latestTarget = revalidateLiveAgentTarget(pinnedTarget);
     if (!latestTarget) {
       useToastStore.getState().pushToast(onlineStrings.dragDropTargetGone, "warning");
       return false;
@@ -106,7 +115,7 @@ export async function commitSavepointPaste(
       return false;
     }
     if (!isCurrent()) return false;
-    const readyTarget = revalidateLiveAgentTarget(latestTarget);
+    const readyTarget = revalidateLiveAgentTarget(pinnedTarget);
     if (!readyTarget || isApprovalWaiting(readyTarget.sessionId)) {
       useToastStore.getState().pushToast(onlineStrings.dragDropTargetGone, "warning");
       return false;

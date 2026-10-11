@@ -11,7 +11,7 @@ const expected: Record<number, string> = { 2: "cmd", 4: "unreadable", 5: "unread
 const start = 1_800_000_000_000;
 
 function obs(ms: number, rawRows: string[], output = start + ms, agent = "claude"): LiveTailObservation {
-  return { observedAt: start + ms, rawRows, lastOutputAt: output, crop: cropLiveTail(rawRows, agent) };
+  return { observedAt: start + ms, outputAcquiredAt: start + ms, rawRows, outputFresh: true, lastOutputAt: output, crop: cropLiveTail(rawRows, agent) };
 }
 function spinner(seconds: number, glyph = "*", tokens = 100): string[] {
   return [`${glyph} Thinking\u2026 (${seconds}s \u00b7 \u2193 ${tokens} tokens)`];
@@ -23,7 +23,7 @@ describe("21:41 facts from three actual observations", () => {
   for (const seat of fixture.seats) {
     it(`seat ${seat.index}: ${expected[seat.index] ?? "idle"}`, () => {
       const history = seat.rounds.map((r: { observedAt: number; rows: string[] }) => ({
-        observedAt: r.observedAt, rawRows: r.rows, lastOutputAt: seat.lastOutputAt, crop: cropLiveTail(r.rows, seat.agent),
+        observedAt: r.observedAt, outputAcquiredAt: r.observedAt, rawRows: r.rows, outputFresh: true, lastOutputAt: seat.lastOutputAt, crop: cropLiveTail(r.rows, seat.agent),
       }));
       expect(deriveLiveTailFact(history).kind).toBe(expected[seat.index] ?? "idle");
     });
@@ -32,7 +32,7 @@ describe("21:41 facts from three actual observations", () => {
     const counts: Record<string, number> = {};
     for (const seat of fixture.seats) {
       const kind = deriveLiveTailFact(seat.rounds.map((r: { observedAt: number; rows: string[] }) => ({
-        observedAt: r.observedAt, rawRows: r.rows, lastOutputAt: seat.lastOutputAt, crop: cropLiveTail(r.rows, seat.agent),
+        observedAt: r.observedAt, outputAcquiredAt: r.observedAt, rawRows: r.rows, outputFresh: true, lastOutputAt: seat.lastOutputAt, crop: cropLiveTail(r.rows, seat.agent),
       }))).kind;
       counts[kind] = (counts[kind] ?? 0) + 1;
     }
@@ -61,13 +61,13 @@ describe("fact thresholds and animation-only changes", () => {
     const rows = spinner(1);
     expect(deriveLiveTailFact([obs(0, rows), obs(19_999, rows, start)]).kind).toBe("alive");
     expect(deriveLiveTailFact([obs(0, rows), obs(20_000, rows, start)]).kind).toBe("frozen");
-    expect(deriveLiveTailFact([obs(0, rows), obs(20_000, rows, start + 20_000)]).kind).toBe("unreadable");
+    expect(deriveLiveTailFact([obs(0, rows), obs(20_000, rows, start + 20_000)]).kind).toBe("alive");
     const missing = [obs(0, rows), obs(20_000, rows)];
     missing.forEach((o) => { o.lastOutputAt = null; });
-    expect(deriveLiveTailFact(missing).kind).not.toBe("frozen");
+    expect(deriveLiveTailFact(missing).kind).toBe("alive");
   });
-  it("detects an old identical screen when the PTY advances, even before the frozen window", () => {
-    expect(deriveLiveTailFact([obs(0, spinner(1)), obs(2_000, spinner(1))]).kind).toBe("unreadable");
+  it("does not call an actually read identical screen unreadable when the PTY advances", () => {
+    expect(deriveLiveTailFact([obs(0, spinner(1)), obs(2_000, spinner(1))]).kind).toBe("alive");
   });
   it("records command waiting when only the command duration advances", () => {
     const rows = (s: number) => [`\u25cf Wait for report \u00b7 ${s}s`, "\u23bf  $ wait", ...spinner(s)];

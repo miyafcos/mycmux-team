@@ -65,12 +65,24 @@ codex resume --last
                     "resume", "--last"]
 
 
-@pytest.mark.parametrize("kind,expected_arg", [("codex", "--last"), ("grok", "--continue")])
+@pytest.mark.parametrize("kind,expected_arg", [("codex", None), ("grok", "--continue")])
 @pytest.mark.parametrize("shell", ["bash", "powershell"])
-def test_resume_without_id_uses_continue_kind(shell: str, kind: str, expected_arg: str) -> None:
+def test_resume_without_id_uses_continue_kind(shell: str, kind: str, expected_arg: str | None) -> None:
+    if shell == "bash" and kind == "codex" and os.name == "nt":
+        pytest.skip("Bash fixture is exercised on Mac/Linux")
     executable = shutil.which(shell)
     if not executable:
         pytest.skip(f"{shell} unavailable")
+    if kind == "codex":
+        # Execute the real automatic branch and report helpers, not a partial
+        # extraction with an undefined helper. It must invoke fresh once, emit
+        # one notice, record the missing-ID result and clean the caller env.
+        from test_codex_restore_runtime import run_bash, run_powershell
+        if shell == "bash":
+            run_bash("missing")
+        else:
+            run_powershell("missing", executable)
+        return
     env = os.environ.copy()
     env.update(MYCMUX_RESUME=kind, MYCMUX_SESSION_ID="", MYCMUX_PANE_SESSION_ID="test-pane",
                TEST_LAUNCHER=str(PS))

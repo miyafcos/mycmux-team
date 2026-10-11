@@ -1,0 +1,80 @@
+[
+  {
+    "name":"L1 late remove ID rebinds to B handoff",
+    "shapeSource":"Synthetic records use the supplied skeleton keys and mothership table.",
+    "answerCorrection":"ANSWER-FIX6-1: all eight-record handoffs finish at zero; only the anonymous six-record control retains one.",
+    "steps":[
+      {"record":{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":6000,"display":"running"},
+      {"record":{"type":"queue-operation","operation":"dequeue"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":6000,"display":"running"},
+      {"record":{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":2},"expectedLastEventAtOffsetMs":8000,"display":"running"},
+      {"record":{"type":"user","message":{"role":"user","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"}},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":9000,"display":"running"},
+      {"record":{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>","commandUuid":"opaque-R"},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":10000,"display":"running"},
+      {"record":{"type":"queue-operation","operation":"dequeue","commandUuid":"opaque-R"},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":10000,"display":"running"},
+      {"record":{"type":"user","message":{"role":"user","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"commandUuid":"opaque-R"},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":0},"expectedLastEventAtOffsetMs":12000,"display":"running"},
+      {"record":{"type":"assistant","message":{"role":"assistant","content":[],"stop_reason":"end_turn"}},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":0},"expectedLastEventAtOffsetMs":13000,"display":"done"}
+    ],
+    "polls":[
+      {"atStep":7,"elapsedMs":1000,"display":"done"},
+      {"atStep":7,"elapsedMs":1799000,"display":"done"},
+      {"atStep":7,"elapsedMs":1800000,"display":"done"}
+    ]
+  },
+  {
+    "name":"L1 anonymous eight records keep B handoff",
+    "shapeSource":"Synthetic records use the supplied skeleton keys and mothership table.",
+    "answerCorrection":"ANSWER-FIX6-1: all eight-record handoffs finish at zero; only the anonymous six-record control retains one.",
+    "steps":[
+      {"record":{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":6000,"display":"running"},
+      {"record":{"type":"queue-operation","operation":"dequeue"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":6000,"display":"running"},
+      {"record":{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":2},"expectedLastEventAtOffsetMs":8000,"display":"running"},
+      {"record":{"type":"user","message":{"role":"user","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"}},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":9000,"display":"running"},
+      {"record":{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":10000,"display":"running"},
+      {"record":{"type":"queue-operation","operation":"dequeue"},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":10000,"display":"running"},
+      {"record":{"type":"user","message":{"role":"user","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"}},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":0},"expectedLastEventAtOffsetMs":12000,"display":"running"},
+      {"record":{"type":"assistant","message":{"role":"assistant","content":[],"stop_reason":"end_turn"}},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":0},"expectedLastEventAtOffsetMs":13000,"display":"done"}
+    ],
+    "polls":[
+      {"atStep":7,"elapsedMs":1000,"display":"done"},
+      {"atStep":7,"elapsedMs":1799000,"display":"done"},
+      {"atStep":7,"elapsedMs":1800000,"display":"done"}
+    ]
+  },
+  {
+    "name":"L1 identified dequeue with anonymous user control",
+    "shapeSource":"Synthetic records use the supplied skeleton keys and mothership table.",
+    "answerCorrection":"ANSWER-FIX6-1: all eight-record handoffs finish at zero; only the anonymous six-record control retains one.",
+    "steps":[
+      {"record":{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":6000,"display":"running"},
+      {"record":{"type":"queue-operation","operation":"dequeue"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":6000,"display":"running"},
+      {"record":{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":2},"expectedLastEventAtOffsetMs":8000,"display":"running"},
+      {"record":{"type":"user","message":{"role":"user","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"}},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":9000,"display":"running"},
+      {"record":{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>","commandUuid":"opaque-R"},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":10000,"display":"running"},
+      {"record":{"type":"queue-operation","operation":"dequeue","commandUuid":"opaque-R"},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":10000,"display":"running"},
+      {"record":{"type":"user","message":{"role":"user","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"}},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":0},"expectedLastEventAtOffsetMs":12000,"display":"running"},
+      {"record":{"type":"assistant","message":{"role":"assistant","content":[],"stop_reason":"end_turn"}},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":0},"expectedLastEventAtOffsetMs":13000,"display":"done"}
+    ],
+    "polls":[
+      {"atStep":7,"elapsedMs":1000,"display":"done"},
+      {"atStep":7,"elapsedMs":1799000,"display":"done"},
+      {"atStep":7,"elapsedMs":1800000,"display":"done"}
+    ]
+  },
+  {
+    "name":"L1 anonymous six records without B delivery",
+    "shapeSource":"Synthetic records use the supplied skeleton keys and mothership table.",
+    "answerCorrection":"ANSWER-FIX6-1: all eight-record handoffs finish at zero; only the anonymous six-record control retains one.",
+    "steps":[
+      {"record":{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":6000,"display":"running"},
+      {"record":{"type":"queue-operation","operation":"dequeue"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":6000,"display":"running"},
+      {"record":{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":2},"expectedLastEventAtOffsetMs":8000,"display":"running"},
+      {"record":{"type":"user","message":{"role":"user","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"}},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":9000,"display":"running"},
+      {"record":{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":10000,"display":"running"},
+      {"record":{"type":"assistant","message":{"role":"assistant","content":[],"stop_reason":"end_turn"}},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"expectedLastEventAtOffsetMs":11000,"display":"running"}
+    ],
+    "polls":[
+      {"atStep":5,"elapsedMs":1000,"display":"running"},
+      {"atStep":5,"elapsedMs":1799000,"display":"running"},
+      {"atStep":5,"elapsedMs":1800000,"display":"done"}
+    ]
+  }
+]

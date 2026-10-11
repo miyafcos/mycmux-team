@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { capturePaneFocusReturn } from "../../lib/focusController";
 import { listen } from "@tauri-apps/api/event";
 import {
   loadWebPanePresets,
@@ -29,6 +30,24 @@ export default function WebPaneStatusBar({ tabId, presetId }: WebPaneStatusBarPr
   const [signedOut, setSignedOut] = useState<boolean | null>(null);
   const [signin, setSignin] = useState<SigninState>("idle");
   const [error, setError] = useState<string | null>(null);
+  const signinButtonRef = useRef<HTMLButtonElement>(null);
+  const signinFocusReturnRef = useRef<{ button: HTMLButtonElement; restore: ReturnType<typeof capturePaneFocusReturn> } | null>(null);
+  const rememberSigninFocus = () => {
+    const button = signinButtonRef.current;
+    if (button && button.ownerDocument.activeElement === button) {
+      signinFocusReturnRef.current?.restore.cancel();
+      signinFocusReturnRef.current = { button, restore: capturePaneFocusReturn(
+        button, null) };
+    }
+  };
+  useEffect(() => () => signinFocusReturnRef.current?.restore.cancel(), []);
+  useLayoutEffect(() => {
+    const pending = signinFocusReturnRef.current;
+    if (pending && !pending.button.isConnected) {
+      pending.restore(pending.button);
+      signinFocusReturnRef.current = null;
+    }
+  }, [signin, signedOut, error]);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,6 +105,7 @@ export default function WebPaneStatusBar({ tabId, presetId }: WebPaneStatusBarPr
   }, [tabId]);
 
   const onSignIn = () => {
+    rememberSigninFocus();
     setError(null);
     setSignin("running");
     void startWebPaneSignin(presetId).catch((reason: unknown) => {
@@ -124,7 +144,9 @@ export default function WebPaneStatusBar({ tabId, presetId }: WebPaneStatusBarPr
       {signedOut && signin === "idle" && (
         <>
           <button
+            ref={signinButtonRef}
             type="button"
+            onFocus={rememberSigninFocus}
             onClick={onSignIn}
             style={{
               flexShrink: 0,

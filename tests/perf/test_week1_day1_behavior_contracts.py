@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import importlib.util
+import os
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -92,7 +95,9 @@ def test_launcher_order_matches_current_contract() -> None:
         label for label, command in zip(EXPECTED_LAUNCHER_OPTIONS, EXPECTED_LAUNCHER_COMMANDS)
         if not command.startswith("__dir_")
     ]
-    assert "restore.json" not in launcher
+    # There is no persistent restore snapshot. A bounded transient Codex
+    # outcome report is separate from the app's saved workspace data.
+    assert "restore.json" not in launcher.replace(".codex-restore.json", "")
     assert_contains(launcher, "__ensure_fugu_env", "src-tauri/src/launcher.sh")
     assert_contains(launcher, "FUGU_API_KEY", "src-tauri/src/launcher.sh")
     assert_contains(launcher_ps1, "Import-MycmuxUserEnvIfMissing", "src-tauri/src/launcher.ps1")
@@ -198,7 +203,7 @@ def test_resume_and_handoff_environment_contract_remains_wired() -> None:
         "MYCMUX_RESUME",
         "MYCMUX_SESSION_ID",
         "__write_session_mapping",
-        "codex resume --no-alt-screen --last",
+        '__mycmux_codex_restore_invoke codex resume --no-alt-screen "$requested"',
         # A handoff pane must mint its own session id, not inherit the source
         # pane's — see the handoff branch in launcher.sh.
         'claude --session-id "$__handoff_sid"',
@@ -212,10 +217,44 @@ def test_resume_and_handoff_environment_contract_remains_wired() -> None:
         "MYCMUX_RESUME",
         "MYCMUX_SESSION_ID",
         "Write-MycmuxSessionMapping",
-        '@("codex", "resume", "--no-alt-screen", "--last")',
+        "@('codex', 'resume', '--no-alt-screen', $requestedId)",
         'Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude" $sid',
     ]:
         assert_contains(launcher_ps1, snippet, "src-tauri/src/launcher.ps1")
+
+    # Automatic restore must forward exact A, never select a last session.
+    # Keep the manual resume menu outside these automatic/helper scopes.
+    sh_helpers = launcher.split("# BEGIN CODEX RESTORE HELPERS", 1)[1].split("# END CODEX RESTORE HELPERS", 1)[0]
+    ps_helpers = launcher_ps1.split("# BEGIN CODEX RESTORE HELPERS", 1)[1].split("# END CODEX RESTORE HELPERS", 1)[0]
+    sh_start = launcher.index('if [ -n "${MYCMUX_CODEX_RESTORE_REASON:-}" ]; then')
+    sh_automatic = launcher[sh_start:launcher.index("\n# Web ", sh_start)]
+    ps_automatic = launcher_ps1.split("function Invoke-MycmuxResumeFromEnv {", 1)[1].split("\n$Options =", 1)[0]
+    assert_contains(sh_automatic, "    codex*)\n      __mycmux_restore_codex\n      ;;", "src-tauri/src/launcher.sh")
+    assert_contains(ps_automatic, '    "codex*" {\n      Invoke-MycmuxCodexRestore\n      return $true\n    }', "src-tauri/src/launcher.ps1")
+    for source, automatic, helpers in (
+        ("src-tauri/src/launcher.sh", sh_automatic, sh_helpers),
+        ("src-tauri/src/launcher.ps1", ps_automatic, ps_helpers),
+    ):
+        assert_not_contains(automatic + helpers, "--last", source)
+
+    # Exercise the real automatic branches plus their report helpers. The
+    # fixture asserts exact argv, at most one fresh call, exactly one downgrade
+    # notice, cleanup, usable caller shell and no retry of ordinary CLI exits.
+    # Load by path so this file's standalone runner works as well as pytest.
+    runtime_spec = importlib.util.spec_from_file_location(
+        "codex_restore_runtime_contract", REPO_ROOT / "tests/test_codex_restore_runtime.py",
+    )
+    assert runtime_spec and runtime_spec.loader
+    runtime = importlib.util.module_from_spec(runtime_spec)
+    runtime_spec.loader.exec_module(runtime)
+    if os.name != "nt":
+        assert shutil.which("bash"), "Bash is required for the Mac/Linux restore contract"
+        for case in runtime.CASES:
+            runtime.run_bash(case, launcher)
+    executable = runtime.powershell_executable(required=os.name == "nt" or runtime.REQUIRE_PS51)
+    if executable:
+        for case in runtime.CASES:
+            runtime.run_powershell(case, executable)
 
     # The "<kind>-handoff:<source pane id>" mappings are junk: no reader accepts
     # them, and persisting one downgraded restore to `claude --continue`, which

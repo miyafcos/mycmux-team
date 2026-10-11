@@ -48,6 +48,7 @@ fn session_is_running<S>(
 
 #[derive(Clone, Debug)]
 pub(crate) struct TrustedAgentIdentity {
+    pub session_epoch: u64,
     pub kind: String,
     pub session_id: String,
     pub agent_pid: u32,
@@ -218,8 +219,14 @@ impl SessionManager {
         if let Some(mut value) = self.requested_conversations.get_mut(pty) { value.agent_seen = true; }
     }
 
+    /// Birth of the current PTY, independent of transcript and renderer generations.
+    pub(crate) fn session_age(&self, pty: &str) -> Option<std::time::Duration> {
+        self.sessions.get(pty).map(|session| session.created_at.elapsed())
+    }
+
     pub(crate) fn trusted_agent_identity(&self, pty: &str) -> Option<TrustedAgentIdentity> {
-        self.sessions.contains_key(pty).then(|| self.trusted_agent_identities.get(pty).map(|v| v.clone())).flatten()
+        let session = self.sessions.get(pty)?;
+        self.trusted_agent_identities.get(pty).filter(|v| v.session_epoch == session.session_epoch()).map(|v| v.clone())
     }
 
     pub(crate) fn conversation_history(&self, pty: &str) -> Vec<String> {
@@ -227,13 +234,14 @@ impl SessionManager {
     }
 
     pub(crate) fn remember_agent_identity(&self, pty: &str, identity: TrustedAgentIdentity) {
-        if !self.sessions.contains_key(pty) { return; }
+        let Some(session) = self.sessions.get(pty) else { return; };
+        if session.session_epoch() != identity.session_epoch { return; }
         self.note_agent_seen(pty);
         let mut history = self.conversation_history.entry(pty.to_string()).or_default();
         if !history.contains(&identity.session_id) { history.push(identity.session_id.clone()); }
         if history.len() > 32 { history.remove(0); }
         drop(history);
-        if self.sessions.contains_key(pty) { self.trusted_agent_identities.insert(pty.to_string(), identity); }
+        self.trusted_agent_identities.insert(pty.to_string(), identity);
     }
 
     pub fn write(&self, session_id: &str, data: &[u8]) -> Result<(), String> {
@@ -333,10 +341,19 @@ impl SessionManager {
         }
     }
 
+    pub(crate) fn retire(&self, session_id: &str) -> Option<PtySession> {
+        self.requested_conversations.remove(session_id);
+        self.trusted_agent_identities.remove(session_id);
+        let retired = self.sessions.remove(session_id).map(|(_, session)| session);
+        if let Some(session) = &retired { session.observation_owner().retire(); self.prune_create_lock_if_idle(session_id); }
+        retired
+    }
+
     pub fn kill(&self, session_id: &str) -> Result<(), String> {
         self.requested_conversations.remove(session_id);
         self.trusted_agent_identities.remove(session_id);
         if let Some((_, session)) = self.sessions.remove(session_id) {
+            session.observation_owner().retire();
             session.kill()?;
             self.prune_create_lock_if_idle(session_id);
         }
@@ -356,6 +373,7 @@ impl SessionManager {
             self.requested_conversations.remove(&key);
             self.trusted_agent_identities.remove(&key);
             if let Some((_, session)) = self.sessions.remove(&key) {
+                session.observation_owner().retire();
                 let _ = session.kill();
                 self.prune_create_lock_if_idle(&key);
             }
@@ -372,10 +390,15 @@ impl SessionManager {
             self.requested_conversations.remove(&key);
             self.trusted_agent_identities.remove(&key);
             if let Some((_, session)) = self.sessions.remove(&key) {
+                session.observation_owner().retire();
                 let _ = session.kill();
                 self.prune_create_lock_if_idle(&key);
             }
         }
+    }
+
+    pub(crate) fn iter_observations(&self) -> Vec<(String, Option<u32>, super::monitor::ObservationOwner, Option<u64>)> {
+        self.sessions.iter().map(|s| (s.key().clone(), s.process_id(), s.observation_owner(), s.last_output_at())).collect()
     }
 
     pub fn iter_pids(&self) -> Vec<(String, Option<u32>)> {
@@ -602,4 +625,11 @@ mod tests {
         assert!(!requested_launch_is_pending(true, Duration::from_secs(9)));
     }
 
+}
+
+#[cfg(test)]
+impl SessionManager {
+    pub(crate) fn install_fixture_owner(&self, id: &str, pid: u32, age: std::time::Duration, store: MetadataStore) {
+        self.sessions.insert(id.into(), PtySession::fixture_owner(id, pid, age, store));
+    }
 }

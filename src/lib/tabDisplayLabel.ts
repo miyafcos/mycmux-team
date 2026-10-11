@@ -1,9 +1,11 @@
+import { shortAutomaticName } from "./autoNamePolicy";
+import { isAutomaticNameTarget, preferredTabName } from "./autoNameOwnership";
 import { getAgent, getDefaultAgent } from "./agents";
 import type { PaneTab } from "../types";
 import type { PaneMetadata, PaneVolatileMetadata } from "../stores/paneMetadataStore";
 
-export function getTabDisplayLabel(
-  tab: Pick<PaneTab, "label" | "labelSource" | "displayName"> & Partial<Pick<PaneTab, "agentId" | "sessionId" | "cwd">>,
+export function getTabDisplayFullLabel(
+  tab: Pick<PaneTab, "label" | "labelSource" | "displayName"> & Partial<Pick<PaneTab, "agentId" | "sessionId" | "cwd" | "displayNameSource">>,
   isTabActive = true,
   metadataBySession: Record<string, PaneMetadata | undefined> = {},
   volatileMetadataBySession: Record<string, PaneVolatileMetadata | undefined> = {},
@@ -12,12 +14,15 @@ export function getTabDisplayLabel(
   const tabMeta = metadataBySession[tab.sessionId ?? ""];
   const tabProcessTitle = volatileMetadataBySession[tab.sessionId ?? ""]?.processTitle;
   const tabCwd = tabMeta?.cwd ?? tab.cwd;
-  const label = tab.label?.trim() ? tab.label : undefined;
   void isTabActive;
-  return (tab.labelSource === "user" ? label : undefined)
-    ?? tab.displayName
-    ?? label
+  return preferredTabName(tab)
     ?? (tabProcessTitle
         ? tabProcessTitle
         : (tabCwd ? tabCwd.replace(/\\/g, "/").split("/").pop() || agent.name : agent.name));
+}
+
+export function getTabDisplayLabel(...args: Parameters<typeof getTabDisplayFullLabel>): string {
+  const full = getTabDisplayFullLabel(...args);
+  const tab = args[0];
+  return tab.displayNameSource === "auto" && isAutomaticNameTarget(tab) ? shortAutomaticName(full) : full;
 }

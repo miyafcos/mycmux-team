@@ -21,10 +21,10 @@ async function checkClosedPanes(): Promise<void> {
     const affected = new Set(trees.map((tree) => tree.root.paneSessionId));
     const label = batch.get(trees[0].root.paneSessionId);
     const message = affected.size === 1
-      ? `閉じたペイン「${label}」から起動されたプロセスが ${trees.length} 件動いています`
-      : `閉じたペインから起動されたプロセスが ${trees.length} 件動いています`;
+      ? `閉じたタブ「${label}」から起動されたプロセスが ${trees.length} 件動いています`
+      : `閉じたタブから起動されたプロセスが ${trees.length} 件動いています`;
     useToastStore.getState().pushToast(message, "warning", {
-      label: "ペイン掃除で確認",
+      label: "タブ掃除で確認",
       run: () => {
         // Avoid a closedPaneStore -> socketCommands -> closedPaneStore cycle.
         void import("../components/layout/tabSweep").then(({ openTabSweepInDashboard }) => openTabSweepInDashboard());

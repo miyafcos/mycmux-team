@@ -21,7 +21,7 @@ export function ownerLocationInFragments(fragments: readonly WindowFragment[], s
       const tab = pane.tabs?.find(tab => tab.session_id === sessionId);
       if (!tab) continue;
       const paneName = getTabDisplayLabel({ label: tab.label ?? pane.label ?? undefined,
-        labelSource: tab.label_source === "ai" ? "ai" : "user", displayName: tab.display_name ?? undefined,
+        labelSource: tab.label_source ?? undefined, displayName: tab.display_name ?? undefined,
         agentId: tab.agent_id ?? pane.agent_id, sessionId, cwd: tab.cwd ?? pane.cwd ?? undefined });
       return { windowLabel: fragment.window_label, workspaceName: workspace.name,
         paneName, otherWindow: fragment.window_label !== windowLabel() };

@@ -1,6 +1,7 @@
 import type { FitAddon } from "@xterm/addon-fit";
 import type { SearchAddon } from "@xterm/addon-search";
 import type { IMarker, Terminal } from "@xterm/xterm";
+import { currentPtyRead, ptyReadGeneration, retainPtyReads, type PtyReadGeneration } from "../../lib/ptyReadGeneration";
 import { writeToSession, type FrontendDataBatch } from "../../lib/ipc";
 import { useToastStore } from "../../stores/toastStore";
 import {
@@ -28,13 +29,61 @@ export const liveTerms = new Map<string, Terminal>();
 // Read authority belongs to this exact parsed Terminal, never just a session ID.
 // A retained hidden mount can attach its PTY without parsing any output.
 const readableTerminalBuffers = new WeakSet<Terminal>();
+const parsedPtyGenerations = new WeakMap<Terminal, ReturnType<typeof ptyReadGeneration>>();
+type ParseTicket = { generation: PtyReadGeneration; finish: (parsed: boolean) => boolean };
+const submittedWrites = new WeakMap<Terminal, Set<ParseTicket>>();
+const failedWrites = new WeakMap<Terminal, PtyReadGeneration>();
 
-export function markTerminalBufferReady(term: Terminal): void {
+/** Actual parse callbacks, not ACK/watchdog settlement, release read authority. */
+export function beginTerminalBufferWrite(sessionId: string, term: Terminal, generation: PtyReadGeneration): (parsed: boolean) => boolean {
+  const release = retainPtyReads(sessionId);
+  const pending = submittedWrites.get(term) ?? new Set<ParseTicket>();
+  const ticket: ParseTicket = { generation, finish: parsed => {
+    if (!pending.delete(ticket)) return false;
+    if (!pending.size) submittedWrites.delete(term);
+    if (!parsed && currentPtyRead(sessionId, generation)) {
+      failedWrites.set(term, generation); parsedPtyGenerations.delete(term);
+    }
+    const accepted = parsed && currentPtyRead(sessionId, generation);
+    release(); return accepted;
+  } };
+  pending.add(ticket); submittedWrites.set(term, pending);
+  if (failedWrites.get(term) !== generation) failedWrites.delete(term);
+  return ticket.finish;
+}
+
+export function cancelTerminalBufferWrites(term: Terminal): void {
+  for (const ticket of [...submittedWrites.get(term) ?? []]) ticket.finish(false);
+}
+
+export function pendingTerminalBufferWrites(term: Terminal, generation: PtyReadGeneration): number {
+  return [...submittedWrites.get(term) ?? []].filter(ticket => ticket.generation === generation).length;
+}
+
+export function markTerminalBufferReady(term: Terminal, generation?: PtyReadGeneration): void {
   readableTerminalBuffers.add(term);
+  const sessionId = [...liveTerms].find(([, current]) => current === term)?.[0]
+    ?? [...termCache].find(([, cached]) => cached.term === term)?.[0];
+  if (generation || sessionId) parsedPtyGenerations.set(term, generation ?? ptyReadGeneration(sessionId!));
 }
 
 export function isTerminalBufferReady(term: Terminal): boolean {
   return readableTerminalBuffers.has(term);
+}
+const currentOutputParsers = new WeakMap<Terminal, () => boolean>();
+
+/** The mounted pump supplies its actual visibility, parking and replay state. */
+export function registerCurrentOutputParser(sessionId: string, term: Terminal, parsing: () => boolean): void {
+  const generation = ptyReadGeneration(sessionId);
+  currentOutputParsers.set(term, () => currentPtyRead(sessionId, generation) && parsing());
+}
+
+export function isTerminalParsingCurrentOutput(sessionId: string): boolean {
+  const term = liveTerms.get(sessionId);
+  const generation = ptyReadGeneration(sessionId);
+  return Boolean(term && !termCache.has(sessionId) && isTerminalBufferReady(term)
+    && parsedPtyGenerations.get(term) === generation && !pendingTerminalBufferWrites(term, generation)
+    && failedWrites.get(term) !== generation && currentOutputParsers.get(term)?.());
 }
 export const terminalSizeCache = new Map<string, { cols: number; rows: number }>();
 export const terminalWriteCounters = new Map<string, number>();
@@ -427,7 +476,7 @@ export function evictTerminalCache(
   if (cached) {
     cached.unlistenExit?.();
     cached.disposeRenderer?.();
-    cached.term.dispose();
+    cancelTerminalBufferWrites(cached.term); cached.term.dispose();
     termCache.delete(sessionId);
     // Cache hit: the Terminal was already disposed here, so there is nothing for
     // a later unmount to leak. Clear any stale mark defensively.
@@ -502,7 +551,7 @@ export function cacheOrDisposeOnUnmount(
   if (sessionsEvictedWhileMounted.delete(sessionId)) {
     entry.unlistenExit?.();
     entry.disposeRenderer?.();
-    entry.term.dispose();
+    cancelTerminalBufferWrites(entry.term); entry.term.dispose();
     if (import.meta.env.DEV) {
       console.log(`[mycmux-diag xterm:${sessionId}] unmount_dispose_evicted`);
     }

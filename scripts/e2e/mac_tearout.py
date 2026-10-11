@@ -21,9 +21,9 @@ from pathlib import Path
 from mycmux_e2e import App
 
 ROOT = Path(__file__).resolve().parents[2]
-match = re.fullmatch(r'mycmux-wt-mac-([a-z0-9]+)-261003', ROOT.name)
+match = re.fullmatch(r'mycmux-wt-mac-([a-z0-9]+)-261003|wt-tearoutfix-([0-9]+)', ROOT.name)
 assert match, ROOT
-SEAT = match.group(1)
+SEAT = match.group(1) or ('fix' + match.group(2))
 OUT = ROOT / 'tmp' / f'tearout-{SEAT}'
 STATE = r"""
 const h=window.__mycmuxE2E, list=h.stores.workspaceList.getState(), ui=h.stores.ui.getState();
@@ -44,6 +44,12 @@ def instrument(app, label):
     js(app, r"""
 if(window.__m1IPC) return true;
 window.__m1IPC=[];
+window.__m1Moves={};
+const invoke=window.__TAURI_INTERNALS__.invoke;
+window.__TAURI_INTERNALS__.invoke=function(command,args,...rest) {
+  if(command==='tearout_start_move') window.__m1Moves[args.id]={id:args.id,label:args.label,mode:args.mode};
+  return invoke.call(this,command,args,...rest);
+};
 const original=window.fetch;
 window.fetch=function(input,options) {
   const url=typeof input==='string'?input:input.url, at=Date.now(), began=performance.now();
@@ -225,7 +231,20 @@ if(kind==='workspace') {{
   const strip=region.querySelector('.pane-tabbar'), r=strip.getBoundingClientRect();
   y=r.top+r.height*.5;endY=r.bottom+13;
   if(kind==='pane'||entry==='pill') {{
-    el=region.querySelector('[data-tab-id='+CSS.escape({json.dumps(tabs[-1]['id'])})+']');
+    const targetId={json.dumps(tabs[-1]['id'])};
+    const heading=()=>region.querySelector('[data-tab-id='+CSS.escape(targetId)+']');
+    const painted=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    if(!heading()) {{
+      const trigger=region.querySelector('.pane-hidden-tabs');
+      if(!trigger) throw new Error('M1 target tab is hidden but the tab list is missing');
+      trigger.click();await painted();
+      const item=region.querySelector('[data-menu-tab-id='+CSS.escape(targetId)+']');
+      if(!item) throw new Error('M1 exact hidden target tab missing');
+      item.click();await painted();
+    }}
+    const active=heading();
+    if(!active) throw new Error('M1 target tab did not become the visible heading');
+    el=active.querySelector('.pane-active-heading-name')||active;
     const grip=el.getBoundingClientRect();x=grip.left+grip.width*.5;
   }} else {{
     for(x=r.right-80;x>r.left;x-=4) {{
@@ -276,7 +295,9 @@ return {{center:{{x:r.left+r.width*.5,y:r.top+r.height*.5}},left:{{x:r.left+5,y:
 
 
 def pump(app, move_id, label, source, receiver=None, point=None, escaped=False):
-    arguments = {'id': move_id, 'label': label, 'sourceLabel': source, 'receiver': receiver,
+    bound = wait(app, lambda: js(app, f'return window.__m1Moves?.[{json.dumps(move_id)}]??null;', source), 'bound native move mode')
+    assert bound['id'] == move_id and bound['label'] == label and bound['mode'] in ('detach', 'dock'), bound
+    arguments = {'id': move_id, 'label': label, 'mode': bound['mode'], 'sourceLabel': source, 'receiver': receiver,
                  'clientX': (point or {}).get('x', -1), 'clientY': (point or {}).get('y', -1),
                  'phase': 'move', 'escaped': False}
     hover = js(app, f"""
@@ -286,7 +307,7 @@ return last;
 """, source)
     arguments.update(phase='end', escaped=escaped)
     end = js(app, f'return await window.__TAURI_INTERNALS__.invoke("tearout_synthetic_sample",{json.dumps(arguments)});', source)
-    return {'hover': hover, 'end': end}
+    return {'bound': bound, 'hover': hover, 'end': end}
 
 
 def cases():
@@ -344,29 +365,57 @@ def run_case(app, case, out):
     writes_before = read_writes()
     writes_during = wait(app, lambda: (value if (value := read_writes()) > writes_before else None), 'live terminal writes during the pending drag', 8)
     move_id = wait(app, lambda: js(app, 'return [...window.__mycmuxE2E.nativeTearout.records.keys()][0]??null;'), 'native transfer record')
-    if case.get('regrab'):
-        pump(app, move_id, label, 'main')
-        wait(app, lambda: js(app, 'return window.__mycmuxE2E.nativeTearout.records.size;') == 0, 'initial keep settled')
-        if case['regrab'] == 'band':
-            js(app, 'const el=document.querySelector("[data-native-pane-shell]").firstElementChild;const r=el.getBoundingClientRect();const send=(type,target,x)=>target.dispatchEvent(new PointerEvent(type,{bubbles:true,cancelable:true,pointerId:42,button:0,buttons:1,clientX:x,clientY:r.top+12}));send("pointerdown",el,r.left+20);send("pointermove",window,r.left+40);return true;', label)
+    name = case['destination']
+    # All old first-gesture dock cases now complete detach before moving the
+    # whole child. The label never chooses the protocol mode; pump reads start.
+    entry = case.get('regrab') or ('band' if name not in ('keep', 'esc') else None)
+    owner = 'main'
+    detaches = []
+    retained_siblings = None
+
+    def settle_detach(move_id, label, owner):
+        probe = pump(app, move_id, label, owner)
+        assert probe['bound']['mode'] == 'detach', probe
+        assert not probe['hover']['approval'] and not probe['end']['approval'], probe
+        assert probe['hover']['alpha_calls'] == 0 and probe['end']['alpha_calls'] == 0, probe
+        wait(app, lambda: js(app, 'return window.__mycmuxE2E.nativeTearout.records.size;', owner) == 0, 'detach receipt/publication finalized')
+        return probe
+
+    def band_start(label):
+        js(app, 'const el=document.querySelector("[data-native-pane-shell]").firstElementChild;const r=el.getBoundingClientRect();const send=(type,target,x)=>target.dispatchEvent(new PointerEvent(type,{bubbles:true,cancelable:true,pointerId:42,button:0,buttons:1,clientX:x,clientY:r.top+12}));send("pointerdown",el,r.left+20);send("pointermove",window,r.left+40);return true;', label)
+        return wait(app, lambda: js(app, 'return [...window.__mycmuxE2E.nativeTearout.records.keys()][0]??null;', label), 'whole-child dock record')
+
+    if entry:
+        detaches.append(settle_detach(move_id, label, owner))
+        owner = label
+        if entry == 'band':
+            move_id = band_start(label)
         else:
             child = js(app, STATE, label)['workspaces'][0]
-            if case['regrab'] == 'pill': tabs = tabs[-1:]
-            pointer_start(app, child, 'pane' if case['regrab'] == 'pill' else 'tab', tabs, label, case['regrab'])
-        move_id = wait(app, lambda: js(app, 'return [...window.__mycmuxE2E.nativeTearout.records.keys()][0]??null;', label), 'regrab record')
-        if case['regrab'] == 'pill':
-            moving = moving_window(app, tabs, label)
-            label = moving['label']
+            if entry == 'pill':
+                siblings, tabs = tabs[:-1], tabs[-1:]
+            pointer_start(app, child, 'pane' if entry == 'pill' else 'tab', tabs, owner, entry)
+            move_id = wait(app, lambda: js(app, 'return [...window.__mycmuxE2E.nativeTearout.records.keys()][0]??null;', owner), 'child internal drag record')
+            if entry == 'pill':
+                # A partial pill in a multi-session child detaches exactly as
+                # in the main window; returning it requires its own whole grip.
+                moving = moving_window(app, tabs, owner)
+                label = moving['label']
+                instrument(app, label)
+                detaches.append(settle_detach(move_id, label, owner))
+                retained_siblings = {'label': owner, 'tabs': siblings}
+                owner = label
+                move_id = band_start(label)
         window_number = identity(app, label)
-    name = case['destination']
     point = destination(app, receiver, name) if name not in ('keep', 'esc') else None
-    owner = moving['label'] if case.get('regrab') and case['regrab'] != 'pill' else 'main'
-    if case.get('regrab') and case['regrab'] == 'pill':
-        owner = wait(app, lambda: next((row['label'] for row in app.windows() if row['label'] not in ('main', label) and row.get('visible')), None), 'pill source')
     probe = pump(app, move_id, label, owner, 'main' if point else None, point, name == 'esc')
     if point:
-        assert probe['end']['approval'], probe
-        assert probe['hover']['alpha_calls'] == 1 and probe['end']['alpha_calls'] == 2, probe
+        assert probe['bound']['mode'] == 'dock', probe
+        # Historical hover approval is diagnostic only. The real final receipt,
+        # ownership and layout below establish the release's accepted target.
+    else:
+        assert probe['bound']['mode'] == 'detach', probe
+        assert not probe['end']['approval'] and probe['end']['alpha_calls'] == 0, probe
     expected_label = label if name == 'keep' else 'main'
     wait(app, lambda: all(rows == [(expected_label, next(tab['sessionId'] for tab in tabs if tab['id'] == tab_id))]
         for tab_id, rows in hosts(app, tabs).items()), 'only the expected window owns each transported session', 25)
@@ -380,6 +429,11 @@ def run_case(app, case, out):
     assert_layout(final_state, source, receiver, tabs, case)
     # Read the same subset after an individual-pill regrab.
     assert_live({tab['id']: before[tab['id']] for tab in tabs}, after)
+    if retained_siblings:
+        sibling_tabs = retained_siblings['tabs']
+        sibling_after = live_clocks(app, sibling_tabs, retained_siblings['label'], before)
+        assert_live({tab['id']: before[tab['id']] for tab in sibling_tabs}, sibling_after)
+        retained_siblings['after'] = sibling_after
     records = wait(app, lambda: [json.loads(line) for line in (app.runtime_dir / 'tearout-log.jsonl').read_text().splitlines()] if (app.runtime_dir / 'tearout-log.jsonl').exists() else None, 'persistent drag log')
     expected = 'kept_window' if name == 'keep' else 'esc_cancelled' if name == 'esc' else 'docked'
     record = wait(app, lambda: next((json.loads(line) for line in (app.runtime_dir / 'tearout-log.jsonl').read_text().splitlines() if json.loads(line)['drag_id'] == move_id), None), 'terminal record')
@@ -393,7 +447,7 @@ def run_case(app, case, out):
     ipc_labels = {owner, expected_label}
     ipc = {label: js(app, 'return window.__m1IPC??[];', label) for label in ipc_labels if label in present}
     unavailable_ipc_windows = sorted(ipc_labels - present)
-    return {'initial': initial, 'before': before, 'during': during, 'after': after, 'source_state': before_state, 'final_state': final_state, 'writes_before': writes_before, 'writes_during': writes_during, 'native_window_number': window_number, 'probe': probe, 'record': record, 'ipc': ipc, 'unavailable_ipc_windows': unavailable_ipc_windows, 'windows': windows}
+    return {'initial': initial, 'before': before, 'during': during, 'after': after, 'source_state': before_state, 'final_state': final_state, 'writes_before': writes_before, 'writes_during': writes_during, 'native_window_number': window_number, 'probe': probe, 'detaches': detaches, 'retained_siblings': retained_siblings, 'record': record, 'ipc': ipc, 'unavailable_ipc_windows': unavailable_ipc_windows, 'windows': windows}
 
 
 def main():

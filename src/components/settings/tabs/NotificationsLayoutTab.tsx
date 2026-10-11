@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { supportsNativePaneTearout, isMacTearoutPlatform } from "../../../lib/tearout/feature";
 import { notificationSettingsStrings } from "../settingsStrings";
@@ -7,6 +8,9 @@ import { checkboxLabelStyle, checkboxLabelStyleFor, sectionHeadingStyle } from "
 // parent/child disabled+dim pattern for 通知 -> 通知サウンド) plus the pane
 // split-button visibility toggles, now with pure Japanese labels.
 export function NotificationsLayoutTab() {
+  const paneFocusDescriptionId = useId();
+  const paneFocusMode = useSettingsStore((s) => s.paneFocusMode);
+  const setPaneFocusMode = useSettingsStore((s) => s.setPaneFocusMode);
   const notificationsEnabled = useSettingsStore((s) => s.notificationsEnabled);
   const setNotificationsEnabled = useSettingsStore((s) => s.setNotificationsEnabled);
   const notificationSoundEnabled = useSettingsStore((s) => s.notificationSoundEnabled);
@@ -27,6 +31,8 @@ export function NotificationsLayoutTab() {
   const setPaneComposerEnabled = useSettingsStore((s) => s.setPaneComposerEnabled);
   const showTerminalHistoryButton = useSettingsStore((s) => s.showTerminalHistoryButton);
   const setShowTerminalHistoryButton = useSettingsStore((s) => s.setShowTerminalHistoryButton);
+  const conversationHistoryMode=useSettingsStore((s)=>s.conversationHistoryMode);
+  const setConversationHistoryMode=useSettingsStore((s)=>s.setConversationHistoryMode);
   const terminalProgressDiagnosticsEnabled = useSettingsStore((s) => s.terminalProgressDiagnosticsEnabled);
   const setTerminalProgressDiagnosticsEnabled = useSettingsStore((s) => s.setTerminalProgressDiagnosticsEnabled);
   const nativePaneTearoutEnabled = useSettingsStore((s) => s.nativePaneTearoutEnabled);
@@ -126,7 +132,36 @@ export function NotificationsLayoutTab() {
         {notificationSettingsStrings.groupingApplyAnimationHint}
       </div>
 
+      <div style={{ ...sectionHeadingStyle, marginTop: 20 }}>{notificationSettingsStrings.paneTitle}</div>
+      <fieldset style={{ border: 0, padding: 0, margin: 0 }} aria-describedby={paneFocusDescriptionId}>
+        <legend>{notificationSettingsStrings.paneFocusLegend}</legend>
+        <label style={checkboxLabelStyle}>
+          <input type="radio" name={`pane-focus-${paneFocusDescriptionId}`} value="click"
+            checked={paneFocusMode === "click"} onChange={() => setPaneFocusMode("click")}
+            aria-describedby={paneFocusDescriptionId} />
+          <span>{notificationSettingsStrings.paneFocusClickLabel}</span>
+        </label>
+        <label style={checkboxLabelStyle}>
+          <input type="radio" name={`pane-focus-${paneFocusDescriptionId}`} value="hover"
+            checked={paneFocusMode === "hover"} onChange={() => setPaneFocusMode("hover")}
+            aria-describedby={paneFocusDescriptionId} />
+          <span>{notificationSettingsStrings.paneFocusHoverLabel}</span>
+        </label>
+        <div id={paneFocusDescriptionId} style={{ color: "var(--cmux-text-dim)", fontSize: 12, marginTop: 4 }}>
+          {notificationSettingsStrings.paneFocusHint}
+        </div>
+      </fieldset>
+
       <div style={{ ...sectionHeadingStyle, marginTop: 20 }}>{notificationSettingsStrings.terminalInputTitle}</div>
+      <label style={checkboxLabelStyle}><span>{notificationSettingsStrings.conversationHistoryModeLabel}</span>
+        <select value={conversationHistoryMode} onChange={(e)=>setConversationHistoryMode(e.target.value as typeof conversationHistoryMode)}>
+          <option value="agent-wheel">エージェントの上ホイールで会話へ</option>
+          <option value="boundary">端末の履歴の先頭で会話へ</option>
+          <option value="manual">ボタン・専用キーで会話へ</option>
+          <option value="legacy">従来の直近200件と端末操作</option>
+        </select>
+      </label>
+      <div style={{color:"var(--cmux-text-dim)",fontSize:12,marginTop:4}}>{notificationSettingsStrings.conversationHistoryModeHint}</div>
       <label style={checkboxLabelStyle}>
         <input type="checkbox" checked={showTerminalHistoryButton}
           onChange={(e) => setShowTerminalHistoryButton(e.target.checked)} />

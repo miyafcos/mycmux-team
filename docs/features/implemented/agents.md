@@ -83,4 +83,4 @@ Claude Code / Codex / claude-codex は過去のセッションを CRSM Palette (
 
 ### Env Hygiene
 
-CRSM 経由で resume を起動する際、ランチャは `MYCMUX_RESUME=<agent-kind>` / `MYCMUX_SESSION_ID` を **対象ペインのみ** に渡す。アプリ起動時に `lib.rs` でこれらを `std::env::remove_var()` で除去するため、新規ペインに env が漏れない。新規ペインにも識別用の `MYCMUX_TERM_PROGRAM` 等は存在する。除去対象は起動・resume 用の一時変数であり、`MYCMUX_*` 全体が空になるわけではない。
+CRSM 経由で resume を起動する際、ランチャは `MYCMUX_RESUME=<agent-kind>` / `MYCMUX_SESSION_ID` を **対象タブのみ** に渡す。アプリ起動時に `lib.rs` でこれらを `std::env::remove_var()` で除去するため、新規タブに env が漏れない。新規タブにも識別用の `MYCMUX_TERM_PROGRAM` 等は存在する。除去対象は起動・resume 用の一時変数であり、`MYCMUX_*` 全体が空になるわけではない。

@@ -68,25 +68,26 @@ def test_tab_sweep_ui_contract_covers_all_entry_points_and_safety_copy() -> None
     app_shell = read("src/components/layout/AppShell.tsx")
     palette = read("src/components/CommandPalette/CrsmPalette.tsx")
 
-    # Closing always goes through the manual channel: the AI judge proposes
-    # checkboxes, it is not a gate on the close button.
+    # The AI proposes checkboxes; closing waits for the person's selection.
     assert 'manualCloseCandidateTabIds' in panel
     assert 'closeCandidateTabIds' not in panel
     # The shortcut comes from the live binding now, so the sentence is split
     # around it. Both halves still have to be present: the point of the check is
     # that the panel tells the operator the close is undoable.
-    assert "閉じたペインは {reopenTabShortcut} で復元できます（会話も再開されます）" in panel
+    assert "閉じたタブの記録は {reopenTabShortcut} で復元できます。会話は再開できます。" in panel
+    assert "SWEEP_RESTORE_LIMIT_TEXT" in panel
+    assert "取り消しは記録の復元で、実行状態は戻りません。" in sweep
     # The model is a user setting now, so the disclosure is built in
     # tabSweep.ts. What must not regress is that it still says exactly what
     # leaves the machine.
-    assert "各ペインの画面末尾${TAB_SWEEP_TAIL_LINES}行と作業フォルダを ${target} に送って判定します（チェックの提案のみ）" in sweep
+    assert "各タブの画面末尾${TAB_SWEEP_TAIL_LINES}行と作業フォルダを ${target} に送って判定します（チェックの提案のみ）" in sweep
     assert 'formatSweepAiNote("judge"' in panel
-    assert "掃除できるペインはありません" in panel
+    assert "掃除できるタブはありません" in panel
 
     # One list with checkboxes — the numbered sections and their per-section
     # action buttons are gone, and so is the collapsed LOCKED list.
     assert 'type="checkbox"' in panel
-    assert "選択した${selectedCount}件を閉じる" in panel
+    assert '${autoReview ? "確認して" : "選択した"}${selectedCount}件を閉じる' in panel
     assert "① 即掃除できる" not in panel
     assert "② AI 判定候補" not in panel
     assert "④ 無名タブのラベル案" not in panel
@@ -129,7 +130,7 @@ def test_tab_sweep_ui_contract_covers_all_entry_points_and_safety_copy() -> None
     assert 'case "tab.sweep":' in app_shell
     assert "openTabSweepInDashboard();" in app_shell
     assert "matchesTabSweepCommand(query)" in palette
-    assert "ペイン掃除を開く" in palette
+    assert "タブ掃除を開く" in palette
     assert "openTabSweepInDashboard" in palette
     assert "useDashboardViewStore.getState().openView()" in sweep
     assert "window.setTimeout(() => window.dispatchEvent(new Event(TAB_SWEEP_OPEN_EVENT)), 0)" in sweep
@@ -138,10 +139,35 @@ def test_tab_sweep_ui_contract_covers_all_entry_points_and_safety_copy() -> None
 def test_material_names_are_local_and_do_not_use_the_judge() -> None:
     auto = read("src/lib/autoPaneNaming.ts")
     evidence = read("src/lib/paneEvidence.ts")
-    for banned in ("run_tab_sweep_judge", "abort_tab_sweep_judge", "buildNamingPrompt", "parseNamingOutput", "readPaneTail", "aiEnabled", "toast"):
-        assert banned not in auto
-    assert "identitiesForScan" in auto
-    assert "readEvidenceScan" in auto
+    naming_modules = {
+        "src/lib/autoPaneNaming.ts",
+        "src/lib/autoNameEvidence.ts",
+        "src/lib/autoNameLanguage.ts",
+        "src/lib/autoNameMaterial.ts",
+        "src/lib/autoNameOwnership.ts",
+        "src/lib/autoNamePolicy.ts",
+        "src/lib/autoNameRecovery.ts",
+        "src/lib/autoWorkspaceNaming.ts",
+        "src/lib/nameRecoveryAction.ts",
+        "src/stores/autoNameRuntimeStore.ts",
+        "src/lib/paneIdentity.ts",
+        "src/lib/tabDisplayLabel.ts",
+        "src-tauri/src/agent_titles/mod.rs",
+        "src-tauri/src/agent_titles/material.rs",
+        "src-tauri/src/agent_titles/material_batch.rs",
+    }
+    naming_modules.update(path.relative_to(ROOT).as_posix() for path in (ROOT / "src/lib").glob("auto*Nam*.ts"))
+    for relative in sorted(naming_modules):
+        source = read(relative)
+        for banned in ("run_tab_sweep_judge", "abort_tab_sweep_judge", "buildNamingPrompt", "parseNamingOutput", "readPaneTail", "aiEnabled", "toast"):
+            assert banned not in source, f"Local naming must not use {banned}: {relative}"
+    assert "scan: readAutoNameScan" in auto
+    assert "createAutoNamePolicy(" in auto
+    assert "return policy.identify(scan)" in auto
+    material = read("src/lib/autoNameEvidence.ts")
+    assert "export async function readAutoNameScan()" in material
+    assert "scanGroupingContext()" in material
+    assert 'invoke<NamingMaterial[]>("auto_name_materials"' in material
     assert 'invoke<AgentSessionTitles[]>("agent_session_titles"' in evidence
     assert "5 * 60_000" in evidence
 
@@ -206,7 +232,7 @@ def test_grouping_mode_is_wired_without_closing_tabs() -> None:
     # it is still declared rather than pinning it to the sealed value.
     assert "export const TAB_GROUPING_ENTRY_ENABLED" in button
     assert "tabGroupingStrings.buttonLabel" in button
-    assert 'buttonLabel: "ペイン再配置"' in strings
+    assert 'buttonLabel: "タブ再配置"' in strings
     assert "TabGroupingPanel" in button
     assert "WorkOverview" not in button
     assert "deps.replaceWorkspaces(" in read("src/components/layout/tabGroupingEngine.ts") and "_restoreGroupingLayout(" in read("src/components/layout/groupingStoreAdapter.ts")

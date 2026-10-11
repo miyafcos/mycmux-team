@@ -6,9 +6,16 @@ import { htmlReviewStrings as s, type HtmlReviewCapture } from "../../src/lib/ht
 
 const mocks = vi.hoisted(() => ({ searchHtmlReviewTargets: vi.fn(), captureHtmlReviewTarget: vi.fn(), readHtmlReviewSelection: vi.fn(), chooseHtmlReviewElement: vi.fn(), cancelHtmlReviewPicker: vi.fn(async () => {}), listen: vi.fn(async (..._args: unknown[]) => () => {}), validateHtmlReviewCapture: vi.fn(), writeText: vi.fn() }));
 vi.mock("../../src/lib/htmlReviewCapture", () => mocks);
-vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }));
-vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => `http://asset.localhost/${encodeURIComponent(path)}` }));
+vi.mock("@tauri-apps/api/event", async original => ({ ...await original<object>(), listen: mocks.listen }));
+vi.mock("@tauri-apps/api/core", async original => ({ ...await original<object>(), convertFileSrc: (path: string) => `http://asset.localhost/${encodeURIComponent(path)}` }));
 import HtmlReviewDraftBar from "../../src/components/workspace/HtmlReviewDraftBar";
+import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { useUiStore } from "../../src/stores/uiStore";
+import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
+import { useKeybindingStore } from "../../src/stores/keybindingStore";
+import { isEditableTarget } from "../../src/lib/keybindings";
+import { focusController } from "../../src/lib/focusController";
+import { makeAppShellKeydown, trackAppShellPaneFocus } from "./fixtures/appShellKeydown";
 
 const frame = { url: "http://asset.localhost/C%3A%2Ffixture.html", documentId: "doc", generation: 1, mutationRevision: 0,
   ref: "r1", fingerprint: "pay", selector: "#pay", rect: { x: 0, y: 0, width: 100, height: 30 },
@@ -43,6 +50,33 @@ beforeEach(async () => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
 
 describe("review draft UI", () => {
+  it("L2 keeps outside body/H2 clear and permits terminal close after a delayed review capture", async () => {
+    container.dataset.dndWorkspaceId = "workspace"; container.dataset.dndPaneId = "preview";
+    useWorkspaceListStore.setState({ activeWorkspaceId: "workspace", workspaces: [{ id: "workspace", panes: [
+      { id: "terminal", activeTabId: "t", tabs: [{ id: "t", sessionId: "terminal-session", type: "terminal" }] },
+      { id: "preview", activeTabId: "p", tabs: [{ id: "p", sessionId: "preview-session", type: "browser" }] },
+    ] }] } as never);
+    useUiStore.setState({ activePaneId: "terminal-session", focusRevision: 0, zoomedPaneId: null }); useKeybindingStore.getState().resetAll();
+    const heading = document.createElement("div"); heading.className = "pane-active-heading"; heading.tabIndex = 0; container.prepend(heading);
+    const tracking = trackAppShellPaneFocus(() => useWorkspaceListStore.getState().workspaces[0]); const close = vi.fn().mockResolvedValue({ status: "closed" });
+    const handler = makeAppShellKeydown({ current: { dashboardOpen: false } }, useWorkspaceListStore, useUiStore,
+      useKeybindingStore.getState().getActionsForEvent, isEditableTarget, close, focusController,
+      useWorkspaceLayoutStore.getState().setActivePaneTab, () => null, undefined, undefined, tracking.memory);
+    window.addEventListener("keydown", handler); const outside = document.createElement("div"); document.body.append(outside);
+    try {
+      await click(s.open); await click(s.search); const choice = button("button : Pay"); choice.focus();
+      let release!: (capture: HtmlReviewCapture) => void;
+      mocks.captureHtmlReviewTarget.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+      await click("button : Pay"); expect(tracking.memory.current?.paneId).toBe("preview");
+      outside.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      document.body.tabIndex = -1; document.body.focus(); document.body.removeAttribute("tabindex");
+      expect(document.activeElement).toBe(document.body); expect(tracking.memory.current).toBeNull();
+      await act(async () => release(capture)); expect.soft(choice.isConnected).toBe(false);
+      expect.soft(document.activeElement).toBe(document.body); expect.soft(tracking.memory.current).toBeNull();
+      document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "w", ctrlKey: true, altKey: true, bubbles: true, cancelable: true }));
+      expect(close).toHaveBeenCalledExactlyOnceWith({ kind: "pane", workspaceId: "workspace", paneId: "terminal" }, "ui");
+    } finally { tracking.dispose(); window.removeEventListener("keydown", handler); outside.remove(); }
+  });
   it("builds a request only after showing an image and receiving a comment", async () => {
     await click(s.open); await click(s.search); await click("button : Pay");
     expect(button(s.copy).disabled).toBe(true);
@@ -145,4 +179,58 @@ describe("review draft UI", () => {
     expect(container.querySelector("img")).toBeNull();
   });
 
+});
+
+import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { useUiStore } from "../../src/stores/uiStore";
+function ownPane() {
+  container.dataset.dndWorkspaceId = "focus-workspace"; container.dataset.dndPaneId = "focus-pane";
+  useWorkspaceListStore.setState({ activeWorkspaceId: "focus-workspace", workspaces: [{ id: "focus-workspace", panes: [{ id: "focus-pane", tabs: [] }] }] as never });
+  useUiStore.setState({ focusRevision: 0, zoomedPaneId: null });
+}
+it("returns focus when an asynchronously captured target row disappears", async () => {
+  ownPane(); await click(s.open); await click(s.search);
+  const row = button("button : Pay"); row.focus(); await click("button : Pay");
+  expect(row.isConnected).toBe(false); expect(document.activeElement).toBe(button(s.close));
+});
+it("returns from the disappearing picker cancel button", async () => {
+  ownPane(); mocks.chooseHtmlReviewElement.mockReturnValue(new Promise(() => {}));
+  await click(s.open); const trigger = button(s.pick); trigger.focus(); await click(s.pick);
+  const cancel = button(s.cancelPick); cancel.focus(); await click(s.cancelPick);
+  expect(cancel.isConnected).toBe(false); expect(document.activeElement).toBe(button(s.close));
+});
+it("does not steal a newer outside focus after target capture", async () => {
+  ownPane(); let resolve!: (value: unknown) => void;
+  mocks.captureHtmlReviewTarget.mockReturnValue(new Promise(done => { resolve = done; }));
+  await click(s.open); await click(s.search); button("button : Pay").focus(); await click("button : Pay");
+  const outside = document.createElement("button"); container.append(outside); outside.focus(); useUiStore.getState().bumpFocusRevision();
+  await act(async () => resolve(capture)); expect(document.activeElement).toBe(outside);
+});
+it("does not steal a newer focus within the same review surface after target capture", async () => {
+  ownPane(); let resolve!: (value: unknown) => void;
+  mocks.captureHtmlReviewTarget.mockReturnValue(new Promise(done => { resolve = done; }));
+  await click(s.open); await click(s.search); button("button : Pay").focus(); await click("button : Pay");
+  // Search controls are disabled while capturing. Add a live focus target in
+  // the mounted surface to exercise the return guard independently of that.
+  const input = document.createElement("input"); container.querySelector("section")!.append(input); input.focus();
+  expect(document.activeElement).toBe(input);
+  await act(async () => resolve(capture)); expect(document.activeElement).toBe(input);
+});
+it("does not restore an older picker focus on Escape after a newer selection", async () => {
+  ownPane(); mocks.chooseHtmlReviewElement.mockReturnValue(new Promise(() => {}));
+  await click(s.open); await click(s.pick); const cancel = button(s.cancelPick); cancel.focus();
+  useUiStore.getState().bumpFocusRevision();
+  await act(async () => cancel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+  expect(cancel.isConnected).toBe(false); expect(document.activeElement).toBe(document.body);
+});
+it("M1 returns a re-entered picker on Escape while its old async capture stays separate", async () => {
+  ownPane(); mocks.chooseHtmlReviewElement.mockReturnValue(new Promise(() => {}));
+  await click(s.open); await click(s.pick); const cancel = button(s.cancelPick); cancel.focus();
+  const before = useUiStore.getState(); const outside = document.createElement("button"); document.body.append(outside);
+  try {
+    await act(async () => outside.focus()); await act(async () => cancel.focus());
+    await act(async () => cancel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    expect(cancel.isConnected).toBe(false); expect(document.activeElement).toBe(button(s.close));
+    expect(useUiStore.getState().activePaneId).toBe(before.activePaneId); expect(useUiStore.getState().focusRevision).toBe(before.focusRevision);
+  } finally { outside.remove(); }
 });

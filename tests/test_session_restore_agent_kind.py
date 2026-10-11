@@ -99,9 +99,21 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
         'Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude-codex"',
         'Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude"',
         'Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "codex"',
-        '@("codex", "resume", "--no-alt-screen", $env:MYCMUX_SESSION_ID)',
+        "@('codex', 'resume', '--no-alt-screen', $requestedId)",
+        'Invoke-MycmuxCodexRestore',
     ]:
         assert_contains(launcher_ps1, snippet, "src-tauri/src/launcher.ps1")
+
+    # The requested ID is captured before transient intent is scrubbed, then
+    # passed literally. Automatic restoration never selects another pane's last.
+    helpers = launcher_ps1.split("# BEGIN CODEX RESTORE HELPERS", 1)[1].split("# END CODEX RESTORE HELPERS", 1)[0]
+    assert_contains(helpers, "$requestedId = $env:MYCMUX_SESSION_ID", "Codex restore helpers")
+    assert_contains(helpers, "'MYCMUX_RESUME', 'MYCMUX_SESSION_ID'", "Codex restore helpers")
+    assert_contains(helpers, 'Remove-Item "Env:\\$key"', "Codex restore helpers")
+    assert "--last" not in helpers
+    codex_branch = launcher_ps1.split('    "codex*" {', 1)[1].split('    "grok*" {', 1)[0]
+    assert_contains(codex_branch, "Invoke-MycmuxCodexRestore", "automatic Codex branch")
+    assert "--last" not in codex_branch
 
     for snippet in [
         "__claude_project_key()",

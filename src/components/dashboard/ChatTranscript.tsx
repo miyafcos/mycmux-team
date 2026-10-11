@@ -1,5 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
-import type { SemanticEventEnvelope } from "../../lib/livebrief";
+import type { SemanticEventEnvelope, TranscriptDescriptor } from "../../lib/livebrief";
+import type { TranscriptHistoryReader } from "../../stores/transcriptHistoryStore";
+import { ArchiveTranscript, type ArchiveTranscriptProps } from "./ArchiveTranscript";
 import { labelsMatch } from "../terminal/terminalTurnChipState";
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 import { DashboardLinkedText, type DashboardLinkContext } from "./DashboardLinkedText";
@@ -165,7 +167,25 @@ function ChatActivityFooter({ displayState, agentKind, lastOutputAt }: {
   </div>;
 }
 
-export function ChatTranscript({
+export function ChatTranscript(props: Parameters<typeof LegacyChatTranscript>[0] & {
+  archiveEnabled?: boolean;
+  archiveVisible?: boolean;
+  archiveDescriptor?: TranscriptDescriptor | null;
+  archiveReader?: TranscriptHistoryReader;
+  onArchiveUserMessages?: (messages:readonly {text:string;occurredAt:number}[]) => void;
+  transcriptSearch?: ArchiveTranscriptProps["transcriptSearch"];
+  onSearchNavigation?: ArchiveTranscriptProps["onSearchNavigation"];
+}) {
+  if (props.archiveEnabled || props.archiveReader || props.archiveDescriptor) return <ArchiveTranscript
+    descriptor={props.archiveDescriptor ?? null} prepared={props.archiveReader} visible={props.archiveVisible}
+    tabId={props.tabId} context={props.linkContext} targetEventId={props.targetEventId} targetEventRequest={props.targetEventRequest} onUserMessages={props.onArchiveUserMessages}
+    transcriptSearch={props.transcriptSearch}
+    onSearchNavigation={props.onSearchNavigation}
+  />;
+  return <LegacyChatTranscript {...props}/>;
+}
+
+function LegacyChatTranscript({
   events,
   sessionId = null,
   tabId = null,

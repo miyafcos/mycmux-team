@@ -158,6 +158,7 @@ where
             .join(&trash_month)
             .join(SESSIONS_DIR),
         &live_sessions.all_ids,
+        &live_sessions.tab_ids,
         now,
         max_age,
         &mut summary,
@@ -344,6 +345,7 @@ fn retain_directory_records(
     source_dir: &Path,
     trash_dir: &Path,
     live_ids: &HashSet<String>,
+    live_tab_ids: &HashSet<String>,
     now: SystemTime,
     max_age: Duration,
     summary: &mut RetentionSummary,
@@ -382,7 +384,9 @@ fn retain_directory_records(
         if !is_safe_session_record_id(&session_id) {
             continue;
         }
-        if live_ids.contains(&session_id) || !is_older_than(&path, now, max_age) {
+        if is_live_session(&session_id, live_ids, live_tab_ids)
+            || !is_older_than(&path, now, max_age)
+        {
             continue;
         }
         move_record(&path, trash_dir, &entry.file_name(), summary, before_move)?;
@@ -434,7 +438,7 @@ fn retain_pane_session_files(
         if !is_safe_pane_mapping_id(session_id) {
             continue;
         }
-        if is_live_pane_mapping(session_id, live_ids, live_tab_ids)
+        if is_live_session(session_id, live_ids, live_tab_ids)
             || !is_older_than(&path, now, max_age)
         {
             continue;
@@ -646,6 +650,91 @@ mod tests {
         assert!(pane_session_path(&roots, &live_id).exists());
         assert!(!trash_session_path(&roots, now, &live_id).exists());
         assert!(!trash_pane_session_path(&roots, now, &live_id).exists());
+    }
+
+    #[test]
+    fn moved_tab_old_records_stay_after_pane_move() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let old_id = make_session_id("wsA", "paneOld", "tabX");
+        write_data_json(&roots, "com.miyazaki.mycmux", &[("wsA", "paneNew", "tabX")]);
+        create_records(&roots, &old_id);
+        let now = future_old_now();
+
+        let summary = run_retention_once(&roots, now).unwrap();
+
+        assert_eq!(summary, RetentionSummary::default());
+        assert!(session_path(&roots, &old_id).join("out.html").is_file());
+        assert!(pane_session_path(&roots, &old_id).is_file());
+        assert!(!trash_session_path(&roots, now, &old_id).exists());
+        assert!(!trash_pane_session_path(&roots, now, &old_id).exists());
+    }
+
+    #[test]
+    fn moved_tab_old_records_stay_after_workspace_move() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let old_id = make_session_id("wsA", "paneOld", "tabY");
+        write_data_json(&roots, "com.miyazaki.mycmux", &[("wsB", "paneNew", "tabY")]);
+        create_records(&roots, &old_id);
+        let now = future_old_now();
+
+        let summary = run_retention_once(&roots, now).unwrap();
+
+        assert_eq!(summary, RetentionSummary::default());
+        assert!(session_path(&roots, &old_id).join("out.html").is_file());
+        assert!(pane_session_path(&roots, &old_id).is_file());
+        assert!(!trash_session_path(&roots, now, &old_id).exists());
+        assert!(!trash_pane_session_path(&roots, now, &old_id).exists());
+    }
+
+    #[test]
+    fn missing_moved_tab_old_records_move_to_trash() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let old_id = make_session_id("wsA", "paneOld", "tabZ");
+        write_data_json(&roots, "com.miyazaki.mycmux", &[("wsA", "paneNew", "tabX")]);
+        create_records(&roots, &old_id);
+        let now = future_old_now();
+
+        let summary = run_retention_once(&roots, now).unwrap();
+
+        assert_eq!(summary, RetentionSummary { moved: 2, skipped: 0 });
+        assert!(!session_path(&roots, &old_id).exists());
+        assert!(!pane_session_path(&roots, &old_id).exists());
+        assert!(trash_session_path(&roots, now, &old_id).join("out.html").is_file());
+        assert!(trash_pane_session_path(&roots, now, &old_id).is_file());
+    }
+
+    #[test]
+    fn missing_tab_records_within_retention_stay() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let recent_id = make_session_id("wsA", "paneOld", "tabZ");
+        write_data_json(&roots, "com.miyazaki.mycmux", &[]);
+        create_records(&roots, &recent_id);
+        let now = SystemTime::now() + Duration::from_secs((RETENTION_DAYS - 1) * DAY_SECS);
+
+        let summary = run_retention_once(&roots, now).unwrap();
+
+        assert_eq!(summary, RetentionSummary::default());
+        assert!(session_path(&roots, &recent_id).join("out.html").is_file());
+        assert!(pane_session_path(&roots, &recent_id).is_file());
+        assert!(!trash_session_path(&roots, now, &recent_id).exists());
+        assert!(!trash_pane_session_path(&roots, now, &recent_id).exists());
+    }
+
+    #[test]
+    fn live_session_matching_keeps_stable_ids_and_guards_suffix_fallback() {
+        let live_ids = HashSet::from([make_session_id("wsA", "paneNew", "tabX")]);
+        let live_tab_ids = HashSet::from(["tabX".to_string()]);
+
+        assert!(is_live_session("pty-wsA-paneNew-tabX", &live_ids, &live_tab_ids));
+        assert!(is_live_session("tabX", &live_ids, &live_tab_ids));
+        assert!(is_live_session("pty-wsA-paneOld-tabX", &live_ids, &live_tab_ids));
+        assert!(!is_live_session("other-wsA-paneOld-tabX", &live_ids, &live_tab_ids));
+        assert!(!is_live_session("pty-wsA-paneOld-nottabX", &live_ids, &live_tab_ids));
+        assert!(!is_live_session("pty-wsA-paneOld-tabZ", &live_ids, &live_tab_ids));
     }
 
     #[test]
@@ -887,15 +976,16 @@ fn is_safe_pane_mapping_id(mapping_id: &str) -> bool {
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'))
 }
 
-fn is_live_pane_mapping(
-    mapping_id: &str,
+fn is_live_session(
+    session_id: &str,
     live_ids: &HashSet<String>,
     live_tab_ids: &HashSet<String>,
 ) -> bool {
-    live_ids.contains(mapping_id)
-        || live_tab_ids.contains(mapping_id)
-        || (mapping_id.starts_with("pty-")
+    // A moved tab keeps its original PTY ID even though data.json stores its new location.
+    live_ids.contains(session_id)
+        || live_tab_ids.contains(session_id)
+        || (session_id.starts_with("pty-")
             && live_tab_ids
                 .iter()
-                .any(|tab_id| mapping_id.ends_with(&format!("-{tab_id}"))))
+                .any(|tab_id| session_id.ends_with(&format!("-{tab_id}"))))
 }

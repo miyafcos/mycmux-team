@@ -40,7 +40,7 @@ export function useAilogAutoIndex(open: boolean, onJobsSettled: () => void): voi
     let cancelled = false;
     setIndexEventsAvailable(true);
     void listenIndexProgress((progress) => {
-      applyIndexProgress(progress);
+      if (!cancelled) applyIndexProgress(progress);
     }).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
@@ -58,7 +58,9 @@ export function useAilogAutoIndex(open: boolean, onJobsSettled: () => void): voi
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     setSummarizeEventsAvailable(true);
-    void listenSummarizeProgress(applySummarizeProgress).then((fn) => {
+    void listenSummarizeProgress((progress) => {
+      if (!cancelled) applySummarizeProgress(progress);
+    }).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
     }).catch(() => {

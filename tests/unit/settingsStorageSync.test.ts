@@ -121,6 +121,39 @@ describe("real settings stores sharing localStorage", () => {
     expect(shared.deliver()).toBe(0);
   });
 
+  it("S03 preserves hover mode across stale unrelated edits and receives it without echo", async () => {
+    const a = await settings(), b = await settings();
+    a.getState().setPaneFocusMode("hover");
+    b.getState().setNotificationsEnabled(false);
+    b.getState().setShowSplitDownButton(true);
+    expect(shared.saved()).toMatchObject({ version: 7, state: {
+      paneFocusMode: "hover", notificationsEnabled: false, showSplitDownButton: true,
+    } });
+    const writes = shared.writes;
+    shared.deliver();
+    expect(a.getState().paneFocusMode).toBe("hover");
+    expect(b.getState().paneFocusMode).toBe("hover");
+    expect(a.getState().notificationsEnabled).toBe(false);
+    expect(shared.writes).toBe(writes);
+    b.getState().setPaneFocusMode("click");
+    shared.deliver();
+    expect(a.getState().paneFocusMode).toBe("click");
+    expect(shared.writes).toBe(writes + 1);
+  });
+
+  it("S03 receives the mode through the Mac preference path without a storage feedback write", async () => {
+    shared.deferReads = true;
+    vi.stubGlobal("navigator", { platform: "MacIntel", userAgent: "Macintosh" });
+    const a = await settings(), b = await settings();
+    const { applyExternalStoreUpdate } = await import("../../src/stores/syncedPersist");
+    a.getState().setPaneFocusMode("hover");
+    applyExternalStoreUpdate(b, { paneFocusMode: "hover" });
+    expect(b.getState().paneFocusMode).toBe("hover");
+    expect(shared.writes).toBe(1);
+    shared.deliver();
+    expect(shared.writes).toBe(1);
+  });
+
   it("compares array contents and keeps foreign values across repeated stale writes", async () => {
     const a = await settings(), b = await settings();
     a.getState().setColorAdaptCommands(["custom"]);

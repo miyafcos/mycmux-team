@@ -25,7 +25,7 @@ const iconProps = (size: number): SVGProps<SVGSVGElement> => ({
 export function ClaudeAgentIcon({ size = 12, ...props }: AgentIconProps) {
   return (
     <svg {...iconProps(size)} {...props}>
-      <path fill="#d97757" fillRule="evenodd" clipRule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0v-3.1h3V5h17.998zM6 10.949h1.488V8.102H6zm10.51 0H18V8.102h-1.49z" />
+      <path fill={props.fill ?? "#d97757"} fillRule="evenodd" clipRule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0v-3.1h3V5h17.998zM6 10.949h1.488V8.102H6zm10.51 0H18V8.102h-1.49z" />
     </svg>
   );
 }
@@ -169,17 +169,7 @@ export function OmpAgentIcon({ size = 12, ...props }: AgentIconProps) {
 }
 
 export function HybridAgentIcon({ size = 12 }: Pick<AgentIconProps, "size">) {
-  const overlapSize = Math.max(1, Math.round(size * 0.68));
-  return (
-    <span aria-hidden="true" style={{ position: "relative", display: "inline-block", width: size, height: size, flexShrink: 0 }}>
-      <span style={{ position: "absolute", left: "5%", top: "5%", lineHeight: 0 }}>
-        <ClaudeAgentIcon size={overlapSize} />
-      </span>
-      <span style={{ position: "absolute", right: "5%", bottom: "5%", lineHeight: 0 }}>
-        <CodexAgentIcon size={overlapSize} />
-      </span>
-    </span>
-  );
+  return <ClaudeAgentIcon size={size} fill="#7a9dff" />;
 }
 
 // Document glyphs use a solid plate and at least one pixel of ink at 12px.
@@ -266,7 +256,7 @@ const chipStyles: Record<string, CSSProperties> = {
   office: { background: ARTIFACT_MARK_COLORS.office.bg, borderColor: ARTIFACT_MARK_COLORS.office.fg },
   claude: { background: "rgba(217,119,87,.12)", borderColor: "rgba(217,119,87,.30)" },
   codex: { background: "rgba(122,157,255,.10)", borderColor: "rgba(122,157,255,.30)" },
-  "claude-codex": { background: "rgba(125,204,151,.10)", borderColor: "rgba(125,204,151,.30)" },
+  "claude-codex": { background: "rgba(122,157,255,.10)", borderColor: "rgba(122,157,255,.30)" },
   grok: { background: "rgba(243,139,168,.10)", borderColor: "rgba(243,139,168,.30)" },
   antigravity: { background: "rgba(66,133,244,.10)", borderColor: "rgba(66,133,244,.30)" },
   gemini: { background: "rgba(155,114,203,.12)", borderColor: "rgba(155,114,203,.30)" },

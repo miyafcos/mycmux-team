@@ -5,6 +5,7 @@ import {
   refocusActiveTerminalIfNeeded,
 } from "./terminalFocusHelpers";
 import { useToastStore } from "../../stores/toastStore";
+import { useUiStore } from "../../stores/uiStore";
 
 const terminalSelectionCopyListeners = new WeakMap<Terminal, { dispose: () => void }>();
 export const MIN_AUTO_COPY_SELECTION_LENGTH = 3;
@@ -59,7 +60,7 @@ function fallbackCopyTextToClipboard(text: string, restoreFocus?: () => void): b
   return copied;
 }
 
-function copyTextToClipboard(text: string, restoreFocus?: () => void): void {
+function copyTextToClipboard(text: string, restoreFocus?: () => void, canUseFallback = () => true): void {
   if (text.trim().length < MIN_AUTO_COPY_SELECTION_LENGTH) {
     restoreFocus?.();
     return;
@@ -69,7 +70,7 @@ function copyTextToClipboard(text: string, restoreFocus?: () => void): void {
     void clipboard
       .writeText(text)
       .then(() => restoreFocus?.())
-      .catch(() => fallbackCopyTextToClipboard(text, restoreFocus))
+      .catch(() => canUseFallback() ? fallbackCopyTextToClipboard(text, restoreFocus) : false)
       .then((fallbackResult) => {
         if (typeof fallbackResult === "boolean") {
           showCopyResultToast(text, fallbackResult);
@@ -79,7 +80,7 @@ function copyTextToClipboard(text: string, restoreFocus?: () => void): void {
       });
     return;
   }
-  showCopyResultToast(text, fallbackCopyTextToClipboard(text, restoreFocus));
+  showCopyResultToast(text, canUseFallback() ? fallbackCopyTextToClipboard(text, restoreFocus) : false);
 }
 
 export function disposeSelectionCopyListener(currentTerm: Terminal | null | undefined): void {
@@ -96,6 +97,7 @@ export function registerSelectionCopyListener(currentTerm: Terminal, sessionId: 
   let selectionDirty = false;
   let copyTimer: number | null = null;
   let lastNonEmptySelection = "";
+  let copyFocusRevision = useUiStore.getState().focusRevision;
   const selectionDisposable = currentTerm.onSelectionChange(() => {
     selectionDirty = true;
   });
@@ -106,7 +108,10 @@ export function registerSelectionCopyListener(currentTerm: Terminal, sessionId: 
   };
 
   const copySelectedText = (): void => {
+    const revision = copyFocusRevision;
+    const selectionStillCurrent = (): boolean => useUiStore.getState().focusRevision === revision;
     const restoreSelectionFocus = (): void => {
+      if (!selectionStillCurrent()) return;
       if (isActiveTerminalInputTarget(sessionId)) {
         focusTerminalSoon(currentTerm, sessionId);
         return;
@@ -119,7 +124,7 @@ export function registerSelectionCopyListener(currentTerm: Terminal, sessionId: 
       return;
     }
     restoreSelectionFocus();
-    copyTextToClipboard(selectedText, restoreSelectionFocus);
+    copyTextToClipboard(selectedText, restoreSelectionFocus, selectionStillCurrent);
     lastNonEmptySelection = "";
   };
 
@@ -139,6 +144,7 @@ export function registerSelectionCopyListener(currentTerm: Terminal, sessionId: 
     }
     // Snapshot only at the copy gesture, before later output can clear it.
     lastNonEmptySelection = currentTerm.getSelection();
+    copyFocusRevision = useUiStore.getState().focusRevision;
     copyTimer = window.setTimeout(() => {
       copyTimer = null;
       copySelectedText();
@@ -155,6 +161,7 @@ export function registerSelectionCopyListener(currentTerm: Terminal, sessionId: 
       window.clearTimeout(copyTimer);
     }
     lastNonEmptySelection = currentTerm.getSelection();
+    copyFocusRevision = useUiStore.getState().focusRevision;
     copyTimer = window.setTimeout(() => {
       copyTimer = null;
       selectionDirty = false;

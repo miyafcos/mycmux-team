@@ -859,6 +859,25 @@ def test_start_tab_cli_maps_the_session_and_prints_the_socket_result(tmp_path: P
     assert result.stderr == ""
 
 
+def test_declare_tab_carries_the_callers_anchor_for_delegation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", "caller")
+    result, requests = _run_with_replies(tmp_path, [
+        "declare-tab", "--session", "target", "--label", "Worker",
+    ], [_reply({"tabId": "child"})])
+    assert result.returncode == 0
+    assert requests[0]["cmd"] == "pane.declare_tab"
+    assert requests[0]["args"]["anchorSessionId"] == "caller"
+
+
+def test_declare_tab_without_a_caller_does_not_invent_delegation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MYCMUX_PANE_SESSION_ID", raising=False)
+    result, requests = _run_with_replies(tmp_path, [
+        "declare-tab", "--session", "target", "--label", "Worker",
+    ], [_reply({"tabId": "child"})])
+    assert result.returncode == 0
+    assert "anchorSessionId" not in requests[0]["args"]
+
+
 def test_start_tab_cli_requires_session_argument(tmp_path: Path) -> None:
     result = _run_cli(tmp_path, ["start-tab"])
     assert result.returncode == 2

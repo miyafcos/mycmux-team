@@ -6,8 +6,8 @@ The foundation is a set of *negative* guarantees: a second window boots the
 same bundle, so every app-wide singleton has to be gated on `isMainWindow()`.
 The three that cause visible damage when they regress:
 
-1. capability glob — a label outside `mycmux-w*` gets zero permissions and the
-   whole child window is inert,
+1. primary webview capability glob — a detached window whose app webview
+   label misses `mycmux-w*` has no app permissions and is inert,
 2. `socket-request` — Rust broadcasts it (`app.emit`), so an unguarded child
    would execute every socket command a second time,
 3. close → `quitApp()` — a child close must not kill every PTY in the process.
@@ -51,12 +51,24 @@ def assert_contains(text: str, snippet: str, source: str) -> None:
 def test_capability_covers_child_window_labels() -> None:
     capability = json.loads(read_repo_text("src-tauri/capabilities/default.json"))
 
-    assert capability["windows"] == ["main", "mycmux-w*"], (
-        "Child windows are labelled mycmux-w<n> (commands::window::next_child_window_label). "
-        "Without the glob they get zero permissions and every invoke from them fails."
+    # Approved C59 contract change: SPEC §4.2–4.3 and §4.6 preserve Local
+    # primary app access and detach/return while isolating Web pane webviews;
+    # REVIEW-RESPONSE-1 (F2) requires Local requests with matching primary labels.
+    # WebviewWindowBuilder gives a detached app webview its mycmux-w<n> window
+    # label, so keeping this glob preserves the original child-invoke promise.
+    assert capability["local"] is True
+    assert capability["webviews"] == ["main", "mycmux-w*"], (
+        "Each detached window's app webview is labelled mycmux-w<n>. "
+        "Without this glob its app commands and window controls have no grants."
     )
+    # Tauri ORs window and webview selectors. A windows selector would also
+    # grant a Local-classified web-pane-* child inside main/mycmux-w<n>.
+    # Its absence plus the exact primary webview selectors prevents inheritance.
+    assert "windows" not in capability, "Web pane children must not inherit primary grants"
+    assert "remote" not in capability, "Primary grants must stay Local-only"
 
     permissions = capability["permissions"]
+    assert "app-local" in permissions, "Detached app webviews need all registered app commands"
     # Children reveal themselves after first paint (App.tsx) — neither
     # allow-show nor allow-set-focus is part of core:window:default.
     # allow-set-size is how a detached window snaps to a screen edge; without

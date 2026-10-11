@@ -1,20 +1,20 @@
 # Agent Integration Contract — mycmux 内エージェントの委譲規約
 
 mycmux はエージェント (Claude Code / Codex) の振る舞いを強制しない。
-「委譲は見える形で = 新しいセッションペインを開いて行う」という方針は、
+「委譲は見える形で = 新しいセッションタブを開いて行う」という方針は、
 **各エージェント側のルールファイルに書くことで成立する**設計になっている。
 この文書はその契約の正本 (mycmux 側から見た全体図)。環境再構築・別 PC 展開時はここを起点にする。
 
 ## 方針 (2026-07-16 作者が確定)
 
 - mycmux 内でエージェントが別エージェントへまとまった作業を委譲するときは、
-  **ヘッドレスのバックグラウンドジョブではなく、同タブに可視ペインを spawn する**。
+  **ヘッドレスのバックグラウンドジョブではなく、呼び出し元のタブの裏に、人が確認できる新しいタブを spawn する**。
   画面で監視・介入できる形が正 (openai-codex プラグインの裏ジョブは同日撤去済み)。
 - ヘッドレス (`codex exec` 等) の許可場面は3つのみ:
   1. 非 mycmux セッション (cron / schedule の自律ジョブ — 見る人がいない)
-  2. Workflow の大量 fan-out 並列段 (ペイン爆発防止)
+  2. Workflow の大量 fan-out 並列段 (タブ爆発防止)
   3. 介入余地のない短い照合 (math-verify 等)
-- Claude Code 内部の Task / subagent は対象外 (従来どおり裏実行。ペイン爆発防止)。
+- Claude Code 内部の Task / subagent は対象外 (従来どおり裏実行。タブ爆発防止)。
 
 ## mycmux がエージェントに提供するもの
 
@@ -23,22 +23,22 @@ mycmux はエージェント (Claude Code / Codex) の振る舞いを強制し�
 | 変数 | 用途 |
 | --- | --- |
 | `MYCMUX_TERM_PROGRAM=mycmux` | mycmux 内で動いているかの判定 (委譲経路の分岐キー) |
-| `MYCMUX_TAB_ID` / `MYCMUX_PANE_SESSION_ID` | 自ペイン・自ペインの識別。spawn-tab のアンカーに使われる |
+| `MYCMUX_TAB_ID` / `MYCMUX_PANE_SESSION_ID` | タブのIDと端末セッションのID。spawn-tab のアンカーに使われる |
 | `MYCMUX_MARKDOWN_OUT` / `MYCMUX_HTML_OUT` / `MYCMUX_ARTIFACTS_DIR` | セッション成果物の出力先 |
 
 ### CLI (`scripts/mycmux_agent_cli.py`)
 
 Web 操作: `web-open --url https://chatgpt.com/c/abc --background`、`web-read --tab <id>` (または `--preset <id>`)、`web-close --tab <id>`。結果は JSON で返す。
-`web-push` がペインを新規作成するときは裏ペインで開き、呼び出し元のフォーカスを維持する。前面で開く場合は `web-open` → `web-push --tab <id>` を使う。
+`web-push` がタブを新規作成するときは裏のタブで開き、呼び出し元のフォーカスを維持する。前面で開く場合は `web-open` → `web-push --tab <id>` を使う。
 
 ```
 python scripts/mycmux_agent_cli.py spawn --target <claude|codex> --prompt-file <spec.md>
 ```
 
-- 同タブに新しいペインを開き、純正の対話 TUI (Claude Code / Codex) を起動して spec を流し込む
-  (内部 RPC: `pane.spawn_tab`。`--split` または `spawn-tab --detach` 指定時のみ `pane.spawn` = 新タブ。`--workspace` / `--anchor-pane` / `--direction` は `--split` 必須。`MYCMUX_PANE_SESSION_ID` 欠落時はエラー終了 — 新タブへのフォールバックはしない (2026-08-21 裁定)。応答 JSON の `placement` が `tab` / `pane` を示す)
+- 呼び出し元のタブの裏に新しいタブを開き、純正の対話 TUI (Claude Code / Codex) を起動して spec を流し込む
+  (内部 RPC: `pane.spawn_tab`。`--split` または `spawn-tab --detach` 指定時のみ `pane.spawn` = 別に表示する新しいタブ。`--workspace` / `--anchor-pane` / `--direction` は `--split` 必須。`MYCMUX_PANE_SESSION_ID` 欠落時はエラー終了 — 別の表示先へのフォールバックはしない (2026-08-21 裁定)。応答 JSON の `placement` が `tab` / `pane` を示す)
 - effort やモデル指定は CLI フラグでは渡らない — **spec 本文に日本語で明記**する
-- spawn の初期 handoff と、既存ペインへの一般入力は別経路。一般入力で生の `send --enter` を自動実行せず、後述の mycmux bridge で画面と canonical state を検証する
+- spawn の初期 handoff と、既存タブへの一般入力は別経路。一般入力で生の `send --enter` を自動実行せず、後述の mycmux bridge で画面と canonical state を検証する
 
 別ワークスペースで走らせるときは `python scripts/mycmux_agent_cli.py workspace-new --name <name>` で新設します。
 応答の `workspaceId` を使い、`python scripts/mycmux_agent_cli.py spawn --split --workspace <id> --target codex --no-activate` で起動します。
@@ -56,6 +56,26 @@ that an existing tab already holds. If `spawn-tab --resume-session <id>` fails
 with `AGENT_SESSION_ALREADY_RUNNING`, use the owner tab identified by
 `ownerSessionId` in the error JSON.
 
+#### タブを閉じる
+
+`close-tab --session ID [--force]` / 制御 API `pane.close_tab` は全種類のタブを対象にする。
+指定は従来どおり `sessionId` (`session_id` も可)。`force` は boolean、既定 false。
+既存の `workspaceId` / `paneId` / `tabId` に、種類・能力・終了結果を追加して返す。
+通常の端末は kill の成功を待って `closed:true, effect:"killed"`、Web・資料・ランチャー・online は
+表示だけを閉じて `closed:true, effect:"hidden"`。まだ起動していない宣言タブも `hidden`。
+未保存の資料は次の結果を返し、表示と編集内容を保持する。`--force` (`force:true`) で明示的に捨てて閉じる。
+
+```json
+{"workspaceId":"w1","paneId":"p1","tabId":"t1","kind":"browser","hasPty":true,"persistent":false,"transferable":true,"closeEffect":"confirm_unsaved","sendable":false,"closed":false,"effect":"needs_confirmation","reason":"unsaved"}
+```
+
+`hasPty` は既存の互換判定を保つため browser/online でも true。これらは端末送信に対応せず、
+保存対象でもない。`persistent` / `transferable` は ephemeral の除外も反映する。
+終了失敗や応答待ち、ワークスペースの最後のタブ、存在しない ID は従来のエラーを返す。
+`force` でその保護は解除しない。単体終了の拡張は端末送信を拡張しない。
+`send` / `pane.send_text` は端末入力だけを扱い、非端末は書込み前に拒否する。
+一括の `pane.close_tabs` はこの単体終了の `force` 契約の対象外。
+
 #### Web 操作
 
 基本ループは `open --background → wait → snapshot → find/click/type → wait → snapshot/eval → close`。
@@ -70,8 +90,8 @@ ref は同一文書内で有効（hash 遷移では維持・ページ遷移と r
 
 | CLI | 動き |
 | --- | --- |
-| `web-open --preset browser --url URL --background` | フォーカスを維持して裏ペインを開く |
-| `web-list` | Web ペイン一覧と presetId / background / active を取得 |
+| `web-open --preset browser --url URL --background` | フォーカスを維持して裏のタブを開く |
+| `web-list` | Web タブ一覧と presetId / background / active を取得 |
 | `web-navigate --tab ID (--url URL / --back / --forward / --reload)` | URL移動・履歴移動・再読み込み |
 | `web-wait --tab ID --state load/idle/selector [--selector CSS] [--timeout-ms N]` | 読み込み・DOM静止・要素出現を待つ |
 | `web-eval --tab ID (--script JS / --script-file PATH) [--timeout-ms N]` | async 関数本体を評価し JSON を取得（入力256 KB・結果512 KB上限） |
@@ -88,7 +108,7 @@ ref は同一文書内で有効（hash 遷移では維持・ページ遷移と r
 | `web-read --tab ID` | 既存サービスの会話を取得（reader 対応プリセットのみ） |
 | `web-push --tab ID --text TEXT [--send]` | 既存サービスの composer に入力し、指定時だけ送信 |
 | `web-focus --tab <id>` | 明示時のみ前面化（--tabのみ、--preset不可） |
-| `web-close --tab ID` | Web ペインを閉じる（--tabのみ、--preset不可） |
+| `web-close --tab ID` | Web タブを閉じる（--tabのみ、--preset不可） |
 
 close / focus は `--tab` のみ（`--preset` 不可）。それ以外の操作コマンドの `--tab` は `--preset` に置き換えられる。プリセット指定では呼出元のワークスペース内の最新候補を使う。
 JS の click/type/key/upload は合成イベントで、キーの既定動作は best effort。
@@ -143,7 +163,7 @@ python C:/Users/miyaz/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py answ
 
 受付の目安は100ms以内。会話・設定の解析、catalog.json/cache.json の原子的な書き込みはバックグラウンドで行い、受付の返事は完了を表さない。完了すると従来の目録と履歴を更新し、`agent-design-refreshed` に `{workFolder}` を通知する。失敗時は目録を成功扱いで更新せず、診断ログに記録する。ポケットは generatedAt の変化を確認する。
 
-認可は既存の `CredentialRealm::Broad`（`~/.mycmux/mycmux.token`、試験 profile ではその runtime dir）。`hook_cap` のペイン限定資格情報は `unauthorized`、広い token と hook_cap の同時指定は従来どおり `malformed`。この命令はホーム全体を読むためペイン限定の Hook realm に入れない。広い token の欠落・不一致は従来の `{"ok":false,"error":"unauthorized"}`。
+認可は既存の `CredentialRealm::Broad`（`~/.mycmux/mycmux.token`、試験 profile ではその runtime dir）。`hook_cap` のタブ限定資格情報は `unauthorized`、広い token と hook_cap の同時指定は従来どおり `malformed`。この命令はホーム全体を読むためタブ限定の Hook realm に入れない。広い token の欠落・不一致は従来の `{"ok":false,"error":"unauthorized"}`。
 
 引数の形・型の誤りは `workFolderInvalid`、履歴にない・相対パスのフォルダは `workFolderUnknown`、既知でも現在開けないフォルダは `folderUnavailable`。ホームが取れない場合は `homeUnavailable`、受付状態が使えない場合は `stateUnavailable`。通常のエラーは `{"id":7,"result":null,"error":"workFolderUnknown"}` の形。`agent.capabilities` の既存 version/adapters を保ち、トップレベルの `commands` にこの命令を含む Rust 側の命令一覧を返す。`system.version.commands` にも載る。
 
@@ -151,7 +171,7 @@ python C:/Users/miyaz/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py answ
 
 Gemini CLI は 2026-06-18 に個人アカウント向け終了 (実測: `IneligibleTierError`)。後継は
 `agy` (Antigravity CLI)。`spawn --target agy` は新規起動に使えます。初期プロンプトを位置引数で渡す場合は、
-**spawn-tab の任意コマンド argv 経路**で可視ペインを立てる:
+**spawn-tab の任意コマンド argv 経路**で可視タブを立てる:
 
 ```
 python scripts/mycmux_agent_cli.py spawn-tab --label agy -- env NO_COLOR=1 agy -i "C:/path/spec.md を読んで実行して"
@@ -179,7 +199,7 @@ python scripts/mycmux_agent_cli.py spawn-tab --label agy -- env NO_COLOR=1 agy -
 
 Oh My Pi はランチャーの「Oh My Pi」と `python scripts/mycmux_agent_cli.py spawn --target omp` で新規起動できます。Windows のランチャーは `%LOCALAPPDATA%\omp\omp.exe` を使います。Mac の `launcher.sh` は PATH 上の `omp` に落ちます。モデルは `--model`、思考レベルは `--thinking` で渡します。
 
-`spawn --target omp` の prompt / resume / handoff とセッション複製は未対応です。初期プロンプトが必要な場合は `python scripts/mycmux_agent_cli.py spawn-tab -- omp.exe "指示内容"` のように位置引数で渡します。PATH に `omp.exe` が無い Windows 環境では実体のフルパスを指定します。mycmux の再起動後、Oh My Pi のペインは Hermes と同じく起動メニューに戻ります。
+`spawn --target omp` の prompt / resume / handoff とセッション複製は未対応です。初期プロンプトが必要な場合は `python scripts/mycmux_agent_cli.py spawn-tab -- omp.exe "指示内容"` のように位置引数で渡します。PATH に `omp.exe` が無い Windows 環境では実体のフルパスを指定します。mycmux の再起動後、Oh My Pi のタブは Hermes と同じく起動メニューに戻ります。
 
 両ランチャーは `--allow-home` を付けます。これが無いとホームで起動したときに Oh My Pi が一時フォルダへ移るためです。入力欄は bracketed paste と Enter で送信します。
 
@@ -200,16 +220,72 @@ python scripts/mycmux_agent_cli.py spawn --target grok --prompt-file <spec.md>
   `MYCMUX_LAUNCH_TARGET` は `grok` / `grok-resume`
 - **(dangerous) 系のメニュー項目は 2026-08-15 に全廃**した (claude / codex / claude-codex / grok とも。
   実運用で使われていなかったうえ、メニューが 20 項目まで伸びて番号が押しづらくなっていた)。
-  権限を開けた起動が要るときは Custom... から手で打つ。spawn の handoff 経路が内部で使う
-  `bypassPermissions` は別経路なので影響しない
+  権限を開けた起動が要るときは Custom... から手で打つ。Grok の新規起動と spawn の
+  handoff は、どちらも `--permission-mode auto` を使う。
 - セッションの実体は `~/.grok/sessions/<percent-encoded cwd>/<session-id>/` に1会話1ディレクトリ
   (`chat_history.jsonl` / `summary.json` / `events.jsonl` など。2026-08-15 実測)。
   cwd キーは `C%3A%5CUsers%5C...` 形式なので、復元判定は cwd バケットを走査して
   session-id のディレクトリを探す方式にしてある (`agent_restore.rs::grok_session_exists`)
 - ailog の使用量集計、livebrief の会話取り込み (ダッシュボードの介入・要約)、およびアカウント
-  切替と週間使用量表示は対応済み。CRSM パレットのフィルタは未対応で、grok ペインはここでは見えない。
+  切替と週間使用量表示は対応済み。CRSM パレットのフィルタは未対応で、grok タブはここでは見えない。
 - 認証は SuperGrok / X Premium Plus のブラウザログイン (`grok login`)。未認証だと TUI が
   サインイン画面で止まる
+
+### DeepSeek Harness (dsh) の ACP 接続試験 (v0.88.0 候補・既定 OFF)
+
+設定 → AI の「DeepSeek Harness の接続試験を使う」で有効にする、設定画面だけの試験です。
+`dshAcpExperimentEnabled=false` が既定で、OFF の間は切替以外の試験面を出さず、状態の polling も起動もしません。
+保存した ON を読み戻しても自動で起動せず、「新しい会話に接続」か「保存した会話を再開」を押して接続します。
+通常のタブ種類、ランチャー、`pane.spawn` / `pane.send_text`、復元とダッシュボードには dsh を登録しません。
+これは設定で ACP を確かめる明示的な試験で、通常の可視タブへの委譲を置き換えません。
+
+利用者が用意した実行可能な絶対パスを指定します。mycmux は取得・`npx`・`latest`・シェルへの代替起動を行いません。
+Windows の `.cmd` / `.bat` / `.ps1` は対象外です。`--version` の結果が **`0.2.0-rc.2` と完全一致**した場合だけ
+`dsh acp` (profile=acp) を起動します。DSH_HOME は省略可能な設定フォルダへの参照で、中身を mycmux が読み書きしません。
+dsh 本人の profile・モデル・認証の準備は接続前に済ませます。
+ACP の `agentInfo.version` は内部実装の版として別に表示し、実行ファイルの版確認の代わりに使いません。
+protocolVersion=1 と session/close の capability が必須で、不一致・欠落は未対応として停止します。
+
+mycmux が所有する stdio の子は一つ、root 会話は一つです。起動ごとに runId と generation を採番し、
+会話 ID (opaque な dsh の ID)、cwd と組にした `DshRunRef` を返します。送信・中断・permission・close・read は
+この参照を照合し、古い実行へは書きません。request ID は世代を越えて再利用しません。
+再開は list と resume の両 capability がある場合だけ、session/list の root ID/cwd を確かめて行います。
+再開不可を新しい会話へ黙って置き換えません。保存するのは会話参照だけで、過去の本文は読み戻しません。
+
+| 操作 | 専用 IPC | 返す事実と制限 |
+| --- | --- | --- |
+| 入切・状態 | `dsh_acp_set_enabled` / `dsh_acp_status` | OFF は session の操作と起動を拒否。状態照会と owned stop は後片付けのため許可 |
+| 新規・再開 | `dsh_acp_start` | 明示した path/cwd/DSH_HOME と任意の保存参照。所有済み・起動処理中の二重起動は拒否 |
+| 送信 | `dsh_acp_prompt` | text 一件、operationId と expectedRun が必須。同時に一件だけ。同じ ID/本文の再呼出は同じ receipt |
+| 読取 | `dsh_acp_read` | 捕捉した ACP update のみ。source、cursor、欠落を返す。端末画面ではない |
+| 権限の返答 | `dsh_acp_permission` | 自分の会話・pending prompt に結び付いた一回の allow/reject のみ。永続許可はしない |
+| ターン中断 | `dsh_acp_cancel` | pending がなければ no-op。通知の送信と、その prompt の cancelled settlement を分ける |
+| 会話 close | `dsh_acp_close_session` | close の返答を待つ。保存会話は消さず、process の stop は別 |
+| process stop | `dsh_acp_stop_owned` | healthy な会話は close を試し、owned child を止める。終了を確認できなければ process=unknown |
+
+prompt の `submittedAtMs` はローカルから書いた時刻です。ACP には独立した受理 receipt がないため
+`acceptedAtMs=null` のままです。`observedAtMs` は更新の観測、`settledAtMs` と stopReason は対応する prompt の返答で付けます。
+end_turn や静止は、仕事全体の完成・検収を表しません。close の返答だけでも pending prompt の完了にしません。
+返答喪失、timeout、EOF、不正 JSON、stdout のログ混入、256 KiB を越す行は outcome=unknown にし、自動で再送しません。
+unknown の実行は送信を拒否し、owned stop の終了を確認したあと明示的に接続し直します。終了が未確認の間は所有を保持し、別の子を起動しません。
+通常 RPC は10秒、prompt は120秒、中断は10秒以内に対応する settlement が必要です。
+
+`DshRead.historyAvailable=false` は新規・再開とも固定です。受けた更新だけを最大128件・本文合計64 KiBまで保持し、
+切捨てと cursor の欠落を明示します。tool の入力・設定の値・remote error・stderr を画面やログに渡さず、
+表示する本文では既知の資格情報の形を伏せます。API キー・OAuth token の入力欄と保存先は作りません。
+起動時に mycmux のタブ識別・hook capability、Claude/Codex の実行環境、資格情報を含む名前の環境変数を除きます。
+HOME は dsh 本人が設定を使うため維持します。dsh の子を通常の Codex タブとして登録せず、既存の PID ancestry/hook の判定も変更しません。
+
+`agent.capabilities` の版と8操作 (start/resume/fork/send/steer/interrupt/readEvents/usage) は維持し、
+`dsh` / `acpStdioExperiment` の申告を加えます。start/send/readEvents/interrupt の enforced はローカル fixture で確かめた範囲だけです。
+resume は未接続なら unverified、capability 欠落なら unsupported、広告と list 照合ができた場合だけ fixture の範囲で enforced。
+fork・steer・履歴取得・native の一般質問は unsupported、使用量は unverified です。
+`testedExecutableVersion=null` のままで、実配布版の ACP と Windows の対応は認定していません。
+母艦の rc.2 記録は CLI の版と headless の MISSING_CREDENTIAL を確認したもので、ACP の正常ターンの証拠には使いません。
+
+戻すときはスイッチを OFF にします。設定画面を閉じたときも owned process を止めます。
+会話 ID/cwd の保存参照と dsh 本人の会話・認証ファイルは保持します。通常の Claude/Codex/Grok の経路は従来どおりです。
+設計の下書きは [ADR 0016](adr/0016-dsh-acp-experiment.md)。
 
 ### 新エージェントを登録するときのチェックリスト
 
@@ -247,7 +323,7 @@ python scripts/mycmux_agent_cli.py spawn --target grok --prompt-file <spec.md>
 
 ### 完了検知の規約
 
-spawn したペインの完了・生存は画面でなく**実体を3層でポーリング**する (2026-07-16 確立):
+spawn したタブの完了・生存は画面でなく**実体を3層でポーリング**する (2026-07-16 確立):
 
 1. **DONE マーカーファイル** (spec で出力先を指定・末尾行判定は CRLF 耐性をつける) — 正常完了
 2. **自セッションの rollout ログ増分** (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`) —
@@ -264,18 +340,18 @@ spawn したペインの完了・生存は画面でなく**実体を3層でポ�
 
 ### 見張り (dispatch_guard) — 止まった子の回復と通報 (2026-09-08 追加)
 
-spawn した子 (と手動の agent ペイン) が「起動ダイアログ・入力欄に残った本文・AskUserQuestion・承認・ログイン」で黙って止まる 4 系統を、session-dispatch スキル同梱の常駐プロセスが 15 秒周期で検出し、回復するか通報する。mycmux 本体は socket API (`session.state_view` / `pane.read` / `pane.send_text`) を提供するだけで、判定と操作はスキル側にある。
+spawn した子 (と手動の agent タブ) が「起動ダイアログ・入力欄に残った本文・AskUserQuestion・承認・ログイン」で黙って止まる 4 系統を、session-dispatch スキル同梱の常駐プロセスが 15 秒周期で検出し、回復するか通報する。mycmux 本体は socket API (`session.state_view` / `pane.read` / `pane.send_text`) を提供するだけで、判定と操作はスキル側にある。
 
 | 症状 | 防ぐ場所 | 効き方 |
 | --- | --- | --- |
 | 起動ダイアログ (MCP 選択・trust・auto 確認) | Claude Code の settings (`enableAllProjectMcpServers` / `skipAutoPermissionPrompt`) + `dispatch_preflight.py` が cwd の承認を先に書く | 起きなくなる。残りは見張りが受諾キー 1 回 |
 | 子の AskUserQuestion / plan 承認 | PreToolUse hook `dispatch-child-guard.py` (台帳の active 行にある子だけ deny) | 呼べなくなる |
 | 機械送信の本文が残る | `dispatch_send.py` の配送確認 → 見張りが期待値 4 点付き Enter を 1 回 | 起きても 1〜2 分で回復。人が打った本文は送らず 10 分で通報 |
-| 承認・ログイン・手動ペインの質問 | 見張りが画面を読む | 子の承認は「拒否 + 代替手段の指示」、ログインと手動ペインは通報のみ |
+| 承認・ログイン・手動タブの質問 | 見張りが画面を読む | 子の承認は「拒否 + 代替手段の指示」、ログインと手動タブは通報のみ |
 
 - 起動: ランチャー (`launcher.ps1` / `launcher.sh`) が agent TUI を立てるたびに `dispatch_guard.py ensure` を detached で呼ぶ (idempotent・`MYCMUX_DISPATCH_GUARD=off` で無効)。母艦側は 10 分ごとの Scheduled Task でも `ensure` する
-- 状態: `python -X utf8 ~/.claude/skills/session-dispatch/scripts/dispatch_guard.py doctor` (生存・最終周期・ペインごとの分類・通報数)。記録は `~/.claude/dispatch/guard/` (guard.log / state.json / pending_sends.jsonl / escalations.jsonl)
-- 実機試験: `dispatch_canary.py --scenario startup,askuser,draft` (新規 cwd に子を立て、spec 消費 ≤ 60 秒・AskUserQuestion deny・機械本文の配送を assert し、子ペインを閉じる)
+- 状態: `python -X utf8 ~/.claude/skills/session-dispatch/scripts/dispatch_guard.py doctor` (生存・最終周期・タブごとの分類・通報数)。記録は `~/.claude/dispatch/guard/` (guard.log / state.json / pending_sends.jsonl / escalations.jsonl)
+- 実機試験: `dispatch_canary.py --scenario startup,askuser,draft` (新規 cwd に子を立て、spec 消費 ≤ 60 秒・AskUserQuestion deny・機械本文の配送を assert し、子タブを閉じる)
 - 既知の穴: Codex 子の idle 検知 (rollout に応答終了の印が無く attention も none のまま)。mycmux 側で Codex の待機を attention に載せるのが次の一手。詳細設計と証拠は母艦の `~/.claude/_work/dispatch_guard_260908/`
 
 ## 配布物: Claude Code スキルパック
@@ -311,7 +387,7 @@ CLI は `MYCMUX_AGENT_CLI` → ホームの導入先 → スクリプトがあ�
 
 1. Python 3.10 以上と Claude Code を用意し、リポジトリのルートで `python scripts/install_claude_skills.py install` を実行する
 2. `python scripts/install_claude_skills.py check` が 3 スキルと CLI を最新と表示し、exit 0 になること
-3. mycmux 内で Claude Code を起動し、スキルの一覧・状態取得を確認する。Web ペインは各自でログインする
+3. mycmux 内で Claude Code を起動し、スキルの一覧・状態取得を確認する。Web タブは各自でログインする
 4. oracmux の送信禁止フォルダが必要なら guard.example.json を基に設定する
 5. 個人用の委譲ルールは任意で整備する。既存の rules や Codex の AGENTS.md は installer の変更対象にしない
 6. openai-codex プラグイン (`claude plugin list` で `codex@openai-codex`) が**入っていない**こと
@@ -319,4 +395,4 @@ CLI は `MYCMUX_AGENT_CLI` → ホームの導入先 → スクリプトがあ�
 
 ### 稼働中の会話の重複起動
 
-同じ種類・会話 ID が別の PTY で稼働中、または起動処理中の場合、再開や ID 指定の起動は `AGENT_SESSION_ALREADY_RUNNING:` で始まるエラーで拒否します。続く JSON の `kind` はエージェント種類、`agentSessionId` は会話 ID、`ownerSessionId` は稼働中の mycmux PTY session ID です。呼出元は別のペインを起動せず、`ownerSessionId` に対応する既存のペインを使ってください。分岐起動 (`--fork-session` / `MYCMUX_RESUME_FORK=1`) は対象外です。
+同じ種類・会話 ID が別の PTY で稼働中、または起動処理中の場合、再開や ID 指定の起動は `AGENT_SESSION_ALREADY_RUNNING:` で始まるエラーで拒否します。続く JSON の `kind` はエージェント種類、`agentSessionId` は会話 ID、`ownerSessionId` は稼働中の mycmux PTY session ID です。呼出元は別のタブを起動せず、`ownerSessionId` に対応する既存のタブを使ってください。分岐起動 (`--fork-session` / `MYCMUX_RESUME_FORK=1`) は対象外です。

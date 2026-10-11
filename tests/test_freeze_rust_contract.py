@@ -87,7 +87,7 @@ def test_kill_session_registration_times_the_whole_existing_command_on_the_same_
     source = WATCHDOG.read_text(encoding="utf-8")
     assert re.search(r"#\[tauri::command\]\s*pub async fn measured_kill_session\(", source)
     body = function_body(source, "measured_kill_session")
-    call = "crate::commands::terminal::kill_session(state, session_id.clone())"
+    call = "crate::commands::terminal::kill_session(app_handle, state, session_id.clone())"
     assert body.index("Instant::now()") < body.index(call) < body.index("start.elapsed()")
     assert call + ".await" in body
     assert "spawn_blocking" not in body

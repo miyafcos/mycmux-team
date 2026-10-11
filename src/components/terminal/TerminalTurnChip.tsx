@@ -3,6 +3,7 @@ import { memo, type MouseEvent, useCallback, useEffect, useRef, useState } from 
 import { TerminalTurnList, type TurnListRow } from "./TerminalTurnList";
 import type { TurnChipMode } from "./terminalTurnChipState";
 import { terminalTurnStrings } from "./terminalTurnStrings";
+import { captureTemporaryFocusReturn } from "../../lib/focusController";
 
 export interface TerminalTurnChipProps {
   index: number;
@@ -17,6 +18,8 @@ export interface TerminalTurnChipProps {
   onJumpLabel?: (label: string) => void;
   onListOpen: () => void;
   onListVisibilityChange?: (open: boolean) => void;
+  /** The wrapper's chip expires; completing its list must use the durable host. */
+  returnFocusToOwner?: boolean;
   /** Pointer entered the chip; keeps it from auto-hiding while in use. */
   onHover?: () => void;
   leaving?: boolean;
@@ -42,6 +45,7 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
   onJumpLabel,
   onListOpen,
   onListVisibilityChange,
+  returnFocusToOwner = false,
   onHover,
   leaving = false,
   mode = "scroll",
@@ -49,11 +53,15 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
 }: TerminalTurnChipProps) {
   const [isListOpen, setIsListOpen] = useState(false);
   const chipRef = useRef<HTMLDivElement>(null);
+  const focusReturnRef = useRef<ReturnType<typeof captureTemporaryFocusReturn> | null>(null);
 
-  const closeList = useCallback((): void => {
+  const closeList = useCallback((restore = true): void => {
+    if (restore) focusReturnRef.current?.(returnFocusToOwner ? chipRef.current : chipRef.current?.querySelector(".terminal-turn-list") ?? null);
+    focusReturnRef.current?.cancel(); focusReturnRef.current = null;
     setIsListOpen(false);
     onListVisibilityChange?.(false);
-  }, [onListVisibilityChange]);
+  }, [onListVisibilityChange, returnFocusToOwner]);
+  useEffect(() => () => focusReturnRef.current?.cancel(), []);
 
   useEffect(() => {
     if (!isListOpen) return;
@@ -61,7 +69,7 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
       if (event.key === "Escape") closeList();
     };
     const onMouseDown = (event: globalThis.MouseEvent): void => {
-      if (!chipRef.current?.contains(event.target as Node)) closeList();
+      if (!chipRef.current?.contains(event.target as Node)) closeList(false);
     };
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("mousedown", onMouseDown);
@@ -72,7 +80,7 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
   }, [closeList, isListOpen]);
 
   useEffect(() => {
-    if (leaving) closeList();
+    if (leaving) closeList(false);
   }, [closeList, leaving]);
 
   const toggleList = (): void => {
@@ -81,6 +89,9 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
       return;
     }
     onListOpen();
+    focusReturnRef.current = captureTemporaryFocusReturn(chipRef.current,
+      returnFocusToOwner ? null : chipRef.current?.querySelector<HTMLButtonElement>(".terminal-turn-chip__label") ?? null,
+      () => chipRef.current);
     onListVisibilityChange?.(true);
     setIsListOpen(true);
   };
@@ -152,7 +163,7 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
         mode={mode}
         onJump={onJump}
         onJumpLabel={onJumpLabel}
-        onClose={closeList}
+        onClose={() => closeList()}
       /> : null}
     </div>
   );

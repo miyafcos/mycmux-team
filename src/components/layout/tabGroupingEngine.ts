@@ -742,7 +742,7 @@ function compileGroupingPlanCore(
     if (workspaceId) noteGeneratedId(workspaceId);
     if (group.layout!.columns.length > 4) errors.push(`グループ ${group.groupId} の列数が4を超えます`);
     group.layout!.columns.forEach((column, columnIndex) => {
-      if (column.panes.length > 4) errors.push(`グループ ${group.groupId} の1列あたりタブ数が4を超えます`);
+      if (column.panes.length > 4) errors.push(`グループ ${group.groupId} で上下に表示するタブ数が4を超えます`);
       column.panes.forEach((_itemPane, paneIndex) => {
         if (!_itemPane.existingPaneId) noteGeneratedId(allocator.paneId(group.groupId, columnIndex, paneIndex));
       });
@@ -754,7 +754,7 @@ function compileGroupingPlanCore(
   const moved = new Map<string, PaneTab>();
   for (const id of targetIds) {
     const found = sourceIndex.get(id);
-    if (!found) return { ok: false, errors: [`ペイン ${id} が見つかりません`], stale: [] };
+    if (!found) return { ok: false, errors: [`タブ ${id} が見つかりません`], stale: [] };
     moved.set(id, structuredClone(found.tab));
   }
   const preferredTabId = selectedTabId(current, context.activeSessionId, context.activeWorkspaceId);
@@ -767,9 +767,11 @@ function compileGroupingPlanCore(
   }));
   const modified = new Set<string>();
   const newWorkspaces: Workspace[] = [];
+  const destinationColumnSlots = new Map<string, string[][]>();
 
   for (const group of adopted) {
     const columns: string[][] = [];
+    const columnAnchors: (string | undefined)[] = [];
     const panes: Pane[] = [];
     group.layout!.columns.forEach((column, columnIndex) => {
       const columnIds: string[] = [];
@@ -779,7 +781,7 @@ function compileGroupingPlanCore(
           const destId = group.destination.kind === "existing_workspace" ? group.destination.workspaceId : null;
           const destination = next.find(w => w.id === destId);
           const target = destination?.panes.find(p => p.id === spec.existingPaneId);
-          if (!destination || !target) { errors.push("既存タブの合流先が見つかりません: " + spec.existingPaneId); return; }
+          if (!destination || !target) { errors.push("追加先の表示場所が見つかりません: " + spec.existingPaneId); return; }
           const combined = [...target.tabs, ...tabs];
           const active = preferredTabId && combined.some(t => t.id === preferredTabId) ? preferredTabId : target.activeTabId;
           destination.panes = destination.panes.map(p => p.id === target.id ? {
@@ -791,7 +793,10 @@ function compileGroupingPlanCore(
           columnIds.push(paneId);
         }
       });
-      if (columnIds.length) columns.push(columnIds);
+      if (columnIds.length) {
+        columns.push(columnIds);
+        columnAnchors.push(column.existingColumnPaneId);
+      }
     });
     if (errors.length) return { ok: false, errors, stale: [] };
     if (group.destination.kind === "new_workspace") {
@@ -800,6 +805,7 @@ function compileGroupingPlanCore(
       newWorkspaces.push(buildWorkspaceRecord({
         id: workspaceId,
         name: group.destination.proposedName,
+        nameSource: group.destination.nameEdited ? undefined : "auto",
         gridTemplateId: deriveGridTemplateId(columns),
         panes,
         splitColumns: columns,
@@ -812,13 +818,33 @@ function compileGroupingPlanCore(
       const destinationWorkspaceId = group.destination.workspaceId;
       const index = next.findIndex((workspace) => workspace.id === destinationWorkspaceId);
       if (index < 0) return { ok: false, errors: [], stale: classifyStale(context.baseline, current, targetIds, destinations) };
-      const mergedColumns = [...(next[index].splitColumns ?? []), ...columns];
+      const originalColumns = current[index].splitColumns ?? [];
+      // Resolve anchors in the verified live snapshot, before all adopted tabs
+      // were extracted. Keep empty slots at their original positions until the
+      // final prune; later groups must share the same slots and row budget.
+      const mergedColumns = destinationColumnSlots.get(destinationWorkspaceId) ?? originalColumns.map(column => (
+        column.filter(id => next[index].panes.some(pane => pane.id === id && pane.tabs.length > 0))
+      ));
+      columns.forEach((column, columnIndex) => {
+        const anchor = columnAnchors[columnIndex];
+        if (!anchor) { mergedColumns.push(column); return; }
+        const originalColumnIndex = originalColumns.findIndex(candidate => candidate.includes(anchor));
+        const target = mergedColumns[originalColumnIndex];
+        if (!target) { errors.push(`既存列の表示場所が見つかりません: ${anchor}`); return; }
+        if (target.length + column.length > 4) { errors.push(`ワークスペース ${destinationWorkspaceId} で上下に表示するタブ数が4を超えます`); return; }
+        target.push(...column);
+      });
+      if (errors.length) return { ok: false, errors, stale: [] };
       // Count columns after pruning, not before. Sending a workspace's own tabs
       // back into it empties the columns they came from, and pruneWorkspace
       // drops those; counting first rejected valid four-column layouts because
       // the soon-to-vanish columns were still in the tally.
       const merged = pruneWorkspace({
         ...next[index],
+        ...(group.destination.nameEdited && next[index].nameSource === "auto" ? {
+          name: group.destination.proposedName ?? next[index].name,
+          nameSource: undefined,
+        } : {}),
         panes: [...next[index].panes, ...panes],
         splitColumns: mergedColumns,
       });
@@ -826,6 +852,7 @@ function compileGroupingPlanCore(
         return { ok: false, errors: [`ワークスペース ${next[index].id} の列数が4を超えます`], stale: [] };
       }
       next[index] = merged;
+      destinationColumnSlots.set(destinationWorkspaceId, mergedColumns);
       modified.add(next[index].id);
     }
   }
@@ -911,7 +938,8 @@ function structuralTabProjection(tab: PaneTab) {
 function structuralUndoProjection(workspaces: readonly Workspace[]): unknown {
   return workspaces.map((workspace) => ({
     id: workspace.id,
-    name: workspace.name,
+    name: workspace.nameSource === "auto" ? null : workspace.name,
+    ...(workspace.nameSource === "auto" ? { nameSource: "auto" } : {}),
     gridTemplateId: workspace.gridTemplateId,
     status: workspace.status,
     createdAt: workspace.createdAt,
@@ -1081,6 +1109,11 @@ function selectionPreservingSnapshot(
     .flatMap((workspace) => workspace.panes.flatMap((pane) => pane.tabs))
     .find((tab) => tab.id === tabId);
   for (const workspace of workspaces) {
+    const liveWorkspace = liveWorkspaces.find(item => item.id === workspace.id);
+    if (workspace.nameSource === "auto" && liveWorkspace?.nameSource === "auto") {
+      workspace.name = liveWorkspace.name;
+      workspace.nameSource = "auto";
+    }
     for (const itemPane of workspace.panes) {
       itemPane.tabs = itemPane.tabs.map((tab) => {
         const liveTab = findLiveTab(tab.id);

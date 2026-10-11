@@ -42,7 +42,7 @@ const FONT_PRESET_GROUPS: FontPresetGroup[] = [
     id: "code-standard",
     title: "コード・標準",
     detail: "普段使い。迷ったらここから",
-    presetIds: ["jetbrains-ja", "udev-gothic", "udev-gothic-35", "cascadia-biz", "consolas-meiryo"],
+    presetIds: ["jetbrains-ja", "hackgen-console", "udev-gothic", "udev-gothic-35", "cascadia-biz", "consolas-meiryo"],
   },
   {
     id: "ja-readable",
@@ -213,9 +213,13 @@ function FontPresetOption({
               fontSize: 11,
               color: "var(--cmux-text-tertiary)",
               lineHeight: 1.25,
+              // Reserve the same two-line area even for a short description.
+              height: "2.5em",
+              display: "-webkit-box",
+              WebkitBoxOrient: "vertical",
+              WebkitLineClamp: 2,
               overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
+              whiteSpace: "normal",
             }}
           >
             {preset.description}
@@ -367,7 +371,7 @@ export function ThemeFontSettings({
 
       <div>
         <div style={{ fontSize: 12, color: "var(--cmux-text-secondary)", marginBottom: 8 }}>
-          フォントサイズ: {fontSize}px
+          端末と会話の文字の大きさ: {fontSize}px
         </div>
         <input
           type="range"
@@ -381,7 +385,7 @@ export function ThemeFontSettings({
 
       <div>
         <div style={{ fontSize: 12, color: "var(--cmux-text-secondary)", marginBottom: 8 }}>
-          行間: {lineHeight.toFixed(2)}
+          端末と会話の行間: {lineHeight.toFixed(2)}
         </div>
         <input
           type="range"
@@ -401,9 +405,9 @@ export function ThemeFontSettings({
       <div>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
           <div>
-            <div style={{ fontSize: 12, color: "var(--cmux-text-secondary)" }}>端末フォント</div>
+            <div style={{ fontSize: 12, color: "var(--cmux-text-secondary)" }}>フォント</div>
             <div style={{ marginTop: 2, fontSize: 11, color: "var(--cmux-text-tertiary)" }}>
-              3分類から選ぶ。すべて表プレビューつき
+              アプリの文字すべて (端末・会話・サイドバー・メニュー) に使います。3 分類から選べます
             </div>
           </div>
         </div>

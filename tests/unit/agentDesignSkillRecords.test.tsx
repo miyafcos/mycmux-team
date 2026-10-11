@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SkillsView } from "../../src/components/skills/SkillsView";
+import { SkillDetail } from "../../src/components/skills/SkillDetail";
 import { skillsApi, type SkillCatalog, type SkillRow } from "../../src/lib/skillsApi";
 vi.mock("@tauri-apps/api/core", async original => ({ ...await original<typeof import("@tauri-apps/api/core")>(), invoke: vi.fn() }));
 vi.mock("@tauri-apps/plugin-shell", () => ({ open: vi.fn() }));
@@ -49,4 +50,13 @@ it("keeps missing file metadata distinct from a measured empty file", async () =
   const known = rows.find(value => value.textContent?.includes("EmptyFile"))!.children[2];
   expect(unknown.textContent).toContain("大きさは未計測"); expect(unknown.textContent).toContain("日時は未取得");
   expect(unknown.textContent).not.toContain("1970"); expect(known.textContent).toContain("0 KB");
+});
+it("keeps mixed-case IDs and tri-state membership on read-only skill details", async () => {
+  for (const [id, membership, label] of [["Reviewer", true, "掲載あり"], ["anthropic-skills:PPTX", null, "未取得"], ["disabled", false, "掲載なし"]] as const) {
+    const item = { ...row(id, 0, 0), docPath: membership == null ? null : "/synthetic/" + id + "/SKILL.md", listedIn: { claude: membership, codex: null } };
+    await act(async () => root.render(<SkillDetail row={item} api={api} tab="content" setTab={vi.fn()} expanded={false} setExpanded={vi.fn()} query="" snippet="" notify={vi.fn()} close={vi.fn()} readOnly />));
+    expect(host.querySelector(".skills-detail-meta code")?.textContent).toBe(id);
+    expect(host.querySelector(".skills-read-facts")?.textContent).toContain("claude " + label);
+    if (membership !== false) expect(host.querySelector(".skills-read-facts")?.textContent).not.toContain("claude 掲載なし");
+  }
 });

@@ -1,6 +1,6 @@
 # スキル画面 段1の設計
 
-スキルの正本は各サービスの SKILL.md とフォルダであり、画面は読取りと新しいペインの起動を行う。個人の棚定義と Codex の利用記録は ~/.mycmux/skills に置く。本文、設定、フック、エージェントの認証はこの画面から書き換えない。
+スキルの正本は各サービスの SKILL.md とフォルダであり、画面は読取りと新しいタブの起動を行う。個人の棚定義と Codex の利用記録は ~/.mycmux/skills に置く。本文、設定、フック、エージェントの認証はこの画面から書き換えない。
 
 ## 外枠と埋め込み
 
@@ -12,7 +12,7 @@ SkillsButton は上の帯の入口、SkillsPanel は全面の OverlayShell と�
 
 SkillsViewProps は initialSkillId?: string | null、onClose: () => void、api?: typeof skillsApi、initialCatalog?: SkillCatalog。指定された id が変わると「すべて」の棚へ戻してその1本を選ぶ。データ到着前の id も保持し、未登録なら最初の行に戻す。api と initialCatalog は読取りの差し替え口であり、合成ホームの画面検証にも使う。親は高さのある領域と既存の cmux テーマ変数を供給する。
 
-表示は workspace store を購読しない。「始める」と「AI に直してもらう」だけが useWorkspaceListStore、useWorkspaceLayoutStore、useUiStore を読み、現在のワークスペースとセッションを含むタブに addTabToPaneWithOptions で新しいペインを作る。initialPrompt は /名前 または $名前。戻る処理は onClose に委ねる。
+表示は workspace store を購読しない。「始める」と「AI に直してもらう」だけが useWorkspaceListStore、useWorkspaceLayoutStore、useUiStore を読み、現在のワークスペースと呼び出し元の入れ物に addTabToPaneWithOptions で新しいタブを作る。initialPrompt は /名前 または $名前。戻る処理は onClose に委ねる。
 
 ## 読取りと層
 

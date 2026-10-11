@@ -26,6 +26,16 @@ import { useUsageStore } from "./usageStore";
 
 type BusyByProvider = Record<CliProvider, string | null>;
 
+export type SwitchExecution =
+  | { kind: "switched"; result: CliSwitchResult }
+  | { kind: "already_active" | "rejected" | "failed"; error: unknown }
+  | { kind: "cancelled" };
+
+const API_REJECTIONS = new Set([
+  "cli_account.error.profile_not_found", "cli_account.error.needs_relogin",
+  "cli_account.error.switch_busy", "cli_account.error.switch_expired",
+]);
+
 export interface CliAccountStoreState {
   profiles: CliAccountProfile[];
   live: CliLiveLogin[];
@@ -40,6 +50,7 @@ export interface CliAccountStoreState {
   fetch(): Promise<void>;
   capture(provider: CliProvider, label?: string): Promise<CliAccountProfile | null>;
   switchTo(provider: CliProvider, profileId: string, shouldSwitch?: () => boolean): Promise<CliSwitchResult | null>;
+  switchToForApi(provider: CliProvider, profileId: string, deadline: number): Promise<SwitchExecution>;
   remove(provider: CliProvider, profileId: string): Promise<boolean>;
   rename(provider: CliProvider, profileId: string, label: string): Promise<boolean>;
   resolveOrphan(orphan: CliOrphanSnapshot, action: CliOrphanAction, label?: string): Promise<boolean>;
@@ -106,6 +117,61 @@ export const useCliAccountStore = create<CliAccountStoreState>((set, get) => {
     set((state) => ({ busyByProvider: { ...state.busyByProvider, [provider]: value } }));
   };
 
+  const executeSwitch = async (
+    provider: CliProvider, profileId: string,
+    options: { apiRequest?: boolean; deadline?: number; shouldSwitch?: () => boolean },
+  ): Promise<SwitchExecution> => {
+    if (get().busyByProvider[provider] !== null) {
+      return { kind: "rejected", error: "cli_account.error.switch_busy" };
+    }
+    setBusy(provider, profileId);
+    try {
+      const result = await enqueueMutation(() => {
+        if (options.apiRequest && Date.now() >= options.deadline!) {
+          return Promise.reject("cli_account.error.switch_expired");
+        }
+        if (options.shouldSwitch && !options.shouldSwitch()) return Promise.resolve(null);
+        return options.apiRequest
+          ? switchCliAccount(provider, profileId, true)
+          : switchCliAccount(provider, profileId);
+      });
+      if (!result) return { kind: "cancelled" };
+      set({ lastSwitchResult: result });
+      const identityMismatch = result.warnings.includes("cli_account.warning.restored_identity_mismatch");
+      const metadataNotSaved = result.warnings.includes("cli_account.warning.switch_metadata_not_saved");
+      useToastStore.getState().pushToast(
+        identityMismatch
+          ? `「${result.profile.label}」への切り替え処理は完了しましたが、ログインの一致を確認できません。警告とバックアップを確認してください。`
+          : metadataNotSaved
+            ? `「${result.profile.label}」のログイン情報は反映されましたが、選択履歴を保存できませんでした。警告とバックアップを確認してください。`
+          : `「${result.profile.label}」に切り替えました。新しく起動するセッションから反映されます。`,
+        identityMismatch || metadataNotSaved ? "warning" : "info",
+      );
+      await Promise.all([get().fetch(), options.apiRequest
+        ? useUsageStore.getState().fetch(false, "account.switch")
+        : useUsageStore.getState().fetch()]);
+      scheduleSwitchRevertCheck(get, provider, result.profile.identity_key, result.profile.label);
+      return { kind: "switched", result };
+    } catch (error) {
+      const rawCode = error instanceof Error ? error.message : error;
+      const corePrefix = "cli_account.api.core_error:";
+      const fromCore = options.apiRequest && typeof rawCode === "string" && rawCode.startsWith(corePrefix);
+      const code = fromCore ? (rawCode as string).slice(corePrefix.length) : rawCode;
+      if (options.apiRequest && !fromCore && code === "cli_account.result.already_active") {
+        return { kind: "already_active", error: code };
+      }
+      if (options.apiRequest && !fromCore && typeof code === "string" && API_REJECTIONS.has(code)) {
+        return { kind: "rejected", error: code };
+      }
+      const failure = fromCore ? code : error;
+      set({ operationError: cliAccountMessage(failure) });
+      await get().fetch();
+      return { kind: "failed", error: failure };
+    } finally {
+      setBusy(provider, null);
+    }
+  };
+
   return {
     profiles: [],
     live: [],
@@ -161,38 +227,11 @@ export const useCliAccountStore = create<CliAccountStoreState>((set, get) => {
     },
 
     switchTo: async (provider, profileId, shouldSwitch) => {
-      if (get().busyByProvider[provider] !== null) return null;
-      setBusy(provider, profileId);
-      try {
-        const result = await enqueueMutation(() => shouldSwitch && !shouldSwitch()
-          ? Promise.resolve(null) : switchCliAccount(provider, profileId));
-        if (!result) return null;
-        set({ lastSwitchResult: result });
-        const identityMismatch = result.warnings.includes(
-          "cli_account.warning.restored_identity_mismatch",
-        );
-        const metadataNotSaved = result.warnings.includes(
-          "cli_account.warning.switch_metadata_not_saved",
-        );
-        useToastStore.getState().pushToast(
-          identityMismatch
-            ? `「${result.profile.label}」への切り替え処理は完了しましたが、ログインの一致を確認できません。警告とバックアップを確認してください。`
-            : metadataNotSaved
-              ? `「${result.profile.label}」のログイン情報は反映されましたが、選択履歴を保存できませんでした。警告とバックアップを確認してください。`
-            : `「${result.profile.label}」に切り替えました。新しく起動するセッションから反映されます。`,
-          identityMismatch || metadataNotSaved ? "warning" : "info",
-        );
-        await Promise.all([get().fetch(), useUsageStore.getState().fetch()]);
-        scheduleSwitchRevertCheck(get, provider, result.profile.identity_key, result.profile.label);
-        return result;
-      } catch (error) {
-        set({ operationError: cliAccountMessage(error) });
-        await get().fetch();
-        return null;
-      } finally {
-        setBusy(provider, null);
-      }
+      const execution = await executeSwitch(provider, profileId, { shouldSwitch });
+      return execution.kind === "switched" ? execution.result : null;
     },
+
+    switchToForApi: (provider, profileId, deadline) => executeSwitch(provider, profileId, { apiRequest: true, deadline }),
 
     remove: async (provider, profileId) => {
       if (get().busyByProvider[provider] !== null) return false;

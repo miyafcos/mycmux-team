@@ -3,17 +3,28 @@ import { useWorkspaceLayoutStore } from "../stores/workspaceLayoutStore";
 import { useWorkspaceListStore } from "../stores/workspaceListStore";
 import { usePaneMetadataStore } from "../stores/paneMetadataStore";
 import { useLauncherDirsStore } from "../stores/launcherDirsStore";
-import type { Workspace } from "../types";
+import type { Pane, PaneTab, Workspace } from "../types";
 import type { GroupingScan } from "../components/layout/tabGrouping";
-import { readEvidenceScan, identitiesForScan, TITLE_REFRESH_MS } from "./paneEvidence";
+import { paneRegistry } from "./paneEvidence";
+import { readAutoNameScan, liveNamingBinding, liveNamingMaterialSignature, namingScanStillCurrent } from "./autoNameEvidence";
+import { createAutoNamePolicy, isAutomaticNameTarget } from "./autoNamePolicy";
+import { useLiveBriefStore } from "../stores/liveBriefStore";
+import { aggregateWorkspaceName, createAutoWorkspaceNamePolicy, type WorkspaceNameSummary } from "./autoWorkspaceNaming";
+import { useAutoNameRuntimeStore, isPaneNameHeld, isWorkspaceNameHeld, pruneNamingRuntime } from "../stores/autoNameRuntimeStore";
+import { namingBinding, type AutoNameScan } from "./autoNameMaterial";
 import type { PaneIdentityResult } from "./paneIdentity";
+import { getTabDisplayLabel } from "./tabDisplayLabel";
 
 export const AUTO_PANE_NAMING_DEBOUNCE_MS = 350;
-export const AUTO_PANE_NAMING_INTERVAL_MS = TITLE_REFRESH_MS;
+export const AUTO_PANE_NAMING_INTERVAL_MS = 30_000;
 export interface AutoPaneNamingDependencies {
   enabled: () => boolean;
+  workspaceEnabled?: () => boolean;
+  afterIdentify?: (scan: GroupingScan) => void;
   scan: () => Promise<GroupingScan>;
   identify: (scan: GroupingScan) => PaneIdentityResult;
+  nextCheckMs?: () => number | undefined;
+  bindingMatches?: (evidence: GroupingScan["tabs"][number], tab: PaneTab, pane: Pane) => boolean;
   workspaces: () => Workspace[];
   subscribe: (listener: () => void) => () => void;
   setDisplayName: (workspaceId: string, paneId: string, tabId: string, name: string | undefined) => void;
@@ -28,22 +39,83 @@ export function buildAutoPaneNamingSignature(tab: {
     tab.agentSessionId, tab.sessionTitle, tab.taskTitle]);
 }
 function materialSignature(workspaces: Workspace[]): string {
-  return JSON.stringify(workspaces.map(w => [w.id, w.name, w.panes.map(p => [p.id, p.tabs.map(t =>
+  return JSON.stringify(workspaces.map(w => [w.id, w.name, w.nameSource, w.status, w.panes.map(p => [p.id, p.tabs.map(t =>
     [buildAutoPaneNamingSignature(t), t.sessionId, t.origin, t.lifecycle])])]));
 }
 function metadataMaterialSignature(metadata: ReturnType<typeof usePaneMetadataStore.getState>["metadata"]): string {
   return JSON.stringify(Object.entries(metadata).map(([id, m]) => [id, m.cwd, m.agentKind, m.agentSessionId, m.claudeSessionId]));
 }
 function defaultDependencies(): AutoPaneNamingDependencies {
+  const newPolicy = () => createAutoNamePolicy(Date.now, paneRegistry,
+    (tab, meaning) => isPaneNameHeld(tab.id, meaning.binding, meaning.contentKey),
+    tab => getTabDisplayLabel(tab, true, usePaneMetadataStore.getState().metadata, usePaneMetadataStore.getState().volatileMetadata));
+  const policy = newPolicy();
+  let revision = useAutoNameRuntimeStore.getState().revision;
+  const workspacePolicy = createAutoWorkspaceNamePolicy();
   return {
     enabled: () => useSettingsStore.getState().autoPaneNamingEnabled,
-    scan: readEvidenceScan, identify: identitiesForScan,
+    workspaceEnabled: () => useSettingsStore.getState().autoWorkspaceNamingEnabled,
+    scan: readAutoNameScan,
+    bindingMatches: (evidence, tab, pane) => namingBinding(evidence) === liveNamingBinding(tab, pane),
+    identify: scan => {
+      const nextRevision = useAutoNameRuntimeStore.getState().revision;
+      if (nextRevision !== revision) {
+        const runtime = useAutoNameRuntimeStore.getState();
+        policy.reset([...runtime.invalidatedTabs].filter(([, at]) => at > revision && at <= nextRevision).map(([id]) => id));
+        workspacePolicy.reset([...runtime.invalidatedWorkspaces].filter(([, at]) => at > revision && at <= nextRevision).map(([id]) => id));
+        revision = nextRevision;
+      }
+      return policy.identify(scan);
+    },
+    nextCheckMs: () => policy.nextCheckMs(),
+    afterIdentify: scan => {
+      const current = useWorkspaceListStore.getState();
+      const scanned = new Map(scan.tabs.map(tab => [tab.id, tab]));
+      const currentMeanings = (workspaces: Workspace[]) => new Map([...policy.meanings()].filter(([id, meaning]) => {
+        const pane = workspaces.flatMap(w => w.panes).find(p => p.tabs.some(t => t.id === id));
+        const tab = pane?.tabs.find(t => t.id === id); const input = scanned.get(id);
+        return tab && liveNamingBinding(tab, pane) === meaning.binding
+          && (!input || !(scan as Partial<AutoNameScan>).naming || namingScanStillCurrent(scan as AutoNameScan, input));
+      }));
+      const meanings = currentMeanings(current.workspaces);
+      const descriptions = new Map<string, string>();
+      const summaries = new Map<string, WorkspaceNameSummary>();
+      const patches = [];
+      const workspaceIds = new Set(current.workspaces.map(w => w.id));
+      workspacePolicy.prune(workspaceIds);
+      pruneNamingRuntime(workspaceIds, new Set(current.workspaces.flatMap(w => w.panes.flatMap(p => p.tabs.map(t => t.id)))));
+      for (const workspace of current.workspaces) {
+        const summary = aggregateWorkspaceName(workspace, meanings, liveNamingBinding);
+        descriptions.set(workspace.id, summary.description); summaries.set(workspace.id, summary);
+        if (!useSettingsStore.getState().autoWorkspaceNamingEnabled || isWorkspaceNameHeld(workspace.id, summary.key)) continue;
+        const name = workspacePolicy.candidate(workspace, summary);
+        if (name) patches.push({ id: workspace.id, expectedName: workspace.name, expectedSource: "auto" as const, name, nameSource: "auto" as const });
+      }
+      const applied = current.applyNamePatches({ tabs: [], workspaces: patches }, workspace => {
+        const summary = summaries.get(workspace.id), runtime = useAutoNameRuntimeStore.getState();
+        return !!summary && useSettingsStore.getState().autoWorkspaceNamingEnabled && workspace.status !== "stopped"
+          && (runtime.invalidatedWorkspaces.get(workspace.id) ?? 0) <= revision
+          && summary.key === aggregateWorkspaceName(workspace, currentMeanings([workspace]), liveNamingBinding).key
+          && !isWorkspaceNameHeld(workspace.id, summary.key);
+      });
+      for (const id of applied) workspacePolicy.committed(id, summaries.get(id)!);
+      const runtime = useAutoNameRuntimeStore.getState();
+      if (JSON.stringify([...runtime.descriptions]) !== JSON.stringify([...descriptions])) useAutoNameRuntimeStore.setState({ descriptions });
+      useAutoNameRuntimeStore.setState({ meanings });
+    },
     workspaces: () => useWorkspaceListStore.getState().workspaces,
     setDisplayName: (w, p, t, name) => useWorkspaceLayoutStore.getState().setTabDisplayName(w, p, t, name),
     subscribe: listener => {
       let signature = materialSignature(useWorkspaceListStore.getState().workspaces);
       let metadataSignature = metadataMaterialSignature(usePaneMetadataStore.getState().metadata);
+      let liveSignature = liveNamingMaterialSignature(useLiveBriefStore.getState());
       const unsubscribers = [
+        useAutoNameRuntimeStore.subscribe((state, previous) => { if (state.revision !== previous.revision) listener(); }),
+        useLiveBriefStore.subscribe((state, previous) => {
+          if (state.briefsBySession === previous.briefsBySession && state.eventsBySession === previous.eventsBySession && state.listEventsBySession === previous.listEventsBySession) return;
+          const next = liveNamingMaterialSignature(state);
+          if (next !== liveSignature) { liveSignature = next; listener(); }
+        }),
         // Both stores change far more often than the naming material does (focus, output
         // heartbeats); skip the signature work unless the watched slice was replaced.
         useWorkspaceListStore.subscribe((state, previous) => {
@@ -51,7 +123,7 @@ function defaultDependencies(): AutoPaneNamingDependencies {
           const next = materialSignature(state.workspaces);
           if (next !== signature) { signature = next; listener(); }
         }),
-        useSettingsStore.subscribe((state, previous) => { if (state.autoPaneNamingEnabled !== previous.autoPaneNamingEnabled) listener(); }),
+        useSettingsStore.subscribe((state, previous) => { if (state.autoPaneNamingEnabled !== previous.autoPaneNamingEnabled || state.autoWorkspaceNamingEnabled !== previous.autoWorkspaceNamingEnabled) listener(); }),
         useLauncherDirsStore.subscribe((state, previous) => { if (state.view !== previous.view) listener(); }),
         usePaneMetadataStore.subscribe((state, previous) => {
           if (state.metadata === previous.metadata) return;
@@ -73,12 +145,14 @@ function defaultDependencies(): AutoPaneNamingDependencies {
 export interface AutoPaneNamingScheduler { start: () => void; stop: () => void; runNow: () => Promise<void>; readonly running: boolean }
 export function createAutoPaneNamingScheduler(deps: AutoPaneNamingDependencies = defaultDependencies()): AutoPaneNamingScheduler {
   let started = false; let running = false; let epoch = 0; let dirty = false;
+  let previousPaneEnabled: boolean | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let interval: ReturnType<typeof setInterval> | undefined;
   let unsubscribe: (() => void) | undefined;
+  const active = () => deps.enabled() || (deps.workspaceEnabled?.() ?? false);
   const clearAutomaticNames = () => {
     for (const workspace of deps.workspaces()) for (const pane of workspace.panes) for (const tab of pane.tabs) {
-      if (tab.displayNameSource === "auto" && tab.displayName !== undefined) deps.setDisplayName(workspace.id, pane.id, tab.id, undefined);
+      if (isAutomaticNameTarget(tab) && tab.displayNameSource === "auto" && tab.displayName !== undefined) deps.setDisplayName(workspace.id, pane.id, tab.id, undefined);
     }
   };
   const schedule = () => {
@@ -88,28 +162,45 @@ export function createAutoPaneNamingScheduler(deps: AutoPaneNamingDependencies =
     if (!started) return;
     // Switching the setting off takes the automatic names away, so each pane shows its own
     // label again instead of a name that no longer follows its material.
-    if (!deps.enabled()) { dirty = false; clearAutomaticNames(); return; }
+    const paneEnabled = deps.enabled();
+    const clearNames = !paneEnabled && previousPaneEnabled !== false;
+    previousPaneEnabled = paneEnabled;
+    // Clear on startup/transition only. An explicit one-time recovery remains
+    // visible while automatic updates are off; layout notifications do not undo it.
+    if (clearNames) clearAutomaticNames();
+    if (!active()) { dirty = false; return; }
     timer = deps.setTimeout(() => { timer = undefined; void execute(); }, AUTO_PANE_NAMING_DEBOUNCE_MS);
   };
   async function execute() {
-    if (!started || !deps.enabled() || running) return;
+    if (!started || !active() || running) return;
     running = true; dirty = false;
     const token = epoch;
     try {
       const scan = await deps.scan();
-      if (!started || !deps.enabled() || token !== epoch) return;
+      if (!started || !active() || token !== epoch) return;
       const identities = deps.identify(scan);
+      deps.afterIdentify?.(scan);
       const scanned = new Map(scan.tabs.map(t => [t.id, t]));
-      for (const workspace of deps.workspaces()) for (const pane of workspace.panes) for (const tab of pane.tabs) {
+      for (const workspace of deps.workspaces().filter(w => w.status !== "stopped")) for (const pane of workspace.panes) for (const tab of pane.tabs) {
         const evidence = scanned.get(tab.id); const identity = identities.tabs.get(tab.id);
-        if (!evidence || !identity || evidence.sessionId !== tab.sessionId || evidence.label !== (tab.label ?? "")
+        if (!deps.enabled() || !evidence || !identity || evidence.sessionId !== tab.sessionId || evidence.label !== (tab.label ?? "")
+          || evidence.labelSource !== tab.labelSource || !isAutomaticNameTarget(tab)
+          || (deps.bindingMatches && !deps.bindingMatches(evidence, tab, pane))
+          || ((scan as Partial<AutoNameScan>).naming && !namingScanStillCurrent(scan as AutoNameScan, evidence))
           || evidence.workspaceId !== workspace.id || evidence.paneId !== pane.id) continue;
         // No material means leave the visible name unchanged.
         if (identity.displayName !== null && tab.displayName !== identity.displayName)
           deps.setDisplayName(workspace.id, pane.id, tab.id, identity.displayName);
       }
     } catch (error) { console.warn("[auto-pane-naming] Evidence unavailable", error); }
-    finally { running = false; if (dirty && started && deps.enabled()) schedule(); }
+    finally {
+      running = false;
+      if (dirty && started && active()) schedule();
+      else if (started && active() && timer === undefined) {
+        const wait = deps.nextCheckMs?.();
+        if (wait !== undefined) timer = deps.setTimeout(() => { timer = undefined; void execute(); }, Math.max(350, wait));
+      }
+    }
   }
   // The store listeners run inside whatever changed the store. A naming fault is logged here
   // instead of reaching that change and stopping it half-way (v0.80.1-v0.80.2).
@@ -117,7 +208,7 @@ export function createAutoPaneNamingScheduler(deps: AutoPaneNamingDependencies =
     try { schedule(); } catch (error) { console.error("[mycmux] auto pane naming listener threw; the change that woke it still went through", error); }
   };
   function start() {
-    if (started) return; started = true; unsubscribe = deps.subscribe(scheduleFromListener);
+    if (started) return; started = true; previousPaneEnabled = undefined; unsubscribe = deps.subscribe(scheduleFromListener);
     interval = deps.setInterval(() => { void execute(); }, AUTO_PANE_NAMING_INTERVAL_MS);
     schedule();
   }

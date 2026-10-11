@@ -15,7 +15,7 @@ const headlessBufferMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../src/lib/ipc", () => ipcMocks);
-vi.mock("../../src/components/terminal/XTermWrapper", () => terminalBufferMocks);
+vi.mock("../../src/components/terminal/XTermWrapper", () => ({ ...terminalBufferMocks, isTerminalParsingCurrentOutput: (id: string) => terminalBufferMocks.hasTerminalBuffer(id, true) }));
 vi.mock("../../src/components/terminal/headlessBuffer", () => ({
   ...headlessBufferMocks,
   readHeadlessBufferLines: async (id: string, load: () => Promise<unknown>, lines: number, size: unknown) => (

@@ -76,6 +76,22 @@ fn identity(path: &Path) -> Option<(String, Value, String)> {
         });
     Some((id, fm, body.into()))
 }
+fn listed_in(catalog: &Catalog, service: &str, names: &BTreeSet<String>) -> Option<bool> {
+    let service = catalog.services.iter().find(|s| s.id == service)?;
+    service.session.file.as_ref()?;
+    let listing = &service.session.listing;
+    if !listing.names_complete.unwrap_or(listing.count.is_some()) {
+        return None;
+    }
+    // A known inclusion remains true even if another alias is uncertain.
+    if listing.entries.iter().any(|entry| names.contains(&entry.name.to_lowercase())) {
+        return Some(true);
+    }
+    if listing.unknown_names.iter().any(|name| names.contains(&name.to_lowercase())) {
+        return None;
+    }
+    Some(false)
+}
 pub fn catalog(home: &Path, catalog: &Catalog) -> Value {
     let mut rows = BTreeMap::new();
     let mut places: BTreeMap<String, Vec<Value>> = BTreeMap::new();
@@ -139,6 +155,14 @@ pub fn catalog(home: &Path, catalog: &Catalog) -> Value {
                 }
             }
         }
+        // Keep uncertain recorded identities visible without attaching an
+        // unreadable body or treating them as proven exclusions.
+        for name in &service.session.listing.unknown_names {
+            let (kind, plugin) = name.split_once(':').map_or(("builtin", None), |(plugin, _)| {
+                ("plugin", (plugin != "anthropic-skills").then_some(plugin))
+            });
+            bridge::catalog::add(&mut rows, name, "", &service.id, kind, plugin, None);
+        }
     }
     let defaults: Value = serde_json::from_str(bridge::catalog::DEFAULTS).unwrap_or(Value::Null);
     let mut value = bridge::catalog::decorate(home, &home.join(".mycmux/skills"), defaults, rows, false);
@@ -174,7 +198,7 @@ pub fn catalog(home: &Path, catalog: &Catalog) -> Value {
     for field in ["skills", "hiddenSkills"] {
         for row in value[field].as_array_mut().into_iter().flatten() {
             let key = row["id"].as_str().unwrap_or("").to_owned();
-            let names: BTreeSet<_> = std::iter::once(key.clone())
+            let names: BTreeSet<_> = std::iter::once(key.to_lowercase())
                 .chain(row["aliases"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_lowercase))
                 .collect();
             let entries: Vec<_> = claude.as_ref().and_then(|v| v["skillUsage"].as_object())
@@ -200,7 +224,7 @@ pub fn catalog(home: &Path, catalog: &Catalog) -> Value {
             row["usageCount"] = json!(count.saturating_add(count_codex));
             row["lastUsedAt"] = json!([last_claude, last_codex].into_iter().flatten().max_by(f64::total_cmp));
             row["codexRecorded"] = json!(codex_state == "available");
-            row["listedIn"] = json!({"claude":catalog.services.iter().find(|s|s.id=="claude").filter(|s| s.session.file.is_some() && s.session.listing.count.is_some()).map(|s|s.session.listing.entries.iter().any(|entry|names.contains(&entry.name.to_lowercase()))),"codex":catalog.services.iter().find(|s|s.id=="codex").filter(|s| s.session.file.is_some() && s.session.listing.count.is_some()).map(|s|s.session.listing.entries.iter().any(|entry|names.contains(&entry.name.to_lowercase())))});
+            row["listedIn"] = json!({"claude":listed_in(catalog,"claude",&names),"codex":listed_in(catalog,"codex",&names)});
         }
     }
     super::redaction::scrub(&mut value);

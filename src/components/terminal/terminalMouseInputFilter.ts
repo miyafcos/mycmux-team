@@ -233,7 +233,19 @@ export function shouldForwardWheelToApplication(
   return activeBufferType === "alternate" && (mouseReportingEnabled || forceMouseReport);
 }
 
-export function attachTerminalWheelScroll(container: HTMLElement, currentTerm: Terminal, sessionId: string, forceMouseReport: boolean): () => void {
+export interface TerminalHistoryWheelAdmission {
+  wheel: (event: WheelEvent, term: Terminal, interaction: { composing: boolean; dragging: boolean }) => boolean;
+  boundary: (term: Terminal, interaction: { composing: boolean; dragging: boolean }) => boolean;
+  composing: () => boolean;
+  onDragging: (dragging: boolean) => void;
+}
+export function isXtermVerticalScrollbarTarget(target: EventTarget | null, container: HTMLElement): boolean {
+  return target instanceof Element && container.contains(target) && !!target.closest(".xterm-scrollable-element > .scrollbar.vertical");
+}
+export function attachTerminalWheelScroll(container: HTMLElement, currentTerm: Terminal, sessionId: string, forceMouseReport: boolean, history?: TerminalHistoryWheelAdmission): () => void {
+  let dragging = false;
+  let scrollbar: { id: number; y: number } | null = null;
+  let boundaryFrame: number | null = null;
   const handleWheel = (event: WheelEvent): void => {
     if (event.defaultPrevented || event.metaKey) return;
     if (event.ctrlKey && !event.shiftKey && !event.altKey) {
@@ -247,6 +259,10 @@ export function attachTerminalWheelScroll(container: HTMLElement, currentTerm: T
     }
     const lines = wheelDeltaToTerminalLines(event, currentTerm.rows);
     if (lines === 0) return;
+    // Arbitration precedes both local scrolling and every SGR/PTY write.
+    if (history?.wheel(event, currentTerm, { composing: history.composing(), dragging })) {
+      event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); return;
+    }
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
@@ -268,6 +284,27 @@ export function attachTerminalWheelScroll(container: HTMLElement, currentTerm: T
     currentTerm.scrollLines(lines);
   };
 
+  const pointerDown = (event: PointerEvent): void => {
+    dragging = true; history?.onDragging(true);
+    scrollbar = event.isTrusted && event.button === 0 && isXtermVerticalScrollbarTarget(event.target, container) ? { id: event.pointerId, y: event.clientY } : null;
+  };
+  const pointerUp = (event: PointerEvent): void => {
+    const gesture = scrollbar; dragging = false; scrollbar = null; history?.onDragging(false);
+    if (!event.isTrusted || !gesture || gesture.id !== event.pointerId || event.clientY >= gesture.y || event.ctrlKey || event.shiftKey || event.altKey || event.metaKey) return;
+    boundaryFrame = requestAnimationFrame(() => { boundaryFrame = null; history?.boundary(currentTerm, { composing: history.composing(), dragging: false }); });
+  };
+  const pointerCancel = (): void => { dragging = false; scrollbar = null; history?.onDragging(false); };
   container.addEventListener("wheel", handleWheel, { capture: true, passive: false });
-  return () => container.removeEventListener("wheel", handleWheel, { capture: true });
+  if (history) {
+    container.addEventListener("pointerdown", pointerDown, true);
+    window.addEventListener("pointerup", pointerUp, true); window.addEventListener("pointercancel", pointerCancel, true);
+  }
+  return () => {
+    container.removeEventListener("wheel", handleWheel, { capture: true });
+    if (history) {
+      container.removeEventListener("pointerdown", pointerDown, true);
+      window.removeEventListener("pointerup", pointerUp, true); window.removeEventListener("pointercancel", pointerCancel, true);
+      if (boundaryFrame !== null) cancelAnimationFrame(boundaryFrame); pointerCancel();
+    }
+  };
 }

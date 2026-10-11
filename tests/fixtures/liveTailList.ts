@@ -1,4 +1,4 @@
-import { cropLiveTail } from "../../src/lib/liveTail/crop";
+import { cropLiveTail, unreadableLiveTail } from "../../src/lib/liveTail/crop";
 import type { LiveTailFactKind } from "../../src/lib/liveTail/facts";
 import type { LiveTailEntry, LiveTailTarget } from "../../src/stores/liveTailStore";
 import type { PaneTab, Workspace } from "../../src/types";
@@ -12,8 +12,8 @@ export function liveTailFixtureEntry(kind: LiveTailFactKind, now = LIVE_TAIL_TES
     : kind === "idle" ? ["Sample result", "* Cooked for 3s · done 01:00"]
       : kind === "cmd" ? ["● Wait for sample report · 2m 4s", "⎿  $ sample-wait", "* Thinking… (3m 12s · ↓ 62.3k tokens)"]
         : ["● Read sample draft", "Sample output", "* Thinking… (3m 12s · ↓ 62.3k tokens)"];
-  const crop = cropLiveTail(rawRows, "claude");
-  const observation = { crop, rawRows, lastOutputAt: now - (kind === "frozen" ? 180_000 : 1_000), observedAt: now };
+  const crop = kind === "unreadable" ? unreadableLiveTail("read_failed", rawRows) : cropLiveTail(rawRows, "claude");
+  const observation = { crop, rawRows, outputFresh: true, outputAcquiredAt: now, lastOutputAt: now - (kind === "frozen" ? 180_000 : 1_000), observedAt: now };
   const evidence = {
     observation, observations: 2, workingSinceMs: now - (kind === "stale" ? 180_000 : 20_000),
     rawUnchangedSinceMs: now - (kind === "frozen" ? 180_000 : kind === "unreadable" ? 30_000 : 0),

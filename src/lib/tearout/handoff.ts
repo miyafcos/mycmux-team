@@ -3,6 +3,7 @@ import { getAllWindows } from "@tauri-apps/api/window";
 import { windowLabel } from "../windowContext";
 import type { PaneHandoffEndpoint } from "../paneHandoff";
 import { commitPaneHandoffContext, resolvePaneHandoffContext } from "../paneHandoffRuntime";
+import type { ReleaseApproval } from "./release";
 import type { DockTarget } from "../../stores/detachedDockStore";
 
 const CONTEXT = "mycmux://tearout-handoff-context";
@@ -10,9 +11,10 @@ const REQUEST = "mycmux://tearout-handoff-request";
 const RESULT = "mycmux://tearout-handoff-result";
 const CANCEL = "mycmux://tearout-handoff-cancel";
 type HandoffTarget = Extract<DockTarget, { kind: "handoff" }>;
-interface HandoffApproval { receiver: string; token: string; target: HandoffTarget }
+type HandoffApproval = ReleaseApproval & { target: HandoffTarget };
 export interface TearoutHandoffDrag {
   id: string;
+  mode: "dock";
   label: string;
   sourceWindow: string;
   endpoint: PaneHandoffEndpoint | null;
@@ -23,7 +25,7 @@ const results = new Map<string, (ok: boolean) => void>();
 
 export function tearoutHandoffSource(id: string, label: string, sourceWindow?: string): PaneHandoffEndpoint | null {
   const drag = sources.get(id);
-  return drag?.label === label && drag.sourceWindow === sourceWindow ? drag.endpoint : null;
+  return drag?.mode === "dock" && drag.label === label && drag.sourceWindow === sourceWindow ? drag.endpoint : null;
 }
 
 /** Complete fan-out before native movement can send its first sample. */
@@ -63,7 +65,7 @@ export async function requestTearoutHandoff(id: string, approval: HandoffApprova
   }
 }
 
-export function installTearoutHandoff(consumeApproval: (token: string, target: HandoffTarget) => boolean) {
+export function installTearoutHandoff(consumeApproval: (token: string, target: HandoffTarget, approval: HandoffApproval, sender: string) => boolean | Promise<boolean>) {
   const receiver = windowLabel();
   const ownWindow = { target: { kind: "Window" as const, label: receiver } };
   const seen = new Map<string, Set<string>>();
@@ -78,10 +80,15 @@ export function installTearoutHandoff(consumeApproval: (token: string, target: H
     let ok = false;
     try {
       const target = request.approval.target;
-      if (drag?.endpoint && drag.sourceWindow === request.requester && request.approval.receiver === receiver
-        && target.kind === "handoff" && consumeApproval(request.approval.token, target)) {
+      if (drag?.mode === "dock" && drag.endpoint && drag.sourceWindow === request.requester && request.approval.receiver === receiver
+        && target.kind === "handoff") {
+        // Keep the original recipient through native approval as well as draft preparation.
         const context = resolvePaneHandoffContext(drag.endpoint, target.workspaceId, target.paneId, target);
-        ok = await commitPaneHandoffContext(context, isCurrent);
+        if (await consumeApproval(request.approval.token, target, request.approval, request.requester)) {
+          ok = await commitPaneHandoffContext(context, isCurrent);
+        } else {
+          await commitPaneHandoffContext(null, isCurrent);
+        }
       } else {
         await commitPaneHandoffContext(null, isCurrent);
       }
@@ -92,7 +99,7 @@ export function installTearoutHandoff(consumeApproval: (token: string, target: H
   };
   const registered = [
     listen<TearoutHandoffDrag>(CONTEXT, ({ payload }) => {
-      if (payload.endpoint) sources.set(payload.id, payload);
+      if (payload.mode === "dock" && payload.endpoint) sources.set(payload.id, payload);
       else { sources.delete(payload.id); seen.delete(payload.id); }
     }, ownWindow),
     listen<Request>(REQUEST, ({ payload }) => { void receive(payload).catch(error => console.warn("[tearout] handoff failed", error)); }, ownWindow),

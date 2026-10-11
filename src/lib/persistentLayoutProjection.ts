@@ -1,4 +1,5 @@
 import type { Pane, PaneTab, Workspace } from "../types";
+import { delegationId, delegationTimestamp } from "./delegationMetadata";
 import type {
   PersistentPaneKey,
   PersistentPaneTabKey,
@@ -85,6 +86,9 @@ export function persistentTabProjection(tab: PaneTab) {
       kind: tab.origin.kind,
       parentTabId: tab.origin.parentTabId,
     },
+    delegatedByTabId: delegationId(tab.delegatedByTabId),
+    delegatedByAgentSessionId: delegationId(tab.delegatedByAgentSessionId),
+    delegatedAt: delegationTimestamp(tab.delegatedAt),
     declaredPrompt: tab.declaredPrompt,
     declaredTarget: tab.declaredTarget,
   } satisfies Record<PersistentPaneTabKey, unknown>;
@@ -118,6 +122,7 @@ function persistentWorkspaceProjection(workspace: Workspace) {
   const projection = {
     id: workspace.id,
     name: workspace.name,
+    nameSource: workspace.nameSource,
     gridTemplateId: workspace.gridTemplateId,
     status: workspace.status,
     createdAt: finiteNumber(workspace.createdAt, "workspace.createdAt"),

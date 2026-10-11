@@ -29,8 +29,8 @@ function InboxPanel({ open, closing, onClose }: { open: boolean; closing: boolea
         <strong>{inboxStrings.title}</strong>
         <div style={{ fontSize: 12, color: "var(--cmux-text-secondary)", marginTop: 4 }}>{inboxStrings.recent}</div>
       </div>
-      <button type="button" className="cmux-title-btn" disabled={loading || !open} onClick={() => setRefresh((value) => value + 1)}>{inboxStrings.refresh}</button>
-      <button type="button" className="cmux-title-btn" aria-label={inboxStrings.close} onClick={onClose}><X size={14} /></button>
+      <button type="button" className="cmux-title-btn inbox-panel-button" disabled={loading || !open} onClick={() => setRefresh((value) => value + 1)}>{inboxStrings.refresh}</button>
+      <button type="button" className="cmux-title-btn inbox-panel-button" aria-label={inboxStrings.close} onClick={onClose}><X size={14} /></button>
     </header>
     <div style={{ padding: 16, overflowY: "auto", minHeight: 0, color: "var(--cmux-text)" }}>
       {loading ? <p role="status">{inboxStrings.loading}</p> : error ? <p role="alert">{inboxStrings.failed}</p> :
@@ -43,7 +43,7 @@ function InboxPanel({ open, closing, onClose }: { open: boolean; closing: boolea
                 {inboxSenderLabel(entry.from)} · {entry.receivedAt ? new Date(entry.receivedAt).toLocaleString() : ""}
               </div>
             </div>
-            <button type="button" className="cmux-title-btn" disabled={!open} aria-label={entry.title + " " + inboxStrings.open} onClick={() => {
+            <button type="button" className="cmux-title-btn inbox-panel-button" disabled={!open} aria-label={entry.title + " " + inboxStrings.open} onClick={() => {
               onClose();
               void openInboxEntry(entry);
             }}>{inboxStrings.open}</button>

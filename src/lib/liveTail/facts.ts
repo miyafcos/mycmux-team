@@ -9,6 +9,10 @@ export interface LiveTailObservation {
   rawRows: string[];
   lastOutputAt: number | null;
   observedAt: number;
+  /** Positive timestamp evidence from this sample's round and lifetime. */
+  outputFresh?: boolean;
+  /** Silence is supported only up to this conservative acquisition clock. */
+  outputAcquiredAt?: number;
 }
 
 export type LiveTailFactKind = "progress" | "cmd" | "stale" | "frozen" | "unreadable" | "error" | "idle" | "alive";
@@ -72,8 +76,8 @@ export function advanceLiveTailEvidence(previous: LiveTailEvidence | undefined, 
     || increased(before!.crop.tokens, observation.crop.tokens)
     || increased(before!.crop.tool?.outputLines, observation.crop.tool?.outputLines)
   );
-  const working = observation.crop.state === "working" || observation.crop.state === "unknown";
-  const wasWorking = before?.crop.state === "working" || before?.crop.state === "unknown";
+  const working = observation.crop.state === "working";
+  const wasWorking = before?.crop.state === "working";
   return {
     observation,
     observations: (previous?.observations ?? 0) + 1,
@@ -97,20 +101,27 @@ export function factForLiveTailEvidence(evidence: LiveTailEvidence, now = eviden
   if (!crop.readable) return fact("unreadable");
   if (crop.state === "error") return fact("error");
   if (crop.state === "done") return fact("idle");
+  if (crop.state !== "working") return fact("alive");
   // One sample is never proof of either progress or a frozen screen.
   if (evidence.observations < 2) return fact("alive", evidence.workingSinceMs);
+  const outputObservedAt = observation.outputAcquiredAt;
+  const silenceAt = outputObservedAt === undefined || !Number.isFinite(outputObservedAt)
+    || outputObservedAt < observation.observedAt ? null : Math.min(now, outputObservedAt);
   if (now - rawUnchangedSinceMs >= FROZEN_WINDOW_MS) {
-    if (lastOutputAt !== null && now - lastOutputAt >= FROZEN_WINDOW_MS) {
+    if (observation.outputFresh === true && silenceAt !== null && lastOutputAt !== null && silenceAt - lastOutputAt >= FROZEN_WINDOW_MS) {
       return fact("frozen", Math.max(rawUnchangedSinceMs, lastOutputAt));
     }
-    return fact("unreadable", rawUnchangedSinceMs);
+    // Output can be background work or invisible control sequences. A missing
+    // timestamp also cannot disprove a screen we just successfully read.
+    return fact("alive", rawUnchangedSinceMs);
   }
-  if (evidence.outputAdvancedWithSameScreen) return fact("unreadable", rawUnchangedSinceMs);
+  if (evidence.outputAdvancedWithSameScreen) return fact("alive", rawUnchangedSinceMs);
   if (lastProgressAt !== null && now - lastProgressAt < PROGRESS_WINDOW_MS) return fact("progress", lastProgressAt);
   if (crop.tool && evidence.commandAdvanced) return fact("cmd", evidence.commandSinceMs ?? observation.observedAt);
   const noProgressSince = lastProgressAt ?? evidence.workingSinceMs;
   if (!crop.tool && now - noProgressSince >= STALE_WINDOW_MS
-    && lastOutputAt !== null && now - lastOutputAt < FROZEN_WINDOW_MS) return fact("stale", noProgressSince);
+    && observation.outputFresh === true && silenceAt !== null && lastOutputAt !== null
+    && silenceAt - lastOutputAt < FROZEN_WINDOW_MS) return fact("stale", noProgressSince);
   return fact("alive", noProgressSince);
 }
 

@@ -54,7 +54,7 @@ describe("Jev settings", () => {
     expect(bridge.invoke).toHaveBeenLastCalledWith("save_jev_settings", {
       enabled: true, model: "typesafe/jev-1.13", apiKey: null,
     });
-    expect(host.querySelector('[role="status"]')?.textContent).toContain("次のペイン再配置からJev");
+    expect(host.querySelector('[role="status"]')?.textContent).toContain("次のタブ再配置からJev");
   });
   it("shows a useful authentication failure and keeps the form available", async () => {
     await act(async () => { root.render(<JevSettingsSection aiEnabled />); });

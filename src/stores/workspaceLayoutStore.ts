@@ -1,3 +1,4 @@
+import { isAutomaticNameTarget } from "../lib/autoNamePolicy";
 import { create } from "zustand";
 import { confirm } from "../lib/appConfirmation";
 import { getTabDisplayLabel } from "../lib/tabDisplayLabel";
@@ -5,6 +6,7 @@ import { v4 as uuid } from "uuid";
 import type { ArtifactSourceKind, Pane, PaneTab, GridTemplateId, SuppressedAgentSession, Workspace } from "../types";
 import { isDeclaredTab, partitionTabsForRestore, type RestorablePaneTab } from "../lib/tabLifecycle";
 import type { PaneConfig } from "../lib/ipc";
+import { delegationId, delegationTimestamp } from "../lib/delegationMetadata";
 import { agentIdForSessionKind } from "../lib/agentSessionConfig";
 import { getGridTemplate } from "../lib/gridTemplates";
 import { getDefaultAgent } from "../lib/agents";
@@ -46,7 +48,7 @@ function makeTab(
   paneId: string,
   agentId: string,
   type: PaneTab["type"] = "terminal",
-  options?: Partial<Pick<PaneTab, "id" | "sessionId" | "label" | "labelSource" | "displayName" | "displayNameSource" | "presetId" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "turnMarks" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "sourceMtimeMs" | "isDirty" | "reloadCounter" | "lifecycle" | "origin" | "declaredPrompt" | "declaredTarget">>,
+  options?: Partial<Pick<PaneTab, "id" | "sessionId" | "label" | "labelSource" | "displayName" | "displayNameSource" | "presetId" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "turnMarks" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "sourceMtimeMs" | "isDirty" | "reloadCounter" | "lifecycle" | "origin" | "delegatedByTabId" | "delegatedByAgentSessionId" | "delegatedAt" | "declaredPrompt" | "declaredTarget">>,
 ): PaneTab {
   const tabId = options?.id ?? uuid();
   return {
@@ -80,6 +82,9 @@ function makeTab(
     reloadCounter: options?.reloadCounter,
     lifecycle: options?.lifecycle,
     origin: options?.origin,
+    delegatedByTabId: options?.delegatedByTabId,
+    delegatedByAgentSessionId: options?.delegatedByAgentSessionId,
+    delegatedAt: options?.delegatedAt,
     declaredPrompt: options?.declaredPrompt,
     declaredTarget: options?.declaredTarget,
   };
@@ -307,7 +312,7 @@ function moveTabsToNewWorkspaceInStore(
   anchorTabId: string,
   targetWorkspaceId: string,
   workspaceName: string,
-  options?: { activate?: boolean },
+  options?: { activate?: boolean; nameSource?: "auto" },
 ): boolean {
   const listStore = useWorkspaceListStore.getState();
   const sourceWorkspace = listStore.getWorkspace(sourceWorkspaceId);
@@ -350,7 +355,7 @@ function moveTabsToNewWorkspaceInStore(
     "1x1",
     [newPane],
     [[newPane.id]],
-    { id: targetWorkspaceId, activate: options?.activate },
+    { id: targetWorkspaceId, activate: options?.activate, nameSource: options?.nameSource },
   );
   removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
   return true;
@@ -487,6 +492,9 @@ interface TerminalLaunchOptions {
   launchEnv?: Record<string, string>;
   /** Ownership metadata for dashboard grouping; socket spawns carry the caller's lineage. */
   origin?: PaneTab["origin"];
+  delegatedByTabId?: string;
+  delegatedByAgentSessionId?: string;
+  delegatedAt?: number;
   initialPrompt?: string;
   commandArgv?: string[];
   /** Keep the tab out of layout persistence (see `PaneTab.ephemeral`). */
@@ -502,6 +510,9 @@ interface DeclaredTabOptions {
   declaredPrompt?: string;
   declaredTarget?: string;
   origin?: PaneTab["origin"];
+  delegatedByTabId?: string;
+  delegatedByAgentSessionId?: string;
+  delegatedAt?: number;
 }
 
 interface DeclaredLaunchOptions {
@@ -658,7 +669,7 @@ interface WorkspaceLayoutState {
     tabId: string,
     targetWorkspaceId: string,
     workspaceName: string,
-    options?: { activate?: boolean },
+    options?: { activate?: boolean; nameSource?: "auto" },
   ) => boolean;
   moveTabsToNewWorkspace: (
     sourceWorkspaceId: string,
@@ -667,14 +678,14 @@ interface WorkspaceLayoutState {
     anchorTabId: string,
     targetWorkspaceId: string,
     workspaceName: string,
-    options?: { activate?: boolean },
+    options?: { activate?: boolean; nameSource?: "auto" },
   ) => boolean;
   movePaneToNewWorkspace: (
     sourceWorkspaceId: string,
     sourcePaneId: string,
     targetWorkspaceId: string,
     workspaceName: string,
-    options?: { activate?: boolean },
+    options?: { activate?: boolean; nameSource?: "auto" },
   ) => boolean;
   
   // Helper to build initial panes for new workspace
@@ -757,6 +768,9 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
                 terminalSnapshot: isDeclaredRestoredTab || isWebRestoredTab ? undefined : tabConfig.terminal_snapshot ?? undefined,
                 turnMarks: isDeclaredRestoredTab || isWebRestoredTab ? undefined : tabConfig.turn_marks ?? undefined,
                 lifecycle: tabConfig.lifecycle ?? undefined,
+                delegatedByTabId: delegationId(tabConfig.delegated_by_tab_id),
+                delegatedByAgentSessionId: delegationId(tabConfig.delegated_by_agent_session_id),
+                delegatedAt: delegationTimestamp(tabConfig.delegated_at),
                 origin: tabConfig.origin
                   ? { kind: tabConfig.origin.kind, parentTabId: tabConfig.origin.parent_tab_id ?? undefined }
                   : undefined,
@@ -765,6 +779,12 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
               },
             );
             occupiedSessionIds.add(tab.sessionId);
+            if (!isDeclaredRestoredTab && !isWebRestoredTab
+              && (restoredTabType === undefined || restoredTabType === null || restoredTabType === "terminal")
+              && !tab.launchEnv?.MYCMUX_HANDOFF
+              && (tabAgentKind === "codex" || (!tabAgentKind && tabAgentId === "codex"))) {
+              tab.codexRestoreReason = "saved-codex-pane";
+            }
             if (!isDeclaredRestoredTab && tab.turnMarks && tab.turnMarks.length > 0) {
               seedTurnMarkSnapshots(tab.sessionId, tab.turnMarks);
             }
@@ -775,6 +795,14 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
             cwd: pc.cwd ?? undefined,
             launchEnv: pc.launch_env ?? undefined,
           })];
+      if (!pc.tabs?.length && (pc.agent_kind === "codex"
+        || (!pc.agent_kind && !pc.claude_session_id && normalizeRestoredAgentId(pc.agent_id) === "codex"))) {
+        if (pc.agent_kind === "codex") {
+          tabs[0].agentKind = "codex";
+          tabs[0].agentSessionId = pc.agent_session_id ?? undefined;
+        }
+        if (!tabs[0].launchEnv?.MYCMUX_HANDOFF) tabs[0].codexRestoreReason = "saved-codex-pane";
+      }
       const partition = partitionTabsForRestore(tabs);
       if (partition.quarantined.length > 0) {
         console.warn(`[restore] quarantined ${partition.quarantined.length} tab(s) with an unknown lifecycle`);
@@ -930,6 +958,9 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       agentSessionId: options.agentSessionId,
       launchEnv: options.launchEnv,
       origin: options.origin,
+      delegatedByTabId: options.delegatedByTabId,
+      delegatedByAgentSessionId: options.delegatedByAgentSessionId,
+      delegatedAt: options.delegatedAt,
       initialPrompt: options.initialPrompt,
       commandArgv: options.commandArgv,
       ephemeral: options.ephemeral,
@@ -1074,6 +1105,9 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       agentSessionId: options.agentSessionId,
       launchEnv: options.launchEnv,
       origin: options.origin,
+      delegatedByTabId: options.delegatedByTabId,
+      delegatedByAgentSessionId: options.delegatedByAgentSessionId,
+      delegatedAt: options.delegatedAt,
       initialPrompt: options.initialPrompt,
       commandArgv: options.commandArgv,
       ephemeral: options.ephemeral,
@@ -1120,6 +1154,9 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       declaredPrompt: options.declaredPrompt,
       declaredTarget: options.declaredTarget,
       origin: options.origin,
+      delegatedByTabId: options.delegatedByTabId,
+      delegatedByAgentSessionId: options.delegatedByAgentSessionId,
+      delegatedAt: options.delegatedAt,
     });
     useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, workspace.panes.map((candidate) => (
       candidate.id === paneId ? { ...candidate, tabs: [...candidate.tabs, tab] } : candidate
@@ -1144,6 +1181,9 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       cwd: declared.cwd,
       agentKind: target,
       origin: declared.origin,
+      delegatedByTabId: declared.delegatedByTabId,
+      delegatedByAgentSessionId: declared.delegatedByAgentSessionId,
+      delegatedAt: declared.delegatedAt,
       initialPrompt: declared.declaredPrompt,
     };
     const shouldActivateTab = options.activationSource !== "socket"
@@ -1695,7 +1735,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       "1x1",
       [sourcePane],
       [[sourcePane.id]],
-      { id: targetWorkspaceId, activate: options?.activate },
+      { id: targetWorkspaceId, activate: options?.activate, nameSource: options?.nameSource },
     );
     removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
     return true;
@@ -1740,7 +1780,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     let changed = false;
     const panes = workspace.panes.map(pane => pane.id !== paneId ? pane : {
       ...pane, tabs: pane.tabs.map(tab => {
-        if (tab.id !== tabId || tab.displayName === name) return tab;
+        if (tab.id !== tabId || tab.displayName === name || !isAutomaticNameTarget(tab)) return tab;
         changed = true;
         return { ...tab, displayName: name, displayNameSource: name ? "auto" as const : undefined };
       }),

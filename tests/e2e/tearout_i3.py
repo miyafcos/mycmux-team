@@ -66,7 +66,7 @@ if (!window.__i3Store || !window.__i3Command) throw new Error('test access missi
 const open = [...document.querySelectorAll('button')].find(b => b.title === '\u8a2d\u5b9a' && b.offsetParent !== null);
 open.click(); await tm.sleep(600);
 tm.byText('\u901a\u77e5\u3068\u30ec\u30a4\u30a2\u30a6\u30c8').click(); await tm.sleep(400);
-const label = [...document.querySelectorAll('label')].find(l => l.innerText.includes('\u30da\u30a4\u30f3\u306e\u5207\u308a\u96e2\u3057\u3092\u65b0\u3057\u3044\u52d5\u304d\u306b\u3059\u308b'));
+const label = [...document.querySelectorAll('label')].find(l => l.innerText.includes('\u30bf\u30d6\u306e\u5207\u308a\u96e2\u3057\u3092\u65b0\u3057\u3044\u52d5\u304d\u306b\u3059\u308b'));
 const box = label.querySelector('input[type=checkbox]'); if (!box.checked) box.click();
 document.querySelector('.cmux-settings-close-button').click(); await tm.sleep(2200);
 const workspace = window.__i3Store.getState().workspaces.find(ws => ws.panes.some(p => p.tabs.some(t => t.type === 'terminal')));
@@ -538,7 +538,7 @@ const open = [...document.querySelectorAll('button')].find(b => b.title === '設
 if (!open) throw new Error('neither the settings store nor the settings button is reachable');
 open.click(); await tm.sleep(600);
 tm.byText('通知とレイアウト').click(); await tm.sleep(400);
-const label = [...document.querySelectorAll('label')].find(l => l.innerText.includes('ペインの切り離しを新しい動きにする'));
+const label = [...document.querySelectorAll('label')].find(l => l.innerText.includes('タブの切り離しを新しい動きにする'));
 const box = label.querySelector('input[type=checkbox]'); if (box.checked) box.click(); await tm.sleep(300);
 const off = !box.checked;
 document.querySelector('.cmux-settings-close-button').click(); await tm.sleep(800);

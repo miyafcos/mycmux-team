@@ -27,14 +27,14 @@ CRSM = Claude / Codex Recent Session Manager. Global overlay listing recent agen
 
 ### Ctrl+P and automatic resume
 
-v0.4.0 で「保存済みセッション ID で自動 resume 起動を優先」する旧仕様を廃止した。理由は env 汚染事故 (`MYCMUX_RESUME=1` 等が新規ペインに伝播してエージェントモードが暴発) を根絶するため。CRSM Palette は **その代替の手動 resume 入口** として導入された。v0.5.6 で多層安全弁つきの自動 resume が再導入され、現在は両方を利用できる。
+v0.4.0 で「保存済みセッション ID で自動 resume 起動を優先」する旧仕様を廃止した。理由は env 汚染事故 (`MYCMUX_RESUME=1` 等が新規タブに伝播してエージェントモードが暴発) を根絶するため。CRSM Palette は **その代替の手動 resume 入口** として導入された。v0.5.6 で多層安全弁つきの自動 resume が再導入され、現在は両方を利用できる。
 
 ### UI
 
 - Width: `min(1200px, calc(100vw - 32px))` / 2 カラムレイアウト (左: セッション一覧 / 右: 詳細サブパネル)
 - 左カラムの行: agent kind (色分けバッジ) + タイトル要約 + cwd chip + 相対時刻 (started_at)
 - 右カラム: 選択中セッションの詳細 (会話プレビュー / フルパス / kind / 開始時刻)
-- Enter で選択 → 新規タブを spawn し対象セッションを resume
+- Enter で選択 → 新しいタブを別に表示して対象セッションを resume
 
 ### Implementation
 

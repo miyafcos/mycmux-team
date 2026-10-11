@@ -2,7 +2,7 @@
 use super::*;
 
 pub(crate) fn assert_hook_rebind(kind: &str, pty: &str, update: impl FnOnce() -> AgentSessionMapping) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap(); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
     let old_path = dir.path().join("old.jsonl");
     let new_path = dir.path().join("new.jsonl");
     let line = |text| if kind == "codex" {

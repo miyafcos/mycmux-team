@@ -12,6 +12,19 @@ function webTab(presetId?: string): PaneTab {
 }
 
 describe("resolveTabMark", () => {
+  it("draws claude-codex with the Claude shape and Codex blue", () => {
+    const claudeMarkup = renderToStaticMarkup(createElement(AgentKindIcon, { kind: "claude", chip: false }));
+    const hybridMarkup = renderToStaticMarkup(createElement(AgentKindIcon, { kind: "claude-codex", chip: false }));
+    expect(hybridMarkup.match(/<path[^>]*>/)?.[0]).toBe(
+      claudeMarkup.match(/<path[^>]*>/)?.[0]?.replace("#d97757", "#7a9dff"),
+    );
+    expect(hybridMarkup.match(/<svg/g)).toHaveLength(1);
+    expect(tabMarkColor("claude-codex")).toEqual(tabMarkColor("codex"));
+    const chipMarkup = renderToStaticMarkup(createElement(AgentKindIcon, { kind: "claude-codex" }));
+    expect(chipMarkup).toContain("rgba(122,157,255,.10)");
+    expect(chipMarkup).toContain("rgba(122,157,255,.30)");
+  });
+
   it("gives a web tab the same mark its launcher row draws", () => {
     const items = launchItems();
     for (const presetId of Object.keys(WEB_PRESET_MARKS)) {

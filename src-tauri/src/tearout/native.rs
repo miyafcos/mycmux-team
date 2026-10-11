@@ -1,5 +1,6 @@
 use super::geometry::{self, ReceiverCandidate, Rect};
-use super::{unix_ms, Approval, MoveState, Reveal, TearoutState, WindowGeometry};
+use super::{unix_ms, Approval, MoveMode, MoveState, Reveal, TearoutState, WindowGeometry};
+use super::release::{ReleaseFrame, ReleaseMethod, ReleasePoint};
 use serde::Serialize;
 use std::time::{Duration, Instant};
 use std::{
@@ -26,7 +27,7 @@ use windows::Win32::{
             GetWindowPlacement, SetWindowPlacement, SetWindowPos, SW_MAXIMIZE, SW_SHOWNORMAL,
             SWP_NOACTIVATE, SWP_NOZORDER, WINDOWPLACEMENT, WINDOWPLACEMENT_FLAGS, GetClientRect, IsZoomed,
             WPF_RESTORETOMAXIMIZED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, HCBT_ACTIVATE, WH_CBT, WH_KEYBOARD, WM_CANCELMODE, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE,
-            WM_KEYDOWN, WM_NCDESTROY, WS_EX_LAYERED,
+            WM_KEYDOWN, WM_NCDESTROY, WS_EX_LAYERED, WH_MOUSE, MOUSEHOOKSTRUCT, WM_LBUTTONUP, WM_NCLBUTTONUP,
         },
     },
 };
@@ -310,6 +311,7 @@ pub(super) fn restore_saved_frame(window: &tauri::Window, x: f64, y: f64, width:
 #[derive(Clone, Serialize)]
 struct Sample {
     id: String,
+    mode: MoveMode,
     label: String,
     sequence: u64,
     source: String,
@@ -332,6 +334,7 @@ struct Sample {
     esc_at: Option<u64>,
     original: WindowGeometry,
     moved: bool,
+    release: Option<ReleasePoint>,
 }
 
 fn mycmux_handles(app: &AppHandle) -> Vec<usize> {
@@ -393,6 +396,20 @@ unsafe extern "system" fn keyboard(code: i32, key: WPARAM, data: LPARAM) -> LRES
     unsafe { CallNextHookEx(None, code, key, data) }
 }
 
+// A thread-local mouse observer sees the move loop's original up coordinate;
+// it never injects or consumes an event and requires no global input hook.
+unsafe extern "system" fn mouse_release(code: i32, message: WPARAM, data: LPARAM) -> LRESULT {
+    if code >= 0 && matches!(message.0 as u32, WM_LBUTTONUP | WM_NCLBUTTONUP) {
+        let event = unsafe { &*(data.0 as *const MOUSEHOOKSTRUCT) };
+        ACTIVE_MOVE.with(|active| {
+            if let Some(shared) = active.borrow().as_ref() {
+                shared.release.latch(ReleasePoint { x: event.pt.x as f64, y: event.pt.y as f64, at: unix_ms(), method: ReleaseMethod::NativeUp });
+            }
+        });
+    }
+    unsafe { CallNextHookEx(None, code, message, data) }
+}
+
 unsafe extern "system" fn observe(
     hwnd: HWND,
     message: u32,
@@ -411,6 +428,8 @@ unsafe extern "system" fn observe(
             // Esc/CancelMode exits with the mouse still held. Release does not.
             if unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 } {
                 mark_escape(shared);
+            } else if let Ok(point) = cursor() {
+                shared.release.latch(ReleasePoint { x: point.x as f64, y: point.y as f64, at: unix_ms(), method: ReleaseMethod::NativeExit });
             }
             shared.exited.store(true, Ordering::Release);
         }
@@ -447,7 +466,9 @@ pub fn cancel(app: &AppHandle, label: &str) -> Result<(), String> {
 }
 
 fn receiver_at(app: &AppHandle, moving: &str, point: POINT, monitors: &[geometry::MonitorArea]) -> Option<(String, f64, f64)> {
-    if geometry::snap_edge_reserved(point.x as f64, point.y as f64, monitors) { return None; }
+    // An app receiver wins at a work-area edge. With no receiver the OS move
+    // loop retains its normal snap behavior; no docking target is fabricated.
+    let _ = monitors;
     let handles: HashMap<usize, String> = app
         .windows()
         .into_iter()
@@ -493,11 +514,19 @@ fn receiver_at(app: &AppHandle, moving: &str, point: POINT, monitors: &[geometry
         return None;
     }
     let scale = unsafe { GetDpiForWindow(handle) }.max(96) as f64 / 96.0;
-    Some((
-        label,
-        (point.x - origin.x) as f64 / scale,
-        (point.y - origin.y) as f64 / scale,
-    ))
+    let (x, y) = geometry::receiver_client_point((point.x as f64, point.y as f64), (origin.x as f64, origin.y as f64), scale);
+    Some((label, x, y))
+}
+
+pub(super) fn receiver_geometry(app: &AppHandle, label: &str) -> Result<serde_json::Value, String> {
+    let window = app.get_window(label).ok_or("tearout_receiver_window_missing")?;
+    let handle = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
+    if !unsafe { IsWindowVisible(handle) }.as_bool() || unsafe { IsIconic(handle) }.as_bool() { return Err("tearout_receiver_unavailable".into()); }
+    let mut origin = POINT::default(); let mut client = RECT::default();
+    if !unsafe { ClientToScreen(handle, &mut origin) }.as_bool() { return Err("tearout_receiver_geometry_failed".into()); }
+    unsafe { GetClientRect(handle, &mut client) }.map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({"window":handle.0 as usize,"origin":[origin.x,origin.y],
+        "size":[client.right-client.left,client.bottom-client.top],"scale":unsafe { GetDpiForWindow(handle) }.max(96) as f64 / 96.0}))
 }
 
 pub fn set_alpha(window: &tauri::Window, alpha: u8) -> Result<bool, String> {
@@ -532,6 +561,7 @@ pub(super) fn synthetic_sample(
     id: String,
     label: String,
     source: String,
+    mode: MoveMode,
     region_count: usize,
     receiver: Option<String>,
     client_x: f64,
@@ -557,7 +587,9 @@ pub(super) fn synthetic_sample(
         let shared = moves
             .entry(id.clone())
             .or_insert_with(|| {
-                let shared = Arc::new(MoveState::default());
+                let shared = Arc::new(MoveState { mode, ..MoveState::default() });
+                *shared.moving_label.lock().unwrap_or_else(|e| e.into_inner()) = Some(label.clone());
+                *shared.source_label.lock().unwrap_or_else(|e| e.into_inner()) = Some(source.clone());
                 shared.synthetic.store(true, Ordering::Release);
                 shared.metrics.probe.store(diagnostics, Ordering::Release);
                 shared
@@ -576,6 +608,7 @@ pub(super) fn synthetic_sample(
                 shared
             })
             .clone();
+        shared.require_mode(mode)?;
         if !shared.synthetic.load(Ordering::Acquire) {
             return Err("tearout_synthetic_live_move".into());
         }
@@ -589,7 +622,7 @@ pub(super) fn synthetic_sample(
     let point_pair = (point.x as f64, point.y as f64);
     let start = *shared.synthetic_origin.lock().map_err(|e| e.to_string())?.get_or_insert(point_pair);
     if source != label || geometry::moved_for_dock(start, point_pair, target_scale) { shared.moved.store(true, Ordering::Release); }
-    let receiver = if shared.moved.load(Ordering::Acquire) && !geometry::snap_edge_reserved(point_pair.0, point_pair.1, &monitor_areas(app)) { receiver } else { None };
+    let receiver = if shared.mode.allows_dock() && shared.moved.load(Ordering::Acquire) { receiver } else { None };
     let original = {
         let mut original = shared.original.lock().map_err(|e| e.to_string())?;
         *original.get_or_insert(geometry(&window)?)
@@ -638,8 +671,9 @@ pub(super) fn synthetic_sample(
             "recipients": 0 }));
     }
     let position = window.outer_position().map_err(|e| e.to_string())?;
-    let sample = Sample {
+    let mut sample = Sample {
         id: id.clone(),
+        mode: shared.mode,
         label,
         sequence,
         source,
@@ -666,7 +700,18 @@ pub(super) fn synthetic_sample(
         esc_at: escaped.then_some(at),
         original,
         moved: shared.moved.load(Ordering::Acquire),
+        release: (phase == "end" && !escaped).then_some(ReleasePoint { x: point_pair.0, y: point_pair.1, at, method: ReleaseMethod::Synthetic }),
     };
+    if let Some(point) = sample.release {
+        shared.closed.store(true, Ordering::Release);
+        if let Some(receiver) = &sample.receiver {
+            if super::arm_release(app, ReleaseFrame { id: id.clone(), mode: shared.mode, label: sample.label.clone(), source: sample.source.clone(),
+                receiver: receiver.clone(), receiver_epoch: sample.receiver_epoch, region_count: sample.region_count,
+                client_x, client_y, point, token: String::new() }).is_err() {
+                sample.error = Some("tearout_release_escrow_failed"); sample.release = None;
+            }
+        }
+    }
     let bytes = serde_json::to_vec(&sample)
         .map_err(|e| e.to_string())?
         .len();
@@ -812,6 +857,8 @@ pub fn start(
         unsafe { SetWindowsHookExW(WH_KEYBOARD, Some(keyboard), None, GetCurrentThreadId()) }
             .ok()
             .map(|hook| hook.0 as usize);
+    let mouse_hook = unsafe { SetWindowsHookExW(WH_MOUSE, Some(mouse_release), None, GetCurrentThreadId()) }
+        .ok().map(|hook| hook.0 as usize);
     shared.alpha.store(255, Ordering::Release);
     let app = app.clone();
     let label = label.to_owned();
@@ -839,7 +886,7 @@ pub fn start(
                 mark_escape(&polling);
             }
             let held = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 };
-            let point = cursor().unwrap_or_default();
+            let mut point = cursor().unwrap_or_default();
             let entered = polling.entered.load(Ordering::Acquire);
             let exited = polling.exited.load(Ordering::Acquire);
             let failed = polling.failed.load(Ordering::Acquire)
@@ -852,13 +899,17 @@ pub fn start(
             }
             // Do not restore/destroy a window while its OS move loop still owns it.
             let done = exited || failed && !entered || !was_held || !entered && !held;
+            let release = (done && !escaped && !failed).then(|| polling.release.final_point(ReleasePoint {
+                x: point.x as f64, y: point.y as f64, at: unix_ms(), method: ReleaseMethod::PollFallback,
+            }));
+            if let Some(release) = release { point = POINT { x: release.x.round() as i32, y: release.y.round() as i32 }; }
             let scan_at = Instant::now();
             if entered && (point.x != initial_cursor.x || point.y != initial_cursor.y) {
                 polling.dragged.store(true, Ordering::Release);
             }
             if source != label || geometry::moved_for_dock((initial_cursor.x as f64, initial_cursor.y as f64),
                 (point.x as f64, point.y as f64), initial_scale) { polling.moved.store(true, Ordering::Release); }
-            let hit = if polling.moved.load(Ordering::Acquire) { receiver_at(&app, &label, point, &monitors) } else { None };
+            let hit = if polling.mode.allows_dock() && polling.moved.load(Ordering::Acquire) { receiver_at(&app, &label, point, &monitors) } else { None };
             polling
                 .metrics
                 .poll(Some(scan_at.elapsed().as_secs_f64() * 1000.0));
@@ -920,10 +971,8 @@ pub fn start(
                             drop(Arc::from_raw(reference as *const MoveState));
                         }
                     }
-                    if let Some(hook) = hook {
-                        unsafe {
-                            let _ = UnhookWindowsHookEx(HHOOK(hook as *mut _));
-                        }
+                    for hook in [hook, mouse_hook].into_iter().flatten() {
+                        unsafe { let _ = UnhookWindowsHookEx(HHOOK(hook as *mut _)); }
                     }
                     ACTIVE_MOVE.with(|active| *active.borrow_mut() = None);
                 });
@@ -944,8 +993,9 @@ pub fn start(
             let lifecycle =
                 done || previous_started != Some(started) || focus_stolen != previous_focus_stolen;
             previous_started = Some(started);
-            let sample = Sample {
+            let mut sample = Sample {
                 id: id.clone(),
+                mode: polling.mode,
                 label: label.clone(),
                 sequence: polling.sample_count.fetch_add(1, Ordering::AcqRel),
                 source: source.clone(),
@@ -954,7 +1004,7 @@ pub fn start(
                 x: point.x,
                 y: point.y,
                 phase: if done { "end" } else { "move" },
-                at: unix_ms(),
+                at: release.map(|point| point.at).unwrap_or_else(unix_ms),
                 escaped,
                 receiver,
                 client_x: hit.as_ref().map(|(_, x, _)| *x).unwrap_or(-1.0),
@@ -971,7 +1021,17 @@ pub fn start(
                 },
                 original,
                 moved: polling.dragged.load(Ordering::Acquire),
+                release,
             };
+            if let Some(point) = release {
+                if let Some(receiver) = &sample.receiver {
+                    if super::arm_release(&app, ReleaseFrame { id: id.clone(), mode: polling.mode, label: label.clone(), source: source.clone(),
+                        receiver: receiver.clone(), receiver_epoch: sample.receiver_epoch, region_count: sample.region_count,
+                        client_x: sample.client_x, client_y: sample.client_y, point, token: String::new() }).is_err() {
+                        sample.error = Some("tearout_release_escrow_failed"); sample.release = None;
+                    }
+                }
+            }
             let approved = polling
                 .approval
                 .lock()

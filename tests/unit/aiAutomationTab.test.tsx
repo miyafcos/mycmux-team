@@ -23,22 +23,25 @@ describe("AI と自動化の設定", () => {
       "モデル",
       "カスタム…",
       "この設定で動く機能",
-      "ペインの自動命名",
+      "タブの自動命名",
+      "ワークスペース名を中身から自動で付ける",
       "返信案の準備",
       "報告インボックスの要約",
-      "ペイン整理のAI判定",
+      "タブ整理のAI判定",
       "ailog セッション要約",
       "ailog 一括要約",
-      "ペイン再配置 — Jev",
+      "タブ再配置 — Jev",
       "OpenRouter APIキー",
       "Jev設定を保存",
-      "案件登録・作業フォルダ・会話の題名から表示名を付けます (AI は使いません)",
+      "直近の依頼・扱うファイル・今の動きから短い表示名を付けます。手で付けた名前は保持します。 (AI は使いません)",
+      "すべてのタブの作業から名前をまとめます。既存の名前と手で付けた名前は、自動では変更しません。 (AI は使いません)",
       "セッションログ全文を送ります（トークン消費が大きい機能です）",
     ]) {
       expect(html).toContain(text);
     }
 
     expect(html).toContain("自動");
+    expect(html.match(/AI は使いません/g)).toHaveLength(2);
     expect(html).toContain("ボタンで実行");
     expect(html.match(/<select/g)).toHaveLength(3);
     expect(html).toContain('aria-label="Jevの接続先"');

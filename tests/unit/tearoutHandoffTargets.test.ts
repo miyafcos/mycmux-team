@@ -74,3 +74,15 @@ describe("native tearout handoff targets", () => {
     expect(changes).toHaveBeenCalledTimes(2); stop();
   });
 });
+
+
+it("F1 carries the known conversation into target equality and stored approval identity", () => {
+  usePaneMetadataStore.setState({ metadata: { "target-pty": { agentKind: "codex", agentSessionId: "selected-conversation" } } });
+  const target = resolve()!;
+  expect(target).toMatchObject({ kind: "handoff", targetAgentSessionId: "selected-conversation" });
+  const changed = { ...target, targetAgentSessionId: "replacement-conversation" };
+  expect(sameDockTarget(target, changed)).toBe(false);
+  useDetachedDockStore.getState().setTarget(target);
+  useDetachedDockStore.getState().setTarget(changed);
+  expect(useDetachedDockStore.getState().target).toEqual(changed);
+});

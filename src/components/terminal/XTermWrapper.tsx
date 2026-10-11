@@ -8,7 +8,7 @@ import { SgrLightRewriter } from "./sgrLightTheme";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SearchAddon } from "@xterm/addon-search";
-import { focusController } from "../../lib/focusController";
+import { capturePaneFocusReturn, captureTemporaryFocusReturn, focusController } from "../../lib/focusController";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
@@ -34,6 +34,7 @@ import {
 } from "../../lib/ipc";
 import type { FrontendDataBatch } from "../../lib/ipc";
 import { withTerminalDeadline } from "../../lib/terminalDeadline";
+import { currentPtyRead, ptyReadGeneration, type PtyReadGeneration } from "../../lib/ptyReadGeneration";
 import { TerminalStreamHealth, terminalHealthMonitor } from "../../lib/terminalStreamHealth";
 import { buildTerminalRecoveryFrame, freezeTerminalScreen } from "./terminalRecoveryFrame";
 import {
@@ -72,8 +73,11 @@ import {
 import { startsAsAgentTui } from "./agentTuiDetection";
 import { TerminalTranscriptPanel } from "./TerminalTranscriptPanel";
 import { useTerminalHistoryPanel } from "./useTerminalHistoryPanel";
+import { useTerminalArchiveEntry } from "./useTerminalArchiveEntry";
+import { isExplicitHistoryKey, isHistoryBoundaryKey } from "./conversationHistoryAdmission";
 import { terminalProgressDiagnostics, type TerminalProgressViewport } from "../../lib/terminalProgressDiagnostics";
 import { terminalPaneStrings } from "../workspace/terminalPaneStrings";
+import { TERMINAL_SEARCH_EVENT } from "./terminalSearchEvents";
 import {
   buildTurnListRows,
   createTurnChipVisibilityController,
@@ -113,6 +117,8 @@ import {
   type CachedTerm,
   type PendingFrontendBatch,
   bumpTerminalWriteCounter,
+  beginTerminalBufferWrite,
+  cancelTerminalBufferWrites,
   cacheOrDisposeOnUnmount,
   chunkedWrite,
   enqueueSessionWrite,
@@ -120,6 +126,7 @@ import {
   liveTerms,
   isTerminalBufferReady,
   markTerminalBufferReady,
+  registerCurrentOutputParser,
   planTerminalScrollbackRecovery,
   registerTerminalCacheEvictionCleanup,
   rememberTerminalRawTail,
@@ -161,6 +168,7 @@ import { HTTP_LINK_REGEX, registerArtifactLinkProvider } from "./terminalLinkPro
 import { recordPerf } from "../../lib/perfTimeline";
 import { ANSI_KEYS, withAnsiContrastFloor } from "./terminalThemeColors";
 import { buildLaunchRequest, buildAgentRecoveryLaunch, type TerminalLaunchParams } from "./terminalLaunchParams";
+import { consumeCodexRestoreReason } from "../../lib/codexRestore";
 import { createAgentResumeRecovery } from "../../lib/agentResumeRecovery";
 import { parseAgentRestoreChoice } from "../../lib/agentRestoreChoice";
 import { agentResumeOwnerLocation, openAgentResumeOwner } from "../../lib/agentResumeOwner";
@@ -211,6 +219,7 @@ import {
 } from "../../lib/ptyReplay";
 
 export { evictTerminalCache, getTerminalWriteCounter } from "./terminalCache";
+export { isTerminalParsingCurrentOutput } from "./terminalCache";
 export { allowInactiveTerminalPointerFocus } from "./terminalFocusHelpers";
 
 export const WORKING_INDICATOR_PATTERNS: readonly RegExp[] = [
@@ -241,7 +250,7 @@ function playNotificationSound() {
   }
 }
 
-export const PTY_EXIT_NOTICE = "\r\n\x1b[2m[プロセスは終了しました。このペインを閉じるか、新しいペインを開いてください]\x1b[0m\r\n";
+export const PTY_EXIT_NOTICE = "\r\n\x1b[2m[プロセスは終了しました。このタブを閉じるか、新しいタブを開いてください]\x1b[0m\r\n";
 
 export function reportAgentSessionAlreadyRunning(error: unknown, write: (notice: string) => void): boolean {
   const conflict = parseAgentSessionAlreadyRunning(error);
@@ -254,7 +263,7 @@ export function reportAgentSessionAlreadyRunning(error: unknown, write: (notice:
     useToastStore.getState().pushToast(
       `この会話は「${owner.workspace.name} / ${label}」で動いています`,
       "warning",
-      { label: "そのペインを開く", run: () => openWatchdogSession(conflict.ownerSessionId) },
+      { label: "そのタブを開く", run: () => openWatchdogSession(conflict.ownerSessionId) },
     );
   }
   return true;
@@ -271,6 +280,7 @@ export function createPtyExitReporter(write: (notice: string) => void, onExit?: 
 }
 
 interface XTermWrapperProps {
+  historyVisible?: boolean;
   workspaceId: string;
   sessionId: string;
   command: string;
@@ -286,6 +296,7 @@ interface XTermWrapperProps {
   onArtifactLinkClick?: (uri: string, screenPos: { x: number; y: number }) => void;
   cwd?: string;
   launchEnv?: Record<string, string>;
+  restoreReason?: "saved-codex-pane";
   initialReplay?: string[];
 }
 
@@ -776,9 +787,10 @@ function ensureConfigLoaded(): Promise<void> {
   return configPromise;
 }
 
-export const TERMINAL_SEARCH_EVENT = "mycmux:terminal-search";
+export { TERMINAL_SEARCH_EVENT } from "./terminalSearchEvents";
 
 export default memo(function XTermWrapper({
+  historyVisible = true,
   workspaceId,
   sessionId,
   command,
@@ -794,6 +806,7 @@ export default memo(function XTermWrapper({
   onArtifactLinkClick,
   cwd,
   launchEnv,
+  restoreReason,
   initialReplay,
 }: XTermWrapperProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -819,14 +832,21 @@ export default memo(function XTermWrapper({
     args,
     cwd,
     launchEnv,
+    restoreReason,
   });
   launchParamsRef.current = { command, args, cwd, launchEnv };
+  if (restoreReason) launchParamsRef.current.restoreReason = restoreReason;
 
   const [resumeRecovery, setResumeRecovery] = useState<ResumeRecoveryModel | null>(null);
   const [resumeConfirmation, setResumeConfirmation] = useState<{ working: boolean; hidden: boolean } | null>(null);
   const [resumeBusy, setResumeBusy] = useState(false);
   const [resumeError, setResumeError] = useState(false);
   const resumeConfirmationRef = useRef<((yes: boolean) => void) | null>(null);
+  const resumeFocusReturnRef = useRef<ReturnType<typeof capturePaneFocusReturn> | null>(null);
+  const confirmedResumeFocusReturnRef = useRef<{
+    restore: ReturnType<typeof capturePaneFocusReturn>;
+    temporary: HTMLElement | null;
+  } | null>(null);
   const resumeActionsRef = useRef({
     openOwner: () => {}, takeover: () => {}, fresh: () => {},
     original: (_id: string) => {}, saved: () => {},
@@ -847,8 +867,20 @@ export default memo(function XTermWrapper({
   const lastBufferTypeRef = useRef<string | null>(null);
   const [turnListRows, setTurnListRows] = useState<TurnListRow[]>([]);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchFocusReturnRef = useRef<ReturnType<typeof capturePaneFocusReturn> | null>(null);
+  useEffect(() => () => {
+    searchFocusReturnRef.current?.cancel();
+    resumeFocusReturnRef.current?.cancel();
+    confirmedResumeFocusReturnRef.current?.restore.cancel();
+  }, []);
   const openSearch = useCallback(() => {
+    searchFocusReturnRef.current?.cancel();
     focusController.request("programmatic", { sessionId, focus: false });
+    searchFocusReturnRef.current = captureTemporaryFocusReturn(
+      containerRef.current?.parentElement ?? null,
+      containerRef.current?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea") ?? null,
+      () => searchInputRef.current?.parentElement ?? null,
+    );
     setIsSearchOpen(true);
     searchInputRef.current?.focus();
   }, [sessionId]);
@@ -870,7 +902,14 @@ export default memo(function XTermWrapper({
   const turnListRequestRef = useRef(0);
   const turnChipVisibilityRef = useRef<TurnChipVisibilityController | null>(null);
   const turnListOpenRef = useRef(false);
-  const { transcriptPanelOpen, setTranscriptPanelOpen, closeTranscriptPanel } = useTerminalHistoryPanel(sessionId);
+  const { transcriptPanelOpen, transcriptPanelFocusRequest, setTranscriptPanelOpen, closeTranscriptPanel: closeHistoryPanel, openAccepted } = useTerminalHistoryPanel(sessionId, historyVisible);
+  const archiveEntry = useTerminalArchiveEntry(sessionId, tabIdForSession(sessionId), containerRef, termRef, transcriptPanelOpen, openAccepted, historyVisible);
+  const archiveEntryRef = useRef(archiveEntry); archiveEntryRef.current = archiveEntry;
+  const searchOpenRef = useRef(isSearchOpen); searchOpenRef.current = isSearchOpen;
+  const closeTranscriptPanel = useCallback(() => {
+    if (!archiveEntryRef.current.close()) useToastStore.getState().pushToast("端末の表示が更新されたため、現在の端末に戻りました", "info");
+    closeHistoryPanel();
+  }, [closeHistoryPanel]);
   const transcriptPanelOpenRef = useRef(transcriptPanelOpen);
   transcriptPanelOpenRef.current = transcriptPanelOpen;
   const progressViewportRef = useRef<(() => TerminalProgressViewport | null) | null>(null);
@@ -1286,6 +1325,13 @@ export default memo(function XTermWrapper({
     let visibleAskAttentionId: string | null = null;
     let lastScanSignature: string | null = null;
     let isImeComposing = false;
+    let historyDragging = false;
+    const historyAdmission = {
+      composing: () => isImeComposing,
+      onDragging: (dragging: boolean) => { historyDragging = dragging; },
+      wheel: (event: WheelEvent, current: Terminal, interaction: { composing: boolean; dragging: boolean }) => !disposed && !termDisposed && archiveEntryRef.current.wheel(event, current, interaction, searchOpenRef.current || turnListOpenRef.current),
+      boundary: (current: Terminal, interaction: { composing: boolean; dragging: boolean }) => !disposed && !termDisposed && archiveEntryRef.current.boundary(current, interaction, searchOpenRef.current || turnListOpenRef.current),
+    };
     let resizePendingDuringComposition = false;
     const forceWheelMouseReport = startsAsAgentTui(command, args, agentId, agentKind, launchEnv);
     // An agent TUI owns the mouse *and* keeps its prompt on the bottom row.
@@ -1762,6 +1808,15 @@ export default memo(function XTermWrapper({
         }
 
         if (isPlainTerminalInputEvent(e)) {
+          // Plain keys never reach user shortcut overrides. Try the guarded
+          // history boundary before handing Shift+PageUp back to xterm.
+          if (isHistoryBoundaryKey(e) && useSettingsStore.getState().conversationHistoryMode !== "legacy" && !e.defaultPrevented && !disposed && !termDisposed) {
+            const interaction = { composing: isImeComposing, dragging: historyDragging };
+            const overlay = searchOpenRef.current || turnListOpenRef.current;
+            if (archiveEntryRef.current.boundary(currentTerm, interaction, overlay)) {
+              e.preventDefault(); e.stopPropagation(); return false;
+            }
+          }
           e.stopPropagation();
           return true;
         }
@@ -1795,6 +1850,12 @@ export default memo(function XTermWrapper({
           return false;
         }
 
+        const interaction = { composing: isImeComposing, dragging: historyDragging };
+        const overlay = searchOpenRef.current || turnListOpenRef.current;
+        const accepted = !e.defaultPrevented && !disposed && !termDisposed && (
+          isExplicitHistoryKey(e, IS_MAC) && archiveEntryRef.current.explicit(currentTerm, interaction, overlay)
+        );
+        if (accepted) { e.preventDefault(); e.stopPropagation(); return false; }
         return true;
       });
     };
@@ -2131,6 +2192,12 @@ export default memo(function XTermWrapper({
       return isContainerPainted() && hasWritableTerminalSize();
     };
 
+    const isEligibleFocusTarget = (): boolean => {
+      if (disposed || termDisposed) return false;
+      invalidateContainerVisibilityMemo();
+      return isContainerWritable();
+    };
+
     // The window sitting behind another app is the one "not painting" that must
     // stay cheap: the pane keeps its box and its place, and the reader will be
     // looking straight at it again. On macOS that happens on every Cmd-Tab, and
@@ -2157,6 +2224,15 @@ export default memo(function XTermWrapper({
         && !termDisposed
         && isContainerWritable()
       );
+    };
+
+    const registerReadAuthority = (mounted: Terminal): void => {
+      registerCurrentOutputParser(sessionId, mounted, () => {
+        invalidateContainerVisibilityMemo();
+        return term === mounted && !disposed && !termDisposed && canWritePendingBatches()
+          && !replayActive && !scrollbackSyncInFlight && !writingBatch && pendingBatches.length === 0
+          && !terminalScrollbackResyncNeeded.has(sessionId);
+      });
     };
 
     const schedulePendingWriteDrain = (delay = 80): void => {
@@ -2302,6 +2378,7 @@ export default memo(function XTermWrapper({
       watchdogMs = 2000,
       progressEnd?: number,
       progressGeneration?: number,
+      sourceGeneration: PtyReadGeneration = ptyReadGeneration(sessionId),
     ): Promise<void> => {
       return new Promise((resolve) => {
         if (!term || termDisposed) {
@@ -2309,6 +2386,7 @@ export default memo(function XTermWrapper({
           return;
         }
         const writeTerm = term;
+        const completeParse = beginTerminalBufferWrite(sessionId, writeTerm, sourceGeneration);
         const generation = pumpGeneration;
         const measuredBytes = terminalWriteByteLength(output);
         const writeMeasurement = recordTerminalWriteStart(sessionId, measuredBytes);
@@ -2349,7 +2427,7 @@ export default memo(function XTermWrapper({
             : displayOutput;
           writeTerm.write(rewrittenOutput, () => {
             // A timeout or thrown write is not proof that xterm parsed the bytes.
-            markTerminalBufferReady(writeTerm);
+            if (completeParse(true)) markTerminalBufferReady(writeTerm, sourceGeneration);
             if (generation === pumpGeneration && !disposed && !termDisposed && writeTerm === term) {
               streamHealth.applied();
               terminalProgressDiagnostics.finishWrite(sessionId, progressWrite);
@@ -2357,6 +2435,7 @@ export default memo(function XTermWrapper({
             finish();
           });
         } catch {
+          completeParse(false);
           finish();
         }
       });
@@ -2402,7 +2481,8 @@ export default memo(function XTermWrapper({
 
     const performBackendScrollbackSync = async (): Promise<boolean> => {
       const generation = pumpGeneration;
-      if (!canWritePendingBatches()) return false;
+      const readGeneration = ptyReadGeneration(sessionId);
+      if (!canWritePendingBatches() || !currentPtyRead(sessionId, readGeneration)) return false;
       const knownTail = terminalRawTailBySession.get(sessionId);
       let scrollbackSnapshot: Awaited<ReturnType<typeof getSessionScrollback>>;
       try {
@@ -2413,13 +2493,13 @@ export default memo(function XTermWrapper({
       // Visibility can change while the IPC request is in flight. Never reset
       // or write into a terminal that became hidden in that interval.
       invalidateContainerVisibilityMemo();
-      if (generation !== pumpGeneration || disposed || termDisposed || !term || !canWritePendingBatches()) return false;
+      if (!currentPtyRead(sessionId, readGeneration) || generation !== pumpGeneration || disposed || termDisposed || !term || !canWritePendingBatches()) return false;
       const scrollback = new Uint8Array(scrollbackSnapshot.data);
       if (scrollback.byteLength === 0) {
         replaceTerminalRawTail(sessionId, scrollback);
         lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;
-        // An actual empty backend snapshot is authoritative too.
-        markTerminalBufferReady(term);
+        // Fetching no bytes does not prove that this Terminal parsed this
+        // producer. Keep its existing parse proof; an old buffer stays fenced.
         return true;
       }
       const recoveryPlan = planTerminalScrollbackRecovery(
@@ -2431,7 +2511,7 @@ export default memo(function XTermWrapper({
       );
       if (recoveryPlan.action === "rebuild-truncated") {
         const prepared = await buildTerminalRecoveryFrame(scrollback, scrollbackSnapshot.startOffset, term.cols, term.rows);
-        if (generation !== pumpGeneration || disposed || termDisposed || !canWritePendingBatches()) return false;
+        if (!currentPtyRead(sessionId, readGeneration) || generation !== pumpGeneration || disposed || termDisposed || !canWritePendingBatches()) return false;
         const releaseScreen = await freezeTerminalScreen(term);
         recoveryScreenOwners += 1;
         // Keep diagnostic bookkeeping in the screen release callback.
@@ -2439,7 +2519,7 @@ export default memo(function XTermWrapper({
           recoveryScreenOwners -= 1;
           releaseScreen();
         };
-        if (generation !== pumpGeneration || disposed || termDisposed || !term || !canWritePendingBatches()) {
+        if (!currentPtyRead(sessionId, readGeneration) || generation !== pumpGeneration || disposed || termDisposed || !term || !canWritePendingBatches()) {
           unfreeze();
           return false;
         }
@@ -2451,8 +2531,8 @@ export default memo(function XTermWrapper({
           term.reset();
           outputDecoder = prepared.decoder;
           backgroundScanResync = true;
-          await writeTerminalOutput(stripTerminalMouseModeControlSequences(prepared.text), 8000, scrollbackSnapshot.endOffset);
-          if (generation !== pumpGeneration || disposed || termDisposed) return false;
+          await writeTerminalOutput(stripTerminalMouseModeControlSequences(prepared.text), 8000, scrollbackSnapshot.endOffset, undefined, readGeneration);
+          if (!currentPtyRead(sessionId, readGeneration) || generation !== pumpGeneration || disposed || termDisposed) return false;
           reanchorTurnMarks(sessionId, term);
           term.refresh(0, term.rows - 1);
           await new Promise<void>(resolve => {
@@ -2460,7 +2540,7 @@ export default memo(function XTermWrapper({
             requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(); }));
           });
         } finally { releaseHold(); unfreeze(); }
-        if (generation !== pumpGeneration || disposed || termDisposed) return false;
+        if (!currentPtyRead(sessionId, readGeneration) || generation !== pumpGeneration || disposed || termDisposed) return false;
         replaceTerminalRawTail(sessionId, scrollback);
         lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;
         bumpTerminalWriteCounter(sessionId);
@@ -2475,7 +2555,7 @@ export default memo(function XTermWrapper({
         lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;
         return true;
       }
-      if (!canWritePendingBatches()) return false;
+      if (!canWritePendingBatches() || !currentPtyRead(sessionId, readGeneration)) return false;
       const replacesVisibleBuffer = recoveryPlan.action === "replace"
         || recoveryPlan.action === "initial-replay";
       let releaseHold: (() => void) | null = null;
@@ -2502,8 +2582,9 @@ export default memo(function XTermWrapper({
           stripTerminalMouseModeControlSequences(replayText),
           replacesVisibleBuffer ? 8000 : 2000,
           scrollbackSnapshot.endOffset,
+          undefined, readGeneration,
         );
-        if (generation !== pumpGeneration || disposed || termDisposed) return false;
+        if (!currentPtyRead(sessionId, readGeneration) || generation !== pumpGeneration || disposed || termDisposed) return false;
         recordPerf("xterm.backend-replay.done", sessionId);
         const finalizePersistedReplay = shouldFinalizePersistedInitialReplay(
           coldPersistedRestore,
@@ -2511,7 +2592,7 @@ export default memo(function XTermWrapper({
         );
         if (finalizePersistedReplay) {
           if (replayTerm.buffer.active.type === "alternate") {
-            await writeTerminalOutput("\x1b[?1049l\x1b[?25h\x1b[0m\r\n", 2000);
+            await writeTerminalOutput("\x1b[?1049l\x1b[?25h\x1b[0m\r\n", 2000, undefined, undefined, readGeneration);
           }
           terminalInitialReplayMarkers.get(sessionId)?.dispose();
           const replayMarker = replayTerm.registerMarker(0);
@@ -2532,10 +2613,10 @@ export default memo(function XTermWrapper({
       } finally {
         releaseHold?.();
       }
-      if (generation !== pumpGeneration || disposed || termDisposed || !term) return false;
+      if (!currentPtyRead(sessionId, readGeneration) || generation !== pumpGeneration || disposed || termDisposed || !term) return false;
       replaceTerminalRawTail(sessionId, scrollback);
       lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;
-      if (!canWritePendingBatches()) return false;
+      if (!canWritePendingBatches() || !currentPtyRead(sessionId, readGeneration)) return false;
       markTerminalHasLiveOutput(sessionId);
       bumpTerminalWriteCounter(sessionId);
       scheduleFullRefresh(term, [0, 48, 160]);
@@ -2768,6 +2849,10 @@ export default memo(function XTermWrapper({
       disposeResumeRecovery = null;
       resumeConfirmationRef.current?.(false);
       resumeConfirmationRef.current = null;
+      resumeFocusReturnRef.current?.cancel();
+      resumeFocusReturnRef.current = null;
+      confirmedResumeFocusReturnRef.current?.restore.cancel();
+      confirmedResumeFocusReturnRef.current = null;
     };
     const attachFrontendChannel = async (
       cols: number, rows: number, reason: SessionAttachOptions["reason"] = "mount",
@@ -2790,13 +2875,15 @@ export default memo(function XTermWrapper({
         launch.cwd,
         launch.env,
         reason === "mount" && hasTearoutSessionAttachment(sessionId),
-        { reason, restoreConfirmed, stillOwned: () => generation === pumpGeneration && !disposed && !termDisposed },
+        { reason, restoreConfirmed, restoreReason: launch.restoreReason, stillOwned: () => generation === pumpGeneration && !disposed && !termDisposed },
       );
       if (generation !== pumpGeneration || disposed || termDisposed) return;
+      if (launch.restoreReason) consumeCodexRestoreReason(sessionId);
       ownedChannelId = getSessionChannelId(sessionId);
       streamHealth.attached();
       if (launch.env?.MYCMUX_HANDOFF?.trim()) consumeHandoffLaunchEnv(sessionId);
       frontendChannelReady = true;
+      if (term) registerReadAuthority(term);
       markTearoutSessionAttached(sessionId);
       if (cols > 0 && rows > 0) {
         lastSentCols = cols;
@@ -2818,6 +2905,11 @@ export default memo(function XTermWrapper({
 
     const restartAgent = async (kind: string, id: string, fresh: boolean, confirmed = false): Promise<void> => {
       if (disposed || termDisposed || !term) return;
+      const owner = containerRef.current?.parentElement ?? null;
+      const confirmedFocus = confirmedResumeFocusReturnRef.current;
+      const returnFocus = confirmedFocus?.restore ?? capturePaneFocusReturn(owner,
+        containerRef.current?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea") ?? null);
+      confirmedResumeFocusReturnRef.current = null;
       setResumeBusy(true);
       setResumeError(false);
       recoveryLaunch = buildAgentRecoveryLaunch(recoveryLaunch ?? launchParamsRef.current, kind, id, fresh);
@@ -2842,11 +2934,12 @@ export default memo(function XTermWrapper({
         }
         setResumeRecovery(null);
         setResumeConfirmation(null);
-        term.focus();
+        returnFocus(confirmedFocus ? confirmedFocus.temporary : owner?.querySelector("[data-agent-resume-recovery]") ?? null);
       } catch (error) {
         handleResumeBlock(error);
         throw error;
       } finally {
+        returnFocus.cancel();
         if (!disposed) setResumeBusy(false);
       }
     };
@@ -2855,6 +2948,8 @@ export default memo(function XTermWrapper({
       void action().then(() => {
         if (frontendChannelReady && !disposed) clearResumeRecovery();
       }).catch(error => {
+        confirmedResumeFocusReturnRef.current?.restore.cancel();
+        confirmedResumeFocusReturnRef.current = null;
         if (disposed) return;
         console.warn("[XTermWrapper] Agent recovery failed:", error);
         setResumeError(true);
@@ -2888,6 +2983,11 @@ export default memo(function XTermWrapper({
           confirmStop: (working, hidden) => new Promise(resolve => {
             if (disposed) { resolve(false); return; }
             resumeConfirmationRef.current = resolve;
+            const owner = containerRef.current?.parentElement ?? null;
+            resumeFocusReturnRef.current?.cancel();
+            resumeFocusReturnRef.current = captureTemporaryFocusReturn(owner,
+              owner?.ownerDocument.activeElement instanceof HTMLElement ? owner.ownerDocument.activeElement : null,
+              () => containerRef.current?.parentElement?.querySelector<HTMLElement>("[role='alertdialog']") ?? null);
             setResumeConfirmation({ working, hidden });
           }),
           stopOwner: killSession,
@@ -3012,25 +3112,28 @@ export default memo(function XTermWrapper({
           filterTerminalMouseInputSequences(data),
         );
         if (!inputData) return;
-        if (!shouldAcceptTerminalInput(sessionId)) return;
-        if (hasNonWheelInput) {
-          recordPerf("terminal.input.accepted", sessionId);
-          awaitingInputPaint = true;
-          clearActiveTerminalNotification(sessionId);
-          focusTerminalIfNeeded(currentTerm, sessionId);
-        }
-        noteTurnInput(sessionId, inputData, lastSynchronizedScrollbackEnd);
-        observeSessionInput(sessionId, inputData);
-        chunkedWrite(sessionId, inputData);
-        if (hasNonWheelInput) {
-          try {
-            window.dispatchEvent(
-              new CustomEvent("mycmux:keystroke", { detail: { sessionId, data: inputData } }),
-            );
-          } catch {
-            // Ignore dispatch failures; the input-probe event is non-critical.
+        const accept = () => {
+          if (hasNonWheelInput) {
+            recordPerf("terminal.input.accepted", sessionId);
+            awaitingInputPaint = true;
+            clearActiveTerminalNotification(sessionId);
+            focusTerminalIfNeeded(currentTerm, sessionId);
           }
-        }
+          noteTurnInput(sessionId, inputData, lastSynchronizedScrollbackEnd);
+          observeSessionInput(sessionId, inputData);
+          chunkedWrite(sessionId, inputData);
+          if (hasNonWheelInput) {
+            try {
+              window.dispatchEvent(
+                new CustomEvent("mycmux:keystroke", { detail: { sessionId, data: inputData } }),
+              );
+            } catch {
+              // Ignore dispatch failures; the input-probe event is non-critical.
+            }
+          }
+        };
+        if (focusController.deferHoverFocusReport(sessionId, inputData, accept)) return;
+        if (shouldAcceptTerminalInput(sessionId)) accept();
       });
 
       binaryDisposable = currentTerm.onBinary((data) => {
@@ -3085,7 +3188,7 @@ export default memo(function XTermWrapper({
       if (term) {
         termDisposed = true;
         disposeWebglRenderer(sessionId, term, false);
-        term.dispose();
+        cancelTerminalBufferWrites(term); term.dispose();
       }
     };
 
@@ -3213,6 +3316,7 @@ export default memo(function XTermWrapper({
       sessionStarted = true;
       if (sessionExitPending) reportSessionExit();
       liveTerms.set(sessionId, cached.term);
+      registerReadAuthority(cached.term);
       useTerminalObservationStore.getState().markObserved(sessionId);
       recordXtermMounted(sessionId);
       applyTerminalRenderer(sessionId, cached.term, resolveEffectiveTerminalRendererFromStores());
@@ -3239,9 +3343,9 @@ export default memo(function XTermWrapper({
       registerCompositionGuard(cached.term, cached.fitAddon);
       registerPaintFocusListeners(cached.term);
       registerSelectionCopyListener(cached.term, sessionId);
-      removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, cached.term, sessionId, forceWheelMouseReport);
+      removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, cached.term, sessionId, forceWheelMouseReport, historyAdmission);
       removeWheelFocusGuard = registerTerminalWheelFocusGuard(cached.term, sessionId);
-      removeFocusSync = registerTerminalFocusSync(cached.term, sessionId);
+      removeFocusSync = registerTerminalFocusSync(cached.term, sessionId, isEligibleFocusTarget);
       attachTerminalKeyHandler(cached.term);
       registerInputListeners(cached.term);
       registerScanListener(cached.term);
@@ -3383,6 +3487,7 @@ export default memo(function XTermWrapper({
       refreshTurnChipAfterFirstRender(term);
       invalidateContainerVisibilityMemo();
       liveTerms.set(sessionId, term);
+      registerReadAuthority(term);
       useTerminalObservationStore.getState().markObserved(sessionId);
       recordXtermMounted(sessionId);
       recordCursorBlink(sessionId, term.options.cursorBlink === true);
@@ -3400,6 +3505,7 @@ export default memo(function XTermWrapper({
           );
         }
         const replayTerm = term;
+        const replayReadGeneration = ptyReadGeneration(sessionId);
         await new Promise<void>((resolve) => {
           const output = `${stripTerminalMouseModeControlSequences(displayReplay)}\r\n`;
           const measuredBytes = terminalWriteByteLength(output);
@@ -3411,11 +3517,17 @@ export default memo(function XTermWrapper({
           );
           const adaptedOutput = colorAdapterRef.current.transform(output, colorAdaptEnabled);
           const rewrittenOutput = sgrLightRewriter.transform(adaptedOutput, isLightThemeRef.current);
-          replayTerm.write(rewrittenOutput, () => {
-            markTerminalBufferReady(replayTerm);
-            recordTerminalWriteCallback(writeMeasurement);
-            resolve();
-          });
+          const completeParse = beginTerminalBufferWrite(sessionId, replayTerm, replayReadGeneration);
+          try {
+            replayTerm.write(rewrittenOutput, () => {
+              if (completeParse(true)) markTerminalBufferReady(replayTerm, replayReadGeneration);
+              recordTerminalWriteCallback(writeMeasurement);
+              resolve();
+            });
+          } catch (error) {
+            completeParse(false);
+            throw error;
+          }
         });
         recordPerf("xterm.replay.done", sessionId);
         bumpTerminalWriteCounter(sessionId);
@@ -3433,9 +3545,9 @@ export default memo(function XTermWrapper({
       registerCompositionGuard(term, fitAddon);
       registerPaintFocusListeners(term);
       registerSelectionCopyListener(term, sessionId);
-      removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, term, sessionId, forceWheelMouseReport);
+      removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, term, sessionId, forceWheelMouseReport, historyAdmission);
       removeWheelFocusGuard = registerTerminalWheelFocusGuard(term, sessionId);
-      removeFocusSync = registerTerminalFocusSync(term, sessionId);
+      removeFocusSync = registerTerminalFocusSync(term, sessionId, isEligibleFocusTarget);
       attachTerminalKeyHandler(term);
 
       // OSC 9988: mycmux HTML sidetab. Payload = file URL or absolute path.
@@ -3547,7 +3659,7 @@ export default memo(function XTermWrapper({
       setIsSearchOpen(false);
       setSearchQuery("");
       searchAddonRef.current?.clearDecorations();
-      containerRef.current?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")?.focus();
+      searchFocusReturnRef.current?.(searchInputRef.current?.parentElement ?? null);
     }
   }, [searchQuery]);
 
@@ -3555,7 +3667,7 @@ export default memo(function XTermWrapper({
     setIsSearchOpen(false);
     setSearchQuery("");
     searchAddonRef.current?.clearDecorations();
-    containerRef.current?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")?.focus();
+    searchFocusReturnRef.current?.(searchInputRef.current?.parentElement ?? null);
   }, []);
 
   const noteLookBackIntent = useCallback(() => {
@@ -3593,6 +3705,22 @@ export default memo(function XTermWrapper({
         onOriginal={id => resumeActionsRef.current.original(id)}
         onSaved={() => resumeActionsRef.current.saved()}
         onConfirm={yes => {
+          const owner = containerRef.current?.parentElement ?? null;
+          if (yes) {
+            // Carry this confirmation's intent across owner lookup/stop/attach.
+            // A later outside action must cancel it before restart even begins.
+            resumeFocusReturnRef.current?.cancel();
+            confirmedResumeFocusReturnRef.current?.restore.cancel();
+            const active = owner?.ownerDocument.activeElement;
+            const recovery = owner?.querySelector("[data-agent-resume-recovery]");
+            confirmedResumeFocusReturnRef.current = {
+              restore: capturePaneFocusReturn(owner,
+                containerRef.current?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea") ?? null),
+              // The confirmation's focused control disappears before attach.
+              temporary: active instanceof HTMLElement && recovery?.contains(active) ? active : null,
+            };
+          } else resumeFocusReturnRef.current?.(owner?.querySelector("[data-agent-resume-recovery]") ?? null);
+          resumeFocusReturnRef.current = null;
           resumeConfirmationRef.current?.(yes);
           resumeConfirmationRef.current = null;
           setResumeConfirmation(null);
@@ -3613,6 +3741,7 @@ export default memo(function XTermWrapper({
           onJumpLabel={jumpTurnByLabel}
           onListOpen={openTurnList}
           onListVisibilityChange={setTurnListOpen}
+          returnFocusToOwner
           onHover={noteLookBackIntent}
           leaving={turnChipLeaving}
           mode={turnChip.mode}
@@ -3621,15 +3750,18 @@ export default memo(function XTermWrapper({
       )}
       {transcriptPanelOpen && (
         <TerminalTranscriptPanel
+          focusRequest={transcriptPanelFocusRequest}
+          visible={historyVisible}
           sessionId={sessionId}
           tabId={tabIdForSession(sessionId)}
           agentKind={agentKind ?? "none"}
           onClose={closeTranscriptPanel}
           onOpenDashboard={openTranscriptDashboard}
+          archiveReader={archiveEntry.reader}
         />
       )}
       {isSearchOpen && (
-        <div style={{
+        <div data-terminal-search="true" style={{
           position: "absolute",
           top: 8,
           right: 16,

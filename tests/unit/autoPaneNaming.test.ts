@@ -51,8 +51,8 @@ it("retains manual and readable labels, and leaves no-material names alone", asy
   Object.assign(h.scan.tabs[1], { label: "Old summary", labelSource: "ai", taskTitle: null });
   Object.assign(h.workspaces[1].panes[0].tabs[0], { label: "Old summary", labelSource: "ai" });
   await h.scheduler.runNow();
-  expect(h.deps.setDisplayName).toHaveBeenCalledTimes(1);
-  expect(h.deps.setDisplayName).toHaveBeenCalledWith("one", "pone", "one", "手動名");
+  expect(h.deps.setDisplayName).not.toHaveBeenCalled();
+  expect(h.workspaces[0].panes[0].tabs[0].label).toBe("手動名");
 });
 it("takes automatic display names away when the setting is switched off", async () => {
   const h = await setup(); h.scheduler.start(); await h.scheduler.runNow();
@@ -114,4 +114,32 @@ it("keeps a naming fault inside the store listener that woke the scheduler", asy
     expect(() => h.notify()).not.toThrow();
     expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("auto pane naming"), failure);
   } finally { consoleError.mockRestore(); }
+});
+
+it("aggregates workspaces with pane naming off, and stops reading when both flags are off", async () => {
+  const h = await setup(); let workspaceEnabled = true;
+  const afterIdentify = vi.fn();
+  const scheduler = createAutoPaneNamingScheduler({ ...h.deps, enabled: () => false, workspaceEnabled: () => workspaceEnabled, afterIdentify });
+  schedulers.push(scheduler); await scheduler.runNow();
+  expect(afterIdentify).toHaveBeenCalledTimes(1); expect(h.deps.setDisplayName).not.toHaveBeenCalled();
+  workspaceEnabled = false; await scheduler.runNow(); expect(h.deps.scan).toHaveBeenCalledTimes(1);
+});
+
+it("discards a name when its workspace stops during the read even without a listener notification", async () => {
+  const h = await setup(); let release!: (scan: typeof h.scan) => void;
+  h.deps.scan.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  const running = h.scheduler.runNow();
+  h.workspaces[0].status = "stopped";
+  release(h.scan); await running;
+  expect(h.deps.setDisplayName).toHaveBeenCalledTimes(1);
+  expect(h.deps.setDisplayName.mock.calls[0][2]).toBe("two");
+  expect(h.workspaces[0].panes[0].tabs[0].displayName).toBeUndefined();
+});
+
+it("keeps an explicit recovered name while both automatic flags remain off", async () => {
+  const h = await setup(); h.disable(); await h.scheduler.runNow();
+  h.deps.setDisplayName("one", "pone", "one", "方程式の解説スライド制作");
+  h.notify(); await h.scheduler.runNow();
+  expect(h.workspaces[0].panes[0].tabs[0].displayName).toBe("方程式の解説スライド制作");
+  expect(h.deps.scan).not.toHaveBeenCalled();
 });

@@ -21,6 +21,10 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
 }));
 
+vi.mock("@tauri-apps/api/webview", () => ({
+  getCurrentWebview: () => ({ listen: vi.fn(() => Promise.resolve(() => {})) }),
+}));
+
 vi.mock("@tauri-apps/plugin-shell", () => ({ open: vi.fn(() => Promise.resolve()) }));
 
 vi.mock("allotment", async () => {

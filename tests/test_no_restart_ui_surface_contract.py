@@ -54,10 +54,11 @@ def test_pane_and_workspace_ui_surfaces_remain_wired() -> None:
     assert_snippets(
         "src/components/workspace/PaneTabBar.tsx",
         [
-            "title={paneToolbarStrings.newTab}",
-            "title={paneToolbarStrings.splitRight}",
-            "title={paneToolbarStrings.splitDown}",
-            "title={paneToolbarStrings.closePane}",
+            "label: paneToolbarStrings.newTab",
+            "label: paneToolbarStrings.splitRight",
+            "label: paneToolbarStrings.splitDown",
+            "paneToolbarStrings.closePaneWithHidden(hiddenTabs.length)",
+            "paneToolbarStrings.closePane(Math.max(0, pane.tabs.length - 1))",
         ],
     )
     # ...and the keys themselves have to resolve to Japanese, so an English
@@ -65,10 +66,10 @@ def test_pane_and_workspace_ui_surfaces_remain_wired() -> None:
     assert_snippets(
         "src/components/workspace/terminalPaneStrings.ts",
         [
-            'newTab: "新しいターミナルペイン"',
-            'splitRight: "右に分割"',
-            'splitDown: "下に分割"',
-            'closePane: "タブを閉じる"',
+            'newTab: "新しいターミナルタブ"',
+            'splitRight: "右にタブを開く"',
+            'splitDown: "下にタブを開く"',
+            'closePane: (behindCount: number)',
         ],
     )
     assert_snippets(

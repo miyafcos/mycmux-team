@@ -16,7 +16,6 @@ vi.mock("../../src/lib/ipc", async (original) => ({
 import { handleSocketCommand } from "../../src/components/layout/socketCommands";
 import PaneTabBar from "../../src/components/workspace/PaneTabBar";
 import { HISTORY_MAPPING_POLL_MS, TERMINAL_HISTORY_EVENT } from "../../src/components/terminal/TerminalHistoryEntry";
-import { terminalTurnStrings } from "../../src/components/terminal/terminalTurnStrings";
 import type { AgentSessionMapping } from "../../src/lib/ipc";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
@@ -38,6 +37,17 @@ function Toolbar() {
   const pane = useWorkspaceListStore((state) => state.workspaces[0].panes[0]);
   return <PaneTabBar pane={pane} workspaceId={workspaceId} hasTerminalBuffer={() => true}
     onSelectTab={(tabId) => useWorkspaceLayoutStore.getState().setActivePaneTab(workspaceId, paneId, tabId)} />;
+}
+
+async function openActions() {
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-haspopup=menu]:not(.pane-hidden-tabs)")!.click());
+}
+async function selectHidden(tabId: string) {
+  await act(async () => host.querySelector<HTMLButtonElement>(".pane-hidden-tabs")!.click());
+  const target = host.querySelector<HTMLElement>(`[data-menu-tab-id="${tabId}"]`)!;
+  await act(async () => target.click());
+  await openActions();
+  return host.querySelector<HTMLElement>(`[data-tab-id="${tabId}"]`)!;
 }
 
 beforeEach(() => {
@@ -87,6 +97,7 @@ describe("synthetic history acceptance through the real spawn handler and toolba
     }) as { tabId: string; sessionId: string; activationApplied: boolean };
     mappings[result.sessionId] = { agent_kind: "claude", session_id: agentId };
     await act(async () => root.render(<Toolbar />));
+    await openActions();
 
     expect(mocks.createSession).toHaveBeenCalledOnce();
     const createArgs = mocks.createSession.mock.calls[0];
@@ -99,26 +110,32 @@ describe("synthetic history acceptance through the real spawn handler and toolba
     expect(result.activationApplied).toBe(false);
     expect(useWorkspaceListStore.getState().workspaces[0].panes[0].activeTabId).toBe("shell-tab");
     expect(useUiStore.getState().activePaneId).toBe(anchor);
-    expect(host.querySelector("[data-terminal-history-entry=true]")).toBeNull();
-    expect(host.querySelector("[data-terminal-history-unavailable=true]")?.getAttribute("title"))
-      .toBe(terminalTurnStrings.historyUnlinked);
+    expect(host.querySelector(".pane-heading-row > [data-terminal-magnifier-destination=history]")).toBeNull();
+    expect(host.querySelector(".pane-heading-row > [data-terminal-magnifier]")?.getAttribute("data-terminal-magnifier-destination"))
+      .toBe("terminal");
     await act(async () => vi.advanceTimersByTimeAsync(60_000));
-    expect(host.querySelector("[data-terminal-history-entry=true]")).toBeNull();
+    expect(host.querySelector(".pane-heading-row > [data-terminal-magnifier-destination=history]")).toBeNull();
     expect(mocks.mappings.mock.calls.every(([ids]) => ids.length === 1 && ids[0] === anchor)).toBe(true);
 
-    // The driver's fix is to click the returned tab, then wait for its entry.
-    const target = host.querySelector<HTMLElement>(`[data-tab-id="${result.tabId}"]`)!;
+    // Select the spawned session through the hidden-session list, then open its history item.
+    await openActions();
+    const target = await selectHidden(result.tabId);
     expect(target).not.toBeNull();
-    await act(async () => { target.click(); await vi.advanceTimersByTimeAsync(250); });
     expect(useWorkspaceListStore.getState().workspaces[0].panes[0].activeTabId).toBe(result.tabId);
     expect(mocks.mappings).toHaveBeenLastCalledWith([result.sessionId]);
-    const entry = host.querySelector<HTMLButtonElement>("[data-terminal-history-entry=true]");
+    const entry = host.querySelector<HTMLButtonElement>(".pane-heading-row > [data-terminal-magnifier-destination=history]");
     expect(entry).not.toBeNull();
     const request = vi.fn();
     window.addEventListener(TERMINAL_HISTORY_EVENT, request, { once: true });
+    const intent = useUiStore.getState();
+    const focusOwner = document.activeElement;
     await act(async () => entry!.click());
     expect(request).toHaveBeenCalledOnce();
-    expect((request.mock.calls[0][0] as CustomEvent).detail).toEqual({ sessionId: result.sessionId });
+    expect((request.mock.calls[0][0] as CustomEvent).detail).toEqual({
+      sessionId: result.sessionId,
+      request: { sessionId: result.sessionId, signal: expect.objectContaining({ aborted: false }),
+        selectionRevision: intent.focusRevision, ownerSessionId: intent.activePaneId, focusOwner },
+    });
     expect(mocks.createSession).toHaveBeenCalledOnce();
     await act(async () => { target.click(); await vi.advanceTimersByTimeAsync(HISTORY_MAPPING_POLL_MS); });
     expect(mocks.createSession).toHaveBeenCalledOnce();
@@ -130,16 +147,15 @@ describe("synthetic history acceptance through the real spawn handler and toolba
       anchorSessionId: anchor, commandArgv: [command, "--session-id", agentId],
     }) as { tabId: string; sessionId: string };
     await act(async () => root.render(<Toolbar />));
-    expect(host.querySelector("[data-terminal-history-entry=true]")).not.toBeNull();
+    await openActions();
+    expect(host.querySelector(".pane-heading-row > [data-terminal-magnifier-destination=history]")).not.toBeNull();
     expect(mocks.mappings).toHaveBeenLastCalledWith([anchor]);
 
-    await act(async () => {
-      host.querySelector<HTMLElement>(`[data-tab-id="${result.tabId}"]`)!.click();
-      await vi.advanceTimersByTimeAsync(250);
-    });
+    await openActions();
+    await selectHidden(result.tabId);
     expect(mocks.mappings).toHaveBeenLastCalledWith([result.sessionId]);
-    expect(host.querySelector("[data-terminal-history-entry=true]")).toBeNull();
-    expect(host.querySelector("[data-terminal-history-unavailable=true]")?.getAttribute("title"))
-      .toBe(terminalTurnStrings.historyUnlinked);
+    expect(host.querySelector(".pane-heading-row > [data-terminal-magnifier-destination=history]")).toBeNull();
+    expect(host.querySelector(".pane-heading-row > [data-terminal-magnifier]")?.getAttribute("data-terminal-magnifier-destination"))
+      .toBe("terminal");
   });
 });

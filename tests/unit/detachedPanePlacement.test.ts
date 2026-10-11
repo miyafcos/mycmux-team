@@ -29,7 +29,7 @@ describe("detached pane placement adoption", () => {
     ["right", [["target", "below"], ["incoming"], ["neighbor"]]],
     ["up", [["incoming", "target", "below"], ["neighbor"]]],
     ["down", [["target", "incoming", "below"], ["neighbor"]]],
-  ] as const)("adopts terminal and PDF at %s without changing the selected tab", (zone, columns) => {
+  ] as const)("adopts terminal and PDF at %s with selection changed only for a header drop", (zone, columns) => {
     const placement: DetachedReturnTarget = zone === "index"
       ? { kind: "pane", workspaceId: "destination", paneId: "target", index: 0 }
       : { kind: "pane-zone", workspaceId: "destination", paneId: "target", zone };
@@ -40,11 +40,11 @@ describe("detached pane placement adoption", () => {
     expect(store.workspaces).toHaveLength(1); expect(store.activeWorkspaceId).toBe("destination");
     expect(ws.splitColumns).toEqual(columns);
     const target = ws.panes.find((pane) => pane.id === "target")!;
-    expect(target.activeTabId).toBe("target-tab"); expect(target.sessionId).toBe("pty-target");
+    expect(target.activeTabId).toBe(zone === "index" ? "pdf" : "target-tab"); expect(target.sessionId).toBe(zone === "index" ? "pty-pdf" : "pty-target");
     const receiving = ws.panes.find((pane) => pane.tabs.some((tab) => tab.id === "pdf"))!;
     expect(receiving.tabs.find((tab) => tab.id === "terminal")!.sessionId).toBe("pty-carried");
     expect(receiving.tabs.find((tab) => tab.id === "pdf")).toMatchObject({ type: "browser", sourceKind: "pdf", htmlPath: "C:/preview.html" });
-    if (zone === "index") expect(receiving.tabs.map((tab) => tab.id)).toEqual(["terminal", "pdf", "target-tab"]);
+    if (zone === "index") expect(receiving.tabs.map((tab) => tab.id)).toEqual(["target-tab", "terminal", "pdf"]);
     else if (zone === "center") expect(receiving.tabs.map((tab) => tab.id)).toEqual(["target-tab", "terminal", "pdf"]);
     else { expect(receiving.tabs.map((tab) => tab.id)).toEqual(["terminal", "pdf"]); expect(receiving.activeTabId).toBe("pdf"); }
   });

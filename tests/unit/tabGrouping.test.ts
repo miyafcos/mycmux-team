@@ -10,6 +10,7 @@ import {
   parseGroupingOutput,
   scanGroupingContext,
   TAB_GROUPING_TAIL_LINES,
+  validateEditedPlan,
   type GroupingScan,
   type GroupingScanSource,
   type GroupingTab,
@@ -250,10 +251,10 @@ describe("buildGroupingPrompt", () => {
     expect(prompt).toContain("全ワークスペース");
     expect(prompt).toContain("日本語");
     expect(prompt).toContain("固有名詞");
-    expect(prompt).toContain("3〜8ペイン");
+    expect(prompt).toContain("3〜8タブ");
     expect(prompt).toContain("1案件=1ワークスペースに機械的に割らない");
-    expect(prompt).toContain("レイアウトは列で分けます");
-    expect(prompt).toContain("裏ペイン");
+    expect(prompt).toContain("layout.columns の各要素で表示場所を分けます");
+    expect(prompt).toContain("裏のタブ");
     expect(prompt).toContain("別のワークスペースへ隔離");
     // Each of these earns its place from a measured failure of the answer:
     // a tab claimed by two groups (v3), a tab quietly dropped (v4/v5), and
@@ -261,7 +262,7 @@ describe("buildGroupingPrompt", () => {
     expect(prompt).toContain("2つ以上のグループに入れないでください");
     expect(prompt).toContain("省略せず unassignedTabIds に入れてください");
     expect(prompt).toContain("3分の1を超えないように");
-    expect(prompt).toContain("親子関係は階層で表現");
+    expect(prompt).toContain("親子関係は配置で表現");
     expect(prompt).toContain("コードフェンス");
     expect(prompt).toContain("schemaVersion");
     expect(formatGroupingAiNote("claude", "opus", true)).toContain("再配置案");
@@ -389,6 +390,21 @@ describe("parseGroupingOutput", () => {
     if (parsed.status !== "ok") return;
     expect(parsed.plans).toHaveLength(2);
     expect(parsed.comparisonInsufficient).toBe(false);
+  });
+
+  it("describes an invalid existing-container target as a display location", () => {
+    const output = validPlanJson(ids);
+    Object.assign(output.plans[0].groups[0].layout!.columns[0].panes[0], { existingPaneId: "pane-1" });
+    const rejected = parseGroupingOutput(JSON.stringify(output), ids, workspaces);
+    expect(rejected.status).toBe("ok");
+    if (rejected.status !== "ok") throw new Error("The unaffected alternative should remain valid");
+    expect(rejected.droppedPlans.map(issue => issue.reason)).toEqual(["グループ「案件甲」: " + "既存の表示場所への追加先が不正です"]);
+
+    const valid = parseGroupingOutput(JSON.stringify(validPlanJson(ids)), ids, workspaces);
+    expect(valid.status).toBe("ok");
+    if (valid.status !== "ok") throw new Error("The unedited plan should be valid");
+    valid.plans[0].groups[0].layout!.columns[0].panes[0].existingPaneId = "pane-1";
+    expect(validateEditedPlan(valid.plans[0], ids, workspaces.map(item => item.id))).toContain("既存の表示場所への追加先が不正です");
   });
 
   it("parks a tab the judge forgot instead of throwing the plan away", () => {

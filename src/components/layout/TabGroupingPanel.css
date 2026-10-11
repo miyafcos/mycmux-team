@@ -92,6 +92,20 @@
   overflow: hidden;
 }
 
+.cmux-tab-grouping-presets {
+  display: grid;
+  flex: none;
+  gap: var(--cmux-space-2);
+  border-bottom: 1px solid var(--cmux-border);
+  padding: var(--cmux-space-4) var(--cmux-space-7);
+}
+
+.cmux-tab-grouping-preset-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cmux-space-2);
+}
+
 .cmux-tab-grouping-body.is-compare {
   grid-template-columns: minmax(220px, 32%) 1fr;
 }

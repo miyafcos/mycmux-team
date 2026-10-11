@@ -122,16 +122,16 @@ export function groupPaneLeftovers(
     const running = processes.some((process) => process.paneRunning);
     const closedPane = [...closedPanes].reverse().find((entry) => entry.paneSessionId === paneSessionId);
     const label = closedPane?.label || closedPane?.displayName || closedPaneLabels.get(paneSessionId)
-      || (closedPane ? "名前のないペイン" : undefined);
+      || (closedPane ? "名前のないタブ" : undefined);
     return {
       paneSessionId,
       title: openPane
-        ? `ペイン「${getTabDisplayLabel(openPane.tab)}」(${openPane.workspaceName}) から切り離されたもの`
+        ? `タブ「${getTabDisplayLabel(openPane.tab)}」(${openPane.workspaceName}) から切り離されたもの`
         : running
-          ? `動いているペイン (ID ${paneSessionId.slice(0, 8)}) から切り離されたもの`
+          ? `動いているタブ (ID ${paneSessionId.slice(0, 8)}) から切り離されたもの`
           : label
-            ? `閉じたペイン「${label}」から残っているもの`
-            : `閉じたペイン (ID ${paneSessionId.slice(0, 8)}) から残っているもの`,
+            ? `閉じたタブ「${label}」から残っているもの`
+            : `閉じたタブ (ID ${paneSessionId.slice(0, 8)}) から残っているもの`,
       closed: !openPane && !running,
       processes,
     };

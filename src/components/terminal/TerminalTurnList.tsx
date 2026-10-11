@@ -22,7 +22,7 @@ export function TerminalTurnList({
 }: TerminalTurnListProps) {
   const transcript = mode === "transcript";
   return (
-    <div className="terminal-turn-list" role="listbox" aria-label={terminalTurnStrings.listTitle}>
+    <div className="terminal-turn-list" role="listbox" data-pane-hover-focus-blocker="true" aria-label={terminalTurnStrings.listTitle}>
       {rows.length === 0 ? <div className="terminal-turn-list__empty">{terminalTurnStrings.listEmpty}</div> : null}
       {rows.map((row) => {
         // A row still present in the scrollback can be scrolled to in place,

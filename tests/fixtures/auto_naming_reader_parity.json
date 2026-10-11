@@ -1,0 +1,358 @@
+{
+  "schema": "B12-reader-parity-seed-v1",
+  "source_head": "8e8151144190364d26027317a0e99e7ff257b27e",
+  "source_recording_sha256": "615e5af7230e426481dbc33060eb2b1ba246d6695dafb1cb2788b1eeb19aad51",
+  "source_case": "b11-real-193",
+  "frames": [
+    {
+      "at": 0,
+      "brief": {
+        "activityKind": null,
+        "activitySourceEventId": null,
+        "activityText": null,
+        "agentKind": "claude",
+        "agentSessionId": "agent-b11-real-193-0",
+        "briefRevision": 0,
+        "checkpoint": null,
+        "checkpointEvidenceEventIds": [],
+        "eventSeq": 1,
+        "lastEventAt": 1791631280131,
+        "lastSuccessfulReadAt": 2000000,
+        "latestInstruction": "動画を編集する",
+        "namingSourceEventIds": [
+          "u-0:0"
+        ],
+        "operationalState": "ready",
+        "pendingInputKind": null,
+        "pendingOptions": [],
+        "pendingPrompt": null,
+        "promptEventId": null,
+        "promptHash": null,
+        "ptyGeneration": 1,
+        "ptyInputRevision": 0,
+        "ptyInstanceId": "instance",
+        "ptySessionId": "pty-b11-real-193-0",
+        "serviceEpoch": "B11",
+        "sourceRevision": 1,
+        "task": "動画を編集する",
+        "taskSourceEventIds": [
+          "u-0:0"
+        ],
+        "telemetryHealth": "live",
+        "updatedAt": 2000000
+      },
+      "cache_events": [
+        {
+          "eventId": "u-0:0",
+          "kind": {
+            "digest": "6704f7d00a40d4bc3fdadaddffeb447864feecc2c91ed30a2881d5c6d2f07068",
+            "kind": "taskStart",
+            "text": "動画を編集する",
+            "type": "userMessage"
+          },
+          "occurredAt": 1791631280131,
+          "sourceByteEnd": 89,
+          "sourceByteStart": 0,
+          "sourceRevision": 0
+        }
+      ],
+      "material": {
+        "agent_kind": "claude",
+        "agent_session_id": "agent-b11-real-193-0",
+        "cwd": "/fixture",
+        "events": [],
+        "incomplete_event_ids": [],
+        "instruction_history_complete": true,
+        "latest_instruction": "動画を編集する",
+        "latest_instruction_byte_start": 0,
+        "latest_instruction_complete": true,
+        "latest_instruction_event_id": "u-0:0",
+        "latest_instruction_kind": "taskStart",
+        "pty_session_id": "pty-b11-real-193-0",
+        "tab_id": "b11-real-193-0",
+        "task_title": null,
+        "task_title_complete": true
+      },
+      "raw_records": [
+        {
+          "message": {
+            "content": "動画を編集する",
+            "role": "user"
+          },
+          "type": "user",
+          "uuid": "u-0"
+        }
+      ]
+    },
+    {
+      "at": 60000,
+      "brief": {
+        "activityKind": null,
+        "activitySourceEventId": null,
+        "activityText": null,
+        "agentKind": "claude",
+        "agentSessionId": "agent-b11-real-193-0",
+        "briefRevision": 0,
+        "checkpoint": null,
+        "checkpointEvidenceEventIds": [],
+        "eventSeq": 2,
+        "lastEventAt": 1791631280131,
+        "lastSuccessfulReadAt": 2060000,
+        "latestInstruction": "解説スライドを作る",
+        "namingSourceEventIds": [
+          "u-0:0",
+          "u-1:0"
+        ],
+        "operationalState": "ready",
+        "pendingInputKind": null,
+        "pendingOptions": [],
+        "pendingPrompt": null,
+        "promptEventId": null,
+        "promptHash": null,
+        "ptyGeneration": 1,
+        "ptyInputRevision": 0,
+        "ptyInstanceId": "instance",
+        "ptySessionId": "pty-b11-real-193-0",
+        "serviceEpoch": "B11",
+        "sourceRevision": 2,
+        "task": "動画を編集する / 解説スライドを作る",
+        "taskSourceEventIds": [
+          "u-0:0",
+          "u-1:0"
+        ],
+        "telemetryHealth": "live",
+        "updatedAt": 2060000
+      },
+      "cache_events": [
+        {
+          "eventId": "u-0:0",
+          "kind": {
+            "digest": "6704f7d00a40d4bc3fdadaddffeb447864feecc2c91ed30a2881d5c6d2f07068",
+            "kind": "taskStart",
+            "text": "動画を編集する",
+            "type": "userMessage"
+          },
+          "occurredAt": 1791631280131,
+          "sourceByteEnd": 89,
+          "sourceByteStart": 0,
+          "sourceRevision": 0
+        },
+        {
+          "eventId": "u-1:0",
+          "kind": {
+            "digest": "f4a2747e17acf251f9d7c7350036bcc0738568b72f3ffa2016333378983bcb65",
+            "kind": "taskChange",
+            "text": "解説スライドを作る",
+            "type": "userMessage"
+          },
+          "occurredAt": 1791631280131,
+          "sourceByteEnd": 184,
+          "sourceByteStart": 89,
+          "sourceRevision": 1
+        }
+      ],
+      "material": {
+        "agent_kind": "claude",
+        "agent_session_id": "agent-b11-real-193-0",
+        "cwd": "/fixture",
+        "events": [
+          {
+            "eventId": "u-0:0",
+            "kind": {
+              "digest": "6704f7d00a40d4bc3fdadaddffeb447864feecc2c91ed30a2881d5c6d2f07068",
+              "kind": "taskStart",
+              "text": "動画を編集する",
+              "type": "userMessage"
+            },
+            "occurredAt": 1791631280131,
+            "sourceByteEnd": 89,
+            "sourceByteStart": 0,
+            "sourceRevision": 0
+          }
+        ],
+        "incomplete_event_ids": [],
+        "instruction_history_complete": true,
+        "latest_instruction": "解説スライドを作る",
+        "latest_instruction_byte_start": 89,
+        "latest_instruction_complete": true,
+        "latest_instruction_event_id": "u-1:0",
+        "latest_instruction_kind": "taskChange",
+        "pty_session_id": "pty-b11-real-193-0",
+        "tab_id": "b11-real-193-0",
+        "task_title": null,
+        "task_title_complete": true
+      },
+      "raw_records": [
+        {
+          "message": {
+            "content": "動画を編集する",
+            "role": "user"
+          },
+          "type": "user",
+          "uuid": "u-0"
+        },
+        {
+          "message": {
+            "content": "解説スライドを作る",
+            "role": "user"
+          },
+          "type": "user",
+          "uuid": "u-1"
+        }
+      ]
+    },
+    {
+      "at": 65000,
+      "brief": {
+        "activityKind": null,
+        "activitySourceEventId": null,
+        "activityText": null,
+        "agentKind": "claude",
+        "agentSessionId": "agent-b11-real-193-0",
+        "briefRevision": 0,
+        "checkpoint": null,
+        "checkpointEvidenceEventIds": [],
+        "eventSeq": 3,
+        "lastEventAt": 1791631280131,
+        "lastSuccessfulReadAt": 2065000,
+        "latestInstruction": "続きをお願いします",
+        "namingSourceEventIds": [
+          "u-0:0",
+          "u-1:0",
+          "u-2:0"
+        ],
+        "operationalState": "ready",
+        "pendingInputKind": null,
+        "pendingOptions": [],
+        "pendingPrompt": null,
+        "promptEventId": null,
+        "promptHash": null,
+        "ptyGeneration": 1,
+        "ptyInputRevision": 0,
+        "ptyInstanceId": "instance",
+        "ptySessionId": "pty-b11-real-193-0",
+        "serviceEpoch": "B11",
+        "sourceRevision": 3,
+        "task": "動画を編集する / 解説スライドを作る / 続きをお願いします",
+        "taskSourceEventIds": [
+          "u-0:0",
+          "u-1:0",
+          "u-2:0"
+        ],
+        "telemetryHealth": "live",
+        "updatedAt": 2065000
+      },
+      "cache_events": [
+        {
+          "eventId": "u-0:0",
+          "kind": {
+            "digest": "6704f7d00a40d4bc3fdadaddffeb447864feecc2c91ed30a2881d5c6d2f07068",
+            "kind": "taskStart",
+            "text": "動画を編集する",
+            "type": "userMessage"
+          },
+          "occurredAt": 1791631280131,
+          "sourceByteEnd": 89,
+          "sourceByteStart": 0,
+          "sourceRevision": 0
+        },
+        {
+          "eventId": "u-1:0",
+          "kind": {
+            "digest": "f4a2747e17acf251f9d7c7350036bcc0738568b72f3ffa2016333378983bcb65",
+            "kind": "taskChange",
+            "text": "解説スライドを作る",
+            "type": "userMessage"
+          },
+          "occurredAt": 1791631280131,
+          "sourceByteEnd": 184,
+          "sourceByteStart": 89,
+          "sourceRevision": 1
+        },
+        {
+          "eventId": "u-2:0",
+          "kind": {
+            "digest": "a2191a6a02451b1d648f1e20006a44ed7f0a47d6203e71d0472d0e542be965c0",
+            "kind": "taskChange",
+            "text": "続きをお願いします",
+            "type": "userMessage"
+          },
+          "occurredAt": 1791631280131,
+          "sourceByteEnd": 279,
+          "sourceByteStart": 184,
+          "sourceRevision": 2
+        }
+      ],
+      "material": {
+        "agent_kind": "claude",
+        "agent_session_id": "agent-b11-real-193-0",
+        "cwd": "/fixture",
+        "events": [
+          {
+            "eventId": "u-0:0",
+            "kind": {
+              "digest": "6704f7d00a40d4bc3fdadaddffeb447864feecc2c91ed30a2881d5c6d2f07068",
+              "kind": "taskStart",
+              "text": "動画を編集する",
+              "type": "userMessage"
+            },
+            "occurredAt": 1791631280131,
+            "sourceByteEnd": 89,
+            "sourceByteStart": 0,
+            "sourceRevision": 0
+          },
+          {
+            "eventId": "u-1:0",
+            "kind": {
+              "digest": "f4a2747e17acf251f9d7c7350036bcc0738568b72f3ffa2016333378983bcb65",
+              "kind": "taskChange",
+              "text": "解説スライドを作る",
+              "type": "userMessage"
+            },
+            "occurredAt": 1791631280131,
+            "sourceByteEnd": 184,
+            "sourceByteStart": 89,
+            "sourceRevision": 1
+          }
+        ],
+        "incomplete_event_ids": [],
+        "instruction_history_complete": true,
+        "latest_instruction": "続きをお願いします",
+        "latest_instruction_byte_start": 184,
+        "latest_instruction_complete": true,
+        "latest_instruction_event_id": "u-2:0",
+        "latest_instruction_kind": "taskChange",
+        "pty_session_id": "pty-b11-real-193-0",
+        "tab_id": "b11-real-193-0",
+        "task_title": null,
+        "task_title_complete": true
+      },
+      "raw_records": [
+        {
+          "message": {
+            "content": "動画を編集する",
+            "role": "user"
+          },
+          "type": "user",
+          "uuid": "u-0"
+        },
+        {
+          "message": {
+            "content": "解説スライドを作る",
+            "role": "user"
+          },
+          "type": "user",
+          "uuid": "u-1"
+        },
+        {
+          "message": {
+            "content": "続きをお願いします",
+            "role": "user"
+          },
+          "type": "user",
+          "uuid": "u-2"
+        }
+      ]
+    }
+  ]
+}

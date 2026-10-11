@@ -8,7 +8,17 @@ const analysisHarness = vi.hoisted(() => ({ value: null as unknown }));
 const liveRenderHarness = vi.hoisted(() => ({ counts: new Map<string, number>() }));
 const parentRenderHarness = vi.hoisted(() => ({ panel: 0, sideBySide: 0 }));
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => true) }));
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()),
+  invoke: vi.fn(async () => true),
+}));
+
+// Keep the existing fixed analysis fixture at the production evidence entry.
+vi.mock("../../src/components/layout/evidenceGrouping", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/components/layout/evidenceGrouping")>();
+  const grouping = await import("../../src/components/layout/tabGrouping");
+  return { ...actual, runEvidenceGroupingAnalysis: grouping.runGroupingAnalysis };
+});
 
 vi.mock("../../src/components/layout/tabGrouping", async (importActual) => {
   const actual = await importActual<typeof import("../../src/components/layout/tabGrouping")>();

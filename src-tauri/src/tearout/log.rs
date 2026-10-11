@@ -72,8 +72,23 @@ pub struct Destination {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum InputSurface { Band, Strip, Sidebar }
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InputEvidence { pointer_id: i64, event_at: f64, trusted: bool, surface: InputSurface }
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseEvidence { point: super::release::ReleasePoint, receiver_window: Option<String>, receiver_epoch: Option<u64>, client_x: Option<f64>, client_y: Option<f64> }
+static INPUT_EVIDENCE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DragRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input_evidence: Option<InputEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    release_point: Option<ReleaseEvidence>,
     drag_id: String,
     pane_id: String,
     source_window: String,
@@ -132,11 +147,21 @@ fn identifier(value: &str) -> String {
         .collect()
 }
 
+fn retain_input_evidence(record: &mut DragRecord, test_profile: bool, within_budget: bool) {
+    if !test_profile || !within_budget {
+        record.input_evidence = None; record.release_point = None;
+    }
+}
+
 fn line(mut record: DragRecord, profile: &str) -> Result<Vec<u8>, String> {
+    let has_evidence = record.input_evidence.is_some() || record.release_point.is_some();
+    let within_budget = !has_evidence || INPUT_EVIDENCE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 256;
+    retain_input_evidence(&mut record, crate::test_profile::is_active(), within_budget);
     record.drag_id = identifier(&record.drag_id);
     record.pane_id = identifier(&record.pane_id);
     record.source_window = identifier(&record.source_window);
     record.receiver_window = record.receiver_window.map(|id| identifier(&id));
+    if let Some(evidence) = &mut record.release_point { evidence.receiver_window = evidence.receiver_window.take().map(|id| identifier(&id)); }
     if let Some(destination) = &mut record.destination {
         destination.workspace_id = destination.workspace_id.take().map(|id| identifier(&id));
         destination.pane_id = destination.pane_id.take().map(|id| identifier(&id));
@@ -281,6 +306,20 @@ pub(super) fn native_summary(
     }
 }
 
+/// An isolated test profile may opt into bounded input/release correlation.
+/// No production pointer coordinates or terminal contents are recorded.
+#[tauri::command]
+pub async fn tearout_input_evidence_enabled() -> bool {
+    if !crate::test_profile::is_active() { return false; }
+    tokio::task::spawn_blocking(|| {
+        crate::test_profile::runtime_dir().ok()
+            .and_then(|root| fs::read(root.join("tearout-diagnostics.json")).ok())
+            .filter(|bytes| bytes.len() <= 4096)
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .is_some_and(|value| value["input_release"].as_bool() == Some(true))
+    }).await.unwrap_or(false)
+}
+
 #[tauri::command]
 pub async fn tearout_log_record(record: LogRecord) -> Result<(), String> {
     let root = crate::test_profile::runtime_dir()?;
@@ -328,6 +367,21 @@ mod tests {
         injected["terminal_output"] = serde_json::json!("SECRET");
         assert!(serde_json::from_value::<DragRecord>(injected).is_err());
     }
+    #[test]
+    fn input_release_schema_is_bounded_test_only_and_rejects_content() {
+        let mut value = serde_json::to_value(record()).unwrap();
+        value["input_evidence"] = serde_json::json!({"pointer_id":1,"event_at":100.5,"trusted":false,"surface":"band"});
+        value["release_point"] = serde_json::json!({"point":{"x":-1200.5,"y":-30.0,"at":110,"method":"native_up"}, "receiver_window":"receiver", "receiver_epoch":4, "client_x":100.25,"client_y":50.5});
+        let mut parsed: DragRecord = serde_json::from_value(value.clone()).unwrap();
+        retain_input_evidence(&mut parsed, false, true);
+        assert!(parsed.input_evidence.is_none() && parsed.release_point.is_none());
+        let mut parsed: DragRecord = serde_json::from_value(value.clone()).unwrap();
+        retain_input_evidence(&mut parsed, true, false);
+        assert!(parsed.input_evidence.is_none() && parsed.release_point.is_none());
+        value["input_evidence"]["terminal_output"] = serde_json::json!("forbidden");
+        assert!(serde_json::from_value::<DragRecord>(value).is_err());
+    }
+
     #[test]
     fn handoff_records_roundtrip_without_accepting_conversation_content() {
         for outcome in ["handed_off", "handoff_failed"] {

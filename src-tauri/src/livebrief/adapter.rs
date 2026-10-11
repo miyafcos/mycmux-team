@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::autonomy::{AutonomyTracker, SessionAutonomy};
 use super::reducer::{PendingInputKind, PendingOption};
 use super::telemetry::{extract_claude, extract_codex, BillableTokens, CodexTotals, TelemetryDelta};
 use super::{sha256_hex, unix_ms};
@@ -87,9 +88,12 @@ pub enum UserMessageKind {
 pub struct AgentAdapter {
     kind: String,
     provider_kind: String,
+    autonomy: AutonomyTracker,
     open_questions: HashMap<String, String>,
     open_tools: HashMap<String, (String, Option<String>)>,
+    open_started_at: HashMap<String, i64>,
     seen_native_ids: HashSet<String>,
+    replayed_autonomy_ids: Option<HashSet<String>>,
     seen_operator_message: bool,
     claude_billed: HashMap<String, BillableTokens>,
     codex_turn_id: Option<String>,
@@ -114,9 +118,12 @@ impl AgentAdapter {
         Ok(Self {
             kind: kind.to_string(),
             provider_kind,
+            autonomy: AutonomyTracker::default(),
             open_questions: HashMap::new(),
             open_tools: HashMap::new(),
+            open_started_at: HashMap::new(),
             seen_native_ids: HashSet::new(),
+            replayed_autonomy_ids: None,
             seen_operator_message: false,
             claude_billed: HashMap::new(),
             codex_turn_id: None,
@@ -152,7 +159,11 @@ impl AgentAdapter {
         } else {
             native_id(&value, byte_range)
         };
-        if !self.seen_native_ids.insert(native_id.clone()) {
+        let dedupe_id = if self.kind != "grok" && value.get("uuid").or_else(|| value.get("id")).or_else(|| value.pointer("/payload/id")).is_none() {
+            format!("{native_id}:{}", sha256_hex(raw_line.as_bytes()))
+        } else { native_id.clone() };
+        let already_observed = self.replayed_autonomy_ids.as_ref().is_some_and(|ids| ids.contains(&dedupe_id));
+        if !self.seen_native_ids.insert(dedupe_id) {
             self.last_telemetry_delta = None;
             return Ok(Vec::new());
         }
@@ -166,11 +177,25 @@ impl AgentAdapter {
                 .and_then(parse_timestamp)
                 .unwrap_or_else(unix_ms)
         };
+        if !already_observed { self.autonomy.observe(&self.kind, &value, occurred_at); }
         let mut kinds = match self.kind.as_str() {
             "codex" => self.decode_codex(&value),
             "grok" => self.decode_grok(&value),
             _ => self.decode_claude(&value),
         };
+        if !already_observed && !kinds.is_empty() { self.autonomy.record_activity(occurred_at); }
+        for kind in &kinds {
+            match kind {
+                SemanticEventKind::ToolStart { call_id, .. } | SemanticEventKind::Question { provider_call_id: call_id, .. } => {
+                    if already_observed { self.open_started_at.entry(call_id.clone()).or_insert(occurred_at); }
+                    else { self.open_started_at.insert(call_id.clone(), occurred_at); }
+                }
+                SemanticEventKind::ToolEnd { call_id, .. } | SemanticEventKind::QuestionResolved { provider_call_id: call_id, .. } => {
+                    self.open_started_at.remove(call_id);
+                }
+                _ => {}
+            }
+        }
         Ok(kinds
             .drain(..)
             .enumerate()
@@ -183,6 +208,92 @@ impl AgentAdapter {
                 kind,
             })
             .collect())
+    }
+
+    pub fn autonomy_at(&self, now: i64, process_started_at: Option<i64>) -> SessionAutonomy {
+        self.autonomy.snapshot(now, process_started_at)
+    }
+
+    pub fn autonomy_last_event_at(&self) -> Option<i64> {
+        self.autonomy.last_event_at()
+    }
+
+    pub fn event_clock_needs_rebase(&self, now: i64) -> bool {
+        self.autonomy.event_clock_needs_rebase(now)
+    }
+
+    pub fn mark_truncated_history(&mut self) {
+        self.autonomy.mark_truncated_history(self.kind == "claude");
+    }
+
+    pub fn inherit_autonomy(&mut self, previous: &Self, now: i64, process_started_at: Option<i64>) {
+        self.autonomy.inherit_current_work(&previous.autonomy, now, process_started_at);
+    }
+
+    /// Seed only current work before replay; display/history parser state starts fresh.
+    pub fn inherit_before_replay(&mut self, previous: &Self, same_conversation: bool) {
+        if same_conversation {
+            self.autonomy = previous.autonomy.clone();
+            self.open_questions = previous.open_questions.clone();
+            self.open_tools = previous.open_tools.clone();
+            self.open_started_at = previous.open_started_at.clone();
+            self.replayed_autonomy_ids = Some(previous.seen_native_ids.clone());
+        } else {
+            self.inherit_autonomy(previous, i64::MIN, None);
+        }
+    }
+
+    pub fn finish_replay(&mut self) {
+        if let Some(ids) = self.replayed_autonomy_ids.take() { self.seen_native_ids.extend(ids); }
+    }
+
+    pub fn has_prior_process_work(&self, start: Option<i64>) -> bool {
+        start.is_some_and(|start| self.open_started_at.values().any(|at| *at < start))
+    }
+
+    pub fn retire_prior_process(&mut self, start: Option<i64>) -> Vec<SemanticEventKind> {
+        let Some(start) = start else { return Vec::new() };
+        let mut ids: Vec<_> = self.open_started_at.iter().filter(|(_, at)| **at < start)
+            .map(|(id, _)| id.clone()).collect();
+        ids.sort();
+        let mut out = Vec::new();
+        for id in ids {
+            self.open_started_at.remove(&id);
+            if let Some(prompt_event_id) = self.open_questions.remove(&id) {
+                out.push(SemanticEventKind::QuestionResolved { prompt_event_id, provider_call_id: id.clone() });
+            }
+            if let Some((tool, target)) = self.open_tools.remove(&id) {
+                out.push(SemanticEventKind::ToolEnd { call_id: id, tool, target, ok: false,
+                    summary: Some("Previous agent process ended".to_string()) });
+            }
+        }
+        out
+    }
+
+    pub fn prune_autonomy(&mut self, now: i64, process_started_at: Option<i64>) {
+        self.autonomy.prune(now, process_started_at);
+    }
+
+    #[cfg(test)]
+    pub fn retained_background_count(&self) -> usize {
+        self.autonomy.retained_background_count()
+    }
+
+    fn interrupt_current_turn(&mut self) -> Vec<SemanticEventKind> {
+        self.open_started_at.clear();
+        let mut questions: Vec<_> = self.open_questions.drain().collect();
+        questions.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut out = Vec::new();
+        for (provider_call_id, prompt_event_id) in questions {
+            self.open_tools.remove(&provider_call_id);
+            out.push(SemanticEventKind::QuestionResolved { prompt_event_id, provider_call_id });
+        }
+        let mut tools: Vec<_> = self.open_tools.drain().collect();
+        tools.sort_by(|a, b| a.0.cmp(&b.0));
+        out.extend(tools.into_iter().map(|(call_id, (tool, target))| SemanticEventKind::ToolEnd {
+            call_id, tool, target, ok: false, summary: Some("Turn interrupted".to_string()),
+        }));
+        out
     }
 
     fn extract_telemetry(&mut self, value: &Value) -> Option<TelemetryDelta> {
@@ -226,6 +337,9 @@ impl AgentAdapter {
         }
         if outer == "event_msg" && matches!(inner, "task_complete" | "turn_aborted") {
             self.set_codex_turn(None);
+        }
+        if outer == "event_msg" && inner == "turn_aborted" {
+            return self.interrupt_current_turn();
         }
         match (outer, inner) {
             ("event_msg", "user_message") => payload
@@ -391,6 +505,9 @@ impl AgentAdapter {
     /// record, not as a top-level record, so one record can carry both an
     /// operator message and several tool completions.
     fn claude_user(&mut self, record: &Value, message: &Value) -> Vec<SemanticEventKind> {
+        if collect_text(message.get("content")).is_some_and(|text| text.trim_start().starts_with("[Request interrupted by user")) {
+            return self.interrupt_current_turn();
+        }
         let is_meta = record
             .get("isMeta")
             .and_then(Value::as_bool)
@@ -483,6 +600,7 @@ impl AgentAdapter {
             .unwrap_or("missing-call-id")
             .to_string();
         if let Some(prompt_event_id) = self.open_questions.remove(&call_id) {
+            self.open_tools.remove(&call_id);
             return vec![SemanticEventKind::QuestionResolved {
                 prompt_event_id,
                 provider_call_id: call_id,
@@ -567,6 +685,7 @@ impl AgentAdapter {
             .unwrap_or("missing-call-id")
             .to_string();
         if let Some(prompt_event_id) = self.open_questions.remove(&call_id) {
+            self.open_tools.remove(&call_id);
             return vec![SemanticEventKind::QuestionResolved {
                 prompt_event_id,
                 provider_call_id: call_id,
@@ -745,7 +864,7 @@ fn grok_text(value: &Value) -> Option<String> {
     }
 }
 
-fn collect_text(value: Option<&Value>) -> Option<String> {
+pub(super) fn collect_text(value: Option<&Value>) -> Option<String> {
     match value? {
         Value::String(text) if !text.trim().is_empty() => Some(text.to_string()),
         Value::Array(items) => {
@@ -761,7 +880,7 @@ fn collect_text(value: Option<&Value>) -> Option<String> {
     }
 }
 
-fn extract_target(raw: &str) -> Option<String> {
+pub(super) fn extract_target(raw: &str) -> Option<String> {
     serde_json::from_str::<Value>(raw).ok().and_then(|value| {
         value
             .get("file_path")
@@ -892,7 +1011,7 @@ fn clear_error_line(output: &str) -> Option<&str> {
     })
 }
 
-fn parse_question(raw: &str) -> (String, PendingInputKind, Vec<PendingOption>) {
+pub(super) fn parse_question(raw: &str) -> (String, PendingInputKind, Vec<PendingOption>) {
     let value = serde_json::from_str::<Value>(raw).unwrap_or(Value::Null);
     let prompt = value
         .get("question")
@@ -944,7 +1063,25 @@ const INJECTED_USER_PREFIXES: [&str; 4] = [
     "<system-reminder>",
 ];
 
-fn is_injected_user_text(text: &str) -> bool {
+/// Model inputs differ from local CLI display records. Explicit notification,
+/// peer and continuation-hook inputs may be meta records but do start a turn.
+pub(super) fn claude_user_starts_turn(record: &Value, text: &str) -> bool {
+    let text = text.trim_start();
+    if text.is_empty() || ["<command-name>", "<command-message>", "<local-command-stdout>"]
+        .iter().any(|prefix| text.starts_with(prefix)) {
+        return false;
+    }
+    if matches!(record.pointer("/origin/kind").and_then(Value::as_str),
+        Some("human" | "peer" | "task-notification" | "hook" | "stop-hook"))
+        || record.get("turnOrigin").and_then(Value::as_str) == Some("task_notification")
+        || ["<task-notification>", "<peer-message>", "<teammate-message>", "<stop-hook-feedback>", "Stop hook feedback:"]
+            .iter().any(|prefix| text.starts_with(prefix)) {
+        return true;
+    }
+    record.get("isMeta").and_then(Value::as_bool) != Some(true) && !is_injected_user_text(text)
+}
+
+pub(super) fn is_injected_user_text(text: &str) -> bool {
     let text = text.trim_start();
     INJECTED_USER_PREFIXES
         .iter()
@@ -956,7 +1093,7 @@ fn short(text: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.chars().take(160).collect())
 }
 
-fn parse_timestamp(value: &str) -> Option<i64> {
+pub(super) fn parse_timestamp(value: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(value)
         .ok()
         .map(|time| time.timestamp_millis())

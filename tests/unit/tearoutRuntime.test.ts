@@ -17,22 +17,27 @@ vi.mock("../../src/lib/tearout/sessionAttachment", () => ({ expectTearoutAttachm
 vi.mock("../../src/components/terminal/terminalCache", async (original) => ({
   ...await original<typeof import("../../src/components/terminal/terminalCache")>(), evictTerminalCache: vi.fn(),
 }));
-import { installTearoutRuntime, tearoutTab, tearoutPane, useTearoutStore, isTearoutChild, markTearoutChildReady, visitTearoutLocation, regrabTearoutWindow } from "../../src/lib/tearout/runtime";
+import { installTearoutRuntime, tearoutTab, tearoutPane, useTearoutStore, isTearoutChild, markTearoutChildReady, visitTearoutLocation, regrabTearoutWindow, canRegrabTearoutTab, canRegrabTearoutPane } from "../../src/lib/tearout/runtime";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { useSessionAttentionStore } from "../../src/stores/sessionAttentionStore";
+import { createPaneMoveRequest, executePaneMove } from "../../src/lib/paneMoveOperation";
 import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
 import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useUiStore } from "../../src/stores/uiStore";
 import { restoreTearoutSource, removeTearoutTab } from "../../src/lib/tearout/model";
 import { evictTerminalCache } from "../../src/components/terminal/terminalCache";
-import { tearoutOperationBusy, endTearoutOperation } from "../../src/lib/tearout/operation";
+import { tearoutOperationBusy, beginTearoutOperation, endTearoutOperation } from "../../src/lib/tearout/operation";
 import { activeTearoutRecords } from "../../src/lib/tearout/record";
 import * as tearoutHandoff from "../../src/lib/tearout/handoff";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
+import { restoreWorkspaceConfigs } from "../../src/lib/workspaceRestore";
 import { buildWindowFragment, toTransferConfig } from "../../src/components/layout/SocketListener";
 import type { Workspace } from "../../src/types";
 import type { WorkspaceConfig } from "../../src/lib/ipc";
 
+const deliveredToMain: { token: string; source: string }[] = [];
 function dispatch(event: string, payload: unknown, recipient?: string) {
+  if (event === "mycmux://tearout-delivery" && (!recipient || recipient === "main")) deliveredToMain.push(payload as { token: string; source: string });
   for (const callback of [...(mocks.listeners.get(event) ?? [])]) {
     const target = mocks.targets.get(callback);
     // Tauri's default Any subscription receives an emitTo for another window.
@@ -53,6 +58,7 @@ let stop: () => void;
 beforeEach(() => {
   mocks.listeners.clear(); vi.clearAllMocks(); mocks.failShow = false; mocks.failReceipt = false; mocks.failNativeListen = false; mocks.escape = true;
   mocks.broadcastTargetedDelivery = false; mocks.attachmentReady = null;
+  endTearoutOperation(); usePaneMetadataStore.setState({ metadata: {} });
   Object.defineProperty(navigator, "platform", { configurable: true, value: "Win32" });
   useSettingsStore.setState({ nativePaneTearoutEnabled: true });
   useWorkspaceListStore.setState({ workspaces: [workspace()], activeWorkspaceId: "source" });
@@ -77,7 +83,12 @@ beforeEach(() => {
   });
   stop = installTearoutRuntime({ serialize: config, publish: async () => {} });
 });
-afterEach(async () => { stop(); await Promise.resolve(); useSettingsStore.setState({ nativePaneTearoutEnabled: false }); });
+afterEach(async () => {
+  // Cancel the test's source transactions before reusing this WebView's
+  // module graph in the next test; pointer-up alone intentionally cannot.
+  for (const delivery of deliveredToMain.splice(0)) dispatch("mycmux://tearout-revoke", { ...delivery, ack: `cleanup-${delivery.token}` }, "main");
+  for (let i = 0; i < 12; i++) await Promise.resolve();
+  stop(); await Promise.resolve(); useSettingsStore.setState({ nativePaneTearoutEnabled: false }); });
 const item = { kind: "tab" as const, workspaceId: "source", paneId: "pane", tabId: "tab", label: "Terminal" };
 const gap = { x: 0, y: 0, width: 90, height: 30 };
 describe("tear-out failure and Esc at the actual transfer entry", () => {
@@ -204,20 +215,21 @@ describe("tear-out failure and Esc at the actual transfer entry", () => {
         }
         if (event.endsWith("tearout-revoke")) dispatch("mycmux://tearout-revoke", payload);
       });
-      const pending = tearoutTab(item, gap, { x: 10, y: 10 });
+      const pending = regrabTearoutWindow();
       await vi.advanceTimersByTimeAsync(19000);
-      expect(useWorkspaceListStore.getState().workspaces).toEqual([]);
+      expect(useWorkspaceListStore.getState().workspaces).toEqual(before);
       const request = mocks.emitTo.mock.calls.find(([, event]) => event.endsWith("tearout-outgoing"))![2];
       expect(request.deliveryToken).toBeTruthy();
       expect(request.deliveryToken).not.toBe(request.token);
       await vi.advanceTimersByTimeAsync(1000);
       await pending;
+      await vi.waitFor(() => expect(tearoutOperationBusy()).toBe(false));
       expect(useWorkspaceListStore.getState().workspaces).toEqual(before);
       const revokeIndex = mocks.emitTo.mock.calls.findIndex(([, event, payload]) =>
         event.endsWith("tearout-revoke") && payload.token === request.deliveryToken);
-      const retireIndex = mocks.invoke.mock.calls.findIndex(([command]) => command === "tearout_retire");
+      const restoreIndex = mocks.invoke.mock.calls.findIndex(([command]) => command === "tearout_restore_geometry");
       expect(revokeIndex).toBeGreaterThanOrEqual(0);
-      expect(mocks.emitTo.mock.invocationCallOrder[revokeIndex]).toBeLessThan(mocks.invoke.mock.invocationCallOrder[retireIndex]);
+      expect(mocks.emitTo.mock.invocationCallOrder[revokeIndex]).toBeLessThan(mocks.invoke.mock.invocationCallOrder[restoreIndex]);
       expect(mocks.invoke).toHaveBeenCalledWith("tearout_phase", { id: request.deliveryToken, phase: "rolled_back" });
       expect(mocks.invoke).toHaveBeenCalledWith("tearout_forget", { id: request.deliveryToken });
       const receipts = mocks.emitTo.mock.calls.filter(([, event]) => event.endsWith("tearout-receipt")).length;
@@ -261,12 +273,13 @@ describe("tear-out failure and Esc at the actual transfer entry", () => {
       if (event.endsWith("tearout-outgoing")) { request = payload; confirm(); return; }
       return emitTo(label, event, payload);
     });
-    const pending = tearoutTab(item, gap, { x: 10, y: 10 });
+    const pending = regrabTearoutWindow();
     await requested;
-    expect(mocks.emitTo.mock.calls.some(([, event]) => event.endsWith("tearout-finalize"))).toBe(false);
+    expect(mocks.invoke.mock.calls.some(([command]) => command === "tearout_finalize")).toBe(false);
     dispatch("mycmux://tearout-receipt", { token: request.token, ok: true });
     await pending;
-    expect(mocks.emitTo).toHaveBeenCalledWith("peer", "mycmux://tearout-finalize", { token: request.deliveryToken });
+    await vi.waitFor(() => expect(tearoutOperationBusy()).toBe(false));
+    expect(mocks.invoke).toHaveBeenCalledWith("tearout_finalize", { id: request.deliveryToken, token: request.deliveryToken });
     expect(mocks.invoke.mock.calls.some(([cmd, args]) => cmd === "tearout_phase" && args.phase === "rolled_back")).toBe(false);
   });
   it("restoring a removed workspace keeps its position and unrelated panes", () => {
@@ -652,72 +665,309 @@ it.each(["tearout_session_not_alive", "tearout_attachment_timeout", "tearout_ado
   });
   await tearoutTab(item, gap, { x: 10, y: 10 });
   const notice = useToastStore.getState().toasts.find(toast => toast.kind === "error")!;
-  expect(notice.message).toContain("\u79fb\u52d5\u5148\u306e\u7a93\u304c\u30da\u30a4\u30f3\u3092\u53d7\u3051\u53d6\u308c\u307e\u305b\u3093\u3067\u3057\u305f");
+  expect(notice.message).toContain("\u79fb\u52d5\u5148\u306e\u7a93\u304c\u30bf\u30d6\u3092\u53d7\u3051\u53d6\u308c\u307e\u305b\u3093\u3067\u3057\u305f");
   expect(notice.message).toContain("\u623b\u3057\u307e\u3057\u305f");
   expect(notice.message).not.toMatch(/pty-|tearout_/);
   expect(useWorkspaceListStore.getState().workspaces).toEqual([workspace()]);
 });
 
-describe("handoff returns to the source snapshot", () => {
-  it.each(["front", "background", "failed", "request-error", "last-workspace"])(
-    "restores IDs, order, active and remembered selection after %s handoff", async (mode) => {
-      const source = workspace();
-      if (mode !== "last-workspace") {
-        source.panes[0].tabs = [
-          { id: "front", agentId: "shell", sessionId: "front-pty", label: "Front" },
-          source.panes[0].tabs[0],
-          { id: "back", agentId: "shell", sessionId: "back-pty", label: "Back" },
-        ];
-        const background = mode === "background";
-        source.panes[0].activeTabId = background ? "front" : "tab";
-        source.panes[0].sessionId = background ? "front-pty" : "pty-original";
-      }
-      const before = [workspace("earlier"), source, workspace("later")];
-      before[0].panes[0].id = "earlier-pane"; before[0].panes[0].tabs[0].id = "earlier-tab";
-      before[0].panes[0].tabs[0].sessionId = "earlier-pty";
-      before[0].panes[0].sessionId = "earlier-pty"; before[0].panes[0].activeTabId = "earlier-tab";
-      before[2].panes[0].id = "later-pane"; before[2].panes[0].tabs[0].id = "later-tab";
-      before[2].panes[0].tabs[0].sessionId = "later-pty";
-      before[2].panes[0].sessionId = "later-pty"; before[2].panes[0].activeTabId = "later-tab";
-      useWorkspaceListStore.setState({ workspaces: before, activeWorkspaceId: "source",
-        lastActivePaneByWorkspace: { source: source.panes[0].sessionId, earlier: "earlier-pty" } });
-      useUiStore.setState({ activePaneId: source.panes[0].sessionId, zoomedPaneId: "pane" });
-      usePaneMetadataStore.setState({ metadata: { "pty-original": {
-        agentKind: "claude", agentSessionId: "fake-source-agent", cwd: "C:/demo/source" } } });
-      const clearContext = vi.fn(async () => {});
-      const broadcast = vi.spyOn(tearoutHandoff, "publishTearoutHandoffDrag").mockResolvedValue(clearContext);
-      const handoff = vi.spyOn(tearoutHandoff, "requestTearoutHandoff");
-      if (mode === "request-error") handoff.mockRejectedValue(new Error("synthetic receiver failure"));
-      else handoff.mockResolvedValue(mode !== "failed");
-      const invoke = mocks.invoke.getMockImplementation()!;
-      const approval = { receiver: "peer", token: "painted", target: { kind: "handoff", workspaceId: "target-ws",
-        paneId: "target-pane", tabId: "target-tab", sessionId: "target-pty", targetAgentKind: "codex" } };
-      mocks.invoke.mockImplementation(async (command, args) => {
-        if (command === "tearout_start_move") {
-          expect(useWorkspaceListStore.getState().workspaces.flatMap(ws => ws.panes.flatMap(pane => pane.tabs))
-            .some(tab => tab.id === "tab")).toBe(false);
-          dispatch("mycmux://tearout-native", { ...args, phase: "end", at: Date.now(), escaped: false,
-            receiver: "peer", client_x: 300, client_y: 200, approval, native_started_at: Date.now(),
-            error: null, scale: 1, monitor: "DISPLAY1", focus_stolen: false });
-          return;
-        }
-        return invoke(command, args);
-      });
-      await tearoutTab(item, gap, { x: 10, y: 10 });
-      expect(handoff).toHaveBeenCalledWith(expect.any(String), approval);
-      expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({ sourceWindow: "main", label: "mycmux-w42",
-        endpoint: expect.objectContaining({ workspaceId: "source", paneId: "pane", tab: expect.objectContaining({ id: "tab", sessionId: "pty-original" }) }) }));
-      expect(clearContext).toHaveBeenCalledTimes(1);
+describe("handoff from a detached child preserves its existing state", () => {
+  it.each(["success", "failed", "request-error"])("preserves IDs, selection and live session on %s", async outcome => {
+    const before = useWorkspaceListStore.getState().workspaces;
+    useWorkspaceListStore.setState({ lastActivePaneByWorkspace: { source: "pty-original" } });
+    useUiStore.setState({ activePaneId: "pty-original", zoomedPaneId: "pane" });
+    usePaneMetadataStore.setState({ metadata: { "pty-original": {
+      agentKind: "claude", agentSessionId: "source-agent", cwd: "C:/demo" } } });
+    const clear = vi.fn(async () => {});
+    const publish = vi.spyOn(tearoutHandoff, "publishTearoutHandoffDrag").mockResolvedValue(clear);
+    const handoff = vi.spyOn(tearoutHandoff, "requestTearoutHandoff");
+    if (outcome === "request-error") handoff.mockRejectedValue(new Error("synthetic receiver failure"));
+    else handoff.mockResolvedValue(outcome === "success");
+    const approval = { receiver: "peer", token: "painted", target: { kind: "handoff", workspaceId: "target", paneId: "target-pane",
+      tabId: "target-tab", sessionId: "target-pty", targetAgentKind: "codex" } };
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === "tearout_start_move") dispatch("mycmux://tearout-native", { ...args, phase: "end", at: Date.now(), escaped: false,
+        receiver: "peer", client_x: 150, client_y: 150, approval, error: null, original: { x: 10, y: 20, width: 600, height: 400 } });
+    });
+    try {
+      await regrabTearoutWindow(); await vi.waitFor(() => expect(tearoutOperationBusy()).toBe(false));
+      expect(handoff).toHaveBeenCalledWith(expect.any(String), approval); expect(clear).toHaveBeenCalledOnce();
       expect(useWorkspaceListStore.getState().workspaces).toEqual(before);
       expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe("source");
-      expect(useWorkspaceListStore.getState().lastActivePaneByWorkspace).toEqual({ source: source.panes[0].sessionId, earlier: "earlier-pty" });
-      expect(useUiStore.getState().activePaneId).toBe(source.panes[0].sessionId);
-      expect(useUiStore.getState().zoomedPaneId).toBe("pane");
-      expect(mocks.attachments).toHaveBeenCalledWith(["pty-original"]);
-      expect(mocks.invoke.mock.calls.filter(([cmd]) => cmd === "tearout_retire")).toHaveLength(1);
-      expect(mocks.invoke.mock.calls.some(([cmd]) => ["create_session", "kill_session", "spawn_session"].includes(cmd))).toBe(false);
+      expect(useWorkspaceListStore.getState().lastActivePaneByWorkspace).toEqual({ source: "pty-original" });
+      expect(useUiStore.getState().activePaneId).toBe("pty-original"); expect(useUiStore.getState().zoomedPaneId).toBe("pane");
+      expect(mocks.attachments).not.toHaveBeenCalled();
+      expect(mocks.invoke.mock.calls.some(([cmd]) => ["tearout_take_spare", "tearout_retire", "create_session", "kill_session"].includes(cmd))).toBe(false);
+      expect(mocks.invoke).toHaveBeenCalledWith("tearout_restore_geometry", { label: "main", geometry: { x: 10, y: 20, width: 600, height: 400 } });
       const record = mocks.invoke.mock.calls.find(([cmd, args]) => cmd === "tearout_log_record" && args.record.result)![1].record;
-      expect(record.result).toBe(mode === "failed" || mode === "request-error" ? "handoff_failed" : "handed_off");
+      expect(record.result).toBe(outcome === "success" ? "handed_off" : "handoff_failed");
       expect(record.destination.kind).toBe("handoff");
+      if (outcome === "request-error") expect(record.failure_reason).toBe("synthetic receiver failure");
+    } finally { publish.mockRestore(); handoff.mockRestore(); }
+  });
+});
+
+describe("native transport common move result", () => {
+  it("rejects a generation change during the commit command before removing source ownership", async () => {
+    const feed = (epoch: number) => useSessionAttentionStore.getState().applySnapshot({ server_epoch: "move-server", seq: epoch,
+      sessions: [{ session_id: "pty-original", session_revision: epoch, status: { session_epoch: epoch, lifecycle: "alive", ui_state: "working",
+        attention: { attention_id: null, kind: "none", detail: null, state_since: 0 } } }] });
+    useSessionAttentionStore.getState().resetForTests(); feed(7);
+    const original = useWorkspaceListStore.getState().workspaces;
+    const invoke = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation(async (command: string, args: any) => {
+      if (command === "tearout_phase" && args.phase === "committed") feed(8);
+      return invoke(command, args);
     });
+    try {
+      const result = await executePaneMove(createPaneMoveRequest(item, { kind: "native-window", gap, offset: { x: 10, y: 10 } }));
+      expect(result).toMatchObject({ status: "failed", phase: "rolled_back", receipt: "pending", reason: expect.stringContaining("execution_changed") });
+      expect(useWorkspaceListStore.getState().workspaces).toEqual(original);
+      expect(mocks.invoke.mock.calls.some(([command]) => command === "tearout_start_move")).toBe(false);
+      expect(mocks.emitTo.mock.calls.some(([, event]) => event.endsWith("tearout-delivery"))).toBe(false);
+    } finally { useSessionAttentionStore.getState().resetForTests(); }
+  });
+
+  it("reports a kept native window as moved only after the real receiver receipt", async () => {
+    mocks.escape = false;
+    const request = createPaneMoveRequest(item, { kind: "native-window", gap, offset: { x: 10, y: 10 } });
+    expect(await executePaneMove(request)).toMatchObject({ operationId: request.operationId, status: "moved", phase: "cleaned",
+      receipt: "acknowledged", destinationWindow: "mycmux-w42" });
+    expect(mocks.invoke).toHaveBeenCalledWith("tearout_phase", { id: request.operationId, phase: "received" });
+  });
+});
+
+
+describe("local overlap refusal (E1/E4/E5)", () => {
+  it("captures moving before a delayed or failed rejection log, without a recovery warning", async () => {
+    const { useToastStore } = await import("../../src/stores/toastStore");
+    useToastStore.setState({ toasts: [] });
+    expect(beginTearoutOperation()).toBe(true);
+    const before = useWorkspaceListStore.getState().workspaces;
+    let failLog = (_error: Error) => {};
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "tearout_log_record") return new Promise((_, reject) => { failLog = reject; });
+    });
+    const refused = regrabTearoutWindow().catch(error => error);
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("tearout_log_record", expect.anything()));
+    endTearoutOperation();
+    failLog(new Error("log unavailable"));
+    const error = await refused;
+    expect(error).toMatchObject({ message: "tearout_move_busy", phase: "moving" });
+    expect(useToastStore.getState().toasts).toEqual([]);
+    expect(useWorkspaceListStore.getState().workspaces).toEqual(before);
+    expect(mocks.invoke.mock.calls.some(([cmd]) => cmd === "tearout_start_move" || cmd === "tearout_settle")).toBe(false);
+  });
+  it("recognizes another WebView's accepted move from native lifecycle samples", async () => {
+    const sample = { id: "other-owner", mode: "detach", label: "main", source: "peer", phase: "move", at: Date.now(),
+      receiver: null, client_x: -1, client_y: -1, approval: null, escaped: false, region_count: 1 };
+    dispatch("mycmux://tearout-native", sample, "main");
+    try {
+      expect(tearoutOperationBusy()).toBe(true);
+      await expect(regrabTearoutWindow()).rejects.toMatchObject({ message: "tearout_move_busy", phase: "moving" });
+      expect(mocks.invoke.mock.calls.some(([cmd]) => cmd === "tearout_start_move")).toBe(false);
+      expect(mocks.invoke.mock.calls.find(([cmd, args]) => cmd === "tearout_log_record" && args.record.result === "rejected_busy")?.[1].record.failure_phase).toBe("moving");
+    } finally {
+      dispatch("mycmux://tearout-native", { ...sample, phase: "end" }, "main");
+      endTearoutOperation();
+    }
+  });
+});
+
+it("refuses a cross-WebView regrab before native ownership even before its first lifecycle sample (E5)", async () => {
+  const { useToastStore } = await import("../../src/stores/toastStore"); useToastStore.setState({ toasts: [] });
+  const before = useWorkspaceListStore.getState().workspaces;
+  let id = "";
+  mocks.invoke.mockImplementation(async (command: string, args: any) => {
+    if (command === "tearout_start_move") {
+      id = args.id;
+      return { kind: "rejected_busy", pre_ownership: true, phase: "moving", owner_id: "main-owned", source: "peer", label: "main" };
+    }
+  });
+  try {
+    await expect(regrabTearoutWindow()).rejects.toMatchObject({ message: "tearout_move_busy", phase: "moving" });
+    expect(useWorkspaceListStore.getState().workspaces).toEqual(before);
+    expect(useToastStore.getState().toasts).toEqual([]);
+    expect(mocks.invoke.mock.calls.some(([cmd]) => cmd === "tearout_settle" || cmd === "tearout_restore_geometry")).toBe(false);
+    expect(mocks.invoke.mock.calls.find(([cmd, args]) => cmd === "tearout_log_record" && args.record.result === "rejected_busy")?.[1].record.failure_phase).toBe("moving");
+    expect(tearoutOperationBusy()).toBe(false);
+  } finally {
+    dispatch("mycmux://tearout-native", { id, mode: "dock", phase: "end", at: Date.now(), escaped: true, receiver: null, error: null });
+    await Promise.resolve(); await Promise.resolve(); endTearoutOperation();
+  }
+});
+
+
+it.each(["raw-busy", "not-pre-ownership", "different-window", "same-request"] as const)(
+  "preserves native-start recovery without an authentic pre-ownership refusal: %s", async reason => {
+    const { useToastStore } = await import("../../src/stores/toastStore"); useToastStore.setState({ toasts: [] });
+    mocks.invoke.mockImplementation(async (command: string, args: any) => {
+      if (command !== "tearout_start_move") return;
+      if (reason === "raw-busy") throw new Error("tearout_move_busy");
+      return { kind: "rejected_busy", pre_ownership: reason !== "not-pre-ownership", phase: "moving",
+        owner_id: reason === "same-request" ? args.id : "main-owned", source: "peer",
+        label: reason === "different-window" ? "other-window" : args.label };
+    });
+    await expect(regrabTearoutWindow()).rejects.toThrow(reason === "raw-busy" ? "tearout_move_busy" : "tearout_start_result_invalid");
+    expect(mocks.invoke).toHaveBeenCalledWith("tearout_settle", { label: "main" });
+    expect(useToastStore.getState().toasts.some(toast => toast.kind === "error")).toBe(true);
+    expect(mocks.invoke.mock.calls.filter(([cmd]) => cmd === "tearout_log_record").at(-1)?.[1].record)
+      .toMatchObject({ result: "failed_restored", failure_phase: "moving", errors: ["native_move_failed"] });
+    expect(tearoutOperationBusy()).toBe(false); expect(activeTearoutRecords.size).toBe(0);
+  });
+
+
+describe("O2 separates first detach from whole-window dock", () => {
+  it.each(["workspace", "handoff"])("keeps the first window despite an otherwise valid %s approval", async kind => {
+    const approval = { receiver: "peer", token: "painted", target: kind === "workspace" ? { kind } : {
+      kind, workspaceId: "target", paneId: "target-pane", tabId: "target-tab", sessionId: "target-pty", targetAgentKind: "codex" } };
+    const publish = vi.spyOn(tearoutHandoff, "publishTearoutHandoffDrag").mockResolvedValue(async () => {});
+    const handoff = vi.spyOn(tearoutHandoff, "requestTearoutHandoff").mockResolvedValue(true);
+    usePaneMetadataStore.setState({ metadata: { "pty-original": { agentKind: "claude", agentSessionId: "source-agent", cwd: "C:/demo" } } });
+    const base = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === "tearout_start_move") {
+        dispatch("mycmux://tearout-native", { ...args, source: "main", phase: "end", at: Date.now(), escaped: false,
+          receiver: "peer", client_x: 150, client_y: 150, approval, error: null,
+          release: { x: 150, y: 150, at: Date.now(), method: "native_up" } });
+        return;
+      }
+      if (command === "tearout_resolve_release") return approval;
+      return base(command, args);
+    });
+    const emit = mocks.emitTo.getMockImplementation()!;
+    mocks.emitTo.mockImplementation(async (label, event, payload) => {
+      if (event.endsWith("tearout-outgoing")) dispatch("mycmux://tearout-receipt", { token: payload.token, ok: true });
+      else return emit(label, event, payload);
+    });
+    try {
+      await tearoutTab(item, gap, { x: 10, y: 10 });
+      expect(mocks.invoke).toHaveBeenCalledWith("tearout_settle", { label: "mycmux-w42" });
+      expect(mocks.invoke.mock.calls.some(([cmd]) => cmd === "tearout_resolve_release")).toBe(false);
+      expect(mocks.emitTo.mock.calls.some(([, event]) => event.endsWith("tearout-outgoing"))).toBe(false);
+      expect(publish).not.toHaveBeenCalled(); expect(handoff).not.toHaveBeenCalled();
+      expect(mocks.invoke).toHaveBeenCalledWith("tearout_start_move", expect.objectContaining({ mode: "detach" }));
+      expect(useWorkspaceListStore.getState().workspaces).toEqual([]);
+      expect(mocks.invoke.mock.calls.find(([cmd, args]) => cmd === "tearout_log_record" && args.record.result)?.[1].record.result).toBe("kept_window");
+    } finally { publish.mockRestore(); handoff.mockRestore(); }
+  });
+  it("detaches a partial pane inside a child and reserves dock for the whole child", async () => {
+    window.__MYCMUX_TEAROUT_WINDOW__ = true;
+    const source = workspace();
+    source.panes.push({ ...source.panes[0], id: "other", sessionId: "pty-other", activeTabId: "other-tab",
+      tabs: [{ ...source.panes[0].tabs[0], id: "other-tab", sessionId: "pty-other" }] });
+    source.splitColumns = [["pane"], ["other"]];
+    useWorkspaceListStore.setState({ workspaces: [source] });
+    const base = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === "tearout_start_move") { dispatch("mycmux://tearout-native", { ...args, phase: "end", at: Date.now(), escaped: false, approval: null, error: null }); return; }
+      return base(command, args);
+    });
+    try {
+      expect(canRegrabTearoutTab(item)).toBe(false);
+      expect(canRegrabTearoutPane({ kind: "pane", workspaceId: "source", paneId: "pane", label: "Group", tabCount: 1 })).toBe(false);
+      await tearoutPane({ kind: "pane", workspaceId: "source", paneId: "pane", label: "Group", tabCount: 1 }, gap, { x: 10, y: 10 });
+      expect(mocks.invoke).toHaveBeenCalledWith("tearout_start_move", expect.objectContaining({ mode: "detach", regionCount: 1 }));
+      expect(useWorkspaceListStore.getState().workspaces[0].panes.map(p => p.id)).toEqual(["other"]);
+    } finally { delete window.__MYCMUX_TEAROUT_WINDOW__; }
+  });
+  it.each([true, false])("publishes regrab handoff context, awaits its receipt and preserves ownership, ok=%s", async ok => {
+    const before = useWorkspaceListStore.getState().workspaces;
+    usePaneMetadataStore.setState({ metadata: { "pty-original": { agentKind: "claude", agentSessionId: "source-agent", cwd: "C:/demo" } } });
+    const clear = vi.fn(async () => {});
+    const publish = vi.spyOn(tearoutHandoff, "publishTearoutHandoffDrag").mockResolvedValue(clear);
+    let receipt!: (ok: boolean) => void;
+    const handoff = vi.spyOn(tearoutHandoff, "requestTearoutHandoff").mockImplementation(() => new Promise(resolve => { receipt = resolve; }));
+    const approval = { receiver: "peer", token: "final", release_id: "release-id", layout_revision: "revision", target: {
+      kind: "handoff", workspaceId: "target", paneId: "target-pane", tabId: "target-tab", sessionId: "target-pty", targetAgentKind: "codex" } };
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === "tearout_start_move") {
+        dispatch("mycmux://tearout-native", { ...args, source: "main", phase: "end", at: Date.now(), escaped: false, receiver: "peer",
+          client_x: 150, client_y: 150, approval: null, error: null, original: { x: 10, y: 10, width: 600, height: 400 },
+          release: { x: 150, y: 150, at: Date.now(), method: "native_up" } });
+      }
+      if (command === "tearout_resolve_release") return approval;
+    });
+    // Old regrab misroutes this target through dock. Acknowledge that request
+    // so the red run has no pending timeout or ownership leaking to the next test.
+    const emit = mocks.emitTo.getMockImplementation()!;
+    mocks.emitTo.mockImplementation(async (label, event, payload) => {
+      if (event.endsWith("tearout-outgoing")) dispatch("mycmux://tearout-receipt", { token: payload.token, ok: true });
+      else return emit(label, event, payload);
+    });
+    try {
+      await regrabTearoutWindow();
+      await vi.waitFor(() => expect(handoff).toHaveBeenCalled());
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ id: expect.any(String), label: "main", sourceWindow: "main",
+        endpoint: expect.objectContaining({ tab: expect.objectContaining({ id: "tab", sessionId: "pty-original" }) }) }));
+      expect(publish.mock.invocationCallOrder[0]).toBeLessThan(mocks.invoke.mock.invocationCallOrder[mocks.invoke.mock.calls.findIndex(([cmd]) => cmd === "tearout_start_move")]);
+      expect(mocks.invoke).toHaveBeenCalledWith("tearout_start_move", expect.objectContaining({ mode: "dock", regrab: true }));
+      expect(tearoutOperationBusy()).toBe(true); expect(clear).not.toHaveBeenCalled();
+      receipt(ok);
+      await vi.waitFor(() => expect(tearoutOperationBusy()).toBe(false));
+      expect(clear).toHaveBeenCalledOnce();
+      expect(useWorkspaceListStore.getState().workspaces).toEqual(before);
+      expect(mocks.invoke.mock.calls.some(([cmd]) => cmd === "tearout_take_spare" || cmd === "tearout_retire")).toBe(false);
+      expect(mocks.emitTo.mock.calls.some(([, event]) => event.endsWith("tearout-outgoing"))).toBe(false);
+      expect(mocks.invoke.mock.calls.find(([cmd, args]) => cmd === "tearout_log_record" && args.record.result)?.[1].record.result).toBe(ok ? "handed_off" : "handoff_failed");
+    } finally { receipt?.(false); await Promise.resolve(); publish.mockRestore(); handoff.mockRestore(); }
+  });
+});
+
+
+it.each(["center", "left", "right", "up", "down"] as const)("O2 docks the next whole-window gesture at the same point into %s without a spare", async zone => {
+  const approval = { receiver: "peer", token: "final", release_id: "second-release", layout_revision: "layout", target: {
+    kind: "pane-zone", workspaceId: "receiver", paneId: "receiver-pane", zone } };
+  const base = mocks.invoke.getMockImplementation()!;
+  mocks.invoke.mockImplementation(async (command, args) => {
+    if (command === "tearout_start_move") dispatch("mycmux://tearout-native", { ...args, source: "main", phase: "end", at: Date.now(),
+      escaped: false, error: null, receiver: "peer", client_x: 150, client_y: 150, approval,
+      release: { x: 150, y: 150, at: Date.now(), method: "native_up" }, original: { x: 0, y: 0, width: 600, height: 400 } });
+    else if (command === "tearout_resolve_release") return approval;
+    else return base(command, args);
+  });
+  await tearoutTab(item, gap, { x: 10, y: 10 });
+  expect(mocks.emitTo.mock.calls.some(([, event]) => event.endsWith("tearout-outgoing"))).toBe(false);
+  expect(mocks.invoke.mock.calls.filter(([cmd]) => cmd === "tearout_take_spare")).toHaveLength(1);
+  // Load the received child state; this second gesture owns the existing window.
+  useWorkspaceListStore.setState({ workspaces: [workspace()], activeWorkspaceId: "source" });
+  let outgoing: any;
+  const emit = mocks.emitTo.getMockImplementation()!;
+  mocks.emitTo.mockImplementation(async (label, event, payload) => {
+    if (event.endsWith("tearout-outgoing")) outgoing = payload;
+    else return emit(label, event, payload);
+  });
+  await regrabTearoutWindow();
+  await vi.waitFor(() => expect(outgoing?.approval.target).toEqual(approval.target));
+  expect(tearoutOperationBusy()).toBe(true);
+  expect(mocks.invoke.mock.calls.filter(([cmd]) => cmd === "tearout_take_spare")).toHaveLength(1);
+  expect(mocks.invoke.mock.calls.filter(([cmd]) => cmd === "tearout_resolve_release")).toHaveLength(1);
+  dispatch("mycmux://tearout-receipt", { token: outgoing.token, ok: true });
+  await vi.waitFor(() => expect(tearoutOperationBusy()).toBe(false));
+  expect(mocks.invoke).toHaveBeenCalledWith("tearout_finalize", { id: outgoing.deliveryToken, token: outgoing.deliveryToken });
+});
+
+
+it.each([false, true])("O2 regrab uses received identity before metadata and honors live clearing, cleared=%s", async cleared => {
+  const cfg = config(workspace("received"));
+  cfg.panes[0].tabs![0].agent_kind = "claude";
+  cfg.panes[0].tabs![0].agent_session_id = "received-agent";
+  cfg.panes[0].tabs![0].cwd = "C:/demo/received";
+  useWorkspaceListStore.setState({ workspaces: [], activeWorkspaceId: "received" });
+  usePaneMetadataStore.setState({ metadata: cleared ? { "pty-original": { cwd: "C:/demo/received" } } : {} }); restoreWorkspaceConfigs([cfg]);
+  const clear = vi.fn(async () => {});
+  const publish = vi.spyOn(tearoutHandoff, "publishTearoutHandoffDrag").mockResolvedValue(clear);
+  mocks.invoke.mockImplementation(async (command, args) => {
+    if (command === "tearout_start_move") dispatch("mycmux://tearout-native", { ...args, phase: "end", at: Date.now(), escaped: true, error: null,
+      receiver: null, approval: null, original: { x: 0, y: 0, width: 600, height: 400 } });
+  });
+  try {
+    await regrabTearoutWindow(); await vi.waitFor(() => expect(tearoutOperationBusy()).toBe(false));
+    if (cleared) { expect(publish).not.toHaveBeenCalled(); expect(clear).not.toHaveBeenCalled(); }
+    else {
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ mode: "dock", endpoint: expect.objectContaining({ metadata: {
+        agentKind: "claude", agentSessionId: "received-agent", cwd: "C:/demo/received" } }) }));
+      expect(clear).toHaveBeenCalledOnce();
+    }
+  } finally { publish.mockRestore(); }
 });

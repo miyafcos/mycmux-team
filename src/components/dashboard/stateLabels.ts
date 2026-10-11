@@ -22,6 +22,14 @@ export function stateLabels(state: DashboardDisplayState): StateLabels {
   if (state === "done") return stateLabelsForAxes("needsReview", "done");
   if (state === "acknowledged") return stateLabelsForAxes(null, "done");
   if (state === "stopped") return stateLabelsForAxes(null, "stopped");
+  if (state === "delegated") {
+    return { ...stateLabelsForAxes(null, "waiting"), primary: dashboardStrings.stateDelegated,
+      activityLabel: dashboardStrings.stateDelegated, tooltip: dashboardStrings.stateDelegated };
+  }
+  if (state === "delegationUnknown") {
+    return { ...stateLabelsForAxes(null, "waiting"), primary: dashboardStrings.stateDelegationUnknown,
+      activityLabel: dashboardStrings.stateDelegationUnknown, tooltip: dashboardStrings.stateDelegationUnknown };
+  }
   return stateLabelsForAxes(null, "waiting");
 }
 

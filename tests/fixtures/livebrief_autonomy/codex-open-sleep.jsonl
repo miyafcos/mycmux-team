@@ -1,0 +1,2 @@
+{"type":"event_msg","timestamp":"2026-10-08T05:15:45.274Z","ordinal":1,"payload":{"type":"task_started","turn_id":"id-00002","root_turn_id":"id-00002","started_at":1791436543,"model_context_window":258400,"collaboration_mode_kind":"[text 7]"}}
+{"type":"response_item","timestamp":"2026-10-08T07:51:37.058Z","ordinal":1546,"payload":{"type":"function_call","id":"id-01052","name":"sleep","namespace":"[text 5]","arguments":"[text 21]","call_id":"id-01053"}}

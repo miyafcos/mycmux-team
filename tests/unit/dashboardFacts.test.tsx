@@ -187,6 +187,18 @@ describe("気づき欄の事実カード", () => {
     expect(card?.dataset.attentionFactKind).toBe("noUpdate");
     expect(card?.textContent).toContain(dashboardStrings.attentionFactKindLabel("noUpdate", 45));
     expect(card?.querySelector(".cmux-attention-fact-detail")?.textContent).toBe("テストを実行中");
+    expect(card?.textContent).not.toContain("2 本目");
+  });
+
+  it("45 分 静かな自走中の席からは、更新なしの気づきを出さない", async () => {
+    await renderAttention([source({
+      noUpdateMinutes: 45,
+      brief: brief({ activityText: "テストを実行中\n2 本目", autonomy: { turnState: "active", openToolCount: 0, armedBackgroundCount: 0 } }),
+    })]);
+
+    const card = container.querySelector<HTMLElement>("[data-attention-fact-card]");
+    expect(card).toBeNull();
+    expect(container.querySelector("[data-attention-empty]")?.textContent).toBe(dashboardStrings.attentionEmpty);
   });
 });
 

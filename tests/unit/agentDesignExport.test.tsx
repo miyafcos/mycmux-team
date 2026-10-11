@@ -39,8 +39,8 @@ describe("agent design export", () => {
   it("keeps the export surface and key 6 beside the mechanism and four established views", async () => {
     const base: AgentDesignApi = { peek: () => catalog, cached: async () => catalog, refresh: async () => catalog, document: vi.fn(), close: vi.fn(), scene: vi.fn(), setHermesHome: vi.fn() };
     await act(async () => root.render(<AgentDesignView onClose={vi.fn()} api={base} exportApi={api} initialCatalog={catalog} />));
-    expect(host.querySelectorAll(".ad-tabs button")).toHaveLength(8);
-    expect(host.querySelectorAll(".ad-tabs button")[7].textContent).toBe("書き出し");
+    expect(host.querySelectorAll(".ad-tabs button")).toHaveLength(9);
+    expect(host.querySelectorAll(".ad-tabs button")[8].textContent).toBe("書き出し");
     await act(async () => host.querySelector(".ad-view")!.dispatchEvent(new KeyboardEvent("keydown", { key: "6", bubbles: true }))); await settle();
     expect(host.querySelector('[data-ad-view="export"]')).toBeTruthy();
     await act(async () => host.querySelector<HTMLInputElement>(".ad-search input")!.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true })));

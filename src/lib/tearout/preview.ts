@@ -6,7 +6,7 @@ export function sameDockTarget(a: DockTarget | null, b: DockTarget | null): bool
   return a.kind === b.kind && a.workspaceId === b.workspaceId && a.paneId === b.paneId
     && (a.kind === "tab-index" && b.kind === "tab-index" ? a.index === b.index
       : a.kind === "handoff" && b.kind === "handoff" ? a.tabId === b.tabId && a.sessionId === b.sessionId
-        && a.targetAgentKind === b.targetAgentKind
+        && a.targetAgentKind === b.targetAgentKind && a.targetAgentSessionId === b.targetAgentSessionId
       : a.kind === "pane-zone" && b.kind === "pane-zone" && a.zone === b.zone);
 }
 

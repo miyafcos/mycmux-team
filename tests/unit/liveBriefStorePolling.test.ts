@@ -530,3 +530,21 @@ describe("followup subscription and detail regressions", () => {
     expect(useLiveBriefStore.getState().eventsBySession).toEqual({});
   });
 });
+
+
+describe("R9 unchanged semantic brief observations",()=>{
+ it("keeps automatic admission fresh without Dashboard/detail polling and expires stopped reads",async()=>{
+  const now=10000;vi.setSystemTime(now);
+  const brief={ptySessionId:"proof",agentKind:"claude",agentSessionId:"exact",ptyGeneration:7,ptyInstanceId:"instance",serviceEpoch:"service",briefRevision:1,lastSuccessfulReadAt:now,telemetryHealth:"live",pendingInputKind:null,pendingPrompt:null,operationalState:"running"} as import("../../src/lib/livebrief").LiveSessionBrief;
+  let reading=true;
+  mocks.invoke.mockImplementation(async(cmd:string)=>cmd==="get_live_briefs"?[brief]:cmd==="get_live_read_observations"?[{...brief,lastSuccessfulReadAt:reading?Date.now():now+6000}]:[]);
+  const release=(connectLiveBriefStore as (ids:readonly string[])=>()=>void)(["proof"]);
+  await vi.advanceTimersByTimeAsync(6000);
+  const {automaticHistorySafe}=await import("../../src/components/terminal/conversationHistoryAdmission");
+  const state=useLiveBriefStore.getState() as unknown as {observationsBySession?:Record<string,unknown>};
+  const safety={active:true,visible:true,disposed:false,composing:false,selecting:false,dragging:false,overlay:false,liveAgentKind:"claude",ptyAlive:true,descriptor:{ptySessionId:"proof",tabId:"tab",expectedAgentKind:"claude",expectedAgentSessionId:"exact"},ready:true,brief:useLiveBriefStore.getState().briefsBySession.proof,observation:state.observationsBySession?.proof,attention:{kind:"none",uiState:"working",sessionEpoch:7},signals:{health:"fresh",activity:"streaming",lastMonitorAt:Date.now()},now:Date.now()} as unknown as import("../../src/components/terminal/conversationHistoryAdmission").HistorySafety;
+  expect(automaticHistorySafe(safety)).toBe(true);expect(useLiveBriefStore.getState().briefsBySession.proof).toBe(brief);expect(eventCalls()).toEqual([]);
+  reading=false;await vi.advanceTimersByTimeAsync(6000);safety.now=Date.now();safety.signals!.lastMonitorAt=Date.now();Object.assign(safety,{observation:(useLiveBriefStore.getState() as any).observationsBySession?.proof});expect(automaticHistorySafe(safety)).toBe(false);
+  release();const count=mocks.invoke.mock.calls.filter(c=>c[0]==="get_live_read_observations").length;await vi.advanceTimersByTimeAsync(6000);expect(mocks.invoke.mock.calls.filter(c=>c[0]==="get_live_read_observations").length).toBe(count);
+ });
+});

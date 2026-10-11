@@ -34,7 +34,7 @@ async function frame() {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.label = "main";
-  useWorkspaceListStore.setState({ workspaces: [{ id: "destination", panes: [{ id: "pane", tabs: [] }] } as unknown as Workspace] });
+  useWorkspaceListStore.setState({ workspaces: [{ id: "destination", panes: [{ id: "pane", tabs: [{ id: "a" }, { id: "b" }] }] } as unknown as Workspace] });
   frames.clear();
   vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => { frames.set(++frameId, callback); return frameId; });
   vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
@@ -67,7 +67,7 @@ describe("detached dock target", () => {
         toLabel: label, workspaceId: "transfer",
       });
       expect(takeDetachedPlacements(["transfer"])).toEqual({ transfer: {
-        kind: "pane", workspaceId: "destination", paneId: "pane", index: 1,
+        kind: "pane", workspaceId: "destination", paneId: "pane", index: 2,
       } });
     } finally { stop(); }
   });
@@ -87,8 +87,8 @@ describe("detached dock target", () => {
     } finally { stop(); }
   });
 
-  it.each([[220, 0], [250, 1], [349, 1], [350, 2], [440, 2]])(
-    "converts screen x %s at 150 percent scale into slot %s", (screenX, index) => {
+  it.each([[220, 2], [250, 2], [349, 2], [350, 2], [440, 2]])(
+    "converts screen x %s at 150 percent scale and appends at slot %s", (screenX, index) => {
       expect(detachedDockTarget(payload("move", screenX), { x: 300, y: 150, scale: 1.5 }))
         .toEqual({ kind: "tab-index", workspaceId: "destination", paneId: "pane", index });
       expect(hit).toHaveBeenCalledWith(screenX - 200, 10);
@@ -171,7 +171,7 @@ describe("detached dock target", () => {
       emit("move", 440); emit("end", 220);
       await frame();
       expect(hit).toHaveBeenCalledTimes(2);
-      expect(takeDetachedPlacements(["transfer"])).toEqual({ transfer: { kind: "pane", workspaceId: "destination", paneId: "pane", index: 0 } });
+      expect(takeDetachedPlacements(["transfer"])).toEqual({ transfer: { kind: "pane", workspaceId: "destination", paneId: "pane", index: 2 } });
       expect(mocks.handoff).toHaveBeenCalledTimes(1);
     } finally { stop(); }
   });

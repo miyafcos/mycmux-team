@@ -139,6 +139,7 @@ describe("workspace factory parity", () => {
       structuredClone(compiledRecord.splitColumns ?? []),
       {
         id: compiledRecord.id,
+        nameSource: compiledRecord.nameSource,
         createdAt: compiledRecord.createdAt,
         color: compiledRecord.color,
         pet: compiledRecord.pet,
@@ -151,6 +152,7 @@ describe("workspace factory parity", () => {
     const factoryRecord = buildWorkspaceRecord({
       id: compiledRecord.id,
       name: compiledRecord.name,
+      nameSource: compiledRecord.nameSource,
       gridTemplateId: compiledRecord.gridTemplateId,
       panes: structuredClone(compiledRecord.panes),
       splitColumns: structuredClone(compiledRecord.splitColumns ?? []),

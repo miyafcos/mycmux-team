@@ -3,8 +3,11 @@ import type { Pane } from "../types";
 import { usePaneMetadataStore } from "../stores/paneMetadataStore";
 import { collectLiveAgentTabs, collectPaneCloseVictims, paneCloseImpactMessage } from "./paneCloseImpact";
 import { agentCloseDialogOptions } from "./agentCloseDialog";
+import type { PaneCloseTarget } from "./paneClosePreflight";
 
 export interface PaneCloseConfirmOptions {
+  /** Preflight panes hold the selected tabs; distinguish selection from a whole container. */
+  targetKind?: PaneCloseTarget["kind"];
   /** Shown in the body when a workspace is closed, so the target is unambiguous. */
   workspaceName?: string;
   /**
@@ -31,12 +34,12 @@ export async function confirmPaneClose(
   if (victims.length === 0 && (scope === "pane" || scope === "tab")) return true;
 
   const body = scope === "tab"
-    ? `「${victims[0].label}」は稼働中です。このペインを閉じて終了しますか？`
+    ? `「${victims[0].label}」は稼働中です。このタブを閉じて終了しますか？`
     : scope === "pane" && liveAgentTabs.length > 0
-    ? `このタブには実行中のエージェントペインが ${liveAgentTabs.length} 件あります。まとめて閉じますか？`
+    ? `実行中のエージェントのタブが ${liveAgentTabs.length} 個あります。対象のタブをまとめて閉じますか？`
     : victims.length > 0
       ? paneCloseImpactMessage(victims)
-    : "開いているペインは、まとめて終了します。";
+    : "開いているタブは、まとめて終了します。";
   const peers = options.peerWindowCount ?? 0;
   const outcome = scope !== "window"
     ? ""
@@ -46,10 +49,19 @@ export async function confirmPaneClose(
   const named = scope === "workspace" && options.workspaceName
     ? `ワークスペース「${options.workspaceName}」\n${body}`
     : `${body}${outcome}`;
+  const selectedCount = panes.reduce((count, pane) => count + pane.tabs.length, 0);
+  const behindCount = Math.max(0, selectedCount - 1);
+  const title = scope === "tab"
+    ? "このタブを閉じます"
+    : options.targetKind === "tabs"
+      ? `選択したタブ ${selectedCount} 個を閉じます`
+      : behindCount > 0
+        ? `このタブと裏のタブ ${behindCount} 個を閉じます`
+        : "このタブを閉じます";
 
   return confirm(named, {
     ...((scope === "pane" || scope === "tab")
-      ? agentCloseDialogOptions(scope === "tab" ? "このペインを閉じます" : "このタブを閉じます")
+      ? agentCloseDialogOptions(title)
       : {
           title: scope === "window"
             ? peers > 0 ? "このウィンドウを閉じます" : "mycmux を終了します"

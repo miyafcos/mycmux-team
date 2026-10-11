@@ -28,6 +28,23 @@
   font-display: block;
 }
 
+/* Same font-display: block rationale as UDEV Gothic NF above. */
+@font-face {
+  font-family: "HackGen Console NF";
+  src: url("./assets/fonts/HackGenConsoleNF-Regular.woff") format("woff");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "HackGen Console NF";
+  src: url("./assets/fonts/HackGenConsoleNF-Bold.woff") format("woff");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
 :root {
   --cmux-bg: #0a0a0a;
   --cmux-bg-solid: #0a0a0a;
@@ -77,17 +94,17 @@
   /* UI chrome line-height, driven by the density setting (AppShell overrides
      per uiDensity). "normal" keeps the historical look for "standard". */
   --cmux-line-height-ui: normal;
-  /* UI chrome. The Japanese faces are named explicitly because the generic
-     sans-serif fallback differs per platform; on macOS this resolves to
-     Hiragino Sans, the best Japanese UI face the system ships. */
+  /* UI fallback. The themed root prepends the selected font's named faces.
+     Explicit Japanese faces keep the fallback predictable across platforms;
+     this canonical stack is also guarded against the copy in fontAvailability. */
   --cmux-font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", Meiryo, Roboto, sans-serif;
   --cmux-dash-ui-font: var(--cmux-font-ui);
   --cmux-dash-body-font: var(--cmux-font-mono);
   --cmux-dash-font-size: var(--cmux-font-size-sm);
   --cmux-dash-line-height: var(--cmux-line-height-ui);
-  /* "UDEV Gothic NF" is the bundled face declared above, so this resolves to
-     the same glyphs on every platform. The rest is a safety net for a build
-     whose font assets failed to load. */
+  /* Mono fallback. The themed root prepends the selected font's named faces.
+     "UDEV Gothic NF" is bundled; the other faces are a safety net if its assets
+     fail to load. The canonical stack stays in sync with fontAvailability. */
   --cmux-font-mono: "UDEV Gothic NF", "UDEV Gothic", ui-monospace, SFMono-Regular, "JetBrains Mono", Consolas, monospace;
   --cmux-focus-ring: color-mix(in srgb, var(--cmux-accent) 45%, transparent);
   --cmux-dnd-tab: #38bdf8;
@@ -267,6 +284,35 @@ body,
   text-rendering: optimizeLegibility;
 }
 
+/* Resolve inherited typography where the selected font variables are set. */
+[data-cmux-themed-root] {
+  font-family: var(--cmux-font-ui);
+}
+
+/* Override user-agent form fonts while leaving explicit class/inline fonts in charge. */
+:where([data-cmux-themed-root]) :where(button, input, select, textarea) {
+  font-family: inherit;
+}
+
+/* Override user-agent monospace fonts without displacing explicit component fonts. */
+:where([data-cmux-themed-root]) :where(code, pre, kbd, samp) {
+  font-family: var(--cmux-font-mono);
+}
+
+/* App siblings and recovery UI keep typography even when a shell is absent. */
+:where([data-cmux-app-font-scope]) :where(button, input, select, textarea) {
+  font-family: inherit;
+}
+
+:where([data-cmux-app-font-scope]) :where(code, pre, kbd, samp) {
+  font-family: var(--cmux-font-mono);
+}
+
+/* A pre can deliberately use a body font; its nested code must share that route. */
+:where([data-cmux-themed-root], [data-cmux-app-font-scope]) :where(pre code) {
+  font-family: inherit;
+}
+
 /* macOS draws text through CoreText, which applies almost no hinting, and
    `-webkit-font-smoothing: antialiased` forces greyscale antialiasing on top
    of that and thins every glyph further. Windows ignores the property and
@@ -411,6 +457,25 @@ div:focus-within > .tab-close-btn,
   color: var(--cmux-text-secondary) !important;
 }
 
+.inbox-panel-button {
+  background: none;
+  border: none;
+  color: var(--cmux-text-secondary);
+  cursor: pointer;
+  padding: 3px 8px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+}
+
+.inbox-panel-button:disabled,
+.inbox-panel-button:disabled:hover {
+  background: none !important;
+  color: var(--cmux-text-tertiary) !important;
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .cmux-title-btn.cmux-title-btn--close:hover {
   background: color-mix(in srgb, var(--cmux-red) 22%, transparent) !important;
   color: var(--cmux-red) !important;
@@ -482,6 +547,76 @@ div:focus-within > .tab-close-btn,
   background: var(--pane-tabbar-bg, var(--cmux-surface-raised)) !important;
   box-shadow: var(--cmux-edge-highlight);
   container-type: inline-size;
+}
+
+.pane-heading-row {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 4px;
+  min-width: 0;
+}
+
+.pane-heading-content {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1 1 0;
+  min-width: 0;
+  align-self: stretch;
+}
+
+.pane-active-heading {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 36px;
+  box-sizing: border-box;
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0 6px;
+  overflow: hidden;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+
+.pane-active-heading-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-heading-spacer {
+  flex: 1 1 0;
+  min-width: 0;
+  align-self: stretch;
+}
+
+.pane-heading-row > .pane-action-btn,
+.pane-heading-row > div > .pane-action-btn {
+  flex-shrink: 0;
+  padding: 4px;
+}
+
+.pane-hidden-tabs {
+  font-size: var(--cmux-font-size-xs);
+  white-space: nowrap;
+}
+
+.pane-header-close:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.pane-header-close:disabled:hover {
+  color: var(--cmux-text-tertiary);
+  background: none;
+}
+
+.pane-history-menu-item {
+  padding: 6px 12px;
 }
 
 /* The all-tabs dropdown necessarily floats over pane borders and neighbouring
@@ -1268,6 +1403,7 @@ div:focus-within > .tab-close-btn,
 .terminal-transcript-panel__head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--cmux-space-2);
   padding: var(--cmux-space-2) var(--cmux-space-3);
   border-bottom: 1px solid var(--cmux-border);
@@ -1303,6 +1439,51 @@ div:focus-within > .tab-close-btn,
   flex-direction: column;
   overflow: hidden;
 }
+
+.terminal-transcript-search {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-width: 0;
+  gap: var(--cmux-space-2);
+  padding: var(--cmux-space-2) var(--cmux-space-3);
+  border-bottom: 1px solid var(--cmux-border);
+  font-size: var(--cmux-font-size-xs);
+  overflow-wrap: anywhere;
+}
+.terminal-transcript-search input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  padding: var(--cmux-space-2);
+  border: 1px solid var(--cmux-border);
+  border-radius: 4px;
+  color: var(--cmux-text);
+  background: var(--cmux-surface);
+}
+.terminal-transcript-search__controls { display: flex; align-items: center; flex-wrap: wrap; gap: var(--cmux-space-2); }
+.terminal-transcript-search button { font: inherit; padding: var(--cmux-space-1) var(--cmux-space-2); border: 1px solid var(--cmux-border); border-radius: 4px; color: var(--cmux-text-secondary); background: var(--cmux-surface); cursor: pointer; }
+.terminal-transcript-search button:disabled { opacity: 0.5; cursor: default; }
+.terminal-transcript-search__scope { color: var(--cmux-text-dim); }
+.cmux-archive-row[data-transcript-search-match="true"] { background: var(--cmux-hover); }
+.cmux-archive-search-active { outline: 2px solid var(--cmux-accent); outline-offset: -2px; }
+
+.cmux-archive-transcript { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; }
+.cmux-archive-actions, .cmux-archive-nav { display: flex; align-items: center; flex-wrap: wrap; gap: var(--cmux-space-2); padding: var(--cmux-space-2); font-size: var(--cmux-font-size-xs); }
+.cmux-archive-actions button, .cmux-archive-nav button, .cmux-archive-boundary, .cmux-archive-row button { font: inherit; color: var(--cmux-text-secondary); border: 1px solid var(--cmux-border); border-radius: 4px; background: var(--cmux-surface); cursor: pointer; padding: var(--cmux-space-1) var(--cmux-space-2); }
+.cmux-archive-actions button:disabled, .cmux-archive-nav button:disabled, .cmux-archive-boundary:disabled { opacity: 0.5; cursor: default; }
+.cmux-archive-actions span { color: var(--cmux-text-dim); }
+.cmux-archive-nav { flex-wrap: nowrap; border-bottom: 1px solid var(--cmux-border); }
+.cmux-archive-boundary { text-align: center; font-size: var(--cmux-font-size-xs); }
+.cmux-archive-log { flex: 1; min-height: 0; padding: 0; overflow: auto; overflow-anchor: none; }
+.cmux-archive-row { padding: var(--cmux-space-2); box-sizing: border-box; }
+.cmux-archive-evidence { border-left: 2px solid var(--cmux-border); }
+.cmux-archive-target { color: var(--cmux-text-dim); overflow-wrap: anywhere; }
+.cmux-archive-empty, .cmux-archive-notice { padding: var(--cmux-space-2); font-size: var(--cmux-font-size-xs); color: var(--cmux-text-dim); }
+.cmux-archive-pending { height: 40px; padding: var(--cmux-space-2); box-sizing: border-box; font-size: var(--cmux-font-size-xs); }
+.cmux-archive-body { max-height: 40%; flex-shrink: 0; min-height: 80px; display: flex; flex-direction: column; border-top: 1px solid var(--cmux-border); }
+.cmux-archive-body pre { overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: var(--cmux-space-2); font-size: var(--cmux-font-size-xs); }
 
 .terminal-turn-chip {
   position: absolute;

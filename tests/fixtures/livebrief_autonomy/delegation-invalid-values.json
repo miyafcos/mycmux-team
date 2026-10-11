@@ -1,0 +1,95 @@
+[
+  {
+    "name": "missing",
+    "remove": [
+      "delegated_by_tab_id",
+      "delegated_by_agent_session_id",
+      "delegated_at"
+    ]
+  },
+  {
+    "name": "null",
+    "patch": {
+      "delegated_by_tab_id": null,
+      "delegated_by_agent_session_id": null,
+      "delegated_at": null
+    },
+    "remove": [
+      "delegated_by_tab_id",
+      "delegated_by_agent_session_id",
+      "delegated_at"
+    ]
+  },
+  {
+    "name": "numeric parent ID",
+    "patch": {
+      "delegated_by_tab_id": 7
+    },
+    "remove": [
+      "delegated_by_tab_id"
+    ]
+  },
+  {
+    "name": "numeric conversation ID",
+    "patch": {
+      "delegated_by_agent_session_id": 7
+    },
+    "remove": [
+      "delegated_by_agent_session_id"
+    ]
+  },
+  {
+    "name": "string timestamp",
+    "patch": {
+      "delegated_at": "1800000000000"
+    },
+    "remove": [
+      "delegated_at"
+    ]
+  },
+  {
+    "name": "fraction timestamp",
+    "patch": {
+      "delegated_at": 1.5
+    },
+    "remove": [
+      "delegated_at"
+    ]
+  },
+  {
+    "name": "huge timestamp",
+    "patch": {
+      "delegated_at": 1e+30
+    },
+    "remove": [
+      "delegated_at"
+    ]
+  },
+  {
+    "name": "unsafe integer timestamp",
+    "patch": {
+      "delegated_at": 9007199254740992
+    },
+    "remove": [
+      "delegated_at"
+    ]
+  },
+  {
+    "name": "negative timestamp",
+    "patch": {
+      "delegated_at": -1
+    },
+    "remove": [
+      "delegated_at"
+    ]
+  },
+  {
+    "name": "future key",
+    "patch": {
+      "future_delegation": {
+        "ignored": true
+      }
+    },
+    "remove": []
+  }
+]

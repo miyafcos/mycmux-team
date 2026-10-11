@@ -12,6 +12,7 @@ export interface PaneHandoffPinnedTarget {
   tabId: string;
   sessionId: string;
   targetAgentKind: AgentSessionKind;
+  targetAgentSessionId?: string;
 }
 
 /** Capture only handoff identity; no terminal content or launch environment travels. */
@@ -38,7 +39,8 @@ export function resolvePaneHandoffContext(source: PaneHandoffEndpoint | null,
   const pasteTarget = resolveLiveAgentTarget(workspaceId, paneId, tab.id);
   if (!eligibility || !pasteTarget || pasteTarget.targetKind !== eligibility.targetAgentKind) return null;
   if (pinned && (pasteTarget.tabId !== pinned.tabId || pasteTarget.sessionId !== pinned.sessionId
-    || pasteTarget.targetKind !== pinned.targetAgentKind)) return null;
+    || pasteTarget.targetKind !== pinned.targetAgentKind
+    || pinned.targetAgentSessionId !== undefined && pasteTarget.agentSessionId !== pinned.targetAgentSessionId)) return null;
   return { eligibility, pasteTarget };
 }
 
@@ -50,12 +52,13 @@ export async function commitPaneHandoffContext(context: ReturnType<typeof resolv
     useToastStore.getState().pushToast(onlineStrings.dragDropTargetGone, "warning");
     return false;
   }
+  const pasteTarget = { ...context.pasteTarget };
   const openingToastId = useToastStore.getState().pushToast(onlineStrings.dragDropPreparingDraft, "info");
   try {
     const published = await publishSavepoint({ cwd: context.eligibility.sourceCwd,
       agentKind: context.eligibility.publishAgentKind, agentSessionId: context.eligibility.sourceAgentSessionId });
     if (!isCurrent()) return false;
-    return await commitSavepointPaste(published.bundle_dir, context.pasteTarget, openingToastId, isCurrent);
+    return await commitSavepointPaste(published.bundle_dir, pasteTarget, openingToastId, isCurrent);
   } catch (error) {
     console.error("[mycmux] failed to publish pane handoff", error);
     if (isCurrent()) useToastStore.getState().pushToast(onlineStrings.dragDropErrorPrefix + String(error), "error");

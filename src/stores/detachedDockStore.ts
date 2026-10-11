@@ -2,8 +2,7 @@ import { create } from "zustand";
 import { listen, emitTo } from "@tauri-apps/api/event";
 import { getCurrentWindow, getAllWindows } from "@tauri-apps/api/window";
 import { useWorkspaceListStore } from "./workspaceListStore";
-import { resolveTabInsertionIndex } from "./paneDragStore";
-import { resolvePaneDropZone, type PaneHandoffEndpoint } from "../lib/paneHandoff";
+import { paneHeaderInsertionIndex, resolvePaneHeaderTarget, resolvePaneDropZone, type PaneHandoffEndpoint } from "../lib/paneHandoff";
 import { resolvePaneHandoffContext, type PaneHandoffPinnedTarget } from "../lib/paneHandoffRuntime";
 import type { DetachedReturnTarget } from "../lib/detachedPane";
 import { WINDOW_REGISTRY_CHANGED_EVENT } from "../lib/ipc";
@@ -53,23 +52,24 @@ export function detachedDockTarget(
   if (x < 0 || y < 0 || x >= width || y >= height) return null;
   const element = doc.elementFromPoint(x, y);
   if (element?.closest('[data-dnd-new-workspace-target="true"]')) return { kind: "workspace" };
-  const strip = element?.closest<HTMLElement>(".pane-tabbar");
   const pane = element?.closest<HTMLElement>("[data-dnd-pane-id][data-dnd-workspace-id]");
   const workspaceId = pane?.dataset.dndWorkspaceId;
   const paneId = pane?.dataset.dndPaneId;
   if (!pane || !workspaceId || !paneId) return null;
   const previousZone = previousTarget?.kind === "pane-zone"
     && previousTarget.workspaceId === workspaceId && previousTarget.paneId === paneId ? previousTarget.zone : "center";
-  if (strip) {
-    const spans = Array.from(strip.querySelectorAll<HTMLElement>("[data-tab-id]"))
-      .map((tab) => tab.getBoundingClientRect());
-    return { kind: "tab-index", workspaceId, paneId, index: resolveTabInsertionIndex(spans, x) };
+  const header = resolvePaneHeaderTarget(element);
+  if (header) {
+    const destination = useWorkspaceListStore.getState().getWorkspace(workspaceId)?.panes.find((pane) => pane.id === paneId);
+    if (!destination) return null;
+    return { kind: "tab-index", ...header, index: paneHeaderInsertionIndex(destination) };
   }
   const zone = resolvePaneDropZone(pane.getBoundingClientRect(), x, y, previousZone);
   if (zone === "center" && element?.closest('[data-dnd-handoff-surface="true"]')) {
     const context = resolvePaneHandoffContext(handoffSource, workspaceId, paneId);
     if (context) return { kind: "handoff", workspaceId, paneId, tabId: context.pasteTarget.tabId,
-      sessionId: context.pasteTarget.sessionId, targetAgentKind: context.pasteTarget.targetKind };
+      sessionId: context.pasteTarget.sessionId, targetAgentKind: context.pasteTarget.targetKind,
+      ...(context.pasteTarget.agentSessionId ? { targetAgentSessionId: context.pasteTarget.agentSessionId } : {}) };
   }
   return { kind: "pane-zone", workspaceId, paneId, zone };
 }
@@ -92,7 +92,8 @@ export const useDetachedDockStore = create<DetachedDockState>((set, get) => ({
       && ((previous.kind === "tab-index" && target.kind === "tab-index" && previous.index === target.index)
         || (previous.kind === "pane-zone" && target.kind === "pane-zone" && previous.zone === target.zone)
         || (previous.kind === "handoff" && target.kind === "handoff" && previous.tabId === target.tabId
-          && previous.sessionId === target.sessionId && previous.targetAgentKind === target.targetAgentKind)))) return;
+          && previous.sessionId === target.sessionId && previous.targetAgentKind === target.targetAgentKind
+          && previous.targetAgentSessionId === target.targetAgentSessionId)))) return;
     set({ target });
   },
   clear: () => {

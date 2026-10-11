@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from "react";
 import {
-  resolveTabInsertionIndex,
   samePaneDropTarget,
   usePaneDragStore,
   type PaneDragItem,
@@ -10,23 +9,27 @@ import { useWorkspaceLayoutStore } from "../stores/workspaceLayoutStore";
 import { useWorkspaceListStore } from "../stores/workspaceListStore";
 import { useSavepointDragStore } from "../stores/savepointDragStore";
 import { focusController } from "../lib/focusController";
-import type { DetachedPaneOrigin } from "../lib/ipc";
 import { detachedOriginForDrag, isTransferableTab } from "../lib/detachedPane";
 import { isOutsideWindowViewport } from "../lib/windowEdge";
-import { captureLegacyTearoutSource } from "../lib/tearout/legacySource";
-import { tearoutOperationBusy } from "../lib/tearout/operation";
-import { recoveryBusy } from "../lib/tearout/recoveryNotice";
-import { tearOutWorkspaceToNewWindow } from "../lib/workspaceTearOut";
+import { createWorkspaceHover } from "../lib/workspaceHover";
+import { localTearoutRefusal } from "../lib/tearout/operation";
+import { recordTearoutRefusal } from "../lib/tearout/refusal";
+import { TearoutRecord } from "../lib/tearout/record";
+import { windowLabel } from "../lib/windowContext";
 import {
   isPaneDropTargetEligible,
   prioritizePaneHandoffDropTarget,
   resolvePaneDropZone,
+  resolvePaneHeaderTarget,
+  paneHeaderInsertionIndex,
 } from "../lib/paneHandoff";
+import { selectPaneHeaderTab } from "../lib/workspaceRestore";
 import { capturePaneHandoffSource, resolvePaneHandoffContext as resolveHandoffContext,
   commitPaneHandoffContext } from "../lib/paneHandoffRuntime";
 import { paneDndStrings } from "../components/workspace/paneDndStrings";
 import { useToastStore } from "../stores/toastStore";
-import { applyLayoutMutation, layoutStructureRevision } from "../lib/layoutMutation";
+import { createPaneMoveRequest, executePaneMove } from "../lib/paneMoveOperation";
+import { layoutStructureRevision } from "../lib/layoutMutation";
 import { resolveMinimapDropZone } from "../components/dashboard/minimapModel";
 import { beginNativePaneDrag, usesNativePaneDrag, beginNativeGroupDrag, usesNativeGroupDrag } from "../lib/tearout/pointerDrag";
 import { moveMinimapItemToNewWorkspace } from "../components/dashboard/minimapWorkspaceActions";
@@ -36,8 +39,6 @@ import {
   type TearOutDragTrace,
   type TearOutPointerSample,
 } from "../lib/tearOutDiagnostics";
-
-const WORKSPACE_HOVER_DELAY_MS = 350;
 
 function tearOutPointerSample(event: Pick<PointerEvent, "clientX" | "clientY" | "screenX" | "screenY">): TearOutPointerSample {
   return {
@@ -101,13 +102,10 @@ export function canDropTarget(item: PaneDragItem, target: PaneDropTarget): boole
   }
 
   if (target.kind === "tab-index") {
-    // Reorder is same-pane only. Moving a tab into another pane already has a
-    // dedicated target (that pane's center/split zones), and letting the strip
-    // be a second cross-pane surface would give one hover two meanings.
+    const destination = listState.getWorkspace(target.workspaceId)?.panes.find((pane) => pane.id === target.paneId);
     return item.kind === "tab"
-      && item.workspaceId === target.workspaceId
-      && item.paneId === target.paneId
-      && sourcePane.tabs.length >= 2
+      && Boolean(destination)
+      && (item.workspaceId !== target.workspaceId || item.paneId !== target.paneId)
       && sourcePane.tabs.some((tab) => tab.id === item.tabId);
   }
 
@@ -134,7 +132,7 @@ export function canDropTarget(item: PaneDragItem, target: PaneDropTarget): boole
   }, target, sourcePane.tabs.length);
 }
 
-function resolveDropTargetAtPoint(x: number, y: number, item: PaneDragItem): PaneDropTarget | null {
+export function resolveDropTargetAtPoint(x: number, y: number, item: PaneDragItem): PaneDropTarget | null {
   const element = document.elementFromPoint(x, y);
   if (item.surface === "minimap") {
     if (element?.closest("[data-minimap-new-workspace-target='true']")) {
@@ -183,27 +181,14 @@ function resolveDropTargetAtPoint(x: number, y: number, item: PaneDragItem): Pan
     return prioritizePaneHandoffDropTarget(Boolean(handoffElement), handoffTarget, fallbackTarget);
   }
 
-  // The tab strip sits inside the pane, so it must be tested before the pane
-  // zones: over its own strip a tab drag means "reorder", not "split up".
-  const stripElement = element?.closest<HTMLElement>("[data-pane-tab-strip]");
-  const stripPaneId = stripElement?.getAttribute("data-pane-tab-strip");
-  const stripWorkspaceId = stripElement
-    ?.closest<HTMLElement>("[data-dnd-workspace-id]")
-    ?.getAttribute("data-dnd-workspace-id");
-  if (stripElement && stripPaneId && stripWorkspaceId) {
-    const spans = Array.from(
-      stripElement.querySelectorAll<HTMLElement>("[data-tab-id]"),
-    ).map((pill) => pill.getBoundingClientRect());
-    const target = {
-      kind: "tab-index" as const,
-      workspaceId: stripWorkspaceId,
-      paneId: stripPaneId,
-      index: resolveTabInsertionIndex(spans, x),
-    };
-    // Cross-pane and single-tab drags fall through to the pane zones below.
-    if (canDropTarget(item, target)) {
-      return prioritizePaneHandoffDropTarget(Boolean(handoffElement), handoffTarget, target);
-    }
+  // Resolve the heading before the body zones, so an OFF tearout setting does
+  // not turn a cross-pane header drop into an upper row. Same-pane is a no-op.
+  const header = resolvePaneHeaderTarget(element);
+  if (header && item.kind === "tab") {
+    const pane = useWorkspaceListStore.getState().getWorkspace(header.workspaceId)?.panes.find((pane) => pane.id === header.paneId);
+    if (!pane) return null;
+    const target = { kind: "tab-index" as const, ...header, index: paneHeaderInsertionIndex(pane) };
+    return canDropTarget(item, target) ? target : null;
   }
 
   const paneElement = element?.closest<HTMLElement>("[data-dnd-workspace-id][data-dnd-pane-id]");
@@ -230,59 +215,10 @@ function resolveDropTargetAtPoint(x: number, y: number, item: PaneDragItem): Pan
   return prioritizePaneHandoffDropTarget(Boolean(handoffElement), handoffTarget, fallbackTarget);
 }
 
-function commitMinimapTabDrop(
-  item: Extract<PaneDragItem, { kind: "tab" | "tab-bundle" }>,
-  target: PaneDropTarget | null,
-): void {
-  if (!target || target.kind !== "pane" || target.surface !== "minimap" || !canDropTarget(item, target)) return;
-  const listStore = useWorkspaceListStore.getState();
-  const before = listStore.workspaces;
-  const currentRevision = layoutStructureRevision(before);
-  const tabIds = item.kind === "tab" ? [item.tabId] : item.tabIds;
-  const anchorTabId = item.kind === "tab" ? item.tabId : item.anchorTabId;
-  const mutation = {
-    kind: "move-tabs" as const,
-    operationId: crypto.randomUUID(),
-    tabIds,
-    anchorTabId,
-    to: target.zone === "center"
-      ? { workspaceId: target.workspaceId, paneId: target.paneId }
-      : { workspaceId: target.workspaceId, split: { paneId: target.paneId, zone: target.zone } },
-    sourceLayoutRevision: item.sourceLayoutRevision ?? currentRevision,
-  };
-  const { workspaces, summary } = applyLayoutMutation(before, mutation, currentRevision);
-  if (!summary.staleRevision && summary.moved.length > 0) {
-    listStore._replaceWorkspaces(workspaces);
-  }
-}
-
-function commitMinimapPaneDrop(
-  item: Extract<PaneDragItem, { kind: "pane" }>,
-  target: PaneDropTarget | null,
-): void {
-  if (!target || target.kind !== "pane" || target.surface !== "minimap" || !canDropTarget(item, target)) return;
-  const listStore = useWorkspaceListStore.getState();
-  const sourcePane = listStore.getWorkspace(item.workspaceId)?.panes.find((pane) => pane.id === item.paneId);
-  if (!sourcePane || sourcePane.tabs.length === 0) return;
-  const before = listStore.workspaces;
-  const currentRevision = layoutStructureRevision(before);
-  const anchorTabId = sourcePane.tabs.some((tab) => tab.id === sourcePane.activeTabId)
-    ? sourcePane.activeTabId
-    : sourcePane.tabs[0].id;
-  const mutation = {
-    kind: "move-tabs" as const,
-    operationId: crypto.randomUUID(),
-    tabIds: sourcePane.tabs.map((tab) => tab.id),
-    anchorTabId,
-    to: target.zone === "center"
-      ? { workspaceId: target.workspaceId, paneId: target.paneId }
-      : { workspaceId: target.workspaceId, split: { paneId: target.paneId, zone: target.zone } },
-    sourceLayoutRevision: item.sourceLayoutRevision ?? currentRevision,
-  };
-  const { workspaces, summary } = applyLayoutMutation(before, mutation, currentRevision);
-  if (!summary.staleRevision && summary.moved.length > 0) {
-    listStore._replaceWorkspaces(workspaces);
-  }
+function commitMinimapPaneMove(item: PaneDragItem, target: Extract<PaneDropTarget, { kind: "pane" }>): void {
+  executePaneMove(createPaneMoveRequest(item, {
+    kind: "split", workspaceId: target.workspaceId, paneId: target.paneId, zone: target.zone, atomic: true,
+  }));
 }
 
 async function commitPaneHandoff(item: PaneDragItem,
@@ -294,7 +230,7 @@ function moveDragItemToNewWorkspace(
   item: PaneDragItem,
   workspaceId: string,
   workspaceName: string,
-  options?: { activate?: boolean },
+  options?: { activate?: boolean; nameSource?: "auto" },
 ): boolean {
   const layoutStore = useWorkspaceLayoutStore.getState();
   if (item.kind === "tab") {
@@ -327,24 +263,25 @@ function moveDragItemToNewWorkspace(
   );
 }
 
-function tearOutMovedWorkspace(
-  workspaceId: string,
+function tearOutPaneToNewWindow(
+  item: PaneDragItem,
   focusSessionId: string | null,
   target: Extract<PaneDropTarget, { kind: "new-window" }>,
   trace: TearOutDragTrace | null,
-  detachedFrom?: DetachedPaneOrigin,
-  restoreSource?: (transferId: string) => void,
 ): void {
-  // If opening the window fails the workspace simply stays here — nothing to
-  // undo and no PTY session is lost.
-  trace?.commitPending(workspaceId, focusSessionId);
+  const detachedFrom = detachedOriginForDrag(useWorkspaceListStore.getState().getWorkspace(item.workspaceId), item);
+  trace?.commitPending(item.workspaceId, focusSessionId);
   trace?.windowCreateRequested();
-  void tearOutWorkspaceToNewWindow(workspaceId, {
-    x: target.screenX - 40,
-    y: target.screenY - 20,
-    ...(detachedFrom ? { detachedFrom } : {}),
-    ...(restoreSource ? { restoreSource: () => restoreSource(workspaceId) } : {}),
-  }).then((label) => {
+  void executePaneMove(createPaneMoveRequest(item, {
+    kind: "window", x: target.screenX - 40, y: target.screenY - 20, detachedFrom,
+  })).then((result) => {
+    if (result.refusal) {
+      trace?.transition("cancelled", "pane transfer refused while another move is pending");
+      clearTearOutMeasurementAfterDelay();
+      return;
+    }
+    if (result.error !== undefined) throw result.error;
+    const label = result.status === "moved" ? result.destinationWindow : undefined;
     if (!label) {
       trace?.failed("transfer-failed", "workspace transfer returned no destination window");
       clearTearOutMeasurementAfterDelay();
@@ -369,34 +306,20 @@ export function commitPaneDragDrop(
 ): void {
   if (!target || !canDropTarget(item, target)) return;
 
-  if (target.kind === "new-window" && tearoutOperationBusy()) { recoveryBusy(); return; }
-  const restoreSource = target.kind === "new-window" ? captureLegacyTearoutSource(item) : undefined;
+  const refusal = target.kind === "new-window" ? localTearoutRefusal() : null;
+  if (refusal) {
+    const tabId = item.kind === "tab" ? item.tabId : item.kind === "tab-bundle" ? item.anchorTabId : item.paneId;
+    void recordTearoutRefusal(new TearoutRecord(crypto.randomUUID(), tabId, windowLabel(), Date.now()), refusal);
+    trace?.transition("cancelled", "pane transfer refused while another move is pending");
+    clearTearOutMeasurementAfterDelay();
+    return;
+  }
   const focusSessionId = getFocusSessionId(item);
-  const detachedFrom = target.kind === "new-window"
-    ? detachedOriginForDrag(useWorkspaceListStore.getState().getWorkspace(item.workspaceId), item)
-    : undefined;
 
   if (item.surface === "minimap") {
-    if (target.kind === "pane" && (item.kind === "tab" || item.kind === "tab-bundle")) commitMinimapTabDrop(item, target);
-    else if (target.kind === "pane" && item.kind === "pane") commitMinimapPaneDrop(item, target);
+    if (target.kind === "pane") commitMinimapPaneMove(item, target);
     else if (target.kind === "new-workspace") moveMinimapItemToNewWorkspace(item);
-    else if (target.kind === "new-window") {
-      const listStore = useWorkspaceListStore.getState();
-      const workspaceId = crypto.randomUUID();
-      const workspaceName = `Workspace ${listStore.workspaces.length + 1}`;
-      const moved = moveDragItemToNewWorkspace(
-        item,
-        workspaceId,
-        workspaceName,
-        { activate: false },
-      );
-      if (!moved) {
-        trace?.failed("transfer-failed", "source pane/tab could not move into the transfer workspace");
-        clearTearOutMeasurementAfterDelay();
-        return;
-      }
-      tearOutMovedWorkspace(workspaceId, focusSessionId, target, trace, detachedFrom, restoreSource);
-    }
+    else if (target.kind === "new-window") tearOutPaneToNewWindow(item, focusSessionId, target, trace);
     return;
   }
 
@@ -405,78 +328,39 @@ export function commitPaneDragDrop(
     return;
   }
 
-  const layoutStore = useWorkspaceLayoutStore.getState();
   const listStore = useWorkspaceListStore.getState();
 
   if (target.kind === "tab-index") {
-    // canDropTarget already pinned this to a tab drag inside the same pane.
     if (item.kind !== "tab") return;
-    layoutStore.reorderPaneTab(target.workspaceId, target.paneId, item.tabId, target.index);
+    const result = executePaneMove(createPaneMoveRequest(item, {
+      kind: "split", workspaceId: target.workspaceId, paneId: target.paneId, zone: "center",
+    }));
+    if (result.status !== "moved") return;
+    selectPaneHeaderTab(target.workspaceId, target.paneId, item.tabId);
     useWorkspaceListStore.getState().setActiveWorkspace(target.workspaceId);
     focusController.request("drag", { sessionId: focusSessionId, focus: true });
     return;
   }
 
-  if (target.kind === "new-workspace" || target.kind === "new-window") {
+  if (target.kind === "new-window") {
+    tearOutPaneToNewWindow(item, focusSessionId, target, trace);
+    return;
+  }
+
+  if (target.kind === "new-workspace") {
     const workspaceId = crypto.randomUUID();
     const workspaceName = `Workspace ${listStore.workspaces.length + 1}`;
-    // A tear-out's transfer workspace leaves this window right away; activating
-    // it would make its removal jump the view to the last workspace in the list.
-    const moved = moveDragItemToNewWorkspace(item, workspaceId, workspaceName,
-      target.kind === "new-window" ? { activate: false } : undefined);
-    if (!moved) {
-      if (target.kind === "new-window") {
-        trace?.failed("transfer-failed", "source pane/tab could not move into the transfer workspace");
-        clearTearOutMeasurementAfterDelay();
-      }
-      return;
-    }
-    if (target.kind === "new-window") {
-      // Dropped outside the window: the fresh workspace immediately tears out
-      // to a new OS window at the drop point.
-      tearOutMovedWorkspace(workspaceId, focusSessionId, target, trace, detachedFrom, restoreSource);
-      return;
-    }
+    const moved = moveDragItemToNewWorkspace(item, workspaceId, workspaceName, { nameSource: "auto" });
+    if (!moved) return;
     useWorkspaceListStore.getState().setActiveWorkspace(workspaceId);
     focusController.request("drag", { sessionId: focusSessionId, focus: true });
     return;
   }
 
-  if (item.kind === "tab") {
-    if (target.zone === "center") {
-      layoutStore.moveTabToPane(
-        item.workspaceId,
-        item.paneId,
-        item.tabId,
-        target.workspaceId,
-        target.paneId,
-      );
-    } else {
-      layoutStore.moveTabToSplit(
-        item.workspaceId,
-        item.paneId,
-        item.tabId,
-        target.workspaceId,
-        target.paneId,
-        target.zone,
-      );
-    }
-  } else if (item.kind === "pane" && target.zone === "center") {
-    layoutStore.movePaneToPane(
-      item.workspaceId,
-      item.paneId,
-      target.workspaceId,
-      target.paneId,
-    );
-  } else if (item.kind === "pane" && target.zone !== "center") {
-    layoutStore.movePaneToSplit(
-      item.workspaceId,
-      item.paneId,
-      target.workspaceId,
-      target.paneId,
-      target.zone,
-    );
-  }
+  const result = executePaneMove(createPaneMoveRequest(item, {
+    kind: "split", workspaceId: target.workspaceId, paneId: target.paneId, zone: target.zone,
+  }));
+  if (result.status !== "moved") return;
 
   useWorkspaceListStore.getState().setActiveWorkspace(target.workspaceId);
   focusController.request("drag", { sessionId: focusSessionId, focus: true });
@@ -484,56 +368,12 @@ export function commitPaneDragDrop(
 
 export function usePaneDragSource() {
   const suppressClickRef = useRef(false);
-  const hoverTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
-  const hoverWorkspaceIdRef = useRef<string | null>(null);
-
-  const clearHoverTimer = useCallback(() => {
-    if (hoverTimerRef.current) {
-      window.clearTimeout(hoverTimerRef.current);
-      hoverTimerRef.current = null;
-    }
-    hoverWorkspaceIdRef.current = null;
-    usePaneDragStore.getState().setHoverWorkspaceId(null);
-  }, []);
-
-  const updateWorkspaceHover = useCallback((x: number, y: number) => {
-    if (usePaneDragStore.getState().item?.surface === "minimap") {
-      clearHoverTimer();
-      return;
-    }
-    const element = document.elementFromPoint(x, y);
-    if (element?.closest("[data-dnd-new-workspace-target='true']")) {
-      clearHoverTimer();
-      return;
-    }
-    const workspaceElement = element?.closest<HTMLElement>("[data-dnd-workspace-target-id]");
-    const workspaceId = workspaceElement?.getAttribute("data-dnd-workspace-target-id") ?? null;
-    const listStore = useWorkspaceListStore.getState();
-
-    if (!workspaceId || workspaceId === listStore.activeWorkspaceId || !listStore.getWorkspace(workspaceId)) {
-      clearHoverTimer();
-      return;
-    }
-
-    usePaneDragStore.getState().setHoverWorkspaceId(workspaceId);
-    if (hoverWorkspaceIdRef.current === workspaceId && hoverTimerRef.current) return;
-
-    if (hoverTimerRef.current) {
-      window.clearTimeout(hoverTimerRef.current);
-    }
-    hoverWorkspaceIdRef.current = workspaceId;
-    hoverTimerRef.current = window.setTimeout(() => {
-      const dragItem = usePaneDragStore.getState().item;
-      if (!dragItem) return;
-      const latest = useWorkspaceListStore.getState();
-      if (latest.getWorkspace(workspaceId)) {
-        latest.setActiveWorkspace(workspaceId);
-      }
-      usePaneDragStore.getState().setHoverWorkspaceId(null);
-      hoverTimerRef.current = null;
-      hoverWorkspaceIdRef.current = null;
-    }, WORKSPACE_HOVER_DELAY_MS);
-  }, [clearHoverTimer]);
+  const workspaceHoverRef = useRef<ReturnType<typeof createWorkspaceHover> | null>(null);
+  workspaceHoverRef.current ??= createWorkspaceHover({
+    active: () => usePaneDragStore.getState().item !== null,
+    surface: () => usePaneDragStore.getState().item?.surface,
+  });
+  const { clear: clearHoverTimer, update: updateWorkspaceHover } = workspaceHoverRef.current;
 
   const beginPointerDrag = useCallback((event: ReactPointerEvent<HTMLElement>, item: PaneDragItem) => {
     if (event.button !== 0) return;

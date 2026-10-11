@@ -37,8 +37,8 @@ export interface PaneTab {
   sessionId: string;
   agentId: string;
   label?: string;
-  /** Who set `label`. Absent means user-set (pre-migration data is treated as user-set). */
-  labelSource?: "user" | "ai";
+  /** Who set `label`. Legacy readable labels without provenance are protected. */
+  labelSource?: "user" | "ai" | "launch";
   displayName?: string;
   displayNameSource?: "auto";
   /**
@@ -62,6 +62,8 @@ export interface PaneTab {
   /** Duplicate restore identity retained for manual recovery; never auto-resumed. */
   suppressedAgentSessions?: SuppressedAgentSession[];
   launchEnv?: Record<string, string>;
+  /** Runtime-only cold restore intent; never serialized into layout or env. */
+  codexRestoreReason?: "saved-codex-pane";
   /** Ephemeral prompt appended to the first agent launch; not persisted. */
   initialPrompt?: string;
   /** Ephemeral command override for the first agent launch; not persisted. */
@@ -93,6 +95,12 @@ export interface PaneTab {
   lifecycle?: "declared";
   /** Stable ownership metadata for dashboard grouping; runtime session ids are not used here. */
   origin?: { kind: "human" | "agent"; parentTabId?: string };
+  /** Stable delegating tab identity; independent of runtime PTY/session ids. */
+  delegatedByTabId?: string;
+  /** Conversation observed at creation, when known; not a launch/resume identity. */
+  delegatedByAgentSessionId?: string;
+  /** Creation time in epoch milliseconds, used only to compare parent process birth. */
+  delegatedAt?: number;
   /** Intent captured before a declared tab is launched. */
   declaredPrompt?: string;
   /** Intended agent or execution target captured before launch. */
@@ -131,6 +139,8 @@ export type WorkspaceStatus = "setup" | "running" | "stopped";
 export interface Workspace {
   id: string;
   name: string;
+  /** Only names explicitly produced by the app are automatically replaceable. */
+  nameSource?: "auto";
   gridTemplateId: GridTemplateId;
   panes: Pane[];
   status: WorkspaceStatus;
@@ -161,7 +171,7 @@ export type PaneNonPersistentKey = never;
 // sourceMtimeMs is deliberately not saved: the file can change while the app
 // is closed, and a stale timestamp would make the restored pane skip the
 // reload it needs.
-export type PaneTabNonPersistentKey = "webBackground" | "webInitialUrl" | "sourceMtimeMs";
+export type PaneTabNonPersistentKey = "webBackground" | "webInitialUrl" | "sourceMtimeMs" | "codexRestoreReason";
 
 export type PersistentWorkspaceKey = Exclude<keyof Workspace, WorkspaceNonPersistentKey>;
 export type PersistentPaneKey = Exclude<keyof Pane, PaneNonPersistentKey>;

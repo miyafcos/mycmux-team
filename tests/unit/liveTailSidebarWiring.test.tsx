@@ -9,6 +9,7 @@ import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
 import { disposeLiveTailObserver } from "../../src/stores/liveTailStore";
 import { __resetLiveBriefStoreForTests } from "../../src/stores/liveBriefStore";
 import { LIVE_TAIL_TEST_NOW, liveTailFixtureScene } from "../fixtures/liveTailList";
+import { TERMINAL_IPC_TIMEOUT_MS } from "../../src/lib/terminalDeadline";
 
 const mocks = vi.hoisted(() => ({
   targets: vi.fn(), outputs: vi.fn(), readPaneTail: vi.fn(), subscribe: vi.fn(), unsubscribe: vi.fn(), unlisten: vi.fn(), jump: vi.fn(),
@@ -53,8 +54,23 @@ describe("real sidebar live-tail wiring", () => {
     await render(); await advance(0); await advance(2_000);
     expect(mocks.readPaneTail).toHaveBeenCalledTimes(2);
     expect(mocks.readPaneTail.mock.calls.every(call => call[0] === "sample-session-0")).toBe(true);
+    expect(mocks.readPaneTail).toHaveBeenCalledWith("sample-session-0", 40, false,
+      { headlessFetchTimeoutMs: TERMINAL_IPC_TIMEOUT_MS, purpose: "observation", isCurrent: expect.any(Function) });
     expect(useUiStore.getState().sidebarWidth).toBe(220);
     expect(host.querySelector(".live-tail-name")?.textContent).toBe("Sample alive");
+  });
+  it("also reads a local session in an inactive workspace while excluding detached-window targets", async () => {
+    const inactive = liveTailFixtureScene(["alive"], "inactive-workspace");
+    const pane = inactive.workspace.panes[0], tab = pane.tabs[0];
+    pane.id = "inactive-pane"; tab.id = "inactive-tab"; tab.sessionId = "inactive-session";
+    pane.sessionId = tab.sessionId; pane.activeTabId = tab.id;
+    useWorkspaceListStore.setState({ workspaces: [scene.workspace, inactive.workspace], activeWorkspaceId: scene.workspace.id });
+    mocks.targets.mockResolvedValue([...scene.targets, { ...inactive.targets[0], paneId: pane.id, tabId: tab.id, sessionId: tab.sessionId },
+      { ...scene.targets[0], sessionId: "detached-session", workspaceId: "detached-workspace", tabId: "detached-tab" }]);
+    mocks.outputs.mockResolvedValue({ "sample-session-0": LIVE_TAIL_TEST_NOW, "inactive-session": LIVE_TAIL_TEST_NOW });
+    await render(); await advance(0); await advance(2_000);
+    expect([...new Set(mocks.readPaneTail.mock.calls.map(call => call[0]))].sort()).toEqual(["inactive-session", "sample-session-0"]);
+    expect(host.querySelectorAll(".live-tail-row")).toHaveLength(2);
   });
   it.each(["collapse", "zoom"] as const)("releases demand and hides rows when the actual sidebar is hidden by %s", async reason => {
     await render(); await advance(0); await advance(2_000);

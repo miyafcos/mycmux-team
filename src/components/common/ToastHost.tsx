@@ -10,12 +10,13 @@ const kindStyles: Record<ToastKind, { color: string; Icon: LucideIcon }> = {
 };
 
 export default function ToastHost() {
-  const toasts = useToastStore((state) => state.toasts);
+  const ordinaryToasts = useToastStore((state) => state.toasts);
+  const reservationNotice = useToastStore((state) => state.transferReservationNotice);
   const dismissToast = useToastStore((state) => state.dismissToast);
 
-  if (toasts.length === 0) return null;
+  if (ordinaryToasts.length === 0 && !reservationNotice) return null;
 
-  return (
+  const ordinaryHost = (
     <div
       aria-live="polite"
       style={{
@@ -30,7 +31,7 @@ export default function ToastHost() {
         pointerEvents: "none",
       }}
     >
-      {toasts.map((toast) => {
+      {ordinaryToasts.map((toast) => {
         const { color, Icon } = kindStyles[toast.kind];
         const actions = (toast.actions ?? (toast.action ? [toast.action] : [])).slice(0, 2);
         return (
@@ -113,5 +114,81 @@ export default function ToastHost() {
         );
       })}
     </div>
+  );
+
+  return (
+    <>
+      {ordinaryHost}
+      {reservationNotice ? (
+        <div
+          aria-live="polite"
+          style={{
+            position: "fixed",
+            top: 16,
+            left: 16,
+            zIndex: 241,
+            width: 320,
+            maxWidth: "calc(100vw - 32px)",
+            maxHeight: "calc(100vh - 32px)",
+            pointerEvents: "none",
+          }}
+        >
+          <div
+            role="status"
+            onClick={() => dismissToast(reservationNotice.id)}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return;
+              event.preventDefault();
+              event.stopPropagation();
+              dismissToast(reservationNotice.id);
+            }}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "18px minmax(0, 1fr) 18px",
+              gap: 10,
+              alignItems: "start",
+              width: "100%",
+              maxHeight: "inherit",
+              boxSizing: "border-box",
+              overflow: "hidden",
+              padding: "10px 12px",
+              background: "var(--cmux-popover, #161616)",
+              border: "1px solid var(--cmux-border, rgba(255,255,255,0.12))",
+              borderRadius: 6,
+              boxShadow: "var(--cmux-shadow-popover, 0 12px 32px rgba(0,0,0,0.4))",
+              color: "var(--cmux-text, #ededed)",
+              fontFamily: "inherit",
+              fontSize: 12,
+              lineHeight: 1.4,
+              textAlign: "left",
+              pointerEvents: "auto",
+            }}
+          >
+            <AlertTriangle size={16} color={kindStyles.warning.color} aria-hidden="true" />
+            <span
+              tabIndex={0}
+              // Reading, selecting or scrolling the explanation must not dismiss it.
+              onClick={(event) => event.stopPropagation()}
+              style={{ minHeight: 0, maxHeight: "calc(100vh - 54px)", overflowY: "auto", overflowWrap: "anywhere" }}
+            >
+              {reservationNotice.message}
+            </span>
+            <button
+              type="button"
+              className="pane-action-btn"
+              aria-label={toastStrings.close}
+              title={toastStrings.close}
+              onClick={(event) => {
+                event.stopPropagation();
+                dismissToast(reservationNotice.id);
+              }}
+              style={{ gridColumn: 3, gridRow: 1, alignSelf: "start", width: 18, height: 18 }}
+            >
+              <X size={12} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }

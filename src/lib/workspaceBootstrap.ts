@@ -63,6 +63,7 @@ export function applyCwdToPanes(panes: Pane[], cwd: string): Pane[] {
 
 export interface CreateWorkspaceAtCwdOptions {
   name?: string;
+  nameSource?: "auto";
   gridTemplateId?: GridTemplateId;
   activate?: boolean;
   /** Per-pane agent / model / effort. Absent panes open the launcher menu. */
@@ -146,7 +147,7 @@ export function createWorkspaceAtCwd(
     gridTemplateId,
     panes,
     splitColumns,
-    { id: workspaceId, activate: options.activate },
+    { id: workspaceId, activate: options.activate, nameSource: options.nameSource ?? (options.name === undefined ? "auto" : undefined) },
   );
 
   return workspaceId;

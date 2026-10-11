@@ -11,7 +11,7 @@ export const settingsStrings = {
 // 委譲を見守る機能の画面語。内部の dispatchWatchdog* 識別子とは分ける。
 export const delegationWatchStrings = {
   heading: "委譲の見守り",
-  description: "バックグラウンドで動かしている AI ペインを定期的に確認し、質問待ち・完了未確認・見守りの停滞を通知します。",
+  description: "バックグラウンドで動かしている AI タブを定期的に確認し、質問待ち・完了未確認・見守りの停滞を通知します。",
   enabledLabel: "見守りを有効にする",
   sensitivityTitle: "通知の敏感さ",
   sensitivityAriaLabel: "見守り通知の敏感さ",
@@ -26,7 +26,7 @@ export const delegationWatchStrings = {
   notifyTitle: "見守りの通知",
   notifyLabel: "見守りの通知を出す",
   notifyHint: "「通知とレイアウト」の通知をオフにしている間は、ここをオンにしてもトーストとバッジは出ません。",
-  queueTitle: (count: number): string => `いま気になっているペイン (${count}件)`,
+  queueTitle: (count: number): string => `いま気になっているタブ (${count}件)`,
   queueEmpty: "問題は見つかっていません。",
   queueContinuing: (elapsed: string, confirmations: number): string => `${elapsed}継続・連続確認 ${confirmations} 回`,
   // トーストは単独で読まれるので、どのペインで何が起きたのかを文で書き、開くボタンを添える。
@@ -76,18 +76,25 @@ export const notificationSettingsStrings = {
   toastSystemLabel: "システム・接続",
   toastFailureAlwaysShownHint: "失敗・エラーは通知設定に関わらず常に表示します。",
   layoutTitle: "レイアウト",
-  nativePaneTearoutLabel: "ペインの切り離しを新しい動きにする (試験中)",
-  splitRightLabel: "「右に分割」ボタンを表示",
-  splitDownLabel: "「下に分割」ボタンを表示",
-  groupingApplyAnimationLabel: "ペイン再配置の適用時に動きを表示",
+  nativePaneTearoutLabel: "タブの切り離しを新しい動きにする (試験中)",
+  splitRightLabel: "「⋮」に「右にタブを開く」を表示",
+  splitDownLabel: "「⋮」に「下にタブを開く」を表示",
+  groupingApplyAnimationLabel: "タブ再配置の適用時に動きを表示",
   groupingApplyAnimationHint: "オフにすると、配置図から実画面への移動を省略して即時に切り替えます。Windows のアニメーション効果をオフにしている場合も動きません。",
   terminalInputTitle: "ターミナル入力",
-  terminalHistoryLabel: "「会話履歴を開く」ボタンを表示",
-  terminalHistoryHint: "このペインの会話の記録を読みます。表示は直近200件までです。閉じると端末に戻ります。",
+  paneTitle: "タブ",
+  paneFocusLegend: "タブのフォーカス",
+  paneFocusClickLabel: "クリックで切り替える (標準)",
+  paneFocusHoverLabel: "マウスを乗せたら切り替える",
+  paneFocusHint: "ターミナルと起動メニューの入力先を切り替えます。入力欄の編集中は切り替わりません。起動メニューに入ると検索欄が選ばれるので、戻るときはクリックしてください。",
+  terminalHistoryLabel: "虫眼鏡で会話履歴を開く",
+  terminalHistoryHint: "オフにすると虫眼鏡は端末内検索。会話履歴の上部で、この会話の過去の発言を探せます。閉じると端末に戻ります。端末の履歴は Shift+ホイールで読みます。",
+  conversationHistoryModeLabel: "過去の会話の読み方",
+  conversationHistoryModeHint: "自動の切り替えは、質問・承認待ち、文字選択、修飾キー、状態を確認できないときには行いません。",
   terminalProgressDiagnosticsLabel: "端末の表示の進み具合を診断用に記録する",
   terminalProgressDiagnosticsHint: "画面が崩れるときの調査に使います。本文・入力・名前・パスは記録しません。記録量には上限があります。通常はオフです。",
-  paneComposerLabel: "ペインの下に入力欄を出す",
-  paneComposerHint: "文字を選んで消す・書き直すといった編集ができる入力欄です。Enter で送信、Shift+Enter で改行。ペインが低いときは自動的に隠れます。",
+  paneComposerLabel: "タブの下に入力欄を出す",
+  paneComposerHint: "文字を選んで消す・書き直すといった編集ができる入力欄です。Enter で送信、Shift+Enter で改行。タブの高さが足りないときは自動的に隠れます。",
 } as const;
 
 export const aiSettingsStrings = {
@@ -103,8 +110,12 @@ export const aiSettingsStrings = {
   manualBadge: "ボタンで実行",
   features: {
     autoPaneNaming: {
-      label: "ペインの自動命名",
-      disclosure: "案件登録・作業フォルダ・会話の題名から表示名を付けます (AI は使いません)",
+      label: "タブの自動命名",
+      disclosure: "直近の依頼・扱うファイル・今の動きから短い表示名を付けます。手で付けた名前は保持します。 (AI は使いません)",
+    },
+    autoWorkspaceNaming: {
+      label: "ワークスペース名を中身から自動で付ける",
+      disclosure: "すべてのタブの作業から名前をまとめます。既存の名前と手で付けた名前は、自動では変更しません。 (AI は使いません)",
     },
     replyDraft: {
       label: "返信案の準備",
@@ -115,8 +126,8 @@ export const aiSettingsStrings = {
       disclosure: "報告本文を送ります",
     },
     tabSweep: {
-      label: "ペイン整理のAI判定",
-      disclosure: "各ペインの画面末尾8行と作業フォルダを送ります",
+      label: "タブ整理のAI判定",
+      disclosure: "各タブの画面末尾8行と作業フォルダを送ります",
     },
     ailogSession: {
       label: "ailog セッション要約",
@@ -127,7 +138,7 @@ export const aiSettingsStrings = {
       disclosure: "選択したセッションのログを順に送ります",
     },
     tabRelayout: {
-      label: "ペイン再配置",
+      label: "タブ再配置",
       disclosure: "案件登録・作業フォルダ・会話の題名から3案を組みます。Jevは役割判定に使います。",
     },
   },
@@ -139,15 +150,15 @@ export const aiSettingsStrings = {
 
 // 材料から付ける表示名の文言。
 export const autoPaneNamingStrings = {
-  title: "ペイン名の自動命名",
+  title: "タブ名の自動命名",
   label: "材料から表示名を付ける (AI は使わない)",
   hint: "案件登録・作業フォルダ・会話の題名を使います。自分で付けた名前を優先します。",
   disabledByAiHint: "AI機能がオフでも利用できます。",
   // トーストは 8 秒で消えて履歴が残らないので、どの機能が何をしたかが
   // 1 行で分かるところまで書く (2026-09-09 作者の指摘「中身がわかりづらい」)。
-  toastApplied: (count: number): string => `ペイン名の自動命名: ${count}件のペインに名前をつけました`,
+  toastApplied: (count: number): string => `タブ名の自動命名: ${count}件のタブに名前をつけました`,
   toastUndo: "元に戻す",
-  toastUndone: "ペイン名の自動命名: つけた名前を元に戻しました",
+  toastUndone: "タブ名の自動命名: つけた名前を元に戻しました",
 } as const;
 
 // キャラ (pet) 設定タブの文言。用語は「ワークスペース > タブ > ペイン」(2026-08-11 確定)。
@@ -156,12 +167,14 @@ export const petSettingsStrings = {
   displayTitle: "表示",
   displayHint: "必要な場合だけ表示できます。",
   displayModeWs: "ワークスペースに1体",
-  displayModeBoth: "＋ペインにも小さく",
+  displayModeBoth: "＋タブにも小さく",
   displayModeNone: "キャラなし (既定)",
   candidatesTitle: "キャラ (pet) の候補",
   candidatesHint: "チェックを入れたものだけが、新しいワークスペースのランダム抽選に出ます。クリックで切替。",
   newWsTitle: "新しいワークスペースを作ったとき",
-  newWsRandom: "候補からランダムで1体 (以後そのワークスペースに固定)",
+  newWsRandom: "使用中のキャラを避けてランダム (既定)",
+  newWsRandomRepeat: "候補からランダム (重なってもよい・以前の方式)",
+  newWsRandomHint: "候補をひと通り使うまでは重ならず、使い切ったら再び抽選します。候補が1体なら同じキャラになります。決まったキャラはそのワークスペースに固定します。",
   newWsChoose: "毎回自分で選ぶ",
   newWsFixed: "いつも同じ1体にする",
   importTitle: "pet を増やす",

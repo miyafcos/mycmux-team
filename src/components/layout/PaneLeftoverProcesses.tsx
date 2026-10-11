@@ -82,14 +82,14 @@ export function PaneLeftoverProcesses({ active }: { active: boolean }) {
   return (
     <section aria-labelledby="pane-leftover-heading" style={{ margin: "0 16px 12px", paddingTop: 12, borderTop: "1px solid var(--cmux-border)" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-        <h2 id="pane-leftover-heading" style={{ margin: 0, fontSize: 13 }}>ペインの外で動いているプロセス</h2>
+        <h2 id="pane-leftover-heading" style={{ margin: 0, fontSize: 13 }}>タブの外で動いているプロセス</h2>
         <button type="button" style={{ ...buttonStyle, opacity: loading ? 0.5 : 1 }} disabled={loading || stopping.size > 0} onClick={() => void refresh()}>再読み込み</button>
       </div>
-      <p style={{ margin: "6px 0 10px", fontSize: 11, color: "var(--cmux-text-secondary)", lineHeight: 1.5 }}>ペインの中から起動され、ペインの外で動き続けているプロセスです。常駐の見張りのように残しておくものもあるので、中身を見てから止めてください。</p>
+      <p style={{ margin: "6px 0 10px", fontSize: 11, color: "var(--cmux-text-secondary)", lineHeight: 1.5 }}>タブの中から起動され、タブの外で動き続けているプロセスです。常駐の見張りのように残しておくものもあるので、中身を見てから止めてください。</p>
       {loading ? <div role="status" style={{ fontSize: 11, marginBottom: 6 }}>{processes === null ? "確認中" : "更新中"}</div> : null}
       {scanError ? <div role="alert" style={{ fontSize: 11, color: "var(--cmux-red)", marginBottom: 6 }}>{`確認できませんでした: ${scanError}`}</div> : null}
       <div aria-busy={loading} data-pane-leftover-list="true" style={{ opacity: loading && processes !== null ? 0.45 : 1 }}>
-        {processes !== null && groups.length === 0 ? <p style={{ margin: "6px 0", fontSize: 11 }}>ペインの外で動いているプロセスはありません。</p> : null}
+        {processes !== null && groups.length === 0 ? <p style={{ margin: "6px 0", fontSize: 11 }}>タブの外で動いているプロセスはありません。</p> : null}
         {groups.map((group) => (
           <div key={group.paneSessionId} data-pane-leftover-group={group.paneSessionId}>
             <h3 style={{ margin: "10px 0 4px", fontSize: 11, fontWeight: 600, overflowWrap: "anywhere" }}>{group.title}</h3>

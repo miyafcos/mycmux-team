@@ -1,0 +1,1157 @@
+{
+  "mode": "native-adapter-shape",
+  "cases": [
+    {
+      "id": "negation-short",
+      "reason": "動画を編集しない",
+      "jobs": [
+        {
+          "id": "a",
+          "frames": [
+            {
+              "at": 0,
+              "events": [
+                {
+                  "eventId": "negation-short-a-0-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 0,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "動画を編集する",
+                    "digest": "fixture-0"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "動画を編集する"
+                  }
+                }
+              ]
+            },
+            {
+              "at": 60000,
+              "events": [
+                {
+                  "eventId": "negation-short-a-60000-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 60000,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "動画を編集する",
+                    "digest": "fixture-0"
+                  }
+                },
+                {
+                  "eventId": "negation-short-a-60000-1",
+                  "sourceRevision": 2,
+                  "occurredAt": 60000,
+                  "sourceByteStart": 100,
+                  "sourceByteEnd": 200,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskChange",
+                    "text": "動画を編集しない",
+                    "digest": "fixture-1"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "動画を編集する"
+                  }
+                },
+                {
+                  "type": "user",
+                  "uuid": "native-u-1",
+                  "message": {
+                    "role": "user",
+                    "content": "動画を編集しない"
+                  }
+                }
+              ]
+            }
+          ],
+          "must": [
+            "作業内容未取得"
+          ],
+          "forbidden": [
+            "動画編集"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "negation-polite",
+      "reason": "動画を編集しません",
+      "jobs": [
+        {
+          "id": "a",
+          "frames": [
+            {
+              "at": 0,
+              "events": [
+                {
+                  "eventId": "negation-polite-a-0-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 0,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "動画を編集する",
+                    "digest": "fixture-0"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "動画を編集する"
+                  }
+                }
+              ]
+            },
+            {
+              "at": 60000,
+              "events": [
+                {
+                  "eventId": "negation-polite-a-60000-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 60000,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "動画を編集する",
+                    "digest": "fixture-0"
+                  }
+                },
+                {
+                  "eventId": "negation-polite-a-60000-1",
+                  "sourceRevision": 2,
+                  "occurredAt": 60000,
+                  "sourceByteStart": 100,
+                  "sourceByteEnd": 200,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskChange",
+                    "text": "動画を編集しません",
+                    "digest": "fixture-1"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "動画を編集する"
+                  }
+                },
+                {
+                  "type": "user",
+                  "uuid": "native-u-1",
+                  "message": {
+                    "role": "user",
+                    "content": "動画を編集しません"
+                  }
+                }
+              ]
+            }
+          ],
+          "must": [
+            "作業内容未取得"
+          ],
+          "forbidden": [
+            "動画編集"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "continuation",
+      "reason": "adapter taskChangeの続き",
+      "jobs": [
+        {
+          "id": "a",
+          "frames": [
+            {
+              "at": 0,
+              "events": [
+                {
+                  "eventId": "continuation-a-0-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 0,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "方程式の解説スライドを作る",
+                    "digest": "fixture-0"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "方程式の解説スライドを作る"
+                  }
+                }
+              ]
+            },
+            {
+              "at": 60000,
+              "events": [
+                {
+                  "eventId": "continuation-a-60000-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 60000,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "方程式の解説スライドを作る",
+                    "digest": "fixture-0"
+                  }
+                },
+                {
+                  "eventId": "continuation-a-60000-1",
+                  "sourceRevision": 2,
+                  "occurredAt": 60000,
+                  "sourceByteStart": 100,
+                  "sourceByteEnd": 200,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskChange",
+                    "text": "続きをお願いします",
+                    "digest": "fixture-1"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "方程式の解説スライドを作る"
+                  }
+                },
+                {
+                  "type": "user",
+                  "uuid": "native-u-1",
+                  "message": {
+                    "role": "user",
+                    "content": "続きをお願いします"
+                  }
+                }
+              ]
+            }
+          ],
+          "must": [
+            "作業内容未取得"
+          ],
+          "forbidden": []
+        }
+      ]
+    },
+    {
+      "id": "acknowledged-new-job",
+      "reason": "承知の後ろの新指示",
+      "jobs": [
+        {
+          "id": "a",
+          "frames": [
+            {
+              "at": 0,
+              "events": [
+                {
+                  "eventId": "acknowledged-new-job-a-0-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 0,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "方程式の解説スライドを作る",
+                    "digest": "fixture-0"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "方程式の解説スライドを作る"
+                  }
+                }
+              ]
+            },
+            {
+              "at": 60000,
+              "events": [
+                {
+                  "eventId": "acknowledged-new-job-a-60000-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 60000,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "方程式の解説スライドを作る",
+                    "digest": "fixture-0"
+                  }
+                },
+                {
+                  "eventId": "acknowledged-new-job-a-60000-1",
+                  "sourceRevision": 2,
+                  "occurredAt": 60000,
+                  "sourceByteStart": 100,
+                  "sourceByteEnd": 200,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskChange",
+                    "text": "了解です。次は字幕位置を直してください",
+                    "digest": "fixture-1"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "方程式の解説スライドを作る"
+                  }
+                },
+                {
+                  "type": "user",
+                  "uuid": "native-u-1",
+                  "message": {
+                    "role": "user",
+                    "content": "了解です。次は字幕位置を直してください"
+                  }
+                }
+              ]
+            }
+          ],
+          "must": [
+            "字幕位置",
+            "修正"
+          ],
+          "forbidden": [
+            "スライド"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "heading-tail-loss",
+      "reason": "古い見出しと無関係の書込",
+      "jobs": [
+        {
+          "id": "a",
+          "frames": [
+            {
+              "at": 0,
+              "events": [
+                {
+                  "eventId": "heading-tail-loss-a-0-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 0,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "解説スライドを作る",
+                    "digest": "fixture-0"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "解説スライドを作る"
+                  }
+                }
+              ]
+            },
+            {
+              "at": 60000,
+              "events": [
+                {
+                  "eventId": "heading-tail-loss-a-60000-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 60000,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "toolStart",
+                    "tool": "Write",
+                    "call_id": "w0",
+                    "target": "lesson.pptx"
+                  }
+                }
+              ],
+              "task_title": "動画を編集する",
+              "raw_records": [
+                {
+                  "type": "assistant",
+                  "uuid": "native-w-0",
+                  "message": {
+                    "role": "assistant",
+                    "content": [
+                      {
+                        "type": "tool_use",
+                        "id": "w0",
+                        "name": "Write",
+                        "input": {
+                          "file_path": "lesson.pptx"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          ],
+          "must": [
+            "作業内容未取得"
+          ],
+          "forbidden": [
+            "動画"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "activity-inflection",
+      "reason": "活用した動作だけの変化",
+      "jobs": [
+        {
+          "id": "a",
+          "frames": [
+            {
+              "at": 0,
+              "events": [
+                {
+                  "eventId": "activity-inflection-a-0-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 0,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "agentMessage",
+                    "text": "スライドを作っている"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "assistant",
+                  "uuid": "native-a-0",
+                  "message": {
+                    "role": "assistant",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "スライドを作っている"
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "at": 60000,
+              "events": [
+                {
+                  "eventId": "activity-inflection-a-60000-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 60000,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "agentMessage",
+                    "text": "字幕位置を直している"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "assistant",
+                  "uuid": "native-a-0",
+                  "message": {
+                    "role": "assistant",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "字幕位置を直している"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          ],
+          "must": [
+            "字幕位置",
+            "修正"
+          ],
+          "forbidden": [
+            "スライド"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "write-recency",
+      "reason": "同じfile集合で最新の書込が変わる",
+      "jobs": [
+        {
+          "id": "a",
+          "frames": [
+            {
+              "at": 0,
+              "events": [
+                {
+                  "eventId": "write-recency-a-0-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 0,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "toolStart",
+                    "tool": "Write",
+                    "call_id": "w0",
+                    "target": "movie.mp4"
+                  }
+                },
+                {
+                  "eventId": "write-recency-a-0-1",
+                  "sourceRevision": 2,
+                  "occurredAt": 0,
+                  "sourceByteStart": 100,
+                  "sourceByteEnd": 200,
+                  "kind": {
+                    "type": "toolStart",
+                    "tool": "Write",
+                    "call_id": "w1",
+                    "target": "lesson.pptx"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "assistant",
+                  "uuid": "native-w-0",
+                  "message": {
+                    "role": "assistant",
+                    "content": [
+                      {
+                        "type": "tool_use",
+                        "id": "w0",
+                        "name": "Write",
+                        "input": {
+                          "file_path": "movie.mp4"
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "assistant",
+                  "uuid": "native-w-1",
+                  "message": {
+                    "role": "assistant",
+                    "content": [
+                      {
+                        "type": "tool_use",
+                        "id": "w1",
+                        "name": "Write",
+                        "input": {
+                          "file_path": "lesson.pptx"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "at": 60000,
+              "events": [
+                {
+                  "eventId": "write-recency-a-60000-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 60000,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "toolStart",
+                    "tool": "Write",
+                    "call_id": "w0",
+                    "target": "lesson.pptx"
+                  }
+                },
+                {
+                  "eventId": "write-recency-a-60000-1",
+                  "sourceRevision": 2,
+                  "occurredAt": 60000,
+                  "sourceByteStart": 100,
+                  "sourceByteEnd": 200,
+                  "kind": {
+                    "type": "toolStart",
+                    "tool": "Write",
+                    "call_id": "w1",
+                    "target": "movie.mp4"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "assistant",
+                  "uuid": "native-w-0",
+                  "message": {
+                    "role": "assistant",
+                    "content": [
+                      {
+                        "type": "tool_use",
+                        "id": "w0",
+                        "name": "Write",
+                        "input": {
+                          "file_path": "lesson.pptx"
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "assistant",
+                  "uuid": "native-w-1",
+                  "message": {
+                    "role": "assistant",
+                    "content": [
+                      {
+                        "type": "tool_use",
+                        "id": "w1",
+                        "name": "Write",
+                        "input": {
+                          "file_path": "movie.mp4"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          ],
+          "must": [
+            "作業内容未取得"
+          ],
+          "forbidden": [
+            "スライド"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "video-estimates",
+      "reason": "動画の分野でも見積",
+      "workspaceMust": [
+        "見積"
+      ],
+      "workspaceForbidden": [
+        "動画編集"
+      ],
+      "jobs": [
+        {
+          "id": "a",
+          "frames": [
+            {
+              "at": 0,
+              "events": [
+                {
+                  "eventId": "video-estimates-a-0-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 0,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "動画制作費の見積を作る",
+                    "digest": "fixture-0"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "動画制作費の見積を作る"
+                  }
+                }
+              ]
+            }
+          ],
+          "must": [
+            "見積"
+          ]
+        },
+        {
+          "id": "b",
+          "frames": [
+            {
+              "at": 0,
+              "events": [
+                {
+                  "eventId": "video-estimates-b-0-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 0,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "字幕制作費の見積を作る",
+                    "digest": "fixture-0"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "字幕制作費の見積を作る"
+                  }
+                }
+              ]
+            }
+          ],
+          "must": [
+            "見積"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "different-projects",
+      "reason": "数学と国語の違いは番号で代用しない",
+      "distinct": true,
+      "projects": [
+        "数学",
+        "国語"
+      ],
+      "jobs": [
+        {
+          "id": "a",
+          "project": "数学",
+          "frames": [
+            {
+              "at": 0,
+              "events": [
+                {
+                  "eventId": "different-projects-a-0-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 0,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "数学のスライドを作る",
+                    "digest": "fixture-0"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "数学のスライドを作る"
+                  }
+                }
+              ]
+            }
+          ],
+          "must": [
+            "数学",
+            "スライド",
+            "制作"
+          ]
+        },
+        {
+          "id": "b",
+          "project": "国語",
+          "frames": [
+            {
+              "at": 0,
+              "events": [
+                {
+                  "eventId": "different-projects-b-0-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 0,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "国語のスライドを作る",
+                    "digest": "fixture-0"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "国語のスライドを作る"
+                  }
+                }
+              ]
+            }
+          ],
+          "must": [
+            "国語",
+            "スライド",
+            "制作"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "head-noun",
+      "reason": "見える短名にも参加者名簿",
+      "jobs": [
+        {
+          "id": "a",
+          "frames": [
+            {
+              "at": 0,
+              "events": [
+                {
+                  "eventId": "head-noun-a-0-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 0,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "全国の小学校と中学校と高等学校の教職員の参加者名簿を作る",
+                    "digest": "fixture-0"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "全国の小学校と中学校と高等学校の教職員の参加者名簿を作る"
+                  }
+                }
+              ]
+            }
+          ],
+          "must": [
+            "参加者名簿",
+            "制作"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "three-siblings",
+      "reason": "同じ中心名詞でも動作で区別",
+      "distinct": true,
+      "jobs": [
+        {
+          "id": "0",
+          "frames": [
+            {
+              "at": 0,
+              "events": [
+                {
+                  "eventId": "three-siblings-0-0-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 0,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "数学スライドの解説ページを調整する",
+                    "digest": "fixture-0"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "数学スライドの解説ページを調整する"
+                  }
+                }
+              ]
+            }
+          ],
+          "must": [
+            "解説ページ",
+            "調整"
+          ]
+        },
+        {
+          "id": "1",
+          "frames": [
+            {
+              "at": 0,
+              "events": [
+                {
+                  "eventId": "three-siblings-1-0-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 0,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "数学スライドの解説ページを確認する",
+                    "digest": "fixture-0"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "数学スライドの解説ページを確認する"
+                  }
+                }
+              ]
+            }
+          ],
+          "must": [
+            "解説ページ",
+            "確認"
+          ]
+        },
+        {
+          "id": "2",
+          "frames": [
+            {
+              "at": 0,
+              "events": [
+                {
+                  "eventId": "three-siblings-2-0-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 0,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "数学スライドの解説ページを校正する",
+                    "digest": "fixture-0"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "数学スライドの解説ページを校正する"
+                  }
+                }
+              ]
+            }
+          ],
+          "must": [
+            "解説ページ",
+            "校正"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hierarchical-projects",
+      "reason": "階層ラベルと共通の登録親があっても教科を残す",
+      "distinct": true,
+      "projects": [
+        "数学",
+        "国語"
+      ],
+      "jobs": [
+        {
+          "id": "a",
+          "project": "数学",
+          "frames": [
+            {
+              "at": 0,
+              "events": [
+                {
+                  "eventId": "different-projects-a-0-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 0,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "スライドを作る",
+                    "digest": "fixture-0"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "スライドを作る"
+                  }
+                }
+              ]
+            }
+          ],
+          "must": [
+            "数学",
+            "スライド",
+            "制作"
+          ]
+        },
+        {
+          "id": "b",
+          "project": "国語",
+          "frames": [
+            {
+              "at": 0,
+              "events": [
+                {
+                  "eventId": "different-projects-b-0-0",
+                  "sourceRevision": 1,
+                  "occurredAt": 0,
+                  "sourceByteStart": 0,
+                  "sourceByteEnd": 100,
+                  "kind": {
+                    "type": "userMessage",
+                    "kind": "taskStart",
+                    "text": "スライドを作る",
+                    "digest": "fixture-0"
+                  }
+                }
+              ],
+              "task_title": null,
+              "raw_records": [
+                {
+                  "type": "user",
+                  "uuid": "native-u-0",
+                  "message": {
+                    "role": "user",
+                    "content": "スライドを作る"
+                  }
+                }
+              ]
+            }
+          ],
+          "must": [
+            "国語",
+            "スライド",
+            "制作"
+          ]
+        }
+      ],
+      "registrations": [
+        {
+          "section": "projects",
+          "label": "共通のサンプル企画",
+          "path": "/fixture"
+        },
+        {
+          "section": "projects",
+          "label": "サンプル企画/数学",
+          "path": "/fixture/数学"
+        },
+        {
+          "section": "projects",
+          "label": "サンプル企画/国語",
+          "path": "/fixture/国語"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,3919 @@
+{
+  "schemaVersion": 1,
+  "policy": "rules-v1",
+  "notice": "All conversations and project names are fictional. Failure types reproduce naming defects from a supplied snapshot; its private conversation contents were not available. These are not replays of real sessions.",
+  "scoring": "Five axes (content, specificity, distinction, complete phrase, character integrity), 0..2 each. Automatic expected names, including abstentions, form the quality denominator. Protected/unknown/off states are separate contract gates.",
+  "cases": [
+    {
+      "id": "slides-initial",
+      "category": "normal",
+      "reason": "具体的な初回の対象と動作。cwdや起動IDより最新の依頼を優先。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "slides",
+              "label": "launch-slides",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-slides",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式の解説スライドを作る"
+                },
+                {
+                  "at": 1,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "lesson.pptx"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "slides": {
+            "must": [
+              "方程式",
+              "スライド",
+              "制作"
+            ],
+            "forbidden": [
+              "動画"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "slides",
+      "scenario": "initial"
+    },
+    {
+      "id": "slides-shift",
+      "category": "normal",
+      "reason": "別作業への明確な変更を10秒の持続後に採用する。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "slides",
+              "label": "launch-slides",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-slides",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式の解説スライドを作る"
+                },
+                {
+                  "at": 20000,
+                  "type": "userMessage",
+                  "kind": "taskChange",
+                  "text": "解説スライドの解答を校正する"
+                },
+                {
+                  "at": 20001,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "lesson.pptx"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "slides": {
+            "must": [
+              "解答",
+              "校正"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 20000
+        },
+        {
+          "at": 25000
+        },
+        {
+          "at": 30000
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "slides",
+      "scenario": "shift"
+    },
+    {
+      "id": "slides-siblings",
+      "category": "normal",
+      "reason": "同じ背景案件の異なる仕事を全タブで区別する。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "slides-0",
+              "label": "launch-slides-0",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-slides-0",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式スライドの図版を調整する"
+                }
+              ]
+            },
+            {
+              "id": "slides-1",
+              "label": "launch-slides-1",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-slides-1",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式スライドの解答を確認する"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "slides-0": {
+            "must": [
+              "図版",
+              "調整"
+            ]
+          },
+          "slides-1": {
+            "must": [
+              "解答",
+              "確認"
+            ]
+          }
+        },
+        "distinctPrefixes": true
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "slides",
+      "scenario": "siblings"
+    },
+    {
+      "id": "slides-material",
+      "category": "normal",
+      "reason": "読んだ参考素材や初期の題は、肯定された新しい成果物に置き換えない。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "slides",
+              "label": "launch-slides",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-slides",
+              "cwd": "C:/sample/src",
+              "initialTitle": "動画を編集する",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "動画を編集する"
+                },
+                {
+                  "at": 1,
+                  "type": "userMessage",
+                  "kind": "correction",
+                  "text": "動画を編集するの依頼ではなく方程式の解説スライドを作る"
+                },
+                {
+                  "at": 2,
+                  "type": "file",
+                  "operation": "read",
+                  "path": "reference.mp4"
+                },
+                {
+                  "at": 3,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "lesson.pptx"
+                },
+                {
+                  "at": 4,
+                  "type": "userMessage",
+                  "kind": "ack",
+                  "text": "了解"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "slides": {
+            "must": [
+              "作業内容未取得"
+            ],
+            "forbidden": [
+              "動画"
+            ],
+            "unknown": true
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 1
+        },
+        {
+          "at": 10001
+        },
+        {
+          "at": 130001
+        },
+        {
+          "at": 430001
+        }
+      ],
+      "domain": "slides",
+      "scenario": "misleading-material"
+    },
+    {
+      "id": "video-initial",
+      "category": "normal",
+      "reason": "具体的な初回の対象と動作。cwdや起動IDより最新の依頼を優先。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "video",
+              "label": "launch-video",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-video",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "授業動画の字幕位置を調整する"
+                },
+                {
+                  "at": 1,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "lesson.srt"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "video": {
+            "must": [
+              "字幕",
+              "位置",
+              "調整"
+            ],
+            "forbidden": [
+              "スライド"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "video",
+      "scenario": "initial"
+    },
+    {
+      "id": "video-shift",
+      "category": "normal",
+      "reason": "別作業への明確な変更を10秒の持続後に採用する。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "video",
+              "label": "launch-video",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-video",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "授業動画の字幕位置を調整する"
+                },
+                {
+                  "at": 20000,
+                  "type": "userMessage",
+                  "kind": "taskChange",
+                  "text": "授業動画の音量を調整する"
+                },
+                {
+                  "at": 20001,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "lesson.srt"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "video": {
+            "must": [
+              "音量",
+              "調整"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 20000
+        },
+        {
+          "at": 25000
+        },
+        {
+          "at": 30000
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "video",
+      "scenario": "shift"
+    },
+    {
+      "id": "video-siblings",
+      "category": "normal",
+      "reason": "同じ背景案件の異なる仕事を全タブで区別する。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "video-0",
+              "label": "launch-video-0",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-video-0",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "授業動画の字幕位置を調整する"
+                }
+              ]
+            },
+            {
+              "id": "video-1",
+              "label": "launch-video-1",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-video-1",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "授業動画の音量を調整する"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "video-0": {
+            "must": [
+              "字幕",
+              "調整"
+            ]
+          },
+          "video-1": {
+            "must": [
+              "音量",
+              "調整"
+            ]
+          }
+        },
+        "distinctPrefixes": true
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "video",
+      "scenario": "siblings"
+    },
+    {
+      "id": "video-material",
+      "category": "normal",
+      "reason": "読んだ参考素材や初期の題は、肯定された新しい成果物に置き換えない。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "video",
+              "label": "launch-video",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-video",
+              "cwd": "C:/sample/src",
+              "initialTitle": "スライドを作る",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "スライドを作る"
+                },
+                {
+                  "at": 1,
+                  "type": "userMessage",
+                  "kind": "correction",
+                  "text": "スライドを作るの依頼ではなく授業動画の字幕位置を調整する"
+                },
+                {
+                  "at": 2,
+                  "type": "file",
+                  "operation": "read",
+                  "path": "reference.pptx"
+                },
+                {
+                  "at": 3,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "lesson.srt"
+                },
+                {
+                  "at": 4,
+                  "type": "userMessage",
+                  "kind": "ack",
+                  "text": "了解"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "video": {
+            "must": [
+              "作業内容未取得"
+            ],
+            "forbidden": [
+              "スライド"
+            ],
+            "unknown": true
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 1
+        },
+        {
+          "at": 10001
+        },
+        {
+          "at": 130001
+        },
+        {
+          "at": 430001
+        }
+      ],
+      "domain": "video",
+      "scenario": "misleading-material"
+    },
+    {
+      "id": "estimate-initial",
+      "category": "normal",
+      "reason": "具体的な初回の対象と動作。cwdや起動IDより最新の依頼を優先。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "estimate",
+              "label": "launch-estimate",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-estimate",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "機材費の見積を作る"
+                },
+                {
+                  "at": 1,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "costs.xlsx"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "estimate": {
+            "must": [
+              "機材費",
+              "見積"
+            ],
+            "forbidden": [
+              "営業文面"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "estimate",
+      "scenario": "initial"
+    },
+    {
+      "id": "estimate-shift",
+      "category": "normal",
+      "reason": "別作業への明確な変更を10秒の持続後に採用する。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "estimate",
+              "label": "launch-estimate",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-estimate",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "機材費の見積を作る"
+                },
+                {
+                  "at": 20000,
+                  "type": "userMessage",
+                  "kind": "taskChange",
+                  "text": "機材費の集計表を確認する"
+                },
+                {
+                  "at": 20001,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "costs.xlsx"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "estimate": {
+            "must": [
+              "集計表",
+              "確認"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 20000
+        },
+        {
+          "at": 25000
+        },
+        {
+          "at": 30000
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "estimate",
+      "scenario": "shift"
+    },
+    {
+      "id": "estimate-siblings",
+      "category": "normal",
+      "reason": "同じ背景案件の異なる仕事を全タブで区別する。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "estimate-0",
+              "label": "launch-estimate-0",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-estimate-0",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "機材費の明細を集計する"
+                }
+              ]
+            },
+            {
+              "id": "estimate-1",
+              "label": "launch-estimate-1",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-estimate-1",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "機材費の根拠を確認する"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "estimate-0": {
+            "must": [
+              "明細",
+              "集計"
+            ]
+          },
+          "estimate-1": {
+            "must": [
+              "根拠",
+              "確認"
+            ]
+          }
+        },
+        "distinctPrefixes": true
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "estimate",
+      "scenario": "siblings"
+    },
+    {
+      "id": "estimate-material",
+      "category": "normal",
+      "reason": "読んだ参考素材や初期の題は、肯定された新しい成果物に置き換えない。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "estimate",
+              "label": "launch-estimate",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-estimate",
+              "cwd": "C:/sample/src",
+              "initialTitle": "営業文面を校正する",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "営業文面を校正する"
+                },
+                {
+                  "at": 1,
+                  "type": "userMessage",
+                  "kind": "correction",
+                  "text": "営業文面を校正するの依頼ではなく機材費の見積を作る"
+                },
+                {
+                  "at": 2,
+                  "type": "file",
+                  "operation": "read",
+                  "path": "reference.ts"
+                },
+                {
+                  "at": 3,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "costs.xlsx"
+                },
+                {
+                  "at": 4,
+                  "type": "userMessage",
+                  "kind": "ack",
+                  "text": "了解"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "estimate": {
+            "must": [
+              "作業内容未取得"
+            ],
+            "forbidden": [
+              "営業文面"
+            ],
+            "unknown": true
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 1
+        },
+        {
+          "at": 10001
+        },
+        {
+          "at": 130001
+        },
+        {
+          "at": 430001
+        }
+      ],
+      "domain": "estimate",
+      "scenario": "misleading-material"
+    },
+    {
+      "id": "code-initial",
+      "category": "normal",
+      "reason": "具体的な初回の対象と動作。cwdや起動IDより最新の依頼を優先。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "code",
+              "label": "launch-code",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-code",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "日付表示を修正する"
+                },
+                {
+                  "at": 1,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "DateHeader.tsx"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "code": {
+            "must": [
+              "日付表示",
+              "修正"
+            ],
+            "forbidden": [
+              "動画"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "code",
+      "scenario": "initial"
+    },
+    {
+      "id": "code-shift",
+      "category": "normal",
+      "reason": "別作業への明確な変更を10秒の持続後に採用する。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "code",
+              "label": "launch-code",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-code",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "日付表示を修正する"
+                },
+                {
+                  "at": 20000,
+                  "type": "userMessage",
+                  "kind": "taskChange",
+                  "text": "予定一覧の配色を調整する"
+                },
+                {
+                  "at": 20001,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "DateHeader.tsx"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "code": {
+            "must": [
+              "配色",
+              "調整"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 20000
+        },
+        {
+          "at": 25000
+        },
+        {
+          "at": 30000
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "code",
+      "scenario": "shift"
+    },
+    {
+      "id": "code-siblings",
+      "category": "normal",
+      "reason": "同じ背景案件の異なる仕事を全タブで区別する。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "code-0",
+              "label": "launch-code-0",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-code-0",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "予定一覧の配色を調整する"
+                }
+              ]
+            },
+            {
+              "id": "code-1",
+              "label": "launch-code-1",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-code-1",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "予定一覧の文字サイズを修正する"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "code-0": {
+            "must": [
+              "配色",
+              "調整"
+            ]
+          },
+          "code-1": {
+            "must": [
+              "文字サイズ",
+              "修正"
+            ]
+          }
+        },
+        "distinctPrefixes": true
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "code",
+      "scenario": "siblings"
+    },
+    {
+      "id": "code-material",
+      "category": "normal",
+      "reason": "読んだ参考素材や初期の題は、肯定された新しい成果物に置き換えない。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "code",
+              "label": "launch-code",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-code",
+              "cwd": "C:/sample/src",
+              "initialTitle": "動画を編集する",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "動画を編集する"
+                },
+                {
+                  "at": 1,
+                  "type": "userMessage",
+                  "kind": "correction",
+                  "text": "動画を編集するの依頼ではなく日付表示を修正する"
+                },
+                {
+                  "at": 2,
+                  "type": "file",
+                  "operation": "read",
+                  "path": "reference.mp4"
+                },
+                {
+                  "at": 3,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "DateHeader.tsx"
+                },
+                {
+                  "at": 4,
+                  "type": "userMessage",
+                  "kind": "ack",
+                  "text": "了解"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "code": {
+            "must": [
+              "作業内容未取得"
+            ],
+            "forbidden": [
+              "動画"
+            ],
+            "unknown": true
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 1
+        },
+        {
+          "at": 10001
+        },
+        {
+          "at": 130001
+        },
+        {
+          "at": 430001
+        }
+      ],
+      "domain": "code",
+      "scenario": "misleading-material"
+    },
+    {
+      "id": "research-initial",
+      "category": "normal",
+      "reason": "具体的な初回の対象と動作。cwdや起動IDより最新の依頼を優先。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "research",
+              "label": "launch-research",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-research",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "ブラウザの描画不具合を比較する"
+                },
+                {
+                  "at": 1,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "report.md"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "research": {
+            "must": [
+              "描画不具合",
+              "比較"
+            ],
+            "forbidden": [
+              "コード修正"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "research",
+      "scenario": "initial"
+    },
+    {
+      "id": "research-shift",
+      "category": "normal",
+      "reason": "別作業への明確な変更を10秒の持続後に採用する。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "research",
+              "label": "launch-research",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-research",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "ブラウザの描画不具合を比較する"
+                },
+                {
+                  "at": 20000,
+                  "type": "userMessage",
+                  "kind": "taskChange",
+                  "text": "描画不具合の再現条件を調査する"
+                },
+                {
+                  "at": 20001,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "report.md"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "research": {
+            "must": [
+              "再現条件",
+              "調査"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 20000
+        },
+        {
+          "at": 25000
+        },
+        {
+          "at": 30000
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "research",
+      "scenario": "shift"
+    },
+    {
+      "id": "research-siblings",
+      "category": "normal",
+      "reason": "同じ背景案件の異なる仕事を全タブで区別する。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "research-0",
+              "label": "launch-research-0",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-research-0",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "ブラウザの描画速度を比較する"
+                }
+              ]
+            },
+            {
+              "id": "research-1",
+              "label": "launch-research-1",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-research-1",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "ブラウザの文字描画を比較する"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "research-0": {
+            "must": [
+              "描画速度",
+              "比較"
+            ]
+          },
+          "research-1": {
+            "must": [
+              "文字描画",
+              "比較"
+            ]
+          }
+        },
+        "distinctPrefixes": true
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "research",
+      "scenario": "siblings"
+    },
+    {
+      "id": "research-material",
+      "category": "normal",
+      "reason": "読んだ参考素材や初期の題は、肯定された新しい成果物に置き換えない。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "research",
+              "label": "launch-research",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-research",
+              "cwd": "C:/sample/src",
+              "initialTitle": "コードを修正する",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "コードを修正する"
+                },
+                {
+                  "at": 1,
+                  "type": "userMessage",
+                  "kind": "correction",
+                  "text": "コードを修正するの依頼ではなくブラウザの描画不具合を比較する"
+                },
+                {
+                  "at": 2,
+                  "type": "file",
+                  "operation": "read",
+                  "path": "implementation.ts"
+                },
+                {
+                  "at": 3,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "report.md"
+                },
+                {
+                  "at": 4,
+                  "type": "userMessage",
+                  "kind": "ack",
+                  "text": "了解"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "research": {
+            "must": [
+              "作業内容未取得"
+            ],
+            "forbidden": [
+              "コード修正"
+            ],
+            "unknown": true
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 1
+        },
+        {
+          "at": 10001
+        },
+        {
+          "at": 130001
+        },
+        {
+          "at": 430001
+        }
+      ],
+      "domain": "research",
+      "scenario": "misleading-material"
+    },
+    {
+      "id": "desk-initial",
+      "category": "normal",
+      "reason": "具体的な初回の対象と動作。cwdや起動IDより最新の依頼を優先。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "desk",
+              "label": "launch-desk",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-desk",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "窓口のアップロード処理を修正する"
+                },
+                {
+                  "at": 1,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "bot.ts"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "desk": {
+            "must": [
+              "アップロード処理",
+              "修正"
+            ],
+            "forbidden": [
+              "スライド"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "desk",
+      "scenario": "initial"
+    },
+    {
+      "id": "desk-shift",
+      "category": "normal",
+      "reason": "別作業への明確な変更を10秒の持続後に採用する。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "desk",
+              "label": "launch-desk",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-desk",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "窓口のアップロード処理を修正する"
+                },
+                {
+                  "at": 20000,
+                  "type": "userMessage",
+                  "kind": "taskChange",
+                  "text": "窓口の送付処理を修正する"
+                },
+                {
+                  "at": 20001,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "bot.ts"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "desk": {
+            "must": [
+              "送付処理",
+              "修正"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 20000
+        },
+        {
+          "at": 25000
+        },
+        {
+          "at": 30000
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "desk",
+      "scenario": "shift"
+    },
+    {
+      "id": "desk-siblings",
+      "category": "normal",
+      "reason": "同じ背景案件の異なる仕事を全タブで区別する。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "desk-0",
+              "label": "launch-desk-0",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-desk-0",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "窓口のアップロード処理を修正する"
+                }
+              ]
+            },
+            {
+              "id": "desk-1",
+              "label": "launch-desk-1",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-desk-1",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "窓口の送付処理を確認する"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "desk-0": {
+            "must": [
+              "アップロード",
+              "修正"
+            ]
+          },
+          "desk-1": {
+            "must": [
+              "送付",
+              "確認"
+            ]
+          }
+        },
+        "distinctPrefixes": true
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "domain": "desk",
+      "scenario": "siblings"
+    },
+    {
+      "id": "desk-material",
+      "category": "normal",
+      "reason": "読んだ参考素材や初期の題は、肯定された新しい成果物に置き換えない。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "desk",
+              "label": "launch-desk",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-desk",
+              "cwd": "C:/sample/src",
+              "initialTitle": "スライドを作る",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "スライドを作る"
+                },
+                {
+                  "at": 1,
+                  "type": "userMessage",
+                  "kind": "correction",
+                  "text": "スライドを作るの依頼ではなく窓口のアップロード処理を修正する"
+                },
+                {
+                  "at": 2,
+                  "type": "file",
+                  "operation": "read",
+                  "path": "reference.pptx"
+                },
+                {
+                  "at": 3,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "bot.ts"
+                },
+                {
+                  "at": 4,
+                  "type": "userMessage",
+                  "kind": "ack",
+                  "text": "了解"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "desk": {
+            "must": [
+              "作業内容未取得"
+            ],
+            "forbidden": [
+              "スライド"
+            ],
+            "unknown": true
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 1
+        },
+        {
+          "at": 10001
+        },
+        {
+          "at": 130001
+        },
+        {
+          "at": 430001
+        }
+      ],
+      "domain": "desk",
+      "scenario": "misleading-material"
+    },
+    {
+      "id": "failure-internal-0",
+      "category": "failure",
+      "reason": "実例型: 数字ID・空白入り起動名・日付フォルダ。明示の救済後も制御ラベルは変えない。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "internal-0",
+              "label": "claude-123456",
+              "labelSource": null,
+              "displayName": "claude-123456",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-internal-0",
+              "cwd": "C:/work/261009/sample_src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "日付表示を修正する"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "internal-0": {
+            "must": [
+              "日付表示",
+              "修正"
+            ],
+            "forbidden": [
+              "123456",
+              "3009",
+              "0800",
+              "261009",
+              "clockshift"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "failureType": "internal-id-space-date",
+      "recovery": true
+    },
+    {
+      "id": "failure-internal-1",
+      "category": "failure",
+      "reason": "実例型: 数字ID・空白入り起動名・日付フォルダ。明示の救済後も制御ラベルは変えない。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "internal-1",
+              "label": "runner clockshift 3009 retry until 0800",
+              "labelSource": null,
+              "displayName": "runner clockshift 3009 retry until 0800",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-internal-1",
+              "cwd": "C:/work/261009/sample_src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "日付表示を修正する"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "internal-1": {
+            "must": [
+              "日付表示",
+              "修正"
+            ],
+            "forbidden": [
+              "123456",
+              "3009",
+              "0800",
+              "261009",
+              "clockshift"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "failureType": "internal-id-space-date",
+      "recovery": true
+    },
+    {
+      "id": "failure-duplicate-0",
+      "category": "failure",
+      "reason": "実例型: 重複と途中で切れたID。真に同一の仕事だけは安定番号を許す。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "duplicate-0-0",
+              "label": "launch-duplicate-0-0",
+              "labelSource": "launch",
+              "displayName": "サンプル企画 261009- -m…",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-duplicate-0-0",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式の解説スライドを作る"
+                }
+              ]
+            },
+            {
+              "id": "duplicate-0-1",
+              "label": "launch-duplicate-0-1",
+              "labelSource": "launch",
+              "displayName": "サンプル企画 261009- -m…",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-duplicate-0-1",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式の解説スライドを作る"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "duplicate-0-0": {
+            "must": [
+              "方程式",
+              "スライド",
+              "制作"
+            ]
+          },
+          "duplicate-0-1": {
+            "must": [
+              "方程式",
+              "スライド",
+              "制作"
+            ]
+          }
+        },
+        "duplicateException": "同じ指示・対象・動作で区別材料がない。番号以外の役割を作らない。"
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "failureType": "duplicate"
+    },
+    {
+      "id": "failure-duplicate-1",
+      "category": "failure",
+      "reason": "実例型: 重複と途中で切れたID。真に同一の仕事だけは安定番号を許す。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "duplicate-1-0",
+              "label": "launch-duplicate-1-0",
+              "labelSource": "launch",
+              "displayName": "サンプル企画 261009- -m…",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-duplicate-1-0",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式の解説スライドを作る"
+                }
+              ]
+            },
+            {
+              "id": "duplicate-1-1",
+              "label": "launch-duplicate-1-1",
+              "labelSource": "launch",
+              "displayName": "サンプル企画 261009- -m…",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-duplicate-1-1",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式の解説スライドを作る"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "duplicate-1-0": {
+            "must": [
+              "方程式",
+              "スライド",
+              "制作"
+            ]
+          },
+          "duplicate-1-1": {
+            "must": [
+              "方程式",
+              "スライド",
+              "制作"
+            ]
+          }
+        },
+        "duplicateException": "同じ指示・対象・動作で区別材料がない。番号以外の役割を作らない。"
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "failureType": "duplicate"
+    },
+    {
+      "id": "failure-prefix-0",
+      "category": "failure",
+      "reason": "実例型: 全席が共通案件名で始まる。登録された先頭句のみを外し、仕事の違いを前へ出す。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "prefix-0-a",
+              "label": "launch-prefix-0-a",
+              "labelSource": "launch",
+              "displayName": "サンプル企画 量産分",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-prefix-0-a",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "サンプル企画の数学スライドの図版を調整する"
+                }
+              ]
+            },
+            {
+              "id": "prefix-0-b",
+              "label": "launch-prefix-0-b",
+              "labelSource": "launch",
+              "displayName": "サンプル企画 第2回",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-prefix-0-b",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "サンプル企画の数学スライドの解答を校正する"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "prefix-0-a": {
+            "must": [
+              "図版",
+              "調整"
+            ],
+            "forbidden": [
+              "サンプル企画"
+            ]
+          },
+          "prefix-0-b": {
+            "must": [
+              "解答",
+              "校正"
+            ],
+            "forbidden": [
+              "サンプル企画"
+            ]
+          }
+        },
+        "distinctPrefixes": true
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "failureType": "common-prefix",
+      "projects": [
+        "サンプル企画"
+      ],
+      "registrations": [
+        {
+          "section": "fixture",
+          "label": "サンプル企画",
+          "path": "C:/sample/src"
+        }
+      ]
+    },
+    {
+      "id": "failure-prefix-1",
+      "category": "failure",
+      "reason": "実例型: 全席が共通案件名で始まる。登録された先頭句のみを外し、仕事の違いを前へ出す。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "prefix-1-a",
+              "label": "launch-prefix-1-a",
+              "labelSource": "launch",
+              "displayName": "サンプル企画 量産分",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-prefix-1-a",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "サンプル企画の数学スライドの図版を調整する"
+                }
+              ]
+            },
+            {
+              "id": "prefix-1-b",
+              "label": "launch-prefix-1-b",
+              "labelSource": "launch",
+              "displayName": "サンプル企画 第2回",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-prefix-1-b",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "サンプル企画の数学スライドの解答を校正する"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "prefix-1-a": {
+            "must": [
+              "図版",
+              "調整"
+            ],
+            "forbidden": [
+              "サンプル企画"
+            ]
+          },
+          "prefix-1-b": {
+            "must": [
+              "解答",
+              "校正"
+            ],
+            "forbidden": [
+              "サンプル企画"
+            ]
+          }
+        },
+        "distinctPrefixes": true
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "failureType": "common-prefix",
+      "projects": [
+        "サンプル企画"
+      ],
+      "registrations": [
+        {
+          "section": "fixture",
+          "label": "サンプル企画",
+          "path": "C:/sample/src"
+        }
+      ]
+    },
+    {
+      "id": "failure-clipping-0",
+      "category": "failure",
+      "reason": "実例型: 依頼の先頭を文字数で切った省略名。全文と句として完結する短名を別に作る。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "clip-0",
+              "label": "launch-clip-0",
+              "labelSource": "launch",
+              "displayName": "依頼書: 窓口の送付を「アップロードと…",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-clip-0",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "授業資料のアップロードと送付を分ける処理を修正する"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "clip-0": {
+            "must": [
+              "アップロード",
+              "処理",
+              "修正"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "failureType": "clipping"
+    },
+    {
+      "id": "failure-clipping-1",
+      "category": "failure",
+      "reason": "実例型: 依頼の先頭を文字数で切った省略名。全文と句として完結する短名を別に作る。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "clip-1",
+              "label": "launch-clip-1",
+              "labelSource": "launch",
+              "displayName": "依頼書: 窓口の送付を「アップロードと…",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-clip-1",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "数学の第2回の方程式を使う授業の解説スライドを制作する"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "clip-1": {
+            "must": [
+              "数学",
+              "スライド",
+              "制作"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "failureType": "clipping"
+    },
+    {
+      "id": "failure-mangle-0",
+      "category": "failure",
+      "reason": "実例型: project名の部分文字列削除で語抜け・空区切りが生じる。先頭句だけを外して固有語を保つ。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "mangle-0",
+              "label": "launch-mangle-0",
+              "labelSource": "launch",
+              "displayName": "サンプル企画 Pocket・ ・サイト…",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-mangle-0",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "サンプル企画のPocketトーク画面を修正する"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "mangle-0": {
+            "must": [
+              "Pocket",
+              "修正",
+              "修正"
+            ],
+            "forbidden": [
+              "サンプル企画",
+              "・ ・"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "failureType": "word-mangle",
+      "projects": [
+        "サンプル企画"
+      ],
+      "registrations": [
+        {
+          "section": "fixture",
+          "label": "サンプル企画",
+          "path": "C:/sample/src"
+        }
+      ]
+    },
+    {
+      "id": "failure-mangle-1",
+      "category": "failure",
+      "reason": "実例型: project名の部分文字列削除で語抜け・空区切りが生じる。先頭句だけを外して固有語を保つ。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "mangle-1",
+              "label": "launch-mangle-1",
+              "labelSource": "launch",
+              "displayName": "サンプル企画 Pocket・ ・サイト…",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-mangle-1",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "サンプル企画のPocketサイトの図版を調整する"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "mangle-1": {
+            "must": [
+              "Pocket",
+              "図版",
+              "調整"
+            ],
+            "forbidden": [
+              "サンプル企画",
+              "・ ・"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "failureType": "word-mangle",
+      "projects": [
+        "サンプル企画"
+      ],
+      "registrations": [
+        {
+          "section": "fixture",
+          "label": "サンプル企画",
+          "path": "C:/sample/src"
+        }
+      ]
+    },
+    {
+      "id": "failure-stale-0",
+      "category": "failure",
+      "reason": "実例型: 初期題名/進捗名の残留。明示訂正後の現在の成果物へ切り替える。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "stale-0",
+              "label": "launch-stale-0",
+              "labelSource": "launch",
+              "displayName": "動画編集・アップロード対応と…",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-stale-0",
+              "cwd": "C:/sample/src",
+              "initialTitle": "動画編集",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "動画を編集する"
+                },
+                {
+                  "at": 1,
+                  "type": "userMessage",
+                  "kind": "correction",
+                  "text": "動画ではなく方程式の解説スライドを作る"
+                },
+                {
+                  "at": 2,
+                  "type": "file",
+                  "operation": "read",
+                  "path": "reference.mp4"
+                },
+                {
+                  "at": 3,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "lesson.pptx"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "stale-0": {
+            "must": [
+              "方程式",
+              "スライド",
+              "制作"
+            ],
+            "forbidden": [
+              "動画"
+            ]
+          }
+        },
+        "workspaceMust": [
+          "スライド"
+        ]
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 1
+        },
+        {
+          "at": 10001
+        },
+        {
+          "at": 130001
+        },
+        {
+          "at": 430001
+        }
+      ],
+      "failureType": "stale-title"
+    },
+    {
+      "id": "failure-stale-1",
+      "category": "failure",
+      "reason": "実例型: 初期題名/進捗名の残留。明示訂正後の現在の成果物へ切り替える。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "stale-1",
+              "label": "launch-stale-1",
+              "labelSource": "launch",
+              "displayName": "動画編集・アップロード対応と…",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-stale-1",
+              "cwd": "C:/sample/src",
+              "initialTitle": "動画編集",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "動画を編集する"
+                },
+                {
+                  "at": 1,
+                  "type": "userMessage",
+                  "kind": "correction",
+                  "text": "動画ではなく方程式の解説スライドを作る"
+                },
+                {
+                  "at": 2,
+                  "type": "file",
+                  "operation": "read",
+                  "path": "reference.mp4"
+                },
+                {
+                  "at": 3,
+                  "type": "file",
+                  "operation": "write",
+                  "path": "lesson.pptx"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "stale-1": {
+            "must": [
+              "方程式",
+              "スライド",
+              "制作"
+            ],
+            "forbidden": [
+              "動画"
+            ]
+          }
+        },
+        "workspaceMust": [
+          "スライド"
+        ]
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 1
+        },
+        {
+          "at": 10001
+        },
+        {
+          "at": 130001
+        },
+        {
+          "at": 430001
+        }
+      ],
+      "failureType": "stale-title"
+    },
+    {
+      "id": "failure-workspace-0",
+      "category": "failure",
+      "reason": "実例型: ワークスペース名と混在する仕事の不一致。子席多数は同一仕事の票を増やさない。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "mixed-0-desk",
+              "label": "launch-mixed-0-desk",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-mixed-0-desk",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "窓口のアップロード処理を修正する"
+                }
+              ]
+            },
+            {
+              "id": "mixed-0-slide",
+              "label": "launch-mixed-0-slide",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-mixed-0-slide",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式の解説スライドを作る"
+                }
+              ]
+            },
+            {
+              "id": "mixed-0-quote",
+              "label": "launch-mixed-0-quote",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-mixed-0-quote",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "機材費の見積を作る"
+                }
+              ]
+            },
+            {
+              "id": "mixed-0-child0",
+              "label": "launch-mixed-0-child0",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-mixed-0-child0",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式の解説スライドを作る"
+                }
+              ],
+              "parentTabId": "mixed-0-slide"
+            },
+            {
+              "id": "mixed-0-child1",
+              "label": "launch-mixed-0-child1",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-mixed-0-child1",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式の解説スライドを作る"
+                }
+              ],
+              "parentTabId": "mixed-0-slide"
+            },
+            {
+              "id": "mixed-0-child2",
+              "label": "launch-mixed-0-child2",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-mixed-0-child2",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式の解説スライドを作る"
+                }
+              ],
+              "parentTabId": "mixed-0-slide"
+            },
+            {
+              "id": "mixed-0-child3",
+              "label": "launch-mixed-0-child3",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-mixed-0-child3",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式の解説スライドを作る"
+                }
+              ],
+              "parentTabId": "mixed-0-slide"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "mixed-0-desk": {
+            "must": [
+              "修正"
+            ]
+          },
+          "mixed-0-slide": {
+            "must": [
+              "スライド",
+              "制作"
+            ]
+          },
+          "mixed-0-quote": {
+            "must": [
+              "見積"
+            ]
+          },
+          "mixed-0-child0": {
+            "must": [
+              "スライド",
+              "制作"
+            ]
+          },
+          "mixed-0-child1": {
+            "must": [
+              "スライド",
+              "制作"
+            ]
+          },
+          "mixed-0-child2": {
+            "must": [
+              "スライド",
+              "制作"
+            ]
+          },
+          "mixed-0-child3": {
+            "must": [
+              "スライド",
+              "制作"
+            ]
+          }
+        },
+        "workspaceMust": [
+          "機材費見積",
+          "ほか2"
+        ],
+        "jobs": 3,
+        "duplicateException": "同一のスライド仕事を委譲した親子は番号だけで区別する。"
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "failureType": "workspace-mismatch"
+    },
+    {
+      "id": "failure-workspace-1",
+      "category": "failure",
+      "reason": "実例型: ワークスペース名と混在する仕事の不一致。子席多数は同一仕事の票を増やさない。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "mixed-1-desk",
+              "label": "launch-mixed-1-desk",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-mixed-1-desk",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "窓口のアップロード処理を修正する"
+                }
+              ]
+            },
+            {
+              "id": "mixed-1-slide",
+              "label": "launch-mixed-1-slide",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-mixed-1-slide",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式の解説スライドを作る"
+                }
+              ]
+            },
+            {
+              "id": "mixed-1-quote",
+              "label": "launch-mixed-1-quote",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-mixed-1-quote",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "機材費の見積を作る"
+                }
+              ]
+            },
+            {
+              "id": "mixed-1-child0",
+              "label": "launch-mixed-1-child0",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-mixed-1-child0",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式の解説スライドを作る"
+                }
+              ],
+              "parentTabId": "mixed-1-slide"
+            },
+            {
+              "id": "mixed-1-child1",
+              "label": "launch-mixed-1-child1",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-mixed-1-child1",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式の解説スライドを作る"
+                }
+              ],
+              "parentTabId": "mixed-1-slide"
+            },
+            {
+              "id": "mixed-1-child2",
+              "label": "launch-mixed-1-child2",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-mixed-1-child2",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式の解説スライドを作る"
+                }
+              ],
+              "parentTabId": "mixed-1-slide"
+            },
+            {
+              "id": "mixed-1-child3",
+              "label": "launch-mixed-1-child3",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-mixed-1-child3",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "方程式の解説スライドを作る"
+                }
+              ],
+              "parentTabId": "mixed-1-slide"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "mixed-1-desk": {
+            "must": [
+              "修正"
+            ]
+          },
+          "mixed-1-slide": {
+            "must": [
+              "スライド",
+              "制作"
+            ]
+          },
+          "mixed-1-quote": {
+            "must": [
+              "見積"
+            ]
+          },
+          "mixed-1-child0": {
+            "must": [
+              "スライド",
+              "制作"
+            ]
+          },
+          "mixed-1-child1": {
+            "must": [
+              "スライド",
+              "制作"
+            ]
+          },
+          "mixed-1-child2": {
+            "must": [
+              "スライド",
+              "制作"
+            ]
+          },
+          "mixed-1-child3": {
+            "must": [
+              "スライド",
+              "制作"
+            ]
+          }
+        },
+        "workspaceMust": [
+          "機材費見積",
+          "ほか2"
+        ],
+        "jobs": 3,
+        "duplicateException": "同一のスライド仕事を委譲した親子は番号だけで区別する。"
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "failureType": "workspace-mismatch"
+    },
+    {
+      "id": "state-manual",
+      "category": "state",
+      "reason": "人が付けた数字名も空の手動名も対象外。名前/ラベル/IDを上書きしない。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "manual",
+              "label": "claude-123456",
+              "labelSource": "user",
+              "displayName": "昔の手動優先表示",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-manual",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "解説スライドを作る"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "manual": {
+            "protected": true
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "qualityEligible": false
+    },
+    {
+      "id": "state-legacy",
+      "category": "state",
+      "reason": "出所不明の readable label と workspace name は通常の自動処理で保護。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": null,
+          "status": "running",
+          "tabs": [
+            {
+              "id": "legacy",
+              "label": "readable legacy launch",
+              "labelSource": null,
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-legacy",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "解説スライドを作る"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "legacy": {
+            "protected": true
+          }
+        },
+        "workspaceProtected": true
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "qualityEligible": false
+    },
+    {
+      "id": "state-missing",
+      "category": "state",
+      "reason": "本文のないID/日付だけから仕事を創作しない。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "unknown",
+              "label": "runner-261009",
+              "labelSource": "launch",
+              "displayName": null,
+              "displayNameSource": null,
+              "agentKind": "",
+              "agentSessionId": null,
+              "cwd": "C:/sample/src",
+              "initialTitle": "",
+              "events": []
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "unknown": {
+            "must": [
+              "作業内容未取得"
+            ],
+            "unknown": true
+          }
+        },
+        "workspaceMust": [
+          "作業内容未取得"
+        ]
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "qualityEligible": false
+    },
+    {
+      "id": "state-stopped",
+      "category": "state",
+      "reason": "停止後は前回の意味を保持するが、それだけで workspace を改名しない。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "stopped",
+              "label": "launch-stopped",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-stopped",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "解説スライドを作る"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "stopped": {
+            "must": [
+              "スライド",
+              "制作"
+            ]
+          }
+        },
+        "workspaceProtected": true
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 20000,
+          "stop": true
+        },
+        {
+          "at": 200000,
+          "stop": true
+        }
+      ],
+      "qualityEligible": false
+    },
+    {
+      "id": "state-replaced",
+      "category": "state",
+      "reason": "同じタブのPTY/会話IDが変わったら古い名前・材料を引き継がない。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "replace",
+              "label": "launch-replace",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-replace",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "解説スライドを作る"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "replace": {
+            "must": [
+              "機材費",
+              "見積"
+            ],
+            "forbidden": [
+              "スライド"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 20000,
+          "replace": true
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ]
+    },
+    {
+      "id": "state-pane-off",
+      "category": "state",
+      "reason": "pane off でも中身を集約し、workspace の更新を継続する。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "pane-off",
+              "label": "launch-pane-off",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-pane-off",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "機材費の見積を作る"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "pane-off": {
+            "off": true
+          }
+        },
+        "workspaceMust": [
+          "機材費",
+          "見積"
+        ]
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "qualityEligible": false,
+      "paneEnabled": false
+    },
+    {
+      "id": "state-ai-off",
+      "category": "state",
+      "reason": "全体 AI off でも規則の命名と workspace 集約は機能する。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "ai-off",
+              "label": "launch-ai-off",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-ai-off",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "日付表示を修正する"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "ai-off": {
+            "must": [
+              "日付表示",
+              "修正"
+            ]
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "aiEnabled": false
+    },
+    {
+      "id": "state-mixed-unknown",
+      "category": "state",
+      "reason": "既知の2話題と未知を全て表し、最初の席の仕事で未知を隠さない。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "known-slide",
+              "label": "launch-known-slide",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-known-slide",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "解説スライドを作る"
+                }
+              ]
+            },
+            {
+              "id": "known-quote",
+              "label": "launch-known-quote",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-known-quote",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "機材費の見積を作る"
+                }
+              ]
+            },
+            {
+              "id": "unknown-slot",
+              "label": "launch-unknown-slot",
+              "labelSource": "launch",
+              "displayName": null,
+              "displayNameSource": null,
+              "agentKind": "",
+              "agentSessionId": null,
+              "cwd": "C:/sample/src",
+              "initialTitle": "",
+              "events": []
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "known-slide": {
+            "must": [
+              "スライド",
+              "制作"
+            ]
+          },
+          "known-quote": {
+            "must": [
+              "機材費",
+              "見積"
+            ]
+          },
+          "unknown-slot": {
+            "must": [
+              "作業内容未取得"
+            ],
+            "unknown": true
+          }
+        },
+        "workspaceMust": [
+          "解説スライド制作",
+          "機材費見積",
+          "ほか1"
+        ]
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ]
+    },
+    {
+      "id": "state-recovery",
+      "category": "state",
+      "reason": "明示の救済で未知の既存名を自動へ戻す。user 名は一括でも除外。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": null,
+          "status": "running",
+          "tabs": [
+            {
+              "id": "recover",
+              "label": "runner clockshift retry",
+              "labelSource": null,
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-recover",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "日付表示を修正する"
+                }
+              ]
+            },
+            {
+              "id": "human",
+              "label": "手で付けた名前",
+              "labelSource": "user",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-human",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "機材費の見積を作る"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "recover": {
+            "must": [
+              "日付表示",
+              "修正"
+            ]
+          },
+          "human": {
+            "protected": true
+          }
+        }
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000
+        }
+      ],
+      "recovery": true
+    },
+    {
+      "id": "state-undo",
+      "category": "state",
+      "reason": "明示の付け直しを取り消し、後から付けた手動名を残す。",
+      "workspaces": [
+        {
+          "id": "w",
+          "name": "昔の案件名",
+          "nameSource": "auto",
+          "status": "running",
+          "tabs": [
+            {
+              "id": "undo",
+              "label": "launch-undo",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-undo",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "解説スライドを作る"
+                }
+              ]
+            },
+            {
+              "id": "later-human",
+              "label": "launch-later-human",
+              "labelSource": "launch",
+              "displayName": "古い自動名",
+              "displayNameSource": "auto",
+              "agentKind": "codex",
+              "agentSessionId": "agent-later-human",
+              "cwd": "C:/sample/src",
+              "initialTitle": "古い作業の題",
+              "events": [
+                {
+                  "at": 0,
+                  "type": "userMessage",
+                  "kind": "taskStart",
+                  "text": "機材費の見積を作る"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "tabs": {
+          "undo": {
+            "restored": true
+          },
+          "later-human": {
+            "must": [
+              "後の手動名"
+            ],
+            "protected": true
+          }
+        },
+        "workspaceProtected": true
+      },
+      "frames": [
+        {
+          "at": 0
+        },
+        {
+          "at": 150000
+        },
+        {
+          "at": 330000,
+          "undo": true,
+          "manualRename": "later-human"
+        }
+      ],
+      "qualityEligible": false,
+      "recovery": true
+    }
+  ]
+}

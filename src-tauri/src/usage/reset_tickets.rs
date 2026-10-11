@@ -595,6 +595,105 @@ pub fn map_codex_outcome(status: u16, body: &str) -> ResetTicketOutcome {
     ResetTicketOutcome::new(kind)
 }
 
+/// Process-local replay window, matching the existing unsettled-request age.
+pub(crate) const RESET_REPLAY_TTL_MS: i64 = 600_000;
+
+#[derive(Clone)]
+struct ResetOperation {
+    request: UnsettledReset,
+    first_seen_at_ms: i64,
+    reusable: bool,
+    retry_of_unconfirmed: bool,
+    settled: Option<ResetTicketOutcome>,
+}
+
+#[derive(Default)]
+pub(crate) struct ResetOperations {
+    // The key includes provider and verified owner, never only live:* / row id.
+    entries: HashMap<(String, String), ResetOperation>,
+}
+
+pub(crate) enum ResetAttempt {
+    Settled(ResetTicketOutcome),
+    Send { reuse: Option<UnsettledReset> },
+}
+
+impl ResetOperations {
+    fn prune(&mut self, now_ms: i64) {
+        self.entries.retain(|_, entry|
+            now_ms.saturating_sub(entry.first_seen_at_ms) < RESET_REPLAY_TTL_MS);
+    }
+
+    pub(crate) fn cached(&mut self, key: &str, caller_id: &str, now_ms: i64) -> Option<ResetTicketOutcome> {
+        self.prune(now_ms);
+        self.entries.get(&(key.to_string(), caller_id.to_string()))
+            .and_then(|entry| entry.settled.clone())
+    }
+
+    pub(crate) fn begin(
+        &mut self, key: &str, identity: &str, caller_id: &str,
+        pending: Option<UnsettledReset>, now_ms: i64,
+    ) -> ResetAttempt {
+        self.prune(now_ms);
+        // A replayed operation cannot become a new claim after live:* changes
+        // owner. PC's new presses have new IDs and follow the original path.
+        if self.entries.iter().any(|((owner_key, operation_id), entry)|
+            operation_id == caller_id && owner_key.split(':').next() == key.split(':').next()
+                && entry.request.identity != identity) {
+            return ResetAttempt::Settled(ResetTicketOutcome::new(ResetTicketOutcomeKind::OwnerMismatch));
+        }
+        let entry_key = (key.to_string(), caller_id.to_string());
+        if let Some(outcome) = self.entries.get(&entry_key)
+            .filter(|entry| entry.request.identity == identity)
+            .and_then(|entry| entry.settled.as_ref()) {
+            return ResetAttempt::Settled(outcome.clone());
+        }
+        let reuse = self.entries.get(&entry_key)
+            .filter(|entry| entry.request.identity == identity && entry.reusable)
+            .map(|entry| entry.request.clone())
+            .or(pending);
+        let request = reuse.clone().unwrap_or_else(|| UnsettledReset {
+            identity: identity.to_string(), request_id: caller_id.to_string(),
+            target_id: None, started_at_ms: now_ms,
+        });
+        let entry = self.entries.entry(entry_key).or_insert_with(|| ResetOperation {
+            request: request.clone(), first_seen_at_ms: now_ms, reusable: false,
+            retry_of_unconfirmed: false, settled: None,
+        });
+        entry.request = request;
+        entry.reusable |= reuse.is_some();
+        entry.retry_of_unconfirmed |= reuse.is_some();
+        ResetAttempt::Send { reuse }
+    }
+
+    pub(crate) fn claim_answered(&mut self, key: &str, request_id: &str, target: Option<&str>) {
+        for ((owner_key, _), entry) in &mut self.entries {
+            if owner_key == key && entry.request.request_id == request_id {
+                entry.request.target_id = target.map(str::to_string);
+                // Once dispatched, this operation stays bound to this request
+                // and ticket even if the shared pending slot later disappears.
+                entry.reusable = true;
+            }
+        }
+    }
+
+    pub(crate) fn finish(&mut self, key: &str, caller_id: &str, outcome: &ResetTicketOutcome) {
+        use ResetTicketOutcomeKind::*;
+        if !matches!(outcome.kind, Reset | AlreadyUsed | OfferChanged | NothingToReset | NoTicket) {
+            return;
+        }
+        let Some(request_id) = self.entries.get(&(key.to_string(), caller_id.to_string()))
+            .map(|entry| entry.request.request_id.clone()) else { return };
+        for ((owner_key, _), entry) in &mut self.entries {
+            if owner_key == key && entry.request.request_id == request_id {
+                let mut settled = outcome.clone();
+                settled.retry_of_unconfirmed = entry.retry_of_unconfirmed;
+                entry.settled = Some(settled);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 pub async fn fake_http_once(
     response_body: &'static str,
@@ -639,12 +738,20 @@ pub async fn fake_http_once(
 pub async fn fake_http_sequence(
     responses: Vec<(u16, String)>,
 ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    fake_http_sequence_with_headers(responses.into_iter().map(|(status, body)|
+        (status, String::new(), body)).collect()).await
+}
+
+#[cfg(test)]
+pub async fn fake_http_sequence_with_headers(
+    responses: Vec<(u16, String, String)>,
+) -> (String, tokio::task::JoinHandle<Vec<String>>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let handle = tokio::spawn(async move {
         let mut requests = Vec::new();
-        for (status, body) in responses {
+        for (status, headers, body) in responses {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut bytes = Vec::new();
             let mut buffer = [0u8; 4096];
@@ -671,7 +778,7 @@ pub async fn fake_http_sequence(
             }
             requests.push(String::from_utf8(bytes).unwrap());
             let label = if status == 200 { "OK" } else { "Failure" };
-            let response = format!("HTTP/1.1 {status} {label}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            let response = format!("HTTP/1.1 {status} {label}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n{body}", body.len());
             stream.write_all(response.as_bytes()).await.unwrap();
         }
         if let Ok(Ok((mut stream, _))) =
@@ -989,5 +1096,40 @@ mod tests {
                 kind
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod operation_replay_tests {
+    use super::*;
+
+    #[test]
+    fn reset_operations_keep_caller_alias_and_settled_target_per_owner() {
+        let mut memory = ResetOperations::default();
+        assert!(matches!(memory.begin("codex:a", "a", "P", None, 0), ResetAttempt::Send { reuse: None }));
+        memory.claim_answered("codex:a", "P", Some("C1"));
+        let pending = UnsettledReset { identity: "a".into(), request_id: "P".into(), target_id: Some("C1".into()), started_at_ms: 0 };
+        assert!(matches!(memory.begin("codex:a", "a", "A", Some(pending), 1), ResetAttempt::Send { reuse: Some(_) }));
+        let mut answer = ResetTicketOutcome::new(ResetTicketOutcomeKind::Reset);
+        answer.retry_of_unconfirmed = true;
+        memory.finish("codex:a", "A", &answer);
+        match memory.begin("codex:a", "a", "A", None, 2) {
+            ResetAttempt::Settled(found) => assert_eq!(found, answer),
+            _ => panic!("settled alias must not start C2"),
+        }
+        assert_eq!(memory.entries[&("codex:a".into(), "A".into())].request.target_id.as_deref(), Some("C1"));
+        assert!(matches!(memory.begin("codex:b", "b", "A", None, 2),
+            ResetAttempt::Settled(ResetTicketOutcome { kind: ResetTicketOutcomeKind::OwnerMismatch, .. })));
+        assert!(matches!(memory.begin("claude:b", "b", "A", None, 2), ResetAttempt::Send { reuse: None }));
+        assert!(matches!(memory.begin("codex:a", "a", "new-press", None, 2), ResetAttempt::Send { reuse: None }));
+    }
+
+    #[test]
+    fn reset_operations_expire_only_after_the_documented_replay_window() {
+        let mut memory = ResetOperations::default();
+        memory.begin("claude:a", "a", "A", None, 100);
+        memory.finish("claude:a", "A", &ResetTicketOutcome::new(ResetTicketOutcomeKind::NoTicket));
+        assert!(matches!(memory.begin("claude:a", "a", "A", None, 100 + RESET_REPLAY_TTL_MS - 1), ResetAttempt::Settled(_)));
+        assert!(matches!(memory.begin("claude:a", "a", "A", None, 100 + RESET_REPLAY_TTL_MS), ResetAttempt::Send { reuse: None }));
     }
 }

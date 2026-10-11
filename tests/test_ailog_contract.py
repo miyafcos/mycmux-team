@@ -109,10 +109,10 @@ def test_expected_commands_exist() -> None:
 
 def test_every_ailog_command_is_registered_in_the_invoke_handler() -> None:
     lib_text = read(LIB_RS)
-    handler_start = lib_text.find("invoke_handler(tauri::generate_handler![")
-    assert handler_start != -1, "lib.rs has no invoke_handler"
-    handler_end = lib_text.find("])", handler_start)
-    assert handler_end != -1, "lib.rs invoke_handler is not terminated"
+    handler_start = lib_text.find("app_commands![")
+    assert handler_start != -1, "lib.rs has no app_commands registration"
+    handler_end = lib_text.find("\n];", handler_start)
+    assert handler_end != -1, "lib.rs app_commands registration is not terminated"
     handler = lib_text[handler_start:handler_end]
 
     unregistered = [

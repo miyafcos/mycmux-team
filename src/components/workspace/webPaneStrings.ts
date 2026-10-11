@@ -6,9 +6,9 @@ export const webPaneStrings = {
   signedOut: (service: string) => `${service} にログインしていません。`,
   signInButton: "別の窓でログイン",
   // 一度きりであることを明示する。毎回出るなら不具合。
-  signInHint: "この操作は 1 回だけです。ログイン状態はこのペイン専用のプロファイルに残ります。",
+  signInHint: "この操作は 1 回だけです。ログイン状態はこのタブ専用のプロファイルに残ります。",
   signInRunning: (service: string) =>
     `${service} のログイン窓を開いています。ログインが終わったらその窓を閉じてください。`,
   signInFailed: "ログイン窓を開けませんでした",
-  reopening: "ログイン窓を閉じたので、ペインを開き直しています…",
+  reopening: "ログイン窓を閉じたので、タブを開き直しています…",
 } as const;

@@ -1,4 +1,5 @@
 import { getTabDisplayLabel } from "./tabDisplayLabel";
+import { canTransferTab, paneTabKind } from "./paneKindCapabilities";
 import type { DetachedPaneOrigin, WorkspaceConfig } from "./ipc";
 import type { PaneDropZone } from "../stores/paneDragStore";
 import type { PaneTab, Workspace } from "../types";
@@ -76,13 +77,12 @@ export function detachedMetadata(source: object | undefined): Pick<WorkspaceConf
 }
 
 export function isDetachableTab(tab: { type?: string | null; ephemeral?: boolean }): boolean {
-  return !tab.ephemeral && (tab.type == null || tab.type === "terminal" || tab.type === "launcher"
-    || tab.type === "browser" || tab.type === "web");
+  return paneTabKind(tab) !== "unknown" && canTransferTab(tab);
 }
 
 /** Tabs supported by the live window-transfer serializer. */
 export function isTransferableTab(tab: { type?: string | null; ephemeral?: boolean }): boolean {
-  return !tab.ephemeral && tab.type !== "online";
+  return canTransferTab(tab);
 }
 
 /** Capture the source position before moving a single tab into its transfer workspace. */
@@ -111,6 +111,7 @@ export function detachedWorkspaceConfig(
   if (config.panes.length !== 1 || pane.tabs?.length !== 1 || !tab || !isDetachableTab(tab)) return null;
   return {
     ...config,
+    name_source: tab.label_source === "user" ? undefined : "auto",
     name: getTabDisplayLabel({ label: tab.label ?? undefined, labelSource: tab.label_source ?? undefined, displayName: tab.display_name ?? undefined, agentId: tab.agent_id, cwd: tab.cwd ?? undefined }),
     grid_template_id: "1x1",
     panes: [{ ...pane, active_tab_id: tab.tab_id, tabs: [tab] }],

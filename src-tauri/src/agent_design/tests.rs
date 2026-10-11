@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::BTreeSet;
+mod synced_tests;
 
 #[test]
 fn v04_initial_flow_excludes_conditional_and_shadowed_instructions() {
@@ -117,7 +118,7 @@ impl Fixture {
         let home = safe::canonical(directory.path());
         let script = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../tests/fixtures/agent_home/prepare_home.py");
-        let result = std::process::Command::new(if cfg!(windows) { "python" } else { "python3" })
+        let result = std::process::Command::new(if cfg!(windows) { "python" } else { "python3" }).arg("-B")
             .arg(script)
             .arg(&home)
             .args(["--variant", kind])
@@ -127,6 +128,16 @@ impl Fixture {
             result.status.success(),
             "synthetic fixture generator failed"
         );
+        // The legacy generator has one account cache without an OAuth identity.
+        // Give only this synthetic fixture an explicit current account.
+        let synced = home.join(".claude/skills/synced/catalog");
+        if synced.is_dir() {
+            fs::rename(&synced, home.join(".claude/skills/synced/fixture-org_fixture-account"))
+                .unwrap();
+            let mut state = safe::json(&home.join(".claude.json")).unwrap();
+            state["oauthAccount"] = json!({"organizationUuid":"fixture-org","accountUuid":"fixture-account"});
+            write(&home, ".claude.json", &state.to_string());
+        }
         Self {
             _directory: directory,
             home,
@@ -833,16 +844,13 @@ fn metadata_document_apis_never_return_private_values_or_memory_bodies() {
 #[test]
 fn readonly_skills_support_initial_listing_aliases_and_command_files() {
     let f = Fixture::new("both");
-    let mut c = f.catalog();
-    let service = c.services.iter_mut().find(|s| s.id == "claude").unwrap();
-    service
+    let c = f.catalog();
+    assert!(service(&c, "claude")
         .session
         .listing
         .entries
-        .iter_mut()
-        .find(|e| e.name == "remote")
-        .unwrap()
-        .name = "anthropic-skills:remote".into();
+        .iter()
+        .any(|entry| entry.name == "anthropic-skills:remote" && entry.kind == "synced"));
     write(f.home(), ".claude/commands/plain.md", "# Plain command\n");
     let shelf = skill_read::catalog(f.home(), &c);
     let rows = shelf["skills"].as_array().unwrap();

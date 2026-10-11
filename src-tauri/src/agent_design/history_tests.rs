@@ -14,7 +14,7 @@ impl Fixture {
     }
     fn prepare(&self, action: &str) {
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/agent_home/prepare_history.py");
-        let output = Command::new(if cfg!(windows) { "python" } else { "python3" }).args([script.to_str().unwrap(),self.home.to_str().unwrap(),action]).output().unwrap();
+        let output = Command::new(if cfg!(windows) { "python" } else { "python3" }).arg("-B").args([script.to_str().unwrap(),self.home.to_str().unwrap(),action]).output().unwrap();
         assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
     }
     fn item(&self, service: &str, name: &str, layer: u8, kind: &str, allowed: bool) -> Item {

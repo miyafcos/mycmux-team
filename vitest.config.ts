@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { narrowBasePlugin } from "./tests/helpers/narrowBasePlugin";
 
 const TYPE_COVERAGE_TEST = "tests/unit/persistentLayoutProjectionTypeCoverage.test.ts";
 
@@ -7,6 +8,7 @@ export default defineConfig({
     environment: "node",
     projects: [
       {
+        plugins: [narrowBasePlugin()],
         test: {
           name: "unit",
           include: ["tests/unit/**/*.test.{ts,tsx}"],

@@ -1,0 +1,15 @@
+{
+  "identifier": "web-pane",
+  "description": "Only bound automation replies and registered navigation shortcuts from Web pane children",
+  "local": true,
+  "webviews": ["web-pane-*"],
+  "remote": {
+    "urls": ["https://*:*", "http://*:*", "asset://localhost", "about\\:blank"]
+  },
+  "permissions": [
+    "allow-webpane-read-result",
+    "allow-webpane-push-result",
+    "allow-webpane-eval-result",
+    "allow-webpane-forward-shortcut"
+  ]
+}

@@ -7,11 +7,15 @@ import { outsideTearoutStrip } from "./model";
 import { tearoutTab, tearoutPane, tearoutWorkspace, canRegrabTearoutTab, canRegrabTearoutPane, regrabTearoutWindow } from "./runtime";
 import { TearoutRecord } from "./record";
 import { windowLabel } from "../windowContext";
-import { tearoutOperationBusy, tearoutOperationPhase } from "./operation";
-import { recoveryBusy } from "./recoveryNotice";
+import { localTearoutRefusal, LocalTearoutRefusal } from "./operation";
+import { recordTearoutRefusal } from "./refusal";
 import { afterTearoutFrame } from "./macFrame";
 
+let pointerOwner: symbol | null = null;
+
 export function usesNativePaneDrag(item: PaneDragItem): boolean {
+  // Minimap chips describe an atomic layout edit; they do not carry a native
+  // window band through the OS move loop. Their moves still use the same contract.
   if (!nativePaneTearoutEnabled(useSettingsStore.getState().nativePaneTearoutEnabled)
     || item.kind !== "tab" || item.surface === "minimap") return false;
   const tab = useWorkspaceListStore.getState().getWorkspace(item.workspaceId)?.panes
@@ -42,8 +46,15 @@ export function beginNativeGroupDrag(event: PointerEvent, element: HTMLElement,
 }
 function beginNativeRegionDrag(event: PointerEvent, element: HTMLElement,
   item: Extract<PaneDragItem, { kind: "tab" | "pane" }>, callbacks: DragCallbacks): void {
+  const refusal = localTearoutRefusal() ?? (pointerOwner ? new LocalTearoutRefusal("moving") : null);
+  if (refusal) {
+    const record = new TearoutRecord(crypto.randomUUID(), item.kind === "tab" ? item.tabId : item.paneId, windowLabel(), Date.now(), item.kind === "tab" ? "pane" : "tab", item.kind === "tab" ? 1 : item.tabCount);
+    record.input?.(event, "strip"); void recordTearoutRefusal(record, refusal);
+    return;
+  }
   const strip = element.closest<HTMLElement>(".pane-tabbar");
   if (!strip) return;
+  const owner = Symbol(); pointerOwner = owner;
   const bounds = strip.getBoundingClientRect();
   const grip = element.getBoundingClientRect();
   const gap = { x: grip.x, y: grip.y, width: grip.width, height: grip.height };
@@ -54,12 +65,14 @@ function beginNativeRegionDrag(event: PointerEvent, element: HTMLElement,
   let cancelFrame: (() => void) | null = null;
   let latest: { x: number; y: number } | null = null;
   const cleanup = () => {
+    if (pointerOwner === owner) pointerOwner = null;
     cancelFrame?.(); cancelFrame = null; latest = null;
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
     window.removeEventListener("pointercancel", cancel);
     window.removeEventListener("keydown", key, true);
     window.removeEventListener("blur", cancel);
+    if (!dragging) return;
     try { if (element.hasPointerCapture(event.pointerId)) element.releasePointerCapture(event.pointerId); } catch { /* Unmounted source. */ }
     document.body.style.cursor = "";
     try {
@@ -72,13 +85,14 @@ function beginNativeRegionDrag(event: PointerEvent, element: HTMLElement,
     if (next.pointerId !== event.pointerId || handed) return;
     if (!dragging && Math.hypot(next.clientX - event.clientX, next.clientY - event.clientY) < 9) return;
     if (!dragging) {
-      dragging = true;
       record = new TearoutRecord(crypto.randomUUID(), item.kind === "tab" ? item.tabId : item.paneId, windowLabel(), downAt,
         item.kind === "tab" ? "pane" : "tab", item.kind === "tab" ? 1 : item.tabCount);
-      if (tearoutOperationBusy()) {
-        handed = true; record.error("move_busy"); record.failure("tearout_move_busy", tearoutOperationPhase());
-        recoveryBusy(); cleanup(); void record.finish("rejected_busy", null, null).catch(() => {}); return;
+      record.input?.(event, "strip");
+      const refusal = localTearoutRefusal();
+      if (refusal) {
+        handed = true; cleanup(); void recordTearoutRefusal(record, refusal); return;
       }
+      dragging = true;
       callbacks.suppress(true);
       try { element.setPointerCapture(event.pointerId); } catch { /* Window listeners remain active. */ }
       document.body.style.cursor = "grabbing";
@@ -138,9 +152,16 @@ function beginNativeRegionDrag(event: PointerEvent, element: HTMLElement,
 }
 
 /** Vertical sidebar movement remains a reorder; crossing its outer boundary tears out. */
-export function beginNativeWorkspaceDrag(event: PointerEvent, element: HTMLElement, workspaceId: string, callbacks: DragCallbacks): void {
+export function beginNativeWorkspaceDrag(event: PointerEvent, element: HTMLElement, workspaceId: string, callbacks: DragCallbacks): boolean {
+  const refusal = localTearoutRefusal() ?? (pointerOwner ? new LocalTearoutRefusal("moving") : null);
+  if (refusal) {
+    const record = new TearoutRecord(crypto.randomUUID(), workspaceId, windowLabel(), Date.now(), "workspace", useWorkspaceListStore.getState().getWorkspace(workspaceId)?.panes.reduce((n, pane) => n + pane.tabs.length, 0) ?? 0);
+    record.input?.(event, "sidebar"); void recordTearoutRefusal(record, refusal);
+    return false;
+  }
   const sidebar = element.closest<HTMLElement>('[data-dnd-workspace-sidebar="true"]');
-  if (!sidebar) return;
+  if (!sidebar) return false;
+  const owner = Symbol(); pointerOwner = owner;
   const bounds = sidebar.getBoundingClientRect();
   const grip = element.getBoundingClientRect();
   const gap = { x: grip.x, y: grip.y, width: grip.width, height: grip.height };
@@ -151,12 +172,14 @@ export function beginNativeWorkspaceDrag(event: PointerEvent, element: HTMLEleme
   let cancelFrame: (() => void) | null = null;
   let latest: { x: number; y: number } | null = null;
   const cleanup = () => {
+    if (pointerOwner === owner) pointerOwner = null;
     cancelFrame?.(); cancelFrame = null; latest = null;
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
     window.removeEventListener("pointercancel", cancel);
     window.removeEventListener("keydown", key, true);
     window.removeEventListener("blur", cancel);
+    if (!dragging) { window.setTimeout(() => callbacks.suppress(false), 0); return; }
     try { if (element.hasPointerCapture(event.pointerId)) element.releasePointerCapture(event.pointerId); } catch { /* Removed source. */ }
     document.body.style.cursor = "";
     window.setTimeout(() => callbacks.suppress(false), 0);
@@ -165,13 +188,14 @@ export function beginNativeWorkspaceDrag(event: PointerEvent, element: HTMLEleme
     if (next.pointerId !== event.pointerId || handed) return;
     if (!dragging && Math.hypot(next.clientX - event.clientX, next.clientY - event.clientY) < 9) return;
     if (!dragging) {
-      dragging = true;
       const count = useWorkspaceListStore.getState().getWorkspace(workspaceId)?.panes.reduce((count, pane) => count + pane.tabs.length, 0) ?? 0;
       record = new TearoutRecord(crypto.randomUUID(), workspaceId, windowLabel(), downAt, "workspace", count);
-      if (tearoutOperationBusy()) {
-        handed = true; record.error("move_busy"); record.failure("tearout_move_busy", tearoutOperationPhase());
-        recoveryBusy(); cleanup(); void record.finish("rejected_busy", null, null).catch(() => {}); return;
+      record.input?.(event, "sidebar");
+      const refusal = localTearoutRefusal();
+      if (refusal) {
+        handed = true; cleanup(); void recordTearoutRefusal(record, refusal); return;
       }
+      dragging = true;
       callbacks.suppress(true);
       try { element.setPointerCapture(event.pointerId); } catch { /* Window listeners remain active. */ }
       document.body.style.cursor = "grabbing";
@@ -217,4 +241,5 @@ export function beginNativeWorkspaceDrag(event: PointerEvent, element: HTMLEleme
   window.addEventListener("pointercancel", cancel);
   window.addEventListener("keydown", key, true);
   window.addEventListener("blur", cancel);
+  return true;
 }

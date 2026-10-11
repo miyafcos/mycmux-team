@@ -1,6 +1,7 @@
 """Execute Claude restore branches with CLI stubs; never start a real agent."""
 from pathlib import Path
 import os
+import re
 import shutil
 import subprocess
 import pytest
@@ -22,6 +23,18 @@ def test_claude_launch_lines_never_bypass_or_continue():
             assert "bypassPermissions" not in line, line
             assert "--dangerously-skip-permissions" not in line, line
             assert "--continue" not in line, line
+
+
+def test_grok_launch_lines_use_auto_and_neither_launcher_bypasses():
+    for path in (SH, PS):
+        source = path.read_text(encoding="utf-8")
+        assert "bypassPermissions" not in source
+        lines = [line for line in source.splitlines()
+                 if "grok" in line and "--permission-mode" in line
+                 and not line.lstrip().startswith("#")]
+        assert len(lines) >= 2
+        for line in lines:
+            assert re.search(r'--permission-mode(?:\s+|",\s*")auto\b', line), line
 
 
 

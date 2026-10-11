@@ -7,6 +7,7 @@ import type { AttentionCategory } from "../../stores/sessionAttentionStore";
 interface TabItemProps {
   uiVariant?: "default" | "cmux";
   name: string;
+  description?: string;
   tabCount: number;
   activeTabLabels?: readonly string[];
   remainingTabCount?: number;
@@ -72,7 +73,7 @@ function UnseenAttentionRing({ count, category }: { count: number; category: Att
   );
 }
 
-export default memo(function TabItem({ uiVariant = "default", name, tabCount, activeTabLabels = [], remainingTabCount = 0, notificationCount, petState = "resting", petAtlasUrl, showPet = true, unseenAttentionCount = 0, unseenAttentionCategory = null, color, active, onClick, onClose, onMenu, onRename, renameSignal = 0 }: TabItemProps) {
+export default memo(function TabItem({ uiVariant = "default", name, description, tabCount, activeTabLabels = [], remainingTabCount = 0, notificationCount, petState = "resting", petAtlasUrl, showPet = true, unseenAttentionCount = 0, unseenAttentionCategory = null, color, active, onClick, onClose, onMenu, onRename, renameSignal = 0 }: TabItemProps) {
   const hasUnseenAttention = unseenAttentionCount > 0 && unseenAttentionCategory !== null;
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(name);
@@ -101,7 +102,7 @@ export default memo(function TabItem({ uiVariant = "default", name, tabCount, ac
 
   const commitRename = useCallback(() => {
     const trimmed = editValue.trim();
-    if (trimmed && trimmed !== name && onRename) {
+    if (trimmed && onRename) {
       onRename(trimmed);
     }
     setEditing(false);
@@ -209,7 +210,7 @@ export default memo(function TabItem({ uiVariant = "default", name, tabCount, ac
             />
           ) : (
             <span
-              title={name}
+              title={description ? `${name}\n${description}` : name}
               style={{
                 flex: 1,
                 minWidth: 0,
@@ -233,7 +234,7 @@ export default memo(function TabItem({ uiVariant = "default", name, tabCount, ac
           }}>
             {/* The overflow line under this card reads "ほか N", so an English
                 plural here left one small card speaking two languages. */}
-            ペイン {tabCount}
+            タブ {tabCount}
           </span>
         </div>
         {active && activeTabLabels.map((label, index) => (

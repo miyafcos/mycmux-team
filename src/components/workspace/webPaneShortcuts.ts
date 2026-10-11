@@ -7,6 +7,24 @@ import {
   type KeybindingActionId,
 } from "../../lib/keybindings";
 import type { KeybindingsMap } from "../../stores/keybindingStore";
+import { useWorkspaceListStore } from "../../stores/workspaceListStore";
+import { useUiStore } from "../../stores/uiStore";
+import { isPaneTabClosing } from "../../lib/paneCloseOperation";
+import type { PaneTab } from "../../types";
+
+/** Resolve ownership from the live window store, rather than registration. */
+export function displayedPaneShortcutSource(tabId: string): PaneTab | undefined {
+  const { workspaces, activeWorkspaceId } = useWorkspaceListStore.getState();
+  const workspace = workspaces.find(candidate => candidate.id === activeWorkspaceId);
+  if (!workspace || isPaneTabClosing(tabId)) return undefined;
+  const zoomedPaneId = useUiStore.getState().zoomedPaneId;
+  for (const pane of workspace.panes) {
+    if (zoomedPaneId !== null && zoomedPaneId !== pane.id) continue;
+    const displayed = pane.tabs.find(tab => tab.id === pane.activeTabId) ?? pane.tabs[0];
+    if (displayed?.id === tabId) return displayed;
+  }
+  return undefined;
+}
 
 export const WEB_PANE_KEYDOWN_EVENT = "mycmux:web-pane-keydown";
 
@@ -146,9 +164,11 @@ export function dispatchWebPaneKeydown(
   value: unknown,
   forwardedShortcuts: ReadonlySet<string>,
   expectedTabIds: ReadonlySet<string>,
+  activateTab?: (tabId: string) => boolean,
 ): boolean {
   if (!isForwardedKey(value) || value.isComposing || !expectedTabIds.has(value.tabId)) return false;
   if (!forwardedShortcuts.has(shortcutFromWebPanePayload(value))) return false;
+  if (activateTab && !activateTab(value.tabId)) return false;
   return window.dispatchEvent(new KeyboardEvent("keydown", {
     key: value.key,
     code: value.code,

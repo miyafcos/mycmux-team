@@ -14,7 +14,7 @@ describe("36-round, six-minute offline recording", () => {
       for (const round of seat.rounds) {
         const before = evidence;
         const crop = cropLiveTail(round.rows, seat.agent);
-        evidence = advanceLiveTailEvidence(before, { crop, rawRows: round.rows, observedAt: round.observedAt, lastOutputAt: round.lastOutputAt });
+        evidence = advanceLiveTailEvidence(before, { crop, rawRows: round.rows, observedAt: round.observedAt, outputAcquiredAt: round.observedAt, outputFresh: true, lastOutputAt: round.lastOutputAt });
         const fact = factForLiveTailEvidence(evidence);
         counts[fact.kind] = (counts[fact.kind] ?? 0) + 1; observations += 1;
         if (before && round.lastOutputAt > (before.observation.lastOutputAt ?? 0)) {
@@ -38,7 +38,7 @@ describe("36-round, six-minute offline recording", () => {
       let evidence: LiveTailEvidence | undefined;
       for (const round of fixture.seats[index].rounds) {
         evidence = advanceLiveTailEvidence(evidence, { crop: cropLiveTail(round.rows, fixture.seats[index].agent),
-          rawRows: round.rows, observedAt: round.observedAt, lastOutputAt: round.lastOutputAt });
+          rawRows: round.rows, observedAt: round.observedAt, outputAcquiredAt: round.observedAt, outputFresh: true, lastOutputAt: round.lastOutputAt });
         expect(factForLiveTailEvidence(evidence).kind).toBe(round.round < 2 ? "alive" : "frozen");
         expect(evidence.lastProgressAt).toBeNull();
       }

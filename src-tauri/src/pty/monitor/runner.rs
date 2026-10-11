@@ -40,7 +40,7 @@ pub fn start_monitor(
         let (git_result_tx, git_result_rx) = mpsc::channel::<GitBranchResult>();
         let git_request_tx = spawn_git_branch_workers(git_result_tx);
         let mut git_branch_cwd: HashMap<String, String> = HashMap::new();
-        let mut git_in_flight: HashSet<String> = HashSet::new();
+        let mut git_in_flight: HashMap<String, ObservationOwner> = HashMap::new();
 
         loop {
             // OSC 7 handles CWD instantly for bash/zsh/fish;
@@ -56,19 +56,22 @@ pub fn start_monitor(
             // this tick's `changed` comparison instead of the previous 5s
             // finding out via a second, redundant emit.
             while let Ok(result) = git_result_rx.try_recv() {
-                git_in_flight.remove(&result.session_id);
-                git_branch_cwd.insert(result.session_id.clone(), result.cwd.clone());
-                if let Some(meta) = last_metadata.get_mut(&result.session_id) {
-                    if meta.git_branch != result.git_branch {
-                        meta.git_branch = result.git_branch;
-                        metadata_store.insert(result.session_id.clone(), meta.clone());
-                        let _ = app_handle.emit("pty_metadata", meta.clone());
+                let Some(owner) = git_in_flight.remove(&result.session_id) else { continue; };
+                owner.publish(|| {
+                    if let Some(meta) = last_metadata.get_mut(&result.session_id).filter(|m| m.session_epoch == owner.epoch && m.cwd == result.cwd) {
+                        git_branch_cwd.insert(result.session_id.clone(), result.cwd.clone());
+                        if meta.git_branch != result.git_branch {
+                            meta.git_branch = result.git_branch;
+                            metadata_store.insert(result.session_id.clone(), meta.clone());
+                            let _ = app_handle.emit("pty_metadata", meta.clone());
+                        }
                     }
-                }
+                });
             }
 
             transcript_activity.retain_recent(std::time::SystemTime::now());
-            let pids = manager.iter_pids();
+            let observations = manager.iter_observations();
+            let pids: Vec<_> = observations.iter().map(|(id, pid, _, _)| (id.clone(), *pid)).collect();
             let refresh_started = Instant::now();
 
             // `OnlyIfNotSet` means sysinfo pays the Windows PEB read once per
@@ -149,10 +152,11 @@ pub fn start_monitor(
                 for pane in owners { conversation_history.remember(id, pane); }
             }
 
-            for (session_id, pid_opt) in pids.iter().cloned() {
+            for (session_id, pid_opt, owner, last_output_at) in observations {
                 // Poll even without a PID or usable CWD. Retain the PTY for
                 // reattach, but never publish live metadata after its exit.
                 if let Some(session) = manager.get(&session_id) {
+                    if session.session_epoch() != owner.epoch { continue; }
                     if session.poll_exited() {
                         session.report_exit_once(&app_handle, &session_state_store);
                         continue;
@@ -161,12 +165,13 @@ pub fn start_monitor(
                     continue;
                 }
                 if let Some(pid) = pid_opt {
-                    let Some((session_epoch, last_output_at)) =
-                        manager.session_observation(&session_id)
-                    else {
-                        continue;
-                    };
-                    session_epochs.insert(session_id.clone(), session_epoch);
+                    let session_epoch = owner.epoch;
+                    if session_epochs.insert(session_id.clone(), session_epoch) != Some(session_epoch) {
+                        last_metadata.remove(&session_id); missing_live_agent_ticks.remove(&session_id);
+                        detected_agent_sessions.remove(&session_id); failed_detected_agent_sessions.remove(&session_id);
+                        pending_agent_session_switches.remove(&session_id); last_output_evidence_at.remove(&session_id);
+                        git_branch_cwd.remove(&session_id); codex_rollout_detector.remove(&session_id);
+                    }
                     if let Some(output_at) = last_output_at {
                         let previous = last_output_evidence_at
                             .get(&session_id)
@@ -193,7 +198,7 @@ pub fn start_monitor(
                     let process_name = get_foreground_process_name(&sys, fg_pid);
                     let foreground_agent = find_agent_descendant(&sys, &child_index, shell_pid);
                     let agent_active = foreground_agent.is_some();
-                    if agent_active { manager.note_agent_seen(&session_id); }
+                    if agent_active { owner.publish(|| manager.note_agent_seen(&session_id)); }
                     if let Some((DetectedAgentKind::Codex, agent_pid)) = foreground_agent {
                         if let Some(agent_started_at) = sys.process(agent_pid).and_then(|process| {
                             process.start_time().checked_mul(1_000)
@@ -238,7 +243,8 @@ pub fn start_monitor(
                     // tick until a request actually gets queued for it.
                     let needs_git_check = !cwd.is_empty()
                         && git_branch_cwd.get(&session_id) != Some(&cwd);
-                    if needs_git_check && git_in_flight.insert(session_id.clone()) {
+                    if needs_git_check && !git_in_flight.contains_key(&session_id) {
+                        git_in_flight.insert(session_id.clone(), owner.clone());
                         // RS-5: hand the (possibly slow) git invocation to the
                         // worker pool instead of blocking this loop — other
                         // sessions' metadata keeps updating every tick even
@@ -609,9 +615,7 @@ pub fn start_monitor(
                                 claimed_agent_session_ids.contains(&mapping.session_id)
                             });
                         if !mapping_owned_by_live_process {
-                            let _ = crate::commands::session_mapping::remove_session_mapping_file(
-                                &session_id,
-                            );
+                            owner.publish(|| { let _ = crate::commands::session_mapping::remove_session_mapping_file(&session_id); });
                         }
                     }
 
@@ -627,6 +631,7 @@ pub fn start_monitor(
                             {
                                 let evt = PtyWorkDone {
                                     session_id: session_id.clone(),
+                                    session_epoch,
                                     prev_process: prev.clone(),
                                     current_process: current.to_string(),
                                 };
@@ -639,7 +644,7 @@ pub fn start_monitor(
                                         current.to_string(),
                                     ),
                                 );
-                                let _ = app_handle.emit("pty_work_done", evt);
+                                owner.publish(|| { let _ = app_handle.emit("pty_work_done", evt); });
                             }
                         }
                     }
@@ -654,17 +659,14 @@ pub fn start_monitor(
                             kind,
                             current_agent_session_id,
                         ) {
-                            write_detected_agent_session_mapping(
-                                &session_id,
-                                kind,
-                                current_agent_session_id,
-                            );
+                            owner.publish(|| write_detected_agent_session_mapping(&session_id, kind, current_agent_session_id));
                         }
                     }
 
-                    let status_changed = last_metadata
-                        .get(&session_id)
-                        .is_none_or(|old| old.process_status != process_status);
+                    let status_changed = monitor_status_changed(
+                        last_metadata.get(&session_id),
+                        &process_status,
+                    );
                     if status_changed {
                         let status = match process_status.as_deref() {
                             Some("working") => crate::session_state::MonitorStatus::Working,
@@ -702,14 +704,14 @@ pub fn start_monitor(
                             .or_else(|| requested.as_ref().map(|(_, id)| id.clone()))?;
                         Some(crate::pty::manager::TrustedAgentIdentity {
                             kind: requested.map(|(kind, _)| kind).unwrap_or_else(|| kind.display_kind().to_string()),
-                            session_id: id, agent_pid: pid.as_u32(), agent_started_at: process.start_time(), from_hook: false,
+                            session_epoch, session_id: id, agent_pid: pid.as_u32(), agent_started_at: process.start_time(), from_hook: false,
                         })
                     });
                     let agent_session_trusted = canonical_identity.as_ref().is_some_and(|identity|
                         agent_kind.as_deref() == Some(identity.kind.as_str()) && agent_session_id.as_deref() == Some(identity.session_id.as_str()));
-                    if let Some(identity) = canonical_identity { manager.remember_agent_identity(&session_id, identity); }
                     let metadata = PtyMetadata {
                         session_id: session_id.clone(),
+                        session_epoch,
                         cwd: cwd.clone(),
                         git_branch: git_branch.clone(),
                         process_name: process_name.clone(),
@@ -722,6 +724,9 @@ pub fn start_monitor(
                         live_agent_kind: live_agent_kind.clone(),
                         agent_session_id: agent_session_id.clone(),
                         agent_session_trusted,
+                        observed_at: Some(observed_at),
+                        agent_started_at: foreground_agent.and_then(|(_, pid)| sys.process(pid))
+                            .and_then(|process| process.start_time().checked_mul(1_000)),
                     };
 
                     let changed = match last_metadata.get(&session_id) {
@@ -738,16 +743,16 @@ pub fn start_monitor(
                                 || old.agent_kind != agent_kind
                                 || old.agent_session_id != agent_session_id
                                 || old.agent_session_trusted != agent_session_trusted
+                                || old.observed_at != metadata.observed_at
+                                || old.agent_started_at != metadata.agent_started_at
                         }
                         None => true,
                     };
 
                     // Always track last_metadata for work-done detection, even if
                     // not "changed" enough to re-emit pty_metadata.
-                    last_metadata.insert(session_id.clone(), metadata.clone());
-                    if changed {
-                        metadata_store.insert(session_id.clone(), metadata.clone());
-                        let _ = app_handle.emit("pty_metadata", metadata);
+                    if publish_monitor_observation(&manager, &metadata_store, &owner, canonical_identity, metadata.clone(), changed, |meta| { let _ = app_handle.emit("pty_metadata", meta); }) {
+                        last_metadata.insert(session_id.clone(), metadata);
                     }
                 }
             }
@@ -780,7 +785,13 @@ pub fn start_monitor(
             last_output_evidence_at.retain(|k, _| active_keys.contains(k));
             session_epochs.retain(|k, _| active_keys.contains(k));
             codex_rollout_detector.retain_active(&active_keys);
-            metadata_store.retain(|k, _| active_keys.contains(k));
+            let cached: Vec<_> = metadata_store.iter().map(|m| (m.key().clone(), m.session_epoch)).collect();
+            for (id, epoch) in cached {
+                let current = manager.get(&id); // Keep session -> metadata lock order, as in snapshots.
+                if current.as_ref().is_none_or(|s| s.session_epoch() != epoch) {
+                    metadata_store.remove_if(&id, |_, m| m.session_epoch == epoch);
+                }
+            }
             // git_in_flight is *not* pruned for dead sessions here: a request
             // may still be running on a worker thread, and the drain step at
             // the top of the next tick removes the entry once that request's
@@ -817,6 +828,15 @@ fn observe_live_agent_kind(
     }
 }
 
+/// The monitor emits status evidence only on a changed process classification.
+pub(crate) fn monitor_status_changed(
+    previous: Option<&PtyMetadata>,
+    process_status: &Option<String>,
+) -> bool {
+    let status_changed = previous.is_none_or(|old| old.process_status != *process_status);
+    status_changed
+}
+
 fn monitor_refresh_interval(frontend_visible: bool) -> Duration {
     Duration::from_secs(if frontend_visible { 10 } else { 20 })
 }
@@ -826,6 +846,46 @@ mod tests {
     use super::{monitor_cwd, monitor_refresh_interval, observe_live_agent_kind};
     use crate::pty::monitor::{detection::DetectedAgentKind, PtyMetadata};
     use std::time::Duration;
+
+    #[test]
+    fn quiet_review_qx3_real_shell_classifier_and_monitor_emit_gate() {
+        use crate::session_state::{Activity, Evidence, MonitorStatus, OutputOrigin, SessionStateStore, UiSessionState, QUIET_AFTER_MS};
+        use crate::status_feed::StatusFeed;
+        use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+        let output_at = 1_000_100;
+        for shell in ["zsh", "cmd.exe"] {
+            let clock = Arc::new(AtomicU64::new(output_at));
+            let read_clock = clock.clone();
+            let store = SessionStateStore::with_clock(Arc::new(move || read_clock.load(Ordering::SeqCst)));
+            let feed = StatusFeed::new(store.clone());
+            store.set_change_listener(feed.change_listener());
+            let (status, status_at) = super::super::process_status_from_observation(Some(shell), Some(100), false);
+            assert_eq!(status.as_deref(), Some("idle"));
+            assert_eq!(status_at, Some(100));
+            assert!(super::monitor_status_changed(None, &status));
+            let mut previous = PtyMetadata::unobserved("quiet-shell".into());
+            previous.process_name = Some(shell.into());
+            previous.process_status = status;
+            store.ingest("quiet-shell", Evidence::monitor_status(output_at - 100, 1, MonitorStatus::Idle, None));
+            store.ingest("quiet-shell", Evidence::last_output(output_at, 1, OutputOrigin::Pty));
+            for elapsed in [10_000, 59_999, 60_000, 120_000, 3_600_000] {
+                clock.store(output_at + elapsed, Ordering::SeqCst);
+                let (observed, _) = super::super::process_status_from_observation(Some(shell), Some(100), false);
+                let emit = super::monitor_status_changed(Some(&previous), &observed);
+                assert!(!emit, "unchanged real shell classification must not emit monitor Idle");
+                if emit {
+                    store.ingest("quiet-shell", Evidence::monitor_status(output_at + elapsed, 1, MonitorStatus::Idle, None));
+                }
+                let snapshot = feed.frontend_snapshot();
+                assert_eq!(snapshot.sessions[0].status.ui_state, if elapsed < QUIET_AFTER_MS { UiSessionState::Working } else { UiSessionState::Idle });
+                assert_eq!(store.current_view("quiet-shell").unwrap().activity, Activity::Streaming);
+                previous.process_status = observed;
+            }
+            let (working, _) = super::super::process_status_from_observation(Some(shell), Some(100), true);
+            assert_eq!(working.as_deref(), Some("working"));
+            assert!(super::monitor_status_changed(Some(&previous), &working));
+        }
+    }
 
     #[test]
     fn missing_cwd_does_not_block_live_identity_or_scan_unrelated_transcripts() {
@@ -917,4 +977,16 @@ mod tests {
         assert_eq!(monitor_refresh_interval(true), Duration::from_secs(10));
         assert_eq!(monitor_refresh_interval(false), Duration::from_secs(20));
     }
+}
+
+/// The monitor's identity/metadata publication boundary.
+pub(crate) fn publish_monitor_observation(
+    manager: &SessionManager, store: &MetadataStore, owner: &ObservationOwner,
+    identity: Option<crate::pty::manager::TrustedAgentIdentity>, metadata: PtyMetadata,
+    changed: bool, emit: impl FnOnce(PtyMetadata),
+) -> bool {
+    owner.publish(|| {
+        if let Some(identity) = identity { manager.remember_agent_identity(&metadata.session_id, identity); }
+        if changed { store.insert(metadata.session_id.clone(), metadata.clone()); emit(metadata); }
+    })
 }

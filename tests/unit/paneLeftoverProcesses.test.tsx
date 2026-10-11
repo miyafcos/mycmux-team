@@ -85,9 +85,9 @@ describe("processes outside panes", () => {
     await render();
     const groups = [...container.querySelectorAll<HTMLElement>("[data-pane-leftover-group]")];
     expect(groups).toHaveLength(3);
-    expect(groups[2].textContent).toContain("ペイン「調査」(作業) から切り離されたもの");
-    expect(container.textContent).toContain("閉じたペイン「監視」から残っているもの");
-    expect(container.textContent).toContain("閉じたペイン (ID 12345678) から残っているもの");
+    expect(groups[2].textContent).toContain("タブ「調査」(作業) から切り離されたもの");
+    expect(container.textContent).toContain("閉じたタブ「監視」から残っているもの");
+    expect(container.textContent).toContain("閉じたタブ (ID 12345678) から残っているもの");
     expect(container.querySelectorAll("[data-pane-leftover-pid]")).toHaveLength(4);
     expect(container.textContent).toContain("メモリ 25.0 MB");
     expect(container.textContent).toMatch(/起動 \d{2}\/\d{2} \d{2}:\d{2}/);
@@ -106,7 +106,7 @@ describe("processes outside panes", () => {
     await render();
     const groups = [...container.querySelectorAll<HTMLElement>("[data-pane-leftover-group]")];
     expect(groups[1].getAttribute("data-pane-leftover-group")).toBe("12345678-running");
-    expect(groups[1].textContent).toContain("動いているペイン (ID 12345678) から切り離されたもの");
+    expect(groups[1].textContent).toContain("動いているタブ (ID 12345678) から切り離されたもの");
   });
 
   it("shows roots with descendant counts and total memory in compact rows", async () => {
@@ -129,7 +129,7 @@ describe("processes outside panes", () => {
 
   it("shows the empty state after a successful scan", async () => {
     await render();
-    expect(container.textContent).toContain("ペインの外で動いているプロセスはありません。");
+    expect(container.textContent).toContain("タブの外で動いているプロセスはありません。");
   });
 
   it("keeps and dims the previous rows while updating", async () => {

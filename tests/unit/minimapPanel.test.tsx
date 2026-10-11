@@ -111,6 +111,31 @@ describe("minimapMapHeightPx", () => {
 });
 
 describe("LayoutMinimapPanel", () => {
+  it.each([
+    [0, undefined],
+    [1, "このタブを移動"],
+    [3, "このタブと裏のタブを移動"],
+  ] as const)("offers a move grip only when a cell has tabs (%i)", async (count, title) => {
+    const workspace: Workspace = { id: "ws", name: "Grip states", gridTemplateId: "1x1", status: "running", createdAt: 1,
+      panes: [pane("p", Array.from({ length: count }, (_, index) => tab(`t${index}`)))], splitColumns: [["p"]] };
+    const style = document.createElement("style");
+    const css = readFileSync("src/components/dashboard/MinimapPanel.css", "utf8");
+    style.textContent = [...css.matchAll(/\.cmux-minimap-pane-grip[^{}]*\{[^}]*\}/g)].map(match => match[0]).join("\n");
+    document.head.appendChild(style);
+    try {
+      await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]} displayStateByTabId={new Map()} selectedTabId={null} activePaneSessionId={null} onSelect={vi.fn()} />));
+      const grip = container.querySelector<HTMLElement>("[data-minimap-pane='p'] [data-minimap-pane-grip]")!;
+      const computed = getComputedStyle(grip);
+      expect(grip.getAttribute("title")).toBe(title ?? null);
+      expect(computed.cursor).toBe(count === 0 ? "default" : "grab");
+      expect(computed.height).toBe("7px");
+      expect(computed.visibility).toBe(count === 0 ? "hidden" : "visible");
+      expect(container.querySelectorAll("[data-minimap-pane='p'] [data-minimap-tab]")).toHaveLength(count);
+    } finally {
+      style.remove();
+    }
+  });
+
   it("projects buildMinimapModel shares for an uneven two-workspace layout", async () => {
     const wsA: Workspace = { id: "ws-a", name: "A", gridTemplateId: "1x1", status: "running", createdAt: 1,
       panes: [pane("a", [tab("a")]), pane("b", [tab("b")]), pane("c", [tab("c")])], splitColumns: [["a", "b"], ["c"]], columnWidths: [1, 3], rowHeightsPerCol: [[1, 3], [1]] };
@@ -212,7 +237,7 @@ describe("LayoutMinimapPanel", () => {
     const chip = container.querySelector<HTMLElement>("[data-minimap-tab='tab']")!;
     const name = container.querySelector<HTMLElement>(".cmux-minimap-workspace-name")!;
     expect(chip.querySelector(".cmux-minimap-label")?.textContent).toBe(longLabel);
-    expect(chip.title).toBe(longLabel);
+    expect(chip.title).toBe(`${longLabel}\n休止中・会話は再開できる (プロセスは終了している)`);
     expect(chip.getAttribute("aria-label")).toContain(`${longLabel} — `);
     expect(chip.getAttribute("aria-label")).toContain("ダブルクリックで元の画面に戻る");
     expect(chip.getAttribute("aria-label")).toContain("Alt+クリックでグループ選択");
@@ -281,7 +306,7 @@ describe("LayoutMinimapPanel", () => {
     });
 
     expect(moveSpy).toHaveBeenCalledTimes(1);
-    expect(moveSpy).toHaveBeenLastCalledWith("ws-a", "a", "a", expect.any(String), "Workspace 3", { activate: false });
+    expect(moveSpy).toHaveBeenLastCalledWith("ws-a", "a", "a", expect.any(String), "Workspace 3", { activate: false, nameSource: "auto" });
     expect(setActiveWorkspaceSpy).not.toHaveBeenCalled();
     expect(focusSpy).not.toHaveBeenCalled();
     expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe("ws-a");
@@ -459,9 +484,26 @@ describe("LayoutMinimapPanel", () => {
     expect(button.disabled).toBe(false);
     await act(async () => button.click());
     expect(moveSpy).toHaveBeenCalledTimes(1);
-    expect(moveSpy).toHaveBeenLastCalledWith("ws-a", "a", "a", expect.any(String), "Workspace 3", { activate: false });
+    expect(moveSpy).toHaveBeenLastCalledWith("ws-a", "a", "a", expect.any(String), "Workspace 3", { activate: false, nameSource: "auto" });
     expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe("ws-a");
     expect(useUiStore.getState().focusRevision).toBe(0);
+  });
+
+  it("F10: keeps the full new-workspace label on one line and lets sibling actions wrap", async () => {
+    await renderDndPanel(dndWorkspaces());
+    const button = container.querySelector<HTMLButtonElement>("[data-minimap-new-workspace-button='true']")!;
+    expect(button.textContent?.trim()).toBe("＋ 新しいワークスペース");
+    expect(button.closest(".cmux-minimap-new-workspace-zone")?.parentElement?.className).toBe("cmux-minimap-footer");
+    const css = readFileSync("src/components/dashboard/MinimapPanel.css", "utf8");
+    const footer = css.match(/\.cmux-minimap-footer\s*\{([^}]+)\}/)![1];
+    const zone = css.match(/\.cmux-minimap-new-workspace-zone\s*\{([^}]+)\}/)![1];
+    const action = css.match(/\.cmux-minimap-new-workspace-zone button\s*\{([^}]+)\}/)![1];
+    expect(footer).toContain("flex-wrap: wrap;");
+    expect(zone).toContain("min-width: max-content;");
+    expect(zone).toContain("flex: 1 0 auto;");
+    expect(action).toContain("white-space: nowrap;");
+    expect(action).not.toMatch(/text-overflow:\s*ellipsis|overflow:\s*hidden/);
+    expect(css.match(/\.cmux-minimap-tab-sweep\s*\{([^}]+)\}/)![1]).toContain("min-height: 29px;");
   });
 
   it("commits one atomic center drop across workspaces without changing active workspace or focus", async () => {
@@ -702,7 +744,7 @@ describe("LayoutMinimapPanel", () => {
 
   it("places the tab sweep control in the minimap footer and removes it from the title bar", async () => {
     await renderDndPanel(dndWorkspaces());
-    const sweepButton = container.querySelector<HTMLElement>("[aria-label='ペイン掃除']")!;
+    const sweepButton = container.querySelector<HTMLElement>("[aria-label='タブ掃除']")!;
     expect(sweepButton.closest(".cmux-minimap-footer")).not.toBeNull();
     expect(readFileSync("src/components/layout/TitleBar.tsx", "utf8")).not.toContain("TabSweepButton");
   });
@@ -831,7 +873,7 @@ describe("LayoutMinimapPanel", () => {
     await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]} displayStateByTabId={new Map()} selectedTabId={null} activePaneSessionId={null} onSelect={vi.fn()} />));
     const cell = container.querySelector<HTMLElement>("[data-minimap-pane='empty']")!;
 
-    expect(cell.querySelector(".cmux-minimap-pane-empty")?.textContent).toBe("空きタブ");
+    expect(cell.querySelector(".cmux-minimap-pane-empty")?.textContent).toBe("空き位置");
     expect(container.querySelectorAll("[data-minimap-pane='empty'] [data-minimap-tab]")).toHaveLength(0);
     // A 0-tab pane is budgeted as one row, exactly like a 1-tab pane.
     expect(minimapCellHeightPx(0, true)).toBe(minimapCellHeightPx(1, true));
@@ -1005,7 +1047,7 @@ describe("LayoutMinimapPanel", () => {
     await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]} displayStateByTabId={new Map()} selectedTabId={null} activePaneSessionId={null} onSelect={vi.fn()} />));
     const chip = container.querySelector<HTMLElement>("[data-minimap-tab='a']")!;
     expect(chip.querySelector(".cmux-minimap-age")).toBeNull();
-    expect(chip.title).toBe("a");
+    expect(chip.title).toBe("a\n休止中・会話は再開できる (プロセスは終了している)");
     // The chip names the vendor the same way the tab bar badge does.
     expect(chip.getAttribute("aria-label")).toContain("a — Codex・");
   });

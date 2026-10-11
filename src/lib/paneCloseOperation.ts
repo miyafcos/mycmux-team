@@ -16,16 +16,19 @@ import { useToastStore } from "../stores/toastStore";
 import { useUiStore } from "../stores/uiStore";
 import { applyLayoutMutation, type MutationSummary } from "./layoutMutation";
 import { getTabDisplayLabel } from "./tabDisplayLabel";
+import { paneKindCapabilities, tabNeedsCloseConfirmation } from "./paneKindCapabilities";
 
 export const PANE_CLOSE_TIMEOUT_MS = 10_000;
 export type PaneCloseSource = "ui" | "cli";
 export interface PaneCloseOptions {
   // Bulk callers retain the existing capability to publish their layout mutation.
   commitBulkLayout?: (workspaces: Workspace[]) => void;
+  /** Single-tab automation must explicitly discard unsaved document edits. */
+  force?: boolean;
 }
 export interface PaneCloseResult {
-  status: "closed" | "refused" | "cancelled" | "failed" | "pending";
-  reason?: "last" | "missing" | "busy";
+  status: "closed" | "needs_confirmation" | "refused" | "cancelled" | "failed" | "pending";
+  reason?: "last" | "missing" | "busy" | "unsaved";
   error?: unknown;
   summary?: MutationSummary;
   closedTabIds?: string[];
@@ -44,6 +47,11 @@ interface CloseOperation {
 const operations = new Map<string, CloseOperation>();
 // Keep acknowledged kills only while their tabs remain visible after a partial failure.
 const terminatedSessions = new Set<string>();
+
+/** A reserved tab must not accept queued input while its close is in flight. */
+export function isPaneTabClosing(tabId: string): boolean {
+  return [...operations.values()].some(op => op.owners.some(owner => owner.tab.id === tabId));
+}
 
 function keyOf(target: PaneCloseTarget): string {
   return target.kind === "tabs" ? `tabs:${[...new Set(target.tabIds)].sort().join("\0")}`
@@ -70,13 +78,13 @@ function fingerprint(plan: Extract<ReturnType<typeof preflightPaneClose>, { ok: 
   });
 }
 function ownsPty({ tab }: PaneCloseOwner): boolean {
-  return (tab.type === undefined || tab.type === "terminal") && !isDeclaredTab(tab);
+  return paneKindCapabilities(tab).closeEffect === "kill" && !isDeclaredTab(tab);
 }
 function showFailure(op: CloseOperation, pending: boolean): void {
   if (op.toastId) return;
   op.toastId = useToastStore.getState().pushToast(pending
-    ? "\u7d42\u4e86\u306e\u5fdc\u7b54\u3092\u5f85\u3063\u3066\u3044\u307e\u3059\u3002\u30da\u30a4\u30f3\u306f\u7d50\u679c\u304c\u5c4a\u304f\u307e\u3067\u6b8b\u3057\u307e\u3059\u3002"
-    : "\u7d42\u4e86\u3067\u304d\u306a\u304b\u3063\u305f\u305f\u3081\u3001\u30da\u30a4\u30f3\u3092\u6b8b\u3057\u307e\u3057\u305f\u3002\u3082\u3046\u4e00\u5ea6\u9589\u3058\u308b\u3053\u3068\u304c\u3067\u304d\u307e\u3059\u3002",
+    ? "\u7d42\u4e86\u306e\u5fdc\u7b54\u3092\u5f85\u3063\u3066\u3044\u307e\u3059\u3002\u30bf\u30d6\u306f\u7d50\u679c\u304c\u5c4a\u304f\u307e\u3067\u6b8b\u3057\u307e\u3059\u3002"
+    : "\u7d42\u4e86\u3067\u304d\u306a\u304b\u3063\u305f\u305f\u3081\u3001\u30bf\u30d6\u3092\u6b8b\u3057\u307e\u3057\u305f\u3002\u3082\u3046\u4e00\u5ea6\u9589\u3058\u308b\u3053\u3068\u304c\u3067\u304d\u307e\u3059\u3002",
   "error", {
     label: pending ? "\u7d50\u679c\u3092\u78ba\u8a8d" : "\u3082\u3046\u4e00\u5ea6\u9589\u3058\u308b",
     run: () => { void closePaneOperation(op.target, op.source, op.options); },
@@ -88,11 +96,13 @@ async function execute(op: CloseOperation): Promise<PaneCloseResult> {
   if (!plan.ok) return { status: "refused", reason: plan.reason };
   while (true) {
     op.owners = plan.owners;
+    if (op.source === "cli" && op.target.kind === "tab" && !op.options.force
+      && plan.owners.some(({ tab }) => tabNeedsCloseConfirmation(tab))) return { status: "needs_confirmation", reason: "unsaved" };
     const before = fingerprint(plan);
     if (op.source === "ui") {
-      if (!await confirmPaneClose(plan.panes, op.target.kind === "tab" ? "tab" : "pane")) return { status: "cancelled" };
+      if (!await confirmPaneClose(plan.panes, op.target.kind === "tab" ? "tab" : "pane", { targetKind: op.target.kind })) return { status: "cancelled" };
       for (const { tab } of plan.owners) {
-        if (tab.type === "browser" && tab.isDirty && !await confirm(`${getTabDisplayLabel(tab)} has unsaved edits. Close it anyway?`)) return { status: "cancelled" };
+        if (tabNeedsCloseConfirmation(tab) && !await confirm(`${getTabDisplayLabel(tab)} has unsaved edits. Close it anyway?`)) return { status: "cancelled" };
       }
     }
     const current = readPlan(op.target, op);

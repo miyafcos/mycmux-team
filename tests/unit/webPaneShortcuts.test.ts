@@ -95,4 +95,28 @@ describe("web pane shortcut forwarding", () => {
     expect(listener).toHaveBeenCalledTimes(1);
     window.removeEventListener("keydown", listener);
   });
+
+  it("runs source activation only after every validation gate and before key dispatch", () => {
+    const forwarded = new Set(deriveWebPaneForwardedShortcuts(DEFAULT_KEYBINDINGS));
+    const tabs = new Set(["web-tab"]);
+    const order: string[] = [];
+    const activate = vi.fn(() => { order.push("activate"); return true; });
+    const listener = () => { order.push("keydown"); };
+    window.addEventListener("keydown", listener);
+    try {
+      for (const value of [null, {}, payload({ tabId: "other-tab" }), payload({ isComposing: true }),
+        payload({ location: 4 }), payload({ key: "r", code: "KeyR" }),
+        { ...payload(), ctrlKey: "true" }, { ...payload(), code: null }]) {
+        expect(dispatchWebPaneKeydown(value, forwarded, tabs, activate)).toBe(false);
+      }
+      expect(activate).not.toHaveBeenCalled();
+      expect(order).toEqual([]);
+      expect(dispatchWebPaneKeydown(payload(), forwarded, tabs, activate)).toBe(true);
+      expect(activate).toHaveBeenCalledExactlyOnceWith("web-tab");
+      expect(order).toEqual(["activate", "keydown"]);
+      order.length = 0;
+      expect(dispatchWebPaneKeydown(payload(), forwarded, tabs, () => false)).toBe(false);
+      expect(order).toEqual([]);
+    } finally { window.removeEventListener("keydown", listener); }
+  });
 });

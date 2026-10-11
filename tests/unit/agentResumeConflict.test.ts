@@ -71,7 +71,7 @@ describe("agent resume conflict", () => {
   });
 
   it("exports the exact terminal notice and adds hidden-owner detail inside brackets", () => {
-    expect(AGENT_SESSION_ALREADY_RUNNING_NOTICE).toBe("\r\n\x1b[33m[\u3053\u306e\u4f1a\u8a71\u306f\u5225\u306e\u30da\u30a4\u30f3\u3067\u52d5\u3044\u3066\u3044\u308b\u305f\u3081\u3001\u3053\u3053\u3067\u306f\u8d77\u52d5\u3057\u307e\u305b\u3093\u3067\u3057\u305f]\x1b[0m\r\n");
+    expect(AGENT_SESSION_ALREADY_RUNNING_NOTICE).toBe("\r\n\x1b[33m[\u3053\u306e\u4f1a\u8a71\u306f\u5225\u306e\u30bf\u30d6\u3067\u52d5\u3044\u3066\u3044\u308b\u305f\u3081\u3001\u3053\u3053\u3067\u306f\u8d77\u52d5\u3057\u307e\u305b\u3093\u3067\u3057\u305f]\x1b[0m\r\n");
     expect(agentSessionAlreadyRunningNotice()).toBe(AGENT_SESSION_ALREADY_RUNNING_NOTICE);
     expect(agentSessionAlreadyRunningNotice("123456789-more")).toBe(AGENT_SESSION_ALREADY_RUNNING_NOTICE.replace("]\x1b[0m", " (\u753b\u9762\u306b\u7121\u3044\u30bb\u30c3\u30b7\u30e7\u30f3 12345678 \u3067\u52d5\u3044\u3066\u3044\u307e\u3059)]\x1b[0m"));
   });
@@ -94,7 +94,7 @@ describe("agent resume conflict", () => {
     const [toast] = useToastStore.getState().toasts;
     expect(toast.kind).toBe("warning");
     expect(toast.message).toBe("\u3053\u306e\u4f1a\u8a71\u306f\u300cWorkspace / Task\u300d\u3067\u52d5\u3044\u3066\u3044\u307e\u3059");
-    expect(toast.action?.label).toBe("\u305d\u306e\u30da\u30a4\u30f3\u3092\u958b\u304f");
+    expect(toast.action?.label).toBe("\u305d\u306e\u30bf\u30d6\u3092\u958b\u304f");
     expect(toast.actions).toBeUndefined();
     toast.action!.run();
     expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe("owner");

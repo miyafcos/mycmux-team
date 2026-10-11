@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { tabGroupingStrings } from "../../src/components/dashboard/dashboardStrings";
 
 // scripts/build_grouping_live_mock.ps1 writes the generated mock outside the
 // repository, into the author's local report folder. That artifact exists on
@@ -50,8 +51,10 @@ describe("Tab grouping live mock artifact", () => {
     const source = readFileSync("src/mock/tabGroupingLiveMock.tsx", "utf8");
     const buildScript = readFileSync("scripts/build_grouping_live_mock.ps1", "utf8");
     expect(source).toContain("左のグループで「再配置する」「現状維持」を選びます。");
-    expect(source).toContain("ペインを選び、右の配置図の移動先タブをクリックします。");
-    expect(source).toContain("「変更対象のみ表示」で動くペインだけに絞れます。");
+    expect(source).toContain("タブを選んで、右の配置図で移動先の表示場所をクリックします。");
+    expect(source).toContain("タブはドラッグして移動先の表示場所へ落とせます。");
+    expect(tabGroupingStrings.editMapLegend).toBe("タブを選んで、右の配置図で移動先の表示場所をクリックします");
+    expect(source).toContain("「変更対象のみ表示」で動くタブだけに絞れます。");
     expect(source).toContain("tabGroupingStrings.editPlan");
     expect(source).toContain('params.get("step") !== "2"');
     expect(buildScript).toContain("preview_step2.png");

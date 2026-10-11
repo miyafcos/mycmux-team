@@ -174,7 +174,7 @@ export function composeJevPlans(scan: GroupingScan, judgements: JevJudgements): 
       const preserve = hold || (strategy === "minimal_move" && [...keep.values()].includes(bucket));
       if (hold) warnings.push({ code: "UNCLEAR_ROLE", tabIds, message: members.length > 16
         ? "大きな親子グループは現在位置を保ちます。分け方を確認してください。"
-        : "作業の情報が足りないペインは現在位置に残します。" });
+        : "作業の情報が足りないタブは現在位置に残します。" });
       if (strategy === "role" && bucket.length > 1) warnings.push({
         code: "MIXED_PROJECT", tabIds, message: "同じ役割のタスクを横に見渡せるようにまとめています。案件ごとに列を分けます。",
       });

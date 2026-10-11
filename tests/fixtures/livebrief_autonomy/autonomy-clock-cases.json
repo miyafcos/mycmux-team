@@ -1,0 +1,387 @@
+[
+  {
+    "name": "J2 H2 F4 one-hour rollback expires once on the corrected clock",
+    "source": "Synthetic records follow the supplied Claude queue and turn skeleton keys.",
+    "records": [
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "content": "work"
+          }
+        },
+        "atOffsetMs": -1000
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "stop_reason": "end_turn",
+            "content": []
+          }
+        },
+        "atOffsetMs": 0
+      }
+    ],
+    "turnUnknown": false,
+    "steps": [
+      {
+        "nowOffsetMs": 0,
+        "expectedLastEventAtOffsetMs": 0,
+        "expectedTurnState": "complete",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": -3600000,
+        "expectedLastEventAtOffsetMs": -3600000,
+        "expectedTurnState": "complete",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": -3599000,
+        "record": {
+          "type": "progress",
+          "message": "ignored"
+        },
+        "eventAtOffsetMs": -3599000,
+        "expectedLastEventAtOffsetMs": -3600000,
+        "expectedTurnState": "complete",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": -2700000,
+        "expectedLastEventAtOffsetMs": -3600000,
+        "expectedTurnState": "complete",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": -1801000,
+        "expectedLastEventAtOffsetMs": -3600000,
+        "expectedTurnState": "complete",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": -1800000,
+        "expectedLastEventAtOffsetMs": -3600000,
+        "expectedTurnState": "complete",
+        "display": "done"
+      },
+      {
+        "nowOffsetMs": -1000000,
+        "expectedLastEventAtOffsetMs": -3600000,
+        "expectedTurnState": "complete",
+        "display": "done"
+      }
+    ]
+  },
+  {
+    "name": "J2 unknown turn returns to baseline thirty minutes after rollback",
+    "source": "Synthetic records follow the supplied Claude queue and turn skeleton keys.",
+    "records": [
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "content": "work"
+          }
+        },
+        "atOffsetMs": -1000
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "stop_reason": "end_turn",
+            "content": []
+          }
+        },
+        "atOffsetMs": 0
+      }
+    ],
+    "turnUnknown": true,
+    "steps": [
+      {
+        "nowOffsetMs": 0,
+        "expectedLastEventAtOffsetMs": 0,
+        "expectedTurnState": "unknown",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": -3600000,
+        "expectedLastEventAtOffsetMs": -3600000,
+        "expectedTurnState": "unknown",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": -1801000,
+        "expectedLastEventAtOffsetMs": -3600000,
+        "expectedTurnState": "unknown",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": -1800000,
+        "expectedLastEventAtOffsetMs": -3600000,
+        "expectedTurnState": "unknown",
+        "display": "noUpdate"
+      }
+    ]
+  },
+  {
+    "name": "J2 a new event after rollback starts a new window",
+    "source": "Synthetic records follow the supplied Claude queue and turn skeleton keys.",
+    "records": [
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "content": "work"
+          }
+        },
+        "atOffsetMs": -1000
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "stop_reason": "end_turn",
+            "content": []
+          }
+        },
+        "atOffsetMs": 0
+      }
+    ],
+    "turnUnknown": false,
+    "steps": [
+      {
+        "nowOffsetMs": 0,
+        "expectedLastEventAtOffsetMs": 0,
+        "expectedTurnState": "complete",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": -3600000,
+        "expectedLastEventAtOffsetMs": -3600000,
+        "expectedTurnState": "complete",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": -3000000,
+        "record": {
+          "type": "user",
+          "message": {
+            "content": "next work"
+          }
+        },
+        "eventAtOffsetMs": -3000000,
+        "expectedLastEventAtOffsetMs": -3000000,
+        "expectedTurnState": "active",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": -2999000,
+        "record": {
+          "type": "assistant",
+          "message": {
+            "stop_reason": "end_turn",
+            "content": []
+          }
+        },
+        "eventAtOffsetMs": -2999000,
+        "expectedLastEventAtOffsetMs": -2999000,
+        "expectedTurnState": "complete",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": -1200000,
+        "expectedLastEventAtOffsetMs": -2999000,
+        "expectedTurnState": "complete",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": -1199000,
+        "expectedLastEventAtOffsetMs": -2999000,
+        "expectedTurnState": "complete",
+        "display": "done"
+      }
+    ]
+  },
+  {
+    "name": "J2 new records before the first corrected poll retain their event time",
+    "source": "Synthetic records follow the supplied Claude queue and turn skeleton keys.",
+    "records": [
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "content": "work"
+          }
+        },
+        "atOffsetMs": -1000
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "stop_reason": "end_turn",
+            "content": []
+          }
+        },
+        "atOffsetMs": 0
+      }
+    ],
+    "turnUnknown": false,
+    "steps": [
+      {
+        "nowOffsetMs": 0,
+        "expectedLastEventAtOffsetMs": 0,
+        "expectedTurnState": "complete",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": -2999500,
+        "record": {
+          "type": "user",
+          "message": {
+            "content": "new clock work"
+          }
+        },
+        "eventAtOffsetMs": -3000000,
+        "expectedLastEventAtOffsetMs": -3000000,
+        "expectedTurnState": "active",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": -2999000,
+        "record": {
+          "type": "assistant",
+          "message": {
+            "stop_reason": "end_turn",
+            "content": []
+          }
+        },
+        "eventAtOffsetMs": -2999000,
+        "expectedLastEventAtOffsetMs": -2999000,
+        "expectedTurnState": "complete",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": -1199000,
+        "expectedLastEventAtOffsetMs": -2999000,
+        "expectedTurnState": "complete",
+        "display": "done"
+      }
+    ]
+  },
+  {
+    "name": "J2 null events never become unknown self-driving evidence",
+    "source": "Synthetic records follow the supplied Claude queue and turn skeleton keys.",
+    "records": [],
+    "turnUnknown": false,
+    "steps": [
+      {
+        "nowOffsetMs": -3600000,
+        "expectedLastEventAtOffsetMs": null,
+        "expectedTurnState": "unknown",
+        "display": "idle"
+      },
+      {
+        "nowOffsetMs": -1800000,
+        "expectedLastEventAtOffsetMs": null,
+        "expectedTurnState": "unknown",
+        "display": "idle"
+      }
+    ]
+  },
+  {
+    "name": "J2 fifty-nine-second future skew keeps the original anchor",
+    "source": "Synthetic records follow the supplied Claude queue and turn skeleton keys.",
+    "records": [
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "content": "work"
+          }
+        },
+        "atOffsetMs": -1000
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "stop_reason": "end_turn",
+            "content": []
+          }
+        },
+        "atOffsetMs": 0
+      }
+    ],
+    "turnUnknown": false,
+    "steps": [
+      {
+        "nowOffsetMs": -59999,
+        "expectedLastEventAtOffsetMs": 0,
+        "expectedTurnState": "complete",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": 1799999,
+        "expectedLastEventAtOffsetMs": 0,
+        "expectedTurnState": "complete",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": 1800000,
+        "expectedLastEventAtOffsetMs": 0,
+        "expectedTurnState": "complete",
+        "display": "done"
+      }
+    ]
+  },
+  {
+    "name": "J2 sixty-second future anchor resets exactly once",
+    "source": "Synthetic records follow the supplied Claude queue and turn skeleton keys.",
+    "records": [
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "content": "work"
+          }
+        },
+        "atOffsetMs": -1000
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "stop_reason": "end_turn",
+            "content": []
+          }
+        },
+        "atOffsetMs": 0
+      }
+    ],
+    "turnUnknown": false,
+    "steps": [
+      {
+        "nowOffsetMs": -60000,
+        "expectedLastEventAtOffsetMs": -60000,
+        "expectedTurnState": "complete",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": 1739999,
+        "expectedLastEventAtOffsetMs": -60000,
+        "expectedTurnState": "complete",
+        "display": "running"
+      },
+      {
+        "nowOffsetMs": 1740000,
+        "expectedLastEventAtOffsetMs": -60000,
+        "expectedTurnState": "complete",
+        "display": "done"
+      }
+    ]
+  }
+]

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readPaneTail } from "../../src/components/layout/socketCommands";
 import { terminalSizeCache } from "../../src/components/terminal/terminalCache";
 import { __headlessBufferCacheSizeForTests, __resetHeadlessBufferCacheForTests, getHeadlessBufferLines, readHeadlessBufferLines } from "../../src/components/terminal/headlessBuffer";
+import { __resetPtyReadGenerationsForTests, observePtyEpoch, replacePtyReadOwners } from "../../src/lib/ptyReadGeneration";
 import { TerminalDeadlineError } from "../../src/lib/terminalDeadline";
 import type { ScrollbackSnapshot } from "../../src/lib/ipc";
 
@@ -10,7 +11,7 @@ vi.mock("../../src/lib/ipc", async (original) => ({
   ...await original<typeof import("../../src/lib/ipc")>(), getSessionScrollback: mocks.read,
 }));
 vi.mock("../../src/components/terminal/XTermWrapper", () => ({
-  hasTerminalBuffer: mocks.visible, getTerminalBufferLines: mocks.lines,
+  hasTerminalBuffer: mocks.visible, isTerminalParsingCurrentOutput: (id: string) => mocks.visible(id, true), getTerminalBufferLines: mocks.lines,
 }));
 
 const encoder = new TextEncoder();
@@ -31,6 +32,7 @@ function expected(cols = 120, label = "Working (1s)"): string[] {
 }
 function replace(text: string, options: Partial<Snapshot> = {}): void {
   const data = encoder.encode(text);
+  if (options.sessionEpoch !== undefined) observePtyEpoch("background", options.sessionEpoch);
   current = { data, startOffset: 0, endOffset: data.length, cols: 120, rows: 40, sessionEpoch: 17, sizeRevision: 0, isDelta: false, ...options };
 }
 function append(text: string): void {
@@ -51,12 +53,16 @@ function response(cursor?: Cursor): Snapshot {
   return result;
 }
 
+const owner = Symbol("live reader fixture sessions");
 beforeEach(() => {
-  __resetHeadlessBufferCacheForTests(); terminalSizeCache.clear(); vi.clearAllMocks();
+  __resetHeadlessBufferCacheForTests(); __resetPtyReadGenerationsForTests(); terminalSizeCache.clear(); vi.clearAllMocks();
+  replacePtyReadOwners(owner, new Set(["background", "front", "full", "old-default",
+    ...Array.from({ length: 12 }, (_, index) => `other-${index}`),
+    ...Array.from({ length: 12 }, (_, index) => `pressure-${index}`)]));
   mocks.visible.mockReturnValue(false); requests = []; payloadBytes = [];
   replace(frame()); mocks.read.mockImplementation(async (_id: string, cursor?: Cursor) => response(cursor));
 });
-afterEach(() => { vi.useRealTimers(); __resetHeadlessBufferCacheForTests(); terminalSizeCache.clear(); });
+afterEach(() => { vi.useRealTimers(); __resetHeadlessBufferCacheForTests(); terminalSizeCache.clear(); replacePtyReadOwners(owner, new Set()); });
 
 describe("stage 0 background pane reads", () => {
   it("T1 reconstructs a 120x40 positioned Codex-like frame without a renderer size cache", async () => {
@@ -218,6 +224,25 @@ function rollPartialScreenRing(): void {
 }
 
 describe("RV0-01 bounded snapshot fetching with the real headless parser", () => {
+  it("keeps a live-tail fetch pending beyond 200 ms but releases a lost fetch at its 4 s allowance", async () => {
+    // Load dynamic read modules before switching to fake time.
+    await readPaneTail("background", 40);
+    mocks.read.mockImplementationOnce(() => new Promise(() => {}));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const settled = vi.fn();
+    const failed = readPaneTail("background", 40, false, { headlessFetchTimeoutMs: 4_000 })
+      .then(settled, (error: unknown) => { settled(); return error; });
+    await vi.advanceTimersByTimeAsync(3_999);
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await failed).toBeInstanceOf(TerminalDeadlineError);
+    expect(settled).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+    mocks.read.mockImplementation(async (_id: string, cursor?: Cursor) => response(cursor));
+    await expect(readPaneTail("background", 40)).resolves.toEqual(expected());
+    expect(payloadBytes.at(-1)).toBe(0);
+  });
+
   it.each(["resolve", "reject"] as const)("recovers after a fetch timeout and ignores a late %s", async (late) => {
     replace("old");
     const initial = current;
@@ -284,7 +309,7 @@ describe("RV0-01 bounded snapshot fetching with the real headless parser", () =>
     expect(loadB).toHaveBeenCalledExactlyOnceWith(undefined);
   });
 
-  it("bounds an incompatible delta and its full retry within one fetch budget", async () => {
+  it.each([200, 4_000])("bounds an incompatible delta and its full retry within one %i ms fetch budget", async budget => {
     replace("old");
     const initial = current;
     await getHeadlessBufferLines("background", initial, 40);
@@ -292,18 +317,18 @@ describe("RV0-01 bounded snapshot fetching with the real headless parser", () =>
     const lateFull = new Promise<Snapshot>((resolve) => { releaseLate = resolve; });
     const loadA = vi.fn()
       .mockImplementationOnce(() => new Promise<Snapshot>((resolve) => {
-        setTimeout(() => resolve({ ...initial, sessionEpoch: 99, isDelta: true }), 150);
+        setTimeout(() => resolve({ ...initial, sizeRevision: 99, isDelta: true }), budget * 0.75);
       }))
       .mockImplementationOnce(() => lateFull);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
-    const first = readHeadlessBufferLines("background", loadA, 40).catch((error: unknown) => error);
-    await vi.advanceTimersByTimeAsync(150);
+    const first = readHeadlessBufferLines("background", loadA, 40, undefined, budget).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(budget * 0.75);
     expect(loadA).toHaveBeenCalledTimes(2);
     expect(loadA).toHaveBeenLastCalledWith(undefined);
     replace("old\r\nnew");
     const loadB = vi.fn(async (cursor?: Cursor) => response(cursor));
     const second = readHeadlessBufferLines("background", loadB, 40);
-    await vi.advanceTimersByTimeAsync(49);
+    await vi.advanceTimersByTimeAsync(budget * 0.25 - 1);
     expect(loadB).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(loadB).toHaveBeenCalledOnce();

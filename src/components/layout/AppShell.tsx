@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { ThemeBackgroundSettings } from "../../types";
+import type { ThemeBackgroundSettings, Workspace } from "../../types";
 import {
   useWorkspaceListStore,
   useWorkspaceLayoutStore,
@@ -284,6 +284,54 @@ function paneMatchesSession(
     sessionId
     && (pane.sessionId === sessionId || pane.tabs?.some((tab) => tab.sessionId === sessionId)),
   );
+}
+
+type PaneFocusOwner = { workspaceId: string; paneId: string };
+
+function livePaneFocusOwner(target: Element | null, workspace: Workspace): PaneFocusOwner | null {
+  const root = target?.closest<HTMLElement>("[data-dnd-pane-id],[data-pane-focus-pane-id]");
+  const workspaceId = root?.dataset.paneFocusWorkspaceId ?? root?.dataset.dndWorkspaceId;
+  const paneId = root?.dataset.paneFocusPaneId ?? root?.dataset.dndPaneId;
+  if (!paneId || workspaceId !== workspace.id || !workspace.panes.some(pane => pane.id === paneId)) return null;
+  return { workspaceId, paneId };
+}
+
+function trackDocumentPaneFocus(
+  doc: Document,
+  getWorkspace: () => Workspace | undefined,
+  remember: (owner: PaneFocusOwner | null) => void,
+): () => void {
+  const ownerFor = (target: EventTarget | null): PaneFocusOwner | null => {
+    const workspace = getWorkspace();
+    const ElementConstructor = doc.defaultView?.Element;
+    return workspace && ElementConstructor && target instanceof ElementConstructor && target.ownerDocument === doc
+      ? livePaneFocusOwner(target, workspace) : null;
+  };
+  const onFocus = (event: FocusEvent) => remember(ownerFor(event.target));
+  const onPointerDown = (event: PointerEvent) => { if (!ownerFor(event.target)) remember(null); };
+  doc.addEventListener("focusin", onFocus, true);
+  doc.addEventListener("pointerdown", onPointerDown, true);
+  return () => {
+    doc.removeEventListener("focusin", onFocus, true);
+    doc.removeEventListener("pointerdown", onPointerDown, true);
+    remember(null);
+  };
+}
+
+function closeKeySourcePaneId(event: KeyboardEvent, workspace: Workspace, lastFocusedPane: PaneFocusOwner | null = null): string | null {
+  let target = event.target;
+  if (target === window || (target instanceof Window && target.document === document)
+    || target === document || target === document.body) {
+    const active = document.activeElement;
+    target = active instanceof HTMLIFrameElement || active instanceof HTMLEmbedElement ? active : null;
+  }
+  // DOM attributes identify a candidate only. Resolve it in this window's
+  // live foreground workspace before treating it as an attributable source.
+  const source = target instanceof Element ? livePaneFocusOwner(target, workspace) : null;
+  if (source) return source.paneId;
+  if (document.activeElement && document.activeElement !== document.body) return null;
+  return lastFocusedPane?.workspaceId === workspace.id && workspace.panes.some(pane => pane.id === lastFocusedPane.paneId)
+    ? lastFocusedPane.paneId : null;
 }
 
 function isPlainXtermInputEvent(event: KeyboardEvent): boolean {
@@ -608,6 +656,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     const taken = useWorkspaceListStore.getState().workspaces.map((workspace) => workspace.name);
     createWorkspaceAtCwd(cwd, {
       name: uniqueWorkspaceName(workspaceNameFromCwd(cwd), taken),
+      nameSource: "auto",
     });
   }, []);
 
@@ -622,6 +671,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     (result: WorkspaceSetupResult) => {
       createWorkspaceAtCwd(result.cwd, {
         name: result.name,
+        nameSource: result.nameSource,
         gridTemplateId: result.gridTemplateId,
         paneSpecs: result.paneSpecs,
       });
@@ -661,6 +711,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   // re-attached the window keydown listener each time. The guard below reads
   // them from the ref at event time, so the values it sees are identical to the
   // ones a re-attached listener saw.
+  const lastFocusedPaneRef = useRef<PaneFocusOwner | null>(null);
   const stateRef = useRef({
     workspaces,
     activeId,
@@ -743,6 +794,13 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   }, [restoreClosedPane]);
 
   useEffect(() => {
+    return trackDocumentPaneFocus(document, () => {
+      const state = useWorkspaceListStore.getState();
+      return state.workspaces.find(workspace => workspace.id === state.activeWorkspaceId);
+    }, owner => { lastFocusedPaneRef.current = owner; });
+  }, []);
+
+  useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       // Skip if modals are open
       if (
@@ -776,12 +834,16 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       e.stopImmediatePropagation();
 
       const action = actions[0]; // Execute first matching action
+      // A child webview activates its source immediately before forwarding.
+      // React may not have refreshed stateRef yet; route from the live stores.
       const {
         workspaces: ws,
-        activeId: aid,
+        activeWorkspaceId: aid,
+      } = useWorkspaceListStore.getState();
+      const {
         activePaneId: apid,
         lastActivePaneId: lpid,
-      } = stateRef.current;
+      } = useUiStore.getState();
 
       // Execute the action based on action ID
       switch (action) {
@@ -901,8 +963,20 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           const activeWs = ws.find(w => w.id === aid);
           const activePane = activeWs?.panes.find(p => paneMatchesSession(p, apid));
           if (activeWs && activePane) {
-            void closePaneOperation({ kind: "pane", workspaceId: activeWs.id, paneId: activePane.id }, "ui").then(result => {
+            const displayed = activePane.tabs.find(tab => tab.id === activePane.activeTabId) ?? activePane.tabs[0];
+            if (displayed && (displayed.type === undefined || displayed.type === "terminal")) {
+              const sourcePaneId = closeKeySourcePaneId(e, activeWs, lastFocusedPaneRef.current);
+              if (sourcePaneId && sourcePaneId !== activePane.id) return;
+            }
+            const target = activePane.tabs.length > 1
+              ? { kind: "tab" as const, workspaceId: activeWs.id, paneId: activePane.id, tabId: activePane.activeTabId }
+              : { kind: "pane" as const, workspaceId: activeWs.id, paneId: activePane.id };
+            void closePaneOperation(target, "ui").then(result => {
               if (result.status !== "closed") return;
+              if (target.kind === "tab") {
+                focusController.focusPaneSoon(activePane.id);
+                return;
+              }
               const remaining = useWorkspaceListStore.getState().getWorkspace(activeWs.id)?.panes ?? [];
               const neighbor = findPaneInDirection(apid!, "right", remaining)
                 || findPaneInDirection(apid!, "down", remaining)

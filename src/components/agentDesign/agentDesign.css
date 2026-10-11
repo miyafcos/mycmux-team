@@ -231,8 +231,8 @@
 .ad-view [hidden] { display:none !important; }
 .ad-header { height:auto; min-height:56px; flex-wrap:wrap; padding:8px 12px; gap:8px; }
 .ad-brand { min-width:150px; max-width:260px; }
-.ad-tabs { flex-wrap:wrap; }
-.ad-tabs button { padding:5px 9px; font-size:12px; }
+.ad-tabs { flex-wrap:wrap; max-width:100%; min-width:0; }
+.ad-tabs button { padding:5px 9px; font-size:12px; white-space:nowrap; flex:none; }
 .ad-search { width:210px; }
 .ad-header > button { gap:5px; }
 .ad-page { flex:1; min-height:0; }

@@ -34,6 +34,24 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("C1-C3 close transaction", () => {
+  it("passes the operation kind and selected preflight tabs to confirmation", async () => {
+    mocks.confirm.mockResolvedValue(false);
+    expect(await closePaneOperation(target, "ui")).toMatchObject({ status: "cancelled" });
+    expect(mocks.confirm.mock.calls[0][1]).toBe("tab");
+    expect(mocks.confirm.mock.calls[0][2]).toEqual({ targetKind: "tab" });
+    mocks.confirm.mockClear();
+    replace(fixture(2, 3));
+    expect(await closePaneOperation({ kind: "pane", workspaceId: "w", paneId: "p0" }, "ui")).toMatchObject({ status: "cancelled" });
+    expect(mocks.confirm.mock.calls[0][2]).toEqual({ targetKind: "pane" });
+    expect(mocks.confirm.mock.calls[0][0][0].tabs).toHaveLength(3);
+    mocks.confirm.mockClear();
+    expect(await closePaneOperation({ kind: "tabs", tabIds: ["t0-0", "t0-2", "missing"] }, "ui", bulkOptions)).toMatchObject({ status: "cancelled" });
+    expect(mocks.confirm.mock.calls[0][1]).toBe("pane");
+    expect(mocks.confirm.mock.calls[0][2]).toEqual({ targetKind: "tabs" });
+    expect(mocks.confirm.mock.calls[0][0].flatMap((pane: Workspace["panes"][number]) => pane.tabs.map(tab => tab.id))).toEqual(["t0-0", "t0-2"]);
+    expect(mocks.kill).not.toHaveBeenCalled();
+  });
+
   it("has zero side effects on last-tab refusal", async () => {
     replace(fixture());
     const before = JSON.stringify(useWorkspaceListStore.getState().workspaces);

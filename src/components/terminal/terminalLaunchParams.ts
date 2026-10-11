@@ -22,6 +22,7 @@ export interface TerminalLaunchParams {
   args: string[];
   cwd?: string;
   launchEnv?: Record<string, string>;
+  restoreReason?: "saved-codex-pane";
 }
 
 export interface TerminalLaunchRequest {
@@ -29,6 +30,7 @@ export interface TerminalLaunchRequest {
   args: string[];
   cwd?: string;
   env?: Record<string, string>;
+  restoreReason?: "saved-codex-pane";
 }
 
 /**
@@ -44,6 +46,7 @@ export function buildLaunchRequest(params: TerminalLaunchParams): TerminalLaunch
     // Historical behavior: an absent env is sent as undefined (backend treats it
     // as "no frontend env"); an empty object is still forwarded as-is.
     env: params.launchEnv || undefined,
+    ...(params.restoreReason ? { restoreReason: params.restoreReason } : {}),
   };
 }
 
@@ -120,6 +123,10 @@ export function buildAgentRecoveryLaunch(params: TerminalLaunchParams, kind: str
   } else {
     // The existing launcher owns shell quoting and provider-specific options.
     env.MYCMUX_LAUNCH_TARGET = kind;
+  }
+  if (kind === "codex" && fresh) {
+    for (const key of ["MYCMUX_RESUME", "MYCMUX_SESSION_ID", "MYCMUX_AGENT_KIND", "MYCMUX_RESUME_FORK", "MYCMUX_CODEX_RESTORE_REASON"]) delete env[key];
+    return { ...params, args, launchEnv: env, restoreReason: undefined };
   }
   return { ...params, args, launchEnv: env };
 }

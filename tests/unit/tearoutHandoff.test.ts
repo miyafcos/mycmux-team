@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ label: "peer", listeners: new Map<string, Function>(),
-  emitTo: vi.fn(), publish: vi.fn(), join: vi.fn(), write: vi.fn(), consume: vi.fn(),
+  emitTo: vi.fn(), publish: vi.fn(), join: vi.fn(), write: vi.fn(), alive: vi.fn(), consume: vi.fn(),
   windows: vi.fn(async () => [{ label: "main" }, { label: "peer" }]) }));
 vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo,
   listen: vi.fn(async (name, callback, options) => { mocks.listeners.set(name, callback); return () => mocks.listeners.delete(name); }) }));
@@ -9,8 +9,8 @@ vi.mock("@tauri-apps/api/window", () => ({ getAllWindows: mocks.windows }));
 vi.mock("../../src/lib/windowContext", () => ({ windowLabel: () => mocks.label, isMainWindow: () => mocks.label === "main" }));
 vi.mock("../../src/lib/ipc", async (original) => ({ ...await original<typeof import("../../src/lib/ipc")>(),
   publishSavepoint: mocks.publish, joinSavepointSummary: mocks.join, writeToSession: mocks.write,
-  isSessionAlive: vi.fn(async () => true) }));
-import { installTearoutHandoff, publishTearoutHandoffDrag } from "../../src/lib/tearout/handoff";
+  isSessionAlive: mocks.alive }));
+import { installTearoutHandoff, publishTearoutHandoffDrag, requestTearoutHandoff } from "../../src/lib/tearout/handoff";
 import { capturePaneHandoffSource } from "../../src/lib/paneHandoffRuntime";
 import { commitPaneDragDrop } from "../../src/hooks/usePaneDragSource";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
@@ -21,7 +21,7 @@ import type { Workspace } from "../../src/types";
 const endpoint = { workspaceId: "original", paneId: "source-pane",
   tab: { id: "source-tab", sessionId: "source-pty", agentId: "shell", type: "terminal" as const },
   metadata: { agentKind: "claude-codex" as const, agentSessionId: "fake-agent-id", cwd: "C:/demo/source" } };
-const context = { id: "drag", label: "child", sourceWindow: "main", endpoint };
+const context = { id: "drag", mode: "dock" as const, label: "child", sourceWindow: "main", endpoint };
 const target = { kind: "handoff" as const, workspaceId: "receiver", paneId: "target-pane",
   tabId: "target-tab", sessionId: "target-pty", targetAgentKind: "codex" as const };
 const request = { id: "drag", token: "request", requester: "main", approval: { receiver: "peer", token: "painted", target } };
@@ -34,7 +34,7 @@ beforeEach(async () => {
   vi.clearAllMocks(); mocks.listeners.clear(); mocks.label = "peer";
   mocks.publish.mockResolvedValue({ bundle_dir: "C:/demo/bundle" });
   mocks.join.mockResolvedValue({ handoff_path: "C:/demo/bundle/handoff.md", cwd_missing: false });
-  mocks.write.mockResolvedValue(undefined); mocks.consume.mockReturnValue(true);
+  mocks.alive.mockResolvedValue(true); mocks.write.mockResolvedValue(undefined); mocks.consume.mockReturnValue(true);
   mocks.emitTo.mockResolvedValue(undefined);
   useWorkspaceListStore.setState({ workspaces: [receiver()], activeWorkspaceId: "receiver" });
   usePaneMetadataStore.setState({ metadata: { "target-pty": { agentKind: "codex" } } });
@@ -49,7 +49,7 @@ const received = () => vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWit
 describe("receiver-owned native handoff", () => {
   it("uses the original agent session and the receiver's pinned terminal without adopting the source", async () => {
     dispatch("request", request); await received();
-    expect(mocks.consume).toHaveBeenCalledWith("painted", target);
+    expect(mocks.consume).toHaveBeenCalledWith("painted", target, request.approval, request.requester);
     expect(mocks.publish).toHaveBeenCalledWith({ cwd: "C:/demo/source", agentKind: "claude", agentSessionId: "fake-agent-id" });
     expect(mocks.write).toHaveBeenCalledWith("target-pty", expect.stringContaining("C:/demo/bundle/handoff.md"));
     expect(mocks.write.mock.calls[0][1]).not.toMatch(/[\r\n]/);
@@ -114,5 +114,95 @@ describe("receiver-owned native handoff", () => {
     commitPaneDragDrop(item, { kind: "handoff", workspaceId: "receiver", paneId: "target-pane" });
     await vi.waitFor(() => expect(mocks.write).toHaveBeenCalledTimes(1), { timeout: 1500 });
     expect(useWorkspaceListStore.getState().workspaces[0].panes[0].tabs.map(tab => tab.id)).toEqual(["front", "source-tab"]);
+  });
+});
+
+
+it("O2 never consumes a first-detach handoff context", async () => {
+  dispatch("context", { ...context, mode: "detach" }); dispatch("request", request); await received();
+  expect(mocks.consume).not.toHaveBeenCalled(); expect(mocks.publish).not.toHaveBeenCalled(); expect(mocks.write).not.toHaveBeenCalled();
+  expect(mocks.emitTo).toHaveBeenCalledWith("main", "mycmux://tearout-handoff-result", { token: "request", ok: false });
+});
+it.each([true, false])("O2 source waits for the addressed handoff receipt, ok=%s", async ok => {
+  let requestToken!: string;
+  mocks.emitTo.mockImplementation(async (_label, name, payload) => {
+    if (name.endsWith("tearout-handoff-request")) requestToken = payload.token;
+  });
+  let finished = false;
+  const pending = requestTearoutHandoff("drag", request.approval).then(result => { finished = true; return result; });
+  await vi.waitFor(() => expect(requestToken).toBeTruthy());
+  expect(finished).toBe(false);
+  dispatch("result", { token: "different-request", ok: true }); await Promise.resolve(); expect(finished).toBe(false);
+  dispatch("result", { token: requestToken, ok }); expect(await pending).toBe(ok);
+});
+
+
+describe("R1 recipient identity across asynchronous handoff", () => {
+  it.each(["publish", "join", "alive"].flatMap(stage => ["kind", "conversation"].map(identity => [stage, identity] as const)))("refuses changed %s / %s", async (stage, identity) => {
+      mocks.emitTo.mockClear(); mocks.write.mockClear();
+      usePaneMetadataStore.setState({ metadata: { "target-pty": { agentKind: "codex", agentSessionId: "original-conversation" } } });
+      let resolve!: (value: any) => void;
+      const pending = new Promise(done => { resolve = done; });
+      const delayed = stage === "publish" ? mocks.publish : stage === "join" ? mocks.join : mocks.alive; delayed.mockReturnValueOnce(pending);
+      dispatch("request", { ...request, token: `request-${stage}-${identity}` });
+      await vi.waitFor(() => expect(delayed.mock.results.at(-1)?.value).toBe(pending));
+      usePaneMetadataStore.setState({ metadata: { "target-pty": {
+        agentKind: identity === "kind" ? "claude" : "codex",
+        agentSessionId: identity === "conversation" ? "replacement-conversation" : "original-conversation",
+      } } });
+      resolve(stage === "publish" ? { bundle_dir: "C:/demo/bundle" } : stage === "join"
+        ? { handoff_path: "C:/demo/bundle/handoff.md", cwd_missing: false } : true);
+      await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith("main", "mycmux://tearout-handoff-result",
+        { token: `request-${stage}-${identity}`, ok: false }));
+      expect(mocks.write).not.toHaveBeenCalled();
+      expect(useToastStore.getState().toasts.some(toast => toast.kind === "warning")).toBe(true);
+  });
+  it("refuses a replacement conversation during authenticated approval", async () => {
+    usePaneMetadataStore.setState({ metadata: { "target-pty": { agentKind: "codex", agentSessionId: "original-conversation" } } });
+    let resolve!: (ok: boolean) => void;
+    mocks.consume.mockReturnValueOnce(new Promise<boolean>(done => { resolve = done; }));
+    dispatch("request", request);
+    await vi.waitFor(() => expect(mocks.consume).toHaveBeenCalledTimes(1));
+    usePaneMetadataStore.setState({ metadata: { "target-pty": { agentKind: "codex", agentSessionId: "replacement-conversation" } } });
+    resolve(true); await received();
+    expect(mocks.emitTo).toHaveBeenCalledWith("main", "mycmux://tearout-handoff-result", { token: "request", ok: false });
+    expect(mocks.write).not.toHaveBeenCalled();
+    expect(useToastStore.getState().toasts.some(toast => toast.kind === "warning")).toBe(true);
+  });
+  it("accepts the same known conversation after authenticated approval waits", async () => {
+    usePaneMetadataStore.setState({ metadata: { "target-pty": { agentKind: "codex", agentSessionId: "original-conversation" } } });
+    let resolve!: (ok: boolean) => void;
+    mocks.consume.mockReturnValueOnce(new Promise<boolean>(done => { resolve = done; }));
+    dispatch("request", request);
+    await vi.waitFor(() => expect(mocks.consume).toHaveBeenCalledTimes(1));
+    expect(mocks.publish).not.toHaveBeenCalled(); expect(mocks.write).not.toHaveBeenCalled();
+    resolve(true); await received();
+    expect(mocks.write).toHaveBeenCalledTimes(1);
+    expect(mocks.emitTo).toHaveBeenCalledWith("main", "mycmux://tearout-handoff-result", { token: "request", ok: true });
+  });
+  it.each(["claude", "codex", "claude-codex"] as const)("accepts an unchanged known %s conversation", async kind => {
+    usePaneMetadataStore.setState({ metadata: { "target-pty": { agentKind: kind, agentSessionId: "same-conversation" } } });
+    dispatch("request", { ...request, approval: { ...request.approval, target: { ...target, targetAgentKind: kind } } });
+    await received();
+    expect(mocks.publish).toHaveBeenCalledTimes(1); expect(mocks.join).toHaveBeenCalledTimes(1);
+    expect(mocks.alive).toHaveBeenCalledTimes(1); expect(mocks.write).toHaveBeenCalledTimes(1);
+    expect(mocks.emitTo).toHaveBeenCalledWith("main", "mycmux://tearout-handoff-result", { token: "request", ok: true });
+  });
+  it("refuses a new conversation on the in-app handoff path while publishing", async () => {
+    const source = { ...receiver(), id: "original", panes: [{ ...receiver().panes[0], id: "source-pane",
+      tabs: [endpoint.tab], activeTabId: "source-tab" }] };
+    useWorkspaceListStore.setState({ workspaces: [source, receiver()] });
+    usePaneMetadataStore.setState({ metadata: { "source-pty": endpoint.metadata,
+      "target-pty": { agentKind: "codex", agentSessionId: "original-conversation" } } });
+    let resolve!: (value: any) => void;
+    const pending = new Promise(done => { resolve = done; }); mocks.publish.mockReturnValueOnce(pending);
+    commitPaneDragDrop({ kind: "tab", workspaceId: "original", paneId: "source-pane", tabId: "source-tab", label: "Source" },
+      { kind: "handoff", workspaceId: "receiver", paneId: "target-pane" });
+    await vi.waitFor(() => expect(mocks.publish).toHaveBeenCalledTimes(1));
+    usePaneMetadataStore.setState({ metadata: { "source-pty": endpoint.metadata,
+      "target-pty": { agentKind: "codex", agentSessionId: "replacement-conversation" } } });
+    resolve({ bundle_dir: "C:/demo/bundle" });
+    await vi.waitFor(() => expect(useToastStore.getState().toasts.some(toast => toast.kind === "warning")).toBe(true));
+    expect(mocks.write).not.toHaveBeenCalled();
   });
 });

@@ -99,3 +99,21 @@ describe("native group entry boundaries", () => {
     expect(mocks.pane).not.toHaveBeenCalled(); expect(mocks.workspace).not.toHaveBeenCalled(); expect(captured).toBe(false);
   });
 });
+
+
+it("O2 a partial drag within a multi-pane child commits inside the strip and detaches on exit", () => {
+  window.__MYCMUX_TEAROUT_WINDOW__ = true;
+  const ws = useWorkspaceListStore.getState().workspaces[0];
+  useWorkspaceListStore.setState({ workspaces: [{ ...ws, panes: [...ws.panes, { ...ws.panes[0], id: "other" }] }] });
+  try {
+    // The runtime shape test separately proves this partial child cannot regrab.
+    beginNativeGroupDrag(pointer("pointerdown", 20, 10), grip, item, callbacks);
+    window.dispatchEvent(pointer("pointermove", 40, 10));
+    window.dispatchEvent(pointer("pointerup", 60, 10));
+    expect(callbacks.resolve).toHaveBeenCalledWith(60, 10); expect(callbacks.commit).toHaveBeenCalledOnce();
+    expect(mocks.pane).not.toHaveBeenCalled(); expect(mocks.regrab).not.toHaveBeenCalled();
+    beginNativeGroupDrag(pointer("pointerdown", 20, 10), grip, item, callbacks);
+    window.dispatchEvent(pointer("pointermove", 40, 48.1));
+    expect(mocks.pane).toHaveBeenCalledOnce(); expect(mocks.regrab).not.toHaveBeenCalled();
+  } finally { delete window.__MYCMUX_TEAROUT_WINDOW__; }
+});

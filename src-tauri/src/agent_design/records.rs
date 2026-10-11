@@ -429,7 +429,7 @@ fn next_record<R: BufRead>(
 pub fn claude(
     path: &Path,
     own: &BTreeSet<String>,
-    synced: &BTreeSet<String>,
+    _synced: &BTreeSet<String>,
     commands: &BTreeSet<String>,
     usage: Option<&serde_json::Map<String, Value>>,
 ) -> Session {
@@ -462,11 +462,42 @@ pub fn claude(
                 .filter_map(Value::as_str)
                 .filter_map(safe::identifier)
                 .collect();
-            let mut starts: Vec<_> = names
-                .iter()
-                .filter_map(|name| content.find(&format!("- {name}:")).map(|pos| (pos, name)))
-                .collect();
-            starts.sort_by_key(|(pos, _)| *pos);
+            let names_complete = a["names"].as_array().is_some_and(|raw| {
+                raw.len() == names.len()
+                    && raw.iter().zip(&names).all(|(value, name)| value.as_str() == Some(name.as_str()))
+            })
+                && a["skillCount"].as_u64() == Some(names.len() as u64)
+                && names.iter().collect::<BTreeSet<_>>().len() == names.len();
+            // Repeated declarations invalidate the population total, but must
+            // never become separate actionable candidates for one identity.
+            let mut seen = BTreeSet::new();
+            let names: Vec<_> = names.into_iter().filter(|name| seen.insert(name.clone())).collect();
+            let mut starts = vec![];
+            let mut spans_complete = true;
+            let mut assigned = BTreeSet::new();
+            let mut pos = 0;
+            for line in content.split_inclusive('\n') {
+                if let Some(row) = line.strip_prefix("- ") {
+                    // A qualified identity can start with another declared
+                    // name. Assign the whole supported row to the longest
+                    // matching identity, never its shorter namespace prefix.
+                    let name = names.iter().filter(|name| {
+                        row.strip_prefix(name.as_str()).is_some_and(|rest| rest.starts_with(':'))
+                    }).max_by_key(|name| name.len());
+                    match name {
+                        Some(name) if assigned.insert(name) => starts.push((pos, name)),
+                        _ => spans_complete = false,
+                    }
+                }
+                pos += line.len();
+            }
+            // Only the already supported colon/description rows have known
+            // spans. Do not infer another native format or treat unparsed text
+            // as overhead when applying today's visibility settings.
+            let text_complete = a["content"].is_string()
+                && names_complete
+                && spans_complete
+                && starts.len() == names.len();
             let mut entries = Vec::new();
             for name in &names {
                 let chars = starts
@@ -478,19 +509,14 @@ pub fn claude(
                         content[start..end].chars().count() as u64
                     })
                     .unwrap_or(0);
-                let suffix = name.split_once(':').map(|(_, n)| n);
-                let kind = if let Some(suffix) = suffix {
-                    if synced.contains(suffix) {
-                        "synced"
-                    } else {
-                        "plugin"
-                    }
+                let kind = if name.starts_with("anthropic-skills:") {
+                    "synced"
+                } else if name.contains(':') {
+                    "plugin"
                 } else if own.contains(name) {
                     "own"
                 } else if commands.contains(name) {
                     "command"
-                } else if synced.contains(name) {
-                    "synced"
                 } else {
                     "builtin"
                 };
@@ -508,10 +534,15 @@ pub fn claude(
                 });
             }
             session.listing = finish_listing(
-                a["skillCount"].as_u64().or(Some(names.len() as u64)),
+                a["skillCount"].as_u64().filter(|_| text_complete),
                 content.chars().count() as u64,
                 entries,
             );
+            session.listing.names_complete = Some(names_complete);
+            session.listing.text_complete = Some(text_complete);
+            if !text_complete {
+                session.listing.chars = None;
+            }
         } else if a["type"] == "hook_success" && a["hookEvent"] == "SessionStart" {
             let chars = a["content"]
                 .as_str()
@@ -526,7 +557,7 @@ pub fn claude(
     }
     session
 }
-fn finish_listing(count: Option<u64>, chars: u64, entries: Vec<ListedSkill>) -> Listing {
+pub(super) fn finish_listing(count: Option<u64>, chars: u64, entries: Vec<ListedSkill>) -> Listing {
     let mut groups: BTreeMap<String, (u64, u64)> = BTreeMap::new();
     let mut plugins = BTreeMap::new();
     for e in &entries {

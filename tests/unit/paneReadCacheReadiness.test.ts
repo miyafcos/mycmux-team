@@ -1,7 +1,7 @@
 import { Terminal as HeadlessTerminal } from "@xterm/headless";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleSocketCommand } from "../../src/components/layout/socketCommands";
-import { cacheOrDisposeOnUnmount, isTerminalBufferReady, markTerminalBufferReady, liveTerms, termCache, terminalSizeCache, type CachedTerm } from "../../src/components/terminal/terminalCache";
+import { cacheOrDisposeOnUnmount, isTerminalBufferReady, markTerminalBufferReady, registerCurrentOutputParser, liveTerms, termCache, terminalSizeCache, type CachedTerm } from "../../src/components/terminal/terminalCache";
 import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 
@@ -22,7 +22,10 @@ function terminal(sessionId: string, cached: boolean) {
       term: rendered, fitAddon: {} as CachedTerm["fitAddon"], searchAddon: {} as CachedTerm["searchAddon"],
       xtermElement: {} as HTMLElement, unlistenExit: null,
     });
-  } else liveTerms.set(sessionId, rendered);
+  } else {
+    liveTerms.set(sessionId, rendered);
+    registerCurrentOutputParser(sessionId, rendered, () => sessionId === "front");
+  }
   return term;
 }
 
@@ -62,7 +65,7 @@ describe("pane.read with actual unsynchronized retained terminals", () => {
 
   it.each([
     ["MacIntel", false], ["MacIntel", true], ["Win32", false], ["Win32", true],
-  ] as const)("keeps a parsed cleared screen authoritative on %s (cached=%s)", async (platform, cached) => {
+  ] as const)("reads a parsed cleared screen only from its current mounted parser on %s (cached=%s)", async (platform, cached) => {
     Object.defineProperty(navigator, "platform", { configurable: true, value: platform });
     const term = terminal("front", cached);
     await new Promise<void>((resolve) => term.write("visible\r\n", () => {
@@ -70,10 +73,15 @@ describe("pane.read with actual unsynchronized retained terminals", () => {
       resolve();
     }));
     const visible = await handleSocketCommand("pane.read", { sessionId: "front" }) as { lines: string[] };
-    expect(visible.lines).toEqual(["visible"]);
+    if (cached) expect(visible.lines.some(line => line.includes("M5CLOCK 2"))).toBe(true);
+    else expect(visible.lines).toEqual(["visible"]);
     await new Promise<void>((resolve) => term.write("\x1b[3J\x1b[2J\x1b[H", resolve));
-    await expect(handleSocketCommand("pane.read", { sessionId: "front" })).resolves.toEqual({ sessionId: "front", lines: [] });
-    expect(ipc.getSessionScrollback).not.toHaveBeenCalled();
+    const cleared = await handleSocketCommand("pane.read", { sessionId: "front" }) as { lines: string[] };
+    if (cached) {
+      expect(cleared.lines.some(line => line.includes("M5CLOCK 2"))).toBe(true); expect(ipc.getSessionScrollback).toHaveBeenCalled();
+    } else {
+      expect(cleared.lines).toEqual([]); expect(ipc.getSessionScrollback).not.toHaveBeenCalled();
+    }
   });
 
   it("requires the parse callback, and never carries readiness to a fresh Terminal with the same ID", async () => {

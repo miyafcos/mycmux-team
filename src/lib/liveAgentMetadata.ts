@@ -1,3 +1,5 @@
+import { listen } from "@tauri-apps/api/event";
+import { codexRestoreNoticeEpoch, invalidateCodexRestoreNotice, publishCodexRestoreNoticeEpoch, ptyExitConfirmed } from "./codexRestoreLifecycle";
 import { getPtyMetadataSnapshot, onPtyExit, type PtyMetadata } from "./ipc";
 import { usePaneMetadataStore } from "../stores/paneMetadataStore";
 import { agentSessionIdentityKey, useWorkspaceListStore } from "../stores/workspaceListStore";
@@ -9,9 +11,20 @@ import type { AgentSessionKind } from "../types";
 
 // An in-flight snapshot must never replace a newer monitor or exit observation.
 const liveRevisions = new Map<string, number>();
-function setLiveObservation(sessionId: string, kind: string | null, alive: boolean): void {
+function currentOwner(meta: PtyMetadata): boolean {
+  if (ptyExitConfirmed(meta.session_id, meta.session_epoch)) return false;
+  const owner = codexRestoreNoticeEpoch(meta.session_id);
+  return owner === undefined || (owner !== null && owner === meta.session_epoch);
+}
+function setLiveObservation(sessionId: string, kind: string | null, alive: boolean, meta?: PtyMetadata, requestedAt = Date.now()): void {
+  if (meta && !currentOwner(meta)) return;
+  if (meta?.session_epoch !== undefined && codexRestoreNoticeEpoch(sessionId) === undefined) publishCodexRestoreNoticeEpoch(sessionId, meta.session_epoch);
   liveRevisions.set(sessionId, (liveRevisions.get(sessionId) ?? 0) + 1);
-  usePaneMetadataStore.getState().setLiveAgent(sessionId, kind, alive);
+  usePaneMetadataStore.getState().setLiveAgent(sessionId, kind, alive, {
+    observedAt: meta?.observed_at ?? requestedAt,
+    agentSessionId: meta?.agent_session_trusted === false ? undefined : meta?.agent_session_id ?? meta?.claude_session_id,
+    startedAt: meta?.agent_started_at ?? undefined,
+  });
 }
 
 export function ownedTerminalSessions(): Set<string> {
@@ -26,13 +39,17 @@ export async function hydrateLiveAgents(
   isCurrent: () => boolean = () => true,
 ): Promise<void> {
   const before = new Map(Array.from(sessionIds, id => [id, liveRevisions.get(id) ?? 0]));
+  const requestedAt = Date.now();
   const snapshot = await getPtyMetadataSnapshot();
   if (!isCurrent()) return;
   const owned = ownedTerminalSessions();
   for (const [id, revision] of before) {
     if (!owned.has(id) || revision !== (liveRevisions.get(id) ?? 0)) continue;
     const meta = snapshot[id];
-    setLiveObservation(id, meta?.live_agent_kind ?? null, meta !== undefined);
+    if (meta && !currentOwner(meta)) continue;
+    if (meta && !meta.process_name && !normalizeDisplayAgentKind(meta.live_agent_kind)) {
+      usePaneMetadataStore.getState().setVolatileMetadata(id, { ptyAlive: true, liveAgentObservationKnown: false });
+    } else setLiveObservation(id, meta?.live_agent_kind ?? null, meta !== undefined, meta, requestedAt);
   }
 }
 
@@ -46,6 +63,21 @@ export function connectLiveAgentHydration(loaded: Promise<unknown>): () => void 
   let queued = false;
   let owned = new Set<string>();
   const pending = new Set<string>();
+  const lifecycleStops: Array<() => void> = [];
+  const adoptOwner = (id: string, epoch: number | null): void => {
+    if (!alive || !ownedTerminalSessions().has(id)) return;
+    publishCodexRestoreNoticeEpoch(id, epoch);
+    liveRevisions.set(id, (liveRevisions.get(id) ?? 0) + 1);
+    const ended = ptyExitConfirmed(id, epoch);
+    usePaneMetadataStore.setState(state => ({ volatileMetadata: { ...state.volatileMetadata,
+      [id]: { liveAgentKind: null, ptyAlive: epoch !== null && !ended, liveAgentObservationKnown: ended } } }));
+  };
+  const lifecycleReady = Promise.all([
+    listen<{ session_id: string }>("codex-restore-invalidated", event => {
+      invalidateCodexRestoreNotice(event.payload.session_id); adoptOwner(event.payload.session_id, null);
+    }),
+    listen<{ session_id: string; session_epoch: number | null }>("codex-restore-published", event => adoptOwner(event.payload.session_id, event.payload.session_epoch)),
+  ]).then(stops => { if (alive) lifecycleStops.push(...stops); else stops.forEach(stop => stop()); }).catch(() => {});
   const exits = new Map<string, () => void>();
   const exitRegistrations = new Map<string, object>();
   const schedule = (): void => {
@@ -89,10 +121,11 @@ export function connectLiveAgentHydration(loaded: Promise<unknown>): () => void 
   };
   const unsubscribe = useWorkspaceListStore.subscribe(reconcile);
   reconcile();
-  void loaded.then(() => { ready = true; schedule(); });
+  void Promise.all([loaded, lifecycleReady]).then(() => { ready = true; schedule(); });
   return () => {
     alive = false;
     stopOwnerNavigation();
+    lifecycleStops.forEach(stop => stop());
     unsubscribe();
     for (const unlisten of exits.values()) unlisten();
     exits.clear();
@@ -101,11 +134,15 @@ export function connectLiveAgentHydration(loaded: Promise<unknown>): () => void 
 }
 
 export function applyPtyMetadata(meta: PtyMetadata): void {
+  if (!currentOwner(meta)) return;
   const foregroundIsShell = isShellProcess(meta.process_name ?? undefined);
   const liveKind = normalizeDisplayAgentKind(meta.live_agent_kind);
   const agentActive = meta.agent_active === true || liveKind !== null;
   const processIsShell = agentActive ? false : foregroundIsShell;
-  setLiveObservation(meta.session_id, meta.live_agent_kind ?? null, true);
+  if (!meta.process_name && !liveKind && meta.live_agent_kind !== undefined) {
+    liveRevisions.set(meta.session_id, (liveRevisions.get(meta.session_id) ?? 0) + 1);
+    usePaneMetadataStore.getState().setVolatileMetadata(meta.session_id, { ptyAlive: true, liveAgentObservationKnown: false });
+  } else setLiveObservation(meta.session_id, meta.live_agent_kind ?? null, true, meta);
   // Display identity never depends on winning a persistence/session-id claim.
   const resumeActive = meta.agent_session_trusted !== false && agentActive && (meta.agent_kind === "claude" || meta.agent_kind === "claude-codex"
     || meta.agent_kind === "codex" || meta.agent_kind === "grok")

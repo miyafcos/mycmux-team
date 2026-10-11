@@ -2,15 +2,12 @@ import { getPtyMetadataSnapshot, getSessionOutputSnapshot, getWindowFragments, t
 import { otherWindowWorkspaces } from "../socketTabWindows";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { usePaneMetadataStore } from "../../stores/paneMetadataStore";
-import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
+import { trustedLiveTailStatus } from "./status";
 import type { LiveTailTarget } from "../../stores/liveTailStore";
 
 export async function loadLiveTailOutputs(): Promise<Record<string, number | null>> {
-  try { return await getSessionOutputSnapshot(); } catch {
-    const { metadata, volatileMetadata } = usePaneMetadataStore.getState();
-    return Object.fromEntries([...new Set([...Object.keys(metadata), ...Object.keys(volatileMetadata)])]
-      .map((id) => [id, volatileMetadata[id]?.backendLastOutputAt ?? metadata[id]?.backendLastOutputAt ?? null]));
-  }
+  // Cached metadata is display history, never fresh evidence of PTY silence.
+  return getSessionOutputSnapshot().catch(() => ({}));
 }
 
 export async function loadLiveTailTargets(): Promise<LiveTailTarget[]> {
@@ -20,18 +17,13 @@ export async function loadLiveTailTargets(): Promise<LiveTailTarget[]> {
   ]);
   const { workspaces } = useWorkspaceListStore.getState();
   const { metadata, volatileMetadata } = usePaneMetadataStore.getState();
-  const { attentionBySession } = useSessionAttentionStore.getState();
   const targets: LiveTailTarget[] = [];
   function add(identity: Omit<LiveTailTarget, "status" | "waitingForReply">) {
     const id = identity.sessionId;
-    const attention = attentionBySession[id];
     const meta = metadata[id];
-    const waiting = attention?.uiState === "waiting" || attention?.kind === "input" || attention?.kind === "approval"
-      || attention?.kind === "rate_limited" || (!attention && meta?.agentStatus === "waiting");
-    const working = attention ? attention.uiState === "working" : meta?.agentStatus === "working"
-      || meta?.processIsShell === false || processes[id]?.process_status === "working";
+    const status = trustedLiveTailStatus(id) ?? "unknown";
     targets.push({ ...identity, agentKind: processes[id]?.live_agent_kind ?? volatileMetadata[id]?.liveAgentKind ?? meta?.agentKind ?? identity.agentKind,
-      status: waiting ? "waiting" : working ? "working" : "idle", waitingForReply: waiting });
+      status, waitingForReply: status === "waiting" });
   }
   for (const workspace of workspaces) {
     for (const pane of workspace.panes) {

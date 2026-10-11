@@ -192,3 +192,21 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod unit_root_safety_tests {
+    #[test]
+    fn unit_test_runtime_root_never_uses_the_platform_profile() {
+        let raw = crate::raw_test_platform_dirs::home_dir(); // Path computation only; never read/write this tree.
+        let resolved = dirs::home_dir().expect("owned test home");
+        assert_ne!(Some(&resolved), raw.as_ref(), "test HOME must not be the raw platform profile");
+        println!("UNIT_TEST_ROOT={}", resolved.display());
+        assert!(resolved.is_absolute());
+        assert!(resolved.join("unit-test-home").is_file());
+        let runtime = crate::test_profile::runtime_dir().unwrap();
+        assert!(runtime.starts_with(&resolved));
+        for root in [dirs::config_dir(), dirs::data_dir(), dirs::data_local_dir(), dirs::cache_dir(), dirs::runtime_dir()] {
+            assert!(root.unwrap().starts_with(&resolved), "every mutable dirs root must be owned by the test process");
+        }
+    }
+}

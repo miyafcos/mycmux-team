@@ -213,7 +213,7 @@ fn metadata_link_and_finding_evidence_never_export_private_bodies() {
 #[test]
 fn synthetic_home_canaries_are_excluded_by_the_real_catalogue_pipeline() {
     let dir=tempfile::tempdir().unwrap(); let home=safe::canonical(&dir.path().join("home"));
-    let status=std::process::Command::new(if cfg!(windows){"python"}else{"python3"}).arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/agent_home/prepare_export_home.py")).arg(&home).status().unwrap();
+    let status=std::process::Command::new(if cfg!(windows){"python"}else{"python3"}).arg("-B").arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/agent_home/prepare_export_home.py")).arg(&home).status().unwrap();
     assert!(status.success()); let home=safe::canonical(&home);
     let c=super::super::collect(&home,&home,&home.join(".codex"),&home.join(".hermes"),&super::super::scheduled::Jobs::default(),(None,None));
     let p=book::prepare(&c,&ExportOptions::default(),&[],&[]).unwrap();

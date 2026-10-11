@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { getAccountUsage, type ProfileUsage } from "../lib/ipc";
+import { getAccountUsage, type ApiUsageCommand, type ProfileUsage } from "../lib/ipc";
 
 // Re-exported so consumers keep working against the store's public surface
 // without reaching into lib/ipc directly.
@@ -11,7 +11,7 @@ type UsageState = {
   lastError: string | null;
   lastFetchedAt: number | null;
   loading: boolean;
-  fetch: (refreshMetadata?: boolean) => Promise<void>;
+  fetch: (refreshMetadata?: boolean, apiCommand?: ApiUsageCommand) => Promise<void>;
 };
 
 function errorMessage(error: unknown): string {
@@ -32,11 +32,11 @@ export const useUsageStore = create<UsageState>((set) => ({
   lastFetchedAt: null,
   loading: false,
 
-  fetch: async (refreshMetadata = false) => {
+  fetch: async (refreshMetadata = false, apiCommand) => {
     const mySeq = ++accountsSeq;
     set({ loading: true });
     try {
-      const report = await (refreshMetadata ? getAccountUsage(true) : getAccountUsage());
+      const report = await (apiCommand ? getAccountUsage(refreshMetadata, apiCommand) : refreshMetadata ? getAccountUsage(true) : getAccountUsage());
       if (mySeq !== accountsSeq) {
         return;
       }

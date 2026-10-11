@@ -50,8 +50,41 @@ describe("confirmPaneClose", () => {
   it("uses the agent wording for a cohabiting live agent tab", async () => {
     await expect(confirmPaneClose([cohabitingAgentPane()], "pane")).resolves.toBe(true);
     expect(confirmDialog).toHaveBeenCalledOnce();
-    expect(confirmDialog.mock.calls[0][0]).toBe("このタブには実行中のエージェントペインが 1 件あります。まとめて閉じますか？");
+    expect(confirmDialog.mock.calls[0][0]).toBe("実行中のエージェントのタブが 1 個あります。対象のタブをまとめて閉じますか？");
     expect(confirmDialog.mock.calls[0][1]).toMatchObject({ okLabel: "終了", cancelLabel: "キャンセル" });
+    expect(confirmDialog.mock.calls[0][1].title).toBe("このタブと裏のタブ 1 個を閉じます");
+  });
+
+  it("counts all background tabs, including idle tabs, rather than only live agents", async () => {
+    const pane = cohabitingAgentPane();
+    pane.tabs.push(
+      { id: "t3", sessionId: "session-t3", agentId: "shell", label: "idle-1" },
+      { id: "t4", sessionId: "session-t4", agentId: "shell", label: "idle-2" },
+    );
+    await expect(confirmPaneClose([pane], "pane", { targetKind: "pane" })).resolves.toBe(true);
+    expect(confirmDialog.mock.calls[0][1].title).toBe("このタブと裏のタブ 3 個を閉じます");
+    expect(confirmDialog.mock.calls[0][0]).toBe("実行中のエージェントのタブが 1 個あります。対象のタブをまとめて閉じますか？");
+  });
+
+  it("uses the zero-background title for a whole container holding one live tab", async () => {
+    await expect(confirmPaneClose([activeAgentPane()], "pane", { targetKind: "pane" })).resolves.toBe(true);
+    expect(confirmDialog.mock.calls[0][1].title).toBe("このタブを閉じます");
+  });
+
+  it("names a selected bulk close and counts only its selected preflight tabs", async () => {
+    const first = activeAgentPane();
+    const second = idlePane();
+    await expect(confirmPaneClose([first, second], "pane", { targetKind: "tabs" })).resolves.toBe(true);
+    expect(confirmDialog.mock.calls[0][1].title).toBe("選択したタブ 2 個を閉じます");
+    expect(confirmDialog.mock.calls[0][0]).toBe("実行中のエージェントのタブが 1 個あります。対象のタブをまとめて閉じますか？");
+  });
+
+  it("distinguishes a one-tab selection from the single-session operation", async () => {
+    await expect(confirmPaneClose([activeAgentPane()], "pane", { targetKind: "tabs" })).resolves.toBe(true);
+    expect(confirmDialog.mock.calls[0][1].title).toBe("選択したタブ 1 個を閉じます");
+    confirmDialog.mockClear();
+    await expect(confirmPaneClose([activeAgentPane()], "tab", { targetKind: "tab" })).resolves.toBe(true);
+    expect(confirmDialog.mock.calls[0][1].title).toBe("このタブを閉じます");
   });
 
   it("uses the existing wording for a busy non-agent tab", async () => {
@@ -60,7 +93,7 @@ describe("confirmPaneClose", () => {
     };
     await expect(confirmPaneClose([idlePane()], "pane")).resolves.toBe(true);
     expect(confirmDialog).toHaveBeenCalledOnce();
-    expect(confirmDialog.mock.calls[0][0]).toContain("稼働中のペインが 1 個あります");
+    expect(confirmDialog.mock.calls[0][0]).toContain("稼働中のタブが 1 個あります");
   });
 
   // A workspace close has always been confirmed. Reusing the pane rule here

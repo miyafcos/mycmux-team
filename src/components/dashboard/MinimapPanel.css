@@ -37,12 +37,13 @@
    はみ出さないよう clip する。 */
 .cmux-minimap-map { position: relative; display: flex; box-sizing: border-box; height: var(--minimap-map-height, 58px); gap: 4px; overflow: clip; border-radius: 5px; padding: 8px; background-color: var(--cmux-surface); background-image: radial-gradient(color-mix(in srgb, var(--cmux-text-tertiary) 28%, transparent) .7px, transparent .8px); background-size: 8px 8px; background-position: 3px 3px; transition: height 180ms var(--cmux-ease); }
 .cmux-minimap-map.is-expanded { height: var(--minimap-map-height, 248px); }
-.cmux-minimap-footer { display: flex; flex: 0 0 auto; gap: 6px; border-top: 1px solid var(--cmux-border-hairline); padding: 8px 14px 10px; }
-.cmux-minimap-new-workspace-zone { min-width: 0; flex: 1 1 auto; border: 1px dashed color-mix(in srgb, var(--cmux-text-tertiary) 60%, transparent); border-radius: var(--cmux-radius-sm); color: var(--cmux-text-tertiary); background: transparent; transition: border-color 180ms var(--cmux-ease), background 180ms var(--cmux-ease), color 180ms var(--cmux-ease); }
+/* Keep the complete action label; move sibling actions onto another row when needed. */
+.cmux-minimap-footer { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 6px; border-top: 1px solid var(--cmux-border-hairline); padding: 8px 14px 10px; }
+.cmux-minimap-new-workspace-zone { min-width: max-content; flex: 1 0 auto; border: 1px dashed color-mix(in srgb, var(--cmux-text-tertiary) 60%, transparent); border-radius: var(--cmux-radius-sm); color: var(--cmux-text-tertiary); background: transparent; transition: border-color 180ms var(--cmux-ease), background 180ms var(--cmux-ease), color 180ms var(--cmux-ease); }
 .cmux-minimap-new-workspace-zone.is-minimap-drop-target { border-color: var(--cmux-accent); color: var(--cmux-accent-text); background: color-mix(in srgb, var(--cmux-accent) 22%, transparent); }
-.cmux-minimap-new-workspace-zone button { display: block; width: 100%; border: 0; padding: 7px; color: inherit; background: transparent; font: inherit; font-size: var(--cmux-font-size-xs); text-align: center; cursor: pointer; }
+.cmux-minimap-new-workspace-zone button { display: block; width: 100%; border: 0; padding: 7px; color: inherit; background: transparent; font: inherit; font-size: var(--cmux-font-size-xs); text-align: center; white-space: nowrap; cursor: pointer; }
 .cmux-minimap-new-workspace-zone button:disabled { cursor: not-allowed; opacity: .55; }
-.cmux-minimap-tab-sweep { position: relative; display: flex; flex: 0 0 auto; }
+.cmux-minimap-tab-sweep { position: relative; display: flex; min-height: 29px; flex: 0 0 auto; }
 .cmux-minimap-tab-sweep-button { display: inline-flex; align-items: center; gap: 5px; border: 0; border-radius: var(--cmux-radius-sm); padding: 0 10px; color: var(--cmux-text-secondary); background: var(--cmux-surface-raised); font: inherit; font-size: var(--cmux-font-size-xs); cursor: pointer; transition: color 180ms var(--cmux-ease), background 180ms var(--cmux-ease); }
 .cmux-minimap-tab-sweep-button:hover { color: var(--cmux-text); background: var(--cmux-hover); }
 .cmux-minimap-tab-sweep-button[aria-busy="true"] { animation: cmux-usage-pulse 1.2s ease-in-out infinite; }
@@ -55,6 +56,7 @@
 .cmux-minimap-pane-grip { flex: none; height: 7px; border-radius: 3px; background: transparent; cursor: grab; }
 .cmux-minimap-pane-grip:hover { background: color-mix(in srgb, var(--cmux-accent) 18%, transparent); }
 .cmux-minimap-pane-grip:active { cursor: grabbing; }
+.cmux-minimap-pane-grip.is-empty { visibility: hidden; cursor: default; }
 .cmux-minimap-pane-empty { display: grid; min-height: 0; flex: 1 1 auto; place-items: center; color: var(--cmux-text-tertiary); font-size: var(--cmux-font-size-xs); }
 .cmux-minimap-cell.is-active-pane { box-shadow: inset 0 0 0 1px var(--cmux-accent); }
 .cmux-minimap-cell.is-drag-source { opacity: .35; transition: none; }

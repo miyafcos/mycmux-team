@@ -18,6 +18,10 @@ export interface SkillListing {
   count: number | null; chars: number | null; entries: ListedSkill[];
   groups: { kind: string; count: number; chars: number }[];
   pluginCounts: Record<string, number>; disabledCounts: Record<string, number>; disabledChars: number | null;
+  unknownNames?: string[];
+  namesComplete?: boolean;
+  textComplete?: boolean;
+  evidence?: string;
 }
 export interface DesignSession {
   file: string | null; startedAt?: string | null; linesRead: number; bytesConsumed: number; stoppedAt: string; listing: SkillListing;

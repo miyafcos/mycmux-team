@@ -1,7 +1,10 @@
+import { recoverNamesFromContent, undoRecoveredNames, type NameRecoveryFeedback } from "../../../lib/nameRecoveryAction";
+import { useAutoNameRuntimeStore } from "../../../stores/autoNameRuntimeStore";
 import { useEffect, useState } from "react";
 import { AI_PROVIDERS, aiProviderDef, classifyModelForProvider } from "../../../lib/aiModels";
 import { useAiSettingsStore } from "../../../stores/aiSettingsStore";
 import { useSettingsStore } from "../../../stores/settingsStore";
+import { useToastStore } from "../../../stores/toastStore";
 import { aiSettingsStrings } from "../settingsStrings";
 import { checkboxLabelStyle, checkboxLabelStyleFor, dividerStyle, sectionHeadingStyle } from "../tabStyles";
 
@@ -9,8 +12,17 @@ import { JevSettingsSection } from "./JevSettingsSection";
 import { ClaudeSkillsSection } from "./ClaudeSkillsSection";
 import { AgentIntegrationsSection } from "./AgentIntegrationsSection";
 import { CodexAppServerSection } from "./CodexAppServerSection";
+import { DshAcpSection } from "./DshAcpSection";
 
 const CUSTOM_MODEL_VALUE = "__custom__";
+const nameRecoveryFeedback: NameRecoveryFeedback = (result, undo) => {
+  const messages = {
+    applied: "名前を付け直しました。",
+    failed: "作業内容を取得できませんでした。名前の付け直しは元に戻せます。",
+    undone: "名前の付け直しを元に戻しました。後から手で付けた名前は残ります。",
+  };
+  useToastStore.getState().pushToast(messages[result], result === "failed" ? "error" : "info", undo ? { label: "元に戻す", run: undo } : undefined);
+};
 const hintStyle = { marginTop: 4, fontSize: 11, lineHeight: 1.6, color: "var(--cmux-text-dim)" } as const;
 const selectStyle = { width: 300, fontSize: 12, padding: "5px 8px" } as const;
 const badgeStyle = {
@@ -75,6 +87,10 @@ export function AiTab() {
   const setReplyDraftSuggestionsEnabled = useSettingsStore((s) => s.setReplyDraftSuggestionsEnabled);
   const autoPaneNamingEnabled = useSettingsStore((s) => s.autoPaneNamingEnabled);
   const setAutoPaneNamingEnabled = useSettingsStore((s) => s.setAutoPaneNamingEnabled);
+
+  const autoWorkspaceNamingEnabled = useSettingsStore(s => s.autoWorkspaceNamingEnabled);
+  const setAutoWorkspaceNamingEnabled = useSettingsStore(s => s.setAutoWorkspaceNamingEnabled);
+  const recovery = useAutoNameRuntimeStore(s => s.recovery);
 
   const def = aiProviderDef(provider);
   const isPreset = def.presets.some((preset) => preset.id === model);
@@ -161,6 +177,17 @@ export function AiTab() {
           onChange={setAutoPaneNamingEnabled}
         />
         <FeatureRow
+          label={aiSettingsStrings.features.autoWorkspaceNaming.label}
+          disclosure={aiSettingsStrings.features.autoWorkspaceNaming.disclosure}
+          enabled={true}
+          checked={autoWorkspaceNamingEnabled}
+          onChange={setAutoWorkspaceNamingEnabled}
+        />
+        <div style={{ display: "grid", gap: 8, justifyItems: "start" }}>
+          <button onClick={() => void recoverNamesFromContent(undefined, nameRecoveryFeedback)}>自動の名前に戻す (手で付けた名前以外)</button>
+          {recovery && <button onClick={() => undoRecoveredNames(nameRecoveryFeedback)}>名前の付け直しを元に戻す</button>}
+        </div>
+        <FeatureRow
           label={aiSettingsStrings.features.replyDraft.label}
           badge={aiSettingsStrings.automaticBadge}
           disclosure={aiSettingsStrings.features.replyDraft.disclosure}
@@ -204,6 +231,7 @@ export function AiTab() {
       <ClaudeSkillsSection />
       <AgentIntegrationsSection />
       <CodexAppServerSection />
+      <DshAcpSection />
     </div>
   );
 }

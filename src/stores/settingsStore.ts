@@ -7,10 +7,19 @@ import {
   type TerminalRenderer,
 } from "./settingsMigration";
 import { useAiSettingsStore } from "./aiSettingsStore";
+import type { DshRunRef } from "../lib/agentAdapterApi";
+import { DEFAULT_CONVERSATION_HISTORY_MODE, normalizeConversationHistoryMode, type ConversationHistoryMode } from "../lib/conversationHistory";
+import { DEFAULT_DORMANCY_PRESSURE_SETTINGS, normalizeDormancyPressureSettings, type DormancyPressureSettings } from "../lib/agentDormancy";
 
 export interface LegacyAiFeatureSettings {
   autoPaneNamingEnabled?: boolean;
   replyDraftSuggestionsEnabled?: boolean;
+}
+
+export type PaneFocusMode = "click" | "hover";
+
+export function normalizePaneFocusMode(value: unknown): PaneFocusMode {
+  return value === "hover" ? "hover" : "click";
 }
 
 export function parseLegacyAiFeatureSettings(raw: string | null): LegacyAiFeatureSettings {
@@ -87,28 +96,40 @@ interface SettingsState {
   launcherHiddenIds: string[];
   /** Diagram-flight animation shown before a grouping layout commit. */
   groupingApplyAnimationEnabled: boolean;
+  /** Opt-in compatibility path: close sweep suggestions without human review. */
+  autoSweepCloseWithoutConfirmation: boolean;
+  dormancyPressureSettings: DormancyPressureSettings;
+  dormancyAllowUnreadCompletion: boolean;
   dispatchWatchdogEnabled: boolean;
   dispatchWatchdogIntervalMinutes: number;
   dispatchStallMinutes: number;
   dispatchWatchdogNotify: boolean;
   paneComposerEnabled: boolean;
-  /** Persistent explicit entry into the exact pane's conversation history. */
+  paneFocusMode: PaneFocusMode;
+  /** Persisted magnifier routing preference; retain the original storage key. */
   showTerminalHistoryButton: boolean;
+  conversationHistoryMode: ConversationHistoryMode;
   /** Content-free terminal progress logging; no polling or writes by default. */
   terminalProgressDiagnosticsEnabled: boolean;
   /** Deliberately off until an operator explicitly enables declared-tab launch. */
   declaredLaunchEnabled: boolean;
   /** Independent Codex stdio trial; never changes the ordinary launcher. */
   codexAppServerExperimentEnabled: boolean;
+  /** Independent ACP trial: paths and conversation references only. */
+  dshAcpExperimentEnabled: boolean;
+  dshAcpExecutablePath: string;
+  dshAcpHomePath: string;
+  dshAcpSavedRun: DshRunRef | null;
   /** AI-generated next-action drafts are opt-in; machine suggestions stay available. */
   replyDraftSuggestionsEnabled: boolean;
-  /** Automatic AI naming only touches unnamed or AI-named tabs. */
+  /** Rules update only automatically owned display names; user names remain protected. */
   autoPaneNamingEnabled: boolean;
+  autoWorkspaceNamingEnabled: boolean;
   /** Provenance marker: compatibility booleans below are no longer legacy input. */
   aiFeatureSettingsDataJsonMigrationComplete: boolean;
   appearanceAdvancedOpen: boolean;
   hydrateAiFeatureSettings: (state: Pick<SettingsState, "autoPaneNamingEnabled" | "replyDraftSuggestionsEnabled">
-    & Partial<Pick<SettingsState, "aiFeatureSettingsDataJsonMigrationComplete">>) => void;
+    & Partial<Pick<SettingsState, "aiFeatureSettingsDataJsonMigrationComplete" | "autoWorkspaceNamingEnabled">>) => void;
   setNotificationsEnabled: (v: boolean) => void;
   setNotificationSoundEnabled: (v: boolean) => void;
   setToastAiActivityEnabled: (v: boolean) => void;
@@ -125,17 +146,27 @@ interface SettingsState {
   setNativePaneTearoutEnabled: (v: boolean) => void;
   setLauncherHiddenIds: (v: string[]) => void;
   setGroupingApplyAnimationEnabled: (v: boolean) => void;
+  setAutoSweepCloseWithoutConfirmation: (v: boolean) => void;
+  setDormancyPressureSettings: (v: Partial<DormancyPressureSettings>) => void;
+  setDormancyAllowUnreadCompletion: (v: boolean) => void;
   setDispatchWatchdogEnabled: (v: boolean) => void;
   setDispatchWatchdogIntervalMinutes: (v: number) => void;
   setDispatchStallMinutes: (v: number) => void;
   setDispatchWatchdogNotify: (v: boolean) => void;
   setPaneComposerEnabled: (v: boolean) => void;
+  setPaneFocusMode: (v: PaneFocusMode) => void;
   setShowTerminalHistoryButton: (v: boolean) => void;
+  setConversationHistoryMode: (v: ConversationHistoryMode) => void;
   setTerminalProgressDiagnosticsEnabled: (v: boolean) => void;
   setDeclaredLaunchEnabled: (v: boolean) => void;
   setCodexAppServerExperimentEnabled: (v: boolean) => void;
+  setDshAcpExperimentEnabled: (v: boolean) => void;
+  setDshAcpExecutablePath: (v: string) => void;
+  setDshAcpHomePath: (v: string) => void;
+  setDshAcpSavedRun: (v: DshRunRef | null) => void;
   setReplyDraftSuggestionsEnabled: (v: boolean) => void;
   setAutoPaneNamingEnabled: (v: boolean) => void;
+  setAutoWorkspaceNamingEnabled: (v: boolean) => void;
   setAppearanceAdvancedOpen: (v: boolean) => void;
 }
 
@@ -167,17 +198,27 @@ export const useSettingsStore = create<SettingsState>()(
       macNativePaneTearoutEnabled: true,
       launcherHiddenIds: [],
       groupingApplyAnimationEnabled: true,
+      autoSweepCloseWithoutConfirmation: false,
+      dormancyPressureSettings: { ...DEFAULT_DORMANCY_PRESSURE_SETTINGS },
+      dormancyAllowUnreadCompletion: true,
       dispatchWatchdogEnabled: true,
       dispatchWatchdogIntervalMinutes: 10,
       dispatchStallMinutes: 45,
       dispatchWatchdogNotify: true,
       paneComposerEnabled: true,
+      paneFocusMode: "click",
       showTerminalHistoryButton: true,
+      conversationHistoryMode: DEFAULT_CONVERSATION_HISTORY_MODE,
       terminalProgressDiagnosticsEnabled: false,
       declaredLaunchEnabled: false,
       codexAppServerExperimentEnabled: false,
+      dshAcpExperimentEnabled: false,
+      dshAcpExecutablePath: "",
+      dshAcpHomePath: "",
+      dshAcpSavedRun: null,
       replyDraftSuggestionsEnabled: false,
       autoPaneNamingEnabled: true,
+      autoWorkspaceNamingEnabled: true,
       aiFeatureSettingsDataJsonMigrationComplete: false,
       appearanceAdvancedOpen: false,
       hydrateAiFeatureSettings: (state) => applyAutomaticStoreUpdate(api, state),
@@ -198,18 +239,35 @@ export const useSettingsStore = create<SettingsState>()(
         ...(typeof navigator !== "undefined" && /^Mac/i.test(navigator.platform) ? { macNativePaneTearoutEnabled: v } : {}) }),
       setLauncherHiddenIds: (v) => set({ launcherHiddenIds: v }),
       setGroupingApplyAnimationEnabled: (v) => set({ groupingApplyAnimationEnabled: v }),
+      setAutoSweepCloseWithoutConfirmation: (v) => set({ autoSweepCloseWithoutConfirmation: v }),
+      setDormancyPressureSettings: (v) => set((state) => ({
+        dormancyPressureSettings: normalizeDormancyPressureSettings({ ...state.dormancyPressureSettings, ...v }),
+      })),
+      setDormancyAllowUnreadCompletion: (v) => set({ dormancyAllowUnreadCompletion: v }),
       setDispatchWatchdogEnabled: (v) => set({ dispatchWatchdogEnabled: v }),
       setDispatchWatchdogIntervalMinutes: (v) => set({ dispatchWatchdogIntervalMinutes: v }),
       setDispatchStallMinutes: (v) => set({ dispatchStallMinutes: v }),
       setDispatchWatchdogNotify: (v) => set({ dispatchWatchdogNotify: v }),
       setPaneComposerEnabled: (v) => set({ paneComposerEnabled: v }),
+      setPaneFocusMode: (v) => set({ paneFocusMode: normalizePaneFocusMode(v) }),
       setShowTerminalHistoryButton: (v) => set({ showTerminalHistoryButton: v }),
+      setConversationHistoryMode: (v) => set({ conversationHistoryMode: normalizeConversationHistoryMode(v) }),
       setTerminalProgressDiagnosticsEnabled: (v) => set({ terminalProgressDiagnosticsEnabled: v }),
       setDeclaredLaunchEnabled: (v) => set({ declaredLaunchEnabled: v }),
       setCodexAppServerExperimentEnabled: (v) => set({ codexAppServerExperimentEnabled: v }),
+      setDshAcpExperimentEnabled: (v) => set({ dshAcpExperimentEnabled: v }),
+      setDshAcpExecutablePath: (v) => set({ dshAcpExecutablePath: v }),
+      setDshAcpHomePath: (v) => set({ dshAcpHomePath: v }),
+      setDshAcpSavedRun: (v) => set({ dshAcpSavedRun: v ? {
+        runId: v.runId, generation: v.generation, convId: v.convId, cwd: v.cwd,
+      } : null }),
       setReplyDraftSuggestionsEnabled: (v) => {
         useAiSettingsStore.getState().setPersistedReplyDraftSuggestionsEnabled(v);
         set({ replyDraftSuggestionsEnabled: v });
+      },
+      setAutoWorkspaceNamingEnabled: (v) => {
+        useAiSettingsStore.getState().setPersistedAutoWorkspaceNamingEnabled(v);
+        set({ autoWorkspaceNamingEnabled: v });
       },
       setAutoPaneNamingEnabled: (v) => {
         useAiSettingsStore.getState().setPersistedAutoPaneNamingEnabled(v);
@@ -222,6 +280,9 @@ export const useSettingsStore = create<SettingsState>()(
       version: SETTINGS_STORE_VERSION,
       merge: (persisted, current) => {
         const merged = { ...current, ...(persisted as Partial<SettingsState> | undefined) };
+        merged.conversationHistoryMode = normalizeConversationHistoryMode((persisted as Partial<SettingsState> | undefined)?.conversationHistoryMode);
+        merged.paneFocusMode = normalizePaneFocusMode((persisted as Partial<SettingsState> | undefined)?.paneFocusMode);
+        merged.dormancyPressureSettings = normalizeDormancyPressureSettings(merged.dormancyPressureSettings ?? {});
         // Older Mac installs carry the Windows-default true field. It is not
         // consent to the Mac experiment; only the new explicit marker is.
         if (typeof navigator !== "undefined" && /^Mac/i.test(navigator.platform)) {

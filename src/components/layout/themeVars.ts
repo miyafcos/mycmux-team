@@ -7,6 +7,7 @@ import { resolveAccentTextColor } from "../theme/colorContrast";
 import { compositeOver } from "../../lib/theme/oklab";
 import { DEFAULT_THEME_BACKGROUND } from "../../lib/themeBackgrounds";
 import { IS_MAC } from "../../lib/keybindings";
+import { UI_FONT_FALLBACK, MONO_FONT_FALLBACK, fontStackWithFallback } from "../../lib/fontAvailability";
 
 // Colour derivation no longer lives here. `resolveTheme()` in
 // src/lib/theme/resolveTheme.ts owns every colour-mix, wallpaper alpha and
@@ -63,6 +64,7 @@ export interface ThemeVarsInput {
 export function buildThemeVars(input: ThemeVarsInput): CSSProperties {
   const { theme, background, uiDensity, fontFamily, fontSize, lineHeight, uiFontScale } = input;
   const mediaActive = input.mediaActive ?? isMediaBackgroundActive(background);
+  const uiFontFamily = fontStackWithFallback(fontFamily, UI_FONT_FALLBACK);
 
   const densityTokens = UI_DENSITY_TOKENS[uiDensity];
   const densitySpace = (base: number) => `${Math.round(base * densityTokens.spaceScale)}px`;
@@ -86,6 +88,10 @@ export function buildThemeVars(input: ThemeVarsInput): CSSProperties {
   });
 
   return {
+    "--cmux-font-ui": uiFontFamily,
+    "--cmux-font-mono": fontStackWithFallback(fontFamily, MONO_FONT_FALLBACK),
+    // :root resolves aliases there, so re-declare this at the themed root too.
+    "--cmux-dash-ui-font": uiFontFamily,
     "--cmux-font-size-xs": scalePx(densityTokens.fontXs),
     "--cmux-font-size-sm": scalePx(densityTokens.fontSm),
     "--cmux-font-size-md": scalePx(densityTokens.fontMd),

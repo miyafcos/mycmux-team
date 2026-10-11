@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { PaneTab } from "../../src/types";
 import {
-  formatTabPosition,
   isTabActivationKey,
+  formatHiddenTabCount,
+  resolveHiddenTabStatus,
   PANE_TABBAR_COMPACT_ENTER,
   PANE_TABBAR_COMPACT_EXIT,
   PANE_TABBAR_COMPACT1_ENTER,
@@ -16,20 +17,15 @@ import {
   PANE_TABBAR_SLIM_ENTER,
   PANE_TABBAR_SLIM_EXIT,
   resolveActiveAgentLabel,
-  resolveChipPreviewDirection,
   resolvePaneTabBarActions,
   resolveTabStatusIndicator,
-  resolvePaneTabPresentation,
   resolvePaneTabMenuLeft,
   resolvePaneTabMenuRows,
   resolvePaneTabBarMode,
   shouldCloseTabOnAuxClick,
   shouldMarkAttentionSeen,
   shouldShowDeferredRestoreBadge,
-  shouldShowChipPreview,
-  shouldShowInlinePinControl,
   shouldShowPublishButton,
-  shouldStartRenameOnDoubleClick,
 } from "../../src/components/workspace/PaneTabBar";
 import type { SessionAttention } from "../../src/stores/sessionAttentionStore";
 import type {
@@ -325,13 +321,13 @@ describe("resolvePaneTabBarActions", () => {
     "full", "slim", "compact", "compact3", "compact2", "compact1", "micro",
   ];
   const visibleByMode: Record<PaneTabBarMode, PaneTabBarActionId[]> = {
-    full: allActions,
-    slim: ["search", "publish", "split-right", "zoom", "dashboard", "close"],
-    compact: ["publish", "split-right", "zoom", "dashboard", "close"],
-    compact3: ["split-right", "zoom", "close"],
-    compact2: ["split-right", "close"],
+    full: ["zoom", "close"],
+    slim: ["zoom", "close"],
+    compact: ["zoom", "close"],
+    compact3: ["zoom", "close"],
+    compact2: ["close"],
     compact1: ["close"],
-    micro: [],
+    micro: ["close"],
   };
 
   for (const mode of modes) {
@@ -354,7 +350,7 @@ describe("resolvePaneTabBarActions", () => {
     }
   }
 
-  it.each(["compact3", "compact2", "compact1"] as const)(
+  it.each(modes)(
     "keeps close visible in %s mode",
     (mode) => {
       expect(resolvePaneTabBarActions(mode, { showPublish: true }).visible).toContain("close");
@@ -379,12 +375,7 @@ describe("resolvePaneTabBarActions", () => {
     );
 
     expect(removedPerTier).toEqual([
-      ["new-tab", "split-down"],
-      ["search"],
-      ["publish", "dashboard"],
-      ["zoom"],
-      ["split-right"],
-      ["close"],
+      [], [], [], ["zoom"], [], [],
     ]);
     for (let index = 1; index < visibleSets.length; index += 1) {
       expect(visibleSets[index].every((action) => visibleSets[index - 1].includes(action)))
@@ -393,16 +384,15 @@ describe("resolvePaneTabBarActions", () => {
   });
 });
 
-describe("formatTabPosition", () => {
-  it("formats a 1-based position over the total", () => {
-    expect(formatTabPosition(1, 5)).toBe("2/5");
-    expect(formatTabPosition(0, 1)).toBe("1/1");
+describe("formatHiddenTabCount", () => {
+  it("shows hidden counts at wide widths", () => {
+    expect(formatHiddenTabCount(1, "full")).toBe("裏 1");
+    expect(formatHiddenTabCount(5, "slim")).toBe("裏 5");
   });
-
-  it("falls back to the first position when the active index is unknown", () => {
-    expect(formatTabPosition(-1, 4)).toBe("1/4");
-    expect(formatTabPosition(9, 4)).toBe("1/4");
-    expect(formatTabPosition(0, 0)).toBe("1/1");
+  it("keeps counts compact at narrow widths", () => {
+    expect(formatHiddenTabCount(1, "compact2")).toBe("+1");
+    expect(formatHiddenTabCount(5, "compact1")).toBe("+5");
+    expect(formatHiddenTabCount(12, "micro")).toBe("+12");
   });
 });
 
@@ -493,26 +483,11 @@ describe("resolvePaneTabMenuRows", () => {
   });
 });
 
-describe("shouldShowInlinePinControl", () => {
-  it("shows the inline toggle only in modes wide enough for a button", () => {
-    const modes: PaneTabBarMode[] = [
-      "full",
-      "slim",
-      "compact",
-      "compact3",
-      "compact2",
-      "compact1",
-      "micro",
-    ];
-    expect(modes.map((mode) => shouldShowInlinePinControl(mode))).toEqual([
-      true,
-      true,
-      true,
-      true,
-      false,
-      false,
-      false,
-    ]);
+describe("header zoom visibility", () => {
+  it("keeps zoom on the header only at the four wider tiers", () => {
+    const modes: PaneTabBarMode[] = ["full", "slim", "compact", "compact3", "compact2", "compact1", "micro"];
+    expect(modes.map((mode) => resolvePaneTabBarActions(mode, { showPublish: false }).visible.includes("zoom")))
+      .toEqual([true, true, true, true, false, false, false]);
   });
 });
 
@@ -551,29 +526,26 @@ describe("shouldCloseTabOnAuxClick", () => {
   });
 });
 
-describe("pane tab chip presentation", () => {
-  it("keeps only the active tab as a full pill", () => {
-    expect(resolvePaneTabPresentation("active", "active")).toBe("pill");
-    expect(resolvePaneTabPresentation("pinned", "active")).toBe("chip");
-    expect(resolvePaneTabPresentation("tab", null)).toBe("chip");
-    expect(resolvePaneTabPresentation("tab", undefined)).toBe("chip");
+describe("hidden-tab severity aggregation", () => {
+  it("lets errors dominate waiting and working", () => {
+    expect(resolveHiddenTabStatus(["working", "waiting", "error"])).toBe("error");
+    expect(resolveHiddenTabStatus(["error", "working", "waiting"])).toBe("error");
+    expect(resolveHiddenTabStatus([null, "error"])).toBe("error");
+    expect(resolveHiddenTabStatus(["error"])).toBe("error");
   });
-
-  it("shows a chip preview only when hovering outside a drag", () => {
-    expect(shouldShowChipPreview(true, false)).toBe(true);
-    expect(shouldShowChipPreview(false, false)).toBe(false);
-    expect(shouldShowChipPreview(true, true)).toBe(false);
+  it("keeps waiting ahead of working independently of order", () => {
+    expect(resolveHiddenTabStatus(["working", "waiting"])).toBe("waiting");
+    expect(resolveHiddenTabStatus(["waiting", "working"])).toBe("waiting");
+    expect(resolveHiddenTabStatus([null, "waiting"])).toBe("waiting");
   });
-
-  it("flips a chip preview only when the right side overflows", () => {
-    expect(resolveChipPreviewDirection(100, 0, 400, 200)).toBe("right");
-    expect(resolveChipPreviewDirection(250, 0, 400, 200)).toBe("left");
-    expect(resolveChipPreviewDirection(50, 0, 150, 200)).toBe("right");
-    expect(resolveChipPreviewDirection(200, 0, 400, 200)).toBe("right");
+  it("shows working only when heavier states are absent", () => {
+    expect(resolveHiddenTabStatus([null, "working"])).toBe("working");
+    expect(resolveHiddenTabStatus(["working", null])).toBe("working");
+    expect(resolveHiddenTabStatus(["working", "working"])).toBe("working");
+    expect(resolveHiddenTabStatus(["working"])).toBe("working");
   });
-
-  it("allows rename from both a full pill and an inactive chip", () => {
-    expect(shouldStartRenameOnDoubleClick("pill")).toBe(true);
-    expect(shouldStartRenameOnDoubleClick("chip")).toBe(true);
+  it("hides severity for empty and idle hidden sessions", () => {
+    expect(resolveHiddenTabStatus([])).toBeNull();
+    expect(resolveHiddenTabStatus([null, null])).toBeNull();
   });
 });

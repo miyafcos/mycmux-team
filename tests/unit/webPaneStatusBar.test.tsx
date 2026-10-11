@@ -20,6 +20,13 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: eventMocks.listen }));
 
 import WebPaneStatusBar from "../../src/components/workspace/WebPaneStatusBar";
 import { webPaneStrings } from "../../src/components/workspace/webPaneStrings";
+import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { useUiStore } from "../../src/stores/uiStore";
+import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
+import { useKeybindingStore } from "../../src/stores/keybindingStore";
+import { isEditableTarget } from "../../src/lib/keybindings";
+import { focusController } from "../../src/lib/focusController";
+import { makeAppShellKeydown, trackAppShellPaneFocus } from "./fixtures/appShellKeydown";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -61,6 +68,56 @@ beforeEach(async () => {
     root.render(<WebPaneStatusBar tabId="web-tab" presetId="chatgpt" />);
     await Promise.resolve();
     await Promise.resolve();
+  });
+});
+
+describe("pane-owned temporary sign-in controls", () => {
+  async function ownedButton() {
+    container.dataset.dndWorkspaceId = "workspace"; container.dataset.dndPaneId = "web-pane";
+    useWorkspaceListStore.setState({ activeWorkspaceId: "workspace", workspaces: [{ id: "workspace", panes: [{ id: "web-pane", tabs: [] }] }] } as never);
+    useUiStore.setState({ focusRevision: 0, zoomedPaneId: null });
+    const heading = document.createElement("div"); heading.className = "pane-active-heading"; heading.tabIndex = 0;
+    container.prepend(heading);
+    await emitUrl({ tabId: "web-tab", signedOut: true });
+    const button = bar()!.querySelector<HTMLButtonElement>("button")!;
+    await act(async () => button.focus()); return { button, heading };
+  }
+  it.each(["click", "native-running", "navigation"])("returns a disappearing sign-in button to its heading on %s", async action => {
+    const { button, heading } = await ownedButton();
+    if (action === "click") await act(async () => button.click());
+    if (action === "native-running") await act(async () => listenerFor(apiMocks.WEB_PANE_SIGNIN_EVENT)?.({ payload: { tabIds: ["web-tab"], state: "running" } }));
+    if (action === "navigation") await emitUrl({ tabId: "web-tab", signedOut: false });
+    expect(button.isConnected).toBe(false); expect(document.activeElement).toBe(heading);
+  });
+  it.each(["revision", "focus"])("does not steal a newer %s when the sign-in button disappears", async decision => {
+    const { button, heading } = await ownedButton();
+    if (decision === "revision") useUiStore.getState().bumpFocusRevision();
+    if (decision === "focus") heading.focus();
+    await emitUrl({ tabId: "web-tab", signedOut: false });
+    expect(button.isConnected).toBe(false);
+    expect(document.activeElement).toBe(decision === "focus" ? heading : document.body);
+  });
+  it("L2 keeps H2 cleared and permits terminal close after an outside pointer/body then navigation", async () => {
+    const { button } = await ownedButton();
+    const terminalTab = { id: "terminal-tab", type: "terminal", agentId: "shell-starter", sessionId: "terminal-session" };
+    useWorkspaceListStore.setState({ workspaces: [{ id: "workspace", panes: [{ id: "terminal", activeTabId: "terminal-tab", tabs: [terminalTab] },
+      { id: "web-pane", activeTabId: "web-tab", tabs: [{ ...terminalTab, id: "web-tab", type: "web", sessionId: "web-session" }] }] }] } as never);
+    useUiStore.setState({ activePaneId: "terminal-session", lastActivePaneId: "terminal-session" }); useKeybindingStore.getState().resetAll();
+    const tracking = trackAppShellPaneFocus(() => useWorkspaceListStore.getState().workspaces[0]); const close = vi.fn().mockResolvedValue({ status: "closed" });
+    const handler = makeAppShellKeydown({ current: { dashboardOpen: false } }, useWorkspaceListStore, useUiStore,
+      useKeybindingStore.getState().getActionsForEvent, isEditableTarget, close, focusController,
+      useWorkspaceLayoutStore.getState().setActivePaneTab, () => null, undefined, undefined, tracking.memory);
+    window.addEventListener("keydown", handler);
+    const outside = document.createElement("div"); document.body.append(outside);
+    try {
+      await act(async () => { button.blur(); button.focus(); }); expect(tracking.memory.current?.paneId).toBe("web-pane");
+      outside.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })); button.blur();
+      expect(document.activeElement).toBe(document.body); expect(tracking.memory.current).toBeNull();
+      await emitUrl({ tabId: "web-tab", signedOut: false });
+      expect.soft(document.activeElement).toBe(document.body); expect.soft(tracking.memory.current).toBeNull();
+      document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "w", ctrlKey: true, altKey: true, bubbles: true, cancelable: true }));
+      expect(close).toHaveBeenCalledExactlyOnceWith({ kind: "pane", workspaceId: "workspace", paneId: "terminal" }, "ui");
+    } finally { tracking.dispose(); window.removeEventListener("keydown", handler); outside.remove(); }
   });
 });
 

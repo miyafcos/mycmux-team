@@ -1,5 +1,13 @@
 mod agent_restore;
 mod agent_session_guard;
+mod codex_restore;
+use codex_restore::*;
+pub(crate) use codex_restore::{invalidate_codex_restore_notice, publish_codex_restore_epoch};
+pub(crate) fn codex_restore_lifecycle_gate(pty: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+    codex_restore::creation_gate(pty)
+}
+#[cfg(feature = "e2e")]
+pub(crate) mod codex_restore_harness;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -62,18 +70,24 @@ pub async fn get_terminal_config() -> TerminalConfigPayload {
 
 #[tauri::command]
 pub fn get_pty_metadata_snapshot(state: State<'_, AppState>) -> HashMap<String, PtyMetadata> {
-    state
-        .session_manager
+    metadata_snapshot_for(&state.session_manager, &state.metadata_store)
+}
+
+pub(crate) fn metadata_snapshot_for(manager: &crate::pty::manager::SessionManager, metadata_store: &crate::pty::monitor::MetadataStore) -> HashMap<String, PtyMetadata> {
+    manager
         .iter_pids()
         .into_iter()
-        .filter(|(id, _)| state.session_manager.is_running(id))
-        .map(|(id, _)| {
-            let metadata = state
-                .metadata_store
+        .filter(|(id, _)| manager.is_running(id))
+        .filter_map(|(id, _)| {
+            let session = manager.get(&id)?;
+            let epoch = session.session_epoch();
+            let mut metadata = metadata_store
                 .get(&id)
+                .filter(|entry| entry.session_epoch == epoch)
                 .map(|entry| entry.clone())
                 .unwrap_or_else(|| PtyMetadata::unobserved(id.clone()));
-            (id, metadata)
+            metadata.session_epoch = epoch;
+            Some((id, metadata))
         })
         .collect()
 }
@@ -184,6 +198,7 @@ pub async fn get_session_output_snapshot(state: State<'_, AppState>) -> Result<H
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
 pub async fn create_session(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     caller: tauri::Webview,
     app_handle: AppHandle,
     state: State<'_, AppState>,
@@ -198,6 +213,7 @@ pub async fn create_session(
     background_only: Option<bool>,
     attach_reason: Option<String>,
     restore_confirmed: Option<bool>,
+    restore_reason: Option<String>,
 ) -> Result<(), String> {
     let reason = match attach_reason.as_deref() {
         Some("channel-stall" | "write-stall" | "background") => attach_reason.as_deref().unwrap(),
@@ -209,7 +225,7 @@ pub async fn create_session(
     let _ = state;
     crate::util::task::run_blocking("create_session", move || {
         let state = worker_app.state::<AppState>();
-        create_session_blocking(app_handle, state, session_id, command, args, cols, rows, on_data, cwd, env, background_only.unwrap_or(false), attach_origin, restore_confirmed.unwrap_or(false))
+        create_session_blocking(app_handle, state, session_id, command, args, cols, rows, on_data, cwd, env, background_only.unwrap_or(false), attach_origin, restore_confirmed.unwrap_or(false), restore_reason)
     }).await
 }
 
@@ -228,11 +244,17 @@ fn create_session_blocking(
     background_only: bool,
     attach_origin: String,
     restore_confirmed: bool,
+    restore_reason: Option<String>,
 ) -> Result<(), String> {
     crate::perf_timeline::mark("session.create.enter", Some(&session_id));
-    let requested_command = command;
+    #[cfg(feature = "e2e")]
+    codex_restore_harness::publication_checkpoint(&session_id, "create-enter");
+    let create_gate = codex_restore::creation_gate(&session_id);
+    let creation_guard = create_gate.lock().unwrap_or_else(|e| e.into_inner());
+    let mut requested_command = command;
     let mut args = args;
     let mut env_map = env.unwrap_or_default();
+    codex_restore::sanitize_report_env(&mut env_map);
     let mut restore_notice = false;
     let mut cwd = cwd;
     // A PTY that is still tracked for this session_id means create() below
@@ -243,6 +265,21 @@ fn create_session_blocking(
     // and re-emit "agent-restore-downgraded" for sessions that were never
     // being restored in the first place.
     let reattach = state.session_manager.is_alive(&session_id);
+    let codex_restore = !reattach && codex_restore_requested(&requested_command, &args, &env_map, restore_reason.as_deref());
+    let codex_executable = if codex_restore {
+        Some(codex_restore::classify_executable(&requested_command, &args)
+            .ok_or("Unsupported Codex restore executable")?)
+    } else { None };
+    if codex_restore && !env_map.contains_key("MYCMUX_RESUME") {
+        if let Some(id) = codex_restore::exact_resume_id(&requested_command, &args) { env_map.insert("MYCMUX_SESSION_ID".into(), id); }
+        env_map.insert("MYCMUX_RESUME".into(), "codex".into());
+    }
+    let codex_requested_id = codex_restore.then(|| env_map.get("MYCMUX_SESSION_ID").cloned()).flatten();
+    let restore_tab_id = env_map.get("MYCMUX_TAB_ID").filter(|id| is_uuid_like(id)).cloned();
+    let codex_generation = codex_restore.then(|| uuid::Uuid::new_v4().to_string());
+    let mut codex_downgrade_reason = None;
+    let mut codex_report_unavailable = false;
+    if codex_restore { codex_restore_diag(&session_id, restore_tab_id.as_deref(), codex_requested_id.as_deref(), "request", "saved-conversation"); }
     // Guard before restore recovery, mapping writes, trust writes or spawn.
     // Keep the claim in scope through every success/error return from create.
     let _launch_claim = if reattach {
@@ -267,13 +304,46 @@ fn create_session_blocking(
             }
         }
     }
+    if codex_restore && codex_restore::clear_codex_restore_report(&session_id).is_err() {
+        codex_report_unavailable = true;
+        codex_restore_diag(&session_id, restore_tab_id.as_deref(), codex_requested_id.as_deref(), "downgrade", "report-unavailable");
+        for id in std::iter::once(session_id.as_str()).chain(restore_tab_id.as_deref()) { let _ = crate::commands::session_mapping::remove_session_mapping_file(id); }
+        for key in ["MYCMUX_RESUME", "MYCMUX_SESSION_ID", "MYCMUX_AGENT_KIND", "MYCMUX_RESUME_FORK", "MYCMUX_LAUNCH_KIND", "MYCMUX_LAUNCH_TARGET"] { env_map.remove(key); }
+        env_map.insert("__CMUX_LAUNCHER_DONE".into(), "1".into());
+        requested_command = codex_restore_report_unavailable_shell(&mut args);
+        if cwd.as_deref().is_some_and(|value| !Path::new(value).is_dir()) { cwd = None; }
+    }
     if !reattach {
         inherit_claude_resume_effort(&args, &mut env_map, cwd.as_deref(), last_claude_effort);
     }
     if command_leaf(&requested_command).eq_ignore_ascii_case("claude") {
         normalize_claude_launch_args(&mut args, &env_map);
     }
-    if !reattach {
+    if codex_restore && !codex_report_unavailable {
+        let validation = validate_agent_restore_request(cwd.as_deref(), &env_map);
+        let reason = match codex_requested_id.as_deref() {
+            None => "missing-id",
+            Some(id) if id.trim().is_empty() => "missing-id",
+            Some(id) if !is_uuid_like(id) => "malformed-id",
+            _ if validation.is_err() || cwd.as_deref().is_some_and(|value| !Path::new(value).is_dir()) => "validation-failed",
+            _ => "exists",
+        };
+        codex_restore_diag(&session_id, restore_tab_id.as_deref(), codex_requested_id.as_deref(), "validation", reason);
+        if reason == "missing-id" {
+            crate::diag::log(&format!("{} guidance=Install the Codex owner hook in Settings to record conversation IDs (owner decision).",
+                codex_restore_diag_line(&session_id, restore_tab_id.as_deref(), None, "guidance", "missing-id")));
+        }
+        if reason != "exists" {
+            codex_downgrade_reason = Some(reason);
+            if let Some(fresh) = codex_executable.as_ref().and_then(|exe| exe.fresh_args()) { args = fresh; }
+            for id in std::iter::once(session_id.as_str()).chain(restore_tab_id.as_deref()) { let _ = crate::commands::session_mapping::remove_session_mapping_file(id); }
+            for key in ["MYCMUX_RESUME", "MYCMUX_SESSION_ID", "MYCMUX_AGENT_KIND", "MYCMUX_RESUME_FORK"] { env_map.remove(key); }
+            if matches!(codex_executable, Some(codex_restore::CodexExecutable::Launcher)) { env_map.insert("MYCMUX_LAUNCH_TARGET".into(), "codex".into()); }
+            if cwd.as_deref().is_some_and(|value| !Path::new(value).is_dir()) { cwd = None; }
+            codex_restore_diag(&session_id, restore_tab_id.as_deref(), codex_requested_id.as_deref(), "downgrade", reason);
+        }
+    }
+    if !reattach && !codex_restore {
         let validation = validate_agent_restore_request(cwd.as_deref(), &env_map).and_then(|()| {
             if env_map.get("MYCMUX_RESUME").is_some_and(|kind| kind == "claude")
                 && (env_map.get("MYCMUX_SESSION_ID").is_none_or(|id| id.trim().is_empty())
@@ -376,6 +446,8 @@ fn create_session_blocking(
         .map(|value| value == "1")
         .unwrap_or(false);
     sanitize_launch_env(&mut env_map);
+    if let Some(reason) = codex_downgrade_reason { env_map.insert("MYCMUX_CODEX_RESTORE_REASON".into(), reason.into()); }
+    if let Some(generation) = codex_generation.as_ref() { env_map.insert("MYCMUX_CODEX_RESTORE_GENERATION".into(), generation.clone()); }
     // Canonical MYCMUX_HTML_OUT (HTML sidetab path) for this pane. sanitize_launch_env
     // just stripped any incoming value, so untrusted env cannot redirect the output.
     // session_id is used as a single directory segment, so reject anything that
@@ -460,10 +532,11 @@ fn create_session_blocking(
     // decides the command, so record what was actually spawned: it is the one
     // line that separates "the launcher never ran" from "the CLI failed".
     if let Some(target) = env_map.get("MYCMUX_LAUNCH_TARGET") {
-        crate::diag::warn(
+        if codex_restore && target == "codex" { codex_restore_diag(&session_id, restore_tab_id.as_deref(), codex_requested_id.as_deref(), "dispatch", "launcher"); }
+        else { crate::diag::warn(
             "launch",
             &format!("target={target} command={command} args={args:?}"),
-        );
+        ); }
     }
     inject_osc7_hook(&command, &mut args, &mut env_map);
     inject_no_color_for_agy(&command, &mut env_map);
@@ -482,30 +555,58 @@ fn create_session_blocking(
             write_session_mapping_file(&session_id, &request.kind, &request.agent_session_id)?;
         }
     }
-    let command = if restore_notice {
+    let command = if let Some(mut fresh_args) = codex_executable.as_ref().filter(|_| !codex_report_unavailable).and_then(|exe| exe.fresh_args()) {
+        let fresh_command = prepare_spawn_command(&requested_command, &mut fresh_args);
+        wrap_codex_restore(&command, &mut args, &fresh_command, &fresh_args)
+    } else if restore_notice {
         wrap_restore_notice(&command, &mut args)
     } else {
         command
     };
     let launch_conversation = requested_conversation(&requested_command, &args, &env_map);
-    state.session_manager.create(
+    #[cfg(feature = "e2e")]
+    codex_restore_harness::capture_launch(&session_id, &command, &args, &env_map);
+    invalidate_codex_restore_notice(&app_handle, &session_id);
+    let created = state.session_manager.create(
         session_id.clone(),
         &command,
         &args,
         cols,
         rows,
         on_data,
-        app_handle,
+        app_handle.clone(),
         launch_cwd,
         Some(env_map),
         state.metadata_store.clone(),
         state.scrollback_dir.get().map(PathBuf::as_path),
         background_only,
         &attach_origin,
-    )?;
+    );
+    if codex_restore && created.is_err() { codex_restore_diag(&session_id, restore_tab_id.as_deref(), codex_requested_id.as_deref(), "spawn-failure", "pty-spawn-failed"); }
+    created?;
     if !reattach {
         if let Some(request) = launch_conversation {
             state.session_manager.remember_requested_conversation(&session_id, &request.kind, &request.agent_session_id);
+        }
+    }
+    // Create, kill and attachment share this gate through publication.
+    // Release before report registration/delivery.
+    let active_epoch = state.session_manager.session_observation(&session_id).map(|value| value.0);
+    let codex_epoch = (!reattach && codex_restore).then_some(active_epoch).flatten();
+    #[cfg(feature = "e2e")]
+    codex_restore_harness::publication_checkpoint(&session_id, "create-publish");
+    publish_codex_restore_epoch(&app_handle, &session_id, active_epoch);
+    drop(creation_guard);
+    #[cfg(feature = "e2e")]
+    codex_restore_harness::after_native_create(&session_id, codex_generation.as_deref());
+    if !reattach && codex_restore {
+        if let (Some(epoch), Some(generation)) = (codex_epoch, codex_generation) {
+            let context = codex_restore::RestoreReportContext::new(epoch, generation, restore_tab_id, codex_requested_id);
+            if codex_report_unavailable {
+                codex_restore::emit_notice(&app_handle, &session_id, &context, "report-unavailable");
+            } else {
+                codex_restore::watch_report(app_handle.clone(), state.session_manager.clone(), session_id.clone(), context);
+            }
         }
     }
     crate::perf_timeline::mark("session.create.done", Some(&session_id));
@@ -520,6 +621,19 @@ fn create_session_blocking(
         );
     }
     Ok(())
+}
+
+// Notification freshness only; not an identity/save reader or authority.
+#[tauri::command(async)]
+pub async fn get_codex_restore_epoch(state: State<'_, AppState>, session_id: String) -> Result<Option<u64>, String> {
+    let manager = state.session_manager.clone();
+    crate::util::task::run_blocking("codex_restore_epoch", move || {
+        #[cfg(feature = "e2e")]
+        codex_restore_harness::publication_checkpoint(&session_id, "epoch-enter");
+        let gate = codex_restore_lifecycle_gate(&session_id);
+        let _guard = gate.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(manager.session_observation(&session_id).map(|value| value.0))
+    }).await
 }
 
 #[cfg(target_os = "windows")]
@@ -1098,6 +1212,7 @@ pub struct GuardedWriteResult {
 
 #[tauri::command]
 pub fn write_to_session(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     state: State<'_, AppState>,
     session_id: String,
     data: String,
@@ -1115,6 +1230,7 @@ pub async fn get_session_input_revision(
 
 #[tauri::command(async)]
 pub async fn write_to_session_guarded(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     state: State<'_, AppState>,
     session_id: String,
     data: String,
@@ -1335,23 +1451,40 @@ pub async fn discard_session_scrollback(
 }
 
 #[tauri::command(async)]
-pub async fn kill_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
+pub async fn kill_session(app_handle: AppHandle, state: State<'_, AppState>, session_id: String) -> Result<(), String> {
     let hooks = state.hook_service.clone();
     let manager = state.session_manager.clone();
     let dir = state.scrollback_dir.get().cloned();
     let session_state = state.session_state_store.clone();
     hooks.queue_session_drain(&session_id);
     crate::util::task::run_blocking("kill_session", move || {
+        #[cfg(feature = "e2e")]
+        codex_restore_harness::publication_checkpoint(&session_id, "kill-enter");
+        let gate = codex_restore_lifecycle_gate(&session_id);
+        let guard = gate.lock().unwrap_or_else(|e| e.into_inner());
+        invalidate_codex_restore_notice(&app_handle, &session_id);
         let session_epoch = manager
             .session_observation(&session_id)
             .map(|(session_epoch, _)| session_epoch);
-        let kill_result = manager.kill(&session_id);
+        let retired = manager.retire(&session_id);
+        // Cleanup keyed only by P must finish before any successor can use P.
         let remove_result = if let Some(dir) = dir.as_ref() {
             crate::pty::scrollback_store::remove(dir, &session_id)
                 .map_err(|error| format!("Failed to remove scrollback for {session_id}: {error}"))
         } else {
             Ok(())
         };
+        let published_epoch = manager.session_observation(&session_id).map(|value| value.0);
+        #[cfg(feature = "e2e")]
+        codex_restore_harness::publication_checkpoint(&session_id, "kill-publish");
+        publish_codex_restore_epoch(&app_handle, &session_id, published_epoch);
+        drop(guard);
+        // Child termination / ClosePseudoConsole operate only on this retired
+        // object, outside the lifecycle gate. Never publish after its teardown.
+        #[cfg(feature = "e2e")]
+        codex_restore_harness::retirement_checkpoint(&session_id);
+        let kill_result = retired.as_ref().map_or(Ok(()), |session| session.kill());
+        drop(retired);
         kill_result?;
         remove_result?;
         if let Some(session_epoch) = session_epoch {
@@ -2201,4 +2334,16 @@ mod f4_profile_owner_tests {
         let conversation = Conversation::new("codex", &args[4]).unwrap();
         assert_eq!(owner_conversation(interactive, None, Some(conversation.clone()), None, None, None), Some(conversation));
     }
+}
+
+#[cfg(test)]
+mod n3_restore_bindings {
+    use super::*;
+    fn restore_entry(command: &str, args: &[String], env: &HashMap<String, String>, reason: Option<&str>) -> bool {
+        codex_restore_requested(command, args, env, reason)
+    }
+    fn restore_wrapper(command: &str, args: &mut Vec<String>) -> String {
+        wrap_codex_restore(command, args, "codex", &["--no-alt-screen".into()])
+    }
+    include!("../../../tests/helpers/codex_restore_native.rs");
 }

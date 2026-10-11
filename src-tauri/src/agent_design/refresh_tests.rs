@@ -13,7 +13,7 @@ impl Fixture {
     fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let home = safe::canonical(directory.path());
-        let result = std::process::Command::new(if cfg!(windows) { "python" } else { "python3" })
+        let result = std::process::Command::new(if cfg!(windows) { "python" } else { "python3" }).arg("-B")
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/agent_home/prepare_home.py"))
             .arg(&home).args(["--variant", "both"]).output().unwrap();
         assert!(result.status.success(), "synthetic fixture generator failed");

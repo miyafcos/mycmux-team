@@ -46,7 +46,12 @@ def test_ai_command_building_is_centralized() -> None:
             # Hook attribution parses provider argv and skips option values;
             # it does not construct an AI command or select a model.
             is_provider_argv_parse = relative == "agent_state/hook_source.rs" and token == '"--model"'
-            assert token not in source or is_ai_module or is_saved_pty_model or is_provider_argv_parse, f"{path}: centralized AI command token {token}"
+            # Like hook attribution, exact restore parses provider argv and
+            # skips option values (also covered by its parser test vectors).
+            # This parser does not construct an AI command or select a model. Limit
+            # this exception to this file and this single option token.
+            is_codex_restore_argv_parse = relative == "commands/terminal/codex_restore.rs" and token == '"--model"'
+            assert token not in source or is_ai_module or is_saved_pty_model or is_provider_argv_parse or is_codex_restore_argv_parse, f"{path}: centralized AI command token {token}"
 
 
 def test_sql_model_literals_are_forbidden() -> None:

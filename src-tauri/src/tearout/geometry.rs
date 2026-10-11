@@ -14,6 +14,12 @@ pub fn frontmost_receiver<'a>(x: f64, y: f64, candidates: &'a [ReceiverCandidate
         .and_then(|candidate| candidate.label.as_deref())
 }
 
+/// Native screen pixels are rebased using the receiver's client origin and
+/// DPI once. The moving window's scale is deliberately not an input.
+pub fn receiver_client_point(point: (f64, f64), origin: (f64, f64), receiver_scale: f64) -> (f64, f64) {
+    ((point.0 - origin.0) / receiver_scale.max(0.01), (point.1 - origin.1) / receiver_scale.max(0.01))
+}
+
 pub fn dwell_ready(start: Option<u64>, now: u64, painted: bool) -> bool {
     painted && start.is_some_and(|start| now.saturating_sub(start) >= 120)
 }
@@ -102,6 +108,26 @@ pub fn snap_edge_reserved(x: f64, y: f64, monitors: &[MonitorArea]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn receiver_dpi_and_signed_origins_convert_once_r5() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let origin = (-2560.0, -1440.0);
+            let expected = (150.25, 75.5);
+            let point = (origin.0 + expected.0 * scale, origin.1 + expected.1 * scale);
+            assert_eq!(receiver_client_point(point, origin, scale), expected);
+        }
+    }
+    #[test]
+    fn maximized_app_receiver_at_exterior_snap_edge_stays_eligible_r4() {
+        let area = MonitorArea { bounds: Rect { x: -2560.0, y: -1440.0, width: 2560.0, height: 1440.0 },
+            work: Rect { x: -2560.0, y: -1440.0, width: 2560.0, height: 1400.0 }, scale: 1.5 };
+        let covering = [ReceiverCandidate { label: Some("moving".into()), rect: area.work, visible: true },
+            ReceiverCandidate { label: Some("receiver".into()), rect: area.work, visible: true }];
+        assert!(snap_edge_reserved(-2559.0, -1300.0, &[area]));
+        assert_eq!(frontmost_receiver(-2559.0, -1300.0, &covering, "moving"), Some("receiver"));
+        assert_eq!(frontmost_receiver(-2561.0, -1300.0, &covering, "moving"), None);
+    }
+
     #[test]
     fn initial_size_preserves_logical_pixels_and_caps_the_destination_work_area() {
         let work = Rect { width: 2560.0, height: 1520.0, ..Rect::default() };

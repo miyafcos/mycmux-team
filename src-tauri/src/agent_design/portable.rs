@@ -147,8 +147,11 @@ pub fn complete(catalog: &mut Catalog, home: &Path, cwd: &Path) {
                             }
                             .into(),
                             chars: amount,
-                            evidence: if (n == 3 && amount.is_some())
-                                || (n == 4 && amount.is_some())
+                            evidence: if n == 3 {
+                                s.session.listing.evidence.as_deref().unwrap_or(
+                                    if amount.is_some() { "measured" } else { "declaration" },
+                                )
+                            } else if (n == 4 && amount.is_some())
                                 || (s.id == "codex" && [1, 2].contains(&n) && amount.is_some())
                             {
                                 "measured"

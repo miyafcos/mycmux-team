@@ -16,6 +16,7 @@ export type WorkspaceLayoutSizes = Pick<
 export interface BuildWorkspaceRecordInput extends WorkspaceLayoutSizes {
   id: string;
   name: string;
+  nameSource?: "auto";
   gridTemplateId: GridTemplateId;
   panes: Workspace["panes"];
   splitColumns: string[][];
@@ -53,6 +54,7 @@ export function normalizeWorkspaceLayout(workspace: Workspace): Workspace {
   return {
     id: workspace.id,
     name: workspace.name,
+    ...(workspace.nameSource === "auto" ? { nameSource: "auto" as const } : {}),
     gridTemplateId: workspace.gridTemplateId,
     panes,
     status: workspace.status,
@@ -75,6 +77,7 @@ export function buildWorkspaceRecord(input: BuildWorkspaceRecordInput): Workspac
   return normalizeWorkspaceLayout({
     id: input.id,
     name: input.name,
+    ...(input.nameSource === "auto" ? { nameSource: "auto" as const } : {}),
     gridTemplateId: input.gridTemplateId,
     panes: structuredClone(input.panes),
     splitColumns: structuredClone(input.splitColumns),

@@ -86,11 +86,19 @@ pub struct ListingGroup {
 pub struct Listing {
     pub count: Option<u64>,
     pub chars: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub names_complete: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_complete: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
     pub entries: Vec<ListedSkill>,
     pub groups: Vec<ListingGroup>,
     pub plugin_counts: BTreeMap<String, u64>,
     pub disabled_counts: BTreeMap<String, u64>,
     pub disabled_chars: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unknown_names: Vec<String>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

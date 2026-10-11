@@ -20,6 +20,7 @@
         let (agent_kind, agent_session_id, claude_session_id) =
             codex_agent_metadata_fields(None, None);
         let metadata = PtyMetadata {
+            session_epoch: 1,
             session_id: "pane-session".to_string(),
             cwd: r"C:\work".to_string(),
             git_branch: None,
@@ -30,6 +31,8 @@
             agent_active: true,
             claude_session_id,
             agent_session_trusted: false,
+            observed_at: Some(1_725_000_000_123),
+            agent_started_at: Some(1_725_000_000_000),
             live_agent_kind: agent_kind.clone(),
             agent_kind,
             agent_session_id,

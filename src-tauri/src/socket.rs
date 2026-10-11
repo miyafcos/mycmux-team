@@ -39,7 +39,7 @@ const SOCKET_API_MINOR: u64 = 0;
 
 // Keep the frontend names in sync with SOCKET_COMMAND_NAMES in socketCommands.ts.
 const FRONTEND_SOCKET_COMMAND_NAMES: &[&str] = &[
-    "account.usage", "usage", "inbox.post", "workspace.list", "list_workspaces",
+    "account.switch", "account.use_reset_ticket", "account.usage", "usage", "inbox.post", "workspace.list", "list_workspaces",
     "workspace.select", "select_workspace", "workspace.rename", "rename_workspace",
     "workspace.new", "new_workspace", "workspace.close", "close_workspace",
     "pane.list", "list_panes", "pane.list_all",
@@ -84,8 +84,46 @@ fn system_version_payload() -> Value {
             "launch.kind_env",
             "agent.hooks.status",
             "agent.capabilities.v1",
+            "account.switch.v1",
+            "account.usage.presentation.v1",
+            "account.use_reset_ticket",
         ],
     })
+}
+
+/// Only fixed command/provider/outcome literals reach the diagnostic log.
+/// Neither request ids/args nor arbitrary frontend errors are formatted.
+fn account_api_log_line(request: &SocketRequest, response: &SocketResponse) -> Option<String> {
+    let command = match request.cmd.as_str() {
+        "account.switch" => "account.switch",
+        "account.use_reset_ticket" => "account.use_reset_ticket",
+        _ => return None,
+    };
+    let provider = match request.args.get("provider").and_then(Value::as_str) {
+        Some("claude") => "claude",
+        Some("codex") => "codex",
+        Some("grok") => "grok",
+        _ => "invalid",
+    };
+    let status = response.result.as_ref().and_then(|value| value.get("status")).and_then(Value::as_str);
+    let outcome = match (response.error.is_none(), status) {
+        (true, Some("switched")) if command == "account.switch" => "switched",
+        (true, Some("already_active")) if command == "account.switch" => "already_active",
+        (true, Some("used")) if command == "account.use_reset_ticket" => "used",
+        (true, Some("unconfirmed")) if command == "account.use_reset_ticket" => "unconfirmed",
+        (true, Some("no_ticket")) if command == "account.use_reset_ticket" => "no_ticket",
+        (true, Some("not_usable")) if command == "account.use_reset_ticket" => "not_usable",
+        (true, Some("rejected")) => "rejected",
+        (true, Some("failed")) => "failed",
+        _ => "unknown",
+    };
+    Some(format!("cmd={command} provider={provider} result={outcome}"))
+}
+
+pub(crate) fn log_account_api_result(request: &SocketRequest, response: &SocketResponse) {
+    if let Some(line) = account_api_log_line(request, response) {
+        crate::diag::log(&line);
+    }
 }
 
 pub struct SocketState {
@@ -439,13 +477,15 @@ fn stale_send_text_result(
     store: &crate::session_state::SessionStateStore,
     expectations: &SendTextExpectations,
 ) -> Option<Value> {
-    let Some(current_view) = store.current_view(&expectations.session_id) else {
+    let Some(current) = store.current_projection(&expectations.session_id) else {
         return Some(serde_json::json!({
             "sent": false,
             "reason": "unknown_session",
             "current": Value::Null,
         }));
     };
+
+    let current_view = &current.view;
 
     let reason = if expectations
         .session_epoch
@@ -472,7 +512,7 @@ fn stale_send_text_result(
     Some(serde_json::json!({
         "sent": false,
         "reason": reason,
-        "current": crate::status_feed::FeedSession::from(&current_view),
+        "current": crate::status_feed::FeedSession::from(&current),
     }))
 }
 
@@ -873,8 +913,9 @@ async fn handle_connection(
                         }
                         if cmd == "agent.capabilities" {
                             let adapters = app.state::<crate::codex_app_server::CodexAppServerState>();
+                            let dsh = app.state::<crate::dsh_acp::DshAcpState>();
                             let response = SocketResponse {
-                                id, result: Some(agent_capabilities_payload(crate::agent_adapters::snapshot(&adapters).await)), error: None,
+                                id, result: Some(agent_capabilities_payload(crate::agent_adapters::snapshot(&adapters, &dsh).await)), error: None,
                             };
                             let _ = write_json_line(&mut writer, &response).await;
                             continue;
@@ -964,6 +1005,7 @@ async fn handle_connection(
                                 FRONTEND_RESPONSE_TIMEOUT,
                             )
                             .await;
+                            log_account_api_result(&req, &resp);
                             let resp_json = serde_json::to_string(&resp).unwrap_or_default();
                             let _ = writer.write_all(resp_json.as_bytes()).await;
                             let _ = writer.write_all(b"\n").await;
@@ -975,6 +1017,7 @@ async fn handle_connection(
                                 result: None,
                                 error: Some("Frontend not ready".to_string()),
                             };
+                            log_account_api_result(&req, &err_resp);
                             let resp_json = serde_json::to_string(&err_resp).unwrap_or_default();
                             let _ = writer.write_all(resp_json.as_bytes()).await;
                             let _ = writer.write_all(b"\n").await;
@@ -1213,6 +1256,9 @@ mod tests {
         assert_eq!(payload["hook_protocol"], serde_json::json!({"major": 1, "minor": 0}));
         let commands = payload["commands"].as_array().unwrap();
         assert!(commands.contains(&serde_json::json!("system.version")));
+        assert!(commands.contains(&serde_json::json!("account.switch")));
+        assert!(commands.contains(&serde_json::json!("account.use_reset_ticket")));
+        assert!(commands.contains(&serde_json::json!("account.usage")));
         assert!(commands.contains(&serde_json::json!("session.state_view")));
         assert!(commands.contains(&serde_json::json!("agent.hooks.status")));
         assert!(!commands.contains(&serde_json::json!("agent.hooks.set")));
@@ -1227,6 +1273,9 @@ mod tests {
             "launch.kind_env",
             "agent.hooks.status",
             "agent.capabilities.v1",
+            "account.switch.v1",
+            "account.usage.presentation.v1",
+            "account.use_reset_ticket",
         ] {
             assert!(payload["capabilities"]
                 .as_array()
@@ -1237,6 +1286,43 @@ mod tests {
         assert!(!commands.iter().any(|name| name.as_str().unwrap().starts_with("e2e.")));
         #[cfg(feature = "e2e")]
         assert!(commands.contains(&serde_json::json!("e2e.eval")));
+    }
+
+    #[test]
+    fn account_reset_api_diagnostics_never_format_private_fields() {
+        let request = SocketRequest { id: 7, cmd: "account.use_reset_ticket".into(), args: serde_json::json!({
+            "provider":"codex", "profile_id":"private@example.test", "expected_email":"private@example.test",
+            "request_id":"synthetic-secret", "token":"synthetic-secret",
+        }) };
+        for status in ["used", "unconfirmed", "no_ticket", "not_usable", "rejected", "failed"] {
+            let response = SocketResponse { id: 7, error: None, result: Some(serde_json::json!({
+                "status":status, "error_code":"private@example.test synthetic-secret",
+            })) };
+            assert_eq!(account_api_log_line(&request, &response).unwrap(), format!("cmd=account.use_reset_ticket provider=codex result={status}"));
+        }
+        let response = SocketResponse { id: 7, error: Some("private@example.test synthetic-secret".into()), result: None };
+        assert_eq!(account_api_log_line(&request, &response).unwrap(), "cmd=account.use_reset_ticket provider=codex result=unknown");
+    }
+
+    #[test]
+    fn account_api_diagnostics_format_only_fixed_literals() {
+        let mut request = SocketRequest { id: 42, cmd: "account.switch".into(), args: serde_json::json!({
+            "provider": "claude", "profile_id": "private@example.test",
+            "token": "synthetic-secret", "path": "/private/auth.json",
+        }) };
+        for status in ["switched", "already_active", "rejected", "failed"] {
+            let response = SocketResponse { id: 42, error: None, result: Some(serde_json::json!({
+                "status": status, "email": "private@example.test", "error_code": "synthetic-secret",
+            })) };
+            assert_eq!(account_api_log_line(&request, &response).as_deref(), Some(format!("cmd=account.switch provider=claude result={status}").as_str()));
+        }
+        request.args["provider"] = serde_json::json!("private@example.test\nsynthetic-secret");
+        let response = SocketResponse { id: 42, error: Some("private@example.test synthetic-secret".into()), result: None };
+        assert_eq!(account_api_log_line(&request, &response).as_deref(), Some("cmd=account.switch provider=invalid result=unknown"));
+        let response = SocketResponse { id: 42, error: None, result: Some(serde_json::json!({"status": "private@example.test synthetic-secret"})) };
+        assert_eq!(account_api_log_line(&request, &response).as_deref(), Some("cmd=account.switch provider=invalid result=unknown"));
+        request.cmd = "account.usage".into();
+        assert!(account_api_log_line(&request, &response).is_none());
     }
 
     #[test]
@@ -1689,6 +1775,36 @@ mod tests {
         .unwrap();
         assert_eq!(future["reason"], "session_revision");
         assert_eq!(future["current"]["session_revision"], 1);
+    }
+
+    #[test]
+    fn stale_send_text_current_uses_the_store_projection_without_changing_acceptance_guards() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let output_at = 1_000_100;
+        let clock = Arc::new(AtomicU64::new(output_at));
+        let read_clock = clock.clone();
+        let store = SessionStateStore::with_clock(Arc::new(move || read_clock.load(Ordering::SeqCst)));
+        store.ingest("session-a", Evidence::last_output(output_at, 1, crate::session_state::OutputOrigin::Pty));
+        let before = store.current_view("session-a").unwrap();
+        clock.store(output_at + crate::session_state::QUIET_AFTER_MS, Ordering::SeqCst);
+        let mut expectations = SendTextExpectations {
+            session_id: "session-a".into(),
+            session_epoch: Some(2),
+            attention_id: None,
+            session_revision: None,
+        };
+        let stale = stale_send_text_result(&store, &expectations).unwrap();
+        assert_eq!(stale["reason"], "session_epoch");
+        assert_eq!(stale["current"]["status"]["ui_state"], "idle");
+        assert_eq!(stale["current"]["status"]["activity"], "streaming");
+        assert_eq!(stale["current"]["session_revision"], before.session_revision + 1);
+        expectations.session_epoch = Some(1);
+        for revision in [0, before.session_revision, before.session_revision + 1] {
+            expectations.session_revision = Some(revision);
+            assert!(stale_send_text_result(&store, &expectations).is_none());
+        }
+        expectations.session_revision = Some(before.session_revision + 2);
+        assert_eq!(stale_send_text_result(&store, &expectations).unwrap()["reason"], "session_revision");
     }
 
     #[tokio::test]

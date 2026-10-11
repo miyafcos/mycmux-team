@@ -180,7 +180,7 @@ export function PaneComposer({ sessionId, target }: PaneComposerProps) {
       // change exists to remove.
       if (outcome?.confirmed !== true) {
         useToastStore.getState().pushToast(
-          `送信を確認できませんでした${outcome?.reason ? ` (${outcome.reason})` : ""}。ペインの入力行を確認してください`,
+          `送信を確認できませんでした${outcome?.reason ? ` (${outcome.reason})` : ""}。タブの入力行を確認してください`,
           "warning",
         );
       }

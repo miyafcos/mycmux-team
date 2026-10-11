@@ -10,6 +10,46 @@ describe("paneMetadataStore notification clearing", () => {
     vi.restoreAllMocks();
   });
 
+  it("INTEG-4 keeps observation-only state stable below 30 seconds and publishes at the boundary", () => {
+    let now = 1_800_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const evidence = { agentSessionId: "conversation", startedAt: now - 1000 };
+    usePaneMetadataStore.getState().setLiveAgent("session", "claude", true, evidence);
+    const before = usePaneMetadataStore.getState();
+    now += 29_999;
+    before.setLiveAgent("session", "claude", true, evidence);
+    expect(usePaneMetadataStore.getState()).toBe(before);
+    now++;
+    before.setLiveAgent("session", "claude", true, evidence);
+    expect(usePaneMetadataStore.getState().volatileMetadata.session.liveAgentObservedAt).toBe(now);
+    expect(usePaneMetadataStore.getState().volatileMetadata.session.liveAgentChangedAt).toBe(now - 30_000);
+  });
+
+  it("INTEG-4 publishes identity changes and process exits inside the observation window", () => {
+    let now = 1_800_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const store = usePaneMetadataStore.getState();
+    store.setLiveAgent("session", "claude", true, { agentSessionId: "A", startedAt: now - 1000 });
+    now++;
+    store.setLiveAgent("session", "claude", true, { agentSessionId: "B", startedAt: now });
+    expect(usePaneMetadataStore.getState().volatileMetadata.session).toMatchObject({ liveAgentSessionId: "B", liveAgentObservedAt: now, liveAgentChangedAt: now });
+    now++;
+    store.setLiveAgent("session", null, false);
+    expect(usePaneMetadataStore.getState().volatileMetadata.session).toMatchObject({ liveAgentKind: null, ptyAlive: false, liveAgentObservedAt: now });
+  });
+
+  it("INTEG-4 rebases observation uncertainty immediately after clock rollback", () => {
+    let now = 1_800_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const store = usePaneMetadataStore.getState();
+    store.setLiveAgent("session", "claude", true);
+    now -= 3_600_000;
+    store.setLiveAgent("session", "claude", true);
+    expect(usePaneMetadataStore.getState().volatileMetadata.session).toMatchObject({
+      liveAgentObservedAt: now, liveAgentChangedAt: now, liveAgentIdentityUnknownSince: now, liveAgentStartUnknownSince: now,
+    });
+  });
+
   it("keeps state references stable when notification counters are already zero", () => {
     usePaneMetadataStore.setState({
       metadata: { session: { notificationCount: 0, workDoneCount: 0 } },

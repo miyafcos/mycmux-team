@@ -16,6 +16,8 @@ import { TearoutRecord } from "../../lib/tearout/record";
 import { windowLabel } from "../../lib/windowContext";
 import { getWindowFragments } from "../../lib/ipc";
 import { WindowControls } from "./WindowControls";
+import { localTearoutRefusal, LocalTearoutRefusal } from "../../lib/tearout/operation";
+import { recordTearoutRefusal } from "../../lib/tearout/refusal";
 import { windowsNativeBand } from "../../lib/tearout/windowBehavior";
 
 /** The same live pane renderer and drag feedback, without a sidebar. */
@@ -32,27 +34,43 @@ export default function NativePaneShell() {
   const lastPress = useRef<{ at: number; x: number; y: number; moved: boolean } | null>(null);
   const toggledAt = useRef(0);
   const bandMoving = useRef(false);
+  const bandOwner = useRef<symbol | null>(null);
   useEffect(() => () => stopBand.current(), []);
   const beginBand = (event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
     event.preventDefault();
-    stopBand.current();
     const start = { x: event.clientX, y: event.clientY, id: event.pointerId, at: Date.now() };
     const native = workspaces.length === 1 && nativePaneTearoutEnabled(useSettingsStore.getState().nativePaneTearoutEnabled);
     const kind = panes.length > 1 ? "workspace" : tabs.length > 1 ? "tab" : "pane";
-    const regrab = () => regrabTearoutWindow(new TearoutRecord(crypto.randomUUID(), tabs[0]?.id ?? workspaces[0].id,
-      windowLabel(), start.at, kind, tabs.length), windowsBand ? (sample) => {
-        bandMoving.current = false;
-        if (lastPress.current) lastPress.current.moved = sample.moved === true;
-      } : undefined);
+    const makeRecord = () => {
+      const record = new TearoutRecord(crypto.randomUUID(), tabs[0]?.id ?? workspaces[0]?.id ?? "missing", windowLabel(), start.at, kind, tabs.length);
+      record.input?.(event.nativeEvent, "band"); return record;
+    };
+    const refusal = localTearoutRefusal() ?? (bandOwner.current ? new LocalTearoutRefusal("moving") : null);
+    if (refusal) { void recordTearoutRefusal(makeRecord(), refusal); return; }
+    stopBand.current();
+    const owner = Symbol(); bandOwner.current = owner;
+    const release = () => {
+      if (bandOwner.current !== owner) return;
+      bandOwner.current = null; bandMoving.current = false;
+    };
+    const regrab = () => regrabTearoutWindow(makeRecord(), (sample) => {
+      if (bandOwner.current !== owner) return;
+      release();
+      if (lastPress.current) lastPress.current.moved = sample.moved === true;
+    });
     const failedMove = (error: unknown) => {
-      bandMoving.current = false;
+      release();
+      if (error instanceof LocalTearoutRefusal && error.phase === "moving") {
+        lastPress.current = null; return;
+      }
       setFailed(true); console.warn("[tearout] band move failed", error);
     };
     if (windowsBand) {
       const previous = lastPress.current;
       if (previous && !previous.moved && !bandMoving.current && start.at - previous.at < 300
         && Math.hypot(start.x - previous.x, start.y - previous.y) < 9) {
+        release();
         lastPress.current = null;
         toggledAt.current = start.at;
         void getCurrentWindow().toggleMaximize().catch(failedMove);
@@ -61,20 +79,23 @@ export default function NativePaneShell() {
       lastPress.current = { at: start.at, x: start.x, y: start.y, moved: false };
       bandMoving.current = true;
       // Windows owns the move immediately, including restore-under-cursor.
-      void (native ? regrab() : getCurrentWindow().startDragging().finally(() => { bandMoving.current = false; }))
+      void (native ? regrab() : getCurrentWindow().startDragging().finally(release))
         .catch(failedMove);
       return;
     }
     // Mac and the OFF route retain their existing pointer threshold.
+    let started = false;
     const cleanup = () => {
+      if (!started) release();
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", cleanup);
       window.removeEventListener("pointercancel", cleanup);
     };
     const move = (next: PointerEvent) => {
       if (next.pointerId !== start.id || Math.hypot(next.clientX - start.x, next.clientY - start.y) < 9) return;
+      started = true; bandMoving.current = true;
       cleanup();
-      void (native ? regrab() : getCurrentWindow().startDragging()).catch(failedMove);
+      void (native ? regrab() : getCurrentWindow().startDragging().finally(release)).catch(failedMove);
     };
     stopBand.current = cleanup;
     window.addEventListener("pointermove", move);
@@ -85,7 +106,9 @@ export default function NativePaneShell() {
     if (!windowsBand || (event.target as HTMLElement).closest("button") || bandMoving.current
       || lastPress.current?.moved || Date.now() - toggledAt.current < 100) return;
     lastPress.current = null;
-    void getCurrentWindow().toggleMaximize().catch(console.error);
+    void getCurrentWindow().toggleMaximize().catch((error) => {
+      setFailed(true); console.warn("[tearout] maximize failed", error);
+    });
   };
   const close = async () => {
     if (closing) return;

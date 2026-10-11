@@ -147,8 +147,14 @@ pub async fn refresh_claude(
     client: &Client,
     refresh_token: &str,
 ) -> Result<RefreshedClaude, RefreshError> {
+    refresh_claude_at(client, refresh_token, CLAUDE_TOKEN_URL).await
+}
+
+pub(crate) async fn refresh_claude_at(
+    client: &Client, refresh_token: &str, url: &str,
+) -> Result<RefreshedClaude, RefreshError> {
     let (status, body, retry_after) = post_refresh(
-        client.post(CLAUDE_TOKEN_URL)
+        client.post(url)
             .header("anthropic-beta", "oauth-2025-04-20")
             .json(&serde_json::json!({"grant_type":"refresh_token","refresh_token":refresh_token,"client_id":CLAUDE_CLIENT_ID})),
     ).await?;
@@ -239,14 +245,16 @@ async fn post_refresh(
     let diag = diag_suffix(response.headers());
     let body = response.text().await.map_err(|_| RefreshError::Network)?;
     if !status.is_success() {
-        eprintln!(
-            "OAuth refresh failure: HTTP {}{}: {}",
-            status.as_u16(),
-            diag,
-            truncate(&body.split_whitespace().collect::<Vec<_>>().join(" "), 300)
-        );
+        log_refresh_failure(status.as_u16(), &diag, &body);
     }
     Ok((status, body, retry_after))
+}
+
+pub(crate) fn log_refresh_failure(status: u16, diag: &str, body: &str) {
+    crate::usage::logging::stderr(format_args!(
+        "OAuth refresh failure: HTTP {}{}: {}", status, diag,
+        truncate(&body.split_whitespace().collect::<Vec<_>>().join(" "), 300)
+    ));
 }
 
 fn classify_with_retry(

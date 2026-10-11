@@ -10,8 +10,8 @@ export const setupStrings = {
   cancel: "やめる",
   launch: "開く",
   layout: "レイアウト",
-  agents: (paneCount: number) => `エージェント (${paneCount} ペイン)`,
+  agents: (paneCount: number) => `エージェント (${paneCount} タブ)`,
   modelPlaceholder: "モデル（既定）",
-  paneModelLabel: (slot: number) => `ペイン ${slot} のモデル`,
-  paneEffortLabel: (slot: number) => `ペイン ${slot} の thinking`,
+  paneModelLabel: (slot: number) => `タブ ${slot} のモデル`,
+  paneEffortLabel: (slot: number) => `タブ ${slot} の thinking`,
 } as const;

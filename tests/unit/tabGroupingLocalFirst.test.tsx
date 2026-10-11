@@ -209,7 +209,7 @@ describe("local plan on a cold open", () => {
         reason: "有効なプランがありません",
         issues: [
           { scope: "response", reason: "有効なプランがありません" },
-          { scope: "plan", planId: "bad", planTitle: "案件案", reason: "layout が未知のペインを含みます" },
+          { scope: "plan", planId: "bad", planTitle: "案件案", reason: "layout が未知のタブを含みます" },
         ],
         raw: '{"plans":[]}', validPlans: [],
       },
@@ -224,7 +224,7 @@ describe("local plan on a cold open", () => {
 
     expect(document.body.textContent).toContain(LOCAL_GROUPING_PLAN_TITLE);
     expect(document.body.textContent).toContain(tabGroupingStrings.judgeFailedKeepingCurrent);
-    expect(document.body.textContent).toContain("案件案: layout が未知のペインを含みます");
+    expect(document.body.textContent).toContain("案件案: layout が未知のタブを含みます");
     expect(document.querySelector("details")?.open).toBe(false);
     expect(button(tabGroupingStrings.editPlan).disabled).toBe(false);
     expect(button(tabGroupingStrings.confirmPlan).disabled).toBe(false);
@@ -272,7 +272,7 @@ describe("local plan on a cold open", () => {
     analysisHarness.value = invalidAnalysis();
     await act(async () => analysisHarness.release?.());
     await settle();
-    expect(document.body.textContent).toContain("案件案: layout が未知のペインを含みます");
+    expect(document.body.textContent).toContain("案件案: layout が未知のタブを含みます");
     expect(document.querySelector("details")?.open).toBe(false);
     expect(button(tabGroupingStrings.editPlan).disabled).toBe(true);
   });

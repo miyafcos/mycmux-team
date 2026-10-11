@@ -270,7 +270,7 @@ fn aggregates(catalog: &mut Catalog) {
                 },
                 read_timing: timing.into(),
                 evidence: if kind == "skillListing" {
-                    "measured"
+                    service.session.listing.evidence.as_deref().unwrap_or("measured")
                 } else {
                     "declaration"
                 }

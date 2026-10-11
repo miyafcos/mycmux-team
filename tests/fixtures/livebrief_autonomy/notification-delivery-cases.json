@@ -1,0 +1,1249 @@
+[
+  {
+    "name": "user-only then remove-only",
+    "steps": [
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "dequeue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>"
+          }
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "finished"
+              }
+            ],
+            "stop_reason": "end_turn"
+          }
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "remove",
+          "reason": "absorbed_mid_turn",
+          "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>",
+          "commandUuid": "B"
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "finished"
+              }
+            ],
+            "stop_reason": "end_turn"
+          }
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "dequeue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+          }
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "finished"
+              }
+            ],
+            "stop_reason": "end_turn"
+          }
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "done"
+      }
+    ]
+  },
+  {
+    "name": "remove-only then user-only",
+    "steps": [
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "remove",
+          "reason": "absorbed_mid_turn",
+          "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>",
+          "commandUuid": "A"
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "finished"
+              }
+            ],
+            "stop_reason": "end_turn"
+          }
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "dequeue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>"
+          }
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "finished"
+              }
+            ],
+            "stop_reason": "end_turn"
+          }
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "dequeue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+          }
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "finished"
+              }
+            ],
+            "stop_reason": "end_turn"
+          }
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "done"
+      }
+    ]
+  },
+  {
+    "name": "prequeued same-content remove plus user consumes one",
+    "steps": [
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 2
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "remove",
+          "reason": "absorbed_mid_turn",
+          "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>",
+          "commandUuid": "A"
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+          }
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "finished"
+              }
+            ],
+            "stop_reason": "end_turn"
+          }
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+          }
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "finished"
+              }
+            ],
+            "stop_reason": "end_turn"
+          }
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "done"
+      }
+    ]
+  },
+  {
+    "name": "prequeued same-content user plus late-ID remove consumes one",
+    "steps": [
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 2
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+          }
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "remove",
+          "reason": "absorbed_mid_turn",
+          "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>",
+          "commandUuid": "A"
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "finished"
+              }
+            ],
+            "stop_reason": "end_turn"
+          }
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "remove",
+          "reason": "absorbed_mid_turn",
+          "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>",
+          "commandUuid": "B"
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "finished"
+              }
+            ],
+            "stop_reason": "end_turn"
+          }
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "done"
+      }
+    ]
+  },
+  {
+    "name": "J3 dequeue A before enqueue B then user A and late-ID remove B",
+    "steps": [
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running",
+        "expectedLastEventAtOffsetMs": 6000
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "dequeue"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running",
+        "expectedLastEventAtOffsetMs": 6000
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 2
+        },
+        "display": "running",
+        "expectedLastEventAtOffsetMs": 8000
+      },
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>"
+          }
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running",
+        "expectedLastEventAtOffsetMs": 9000
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "remove",
+          "reason": "absorbed_mid_turn",
+          "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>",
+          "commandUuid": "B"
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running",
+        "expectedLastEventAtOffsetMs": 10000
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 2
+        },
+        "display": "running",
+        "expectedLastEventAtOffsetMs": 11000
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "dequeue"
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 2
+        },
+        "display": "running",
+        "expectedLastEventAtOffsetMs": 11000
+      },
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+          }
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running",
+        "expectedLastEventAtOffsetMs": 13000
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "stop_reason": "end_turn",
+            "content": []
+          }
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running",
+        "expectedLastEventAtOffsetMs": 14000
+      }
+    ],
+    "expectationCorrection": "FIX-5 ANSWER-FIX5-1: observable input is indistinguishable from K1. Without a delivery ID linking enqueue/dequeue/user, the late remove may be A's duplicate or B's delivery. Keep the possible undelivered notice; the completed-turn safety net bounds it at 30 minutes.",
+    "undeliveredPolls": [
+      {
+        "atStep": 8,
+        "elapsedMs": 1000,
+        "display": "running"
+      },
+      {
+        "atStep": 8,
+        "elapsedMs": 1799000,
+        "display": "running"
+      },
+      {
+        "atStep": 8,
+        "elapsedMs": 1800000,
+        "display": "done"
+      }
+    ]
+  },
+  {
+    "name": "J3 prequeued A and B then remove A and dequeue B to user B",
+    "steps": [
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 2
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "remove",
+          "reason": "absorbed_mid_turn",
+          "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>",
+          "commandUuid": "A"
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "dequeue"
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>"
+          }
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "dequeue"
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+          }
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "stop_reason": "end_turn",
+            "content": []
+          }
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "done"
+      }
+    ]
+  },
+  {
+    "name": "J3 identified dequeued A user plus remove leaves B pending",
+    "steps": [
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>",
+          "commandUuid": "A"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "dequeue",
+          "commandUuid": "A"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>",
+          "commandUuid": "B"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 2
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>"
+          }
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "remove",
+          "reason": "absorbed_mid_turn",
+          "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>",
+          "commandUuid": "A"
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "stop_reason": "end_turn",
+            "content": []
+          }
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "dequeue",
+          "commandUuid": "B"
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "<task-notification><task-id>id-00592</task-id><status>running</status></task-notification>"
+          }
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 1,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "enqueue",
+          "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "queue-operation",
+          "operation": "dequeue"
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 1
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"
+          }
+        },
+        "expected": {
+          "turnState": "active",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "running"
+      },
+      {
+        "record": {
+          "type": "assistant",
+          "message": {
+            "stop_reason": "end_turn",
+            "content": []
+          }
+        },
+        "expected": {
+          "turnState": "complete",
+          "openToolCount": 0,
+          "armedBackgroundCount": 0,
+          "backgroundState": "known",
+          "pendingNotificationCount": 0
+        },
+        "display": "done"
+      }
+    ]
+  },
+  {
+    "name": "K1 anonymous dequeue user then remove; B via user",
+    "note": "Synthetic records follow the supplied skeleton keys. Anonymous dequeue plus both receipts of A must leave B possible; later B user/remove settles it, otherwise complete reaches the existing 30-minute safety net.",
+    "steps": [
+      {"record":{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":6000},
+      {"record":{"type":"queue-operation","operation":"dequeue"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":6000},
+      {"record":{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":2},"display":"running","expectedLastEventAtOffsetMs":8000},
+      {"record":{"type":"user","message":{"role":"user","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"}},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":9000},
+      {"record":{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>","commandUuid":"opaque-A"},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":10000},
+      {"record":{"type":"assistant","message":{"stop_reason":"end_turn","content":[]}},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":11000},
+      {"record":{"type":"user","message":{"role":"user","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"}},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":0},"display":"running","expectedLastEventAtOffsetMs":12000},
+      {"record":{"type":"assistant","message":{"stop_reason":"end_turn","content":[]}},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":0},"display":"done","expectedLastEventAtOffsetMs":13000}
+    ],
+    "undeliveredPolls": [
+      {"atStep":5,"elapsedMs":1000,"display":"running"},
+      {"atStep":5,"elapsedMs":1799000,"display":"running"},
+      {"atStep":5,"elapsedMs":1800000,"display":"done"}
+    ]
+  },
+  {
+    "name": "K1 anonymous dequeue user then remove; B via remove",
+    "note": "Synthetic records follow the supplied skeleton keys. Anonymous dequeue plus both receipts of A must leave B possible; later B user/remove settles it, otherwise complete reaches the existing 30-minute safety net.",
+    "steps": [
+      {"record":{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":6000},
+      {"record":{"type":"queue-operation","operation":"dequeue"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":6000},
+      {"record":{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":2},"display":"running","expectedLastEventAtOffsetMs":8000},
+      {"record":{"type":"user","message":{"role":"user","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"}},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":9000},
+      {"record":{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>","commandUuid":"opaque-A"},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":10000},
+      {"record":{"type":"assistant","message":{"stop_reason":"end_turn","content":[]}},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":11000},
+      {"record":{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>","commandUuid":"opaque-B"},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":0},"display":"running","expectedLastEventAtOffsetMs":12000},
+      {"record":{"type":"assistant","message":{"stop_reason":"end_turn","content":[]}},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":0},"display":"done","expectedLastEventAtOffsetMs":13000}
+    ],
+    "undeliveredPolls": [
+      {"atStep":5,"elapsedMs":1000,"display":"running"},
+      {"atStep":5,"elapsedMs":1799000,"display":"running"},
+      {"atStep":5,"elapsedMs":1800000,"display":"done"}
+    ]
+  },
+  {
+    "name": "K1 anonymous dequeue remove then user; B via user",
+    "note": "Synthetic records follow the supplied skeleton keys. Anonymous dequeue plus both receipts of A must leave B possible; later B user/remove settles it, otherwise complete reaches the existing 30-minute safety net.",
+    "steps": [
+      {"record":{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":6000},
+      {"record":{"type":"queue-operation","operation":"dequeue"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":6000},
+      {"record":{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":2},"display":"running","expectedLastEventAtOffsetMs":8000},
+      {"record":{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>","commandUuid":"opaque-A"},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":9000},
+      {"record":{"type":"user","message":{"role":"user","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"}},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":10000},
+      {"record":{"type":"assistant","message":{"stop_reason":"end_turn","content":[]}},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":11000},
+      {"record":{"type":"user","message":{"role":"user","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"}},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":0},"display":"running","expectedLastEventAtOffsetMs":12000},
+      {"record":{"type":"assistant","message":{"stop_reason":"end_turn","content":[]}},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":0},"display":"done","expectedLastEventAtOffsetMs":13000}
+    ],
+    "undeliveredPolls": [
+      {"atStep":5,"elapsedMs":1000,"display":"running"},
+      {"atStep":5,"elapsedMs":1799000,"display":"running"},
+      {"atStep":5,"elapsedMs":1800000,"display":"done"}
+    ]
+  },
+  {
+    "name": "K1 anonymous dequeue remove then user; B via remove",
+    "note": "Synthetic records follow the supplied skeleton keys. Anonymous dequeue plus both receipts of A must leave B possible; later B user/remove settles it, otherwise complete reaches the existing 30-minute safety net.",
+    "steps": [
+      {"record":{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":6000},
+      {"record":{"type":"queue-operation","operation":"dequeue"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":6000},
+      {"record":{"type":"queue-operation","operation":"enqueue","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":2},"display":"running","expectedLastEventAtOffsetMs":8000},
+      {"record":{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>","commandUuid":"opaque-A"},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":9000},
+      {"record":{"type":"user","message":{"role":"user","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>"}},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":10000},
+      {"record":{"type":"assistant","message":{"stop_reason":"end_turn","content":[]}},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":1},"display":"running","expectedLastEventAtOffsetMs":11000},
+      {"record":{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","content":"<task-notification><task-id>id-00592</task-id><status>completed</status></task-notification>","commandUuid":"opaque-B"},"expected":{"turnState":"active","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":0},"display":"running","expectedLastEventAtOffsetMs":12000},
+      {"record":{"type":"assistant","message":{"stop_reason":"end_turn","content":[]}},"expected":{"turnState":"complete","openToolCount":0,"armedBackgroundCount":0,"backgroundState":"known","pendingNotificationCount":0},"display":"done","expectedLastEventAtOffsetMs":13000}
+    ],
+    "undeliveredPolls": [
+      {"atStep":5,"elapsedMs":1000,"display":"running"},
+      {"atStep":5,"elapsedMs":1799000,"display":"running"},
+      {"atStep":5,"elapsedMs":1800000,"display":"done"}
+    ]
+  }
+]

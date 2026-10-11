@@ -10,7 +10,7 @@ fn fixture() -> (tempfile::TempDir, std::path::PathBuf) {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/skills_home");
     let pocket = std::env::var_os("MYCMUX_POCKET_SOURCE");
     if let Some(pocket) = pocket {
-        let output = std::process::Command::new(if cfg!(windows) { "python" } else { "python3" })
+        let output = std::process::Command::new(if cfg!(windows) { "python" } else { "python3" }).arg("-B")
             .arg("-X")
             .arg("utf8")
             .arg(fixture.join("prepare_home.py"))
@@ -26,7 +26,7 @@ fn fixture() -> (tempfile::TempDir, std::path::PathBuf) {
             String::from_utf8_lossy(&output.stderr)
         );
     } else {
-        let output=std::process::Command::new(if cfg!(windows) { "python" } else { "python3" }).arg("-X").arg("utf8").arg("-c").arg("import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); from prepare_home import prepare; prepare(Path(sys.argv[2]))").arg(&fixture).arg(&home).output().unwrap();
+        let output=std::process::Command::new(if cfg!(windows) { "python" } else { "python3" }).arg("-B").arg("-X").arg("utf8").arg("-c").arg("import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); from prepare_home import prepare; prepare(Path(sys.argv[2]))").arg(&fixture).arg(&home).output().unwrap();
         assert!(
             output.status.success(),
             "{}",

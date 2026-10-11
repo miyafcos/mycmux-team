@@ -25,6 +25,7 @@ const eventMocks = vi.hoisted(() => ({
 
 vi.mock("../../src/components/workspace/webPaneApi", () => apiMocks);
 vi.mock("@tauri-apps/api/event", () => ({ listen: eventMocks.listen }));
+vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ listen: eventMocks.listen }) }));
 
 import WebPaneController from "../../src/components/workspace/WebPaneController";
 

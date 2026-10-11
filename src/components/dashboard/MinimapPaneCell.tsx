@@ -46,12 +46,12 @@ export function MinimapPaneCell({ cell, workspaceId, selectedTabId, selectedTabI
     style={{ flexGrow: cell.heightShare, minHeight }}
   >
     <div
-      className="cmux-minimap-pane-grip"
+      className={`cmux-minimap-pane-grip${cell.chips.length === 0 ? " is-empty" : ""}`}
       data-minimap-pane-grip=""
-      title="タブを移動"
+      title={cell.chips.length === 0 ? undefined : cell.chips.length > 1 ? "このタブと裏のタブを移動" : "このタブを移動"}
       aria-hidden="true"
     />
-    {cell.chips.length === 0 ? <span className="cmux-minimap-pane-empty">空きタブ</span> : null}
+    {cell.chips.length === 0 ? <span className="cmux-minimap-pane-empty">空き位置</span> : null}
     {cell.chips.map((chip) => {
       const openColumn = openColumnByTabId.get(chip.tabId);
       return <MinimapTabChip key={chip.tabId} chip={chip} workspaceId={workspaceId} paneId={cell.paneId} selected={!isDragSource && chip.tabId === selectedTabId} open={openColumn !== undefined} columnColor={openColumn === undefined ? undefined : chatColumnColor(openColumn)} selectedTabIds={selectedTabIds} groupPulseTabIds={groupPulseTabIds} displayState={displayStateByTabId.get(chip.tabId) ?? "idle"} collapsed={!expanded} now={now} onSelect={onSelect} onSelectGroup={onSelectGroup} onJump={onJump} />;

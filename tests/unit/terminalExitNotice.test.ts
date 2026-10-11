@@ -9,7 +9,7 @@ describe("PTY exit notice", () => {
     const report = createPtyExitReporter(write, onExit);
     report();
     report();
-    expect(PTY_EXIT_NOTICE).toBe("\r\n\x1b[2m[プロセスは終了しました。このペインを閉じるか、新しいペインを開いてください]\x1b[0m\r\n");
+    expect(PTY_EXIT_NOTICE).toBe("\r\n\x1b[2m[プロセスは終了しました。このタブを閉じるか、新しいタブを開いてください]\x1b[0m\r\n");
     expect(order).toEqual([PTY_EXIT_NOTICE, "onExit"]);
     expect(write).toHaveBeenCalledOnce();
     expect(onExit).toHaveBeenCalledOnce();

@@ -14,7 +14,8 @@ def test_kill_does_not_wait_for_hook_reply_and_teardown_uses_the_blocking_pool()
     body = function_body(text("src-tauri/src/commands/terminal.rs"), "kill_session")
     assert "queue_session_drain(&session_id)" in body
     assert ".drain_session(" not in body
-    assert body.index("queue_session_drain") < body.index('run_blocking("kill_session"') < body.index("manager.kill(")
+    # L16 (INTEG-2b): retire under the lifecycle gate inside the blocking closure, then tear the retired object down.
+    assert body.index("queue_session_drain") < body.index('run_blocking("kill_session"') < body.index("manager.retire(") < body.index("session.kill()")
     assert "}).await" in body
     queue = function_body(text("src-tauri/src/agent_state/hook.rs"), "queue_session_drain")
     assert ".try_send(" in queue

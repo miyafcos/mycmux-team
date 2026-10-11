@@ -481,7 +481,7 @@ function ArtifactEditorToolbarImpl({
       </div>
 
       {isEditing && canUseEditor && (
-      <div style={commandRowStyle}>
+      <div data-artifact-edit-controls="true" style={commandRowStyle}>
         <div style={groupStyle} role="group" aria-label={artifactEditorStrings.fileActions}>
           <span style={groupLabelStyle}>File</span>
           <ToolbarButton

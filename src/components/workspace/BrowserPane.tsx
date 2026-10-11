@@ -22,6 +22,9 @@ import {
 } from "../../lib/browserPanePreview";
 import { installPreviewLinkHandler } from "../../lib/previewLinks";
 import { isChildWebviewPreview } from "./WebPaneController";
+import { displayedPaneShortcutSource } from "./webPaneShortcuts";
+import { useUiStore } from "../../stores/uiStore";
+import { capturePaneFocusReturn } from "../../lib/focusController";
 import HtmlReviewDraftBar from "./HtmlReviewDraftBar";
 import { supportsHtmlReviewDraft } from "../../lib/htmlReviewDraft";
 import ArtifactEditorToolbar, {
@@ -42,6 +45,8 @@ interface BrowserPaneProps {
    * it -- the dashboard's preview column -- the document stays in a frame.
    */
   tabId?: string;
+  /** A dashboard column forwards only dashboard actions and never selects a pane. */
+  isDashboardPreview?: boolean;
   /** Bump to force iframe remount when the same htmlPath is re-emitted. */
   reloadKey: number;
   isDirty: boolean;
@@ -58,6 +63,9 @@ interface BrowserPaneProps {
 }
 
 const EDITOR_STYLE_ID = "mycmux-artifact-editor-style";
+const DASHBOARD_PREVIEW_ACTIONS = new Set([
+  "dashboard.open", "dashboard.column.prev", "dashboard.column.next", "dashboard.column.close", "dashboard.column.pin",
+]);
 const OFFICE_PAGE_CLASS = "mycmux-doc-page";
 
 function removeScripts(doc: Document): void {
@@ -463,6 +471,7 @@ function runTableCommand(doc: Document, command: ArtifactEditorCommand): boolean
 
 function BrowserPaneImpl({
   tabId,
+  isDashboardPreview = false,
   htmlPath,
   sourcePath,
   sourceKind,
@@ -475,6 +484,7 @@ function BrowserPaneImpl({
   onOpenLocalPath,
 }: BrowserPaneProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const markdownEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const inputCleanupRef = useRef<(() => void) | null>(null);
   const selectionRangeRef = useRef<Range | null>(null);
   const preserveEditAfterSaveRef = useRef(false);
@@ -484,6 +494,7 @@ function BrowserPaneImpl({
   const onDirtyChangeRef = useRef(onDirtyChange);
   const onSavedRef = useRef(onSaved);
   const [isEditing, setIsEditing] = useState(false);
+  const browserRootRef = useRef<HTMLDivElement>(null);
   const [dirty, setDirty] = useState(isDirty);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -684,6 +695,47 @@ function BrowserPaneImpl({
     }
     if (!doc) return;
 
+    const activateSource = (): boolean => {
+      if (isDashboardPreview) return false;
+      const tab = tabId ? displayedPaneShortcutSource(tabId) : undefined;
+      if (!tab || tab.type !== "browser") return false;
+      if (useUiStore.getState().activePaneId === tab.sessionId) useUiStore.getState().bumpFocusRevision();
+      useUiStore.getState().setActivePaneId(tab.sessionId);
+      return true;
+    };
+    const ignoredPointerTarget = (target: EventTarget | null): boolean => {
+      const element = target as Element | null;
+      return Boolean(element?.closest?.("button,a,input,textarea,select,iframe,[contenteditable='true']"));
+    };
+    const modified = (event: PointerEvent): boolean => event.shiftKey || event.altKey || event.ctrlKey || event.metaKey;
+    let pendingClick: { pointerId: number; x: number; y: number; selection: string } | null = null;
+    const pointerDown = (event: PointerEvent): void => {
+      pendingClick = null;
+      if (event.button !== 0 || modified(event) || ignoredPointerTarget(event.target)) return;
+      pendingClick = { pointerId: event.pointerId, x: event.clientX, y: event.clientY,
+        selection: doc.getSelection()?.toString().trim() ?? "" };
+    };
+    const pointerUp = (event: PointerEvent): void => {
+      const pending = pendingClick;
+      pendingClick = null;
+      if (!pending || pending.pointerId !== event.pointerId || event.button !== 0
+        || modified(event) || ignoredPointerTarget(event.target)
+        || Math.hypot(event.clientX - pending.x, event.clientY - pending.y) > 5) return;
+      const selection = doc.getSelection()?.toString().trim() ?? "";
+      if (selection && selection !== pending.selection) return;
+      activateSource();
+    };
+    const pointerCancel = (): void => { pendingClick = null; };
+    doc.addEventListener("pointerdown", pointerDown, true);
+    doc.addEventListener("pointerup", pointerUp, true);
+    doc.addEventListener("pointercancel", pointerCancel, true);
+    const detachPointerActivation = (): void => {
+      pendingClick = null;
+      doc.removeEventListener("pointerdown", pointerDown, true);
+      doc.removeEventListener("pointerup", pointerUp, true);
+      doc.removeEventListener("pointercancel", pointerCancel, true);
+    };
+
     const forwardShortcut = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
 
@@ -725,6 +777,11 @@ function BrowserPaneImpl({
 
       const actions = getActionsForEvent(event);
       if (actions.length === 0) return;
+      // Hidden or closing documents can leave queued events behind. Never send
+      // their routing keys to whichever terminal happened to be active before.
+      if (isDashboardPreview) {
+        if (!actions.every(action => DASHBOARD_PREVIEW_ACTIONS.has(action))) return;
+      } else if (!activateSource()) return;
 
       if (actions.includes("pane.zoom.toggle")) {
         event.preventDefault();
@@ -746,7 +803,10 @@ function BrowserPaneImpl({
         cancelable: true,
       });
 
-      const handled = !window.dispatchEvent(forwarded) || forwarded.defaultPrevented;
+      // Dashboard column actions are handled by the parent document's capture
+      // listener; its toggle then bubbles to AppShell's window listener.
+      const target = isDashboardPreview ? (iframeRef.current?.ownerDocument ?? document) : window;
+      const handled = !target.dispatchEvent(forwarded) || forwarded.defaultPrevented;
       if (handled) {
         event.preventDefault();
         event.stopPropagation();
@@ -769,6 +829,7 @@ function BrowserPaneImpl({
       const previewDoc = doc;
       const cleanups: Array<() => void> = [
         () => previewDoc.removeEventListener("keydown", forwardShortcut, true),
+        detachPointerActivation,
         detachPreviewLinks,
       ];
 
@@ -799,6 +860,7 @@ function BrowserPaneImpl({
     doc.addEventListener("paste", markDirty);
     inputCleanupRef.current = () => {
       detachPreviewLinks();
+      detachPointerActivation();
       doc.removeEventListener("keydown", forwardShortcut, true);
       doc.removeEventListener("selectionchange", rememberSelection);
       doc.removeEventListener("keyup", rememberSelection);
@@ -808,7 +870,7 @@ function BrowserPaneImpl({
       doc.removeEventListener("paste", markDirty);
     };
     doc.body.focus();
-  }, [getActionsForEvent, isEditing, onZoomToggle, sourceKind, updateDirty]);
+  }, [getActionsForEvent, isDashboardPreview, isEditing, onZoomToggle, sourceKind, tabId, updateDirty]);
 
   const getEditableDocument = useCallback((): Document | null => {
     return iframeRef.current?.contentDocument ?? null;
@@ -925,6 +987,16 @@ function BrowserPaneImpl({
 
   const handleCancel = useCallback(() => {
     if (dirty && !window.confirm("Discard unsaved edits?")) return;
+    const root = browserRootRef.current;
+    // Toolbar mousedown deliberately keeps focus in the editor. Cancel removes
+    // Markdown's textarea and replaces the edit iframe (its React key changes).
+    // Only edit content/tools disappear; surviving tools and outside focus stay.
+    const active = root?.ownerDocument.activeElement;
+    if (root && active instanceof HTMLElement && root.contains(active)
+      && (active === markdownEditorRef.current || active === iframeRef.current
+        || active.closest("[data-artifact-edit-controls]"))) {
+      capturePaneFocusReturn(root, null)(active);
+    }
     inputCleanupRef.current?.();
     inputCleanupRef.current = null;
     setIsEditing(false);
@@ -978,6 +1050,7 @@ function BrowserPaneImpl({
 
   return (
     <div
+      ref={browserRootRef}
       style={{
         position: "absolute",
         inset: 0,
@@ -1047,6 +1120,7 @@ function BrowserPaneImpl({
         />
       ) : sourceKind === "pdf" ? (
         <embed
+          data-browser-pane-tab-id={tabId}
           key={`${resolvedPreviewPath}#${reloadKey}#${localReloadKey}`}
           src={src}
           type="application/pdf"
@@ -1062,6 +1136,7 @@ function BrowserPaneImpl({
         />
       ) : isEditing && sourceKind === "markdown" ? (
         <textarea
+          ref={markdownEditorRef}
           value={markdownDraft}
           spellCheck
           title={sourcePath ?? htmlPath}
@@ -1103,6 +1178,7 @@ function BrowserPaneImpl({
       ) : (
       <iframe
         ref={iframeRef}
+        data-browser-pane-tab-id={tabId}
         key={
           isEditing
             ? `${sourcePath ?? htmlPath}#edit#${reloadKey}`

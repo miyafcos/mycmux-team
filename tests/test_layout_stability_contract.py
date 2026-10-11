@@ -255,7 +255,7 @@ def test_browser_preview_panes_are_not_persisted_as_empty_terminal_panes() -> No
         "const keepPane = !pane.tabs || pane.tabs.length > 0;",
         ".map(dropEmptyTabPanesFromConfig)",
         ".filter((cfg) => cfg.panes.length > 0)",
-        ': pane.tabs.filter((tab) => tab.type !== "browser" && !tab.ephemeral);',
+        ': pane.tabs.filter(isPersistentTab);',
         "if (persistedTabs.length === 0) return null;",
         "const droppedEphemeralPane = paneEntries.length !== ws.panes.length;",
         "column_widths: droppedEphemeralPane ? null : normalizeColumnWidths(ws, splitColumns),",
@@ -433,9 +433,12 @@ def test_selection_copy_listener_survives_cached_terminal_remounts() -> None:
         "if (isActiveTerminalInputTarget(sessionId)) {",
         "refocusActiveTerminalIfNeeded();",
         "if (!selectedText) {\n      restoreSelectionFocus();\n      return;\n    }",
-        "copyTextToClipboard(selectedText, restoreSelectionFocus);",
+        "copyTextToClipboard(selectedText, restoreSelectionFocus, selectionStillCurrent);",
+        "const selectionStillCurrent = (): boolean => useUiStore.getState().focusRevision === revision;",
+        "if (!selectionStillCurrent()) return;",
         ".then(() => restoreFocus?.())",
-        ".catch(() => fallbackCopyTextToClipboard(text, restoreFocus))",
+        ".catch(() => canUseFallback() ? fallbackCopyTextToClipboard(text, restoreFocus) : false)",
+        "showCopyResultToast(text, canUseFallback() ? fallbackCopyTextToClipboard(text, restoreFocus) : false);",
         "const flushContextMenuSelectionCopy = () => {",
         'termElement?.addEventListener("contextmenu", flushContextMenuSelectionCopy);',
         'termElement?.removeEventListener("contextmenu", flushContextMenuSelectionCopy);',
@@ -486,7 +489,10 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
     focus_controller = read_repo_text("src/lib/focusController.ts")
     for snippet in [
         # xterm focus restore machinery now lives in the focusController
-        'el?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")',
+        'const textarea = Array.from(el?.querySelectorAll<HTMLTextAreaElement>(".xterm-helper-textarea") ?? [])\n'
+        '    .find(candidate => !candidate.closest("[hidden],[aria-hidden=\'true\']"));',
+        "if (textarea) {\n    textarea.focus();\n    return true;\n  }\n  return false;",
+        "if (composerHoldsFocus() || useUiStore.getState().focusRevision !== revision) return;",
         "const TERMINAL_FOCUS_RETRY_LIMIT = 8;",
         "function focusSessionSoon(",
         "function focusPaneSoon(paneId: string | null | undefined): void",
@@ -500,11 +506,19 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
         "const isSelectionButton = event.button === 0 || event.button === 2;",
         'focusController.request("pointer", {',
         'action: "pending",',
-        "if (event.button === 2) {\n      pendingPaneClickActivationRef.current = null;\n      activatePane();\n      return;\n    }",
+        "if (focusTerminal) {\n      focusController.request(\"pointer\", {\n"
+        "        sessionId: tab.sessionId,\n        paneId: pane.id,\n        action: \"pending\",\n"
+        "        pointerId: event.pointerId,\n        focus: true,\n      });\n"
+        "      if (event.button === 2) {\n        pendingPaneClickActivationRef.current = null;\n"
+        "        activatePane();\n        return;\n      }\n    }",
         "const handlePanePointerUpCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {",
         "function getDocumentSelectionText(): string",
         'target.closest(".xterm-helper-textarea")',
-        "pendingPaneClickActivationRef.current = {\n      sessionId: tab.sessionId,\n      pointerId: event.pointerId,\n      x: event.clientX,\n      y: event.clientY,\n      selectionText: getDocumentSelectionText(),\n    };",
+        "pendingPaneClickActivationRef.current = {\n      sessionId: tab.sessionId,\n      pointerId: event.pointerId,\n"
+        "      button: event.button,\n      focusTerminal,\n      x: event.clientX,\n      y: event.clientY,\n"
+        "      selectionText: getDocumentSelectionText(),\n    };",
+        "const selectNonTerminalPane = useCallback(() => {",
+        "if (event.detail !== 0 || event.button !== 0 || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;",
         "const nextSelectionText = getDocumentSelectionText();",
         "if (nextSelectionText && nextSelectionText !== pending.selectionText) {\n      abortPendingActivation();\n      return;\n    }",
         'focusController.request("pointer", { sessionId: pending.sessionId, action: "abort" });',
@@ -618,7 +632,7 @@ def test_pane_tab_rename_double_click_does_not_steal_focus() -> None:
         "event.stopPropagation();",
         "suppressNextTabClick();",
         "startEditingTab(tab.id, label);",
-        "onClick={(event) => {\n                if (event.detail >= 2) {",
+        "onClick={(event) => {\n        if (event.detail >= 2) {",
         "if (isEditingTab || focusController.shouldSuppressTabClick() || shouldSuppressClick()) {",
         "<PaneTabRenameEditor",
         "if (pendingTabClickRef.current !== null) clearTimeout(pendingTabClickRef.current);",
@@ -657,7 +671,7 @@ def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
         "const inputData = stripTerminalMouseInputSequences(data);",
         "function wheelEventToSgrMouseReport(currentTerm: Terminal, event: WheelEvent, lines: number): string | null",
         "export function shouldForwardWheelToApplication(",
-        "function attachTerminalWheelScroll(container: HTMLElement, currentTerm: Terminal, sessionId: string, forceMouseReport: boolean): () => void",
+        "function attachTerminalWheelScroll(container: HTMLElement, currentTerm: Terminal, sessionId: string, forceMouseReport: boolean, history?: TerminalHistoryWheelAdmission): () => void",
         "const wheelScrollContainer: HTMLElement = container;",
         "event.preventDefault();\n    event.stopPropagation();\n    event.stopImmediatePropagation();",
         "const forceWheelMouseReport = startsAsAgentTui(command, args, agentId, agentKind, launchEnv);",
@@ -666,8 +680,8 @@ def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
         "event.shiftKey,",
         "chunkedWrite(sessionId, report);",
         "currentTerm.scrollLines(lines);",
-        "removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, cached.term, sessionId, forceWheelMouseReport);",
-        "removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, term, sessionId, forceWheelMouseReport);",
+        "removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, cached.term, sessionId, forceWheelMouseReport, historyAdmission);",
+        "removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, term, sessionId, forceWheelMouseReport, historyAdmission);",
         "removeWheelScrollGuard?.();",
         "hasNonWheelInput: hasTerminalUserInput(inputData),",
         "return focusController.shouldSuppressWheelFocusInput(sessionId);",
@@ -783,7 +797,7 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         "let scrollbackSyncInFlight: Promise<boolean> | null = null;",
         "let frontendChannelReady = false;",
         'scrollbackSnapshot = await withTerminalDeadline(getSessionScrollback(sessionId), "get_session_scrollback");',
-        "if (generation !== pumpGeneration || disposed || termDisposed || !term || !canWritePendingBatches()) return false;",
+        "if (!currentPtyRead(sessionId, readGeneration) || generation !== pumpGeneration || disposed || termDisposed || !term || !canWritePendingBatches()) return false;",
         "const tailStart = findLastSubarray(scrollback, knownTail);",
         "sliceBatchAfterScrollbackOffset(",
         "lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;",
@@ -837,6 +851,40 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         "scheduleFullRefresh(replayTerm, [0, 48, 160]);",
     ]:
         assert_contains(terminal_sources, snippet, "src/components/terminal/*")
+
+    # The post-IPC guard still rejects unwritable/disposed/replaced terminals,
+    # and now also rejects a retired PTY read generation before touching bytes.
+    sync = xterm_wrapper.split("const performBackendScrollbackSync =", 1)[1].split(
+        "const syncBackendScrollbackToTerminal =", 1,
+    )[0]
+    guard = "if (!currentPtyRead(sessionId, readGeneration) || generation !== pumpGeneration || disposed || termDisposed || !term || !canWritePendingBatches()) return false;"
+    assert sync.index("await withTerminalDeadline(getSessionScrollback(sessionId)") < sync.index(guard)
+    assert sync.index(guard) < sync.index("const scrollback = new Uint8Array(scrollbackSnapshot.data);")
+
+    # ACK without parsing: window-only parking retains the exact batch, while
+    # other unwritable layouts preserve backend catch-up via scrollback resync.
+    pump = xterm_wrapper.split("async function pumpTerminalWrites()", 1)[1].split(
+        "removePtyReplayTarget =", 1,
+    )[0]
+    parked = pump.split("if (!canWritePendingBatches()) {", 1)[1].split("currentPendingBatch = pending;", 1)[0]
+    assert """if (!isContainerWritable() && !isParkedByWindowOnly()) {
+              terminalScrollbackResyncNeeded.add(sessionId);
+              ackPendingBatch(pending);
+              continue;
+            }
+            ackPendingBatch(pending);
+            pendingBatches.unshift(pending);""" in parked
+    assert "schedulePendingWriteDrain();" in parked and "break;" in parked
+    enqueue = xterm_wrapper.split("const enqueueFrontendBatch =", 1)[1].split("let recoveryLaunch:", 1)[0]
+    assert """if (!isContainerWritable() && !isParkedByWindowOnly()) {
+        terminalScrollbackResyncNeeded.add(sessionId);
+        ackBatch(batch);
+        return;
+      }""" in enqueue
+    assert enqueue.index("pendingBatches.push(pending);") < enqueue.index("if (canWritePendingBatches()) {")
+    assert """} else {
+        ackPendingBatch(pending);
+        if (isContainerWritable()) {""" in enqueue
 
     # A failed pull is bounded independently from the ACK/layout safeguards.
     assert "const SCROLLBACK_RETRY_MAX_FAILURES = 6;" in xterm_wrapper
@@ -925,7 +973,7 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
 
     replay_write = xterm_wrapper.index("await writeTerminalOutput(")
     replay_tail = xterm_wrapper.index("replaceTerminalRawTail(sessionId, scrollback);", replay_write)
-    replay_disposed = xterm_wrapper.index("if (generation !== pumpGeneration || disposed || termDisposed) return false;", replay_write)
+    replay_disposed = xterm_wrapper.index("if (!currentPtyRead(sessionId, readGeneration) || generation !== pumpGeneration || disposed || termDisposed) return false;", replay_write)
     assert replay_write < replay_disposed < replay_tail
 
     assert_contains(ipc, "export async function getSessionScrollback(\n  sessionId: string, since?: ScrollbackCursor,", "src/lib/ipc.ts")

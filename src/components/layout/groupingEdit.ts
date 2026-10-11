@@ -212,6 +212,7 @@ function stripTabs(plan: GroupingPlan, moving: ReadonlySet<string>): GroupingPla
       tabIds: strip(group.tabIds),
       layout: group.layout ? {
         columns: group.layout.columns.map((column) => ({
+          ...column,
           panes: column.panes.map((pane) => ({ ...pane, tabIds: strip(pane.tabIds) })),
         })),
       } : null,
@@ -286,6 +287,7 @@ function restoredLayout(layout: GroupingLayout, currentTabIds: readonly string[]
   const allowed = new Set(currentTabIds);
   const placed = new Set<string>();
   const columns = layout.columns.map((column) => ({
+    ...column,
     panes: column.panes.map((pane) => ({
       ...pane,
       tabIds: pane.tabIds.filter((tabId) => {
@@ -341,6 +343,7 @@ export function normalizeEditedPlan(plan: GroupingPlan): GroupingPlan {
       const names = new Set<string>();
       return {
         columns: layout.columns.map((column) => ({
+          ...column,
           panes: column.panes.map((pane) => {
             const title = uniqueGroupingName(pane.title, names);
             names.add(title);
@@ -353,6 +356,7 @@ export function normalizeEditedPlan(plan: GroupingPlan): GroupingPlan {
     if (group.adopted && group.disposition === "reorganize" && group.layout) {
       const named = uniquePaneNames(group.layout);
       const columns = named.columns.map((column) => ({
+        ...column,
         panes: column.panes.map((pane) => ({
           ...pane,
           tabIds: takeFirstOccurrence(pane.tabIds),
@@ -441,7 +445,14 @@ export function applyEditCommand(
         ...plannedWorkspaceNames(session.plan, sourceGroup.groupId),
         ...(options.existingWorkspaceNames ?? []),
       ];
-      destination = { kind: "new_workspace", proposedName: uniqueGroupingName(requested, taken) };
+      destination = { kind: "new_workspace", proposedName: uniqueGroupingName(requested, taken), nameEdited: true };
+    }
+    if (destination.kind === "existing_workspace") {
+      const workspaceId = destination.workspaceId;
+      const fixed = [sourceGroup.destination,
+        session.basePlan.groups.find(item => item.groupId === group.groupId)?.destination]
+        .find(item => item?.kind === "existing_workspace" && item.workspaceId === workspaceId && item.nameEdited);
+      if (fixed?.kind === "existing_workspace") destination = structuredClone(fixed);
     }
     const stored = stashes[sourceGroup.groupId];
     const sourceLayout = group.layout ?? stored;
@@ -449,6 +460,12 @@ export function applyEditCommand(
     const nextLayout = sourceLayout
       ? restoredLayout(sourceLayout, group.tabIds, group.title)
       : defaultLayoutForTabs(group.tabIds, group.title);
+    const priorDestination = group.layout ? sourceGroup.destination
+      : session.basePlan.groups.find(item => item.groupId === group.groupId)?.destination;
+    if (destination.kind !== "existing_workspace" || priorDestination?.kind !== "existing_workspace"
+      || destination.workspaceId !== priorDestination.workspaceId) {
+      for (const column of nextLayout.columns) delete column.existingColumnPaneId;
+    }
     Object.assign(group, {
       disposition: "reorganize" as const,
       destination,
@@ -477,7 +494,7 @@ export function applyEditCommand(
       groupId,
       title,
       disposition: "reorganize",
-      destination: { kind: "new_workspace", proposedName: title },
+      destination: { kind: "new_workspace", proposedName: title, nameEdited: true },
       layout: defaultLayoutForTabs([], title),
       tabIds: [],
       adopted: true,
@@ -518,13 +535,13 @@ export function applyEditCommand(
     if (groupIndex < 0 || session.plan.groups[groupIndex].destination.kind !== "new_workspace") return session;
     const requested = normalizedName(command.proposedName);
     const currentName = session.plan.groups[groupIndex].destination.proposedName;
-    if (!requested || requested === currentName) return session;
+    if (!requested || (requested === currentName && session.plan.groups[groupIndex].destination.nameEdited)) return session;
     const proposedName = uniqueGroupingName(requested, [
       ...plannedWorkspaceNames(session.plan, session.plan.groups[groupIndex].groupId),
       ...(options.existingWorkspaceNames ?? []),
     ]);
     const candidate = clonePlanForEdit(session.plan);
-    candidate.groups[groupIndex].destination = { kind: "new_workspace", proposedName };
+    candidate.groups[groupIndex].destination = { kind: "new_workspace", proposedName, nameEdited: true };
     return finalizeChange(session, candidate, cloneStashes(session.stashedLayouts));
   }
 

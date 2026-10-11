@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(async () => {}) }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
-import { TearoutRecord } from "../../src/lib/tearout/record";
-beforeEach(() => mocks.invoke.mockClear());
+import { TearoutRecord, configureTearoutInputEvidence } from "../../src/lib/tearout/record";
+beforeEach(() => { mocks.invoke.mockClear(); configureTearoutInputEvidence(false); });
 describe("one metadata record per native gesture", () => {
   it("keeps the actual timing, identity, destination, scale and focus without terminal contents", async () => {
     const record = new TearoutRecord("drag", "tab", "main", 10);
@@ -38,4 +38,23 @@ it("preserves an absent release as unmeasured and logs the recovery stage", asyn
   await record.finish("rejected_busy");
   expect(mocks.invoke.mock.calls[0][1].record).toMatchObject({ released_at: null, released: false,
     failure_reason: "tearout_move_busy", failure_phase: "restoring", failed_session_ids: ["pty-existing"] });
+});
+
+
+it("records bounded DOM/native correlation only after test-profile opt-in", async () => {
+  configureTearoutInputEvidence(true);
+  const event = { pointerId: 4, timeStamp: 20, isTrusted: false } as PointerEvent;
+  const point = { x: -1200.5, y: -30, at: 40, method: "native_up" as const };
+  for (let i = 0; i < 257; i++) {
+    const record = new TearoutRecord(`input-${i}`, "tab", "main", 10);
+    record.input(event, "band");
+    record.native({ at: 50, native_started_at: 25, phase: "end", scale: 2, monitor: null, focus_stolen: false, release: point });
+    await record.finish("kept_window");
+  }
+  expect(mocks.invoke.mock.calls[0][1].record).toMatchObject({ input_evidence: { pointer_id: 4, trusted: false, surface: "band" },
+    release_point: { point, receiver_window: null, receiver_epoch: null, client_x: null, client_y: null }, released_at: 40 });
+  expect(mocks.invoke.mock.calls[256][1].record).toMatchObject({ input_evidence: null, release_point: null });
+  configureTearoutInputEvidence(false);
+  const ordinary = new TearoutRecord("ordinary", "tab", "main", 10); ordinary.input(event, "band"); await ordinary.finish("kept_window");
+  expect(mocks.invoke.mock.calls.at(-1)![1].record.input_evidence).toBeNull();
 });

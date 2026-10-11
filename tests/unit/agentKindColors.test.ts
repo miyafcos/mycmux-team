@@ -18,8 +18,8 @@ describe("agentKindColor", () => {
 
   it("returns the shared Hybrid palette", () => {
     expect(agentKindColor("claude-codex")).toEqual({
-      fg: "#7dcc97",
-      bg: "rgba(74, 222, 128, 0.10)",
+      fg: "#8ab8e8",
+      bg: "rgba(94, 158, 255, 0.10)",
     });
   });
 

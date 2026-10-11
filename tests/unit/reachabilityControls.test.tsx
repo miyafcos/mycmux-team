@@ -25,7 +25,7 @@ import { TAB_RESTORE_CLOSED_EVENT } from "../../src/components/layout/tabSweep";
 import { focusController } from "../../src/lib/focusController";
 import { formatShortcutLabel } from "../../src/lib/keybindings";
 import { useKeybindingStore } from "../../src/stores/keybindingStore";
-import { crsmListSessions } from "../../src/lib/ipc";
+import { crsmListSessions, readAgentSessionMappings } from "../../src/lib/ipc";
 import type { Pane, Workspace } from "../../src/types";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -98,6 +98,7 @@ beforeEach(() => {
   useUiStore.setState({ activePaneId: "session-a" });
   useSettingsStore.setState({ crsmShowClaude: true, crsmShowCodex: true, crsmShowClaudeCodex: true, showSplitDownButton: true });
   vi.mocked(crsmListSessions).mockResolvedValue(sessions as Awaited<ReturnType<typeof crsmListSessions>>);
+  vi.mocked(readAgentSessionMappings).mockResolvedValue({});
   while (popClosedPane()) { /* Drain test history. */ }
   useToastStore.setState({ toasts: [] });
   host = document.createElement("div");
@@ -114,6 +115,9 @@ afterEach(async () => {
 
 describe("reachability controls", () => {
   it("reachability #1 focuses the first menu item, Down/Enter runs the second once, Escape returns to trigger", async () => {
+    // Focus return requires the live pane owner that TerminalPane supplies.
+    host.dataset.dndWorkspaceId = workspace.id;
+    host.dataset.dndPaneId = pane.id;
     const add = vi.fn();
     const split = vi.fn();
     await act(async () => root.render(<PaneTabBar pane={pane} workspaceId={workspace.id} onAddTab={add} onSplitDown={split} hasTerminalBuffer={() => true} />));
@@ -122,9 +126,12 @@ describe("reachability controls", () => {
     const items = [...host.querySelectorAll<HTMLButtonElement>("[role='menuitem']")];
     expect(document.activeElement).toBe(items[0]);
     expect(items[0].type).toBe("button");
-    expect(items[1].textContent).toBe(paneToolbarStrings.splitDown);
+    expect(items[1].textContent).toBe("名前を変更");
     await key("ArrowDown");
     expect(document.activeElement).toBe(items[1]);
+    const splitIndex = items.findIndex((item) => item.textContent === paneToolbarStrings.splitDown);
+    expect(splitIndex).toBeGreaterThan(1);
+    for (let i = 1; i < splitIndex; i++) await key("ArrowDown");
     await key("Enter");
     expect(split).toHaveBeenCalledTimes(1);
     expect(add).not.toHaveBeenCalled();
@@ -270,17 +277,18 @@ describe("reachability controls", () => {
     }
   });
 
-  it.each([800, 500, 330, 240, 200, 160, 100])("reachability #5 routes search from the menu at width %i and folds the header below slim", async (barWidth) => {
+  it.each([800, 500, 330, 240, 200, 160, 100])("reachability #5 routes terminal search from the menu and magnifier at width %i", async (barWidth) => {
     width = barWidth;
     const search = vi.fn();
     window.addEventListener(TERMINAL_SEARCH_EVENT, search);
     try {
       await act(async () => root.render(<PaneTabBar pane={pane} workspaceId={workspace.id} hasTerminalBuffer={() => true} />));
       const header = host.querySelector<HTMLButtonElement>(`button[aria-label='${terminalPaneStrings.searchTerminal}']`);
-      expect(Boolean(header)).toBe(barWidth >= 360);
+      expect(Boolean(header)).toBe([800, 500, 330, 240].includes(barWidth));
+      expect(host.querySelector(".pane-header-close")).not.toBeNull();
+      expect(host.querySelector("[role='menu']")).toBeNull();
       if (header) {
-        // The tooltip now carries the live binding, so it reads ⇧⌘F on macOS
-        // instead of the Ctrl spelling that was hardcoded here.
+        // The fallback magnifier carries the live terminal-search binding.
         expect(header.title).toBe(terminalPaneStrings.searchTerminalTitle(
           formatShortcutLabel(useKeybindingStore.getState().keybindings["terminal.search"]),
         ));
@@ -292,6 +300,9 @@ describe("reachability controls", () => {
       await click(button(terminalPaneStrings.paneActions));
       const item = [...host.querySelectorAll<HTMLButtonElement>("[role='menuitem']")]
         .find((node) => node.textContent === terminalPaneStrings.searchTerminal)!;
+      expect(item.title).toBe(terminalPaneStrings.searchTerminalTitle(
+        formatShortcutLabel(useKeybindingStore.getState().keybindings["terminal.search"]),
+      ));
       await click(item);
       expect(search).toHaveBeenCalledOnce();
       expect((search.mock.calls[0][0] as CustomEvent).detail).toEqual({ sessionId: "session-a" });
@@ -307,10 +318,12 @@ describe("reachability controls", () => {
     window.addEventListener(TERMINAL_SEARCH_EVENT, search);
     try {
       await act(async () => root.render(<PaneTabBar pane={inactivePane} workspaceId={workspace.id} hasTerminalBuffer={() => true} />));
-      const header = button(terminalPaneStrings.searchTerminal);
+      const header = host.querySelector<HTMLButtonElement>(".pane-heading-row [data-terminal-magnifier]")!;
       expect(header.getAttribute("aria-disabled")).toBe("true");
       expect(header.title).toBe(terminalPaneStrings.searchUnavailable);
       await click(header);
+      expect(search).not.toHaveBeenCalled();
+      expect(host.querySelector(".pane-header-close")).not.toBeNull();
       await click(button(terminalPaneStrings.paneActions));
       const item = [...host.querySelectorAll<HTMLButtonElement>("[role='menuitem']")]
         .find((node) => node.textContent === terminalPaneStrings.searchTerminal)!;

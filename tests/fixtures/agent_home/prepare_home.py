@@ -62,9 +62,9 @@ def prepare(root: Path, variant: str) -> Path:
                  "mcpServers": {SECRET + "_MCP": {"env": {"AUTH": SECRET}}},
                  "projects": {cwd.replace("\\", "/"): {"mcpServers": {"example": {"args": [SECRET]}}}}}
         write(root, ".claude.json", json.dumps(state))
-        listing = "- reviewer: Synthetic review\n- unused: Synthetic rarely used procedure\n- remote: Synchronized procedure\n- sample-command: Synthetic command\n- help: Product helper\n"
+        listing = "- reviewer: Synthetic review\n- unused: Synthetic rarely used procedure\n- anthropic-skills:remote: Synchronized procedure\n- sample-command: Synthetic command\n- help: Product helper\n"
         rows = [
-            {"type": "attachment", "attachment": {"type": "skill_listing", "isInitial": True, "skillCount": 5, "names": ["reviewer", "unused", "remote", "sample-command", "help"], "content": listing}},
+            {"type": "attachment", "attachment": {"type": "skill_listing", "isInitial": True, "skillCount": 5, "names": ["reviewer", "unused", "anthropic-skills:remote", "sample-command", "help"], "content": listing}},
             {"type": "attachment", "attachment": {"type": "hook_success", "hookEvent": "SessionStart", "command": "python hook.py --auth " + SECRET, "content": SECRET}},
             {"type": "assistant", "message": {"content": BODY}},
             {"type": "user", "message": {"content": BODY}},

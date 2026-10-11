@@ -18,6 +18,8 @@ export interface SavepointPasteDropTarget {
   tabId: string;
   sessionId: string;
   targetKind: AgentSessionKind;
+  /** Conversation identity captured before preparing the handoff, when known. */
+  agentSessionId?: string;
 }
 
 export interface SavepointSpawnDropTarget {

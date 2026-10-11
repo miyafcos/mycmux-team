@@ -756,6 +756,7 @@ impl Worker {
         if !session_mapping::is_safe_mapping_id(&parsed.provider_session_id) {
             return self.reject(id, "malformed", false);
         }
+        let source_epoch = self.session_manager.as_ref().and_then(|m| m.session_observation(record.launch.terminal_session_id().as_str())).map(|v| v.0);
         let source = parsed.sender_pid.map(|pid| (self.source_verifier)(
             record.launch.terminal_session_id().as_str(), record.launch.provider().as_str(), pid,
         )).unwrap_or(HookSource::Unverified);
@@ -873,7 +874,7 @@ impl Worker {
                     return self.reject(id, reason, reason == "queue_dropped");
                 }
                 if is_current_session {
-                    self.remember_verified_identity(hook_cap, &mapping_session_id, source_pid, source_started_at);
+                    self.remember_verified_identity(hook_cap, &mapping_session_id, source_pid, source_started_at, source_epoch);
                 }
                 self.metrics.accepted.fetch_add(1, Ordering::Relaxed);
                 HookWireResponse::success(
@@ -892,7 +893,7 @@ impl Worker {
                     return self.reject(id, reason, reason == "queue_dropped");
                 }
                 if self.capabilities.get(hook_cap).is_some_and(|record| record.last_mapping_session.as_deref() == Some(mapping_session_id.as_str())) {
-                    self.remember_verified_identity(hook_cap, &mapping_session_id, source_pid, source_started_at);
+                    self.remember_verified_identity(hook_cap, &mapping_session_id, source_pid, source_started_at, source_epoch);
                 }
                 HookWireResponse::success(id, json!({ "deduplicated": true }))
             },
@@ -912,7 +913,7 @@ impl Worker {
         }
     }
 
-    fn remember_verified_identity(&self, cap: &str, session_id: &str, pid: u32, started_at: u64) {
+    fn remember_verified_identity(&self, cap: &str, session_id: &str, pid: u32, started_at: u64, source_epoch: Option<u64>) {
         let Some(manager) = &self.session_manager else { return; };
         let Some(record) = self.capabilities.get(cap) else { return; };
         if record.state != CapabilityState::Active { return; }
@@ -921,7 +922,9 @@ impl Worker {
         let kind = manager.requested_conversation(pty).map(|v| v.0)
             .filter(|kind| kind == provider || (provider == "claude" && kind == "claude-codex"))
             .unwrap_or_else(|| provider.to_string());
+        let Some(session_epoch) = source_epoch else { return; };
         manager.remember_agent_identity(pty, crate::pty::manager::TrustedAgentIdentity {
+            session_epoch,
             kind, session_id: session_id.to_string(), agent_pid: pid, agent_started_at: started_at, from_hook: true,
         });
     }
@@ -1236,6 +1239,7 @@ mod tests {
         #[cfg(not(target_os = "windows"))]
         let python = "python3";
         let mut child = Command::new(python)
+            .arg("-B")
             .arg(helper)
             .args(["--provider", "codex", "--event-kind", "turn_ended"])
             .env("MYCMUX_HOOK_CAP", &grant.hook_cap)

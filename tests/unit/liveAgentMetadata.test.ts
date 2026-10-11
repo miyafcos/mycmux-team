@@ -62,6 +62,17 @@ beforeEach(() => {
 afterEach(() => { for (const stop of stops.splice(0)) stop(); vi.useRealTimers(); });
 
 describe("live agent marks and restoration authority", () => {
+  it("F8 unobserved hydration distinguishes unknown from a confirmed shell or exit", async () => {
+    mocks.snapshot.mockResolvedValue({ "pty-main": metadata({ process_name: null, live_agent_kind: null }) });
+    await hydrateLiveAgents(["pty-main"]);
+    expect(usePaneMetadataStore.getState().volatileMetadata["pty-main"]).toMatchObject({ ptyAlive: true, liveAgentObservationKnown: false });
+    applyPtyMetadata(metadata());
+    expect(usePaneMetadataStore.getState().volatileMetadata["pty-main"].liveAgentObservationKnown).toBe(true);
+    applyPtyMetadata(metadata({ process_name: null, live_agent_kind: null }));
+    expect(usePaneMetadataStore.getState().volatileMetadata["pty-main"]).toMatchObject({ liveAgentKind: "claude", liveAgentObservationKnown: false });
+    applyPtyMetadata(metadata({ process_name: "powershell", live_agent_kind: null, agent_active: false }));
+    expect(usePaneMetadataStore.getState().volatileMetadata["pty-main"]).toMatchObject({ liveAgentKind: null, liveAgentObservationKnown: true });
+  });
   it("U1 clears a live mark on one null event even when waiting blocks restoration clearing", () => {
     applyPtyMetadata(metadata());
     usePaneMetadataStore.getState().setMetadata("pty-main", { agentStatus: "waiting" });

@@ -707,10 +707,10 @@ function Invoke-MycmuxHandoffFromEnv {
     "grok" {
       $sid = Get-MycmuxGrokSessionId
       if ([string]::IsNullOrWhiteSpace($sid)) {
-        Invoke-MycmuxCommandArray -Command (Add-MycmuxLaunchSpecToCommandArray @("grok", "--no-alt-screen", "--permission-mode", "bypassPermissions", $bootstrap))
+        Invoke-MycmuxCommandArray -Command (Add-MycmuxLaunchSpecToCommandArray @("grok", "--no-alt-screen", "--permission-mode", "auto", $bootstrap))
       } else {
         Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "grok" $sid
-        Invoke-MycmuxCommandArray -Command (Add-MycmuxLaunchSpecToCommandArray @("grok", "--no-alt-screen", "--session-id", $sid, "--permission-mode", "bypassPermissions", $bootstrap))
+        Invoke-MycmuxCommandArray -Command (Add-MycmuxLaunchSpecToCommandArray @("grok", "--no-alt-screen", "--session-id", $sid, "--permission-mode", "auto", $bootstrap))
       }
       return $true
     }
@@ -724,7 +724,129 @@ function Invoke-MycmuxHandoffFromEnv {
   return $true
 }
 
+# BEGIN CODEX RESTORE HELPERS
+function Write-MycmuxCodexRestoreReport {
+  param([string]$Outcome, [string]$Reason)
+  $script:MycmuxCodexReportWritten = $false
+  $paneId = $env:MYCMUX_PANE_SESSION_ID
+  if (-not $paneId -or $paneId -notmatch '^[a-zA-Z0-9_.-]+$' -or $paneId -in @('.', '..')) { return }
+  $tabId = if ($env:MYCMUX_TAB_ID -match '^[0-9a-fA-F-]{36}$') { $env:MYCMUX_TAB_ID } else { '' }
+  $runtimeDir = if ($env:MYCMUX_RUNTIME_DIR) { $env:MYCMUX_RUNTIME_DIR } else { Join-Path $HOME '.mycmux' }
+  try {
+    $directory = Join-Path $runtimeDir 'pane-sessions'
+    New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop | Out-Null
+    $path = Join-Path $directory "$paneId.codex-restore.json"
+    if (Test-Path -LiteralPath $path -PathType Container) { return }
+    $json = @{ generation = $script:MycmuxCodexReportGeneration; tab_id = $tabId; outcome = $Outcome; reason = $Reason } | ConvertTo-Json -Compress
+    [System.IO.File]::WriteAllText("$path.tmp-$PID", $json, (New-Object System.Text.UTF8Encoding($false)))
+    Move-Item -LiteralPath "$path.tmp-$PID" -Destination $path -Force -ErrorAction Stop
+    $script:MycmuxCodexReportWritten = $true
+  } catch { }
+}
+
+function Remove-MycmuxCodexRestoreMapping {
+  $runtimeDir = if ($env:MYCMUX_RUNTIME_DIR) { $env:MYCMUX_RUNTIME_DIR } else { Join-Path $HOME '.mycmux' }
+  foreach ($id in @($env:MYCMUX_PANE_SESSION_ID, $env:MYCMUX_TAB_ID)) {
+    if ($id -and $id -match '^[a-zA-Z0-9_.-]+$' -and $id -notin @('.', '..')) {
+      Remove-Item -LiteralPath (Join-Path $runtimeDir "pane-sessions\$id.txt") -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+function Invoke-MycmuxCodexRestoreCommand {
+  param([string[]]$Command)
+  $script:MycmuxCodexInvoked = $false
+  $script:MycmuxCodexExitCode = 0
+  # Make invocation errors terminating locally under the launcher's Continue
+  # policy. Native nonzero exit codes still do not throw in Windows PS 5.1.
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Stop'
+  try {
+    $env:MYCMUX_LAUNCH_KIND = $script:MycmuxPendingLaunchKind
+    $global:LASTEXITCODE = 0
+    Invoke-MycmuxCommandArray -Command $Command
+    $script:MycmuxCodexInvoked = $true
+    $script:MycmuxCodexExitCode = $global:LASTEXITCODE
+  } catch [System.Management.Automation.CommandNotFoundException] {
+    $script:MycmuxCodexExitCode = 127
+  } catch [System.Management.Automation.ApplicationFailedException] {
+    $script:MycmuxCodexExitCode = 126
+  } catch [System.ComponentModel.Win32Exception] {
+    $script:MycmuxCodexExitCode = 126
+  } catch {
+    # Interrupted pipelines and provider/application errors are not evidence
+    # that no CLI started. Do not replay them as a fresh conversation.
+    $script:MycmuxCodexInvoked = $true
+    $script:MycmuxCodexExitCode = 1
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+    Remove-Item Env:\MYCMUX_LAUNCH_KIND -ErrorAction SilentlyContinue
+  }
+}
+
+function Invoke-MycmuxCodexRestore {
+  param([string[]]$ResumeCommand, [string[]]$FreshCommand)
+  $requestedId = $env:MYCMUX_SESSION_ID
+  $reason = $env:MYCMUX_CODEX_RESTORE_REASON
+  $script:MycmuxCodexReportGeneration = $env:MYCMUX_CODEX_RESTORE_GENERATION
+  foreach ($key in @('MYCMUX_RESUME', 'MYCMUX_SESSION_ID', 'MYCMUX_AGENT_KIND', 'MYCMUX_RESUME_FORK', 'MYCMUX_CODEX_RESTORE_REASON', 'MYCMUX_CODEX_RESTORE_GENERATION', 'MYCMUX_LAUNCH_KIND', 'MYCMUX_LAUNCH_TARGET')) {
+    Remove-Item "Env:\$key" -ErrorAction SilentlyContinue
+  }
+  if (-not $reason) {
+    if ([string]::IsNullOrWhiteSpace($requestedId)) { $reason = 'missing-id' }
+    elseif ($requestedId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') { $reason = 'malformed-id' }
+  }
+  if (-not $reason) {
+    $script:MycmuxPendingLaunchKind = 'resume'
+    Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID 'codex' $requestedId
+    if (-not $ResumeCommand) { $ResumeCommand = @('codex', 'resume', '--no-alt-screen', $requestedId) }
+    Invoke-MycmuxCodexRestoreCommand -Command $ResumeCommand
+    if ($script:MycmuxCodexInvoked) {
+      if ($script:MycmuxCodexExitCode -eq 0) { Write-MycmuxCodexRestoreReport 'completed' 'cli-exit' }
+      else {
+        Write-MycmuxCodexRestoreReport 'exited' 'cli-exit'
+        Write-Host "  Codex exited with status $script:MycmuxCodexExitCode; returning to the shell."
+      }
+      if (-not $script:MycmuxCodexReportWritten) {
+        Write-Host '  Codex restore outcome could not be recorded; returning to the shell.'
+      }
+      $script:MycmuxPendingLaunchKind = $null
+      return
+    }
+    $reason = 'spawn-failed'
+  }
+  Remove-MycmuxCodexRestoreMapping
+  Write-MycmuxCodexRestoreReport 'downgrade' $reason
+  if (-not $script:MycmuxCodexReportWritten) {
+    Write-Host '  Codex restore outcome could not be recorded; returning to the shell.'
+    $script:MycmuxPendingLaunchKind = $null
+    return
+  }
+  Write-Host '  Previous conversation could not be restored; starting a new session.'
+  $script:MycmuxPendingLaunchKind = 'new'
+  if (Get-Command Start-MycmuxSessionTracking -ErrorAction SilentlyContinue) {
+    Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID 'codex' $null
+  }
+  if (-not $FreshCommand) { $FreshCommand = @('codex', '--no-alt-screen') }
+  Invoke-MycmuxCodexRestoreCommand -Command $FreshCommand
+  if (-not $script:MycmuxCodexInvoked -or $script:MycmuxCodexExitCode -ne 0) {
+    Write-MycmuxCodexRestoreReport 'fresh-failed' $reason
+    Write-Host "  Fresh Codex could not continue (status $script:MycmuxCodexExitCode); returning to the shell."
+  } else {
+    Write-MycmuxCodexRestoreReport 'fresh-completed' $reason
+  }
+  if (-not $script:MycmuxCodexReportWritten) {
+    Write-Host '  Codex restore outcome could not be recorded; returning to the shell.'
+  }
+  $script:MycmuxPendingLaunchKind = $null
+}
+# END CODEX RESTORE HELPERS
+
 function Invoke-MycmuxResumeFromEnv {
+  if ($env:MYCMUX_CODEX_RESTORE_REASON -and (-not $env:MYCMUX_RESUME -or $env:MYCMUX_RESUME -eq 'codex') -and (-not $env:MYCMUX_LAUNCH_TARGET -or $env:MYCMUX_LAUNCH_TARGET -eq 'codex')) {
+    Invoke-MycmuxCodexRestore
+    return $true
+  }
   if (-not $env:MYCMUX_RESUME) {
     return $false
   }
@@ -780,13 +902,7 @@ function Invoke-MycmuxResumeFromEnv {
       return $true
     }
     "codex*" {
-      if ($env:MYCMUX_SESSION_ID) {
-        Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "codex" $env:MYCMUX_SESSION_ID
-        Invoke-MycmuxCommandArray -Command @("codex", "resume", "--no-alt-screen", $env:MYCMUX_SESSION_ID)
-      } else {
-        Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "codex" $null
-        Invoke-MycmuxCommandArray -Command @("codex", "resume", "--no-alt-screen", "--last")
-      }
+      Invoke-MycmuxCodexRestore
       return $true
     }
     "grok*" {

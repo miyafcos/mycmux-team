@@ -16,6 +16,28 @@ static WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 /// lines. A poisoned lock is recovered rather than propagated: diagnostics must
 /// never take the app down.
 pub fn log(line: &str) {
+    crate::usage::logging::private_log(crate::usage::logging::Sink::Diagnostic,
+        format_args!("{line}"), || log_unfiltered(line));
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    static TEST_LOG_DIR: std::path::PathBuf;
+}
+
+#[cfg(test)]
+pub(crate) async fn with_test_dir<T>(dir: std::path::PathBuf, future: impl std::future::Future<Output = T>) -> T {
+    TEST_LOG_DIR.scope(dir, future).await
+}
+
+fn log_unfiltered(line: &str) {
+    #[cfg(test)]
+    if let Ok(dir) = TEST_LOG_DIR.try_with(Clone::clone) {
+        let lock = WRITE_LOCK.get_or_init(|| Mutex::new(()));
+        let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = log_to_dir(&dir, line);
+        return;
+    }
     if cfg!(test) {
         // Unit tests exercise error paths on purpose; they must not append to
         // the developer's real ~/.mycmux/diag.log. `log_to_home` stays testable.
@@ -48,6 +70,7 @@ pub fn format_module_line(module: &str, message: &str) -> String {
 /// an interleaved line; a single append-mode `writeln!` keeps that unlikely.
 /// Any I/O failure is swallowed — the hook must not panic again.
 pub fn log_panic(line: &str) {
+    if !crate::usage::logging::private_allowed() { return; }
     if cfg!(test) {
         return;
     }
@@ -89,7 +112,7 @@ pub fn format_panic_report(payload: &str, location: Option<&str>) -> String {
 macro_rules! diag_warn {
     ($module:expr, $($arg:tt)*) => {{
         let message = format!($($arg)*);
-        eprintln!("[{}] {}", $module, message);
+        $crate::usage::logging::stderr(format_args!("[{}] {}", $module, message));
         $crate::diag::warn($module, &message);
     }};
 }

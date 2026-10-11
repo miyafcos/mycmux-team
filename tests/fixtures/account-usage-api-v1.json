@@ -1,0 +1,2798 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "all_five_groups_and_active_precedence",
+      "input": {
+        "accounts": [
+          {
+            "profile_id": "claude-limit",
+            "provider": "claude",
+            "label": "A",
+            "email": "claude-limit@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 100,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-near",
+            "provider": "claude",
+            "label": "A",
+            "email": "claude-near@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 95,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "grok-unsupported",
+            "provider": "grok",
+            "label": "grok-unsupported",
+            "email": "grok-unsupported@example.test",
+            "plan": null,
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "unsupported",
+            "five_hour": null,
+            "seven_day": null,
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-active-relogin",
+            "provider": "claude",
+            "label": "A",
+            "email": "claude-active-relogin@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": true,
+            "needs_relogin": true,
+            "state": "needs_relogin",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": "account_usage.error.needs_relogin",
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-available",
+            "provider": "claude",
+            "label": "A",
+            "email": "claude-available@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "codex-available",
+            "provider": "codex",
+            "label": "A",
+            "email": "codex-available@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "codex-active-cooldown",
+            "provider": "codex",
+            "label": "A",
+            "email": "codex-active-cooldown@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": true,
+            "needs_relogin": false,
+            "state": "cooldown",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 100,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": "2026-10-10T00:02:00Z",
+            "fetched_at": "2026-10-10T00:00:00Z"
+          }
+        ],
+        "generated_at": "2026-10-10T00:00:00Z"
+      },
+      "expected": {
+        "accounts": [
+          {
+            "profile_id": "claude-limit",
+            "provider": "claude",
+            "label": "A",
+            "email": "claude-limit@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 100,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "limited",
+            "availability_order": 0,
+            "availability_label": "5h制限"
+          },
+          {
+            "profile_id": "claude-near",
+            "provider": "claude",
+            "label": "A",
+            "email": "claude-near@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 95,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "near_limit",
+            "availability_order": 0,
+            "availability_label": "残量わずか"
+          },
+          {
+            "profile_id": "grok-unsupported",
+            "provider": "grok",
+            "label": "grok-unsupported",
+            "email": "grok-unsupported@example.test",
+            "plan": null,
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "unsupported",
+            "five_hour": null,
+            "seven_day": null,
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "unverified",
+            "availability_order": 0,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-active-relogin",
+            "provider": "claude",
+            "label": "A",
+            "email": "claude-active-relogin@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": true,
+            "needs_relogin": true,
+            "state": "needs_relogin",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": "account_usage.error.needs_relogin",
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "active",
+            "availability_order": 0,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-available",
+            "provider": "claude",
+            "label": "A",
+            "email": "claude-available@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 0,
+            "availability_label": null
+          },
+          {
+            "profile_id": "codex-available",
+            "provider": "codex",
+            "label": "A",
+            "email": "codex-available@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 1,
+            "availability_label": null
+          },
+          {
+            "profile_id": "codex-active-cooldown",
+            "provider": "codex",
+            "label": "A",
+            "email": "codex-active-cooldown@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": true,
+            "needs_relogin": false,
+            "state": "cooldown",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 100,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": "2026-10-10T00:02:00Z",
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "active",
+            "availability_order": 1,
+            "availability_label": "前回値：週間制限"
+          }
+        ],
+        "generated_at": "2026-10-10T00:00:00Z",
+        "availability_groups": [
+          {
+            "id": "active",
+            "label": "使用中",
+            "collapsible": false,
+            "profile_ids": [
+              "claude-active-relogin",
+              "codex-active-cooldown"
+            ]
+          },
+          {
+            "id": "available",
+            "label": "切替候補",
+            "collapsible": false,
+            "profile_ids": [
+              "claude-available",
+              "codex-available"
+            ]
+          },
+          {
+            "id": "near_limit",
+            "label": "残量わずか",
+            "collapsible": true,
+            "profile_ids": [
+              "claude-near"
+            ]
+          },
+          {
+            "id": "limited",
+            "label": "制限中",
+            "collapsible": true,
+            "profile_ids": [
+              "claude-limit"
+            ]
+          },
+          {
+            "id": "unverified",
+            "label": "確認が必要",
+            "collapsible": false,
+            "profile_ids": [
+              "grok-unsupported"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "exact_thresholds_without_rounding",
+      "input": {
+        "accounts": [
+          {
+            "profile_id": "claude-120",
+            "provider": "claude",
+            "label": "120",
+            "email": "claude-120@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 120,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-996",
+            "provider": "claude",
+            "label": "99.6",
+            "email": "claude-996@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 99.6,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-94999",
+            "provider": "claude",
+            "label": "94.999",
+            "email": "claude-94999@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 94.999,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-100",
+            "provider": "claude",
+            "label": "100",
+            "email": "claude-100@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 100,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 100,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-95",
+            "provider": "claude",
+            "label": "95",
+            "email": "claude-95@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 95,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          }
+        ],
+        "generated_at": "2026-10-10T00:00:00Z"
+      },
+      "expected": {
+        "accounts": [
+          {
+            "profile_id": "claude-120",
+            "provider": "claude",
+            "label": "120",
+            "email": "claude-120@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 120,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "limited",
+            "availability_order": 1,
+            "availability_label": "5h制限"
+          },
+          {
+            "profile_id": "claude-996",
+            "provider": "claude",
+            "label": "99.6",
+            "email": "claude-996@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 99.6,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "near_limit",
+            "availability_order": 1,
+            "availability_label": "残量わずか"
+          },
+          {
+            "profile_id": "claude-94999",
+            "provider": "claude",
+            "label": "94.999",
+            "email": "claude-94999@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 94.999,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 0,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-100",
+            "provider": "claude",
+            "label": "100",
+            "email": "claude-100@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 100,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 100,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "limited",
+            "availability_order": 0,
+            "availability_label": "5h制限・週間制限"
+          },
+          {
+            "profile_id": "claude-95",
+            "provider": "claude",
+            "label": "95",
+            "email": "claude-95@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 95,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "near_limit",
+            "availability_order": 0,
+            "availability_label": "残量わずか"
+          }
+        ],
+        "generated_at": "2026-10-10T00:00:00Z",
+        "availability_groups": [
+          {
+            "id": "available",
+            "label": "切替候補",
+            "collapsible": false,
+            "profile_ids": [
+              "claude-94999"
+            ]
+          },
+          {
+            "id": "near_limit",
+            "label": "残量わずか",
+            "collapsible": true,
+            "profile_ids": [
+              "claude-95",
+              "claude-996"
+            ]
+          },
+          {
+            "id": "limited",
+            "label": "制限中",
+            "collapsible": true,
+            "profile_ids": [
+              "claude-100",
+              "claude-120"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "cooldown_previous_values_and_missing_general",
+      "input": {
+        "accounts": [
+          {
+            "profile_id": "claude-cooldown-model",
+            "provider": "claude",
+            "label": "D",
+            "email": "claude-cooldown-model@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "cooldown",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": {
+              "pct": 100,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-cooldown-limit",
+            "provider": "claude",
+            "label": "A",
+            "email": "claude-cooldown-limit@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "cooldown",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 100,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-cooldown-near",
+            "provider": "claude",
+            "label": "B",
+            "email": "claude-cooldown-near@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "cooldown",
+            "five_hour": {
+              "pct": 99,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-cooldown-below",
+            "provider": "claude",
+            "label": "C",
+            "email": "claude-cooldown-below@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "cooldown",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-missing",
+            "provider": "claude",
+            "label": "E",
+            "email": null,
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": null,
+            "seven_day": null,
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "reset_tickets": null,
+            "subscription": null,
+            "token_owner_email": null
+          }
+        ],
+        "generated_at": "2026-10-10T00:00:00Z"
+      },
+      "expected": {
+        "accounts": [
+          {
+            "profile_id": "claude-cooldown-model",
+            "provider": "claude",
+            "label": "D",
+            "email": "claude-cooldown-model@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "cooldown",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": {
+              "pct": 100,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "unverified",
+            "availability_order": 2,
+            "availability_label": "前回値：一部モデル制限"
+          },
+          {
+            "profile_id": "claude-cooldown-limit",
+            "provider": "claude",
+            "label": "A",
+            "email": "claude-cooldown-limit@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "cooldown",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 100,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "limited",
+            "availability_order": 0,
+            "availability_label": "前回値：週間制限"
+          },
+          {
+            "profile_id": "claude-cooldown-near",
+            "provider": "claude",
+            "label": "B",
+            "email": "claude-cooldown-near@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "cooldown",
+            "five_hour": {
+              "pct": 99,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "unverified",
+            "availability_order": 0,
+            "availability_label": "前回値：残量わずか"
+          },
+          {
+            "profile_id": "claude-cooldown-below",
+            "provider": "claude",
+            "label": "C",
+            "email": "claude-cooldown-below@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "cooldown",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "unverified",
+            "availability_order": 1,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-missing",
+            "provider": "claude",
+            "label": "E",
+            "email": null,
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": null,
+            "seven_day": null,
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "reset_tickets": null,
+            "subscription": null,
+            "token_owner_email": null,
+            "availability_group": "unverified",
+            "availability_order": 3,
+            "availability_label": null
+          }
+        ],
+        "generated_at": "2026-10-10T00:00:00Z",
+        "availability_groups": [
+          {
+            "id": "limited",
+            "label": "制限中",
+            "collapsible": true,
+            "profile_ids": [
+              "claude-cooldown-limit"
+            ]
+          },
+          {
+            "id": "unverified",
+            "label": "確認が必要",
+            "collapsible": false,
+            "profile_ids": [
+              "claude-cooldown-near",
+              "claude-cooldown-below",
+              "claude-cooldown-model",
+              "claude-missing"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "partial_model_limits",
+      "input": {
+        "accounts": [
+          {
+            "profile_id": "grok-model",
+            "provider": "grok",
+            "label": "grok-model",
+            "email": "grok-model@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [
+              {
+                "key": "grok-extended",
+                "window": {
+                  "pct": 101,
+                  "resets_at": "2026-10-17T00:00:00Z"
+                }
+              }
+            ],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-sonnet",
+            "provider": "claude",
+            "label": "claude-sonnet",
+            "email": "claude-sonnet@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": {
+              "pct": 100,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-model-only",
+            "provider": "claude",
+            "label": "claude-model-only",
+            "email": "claude-model-only@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": null,
+            "seven_day": null,
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [
+              {
+                "key": "future_model",
+                "window": {
+                  "pct": 100,
+                  "resets_at": "2026-10-17T00:00:00Z"
+                }
+              }
+            ],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "codex-opus",
+            "provider": "codex",
+            "label": "codex-opus",
+            "email": "codex-opus@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": {
+              "pct": 100,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          }
+        ],
+        "generated_at": "2026-10-10T00:00:00Z"
+      },
+      "expected": {
+        "accounts": [
+          {
+            "profile_id": "grok-model",
+            "provider": "grok",
+            "label": "grok-model",
+            "email": "grok-model@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [
+              {
+                "key": "grok-extended",
+                "window": {
+                  "pct": 101,
+                  "resets_at": "2026-10-17T00:00:00Z"
+                }
+              }
+            ],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 2,
+            "availability_label": "一部モデル制限"
+          },
+          {
+            "profile_id": "claude-sonnet",
+            "provider": "claude",
+            "label": "claude-sonnet",
+            "email": "claude-sonnet@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": {
+              "pct": 100,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 0,
+            "availability_label": "一部モデル制限"
+          },
+          {
+            "profile_id": "claude-model-only",
+            "provider": "claude",
+            "label": "claude-model-only",
+            "email": "claude-model-only@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": null,
+            "seven_day": null,
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [
+              {
+                "key": "future_model",
+                "window": {
+                  "pct": 100,
+                  "resets_at": "2026-10-17T00:00:00Z"
+                }
+              }
+            ],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "unverified",
+            "availability_order": 0,
+            "availability_label": "一部モデル制限"
+          },
+          {
+            "profile_id": "codex-opus",
+            "provider": "codex",
+            "label": "codex-opus",
+            "email": "codex-opus@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": {
+              "pct": 100,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 1,
+            "availability_label": "一部モデル制限"
+          }
+        ],
+        "generated_at": "2026-10-10T00:00:00Z",
+        "availability_groups": [
+          {
+            "id": "available",
+            "label": "切替候補",
+            "collapsible": false,
+            "profile_ids": [
+              "claude-sonnet",
+              "codex-opus",
+              "grok-model"
+            ]
+          },
+          {
+            "id": "unverified",
+            "label": "確認が必要",
+            "collapsible": false,
+            "profile_ids": [
+              "claude-model-only"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "all_acquisition_states",
+      "input": {
+        "accounts": [
+          {
+            "profile_id": "claude-error",
+            "provider": "claude",
+            "label": "E",
+            "email": "claude-error@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "error",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": "account_usage.error.synthetic",
+            "retry_at": "2026-10-17T00:00:00Z",
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-wait",
+            "provider": "claude",
+            "label": "B",
+            "email": "claude-wait@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "wait_for_cli",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-ok",
+            "provider": "claude",
+            "label": "A",
+            "email": "claude-ok@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-needs",
+            "provider": "claude",
+            "label": "C",
+            "email": "claude-needs@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": true,
+            "state": "needs_relogin",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-unsupported",
+            "provider": "claude",
+            "label": "D",
+            "email": "claude-unsupported@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "unsupported",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-cooldown",
+            "provider": "claude",
+            "label": "F",
+            "email": "claude-cooldown@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "cooldown",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-09T20:00:00Z"
+          }
+        ],
+        "generated_at": "2026-10-10T00:00:00Z"
+      },
+      "expected": {
+        "accounts": [
+          {
+            "profile_id": "claude-error",
+            "provider": "claude",
+            "label": "E",
+            "email": "claude-error@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "error",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": "account_usage.error.synthetic",
+            "retry_at": "2026-10-17T00:00:00Z",
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "unverified",
+            "availability_order": 3,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-wait",
+            "provider": "claude",
+            "label": "B",
+            "email": "claude-wait@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "wait_for_cli",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "unverified",
+            "availability_order": 0,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-ok",
+            "provider": "claude",
+            "label": "A",
+            "email": "claude-ok@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 0,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-needs",
+            "provider": "claude",
+            "label": "C",
+            "email": "claude-needs@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": true,
+            "state": "needs_relogin",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "unverified",
+            "availability_order": 1,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-unsupported",
+            "provider": "claude",
+            "label": "D",
+            "email": "claude-unsupported@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "unsupported",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "unverified",
+            "availability_order": 2,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-cooldown",
+            "provider": "claude",
+            "label": "F",
+            "email": "claude-cooldown@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "cooldown",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-09T20:00:00Z",
+            "availability_group": "unverified",
+            "availability_order": 4,
+            "availability_label": null
+          }
+        ],
+        "generated_at": "2026-10-10T00:00:00Z",
+        "availability_groups": [
+          {
+            "id": "available",
+            "label": "切替候補",
+            "collapsible": false,
+            "profile_ids": [
+              "claude-ok"
+            ]
+          },
+          {
+            "id": "unverified",
+            "label": "確認が必要",
+            "collapsible": false,
+            "profile_ids": [
+              "claude-wait",
+              "claude-needs",
+              "claude-unsupported",
+              "claude-error",
+              "claude-cooldown"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "stable_provider_registered_label_id_unicode_order",
+      "input": {
+        "accounts": [
+          {
+            "profile_id": "grok-sort",
+            "provider": "grok",
+            "label": "A",
+            "email": "grok-sort@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-unregistered",
+            "provider": "claude",
+            "label": "A",
+            "email": "claude-unregistered@example.test",
+            "plan": "pro",
+            "registered": false,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-unicode-kata",
+            "provider": "claude",
+            "label": "ア",
+            "email": "claude-unicode-kata@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-dup-b",
+            "provider": "claude",
+            "label": "a",
+            "email": "claude-dup-b@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "codex-sort",
+            "provider": "codex",
+            "label": "A",
+            "email": "codex-sort@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-unicode-hira",
+            "provider": "claude",
+            "label": "あ",
+            "email": "claude-unicode-hira@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-upper",
+            "provider": "claude",
+            "label": "B",
+            "email": "claude-upper@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-dup-a",
+            "provider": "claude",
+            "label": "a",
+            "email": "claude-dup-a@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          }
+        ],
+        "generated_at": "2026-10-10T00:00:00Z"
+      },
+      "expected": {
+        "accounts": [
+          {
+            "profile_id": "grok-sort",
+            "provider": "grok",
+            "label": "A",
+            "email": "grok-sort@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 7,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-unregistered",
+            "provider": "claude",
+            "label": "A",
+            "email": "claude-unregistered@example.test",
+            "plan": "pro",
+            "registered": false,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 5,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-unicode-kata",
+            "provider": "claude",
+            "label": "ア",
+            "email": "claude-unicode-kata@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 4,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-dup-b",
+            "provider": "claude",
+            "label": "a",
+            "email": "claude-dup-b@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 2,
+            "availability_label": null
+          },
+          {
+            "profile_id": "codex-sort",
+            "provider": "codex",
+            "label": "A",
+            "email": "codex-sort@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 6,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-unicode-hira",
+            "provider": "claude",
+            "label": "あ",
+            "email": "claude-unicode-hira@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 3,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-upper",
+            "provider": "claude",
+            "label": "B",
+            "email": "claude-upper@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 0,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-dup-a",
+            "provider": "claude",
+            "label": "a",
+            "email": "claude-dup-a@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 1,
+            "availability_label": null
+          }
+        ],
+        "generated_at": "2026-10-10T00:00:00Z",
+        "availability_groups": [
+          {
+            "id": "available",
+            "label": "切替候補",
+            "collapsible": false,
+            "profile_ids": [
+              "claude-upper",
+              "claude-dup-a",
+              "claude-dup-b",
+              "claude-unicode-hira",
+              "claude-unicode-kata",
+              "claude-unregistered",
+              "codex-sort",
+              "grok-sort"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "stable_order_when_percentages_change",
+      "input": {
+        "accounts": [
+          {
+            "profile_id": "grok-sort",
+            "provider": "grok",
+            "label": "A",
+            "email": "grok-sort@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 94,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 0,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-unregistered",
+            "provider": "claude",
+            "label": "A",
+            "email": "claude-unregistered@example.test",
+            "plan": "pro",
+            "registered": false,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 84,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-unicode-kata",
+            "provider": "claude",
+            "label": "ア",
+            "email": "claude-unicode-kata@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 74,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-dup-b",
+            "provider": "claude",
+            "label": "a",
+            "email": "claude-dup-b@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 64,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 30,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "codex-sort",
+            "provider": "codex",
+            "label": "A",
+            "email": "codex-sort@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 54,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 40,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-unicode-hira",
+            "provider": "claude",
+            "label": "あ",
+            "email": "claude-unicode-hira@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 44,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 50,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-upper",
+            "provider": "claude",
+            "label": "B",
+            "email": "claude-upper@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 34,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 60,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          },
+          {
+            "profile_id": "claude-dup-a",
+            "provider": "claude",
+            "label": "a",
+            "email": "claude-dup-a@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 24,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 70,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z"
+          }
+        ],
+        "generated_at": "2026-10-10T00:00:00Z"
+      },
+      "expected": {
+        "accounts": [
+          {
+            "profile_id": "grok-sort",
+            "provider": "grok",
+            "label": "A",
+            "email": "grok-sort@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 94,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 0,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 7,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-unregistered",
+            "provider": "claude",
+            "label": "A",
+            "email": "claude-unregistered@example.test",
+            "plan": "pro",
+            "registered": false,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 84,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 5,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-unicode-kata",
+            "provider": "claude",
+            "label": "ア",
+            "email": "claude-unicode-kata@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 74,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 4,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-dup-b",
+            "provider": "claude",
+            "label": "a",
+            "email": "claude-dup-b@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 64,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 30,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 2,
+            "availability_label": null
+          },
+          {
+            "profile_id": "codex-sort",
+            "provider": "codex",
+            "label": "A",
+            "email": "codex-sort@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 54,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 40,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 6,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-unicode-hira",
+            "provider": "claude",
+            "label": "あ",
+            "email": "claude-unicode-hira@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 44,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 50,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 3,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-upper",
+            "provider": "claude",
+            "label": "B",
+            "email": "claude-upper@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 34,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 60,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 0,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-dup-a",
+            "provider": "claude",
+            "label": "a",
+            "email": "claude-dup-a@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 24,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 70,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "availability_group": "available",
+            "availability_order": 1,
+            "availability_label": null
+          }
+        ],
+        "generated_at": "2026-10-10T00:00:00Z",
+        "availability_groups": [
+          {
+            "id": "available",
+            "label": "切替候補",
+            "collapsible": false,
+            "profile_ids": [
+              "claude-upper",
+              "claude-dup-a",
+              "claude-dup-b",
+              "claude-unicode-hira",
+              "claude-unicode-kata",
+              "claude-unregistered",
+              "codex-sort",
+              "grok-sort"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "tickets_and_subscription_metadata_preserved",
+      "input": {
+        "accounts": [
+          {
+            "profile_id": "codex-metadata",
+            "provider": "codex",
+            "label": "codex-metadata",
+            "email": "codex-metadata@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "reset_tickets": {
+              "available": 0,
+              "expires_at": null,
+              "usable_now": false,
+              "blocked_reason": "not_offered",
+              "clears": [
+                "five_hour",
+                "seven_day"
+              ],
+              "moves_weekly_reset": true,
+              "requires_limit": false,
+              "title": "Synthetic credit"
+            },
+            "subscription": {
+              "source": "codex_subscription",
+              "checked_at": "2026-10-10T00:00:00Z",
+              "plan": "plus",
+              "renews_at": "2026-10-17T00:00:00Z",
+              "ends_at": null,
+              "started_at": "2026-09-01T00:00:00Z",
+              "will_renew": true
+            },
+            "token_owner_email": "codex-owner@example.test"
+          },
+          {
+            "profile_id": "claude-metadata",
+            "provider": "claude",
+            "label": "claude-metadata",
+            "email": "claude-metadata@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "reset_tickets": {
+              "available": 2,
+              "expires_at": "2026-10-17T00:00:00Z",
+              "usable_now": false,
+              "blocked_reason": "requires_limit",
+              "clears": [
+                "five_hour",
+                "seven_day"
+              ],
+              "moves_weekly_reset": false,
+              "requires_limit": true,
+              "title": null
+            },
+            "subscription": {
+              "source": "claude_profile",
+              "checked_at": "2026-10-10T00:00:00Z",
+              "plan": "max",
+              "renews_at": null,
+              "ends_at": "2026-11-01T00:00:00Z",
+              "started_at": null,
+              "will_renew": false
+            },
+            "token_owner_email": null
+          }
+        ],
+        "generated_at": "2026-10-10T00:00:00Z"
+      },
+      "expected": {
+        "accounts": [
+          {
+            "profile_id": "codex-metadata",
+            "provider": "codex",
+            "label": "codex-metadata",
+            "email": "codex-metadata@example.test",
+            "plan": "plus",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "reset_tickets": {
+              "available": 0,
+              "expires_at": null,
+              "usable_now": false,
+              "blocked_reason": "not_offered",
+              "clears": [
+                "five_hour",
+                "seven_day"
+              ],
+              "moves_weekly_reset": true,
+              "requires_limit": false,
+              "title": "Synthetic credit"
+            },
+            "subscription": {
+              "source": "codex_subscription",
+              "checked_at": "2026-10-10T00:00:00Z",
+              "plan": "plus",
+              "renews_at": "2026-10-17T00:00:00Z",
+              "ends_at": null,
+              "started_at": "2026-09-01T00:00:00Z",
+              "will_renew": true
+            },
+            "token_owner_email": "codex-owner@example.test",
+            "availability_group": "available",
+            "availability_order": 1,
+            "availability_label": null
+          },
+          {
+            "profile_id": "claude-metadata",
+            "provider": "claude",
+            "label": "claude-metadata",
+            "email": "claude-metadata@example.test",
+            "plan": "pro",
+            "registered": true,
+            "is_active": false,
+            "needs_relogin": false,
+            "state": "ok",
+            "five_hour": {
+              "pct": 10,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day": {
+              "pct": 20,
+              "resets_at": "2026-10-17T00:00:00Z"
+            },
+            "seven_day_sonnet": null,
+            "seven_day_opus": null,
+            "model_windows": [],
+            "error_code": null,
+            "retry_at": null,
+            "fetched_at": "2026-10-10T00:00:00Z",
+            "reset_tickets": {
+              "available": 2,
+              "expires_at": "2026-10-17T00:00:00Z",
+              "usable_now": false,
+              "blocked_reason": "requires_limit",
+              "clears": [
+                "five_hour",
+                "seven_day"
+              ],
+              "moves_weekly_reset": false,
+              "requires_limit": true,
+              "title": null
+            },
+            "subscription": {
+              "source": "claude_profile",
+              "checked_at": "2026-10-10T00:00:00Z",
+              "plan": "max",
+              "renews_at": null,
+              "ends_at": "2026-11-01T00:00:00Z",
+              "started_at": null,
+              "will_renew": false
+            },
+            "token_owner_email": null,
+            "availability_group": "available",
+            "availability_order": 0,
+            "availability_label": null
+          }
+        ],
+        "generated_at": "2026-10-10T00:00:00Z",
+        "availability_groups": [
+          {
+            "id": "available",
+            "label": "切替候補",
+            "collapsible": false,
+            "profile_ids": [
+              "claude-metadata",
+              "codex-metadata"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "empty_report",
+      "input": {
+        "accounts": [],
+        "generated_at": "2026-10-10T00:00:00Z"
+      },
+      "expected": {
+        "accounts": [],
+        "generated_at": "2026-10-10T00:00:00Z",
+        "availability_groups": []
+      }
+    }
+  ]
+}

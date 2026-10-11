@@ -27,12 +27,12 @@ describe("leftover group identity and remembered labels", () => {
       process({ pid: 3, paneSessionId: "closed" }),
     ], [], [{ ...history("old"), paneSessionId: "12345678-running" }]);
     expect(groups.map((group) => group.closed)).toEqual([true, false]);
-    expect(groups[1].title).toBe("動いているペイン (ID 12345678) から切り離されたもの");
+    expect(groups[1].title).toBe("動いているタブ (ID 12345678) から切り離されたもの");
   });
 
   it("uses remembered names after history labels and before an ID fallback", () => {
     rememberClosedPaneLabel("pane", "background");
-    expect(groupPaneLeftovers([process()], [], [])[0].title).toBe("閉じたペイン「background」から残っているもの");
+    expect(groupPaneLeftovers([process()], [], [])[0].title).toBe("閉じたタブ「background」から残っているもの");
     expect(groupPaneLeftovers([process()], [], [history("history")])[0].title).toContain("「history」");
     expect(groupPaneLeftovers([process()], [], [history(null, "display")])[0].title).toContain("「display」");
     expect(groupPaneLeftovers([process()], [], [history(null)])[0].title).toContain("「background」");

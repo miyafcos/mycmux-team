@@ -7,10 +7,14 @@ import { DEFAULT_JEV_SETTINGS, abandonJevSettingsLoad, loadJevSettings, useJevSe
 import { EVIDENCE_GROUPING_VERSION, runEvidenceGroupingAnalysis, readEvidenceScan } from "../components/layout/evidenceGrouping";
 import {
   groupingPromptPayload,
+  groupingStrategyInstructions,
+  type GroupingAnalysisDependencies,
+  type GroupingPresetStrategy,
   type GroupingAnalysisResult,
   type GroupingAnalysisStage,
   type GroupingScan,
 } from "../components/layout/tabGrouping";
+import { withRequestedGroupingPlan } from "../components/layout/groupingLocalPlan";
 import { hashCanonical } from "./persistentLayoutProjection";
 import { useAiSettingsStore } from "../stores/aiSettingsStore";
 import { type PaneVolatileMetadata } from "../stores/paneMetadataStore";
@@ -166,7 +170,7 @@ export function groupingFingerprints(scan: GroupingScan): GroupingFingerprints {
   const exact = groupingPromptPayload(scan);
   const structural = {
     ...exact,
-    tabs: exact.tabs.map(({ tail: _tail, lastOutputAt: _lastOutputAt, ...tab }) => tab),
+    tabs: exact.tabs.map(({ tail: _tail, lastOutputAt: _lastOutputAt, attention: _attention, ...tab }) => tab),
   };
   return {
     structural: hashCanonical(structural),
@@ -205,7 +209,49 @@ async function withScanTimeout<T>(scan: Promise<T>): Promise<T> {
   }
 }
 
-function productionDependencies(): GroupingPrecomputeDependencies {
+/** Keep the existing Jev decision schema; strategy context travels in state. */
+export function groupingEvidencePrompt(prompt: string, scan: GroupingScan, requestedStrategy: GroupingPresetStrategy): string {
+  const payload = JSON.parse(prompt) as { requests: Array<{ state: Record<string, unknown>; questions: unknown }> };
+  return JSON.stringify({
+    ...payload,
+    requested_strategy: requestedStrategy,
+    requests: payload.requests.map(request => {
+      const panes = request.state.panes as Record<string, Record<string, unknown>>;
+      return { ...request, state: {
+        ...request.state,
+        requested_strategy: requestedStrategy,
+        grouping_context: { scannedAt: scan.scannedAt, instructions: groupingStrategyInstructions(requestedStrategy) },
+        panes: Object.fromEntries(Object.entries(panes).map(([key, pane]) => {
+          const tab = scan.tabs[Number(key.slice("pane_".length))];
+          return [key, { ...pane,
+            attention: tab?.attention ?? { working: false, waiting: null, unreadCompletion: false },
+            lastOutputAt: tab?.lastOutputAt ?? null,
+            humanOrigin: tab?.origin?.kind === "human",
+          }];
+        })),
+      } };
+    }),
+  });
+}
+
+async function analyzeEvidenceWithPreset(
+  deps: GroupingAnalysisDependencies,
+  useJev: boolean,
+  requestedStrategy?: GroupingPresetStrategy,
+): Promise<GroupingAnalysisResult> {
+  // Capture the same scan the decision requests reference; do not rescan at
+  // judge time and risk attaching another pane's attention to a numbered ID.
+  let scan: GroupingScan;
+  const result = await runEvidenceGroupingAnalysis({
+    ...deps,
+    scan: async () => { scan = await deps.scan(); return scan; },
+    judge: (prompt, requestId) => deps.judge(requestedStrategy
+      ? groupingEvidencePrompt(prompt, scan, requestedStrategy) : prompt, requestId),
+  }, useJev);
+  return withRequestedGroupingPlan(result, requestedStrategy);
+}
+
+function productionDependencies(requestedStrategy?: GroupingPresetStrategy): GroupingPrecomputeDependencies {
   const useJev = () => useJevSettingsStore.getState().enabled && useAiSettingsStore.getState().aiEnabled;
   return {
     // The coordinator calls these as `dependencies.setTimer(...)` / `dependencies.clearTimer(...)`.
@@ -238,10 +284,10 @@ function productionDependencies(): GroupingPrecomputeDependencies {
       return () => document.removeEventListener("visibilitychange", listener);
     },
     scan: () => withScanTimeout(readEvidenceScan()),
-    analyze: (scan, judge, requestId) => runEvidenceGroupingAnalysis({ scan: async () => scan, judge, requestId }, useJev()),
-    analyzeCurrent: (judge, requestId, onProgress) => runEvidenceGroupingAnalysis({
+    analyze: (scan, judge, requestId) => analyzeEvidenceWithPreset({ scan: async () => scan, judge, requestId }, useJev(), requestedStrategy),
+    analyzeCurrent: (judge, requestId, onProgress) => analyzeEvidenceWithPreset({
       scan: () => withScanTimeout(readEvidenceScan()), judge, requestId, onProgress,
-    }, useJev()),
+    }, useJev(), requestedStrategy),
     judge: (prompt, requestId) => invoke<string>("run_jev_grouping_judge", { prompt, requestId }),
     abort: requestId => invoke<boolean>("abort_tab_sweep_judge", { requestId }),
     readStorage: key => { try { return typeof localStorage === "undefined" ? null : localStorage.getItem(key); } catch { return null; } },
@@ -815,25 +861,34 @@ export function peekGroupingPrecompute(): GroupingPrecomputePeek {
 }
 
 let foregroundWait: AbortController | null = null;
+let foregroundCoordinator: ReturnType<typeof createGroupingPrecomputeCoordinator> | null = null;
 export function cancelForegroundGroupingAnalysis(): void {
   foregroundWait?.abort();
   foregroundWait = null;
   abandonJevSettingsLoad();
+  foregroundCoordinator?.cancelForeground();
+  foregroundCoordinator = null;
   groupingPrecompute.cancelForeground();
 }
 
 export async function generateForegroundGroupingAnalysis(
   force = false,
   onProgress?: (stage: GroupingAnalysisStage) => void,
+  requestedStrategy?: GroupingPresetStrategy,
 ): Promise<GroupingProductionResult> {
   const controller = new AbortController();
   const trace = beginGroupingTrace();
   foregroundWait = controller;
+  // Preset snapshots depend on transient attention. Use the same coordinator
+  // for this request, without reading or overwriting the recommended cache.
+  const coordinator = requestedStrategy
+    ? createGroupingPrecomputeCoordinator(productionDependencies(requestedStrategy)) : groupingPrecompute;
+  foregroundCoordinator = coordinator;
   try {
     trace.mark("settings");
     await boundedGroupingWait(loadJevSettings(), 5_000, controller.signal);
     if (controller.signal.aborted) throw new Error("cancelled");
-    const result = await boundedGroupingWait(groupingPrecompute.generateForeground(force, stage => {
+    const result = await boundedGroupingWait(coordinator.generateForeground(force, stage => {
       trace.mark(stage === "judging" ? "jev" : stage === "scanning" ? "scan" : "prepare");
       onProgress?.(stage);
     }), GROUPING_FOREGROUND_TIMEOUT_MS, controller.signal);
@@ -843,7 +898,11 @@ export async function generateForegroundGroupingAnalysis(
     const reason = error instanceof Error ? error.message : "";
     trace.finish(reason === "timeout" ? "timeout" : reason === "cancelled" ? "cancelled" : "error");
     throw error;
-  } finally { if (foregroundWait === controller) foregroundWait = null; }
+  } finally {
+    if (foregroundWait === controller) foregroundWait = null;
+    if (foregroundCoordinator === coordinator) foregroundCoordinator = null;
+    if (requestedStrategy) coordinator.stop();
+  }
 }
 
 export function requestGroupingPrecomputeRefresh(): void {

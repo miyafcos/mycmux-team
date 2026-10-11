@@ -37,7 +37,9 @@ function showNext(): void {
   if (dismissActive) return;
   const request = queue.shift();
   if (!request) return;
-  const target = document.querySelector<HTMLElement>("[data-cmux-themed-root]") ?? document.body;
+  const target = document.querySelector<HTMLElement>("[data-cmux-themed-root]")
+    ?? document.querySelector<HTMLElement>("[data-cmux-app-font-scope]")
+    ?? document.body;
   const previousFocus = document.activeElement;
   const backdrop = document.createElement("div");
   backdrop.className = "cmux-overlay-backdrop";

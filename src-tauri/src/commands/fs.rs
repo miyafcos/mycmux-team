@@ -17,7 +17,8 @@ pub struct ResolvedLocalPathLink {
 /// Cross-platform; mycmux ships on Windows so that path is the one
 /// exercised in production.
 #[tauri::command(async)]
-pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
+pub async fn reveal_in_explorer(
+    _trusted: crate::ipc_caller::TrustedAppCaller, path: String) -> Result<(), String> {
     crate::util::task::run_blocking("reveal_in_explorer", move || {
         reveal_path_in_os_file_manager(Path::new(&path))
     }).await
@@ -27,7 +28,8 @@ pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
 /// no-op in spirit (the UI hides this menu item for dirs). Cross-platform;
 /// Windows delegates to Explorer so local files use the registered default app.
 #[tauri::command(async)]
-pub async fn open_with_default(path: String) -> Result<(), String> {
+pub async fn open_with_default(
+    _trusted: crate::ipc_caller::TrustedAppCaller, path: String) -> Result<(), String> {
     crate::util::task::run_blocking("open_with_default", move || {
         open_path_with_default_app_impl(Path::new(&path))
     }).await
@@ -185,7 +187,8 @@ fn local_path_candidate_to_path(value: &str) -> Option<PathBuf> {
 }
 
 #[tauri::command(async)]
-pub async fn reveal_path_in_explorer(uri: String) -> Result<(), String> {
+pub async fn reveal_path_in_explorer(
+    _trusted: crate::ipc_caller::TrustedAppCaller, uri: String) -> Result<(), String> {
     crate::util::task::run_blocking("reveal_path_in_explorer", move || {
         let path = artifact_path_from_uri(&uri)?;
         reveal_path_in_os_file_manager(&path)
@@ -194,7 +197,8 @@ pub async fn reveal_path_in_explorer(uri: String) -> Result<(), String> {
 }
 
 #[tauri::command(async)]
-pub async fn open_path_with_default_app(uri: String) -> Result<(), String> {
+pub async fn open_path_with_default_app(
+    _trusted: crate::ipc_caller::TrustedAppCaller, uri: String) -> Result<(), String> {
     crate::util::task::run_blocking("open_path_with_default_app", move || {
         let path = artifact_path_from_uri(&uri)?;
         open_path_with_default_app_impl(&path)

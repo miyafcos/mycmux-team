@@ -2,6 +2,7 @@
 import { Terminal as PublishedTerminal } from "@xterm/headless/lib-headless/xterm-headless.mjs";
 import type { ScrollbackCursor, ScrollbackSnapshot } from "../../lib/ipc";
 import { withTerminalDeadline } from "../../lib/terminalDeadline";
+import { currentPtyRead, ptyReadGeneration, retainPtyReads, subscribePtyReads, validatePtySnapshot, type PtyReadGeneration } from "../../lib/ptyReadGeneration";
 import {
   TERMINAL_SNAPSHOT_MAX_WRAPPED_LINES,
   TERMINAL_SNAPSHOT_SCAN_MULTIPLIER,
@@ -29,6 +30,7 @@ export interface HeadlessBufferSize {
 
 interface HeadlessBufferCacheEntry {
   terminal: HeadlessTerminal;
+  generation: PtyReadGeneration;
   endOffset: number;
   sessionEpoch?: number;
   sizeRevision?: number;
@@ -53,6 +55,14 @@ function resolveSize(
 
 const headlessBufferCache = new Map<string, HeadlessBufferCacheEntry>();
 const sessionWriteQueues = new Map<string, Promise<void>>();
+subscribePtyReads(sessionId => {
+  const entry = headlessBufferCache.get(sessionId);
+  if (!entry) return;
+  headlessBufferCache.delete(sessionId);
+  // A parser callback must settle before disposal. Its generation check below
+  // prevents the retired parser from committing or re-entering the cache.
+  if (!entry.busy) entry.terminal.dispose();
+});
 
 function cleanTerminalSnapshotLine(text: string): string {
   return text
@@ -111,7 +121,7 @@ function getBufferLines(terminal: HeadlessTerminal, maxLines: number): string[] 
   }
 }
 
-function createCacheEntry(size: HeadlessBufferSize): HeadlessBufferCacheEntry {
+function createCacheEntry(size: HeadlessBufferSize, generation: PtyReadGeneration): HeadlessBufferCacheEntry {
   return {
     terminal: new Terminal({
       cols: size.cols,
@@ -119,6 +129,7 @@ function createCacheEntry(size: HeadlessBufferSize): HeadlessBufferCacheEntry {
       scrollback: HEADLESS_BUFFER_SCROLLBACK,
       allowProposedApi: true,
     }),
+    generation,
     endOffset: 0,
     busy: false,
     cols: size.cols,
@@ -171,89 +182,104 @@ export function getHeadlessBufferLines(
 
 export function readHeadlessBufferLines(
   sessionId: string, loadSnapshot: SnapshotLoader, maxLines: number, size?: HeadlessBufferSize,
+  fetchTimeoutMs = HEADLESS_BUFFER_FETCH_TIMEOUT_MS, purpose?: "observation", isCurrent = () => true,
 ): Promise<string[]> {
-  return replayHeadlessBuffer(sessionId, loadSnapshot, maxLines, size);
+  return replayHeadlessBuffer(sessionId, loadSnapshot, maxLines, size, fetchTimeoutMs, purpose, isCurrent);
 }
 
-function replayHeadlessBuffer(
+async function replayHeadlessBuffer(
   sessionId: string, source: ScrollbackSnapshot | SnapshotLoader, maxLines: number, size?: HeadlessBufferSize,
+  fetchTimeoutMs = HEADLESS_BUFFER_FETCH_TIMEOUT_MS, purpose?: "observation", isCurrent = () => true,
 ): Promise<string[]> {
-  return withSessionWriteQueue(sessionId, async () => {
-    let entry = headlessBufferCache.get(sessionId);
-    // Pin cached parser state while fetching, and serialize fetch + parse so a
-    // second reader requests the cursor the first reader actually committed.
-    if (entry) entry.busy = true;
-    try {
-      const previousSize = entry ? resolveSize(size, entry) : undefined;
-      const canRequestDelta = entry && previousSize?.cols === entry.cols && previousSize.rows === entry.rows
-        && entry.sessionEpoch !== undefined && entry.sizeRevision !== undefined;
-      const cursor: ScrollbackCursor | undefined = canRequestDelta && entry ? {
-        endOffset: entry.endOffset, sessionEpoch: entry.sessionEpoch!, sizeRevision: entry.sizeRevision!,
-      } : undefined;
-      // Bound the fetch phase inside the queue, including a possible full retry.
-      // No parser/cursor/geometry changes happen before this await succeeds.
-      // On timeout keep the last committed state; late results cannot resume
-      // this operation, and the next reader can request its still-valid cursor.
-      const fetchDeadline = performance.now() + HEADLESS_BUFFER_FETCH_TIMEOUT_MS;
-      const loadSnapshot = (since?: ScrollbackCursor) => {
-        if (typeof source !== "function") throw new Error("PTY scrollback delta requires a full snapshot");
-        return withTerminalDeadline(source(since), "headless get_session_scrollback",
-          Math.max(0, fetchDeadline - performance.now()));
-      };
-      let snapshot = typeof source === "function" ? await loadSnapshot(cursor) : source;
-      let wanted = resolveSize(size, snapshot);
-      const canAppend = () => Boolean(entry && entry.cols === wanted.cols && entry.rows === wanted.rows
-        && entry.sessionEpoch === snapshot.sessionEpoch && entry.sizeRevision === snapshot.sizeRevision
-        && entry.endOffset >= snapshot.startOffset && entry.endOffset <= snapshot.endOffset);
-      // A delta alone cannot initialize a fresh parser. Retry once with the
-      // entire retained ring if the producer returned incompatible metadata.
-      if (snapshot.isDelta && !canAppend()) {
-        if (typeof source !== "function") throw new Error("PTY scrollback delta requires a full snapshot");
-        snapshot = await loadSnapshot();
-        wanted = resolveSize(size, snapshot);
-        if (snapshot.isDelta && !canAppend()) throw new Error("PTY scrollback delta requires a full snapshot");
-      }
-      // A warm parser may retain screen cells from bytes already dropped by
-      // the ring. Preserve it while the cursor is valid. Cold/delta equivalence
-      // requires retained bytes that reconstruct the same parser/screen state.
-      const replayDelta = canAppend();
-      if (!entry || !replayDelta) {
-        // Eviction or incompatible metadata loses that earlier state. Replaying
-        // the retained raw ring is best effort: partial-update TUIs can have
-        // missing screen cells because the ring is not a screen checkpoint.
+  const release = retainPtyReads(sessionId);
+  try {
+    const generation = ptyReadGeneration(sessionId);
+    const cursorFor = (entry?: HeadlessBufferCacheEntry): ScrollbackCursor | undefined => {
+      const wanted = entry ? resolveSize(size, entry) : undefined;
+      return entry && currentPtyRead(sessionId, entry.generation) && wanted?.cols === entry.cols && wanted.rows === entry.rows
+        && entry.sessionEpoch !== undefined && entry.sizeRevision !== undefined
+        ? { endOffset: entry.endOffset, sessionEpoch: entry.sessionEpoch, sizeRevision: entry.sizeRevision } : undefined;
+    };
+    let fetchDeadline = performance.now() + fetchTimeoutMs;
+    const load = (cursor?: ScrollbackCursor): Promise<ScrollbackSnapshot> => {
+      if (!currentPtyRead(sessionId, generation) || !isCurrent()) return Promise.reject(new Error("PTY read generation changed"));
+      if (typeof source !== "function") return Promise.reject(new Error("PTY scrollback delta requires a full snapshot"));
+      return withTerminalDeadline(source(cursor), "headless get_session_scrollback", Math.max(0, fetchDeadline - performance.now()));
+    };
+    const commit = async (snapshot: ScrollbackSnapshot): Promise<string[] | undefined> => {
+      if (!isCurrent()) throw new Error("pane read lifetime changed");
+      validatePtySnapshot(sessionId, generation, snapshot.sessionEpoch);
+      let entry = headlessBufferCache.get(sessionId);
+      const wanted = resolveSize(size, snapshot);
+      const compatible = Boolean(entry && entry.generation === generation && entry.cols === wanted.cols && entry.rows === wanted.rows
+        && entry.sessionEpoch === snapshot.sessionEpoch && entry.sizeRevision === snapshot.sizeRevision);
+      // An interactive reader may advance the cursor while an observer is fetching.
+      // Never rewind the committed parser to that observer's older reply.
+      if (entry?.generation === generation && entry.sessionEpoch === snapshot.sessionEpoch
+        && (entry.endOffset > snapshot.endOffset || (entry.sizeRevision !== undefined && snapshot.sizeRevision !== undefined
+          && entry.sizeRevision > snapshot.sizeRevision))) return getBufferLines(entry.terminal, maxLines);
+      const canAppend = compatible && entry!.endOffset >= snapshot.startOffset && entry!.endOffset <= snapshot.endOffset;
+      if (snapshot.isDelta && !canAppend) return undefined;
+      if (!entry || !canAppend) {
         if (entry) disposeEntry(sessionId, entry);
         if (headlessBufferCache.size >= HEADLESS_BUFFER_CACHE_LIMIT) {
-          const oldestIdle = [...headlessBufferCache.entries()].find(([, candidate]) => !candidate.busy);
-          if (oldestIdle) disposeEntry(oldestIdle[0], oldestIdle[1]);
+          const idle = [...headlessBufferCache.entries()].find(([, candidate]) => !candidate.busy);
+          if (idle) disposeEntry(idle[0], idle[1]);
         }
-        entry = createCacheEntry(wanted);
+        entry = createCacheEntry(wanted, generation);
         if (headlessBufferCache.size < HEADLESS_BUFFER_CACHE_LIMIT) headlessBufferCache.set(sessionId, entry);
-      } else {
-        touchEntry(sessionId, entry);
       }
-      const replayStart = replayDelta ? entry.endOffset - snapshot.startOffset : 0;
+      const replayStart = canAppend ? entry.endOffset - snapshot.startOffset : 0;
       entry.busy = true;
       try {
         await writeToTerminal(entry.terminal, snapshot.data.subarray(replayStart));
+        if (!isCurrent()) throw new Error("pane read lifetime changed");
+        validatePtySnapshot(sessionId, generation, snapshot.sessionEpoch);
         entry.endOffset = snapshot.endOffset;
         entry.sessionEpoch = snapshot.sessionEpoch;
         entry.sizeRevision = snapshot.sizeRevision;
         const lines = getBufferLines(entry.terminal, maxLines);
         if (headlessBufferCache.get(sessionId) === entry) touchEntry(sessionId, entry);
-        else entry.terminal.dispose(); // All slots were busy; this replay is temporary.
+        else entry.terminal.dispose();
         return lines;
       } catch (error) {
         disposeEntry(sessionId, entry);
         throw error;
+      } finally {
+        entry.busy = false;
+        evictOverflow();
       }
-    } finally {
-      if (entry) entry.busy = false;
-      evictOverflow();
+    };
+    if (purpose === "observation") {
+      // Only parser mutations share the queue. A four-second observer IPC wait
+      // cannot consume an ordinary read or send-confirmation's deadline.
+      let snapshot = typeof source === "function" ? await load(cursorFor(headlessBufferCache.get(sessionId))) : source;
+      let lines = await withSessionWriteQueue(sessionId, () => commit(snapshot));
+      if (lines === undefined) {
+        snapshot = await load(); // One full retry, outside the queue, same budget.
+        lines = await withSessionWriteQueue(sessionId, () => commit(snapshot));
+      }
+      if (lines === undefined) throw new Error("PTY scrollback delta requires a full snapshot");
+      return lines;
     }
-  });
+    return await withSessionWriteQueue(sessionId, async () => {
+      // Preserve the default reader's serialized cursor and 200 ms fetch budget.
+      fetchDeadline = performance.now() + fetchTimeoutMs;
+      let snapshot = typeof source === "function" ? await load(cursorFor(headlessBufferCache.get(sessionId))) : source;
+      let lines = await commit(snapshot);
+      if (lines === undefined) { snapshot = await load(); lines = await commit(snapshot); }
+      if (lines === undefined) throw new Error("PTY scrollback delta requires a full snapshot");
+      return lines;
+    });
+  } finally { release(); }
 }
 
 export function __headlessBufferCacheSizeForTests(): number { return headlessBufferCache.size; }
+
+export function __headlessBufferStateForTests() {
+  return { entries: [...headlessBufferCache].map(([sessionId, entry]) => ({ sessionId, generation: entry.generation,
+    epoch: entry.sessionEpoch, endOffset: entry.endOffset, busy: entry.busy })), queued: [...sessionWriteQueues.keys()] };
+}
 
 export function __resetHeadlessBufferCacheForTests(): void {
   for (const [sessionId, entry] of headlessBufferCache) disposeEntry(sessionId, entry);

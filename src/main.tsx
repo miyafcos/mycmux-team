@@ -68,6 +68,9 @@ async function waitForBundledFonts(): Promise<void> {
       Promise.all([
         document.fonts.load('400 16px "UDEV Gothic NF"'),
         document.fonts.load('700 16px "UDEV Gothic NF"'),
+        // The hackgen-console preset needs both faces before the first atlas.
+        document.fonts.load('400 16px "HackGen Console NF"'),
+        document.fonts.load('700 16px "HackGen Console NF"'),
       ]),
       // A slow or broken asset must not turn into a blank window. The CSS stack
       // still falls through to a system monospace face if this times out.

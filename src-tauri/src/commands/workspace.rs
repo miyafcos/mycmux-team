@@ -25,6 +25,7 @@ fn load_persistent_data_for<T: storage::PersistentDataTarget + ?Sized>(
 
 #[tauri::command(async)]
 pub async fn save_persistent_data(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     app_handle: AppHandle,
     mut data: PersistentData,
 ) -> Result<(), storage::PersistentStorageError> {
@@ -465,6 +466,9 @@ mod tests {
             turn_marks: None,
             lifecycle: None,
             origin: None,
+            delegated_by_tab_id: None,
+            delegated_by_agent_session_id: None,
+            delegated_at: None,
             declared_prompt: None,
             declared_target: None,
         }]);

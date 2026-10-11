@@ -22,7 +22,7 @@ export function readingSteps(catalog: AgentDesignCatalog, service: DesignService
   return stepIds.map((id, index) => {
     const saved = declared?.find(step => step.id === id);
     return { id, stage: [0, 1, 1, 1, 1, 2, 3, 4, 4, 4, 5, 6][index], timing: index === 0 || index > 9 ? "outside" : index < 5 ? "always" : index === 7 ? "conditional" : index === 8 || index === 9 ? "onDemand" : "event",
-      chars: saved?.chars ?? quantities[index] ?? null, evidence: saved?.evidence ?? (index === 3 && quantities[index] != null ? "measured" : "declaration"),
+      chars: saved?.chars ?? quantities[index] ?? null, evidence: saved?.evidence ?? (index === 3 ? service.session.listing.evidence ?? (quantities[index] != null ? "measured" : "declaration") : "declaration"),
       itemIds: stepItems(catalog, service, index).map(item => item.id),
       hookScripts: saved?.hookScripts ?? service.hooks.filter(hook => stageEvents[id]?.includes(hook.event)).map(hook => hook.script) };
   });

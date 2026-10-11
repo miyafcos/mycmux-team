@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   defaultShortcutFor,
@@ -11,10 +12,23 @@ import {
 } from "../../src/lib/keybindings";
 
 describe("global keybindings", () => {
+  it("documents all current UI titles exactly in the README shortcut table", () => {
+    const rows = readFileSync("README.md", "utf8").split(/\r?\n/)
+      .filter(line => /^\| \d+ \|/.test(line))
+      .map(line => line.split("|").map(cell => cell.trim()))
+      .filter(cells => /^`[a-z]+\.[\w.]+`$/.test(cells[3] ?? ""));
+    expect(rows).toHaveLength(KEYBINDING_DEFINITIONS.length);
+    const documented = new Map(rows.map(cells => [cells[3].slice(1, -1), cells[5]]));
+    expect(documented.size).toBe(KEYBINDING_DEFINITIONS.length);
+    for (const definition of KEYBINDING_DEFINITIONS) {
+      expect(documented.get(definition.action)).toBe(definition.title);
+    }
+  });
+
   it("registers a non-conflicting global command", () => {
     const definition = getActionDefinition("tab.sweep");
     expect(definition).toMatchObject({
-      title: "ペイン掃除を開く",
+      title: "タブ掃除を開く",
       category: "Global",
       defaultShortcut: "ctrl+shift+k",
     });

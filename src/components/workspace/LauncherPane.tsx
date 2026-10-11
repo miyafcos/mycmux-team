@@ -32,6 +32,11 @@ import { closePaneOperation } from "../../lib/paneCloseOperation";
 import { useUiStore } from "../../stores/uiStore";
 import { useLauncherDirsStore } from "../../stores/launcherDirsStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { useWorkspaceListStore } from "../../stores/workspaceListStore";
+import { usePaneHoverFocus } from "../../hooks/usePaneHoverFocus";
+import { isRestorableTab } from "../../lib/tabLifecycle";
+import { isStartupSessionPending } from "../../lib/startupSessionGate";
+import { isTearoutSessionDormant } from "../../lib/tearout/sessionAttachment";
 import {
   cycleChoice,
   dirSections,
@@ -313,6 +318,15 @@ export default function LauncherPane({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const modelInputRef = useRef<HTMLInputElement | null>(null);
   const paneRef = useRef<HTMLDivElement | null>(null);
+  const hoverListRef = useRef<HTMLDivElement | null>(null);
+  const hoverFocusGuardRef = useRef<(() => boolean) | null>(null);
+  const zoomedPaneId = useUiStore((s) => s.zoomedPaneId);
+  const hoverWorkspaceVisible = useWorkspaceListStore((s) => {
+    const pane = s.workspaces.find((w) => w.id === workspaceId)?.panes.find((p) => p.id === paneId);
+    const tab = pane?.tabs.find((t) => t.id === pane.activeTabId) ?? pane?.tabs[0];
+    return s.activeWorkspaceId === workspaceId && tab?.id === tabId && tab.sessionId === sessionId
+      && tab.type === "launcher" && isRestorableTab(tab);
+  });
   const specEntry = specTarget ? getCatalogEntry(specTarget) : undefined;
   // claude-codex's chips are its installed models.json, re-read on each open.
   const specModels = useLaunchModels(specEntry);
@@ -351,10 +365,24 @@ export default function LauncherPane({
     inputRef.current?.focus();
   }, [setActivePaneId, sessionId]);
 
+  const hoverFocusEnabled = usePaneHoverFocus(hoverListRef, {
+    enabled: hoverWorkspaceVisible && (zoomedPaneId === null || zoomedPaneId === paneId)
+      && !isStartupSessionPending(sessionId) && !isTearoutSessionDormant(sessionId),
+    workspaceId, paneId, tabId, sessionId, kind: "launcher",
+    onActivate: (focusGuard) => {
+      hoverFocusGuardRef.current = focusGuard;
+      claimFocus();
+    },
+  });
+
   // S2: the pane is opened to be typed into — but only once it is the focused
   // one, or opening a background pane would steal the caret.
   useEffect(() => {
-    if (!isActive) return;
+    if (!isActive) { hoverFocusGuardRef.current = null; return; }
+    const guard = hoverFocusGuardRef.current;
+    if (guard && !guard()) return;
+    // Only the first active effect belongs to hover. Later spec edits are explicit.
+    hoverFocusGuardRef.current = null;
     if (specEntry && specRow === "model" && specTypesModel) {
       modelInputRef.current?.focus();
     } else {
@@ -901,7 +929,7 @@ export default function LauncherPane({
       //
       // Bubbles up from the chips: each one suppresses the default to keep the
       // caret, and the pane still learns it was clicked.
-      onMouseDown={claimFocus}
+      onMouseDown={() => { hoverFocusGuardRef.current = null; claimFocus(); }}
       style={{
         position: "absolute",
         inset: 0,
@@ -1049,7 +1077,8 @@ export default function LauncherPane({
         </div>
       )}
 
-      <div style={{ flex: "1 1 auto", overflowY: "auto", padding: "2px 0 10px" }}>{body}</div>
+      <div ref={hoverListRef} data-pane-hover-focus-surface={hoverFocusEnabled ? "launcher" : undefined}
+        style={{ flex: "1 1 auto", overflowY: "auto", padding: "2px 0 10px" }}>{body}</div>
 
       <div
         style={{

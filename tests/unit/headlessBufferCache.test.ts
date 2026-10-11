@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { replacePtyReadOwners } from "../../src/lib/ptyReadGeneration";
 
 const headlessState = vi.hoisted(() => ({
   holdWrites: false,
@@ -41,12 +42,16 @@ import {
   getHeadlessBufferLines,
 } from "../../src/components/terminal/headlessBuffer";
 
+const owner = Symbol("live cache fixture sessions");
 beforeEach(() => {
+  replacePtyReadOwners(owner, new Set(["session", ...Array.from({ length: 14 }, (_, index) => `busy-${index}`),
+    ...Array.from({ length: 13 }, (_, index) => `session-${index}`)]));
   __resetHeadlessBufferCacheForTests();
   headlessState.instances.length = 0;
   headlessState.holdWrites = false;
   headlessState.pendingWrites = [];
 });
+afterEach(() => { __resetHeadlessBufferCacheForTests(); replacePtyReadOwners(owner, new Set()); });
 
 describe("headless terminal scrollback cache", () => {
   it("keeps at most 12 cached terminals even when all slots are busy", async () => {

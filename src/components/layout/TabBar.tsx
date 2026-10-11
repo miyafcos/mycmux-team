@@ -1,3 +1,5 @@
+import { recoverNamesFromContent, undoRecoveredNames, type NameRecoveryFeedback } from "../../lib/nameRecoveryAction";
+import { useAutoNameRuntimeStore } from "../../stores/autoNameRuntimeStore";
 import { memo, useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo, useSyncExternalStore } from "react";
 import type { CSSProperties, MutableRefObject, ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -31,6 +33,7 @@ import { useUiStore } from "../../stores/uiStore";
 import { useStallStore } from "../../stores/stallStore";
 import { tearOutWorkspaceToNewWindow } from "../../lib/workspaceTearOut";
 import { beginNativeWorkspaceDrag, usesNativeWorkspaceDrag } from "../../lib/tearout/pointerDrag";
+import { LocalTearoutRefusal } from "../../lib/tearout/operation";
 import { isOutsideWindowViewport } from "../../lib/windowEdge";
 import { TearOutBanner } from "../workspace/PaneDragOverlay";
 import { paneDndStrings } from "../workspace/paneDndStrings";
@@ -49,6 +52,15 @@ import {
   type TearOutMeasurementSnapshot,
   type TearOutPointerSample,
 } from "../../lib/tearOutDiagnostics";
+
+const nameRecoveryFeedback: NameRecoveryFeedback = (result, undo) => {
+  const messages = {
+    applied: "名前を付け直しました。",
+    failed: "作業内容を取得できませんでした。名前の付け直しは元に戻せます。",
+    undone: "名前の付け直しを元に戻しました。後から手で付けた名前は残ります。",
+  };
+  useToastStore.getState().pushToast(messages[result], result === "failed" ? "error" : "info", undo ? { label: "元に戻す", run: undo } : undefined);
+};
 
 function tearOutPointerSample(event: Pick<PointerEvent, "clientX" | "clientY" | "screenX" | "screenY">): TearOutPointerSample {
   return {
@@ -260,6 +272,7 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
   onClose,
   onRename,
 }: WorkspaceTabEntryProps) {
+  const workspaceDescription = useAutoNameRuntimeStore(state => state.descriptions.get(ws.id));
   const petDisplayMode = usePetSettingsStore((state) => state.petDisplayMode);
   const pets = usePetSettingsStore((state) => state.pets);
   const workspaceTabs = useMemo(
@@ -368,6 +381,7 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
       <TabItem
         uiVariant={uiVariant}
         name={ws.name}
+        description={workspaceDescription}
         tabCount={workspaceTabCount(ws)}
         activeTabLabels={tabPreview.labels}
         remainingTabCount={tabPreview.remainingCount}
@@ -403,11 +417,14 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
   const paneMoveHoverWorkspaceId = usePaneDragStore((s) => s.hoverWorkspaceId);
   const savepointDragActive = useSavepointDragStore((s) => s.item !== null);
   const savepointHoverWorkspaceId = useSavepointDragStore((s) => s.hoverWorkspaceId);
-  const paneDragActive = paneMoveDragActive || savepointDragActive;
+  const nativeWorkspaceHoverActive = !paneMoveDragActive && paneMoveHoverWorkspaceId !== null;
+  const paneDragActive = paneMoveDragActive || savepointDragActive || nativeWorkspaceHoverActive;
   const hoverWorkspaceId = paneMoveHoverWorkspaceId ?? savepointHoverWorkspaceId;
   const paneNewWorkspaceDropActive = usePaneDragStore((s) => s.target?.kind === "new-workspace");
   const detachedNewWorkspaceDropActive = useDetachedDockStore((s) => s.target?.kind === "workspace");
-  const newWorkspaceDropActive = paneNewWorkspaceDropActive || detachedNewWorkspaceDropActive;
+  // Row dwell only opens a workspace. Sidebar release still creates a new one;
+  // while waiting, show the row mark instead of two competing destinations.
+  const newWorkspaceDropActive = paneNewWorkspaceDropActive || detachedNewWorkspaceDropActive && !nativeWorkspaceHoverActive;
   const tearOutMeasurement = usePaneDragStore((s) => s.tearOutMeasurement);
   const newWorkspaceShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["workspace.new"]));
 
@@ -416,6 +433,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
   // Pointer is currently outside the window mid-drag: releasing tears the
   // workspace out to a new OS window instead of reordering.
   const [tearOutReady, setTearOutReady] = useState(false);
+  const recovery = useAutoNameRuntimeStore(state => state.recovery);
   const [contextMenu, setContextMenu] = useState<{ workspaceId: string; x: number; y: number } | null>(null);
   const [contextMenuPos, setContextMenuPos] = useState({ left: 0, top: 0 });
   const [renameSignals, setRenameSignals] = useState<Record<string, number>>({});
@@ -440,9 +458,8 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
     if (target.tagName === "BUTTON" || target.tagName === "INPUT" || target.closest("button, input")) return;
     const workspaceId = workspaces[index]?.id;
     if (workspaceId && usesNativeWorkspaceDrag(workspaceId)) {
-      nativeWorkspaceDragging.current = true;
       let destination = index;
-      beginNativeWorkspaceDrag(e.nativeEvent, e.currentTarget as HTMLElement, workspaceId, {
+      const accepted = beginNativeWorkspaceDrag(e.nativeEvent, e.currentTarget as HTMLElement, workspaceId, {
         suppress: value => {
           dragging.current = value;
           if (value) setDragIndex(index);
@@ -465,6 +482,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
           if (sourceIndex >= 0 && sourceIndex !== destination) reorder(sourceIndex, destination);
         },
       });
+      if (accepted) nativeWorkspaceDragging.current = true;
       return;
     }
     startY.current = e.clientY;
@@ -555,6 +573,11 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
           trace?.committed();
           clearTearOutMeasurementAfterDelay();
         }).catch((err) => {
+            if (err instanceof LocalTearoutRefusal && err.phase === "moving") {
+              trace?.transition("cancelled", "workspace transfer refused while another move is pending");
+              clearTearOutMeasurementAfterDelay();
+              return;
+            }
             trace?.failed("create-failed", String(err));
             trace?.rolledBack("source workspace remained in its original window");
             clearTearOutMeasurementAfterDelay();
@@ -833,6 +856,12 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
           >
             名前を変更
           </WorkspaceContextMenuItem>
+          <WorkspaceContextMenuItem onClick={() => { const id = contextWorkspace.id; setContextMenu(null); void recoverNamesFromContent(id, nameRecoveryFeedback); }}>
+            中身から名前を付け直す
+          </WorkspaceContextMenuItem>
+          {recovery && <WorkspaceContextMenuItem onClick={() => { setContextMenu(null); undoRecoveredNames(nameRecoveryFeedback); }}>
+            名前の付け直しを元に戻す
+          </WorkspaceContextMenuItem>}
           <WorkspaceContextMenuItem
             onClick={() => {
               // Tear-out (Phase 3b). The workspace moves to a new OS window
@@ -845,6 +874,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
                 x: window.screenX + 80,
                 y: window.screenY + 60,
               }).catch((err) => {
+                if (err instanceof LocalTearoutRefusal && err.phase === "moving") return;
                 console.error("[multiwindow] tear-out failed", err);
                 useToastStore
                   .getState()

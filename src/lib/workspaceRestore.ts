@@ -5,6 +5,15 @@ import {
 import type { WorkspaceConfig } from "./ipc";
 import type { Workspace } from "../types";
 import { detachedMetadata, resolveDetachedReturnTarget, type DetachedReturnTarget } from "./detachedPane";
+import { paneHeaderInsertionIndex } from "./paneHandoff";
+
+/** Select only after the merge has committed; a destination pin stays pinned. */
+export function selectPaneHeaderTab(workspaceId: string, paneId: string, tabId: string): boolean {
+  const pane = useWorkspaceListStore.getState().getWorkspace(workspaceId)?.panes.find((pane) => pane.id === paneId);
+  if (!pane?.tabs.some((tab) => tab.id === tabId)) return false;
+  useWorkspaceLayoutStore.getState().setActivePaneTab(workspaceId, paneId, tabId);
+  return true;
+}
 
 /**
  * Turning a persisted `WorkspaceConfig[]` into live workspaces.
@@ -71,8 +80,9 @@ export function restoreWorkspaceConfigs(
     const incomingTabs = cfg.panes.length === 1 ? cfg.panes[0].tabs : undefined;
     const canPlace = destination && incomingTabs?.length
       && !placementWorkspace!.panes.some((pane) => pane.tabs.some((tab) => incomingTabs.some((incoming) => incoming.tab_id === tab.id)));
-    const validPlacement = canPlace && placement?.kind === "pane" && Number.isSafeInteger(placement.index)
-      ? { ...placement, index: Math.max(0, Math.min(placement.index, destination.tabs.length)) }
+    const isHeaderPlacement = canPlace && placement?.kind === "pane" && Number.isSafeInteger(placement.index);
+    const validPlacement = isHeaderPlacement
+      ? { ...placement, index: paneHeaderInsertionIndex(destination) }
       : canPlace && placement?.kind === "pane-zone"
         ? placement.zone === "center"
           ? { kind: "pane" as const, workspaceId: placement.workspaceId, paneId: placement.paneId, index: destination.tabs.length }
@@ -127,8 +137,10 @@ export function restoreWorkspaceConfigs(
       };
       listStore._updateWorkspacePanes(workspace.id, workspace.panes.map((candidate) =>
         candidate.id === pane.id ? returnedPane : candidate));
+      const returnedActiveTab = tabs.find((tab) => tab.id === restored.panes[0]?.activeTabId) ?? tabs[0];
+      if (isHeaderPlacement) selectPaneHeaderTab(workspace.id, pane.id, returnedActiveTab.id);
       restoredWorkspaceIds.push(workspace.id);
-      if (cfg.id === selection.activeWorkspaceId) activePaneSessionId = tabs[0].sessionId;
+      if (cfg.id === selection.activeWorkspaceId) activePaneSessionId = isHeaderPlacement ? returnedActiveTab.sessionId : tabs[0].sessionId;
       continue;
     }
     // Use split_columns if available; fall back to transposed split_rows for old data
@@ -149,8 +161,10 @@ export function restoreWorkspaceConfigs(
       {
         id: cfg.id,
         createdAt: cfg.created_at,
+        nameSource: cfg.name_source === "auto" ? "auto" : undefined,
         color: cfg.color ?? undefined,
         pet: cfg.pet ?? undefined,
+        restorePet: true,
         columnWidths: cfg.column_widths ?? undefined,
         rowHeightsPerCol: cfg.row_heights_per_col ?? undefined,
         // buildWorkspaceRecord validates these against the restored columns and

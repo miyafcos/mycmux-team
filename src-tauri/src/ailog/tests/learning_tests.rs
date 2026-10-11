@@ -246,7 +246,7 @@ fn file_ranking_documents_cumulative_count_when_period_count_is_unavailable() {
 fn smoke_real_database_learning_reports() {
     let path = crate::ailog::db_path().expect("ailog db path");
     assert!(path.is_file(), "ailog db not found: {path:?}");
-    let conn = crate::ailog::open_db(&path).expect("open live ailog db");
+    let conn = learning_smoke_connection(&path).expect("open live ailog db");
     let now = chrono::Utc::now().timestamp_millis();
     let findings = query::findings(
         &conn,
@@ -279,4 +279,20 @@ fn smoke_real_database_learning_reports() {
         rankings.failed_commands.len(),
         rankings.rewritten_files.len()
     );
+}
+
+fn learning_smoke_connection(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
+    rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|error| error.to_string())
+}
+
+#[test]
+fn learning_smoke_open_is_read_only_without_schema_initialization() {
+    let dir = tempfile::tempdir().unwrap(); let path = dir.path().join("fixture.db");
+    rusqlite::Connection::open(&path).unwrap().execute_batch("CREATE TABLE owner_sentinel(value TEXT); INSERT INTO owner_sentinel VALUES ('unchanged');").unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let conn = learning_smoke_connection(&path).unwrap();
+    assert!(conn.is_readonly(rusqlite::DatabaseName::Main).unwrap());
+    assert!(conn.execute_batch("CREATE TABLE forbidden_write(value TEXT);").is_err());
+    drop(conn);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
 }

@@ -691,6 +691,7 @@ pub async fn codex_app_server_set_enabled(
 
 #[tauri::command]
 pub async fn codex_app_server_start(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     state: tauri::State<'_, CodexAppServerState>,
     cwd: String,
     executable: Option<String>,
@@ -700,6 +701,7 @@ pub async fn codex_app_server_start(
 
 #[tauri::command]
 pub async fn codex_app_server_command(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     state: tauri::State<'_, CodexAppServerState>,
     request: ExperimentCommand,
 ) -> Result<Value, String> {

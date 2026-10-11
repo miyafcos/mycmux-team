@@ -666,6 +666,7 @@ pub(crate) fn spawn_child_window_with_restore(
 /// is posted to the main thread.
 #[tauri::command]
 pub fn open_child_window(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     app: AppHandle,
     label: Option<String>,
     x: Option<f64>,
@@ -724,6 +725,7 @@ pub fn handle_app_run_event(app: &AppHandle, event: tauri::RunEvent) {
     };
     let state = app.state::<AppState>();
     if state.window_registry.begin_shutdown(live_windows, code) {
+        state.session_state_store.stop_quiet_worker();
         let worker_app = app.clone();
         match crate::shutdown::Cleanup::start(crate::shutdown::SHUTDOWN_BUDGET, move |deadline| {
             let state = worker_app.state::<AppState>();

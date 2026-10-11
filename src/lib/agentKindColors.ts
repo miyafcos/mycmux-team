@@ -11,7 +11,7 @@ export const AGENT_KIND_ORDER = ["claude", "codex", "claude-codex", "grok"] as c
 export const KIND_COLORS: Record<DisplayAgentKind, AgentKindColor> = {
   "claude": { fg: "#f0a878", bg: "rgba(255, 138, 61, 0.10)" },
   "codex": { fg: "#8ab8e8", bg: "rgba(94, 158, 255, 0.10)" },
-  "claude-codex": { fg: "#7dcc97", bg: "rgba(74, 222, 128, 0.10)" },
+  "claude-codex": { fg: "#8ab8e8", bg: "rgba(94, 158, 255, 0.10)" },
   "grok": { fg: "#f38ba8", bg: "rgba(243, 139, 168, 0.10)" },
   "antigravity": { fg: "#4285f4", bg: "rgba(66, 133, 244, 0.10)" },
   // Hermes's own mark is monochrome; the gold is the brand colour its

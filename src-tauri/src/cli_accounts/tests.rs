@@ -981,6 +981,192 @@ fn switch_to_named_profile_preserves_its_real_tokens_and_files_live_to_owner() {
     assert!(result.warnings.contains(&WARN_LIVE_TOKEN_FILED_TO_OWNER.to_string()));
 }
 
+fn api_switch(c: &OwnerCase, provider: CliProvider, id: &str, lookup: OwnerLookup) -> Result<CliSwitchResult, String> {
+    let gp = grok::GrokPaths { auth: c.dir.path().join("grok-auth.json"), lock: c.dir.path().join("grok-auth.lock") };
+    api::switch_with_paths(c.dir.path(), &c.cp, &c.xp, &gp, provider, id, lookup)
+}
+
+#[test]
+fn api_switch_writes_cli_updated_keys_back_through_pc_core() {
+    let c = OwnerCase::new();
+    c.live("P", "p-live");
+    let lookup = |token: &str| if token == "p-live" { Some(synthetic_owner("P")) } else { owner_lookup(token) };
+    let result = api_switch(&c, CliProvider::Claude, &c.x.id, &lookup).unwrap();
+    assert_eq!(result.wrote_back_to, Some(c.p.id.clone()));
+    assert_eq!(c.stored(&c.p.id).credentials_text, owner_credentials("p-live"));
+    assert_eq!(claude::read_live_identity(&c.cp).identity_key.as_deref(), Some("X"));
+    assert_eq!(registry::load(c.dir.path()).unwrap().active.claude.as_deref(), Some(c.x.id.as_str()));
+}
+
+#[test]
+fn api_switch_foreign_and_unverified_keys_keep_pc_filing_rules() {
+    for verified in [true, false] {
+        let c = OwnerCase::new();
+        let before = fs::read(c.path(&c.p.id)).unwrap();
+        let unknown = |_: &str| None;
+        let lookup: OwnerLookup = if verified { &owner_lookup } else { &unknown };
+        let result = api_switch(&c, CliProvider::Claude, &c.p.id, lookup).unwrap();
+        assert_eq!(fs::read(c.path(&c.p.id)).unwrap(), before);
+        if verified {
+            assert_eq!(result.wrote_back_to.as_deref(), Some(c.x.id.as_str()));
+            assert_eq!(c.stored(&c.x.id).credentials_text, owner_credentials("x-live"));
+            assert!(result.warnings.contains(&WARN_LIVE_TOKEN_FILED_TO_OWNER.to_string()));
+        } else {
+            assert!(result.wrote_back_to.is_none());
+            assert!(result.warnings.contains(&WARN_LIVE_TOKEN_NOT_SAVED.to_string()));
+        }
+        assert!(Path::new(&result.backup_dir).exists());
+    }
+}
+
+#[test]
+fn api_switch_rejections_and_healthy_noop_leave_files_unchanged() {
+    let c = OwnerCase::new();
+    c.live("P", "p-access");
+    let bytes = || (c.live_bytes(), fs::read(c.path(&c.p.id)).unwrap(), fs::read(c.path(&c.x.id)).unwrap(), fs::read(registry::path(c.dir.path())).unwrap());
+    let before = bytes();
+    for (provider, id) in [(CliProvider::Claude, "claude-missing"), (CliProvider::Codex, c.p.id.as_str()), (CliProvider::Claude, "../outside"), (CliProvider::Claude, "live:claude")] {
+        assert_eq!(api_switch(&c, provider, id, &owner_lookup).err().as_deref(), Some(ERR_PROFILE_NOT_FOUND));
+        assert_eq!(bytes(), before);
+    }
+    assert_eq!(api_switch(&c, CliProvider::Claude, &c.p.id, &owner_lookup).err().as_deref(), Some(api::ALREADY_ACTIVE));
+    assert_eq!(bytes(), before);
+    assert!(!snapshot::backup_root(c.dir.path()).exists());
+    record_refresh_rejection(c.dir.path(), &c.p.id, "synthetic-time".into()).unwrap();
+    let rejected_before = bytes();
+    assert_eq!(api_switch(&c, CliProvider::Claude, &c.p.id, &owner_lookup).err().as_deref(), Some(ERR_NEEDS_RELOGIN));
+    assert_eq!(bytes(), rejected_before);
+    assert!(!snapshot::backup_root(c.dir.path()).exists());
+}
+
+#[test]
+fn api_switch_core_failure_after_writeback_keeps_error_provenance() {
+    let c = OwnerCase::new();
+    c.live("P", "p-access");
+    let expired = owner_credentials("p-access").replace("\"refreshTokenExpiresAt\":4102444800000", "\"refreshTokenExpiresAt\":1");
+    fs::write(&c.cp.credentials, &expired).unwrap();
+    let before = fs::read(c.path(&c.p.id)).unwrap();
+    let error = api_switch(&c, CliProvider::Claude, &c.p.id, &owner_lookup).err().unwrap();
+    assert_ne!(fs::read(c.path(&c.p.id)).unwrap(), before);
+    assert_eq!(c.stored(&c.p.id).credentials_text, expired);
+    assert_eq!(error, "cli_account.api.core_error:cli_account.error.needs_relogin");
+}
+
+#[test]
+fn api_switch_known_relogin_rejection_has_no_core_marker_or_write() {
+    let c = OwnerCase::new();
+    record_refresh_rejection(c.dir.path(), &c.p.id, "synthetic-time".into()).unwrap();
+    let before = (c.live_bytes(), fs::read(c.path(&c.p.id)).unwrap(), fs::read(registry::path(c.dir.path())).unwrap());
+    assert_eq!(api_switch(&c, CliProvider::Claude, &c.p.id, &owner_lookup).err().as_deref(), Some(ERR_NEEDS_RELOGIN));
+    assert_eq!((c.live_bytes(), fs::read(c.path(&c.p.id)).unwrap(), fs::read(registry::path(c.dir.path())).unwrap()), before);
+}
+
+#[test]
+fn api_switch_codex_and_grok_use_the_same_core_and_noop_policy() {
+    let c = OwnerCase::new();
+    let gp = grok::GrokPaths { auth: c.dir.path().join("grok-auth.json"), lock: c.dir.path().join("grok-auth.lock") };
+    fs::write(&c.xp.auth, CODEX).unwrap();
+    fs::write(&gp.auth, GROK.replace("2026-08-20", "2099-08-20")).unwrap();
+    let forbidden_lookup = |_: &str| panic!("only Claude may consult token ownership");
+    for provider in [CliProvider::Codex, CliProvider::Grok] {
+        let profile = capture_account_with_grok(c.dir.path(), &c.cp, &c.xp, Some(&gp), provider, None, &forbidden_lookup, UnverifiedPolicy::Refuse).unwrap();
+        assert_eq!(api_switch(&c, provider, &profile.id, &forbidden_lookup).err().as_deref(), Some(api::ALREADY_ACTIVE));
+        if provider == CliProvider::Codex { fs::remove_file(&c.xp.auth).unwrap(); } else { fs::remove_file(&gp.auth).unwrap(); }
+        let result = api_switch(&c, provider, &profile.id, &forbidden_lookup).unwrap();
+        assert_eq!(result.profile.id, profile.id);
+        assert!(result.warnings.is_empty());
+    }
+    fs::write(c.dir.path().join("config.toml"), "cli_auth_credentials_store = \"keyring\"\n").unwrap();
+    let profile = registry::load(c.dir.path()).unwrap().profiles.into_iter().find(|p| p.provider == CliProvider::Codex).unwrap();
+    assert_eq!(api_switch(&c, CliProvider::Codex, &profile.id, &forbidden_lookup).err().as_deref(), Some(ERR_CODEX_CREDENTIALS_STORE_UNSUPPORTED));
+}
+
+#[test]
+fn api_switch_identity_only_or_empty_tokens_are_not_healthy_noops() {
+    let mut noops = Vec::new();
+    for (provider, broken) in [
+        (CliProvider::Codex, r#"{"tokens":{"account_id":"codex-account-a"}}"#),
+        (CliProvider::Codex, r#"{"tokens":{"account_id":"codex-account-a","access_token":"","refresh_token":""}}"#),
+        (CliProvider::Grok, r#"{"entry":{"user_id":"grok-user-a"}}"#),
+        (CliProvider::Grok, r#"{"entry":{"user_id":"grok-user-a","key":"eyJhbGciOiJub25lIn0.eyJzdWIiOiJncm9rLXVzZXItYSJ9.","refresh_token":"","oidc_client_id":""}}"#),
+        (CliProvider::Grok, r#"{"entry":{"user_id":"grok-user-a","key":"","refresh_token":"","oidc_client_id":""}}"#),
+        (CliProvider::Codex, r#"{"tokens":{"account_id":"codex-account-a","access_token":"eyJhbGciOiJub25lIn0.eyJleHAiOjF9."}}"#),
+        (CliProvider::Grok, r#"{"entry":{"user_id":"grok-user-a","key":"eyJhbGciOiJub25lIn0.eyJzdWIiOiJncm9rLXVzZXItYSJ9.","refresh_token":"synthetic","oidc_client_id":"synthetic","expires_at":"1970-01-01T00:00:00Z"}}"#),
+    ] {
+        let c = OwnerCase::new();
+        let gp = grok::GrokPaths { auth: c.dir.path().join("grok-auth.json"), lock: c.dir.path().join("grok-auth.lock") };
+        fs::write(&c.xp.auth, CODEX).unwrap();
+        fs::write(&gp.auth, GROK.replace("2026-08-20", "2099-08-20")).unwrap();
+        let p = capture_account_with_grok(c.dir.path(), &c.cp, &c.xp, Some(&gp), provider, None, &owner_lookup, UnverifiedPolicy::Refuse).unwrap();
+        let path = if provider == CliProvider::Codex { &c.xp.auth } else { &gp.auth };
+        fs::write(path, broken).unwrap();
+        let result = api::switch_with_paths(c.dir.path(), &c.cp, &c.xp, &gp, provider, &p.id, &owner_lookup);
+        if result.err().as_deref() == Some(api::ALREADY_ACTIVE) { noops.push((provider, broken)); }
+    }
+    assert!(noops.is_empty(), "unhealthy live credentials treated as no-op: {noops:?}");
+}
+
+fn grok_test_jwt(exp: Option<i64>) -> String {
+    use base64::Engine;
+    let mut claims = serde_json::json!({"sub": "grok-user-a"});
+    if let Some(exp) = exp { claims["exp"] = exp.into(); }
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string());
+    format!("eyJhbGciOiJub25lIn0.{payload}.")
+}
+
+#[test]
+fn api_switch_fresh_grok_jwt_ignores_refresh_preserved_old_expiry() {
+    let c = OwnerCase::new();
+    let gp = grok::GrokPaths { auth: c.dir.path().join("grok-auth.json"), lock: c.dir.path().join("grok-auth.lock") };
+    let old = serde_json::json!({"entry": {"user_id": "grok-user-a", "key": grok_test_jwt(Some(1)),
+        "refresh_token": "old-refresh", "oidc_client_id": "synthetic", "expires_at": "1970-01-01T00:00:00Z"}});
+    fs::write(&gp.auth, old.to_string()).unwrap();
+    let p = capture_account_with_grok(c.dir.path(), &c.cp, &c.xp, Some(&gp), CliProvider::Grok, None,
+        &owner_lookup, UnverifiedPolicy::Refuse).unwrap();
+    let fresh = grok_test_jwt(Some(4102444800));
+    assert_eq!(grok::update_live_tokens(&gp, "old-refresh", &fresh, Some("next-refresh")).unwrap(),
+        grok::LiveTokenWrite::Applied);
+    let refreshed: serde_json::Value = serde_json::from_slice(&fs::read(&gp.auth).unwrap()).unwrap();
+    assert_eq!(refreshed["entry"]["expires_at"], old["entry"]["expires_at"]);
+    let live = fs::read(&gp.auth).unwrap();
+    let saved = fs::read(c.path(&p.id)).unwrap();
+    let registry = fs::read(registry::path(c.dir.path())).unwrap();
+    let backups = snapshot::backup_root(c.dir.path());
+    let backup_inventory = || if backups.exists() {
+        let mut names: Vec<_> = fs::read_dir(&backups).unwrap().map(|e| e.unwrap().file_name()).collect();
+        names.sort(); names
+    } else { Vec::new() };
+    let before = backup_inventory();
+    assert_eq!(api::switch_with_paths(c.dir.path(), &c.cp, &c.xp, &gp, CliProvider::Grok, &p.id,
+        &owner_lookup).err().as_deref(), Some(api::ALREADY_ACTIVE));
+    assert_eq!(fs::read(&gp.auth).unwrap(), live);
+    assert_eq!(fs::read(c.path(&p.id)).unwrap(), saved);
+    assert_eq!(fs::read(registry::path(c.dir.path())).unwrap(), registry);
+    assert_eq!(backup_inventory(), before);
+}
+
+#[test]
+fn api_switch_grok_expired_and_unknown_key_expiry_keep_the_fallback() {
+    for (key_expiry, stored_expiry, noop) in [
+        (Some(1), Some("2099-01-01T00:00:00Z"), false),
+        (None, Some("1970-01-01T00:00:00Z"), false),
+        (None, Some("2099-01-01T00:00:00Z"), true),
+        (None, None, true),
+    ] {
+        let c = OwnerCase::new();
+        let gp = grok::GrokPaths { auth: c.dir.path().join("grok-auth.json"), lock: c.dir.path().join("grok-auth.lock") };
+        let mut auth = serde_json::json!({"entry": {"user_id":"grok-user-a", "key": grok_test_jwt(key_expiry),
+            "refresh_token":"synthetic", "oidc_client_id":"synthetic"}});
+        if let Some(expiry) = stored_expiry { auth["entry"]["expires_at"] = expiry.into(); }
+        fs::write(&gp.auth, auth.to_string()).unwrap();
+        let p = capture_account_with_grok(c.dir.path(), &c.cp, &c.xp, Some(&gp), CliProvider::Grok, None,
+            &owner_lookup, UnverifiedPolicy::Refuse).unwrap();
+        let result = api::switch_with_paths(c.dir.path(), &c.cp, &c.xp, &gp, CliProvider::Grok, &p.id, &owner_lookup);
+        assert_eq!(result.err().as_deref() == Some(api::ALREADY_ACTIVE), noop,
+            "key expiry={key_expiry:?}, stored expiry={stored_expiry:?}");
+    }
+}
+
 #[test]
 fn switch_to_token_owner_does_not_poison_the_named_profile() {
     let c = OwnerCase::new();
@@ -1139,4 +1325,76 @@ fn codex_and_grok_capture_switch_never_consult_claude_owner_lookup() {
         assert!(result.profile.foreign_token_owner.is_none());
         assert!(!cp.credentials.exists() && !cp.claude_json.exists());
     }
+}
+
+#[test]
+fn codex_switch_refuses_non_file_config_before_any_mutation() {
+    for (text, code) in [
+        ("cli_auth_credentials_store = 'keyring'", ERR_CODEX_CREDENTIALS_STORE_UNSUPPORTED),
+        ("cli_auth_credentials_store = 'auto'", ERR_CODEX_CREDENTIALS_STORE_UNSUPPORTED),
+        ("broken = [", ERR_CODEX_CONFIG_UNREADABLE),
+    ] {
+        let dir = tempdir().unwrap();
+        let cp = staging::test_support::FileCredentials;
+        let cp = staging::StagingCredentials::claude_paths(&cp, &dir.path().join("claude"));
+        let xp = CodexPaths { auth: dir.path().join("codex/auth.json") };
+        fs::create_dir_all(xp.auth.parent().unwrap()).unwrap();
+        fs::write(&xp.auth, CODEX).unwrap();
+        let target = capture_account(dir.path(), &cp, &xp, CliProvider::Codex,
+            None, &fixture_owner, UnverifiedPolicy::Refuse).unwrap();
+        let snapshot_path = snapshot::snapshot_dir(dir.path()).join(format!("{}.json", target.id));
+        let before_snapshot = fs::read(&snapshot_path).unwrap();
+        let before_registry = fs::read(registry::path(dir.path())).unwrap();
+        // Live credentials diverge from the saved account; an accidental
+        // write-back would create an orphan or overwrite its snapshot.
+        fs::write(&xp.auth, codex_fixture_for_identity("codex-account-b")).unwrap();
+        let before_live = fs::read(&xp.auth).unwrap();
+        let config = xp.auth.parent().unwrap().join("config.toml");
+        fs::write(&config, text).unwrap();
+        let result = switch_account(dir.path(), &cp, &xp, CliProvider::Codex,
+            &target.id, &fixture_owner);
+        assert_eq!(result.err().as_deref(), Some(code));
+        assert_eq!(fs::read(&xp.auth).unwrap(), before_live);
+        assert_eq!(fs::read(&snapshot_path).unwrap(), before_snapshot);
+        assert_eq!(fs::read(registry::path(dir.path())).unwrap(), before_registry);
+        assert_eq!(fs::read_to_string(config).unwrap(), text);
+        assert_eq!(fs::read_dir(snapshot::snapshot_dir(dir.path())).unwrap().count(), 1);
+        assert!(!snapshot::backup_root(dir.path()).exists());
+    }
+}
+
+#[test]
+fn codex_switch_with_file_store_restores_the_saved_account() {
+    for config in [None, Some("cli_auth_credentials_store = 'file'")] {
+        let dir = tempdir().unwrap();
+        let cp = staging::test_support::FileCredentials;
+        let cp = staging::StagingCredentials::claude_paths(&cp, &dir.path().join("claude"));
+        let xp = CodexPaths { auth: dir.path().join("auth.json") };
+        fs::write(&xp.auth, CODEX).unwrap();
+        let target = capture_account(dir.path(), &cp, &xp, CliProvider::Codex,
+            None, &fixture_owner, UnverifiedPolicy::Refuse).unwrap();
+        fs::write(&xp.auth, codex_fixture_for_identity("codex-account-b")).unwrap();
+        if let Some(text) = config {
+            fs::write(dir.path().join("config.toml"), text).unwrap();
+        }
+        let result = switch_account(dir.path(), &cp, &xp, CliProvider::Codex,
+            &target.id, &fixture_owner).unwrap();
+        assert_eq!(fs::read_to_string(&xp.auth).unwrap(), CODEX);
+        assert_eq!(codex::read_live_identity(&xp).identity_key.as_deref(), Some("codex-account-a"));
+        assert_eq!(registry::load(dir.path()).unwrap().active.codex.as_deref(), Some(target.id.as_str()));
+        assert!(result.warnings.contains(&WARN_UNREGISTERED_LIVE_LOGIN_SAVED.to_string()));
+    }
+}
+
+fn codex_fixture_for_identity(identity: &str) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    let mut value: serde_json::Value = serde_json::from_str(CODEX).unwrap();
+    let claims = serde_json::json!({
+        "email": "other-codex@example.test",
+        "https://api.openai.com/auth": {"chatgpt_account_id": identity},
+    });
+    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap());
+    value["tokens"]["id_token"] = serde_json::json!(format!("eyJhbGciOiJub25lIn0.{payload}."));
+    value["tokens"]["account_id"] = serde_json::json!(identity);
+    serde_json::to_string(&value).unwrap()
 }

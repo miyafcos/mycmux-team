@@ -5,12 +5,26 @@
 //! its source, binding and PTY input revision all still match.
 
 mod adapter;
+pub(crate) mod archive_projection;
+pub(crate) mod archive_scan;
+pub(crate) mod archive;
+pub(crate) mod archive_commands;
+mod autonomy;
+#[cfg(test)]
+mod autonomy_tests;
+#[cfg(test)]
+mod fix4_tests;
+#[cfg(test)]
+mod fix5_tests;
+#[cfg(test)]
+mod fix6_tests;
 #[cfg(test)]
 pub(crate) mod hook_tests;
 mod excerpt;
 pub(crate) mod excerpt_ja;
 pub(crate) mod intervene;
 mod reducer;
+pub(crate) mod naming;
 mod telemetry;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -33,7 +47,8 @@ use crate::pty::manager::SessionManager;
 use crate::pty::monitor::MetadataStore;
 use crate::AppState;
 
-pub use adapter::{AgentAdapter, ByteRange, SemanticEventEnvelope, SemanticEventKind};
+pub use autonomy::SessionAutonomy;
+pub use adapter::{AgentAdapter, ByteRange, SemanticEventEnvelope, SemanticEventKind, UserMessageKind};
 pub(crate) use excerpt::ContextExcerpt;
 pub use intervene::{InterventionAction, InterventionExpectation, InterventionResult};
 pub use reducer::{LiveBriefReducer, PendingInputKind, PendingOption};
@@ -79,6 +94,12 @@ pub struct LiveSessionBrief {
     /// The most recent instruction on its own, without the folded task history.
     pub latest_instruction: Option<String>,
     pub task_source_event_ids: Vec<String>,
+    /// Bounded operator-event references used only by automatic naming. The
+    /// generic task/latest instruction still exclude Answer and Ack.
+    #[serde(default)]
+    pub naming_source_event_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub naming_plan: Option<naming::NamingPlan>,
     pub activity_kind: Option<String>,
     pub activity_text: Option<String>,
     pub activity_source_event_id: Option<String>,
@@ -91,6 +112,8 @@ pub struct LiveSessionBrief {
     pub prompt_hash: Option<String>,
     pub event_seq: u64,
     pub operational_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autonomy: Option<SessionAutonomy>,
     pub telemetry_health: String,
     pub last_event_at: Option<i64>,
     pub last_successful_read_at: Option<i64>,
@@ -105,6 +128,16 @@ pub struct LiveSessionBrief {
 #[serde(rename_all = "camelCase")]
 pub struct LiveBriefUpdate {
     pub brief: LiveSessionBrief,
+}
+
+/// Text-free read success proof. Semantic revision and phone payloads stay unchanged.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct LiveReadObservation {
+    #[serde(flatten)]
+    pub binding: LiveBinding,
+    pub last_successful_read_at: i64,
+    pub service_epoch: String,
 }
 
 /// Tail of the semantic event ring for one session. Read straight out of the
@@ -140,6 +173,18 @@ struct TailCursor {
     committed_anchor: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AgentProcessIdentity {
+    pid: u32,
+    started_at_seconds: u64,
+}
+
+impl From<&crate::pty::manager::TrustedAgentIdentity> for AgentProcessIdentity {
+    fn from(identity: &crate::pty::manager::TrustedAgentIdentity) -> Self {
+        Self { pid: identity.agent_pid, started_at_seconds: identity.agent_started_at }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct SessionSnapshot {
     brief: LiveSessionBrief,
@@ -147,6 +192,8 @@ pub(crate) struct SessionSnapshot {
     adapter: AgentAdapter,
     reducer: LiveBriefReducer,
     events: VecDeque<SemanticEventEnvelope>,
+    agent_process: Option<AgentProcessIdentity>,
+    agent_process_cutoff: Option<i64>,
 }
 
 #[derive(Default)]
@@ -194,6 +241,14 @@ pub struct LiveBriefService {
 }
 
 impl LiveBriefService {
+    /// Naming never wakes the normal transcript bootstrap reader.
+    pub fn peek_naming_events(&self, id: &str) -> Option<(LiveSessionBrief, Vec<SemanticEventEnvelope>)> {
+        let state = self.state.lock().ok()?;
+        let snapshot = state.sessions.get(id)?;
+        let ids: HashSet<_> = snapshot.brief.naming_plan.as_ref()?.entries.iter().map(|entry| entry.event_id.as_str()).collect();
+        Some((snapshot.brief.clone(), snapshot.events.iter().filter(|event| ids.contains(event.event_id.as_str())).cloned().collect()))
+    }
+
     pub fn new(manager: Arc<SessionManager>, metadata: MetadataStore) -> Self {
         Self {
             manager,
@@ -249,6 +304,16 @@ impl LiveBriefService {
         state.sessions.values().map(|snapshot| snapshot.brief.clone()).collect()
     }
 
+    /// Return only cached evidence; this must not make a stopped sweep look fresh.
+    pub fn read_observations(&self, ids: &[String]) -> Vec<LiveReadObservation> {
+        let state=self.state.lock().unwrap_or_else(|p|p.into_inner());
+        ids.iter().take(60).filter_map(|id| {
+            let brief=&state.sessions.get(id)?.brief;
+            if brief.telemetry_health!="live" {return None;}
+            Some(LiveReadObservation {binding:brief.binding.clone(),last_successful_read_at:brief.last_successful_read_at?,service_epoch:brief.service_epoch.clone()})
+        }).collect()
+    }
+
     fn refresh_all(&self) {
         self.refresh_all_with(|| {
         crate::perf_timeline::mark("livebrief.refresh.enter", None);
@@ -269,12 +334,15 @@ impl LiveBriefService {
         let now = unix_ms();
         let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         for session_id in reused {
-            if let Some(snapshot) = state.sessions.get_mut(&session_id) {
+            let Some(owner) = self.manager.get(&session_id) else { continue; };
+            if let Some(snapshot) = state.sessions.get_mut(&session_id).filter(|s| owner.session_epoch() == s.brief.binding.pty_generation) {
                 snapshot.brief.last_successful_read_at = Some(now);
                 snapshot.brief.updated_at = now;
             }
         }
         for (session_id, snapshot) in next {
+            let Some(owner) = self.manager.get(&session_id) else { continue; };
+            if owner.session_epoch() != snapshot.brief.binding.pty_generation { continue; }
             let previous = state.sessions.get(&session_id);
             let mut snapshot = keep_last_picture(previous, snapshot);
             let changed = previous.map(|old| brief_changed(&old.brief, &snapshot.brief)).unwrap_or(true);
@@ -348,9 +416,10 @@ impl LiveBriefService {
         let (history_cwd, history_branch) = self
             .metadata
             .get(pty_session_id)
+            .filter(|metadata| metadata.session_epoch == pty_generation)
             .map(|metadata| (Some(metadata.cwd.clone()), metadata.git_branch.clone()))
             .unwrap_or((None, None));
-        refresh_bound_transcript(
+        let next = refresh_bound_transcript(
             prior,
             &binding,
             kind,
@@ -359,7 +428,20 @@ impl LiveBriefService {
             history_cwd.as_deref(),
             history_branch.as_deref(),
             locate_transcript_cached,
-        )
+        );
+        let now = unix_ms();
+        let identity = self.manager.trusted_agent_identity(pty_session_id)
+            .filter(|identity| identity.session_epoch == pty_generation && identity.kind == kind && identity.session_id == mapping.session_id && identity.agent_started_at > 0);
+        let process = identity.as_ref().map(AgentProcessIdentity::from);
+        let process_started_at = identity
+            .map(|identity| (identity.agent_started_at as i64).saturating_mul(1000))
+            .or_else(|| self.metadata.get(pty_session_id)
+                .filter(|meta| meta.session_epoch == pty_generation && (meta.live_agent_kind.as_deref() == Some(kind)
+                    || (kind == "claude-codex" && meta.live_agent_kind.as_deref() == Some("claude"))))
+                .and_then(|meta| meta.agent_started_at).and_then(|at| i64::try_from(at).ok()))
+            .or_else(|| self.manager.session_age(pty_session_id)
+                .map(|age| now.saturating_sub(age.as_millis().min(i64::MAX as u128) as i64)));
+        refresh_autonomy_for_process(next, prior, now, process_started_at, process)
     }
 
     fn base_binding(&self, pty_session_id: &str, agent_kind: &str, agent_session_id: &str, pty_generation: u64, pty_input_revision: u64) -> LiveBinding {
@@ -496,14 +578,99 @@ fn keep_last_picture(previous: Option<&SessionSnapshot>, next: SessionSnapshot) 
     merged
 }
 
-/// True when two briefs differ in meaning. `updated_at`,
-/// `last_successful_read_at` and `brief_revision` are excluded on purpose:
-/// the reducer stamps the first two with `now` on every rebuild, so a plain
-/// `!=` made every session look changed once a second.
+/// Attach turn/work observations without changing operational_state.
+fn apply_autonomy(adapter: &AgentAdapter, brief: &mut LiveSessionBrief, now: i64, process_started_at: Option<i64>) {
+    if !matches!(brief.binding.agent_kind.as_str(), "claude" | "claude-codex" | "codex") { return; }
+    brief.autonomy = Some(adapter.autonomy_at(now, process_started_at));
+    // The adapter owns the normalized meaningful-event clock. Combining it
+    // with the reducer's raw future timestamp would undo a clock correction.
+    brief.last_event_at = adapter.autonomy_last_event_at();
+}
+
+// OS birth times have one-second precision. Only an observed PID/birth change
+// retires the ambiguous first second as old work; unchanged/first observations
+// keep the original timestamp rule. Never attach a reply to an uncertain owner.
+fn refresh_autonomy_for_process(
+    next: Option<SessionSnapshot>, prior: Option<&SessionSnapshot>, now: i64,
+    process_started_at: Option<i64>, process: Option<AgentProcessIdentity>,
+) -> Option<SessionSnapshot> {
+    let previous_process = prior.and_then(|snapshot| snapshot.agent_process);
+    let changed = previous_process.zip(process).is_some_and(|(old, new)| old != new);
+    // Keep the observed generation's cutoff across cached polls and replay.
+    // Re-reading the same old question must not make it writable again.
+    let previous_cutoff = prior.and_then(|snapshot| snapshot.agent_process_cutoff);
+    let cutoff = if changed {
+        process_started_at.map(|start| start.saturating_add(1000))
+    } else {
+        previous_cutoff.filter(|cutoff| process_started_at == Some(cutoff.saturating_sub(1000)))
+            .or(process_started_at)
+    };
+    let mut next = refresh_autonomy(next, prior, now, cutoff);
+    if process.is_some() && previous_process != process && next.is_none() { next = prior.cloned(); }
+    if let Some(snapshot) = &mut next {
+        snapshot.agent_process = process.or(previous_process);
+        snapshot.agent_process_cutoff = if changed { cutoff }
+            else if process.is_some() && previous_process != process { None }
+            else { previous_cutoff };
+    }
+    next
+}
+
+// Expiry and process replacement must be observed even when no transcript
+// bytes arrived. Reuse the cached parser; publish only a meaningful change.
+fn refresh_autonomy(next: Option<SessionSnapshot>, prior: Option<&SessionSnapshot>, now: i64, process_started_at: Option<i64>) -> Option<SessionSnapshot> {
+    let fresh = next.is_some();
+    if !fresh {
+        let old = prior?;
+        if old.brief.telemetry_health != "live" || !matches!(old.brief.binding.agent_kind.as_str(), "claude" | "claude-codex" | "codex") { return None; }
+        let autonomy = old.adapter.autonomy_at(now, process_started_at);
+        let last_event_at = old.adapter.autonomy_last_event_at();
+        if old.brief.autonomy.as_ref() == Some(&autonomy) && old.brief.last_event_at == last_event_at
+            && !old.adapter.has_prior_process_work(process_started_at)
+            && !old.adapter.event_clock_needs_rebase(now) {
+            return None; // No deep copy for an unchanged autonomy poll.
+        }
+    }
+    let mut snapshot = next.or_else(|| prior.cloned())?;
+    if snapshot.brief.telemetry_health == "live" {
+        retire_prior_process(&mut snapshot, now, process_started_at);
+        snapshot.adapter.prune_autonomy(now, process_started_at);
+        apply_autonomy(&snapshot.adapter, &mut snapshot.brief, now, process_started_at);
+    }
+    if fresh || prior.is_none_or(|old| brief_changed(&old.brief, &snapshot.brief)) { Some(snapshot) } else { None }
+}
+
+fn retire_prior_process(snapshot: &mut SessionSnapshot, now: i64, start: Option<i64>) {
+    let kinds = snapshot.adapter.retire_prior_process(start);
+    if kinds.is_empty() { return; }
+    let mut binding = snapshot.brief.binding.clone();
+    binding.source_revision = binding.source_revision.saturating_add(1);
+    for (index, kind) in kinds.into_iter().enumerate() {
+        let event = SemanticEventEnvelope {
+            event_id: format!("process-boundary:{}:{}:{index}", start.unwrap_or(now), binding.source_revision),
+            source_revision: binding.source_revision, occurred_at: now,
+            source_byte_start: snapshot.cursor.committed_offset, source_byte_end: snapshot.cursor.committed_offset, kind,
+        };
+        snapshot.reducer.apply(&event);
+        snapshot.events.push_back(event);
+        if snapshot.events.len() > RING_CAPACITY {
+            if let Some(evicted) = snapshot.events.front() {
+                snapshot.reducer.naming_evicted(evicted);
+            }
+            snapshot.events.pop_front();
+        }
+    }
+    snapshot.brief = snapshot.reducer.to_brief(binding, "live", &snapshot.brief.service_epoch, now);
+}
+
+/// Read/poll timestamps and brief_revision are excluded: silence does not
+/// publish a new state. Autonomy changes and expiry do publish a new state.
 fn brief_changed(old: &LiveSessionBrief, new: &LiveSessionBrief) -> bool {
     old.binding != new.binding
         || old.task != new.task
         || old.latest_instruction != new.latest_instruction
+        || old.naming_source_event_ids != new.naming_source_event_ids
+        || match (&old.naming_plan, &new.naming_plan) { (Some(a), Some(b)) => !a.same_meaning(b), (None, None) => false, _ => true }
         || old.task_source_event_ids != new.task_source_event_ids
         || old.activity_kind != new.activity_kind
         || old.activity_text != new.activity_text
@@ -517,6 +684,7 @@ fn brief_changed(old: &LiveSessionBrief, new: &LiveSessionBrief) -> bool {
         || old.prompt_hash != new.prompt_hash
         || old.event_seq != new.event_seq
         || old.operational_state != new.operational_state
+        || old.autonomy != new.autonomy
         || old.telemetry_health != new.telemetry_health
         || old.last_event_at != new.last_event_at
         || old.service_epoch != new.service_epoch
@@ -716,7 +884,9 @@ fn apply_known_transcript_path(
             }
         }
     }
-    match bootstrap_transcript_with_history(path, kind, binding, service_epoch, history_cwd, history_branch) {
+    let seed = prior.filter(|old| old.brief.binding.pty_instance_id == binding.pty_instance_id
+        && old.brief.binding.pty_generation == binding.pty_generation && old.brief.binding.agent_kind == binding.agent_kind);
+    match bootstrap_transcript_seeded(path, kind, binding, service_epoch, history_cwd, history_branch, MAX_BOOTSTRAP_BYTES, seed) {
         Ok(snapshot) => PathApply::Ready(snapshot),
         Err(_) => PathApply::Unavailable,
     }
@@ -773,7 +943,7 @@ fn missing_transcripts() -> &'static Mutex<MissingTranscripts> {
 
 /// Remember found paths by (kind, id), as well as recent misses. A removed
 /// path is rediscovered; a reused PTY binding can reuse a still-existing path.
-fn locate_transcript_cached(kind: &str, session_id: &str) -> Option<PathBuf> {
+pub(crate) fn locate_transcript_cached(kind: &str, session_id: &str) -> Option<PathBuf> {
     locate_with_miss_cache(kind, session_id, Instant::now(), locate_transcript)
 }
 
@@ -876,6 +1046,23 @@ fn bootstrap_transcript(
     bootstrap_transcript_with_history(path, kind, binding, service_epoch, None, None)
 }
 
+/// Bounded read for a saved conversation; never creates a PTY or a live binding.
+pub(crate) fn read_dormancy_record_events(path: &Path, kind: &str, session_id: &str, pty: &str, require_complete: bool) -> Result<LiveSessionEvents, String> {
+    let binding = LiveBinding {
+        pty_session_id: pty.into(), agent_session_id: session_id.into(), agent_kind: kind.into(),
+        pty_instance_id: "dormant-record".into(), pty_generation: 0, source_revision: 0, pty_input_revision: 0,
+    };
+    let snapshot = bootstrap_transcript(path, kind, &binding, "dormant-record")?;
+    let last_reply = snapshot.events.iter().rposition(|event| matches!(event.kind, SemanticEventKind::AgentMessage { .. }));
+    let last_input = snapshot.events.iter().rposition(|event| matches!(event.kind, SemanticEventKind::UserMessage { .. }));
+    if require_complete && (snapshot.brief.pending_input_kind.is_some()
+        || last_reply.is_none() || last_input.zip(last_reply).is_some_and(|(input, reply)| input > reply)) {
+        return Err("Conversation has no saved reply or is awaiting input".into());
+    }
+    Ok(LiveSessionEvents { pty_session_id: pty.into(), brief_revision: snapshot.brief.brief_revision,
+        telemetry_health: "ended".into(), events: snapshot.events.into_iter().collect() })
+}
+
 fn bootstrap_transcript_with_history(
     path: &Path,
     kind: &str,
@@ -904,16 +1091,33 @@ fn bootstrap_transcript_windowed(
     history_branch: Option<&str>,
     max_bootstrap_bytes: u64,
 ) -> Result<SessionSnapshot, String> {
+    bootstrap_transcript_seeded(path, kind, binding, service_epoch, history_cwd, history_branch, max_bootstrap_bytes, None)
+}
+
+fn bootstrap_transcript_seeded(
+    path: &Path, kind: &str, binding: &LiveBinding, service_epoch: &str,
+    history_cwd: Option<&str>, history_branch: Option<&str>, max_bootstrap_bytes: u64,
+    seed: Option<&SessionSnapshot>,
+) -> Result<SessionSnapshot, String> {
     let metadata = std::fs::metadata(path).map_err(|error| format!("stat transcript: {error}"))?;
     crate::perf_timeline::mark("livebrief.bootstrap.enter", Some(&binding.pty_session_id));
     let (bytes, base_offset) = read_bootstrap_window_limited(path, metadata.len(), max_bootstrap_bytes)?;
     crate::perf_timeline::mark_value("livebrief.bootstrap.bytes", Some(&binding.pty_session_id), Some(bytes.len() as u64));
     let file_identity = file_identity(path, &metadata);
+    let seed = seed.filter(|old| matches!(kind, "claude" | "claude-codex" | "codex")
+        && !old.cursor.path.as_os_str().is_empty());
+    let same_conversation = seed.filter(|old| old.brief.binding.agent_session_id == binding.agent_session_id);
     let mut adapter = AgentAdapter::new(kind)?;
+    if let Some(old) = seed { adapter.inherit_before_replay(&old.adapter, same_conversation.is_some()); }
+    if base_offset > 0 && same_conversation.is_none_or(|old| base_offset > old.cursor.committed_offset) {
+        adapter.mark_truncated_history();
+    }
     let mut reducer = LiveBriefReducer::new();
+    if let Some(old) = same_conversation { reducer.inherit_open_work(&old.reducer); }
     let mut events = VecDeque::new();
     let mut history_events = Vec::new();
     let parsed = complete_line_records(&bytes, base_offset);
+    reducer.naming_source(base_offset, base_offset.saturating_add(bytes.len() as u64), base_offset > 0 || parsed.skipped > 0, !parsed.pending_bytes.is_empty());
     let (source_revision, decode_skipped) = apply_decoded_records(
         &mut adapter,
         &mut reducer,
@@ -922,6 +1126,16 @@ fn bootstrap_transcript_windowed(
         parsed.records,
         0,
     );
+    adapter.finish_replay();
+    // Retain evidence only for still-open work omitted from the replacement;
+    // old user messages and already-resolved questions never enter the new ring.
+    if let Some(old) = same_conversation {
+        let mut inherited: VecDeque<_> = old.events.iter().filter(|event| reducer.retains_work_event(event)
+            && !events.iter().any(|current| current.event_id == event.event_id)).cloned().collect();
+        inherited.append(&mut events);
+        events = inherited;
+        while events.len() > RING_CAPACITY { events.pop_front(); }
+    }
     warn_skipped_lines(path, parsed.skipped.saturating_add(decode_skipped));
     // History is best-effort only: a corrupt or locked history.db must never
     // stop livebrief's transcript poll or prevent its snapshot from updating.
@@ -930,6 +1144,7 @@ fn bootstrap_transcript_windowed(
     binding.source_revision = source_revision;
     let now = unix_ms();
     let mut brief = reducer.to_brief(binding.clone(), "live", service_epoch, now);
+    apply_autonomy(&adapter, &mut brief, now, None);
     brief.brief_revision = source_revision;
     let cursor = TailCursor {
         path: path.to_path_buf(),
@@ -943,7 +1158,7 @@ fn bootstrap_transcript_windowed(
         committed_anchor: transcript_anchor(path, parsed.committed_end)?,
     };
     crate::perf_timeline::mark("livebrief.bootstrap.done", Some(&binding.pty_session_id));
-    Ok(SessionSnapshot { brief, cursor, adapter, reducer, events })
+    Ok(SessionSnapshot { brief, cursor, adapter, reducer, events, agent_process: seed.and_then(|old| old.agent_process), agent_process_cutoff: seed.and_then(|old| old.agent_process_cutoff) })
 }
 
 /// Operator prompts in `path`, oldest first, capped to the newest `max`.
@@ -1047,6 +1262,8 @@ fn apply_decoded_records(
     let mut skipped = 0;
     for (raw, range) in records {
         source_revision = source_revision.saturating_add(1);
+        // Keep the naming reader's existing 1 MiB whole-line bound, including its newline.
+        if range.end.saturating_sub(range.start) > MAX_LINE_BYTES as u64 { reducer.naming_unknown(); }
         match adapter.decode_record(raw, range, source_revision) {
             Ok(decoded) => {
                 if let Some(delta) = adapter.take_telemetry_delta() {
@@ -1057,11 +1274,12 @@ fn apply_decoded_records(
                     history_events.push(JournalEvent::from_raw_line(event.clone(), raw));
                     events.push_back(event);
                     if events.len() > RING_CAPACITY {
+                        if let Some(event) = events.front() { reducer.naming_evicted(event); }
                         events.pop_front();
                     }
                 }
             }
-            Err(_) => skipped += 1,
+            Err(_) => { reducer.naming_unknown(); skipped += 1; }
         }
     }
     (source_revision, skipped)
@@ -1106,6 +1324,7 @@ fn advance_transcript_with_history(
     let mut bytes = std::mem::take(&mut snapshot.cursor.pending_bytes);
     bytes.extend_from_slice(&appended);
     let parsed = complete_line_records(&bytes, snapshot.cursor.committed_offset);
+    snapshot.reducer.naming_source(0, read_end, parsed.skipped > 0, !parsed.pending_bytes.is_empty());
     let mut history_events = Vec::new();
     let committed_offset = parsed.committed_end;
     let (source_revision, decode_skipped) = apply_decoded_records(
@@ -1123,6 +1342,7 @@ fn advance_transcript_with_history(
     binding.source_revision = source_revision;
     let now = unix_ms();
     snapshot.brief = snapshot.reducer.to_brief(binding, "live", service_epoch, now);
+    apply_autonomy(&snapshot.adapter, &mut snapshot.brief, now, None);
     snapshot.cursor.file_identity = file_identity(&snapshot.cursor.path, metadata);
     snapshot.cursor.read_offset = read_end;
     snapshot.cursor.committed_offset = committed_offset;
@@ -1226,14 +1446,14 @@ fn transcript_anchor(path: &Path, committed_offset: u64) -> Result<String, Strin
 fn unavailable_snapshot(binding: LiveBinding, health: &str, service_epoch: &str) -> SessionSnapshot {
     let now = unix_ms();
     let brief = LiveSessionBrief {
-        binding, task: None, latest_instruction: None, task_source_event_ids: Vec::new(), activity_kind: None, activity_text: None,
+        binding, task: None, latest_instruction: None, task_source_event_ids: Vec::new(), naming_source_event_ids: Vec::new(), naming_plan: None, activity_kind: None, activity_text: None,
         activity_source_event_id: None, checkpoint: None, checkpoint_evidence_event_ids: Vec::new(),
         pending_input_kind: None, pending_prompt: None, pending_options: Vec::new(), prompt_event_id: None,
         prompt_hash: None, event_seq: 0, operational_state: "running".to_string(), telemetry_health: health.to_string(),
         last_event_at: None, last_successful_read_at: None, updated_at: now, service_epoch: service_epoch.to_string(), brief_revision: 0,
-        telemetry: None,
+        autonomy: None, telemetry: None,
     };
-    SessionSnapshot { brief, cursor: TailCursor { path: PathBuf::new(), file_identity: String::new(), stream_generation: 0, read_offset: 0, committed_offset: 0, pending_bytes: Vec::new(), committed_anchor: String::new() }, adapter: AgentAdapter::new("codex").expect("supported adapter"), reducer: LiveBriefReducer::new(), events: VecDeque::new() }
+    SessionSnapshot { brief, cursor: TailCursor { path: PathBuf::new(), file_identity: String::new(), stream_generation: 0, read_offset: 0, committed_offset: 0, pending_bytes: Vec::new(), committed_anchor: String::new() }, adapter: AgentAdapter::new("codex").expect("supported adapter"), reducer: LiveBriefReducer::new(), events: VecDeque::new(), agent_process: None, agent_process_cutoff: None }
 }
 
 fn file_identity(path: &Path, metadata: &std::fs::Metadata) -> String {
@@ -1247,6 +1467,12 @@ pub(crate) fn unix_ms() -> i64 { SystemTime::now().duration_since(UNIX_EPOCH).ma
 #[tauri::command(async)]
 pub async fn get_live_briefs(state: State<'_, AppState>) -> Result<Vec<LiveSessionBrief>, String> {
     snapshots_on_blocking_pool(state.livebrief_service.clone()).await
+}
+
+#[tauri::command(async)]
+pub async fn get_live_read_observations(state:State<'_,AppState>,pty_session_ids:Vec<String>)->Result<Vec<LiveReadObservation>,String> {
+    let service=state.livebrief_service.clone();
+    crate::util::task::run_blocking("get_live_read_observations",move||Ok(service.read_observations(&pty_session_ids))).await
 }
 
 async fn snapshots_on_blocking_pool(service: LiveBriefService) -> Result<Vec<LiveSessionBrief>, String> {
@@ -1301,6 +1527,7 @@ pub async fn get_transcript_user_prompts(
 
 #[tauri::command(async)]
 pub async fn send_intervention(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     state: State<'_, AppState>,
     expectation: InterventionExpectation,
     action: InterventionAction,
@@ -1367,20 +1594,42 @@ mod tests {
 
     #[test]
     fn event_history_never_outgrows_the_ring_capacity() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let path = dir.path().join("rollout.jsonl");
         let body: String = (0..(RING_CAPACITY * 2))
             .map(|index| format!("{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"m{index}\"}}}}\n"))
             .collect();
         std::fs::write(&path, body).expect("write transcript");
         let snapshot = bootstrap_transcript(&path, "codex", &test_binding(), "epoch").expect("bootstrap");
+        let fixture_db = dir.path().join(".mycmux/history.db");
+        assert!(fixture_db.is_file(), "history output escaped its explicit fixture root");
+        let history = rusqlite::Connection::open_with_flags(&fixture_db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        assert_eq!(history.query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, usize>(0)).unwrap(), RING_CAPACITY * 2);
         assert_eq!(snapshot.events.len(), RING_CAPACITY);
         assert_eq!(snapshot.brief.event_seq, (RING_CAPACITY * 2) as u64);
+    }
+    #[test]
+    fn core_naming_ring_source_holes_and_legacy_wire_are_conservative() {
+        let dir = tempfile::tempdir().unwrap(); let _unit_home = crate::unit_test_dirs::fixture_home(&dir); let path = dir.path().join("naming.jsonl");
+        let body: String = (0..(RING_CAPACITY + 1)).map(|i| codex_user_line(&format!("task-{i}"))).collect();
+        std::fs::write(&path, &body).unwrap();
+        let full = bootstrap_transcript(&path, "codex", &test_binding(), "epoch").unwrap();
+        let plan = full.brief.naming_plan.as_ref().unwrap(); assert!(plan.coverage.count_loss.is_some()); assert!(plan.entries.len() <= 24);
+        let mut changed = full.brief.clone(); changed.naming_plan.as_mut().unwrap().coverage.read_end += 1;
+        assert!(!brief_changed(&full.brief, &changed));
+        let windowed = bootstrap_transcript_windowed(&path, "codex", &test_binding(), "epoch", None, None, 512).unwrap();
+        assert!(windowed.brief.naming_plan.unwrap().coverage.source_unknown);
+        std::fs::write(&path, format!("{}bad json\n", codex_user_line("direct"))).unwrap();
+        let bad = bootstrap_transcript(&path, "codex", &test_binding(), "epoch").unwrap(); assert!(bad.brief.naming_plan.unwrap().coverage.source_unknown);
+        std::fs::write(&path, format!("{}{{\"partial\":", codex_user_line("direct"))).unwrap();
+        let pending = bootstrap_transcript(&path, "codex", &test_binding(), "epoch").unwrap(); assert!(pending.brief.naming_plan.unwrap().coverage.source_unknown);
+        let mut wire = serde_json::to_value(full.brief).unwrap(); wire.as_object_mut().unwrap().remove("namingPlan");
+        assert!(serde_json::from_value::<LiveSessionBrief>(wire).unwrap().naming_plan.is_none());
     }
 
     #[test]
     fn transcript_append_advances_only_the_tail() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let path = dir.path().join("rollout.jsonl");
         let first = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"first\"}}\n";
         let second = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"second\"}}\n";
@@ -1400,7 +1649,7 @@ mod tests {
     /// the cursor must follow the read, or the next tick replays that line.
     #[test]
     fn a_transcript_that_grows_between_stat_and_read_is_not_replayed() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let path = dir.path().join("rollout.jsonl");
         std::fs::write(&path, codex_user_line("first")).expect("write first record");
         let snapshot = bootstrap_transcript(&path, "codex", &test_binding(), "epoch").expect("bootstrap");
@@ -1430,7 +1679,7 @@ mod tests {
 
     #[test]
     fn a_pending_record_survives_growth_after_stat_and_the_next_cached_poll() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap(); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let path = dir.path().join("rollout-agent-1.jsonl");
         std::fs::write(&path, codex_user_line("first")).unwrap();
         let snapshot = bootstrap_transcript(&path, "codex", &test_binding(), "epoch").unwrap();
@@ -1524,7 +1773,7 @@ mod tests {
 
     #[test]
     fn duplicate_mapping_mtime_ties_do_not_choose_a_random_owner() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap(); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         for pane in ["a", "b", "c"] {
             let path = dir.path().join(format!("{pane}.txt"));
             std::fs::write(&path, b"claude:session").unwrap();
@@ -1538,7 +1787,7 @@ mod tests {
 
     #[test]
     fn an_ended_snapshot_recovers_when_its_transcript_grows_again() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap(); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let path = dir.path().join("rollout-agent-1.jsonl");
         std::fs::write(&path, codex_user_line("before")).unwrap();
         let prior = bootstrap_transcript(&path, "codex", &test_binding(), "epoch").unwrap();
@@ -1574,7 +1823,7 @@ mod tests {
 
     #[test]
     fn transcript_prompts_keep_transcript_order() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let path = dir.path().join("session.jsonl");
         let body: String = ["first prompt", "Go", "second prompt", "Go"]
             .iter()
@@ -1593,7 +1842,7 @@ mod tests {
     /// never typed, so it must not become a turn mark.
     #[test]
     fn transcript_prompts_drop_injected_and_meta_records() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let path = dir.path().join("session.jsonl");
         let mut body = claude_user_line("real prompt");
         body.push_str(&claude_user_line("<system-reminder>not typed</system-reminder>"));
@@ -1611,7 +1860,7 @@ mod tests {
 
     #[test]
     fn transcript_prompts_keep_only_the_newest_when_capped() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let path = dir.path().join("session.jsonl");
         let body: String = (0..10).map(|index| claude_user_line(&format!("p{index}"))).collect();
         std::fs::write(&path, body).expect("write transcript");
@@ -1638,7 +1887,7 @@ mod tests {
     /// brief built from its tail instead of failing the whole session.
     #[test]
     fn an_oversized_transcript_bootstraps_from_its_tail_window() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let path = dir.path().join("rollout.jsonl");
         let body: String = (0..200).map(|index| codex_user_line(&format!("m{index}"))).collect();
         std::fs::write(&path, &body).expect("write transcript");
@@ -1662,7 +1911,7 @@ mod tests {
     /// A-1 follow-up: the tail cursor of a windowed bootstrap must advance.
     #[test]
     fn a_windowed_bootstrap_still_advances_on_append() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let path = dir.path().join("rollout.jsonl");
         let body: String = (0..200).map(|index| codex_user_line(&format!("m{index}"))).collect();
         std::fs::write(&path, &body).expect("write transcript");
@@ -1689,7 +1938,7 @@ mod tests {
     /// A-2: one giant, non-UTF-8 or unparsable line must not blank the session.
     #[test]
     fn malformed_lines_are_skipped_without_losing_the_good_ones() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let path = dir.path().join("rollout.jsonl");
         let mut body: Vec<u8> = Vec::new();
         body.extend_from_slice(codex_user_line("first").as_bytes());
@@ -1743,7 +1992,7 @@ mod tests {
     /// A-3: duplicated transcripts for one session id resolve to the newest.
     #[test]
     fn newest_path_by_mtime_prefers_the_most_recent_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let stale = dir.path().join("stale.jsonl");
         let fresh = dir.path().join("fresh.jsonl");
         let missing = dir.path().join("missing.jsonl");
@@ -1786,7 +2035,7 @@ mod tests {
 
     #[test]
     fn found_transcript_paths_are_cached_by_kind_and_id_and_rediscovered_if_moved() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap(); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let old = dir.path().join("old.jsonl");
         let new = dir.path().join("new.jsonl");
         std::fs::write(&old, b"transcript").unwrap();
@@ -1837,7 +2086,7 @@ mod tests {
 
     #[test]
     fn newest_pane_by_mapping_mtime_picks_the_latest_and_fails_closed() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         std::fs::write(dir.path().join("pane-a.txt"), b"codex:s1").expect("write pane-a");
         std::fs::write(dir.path().join("pane-b.txt"), b"codex:s1").expect("write pane-b");
         set_mtime(&dir.path().join("pane-a.txt"), 1_700_000_000);
@@ -2113,7 +2362,7 @@ mod tests {
     /// Growth of a bound Codex transcript must not walk the session tree again.
     #[test]
     fn cached_codex_growth_discovers_only_on_initial_bind() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let root = dir.path();
         let session_id = "agent-1";
         let path = root.join(format!("rollout-{session_id}.jsonl"));
@@ -2144,7 +2393,7 @@ mod tests {
 
     #[test]
     fn unchanged_cached_transcript_is_a_metadata_fast_path() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let root = dir.path();
         let session_id = "agent-1";
         let path = root.join(format!("rollout-{session_id}.jsonl"));
@@ -2166,7 +2415,7 @@ mod tests {
 
     #[test]
     fn truncated_cached_transcript_recovers_via_discovery() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let root = dir.path();
         let session_id = "agent-1";
         let path = root.join(format!("rollout-{session_id}.jsonl"));
@@ -2193,7 +2442,7 @@ mod tests {
 
     #[test]
     fn replaced_transcript_at_a_new_path_recovers_via_discovery() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let root = dir.path();
         let session_id = "agent-1";
         let original = root.join(format!("old-{session_id}.jsonl"));
@@ -2220,7 +2469,7 @@ mod tests {
 
     #[test]
     fn missing_cached_path_without_a_replacement_is_unavailable() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let root = dir.path();
         let session_id = "agent-1";
         let path = root.join(format!("rollout-{session_id}.jsonl"));
@@ -2242,7 +2491,7 @@ mod tests {
 
     #[test]
     fn input_revision_changes_advance_the_existing_tail_without_a_glob_or_rebootstrap() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap(); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let session_id = "agent-1";
         let path = dir.path().join(format!("rollout-{session_id}.jsonl"));
         std::fs::write(&path, codex_user_line("first")).unwrap();
@@ -2274,7 +2523,7 @@ mod tests {
 
     #[test]
     fn binding_change_does_not_reuse_the_old_path() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let root = dir.path();
         let first_id = "agent-1";
         let second_id = "agent-2";
@@ -2304,7 +2553,7 @@ mod tests {
 
     #[test]
     fn claude_cached_append_keeps_events_and_cursor() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let root = dir.path();
         let session_id = "claude-sess";
         let path = root.join(format!("{session_id}.jsonl"));
@@ -2335,7 +2584,7 @@ mod tests {
     /// Synthetic Codex tree: after the first glob, ten appends must not walk again.
     #[test]
     fn growing_codex_tree_is_not_reenumerated_after_bind() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().expect("tempdir"); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
         let root = dir.path().join("sessions");
         const NOISE_FILES: usize = 400;
         for index in 0..NOISE_FILES {
@@ -2383,4 +2632,19 @@ mod tests {
             calls.get()
         );
     }
+    #[test]
+    fn archive_read_observations_are_bounded_text_free_and_never_refresh_success() {
+        let service=LiveBriefService::new(Arc::new(SessionManager::new()),crate::pty::monitor::new_metadata_store());
+        let mut snapshot=unavailable_snapshot(test_binding(),"live",&service.service_epoch);
+        snapshot.brief.last_successful_read_at=Some(123);snapshot.brief.task=Some("must not serialize".into());snapshot.brief.brief_revision=7;
+        let id=snapshot.brief.binding.pty_session_id.clone();service.state.lock().unwrap().sessions.insert(id.clone(),snapshot);
+        let proof=service.read_observations(&vec![id.clone();100]);assert_eq!(proof.len(),60);
+        assert!(proof.iter().all(|p|p.last_successful_read_at==123));let encoded=serde_json::to_string(&proof).unwrap();assert!(!encoded.contains("must not serialize"));assert!(!encoded.contains("briefRevision"));
+        assert!(service.read_observations(&["foreign".into()]).is_empty());
+        let state=service.state.lock().unwrap();assert!(state.last_refresh_finished_at.is_none());assert_eq!(state.sessions[&id].brief.brief_revision,7);assert_eq!(proof[0].binding,state.sessions[&id].brief.binding);
+    }
+
 }
+
+#[cfg(test)]
+mod epoch_race_tests;

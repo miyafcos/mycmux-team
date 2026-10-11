@@ -51,13 +51,20 @@ async function key(value: string) { await act(async () => editor()!.dispatchEven
 
 describe("C4 rename without selection or terminal activation", () => {
   for (const state of ["active", "inactive", "pinned", "declared", "overflow"]) {
-    for (const entry of ["context", "double-click"]) {
+    for (const entry of state === "active" ? ["context", "double-click"] : ["context", "list"]) {
       it(`${state}, ${entry}, three saves and cancellations`, async () => {
         const id = await render(state);
         const request = vi.spyOn(focusController, "request");
         for (let i = 0; i < 3; i++) {
           const open = async () => {
-            if (entry === "context") {
+            if (state !== "active") {
+              expect(pill(id)).toBeNull();
+              await act(async () => container.querySelector<HTMLButtonElement>(".pane-hidden-tabs")!.click());
+              const row = container.querySelector<HTMLElement>(`[data-menu-tab-id="${id}"]`)!;
+              expect(row).not.toBeNull();
+              if (entry === "context") await act(async () => row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 })));
+              else await act(async () => row.querySelector<HTMLButtonElement>(".pane-tab-menu-rename-btn")!.click());
+            } else if (entry === "context") {
               await act(async () => pill(id).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 })));
               const button = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(b => b.textContent === "\u540d\u524d\u3092\u5909\u66f4")!;
               expect(button).toBeDefined(); await act(async () => button.click());

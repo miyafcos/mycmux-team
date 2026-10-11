@@ -268,7 +268,7 @@ describe("docking detached panes", () => {
       expect(resolveDetachedReturnTarget(detachedWorkspaceConfig(transferConfig(), { ...origin, ...coordinates })!, [source]))
         .toEqual({ kind: "workspace" });
     });
-  it("prefers explicit placement over detached origin and inserts at the requested index", () => {
+  it("prefers explicit heading placement over detached origin and appends/selects the returned session", () => {
     const source = sourceWorkspace();
     source.panes[0].tabs.pop();
     const destination = sourceWorkspace();
@@ -282,10 +282,11 @@ describe("docking detached panes", () => {
     } });
     expect(result.restoredWorkspaceIds).toEqual(["destination"]);
     expect(useWorkspaceListStore.getState().getWorkspace("destination")!.panes[0].tabs.map((tab) => tab.id))
-      .toEqual(["tab", "before", "after"]);
+      .toEqual(["before", "after", "tab"]);
     expect(useWorkspaceListStore.getState().getWorkspace("source")!.panes[0].tabs.map((tab) => tab.id))
       .toEqual(["before"]);
-    expect(useWorkspaceListStore.getState().getWorkspace("destination")!.panes[0].tabs[0].sessionId).toBe(carriedId);
+    expect(useWorkspaceListStore.getState().getWorkspace("destination")!.panes[0].tabs.at(-1)?.sessionId).toBe(carriedId);
+    expect(useWorkspaceListStore.getState().getWorkspace("destination")!.panes[0].activeTabId).toBe("tab");
   });
 
   it("falls back safely if the placement pane disappeared before adoption", () => {

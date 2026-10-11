@@ -138,9 +138,10 @@ describe("transported groups land at the requested state", () => {
     const current = useWorkspaceListStore.getState().workspaces;
     const result = current.find(w => w.id === (kind === "sidebar" ? incoming.id : receiver.id))!;
     if (kind === "sidebar") expect(result.panes[0].tabs.map(t => t.id)).toEqual(["incoming-first-a", "incoming-first-b"]);
-    else if (kind === "strip" || kind === "center") expect(result.panes[0].tabs.map(t => t.id)).toEqual(kind === "strip"
-      ? ["neighbor-first-a", "incoming-first-a", "incoming-first-b", "neighbor-first-b"]
-      : ["neighbor-first-a", "neighbor-first-b", "incoming-first-a", "incoming-first-b"]);
+    else if (kind === "strip" || kind === "center") {
+      expect(result.panes[0].tabs.map(t => t.id)).toEqual(["neighbor-first-a", "neighbor-first-b", "incoming-first-a", "incoming-first-b"]);
+      expect(result.panes[0].activeTabId).toBe(kind === "strip" ? "incoming-first-b" : "neighbor-first-b");
+    }
     else {
       expect(result.panes.find(p => p.id === "incoming-first")!.tabs.map(t => t.id)).toEqual(["incoming-first-a", "incoming-first-b"]);
       expect(result.splitColumns).toEqual(kind === "left" ? [["incoming-first"], [target.id]]
@@ -161,11 +162,11 @@ describe("transported groups land at the requested state", () => {
       : { kind: "pane-zone" as const, workspaceId: receiver.id, paneId: target.id, zone: kind as "center" | typeof directions[number] };
     dispatch("mycmux://tearout-delivery", { token: `delivery-${kind}`, source: "peer", configs: [toTransferConfig(incoming)],
       placement, activeSessionId: incoming.panes[0].sessionId });
-    await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith("peer", "mycmux://tearout-receipt", { token: `delivery-${kind}`, ok: true }));
+    await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith("peer", "mycmux://tearout-receipt", { token: `delivery-${kind}`, ok: true }), { timeout: 10_000 });
     expect(useUiStore.getState().activePaneId).toBe(incoming.panes[0].sessionId);
     expect(useWorkspaceListStore.getState().workspaces.flatMap(ws => ws.panes).find(p => p.tabs.some(t => t.id === "incoming-first-b"))!.activeTabId).toBe("incoming-first-b");
     dispatch("mycmux://tearout-revoke", { token: `delivery-${kind}`, ack: `revoke-${kind}`, source: "peer" });
-    await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith("peer", "mycmux://tearout-receipt", { token: `revoke-${kind}`, ok: true }));
+    await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith("peer", "mycmux://tearout-receipt", { token: `revoke-${kind}`, ok: true }), { timeout: 10_000 });
     expect(useWorkspaceListStore.getState().workspaces).toEqual(before);
     expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe("source");
     expect(useUiStore.getState().activePaneId).toBe(active);

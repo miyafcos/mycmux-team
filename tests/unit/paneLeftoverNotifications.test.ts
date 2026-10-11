@@ -56,8 +56,8 @@ describe("closed-pane leftover notifications", () => {
     const toasts = useToastStore.getState().toasts;
     expect(toasts).toHaveLength(1);
     expect(toasts[0].kind).toBe("warning");
-    expect(toasts[0].message).toBe("閉じたペインから起動されたプロセスが 2 件動いています");
-    expect(toasts[0].action?.label).toBe("ペイン掃除で確認");
+    expect(toasts[0].message).toBe("閉じたタブから起動されたプロセスが 2 件動いています");
+    expect(toasts[0].action?.label).toBe("タブ掃除で確認");
     expect(toasts[0].actions).toBeUndefined();
     toasts[0].action?.run();
     await vi.dynamicImportSettled();
@@ -71,7 +71,7 @@ describe("closed-pane leftover notifications", () => {
     const a = tab("a");
     pushClosedTab(pane([a]), a);
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(useToastStore.getState().toasts[0].message).toBe("閉じたペイン「監視 a」から起動されたプロセスが 2 件動いています");
+    expect(useToastStore.getState().toasts[0].message).toBe("閉じたタブ「監視 a」から起動されたプロセスが 2 件動いています");
   });
 
   it("checks all terminals when a pane container closes, without changing the undo history count", async () => {
@@ -81,7 +81,7 @@ describe("closed-pane leftover notifications", () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(useToastStore.getState().toasts[0].message).toContain("監視 background");
     expect(getClosedPaneEntries().some((entry) => entry.paneSessionId === "background")).toBe(false);
-    expect(groupPaneLeftovers([process("background")], [], getClosedPaneEntries())[0].title).toBe("閉じたペイン「監視 background」から残っているもの");
+    expect(groupPaneLeftovers([process("background")], [], getClosedPaneEntries())[0].title).toBe("閉じたタブ「監視 background」から残っているもの");
   });
 
   it("checks every closed workspace terminal even beyond the five-entry undo cap", async () => {
@@ -93,7 +93,7 @@ describe("closed-pane leftover notifications", () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(useToastStore.getState().toasts[0].message).toContain("監視 tab-8");
     expect(getClosedPaneEntries().some((entry) => entry.paneSessionId === "tab-8")).toBe(false);
-    expect(groupPaneLeftovers([process("tab-8")], [], getClosedPaneEntries())[0].title).toBe("閉じたペイン「監視 tab-8」から残っているもの");
+    expect(groupPaneLeftovers([process("tab-8")], [], getClosedPaneEntries())[0].title).toBe("閉じたタブ「監視 tab-8」から残っているもの");
   });
 
   it("keeps a closed pane name after its undo entry is evicted", async () => {
@@ -105,7 +105,7 @@ describe("closed-pane leftover notifications", () => {
     expect(getClosedPaneEntries().some((entry) => entry.paneSessionId === "tab-0")).toBe(false);
     mocks.invoke.mockResolvedValue([process("tab-0")]);
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(groupPaneLeftovers([process("tab-0")], [], getClosedPaneEntries())[0].title).toBe("閉じたペイン「監視 tab-0」から残っているもの");
+    expect(groupPaneLeftovers([process("tab-0")], [], getClosedPaneEntries())[0].title).toBe("閉じたタブ「監視 tab-0」から残っているもの");
   });
 
   it("shows no toast when no process belongs to the closed pane", async () => {

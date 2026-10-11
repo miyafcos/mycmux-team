@@ -48,7 +48,7 @@ describe("live-tail workspace list", () => {
     scene = liveTailFixtureScene(["idle", "idle", "idle"]);
     scene.targets[1].waitingForReply = true; scene.targets[1].status = "waiting";
     await render();
-    expect(host.querySelectorAll("button")).toHaveLength(1);
+    expect(host.querySelectorAll(".live-tail-row")).toHaveLength(1);
     expect(host.textContent).toContain("ほか 入力待ち 2");
     await hover(host.querySelector("button")!);
     expect(tooltip().textContent).toContain("返事待ち");
@@ -76,7 +76,7 @@ describe("live-tail workspace list", () => {
     expect([...tooltip().querySelectorAll(".live-tail-popup-rows > div")].map(element => element.textContent))
       .toEqual(scene.entries["sample-session-0"].evidence.observation.crop.rows);
     expect(tooltip().textContent).toContain("コマンド待ち 2分4秒");
-    expect(tooltip().textContent).toContain("押すとこのペインへ");
+    expect(tooltip().querySelector(".live-tail-go")).toBeNull();
     expect(row("Sample cmd").querySelector(".live-tail-line")!.textContent).toBe("● Wait for sample report · 2m 4s");
     expect(tooltip().closest("[data-cmux-themed-root]")).toBe(host);
   });
@@ -113,9 +113,9 @@ describe("live-tail workspace list", () => {
   });
   it("does not present stale diagnostic rows as a readable screen", async () => {
     scene = liveTailFixtureScene(["unreadable"]); await render(); await hover(row("Sample unreadable"));
-    expect(tooltip().textContent).toContain("画面を読めない"); expect(tooltip().textContent).toContain("開けば最新になります");
+    expect(tooltip().textContent).toContain("画面を読めない"); expect(tooltip().textContent).not.toContain("開けば最新になります");
     expect(tooltip().querySelector(".live-tail-popup-rows")).toBeNull();
-    expect(row("Sample unreadable").querySelector(".live-tail-line")!.textContent).toBe("");
+    expect(row("Sample unreadable").querySelector(".live-tail-summary")).toBeNull();
   });
   it("has no contextmenu handler or stop action", async () => {
     scene = liveTailFixtureScene(["progress"]); await render();
@@ -144,5 +144,80 @@ describe("live-tail workspace list", () => {
     const entry = liveTailFixtureEntry(kind);
     const fact = { kind, sinceMs: LIVE_TAIL_TEST_NOW - 180_000, elapsedSec: null, tokens: null, toolElapsedSec: null, error: entry.evidence.observation.crop.error };
     expect(liveTailFactText(fact, LIVE_TAIL_TEST_NOW)).toBe({ stale: "3分 進んでいない", frozen: "画面が止まっている 3分", error: "エラー", unreadable: "画面を読めない" }[kind]);
+  });
+
+  it.each(["progress", "cmd", "stale", "frozen", "error"] as const)("keeps two lines only when %s has screen text", async kind => {
+    scene = liveTailFixtureScene([kind]); await render();
+    expect(row(`Sample ${kind}`).querySelector(".live-tail-heading")).not.toBeNull();
+    expect(row(`Sample ${kind}`).querySelector(".live-tail-summary")).not.toBeNull();
+  });
+  it("keeps empty, initially pending, and reply-waiting rows on one line", async () => {
+    scene = liveTailFixtureScene(["alive", "alive", "idle"]);
+    const observation = scene.entries["sample-session-0"].evidence.observation;
+    observation.rawRows = []; observation.crop.rows = []; observation.crop.marker = null;
+    delete scene.entries["sample-session-1"];
+    scene.targets[2].waitingForReply = true; scene.targets[2].status = "waiting";
+    await render();
+    expect(host.querySelectorAll(".live-tail-row")).toHaveLength(3);
+    expect(host.querySelectorAll(".live-tail-summary, .live-tail-dot")).toHaveLength(0);
+    expect(row("Sample alive").querySelector(".live-tail-badge")).toBeNull();
+  });
+  it("shrinks rendered spacing while retaining typography tokens", async () => {
+    scene = liveTailFixtureScene(["alive"]); await render();
+    const style = document.createElement("style");
+    style.textContent = readFileSync(join(__dirname, "../../src/components/layout/LiveTailList.css"), "utf8");
+    document.head.append(style);
+    try {
+      const rowStyle = getComputedStyle(row("Sample alive"));
+      expect(Number.parseFloat(rowStyle.paddingTop)).toBeLessThan(4);
+      expect(Number.parseFloat(rowStyle.marginTop)).toBeLessThan(3);
+      expect(Number.parseFloat(getComputedStyle(row("Sample alive").querySelector(".live-tail-heading")!).lineHeight)).toBeLessThan(1.5);
+      expect(style.textContent).toContain("var(--cmux-font-size-sm)");
+      expect(style.textContent).toContain("var(--cmux-font-size-xs)");
+      expect(style.textContent).not.toMatch(/font-size:\s*(?:[0-9]|10)px/);
+    } finally { style.remove(); }
+  });
+  it("opens and closes input-idle rows by click, Enter, and Space and jumps to their identities", async () => {
+    scene = liveTailFixtureScene(["idle", "idle"]); delete scene.entries["sample-session-1"]; scene.targets[1].status = "idle";
+    await render();
+    const toggle = host.querySelector<HTMLButtonElement>("button.live-tail-idle");
+    expect(toggle).not.toBeNull();
+    expect(toggle!.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle!.textContent).toContain("▸");
+    await act(async () => toggle!.click());
+    expect(toggle!.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle!.textContent).toContain("▾");
+    expect(document.getElementById(toggle!.getAttribute("aria-controls")!)).not.toBeNull();
+    const idleRows = [...host.querySelectorAll<HTMLButtonElement>(".live-tail-row")];
+    expect(idleRows).toHaveLength(2);
+    expect(idleRows.map(element => element.dataset.fact)).toEqual(["idle", "idle"]);
+    expect(host.querySelectorAll(".live-tail-summary, .live-tail-dot")).toHaveLength(0);
+    await act(async () => idleRows[1].click());
+    expect(jump).toHaveBeenCalledExactlyOnceWith({ workspaceId: scene.workspace.id, paneId: "sample-pane", tab: scene.workspace.panes[0].tabs[1] });
+    for (const [key, expanded] of [["Enter", "false"], [" ", "true"]]) {
+      await act(async () => toggle!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })));
+      expect(toggle!.getAttribute("aria-expanded")).toBe(expanded);
+    }
+  });
+  it("keeps disclosure state per workspace and resets it on remount", async () => {
+    scene = liveTailFixtureScene(["idle"], "workspace-a"); await render();
+    const toggle = () => host.querySelector<HTMLButtonElement>("button.live-tail-idle")!;
+    expect(toggle()).not.toBeNull();
+    await act(async () => toggle().click());
+    scene = liveTailFixtureScene(["idle"], "workspace-b"); await render();
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    scene = liveTailFixtureScene(["idle"], "workspace-a"); await render();
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    await act(async () => root.render(null)); await render();
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+  });
+  it("shows the actual age of a retained screen without guide text", async () => {
+    scene = liveTailFixtureScene(["alive"]);
+    scene.entries["sample-session-0"].retained = true;
+    scene.entries["sample-session-0"].evidence.observation.observedAt = LIVE_TAIL_TEST_NOW - 7_000;
+    await render(); await hover(row("Sample alive"));
+    expect(tooltip().textContent).toContain("画面の読み取り 7秒前");
+    expect(tooltip().textContent).not.toContain("開けば最新になります");
+    expect(host.querySelector(".live-tail-go")).toBeNull();
   });
 });

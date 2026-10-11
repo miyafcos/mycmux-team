@@ -45,7 +45,7 @@ describe("material grouping", () => {
     expect(move[0].tabIds).toEqual(["away"]);
     expect(move[0].destination).toEqual({ kind: "existing_workspace", workspaceId: "home" });
     expect(plans[0].groups.some(g => g.destination.kind === "new_workspace")).toBe(false);
-    expect(plans[0].rationale).toContain("1 ペイン");
+    expect(plans[0].rationale).toContain("1 タブ");
   });
   it("stacks into a matching resident at four columns, otherwise the last resident", () => {
     const home = workspace("home", "toolx", [pane("resident", "C:/toolx"), ...["b", "c", "d"].map(id => pane(id, ""))]);

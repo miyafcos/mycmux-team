@@ -26,15 +26,16 @@ export function buildTerminalPaneLaunch(
 ) {
   const paneCwd = activeTab?.cwd ?? pane.cwd;
   const resolvedAgentId = activeTab?.agentId;
+  const savedAgentSession = activeTab ? resolveSavedAgentSession(activeTab) : null;
   const launchThroughLauncher = Boolean(
     activeTab
     && !activeTab.commandArgv?.length
-    && requiresLauncherDispatch(activeTab.launchEnv ?? pane.launchEnv),
+    && (requiresLauncherDispatch(activeTab.launchEnv ?? pane.launchEnv)
+      || (resolvedAgentId === "shell" && (savedAgentSession?.kind === "codex" || activeTab.codexRestoreReason))),
   );
   const agent = resolvedAgentId
     ? (launchThroughLauncher ? agents.getDefaultAgent() : agents.getAgent(resolvedAgentId) ?? agents.getDefaultAgent())
     : null;
-  const savedAgentSession = activeTab ? resolveSavedAgentSession(activeTab) : null;
   const launchCommand = activeTab?.commandArgv?.[0] ?? agent?.command ?? "";
   const launchArgs = activeTab?.commandArgv?.length
     ? activeTab.commandArgv.slice(1)
@@ -50,5 +51,6 @@ export function buildTerminalPaneLaunch(
       )
     : [];
   const launchEnv = buildTerminalPaneLaunchEnv(pane, activeTab, launchThroughLauncher, savedAgentSession);
-  return { paneCwd, resolvedAgentId, agent, savedAgentSession, launchCommand, launchArgs, launchEnv };
+  return { paneCwd, resolvedAgentId, agent, savedAgentSession, launchCommand, launchArgs, launchEnv,
+    ...(activeTab?.codexRestoreReason ? { restoreReason: activeTab.codexRestoreReason } : {}) };
 }

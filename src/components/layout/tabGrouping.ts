@@ -2,7 +2,11 @@
 import type { PtyMetadataSnapshot, SessionOutputSnapshot } from "../../lib/ipc";
 import { reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
-import { usePetSettingsStore } from "../../stores/petSettingsStore";
+import { attentionCategory, type SessionAttention } from "../../stores/sessionAttentionStore";
+import type { AskQuestionSessionState } from "../../stores/askQuestionStore";
+import { petAssignmentSettings } from "../../stores/petSettingsStore";
+import { useWorkspaceListStore } from "../../stores/workspaceListStore";
+import { choosePetAssignment, petRandomFromSeed, planPetAssignments, type PetAssignmentSettings } from "../../lib/petAssignment";
 import type { Pane, PaneTab, Workspace } from "../../types";
 import { aiProviderDef, type AiProviderId } from "../../lib/aiModels";
 import { aiSettingsStrings } from "../settings/settingsStrings";
@@ -27,7 +31,27 @@ export const TAB_GROUPING_MAX_PANES_PER_COLUMN = 4;
 export const TAB_GROUPING_PLAN_MIN = 2;
 export const TAB_GROUPING_PLAN_MAX = 3;
 
-export type GroupingStrategy = "project" | "role" | "minimal_move" | "mixed";
+export type GroupingStrategy = "active_watch" | "main_sessions" | "project" | "role" | "minimal_move" | "mixed";
+export type GroupingPresetStrategy = Extract<GroupingStrategy, "active_watch" | "main_sessions">;
+export type GroupingPreset = "recommended" | GroupingPresetStrategy;
+export const GROUPING_PRESET_STORAGE_KEY = "mycmux.groupingPrecompute.requestedStrategy.v1";
+
+export function readGroupingPreset(): GroupingPreset {
+  try {
+    const value = typeof localStorage === "undefined" ? null : localStorage.getItem(GROUPING_PRESET_STORAGE_KEY);
+    return value === "active_watch" || value === "main_sessions" ? value : "recommended";
+  } catch {
+    return "recommended";
+  }
+}
+
+export function rememberGroupingPreset(preset: GroupingPreset): void {
+  try {
+    if (typeof localStorage !== "undefined") localStorage.setItem(GROUPING_PRESET_STORAGE_KEY, preset);
+  } catch {
+    // Choosing a preset still works when optional storage is unavailable.
+  }
+}
 export type GroupingDisposition = "reorganize" | "keep";
 export type GroupingPaneRole = "mother" | "worker" | "review" | "mixed" | "unspecified";
 export type GroupingWarningCode =
@@ -37,8 +61,8 @@ export type GroupingWarningCode =
   | "EXISTING_WORKSPACE_CONFLICT";
 
 export type GroupingDestination =
-  | { kind: "new_workspace"; proposedName: string }
-  | { kind: "existing_workspace"; workspaceId: string }
+  | { kind: "new_workspace"; proposedName: string; nameEdited?: true }
+  | { kind: "existing_workspace"; workspaceId: string; nameEdited?: true; proposedName?: string }
   | { kind: "current_locations" };
 
 export interface GroupingLayoutPane {
@@ -49,6 +73,8 @@ export interface GroupingLayoutPane {
 }
 
 export interface GroupingLayoutColumn {
+  /** Add rows to the destination column containing this surviving resident pane. */
+  existingColumnPaneId?: string;
   panes: GroupingLayoutPane[];
 }
 
@@ -84,6 +110,12 @@ export interface GroupingPlan {
   warnings: GroupingWarning[];
 }
 
+export interface GroupingAttention {
+  working: boolean;
+  waiting: "input" | "approval" | "question" | "error" | "rate_limited" | null;
+  unreadCompletion: boolean;
+}
+
 export interface GroupingTab {
   id: string;
   sessionId: string;
@@ -101,6 +133,8 @@ export interface GroupingTab {
   paneId: string;
   column: number;
   lastOutputAt: number | null;
+  /** New scans always supply this; older cached scans omit it. */
+  attention?: GroupingAttention;
   tail: string[];
 }
 
@@ -133,6 +167,9 @@ export interface GroupingScanSource {
   lastOutputBySession: SessionOutputSnapshot;
   readTail: (sessionId: string, lines: number) => Promise<string[]>;
   now: number;
+  attentionBySession?: Readonly<Record<string, SessionAttention | undefined>>;
+  questionsBySession?: Readonly<Record<string, Pick<AskQuestionSessionState, "screen" | "stopReason"> | undefined>>;
+  seenAttentionByTab?: Map<string, string>;
   /**
    * The local instant plan builds a scan from the stores alone, with no IPC, so
    * it cannot know which PTYs are alive. It keeps every terminal tab instead of
@@ -212,7 +249,7 @@ export interface GroupingApplyReport {
 
 export type TabPreviewKind = "moved" | "kept" | "unassigned" | "untouched";
 
-const STRATEGIES = new Set<GroupingStrategy>(["project", "role", "minimal_move", "mixed"]);
+const STRATEGIES = new Set<GroupingStrategy>(["active_watch", "main_sessions", "minimal_move", "project", "role", "mixed"]);
 const ROLES = new Set<GroupingPaneRole>(["mother", "worker", "review", "mixed", "unspecified"]);
 const WARNING_CODES = new Set<GroupingWarningCode>([
   "LOW_CONFIDENCE",
@@ -280,16 +317,19 @@ function cleanedTail(lines: readonly string[]): string[] {
 
 
 export function choosePetForNewWorkspace(): string | undefined {
-  const petSettings = usePetSettingsStore.getState();
-  const enabledPets = petSettings.pets.filter((pet) => !petSettings.petDisabled.includes(pet.id));
-  const fallbackPet = enabledPets[0]?.id ?? "clawd";
-  if (petSettings.petNewWorkspaceMode === "choose") return undefined;
-  if (petSettings.petNewWorkspaceMode === "fixed") {
-    return petSettings.petFixedId && enabledPets.some((pet) => pet.id === petSettings.petFixedId)
-      ? petSettings.petFixedId
-      : fallbackPet;
-  }
-  return enabledPets[Math.floor(Math.random() * enabledPets.length)]?.id ?? fallbackPet;
+  return choosePetAssignment(petAssignmentSettings(), useWorkspaceListStore.getState().workspaces.map((workspace) => workspace.pet)).petId;
+}
+
+/** Each new group gets its own stable choice; preview never consumes the bag. */
+export function petDefaultsForGrouping(
+  groups: readonly GroupingGroup[],
+  workspaces: readonly Workspace[],
+  settings: PetAssignmentSettings,
+  seed: string,
+): Record<string, { pet?: string }> {
+  const keys = groups.filter((group) => group.adopted && group.disposition === "reorganize" && group.destination.kind === "new_workspace").map((group) => group.groupId);
+  const plan = planPetAssignments(settings, workspaces.map((workspace) => workspace.pet), keys, petRandomFromSeed(seed));
+  return Object.fromEntries(keys.map((key) => [key, { pet: plan.pets[key] }]));
 }
 
 
@@ -395,9 +435,11 @@ export function lineageClustersFromTabs(tabs: readonly GroupingTab[]): GroupingL
 }
 
 async function loadDefaultGroupingSource(now = Date.now()): Promise<GroupingScanSource> {
-  const [stores, ipc] = await Promise.all([
+  const [stores, ipc, attention, questions] = await Promise.all([
     import("../../stores/workspaceStore"),
     import("../../lib/ipc"),
+    import("../../stores/sessionAttentionStore"),
+    import("../../stores/askQuestionStore"),
   ]);
   let processMetadata: PtyMetadataSnapshot = {};
   let processMetadataAvailable = true;
@@ -418,6 +460,9 @@ async function loadDefaultGroupingSource(now = Date.now()): Promise<GroupingScan
     processMetadata,
     processMetadataAvailable,
     lastOutputBySession,
+    attentionBySession: attention.useSessionAttentionStore.getState().attentionBySession,
+    seenAttentionByTab: attention.useSessionAttentionStore.getState().seenAttentionByTab,
+    questionsBySession: questions.useAskQuestionStore.getState().bySession,
     readTail: async () => [],
     now,
   };
@@ -428,6 +473,7 @@ export async function scanGroupingContext(
 ): Promise<GroupingScan> {
   const source = providedSource ?? await loadDefaultGroupingSource();
   const tabs: GroupingTab[] = [];
+  const seenAttentionByTab = source.seenAttentionByTab ?? new Map<string, string>();
 
   for (const workspace of source.workspaces) {
     const paneById = new Map(workspace.panes.map((pane) => [pane.id, pane]));
@@ -448,6 +494,12 @@ export async function scanGroupingContext(
           );
           if (!source.skipLivenessFilter && isDeadReason(reason)) continue;
           const metadata = source.metadata[tab.sessionId];
+          const attention = source.attentionBySession?.[tab.sessionId];
+          const question = source.questionsBySession?.[tab.sessionId];
+          const kind = attention?.kind;
+          const waiting: GroupingAttention["waiting"] = question && (question.screen !== null || question.stopReason !== null)
+            ? "question"
+            : kind === "input" || kind === "approval" || kind === "error" || kind === "rate_limited" ? kind : null;
           tabs.push({
             id: tab.id,
             sessionId: tab.sessionId,
@@ -463,6 +515,12 @@ export async function scanGroupingContext(
             paneId: pane.id,
             column: columnIndex + 1,
             lastOutputAt: source.lastOutputBySession[tab.sessionId] ?? null,
+            attention: {
+              working: attention?.uiState === "working" || metadata?.agentStatus === "working",
+              waiting,
+              // The same unread-completion predicate used by agent dormancy.
+              unreadCompletion: attentionCategory(tab.id, attention, seenAttentionByTab) === "done",
+            },
             tail: [],
           });
         }
@@ -501,8 +559,9 @@ export async function scanGroupingContext(
   };
 }
 
-export function groupingPromptPayload(scan: GroupingScan) {
+export function groupingPromptPayload(scan: GroupingScan, requestedStrategy?: GroupingStrategy) {
   return {
+    ...(requestedStrategy ? { requested_strategy: requestedStrategy } : {}),
     tabs: scan.tabs.map((tab) => ({
       id: tab.id,
       sessionId: tab.sessionId,
@@ -516,6 +575,7 @@ export function groupingPromptPayload(scan: GroupingScan) {
       paneId: tab.paneId,
       column: tab.column,
       lastOutputAt: tab.lastOutputAt,
+      attention: tab.attention ?? { working: false, waiting: null, unreadCompletion: false },
       tail: tab.tail.slice(-TAB_GROUPING_TAIL_LINES),
     })),
     workspaces: scan.workspaces.map((workspace) => ({
@@ -533,8 +593,8 @@ export interface GroupingPromptReferences {
 }
 
 /** Request-local references reduce generation work; persistent IDs never change. */
-function groupingPromptRequest(scan: GroupingScan) {
-  const payload = groupingPromptPayload(scan);
+function groupingPromptRequest(scan: GroupingScan, requestedStrategy?: GroupingStrategy) {
+  const payload = groupingPromptPayload(scan, requestedStrategy);
   const shortIds = (ids: string[], prefix: string) => {
     const reserved = new Set(ids);
     const result = new Map<string, string>();
@@ -557,6 +617,7 @@ function groupingPromptRequest(scan: GroupingScan) {
   return {
     references: { tabIds: reverse(tabIds), workspaceIds: reverse(workspaceIds) },
     payload: {
+      ...(payload.requested_strategy ? { requested_strategy: payload.requested_strategy } : {}),
       tabs: payload.tabs.map(({ sessionId: _sessionId, ...tab }) => ({
         ...tab,
         id: tabIds.get(tab.id),
@@ -614,33 +675,50 @@ function restoreGroupingReferences(value: unknown, references: GroupingPromptRef
   }
 }
 
+/** Shared by the full-plan prompt and the evidence judge's request state. */
+export function groupingStrategyInstructions(requestedStrategy?: GroupingStrategy): string[] {
+  return [
+    "active_watch（稼働中だけ）は、次の返事待ちが出るまで見張るタブだけをまとめます。attention.working、attention.waiting（input / approval / question / error / rate_limited）、attention.unreadCompletion、直近5分の lastOutputAt のいずれかに該当するタブが対象です。",
+    "active_watch は待ち（input / approval / question）→作業中→error / rate_limited→直近の出力の順で最大16本を「稼働中」へまとめ、ほかは keep にします。",
+    "main_sessions（メインだけ）は、いま主に相手にしている2〜3本だけをまとめます。こちらの返事待ち（input / approval / question）、origin.kind=human、根拠のある母艦の役割、lastOutputAt の新しさの順に上位3本（1本しかなければ1本）を「メイン」へまとめ、ほかは keep にします。同点は現在のワークスペース順・columns の順を守ります。",
+    "この2つの切り口では系譜や案件より対象条件を優先します。3〜8タブ・エラー隔離・親子だけの行分割の規則は適用せず、再配置の1グループに最大4つの columns 要素、各要素に最大4つの表示場所で見渡せる配置にしてください。",
+    "新規名は「稼働中」「メイン」の固定語です。同名ワークスペースがあれば existing_workspace に合流し、番号を付けたワークスペースを増やさないでください。",
+    ...(requestedStrategy ? [`requested_strategy=${requestedStrategy} が指定されています。1本目の案は必ずこの strategy で返し、残りは切り口の異なる案にしてください。`] : []),
+  ];
+}
+
 export function buildGroupingPrompt(
   scan: GroupingScan,
   payload: unknown = groupingPromptPayload(scan),
   feedback: ParseIssue[] = [],
 ): string {
+  const requestedStrategy = isObject(payload) && typeof payload.requested_strategy === "string"
+    && STRATEGIES.has(payload.requested_strategy as GroupingStrategy)
+    ? payload.requested_strategy as GroupingStrategy : undefined;
   return [
-    "次の全ワークスペースの生きているターミナルペインを、案件・役割ごとに再配置するプランを2〜3件作ってください。",
-    "切り口の異なる案を並べてください。strategy は project / role / minimal_move / mixed のいずれかです。",
-    "ペインは閉じません。PTY も殺しません。配置（ワークスペース・タブ）だけを設計してください。",
+    "次の全ワークスペースの生きているターミナルタブを、案件・役割ごとに再配置するプランを2〜3件作ってください。",
+    "切り口の異なる案を並べてください。strategy は active_watch / main_sessions / minimal_move / project / role / mixed のいずれかです。",
+    "タブは閉じません。PTY も殺しません。ワークスペース内のタブの配置だけを設計してください。",
     "origin.parentTabId でつながる系譜クラスタは、特別な理由がなければ同じグループに残してください。",
     "ワークスペースは案件の厳密な境界ではなく、見渡す場所です。1案件=1ワークスペースに機械的に割らないでください。",
-    "1つのペインを2つ以上のグループに入れないでください。系譜クラスタを分けたくなったときも、どちらか一方のグループにだけ入れてください。",
-    "ただし性質の違うペインを同じワークスペースに混ぜないでください。起動失敗・エラー・要対応のペインは、正常に動いているペインとは別のワークスペースへ隔離してください。隔離用のワークスペースは1〜2ペインでも構いません。",
-    "1ワークスペースは3〜8ペインにしてください。3ペイン未満のグループを作らないでください（隔離用ワークスペースだけが例外です）。3ペインに満たない案件は、性質の近い他の小案件と同じワークスペースへまとめ、列で分け、グループ名は「国語課+雑務」のように両方を書いてください。大きな案件だけ独立したワークスペースにしてください。",
-    "どのグループにも収まらないペインは、省略せず unassignedTabIds に入れてください。サイズを整えるためにペインを落とすことは禁止です。",
+    "1つのタブを2つ以上のグループに入れないでください。系譜クラスタを分けたくなったときも、どちらか一方のグループにだけ入れてください。",
+    "ただし性質の違うタブを同じワークスペースに混ぜないでください。起動失敗・エラー・要対応のタブは、正常に動いているタブとは別のワークスペースへ隔離してください。隔離用のワークスペースは1〜2タブでも構いません。",
+    "1ワークスペースは3〜8タブにしてください。3タブ未満のグループを作らないでください（隔離用ワークスペースだけが例外です）。3タブに満たない案件は、性質の近い他の小案件と同じワークスペースへまとめ、表示場所を分け、グループ名は「国語課+雑務」のように両方を書いてください。大きな案件だけ独立したワークスペースにしてください。",
+    "どのグループにも収まらないタブは、省略せず unassignedTabIds に入れてください。サイズを整えるためにタブを落とすことは禁止です。",
     "どの strategy の案も、この見やすいサイズを守ってください。",
-    "レイアウトは列で分けます。1つの列にタブを2つ以上重ねてよいのは、上が親（母艦・指揮側）で下がその子（worker）のときだけです。それ以外は必ず列を増やしてください。タブを重ねた列が、その案の列数の3分の1を超えないようにしてください。",
-    "同じ役割で関連の深いペインは、タブを分けず1つのタブの tabIds にまとめて裏ペインとして重ねてください。",
-    "親子関係は階層で表現してください。親（母艦・指揮側）のタブを列の一番上に置き、子（worker）はその下のタブか、親と同じタブの裏ペインに入れてください。",
+    "layout.columns の各要素で表示場所を分けます。1つの要素の panes に表示中のタブを2つ以上上下に並べてよいのは、上が親（母艦・指揮側）で下がその子（worker）のときだけです。それ以外は必ず columns の要素を増やしてください。上下にタブを並べた要素が、その案の columns の要素数の3分の1を超えないようにしてください。",
+    "同じ役割で関連の深いタブは、表示場所を分けず1つの panes 要素の tabIds にまとめ、1つを表示中のタブ、残りを裏のタブとして重ねてください。",
+    "親子関係は配置で表現してください。親（母艦・指揮側）の表示中のタブを columns の要素の一番上に置き、子（worker）はその下に表示するか、親のタブの裏のタブにしてください。",
     "名前は日本語が基本です。固有名詞（mycmux / Claude / Codex など）はアルファベットのままで構いません。fix / build / review / server のような一般英単語は日本語にしてください。ツール名をカタカナへ無理に直さないでください。短く（目安20文字以内）。",
     "pane.role は mother / worker / review / mixed / unspecified のみです。warnings は {code, tabIds, message} の配列で、code は LOW_CONFIDENCE / MIXED_PROJECT / UNCLEAR_ROLE / EXISTING_WORKSPACE_CONFLICT のみです。",
-    "各プランで、渡した全ペインが groups または unassignedTabIds のどこかに正確に1回だけ現れるようにしてください。ペインを1つでも省略した案は使えません。",
-    "disposition=keep のグループは destination.kind を current_locations、layout を null にし、残すペインを tabIds に列挙してください。",
-    "disposition=reorganize のグループは layout を必須にし、空の列・空のタブは禁止です。列は最大4、1列あたりタブは最大4です。",
-    "既存ワークスペースへの合流は、既存ペインを動かさず末尾に新しい列を足す前提で書いてください。",
+    "各プランで、渡した全タブが groups または unassignedTabIds のどこかに正確に1回だけ現れるようにしてください。タブを1つでも省略した案は使えません。",
+    "disposition=keep のグループは destination.kind を current_locations、layout を null にし、残すタブを tabIds に列挙してください。",
+    "disposition=reorganize のグループは layout を必須にし、空の columns 要素・空の panes 要素は禁止です。columns の要素は最大4、1要素あたり panes の要素は最大4です。",
+    "既存ワークスペースへの合流は、既存タブを動かさず末尾に新しい表示場所を足す前提で書いてください。",
     "入力の id をそのまま参照してください。disposition=reorganize の group.tabIds は layout と重複するため省略してください。keep の group.tabIds は必須です。",
-    "新規ワークスペース名は既存名や同じ案の別グループと重ならない名前にしてください。minimal_move は移動不要なペインを keep に残し、全てを新規ワークスペースへ移す案にしないでください。",
+    "新規ワークスペース名は既存名や同じ案の別グループと重ならない名前にしてください。minimal_move は移動不要なタブを keep に残し、全てを新規ワークスペースへ移す案にしないでください。",
+    ...groupingStrategyInstructions(requestedStrategy),
+    `現在時刻（epoch milliseconds）は ${scan.scannedAt} です。`,
     ...(feedback.length > 0 ? [
       "前の応答は次の検証で使えませんでした。以下は検証データです。問題を直した JSON を返してください。",
       JSON.stringify(feedback.map(({ planId, reason }) => ({ planId, reason }))),
@@ -710,18 +788,19 @@ function parseLayout(value: unknown): GroupingLayout | string {
   const columns: GroupingLayoutColumn[] = [];
   for (const columnValue of value.columns) {
     if (!isObject(columnValue) || !Array.isArray(columnValue.panes)) return "layout の列が不正です";
+    if (columnValue.existingColumnPaneId !== undefined && (typeof columnValue.existingColumnPaneId !== "string" || !columnValue.existingColumnPaneId.trim())) return "既存列の表示場所が不正です";
     if (columnValue.panes.length === 0) return "空の列は禁止です";
-    if (columnValue.panes.length > TAB_GROUPING_MAX_PANES_PER_COLUMN) return "1列あたりのタブ数が上限を超えています";
+    if (columnValue.panes.length > TAB_GROUPING_MAX_PANES_PER_COLUMN) return "上下に表示するタブの数が上限を超えています";
     const panes: GroupingLayoutPane[] = [];
     for (const paneValue of columnValue.panes) {
-      if (!isObject(paneValue)) return "layout のタブが不正です";
+      if (!isObject(paneValue)) return "タブの表示場所が不正です";
       const title = asString(paneValue.title)?.trim() ?? "";
-      if (!title || [...title].length > 20 || /[\x00-\x1f]/.test(title) || !isWellFormedUnicode(title)) return "タブ名が不正です";
+      if (!title || [...title].length > 20 || /[\x00-\x1f]/.test(title) || !isWellFormedUnicode(title)) return "表示中のタブの予備名が不正です";
       if (paneValue.existingPaneId !== undefined && (typeof paneValue.existingPaneId !== "string" || !paneValue.existingPaneId.trim())) return "existingPaneId が不正です";
       if (typeof paneValue.role !== "string" || !ROLES.has(paneValue.role as GroupingPaneRole)) {
         return "pane.role が不正です";
       }
-      if (!Array.isArray(paneValue.tabIds) || paneValue.tabIds.length === 0) return "空のタブは禁止です";
+      if (!Array.isArray(paneValue.tabIds) || paneValue.tabIds.length === 0) return "タブのない表示場所は禁止です";
       if (paneValue.tabIds.some((id) => typeof id !== "string" || !id.trim())) return "pane.tabIds が不正です";
       panes.push({
         title,
@@ -730,7 +809,7 @@ function parseLayout(value: unknown): GroupingLayout | string {
         tabIds: paneValue.tabIds.map((id) => String(id).trim()),
       });
     }
-    columns.push({ panes });
+    columns.push({ panes, ...(typeof columnValue.existingColumnPaneId === "string" ? { existingColumnPaneId: columnValue.existingColumnPaneId } : {}) });
   }
   return { columns };
 }
@@ -748,7 +827,7 @@ function parseWarnings(value: unknown, allowedTabIds: ReadonlySet<string>): Grou
       return "warning.tabIds が不正です";
     }
     const tabIds = entry.tabIds.map((id) => id.trim());
-    if (tabIds.some((id) => !allowedTabIds.has(id))) return "warning が未知のペインを参照しています";
+    if (tabIds.some((id) => !allowedTabIds.has(id))) return "warning が未知のタブを参照しています";
     warnings.push({
       code: entry.code as GroupingWarningCode,
       tabIds,
@@ -795,7 +874,7 @@ function parseGroup(
     if (!Array.isArray(value.tabIds) || value.tabIds.length === 0) return "keep グループの tabIds が空です";
     if (value.tabIds.some((id) => typeof id !== "string" || !id.trim())) return "keep グループの tabIds が不正です";
     const tabIds = value.tabIds.map((id) => id.trim());
-    if (tabIds.some((id) => !allowedTabIds.has(id))) return "keep グループが未知のペインを含みます";
+    if (tabIds.some((id) => !allowedTabIds.has(id))) return "keep グループが未知のタブを含みます";
     return {
       groupId,
       title,
@@ -813,16 +892,16 @@ function parseGroup(
   }
   const layout = parseLayout(value.layout);
   if (typeof layout === "string") return layout;
-  if (destination.kind !== "existing_workspace" && layout.columns.some(c => c.panes.some(p => p.existingPaneId))) return "既存タブへの合流先が不正です";
+  if (destination.kind !== "existing_workspace" && layout.columns.some(c => c.existingColumnPaneId || c.panes.some(p => p.existingPaneId))) return "既存の表示場所への追加先が不正です";
   const tabIds = flattenLayoutTabIds(layout);
-  if (tabIds.some((id) => !allowedTabIds.has(id))) return "layout が未知のペインを含みます";
+  if (tabIds.some((id) => !allowedTabIds.has(id))) return "layout が未知のタブを含みます";
   if (value.tabIds !== undefined) {
     if (!Array.isArray(value.tabIds) || value.tabIds.some((id) => typeof id !== "string" || !id.trim())) {
       return "group.tabIds が不正です";
     }
     const explicit = value.tabIds.map((id) => id.trim());
     if ([...explicit].sort().join("\0") !== [...tabIds].sort().join("\0")) {
-      return "group.tabIds と layout のペインが一致しません";
+      return "group.tabIds と layout のタブが一致しません";
     }
   }
   return {
@@ -871,7 +950,7 @@ function parsePlan(
     return "unassignedTabIds が不正です";
   }
   const unassignedTabIds = value.unassignedTabIds.map((id) => id.trim());
-  if (unassignedTabIds.some((id) => !allowedTabIds.has(id))) return "unassignedTabIds が未知のペインを含みます";
+  if (unassignedTabIds.some((id) => !allowedTabIds.has(id))) return "unassignedTabIds が未知のタブを含みます";
 
   const appearances = new Map<string, number>();
   const note = (id: string) => appearances.set(id, (appearances.get(id) ?? 0) + 1);
@@ -885,12 +964,12 @@ function parsePlan(
   const missing: string[] = [];
   for (const id of allowedTabIds) {
     const count = appearances.get(id) ?? 0;
-    if (count > 1) return `ペイン ${id} の出現回数が1ではありません`;
+    if (count > 1) return `タブ ${id} の出現回数が1ではありません`;
     if (count === 0) missing.push(id);
   }
   unassignedTabIds.push(...missing);
   for (const id of appearances.keys()) {
-    if (!allowedTabIds.has(id)) return `未知のペイン ${id}`;
+    if (!allowedTabIds.has(id)) return `未知のタブ ${id}`;
   }
 
   const warnings = parseWarnings(value.warnings, allowedTabIds);
@@ -899,7 +978,7 @@ function parsePlan(
     warnings.push({
       code: "LOW_CONFIDENCE",
       tabIds: missing,
-      message: `案に含まれなかった${missing.length}ペインは、現在の場所に残します。`,
+      message: `案に含まれなかった${missing.length}タブは、現在の場所に残します。`,
     });
   }
 
@@ -940,6 +1019,7 @@ export function parseGroupingOutput(
   existingWorkspaceIds: Iterable<string>,
   existingWorkspaceNames: Iterable<string> = [],
   references?: GroupingPromptReferences,
+  trustedLocalPlans?: readonly GroupingPlan[],
 ): ParseGroupingResult {
   const trimmed = raw.trim();
   const allowed = new Set([...allowedTabIds]);
@@ -989,6 +1069,20 @@ export function parseGroupingOutput(
       continue;
     }
     seenPlanIds.add(plan.planId);
+    // Model JSON cannot assert ownership. Only a matching locally authored
+    // destination can restore it after serialization; references stay separate.
+    const local = trustedLocalPlans?.find(candidate => candidate.planId === plan.planId);
+    for (const group of plan.groups) {
+      const destination = group.destination;
+      const trusted = local?.groups.find(candidate => candidate.groupId === group.groupId)?.destination;
+      if (!trusted || trusted.kind === "current_locations" || !trusted.nameEdited) continue;
+      if ((destination.kind === "new_workspace" && trusted.kind === "new_workspace"
+        && destination.proposedName === trusted.proposedName)
+        || (destination.kind === "existing_workspace" && trusted.kind === "existing_workspace"
+          && destination.workspaceId === trusted.workspaceId)) {
+        group.destination = structuredClone(trusted);
+      }
+    }
     validPlans.push(plan);
   }
 
@@ -1035,6 +1129,7 @@ export function reassignTabs(
       tabIds: nextTabIds,
       layout: {
         columns: group.layout.columns.map((column) => ({
+          ...column,
           panes: column.panes.map((pane) => ({ ...pane, tabIds: strip(pane.tabIds) })),
         })),
       },
@@ -1051,6 +1146,7 @@ export function reassignTabs(
       }
       const paneTitle = target.paneTitle;
       const columns = group.layout.columns.map((column, columnIndex) => ({
+        ...column,
         panes: column.panes.map((pane, paneIndex) => {
           const isDefault = columnIndex === 0 && paneIndex === 0;
           const matches = paneTitle ? pane.title === paneTitle : isDefault;
@@ -1104,10 +1200,11 @@ export function validateEditedPlan(
       }
       if (group.layout.columns.length === 0) errors.push(`グループ「${group.title}」に空の列があります`);
       for (const column of group.layout.columns) {
+        if (column.existingColumnPaneId !== undefined && (!column.existingColumnPaneId.trim() || group.destination.kind !== "existing_workspace")) errors.push("既存列の表示場所が不正です");
         if (column.panes.length === 0) errors.push(`グループ「${group.title}」に空の列があります`);
         for (const pane of column.panes) {
-          if (pane.tabIds.length === 0) errors.push(`グループ「${group.title}」に空のタブがあります`);
-          if (pane.existingPaneId !== undefined && (!pane.existingPaneId.trim() || group.destination.kind !== "existing_workspace")) errors.push("既存タブへの合流先が不正です");
+          if (pane.tabIds.length === 0) errors.push(`グループ「${group.title}」にタブのない表示場所があります`);
+          if (pane.existingPaneId !== undefined && (!pane.existingPaneId.trim() || group.destination.kind !== "existing_workspace")) errors.push("既存の表示場所への追加先が不正です");
         }
       }
       const layoutIds = flattenLayoutTabIds(group.layout);
@@ -1133,7 +1230,7 @@ export function validateEditedPlan(
   }
   plan.unassignedTabIds.forEach(note);
   for (const id of allowed) {
-    if ((appearances.get(id) ?? 0) !== 1) errors.push(`ペイン ${id} の出現回数が1ではありません`);
+    if ((appearances.get(id) ?? 0) !== 1) errors.push(`タブ ${id} の出現回数が1ではありません`);
   }
   return errors;
 }
@@ -1166,7 +1263,7 @@ export function classifyStale(
       issues.push({
         code: "tab_closed",
         tabId: entry.tabId,
-        message: `ペイン ${entry.tabId} が閉じられています`,
+        message: `タブ ${entry.tabId} が閉じられています`,
       });
       continue;
     }
@@ -1174,14 +1271,14 @@ export function classifyStale(
       issues.push({
         code: "session_mismatch",
         tabId: entry.tabId,
-        message: `ペイン ${entry.tabId} の sessionId が分析時と違います`,
+        message: `タブ ${entry.tabId} の sessionId が分析時と違います`,
       });
     }
     if (live.workspace.id !== entry.workspaceId || live.pane.id !== entry.paneId) {
       issues.push({
         code: "tab_moved",
         tabId: entry.tabId,
-        message: `ペイン ${entry.tabId} が分析後に手動で移動されています`,
+        message: `タブ ${entry.tabId} が分析後に手動で移動されています`,
       });
     }
   }
@@ -1191,7 +1288,7 @@ export function classifyStale(
 
 function tabLabel(workspaces: readonly Workspace[], tabId: string): string {
   const found = tabIndex(workspaces).get(tabId);
-  return found?.tab.label?.trim() || "無名ペイン";
+  return found?.tab.label?.trim() || "無名タブ";
 }
 
 export function buildApplyReport(
@@ -1254,11 +1351,12 @@ export interface GroupingAnalysisDependencies {
   requestId: () => string;
   onProgress?: (stage: GroupingAnalysisStage) => void;
   now?: () => number;
+  requestedStrategy?: GroupingStrategy;
 }
 
 export type GroupingAnalysisStage = "scanning" | "judging" | "validating" | "retrying";
 
-export const TAB_GROUPING_PROMPT_VERSION = "tab-grouping-v7";
+export const TAB_GROUPING_PROMPT_VERSION = "tab-grouping-v8";
 
 export interface GroupingAnalysisTimings {
   totalMs: number;
@@ -1317,7 +1415,7 @@ export async function runGroupingAnalysis(
   const firstId = deps.requestId();
   const names = scan.workspaces.map((workspace) => workspace.name);
   deps.onProgress?.("judging");
-  const request = groupingPromptRequest(scan);
+  const request = groupingPromptRequest(scan, deps.requestedStrategy);
   const firstRaw = await judge(buildGroupingPrompt(scan, request.payload), firstId);
   deps.onProgress?.("validating");
   const parse = (raw: string) => {

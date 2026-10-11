@@ -180,3 +180,14 @@ export function cropLiveTail(rawRows: readonly string[], agentKind: string | nul
   if (agentKind === "codex") return cropCodex(rows);
   return { ...base(), state: "unknown", readable: rows.length > 0, rows: rows.filter((r) => r.trim()).slice(-3) };
 }
+
+/** A successful screen read need not contain an agent's running/done marker.
+ * Resumed answers and changed TUI formats still have useful verbatim text. */
+export function cropLiveTailScreen(rawRows: readonly string[], agentKind: string | null): LiveTailCrop {
+  const crop = cropLiveTail(rawRows, agentKind);
+  if (crop.readable) return crop;
+  const rows = trimBlankTail(rawRows);
+  const body = agentKind === "claude" || agentKind === "claude-codex" ? claudeBody(rows)
+    : agentKind === "codex" ? codexBody(rows) : rows;
+  return { ...base(), state: "unknown", rows: body.filter(row => row.trim()).slice(-3) };
+}

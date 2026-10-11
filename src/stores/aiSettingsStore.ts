@@ -12,17 +12,21 @@ import {
 // the Rust consumers resolve this setting before launching a provider CLI.
 
 export const DEFAULT_AUTO_PANE_NAMING_ENABLED = true;
+export const DEFAULT_AUTO_WORKSPACE_NAMING_ENABLED = true;
 export const DEFAULT_REPLY_DRAFT_SUGGESTIONS_ENABLED = false;
 
 export interface DataJsonAiFeatureSettings {
   autoPaneNamingEnabled: boolean | null | undefined;
+  autoWorkspaceNamingEnabled?: boolean | null;
   replyDraftSuggestionsEnabled: boolean | null | undefined;
 }
 
 export interface EffectiveDataJsonAiFeatureSettings {
   autoPaneNamingEnabled: boolean;
+  autoWorkspaceNamingEnabled: boolean;
   replyDraftSuggestionsEnabled: boolean;
   persistedAutoPaneNamingEnabled: boolean | null;
+  persistedAutoWorkspaceNamingEnabled: boolean | null;
   persistedReplyDraftSuggestionsEnabled: boolean | null;
   migrationNeeded: boolean;
 }
@@ -46,6 +50,8 @@ export function resolveDataJsonAiFeatureSettings(
   const persistedReplyDraftSuggestionsEnabled = dataReplyDraft ?? legacyReplyDraft;
   return {
     autoPaneNamingEnabled: persistedAutoPaneNamingEnabled ?? DEFAULT_AUTO_PANE_NAMING_ENABLED,
+    autoWorkspaceNamingEnabled: dataJson.autoWorkspaceNamingEnabled ?? DEFAULT_AUTO_WORKSPACE_NAMING_ENABLED,
+    persistedAutoWorkspaceNamingEnabled: dataJson.autoWorkspaceNamingEnabled ?? null,
     replyDraftSuggestionsEnabled:
       persistedReplyDraftSuggestionsEnabled ?? DEFAULT_REPLY_DRAFT_SUGGESTIONS_ENABLED,
     persistedAutoPaneNamingEnabled,
@@ -61,6 +67,7 @@ export interface PersistedAiSettings {
   aiModel: string;
   aiEnabled: boolean;
   persistedAutoPaneNamingEnabled: boolean | null;
+  persistedAutoWorkspaceNamingEnabled: boolean | null;
   persistedReplyDraftSuggestionsEnabled: boolean | null;
 }
 
@@ -75,6 +82,7 @@ interface AiSettingsState extends PersistedAiSettings {
   setAiModel: (model: string) => void;
   setAiEnabled: (enabled: boolean) => void;
   setPersistedAutoPaneNamingEnabled: (enabled: boolean) => void;
+  setPersistedAutoWorkspaceNamingEnabled: (enabled: boolean) => void;
   setPersistedReplyDraftSuggestionsEnabled: (enabled: boolean) => void;
   completeLegacyAiFeatureSettingsMigration: () => void;
   resetAiSettings: () => void;
@@ -85,6 +93,7 @@ export const useAiSettingsStore = create<AiSettingsState>((set) => ({
   aiModel: DEFAULT_AI_MODEL,
   aiEnabled: true,
   persistedAutoPaneNamingEnabled: null,
+  persistedAutoWorkspaceNamingEnabled: null,
   persistedReplyDraftSuggestionsEnabled: null,
   legacyAiFeatureSettingsMigrationPending: false,
   hydrateAiSettings: (settings) => {
@@ -94,6 +103,7 @@ export const useAiSettingsStore = create<AiSettingsState>((set) => ({
       aiModel: normalizeAiModel(settings.aiModel, provider),
       aiEnabled: settings.aiEnabled ?? true,
       persistedAutoPaneNamingEnabled: settings.persistedAutoPaneNamingEnabled ?? null,
+      persistedAutoWorkspaceNamingEnabled: settings.persistedAutoWorkspaceNamingEnabled ?? null,
       persistedReplyDraftSuggestionsEnabled: settings.persistedReplyDraftSuggestionsEnabled ?? null,
       legacyAiFeatureSettingsMigrationPending:
         settings.legacyAiFeatureSettingsMigrationPending ?? false,
@@ -106,6 +116,7 @@ export const useAiSettingsStore = create<AiSettingsState>((set) => ({
   setAiModel: (model) => set((state) => ({ aiModel: normalizeAiModel(model, state.aiProvider) })),
   setAiEnabled: (aiEnabled) => set({ aiEnabled }),
   setPersistedAutoPaneNamingEnabled: (enabled) => set({ persistedAutoPaneNamingEnabled: enabled }),
+  setPersistedAutoWorkspaceNamingEnabled: (enabled) => set({ persistedAutoWorkspaceNamingEnabled: enabled }),
   setPersistedReplyDraftSuggestionsEnabled: (enabled) => set({
     persistedReplyDraftSuggestionsEnabled: enabled,
   }),
@@ -117,6 +128,7 @@ export const useAiSettingsStore = create<AiSettingsState>((set) => ({
     aiModel: DEFAULT_AI_MODEL,
     aiEnabled: true,
     persistedAutoPaneNamingEnabled: null,
+    persistedAutoWorkspaceNamingEnabled: null,
     persistedReplyDraftSuggestionsEnabled: null,
     legacyAiFeatureSettingsMigrationPending: false,
   }),

@@ -25,6 +25,7 @@ import { TerminalTranscriptPanel } from "../../src/components/terminal/TerminalT
 import { terminalTurnStrings } from "../../src/components/terminal/terminalTurnStrings";
 import { useDashboardViewStore } from "../../src/stores/dashboardViewStore";
 import { useLiveBriefStore } from "../../src/stores/liveBriefStore";
+import { useSettingsStore } from "../../src/stores/settingsStore";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -54,6 +55,8 @@ async function mountPanel(onClose = vi.fn()): Promise<ReturnType<typeof vi.fn>> 
 }
 
 beforeEach(() => {
+  // Preserve the existing 200-event characterization through the explicit legacy mode.
+  useSettingsStore.setState({ conversationHistoryMode: "legacy" });
   mocks.holdDetailSession.mockClear();
   mocks.releaseHold.mockClear();
   useDashboardViewStore.setState({ open: false, userTurnRequests: {}, userTurnRequestSeq: 0 });

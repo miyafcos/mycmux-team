@@ -34,17 +34,24 @@ def test_native_regrab_changes_no_window_attribute_and_gates_docking_after_movem
         assert forbidden not in start
     assert 'window.start_dragging()' in start
     assert 'geometry::moved_for_dock' in start
-    assert 'if polling.moved.load(Ordering::Acquire)' in start
+    # B3: only explicit dock mode discovers targets, with the same movement gate.
+    assert 'if polling.mode.allows_dock() && polling.moved.load(Ordering::Acquire)' in start
     assert 'WS_EX_LAYERED' in body(source, "set_alpha")
     assert 'SetLayeredWindowAttributes' in body(source, "set_alpha")
 
 
-def test_real_and_synthetic_receivers_apply_the_same_exterior_edge_filter():
+def test_app_receivers_take_precedence_over_exterior_snap_without_changing_os_movement():
+    # B2 approval: an eligible application destination wins at screen edges;
+    # the OS retains native snap when no application destination is present.
     source = read("src-tauri/src/tearout/native.rs")
-    assert 'geometry::snap_edge_reserved' in body(source, "receiver_at")
+    receiver = body(source, "receiver_at")
     synthetic = body(source, "synthetic_sample")
-    assert 'geometry::snap_edge_reserved' in synthetic
+    assert 'geometry::snap_edge_reserved' not in receiver and 'geometry::snap_edge_reserved' not in synthetic
+    assert 'geometry::frontmost_receiver' in receiver
+    assert 'ClientToScreen' in receiver and 'geometry::receiver_client_point' in receiver
     assert 'ClientToScreen' in synthetic and 'geometry::moved_for_dock' in synthetic
+    assert 'window.start_dragging()' in body(source, "start")
+    assert 'maximized_app_receiver_at_exterior_snap_edge_stays_eligible_r4' in read("src-tauri/src/tearout/geometry.rs")
     assert 'GetMonitorInfoW' in body(source, "monitor_area")
     assert 'rcWork' in body(source, "monitor_area")
 

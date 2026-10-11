@@ -36,7 +36,7 @@ afterEach(()=>{act(()=>root.unmount());document.body.replaceChildren();vi.useRea
 describe("agent design history",()=>{
   it("keeps the history surface and key 5 beside the mechanism, rail and four established surfaces",async()=>{
     await act(async()=>root.render(<AgentDesignView api={api} initialCatalog={catalog} onClose={vi.fn()}/>));
-    expect(document.querySelectorAll(".ad-tabs button")).toHaveLength(8);
+    expect(document.querySelectorAll(".ad-tabs button")).toHaveLength(9);
     expect(Array.from(document.querySelectorAll<HTMLButtonElement>(".ad-tabs button")).every(tab => !tab.disabled)).toBe(true);
     await act(async()=>document.querySelector(".ad-view")!.dispatchEvent(new KeyboardEvent("keydown",{key:"5",bubbles:true})));
     expect(document.querySelector('[data-ad-view="history"]')).toBeTruthy();expect(document.querySelectorAll(".ad-service")).toHaveLength(3);

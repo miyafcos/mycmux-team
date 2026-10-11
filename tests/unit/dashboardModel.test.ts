@@ -301,6 +301,25 @@ describe("dashboard model", () => {
         operationalState: "running",
         noUpdateMinutes: 5,
       }))).toBe("noUpdate");
+      expect(resolveDisplayState(card({
+        telemetryHealth: "live",
+        operationalState: "needsHuman",
+        noUpdateMinutes: 90,
+      }))).toBe("needsHuman");
+    });
+
+    it("keeps a live autonomous turn working past the five minute threshold", () => {
+      expect(resolveDisplayState(card({
+        telemetryHealth: "live",
+        operationalState: "running",
+        noUpdateMinutes: 4,
+      }))).toBe("running");
+      expect(resolveDisplayState(card({
+        telemetryHealth: "live",
+        operationalState: "running",
+        brief: brief({ autonomy: { turnState: "active", openToolCount: 0, armedBackgroundCount: 0 } }),
+        noUpdateMinutes: 5,
+      }))).toBe("running");
       // 人間待ちは古くても要対応のまま (先に人間の手が要る)。
       expect(resolveDisplayState(card({
         telemetryHealth: "live",
@@ -370,7 +389,7 @@ describe("dashboard model", () => {
     }, `t-${occurrenceOrder}`));
     expect(needsHumanCards([])).toEqual([]);
     expect(needsHumanCards(items).map((item) => item.attention?.occurrenceOrder)).toEqual([1, 2, 3, 4, 5]);
-    // done / running は要対応セクションに混ぜない。
+    // Completed work stays in the review section, outside urgent navigation.
     expect(needsHumanCards([distinct({ attentionCategory: "done", group: "done" }, "t-done")])).toEqual([]);
   });
 

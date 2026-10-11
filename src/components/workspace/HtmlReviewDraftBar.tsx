@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { WEB_PANE_URL_EVENT, type WebPaneUrlEvent } from "./webPaneApi";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { capturePaneFocusReturn, captureTemporaryFocusReturn } from "../../lib/focusController";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { buildHtmlReviewRequest, htmlReviewStrings as s, type HtmlReviewCapture, type ReviewPageRevision, type ReviewTarget } from "../../lib/htmlReviewDraft";
 import { cancelHtmlReviewPicker, chooseHtmlReviewElement, captureHtmlReviewTarget, readHtmlReviewSelection, searchHtmlReviewTargets, validateHtmlReviewCapture } from "../../lib/htmlReviewCapture";
@@ -17,12 +18,29 @@ export default function HtmlReviewDraftBar({ tabId, sourcePath, previewPath, rel
   const [capture, setCapture] = useState<HtmlReviewCapture | null>(null);
   const [imageReady, setImageReady] = useState(false);
   const [picking, setPicking] = useState(false);
+  const rootRef = useRef<HTMLElement>(null);
+  const focusReturnRef = useRef<{ node: Element | null; restore: ReturnType<typeof capturePaneFocusReturn> } | null>(null);
+  const pickerFocusReturnRef = useRef<ReturnType<typeof captureTemporaryFocusReturn> | null>(null);
   const picker = useRef<{ tabId: string; token: string } | null>(null);
   const stopPicker = useCallback(() => {
     const active = picker.current; picker.current = null;
     if (active) void cancelHtmlReviewPicker(active.tabId, active.token).catch(() => undefined);
   }, []);
   const [busy, setBusy] = useState(false);
+  useEffect(() => () => {
+    focusReturnRef.current?.restore.cancel(); pickerFocusReturnRef.current?.cancel();
+  }, []);
+  useLayoutEffect(() => {
+    if (!picking) { pickerFocusReturnRef.current?.cancel(); pickerFocusReturnRef.current = null; }
+    const pending = focusReturnRef.current;
+    if (pending?.node instanceof HTMLElement && !pending.node.isConnected) {
+      pending.restore(pending.node);
+      focusReturnRef.current = null;
+    } else if (!busy && !picking) {
+      pending?.restore.cancel();
+      focusReturnRef.current = null;
+    }
+  }, [capture, targets, picking, busy]);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const epoch = useRef(0);
@@ -53,6 +71,11 @@ export default function HtmlReviewDraftBar({ tabId, sourcePath, previewPath, rel
 
   const run = async (operation: (current: () => boolean) => Promise<void>) => {
     if (inFlight.current) return;
+    const root = rootRef.current;
+    focusReturnRef.current?.restore.cancel();
+    focusReturnRef.current = { node: root?.ownerDocument.activeElement ?? null,
+      restore: capturePaneFocusReturn(root,
+        root?.querySelector<HTMLButtonElement>("button[aria-expanded]") ?? null) };
     inFlight.current = true;
     const token = ++epoch.current;
     const current = () => epoch.current === token;
@@ -90,6 +113,11 @@ export default function HtmlReviewDraftBar({ tabId, sourcePath, previewPath, rel
     if (current()) { setCapture(next); setMessage(""); }
   });
   const pickScreen = () => void run(async (current) => {
+    const root = rootRef.current;
+    pickerFocusReturnRef.current?.cancel();
+    pickerFocusReturnRef.current = captureTemporaryFocusReturn(root,
+      root?.querySelector<HTMLButtonElement>("button[aria-expanded]") ?? null,
+      () => rootRef.current?.querySelector<HTMLElement>("[data-review-cancel-picker]") ?? null);
     setCapture(null); setImageReady(false); setTargets(null); setMessage(s.picking); setPicking(true);
     const token = crypto.randomUUID();
     picker.current = { tabId, token };
@@ -106,8 +134,17 @@ export default function HtmlReviewDraftBar({ tabId, sourcePath, previewPath, rel
       if (current()) setPicking(false);
     }
   });
-  const cancelPicking = () => {
+  const cancelPicking = (command = false) => {
+    const root = rootRef.current;
+    const active = root?.ownerDocument.activeElement;
+    if (root && active instanceof HTMLElement && active.matches("[data-review-cancel-picker]")) {
+      if (command) {
+        capturePaneFocusReturn(root,
+          root.querySelector<HTMLButtonElement>("button[aria-expanded]"))(active);
+      } else pickerFocusReturnRef.current?.(active);
+    }
     epoch.current++; inFlight.current = false; stopPicker();
+    focusReturnRef.current?.restore.cancel(); focusReturnRef.current = null;
     setBusy(false); setPicking(false); setMessage(s.pickCancelled); setError("");
   };
   const copy = () => void run(async (current) => {
@@ -124,7 +161,7 @@ export default function HtmlReviewDraftBar({ tabId, sourcePath, previewPath, rel
     setBusy(false); setOpen(!open); setTargets(null); setCapture(null); setImageReady(false); setMessage(""); setError("");
   };
 
-  return <section className={`html-review-draft${open ? " is-open" : ""}`} aria-label={s.title}
+  return <section ref={rootRef} className={`html-review-draft${open ? " is-open" : ""}`} aria-label={s.title}
     onKeyDown={(event) => { if (picking && event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancelPicking(); } }}>
     <div className="html-review-draft__heading">
       <button type="button" aria-expanded={open} onClick={toggle}>{open ? s.close : s.open}</button>
@@ -140,7 +177,7 @@ export default function HtmlReviewDraftBar({ tabId, sourcePath, previewPath, rel
       <div className="html-review-draft__methods">
         <button type="button" disabled={busy} onClick={selectRange}>{s.selection}</button>
         <button type="button" disabled={busy} onClick={pickScreen}>{s.pick}</button>
-        {picking && <button type="button" onClick={cancelPicking}>{s.cancelPick}</button>}
+        {picking && <button type="button" data-review-cancel-picker onClick={() => cancelPicking(true)}>{s.cancelPick}</button>}
       </div>
       {targets && !capture && <ul className="html-review-draft__targets" aria-label={s.query}>
         {targets.nodes.map((node) => <li key={node.ref}>

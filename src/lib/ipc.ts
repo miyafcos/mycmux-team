@@ -1,4 +1,11 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { beginPtyReadTransition, currentPtyRead, finishPtyReadTransition, ptyReadGeneration, retainPtyReads, validatePtySnapshot } from "./ptyReadGeneration";
+export {
+  setDshExperimentEnabled, startDshExperiment, getDshExperimentStatus, readDshExperiment,
+  sendDshPrompt, cancelDshPrompt, answerDshPermission, closeDshSession, stopDshOwnedProcess,
+  type DshRunRef, type DshRead, type DshState, type DshDelivery,
+  type DshStartRequest, type DshPromptRequest, type DshPermissionAnswer,
+} from "./agentAdapterApi";
 import { PtyOutputChannel } from "./ptyOutputChannel";
 import { withTerminalDeadline, TERMINAL_ATTACH_TIMEOUT_MS } from "./terminalDeadline";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -17,6 +24,7 @@ import type { OnlineSavepointEntry } from "../components/online/onlineSavepoints
 import { markSessionFrontendActivity } from "./agentDormancy";
 import { windowLabel, hasWindowRole, setWindowRole } from "./windowContext";
 import { macPrewarmAttachGuard, macPrewarmSessionOwned } from "./tearout/sessionAttachment";
+import { needsCodexNoticePreparation, invalidateCodexRestoreNotice, codexRestoreNoticeEpoch, codexRestoreNoticeRevision, confirmPtyExit } from "./codexRestoreLifecycle";
 import type { ResetTickets, ResetTicketOutcome } from "./resetTickets";
 
 export { getCurrentSessionEpoch, type FrontendDataBatch };
@@ -42,6 +50,7 @@ interface CreateSessionArgs {
   backgroundOnly?: boolean;
   attachReason?: string;
   restoreConfirmed?: boolean;
+  restoreReason?: "saved-codex-pane";
   cwd: string | null;
   env: Record<string, string> | null;
 }
@@ -77,7 +86,7 @@ interface SocketResponseArgs { id: number; result: any; error: string | null }
 interface CandidatesArgs { candidates: string[] }
 interface UriArgs { uri: string }
 interface CaptureCliAccountArgs { provider: CliProvider; label?: string }
-interface SwitchCliAccountArgs { provider: CliProvider; profileId: string }
+interface SwitchCliAccountArgs { provider: CliProvider; profileId: string; apiRequest?: boolean }
 interface ProfileIdArgs { profileId: string }
 interface RenameCliAccountArgs extends ProfileIdArgs { label: string }
 interface ResolveCliAccountOrphanArgs {
@@ -104,6 +113,7 @@ export function getSessionChannelId(sessionId: string): number | undefined {
 export interface SessionAttachOptions {
   reason?: "mount" | "channel-stall" | "write-stall" | "background";
   restoreConfirmed?: boolean;
+  restoreReason?: "saved-codex-pane";
   backgroundOnly?: boolean;
   stillOwned?: () => boolean;
 }
@@ -336,11 +346,16 @@ export async function createSession(
   reattachOnly = false,
   options: SessionAttachOptions = {},
 ): Promise<void> {
+  const readTransition = reattachOnly ? undefined : beginPtyReadTransition(sessionId);
   const generation = sessionKillGenerations.get(sessionId) ?? 0;
   const prewarmGuard = typeof navigator !== "undefined" && /^Mac/i.test(navigator.platform)
     ? macPrewarmAttachGuard(sessionId) : null;
   const previous = sessionCreateTails.get(sessionId) ?? Promise.resolve();
   const operation = previous.catch(() => {}).then(async () => {
+    const preparation = import("./codexRestore").then(async restore => { await restore.ensureCodexRestoreNoticeListener(); return restore; });
+    if (needsCodexNoticePreparation(command, args, env, options.restoreReason)) {
+      await withTerminalDeadline(preparation, "Codex restore preparation").catch(() => {});
+    } else void preparation.catch(() => {});
     if ((sessionKillGenerations.get(sessionId) ?? 0) !== generation) {
       throw new SessionClosedError(sessionId);
     }
@@ -351,6 +366,7 @@ export async function createSession(
       && !macPrewarmSessionOwned(sessionId)) throw new SessionClosedError(sessionId);
     if (prewarmGuard && !prewarmGuard()) throw new SessionClosedError(sessionId);
     if (options.stillOwned && !options.stillOwned()) throw new SessionClosedError(sessionId);
+    invalidateCodexRestoreNotice(sessionId);
     if (options.backgroundOnly) {
       // Starting a headless PTY is not a renderer attachment. In particular it
       // must not commit an epoch that silences an already mounted renderer.
@@ -359,6 +375,7 @@ export async function createSession(
         await withTerminalDeadline(invoke<void>("create_session", {
           sessionId, command, args, cols, rows, onData: channel,
           cwd: cwd ?? null, env: env ?? null, backgroundOnly: true, attachReason: "background",
+          ...(options.restoreReason ? { restoreReason: options.restoreReason } : {}),
         } satisfies CreateSessionArgs), "background create_session", TERMINAL_ATTACH_TIMEOUT_MS);
         // Rust ends this transient channel after a successful headless create.
         // Let queued frames and that end notification drain before unregistering
@@ -408,7 +425,13 @@ export async function createSession(
     }
     try {
       if (reattachOnly) {
-        await withTerminalDeadline(invoke<void>("tearout_attach", { sessionId, onData: channel }), "tearout_attach", TERMINAL_ATTACH_TIMEOUT_MS);
+        const attachment = withTerminalDeadline(invoke<void>("tearout_attach", { sessionId, onData: channel }), "tearout_attach", TERMINAL_ATTACH_TIMEOUT_MS);
+        void preparation.then(restore => restore.synchronizeCodexRestoreNoticeEpoch(sessionId, attachment, () =>
+          (sessionKillGenerations.get(sessionId) ?? 0) === generation
+          && (!options.stillOwned || options.stillOwned()) && (!prewarmGuard || prewarmGuard())
+          && (typeof navigator === "undefined" || !/^Mac/i.test(navigator.platform) || macPrewarmSessionOwned(sessionId))
+        )).catch(() => {});
+        await attachment;
       } else {
       await withTerminalDeadline(invoke<void>("create_session", {
         sessionId,
@@ -421,6 +444,7 @@ export async function createSession(
         env: env ?? null,
         attachReason: options.reason ?? "mount",
         ...(options.restoreConfirmed ? { restoreConfirmed: true } : {}),
+        ...(options.restoreReason ? { restoreReason: options.restoreReason } : {}),
       } satisfies CreateSessionArgs), "create_session", TERMINAL_ATTACH_TIMEOUT_MS);
       }
       if (options.stillOwned && !options.stillOwned()) throw new SessionClosedError(sessionId);
@@ -435,9 +459,12 @@ export async function createSession(
     }
   });
   sessionCreateTails.set(sessionId, operation);
+  let created = false;
   try {
     await operation;
+    created = true;
   } finally {
+    if (readTransition) finishPtyReadTransition(sessionId, readTransition, created ? true : undefined);
     if (sessionCreateTails.get(sessionId) === operation) {
       sessionCreateTails.delete(sessionId);
     }
@@ -476,10 +503,17 @@ export interface ScrollbackCursor {
 export async function getSessionScrollback(
   sessionId: string, since?: ScrollbackCursor,
 ): Promise<ScrollbackSnapshot> {
-  const frame = await invoke<ArrayBuffer>("get_session_scrollback", {
-    sessionId, ...(since === undefined ? {} : { since }),
-  } satisfies SessionIdArgs & { since?: ScrollbackCursor });
-  return decodeScrollbackSnapshot(frame);
+  const release = retainPtyReads(sessionId);
+  try {
+    const generation = ptyReadGeneration(sessionId);
+    if (!currentPtyRead(sessionId, generation)) throw new SessionClosedError(sessionId);
+    const frame = await invoke<ArrayBuffer>("get_session_scrollback", {
+      sessionId, ...(since === undefined ? {} : { since }),
+    } satisfies SessionIdArgs & { since?: ScrollbackCursor });
+    const snapshot = decodeScrollbackSnapshot(frame);
+    validatePtySnapshot(sessionId, generation, snapshot.sessionEpoch);
+    return snapshot;
+  } finally { release(); }
 }
 
 export async function hasPersistedScrollback(sessionId: string): Promise<boolean> {
@@ -539,6 +573,9 @@ export async function getAgentConversationOwner(kind: string, agentSessionId: st
 }
 
 export async function killSession(sessionId: string): Promise<void> {
+  const readTransition = beginPtyReadTransition(sessionId);
+  let closed = false;
+  invalidateCodexRestoreNotice(sessionId);
   sessionKillGenerations.set(sessionId, (sessionKillGenerations.get(sessionId) ?? 0) + 1);
   activePtyChannels.get(sessionId)?.retire();
   activePtyChannels.delete(sessionId);
@@ -549,7 +586,9 @@ export async function killSession(sessionId: string): Promise<void> {
   sessionCreateTails.set(sessionId, operation);
   try {
     await operation;
+    closed = true;
   } finally {
+    finishPtyReadTransition(sessionId, readTransition, closed ? false : undefined);
     if (sessionCreateTails.get(sessionId) === operation) {
       sessionCreateTails.delete(sessionId);
     }
@@ -608,17 +647,48 @@ export async function saveEditableArtifact(
   return invoke<SaveEditableArtifactResult>("save_editable_artifact", { sourcePath, sourceKind, content } satisfies SaveEditableArtifactArgs);
 }
 
-export function onPtyExit(
+export async function onPtyExit(
   sessionId: string,
   callback: () => void,
 ): Promise<UnlistenFn> {
-  return listen(`pty-exit-${sessionId}`, () => {
+  let active = true;
+  let deliveredEpoch: number | undefined;
+  const accept = (epoch?: number): void => {
+    if (!active || (epoch !== undefined && deliveredEpoch === epoch)) return;
+    if (epoch !== undefined) { deliveredEpoch = epoch; confirmPtyExit(sessionId, epoch); }
     callback();
+  };
+  const settle = async (epoch: number): Promise<void> => {
+    // Native lookup waits on the existing lifecycle gate. Recheck a changed
+    // renderer revision; bound both lost replies and transport retries.
+    for (let attempt = 0; active && attempt < 3; attempt++) {
+      const current = codexRestoreNoticeEpoch(sessionId);
+      if (current != null) { if (current === epoch) accept(epoch); return; }
+      const revision = codexRestoreNoticeRevision(sessionId);
+      try {
+        const owner = await withTerminalDeadline(invoke<number | null>("get_codex_restore_epoch", { sessionId }), "PTY exit epoch");
+        if (!active) return;
+        if (revision !== codexRestoreNoticeRevision(sessionId)) continue;
+        if (owner === epoch) accept(epoch);
+        return;
+      } catch { if (active && attempt < 2) await new Promise(resolve => setTimeout(resolve, 50)); }
+    }
+    if (codexRestoreNoticeEpoch(sessionId) === epoch) accept(epoch);
+  };
+  const unlisten = await listen<{ session_epoch?: number } | null>(`pty-exit-${sessionId}`, event => {
+    const epoch = event.payload?.session_epoch;
+    const current = codexRestoreNoticeEpoch(sessionId);
+    if (current != null) { if (current === epoch) accept(epoch); }
+    else if (epoch !== undefined) void settle(epoch);
+    else if (current === undefined) accept(); // Legacy only before ownership is known.
   });
+  return () => { active = false; return unlisten(); };
 }
 
 export interface PtyMetadata {
   session_id: string;
+  /** Native PTY owner, independent of process birth and observation time. */
+  session_epoch?: number;
   cwd: string;
   git_branch?: string;
   process_name?: string;
@@ -632,10 +702,37 @@ export interface PtyMetadata {
   agent_kind?: AgentSessionKind;
   agent_session_id?: string;
   agent_session_trusted?: boolean;
+  /** Actual monitor observation and agent process birth, in epoch milliseconds. */
+  observed_at?: number | null;
+  agent_started_at?: number | null;
 }
 
 export type PtyMetadataSnapshot = Record<string, PtyMetadata>;
 export type SessionOutputSnapshot = Record<string, number | null>;
+
+/** Available physical memory in MiB; null means this environment cannot measure it. */
+export function getAvailableMemoryMiB(): Promise<number | null> {
+  return invoke<number | null>("get_available_memory_mib");
+}
+
+export interface DormancyRecordReceipt {
+  ptySessionId: string;
+  agentKind: "claude" | "codex";
+  agentSessionId: string;
+  ptyGeneration: number;
+  savedAt: number;
+  bytes: number;
+}
+
+export function saveAgentDormancyRecord(ptySessionId: string, agentKind: "claude" | "codex", agentSessionId: string): Promise<DormancyRecordReceipt> {
+  return invoke<DormancyRecordReceipt>("save_agent_dormancy_record", { ptySessionId, agentKind, agentSessionId });
+}
+
+export function getAgentDormancyRecord(receipt: DormancyRecordReceipt): Promise<import("./livebrief").LiveSessionEvents> {
+  return invoke<import("./livebrief").LiveSessionEvents>("get_agent_dormancy_record", {
+    ptySessionId: receipt.ptySessionId, agentKind: receipt.agentKind, agentSessionId: receipt.agentSessionId,
+  });
+}
 
 export type SessionAttentionKind = "none" | "input" | "approval" | "rate_limited" | "error" | "done";
 export type SessionUiState = "working" | "idle" | "waiting" | "done" | "unknown";
@@ -676,7 +773,16 @@ export interface SessionStatusChangedPayload extends FeedSessionPayload {
 }
 
 export async function getPtyMetadataSnapshot(): Promise<PtyMetadataSnapshot> {
-  return invoke<PtyMetadataSnapshot>("get_pty_metadata_snapshot");
+  const { ownedTerminalSessions } = await import("./liveAgentMetadata");
+  const before = new Map([...ownedTerminalSessions()].map(id => [id, codexRestoreNoticeEpoch(id)] as const));
+  const snapshot = await invoke<PtyMetadataSnapshot>("get_pty_metadata_snapshot");
+  for (const id of new Set([...Object.keys(snapshot), ...ownedTerminalSessions()])) {
+    const owner = codexRestoreNoticeEpoch(id);
+    if (owner === null) delete snapshot[id];
+    else if (owner !== undefined && owner !== snapshot[id]?.session_epoch && (snapshot[id] || owner !== before.get(id)))
+      snapshot[id] = { session_id: id, session_epoch: owner, cwd: "", agent_active: false, agent_session_trusted: false };
+  }
+  return snapshot;
 }
 
 export async function listRunningSessionIds(): Promise<string[]> {
@@ -709,6 +815,7 @@ export function onPtyMetadata(
 
 export interface PtyWorkDone {
   session_id: string;
+  session_epoch?: number;
   prev_process: string;
   current_process: string;
 }
@@ -717,6 +824,8 @@ export function onPtyWorkDone(
   callback: (evt: PtyWorkDone) => void,
 ): Promise<UnlistenFn> {
   return listen<PtyWorkDone>("pty_work_done", (event) => {
+    const owner = codexRestoreNoticeEpoch(event.payload.session_id);
+    if (owner !== undefined && (owner === null || owner !== event.payload.session_epoch)) return;
     callback(event.payload);
   });
 }
@@ -1207,7 +1316,7 @@ export interface PaneTabConfig {
   session_id?: string | null;
   agent_id: string;
   label?: string | null;
-  label_source?: "user" | "ai" | null;
+  label_source?: "user" | "ai" | "launch" | null;
   display_name?: string | null;
   display_name_source?: "auto" | null;
   /**
@@ -1232,6 +1341,9 @@ export interface PaneTabConfig {
   turn_marks?: TurnMarkPersistSnapshot[] | null;
   lifecycle?: "declared" | null;
   origin?: { kind: "human" | "agent"; parent_tab_id?: string | null } | null;
+  delegated_by_tab_id?: string | null;
+  delegated_by_agent_session_id?: string | null;
+  delegated_at?: number | null;
   declared_prompt?: string | null;
   declared_target?: string | null;
 }
@@ -1276,6 +1388,7 @@ export interface WorkspaceConfig {
   window_frame?: { x: number; y: number; width: number; height: number } | null;
   id: string;
   name: string;
+  name_source?: "auto" | null;
   grid_template_id: string;
   panes: PaneConfig[];
   created_at: number;
@@ -1306,13 +1419,15 @@ export interface AppSettings {
   ui_font_scale?: number;
   sidebar_width?: number;
   pet_display_mode?: "ws" | "both" | "none";
-  pet_new_ws_mode?: "random" | "choose" | "fixed";
+  pet_new_ws_mode?: "random" | "random-repeat" | "choose" | "fixed";
   pet_disabled?: string[];
   pet_fixed_id?: string | null;
+  pet_random_bag?: import("./petAssignment").PetAssignmentBag | null;
   ai_provider?: string;
   ai_model?: string;
   ai_enabled?: boolean;
   auto_pane_naming_enabled?: boolean | null;
+  auto_workspace_naming_enabled?: boolean | null;
   reply_draft_suggestions_enabled?: boolean | null;
   ailog_usd_jpy_rate?: number;
 }
@@ -1547,7 +1662,12 @@ export interface AccountUsageReport {
   generated_at: string;
 }
 
-export async function getAccountUsage(refreshMetadata = false): Promise<AccountUsageReport> {
+export type ApiUsageCommand = "account.switch" | "account.use_reset_ticket" | "account.usage";
+
+export async function getAccountUsage(refreshMetadata = false, apiCommand?: ApiUsageCommand): Promise<AccountUsageReport> {
+  if (apiCommand) return invoke<AccountUsageReport>("get_account_usage", {
+    ...(refreshMetadata ? { refreshMetadata: true } : {}), apiCommand,
+  });
   return refreshMetadata
     ? invoke<AccountUsageReport>("get_account_usage", { refreshMetadata: true })
     : invoke<AccountUsageReport>("get_account_usage");
@@ -1555,6 +1675,13 @@ export async function getAccountUsage(refreshMetadata = false): Promise<AccountU
 
 export async function claimResetTicket(profileId: string, requestId: string, expectedEmail: string | null): Promise<ResetTicketOutcome> {
   return invoke<ResetTicketOutcome>("use_reset_ticket", { profileId, requestId, expectedEmail });
+}
+
+/** Same backend executor/state as PC, with API provider binding and logging policy. */
+export async function claimResetTicketForApi(provider: CliProvider, profileId: string, requestId: string, expectedEmail: string | null): Promise<ResetTicketOutcome> {
+  return invoke<ResetTicketOutcome>("use_reset_ticket", {
+    profileId, requestId, expectedEmail, apiRequest: true, apiProvider: provider,
+  });
 }
 
 export type CliProvider = "claude" | "codex" | "grok";
@@ -1626,8 +1753,9 @@ export async function captureCliAccount(provider: CliProvider, label?: string): 
   return invoke<CliAccountProfile>("capture_cli_account", { provider, label } satisfies CaptureCliAccountArgs);
 }
 
-export async function switchCliAccount(provider: CliProvider, profileId: string): Promise<CliSwitchResult> {
-  return invoke<CliSwitchResult>("switch_cli_account", { provider, profileId } satisfies SwitchCliAccountArgs);
+export async function switchCliAccount(provider: CliProvider, profileId: string, apiRequest = false): Promise<CliSwitchResult> {
+  const args = apiRequest ? { provider, profileId, apiRequest: true } : { provider, profileId };
+  return invoke<CliSwitchResult>("switch_cli_account", args satisfies SwitchCliAccountArgs);
 }
 
 export async function removeCliAccount(profileId: string): Promise<void> {

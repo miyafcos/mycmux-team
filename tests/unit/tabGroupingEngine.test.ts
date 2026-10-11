@@ -372,6 +372,16 @@ describe("Gate 1 CommitTicket OCC", () => {
     expect(store.state.replaceCalls).toBe(0);
   });
 
+  it("names a missing container destination as a display location", () => {
+    const current = initialLayout();
+    const plan = planFor(["t1", "t2", "t3"], ["t1"], { destinationWorkspaceId: "ws-b" });
+    plan.groups[0].layout!.columns[0].panes[0].existingPaneId = "missing-pane";
+    const result = createGroupingEngine().compileGroupingPlan(plan, current, contextFor(current, "missing-location"));
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Missing container must reject the compile");
+    expect(result.errors).toContain("追加先の表示場所が見つかりません: missing-pane");
+  });
+
   it("rejects plan and ticket tampering before replace", () => {
     const first = prepare("seed-plan");
     const changedPlan = structuredClone(first.plan);
@@ -678,7 +688,7 @@ describe("Gate 1 deterministic allocation and identity", () => {
     };
     const panes = engine.compileGroupingPlan(panesPlan, current, contextFor(current, "seed-panes"));
     expect(panes.ok).toBe(false);
-    if (!panes.ok) expect(panes.errors.join(" ")).toContain("タブ数が4を超えます");
+    if (!panes.ok) expect(panes.errors.join(" ")).toContain("上下に表示するタブ数が4を超えます");
   });
 
   it.each(["five-columns", "five-panes"] as const)(
@@ -1235,4 +1245,16 @@ describe("Gate 1 undo boundary", () => {
     });
     expect(store.state.replaceCalls).toBe(replaceCalls);
   });
+});
+
+it("keeps live automatic workspace names through grouping undo and restores membership", () => {
+  const current = initialLayout(); current[0].nameSource = "auto";
+  const engine = createGroupingEngine(); const plan = planFor(["t1", "t2", "t3"], ["t1"], { destinationWorkspaceId: "ws-b" });
+  const prepared = engine.prepareGroupingCommit(plan, current, contextFor(current, "auto-name-undo"));
+  if (!prepared.ok) throw new Error(prepared.errors.join(" / "));
+  const store = harness(current); expect(engine.commitPreparedGrouping(plan, prepared.ticket, store.deps).ok).toBe(true);
+  store.mutateWorkspaces(draft => { draft.find(w => w.id === "ws-a")!.name = "教材制作"; });
+  expect(engine.restoreGroupingUndo(store.deps).ok).toBe(true);
+  expect(store.workspaces().find(w => w.id === "ws-a")?.name).toBe("教材制作");
+  expect(store.workspaces().find(w => w.id === "ws-a")?.panes[0].tabs.map(t => t.id)).toEqual(["t1", "t2"]);
 });

@@ -43,12 +43,126 @@ const GENERIC_FAMILIES = new Set([
   "unset",
 ]);
 
+// Keep these byte-identical to the corresponding :root values in global.css.
+// fontUnifyContract.test.ts guards the copies; rendered stacks put generics last.
+export const UI_FONT_FALLBACK = '-apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", Meiryo, Roboto, sans-serif';
+export const MONO_FONT_FALLBACK = '"UDEV Gothic NF", "UDEV Gothic", ui-monospace, SFMono-Regular, "JetBrains Mono", Consolas, monospace';
+
 /** Split a CSS font stack into family names, dropping quotes and generics. */
 export function nonGenericFamilies(stack: string): string[] {
   return stack
     .split(",")
     .map((part) => part.trim().replace(/^["']|["']$/g, "").trim())
     .filter((name) => name.length > 0 && !GENERIC_FAMILIES.has(name.toLowerCase()));
+}
+
+const CSS_WIDE_FAMILY_KEYWORDS = new Set(["inherit", "initial", "unset", "revert", "revert-layer", "default"]);
+const isCssWhitespace = (char: string | undefined) => char !== undefined && /[\t\n\f\r ]/.test(char);
+const isNameStart = (char: string | undefined) => char !== undefined && (/[a-zA-Z_]/.test(char) || char.charCodeAt(0) >= 0x80);
+const isNameChar = (char: string | undefined) => isNameStart(char) || (char !== undefined && /[-0-9]/.test(char));
+
+/** Decode one CSS escape, including its optional hex terminator whitespace. */
+function cssEscape(source: string, index: number): { value: string; end: number } | null {
+  const next = source[index + 1];
+  if (next === undefined || /[\n\r\f]/.test(next)) return null;
+  let end = index + 1;
+  if (/[0-9a-fA-F]/.test(next)) {
+    while (end < index + 7 && /[0-9a-fA-F]/.test(source[end] ?? "")) end++;
+    const code = Number.parseInt(source.slice(index + 1, end), 16);
+    if (isCssWhitespace(source[end])) {
+      end += source[end] === "\r" && source[end + 1] === "\n" ? 2 : 1;
+    }
+    return { value: String.fromCodePoint(code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) ? 0xfffd : code), end };
+  }
+  return { value: next === "\0" ? "\ufffd" : next, end: index + 2 };
+}
+
+function quoteFamilyName(name: string): string {
+  return `"${name.replace(/[\\"]/g, (char) => `\\${char}`)
+    .replace(/[\x00-\x1f\x7f]/g, (char) => `\\${char.charCodeAt(0).toString(16)} `)}"`;
+}
+
+interface CssFontFamily { css: string; generic: boolean }
+
+/** Read strings or identifier sequences; a malformed comma component is discarded. */
+function tokenizeFontFamilies(input: string): CssFontFamily[] {
+  // CSS preprocessing replaces literal NUL before strings or identifiers are read.
+  const source = input.replace(/\0/g, "\ufffd");
+  const families: CssFontFamily[] = [];
+  let tokens: Array<{ kind: "string" | "identifier"; value: string }> = [];
+  let invalid = false;
+  const finish = () => {
+    if (!invalid && tokens.length === 1 && tokens[0].kind === "string") {
+      // A quoted "serif" is a literal face name, never the serif keyword.
+      families.push({ css: tokens[0].value, generic: false });
+    } else if (!invalid && tokens.length > 0 && tokens.every((token) => token.kind === "identifier"
+      && !CSS_WIDE_FAMILY_KEYWORDS.has(token.value.toLowerCase()))) {
+      const name = tokens.map((token) => token.value).join(" ");
+      const generic = tokens.length === 1 && GENERIC_FAMILIES.has(name.toLowerCase());
+      families.push({ css: generic ? name : quoteFamilyName(name), generic });
+    }
+    tokens = [];
+    invalid = false;
+  };
+
+  for (let index = 0; index < source.length;) {
+    const char = source[index];
+    if (isCssWhitespace(char)) { index++; continue; }
+    if (char === ",") { finish(); index++; continue; }
+    if (char === "/" && source[index + 1] === "*") {
+      const end = source.indexOf("*/", index + 2);
+      if (end < 0) { invalid = true; break; }
+      index = end + 2;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      const start = index++;
+      let closed = false;
+      while (index < source.length) {
+        if (source[index] === char) { index++; closed = true; break; }
+        if (source[index] === "\\") {
+          const next = source[index + 1];
+          if (next !== undefined && /[\n\r\f]/.test(next)) {
+            index += next === "\r" && source[index + 2] === "\n" ? 3 : 2;
+            continue; // Escaped line breaks are valid string continuations.
+          }
+          const escape = cssEscape(source, index);
+          if (escape) { index = escape.end; continue; }
+          invalid = true;
+        } else if (/[\n\r\f]/.test(source[index])) {
+          invalid = true;
+        }
+        index++;
+      }
+      if (!closed) invalid = true;
+      tokens.push({ kind: "string", value: source.slice(start, index) });
+      continue;
+    }
+
+    const startsEscape = (at: number) => source[at] === "\\" && cssEscape(source, at) !== null;
+    const startsIdentifier = isNameStart(char) || startsEscape(index)
+      || (char === "-" && (isNameStart(source[index + 1]) || source[index + 1] === "-" || startsEscape(index + 1)));
+    if (!startsIdentifier) { invalid = true; index++; continue; }
+    let value = "";
+    while (index < source.length) {
+      if (isNameChar(source[index])) { value += source[index++]; continue; }
+      if (source[index] !== "\\") break;
+      const escape = cssEscape(source, index);
+      if (!escape) break;
+      value += escape.value;
+      index = escape.end;
+    }
+    tokens.push({ kind: "identifier", value });
+  }
+  finish();
+  return families;
+}
+
+/** Prefer the selected faces, retaining every named fallback before generics. */
+export function fontStackWithFallback(setting: string, fallbackStack: string): string {
+  const fallback = tokenizeFontFamilies(fallbackStack);
+  const families = [...tokenizeFontFamilies(setting), ...fallback].filter((family) => !family.generic);
+  return [...families, ...fallback.filter((family) => family.generic)].map((family) => family.css).join(", ");
 }
 
 // Mixes Latin and CJK so a face that only covers one of the two still shifts the

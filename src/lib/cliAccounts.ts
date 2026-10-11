@@ -73,6 +73,12 @@ const CLI_ACCOUNT_MESSAGES: Record<string, string> = {
     "原因: Codexのログイン情報を読み取れませんでした。次にすること: Codexでログイン状態を確認してください。",
   "cli_account.error.codex_identity_invalid":
     "原因: Codexのログイン情報を解析できませんでした。次にすること: Codexで再ログインしてください。",
+  "cli_account.error.codex_credentials_store_unsupported":
+    "原因: Codexの認証情報の保存先がファイル以外に設定されているため、切り替えできません。次にすること: Codexのconfig.tomlでcli_auth_credentials_storeを「file」に設定してから、もう一度お試しください。",
+  "cli_account.error.codex_config_unreadable":
+    "原因: Codexの認証情報の保存先の設定を読み取れませんでした。次にすること: Codexのconfig.tomlの内容とアクセス権を確認して、もう一度お試しください。",
+  "cli_account.error.codex_login_file_missing":
+    "原因: 制限時間内にCodexの認証情報のファイルが見つかりませんでした。保存先がファイル以外に設定されている可能性があります。次にすること: Codexの設定を確認して、もう一度アカウントの追加からお試しください。",
   "cli_account.error.grok_identity_unreadable": grokAccountStrings.identityUnreadable,
   "cli_account.error.grok_identity_invalid": grokAccountStrings.identityInvalid,
   "cli_account.error.grok_auth_lock_timeout": grokAccountStrings.authLockTimeout,
@@ -85,7 +91,7 @@ const CLI_ACCOUNT_MESSAGES: Record<string, string> = {
   "cli_account.error.login_cancelled":
     "原因: ログインを中止しました。次にすること: 一時フォルダーは破棄しました。追加が必要な場合はもう一度お試しください。",
   "cli_account.error.login_already_running":
-    "原因: このCLIのログインがすでに進行中です。次にすること: 開いているログインペインを完了するか中止してから、もう一度お試しください。",
+    "原因: このCLIのログインがすでに進行中です。次にすること: 開いているログインタブを完了するか中止してから、もう一度お試しください。",
   "cli_account.error.login_session_not_found":
     "原因: 対象のログイン処理が見つかりません。次にすること: 一覧を更新してから、もう一度お試しください。",
   "cli_account.warning.active_snapshot_refreshed":
@@ -270,7 +276,7 @@ export function switchWarningText(
     ? `${PROVIDER_TITLE[provider]} のセッションが ${count} 件実行中です。`
     : `mycmux 内で実行中の ${PROVIDER_TITLE[provider]} セッションは確認できませんでした。`;
   const panes = paneDetails.length > 0
-    ? `\n対象ペイン:\n${paneDetails.map((detail) => `・${detail}`).join("\n")}`
+    ? `\n対象タブ:\n${paneDetails.map((detail) => `・${detail}`).join("\n")}`
     : "";
   return (
     `${target}切り替えます。切り替え前の状態は自動でバックアップされ、新しく起動するセッションから反映されます。\n` +

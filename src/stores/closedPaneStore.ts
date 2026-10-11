@@ -27,7 +27,7 @@ export interface ClosedPaneEntry {
   paneSessionId?: string;
   cwd: string | null;
   label: string | null;
-  labelSource?: "user" | "ai";
+  labelSource?: "user" | "ai" | "launch";
   displayName?: string;
   displayNameSource?: "auto";
   agentKind: AgentSessionKind | null;

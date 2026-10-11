@@ -1,4 +1,6 @@
 use super::*;
+mod skills;
+
 pub fn read(home: &Path, cwd: &Path, jobs: &Jobs, version: Option<String>) -> Scan {
     let root = home.join(".claude");
     let mut scan = Scan::new("claude", "Claude Code", &root);
@@ -7,6 +9,12 @@ pub fn read(home: &Path, cwd: &Path, jobs: &Jobs, version: Option<String>) -> Sc
         return scan;
     }
     let cache = load_stage1(home);
+    let state = safe::json(&home.join(".claude.json"));
+    let mut overrides = if root.join("settings.json").exists() {
+        skills::Overrides::unknown()
+    } else {
+        skills::Overrides::default()
+    };
     let mut known_hooks = !root.join("settings.json").exists();
     for (file, local) in [("settings.json", false), ("settings.local.json", true)] {
         let path = root.join(file);
@@ -52,6 +60,7 @@ pub fn read(home: &Path, cwd: &Path, jobs: &Jobs, version: Option<String>) -> Sc
                                     "env",
                                     "hooks",
                                     "enabledPlugins",
+                                    "skillOverrides",
                                 ]
                                 .contains(&k.as_str())
                             })
@@ -65,6 +74,7 @@ pub fn read(home: &Path, cwd: &Path, jobs: &Jobs, version: Option<String>) -> Sc
                     scan.items[idx].fields = fields.clone();
                 }
                 if !local {
+                    overrides = skills::Overrides::from_settings(&v);
                     known_hooks = true;
                     scan.service.settings = fields;
                     scan.service.hooks = hooks(&v, &path, &raw);
@@ -127,6 +137,9 @@ pub fn read(home: &Path, cwd: &Path, jobs: &Jobs, version: Option<String>) -> Sc
                 scan.items[idx].status = "unknown".into();
             }
         }
+    }
+    if overrides.has_unknown() {
+        scan.service.settings.push(Field::new("skillOverrides", "unknown"));
     }
     add_hook_links(&mut scan, known_hooks);
     let mut instruction_chars = 0;
@@ -247,19 +260,9 @@ pub fn read(home: &Path, cwd: &Path, jobs: &Jobs, version: Option<String>) -> Sc
     scan.service
         .stat("memoryFiles", counts.map(|v| v.iter().sum()));
     let own = skills_at(&mut scan, &root.join("skills"), "skillsOwn", &cache, home);
-    let synced_files = safe::files(&root.join("skills/synced"), Some(&["md"]));
-    let mut synced = BTreeSet::new();
-    let mut sync_count = 0;
-    if let Some(paths) = &synced_files {
-        for path in paths.iter().filter(|p| safe::basename(p) == "SKILL.md") {
-            if let Some(name) = skill(&mut scan, path, &cache, home) {
-                synced.insert(name);
-                sync_count += 1;
-            }
-        }
-    }
-    scan.service
-        .stat("skillsSynced", synced_files.map(|_| sync_count));
+    let (synced, synced_scan) =
+        skills::read_synced(&mut scan, &root, &cache, home, state.as_ref());
+    skills::apply_overrides(&mut scan, &overrides);
     let command_paths = safe::children(&root.join("commands"));
     let mut commands = BTreeSet::new();
     if let Some(paths) = &command_paths {
@@ -298,7 +301,6 @@ pub fn read(home: &Path, cwd: &Path, jobs: &Jobs, version: Option<String>) -> Sc
                 .map(|v| v.len() as u64)
         }),
     );
-    let state = safe::json(&home.join(".claude.json"));
     let usage = state.as_ref().and_then(|v| v["skillUsage"].as_object());
     scan.service
         .stat("skillUsageNames", usage.map(|v| v.len() as u64));
@@ -330,6 +332,7 @@ pub fn read(home: &Path, cwd: &Path, jobs: &Jobs, version: Option<String>) -> Sc
     );
     if let Some(path) = records::latest_claude(&root, cwd) {
         scan.service.session = records::claude(&path, &own, &synced, &commands, usage);
+        skills::filter_listing(&mut scan, &overrides, synced_scan);
     }
     scan.service.context.listing = scan.service.session.listing.chars;
     scan.service.context.startup = scan.service.session.startup_chars;

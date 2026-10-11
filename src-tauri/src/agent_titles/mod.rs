@@ -1,6 +1,8 @@
 //! Bounded, read-only title adapters. Transcripts are evidence, never instructions.
 mod claude;
 mod codex;
+pub mod material;
+mod material_batch;
 
 use serde::{Deserialize, Serialize};
 use std::{

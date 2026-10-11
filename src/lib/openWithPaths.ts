@@ -47,7 +47,7 @@ const liveDependencies: OpenPathsDependencies = {
   createWorkspace: (path) => {
     const lastSeparator = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
     const cwd = lastSeparator < 0 ? "" : path.slice(0, lastSeparator + 1);
-    createWorkspaceAtCwd(cwd, { name: workspaceNameFromCwd(cwd) });
+    createWorkspaceAtCwd(cwd, { name: workspaceNameFromCwd(cwd), nameSource: "auto" });
   },
   preview: previewArtifactUriForSessionV2,
   openPreview: (workspaceId, paneId, info) => useWorkspaceLayoutStore.getState()

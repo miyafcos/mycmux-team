@@ -67,7 +67,7 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "sidebar.toggle", title: "サイドバーの表示切り替え", category: "Global", defaultShortcut: "ctrl+b" },
   { action: "settings.keybindings", title: "キーボードショートカットを開く", category: "Global", defaultShortcut: "ctrl+," },
   { action: "crsm.palette", title: "セッションを続きから開く", category: "Global", defaultShortcut: "ctrl+p" },
-  { action: "tab.sweep", title: "ペイン掃除を開く", category: "Global", defaultShortcut: "ctrl+shift+k" },
+  { action: "tab.sweep", title: "タブ掃除を開く", category: "Global", defaultShortcut: "ctrl+shift+k" },
   { action: "dashboard.open", title: "ダッシュボードを開く", category: "Global", defaultShortcut: "ctrl+shift+g" },
   { action: "dashboard.column.prev", title: "ダッシュボードの左の列へ", category: "Global", defaultShortcut: "ctrl+shift+arrowleft" },
   { action: "dashboard.column.next", title: "ダッシュボードの右の列へ", category: "Global", defaultShortcut: "ctrl+shift+arrowright" },
@@ -95,19 +95,19 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "pane.focus.down", title: "下のタブへ", category: "Pane", defaultShortcut: "ctrl+alt+arrowdown" },
   // ⌥⌘D is the system shortcut for hiding the Dock, so macOS never lets the
   // split shortcuts through. Drop Option there and split on ⌘D / ⇧⌘D.
-  { action: "pane.split.right", title: "タブを右に分割", category: "Pane", defaultShortcut: "ctrl+alt+d", macDefaultShortcut: "meta+d" },
-  { action: "pane.split.down", title: "タブを下に分割", category: "Pane", defaultShortcut: "ctrl+alt+shift+d", macDefaultShortcut: "meta+shift+d" },
-  { action: "pane.close", title: "アクティブなタブを閉じる", category: "Pane", defaultShortcut: "ctrl+alt+w" },
-  { action: "pane.reopen", title: "閉じたペインを開き直す", category: "Pane", defaultShortcut: "ctrl+shift+t" },
-  { action: "pane.zoom.toggle", title: "タブの最大化を切り替え", category: "Pane", defaultShortcut: "ctrl+shift+enter" },
-  { action: "pane.tab.next", title: "タブ内の次のペイン", category: "Pane", defaultShortcut: "ctrl+alt+pagedown" },
-  { action: "pane.tab.prev", title: "タブ内の前のペイン", category: "Pane", defaultShortcut: "ctrl+alt+pageup" },
+  { action: "pane.split.right", title: "右にタブを開く", category: "Pane", defaultShortcut: "ctrl+alt+d", macDefaultShortcut: "meta+d" },
+  { action: "pane.split.down", title: "下にタブを開く", category: "Pane", defaultShortcut: "ctrl+alt+shift+d", macDefaultShortcut: "meta+shift+d" },
+  { action: "pane.close", title: "表示中のタブを閉じる", category: "Pane", defaultShortcut: "ctrl+alt+w" },
+  { action: "pane.reopen", title: "閉じたタブを開き直す", category: "Pane", defaultShortcut: "ctrl+shift+t" },
+  { action: "pane.zoom.toggle", title: "このタブだけ表示・元の表示に戻す", category: "Pane", defaultShortcut: "ctrl+shift+enter" },
+  { action: "pane.tab.next", title: "同じ場所の次のタブ", category: "Pane", defaultShortcut: "ctrl+alt+pagedown" },
+  { action: "pane.tab.prev", title: "同じ場所の前のタブ", category: "Pane", defaultShortcut: "ctrl+alt+pageup" },
   { action: "pane.attention.next", title: "次の要対応へ", category: "Pane", defaultShortcut: "ctrl+alt+a" },
-  { action: "pane.tab.pin.toggle", title: "アクティブペインを固定", category: "Pane", defaultShortcut: "ctrl+alt+p" },
+  { action: "pane.tab.pin.toggle", title: "表示中のタブを並びの先頭に固定", category: "Pane", defaultShortcut: "ctrl+alt+p" },
 
   { action: "terminal.search", title: "端末内を検索", category: "Terminal", defaultShortcut: "ctrl+shift+f" },
   // Not ctrl+shift+i: that is the WebView's own DevTools shortcut.
-  { action: "composer.focus", title: "ペインの入力欄へ移動", category: "Terminal", defaultShortcut: "ctrl+alt+i" },
+  { action: "composer.focus", title: "タブの入力欄へ移動", category: "Terminal", defaultShortcut: "ctrl+alt+i" },
 
 ];
 

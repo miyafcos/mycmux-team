@@ -59,7 +59,7 @@ Windows ConPTY pipes that remain open after the process ends.
    visible, 20 seconds while hidden). An atomic guard reports the exit once:
    it ingests `Lifecycle::Exited` with the PTY epoch and emits `pty-exit-{session_id}`.
 2. `XTermWrapper` writes one dim notice per session start:
-   `[プロセスは終了しました。このペインを閉じるか、新しいペインを開いてください]`,
+   `[プロセスは終了しました。このタブを閉じるか、新しいタブを開いてください]`,
    then invokes `onExit` if supplied.
 3. The PTY and its last screen remain available for reattach until the user
    closes the tab. Reattach does not revive its lifecycle; only a new PTY epoch
@@ -87,6 +87,6 @@ See [config-detection.md](config-detection.md) for detection details.
 - Background approval scanning throttled to 300ms
 - Only the active terminal tab mounts `XTermWrapper`; inactive tabs keep backend PTYs and can reuse cached terminals/scrollback on reattach
 
-## ペイン掃除
+## タブ掃除
 
-[ペイン掃除](tab-sweep.md)で、終了済みのペインや、ペインの外で動き続けているプロセスを確認できます。
+[タブ掃除](tab-sweep.md)で、終了済みのタブや、タブの外で動き続けているプロセスを確認できます。

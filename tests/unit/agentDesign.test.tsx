@@ -15,6 +15,9 @@ vi.mock("../../src/components/skills/skillLaunch", () => ({ startSkill: mocks.la
 import { AgentDesignView } from "../../src/components/agentDesign/AgentDesignView";
 import { AgentDesignPanel } from "../../src/components/agentDesign/AgentDesignPanel";
 import { AgentDesignButton } from "../../src/components/agentDesign/AgentDesignButton";
+import { ItemList, UsageNote } from "../../src/components/agentDesign/Information";
+import { AmountBand, ItemDetail } from "../../src/components/agentDesign/ui";
+import { InspectionView } from "../../src/components/agentDesign/InspectionView";
 import { agentDesignStrings as s } from "../../src/components/agentDesign/agentDesignStrings";
 import { createReadOnlySkillsApi } from "../../src/components/agentDesign/readOnlySkillsApi";
 import { skillsStrings } from "../../src/components/skills/skillsStrings";
@@ -47,16 +50,129 @@ function setInput(element: HTMLInputElement | HTMLTextAreaElement, value: string
   element.dispatchEvent(new Event("input", { bubbles: true }));
 }
 describe("agent design stage A", () => {
+  it("counts duplicate sampled identities only once in usage notes", async () => {
+    const original = fixture.services[0];
+    const entry = original.session.listing.entries[0];
+    const service = { ...original, session: { ...original.session, listing: { ...original.session.listing, textComplete: false, count: null, chars: null, entries: [entry, entry] } } };
+    await act(async () => root.render(<UsageNote service={service} />));
+    expect(host.textContent).toContain("記録なし 1 本");
+    expect(host.textContent).not.toContain("記録なし 2 本");
+  });
+  it("offers one candidate control for each distinct sampled identity", async () => {
+    const finding = { ...fixture.findings[0], count: 2, chars: null, names: ["reviewer", "reviewer"] };
+    const data: AgentDesignCatalog = { ...fixture, findings: [finding] };
+    const onSkill = vi.fn();
+    await act(async () => root.render(<InspectionView catalog={data} api={api} query="" selectedId={null} setSelectedId={vi.fn()} update={vi.fn()} notify={vi.fn()} openItem={vi.fn()} onSkill={onSkill} />));
+    expect(host.querySelectorAll('.ad-candidates input[type="checkbox"]')).toHaveLength(1);
+    expect(host.querySelectorAll(".ad-candidates tbody tr")).toHaveLength(1);
+    await act(async () => host.querySelector<HTMLButtonElement>(".ad-candidates tbody button")!.click());
+    expect(onSkill).toHaveBeenCalledExactlyOnceWith("reviewer");
+  });
+  it("identifies listing estimates in the comparison cell and scope while preserving sample provenance", async () => {
+    const data: AgentDesignCatalog = { ...fixture, services: fixture.services.map(service => service.id === "claude" ? { ...service, session: { ...service.session, file: "sample-before-settings.jsonl", startedAt: new Date(2026, 9, 7, 17, 16).toISOString(), listing: { ...service.session.listing, evidence: "estimated" } } } : service.id === "codex" ? { ...service, session: { ...service.session, listing: { ...service.session.listing, count: null } } } : service) };
+    api.cached = async () => data; api.refresh = async () => data;
+    await act(async () => root.render(<AgentDesignView onClose={vi.fn()} api={api} initialCatalog={data} initialView="overview" />));
+    await key("3");
+    const cells = host.querySelectorAll('[data-ad-compare-row="7"] td');
+    expect(cells[0].textContent).toContain("今の設定を当てた推定");
+    expect(cells[1].textContent).toContain("初期一覧の名前と説明");
+    expect(cells[1].textContent).toContain("初期の一覧は未取得");
+    expect(cells[1].textContent).not.toContain("推定");
+    const scopes = host.querySelectorAll(".ad-compare-scope section");
+    expect(scopes[0].textContent).toContain("今の設定を当てた推定");
+    expect(scopes[0].textContent).toContain("sample-before-settings.jsonl");
+    expect(scopes[0].textContent).toContain("2026/10/7 17:16");
+    expect(scopes[1].textContent).toContain("採用した会話の初期記録");
+    expect(scopes[1].textContent).not.toContain("推定");
+  });
+  it("identifies the projected listing amount in the overview table and keeps the sample source", async () => {
+    const data: AgentDesignCatalog = { ...fixture, services: fixture.services.map(service => service.id === "claude" ? { ...service, session: { ...service.session, file: "sample-before-settings.jsonl", startedAt: new Date(2026, 9, 7, 17, 16).toISOString(), listing: { ...service.session.listing, evidence: "estimated" } } } : service) };
+    api.cached = async () => data; api.refresh = async () => data;
+    await act(async () => root.render(<AgentDesignView onClose={vi.fn()} api={api} initialCatalog={data} initialView="overview" />));
+    expect(host.querySelector('[data-ad-layer="5"] td:nth-child(3)')?.textContent).toContain("今の設定を当てた推定");
+    expect(host.querySelector(".ad-layers thead th:nth-child(3)")?.textContent).toContain("推定");
+    expect(host.querySelector('[data-ad-layer="3"] td:nth-child(3)')?.textContent).toBe("20 字");
+    expect(host.querySelector(".ad-session-origin")?.textContent).toContain("sample-before-settings.jsonl");
+    expect(host.querySelector(".ad-session-origin")?.textContent).toContain("10/7 17:16");
+  });
+  it("shows unknown description amounts for incompletely parsed listing text in usage notes", async () => {
+    const original = fixture.services[0];
+    const service = { ...original, session: { ...original.session, listing: { ...original.session.listing, textComplete: false, count: null, chars: null, entries: original.session.listing.entries.map(entry => ({ ...entry, chars: 0 })) } } };
+    await act(async () => root.render(<UsageNote service={service} />));
+    expect(host.textContent).toContain("説明の量は未取得");
+    expect(host.textContent).not.toContain("0 字");
+  });
+  it("shows unknown description amounts for incompletely parsed inspection candidates", async () => {
+    const original = fixture.services[0];
+    const service = { ...original, session: { ...original.session, listing: { ...original.session.listing, textComplete: false, count: null, chars: null, entries: original.session.listing.entries.map(entry => ({ ...entry, chars: 0 })) } } };
+    const data: AgentDesignCatalog = { ...fixture, services: [service, ...fixture.services.slice(1)], findings: fixture.findings.map(finding => ({ ...finding, chars: null })) };
+    await act(async () => root.render(<InspectionView catalog={data} api={api} query="" selectedId={null} setSelectedId={vi.fn()} update={vi.fn()} notify={vi.fn()} openItem={vi.fn()} onSkill={vi.fn()} />));
+    expect(host.querySelector(".ad-candidates tbody tr td:nth-child(2)")?.textContent).toBe("量は未取得");
+  });
+  it("labels current-settings listing projections as estimates and keeps sample provenance", async () => {
+    const service = fixture.services.find(service => service.id === "claude")!;
+    const listing = { ...service.session.listing, evidence: "estimated" };
+    const projected = { ...service, session: { ...service.session, file: "sample-before-settings.jsonl", startedAt: new Date(2026, 9, 7, 17, 16).toISOString(), listing } };
+    await act(async () => root.render(<AmountBand service={projected} />));
+    expect(host.querySelector(".ad-amount-heading")?.textContent).toContain("今の設定を当てた推定");
+    const origin = host.querySelector(".ad-session-origin")!;
+    expect(origin.textContent).toContain("10/7 17:16");
+    expect(origin.textContent).toContain("sample-before-settings.jsonl");
+    expect(origin.textContent).toContain("推定の元にした");
+    expect(origin.textContent).not.toContain(s.sessionOrigin);
+  });
+  it("keeps projection labels consistent on the service rail and reading flow fallback", async () => {
+    const data: AgentDesignCatalog = { ...fixture, services: fixture.services.map(service => service.id === "claude" ? { ...service, session: { ...service.session, listing: { ...service.session.listing, evidence: "estimated" } } } : service) };
+    api.cached = async () => data; api.refresh = async () => data;
+    await act(async () => root.render(<AgentDesignView onClose={vi.fn()} api={api} initialCatalog={data} initialView="overview" />));
+    expect(host.querySelector(".ad-service.selected")?.textContent).toContain("今の設定を当てた推定");
+    await key("2");
+    expect(host.querySelector(".ad-evidence-grid")?.textContent).toContain("今の設定を当てた推定");
+    expect(host.querySelector('[data-ad-step="listing"] .ad-badge-estimated')).not.toBeNull();
+    expect(host.querySelector(".ad-amount-heading")?.textContent).toContain("今の設定を当てた推定");
+    await key("4");
+    expect(host.querySelector(".ad-candidates")?.textContent).toContain("今の設定を当てた推定");
+  });
+  it("explains inactive Claude skills and name-only listing state on the list and detail", async () => {
+    const sample = fixture.items.find(item => item.service === "claude" && item.kind === "skill")!;
+    const states = ["otherAccount", "accountUnknown", "off", "user-invocable-only", "unknown", "name-only"];
+    const items = states.map(state => ({ ...sample, id: "state:" + state, active: state === "name-only", fields: [{ key: "listingState", value: state }] }));
+    await act(async () => root.render(<ItemList items={items} catalog={fixture} onOpen={vi.fn()} />));
+    for (const [index, state] of states.entries()) {
+      const article = host.querySelectorAll("article")[index];
+      expect(article.textContent).toContain(s.skillListingStates[state]);
+      expect(article.classList.contains("inactive")).toBe(state !== "name-only");
+    }
+    await act(async () => root.render(<ItemDetail item={items[0]} catalog={fixture} api={api} onBack={vi.fn()} onSkill={vi.fn()} />));
+    expect(host.querySelector(".ad-item-detail")?.textContent).toContain(s.skillListingStates.otherAccount);
+  });
+  it("renders the shadow finding with Japanese wording and both paths and namespaces", async () => {
+    const sample = fixture.items.find(item => item.service === "claude" && item.kind === "skill")!;
+    const own = { ...sample, id: "own:pptx", path: "/synthetic/home/.claude/skills/pptx/SKILL.md", fields: [{ key: "namespace", value: "none" }, { key: "listingName", value: "pptx" }] };
+    const synced = { ...sample, id: "synced:pptx", path: "/synthetic/home/.claude/skills/synced/org_account/pptx/SKILL.md", fields: [{ key: "namespace", value: "anthropic-skills" }, { key: "listingName", value: "anthropic-skills:pptx" }] };
+    const data: AgentDesignCatalog = { ...fixture, items: [own, synced], findings: [{ id: "claude:shadow:pptx", kind: "shadow", service: "claude", layer: 5, severity: "watch", count: 1, chars: null, names: ["pptx"], itemIds: [own.id, synced.id], proposal: "shadow", unknowns: [], evidence: [own, synced].map(item => ({ path: item.path, line: null, record: null, rule: "ownAndSyncedListed", fields: item.fields })) }] };
+    await act(async () => root.render(<InspectionView catalog={data} api={api} query="" selectedId={null} setSelectedId={vi.fn()} update={vi.fn()} notify={vi.fn()} openItem={vi.fn()} onSkill={vi.fn()} />));
+    expect(host.querySelector('[data-ad-finding="claude:shadow:pptx"]')?.textContent).toContain(s.findingTitles.shadow);
+    expect(host.querySelector('[data-ad-finding="claude:shadow:pptx"]')?.textContent).toContain(s.watch);
+    expect(host.querySelector('[data-ad-finding*="duplicate"]')).toBeNull();
+    const detail = host.querySelector(".ad-detail")!;
+    expect(detail.textContent).toContain(own.path);
+    expect(detail.textContent).toContain(synced.path);
+    expect(detail.textContent).toContain(s.namespaceNames.none);
+    expect(detail.textContent).toContain("anthropic-skills:pptx");
+    expect(detail.textContent).toContain(s.ruleNames.ownAndSyncedListed);
+    expect(detail.textContent).toContain(s.proposals.shadow);
+  });
   it("replaces the sole titlebar entry with the full agent design overlay", async () => {
     await act(async () => root.render(<AgentDesignButton />));
     const entry = document.querySelector<HTMLButtonElement>('button[aria-label="' + s.title + '"]')!;
     expect(entry.title).toBe(s.title); expect(entry.querySelector("svg")?.getAttribute("width")).toBe("12");
     await act(async () => entry.click()); expect(document.querySelector("#agent-design-panel .ad-view")).toBeTruthy();
     expect(document.querySelector(".skills-panel")).toBeNull(); expect(entry.getAttribute("aria-expanded")).toBe("true");
-    expect(document.querySelectorAll(".ad-tabs button")).toHaveLength(8);
+    expect(document.querySelectorAll(".ad-tabs button")).toHaveLength(9);
     await act(async () => document.querySelector<HTMLButtonElement>('.ad-header button[aria-label="' + s.close + '"]')!.click());
     expect(entry.getAttribute("aria-expanded")).toBe("false");
-    const titlebar = readFileSync("src/components/layout/TitleBar.tsx", "utf8"); expect(titlebar).toMatch(/<AiLogButton\s*\/>\s*<AgentDesignButton\s*\/>\s*<SkillsButton\s*\/>\s*<DashboardButton\s*\/>/);
+    const titlebar = readFileSync("src/components/layout/TitleBar.tsx", "utf8"); expect(titlebar).toMatch(/<AgentDesignButton\s*\/>\s*<DashboardButton\s*\/>\s*<InboxButton\s*\/>/);
   });
   it("retains the four established surfaces and preserves the service rail", async () => {
     await view();

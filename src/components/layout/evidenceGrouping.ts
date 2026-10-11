@@ -66,7 +66,7 @@ function rationale(scan: GroupingScan, groups: GroupingGroup[], identity: PaneId
     const dest = g.destination.kind === "existing_workspace" ? scan.workspaces.find(w => g.destination.kind === "existing_workspace" && w.id === g.destination.workspaceId)?.name : g.title;
     return tabName(scan, id, identity) + " → " + dest;
   }));
-  return moves.length ? moves.length + " ペインを動かします: " + moves.slice(0, 3).join("、") + (moves.length > 3 ? "、ほか " + (moves.length - 3) + " 件" : "") : "すべてのペインを今の場所に残します。";
+  return moves.length ? moves.length + " タブを動かします: " + moves.slice(0, 3).join("、") + (moves.length > 3 ? "、ほか " + (moves.length - 3) + " 件" : "") : "すべてのタブを今の場所に残します。";
 }
 export function composeEvidencePlans(scan: GroupingScan, registry: readonly ProjectRegistration[] = paneRegistry(), roleOverrides?: GroupingPaneRole[]): GroupingPlan[] {
   const identity = identitiesForScan(scan, [...registry]);
@@ -101,7 +101,7 @@ export function composeEvidencePlans(scan: GroupingScan, registry: readonly Proj
       for (let attempt = 0; attempt <= names.length; attempt++) {
         const title = names[attempt] ?? uniqueGroupingName(names[names.length - 1], taken);
         const matching = home ? scan.workspaces.find(w => w.id === home)
-          : scan.workspaces.find(w => w.name === title || (attempt === 0 && w.name === name));
+          : scan.workspaces.find(w => w.nameSource !== "auto" && (w.name === title || (attempt === 0 && w.name === name)));
         const movingIds = matching ? ids.filter(id => scan.tabs.find(t => t.id === id)!.workspaceId !== matching.id) : ids;
         if (!movingIds.length) return;
         const existing = groups.find(g => matching

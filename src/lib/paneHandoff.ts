@@ -1,6 +1,6 @@
 import type { PaneMetadata } from "../stores/paneMetadataStore";
 import type { PaneDropTarget, PaneDropZone } from "../stores/paneDragStore";
-import type { AgentSessionKind, PaneTab } from "../types";
+import type { AgentSessionKind, Pane, PaneTab } from "../types";
 import { resolveLiveSavepointTargetKind } from "./savepointHandoff";
 
 type HandoffMetadata = Pick<PaneMetadata, "agentKind" | "agentSessionId" | "cwd">;
@@ -36,6 +36,20 @@ interface PaneDropSourceIdentity {
 }
 
 type PaneZoneDropTarget = Extract<PaneDropTarget, { kind: "pane" }>;
+
+/** A heading owns one merge surface, including its name and empty space. */
+export function resolvePaneHeaderTarget(element: Element | null): { workspaceId: string; paneId: string } | null {
+  const header = element?.closest(".pane-tabbar");
+  const pane = header?.closest<HTMLElement>("[data-dnd-workspace-id][data-dnd-pane-id]");
+  const workspaceId = pane?.dataset.dndWorkspaceId;
+  const paneId = pane?.dataset.dndPaneId;
+  return workspaceId && paneId ? { workspaceId, paneId } : null;
+}
+
+/** Headers append; the active heading's rectangle no longer defines a slot. */
+export function paneHeaderInsertionIndex(pane: Pick<Pane, "tabs">): number {
+  return pane.tabs.length;
+}
 
 export function isPaneDropTargetEligible(
   source: PaneDropSourceIdentity,

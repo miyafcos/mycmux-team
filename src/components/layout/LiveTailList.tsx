@@ -1,9 +1,10 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { jumpToPaneTab } from "../../lib/jumpToPaneTab";
-import { factForLiveTailEvidence, type LiveTailFact } from "../../lib/liveTail/facts";
+import { type LiveTailFact } from "../../lib/liveTail/facts";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
-import { acquireLiveTailConsumer, useLiveTailStore, type LiveTailEntry, type LiveTailTarget } from "../../stores/liveTailStore";
+import { acquireLiveTailConsumer, liveTailAttentionChanged, liveTailScreenRetained, liveTailTargetsForView, statusForLiveTailTarget, useLiveTailStore, type LiveTailEntry, type LiveTailTarget } from "../../stores/liveTailStore";
+import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { connectLiveBriefStore, useLiveBriefStore } from "../../stores/liveBriefStore";
 import { useThemeStore } from "../../stores/themeStore";
 import type { PaneMetadata, PaneVolatileMetadata } from "../../stores/paneMetadataStore";
@@ -102,11 +103,22 @@ export function liveTailFactText(fact: LiveTailFact, now: number, waitingForRepl
   }
 }
 
-function clockText(at: number | null | undefined): string | null {
+const clockFormatter = new Intl.DateTimeFormat("ja-JP", {
+  hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "UTC",
+});
+
+function localClockFields(at: number | null | undefined): number | null {
   if (at === null || at === undefined || !Number.isFinite(at)) return null;
   const date = new Date(at);
   if (Number.isNaN(date.getTime())) return null;
-  return date.toLocaleTimeString("ja-JP", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return date.getHours() * 3_600 + date.getMinutes() * 60 + date.getSeconds();
+}
+
+function clockText(at: number | null | undefined): string | null {
+  // Read local civil fields on every call: caching the default timezone would
+  // keep an old OS timezone. A safe UTC date also handles either Date limit.
+  const seconds = localClockFields(at);
+  return seconds === null ? null : clockFormatter.format(new Date(Date.UTC(2000, 0, 1, 0, 0, seconds)));
 }
 
 /** This component owns the sidebar's one demand lease, even when kept mounted. */
@@ -136,31 +148,94 @@ export function WorkspaceLiveTailList(props: ConnectedListProps) {
   return <LiveTailList {...props} targets={targets} entries={entries} />;
 }
 
-interface TailRowProps {
+interface TailRowInput {
   workspaceId: string;
   paneId: string;
   tab: PaneTab;
   target: LiveTailTarget;
   entry?: LiveTailEntry;
+  fact: LiveTailFact;
   name: string;
   child: boolean;
   lastOutputAt: number | null;
-  colors: CSSProperties;
+  compact?: boolean;
 }
 
-function TailRow({ workspaceId, paneId, tab, target, entry, name, child, lastOutputAt, colors }: TailRowProps) {
-  const fontFamily = useThemeStore(state => state.fontFamily);
-  const fontScale = useThemeStore(state => state.uiFontScale);
-  const lastEventAt = useLiveBriefStore(state => state.briefsBySession[target.sessionId]?.lastEventAt ?? null);
-  const fact = entry ? factForLiveTailEvidence(entry.evidence) : {
-    kind: "unreadable" as const, sinceMs: Date.now(), elapsedSec: null, tokens: null, toolElapsedSec: null, error: null,
-  };
+type TailRowVisual = Readonly<{
+  workspaceId: string;
+  paneId: string;
+  tabId: string;
+  sessionId: string;
+  agentKind: LiveTailTarget["agentKind"];
+  name: string;
+  child: boolean;
+  fact: Readonly<LiveTailFact>;
+  summary: string;
+  rows: readonly string[];
+  progressAt: number | null;
+  previousScreen: boolean;
+  sampleAt: number | null;
+  waitingForReply: boolean;
+  aliveScreenText: string | null;
+  lastOutputAt: number | null;
+}>;
+
+interface TailRowProps {
+  readonly visual: TailRowVisual;
+  readonly tab: PaneTab;
+  readonly colors: CSSProperties;
+}
+
+/** Snapshot every row/popup/effect input; do not retain mutable entry history. */
+function projectTailRow({ workspaceId, paneId, tab, target, entry, fact, name, child, lastOutputAt, compact = false }: TailRowInput): TailRowVisual {
+  const previousScreen = liveTailAttentionChanged(target, entry);
+  const retained = liveTailScreenRetained(target, entry);
   const crop = entry?.evidence.observation.crop;
   const readable = crop?.readable && fact.kind !== "unreadable";
-  const rows = readable ? crop.rows.slice(-3) : [];
-  const summary = readable
+  const summary = readable && !compact && (fact.kind !== "idle" || previousScreen)
     ? (crop.tool || crop.state === "error" ? crop.rows[0] : crop.marker ?? crop.rows[crop.rows.length - 1]) ?? ""
     : "";
+  const status = statusForLiveTailTarget(target), waitingForReply = status === "waiting";
+  return {
+    workspaceId, paneId, tabId: tab.id, sessionId: target.sessionId, agentKind: target.agentKind, name, child,
+    fact: { ...fact }, summary, rows: readable ? crop.rows.slice(-3) : [],
+    progressAt: entry?.evidence.lastProgressAt ?? null, previousScreen,
+    sampleAt: retained && entry ? entry.evidence.observation.observedAt : null,
+    waitingForReply, lastOutputAt,
+    aliveScreenText: fact.kind === "alive" && !waitingForReply
+      && (crop?.state === "unknown" || (crop?.state !== "working" && status !== "working"))
+      ? (readable ? "画面を読めた" : "画面を確認中") : null,
+  };
+}
+
+function sameScalarFields<T extends object>(a: T, b: T): boolean {
+  const keys = Object.keys(a) as Array<keyof T>;
+  return keys.length === Object.keys(b).length && keys.every(key => Object.is(a[key], b[key]));
+}
+
+function sameRowPresentation(a: TailRowProps, b: TailRowProps): boolean {
+  // Frozen popups can show civil clocks. Independent brief/timer renders can
+  // change those clocks without updating parent props, so every parent render
+  // must refresh them, as in stage C. Keep the same row instance and cadence.
+  if (b.visual.fact.kind === "frozen") return false;
+  // Jump closures and theme variables are explicit inputs. The comparator
+  // reads only immutable snapshots, never the current external stores.
+  if (a.tab !== b.tab || a.colors !== b.colors) return false;
+  const previous = a.visual, next = b.visual;
+  if (!sameScalarFields(previous.fact, next.fact) || previous.rows.length !== next.rows.length
+    || !previous.rows.every((row, index) => row === next.rows[index])) return false;
+  const keys = Object.keys(previous) as Array<keyof TailRowVisual>;
+  return keys.length === Object.keys(next).length
+    && keys.every(key => key === "fact" || key === "rows" || Object.is(previous[key], next[key]));
+}
+
+function TailRow({ visual, tab, colors }: TailRowProps) {
+  const { workspaceId, paneId, tabId, sessionId, agentKind, fact, name, child, lastOutputAt,
+    summary, rows, progressAt, previousScreen, sampleAt, waitingForReply, aliveScreenText } = visual;
+  useSessionAttentionStore(state => state.attentionBySession[sessionId]);
+  const fontFamily = useThemeStore(state => state.fontFamily);
+  const fontScale = useThemeStore(state => state.uiFontScale);
+  const lastEventAt = useLiveBriefStore(state => state.briefsBySession[sessionId]?.lastEventAt ?? null);
   const { ref: lineRef, fitted } = useFittedLine(summary, fontFamily, fontScale);
   const anchorRef = useRef<HTMLButtonElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
@@ -172,7 +247,6 @@ function TailRow({ workspaceId, paneId, tab, target, entry, name, child, lastOut
   const [position, setPosition] = useState({ left: 0, top: 0 });
   const [now, setNow] = useState(Date.now);
   const [flashAt, setFlashAt] = useState<number | null>(null);
-  const progressAt = entry?.evidence.lastProgressAt ?? null;
   const previousProgress = useRef(progressAt);
   const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false);
   const popupId = useId();
@@ -225,7 +299,7 @@ function TailRow({ workspaceId, paneId, tab, target, entry, name, child, lastOut
   const enter = () => { clearTimeout(leaveTimer.current); setDismissed(false); setHovered(true); };
   const leave = () => { leaveTimer.current = setTimeout(() => setHovered(false), 120); };
   const jump = () => jumpToPaneTab({ workspaceId, paneId, tab });
-  const factText = liveTailFactText(fact, now, target.waitingForReply);
+  const factText = previousScreen ? "前の画面" : aliveScreenText ?? liveTailFactText(fact, now, waitingForReply);
   const outputTime = clockText(lastOutputAt);
   const eventTime = clockText(lastEventAt);
   const badge = BADGES[fact.kind];
@@ -236,7 +310,7 @@ function TailRow({ workspaceId, paneId, tab, target, entry, name, child, lastOut
         ref={anchorRef}
         type="button"
         className={`live-tail-row${child ? " live-tail-row--child" : ""}`}
-        data-live-tail-tab={tab.id}
+        data-live-tail-tab={tabId}
         data-fact={fact.kind}
         aria-label={name}
         aria-describedby={open ? popupId : undefined}
@@ -253,14 +327,14 @@ function TailRow({ workspaceId, paneId, tab, target, entry, name, child, lastOut
         {flashAt !== null && !reducedMotion && <span key={flashAt} className="live-tail-flash" data-live-tail-flash aria-hidden="true" />}
         <span className="live-tail-heading">
           {child && <span className="live-tail-tree" aria-hidden="true">└</span>}
-          <span className="live-tail-agent" aria-hidden="true"><AgentKindIcon kind={target.agentKind} size={12} chip={false} /></span>
+          <span className="live-tail-agent" aria-hidden="true"><AgentKindIcon kind={agentKind} size={12} chip={false} /></span>
           <span className="live-tail-name">{name}</span>
           {badge && <span className="live-tail-badge">{badge}</span>}
         </span>
-        <span className="live-tail-summary">
+        {summary.trim() && <span className="live-tail-summary">
           <span className="live-tail-dot" aria-hidden="true" />
           <span ref={lineRef} className="live-tail-line" style={{ fontFamily }}>{fitted}</span>
-        </span>
+        </span>}
       </button>
       {open && portal && createPortal(
         <div
@@ -274,41 +348,64 @@ function TailRow({ workspaceId, paneId, tab, target, entry, name, child, lastOut
           onMouseLeave={leave}
           onClick={jump}
         >
-          <div className="live-tail-popup-heading"><AgentKindIcon kind={target.agentKind} size={12} chip={false} /><b>{name}</b></div>
+          <div className="live-tail-popup-heading"><AgentKindIcon kind={agentKind} size={12} chip={false} /><b>{name}</b></div>
           {rows.length > 0 && <div className="live-tail-popup-rows" style={{ fontFamily }}>{rows.map((row, index) => <div key={index}>{row}</div>)}</div>}
           <div className="live-tail-fact">{factText}</div>
           {fact.kind === "frozen" && <div className="live-tail-evidence">端末の最後の出力 {outputTime ?? "不明"} · {eventTime ? `会話記録の最後の書き込み ${eventTime}` : "会話記録 不明"}</div>}
-          {fact.kind === "unreadable" && <div className="live-tail-evidence">開けば最新になります</div>}
-          <div className="live-tail-go">押すとこのペインへ</div>
+          {sampleAt !== null && <div className="live-tail-evidence">画面の読み取り {Math.max(0, Math.floor((now - sampleAt) / 1_000))}秒前</div>}
         </div>, portal,
       )}
     </>
   );
 }
 
+const MemoTailRow = memo(TailRow, sameRowPresentation);
+
 /** Workspace order and names come from the same layout as the pane tab bar. */
 export function LiveTailList({ workspace, targets, entries, metadataBySession = {}, volatileMetadataBySession = {} }: LiveTailListProps) {
+  useSessionAttentionStore(state => state.attentionBySession);
   const baseTheme = useThemeStore(state => state.theme);
   const tweaks = useThemeStore(state => state.themeTweaks);
   const colors = useMemo(() => buildLiveTailThemeVars(applyThemeTweaks(baseTheme, tweaks)), [baseTheme, tweaks]);
-  const byTab = new Map(targets.filter(target => target.workspaceId === workspace.id).map(target => [target.tabId, target]));
-  let idle = 0;
+  const [expandedWorkspaces, setExpandedWorkspaces] = useState<ReadonlySet<string>>(() => new Set());
+  const idleId = useId();
+  const expanded = expandedWorkspaces.has(workspace.id);
+  const toggleIdle = () => setExpandedWorkspaces(previous => {
+    const next = new Set(previous);
+    if (next.has(workspace.id)) next.delete(workspace.id);
+    else next.add(workspace.id);
+    return next;
+  });
+  const byTab = new Map(liveTailTargetsForView(targets, entries).filter(({ target }) => target.workspaceId === workspace.id)
+    .map(view => [view.target.tabId, view]));
+  const idleRows: ReactNode[] = [];
   const rows = workspace.panes.flatMap(pane => pane.tabs.flatMap(tab => {
-    const target = byTab.get(tab.id);
-    if (!target || target.paneId !== pane.id || target.sessionId !== tab.sessionId) return [];
-    const entry = entries[target.sessionId];
-    const kind = entry ? factForLiveTailEvidence(entry.evidence).kind : target.status === "idle" ? "idle" : "unreadable";
-    if (kind === "idle" && !target.waitingForReply) { idle += 1; return []; }
+    const view = byTab.get(tab.id);
+    if (!view || view.target.paneId !== pane.id || view.target.sessionId !== tab.sessionId) return [];
+    const { target, entry, fact, inputIdle } = view;
     const times = [entry?.evidence.observation.lastOutputAt, volatileMetadataBySession[tab.sessionId]?.backendLastOutputAt, metadataBySession[tab.sessionId]?.backendLastOutputAt]
       .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-    return [<TailRow key={tab.id} workspaceId={workspace.id} paneId={pane.id} tab={tab} target={target} entry={entry}
-      name={getTabDisplayLabel(tab, tab.id === pane.activeTabId, metadataBySession, volatileMetadataBySession)}
-      child={tab.origin?.kind === "agent" && Boolean(tab.origin.parentTabId)}
-      lastOutputAt={times.length ? Math.max(...times) : null} colors={colors} />];
+    const row = <MemoTailRow key={tab.id} tab={tab} colors={colors} visual={projectTailRow({
+      workspaceId: workspace.id, paneId: pane.id, tab, target, entry, fact, compact: inputIdle,
+      name: getTabDisplayLabel(tab, tab.id === pane.activeTabId, metadataBySession, volatileMetadataBySession),
+      child: tab.origin?.kind === "agent" && Boolean(tab.origin.parentTabId),
+      lastOutputAt: times.length ? Math.max(...times) : null,
+    })} />;
+    if (inputIdle) { idleRows.push(row); return []; }
+    return [row];
   }));
-  if (!rows.length && !idle) return null;
+  if (!rows.length && !idleRows.length) return null;
   return <div className="live-tail-list" data-live-tail-workspace={workspace.id} style={colors}>
     {rows}
-    {idle > 0 && <div className="live-tail-idle">ほか 入力待ち {idle}</div>}
+    {idleRows.length > 0 && <>
+      <button type="button" className="live-tail-idle" aria-expanded={expanded} aria-controls={idleId}
+        onClick={event => { event.stopPropagation(); toggleIdle(); }}
+        onKeyDown={event => {
+          if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); toggleIdle(); }
+        }}>
+        <span aria-hidden="true">{expanded ? "▾" : "▸"}</span> ほか 入力待ち {idleRows.length}
+      </button>
+      <div id={idleId} hidden={!expanded}>{expanded && idleRows}</div>
+    </>}
   </div>;
 }

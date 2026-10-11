@@ -19,7 +19,7 @@ const strings = {
   returningTitle: "ワークスペースがありません",
   returningBody: "開いているワークスペースはありません。下のどれかから再開できます。",
   homeAction: "ホームで新規ワークスペース",
-  homeActionHint: "ホームフォルダで 1 ペインのターミナルを開きます",
+  homeActionHint: "ホームフォルダでターミナルタブを1個開きます",
   folderAction: "フォルダを選んで開始",
   folderActionHint: "選んだフォルダを作業ディレクトリにします",
   folderDialogTitle: "ワークスペースの作業フォルダを選択",
@@ -89,7 +89,7 @@ export default function EmptyWorkspaceState({ variant, onOpenSetup }: EmptyWorks
     setPending("home");
     try {
       const home = await homeDir();
-      createWorkspaceAtCwd(home, { name: workspaceNameFromCwd(home) });
+      createWorkspaceAtCwd(home, { name: workspaceNameFromCwd(home), nameSource: "auto" });
     } catch (error) {
       console.error("[empty-state] failed to resolve home directory", error);
       pushToast(strings.homeError, "error");
@@ -110,7 +110,7 @@ export default function EmptyWorkspaceState({ variant, onOpenSetup }: EmptyWorks
       });
       // null = user cancelled; stay on the panel instead of creating anything.
       if (typeof picked !== "string" || picked.length === 0) return;
-      createWorkspaceAtCwd(picked, { name: workspaceNameFromCwd(picked) });
+      createWorkspaceAtCwd(picked, { name: workspaceNameFromCwd(picked), nameSource: "auto" });
     } catch (error) {
       console.error("[empty-state] folder picker failed", error);
       pushToast(strings.folderError, "error");

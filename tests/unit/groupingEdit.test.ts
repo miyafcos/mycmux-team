@@ -351,13 +351,13 @@ describe("grouping edit invariants", () => {
     expect(isJapaneseGroupingName(numbered)).toBe(true);
   });
 
-  it("renames workspace and pane names uniquely while same-name edits stay no-ops", () => {
+  it("protects even same-name workspace edits and renames workspace and pane names uniquely", () => {
     const base = beginGroupingEdit(planWith());
     expect(applyEditCommand(base, {
       kind: "rename_new_workspace",
       groupId: "group:a",
       proposedName: "案件甲",
-    })).toBe(base);
+    }).plan.groups[0].destination).toMatchObject({ nameEdited: true });
     const workspaceRenamed = applyEditCommand(base, {
       kind: "rename_new_workspace",
       groupId: "group:a",
@@ -366,6 +366,7 @@ describe("grouping edit invariants", () => {
     expect(workspaceRenamed.plan.groups[0].destination).toEqual({
       kind: "new_workspace",
       proposedName: "案件乙 2",
+      nameEdited: true,
     });
     const paneRenamed = applyEditCommand(workspaceRenamed, {
       kind: "rename_pane",

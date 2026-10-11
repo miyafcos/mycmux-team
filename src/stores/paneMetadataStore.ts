@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { AgentSessionKind } from "../types";
 import { isolateSubscribers } from "../lib/isolatedStoreListeners";
+import { observationClockRolledBack } from "../lib/observationClock";
 
 export type AgentStatus = "working" | "waiting" | "done" | "idle";
 
@@ -34,6 +35,13 @@ export type PaneVolatileMetadata = Pick<
 > & {
   liveAgentKind?: string | null;
   ptyAlive?: boolean;
+  liveAgentObservationKnown?: boolean;
+  liveAgentObservedAt?: number;
+  liveAgentChangedAt?: number;
+  liveAgentSessionId?: string;
+  liveAgentStartedAt?: number;
+  liveAgentIdentityUnknownSince?: number;
+  liveAgentStartUnknownSince?: number;
 };
 
 export interface PaneMetadataState {
@@ -52,7 +60,7 @@ export interface PaneMetadataState {
   lastLogAt: Record<string, number>;
   setMetadata: (sessionId: string, data: Partial<PaneMetadata>) => void;
   setVolatileMetadata: (sessionId: string, data: Partial<PaneVolatileMetadata>) => void;
-  setLiveAgent: (sessionId: string, liveAgentKind: string | null, ptyAlive: boolean) => void;
+  setLiveAgent: (sessionId: string, liveAgentKind: string | null, ptyAlive: boolean, evidence?: { observedAt?: number; agentSessionId?: string; startedAt?: number }) => void;
   clearAgentStatus: (sessionId: string) => void;
   clearClaudeSessionId: (sessionId: string) => void;
   clearAgentSessionId: (sessionId: string) => void;
@@ -210,12 +218,32 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
 
   // Null is an observation, not a missing partial-update field. Never write
   // live identity into the low-frequency persistence slice.
-  setLiveAgent: (sessionId, liveAgentKind, ptyAlive) => set((state) => {
+  setLiveAgent: (sessionId, liveAgentKind, ptyAlive, evidence) => set((state) => {
     const previous = state.volatileMetadata[sessionId];
-    if (previous?.liveAgentKind === liveAgentKind && previous?.ptyAlive === ptyAlive) return state;
+    const now = Date.now();
+    const at = evidence?.observedAt ?? now;
+    const rolledBack = observationClockRolledBack(previous?.liveAgentObservedAt, now);
+    if (!rolledBack && previous?.liveAgentObservedAt !== undefined && previous.liveAgentObservedAt > at) return state;
+    const agentSessionId = liveAgentKind ? evidence?.agentSessionId : undefined;
+    const startedAt = liveAgentKind ? evidence?.startedAt : undefined;
+    const processChanged = rolledBack || previous?.liveAgentKind !== liveAgentKind
+      || (agentSessionId !== undefined && previous?.liveAgentSessionId !== undefined && agentSessionId !== previous.liveAgentSessionId)
+      || (startedAt !== undefined && previous?.liveAgentStartedAt !== undefined && startedAt !== previous.liveAgentStartedAt);
+    const unchanged = !rolledBack && previous?.liveAgentKind === liveAgentKind && previous?.ptyAlive === ptyAlive
+      && previous?.liveAgentObservationKnown === true && previous.liveAgentSessionId === agentSessionId
+      && previous.liveAgentStartedAt === startedAt;
+    // Keep fresh delegation evidence without publishing every monitor tick to
+    // terminal rows. Identity, exit and rollback changes still publish at once.
+    if (unchanged && previous.liveAgentObservedAt !== undefined && at - previous.liveAgentObservedAt < 30_000) return state;
     return { volatileMetadata: {
       ...state.volatileMetadata,
-      [sessionId]: { ...previous, liveAgentKind, ptyAlive },
+      [sessionId]: { ...previous, liveAgentKind, ptyAlive, liveAgentObservationKnown: true, liveAgentObservedAt: at,
+        liveAgentChangedAt: unchanged ? previous?.liveAgentChangedAt : at,
+        liveAgentSessionId: agentSessionId, liveAgentStartedAt: startedAt,
+        liveAgentIdentityUnknownSince: !liveAgentKind || agentSessionId !== undefined ? undefined
+          : processChanged ? at : previous?.liveAgentIdentityUnknownSince ?? at,
+        liveAgentStartUnknownSince: !liveAgentKind || startedAt !== undefined ? undefined
+          : processChanged ? at : previous?.liveAgentStartUnknownSince ?? at },
     } };
   }),
 

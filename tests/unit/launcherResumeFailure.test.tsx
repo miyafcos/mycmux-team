@@ -48,7 +48,7 @@ vi.mock("../../src/stores/workspaceLayoutStore", () => ({
 vi.mock("../../src/stores/uiStore", () => ({
   useUiStore: Object.assign(
     (select: (state: typeof mocks.ui) => unknown) => select(mocks.ui),
-    { getState: () => mocks.ui },
+    { getState: () => mocks.ui, subscribe: () => () => {} },
   ),
 }));
 

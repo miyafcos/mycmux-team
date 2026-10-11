@@ -18,6 +18,7 @@ import { requiresLauncherDispatch } from "../../lib/launcherDispatch";
 import { buildSpawnLaunchEnv } from "../../lib/spawnLaunchEnv";
 import { consumeHandoffLaunchEnv } from "../../lib/handoffLaunchEnv";
 import { buildTerminalPaneLaunch } from "../../lib/terminalPaneLaunch";
+import { consumeCodexRestoreReason } from "../../lib/codexRestore";
 import { otherWindowWorkspaces, requestPeerTabStart, serializeOtherWindowPanes, type TabStartResult } from "../../lib/socketTabWindows";
 import {
   listenForPeerSocketCommandEvent, requestPeerSocketCommand,
@@ -25,6 +26,7 @@ import {
 } from "../../lib/socketCommandWindows";
 import type { TerminalLaunchRequest } from "../terminal/terminalLaunchParams";
 import { isDeclaredTab, isRestorableTab, type RestorablePaneTab } from "../../lib/tabLifecycle";
+import { paneKindCapabilities, paneTabKind, isPersistentTab, canTransferTab } from "../../lib/paneKindCapabilities";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
 import { resolveTabMark, tabMarkSource } from "../../lib/tabMark";
@@ -41,6 +43,8 @@ import {
 import { collectPaneCloseVictims } from "../../lib/paneCloseImpact";
 import { invoke } from "@tauri-apps/api/core";
 import { postInboxMessage } from "../../lib/inbox";
+import { usePaneMetadataStore as delegationMetadataStore } from "../../stores/paneMetadataStore";
+import { delegationForCaller } from "../dashboard/delegationModel";
 
 import type { WebPaneBounds, WebPaneTarget, WebPaneTargetInfo, WebPaneWaitResult, WebPaneModifier, WebPaneNativeBudget } from "../workspace/webPaneApi";
 
@@ -984,9 +988,10 @@ async function attachBackgroundTabSession(
     launch.cwd,
     launch.env,
     false,
-    { backgroundOnly: true, reason: "background" },
+    { backgroundOnly: true, reason: "background", restoreReason: launch.restoreReason },
   );
   if (launch.env?.MYCMUX_HANDOFF?.trim()) consumeHandoffLaunchEnv(tab.sessionId);
+  if (launch.restoreReason) consumeCodexRestoreReason(tab.sessionId);
 }
 
 async function startTab(args: SocketArgs): Promise<TabStartResult> {
@@ -1018,6 +1023,7 @@ async function startTab(args: SocketArgs): Promise<TabStartResult> {
   const launch = buildTerminalPaneLaunch(target.pane, target.tab, agents);
   await attachBackgroundTabSession(target.tab, {
     command: launch.launchCommand, args: launch.launchArgs,
+    restoreReason: launch.restoreReason,
     cwd: launch.paneCwd, env: launch.launchEnv,
   });
   return { started: true, sessionId };
@@ -1072,11 +1078,14 @@ async function spawnPane(args: SocketArgs) {
     : await resolveHandoffPromptPath(args);
 
   const plan = resolveSpawnPanePlan(args, handoffPromptPath);
+  const callerSessionId = socketArgString(args, "anchorSessionId", "anchor_session_id");
+  const delegation = plan.mode === "web" ? {} : delegationForCaller(
+    useWorkspaceListStore.getState().workspaces, delegationMetadataStore.getState().volatileMetadata, callerSessionId,
+    socketArgString(args, "anchorTabId", "anchor_tab_id"));
   const workspaceState = useWorkspaceListStore.getState();
   // Prefer the caller's own location over whatever the human is looking at.
   // Falling straight back to activeWorkspaceId meant an agent sitting in a
   // background workspace split the pane the operator was working in.
-  const callerSessionId = socketArgString(args, "anchorSessionId", "anchor_session_id");
   const requestedAnchorId = socketArgString(args, "anchorPaneId", "anchor_pane_id");
   const callerWorkspaceId = callerSessionId
     ? workspaceState.workspaces.find((candidate) =>
@@ -1171,8 +1180,10 @@ async function spawnPane(args: SocketArgs) {
     const beforeTabIds = new Set(lonePane.tabs.map((tab) => tab.id));
     useWorkspaceLayoutStore.getState().addTabToPaneWithOptions(workspaceId, lonePane.id, {
       ...plan.paneOptions,
+      labelSource: "launch",
       launchEnv: buildSpawnLaunchEnv(lonePane.launchEnv, plan.paneOptions.launchEnv),
       origin: resolveSpawnOrigin(args, undefined),
+      ...delegation,
       activate,
       activationSource: "socket",
     });
@@ -1226,8 +1237,10 @@ async function spawnPane(args: SocketArgs) {
     directionArg,
     {
       ...plan.paneOptions,
+      labelSource: "launch",
       launchEnv: buildSpawnLaunchEnv(anchorPane.launchEnv, plan.paneOptions.launchEnv),
       origin: resolveSpawnOrigin(args, anchorTabId),
+      ...delegation,
       activate,
       activationSource: "socket",
     },
@@ -1297,8 +1310,10 @@ async function spawnTab(args: SocketArgs) {
   const plan = hasCommandArgv || !target
     ? resolveSpawnTabPlan(args)
     : resolveSpawnTabPlan(args, await resolveHandoffPromptPath(args));
-  // Re-resolve after the handoff round-trip above: `owner` was read before that
-  // await, so its tab list can already be stale by the time we diff it.
+  const delegation = delegationForCaller(useWorkspaceListStore.getState().workspaces,
+    delegationMetadataStore.getState().volatileMetadata, anchorSessionId,
+    socketArgString(args, "anchorTabId", "anchor_tab_id"));
+  // Re-resolve after the existing handoff read, before diffing the current tabs.
   const current = findPaneBySessionId(
     useWorkspaceListStore.getState().workspaces,
     anchorSessionId,
@@ -1319,8 +1334,10 @@ async function spawnTab(args: SocketArgs) {
     pane.id,
     {
       ...plan.paneOptions,
+      labelSource: "launch",
       launchEnv: buildSpawnLaunchEnv(pane.launchEnv, plan.paneOptions.launchEnv),
       origin: resolveSpawnOrigin(args, anchorTabId),
+      ...delegation,
       activate,
       // Stays on the socket contract even for an operator request: nothing on
       // screen moves until the PTY is up, so a spawn that fails and rolls back
@@ -1927,8 +1944,12 @@ async function declareTab(args: SocketArgs) {
     ? resolveExplicitOriginKind(explicitOriginKind)
     : "human";
   const parentTabId = socketArgString(args, "parentTabId", "parent_tab_id");
+  const delegation = delegationForCaller(useWorkspaceListStore.getState().workspaces,
+    delegationMetadataStore.getState().volatileMetadata, socketArgString(args, "anchorSessionId", "anchor_session_id"),
+    socketArgString(args, "anchorTabId", "anchor_tab_id"));
   const tab = useWorkspaceLayoutStore.getState().declareTab(match.workspace.id, match.pane.id, {
     label,
+    ...delegation,
     declaredPrompt: socketArgString(args, "declaredPrompt", "declared_prompt"),
     declaredTarget: socketArgString(args, "declaredTarget", "declared_target"),
     origin: originKind ? { kind: originKind, parentTabId } : undefined,
@@ -2037,11 +2058,19 @@ async function closeTab(args: SocketArgs) {
     .find(candidate => candidate.tab.sessionId === sessionId);
   if (!owner) throw new Error("pane.close_tab session not found");
   const { workspace, pane, tab } = owner;
-  if (tab.type !== "terminal") throw new Error("pane.close_tab requires a terminal tab");
   const { closePaneOperation } = await import("../../lib/paneCloseOperation");
-  const result = await closePaneOperation({ kind: "tab", workspaceId: workspace.id, paneId: pane.id, tabId: tab.id }, "cli");
-  requireClosedResult(result);
-  return { workspaceId: workspace.id, paneId: pane.id, tabId: tab.id };
+  const force = socketOptionalBoolean(args, "force") ?? false;
+  const result = await closePaneOperation({ kind: "tab", workspaceId: workspace.id, paneId: pane.id, tabId: tab.id }, "cli", { force });
+  if (result.status !== "needs_confirmation") requireClosedResult(result);
+  const capabilities = paneKindCapabilities(tab);
+  return {
+    workspaceId: workspace.id, paneId: pane.id, tabId: tab.id,
+    kind: paneTabKind(tab), ...capabilities, persistent: isPersistentTab(tab), transferable: canTransferTab(tab),
+    closed: result.status === "closed",
+    effect: result.status === "needs_confirmation" ? "needs_confirmation"
+      : capabilities.closeEffect === "kill" && !isDeclaredTab(tab) ? "killed" : "hidden",
+    reason: result.reason ?? null,
+  };
 }
 
 function requireClosedResult(result: import("../../lib/paneCloseOperation").PaneCloseResult): void {
@@ -2408,6 +2437,7 @@ async function sendPaneText(args: SocketArgs, expiresAt?: number, peerRequest = 
   if (target && isDeclaredTab(target.tab)) {
     throw new Error("pane.send_text cannot target a declared tab");
   }
+  if (target && !paneKindCapabilities(target.tab).sendable) throw new Error("pane.send_text requires a terminal tab");
   if (!isKnownPaneSession(workspaces, sessionId)) {
     throw new Error("pane.send_text session is not a known pane");
   }
@@ -2419,6 +2449,7 @@ async function sendPaneText(args: SocketArgs, expiresAt?: number, peerRequest = 
       throw new Error("pane.send_text session is not a known pane");
     }
     if (current && isDeclaredTab(current.tab)) throw new Error("pane.send_text cannot target a declared tab");
+    if (current && !paneKindCapabilities(current.tab).sendable) throw new Error("pane.send_text requires a terminal tab");
   };
   return serializePaneSend(sessionId, async () => {
     validateTarget();
@@ -2542,11 +2573,13 @@ export async function readPaneTail(
   sessionId: string,
   lines: unknown,
   preferHeadless = false,
+  options?: { headlessFetchTimeoutMs?: number; purpose?: "observation"; isCurrent?: () => boolean },
 ): Promise<string[]> {
-  const { getTerminalBufferLines, hasTerminalBuffer } = await import("../terminal/XTermWrapper");
+  if (options?.isCurrent && !options.isCurrent()) throw new Error("pane read lifetime changed");
+  const { getTerminalBufferLines, isTerminalParsingCurrentOutput } = await import("../terminal/XTermWrapper");
   // Preserve parsed empty screens (including cleared TUIs), but never let an
   // unparsed prewarm/cache entry conceal backend output.
-  if (!preferHeadless && hasTerminalBuffer(sessionId, true)) {
+  if (!preferHeadless && isTerminalParsingCurrentOutput(sessionId)) {
     return getTerminalBufferLines(sessionId, clampPaneReadLines(lines));
   }
 
@@ -2568,7 +2601,7 @@ export async function readPaneTail(
     // still has no screen to read, preserving the existing error contract.
     if (snapshot.data.byteLength === 0 && !snapshot.isDelta) throw new Error("no terminal buffer for session");
     return snapshot;
-  }, clampPaneReadLines(lines), terminalSizeCache.get(sessionId));
+  }, clampPaneReadLines(lines), terminalSizeCache.get(sessionId), options?.headlessFetchTimeoutMs, options?.purpose, options?.isCurrent);
 }
 
 async function movePane(args: SocketArgs) {
@@ -2695,6 +2728,8 @@ async function closeWorkspace(args: SocketArgs) {
 
 // Public socket names, including compatibility aliases. Dispatch and contracts share this table.
 export const SOCKET_COMMAND_NAMES = [
+  "account.switch",
+  "account.use_reset_ticket",
   "account.usage",
   "usage",
   "inbox.post",
@@ -2776,14 +2811,24 @@ export async function handleSocketCommand(
   const workspaceState = useWorkspaceListStore.getState();
 
   switch (cmd as SocketCommandName) {
+    case "account.switch": {
+      const { switchAccountForApi } = await import("../../lib/accountSwitchApi");
+      return switchAccountForApi(args, context.deadline);
+    }
+    case "account.use_reset_ticket": {
+      const { useResetTicketForApi } = await import("../../lib/accountResetTicketApi");
+      return useResetTicketForApi(args, context.deadline);
+    }
     case "inbox.post":
       return postInboxMessage(args);
     // Read-only: the account usage report mycmux already fetches for the Usage
     // tab. Exposed over the socket so an agent can see how much room each
     // registered CLI account has left without touching the credential store.
     case "account.usage":
-    case "usage":
-      return await invoke("get_account_usage");
+    case "usage": {
+      const { getAccountUsageForApi } = await import("../../lib/accountUsageApi");
+      return getAccountUsageForApi();
+    }
 
     case "workspace.list":
     case "list_workspaces":

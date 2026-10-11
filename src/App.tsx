@@ -41,7 +41,7 @@ import NativePaneShell, { TearoutSourceGap } from "./components/layout/NativePan
 import { isTearoutChild, markTearoutChildReady } from "./lib/tearout/runtime";
 import { usesNativePaneShell } from "./lib/tearout/feature";
 import { detachedWorkspaceForWindow } from "./lib/detachedPane";
-import ErrorBoundary from "./components/common/ErrorBoundary";
+import ErrorBoundary, { AppFontScope } from "./components/common/ErrorBoundary";
 import ToastHost from "./components/common/ToastHost";
 import { initDefaultShell } from "./lib/agents";
 import { isSavepointTransferPath, receiveSavepointTransfer } from "./lib/savepointTransfer";
@@ -460,48 +460,51 @@ function App() {
 
   if (childProbeError) {
     return (
-      <div
-        style={{
-          width: "100vw",
-          height: "100vh",
-          background: "color-mix(in srgb, var(--cmux-red) 16%, var(--cmux-boot-bg, #0a0a0a))",
-          color: "var(--cmux-boot-fg, #ededed)",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 12,
-          padding: 32,
-          textAlign: "center",
-          font: "13px/1.6 system-ui, sans-serif",
-          userSelect: "text",
-        }}
-      >
-        <div style={{ fontSize: 18, fontWeight: 700 }}>
-          このウィンドウはバックエンドに接続できません
-        </div>
-        <div style={{ maxWidth: 620 }}>
-          ウィンドウ <code>{windowLabel()}</code> からの IPC が失敗しました。
-          <br />
-          src-tauri/capabilities/default.json の windows に
-          <code> &quot;mycmux-w*&quot; </code>
-          が含まれているか確認してください。
-        </div>
-        <pre
+      <AppFontScope>
+        <div
           style={{
-            maxWidth: "80vw",
-            maxHeight: "40vh",
-            overflow: "auto",
-            background: "rgba(0,0,0,0.35)",
-            padding: 12,
-            borderRadius: 6,
-            fontSize: 12,
-            whiteSpace: "pre-wrap",
+            width: "100vw",
+            height: "100vh",
+            background: "color-mix(in srgb, var(--cmux-red) 16%, var(--cmux-boot-bg, #0a0a0a))",
+            color: "var(--cmux-boot-fg, #ededed)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 12,
+            padding: 32,
+            textAlign: "center",
+            fontSize: 13,
+            lineHeight: 1.6,
+            userSelect: "text",
           }}
         >
-          {childProbeError}
-        </pre>
-      </div>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>
+            このウィンドウはバックエンドに接続できません
+          </div>
+          <div style={{ maxWidth: 620 }}>
+            ウィンドウ <code>{windowLabel()}</code> からの IPC が失敗しました。
+            <br />
+            src-tauri/capabilities/default.json の windows に
+            <code> &quot;mycmux-w*&quot; </code>
+            が含まれているか確認してください。
+          </div>
+          <pre
+            style={{
+              maxWidth: "80vw",
+              maxHeight: "40vh",
+              overflow: "auto",
+              background: "rgba(0,0,0,0.35)",
+              padding: 12,
+              borderRadius: 6,
+              fontSize: 12,
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {childProbeError}
+          </pre>
+        </div>
+      </AppFontScope>
     );
   }
 
@@ -518,28 +521,30 @@ function App() {
   }
 
   return (
-    <div style={{ position: "relative", width: "100vw", height: "100vh", background: "var(--cmux-boot-bg, #0a0a0a)" }}>
-      <ErrorBoundary>
-        {usesNativePaneShell(isTearoutChild(), detachedWorkspace !== null, nativeTearoutEnabled) ? <NativePaneShell /> : detachedWorkspace
-          ? <DetachedPaneShell workspace={detachedWorkspace} />
-          : <Suspense fallback={<div style={{ width: "100%", height: "100%" }} />}>
-              <AppShell uiVariant={uiVariant} />
-            </Suspense>}
-        <ToastHost />
-        <TearoutSourceGap />
-      </ErrorBoundary>
-      {startupMaskVisible && (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            background: "var(--cmux-boot-bg, #0a0a0a)",
-            zIndex: 9999,
-            pointerEvents: "none",
-          }}
-        />
-      )}
-    </div>
+    <AppFontScope>
+      <div style={{ position: "relative", width: "100vw", height: "100vh", background: "var(--cmux-boot-bg, #0a0a0a)" }}>
+        <ErrorBoundary>
+          {usesNativePaneShell(isTearoutChild(), detachedWorkspace !== null, nativeTearoutEnabled) ? <NativePaneShell /> : detachedWorkspace
+            ? <DetachedPaneShell workspace={detachedWorkspace} />
+            : <Suspense fallback={<div style={{ width: "100%", height: "100%" }} />}>
+                <AppShell uiVariant={uiVariant} />
+              </Suspense>}
+          <ToastHost />
+          <TearoutSourceGap />
+        </ErrorBoundary>
+        {startupMaskVisible && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              background: "var(--cmux-boot-bg, #0a0a0a)",
+              zIndex: 9999,
+              pointerEvents: "none",
+            }}
+          />
+        )}
+      </div>
+    </AppFontScope>
   );
 }
 

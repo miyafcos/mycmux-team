@@ -1,4 +1,5 @@
 import { persistenceStrings } from "../../lib/persistenceStrings";
+import { delegationId, delegationTimestamp } from "../../lib/delegationMetadata";
 import { confirmPaneClose } from "../../lib/paneCloseConfirmation";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
 import { evictTerminalCache, registerTerminalCacheEvictionCleanup } from "../terminal/terminalCache";
@@ -107,6 +108,7 @@ import {
   restoreWorkspaceConfigs,
 } from "../../lib/workspaceRestore";
 import { isDeclaredTab, isRestorableTab, tabHasPty } from "../../lib/tabLifecycle";
+import { isPersistentTab } from "../../lib/paneKindCapabilities";
 import {
   capTurnMarkPersistSnapshots,
   getTurnMarkPersistSnapshot,
@@ -270,7 +272,7 @@ export function reportAgentSessionDedupeConflicts(conflicts: AgentSessionDedupeC
   useToastStore
     .getState()
     .pushToast(
-      `同じ会話が複数のペインに割り当てられていたため、1つだけを復元対象に残し、${freshConflicts.length}件を退避しました`,
+      `同じ会話が複数のタブに割り当てられていたため、1つだけを復元対象に残し、${freshConflicts.length}件を退避しました`,
       "warning",
     );
 }
@@ -1221,12 +1223,10 @@ export function toConfig(
       // would revive a terminal pointed at nothing.
       const persistedTabs = purpose === "transfer"
         ? pane.tabs.filter(isTransferableTab)
-        : pane.tabs.filter((tab) => tab.type !== "browser" && !tab.ephemeral);
+        : pane.tabs.filter(isPersistentTab);
       if (persistedTabs.length === 0) return null;
-      const terminalTabs = persistedTabs.filter((tab) => tab.type !== "online");
-      if (terminalTabs.length === 0) return null;
-      const activeTab = terminalTabs.find((tab) => tab.id === pane.activeTabId) ?? terminalTabs[0];
-      return { pane, activeTab, persistedTabs: terminalTabs };
+      const activeTab = persistedTabs.find((tab) => tab.id === pane.activeTabId) ?? persistedTabs[0];
+      return { pane, activeTab, persistedTabs };
     })
     .filter((entry): entry is {
       pane: Workspace["panes"][number];
@@ -1271,6 +1271,7 @@ export function toConfig(
   return {
     id: ws.id,
     name: ws.name,
+    ...(ws.nameSource === "auto" ? { name_source: "auto" as const } : {}),
     grid_template_id: ws.gridTemplateId,
     ...detachedMetadata(useWorkspaceListStore.getState().getWorkspace(ws.id) ?? ws),
     // Workspace color must round-trip: it is the only sidebar grouping cue and
@@ -1391,6 +1392,9 @@ export function toConfig(
             origin: tab.origin
               ? { kind: tab.origin.kind, parent_tab_id: tab.origin.parentTabId ?? null }
               : null,
+            delegated_by_tab_id: delegationId(tab.delegatedByTabId) ?? null,
+            delegated_by_agent_session_id: delegationId(tab.delegatedByAgentSessionId) ?? null,
+            delegated_at: delegationTimestamp(tab.delegatedAt) ?? null,
             declared_prompt: tab.declaredPrompt ?? null,
             declared_target: tab.declaredTarget ?? null,
           };
@@ -1645,10 +1649,12 @@ export function hydrateAiSettingsFromDataJson(settings: Pick<
   | "ai_model"
   | "ai_enabled"
   | "auto_pane_naming_enabled"
+  | "auto_workspace_naming_enabled"
   | "reply_draft_suggestions_enabled"
 >): void {
   const resolved = resolveDataJsonAiFeatureSettings({
     autoPaneNamingEnabled: settings.auto_pane_naming_enabled,
+    autoWorkspaceNamingEnabled: settings.auto_workspace_naming_enabled,
     replyDraftSuggestionsEnabled: settings.reply_draft_suggestions_enabled,
   }, readLegacyAiFeatureSettings());
   useAiSettingsStore.getState().hydrateAiSettings({
@@ -1656,6 +1662,7 @@ export function hydrateAiSettingsFromDataJson(settings: Pick<
     aiModel: settings.ai_model,
     aiEnabled: settings.ai_enabled,
     persistedAutoPaneNamingEnabled: resolved.persistedAutoPaneNamingEnabled,
+    persistedAutoWorkspaceNamingEnabled: resolved.persistedAutoWorkspaceNamingEnabled,
     persistedReplyDraftSuggestionsEnabled: resolved.persistedReplyDraftSuggestionsEnabled,
     legacyAiFeatureSettingsMigrationPending: resolved.migrationNeeded,
   });
@@ -1663,6 +1670,7 @@ export function hydrateAiSettingsFromDataJson(settings: Pick<
   // automation code, but data.json is now the source of truth.
   useSettingsStore.getState().hydrateAiFeatureSettings({
     autoPaneNamingEnabled: resolved.autoPaneNamingEnabled,
+    autoWorkspaceNamingEnabled: resolved.autoWorkspaceNamingEnabled,
     replyDraftSuggestionsEnabled: resolved.replyDraftSuggestionsEnabled,
     ...(!resolved.migrationNeeded
       ? { aiFeatureSettingsDataJsonMigrationComplete: true }
@@ -1701,6 +1709,7 @@ async function hydrateChildWindow(): Promise<void> {
     petNewWorkspaceMode: settings.pet_new_ws_mode,
     petDisabled: settings.pet_disabled,
     petFixedId: settings.pet_fixed_id ?? undefined,
+    petRandomBag: settings.pet_random_bag ?? undefined,
   });
   hydrateAiSettingsFromDataJson(settings);
   void loadPetCatalog();
@@ -1867,6 +1876,7 @@ export function useWorkspacePersist() {
             petNewWorkspaceMode: data.settings.pet_new_ws_mode,
             petDisabled: data.settings.pet_disabled,
             petFixedId: data.settings.pet_fixed_id ?? undefined,
+            petRandomBag: data.settings.pet_random_bag ?? undefined,
           });
           hydrateAiSettingsFromDataJson(data.settings);
           void loadPetCatalog();
@@ -2073,10 +2083,12 @@ export function useWorkspacePersist() {
           pet_new_ws_mode: petSettings.petNewWorkspaceMode,
           pet_disabled: petSettings.petDisabled,
           pet_fixed_id: petSettings.petFixedId ?? null,
+          pet_random_bag: petSettings.petRandomBag ?? null,
           ai_provider: aiSettings.aiProvider,
           ai_model: aiSettings.aiModel,
           ai_enabled: aiSettings.aiEnabled,
           auto_pane_naming_enabled: aiSettings.persistedAutoPaneNamingEnabled,
+          auto_workspace_naming_enabled: aiSettings.persistedAutoWorkspaceNamingEnabled,
           reply_draft_suggestions_enabled: aiSettings.persistedReplyDraftSuggestionsEnabled,
         },
         active_workspace_id: serialized.selection.workspaceId,
@@ -2428,7 +2440,7 @@ export function useWorkspacePersist() {
       useToastStore
         .getState()
         .pushToast(
-          "保存されていたターミナルフォントがこの環境で正しく表示できないため、同梱フォントに切り替えました (設定 → 表示 で変更できます)",
+          "保存されていたフォントがこの環境で正しく表示できないため、同梱フォントに切り替えました (設定 → 外観 で変更できます)",
           "info",
           undefined,
           undefined,
@@ -2452,6 +2464,7 @@ export function useWorkspacePersist() {
         || state.petNewWorkspaceMode !== previousState.petNewWorkspaceMode
         || state.petDisabled !== previousState.petDisabled
         || state.petFixedId !== previousState.petFixedId
+        || state.petRandomBag !== previousState.petRandomBag
       ) markDirty();
     });
     const unsubAi = useAiSettingsStore.subscribe((state, previousState) => {
@@ -2460,6 +2473,7 @@ export function useWorkspacePersist() {
         || state.aiModel !== previousState.aiModel
         || state.aiEnabled !== previousState.aiEnabled
         || state.persistedAutoPaneNamingEnabled !== previousState.persistedAutoPaneNamingEnabled
+        || state.persistedAutoWorkspaceNamingEnabled !== previousState.persistedAutoWorkspaceNamingEnabled
         || state.persistedReplyDraftSuggestionsEnabled
           !== previousState.persistedReplyDraftSuggestionsEnabled
       ) markDirty();

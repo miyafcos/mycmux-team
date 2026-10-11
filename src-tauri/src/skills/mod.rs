@@ -161,6 +161,7 @@ pub async fn skills_diff(id: String, left: usize, right: usize) -> Result<Value,
 }
 #[tauri::command]
 pub async fn skills_export(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
     id: String,
     paths: Vec<String>,
     destination: String,

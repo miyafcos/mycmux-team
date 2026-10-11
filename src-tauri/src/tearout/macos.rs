@@ -1,6 +1,7 @@
 //! AppKit WindowServer handoff using the original mouse-down; nonmodal fallback.
 //! No global event injection, activation, new permissions or modal Tao reentry.
-use super::{geometry, unix_ms, Approval, MoveState, Reveal, TearoutState, WindowGeometry};
+use super::{geometry, unix_ms, Approval, MoveMode, MoveState, Reveal, TearoutState, WindowGeometry};
+use super::release::{ReleaseFrame, ReleaseMethod, ReleasePoint};
 use block2::RcBlock;
 use objc2::{class, msg_send, rc::Retained, runtime::AnyObject};
 use objc2_foundation::{NSPoint, NSRect, NSString};
@@ -21,6 +22,7 @@ struct Active {
     id: String,
     timer: Retained<AnyObject>,
     monitor: Retained<AnyObject>,
+    shared: Arc<MoveState>,
 }
 thread_local! {
     static ACTIVE: RefCell<Option<Active>> = const { RefCell::new(None) };
@@ -76,6 +78,21 @@ pub(super) fn capture_mouse_down(enabled: bool) {
     let block = RcBlock::new(move |event: *mut AnyObject| -> *mut AnyObject {
         if let Some(event_ref) = unsafe { event.as_ref() } {
             let kind: usize = unsafe { msg_send![event_ref, type] };
+            if kind == 2 {
+                let shared = ACTIVE.with(|active| active.borrow().as_ref().map(|active| active.shared.clone()));
+                if let Some(shared) = shared {
+                    let location: NSPoint = unsafe { msg_send![event_ref, locationInWindow] };
+                    let window: *mut AnyObject = unsafe { msg_send![event_ref, window] };
+                    let point: NSPoint = if let Some(window) = unsafe { window.as_ref() } {
+                        unsafe { msg_send![window, convertPointToScreen: location] }
+                    } else { location };
+                    let stamp: f64 = unsafe { msg_send![event_ref, timestamp] };
+                    let info: Retained<AnyObject> = unsafe { msg_send![class!(NSProcessInfo), processInfo] };
+                    let uptime: f64 = unsafe { msg_send![&*info, systemUptime] };
+                    shared.release.latch(ReleasePoint { x: point.x, y: point.y,
+                        at: unix_ms().saturating_sub(((uptime - stamp).max(0.0) * 1000.0) as u64), method: ReleaseMethod::NativeUp });
+                }
+            }
             MOUSE_DOWN.with(|slot| {
                 *slot.borrow_mut() = if kind == 1 {
                     unsafe { Retained::retain(event) }
@@ -153,6 +170,21 @@ pub(super) fn window_identity(app: &AppHandle, label: &str) -> Result<serde_json
         .ok_or("tearout_identity_window_missing")?;
     let number: isize = unsafe { msg_send![ns_window(&window)?, windowNumber] };
     Ok(serde_json::json!({ "window_number": number }))
+}
+
+pub(super) fn receiver_geometry(app: &AppHandle, label: &str) -> Result<serde_json::Value, String> {
+    let window = app.get_window(label).ok_or("tearout_receiver_window_missing")?;
+    unsafe {
+        let native = ns_window(&window)?;
+        let visible: bool = msg_send![native, isVisible]; let minimized: bool = msg_send![native, isMiniaturized];
+        if !visible || minimized { return Err("tearout_receiver_unavailable".into()); }
+        let number: isize = msg_send![native, windowNumber]; let frame: NSRect = msg_send![native, frame];
+        let scale: f64 = msg_send![native, backingScaleFactor];
+        let view: *mut AnyObject = msg_send![native, contentView]; let view = view.as_ref().ok_or("tearout_receiver_view_missing")?;
+        let bounds: NSRect = msg_send![view, bounds]; let flipped: bool = msg_send![view, isFlipped];
+        Ok(serde_json::json!({"window":number,"origin":[frame.origin.x,frame.origin.y],"size":[frame.size.width,frame.size.height],
+            "bounds":[bounds.origin.x,bounds.origin.y,bounds.size.width,bounds.size.height],"flipped":flipped,"scale":scale}))
+    }
 }
 
 pub fn reveal(
@@ -259,6 +291,7 @@ pub fn set_alpha(window: &tauri::Window, alpha: u8) -> Result<bool, String> {
 #[derive(Clone, Serialize)]
 struct Sample {
     id: String,
+    mode: MoveMode,
     label: String,
     source: String,
     sequence: u64,
@@ -280,6 +313,8 @@ struct Sample {
     focus_stolen: bool,
     esc_at: Option<u64>,
     original: WindowGeometry,
+    release: Option<ReleasePoint>,
+    moved: bool,
 }
 
 fn original(window: &tauri::Window) -> Result<WindowGeometry, String> {
@@ -403,6 +438,7 @@ fn sample(
     source: &str,
     shared: &MoveState,
     hit: Option<(String, f64, f64)>,
+    release: Option<ReleasePoint>,
     done: bool,
     escaped: bool,
     failed: bool,
@@ -410,7 +446,8 @@ fn sample(
     focus_stolen: bool,
     scan_ms: Option<f64>,
 ) -> Result<serde_json::Value, String> {
-    let at = unix_ms();
+    let hit = if shared.mode.allows_dock() { hit } else { None };
+    let at = release.map(|point| point.at).unwrap_or_else(unix_ms);
     shared.metrics.poll(scan_ms);
     let sequence = shared.sample_count.fetch_add(1, Ordering::AcqRel);
     let receiver = hit.as_ref().map(|(label, _, _)| label.clone());
@@ -476,9 +513,10 @@ fn sample(
         .and_then(|w| w.current_monitor().ok().flatten())
         .and_then(|m| m.name().cloned());
     let started = shared.started_at.load(Ordering::Acquire);
-    let point = cursor();
-    let notification = Sample {
+    let point = release.map(|point| NSPoint::new(point.x, point.y)).unwrap_or_else(cursor);
+    let mut notification = Sample {
         id: id.into(),
+        mode: shared.mode,
         label: label.into(),
         source: source.into(),
         sequence,
@@ -504,7 +542,18 @@ fn sample(
             value => Some(value),
         },
         original,
+        release,
+        moved: shared.dragged.load(Ordering::Acquire),
     };
+    if let Some(point) = release {
+        if let Some(receiver) = &notification.receiver {
+            if super::arm_release(app, ReleaseFrame { id: id.into(), mode: shared.mode, label: label.into(), source: source.into(), receiver: receiver.clone(),
+                receiver_epoch: notification.receiver_epoch, region_count: notification.region_count,
+                client_x: notification.client_x, client_y: notification.client_y, point, token: String::new() }).is_err() {
+                notification.error = Some("tearout_release_escrow_failed"); notification.release = None;
+            }
+        }
+    }
     let bytes = serde_json::to_vec(&notification)
         .map_err(|e| e.to_string())?
         .len();
@@ -605,6 +654,7 @@ pub fn start(
     let stolen = std::cell::Cell::new(false);
     let start_point = cursor();
     let start_frame: NSRect = unsafe { msg_send![moving_pointer as *const AnyObject, frame] };
+    let active_shared = shared.clone();
     let keys = shared.clone();
     let key_block = RcBlock::new(move |event: *mut AnyObject| -> *mut AnyObject {
         if let Some(event_ref) = unsafe { event.as_ref() } {
@@ -633,7 +683,7 @@ pub fn start(
             || shared.cancelled.load(Ordering::Acquire)
             || began.elapsed().as_secs() >= 300;
         let mut failed = handle.get_window(&moving).is_none();
-        let point = cursor();
+        let mut point = cursor();
         if !escaped && !failed && held() {
             if let Some(window) = handle.get_window(&moving) {
                 let origin = NSPoint::new(
@@ -660,11 +710,16 @@ pub fn start(
             }
         }
         let done = escaped || failed || !held();
+        let release = (done && !escaped && !failed).then(|| shared.release.final_point(ReleasePoint {
+            x: point.x, y: point.y, at: unix_ms(), method: ReleaseMethod::PollFallback,
+        }));
+        if let Some(release) = release { point = NSPoint::new(release.x, release.y); }
+        if point != start_point { shared.dragged.store(true, Ordering::Release); }
         if escaped {
             mark_escape(&shared);
         }
         let scan_at = Instant::now();
-        let hit = receiver_at(&handle, &moving, point);
+        let hit = if shared.mode.allows_dock() { receiver_at(&handle, &moving, point) } else { None };
         let scan_ms = scan_at.elapsed().as_secs_f64() * 1000.0;
         if sample(
             &handle,
@@ -673,6 +728,7 @@ pub fn start(
             &source,
             &shared,
             hit,
+            release,
             done,
             escaped,
             failed,
@@ -689,6 +745,7 @@ pub fn start(
                 &moving,
                 &source,
                 &shared,
+                None,
                 None,
                 true,
                 escaped,
@@ -711,7 +768,7 @@ pub fn start(
         let mode = NSString::from_str("NSRunLoopCommonModes");
         let _: () = msg_send![&*run_loop, addTimer: &*timer, forMode: &*mode];
     }
-    ACTIVE.with(|slot| *slot.borrow_mut() = Some(Active { id, timer, monitor }));
+    ACTIVE.with(|slot| *slot.borrow_mut() = Some(Active { id, timer, monitor, shared: active_shared }));
     if let Some(down) = down {
         let event_number: isize = unsafe { msg_send![&*down, eventNumber] };
         let event_window: isize = unsafe { msg_send![&*down, windowNumber] };
@@ -731,6 +788,7 @@ pub(super) fn synthetic_sample(
     id: String,
     label: String,
     source: String,
+    mode: MoveMode,
     region_count: usize,
     receiver: Option<String>,
     client_x: f64,
@@ -756,7 +814,9 @@ pub(super) fn synthetic_sample(
         moves
             .entry(id.clone())
             .or_insert_with(|| {
-                let state = Arc::new(MoveState::default());
+                let state = Arc::new(MoveState { mode, ..MoveState::default() });
+                *state.moving_label.lock().unwrap_or_else(|e| e.into_inner()) = Some(label.clone());
+                *state.source_label.lock().unwrap_or_else(|e| e.into_inner()) = Some(source.clone());
                 state.synthetic.store(true, Ordering::Release);
                 state
                     .region_count
@@ -767,6 +827,7 @@ pub(super) fn synthetic_sample(
             })
             .clone()
     };
+    shared.require_mode(mode)?;
     if !shared.synthetic.load(Ordering::Acquire) {
         return Err("tearout_synthetic_live_move".into());
     }
@@ -790,6 +851,7 @@ pub(super) fn synthetic_sample(
         &source,
         &shared,
         receiver.map(|label| (label, client_x, client_y)),
+        (phase == "end" && !escaped).then(|| { let point = cursor(); ReleasePoint { x: point.x, y: point.y, at: unix_ms(), method: ReleaseMethod::Synthetic } }),
         phase == "end",
         escaped,
         false,

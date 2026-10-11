@@ -17,8 +17,8 @@ export const terminalTurnStrings = {
   openInDashboard: "ダッシュボードで開く",
   /** In-pane transcript panel. */
   openPanel: "会話履歴を開く",
-  historyUnlinked: "このペインに対応する会話の記録がまだ確認できません",
-  historyChecking: "このペインの会話の記録を確認中",
+  historyUnlinked: "このタブに対応する会話の記録がまだ確認できません",
+  historyChecking: "このタブの会話の記録を確認中",
   recentHistory: "直近200件までの会話の記録",
   closePanel: "会話履歴を閉じる",
   listTitle: "送った命令",

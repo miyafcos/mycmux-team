@@ -194,7 +194,7 @@ def add_interactive_launch_arguments(
     parser: argparse.ArgumentParser, *, target_required: bool
 ) -> None:
     parser.add_argument("--target", choices=AGENT_TARGETS, required=target_required)
-    parser.add_argument("--preset", help="web ペインのプリセット id (--target web のとき)")
+    parser.add_argument("--preset", help="web タブのプリセット id (--target web のとき)")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--prompt")
     mode.add_argument("--prompt-file", type=Path)
@@ -727,9 +727,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Control visible mycmux panes through the local socket.",
         epilog=(
             "Safety: send types text into a live terminal; verify the session first. "
-            "Vocabulary: this CLI's English mirrors the Japanese UI - English 'pane' is the "
-            "Japanese 'tab' (a split region), English 'tab' is the Japanese 'pane' (one "
-            "session). See docs/adr/0013-vocabulary-workspace-tab-pane.md."
+            "Vocabulary: English 'tab' and Japanese 'タブ' both mean one session. English 'pane' is the "
+            "container for the displayed tab and its background tabs (or a tab group). Code, stored fields and API names are "
+            "unchanged. See docs/adr/0017-workspace-tab-and-tab-groups.md."
         ),
     )
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
@@ -856,8 +856,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     restore_activation.add_argument("--token", required=True, type=parse_json_object)
 
-    close_tab = subparsers.add_parser("close-tab", help="Close a terminal tab")
+    close_tab = subparsers.add_parser(
+        "close-tab", help="Close a tab of any kind",
+        description="Close a terminal, Web, document, launcher or online tab. Unsaved documents require --force.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='Result example:\n{"workspaceId":"w1","paneId":"p1","tabId":"t1","kind":"browser","hasPty":true,"persistent":false,"transferable":true,"closeEffect":"confirm_unsaved","sendable":false,"closed":false,"effect":"needs_confirmation","reason":"unsaved"}',
+    )
     close_tab.add_argument("--session", required=True)
+    close_tab.add_argument("--force", action="store_true", help="Discard unsaved document edits (default: false). Never bypasses the last-tab guard or kill failures.")
 
     rename = subparsers.add_parser("rename", help="Rename a terminal tab")
     rename.add_argument("--session", required=True)
@@ -1209,6 +1215,7 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
             "label": namespace.label,
             "origin": namespace.origin,
         }
+        optional_arg(args, "anchorSessionId", os.environ.get("MYCMUX_PANE_SESSION_ID"))
         optional_arg(args, "declaredPrompt", namespace.prompt)
         optional_arg(args, "declaredTarget", namespace.target)
         return "pane.declare_tab", args
@@ -1219,7 +1226,10 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     if namespace.subcommand == "restore-activation":
         return "pane.restore_activation", namespace.token
     if namespace.subcommand == "close-tab":
-        return "pane.close_tab", {"sessionId": namespace.session}
+        args = {"sessionId": namespace.session}
+        if namespace.force:
+            args["force"] = True
+        return "pane.close_tab", args
     if namespace.subcommand == "rename":
         return "pane.rename_tab", {
             "sessionId": namespace.session,

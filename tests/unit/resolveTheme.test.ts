@@ -135,6 +135,9 @@ function legacyThemeVars(input: ThemeVarsCase): Record<string, string> {
   const currentTheme = input.theme;
   const themeBackground = input.background;
   const { uiDensity, fontFamily, fontSize, lineHeight, uiFontScale } = input;
+  // U1 adds three font routes. These fixtures use single named families;
+  // keep their expected stacks independent of the production stack builder.
+  const uiFontFamily = `"${fontFamily}", "Segoe UI", "Hiragino Sans", "Yu Gothic UI", "Meiryo", "Roboto", -apple-system, BlinkMacSystemFont, sans-serif`;
 
   const isLightChrome = legacyIsLightColor(currentTheme.chrome.background);
   const mediaBackgroundActive = themeBackground.mode === "preset" || (
@@ -154,6 +157,9 @@ function legacyThemeVars(input: ThemeVarsCase): Record<string, string> {
   };
 
   return {
+    "--cmux-font-ui": uiFontFamily,
+    "--cmux-dash-ui-font": uiFontFamily,
+    "--cmux-font-mono": `"${fontFamily}", "UDEV Gothic NF", "UDEV Gothic", "SFMono-Regular", "JetBrains Mono", "Consolas", ui-monospace, monospace`,
     "--cmux-font-size-xs": scalePx(densityTokens.fontXs),
     "--cmux-font-size-sm": scalePx(densityTokens.fontSm),
     "--cmux-font-size-md": scalePx(densityTokens.fontMd),
@@ -315,15 +321,15 @@ describe("resolveTheme leaves every dark theme byte-identical", () => {
     expect(DARK_THEMES).toHaveLength(21);
   });
 
-  it("emits 53 colour variables plus 11 typography/spacing plus 3 dashboard plus colorScheme", () => {
+  it("emits 53 colour variables plus 11 typography/spacing plus 6 font/dashboard plus colorScheme", () => {
     expect(RESOLVED_THEME_TOKENS).toHaveLength(53);
     expect(new Set(RESOLVED_THEME_TOKENS.map((token) => token.cssVar)).size).toBe(53);
     expect(RESOLVED_THEME_TOKENS.map((token) => token.cssVar)).toContain(STAGE_2_ADDED_VAR);
 
     const vars = buildThemeVars({ theme: THEMES[0], background: WALLPAPER_ON, ...BASE_TYPOGRAPHY });
     const keys = Object.keys(vars);
-    expect(keys).toHaveLength(68);
-    expect(keys.filter((key) => key.startsWith("--"))).toHaveLength(67);
+    expect(keys).toHaveLength(71);
+    expect(keys.filter((key) => key.startsWith("--"))).toHaveLength(70);
     expect(keys).toContain("colorScheme");
   });
 
@@ -354,8 +360,8 @@ describe("resolveTheme leaves every dark theme byte-identical", () => {
       }
     }
 
-    // 21 dark themes x 2 wallpaper states x 67 pre-existing variables.
-    expect(comparisons).toBe(2814);
+    // 21 dark themes x 2 wallpaper states x 70 variables, including U1 fonts.
+    expect(comparisons).toBe(2940);
   });
 });
 
@@ -420,8 +426,8 @@ describe("dark edge cases stay identical too", () => {
       }
     }
 
-    // 21 dark themes x 3 edge cases x 67 pre-existing variables.
-    expect(comparisons).toBe(4221);
+    // 21 dark themes x 3 edge cases x 70 variables, including U1 fonts.
+    expect(comparisons).toBe(4410);
   });
 
   it("reads an empty image path as no wallpaper", () => {

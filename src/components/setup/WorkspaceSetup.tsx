@@ -11,6 +11,7 @@ import { setupStrings } from "./setupStrings";
 
 export interface WorkspaceSetupResult {
   name: string;
+  nameSource?: "auto";
   gridTemplateId: GridTemplateId;
   /** Empty means "wherever a PTY starts by default" (the home directory). */
   cwd: string;
@@ -72,6 +73,7 @@ export default function WorkspaceSetup({ defaultCwd, onLaunch, onCancel }: Works
   const handleLaunch = useCallback(() => {
     onLaunch({
       name: name.trim() || derivedName,
+      nameSource: name.trim() ? undefined : "auto",
       gridTemplateId: gridId,
       cwd: normalizeCwd(cwd),
       paneSpecs,

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-import { focusController } from "../../lib/focusController";
+import { focusController, registerFocusReturnOwner } from "../../lib/focusController";
 import { observeActiveSession, observeAheadSessions } from "../../lib/backgroundAiScheduler";
 import { isEditableTarget } from "../../lib/keybindings";
 import { useKeybindingStore } from "../../stores/keybindingStore";
@@ -41,6 +41,7 @@ import {
 import { usePaneMetadataStore, useUiStore, useWorkspaceListStore } from "../../stores/workspaceStore";
 import { jumpToPaneTab } from "../../lib/jumpToPaneTab";
 import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
+import { useDelegationParents } from "./useDelegationParents";
 import { useStallStore } from "../../stores/stallStore";
 import { useWorkOrderStore } from "../../stores/workOrderStore";
 import { connectReportInboxStatusFeed, useReportInboxStore } from "../../stores/reportInboxStore";
@@ -197,6 +198,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   const minimapWidth = clampDashboardMinimapWidth(viewState.minimapWidth, viewportWidth, viewState.sessionListCollapsed);
   const sessionListWidth = dashboardSessionListWidth(viewState.sessionListCollapsed);
   const workspaces = useWorkspaceListStore((state) => state.workspaces);
+  const delegationParents = useDelegationParents(workspaces);
   const dragItem = usePaneDragStore((state) => state.item);
   const dragPointer = usePaneDragStore((state) => state.pointer);
   const dashboardChatDropPreview = usePaneDragStore((state) => state.dashboardChatDropPreview);
@@ -210,6 +212,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   const stallsBySession = useStallStore((state) => state.entries);
   const attentionState = useSessionAttentionStore(useShallow((state) => ({
     attentionBySession: state.attentionBySession,
+    dormantCompletionsBySession: state.dormantCompletionsBySession,
     seenAttentionByTab: state.seenAttentionByTab,
     doneMarkByTab: state.doneMarkByTab,
   })));
@@ -227,18 +230,21 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     lastLogBySession: metadataState.lastLog,
     lastLogAtBySession: metadataState.lastLogAt,
     attentionBySession: attentionState.attentionBySession,
+    dormantCompletionsBySession: attentionState.dormantCompletionsBySession,
     seenAttentionByTab: attentionState.seenAttentionByTab,
     doneMarkByTab: attentionState.doneMarkByTab,
     stallsBySession,
     briefsBySession,
+    delegationParents,
     now,
     hasTerminalBuffer,
-  }), [attentionState, briefsBySession, metadataState, now, stallsBySession, workspaces]);
+  }), [attentionState, briefsBySession, delegationParents, metadataState, now, stallsBySession, workspaces]);
   const attentionFactSources = useMemo<AttentionFactSource[]>(() => cards.map((card) => ({
     sessionId: card.tab.sessionId,
     label: card.label,
     brief: card.brief,
     noUpdateMinutes: card.noUpdateMinutes,
+    now: card.now,
     queuedInput: card.stall?.reason === "queued_input" ? card.stall.detail ?? null : null,
   })), [cards]);
   const minimapDisplayStateByTabId = useMemo(() => new Map(cards.map((card) => [card.tab.id, resolveDisplayState(card)] as const)), [cards]);
@@ -279,6 +285,16 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   const activeColumnTabId = chatColumnTabIds[activeChatColumn] ?? null;
   const activeColumnIsInbox = isDashboardInboxColumn(activeColumnTabId);
   const activeColumnIsPreview = isDashboardPreviewColumn(activeColumnTabId);
+  const registerPreviewFocusOwner = useCallback((article: HTMLElement | null) => {
+    if (!article) return;
+    return registerFocusReturnOwner(article, {
+      isLive: () => {
+        const state = useDashboardViewStore.getState();
+        return state.open && Boolean(state.previewColumn) && state.chatColumnTabIds.includes(DASHBOARD_PREVIEW_COLUMN_ID);
+      },
+      fallback: () => article.querySelector<HTMLElement>("header[tabindex]"),
+    });
+  }, []);
   // Direct composer routing must use the same column the user sees as active.
   // Do not fall back to another card if a stale layout id disappears.
   const activeColumnCard = activeColumnTabId && !isDashboardSpecialColumn(activeColumnTabId)
@@ -1177,6 +1193,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
                 const previewTitle = preview?.label ?? dashboardStrings.previewColumnTitle;
                 return <article
                   key={slotId}
+                  ref={registerPreviewFocusOwner}
                   data-dashboard-chat-column={slotId}
                   data-dashboard-chat-column-motion={motion ?? "idle"}
                   data-active={index === activeChatColumn ? "true" : "false"}
@@ -1209,6 +1226,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
                   <div className="cmux-dashboard-chat-column-body" data-dashboard-preview-column="true">
                     {preview ? <ErrorBoundary>
                       <BrowserPane
+                        isDashboardPreview
                         htmlPath={preview.htmlPath}
                         sourcePath={preview.sourcePath}
                         sourceKind={preview.sourceKind}

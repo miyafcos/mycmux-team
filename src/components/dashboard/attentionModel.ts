@@ -1,5 +1,6 @@
 import type { AttentionCard, PrimaryAction, Severity, Waiting } from "../../lib/attentionBridge";
 import type { LiveSessionBrief } from "../../lib/livebrief";
+import { isSelfDriving } from "./dashboardModel";
 
 const WAITING_PRIORITY: Record<Waiting, number> = { human: 0, work: 1, none: 2 };
 const SEVERITY_PRIORITY: Record<Severity, number> = { blocking: 0, warning: 1, advisory: 2 };
@@ -25,6 +26,7 @@ export type AttentionFactKind = "pendingQuestion" | "queuedInput" | "noUpdate";
 
 /** 一覧のカード 1 枚を、気づき欄が要る範囲だけに削いだもの。 */
 export interface AttentionFactSource {
+  now?: number;
   sessionId: string;
   label: string;
   brief?: LiveSessionBrief;
@@ -106,7 +108,9 @@ function attentionFactCard(source: AttentionFactSource): AttentionFactCard | nul
     return { ...base, id: `fact:queued:${source.sessionId}`, kind: "queuedInput", detail: queued };
   }
 
-  if (minutes !== null && minutes >= ATTENTION_NO_UPDATE_MINUTES) {
+  const useBaselineQuietRule = brief?.telemetryHealth !== "live" || !brief.autonomy
+    || (brief.autonomy.turnState === "unknown" && !isSelfDriving(brief, source.now));
+  if (useBaselineQuietRule && minutes !== null && minutes >= ATTENTION_NO_UPDATE_MINUTES) {
     return {
       ...base,
       id: `fact:noupdate:${source.sessionId}`,

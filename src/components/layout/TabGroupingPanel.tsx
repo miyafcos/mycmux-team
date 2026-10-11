@@ -11,6 +11,7 @@ import { useGroupingRuntimeStore } from "../../stores/groupingRuntimeStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
+import { petAssignmentSettings } from "../../stores/petSettingsStore";
 import { layoutStructureRevision } from "../../lib/layoutMutation";
 import {
   cancelForegroundGroupingAnalysis,
@@ -19,11 +20,16 @@ import {
   peekGroupingPrecompute,
   requestGroupingPrecomputeRefresh,
 } from "../../lib/groupingPrecompute";
+import { useAskQuestionStore } from "../../stores/askQuestionStore";
 import { attentionCategory, useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import type { Pane, PaneTab, Workspace } from "../../types";
 import { formatJudgeError, formatLastOutputAgeCompact } from "./tabSweep";
 import {
-  choosePetForNewWorkspace,
+  petDefaultsForGrouping,
+  readGroupingPreset,
+  rememberGroupingPreset,
+  type GroupingPreset,
+  type GroupingPresetStrategy,
   clonePlanForEdit,
   findTabLocation,
   planCardStats,
@@ -78,7 +84,7 @@ import {
   type GroupingApplyAnimationStarter,
 } from "./groupingApplyAnimation";
 import { requestGroupingLandingFlight } from "./GroupingFlightHost";
-import { buildLocalGroupingAnalysis, buildLocalGroupingScan } from "./groupingLocalPlan";
+import { buildLocalGroupingAnalysis, buildLocalGroupingScan, withRequestedGroupingPlan } from "./groupingLocalPlan";
 import { usePaneMetadataStore } from "../../stores/paneMetadataStore";
 import { groupingExitTangent } from "./groupingLandingFlight";
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
@@ -94,7 +100,7 @@ import { useGroupingDrag } from "../../hooks/useGroupingDrag";
 import "./TabGroupingPanel.css";
 
 const GroupingEvidenceContext = createContext(new Map<string, { name: string; reason: string }>());
-function GroupingEvidenceName({ tab }: { tab: { id: string; label?: string; labelSource?: "user" | "ai"; displayName?: string } }) {
+function GroupingEvidenceName({ tab }: { tab: { id: string; label?: string; labelSource?: "user" | "ai" | "launch"; displayName?: string } }) {
   const evidence = useContext(GroupingEvidenceContext).get(tab.id);
   const current = getTabDisplayLabel(tab);
   const name = evidence?.name ?? current;
@@ -217,7 +223,7 @@ const GroupingLiveClockBadge = memo(function GroupingLiveClockBadge({
   );
 });
 
-export const GROUPING_STRATEGY_ORDER = ["minimal_move", "project", "role", "mixed"] as const;
+export const GROUPING_STRATEGY_ORDER = ["active_watch", "main_sessions", "minimal_move", "project", "role", "mixed"] as const;
 
 export function groupingStepStates(input: {
   mode: GroupingStepId;
@@ -246,10 +252,12 @@ export function previousGroupingStep(mode: GroupingStepId): GroupingStepId | nul
   return index > 0 ? GROUPING_STEPS[index - 1] : null;
 }
 
-export function orderGroupingPlansForDisplay(plans: readonly GroupingPlan[]): GroupingPlan[] {
+export function orderGroupingPlansForDisplay(plans: readonly GroupingPlan[], requestedStrategy?: GroupingPresetStrategy): GroupingPlan[] {
   const order = new Map(GROUPING_STRATEGY_ORDER.map((strategy, index) => [strategy, index]));
   return plans.map((plan, sourceIndex) => ({ plan, sourceIndex }))
-    .sort((a, b) => (order.get(a.plan.strategy) ?? GROUPING_STRATEGY_ORDER.length)
+    .sort((a, b) => Number(b.plan.strategy === requestedStrategy) - Number(a.plan.strategy === requestedStrategy)
+      || (requestedStrategy ? Number(b.plan.strategy === "role") - Number(a.plan.strategy === "role") : 0)
+      || (order.get(a.plan.strategy) ?? GROUPING_STRATEGY_ORDER.length)
       - (order.get(b.plan.strategy) ?? GROUPING_STRATEGY_ORDER.length)
       || a.sourceIndex - b.sourceIndex)
     .map(({ plan }) => plan);
@@ -401,16 +409,19 @@ function groupingPreparedTime(generatedAt: number): string {
 function groupingPreparedStatus(
   freshness: GroupingAnalysisFreshness,
   generatedAt: number,
+  requestedStrategy?: GroupingPresetStrategy,
 ): string {
   const time = groupingPreparedTime(generatedAt);
   if (freshness === "fresh") return `現在の状態・${time}に準備済み`;
   // The local plan is a real, applicable plan -- it is labelled by how it was
   // made, not as a weaker version of the AI one.
-  if (freshness === "local") return `作業フォルダから組んだ案・${time}`;
+  if (freshness === "local") return requestedStrategy ? `${strategyLabel(requestedStrategy)}の案・${time}` : `作業フォルダから組んだ案・${time}`;
   return `${time}時点の案（参考表示）`;
 }
 
 function strategyLabel(strategy: GroupingPlan["strategy"]): string {
+  if (strategy === "active_watch") return tabGroupingStrings.strategyActiveWatch;
+  if (strategy === "main_sessions") return tabGroupingStrings.strategyMainSessions;
   if (strategy === "project") return tabGroupingStrings.strategyProject;
   if (strategy === "role") return tabGroupingStrings.strategyRole;
   if (strategy === "minimal_move") return tabGroupingStrings.strategyMinimal;
@@ -1712,6 +1723,8 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
   const dropPickerActiveIdRef = useRef<string | null>(null);
   const dropPickerEngagedRef = useRef(false);
   const previousSelectedCountRef = useRef(0);
+  const [preset, setPreset] = useState<GroupingPreset>(readGroupingPreset);
+  const requestedStrategy = preset === "recommended" ? undefined : preset;
   const [mode, setMode] = useState<GroupingMode>("compare");
   const [confirmView, setConfirmView] = useState<ConfirmView>("side-by-side");
   const [showCurrent, setShowCurrent] = useState(false);
@@ -1757,10 +1770,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     allocationSeed: requestId(),
     createdAt: Date.now(),
   }));
-  const [newWorkspaceDefaults, setNewWorkspaceDefaults] = useState<{ pet: Workspace["pet"] } | null>(() => {
-    const pet = choosePetForNewWorkspace();
-    return pet === undefined ? null : { pet };
-  });
+  const [petDefaultsSettings, setPetDefaultsSettings] = useState(petAssignmentSettings);
   const aiProvider = useAiSettingsStore((state) => state.aiProvider);
   const aiEnabled = useAiSettingsStore((state) => state.aiEnabled);
   const jevEnabled = useJevSettingsStore((state) => state.enabled);
@@ -1777,10 +1787,14 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
   const attentionBySession = useSessionAttentionStore((state) => state.attentionBySession);
   const seenAttentionByTab = useSessionAttentionStore((state) => state.seenAttentionByTab);
 
-  const displayedPlans = useMemo(() => orderGroupingPlansForDisplay(plans), [plans]);
+  const displayedPlans = useMemo(() => orderGroupingPlansForDisplay(plans, requestedStrategy), [plans, requestedStrategy]);
   const editSession = selectedPlanId ? editedByPlan[selectedPlanId] ?? null : null;
   const edited = editSession?.plan
     ?? (selectedPlanId ? plans.find((plan) => plan.planId === selectedPlanId) ?? null : null);
+  const emptyPresetPlan = Boolean(edited && (edited.strategy === "active_watch" || edited.strategy === "main_sessions") && edited.groups.length === 0);
+  const newWorkspaceDefaults = useMemo(() => edited
+    ? petDefaultsForGrouping(edited.groups, workspaces, petDefaultsSettings, analysisIdentity.allocationSeed)
+    : null, [edited, workspaces, petDefaultsSettings, analysisIdentity.allocationSeed]);
   const selectedGroup = edited?.groups.find((group) => group.groupId === selectedGroupId) ?? edited?.groups[0] ?? null;
   // Only block the plan controls while there is nothing to act on. Once a plan
   // is on screen -- including the local instant plan built before the judge is
@@ -1911,9 +1925,9 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     freshness: GroupingAnalysisFreshness,
     generatedAt: number,
   ) => {
+    result = withRequestedGroupingPlan(result, requestedStrategy);
     setAnalysisIdentity({ allocationSeed: requestId(), createdAt: Date.now() });
-    const pet = choosePetForNewWorkspace();
-    setNewWorkspaceDefaults(pet === undefined ? null : { pet });
+    setPetDefaultsSettings(petAssignmentSettings());
     resetTransientUi();
     setMode("compare");
     setScan(result.scan);
@@ -1931,7 +1945,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
       return;
     }
     const parsed: ParseGroupingResult = result.parsed;
-    const orderedPlans = orderGroupingPlansForDisplay(parsed.plans);
+    const orderedPlans = orderGroupingPlansForDisplay(parsed.plans, requestedStrategy);
     setParseError(null);
     setPlans(parsed.plans);
     setEditedByPlan(Object.fromEntries(parsed.plans.map((plan) => [
@@ -1941,8 +1955,8 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     setSelectedPlanId(orderedPlans[0]?.planId ?? null);
     setSelectedGroupId(orderedPlans[0]?.groups[0]?.groupId ?? null);
     setComparisonInsufficient(freshness !== "local" && parsed.comparisonInsufficient);
-    setStatus(groupingPreparedStatus(freshness, generatedAt));
-  }, [resetTransientUi]);
+    setStatus(groupingPreparedStatus(freshness, generatedAt, requestedStrategy));
+  }, [requestedStrategy, resetTransientUi]);
 
   // True once the user has done anything with the plan on screen. A judge
   // result that arrives afterwards must not silently replace their work.
@@ -1963,9 +1977,20 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     try {
       const attentionState = useSessionAttentionStore.getState();
       const workspaceState = useWorkspaceListStore.getState();
+      const metadataState = usePaneMetadataStore.getState();
+      const lastOutputBySession: Record<string, number> = {};
+      for (const source of [metadataState.metadata, metadataState.volatileMetadata]) {
+        for (const [sessionId, metadata] of Object.entries(source)) {
+          if (typeof metadata.backendLastOutputAt === "number") lastOutputBySession[sessionId] = metadata.backendLastOutputAt;
+        }
+      }
       const scan = await buildLocalGroupingScan({
         workspaces: workspaceState.workspaces,
-        metadata: usePaneMetadataStore.getState().metadata,
+        metadata: metadataState.metadata,
+        lastOutputBySession,
+        attentionBySession: attentionState.attentionBySession,
+        seenAttentionByTab: attentionState.seenAttentionByTab,
+        questionsBySession: useAskQuestionStore.getState().bySession,
         attentionByTabId: {},
         now: Date.now(),
       });
@@ -1979,6 +2004,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
       }
       const analysis = buildLocalGroupingAnalysis(scan, attentionByTabId, {
         existingWorkspaceNames: workspaceState.workspaces.map((workspace) => workspace.name),
+        requestedStrategy,
       });
       if (!analysis || !isCurrent()) return false;
       hydrateAnalysis(analysis, "local", Date.now());
@@ -1986,7 +2012,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     } catch {
       return false;
     }
-  }, [hydrateAnalysis]);
+  }, [hydrateAnalysis, requestedStrategy]);
 
   const analyze = useCallback(async (force = true, options?: { keepCurrent?: boolean }) => {
     cancelJudge();
@@ -2015,7 +2041,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     try {
       const produced = await generateForegroundGroupingAnalysis(force, (stage) => {
         if (generation === analyzeGenerationRef.current) setAnalysisStage(stage);
-      });
+      }, requestedStrategy);
       if (generation !== analyzeGenerationRef.current) return;
       if (produced.kind === "obsolete") {
         setStatus("状態が変わったため、もう一度分析してください");
@@ -2062,7 +2088,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
         setAnalyzing(false);
       }
     }
-  }, [aiProvider, jevEnabled, cancelJudge, hydrateAnalysis, resetTransientUi]);
+  }, [aiProvider, jevEnabled, cancelJudge, hydrateAnalysis, requestedStrategy, resetTransientUi]);
 
   useEffect(() => {
     if (!open) {
@@ -2072,7 +2098,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     if (intent === "review" && useGroupingRuntimeStore.getState().undo?.status === "available") return;
     let cancelled = false;
     markGroupingInterest();
-    const cached = peekGroupingPrecompute();
+    const cached = requestedStrategy ? { kind: "miss" as const } : peekGroupingPrecompute();
     if (cached.kind === "fresh" || cached.kind === "soft-stale") {
       hydrateAnalysis(cached.analysis, cached.kind, cached.generatedAt);
       if (cached.kind === "soft-stale") {
@@ -2085,14 +2111,14 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     } else {
       void (async () => {
         const shown = await showLocalPlan(() => !cancelled);
-        if (!cancelled) await analyze(false, shown ? { keepCurrent: true } : undefined);
+        if (!cancelled && !(requestedStrategy && (!aiEnabled || !jevEnabled))) await analyze(Boolean(requestedStrategy), shown ? { keepCurrent: true } : undefined);
       })();
     }
     return () => {
       cancelled = true;
       cancelJudge();
     };
-  }, [analyze, cancelJudge, hydrateAnalysis, intent, open, showLocalPlan]);
+  }, [aiEnabled, analyze, cancelJudge, hydrateAnalysis, intent, jevEnabled, open, requestedStrategy, showLocalPlan]);
 
   useEffect(() => {
     if (!open
@@ -2123,7 +2149,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
   }, [moveOpen]);
 
   useEffect(() => {
-    if (mode !== "confirm" || !edited || !scan || applying || applied) return;
+    if (mode !== "confirm" || !edited || !scan || applying || applied || emptyPresetPlan) return;
     if (ticket) {
       if (preparedPlan === edited) return;
       revisionReprepareRef.current = false;
@@ -2154,7 +2180,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     setTicket(result.ticket);
     setPreparedLayoutRevision(useWorkspaceListStore.getState().layoutRevision);
     revisionReprepareRef.current = false;
-  }, [analysisIdentity, applied, applying, edited, mode, newWorkspaceDefaults, preparedPlan, scan, ticket]);
+  }, [analysisIdentity, applied, applying, edited, emptyPresetPlan, mode, newWorkspaceDefaults, preparedPlan, scan, ticket]);
 
   useEffect(() => {
     if (!confirmationInvalidated) return;
@@ -2716,6 +2742,35 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
           {tabGroupingStrings.dropPickerHint}
         </div>
 
+        <div className="cmux-tab-grouping-presets">
+          <div className="cmux-tab-grouping-preset-options" role="group" aria-label={tabGroupingStrings.presetLabel}>
+            {(["recommended", "active_watch", "main_sessions"] as const).map(value => (
+              <button
+                key={value}
+                type="button"
+                className={`cmux-tab-grouping-button${preset === value ? " is-primary" : ""}`}
+                data-grouping-preset={value}
+                aria-pressed={preset === value}
+                aria-describedby={preset === value ? "grouping-preset-description" : undefined}
+                disabled={applying || Boolean(applied) || reviewApplied}
+                onClick={() => {
+                  if (preset === value) return;
+                  cancelJudge();
+                  setAnalyzing(false);
+                  rememberGroupingPreset(value);
+                  setPreset(value);
+                }}
+              >
+                {value === "recommended" ? tabGroupingStrings.presetRecommended : strategyLabel(value)}
+              </button>
+            ))}
+          </div>
+          <div id="grouping-preset-description" className="cmux-tab-grouping-note">
+            {preset === "active_watch" ? tabGroupingStrings.strategyActiveWatchDescription
+              : preset === "main_sessions" ? tabGroupingStrings.strategyMainSessionsDescription : tabGroupingStrings.presetRecommendedDescription}
+          </div>
+        </div>
+
         {analysisNotice ? (
           <div className="cmux-tab-grouping-analysis-notice">
             <GroupingAnalysisDetails {...analysisNotice} />
@@ -2729,7 +2784,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
                 {analyzing ? (
                   <div className="cmux-tab-grouping-note">
                     <div>{analysisProgress}</div>
-                    {analysisFreshness === "local" ? <div>{tabGroupingStrings.localPlanWhileJudging}</div> : null}
+                    {analysisFreshness === "local" ? <div>{requestedStrategy ? tabGroupingStrings.presetPlanWhileJudging : tabGroupingStrings.localPlanWhileJudging}</div> : null}
                     {analysisWaitExceeded ? <div>{usablePlanWhileJudging ? tabGroupingStrings.analysisSlowHint : tabGroupingStrings.analysisSlowNoPlanHint}</div> : null}
                   </div>
                 ) : null}
@@ -3410,7 +3465,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
                 <button
                   type="button"
                   className="cmux-tab-grouping-button is-primary"
-                  disabled={resultReadOnly || !edited || analyzingWithoutPlan || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError) || editErrors.length > 0 || Boolean(displayedCompiled && !displayedCompiled.ok) || (displayedCompiled?.ok === true && displayedCompiled.transaction.expected.movedTabIds.length === 0)}
+                  disabled={resultReadOnly || !edited || emptyPresetPlan || analyzingWithoutPlan || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError) || editErrors.length > 0 || Boolean(displayedCompiled && !displayedCompiled.ok) || (displayedCompiled?.ok === true && displayedCompiled.transaction.expected.movedTabIds.length === 0)}
                   onClick={() => enterMode("confirm")}
                 >
                   {tabGroupingStrings.confirmPlan}
@@ -3418,7 +3473,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
                 <button
                   type="button"
                   className="cmux-tab-grouping-button"
-                  disabled={resultReadOnly || !edited || analyzingWithoutPlan || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError)}
+                  disabled={resultReadOnly || !edited || emptyPresetPlan || analyzingWithoutPlan || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError)}
                   onClick={() => enterMode("edit")}
                 >
                   {tabGroupingStrings.editPlan}
@@ -3428,7 +3483,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
               <button
                 type="button"
                 className="cmux-tab-grouping-button is-primary"
-                disabled={resultReadOnly || !edited || analyzingWithoutPlan || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError) || editErrors.length > 0 || (mode === "confirm" && (!ticket || preparedPlan !== edited || confirmationInvalidated)) || Boolean(displayedCompiled && !displayedCompiled.ok) || (displayedCompiled?.ok === true && displayedCompiled.transaction.expected.movedTabIds.length === 0)}
+                disabled={resultReadOnly || !edited || emptyPresetPlan || analyzingWithoutPlan || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError) || editErrors.length > 0 || (mode === "confirm" && (!ticket || preparedPlan !== edited || confirmationInvalidated)) || Boolean(displayedCompiled && !displayedCompiled.ok) || (displayedCompiled?.ok === true && displayedCompiled.transaction.expected.movedTabIds.length === 0)}
                 onClick={() => {
                   if (mode === "confirm") apply();
                   else if (nextStep) enterMode(nextStep);

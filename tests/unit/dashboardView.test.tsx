@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => ({
   submitAskQuestionChoice: vi.fn(async () => ({ ok: true, stopReason: null, keysSent: [] })),
   submitAskQuestionReview: vi.fn(async () => ({ ok: true, stopReason: null, keysSent: [] })),
   isAskQuestionBusy: vi.fn(() => false),
-  attentionCards: vi.fn(),
+  attentionCards: vi.fn(), invoke: vi.fn(), mappings: vi.fn(),
 }));
 
 vi.mock("../../src/stores/liveBriefStore", async () => {
@@ -38,7 +38,7 @@ vi.mock("../../src/lib/focusController", async () => {
 
 vi.mock("../../src/lib/ipc", async () => {
   const actual = await vi.importActual<typeof import("../../src/lib/ipc")>("../../src/lib/ipc");
-  return { ...actual, onSessionStatusChanged: mocks.onSessionStatusChanged };
+  return { ...actual, onSessionStatusChanged: mocks.onSessionStatusChanged, readAgentSessionMappings:mocks.mappings };
 });
 
 vi.mock("../../src/lib/backgroundAiScheduler", async () => {
@@ -79,6 +79,8 @@ vi.mock("../../src/components/dashboard/askQuestionRouting", async () => {
   };
 });
 
+vi.mock("@tauri-apps/api/core",async original=>({...await original<typeof import("@tauri-apps/api/core")>(),invoke:mocks.invoke}));
+
 import { clampDashboardChatDropIndicatorOffset, DashboardView } from "../../src/components/dashboard/DashboardView";
 import { dashboardStrings } from "../../src/components/dashboard/dashboardStrings";
 import { useInterventionFeedbackStore } from "../../src/components/dashboard/interventionRouting";
@@ -93,6 +95,7 @@ import {
   dashboardMinimapMaxWidth,
   useDashboardViewStore,
 } from "../../src/stores/dashboardViewStore";
+import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useLiveBriefStore } from "../../src/stores/liveBriefStore";
 import { __resetReportInboxStoreForTests } from "../../src/stores/reportInboxStore";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
@@ -281,6 +284,13 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  useSettingsStore.setState({conversationHistoryMode:"agent-wheel"});
+  mocks.mappings.mockImplementation(async(ids:string[])=>Object.fromEntries(ids.map(id=>[id,{agent_kind:"codex",session_id:`exact-${id}`}])));
+  mocks.invoke.mockImplementation(async(cmd:string,args:any)=>{
+    if(cmd!=="open_transcript_history")return null;
+    const b=useLiveBriefStore.getState().briefsBySession[args.request.ptySessionId];if(b?.telemetryHealth==="unavailable")throw "permissionDenied";
+    return {readerId:args.request.ptySessionId,sourceGeneration:"g",snapshotEnd:"0",items:[],olderCursor:null,newerCursor:"tail",latestCursor:"latest",scanContinuation:null,reachedStart:true,reachedFence:true,diagnostics:[]};
+  });
   vi.useFakeTimers();
   vi.setSystemTime(NOW);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -331,6 +341,29 @@ async function renderDashboard(): Promise<void> {
     await Promise.resolve();
   });
 }
+
+it("INTEG-4 subscribes to a delegated seat's retained dormant completion", async () => {
+  const parent = tab("parent", "parent-session", "Parent");
+  const child = { ...tab("worker", "worker-session", "Worker"), delegatedByTabId: parent.id,
+    delegatedByAgentSessionId: "parent-conversation", delegatedAt: NOW - 1000 };
+  const attention = { ...doneAttention(child.sessionId), sessionEpoch: 7 };
+  seedDashboard({ workspace: workspace([parent, child]), selectedTabId: parent.id, chatColumnTabIds: [],
+    attention: { [child.sessionId]: attention } });
+  usePaneMetadataStore.setState({ volatileMetadata: {
+    [parent.sessionId]: { ptyAlive: false, liveAgentKind: null, liveAgentObservationKnown: true, liveAgentObservedAt: NOW },
+    [child.sessionId]: { ptyAlive: false },
+  } });
+  await renderDashboard();
+  const row = () => container.querySelector<HTMLElement>(`[data-dashboard-row="${child.id}"]`)!;
+  expect(row().dataset.dashboardState).toBe("stopped");
+  await act(async () => {
+    expect(useSessionAttentionStore.getState().preserveDormantCompletion(child.sessionId, [child.id], {
+      ptySessionId: child.sessionId, agentKind: "codex", agentSessionId: "11111111-1111-4111-8111-111111111111",
+      ptyGeneration: 7, savedAt: NOW, bytes: 256,
+    }, attention.attentionId)).toBe(true);
+  });
+  expect(row().dataset.dashboardState).toBe("done");
+});
 
 describe("clampDashboardChatDropIndicatorOffset", () => {
   it("keeps a three-pixel indicator fully inside the root at either edge", () => {
@@ -449,23 +482,23 @@ describe("DashboardView split3 selection", () => {
     });
     await renderDashboard();
 
-    expect(centerBreadcrumb(container)).toBe("Workspace A › タブ1 › P1");
+    expect(centerBreadcrumb(container)).toBe("Workspace A › タブ1-1");
     const doneRow = container.querySelector<HTMLElement>(`[data-dashboard-row="${done.id}"]`);
     expect(doneRow).not.toBeNull();
 
     await act(async () => doneRow?.click());
     expect(useDashboardViewStore.getState().selectedTabId).toBe(done.id);
-    expect(centerBreadcrumb(container)).toBe("Workspace A › タブ1 › P2");
+    expect(centerBreadcrumb(container)).toBe("Workspace A › タブ1-2");
 
     const region = container.querySelector<HTMLElement>("[role='region']");
     expect(region).not.toBeNull();
     await act(async () => region?.dispatchEvent(new KeyboardEvent("keydown", { key: "k", bubbles: true })));
     expect(useDashboardViewStore.getState().selectedTabId).toBe(active.id);
-    expect(centerBreadcrumb(container)).toBe("Workspace A › タブ1 › P1");
+    expect(centerBreadcrumb(container)).toBe("Workspace A › タブ1-1");
 
     await act(async () => region?.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true })));
     expect(useDashboardViewStore.getState().selectedTabId).toBe(done.id);
-    expect(centerBreadcrumb(container)).toBe("Workspace A › タブ1 › P2");
+    expect(centerBreadcrumb(container)).toBe("Workspace A › タブ1-2");
   });
 
   it("keeps the split3 center as the only question anchor", async () => {
@@ -490,7 +523,7 @@ describe("DashboardView split3 selection", () => {
     expect(useDashboardViewStore.getState().selectedTabId).toBe(second.id);
     const selectedRow = container.querySelector<HTMLElement>(`[data-dashboard-row="${second.id}"]`);
     expect(selectedRow?.style.boxShadow).toContain("var(--cmux-accent)");
-    expect(centerBreadcrumb(container)).toBe("Workspace A › タブ1 › P2");
+    expect(centerBreadcrumb(container)).toBe("Workspace A › タブ1-2");
     expect(chip?.classList.contains("is-selected")).toBe(true);
   });
 
@@ -508,7 +541,7 @@ describe("DashboardView split3 selection", () => {
     await act(async () => secondRow?.click());
     expect(useDashboardViewStore.getState().selectedTabId).toBe(second.id);
     expect(secondRow?.style.boxShadow).toContain("var(--cmux-accent)");
-    expect(centerBreadcrumb(container)).toBe("Workspace B › タブ1 › P1");
+    expect(centerBreadcrumb(container)).toBe("Workspace B › タブ1-1");
     const secondWorkspace = container.querySelector<HTMLElement>("[data-minimap-workspace='ws-b']")!;
     expect(secondWorkspace.querySelector("button")?.getAttribute("aria-expanded")).toBe("true");
     expect(secondWorkspace.querySelector(`[data-minimap-tab='${second.id}']`)?.classList.contains("is-selected")).toBe(true);
@@ -534,7 +567,8 @@ describe("DashboardView split3 selection", () => {
     expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "端末" || button.textContent === "チャット")).toBe(false);
   });
 
-  it("tells a transcript it could not read apart from one that is genuinely empty", async () => {
+  it.each(["agent-wheel","legacy"] as const)("tells a transcript it could not read apart from one that is genuinely empty (%s)", async mode => {
+    useSettingsStore.setState({conversationHistoryMode:mode});
     const unreadable = tab("tab-unreadable", "s-unreadable", "Unreadable");
     seedDashboard({
       workspace: workspace([unreadable]),
@@ -568,7 +602,8 @@ describe("DashboardView split3 selection", () => {
   });
 
 
-  it("uses empty detail for the column and active question state instead of reviving a shallow question", async () => {
+  it.each(["agent-wheel","legacy"] as const)("uses empty detail for the column and active question state instead of reviving a shallow question (%s)", async mode => {
+    useSettingsStore.setState({conversationHistoryMode:mode});
     const item = tab("tab-empty", "s-empty", "Empty detail");
     seedDashboard({
       workspace: workspace([item]), selectedTabId: item.id,

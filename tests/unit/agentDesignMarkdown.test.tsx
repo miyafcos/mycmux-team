@@ -13,7 +13,6 @@ vi.mock("../../src/hooks/useAccountsPolling", () => ({ useAccountsPolling: vi.fn
 vi.mock("../../src/hooks/useCliLoginEvents", () => ({ useCliLoginEvents: vi.fn() }));
 vi.mock("../../src/components/layout/AccountsButton", () => ({ AccountsButton: () => <button>Accounts</button> }));
 vi.mock("../../src/components/layout/WindowControls", () => ({ WindowControls: () => <button>Close window</button> }));
-vi.mock("../../src/components/ailog/AiLogButton", () => ({ AiLogButton: () => <button>Log</button> }));
 vi.mock("../../src/components/dashboard/DashboardButton", () => ({ DashboardButton: () => <button>Dashboard</button> }));
 vi.mock("../../src/components/settings/SettingsDialog", () => ({ default: () => null }));
 import { DocumentView } from "../../src/components/agentDesign/DocumentView";
@@ -21,7 +20,6 @@ import { ItemDetail } from "../../src/components/agentDesign/ui";
 import TitleBar from "../../src/components/layout/TitleBar";
 import { SkillsButton } from "../../src/components/skills/SkillsButton";
 import { agentDesignStrings as s } from "../../src/components/agentDesign/agentDesignStrings";
-import { skillsStrings } from "../../src/components/skills/skillsStrings";
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root, host: HTMLDivElement;
 const raw = "---\r\npaths:\r\n  - src/**\r\n---\r\n# Heading\r\n\r\n- Item\r\n\r\n| A | B |\r\n|---|---|\r\n| One | Two |\r\n\r\n> Quote\r\n\r\n\x60\x60\x60ts\r\nconst value = 1;\r\n\x60\x60\x60\r\n\r\n[Link](https://example.test)\r\n<script>globalThis.AD_CANARY = 1</script><img src=x onerror=\"globalThis.AD_CANARY=2\"><a href=\"javascript:AD_CANARY=3\">Blocked</a>\r\n";
@@ -121,22 +119,19 @@ describe("agent design Markdown and direct skills entry", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("agent_design_document", { id: item.id, cwd: catalog.cwd });
     expect(host.querySelector(".skills-markdown h1")?.textContent).toBe("Heading");
   });
-  it("places the two distinct real buttons together and opens their respective panels", async () => {
+  it("opens skills inside the real agent design entry after consolidating the titlebar", async () => {
     await render(<TitleBar onOpenOnlinePanel={vi.fn()} />);
     const design = host.querySelector<HTMLButtonElement>('button[aria-controls="agent-design-panel"]')!;
-    const skills = host.querySelector<HTMLButtonElement>('button[aria-controls="skills-panel"]')!;
-    expect(skills.title).toBe(skillsStrings.title);
-    expect(skills.getAttribute("aria-label")).toBe(skillsStrings.title);
-    expect(design.parentElement?.nextElementSibling).toBe(skills.parentElement);
-    expect(skills.querySelector("svg")?.outerHTML).not.toBe(design.querySelector("svg")?.outerHTML);
-    expect(skills.querySelector("svg")?.getAttribute("width")).toBe("12");
-    await act(async () => skills.click());
-    expect(document.querySelector("#skills-panel .skills-panel")).toBeTruthy();
-    expect(document.querySelector("#agent-design-panel")).toBeNull();
-    expect(mocks.invoke).toHaveBeenCalledWith("agent_design_skills", { cwd: null });
-    await act(async () => skills.click());
+    expect(host.querySelector('button[aria-controls="skills-panel"]')).toBeNull();
+    expect(host.querySelector('button[aria-controls="ailog-panel"]')).toBeNull();
+    expect(design.title).toBe(s.title); expect(design.getAttribute("aria-label")).toBe(s.title);
+    expect(design.querySelector("svg")?.getAttribute("width")).toBe("12");
     await act(async () => design.click());
     expect(document.querySelector("#agent-design-panel .ad-view")).toBeTruthy();
     expect(design.getAttribute("aria-expanded")).toBe("true");
+    await click(s.skills);
+    expect(document.querySelector("#agent-design-panel .skills-panel")).toBeTruthy();
+    expect(document.querySelector("#skills-panel")).toBeNull();
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_design_skills", { cwd: catalog.cwd });
   });
 });

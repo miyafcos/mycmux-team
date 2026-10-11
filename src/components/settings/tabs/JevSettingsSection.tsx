@@ -28,14 +28,14 @@ export function JevSettingsSection({ aiEnabled }: { aiEnabled: boolean }) {
       } else {
         await saveJevSettings(enabled, model, apiKey);
         setApiKey("");
-        setMessage(enabled ? "保存しました。次のペイン再配置からJevを使います。" : "保存しました。ペイン再配置は手元の材料だけを使います。");
+        setMessage(enabled ? "保存しました。次のタブ再配置からJevを使います。" : "保存しました。タブ再配置は手元の材料だけを使います。");
       }
     } catch (caught) { setError(jevErrorMessage(caught)); }
     finally { setBusy(null); }
   };
   return <section aria-labelledby="jev-settings-heading">
     <div style={dividerStyle} />
-    <h3 id="jev-settings-heading" style={sectionHeadingStyle}>ペイン再配置 — Jev</h3>
+    <h3 id="jev-settings-heading" style={sectionHeadingStyle}>タブ再配置 — Jev</h3>
     <p style={hint}>「役割で見渡す」案の役割判定に使います。3案と表示名は手元の材料から組みます。</p>
     <label style={checkboxLabelStyle}>
       <input type="checkbox" checked={enabled} disabled={!aiEnabled || Boolean(busy) || !settings.loaded}
@@ -62,7 +62,7 @@ export function JevSettingsSection({ aiEnabled }: { aiEnabled: boolean }) {
         <input value={model} autoComplete="off" spellCheck={false} disabled={Boolean(busy)}
           onChange={(event) => setModel(event.target.value)} style={field} />
       </label>
-      <div style={hint}>役割の判定時に、ペインの名前・作業フォルダ・題名・親子関係をOpenRouter経由で送ります。接続テストは短い確認データだけを送り、少額のAPI利用料が発生します。</div>
+      <div style={hint}>役割の判定時に、タブの名前・作業フォルダ・題名・親子関係をOpenRouter経由で送ります。接続テストは短い確認データだけを送り、少額のAPI利用料が発生します。</div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button type="button" disabled={Boolean(busy) || (!apiKey.trim() && !settings.hasApiKey)}
           onClick={() => void run("test")}>{busy === "test" ? "接続を確認中…" : "接続テスト"}</button>

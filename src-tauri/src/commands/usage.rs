@@ -286,6 +286,131 @@ fn token_source(row: &PlannedRow, base: &std::path::Path) -> Result<String, Stri
     }
 }
 
+// The Tauri wrapper and injected tests call the same command implementation.
+// Only the test variant can redirect paths or endpoints; no extra IPC inputs
+// or credential-path overrides are exposed in the product.
+enum UsageApp {
+    Native(tauri::AppHandle),
+    #[cfg(test)]
+    Test(TestUsageApp),
+}
+
+#[cfg(test)]
+struct TestUsageApp {
+    base: std::path::PathBuf,
+    claude: ClaudePaths,
+    codex: CodexPaths,
+    grok: GrokPaths,
+    endpoint: String,
+}
+
+impl UsageApp {
+    fn data_dir(&self) -> Result<std::path::PathBuf, String> {
+        match self {
+            Self::Native(app) => app.path().app_data_dir().map(crate::test_profile::app_data_dir_from)
+                .map_err(|error| error.to_string()),
+            #[cfg(test)]
+            Self::Test(test) => Ok(test.base.clone()),
+        }
+    }
+
+    fn log(&self, context: &str, detail: &str) {
+        match self {
+            Self::Native(app) => crate::usage::log_oauth_failure(app, context, detail),
+            #[cfg(test)]
+            Self::Test(test) => crate::usage::log_oauth_failure_to(|| Some(test.base.clone()), context, detail),
+        }
+    }
+
+    fn accounts(&self, base: &std::path::Path) -> Result<crate::cli_accounts::CliAccountsSnapshot, String> {
+        match self {
+            Self::Native(_) => crate::cli_accounts::list_resolved(base),
+            #[cfg(test)]
+            Self::Test(test) => crate::cli_accounts::list(base, &test.claude, &test.codex),
+        }
+    }
+
+    fn source(&self, row: &PlannedRow, base: &std::path::Path,
+        resolve: impl FnOnce() -> Result<String, String>,
+    ) -> Result<String, String> {
+        match self {
+            Self::Native(_) => { let _ = (row, base); resolve() },
+            #[cfg(test)]
+            Self::Test(test) if row.is_active || !row.registered => {
+                match row.provider {
+                    CliProvider::Claude => claude::read_credentials(&test.claude),
+                    CliProvider::Codex => std::fs::read_to_string(&test.codex.auth).ok(),
+                    CliProvider::Grok => std::fs::read_to_string(&test.grok.auth).ok(),
+                }.ok_or_else(|| ERROR_SNAPSHOT_UNAVAILABLE.to_string())
+            }
+            #[cfg(test)]
+            Self::Test(_) => snapshot_text(base, &row.profile_id, row.provider),
+        }
+    }
+
+    fn live_check(&self, row: &PlannedRow) -> LiveIdentityCheck {
+        match self {
+            Self::Native(_) => live_identity_check(row),
+            #[cfg(test)]
+            Self::Test(test) => {
+                let live = match row.provider {
+                    CliProvider::Claude => claude::read_live_identity(&test.claude),
+                    CliProvider::Codex => codex::read_live_identity(&test.codex),
+                    CliProvider::Grok => grok::read_live_identity(&test.grok),
+                };
+                classify_live_identity(Some(&live), row.identity_key.as_deref())
+            }
+        }
+    }
+
+    fn claude_live_credentials(&self) -> Option<String> {
+        match self {
+            Self::Native(_) => ClaudePaths::resolve().ok().and_then(|paths| claude::read_credentials(&paths)),
+            #[cfg(test)]
+            Self::Test(test) => claude::read_credentials(&test.claude),
+        }
+    }
+
+    fn claude_live_access_token(&self) -> Option<String> {
+        // Resolve again for recapture's owner check at its original PC call site.
+        match self {
+            Self::Native(_) => ClaudePaths::resolve().ok()
+                .and_then(|paths| claude::read_credentials(&paths)),
+            #[cfg(test)]
+            Self::Test(test) => claude::read_credentials(&test.claude),
+        }.and_then(|text| token_owner::claude_access_token(&text))
+    }
+
+    fn usage_url(&self) -> &str {
+        match self {
+            Self::Native(_) => oauth_claude::USAGE_URL,
+            #[cfg(test)]
+            Self::Test(test) => &test.endpoint,
+        }
+    }
+
+    async fn claude_owner(&self, state: &UsageState, token: &str, force: bool) -> OwnerCheck {
+        match self {
+            Self::Native(_) if force => token_owner::fetch_claude_token_owner(&state.http, token).await,
+            Self::Native(_) => token_owner::claude_token_owner(&state.http, token).await,
+            #[cfg(test)]
+            Self::Test(test) => {
+                let check = token_owner::fetch_claude_token_owner_at(&state.http, token, &test.endpoint).await;
+                if let OwnerCheck::Owner(owner) = &check { token_owner::remember_owner(token, owner); }
+                check
+            }
+        }
+    }
+
+    async fn refresh_claude(&self, state: &UsageState, token: &str) -> Result<refresh::RefreshedClaude, refresh::RefreshError> {
+        match self {
+            Self::Native(_) => refresh::refresh_claude(&state.http, token).await,
+            #[cfg(test)]
+            Self::Test(test) => refresh::refresh_claude_at(&state.http, token, &test.endpoint).await,
+        }
+    }
+}
+
 struct ResetFlight<'a> {
     state: &'a UsageState,
     profile_id: String,
@@ -339,6 +464,14 @@ async fn live_unsettled(
         .cloned()
 }
 
+async fn begin_reset_operation(
+    state: &UsageState, key: &str, identity: &str, caller_id: &str,
+) -> reset_tickets::ResetAttempt {
+    let pending = live_unsettled(state, key, identity).await;
+    state.reset_operations.lock().await.begin(key, identity, caller_id, pending,
+        Utc::now().timestamp_millis())
+}
+
 async fn settle_reset(
     state: &UsageState,
     key: &str,
@@ -350,6 +483,7 @@ async fn settle_reset(
     outcome: &ResetTicketOutcome,
 ) {
     use ResetTicketOutcomeKind::*;
+    state.reset_operations.lock().await.claim_answered(key, request_id, target_id);
     let mut unsettled = state.reset_unsettled.lock().await;
     match outcome.kind {
         Reset | AlreadyUsed | OfferChanged | NothingToReset | NoTicket => {
@@ -373,49 +507,117 @@ async fn settle_reset(
     }
 }
 
+// API policy binds the provider as well as the row id. Normal PC callers
+// retain the original selection and error without any API-only fields.
+fn reset_ticket_row(
+    profiles: &[CliAccountProfile], live: &[CliLiveLogin], profile_id: &str,
+    api_request: bool, api_provider: Option<CliProvider>,
+) -> Result<PlannedRow, String> {
+    planned_rows(profiles, live).into_iter()
+        .find(|row| row.profile_id == profile_id && (!api_request || api_provider == Some(row.provider)))
+        .ok_or_else(|| if api_request {
+            "reset_ticket.error.profile_not_found".to_string()
+        } else {
+            "Unknown profile id".to_string()
+        })
+}
+
 #[tauri::command(async)]
 pub async fn use_reset_ticket(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, UsageState>,
+    app: tauri::AppHandle, state: tauri::State<'_, UsageState>,
+    profile_id: String, request_id: String, expected_email: Option<String>,
+    api_request: Option<bool>, api_provider: Option<CliProvider>,
+) -> Result<ResetTicketOutcome, String> {
+    use_reset_ticket_command(UsageApp::Native(app), &state, profile_id, request_id,
+        expected_email, api_request.unwrap_or(false), api_provider).await
+}
+
+async fn use_reset_ticket_command(
+    app: UsageApp, state: &UsageState, profile_id: String, request_id: String,
+    expected_email: Option<String>, api_request: bool, api_provider: Option<CliProvider>,
+) -> Result<ResetTicketOutcome, String> {
+    crate::usage::logging::scope(api_request, use_reset_ticket_command_inner(
+        app, state, profile_id, request_id, expected_email, api_request, api_provider,
+    )).await
+}
+
+async fn use_reset_ticket_command_inner(
+    app: UsageApp,
+    state: &UsageState,
     profile_id: String,
     request_id: String,
     expected_email: Option<String>,
+    api_request: bool,
+    api_provider: Option<CliProvider>,
 ) -> Result<ResetTicketOutcome, String> {
-    let default_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
-    let base = crate::test_profile::app_data_dir_from(default_dir);
-    let accounts = crate::cli_accounts::list_resolved(&base)?;
-    let row = planned_rows(&accounts.profiles, &accounts.live)
-        .into_iter()
-        .find(|row| row.profile_id == profile_id)
-        .ok_or_else(|| "Unknown profile id".to_string())?;
+    let base = app.data_dir()?;
+    let accounts = app.accounts(&base)?;
+    let row = reset_ticket_row(&accounts.profiles, &accounts.live, &profile_id,
+        api_request, api_provider)?;
     let source = if row.foreign_owner.is_some() || row.needs_relogin {
         Err(ERROR_SNAPSHOT_UNAVAILABLE.to_string())
     } else {
-        token_source(&row, &base)
+        app.source(&row, &base, || {
+            let source = token_source(&row, &base);
+            source
+        })
     };
+    let endpoints = ResetEndpoints::production();
+    #[cfg(test)]
+    let endpoints = if let UsageApp::Test(test) = &app {
+        ResetEndpoints { claude_base: &test.endpoint,
+            claude_profile_url: &test.endpoint, claude_usage_url: &test.endpoint,
+            codex_usage_url: Some(&test.endpoint) }
+    } else { endpoints };
     let outcome = use_reset_ticket_inner(
         &state, &row, source, &request_id,
-        expected_email.as_deref(), &ResetEndpoints::production(),
+        expected_email.as_deref(), &endpoints,
     ).await?;
-    let kind = serde_json::to_value(outcome.kind).unwrap_or_default();
-    let provider = match row.provider {
-        CliProvider::Claude => "claude",
-        CliProvider::Codex => "codex",
-        CliProvider::Grok => "grok",
-    };
-    let mut detail = format!("profile={} provider={} outcome={}",
-        row.profile_id, provider, kind.as_str().unwrap_or("unavailable"));
-    if let Some(step) = outcome.trace.step {
-        detail.push_str(&format!(" step={}", step.as_str()));
+    if !api_request {
+        let kind = serde_json::to_value(outcome.kind).unwrap_or_default();
+        let provider = match row.provider {
+            CliProvider::Claude => "claude",
+            CliProvider::Codex => "codex",
+            CliProvider::Grok => "grok",
+        };
+        let mut detail = format!("profile={} provider={} outcome={}",
+            row.profile_id, provider, kind.as_str().unwrap_or("unavailable"));
+        if let Some(step) = outcome.trace.step {
+            detail.push_str(&format!(" step={}", step.as_str()));
+        }
+        if let Some(status) = outcome.trace.http_status {
+            detail.push_str(&format!(" http={status}"));
+        }
+        if outcome.trace.remembered_status {
+            detail.push_str(" status=remembered");
+        }
+        app.log("reset_ticket_use", &detail);
     }
-    if let Some(status) = outcome.trace.http_status {
-        detail.push_str(&format!(" http={status}"));
-    }
-    if outcome.trace.remembered_status {
-        detail.push_str(" status=remembered");
-    }
-    crate::usage::log_oauth_failure(&app, "reset_ticket_use", &detail);
     Ok(outcome)
+}
+
+/// Resolve reset bookkeeping from the same owner evidence at every entry.
+/// A live row id is mutable and cannot stand in for a verified account id.
+fn codex_reset_identity(row: &PlannedRow, source: Option<&str>) -> Result<String, ResetTicketOutcomeKind> {
+    use ResetTicketOutcomeKind::{OwnerMismatch, TokenStale};
+    let tokens = source.and_then(|source| credentials::codex_tokens(source).ok());
+    let document_identity = if let Some(tokens) = tokens {
+        if tokens.account_id.as_deref().zip(row.identity_key.as_deref())
+            .is_some_and(|(document, recorded)| document != recorded) {
+            return Err(OwnerMismatch);
+        }
+        let claims = tokens.id_token.as_deref().map(codex::decode_id_token_claims)
+            .transpose().map_err(|_| TokenStale)?;
+        // Match the Codex identity reader's ID-token-first precedence. Keep
+        // tokens.account_id unchanged for the existing upstream request.
+        let identity = claims.and_then(|claims| claims.account_id).or(tokens.account_id);
+        if identity.as_deref().zip(row.identity_key.as_deref())
+            .is_some_and(|(document, recorded)| document != recorded) {
+            return Err(OwnerMismatch);
+        }
+        identity
+    } else { None };
+    document_identity.or_else(|| row.identity_key.clone()).ok_or(TokenStale)
 }
 
 async fn use_reset_ticket_inner(
@@ -433,6 +635,32 @@ async fn use_reset_ticket_inner(
     if row.provider == CliProvider::Grok {
         return Err("Reset tickets are not supported for Grok".into());
     }
+    let owner_mismatch = row.foreign_owner.is_some() || expected_email.zip(row.email.as_deref())
+        .is_some_and(|(expected, current)| !expected.eq_ignore_ascii_case(current));
+    if !owner_mismatch {
+        let owner_key = match row.provider {
+            CliProvider::Claude => row.identity_key.as_ref().map(|identity| format!("claude:{identity}")),
+            CliProvider::Codex => match codex_reset_identity(row, source.as_deref().ok()) {
+                Ok(identity) => Some(format!("codex:{identity}")),
+                Err(OwnerMismatch) => return Ok(ResetTicketOutcome::new(OwnerMismatch)),
+                // Unusable current evidence cannot invalidate a settled
+                // receipt for a stable registered owner. This fallback is
+                // only for cached lookup; fresh claims still require decoding.
+                Err(TokenStale) if row.registered => row.identity_key.as_ref()
+                    .map(|identity| format!("codex:{identity}")),
+                Err(_) => None,
+            },
+            CliProvider::Grok => unreachable!(),
+        };
+        if let Some(key) = owner_key {
+            if let Some(outcome) = state.reset_operations.lock().await
+                .cached(&key, request_id, Utc::now().timestamp_millis()) {
+                // The receipt describes the already verified operation; no
+                // current token or new upstream request is needed to replay it.
+                return Ok(outcome);
+            }
+        }
+    }
     {
         let mut in_flight = state.reset_in_flight.lock().unwrap_or_else(|error| error.into_inner());
         if !in_flight.insert(row.profile_id.clone()) {
@@ -441,8 +669,7 @@ async fn use_reset_ticket_inner(
     }
     let _flight = ResetFlight { state, profile_id: row.profile_id.clone() };
     let started_at_ms = Utc::now().timestamp_millis();
-    let outcome = if row.foreign_owner.is_some() || expected_email.zip(row.email.as_deref())
-        .is_some_and(|(expected, current)| !expected.eq_ignore_ascii_case(current)) {
+    let outcome = if owner_mismatch {
         ResetTicketOutcome::new(OwnerMismatch)
     } else if row.needs_relogin {
         ResetTicketOutcome::new(AuthError)
@@ -533,7 +760,11 @@ async fn claim_claude_press(
         ResetTicketOutcome::new(OwnerMismatch)
     } else {
         let key = format!("claude:{}", owner.account_uuid);
-        let reuse = live_unsettled(state, &key, &owner.account_uuid).await;
+        let reuse = match begin_reset_operation(state, &key, &owner.account_uuid, request_id).await {
+            reset_tickets::ResetAttempt::Settled(outcome) => return outcome,
+            reset_tickets::ResetAttempt::Send { reuse } => reuse,
+        };
+        let caller_id = request_id;
         let request_id = reuse
             .as_ref()
             .map_or(request_id, |entry| entry.request_id.as_str());
@@ -542,6 +773,7 @@ async fn claim_claude_press(
             reuse.as_ref(), started_at_ms, endpoints,
         ).await;
         outcome.retry_of_unconfirmed = reuse.is_some();
+        state.reset_operations.lock().await.finish(&key, caller_id, &outcome);
         outcome
     };
     // Decided by what the profile said (another account, a bad organization).
@@ -695,16 +927,16 @@ async fn claim_codex_ticket(
     if tokens.access_expires_at_ms.is_some_and(|expiry| expiry <= Utc::now().timestamp_millis()) {
         return ResetTicketOutcome::new(TokenStale);
     }
-    if tokens.account_id.as_deref()
-        .zip(row.identity_key.as_deref())
-        .is_some_and(|(token, row)| token != row) {
-        return ResetTicketOutcome::new(OwnerMismatch);
-    }
-    let identity = tokens.account_id
-        .clone()
-        .unwrap_or_else(|| format!("profile:{}", row.profile_id));
+    let identity = match codex_reset_identity(row, Some(source)) {
+        Ok(identity) => identity,
+        Err(kind) => return ResetTicketOutcome::new(kind),
+    };
     let key = format!("codex:{identity}");
-    let reuse = live_unsettled(state, &key, &identity).await;
+    let reuse = match begin_reset_operation(state, &key, &identity, request_id).await {
+        reset_tickets::ResetAttempt::Settled(outcome) => return outcome,
+        reset_tickets::ResetAttempt::Send { reuse } => reuse,
+    };
+    let caller_id = request_id;
     let request_id = reuse
         .as_ref()
         .map_or(request_id, |entry| entry.request_id.as_str());
@@ -713,6 +945,7 @@ async fn claim_codex_ticket(
         reuse.as_ref(), started_at_ms, endpoints,
     ).await;
     outcome.retry_of_unconfirmed = reuse.is_some();
+    state.reset_operations.lock().await.finish(&key, caller_id, &outcome);
     outcome
 }
 
@@ -773,8 +1006,22 @@ async fn claim_codex_verified(
 
 #[tauri::command(async)]
 pub async fn get_account_usage(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, UsageState>,
+    app: tauri::AppHandle, state: tauri::State<'_, UsageState>,
+    refresh_metadata: Option<bool>, api_command: Option<crate::usage::logging::ApiUsageCommand>,
+) -> Result<AccountUsageReport, String> {
+    get_account_usage_command(UsageApp::Native(app), &state, refresh_metadata, api_command).await
+}
+
+async fn get_account_usage_command(
+    app: UsageApp, state: &UsageState, refresh_metadata: Option<bool>,
+    api_command: Option<crate::usage::logging::ApiUsageCommand>,
+) -> Result<AccountUsageReport, String> {
+    crate::usage::logging::scope(api_command.is_some(), get_account_usage_inner(app, state, refresh_metadata)).await
+}
+
+async fn get_account_usage_inner(
+    app: UsageApp,
+    state: &UsageState,
     refresh_metadata: Option<bool>,
 ) -> Result<AccountUsageReport, String> {
     let refresh_metadata = if refresh_metadata == Some(true) {
@@ -782,12 +1029,8 @@ pub async fn get_account_usage(
         let mut last = state.last_metadata_refresh_at_ms.lock().await;
         if now.saturating_sub(*last) >= 60_000 { *last = now; true } else { false }
     } else { false };
-    let default_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    let base = crate::test_profile::app_data_dir_from(default_dir);
-    let accounts = crate::cli_accounts::list_resolved(&base)?;
+    let base = app.data_dir()?;
+    let accounts = app.accounts(&base)?;
     let rows = planned_rows(&accounts.profiles, &accounts.live);
     prepare_subscription_cache(&state, &rows).await;
     let priority = std::mem::take(&mut *state.deferred_priority.lock().await);
@@ -865,7 +1108,10 @@ pub async fn get_account_usage(
             output.push((index, usage));
             continue;
         }
-        let source = token_source(&row, &base);
+        let source = app.source(&row, &base, || {
+            let source = token_source(&row, &base);
+            source
+        });
         let Ok(source) = source else {
             output.push((
                 index,
@@ -933,9 +1179,7 @@ pub async fn get_account_usage(
     // Deferral is not a failure, so nothing else records it: this line is the
     // only way to see how often the budget runs short.
     if !deferred_ids.is_empty() {
-        crate::usage::log_oauth_failure(
-            &app,
-            "get_account_usage_deferred",
+        app.log("get_account_usage_deferred",
             &format!(
                 "deferred={} without_numbers={deferred_blank} spent={}",
                 deferred_ids.len(),
@@ -1071,12 +1315,12 @@ fn foreign_token_usage(row: &PlannedRow, email: Option<String>, snapshot: bool) 
 }
 
 async fn foreign_claude_usage(
-    app: &tauri::AppHandle, state: &UsageState, base: &std::path::Path,
+    app: &UsageApp, state: &UsageState, base: &std::path::Path,
     row: &PlannedRow, owner: TokenOwner, snapshot: bool,
 ) -> FetchResult {
     state.profile_usage_cache.lock().await.remove(&row.profile_id);
     state.account_subscriptions.lock().await.remove(&row.profile_id);
-    crate::usage::log_oauth_failure(app, "claude_token_owner_mismatch", &format!(
+    app.log("claude_token_owner_mismatch", &format!(
         "profile={} claimed={} owner={} active={}", row.profile_id,
         row.identity_key.as_deref().unwrap_or("").chars().take(8).collect::<String>(),
         owner.account_uuid.chars().take(8).collect::<String>(), !snapshot));
@@ -1087,7 +1331,7 @@ async fn foreign_claude_usage(
         let result = tokio::task::spawn_blocking(move ||
             crate::cli_accounts::record_foreign_token_owner(&base, &id, &saved_owner, Utc::now().to_rfc3339())).await;
         if !matches!(result, Ok(Ok(()))) {
-            crate::usage::log_oauth_failure(app, "claude_token_owner_record",
+            app.log("claude_token_owner_record",
                 &format!("profile={} record_failed", row.profile_id));
         }
     }
@@ -1095,7 +1339,7 @@ async fn foreign_claude_usage(
 }
 
 async fn fetch_claude_profile(
-    app: &tauri::AppHandle,
+    app: &UsageApp,
     state: &UsageState,
     base: &std::path::Path,
     row: &PlannedRow,
@@ -1163,7 +1407,7 @@ async fn fetch_claude_profile(
         let check = match token_owner::cached_owner(&access_token) {
             Some(owner) if *fetch_count + 1 < MAX_FETCH_PER_ROUND && token_owner::claim_profile_refresh(&access_token) => {
                 stagger_before_fetch(fetch_count).await;
-                match token_owner::fetch_claude_token_owner(&state.http, &access_token).await {
+                match app.claude_owner(state, &access_token, true).await {
                     OwnerCheck::Owner(fresh) => OwnerCheck::Owner(fresh),
                     failure => {
                         let retry_after = match failure {
@@ -1180,7 +1424,7 @@ async fn fetch_claude_profile(
             Some(owner) => OwnerCheck::Owner(owner),
             None => {
                 stagger_before_fetch(fetch_count).await;
-                token_owner::claude_token_owner(&state.http, &access_token).await
+                app.claude_owner(state, &access_token, false).await
             }
         };
         let (status, detail) = match claude_owner_gate(row.identity_key.as_deref(), row.is_active, row.registered, &check) {
@@ -1193,7 +1437,7 @@ async fn fetch_claude_profile(
                 }
                 stagger_before_fetch(fetch_count).await;
                 let ask = reset_tickets::StatusAsk::now();
-                match oauth_claude::fetch_with_token_status(&state.http, &access_token).await {
+                match oauth_claude::fetch_with_token_status_at(&state.http, &access_token, app.usage_url()).await {
                     Ok(usage) => {
                         if let Some(reason) = usage.reset_status.as_ref().filter(|status| !status.eligible)
                             .and_then(|status| status.ineligible_reason.as_deref()) {
@@ -1255,12 +1499,13 @@ fn should_retry_claude_after_unauthorized(
     matches!(status, Some(401) | Some(403)) && !is_active && !already_refreshed
 }
 
-fn log_reset_ineligible_once(app: &tauri::AppHandle, reason: &str) {
+fn log_reset_ineligible_once(app: &UsageApp, reason: &str) {
+    if !crate::usage::logging::private_allowed() { return; }
     if !matches!(reason, "surface" | "cli_version") { return; }
     static SEEN: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
     let seen = SEEN.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
     if seen.lock().unwrap_or_else(|error| error.into_inner()).insert(reason.to_string()) {
-        crate::usage::log_oauth_failure(app, "claude_reset_ticket_ineligible", &format!("reason={reason}"));
+        app.log("claude_reset_ticket_ineligible", &format!("reason={reason}"));
     }
 }
 
@@ -1272,7 +1517,7 @@ fn shares_live_refresh_token(snapshot_refresh: &str, live_credentials: Option<&s
 
 /// Refresh an inactive Claude snapshot and persist the new tokens before use.
 async fn refresh_claude_snapshot(
-    app: &tauri::AppHandle,
+    app: &UsageApp,
     state: &UsageState,
     base: &std::path::Path,
     row: &PlannedRow,
@@ -1280,7 +1525,7 @@ async fn refresh_claude_snapshot(
     cooldown_key: &str,
     fetch_count: &mut usize,
 ) -> Result<String, FetchResult> {
-    match live_identity_check(row) {
+    match app.live_check(row) {
         LiveIdentityCheck::Active => {
             return Err(FetchResult {
                 usage: profile_usage(
@@ -1305,13 +1550,13 @@ async fn refresh_claude_snapshot(
     }
     // Filing X's live tokens into X's snapshot leaves X inactive by name but
     // sharing the CLI's refresh token. Rotating it here would log the terminal out.
-    let live_credentials = ClaudePaths::resolve().ok().and_then(|paths| claude::read_credentials(&paths));
+    let live_credentials = app.claude_live_credentials();
     if shares_live_refresh_token(&tokens.refresh_token, live_credentials.as_deref()) {
         return Err(FetchResult { usage: profile_usage(row, UsageRowState::WaitForCli,
             Some(ERROR_TOKEN_EXPIRED_ACTIVE), None) });
     }
     stagger_before_fetch(fetch_count).await;
-    let refreshed = match refresh::refresh_claude(&state.http, &tokens.refresh_token).await {
+    let refreshed = match app.refresh_claude(state, &tokens.refresh_token).await {
         Ok(value) => value,
         Err(error) => return Err(refresh_failure(app, state, row, cooldown_key, error).await),
     };
@@ -1356,7 +1601,7 @@ async fn refresh_claude_snapshot(
 }
 
 async fn fetch_codex_profile(
-    app: &tauri::AppHandle,
+    app: &UsageApp,
     state: &UsageState,
     base: &std::path::Path,
     row: &PlannedRow,
@@ -1637,7 +1882,7 @@ fn should_retry_codex_after_unauthorized(
 }
 
 async fn fetch_grok_profile(
-    app: &tauri::AppHandle,
+    app: &UsageApp,
     state: &UsageState,
     base: &std::path::Path,
     row: &PlannedRow,
@@ -1740,7 +1985,7 @@ fn grok_token_destination(is_active: bool, registered: bool) -> GrokTokenDestina
 }
 
 async fn refresh_grok_snapshot(
-    app: &tauri::AppHandle,
+    app: &UsageApp,
     state: &UsageState,
     base: &std::path::Path,
     row: &PlannedRow,
@@ -1752,7 +1997,7 @@ async fn refresh_grok_snapshot(
     if GROK_REFRESH_DISABLED.load(Ordering::Relaxed) {
         return Err(grok_refresh_stopped(row));
     }
-    match live_identity_check(row) {
+    match app.live_check(row) {
         LiveIdentityCheck::Active | LiveIdentityCheck::Inactive => {}
         LiveIdentityCheck::Unknown => return Err(FetchResult { usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_UNAVAILABLE), None) }),
     }
@@ -1805,10 +2050,10 @@ async fn write_grok_live_tokens(
     match outcome {
         Ok(Ok(grok::LiveTokenWrite::Applied)) => {}
         Ok(Ok(grok::LiveTokenWrite::Conflict)) => {
-            eprintln!("[usage] grok auth.json rotated by the CLI first; keeping its tokens");
+            crate::usage::logging::stderr(format_args!("[usage] grok auth.json rotated by the CLI first; keeping its tokens"));
         }
-        Ok(Err(error)) => eprintln!("[usage] grok auth.json update skipped: {error}"),
-        Err(error) => eprintln!("[usage] grok auth.json update panicked: {error}"),
+        Ok(Err(error)) => crate::usage::logging::stderr(format_args!("[usage] grok auth.json update skipped: {error}")),
+        Err(error) => crate::usage::logging::stderr(format_args!("[usage] grok auth.json update panicked: {error}")),
     }
 }
 
@@ -1817,7 +2062,7 @@ async fn write_grok_live_tokens(
 /// return as-is.
 #[allow(clippy::too_many_arguments)]
 async fn refresh_codex_snapshot(
-    app: &tauri::AppHandle,
+    app: &UsageApp,
     state: &UsageState,
     base: &std::path::Path,
     row: &PlannedRow,
@@ -1826,7 +2071,7 @@ async fn refresh_codex_snapshot(
     cooldown_key: &str,
     fetch_count: &mut usize,
 ) -> Result<String, FetchResult> {
-    match live_identity_check(row) {
+    match app.live_check(row) {
         LiveIdentityCheck::Active => {
             return Err(FetchResult {
                 usage: profile_usage(
@@ -2019,14 +2264,14 @@ async fn successful_fetch(
 }
 
 async fn usage_fetch_failure(
-    app: &tauri::AppHandle,
+    app: &UsageApp,
     state: &UsageState,
     row: &PlannedRow,
     cooldown_key: &str,
     status: Option<u16>,
     detail: &str,
 ) -> FetchResult {
-    crate::usage::log_oauth_failure(app, "get_account_usage", detail);
+    app.log("get_account_usage", detail);
     if status == Some(429) {
         apply_429_cooldown(state, cooldown_key, Utc::now().timestamp_millis()).await;
         let retry_at = active_cooldown(state, cooldown_key, Utc::now().timestamp_millis())
@@ -2057,45 +2302,49 @@ async fn usage_fetch_failure(
 /// inactive then can be live by the time the answer comes back. In that window
 /// the stored copy is simply older than the file on disk, and the recovery is
 /// to take the file — not to tell the user to log in again.
-async fn recapture_live_snapshot(app: &tauri::AppHandle, row: &PlannedRow) -> bool {
-    if !matches!(live_identity_check(row), LiveIdentityCheck::Active) {
+async fn recapture_live_snapshot(app: &UsageApp, state: &UsageState, row: &PlannedRow) -> bool {
+    if !matches!(app.live_check(row), LiveIdentityCheck::Active) {
         return false;
     }
     if row.provider == CliProvider::Claude {
-        let Some(token) = ClaudePaths::resolve().ok()
-            .and_then(|paths| claude::read_credentials(&paths))
-            .and_then(|text| token_owner::claude_access_token(&text)) else { return false };
-        let state = app.state::<UsageState>();
-        match token_owner::claude_token_owner(&state.http, &token).await {
+        let Some(token) = app.claude_live_access_token() else { return false };
+        match app.claude_owner(state, &token, false).await {
             OwnerCheck::Owner(owner) if row.identity_key.as_deref() == Some(owner.account_uuid.as_str()) => {}
             _ => return false,
         }
     }
     // Codex/Grok already store name and token together; their recapture is unchanged.
-    let Ok(default_dir) = app.path().app_data_dir() else {
+    let Ok(base) = app.data_dir() else {
         return false;
     };
-    let base = crate::test_profile::app_data_dir_from(default_dir);
     let provider = row.provider;
+    #[cfg(test)]
+    let test_paths = match app {
+        UsageApp::Test(test) => Some((test.claude.clone(), test.codex.clone(), test.grok.clone())),
+        UsageApp::Native(_) => None,
+    };
     matches!(
-        tokio::task::spawn_blocking(move || crate::cli_accounts::capture_resolved(
-            &base, provider, None
-        ))
+        tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some((claude, codex, grok)) = test_paths {
+                return crate::cli_accounts::capture_account_with_grok(&base, &claude, &codex,
+                    Some(&grok), provider, None, &token_owner::cached_owner,
+                    crate::cli_accounts::UnverifiedPolicy::Refuse);
+            }
+            crate::cli_accounts::capture_resolved(&base, provider, None)
+        })
         .await,
         Ok(Ok(_))
     )
 }
 
-async fn remember_refresh_rejection(app: &tauri::AppHandle, row: &PlannedRow) {
-    let Ok(default_dir) = app.path().app_data_dir() else {
-        crate::usage::log_oauth_failure(
-            app,
-            "get_account_usage_refresh_record",
+async fn remember_refresh_rejection(app: &UsageApp, row: &PlannedRow) {
+    let Ok(base) = app.data_dir() else {
+        app.log("get_account_usage_refresh_record",
             &format!("profile={} app_data_dir_unavailable", row.profile_id),
         );
         return;
     };
-    let base = crate::test_profile::app_data_dir_from(default_dir);
     let profile_id = row.profile_id.clone();
     let rejected_at = Utc::now().to_rfc3339();
     let result = tokio::task::spawn_blocking(move || {
@@ -2103,16 +2352,14 @@ async fn remember_refresh_rejection(app: &tauri::AppHandle, row: &PlannedRow) {
     })
     .await;
     if let Err(error) = result.unwrap_or_else(|error| Err(error.to_string())) {
-        crate::usage::log_oauth_failure(
-            app,
-            "get_account_usage_refresh_record",
+        app.log("get_account_usage_refresh_record",
             &format!("profile={} {error}", row.profile_id),
         );
     }
 }
 
 async fn refresh_failure(
-    app: &tauri::AppHandle,
+    app: &UsageApp,
     state: &UsageState,
     row: &PlannedRow,
     cooldown_key: &str,
@@ -2129,9 +2376,7 @@ async fn refresh_failure(
         } else {
             ""
         };
-        crate::usage::log_oauth_failure(
-            app,
-            "get_account_usage_refresh",
+        app.log("get_account_usage_refresh",
             &format!(
                 "provider={:?} profile={} active={} {error:?}{stopped}",
                 row.provider, row.profile_id, row.is_active
@@ -2146,7 +2391,7 @@ async fn refresh_failure(
             // plan and the request, in which case the live file is the newer
             // copy and re-capturing it costs nothing: park the row for one
             // cycle instead of stranding it at "needs re-login" forever.
-            if recapture_live_snapshot(app, row).await {
+            if recapture_live_snapshot(app, state, row).await {
                 return FetchResult {
                     usage: profile_usage(
                         row,
@@ -2160,7 +2405,7 @@ async fn refresh_failure(
             // A user can finish re-login after the first live check but before
             // the registry write. Re-capture once more so that race cannot put
             // a stale rejection marker back onto freshly captured tokens.
-            if recapture_live_snapshot(app, row).await {
+            if recapture_live_snapshot(app, state, row).await {
                 return FetchResult {
                     usage: profile_usage(
                         row,
@@ -2281,6 +2526,24 @@ mod tests {
         }}).to_string()
     }
 
+    fn codex_id_token_source(account: &str) -> String {
+        use base64::Engine;
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::json!({"https://api.openai.com/auth": {
+                "chatgpt_account_id": account
+            }, "exp": 4102444800_i64}).to_string());
+        serde_json::json!({"tokens": {
+            "access_token": "synthetic-codex-access",
+            "id_token": format!("eyJhbGciOiJub25lIn0.{payload}.")
+        }}).to_string()
+    }
+
+    fn codex_reset_responses() -> Vec<(u16, String)> {
+        vec![(200, serde_json::json!({"credits": [{"id":"credit-a",
+            "status":"available", "expires_at":"2099-01-01T00:00:00Z"}]}).to_string()),
+            (500, "{}".into()), (200, r#"{"code":"reset"}"#.into())]
+    }
+
     fn claude_status(grant: &str, extra: serde_json::Value) -> String {
         let mut block = serde_json::json!({
             "eligible": true, "at_limit": false,
@@ -2311,6 +2574,311 @@ mod tests {
 
     fn request_body(request: &str) -> serde_json::Value {
         serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn api_reset_row_binds_provider_and_keeps_pc_selection_and_live_rows() {
+        let p = profile("registered-a", CliProvider::Claude, "A", "account-a");
+        assert_eq!(reset_ticket_row(std::slice::from_ref(&p), &[], &p.id, true, Some(CliProvider::Codex))
+            .err().as_deref(), Some("reset_ticket.error.profile_not_found"));
+        assert_eq!(reset_ticket_row(std::slice::from_ref(&p), &[], &p.id, false, Some(CliProvider::Codex))
+            .unwrap().provider, CliProvider::Claude);
+        assert_eq!(reset_ticket_row(&[], &[], "missing", false, None).err().as_deref(), Some("Unknown profile id"));
+        assert_eq!(reset_ticket_row(&[], &[], "missing", true, Some(CliProvider::Claude)).err().as_deref(), Some("reset_ticket.error.profile_not_found"));
+        let live = live(CliProvider::Claude, Some("account-a"), None);
+        assert_eq!(reset_ticket_row(&[], &[live], "live:claude", true, Some(CliProvider::Claude)).unwrap().profile_id, "live:claude");
+    }
+
+    #[tokio::test]
+    async fn api_reset_shared_unconfirmed_request_both_surface_orders() {
+        // PC and API enter use_reset_ticket_inner with the same managed state;
+        // their only differences are optional row binding and log policy.
+        for provider in [CliProvider::Claude, CliProvider::Codex] {
+            for pc_first in [true, false] {
+                let first_id = if pc_first { "pc-request" } else { "api-request" };
+                let second_id = if pc_first { "api-request" } else { "pc-request" };
+                let responses = if provider == CliProvider::Claude {
+                    vec![(200, claude_status("grant-a", serde_json::json!({}))),
+                        (500, "{}".into()),
+                        (200, claude_status("grant-a", serde_json::json!({}))),
+                        (200, r#"{"result":"reset","resets_left":0}"#.into())]
+                } else {
+                    vec![(200, serde_json::json!({"credits": [{"id":"credit-a", "status":"available", "expires_at":"2099-01-01T00:00:00Z"}]}).to_string()),
+                        (500, "{}".into()), (200, r#"{"code":"reset"}"#.into())]
+                };
+                let (base, received) = reset_tickets::fake_http_sequence(responses).await;
+                let profile_url = format!("{base}/profile");
+                let usage_url = format!("{base}/usage");
+                let codex_url = format!("{base}/backend-api/wham/usage");
+                let urls = endpoints(&base, &profile_url, &usage_url, Some(&codex_url));
+                let token = format!("api-reset-cross-{provider:?}-{pc_first}");
+                cache_owner(&token);
+                let source = if provider == CliProvider::Claude { claude_source(&token) } else { codex_source() };
+                let state = UsageState::new();
+                let row = reset_row(provider);
+                let first = use_reset_ticket_inner(&state, &row, Ok(source.clone()), first_id,
+                    if pc_first { Some("owner@example.test") } else { None }, &urls).await.unwrap();
+                assert_eq!(first.kind, ResetTicketOutcomeKind::Unconfirmed);
+                assert!(!first.retry_of_unconfirmed);
+                let second = use_reset_ticket_inner(&state, &row, Ok(source.clone()), second_id,
+                    if pc_first { None } else { Some("owner@example.test") }, &urls).await.unwrap();
+                assert_eq!(second.kind, ResetTicketOutcomeKind::Reset);
+                assert!(second.retry_of_unconfirmed);
+                assert!(state.reset_unsettled.lock().await.is_empty());
+                // The successful second response was lost. The same caller ID
+                // must replay the settled result, never start another claim.
+                let third = use_reset_ticket_inner(&state, &row, Ok(source), second_id,
+                    if pc_first { None } else { Some("owner@example.test") }, &urls).await.unwrap();
+                assert_eq!(third, second);
+                // The settled operation needs no current credentials to replay.
+                let after_expiry = use_reset_ticket_inner(&state, &row,
+                    Err(ERROR_SNAPSHOT_UNAVAILABLE.into()), second_id, None, &urls).await.unwrap();
+                // A live:* row can change owner while a lost reply is retried.
+                // The same operation must not start a claim on that new owner.
+                let mut other = row.clone();
+                other.identity_key = Some(if provider == CliProvider::Claude { "account-b" } else { "acct-b" }.into());
+                other.email = Some("other@example.test".into());
+                let other_token = format!("{token}-other");
+                token_owner::remember_owner(&other_token, &token_owner::TokenOwner {
+                    account_uuid: "account-b".into(), email: other.email.clone(),
+                    organization_uuid: Some("org-b".into()),
+                });
+                let other_source = if provider == CliProvider::Claude { claude_source(&other_token) }
+                    else { codex_source().replace("acct-a", "acct-b") };
+                let changed_owner = use_reset_ticket_inner(&state, &other, Ok(other_source), second_id, None, &urls).await.unwrap();
+                assert_eq!((after_expiry, changed_owner.kind),
+                    (second, ResetTicketOutcomeKind::OwnerMismatch));
+                let requests = received.await.unwrap();
+                assert_eq!(requests.len(), if provider == CliProvider::Claude { 4 } else { 3 });
+                let posts: Vec<_> = requests.iter().filter(|request| request.starts_with("POST ")).collect();
+                assert_eq!(posts.len(), 2);
+                assert_eq!(request_body(posts[0]), request_body(posts[1]));
+                let id_key = if provider == CliProvider::Claude { "request_id" } else { "redeem_request_id" };
+                assert_eq!(request_body(posts[1])[id_key], first_id);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn codex_id_token_receipt_survives_unreadable_credentials_both_orders() {
+        for pc_first in [true, false] {
+            let (base, received) = reset_tickets::fake_http_sequence(codex_reset_responses()).await;
+            let url = format!("{base}/backend-api/wham/usage");
+            let urls = endpoints(&base, &base, &base, Some(&url));
+            let state = UsageState::new();
+            let row = reset_row(CliProvider::Codex);
+            let source = codex_id_token_source("acct-a");
+            let (p, a) = if pc_first { ("pc-request", "api-request") }
+                else { ("api-request", "pc-request") };
+            let first = use_reset_ticket_inner(&state, &row, Ok(source.clone()), p, None, &urls).await.unwrap();
+            assert_eq!(first.kind, ResetTicketOutcomeKind::Unconfirmed);
+            let settled = use_reset_ticket_inner(&state, &row, Ok(source.clone()), a, None, &urls).await.unwrap();
+            assert_eq!(settled.kind, ResetTicketOutcomeKind::Reset);
+            assert!(settled.retry_of_unconfirmed);
+            let readable = use_reset_ticket_inner(&state, &row, Ok(source), a, None, &urls).await.unwrap();
+            let unreadable = use_reset_ticket_inner(&state, &row,
+                Err(ERROR_SNAPSHOT_UNAVAILABLE.into()), a, None, &urls).await.unwrap();
+            assert_eq!(readable, settled);
+            assert_eq!(unreadable, settled);
+            let requests = received.await.unwrap();
+            assert_eq!(requests.len(), 3);
+            let posts: Vec<_> = requests.iter().filter(|r| r.starts_with("POST ")).collect();
+            assert_eq!(request_body(posts[0]), request_body(posts[1]));
+            assert_eq!(request_body(posts[1])["redeem_request_id"], p);
+            assert_eq!(request_body(posts[1])["credit_id"], "credit-a");
+            assert!(requests.iter().all(|r| !r.to_ascii_lowercase().contains("chatgpt-account-id:")));
+        }
+    }
+
+    #[tokio::test]
+    async fn codex_id_token_live_replay_refuses_a_different_owner() {
+        let (base, received) = reset_tickets::fake_http_sequence(codex_reset_responses()).await;
+        let url = format!("{base}/backend-api/wham/usage");
+        let urls = endpoints(&base, &base, &base, Some(&url));
+        let state = UsageState::new();
+        let mut row = reset_row(CliProvider::Codex);
+        row.profile_id = "live:codex".into(); row.registered = false; row.is_active = true;
+        let source = codex_id_token_source("acct-a");
+        assert_eq!(use_reset_ticket_inner(&state, &row, Ok(source.clone()), "P", None, &urls)
+            .await.unwrap().kind, ResetTicketOutcomeKind::Unconfirmed);
+        let settled = use_reset_ticket_inner(&state, &row, Ok(source), "A", None, &urls).await.unwrap();
+        assert_eq!(settled.kind, ResetTicketOutcomeKind::Reset);
+        row.identity_key = Some("acct-b".into()); row.email = None;
+        let changed = use_reset_ticket_inner(&state, &row, Ok(codex_id_token_source("acct-b")),
+            "A", None, &urls).await.unwrap();
+        assert_eq!(changed.kind, ResetTicketOutcomeKind::OwnerMismatch);
+        // Even unchanged metadata cannot hide an owner change in the same document.
+        row.identity_key = Some("acct-a".into());
+        assert_eq!(use_reset_ticket_inner(&state, &row, Ok(codex_id_token_source("acct-b")),
+            "A", None, &urls).await.unwrap().kind, ResetTicketOutcomeKind::OwnerMismatch);
+        assert_eq!(received.await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn codex_id_token_live_to_registered_keeps_pending_and_receipt() {
+        let (base, received) = reset_tickets::fake_http_sequence(codex_reset_responses()).await;
+        let url = format!("{base}/backend-api/wham/usage");
+        let urls = endpoints(&base, &base, &base, Some(&url));
+        let state = UsageState::new();
+        let saved = reset_row(CliProvider::Codex);
+        let mut live = saved.clone();
+        live.profile_id = "live:codex".into(); live.registered = false; live.is_active = true;
+        let source = codex_id_token_source("acct-a");
+        assert_eq!(use_reset_ticket_inner(&state, &live, Ok(source.clone()), "P", None, &urls)
+            .await.unwrap().kind, ResetTicketOutcomeKind::Unconfirmed);
+        let settled = use_reset_ticket_inner(&state, &saved, Ok(source), "A", None, &urls).await.unwrap();
+        assert_eq!(settled.kind, ResetTicketOutcomeKind::Reset);
+        assert!(settled.retry_of_unconfirmed);
+        assert_eq!(use_reset_ticket_inner(&state, &live, Err(ERROR_SNAPSHOT_UNAVAILABLE.into()),
+            "A", None, &urls).await.unwrap(), settled);
+        let requests = received.await.unwrap();
+        assert_eq!(requests.len(), 3);
+        let posts: Vec<_> = requests.iter().filter(|r| r.starts_with("POST ")).collect();
+        assert_eq!(request_body(posts[0]), request_body(posts[1]));
+        assert_eq!(request_body(posts[1])["redeem_request_id"], "P");
+    }
+
+    #[tokio::test]
+    async fn api_reset_unsupported_provider_sends_no_request() {
+        let (base, received) = reset_tickets::fake_http_sequence(vec![]).await;
+        let state = UsageState::new();
+        let result = use_reset_ticket_inner(&state, &reset_row(CliProvider::Grok), Ok("{}".into()),
+            "api-request", None, &endpoints(&base, &base, &base, None)).await;
+        assert_eq!(result.err().as_deref(), Some("Reset tickets are not supported for Grok"));
+        assert!(received.await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn codex_settled_receipt_survives_malformed_id_token() {
+        let mut mismatches = Vec::new();
+        for explicit_account in [true, false] {
+            for pc_first in [true, false] {
+                let (base, received) = reset_tickets::fake_http_sequence(codex_reset_responses()).await;
+                let url = format!("{base}/backend-api/wham/usage");
+                let urls = endpoints(&base, &base, &base, Some(&url));
+                let state = UsageState::new();
+                let row = reset_row(CliProvider::Codex);
+                let mut source: serde_json::Value = serde_json::from_str(&codex_id_token_source("acct-a")).unwrap();
+                if explicit_account { source["tokens"]["account_id"] = "acct-a".into(); }
+                let (p, a) = if pc_first { ("pc-request", "api-request") }
+                    else { ("api-request", "pc-request") };
+                let email = if pc_first { None } else { Some("owner@example.test") };
+                assert_eq!(use_reset_ticket_inner(&state, &row, Ok(source.to_string()), p,
+                    email, &urls).await.unwrap().kind, ResetTicketOutcomeKind::Unconfirmed);
+                let settled = use_reset_ticket_inner(&state, &row, Ok(source.to_string()), a,
+                    Some("owner@example.test"), &urls).await.unwrap();
+                assert_eq!(settled.kind, ResetTicketOutcomeKind::Reset);
+                assert!(settled.retry_of_unconfirmed);
+                // Still readable JSON and access credentials, but no usable
+                // current ID-token evidence. Only the historical receipt is needed.
+                source["tokens"]["id_token"] = "one".into();
+                let replay = use_reset_ticket_inner(&state, &row, Ok(source.to_string()), a,
+                    Some("OWNER@EXAMPLE.TEST"), &urls).await.unwrap();
+                if replay != settled { mismatches.push((explicit_account, pc_first, replay, settled)); }
+                let requests = received.await.unwrap();
+                assert_eq!(requests.len(), 3);
+                let posts: Vec<_> = requests.iter().filter(|r| r.starts_with("POST ")).collect();
+                assert_eq!(posts.len(), 2);
+                assert_eq!(request_body(posts[0]), request_body(posts[1]));
+                assert_eq!(request_body(posts[1])["redeem_request_id"], p);
+                assert_eq!(request_body(posts[1])["credit_id"], "credit-a");
+                assert_eq!(requests.iter().any(|r| r.to_ascii_lowercase()
+                    .contains("chatgpt-account-id: acct-a")), explicit_account);
+            }
+        }
+        assert!(mismatches.is_empty(), "receipt changed (explicit account / PC first / replay / settled): {mismatches:?}");
+    }
+
+    #[tokio::test]
+    async fn codex_malformed_receipt_keeps_owner_and_fresh_claim_guards() {
+        use ResetTicketOutcomeKind::*;
+        let (base, received) = reset_tickets::fake_http_sequence(codex_reset_responses()).await;
+        let url = format!("{base}/backend-api/wham/usage");
+        let urls = endpoints(&base, &base, &base, Some(&url));
+        let state = UsageState::new();
+        let row = reset_row(CliProvider::Codex);
+        let source = codex_id_token_source("acct-a");
+        assert_eq!(use_reset_ticket_inner(&state, &row, Ok(source.clone()), "P", None, &urls)
+            .await.unwrap().kind, Unconfirmed);
+        assert_eq!(use_reset_ticket_inner(&state, &row, Ok(source.clone()), "A", None, &urls)
+            .await.unwrap().kind, Reset);
+        let mut malformed: serde_json::Value = serde_json::from_str(&source).unwrap();
+        malformed["tokens"]["id_token"] = "one".into();
+        for explicit_account in [true, false] {
+            if explicit_account { malformed["tokens"]["account_id"] = "acct-a".into(); }
+            else { malformed["tokens"].as_object_mut().unwrap().remove("account_id"); }
+            // No settled receipt for a new id: no fresh claim is permitted.
+            assert_eq!(use_reset_ticket_inner(&state, &row, Ok(malformed.to_string()),
+                "fresh-request", None, &urls).await.unwrap().kind, TokenStale);
+            let mut live = row.clone();
+            live.profile_id = "live:codex".into(); live.registered = false; live.is_active = true;
+            assert_eq!(use_reset_ticket_inner(&state, &live, Ok(malformed.to_string()),
+                "A", None, &urls).await.unwrap().kind, TokenStale);
+        }
+        assert_eq!(use_reset_ticket_inner(&state, &row, Ok(malformed.to_string()), "A",
+            Some("other@example.test"), &urls).await.unwrap().kind, OwnerMismatch);
+        let mut foreign = row.clone();
+        foreign.foreign_owner = Some(ForeignTokenOwner { account_uuid: "acct-b".into(),
+            email: None, detected_at: "now".into() });
+        assert_eq!(use_reset_ticket_inner(&state, &foreign, Ok(malformed.to_string()), "A",
+            None, &urls).await.unwrap().kind, OwnerMismatch);
+        // Positive contradictory evidence still overrides a historical receipt,
+        // including an explicit foreign account beside an undecodable ID token.
+        malformed["tokens"]["account_id"] = "acct-b".into();
+        assert_eq!(use_reset_ticket_inner(&state, &row, Ok(malformed.to_string()), "A",
+            None, &urls).await.unwrap().kind, OwnerMismatch);
+        assert_eq!(use_reset_ticket_inner(&state, &row, Ok(codex_id_token_source("acct-b")), "A",
+            None, &urls).await.unwrap().kind, OwnerMismatch);
+        let mut other = row.clone(); other.identity_key = Some("acct-b".into());
+        assert_eq!(use_reset_ticket_inner(&state, &other, Ok(codex_id_token_source("acct-b")), "A",
+            None, &urls).await.unwrap().kind, OwnerMismatch);
+        assert_eq!(received.await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn codex_registered_command_replays_receipt_after_id_token_corruption() {
+        let mut mismatches = Vec::new();
+        for explicit_account in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let base = dir.path();
+            let id = "codex-receipt-a";
+            let mut source: serde_json::Value = serde_json::from_str(&codex_id_token_source("acct-a")).unwrap();
+            if explicit_account { source["tokens"]["account_id"] = "acct-a".into(); }
+            let profile = CliAccountProfile { id: id.into(), provider: CliProvider::Codex,
+                label: "Saved receipt test".into(), email: Some("owner@example.test".into()),
+                identity_key: "acct-a".into(), plan: None, org_name: None, captured_at: "now".into(),
+                last_switched_at: None, needs_relogin: false, refresh_rejected_at: None,
+                foreign_token_owner: None };
+            std::fs::write(base.join("cli_accounts.json"), serde_json::json!({"version":1,
+                "profiles":[profile], "active":{}}).to_string()).unwrap();
+            std::fs::create_dir_all(base.join("cli_account_snapshots")).unwrap();
+            let snapshot = base.join("cli_account_snapshots").join(format!("{id}.json"));
+            let save = |source: &serde_json::Value| std::fs::write(&snapshot, serde_json::json!({
+                "version":1, "provider":"codex", "captured_at":"now", "auth_text":source.to_string(),
+            }).to_string()).unwrap();
+            save(&source);
+            let (endpoint, received) = reset_tickets::fake_http_sequence(codex_reset_responses()).await;
+            let app = || UsageApp::Test(TestUsageApp { base: base.to_path_buf(), endpoint: endpoint.clone(),
+                claude: ClaudePaths { store: claude::CredentialStore::File,
+                    credentials: base.join("absent-claude-credentials.json"), claude_json: base.join("absent-claude.json") },
+                codex: CodexPaths { auth: base.join("absent-codex-auth.json") },
+                grok: GrokPaths { auth: base.join("absent-grok-auth.json"), lock: base.join("grok.lock") },
+            });
+            let state = UsageState::new();
+            // Traverse actual file-backed command row and snapshot-source resolution.
+            assert_eq!(use_reset_ticket_command(app(), &state, id.into(), "P".into(), None,
+                false, None).await.unwrap().kind, ResetTicketOutcomeKind::Unconfirmed);
+            let settled = use_reset_ticket_command(app(), &state, id.into(), "A".into(),
+                Some("owner@example.test".into()), true, Some(CliProvider::Codex)).await.unwrap();
+            assert_eq!(settled.kind, ResetTicketOutcomeKind::Reset);
+            assert!(settled.retry_of_unconfirmed);
+            source["tokens"]["id_token"] = "one".into(); save(&source);
+            let replay = use_reset_ticket_command(app(), &state, id.into(), "A".into(),
+                Some("owner@example.test".into()), true, Some(CliProvider::Codex)).await.unwrap();
+            if replay != settled { mismatches.push((explicit_account, replay, settled)); }
+            assert_eq!(received.await.unwrap().len(), 3);
+        }
+        assert!(mismatches.is_empty(), "registered receipt changed (explicit account / replay / settled): {mismatches:?}");
     }
 
     #[tokio::test]
@@ -4068,3 +4636,7 @@ mod tests {
     }
 
 }
+
+#[cfg(test)]
+#[path = "usage_privacy_tests.rs"]
+mod privacy_tests;

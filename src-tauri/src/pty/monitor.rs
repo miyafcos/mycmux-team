@@ -22,6 +22,7 @@ use super::manager::SessionManager;
 #[derive(Clone, serde::Serialize)]
 pub struct PtyMetadata {
     pub session_id: String,
+    pub session_epoch: u64,
     pub cwd: String,
     pub git_branch: Option<String>,
     pub process_name: Option<String>,
@@ -35,6 +36,9 @@ pub struct PtyMetadata {
     pub live_agent_kind: Option<String>,
     pub agent_session_id: Option<String>,
     pub agent_session_trusted: bool,
+    /// Actual process observation and agent birth, in epoch milliseconds.
+    pub observed_at: Option<u64>,
+    pub agent_started_at: Option<u64>,
 }
 
 impl PtyMetadata {
@@ -43,6 +47,7 @@ impl PtyMetadata {
     pub(crate) fn unobserved(session_id: String) -> Self {
         Self {
             session_id,
+            session_epoch: 0,
             cwd: String::new(),
             git_branch: None,
             process_name: None,
@@ -55,6 +60,8 @@ impl PtyMetadata {
             live_agent_kind: None,
             agent_session_id: None,
             agent_session_trusted: false,
+            observed_at: None,
+            agent_started_at: None,
         }
     }
 }
@@ -80,6 +87,7 @@ fn process_status_from_observation(
 #[derive(Clone, serde::Serialize)]
 pub struct PtyWorkDone {
     pub session_id: String,
+    pub session_epoch: u64,
     pub prev_process: String,
     pub current_process: String,
 }
@@ -162,8 +170,33 @@ pub(crate) use detection::{session_id_from_args, agent_kind_from_process, build_
 use codex_rollout::*;
 use git_branch::*;
 pub use runner::start_monitor;
+#[cfg(test)]
+pub(crate) use runner::publish_monitor_observation;
+#[cfg(test)]
+pub(crate) use runner::monitor_status_changed;
 use transcripts::*;
 
 
 #[cfg(test)]
 mod tests;
+
+/// Shared by every observer of one PTY; retirement invalidates it before E2 publishes.
+#[derive(Clone)]
+pub(crate) struct ObservationOwner {
+    pub epoch: u64,
+    live: Arc<Mutex<bool>>,
+    store: MetadataStore,
+    id: String,
+}
+impl ObservationOwner {
+    pub(crate) fn new(epoch: u64, id: String, store: MetadataStore) -> Self { Self { epoch, id, store, live: Arc::new(Mutex::new(true)) } }
+    pub(crate) fn publish(&self, apply: impl FnOnce()) -> bool {
+        let live = self.live.lock().unwrap_or_else(|e| e.into_inner());
+        if !*live { return false; }
+        apply(); true
+    }
+    pub(crate) fn retire(&self) {
+        *self.live.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        self.store.remove_if(&self.id, |_, meta| meta.session_epoch == self.epoch);
+    }
+}

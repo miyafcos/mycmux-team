@@ -15,7 +15,7 @@ export function moveMinimapItemToNewWorkspace(item: PaneDragItem): boolean {
         item.tabId,
         workspaceId,
         workspaceName,
-        { activate: false },
+        { activate: false, nameSource: "auto" },
       );
   }
   if (item.kind === "tab-bundle") {
@@ -26,7 +26,7 @@ export function moveMinimapItemToNewWorkspace(item: PaneDragItem): boolean {
       item.anchorTabId,
       workspaceId,
       workspaceName,
-      { activate: false },
+      { activate: false, nameSource: "auto" },
     );
   }
   return layoutStore.movePaneToNewWorkspace(
@@ -34,6 +34,6 @@ export function moveMinimapItemToNewWorkspace(item: PaneDragItem): boolean {
     item.paneId,
     workspaceId,
     workspaceName,
-    { activate: false },
+    { activate: false, nameSource: "auto" },
   );
 }

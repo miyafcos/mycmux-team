@@ -100,7 +100,8 @@ pub fn collect(catalog: &Catalog) -> Vec<Finding> {
                     "decide",
                     unused.len() as u64,
                 );
-                f.chars = Some(unused.iter().map(|s| s.chars).sum());
+                f.chars = (listing.text_complete != Some(false))
+                    .then(|| unused.iter().map(|s| s.chars).sum());
                 f.names = unused.iter().map(|s| s.name.clone()).collect();
                 f.evidence.push(Evidence {
                     path: Some(
@@ -226,12 +227,23 @@ pub fn collect(catalog: &Catalog) -> Vec<Finding> {
         }
     }
     let mut names: BTreeMap<(String, String), Vec<&Item>> = BTreeMap::new();
+    let mut claude_names: BTreeMap<String, Vec<&Item>> = BTreeMap::new();
     for item in catalog.items.iter().filter(|i| i.kind == "skill") {
-        if let Some(name) = field(item, "name") {
+        if let Some(name) = field(item, "name").filter(|_| item.active) {
+            let listing_name = if item.service == "claude"
+                && field(item, "sourceKind").as_deref() == Some("synced")
+            {
+                format!("anthropic-skills:{name}")
+            } else {
+                name.clone()
+            };
             names
-                .entry((item.service.clone(), name.to_lowercase()))
+                .entry((item.service.clone(), listing_name.to_lowercase()))
                 .or_default()
                 .push(item);
+            if item.service == "claude" {
+                claude_names.entry(name.to_lowercase()).or_default().push(item);
+            }
         }
         if field(item, "targetExists").as_deref() == Some("false") {
             let mut f = base(
@@ -245,6 +257,19 @@ pub fn collect(catalog: &Catalog) -> Vec<Finding> {
             f.names.push(item.display_name.clone());
             f.item_ids.push(item.id.clone());
             f.evidence.push(evidence(item, "missingWrapperTarget"));
+            out.push(f);
+        }
+    }
+    for (name, items) in claude_names {
+        let own = items.iter().any(|item| field(item, "sourceKind").as_deref() == Some("own"));
+        let synced = items.iter().any(|item| field(item, "sourceKind").as_deref() == Some("synced"));
+        if own && synced {
+            let mut f = base(&format!("claude:shadow:{name}"), "shadow", "claude", 5, "watch", 1);
+            f.names = vec![name];
+            for item in items {
+                f.item_ids.push(item.id.clone());
+                f.evidence.push(evidence(item, "ownAndSyncedListed"));
+            }
             out.push(f);
         }
     }

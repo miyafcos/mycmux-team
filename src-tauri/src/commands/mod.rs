@@ -3,6 +3,7 @@ pub mod claude_codex_models;
 pub mod artifact;
 pub mod inbox;
 pub mod agent_session_clone;
+pub mod agent_dormancy;
 pub mod agent_hooks;
 pub mod agent_prompts;
 pub mod crsm;

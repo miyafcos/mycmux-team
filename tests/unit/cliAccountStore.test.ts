@@ -31,6 +31,7 @@ import {
   type CliSwitchResult,
 } from "../../src/lib/ipc";
 import { __resetCliAccountStoreForTests, useCliAccountStore } from "../../src/stores/cliAccountStore";
+import { switchAccountForApi } from "../../src/lib/accountSwitchApi";
 
 const mockedList = vi.mocked(listCliAccounts);
 const mockedCapture = vi.mocked(captureCliAccount);
@@ -55,7 +56,7 @@ describe("cliAccountStore", () => {
     mockedList.mockReset(); mockedCapture.mockReset(); mockedSwitch.mockReset(); mockedRemove.mockReset(); mockedRename.mockReset(); mockedResolveOrphan.mockReset(); usageFetch.mockReset(); pushToast.mockReset();
     __resetCliAccountStoreForTests();
   });
-  afterEach(() => __resetCliAccountStoreForTests());
+  afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); __resetCliAccountStoreForTests(); });
 
   it("populates profiles and live logins on fetch", async () => {
     mockedList.mockResolvedValue(snapshot([profile]));
@@ -66,6 +67,122 @@ describe("cliAccountStore", () => {
     expect(useCliAccountStore.getState().active.claude).toBe(profile.id);
   });
 
+  it("shares PC notifications, refresh and delayed overwrite detection with account.switch", async () => {
+    vi.useFakeTimers();
+    mockedSwitch.mockResolvedValue(switchResult);
+    mockedList.mockResolvedValue(snapshot([profile]));
+    usageFetch.mockResolvedValue(undefined);
+    const reply = await switchAccountForApi({ provider: "claude", profile_id: profile.id }, Date.now() + 25000);
+    expect(mockedSwitch).toHaveBeenCalledWith("claude", profile.id, true);
+    expect(reply).toEqual({ provider: "claude", profile_id: profile.id, status: "switched", applied: true, active_profile_id: profile.id, active_known: true, intended_active_profile_id: profile.id, wrote_back_to: null, warnings: [], error_code: null });
+    expect(useCliAccountStore.getState().lastSwitchResult).toEqual(switchResult);
+    expect(usageFetch).toHaveBeenCalledOnce();
+    expect(pushToast).toHaveBeenCalledWith("「A」に切り替えました。新しく起動するセッションから反映されます。", "info");
+    mockedList.mockResolvedValue({ ...snapshot([profile]), live: [{ ...snapshot([profile]).live[0], identity_key: "previous", matched_profile_id: null }] });
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(pushToast).toHaveBeenLastCalledWith(expect.stringContaining("上書きされました"), "warning");
+  });
+
+  it("propagates API log policy to the usage refresh after switching", async () => {
+    vi.useFakeTimers();
+    mockedSwitch.mockResolvedValue(switchResult);
+    mockedList.mockResolvedValue(snapshot([profile]));
+    await switchAccountForApi({ provider: "claude", profile_id: profile.id }, Date.now() + 25000);
+    expect(usageFetch).toHaveBeenCalledWith(false, "account.switch");
+  });
+
+  it.each(["profile_not_found", "needs_relogin", "switch_busy"])("returns this API rejection %s without replacing old UI state", async (code) => {
+    mockedSwitch.mockRejectedValue(`cli_account.error.${code}`);
+    mockedList.mockResolvedValue(snapshot([profile]));
+    useCliAccountStore.setState({ operationError: "previous error", lastSwitchResult: switchResult });
+    const reply = await switchAccountForApi({ provider: "claude", profileId: profile.id }, Date.now() + 25000);
+    expect(reply.status).toBe("rejected");
+    expect(reply.error_code).toBe(`cli_account.error.${code}`);
+    expect(reply.applied).toBe(false);
+    expect(useCliAccountStore.getState().operationError).toBe("previous error");
+    expect(useCliAccountStore.getState().lastSwitchResult).toEqual(switchResult);
+    expect(pushToast).not.toHaveBeenCalled();
+    expect(usageFetch).not.toHaveBeenCalled();
+    expect(useCliAccountStore.getState().busyByProvider.claude).toBeNull();
+  });
+
+  it("reports a core needs-relogin failure with its fixed code after write-back", async () => {
+    mockedSwitch.mockRejectedValue("cli_account.api.core_error:cli_account.error.needs_relogin");
+    mockedList.mockResolvedValue(snapshot([profile]));
+    const reply = await switchAccountForApi({ provider: "claude", profile_id: profile.id }, Date.now() + 25000);
+    expect(reply).toMatchObject({ status: "failed", applied: false, error_code: "cli_account.error.needs_relogin" });
+    expect(useCliAccountStore.getState().operationError).not.toContain("api.core_error");
+  });
+
+  it("treats an API already-active marker as a quiet no-op", async () => {
+    mockedSwitch.mockRejectedValue("cli_account.result.already_active");
+    mockedList.mockResolvedValue(snapshot([profile]));
+    const reply = await switchAccountForApi({ provider: "claude", profile_id: profile.id }, Date.now() + 25000);
+    expect(reply.status).toBe("already_active");
+    expect(reply.applied).toBe(false);
+    expect(reply.error_code).toBeNull();
+    expect(pushToast).not.toHaveBeenCalled();
+    expect(usageFetch).not.toHaveBeenCalled();
+  });
+
+  it("excludes concurrent API and PC calls using the same provider busy state", async () => {
+    const pending = deferred<CliSwitchResult>();
+    mockedSwitch.mockImplementationOnce(() => pending.promise);
+    mockedList.mockResolvedValue(snapshot([profile]));
+    const first = switchAccountForApi({ provider: "claude", profile_id: profile.id }, Date.now() + 25000);
+    expect(await useCliAccountStore.getState().switchTo("claude", "claude-other")).toBeNull();
+    const duplicate = await switchAccountForApi({ provider: "claude", profile_id: "claude-other" }, Date.now() + 25000);
+    expect(duplicate).toMatchObject({ status: "rejected", applied: false, error_code: "cli_account.error.switch_busy" });
+    pending.resolve(switchResult);
+    await first;
+    expect(mockedSwitch).toHaveBeenCalledOnce();
+  });
+
+  it("expires a queued API request before invoking Rust and preserves the PC call shape", async () => {
+    vi.useFakeTimers();
+    const pending = deferred<CliSwitchResult>();
+    mockedSwitch.mockImplementationOnce(() => pending.promise);
+    mockedList.mockResolvedValue(snapshot([profile]));
+    const first = useCliAccountStore.getState().switchTo("claude", profile.id);
+    const queued = switchAccountForApi({ provider: "codex", profile_id: "codex-b" }, Date.now() + 5);
+    await Promise.resolve();
+    vi.advanceTimersByTime(6);
+    pending.resolve(switchResult);
+    await first;
+    expect(await queued).toMatchObject({ status: "rejected", error_code: "cli_account.error.switch_expired" });
+    expect(mockedSwitch).toHaveBeenCalledExactlyOnceWith("claude", profile.id);
+    expect(useCliAccountStore.getState().busyByProvider.codex).toBeNull();
+  });
+
+  it("separates observed live identity from registry intention and filters warning text", async () => {
+    mockedSwitch.mockResolvedValue({ ...switchResult, wrote_back_to: "claude-old", warnings: ["cli_account.warning.restored_identity_mismatch", "cli_account.warning.switch_metadata_not_saved", "secret-token a@example.test"] });
+    const observed = snapshot([profile]);
+    observed.live[0].matched_profile_id = "claude-old";
+    observed.active.claude = "claude-old-intention";
+    mockedList.mockResolvedValue(observed);
+    const reply = await switchAccountForApi({ provider: "claude", profile_id: profile.id }, Date.now() + 25000);
+    expect(reply).toMatchObject({ status: "switched", applied: true, active_profile_id: "claude-old", intended_active_profile_id: "claude-old-intention", wrote_back_to: "claude-old" });
+    expect(reply.warnings).toHaveLength(2);
+    expect(JSON.stringify(reply)).not.toContain("secret-token");
+    expect(JSON.stringify(reply)).not.toContain("a@example.test");
+    expect(JSON.stringify(reply)).not.toContain("backup_dir");
+  });
+
+  it("does not turn last-good cached active or a previous error into this API outcome", async () => {
+    useCliAccountStore.setState({ active: { claude: "stale", codex: null, grok: null }, operationError: "previous error", lastSwitchResult: switchResult });
+    mockedSwitch.mockRejectedValue(new Error("secret-token a@example.test /private/auth.json"));
+    mockedList.mockRejectedValue(new Error("read failed"));
+    const reply = await switchAccountForApi({ provider: "claude", profile_id: profile.id }, Date.now() + 25000);
+    expect(reply).toMatchObject({ status: "failed", applied: false, active_profile_id: null, active_known: false, intended_active_profile_id: null, error_code: "cli_account.error.switch_failed", warnings: [] });
+    expect(JSON.stringify(reply)).not.toContain("secret-token");
+  });
+
+  it.each([undefined, null, [], {}, { provider: "invalid@example.test", profile_id: "secret" }, { provider: "claude", profile_id: " " }, { provider: "claude", profile_id: "a", profileId: "b" }, { provider: "claude", profile_id: 1 }])("rejects malformed args %j with a fixed error before invoking", async (args) => {
+    await expect(switchAccountForApi(args, Date.now() + 25000)).rejects.toThrow("account.switch.invalid_args");
+    expect(mockedSwitch).not.toHaveBeenCalled();
+    expect(mockedList).not.toHaveBeenCalled();
+  });
+
   it("keeps last-good data when fetch fails", async () => {
     mockedList.mockResolvedValueOnce(snapshot([profile]));
     await useCliAccountStore.getState().fetch();
@@ -73,6 +190,19 @@ describe("cliAccountStore", () => {
     await useCliAccountStore.getState().fetch();
     expect(useCliAccountStore.getState().profiles).toEqual([profile]);
     expect(useCliAccountStore.getState().fetchError).toContain("原因:");
+  });
+
+  it.each(["../outside", "claude-\u0000secret", "private@example.test", `claude-${"a".repeat(161)}`, "claude-a\n", "claude-a\\b"])("rejects malformed profile id %s before native execution", async (profileId) => {
+    await expect(switchAccountForApi({ provider: "claude", profile_id: profileId }, Date.now() + 25000)).rejects.toThrow("account.switch.invalid_args");
+    expect(mockedSwitch).not.toHaveBeenCalled();
+    expect(mockedList).not.toHaveBeenCalled();
+  });
+
+  it.each(["claude-unknown", "codex-other-provider", `claude-${"a".repeat(153)}`])("keeps valid unknown/wrong-provider/boundary ID %s on the backend rejection path", async (profileId) => {
+    mockedSwitch.mockRejectedValue("cli_account.error.profile_not_found");
+    mockedList.mockResolvedValue(snapshot([profile]));
+    expect(await switchAccountForApi({ provider: "claude", profile_id: profileId }, Date.now() + 25000)).toMatchObject({ status: "rejected", error_code: "cli_account.error.profile_not_found" });
+    expect(mockedSwitch).toHaveBeenCalledWith("claude", profileId, true);
   });
 
   it("drops out-of-order fetch responses", async () => {

@@ -21,6 +21,8 @@ describe("AI feature settings data.json migration", () => {
       autoPaneNamingEnabled: false,
       replyDraftSuggestionsEnabled: true,
       persistedAutoPaneNamingEnabled: false,
+      autoWorkspaceNamingEnabled: true,
+      persistedAutoWorkspaceNamingEnabled: null,
       persistedReplyDraftSuggestionsEnabled: true,
       migrationNeeded: true,
     });
@@ -47,6 +49,8 @@ describe("AI feature settings data.json migration", () => {
       autoPaneNamingEnabled: true,
       replyDraftSuggestionsEnabled: false,
       persistedAutoPaneNamingEnabled: null,
+      autoWorkspaceNamingEnabled: true,
+      persistedAutoWorkspaceNamingEnabled: null,
       persistedReplyDraftSuggestionsEnabled: null,
       migrationNeeded: false,
     });

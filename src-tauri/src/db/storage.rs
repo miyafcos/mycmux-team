@@ -175,6 +175,18 @@ pub struct PaneTabOriginConfig {
     pub parent_tab_id: Option<String>,
 }
 
+// Only auxiliary delegation fields are tolerant; required layout fields remain strict.
+fn optional_delegation_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value.as_str().map(str::to_owned))
+}
+
+fn optional_delegation_timestamp<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<i64>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    // JavaScript safe integer range keeps Rust/TS persistence lossless.
+    Ok(value.as_i64().filter(|at| (0..=9_007_199_254_740_991).contains(at)))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaneTabConfig {
     #[serde(default)]
@@ -183,8 +195,8 @@ pub struct PaneTabConfig {
     pub session_id: Option<String>,
     pub agent_id: String,
     pub label: Option<String>,
-    /// Who set `label`: "user" or "ai". Absent means user-set, so a name that
-    /// predates auto naming (or was typed by hand) is never overwritten.
+    /// Who set `label`: "user", "ai", or a scripted "launch". Unknown/absent
+    /// provenance is handled conservatively by the naming frontend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label_source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -225,6 +237,12 @@ pub struct PaneTabConfig {
     pub lifecycle: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<PaneTabOriginConfig>,
+    #[serde(default, deserialize_with = "optional_delegation_id", skip_serializing_if = "Option::is_none")]
+    pub delegated_by_tab_id: Option<String>,
+    #[serde(default, deserialize_with = "optional_delegation_id", skip_serializing_if = "Option::is_none")]
+    pub delegated_by_agent_session_id: Option<String>,
+    #[serde(default, deserialize_with = "optional_delegation_timestamp", skip_serializing_if = "Option::is_none")]
+    pub delegated_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declared_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -321,6 +339,8 @@ pub struct WorkspaceConfig {
     pub window_frame: Option<WindowFrameConfig>,
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_source: Option<String>,
     pub grid_template_id: String,
     pub panes: Vec<PaneConfig>,
     pub created_at: u64,
@@ -608,6 +628,8 @@ pub struct AppSettings {
     /// setting yet. The frontend supplies the effective UI default.
     #[serde(default)]
     pub auto_pane_naming_enabled: Option<bool>,
+    #[serde(default)]
+    pub auto_workspace_naming_enabled: Option<bool>,
     /// `None` is distinct from the explicit opt-out `Some(false)`.
     #[serde(default)]
     pub reply_draft_suggestions_enabled: Option<bool>,
@@ -628,6 +650,9 @@ pub struct AppSettings {
     pub pet_disabled: Vec<String>,
     #[serde(default)]
     pub pet_fixed_id: Option<String>,
+    /// Frontend-owned, versioned random cycle. Unknown bags remain repairable.
+    #[serde(default)]
+    pub pet_random_bag: Option<serde_json::Value>,
     /// Yen per US dollar used by the AI log money display. Unit prices stay
     /// in USD; the renderer multiplies at format time.
     #[serde(default = "default_ailog_usd_jpy_rate")]
@@ -654,6 +679,7 @@ impl Default for AppSettings {
             ai_model: default_ai_model(),
             ai_enabled: true,
             auto_pane_naming_enabled: None,
+            auto_workspace_naming_enabled: None,
             reply_draft_suggestions_enabled: None,
             dirty_save_mode: true,
             osc7_tracking_enabled: true,
@@ -661,6 +687,7 @@ impl Default for AppSettings {
             pet_new_ws_mode: default_pet_new_ws_mode(),
             pet_disabled: Vec::new(),
             pet_fixed_id: None,
+            pet_random_bag: None,
             ailog_usd_jpy_rate: default_ailog_usd_jpy_rate(),
             ailog_mirror_full_text_root: default_ailog_mirror_full_text_root(),
         }
@@ -1231,6 +1258,42 @@ where
 #[cfg(test)]
 mod tests {
     #[test]
+    fn h7_invalid_auxiliary_delegation_fields_do_not_quarantine_a_valid_layout() {
+        use super::*;
+        let original: serde_json::Value = serde_json::from_str(include_str!("../../../tests/fixtures/livebrief_autonomy/delegation-layout.json")).unwrap();
+        let baseline: PersistentData = serde_json::from_value(original.clone()).unwrap();
+        let rows: Vec<serde_json::Value> = serde_json::from_str(include_str!("../../../tests/fixtures/livebrief_autonomy/delegation-invalid-values.json")).unwrap();
+        for row in rows {
+            let mut input = original.clone();
+            let target = &mut input["workspaces"][0]["panes"][0]["tabs"][0];
+            if row["name"] == "missing" {
+                for field in row["remove"].as_array().unwrap() { target.as_object_mut().unwrap().remove(field.as_str().unwrap()); }
+            }
+            if let Some(patch) = row["patch"].as_object() {
+                for (field, value) in patch { target[field] = value.clone(); }
+            }
+            let mut expected = serde_json::to_value(&baseline).unwrap();
+            for field in row["remove"].as_array().unwrap() {
+                expected["workspaces"][0]["panes"][0]["tabs"][0].as_object_mut().unwrap().remove(field.as_str().unwrap());
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("data.json");
+            let bytes = serde_json::to_vec(&input).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            // Actual file loader, no valid backup: one bad fact must not default
+            // the layout, quarantine the file, or restore an older whole layout.
+            let loaded = load_envelope_from_path(&path).unwrap();
+            assert!(loaded.supported);
+            assert_eq!(serde_json::to_value(loaded.data.unwrap()).unwrap(), expected, "{}", row["name"]);
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+        let mut invalid_required = original;
+        invalid_required["workspaces"][0]["panes"][0]["tabs"][0]["agent_id"] = serde_json::json!(7);
+        assert!(serde_json::from_value::<PersistentData>(invalid_required).is_err(), "only delegation metadata is tolerant");
+    }
+
+    #[test]
     fn profile_mutex_names_are_distinct_and_case_equivalent_windows_paths_share_a_lock() {
         use super::*;
         let names: std::collections::HashSet<_> = [None, Some("default"), Some("one"), Some("two")]
@@ -1477,6 +1540,28 @@ mod tests {
         assert_eq!(settings.pet_new_ws_mode, "random");
         assert!(settings.pet_disabled.is_empty());
         assert!(settings.pet_fixed_id.is_none());
+        assert!(settings.pet_random_bag.is_none());
+    }
+
+    #[test]
+    fn pet_random_bag_and_legacy_random_mode_round_trip() {
+        let value = serde_json::json!({
+            "font_size": 14, "theme_id": "yoru-cafe", "pet_new_ws_mode": "random-repeat",
+            "pet_random_bag": {"version": 1, "candidates": ["clawd", "external:sample"], "remaining": ["external:sample"]}
+        });
+        let settings: AppSettings = serde_json::from_value(value.clone()).unwrap();
+        let saved = serde_json::to_value(settings).unwrap();
+        assert_eq!(saved["pet_new_ws_mode"], value["pet_new_ws_mode"]);
+        assert_eq!(saved["pet_random_bag"], value["pet_random_bag"]);
+    }
+
+    #[test]
+    fn unknown_pet_random_bag_does_not_block_settings_restore() {
+        let settings: AppSettings = serde_json::from_value(serde_json::json!({
+            "font_size": 14, "theme_id": "yoru-cafe", "pet_random_bag": {"version": 99}
+        })).unwrap();
+        assert_eq!(settings.pet_random_bag.unwrap()["version"], 99);
+        assert_eq!(settings.pet_new_ws_mode, "random");
     }
 
     #[test]

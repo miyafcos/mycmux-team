@@ -18,7 +18,7 @@ import { UsageView } from "./UsageView";
 import { isExplicitLlmIntent } from "./panelModel";
 import { EmptyState, SkeletonBlock, noteStyle, subtleButtonStyle } from "./ui";
 
-interface AiLogPanelProps { open: boolean; visible: boolean; closing?: boolean; onClose: () => void; }
+interface AiLogPanelProps { open: boolean; visible: boolean; closing?: boolean; embedded?: boolean; onClose: () => void; }
 
 export function bucketInputRange(day: number, bucket: UsageBucket): { from: string; to: string } {
   const from = toDayInput(day);
@@ -29,7 +29,7 @@ export function bucketInputRange(day: number, bucket: UsageBucket): { from: stri
   return { from, to: `${year}-${`${month}`.padStart(2, "0")}-${`${lastDay}`.padStart(2, "0")}` };
 }
 
-export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPanelProps) {
+export function AiLogPanel({ open, visible, closing = false, embedded = false, onClose }: AiLogPanelProps) {
   const [detailOpen, setDetailOpen] = useState(false);
   const opened = useRef(false);
   const store = useAilogStore(useShallow((state) => ({
@@ -125,10 +125,10 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
   const indexError = !index.autoStarted ? jobDisplayError(index) : null;
   const summarizeError = jobDisplayError(summarize);
 
-  return <OverlayShell open={open} closing={closing} onClose={closePanel} closeOnEscape={!detailOpen} size="full" ariaLabel="AIログ分析" id="ailog-panel">
+  const content = <>
     <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", padding: "12px 16px", borderBottom: "1px solid var(--cmux-border)" }}>
       <div style={{ minWidth: 0 }}>
-        <h1 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>AI ログ分析</h1>
+        {!embedded && <h1 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>AI ログ分析</h1>}
         <div role="status" aria-live="polite" style={{ ...noteStyle, marginTop: 2 }}>
           {store.overview ? `${store.overview.range.label} · ${store.overview.totals.sessions.toLocaleString("ja-JP")} セッション${visibleBusy ? " · 直前の集計を表示したまま更新中…" : ""}` : visibleBusy ? "集計を読み込み中…" : "—"}
           {import.meta.env.DEV && store.lastLoadMs !== null ? ` · ${store.lastLoadMs.toFixed(0)}ms` : ""}
@@ -138,7 +138,7 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
       <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flexWrap: "wrap" }}>
         <IndexBadge />
         <PanelMenu summaryPreset={store.summaryPreset} onSummaryPreset={store.setSummaryPreset} aiDisabledReason={aiDisabledReason} onStartSummarize={startSummarize} />
-        <button type="button" aria-label="閉じる" onClick={closePanel} style={{ ...subtleButtonStyle, padding: "3px 8px" }}>×</button>
+        {!embedded && <button type="button" aria-label="閉じる" onClick={closePanel} style={{ ...subtleButtonStyle, padding: "3px 8px" }}>×</button>}
       </div>
     </header>
     <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}><div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "12px 16px 20px", minWidth: 0 }}>
@@ -148,5 +148,7 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
       <UsageView overview={store.overview} previousTotalsStatus={store.previousTotalsStatus} models={store.models} sessions={store.sessions} series={store.usageSeries} rhythm={store.usageRhythm} loading={store.loading} usageLoading={store.usageLoading} usageError={store.usageError} error={store.dashboardError} statusPending={statusPending} neverIndexed={neverIndexed} noData={noData} running={running} preset={store.preset} metric={store.usageMetric} stack={store.usageStack} bucket={store.usageBucket} seriesAxis={store.usageSeriesAxis} excludeSynthetic={store.excludeSynthetic} selection={store.selection} breakdownDimension={store.breakdownDimension} breakdown={store.breakdown} breakdownError={store.breakdownError} breakdownLoading={store.breakdownLoading} pivot={store.pivot} pivotRowBy={store.pivotRowBy} pivotColBy={store.pivotColBy} pivotLoading={store.pivotLoading} pivotError={store.pivotError} sessionSort={store.sessionSort} sessionPage={store.sessionPage} sessionQuery={store.sessionQuery} sessionAppliedQuery={store.sessionAppliedQuery} sessionAppliedSort={store.sessionAppliedSort} sessionAppliedPage={store.sessionAppliedPage} sessionLoading={store.sessionLoading} sessionError={store.sessionError} detailKey={store.detailKey} onRefresh={activeLoad} onRetryUsage={retryUsage} onStartIndex={startIndex} onMetric={store.setUsageMetric} onStack={store.setUsageStack} onBucket={store.setUsageBucket} onSeriesAxis={store.setUsageSeriesAxis} onPickDay={pickUsageDay} onSelect={store.setSelection} onBreakdownDimension={store.setBreakdownDimension} onRefreshBreakdown={refreshBreakdown} onPivotRowBy={store.setPivotRowBy} onPivotColBy={store.setPivotColBy} onRetryPivot={retryPivot} onSessionSort={store.setSessionSort} onSessionPage={store.setSessionPage} onSessionQuery={applySessionQuery} onRetrySessions={retrySessions} onOpenDetail={openDetail} />
     </div></div>
     {detailOpen ? <OverlayShell open={detailOpen} onClose={closeDetail} size="wide" layer="top" ariaLabel="セッション詳細">{store.detailError ? <EmptyState kind="error" message={store.detailError} onPrimary={() => store.detailKey ? void store.openDetail(store.detailKey.kind, store.detailKey.sessionId) : undefined} primaryLabel="再試行" /> : store.detailLoading ? <div style={{ padding: 16 }}><SkeletonBlock height={120} label="詳細を読み込み中" /></div> : store.detail ? <div style={{ padding: 16, overflowY: "auto" }}><SessionDetailView detail={store.detail} transcript={store.transcript} transcriptLoading={store.transcriptLoading} transcriptError={store.transcriptError} sessionSummarizing={store.sessionSummarizing} sessionSummarizeError={store.sessionSummarizeError} aiDisabledReason={aiDisabledReason} onSummarize={() => runExplicitLlm("summarizeSession", () => store.summarizeSession(store.detail!.session.kind, store.detail!.session.sessionId))} onLoadTranscript={() => store.detailKey ? void store.loadTranscript(store.detailKey.kind, store.detailKey.sessionId) : undefined} onClose={closeDetail} /></div> : null}</OverlayShell> : null}
-  </OverlayShell>;
+  </>;
+  return embedded ? <section className="ailog-embedded" aria-label="ふりかえり" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, minWidth: 0, color: "var(--cmux-text)", background: "var(--cmux-popover)" }}>{content}</section>
+    : <OverlayShell open={open} closing={closing} onClose={closePanel} closeOnEscape={!detailOpen} size="full" ariaLabel="AIログ分析" id="ailog-panel">{content}</OverlayShell>;
 }

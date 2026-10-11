@@ -399,12 +399,13 @@ pub async fn report_renderer_heartbeat(caller: tauri::Webview, heartbeat: Render
 // The command itself moves blocking work to the blocking pool.
 #[tauri::command]
 pub async fn measured_kill_session(
+    app_handle: AppHandle,
     state: State<'_, crate::AppState>,
     session_id: String,
 ) -> Result<(), String> {
     static LIMITS: OnceLock<Mutex<(RateLimit, RateLimit)>> = OnceLock::new();
     let start = Instant::now();
-    let result = crate::commands::terminal::kill_session(state, session_id.clone()).await;
+    let result = crate::commands::terminal::kill_session(app_handle, state, session_id.clone()).await;
     let elapsed_ms = start.elapsed().as_millis();
     let should_log = {
         let mut limits = LIMITS
@@ -529,11 +530,17 @@ fn free_ram_mib() -> Option<u64> {
     }
 }
 
+/// Reuse the watchdog's OS probe on the blocking pool, without a new sampler.
+#[tauri::command(async)]
+pub async fn get_available_memory_mib() -> Result<Option<u64>, String> {
+    crate::util::task::run_blocking("get_available_memory_mib", || Ok(free_ram_mib())).await
+}
+
 #[cfg(not(windows))]
 fn free_ram_mib() -> Option<u64> {
     let mut system = sysinfo::System::new();
     system.refresh_memory();
-    Some(system.available_memory() / (1024 * 1024))
+    (system.total_memory() > 0).then(|| system.available_memory() / (1024 * 1024))
 }
 
 #[cfg(windows)]

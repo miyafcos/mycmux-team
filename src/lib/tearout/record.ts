@@ -1,12 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import { startTearoutFrames, finishTearoutFrames } from "./frameMetrics";
+import type { ReleasePoint } from "./release";
 import type { DockTarget } from "../../stores/detachedDockStore";
 
 export type TearoutResult = "kept_window" | "handed_off" | "handoff_failed" | "docked" | "esc_cancelled" | "failed_restored" | "reordered" | "cancelled_before_tearout" | "rejected_busy" | "restore_failed";
 export type TearoutError = "prepare_failed" | "show_failed" | "native_move_failed" | "receive_failed" | "dock_failed" | "rollback_failed" | "unexpected_failure" | "move_busy";
 export interface Reveal { shown_at: number; visible_at: number; scale: number; monitor: string | null; focus_stolen: boolean }
-export interface NativeTiming { native_started_at: number | null; at: number; phase: "move" | "end"; scale: number; monitor: string | null; focus_stolen: boolean; esc_at?: number | null }
+export interface ReleaseEvidence { point: ReleasePoint; receiver_window: string | null; receiver_epoch: number | null; client_x: number | null; client_y: number | null }
+export interface InputEvidence { pointer_id: number; event_at: number; trusted: boolean; surface: "band" | "strip" | "sidebar" }
+let inputEvidenceEnabled = false;
+let evidenceCount = 0;
+export function configureTearoutInputEvidence(enabled: boolean): void { inputEvidenceEnabled = enabled; if (!enabled) evidenceCount = 0; }
+
+export interface NativeTiming { native_started_at: number | null; at: number; phase: "move" | "end"; scale: number; monitor: string | null; focus_stolen: boolean; esc_at?: number | null; release?: ReleasePoint | null; receiver?: string | null; receiver_epoch?: number; client_x?: number; client_y?: number }
 export interface RecordData {
+  input_evidence: InputEvidence | null; release_point: ReleaseEvidence | null;
   drag_id: string; pane_id: string; source_window: string; switch_on: boolean; down_at: number;
   grabbed_kind: "pane" | "tab" | "workspace"; pane_count: number;
   outside_at: number | null; shown_at: number | null; visible_at: number | null; native_started_at: number | null;
@@ -24,15 +32,20 @@ function destination(target: DockTarget | null) {
 
 export class TearoutRecord {
   private written = false;
+  private evidence = inputEvidenceEnabled && evidenceCount++ < 256;
   private data: RecordData;
   constructor(public readonly id: string, paneId: string, source: string, downAt: number,
     grabbedKind: RecordData["grabbed_kind"] = "pane", paneCount = 1) {
     startTearoutFrames(id);
-    this.data = { drag_id: id, pane_id: paneId, source_window: source, switch_on: true, down_at: downAt,
+    this.data = { input_evidence: null, release_point: null, drag_id: id, pane_id: paneId, source_window: source, switch_on: true, down_at: downAt,
       grabbed_kind: grabbedKind, pane_count: paneCount,
       outside_at: null, shown_at: null, visible_at: null, native_started_at: null, hover_started_at: null,
       highlighted_at: null, receiver_window: null, released_at: null, esc_at: null, layout_done_at: 0, result: "kept_window",
       destination: null, released: false, failure_reason: null, failure_phase: null, failed_session_ids: [], session_id_equal: true, scale: null, monitor: null, focus_stolen: false, errors: [] };
+  }
+  input(event: Pick<PointerEvent, "pointerId" | "timeStamp" | "isTrusted">, surface: InputEvidence["surface"]): void {
+    if (!this.evidence) return;
+    this.data.input_evidence = { pointer_id: event.pointerId, event_at: performance.timeOrigin + event.timeStamp, trusted: event.isTrusted, surface };
   }
   outside(at: number): void { this.data.outside_at ??= at; }
   transport(kind: RecordData["grabbed_kind"], count: number): void { this.data.grabbed_kind = kind; this.data.pane_count = count; }
@@ -42,7 +55,11 @@ export class TearoutRecord {
     if (sample.native_started_at) this.data.native_started_at = sample.native_started_at;
     this.data.scale = sample.scale; this.data.monitor = sample.monitor;
     this.data.focus_stolen ||= sample.focus_stolen;
-    if (sample.phase === "end") { this.data.released_at = sample.at; this.data.released = true; }
+    if (sample.phase === "end") {
+      this.data.released_at = sample.release?.at ?? sample.at; this.data.released = true;
+      if (this.evidence && sample.release) this.data.release_point = { point: { ...sample.release }, receiver_window: sample.receiver ?? null,
+        receiver_epoch: sample.receiver_epoch ?? null, client_x: sample.client_x ?? null, client_y: sample.client_y ?? null };
+    }
     if (sample.esc_at) this.data.esc_at ??= sample.esc_at;
   }
   highlighted(at: number, hoverAt: number, receiver: string): void {

@@ -32,7 +32,7 @@ def test_settings_dialog_separates_ai_and_automation_tabs() -> None:
     )
 
 
-def test_ai_tab_lists_the_seven_declared_features() -> None:
+def test_ai_tab_lists_the_eight_declared_features() -> None:
     text = read_repo_text("src/components/settings/tabs/AiTab.tsx")
     strings = read_repo_text("src/components/settings/settingsStrings.ts")
     expected_copy = (
@@ -44,26 +44,41 @@ def test_ai_tab_lists_the_seven_declared_features() -> None:
         "この設定で動く機能",
         "自動",
         "ボタンで実行",
-        "ペインの自動命名",
-        "案件登録・作業フォルダ・会話の題名から表示名を付けます (AI は使いません)",
+        "タブの自動命名",
+        "直近の依頼・扱うファイル・今の動きから短い表示名を付けます。手で付けた名前は保持します。 (AI は使いません)",
+        "ワークスペース名を中身から自動で付ける",
+        "すべてのタブの作業から名前をまとめます。既存の名前と手で付けた名前は、自動では変更しません。 (AI は使いません)",
         "返信案の準備",
         "ダッシュボードの会話末尾を送ります",
         "報告インボックスの要約",
         "報告本文を送ります",
-        "ペイン整理のAI判定",
-        "各ペインの画面末尾8行と作業フォルダを送ります",
+        "タブ整理のAI判定",
+        "各タブの画面末尾8行と作業フォルダを送ります",
         "ailog セッション要約",
         "セッションログ全文を送ります（トークン消費が大きい機能です）",
         "ailog 一括要約",
         "選択したセッションのログを順に送ります",
-        "ペイン再配置",
+        "タブ再配置",
         "案件登録・作業フォルダ・会話の題名から3案を組みます。Jevは役割判定に使います。",
     )
     for snippet in expected_copy:
         assert snippet in strings, f"Missing approved copy: {snippet}"
+    declared_features = (
+        "autoPaneNaming", "autoWorkspaceNaming", "replyDraft", "reportInboxSummary",
+        "tabSweep", "ailogSession", "ailogBatch", "tabRelayout",
+    )
+    assert text.count("<FeatureRow") == len(declared_features) == 8
+    assert tuple(re.findall(r"label=\{aiSettingsStrings\.features\.(\w+)\.label\}", text)) == declared_features
+    for feature in ("autoPaneNaming", "autoWorkspaceNaming"):
+        block = re.search(rf"\b{feature}: \{{(.*?)\n\s*\}},", strings, re.S)
+        assert block, f"Missing declared feature: {feature}"
+        disclosure = re.search(r'disclosure: "([^"]+)"', block.group(1))
+        assert disclosure and "AI は使いません" in disclosure.group(1), feature
+        assert f"disclosure={{aiSettingsStrings.features.{feature}.disclosure}}" in text
     assert "AutomationTab" not in text
     assert 'checked={replyDraftSuggestionsEnabled}' in text
     assert 'checked={autoPaneNamingEnabled}' in text
+    assert 'checked={autoWorkspaceNamingEnabled}' in text
     assert "JevSettingsSection" in text
     assert "ペイン再配置（準備中）" not in strings
     assert "監査完了まで利用できません" not in strings

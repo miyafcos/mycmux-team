@@ -21,6 +21,9 @@ export interface Toast {
 
 interface ToastState {
   toasts: Toast[];
+  /** One refusal explanation; never consumes the ordinary/action toast limit. */
+  transferReservationNotice: Toast | null;
+  pushTransferReservationNotice: (message: string) => string;
   pushToast: (
     message: string,
     kind?: ToastKind,
@@ -76,6 +79,21 @@ function isToastCategoryEnabled(category: ToastCategory): boolean {
 
 export const useToastStore = create<ToastState>((set, get) => ({
   toasts: [],
+  transferReservationNotice: null,
+  pushTransferReservationNotice: (message) => {
+    const previous = get().transferReservationNotice;
+    const existing = previous?.message === message ? previous : null;
+    const id = existing?.id ?? createToastId();
+    const dismissAt = Math.max(toastDismissDeadlines.get(id) ?? 0, Date.now() + TOAST_AUTO_DISMISS_MS);
+    if (previous && previous.id !== id) clearToastTimer(previous.id);
+    set({ transferReservationNotice: {
+      id, message, kind: "warning", category: "failure", createdAt: existing?.createdAt ?? Date.now(),
+    } });
+    clearToastTimer(id);
+    toastDismissTimers.set(id, globalThis.setTimeout(() => get().dismissToast(id), dismissAt - Date.now()));
+    toastDismissDeadlines.set(id, dismissAt);
+    return id;
+  },
   pushToast: (message, kind = "error", action, actions, durationMs, requestedCategory) => {
     const category = resolveToastCategory(kind, requestedCategory);
     if (!isToastCategoryEnabled(category)) return createToastId();
@@ -130,6 +148,7 @@ export const useToastStore = create<ToastState>((set, get) => ({
     clearToastTimer(id);
     set((state) => ({
       toasts: state.toasts.filter((toast) => toast.id !== id),
+      transferReservationNotice: state.transferReservationNotice?.id === id ? null : state.transferReservationNotice,
     }));
   },
 }));
@@ -138,5 +157,5 @@ export function __resetToastStoreForTests(): void {
   for (const id of toastDismissTimers.keys()) {
     clearToastTimer(id);
   }
-  useToastStore.setState({ toasts: [] });
+  useToastStore.setState({ toasts: [], transferReservationNotice: null });
 }

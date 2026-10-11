@@ -443,7 +443,7 @@ def compose(state, answers):
                 group["layout"]={"columns":[{"panes":[{"title":safe_title(tabs[u[0]].get("label",""),title),
                     "role":roles[u[0]],"tabIds":[tabs[i]["id"] for i in u]}]} for u in units]}
             if unknown:
-                warnings.append({"code":"UNCLEAR_ROLE","tabIds":ids,"message":"\u6839\u62e0\u4e0d\u8db3\u306e\u30da\u30a4\u30f3\u306f\u73fe\u5728\u4f4d\u7f6e\u306b\u6b8b\u3057\u3066\u78ba\u8a8d"})
+                warnings.append({"code":"UNCLEAR_ROLE","tabIds":ids,"message":"\u6839\u62e0\u4e0d\u8db3\u306e\u30bf\u30d6\u306f\u73fe\u5728\u4f4d\u7f6e\u306b\u6b8b\u3057\u3066\u78ba\u8a8d"})
             if not keep and len(chunk)<3 and not error_only:
                 warnings.append({"code":"LOW_CONFIDENCE","tabIds":ids,"message":"\u5c11\u6570\u30b0\u30eb\u30fc\u30d7\u306e\u307e\u3068\u3081\u65b9\u306f\u8981\u8a55\u4fa1"})
             groups.append(group)

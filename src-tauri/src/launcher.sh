@@ -203,6 +203,116 @@ grok() {
 }
 export -f __mycmux_issue_hook_cap __mycmux_ensure_dispatch_guard __mycmux_with_hook_cap __mycmux_codex_with_pane claude claude-codex codex grok
 
+# BEGIN CODEX RESTORE HELPERS
+# These helpers are also embedded in the backend's direct Codex supervisor.
+__mycmux_codex_restore_report() {
+  __MYCMUX_CODEX_REPORT_WRITTEN=0
+  local outcome="$1" reason="$2"
+  local pane="${MYCMUX_PANE_SESSION_ID:-}" tab="${MYCMUX_TAB_ID:-}"
+  [[ "$pane" =~ ^[a-zA-Z0-9_.-]+$ ]] && [ "$pane" != "." ] && [ "$pane" != ".." ] || return 0
+  [[ "$tab" =~ ^[0-9a-fA-F-]{36}$ ]] || tab=""
+  local directory="${MYCMUX_RUNTIME_DIR:-$HOME/.mycmux}/pane-sessions"
+  local path="$directory/$pane.codex-restore.json"
+  mkdir -p "$directory" 2>/dev/null || return 0
+  [ -d "$path" ] && return 0
+  if printf '{"generation":"%s","tab_id":"%s","outcome":"%s","reason":"%s"}\n' "${__MYCMUX_CODEX_REPORT_GENERATION:-}" "$tab" "$outcome" "$reason" > "$path.tmp-$$" 2>/dev/null &&
+    mv -f "$path.tmp-$$" "$path" 2>/dev/null; then __MYCMUX_CODEX_REPORT_WRITTEN=1; fi
+  return 0
+}
+
+__mycmux_drop_codex_restore_mapping() {
+  local directory="${MYCMUX_RUNTIME_DIR:-$HOME/.mycmux}/pane-sessions" id
+  for id in "${MYCMUX_PANE_SESSION_ID:-}" "${MYCMUX_TAB_ID:-}"; do
+    [[ "$id" =~ ^[a-zA-Z0-9_.-]+$ ]] && [ "$id" != "." ] && [ "$id" != ".." ] || continue
+    rm -f "$directory/$id.txt" 2>/dev/null
+  done
+}
+
+__mycmux_codex_restore_invoke() {
+  # Do not infer startup failure from a native program's exit status. Preflight
+  # is positive evidence that no program could be invoked; 126/127 returned by
+  # a program that did run remain ordinary CLI exits.
+  __MYCMUX_CODEX_INVOKED=0
+  local executable="$1"
+  if [ "$executable" = "codex" ]; then
+    if __mycmux_is_windows_shell; then
+      [ -f "$APPDATA/npm/codex.cmd" ] || return 127
+    else
+      type -P codex >/dev/null 2>&1 || return 127
+    fi
+  elif [[ "$executable" == */* ]]; then
+    [ -f "$executable" ] && [ -x "$executable" ] || return 127
+  else
+    command -v "$executable" >/dev/null 2>&1 || return 127
+  fi
+  __MYCMUX_CODEX_INVOKED=1
+  MYCMUX_LAUNCH_KIND="${__MYCMUX_PENDING_LAUNCH_KIND:-}" "$@"
+}
+
+__mycmux_restore_codex() {
+  local requested="${MYCMUX_SESSION_ID:-}" reason="${MYCMUX_CODEX_RESTORE_REASON:-}" code
+  __MYCMUX_CODEX_REPORT_GENERATION="${MYCMUX_CODEX_RESTORE_GENERATION:-}"
+  unset MYCMUX_RESUME MYCMUX_SESSION_ID MYCMUX_AGENT_KIND MYCMUX_RESUME_FORK MYCMUX_CODEX_RESTORE_REASON MYCMUX_CODEX_RESTORE_GENERATION MYCMUX_LAUNCH_KIND MYCMUX_LAUNCH_TARGET
+  if [ -z "$reason" ]; then
+    if [ -z "$requested" ]; then reason=missing-id
+    elif ! [[ "$requested" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then reason=malformed-id
+    fi
+  fi
+  if [ -z "$reason" ]; then
+    __MYCMUX_PENDING_LAUNCH_KIND=resume
+    __write_session_mapping "$MYCMUX_PANE_SESSION_ID" codex "$requested"
+    if [ "${#__MYCMUX_CODEX_RESUME_CMD[@]}" -gt 0 ]; then
+      __mycmux_codex_restore_invoke "${__MYCMUX_CODEX_RESUME_CMD[@]}"
+    else
+      __mycmux_codex_restore_invoke codex resume --no-alt-screen "$requested"
+    fi
+    code=$?
+    if [ "$__MYCMUX_CODEX_INVOKED" = "1" ]; then
+      if [ "$code" = "0" ]; then __mycmux_codex_restore_report completed cli-exit
+      else
+        __mycmux_codex_restore_report exited cli-exit
+        printf '  Codex exited with status %s; returning to the shell.\n' "$code"
+      fi
+      if [ "$__MYCMUX_CODEX_REPORT_WRITTEN" != "1" ]; then
+        printf '%s\n' '  Codex restore outcome could not be recorded; returning to the shell.'
+      fi
+      unset __MYCMUX_PENDING_LAUNCH_KIND
+      return 0
+    fi
+    reason=spawn-failed
+  fi
+  __mycmux_drop_codex_restore_mapping
+  __mycmux_codex_restore_report downgrade "$reason"
+  if [ "$__MYCMUX_CODEX_REPORT_WRITTEN" != "1" ]; then
+    printf '%s\n' '  Codex restore outcome could not be recorded; returning to the shell.'
+    unset __MYCMUX_PENDING_LAUNCH_KIND
+    return 0
+  fi
+  printf '%s\n' '  Previous conversation could not be restored; starting a new session.'
+  __MYCMUX_PENDING_LAUNCH_KIND=new
+  # Keep the base tracking and trusted-identity contract. This restore
+  # helper does not add a new capture or persistence authority.
+  if declare -F __track_codex_session >/dev/null; then __track_codex_session "$MYCMUX_PANE_SESSION_ID" & fi
+  if [ "${#__MYCMUX_CODEX_FRESH_CMD[@]}" -gt 0 ]; then
+    __mycmux_codex_restore_invoke "${__MYCMUX_CODEX_FRESH_CMD[@]}"
+  else
+    __mycmux_codex_restore_invoke codex --no-alt-screen
+  fi
+  code=$?
+  if [ "$__MYCMUX_CODEX_INVOKED" != "1" ] || [ "$code" != "0" ]; then
+    __mycmux_codex_restore_report fresh-failed "$reason"
+    printf '  Fresh Codex could not continue (status %s); returning to the shell.\n' "$code"
+  else
+    __mycmux_codex_restore_report fresh-completed "$reason"
+  fi
+  if [ "$__MYCMUX_CODEX_REPORT_WRITTEN" != "1" ]; then
+    printf '%s\n' '  Codex restore outcome could not be recorded; returning to the shell.'
+  fi
+  unset __MYCMUX_PENDING_LAUNCH_KIND
+  return 0
+}
+# END CODEX RESTORE HELPERS
+
 if [ "${MYCMUX_HOOK_WRAPPERS_ONLY:-}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
@@ -968,10 +1078,10 @@ if [ -n "$__handoff_kind" ]; then
       __handoff_sid="$(__grok_new_session_id)"
       if [ -n "$__handoff_sid" ]; then
         __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "grok" "$__handoff_sid"
-        __handoff_with_launch_spec grok --no-alt-screen --session-id "$__handoff_sid" --permission-mode bypassPermissions "$__bootstrap"
+        __handoff_with_launch_spec grok --no-alt-screen --session-id "$__handoff_sid" --permission-mode auto "$__bootstrap"
         "${__MYCMUX_HANDOFF_CMD[@]}"
       else
-        __handoff_with_launch_spec grok --no-alt-screen --permission-mode bypassPermissions "$__bootstrap"
+        __handoff_with_launch_spec grok --no-alt-screen --permission-mode auto "$__bootstrap"
         "${__MYCMUX_HANDOFF_CMD[@]}"
       fi
       ;;
@@ -983,6 +1093,14 @@ if [ -n "$__handoff_kind" ]; then
   esac
   unset __MYCMUX_PENDING_LAUNCH_KIND
   return 0 2>/dev/null || exit 0
+fi
+
+if [ -n "${MYCMUX_CODEX_RESTORE_REASON:-}" ]; then
+  if { [ -z "${MYCMUX_RESUME:-}" ] || [ "$MYCMUX_RESUME" = codex ]; } &&
+     { [ -z "${MYCMUX_LAUNCH_TARGET:-}" ] || [ "$MYCMUX_LAUNCH_TARGET" = codex ]; }; then
+  __mycmux_restore_codex
+  return 0 2>/dev/null || exit 0
+  fi
 fi
 
 if [ -n "$MYCMUX_RESUME" ]; then
@@ -1040,13 +1158,7 @@ if [ -n "$MYCMUX_RESUME" ]; then
       fi
       ;;
     codex*)
-      if [ -n "$MYCMUX_SESSION_ID" ]; then
-        __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "codex" "$MYCMUX_SESSION_ID"
-        eval "codex resume --no-alt-screen $MYCMUX_SESSION_ID"
-      else
-        __track_codex_session "$MYCMUX_PANE_SESSION_ID" &
-        eval "codex resume --no-alt-screen --last"
-      fi
+      __mycmux_restore_codex
       ;;
     grok*)
       if [ -n "$MYCMUX_SESSION_ID" ]; then
@@ -1085,7 +1197,7 @@ __open_web_tab() {
   web_rc=$?
   # 失敗を握りつぶすと「押しても何も起きない」に見える。理由は必ず出す。
   if [ "$web_rc" -ne 0 ]; then
-    printf '  Web ペインを開けませんでした (exit %s):
+    printf '  Web タブを開けませんでした (exit %s):
 ' "$web_rc"
     printf '    %s
 ' "$web_out"

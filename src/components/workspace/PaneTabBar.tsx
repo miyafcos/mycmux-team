@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { clampMenuPosition } from "../../lib/menuPosition";
 import { PaneTabRenameEditor } from "./PaneTabRenameEditor";
@@ -10,8 +10,10 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import type { Pane, PaneTab } from "../../types";
 import { getDefaultAgent } from "../../lib/agents";
-import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
+import { getTabDisplayLabel, getTabDisplayFullLabel } from "../../lib/tabDisplayLabel";
 import { resolveTabMark, tabMarkSource, type TabMark } from "../../lib/tabMark";
+import { AGENT_DORMANT_LABEL, dormantAgentDescription } from "../../lib/agentDormancy";
+import { openDormantCompletionRecord } from "../../lib/dormantCompletion";
 import { crsmCreateHandoff, duplicateAgentSession } from "../../lib/ipc";
 import {
   buildClonedDuplicateSessionPaneOptions,
@@ -23,12 +25,11 @@ import type { PaneMetadata, PaneVolatileMetadata } from "../../stores/paneMetada
 import { deriveDisplayStatus, type EffectiveStatus } from "../../lib/notificationStatus";
 import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
 import { usePaneDragSource } from "../../hooks/usePaneDragSource";
-import { useDetachedDockStore } from "../../stores/detachedDockStore";
-import { usePaneDragStore } from "../../stores/paneDragStore";
 import { useSavepointPublish } from "../../hooks/useSavepointPublish";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
-import { focusController } from "../../lib/focusController";
+import { capturePaneFocusReturn, captureTemporaryFocusReturn, focusController } from "../../lib/focusController";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
+import { useUiStore } from "../../stores/uiStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { isDeclaredTab } from "../../lib/tabLifecycle";
 import { useToastStore } from "../../stores/toastStore";
@@ -61,6 +62,7 @@ import { formatShortcutLabel } from "../../lib/keybindings";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { TERMINAL_SEARCH_EVENT } from "../terminal/XTermWrapper";
 import { TerminalHistoryEntry } from "../terminal/TerminalHistoryEntry";
+import { displayedPaneShortcutSource } from "./webPaneShortcuts";
 
 interface PaneTabBarProps {
   pane: Pane;
@@ -77,22 +79,6 @@ interface PaneTabBarProps {
   onSelectTab?: (tabId: string) => void;
   hasTerminalBuffer: (sessionId: string) => boolean;
 }
-
-const SplitRightIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-    <line x1="12" y1="3" x2="12" y2="21"></line>
-    <line x1="12" y1="12" x2="21" y2="12"></line>
-  </svg>
-);
-
-const SplitDownIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-    <line x1="3" y1="12" x2="21" y2="12"></line>
-    <line x1="12" y1="12" x2="12" y2="21"></line>
-  </svg>
-);
 
 const MaximizeIcon = () => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -119,37 +105,6 @@ const CloseIcon = ({ size = 10 }: { size?: number }) => (
   </svg>
 );
 
-const DuplicateIcon = () => (
-  <svg
-    width="12"
-    height="12"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    aria-hidden="true"
-    focusable="false"
-  >
-    <rect x="8" y="8" width="12" height="12" rx="2"></rect>
-    <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path>
-  </svg>
-);
-
-const PlusIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <line x1="12" y1="5" x2="12" y2="19"></line>
-    <line x1="5" y1="12" x2="19" y2="12"></line>
-  </svg>
-);
-
-const BookmarkIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"></path>
-  </svg>
-);
-
 const PinIcon = ({ size = 12, filled = false }: { size?: number; filled?: boolean }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? "currentColor" : "none"}
        stroke="currentColor" strokeWidth={24 / size} strokeLinecap="round" strokeLinejoin="round"
@@ -169,13 +124,6 @@ const KebabIcon = () => (
     <circle cx="12" cy="5" r="2" />
     <circle cx="12" cy="12" r="2" />
     <circle cx="12" cy="19" r="2" />
-  </svg>
-);
-
-const EyeIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
-    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
-    <circle cx="12" cy="12" r="3" />
   </svg>
 );
 
@@ -263,36 +211,6 @@ export function isTabActivationKey(key: string): boolean {
 
 /** The mouse button browsers report for a middle click. */
 export const MIDDLE_MOUSE_BUTTON = 1;
-const PANE_TAB_CHIP_PREVIEW_MAX_WIDTH = 200;
-
-export type PaneTabPresentation = "pill" | "chip";
-
-export function resolvePaneTabPresentation(
-  tabId: string,
-  activeTabId: string | null | undefined,
-): PaneTabPresentation {
-  return tabId === activeTabId ? "pill" : "chip";
-}
-
-export function shouldShowChipPreview(hovered: boolean, dragActive: boolean): boolean {
-  return hovered && !dragActive;
-}
-
-export function resolveChipPreviewDirection(
-  chipLeft: number,
-  containerLeft: number,
-  containerRight: number,
-  previewWidth: number,
-): "right" | "left" {
-  const available = containerRight - containerLeft;
-  if (previewWidth >= available) return "right";
-  return chipLeft + previewWidth <= containerRight ? "right" : "left";
-}
-
-export function shouldStartRenameOnDoubleClick(presentation: PaneTabPresentation): boolean {
-  return presentation === "pill" || presentation === "chip";
-}
-
 /**
  * Middle-clicking a tab pill closes it, the way a browser tab does.
  *
@@ -375,18 +293,6 @@ const PANE_TABBAR_ACTION_ORDER: readonly PaneTabBarActionId[] = [
   "close",
 ];
 
-// Listed in the order they fold away: the head is dropped first, the tail
-// survives longest (resolvePaneTabBarActions keeps `slice(-n)`). Closing a tab
-// and splitting a pane are the two actions a narrow pane still needs, so they
-// sit at the end; the savepoint bookmark is the first to move into the kebab.
-const PANE_TABBAR_PRIORITY_ACTIONS: readonly PaneTabBarActionId[] = [
-  "publish",
-  "dashboard",
-  "zoom",
-  "split-right",
-  "close",
-];
-
 // Each boundary owns its collapse and restore thresholds. Walking the ordered
 // table allows one measurement to cross multiple tiers without getting stuck.
 export function resolvePaneTabBarMode(
@@ -420,36 +326,21 @@ export function resolvePaneTabBarActions(
     (action) => action !== "publish" || showPublish,
   );
 
-  if (mode === "full") return { visible: available, overflow: [] };
-  if (mode === "micro") return { visible: [], overflow: available };
-
-  const visiblePriorityCount = mode === "compact3"
-    ? 3
-    : mode === "compact2"
-      ? 2
-      : mode === "compact1"
-        ? 1
-        : PANE_TABBAR_PRIORITY_ACTIONS.length;
-  const visiblePriorityActions: readonly PaneTabBarActionId[] = mode === "slim"
-    ? ["search", ...PANE_TABBAR_PRIORITY_ACTIONS]
-    : PANE_TABBAR_PRIORITY_ACTIONS.slice(-visiblePriorityCount);
-
-  return {
-    visible: available.filter((action) => visiblePriorityActions.includes(action)),
-    overflow: available.filter((action) => !visiblePriorityActions.includes(action)),
-  };
+  const showZoom = mode === "full" || mode === "slim" || mode === "compact" || mode === "compact3";
+  const visible: PaneTabBarActionId[] = showZoom ? ["zoom", "close"] : ["close"];
+  return { visible, overflow: available.filter((action) => !visible.includes(action)) };
 }
 
-// Narrow modes drop the inline pin button entirely — they only have room for a
-// static indicator. The dropdown row stays the always-available toggle surface.
-export function shouldShowInlinePinControl(mode: PaneTabBarMode): boolean {
-  return mode === "full" || mode === "slim" || mode === "compact" || mode === "compact3";
+export function formatHiddenTabCount(count: number, mode: PaneTabBarMode): string {
+  return mode === "compact2" || mode === "compact1" || mode === "micro" ? `+${count}` : `裏 ${count}`;
 }
 
-export function formatTabPosition(activeIndex: number, total: number): string {
-  const safeTotal = Math.max(1, total);
-  const position = activeIndex >= 0 && activeIndex < safeTotal ? activeIndex + 1 : 1;
-  return `${position}/${safeTotal}`;
+/** Same severity order as the individual status dots. */
+export function resolveHiddenTabStatus(indicators: readonly TabStatusIndicator[]): TabStatusIndicator {
+  for (const indicator of ["error", "waiting", "working"] as const) {
+    if (indicators.includes(indicator)) return indicator;
+  }
+  return null;
 }
 
 const publishPopoverButtonStyle: CSSProperties = {
@@ -562,16 +453,19 @@ function PaneTabContextMenuItem({
   disabled,
   title,
   onClick,
+  actionId,
 }: {
   children: ReactNode;
   disabled?: boolean;
   title?: string;
   onClick: () => void;
+  actionId?: string;
 }) {
   return (
     <button
       type="button"
       role="menuitem"
+      data-pane-action={actionId}
       aria-disabled={disabled}
       title={title}
       onClick={() => {
@@ -595,7 +489,7 @@ function PaneTabContextMenuItem({
 
 function handlePaneMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
   if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-  const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("[role='menuitem']"));
+  const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("[role='menuitem'], [data-terminal-magnifier]"));
   if (items.length === 0) return;
   event.preventDefault();
   event.stopPropagation();
@@ -738,9 +632,7 @@ export function shouldMarkAttentionSeen(
   return Boolean(isVisible && tabId && attentionId);
 }
 
-// Shared dropdown listing every tab of a pane. Rendered from the "⋯" button
-// when the full tab strip overflows, and from the "n/m ▾" button in compact
-// mode, so both entry points behave identically.
+// Shared dropdown listing every tab of a pane, opened by the hidden-tab count.
 function PaneTabListMenu({
   pane,
   metadataBySession,
@@ -753,6 +645,7 @@ function PaneTabListMenu({
   onRemoveTab,
   onTogglePin,
   onRenameTab,
+  onReturnFocus,
   onLaunchDeclaredTab,
   onCloseMenu,
 }: {
@@ -767,6 +660,7 @@ function PaneTabListMenu({
   onRemoveTab?: (tabId: string) => void;
   onTogglePin: (tabId: string) => void;
   onRenameTab: (tabId: string, label: string) => void;
+  onReturnFocus: () => void;
   onLaunchDeclaredTab: (tabId: string) => void;
   onCloseMenu: () => void;
 }) {
@@ -804,6 +698,7 @@ function PaneTabListMenu({
     const tabMeta = metadataBySession[tab.sessionId];
     const rowLive = volatileMetadataBySession[tab.sessionId];
     const rowMark = resolveTabMark(tab, rowLive?.liveAgentKind, rowLive?.ptyAlive === true);
+    const dormantDescription = declared ? undefined : dormantAgentDescription(rowMark);
     const status = deriveDisplayStatus(tabMeta, volatileMetadataBySession[tab.sessionId]);
     const label = getTabDisplayLabel(tab, isTabActive);
     const attention = attentionBySession[tab.sessionId];
@@ -826,10 +721,11 @@ function PaneTabListMenu({
         data-menu-tab-id={tab.id}
         role="menuitem"
         tabIndex={0}
-        title={detail ?? label}
+        title={[getTabDisplayFullLabel(tab, isTabActive, metadataBySession, volatileMetadataBySession), dormantDescription ?? detail].filter(Boolean).join(" — ")}
         aria-label={[
           label,
           rowMark?.label ?? null,
+          dormantDescription,
           unreadLabel,
           detail,
         ].filter(Boolean).join(": ")}
@@ -838,14 +734,14 @@ function PaneTabListMenu({
           onRenameTab(tab.id, label); onCloseMenu();
         }}
         onClick={() => {
-          onSelectTab?.(tab.id);
+          if (!openDormantCompletionRecord(tab, Boolean(dormantDescription))) onSelectTab?.(tab.id);
           if (declared) onLaunchDeclaredTab(tab.id);
           onCloseMenu();
         }}
         onKeyDown={(event) => {
           if (event.currentTarget !== event.target || !isTabActivationKey(event.key)) return;
           event.preventDefault();
-          onSelectTab?.(tab.id);
+          if (!openDormantCompletionRecord(tab, Boolean(dormantDescription))) onSelectTab?.(tab.id);
           if (declared) onLaunchDeclaredTab(tab.id);
           onCloseMenu();
         }}
@@ -899,6 +795,7 @@ function PaneTabListMenu({
             } as AgentKindStyle}
           >
             {rowMark.label}
+            {dormantDescription ? `・${AGENT_DORMANT_LABEL}` : ""}
           </span>
         )}
         <span style={{ flex: 1, minWidth: 0 }}>
@@ -977,6 +874,7 @@ function PaneTabListMenu({
             title={paneToolbarStrings.closeTab}
             onClick={(event) => {
               event.stopPropagation();
+              onReturnFocus();
               onRemoveTab?.(tab.id);
             }}
             style={{ padding: 3, flexShrink: 0 }}
@@ -1068,19 +966,6 @@ export default memo(function PaneTabBar({
     return next;
   }, [pane.tabs, tabAttention]);
   const { beginPointerDrag, shouldSuppressClick } = usePaneDragSource();
-  const chipDragActive = usePaneDragStore((state) => state.item !== null);
-  // Insertion slot of an in-progress reorder over this pane's strip, or null.
-  const paneTabInsertionIndex = usePaneDragStore((state) =>
-    state.target?.kind === "tab-index"
-      && state.target.workspaceId === workspaceId
-      && state.target.paneId === pane.id
-      ? state.target.index
-      : null,
-  );
-  const detachedInsertionIndex = useDetachedDockStore((state) =>
-    state.target?.kind === "tab-index" && state.target.workspaceId === workspaceId && state.target.paneId === pane.id
-      ? state.target.index : null);
-  const tabInsertionIndex = paneTabInsertionIndex ?? detachedInsertionIndex;
   const savepointDropTabId = useSavepointDragStore((state) =>
     state.target?.mode === "paste"
       && state.target.workspaceId === workspaceId
@@ -1095,21 +980,22 @@ export default memo(function PaneTabBar({
     (s) => s.addPaneToWorkspaceWithOptions,
   );
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
-  const [previewTabId, setPreviewTabId] = useState<string | null>(null);
-  const previewTimerRef = useRef<number | null>(null);
+  const renameEditorRef = useRef<HTMLDivElement>(null);
+  const renameFocusReturnRef = useRef<ReturnType<typeof capturePaneFocusReturn> | null>(null);
   const [editValue, setEditValue] = useState("");
   const pendingTabClickRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [contextMenu, setContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
-  const contextTriggerRef = useRef<HTMLElement | null>(null);
+  const contextFocusReturnRef = useRef<ReturnType<typeof capturePaneFocusReturn> | null>(null);
   const [contextMenuPos, setContextMenuPos] = useState({ left: 0, top: 0 });
   const [publishPopoverOpen, setPublishPopoverOpen] = useState(false);
   const [publishSummary, setPublishSummary] = useState("");
   const publishPopoverRef = useRef<HTMLDivElement>(null);
-  const tabStripRef = useRef<HTMLDivElement>(null);
+  const publishFocusReturnRef = useRef<ReturnType<typeof capturePaneFocusReturn> | null>(null);
   const tabPillRefs = useRef(new Map<string, HTMLDivElement>());
-  const [tabsOverflowing, setTabsOverflowing] = useState(false);
   const [allTabsOpen, setAllTabsOpen] = useState(false);
+  const allTabsTriggerRef = useRef<HTMLButtonElement>(null);
+  const allTabsFocusReturnRef = useRef<ReturnType<typeof capturePaneFocusReturn> | null>(null);
   const allTabsMenuRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const [barMode, setBarMode] = useState<PaneTabBarMode>("full");
@@ -1117,6 +1003,11 @@ export default memo(function PaneTabBar({
   const kebabRef = useRef<HTMLDivElement>(null);
   const kebabTriggerRef = useRef<HTMLButtonElement>(null);
   const kebabMenuRef = useRef<HTMLDivElement>(null);
+  const kebabFocusReturnRef = useRef<ReturnType<typeof capturePaneFocusReturn> | null>(null);
+  const [kebabMenuPos, setKebabMenuPos] = useState({ left: 0, top: 0 });
+  const canCloseWholePane = useWorkspaceListStore((state) =>
+    (state.workspaces.find((workspace) => workspace.id === workspaceId)?.panes.length ?? 1) > 1,
+  );
   const duplicateSessionLocksRef = useRef(new Set<string>());
   const [duplicatingTabIds, setDuplicatingTabIds] = useState<Set<string>>(() => new Set());
 
@@ -1141,13 +1032,8 @@ export default memo(function PaneTabBar({
   const zoomShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["pane.zoom.toggle"]));
   const searchShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["terminal.search"]));
   const showPublishButton = shouldShowPublishButton(activeTab, activeMeta);
-  const renderMode: PaneTabBarMode = !activeTab && barMode !== "full" && barMode !== "slim"
-    ? "full"
-    : barMode;
-  const { visible: visibleActions, overflow: overflowActions } = resolvePaneTabBarActions(
-    renderMode,
-    { showPublish: showPublishButton },
-  );
+  const renderMode = barMode;
+  const { visible: visibleActions } = resolvePaneTabBarActions(renderMode, { showPublish: showPublishButton });
   const publishIdentity = resolvePublishIdentity(activeTab, activeMeta);
   const agentSessionId = publishIdentity?.sessionId;
   const agentKind = publishIdentity?.kind;
@@ -1172,9 +1058,10 @@ export default memo(function PaneTabBar({
 
   useEffect(() => {
     if (!activeTab || !activeAttention?.attentionId) return;
+    if (dormantAgentDescription(activeMark) && useSessionAttentionStore.getState().dormantCompletionsBySession[activeTab.sessionId]) return;
     if (!shouldMarkAttentionSeen(isVisible, activeTab.id, activeAttention.attentionId)) return;
     useSessionAttentionStore.getState().markSeen(activeTab.id, activeAttention.attentionId);
-  }, [activeAttention?.attentionId, activeTab?.id, isVisible]);
+  }, [activeAttention?.attentionId, activeTab?.id, activeMark?.dormant, isVisible]);
 
   const displayTabLabel = useCallback(
     (tab: PaneTab, isTabActive: boolean) => getTabDisplayLabel(
@@ -1185,26 +1072,6 @@ export default memo(function PaneTabBar({
     ),
     [metadataBySession, volatileMetadataBySession],
   );
-
-  const clearChipPreviewTimer = useCallback(() => {
-    if (previewTimerRef.current !== null) {
-      window.clearTimeout(previewTimerRef.current);
-      previewTimerRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => () => clearChipPreviewTimer(), [clearChipPreviewTimer]);
-
-  useEffect(() => {
-    clearChipPreviewTimer();
-    setPreviewTabId(null);
-  }, [clearChipPreviewTimer, pane.activeTabId]);
-
-  useEffect(() => {
-    if (!chipDragActive) return;
-    clearChipPreviewTimer();
-    setPreviewTabId(null);
-  }, [chipDragActive, clearChipPreviewTimer]);
 
   const handleDuplicateSession = useCallback(async (
     tab: PaneTab,
@@ -1289,11 +1156,17 @@ export default memo(function PaneTabBar({
 
   useEffect(() => () => {
     if (pendingTabClickRef.current !== null) clearTimeout(pendingTabClickRef.current);
+    renameFocusReturnRef.current?.cancel(); contextFocusReturnRef.current?.cancel(); publishFocusReturnRef.current?.cancel();
+    allTabsFocusReturnRef.current?.cancel(); kebabFocusReturnRef.current?.cancel();
   }, []);
 
-  useDismissOnOutside(Boolean(contextMenu), contextMenuRef, (reason) => {
+  const closeContextMenu = (restore = true) => {
+    if (restore) contextFocusReturnRef.current?.(contextMenuRef.current);
+    contextFocusReturnRef.current?.cancel(); contextFocusReturnRef.current = null;
     setContextMenu(null);
-    if (reason === "escape") contextTriggerRef.current?.focus();
+  };
+  useDismissOnOutside(Boolean(contextMenu), contextMenuRef, (reason) => {
+    closeContextMenu(reason === "escape");
   }, { preventDefaultOnEscape: true });
 
   useLayoutEffect(() => {
@@ -1306,12 +1179,20 @@ export default memo(function PaneTabBar({
     );
   }, [contextMenu]);
 
-  useDismissOnOutside(publishPopoverOpen, publishPopoverRef, () => setPublishPopoverOpen(false));
+  const closePublishPopover = (restore = true) => {
+    if (restore) publishFocusReturnRef.current?.(publishPopoverRef.current);
+    publishFocusReturnRef.current?.cancel(); publishFocusReturnRef.current = null;
+    setPublishPopoverOpen(false);
+  };
+  useDismissOnOutside(publishPopoverOpen, publishPopoverRef, reason => closePublishPopover(reason === "escape"));
 
-  useDismissOnOutside(allTabsOpen, allTabsMenuRef, () => setAllTabsOpen(false));
+  useDismissOnOutside(allTabsOpen, allTabsMenuRef, reason => {
+    if (reason === "escape") allTabsFocusReturnRef.current?.(allTabsMenuRef.current);
+    allTabsFocusReturnRef.current?.cancel(); allTabsFocusReturnRef.current = null;
+    setAllTabsOpen(false);
+  });
 
-  // Adaptive layout progressively folds low-priority actions, then the tab
-  // strip, then priority actions while preserving usable hit targets.
+  // Keep the established width thresholds; only zoom folds into the menu.
   useEffect(() => {
     const bar = barRef.current;
     if (!bar) return;
@@ -1325,57 +1206,22 @@ export default memo(function PaneTabBar({
     };
   }, []);
 
-  useEffect(() => {
-    if (kebabOpen) kebabMenuRef.current?.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
+  useLayoutEffect(() => {
+    if (!kebabOpen || !kebabMenuRef.current || !kebabTriggerRef.current) return;
+    const trigger = kebabTriggerRef.current.getBoundingClientRect();
+    const menu = kebabMenuRef.current.getBoundingClientRect();
+    setKebabMenuPos(clampMenuPosition(trigger.right - menu.width, trigger.bottom + 2, menu.width, menu.height));
+    kebabMenuRef.current.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
   }, [kebabOpen]);
 
-  useDismissOnOutside(kebabOpen, kebabRef, (reason) => {
+  const closeKebab = (restore = true) => {
+    if (restore) kebabFocusReturnRef.current?.(kebabMenuRef.current);
+    kebabFocusReturnRef.current?.cancel(); kebabFocusReturnRef.current = null;
     setKebabOpen(false);
-    if (reason === "escape") kebabTriggerRef.current?.focus();
+  };
+  useDismissOnOutside(kebabOpen, kebabRef, (reason) => {
+    closeKebab(reason === "escape");
   }, { preventDefaultOnEscape: true });
-
-  useEffect(() => {
-    const strip = tabStripRef.current;
-    if (!strip) {
-      setTabsOverflowing(false);
-      return;
-    }
-    const measure = () => setTabsOverflowing(strip.scrollWidth > strip.clientWidth + 1);
-    const frame = window.requestAnimationFrame(measure);
-    const observer = new ResizeObserver(measure);
-    observer.observe(strip);
-    for (const child of strip.children) observer.observe(child);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      observer.disconnect();
-    };
-  }, [editingTabId, pane.tabs, barMode]);
-
-  useEffect(() => {
-    const strip = tabStripRef.current;
-    if (!strip) return;
-    const onWheel = (event: WheelEvent) => {
-      if (strip.scrollWidth <= strip.clientWidth + 1 || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-      strip.scrollLeft += event.deltaY;
-      event.preventDefault();
-    };
-    strip.addEventListener("wheel", onWheel, { passive: false });
-    return () => strip.removeEventListener("wheel", onWheel);
-  }, [barMode]);
-
-  useEffect(() => {
-    // Compact and micro modes reuse allTabsOpen for their "n/m ▾" dropdown;
-    // only tab-strip modes auto-close when the strip stops overflowing.
-    if (barMode !== "full" && barMode !== "slim") return;
-    if (!tabsOverflowing) {
-      setAllTabsOpen(false);
-      return;
-    }
-    tabPillRefs.current.get(pane.activeTabId)?.scrollIntoView({
-      block: "nearest",
-      inline: "nearest",
-    });
-  }, [pane.activeTabId, tabsOverflowing, barMode]);
 
   const handlePublishSavepoint = useCallback(async (recordKind: "current" | "final" = "current") => {
     if (!activeTab || !agentKind || !agentSessionId || publishing) return;
@@ -1404,14 +1250,39 @@ export default memo(function PaneTabBar({
     }
   }, [activeTab, agentKind, agentSessionId, metadataBySession, pane.cwd, publishSummary, publishing, runSavepointPublish]);
 
+  const captureFocusReturn = useCallback((trigger: HTMLElement | null, temporary?: () => HTMLElement | null) => {
+    const owner = barRef.current?.closest<HTMLElement>("[data-dnd-pane-id]") ?? null;
+    const isLive = () => {
+      const state = useWorkspaceListStore.getState();
+      const zoomed = useUiStore.getState().zoomedPaneId;
+      return state.activeWorkspaceId === workspaceId && (!zoomed || zoomed === pane.id)
+        && Boolean(state.workspaces.find(ws => ws.id === workspaceId)?.panes.some(p => p.id === pane.id));
+    };
+    return temporary ? captureTemporaryFocusReturn(owner, trigger, temporary, isLive)
+      : capturePaneFocusReturn(owner, trigger, isLive);
+  }, [workspaceId, pane.id]);
+
+  const finishEditingTab = useCallback(() => {
+    renameFocusReturnRef.current?.(renameEditorRef.current);
+    renameFocusReturnRef.current = null;
+    setEditingTabId(null);
+  }, []);
+
   const startEditingTab = useCallback((tabId: string, label: string) => {
+    const doc = barRef.current?.ownerDocument;
+    renameFocusReturnRef.current?.cancel();
+    renameFocusReturnRef.current = captureFocusReturn(doc?.activeElement instanceof HTMLElement ? doc.activeElement : null, () => renameEditorRef.current);
+    contextFocusReturnRef.current?.cancel(); contextFocusReturnRef.current = null;
+    kebabFocusReturnRef.current?.cancel(); kebabFocusReturnRef.current = null;
+    allTabsFocusReturnRef.current?.cancel(); allTabsFocusReturnRef.current = null;
     setContextMenu(null);
+    setKebabOpen(false);
     if (pendingTabClickRef.current !== null) clearTimeout(pendingTabClickRef.current);
     pendingTabClickRef.current = null;
     setAllTabsOpen(false);
     setEditingTabId(tabId);
     setEditValue(label);
-  }, []);
+  }, [captureFocusReturn]);
 
   const suppressNextTabClick = useCallback(() => {
     focusController.request("tab-rename", { action: "suppress-tab-click", suppressMs: 250 });
@@ -1423,8 +1294,8 @@ export default memo(function PaneTabBar({
     if (nextLabel !== tab.label) {
       setTabLabel(workspaceId, pane.id, tab.id, nextLabel);
     }
-    setEditingTabId(null);
-  }, [editValue, pane.id, setTabLabel, workspaceId]);
+    finishEditingTab();
+  }, [editValue, pane.id, setTabLabel, workspaceId, finishEditingTab]);
 
   const handleRenameContextTab = useCallback(() => {
     if (!contextMenu) return;
@@ -1438,9 +1309,10 @@ export default memo(function PaneTabBar({
 
   const handleResetContextTab = useCallback(() => {
     if (!contextMenu) return;
+    captureFocusReturn(tabPillRefs.current.get(contextMenu.tabId) ?? null)(contextMenuRef.current);
     setTabLabel(workspaceId, pane.id, contextMenu.tabId, undefined);
-    setContextMenu(null);
-  }, [contextMenu, pane.id, setTabLabel, workspaceId]);
+    closeContextMenu(false);
+  }, [captureFocusReturn, contextMenu, pane.id, setTabLabel, workspaceId]);
 
   const handleToggleTabPin = useCallback((tabId: string) => {
     togglePaneTabPin(workspaceId, pane.id, tabId);
@@ -1453,9 +1325,10 @@ export default memo(function PaneTabBar({
 
   const handleTogglePinContextTab = useCallback(() => {
     if (!contextMenu) return;
+    captureFocusReturn(tabPillRefs.current.get(contextMenu.tabId) ?? null)(contextMenuRef.current);
     togglePaneTabPin(workspaceId, pane.id, contextMenu.tabId);
-    setContextMenu(null);
-  }, [contextMenu, pane.id, togglePaneTabPin, workspaceId]);
+    closeContextMenu(false);
+  }, [captureFocusReturn, contextMenu, pane.id, togglePaneTabPin, workspaceId]);
 
   const contextTab = contextMenu
     ? pane.tabs.find((candidate) => candidate.id === contextMenu.tabId)
@@ -1463,9 +1336,7 @@ export default memo(function PaneTabBar({
   const canResetContextTabName = contextTab?.label !== undefined;
   const isContextTabPinned = contextTab !== undefined && contextTab.id === pane.pinnedTabId;
 
-  const activeTabIndex = pane.tabs.findIndex((t) => t.id === pane.activeTabId);
   const activeTabLabel = activeTab ? displayTabLabel(activeTab, true) : "";
-  const isEditingActiveTab = activeTab ? editingTabId === activeTab.id : false;
   const editingTab = pane.tabs.find(tab => tab.id === editingTabId);
   const activeNotificationCount = activeMeta?.notificationCount ?? 0;
   const activeUnreadCategory = activeTab
@@ -1487,290 +1358,184 @@ export default memo(function PaneTabBar({
     notificationCount: activeNotificationCount,
     displayStatus: activeStatus,
   });
-  const usesTabStrip = renderMode === "full" || renderMode === "slim";
-  const usesCompactTabs = !usesTabStrip && activeTab !== undefined;
-  const previewTab = previewTabId ? pane.tabs.find((tab) => tab.id === previewTabId) : undefined;
-  const previewElement = previewTab ? tabPillRefs.current.get(previewTab.id) : undefined;
-  // Measured only while a preview is open: these force a layout, and this bar
-  // re-renders on every session status tick.
-  const previewChipRect = previewElement?.getBoundingClientRect();
-  const previewBarRect = previewChipRect ? barRef.current?.getBoundingClientRect() : undefined;
-  const previewDirection = previewChipRect && previewBarRect
-    ? resolveChipPreviewDirection(
-        previewChipRect.left,
-        previewBarRect.left,
-        previewBarRect.right,
-        PANE_TAB_CHIP_PREVIEW_MAX_WIDTH,
-      )
-    : "right";
-  const previewLeft = previewChipRect && previewBarRect
-    ? previewChipRect.left - previewBarRect.left
-    : 0;
-  const previewRight = previewChipRect && previewBarRect
-    ? previewChipRect.right - previewBarRect.left
-    : 0;
-  const previewLive = previewTab ? volatileMetadataBySession[previewTab.sessionId] : undefined;
-  const previewMark = previewTab ? resolveTabMark(previewTab, previewLive?.liveAgentKind, previewLive?.ptyAlive === true) : null;
-  const showsInlinePinControl = shouldShowInlinePinControl(renderMode);
-  const isActiveTabPinned = activeTab !== undefined && activeTab.id === pane.pinnedTabId;
-  const paneActions = (
-    <>
-      <TerminalHistoryEntry sessionId={canSearchTerminal ? activeTab!.sessionId : null} visible={isVisible}
-        compact={renderMode !== "full" && renderMode !== "slim"} />
-      {visibleActions.includes("new-tab") && (
-        <button
-          className="pane-action-btn"
-          onClick={() => onAddTab?.(getDefaultAgent().id, "launcher")}
-          title={paneToolbarStrings.newTab}
-          style={{ margin: "0 1px", padding: "3px 5px", flexShrink: 0, order: 3 }}
-        >
-          <PlusIcon />
-        </button>
-      )}
-      {/* No web-tab button here: a web tab is opened from the pane launcher's
-          "ChatGPT (Web)" entry (2026-09-02). A globe next to New terminal tab
-          read as a browser the pane did not have. */}
-      {(visibleActions.length > 0 || overflowActions.length > 0) && (
-        // Eight controls at one spacing read as a single object, and the one
-        // that closes the pane sat 4px from the one that opens it in the
-        // dashboard. Three groups instead, at the seams the verbs already
-        // make: what this tab holds, what shape the pane is, and ending it.
-        // Measured on the Mac at gap 10 the seam came out 18px against 12px
-        // within, which is only 1.5x and reads as a wobble rather than a break.
-        // 14 puts it at 22 against 12.
-        // as a break; the 12px it costs comes out of the tab strip, which
-        // scrolls, and the bar's width modes are measured on the bar itself
-        // so none of the collapse thresholds move.
-        <div style={{ display: "flex", alignItems: "center", gap: 14, paddingRight: 6, flexShrink: 0, order: 4 }}>
-          {/* What this tab holds. */}
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            {visibleActions.includes("search") && (
-              <button
-                type="button"
-                className="pane-action-btn"
-                aria-label={terminalPaneStrings.searchTerminal}
-                aria-disabled={!canSearchTerminal}
-                title={canSearchTerminal
-                  ? terminalPaneStrings.searchTerminalTitle(searchShortcut)
-                  : terminalPaneStrings.searchUnavailable}
-                onClick={handleSearchTerminal}
-                style={{ opacity: canSearchTerminal ? 1 : 0.55 }}
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                  <circle cx="10" cy="10" r="6" />
-                  <path d="m15 15 6 6" />
-                </svg>
-              </button>
-            )}
-            {visibleActions.includes("publish") && showPublishButton && (
-              <button
-                className="pane-action-btn"
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  // The monitor reports agentKind before the session id resolves;
-                  // a silently-disabled button reads as "broken", so explain instead.
-                  if (!agentSessionId) {
-                    useToastStore.getState().pushToast(onlineStrings.publishNoSession, "error");
-                    return;
-                  }
-                  setPublishPopoverOpen(true);
-                }}
-                title={agentSessionId
-                  ? (published ? onlineStrings.publishButtonTitleUpdate : onlineStrings.publishButtonTitleNew)
-                  : onlineStrings.publishNoSession}
-                style={{
-                  color: published ? "var(--cmux-accent-text)" : undefined,
-                  opacity: agentSessionId ? 1 : 0.55,
-                }}
-              >
-                <BookmarkIcon />
-              </button>
-            )}
-          </div>
-          {/* What shape the pane is, and where else to look at it. */}
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            {visibleActions.includes("split-right") && onSplitRight && showSplitRightButton && (
-              <button className="pane-action-btn pane-tabbar-split" onClick={onSplitRight} title={paneToolbarStrings.splitRight}>
-                <SplitRightIcon />
-              </button>
-            )}
-            {visibleActions.includes("split-down") && onSplitDown && showSplitDownButton && (
-              <button className="pane-action-btn pane-tabbar-split" onClick={onSplitDown} title={paneToolbarStrings.splitDown}>
-                <SplitDownIcon />
-              </button>
-            )}
-            {visibleActions.includes("zoom") && onZoomToggle && (
-              <button
-                className="pane-action-btn pane-tabbar-zoom"
-                onClick={onZoomToggle}
-                title={isZoomed
-                  ? paneToolbarStrings.restorePaneAt(zoomShortcut)
-                  : paneToolbarStrings.zoomPaneAt(zoomShortcut)}
-              >
-                {isZoomed ? <MinimizeIcon /> : <MaximizeIcon />}
-              </button>
-            )}
-            {visibleActions.includes("dashboard") && activeTab && (
-              <button
-                className="pane-action-btn pane-tabbar-dashboard"
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  openDashboardForTab(activeTab.id);
-                }}
-                title={paneToolbarStrings.openInDashboard}
-                aria-label={paneToolbarStrings.openInDashboard}
-              >
-                <EyeIcon />
-              </button>
-            )}
-          </div>
-          {/* Ending it, and everything that did not fit. */}
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            {visibleActions.includes("close") && onClose && (
-              <button className="pane-action-btn" onClick={onClose} title={paneToolbarStrings.closePane}>
-                <CloseIcon size={11} />
-              </button>
-            )}
-            <div ref={kebabRef} style={{ position: "relative", flexShrink: 0 }}>
-              <button
-                ref={kebabTriggerRef}
-                className="pane-action-btn"
-                type="button"
-                title={terminalPaneStrings.paneActions}
-                aria-label={terminalPaneStrings.paneActions}
-                aria-haspopup="menu"
-                aria-expanded={kebabOpen}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setKebabOpen((open) => !open);
-                }}
-                style={{ margin: "0 1px", padding: "3px 5px", flexShrink: 0 }}
-              >
-                <KebabIcon />
-              </button>
-              {kebabOpen && (
-                <div
-                  ref={kebabMenuRef}
-                  role="menu"
-                  onKeyDown={handlePaneMenuKeyDown}
-                  style={{
-                    position: "absolute",
-                    top: "calc(100% + 2px)",
-                    right: 0,
-                    zIndex: 130,
-                    background: "var(--cmux-popover)",
-                    border: "1px solid var(--cmux-border)",
-                    borderRadius: 6,
-                    padding: "4px 0",
-                    boxShadow: "var(--cmux-shadow-pane-menu)",
-                    minWidth: 160,
-                    fontSize: 13,
-                  }}
-                >
-                  {overflowActions.includes("new-tab") && (
-                    <PaneTabContextMenuItem
-                      onClick={() => {
-                        setKebabOpen(false);
-                        onAddTab?.(getDefaultAgent().id, "launcher");
-                      }}
-                    >
-                      {paneToolbarStrings.newTab}
-                    </PaneTabContextMenuItem>
-                  )}
-                  {overflowActions.includes("publish") && showPublishButton && (
-                    <PaneTabContextMenuItem
-                      onClick={() => {
-                        setKebabOpen(false);
-                        if (!agentSessionId) {
-                          useToastStore.getState().pushToast(onlineStrings.publishNoSession, "error");
-                          return;
-                        }
-                        setPublishPopoverOpen(true);
-                      }}
-                    >
-                      {published ? onlineStrings.publishButtonTitleUpdate : onlineStrings.publishButtonTitleNew}
-                    </PaneTabContextMenuItem>
-                  )}
-                  {overflowActions.includes("split-right") && onSplitRight && showSplitRightButton && (
-                    <PaneTabContextMenuItem
-                      onClick={() => {
-                        setKebabOpen(false);
-                        onSplitRight();
-                      }}
-                    >
-                      {paneToolbarStrings.splitRight}
-                    </PaneTabContextMenuItem>
-                  )}
-                  {overflowActions.includes("split-down") && onSplitDown && showSplitDownButton && (
-                    <PaneTabContextMenuItem
-                      onClick={() => {
-                        setKebabOpen(false);
-                        onSplitDown();
-                      }}
-                    >
-                      {paneToolbarStrings.splitDown}
-                    </PaneTabContextMenuItem>
-                  )}
-                  {overflowActions.includes("zoom") && onZoomToggle && (
-                    <PaneTabContextMenuItem
-                      onClick={() => {
-                        setKebabOpen(false);
-                        onZoomToggle();
-                      }}
-                    >
-                      {isZoomed ? paneToolbarStrings.restorePane : paneToolbarStrings.zoomPane}
-                    </PaneTabContextMenuItem>
-                  )}
-                  {overflowActions.includes("dashboard") && activeTab && (
-                    <PaneTabContextMenuItem
-                      onClick={() => {
-                        setKebabOpen(false);
-                        openDashboardForTab(activeTab.id);
-                      }}
-                    >
-                      {paneToolbarStrings.openInDashboard}
-                    </PaneTabContextMenuItem>
-                  )}
-                  <PaneTabContextMenuItem
-                    disabled={!canSearchTerminal}
-                    title={canSearchTerminal
-                  ? terminalPaneStrings.searchTerminalTitle(searchShortcut)
-                  : terminalPaneStrings.searchUnavailable}
-                    onClick={handleSearchTerminal}
-                  >
-                    {terminalPaneStrings.searchTerminal}
-                  </PaneTabContextMenuItem>
-                  <PaneTabContextMenuItem
-                    disabled={!peekClosedPane()}
-                    title={!peekClosedPane() ? terminalPaneStrings.noClosedTab : undefined}
-                    onClick={() => {
-                      if (!peekClosedPane()) return;
-                      setKebabOpen(false);
-                      window.dispatchEvent(new Event(TAB_RESTORE_CLOSED_EVENT));
-                    }}
-                  >
-                    {terminalPaneStrings.reopenTab}
-                  </PaneTabContextMenuItem>
-                  {overflowActions.includes("close") && onClose && (
-                    <PaneTabContextMenuItem
-                      onClick={() => {
-                        setKebabOpen(false);
-                        onClose();
-                      }}
-                    >
-                      {paneToolbarStrings.closePane}
-                    </PaneTabContextMenuItem>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  );
+  const hiddenTabs = pane.tabs.filter((tab) => tab.id !== pane.activeTabId);
+  const hiddenStatus = resolveHiddenTabStatus(hiddenTabs.map((tab) => {
+    const attention = attentionBySession[tab.sessionId];
+    const category = isAttentionUnseen(tab.id, attention, seenAttentionByTab)
+      ? attentionCategory(tab.id, attention, seenAttentionByTab) : null;
+    return resolveTabStatusIndicator({
+      unreadAttentionCategory: isBlockingAttention(category) ? category : null,
+      notificationCount: metadataBySession[tab.sessionId]?.notificationCount ?? 0,
+      displayStatus: deriveDisplayStatus(metadataBySession[tab.sessionId], volatileMetadataBySession[tab.sessionId]),
+    });
+  }));
+  const closeTitle = pane.tabs.length > 1 ? paneToolbarStrings.closeTab : paneToolbarStrings.closePane(Math.max(0, pane.tabs.length - 1));
+  const headerCloseDisabled = pane.tabs.length > 1 ? !activeTab || !onRemoveTab : !canCloseWholePane || !onClose;
+  const handleHeaderClose = () => {
+    if (headerCloseDisabled) return;
+    if (pane.tabs.length > 1 && activeTab) onRemoveTab?.(activeTab.id);
+    else onClose?.();
+  };
+
+  // Each item has one definition, so L29 can replace search/history locally.
+  const showHeaderMagnifier = visibleActions.includes("zoom"); // Plan B; set false for plan A (menu only).
+  const menuItems: Array<{
+    id: string;
+    label?: string;
+    show?: boolean;
+    disabled?: boolean;
+    title?: string;
+    run?: () => void;
+    content?: ReactNode;
+  }> = [
+    { id: "new-tab", label: paneToolbarStrings.newTab, run: () => onAddTab?.(getDefaultAgent().id, "launcher") },
+    { id: "rename", label: paneTabMenuStrings.rename, disabled: !activeTab,
+      run: () => { if (activeTab) startEditingTab(activeTab.id, activeTabLabel); } },
+    { id: "reset-name", label: paneTabMenuStrings.resetName, disabled: activeTab?.label === undefined,
+      title: activeTab?.label === undefined ? terminalPaneStrings.automaticName : undefined,
+      run: () => { if (activeTab) setTabLabel(workspaceId, pane.id, activeTab.id, undefined); } },
+    { id: "search", label: terminalPaneStrings.searchTerminal, disabled: !canSearchTerminal,
+      title: canSearchTerminal ? terminalPaneStrings.searchTerminalTitle(searchShortcut) : terminalPaneStrings.searchUnavailable,
+      run: handleSearchTerminal },
+    { id: "publish", label: published ? onlineStrings.publishButtonTitleUpdate : onlineStrings.publishButtonTitleNew,
+      show: showPublishButton, title: !agentSessionId ? onlineStrings.publishNoSession : undefined,
+      run: () => {
+        if (!agentSessionId) { useToastStore.getState().pushToast(onlineStrings.publishNoSession, "error"); return; }
+        publishFocusReturnRef.current?.cancel();
+        publishFocusReturnRef.current = captureFocusReturn(kebabTriggerRef.current, () => publishPopoverRef.current);
+        setPublishPopoverOpen(true);
+      } },
+    { id: "dashboard", label: paneToolbarStrings.openInDashboard, show: Boolean(activeTab),
+      run: () => { if (activeTab) openDashboardForTab(activeTab.id); } },
+    { id: "history", content: <TerminalHistoryEntry sessionId={canSearchTerminal ? activeTab!.sessionId : null}
+        visible={isVisible} variant="menu" /> },
+    { id: "duplicate", label: paneToolbarStrings.duplicateSession, show: Boolean(activeMeta?.agentKind && activeMeta.agentSessionId),
+      disabled: activeTab ? duplicatingTabIds.has(activeTab.id) : true,
+      run: () => { if (activeTab) void handleDuplicateSession(activeTab, activeTabLabel); } },
+    { id: "split-right", label: paneToolbarStrings.splitRight, show: Boolean(onSplitRight && showSplitRightButton), run: onSplitRight },
+    { id: "split-down", label: paneToolbarStrings.splitDown, show: Boolean(onSplitDown && showSplitDownButton), run: onSplitDown },
+    { id: "zoom", label: isZoomed ? paneToolbarStrings.restorePane : paneToolbarStrings.zoomPane,
+      show: Boolean(!visibleActions.includes("zoom") && onZoomToggle), run: onZoomToggle },
+    { id: "reopen", label: terminalPaneStrings.reopenTab, disabled: !peekClosedPane(),
+      title: !peekClosedPane() ? terminalPaneStrings.noClosedTab : undefined,
+      run: () => { if (peekClosedPane()) window.dispatchEvent(new Event(TAB_RESTORE_CLOSED_EVENT)); } },
+    { id: "close-pane", label: paneToolbarStrings.closePaneWithHidden(hiddenTabs.length), show: pane.tabs.length > 1,
+      disabled: !canCloseWholePane || !onClose,
+      title: canCloseWholePane ? paneToolbarStrings.reopenActiveOnly
+        : `${paneToolbarStrings.lastPaneCloseUnavailable}。${paneToolbarStrings.reopenActiveOnly}`,
+      run: onClose },
+  ];
+
+  const activeHeading = (() => {
+    if (!activeTab) return null;
+    const tab = activeTab;
+    const label = activeTabLabel;
+    const isEditingTab = editingTabId === tab.id;
+    const openNameMenu = (trigger: HTMLElement, x: number, y: number, select: boolean) => {
+      if (select && !isEditingTab && (tab.type === "browser" || tab.type === "web" || tab.type === "online")
+        && displayedPaneShortcutSource(tab.id)) onSelectTab?.(tab.id);
+      contextFocusReturnRef.current?.cancel();
+      contextFocusReturnRef.current = captureFocusReturn(trigger, () => contextMenuRef.current);
+      setContextMenu({ tabId: tab.id, x, y });
+    };
+    const dormantDescription = activeTabDeclared ? undefined : dormantAgentDescription(activeMark);
+    const detail = attentionDetail(activeAttention);
+    const tabTitle = activeTabDeclared
+      ? declaredLaunchEnabled ? `${label} — まだ起動していません。クリックで起動` : `${label} — 起動は無効化中`
+      : dormantDescription ? `${label} — ${dormantDescription}` : detail ? `${label} — ${detail}` : label;
+    return <div
+      data-pane-tab-strip={pane.id}
+      data-tab-id={tab.id}
+      data-mark-kind={activeMark?.kind ?? ""}
+      data-mark-source={tabMarkSource(tab, activeVolatileMeta?.ptyAlive === true)}
+      data-savepoint-drop-workspace-id={workspaceId}
+      data-savepoint-drop-pane-id={pane.id}
+      data-savepoint-drop-tab-id={tab.id}
+      ref={(element) => {
+        if (element) tabPillRefs.current.set(tab.id, element);
+        else tabPillRefs.current.delete(tab.id);
+      }}
+      onPointerDown={(event) => {
+        if (!isEditingTab && event.button === MIDDLE_MOUSE_BUTTON) { event.preventDefault(); return; }
+        if (isEditingTab || event.button !== 0) return;
+        if (event.detail >= 2) {
+          event.preventDefault(); event.stopPropagation(); suppressNextTabClick(); startEditingTab(tab.id, label); return;
+        }
+        beginPointerDrag(event, { kind: "tab", workspaceId, paneId: pane.id, tabId: tab.id, label });
+      }}
+      onDoubleClick={(event) => {
+        event.preventDefault(); event.stopPropagation(); suppressNextTabClick(); startEditingTab(tab.id, label);
+      }}
+      onAuxClick={(event) => {
+        if (!shouldCloseTabOnAuxClick(event.button, isEditingTab, isPillControlTarget(event.target))) return;
+        event.preventDefault(); event.stopPropagation(); onRemoveTab?.(tab.id);
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault(); event.stopPropagation();
+        const keyboardMenu = event.button === 0 && event.detail === 0;
+        openNameMenu(event.currentTarget, event.clientX, event.clientY,
+          !event.altKey && !event.ctrlKey && !event.metaKey && (!event.shiftKey || keyboardMenu));
+      }}
+      onClick={(event) => {
+        if (event.detail >= 2) {
+          event.preventDefault(); event.stopPropagation(); suppressNextTabClick(); startEditingTab(tab.id, label); return;
+        }
+        if (isEditingTab || focusController.shouldSuppressTabClick() || shouldSuppressClick()) {
+          event.preventDefault(); event.stopPropagation(); return;
+        }
+        if (!activeTabDeclared && !dormantDescription) {
+          const isNonTerminalHeading = tab.type === "browser" || tab.type === "web" || tab.type === "online";
+          if (!isNonTerminalHeading || event.button !== 0
+            || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
+          if (pendingTabClickRef.current !== null) clearTimeout(pendingTabClickRef.current);
+          pendingTabClickRef.current = null;
+          onSelectTab?.(tab.id);
+          return;
+        }
+        if (pendingTabClickRef.current !== null) clearTimeout(pendingTabClickRef.current);
+        const selectionRevision = useUiStore.getState().focusRevision;
+        pendingTabClickRef.current = setTimeout(() => {
+          pendingTabClickRef.current = null;
+          const state = useWorkspaceListStore.getState();
+          const currentPane = state.workspaces.find(workspace => workspace.id === workspaceId)?.panes.find(candidate => candidate.id === pane.id);
+          const displayed = currentPane?.tabs.find(candidate => candidate.id === currentPane.activeTabId) ?? currentPane?.tabs[0];
+          if (useUiStore.getState().focusRevision !== selectionRevision
+            || state.activeWorkspaceId !== workspaceId || displayed?.id !== tab.id) return;
+          if (!openDormantCompletionRecord(tab, Boolean(dormantDescription))) onSelectTab?.(tab.id);
+          if (activeTabDeclared) handleLaunchDeclaredTab(tab.id);
+        }, 250);
+      }}
+      onKeyDown={(event) => {
+        if (event.currentTarget !== event.target) return;
+        if (!event.altKey && !event.ctrlKey && !event.metaKey
+          && (event.key === "ContextMenu" && !event.shiftKey || event.key === "F10" && event.shiftKey)) {
+          event.preventDefault(); event.stopPropagation();
+          const rect = event.currentTarget.getBoundingClientRect();
+          openNameMenu(event.currentTarget, rect.left, rect.bottom, true);
+          return;
+        }
+        if (event.key === "F2") {
+          event.preventDefault(); event.stopPropagation(); startEditingTab(tab.id, label); return;
+        }
+        if (!isTabActivationKey(event.key)) return;
+        event.preventDefault();
+        if (!openDormantCompletionRecord(tab, Boolean(dormantDescription))) onSelectTab?.(tab.id);
+        if (activeTabDeclared) handleLaunchDeclaredTab(tab.id);
+      }}
+      role="tab"
+      aria-selected={true}
+      tabIndex={0}
+      title={tabTitle}
+      aria-label={[tabTitle, activeMark?.label, activeUnreadLabel].filter(Boolean).join(": ")}
+      className={`pane-tab-pill pane-active-heading is-active${activeMark ? " has-agent-kind" : ""}${savepointDropTabId === tab.id ? " is-savepoint-write-target" : ""}`}
+      style={{ "--agent-kind-color": activeMark?.color.fg, opacity: dormantDescription ? 0.45 : 1 } as AgentKindStyle}
+    >
+      {activeMark ? <TabAgentIcon mark={activeMark} indicator={activeStatusIndicator} /> : <TabStatusIndicatorDot indicator={activeStatusIndicator} />}
+      <span className="pane-active-heading-name" style={{ fontFamily: "var(--cmux-font-mono)", fontSize: "var(--cmux-font-size-xs)" }}>
+        {activeTabDeclared ? `＋ ${label}（まだ）` : label}
+      </span>
+    </div>;
+  })();
 
   return (
     <>
@@ -1779,7 +1544,7 @@ export default memo(function PaneTabBar({
       className="pane-tabbar"
       onPointerDown={(event) => {
         const target = event.target as HTMLElement;
-        if (target.closest(".pane-tab-pill, button, input, textarea, select")) return;
+        if (target.closest(".pane-tab-pill, button, input, textarea, select, [role=menu]")) return;
         beginPointerDrag(event, {
           kind: "pane",
           workspaceId,
@@ -1802,601 +1567,92 @@ export default memo(function PaneTabBar({
         zIndex: 10,
       }}
     >
-      {/* Tab pills row */}
-      <div style={{ height: 36, display: "flex", alignItems: "center" }}>
-      {usesTabStrip && (<>
-      {/* Tab pills scroll independently so fixed actions always remain reachable. */}
-      <div
-        ref={tabStripRef}
-        className="pane-tab-scroll"
-        role="tablist"
-        data-pane-tab-strip={pane.id}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          flex: 1,
-          overflowX: "auto",
-          overflowY: "hidden",
-          scrollbarWidth: "none",
-          minWidth: 0,
-        }}
-        onScroll={() => setPreviewTabId(null)}
-      >
-        {pane.tabs.map((tab, tabIndex) => {
-          const isTabActive = tab.id === pane.activeTabId;
-          const declared = isDeclaredTab(tab);
-          const tabMeta = metadataBySession[tab.sessionId];
-          const tabVolatileMeta = volatileMetadataBySession[tab.sessionId];
-          const tabMark = resolveTabMark(tab, tabVolatileMeta?.liveAgentKind, tabVolatileMeta?.ptyAlive === true);
-          const tabNotificationCount = tabMeta?.notificationCount ?? 0;
-          const tabEffectiveStatus = deriveDisplayStatus(tabMeta, tabVolatileMeta);
-          const canonicalAttention = attentionBySession[tab.sessionId];
-          const canonicalUnreadCategory = isAttentionUnseen(
-            tab.id,
-            canonicalAttention,
-            seenAttentionByTab,
-          )
-            ? attentionCategory(tab.id, canonicalAttention, seenAttentionByTab)
-            : null;
-          const canonicalBlockingUnreadCategory = isBlockingAttention(canonicalUnreadCategory)
-            ? canonicalUnreadCategory
-            : null;
-          const canonicalDetail = attentionDetail(canonicalAttention);
-          const canonicalUnreadLabel = canonicalAttention?.kind === "rate_limited"
-            ? "未確認の枠切れ"
-            : canonicalBlockingUnreadCategory === "waiting"
-            ? "未確認の入力待ち"
-            : canonicalBlockingUnreadCategory === "error"
-              ? "未確認のエラー"
-                : null;
-          const tabStatusIndicator = resolveTabStatusIndicator({
-            unreadAttentionCategory: canonicalBlockingUnreadCategory,
-            notificationCount: tabNotificationCount,
-            displayStatus: tabEffectiveStatus,
-          });
-          const label = displayTabLabel(tab, isTabActive);
-          const presentation = resolvePaneTabPresentation(tab.id, pane.activeTabId);
-          const isChip = presentation === "chip";
-          const canRenameOnDoubleClick = shouldStartRenameOnDoubleClick(presentation);
-          const isEditingTab = editingTabId === tab.id;
-          const isSavepointDropTarget = savepointDropTabId === tab.id;
-          const canDuplicateSession = Boolean(tabMeta?.agentKind && tabMeta.agentSessionId);
-          const isDuplicatingSession = duplicatingTabIds.has(tab.id);
-          const duplicateSessionTitle = "セッションを複製";
-          const isTabPinned = tab.id === pane.pinnedTabId;
-          const showDeferredRestore = shouldShowDeferredRestoreBadge(
-            tab,
-            isTabActive,
-            hasTerminalBuffer(tab.sessionId),
-          );
-          const tabTitle = declared
-            ? declaredLaunchEnabled ? `${label} — まだ起動していません。クリックで起動` : `${label} — 起動は無効化中`
-            : canonicalDetail
-            ? `${label} — ${canonicalDetail}`
-            : showDeferredRestore
-            ? `${label} — 未復元、クリックで再開`
-            : label;
-
-          return (
-            <Fragment key={tab.id}>
-            {tabInsertionIndex === tabIndex && (
-              <span className="pane-tab-drop-indicator" aria-hidden="true" />
-            )}
-            <div
-              data-tab-id={tab.id}
-              data-mark-kind={tabMark?.kind ?? ""}
-              data-mark-source={tabMarkSource(tab, tabVolatileMeta?.ptyAlive === true)}
-              data-savepoint-drop-workspace-id={workspaceId}
-              data-savepoint-drop-pane-id={pane.id}
-              data-savepoint-drop-tab-id={tab.id}
-              ref={(element) => {
-                if (element) tabPillRefs.current.set(tab.id, element);
-                else tabPillRefs.current.delete(tab.id);
-              }}
-              onPointerDown={(event) => {
-                if (isChip) {
-                  clearChipPreviewTimer();
-                  setPreviewTabId(null);
-                }
-                // Swallow the middle-button press so the webview never arms its
-                // autoscroll cursor; the close itself runs on auxclick.
-                if (!isEditingTab && event.button === MIDDLE_MOUSE_BUTTON) {
-                  event.preventDefault();
-                  return;
-                }
-                if (isEditingTab || event.button !== 0) return;
-                if (canRenameOnDoubleClick && event.detail >= 2) {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  suppressNextTabClick();
-                  startEditingTab(tab.id, label);
-                  return;
-                }
-                beginPointerDrag(event, {
-                  kind: "tab",
-                  workspaceId,
-                  paneId: pane.id,
-                  tabId: tab.id,
-                  label,
-                });
-              }}
-              onDoubleClick={(e) => {
-                if (!canRenameOnDoubleClick) return;
-                e.preventDefault();
-                e.stopPropagation();
-                suppressNextTabClick();
-                startEditingTab(tab.id, label);
-              }}
-              onAuxClick={(event) => {
-                if (!shouldCloseTabOnAuxClick(
-                  event.button,
-                  isEditingTab,
-                  isPillControlTarget(event.target),
-                )) return;
-                event.preventDefault();
-                event.stopPropagation();
-                // Same handler as the pill's × so the close is recorded for
-                // Ctrl+Shift+T.
-                onRemoveTab?.(tab.id);
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                contextTriggerRef.current = e.currentTarget;
-                setContextMenu({ tabId: tab.id, x: e.clientX, y: e.clientY });
-              }}
-              onClick={(event) => {
-                if (event.detail >= 2) {
-                  if (canRenameOnDoubleClick) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    suppressNextTabClick();
-                    startEditingTab(tab.id, label);
-                    return;
-                  }
-                }
-                if (isEditingTab || focusController.shouldSuppressTabClick() || shouldSuppressClick()) {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  return;
-                }
-                if (isTabActive && !declared) return;
-                if (pendingTabClickRef.current !== null) clearTimeout(pendingTabClickRef.current);
-                // A double-click rename must not select or launch on its first click.
-                pendingTabClickRef.current = setTimeout(() => {
-                  pendingTabClickRef.current = null;
-                  onSelectTab?.(tab.id);
-                  if (declared) handleLaunchDeclaredTab(tab.id);
-                }, 250);
-              }}
-              onKeyDown={(event) => {
-                if (event.currentTarget === event.target && event.key === "F2") {
-                  event.preventDefault(); event.stopPropagation();
-                  startEditingTab(tab.id, label);
-                  return;
-                }
-                if (event.currentTarget !== event.target || !isTabActivationKey(event.key)) return;
-                event.preventDefault();
-                onSelectTab?.(tab.id);
-                if (declared) handleLaunchDeclaredTab(tab.id);
-              }}
-              role="tab"
-              aria-selected={isTabActive}
-              tabIndex={0}
-              title={isChip ? undefined : tabTitle}
-              aria-label={[
-                tabTitle,
-                tabMark?.label ?? null,
-                canonicalUnreadLabel,
-              ].filter(Boolean).join(": ")}
-              className={`pane-tab-pill ${isChip ? "pane-tab-chip" : isTabActive ? "is-active" : ""}${isSavepointDropTarget ? " is-savepoint-write-target" : ""}` + (tabMark ? " has-agent-kind" : "") + (isTabPinned ? " is-pinned" : "")}
-              style={isChip ? {
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                position: "relative",
-                padding: 0,
-                height: 36,
-                width: 26,
-                minWidth: 26,
-                maxWidth: 26,
-                flexShrink: 0,
-                cursor: "pointer",
-                background: "transparent",
-                borderRight: "none",
-                borderBottom: "2px solid transparent",
-                "--agent-kind-color": tabMark?.color.fg,
-              } as AgentKindStyle : {
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-                padding: "0 8px 0 7px",
-                height: 36,
-                maxWidth: 160,
-                // Widened to budget the always-mounted pin button.
-                minWidth: isTabActive || canDuplicateSession ? 120 : 76,
-                cursor: isEditingTab ? "text" : "pointer",
-                background: isTabActive ? "var(--cmux-selected)" : "transparent",
-                // The active tab reads as a sheet lifted toward the reader, so
-                // its fill is rounded at the top and square where it meets the
-                // pane below — the shape a tab has on this platform. An
-                // inactive tab has no fill to round, and squaring its divider
-                // keeps the row of them reading as one strip.
-                borderRadius: isTabActive ? "7px 7px 0 0" : 0,
-                // The active tab's own edges are its rounding; a divider drawn
-                // through them would cut the corner off.
-                borderRight: isTabActive
-                  ? "1px solid transparent"
-                  : declared ? "1px dashed var(--cmux-border)" : "1px solid var(--cmux-border-hairline)",
-                borderBottom: "2px solid transparent",
-                flexShrink: 1,
-                transition: "background 0.1s",
-                "--agent-kind-color": tabMark?.color.fg,
-              } as AgentKindStyle}
-              onPointerEnter={isChip ? () => {
-                clearChipPreviewTimer();
-                if (!shouldShowChipPreview(true, chipDragActive)) return;
-                previewTimerRef.current = window.setTimeout(() => {
-                  setPreviewTabId(tab.id);
-                }, 120);
-              } : undefined}
-              onPointerLeave={isChip ? () => {
-                clearChipPreviewTimer();
-                setPreviewTabId((id) => id === tab.id ? null : id);
-              } : undefined}
-            >
-              {isChip ? <>
-                <span className="pane-tab-chip-face">
-                  {tabMark ? (
-                    <TabAgentIcon mark={tabMark} indicator={tabStatusIndicator} />
-                  ) : (
-                    <TabStatusIndicatorDot indicator={tabStatusIndicator} />
-                  )}
-                </span>
-                {isTabPinned && (
-                  <span className="pane-tab-chip-pin-badge" aria-hidden="true">
-                    <PinIcon size={7} filled />
-                  </span>
-                )}
-              </> : <>
-              {tabMark ? (
-                <TabAgentIcon mark={tabMark} indicator={tabStatusIndicator} />
-              ) : (
-                <TabStatusIndicatorDot indicator={tabStatusIndicator} />
-              )}
-              {isTabPinned && (
-                <span style={{ color: "var(--cmux-accent-text)", display: "inline-flex", flexShrink: 0 }}>
-                  <PinIcon size={13} filled />
-                </span>
-              )}
-              {/* label */}
-                <span
-                  className={`pane-tab-label${showDeferredRestore ? " is-deferred-restore" : ""}`}
-                  style={{
-                    fontSize: 13,
-                    fontWeight: isTabActive ? 600 : 400,
-                    fontFamily: "var(--cmux-font-mono)",
-                    color: isTabActive ? "var(--cmux-text)" : "var(--cmux-text-secondary)",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                    flex: 1,
-                    minWidth: 0,
-                  }}
-                >
-                  {declared ? `＋ ${label}（まだ）` : label}
-                </span>
-
-              {/* Always mounted (opacity-hidden until hover/focus/pinned/active)
-                  so the overflow ResizeObserver measures a stable width. */}
-              <button
-                type="button"
-                className={`pane-action-btn pane-tab-pin-btn${isTabPinned ? " is-pinned" : ""}`}
-                aria-label={isTabPinned ? paneToolbarStrings.unpinTab : paneToolbarStrings.pinTab}
-                aria-pressed={isTabPinned}
-                title={isTabPinned ? paneToolbarStrings.unpinTab : paneToolbarStrings.pinTab}
-                onPointerDown={(event) => event.stopPropagation()}
-                onDoubleClick={(event) => event.stopPropagation()}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  handleToggleTabPin(tab.id);
-                }}
-                style={{ padding: 3, flexShrink: 0 }}
-              >
-                <PinIcon />
-              </button>
-              {canDuplicateSession && (
-                <button
-                  type="button"
-                  className="pane-action-btn"
-                  disabled={isDuplicatingSession}
-                  aria-busy={isDuplicatingSession || undefined}
-                  aria-label={duplicateSessionTitle}
-                  title={duplicateSessionTitle}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  onDoubleClick={(event) => event.stopPropagation()}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void handleDuplicateSession(tab, label);
-                  }}
-                  style={{ padding: 4, flexShrink: 0 }}
-                >
-                  <DuplicateIcon />
-                </button>
-              )}
-              {/* close tab button */}
-              {pane.tabs.length > 1 && (
-                <button
-                  className="pane-action-btn"
-                  onClick={(e) => { e.stopPropagation(); onRemoveTab?.(tab.id); }}
-                  title={paneToolbarStrings.closeTab}
-                  style={{ padding: 2, flexShrink: 0 }}
-                >
-                  <CloseIcon size={9} />
-                </button>
-              )}
-              </>}
-            </div>
-            </Fragment>
-          );
-        })}
-        {tabInsertionIndex === pane.tabs.length && (
-          <span className="pane-tab-drop-indicator" aria-hidden="true" />
-        )}
-      </div>
-
-      {tabsOverflowing && (
-        <div ref={allTabsMenuRef} style={{ position: "relative", flexShrink: 0, order: 2 }}>
-          <button
-            className="pane-action-btn"
-            type="button"
-            title={paneToolbarStrings.allTabs}
-            aria-label={paneToolbarStrings.allTabs}
-            aria-expanded={allTabsOpen}
-            onClick={(event) => {
-              event.stopPropagation();
-              setAllTabsOpen((open) => !open);
-            }}
-            style={{ margin: "0 1px", padding: "3px 6px", flexShrink: 0, fontSize: 16, lineHeight: 1 }}
-          >
-            ⋯
-          </button>
-          {allTabsOpen && (
-            <PaneTabListMenu
-              pane={pane}
-              metadataBySession={metadataBySession}
-              volatileMetadataBySession={volatileMetadataBySession}
-              attentionBySession={attentionBySession}
-              seenAttentionByTab={seenAttentionByTab}
-              getTabDisplayLabel={displayTabLabel}
-              hasTerminalBuffer={hasTerminalBuffer}
-              onSelectTab={onSelectTab}
-              onRemoveTab={onRemoveTab}
-              onTogglePin={handleToggleTabPin}
-              onRenameTab={startEditingTab}
-              onLaunchDeclaredTab={handleLaunchDeclaredTab}
-              onCloseMenu={() => setAllTabsOpen(false)}
-            />
-          )}
+      <div className="pane-heading-row">
+        <div className="pane-heading-content"
+          data-savepoint-drop-workspace-id={workspaceId}
+          data-savepoint-drop-pane-id={pane.id}
+          data-savepoint-drop-tab-id={activeTab?.id}>
+          {activeHeading}
+          <div className="pane-heading-spacer" aria-hidden="true" />
         </div>
-      )}
-
-      {paneActions}
-      </>)}
-      {usesCompactTabs && activeTab && (
-        <>
-          <div
-            data-mark-kind={activeMark?.kind ?? ""}
-            data-mark-source={activeTab ? tabMarkSource(activeTab, activeVolatileMeta?.ptyAlive === true) : "saved"}
-            className={"pane-tab-pill is-active pane-tab-compact" + (activeMark ? " has-agent-kind" : "")}
-            onPointerDown={(event) => {
-              if (!isEditingActiveTab && event.button === MIDDLE_MOUSE_BUTTON) {
-                event.preventDefault();
-                return;
-              }
-              if (isEditingActiveTab || event.button !== 0) return;
-              if (event.detail >= 2) {
-                event.preventDefault();
-                event.stopPropagation();
-                suppressNextTabClick();
-                startEditingTab(activeTab.id, activeTabLabel);
-                return;
-              }
-              beginPointerDrag(event, {
-                kind: "tab",
-                workspaceId,
-                paneId: pane.id,
-                tabId: activeTab.id,
-                label: activeTabLabel,
-              });
-            }}
-            onDoubleClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              suppressNextTabClick();
-              startEditingTab(activeTab.id, activeTabLabel);
-            }}
-            onAuxClick={(event) => {
-              if (!shouldCloseTabOnAuxClick(
-                event.button,
-                isEditingActiveTab,
-                isPillControlTarget(event.target),
-              )) return;
-              event.preventDefault();
-              event.stopPropagation();
-              onRemoveTab?.(activeTab.id);
-            }}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              contextTriggerRef.current = e.currentTarget;
-              setContextMenu({ tabId: activeTab.id, x: e.clientX, y: e.clientY });
-            }}
-            onClick={(event) => {
-              if (event.detail >= 2 || isEditingActiveTab) return;
-              if (activeTabDeclared) {
-                if (pendingTabClickRef.current !== null) clearTimeout(pendingTabClickRef.current);
-                pendingTabClickRef.current = setTimeout(() => {
-                  pendingTabClickRef.current = null;
-                  handleLaunchDeclaredTab(activeTab.id);
-                }, 250);
-              }
-            }}
-            title={attentionDetail(activeAttention) ?? activeTabLabel}
-            aria-label={[
-              activeTabLabel,
-              activeMark?.label ?? null,
-              activeUnreadLabel,
-            ].filter(Boolean).join(": ")}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 5,
-              height: 36,
-              padding: "0 5px 0 7px",
-              flex: 1,
-              minWidth: 0,
-              cursor: isEditingActiveTab ? "text" : activeTabDeclared ? "pointer" : "default",
-              borderBottom: activeTabDeclared ? "2px dashed var(--cmux-border)" : "2px solid transparent",
-              "--agent-kind-color": activeMark?.color.fg,
-            } as AgentKindStyle}
-          >
-            {activeMark ? (
-              <TabAgentIcon mark={activeMark} indicator={activeStatusIndicator} />
-            ) : (
-              <TabStatusIndicatorDot indicator={activeStatusIndicator} />
-            )}
-            {/* Narrow modes have no room for the toggle: show the state only,
-                and let the dropdown row do the toggling. */}
-            {!showsInlinePinControl && isActiveTabPinned && (
-              <span
-                title={paneToolbarStrings.pinnedTab}
-                aria-label={paneToolbarStrings.pinnedTab}
-                role="img"
-                style={{ color: "var(--cmux-accent-text)", display: "inline-flex", flexShrink: 0 }}
-              >
-                <PinIcon size={12} filled />
-              </span>
-            )}
-              <span
-                className="pane-tab-label"
-                style={{
-                  fontSize: 13,
-                  fontWeight: 600,
-                  fontFamily: "var(--cmux-font-mono)",
-                  color: "var(--cmux-text)",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                  flex: 1,
-                  minWidth: 0,
-                }}
-              >
-                {activeTabDeclared ? `＋ ${activeTabLabel}（まだ）` : activeTabLabel}
-              </span>
-
-            {showsInlinePinControl && (
-              <button
-                type="button"
-                className={`pane-action-btn pane-tab-pin-btn${isActiveTabPinned ? " is-pinned" : ""}`}
-                aria-label={isActiveTabPinned ? paneToolbarStrings.unpinTab : paneToolbarStrings.pinTab}
-                aria-pressed={isActiveTabPinned}
-                title={isActiveTabPinned ? paneToolbarStrings.unpinTab : paneToolbarStrings.pinTab}
-                onPointerDown={(event) => event.stopPropagation()}
-                onDoubleClick={(event) => event.stopPropagation()}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  handleToggleTabPin(activeTab.id);
-                }}
-                style={{ padding: 4, flexShrink: 0 }}
-              >
-                <PinIcon />
-              </button>
-            )}
-            {activeMeta?.agentKind && activeMeta.agentSessionId && (
-              <button
-                type="button"
-                className="pane-action-btn"
-                disabled={duplicatingTabIds.has(activeTab.id)}
-                aria-busy={duplicatingTabIds.has(activeTab.id) || undefined}
-                aria-label="セッションを複製"
-                title="セッションを複製"
-                onPointerDown={(event) => event.stopPropagation()}
-                onDoubleClick={(event) => event.stopPropagation()}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  void handleDuplicateSession(activeTab, activeTabLabel);
-                }}
-                style={{ padding: 4, flexShrink: 0 }}
-              >
-                <DuplicateIcon />
-              </button>
-            )}
-          </div>
+        {hiddenTabs.length > 0 && (
           <div ref={allTabsMenuRef} style={{ position: "relative", flexShrink: 0 }}>
-            <button
-              className="pane-action-btn"
-              type="button"
-              title={paneToolbarStrings.allTabs}
-              aria-label={paneToolbarStrings.allTabsAt(formatTabPosition(activeTabIndex, pane.tabs.length))}
-              aria-expanded={allTabsOpen}
+            <button ref={allTabsTriggerRef} type="button" className="pane-action-btn pane-hidden-tabs"
+              title={paneToolbarStrings.allTabs} aria-label={paneToolbarStrings.allTabs}
+              aria-haspopup="menu" aria-expanded={allTabsOpen}
+              data-hidden-status={hiddenStatus ?? "idle"}
+              style={{ color: hiddenStatus ? TAB_STATUS_INDICATOR_CONFIG[hiddenStatus].color : undefined }}
               onClick={(event) => {
                 event.stopPropagation();
-                setAllTabsOpen((open) => !open);
-              }}
-              style={{ margin: "0 1px", padding: "3px 5px", flexShrink: 0, fontSize: 11, lineHeight: 1, whiteSpace: "nowrap" }}
-            >
-              {formatTabPosition(activeTabIndex, pane.tabs.length)} ▾
+                allTabsFocusReturnRef.current?.cancel();
+                allTabsFocusReturnRef.current = !allTabsOpen ? captureFocusReturn(allTabsTriggerRef.current, () => allTabsMenuRef.current) : null;
+                setAllTabsOpen(open => !open);
+              }}>
+              {formatHiddenTabCount(hiddenTabs.length, renderMode)}
             </button>
-            {allTabsOpen && (
-              <PaneTabListMenu
-                pane={pane}
-                metadataBySession={metadataBySession}
-                volatileMetadataBySession={volatileMetadataBySession}
-                attentionBySession={attentionBySession}
-                seenAttentionByTab={seenAttentionByTab}
-                getTabDisplayLabel={displayTabLabel}
-                hasTerminalBuffer={hasTerminalBuffer}
-                onSelectTab={onSelectTab}
-                onRemoveTab={onRemoveTab}
-                onTogglePin={handleToggleTabPin}
-                onRenameTab={startEditingTab}
-                onLaunchDeclaredTab={handleLaunchDeclaredTab}
-                onCloseMenu={() => setAllTabsOpen(false)}
-              />
-            )}
+            {allTabsOpen && <PaneTabListMenu pane={pane} metadataBySession={metadataBySession}
+              volatileMetadataBySession={volatileMetadataBySession} attentionBySession={attentionBySession}
+              seenAttentionByTab={seenAttentionByTab} getTabDisplayLabel={displayTabLabel}
+              hasTerminalBuffer={hasTerminalBuffer} onSelectTab={onSelectTab} onRemoveTab={onRemoveTab}
+              onTogglePin={handleToggleTabPin} onRenameTab={startEditingTab}
+              onReturnFocus={() => captureFocusReturn(activeTab ? tabPillRefs.current.get(activeTab.id) ?? null : null)(allTabsMenuRef.current)}
+              onLaunchDeclaredTab={handleLaunchDeclaredTab} onCloseMenu={() => {
+                captureFocusReturn(allTabsTriggerRef.current)(allTabsMenuRef.current);
+                allTabsFocusReturnRef.current?.cancel(); allTabsFocusReturnRef.current = null;
+                setAllTabsOpen(false);
+              }} />}
           </div>
-          {paneActions}
-        </>
-      )}
-      </div>{/* end tab pills row */}
-      {previewTab && previewChipRect && previewBarRect && (
-        <div
-          className={`pane-tab-chip-preview${previewDirection === "left" ? " is-left" : ""}`}
-          aria-hidden="true"
-          style={{
-            position: "absolute",
-            top: 4,
-            ...(previewDirection === "right"
-              ? { left: previewLeft }
-              : { left: previewRight - PANE_TAB_CHIP_PREVIEW_MAX_WIDTH }),
-            "--agent-kind-color": previewMark?.color.fg,
-          } as AgentKindStyle}
-        >
-          {previewMark && <TabAgentIcon mark={previewMark} indicator={null} />}
-          <span style={{
-            fontSize: "var(--cmux-font-size-xs)",
-            fontFamily: "var(--cmux-font-mono)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}>
-            {displayTabLabel(previewTab, false)}
-          </span>
+        )}
+        {visibleActions.includes("zoom") && onZoomToggle && (
+          <button type="button" className="pane-action-btn pane-tabbar-zoom" onClick={onZoomToggle}
+            title={isZoomed ? paneToolbarStrings.restorePaneAt(zoomShortcut) : paneToolbarStrings.zoomPaneAt(zoomShortcut)}>
+            {isZoomed ? <MinimizeIcon /> : <MaximizeIcon />}
+          </button>
+        )}
+        {showHeaderMagnifier && <TerminalHistoryEntry sessionId={canSearchTerminal ? activeTab!.sessionId : null}
+          visible={isVisible} searchTitle={canSearchTerminal ? terminalPaneStrings.searchTerminalTitle(searchShortcut) : terminalPaneStrings.searchUnavailable} />}
+        <button type="button" className="pane-action-btn pane-header-close" onClick={handleHeaderClose}
+          disabled={headerCloseDisabled} aria-label={closeTitle}
+          title={pane.tabs.length <= 1 && !canCloseWholePane ? paneToolbarStrings.lastPaneCloseUnavailable : closeTitle}>
+          <CloseIcon size={11} />
+        </button>
+        <div ref={kebabRef} style={{ position: "relative", flexShrink: 0 }}>
+          <button ref={kebabTriggerRef} type="button" className="pane-action-btn"
+            title={terminalPaneStrings.paneActions} aria-label={terminalPaneStrings.paneActions}
+            aria-haspopup="menu" aria-expanded={kebabOpen}
+            onClick={(event) => {
+              event.stopPropagation();
+              kebabFocusReturnRef.current?.cancel();
+              kebabFocusReturnRef.current = !kebabOpen ? captureFocusReturn(kebabTriggerRef.current, () => kebabMenuRef.current) : null;
+              setKebabOpen(open => !open);
+            }}>
+            <KebabIcon />
+          </button>
+          {kebabOpen && <div ref={kebabMenuRef} className="pane-actions-menu" role="menu"
+            onKeyDown={handlePaneMenuKeyDown} onPointerDown={(event) => event.stopPropagation()}
+            style={{ ...paneTabContextMenuStyle, left: kebabMenuPos.left, top: kebabMenuPos.top, zIndex: 130,
+              maxWidth: "calc(100vw - 16px)", maxHeight: "calc(100vh - 24px)", overflowY: "auto" }}>
+            {menuItems.filter((item) => item.show !== false).map((item) => item.content
+              ? <div key={item.id} className="pane-history-menu-item" data-pane-action={item.id}
+                  onClickCapture={(event) => {
+                    if ((event.target as Element).closest("[data-terminal-magnifier]")?.getAttribute("aria-disabled") !== "true") closeKebab(false);
+                  }}>{item.content}</div>
+              : <PaneTabContextMenuItem key={item.id} actionId={item.id} disabled={item.disabled} title={item.title}
+                  onClick={() => {
+                    const returnFocus = captureFocusReturn(kebabTriggerRef.current);
+                    item.run?.();
+                    returnFocus(kebabMenuRef.current);
+                    closeKebab(false);
+                  }}>
+                  {item.label}
+                </PaneTabContextMenuItem>)}
+          </div>}
         </div>
-      )}
+      </div>
       {publishPopoverOpen && agentSessionId && (
         <div
           ref={publishPopoverRef}
+          data-pane-hover-focus-blocker="true"
           onPointerDown={(event) => event.stopPropagation()}
           style={{
             position: "absolute",
@@ -2457,7 +1713,7 @@ export default memo(function PaneTabBar({
               <button
                 type="button"
                 disabled={publishing}
-                onClick={() => setPublishPopoverOpen(false)}
+                onClick={() => closePublishPopover()}
                 style={{ ...publishPopoverButtonStyle, order: 1 }}
               >
                 {onlineStrings.publishCancel}
@@ -2496,10 +1752,13 @@ export default memo(function PaneTabBar({
           key={editingTab.id}
           label={displayTabLabel(editingTab, editingTab.id === pane.activeTabId)}
           value={editValue}
+          editorRef={renameEditorRef}
+          workspaceId={workspaceId}
+          paneId={pane.id}
           anchor={tabPillRefs.current.get(editingTab.id)?.getBoundingClientRect() ?? barRef.current?.getBoundingClientRect()}
           onChange={setEditValue}
           onSave={() => commitTabLabel(editingTab)}
-          onCancel={() => setEditingTabId(null)}
+          onCancel={finishEditingTab}
         />
       )}
       {contextMenu && (

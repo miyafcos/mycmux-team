@@ -11,12 +11,13 @@ def test_resume_guard_precedes_all_launch_side_effects_and_skips_reattach() -> N
     terminal = text("src-tauri/src/commands/terminal.rs")
     wrapper = terminal[terminal.index("pub async fn create_session("):terminal.index("fn create_session_blocking(")]
     assert 'run_blocking("create_session", move || {' in wrapper
-    assert "create_session_blocking(app_handle, state, session_id, command, args, cols, rows, on_data, cwd, env, background_only.unwrap_or(false), attach_origin, restore_confirmed.unwrap_or(false))" in wrapper
+    assert "create_session_blocking(app_handle, state, session_id, command, args, cols, rows, on_data, cwd, env, background_only.unwrap_or(false), attach_origin, restore_confirmed.unwrap_or(false), restore_reason)" in wrapper
+    assert "restore_reason: Option<String>" in wrapper
     assert "}).await" in wrapper
     create = terminal[terminal.index("fn create_session_blocking("):terminal.index("pub(crate) fn prepare_spawn_command(")]
     guard = create.index("LaunchClaim::acquire")
     assert "let _launch_claim = if reattach {\n        None" in create[:guard]
-    for mutation in ["remove_session_mapping_file(", "std::fs::create_dir_all(", "ensure_claude_project_trusted(", "write_launch_session_mapping(", "state.session_manager.create("]:
+    for mutation in ["clear_codex_restore_report(", "remove_session_mapping_file(", "std::fs::create_dir_all(", "ensure_claude_project_trusted(", "write_launch_session_mapping(", "state.session_manager.create("]:
         assert guard < create.index(mutation), mutation
     assert 'crate::diag::warn("launch", &error)' in create
 

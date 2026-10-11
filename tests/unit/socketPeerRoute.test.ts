@@ -38,6 +38,12 @@ vi.mock("../../src/lib/ipc", async original => ({
 }));
 vi.mock("../../src/components/terminal/XTermWrapper", () => ({
   hasTerminalBuffer: mocks.parsed, hasMountedTerminal: mocks.mounted,
+  isTerminalParsingCurrentOutput: (sessionId: string) => {
+    if (!mocks.mounted(sessionId) || !mocks.parsed(sessionId, true)) return false;
+    const { workspaces, activeWorkspaceId } = useWorkspaceListStore.getState();
+    return workspaces.some(ws => ws.id === activeWorkspaceId && ws.panes.some(pane =>
+      (pane.tabs.find(tab => tab.id === pane.activeTabId) ?? pane.tabs[0])?.sessionId === sessionId));
+  },
   getTerminalBufferLines: mocks.buffer,
 }));
 
@@ -182,8 +188,11 @@ describe("explicit control API targets in another window", () => {
       useWorkspaceListStore.setState({ workspaces: [workspace("peer")] });
       return [];
     });
+    const data = new TextEncoder().encode("main:peer-target-pty:screen");
+    mocks.scrollback.mockResolvedValue({ data, startOffset: 0, endOffset: data.length });
     expect(await handleSocketCommand("pane.read", { sessionId: "peer-target-pty" })).toEqual({ sessionId: "peer-target-pty", lines: ["main:peer-target-pty:screen"] });
     expect(mocks.emitTo).not.toHaveBeenCalled();
+    expect(mocks.buffer).not.toHaveBeenCalled(); expect(mocks.scrollback).toHaveBeenCalledWith("peer-target-pty");
   });
   it("keeps known local requests available and missing targets closed on registry failure", async () => {
     mocks.fragments.mockRejectedValue(new Error("registry unavailable"));
@@ -380,14 +389,19 @@ describe("owner-window execution with real socket handlers", () => {
     expect(mocks.guardedWrite).toHaveBeenCalledExactlyOnceWith("peer-target-pty", MOVED_SEND_TEXT, "owner-attention", 4, 6, 8);
     expect(mocks.write).not.toHaveBeenCalled();
   });
-  it("keeps the rendered screen path for a local background send", async () => {
+  it("confirms a local background send through its current backend without selecting it", async () => {
     const ws = workspace("local"); ws.panes[0].activeTabId = "local-keeper-tab";
     useWorkspaceListStore.setState({ workspaces: [ws] });
-    mocks.buffer.mockReturnValueOnce(["ready"]).mockReturnValueOnce(["ready hello"]).mockReturnValueOnce(["ready hello"]).mockReturnValue(["working"]);
+    let output = "ready ";
+    mocks.scrollback.mockImplementation(async () => {
+      const data = new TextEncoder().encode(output); return { data, startOffset: 0, endOffset: data.length };
+    });
+    mocks.write.mockImplementation(async (_id, data) => { output += data === "\r" ? "\r\nworking" : data; });
     expect(await handleSocketCommand("pane.send_text", { sessionId: "local-target-pty", text: "hello", enter: true }))
       .toMatchObject({ ok: true, confirmed: true, attempts: 1 });
     expect(mocks.write.mock.calls).toEqual([["local-target-pty", "hello"], ["local-target-pty", "\r"]]);
-    expect(mocks.scrollback).not.toHaveBeenCalled(); expect(mocks.emitTo).not.toHaveBeenCalled();
+    expect(mocks.scrollback).toHaveBeenCalled(); expect(mocks.buffer).not.toHaveBeenCalled(); expect(mocks.emitTo).not.toHaveBeenCalled();
+    expect(useWorkspaceListStore.getState().workspaces[0].panes[0].activeTabId).toBe("local-keeper-tab");
   });
   it("uses the renderer's first-tab fallback for a missing activeTabId in the owner", async () => {
     await connectOwner(async () => {
@@ -432,7 +446,8 @@ describe("owner-window execution with real socket handlers", () => {
   });
   it("close_tab closes only the owner's requested tab and returns the existing identity keys", async () => {
     const owner = await connectOwner();
-    expect(await handleSocketCommand("pane.close_tab", { sessionId: "peer-target-pty" })).toEqual({ workspaceId: "peer-ws", paneId: "peer-pane", tabId: "peer-target-tab" });
+    expect(await handleSocketCommand("pane.close_tab", { sessionId: "peer-target-pty" })).toMatchObject({ workspaceId: "peer-ws", paneId: "peer-pane", tabId: "peer-target-tab",
+      kind: "terminal", closed: true, effect: "killed", hasPty: true, persistent: true, transferable: true, closeEffect: "kill", sendable: true, reason: null });
     expect(mocks.kill).toHaveBeenCalledExactlyOnceWith("peer-target-pty");
     expect(owner().workspaces[0].panes[0].tabs.map(tab => tab.sessionId)).toEqual(["peer-keeper-pty"]);
     expect(useWorkspaceListStore.getState().workspaces[0].panes[0].tabs).toHaveLength(2);

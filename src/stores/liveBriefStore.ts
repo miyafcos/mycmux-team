@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import {
-  getLiveBriefs,
+  getLiveBriefs, getLiveReadObservations, type LiveReadObservation,
   getLiveEvents,
   onLiveBriefUpdate,
   subscribeLiveBriefs,
@@ -28,6 +28,8 @@ type BriefMap = Record<string, LiveSessionBrief>;
 
 interface LiveBriefStoreState {
   briefsBySession: BriefMap;
+  observationsBySession: Record<string,LiveReadObservation>;
+  applyObservations: (proofs:readonly LiveReadObservation[], wanted:ReadonlySet<string>)=>void;
   /** 詳細 (開いている会話・深い limit) 専用のイベント。一覧の浅い取得で踏まない。 */
   eventsBySession: Record<string, SemanticEventEnvelope[]>;
   /** イベントを取得した時刻 (ms)。取得済みかどうかの判定にも使う。 */
@@ -55,8 +57,22 @@ export function mergeBrief(previous: BriefMap, incoming: LiveSessionBrief): Brie
   return { ...previous, [incoming.ptySessionId]: incoming };
 }
 
+export function matchesReadObservation(brief:LiveSessionBrief,proof:LiveReadObservation):boolean {
+  return brief.serviceEpoch===proof.serviceEpoch && brief.ptyGeneration===proof.ptyGeneration && brief.ptyInstanceId===proof.ptyInstanceId
+    && brief.ptySessionId===proof.ptySessionId && brief.agentKind===proof.agentKind && brief.agentSessionId===proof.agentSessionId;
+}
+
 export const useLiveBriefStore = create<LiveBriefStoreState>((set) => ({
-  briefsBySession: {},
+  briefsBySession: {}, observationsBySession: {},
+  applyObservations:(proofs,wanted)=>set(state=>{
+    const observationsBySession=Object.fromEntries(Object.entries(state.observationsBySession).filter(([id])=>wanted.has(id)).slice(0,LIVE_EVENT_VISIBLE_LIMIT));
+    for(const proof of proofs.slice(0,LIVE_EVENT_VISIBLE_LIMIT)) {
+      const brief=state.briefsBySession[proof.ptySessionId];
+      if(!wanted.has(proof.ptySessionId)||!brief||!matchesReadObservation(brief,proof)||!Number.isFinite(proof.lastSuccessfulReadAt))continue;
+      const old=observationsBySession[proof.ptySessionId];if(!old||old.lastSuccessfulReadAt<=proof.lastSuccessfulReadAt)observationsBySession[proof.ptySessionId]=proof;
+    }
+    return {observationsBySession};
+  }),
   eventsBySession: {},
   eventsFetchedAtBySession: {},
   listEventsBySession: {},
@@ -106,13 +122,35 @@ export const useLiveBriefStore = create<LiveBriefStoreState>((set) => ({
     return { eventsBySession, eventsFetchedAtBySession };
   }),
   reset: () => set({
-    briefsBySession: {},
+    briefsBySession: {}, observationsBySession: {},
     eventsBySession: {},
     eventsFetchedAtBySession: {},
     listEventsBySession: {},
     listEventsFetchedAtBySession: {},
   }),
 }));
+
+// Visible terminal preparations request at most sixty small cached proofs.
+// This IPC never refreshes the backend; stopped reads therefore stay stale.
+const observationHolds = new Map<string,number>();
+let observationTimer: ReturnType<typeof setInterval> | undefined;
+let observationInFlight = false;
+function reconcileObservationPolling():void {
+  if(observationTimer){clearInterval(observationTimer);observationTimer=undefined;}
+  const wanted=new Set([...observationHolds.keys()].slice(0,LIVE_EVENT_VISIBLE_LIMIT));
+  useLiveBriefStore.getState().applyObservations([],wanted);
+  if(!wanted.size||isHidden())return;
+  const poll=async()=>{
+    if(observationInFlight||isHidden())return;
+    const generation=connectionGeneration;
+    observationInFlight=true;
+    try {
+      const proofs=await getLiveReadObservations([...observationHolds.keys()].slice(0,LIVE_EVENT_VISIBLE_LIMIT));
+      if(generation===connectionGeneration&&!isHidden())useLiveBriefStore.getState().applyObservations(proofs,new Set([...observationHolds.keys()].slice(0,LIVE_EVENT_VISIBLE_LIMIT)));
+    }catch{}finally{observationInFlight=false;}
+  };
+  void poll();observationTimer=setInterval(()=>void poll(),LIVE_EVENT_POLL_MS);
+}
 
 // --- livebrief://update の購読はアプリ全体で 1 本だけ持つ ------------------
 let subscriberCount = 0;
@@ -162,6 +200,7 @@ function retryBriefConnection(): void {
 }
 
 function onBriefVisibilityChange(): void {
+  reconcileObservationPolling();
   retryBriefConnection();
   if (subscriberCount > 0 && !isHidden()) {
     void refreshLiveBriefs();
@@ -191,7 +230,9 @@ function detachBriefVisibilityListener(): void {
  * brief の購読を開始し、購読解除関数を返す。何個の画面から呼ばれても実際の
  * listen は 1 本しか張らない (最後の 1 人が外れたときだけ解除する)。
  */
-export function connectLiveBriefStore(): () => void {
+export function connectLiveBriefStore(observeIds:readonly string[]=[]): () => void {
+  const ids=clampVisibleIds(observeIds);
+  for(const id of ids)observationHolds.set(id,(observationHolds.get(id)??0)+1);
   subscriberCount += 1;
   if (subscriberCount === 1) {
     attachBriefVisibilityListener();
@@ -200,10 +241,13 @@ export function connectLiveBriefStore(): () => void {
     ensureBriefListener();
     if (!isHidden()) void refreshLiveBriefs();
   }
+  if(ids.length)reconcileObservationPolling();
   let released = false;
   return () => {
     if (released) return;
     released = true;
+    for(const id of ids){const n=(observationHolds.get(id)??1)-1;if(n)observationHolds.set(id,n);else observationHolds.delete(id);}
+    if(ids.length)reconcileObservationPolling();
     subscriberCount = Math.max(0, subscriberCount - 1);
     if (subscriberCount > 0) return;
     updateBackendSubscription();
@@ -478,6 +522,7 @@ export function stopEventPolling(): void {
 }
 
 export function __resetLiveBriefStoreForTests(): void {
+  observationHolds.clear();if(observationTimer)clearInterval(observationTimer);observationTimer=undefined;observationInFlight=false;
   detailHolds.clear();
   pollingHold = undefined;
   stopEventPolling();

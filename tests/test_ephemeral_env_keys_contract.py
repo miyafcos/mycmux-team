@@ -20,6 +20,8 @@ EXPECTED_EPHEMERAL_ENV_KEYS = {
     "MYCMUX_HANDOFF_FROM_SESSION",
     "MYCMUX_HANDOFF_LAUNCH_KIND",
     "MYCMUX_LAUNCH_KIND",
+    "MYCMUX_CODEX_RESTORE_GENERATION",
+    "MYCMUX_CODEX_RESTORE_REASON",
     "MYCMUX_PANE_SESSION_ID",
     "MYCMUX_TAB_ID",
     "MYCMUX_HTML_OUT",
@@ -36,6 +38,12 @@ TERMINAL_ENV_GROUPS = (
     "RESUME_QUARTET",
     "HANDOFF_QUARTET",
 )
+
+# Report intent is created by the backend after frontend persistence has
+# already run. Keep the existing persistence and shared-identity guards exact.
+BACKEND_CODEX_REPORT_KEYS = {
+    "MYCMUX_CODEX_RESTORE_GENERATION", "MYCMUX_CODEX_RESTORE_REASON",
+}
 
 
 def read_repo_text(relative_path: str) -> str:
@@ -124,19 +132,31 @@ def test_ephemeral_env_keys_stay_in_sync_across_all_guards() -> None:
                 "MYCMUX_LAUNCH_TARGET",
                 "MYCMUX_LAUNCH_MODEL",
                 "MYCMUX_LAUNCH_EFFORT",
-            },
+            } - BACKEND_CODEX_REPORT_KEYS,
         ),
         "src/components/layout/SocketListener.tsx persistence filter": (
             extract_socket_listener_keys(),
             # This key is injected only by the backend after frontend state is
             # already fixed, so it cannot be persisted by SocketListener.
-            EXPECTED_EPHEMERAL_ENV_KEYS - {"MYCMUX_TEST_PROFILE", "MYCMUX_HOOK_CAP"},
+            EXPECTED_EPHEMERAL_ENV_KEYS - {"MYCMUX_TEST_PROFILE", "MYCMUX_HOOK_CAP"} - BACKEND_CODEX_REPORT_KEYS,
         ),
     }
 
     for source, (keys, expected) in sources.items():
         assert_nonempty(keys, source)
         assert_matches_expected(keys, source, expected)
+
+    # The extra backend-only keys need their own launch-entry scrub, before
+    # the unmodified claim/identity reader runs. No key silently escapes a guard.
+    terminal = read_repo_text("src-tauri/src/commands/terminal.rs")
+    create = terminal[terminal.index("fn create_session_blocking("):terminal.index("pub(crate) fn prepare_spawn_command(")]
+    assert create.index("codex_restore::sanitize_report_env(&mut env_map);") < create.index("let _launch_claim")
+    report = read_repo_text("src-tauri/src/commands/terminal/codex_restore.rs")
+    scrub = report[report.index("fn sanitize_report_env("):report.index("\n}", report.index("fn sanitize_report_env("))]
+    assert set(re.findall(r'"(MYCMUX_CODEX_RESTORE_[A-Z_]+)"', scrub)) == BACKEND_CODEX_REPORT_KEYS
+    assert "env.remove(key)" in scrub
+    for key in BACKEND_CODEX_REPORT_KEYS:
+        assert f'env_map.insert("{key}"' in create
 
 
 def test_terminal_ephemeral_env_groups_are_disjoint() -> None:

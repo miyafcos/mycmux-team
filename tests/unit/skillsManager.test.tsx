@@ -151,10 +151,10 @@ describe("skills manager stage 1", () => {
     await act(async () => document.querySelector<HTMLButtonElement>(`button[aria-label="${s.refresh}"]`)!.click());
     expect(document.querySelector(".skills-markdown h1")?.textContent).toBe("Version 1");
   });
-  it("maps every catalogue symbol and keeps the entry between AI log and dashboard", () => {
+  it("maps every catalogue symbol and keeps the agent design entry before dashboard", () => {
     const symbols = JSON.parse(readFileSync(resolve("tests/fixtures/skills_home/symbols.json"), "utf8")) as string[];
     for (const symbol of symbols) expect(symbolMap[symbol], symbol).toBeDefined();
-    const titlebar = readFileSync(resolve("src/components/layout/TitleBar.tsx"), "utf8"); expect(titlebar).toMatch(/<AiLogButton\s*\/>\s*<AgentDesignButton\s*\/>\s*<SkillsButton\s*\/>\s*<DashboardButton\s*\/>/);
+    const titlebar = readFileSync(resolve("src/components/layout/TitleBar.tsx"), "utf8"); expect(titlebar).toMatch(/<AgentDesignButton\s*\/>\s*<DashboardButton\s*\/>\s*<InboxButton\s*\/>/);
   });
   it("searches names, descriptions, triggers, and full bodies in that order", () => {
     const result = searchSkills([row("one", { line: "needle" }), row("two", { triggers: ["needle"] }), row("three", { body: "needle" })], "needle");

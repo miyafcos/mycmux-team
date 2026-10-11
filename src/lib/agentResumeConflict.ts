@@ -7,7 +7,7 @@ export interface AgentSessionAlreadyRunning {
 }
 
 export const AGENT_SESSION_ALREADY_RUNNING_PREFIX = "AGENT_SESSION_ALREADY_RUNNING:";
-export const AGENT_SESSION_ALREADY_RUNNING_NOTICE = "\r\n\x1b[33m[この会話は別のペインで動いているため、ここでは起動しませんでした]\x1b[0m\r\n";
+export const AGENT_SESSION_ALREADY_RUNNING_NOTICE = "\r\n\x1b[33m[この会話は別のタブで動いているため、ここでは起動しませんでした]\x1b[0m\r\n";
 
 export function parseAgentSessionAlreadyRunning(error: unknown): AgentSessionAlreadyRunning | null {
   const message = typeof error === "string" ? error : error instanceof Error ? error.message : null;

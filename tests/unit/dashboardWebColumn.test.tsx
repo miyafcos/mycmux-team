@@ -128,9 +128,9 @@ describe("a Web tab's conversation in the dashboard", () => {
   });
 
   it("surfaces a failed read without emptying the column", () => {
-    renderColumn(transcriptEntry({ error: "このペインのページをまだ開いていないため読めません" }));
+    renderColumn(transcriptEntry({ error: "このタブのページをまだ開いていないため読めません" }));
     expect(container.querySelector(".cmux-dashboard-web-transcript-error")?.textContent)
-      .toBe("このペインのページをまだ開いていないため読めません");
+      .toBe("このタブのページをまだ開いていないため読めません");
     expect(container.querySelectorAll(".cmux-dashboard-msg")).toHaveLength(2);
   });
 
