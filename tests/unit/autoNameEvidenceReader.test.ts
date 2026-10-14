@@ -8,6 +8,8 @@ import { fixtureMaterial } from "./helpers/autoNamingInvariants";
 import { namingPlanKey, plannedNamingMaterial } from "../../src/lib/autoNameMaterial";
 const fake = vi.hoisted(() => ({ invoke: vi.fn(), scan: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: fake.invoke }));
+// These cases count transcript-material reads; session titles have their own cache and tests.
+vi.mock("../../src/lib/sessionTitles", () => ({ TITLED_AGENT_KINDS: ["claude", "claude-codex"], withSessionTitles: async (scan: unknown) => scan }));
 vi.mock("../../src/components/layout/tabGrouping", () => ({ scanGroupingContext: fake.scan }));
 const tab = { id: "t", sessionId: "pty", workspaceId: "w", paneId: "p", label: "", agentKind: "codex", agentSessionId: "agent", cwd: "/sample", tail: [] } as GroupingScan["tabs"][number];
 const event = (eventId: string, kind: SemanticEventEnvelope["kind"]): SemanticEventEnvelope => ({ eventId, kind, sourceRevision: 1, occurredAt: 1, sourceByteStart: 0, sourceByteEnd: 1 });

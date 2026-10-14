@@ -24,6 +24,8 @@ export const paneToolbarStrings = {
   newTab: "新しいターミナルタブ",
   splitRight: "右にタブを開く",
   splitDown: "下にタブを開く",
+  splitRightAt: (shortcut: string) => `右にタブを開く (${shortcut})`,
+  splitDownAt: (shortcut: string) => `下にタブを開く (${shortcut})`,
   zoomPane: "このタブだけ表示",
   restorePane: "元の表示に戻す",
   zoomPaneAt: (shortcut: string) => `このタブだけ表示 (${shortcut})`,

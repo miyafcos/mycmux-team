@@ -32,7 +32,8 @@ export interface AutoNameMeaning {
   target: string; qualifier?: string; projectIdentity?: string; projectTitle?: string; action: string; topic: string; fullName: string; shortCandidates: string[];
   evidenceRefs: string[]; strength: "strong" | "weak" | "unknown"; binding: string;
   contentKey: string; meaningKey: string; fresh: boolean;
-  source?: "instruction" | "activity" | "file" | "heading" | "none";
+  /** "title" and "label" are shown as written: the agent's own session title, or the launch label. */
+  source?: "instruction" | "activity" | "file" | "heading" | "none" | "title" | "label";
   instructionDisposition?: "none" | "status" | "followup" | "continuation" | "rejection" | "replacement";
   rejectedTasks?: Array<{ target: string; action: string }>;
   instructionContext?: "direct" | "control";
@@ -186,6 +187,95 @@ export function deriveAutoName(evidence: AutoNameEvidence, projectNames: readonl
     instructionContext: unknown.instructionContext, instructionIndex: unknown.instructionIndex,
     meaningKey: normalize(target + "|" + action + "|" + (nearest?.identity ?? "")), fresh: unknown.instructionContext !== "control" && !evidence.replyOnly };
 }
+// Presented names (2026-10-14). The rules above only name a direct, single
+// clause instruction, and real requests (long, colloquial, pasted mail,
+// English hand-offs, "進捗の確認") almost never are one, so most tabs fell to
+// UNKNOWN_AUTO_NAME. A tab now takes, in order: the agent's session title
+// (Claude's custom or AI title), the rule-derived name, its launch label, and
+// only then the unknown name. A raw launch label stays behind a rule name
+// because labels like "bokan clockshift 3009" read as abstract (2026-10-09).
+// The displayed name is cut to 20 graphemes by shortAutomaticName, which turns
+// anything without a task suffix into UNKNOWN_AUTO_NAME, so a presented name is
+// built to fit, a sibling number included.
+export const PRESENTED_NAME_CAP = 20;
+const presentationUnsafe = /[\x00-\x1f\x7f�\ud800-\udfff]/u;
+const presentedNumbered = (base: string, number: number) => fitPresentedName(base, PRESENTED_NAME_CAP - nameGraphemes("・" + number).length) + "・" + number;
+export const isPresentedMeaning = (meaning: AutoNameMeaning): boolean => meaning.source === "title" || meaning.source === "label";
+/** Shorten at a space, ・ or word boundary in the latter half; never append an ellipsis. */
+export function fitPresentedName(text: string, cap: number): string {
+  const graphemes = nameGraphemes(text);
+  if (graphemes.length <= cap) return text;
+  const floor = Math.ceil(cap / 2);
+  let end = -1;
+  for (let index = cap; index >= floor; index--) if (/^[\s・、,|｜/／]$/u.test(graphemes[index] ?? "")) { end = index; break; }
+  if (end < 0 && wordSegmenter) {
+    // Prefer the last cut after a particle ("…スライドの修正と|再提出") so the name ends on a
+    // whole phrase; the trailing particle is dropped below.
+    let at = 0, afterParticle = -1;
+    for (const { segment } of wordSegmenter.segment(text)) {
+      const next = at + nameGraphemes(segment).length;
+      if (next > cap) break;
+      at = next;
+      if (at >= floor && /^[のとをがにでへや]$/u.test(segment)) afterParticle = at;
+    }
+    if (afterParticle >= floor) end = afterParticle;
+    else if (at >= floor) end = at;
+  }
+  let cut = graphemes.slice(0, end < 0 ? cap : end).join("");
+  // A cut must not leave a bracket open ("例題② (10") or end on a joiner ("hikarist-video-").
+  const opener = Math.max(cut.lastIndexOf("("), cut.lastIndexOf("（"), cut.lastIndexOf("「"), cut.lastIndexOf("["));
+  if (opener > 0 && !/[)）」\]]/u.test(cut.slice(opener))) cut = cut.slice(0, opener);
+  cut = cut.replace(/[\s・、,|｜/／\-_–—:：のをがにとはでへや]+$/u, "").trim();
+  return cut || graphemes.slice(0, cap).join("");
+}
+/** Drop a leading copy of a hand-given workspace name ("ひかりスタ 数学" + "ひかりスタ数学 定積分…"). */
+export function stripWorkspacePrefix(name: string, workspaceName: string | undefined): string {
+  const head = (workspaceName ?? "").normalize("NFKC").replace(/\s+/g, "").toLocaleLowerCase();
+  if (nameGraphemes(head).length < 2) return name;
+  let matched = 0, cut = -1, offset = 0;
+  for (const grapheme of nameGraphemes(name)) {
+    offset += grapheme.length;
+    if (/^\s+$/u.test(grapheme)) continue;
+    const piece = grapheme.normalize("NFKC").toLocaleLowerCase();
+    if (!head.startsWith(piece, matched)) return name;
+    matched += piece.length;
+    if (matched >= head.length) { cut = offset; break; }
+  }
+  if (cut < 0) return name;
+  // Only at a word edge: a space or separator, or katakana / Latin running into kanji or
+  // kana ("ひかりスタ数学"). Never inside a word ("ひかりスタンド", "北斗学院", "2027年度", "v2.1").
+  const kind = (grapheme: string) => /\p{Script=Han}/u.test(grapheme) ? "han" : /\p{Script=Hiragana}/u.test(grapheme) ? "hira"
+    : /[\p{Script=Katakana}ー]/u.test(grapheme) ? "kata" : /[A-Za-z]/.test(grapheme) ? "latin" : "other";
+  const last = nameGraphemes(name.slice(0, cut)).pop() ?? "", next = nameGraphemes(name.slice(cut))[0] ?? "";
+  const separated = /^[\s・:：\-–—|｜/／、,]$/u.test(next);
+  const shifted = (kind(last) === "kata" || kind(last) === "latin") && (kind(next) === "han" || kind(next) === "hira");
+  if (!separated && !shifted) return name;
+  const rest = name.slice(cut).replace(/^[\s・:：\-–—|｜/／、,]+/u, "");
+  return nameGraphemes(rest).length >= 4 && !/^[のをがにとはでへもや]/u.test(rest) && !/^[\p{P}\p{S}]/u.test(rest) ? rest : name;
+}
+export interface PresentedNameTab {
+  sessionTitle?: string | null; label?: string; labelSource?: PaneTab["labelSource"];
+}
+export function presentedAutoName(tab: PresentedNameTab, workspace: { name: string; nameSource?: "auto" } | undefined,
+  evidence: Pick<AutoNameEvidence, "binding" | "contentKey" | "evidenceRefs">, ruleNamed = false): AutoNameMeaning | undefined {
+  const clean = (value: string | null | undefined) => (value ?? "").replace(/\s+/g, " ").trim();
+  const title = clean(tab.sessionTitle);
+  // A spawn date prefix ("261014-…") says nothing about the job. A label that
+  // carries an internal ID (an agent counter, a hash, a UUID) is not a launch name.
+  const dated = clean(tab.label).replace(/^\d{6,8}[-_]+/, "");
+  const label = /^(?:claude|codex|grok|claude-codex|shell|agent)[-_]?\d+$/i.test(dated)
+    || /(?:^|[^A-Za-z])(?:claude|codex|grok|shell|agent)[-_]?\d{3,}|\b[0-9a-f]{8,}\b|\b\d{6,8}[-_]/i.test(dated) ? "" : dated;
+  const labelUsable = !ruleNamed && !!label && isAutomaticNameTarget({ label, labelSource: tab.labelSource });
+  const [source, raw] = title && !presentationUnsafe.test(title) ? ["title", title] as const
+    : labelUsable && !presentationUnsafe.test(label) ? ["label", label] as const : [undefined, ""] as const;
+  if (!source) return undefined;
+  const stripped = workspace && workspace.nameSource !== "auto" ? stripWorkspacePrefix(raw, workspace.name) : raw;
+  const fullName = fitPresentedName(stripped, PRESENTED_NAME_CAP);
+  if (!fullName || fullName.startsWith(UNKNOWN_AUTO_NAME)) return undefined;
+  return { target: fullName, action: "", topic: fitPresentedName(fullName, 20), fullName, shortCandidates: [fullName],
+    evidenceRefs: evidence.evidenceRefs, strength: "strong", source, binding: evidence.binding, contentKey: evidence.contentKey,
+    meaningKey: normalize(source + "|" + fullName), fresh: true };
+}
 function numberedName(meaning: AutoNameMeaning, value: number, base = meaning.fullName): string {
   const suffix = "・" + value;
   return shortAutomaticName(base, 48 - length(suffix)) + suffix;
@@ -203,16 +293,38 @@ export function resolveNameSiblings(rows: NamingRow[]): Map<string, string> {
   for (const row of rows.filter(row => !isAutomaticNameTarget(row.tab))) {
     reserve(row.presentation ?? preferredTabName(row.tab) ?? "", "protected:" + row.id);
   }
+  // Titles and launch labels are shown as written. Only an exact repeat is
+  // numbered; the four-grapheme prefix rule below is for generated task names
+  // (titles often share a project word and would otherwise fall to unknown).
+  const presented = automatic.filter(row => isPresentedMeaning(row.meaning));
+  const presentedCounts = new Map<string, number>();
+  for (const { meaning } of presented) presentedCounts.set(normalize(meaning.fullName), (presentedCounts.get(normalize(meaning.fullName)) ?? 0) + 1);
+  const previousPresented = (row: NamingRow) => {
+    const name = row.tab.displayName, number = name?.match(/・([1-9]\d*)$/)?.[1];
+    return row.tab.displayNameSource === "auto" && number && name === presentedNumbered(row.meaning.fullName, Number(number)) ? Number(number) : undefined;
+  };
+  for (const row of [...presented].sort((a, b) => Number(previousPresented(b) !== undefined) - Number(previousPresented(a) !== undefined) || a.id.localeCompare(b.id))) {
+    const base = row.meaning.fullName;
+    let name = base;
+    if ((presentedCounts.get(normalize(base)) ?? 0) > 1 || used.has(normalize(base))) {
+      let number = previousPresented(row) ?? 1;
+      if (used.has(normalize(presentedNumbered(base, number)))) number = 1;
+      while (used.has(normalize(presentedNumbered(base, number)))) number++;
+      name = presentedNumbered(base, number);
+    }
+    result.set(row.id, name); used.add(normalize(name));
+  }
+  const ruled = automatic.filter(row => !isPresentedMeaning(row.meaning));
   // Reserve this presentation family before arranging known jobs. Its counters
   // are an explicit unknown-display exception, not a claimed semantic match.
-  if (automatic.length) {
+  if (ruled.length) {
     const prefix = namePrefix(UNKNOWN_AUTO_NAME), owners = prefixes.get(prefix) ?? new Set<string>();
     owners.add("unknown"); prefixes.set(prefix, owners);
   }
   const counts = new Map<string, number>(), contexts = new Map<string, Set<string>>();
   const qualifierContexts = new Map<string, Set<string>>(), titleContexts = new Map<string, Set<string>>();
   const baseKey = (meaning: AutoNameMeaning) => normalize(meaning.target + "|" + meaning.action);
-  for (const { meaning } of automatic) {
+  for (const { meaning } of ruled) {
     if (meaning.strength !== "unknown") counts.set(meaning.meaningKey, (counts.get(meaning.meaningKey) ?? 0) + 1);
     const qualifiers = contexts.get(baseKey(meaning)) ?? new Set<string>();
     const identity = meaning.projectIdentity ?? meaning.qualifier ?? "";
@@ -244,8 +356,8 @@ export function resolveNameSiblings(rows: NamingRow[]): Map<string, string> {
     const visible = shortAutomaticName(name), owners = prefixes.get(namePrefix(visible));
     return !used.has(normalize(visible)) && (!owners || (identical && [...owners].every(owner => owner === meaning.meaningKey)));
   };
-  const unknownRows = automatic.filter(row => row.meaning.strength === "unknown");
-  const ordered = automatic.filter(row => row.meaning.strength !== "unknown")
+  const unknownRows = ruled.filter(row => row.meaning.strength === "unknown");
+  const ordered = ruled.filter(row => row.meaning.strength !== "unknown")
     .sort((a, b) => Number(validPrevious(b)) - Number(validPrevious(a)) || a.id.localeCompare(b.id));
   for (const row of ordered) {
     const m = row.meaning;
@@ -275,7 +387,7 @@ export function resolveNameSiblings(rows: NamingRow[]): Map<string, string> {
   for (const row of unknownRows) {
     const previous = previousUnknown(row);
     let name = previous && !used.has(normalize(previous)) ? previous : undefined;
-    if (!name && automatic.length === 1 && !used.has(normalize(UNKNOWN_AUTO_NAME))) name = UNKNOWN_AUTO_NAME;
+    if (!name && ruled.length === 1 && !used.has(normalize(UNKNOWN_AUTO_NAME))) name = UNKNOWN_AUTO_NAME;
     if (!name) {
       let number = 1;
       while (used.has(normalize(UNKNOWN_AUTO_NAME + "・" + number))) number++;
@@ -321,6 +433,9 @@ export function createAutoNamePolicy(now: () => number = Date.now, projectNames:
         next = deriveAutoName({ ...evidence, instructionHistoryComplete: false }, projects);
       }
       if (mark && !older) inputWatermarks.set(tab.id, { ...mark });
+      // A session title outranks the rule-derived name; a launch label only replaces the unknown name.
+      const presentedName = presentedAutoName(tab, scan.workspaces.find(w => w.id === tab.workspaceId), evidence, next.strength !== "unknown");
+      if (presentedName) next = presentedName;
       if (current && current.meaningKey !== next.meaningKey) {
         const stamp = now(); const p = pending.get(tab.id);
         const wait = next.strength === "strong" || next.strength === "unknown" ? 10_000 : 60_000;
@@ -346,7 +461,8 @@ export function createAutoNamePolicy(now: () => number = Date.now, projectNames:
       } }));
       const names = resolveNameSiblings(rows.map(row => hold?.(row.tab, row.meaning) ? { ...row, tab: { ...row.tab, label: row.tab.displayName ?? row.tab.label, labelSource: "user" as const } } : row));
       for (const row of rows) if (alive.has(row.id)) tabs.set(row.id, { project: null, projectReason: null,
-        subject: row.meaning.target || null, subjectReason: row.meaning.strength === "unknown" ? null : "task_title", displayName: names.get(row.id) ?? null });
+        subject: row.meaning.target || null, displayName: names.get(row.id) ?? null,
+        subjectReason: row.meaning.strength === "unknown" ? null : row.meaning.source === "title" ? "session_title" : row.meaning.source === "label" ? "readable_label" : "task_title" });
     }
     return { tabs, homes: new Map(), homeScores: new Map() };
   };

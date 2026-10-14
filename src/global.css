@@ -605,12 +605,14 @@ div:focus-within > .tab-close-btn,
   white-space: nowrap;
 }
 
-.pane-header-close:disabled {
+.pane-header-close:disabled,
+.pane-place-close:disabled {
   opacity: 0.55;
   cursor: default;
 }
 
-.pane-header-close:disabled:hover {
+.pane-header-close:disabled:hover,
+.pane-place-close:disabled:hover {
   color: var(--cmux-text-tertiary);
   background: none;
 }

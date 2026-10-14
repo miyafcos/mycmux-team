@@ -995,6 +995,9 @@ mod tests {
         let next=drain(&archive,owner,archive.page(owner,PageRequest{reader_id:id.clone(),cursor:cursor.clone(),limit:Some(2)}).unwrap());
         let at=next.items[0].source_start.parse::<u64>().unwrap()+150;
         let mut f=std::fs::OpenOptions::new().write(true).open(path).unwrap(); f.seek(SeekFrom::Start(at)).unwrap();f.write_all(b"z").unwrap();f.flush().unwrap();
+        // A same-size rewrite is caught by its modification time, which Windows stamps from a coarse
+        // (about 15.6 ms) clock; move it on explicitly so a fast runner cannot stay in the same tick.
+        f.set_modified(SystemTime::now()+Duration::from_secs(2)).unwrap(); drop(f);
         assert_eq!(archive.page(owner,PageRequest{reader_id:id.clone(),cursor,limit:Some(2)}).unwrap_err(),"sourceChanged");
         archive.close_window(owner);assert_eq!(archive.heartbeat(owner,&id).err().as_deref(),Some("cursorExpired"));
         let (dir,path)=fixture("claude",&values);let owner="visited-validation";

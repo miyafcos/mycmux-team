@@ -940,6 +940,8 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       splitInsertHint(existingColumns, afterPaneId, paneId, direction),
     );
     applyStructuralActivation(newPane.sessionId);
+    // The new pane takes input, so it must not stay hidden behind "show only this tab".
+    useUiStore.getState().setZoomedPaneId(null);
   },
 
   addPaneToWorkspaceWithOptions: (workspaceId, afterPaneId, direction, options) => {
@@ -991,6 +993,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     );
     if (options.activate !== false && options.activationSource !== "socket") {
       applyStructuralActivation(newPane.sessionId);
+      useUiStore.getState().setZoomedPaneId(null);
     }
   },
 

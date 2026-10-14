@@ -386,3 +386,23 @@ describe("persistent layout projection", () => {
     expect(persistentLayoutEquals([before], [after])).toBe(false);
   });
 });
+
+describe("splitting while one tab is shown alone (2026-10-14)", () => {
+  it("shows the new pane instead of leaving it hidden behind the zoom", () => {
+    seed(workspace([pane("a"), pane("b")], [["a"], ["b"]]));
+    useUiStore.setState({ zoomedPaneId: "a" });
+    useWorkspaceLayoutStore.getState().addPaneToWorkspace("ws", "a", "right");
+    expect(useUiStore.getState().zoomedPaneId).toBeNull();
+  });
+
+  it("clears the zoom for an activated split and keeps it for a background one", () => {
+    seed(workspace([pane("a"), pane("b")], [["a"], ["b"]]));
+    useUiStore.setState({ zoomedPaneId: "a" });
+    useWorkspaceLayoutStore.getState().addPaneToWorkspaceWithOptions("ws", "a", "right", { activationSource: "socket" });
+    expect(useUiStore.getState().zoomedPaneId).toBe("a");
+    useWorkspaceLayoutStore.getState().addPaneToWorkspaceWithOptions("ws", "a", "right", { activate: false });
+    expect(useUiStore.getState().zoomedPaneId).toBe("a");
+    useWorkspaceLayoutStore.getState().addPaneToWorkspaceWithOptions("ws", "a", "right", {});
+    expect(useUiStore.getState().zoomedPaneId).toBeNull();
+  });
+});

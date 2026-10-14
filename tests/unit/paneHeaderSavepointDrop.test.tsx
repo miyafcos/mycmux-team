@@ -68,7 +68,8 @@ async function mount(empty = false) {
     root.render(<>
       <SavepointHandle />
       <div data-savepoint-drop-pane="true" data-dnd-workspace-id="w" data-dnd-pane-id="p">
-        <PaneTabBar pane={pane} workspaceId="w" hasTerminalBuffer={() => true} onZoomToggle={() => {}} />
+        <PaneTabBar pane={pane} workspaceId="w" hasTerminalBuffer={() => true} onZoomToggle={() => {}}
+          onSplitRight={() => {}} onClose={() => {}} />
         <div data-pane-body="true" />
       </div>
     </>);
@@ -147,8 +148,10 @@ describe("real savepoint resolution over the rendered heading", () => {
       await startDrag();
       expect(await hover(".pane-active-heading-name", 50, 18)).toEqual(paste);
       expect(await hover(".pane-heading-spacer", width / 2, 18)).toEqual(paste);
-      for (const selector of [".pane-hidden-tabs", ".pane-tabbar-zoom", ".pane-header-close", kebab]) {
-        if (selector === ".pane-tabbar-zoom" && value < 210) {
+      // The tab's own × belongs to the name; the right-edge controls keep spawn.
+      expect(await hover(".pane-heading-content > .pane-header-close", 60, 18)).toEqual(paste);
+      for (const selector of [".pane-hidden-tabs", ".pane-tabbar-split", ".pane-tabbar-zoom", ".pane-place-close", kebab]) {
+        if ((selector === ".pane-tabbar-zoom" && value < 210) || ((selector === ".pane-tabbar-split" || selector === ".pane-place-close") && value < 250)) {
           expect(host.querySelector(selector)).toBeNull();
           continue;
         }

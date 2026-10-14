@@ -138,7 +138,8 @@ def test_tab_sweep_ui_contract_covers_all_entry_points_and_safety_copy() -> None
 
 def test_material_names_are_local_and_do_not_use_the_judge() -> None:
     auto = read("src/lib/autoPaneNaming.ts")
-    evidence = read("src/lib/paneEvidence.ts")
+    # Session titles moved out of paneEvidence on 2026-10-14 so the naming reader can share them.
+    evidence = read("src/lib/sessionTitles.ts")
     naming_modules = {
         "src/lib/autoPaneNaming.ts",
         "src/lib/autoNameEvidence.ts",
@@ -151,6 +152,7 @@ def test_material_names_are_local_and_do_not_use_the_judge() -> None:
         "src/lib/nameRecoveryAction.ts",
         "src/stores/autoNameRuntimeStore.ts",
         "src/lib/paneIdentity.ts",
+        "src/lib/sessionTitles.ts",
         "src/lib/tabDisplayLabel.ts",
         "src-tauri/src/agent_titles/mod.rs",
         "src-tauri/src/agent_titles/material.rs",
@@ -170,6 +172,7 @@ def test_material_names_are_local_and_do_not_use_the_judge() -> None:
     assert 'invoke<NamingMaterial[]>("auto_name_materials"' in material
     assert 'invoke<AgentSessionTitles[]>("agent_session_titles"' in evidence
     assert "5 * 60_000" in evidence
+    assert "withSessionTitles(grouped, TITLED_AGENT_KINDS)" in material
 
     # Manual sweep keeps the existing AI resolver, async command and opt-out.
     rust = read("src-tauri/src/commands/tab_sweep.rs")

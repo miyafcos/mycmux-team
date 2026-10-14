@@ -1,6 +1,6 @@
 import { namingBinding } from "./autoNameMaterial";
 import type { Pane, PaneTab, Workspace } from "../types";
-import { nameGraphemes, shortAutomaticName, UNKNOWN_AUTO_NAME, type AutoNameMeaning } from "./autoNamePolicy";
+import { fitPresentedName, isPresentedMeaning, nameGraphemes, shortAutomaticName, UNKNOWN_AUTO_NAME, type AutoNameMeaning } from "./autoNamePolicy";
 
 export interface WorkspaceNameSummary {
   name: string | null;
@@ -27,15 +27,18 @@ export function aggregateWorkspaceName(workspace: Workspace, meanings: ReadonlyM
   const members = workspace.panes.flatMap(pane => pane.tabs.filter(tab => tab.type !== "launcher" && tab.lifecycle !== "declared" && !tab.ephemeral)
     .map(tab => ({ tab, pane })));
   const byId = new Map(members.map(({ tab }) => [tab.id, tab]));
-  const jobs = new Map<string, { topic: string; weight: number; names: Set<string> }>();
-  let unknown = 0;
+  const jobs = new Map<string, { topic: string; weight: number; names: Set<string>; presented: boolean }>();
+  let unknown = 0, labelled = 0;
   const composition: string[] = [];
   const support: Array<readonly [string, string]> = [];
   for (const { tab, pane } of members) {
     const meaning = meanings.get(tab.id);
-    if (!matchesOwner(tab, meaning)) {
+    // A launch label stands in for a tab's name only; letting it vote would swap the
+    // workspace name whenever the tab moves between its label and a rule name.
+    if (!matchesOwner(tab, meaning) || meaning.source === "label") {
       // Unknown owners need a current binding even without accepted task evidence.
       const key = JSON.stringify([bindingFor(tab, pane), "unknown"]);
+      if (meaning?.source === "label") labelled++;
       unknown++; support.push([tab.id, key]); composition.push(key); continue;
     }
     let root = tab.id;
@@ -53,14 +56,14 @@ export function aggregateWorkspaceName(workspace: Workspace, meanings: ReadonlyM
     if (cycle) root = tab.id;
     const key = root + "|" + meaning.meaningKey;
     const weight = meaning.fresh && workspace.status === "running" ? 1 : 0.5;
-    const job = jobs.get(key) ?? { topic: meaning.topic, weight: 0, names: new Set<string>() };
+    const job = jobs.get(key) ?? { topic: meaning.topic, weight: 0, names: new Set<string>(), presented: isPresentedMeaning(meaning) };
     job.weight = Math.max(job.weight, weight); job.names.add(meaning.fullName); jobs.set(key, job);
     support.push([tab.id, JSON.stringify([meaning.binding, meaning.meaningKey, root])]);
     composition.push(JSON.stringify([tab.id, key, meaning.binding, weight]));
   }
-  const topics = new Map<string, { weight: number; count: number; names: Set<string> }>();
+  const topics = new Map<string, { weight: number; count: number; names: Set<string>; presented: boolean }>();
   for (const job of jobs.values()) {
-    const topic = topics.get(job.topic) ?? { weight: 0, count: 0, names: new Set<string>() };
+    const topic = topics.get(job.topic) ?? { weight: 0, count: 0, names: new Set<string>(), presented: job.presented };
     topic.weight += job.weight; topic.count++; for (const name of job.names) topic.names.add(name); topics.set(job.topic, topic);
   }
   const previousOrder = workspace.name.split("・");
@@ -77,17 +80,21 @@ export function aggregateWorkspaceName(workspace: Workspace, meanings: ReadonlyM
   if (ranked.length) {
     const selected = dominant ? ranked.slice(0, 1) : ranked.slice(0, 2);
     const remainder = ranked.length - selected.length + unknown;
-    name = jobs.size === 1 && unknown === 0
-      ? shortAutomaticName([...jobs.values()][0].names.values().next().value ?? selected[0][0])
+    // Session titles have no task suffix for shortAutomaticName to keep; shorten them at a boundary.
+    const fit = (text: string, presented: boolean, cap = 20) => presented ? fitPresentedName(text, cap) : shortAutomaticName(text, cap);
+    const only = jobs.size === 1 && unknown === 0 ? [...jobs.values()][0] : undefined;
+    name = only
+      ? fit(only.names.values().next().value ?? selected[0][0], only.presented)
       : selected.map(([topic]) => topic).join("・") + (remainder ? `・ほか${remainder}` : "");
     // Workspace names use complete topic phrases, bounded separately from pane full names.
     if (nameGraphemes(name).length > 20) {
       const suffix = `・ほか${ranked.length - 1 + unknown}`;
-      name = shortAutomaticName(selected[0][0], 20 - nameGraphemes(suffix).length) + suffix;
+      name = fit(selected[0][0], selected[0][1].presented, 20 - nameGraphemes(suffix).length) + suffix;
     }
   }
   const description = ranked.map(([topic, info]) => `${topic} ${info.count}件: ${[...info.names].sort().join("、")}`)
-    .concat(unknown ? [`作業内容未取得 ${unknown}件`] : [])
+    .concat(labelled ? [`起動時の名前 ${labelled}件`] : [])
+    .concat(unknown - labelled ? [`作業内容未取得 ${unknown - labelled}件`] : [])
     .concat(onlyHeld ? ["最新の作業内容は未取得 (前回の材料)"] : []).join("\n");
   return { name: workspace.status === "stopped" ? null : name, key: JSON.stringify(composition.sort()), description, jobs: count, unknown,
     support: support.sort(([a], [b]) => a.localeCompare(b)), onlyHeld };

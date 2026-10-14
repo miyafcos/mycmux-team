@@ -77,8 +77,8 @@ export const notificationSettingsStrings = {
   toastFailureAlwaysShownHint: "失敗・エラーは通知設定に関わらず常に表示します。",
   layoutTitle: "レイアウト",
   nativePaneTearoutLabel: "タブの切り離しを新しい動きにする (試験中)",
-  splitRightLabel: "「⋮」に「右にタブを開く」を表示",
-  splitDownLabel: "「⋮」に「下にタブを開く」を表示",
+  splitRightLabel: "見出しと「⋮」に「右にタブを開く」を表示",
+  splitDownLabel: "見出しと「⋮」に「下にタブを開く」を表示",
   groupingApplyAnimationLabel: "タブ再配置の適用時に動きを表示",
   groupingApplyAnimationHint: "オフにすると、配置図から実画面への移動を省略して即時に切り替えます。Windows のアニメーション効果をオフにしている場合も動きません。",
   terminalInputTitle: "ターミナル入力",
@@ -111,7 +111,7 @@ export const aiSettingsStrings = {
   features: {
     autoPaneNaming: {
       label: "タブの自動命名",
-      disclosure: "直近の依頼・扱うファイル・今の動きから短い表示名を付けます。手で付けた名前は保持します。 (AI は使いません)",
+      disclosure: "Claude Code の会話の題名、直近の依頼、起動時の名前の順に短い表示名を付けます。手で付けた名前は保持します。 (AI は使いません)",
     },
     autoWorkspaceNaming: {
       label: "ワークスペース名を中身から自動で付ける",
