@@ -33,7 +33,10 @@ export async function runQualityCase(fixture: QualityCase): Promise<QualityResul
   let workspaces: Workspace[] = fixture.workspaces.map(ws => ({ id: ws.id, name: ws.name, nameSource: ws.nameSource ?? undefined, status: ws.status,
     createdAt: 0, gridTemplateId: "1x1", splitColumns: [["pane-" + ws.id]], panes: [{ id: "pane-" + ws.id, activeTabId: ws.tabs[0]?.id ?? "",
       sessionId: "pty-" + ws.tabs[0]?.id, agentId: "shell-starter", tabs: ws.tabs.map(({ initialTitle: _title, events: _events, parentTabId, ...tab }) => ({
-        ...tab, labelSource: tab.labelSource ?? undefined, displayName: tab.displayName ?? undefined, displayNameSource: tab.displayNameSource ?? undefined,
+        // These fixtures score the rule-derived names and the unknown name. A launch label
+        // replaces the unknown name since 2026-10-14 (autoNamePolicy's presented names), so they run unlabeled.
+        ...tab, ...(tab.labelSource === "launch" ? { label: undefined } : {}),
+        labelSource: tab.labelSource === "launch" ? undefined : tab.labelSource ?? undefined, displayName: tab.displayName ?? undefined, displayNameSource: tab.displayNameSource ?? undefined,
         sessionId: "pty-" + tab.id, agentId: "shell-starter", origin: parentTabId ? { kind: "agent", parentTabId } : { kind: "human" },
         launchEnv: { ORIGINAL: tab.id }, initialPrompt: "original-prompt", commandArgv: ["original-command", tab.id],
       })) }] }));

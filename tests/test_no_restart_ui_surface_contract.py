@@ -57,6 +57,10 @@ def test_pane_and_workspace_ui_surfaces_remain_wired() -> None:
             "label: paneToolbarStrings.newTab",
             "label: paneToolbarStrings.splitRight",
             "label: paneToolbarStrings.splitDown",
+            # The heading buttons came back on 2026-10-14 after they had
+            # silently become menu-only; keep them wired, not just the menu.
+            "title={paneToolbarStrings.splitRightAt(splitRightShortcut)}",
+            "title={paneToolbarStrings.splitDownAt(splitDownShortcut)}",
             "paneToolbarStrings.closePaneWithHidden(hiddenTabs.length)",
             "paneToolbarStrings.closePane(Math.max(0, pane.tabs.length - 1))",
         ],

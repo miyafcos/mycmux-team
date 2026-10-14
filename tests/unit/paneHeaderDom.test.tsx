@@ -20,6 +20,8 @@ import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useUiStore } from "../../src/stores/uiStore";
 import { useDashboardViewStore } from "../../src/stores/dashboardViewStore";
 import { focusController } from "../../src/lib/focusController";
+import { formatShortcutLabel } from "../../src/lib/keybindings";
+import { useKeybindingStore } from "../../src/stores/keybindingStore";
 import { confirm } from "../../src/lib/appConfirmation";
 import { killSession, readAgentSessionMappings, onSavepointPublishProgress, crsmListSessions, getWindowFragments, getPtyMetadataSnapshot, getSessionOutputSnapshot } from "../../src/lib/ipc";
 import { closePaneOperation, resetPaneCloseOperationsForTests } from "../../src/lib/paneCloseOperation";
@@ -114,8 +116,12 @@ describe("Stage 2a single heading", () => {
     expect(host.querySelector(".pane-header-close")).not.toBeNull();
     expect(host.querySelector(`button[aria-label="${terminalPaneStrings.paneActions}"]`)).not.toBeNull();
     expect(Boolean(host.querySelector(".pane-tabbar-zoom"))).toBe(value >= 210);
+    expect(host.querySelectorAll(".pane-heading-row .pane-tabbar-split")).toHaveLength(value >= 360 ? 2 : value >= 250 ? 1 : 0);
+    expect(host.querySelector(".pane-active-heading")?.nextElementSibling?.matches(".pane-header-close")).toBe(true);
+    expect(host.querySelector(".pane-place-close")).toBeNull(); // one tab: the name's × already closes the place
     await menu();
     expect(Boolean(item("zoom"))).toBe(value < 210);
+    expect(item("split-right")).not.toBeNull(); expect(item("split-down")).not.toBeNull();
     expect(item("close-pane")).toBeNull();
   });
 
@@ -126,7 +132,9 @@ describe("Stage 2a single heading", () => {
     expect(count.textContent).toBe(value < 210 ? "+3" : "裏 3");
     expect(host.querySelectorAll("[data-tab-id]")).toHaveLength(1);
     const operations = host.querySelectorAll(".pane-heading-row button, .pane-active-heading-name").length;
-    expect(operations).toBe(value < 210 ? 4 : 6);
+    expect(Boolean(host.querySelector(".pane-place-close"))).toBe(value >= 250);
+    // compact3 keeps the 0.88.0 count (the × moved beside the name); wider tiers add split and place ×.
+    expect(operations).toBe(value < 210 ? 4 : value < 250 ? 6 : value < 360 ? 8 : 9);
     expect(Boolean(host.querySelector(".pane-heading-row [data-terminal-magnifier]"))).toBe(value >= 210);
     if (value === 181) expect(operations).toBeLessThanOrEqual(4);
     await click(count);
@@ -188,6 +196,7 @@ describe("Stage 2a single heading", () => {
   it("applies menu gates and resets the active name without selecting it", async () => {
     useSettingsStore.setState({ showSplitRightButton: false, showSplitDownButton: false });
     await mount(pane(1, { type: "web", presetId: "browser" }), true);
+    expect(host.querySelector(".pane-tabbar-split")).toBeNull();
     await menu();
     expect(item("split-right")).toBeNull(); expect(item("split-down")).toBeNull();
     expect(item("publish")).toBeNull(); expect(item("duplicate")).toBeNull();
@@ -199,6 +208,32 @@ describe("Stage 2a single heading", () => {
     await menu();
     expect(item("reset-name")?.getAttribute("aria-disabled")).toBe("true");
     expect(item("reset-name")?.title).toBe(terminalPaneStrings.automaticName);
+  });
+
+  it("puts split buttons on the heading per setting and runs the existing callbacks", async () => {
+    useSettingsStore.setState({ showSplitRightButton: true, showSplitDownButton: false });
+    await mount(pane(2));
+    const right = () => host.querySelector<HTMLButtonElement>(`.pane-heading-row button[aria-label="${paneToolbarStrings.splitRight}"]`);
+    const down = () => host.querySelector<HTMLButtonElement>(`.pane-heading-row button[aria-label="${paneToolbarStrings.splitDown}"]`);
+    const shortcut = (action: "pane.split.right" | "pane.split.down") => formatShortcutLabel(useKeybindingStore.getState().keybindings[action]);
+    expect(right()?.title).toBe(paneToolbarStrings.splitRightAt(shortcut("pane.split.right")));
+    expect(down()).toBeNull();
+    await act(async () => right()!.dispatchEvent(new MouseEvent("pointerdown", { button: 0, bubbles: true })));
+    expect(drag.begin).not.toHaveBeenCalled();
+    await click(right());
+    expect(splitRight).toHaveBeenCalledOnce();
+    await act(async () => useSettingsStore.setState({ showSplitDownButton: true }));
+    expect([...host.querySelectorAll(".pane-heading-row .pane-tabbar-split")].map((node) => node.getAttribute("aria-label")))
+      .toEqual([paneToolbarStrings.splitRight, paneToolbarStrings.splitDown]);
+    expect(down()?.title).toBe(paneToolbarStrings.splitDownAt(shortcut("pane.split.down")));
+    await click(down());
+    expect(splitDown).toHaveBeenCalledOnce();
+    expect(splitRight).toHaveBeenCalledOnce();
+    const order = [...host.querySelectorAll(".pane-heading-row button")].map((node) => node.className);
+    expect(order.findIndex((name) => name.includes("pane-tabbar-split")))
+      .toBeLessThan(order.findIndex((name) => name.includes("pane-tabbar-zoom")));
+    await act(async () => useSettingsStore.setState({ showSplitRightButton: false }));
+    expect(right()).toBeNull(); expect(down()).not.toBeNull();
   });
 
   it("creates a launcher through the existing add-tab callback and dismisses the menu", async () => {
@@ -225,15 +260,19 @@ describe("Stage 2a single heading", () => {
     expect(spacer).not.toBeNull();
     expect(spacer.closest(".pane-tab-pill")).toBeNull();
     expect(spacer.parentElement).toBe(heading.parentElement);
-    expect(spacer.previousElementSibling).toBe(heading);
+    // The tab's own × sits between the name and the spacer; it is the only
+    // control inside the name/spacer drop surface (right-edge controls stay out).
+    const tabClose = heading.nextElementSibling as HTMLElement;
+    expect(tabClose.matches("button.pane-header-close")).toBe(true);
+    expect(spacer.previousElementSibling).toBe(tabClose);
     expect(spacer.textContent).toBe("");
     expect({ ...spacer.dataset }).toEqual({});
     const content = host.querySelector<HTMLElement>(".pane-heading-content")!;
     expect(content).not.toBeNull();
     expect(heading.parentElement).toBe(content);
-    expect(content.querySelector("button, [role=menu]")).toBeNull();
+    expect([...content.querySelectorAll("button, [role=menu]")]).toEqual([tabClose]);
     expect({ ...content.parentElement!.dataset }).toEqual({});
-    for (const surface of [name, spacer]) {
+    for (const surface of [name, tabClose, spacer]) {
       expect(resolvePaneHeaderTarget(surface)).toEqual({ workspaceId: "w", paneId: "p" });
       const drop = surface.closest<HTMLElement>("[data-savepoint-drop-workspace-id][data-savepoint-drop-pane-id][data-savepoint-drop-tab-id]")!;
       expect(drop).not.toBeNull();
@@ -326,7 +365,11 @@ describe("Stage 2a single heading", () => {
     const button = host.querySelector<HTMLButtonElement>(".pane-header-close")!;
     expect(button.disabled).toBe(true); expect(button.title).toBe(paneToolbarStrings.lastPaneCloseUnavailable);
     await click(button); expect(close).not.toHaveBeenCalled();
+    expect(host.querySelector(".pane-place-close")).toBeNull();
     await mount(pane(3));
+    const place = host.querySelector<HTMLButtonElement>(".pane-place-close")!;
+    expect(place.disabled).toBe(true); expect(place.title).toBe(paneToolbarStrings.lastPaneCloseUnavailable);
+    await click(place); expect(close).not.toHaveBeenCalled();
     expect(host.querySelector<HTMLButtonElement>(".pane-header-close")!.disabled).toBe(false);
     expect(host.querySelector<HTMLButtonElement>(".pane-header-close")!.title).toBe(paneToolbarStrings.closeTab);
     await menu();
@@ -374,6 +417,36 @@ describe("Stage 2a single heading", () => {
     expect(peekClosedPane()?.paneSessionId).toBe("pty-0");
     expect(useWorkspaceListStore.getState().workspaces[0].splitColumns).toEqual([["neighbor"]]);
     expect(useUiStore.getState().activePaneId).toBe("pty-neighbor");
+  });
+
+  it("splits the closing controls: the name's × closes one tab, the right edge closes the place", async () => {
+    await mount(pane(3), true);
+    const tabClose = host.querySelector<HTMLButtonElement>(".pane-heading-content > .pane-header-close")!;
+    const place = host.querySelector<HTMLButtonElement>(".pane-heading-row > .pane-place-close")!;
+    expect(place.title).toBe(`${paneToolbarStrings.closePaneWithHidden(2)}。${paneToolbarStrings.reopenActiveOnly}`);
+    expect(place.getAttribute("aria-label")).toBe(place.title);
+    await act(async () => tabClose.dispatchEvent(new MouseEvent("pointerdown", { button: 0, bubbles: true })));
+    expect(drag.begin).not.toHaveBeenCalled();
+    await click(tabClose);
+    expect(remove.mock.calls).toEqual([["t0"]]);
+    expect(close).not.toHaveBeenCalled();
+    remove.mockClear();
+    await click(place);
+    expect(close).toHaveBeenCalledOnce();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("closes a whole multi-session pane from the right-edge × through the real close operation", async () => {
+    usePaneMetadataStore.setState({ metadata: { "pty-0": { processIsShell: false, cwd: "/synthetic" } } });
+    await mount(pane(3), true);
+    let pending: Promise<unknown> | undefined;
+    close.mockImplementation(() => { pending = closePaneOperation({ kind: "pane", workspaceId: "w", paneId: "p" }, "ui"); });
+    await click(host.querySelector(".pane-place-close"));
+    await act(async () => { expect(await pending).toMatchObject({ status: "closed" }); });
+    expect(vi.mocked(confirm).mock.calls[0][1]?.title).toBe("このタブと裏のタブ 2 個を閉じます");
+    expect(vi.mocked(killSession).mock.calls.map(([sessionId]) => sessionId)).toEqual(["pty-0", "pty-1", "pty-2"]);
+    expect(remove).not.toHaveBeenCalled();
+    expect(useWorkspaceListStore.getState().workspaces[0].splitColumns).toEqual([["neighbor"]]);
   });
 
   it("keeps synthetic persistent data and pane.list_all structure identical while rendering and opening menus", async () => {

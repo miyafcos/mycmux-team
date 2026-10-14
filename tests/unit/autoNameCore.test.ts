@@ -210,7 +210,7 @@ async function replay(id: string, reader: Reader, frames: Frame[], schedule: num
       }
       prior = state.workspace;
     }
-    equal(checks, "allowed IPC only", fake.invoke.mock.calls.every(([command]) => ["get_pty_metadata_snapshot", "get_session_output_snapshot", "auto_name_materials"].includes(command)), true);
+    equal(checks, "allowed IPC only", fake.invoke.mock.calls.every(([command]) => ["get_pty_metadata_snapshot", "get_session_output_snapshot", "auto_name_materials", "agent_session_titles"].includes(command)), true);
     return { frames, deliveries, snapshots, writes: states, controlObservedAt, workspaceCommittedAt };
   } finally { scheduler.stop(); unsubscribe(); clearNamingHolds([id], ws.panes[0].tabs.map(t => t.id)); vi.clearAllTimers(); }
 }

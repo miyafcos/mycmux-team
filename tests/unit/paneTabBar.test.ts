@@ -321,13 +321,13 @@ describe("resolvePaneTabBarActions", () => {
     "full", "slim", "compact", "compact3", "compact2", "compact1", "micro",
   ];
   const visibleByMode: Record<PaneTabBarMode, PaneTabBarActionId[]> = {
-    full: ["zoom", "close"],
-    slim: ["zoom", "close"],
-    compact: ["zoom", "close"],
-    compact3: ["zoom", "close"],
-    compact2: ["close"],
-    compact1: ["close"],
-    micro: ["close"],
+    full: ["split-right", "split-down", "zoom", "close"],
+    slim: ["split-right", "split-down", "zoom", "close"],
+    compact: ["split-right", "zoom", "close"],
+    compact3: ["zoom"],
+    compact2: [],
+    compact1: [],
+    micro: [],
   };
 
   for (const mode of modes) {
@@ -350,15 +350,13 @@ describe("resolvePaneTabBarActions", () => {
     }
   }
 
-  it.each(modes)(
-    "keeps close visible in %s mode",
-    (mode) => {
-      expect(resolvePaneTabBarActions(mode, { showPublish: true }).visible).toContain("close");
-    },
-  );
+  it("keeps the whole-place close on the right edge from compact up", () => {
+    expect(modes.map((mode) => resolvePaneTabBarActions(mode, { showPublish: true }).visible.includes("close")))
+      .toEqual([true, true, true, false, false, false, false]);
+  });
 
   it.each(["compact2", "compact1"] as const)(
-    "moves publish into the overflow before close in %s mode",
+    "moves publish into the overflow in the narrow %s mode",
     (mode) => {
       const { visible, overflow } = resolvePaneTabBarActions(mode, { showPublish: true });
       expect(overflow).toContain("publish");
@@ -375,7 +373,7 @@ describe("resolvePaneTabBarActions", () => {
     );
 
     expect(removedPerTier).toEqual([
-      [], [], [], ["zoom"], [], [],
+      [], ["split-down"], ["split-right", "close"], ["zoom"], [], [],
     ]);
     for (let index = 1; index < visibleSets.length; index += 1) {
       expect(visibleSets[index].every((action) => visibleSets[index - 1].includes(action)))
@@ -488,6 +486,16 @@ describe("header zoom visibility", () => {
     const modes: PaneTabBarMode[] = ["full", "slim", "compact", "compact3", "compact2", "compact1", "micro"];
     expect(modes.map((mode) => resolvePaneTabBarActions(mode, { showPublish: false }).visible.includes("zoom")))
       .toEqual([true, true, true, true, false, false, false]);
+  });
+});
+
+describe("header split visibility", () => {
+  it("folds the opt-in down split below slim and the right split below compact", () => {
+    const modes: PaneTabBarMode[] = ["full", "slim", "compact", "compact3", "compact2", "compact1", "micro"];
+    const visible = (action: PaneTabBarActionId) =>
+      modes.map((mode) => resolvePaneTabBarActions(mode, { showPublish: false }).visible.includes(action));
+    expect(visible("split-right")).toEqual([true, true, true, false, false, false, false]);
+    expect(visible("split-down")).toEqual([true, true, false, false, false, false, false]);
   });
 });
 

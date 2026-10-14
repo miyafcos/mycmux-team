@@ -80,6 +80,22 @@ interface PaneTabBarProps {
   hasTerminalBuffer: (sessionId: string) => boolean;
 }
 
+const SplitRightIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+    <line x1="12" y1="3" x2="12" y2="21"></line>
+    <line x1="12" y1="12" x2="21" y2="12"></line>
+  </svg>
+);
+
+const SplitDownIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+    <line x1="3" y1="12" x2="21" y2="12"></line>
+    <line x1="12" y1="12" x2="12" y2="21"></line>
+  </svg>
+);
+
 const MaximizeIcon = () => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="15 3 21 3 21 9"></polyline>
@@ -326,8 +342,24 @@ export function resolvePaneTabBarActions(
     (action) => action !== "publish" || showPublish,
   );
 
-  const showZoom = mode === "full" || mode === "slim" || mode === "compact" || mode === "compact3";
-  const visible: PaneTabBarActionId[] = showZoom ? ["zoom", "close"] : ["close"];
+  // `visible` is what sits on the heading's right edge and `overflow` is only
+  // its complement; the kebab menu has its own gates and still lists the split
+  // and close-place items while they are on the heading.
+  // Splitting is how a new tab gets a place of its own, so the split buttons
+  // came back to the heading on 2026-10-14, and the right-edge × closes the
+  // place with its hidden tabs while the per-tab × beside the name is drawn at
+  // every width. Each extra control costs the name about 22px, so they fold
+  // from the outside in: the opt-in down split below slim, right split and the
+  // place × below compact (the name keeps its 0.88.0 width in compact3), zoom
+  // below compact3. A 9-column heading (about 181px) therefore still shows four
+  // controls including the name.
+  const atLeast = (tier: PaneTabBarMode) => PANE_TABBAR_MODE_ORDER.indexOf(mode) <= PANE_TABBAR_MODE_ORDER.indexOf(tier);
+  const visible: PaneTabBarActionId[] = [
+    ...(atLeast("compact") ? ["split-right" as const] : []),
+    ...(atLeast("slim") ? ["split-down" as const] : []),
+    ...(atLeast("compact3") ? ["zoom" as const] : []),
+    ...(atLeast("compact") ? ["close" as const] : []),
+  ];
   return { visible, overflow: available.filter((action) => !visible.includes(action)) };
 }
 
@@ -1030,6 +1062,8 @@ export default memo(function PaneTabBar({
   // macOS the same binding answers to ⇧⌘↩, so the tooltip was naming keys the
   // user does not press — and it went stale whenever the binding was rebound.
   const zoomShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["pane.zoom.toggle"]));
+  const splitRightShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["pane.split.right"]));
+  const splitDownShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["pane.split.down"]));
   const searchShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["terminal.search"]));
   const showPublishButton = shouldShowPublishButton(activeTab, activeMeta);
   const renderMode = barMode;
@@ -1376,6 +1410,15 @@ export default memo(function PaneTabBar({
     if (pane.tabs.length > 1 && activeTab) onRemoveTab?.(activeTab.id);
     else onClose?.();
   };
+  // The right-edge × closes the whole place, hidden tabs included, through the
+  // same pane-close path as the kebab menu item (running agents are confirmed there).
+  const placeCloseDisabled = !canCloseWholePane || !onClose;
+  const headerCloseButton = <button type="button" className="pane-action-btn pane-header-close" onClick={handleHeaderClose}
+    disabled={headerCloseDisabled} aria-label={closeTitle}
+    title={pane.tabs.length <= 1 && !canCloseWholePane ? paneToolbarStrings.lastPaneCloseUnavailable : closeTitle}>
+    <CloseIcon size={10} />
+  </button>;
+  const placeCloseLabel = `${paneToolbarStrings.closePaneWithHidden(hiddenTabs.length)}。${paneToolbarStrings.reopenActiveOnly}`;
 
   // Each item has one definition, so L29 can replace search/history locally.
   const showHeaderMagnifier = visibleActions.includes("zoom"); // Plan B; set false for plan A (menu only).
@@ -1573,6 +1616,8 @@ export default memo(function PaneTabBar({
           data-savepoint-drop-pane-id={pane.id}
           data-savepoint-drop-tab-id={activeTab?.id}>
           {activeHeading}
+          {/* The tab's own ×, right after its name: closes this tab only (hidden tabs stay), like Ctrl+Alt+W. */}
+          {activeHeading && headerCloseButton}
           <div className="pane-heading-spacer" aria-hidden="true" />
         </div>
         {hiddenTabs.length > 0 && (
@@ -1603,6 +1648,18 @@ export default memo(function PaneTabBar({
               }} />}
           </div>
         )}
+        {visibleActions.includes("split-right") && onSplitRight && showSplitRightButton && (
+          <button type="button" className="pane-action-btn pane-tabbar-split"
+            onClick={onSplitRight} title={paneToolbarStrings.splitRightAt(splitRightShortcut)} aria-label={paneToolbarStrings.splitRight}>
+            <SplitRightIcon />
+          </button>
+        )}
+        {visibleActions.includes("split-down") && onSplitDown && showSplitDownButton && (
+          <button type="button" className="pane-action-btn pane-tabbar-split"
+            onClick={onSplitDown} title={paneToolbarStrings.splitDownAt(splitDownShortcut)} aria-label={paneToolbarStrings.splitDown}>
+            <SplitDownIcon />
+          </button>
+        )}
         {visibleActions.includes("zoom") && onZoomToggle && (
           <button type="button" className="pane-action-btn pane-tabbar-zoom" onClick={onZoomToggle}
             title={isZoomed ? paneToolbarStrings.restorePaneAt(zoomShortcut) : paneToolbarStrings.zoomPaneAt(zoomShortcut)}>
@@ -1611,11 +1668,15 @@ export default memo(function PaneTabBar({
         )}
         {showHeaderMagnifier && <TerminalHistoryEntry sessionId={canSearchTerminal ? activeTab!.sessionId : null}
           visible={isVisible} searchTitle={canSearchTerminal ? terminalPaneStrings.searchTerminalTitle(searchShortcut) : terminalPaneStrings.searchUnavailable} />}
-        <button type="button" className="pane-action-btn pane-header-close" onClick={handleHeaderClose}
-          disabled={headerCloseDisabled} aria-label={closeTitle}
-          title={pane.tabs.length <= 1 && !canCloseWholePane ? paneToolbarStrings.lastPaneCloseUnavailable : closeTitle}>
-          <CloseIcon size={11} />
-        </button>
+        {!activeHeading && headerCloseButton}
+        {/* With no hidden tabs the name's × already closes the place; a second × would only look different. */}
+        {activeHeading && hiddenTabs.length > 0 && visibleActions.includes("close") && (
+          <button type="button" className="pane-action-btn pane-place-close" onClick={() => { if (!placeCloseDisabled) onClose?.(); }}
+            disabled={placeCloseDisabled} aria-label={placeCloseLabel}
+            title={canCloseWholePane ? placeCloseLabel : paneToolbarStrings.lastPaneCloseUnavailable}>
+            <CloseIcon size={11} />
+          </button>
+        )}
         <div ref={kebabRef} style={{ position: "relative", flexShrink: 0 }}>
           <button ref={kebabTriggerRef} type="button" className="pane-action-btn"
             title={terminalPaneStrings.paneActions} aria-label={terminalPaneStrings.paneActions}

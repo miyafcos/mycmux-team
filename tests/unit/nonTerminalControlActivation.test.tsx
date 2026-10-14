@@ -36,9 +36,11 @@ let root: Root;
 let host: HTMLDivElement;
 let handler: ((event: KeyboardEvent) => void) | undefined;
 const close = vi.fn(closePaneOperation);
+const split = vi.fn();
 function Harness() {
   const workspace = useWorkspaceListStore(state => state.workspaces[0]);
   return <>{workspace.panes.map(pane => <TerminalPane key={pane.id} pane={pane} workspaceId={workspace.id}
+    onSplitRight={() => split(pane.id)}
     onClose={() => { void closePaneOperation({ kind: "pane", workspaceId: workspace.id, paneId: pane.id }, "ui"); }} />)}</>;
 }
 async function mount(type: PaneTab["type"] = "browser", sibling = false): Promise<void> {
@@ -293,10 +295,10 @@ describe("non-terminal content controls claim their pane without taking focus", 
     expect(focus).not.toHaveBeenCalled();
   });
 
-  it.each(["menu", "hidden", "zoom"])("activates before the %s heading control while preserving its operation", async control => {
+  it.each(["menu", "hidden", "zoom", "split"])("activates before the %s heading control while preserving its operation", async control => {
     await mount("browser", true);
     const selector = control === "menu" ? `button[aria-label='${terminalPaneStrings.paneActions}']`
-      : control === "hidden" ? ".pane-hidden-tabs" : ".pane-tabbar-zoom";
+      : control === "hidden" ? ".pane-hidden-tabs" : control === "split" ? ".pane-tabbar-split" : ".pane-tabbar-zoom";
     const button = pane().querySelector<HTMLButtonElement>(selector)!;
     expect(button).not.toBeNull();
     await pointer(button, "down"); button.focus(); await pointer(button, "up");
@@ -309,6 +311,7 @@ describe("non-terminal content controls claim their pane without taking focus", 
       expect(useWorkspaceListStore.getState().workspaces[0].panes[1].activeTabId).toBe("sibling-tab");
     }
     if (control === "zoom") expect(useUiStore.getState().zoomedPaneId).toBe("preview");
+    if (control === "split") expect(split).toHaveBeenCalledExactlyOnceWith("preview");
   });
 
   it.each(["menu", "zoom"])("closes the displayed preview through AppShell after the %s action", async control => {
@@ -348,6 +351,16 @@ describe("non-terminal content controls claim their pane without taking focus", 
     expect(useWorkspaceListStore.getState().workspaces[0].panes[1].tabs.map(tab => tab.id)).toEqual(["sibling-tab"]);
     expect(useWorkspaceListStore.getState().workspaces[0].panes[0].tabs[0].id).toBe("terminal-tab");
     expect(mocks.kill).not.toHaveBeenCalled();
+  });
+
+  it("closes the whole place from the right-edge × without activating it first", async () => {
+    await mount("browser", true);
+    const button = pane().querySelector<HTMLButtonElement>(".pane-place-close")!;
+    await pointer(button, "down"); button.focus(); await pointer(button, "up");
+    expect(useUiStore.getState().activePaneId).toBe("terminal-session");
+    await act(async () => button.click());
+    await act(async () => vi.advanceTimersByTimeAsync(600));
+    expect(useWorkspaceListStore.getState().workspaces[0].panes.map(pane => pane.id)).toEqual(["terminal"]);
   });
 
   it.each(["menu", "hidden", "zoom"])("leaves a terminal heading's %s activation behavior unchanged", async control => {

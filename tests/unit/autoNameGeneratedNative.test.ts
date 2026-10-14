@@ -186,7 +186,7 @@ async function nativeCase(id: string, jobs: Array<{ tab?: Partial<PaneTab>; mate
     await check({ tabs: after.panes[0].tabs.slice(0, jobs.length), workspaceName: after.name, writes, reads, snapshots, workspaceWrites, workspaceSnapshots, run });
     expect(violations, "forbidden fields, including restored transient writes").toEqual([]);
     expect(useWorkspaceListStore.getState().workspaces[0].panes[0].tabs[jobs.length]).toEqual(before[jobs.length]);
-    expect(fake.invoke.mock.calls.every(([command]) => ["get_pty_metadata_snapshot", "get_session_output_snapshot", "auto_name_materials"].includes(command))).toBe(true);
+    expect(fake.invoke.mock.calls.every(([command]) => ["get_pty_metadata_snapshot", "get_session_output_snapshot", "auto_name_materials", "agent_session_titles"].includes(command))).toBe(true);
     expect(useAiSettingsStore.getState().aiEnabled).toBe(false);
   } finally {
     scheduler.stop(); unsubscribe();

@@ -192,7 +192,7 @@ function shouldIgnorePaneClickActivationTarget(target: EventTarget | null, focus
     if (!(target instanceof Element)) return true;
     // The heading name and rename dialog have their own selection logic.
     // Blank heading space follows the same completed gesture as pane content.
-    if (target.closest("iframe,embed,.pane-tab-pill,.pane-tabbar[role='dialog'],.pane-header-close,[data-pane-drag-handle],[data-composer-session],[data-terminal-transcript-panel]")) return true;
+    if (target.closest("iframe,embed,.pane-tab-pill,.pane-tabbar[role='dialog'],.pane-header-close,.pane-place-close,[data-pane-drag-handle],[data-composer-session],[data-terminal-transcript-panel]")) return true;
     if (button !== 0 && target.closest(".pane-tabbar")) return true;
     return button !== 0 && Boolean(target.closest("button,a,input,textarea,select,[contenteditable='true']"));
   }

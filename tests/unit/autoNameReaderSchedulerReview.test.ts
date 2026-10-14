@@ -52,7 +52,8 @@ for (const fixture of fixtures) it("reader/scheduler: " + fixture.id + " — " +
     splitColumns: [["p"]], panes: [{ id: "p", sessionId: "unused", activeTabId: "", agentId: "shell-starter",
       tabs: fixture.jobs.map(job => ({ id: fixture.id + "-" + job.id, sessionId: "pty-" + fixture.id + "-" + job.id,
         agentId: "shell-starter", agentKind: "claude", agentSessionId: "agent-" + job.id, cwd: "/fixture/" + (job.project ?? fixture.id),
-        label: "runner-" + job.id, labelSource: "launch", initialPrompt: "original", commandArgv: ["claude", "--resume", job.id], launchEnv: { ORIGINAL: job.id } })) }] };
+        // Unlabeled: a launch label would replace the unknown name under test (2026-10-14).
+        initialPrompt: "original", commandArgv: ["claude", "--resume", job.id], launchEnv: { ORIGINAL: job.id } })) }] };
   const before = structuredClone(ws.panes[0].tabs);
   useWorkspaceListStore.setState({ workspaces: [ws], activeWorkspaceId: ws.id });
   useLauncherDirsStore.setState({ view: { doc: { entries: fixture.registrations ?? (fixture.projects ?? []).map(label => ({ section: "subjects", label, path: "/fixture/" + label })) } } as NonNullable<ReturnType<typeof useLauncherDirsStore.getState>["view"]> });
@@ -87,6 +88,6 @@ for (const fixture of fixtures) it("reader/scheduler: " + fixture.id + " — " +
   }
   for (const word of fixture.workspaceMust ?? []) expect(after.name).toContain(word);
   for (const word of fixture.workspaceForbidden ?? []) expect(after.name).not.toContain(word);
-  expect(fake.invoke.mock.calls.every(([command]) => ["get_pty_metadata_snapshot", "get_session_output_snapshot", "auto_name_materials"].includes(command))).toBe(true);
+  expect(fake.invoke.mock.calls.every(([command]) => ["get_pty_metadata_snapshot", "get_session_output_snapshot", "auto_name_materials", "agent_session_titles"].includes(command))).toBe(true);
   expect(useAiSettingsStore.getState().aiEnabled).toBe(false);
 });

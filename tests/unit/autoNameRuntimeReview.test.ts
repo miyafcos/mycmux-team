@@ -20,7 +20,8 @@ const schedulers: ReturnType<typeof createAutoPaneNamingScheduler>[] = [];
 function workspace(id: string): Workspace {
   return { id, name: "以前の名前", nameSource: "auto", createdAt: 0, gridTemplateId: "1x1", status: "running", splitColumns: [["p-" + id]],
     panes: [{ id: "p-" + id, sessionId: "s-" + id, activeTabId: id, agentId: "shell-starter",
-      tabs: [{ id, sessionId: "s-" + id, agentId: "shell-starter", label: "runner-" + id, labelSource: "launch",
+      // Unlabeled: a launch label would replace the unknown name under test (2026-10-14).
+      tabs: [{ id, sessionId: "s-" + id, agentId: "shell-starter",
         cwd: "/project", agentKind: "codex", agentSessionId: "agent-" + id,
         initialPrompt: "original", commandArgv: ["codex", "resume", id], launchEnv: { ORIGINAL: id } }] }] };
 }
@@ -338,4 +339,19 @@ it("K4-FIX-2 composition CAS: an unknown live binding without accepted evidence 
     expect(useAutoNameRuntimeStore.getState().revision).toBe(0);
     console.log("K4-FIX-2 unknown CAS", JSON.stringify({ attempted, receipts, name: useWorkspaceListStore.getState().workspaces[0].name }));
   } finally { useWorkspaceListStore.setState({ applyNamePatches: originalApply }); }
+});
+it("names a Claude tab by its session title without touching its label, ID or resume", async () => {
+  const ws = workspace("title-run");
+  const tab = ws.panes[0].tabs[0];
+  Object.assign(tab, { agentKind: "claude", label: "cdb-plan-2d", labelSource: "launch", displayName: "作業内容未取得", displayNameSource: "auto",
+    commandArgv: ["claude", "--resume", "agent-title-run"] });
+  useWorkspaceListStore.setState({ workspaces: [ws], activeWorkspaceId: ws.id });
+  const before = structuredClone(tab);
+  const base = fake.invoke.getMockImplementation()!;
+  fake.invoke.mockImplementation(async (command, args) => command === "agent_session_titles"
+    ? [{ tab_id: tab.id, session_title: "山田さんへのメール返信", task_title: "別の作業名" }] : base(command, args));
+  await scheduler().runNow();
+  const after = useWorkspaceListStore.getState().workspaces[0].panes[0].tabs[0];
+  expect(after.displayName).toBe("山田さんへのメール返信");
+  expect({ ...after, displayName: before.displayName, displayNameSource: before.displayNameSource }).toEqual(before);
 });

@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { scanGroupingContext, type GroupingScan } from "../components/layout/tabGrouping";
 import { useLiveBriefStore } from "../stores/liveBriefStore";
 import { deriveAutoName } from "./autoNamePolicy";
+import { TITLED_AGENT_KINDS, withSessionTitles } from "./sessionTitles";
 import { buildAutoNameEvidence, namingBinding, plannedNamingMaterial, namingPlanKey, type NamingMaterial, type AutoNameEvidence, type AutoNameScan } from "./autoNameMaterial";
 export { buildAutoNameEvidence, namingBinding } from "./autoNameMaterial";
 export type { NamingMaterial, AutoNameEvidence, AutoNameScan } from "./autoNameMaterial";
@@ -49,7 +50,11 @@ function namingSourceKey(tab: ScanTab): string {
 }
 const cache = new Map<string, { at: number; key: string; sourceKey: string; value?: NamingMaterial }>();
 export async function readAutoNameScan(): Promise<AutoNameScan> {
-  const raw = await scanGroupingContext();
+  // Session titles name most agent tabs (autoNamePolicy's presented names). Only the
+  // session title is taken here: the task title would change the evidence key and drop holds.
+  const grouped = await scanGroupingContext();
+  const titled = new Map((await withSessionTitles(grouped, TITLED_AGENT_KINDS)).tabs.map(tab => [tab.id, tab.sessionTitle]));
+  const raw = { ...grouped, tabs: grouped.tabs.map(tab => titled.get(tab.id) ? { ...tab, sessionTitle: titled.get(tab.id) } : tab) };
   const scan = { ...raw, tabs: raw.tabs.filter(tab => raw.workspaces.find(w => w.id === tab.workspaceId)?.status !== "stopped") };
   const naming = new Map<string, AutoNameEvidence>(), namingSourceKeys = new Map<string, string>(); const requests = [];
   for (const tab of scan.tabs) {

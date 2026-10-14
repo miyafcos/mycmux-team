@@ -33,8 +33,10 @@ export const nextFamilies = [
   { kind: "unknown", keep: false, texts: ["次は会議を予約してください", "次は設備を点検してください", "配送便を手配してください"] },
   { kind: "replacement", keep: false, texts: ["会議を予約してください", "設備を点検してください", "配送便を手配してください"] },
 ];
+// A launch label replaces the unknown name since 2026-10-14 (autoNamePolicy's presented names), so
+// these rule fixtures start unlabeled to keep asserting unknown; presented names have their own tests.
 export function makeTab(id: string, extra: Partial<PaneTab> = {}): PaneTab {
-  return { id, sessionId: "pty-" + id, agentId: "shell-starter", label: "runner-" + id, labelSource: "launch",
+  return { id, sessionId: "pty-" + id, agentId: "shell-starter",
     agentKind: "claude", agentSessionId: "agent-" + id, cwd: "/fixture",
     initialPrompt: "original", commandArgv: ["claude", "--resume", id], launchEnv: { ORIGINAL: id }, ...extra };
 }
