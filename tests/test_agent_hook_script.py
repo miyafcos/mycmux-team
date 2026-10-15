@@ -189,3 +189,32 @@ def test_filtered_events_do_not_connect(
         )
         assert_silent_success(result, "secret-cap")
         assert not select.select([listener], [], [], 0)[0], "filtered hook opened a socket"
+
+
+@pytest.mark.parametrize("event", ["sessionStart", "preToolUse", "postToolUse", "stop", "sessionEnd"])
+def test_cursor_hooks_never_observe_as_claude(tmp_path: Path, monkeypatch, event: str) -> None:
+    monkeypatch.setenv("CURSOR_VERSION", "2026.10.14-test")
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        (tmp_path / "mycmux.port").write_text(str(listener.getsockname()[1]), encoding="utf-8")
+        result = run_hook(tmp_path, json.dumps({
+            "session_id": "cursor-session", "conversation_id": "cursor-session",
+            "hook_event_name": event, "cursor_version": "2026.10.14-test",
+            "workspace_roots": [str(tmp_path)], "tool_name": "AskUserQuestion",
+        }), cap="secret-cap", provider="claude", event_kind="turn_active")
+        assert_silent_success(result, "secret-cap")
+        assert not select.select([listener], [], [], 0)[0], "Cursor opened a Claude observation socket"
+
+
+def test_claude_code_nested_in_cursor_still_observes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CURSOR_VERSION", "2026.10.14-test")
+    monkeypatch.setenv("CURSOR_PROJECT_DIR", str(tmp_path))
+    test_health_then_observe_reaches_the_socket(tmp_path, "claude", "pre_tool_use", {
+        "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion",
+    }, "attention_required")
+
+
+def test_cursor_environment_alone_does_not_filter_legacy_claude_payload(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CURSOR_VERSION", "2026.10.14-test")
+    test_health_then_observe_reaches_the_socket(tmp_path, "claude", "turn_ended", {}, "turn_ended")

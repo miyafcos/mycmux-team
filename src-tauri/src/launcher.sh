@@ -173,11 +173,40 @@ __mycmux_codex_with_pane() {
   fi
 }
 
+__mycmux_claude_codex_launch_args() {
+  __MYCMUX_CLAUDE_CODEX_ARGS=("$@")
+  [ -n "${MYCMUX_PANE_SESSION_ID:-}" ] || return 0
+  [[ "${MYCMUX_TAB_ID:-}" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ ]] || return 0
+  local argument
+  for argument in "$@"; do
+    case "$argument" in
+      --session-id|--session-id=*|--resume|--resume=*|--continue|--continue=*|--fork-session|--fork-session=*|--print|--print=*|--no-session-persistence|--help|--version|-p*|-r*|-c*|-h|-v|agents|attach|auth|auto-mode|doctor|gateway|import|install|logs|mcp|plugin|plugins|purge|respawn|rm|setup-token|stop|kill|ultrareview|update|upgrade) return 0 ;;
+    esac
+  done
+  local python session_id mapping_dir
+  python="$(__mycmux_python)" || return 0
+  session_id="$("$python" -I -c 'import uuid; print(uuid.uuid4())')" || return 0
+  [[ "$session_id" =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] || return 0
+  mapping_dir="${MYCMUX_RUNTIME_DIR:-$HOME/.mycmux}/pane-sessions"
+  if ! mkdir -p "$mapping_dir" || ! printf 'claude-codex:%s\n' "$session_id" > "$mapping_dir/$MYCMUX_TAB_ID.txt"; then
+    printf '%s\n' 'Claude Codex tab identity could not be registered.' >&2
+    return 0
+  fi
+  __MYCMUX_CLAUDE_CODEX_ARGS=(--session-id "$session_id" "$@")
+}
+
+__mycmux_claude_codex_with_hook() {
+  local executable="$1"
+  shift
+  __mycmux_claude_codex_launch_args "$@"
+  __mycmux_with_hook_cap claude "$executable" "${__MYCMUX_CLAUDE_CODEX_ARGS[@]}"
+}
+
 # The .cmd shims keep the Windows process ancestry intact, but they do not
 # exist on macOS or Linux, where the agents live on PATH instead.
 if __mycmux_is_windows_shell; then
   claude() { __mycmux_with_hook_cap claude "$HOME/bin/claude.cmd" "$@"; }
-  claude-codex() { __mycmux_with_hook_cap claude "$HOME/bin/claude-codex.cmd" "$@"; }
+  claude-codex() { __mycmux_claude_codex_with_hook "$HOME/bin/claude-codex.cmd" "$@"; }
   codex() { __mycmux_codex_with_pane "$APPDATA/npm/codex.cmd" "$@"; }
 else
   claude() {
@@ -188,7 +217,7 @@ else
   claude-codex() {
     local executable
     executable="$(type -P claude-codex 2>/dev/null)" || return 127
-    __mycmux_with_hook_cap claude "$executable" "$@"
+    __mycmux_claude_codex_with_hook "$executable" "$@"
   }
   codex() {
     local executable
@@ -201,7 +230,7 @@ grok() {
   executable="$(type -P grok 2>/dev/null)" || return 127
   __mycmux_with_hook_cap grok "$executable" "$@"
 }
-export -f __mycmux_issue_hook_cap __mycmux_ensure_dispatch_guard __mycmux_with_hook_cap __mycmux_codex_with_pane claude claude-codex codex grok
+export -f __mycmux_issue_hook_cap __mycmux_ensure_dispatch_guard __mycmux_with_hook_cap __mycmux_codex_with_pane __mycmux_claude_codex_launch_args __mycmux_claude_codex_with_hook __mycmux_python __mycmux_is_windows_shell claude claude-codex codex grok
 
 # BEGIN CODEX RESTORE HELPERS
 # These helpers are also embedded in the backend's direct Codex supervisor.
@@ -961,6 +990,36 @@ __read_launch_spec_from_env() {
 
 # フラグは実行ファイルの直後に挟む。末尾に足すと `codex resume <id>` の位置引数を
 # 飲み込んでしまう。
+# Keep resolved paths, including spaces, out of eval's command text.
+__mycmux_cursor() {
+  local exe=""
+  case "$__MYCMUX_PLATFORM" in
+    windows)
+      local installed="${LOCALAPPDATA//\\//}/cursor-agent/cursor-agent.cmd"
+      [ -n "${LOCALAPPDATA:-}" ] && [ -f "$installed" ] && exe="$installed"
+      ;;
+  esac
+  [ -n "$exe" ] || exe="$(type -P cursor-agent 2>/dev/null)"
+  if [ -z "$exe" ] && [ "$__MYCMUX_PLATFORM" != windows ] && [ -x "$HOME/.local/bin/cursor-agent" ]; then
+    exe="$HOME/.local/bin/cursor-agent"
+  fi
+  if [ -z "$exe" ]; then
+    if [ "$__MYCMUX_PLATFORM" = windows ]; then
+      printf '%s\n' "Cursor CLI が見つかりません。PowerShell で irm 'https://cursor.com/install?win32=true' | iex を実行してください。"
+    else
+      printf '%s\n' 'Cursor CLI が見つかりません。curl https://cursor.com/install -fsS | bash で入れてください。'
+    fi
+    return 1
+  fi
+  (
+    if [ "$__MYCMUX_PLATFORM" = windows ]; then
+      unset MSYSTEM EXEPATH
+      export SHELL=powershell
+    fi
+    "$exe" "$@"
+  )
+}
+
 __add_launch_spec_to_cmd() {
   local cmd="$1"
   if [ -z "$cmd" ] || { [ -z "$__MYCMUX_LAUNCH_MODEL" ] && [ -z "$__MYCMUX_LAUNCH_EFFORT" ]; }; then
@@ -988,6 +1047,9 @@ __add_launch_spec_to_cmd() {
     agy)
       [ -n "$__MYCMUX_LAUNCH_MODEL" ] && extra="$extra --model $__MYCMUX_LAUNCH_MODEL"
       [ -n "$__MYCMUX_LAUNCH_EFFORT" ] && extra="$extra --effort $__MYCMUX_LAUNCH_EFFORT"
+      ;;
+    cursor-agent|cursor-agent.cmd|cursor-agent.exe)
+      [ -n "$__MYCMUX_LAUNCH_MODEL" ] && extra="$extra --model $__MYCMUX_LAUNCH_MODEL"
       ;;
     omp|omp.exe)
       [ -n "$__MYCMUX_LAUNCH_MODEL" ] && extra="$extra --model $__MYCMUX_LAUNCH_MODEL"
@@ -1054,6 +1116,16 @@ if [ -n "$__handoff_kind" ]; then
   # so restore fell back to `--continue` and adopted another tab's conversation
   # in the same cwd.
   case "$__handoff_kind" in
+    cursor)
+      if [ "$__handoff_launch_kind" != new ] || [ -z "$__handoff_file" ] || [[ "$__handoff_file" == *[$'&|<>^%"`\r\n']* ]]; then
+        printf '%s\n' 'Cursor: unsupported instruction file path.'
+      else
+        __cursor_args=()
+        [ -n "$__MYCMUX_LAUNCH_MODEL" ] && __cursor_args+=(--model "$__MYCMUX_LAUNCH_MODEL")
+        __mycmux_cursor "${__cursor_args[@]}" -- "Read the UTF-8 instruction file at $__handoff_file and follow its instructions."
+      fi
+      ;;
+
     claude)
       __handoff_project_dir="$(__get_claude_project_dir)"
       __handoff_sid="$(__stable_new_session_id "$__handoff_project_dir")"
@@ -1268,6 +1340,19 @@ __spec_models_for() {
         "Claude Sonnet 4.6 (Thinking)|claude-sonnet-4-6" ;;
     omp)
       printf '%s\n' "Astra (6 flagship)|openai-codex/gpt-6-astra" "Sol (6)|openai-codex/gpt-6-sol" "Luna (6 light)|openai-codex/gpt-6-luna" ;;
+    cursor)
+      printf '%s\n' \
+        "Composer 2.5|composer-2.5" \
+        "Grok 4.7 (Low)|grok-4.7-low" \
+        "Grok 4.7 (Medium)|grok-4.7-medium" \
+        "Grok 4.7 (High)|grok-4.7-high" \
+        "Grok 4.7 (Extra High)|grok-4.7-xhigh" \
+        "Claude Opus 5.5 (High)|claude-opus-5-5-high" \
+        "Claude Opus 5.5 (Max)|claude-opus-5-5-max" \
+        "Claude Sonnet 5.5 (High)|claude-sonnet-5-5-high" \
+        "GPT-5.6 Sol (High)|gpt-5.6-sol-high" \
+        "GPT-5.6 Sol (Extra High)|gpt-5.6-sol-xhigh" \
+        "Gemini 3.1 Pro|gemini-3.1-pro" ;;
     # grok はモデル ID 一覧を公開しておらず、fcc backend はアカウント次第。
     # 一覧を持たず「入力する」で受ける。
     grok|claude-codex-open) : ;;
@@ -1291,7 +1376,7 @@ __spec_efforts_for() {
 
 __spec_has_target() {
   case "$1" in
-    claude|codex|claude-codex|claude-codex-open|grok|agy|hermes|omp) return 0 ;;
+    claude|codex|claude-codex|claude-codex-open|grok|agy|hermes|omp|cursor) return 0 ;;
   esac
   return 1
 }
@@ -1404,6 +1489,9 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
       ;;
     hermes)
       cmd="$HOME/AppData/Local/hermes/bin/hermes.exe"
+      ;;
+    cursor)
+      cmd="cursor-agent"
       ;;
     omp)
       cmd="$__MYCMUX_OMP_COMMAND --allow-home"
@@ -1942,6 +2030,7 @@ if [ -z "$cmd" ]; then
     "Change directory (最近・フォルダを辿る)..."
     "ChatGPT dots (Web)"
     "Grok Bot (アプリ)"
+    "Cursor"
   )
 
   # options / commands と同じ並び。model / effort を取れる行だけ target を持つ
@@ -1962,6 +2051,7 @@ if [ -z "$cmd" ]; then
     "" "" ""
     ""
     ""
+    "cursor"
   )
 
   commands=(
@@ -1989,6 +2079,7 @@ if [ -z "$cmd" ]; then
     "__dir__"
     "__web_dots__"
     "__app_grokbot__"
+    "cursor-agent"
   )
 
   selected=0
@@ -2193,6 +2284,7 @@ if [ -n "$cmd" ]; then
     echo "Starting..." >&$__CMUX_MENU_FD
     echo "" >&$__CMUX_MENU_FD
   fi
+  case "$cmd" in cursor-agent|cursor-agent\ *) cmd="__mycmux_cursor${cmd#cursor-agent}" ;; esac
   eval "$cmd"
 fi
 

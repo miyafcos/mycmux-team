@@ -426,9 +426,15 @@ export default function WebPaneController() {
       const samplePlacement = isPlacementSamplingEnabled();
       const placementStart = samplePlacement ? performance.now() : 0;
       let hostQueries = 0;
+      const occluders = [...document.querySelectorAll<HTMLElement>(OCCLUDER_SELECTOR)];
       const domOccluded = document.visibilityState === "hidden"
-        || document.querySelector(OCCLUDER_SELECTOR) !== null;
+        || occluders.some(element => element.dataset.cmuxNativeWebviewOccluder !== "overlap");
       const blocked = dragBlockedRef.current || domOccluded;
+      const overlapBounds = blocked ? [] : occluders
+        .filter(element => !element.closest("[hidden],[inert],[aria-hidden='true']")
+          && getComputedStyle(element).visibility !== "hidden")
+        .map(element => element.getBoundingClientRect())
+        .filter(bounds => bounds.width > 0 && bounds.height > 0);
       const currentHosts = new Set<HTMLElement>();
       const frameParts: string[] = [];
       let nextRetryAt = Infinity;
@@ -446,7 +452,11 @@ export default function WebPaneController() {
           if (!observedHosts.has(host)) hostObserver?.observe(host);
         }
         if (samplePlacement && !blocked) hostQueries += 1;
-        const bounds = webPaneBoundsForHost(host);
+        const hostBounds = webPaneBoundsForHost(host);
+        const bounds = hostBounds && overlapBounds.some(overlay =>
+          overlay.left < hostBounds.x + hostBounds.width && overlay.right > hostBounds.x
+          && overlay.top < hostBounds.y + hostBounds.height && overlay.bottom > hostBounds.y)
+          ? null : hostBounds;
         const key = `${frameKey(bounds)}:${shortcutsSignature}`;
         frameParts.push(`${tabId}:${key}`);
 

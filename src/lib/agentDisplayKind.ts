@@ -1,4 +1,4 @@
-export type DisplayAgentKind = "claude" | "codex" | "claude-codex" | "grok" | "antigravity" | "hermes" | "omp";
+export type DisplayAgentKind = "claude" | "codex" | "claude-codex" | "grok" | "antigravity" | "hermes" | "omp" | "cursor";
 
 export const COMMAND_DISPLAY_KINDS: Record<string, DisplayAgentKind> = {
   agy: "antigravity",
@@ -9,6 +9,7 @@ export const COMMAND_DISPLAY_KINDS: Record<string, DisplayAgentKind> = {
   // identifies it here -- the launchers set no MYCMUX_AGENT_KIND for it.
   hermes: "hermes",
   omp: "omp",
+  "cursor-agent": "cursor",
 };
 
 /**
@@ -22,13 +23,14 @@ export const LAUNCH_TARGET_DISPLAY_KINDS: Record<string, DisplayAgentKind> = {
   agy: "antigravity",
   hermes: "hermes",
   omp: "omp",
+  cursor: "cursor",
 };
 
 /** Recognize only display kinds; unknown persisted strings are not evidence. */
 export function normalizeDisplayAgentKind(kind: string | null | undefined): DisplayAgentKind | null {
   if (kind === "agy") return "antigravity";
   return kind === "claude" || kind === "codex" || kind === "claude-codex"
-    || kind === "grok" || kind === "antigravity" || kind === "hermes" || kind === "omp"
+    || kind === "grok" || kind === "antigravity" || kind === "hermes" || kind === "omp" || kind === "cursor"
     ? kind : null;
 }
 
@@ -42,7 +44,7 @@ export function resolveDisplayAgentKind(
 
   const command = commandArgv?.[0]
     ?.replace(/^.*[\\/]/, "")
-    .replace(/\.exe$/i, "")
+    .replace(/\.(exe|cmd|bat|com)$/i, "")
     .toLowerCase();
   const fromCommand = command && Object.prototype.hasOwnProperty.call(COMMAND_DISPLAY_KINDS, command)
     ? COMMAND_DISPLAY_KINDS[command] : null;

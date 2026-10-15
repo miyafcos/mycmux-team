@@ -8,7 +8,6 @@ import { useKeybindingStore } from "../../stores/keybindingStore";
 import SettingsDialog, { type SettingsTabId } from "../settings/SettingsDialog";
 import { AgentDesignButton } from "../agentDesign/AgentDesignButton";
 import { DashboardButton } from "../dashboard/DashboardButton";
-import { InboxButton } from "../inbox/InboxButton";
 import { AccountsButton } from "./AccountsButton";
 import { onlineStrings } from "../online/onlineStrings";
 import { titleBarStrings } from "./titleBarStrings";
@@ -284,7 +283,7 @@ export default function TitleBar({
         />
         <AgentDesignButton />
         <DashboardButton />
-        <InboxButton />
+        {/* The inbox entry stays hidden until a sender is wired up; inbox.post toasts still open reports. */}
         <div style={{ position: "relative" }}>
           <button
             onClick={() => {

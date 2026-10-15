@@ -270,7 +270,7 @@ beforeEach(() => {
   useUiStore.setState({ activePaneId: null, focusRevision: 0 });
   useWorkspaceListStore.setState({ workspaces: [], activeWorkspaceId: null });
 
-  host = document.createElement("div");
+  host = document.createElement("div"); host.dataset.cmuxThemedRoot = "true";
   document.body.appendChild(host);
   root = createRoot(host);
 });

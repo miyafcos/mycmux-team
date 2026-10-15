@@ -76,7 +76,7 @@ beforeEach(() => {
   usePaneMetadataStore.setState({ metadata: {}, volatileMetadata: {} });
   useSettingsStore.setState({ showTerminalHistoryButton: true });
   useUiStore.setState({ activePaneId: anchor, focusRevision: 0 });
-  host = document.createElement("div");
+  host = document.createElement("div"); host.dataset.cmuxThemedRoot = "true";
   document.body.append(host);
   root = createRoot(host);
 });

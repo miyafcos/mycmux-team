@@ -29,6 +29,7 @@ export function PaneTabRenameEditor({ label, value, anchor, editorRef, workspace
   const editor = (
     <div ref={editorRef} className="pane-tabbar" role="dialog" aria-label={"\u30bf\u30d6\u306e\u540d\u524d\u3092\u5909\u66f4"}
       data-pane-focus-workspace-id={workspaceId} data-pane-focus-pane-id={paneId}
+      data-cmux-native-webview-occluder="true"
       onPointerDown={event => event.stopPropagation()} onMouseDown={event => event.stopPropagation()}
       onClick={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()}
       onKeyDown={event => {

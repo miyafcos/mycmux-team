@@ -18,10 +18,11 @@ export const KIND_COLORS: Record<DisplayAgentKind, AgentKindColor> = {
   // banner uses, and it matches the chip tint in AgentIcons.tsx.
   "hermes": { fg: "#e3b341", bg: "rgba(198, 152, 26, 0.10)" },
   "omp": { fg: "#c4a0f2", bg: "rgba(145, 92, 207, 0.12)" },
+  "cursor": { fg: "#b8c4d4", bg: "rgba(184, 196, 212, 0.12)" },
 };
 
 export function agentKindColor(kind: string | null | undefined): AgentKindColor | undefined {
-  if (kind === "claude" || kind === "codex" || kind === "claude-codex" || kind === "grok" || kind === "antigravity" || kind === "hermes" || kind === "omp") {
+  if (kind === "claude" || kind === "codex" || kind === "claude-codex" || kind === "grok" || kind === "antigravity" || kind === "hermes" || kind === "omp" || kind === "cursor") {
     return KIND_COLORS[kind];
   }
   return undefined;

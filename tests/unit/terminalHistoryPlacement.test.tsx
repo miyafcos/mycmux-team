@@ -45,7 +45,7 @@ beforeEach(() => {
   useUiStore.setState({ activePaneId: "placement-session" });
   useDashboardViewStore.setState({ open: false });
   usePaneMetadataStore.setState({ metadata: {}, volatileMetadata: {} });
-  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  host = document.createElement("div"); host.dataset.cmuxThemedRoot = "true"; document.body.append(host); root = createRoot(host);
 });
 afterEach(async () => {
   await act(async () => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals();

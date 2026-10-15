@@ -172,7 +172,7 @@ describe("agent design stage A", () => {
     expect(document.querySelectorAll(".ad-tabs button")).toHaveLength(9);
     await act(async () => document.querySelector<HTMLButtonElement>('.ad-header button[aria-label="' + s.close + '"]')!.click());
     expect(entry.getAttribute("aria-expanded")).toBe("false");
-    const titlebar = readFileSync("src/components/layout/TitleBar.tsx", "utf8"); expect(titlebar).toMatch(/<AgentDesignButton\s*\/>\s*<DashboardButton\s*\/>\s*<InboxButton\s*\/>/);
+    const titlebar = readFileSync("src/components/layout/TitleBar.tsx", "utf8"); expect(titlebar).toMatch(/<AgentDesignButton\s*\/>\s*<DashboardButton\s*\/>/);
   });
   it("retains the four established surfaces and preserves the service rail", async () => {
     await view();

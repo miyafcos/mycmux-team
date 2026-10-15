@@ -26,6 +26,14 @@ describe("resolveDisplayAgentKind", () => {
     }
   });
 
+  it("maps Cursor without treating the unrelated agent executable as Cursor", () => {
+    for (const command of ["cursor-agent", "cursor-agent.cmd", "C:/Tools/cursor-agent.cmd", "/home/me/.local/bin/cursor-agent"]) {
+      expect(resolveDisplayAgentKind(undefined, [command])).toBe("cursor");
+    }
+    expect(resolveDisplayAgentKind(undefined, ["powershell.exe"], "cursor")).toBe("cursor");
+    expect(resolveDisplayAgentKind(undefined, ["agent.exe"])).toBeNull();
+  });
+
   it("maps Oh My Pi by command basename and launch target", () => {
     for (const command of ["omp", "omp.exe", "C:\\Users\\me\\AppData\\Local\\omp\\omp.exe", "/usr/local/bin/omp"]) {
       expect(resolveDisplayAgentKind(undefined, [command])).toBe("omp");
@@ -66,12 +74,12 @@ describe("resolveDisplayAgentKind", () => {
 
 describe("LAUNCH_TARGET_DISPLAY_KINDS", () => {
   it("declares the launcher targets that carry no session kind", () => {
-    expect(LAUNCH_TARGET_DISPLAY_KINDS).toEqual({ agy: "antigravity", hermes: "hermes", omp: "omp" });
+    expect(LAUNCH_TARGET_DISPLAY_KINDS).toEqual({ agy: "antigravity", hermes: "hermes", omp: "omp", cursor: "cursor" });
   });
 });
 
 describe("COMMAND_DISPLAY_KINDS", () => {
   it("declares the display-only command mapping", () => {
-    expect(COMMAND_DISPLAY_KINDS).toEqual({ agy: "antigravity", claude: "claude", codex: "codex", grok: "grok", hermes: "hermes", omp: "omp" });
+    expect(COMMAND_DISPLAY_KINDS).toEqual({ agy: "antigravity", claude: "claude", codex: "codex", grok: "grok", hermes: "hermes", omp: "omp", "cursor-agent": "cursor" });
   });
 });

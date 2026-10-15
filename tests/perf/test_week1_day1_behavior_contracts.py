@@ -35,6 +35,7 @@ EXPECTED_LAUNCHER_OPTIONS = [
     "Change directory (最近・フォルダを辿る)...",
     "ChatGPT dots (Web)",
     "Grok Bot (アプリ)",
+    "Cursor",
 ]
 
 EXPECTED_LAUNCHER_COMMANDS = [
@@ -62,6 +63,7 @@ EXPECTED_LAUNCHER_COMMANDS = [
     "__dir__",
     "__web_dots__",
     "__app_grokbot__",
+    "cursor-agent",
 ]
 
 

@@ -259,7 +259,7 @@ $fn = $ast.FindAll({
 if ($fn.Count -ne 1) { throw "New-MycmuxModelChoice not found" }
 Invoke-Expression $fn[0].Extent.Text
 $want = @(
-  "ClaudeModels","CodexModels","AgyModels","OmpModels",
+  "ClaudeModels","CodexModels","AgyModels","OmpModels","CursorModels",
   "ClaudeEfforts","CodexEfforts","ShortEfforts","OmpEfforts","LaunchSpecCatalog"
 )
 foreach ($a in $ast.FindAll({
@@ -404,6 +404,9 @@ PARITY_CASES = [
     ("codex-positional", "codex resume --no-alt-screen --last", "gpt-5.6-sol", "max"),
     ("grok", "grok --no-alt-screen --permission-mode auto", "grok-4", "high"),
     ("agy", "agy", "gemini-3.1-pro-high", "high"),
+    ("cursor", "cursor-agent", "composer-2.5", "high"),
+    ("cursor-cmd", "C:/Tools/cursor-agent.cmd", "grok-4.7-high", "max"),
+    ("cursor-default", "cursor-agent", "", ""),
     ("omp", "omp --allow-home", "openai-codex/gpt-6-sol", "xhigh"),
     ("omp-astra-max", "omp --allow-home", "openai-codex/gpt-6-astra", "max"),
     ("omp-exe", "C:/Users/me/AppData/Local/omp/omp.exe --allow-home", "openai-codex/gpt-6-sol", "xhigh"),
@@ -562,6 +565,9 @@ def test_a_launch_spec_translates_to_the_flags_each_cli_documents() -> None:
     assert by_id["omp-astra-max"] == "omp --model openai-codex/gpt-6-astra --thinking max --allow-home"
     assert by_id["omp-exe"] == "C:/Users/me/AppData/Local/omp/omp.exe --model openai-codex/gpt-6-sol --thinking xhigh --allow-home"
     assert by_id["omp-default"] == "omp --allow-home"
+    assert by_id["cursor"] == "cursor-agent --model composer-2.5"
+    assert by_id["cursor-cmd"] == "C:/Tools/cursor-agent.cmd --model grok-4.7-high"
+    assert by_id["cursor-default"] == "cursor-agent"
     assert by_id["claude-codex"].startswith("claude-codex --model gpt-5.6-sol --effort max ")
     assert by_id["accept-128"].startswith(f"claude --model {'a' * 128} --effort high ")
     assert by_id["claude-codex-gateway"].startswith(

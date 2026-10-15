@@ -135,6 +135,24 @@ def _exchange(stream: socket.socket, request: dict[str, Any], deadline: float) -
     return parsed if isinstance(parsed, dict) else None
 
 
+def _is_cursor_hook_payload(payload: dict[str, Any]) -> bool:
+    """Inherited Cursor env alone must never suppress a nested Claude Code."""
+    return bool(os.environ.get("CURSOR_VERSION")) and (
+        isinstance(payload.get("cursor_version"), str)
+        and bool(payload["cursor_version"])
+        and isinstance(payload.get("workspace_roots"), list)
+        and isinstance(payload.get("hook_event_name"), str)
+        and payload["hook_event_name"] in {
+            "sessionStart", "sessionEnd", "preToolUse", "postToolUse",
+            "postToolUseFailure", "subagentStart", "subagentStop",
+            "beforeShellExecution", "afterShellExecution", "beforeMCPExecution",
+            "afterMCPExecution", "beforeReadFile", "afterFileEdit",
+            "beforeSubmitPrompt", "preCompact", "stop",
+            "afterAgentResponse", "afterAgentThought",
+        }
+    )
+
+
 def _run() -> None:
     deadline = time.monotonic() + DEADLINE_SECONDS
     hook_cap = os.environ.get("MYCMUX_HOOK_CAP")
@@ -159,6 +177,8 @@ def _run() -> None:
         return
     payload = json.loads(raw)
     if not isinstance(payload, dict):
+        return
+    if provider == "claude" and _is_cursor_hook_payload(payload):
         return
     if event_kind == "pre_tool_use":
         tool_name = payload.get("tool_name")

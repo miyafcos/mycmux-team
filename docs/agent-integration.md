@@ -26,6 +26,14 @@ mycmux はエージェント (Claude Code / Codex) の振る舞いを強制し�
 | `MYCMUX_TAB_ID` / `MYCMUX_PANE_SESSION_ID` | タブのIDと端末セッションのID。spawn-tab のアンカーに使われる |
 | `MYCMUX_MARKDOWN_OUT` / `MYCMUX_HTML_OUT` / `MYCMUX_ARTIFACTS_DIR` | セッション成果物の出力先 |
 
+### Claude Codex のタブ識別
+
+Claude Codex の新規対話起動では、ランチャーが会話用の UUID を発行し、
+`--session-id` と `pane-sessions/<MYCMUX_TAB_ID>.txt` の `claude-codex:<UUID>` を
+同じ値で登録する。通常の `claude.exe` と同じ実行ファイルでも、タブは青い
+Claude Codex のキャラ (`#7A9DFF`) として識別される。通常版 Claude は変更しない。
+再開・継続・fork・明示された会話 ID・非対話出力は既存の起動処理に任せる。
+
 ### CLI (`scripts/mycmux_agent_cli.py`)
 
 Web 操作: `web-open --url https://chatgpt.com/c/abc --background`、`web-read --tab <id>` (または `--preset <id>`)、`web-close --tab <id>`。結果は JSON で返す。
@@ -194,6 +202,25 @@ python scripts/mycmux_agent_cli.py spawn-tab --label agy -- env NO_COLOR=1 agy -
   try/finally で必ず元の値へ復元する。加えて `terminal.rs::inject_no_color_for_agy` が、launcher を
   経由せず `command="gemini"` 等を直接 spawn するビルトインエージェント経路
   (`src/lib/agents.ts`) 向けの防御として同じ処理を担う
+
+### Cursor (cursor-agent) の新規起動
+
+起動メニューの「Cursor」と、次のコマンドで新規起動できます。
+
+```powershell
+python scripts/mycmux_agent_cli.py spawn --target cursor --model composer-2.5
+python scripts/mycmux_agent_cli.py spawn --target cursor --model composer-2.5 --prompt-file C:/tasks/spec.md
+```
+
+Windows は `%LOCALAPPDATA%\cursor-agent\cursor-agent.cmd`、次に PATH 上の `cursor-agent` を調べます。Mac / Linux は PATH、次に `~/.local/bin/cursor-agent` です。`agent` は Grok Build などの同名コマンドと衝突するため使いません。未導入の場合は[公式の導入コマンド](https://cursor.com/docs/cli/installation)を表示して止まり、自動では入れません。
+
+モデルは、2026-10-15 のログイン済みの `cursor-agent models` で確認した ID を `--model` で渡します。Composer 2.5、Grok 4.7 の各段、Claude Opus 5.5 / Sonnet 5.5、GPT-5.6 Sol、Gemini 3.1 Pro が選べます。思考の段階は ID に含まれるため、別の effort は付けません。
+
+Windows では Cursor 起動中だけ `SHELL=powershell` にし、Git Bash 由来の `MSYSTEM` / `EXEPATH` を外します。Cursor が取り込んだ Windows 用フックが PowerShell で動き、終了後は元の環境に戻ります。Mac / Linux のシェル指定は変えません。Claude Code、Cursor IDE、Orca の設定は書き換えません。
+
+Claude フックの取り込み自体は残り、他のアプリのフックも動きます。mycmux のフックは `CURSOR_VERSION` と Cursor 固有の payload (イベント名、`cursor_version`、`workspace_roots`) を合わせて判定し、Cursor の呼び出しは空の応答で終わります。Cursor 内から起動した Claude Code の通常 payload は従来どおり記録します。他社フック自体の動作や Cursor の将来版の動作は未確認です ([公式のフックの説明](https://cursor.com/docs/hooks))。
+
+`--prompt` / `--prompt-file` は新規の会話に指示ファイルを読ませます。空白や日本語のパスは使えますが、`& | < > ^ %`、二重引用符、バッククォート、改行を含むパスは拒否します。`--resume-session`、`--handoff-from-session`、会話の複製、「続きから」、会話の記録、使用量・アカウントの集計は未対応です。mycmux の再起動後、Cursor のタブは Hermes / Oh My Pi と同じく起動メニューに戻ります。
 
 ### Oh My Pi (omp) の新規起動
 

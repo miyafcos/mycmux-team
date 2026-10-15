@@ -348,6 +348,7 @@ function TailRow({ visual, tab, colors }: TailRowProps) {
           ref={popupRef}
           id={popupId}
           role="tooltip"
+          data-cmux-native-webview-occluder="overlap"
           className="live-tail-popup"
           data-fact={fact.kind}
           style={{ ...colors, ...position }}

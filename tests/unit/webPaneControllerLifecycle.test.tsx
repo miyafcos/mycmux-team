@@ -28,6 +28,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: eventMocks.listen }));
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ listen: eventMocks.listen }) }));
 
 import WebPaneController from "../../src/components/workspace/WebPaneController";
+import { PaneTabRenameEditor } from "../../src/components/workspace/PaneTabRenameEditor";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -91,6 +92,65 @@ afterEach(async () => {
 });
 
 describe("WebPaneController lifecycle", () => {
+  it("hides only the webview overlapped by a live popup and restores it when the popup moves", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => setTimeout(() => callback(performance.now()), 16));
+    vi.stubGlobal("cancelAnimationFrame", (timer: number) => clearTimeout(timer));
+    const workspace = workspaceWithWebTab();
+    const second = { ...workspace.panes[0].tabs[1], id: "second-web", sessionId: "second-session" };
+    workspace.panes.push({ id: "second-pane", agentId: "web", sessionId: second.sessionId, tabs: [second], activeTabId: second.id });
+    useWorkspaceListStore.setState({ workspaces: [workspace] });
+    const hosts = ["web-tab", "second-web"].map((tabId, index) => {
+      const host = document.createElement("div"); host.dataset.webPaneHostTabId = tabId;
+      host.getBoundingClientRect = () => new DOMRect(100 + index * 400, 40, 300, 400);
+      document.body.appendChild(host); return host;
+    });
+    const popup = document.createElement("div");
+    popup.dataset.cmuxNativeWebviewOccluder = "overlap";
+    let popupLeft = 110;
+    popup.getBoundingClientRect = () => new DOMRect(popupLeft, 60, 100, 100);
+    try {
+      await act(async () => root.render(<WebPaneController />));
+      await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+      apiMocks.updateWebPane.mockClear();
+      document.body.appendChild(popup);
+      await act(async () => { await vi.advanceTimersByTimeAsync(80); });
+      expect(apiMocks.updateWebPane).toHaveBeenCalledWith("web-tab", null, false, expect.any(Array));
+      expect(apiMocks.updateWebPane.mock.calls.some(([tabId, , visible]) => tabId === "second-web" && !visible)).toBe(false);
+      apiMocks.updateWebPane.mockClear();
+      popupLeft = 810; popup.style.left = "810px";
+      await act(async () => { await vi.advanceTimersByTimeAsync(80); });
+      expect(apiMocks.updateWebPane).toHaveBeenCalledWith("web-tab", { x: 100, y: 40, width: 300, height: 400 }, true, expect.any(Array));
+      expect(apiMocks.updateWebPane.mock.calls.some(([, , visible]) => !visible)).toBe(false);
+    } finally {
+      await act(async () => root.unmount());
+      popup.remove(); hosts.forEach(host => host.remove()); vi.useRealTimers();
+    }
+  });
+  it("hides the native webview for the real rename editor and restores it on close", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => setTimeout(() => callback(performance.now()), 16));
+    vi.stubGlobal("cancelAnimationFrame", (timer: number) => clearTimeout(timer));
+    const host = document.createElement("div");
+    host.dataset.webPaneHostTabId = "web-tab";
+    host.getBoundingClientRect = () => ({ x: 0, y: 0, width: 800, height: 600 }) as DOMRect;
+    document.body.appendChild(host);
+    try {
+      await act(async () => root.render(<WebPaneController />));
+      await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+      apiMocks.updateWebPane.mockClear();
+      await act(async () => root.render(<><WebPaneController /><PaneTabRenameEditor label="Sample" value="Sample"
+        workspaceId="workspace" paneId="pane" onChange={() => {}} onSave={() => {}} onCancel={() => {}} /></>));
+      await act(async () => { await vi.advanceTimersByTimeAsync(80); });
+      expect(apiMocks.updateWebPane).toHaveBeenLastCalledWith("web-tab", null, false, expect.any(Array));
+      await act(async () => root.render(<WebPaneController />));
+      await act(async () => { await vi.advanceTimersByTimeAsync(80); });
+      expect(apiMocks.updateWebPane).toHaveBeenLastCalledWith("web-tab", { x: 0, y: 0, width: 800, height: 600 }, true, expect.any(Array));
+    } finally {
+      await act(async () => root.unmount());
+      host.remove(); vi.useRealTimers();
+    }
+  });
   it("observes DOM only while at least one web pane exists", async () => {
     const observe = vi.fn(); const disconnect = vi.fn();
     vi.stubGlobal("MutationObserver", class {

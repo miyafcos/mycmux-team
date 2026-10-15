@@ -73,8 +73,34 @@ function global:claude {
   Invoke-MycmuxAgentWithHook "claude" (Join-Path $HOME "bin\claude.cmd") @($args)
 }
 
+function global:Get-MycmuxClaudeCodexLaunchArgs {
+  param([object[]]$AgentArgs)
+  $launchArgs = @($AgentArgs)
+  $tabId = $env:MYCMUX_TAB_ID
+  if ([string]::IsNullOrWhiteSpace($env:MYCMUX_PANE_SESSION_ID) -or $tabId -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$') {
+    return $launchArgs
+  }
+  foreach ($argument in $launchArgs) {
+    if ([string]$argument -match '^(--session-id|--resume|--continue|--fork-session|--print|--no-session-persistence|--help|--version)(=|$)|^-[prc]|^-[hv]$|^(agents|attach|auth|auto-mode|doctor|gateway|import|install|logs|mcp|plugin|plugins|purge|respawn|rm|setup-token|stop|kill|ultrareview|update|upgrade)$') {
+      return $launchArgs
+    }
+  }
+  $sessionId = [guid]::NewGuid().ToString()
+  $runtimeDir = if ($env:MYCMUX_RUNTIME_DIR) { $env:MYCMUX_RUNTIME_DIR } else { Join-Path $HOME ".mycmux" }
+  $mappingDir = Join-Path $runtimeDir "pane-sessions"
+  try {
+    [IO.Directory]::CreateDirectory($mappingDir) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $mappingDir "$tabId.txt"), "claude-codex:$sessionId`n", [Text.UTF8Encoding]::new($false))
+  } catch {
+    Write-Warning "Claude Codex tab identity could not be registered: $($_.Exception.Message)"
+    return $launchArgs
+  }
+  return @("--session-id", $sessionId) + $launchArgs
+}
+
 function global:claude-codex {
-  Invoke-MycmuxAgentWithHook "claude" (Join-Path $HOME "bin\claude-codex.cmd") @($args)
+  $launchArgs = @(Get-MycmuxClaudeCodexLaunchArgs -AgentArgs @($args))
+  Invoke-MycmuxAgentWithHook "claude" (Join-Path $HOME "bin\claude-codex.cmd") $launchArgs
 }
 
 function global:codex {
@@ -553,6 +579,39 @@ function Invoke-MycmuxWithNoColorGuard {
   }
 }
 
+# Cursor emits PowerShell hook syntax on Windows. MSYSTEM otherwise makes its
+# shell-exec factory prefer Git Bash. Change only the current child invocation.
+function Get-MycmuxCursorCommand {
+  if ($env:LOCALAPPDATA) {
+    $installed = Join-Path $env:LOCALAPPDATA "cursor-agent\cursor-agent.cmd"
+    if (Test-Path -LiteralPath $installed -PathType Leaf) { return $installed }
+  }
+  $found = Get-Command cursor-agent -CommandType Application,ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($found) { return $found.Source }
+  return $null
+}
+
+function Invoke-MycmuxCursor {
+  param([string[]]$Arguments = @())
+  $exe = Get-MycmuxCursorCommand
+  if (-not $exe) {
+    Write-Host "Cursor CLI が見つかりません。PowerShell で irm 'https://cursor.com/install?win32=true' | iex を実行してください。"
+    return
+  }
+  $saved = @{}
+  foreach ($key in @("SHELL", "MSYSTEM", "EXEPATH")) {
+    $saved[$key] = [Environment]::GetEnvironmentVariable($key, "Process")
+  }
+  try {
+    $env:SHELL = "powershell"
+    Remove-Item Env:\MSYSTEM -ErrorAction SilentlyContinue
+    Remove-Item Env:\EXEPATH -ErrorAction SilentlyContinue
+    & $exe @Arguments
+  } finally {
+    foreach ($key in $saved.Keys) { [Environment]::SetEnvironmentVariable($key, $saved[$key], "Process") }
+  }
+}
+
 # --- Launch spec (model / effort) --------------------------------------------
 # Fresh launches and Claude resume use the same saved model / effort values.
 $script:MycmuxLaunchModel = ""
@@ -603,6 +662,8 @@ function Add-MycmuxLaunchSpecToCommandArray {
   } elseif ($leaf -eq "agy") {
     if ($model) { $extra += @("--model", $model) }
     if ($effort) { $extra += @("--effort", $effort) }
+  } elseif ($leaf -eq "cursor-agent") {
+    if ($model) { $extra += @("--model", $model) }
   } elseif ($leaf -eq "omp") {
     if ($model) { $extra += @("--model", $model) }
     if ($effort) { $extra += @("--thinking", $effort) }
@@ -686,6 +747,16 @@ function Invoke-MycmuxHandoffFromEnv {
   # id, so restore fell back to `--continue` and adopted another tab's
   # conversation in the same cwd. Mirrors the handoff branch in launcher.sh.
   switch -Wildcard ($handoffKind) {
+    "cursor" {
+      # Pass a file reference as one positional argument, never as shell code.
+      if ($handoffLaunchKind -ne "new" -or -not $handoffFile -or $handoffFile -match '[&|<>^%"`\r\n]') {
+        Write-Host "Cursor: unsupported instruction file path."
+        return $true
+      }
+      $command = Add-MycmuxLaunchSpecToCommandArray @("cursor-agent", "--", "Read the UTF-8 instruction file at $handoffFile and follow its instructions.")
+      Invoke-MycmuxCursor -Arguments $command[1..($command.Count - 1)]
+      return $true
+    }
     "claude" {
       $sid = Get-MycmuxStableSessionId (Get-MycmuxClaudeProjectDir)
       if ([string]::IsNullOrWhiteSpace($sid)) {
@@ -948,6 +1019,7 @@ $Options = @(
   # Append so every existing agent/resume shortcut keeps its index.
   New-MycmuxOption "ChatGPT dots (Web)" @("__web_dots__") $null
   New-MycmuxOption "Grok Bot (アプリ)" @("__app_grokbot__") $null
+  New-MycmuxOption "Cursor" @("cursor-agent") $null "cursor"
 )
 
 function New-MycmuxModelChoice {
@@ -986,6 +1058,19 @@ $OmpModels = @(
   New-MycmuxModelChoice "Sol (6)" "openai-codex/gpt-6-sol"
   New-MycmuxModelChoice "Luna (6 light)" "openai-codex/gpt-6-luna"
 )
+$CursorModels = @(
+  New-MycmuxModelChoice "Composer 2.5" "composer-2.5"
+  New-MycmuxModelChoice "Grok 4.7 (Low)" "grok-4.7-low"
+  New-MycmuxModelChoice "Grok 4.7 (Medium)" "grok-4.7-medium"
+  New-MycmuxModelChoice "Grok 4.7 (High)" "grok-4.7-high"
+  New-MycmuxModelChoice "Grok 4.7 (Extra High)" "grok-4.7-xhigh"
+  New-MycmuxModelChoice "Claude Opus 5.5 (High)" "claude-opus-5-5-high"
+  New-MycmuxModelChoice "Claude Opus 5.5 (Max)" "claude-opus-5-5-max"
+  New-MycmuxModelChoice "Claude Sonnet 5.5 (High)" "claude-sonnet-5-5-high"
+  New-MycmuxModelChoice "GPT-5.6 Sol (High)" "gpt-5.6-sol-high"
+  New-MycmuxModelChoice "GPT-5.6 Sol (Extra High)" "gpt-5.6-sol-xhigh"
+  New-MycmuxModelChoice "Gemini 3.1 Pro" "gemini-3.1-pro"
+)
 $ClaudeEfforts = @("low", "medium", "high", "xhigh", "max")
 $CodexEfforts = @("low", "medium", "high", "xhigh", "max", "ultra")
 $ShortEfforts = @("low", "medium", "high")
@@ -1003,6 +1088,7 @@ $LaunchSpecCatalog = @{
   # hermes picks provider+model with `hermes model`; mycmux passes no flags.
   "hermes" = [pscustomobject]@{ Models = @(); Efforts = @() }
   "omp" = [pscustomobject]@{ Models = $OmpModels; Efforts = $OmpEfforts }
+  "cursor" = [pscustomobject]@{ Models = $CursorModels; Efforts = @() }
 }
 
 # claude-codex's model menu is its installed model table, not a list kept here:
@@ -1124,6 +1210,7 @@ $LaunchTargets = @{
   "custom" = $Options[18]
   "web-dots" = $Options[19]
   "app-grokbot" = $Options[20]
+  "cursor" = $Options[21]
 }
 
 function Invoke-MycmuxCustomCommand {
@@ -1263,6 +1350,12 @@ function Invoke-MycmuxOption {
   }
 
   Clear-Host
+  if ($Option.Target -eq "cursor") {
+    $command = @(Add-MycmuxLaunchSpecToCommandArray $Option.Command)
+    $cursorArgs = if ($command.Count -gt 1) { $command[1..($command.Count - 1)] } else { @() }
+    Invoke-MycmuxCursor -Arguments $cursorArgs
+    return
+  }
   if ($Option.RequiredCommand -and -not (Test-MycmuxCommand $Option.RequiredCommand)) {
     Write-Host "  $($Option.RequiredCommand) was not found on PATH."
     Write-Host ""

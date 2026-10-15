@@ -101,7 +101,7 @@ beforeEach(() => {
   vi.mocked(readAgentSessionMappings).mockResolvedValue({});
   while (popClosedPane()) { /* Drain test history. */ }
   useToastStore.setState({ toasts: [] });
-  host = document.createElement("div");
+  host = document.createElement("div"); host.dataset.cmuxThemedRoot = "true";
   document.body.append(host);
   root = createRoot(host);
 });

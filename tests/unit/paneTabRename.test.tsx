@@ -20,7 +20,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.clearAllMocks();
-  container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
+  container = document.createElement("div"); container.dataset.cmuxThemedRoot = "true"; document.body.appendChild(container); root = createRoot(container);
   useUiStore.setState({ activePaneId: "pty-active" });
   usePaneMetadataStore.setState({ metadata: {}, volatileMetadata: {} });
 });
@@ -76,6 +76,7 @@ describe("C4 rename without selection or terminal activation", () => {
               });
             }
             expect(editor()).not.toBeNull();
+            expect(editor()!.closest("[data-cmux-native-webview-occluder]")).not.toBeNull();
           };
           await open(); await change(`Saved-${i}`); await key("Enter");
           expect(editor()).toBeNull();

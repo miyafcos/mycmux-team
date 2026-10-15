@@ -79,6 +79,7 @@ describe("live-tail workspace list", () => {
     expect(tooltip().querySelector(".live-tail-go")).toBeNull();
     expect(row("Sample cmd").querySelector(".live-tail-line")!.textContent).toBe("● Wait for sample report · 2m 4s");
     expect(tooltip().closest("[data-cmux-themed-root]")).toBe(host);
+    expect(tooltip().dataset.cmuxNativeWebviewOccluder).toBe("overlap");
   });
   it("uses the spinner without a running command", async () => {
     scene = liveTailFixtureScene(["progress"]); await render();

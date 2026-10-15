@@ -44,14 +44,14 @@ export function resolveComposerTarget(input: ComposerTargetInput): ComposerTarge
 
   if (declared.includes("codex")) return "codex";
   // claude-codex drives the Claude Code TUI, so it takes Claude's input shape.
-  if (declared.some((value) => value === "claude" || value === "claude-codex" || value === "grok" || value === "omp")) return "claude";
+  if (declared.some((value) => value === "claude" || value === "claude-codex" || value === "grok" || value === "omp" || value === "cursor")) return "claude";
 
   const names = [baseName(command), ...args.map(baseName)];
   if (processTitle) names.push(baseName(processTitle));
   if (names.includes("codex")) return "codex";
   if (names.includes("claude")) return "claude";
   if (names.includes("grok")) return "claude";
-  if (names.includes("omp")) return "claude";
+  if (names.includes("omp") || names.includes("cursor-agent")) return "claude";
   return "shell";
 }
 
@@ -63,7 +63,7 @@ export function resolveComposerTarget(input: ComposerTargetInput): ComposerTarge
  * take Claude's bracketed paste, but labelling their composer "Claude" tells the
  * operator they are talking to the wrong agent.
  */
-export type ComposerAgentLabelKind = ComposerTarget | "grok" | "claude-codex" | "omp";
+export type ComposerAgentLabelKind = ComposerTarget | "grok" | "claude-codex" | "omp" | "cursor";
 
 export function resolveComposerAgentLabelKind(input: ComposerTargetInput): ComposerAgentLabelKind {
   const { command, args = [], agentId, agentKind, launchEnv, processTitle } = input;
@@ -78,12 +78,14 @@ export function resolveComposerAgentLabelKind(input: ComposerTargetInput): Compo
   if (declared.includes("grok")) return "grok";
   if (declared.includes("claude-codex")) return "claude-codex";
   if (declared.includes("omp")) return "omp";
+  if (declared.includes("cursor")) return "cursor";
 
   const names = [baseName(command), ...args.map(baseName)];
   if (processTitle) names.push(baseName(processTitle));
   if (names.includes("grok")) return "grok";
   if (names.includes("claude-codex")) return "claude-codex";
   if (names.includes("omp")) return "omp";
+  if (names.includes("cursor-agent")) return "cursor";
 
   return resolveComposerTarget(input);
 }

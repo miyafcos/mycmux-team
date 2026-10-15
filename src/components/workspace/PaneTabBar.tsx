@@ -1,6 +1,8 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
-import { clampMenuPosition } from "../../lib/menuPosition";
+import { createPortal } from "react-dom";
+import type { RefObject } from "react";
+import { usePopoverPosition } from "../../hooks/usePopoverPosition";
 import { PaneTabRenameEditor } from "./PaneTabRenameEditor";
 import {
   ATTENTION_REASON_COLOR,
@@ -434,6 +436,7 @@ const AGENT_KIND_LABELS: Record<string, string> = {
   "antigravity": "Antigravity",
   "hermes": "Hermes",
   "omp": "Oh My Pi",
+  "cursor": "Cursor",
 };
 
 export function resolveActiveAgentLabel(
@@ -667,6 +670,9 @@ export function shouldMarkAttentionSeen(
 // Shared dropdown listing every tab of a pane, opened by the hidden-tab count.
 function PaneTabListMenu({
   pane,
+  workspaceId,
+  menuRef,
+  anchorRef,
   metadataBySession,
   volatileMetadataBySession,
   attentionBySession,
@@ -682,6 +688,9 @@ function PaneTabListMenu({
   onCloseMenu,
 }: {
   pane: Pane;
+  workspaceId: string;
+  menuRef: RefObject<HTMLDivElement | null>;
+  anchorRef: RefObject<HTMLButtonElement | null>;
   metadataBySession: Record<string, PaneMetadata | undefined>;
   volatileMetadataBySession: Record<string, PaneVolatileMetadata | undefined>;
   attentionBySession: Record<string, SessionAttention | undefined>;
@@ -696,25 +705,7 @@ function PaneTabListMenu({
   onLaunchDeclaredTab: (tabId: string) => void;
   onCloseMenu: () => void;
 }) {
-  // Fixed positioning + viewport clamping, matching the tab context menu.
-  // An absolute menu anchored inside the tab bar gets clipped by pane
-  // overflow once the pane is narrower than the menu (compact/micro modes).
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const menuWidth = Math.min(300, Math.max(200, window.innerWidth - 16));
-  const menuMaxHeight = Math.min(360, Math.max(120, window.innerHeight - 24));
-  const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
-  useLayoutEffect(() => {
-    const anchor = menuRef.current?.parentElement;
-    if (!anchor) return;
-    const rect = anchor.getBoundingClientRect();
-    const height = Math.min(menuMaxHeight, menuRef.current?.offsetHeight ?? menuMaxHeight);
-    setMenuPos(clampMenuPosition(
-      resolvePaneTabMenuLeft(rect.left, rect.right, menuWidth),
-      rect.bottom + 6,
-      menuWidth,
-      height,
-    ));
-  }, [menuMaxHeight, menuWidth]);
+  const menuPos = usePopoverPosition(true, menuRef, anchorRef);
   const menuRows = resolvePaneTabMenuRows(
     pane.tabs,
     attentionBySession,
@@ -922,14 +913,19 @@ function PaneTabListMenu({
       ref={menuRef}
       className="cmux-popover-panel pane-tab-menu"
       role="menu"
+      data-pane-focus-workspace-id={workspaceId}
+      data-pane-focus-pane-id={pane.id}
+      onPointerDown={event => event.stopPropagation()}
+      onMouseDown={event => event.stopPropagation()}
+      onClick={event => event.stopPropagation()}
       style={{
         position: "fixed",
         left: menuPos?.left ?? -9999,
         top: menuPos?.top ?? -9999,
         visibility: menuPos ? "visible" : "hidden",
         zIndex: 130,
-        width: menuWidth,
-        maxHeight: menuMaxHeight,
+        width: "min(300px, calc(100vw - 16px))",
+        maxHeight: "min(360px, calc(100vh - 16px))",
         overflowY: "auto",
         boxSizing: "border-box",
         padding: 6,
@@ -1019,7 +1015,6 @@ export default memo(function PaneTabBar({
   const [contextMenu, setContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const contextFocusReturnRef = useRef<ReturnType<typeof capturePaneFocusReturn> | null>(null);
-  const [contextMenuPos, setContextMenuPos] = useState({ left: 0, top: 0 });
   const [publishPopoverOpen, setPublishPopoverOpen] = useState(false);
   const [publishSummary, setPublishSummary] = useState("");
   const publishPopoverRef = useRef<HTMLDivElement>(null);
@@ -1030,13 +1025,32 @@ export default memo(function PaneTabBar({
   const allTabsFocusReturnRef = useRef<ReturnType<typeof capturePaneFocusReturn> | null>(null);
   const allTabsMenuRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   const [barMode, setBarMode] = useState<PaneTabBarMode>("full");
   const [kebabOpen, setKebabOpen] = useState(false);
   const kebabRef = useRef<HTMLDivElement>(null);
   const kebabTriggerRef = useRef<HTMLButtonElement>(null);
   const kebabMenuRef = useRef<HTMLDivElement>(null);
   const kebabFocusReturnRef = useRef<ReturnType<typeof capturePaneFocusReturn> | null>(null);
-  const [kebabMenuPos, setKebabMenuPos] = useState({ left: 0, top: 0 });
+  const contextMenuPos = usePopoverPosition(Boolean(contextMenu), contextMenuRef, barRef, contextMenu);
+  const kebabMenuPos = usePopoverPosition(kebabOpen, kebabMenuRef, kebabTriggerRef);
+  const publishPopoverPos = usePopoverPosition(publishPopoverOpen, publishPopoverRef, barRef);
+  useLayoutEffect(() => {
+    setPortalTarget(barRef.current?.closest<HTMLElement>("[data-cmux-themed-root]") ?? document.body);
+  }, []);
+  useEffect(() => {
+    if (isVisible) return;
+    contextFocusReturnRef.current?.cancel(); contextFocusReturnRef.current = null;
+    allTabsFocusReturnRef.current?.cancel(); allTabsFocusReturnRef.current = null;
+    kebabFocusReturnRef.current?.cancel(); kebabFocusReturnRef.current = null;
+    publishFocusReturnRef.current?.cancel(); publishFocusReturnRef.current = null;
+    renameFocusReturnRef.current?.cancel(); renameFocusReturnRef.current = null;
+    setEditingTabId(null);
+    setContextMenu(null);
+    setAllTabsOpen(false);
+    setKebabOpen(false);
+    setPublishPopoverOpen(false);
+  }, [isVisible]);
   const canCloseWholePane = useWorkspaceListStore((state) =>
     (state.workspaces.find((workspace) => workspace.id === workspaceId)?.panes.length ?? 1) > 1,
   );
@@ -1205,12 +1219,7 @@ export default memo(function PaneTabBar({
 
   useLayoutEffect(() => {
     if (!contextMenu || !contextMenuRef.current) return;
-    const rect = contextMenuRef.current.getBoundingClientRect();
     contextMenuRef.current.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
-    const { left, top } = clampMenuPosition(contextMenu.x, contextMenu.y, rect.width, rect.height);
-    setContextMenuPos((prev) =>
-      prev.left === left && prev.top === top ? prev : { left, top },
-    );
   }, [contextMenu]);
 
   const closePublishPopover = (restore = true) => {
@@ -1220,7 +1229,7 @@ export default memo(function PaneTabBar({
   };
   useDismissOnOutside(publishPopoverOpen, publishPopoverRef, reason => closePublishPopover(reason === "escape"));
 
-  useDismissOnOutside(allTabsOpen, allTabsMenuRef, reason => {
+  useDismissOnOutside(allTabsOpen, [allTabsMenuRef, allTabsTriggerRef], reason => {
     if (reason === "escape") allTabsFocusReturnRef.current?.(allTabsMenuRef.current);
     allTabsFocusReturnRef.current?.cancel(); allTabsFocusReturnRef.current = null;
     setAllTabsOpen(false);
@@ -1241,10 +1250,7 @@ export default memo(function PaneTabBar({
   }, []);
 
   useLayoutEffect(() => {
-    if (!kebabOpen || !kebabMenuRef.current || !kebabTriggerRef.current) return;
-    const trigger = kebabTriggerRef.current.getBoundingClientRect();
-    const menu = kebabMenuRef.current.getBoundingClientRect();
-    setKebabMenuPos(clampMenuPosition(trigger.right - menu.width, trigger.bottom + 2, menu.width, menu.height));
+    if (!kebabOpen || !kebabMenuRef.current) return;
     kebabMenuRef.current.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
   }, [kebabOpen]);
 
@@ -1253,7 +1259,7 @@ export default memo(function PaneTabBar({
     kebabFocusReturnRef.current?.cancel(); kebabFocusReturnRef.current = null;
     setKebabOpen(false);
   };
-  useDismissOnOutside(kebabOpen, kebabRef, (reason) => {
+  useDismissOnOutside(kebabOpen, [kebabRef, kebabMenuRef], (reason) => {
     closeKebab(reason === "escape");
   }, { preventDefaultOnEscape: true });
 
@@ -1621,7 +1627,7 @@ export default memo(function PaneTabBar({
           <div className="pane-heading-spacer" aria-hidden="true" />
         </div>
         {hiddenTabs.length > 0 && (
-          <div ref={allTabsMenuRef} style={{ position: "relative", flexShrink: 0 }}>
+          <div style={{ position: "relative", flexShrink: 0 }}>
             <button ref={allTabsTriggerRef} type="button" className="pane-action-btn pane-hidden-tabs"
               title={paneToolbarStrings.allTabs} aria-label={paneToolbarStrings.allTabs}
               aria-haspopup="menu" aria-expanded={allTabsOpen}
@@ -1635,7 +1641,8 @@ export default memo(function PaneTabBar({
               }}>
               {formatHiddenTabCount(hiddenTabs.length, renderMode)}
             </button>
-            {allTabsOpen && <PaneTabListMenu pane={pane} metadataBySession={metadataBySession}
+            {isVisible && allTabsOpen && portalTarget && createPortal(<PaneTabListMenu pane={pane} workspaceId={workspaceId}
+              menuRef={allTabsMenuRef} anchorRef={allTabsTriggerRef} metadataBySession={metadataBySession}
               volatileMetadataBySession={volatileMetadataBySession} attentionBySession={attentionBySession}
               seenAttentionByTab={seenAttentionByTab} getTabDisplayLabel={displayTabLabel}
               hasTerminalBuffer={hasTerminalBuffer} onSelectTab={onSelectTab} onRemoveTab={onRemoveTab}
@@ -1645,7 +1652,7 @@ export default memo(function PaneTabBar({
                 captureFocusReturn(allTabsTriggerRef.current)(allTabsMenuRef.current);
                 allTabsFocusReturnRef.current?.cancel(); allTabsFocusReturnRef.current = null;
                 setAllTabsOpen(false);
-              }} />}
+              }} />, portalTarget)}
           </div>
         )}
         {visibleActions.includes("split-right") && onSplitRight && showSplitRightButton && (
@@ -1689,9 +1696,11 @@ export default memo(function PaneTabBar({
             }}>
             <KebabIcon />
           </button>
-          {kebabOpen && <div ref={kebabMenuRef} className="pane-actions-menu" role="menu"
+          {isVisible && kebabOpen && portalTarget && createPortal(<div ref={kebabMenuRef} className="pane-actions-menu" role="menu"
+            data-pane-focus-workspace-id={workspaceId} data-pane-focus-pane-id={pane.id}
+            onMouseDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}
             onKeyDown={handlePaneMenuKeyDown} onPointerDown={(event) => event.stopPropagation()}
-            style={{ ...paneTabContextMenuStyle, left: kebabMenuPos.left, top: kebabMenuPos.top, zIndex: 130,
+            style={{ ...paneTabContextMenuStyle, left: kebabMenuPos?.left ?? -9999, top: kebabMenuPos?.top ?? -9999, zIndex: 130,
               maxWidth: "calc(100vw - 16px)", maxHeight: "calc(100vh - 24px)", overflowY: "auto" }}>
             {menuItems.filter((item) => item.show !== false).map((item) => item.content
               ? <div key={item.id} className="pane-history-menu-item" data-pane-action={item.id}
@@ -1707,20 +1716,25 @@ export default memo(function PaneTabBar({
                   }}>
                   {item.label}
                 </PaneTabContextMenuItem>)}
-          </div>}
+          </div>, portalTarget)}
         </div>
       </div>
-      {publishPopoverOpen && agentSessionId && (
+      {isVisible && publishPopoverOpen && agentSessionId && portalTarget && createPortal(
         <div
           ref={publishPopoverRef}
           data-pane-hover-focus-blocker="true"
+          data-pane-focus-workspace-id={workspaceId} data-pane-focus-pane-id={pane.id}
+          data-cmux-native-webview-occluder="true"
           onPointerDown={(event) => event.stopPropagation()}
+          onMouseDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}
           style={{
-            position: "absolute",
-            top: "100%",
-            right: 6,
+            position: "fixed",
+            top: publishPopoverPos?.top ?? -9999,
+            left: publishPopoverPos?.left ?? -9999,
             zIndex: 120,
-            width: 280,
+            width: "min(280px, calc(100vw - 16px))",
+            maxHeight: "calc(100vh - 16px)",
+            overflowY: "auto",
             boxSizing: "border-box",
             background: "var(--cmux-popover)",
             border: "1px solid var(--cmux-border)",
@@ -1805,10 +1819,10 @@ export default memo(function PaneTabBar({
               </button>
             </div>
           </form>
-        </div>
+        </div>, portalTarget
       )}
       </div>
-      {editingTab && (
+      {isVisible && editingTab && (
         <PaneTabRenameEditor
           key={editingTab.id}
           label={displayTabLabel(editingTab, editingTab.id === pane.activeTabId)}
@@ -1822,15 +1836,21 @@ export default memo(function PaneTabBar({
           onCancel={finishEditingTab}
         />
       )}
-      {contextMenu && (
+      {isVisible && contextMenu && portalTarget && createPortal(
         <div
           ref={contextMenuRef}
           role="menu"
+          data-pane-focus-workspace-id={workspaceId} data-pane-focus-pane-id={pane.id}
+          onPointerDown={event => event.stopPropagation()} onMouseDown={event => event.stopPropagation()}
+          onClick={event => event.stopPropagation()}
           onKeyDown={handlePaneMenuKeyDown}
           style={{
             ...paneTabContextMenuStyle,
-            top: contextMenuPos.top,
-            left: contextMenuPos.left,
+            top: contextMenuPos?.top ?? -9999,
+            left: contextMenuPos?.left ?? -9999,
+            maxWidth: "calc(100vw - 16px)",
+            maxHeight: "calc(100vh - 16px)",
+            overflowY: "auto",
           }}
         >
           <PaneTabContextMenuItem onClick={handleRenameContextTab}>
@@ -1846,7 +1866,7 @@ export default memo(function PaneTabBar({
           <PaneTabContextMenuItem onClick={handleTogglePinContextTab}>
             {isContextTabPinned ? paneToolbarStrings.unpinTab : paneToolbarStrings.pinTab}
           </PaneTabContextMenuItem>
-        </div>
+        </div>, portalTarget
       )}
     </>
   );

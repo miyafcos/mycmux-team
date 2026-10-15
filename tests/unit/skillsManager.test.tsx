@@ -154,7 +154,7 @@ describe("skills manager stage 1", () => {
   it("maps every catalogue symbol and keeps the agent design entry before dashboard", () => {
     const symbols = JSON.parse(readFileSync(resolve("tests/fixtures/skills_home/symbols.json"), "utf8")) as string[];
     for (const symbol of symbols) expect(symbolMap[symbol], symbol).toBeDefined();
-    const titlebar = readFileSync(resolve("src/components/layout/TitleBar.tsx"), "utf8"); expect(titlebar).toMatch(/<AgentDesignButton\s*\/>\s*<DashboardButton\s*\/>\s*<InboxButton\s*\/>/);
+    const titlebar = readFileSync(resolve("src/components/layout/TitleBar.tsx"), "utf8"); expect(titlebar).toMatch(/<AgentDesignButton\s*\/>\s*<DashboardButton\s*\/>/);
   });
   it("searches names, descriptions, triggers, and full bodies in that order", () => {
     const result = searchSkills([row("one", { line: "needle" }), row("two", { triggers: ["needle"] }), row("three", { body: "needle" })], "needle");

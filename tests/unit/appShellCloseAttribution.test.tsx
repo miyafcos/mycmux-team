@@ -82,7 +82,7 @@ beforeEach(() => {
   focusController.request("tab-rename", { suppressMs: 0 });
   useSettingsStore.setState({ paneComposerEnabled: false, showTerminalHistoryButton: false });
   useUiStore.setState({ activePaneId: "terminal-session", lastActivePaneId: "terminal-session", focusRevision: 0, zoomedPaneId: null });
-  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  host = document.createElement("div"); host.dataset.cmuxThemedRoot = "true"; document.body.append(host); root = createRoot(host);
 });
 afterEach(async () => {
   if (handler) window.removeEventListener("keydown", handler); handler = undefined;
@@ -159,7 +159,7 @@ describe("AppShell close attribution protects a terminal candidate in one direct
     if (origin === "body") { document.body.tabIndex = -1; target = document.body; }
     else if (origin === "same-pane") target = host.querySelector("[data-dnd-pane-id='terminal'] .xterm-helper-textarea")!;
     else {
-      const container = document.createElement("div"); host.append(container);
+      const container = document.createElement("div"); container.dataset.cmuxThemedRoot = "true"; host.append(container);
       if (origin !== "outside") {
         container.dataset.dndPaneId = origin === "unregistered" ? "missing-pane" : "preview";
         container.dataset.dndWorkspaceId = origin === "background" ? "other-workspace" : "workspace";
@@ -269,7 +269,7 @@ describe("rename completion preserves pane focus ownership without selecting it"
     await mount("browser", true); installShell();
     const trigger = pane().querySelector<HTMLButtonElement>(".pane-hidden-tabs")!;
     await act(async () => trigger.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1, shiftKey: true })));
-    const row = pane().querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!;
+    const row = host.querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!;
     row.focus(); await act(async () => row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 })));
     expect(row.isConnected).toBe(false); await key(renameDialog().querySelector("input")!, "Escape");
     await closeKey(document.activeElement as HTMLElement); expect(close).not.toHaveBeenCalled(); expect(mocks.kill).not.toHaveBeenCalled();
@@ -312,7 +312,7 @@ async function openModifiedList(modifier: "shiftKey" | "ctrlKey" = "shiftKey"): 
 describe("hidden-tab list dismissal returns only its own keyboard focus", () => {
   it.each(["shiftKey", "ctrlKey"] as const)("contains %s pointer open, row focus, Escape, AppShell close", async modifier => {
     await mount("browser", true); installShell(); const trigger = await openModifiedList(modifier);
-    const row = pane().querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!;
+    const row = host.querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!;
     row.focus(); const before = useUiStore.getState(); const focus = vi.spyOn(focusController, "request");
     await key(row, "Escape"); expect(row.isConnected).toBe(false);
     await closeKey(document.activeElement as HTMLElement);
@@ -322,15 +322,15 @@ describe("hidden-tab list dismissal returns only its own keyboard focus", () => 
   });
   it("does not take focus back after an outside pointer dismissal", async () => {
     await mount("browser", true); const trigger = await openModifiedList();
-    pane().querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!.focus();
+    host.querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!.focus();
     const outside = document.createElement("button"); host.append(outside);
     await act(async () => outside.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }))); outside.focus();
-    expect(pane().querySelector("[data-menu-tab-id]")).toBeNull(); expect(document.activeElement).toBe(outside);
+    expect(host.querySelector("[data-menu-tab-id]")).toBeNull(); expect(document.activeElement).toBe(outside);
     expect(trigger.isConnected).toBe(true);
   });
   it.each(["selection", "focus"])("does not overwrite a newer %s on Escape", async newer => {
     await mount("browser", true); await openModifiedList();
-    const row = pane().querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!; row.focus();
+    const row = host.querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!; row.focus();
     const input = host.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")!;
     if (newer === "selection") useUiStore.getState().bumpFocusRevision();
     input.focus(); await key(row, "Escape"); expect(document.activeElement).toBe(input);
@@ -343,7 +343,7 @@ it("does not restore rename's old focus after a newer selection with no DOM focu
 });
 it("does not restore the list's old trigger after a newer selection with no DOM focus move", async () => {
   await mount("browser", true); const trigger = await openModifiedList(); const focus = vi.spyOn(trigger, "focus");
-  const row = pane().querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!; row.focus();
+  const row = host.querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!; row.focus();
   useUiStore.getState().bumpFocusRevision(); await key(row, "Escape");
   expect(focus).not.toHaveBeenCalled(); expect(document.activeElement).toBe(document.body);
 });
@@ -359,7 +359,7 @@ describe("AppShell last pane focus fallback only supplements a body source", () 
       await beginRename(); const dialog = renameDialog(); const input = dialog.querySelector<HTMLInputElement>("input")!;
       await key(input, "Escape");
     } else {
-      await openModifiedList(); const row = pane().querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!; row.focus(); await key(row, "Escape");
+      await openModifiedList(); const row = host.querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!; row.focus(); await key(row, "Escape");
     }
     if (process.env.U6_FOCUS_RETURN_OFF === "1") expect(document.activeElement).toBe(document.body);
     else expect(pane().contains(document.activeElement)).toBe(true);

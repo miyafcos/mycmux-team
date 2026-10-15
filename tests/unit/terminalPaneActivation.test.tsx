@@ -94,7 +94,7 @@ beforeEach(() => {
   usePaneMetadataStore.setState({ metadata: {}, volatileMetadata: {} });
   useUiStore.setState({ activePaneId: previousSessionId, lastActivePaneId: previousSessionId, focusRevision: 0,
     zoomedPaneId: null });
-  container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
+  container = document.createElement("div"); container.dataset.cmuxThemedRoot = "true"; document.body.appendChild(container); root = createRoot(container);
   focusedInput = document.createElement("textarea"); document.body.appendChild(focusedInput); focusedInput.focus();
 });
 

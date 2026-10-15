@@ -46,7 +46,7 @@ def prompt_dir() -> Path:
 # targets. agy, hermes, and omp are agents mycmux keeps no session file for, which
 # is why they are absent from AGENT_KINDS but startable all the same.
 AGENT_TARGETS = (
-    "claude", "codex", "claude-codex", "grok", "agy", "hermes", "omp", "shell", "web",
+    "claude", "codex", "claude-codex", "grok", "agy", "hermes", "omp", "cursor", "shell", "web",
 )
 AGENT_KINDS = ("claude", "codex", "claude-codex", "grok")
 

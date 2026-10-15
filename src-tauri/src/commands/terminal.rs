@@ -1972,6 +1972,23 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_keeps_cursor_fresh_prompt_payload() {
+        for from_session in ["external", "caller-session"] {
+            let mut e = env(&[
+                ("MYCMUX_LAUNCH_TARGET", "cursor"),
+                ("MYCMUX_HANDOFF", "cursor"),
+                ("MYCMUX_HANDOFF_PROMPT_FILE", "C:/prompts/task.md"),
+                ("MYCMUX_HANDOFF_FROM_SESSION", from_session),
+                ("MYCMUX_HANDOFF_LAUNCH_KIND", "new"),
+                ("MYCMUX_LAUNCH_MODEL", "composer-2.5"),
+            ]);
+            let expected = e.clone();
+            sanitize_launch_env(&mut e);
+            assert_eq!(e, expected, "Cursor prompt source: {from_session}");
+        }
+    }
+
+    #[test]
     fn sanitize_drops_partial_handoff_without_from_session() {
         // Incomplete handoff payload — likely env leak — must be stripped wholesale.
         let mut e = env(&[

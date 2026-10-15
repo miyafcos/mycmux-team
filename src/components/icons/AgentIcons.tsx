@@ -263,7 +263,18 @@ const chipStyles: Record<string, CSSProperties> = {
   notebooklm: { background: "rgba(66,133,244,.10)", borderColor: "rgba(66,133,244,.30)" },
   hermes: { background: "rgba(198,152,26,.12)", borderColor: "rgba(198,152,26,.32)" },
   omp: { background: "rgba(145,92,207,.12)", borderColor: "rgba(145,92,207,.32)" },
+  cursor: { background: "rgba(184,196,212,.12)", borderColor: "rgba(184,196,212,.32)" },
 };
+
+export function CursorAgentIcon({ size = 12, ...props }: AgentIconProps) {
+  return (
+    <svg {...iconProps(size)} {...props}>
+      <rect width="24" height="24" rx="4.5" fill="#fff" />
+      <path d="M5 3 19 12 12 14 9 21Z" fill="#20252b" />
+      <path d="M5 3 12 14 9 21Z" fill="#798696" />
+    </svg>
+  );
+}
 
 export function AgentKindIcon({ kind, size = 14, chip = true }: AgentKindIconProps) {
   const Icon = kind === "claude"
@@ -284,6 +295,8 @@ export function AgentKindIcon({ kind, size = 14, chip = true }: AgentKindIconPro
           ? BrowserAgentIcon
         : kind === "hermes"
           ? HermesAgentIcon
+        : kind === "cursor"
+          ? CursorAgentIcon
         : kind === "omp"
           ? OmpAgentIcon
         : kind === "html"

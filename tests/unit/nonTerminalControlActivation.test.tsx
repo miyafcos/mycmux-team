@@ -95,7 +95,7 @@ beforeEach(() => {
   focusController.request("tab-rename", { suppressMs: 0 });
   useSettingsStore.setState({ paneComposerEnabled: false, showTerminalHistoryButton: false });
   useUiStore.setState({ activePaneId: "terminal-session", lastActivePaneId: "terminal-session", focusRevision: 0, zoomedPaneId: null });
-  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  host = document.createElement("div"); host.dataset.cmuxThemedRoot = "true"; document.body.append(host); root = createRoot(host);
 });
 afterEach(async () => {
   if (handler) window.removeEventListener("keydown", handler); handler = undefined;
@@ -160,10 +160,10 @@ describe("non-terminal content controls claim their pane without taking focus", 
       ? `button[aria-label='${terminalPaneStrings.paneActions}']` : ".pane-hidden-tabs")!;
     await act(async () => button.focus()); expect(useUiStore.getState().activePaneId).toBe("terminal-session");
     await keyboardClick(button);
-    const menu = pane().querySelector<HTMLElement>("[role='menu']")!; expect(menu).not.toBeNull();
+    const menu = host.querySelector<HTMLElement>("[role='menu']")!; expect(menu).not.toBeNull();
     expect(useUiStore.getState().activePaneId).toBe("preview-session");
     await act(async () => menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
-    expect(pane().querySelector("[role='menu']")).toBeNull();
+    expect(host.querySelector("[role='menu']")).toBeNull();
     expect(useUiStore.getState().activePaneId).toBe("preview-session");
   });
 
@@ -304,9 +304,9 @@ describe("non-terminal content controls claim their pane without taking focus", 
     await pointer(button, "down"); button.focus(); await pointer(button, "up");
     expect(useUiStore.getState().activePaneId).toBe("preview-session"); expect(document.activeElement).toBe(button);
     await act(async () => button.click());
-    if (control === "menu") expect(pane().querySelector(".pane-actions-menu")).not.toBeNull();
+    if (control === "menu") expect(host.querySelector(".pane-actions-menu")).not.toBeNull();
     if (control === "hidden") {
-      await act(async () => pane().querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!.click());
+      await act(async () => host.querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!.click());
       expect(useUiStore.getState().activePaneId).toBe("sibling-session");
       expect(useWorkspaceListStore.getState().workspaces[0].panes[1].activeTabId).toBe("sibling-tab");
     }
@@ -320,9 +320,9 @@ describe("non-terminal content controls claim their pane without taking focus", 
       ? `button[aria-label='${terminalPaneStrings.paneActions}']` : ".pane-tabbar-zoom")!;
     await click(button);
     if (control === "menu") {
-      await act(async () => pane().querySelector<HTMLElement>(".pane-actions-menu")!.dispatchEvent(
+      await act(async () => host.querySelector<HTMLElement>(".pane-actions-menu")!.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
-      expect(pane().querySelector(".pane-actions-menu")).toBeNull();
+      expect(host.querySelector(".pane-actions-menu")).toBeNull();
     }
     await closeKey(button);
     expect(close).toHaveBeenCalledExactlyOnceWith({ kind: "pane", workspaceId: "workspace", paneId: "preview" }, "ui");
@@ -335,9 +335,9 @@ describe("non-terminal content controls claim their pane without taking focus", 
     await mount("browser", true);
     const button = pane().querySelector<HTMLButtonElement>(".pane-hidden-tabs")!;
     await click(button);
-    await act(async () => pane().querySelector<HTMLElement>("[role='menu']")!.dispatchEvent(
+    await act(async () => host.querySelector<HTMLElement>("[role='menu']")!.dispatchEvent(
       new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
-    expect(pane().querySelector("[role='menu']")).toBeNull();
+    expect(host.querySelector("[role='menu']")).toBeNull();
     expect(useUiStore.getState().activePaneId).toBe("preview-session");
     expect(useWorkspaceListStore.getState().workspaces[0].panes[1].activeTabId).toBe("preview-tab");
   });
@@ -372,7 +372,7 @@ describe("non-terminal content controls claim their pane without taking focus", 
     await click(button); await act(async () => vi.advanceTimersByTimeAsync(600));
     expect(useUiStore.getState().activePaneId).toBe("terminal-session");
     expect(document.activeElement).not.toBe(pane().querySelector("textarea"));
-    if (control === "menu") expect(pane().querySelector("[role='menu']")?.contains(document.activeElement)).toBe(true);
+    if (control === "menu") expect(host.querySelector("[role='menu']")?.contains(document.activeElement)).toBe(true);
     else expect(document.activeElement).toBe(button);
     expect(focus).not.toHaveBeenCalled();
   });

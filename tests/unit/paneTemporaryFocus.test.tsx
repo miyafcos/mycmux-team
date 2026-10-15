@@ -92,7 +92,7 @@ beforeEach(() => {
   focusController.request("tab-rename", { suppressMs: 0 });
   useSettingsStore.setState({ paneComposerEnabled: false, showTerminalHistoryButton: false });
   useUiStore.setState({ activePaneId: "terminal-session", lastActivePaneId: "terminal-session", focusRevision: 0, zoomedPaneId: null });
-  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  host = document.createElement("div"); host.dataset.cmuxThemedRoot = "true"; document.body.append(host); root = createRoot(host);
 });
 afterEach(async () => {
   if (handler) window.removeEventListener("keydown", handler); handler = undefined;
@@ -122,9 +122,9 @@ async function publish(): Promise<HTMLButtonElement> {
     panes: ws.panes.map(p => p.id !== "preview" ? p : { ...p, tabs: p.tabs.map(t => ({...t, agentKind: "claude" as const, claudeSessionId: "synthetic-session"})) }),
   })) })));
   const trigger = await openKebab();
-  const item = pane().querySelector<HTMLButtonElement>("[data-pane-action='publish']")!;
+  const item = host.querySelector<HTMLButtonElement>("[data-pane-action='publish']")!;
   item.focus(); await mouseClick(item, true);
-  expect(pane().querySelector("form input")).not.toBeNull(); return trigger;
+  expect(host.querySelector("form input")).not.toBeNull(); return trigger;
 }
 function OwnedParts({ type }: { type: "turns" | "transcript" }) {
   const [open, setOpen] = useState(true);
@@ -136,10 +136,21 @@ function OwnedParts({ type }: { type: "turns" | "transcript" }) {
   </div>;
 }
 describe("temporary pane controls keep an attributable focus after completion", () => {
+  it("does not hand terminal focus to a portal menu's non-button surface", async () => {
+    await mount("terminal", true);
+    const trigger = pane().querySelector<HTMLButtonElement>(".pane-hidden-tabs")!;
+    await mouseClick(trigger);
+    const surface = host.querySelector<HTMLElement>(".pane-tab-menu")!;
+    const request = vi.spyOn(focusController, "request");
+    await pointer(surface, "down"); await pointer(surface, "up");
+    expect(useUiStore.getState().activePaneId).toBe("terminal-session");
+    expect(request.mock.calls.some(([reason, options]) => reason === "pointer" && options?.focus === true)).toBe(false);
+    expect(surface.isConnected).toBe(true);
+  });
   it.each(["publish", "artifact", "turns", "transcript", "name-menu", "kebab", "all-tabs", "rename-F2", "rename-list"] as const)("M1 returns after outside focus and re-entry into %s", async part => {
     let focused: HTMLElement; let trigger: HTMLElement; let region: HTMLElement;
     if (part === "publish") {
-      trigger = await publish(); focused = pane().querySelector<HTMLInputElement>("form input")!; region = focused.closest("form")!;
+      trigger = await publish(); focused = host.querySelector<HTMLInputElement>("form input")!; region = focused.closest("form")!;
     } else if (part === "artifact") {
       await mount("terminal"); trigger = pane().querySelector<HTMLElement>("[data-artifact-trigger]")!;
       trigger.focus(); await mouseClick(trigger); focused = pane().querySelector<HTMLElement>("button[aria-label='既定のアプリで開く']")!; region = focused.parentElement!;
@@ -155,10 +166,10 @@ describe("temporary pane controls keep an attributable focus after completion", 
     } else {
       await mount("browser", part === "all-tabs" || part === "rename-list");
       const heading = pane().querySelector<HTMLElement>(".pane-active-heading")!;
-      if (part === "kebab") { trigger = await openKebab(); focused = pane().querySelector<HTMLElement>("[role='menuitem']")!; region = focused.closest<HTMLElement>("[role='menu']")!; }
+      if (part === "kebab") { trigger = await openKebab(); focused = host.querySelector<HTMLElement>("[role='menuitem']")!; region = focused.closest<HTMLElement>("[role='menu']")!; }
       else if (part === "all-tabs" || part === "rename-list") {
         trigger = pane().querySelector<HTMLElement>(".pane-hidden-tabs")!; trigger.focus(); await mouseClick(trigger, true);
-        const row = pane().querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!;
+        const row = host.querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!;
         if (part === "rename-list") {
           const rename = row.querySelector<HTMLButtonElement>("button")!; rename.focus(); await mouseClick(rename, true);
           focused = document.querySelector<HTMLElement>("[data-pane-tab-rename-input]")!; region = focused.closest<HTMLElement>("[role='dialog']")!;
@@ -169,7 +180,7 @@ describe("temporary pane controls keep an attributable focus after completion", 
         focused = document.querySelector<HTMLElement>("[data-pane-tab-rename-input]")!; region = focused.closest<HTMLElement>("[role='dialog']")!;
       } else {
         trigger = heading; heading.focus(); await act(async () => heading.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, button: 2, ctrlKey: true })));
-        focused = pane().querySelector<HTMLElement>("[role='menuitem']")!; region = focused.closest<HTMLElement>("[role='menu']")!;
+        focused = host.querySelector<HTMLElement>("[role='menuitem']")!; region = focused.closest<HTMLElement>("[role='menu']")!;
       }
     }
     expect(focused).not.toBeNull(); await act(async () => focused.focus());
@@ -180,11 +191,11 @@ describe("temporary pane controls keep an attributable focus after completion", 
     expect(useUiStore.getState().activePaneId).toBe(before.activePaneId); expect(useUiStore.getState().focusRevision).toBe(before.focusRevision);
   });
   it.each(["Escape", "cancel"])("returns from publish via %s without selecting its terminal", async exit => {
-    const trigger = await publish(); const input = pane().querySelector<HTMLInputElement>("form input")!;
+    const trigger = await publish(); const input = host.querySelector<HTMLInputElement>("form input")!;
     expect(document.activeElement).toBe(input);
     if (exit === "Escape") await key(input, exit);
-    else { const button = pane().querySelector<HTMLButtonElement>("form button")!; button.focus(); await mouseClick(button); }
-    expect(pane().querySelector("form")).toBeNull(); expect(document.activeElement).toBe(trigger);
+    else { const button = host.querySelector<HTMLButtonElement>("form button")!; button.focus(); await mouseClick(button); }
+    expect(host.querySelector("form")).toBeNull(); expect(document.activeElement).toBe(trigger);
     expect(useUiStore.getState().activePaneId).toBe("terminal-session");
   });
   it.each(["escape", "open", "reveal"])("returns from artifact link %s", async exit => {
@@ -200,13 +211,13 @@ describe("temporary pane controls keep an attributable focus after completion", 
     await act(async () => useWorkspaceLayoutStore.getState().setTabLabel("workspace", "preview", "preview-tab", "Custom"));
     const heading = pane().querySelector<HTMLElement>(".pane-active-heading")!; heading.focus();
     await act(async () => heading.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, button: 2, ctrlKey: true })));
-    const items = pane().querySelectorAll<HTMLButtonElement>("[role='menu'] button"); const item = items[action === "pin" ? 2 : 1];
+    const items = host.querySelectorAll<HTMLButtonElement>("[role='menu'] button"); const item = items[action === "pin" ? 2 : 1];
     item.focus(); await mouseClick(item, true); expect(document.activeElement).toBe(heading);
     expect(useUiStore.getState().activePaneId).toBe("terminal-session");
   });
   it("returns from a kebab reset action", async () => {
     await mount(); await act(async () => useWorkspaceLayoutStore.getState().setTabLabel("workspace", "preview", "preview-tab", "Custom"));
-    const trigger = await openKebab(); const item = pane().querySelector<HTMLButtonElement>("[data-pane-action='reset-name']")!;
+    const trigger = await openKebab(); const item = host.querySelector<HTMLButtonElement>("[data-pane-action='reset-name']")!;
     item.focus(); await mouseClick(item, true); expect(document.activeElement).toBe(trigger);
   });
   it.each(["Escape", "choose"])("returns from the actual turn list via %s", async exit => {
@@ -241,7 +252,7 @@ describe("temporary pane controls keep an attributable focus after completion", 
 it("keeps focus inside the pane when a non-terminal list row is selected", async () => {
   await mount("browser", true); const trigger = pane().querySelector<HTMLButtonElement>(".pane-hidden-tabs")!;
   trigger.focus(); await mouseClick(trigger, true);
-  const row = pane().querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!; row.focus(); await mouseClick(row, true);
+  const row = host.querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!; row.focus(); await mouseClick(row, true);
   expect(useUiStore.getState().activePaneId).toBe("sibling-session"); expect(document.activeElement).toBe(trigger);
 });
 it("keeps the list open and returns focus when its focused row-close button disappears", async () => {
@@ -251,13 +262,13 @@ it("keeps the list open and returns focus when its focused row-close button disa
   })) })));
   const trigger = pane().querySelector<HTMLButtonElement>(".pane-hidden-tabs")!;
   trigger.focus(); await mouseClick(trigger, true);
-  const row = pane().querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!;
+  const row = host.querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!;
   const closeButton = row.querySelectorAll<HTMLButtonElement>("button")[2]; closeButton.focus(); await mouseClick(closeButton, true);
-  expect(row.isConnected).toBe(false); expect(pane().querySelector("[role='menu']")).not.toBeNull(); expect(document.activeElement).toBe(pane().querySelector(".pane-active-heading"));
+  expect(row.isConnected).toBe(false); expect(host.querySelector("[role='menu']")).not.toBeNull(); expect(document.activeElement).toBe(pane().querySelector(".pane-active-heading"));
 });
 it.each(["publish", "artifact", "turns", "transcript"])("does not overwrite a newer selection/focus when %s closes", async part => {
   let target: HTMLElement;
-  if (part === "publish") { await publish(); target = pane().querySelector("form input")!; }
+  if (part === "publish") { await publish(); target = host.querySelector("form input")!; }
   else if (part === "artifact") {
     await mount("terminal"); await mouseClick(pane().querySelector("[data-artifact-trigger]")!);
     target = pane().querySelector("button[aria-label='既定のアプリで開く']")!; target.focus();
@@ -272,7 +283,7 @@ it.each(["publish", "artifact", "turns", "transcript"])("does not overwrite a ne
 
 it("keeps a live heading focused when the last hidden row and list trigger disappear", async () => {
   await mount("browser", true); const trigger = pane().querySelector<HTMLButtonElement>(".pane-hidden-tabs")!;
-  trigger.focus(); await mouseClick(trigger, true); const row = pane().querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!;
+  trigger.focus(); await mouseClick(trigger, true); const row = host.querySelector<HTMLElement>("[data-menu-tab-id='sibling-tab']")!;
   const button = row.querySelectorAll<HTMLButtonElement>("button")[2]; button.focus(); await mouseClick(button, true);
   expect(trigger.isConnected).toBe(false); expect(document.activeElement).toBe(pane().querySelector(".pane-active-heading"));
 });
@@ -282,11 +293,11 @@ it.each(["reset-name", "pin", "kebab-reset"])("returns focus after a non-termina
   const heading = pane().querySelector<HTMLElement>(".pane-active-heading")!;
   let trigger: HTMLElement; let item: HTMLButtonElement;
   if (action === "kebab-reset") {
-    trigger = await openKebab(); item = pane().querySelector("[data-pane-action='reset-name']")!;
+    trigger = await openKebab(); item = host.querySelector("[data-pane-action='reset-name']")!;
   } else {
     trigger = heading; heading.focus();
     await act(async () => heading.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, button: 2, ctrlKey: true })));
-    item = pane().querySelectorAll<HTMLButtonElement>("[role='menu'] button")[action === "pin" ? 2 : 1];
+    item = host.querySelectorAll<HTMLButtonElement>("[role='menu'] button")[action === "pin" ? 2 : 1];
   }
   item.focus(); await key(item, "Enter"); await act(async () => item.click());
   expect(item.isConnected).toBe(false); expect(document.activeElement).toBe(trigger);
@@ -433,7 +444,7 @@ it.each(["missing", "failed"])("L5 keeps a focused history item in the actual ke
     return null;
   });
   await mount("terminal"); await openKebab();
-  const button = pane().querySelector<HTMLButtonElement>(".pane-actions-menu [data-terminal-magnifier]")!; expect(button).not.toBeNull();
+  const button = host.querySelector<HTMLButtonElement>(".pane-actions-menu [data-terminal-magnifier]")!; expect(button).not.toBeNull();
   await act(async () => button.focus()); available = false;
   await act(async () => vi.advanceTimersByTimeAsync(HISTORY_MAPPING_POLL_MS));
   expect.soft(button.isConnected).toBe(true); expect.soft(document.activeElement).toBe(button);
@@ -441,7 +452,7 @@ it.each(["missing", "failed"])("L5 keeps a focused history item in the actual ke
   const requested = vi.fn(); window.addEventListener(TERMINAL_HISTORY_EVENT, requested);
   try { await act(async () => button.click()); expect(requested).not.toHaveBeenCalled(); }
   finally { window.removeEventListener(TERMINAL_HISTORY_EVENT, requested); }
-  expect(pane().querySelector(".pane-actions-menu")).not.toBeNull();
+  expect(host.querySelector(".pane-actions-menu")).not.toBeNull();
   available = true; await act(async () => vi.advanceTimersByTimeAsync(HISTORY_MAPPING_POLL_MS));
-  expect(pane().querySelector(".pane-actions-menu [data-terminal-magnifier]")).toBe(button); expect(document.activeElement).toBe(button);
+  expect(host.querySelector(".pane-actions-menu [data-terminal-magnifier]")).toBe(button); expect(document.activeElement).toBe(button);
 });

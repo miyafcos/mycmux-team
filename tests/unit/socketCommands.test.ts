@@ -19,6 +19,43 @@ import { useSettingsStore } from "../../src/stores/settingsStore";
 import { getClosedPaneCount, popClosedPane } from "../../src/stores/closedPaneStore";
 
 describe("resolveSpawnPlan", () => {
+  it("starts Cursor with a model and a fresh prompt file without a tracked session", () => {
+    const plan = resolveSpawnPlan({ target: "cursor", promptFile: "C:/prompts/task.md", model: "composer-2.5" });
+    expect(plan.mode).toBe("prompt");
+    expect(plan.launchEnv).toEqual({
+      MYCMUX_LAUNCH_TARGET: "cursor", MYCMUX_HANDOFF: "cursor",
+      MYCMUX_HANDOFF_PROMPT_FILE: "C:/prompts/task.md", MYCMUX_HANDOFF_LAUNCH_KIND: "new",
+      MYCMUX_HANDOFF_FROM_SESSION: "external",
+      MYCMUX_LAUNCH_MODEL: "composer-2.5",
+    });
+    expect(plan.paneOptions.agentKind).toBeUndefined();
+    expect(plan.paneOptions.agentSessionId).toBeUndefined();
+    for (const promptFile of ["C:/a&b.md", "C:/%PATH%.md", 'C:/a"b.md', "C:/a\nb.md"]) {
+      expect(() => resolveSpawnPlan({ target: "cursor", promptFile })).toThrow(/unsupported shell characters/);
+    }
+    expect(resolveSpawnPlan({ target: "cursor" }).launchEnv).toEqual({ MYCMUX_LAUNCH_TARGET: "cursor" });
+    expect(() => resolveSpawnPlan({ target: "cursor", resumeSessionId: "old" })).toThrow(/tracks sessions/);
+    expect(() => resolveSpawnPlan({ target: "cursor", handoffFromSessionId: "old" }, "handoff.md")).toThrow(/tracks sessions/);
+  });
+
+  it.each([
+    { source: {}, expected: "external" },
+    { source: { fromSessionId: "" }, expected: "external" },
+    { source: { from_session_id: "   " }, expected: "external" },
+    { source: { fromSessionId: "caller-session" }, expected: "caller-session" },
+    { source: { from_session_id: "caller-session" }, expected: "caller-session" },
+  ])("satisfies the Cursor prompt sanitizer source condition: $source", ({ source, expected }) => {
+    const plan = resolveSpawnPlan({
+      target: "cursor",
+      promptFile: "C:/prompts/task.md",
+      ...source,
+    });
+
+    expect(plan.launchEnv?.MYCMUX_HANDOFF_FROM_SESSION).toBe(expected);
+    expect(plan.launchEnv?.MYCMUX_HANDOFF_FROM_SESSION?.trim()).toBeTruthy();
+    expect(plan.paneOptions.launchEnv).toEqual(plan.launchEnv);
+  });
+
   it("builds a generated handoff launch environment", () => {
     const plan = resolveSpawnPlan({
       target: "codex",

@@ -95,6 +95,21 @@ const OMP_MODELS: readonly ModelChoice[] = [
 ];
 const OMP_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
+/** Verified with `cursor-agent models` on 2026-10-15; effort is part of each id. */
+const CURSOR_MODELS: readonly ModelChoice[] = [
+  { value: "composer-2.5", label: "Composer 2.5" },
+  { value: "grok-4.7-low", label: "Grok 4.7 (Low)" },
+  { value: "grok-4.7-medium", label: "Grok 4.7 (Medium)" },
+  { value: "grok-4.7-high", label: "Grok 4.7 (High)" },
+  { value: "grok-4.7-xhigh", label: "Grok 4.7 (Extra High)" },
+  { value: "claude-opus-5-5-high", label: "Claude Opus 5.5 (High)" },
+  { value: "claude-opus-5-5-max", label: "Claude Opus 5.5 (Max)" },
+  { value: "claude-sonnet-5-5-high", label: "Claude Sonnet 5.5 (High)" },
+  { value: "gpt-5.6-sol-high", label: "GPT-5.6 Sol (High)" },
+  { value: "gpt-5.6-sol-xhigh", label: "GPT-5.6 Sol (Extra High)" },
+  { value: "gemini-3.1-pro", label: "Gemini 3.1 Pro" },
+];
+
 const NO_CHOICES: readonly ModelChoice[] = [];
 const NO_EFFORTS: readonly string[] = [];
 
@@ -187,6 +202,14 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
   { target: "web-notebooklm", label: "NotebookLM (Web)", kind: "web", models: NO_CHOICES, efforts: NO_EFFORTS },
   { target: "web-browser", label: "Browser (Web)", kind: "web", models: NO_CHOICES, efforts: NO_EFFORTS },
   { target: "web-dots", label: "ChatGPT dots (Web)", kind: "web", models: NO_CHOICES, efforts: NO_EFFORTS },
+  {
+    target: "cursor",
+    label: "Cursor",
+    kind: "agent",
+    cli: "cursor-agent",
+    models: CURSOR_MODELS,
+    efforts: NO_EFFORTS,
+  },
 ];
 
 /** Entries a workspace pane can be opened with (web rows need a webview). */

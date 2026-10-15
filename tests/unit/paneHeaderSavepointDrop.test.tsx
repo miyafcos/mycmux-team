@@ -121,7 +121,7 @@ beforeEach(() => {
   hit = null;
   originalHitTest = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
   Object.defineProperty(document, "elementFromPoint", { configurable: true, value: vi.fn(() => hit) });
-  host = document.createElement("div");
+  host = document.createElement("div"); host.dataset.cmuxThemedRoot = "true";
   document.body.append(host);
   root = createRoot(host);
 });
@@ -170,7 +170,7 @@ describe("real savepoint resolution over the rendered heading", () => {
     expect(await hover(".pane-heading-spacer", 400, 18)).toEqual(paste);
     // A click without pointerdown models a menu opened by keyboard during the drag.
     await act(async () => host.querySelector<HTMLButtonElement>(trigger)!.click());
-    expect(await hover(entry, 788, 80)).toEqual(right);
+    expect(await hover(entry, 788, 80)).toBeNull();
     expect(hit!.closest(exactTarget)).toBeNull();
     expect(await hover(entry, 400, 80)).toBeNull();
   });

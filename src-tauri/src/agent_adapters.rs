@@ -64,6 +64,7 @@ pub fn legacy_capabilities(agent: &str) -> Result<AdapterCapabilities, String> {
         "agy",
         "hermes",
         "omp",
+        "cursor",
     ]
     .contains(&agent)
     {
@@ -196,6 +197,7 @@ pub async fn snapshot(state: &crate::codex_app_server::CodexAppServerState, dsh:
         "agy",
         "hermes",
         "omp",
+        "cursor",
     ]
     .into_iter()
     .map(|agent| {
@@ -263,6 +265,7 @@ mod tests {
             "agy",
             "hermes",
             "omp",
+            "cursor",
         ] {
             let declaration = legacy_capabilities(agent).unwrap();
             assert_eq!(

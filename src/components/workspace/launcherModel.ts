@@ -100,6 +100,7 @@ const ICON_KINDS: Record<string, string> = {
   agy: "antigravity",
   hermes: "hermes",
   omp: "omp",
+  cursor: "cursor",
   ...Object.fromEntries(
     Object.entries(WEB_PRESET_MARKS).map(([presetId, mark]) => [`web-${presetId}`, mark.kind]),
   ),

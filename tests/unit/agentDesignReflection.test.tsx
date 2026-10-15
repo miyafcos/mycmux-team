@@ -142,7 +142,8 @@ describe("agent design reflection integration", () => {
   it("removes just the AI log and skills titlebar entries and retains the remaining order", () => {
     const titlebar = readFileSync("src/components/layout/TitleBar.tsx", "utf8");
     expect(titlebar).not.toContain("AiLogButton"); expect(titlebar).not.toContain("SkillsButton");
-    expect(titlebar).toMatch(/<AccountsButton\b[\s\S]*?\/>\s*<AgentDesignButton\s*\/>\s*<DashboardButton\s*\/>\s*<InboxButton\s*\/>/);
+    expect(titlebar).toMatch(/<AccountsButton\b[\s\S]*?\/>\s*<AgentDesignButton\s*\/>\s*<DashboardButton\s*\/>/);
+    expect(titlebar).not.toContain("InboxButton");
   });
   it("keeps skills reachable and performs no AI log IPC before reflection is chosen", async () => {
     await render(); await open();

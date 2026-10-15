@@ -15,6 +15,19 @@ const PASTE_END = "\x1b[201~";
 const CODEX_SHIFT_ENTER = "\x1b[13;2u";
 
 describe("resolveComposerTarget", () => {
+  it("keeps Cursor input as one bracketed paste and labels it Cursor", () => {
+    for (const input of [
+      { command: "powershell.exe", launchEnv: { MYCMUX_LAUNCH_TARGET: "cursor" } },
+      { command: "C:/Tools/cursor-agent.cmd" },
+    ]) {
+      expect(resolveComposerTarget(input)).toBe("claude");
+      expect(resolveComposerAgentLabelKind(input)).toBe("cursor");
+      expect(buildComposerPayload({ text: "one\ntwo", target: resolveComposerTarget(input) }).body)
+        .toBe(`${PASTE_START}one\ntwo${PASTE_END}`);
+    }
+    expect(resolveComposerTarget({ command: "agent.exe" })).toBe("shell");
+  });
+
   it("trusts the declared agent kind first", () => {
     expect(resolveComposerTarget({ command: "pwsh.exe", agentKind: "claude" })).toBe("claude");
     expect(resolveComposerTarget({ command: "pwsh.exe", agentKind: "codex" })).toBe("codex");

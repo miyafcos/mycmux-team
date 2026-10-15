@@ -449,6 +449,23 @@ export function resolveSpawnPlan(args: SocketArgs, handoffPromptPath?: string): 
     };
   }
 
+  if (promptFile && target === "cursor" && !resumeSessionId) {
+    if (/[&|<>^%"`\r\n]/.test(promptFile)) {
+      throw new Error("pane.spawn Cursor instruction file path contains unsupported shell characters");
+    }
+    // The source marks an explicit prompt; it is not a Cursor conversation identity.
+    const fromSessionId = socketArgString(args, "fromSessionId", "from_session_id") ?? "external";
+    const launchEnv = {
+      MYCMUX_LAUNCH_TARGET: "cursor",
+      MYCMUX_HANDOFF: "cursor",
+      MYCMUX_HANDOFF_PROMPT_FILE: promptFile,
+      MYCMUX_HANDOFF_FROM_SESSION: fromSessionId,
+      MYCMUX_HANDOFF_LAUNCH_KIND: "new",
+      ...specEnv,
+    };
+    return { target, mode: "prompt", launchEnv, paneOptions: { ...paneOptions, launchEnv } };
+  }
+
   if (promptFile) {
     const kind = requireTrackedKind(target, "prompt");
     const fromSessionId = socketArgString(args, "fromSessionId", "from_session_id") ?? "external";

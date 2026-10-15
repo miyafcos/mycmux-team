@@ -178,6 +178,7 @@ export const PANE_CLICK_IGNORED_TARGET_SELECTOR = [
   "iframe",
   "[contenteditable='true']",
   ".pane-tabbar",
+  "[data-pane-focus-pane-id]",
   ".pane-tab-pill",
   ".pane-action-btn",
   "[data-pane-drag-handle]",
