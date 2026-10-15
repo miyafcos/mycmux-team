@@ -33,6 +33,7 @@
             agent_session_trusted: false,
             observed_at: Some(1_725_000_000_123),
             agent_started_at: Some(1_725_000_000_000),
+            agent_pid: Some(101),
             live_agent_kind: agent_kind.clone(),
             agent_kind,
             agent_session_id,

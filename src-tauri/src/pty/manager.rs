@@ -56,6 +56,49 @@ pub(crate) struct TrustedAgentIdentity {
     pub from_hook: bool,
 }
 
+
+#[derive(Clone)]
+struct SavedAgentIdentity {
+    session_epoch: u64,
+    revision: u64,
+    identity: Option<TrustedAgentIdentity>,
+    trusted: bool,
+}
+
+/// Only the monitor can use suspended evidence to re-prove process ownership.
+/// Naming consumers continue to receive active identities only.
+#[derive(Clone)]
+pub(crate) struct AgentIdentitySnapshot {
+    session_epoch: u64,
+    revision: u64,
+    trusted: bool,
+    identity: Option<TrustedAgentIdentity>,
+}
+
+fn identity_kind_matches(saved: &str, live: &str) -> bool {
+    saved == live || (saved == "claude-codex" && live == "claude")
+}
+
+impl AgentIdentitySnapshot {
+    pub(crate) fn hook_for_process(&self, kind: &str, pid: u32, started_at: u64) -> Option<TrustedAgentIdentity> {
+        self.identity.as_ref().filter(|identity| identity.from_hook
+            && identity.session_epoch == self.session_epoch && identity_kind_matches(&identity.kind, kind)
+            && pid > 0 && started_at > 0 && identity.agent_pid == pid && identity.agent_started_at == started_at).cloned()
+    }
+
+    fn hook_for_metadata(&self, metadata: &super::monitor::PtyMetadata) -> Option<TrustedAgentIdentity> {
+        if self.trusted { return None; }
+        self.identity.as_ref().filter(|identity| identity.from_hook && identity_matches_metadata(identity, metadata)).cloned()
+    }
+}
+
+fn identity_matches_metadata(identity: &TrustedAgentIdentity, metadata: &super::monitor::PtyMetadata) -> bool {
+    identity.session_epoch == metadata.session_epoch && identity.agent_pid > 0
+        && metadata.agent_pid == Some(identity.agent_pid) && identity.agent_started_at > 0
+        && metadata.agent_started_at.is_some() && identity.agent_started_at.checked_mul(1_000) == metadata.agent_started_at
+        && metadata.live_agent_kind.as_deref().is_some_and(|kind| identity_kind_matches(&identity.kind, kind))
+}
+
 struct RequestedConversation {
     kind: String, id: String, created_at: Instant, agent_seen: bool,
 }
@@ -68,7 +111,7 @@ pub struct SessionManager {
     sessions: DashMap<String, PtySession>,
     create_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     requested_conversations: DashMap<String, RequestedConversation>,
-    trusted_agent_identities: DashMap<String, TrustedAgentIdentity>,
+    trusted_agent_identities: DashMap<String, SavedAgentIdentity>,
     conversation_history: DashMap<String, Vec<String>>,
 }
 
@@ -203,7 +246,8 @@ impl SessionManager {
     }
 
     pub(crate) fn remember_requested_conversation(&self, pty: &str, kind: &str, id: &str) {
-        self.requested_conversations.entry(pty.to_string()).or_insert_with(|| RequestedConversation { kind: kind.to_string(), id: id.to_string(), created_at: Instant::now(), agent_seen: self.trusted_agent_identities.contains_key(pty) });
+        let agent_seen = self.trusted_agent_identities.get(pty).is_some_and(|saved| saved.identity.is_some());
+        self.requested_conversations.entry(pty.to_string()).or_insert_with(|| RequestedConversation { kind: kind.to_string(), id: id.to_string(), created_at: Instant::now(), agent_seen });
     }
 
     pub(crate) fn requested_conversation(&self, pty: &str) -> Option<(String, String)> {
@@ -226,22 +270,88 @@ impl SessionManager {
 
     pub(crate) fn trusted_agent_identity(&self, pty: &str) -> Option<TrustedAgentIdentity> {
         let session = self.sessions.get(pty)?;
-        self.trusted_agent_identities.get(pty).filter(|v| v.session_epoch == session.session_epoch()).map(|v| v.clone())
+        if session.poll_exited() {
+            self.trusted_agent_identities.remove_if(pty, |_, saved| saved.session_epoch == session.session_epoch());
+            return None;
+        }
+        self.trusted_agent_identities.remove_if(pty, |_, saved| saved.session_epoch != session.session_epoch());
+        self.trusted_agent_identities.get(pty).filter(|saved|
+            saved.session_epoch == session.session_epoch() && saved.trusted).and_then(|saved| saved.identity.clone())
+    }
+
+    pub(crate) fn agent_identity_snapshot(&self, pty: &str) -> Option<AgentIdentitySnapshot> {
+        let session = self.sessions.get(pty)?;
+        let epoch = session.session_epoch();
+        if session.poll_exited() {
+            self.trusted_agent_identities.remove_if(pty, |_, saved| saved.session_epoch == epoch);
+            return None;
+        }
+        self.trusted_agent_identities.remove_if(pty, |_, saved| saved.session_epoch != epoch);
+        let saved = self.trusted_agent_identities.get(pty).filter(|saved| saved.session_epoch == epoch);
+        Some(AgentIdentitySnapshot {session_epoch:epoch, trusted:saved.as_ref().is_some_and(|saved| saved.trusted),
+            revision:saved.as_ref().map_or(0, |saved| saved.revision), identity:saved.and_then(|saved| saved.identity.clone())})
     }
 
     pub(crate) fn conversation_history(&self, pty: &str) -> Vec<String> {
         self.conversation_history.get(pty).map(|ids| ids.clone()).unwrap_or_default()
     }
 
-    pub(crate) fn remember_agent_identity(&self, pty: &str, identity: TrustedAgentIdentity) {
-        let Some(session) = self.sessions.get(pty) else { return; };
-        if session.session_epoch() != identity.session_epoch { return; }
+    fn note_identity(&self, pty: &str, identity: &TrustedAgentIdentity) {
         self.note_agent_seen(pty);
         let mut history = self.conversation_history.entry(pty.to_string()).or_default();
         if !history.contains(&identity.session_id) { history.push(identity.session_id.clone()); }
         if history.len() > 32 { history.remove(0); }
-        drop(history);
-        self.trusted_agent_identities.insert(pty.to_string(), identity);
+    }
+
+    pub(crate) fn remember_agent_identity(&self, pty: &str, identity: TrustedAgentIdentity) {
+        let Some(session) = self.sessions.get(pty) else { return; };
+        if session.session_epoch() != identity.session_epoch || session.poll_exited() { return; }
+        self.note_identity(pty, &identity);
+        let mut saved = self.trusted_agent_identities.entry(pty.to_string()).or_insert_with(|| SavedAgentIdentity {
+            session_epoch:identity.session_epoch, revision:0, identity:None, trusted:false,
+        });
+        saved.session_epoch = identity.session_epoch;
+        saved.revision = saved.revision.wrapping_add(1);
+        saved.identity = Some(identity); saved.trusted = true;
+    }
+
+    /// Atomically validate the observation's revision, update eligibility, and
+    /// publish metadata. A self hook arriving after the snapshot always wins.
+    pub(crate) fn publish_agent_observation(&self, snapshot: &AgentIdentitySnapshot,
+        identity: Option<TrustedAgentIdentity>, mut metadata: super::monitor::PtyMetadata,
+        apply: impl FnOnce(super::monitor::PtyMetadata),
+    ) -> bool {
+        let pty = metadata.session_id.clone();
+        let Some(session) = self.sessions.get(&pty) else { return false; };
+        if session.session_epoch() != snapshot.session_epoch || metadata.session_epoch != snapshot.session_epoch
+            || session.poll_exited() { return false; }
+        let mut saved = self.trusted_agent_identities.entry(pty.clone()).or_insert_with(|| SavedAgentIdentity {
+            session_epoch:snapshot.session_epoch, revision:0, identity:None, trusted:false,
+        });
+        if saved.session_epoch != snapshot.session_epoch || saved.revision != snapshot.revision { return false; }
+        let identity = identity.filter(|identity| identity_matches_metadata(identity, &metadata))
+            .or_else(|| snapshot.hook_for_metadata(&metadata));
+        metadata.agent_session_trusted = identity.as_ref().is_some_and(|identity|
+            metadata.agent_kind.as_deref() == Some(identity.kind.as_str())
+                && metadata.agent_session_id.as_deref() == Some(identity.session_id.as_str()));
+        let confirmed = identity.clone();
+        if let Some(identity) = identity {
+            saved.identity = Some(identity); saved.trusted = true;
+        } else {
+            // Missing process information suspends the claim. A definite PID,
+            // birth or provider mismatch destroys the re-confirmation evidence.
+            let replaced = saved.identity.as_ref().is_some_and(|identity|
+                metadata.agent_pid.is_some_and(|pid| pid != identity.agent_pid)
+                || metadata.agent_started_at.is_some_and(|birth| identity.agent_started_at.checked_mul(1_000) != Some(birth))
+                || metadata.live_agent_kind.as_deref().is_some_and(|kind| !identity_kind_matches(&identity.kind, kind)));
+            if replaced { saved.identity = None; }
+            saved.trusted = false;
+        }
+        saved.revision = saved.revision.wrapping_add(1);
+        apply(metadata);
+        drop(saved);
+        if let Some(identity) = confirmed { self.note_identity(&pty, &identity); }
+        true
     }
 
     pub fn write(&self, session_id: &str, data: &[u8]) -> Result<(), String> {

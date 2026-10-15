@@ -5,6 +5,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { createAutoPaneNamingScheduler } from "../../src/lib/autoPaneNaming";
 import { readAutoNameScan } from "../../src/lib/autoNameEvidence";
 import { getTabDisplayFullLabel, getTabDisplayLabel } from "../../src/lib/tabDisplayLabel";
+import { uncertainName, topicDescription } from "./helpers/autoNameRetainedContract";
 import { namePrefix, UNKNOWN_AUTO_NAME } from "../../src/lib/autoNamePolicy";
 import { aggregateWorkspaceName } from "../../src/lib/autoWorkspaceNaming";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
@@ -31,22 +32,29 @@ afterAll(() => {
 });
 interface NativeContext {
   tabs: PaneTab[]; writes: Array<{ at: number; id: string; name: string; source?: string }>;
-  reads: Array<{ at: number; id: string }>; snapshots: Array<{ at: number; names: string[] }>;
+  reads: Array<{ at: number; id: string }>; snapshots: Array<{ at: number; names: string[]; previous: boolean[] }>;
   workspaceWrites: Array<{ at: number; name: string; source?: string }>;
   workspaceSnapshots: Array<{ at: number; name: string; candidate: string | null; jobs: number; unknown: number; description: string }>;
+  meaningsAt: Map<number, Map<string, import("../../src/lib/autoNamePolicy").AutoNameMeaning>>;
   workspaceName: string; run: (at: number) => Promise<void>;
 }
 /** Literal tasks and observation times, never selector/aggregate/recorder expectations. */
-function compositeOracle(context: NativeContext, id: string, reader: string, inputName: (at: number) => string) {
+function compositeOracle(context: NativeContext, id: string, reader: string, inputName: (at: number) => string, allowRetention: (at: number) => boolean = () => true) {
   const unknown = "作業内容未取得", { snapshots, reads, writes, workspaceWrites, workspaceSnapshots, tabs } = context;
   // Both healthy routes receive the current canonical plan each run. A plan
   // with no allocations proves loss in cache without making native IPC.
   const observed = new Set(reader !== "transcript" ? snapshots.map(s => s.at) : reads.filter(r => r.id === id + "-0").map(r => r.at));
   const expected = new Map<number, { pane: string; workspace: string; candidate: string; jobs: number; unknown: number; description: string }>();
-  let candidate = inputName(0), accepted: string | undefined, pending: { name: string; readyAt: number } | undefined;
+  let observedAt = 0, candidate = inputName(0), accepted: string | undefined, pending: { name: string; readyAt: number } | undefined;
   let workspace = "以前のワークスペース名", committedAt = -Infinity, proposal: { name: string; since: number; observed: number; count: number } | undefined;
-  for (const { at } of snapshots) {
-    if (observed.has(at)) candidate = inputName(at);
+  for (const { at, previous } of snapshots) {
+    if (observed.has(at)) { candidate = inputName(at); observedAt = at; }
+    if (previous[0]) {
+      const retained = uncertainName(context.meaningsAt.get(at)?.get(id + "-0"), accepted ?? inputName(0));
+      // A stale display may still be visible during the ten-second quiet period
+      // after recovered history proves a different intervening task.
+      if (allowRetention(observedAt)) { candidate = retained; pending = undefined; }
+    }
     accepted ??= candidate;
     pending = candidate === accepted ? undefined : pending?.name === candidate ? pending : { name: candidate, readyAt: at + 10_000 };
     if (pending && at >= pending.readyAt) { accepted = pending.name; pending = undefined; }
@@ -71,7 +79,7 @@ function compositeOracle(context: NativeContext, id: string, reader: string, inp
   }
   for (const s of workspaceSnapshots) {
     const { pane: _pane, ...want } = expected.get(s.at)!;
-    equal("workspace snapshot/topic/count/description at " + s.at, { workspace: s.name, candidate: s.candidate, jobs: s.jobs, unknown: s.unknown, description: s.description }, want);
+    equal("workspace snapshot/topic/count/description at " + s.at, { workspace: s.name, candidate: s.candidate, jobs: s.jobs, unknown: s.unknown, description: topicDescription(s.description) }, want);
   }
   for (const w of workspaceWrites) {
     equal("every workspace write at " + w.at, w.name, expected.get(w.at)!.workspace); equal("workspace provenance", w.source, "auto");
@@ -153,6 +161,7 @@ async function nativeCase(id: string, jobs: Array<{ tab?: Partial<PaneTab>; mate
     throw new Error("Unexpected IPC: " + command);
   });
   const scheduler = createAutoPaneNamingScheduler();
+  const meaningsAt: NativeContext["meaningsAt"] = new Map();
   const run = async (at: number) => {
     elapsed = at; vi.setSystemTime(2_000_000 + at);
     for (const [index, job] of jobs.entries()) if (job.healthy) {
@@ -171,7 +180,8 @@ async function nativeCase(id: string, jobs: Array<{ tab?: Partial<PaneTab>; mate
         eventsBySession: { ...state.eventsBySession, [tab.sessionId]: job.cacheEvents?.(at) ?? fixtureEvents(material) } }));
     }
     await scheduler.runNow();
-    snapshots.push({ at, names: useWorkspaceListStore.getState().workspaces[0].panes[0].tabs.slice(0, jobs.length).map(tab => getTabDisplayFullLabel(tab)) });
+    meaningsAt.set(at, structuredClone(new Map(useAutoNameRuntimeStore.getState().meanings)));
+    snapshots.push({ at, previous: jobs.map((_, index) => useAutoNameRuntimeStore.getState().meanings.get(id + "-" + index)?.staleSince !== undefined), names: useWorkspaceListStore.getState().workspaces[0].panes[0].tabs.slice(0, jobs.length).map(tab => getTabDisplayFullLabel(tab)) });
     const current = useWorkspaceListStore.getState().workspaces[0], summary = aggregateWorkspaceName(current, useAutoNameRuntimeStore.getState().meanings);
     workspaceSnapshots.push({ at, name: current.name, candidate: summary.name, jobs: summary.jobs, unknown: summary.unknown,
       description: useAutoNameRuntimeStore.getState().descriptions.get(id) ?? "" });
@@ -183,10 +193,10 @@ async function nativeCase(id: string, jobs: Array<{ tab?: Partial<PaneTab>; mate
     nativeResults.push({ id, verification: id.startsWith("witness-") || id.startsWith("injected-") ? "intentional-mutation" : "ordinary",
       names: after.panes[0].tabs.slice(0, jobs.length).map(tab => ({ full: getTabDisplayFullLabel(tab), short: getTabDisplayLabel(tab) })),
       workspace: after.name, writes, reads, snapshots, workspaceWrites, workspaceSnapshots });
-    await check({ tabs: after.panes[0].tabs.slice(0, jobs.length), workspaceName: after.name, writes, reads, snapshots, workspaceWrites, workspaceSnapshots, run });
+    await check({ tabs: after.panes[0].tabs.slice(0, jobs.length), workspaceName: after.name, writes, reads, snapshots, workspaceWrites, workspaceSnapshots, meaningsAt, run });
     expect(violations, "forbidden fields, including restored transient writes").toEqual([]);
     expect(useWorkspaceListStore.getState().workspaces[0].panes[0].tabs[jobs.length]).toEqual(before[jobs.length]);
-    expect(fake.invoke.mock.calls.every(([command]) => ["get_pty_metadata_snapshot", "get_session_output_snapshot", "auto_name_materials", "agent_session_titles"].includes(command))).toBe(true);
+    expect(fake.invoke.mock.calls.every(([command]) => ["get_pty_metadata_snapshot", "get_session_output_snapshot", "auto_name_materials", "agent_session_titles", "auto_name_diagnostics"].includes(command))).toBe(true);
     expect(useAiSettingsStore.getState().aiEnabled).toBe(false);
   } finally {
     scheduler.stop(); unsubscribe();
@@ -243,9 +253,9 @@ it("B11 generated frontend: budgets carry incompleteness through the reader and 
   await matrix("B11-native-budgets", ["はいけません。", "は不要です。", "よいですか？", "ください。"].flatMap(suffix =>
     [false, true].map(healthy => ({ suffix, healthy }))), async ({ suffix, healthy }, i) => {
     await nativeCase("b11-budget-" + i, [{ healthy, material: (at, tab) => materialFor(tab, at < 60_000 ? "動画を編集する" :
-      "引用：「" + "あ".repeat(1586) + "」。\n動画を編集して" + suffix) }], ({ tabs, writes }) => {
-      expect(tabs[0].displayName).toBe(UNKNOWN_AUTO_NAME);
-      for (const commit of writes.filter(commit => commit.at >= 70_000)) expect(commit.name).not.toContain("動画編集");
+      "引用：「" + "あ".repeat(1586) + "」。\n動画を編集して" + suffix) }], ({ tabs, writes, meaningsAt }) => {
+      expect(tabs[0].displayName).toBe(uncertainName(meaningsAt.get(360_000)?.get(tabs[0].id), "動画編集"));
+      for (const commit of writes.filter(commit => commit.at >= 70_000)) expect(commit.name).toBe(uncertainName(meaningsAt.get(commit.at)?.get(tabs[0].id), "動画編集"));
     });
   });
 });
@@ -270,7 +280,7 @@ it("B11 generated frontend: mixed workspace invalidation retains held weights", 
       { material: (at, tab) => materialFor(tab, at < 180_000 || state === "fresh" ? "解説スライドを作る" : state === "held-control" ? "続きをお願いします" : undefined) },
       ...Array.from({ length: unknown }, () => ({ material: (_at: number, tab: PaneTab) => materialFor(tab) })),
     ], ({ workspaceName, workspaceWrites }) => {
-      const expected = state === "fresh" ? "解説スライド制作・ほか" + (unknown + 2) : UNKNOWN_AUTO_NAME;
+      const expected = "解説スライド制作・ほか" + (unknown + 2);
       expect(workspaceName).toBe(expected);
       for (const write of workspaceWrites.filter(w => w.at >= 420_000)) expect(write.name).toBe(expected);
     },
@@ -370,11 +380,19 @@ it("B12 generated parity: complete controls preserve deadlines and missing histo
         : missing && delivery === "direct" ? "解説スライド制作" : at < controlledAt ? "解説スライド制作" : "作業内容未取得";
       await nativeCase(id, [{ healthy: reader !== "transcript", material: (at, tab) => frame(at, tab).material,
         brief: at => frame(at).brief, cacheEvents: at => reader === "live-cached" ? frame(at).events : [] }], context => {
-        traces.push(compositeOracle(context, id, reader, inputName));
+        traces.push(compositeOracle(context, id, reader, inputName,
+          at => !(missing && at >= 170_000)));
       }, undefined, schedule);
     }
     expect(traces[1], "same live deadlines and composition even when unchanged input is cached").toEqual(traces[0]);
-    expect(traces[2].final, "physical sampling keeps its own deadlines, then converges in composition").toEqual(traces[0].final);
+    // Keeping the last confirmed name makes the earlier observation history visible.
+    // A physical reader can confirm B before the control while a live reader only saw A.
+    // Every reader's complete literal timeline was checked above, including the stale marker.
+    if (missing && delivery === "direct") expect(traces[2].final).toEqual(traces[0].final);
+    else {
+      expect([UNKNOWN_AUTO_NAME, "動画編集", "解説スライド制作"]).toContain(traces[2].final!.pane);
+      expect(traces[2].final!.jobs).toBe(2);
+    }
   });
 }, 60_000);
 
@@ -396,19 +414,19 @@ it("generated native: status/continuation/replacement with bounded histories and
   await matrix("native-transitions", cases, async ({ task, kind, keep, text, inWindow, incidental }, i) => {
     const request = kind === "replacement" ? task.target + "ではなく" + text : text;
     await nativeCase("transition-" + i, [{ material: (at, tab) => {
-      if (at < 60_000) return materialFor(tab, task.request);
+      if (at < 60_000) return { ...materialFor(tab, task.request), events:[user(0, task.request)] };
       const material = materialFor(tab, request);
       material.events = inWindow ? [user(0, task.request), user(1, request)] :
         [user(0, task.request), ...Array.from({ length: 24 }, (_, index) => envelope(index + 1, { type: "agentMessage", text: "50%" })), user(25, request)];
       if (incidental) material.events.push(write(30, task.target === "動画" ? "temporary.pptx" : "temporary.mp4"));
       return material;
     } }], ({ tabs, writes, snapshots }) => {
-      if (keep) expect(tabs[0].displayName).toBe(UNKNOWN_AUTO_NAME); else expect(tabs[0].displayName).not.toBe(task.name);
+      if (keep) expect(tabs[0].displayName).toBe(task.name); else expect(tabs[0].displayName).not.toBe(task.name);
       for (const snapshot of snapshots.filter(snapshot => snapshot.at >= 70_000)) {
-        if (keep) expect(snapshot.names[0]).toBe(UNKNOWN_AUTO_NAME); else expect(snapshot.names[0]).not.toBe(task.name);
+        if (keep) expect(snapshot.names[0]).toBe(task.name); else expect(snapshot.names[0]).not.toBe(task.name);
       }
       for (const commit of writes.filter(commit => commit.at >= 70_000)) {
-        if (keep) expect(commit.name).toBe(UNKNOWN_AUTO_NAME); else expect(commit.name).not.toBe(task.name);
+        if (keep) expect(commit.name).toBe(task.name); else expect(commit.name).not.toBe(task.name);
       }
     });
   });
@@ -469,7 +487,7 @@ it("generated native: exhausted arrangements and unknown reservations never keep
       (index === size - 1 ? "動画ではなく" : "") + "数学スライドの解説ページ" + "甲乙丙丁戊己"[index] + "を確認する") }));
     await nativeCase("collision-" + i, jobs, ({ tabs, writes }) => {
       expect(tabs[size - 1].displayName).not.toContain("動画編集");
-      expect(new Set(tabs.map(tab => getTabDisplayLabel(tab))).size).toBe(size);
+      expect(new Set(tabs.map(tab => getTabDisplayLabel(tab)).filter(name => !name.startsWith(UNKNOWN_AUTO_NAME))).size).toBe(tabs.filter(tab => !getTabDisplayLabel(tab).startsWith(UNKNOWN_AUTO_NAME)).length);
       for (const commit of writes.filter(commit => commit.at >= 70_000)) expect(commit.name).not.toContain("動画編集");
     });
   });
@@ -480,14 +498,16 @@ it("generated native: unknown reservations and stable additions", async () => {
     await nativeCase("unknown-" + i, [...Array.from({ length: size }, () => ({ material: (_at: number, tab: PaneTab) => materialFor(tab) })),
       { tab: { label: "legacy readable", labelSource: undefined, displayName: reservation, displayNameSource: "auto" }, material: (_at: number, tab: PaneTab) => materialFor(tab) }], async ({ tabs, run }) => {
       const initial = tabs.slice(0, size).map(tab => getTabDisplayLabel(tab));
-      expect(new Set([...initial, reservation]).size).toBe(size + 1);
+      expect(initial.every(name => name === UNKNOWN_AUTO_NAME)).toBe(true);
+      expect(getTabDisplayLabel(tabs[size])).toBe(reservation);
       const ws = useWorkspaceListStore.getState().workspaces[0], added = makeTab("0-added-" + i);
       useWorkspaceListStore.setState({ workspaces: [{ ...ws, panes: [{ ...ws.panes[0], tabs: [added, ...ws.panes[0].tabs] }] }] });
       await run(420_000);
       // Exact IDs, rather than positions, must retain their reservations.
       tabs.slice(0, size).forEach((tab, index) => expect(getTabDisplayLabel(useWorkspaceListStore.getState().workspaces[0].panes[0].tabs.find(t => t.id === tab.id)!)).toBe(initial[index]));
-      const addedTabs = useWorkspaceListStore.getState().workspaces[0].panes[0].tabs.filter(tab => tab.labelSource !== "user");
-      expect(new Set(addedTabs.map(tab => getTabDisplayLabel(tab))).size).toBe(addedTabs.length);
+      const automaticIds = new Set([added.id, ...tabs.slice(0, size).map(tab => tab.id)]);
+      const addedTabs = useWorkspaceListStore.getState().workspaces[0].panes[0].tabs.filter(tab => automaticIds.has(tab.id));
+      expect(addedTabs.every(tab => getTabDisplayLabel(tab) === UNKNOWN_AUTO_NAME)).toBe(true);
       const live = useWorkspaceListStore.getState().workspaces[0];
       useWorkspaceListStore.setState({ workspaces: [{ ...live, panes: [{ ...live.panes[0], tabs: live.panes[0].tabs.filter(tab => tab.id !== tabs[0].id) }] }] });
       await run(480_000);
@@ -534,13 +554,19 @@ it("generated operational boundaries preserve scoped undo/hold and bound raw rea
       if (command === "auto_name_materials") throw new Error("unavailable");
       throw new Error(String(command));
     });
-    await readAutoNameScan(); const attempts = fake.invoke.mock.calls.filter(([command]) => command === "auto_name_materials");
+    const failedScan = await readAutoNameScan(); const attempts = fake.invoke.mock.calls.filter(([command]) => command === "auto_name_materials");
+    expect([...failedScan.naming.values()].map(evidence => evidence.readFailureCount)).toEqual(Array(size).fill(1));
     expect(attempts.map(([, args]) => args.requests.length)).toEqual(Array.from({ length: Math.ceil(size / 64) }, (_, i) => Math.min(64, size - 64 * i)));
-    vi.setSystemTime(2_030_000); await readAutoNameScan();
+    vi.setSystemTime(2_030_000); const cachedScan = await readAutoNameScan();
+    expect([...cachedScan.naming.values()].map(evidence => evidence.readFailureCount)).toEqual(Array(size).fill(1));
     expect(fake.invoke.mock.calls.filter(([command]) => command === "auto_name_materials")).toHaveLength(attempts.length);
+    vi.setSystemTime(2_060_000); const retriedScan = await readAutoNameScan();
+    expect([...retriedScan.naming.values()].map(evidence => evidence.readFailureCount)).toEqual(Array(size).fill(2));
+    const retries = fake.invoke.mock.calls.filter(([command]) => command === "auto_name_materials");
+    expect(retries).toHaveLength(attempts.length * 2);
     useWorkspaceListStore.setState({ workspaces: [{ ...ws, status: "stopped" }] });
     const stopped = await readAutoNameScan(); expect(stopped.tabs).toHaveLength(0);
-    expect(fake.invoke.mock.calls.filter(([command]) => command === "auto_name_materials")).toHaveLength(attempts.length);
+    expect(fake.invoke.mock.calls.filter(([command]) => command === "auto_name_materials")).toHaveLength(retries.length);
   });
 }, 60_000);
 

@@ -12,11 +12,16 @@ let inputEvidenceEnabled = false;
 let evidenceCount = 0;
 export function configureTearoutInputEvidence(enabled: boolean): void { inputEvidenceEnabled = enabled; if (!enabled) evidenceCount = 0; }
 
-export interface NativeTiming { native_started_at: number | null; at: number; phase: "move" | "end"; scale: number; monitor: string | null; focus_stolen: boolean; esc_at?: number | null; release?: ReleasePoint | null; receiver?: string | null; receiver_epoch?: number; client_x?: number; client_y?: number }
+export interface StartAlignment {
+  cursor: [number, number]; before: [number, number]; expected: [number, number]; after: [number, number];
+  scale: number; error_before_px: number; error_after_px: number;
+}
+export interface NativeTiming { start_alignment?: StartAlignment | null; native_started_at: number | null; at: number; phase: "move" | "end"; scale: number; monitor: string | null; focus_stolen: boolean; esc_at?: number | null; release?: ReleasePoint | null; receiver?: string | null; receiver_epoch?: number; client_x?: number; client_y?: number }
 export interface RecordData {
   input_evidence: InputEvidence | null; release_point: ReleaseEvidence | null;
   drag_id: string; pane_id: string; source_window: string; switch_on: boolean; down_at: number;
   grabbed_kind: "pane" | "tab" | "workspace"; pane_count: number;
+  start_alignment: StartAlignment | null;
   outside_at: number | null; shown_at: number | null; visible_at: number | null; native_started_at: number | null;
   hover_started_at: number | null; highlighted_at: number | null; receiver_window: string | null;
   released_at: number | null; esc_at: number | null; layout_done_at: number; result: TearoutResult; destination: ReturnType<typeof destination>;
@@ -39,7 +44,7 @@ export class TearoutRecord {
     startTearoutFrames(id);
     this.data = { input_evidence: null, release_point: null, drag_id: id, pane_id: paneId, source_window: source, switch_on: true, down_at: downAt,
       grabbed_kind: grabbedKind, pane_count: paneCount,
-      outside_at: null, shown_at: null, visible_at: null, native_started_at: null, hover_started_at: null,
+      start_alignment: null, outside_at: null, shown_at: null, visible_at: null, native_started_at: null, hover_started_at: null,
       highlighted_at: null, receiver_window: null, released_at: null, esc_at: null, layout_done_at: 0, result: "kept_window",
       destination: null, released: false, failure_reason: null, failure_phase: null, failed_session_ids: [], session_id_equal: true, scale: null, monitor: null, focus_stolen: false, errors: [] };
   }
@@ -52,6 +57,7 @@ export class TearoutRecord {
   escaped(at: number): void { this.data.esc_at ??= at; }
   revealed(reveal: Reveal): void { Object.assign(this.data, reveal); }
   native(sample: NativeTiming): void {
+    if (sample.start_alignment) this.data.start_alignment = sample.start_alignment;
     if (sample.native_started_at) this.data.native_started_at = sample.native_started_at;
     this.data.scale = sample.scale; this.data.monitor = sample.monitor;
     this.data.focus_stolen ||= sample.focus_stolen;

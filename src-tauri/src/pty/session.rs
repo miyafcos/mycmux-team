@@ -1040,6 +1040,7 @@ impl PtySession {
                                             agent_session_trusted: old.agent_session_trusted,
                                             observed_at: old.observed_at,
                                             agent_started_at: old.agent_started_at,
+                                            agent_pid: old.agent_pid,
                                         },
                                         None => PtyMetadata {
                                             session_id: sid.clone(),
@@ -1058,6 +1059,7 @@ impl PtySession {
                                             agent_session_trusted: false,
                                             observed_at: None,
                                             agent_started_at: None,
+                                            agent_pid: None,
                                         },
                                     };
                                     metadata_store.insert(sid.clone(), meta.clone());

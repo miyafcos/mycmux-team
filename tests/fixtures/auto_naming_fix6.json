@@ -1,0 +1,590 @@
+[
+  {
+    "id": "REVIEW5-01",
+    "text": "New task: Please fix the subtitle position",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-02",
+    "text": "Read /work/subtitle-instructions.md",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-03",
+    "text": "New task: translate the meeting minutes into French.",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-04",
+    "text": "Translate the meeting minutes into French.",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-05",
+    "text": "\u6b21\u306f\u8b70\u4e8b\u9332\u3092\u7ffb\u8a33\u3057\u3066\u304f\u3060\u3055\u3044",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-06",
+    "text": "\u65e5\u4ed8\u306e\u5f62\u5f0f\u306f YYYY/MM/DD \u3067\u3059",
+    "exception": "attribute",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-07",
+    "text": "\u88dc\u8db3\uff1a\u5bfe\u8c61\u306fWindows\u3067\u3059",
+    "exception": "supplement",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-08",
+    "text": "\u65e5\u672c\u8a9e\u3067\u304a\u9858\u3044\u3057\u307e\u3059",
+    "exception": "output",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-09",
+    "text": "Please continue",
+    "exception": "continuation",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-10",
+    "text": "\u7d9a\u3051\u3066",
+    "exception": "continuation",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-11",
+    "text": "\u306f\u3044",
+    "exception": "ack",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-12",
+    "text": "\u9032\u6357\u306f\u3069\u3046\uff1f",
+    "exception": "status",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-13",
+    "text": "\u5bfe\u8c61\u306f Windows 11 \u3067\u3059",
+    "exception": "attribute",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-14",
+    "text": "\u305d\u3053\u306f\u305d\u306e\u307e\u307e\u3067\u5927\u4e08\u592b\u3067\u3059",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-15",
+    "text": "\u4e86\u89e3\u3057\u307e\u3057\u305f\u3002\u7d9a\u3051\u3066\u304f\u3060\u3055\u3044",
+    "exception": "continuation",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-16",
+    "text": "\u82f1\u8a9e\u3067\u3082\u69cb\u3044\u307e\u305b\u3093",
+    "exception": "output",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-17",
+    "text": "YYYY/MM/DD \u3067\u7d71\u4e00\u3057\u3066\u304f\u3060\u3055\u3044",
+    "exception": "output",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-18",
+    "text": "The target is Windows 11.",
+    "exception": "attribute",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-19",
+    "text": "Please keep going.",
+    "exception": "continuation",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-20",
+    "text": "Please continue with the same task.",
+    "exception": "continuation",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-21",
+    "text": "Thanks, keep going.",
+    "exception": "continuation",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-22",
+    "text": "Can you continue?",
+    "exception": "continuation",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-23",
+    "text": "Could you keep going?",
+    "exception": "continuation",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-24",
+    "text": "What's the current status?",
+    "exception": "status",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-25",
+    "text": "Can you use Japanese?",
+    "exception": "output",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-26",
+    "text": "\u65e5\u4ed8\u306e\u5f62\u5f0f\u306f\u3053\u308c\u3067\u3044\u3044\u3067\u3059\u304b\uff1f",
+    "exception": "attribute",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-27",
+    "text": "\u88dc\u8db3\uff1a\u65e5\u4ed8\u306e\u5f62\u5f0f\u3092 YYYY/MM/DD \u306b\u3057\u3066\u304f\u3060\u3055\u3044",
+    "exception": "supplement",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-28",
+    "text": "Read /work/subtitle-spec.md",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-29",
+    "text": "Please fix the subtitle position",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-30",
+    "text": "\u5b57\u5e55\u4f4d\u7f6e\u3092\u4fee\u6b63\u3059\u308b",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-31",
+    "text": "Write a Python script",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-32",
+    "text": "\u3053\u306e\u4f9d\u983c\u3092\u7d99\u7d9a\u3057\u3066\u304f\u3060\u3055\u3044",
+    "exception": "continuation",
+    "review": true
+  },
+  {
+    "id": "REVIEW5-33",
+    "text": "Write a Python script to convert subtitle files.",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-34",
+    "text": "Please write a script to convert subtitle files.",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-35",
+    "text": "Generate a French translation of the meeting minutes.",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-36",
+    "text": "Switch to translating the meeting minutes into French.",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-37",
+    "text": "New task. Translate the meeting minutes into French.",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-38",
+    "text": "New task. Write a script to convert subtitle files.",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-39",
+    "text": "/work/subtitle-instructions.md\u3092\u8aad\u3093\u3067\u304f\u3060\u3055\u3044",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-40",
+    "text": "C:\\work\\subtitle-instructions.md\u3092\u8aad\u3093\u3067\u304f\u3060\u3055\u3044",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-41",
+    "text": "/work/subtitle-instructions.md\u3092\u6e21\u3057\u3066\u304f\u3060\u3055\u3044",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-42",
+    "text": "/work/subtitle-instructions.md \u3092\u8aad\u3093\u3067\u304f\u3060\u3055\u3044",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-43",
+    "text": "\"/work/subtitle-instructions.md\"\u3092\u8aad\u3093\u3067\u304f\u3060\u3055\u3044",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-44",
+    "text": "See /work/subtitle-instructions.md and implement the instructions.",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-45",
+    "text": "For reference: /work/subtitle-instructions.md",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-46",
+    "text": "The reference is /work/subtitle-instructions.md",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-47",
+    "text": "\"Read /work/subtitle-instructions.md\" is a reference",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-48",
+    "text": "\"Please fix the subtitle position\" is a reference",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-49",
+    "text": "> Read /work/subtitle-instructions.md",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-50",
+    "text": "```\nRead /work/subtitle-instructions.md\n```",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-51",
+    "text": "For reference, please read /work/date-format-notes.md",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-52",
+    "text": "Please continue with the same task and use /work/date-format-notes.md for reference.",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-53",
+    "text": "Please fix the same date display",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-54",
+    "text": "Now, please fix the subtitle position",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-55",
+    "text": "Read [instructions](/work/subtitle-instructions.md)",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-56",
+    "text": "Please follow [the instructions](/work/subtitle-instructions.md)",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-57",
+    "text": "Read [instructions](C:\\work\\subtitle-instructions.md)",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "REVIEW5-58",
+    "text": "[/work/subtitle-instructions.md] \u3092\u8aad\u3093\u3067\u304f\u3060\u3055\u3044",
+    "exception": null,
+    "review": true
+  },
+  {
+    "id": "EXTRA-01",
+    "text": "\u7d9a\u3051\u3066\u304f\u3060\u3055\u3044",
+    "exception": "continuation",
+    "review": false
+  },
+  {
+    "id": "EXTRA-02",
+    "text": "\u4f5c\u696d\u3092\u7d9a\u3051\u3066\u304f\u3060\u3055\u3044",
+    "exception": "continuation",
+    "review": false
+  },
+  {
+    "id": "EXTRA-03",
+    "text": "\u72b6\u6cc1\u3092\u6559\u3048\u3066\u304f\u3060\u3055\u3044",
+    "exception": "status",
+    "review": false
+  },
+  {
+    "id": "EXTRA-04",
+    "text": "\u3044\u3064\u7d42\u308f\u308a\u305d\u3046\u3067\u3059\u304b",
+    "exception": "status",
+    "review": false
+  },
+  {
+    "id": "EXTRA-05",
+    "text": "\u3069\u3046\u3067\u3059\u304b",
+    "exception": "status",
+    "review": false
+  },
+  {
+    "id": "EXTRA-06",
+    "text": "\u3044\u3064\u7d42\u308f\u308a\u307e\u3059\u304b",
+    "exception": "status",
+    "review": false
+  },
+  {
+    "id": "EXTRA-07",
+    "text": "\u9032\u6357\u306f?",
+    "exception": "status",
+    "review": false
+  },
+  {
+    "id": "EXTRA-08",
+    "text": "\u8ffd\u8a18\uff1a\u5bfe\u8c61\u306fWindows\u3067\u3059",
+    "exception": "supplement",
+    "review": false
+  },
+  {
+    "id": "EXTRA-09",
+    "text": "Note: the target is Windows",
+    "exception": "supplement",
+    "review": false
+  },
+  {
+    "id": "EXTRA-10",
+    "text": "FYI: Windows only",
+    "exception": "supplement",
+    "review": false
+  },
+  {
+    "id": "EXTRA-11",
+    "text": "\u88dc\u8db3\uff1a\u4fee\u6b63\u5bfe\u8c61\u306fWindows\u3067\u3059",
+    "exception": "supplement",
+    "review": false
+  },
+  {
+    "id": "EXTRA-12",
+    "text": "Please use YYYY/MM/DD for dates",
+    "exception": "output",
+    "review": false
+  },
+  {
+    "id": "EXTRA-13",
+    "text": "Markdown\u3067\u304a\u9858\u3044\u3057\u307e\u3059",
+    "exception": "output",
+    "review": false
+  },
+  {
+    "id": "EXTRA-14",
+    "text": "Please respond in Japanese",
+    "exception": "output",
+    "review": false
+  },
+  {
+    "id": "EXTRA-15",
+    "text": "The target is Windows",
+    "exception": "attribute",
+    "review": false
+  },
+  {
+    "id": "EXTRA-16",
+    "text": "2026/10/15",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-17",
+    "text": "\u88dc\u8db3\uff1a\u5b57\u5e55\u4f4d\u7f6e\u3092\u4fee\u6b63\u3059\u308b",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-18",
+    "text": "Note: write a new subtitle converter",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-19",
+    "text": "FYI: generate a French translation",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-20",
+    "text": "\u8ffd\u8a18\uff1a\u6b21\u306f\u8b70\u4e8b\u9332\u3092\u7ffb\u8a33\u3057\u3066\u304f\u3060\u3055\u3044",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-21",
+    "text": "Please continue. Read [instructions](/work/subtitle-instructions.md)",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-22",
+    "text": "\u7d9a\u3051\u3066\u3002[/work/subtitle-instructions.md]\u3092\u8aad\u3093\u3067\u304f\u3060\u3055\u3044",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-23",
+    "text": "Note: Read [instructions](C:\\work\\subtitle instructions.md)",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-24",
+    "text": "\u8ffd\u8a18\uff1a\u65b0\u3057\u3044\u4f9d\u983c\u66f8 [/work/subtitle.md] \u3092\u6e21\u3057\u3066\u304f\u3060\u3055\u3044",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-25",
+    "text": "Can you continue with the subtitle conversion?",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-26",
+    "text": "Could you keep going and write the report?",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-27",
+    "text": "Please continue translating the meeting minutes",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-28",
+    "text": "\u65e5\u672c\u8a9e\u3067\u5b57\u5e55\u4f4d\u7f6e\u3092\u4fee\u6b63\u3057\u3066\u304f\u3060\u3055\u3044",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-29",
+    "text": "\u65e5\u4ed8\u306e\u5f62\u5f0f\u306f YYYY/MM/DD \u3067\u3059\u3002\u8b70\u4e8b\u9332\u3092\u7ffb\u8a33\u3057\u3066\u304f\u3060\u3055\u3044",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-30",
+    "text": "Note: the target is Windows and write a script",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-31",
+    "text": "What's the current status? Read /work/subtitle.md",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-32",
+    "text": "Can you use Japanese and implement /work/subtitle.md?",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-33",
+    "text": "\u65e5\u4ed8\u306e\u5f62\u5f0f\u306f /work/subtitle.md \u3067\u3059",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-34",
+    "text": "\u5bfe\u8c61\u306f\u8b70\u4e8b\u9332\u3067\u3059",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-35",
+    "text": "\u8a73\u7d30\u306f\u5f8c\u3067\u4f1d\u3048\u307e\u3059",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-36",
+    "text": "New task: details will follow",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-37",
+    "text": "New task.",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-38",
+    "text": "Proceed with the invoice",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-39",
+    "text": "Note: Please continue, then implement the instructions in [brief](/work/a.md)",
+    "exception": null,
+    "review": false
+  },
+  {
+    "id": "EXTRA-40",
+    "text": "\u88dc\u8db3\uff1a[\u4f9d\u983c\u66f8](/work/a.md)\u3092\u5b9f\u88c5\u3057\u3066\u304f\u3060\u3055\u3044",
+    "exception": null,
+    "review": false
+  }
+]

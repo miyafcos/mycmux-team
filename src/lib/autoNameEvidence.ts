@@ -39,7 +39,9 @@ export function liveNamingMaterialSignature(state: LiveState): string {
 export function namingScanStillCurrent(scan: AutoNameScan, tab: ScanTab): boolean {
   if (scan.namingSourceKeys?.get(tab.id) !== undefined && scan.namingSourceKeys.get(tab.id) !== namingSourceKey(tab)) return false;
   const material = cachedNamingMaterial(tab);
-  return !material || buildAutoNameEvidence(tab, material).contentKey === scan.naming.get(tab.id)?.contentKey;
+  if (!material) return true;
+  const current = buildAutoNameEvidence(tab, material), prior = scan.naming.get(tab.id);
+  return current.coreKey !== undefined && prior?.coreKey !== undefined ? current.coreKey === prior.coreKey : current.contentKey === prior?.contentKey;
 }
 function namingSourceKey(tab: ScanTab): string {
   const brief = useLiveBriefStore.getState().briefsBySession[tab.sessionId];
@@ -48,7 +50,13 @@ function namingSourceKey(tab: ScanTab): string {
     && brief.telemetryHealth === "live" && age >= 0 && age < NAMING_READ_INTERVAL_MS
     ? JSON.stringify([brief.serviceEpoch, brief.namingSourceEventIds ?? [], namingPlanKey(brief.namingPlan)]) : "";
 }
-const cache = new Map<string, { at: number; key: string; sourceKey: string; value?: NamingMaterial }>();
+const failedMaterial = (tab: ScanTab): NamingMaterial => ({ tab_id: tab.id, pty_session_id: tab.sessionId,
+  agent_session_id: tab.agentSessionId, agent_kind: tab.agentKind, cwd: tab.cwd, events: [], material_status: "unreadable" });
+const cache = new Map<string, { at: number; key: string; sourceKey: string; readFailureCount: number; value?: NamingMaterial }>();
+const withReadFailures = (tab: ScanTab, material?: NamingMaterial): AutoNameEvidence => {
+  const evidence = buildAutoNameEvidence(tab, material), prior = cache.get(tab.id);
+  return {...evidence, readFailureCount:prior?.key === evidence.binding ? prior.readFailureCount : 0};
+};
 export async function readAutoNameScan(): Promise<AutoNameScan> {
   // Session titles name most agent tabs (autoNamePolicy's presented names). Only the
   // session title is taken here: the task title would change the evidence key and drop holds.
@@ -56,20 +64,27 @@ export async function readAutoNameScan(): Promise<AutoNameScan> {
   const titled = new Map((await withSessionTitles(grouped, TITLED_AGENT_KINDS)).tabs.map(tab => [tab.id, tab.sessionTitle]));
   const raw = { ...grouped, tabs: grouped.tabs.map(tab => titled.get(tab.id) ? { ...tab, sessionTitle: titled.get(tab.id) } : tab) };
   const scan = { ...raw, tabs: raw.tabs.filter(tab => raw.workspaces.find(w => w.id === tab.workspaceId)?.status !== "stopped") };
+  const localMaterials = new Map<string, NamingMaterial>();
   const naming = new Map<string, AutoNameEvidence>(), namingSourceKeys = new Map<string, string>(); const requests = [];
   for (const tab of scan.tabs) {
     const sourceKey = namingSourceKey(tab); namingSourceKeys.set(tab.id, sourceKey);
     const material = cachedNamingMaterial(tab);
-    if (material) { naming.set(tab.id, buildAutoNameEvidence(tab, material)); continue; }
+    if (material) {
+      const evidence = withReadFailures(tab, material);
+      // Codex has no session title. Native sources supply its spec or first request when rules cannot name the live turn.
+      const meaning = deriveAutoName(evidence);
+      if (tab.agentKind !== "codex" || meaning.strength !== "unknown" || meaning.instructionDisposition === "rejection") { naming.set(tab.id, evidence); continue; }
+      localMaterials.set(tab.id, material);
+    }
     const key = namingBinding(tab); const prior = cache.get(tab.id);
     if (!prior || prior.key !== key || Date.now() - prior.at >= NAMING_READ_INTERVAL_MS
       || (sourceKey !== "" && prior.sourceKey !== sourceKey)) {
       // A healthy live source's new references require its current native
       // snapshot. Repeated/failed reads of that source and fallback IO remain
       // throttled; a deferred snapshot must not become an apparent read loss.
-      cache.set(tab.id, { at: Date.now(), key, sourceKey });
+      cache.set(tab.id, { at: Date.now(), key, sourceKey, readFailureCount:prior?.key === key ? prior.readFailureCount : 0 });
       requests.push({ tab_id: tab.id, pty_session_id: tab.sessionId, agent_kind: tab.agentKind, agent_session_id: tab.agentSessionId, cwd: tab.cwd });
-    } else naming.set(tab.id, buildAutoNameEvidence(tab, prior.sourceKey === sourceKey ? prior.value : undefined));
+    } else naming.set(tab.id, withReadFailures(tab, prior.sourceKey === sourceKey ? prior.value : undefined));
   }
   for (let at = 0; at < requests.length; at += 64) {
     const batch = requests.slice(at, at + 64);
@@ -79,11 +94,20 @@ export async function readAutoNameScan(): Promise<AutoNameScan> {
         const tab = scan.tabs.find(tab => tab.id === value.tab_id); if (!tab) continue;
         if (value.pty_session_id !== tab.sessionId || value.cwd !== tab.cwd || value.agent_kind !== tab.agentKind
           || (value.agent_session_id ?? undefined) !== tab.agentSessionId) continue;
-        cache.set(tab.id, { at: Date.now(), key: namingBinding(tab), sourceKey: namingSourceKeys.get(tab.id) ?? "", value }); naming.set(tab.id, buildAutoNameEvidence(tab, value));
+        const readFailureCount = (cache.get(tab.id)?.readFailureCount ?? 0) + Number(value.material_status === "unreadable" || value.material_status === "incomplete");
+        cache.set(tab.id, { at: Date.now(), key: namingBinding(tab), sourceKey: namingSourceKeys.get(tab.id) ?? "", value, readFailureCount });
+        naming.set(tab.id, withReadFailures(tab, value));
       }
-    } catch { /* A read failure does not promote an old, differently bound transcript. */ }
+    } catch { /* Never promote old, differently bound transcript material. */ }
+    // An omitted result includes deadline expiry; keep its reason through the read throttle.
+    for (const request of batch) if (!naming.has(request.tab_id)) {
+      const tab = scan.tabs.find(tab => tab.id === request.tab_id)!;
+      const value = localMaterials.has(tab.id) ? { ...localMaterials.get(tab.id)!, material_status: "unreadable" as const } : failedMaterial(tab);
+      cache.set(tab.id, { at: Date.now(), key: namingBinding(tab), sourceKey: namingSourceKeys.get(tab.id) ?? "", value, readFailureCount:(cache.get(tab.id)?.readFailureCount ?? 0) + 1 });
+      naming.set(tab.id, withReadFailures(tab, value));
+    }
   }
   const ids = new Set(scan.tabs.map(tab => tab.id)); for (const id of cache.keys()) if (!ids.has(id)) cache.delete(id);
-  for (const tab of scan.tabs) if (!naming.has(tab.id)) naming.set(tab.id, buildAutoNameEvidence(tab));
+  for (const tab of scan.tabs) if (!naming.has(tab.id)) naming.set(tab.id, withReadFailures(tab));
   return { ...scan, naming, namingSourceKeys };
 }

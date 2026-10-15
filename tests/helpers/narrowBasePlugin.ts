@@ -12,7 +12,9 @@ export function narrowBasePlugin(): Plugin {
   const graphs = [
     { alias: "codex-base:", prefix: "/__codex_narrow_base__/", revision: NARROW_BASE },
     { alias: "codex-merge:", prefix: "/__codex_narrow_merge__/", revision: NARROW_CANDIDATE },
-  ].map(graph => ({ ...graph, files: new Set(execFileSync("git", ["ls-tree", "-r", "--name-only", graph.revision], { cwd: root, encoding: "utf8" }).trim().split("\n")) }));
+  // Node's file URLs need a drive on Windows, including for these virtual modules.
+  ].map(graph => ({ ...graph, prefix: root.replaceAll("\\", "/") + graph.prefix,
+    files: new Set(execFileSync("git", ["ls-tree", "-r", "--name-only", graph.revision], { cwd: root, encoding: "utf8" }).trim().split("\n")) }));
   const shared = new Set(["src/lib/ipc.ts", "src/stores/paneMetadataStore.ts", "src/lib/windowContext.ts",
     // Detached parity compares the actual component's launch props. Use the
     // same renderer boundary in both graphs; no launch calculation is shared.
@@ -20,7 +22,7 @@ export function narrowBasePlugin(): Plugin {
   const resolve = (file: string, graph: typeof graphs[number]) => {
     const target = [file, file + ".ts", file + ".tsx", file + "/index.ts", file + "/index.tsx"].find(candidate => graph.files.has(candidate));
     if (!target) throw new Error(`Missing pinned base module: ${file}`);
-    return shared.has(target) || !/\.tsx?$/.test(target) ? path.join(root, target) : graph.prefix + target;
+    return shared.has(target) || !/\.tsx?$/.test(target) ? path.join(root, target).replaceAll("\\", "/") : graph.prefix + target;
   };
   return {
     name: "codex-narrow-base-parity", enforce: "pre",

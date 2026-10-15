@@ -3,6 +3,7 @@ mod claude;
 mod codex;
 pub mod material;
 mod material_batch;
+mod naming_sources;
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -233,10 +234,21 @@ fn markdown_paths(prompt: &str) -> Vec<&str> {
     }
     found
 }
+fn task_file_name(path: &Path) -> Option<String> {
+    if !path.is_file() || !path.extension()?.eq_ignore_ascii_case("md") { return None; }
+    if let Some(value) = heading(path) { return Some(value); }
+    let stem = path.file_stem()?.to_str()?;
+    (!matches!(stem.to_ascii_lowercase().as_str(), "spec" | "readme" | "agents" | "instructions"))
+        .then(|| stem.chars().take(160).collect())
+}
+/// Only files explicitly named by this seat's confirmed input qualify for naming material.
+fn explicit_task_title(prompt: &str) -> Option<String> {
+    markdown_paths(prompt).into_iter().find_map(|candidate| task_file_name(Path::new(candidate)))
+}
 fn task_title(cwd: &str, prompt: Option<&str>) -> Option<String> {
     if let Some(prompt) = prompt {
         for candidate in markdown_paths(prompt) {
-            if let Some(title) = heading(Path::new(candidate)) {
+            if let Some(title) = task_file_name(Path::new(candidate)) {
                 return Some(title);
             }
         }
@@ -244,7 +256,14 @@ fn task_title(cwd: &str, prompt: Option<&str>) -> Option<String> {
     if cwd.trim().is_empty() {
         return None;
     }
-    heading(&Path::new(cwd).join("spec.md"))
+    let root = Path::new(cwd).canonicalize().ok()?;
+    for local in [".dispatch/SPEC.md", "spec.md", "SPEC.md"] {
+        let Ok(path) = root.join(local).canonicalize() else { continue; };
+        if path.starts_with(&root) {
+            if let Some(title) = task_file_name(&path) { return Some(title); }
+        }
+    }
+    None
 }
 fn resolve(request: TitleRequest) -> SessionTitles {
     let mut evidence = Evidence::default();

@@ -2,6 +2,8 @@ import { namingBinding } from "./autoNameMaterial";
 import type { Pane, PaneTab, Workspace } from "../types";
 import { fitPresentedName, isPresentedMeaning, nameGraphemes, shortAutomaticName, UNKNOWN_AUTO_NAME, type AutoNameMeaning } from "./autoNamePolicy";
 
+import { autoNameDescription } from "./autoNameStatus";
+
 export interface WorkspaceNameSummary {
   name: string | null;
   key: string;
@@ -29,10 +31,13 @@ export function aggregateWorkspaceName(workspace: Workspace, meanings: ReadonlyM
   const byId = new Map(members.map(({ tab }) => [tab.id, tab]));
   const jobs = new Map<string, { topic: string; weight: number; names: Set<string>; presented: boolean }>();
   let unknown = 0, labelled = 0;
+  const reasons = new Map<string, number>();
   const composition: string[] = [];
   const support: Array<readonly [string, string]> = [];
   for (const { tab, pane } of members) {
     const meaning = meanings.get(tab.id);
+    const reason = autoNameDescription(meaning);
+    if (reason && (meaning?.strength === "unknown" || meaning?.staleSince !== undefined)) reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
     // A launch label stands in for a tab's name only; letting it vote would swap the
     // workspace name whenever the tab moves between its label and a rule name.
     if (!matchesOwner(tab, meaning) || meaning.source === "label") {
@@ -95,12 +100,13 @@ export function aggregateWorkspaceName(workspace: Workspace, meanings: ReadonlyM
   const description = ranked.map(([topic, info]) => `${topic} ${info.count}件: ${[...info.names].sort().join("、")}`)
     .concat(labelled ? [`起動時の名前 ${labelled}件`] : [])
     .concat(unknown - labelled ? [`作業内容未取得 ${unknown - labelled}件`] : [])
+    .concat([...reasons].map(([reason, count]) => `${reason} ${count}件`))
     .concat(onlyHeld ? ["最新の作業内容は未取得 (前回の材料)"] : []).join("\n");
   return { name: workspace.status === "stopped" ? null : name, key: JSON.stringify(composition.sort()), description, jobs: count, unknown,
     support: support.sort(([a], [b]) => a.localeCompare(b)), onlyHeld };
 }
 export function createAutoWorkspaceNamePolicy(now: () => number = Date.now) {
-  const pending = new Map<string, { key: string; since: number; observed: number; count: number }>();
+  const pending = new Map<string, { key: string; supportKey: string; since: number; observed: number; count: number }>();
   const lastCommit = new Map<string, number>();
   const committedSupport = new Map<string, ReadonlyMap<string, string>>();
   return {
@@ -110,8 +116,10 @@ export function createAutoWorkspaceNamePolicy(now: () => number = Date.now) {
       if (workspace.nameSource !== "auto" || workspace.status === "stopped" || !summary.name || workspace.name === summary.name
         || (summary.onlyHeld && unchangedSupport)) { pending.delete(workspace.id); return null; }
       const stamp = now(); const key = JSON.stringify([summary.name, summary.key]);
+      const supportKey = JSON.stringify([summary.name, summary.support]);
       let proposal = pending.get(workspace.id);
-      if (!proposal || proposal.key !== key) { proposal = { key, since: stamp, observed: stamp, count: 1 }; pending.set(workspace.id, proposal); }
+      if (!proposal || (proposal.key !== key && proposal.supportKey !== supportKey)) { proposal = { key, supportKey, since: stamp, observed: stamp, count: 1 }; pending.set(workspace.id, proposal); }
+      proposal.key = key;
       if (stamp - proposal.observed >= 30_000) { proposal.count++; proposal.observed = stamp; }
       const wait = stamp - workspace.createdAt < 120_000 ? 30_000 : 120_000;
       if (proposal.count < 2 || stamp - proposal.since < wait || stamp - (lastCommit.get(workspace.id) ?? -Infinity) < 300_000) return null;

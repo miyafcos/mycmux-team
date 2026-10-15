@@ -2,6 +2,9 @@ import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, typ
 import { createPortal } from "react-dom";
 import { jumpToPaneTab } from "../../lib/jumpToPaneTab";
 import { type LiveTailFact } from "../../lib/liveTail/facts";
+import { isAutomaticNameTarget } from "../../lib/autoNameOwnership";
+import { autoNameDescription } from "../../lib/autoNameStatus";
+import { useAutoNameRuntimeStore } from "../../stores/autoNameRuntimeStore";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
 import { acquireLiveTailConsumer, liveTailAttentionChanged, liveTailScreenRetained, liveTailTargetsForView, statusForLiveTailTarget, useLiveTailStore, type LiveTailEntry, type LiveTailTarget } from "../../stores/liveTailStore";
 import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
@@ -232,6 +235,9 @@ function sameRowPresentation(a: TailRowProps, b: TailRowProps): boolean {
 function TailRow({ visual, tab, colors }: TailRowProps) {
   const { workspaceId, paneId, tabId, sessionId, agentKind, fact, name, child, lastOutputAt,
     summary, rows, progressAt, previousScreen, sampleAt, waitingForReply, aliveScreenText } = visual;
+  const meaning = useAutoNameRuntimeStore(state => state.meanings.get(tabId));
+  const automatic = isAutomaticNameTarget(tab);
+  const namingHint = automatic ? autoNameDescription(meaning) : undefined;
   useSessionAttentionStore(state => state.attentionBySession[sessionId]);
   const fontFamily = useThemeStore(state => state.fontFamily);
   const fontScale = useThemeStore(state => state.uiFontScale);
@@ -328,7 +334,8 @@ function TailRow({ visual, tab, colors }: TailRowProps) {
         <span className="live-tail-heading">
           {child && <span className="live-tail-tree" aria-hidden="true">└</span>}
           <span className="live-tail-agent" aria-hidden="true"><AgentKindIcon kind={agentKind} size={12} chip={false} /></span>
-          <span className="live-tail-name">{name}</span>
+          <span className="live-tail-name" title={namingHint}>{name}</span>
+          {automatic && meaning?.staleSince !== undefined && <span className="live-tail-badge" title={namingHint}>前回</span>}
           {badge && <span className="live-tail-badge">{badge}</span>}
         </span>
         {summary.trim() && <span className="live-tail-summary">

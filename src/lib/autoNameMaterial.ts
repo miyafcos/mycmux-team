@@ -3,7 +3,13 @@ import type { NamingPlan, NamingAllocation, SemanticEventEnvelope, UserMessageKi
 import { sha256Hex } from "./persistentLayoutProjection";
 import { interpretNamingText, isNamingAck, namingTextKey, substantiveInstruction } from "./autoNameLanguage";
 
+export interface NamingInputSource { event_id: string; source_revision: number; source_byte_start: number }
 export interface NamingMaterial {
+  material_status?: "ready" | "waiting" | "missing" | "unreadable" | "unverified" | "contended" | "incomplete"; record_owner?: string | null;
+  initial_instruction?: string | null; initial_instruction_complete?: boolean;
+  task_title_source?: "spec" | "prompt" | null;
+  task_title_explicit?: boolean; task_title_input?: NamingInputSource | null;
+  initial_instruction_source?: NamingInputSource | null;
   tab_id: string; pty_session_id: string; agent_session_id?: string | null;
   agent_kind: string; cwd: string; latest_instruction?: string | null;
   task_title?: string | null; events: SemanticEventEnvelope[];
@@ -13,6 +19,13 @@ export interface NamingMaterial {
   instruction_history_complete?: boolean; naming_plan?: NamingPlan | null;
 }
 export interface AutoNameEvidence {
+  coreKey?: string; readFailureCount?: number;
+  contextHistoryComplete?: boolean;
+  initialInstructionSource?: NamingInputSource; taskTitleInput?: NamingInputSource; taskTitleExplicit?: boolean;
+  instructionSources?: Array<NamingInputSource | undefined>; instructionKinds?: Array<UserMessageKind | undefined>;
+  materialStatus?: NamingMaterial["material_status"]; recordOwner?: string;
+  initialInstruction?: string; initialInstructionComplete?: boolean;
+  taskTitleSource?: NamingMaterial["task_title_source"]; instructionLoss?: boolean;
   id: string; workspaceId: string; binding: string; contentKey: string;
   instructions: string[]; activity: string[];
   instructionCompleteness?: boolean[]; instructionPositions?: Array<number | undefined>;
@@ -87,6 +100,7 @@ export function buildAutoNameEvidence(tab: GroupingScan["tabs"][number], materia
   const incomplete = new Set(matching ? material.incomplete_event_ids : []);
   const instructions: string[] = [], activity: string[] = [], instructionCompleteness: boolean[] = [], activityCompleteness: boolean[] = [];
   const instructionPositions: Array<number | undefined> = [], files: AutoNameEvidence["files"] = [], evidenceRefs: string[] = [];
+  const instructionSources: Array<NamingInputSource | undefined> = [], instructionKinds: Array<UserMessageKind | undefined> = [];
   let present = !!plan, remaining = 3000;
   for (const entry of [...(plan?.entries ?? [])].reverse()) {
     const event = material?.events.find(e => e.eventId === entry.eventId);
@@ -100,6 +114,8 @@ export function buildAutoNameEvidence(tab: GroupingScan["tabs"][number], materia
       const answer = (event?.kind.type === "userMessage" && event.kind.kind === "answer") || (entry.eventId === plan?.latestInput?.eventId && plan.latestInput.kind === "answer");
       instructions.push(complete && !answer ? substantiveInstruction(value) : value);
       instructionCompleteness.push(complete); instructionPositions.push(entry.sourceByteStart);
+      instructionSources.push({event_id:entry.eventId, source_revision:entry.sourceRevision, source_byte_start:entry.sourceByteStart});
+      instructionKinds.push(event?.kind.type === "userMessage" ? event.kind.kind : entry.eventId === plan?.latestInput?.eventId ? plan.latestInput.kind : undefined);
     } else if (entry.role === "agent") {
       // Retain the second body as auxiliary evidence, without upgrading it to current activity.
       activity.push(value); activityCompleteness.push(entry.complete && entry.eventId === plan?.latestAgent?.eventId);
@@ -120,9 +136,28 @@ export function buildAutoNameEvidence(tab: GroupingScan["tabs"][number], materia
   const cwd = take(tab.cwd.split(/[\\/]/).filter(part => !/^([A-Za-z]:|users?|home|src|\d{6,8}|[A-Za-z0-9_-]+)$/i.test(part)).slice(-3).join("/"), Math.min(160, remaining));
   const binding = namingBinding(tab);
   const activityKey = activity.filter((value, index) => { const meaning = interpretNamingText(value); return activityCompleteness[index] && meaning.chosen && !meaning.ambiguous && !meaning.rejected.length; }).map(namingTextKey).filter(Boolean);
-  const contentKey = JSON.stringify([binding, instructions.map((value, i) => instructionCompleteness[i] ? namingTextKey(value) : "incomplete"),
-    activityKey, files.map(({name, operation}) => [name, operation]), taskTitleComplete ? namingTextKey(taskTitle) : "incomplete",
-    mark, plan && [plan.coverage.sourceUnknown, plan.coverage.countLoss, plan.coverage.characterLoss], instructionHistoryComplete, "rules-v5"]);
-  return {id: tab.id, workspaceId: tab.workspaceId, binding, contentKey, instructions, instructionCompleteness, instructionPositions,
+  const coreKey = JSON.stringify([binding, instructions.map((value, i) => instructionCompleteness[i] ? namingTextKey(value) : "incomplete"),
+    instructionSources, instructionKinds, activityKey, files.map(({name, operation}) => [name, operation]),
+    mark, plan && [plan.coverage.sourceUnknown, plan.coverage.countLoss, plan.coverage.characterLoss], instructionHistoryComplete, "rules-v6"]);
+  const contentKey = JSON.stringify([coreKey, taskTitleComplete ? namingTextKey(taskTitle) : "incomplete",
+    matching && [material.material_status, material.record_owner, material.task_title_source, material.initial_instruction_complete,
+      material.initial_instruction && namingTextKey(material.initial_instruction), material.initial_instruction_source,
+      material.task_title_explicit, material.task_title_input]]);
+  return {id: tab.id, workspaceId: tab.workspaceId, binding, contentKey, coreKey,
+    materialStatus: matching ? material?.material_status ?? (plan ? "ready" : "missing") : "waiting",
+    recordOwner: matching ? material?.record_owner ?? undefined : undefined,
+    initialInstruction: matching ? material?.initial_instruction ?? undefined : undefined, initialInstructionComplete: matching ? material?.initial_instruction_complete : undefined,
+    initialInstructionSource: matching && validInputSource(material?.initial_instruction_source) ? material.initial_instruction_source : undefined,
+    taskTitleInput: matching && validInputSource(material?.task_title_input) ? material.task_title_input : undefined,
+    taskTitleExplicit: matching && material?.task_title_explicit === true,
+    contextHistoryComplete: present && !plan?.coverage.sourceUnknown && (!losses.length || recovered),
+    taskTitleSource: matching ? material?.task_title_source : undefined, instructionLoss: !!losses.length, instructions, instructionCompleteness, instructionPositions,
+    instructionSources, instructionKinds,
     activity, activityCompleteness, files, taskTitle, taskTitleComplete, replyOnly, latestInput: mark, instructionHistoryComplete, cwd, evidenceRefs};
+}
+
+export function validInputSource(source?: NamingInputSource | null): source is NamingInputSource {
+  return !!source && typeof source.event_id === "string" && source.event_id.length > 0
+    && Number.isSafeInteger(source.source_revision) && source.source_revision >= 0
+    && Number.isSafeInteger(source.source_byte_start) && source.source_byte_start >= 0;
 }

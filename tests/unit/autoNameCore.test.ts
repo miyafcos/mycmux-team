@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { uncertainName, topicDescription } from "./helpers/autoNameRetainedContract";
 import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
@@ -53,9 +54,10 @@ const scanTab = (tab: PaneTab) => ({ ...tab, label: tab.label ?? "", agentKind: 
   workspaceId: "w", workspaceName: "", paneId: "p", column: 1, tail: [], lastOutputAt: null });
 function finish(h: ReturnType<typeof policyHarness>, checks: Check[], expected: string): unknown {
   const first = h.run(65_000).get("t")?.displayName, stable = h.run(75_000).get("t")?.displayName;
-  equal(checks, "stable current task", stable, expected);
-  for (const at of [120_000, 360_000]) equal(checks, "no resurrection at " + at, h.run(at).get("t")?.displayName, expected);
-  for (const write of h.writes.filter(w => w.at >= 75_000)) equal(checks, "every stable pane write", write.name, expected);
+  const want = () => expected === UNKNOWN ? uncertainName(h.policy.meanings().get("t"), A) : expected;
+  equal(checks, "stable current task", stable, want());
+  for (const at of [120_000, 360_000]) equal(checks, "no resurrection at " + at, h.run(at).get("t")?.displayName, want());
+  for (const write of h.writes.filter(w => w.at >= 75_000)) equal(checks, "every stable pane write", write.name, expected === UNKNOWN ? uncertainName(h.meaningsAt.get(write.at)?.get("t"), A) : expected);
   const beforeRecovery = structuredClone(h.writes);
   Object.assign(h.materials.get("t")!, { latest_instruction: direct, latest_instruction_kind: "taskChange", events: [message(1000, direct)] });
   h.run(420_000); equal(checks, "later complete direct instruction", h.run(430_000).get("t")?.displayName, B);
@@ -140,6 +142,8 @@ async function replay(id: string, reader: Reader, frames: Frame[], schedule: num
   const baseline = structuredClone(immutable(ws)), states: Array<{ at: number; workspace: Workspace }> = [];
   let at = 0, delivered: Frame | undefined, observedKey = "", accepted = A, pending: { name: string; readyAt: number } | undefined;
   let controlObservedAt: number | undefined, workspaceCommittedAt: number | undefined;
+  let oracleWorkspace = ws.name, oracleCommittedAt = -Infinity;
+  let workspaceProposal: { name: string; since: number; observed: number; count: number } | undefined;
   const deliveries: unknown[] = [], snapshots: unknown[] = [], expectedByTime = new Map<number, { pane: string; workspace: string }>();
   const unsubscribe = useWorkspaceListStore.subscribe(state => { states.push({ at, workspace: structuredClone(state.workspaces[0]) }); });
   const frameAt = () => [...frames].reverse().find(f => f.at <= at)!;
@@ -174,12 +178,25 @@ async function replay(id: string, reader: Reader, frames: Frame[], schedule: num
         if (next === UNKNOWN && controlObservedAt === undefined) controlObservedAt = at;
         pending = next === accepted ? undefined : pending?.name === next ? pending : { name: next, readyAt: at + 10_000 };
       }
-      if (pending && at >= pending.readyAt) { accepted = pending.name; pending = undefined; }
+      const previous = useAutoNameRuntimeStore.getState().meanings.get(tab.id);
+      if (previous?.staleSince !== undefined) { accepted = uncertainName(previous, accepted); pending = undefined; }
+      else if (pending && at >= pending.readyAt) { accepted = pending.name; pending = undefined; }
       const current = useWorkspaceListStore.getState().workspaces[0];
       // The first actual successful A patch establishes the workspace cooldown.
       if (workspaceCommittedAt === undefined && states.some(s => s.workspace.name === A + "・ほか1")) workspaceCommittedAt = at;
-      const deadline = controlObservedAt === undefined ? Infinity : Math.max(controlObservedAt + 10_000 + 120_000, (workspaceCommittedAt ?? 30_000) + 300_000);
-      const expectedWorkspace = at < 30_000 ? ws.name : at < deadline ? A + "・ほか1" : UNKNOWN;
+      const candidateWorkspace = accepted === UNKNOWN ? UNKNOWN : accepted + "・ほか1";
+      if (candidateWorkspace === oracleWorkspace) workspaceProposal = undefined;
+      else {
+        if (workspaceProposal?.name !== candidateWorkspace)
+          workspaceProposal = { name: candidateWorkspace, since: at, observed: at, count: 1 };
+        if (at - workspaceProposal.observed >= 30_000) { workspaceProposal.count++; workspaceProposal.observed = at; }
+        const wait = at < 120_000 ? 30_000 : 120_000;
+        if (workspaceProposal.count >= 2 && at - workspaceProposal.since >= wait && at - oracleCommittedAt >= 300_000) {
+          oracleWorkspace = candidateWorkspace; oracleCommittedAt = at; workspaceProposal = undefined;
+        }
+      }
+      const deadline = workspaceProposal ? Math.max(workspaceProposal.since + (at < 120_000 ? 30_000 : 120_000), oracleCommittedAt + 300_000) : Infinity;
+      const expectedWorkspace = oracleWorkspace;
       expectedByTime.set(at, { pane: accepted, workspace: expectedWorkspace });
       const meanings = useAutoNameRuntimeStore.getState().meanings, summary = aggregateWorkspaceName(current, meanings);
       const pane = getTabDisplayFullLabel(current.panes[0].tabs[0]), short = getTabDisplayLabel(current.panes[0].tabs[0]);
@@ -190,7 +207,7 @@ async function replay(id: string, reader: Reader, frames: Frame[], schedule: num
       equal(checks, "workspace concrete topic at " + at, known ? m?.topic : m?.topic ?? "", known ? accepted : "");
       equal(checks, "workspace job count at " + at, summary.jobs, 2); equal(checks, "workspace unknown count at " + at, summary.unknown, known ? 1 : 2);
       const description = known ? `${accepted} 1件: ${accepted}\n${UNKNOWN} 1件` : `${UNKNOWN} 2件`;
-      equal(checks, "workspace description counts/topics at " + at, summary.description, description);
+      equal(checks, "workspace description counts/topics at " + at, topicDescription(summary.description), description);
       snapshots.push({ at, observedFrameAt: observed.at, pane, short, workspace: current.name, summary, meanings: [...meanings],
         controlObservedAt, workspaceCommittedAt, workspaceDeadline: Number.isFinite(deadline) ? deadline : null, expected: expectedByTime.get(at) });
     }
@@ -210,7 +227,7 @@ async function replay(id: string, reader: Reader, frames: Frame[], schedule: num
       }
       prior = state.workspace;
     }
-    equal(checks, "allowed IPC only", fake.invoke.mock.calls.every(([command]) => ["get_pty_metadata_snapshot", "get_session_output_snapshot", "auto_name_materials", "agent_session_titles"].includes(command)), true);
+    equal(checks, "allowed IPC only", fake.invoke.mock.calls.every(([command]) => ["get_pty_metadata_snapshot", "get_session_output_snapshot", "auto_name_materials", "agent_session_titles", "auto_name_diagnostics"].includes(command)), true);
     return { frames, deliveries, snapshots, writes: states, controlObservedAt, workspaceCommittedAt };
   } finally { scheduler.stop(); unsubscribe(); clearNamingHolds([id], ws.panes[0].tabs.map(t => t.id)); vi.clearAllTimers(); }
 }
@@ -261,21 +278,21 @@ it("K3 pane core: controls cancel pending work and lost markers cannot revive ac
     m.events.push(message(2, control)); h.run(65_000);
     equal(checks, "unknown gets its own ten second deadline", h.policy.nextCheckMs(), 10_000);
     h.run(65_001); equal(checks, "reread does not restart deadline", h.policy.nextCheckMs(), 9_999);
-    equal(checks, "control cancels positive B", h.run(75_000).get("t")?.displayName, UNKNOWN);
+    equal(checks, "control cancels positive B", h.run(75_000).get("t")?.displayName, uncertainName(h.policy.meanings().get("t"), A));
     m.events = loss === "missing" ? [] : [envelope(3, {type: "agentMessage", text: loss === "old-activity" ? initial : direct})];
-    for (const at of [90_000, 120_000, 240_000]) equal(checks, "lost marker cannot be healed at " + at, h.run(at).get("t")?.displayName, UNKNOWN);
+    for (const at of [90_000, 120_000, 240_000]) equal(checks, "lost marker cannot be healed at " + at, h.run(at).get("t")?.displayName, uncertainName(h.policy.meanings().get("t"), A));
     m.events = [message(0, initial)]; h.run(250_000);
-    equal(checks, "older direct input cannot cross watermark", h.run(260_000).get("t")?.displayName, UNKNOWN);
+    equal(checks, "older direct input cannot cross watermark", h.run(260_000).get("t")?.displayName, uncertainName(h.policy.meanings().get("t"), A));
     m.events = [message(4, direct)]; h.run(300_000);
     equal(checks, "later complete direct input recovers", h.run(310_000).get("t")?.displayName, B);
-    for (const write of h.writes.filter(w => w.at >= 75_000 && w.at < 300_000)) equal(checks, "every invalidated pane write", write.name, UNKNOWN);
+    for (const write of h.writes.filter(w => w.at >= 75_000 && w.at < 300_000)) equal(checks, "every invalidated pane write", write.name, uncertainName(h.meaningsAt.get(write.at)?.get("t"), A));
     return {writes: h.writes, meaning: h.policy.meanings().get("t")};
   });
   await cases("K3-pane-owner-watermark", ["id", "higher-order-id", "reread", "read-loss", "binding", "reset", "prune"], (mode, checks) => {
     const h = policyHarness(), m = h.materials.get("t")!, tab = h.tabs[0];
     m.events = [message(0, initial)]; h.run(0);
     m.events.push(message(1, "続きをお願いします")); h.run(60_000);
-    equal(checks, "control retires A", h.run(70_000).get("t")?.displayName, UNKNOWN);
+    equal(checks, "control retires A", h.run(70_000).get("t")?.displayName, uncertainName(h.policy.meanings().get("t"), A));
     if (mode.endsWith("id")) {
       m.events = [message(0, initial), ...(mode === "higher-order-id" ? [{...envelope(0, {type: "agentMessage", text: "50%"}), eventId: "noise"}] : []),
         {...message(1, initial), eventId: "different-input-at-same-position"}];
@@ -287,8 +304,8 @@ it("K3 pane core: controls cancel pending work and lost markers cannot revive ac
       m.events = [message(0, initial)];
     }
     h.run(90_000); const expected = ["binding", "reset", "prune"].includes(mode) ? A : UNKNOWN;
-    equal(checks, "same-position identity and owner boundary", h.run(100_000).get("t")?.displayName, expected);
-    equal(checks, "stable rereads release the deadline", h.policy.nextCheckMs(), undefined);
+    equal(checks, "same-position identity and owner boundary", h.run(100_000).get("t")?.displayName, expected === UNKNOWN ? uncertainName(h.policy.meanings().get("t"), A) : expected);
+    equal(checks, "only a retained name keeps its thirty-minute expiry deadline", h.policy.nextCheckMs(), h.policy.meanings().get("t")?.staleSince === undefined ? undefined : 30 * 60_000 - 100_000);
     if (mode === "reread") { m.events = [message(2, direct)]; h.run(120_000); h.run(130_000); equal(checks, "same complete direct input remains concrete", h.run(140_000).get("t")?.displayName, B); }
     return {mode, writes: h.writes, meaning: h.policy.meanings().get("t")};
   });
@@ -303,7 +320,7 @@ it("K3 pane core: file and heading do not invent work and only the latest comple
     const next = deriveAutoName(buildAutoNameEvidence(tab, fixtureMaterial(material)));
     equal(checks, "literal pane oracle", [next.fullName, next.strength], source === "weak" ? ["字幕位置調整", "weak"] : [UNKNOWN, "unknown"]);
     const h = policyHarness([makeTab("t", {displayName: A, displayNameSource: "auto"})]);
-    equal(checks, "saved automatic text has no current proof", h.run(0).get("t")?.displayName, UNKNOWN);
+    equal(checks, "saved automatic text has no current proof", h.run(0).get("t")?.displayName, uncertainName(h.policy.meanings().get("t"), A));
     return {source, meaning: next, savedWrites: h.writes};
   });
 });

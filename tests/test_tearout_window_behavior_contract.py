@@ -30,8 +30,14 @@ def test_windows_settle_only_changes_native_alpha_and_foreground_focus():
 def test_native_regrab_changes_no_window_attribute_and_gates_docking_after_movement():
     source = read("src-tauri/src/tearout/native.rs")
     start = body(source, "start")
-    for forbidden in ("set_focusable", "set_size", "set_position", "set_decorations", "SetWindowLongPtrW", "ShowWindow"):
+    for forbidden in ("set_focusable", "set_size", "set_decorations", "SetWindowLongPtrW", "ShowWindow"):
         assert forbidden not in start
+    # The 0882 ruling permits one initial-detach realignment, never a regrab/dock mutation.
+    alignment = start[start.index('if let Some(offset) = shared.grab_offset'):start.index('if let Err(error) = window.start_dragging()')]
+    assert start.count('set_position') == alignment.count('set_position') == 2
+    command = body(read("src-tauri/src/tearout/mod.rs"), "tearout_start_move")
+    assert 'mode == MoveMode::Detach && regrab != Some(true) && source != label' in command
+    assert 'offset_x.zip(offset_y)' in command
     assert 'window.start_dragging()' in start
     assert 'geometry::moved_for_dock' in start
     # B3: only explicit dock mode discovers targets, with the same movement gate.

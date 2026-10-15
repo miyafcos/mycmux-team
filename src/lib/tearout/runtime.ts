@@ -63,7 +63,7 @@ interface DockRequest { token: string; deliveryToken: string; requester: string;
 export interface NativeSample {
   id: string; readonly mode: TearoutMode; label: string; x: number; y: number; phase: "move" | "end"; at: number; escaped: boolean;
   receiver: string | null; client_x: number; client_y: number; approval: Approval | null;
-  native_started_at: number | null; error: string | null;
+  native_started_at: number | null; error: string | null; start_alignment?: import("./record").StartAlignment | null;
   scale: number; monitor: string | null; focus_stolen: boolean;
   esc_at: number | null; original: { x: number; y: number; width: number; height: number };
   source?: string; region_count?: number; receiver_epoch?: number; moved?: boolean; sequence?: number; release?: ReleasePoint | null;
@@ -1225,7 +1225,7 @@ export async function performNativePaneMove(
     void published.catch(() => { transferFailed = true; record!.error("prepare_failed"); void invoke("tearout_cancel_move", { id, label }).catch(() => {}); });
     checkCancelled();
     failure = "native_move_failed"; stage = "moving";
-    await invoke("tearout_start_move", { label, id, mode, regionCount: transfer.panes.length });
+    await invoke("tearout_start_move", { label, id, mode, regionCount: transfer.panes.length, offsetX: offset.x, offsetY: offset.y });
     await finished;
   } catch (error) {
     ended = true;

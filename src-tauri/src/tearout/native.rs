@@ -67,11 +67,9 @@ pub fn reveal(
     let monitor_scale = monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0);
     let work = monitor_area(point, monitor_scale).map(|m| m.work).unwrap_or(Rect { width: 800.0 * monitor_scale, height: 600.0 * monitor_scale, ..Rect::default() });
     let (width, height) = geometry::initial_logical_size(logical_width, logical_height, work, monitor_scale);
+    let origin = geometry::origin_under_cursor((point.x, point.y), width, geometry::GrabOffset { x: offset_x, y: offset_y }, monitor_scale);
     window
-        .set_position(tauri::PhysicalPosition::new(
-            point.x - (offset_x.clamp(0.0, (width - 40.0).max(0.0)) * monitor_scale).round() as i32,
-            point.y - (offset_y.clamp(0.0, 30.0) * monitor_scale).round() as i32,
-        ))
+        .set_position(tauri::PhysicalPosition::new(origin.0, origin.1))
         .map_err(|e| e.to_string())?;
     // A boundary cursor may select a different DPI from the HWND. Let tao
     // convert the logical extent using the window's actual assigned DPI.
@@ -327,6 +325,7 @@ struct Sample {
     client_y: f64,
     approval: Option<Approval>,
     native_started_at: Option<u64>,
+    start_alignment: Option<geometry::StartAlignment>,
     error: Option<&'static str>,
     scale: f64,
     monitor: Option<String>,
@@ -693,6 +692,7 @@ pub(super) fn synthetic_sample(
             None
         },
         native_started_at: None,
+        start_alignment: None,
         error: None,
         scale: window.scale_factor().map_err(|e| e.to_string())?,
         monitor: None,
@@ -875,7 +875,9 @@ pub fn start(
     );
     let polling = shared.clone();
     let initial_cursor = cursor().unwrap_or_default();
-    let anchor = (initial_cursor.x - position.x, initial_cursor.y - position.y);
+    let start_anchor = Arc::new(Mutex::new((initial_cursor.x - position.x, initial_cursor.y - position.y)));
+    let poll_anchor = start_anchor.clone();
+    let start_app = app.clone();
     std::thread::spawn(move || {
         let begin = std::time::Instant::now();
         let mut opacity = 255;
@@ -916,6 +918,7 @@ pub fn start(
             if entered && polling.metrics.enabled.load(Ordering::Relaxed) {
                 let mut rect = RECT::default();
                 if unsafe { GetWindowRect(HWND(handle as *mut _), &mut rect) }.is_ok() {
+                    let anchor = *poll_anchor.lock().unwrap_or_else(|e| e.into_inner());
                     polling.metrics.lag(
                         ((point.x - rect.left - anchor.0) as f64)
                             .hypot((point.y - rect.top - anchor.1) as f64),
@@ -1011,6 +1014,7 @@ pub fn start(
                 client_y: hit.as_ref().map(|(_, _, y)| *y).unwrap_or(-1.0),
                 approval,
                 native_started_at: (started != 0).then_some(started),
+                start_alignment: *polling.start_alignment.lock().unwrap_or_else(|e| e.into_inner()),
                 error: failed.then_some("tearout_native_move_failed"),
                 scale: unsafe { GetDpiForWindow(HWND(handle as *mut _)) }.max(96) as f64 / 96.0,
                 monitor: monitor_name(point),
@@ -1078,6 +1082,34 @@ pub fn start(
             .remove(&id);
     });
     if was_held {
+        if let Some(offset) = shared.grab_offset {
+            let alignment = (|| -> Result<geometry::StartAlignment, String> {
+                let point = cursor()?;
+                let before = window.outer_position().map_err(|e| e.to_string())?;
+                let original_scale = window.scale_factor().map_err(|e| e.to_string())?;
+                let width = window.inner_size().map_err(|e| e.to_string())?.width as f64 / original_scale.max(0.01);
+                let monitor = start_app.monitor_from_point(point.x as f64, point.y as f64).map_err(|e| e.to_string())?;
+                let mut scale = monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(original_scale);
+                let mut expected = geometry::origin_under_cursor((point.x, point.y), width, offset, scale);
+                window.set_position(tauri::PhysicalPosition::new(expected.0, expected.1)).map_err(|e| e.to_string())?;
+                // At a mixed-DPI seam the HWND can belong to the neighboring screen.
+                // Convert the grip with its actual assigned DPI after placement too.
+                let assigned = window.scale_factor().map_err(|e| e.to_string())?;
+                if (assigned - scale).abs() > 0.001 {
+                    scale = assigned;
+                    expected = geometry::origin_under_cursor((point.x, point.y), width, offset, scale);
+                    window.set_position(tauri::PhysicalPosition::new(expected.0, expected.1)).map_err(|e| e.to_string())?;
+                }
+                let after = window.outer_position().map_err(|e| e.to_string())?;
+                *start_anchor.lock().unwrap_or_else(|e| e.into_inner()) = (point.x - after.x, point.y - after.y);
+                Ok(geometry::StartAlignment::measure([point.x as f64, point.y as f64], [before.x as f64, before.y as f64],
+                    [expected.0 as f64, expected.1 as f64], [after.x as f64, after.y as f64], scale, 1.0))
+            })();
+            match alignment {
+                Ok(alignment) => *shared.start_alignment.lock().unwrap_or_else(|e| e.into_inner()) = Some(alignment),
+                Err(error) => { shared.failed.store(true, Ordering::Release); return Err(error); }
+            }
+        }
         if let Err(error) = window.start_dragging() {
             shared.failed.store(true, Ordering::Release);
             return Err(error.to_string());

@@ -34,12 +34,21 @@ export function namingActions(text: string): NamingAction[] {
   return result.sort((a, b) => a.index - b.index);
 }
 const ack = /^(?:了解(?:です|しました)?|承知(?:しました)?|ありがとう(?:ございます)?|はい|ok|okay)[！! .]*$/i;
+export const isNamingCancellation = (text: string): boolean => !/[?？]/.test(text) && namingClauses(text).some(clause =>
+  /^(?:(?:その|この)?(?:作業|依頼|タスク)(?:は|を)?\s*)?(?:中止|取り?消し|取消|取りやめ|やめ)(?:して|にして|て|する|です)?(?:ください|お願いします)?$/.test(clause.replace(/^追記[:：]\s*/, "")));
+// An explicit context marker is control evidence independently of whether the
+// following request uses a work verb that the naming parser understands.
+const englishTaskPrefix = /^(?:(?:new|next|another|different)\s+(?:task|job|request)\s*[:\-]\s*|for\s+(?:the\s+)?(?:new|next)\s+(?:task|job|request)\s*[:,]\s*)/i;
+export const isNamingNewContext = (text: string): boolean => namingClauses(text).some(clause =>
+  englishTaskPrefix.test(clause) ||
+  /^(?:次は|次に|今は|今回は|次の(?:仕事|作業|依頼)は|追加の仕事|(?:その|この)案件は別の仕事に切り替え)/.test(clause.replace(/^追記[:：]\s*/, "")));
+export const isNamingCorrection = (text: string): boolean => clauses(text).corrected;
 export const isNamingAck = (text: string): boolean => ack.test(text);
-const status = /^(?:進捗|状況)(?:は|を)?(?:どう.*|教えて.*|報告.*|確認.*)?$/;
 const correction = /(?:ではなく(?:て)?|じゃなく(?:て)?|でなく(?:て)?)/;
 interface NamingClause { text: string; question: boolean }
 function clauses(text: string): { clauses: NamingClause[]; corrected: boolean } {
   const data = text.normalize("NFKC")
+    .replace(/^(?:\u88dc\u8db3|\u6761\u4ef6|\u8ffd\u52a0\u6761\u4ef6)\s*[:\uFF1A]\s*/gm, "")
     .replace(/<(?:system|developer|environment_context|instructions)>[\s\S]*?<\/(?:system|developer|environment_context|instructions)>/gi, "")
     .replace(/\x60\x60\x60[\s\S]*?\x60\x60\x60/g, "")
     .replace(/(?:引用|前回の指示|前の依頼|以前の依頼|旧題)\s*[:：]?\s*[「『][^」』]*[」』][^。\n]*[。\n]?/g, "");
@@ -57,9 +66,10 @@ function clauses(text: string): { clauses: NamingClause[]; corrected: boolean } 
   return { clauses: result, corrected };
 }
 export function namingClauses(text: string): string[] { return clauses(text).clauses.map(clause => clause.text); }
-export function substantiveInstruction(text: string): string { return namingClauses(text).length ? text : ""; }
-export const isNamingContinuation = (text: string): boolean =>
-  /^(?:続き(?:を)?(?:お願い(?:します)?|進めて(?:ください)?)|そのまま続けて(?:ください)?|引き続きお願い(?:します)?|作業を続けて(?:ください)?)[。.!！]*$/.test(text.trim());
+// Keep complete raw inputs for invalidation even when clause extraction skips
+// Markdown/quotes. Parsing a name and replacing old work are separate decisions.
+export function substantiveInstruction(text: string): string { return text.trim() ? text : ""; }
+export const isNamingContinuation = (text: string): boolean => namingContextException(text) === "continuation";
 
 export interface NamingTask { target: string; action: string }
 export interface NamingTextMeaning {
@@ -73,18 +83,10 @@ function objectPhrase(text: string): string {
 }
 /** The same semantic representation governs extraction and cache equivalence. */
 function interpretText(text: string): NamingTextMeaning {
+  const exception = namingContextException(text);
+  if (exception) return { rejected: [], ambiguous: false, disposition: exception === "status" ? "status" : "continuation" };
   const parsed = clauses(text);
   const result: NamingTextMeaning = { rejected: [], ambiguous: false, disposition: parsed.clauses.length ? "replacement" : "none" };
-  if (!parsed.corrected && parsed.clauses.length && parsed.clauses.every(clause => isNamingContinuation(clause.text))) {
-    result.disposition = "continuation"; return result;
-  }
-  // Status requests remain control evidence. A question with a task object or
-  // a recognized predicate is uncertain work, not proof that the old job continues.
-  if (!parsed.corrected && parsed.clauses.length && parsed.clauses.every(clause => status.test(clause.text)
-    || (clause.question && /^[\p{Script=Hiragana}]/u.test(clause.text) && objectPhrase(clause.text) === clause.text
-      && !/[をはがにの]/.test(clause.text) && !namingActions(clause.text).length))) {
-    result.disposition = "status"; return result;
-  }
   for (const clause of parsed.clauses) {
     const matches = namingActions(clause.text), last = matches[matches.length - 1];
     if (!last) { result.ambiguous = true; continue; }
@@ -133,3 +135,71 @@ export function interpretNamingText(text: string): NamingTextMeaning {
   return meaning;
 }
 export function namingTextKey(text: string): string { return JSON.stringify(interpretNamingText(text)); }
+
+/** Inspect raw text before clause/quote filtering: links, brackets and Japanese
+ * suffixes must not hide a new Markdown task file behind a continuation. */
+function hasMarkdownTaskDirective(text: string): boolean {
+  return /\.md(?=$|[^A-Za-z0-9_-])/i.test(text)
+    && /\b(?:read|follow|use|load|pass|implement|execute|see)\b|\u8aad\u3080|\u8aad\u3093\u3067|\u6e21\u3059|\u6e21\u3057\u3066|\u4f7f\u3063\u3066|\u5b9f\u88c5|\u5b9f\u884c|\u5f93\u3063\u3066/i.test(text);
+}
+
+export type NamingContextException = "continuation" | "status" | "supplement" | "output" | "attribute";
+
+/** The closed list: match a whole input, never an arbitrary tail. Attribute
+ * subjects and values are intentionally narrow; unknown objects/work verbs
+ * do not qualify. Keep positive/negative fixtures for every exception type. */
+const contextExceptionRules = {
+  continuation: [
+    /^(?:続けて(?:ください)?|続き(?:を)?(?:お願い(?:します)?|進めて(?:ください)?)|そのまま続けて(?:ください)?|引き続きお願い(?:します)?|作業を続けて(?:ください)?|この依頼を継続してください)$/u,
+    /^(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?(?:continue(?:\s+(?:the\s+)?(?:work|task))?(?:\s+with\s+the\s+same\s+task)?|keep\s+going|go\s+on|carry\s+on|proceed)$/i,
+  ],
+  status: [
+    /^(?:(?:進捗|状況)(?:は)?(?:どう(?:ですか)?|いかがですか)?|(?:進捗|状況)を教えて(?:ください)?|いつ終わり(?:そうですか|ますか)|どうですか)$/u,
+    /^(?:what(?:'s| is)\s+the\s+(?:current\s+)?status|(?:can|could)\s+you\s+(?:tell|show)\s+me\s+the\s+(?:current\s+)?status)$/i,
+  ],
+  attribute: [
+    /^(?:(?:(?:修正)?対象|対象環境|OS)(?:は|:)\s*(?:Windows(?:\s*(?:10|11))?|macOS|Linux)\s*(?:です)?|(?:the\s+)?target\s+is\s+(?:Windows(?:\s*(?:10|11))?|macOS|Linux))$/i,
+    /^(?:(?:日付の形式|日付形式)(?:は|:)\s*(?:YYYY\/MM\/DD|YYYY-MM-DD|ISO 8601)\s*(?:です)?|日付の形式はこれで(?:いい|よい)ですか)$/i,
+  ],
+  output: [
+    /^(?:(?:日本語|英語|Markdown|JSON|CSV|箇条書き|テキスト)(?:だけ)?でお願い(?:します)?|(?:日本語|英語)でも構いません)$/i,
+    /^(?:(?:can|could)\s+you\s+)?(?:please\s+)?(?:use|respond\s+in|reply\s+in|answer\s+in)\s+(?:Japanese|English|Markdown|JSON|CSV)$/i,
+    /^(?:(?:please\s+)?use\s+(?:YYYY\/MM\/DD|YYYY-MM-DD|ISO 8601)\s+for\s+dates|(?:YYYY\/MM\/DD|YYYY-MM-DD|ISO 8601)\s*で統一してください|日付の形式を\s*(?:YYYY\/MM\/DD|YYYY-MM-DD|ISO 8601)\s*にしてください)$/i,
+  ],
+  supplement: /^(?:補足|追記|Note|FYI)\s*:\s*(.+)$/i,
+  supplementValue: /^(?:(?:Windows(?:\s*(?:10|11))?|macOS|Linux)(?:\s+only|のみ)?|offline only|オフラインのみ)$/i,
+  continuationAck: /^(?:了解(?:です|しました)?|承知しました|thanks|ok|okay)[,、。.!]\s*/i,
+} as const;
+
+export function namingContextException(text: string): NamingContextException | undefined {
+  const raw = text.normalize("NFKC").replace(/\s+/g, " ").trim();
+  // Raw Markdown directives win before any exception or clause/quote filtering.
+  if (hasMarkdownTaskDirective(raw)) return undefined;
+  const value = raw.replace(/[.!?。]+$/, "").trim();
+  const matches = (kind: "continuation" | "status" | "attribute" | "output", input: string) => contextExceptionRules[kind].some(pattern => pattern.test(input));
+  if (matches("continuation", value.replace(contextExceptionRules.continuationAck, ""))) return "continuation";
+  if (matches("status", value)) return "status";
+  const supplement = value.match(contextExceptionRules.supplement);
+  if (supplement) {
+    const body = supplement[1];
+    return matches("attribute", body) || matches("output", body) || contextExceptionRules.supplementValue.test(body) ? "supplement" : undefined;
+  }
+  if (matches("output", value)) return "output";
+  if (matches("attribute", value)) return "attribute";
+  return undefined;
+}
+
+/** As in v0.88.1/c2dc, every complete non-answer input replaces older work by
+ * default, even when no name can be parsed. Only the closed exceptions retain it. */
+export function isNamingTaskDirective(text: string): boolean {
+  return !!text.trim() && !isNamingAck(text) && namingContextException(text) === undefined;
+}
+
+/** Unresolved task predicates and non-status questions cannot affirm old work. */
+export function isNamingUncertainTask(text: string): boolean {
+  const parsed = interpretNamingText(text);
+  if (parsed.disposition === "continuation" || parsed.disposition === "status") return false;
+  if (parsed.chosen && !parsed.ambiguous && !parsed.rejected.length) return false;
+  return clauses(text).clauses.some(clause => clause.question || namingActions(clause.text).some(action =>
+    action.rejected || /(?:\u3092|\u306f|\u306b\u3064\u3044\u3066|\u306b\u5bfe\u3057\u3066)\s*$/.test(clause.text.slice(0, action.index))));
+}

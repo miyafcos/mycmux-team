@@ -13,6 +13,7 @@ import { aggregateWorkspaceName, createAutoWorkspaceNamePolicy, type WorkspaceNa
 import { useAutoNameRuntimeStore, isPaneNameHeld, isWorkspaceNameHeld, pruneNamingRuntime } from "../stores/autoNameRuntimeStore";
 import { namingBinding, type AutoNameScan } from "./autoNameMaterial";
 import type { PaneIdentityResult } from "./paneIdentity";
+import { reportAutoNameFailures } from "./autoNameDiagnostics";
 import { getTabDisplayLabel } from "./tabDisplayLabel";
 
 export const AUTO_PANE_NAMING_DEBOUNCE_MS = 350;
@@ -78,6 +79,8 @@ function defaultDependencies(): AutoPaneNamingDependencies {
           && (!input || !(scan as Partial<AutoNameScan>).naming || namingScanStillCurrent(scan as AutoNameScan, input));
       }));
       const meanings = currentMeanings(current.workspaces);
+      const automatic = new Set(current.workspaces.flatMap(w => w.panes.flatMap(p => p.tabs.filter(isAutomaticNameTarget).map(t => t.id))));
+      void reportAutoNameFailures(new Map([...meanings].filter(([id]) => automatic.has(id))), Date.now(), (scan as Partial<AutoNameScan>).naming);
       const descriptions = new Map<string, string>();
       const summaries = new Map<string, WorkspaceNameSummary>();
       const patches = [];

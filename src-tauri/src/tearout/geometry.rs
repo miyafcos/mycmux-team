@@ -105,9 +105,56 @@ pub fn snap_edge_reserved(x: f64, y: f64, monitors: &[MonitorArea]) -> bool {
         || (y >= w.y + w.height - band && !neighbors.iter().any(|r| touches(r.y, b.y + b.height) && horizontal(r)))
 }
 
+/// Logical grip coordinates; screen coordinates remain signed physical pixels.
+#[derive(Clone, Copy, Debug)]
+pub struct GrabOffset { pub x: f64, pub y: f64 }
+
+pub fn origin_under_cursor(point: (i32, i32), logical_width: f64, offset: GrabOffset, scale: f64) -> (i32, i32) {
+    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let width = if logical_width.is_finite() { logical_width } else { 720.0 };
+    let bounded = |value: f64, max: f64| if value.is_finite() { value.clamp(0.0, max.max(0.0)) } else { 0.0 };
+    (point.0 - (bounded(offset.x, width - 40.0) * scale).round() as i32,
+        point.1 - (bounded(offset.y, 30.0) * scale).round() as i32)
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub struct StartAlignment {
+    pub cursor: [f64; 2], pub before: [f64; 2], pub expected: [f64; 2], pub after: [f64; 2],
+    pub scale: f64, pub error_before_px: f64, pub error_after_px: f64,
+}
+impl StartAlignment {
+    /// Windows passes physical pixels with unit=1; AppKit passes points with unit=backing scale.
+    pub fn measure(cursor: [f64; 2], before: [f64; 2], expected: [f64; 2], after: [f64; 2], scale: f64, unit: f64) -> Self {
+        let error = |position: [f64; 2]| (position[0] - expected[0]).hypot(position[1] - expected[1]) * unit;
+        Self { cursor, before, expected, after, scale, error_before_px: error(before), error_after_px: error(after) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn realignment_uses_current_destination_dpi_and_signed_screen_coordinates() {
+        let grip = GrabOffset { x: 90.0, y: 18.0 };
+        assert_eq!(origin_under_cursor((900, 500), 720.0, grip, 1.0), (810, 482));
+        assert_eq!(origin_under_cursor((-100, 500), 720.0, grip, 1.5), (-235, 473));
+        // The cursor crossed from 100% at reveal to 150% before native start.
+        let revealed = origin_under_cursor((20, 500), 720.0, grip, 1.0);
+        let expected = origin_under_cursor((-100, 500), 720.0, grip, 1.5);
+        let alignment = StartAlignment::measure([-100.0, 500.0], [revealed.0 as f64, revealed.1 as f64],
+            [expected.0 as f64, expected.1 as f64], [expected.0 as f64, expected.1 as f64], 1.5, 1.0);
+        assert!(alignment.error_before_px > 160.0);
+        assert_eq!(alignment.error_after_px, 0.0);
+    }
+    #[test]
+    fn grip_offsets_clamp_and_round_in_the_destination_band() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let origin = origin_under_cursor((100, -600), 240.0, GrabOffset { x: 900.0, y: 99.0 }, scale);
+            assert_eq!(origin, (100 - (200.0 * scale).round() as i32, -600 - (30.0 * scale).round() as i32));
+        }
+        assert_eq!(origin_under_cursor((0, 0), 720.0, GrabOffset { x: -20.0, y: -10.0 }, 1.5), (0, 0));
+        assert_eq!(origin_under_cursor((0, 0), f64::NAN, GrabOffset { x: f64::NAN, y: f64::INFINITY }, f64::NAN), (0, 0));
+    }
     #[test]
     fn receiver_dpi_and_signed_origins_convert_once_r5() {
         for scale in [1.0, 1.25, 1.5, 2.0] {

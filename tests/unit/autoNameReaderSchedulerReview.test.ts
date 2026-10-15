@@ -3,6 +3,7 @@ import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createAutoPaneNamingScheduler } from "../../src/lib/autoPaneNaming";
 import { getTabDisplayLabel, getTabDisplayFullLabel } from "../../src/lib/tabDisplayLabel";
+import { uncertainName } from "./helpers/autoNameRetainedContract";
 import { namePrefix } from "../../src/lib/autoNamePolicy";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { useSettingsStore } from "../../src/stores/settingsStore";
@@ -76,7 +77,11 @@ for (const fixture of fixtures) it("reader/scheduler: " + fixture.id + " — " +
   results.push({ id: fixture.id, names: after.panes[0].tabs.map(tab => ({ id: tab.id, full: getTabDisplayFullLabel(tab), short: getTabDisplayLabel(tab) })), workspace: after.name });
   for (const [index, job] of fixture.jobs.entries()) {
     const tab = after.panes[0].tabs[index], short = getTabDisplayLabel(tab);
-    for (const word of job.must) { expect(tab.displayName, job.id + " full").toContain(word); expect(short, job.id + " short").toContain(word); }
+    for (const word of job.must) {
+      const expected = fixture.id === "continuation" || fixture.id === "heading-tail-loss"
+        ? uncertainName(useAutoNameRuntimeStore.getState().meanings.get(tab.id), fixture.id === "continuation" ? "方程式の解説スライド制作" : "解説スライド制作") : word;
+      expect(tab.displayName, job.id + " full").toContain(expected); expect(short, job.id + " short").toContain(expected);
+    }
     for (const word of job.forbidden ?? []) { expect(tab.displayName).not.toContain(word); expect(short).not.toContain(word); }
     const { displayName: _name, displayNameSource: _source, ...immutable } = tab;
     expect(immutable).toEqual(before[index]);
@@ -88,6 +93,6 @@ for (const fixture of fixtures) it("reader/scheduler: " + fixture.id + " — " +
   }
   for (const word of fixture.workspaceMust ?? []) expect(after.name).toContain(word);
   for (const word of fixture.workspaceForbidden ?? []) expect(after.name).not.toContain(word);
-  expect(fake.invoke.mock.calls.every(([command]) => ["get_pty_metadata_snapshot", "get_session_output_snapshot", "auto_name_materials", "agent_session_titles"].includes(command))).toBe(true);
+  expect(fake.invoke.mock.calls.every(([command]) => ["get_pty_metadata_snapshot", "get_session_output_snapshot", "auto_name_materials", "agent_session_titles", "auto_name_diagnostics"].includes(command))).toBe(true);
   expect(useAiSettingsStore.getState().aiEnabled).toBe(false);
 });

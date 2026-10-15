@@ -867,7 +867,7 @@ describe("O2 separates first detach from whole-window dock", () => {
       expect(canRegrabTearoutTab(item)).toBe(false);
       expect(canRegrabTearoutPane({ kind: "pane", workspaceId: "source", paneId: "pane", label: "Group", tabCount: 1 })).toBe(false);
       await tearoutPane({ kind: "pane", workspaceId: "source", paneId: "pane", label: "Group", tabCount: 1 }, gap, { x: 10, y: 10 });
-      expect(mocks.invoke).toHaveBeenCalledWith("tearout_start_move", expect.objectContaining({ mode: "detach", regionCount: 1 }));
+      expect(mocks.invoke).toHaveBeenCalledWith("tearout_start_move", expect.objectContaining({ mode: "detach", regionCount: 1, offsetX: 10, offsetY: 10 }));
       expect(useWorkspaceListStore.getState().workspaces[0].panes.map(p => p.id)).toEqual(["other"]);
     } finally { delete window.__MYCMUX_TEAROUT_WINDOW__; }
   });

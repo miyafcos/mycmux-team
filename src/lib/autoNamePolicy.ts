@@ -1,10 +1,13 @@
 import type { PaneTab } from "../types";
-import { NAMING_ACTION_WORDS, interpretNamingText, type NamingTask } from "./autoNameLanguage";
+import { NAMING_ACTION_WORDS, interpretNamingText, isNamingAck, isNamingContinuation, isNamingCancellation, isNamingNewContext, isNamingCorrection, isNamingTaskDirective, isNamingUncertainTask, type NamingTask } from "./autoNameLanguage";
 import type { GroupingScan } from "../components/layout/tabGrouping";
 import type { PaneIdentityResult, ProjectRegistration } from "./paneIdentity";
 import { isAutomaticNameTarget, preferredTabName } from "./autoNameOwnership";
 export { isAutomaticNameTarget } from "./autoNameOwnership";
-import { buildAutoNameEvidence, namingBinding, type AutoNameEvidence, type AutoNameScan } from "./autoNameMaterial";
+import { buildAutoNameEvidence, namingBinding, type NamingInputSource, type AutoNameEvidence, type AutoNameScan } from "./autoNameMaterial";
+
+import type { AutoNameReason } from "./autoNameStatus";
+import { sha256Hex } from "./persistentLayoutProjection";
 
 export const UNKNOWN_AUTO_NAME = "作業内容未取得";
 type Segmenter = new (locale: string, options: { granularity: "grapheme" | "word" }) => { segment(text: string): Iterable<{ segment: string }> };
@@ -20,6 +23,16 @@ const length = (text: string) => {
   return size;
 };
 const normalize = (text: string) => text.normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+/** A complete stop remains a stop when followed by a separate reference or note. */
+function cancelsPreviousTask(text: string): boolean {
+  if (isNamingCancellation(text)) return true;
+  if (/[?\uFF1F]/u.test(text)) return false;
+  for (const boundary of text.matchAll(/\s+/gu)) {
+    if (boundary.index > 80) break;
+    if (isNamingCancellation(text.slice(0, boundary.index))) return true;
+  }
+  return false;
+}
 const prefixCache = new Map<string, string>();
 export const namePrefix = (text: string) => {
   const key = normalize(text); const found = prefixCache.get(key); if (found !== undefined) return found;
@@ -29,15 +42,17 @@ export const namePrefix = (text: string) => {
 };
 const unsafe = /[\x00-\x1f\x7f\ufffd\ud800-\udfff]|・\s*・|…|(?:claude|codex)-\d+|\b\d{6,8}[-_]/u;
 export interface AutoNameMeaning {
+  invalidatesPrevious?: boolean;
+  unknownReason?: AutoNameReason; staleSince?: number; recordOwner?: string;
   target: string; qualifier?: string; projectIdentity?: string; projectTitle?: string; action: string; topic: string; fullName: string; shortCandidates: string[];
   evidenceRefs: string[]; strength: "strong" | "weak" | "unknown"; binding: string;
   contentKey: string; meaningKey: string; fresh: boolean;
   /** "title" and "label" are shown as written: the agent's own session title, or the launch label. */
-  source?: "instruction" | "activity" | "file" | "heading" | "none" | "title" | "label";
+  source?: "instruction" | "activity" | "file" | "heading" | "none" | "title" | "label" | "prompt";
   instructionDisposition?: "none" | "status" | "followup" | "continuation" | "rejection" | "replacement";
   rejectedTasks?: Array<{ target: string; action: string }>;
   instructionContext?: "direct" | "control";
-  instructionIndex?: number; instructionPosition?: number;
+  instructionIndex?: number; instructionPosition?: number; instructionSource?: NamingInputSource; instructionKey?: string;
 }
 const actionSuffix = /(?:制作|修正|校正|調整|調査|比較|編集|確認|集計|送付|見積)$/;
 function balancedPhrase(text: string): boolean {
@@ -143,21 +158,44 @@ export function deriveAutoName(evidence: AutoNameEvidence, projectNames: readonl
   const unknown: AutoNameMeaning = { target: "", action: "", topic: "", fullName: UNKNOWN_AUTO_NAME,
     shortCandidates: [UNKNOWN_AUTO_NAME], evidenceRefs: evidence.evidenceRefs, strength: "unknown",
     binding: evidence.binding, contentKey: evidence.contentKey, meaningKey: "unknown", fresh: false,
+    unknownReason: "no-record", recordOwner: evidence.recordOwner,
     source: "none", instructionDisposition: "followup", rejectedTasks: [], instructionContext: evidence.replyOnly ? "control" : undefined };
   let chosen: NamingTask | undefined; let source: AutoNameMeaning["source"] = "none";
-  if (evidence.instructionHistoryComplete === false) { unknown.instructionDisposition = "replacement"; return unknown; }
   const latest = evidence.instructions[0];
   const mark = evidence.latestInput;
-  if (evidence.replyOnly || (mark && (!mark.complete || mark.kind === "answer" || mark.kind === "ack" || mark.choice || !latest))) return unknown;
+  if (latest && evidence.instructionCompleteness?.[0] !== false && (cancelsPreviousTask(latest) || isNamingNewContext(latest) || isNamingCorrection(latest)))
+    unknown.invalidatesPrevious = true;
+  const fail = (reason: AutoNameReason) => ({ ...unknown, unknownReason: reason });
+  if (evidence.materialStatus === "unreadable") return fail("read-failed");
+  if (evidence.materialStatus === "incomplete") return fail("history-incomplete");
+  if (evidence.materialStatus === "unverified") return fail("record-unverified");
+  if (evidence.materialStatus === "contended") return fail("record-contended");
+  if (evidence.materialStatus === "waiting" && !latest && !evidence.activity[0]) return fail("waiting");
+  if ((latest && (isNamingAck(latest) || isNamingContinuation(latest))) || evidence.replyOnly || (mark && (mark.kind === "answer" || mark.kind === "ack" || mark.choice))) {
+    // An explicit rejection inside a reply invalidates a retained name too.
+    const reply = latest && interpretNamingText(latest);
+    if (reply && (reply.disposition === "rejection" || reply.disposition === "replacement")) unknown.instructionDisposition = reply.disposition;
+    unknown.instructionContext = "control";
+    return fail("reply");
+  }
+  if (latest && evidence.instructionCompleteness?.[0] !== false) {
+    const parsed = interpretNamingText(latest);
+    if (parsed.disposition === "rejection" || parsed.rejected.length) {
+      unknown.instructionDisposition = parsed.disposition; unknown.rejectedTasks = parsed.rejected;
+    }
+  }
+  if (mark && !mark.complete) return fail("instruction-truncated");
+  if (evidence.instructionHistoryComplete === false && evidence.materialStatus !== "missing")
+    return fail(evidence.instructionLoss ? "instruction-truncated" : "history-incomplete");
   if (latest) {
-    if (evidence.instructionCompleteness?.[0] === false) { unknown.instructionDisposition = "replacement"; return unknown; }
+    if (evidence.instructionCompleteness?.[0] === false) return fail("instruction-truncated");
     const first = interpretNamingText(latest);
     unknown.instructionContext = evidence.replyOnly || first.disposition === "continuation" || first.disposition === "status" ? "control" : "direct";
     unknown.rejectedTasks = first.rejected;
     unknown.instructionDisposition = first.disposition;
-    if (first.ambiguous) return unknown;
+    if (first.ambiguous) return fail(first.disposition === "continuation" || first.disposition === "status" ? "reply" : "instruction-unclear");
     if (first.chosen) { chosen = first.chosen; source = "instruction"; }
-    else return unknown;
+    else return fail(first.disposition === "continuation" || first.disposition === "status" ? "reply" : "instruction-unclear");
   }
   if (!chosen && !mark && evidence.activity[0] && evidence.activityCompleteness?.[0] !== false) {
     const activity = interpretNamingText(evidence.activity[0]);
@@ -172,8 +210,8 @@ export function deriveAutoName(evidence: AutoNameEvidence, projectNames: readonl
       target = target.slice(project.length).replace(/^[ の]+/, ""); break;
     }
   }
-  if (unsafe.test(target) || !balancedPhrase(target) || !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(target)) return unknown;
-  const fullTarget = completeTarget(target, 44 - length(action)); if (!fullTarget) return unknown;
+  if (unsafe.test(target) || !balancedPhrase(target) || !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(target)) return fail("unsafe-name");
+  const fullTarget = completeTarget(target, 44 - length(action)); if (!fullTarget) return fail("name-too-long");
   const fullName = fullTarget + action;
   const parts = targetParts(target);
   const variants = [fullName];
@@ -181,9 +219,9 @@ export function deriveAutoName(evidence: AutoNameEvidence, projectNames: readonl
   variants.push(parts[parts.length - 1] + action);
   variants.push(action + "・" + target);
   const shortCandidates = [...new Set(variants.map(name => shortAutomaticName(name)))].filter(n => !unsafe.test(n) && length(n) <= 20).slice(0, 4);
-  if (!shortCandidates.length || shortCandidates[0] === UNKNOWN_AUTO_NAME) return unknown;
+  if (!shortCandidates.length || shortCandidates[0] === UNKNOWN_AUTO_NAME) return fail("name-too-long");
   return { target, qualifier, projectIdentity: nearest?.identity, projectTitle: nearest?.title, action, topic: topicFor(target, action), fullName, shortCandidates, evidenceRefs: evidence.evidenceRefs,
-    strength: source === "instruction" ? "strong" : "weak", source, instructionDisposition: unknown.instructionDisposition, rejectedTasks: unknown.rejectedTasks, binding: evidence.binding, contentKey: evidence.contentKey,
+    recordOwner: evidence.recordOwner, strength: source === "instruction" ? "strong" : "weak", source, instructionDisposition: unknown.instructionDisposition, rejectedTasks: unknown.rejectedTasks, binding: evidence.binding, contentKey: evidence.contentKey,
     instructionContext: unknown.instructionContext, instructionIndex: unknown.instructionIndex,
     meaningKey: normalize(target + "|" + action + "|" + (nearest?.identity ?? "")), fresh: unknown.instructionContext !== "control" && !evidence.replyOnly };
 }
@@ -198,9 +236,9 @@ export function deriveAutoName(evidence: AutoNameEvidence, projectNames: readonl
 // anything without a task suffix into UNKNOWN_AUTO_NAME, so a presented name is
 // built to fit, a sibling number included.
 export const PRESENTED_NAME_CAP = 20;
-const presentationUnsafe = /[\x00-\x1f\x7f�\ud800-\udfff]/u;
+const presentationUnsafe = /[\x00-\x1f\x7f\ufffd\ud800-\udfff]/u;
 const presentedNumbered = (base: string, number: number) => fitPresentedName(base, PRESENTED_NAME_CAP - nameGraphemes("・" + number).length) + "・" + number;
-export const isPresentedMeaning = (meaning: AutoNameMeaning): boolean => meaning.source === "title" || meaning.source === "label";
+export const isPresentedMeaning = (meaning: AutoNameMeaning): boolean => meaning.source === "title" || meaning.source === "label" || meaning.source === "heading";
 /** Shorten at a space, ・ or word boundary in the latter half; never append an ellipsis. */
 export function fitPresentedName(text: string, cap: number): string {
   const graphemes = nameGraphemes(text);
@@ -379,30 +417,36 @@ export function resolveNameSiblings(rows: NamingRow[]): Map<string, string> {
     if (!name) { unknownRows.push(row); continue; }
     result.set(row.id, name); reserve(shortAutomaticName(name), m.meaningKey);
   }
-  const previousUnknown = (row: NamingRow) => row.tab.displayNameSource === "auto"
-    && new RegExp("^" + UNKNOWN_AUTO_NAME + "(?:・[1-9]\\d*)?$").test(row.tab.displayName ?? "") ? row.tab.displayName : undefined;
-  // Existing reservations precede newly added IDs, including when a known
-  // task has exhausted its arrangements and needs an unknown presentation.
-  unknownRows.sort((a, b) => Number(!!previousUnknown(b)) - Number(!!previousUnknown(a)) || a.id.localeCompare(b.id));
-  for (const row of unknownRows) {
-    const previous = previousUnknown(row);
-    let name = previous && !used.has(normalize(previous)) ? previous : undefined;
-    if (!name && ruled.length === 1 && !used.has(normalize(UNKNOWN_AUTO_NAME))) name = UNKNOWN_AUTO_NAME;
-    if (!name) {
-      let number = 1;
-      while (used.has(normalize(UNKNOWN_AUTO_NAME + "・" + number))) number++;
-      name = UNKNOWN_AUTO_NAME + "・" + number;
-    }
-    result.set(row.id, name); reserve(name, "unknown");
-  }
+  for (const row of unknownRows) result.set(row.id, UNKNOWN_AUTO_NAME);
   return result;
 }
+
+export const LAST_CONCRETE_NAME_MS = 30 * 60_000;
 
 /** Clock-driven stability is independent of how often output/polls wake the scheduler. */
 export function createAutoNamePolicy(now: () => number = Date.now, projectNames: () => readonly NamingProject[] = () => [], hold?: (tab: PaneTab, meaning: AutoNameMeaning) => boolean, presentation?: (tab: PaneTab) => string) {
   const accepted = new Map<string, AutoNameMeaning>();
-  // One scalar input watermark per owner; no task body or prior positive meaning.
+  const concrete = new Map<string, { meaning: AutoNameMeaning; at: number }>();
+  // One scalar input watermark per owner; prior concrete names are bounded below.
   const inputWatermarks = new Map<string, NonNullable<AutoNameEvidence["latestInput"]>>();
+  const invalidations = new Map<string, {source:NamingInputSource; blocksFallback:boolean}>();
+  // Material clocks outlive display changes to a launch label or unknown name.
+  type SourceClock = { at: number; staleSince?: number; source?: NamingInputSource };
+  const sourceClocks = new Map<string, Map<string, SourceClock>>();
+  const sourceAt = (evidence: AutoNameEvidence, index: number): NamingInputSource | undefined => evidence.instructionSources?.[index]
+    ?? (evidence.instructionPositions?.[index] === undefined ? undefined : {event_id:evidence.evidenceRefs[index] ?? "input-" + evidence.instructionPositions[index],
+      source_revision:0, source_byte_start:evidence.instructionPositions[index]!});
+  const sameSource = (a: NamingInputSource, b: NamingInputSource) => a.source_byte_start === b.source_byte_start
+    && a.event_id === b.event_id && a.source_revision === b.source_revision;
+  const instructionKey = (evidence: AutoNameEvidence, source: NamingInputSource | undefined) => {
+    const index = source && evidence.instructionSources?.findIndex(value => value?.event_id === source.event_id
+      && value.source_byte_start === source.source_byte_start);
+    const text = index !== undefined && index >= 0 ? evidence.instructions[index] : evidence.initialInstruction ?? "";
+    return sha256Hex(normalize(text));
+  };
+  const confirmationKey = (meaning: AutoNameMeaning) => JSON.stringify([meaning.binding, meaning.recordOwner,
+    meaning.instructionSource ? [meaning.instructionSource.event_id, meaning.instructionSource.source_byte_start, meaning.instructionKey]
+      : [meaning.source, meaning.meaningKey, meaning.instructionPosition]]);
   const pending = new Map<string, { key: string; meaning: AutoNameMeaning; since: number; observed: number; count: number; readyAt: number }>();
   const committedAt = new Map<string, number>();
   const derived = new Map<string, { key: string; meaning: AutoNameMeaning }>();
@@ -412,7 +456,7 @@ export function createAutoNamePolicy(now: () => number = Date.now, projectNames:
     const present = new Set(scan.workspaces.flatMap(w => w.panes.flatMap(p => p.tabs.map(t => t.id))));
     for (const id of pending.keys()) if (!alive.has(id)) pending.delete(id);
     for (const [id, meaning] of accepted) if (!alive.has(id)) accepted.set(id, { ...meaning, fresh: false });
-    for (const id of accepted.keys()) if (!present.has(id)) { accepted.delete(id); inputWatermarks.delete(id); pending.delete(id); committedAt.delete(id); derived.delete(id); }
+    for (const id of accepted.keys()) if (!present.has(id)) { accepted.delete(id); inputWatermarks.delete(id); pending.delete(id); committedAt.delete(id); derived.delete(id); concrete.delete(id); invalidations.delete(id); sourceClocks.delete(id); }
     const projects = projectNames();
     const projectKey = JSON.stringify(projects);
     for (const tab of scan.tabs) {
@@ -422,9 +466,10 @@ export function createAutoNamePolicy(now: () => number = Date.now, projectNames:
       const cached = derived.get(tab.id);
       let next = cached?.key === deriveKey ? { ...cached.meaning, evidenceRefs: evidence.evidenceRefs } : deriveAutoName(evidence, projects);
       if (cached?.key !== deriveKey) derived.set(tab.id, { key: deriveKey, meaning: next });
-      next = { ...next, instructionPosition: evidence.instructionPositions?.[next.instructionIndex ?? 0] };
+      const inputSource = sourceAt(evidence, next.instructionIndex ?? 0);
+      next = { ...next, instructionPosition: inputSource?.source_byte_start, instructionSource:inputSource, instructionKey:instructionKey(evidence, inputSource) };
       const prior = accepted.get(tab.id);
-      if (prior?.binding !== next.binding) { accepted.delete(tab.id); inputWatermarks.delete(tab.id); pending.delete(tab.id); committedAt.delete(tab.id); }
+      if (prior?.binding !== next.binding || (prior?.recordOwner && next.recordOwner && prior.recordOwner !== next.recordOwner)) { accepted.delete(tab.id); inputWatermarks.delete(tab.id); pending.delete(tab.id); committedAt.delete(tab.id); concrete.delete(tab.id); invalidations.delete(tab.id); sourceClocks.delete(tab.id); }
       const current = accepted.get(tab.id);
       const mark = evidence.latestInput, watermark = inputWatermarks.get(tab.id);
       const older = mark && watermark && (mark.sourceByteStart < watermark.sourceByteStart
@@ -433,9 +478,81 @@ export function createAutoNamePolicy(now: () => number = Date.now, projectNames:
         next = deriveAutoName({ ...evidence, instructionHistoryComplete: false }, projects);
       }
       if (mark && !older) inputWatermarks.set(tab.id, { ...mark });
-      // A session title outranks the rule-derived name; a launch label only replaces the unknown name.
-      const presentedName = presentedAutoName(tab, scan.workspaces.find(w => w.id === tab.workspaceId), evidence, next.strength !== "unknown");
-      if (presentedName) next = presentedName;
+      const workspace = scan.workspaces.find(w => w.id === tab.workspaceId);
+      // A bounded history still carries stops/changes even when its newest input is a reply.
+      for (let index = 0; index < evidence.instructions.length; index++) {
+        if (evidence.instructionCompleteness?.[index] === false) continue;
+        const text = evidence.instructions[index], parsed = interpretNamingText(text), source = sourceAt(evidence, index);
+        const control = cancelsPreviousTask(text) || isNamingNewContext(text) || isNamingCorrection(text)
+          || parsed.disposition === "rejection" || parsed.rejected.length > 0 || isNamingUncertainTask(text);
+        const directive = evidence.instructionKinds?.[index] !== "answer" && evidence.instructionKinds?.[index] !== "ack"
+          && isNamingTaskDirective(text);
+        if (!source || (!control && !directive)) continue;
+        const prior = invalidations.get(tab.id);
+        if (!prior || source.source_byte_start >= prior.source.source_byte_start)
+          invalidations.set(tab.id, {source, blocksFallback:control});
+      }
+      const barrier = invalidations.get(tab.id);
+      // Earlier sources are already barred. Keep the same event's clock across
+      // transcript revision changes; revision alone is not a new user input.
+      if (barrier) for (const [key, clock] of sourceClocks.get(tab.id) ?? []) {
+        if (clock.source && (clock.source.source_byte_start < barrier.source.source_byte_start
+          || clock.source.source_byte_start === barrier.source.source_byte_start && clock.source.event_id !== barrier.source.event_id))
+          sourceClocks.get(tab.id)!.delete(key);
+      }
+      const applies = (source: NamingInputSource | undefined) => !!source && (!barrier
+        || source.source_byte_start > barrier.source.source_byte_start || sameSource(source, barrier.source));
+      const allowsInitial = (source: NamingInputSource | undefined) => applies(source)
+        && !(barrier?.blocksFallback && sameSource(source!, barrier.source));
+      const last = concrete.get(tab.id);
+      const interveningChange = !!last?.meaning.instructionSource && !applies(last.meaning.instructionSource);
+      const contextLost = next.unknownReason && (["reply", "read-failed", "history-incomplete", "instruction-truncated", "waiting", "no-record"].includes(next.unknownReason)
+        || next.unknownReason === "instruction-unclear" && !isNamingTaskDirective(evidence.instructions[0] ?? "")
+          && !isNamingUncertainTask(evidence.instructions[0] ?? ""));
+      const invalidated = next.invalidatesPrevious || interveningChange || next.instructionDisposition === "rejection"
+        || (next.instructionDisposition === "replacement" && !!next.rejectedTasks?.length);
+      if (invalidated || (next.strength !== "unknown" && current && next.meaningKey !== current.meaningKey)
+        || (next.strength === "unknown" && !contextLost)) concrete.delete(tab.id);
+      // Keep the v0.88.1 title priority, followed by a current directive and the launch label.
+      const presentedName = presentedAutoName(tab, workspace, evidence, next.strength !== "unknown");
+      if (presentedName?.source === "title") next = presentedName;
+      else if (next.strength === "unknown" && last && (last.meaning.source !== "label" || !presentedName)
+        && contextLost && !invalidated && now() - last.at < LAST_CONCRETE_NAME_MS) {
+        next = { ...last.meaning, contentKey:next.contentKey, evidenceRefs:next.evidenceRefs, fresh:false,
+          unknownReason:next.unknownReason,
+          staleSince:sourceClocks.get(tab.id)?.get(confirmationKey(last.meaning))?.staleSince ?? current?.staleSince ?? now(),
+          instructionDisposition:next.instructionDisposition };
+      } else if (next.strength === "unknown") {
+        const unknown = next;
+        const decorate = (meaning: AutoNameMeaning, source: NamingInputSource): AutoNameMeaning | undefined => {
+          const previousInput = (!mark && !!watermark) || !!mark && (mark.sourceByteStart > source.source_byte_start
+            || mark.sourceByteStart === source.source_byte_start && mark.eventId !== source.event_id);
+          const value = { ...meaning, instructionPosition:source.source_byte_start, instructionSource:source,
+            instructionKey:instructionKey(evidence, source), recordOwner:evidence.recordOwner };
+          const clock = sourceClocks.get(tab.id)?.get(confirmationKey(value));
+          if (previousInput && clock && now() - clock.at >= LAST_CONCRETE_NAME_MS) return undefined;
+          return previousInput ? {...value, fresh:false, unknownReason:unknown.unknownReason,
+            staleSince:clock?.staleSince ?? current?.staleSince ?? now()} : value;
+        };
+        // Later controls do not affirm a newly observed task. Drop an invalidated source
+        // and let a future direct request or the launch label establish its replacement.
+        const latestText = normalize(evidence.instructions[0] ?? ""), initialText = normalize(evidence.initialInstruction ?? "");
+        const initialMatches = !!latestText && !!initialText && (initialText.startsWith(latestText) || latestText.startsWith(initialText));
+        const verified = evidence.materialStatus === "ready" && !!evidence.recordOwner && !older;
+        const knownContext = evidence.contextHistoryComplete || (initialMatches && mark?.complete !== false);
+        const heading = verified && knownContext && evidence.taskTitleExplicit && allowsInitial(evidence.taskTitleInput)
+          && evidence.taskTitleSource === "spec" && evidence.taskTitleComplete !== false
+          ? presentedAutoName({sessionTitle:evidence.taskTitle}, workspace, evidence) : undefined;
+        const initial = verified && knownContext && allowsInitial(evidence.initialInstructionSource) && evidence.initialInstructionComplete && evidence.initialInstruction
+          ? deriveAutoName({...evidence, instructions:[evidence.initialInstruction], instructionCompleteness:[true],
+            latestInput:undefined, replyOnly:false, instructionHistoryComplete:true}, projects) : undefined;
+        if (heading) next = decorate({...heading, source:"heading"}, evidence.taskTitleInput!) ?? unknown;
+        else if (initial && initial.strength !== "unknown") next = decorate({...initial, source:"prompt"}, evidence.initialInstructionSource!) ?? unknown;
+        if (next.strength === "unknown" && presentedName) next = presentedName;
+        else if (next.strength === "unknown" && tab.labelSource === "launch" && tab.label && next.unknownReason === "no-record")
+          next = {...next, unknownReason:"launch-label-unusable"};
+      }
+      next = { ...next, recordOwner: evidence.recordOwner ?? next.recordOwner };
       if (current && current.meaningKey !== next.meaningKey) {
         const stamp = now(); const p = pending.get(tab.id);
         const wait = next.strength === "strong" || next.strength === "unknown" ? 10_000 : 60_000;
@@ -452,6 +569,18 @@ export function createAutoNamePolicy(now: () => number = Date.now, projectNames:
         if (!current) committedAt.set(tab.id, now());
       }
       accepted.set(tab.id, next);
+      if (next.strength !== "unknown" && next !== current) {
+        const key = confirmationKey(next), clocks = sourceClocks.get(tab.id) ?? new Map<string, SourceClock>();
+        // Keep only the current clock for names without a material reference.
+        // Referenced source clocks remain until an input barrier invalidates them.
+        if (!next.instructionSource) for (const [priorKey, clock] of clocks)
+          if (!clock.source && priorKey !== key) clocks.delete(priorKey);
+        const clock: SourceClock = clocks.get(key) ?? {at:now(), source:next.instructionSource};
+        if (next.staleSince !== undefined) clock.staleSince ??= next.staleSince;
+        clocks.set(key, clock); sourceClocks.set(tab.id, clocks);
+        // Re-reading an unchanged source never extends its confirmation time.
+        if (next.staleSince === undefined) concrete.set(tab.id, {meaning:next, at:clock.at});
+      }
     }
     const tabs: PaneIdentityResult["tabs"] = new Map();
     for (const workspace of scan.workspaces) {
@@ -460,6 +589,10 @@ export function createAutoNamePolicy(now: () => number = Date.now, projectNames:
         strength: "unknown", binding: "", contentKey: "", meaningKey: "unknown", fresh: false,
       } }));
       const names = resolveNameSiblings(rows.map(row => hold?.(row.tab, row.meaning) ? { ...row, tab: { ...row.tab, label: row.tab.displayName ?? row.tab.label, labelSource: "user" as const } } : row));
+      for (const row of rows) if (names.get(row.id) === UNKNOWN_AUTO_NAME && row.meaning.strength !== "unknown") {
+        accepted.set(row.id, { ...row.meaning, strength: "unknown", unknownReason: "name-conflict", fresh: false, staleSince: undefined });
+        concrete.delete(row.id);
+      }
       for (const row of rows) if (alive.has(row.id)) tabs.set(row.id, { project: null, projectReason: null,
         subject: row.meaning.target || null, displayName: names.get(row.id) ?? null,
         subjectReason: row.meaning.strength === "unknown" ? null : row.meaning.source === "title" ? "session_title" : row.meaning.source === "label" ? "readable_label" : "task_title" });
@@ -468,7 +601,14 @@ export function createAutoNamePolicy(now: () => number = Date.now, projectNames:
   };
   return { identify, meanings: () => accepted,
     reset(ids: readonly string[]) {
-      for (const id of ids) { accepted.delete(id); inputWatermarks.delete(id); pending.delete(id); committedAt.delete(id); derived.delete(id); }
+      for (const id of ids) { accepted.delete(id); inputWatermarks.delete(id); pending.delete(id); committedAt.delete(id); derived.delete(id); concrete.delete(id); invalidations.delete(id); sourceClocks.delete(id); }
     },
-    nextCheckMs: () => pending.size ? Math.max(1, Math.min(...[...pending.values()].map(p => p.readyAt)) - now()) : undefined };
+    nextCheckMs: () => {
+      const deadlines = [...pending.values()].map(p => p.readyAt);
+      for (const [id, meaning] of accepted) if (meaning.staleSince !== undefined) {
+        const at = sourceClocks.get(id)?.get(confirmationKey(meaning))?.at ?? concrete.get(id)?.at;
+        if (at !== undefined && at + LAST_CONCRETE_NAME_MS > now()) deadlines.push(at + LAST_CONCRETE_NAME_MS);
+      }
+      return deadlines.length ? Math.max(1, Math.min(...deadlines) - now()) : undefined;
+    } };
 }

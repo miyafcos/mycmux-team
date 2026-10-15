@@ -39,6 +39,9 @@ pub struct PtyMetadata {
     /// Actual process observation and agent birth, in epoch milliseconds.
     pub observed_at: Option<u64>,
     pub agent_started_at: Option<u64>,
+    /// Foreground agent PID from this observation, never the shell PTY PID.
+    #[serde(skip)]
+    pub(crate) agent_pid: Option<u32>,
 }
 
 impl PtyMetadata {
@@ -62,6 +65,7 @@ impl PtyMetadata {
             agent_session_trusted: false,
             observed_at: None,
             agent_started_at: None,
+            agent_pid: None,
         }
     }
 }
@@ -171,7 +175,7 @@ use codex_rollout::*;
 use git_branch::*;
 pub use runner::start_monitor;
 #[cfg(test)]
-pub(crate) use runner::publish_monitor_observation;
+pub(crate) use runner::{publish_monitor_observation, publish_monitor_observation_checked};
 #[cfg(test)]
 pub(crate) use runner::monitor_status_changed;
 use transcripts::*;

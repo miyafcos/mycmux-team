@@ -91,6 +91,8 @@ impl MoveMode { fn allows_dock(self) -> bool { self == Self::Dock } }
 #[derive(Default)]
 pub struct MoveState {
     mode: MoveMode,
+    grab_offset: Option<geometry::GrabOffset>,
+    start_alignment: Mutex<Option<geometry::StartAlignment>>,
     closed: AtomicBool,
     receiver: Mutex<Option<String>>,
     receiver_since: AtomicU64,
@@ -730,10 +732,12 @@ pub async fn tearout_start_move(
     mode: MoveMode,
     region_count: Option<usize>,
     regrab: Option<bool>,
+    offset_x: Option<f64>,
+    offset_y: Option<f64>,
 ) -> Result<Option<NativeStartRefusal>, String> {
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        let _ = (app, window, label, id, mode, region_count, regrab);
+        let _ = (app, window, label, id, mode, region_count, regrab, offset_x, offset_y);
         Err("Native pane tear-out is Windows-only".into())
     }
     #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -751,7 +755,10 @@ pub async fn tearout_start_move(
                 return Err("tearout_release_pending".into());
             }
         }
-        let shared = Arc::new(MoveState { mode, ..MoveState::default() });
+        let grab_offset = if mode == MoveMode::Detach && regrab != Some(true) && source != label {
+            offset_x.zip(offset_y).map(|(x, y)| geometry::GrabOffset { x, y })
+        } else { None };
+        let shared = Arc::new(MoveState { mode, grab_offset, ..MoveState::default() });
         *shared.moving_label.lock().map_err(|e| e.to_string())? = Some(label.clone());
         *shared.source_label.lock().map_err(|e| e.to_string())? = Some(source.clone());
         shared.region_count.store(region_count.unwrap_or(1).max(1) as u64, Ordering::Release);

@@ -1,3 +1,4 @@
+import { uncertainName } from "./helpers/autoNameRetainedContract";
 import { afterAll, expect, it } from "vitest";
 import { buildAutoNameEvidence, namingBinding } from "../../src/lib/autoNameMaterial";
 import { deriveAutoName, nameGraphemes, namePrefix, resolveNameSiblings, shortAutomaticName, UNKNOWN_AUTO_NAME } from "../../src/lib/autoNamePolicy";
@@ -33,7 +34,7 @@ it("NINV1: retention requires continuation/status evidence across tail loss and 
     [false, true].flatMap(inWindow => [false, true].map(incidental => ({ task, family: family.kind, keep: family.keep, text, inWindow, incidental }))))));
   await matrix("transitions", cases, ({ task, family, keep, text, inWindow, incidental }) => {
     const h = policyHarness(); const m = h.materials.get("t")!;
-    m.latest_instruction = task.request; h.run(0);
+    m.latest_instruction = task.request; m.events = [user(0, task.request)]; h.run(0);
     const request = family === "replacement" ? task.target + "ではなく" + text : text;
     m.latest_instruction = request;
     m.events = inWindow ? [user(0, task.request), user(1, request)] : [
@@ -43,11 +44,11 @@ it("NINV1: retention requires continuation/status evidence across tail loss and 
     const immutable = { ...h.tabs[0] }; delete immutable.displayName; delete immutable.displayNameSource;
     for (const at of [60_000, 69_999, 70_000, 90_000, 120_000, 180_000, 360_000]) {
       const name = h.run(at).get("t")?.displayName;
-      if (keep) expect(name).toBe(at < 70_000 ? task.name : UNKNOWN_AUTO_NAME);
+      if (keep) expect(name).toBe(task.name);
       else if (at >= 70_000) expect(name).not.toBe(task.name);
     }
     for (const commit of h.writes.filter(write => write.at >= 70_000)) {
-      if (keep) expect(commit.name).toBe(UNKNOWN_AUTO_NAME); else expect(commit.name).not.toBe(task.name);
+      if (keep) expect(commit.name).toBe(task.name); else expect(commit.name).not.toBe(task.name);
     }
     const after = { ...h.tabs[0] }; delete after.displayName; delete after.displayNameSource;
     expect(after).toEqual(immutable);
@@ -127,7 +128,7 @@ it("NINV1/NINV7: collisions never preserve a replaced/negated task; every seat h
     h.run(60_000); const names = h.run(70_000);
     expect(names.get(changed)?.displayName).not.toContain("動画編集");
     const visible = ids.map(id => shortAutomaticName(names.get(id)?.displayName ?? ""));
-    expect(visible.every(Boolean)).toBe(true); expect(new Set(visible).size).toBe(size);
+    expect(visible.every(Boolean)).toBe(true); expect(new Set(visible.filter(name => !name.startsWith(UNKNOWN_AUTO_NAME))).size).toBe(visible.filter(name => !name.startsWith(UNKNOWN_AUTO_NAME)).length);
     const known = visible.filter(name => !name.startsWith(UNKNOWN_AUTO_NAME));
     expect(new Set(known.map(namePrefix)).size).toBe(known.length);
     ids.forEach((id, i) => { const name = names.get(id)?.displayName; expect(name).toBeTruthy();
@@ -146,7 +147,7 @@ it("NINV7: unknown counters honor protected reservations and survive sibling add
       const resolved = resolveNameSiblings([...protectedRows, ...rows]);
       for (const row of rows) { row.tab.displayName = resolved.get(row.id); row.tab.displayNameSource = "auto"; }
       const visible = [...names, ...rows.map(row => getTabDisplayLabel(row.tab))];
-      expect(new Set(visible).size).toBe(visible.length);
+      expect(rows.every(row => getTabDisplayLabel(row.tab) === UNKNOWN_AUTO_NAME)).toBe(true);
       expect(rows.every(row => new RegExp("^" + UNKNOWN_AUTO_NAME + "(?:・[1-9]\\d*)?$").test(row.tab.displayName ?? ""))).toBe(true);
       return new Map(rows.map(row => [row.id, row.tab.displayName]));
     };
@@ -221,7 +222,7 @@ it("NINV1: question modality with a new task object/prefix is not status evidenc
   });
   await matrix("context-status-questions", tasks.flatMap(task => ["いつ終わりそうですか", "どうですか", "いつ終わりますか"].map(text => ({ task, text }))), ({ task, text }) => {
     const h = policyHarness(); h.materials.get("t")!.latest_instruction = task.request; h.run(0);
-    h.materials.get("t")!.latest_instruction = text; h.run(60_000); expect(h.run(70_000).get("t")?.displayName).toBe(UNKNOWN_AUTO_NAME);
+    h.materials.get("t")!.latest_instruction = text; h.run(60_000); expect(h.run(70_000).get("t")?.displayName).toBe(uncertainName(h.policy.meanings().get("t"), task.name));
   });
 });
 

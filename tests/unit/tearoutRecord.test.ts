@@ -58,3 +58,12 @@ it("records bounded DOM/native correlation only after test-profile opt-in", asyn
   const ordinary = new TearoutRecord("ordinary", "tab", "main", 10); ordinary.input(event, "band"); await ordinary.finish("kept_window");
   expect(mocks.invoke.mock.calls.at(-1)![1].record.input_evidence).toBeNull();
 });
+
+it("persists native start alignment independently of cursor tracking lag", async () => {
+  const record = new TearoutRecord("aligned", "p", "main", 1);
+  const alignment = { cursor:[300, 400] as [number, number], before:[100, 200] as [number, number],
+    expected:[250, 370] as [number, number], after:[250, 370] as [number, number], scale:1.5, error_before_px:226.715, error_after_px:0 };
+  record.native({native_started_at:25,at:25,phase:"move",scale:1.5,monitor:"test",focus_stolen:false,start_alignment:alignment});
+  await record.finish("kept_window");
+  expect(mocks.invoke).toHaveBeenLastCalledWith("tearout_log_record", {record:expect.objectContaining({start_alignment:alignment})});
+});

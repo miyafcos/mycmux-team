@@ -4,7 +4,7 @@ use crate::livebrief::{LiveBinding, LiveBriefReducer};
 use serde_json::{json, Value};
 
 fn naming_request(id: &str) -> NamingRequest {
-    NamingRequest { pty_session_id: format!("pty-{id}"), title: TitleRequest {
+    NamingRequest { codex_lookup: None, waiting_for_agent: false, pty_session_id: format!("pty-{id}"), title: TitleRequest {
         tab_id: id.into(), agent_kind: "claude".into(), agent_session_id: Some(format!("agent-{id}")), cwd: "/fixture".into(),
     } }
 }
@@ -214,13 +214,17 @@ fn clipped_activity_and_project_heading_keep_their_completeness_witness() {
     let mut state = crate::livebrief::naming::NamingState::default(); state.observe(&activity, false);
     let result = select(state.plan(), vec![activity]);
     assert_eq!(result.incomplete_event_ids, ["activity"]);
-    let root = std::env::temp_dir().join(format!("b11-heading-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
     std::fs::write(root.join("spec.md"), format!("# 引用：「{}」。\n動画を編集してはいけません。", "あ".repeat(180))).unwrap();
     let mut request = naming_request("heading");
-    request.title.agent_kind = "unsupported".into(); request.title.cwd = root.to_string_lossy().into_owned();
-    let material = fallback(request, Instant::now() + Duration::from_secs(5));
-    std::fs::remove_dir_all(root).unwrap();
+    request.title.cwd = root.to_string_lossy().into_owned();
+    let path = root.join("owned-transcript.jsonl");
+    let prompt = format!("Read \"{}\"", root.join("spec.md").display());
+    std::fs::write(&path, format!("{}\n", user_record(0, &prompt))).unwrap();
+    let material = add_sources(request, NamingMaterial::default(), Some(path), Instant::now() + Duration::from_secs(5));
+    assert!(material.task_title_explicit);
+    assert!(material.task_title_input.is_some());
     assert!(!material.task_title_complete);
     assert_eq!(material.task_title.unwrap().chars().count(), 160);
 }

@@ -72,6 +72,8 @@ pub fn start_monitor(
             transcript_activity.retain_recent(std::time::SystemTime::now());
             let observations = manager.iter_observations();
             let pids: Vec<_> = observations.iter().map(|(id, pid, _, _)| (id.clone(), *pid)).collect();
+            let identity_snapshots: HashMap<_, _> = pids.iter().filter_map(|(id, _)|
+                manager.agent_identity_snapshot(id).map(|snapshot| (id.clone(), snapshot))).collect();
             let refresh_started = Instant::now();
 
             // `OnlyIfNotSet` means sysinfo pays the Windows PEB read once per
@@ -142,9 +144,10 @@ pub fn start_monitor(
             );
             for (pane, mapping) in &mut agent_mappings {
                 if mapping.hook_confirmed {
-                    mapping.hook_confirmed = manager.trusted_agent_identity(pane).is_some_and(|identity|
-                        identity.from_hook && process_panes.get(&Pid::from_u32(identity.agent_pid)) == Some(pane)
-                            && sys.process(Pid::from_u32(identity.agent_pid)).is_some_and(|process| process.start_time() == identity.agent_started_at));
+                    mapping.hook_confirmed = identity_snapshots.get(pane).is_some_and(|snapshot|
+                        process_panes.iter().any(|(pid, owner)| owner == pane && sys.process(*pid).is_some_and(|process|
+                            agent_kind_from_process(&sys, *pid).is_some_and(|kind|
+                                snapshot.hook_for_process(kind.display_kind(), pid.as_u32(), process.start_time()).is_some()))));
                 }
             }
             let mapped_session_owners = mapped_agent_session_owners(&agent_mappings);
@@ -165,6 +168,7 @@ pub fn start_monitor(
                     continue;
                 }
                 if let Some(pid) = pid_opt {
+                    let Some(identity_snapshot) = identity_snapshots.get(&session_id) else { continue; };
                     let session_epoch = owner.epoch;
                     if session_epochs.insert(session_id.clone(), session_epoch) != Some(session_epoch) {
                         last_metadata.remove(&session_id); missing_live_agent_ticks.remove(&session_id);
@@ -311,9 +315,8 @@ pub fn start_monitor(
                             DetectedAgentKind::Claude | DetectedAgentKind::ClaudeCodex => {
                                 let exact = session_id_from_agent_args(&sys, agent_pid, false)
                                     .filter(|id| !conversation_history.abandoned(&session_id, id));
-                                let verified = manager.trusted_agent_identity(&session_id).filter(|identity|
-                                    identity.from_hook && identity.agent_pid == agent_pid.as_u32()
-                                        && sys.process(agent_pid).is_some_and(|process| process.start_time() == identity.agent_started_at));
+                                let verified = sys.process(agent_pid).and_then(|process|
+                                    identity_snapshot.hook_for_process(kind.display_kind(), agent_pid.as_u32(), process.start_time()));
                                 let mapped = verified.map(|identity| AgentSessionAttribution::verified(
                                     if identity.kind == "claude-codex" { "claude-codex" } else { "claude" }, identity.session_id,
                                 )).or_else(|| mapped_agent_session_attribution_for_pane(
@@ -695,8 +698,7 @@ pub fn start_monitor(
                     // A transcript scan can still supply display identity without rewriting saved identity.
                     let canonical_identity = foreground_agent.and_then(|(kind, pid)| {
                         let process = sys.process(pid)?;
-                        let hook = manager.trusted_agent_identity(&session_id).filter(|identity|
-                            identity.from_hook && identity.agent_pid == pid.as_u32() && identity.agent_started_at == process.start_time());
+                        let hook = identity_snapshot.hook_for_process(kind.display_kind(), pid.as_u32(), process.start_time());
                         if hook.is_some() { return hook; }
                         let requested = manager.requested_conversation(&session_id).filter(|(value, _)|
                             value == kind.display_kind() || (value == "claude-codex" && kind == DetectedAgentKind::Claude));
@@ -725,6 +727,7 @@ pub fn start_monitor(
                         agent_session_id: agent_session_id.clone(),
                         agent_session_trusted,
                         observed_at: Some(observed_at),
+                        agent_pid: foreground_agent.map(|(_, pid)| pid.as_u32()),
                         agent_started_at: foreground_agent.and_then(|(_, pid)| sys.process(pid))
                             .and_then(|process| process.start_time().checked_mul(1_000)),
                     };
@@ -745,13 +748,14 @@ pub fn start_monitor(
                                 || old.agent_session_trusted != agent_session_trusted
                                 || old.observed_at != metadata.observed_at
                                 || old.agent_started_at != metadata.agent_started_at
+                                || old.agent_pid != metadata.agent_pid
                         }
                         None => true,
                     };
 
                     // Always track last_metadata for work-done detection, even if
                     // not "changed" enough to re-emit pty_metadata.
-                    if publish_monitor_observation(&manager, &metadata_store, &owner, canonical_identity, metadata.clone(), changed, |meta| { let _ = app_handle.emit("pty_metadata", meta); }) {
+                    if publish_monitor_observation_checked(&manager, &metadata_store, &owner, identity_snapshot, canonical_identity, metadata.clone(), changed, |meta| { let _ = app_handle.emit("pty_metadata", meta); }) {
                         last_metadata.insert(session_id.clone(), metadata);
                     }
                 }
@@ -979,14 +983,29 @@ mod tests {
     }
 }
 
-/// The monitor's identity/metadata publication boundary.
+/// The monitor's identity/metadata publication boundary. Its snapshot predates
+/// process inspection so a newer hook cannot be overwritten or suspended.
+pub(crate) fn publish_monitor_observation_checked(
+    manager: &SessionManager, store: &MetadataStore, owner: &ObservationOwner,
+    snapshot: &crate::pty::manager::AgentIdentitySnapshot,
+    identity: Option<crate::pty::manager::TrustedAgentIdentity>, metadata: PtyMetadata,
+    changed: bool, emit: impl FnOnce(PtyMetadata),
+) -> bool {
+    let mut applied = false;
+    let current = owner.publish(|| {
+        applied = manager.publish_agent_observation(snapshot, identity, metadata, |metadata| {
+            if changed { store.insert(metadata.session_id.clone(), metadata.clone()); emit(metadata); }
+        });
+    });
+    current && applied
+}
+
+#[cfg(test)]
 pub(crate) fn publish_monitor_observation(
     manager: &SessionManager, store: &MetadataStore, owner: &ObservationOwner,
     identity: Option<crate::pty::manager::TrustedAgentIdentity>, metadata: PtyMetadata,
     changed: bool, emit: impl FnOnce(PtyMetadata),
 ) -> bool {
-    owner.publish(|| {
-        if let Some(identity) = identity { manager.remember_agent_identity(&metadata.session_id, identity); }
-        if changed { store.insert(metadata.session_id.clone(), metadata.clone()); emit(metadata); }
-    })
+    let Some(snapshot) = manager.agent_identity_snapshot(&metadata.session_id) else { return false; };
+    publish_monitor_observation_checked(manager, store, owner, &snapshot, identity, metadata, changed, emit)
 }

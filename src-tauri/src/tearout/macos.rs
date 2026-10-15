@@ -307,6 +307,7 @@ struct Sample {
     client_y: f64,
     approval: Option<Approval>,
     native_started_at: Option<u64>,
+    start_alignment: Option<super::geometry::StartAlignment>,
     error: Option<&'static str>,
     scale: f64,
     monitor: Option<String>,
@@ -531,6 +532,7 @@ fn sample(
         client_x: hit.as_ref().map(|(_, x, _)| *x).unwrap_or(-1.0),
         client_y: hit.as_ref().map(|(_, _, y)| *y).unwrap_or(-1.0),
         approval: approval.clone(),
+        start_alignment: *shared.start_alignment.lock().unwrap_or_else(|e| e.into_inner()),
         native_started_at: (started != 0 && !shared.synthetic.load(Ordering::Acquire))
             .then_some(started),
         error: failed.then_some("tearout_native_move_failed"),
@@ -653,6 +655,19 @@ pub fn start(
     let before_focus = focus_snapshot();
     let stolen = std::cell::Cell::new(false);
     let start_point = cursor();
+    if let Some(offset) = shared.grab_offset {
+        unsafe {
+            let native = moving_pointer as *const AnyObject;
+            let before: NSRect = msg_send![native, frame];
+            let expected = origin_under_pointer(start_point, before.size.width, before.size.height, offset.x, offset.y);
+            let _: () = msg_send![native, setFrameOrigin: expected];
+            let after: NSRect = msg_send![native, frame];
+            let scale: f64 = msg_send![native, backingScaleFactor];
+            *shared.start_alignment.lock().unwrap_or_else(|e| e.into_inner()) = Some(super::geometry::StartAlignment::measure(
+                [start_point.x, start_point.y], [before.origin.x, before.origin.y], [expected.x, expected.y],
+                [after.origin.x, after.origin.y], scale, scale));
+        }
+    }
     let start_frame: NSRect = unsafe { msg_send![moving_pointer as *const AnyObject, frame] };
     let active_shared = shared.clone();
     let keys = shared.clone();

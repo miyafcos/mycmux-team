@@ -202,6 +202,12 @@ __fixture_manual_command || exit 95
             (directory / name).symlink_to(target)
         # Never fall through to a real installed Codex when testing preflight.
         env["PATH"] = str(directory)
+        if os.name == "nt":
+            # The fixture's Git Bash utilities still need their MSYS DLLs.
+            runtime_bin = Path(shutil.which("bash") or "/bin/bash").parent
+            assert (runtime_bin / "msys-2.0.dll").is_file(), "Git Bash runtime is required"
+            assert not any((runtime_bin / ("codex" + suffix)).exists() for suffix in ("", ".exe", ".cmd", ".bat")), "fixture PATH must exclude installed Codex"
+            env["PATH"] = os.pathsep.join((str(directory), str(runtime_bin)))
         result = subprocess.run([shutil.which("bash") or "/bin/bash", "-s"], input=script, env=env, text=True, capture_output=True, encoding="utf-8", timeout=15)
         assert (directory / "caller-returned").exists(), "launcher exited instead of returning to the caller"
         assert (directory / "manual-command-clean").exists(), result.stdout + result.stderr + " caller cleanup checks did not complete"

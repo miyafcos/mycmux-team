@@ -102,6 +102,8 @@ pub struct DragRecord {
     shown_at: Option<u64>,
     visible_at: Option<u64>,
     native_started_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    start_alignment: Option<super::geometry::StartAlignment>,
     hover_started_at: Option<u64>,
     highlighted_at: Option<u64>,
     receiver_window: Option<String>,

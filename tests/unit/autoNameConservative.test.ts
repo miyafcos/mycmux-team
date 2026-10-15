@@ -1,3 +1,4 @@
+import { uncertainName } from "./helpers/autoNameRetainedContract";
 import { afterAll, expect, it } from "vitest";
 import { buildAutoNameEvidence, namingBinding } from "../../src/lib/autoNameMaterial";
 import { deriveAutoName, shortAutomaticName, UNKNOWN_AUTO_NAME } from "../../src/lib/autoNamePolicy";
@@ -21,7 +22,7 @@ it("B11 F1: controls resolve the newest substantive instruction and cannot cance
     m.events = sequence === "lost-history" ? [user(2, control)] : [user(0, task.request), user(1, next), user(2, control)];
     h.run(sequence === "between-scans" ? 60_000 : 65_000);
     const name = h.run(sequence === "between-scans" ? 70_000 : 75_000).get("t")?.displayName;
-    expect(name).toBe(UNKNOWN_AUTO_NAME);
+    expect(name).toBe(uncertainName(h.policy.meanings().get("t"), task.name));
     for (const at of [120_000, 360_000]) expect(h.run(at).get("t")?.displayName).toBe(name);
   });
 });
@@ -41,7 +42,7 @@ it("B11 F2: real frontend budgets never close a clipped polarity or control clau
     const clippedOnly = { ...evidence, instructions: evidence.instructions.slice(consumed ? 1 : 0),
       instructionCompleteness: (evidence as typeof evidence & { instructionCompleteness?: boolean[] }).instructionCompleteness?.slice(consumed ? 1 : 0) };
     expect(deriveAutoName(clippedOnly).strength).toBe("unknown");
-    h.run(60_000); expect(h.run(70_000).get("t")?.displayName).toBe(UNKNOWN_AUTO_NAME);
+    h.run(60_000); expect(h.run(70_000).get("t")?.displayName).toBe(uncertainName(h.policy.meanings().get("t"), "動画編集"));
   });
 });
 
@@ -54,7 +55,7 @@ it("B11 F1: barriers survive a missing observation and older history until a pro
     m.latest_instruction = control;
     m.events = [user(positive ? 2 : 0, positive ? "解説スライドを作る" : "動画を編集する"), user(3, control)];
     h.run(65_000);
-    expect(h.run(75_000).get("t")?.displayName).toBe(UNKNOWN_AUTO_NAME);
+    expect(h.run(75_000).get("t")?.displayName).toBe(uncertainName(h.policy.meanings().get("t"), "動画編集"));
   });
 });
 
@@ -65,7 +66,7 @@ it("B11 F1: a later control restores the latest substantive task after its posit
     Object.assign(m, materialFor(h.tabs[0], "解説スライドを作る", 1)); h.run(60_000); expect(h.policy.nextCheckMs()).toBe(10_000);
     Object.assign(m, materialFor(h.tabs[0])); h.run(63_000); expect(h.policy.nextCheckMs()).toBe(10_000);
     Object.assign(m, materialFor(h.tabs[0], control, 2)); h.run(65_000);
-    expect(h.run(75_000).get("t")?.displayName).toBe(UNKNOWN_AUTO_NAME);
+    expect(h.run(75_000).get("t")?.displayName).toBe(uncertainName(h.policy.meanings().get("t"), "動画編集"));
     expect(h.policy.meanings().get("t")?.fresh).toBe(false);
   });
 });
@@ -75,7 +76,7 @@ it("B11 F2: native completeness is retained even after text is already shorter t
     const h = policyHarness(), m = h.materials.get("t")!;
     m.latest_instruction = "動画を編集する"; h.run(0);
     m.latest_instruction = request; m.latest_instruction_kind = "answer"; m.latest_instruction_complete = false;
-    h.run(60_000); expect(h.run(70_000).get("t")?.displayName).toBe(UNKNOWN_AUTO_NAME);
+    h.run(60_000); expect(h.run(70_000).get("t")?.displayName).toBe(uncertainName(h.policy.meanings().get("t"), "動画編集"));
     const complete = materialFor(h.tabs[0], "動画を編集して");
     const clipped = { ...complete, latest_instruction_complete: false };
     expect(buildAutoNameEvidence(scanTab(), complete).contentKey).not.toBe(buildAutoNameEvidence(scanTab(), clipped).contentKey);
@@ -93,7 +94,7 @@ it("B11 F2: a clipped control is never proof that work continues beyond the miss
     const h = policyHarness(), m = h.materials.get("t")!;
     m.latest_instruction = "動画を編集する"; h.run(0);
     m.latest_instruction = "引用：「" + "あ".repeat(1600 - Array.from(control).length - 7) + "」。\n" + control + "。" + tail;
-    h.run(60_000); expect(h.run(70_000).get("t")?.displayName).toBe(UNKNOWN_AUTO_NAME);
+    h.run(60_000); expect(h.run(70_000).get("t")?.displayName).toBe(uncertainName(h.policy.meanings().get("t"), "動画編集"));
   });
 });
 
@@ -104,7 +105,7 @@ it("B11 F3: substantive answers invalidate old work while acknowledgements and b
     m.latest_instruction = "動画を編集する"; h.run(0);
     m.events = [user(0, m.latest_instruction), envelope(1, { type: "userMessage", kind: "answer", text: request, digest: "answer" })];
     h.run(60_000); const name = h.run(70_000).get("t")?.displayName;
-    expect(name).toBe(UNKNOWN_AUTO_NAME);
+    expect(name).toBe(uncertainName(h.policy.meanings().get("t"), "動画編集"));
   });
 });
 
@@ -116,7 +117,7 @@ it("B11 F3: bare answers cannot revive old generic instructions or cancel a newe
     if (change !== "none") { m.events.push(envelope(1, { type: "userMessage", kind: "answer", text: instruction, digest: "answer" })); h.run(60_000); }
     m.latest_instruction = history ? "動画を編集する" : undefined;
     m.events = [...(history ? [user(0, "動画を編集する")] : []), ...["A", "動画", "はい", "了解"].map((text, i) => envelope(i + 2, { type: "userMessage", kind: "answer", text, digest: String(i) }))];
-    h.run(65_000); expect(h.run(75_000).get("t")?.displayName).toBe(UNKNOWN_AUTO_NAME);
+    h.run(65_000); expect(h.run(75_000).get("t")?.displayName).toBe(uncertainName(h.policy.meanings().get("t"), "動画編集"));
   });
 });
 

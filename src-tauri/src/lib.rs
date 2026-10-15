@@ -414,6 +414,7 @@ app_commands![
             commands::jev::run_jev_grouping_judge,
             agent_titles::agent_session_titles,
             agent_titles::material::auto_name_materials,
+            agent_titles::material::auto_name_diagnostics,
             commands::tab_sweep::run_tab_sweep_judge,
             commands::tab_sweep::abort_tab_sweep_judge,
             commands::pane_leftovers::list_pane_leftover_processes,

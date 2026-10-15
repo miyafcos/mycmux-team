@@ -115,6 +115,7 @@ export function policyHarness(tabs = [makeTab("t")], projects: NamingProject[] =
   const materials = new Map(tabs.map(tab => [tab.id, materialFor(tab)]));
   const policy = createAutoNamePolicy(() => now, () => projects);
   const writes: Array<{ at: number; id: string; name: string }> = [];
+  const meaningsAt = new Map<number, Map<string, import("../../../src/lib/autoNamePolicy").AutoNameMeaning>>();
   const run = (at: number) => {
     now = at;
     const scan: AutoNameScan = { scannedAt: at, workspaces: [workspace], workspaceIds: [workspace.id], baseline: [], lineageClusters: [],
@@ -125,6 +126,7 @@ export function policyHarness(tabs = [makeTab("t")], projects: NamingProject[] =
       })) : [], naming: new Map() };
     for (const tab of scan.tabs) { const material = materials.get(tab.id); scan.naming.set(tab.id, buildAutoNameEvidence(tab, material && fixtureMaterial(material))); }
     const names = policy.identify(scan).tabs;
+    meaningsAt.set(at, structuredClone(new Map(policy.meanings())));
     for (const tab of workspace.panes[0].tabs) {
       const name = names.get(tab.id)?.displayName;
       if (name && name !== tab.displayName && tab.labelSource !== "user") {
@@ -133,7 +135,7 @@ export function policyHarness(tabs = [makeTab("t")], projects: NamingProject[] =
     }
     return names;
   };
-  return { policy, workspace, tabs, materials, run, writes };
+  return { policy, workspace, tabs, materials, run, writes, meaningsAt };
 }
 
 interface MatrixResult { name: string; cases: number; failed: number; milliseconds: number; examples: string[] }

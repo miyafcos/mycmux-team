@@ -59,6 +59,7 @@ permissions = [
     "allow-attention-list-cards",
     "allow-attention-resolve-card",
     "allow-attention-set-tracked",
+    "allow-auto-name-diagnostics",
     "allow-auto-name-materials",
     "allow-autonomy-get-settings",
     "allow-autonomy-set-settings",

@@ -1,3 +1,4 @@
+import { uncertainName } from "./helpers/autoNameRetainedContract";
 import { expect, it } from "vitest";
 import { buildLocalGroupingScan } from "../../src/components/layout/groupingLocalPlan";
 import { buildAutoNameEvidence, type AutoNameScan, type AutoNameEvidence, type NamingMaterial } from "../../src/lib/autoNameMaterial";
@@ -35,7 +36,7 @@ it.each(["続きをお願いします", "そのまま続けてください", "�
   expect(h.run(0)).toBe("方程式の解説スライド制作");
   // These strings are taskChange in the real adapter, not exact ack strings.
   h.material.events.push(event(1, { type: "userMessage", kind: "taskChange", text, digest: "b" }));
-  h.run(1_000); expect(h.run(11_000)).toBe(UNKNOWN_AUTO_NAME);
+  h.run(1_000); expect(h.run(11_000)).toBe(uncertainName(h.policy.meanings().get("t"), "方程式の解説スライド制作"));
 });
 it("R5: an acknowledgement clause preserves its substantive trailing instruction", async () => {
   const h = await harness();
@@ -46,14 +47,14 @@ it("R5: an acknowledgement clause preserves its substantive trailing instruction
 it("R5: unsupported follow-up alone does not erase a known task", async () => {
   const h = await harness(); h.material.latest_instruction = "解説スライドを作る"; h.run(0);
   h.material.latest_instruction = "いつ終わりそうですか"; h.run(1_000);
-  expect(h.run(11_000)).toBe(UNKNOWN_AUTO_NAME);
+  expect(h.run(11_000)).toBe(uncertainName(h.policy.meanings().get("t"), "解説スライド制作"));
 });
 it("R6: a stale heading plus an unrelated write cannot replace the accepted task", async () => {
   const h = await harness(); h.material.latest_instruction = "解説スライドを作る"; expect(h.run(0)).toBe("解説スライド制作");
   h.material.latest_instruction = null; h.material.task_title = "動画を編集する";
   h.material.events = [event(2, { type: "toolStart", tool: "Write", call_id: "w", target: "lesson.pptx" })];
   h.run(30_000); h.run(60_000); h.run(120_000);
-  expect(h.run(180_000)).toBe(UNKNOWN_AUTO_NAME);
+  expect(h.run(180_000)).toBe(uncertainName(h.policy.meanings().get("t"), "解説スライド制作"));
   expect(h.policy.meanings().get("t")?.topic).not.toBe("動画編集");
 });
 it("R7: sustained activity inflections invalidate the semantic cache", async () => {
@@ -105,10 +106,10 @@ it("R4: an explicitly rejected saved automatic name is invalidated", async () =>
 it("R6: an equal explicit user task promotes the accepted file provenance", async () => {
   const h = await harness();
   h.material.events = [event(0, { type: "toolStart", tool: "Write", call_id: "w", target: "lesson.pptx" })];
-  expect(h.run(0)).toBe(UNKNOWN_AUTO_NAME);
+  expect(h.run(0)).toBe(uncertainName(h.policy.meanings().get("t"), "スライド編集"));
   h.material.latest_instruction = "スライドを編集する"; h.run(30_000); expect(h.run(40_000)).toBe("スライド編集");
   h.material.latest_instruction = null; h.material.task_title = "動画を編集する";
   h.material.events = [event(1, { type: "toolStart", tool: "Write", call_id: "w2", target: "次回.pptx" })];
   h.run(60_000); h.run(90_000);
-  expect(h.run(120_000)).toBe(UNKNOWN_AUTO_NAME);
+  expect(h.run(120_000)).toBe(uncertainName(h.policy.meanings().get("t"), "スライド編集"));
 });
