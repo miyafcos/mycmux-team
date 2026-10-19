@@ -1,4 +1,6 @@
 import type { PaneFocusMode } from "../stores/settingsStore";
+import type { Workspace } from "../types";
+import { isRestorableTab } from "./tabLifecycle";
 
 export const PANE_HOVER_FOCUS_DWELL_MS = 100;
 
@@ -17,7 +19,7 @@ export interface PaneHoverSnapshot {
   target: PaneHoverTarget | null;
   activePaneId: string | null;
   focusRevision: number;
-  layoutRevision: number;
+  structureKey: string;
   zoomedPaneId: string | null;
   blockerRevision: number;
   windowFocused: boolean;
@@ -66,6 +68,17 @@ export function createPaneHoverState(ime: PaneHoverState["ime"] = "known"): Pane
   return { pointer: null, inside: null, down: false, ime, generation: 0, candidate: null };
 }
 
+/** Only displayed layout/target facts: persistence revisions also change for names and metadata. */
+export function paneHoverStructureKey(list: { activeWorkspaceId: string | null; workspaces: readonly Workspace[] }): string {
+  const workspace = list.workspaces.find((ws) => ws.id === list.activeWorkspaceId);
+  return JSON.stringify([list.activeWorkspaceId, workspace ? [
+    workspace.id, workspace.gridTemplateId, workspace.splitColumns, workspace.columnWidths,
+    workspace.rowHeightsPerCol, workspace.columnDividerPins, workspace.rowDividerPinsPerCol,
+    workspace.panes.map((pane) => [pane.id, pane.sessionId, pane.activeTabId,
+      pane.tabs.map((tab) => [tab.id, tab.sessionId, tab.type, isRestorableTab(tab)])]),
+  ] : null]);
+}
+
 export function samePaneHoverTarget(a: PaneHoverTarget | null, b: PaneHoverTarget | null): boolean {
   return !!a && !!b && a.surface === b.surface && a.workspaceId === b.workspaceId
     && a.paneId === b.paneId && a.tabId === b.tabId && a.sessionId === b.sessionId && a.kind === b.kind;
@@ -79,7 +92,7 @@ export function paneHoverSnapshotAllowsFocus(s: PaneHoverSnapshot): boolean {
 
 function unchangedCandidate(a: PaneHoverSnapshot, b: PaneHoverSnapshot): boolean {
   return samePaneHoverTarget(a.target, b.target) && a.activePaneId === b.activePaneId
-    && a.focusRevision === b.focusRevision && a.layoutRevision === b.layoutRevision
+    && a.focusRevision === b.focusRevision && a.structureKey === b.structureKey
     && a.zoomedPaneId === b.zoomedPaneId && a.blockerRevision === b.blockerRevision;
 }
 

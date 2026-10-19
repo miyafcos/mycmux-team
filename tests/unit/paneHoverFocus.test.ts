@@ -5,7 +5,7 @@ import { createPaneHoverState, decidePaneHoverFocus, PANE_HOVER_FOCUS_DWELL_MS,
 const surface = {}, otherSurface = {};
 export function snapshot(patch: Partial<PaneHoverSnapshot> = {}): PaneHoverSnapshot {
   return { mode: "hover", target: { workspaceId: "w", paneId: "b", tabId: "t", sessionId: "b", surface, kind: "terminal" },
-    activePaneId: "a", focusRevision: 2, layoutRevision: 4, zoomedPaneId: null, blockerRevision: 0,
+    activePaneId: "a", focusRevision: 2, structureKey: "layout-4", zoomedPaneId: null, blockerRevision: 0,
     windowFocused: true, documentVisible: true, connected: true, visible: true, samePane: false,
     dragging: false, captured: false, blocked: false, editorFocused: false, selected: false, ...patch };
 }
@@ -98,7 +98,7 @@ describe("pure pane hover decisions", () => {
   });
   it.each([
     { mode: "click" }, { connected: false }, { visible: false }, { target: null },
-    { activePaneId: "new" }, { focusRevision: 3 }, { layoutRevision: 5 }, { zoomedPaneId: "b" }, { blockerRevision: 1 },
+    { activePaneId: "new" }, { focusRevision: 3 }, { structureKey: "layout-5" }, { zoomedPaneId: "b" }, { blockerRevision: 1 },
     ...["workspaceId", "paneId", "tabId", "sessionId", "surface", "kind"].map((key) => ({
       target: { ...snapshot().target!, [key]: key === "surface" ? otherSurface : "new" },
     })),

@@ -2233,7 +2233,7 @@ dependencies = [
 
 [[package]]
 name = "mycmux"
-version = "0.88.4"
+version = "0.88.5"
 dependencies = [
  "base64 0.22.1",
  "block2",

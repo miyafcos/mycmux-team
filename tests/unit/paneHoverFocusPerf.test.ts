@@ -11,7 +11,7 @@ beforeEach(() => setup()); afterEach(cleanup);
 function snapshots(): decisions.PaneHoverSnapshot[] {
   return Array.from({ length: 12 }, (_, i) => ({ mode: "hover", target: { workspaceId: "w", paneId: `p${i}`,
     tabId: `t${i}`, sessionId: `s${i}`, surface: {}, kind: "terminal" }, activePaneId: "a", focusRevision: 0,
-    layoutRevision: 0, zoomedPaneId: null, blockerRevision: 0, windowFocused: true, documentVisible: true,
+    structureKey: "layout", zoomedPaneId: null, blockerRevision: 0, windowFocused: true, documentVisible: true,
     connected: true, visible: true, samePane: false, dragging: false, captured: false, blocked: false,
     editorFocused: false, selected: false }));
 }

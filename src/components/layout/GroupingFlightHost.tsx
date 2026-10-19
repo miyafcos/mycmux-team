@@ -281,10 +281,11 @@ export function GroupingFlightHost() {
 
   return (
     <>
-      <div data-cmux-overlay-root="true" className="cmux-grouping-flight-host" aria-hidden="true" ref={layerRef} />
+      <div data-cmux-overlay-root="true" data-pane-hover-focus-ignore="true" className="cmux-grouping-flight-host" aria-hidden="true" ref={layerRef} />
       {/* Kept outside the aria-hidden flight layer so the announcement is read. */}
       <div
         data-cmux-overlay-root="true"
+        data-pane-hover-focus-ignore="true"
         aria-live="polite"
         ref={liveRef}
         style={{

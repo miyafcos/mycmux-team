@@ -10,11 +10,25 @@ import { isRestorableTab } from "../lib/tabLifecycle";
 import { isStartupSessionPending } from "../lib/startupSessionGate";
 import { isTearoutSessionDormant } from "../lib/tearout/sessionAttachment";
 import { createPaneHoverState, decidePaneHoverFocus, paneHoverSnapshotAllowsFocus,
-  PANE_HOVER_FOCUS_DWELL_MS, samePaneHoverTarget,
+  PANE_HOVER_FOCUS_DWELL_MS, samePaneHoverTarget, paneHoverStructureKey,
   type PaneHoverCandidate, type PaneHoverEvent, type PaneHoverSnapshot, type PaneHoverTarget } from "../lib/paneHoverFocus";
 
-const BLOCKERS = ".cmux-overlay-backdrop,[data-cmux-overlay-root],[role='dialog'],[role='alertdialog'],[aria-modal='true'],"
+// Resident overlay roots (the grouping flight layers) are always mounted and never modal.
+const BLOCKERS = ".cmux-overlay-backdrop,[data-cmux-overlay-root]:not([data-pane-hover-focus-ignore]),[role='dialog'],[role='alertdialog'],[aria-modal='true'],"
   + ".cmux-popover-panel,[role='menu'],[data-cmux-native-webview-occluder],[data-pane-hover-focus-blocker]";
+const BLOCKER_ATTRIBUTES = new Set(["class", "role", "aria-modal", "data-cmux-overlay-root",
+  "data-pane-hover-focus-ignore", "data-cmux-native-webview-occluder", "data-pane-hover-focus-blocker"]);
+
+/** Match the same selector union while replaying recorded attributes, without mutating the DOM. */
+function matchesBlockerAttributes(element: Element, values: Map<string, string | null>): boolean {
+  const attr = (name: string) => values.has(name) ? values.get(name)! : element.getAttribute(name);
+  const classes = (attr("class") ?? "").split(/[ \t\n\f\r]+/), role = attr("role");
+  return classes.includes("cmux-overlay-backdrop") || classes.includes("cmux-popover-panel")
+    || (attr("data-cmux-overlay-root") !== null && attr("data-pane-hover-focus-ignore") === null)
+    || role === "dialog" || role === "alertdialog" || role === "menu" || attr("aria-modal") === "true"
+    || attr("data-cmux-native-webview-occluder") !== null || attr("data-pane-hover-focus-blocker") !== null;
+}
+
 const EXCLUDED = "button,a,input,textarea:not(.xterm-helper-textarea),select,iframe,embed,object,[contenteditable],[role='button'],[role='separator'],"
   + "[draggable='true'],[data-dnd-drag-handle],[data-pane-drag-handle],[data-terminal-transcript-panel],[data-terminal-history],[data-terminal-search],[data-agent-resume-recovery],"
   + "[hidden],[inert],[aria-hidden='true'],[data-composer-session],[data-declared-tab-placeholder],[data-dormant-transfer-placeholder]";
@@ -59,6 +73,7 @@ class PaneHoverRuntime {
   private observer: MutationObserver;
   private resize: ResizeObserver | undefined;
   private blockerRevision = 0;
+  private visibleBlockers: Set<HTMLElement>;
   private owned: FocusToken | undefined;
   private committing = false;
   private buttons = 0;
@@ -143,34 +158,65 @@ class PaneHoverRuntime {
     const runtime = this;
     // These subscriptions belong to the enabled runtime, never to click mode.
     function paneHoverFocusStoreChanged() { changed(); }
-    function paneHoverFocusUiChanged() { if (!runtime.committing) changed(); }
+    function paneHoverFocusWorkspaceChanged(next: ReturnType<typeof useWorkspaceListStore.getState>, prev: ReturnType<typeof useWorkspaceListStore.getState>) {
+      if (paneHoverStructureKey(next) !== paneHoverStructureKey(prev)) changed();
+    }
+    function paneHoverFocusUiChanged(next: ReturnType<typeof useUiStore.getState>, prev: ReturnType<typeof useUiStore.getState>) {
+      if (!runtime.committing && (next.activePaneId !== prev.activePaneId || next.focusRevision !== prev.focusRevision
+        || next.zoomedPaneId !== prev.zoomedPaneId)) changed();
+    }
     function paneHoverFocusSettingsChanged(next: { paneFocusMode: string }, prev: { paneFocusMode: string }) {
       if (next.paneFocusMode !== prev.paneFocusMode) changed();
     }
-    this.cleanup.push(useWorkspaceListStore.subscribe(paneHoverFocusStoreChanged));
+    this.cleanup.push(useWorkspaceListStore.subscribe(paneHoverFocusWorkspaceChanged));
     this.cleanup.push(useUiStore.subscribe(paneHoverFocusUiChanged));
     this.cleanup.push(usePaneDragStore.subscribe(paneHoverFocusStoreChanged));
     this.cleanup.push(useSavepointDragStore.subscribe(paneHoverFocusStoreChanged));
     this.cleanup.push(useDetachedDockStore.subscribe(paneHoverFocusStoreChanged));
     this.cleanup.push(useSettingsStore.subscribe(paneHoverFocusSettingsChanged));
+    this.visibleBlockers = this.readVisibleBlockers();
     this.observer = new win.MutationObserver((records) => {
-      const relevant = records.some((r) => {
+      // Keep even a blocker added and removed in one batch as a cancellation boundary.
+      const childListChanged = records.some((r) => {
+        if (r.type !== "childList") return false;
         const target = r.target as Element;
-        if (r.type === "attributes") {
-          if (target.matches?.(BLOCKERS) || target.querySelector?.(BLOCKERS)) return true;
-          if (r.attributeName === "class") return /cmux-overlay-backdrop|cmux-popover-panel/.test(r.oldValue ?? "");
-          if (r.attributeName === "role") return r.oldValue === "dialog" || r.oldValue === "alertdialog" || r.oldValue === "menu";
-          if (r.attributeName === "aria-modal") return r.oldValue === "true";
-          return r.attributeName?.startsWith("data-") ?? false;
-        }
         return [...r.addedNodes, ...r.removedNodes].some((node) => node instanceof win.Element
           && (node.matches(BLOCKERS) || (!target.closest?.(".xterm") && !!node.querySelector(BLOCKERS))));
       });
-      if (relevant) { this.blockerRevision++; this.invalidate(); }
+      let attributeRelevant = false, membershipChanged = false;
+      const previousAttributes = new Map<Element, Map<string, string | null>>();
+      // Undo attribute records in reverse order so interleaved root/ignore or role/class changes
+      // retain their intermediate blocker membership, even when the final DOM is unchanged.
+      for (let i = records.length - 1; i >= 0; i--) {
+        const record = records[i];
+        if (record.type !== "attributes") continue;
+        const target = record.target as Element, currentBlocker = target.matches(BLOCKERS);
+        let previousBlocker = false;
+        const name = record.attributeName!;
+        if (BLOCKER_ATTRIBUTES.has(name)) {
+          let values = previousAttributes.get(target);
+          const after = values ? matchesBlockerAttributes(target, values) : currentBlocker;
+          if (!values) { values = new Map(); previousAttributes.set(target, values); }
+          values.set(name, record.oldValue);
+          previousBlocker = matchesBlockerAttributes(target, values);
+          if (after !== previousBlocker) { membershipChanged = true; break; }
+        }
+        if (!attributeRelevant) {
+          attributeRelevant = currentBlocker || previousBlocker
+            || [...this.visibleBlockers].some((element) => target.contains(element))
+            || (target.firstElementChild !== null && !!target.querySelector(BLOCKERS));
+        }
+      }
+      if (!childListChanged && !membershipChanged && !attributeRelevant) return;
+      const blockers = this.readVisibleBlockers();
+      const visibilityChanged = blockers.size !== this.visibleBlockers.size
+        || [...blockers].some((element) => !this.visibleBlockers.has(element));
+      this.visibleBlockers = blockers;
+      if (childListChanged || membershipChanged || visibilityChanged) { this.blockerRevision++; this.invalidate(); }
     });
     this.observer.observe(doc.documentElement, { subtree: true, childList: true, attributes: true, attributeOldValue: true,
       attributeFilter: ["class", "role", "aria-modal", "style", "hidden", "inert", "aria-hidden",
-        "data-cmux-overlay-root", "data-cmux-native-webview-occluder", "data-pane-hover-focus-blocker"] });
+        "data-cmux-overlay-root", "data-pane-hover-focus-ignore", "data-cmux-native-webview-occluder", "data-pane-hover-focus-blocker"] });
     if (win.ResizeObserver) this.resize = new win.ResizeObserver(() => this.invalidate());
   }
 
@@ -205,6 +251,11 @@ class PaneHoverRuntime {
     }
   }
 
+  private readVisibleBlockers(): Set<HTMLElement> {
+    return new Set([...this.doc.querySelectorAll<HTMLElement>(BLOCKERS)].filter((element) =>
+      visible(element, element.matches(".cmux-overlay-backdrop,[data-cmux-overlay-root]"))));
+  }
+
   private snapshot(surface?: Surface, ownFocus = false): PaneHoverSnapshot {
     const ui = useUiStore.getState(), list = useWorkspaceListStore.getState();
     const registration = surface?.current();
@@ -220,10 +271,9 @@ class PaneHoverRuntime {
     const ownInput = ownFocus && registration?.kind === "launcher" && surface?.element.parentElement?.contains(active);
     const protectedFocus = !!surface && !!active && !ownInput && (composerHoldsFocus() || editable(active)
       || (active.matches("input,textarea,select,iframe,embed,object") && !active.matches(".xterm-helper-textarea")));
-    const blocked = !!surface && [...this.doc.querySelectorAll<HTMLElement>(BLOCKERS)].some((element) =>
-      visible(element, element.matches(".cmux-overlay-backdrop,[data-cmux-overlay-root]")));
+    const blocked = !!surface && this.readVisibleBlockers().size > 0;
     return { mode: useSettingsStore.getState().paneFocusMode, target: exact ? target : null,
-      activePaneId: ui.activePaneId, focusRevision: ui.focusRevision, layoutRevision: list.layoutRevision,
+      activePaneId: ui.activePaneId, focusRevision: ui.focusRevision, structureKey: paneHoverStructureKey(list),
       zoomedPaneId: ui.zoomedPaneId, blockerRevision: this.blockerRevision,
       windowFocused: this.focused && this.doc.hasFocus(), documentVisible: this.doc.visibilityState === "visible",
       connected: !!surface?.element.isConnected, visible: !!surface && visible(surface.element)
@@ -296,7 +346,7 @@ class PaneHoverRuntime {
         const expectedRevision = token.focusRevision ?? candidate.snapshot.focusRevision;
         return paneHoverSnapshotAllowsFocus({ ...s, samePane: false })
           && samePaneHoverTarget(s.target, candidate.snapshot.target) && s.activePaneId === expectedId
-          && s.focusRevision === expectedRevision && s.layoutRevision === candidate.snapshot.layoutRevision
+          && s.focusRevision === expectedRevision && s.structureKey === candidate.snapshot.structureKey
           && s.zoomedPaneId === candidate.snapshot.zoomedPaneId && s.blockerRevision === candidate.snapshot.blockerRevision;
       } catch {
         return false;
