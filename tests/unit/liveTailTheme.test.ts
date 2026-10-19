@@ -10,7 +10,7 @@ describe("live-tail fact theme colours", () => {
     const background = { ...DEFAULT_THEME_BACKGROUND, solidSurfaces: true };
     const { resolved, surfaces } = resolveTheme({ theme, background, mediaActive: false });
     const vars = buildLiveTailThemeVars(theme) as Record<string, string>;
-    for (const kind of ["progress", "cmd", "stale", "frozen", "error", "unreadable", "alive"]) {
+    for (const kind of ["waiting", "progress", "cmd", "stale", "frozen", "error", "unreadable", "alive"]) {
       for (const host of [surfaces.canvas, surfaces.surfaceLow, surfaces.surfaceRaised, surfaces.popover, flattenOnto(resolved.hover, surfaces.surfaceLow)]) {
         const opaque = isHexColor(host) ? host : mixHex(theme.chrome.surface, "#ffffff", host.includes("96%") ? 0.04 : 0.07);
         expect(contrastRatio(vars[`--cmux-live-tail-${kind}`], opaque), `${theme.id}/${kind}/${host}`).toBeGreaterThanOrEqual(4.5);
@@ -18,5 +18,6 @@ describe("live-tail fact theme colours", () => {
     }
     expect(vars["--cmux-live-tail-unreadable"]).toBe(vars["--cmux-live-tail-alive"]);
     expect(vars["--cmux-live-tail-frozen"]).toBe(vars["--cmux-live-tail-error"]);
+    expect(vars["--cmux-live-tail-stale"]).toBe(vars["--cmux-live-tail-error"]);
   });
 });

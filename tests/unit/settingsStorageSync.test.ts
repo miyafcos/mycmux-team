@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { LAUNCHABLE_AGENTS } from "../../src/lib/agentCatalog";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), Channel: class {} }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefined), emit: vi.fn() }));
@@ -79,6 +80,68 @@ async function accounts(): Promise<AccountStore> {
 }
 
 describe("real settings stores sharing localStorage", () => {
+  it("preserves a saved user choice when stale main completes its initial probe", async () => {
+    const main = await settings(), child = await settings();
+    child.getState().setAgentServiceVisible("claude", false);
+    expect(main.getState().agentServiceVisibility).toEqual({});
+    const installed = Object.fromEntries(LAUNCHABLE_AGENTS.map(({ target }) => [target, false]));
+    main.getState().initializeDetectedAgentServices({ status: "success", installed });
+    expect(shared.saved().state.agentServiceVisibility).toEqual({ ...installed, claude: false, codex: true });
+    const writes = shared.writes;
+    shared.deliver();
+    expect(main.getState().agentServiceVisibility.claude).toBe(false);
+    expect(child.getState().agentServiceVisibility.claude).toBe(false);
+    expect(shared.writes).toBe(writes);
+  });
+
+  it("preserves another window's toggle when stale B writes a different service", async () => {
+    const a = await settings(), b = await settings();
+    a.getState().setAgentServiceVisible("hermes", false);
+    expect(b.getState().agentServiceVisibility).toEqual({});
+    b.getState().setAgentServiceVisible("omp", false);
+    expect(shared.saved().state.agentServiceVisibility).toEqual({ hermes: false, omp: false });
+    const writes = shared.writes;
+    shared.deliver();
+    expect(a.getState().agentServiceVisibility).toEqual({ hermes: false, omp: false });
+    expect(b.getState().agentServiceVisibility).toEqual({ hermes: false, omp: false });
+    expect(shared.writes).toBe(writes);
+  });
+
+  it("persists an explicit same-key choice even when it matches the stale local value", async () => {
+    const a = await settings(), b = await settings();
+    a.getState().setAgentServiceVisible("hermes", false);
+    shared.deliver();
+    b.getState().setAgentServiceVisible("hermes", true);
+    expect(a.getState().agentServiceVisibility.hermes).toBe(false);
+    a.getState().setAgentServiceVisible("hermes", false);
+    expect(shared.saved().state.agentServiceVisibility.hermes).toBe(false);
+    shared.deliver();
+    expect(b.getState().agentServiceVisibility.hermes).toBe(false);
+  });
+
+  it("does not rewrite complete saved service keys before storage events arrive", async () => {
+    const main = await settings(), child = await settings();
+    for (const { target } of LAUNCHABLE_AGENTS) child.getState().setAgentServiceVisible(target, false);
+    const writes = shared.writes;
+    const installed = Object.fromEntries(LAUNCHABLE_AGENTS.map(({ target }) => [target, true]));
+    main.getState().initializeDetectedAgentServices({ status: "success", installed });
+    expect(shared.writes).toBe(writes);
+    expect(shared.saved().state.agentServiceVisibility).toEqual(Object.fromEntries(LAUNCHABLE_AGENTS.map(({ target }) => [target, false])));
+  });
+
+  it("syncs per-service choices between windows without a write echo", async () => {
+    const a = await settings(), b = await settings();
+    a.getState().setAgentServiceVisible("hermes", false);
+    const writes = shared.writes;
+    shared.deliver();
+    expect(b.getState().agentServiceVisibility).toEqual({ hermes: false });
+    expect(shared.writes).toBe(writes);
+    b.getState().setAgentServiceVisible("codex", false);
+    shared.deliver();
+    expect(a.getState().agentServiceVisibility).toEqual({ hermes: false, codex: false });
+    expect(shared.writes).toBe(writes + 1);
+  });
+
   it.each(["AI boot", "PREFERENCE", "another setting"])("keeps A's change when stale B writes %s", async (path) => {
     const a = await settings(), b = await settings();
     a.getState().setShowSplitDownButton(true);

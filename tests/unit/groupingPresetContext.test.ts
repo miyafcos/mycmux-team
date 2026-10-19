@@ -143,7 +143,7 @@ describe("grouping attention scan", () => {
 
 describe("strategy payloads and full-plan compatibility", () => {
   it("defines both strategies, their labels, descriptions, and display order", async () => {
-    expect(GROUPING_STRATEGY_ORDER).toEqual(["active_watch", "main_sessions", "minimal_move", "project", "role", "mixed"]);
+    expect(GROUPING_STRATEGY_ORDER).toEqual(["active_watch", "main_sessions", "minimal_move", "project", "role", "mixed", "attribute"]);
     expect(tabGroupingStrings.strategyActiveWatch).toBe("稼働中だけ");
     expect(tabGroupingStrings.strategyMainSessions).toBe("メインだけ");
     expect(tabGroupingStrings.strategyActiveWatchDescription).toContain("次の返事待ち");

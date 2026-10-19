@@ -1,3 +1,4 @@
+import { useAgentServiceVisibility } from "../../hooks/useAgentServiceVisibility";
 import { useEffect, useRef, useState } from "react";
 import { Copy, Play, Share2, FolderOpen, Expand, Minimize, Pencil, Sparkles, FileText, Search, ArrowLeft, Check, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
@@ -23,6 +24,7 @@ interface Props {
   notify: (message: string) => void; close: () => void; readOnly?: boolean;
 }
 export function SkillDetail({ row, category, api, tab, setTab, expanded, setExpanded, query, snippet, notify, close, readOnly = false }: Props) {
+  const visible = useAgentServiceVisibility();
   const designApi = api as Partial<ReadOnlySkillsApi>;
   const [designDoc, setDesignDoc] = useState<DesignDocument | null>(null);
   const [content, setContent] = useState<SkillDocument | null>(null); const [folder, setFolder] = useState<SkillFolder | null>(null); const [preview, setPreview] = useState<SkillPreview | null>(null);
@@ -47,7 +49,7 @@ export function SkillDetail({ row, category, api, tab, setTab, expanded, setExpa
     return () => { live = false; };
   }, [tab, sharing, folder, row.id, row.docPath, api, readOnly]);
   const action = async (run: () => void | Promise<void>) => { try { await run(); } catch (error) { notify(s.error(String(error))); } };
-  const launch = (kind: "claude" | "codex", repair = false) => void action(() => { if (readOnly) { notify(s.readOnly); return; } startSkill(row, kind, repair); close(); });
+  const launch = (kind: "claude" | "codex", repair = false) => void action(() => { if (!visible(kind)) return; if (readOnly) { notify(s.readOnly); return; } startSkill(row, kind, repair); close(); });
   const showFile = async (relative: string) => { const epoch = ++fileEpoch.current; try { const value = await api.preview(row.id, relative); if (epoch === fileEpoch.current && mounted.current) setPreview(value); } catch (error) { if (epoch === fileEpoch.current && mounted.current) setError(s.error(String(error))); } };
   const openDesignFile = (relative: string, offset?: number) => {
     const epoch = ++fileEpoch.current; setDesignDoc(null);
@@ -77,7 +79,7 @@ export function SkillDetail({ row, category, api, tab, setTab, expanded, setExpa
   return <>
     <div className="skills-detail-head"><span className="skills-big-symbol" style={{ color: categoryTone(row.category), background: `color-mix(in srgb, ${categoryTone(row.category)} 10%, var(--cmux-surface-raised))` }}><SkillSymbol symbol={row.symbol ?? category?.symbol ?? null} size={29} /></span><div className="skills-detail-title"><h2>{row.label}</h2><div className="skills-detail-meta"><code>{row.id}</code><span className="skills-chip">{category?.name ?? s.unsorted}</span><span className="skills-chip">{s.kinds[row.kind] ?? row.kind}</span><span className="skills-chip" title={s.curationHelp}>{s.curations[row.curation] ?? row.curation}</span></div><p>{row.line}</p>
       <div className="skills-calls">{["claude", "codex"].map(kind => row.calls[kind] && <button key={kind} title={s.copyCall} onClick={() => void action(async () => { await navigator.clipboard.writeText(row.calls[kind]); notify(s.copied); })}>{kind === "claude" ? <ClaudeAgentIcon /> : <CodexAgentIcon />}<code>{row.calls[kind]}</code><span>{kind === "claude" ? "Claude 用の呼ぶ言葉をコピー" : "Codex 用の呼ぶ言葉をコピー"}</span><Copy size={12} /></button>)}</div>
-      <div className="skills-actions">{!readOnly && <><button className="primary" disabled={!row.calls.claude} onClick={() => launch("claude")}><Play size={13} />{s.startClaude}</button><button disabled={!row.calls.codex} onClick={() => launch("codex")}><CodexAgentIcon />{s.startCodex}</button><button disabled={!row.docPath} onClick={() => { setSharing(true); }}><Share2 size={13} />{s.share}</button></>}<button disabled={!row.docPath} onClick={() => void action(async () => { await invoke("reveal_in_explorer", { path: row.docPath }); })}><FolderOpen size={13} />{s.folder}</button><button hidden={readOnly} onClick={() => setExpanded(!expanded)}>{expanded ? <Minimize size={13} /> : <Expand size={13} />}{expanded ? s.collapse : s.expand}</button></div>
+      <div className="skills-actions">{!readOnly && <>{visible("claude") && <button className="primary" disabled={!row.calls.claude} onClick={() => launch("claude")}><Play size={13} />{s.startClaude}</button>}{visible("codex") && <button disabled={!row.calls.codex} onClick={() => launch("codex")}><CodexAgentIcon />{s.startCodex}</button>}<button disabled={!row.docPath} onClick={() => { setSharing(true); }}><Share2 size={13} />{s.share}</button></>}<button disabled={!row.docPath} onClick={() => void action(async () => { await invoke("reveal_in_explorer", { path: row.docPath }); })}><FolderOpen size={13} />{s.folder}</button><button hidden={readOnly} onClick={() => setExpanded(!expanded)}>{expanded ? <Minimize size={13} /> : <Expand size={13} />}{expanded ? s.collapse : s.expand}</button></div>
       {places?.duplicateCodex && <p className="skills-warning" role="note">{s.duplicateWarning}</p>}
     </div></div>
     {readOnly && <section className="skills-read-facts"><div className="ad-facts">
@@ -89,7 +91,7 @@ export function SkillDetail({ row, category, api, tab, setTab, expanded, setExpa
       <section><h3>本文は必要なときに読む</h3><p>呼ばれた・開かれた手順だけを追加します。実行・成功の記録は別です。</p></section>
     </div><SkillRecords row={row} />
     <h3>全ての置き場所</h3>{row.places?.length ? <table className="skills-dense-table"><thead><tr><th>サービス</th><th>量</th><th>更新日時</th><th>場所</th></tr></thead><tbody>{row.places.map(place => <tr key={place.service + place.path}><th>{place.service}</th><td>{sizeText({ chars: place.chars, lines: place.lines, bytes: place.bytes })}</td><td>{dateTime(place.modifiedAt)}</td><td><code className="ad-path">{place.path}</code></td></tr>)}</tbody></table> : <p>量の内訳は未取得です。「置き場所」で取得できた場所を確認できます。</p>}</section>}
-    <nav className="skills-tabs" aria-label={s.detailTabs}>{["content", "folder", "places"].map(value => <button key={value} aria-pressed={tab === value && !sharing} className={tab === value && !sharing ? "active" : ""} onClick={() => { setSharing(false); setTab(value); }}>{s.tabs[value]}</button>)}<span />{!readOnly && <><button disabled={!row.docPath} onClick={() => void action(async () => { await invoke("open_with_default", { path: row.docPath }); })} title={s.editor}><Pencil size={13} />{s.editor}</button><button disabled={!row.docPath} onClick={() => launch("claude", true)}><Sparkles size={13} />{s.repair}</button></>}</nav>
+    <nav className="skills-tabs" aria-label={s.detailTabs}>{["content", "folder", "places"].map(value => <button key={value} aria-pressed={tab === value && !sharing} className={tab === value && !sharing ? "active" : ""} onClick={() => { setSharing(false); setTab(value); }}>{s.tabs[value]}</button>)}<span />{!readOnly && <><button disabled={!row.docPath} onClick={() => void action(async () => { await invoke("open_with_default", { path: row.docPath }); })} title={s.editor}><Pencil size={13} />{s.editor}</button>{visible("claude") && <button disabled={!row.docPath} onClick={() => launch("claude", true)}><Sparkles size={13} />{s.repair}</button>}</>}</nav>
     <div className="skills-detail-body" ref={container}>
       {error && <p role="alert" className="skills-warning">{error}</p>}
       {sharing ? <section className="skills-share" aria-label={s.share}><div className="skills-section-head"><h3>{s.shareTitle}</h3><button onClick={() => setSharing(false)}><ArrowLeft size={13} />{s.back}</button></div><p>{s.shareNote}</p><p>{s.shareSize(selection.length, bytes(shareBytes))} <span className={tooLarge ? "skills-warning" : ""}>{s.shareLimits}</span></p>

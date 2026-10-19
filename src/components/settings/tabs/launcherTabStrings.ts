@@ -2,6 +2,7 @@
 // LauncherTab.tsx 側は非 ASCII を持たず、文言はここに集約する
 // (launcherStrings.ts / webPaneStrings と同じ方針 — 委譲先の文字化け防止)。
 export const launcherTabStrings = {
+  terminalRow: "ターミナル",
   launchHeading: "新規に起動",
   webHeading: "Web",
   resumeRow: "続きから",

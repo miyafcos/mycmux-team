@@ -255,6 +255,7 @@ fn create_session_blocking(
     let mut args = args;
     let mut env_map = env.unwrap_or_default();
     codex_restore::sanitize_report_env(&mut env_map);
+    validate_terminal_shell_launch(&mut env_map)?;
     let mut restore_notice = false;
     let mut cwd = cwd;
     // A PTY that is still tracked for this session_id means create() below
@@ -519,7 +520,7 @@ fn create_session_blocking(
     // of the agents. See `commands::shell::login_shell_path`.
     #[cfg(target_os = "macos")]
     if !env_map.contains_key("PATH") {
-        if let Some(path) = crate::commands::shell::login_shell_path() {
+        if let Some(path) = crate::commands::shell::login_shell_path(&app_handle) {
             env_map.insert("PATH".to_string(), path.to_string());
         }
     }
@@ -789,6 +790,32 @@ pub(crate) fn is_launch_spec_value(value: &str) -> bool {
         && value.len() <= 128
         && value.as_bytes()[0].is_ascii_alphanumeric()
         && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._/-".contains(&byte))
+}
+
+/// Launch targets are fixed identifiers, never user command text.
+fn validate_terminal_shell_launch(env: &mut HashMap<String, String>) -> Result<(), String> {
+    env.retain(|key, _| !["MYCMUX_LAUNCH_TARGET", "MYCMUX_LAUNCH_COMMAND"].iter()
+        .any(|canonical| key != *canonical && key.eq_ignore_ascii_case(canonical)));
+    if let Some(target) = env.get("MYCMUX_LAUNCH_TARGET") {
+        if !matches!(target.as_str(), "shell" | "claude" | "codex" | "claude-codex" | "grok"
+            | "hermes" | "omp" | "cursor" | "agy" | "gemini" | "antigravity" | "aider"
+            | "claude-resume" | "codex-resume" | "claude-codex-resume" | "grok-resume"
+            | "claude-codex-open" | "fcc" | "fcc-claude" | "custom" | "chatgpt"
+            | "web-chatgpt" | "web-gemini" | "gemini-web" | "web-grok" | "grok-web"
+            | "web-claude" | "claude-web" | "claude-ai" | "web-notebooklm" | "notebooklm"
+            | "web-browser" | "web-dots" | "app-grokbot") {
+            return Err("Invalid launcher target".into());
+        }
+    }
+    if let Some(command) = env.get("MYCMUX_LAUNCH_COMMAND") {
+        if env.get("MYCMUX_LAUNCH_TARGET").map(String::as_str) != Some("shell")
+            || command.trim().is_empty() || command.encode_utf16().count() > 4096
+            || command.chars().any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')) {
+            // Never include the command in an error or diagnostic.
+            return Err("Terminal command must be one line of at most 4096 characters".into());
+        }
+    }
+    Ok(())
 }
 
 fn normalize_claude_launch_args(args: &mut Vec<String>, env: &HashMap<String, String>) {
@@ -1969,6 +1996,34 @@ mod tests {
             let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
             assert_eq!(launch_kind_for_agent(command, &args), *expected, "{command}");
         }
+    }
+
+    #[test]
+    fn terminal_shell_accepts_verbatim_command_and_rejects_unsafe_envelopes() {
+        let command = r#" printf '%s' \"quoted\"; echo $value | cat # 日本語 "#;
+        let mut valid = env(&[("MYCMUX_LAUNCH_TARGET", "shell"), ("MYCMUX_LAUNCH_COMMAND", command)]);
+        assert!(validate_terminal_shell_launch(&mut valid).is_ok());
+        sanitize_launch_env(&mut valid);
+        assert_eq!(valid.get("MYCMUX_LAUNCH_COMMAND").map(String::as_str), Some(command));
+        for bad in ["", " ", "echo ok\necho bad", "echo\rok", "echo\tok", "echo\u{1b}ok", "echo\u{85}ok", "echo\u{2028}ok", "echo\u{2029}ok"] {
+            let mut invalid = env(&[("MYCMUX_LAUNCH_TARGET", "shell"), ("MYCMUX_LAUNCH_COMMAND", bad)]);
+            let error = validate_terminal_shell_launch(&mut invalid).unwrap_err();
+            assert_eq!(error, "Terminal command must be one line of at most 4096 characters");
+        }
+        let mut boundary = env(&[("MYCMUX_LAUNCH_TARGET", "shell"), ("MYCMUX_LAUNCH_COMMAND", &"x".repeat(4096))]);
+        assert!(validate_terminal_shell_launch(&mut boundary).is_ok());
+        boundary.insert("MYCMUX_LAUNCH_COMMAND".into(), "x".repeat(4097));
+        assert!(validate_terminal_shell_launch(&mut boundary).is_err());
+        boundary.insert("MYCMUX_LAUNCH_COMMAND".into(), "\u{1f600}".repeat(2049));
+        assert!(validate_terminal_shell_launch(&mut boundary).is_err());
+        for target in ["invalid", "shell;echo secret", "claude"] {
+            let mut invalid = env(&[("MYCMUX_LAUNCH_TARGET", target), ("MYCMUX_LAUNCH_COMMAND", "secret")]);
+            let error = validate_terminal_shell_launch(&mut invalid).unwrap_err();
+            assert!(!error.contains("secret"));
+        }
+        let mut aliases = env(&[("mycmux_launch_command", "secret"), ("mycmux_launch_target", "shell")]);
+        assert!(validate_terminal_shell_launch(&mut aliases).is_ok());
+        assert!(aliases.is_empty());
     }
 
     #[test]

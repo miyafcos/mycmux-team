@@ -1,3 +1,5 @@
+import { ailogServiceNames } from "../../lib/agentServiceVisibility";
+import { agentServiceVisibilityStrings } from "../../lib/agentServiceVisibilityStrings";
 /**
  * Shape of the usage tab: which metric a series is measured in, how the daily
  * stack is laid out, and how models are folded into a readable number of bands.
@@ -184,7 +186,7 @@ export const USAGE_AXES: UsageAxis[] = [
     series: true,
   },
   { value: "effort", label: "推論の深さ", hint: "Codex が記録した reasoning effort 設定。品質・難易度・作業量の評価ではありません", series: true },
-  { value: "kind", label: "CLI", hint: "Claude Code / Codex / Grok", series: true },
+  { value: "kind", label: "CLI", hint: agentServiceVisibilityStrings.ailogKindHint(ailogServiceNames(() => true, true)), series: true },
   { value: "origin", label: "起動元", hint: "セッションを起こした経路", series: false },
 ];
 
@@ -192,6 +194,10 @@ export const USAGE_AXES: UsageAxis[] = [
 export const SERIES_AXES = USAGE_AXES.filter(
   (axis): axis is UsageAxis & { value: SeriesGroupBy } => axis.series,
 );
+
+export function usageAxisHint(axis: UsageAxis, visible: (target: string) => boolean): string {
+  return axis.value === "kind" ? agentServiceVisibilityStrings.ailogKindHint(ailogServiceNames(visible, true)) : axis.hint;
+}
 
 export function axisLabel(axis: PivotAxis): string {
   return USAGE_AXES.find((entry) => entry.value === axis)?.label ?? axis;

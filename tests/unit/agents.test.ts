@@ -17,15 +17,16 @@ vi.mock("@tauri-apps/api/core", () => ({
 async function loadLauncherAgent(
   shell: { command: string; args: string[] },
   platform: string,
+  integratedShell = false,
 ): Promise<AgentDefinition> {
   vi.resetModules();
   vi.stubGlobal("navigator", { platform });
   mocks.getDefaultShell.mockResolvedValue(shell);
   mocks.invoke.mockResolvedValue(null);
 
-  const { getAgent, initDefaultShell } = await import("../../src/lib/agents");
+  const { getAgent, getDefaultAgent, initDefaultShell } = await import("../../src/lib/agents");
   await initDefaultShell();
-  const launcher = getAgent("shell-starter");
+  const launcher = integratedShell ? getDefaultAgent(true) : getAgent("shell-starter");
   if (!launcher) throw new Error("Launch Menu agent is missing");
   return launcher;
 }
@@ -59,6 +60,23 @@ describe("Launch Menu shell wiring", () => {
       "-c",
       'if [ -f "$HOME/.mycmux/bin/launcher.sh" ]; then source "$HOME/.mycmux/bin/launcher.sh"; fi; exec "${SHELL:-/bin/zsh}" -i',
     ]);
+  });
+
+  it("keeps wrapper definitions in the interactive Bash instead of execing back to zsh", async () => {
+    const launcher = await loadLauncherAgent({ command: "/bin/zsh", args: [] }, "MacIntel", true);
+    expect(launcher.command).toBe("/bin/bash");
+    expect(launcher.args.slice(0, 4)).toEqual(["--noprofile", "--norc", "-i", "-c"]);
+    expect(launcher.args.at(-1)).toContain('exec "$BASH" --noprofile --rcfile "$HOME/.mycmux/bin/launcher.sh" -i');
+    expect(launcher.args.at(-1)).not.toContain("/bin/zsh");
+  });
+
+  it.each(["powershell.exe", "pwsh.exe", "cmd.exe"])("uses interactive PowerShell directly for terminal mode with %s", async command => {
+    const launcher = await loadLauncherAgent({ command, args: [] }, "Win32", true);
+    expect(launcher.command).toBe(command === "cmd.exe" ? "powershell.exe" : command);
+    expect(launcher.args).toContain("-NoExit");
+    expect(launcher.args).toContain("-NoProfile");
+    expect(launcher.args.at(-1)).toContain("{ . $launcher }");
+    expect(launcher.args.at(-1)).not.toContain("& $launcher");
   });
 
   it("leaves a non-bash, non-zsh shell on the bare-shell path", async () => {

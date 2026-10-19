@@ -130,7 +130,8 @@ export function buildLiveTailThemeVars(theme: ThemeDefinition): CSSProperties {
   const liveTailVars = {
     "--cmux-live-tail-progress": liveTailColor(theme.status.done),
     "--cmux-live-tail-cmd": liveTailColor(theme.status.working),
-    "--cmux-live-tail-stale": liveTailColor(theme.status.waiting),
+    "--cmux-live-tail-waiting": liveTailColor(theme.status.waiting),
+    "--cmux-live-tail-stale": liveTailColor(theme.status.error),
     "--cmux-live-tail-frozen": liveTailColor(theme.status.error),
     "--cmux-live-tail-error": liveTailColor(theme.status.error),
     "--cmux-live-tail-unreadable": liveTailColor(theme.chrome.textMuted),

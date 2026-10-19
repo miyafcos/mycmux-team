@@ -277,6 +277,12 @@ export function CursorAgentIcon({ size = 12, ...props }: AgentIconProps) {
 }
 
 export function AgentKindIcon({ kind, size = 14, chip = true }: AgentKindIconProps) {
+  if (kind === "shell") return (
+    <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+      <rect x="2" y="3" width="16" height="14" rx="2" />
+      <path d="m5 7 3 3-3 3m5 0h5" />
+    </svg>
+  );
   const Icon = kind === "claude"
     ? ClaudeAgentIcon
     : kind === "codex"

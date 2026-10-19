@@ -1,3 +1,5 @@
+import { useAgentDesignServiceVisibility } from "./serviceVisibility";
+import { agentServiceVisibilityStrings as visibilityStrings } from "../../lib/agentServiceVisibilityStrings";
 import { ArrowLeft } from "lucide-react";
 import type { AgentDesignApi, AgentDesignCatalog, DesignService } from "../../lib/agentDesignApi";
 import { agentDesignStrings as s, chars, number, bytes } from "./agentDesignStrings";
@@ -38,10 +40,14 @@ function summary(catalog: AgentDesignCatalog, a: DesignService, row: number): [s
   if (row === 12) return [quantity("scheduledJobs", "処理"), joined(metric("有効", st.scheduledEnabled, "処理"), "決まった時刻で動く")];
   return [quantity("references", "文書"), "必要なときに資料を開く"];
 }
+const compareColumnWeights: Record<DesignService["id"], number> = { claude: 29, codex: 29, hermes: 17 };
 export function ComparisonView({ catalog, query, selectedRow, setSelectedRow, opened, setOpened, onSkill, onOpen }: {
   catalog: AgentDesignCatalog; api: AgentDesignApi; query: string; selectedRow: number; setSelectedRow: (r: number) => void; opened: boolean; setOpened: (b: boolean) => void; onSkill: (id?: string) => void; onOpen: (id: string, line?: number) => void;
 }) {
-  const services = catalog.services;
+  const visible = useAgentDesignServiceVisibility();
+  const services = catalog.services.filter(a => visible(a.id));
+  const totalWeight = services.reduce((sum, a) => sum + compareColumnWeights[a.id], 0);
+  if (!services.length) return <main className="ad-compare ad-main">{visibilityStrings.agentDesignNone}</main>;
   const tag = (row: number) => row === 8 && Object.keys((services.find(a => a.id === "codex") ?? services[0]).session.listing.disabledCounts).length ? s.damaged : row === 2 ? s.claudeOnly : [1, 4, 6].includes(row) ? s.differentForm : [9, 10, 11, 12, 13].includes(row) ? s.differentCount : s.sameRole;
   const rows = s.compareRows.map((label, row) => ({ label, row })).filter(({ label, row }) => !query || (label + services.map(a => summary(catalog, a, row).join(" ")).join(" ")).toLowerCase().includes(query.toLowerCase()));
   return <main className="ad-compare ad-main" data-ad-view="compare">
@@ -49,7 +55,7 @@ export function ComparisonView({ catalog, query, selectedRow, setSelectedRow, op
     {opened ? <><button className="ad-back" onClick={() => setOpened(false)}><ArrowLeft size={13} />{s.back}</button><h2>{s.compareRows[selectedRow]}</h2>
       <div className="ad-compare-documents">{services.map(a => <section key={a.id}><h3><ServiceMark id={a.id} />{a.displayName}</h3>
         <ItemList items={compareItems(catalog, a, selectedRow)} catalog={catalog} onOpen={onOpen} onSkill={onSkill} /></section>)}</div></>
-      : <table className="ad-compare-table" tabIndex={0} aria-label={s.compareTitle}><colgroup><col style={{ width: "14%" }} /><col style={{ width: "29%" }} /><col style={{ width: "29%" }} /><col style={{ width: "17%" }} /><col style={{ width: "11%" }} /></colgroup>
+      : <table className="ad-compare-table" tabIndex={0} aria-label={s.compareTitle}><colgroup><col style={{ width: "14%" }} />{services.map(a => <col key={a.id} style={{ width: `${75 * compareColumnWeights[a.id] / totalWeight}%` }} />)}<col style={{ width: "11%" }} /></colgroup>
         <thead><tr><th>{s.sameRole}</th>{services.map(a => <th key={a.id}><ServiceMark id={a.id} />{a.displayName}</th>)}<th>{s.compareTag}</th></tr></thead>
         <tbody>{rows.map(({ label, row }) => <tr key={row} tabIndex={-1} data-ad-compare-row={row} aria-selected={row === selectedRow} className={row === selectedRow ? "selected" : ""} onClick={() => { setSelectedRow(row); setOpened(true); }}>
           <th scope="row"><button onClick={() => { setSelectedRow(row); setOpened(true); }}>{label} →</button></th>{services.map(a => { const values = summary(catalog, a, row); return <td key={a.id}><button className="ad-cell-open" aria-label={a.displayName + "の" + label + "を確認"} onClick={() => { setSelectedRow(row); setOpened(true); }}><strong>{values[0]}</strong><small>{values[1]}</small></button></td>; })}<td><span className={"ad-compare-tag" + (tag(row) === s.damaged ? " damaged" : "")}>{tag(row)}</span></td></tr>)}</tbody>

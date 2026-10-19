@@ -52,6 +52,15 @@ fn prefer_wrapper_bash(shell: &str) -> String {
     }
 }
 
+#[cfg(target_os = "macos")]
+static CONFIRMED_LOGIN_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// File-only consumers read an observed PATH without waiting for a shell probe.
+#[cfg(target_os = "macos")]
+pub(crate) fn cached_login_shell_path() -> Option<&'static str> {
+    CONFIRMED_LOGIN_PATH.get().map(String::as_str)
+}
+
 /// The PATH a pane should run with, or `None` when the process already has a
 /// usable one.
 ///
@@ -72,7 +81,7 @@ fn prefer_wrapper_bash(shell: &str) -> String {
 /// pane for the rest of the run without Homebrew or ~/.local/bin on PATH, with
 /// nothing the operator could do short of restarting the app.
 #[cfg(target_os = "macos")]
-pub(crate) fn login_shell_path() -> Option<&'static str> {
+pub(crate) fn login_shell_path(app: &tauri::AppHandle) -> Option<&'static str> {
     struct Probe {
         path: Option<&'static str>,
         failed_at: Option<std::time::Instant>,
@@ -96,7 +105,7 @@ pub(crate) fn login_shell_path() -> Option<&'static str> {
     {
         return None;
     }
-    match resolve_login_shell_path() {
+    match resolve_login_shell_path(app) {
         Some(path) => {
             let path: &'static str = Box::leak(path.into_boxed_str());
             probe.path = Some(path);
@@ -110,7 +119,7 @@ pub(crate) fn login_shell_path() -> Option<&'static str> {
 }
 
 #[cfg(target_os = "macos")]
-fn resolve_login_shell_path() -> Option<String> {
+fn resolve_login_shell_path(app: &tauri::AppHandle) -> Option<String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     if !std::path::Path::new(&shell).exists() {
         return None;
@@ -133,9 +142,24 @@ fn resolve_login_shell_path() -> Option<String> {
         return None;
     }
     let reported = String::from_utf8(output.stdout).ok()?;
+    // Remember a validated answer even when it equals the process PATH.
+    // Keep the launcher's existing identical-PATH/no-override behavior.
+    confirm_login_path(&CONFIRMED_LOGIN_PATH, &reported, || {
+        use tauri::Emitter;
+        let _ = app.emit("agent-service-path-ready", ());
+    });
     let path = usable_login_path(&reported, &std::env::var("PATH").unwrap_or_default())?;
     crate::diag::warn("shell", &format!("resolved login PATH for panes: {path}"));
     Some(path)
+}
+
+// Publish readiness only after a validated PATH is visible to file-only readers,
+// including when it matches the inherited PATH and panes need no override.
+#[cfg(any(target_os = "macos", test))]
+fn confirm_login_path(cache: &std::sync::OnceLock<String>, reported: &str, notify: impl FnOnce()) {
+    if let Some(confirmed) = usable_login_path(reported, "") {
+        if cache.set(confirmed).is_ok() { notify(); }
+    }
 }
 
 /// Whether a shell's reported PATH is worth handing to a pane.
@@ -220,6 +244,23 @@ pub async fn get_default_shell() -> DefaultShellInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn login_path_readiness_is_published_once_after_a_valid_value_is_cached() {
+        let cache = std::sync::OnceLock::new();
+        let notifications = std::cell::Cell::new(0);
+        confirm_login_path(&cache, "invalid", || panic!("invalid PATH must not signal readiness"));
+        assert!(cache.get().is_none());
+        let path = "/usr/bin:/bin";
+        assert_eq!(usable_login_path(path, path), None);
+        confirm_login_path(&cache, path, || {
+            assert_eq!(cache.get().map(String::as_str), Some(path));
+            notifications.set(notifications.get() + 1);
+        });
+        confirm_login_path(&cache, "/other/bin", || panic!("readiness must not repeat"));
+        assert_eq!(notifications.get(), 1);
+        assert_eq!(cache.get().map(String::as_str), Some(path));
+    }
 
     #[test]
     fn login_path_is_taken_when_it_differs_from_the_process_path() {

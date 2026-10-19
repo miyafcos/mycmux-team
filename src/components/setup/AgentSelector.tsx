@@ -1,3 +1,4 @@
+import { useAgentServiceVisibility } from "../../hooks/useAgentServiceVisibility";
 import { useId } from "react";
 import type { CSSProperties } from "react";
 import { setupStrings } from "./setupStrings";
@@ -44,6 +45,7 @@ const optionStyle: CSSProperties = {
  * choice travels as MYCMUX_LAUNCH_TARGET and the launcher does the spawning.
  */
 export default function AgentSelector({ slotIndex, value, onChange }: AgentSelectorProps) {
+  const serviceVisible = useAgentServiceVisibility();
   const modelListId = useId();
   const entry = getCatalogEntry(value.target);
   const models = useLaunchModels(entry);
@@ -80,7 +82,7 @@ export default function AgentSelector({ slotIndex, value, onChange }: AgentSelec
         >
           <option value={LAUNCHER_MENU_TARGET} style={optionStyle}>&gt; Launch Menu</option>
           <option value={SHELL_TARGET} style={optionStyle}>$ Shell</option>
-          {LAUNCHABLE_AGENTS.map((agent) => (
+          {LAUNCHABLE_AGENTS.filter((agent) => serviceVisible(agent.target) || agent.target === value.target).map((agent) => (
             <option key={agent.target} value={agent.target} style={optionStyle}>
               {agent.label}
             </option>

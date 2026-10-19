@@ -3,6 +3,7 @@ import { boundedGroupingWait } from "./groupingWaits";
 import { beginGroupingTrace } from "./groupingDiagnostics";
 export const GROUPING_FOREGROUND_TIMEOUT_MS = 60_000;
 export const GROUPING_JEV_REPLY_TIMEOUT_MS = 30_000;
+export const ATTRIBUTE_GROUPING_BACKGROUND_TIMEOUT_MS = 120_000;
 import { DEFAULT_JEV_SETTINGS, abandonJevSettingsLoad, loadJevSettings, useJevSettingsStore } from "../stores/jevSettingsStore";
 import { EVIDENCE_GROUPING_VERSION, runEvidenceGroupingAnalysis, readEvidenceScan } from "../components/layout/evidenceGrouping";
 import {
@@ -14,8 +15,13 @@ import {
   type GroupingAnalysisStage,
   type GroupingScan,
 } from "../components/layout/tabGrouping";
+import { ATTRIBUTE_GROUPING_VERSION } from "../components/layout/attributeGrouping";
+import { analyzeAttributeWithEvidence } from "../components/layout/attributeGroupingAnalysis";
+import { readGroupingPreset } from "../components/layout/tabGrouping";
 import { withRequestedGroupingPlan } from "../components/layout/groupingLocalPlan";
 import { hashCanonical } from "./persistentLayoutProjection";
+import { paneRegistry } from "./paneEvidence";
+import { useLauncherDirsStore } from "../stores/launcherDirsStore";
 import { useAiSettingsStore } from "../stores/aiSettingsStore";
 import { type PaneVolatileMetadata } from "../stores/paneMetadataStore";
 import { useWorkspaceListStore } from "../stores/workspaceListStore";
@@ -110,6 +116,7 @@ export interface GroupingPrecomputeDependencies {
   now: () => number;
   setTimer: (callback: () => void, delayMs: number) => TimerHandle;
   clearTimer: (timer: TimerHandle) => void;
+  prepareIdentity?: () => Promise<unknown> | undefined;
   getAiIdentity: () => AiIdentity;
   getLayoutRevision: () => number;
   getPtyQuietDelay: (now: number) => number;
@@ -129,7 +136,7 @@ export interface GroupingPrecomputeDependencies {
     requestId: () => string,
     onProgress?: (stage: GroupingAnalysisStage) => void,
   ) => Promise<GroupingAnalysisResult>;
-  judge: (prompt: string, requestId: string) => Promise<string>;
+  judge: (prompt: string, requestId: string, mode?: "background" | "foreground") => Promise<string>;
   abort: (requestId: string) => Promise<unknown>;
   readStorage: (key: string) => string | null;
   writeStorage: (key: string, value: string) => void;
@@ -238,7 +245,10 @@ async function analyzeEvidenceWithPreset(
   deps: GroupingAnalysisDependencies,
   useJev: boolean,
   requestedStrategy?: GroupingPresetStrategy,
+  mode: "background" | "foreground" = "foreground",
 ): Promise<GroupingAnalysisResult> {
+  if (requestedStrategy === "attribute") return analyzeAttributeWithEvidence(deps, useAiSettingsStore.getState().aiEnabled, useJev,
+    requestId => invoke<boolean>("abort_tab_sweep_judge", { requestId }), mode);
   // Capture the same scan the decision requests reference; do not rescan at
   // judge time and risk attaching another pane's attention to a numbered ID.
   let scan: GroupingScan;
@@ -251,7 +261,19 @@ async function analyzeEvidenceWithPreset(
   return withRequestedGroupingPlan(result, requestedStrategy);
 }
 
+/** Only this dependency invokes the CLI for the attribute preset. */
+async function runAttributeGroupingJudge(prompt: string, requestId: string, mode?: "background" | "foreground"): Promise<string> {
+  try {
+    return await boundedGroupingWait(invoke<string>("run_tab_sweep_judge", { prompt, requestId, mode: "grouping" }),
+      mode === "background" ? ATTRIBUTE_GROUPING_BACKGROUND_TIMEOUT_MS : 25_000);
+  } catch (error) {
+    void invoke<boolean>("abort_tab_sweep_judge", { requestId }).catch(() => {});
+    throw error;
+  }
+}
+
 function productionDependencies(requestedStrategy?: GroupingPresetStrategy): GroupingPrecomputeDependencies {
+  const strategy = () => requestedStrategy ?? (readGroupingPreset() === "attribute" ? "attribute" : undefined);
   const useJev = () => useJevSettingsStore.getState().enabled && useAiSettingsStore.getState().aiEnabled;
   return {
     // The coordinator calls these as `dependencies.setTimer(...)` / `dependencies.clearTimer(...)`.
@@ -261,8 +283,14 @@ function productionDependencies(requestedStrategy?: GroupingPresetStrategy): Gro
     now: Date.now,
     setTimer: (callback, ms) => setTimeout(callback, ms),
     clearTimer: timer => clearTimeout(timer),
+    prepareIdentity: () => strategy() === "attribute" && !useLauncherDirsStore.getState().view
+      ? useLauncherDirsStore.getState().load() : undefined,
     getAiIdentity: () => {
       const jev = useJevSettingsStore.getState();
+      const ai = useAiSettingsStore.getState();
+      if (strategy() === "attribute") return { enabled: true,
+        provider: ai.aiEnabled ? ai.aiProvider : "local", model: ai.aiModel,
+        promptVersion: `${ATTRIBUTE_GROUPING_VERSION}:${ai.aiEnabled}:${jev.enabled}:${jev.model}:${jev.revision}:${hashCanonical(paneRegistry())}` };
       return { enabled: true, provider: useJev() ? "jev-openrouter" : "local",
         model: useJev() ? jev.model : "", promptVersion: `${EVIDENCE_GROUPING_VERSION}:${jev.revision}` };
     },
@@ -274,9 +302,12 @@ function productionDependencies(requestedStrategy?: GroupingPresetStrategy): Gro
     }),
     subscribePty: () => () => {},
     subscribeAi: listener => {
-      const cli = useAiSettingsStore.subscribe((s, p) => { if (s.aiEnabled !== p.aiEnabled) listener(); });
+      const cli = useAiSettingsStore.subscribe((s, p) => { if (s.aiEnabled !== p.aiEnabled || (strategy() === "attribute" && (s.aiProvider !== p.aiProvider || s.aiModel !== p.aiModel))) listener(); });
       const jev = useJevSettingsStore.subscribe((s, p) => { if (s.enabled !== p.enabled || s.model !== p.model || s.revision !== p.revision) listener(); });
-      return () => { cli(); jev(); };
+      const registry = useLauncherDirsStore.subscribe((s, p) => {
+        if (strategy() === "attribute" && s.view?.doc?.entries !== p.view?.doc?.entries) listener();
+      });
+      return () => { cli(); jev(); registry(); };
     },
     subscribeVisibility: listener => {
       if (typeof document === "undefined") return () => {};
@@ -284,11 +315,13 @@ function productionDependencies(requestedStrategy?: GroupingPresetStrategy): Gro
       return () => document.removeEventListener("visibilitychange", listener);
     },
     scan: () => withScanTimeout(readEvidenceScan()),
-    analyze: (scan, judge, requestId) => analyzeEvidenceWithPreset({ scan: async () => scan, judge, requestId }, useJev(), requestedStrategy),
+    analyze: (scan, judge, requestId) => analyzeEvidenceWithPreset({ scan: async () => scan, judge, requestId }, useJev(), strategy(), "background"),
     analyzeCurrent: (judge, requestId, onProgress) => analyzeEvidenceWithPreset({
       scan: () => withScanTimeout(readEvidenceScan()), judge, requestId, onProgress,
-    }, useJev(), requestedStrategy),
-    judge: (prompt, requestId) => invoke<string>("run_jev_grouping_judge", { prompt, requestId }),
+    }, useJev(), strategy()),
+    judge: (prompt, requestId, mode) => strategy() === "attribute" && prompt.startsWith(ATTRIBUTE_GROUPING_VERSION + "\n")
+      ? runAttributeGroupingJudge(prompt, requestId, mode)
+      : invoke<string>("run_jev_grouping_judge", { prompt, requestId }),
     abort: requestId => invoke<boolean>("abort_tab_sweep_judge", { requestId }),
     readStorage: key => { try { return typeof localStorage === "undefined" ? null : localStorage.getItem(key); } catch { return null; } },
     writeStorage: (key, value) => { try { if (typeof localStorage !== "undefined") localStorage.setItem(key, value); } catch { /* Optional cache. */ } },
@@ -475,6 +508,13 @@ export function createGroupingPrecomputeCoordinator(
     if (invalidated) {
       return { kind: "obsolete" };
     }
+    if (analysis.attributeRetryable) {
+      if (ready) previousGeneratedAt = ready.generatedAt;
+      ready = null;
+      quietWaitStartedAt = null;
+      clearScheduled();
+      return { kind: "ready", analysis, generatedAt: dependencies.now() };
+    }
     if (analysis.parsed.status === "invalid") {
       // Deliver diagnostics, but never replace a usable cached plan with a failure.
       quietWaitStartedAt = null;
@@ -504,8 +544,15 @@ export function createGroupingPrecomputeCoordinator(
     mode: "background" | "foreground",
     force: boolean,
     onProgress?: (stage: GroupingAnalysisStage) => void,
+    signal?: AbortSignal,
   ): Promise<GroupingProductionResult> => {
     if (mode === "foreground") clearScheduled();
+    // Initial registry hydration defines the scan contract; later edits still invalidate it.
+    const preparation = dependencies.prepareIdentity?.();
+    if (preparation) {
+      await boundedGroupingWait(preparation, GROUPING_SCAN_TIMEOUT_MS, signal);
+      if (stopped) return { kind: "obsolete" };
+    }
     const identity = currentIdentity();
     if (mode === "foreground" && !force && ready
       && sameCheapIdentity(ready.ai, ready.layoutRevision, identity.ai, identity.layoutRevision)
@@ -600,6 +647,10 @@ export function createGroupingPrecomputeCoordinator(
       controller: new AbortController(),
     };
     pending = record;
+    // The caller deadline also covers registry loading before this analysis.
+    const cancelFromCaller = () => record.controller.abort();
+    signal?.addEventListener("abort", cancelFromCaller, { once: true });
+    if (signal?.aborted) cancelFromCaller();
 
     void (async () => {
       try {
@@ -631,7 +682,11 @@ export function createGroupingPrecomputeCoordinator(
               metrics.foregroundGenerations += 1;
             }
             record.activeRequestId = requestId;
-            return boundedGroupingWait(dependencies.judge(prompt, requestId), GROUPING_JEV_REPLY_TIMEOUT_MS,
+            const attributePrompt = prompt.startsWith(ATTRIBUTE_GROUPING_VERSION + "\n");
+            const timeout = mode === "background" && attributePrompt
+              ? ATTRIBUTE_GROUPING_BACKGROUND_TIMEOUT_MS : GROUPING_JEV_REPLY_TIMEOUT_MS;
+            const reply = attributePrompt ? dependencies.judge(prompt, requestId, mode) : dependencies.judge(prompt, requestId);
+            return boundedGroupingWait(reply, timeout,
               mode === "foreground" ? record.controller.signal : undefined);
         };
         const nextRequestId = () => `grouping-${dependencies.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -656,6 +711,7 @@ export function createGroupingPrecomputeCoordinator(
         if (record.activeRequestId) void dependencies.abort(record.activeRequestId).catch(() => {});
         rejectPending(error);
       } finally {
+        signal?.removeEventListener("abort", cancelFromCaller);
         record.activeRequestId = null;
         if (pending === record) {
           pending = null;
@@ -787,11 +843,13 @@ export function createGroupingPrecomputeCoordinator(
     generateForeground: (
       force = false,
       onProgress?: (stage: GroupingAnalysisStage) => void,
-    ) => produce("foreground", force, onProgress),
+      signal?: AbortSignal,
+    ) => produce("foreground", force, onProgress, signal),
     remember: (
       analysis: GroupingAnalysisResult,
       generatedAt = dependencies.now(),
     ) => {
+      if (analysis.attributeRetryable) { ready = null; return; }
       const identity = currentIdentity();
       const fingerprints = groupingFingerprints(analysis.scan);
       ready = {
@@ -881,7 +939,8 @@ export async function generateForegroundGroupingAnalysis(
   foregroundWait = controller;
   // Preset snapshots depend on transient attention. Use the same coordinator
   // for this request, without reading or overwriting the recommended cache.
-  const coordinator = requestedStrategy
+  const isolated = requestedStrategy && (requestedStrategy !== "attribute" || readGroupingPreset() !== "attribute");
+  const coordinator = isolated
     ? createGroupingPrecomputeCoordinator(productionDependencies(requestedStrategy)) : groupingPrecompute;
   foregroundCoordinator = coordinator;
   try {
@@ -891,17 +950,18 @@ export async function generateForegroundGroupingAnalysis(
     const result = await boundedGroupingWait(coordinator.generateForeground(force, stage => {
       trace.mark(stage === "judging" ? "jev" : stage === "scanning" ? "scan" : "prepare");
       onProgress?.(stage);
-    }), GROUPING_FOREGROUND_TIMEOUT_MS, controller.signal);
+    }, controller.signal), GROUPING_FOREGROUND_TIMEOUT_MS, controller.signal);
     trace.finish("shown");
     return result;
   } catch (error) {
     const reason = error instanceof Error ? error.message : "";
+    if (reason === "timeout") controller.abort();
     trace.finish(reason === "timeout" ? "timeout" : reason === "cancelled" ? "cancelled" : "error");
     throw error;
   } finally {
     if (foregroundWait === controller) foregroundWait = null;
     if (foregroundCoordinator === coordinator) foregroundCoordinator = null;
-    if (requestedStrategy) coordinator.stop();
+    if (isolated) coordinator.stop();
   }
 }
 

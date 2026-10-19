@@ -10,6 +10,12 @@ function trustedAttention(sessionId: string): SessionAttention | undefined {
   return attention;
 }
 
+/** Only accepted state from the current conversation may drive the state line. */
+export function trustedLiveTailAttention(sessionId: string): Pick<SessionAttention, "kind" | "stateSince"> | undefined {
+  const attention = trustedAttention(sessionId);
+  return attention ? { kind: attention.kind, stateSince: attention.stateSince } : undefined;
+}
+
 /** Value identity survives duplicate feed objects, but changes with accepted state. */
 export function trustedLiveTailAttentionKey(sessionId: string): string | null {
   const attention = trustedAttention(sessionId);

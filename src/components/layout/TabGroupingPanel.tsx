@@ -6,6 +6,7 @@ import { createContext, useContext, memo, useCallback, useEffect, useLayoutEffec
 import { OverlayShell } from "../common/OverlayShell";
 import { tabGroupingStrings } from "../dashboard/dashboardStrings";
 import { useAiSettingsStore } from "../../stores/aiSettingsStore";
+import { useLauncherDirsStore } from "../../stores/launcherDirsStore";
 import { jevErrorMessage, useJevSettingsStore } from "../../stores/jevSettingsStore";
 import { useGroupingRuntimeStore } from "../../stores/groupingRuntimeStore";
 import { useSettingsStore } from "../../stores/settingsStore";
@@ -223,7 +224,7 @@ const GroupingLiveClockBadge = memo(function GroupingLiveClockBadge({
   );
 });
 
-export const GROUPING_STRATEGY_ORDER = ["active_watch", "main_sessions", "minimal_move", "project", "role", "mixed"] as const;
+export const GROUPING_STRATEGY_ORDER = ["active_watch", "main_sessions", "minimal_move", "project", "role", "mixed", "attribute"] as const;
 
 export function groupingStepStates(input: {
   mode: GroupingStepId;
@@ -420,6 +421,7 @@ function groupingPreparedStatus(
 }
 
 function strategyLabel(strategy: GroupingPlan["strategy"]): string {
+  if (strategy === "attribute") return tabGroupingStrings.strategyAttribute;
   if (strategy === "active_watch") return tabGroupingStrings.strategyActiveWatch;
   if (strategy === "main_sessions") return tabGroupingStrings.strategyMainSessions;
   if (strategy === "project") return tabGroupingStrings.strategyProject;
@@ -1773,6 +1775,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
   const [petDefaultsSettings, setPetDefaultsSettings] = useState(petAssignmentSettings);
   const aiProvider = useAiSettingsStore((state) => state.aiProvider);
   const aiEnabled = useAiSettingsStore((state) => state.aiEnabled);
+  const attributeModel = useAiSettingsStore((state) => preset === "attribute" ? state.aiModel : "");
   const jevEnabled = useJevSettingsStore((state) => state.enabled);
   const jevModel = useJevSettingsStore((state) => state.model);
   const groupingApplyAnimationEnabled = useSettingsStore((state) => state.groupingApplyAnimationEnabled);
@@ -2057,7 +2060,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
         return;
       }
       if (options?.keepCurrent && (
-        panelTouchedRef.current || Date.now() - startedAt >= TAB_GROUPING_WAIT_BUDGET_MS
+        panelTouchedRef.current || (requestedStrategy !== "attribute" && Date.now() - startedAt >= TAB_GROUPING_WAIT_BUDGET_MS)
       )) {
         // A late answer is offered explicitly even if the user has not edited yet.
         setAvailableAnalysis(produced);
@@ -2097,11 +2100,20 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     }
     if (intent === "review" && useGroupingRuntimeStore.getState().undo?.status === "available") return;
     let cancelled = false;
+    const refreshColdAttributePlan = async () => {
+      const registry = useLauncherDirsStore.getState();
+      if (requestedStrategy !== "attribute" || aiEnabled || registry.view) return;
+      const untouched = () => !cancelled && !panelTouchedRef.current && !applyInFlightRef.current;
+      // AI-off still needs registered folders; refresh only the untouched instant plan.
+      if (await registry.load() && untouched()) await showLocalPlan(untouched);
+    };
     markGroupingInterest();
-    const cached = requestedStrategy ? { kind: "miss" as const } : peekGroupingPrecompute();
+    const cached = requestedStrategy && requestedStrategy !== "attribute" ? { kind: "miss" as const } : peekGroupingPrecompute();
     if (cached.kind === "fresh" || cached.kind === "soft-stale") {
       hydrateAnalysis(cached.analysis, cached.kind, cached.generatedAt);
-      if (cached.kind === "soft-stale") {
+      if (requestedStrategy === "attribute" && !aiEnabled && !useLauncherDirsStore.getState().view) {
+        void refreshColdAttributePlan();
+      } else if (cached.kind === "soft-stale") {
         // Layout moved under the plan: someone is waiting at an open panel, so
         // re-judge in the foreground while the old plan stays visible. Mere
         // output drift only needs the background refresh.
@@ -2111,14 +2123,18 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     } else {
       void (async () => {
         const shown = await showLocalPlan(() => !cancelled);
-        if (!cancelled && !(requestedStrategy && (!aiEnabled || !jevEnabled))) await analyze(Boolean(requestedStrategy), shown ? { keepCurrent: true } : undefined);
+        if (!cancelled && requestedStrategy === "attribute" && !aiEnabled) {
+          await refreshColdAttributePlan();
+        } else if (!cancelled && !(requestedStrategy && requestedStrategy !== "attribute" && (!aiEnabled || !jevEnabled))) {
+          await analyze(Boolean(requestedStrategy), shown ? { keepCurrent: true } : undefined);
+        }
       })();
     }
     return () => {
       cancelled = true;
       cancelJudge();
     };
-  }, [aiEnabled, analyze, cancelJudge, hydrateAnalysis, intent, jevEnabled, open, requestedStrategy, showLocalPlan]);
+  }, [aiEnabled, attributeModel, analyze, cancelJudge, hydrateAnalysis, intent, jevEnabled, open, requestedStrategy, showLocalPlan]);
 
   useEffect(() => {
     if (!open
@@ -2744,7 +2760,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
 
         <div className="cmux-tab-grouping-presets">
           <div className="cmux-tab-grouping-preset-options" role="group" aria-label={tabGroupingStrings.presetLabel}>
-            {(["recommended", "active_watch", "main_sessions"] as const).map(value => (
+            {(["recommended", "active_watch", "main_sessions", "attribute"] as const).map(value => (
               <button
                 key={value}
                 type="button"
@@ -2767,7 +2783,8 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
           </div>
           <div id="grouping-preset-description" className="cmux-tab-grouping-note">
             {preset === "active_watch" ? tabGroupingStrings.strategyActiveWatchDescription
-              : preset === "main_sessions" ? tabGroupingStrings.strategyMainSessionsDescription : tabGroupingStrings.presetRecommendedDescription}
+              : preset === "main_sessions" ? tabGroupingStrings.strategyMainSessionsDescription
+                : preset === "attribute" ? tabGroupingStrings.strategyAttributeDescription : tabGroupingStrings.presetRecommendedDescription}
           </div>
         </div>
 
@@ -3426,7 +3443,8 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
             ) : null}
             <div className="cmux-tab-grouping-note">
               {mode === "compare" && currentPlanStats ? `${tabGroupingStrings.planMoveNote(currentPlanStats.moved)} / ` : ""}
-              {`案件登録・作業フォルダ・会話の題名から3案を組みます。${jevEnabled && aiEnabled ? `Jev (${jevModel}) は役割の判定に使います。` : ""}`}
+              {preset === "attribute" ? tabGroupingStrings.attributeAnalysisNote(aiEnabled, aiProvider, attributeModel)
+                : `案件登録・作業フォルダ・会話の題名から3案を組みます。${jevEnabled && aiEnabled ? `Jev (${jevModel}) は役割の判定に使います。` : ""}`}
               {editErrors.length > 0 ? ` / ${editErrors.join(" / ")}` : ""}
               {status !== tabGroupingStrings.ticketInvalidated && stale.length > 0
                 ? ` / ${stale.map((issue) => issue.message).join(" / ")}`

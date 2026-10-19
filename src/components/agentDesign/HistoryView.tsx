@@ -1,3 +1,4 @@
+import { useAgentDesignServiceVisibility } from "./serviceVisibility";
 import { useEffect, useRef, useState } from "react";
 import type { AgentDesignApi, AgentDesignCatalog, AgentServiceId, DesignGitHistory, DesignHistory, DesignHistoryChange, DesignHistoryDiff } from "../../lib/agentDesignApi";
 import { agentDesignStrings as s, bytes, number } from "./agentDesignStrings";
@@ -74,6 +75,7 @@ export function HistoryView({ onOpen = () => {}, ...props }: HistoryViewProps) {
   return <HistoryRecords {...props} onOpen={onOpen} />;
 }
 function HistoryRecords({ catalog, api, query, serviceId, onOpen }: HistoryViewProps & { onOpen: (id: string) => void }) {
+  const visible = useAgentDesignServiceVisibility();
   const [history, setHistory] = useState<DesignHistory | null>(null);
   const [before, setBefore] = useState(""); const [after, setAfter] = useState("");
   const [pair, setPair] = useState<DesignHistoryChange[] | null>(null);
@@ -81,6 +83,7 @@ function HistoryRecords({ catalog, api, query, serviceId, onOpen }: HistoryViewP
   const [selected, setSelected] = useState(""); const [git, setGit] = useState<DesignGitHistory | null>(null);
   const [change, setChange] = useState<DesignHistoryChange | null>(null); const [diff, setDiff] = useState<DesignHistoryDiff | null>(null);
   const [error, setError] = useState(""); const [retry, setRetry] = useState(0); const [gitBusy, setGitBusy] = useState(false);
+  useEffect(() => { if (service !== "all" && !visible(service)) setService(catalog.services.find(value => visible(value.id))?.id ?? "all"); }, [service, visible, catalog.services]);
   const scope = useRef(0);
   const historyFolder = useRef(catalog.cwd);
   useEffect(() => { setService(serviceId ?? "all"); setSelected(""); setChange(null); setGit(null); setDiff(null); }, [catalog.cwd, serviceId]);
@@ -143,7 +146,7 @@ function HistoryRecords({ catalog, api, query, serviceId, onOpen }: HistoryViewP
       {points.length > 0 && <table className="ad-dense-table"><thead><tr><th>写しの時刻</th><th>元の目録の時刻</th><th>対象</th></tr></thead><tbody>{points.map(point => <tr key={point.id}><th>{dateTime(point.capturedAt)}</th><td>{dateTime(point.catalogGeneratedAt)}</td><td>{number(point.itemCount)} 項目 · {point.services?.map(value => `${value.service}: ${value.state === "present" ? "取得済み" : value.state === "absent" ? "なし" : "未取得"} ${number(value.itemCount)} 項目`).join(" · ") ?? "サービス別の範囲は未取得"}</td></tr>)}</tbody></table>}
       {history && points.length < 2 && <p>{history.snapshotCount === 0 ? h.empty : history.snapshotCount === 1 ? h.one : "二時点の範囲は未取得です。"} 比べるにはこの作業フォルダの写しが 2 時点必要です。</p>}
     </section>}
-    <div className="ad-actions"><label>サービス <select aria-label="履歴のサービス" value={service} onChange={e => setService(e.target.value)}><option value="all">全サービス</option>{catalog.services.map(value => <option key={value.id} value={value.id}>{value.displayName}</option>)}</select></label><label>層 <select aria-label="履歴の層" value={layer} onChange={e => setLayer(e.target.value)}><option value="all">全層</option><option value="-1">{h.amounts}</option>{[7, 6, 5, 4, 3, 2, 1].map(value => <option key={value} value={value}>{s.layerNames[value]}</option>)}</select></label></div>
+    <div className="ad-actions"><label>サービス <select aria-label="履歴のサービス" value={service} onChange={e => setService(e.target.value)}><option value="all">全サービス</option>{catalog.services.filter(value => visible(value.id)).map(value => <option key={value.id} value={value.id}>{value.displayName}</option>)}</select></label><label>層 <select aria-label="履歴の層" value={layer} onChange={e => setLayer(e.target.value)}><option value="all">全層</option><option value="-1">{h.amounts}</option>{[7, 6, 5, 4, 3, 2, 1].map(value => <option key={value} value={value}>{s.layerNames[value]}</option>)}</select></label></div>
     {mode === "git" && <><h3>ファイルを選ぶ · {number(items.length)} 件</h3><p className="ad-muted">上の検索欄で名前・置き場所を探せます。</p><table className="ad-dense-table"><thead><tr><th>項目・置き場所</th><th>役割・量・更新</th><th>確認</th></tr></thead><tbody>{items.map(item => { const live = catalog.items.find(row => row.id === item.id); return <tr key={item.id} aria-selected={selected === item.id}><th><button data-ad-history-item={item.id} onClick={() => setSelected(item.id)}>{item.displayName}</button><code className="ad-path">{item.path}</code></th><td>{item.service} · {s.layerNames[item.layer]}{live && <small>{itemRole(live, catalog)} · {sizeText(live.size)} · {dateTime(live.modifiedAt)}</small>}</td><td>{live ? <button data-ad-open={item.id} onClick={() => onOpen(item.id)}>現在の本文を開く</button> : "現在の目録にはありません"}</td></tr>; })}</tbody></table></>}
     <h3>{mode === "snapshot" ? "二時点の変更" : "選んだファイルの変更"} · {mode === "snapshot" && before && after && pair == null ? "比較中" : number(changes.length) + " 件"}</h3>
     {mode === "git" && (gitBusy ? <p role="status">変更履歴を取得中</p> : git?.status !== "ready" && <p>{selected ? statusWords[git?.status ?? ""] ?? "この履歴は未取得です。" : "上のファイルから選んでください。取得するのは最新 30 件までです。"}</p>)}

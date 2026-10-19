@@ -1,3 +1,6 @@
+import { ailogServiceNames } from "../../lib/agentServiceVisibility";
+import { agentServiceVisibilityStrings } from "../../lib/agentServiceVisibilityStrings";
+import { useAgentServiceVisibility } from "../../hooks/useAgentServiceVisibility";
 /**
  * Small shared pieces for the AI log dashboard: section frames, tables, chips
  * and the three empty states.
@@ -346,10 +349,11 @@ export function EmptyState({
   primaryLabel?: string;
   busy?: boolean;
 }) {
+  const visible = useAgentServiceVisibility();
   const copy: Record<EmptyStateKind, { title: string; body: string; action: string }> = {
     "not-indexed": {
       title: "記録をまだ取り込んでいません",
-      body: "Claude、Codex、Grok の記録を取り込むと、ここに集計が出ます。初回は数十秒かかります。",
+      body: agentServiceVisibilityStrings.ailogEmptyBody(ailogServiceNames(visible)),
       action: "記録を取り込む",
     },
     "no-data": {

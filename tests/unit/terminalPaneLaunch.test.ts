@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentDefinition, Pane, PaneTab } from "../../src/types";
 import { buildTerminalPaneLaunch } from "../../src/lib/terminalPaneLaunch";
 
@@ -23,6 +23,18 @@ const tab = (overrides: Partial<PaneTab> = {}): PaneTab => ({
 });
 
 describe("shared terminal pane launch builder", () => {
+  it("U2 requests the integrated shell agent only for terminal mode", () => {
+    const integrated = agent("shell-starter", "powershell.exe", ["-NoProfile", "-NoExit", "integrated-launcher"]);
+    const defaults = vi.fn((shellOnly?: boolean) => shellOnly ? integrated : launcher);
+    const shell = buildTerminalPaneLaunch(pane, tab({ launchEnv: { MYCMUX_LAUNCH_TARGET: "shell" } }), { ...agents, getDefaultAgent: defaults });
+    expect(defaults).toHaveBeenCalledWith(true);
+    expect(shell.launchCommand).toBe(integrated.command);
+    expect(shell.launchArgs).toEqual(integrated.args);
+    defaults.mockClear();
+    buildTerminalPaneLaunch(pane, tab({ launchEnv: { MYCMUX_LAUNCH_TARGET: "claude" } }), { ...agents, getDefaultAgent: defaults });
+    expect(defaults).toHaveBeenCalledWith(false);
+  });
+
   it("keeps the absent-tab UI result", () => {
     expect(buildTerminalPaneLaunch(pane, undefined, agents)).toEqual({
       paneCwd: "C:/pane", resolvedAgentId: undefined, agent: null,

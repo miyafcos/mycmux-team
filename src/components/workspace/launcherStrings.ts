@@ -5,6 +5,10 @@ export const launcherStrings = {
   // 打っても打たなくても選べる、が S2 の狙い。
   searchPlaceholder: "打って探す / そのまま選ぶ",
   launch: "新規に起動",
+  terminal: "ターミナル",
+  runInTerminal: (command: string) => `ターミナルで実行: ${command}`,
+  commandSingleLine: "改行・制御文字を含まない 1 行だけ流せます",
+  commandTooLong: "入力は 4,096 文字までにしてください",
   web: "Web",
   dev: "開発",
   anken: "案件",

@@ -10,6 +10,7 @@ import { __resetPtyReadGenerationsForTests, ptyReadGeneration } from "../../src/
 import { loadLiveTailTargets } from "../../src/lib/liveTail/targets";
 import { acquireLiveTailConsumer, disposeLiveTailObserver, useLiveTailStore, type LiveTailState, type LiveTailsResponse } from "../../src/stores/liveTailStore";
 import { useSessionAttentionStore } from "../../src/stores/sessionAttentionStore";
+import { formatLiveTailAgo } from "../../src/lib/liveTail/stateLine";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import type { Workspace } from "../../src/types";
 
@@ -78,11 +79,17 @@ async function checkViews(response: LiveTailsResponse) {
 }
 async function checkAge(observedAt: number) {
   await expandIdle();
-  expect.soft(row()?.querySelector(".live-tail-badge")).toBeNull();
+  const attention = useSessionAttentionStore.getState().attentionBySession.A;
+  const waiting = attention.uiState === "waiting";
+  expect.soft(row()?.querySelector(".live-tail-badge")?.textContent ?? null).toBe(waiting ? "回答待ち" : null);
+  expect.soft(state.entries.A.evidence.observation.observedAt).toBe(observedAt);
   await showTooltip();
   const tooltip = document.querySelector('[role="tooltip"]');
-  expect.soft(tooltip?.textContent).toContain(`画面の読み取り ${Math.floor((Date.now() - observedAt) / 1_000)}秒前`);
-  expect.soft(tooltip?.querySelector(".live-tail-fact")?.textContent).not.toMatch(/エラー|読めない|止まっている|進んでいない|作業中|入力待ち|返事待ち/);
+  expect.soft(tooltip?.querySelector(".live-tail-evidence")).toBeNull();
+  expect.soft(tooltip?.querySelector(".live-tail-fact")?.textContent).toBe(waiting ? "回答待ち"
+    : attention.kind === "done" ? `完了 · ${formatLiveTailAgo(Date.now() - attention.stateSince)}`
+      : state.entries.A.evidence.observation.crop.state === "done" ? "完了" : "入力待ち");
+  if (state.entries.A.evidence.observation.crop.readable) expect.soft(tooltip?.querySelector(".live-tail-popup-rows--previous")).not.toBeNull();
 }
 async function showTooltip() {
   if (!row()) return;
@@ -169,7 +176,9 @@ describe("stage C conservative screen authority, real API and rendered sidebar",
     if (next === "error") expect.soft(row()?.querySelector(".live-tail-badge")?.textContent).toBe("エラー");
     else expect.soft(row()?.querySelector(".live-tail-badge")).toBeNull();
     await showTooltip();
-    expect.soft(document.querySelector('[role="tooltip"]')?.textContent).toContain(`画面の読み取り ${Math.floor((Date.now() - state.entries.A.evidence.observation.observedAt) / 1_000)}秒前`);
+    expect.soft(document.querySelector('[role="tooltip"] .live-tail-evidence')).toBeNull();
+    expect.soft(document.querySelector('[role="tooltip"] .live-tail-popup-rows')?.textContent)
+      .toBe(state.entries.A.evidence.observation.crop.rows.join(""));
   });
   it("a single rejected revalidation settles as unreadable without idle retries", async () => {
     const first = api(); await step(); await first;

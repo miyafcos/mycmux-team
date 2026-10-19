@@ -31,15 +31,15 @@ export const TAB_GROUPING_MAX_PANES_PER_COLUMN = 4;
 export const TAB_GROUPING_PLAN_MIN = 2;
 export const TAB_GROUPING_PLAN_MAX = 3;
 
-export type GroupingStrategy = "active_watch" | "main_sessions" | "project" | "role" | "minimal_move" | "mixed";
-export type GroupingPresetStrategy = Extract<GroupingStrategy, "active_watch" | "main_sessions">;
+export type GroupingStrategy = "attribute" | "active_watch" | "main_sessions" | "project" | "role" | "minimal_move" | "mixed";
+export type GroupingPresetStrategy = Extract<GroupingStrategy, "active_watch" | "main_sessions" | "attribute">;
 export type GroupingPreset = "recommended" | GroupingPresetStrategy;
 export const GROUPING_PRESET_STORAGE_KEY = "mycmux.groupingPrecompute.requestedStrategy.v1";
 
 export function readGroupingPreset(): GroupingPreset {
   try {
     const value = typeof localStorage === "undefined" ? null : localStorage.getItem(GROUPING_PRESET_STORAGE_KEY);
-    return value === "active_watch" || value === "main_sessions" ? value : "recommended";
+    return value === "active_watch" || value === "main_sessions" || value === "attribute" ? value : "recommended";
   } catch {
     return "recommended";
   }
@@ -249,7 +249,7 @@ export interface GroupingApplyReport {
 
 export type TabPreviewKind = "moved" | "kept" | "unassigned" | "untouched";
 
-const STRATEGIES = new Set<GroupingStrategy>(["active_watch", "main_sessions", "minimal_move", "project", "role", "mixed"]);
+const STRATEGIES = new Set<GroupingStrategy>(["attribute", "active_watch", "main_sessions", "minimal_move", "project", "role", "mixed"]);
 const ROLES = new Set<GroupingPaneRole>(["mother", "worker", "review", "mixed", "unspecified"]);
 const WARNING_CODES = new Set<GroupingWarningCode>([
   "LOW_CONFIDENCE",
@@ -1367,6 +1367,8 @@ export interface GroupingAnalysisTimings {
 }
 
 export interface GroupingAnalysisResult {
+  /** A transient attribute fallback is shown once and retried on the next opportunity. */
+  attributeRetryable?: boolean;
   scan: GroupingScan;
   parsed: ParseGroupingResult;
   retried: boolean;

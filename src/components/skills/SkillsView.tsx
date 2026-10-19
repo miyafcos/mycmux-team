@@ -1,3 +1,4 @@
+import { useAgentServiceVisibility } from "../../hooks/useAgentServiceVisibility";
 import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { Search, X, RefreshCw, Grid2X2, Star, Sparkles, History, EyeOff, Puzzle, Box, Terminal, Folder } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
@@ -16,7 +17,8 @@ import { skillsStrings as s } from "./skillsStrings";
 import "./skills.css";
 
 export function SkillUsage({ row }: { row: SkillRow }) {
-  return <span className="skills-usage"><span title={s.claudeUsage} style={{ color: KIND_COLORS.claude.fg }}><ClaudeAgentIcon />{row.usage.claude}</span><span title={row.codexRecorded ? s.codexUsage : s.noRecord} style={{ color: KIND_COLORS.codex.fg }}><CodexAgentIcon />{row.usage.codex}</span></span>;
+  const visible = useAgentServiceVisibility();
+  return <span className="skills-usage">{visible("claude") && <span title={s.claudeUsage} style={{ color: KIND_COLORS.claude.fg }}><ClaudeAgentIcon />{row.usage.claude}</span>}{visible("codex") && <span title={row.codexRecorded ? s.codexUsage : s.noRecord} style={{ color: KIND_COLORS.codex.fg }}><CodexAgentIcon />{row.usage.codex}</span>}</span>;
 }
 export interface SkillsViewProps {
   /** Select one registered skill when mounted or when the host changes this id. */
@@ -29,6 +31,7 @@ export interface SkillsViewProps {
 }
 export function SkillsView(props: SkillsViewProps) { return props.readOnly ? <SkillsExplorer {...props} /> : <ManagedSkillsView {...props} />; }
 function ManagedSkillsView({ initialSkillId = null, onClose, api = skillsApi, initialCatalog, readOnly = false }: SkillsViewProps) {
+  const visible = useAgentServiceVisibility();
   const [catalog, setCatalog] = useState<SkillCatalog | null>(() => initialCatalog ?? api.peek());
   const [shelf, setShelf] = useState("all"); const [query, setQuery] = useState(""); const [agent, setAgent] = useState("all"); const [sort, setSort] = useState("usage");
   const [selected, setSelected] = useState<string | null>(initialSkillId); const [expanded, setExpanded] = useState(false); const [tab, setTab] = useState("content");
@@ -51,18 +54,19 @@ function ManagedSkillsView({ initialSkillId = null, onClose, api = skillsApi, in
   useEffect(() => { if (!readOnly && shelf === "bundled") void invoke<{ skills: { name: string; state: string }[] }>("claude_skills_status").then(result => setBundled(result.skills)).catch(error => setNotice(s.error(String(error)))); }, [shelf, readOnly]);
   useEffect(() => { if (!changed.size) return; const timer = setTimeout(() => setChanged(new Set()), 2000); return () => clearTimeout(timer); }, [changed]);
   useEffect(() => { if (initialSkillId) { setShelf("all"); setAgent("all"); setQuery(""); setSelected(initialSkillId); } }, [initialSkillId]);
+  useEffect(() => { if (agent !== "all" && !visible(agent)) setAgent("all"); }, [agent, visible]);
   const matches = useMemo(() => {
     let rows = shelf === "hidden" ? catalog?.hiddenSkills ?? [] : catalog?.skills ?? [];
-    rows = rows.filter(row => (agent === "all" || row.agents.includes(agent)) && (
+    rows = rows.filter(row => (agent === "all" || !visible(agent) || row.agents.includes(agent)) && (
       shelf === "all" || shelf === "hidden" || shelf === "frequent" || (shelf === "new" && row.isNew) || shelf === "recent" || row.category === shelf || row.kind === shelf));
     rows = [...rows].sort((a, b) => sort === "name" ? a.label.localeCompare(b.label) : sort === "recent" || shelf === "recent" ? b.modifiedAt - a.modifiedAt : sort === "size" ? b.fileSize - a.fileSize : b.usageCount - a.usageCount);
     if (shelf === "frequent") rows = rows.filter(row => row.usageCount > 0);
     return searchSkills(rows, query);
-  }, [catalog, shelf, agent, sort, query]);
+  }, [catalog, shelf, agent, sort, query, visible]);
   const virtual = useVirtualRows(matches.length, 76);
   useEffect(() => { if (!matches.some(m => m.row.id === selected)) setSelected(matches.some(m => m.row.id === initialSkillId) ? initialSkillId : matches[0]?.row.id ?? null); }, [matches, selected, initialSkillId]);
   const match = matches.find(m => m.row.id === selected); const row = match?.row;
-  const launch = (kind: "claude" | "codex") => { if (readOnly) { setNotice(s.readOnly); return; } if (!row) return; try { startSkill(row, kind); onClose(); } catch (error) { setNotice(s.error(String(error))); } };
+  const launch = (kind: "claude" | "codex") => { if (!visible(kind)) return; if (readOnly) { setNotice(s.readOnly); return; } if (!row) return; try { startSkill(row, kind); onClose(); } catch (error) { setNotice(s.error(String(error))); } };
   const goShelf = (id: string) => { setShelf(id); setExpanded(false); setQuery(""); };
   const keyboard = (event: React.KeyboardEvent) => {
     const editing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement;
@@ -90,7 +94,7 @@ function ManagedSkillsView({ initialSkillId = null, onClose, api = skillsApi, in
         <nav className="skills-rail" aria-label={s.shelves}>{specials.map(railItem)}<h3>{s.shelf}</h3>{catalog?.categories.map(category => <button key={category.id} onClick={() => goShelf(category.id)} className={shelf === category.id ? "selected" : ""} aria-pressed={shelf === category.id}><span style={{ color: categoryTone(category.id) }}><SkillSymbol symbol={category.symbol} size={15} /></span><span>{category.name}</span><small>{countShelf(category.id)}</small></button>)}<h3>{s.other}</h3>{extras.map(railItem)}</nav>
         {!expanded && <section className="skills-list" aria-label={s.list}>
           <div className="skills-list-toolbar"><strong>{query ? s.searchResults : catalog?.categories.find(c => c.id === shelf)?.name ?? [...specials, ...extras].find(i => i.id === shelf)?.label}</strong><small>{matches.length}</small><div className="skills-header-spacer" />
-            <select aria-label={s.filterAgent} value={agent} onChange={e => setAgent(e.target.value)}><option value="all">{s.all}</option><option value="claude">Claude</option><option value="codex">Codex</option></select>
+            <select aria-label={s.filterAgent} value={agent} onChange={e => setAgent(e.target.value)}><option value="all">{s.all}</option>{visible("claude") && <option value="claude">Claude</option>}{visible("codex") && <option value="codex">Codex</option>}</select>
             <select aria-label={s.sort} value={sort} onChange={e => setSort(e.target.value)}><option value="usage">{s.sortUsage}</option><option value="name">{s.sortName}</option><option value="recent">{s.sortRecent}</option><option value="size">{s.sortSize}</option></select></div>
           {shelf === "bundled" ? <div className="skills-empty">{bundled.map(item => <p key={item.name}><code>{item.name}</code> <span>{s.bundledState(item.state)}</span></p>)}</div> : <div className="skills-rows" role="listbox" aria-label={s.list} aria-activedescendant={selected ? `skill-row-${selected}` : undefined} tabIndex={0} ref={virtual.ref} onScroll={virtual.onScroll}>
             <div style={{ height: virtual.paddingTop }} />{matches.slice(virtual.start, virtual.end).map((item: SkillMatch, index) => <div key={item.row.id} style={{ height: 76 }}>{query && (virtual.start + index === 0 || matches[virtual.start + index - 1]?.group !== item.group) && <div className="skills-match-group">{s.groups[item.group]}</div>}

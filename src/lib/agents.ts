@@ -10,9 +10,11 @@ function bashLauncherScript(): string {
   return _runtimeLeaf ? `$HOME/${_runtimeLeaf}/bin/launcher.sh` : "";
 }
 
-function powerShellLauncherCommand(): string {
-  if (!_runtimeLeaf) return "Write-Host 'mycmux launcher profile could not be verified; refusing to launch it.'";
-  return `$launcher = Join-Path $HOME '${_runtimeLeaf}\\bin\\launcher.ps1'; if (Test-Path -LiteralPath $launcher) { & $launcher } else { Write-Host 'mycmux launcher is not installed. Restart mycmux or reinstall the latest version.' }`;
+function powerShellLauncherCommand(dotSource = false): string {
+  const dispatch = dotSource ? ". $launcher" : "& $launcher";
+  const clearCommand = dotSource ? "$env:MYCMUX_LAUNCH_COMMAND = $null; " : "";
+  if (!_runtimeLeaf) return `${clearCommand}Write-Host 'mycmux launcher profile could not be verified; refusing to launch it.'`;
+  return `$launcher = Join-Path $HOME '${_runtimeLeaf}\\bin\\launcher.ps1'; if (Test-Path -LiteralPath $launcher) { ${dispatch} } else { ${clearCommand}Write-Host 'mycmux launcher is not installed. Restart mycmux or reinstall the latest version.' }`;
 }
 
 function cmdLauncherCommand(): string {
@@ -127,8 +129,25 @@ export function getAgent(id: string): AgentDefinition | undefined {
   return BUILT_IN_AGENTS.find((a) => a.id === id);
 }
 
-export function getDefaultAgent(): AgentDefinition {
-  return BUILT_IN_AGENTS[0];
+export function getDefaultAgent(integratedShell = false): AgentDefinition {
+  const launcher = BUILT_IN_AGENTS[0];
+  if (!integratedShell) return launcher;
+  // The interactive shell must own the wrappers. A cmd parent or an exec back
+  // into zsh would discard them (and a cmd parent would retain the payload env).
+  const powershell = isPowerShellLikeShell(_detectedShell.command) || isCmdLikeShell(_detectedShell.command);
+  const command = powershell
+    ? (isCmdLikeShell(_detectedShell.command) ? "powershell.exe" : _detectedShell.command)
+    : (shouldSourceLauncherWithBash(_detectedShell.command) ? launcherCommand(_detectedShell.command) : "/bin/bash");
+  const script = bashLauncherScript();
+  const bashStart = `unset MYCMUX_LAUNCH_COMMAND MYCMUX_LAUNCH_TARGET; printf '%s\\n' 'mycmux launcher is not installed or its profile could not be verified.'; exec "$BASH" --noprofile --norc -i`;
+  return {
+    ...launcher, command,
+    args: powershell
+      ? ["-NoLogo", "-NoProfile", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", powerShellLauncherCommand(true)]
+      : ["--noprofile", "--norc", "-i", "-c", script
+        ? `if [ -f "${script}" ]; then exec "$BASH" --noprofile --rcfile "${script}" -i; else ${bashStart}; fi`
+        : bashStart],
+  };
 }
 
 function shellLeaf(command: string): string {

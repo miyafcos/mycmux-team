@@ -10,6 +10,8 @@ import type { LauncherRule, RuleForm, RuleMode } from "../../../lib/launcherDirs
 import { dirSections, launchItems, middleEllipsis } from "../../workspace/launcherModel";
 import { AgentKindIcon } from "../../icons/AgentIcons";
 import { checkboxLabelStyle, dialogButtonStyle, dividerStyle, sectionHeadingStyle } from "../tabStyles";
+import { useAgentServiceVisibility } from "../../../hooks/useAgentServiceVisibility";
+import { agentServiceVisibilityStrings } from "../../../lib/agentServiceVisibilityStrings";
 import { launcherTabStrings as T } from "./launcherTabStrings";
 
 const smallButton: CSSProperties = {
@@ -169,6 +171,7 @@ function RuleEditor({ initial, sections, busy, onSave, onCancel }: {
 }
 
 export function LauncherTab() {
+  const serviceVisible = useAgentServiceVisibility();
   const hiddenIds = useSettingsStore((state) => state.launcherHiddenIds);
   const setHiddenIds = useSettingsStore((state) => state.setLauncherHiddenIds);
   const hidden = new Set(hiddenIds);
@@ -245,7 +248,9 @@ export function LauncherTab() {
   return (
     <div style={{ fontSize: "var(--cmux-font-size-sm)", minWidth: 0 }}>
       <div style={sectionHeadingStyle}>{T.launchHeading}</div>
-      {items.filter((entry) => entry.kind === "agent").map((entry) => row(entry.target, entry.short, entry.iconKind, entry.label))}
+      {items.filter((entry) => entry.kind === "agent" && serviceVisible(entry.target)).map((entry) => row(entry.target, entry.short, entry.iconKind, entry.label))}
+      {row("shell", T.terminalRow, "shell")}
+      <div style={noteStyle}>{agentServiceVisibilityStrings.launcherMoreNote}</div>
       <div style={dividerStyle} />
       <div style={sectionHeadingStyle}>{T.webHeading}</div>
       {items.filter((entry) => entry.kind === "web").map((entry) => row(entry.target, entry.short, entry.iconKind))}

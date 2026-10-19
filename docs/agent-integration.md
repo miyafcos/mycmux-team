@@ -336,6 +336,7 @@ fork・steer・履歴取得・native の一般質問は unsupported、使用量�
    `spec_targets` 配列)。
    `tests/test_launcher_catalog_contract.py` が欠落を機械検出し、両ランチャーに同じ入力を与えて
    出力一致まで確認する (選択肢リストは PowerShell と bash を実際に走らせて突き合わせる)
+   サービス表示の検出規則を `src-tauri/src/agent_services.rs` に追加し、`tests/test_agent_service_visibility_contract.py` で catalog 全 target の対応を確認する。
 6. **表示**: `agentDisplayKind.ts` / `agentKindColors.ts` / `AgentIcons.tsx` / `PaneTabBar.tsx`
 7. **Rust**: `pty/monitor/detection.rs` の `DetectedAgentKind`、`pty/monitor/runner.rs` の
    match アーム (**非網羅だとコンパイルエラー**)、`commands/session_mapping.rs` の allowlist、

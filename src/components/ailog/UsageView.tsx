@@ -1,3 +1,4 @@
+import { useAgentServiceVisibility } from "../../hooks/useAgentServiceVisibility";
 import { memo, useMemo, useState } from "react";
 
 import type { BreakdownReport, ModelsReport, Overview, PivotAxis, PivotReport, RangePreset, SeriesGroupBy, SeriesReport, SessionsReport, UsageBucket, UsageRhythmReport } from "../../lib/ailog";
@@ -15,7 +16,7 @@ import { ReworkRankings } from "./ReworkRankings";
 import { UsageTotals } from "./UsageTotals";
 import { WorkTagTable } from "./WorkTagTable";
 import { HANDOFF_SECTION_SUMMARY, HandoffTable } from "./HandoffTable";
-import { bucketNoun, buildUsageModel, groupByLabel, isStackable, rhythmMetricOf, SERIES_AXES, USAGE_METRICS, usageMetricInfo, type UsageMetric } from "./usageModel";
+import { bucketNoun, buildUsageModel, groupByLabel, isStackable, rhythmMetricOf, usageAxisHint, SERIES_AXES, USAGE_METRICS, usageMetricInfo, type UsageMetric } from "./usageModel";
 import { ButtonGroup, DeferredDetails, EmptyState, Section, SkeletonBlock, noteStyle } from "./ui";
 
 export const UsageView = memo(function UsageView(props: {
@@ -29,6 +30,7 @@ export const UsageView = memo(function UsageView(props: {
   onRefresh: () => void; onRetryUsage: () => void; onStartIndex: () => void; onMetric: (metric: UsageMetric) => void; onStack: (stack: "absolute" | "share") => void; onBucket: (bucket: UsageBucket) => void; onSeriesAxis: (value: SeriesGroupBy) => void;
   onPickDay: (day: number) => void; onSelect: (selection: AilogSelection | null) => void; onBreakdownDimension: (value: BreakdownDimension) => void; onRefreshBreakdown: () => void; onPivotRowBy: (value: PivotAxis) => void; onPivotColBy: (value: PivotAxis) => void; onRetryPivot: () => void; onSessionSort: (value: SessionSort) => void; onSessionPage: (value: number) => void; onSessionQuery: (value: string) => void; onRetrySessions: () => void; onOpenDetail: (kind: string, sessionId: string) => void;
 }) {
+  const visible = useAgentServiceVisibility();
   const p = props;
   const [highlight, setHighlight] = useState<string | null>(null);
   const model = useMemo(() => p.series ? buildUsageModel(p.series.buckets, p.metric, undefined, p.bucket, p.series.groupBy) : null, [p.series, p.metric, p.bucket]);
@@ -113,7 +115,7 @@ export const UsageView = memo(function UsageView(props: {
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
               <ButtonGroup ariaLabel="単位" roleLabel="単位" value={p.bucket} onChange={p.onBucket} options={[{ value: "day", label: "日" }, { value: "week", label: "週" }, { value: "month", label: "月" }]} />
               <ButtonGroup ariaLabel="表示" roleLabel="表示" value={p.stack} onChange={p.onStack} options={[{ value: "absolute", label: "実数" }, { value: "share", label: "構成比" }]} />
-              <ButtonGroup ariaLabel="まとめ方" roleLabel="まとめ方" value={p.seriesAxis} onChange={p.onSeriesAxis} options={SERIES_AXES.map((axis) => ({ value: axis.value, label: axis.label, title: axis.hint }))} />
+              <ButtonGroup ariaLabel="まとめ方" roleLabel="まとめ方" value={p.seriesAxis} onChange={p.onSeriesAxis} options={SERIES_AXES.map((axis) => ({ value: axis.value, label: axis.label, title: usageAxisHint(axis, visible) }))} />
             </div>
             {model && isStackable(p.metric) ? <UsageBucketChart model={model} metric={p.metric} mode={p.stack} highlight={highlight} onHighlight={setHighlight} onPickDay={p.onPickDay} groupBy={p.series!.groupBy} bucket={p.bucket} priceCoverage={p.series!.priceCoverage} /> : <div style={noteStyle}>セッション数は分類間で重複するため、この積み上げグラフでは表示しません。分類別の値は下の内訳表で確認できます。</div>}
           </>

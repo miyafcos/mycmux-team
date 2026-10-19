@@ -1,0 +1,1989 @@
+{
+  "scan": {
+    "scannedAt": 0,
+    "tabs": [
+      {
+        "id": "tab-1",
+        "sessionId": "session-tab-1",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "",
+        "displayName": "mycmux demo-release-A…",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/mycmux-demo-main/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-1",
+        "workspaceName": "稼働",
+        "paneId": "place-1-1",
+        "column": 1,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-2",
+        "sessionId": "session-tab-2",
+        "agentId": "codex",
+        "type": "terminal",
+        "label": "demo integrate sample",
+        "displayName": "demo integrate sample",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/mycmux-wt-demo-merge/",
+        "origin": {
+          "kind": "agent",
+          "parentTabId": "tab-1"
+        },
+        "agentKind": "codex",
+        "workspaceId": "ws-1",
+        "workspaceName": "稼働",
+        "paneId": "place-1-1",
+        "column": 1,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-3",
+        "sessionId": "session-tab-3",
+        "agentId": "codex",
+        "type": "terminal",
+        "label": "demo platform check",
+        "displayName": "demo platform check",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/.claude/dispatch/demo-mycmux-platform-check/mv/",
+        "origin": {
+          "kind": "agent",
+          "parentTabId": "tab-1"
+        },
+        "agentKind": "codex",
+        "workspaceId": "ws-1",
+        "workspaceName": "稼働",
+        "paneId": "place-1-1",
+        "column": 1,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-4",
+        "sessionId": "session-tab-4",
+        "agentId": "codex",
+        "type": "terminal",
+        "label": "demo toast sample",
+        "displayName": "demo toast sample",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/mycmux-wt-demo-toast/",
+        "origin": {
+          "kind": "agent",
+          "parentTabId": "tab-1"
+        },
+        "agentKind": "codex",
+        "workspaceId": "ws-1",
+        "workspaceName": "稼働",
+        "paneId": "place-1-1",
+        "column": 1,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-5",
+        "sessionId": "session-tab-5",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "ひかりスタ数学 総監督",
+        "displayName": "ひかりスタ数学 総監督",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/",
+        "origin": {
+          "kind": "agent",
+          "parentTabId": "absent-parent"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-1",
+        "workspaceName": "稼働",
+        "paneId": "place-1-2",
+        "column": 2,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-6",
+        "sessionId": "session-tab-6",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "demo-hikarista-send-a",
+        "displayName": "ひかりスタ 送付の手順の試行整理",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/.claude/dispatch/demo-hikarista-send-a/",
+        "origin": {
+          "kind": "agent",
+          "parentTabId": "tab-5"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-1",
+        "workspaceName": "稼働",
+        "paneId": "place-1-2",
+        "column": 2,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-7",
+        "sessionId": "session-tab-7",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "demo-hikarista-send-b",
+        "displayName": "ひかりスタ 10/9 の底上げの納品前ゲ…",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/reports/ひかりスタ数学_納品前ゲート_10月9日の底上げ_261004/",
+        "origin": {
+          "kind": "agent",
+          "parentTabId": "absent-parent"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-1",
+        "workspaceName": "稼働",
+        "paneId": "place-1-2",
+        "column": 2,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-8",
+        "sessionId": "session-tab-8",
+        "agentId": "codex",
+        "type": "terminal",
+        "label": "demo-hikarista-send-d",
+        "displayName": "ひかりスタ 10月9日から先の底上げ 直…",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/reports/ひかりスタ数学_第2回の制作_260921/45_10月9日から先の底上げ_261004/02_直し/04_講師B様/",
+        "origin": {
+          "kind": "agent",
+          "parentTabId": "tab-6"
+        },
+        "agentKind": "codex",
+        "workspaceId": "ws-1",
+        "workspaceName": "稼働",
+        "paneId": "place-1-2",
+        "column": 2,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-9",
+        "sessionId": "session-tab-9",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "demo-hikarista-send-e",
+        "displayName": "ひかりスタ 10/2 の講師A様・講師C様の…",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/reports/ひかりスタ数学_納品前ゲート_10月2日の底上げ_261002/",
+        "origin": {
+          "kind": "agent",
+          "parentTabId": "tab-6"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-1",
+        "workspaceName": "稼働",
+        "paneId": "place-1-2",
+        "column": 2,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-10",
+        "sessionId": "session-tab-10",
+        "agentId": "codex",
+        "type": "terminal",
+        "label": "demo-hikarista-send-c",
+        "displayName": "ひかりスタ 10月9日から先の底上げ 直…",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/reports/ひかりスタ数学_第2回の制作_260921/45_10月9日から先の底上げ_261004/02_直し/03_講師D様/",
+        "origin": {
+          "kind": "agent",
+          "parentTabId": "tab-6"
+        },
+        "agentKind": "codex",
+        "workspaceId": "ws-1",
+        "workspaceName": "稼働",
+        "paneId": "place-1-2",
+        "column": 2,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-11",
+        "sessionId": "session-tab-11",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "",
+        "displayName": "当番のシフト管理の移行",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/_work/hikarista_spec_demo/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-1",
+        "workspaceName": "稼働",
+        "paneId": "place-1-3",
+        "column": 3,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-12",
+        "sessionId": "session-tab-12",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "",
+        "displayName": "mycmux サンプル企画仮納品と 画面確認",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-1",
+        "workspaceName": "稼働",
+        "paneId": "place-1-4",
+        "column": 4,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-13",
+        "sessionId": "session-tab-13",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "",
+        "displayName": "Claude Codeのデモ設定パ…",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-1",
+        "workspaceName": "稼働",
+        "paneId": "place-1-5",
+        "column": 5,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-14",
+        "sessionId": "session-tab-14",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "demo-agent-a",
+        "displayName": "mycmux 画面の配色の試作",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/",
+        "origin": {
+          "kind": "agent",
+          "parentTabId": "tab-1"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-1",
+        "workspaceName": "稼働",
+        "paneId": "place-1-6",
+        "column": 6,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-15",
+        "sessionId": "session-tab-15",
+        "agentId": "codex",
+        "type": "terminal",
+        "label": "",
+        "displayName": "",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "codex",
+        "workspaceId": "ws-1",
+        "workspaceName": "稼働",
+        "paneId": "place-1-7",
+        "column": 7,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-16",
+        "sessionId": "session-tab-16",
+        "agentId": "codex",
+        "type": "terminal",
+        "label": "",
+        "displayName": "",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "codex",
+        "workspaceId": "ws-1",
+        "workspaceName": "稼働",
+        "paneId": "place-1-8",
+        "column": 8,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-17",
+        "sessionId": "session-tab-17",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "",
+        "displayName": "応答時間とメモリのボトルネック",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-2",
+        "workspaceName": "mycmux 調査の机",
+        "paneId": "place-2-1",
+        "column": 1,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-18",
+        "sessionId": "session-tab-18",
+        "agentId": "codex",
+        "type": "terminal",
+        "label": "",
+        "displayName": "mycmux demo research",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "codex",
+        "workspaceId": "ws-2",
+        "workspaceName": "mycmux 調査の机",
+        "paneId": "place-2-2",
+        "column": 2,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-19",
+        "sessionId": "session-tab-19",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "hikarista-spec-demo",
+        "displayName": "ひかりスタ 統合制作仕様書 v1.3 の…",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/_work/hikarista_spec_demo/",
+        "origin": {
+          "kind": "agent",
+          "parentTabId": "absent-parent"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-3",
+        "workspaceName": "ひかりスタ仕様の机",
+        "paneId": "place-3-1",
+        "column": 1,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-20",
+        "sessionId": "session-tab-20",
+        "agentId": "codex",
+        "type": "terminal",
+        "label": "講師の連絡準備",
+        "displayName": "講師の連絡準備",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/reports/hikarista_math_instructor_demo_20260101/",
+        "origin": {
+          "kind": "agent",
+          "parentTabId": "absent-parent"
+        },
+        "agentKind": "codex",
+        "workspaceId": "ws-3",
+        "workspaceName": "ひかりスタ仕様の机",
+        "paneId": "place-3-2",
+        "column": 2,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-21",
+        "sessionId": "session-tab-21",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "",
+        "displayName": "ひかりスタ 台割の設問数案",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/shared/office/北斗学院/ひかりスタ/数学/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-3",
+        "workspaceName": "ひかりスタ仕様の机",
+        "paneId": "place-3-3",
+        "column": 3,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-22",
+        "sessionId": "session-tab-22",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "",
+        "displayName": "サンプル企画 小学校 科ドリル 問…",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-4",
+        "workspaceName": "資料の机",
+        "paneId": "place-4-1",
+        "column": 1,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-23",
+        "sessionId": "session-tab-23",
+        "agentId": "codex",
+        "type": "terminal",
+        "label": "",
+        "displayName": "",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "codex",
+        "workspaceId": "ws-4",
+        "workspaceName": "資料の机",
+        "paneId": "place-4-2",
+        "column": 2,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-24",
+        "sessionId": "session-tab-24",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "",
+        "displayName": "次期の予算作成",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-5",
+        "workspaceName": "次期の予算作成の机",
+        "paneId": "place-5-1",
+        "column": 1,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-25",
+        "sessionId": "session-tab-25",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "",
+        "displayName": "Memory Demo Directo…",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-5",
+        "workspaceName": "次期の予算作成の机",
+        "paneId": "place-5-2",
+        "column": 2,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-26",
+        "sessionId": "session-tab-26",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "",
+        "displayName": "mycmux Shift-trial …",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/mycmux-demo-main/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-6",
+        "workspaceName": "シフトの机",
+        "paneId": "place-6-1",
+        "column": 1,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-27",
+        "sessionId": "session-tab-27",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "",
+        "displayName": "見積もり請求書tool共通化",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-6",
+        "workspaceName": "シフトの机",
+        "paneId": "place-6-2",
+        "column": 2,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-28",
+        "sessionId": "session-tab-28",
+        "agentId": "codex",
+        "type": "terminal",
+        "label": "demo-estimate-check",
+        "displayName": "見積書・請求書の書式をそろえる hoo…",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/_work/estimate_demo_check/",
+        "origin": {
+          "kind": "agent",
+          "parentTabId": "tab-27"
+        },
+        "agentKind": "codex",
+        "workspaceId": "ws-6",
+        "workspaceName": "シフトの机",
+        "paneId": "place-6-2",
+        "column": 2,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-29",
+        "sessionId": "session-tab-29",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "理科の担当Aから校正紙が届きました これ担当Bに連絡かな？メール確認してもらって今後のスケジュール予定の確認をお願いします。これいつまでに私はなにをせなあかんかの整理をお願いしますｌ",
+        "displayName": "理科の担当Aから校正紙が届きました これ…",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-6",
+        "workspaceName": "シフトの机",
+        "paneId": "place-6-3",
+        "column": 3,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-30",
+        "sessionId": "session-tab-30",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "",
+        "displayName": "デモのセッション の階層関係と整理",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-7",
+        "workspaceName": "デモのセッション テスト机",
+        "paneId": "place-7-1",
+        "column": 1,
+        "lastOutputAt": null,
+        "tail": []
+      },
+      {
+        "id": "tab-31",
+        "sessionId": "session-tab-31",
+        "agentId": "claude-code",
+        "type": "terminal",
+        "label": "sid a1b2c3d4 このセッションの整理を試し、デモの画面の表示を見分ける",
+        "displayName": "sid a1b2c3d4 このセッショ…",
+        "labelSource": "auto",
+        "cwd": "C:/Users/example/",
+        "origin": {
+          "kind": "human"
+        },
+        "agentKind": "claude",
+        "workspaceId": "ws-7",
+        "workspaceName": "デモのセッション テスト机",
+        "paneId": "place-7-2",
+        "column": 2,
+        "lastOutputAt": null,
+        "tail": []
+      }
+    ],
+    "workspaces": [
+      {
+        "id": "ws-1",
+        "name": "稼働",
+        "panes": [
+          {
+            "id": "place-1-1",
+            "agentId": "claude-code",
+            "sessionId": "session-tab-1",
+            "tabs": [
+              {
+                "id": "tab-1",
+                "sessionId": "session-tab-1",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "",
+                "displayName": "mycmux demo-release-A…",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/mycmux-demo-main/",
+                "origin": {
+                  "kind": "human"
+                }
+              },
+              {
+                "id": "tab-2",
+                "sessionId": "session-tab-2",
+                "agentId": "codex",
+                "type": "terminal",
+                "label": "demo integrate sample",
+                "displayName": "demo integrate sample",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/mycmux-wt-demo-merge/",
+                "origin": {
+                  "kind": "agent",
+                  "parentTabId": "tab-1"
+                }
+              },
+              {
+                "id": "tab-3",
+                "sessionId": "session-tab-3",
+                "agentId": "codex",
+                "type": "terminal",
+                "label": "demo platform check",
+                "displayName": "demo platform check",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/.claude/dispatch/demo-mycmux-platform-check/mv/",
+                "origin": {
+                  "kind": "agent",
+                  "parentTabId": "tab-1"
+                }
+              },
+              {
+                "id": "tab-4",
+                "sessionId": "session-tab-4",
+                "agentId": "codex",
+                "type": "terminal",
+                "label": "demo toast sample",
+                "displayName": "demo toast sample",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/mycmux-wt-demo-toast/",
+                "origin": {
+                  "kind": "agent",
+                  "parentTabId": "tab-1"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/mycmux-demo-main/",
+            "activeTabId": "tab-1",
+            "pinnedTabId": "tab-1"
+          },
+          {
+            "id": "place-1-2",
+            "agentId": "claude-code",
+            "sessionId": "session-tab-5",
+            "tabs": [
+              {
+                "id": "tab-5",
+                "sessionId": "session-tab-5",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "ひかりスタ数学 総監督",
+                "displayName": "ひかりスタ数学 総監督",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/",
+                "origin": {
+                  "kind": "agent",
+                  "parentTabId": "absent-parent"
+                }
+              },
+              {
+                "id": "tab-6",
+                "sessionId": "session-tab-6",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "demo-hikarista-send-a",
+                "displayName": "ひかりスタ 送付の手順の試行整理",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/.claude/dispatch/demo-hikarista-send-a/",
+                "origin": {
+                  "kind": "agent",
+                  "parentTabId": "tab-5"
+                }
+              },
+              {
+                "id": "tab-7",
+                "sessionId": "session-tab-7",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "demo-hikarista-send-b",
+                "displayName": "ひかりスタ 10/9 の底上げの納品前ゲ…",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/reports/ひかりスタ数学_納品前ゲート_10月9日の底上げ_261004/",
+                "origin": {
+                  "kind": "agent",
+                  "parentTabId": "absent-parent"
+                }
+              },
+              {
+                "id": "tab-8",
+                "sessionId": "session-tab-8",
+                "agentId": "codex",
+                "type": "terminal",
+                "label": "demo-hikarista-send-d",
+                "displayName": "ひかりスタ 10月9日から先の底上げ 直…",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/reports/ひかりスタ数学_第2回の制作_260921/45_10月9日から先の底上げ_261004/02_直し/04_講師B様/",
+                "origin": {
+                  "kind": "agent",
+                  "parentTabId": "tab-6"
+                }
+              },
+              {
+                "id": "tab-9",
+                "sessionId": "session-tab-9",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "demo-hikarista-send-e",
+                "displayName": "ひかりスタ 10/2 の講師A様・講師C様の…",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/reports/ひかりスタ数学_納品前ゲート_10月2日の底上げ_261002/",
+                "origin": {
+                  "kind": "agent",
+                  "parentTabId": "tab-6"
+                }
+              },
+              {
+                "id": "tab-10",
+                "sessionId": "session-tab-10",
+                "agentId": "codex",
+                "type": "terminal",
+                "label": "demo-hikarista-send-c",
+                "displayName": "ひかりスタ 10月9日から先の底上げ 直…",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/reports/ひかりスタ数学_第2回の制作_260921/45_10月9日から先の底上げ_261004/02_直し/03_講師D様/",
+                "origin": {
+                  "kind": "agent",
+                  "parentTabId": "tab-6"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/",
+            "activeTabId": "tab-5"
+          },
+          {
+            "id": "place-1-3",
+            "agentId": "claude-code",
+            "sessionId": "session-tab-11",
+            "tabs": [
+              {
+                "id": "tab-11",
+                "sessionId": "session-tab-11",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "",
+                "displayName": "当番のシフト管理の移行",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/_work/hikarista_spec_demo/",
+                "origin": {
+                  "kind": "human"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/_work/hikarista_spec_demo/",
+            "activeTabId": "tab-11"
+          },
+          {
+            "id": "place-1-4",
+            "agentId": "claude-code",
+            "sessionId": "session-tab-12",
+            "tabs": [
+              {
+                "id": "tab-12",
+                "sessionId": "session-tab-12",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "",
+                "displayName": "mycmux サンプル企画仮納品と 画面確認",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/",
+                "origin": {
+                  "kind": "human"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/",
+            "activeTabId": "tab-12"
+          },
+          {
+            "id": "place-1-5",
+            "agentId": "claude-code",
+            "sessionId": "session-tab-13",
+            "tabs": [
+              {
+                "id": "tab-13",
+                "sessionId": "session-tab-13",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "",
+                "displayName": "Claude Codeのデモ設定パ…",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/",
+                "origin": {
+                  "kind": "human"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/",
+            "activeTabId": "tab-13"
+          },
+          {
+            "id": "place-1-6",
+            "agentId": "claude-code",
+            "sessionId": "session-tab-14",
+            "tabs": [
+              {
+                "id": "tab-14",
+                "sessionId": "session-tab-14",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "demo-agent-a",
+                "displayName": "mycmux 画面の配色の試作",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/",
+                "origin": {
+                  "kind": "agent",
+                  "parentTabId": "tab-1"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/",
+            "activeTabId": "tab-14"
+          },
+          {
+            "id": "place-1-7",
+            "agentId": "codex",
+            "sessionId": "session-tab-15",
+            "tabs": [
+              {
+                "id": "tab-15",
+                "sessionId": "session-tab-15",
+                "agentId": "codex",
+                "type": "terminal",
+                "label": "",
+                "displayName": "",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/",
+                "origin": {
+                  "kind": "human"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/",
+            "activeTabId": "tab-15"
+          },
+          {
+            "id": "place-1-8",
+            "agentId": "codex",
+            "sessionId": "session-tab-16",
+            "tabs": [
+              {
+                "id": "tab-16",
+                "sessionId": "session-tab-16",
+                "agentId": "codex",
+                "type": "terminal",
+                "label": "",
+                "displayName": "",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/",
+                "origin": {
+                  "kind": "human"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/",
+            "activeTabId": "tab-16"
+          }
+        ],
+        "splitColumns": [
+          [
+            "place-1-8"
+          ],
+          [
+            "place-1-4"
+          ],
+          [
+            "place-1-3"
+          ],
+          [
+            "place-1-2"
+          ],
+          [
+            "place-1-1"
+          ],
+          [
+            "place-1-7"
+          ],
+          [
+            "place-1-6"
+          ],
+          [
+            "place-1-5"
+          ]
+        ],
+        "gridTemplateId": "1x1",
+        "status": "running",
+        "createdAt": 0
+      },
+      {
+        "id": "ws-2",
+        "name": "mycmux 調査の机",
+        "panes": [
+          {
+            "id": "place-2-1",
+            "agentId": "claude-code",
+            "sessionId": "session-tab-17",
+            "tabs": [
+              {
+                "id": "tab-17",
+                "sessionId": "session-tab-17",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "",
+                "displayName": "応答時間とメモリのボトルネック",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/",
+                "origin": {
+                  "kind": "human"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/",
+            "activeTabId": "tab-17"
+          },
+          {
+            "id": "place-2-2",
+            "agentId": "codex",
+            "sessionId": "session-tab-18",
+            "tabs": [
+              {
+                "id": "tab-18",
+                "sessionId": "session-tab-18",
+                "agentId": "codex",
+                "type": "terminal",
+                "label": "",
+                "displayName": "mycmux demo research",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/",
+                "origin": {
+                  "kind": "human"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/",
+            "activeTabId": "tab-18"
+          }
+        ],
+        "splitColumns": [
+          [
+            "place-2-2"
+          ],
+          [
+            "place-2-1"
+          ]
+        ],
+        "gridTemplateId": "1x1",
+        "status": "running",
+        "createdAt": 0
+      },
+      {
+        "id": "ws-3",
+        "name": "ひかりスタ仕様の机",
+        "panes": [
+          {
+            "id": "place-3-1",
+            "agentId": "claude-code",
+            "sessionId": "session-tab-19",
+            "tabs": [
+              {
+                "id": "tab-19",
+                "sessionId": "session-tab-19",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "hikarista-spec-demo",
+                "displayName": "ひかりスタ 統合制作仕様書 v1.3 の…",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/_work/hikarista_spec_demo/",
+                "origin": {
+                  "kind": "agent",
+                  "parentTabId": "absent-parent"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/_work/hikarista_spec_demo/",
+            "activeTabId": "tab-19"
+          },
+          {
+            "id": "place-3-2",
+            "agentId": "codex",
+            "sessionId": "session-tab-20",
+            "tabs": [
+              {
+                "id": "tab-20",
+                "sessionId": "session-tab-20",
+                "agentId": "codex",
+                "type": "terminal",
+                "label": "講師の連絡準備",
+                "displayName": "講師の連絡準備",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/reports/hikarista_math_instructor_demo_20260101/",
+                "origin": {
+                  "kind": "agent",
+                  "parentTabId": "absent-parent"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/reports/hikarista_math_instructor_demo_20260101/",
+            "activeTabId": "tab-20"
+          },
+          {
+            "id": "place-3-3",
+            "agentId": "claude-code",
+            "sessionId": "session-tab-21",
+            "tabs": [
+              {
+                "id": "tab-21",
+                "sessionId": "session-tab-21",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "",
+                "displayName": "ひかりスタ 台割の設問数案",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/shared/office/北斗学院/ひかりスタ/数学/",
+                "origin": {
+                  "kind": "human"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/shared/office/北斗学院/ひかりスタ/数学/",
+            "activeTabId": "tab-21"
+          }
+        ],
+        "splitColumns": [
+          [
+            "place-3-1"
+          ],
+          [
+            "place-3-3"
+          ],
+          [
+            "place-3-2"
+          ]
+        ],
+        "gridTemplateId": "1x1",
+        "status": "running",
+        "createdAt": 0
+      },
+      {
+        "id": "ws-4",
+        "name": "資料の机",
+        "panes": [
+          {
+            "id": "place-4-1",
+            "agentId": "claude-code",
+            "sessionId": "session-tab-22",
+            "tabs": [
+              {
+                "id": "tab-22",
+                "sessionId": "session-tab-22",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "",
+                "displayName": "サンプル企画 小学校 科ドリル 問…",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/",
+                "origin": {
+                  "kind": "human"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/",
+            "activeTabId": "tab-22"
+          },
+          {
+            "id": "place-4-2",
+            "agentId": "codex",
+            "sessionId": "session-tab-23",
+            "tabs": [
+              {
+                "id": "tab-23",
+                "sessionId": "session-tab-23",
+                "agentId": "codex",
+                "type": "terminal",
+                "label": "",
+                "displayName": "",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/",
+                "origin": {
+                  "kind": "human"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/",
+            "activeTabId": "tab-23"
+          }
+        ],
+        "splitColumns": [
+          [
+            "place-4-2"
+          ],
+          [
+            "place-4-1"
+          ]
+        ],
+        "gridTemplateId": "1x1",
+        "status": "running",
+        "createdAt": 0
+      },
+      {
+        "id": "ws-5",
+        "name": "次期の予算作成の机",
+        "panes": [
+          {
+            "id": "place-5-1",
+            "agentId": "claude-code",
+            "sessionId": "session-tab-24",
+            "tabs": [
+              {
+                "id": "tab-24",
+                "sessionId": "session-tab-24",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "",
+                "displayName": "次期の予算作成",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/",
+                "origin": {
+                  "kind": "human"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/",
+            "activeTabId": "tab-24"
+          },
+          {
+            "id": "place-5-2",
+            "agentId": "claude-code",
+            "sessionId": "session-tab-25",
+            "tabs": [
+              {
+                "id": "tab-25",
+                "sessionId": "session-tab-25",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "",
+                "displayName": "Memory Demo Directo…",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/",
+                "origin": {
+                  "kind": "human"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/",
+            "activeTabId": "tab-25"
+          }
+        ],
+        "splitColumns": [
+          [
+            "place-5-1"
+          ],
+          [
+            "place-5-2"
+          ]
+        ],
+        "gridTemplateId": "1x1",
+        "status": "running",
+        "createdAt": 0
+      },
+      {
+        "id": "ws-6",
+        "name": "シフトの机",
+        "panes": [
+          {
+            "id": "place-6-1",
+            "agentId": "claude-code",
+            "sessionId": "session-tab-26",
+            "tabs": [
+              {
+                "id": "tab-26",
+                "sessionId": "session-tab-26",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "",
+                "displayName": "mycmux Shift-trial …",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/mycmux-demo-main/",
+                "origin": {
+                  "kind": "human"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/mycmux-demo-main/",
+            "activeTabId": "tab-26"
+          },
+          {
+            "id": "place-6-2",
+            "agentId": "claude-code",
+            "sessionId": "session-tab-27",
+            "tabs": [
+              {
+                "id": "tab-27",
+                "sessionId": "session-tab-27",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "",
+                "displayName": "見積もり請求書tool共通化",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/",
+                "origin": {
+                  "kind": "human"
+                }
+              },
+              {
+                "id": "tab-28",
+                "sessionId": "session-tab-28",
+                "agentId": "codex",
+                "type": "terminal",
+                "label": "demo-estimate-check",
+                "displayName": "見積書・請求書の書式をそろえる hoo…",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/_work/estimate_demo_check/",
+                "origin": {
+                  "kind": "agent",
+                  "parentTabId": "tab-27"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/",
+            "activeTabId": "tab-27"
+          },
+          {
+            "id": "place-6-3",
+            "agentId": "claude-code",
+            "sessionId": "session-tab-29",
+            "tabs": [
+              {
+                "id": "tab-29",
+                "sessionId": "session-tab-29",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "理科の担当Aから校正紙が届きました これ担当Bに連絡かな？メール確認してもらって今後のスケジュール予定の確認をお願いします。これいつまでに私はなにをせなあかんかの整理をお願いしますｌ",
+                "displayName": "理科の担当Aから校正紙が届きました これ…",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/",
+                "origin": {
+                  "kind": "human"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/",
+            "activeTabId": "tab-29"
+          }
+        ],
+        "splitColumns": [
+          [
+            "place-6-1"
+          ],
+          [
+            "place-6-2"
+          ],
+          [
+            "place-6-3"
+          ]
+        ],
+        "gridTemplateId": "1x1",
+        "status": "running",
+        "createdAt": 0
+      },
+      {
+        "id": "ws-7",
+        "name": "デモのセッション テスト机",
+        "panes": [
+          {
+            "id": "place-7-1",
+            "agentId": "claude-code",
+            "sessionId": "session-tab-30",
+            "tabs": [
+              {
+                "id": "tab-30",
+                "sessionId": "session-tab-30",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "",
+                "displayName": "デモのセッション の階層関係と整理",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/",
+                "origin": {
+                  "kind": "human"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/",
+            "activeTabId": "tab-30"
+          },
+          {
+            "id": "place-7-2",
+            "agentId": "claude-code",
+            "sessionId": "session-tab-31",
+            "tabs": [
+              {
+                "id": "tab-31",
+                "sessionId": "session-tab-31",
+                "agentId": "claude-code",
+                "type": "terminal",
+                "label": "sid a1b2c3d4 このセッションの整理を試し、デモの画面の表示を見分ける",
+                "displayName": "sid a1b2c3d4 このセッショ…",
+                "labelSource": "auto",
+                "cwd": "C:/Users/example/",
+                "origin": {
+                  "kind": "human"
+                }
+              }
+            ],
+            "cwd": "C:/Users/example/",
+            "activeTabId": "tab-31"
+          }
+        ],
+        "splitColumns": [
+          [
+            "place-7-1"
+          ],
+          [
+            "place-7-2"
+          ]
+        ],
+        "gridTemplateId": "1x1",
+        "status": "running",
+        "createdAt": 0
+      }
+    ],
+    "workspaceIds": [
+      "ws-1",
+      "ws-2",
+      "ws-3",
+      "ws-4",
+      "ws-5",
+      "ws-6",
+      "ws-7"
+    ],
+    "lineageClusters": [],
+    "baseline": [
+      {
+        "tabId": "tab-1",
+        "workspaceId": "ws-1",
+        "paneId": "place-1-1",
+        "sessionId": "session-tab-1"
+      },
+      {
+        "tabId": "tab-2",
+        "workspaceId": "ws-1",
+        "paneId": "place-1-1",
+        "sessionId": "session-tab-2"
+      },
+      {
+        "tabId": "tab-3",
+        "workspaceId": "ws-1",
+        "paneId": "place-1-1",
+        "sessionId": "session-tab-3"
+      },
+      {
+        "tabId": "tab-4",
+        "workspaceId": "ws-1",
+        "paneId": "place-1-1",
+        "sessionId": "session-tab-4"
+      },
+      {
+        "tabId": "tab-5",
+        "workspaceId": "ws-1",
+        "paneId": "place-1-2",
+        "sessionId": "session-tab-5"
+      },
+      {
+        "tabId": "tab-6",
+        "workspaceId": "ws-1",
+        "paneId": "place-1-2",
+        "sessionId": "session-tab-6"
+      },
+      {
+        "tabId": "tab-7",
+        "workspaceId": "ws-1",
+        "paneId": "place-1-2",
+        "sessionId": "session-tab-7"
+      },
+      {
+        "tabId": "tab-8",
+        "workspaceId": "ws-1",
+        "paneId": "place-1-2",
+        "sessionId": "session-tab-8"
+      },
+      {
+        "tabId": "tab-9",
+        "workspaceId": "ws-1",
+        "paneId": "place-1-2",
+        "sessionId": "session-tab-9"
+      },
+      {
+        "tabId": "tab-10",
+        "workspaceId": "ws-1",
+        "paneId": "place-1-2",
+        "sessionId": "session-tab-10"
+      },
+      {
+        "tabId": "tab-11",
+        "workspaceId": "ws-1",
+        "paneId": "place-1-3",
+        "sessionId": "session-tab-11"
+      },
+      {
+        "tabId": "tab-12",
+        "workspaceId": "ws-1",
+        "paneId": "place-1-4",
+        "sessionId": "session-tab-12"
+      },
+      {
+        "tabId": "tab-13",
+        "workspaceId": "ws-1",
+        "paneId": "place-1-5",
+        "sessionId": "session-tab-13"
+      },
+      {
+        "tabId": "tab-14",
+        "workspaceId": "ws-1",
+        "paneId": "place-1-6",
+        "sessionId": "session-tab-14"
+      },
+      {
+        "tabId": "tab-15",
+        "workspaceId": "ws-1",
+        "paneId": "place-1-7",
+        "sessionId": "session-tab-15"
+      },
+      {
+        "tabId": "tab-16",
+        "workspaceId": "ws-1",
+        "paneId": "place-1-8",
+        "sessionId": "session-tab-16"
+      },
+      {
+        "tabId": "tab-17",
+        "workspaceId": "ws-2",
+        "paneId": "place-2-1",
+        "sessionId": "session-tab-17"
+      },
+      {
+        "tabId": "tab-18",
+        "workspaceId": "ws-2",
+        "paneId": "place-2-2",
+        "sessionId": "session-tab-18"
+      },
+      {
+        "tabId": "tab-19",
+        "workspaceId": "ws-3",
+        "paneId": "place-3-1",
+        "sessionId": "session-tab-19"
+      },
+      {
+        "tabId": "tab-20",
+        "workspaceId": "ws-3",
+        "paneId": "place-3-2",
+        "sessionId": "session-tab-20"
+      },
+      {
+        "tabId": "tab-21",
+        "workspaceId": "ws-3",
+        "paneId": "place-3-3",
+        "sessionId": "session-tab-21"
+      },
+      {
+        "tabId": "tab-22",
+        "workspaceId": "ws-4",
+        "paneId": "place-4-1",
+        "sessionId": "session-tab-22"
+      },
+      {
+        "tabId": "tab-23",
+        "workspaceId": "ws-4",
+        "paneId": "place-4-2",
+        "sessionId": "session-tab-23"
+      },
+      {
+        "tabId": "tab-24",
+        "workspaceId": "ws-5",
+        "paneId": "place-5-1",
+        "sessionId": "session-tab-24"
+      },
+      {
+        "tabId": "tab-25",
+        "workspaceId": "ws-5",
+        "paneId": "place-5-2",
+        "sessionId": "session-tab-25"
+      },
+      {
+        "tabId": "tab-26",
+        "workspaceId": "ws-6",
+        "paneId": "place-6-1",
+        "sessionId": "session-tab-26"
+      },
+      {
+        "tabId": "tab-27",
+        "workspaceId": "ws-6",
+        "paneId": "place-6-2",
+        "sessionId": "session-tab-27"
+      },
+      {
+        "tabId": "tab-28",
+        "workspaceId": "ws-6",
+        "paneId": "place-6-2",
+        "sessionId": "session-tab-28"
+      },
+      {
+        "tabId": "tab-29",
+        "workspaceId": "ws-6",
+        "paneId": "place-6-3",
+        "sessionId": "session-tab-29"
+      },
+      {
+        "tabId": "tab-30",
+        "workspaceId": "ws-7",
+        "paneId": "place-7-1",
+        "sessionId": "session-tab-30"
+      },
+      {
+        "tabId": "tab-31",
+        "workspaceId": "ws-7",
+        "paneId": "place-7-2",
+        "sessionId": "session-tab-31"
+      }
+    ]
+  },
+  "registry": [
+    {
+      "section": "dev",
+      "label": "mycmux (master)",
+      "path": "C:/Users/example/mycmux-demo-main"
+    },
+    {
+      "section": "dev",
+      "label": "demo-agent-console (デモの実行画面)",
+      "path": "C:/Users/example/demo-agent-console"
+    },
+    {
+      "section": "dev",
+      "label": "demo-input-method (試作IME)",
+      "path": "C:/Users/example/demo-input-method"
+    },
+    {
+      "section": "dev",
+      "label": "demo-window-cli (試作ウィンドウ)",
+      "path": "C:/Users/example/tools/demo-window-cli"
+    },
+    {
+      "section": "dev",
+      "label": "Demo HTML Desk (旧demo-html拡張・ブラウザ拡張)",
+      "path": "C:/Users/example/demo-html-extension"
+    },
+    {
+      "section": "dev",
+      "label": "demo-work-portal (案件・財務 新システム)",
+      "path": "C:/Users/example/demo-work-portal"
+    },
+    {
+      "section": "dev",
+      "label": "mycmux (lite)",
+      "path": "C:/Users/example/mycmux-demo-lite"
+    },
+    {
+      "section": "dev",
+      "label": "demo-chat-agent (デモ会話AI)",
+      "path": "C:/Users/example/demo-chat-agent"
+    },
+    {
+      "section": "dev",
+      "label": "demo-cli-combo",
+      "path": "C:/Users/example/demo-cli-combo"
+    },
+    {
+      "section": "dev",
+      "label": "card-range-trainer (Demo Cards)",
+      "path": "C:/Users/example/apps/card-range-trainer"
+    },
+    {
+      "section": "dev",
+      "label": "demo-expense (デモ財務管理GAS)",
+      "path": "C:/Users/example/demo-expense-manager"
+    },
+    {
+      "section": "dev",
+      "label": "demo-lesson-hub",
+      "path": "C:/Users/example/demo-lesson-hub"
+    },
+    {
+      "section": "dev",
+      "label": "demo-desktop-cli (Computer Use)",
+      "path": "C:/Users/example/tools/demo-desktop-cli"
+    },
+    {
+      "section": "dev",
+      "label": "demo-doc-editor",
+      "path": "C:/Users/example/demo-doc-editor"
+    },
+    {
+      "section": "dev",
+      "label": "demo-chat-buddy",
+      "path": "C:/Users/example/demo-chat-buddy"
+    },
+    {
+      "section": "dev",
+      "label": "demo-avatar (デモLive2D)",
+      "path": "C:/Users/example/demo-avatar"
+    },
+    {
+      "section": "dev",
+      "label": "demo-mouse-cli (試作マウス)",
+      "path": "C:/Users/example/tools/demo-mouse-cli"
+    },
+    {
+      "section": "dev",
+      "label": "race-research",
+      "path": "C:/Users/example/race-research"
+    },
+    {
+      "section": "dev",
+      "label": "mycmux-wt-demo-launch-b",
+      "path": "C:/Users/example/mycmux-wt-demo-launch-b"
+    },
+    {
+      "section": "dev",
+      "label": "mycmux-wt-demo-notes-a",
+      "path": "C:/Users/example/mycmux-wt-demo-notes-a"
+    },
+    {
+      "section": "dev",
+      "label": "mycmux-wt-demo-launch-a",
+      "path": "C:/Users/example/mycmux-wt-demo-launch-a"
+    },
+    {
+      "section": "dev",
+      "label": "mycmux-demo-sample-c",
+      "path": "C:/Users/example/mycmux-demo-sample-c"
+    },
+    {
+      "section": "dev",
+      "label": "mycmux-wt-demo-notes-b",
+      "path": "C:/Users/example/mycmux-wt-demo-notes-b"
+    },
+    {
+      "section": "dev",
+      "label": "mycmux-demo-release",
+      "path": "C:/Users/example/mycmux-demo-release"
+    },
+    {
+      "section": "dev",
+      "label": "mycmux-wt-demo-folders-a",
+      "path": "C:/Users/example/mycmux-wt-demo-folders-a"
+    },
+    {
+      "section": "dev",
+      "label": "mycmux-wt-demo-folders-b",
+      "path": "C:/Users/example/mycmux-wt-demo-folders-b"
+    },
+    {
+      "section": "dev",
+      "label": "mycmux-demo-sample-a",
+      "path": "C:/Users/example/mycmux-demo-sample-a"
+    },
+    {
+      "section": "dev",
+      "label": "mycmux-demo-sample-b",
+      "path": "C:/Users/example/mycmux-demo-sample-b"
+    },
+    {
+      "section": "anken",
+      "label": "北斗学院/ひかりスタ/数学",
+      "path": "C:/Users/example/shared/office/北斗学院/ひかりスタ/数学"
+    },
+    {
+      "section": "anken",
+      "label": "北斗学院/ひかりスタ/00_資料",
+      "path": "C:/Users/example/shared/office/北斗学院/ひかりスタ/00_資料"
+    },
+    {
+      "section": "anken",
+      "label": "つばさゼミ/数学",
+      "path": "C:/Users/example/shared/office/つばさゼミ/数学"
+    },
+    {
+      "section": "anken",
+      "label": "北斗学院/ひかりスタ/理科",
+      "path": "C:/Users/example/shared/office/北斗学院/ひかりスタ/理科"
+    },
+    {
+      "section": "anken",
+      "label": "サンプル編集/つばさ中学校",
+      "path": "C:/Users/example/shared/office/サンプル編集/つばさ中学校"
+    },
+    {
+      "section": "anken",
+      "label": "サンプル短期大学/2027年度入試",
+      "path": "C:/Users/example/shared/office/サンプル短期大学/2027年度入試"
+    },
+    {
+      "section": "anken",
+      "label": "サンプル高校/2027年度入試",
+      "path": "C:/Users/example/shared/office/サンプル高校/2027年度入試"
+    },
+    {
+      "section": "anken",
+      "label": "サンプル出版/2026サンプル中適性検査模試",
+      "path": "C:/Users/example/shared/office/サンプル出版/2026サンプル中適性検査模試"
+    },
+    {
+      "section": "anken",
+      "label": "つばさ大学/2026",
+      "path": "C:/Users/example/shared/office/つばさ大学/2026"
+    },
+    {
+      "section": "anken",
+      "label": "サンプル模試/標準版",
+      "path": "C:/Users/example/shared/office/サンプル模試/標準版"
+    },
+    {
+      "section": "anken",
+      "label": "サンプル短期大学/2025年度入試",
+      "path": "C:/Users/example/shared/office/サンプル短期大学/2025年度入試"
+    },
+    {
+      "section": "anken",
+      "label": "サンプル書房/資格講座",
+      "path": "C:/Users/example/shared/office/サンプル書房/資格講座"
+    },
+    {
+      "section": "anken",
+      "label": "つばさ出版/サンプル大学850",
+      "path": "C:/Users/example/shared/office/つばさ出版/サンプル大学850"
+    },
+    {
+      "section": "anken",
+      "label": "サンプル短期大学/理科",
+      "path": "C:/Users/example/shared/office/サンプル短期大学/理科"
+    },
+    {
+      "section": "anken",
+      "label": "つばさ教材社/進路ガイド",
+      "path": "C:/Users/example/shared/office/つばさ教材社/進路ガイド"
+    },
+    {
+      "section": "anken",
+      "label": "サンプル研究所/01_受領資料_260902",
+      "path": "C:/Users/example/shared/office/サンプル研究所/01_受領資料_260902"
+    },
+    {
+      "section": "anken",
+      "label": "サンプル企画/国語",
+      "path": "C:/Users/example/shared/office/サンプル企画/国語"
+    },
+    {
+      "section": "anken",
+      "label": "サンプル企画/社会",
+      "path": "C:/Users/example/shared/office/サンプル企画/社会"
+    },
+    {
+      "section": "anken",
+      "label": "つばさ進研/2026サンプル模試V",
+      "path": "C:/Users/example/shared/office/つばさ進研/2026サンプル模試V"
+    },
+    {
+      "section": "anken",
+      "label": "つばさ書房/00_資料",
+      "path": "C:/Users/example/shared/office/つばさ書房/00_資料"
+    }
+  ],
+  "raw": "{\"projects\": [{\"name\": \"mycmux (master)\", \"short\": \"mycmux\", \"attribute\": \"アプリ・開発\", \"evidence\": \"案件登録「mycmux (master)」\"}, {\"name\": \"ひかりスタ\", \"short\": \"ひかりスタ\", \"attribute\": \"編集・制作\", \"evidence\": \"ひかりスタ数学の教材制作・納品前校正\"}, {\"name\": \"当番のシフト管理\", \"short\": \"当番のシフト\", \"attribute\": \"整理・事務\", \"evidence\": \"題名に「当番のシフト管理の移行」\"}, {\"name\": \"mycmux\", \"short\": \"mycmux\", \"attribute\": \"アプリ・開発\", \"evidence\": \"題名に「mycmux」\"}, {\"name\": \"Claude Codeのデモ設定パ…\", \"short\": \"Claude Code\", \"attribute\": \"アプリ・開発\", \"evidence\": \"題名に「Claude Codeのデモ設定パ…」\"}, {\"name\": \"応答時間とメモリのボトルネック\", \"short\": \"応答時間\", \"attribute\": \"アプリ・開発\", \"evidence\": \"題名に「応答時間とメモリのボトルネック」\"}, {\"name\": \"mycmux demo research\", \"short\": \"demo\", \"attribute\": \"アプリ・開発\", \"evidence\": \"題名に「mycmux demo research」\"}, {\"name\": \"サンプル企画\", \"short\": \"サンプル企画\", \"attribute\": \"編集・制作\", \"evidence\": \"題名に「サンプル企画 小学校 科ドリル 問…」\"}, {\"name\": \"次期の予算作成\", \"short\": \"予算作成\", \"attribute\": \"整理・事務\", \"evidence\": \"題名に「次期の予算作成」\"}, {\"name\": \"Memory Demo Directo…\", \"short\": \"Memory\", \"attribute\": \"アプリ・開発\", \"evidence\": \"題名に「Memory Demo Directo…」\"}, {\"name\": \"見積書・請求書\", \"short\": \"見積書\", \"attribute\": \"整理・事務\", \"evidence\": \"題名が「見積もり請求書tool共通化」「見積書・請求書の書式をそろえる」\"}, {\"name\": \"理科の担当Aから校正紙が届きました これ…\", \"short\": \"校正紙\", \"attribute\": \"整理・事務\", \"evidence\": \"校正紙の受領後の連絡・予定整理\"}, {\"name\": \"デモのセッション の階層関係と整理\", \"short\": \"デモのセッション\", \"attribute\": \"アプリ・開発\", \"evidence\": \"題名に「デモのセッション」\"}, {\"name\": \"sid a1b2c3d4 このセッショ…\", \"short\": \"sid a1b2\", \"attribute\": \"アプリ・開発\", \"evidence\": \"題名に「セッション」の可視化\"}, {\"name\": \"未分類\", \"short\": \"未分類\", \"attribute\": \"整理・事務\", \"evidence\": \"題名・ラベル・フォルダから案件を特定できない\"}], \"panes\": [{\"id\": \"p1\", \"project\": \"mycmux (master)\", \"confidence\": 1.0, \"evidence\": \"案件= mycmux (確定)、登録も一致\"}, {\"id\": \"p2\", \"project\": \"mycmux (master)\", \"confidence\": 1.0, \"evidence\": \"案件= mycmux (確定)\"}, {\"id\": \"p3\", \"project\": \"mycmux (master)\", \"confidence\": 1.0, \"evidence\": \"案件= mycmux (確定)\"}, {\"id\": \"p4\", \"project\": \"mycmux (master)\", \"confidence\": 1.0, \"evidence\": \"案件= mycmux (確定)\"}, {\"id\": \"p5\", \"project\": \"ひかりスタ\", \"confidence\": 0.99, \"evidence\": \"題名に「ひかりスタ数学」\"}, {\"id\": \"p6\", \"project\": \"ひかりスタ\", \"confidence\": 1.0, \"evidence\": \"案件=ひかりスタ (確定)\"}, {\"id\": \"p7\", \"project\": \"ひかりスタ\", \"confidence\": 1.0, \"evidence\": \"題名・フォルダにひかりスタ数学の納品前ゲート\"}, {\"id\": \"p8\", \"project\": \"ひかりスタ\", \"confidence\": 1.0, \"evidence\": \"題名・フォルダにひかりスタ数学の制作・直し\"}, {\"id\": \"p9\", \"project\": \"ひかりスタ\", \"confidence\": 1.0, \"evidence\": \"題名・フォルダにひかりスタ数学の納品前ゲート\"}, {\"id\": \"p10\", \"project\": \"ひかりスタ\", \"confidence\": 1.0, \"evidence\": \"題名・フォルダにひかりスタ数学の制作・直し\"}, {\"id\": \"p11\", \"project\": \"ひかりスタ\", \"confidence\": 1.0, \"evidence\": \"案件=ひかりスタ (確定)\"}, {\"id\": \"p12\", \"project\": \"mycmux\", \"confidence\": 0.93, \"evidence\": \"題名に「mycmux」。サンプル企画は納品語として含まれる\"}, {\"id\": \"p13\", \"project\": \"Claude Codeのデモ設定パ…\", \"confidence\": 0.9, \"evidence\": \"題名のテーマを案件名に採用\"}, {\"id\": \"p14\", \"project\": \"mycmux\", \"confidence\": 0.98, \"evidence\": \"題名に「mycmux」\"}, {\"id\": \"p15\", \"project\": \"\", \"confidence\": 0.99, \"evidence\": \"題名なし、ラベルなし、フォルダはホーム\"}, {\"id\": \"p16\", \"project\": \"\", \"confidence\": 0.99, \"evidence\": \"題名なし、ラベルなし、フォルダはホーム\"}, {\"id\": \"p17\", \"project\": \"応答時間とメモリのボトルネック\", \"confidence\": 0.9, \"evidence\": \"題名のテーマを案件名に採用\"}, {\"id\": \"p18\", \"project\": \"mycmux\", \"confidence\": 0.95, \"evidence\": \"題名に「mycmux」\"}, {\"id\": \"p19\", \"project\": \"ひかりスタ\", \"confidence\": 1.0, \"evidence\": \"案件=ひかりスタ (確定)\"}, {\"id\": \"p20\", \"project\": \"ひかりスタ\", \"confidence\": 1.0, \"evidence\": \"案件=ひかりスタ (確定)\"}, {\"id\": \"p21\", \"project\": \"ひかりスタ\", \"confidence\": 1.0, \"evidence\": \"案件=ひかりスタ (確定)\"}, {\"id\": \"p22\", \"project\": \"サンプル企画\", \"confidence\": 0.99, \"evidence\": \"題名に「サンプル企画」\"}, {\"id\": \"p23\", \"project\": \"\", \"confidence\": 0.99, \"evidence\": \"題名なし、ラベルなし、フォルダはホーム\"}, {\"id\": \"p24\", \"project\": \"次期の予算作成\", \"confidence\": 0.99, \"evidence\": \"題名そのまま\"}, {\"id\": \"p25\", \"project\": \"Memory Demo Directo…\", \"confidence\": 0.9, \"evidence\": \"題名のテーマを案件名に採用\"}, {\"id\": \"p26\", \"project\": \"mycmux (master)\", \"confidence\": 1.0, \"evidence\": \"登録 mycmux (master)、確定案件の指示はないがフォルダと登録が一致\"}, {\"id\": \"p27\", \"project\": \"見積書・請求書\", \"confidence\": 0.96, \"evidence\": \"見積書・請求書の共通化\"}, {\"id\": \"p28\", \"project\": \"見積書・請求書\", \"confidence\": 0.96, \"evidence\": \"題名の見積書・請求書テーマをp27と統一\"}, {\"id\": \"p29\", \"project\": \"理科の担当Aから校正紙が届きました これ…\", \"confidence\": 0.9, \"evidence\": \"題名の校正紙に関する連絡・日程整理\"}, {\"id\": \"p30\", \"project\": \"デモのセッション の階層関係と整理\", \"confidence\": 0.9, \"evidence\": \"題名のテーマを案件名に採用\"}, {\"id\": \"p31\", \"project\": \"sid a1b2c3d4 このセッショ…\", \"confidence\": 0.9, \"evidence\": \"題名・ラベルのセッション可視化テーマ\"}], \"bundles\": [{\"projects\": [\"次期の予算作成\", \"見積書・請求書\"], \"reason\": \"どちらも予算・見積・請求に関する事務\"}, {\"projects\": [\"応答時間とメモリのボトルネック\", \"Memory Demo Directo…\"], \"reason\": \"どちらもメモリの扱いに関する道具の調査・改善\"}, {\"projects\": [\"デモのセッション の階層関係と整理\", \"sid a1b2c3d4 このセッショ…\"], \"reason\": \"どちらもセッションの構造や可視化を扱う開発\"}]}",
+  "prototype": {
+    "fixed": [
+      {
+        "id": "p1",
+        "project": "mycmux"
+      },
+      {
+        "id": "p2",
+        "project": "mycmux"
+      },
+      {
+        "id": "p3",
+        "project": "mycmux"
+      },
+      {
+        "id": "p4",
+        "project": "mycmux"
+      },
+      {
+        "id": "p6",
+        "project": "ひかりスタ"
+      },
+      {
+        "id": "p7",
+        "project": "ひかりスタ"
+      },
+      {
+        "id": "p8",
+        "project": "ひかりスタ"
+      },
+      {
+        "id": "p9",
+        "project": "ひかりスタ"
+      },
+      {
+        "id": "p10",
+        "project": "ひかりスタ"
+      },
+      {
+        "id": "p11",
+        "project": "ひかりスタ"
+      },
+      {
+        "id": "p19",
+        "project": "ひかりスタ"
+      },
+      {
+        "id": "p20",
+        "project": "ひかりスタ"
+      },
+      {
+        "id": "p21",
+        "project": "ひかりスタ"
+      },
+      {
+        "id": "p26",
+        "project": "mycmux"
+      }
+    ],
+    "groups": [
+      {
+        "name": "シフトの机",
+        "kind": "まとめ",
+        "projects": [
+          "次期の予算作成",
+          "見積書・請求書",
+          "理科の担当Aから校正紙が届きました これ…"
+        ],
+        "keeps": "シフトの机"
+      },
+      {
+        "name": "mycmux 調査の机",
+        "kind": "まとめ",
+        "projects": [
+          "応答時間とメモリのボトルネック",
+          "Memory Demo Directo…",
+          "mycmux"
+        ],
+        "keeps": "mycmux 調査の机"
+      },
+      {
+        "name": "デモのセッション テスト机",
+        "kind": "まとめ",
+        "projects": [
+          "デモのセッション の階層関係と整理",
+          "sid a1b2c3d4 このセッショ…"
+        ],
+        "keeps": "デモのセッション テスト机"
+      },
+      {
+        "name": "ひかりスタ仕様の机",
+        "kind": "まとめ",
+        "projects": [
+          "ひかりスタ",
+          "サンプル企画"
+        ],
+        "keeps": "ひかりスタ仕様の机"
+      }
+    ],
+    "moves": 4
+  },
+  "expected": {
+    "groups": [
+      {
+        "kind": "まとめ",
+        "projects": [
+          "次期の予算作成",
+          "見積書・請求書",
+          "理科の担当Aから校正紙が届きました これ…"
+        ],
+        "existing": true
+      },
+      {
+        "kind": "まとめ",
+        "projects": [
+          "応答時間とメモリのボトルネック",
+          "Memory Demo Directo…",
+          "mycmux"
+        ],
+        "existing": true
+      },
+      {
+        "kind": "まとめ",
+        "projects": [
+          "デモのセッション の階層関係と整理",
+          "sid a1b2c3d4 このセッショ…"
+        ],
+        "existing": true
+      },
+      {
+        "kind": "まとめ",
+        "projects": [
+          "ひかりスタ 数学",
+          "サンプル企画",
+          "講師の連絡準備"
+        ],
+        "existing": true
+      }
+    ],
+    "moves": [
+      "p27",
+      "p28",
+      "p29",
+      "p25",
+      "p26",
+      "p22"
+    ]
+  }
+}

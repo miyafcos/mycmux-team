@@ -220,8 +220,14 @@ def test_grouping_mode_is_wired_without_closing_tabs() -> None:
 
     assert "const GROUPING_TIMEOUT: Duration = Duration::from_secs(300)" in rust
     assert 'Some("grouping") => GROUPING_TIMEOUT' in rust
-    assert 'mode: "grouping"' not in precompute
-    assert "run_tab_sweep_judge" not in precompute
+    # 10/15: the attribute preset alone asks the background AI; the default path stays local + Jev.
+    assert precompute.count('invoke<string>("run_tab_sweep_judge"') == 1
+    assert precompute.count('mode: "grouping"') == 1
+    attribute_judge = precompute.split("async function runAttributeGroupingJudge(", 1)[1].split("\nfunction productionDependencies", 1)[0]
+    assert 'invoke<string>("run_tab_sweep_judge"' in attribute_judge
+    assert 'mode: "grouping"' in attribute_judge
+    assert 'strategy() === "attribute" && prompt.startsWith(ATTRIBUTE_GROUPING_VERSION' in precompute
+    assert 'if (requestedStrategy === "attribute") return analyzeAttributeWithEvidence' in precompute
     assert "runEvidenceGroupingAnalysis" in precompute
     assert "run_jev_grouping_judge" in precompute
     assert 'invoke<boolean>("abort_tab_sweep_judge"' in precompute

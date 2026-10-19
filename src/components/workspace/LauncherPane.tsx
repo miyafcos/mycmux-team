@@ -21,6 +21,7 @@ import {
   isValidLaunchSpecValue,
 } from "../../lib/agentCatalog";
 import { agentIdForSessionKind } from "../../lib/agentSessionConfig";
+import { buildTerminalShellLaunchEnv, terminalCommandError } from "../../lib/terminalShellCommand";
 import { useLaunchModels } from "../../lib/claudeCodexModels";
 import {
   crsmListSessions,
@@ -31,6 +32,7 @@ import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
 import { closePaneOperation } from "../../lib/paneCloseOperation";
 import { useUiStore } from "../../stores/uiStore";
 import { useLauncherDirsStore } from "../../stores/launcherDirsStore";
+import { useAgentServiceVisibility } from "../../hooks/useAgentServiceVisibility";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { usePaneHoverFocus } from "../../hooks/usePaneHoverFocus";
@@ -47,6 +49,7 @@ import {
   previewLine,
   searchItems,
   specRowsFor,
+  terminalLaunchItem,
   tailPath,
   type LauncherDirItem,
   type LauncherItem,
@@ -316,6 +319,7 @@ export default function LauncherPane({
   const [sessions, setSessions] = useState<CrsmSessionEntry[]>([]);
   const [resumeError, setResumeError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const terminalLaunchStartedRef = useRef(false);
   const modelInputRef = useRef<HTMLInputElement | null>(null);
   const paneRef = useRef<HTMLDivElement | null>(null);
   const hoverListRef = useRef<HTMLDivElement | null>(null);
@@ -340,6 +344,8 @@ export default function LauncherPane({
   // No list means the model is typed; focus follows that, not the list itself.
   const specTypesModel = specModels.length === 0;
 
+  const serviceVisible = useAgentServiceVisibility();
+  useEffect(() => { if (specTarget && !serviceVisible(specTarget)) setSpecTarget(null); }, [specTarget, serviceVisible]);
   const hiddenIds = useSettingsStore((s) => s.launcherHiddenIds);
   const hidden = useMemo(() => new Set(hiddenIds), [hiddenIds]);
   // Kind filters are shared with Ctrl+P on purpose: the same session should not
@@ -395,10 +401,10 @@ export default function LauncherPane({
   }, [loadDirs]);
 
   const allLaunch = useMemo(
-    () => launchItems().filter((item) => !hidden.has(item.target)),
-    [hidden],
+    () => [...launchItems(), terminalLaunchItem()].filter((item) => !hidden.has(item.target) && (item.kind !== "agent" || serviceVisible(item.target))),
+    [hidden, serviceVisible],
   );
-  const agents = useMemo(() => allLaunch.filter((item) => item.kind === "agent"), [allLaunch]);
+  const agents = useMemo(() => allLaunch.filter((item) => item.kind === "agent" || item.kind === "shell"), [allLaunch]);
   const webs = useMemo(() => allLaunch.filter((item) => item.kind === "web"), [allLaunch]);
   const sections = useMemo(() => dirSections(view, hiddenIds), [view, hiddenIds]);
 
@@ -456,6 +462,8 @@ export default function LauncherPane({
   ]);
 
   const trimmed = query.trim();
+  const commandError = query ? terminalCommandError(query) : null;
+  const commandErrorText = commandError === "too-long" ? S.commandTooLong : commandError ? S.commandSingleLine : null;
   const matchedLaunch = useMemo(
     () => searchItems(allLaunch, trimmed),
     [allLaunch, trimmed],
@@ -470,8 +478,8 @@ export default function LauncherPane({
   );
 
   /** Keyboard order (S12). Mirrors what the body renders, top to bottom. */
-  const navigable: LauncherItem[] = useMemo(() => {
-    if (trimmed) return [...matchedLaunch, ...matchedDirs, ...matchedResumes];
+  const navigable = useMemo<LauncherItem[]>(() => {
+    if (trimmed) return [...matchedLaunch, ...matchedDirs, ...matchedResumes, { kind: "command", command: query }];
     const slice = <T,>(items: T[], key: string) =>
       expanded[key] ? items : items.slice(0, SECTION_PREVIEW);
     return [
@@ -481,7 +489,7 @@ export default function LauncherPane({
       ...slice(resumes, "resume"),
     ];
   }, [
-    trimmed, matchedLaunch, matchedDirs, matchedResumes,
+    trimmed, query, matchedLaunch, matchedDirs, matchedResumes,
     agents, webs, sections, resumes, expanded,
   ]);
 
@@ -503,6 +511,7 @@ export default function LauncherPane({
 
   const launchAgent = useCallback(
     (target: string, spec?: { model?: string; effort?: string }) => {
+      if (!serviceVisible(target)) return;
       // L1: never assemble the env by hand — sanitizeLaunchSpecValue lives in
       // here and is what stops `--model -x` reaching the CLI.
       const launchEnv = buildLaunchSpecEnv({ target, model: spec?.model, effort: spec?.effort });
@@ -516,8 +525,19 @@ export default function LauncherPane({
       });
       closeLauncherTab();
     },
-    [addTabToPaneWithOptions, workspaceId, paneId, targetCwd, closeLauncherTab],
+    [addTabToPaneWithOptions, workspaceId, paneId, targetCwd, closeLauncherTab, serviceVisible],
   );
+
+  const launchTerminal = useCallback((command?: string) => {
+    if (terminalLaunchStartedRef.current || (command !== undefined && terminalCommandError(command))) return;
+    terminalLaunchStartedRef.current = true;
+    addTabToPaneWithOptions(workspaceId, paneId, {
+      agentId: "shell-starter",
+      cwd: targetCwd,
+      launchEnv: buildTerminalShellLaunchEnv(command),
+    });
+    closeLauncherTab();
+  }, [addTabToPaneWithOptions, workspaceId, paneId, targetCwd, closeLauncherTab]);
 
   const launchWeb = useCallback(
     (item: LauncherLaunchItem) => {
@@ -552,6 +572,10 @@ export default function LauncherPane({
 
   const activate = useCallback(
     (item: LauncherItem) => {
+      if (item.kind === "command" || item.kind === "shell") {
+        launchTerminal(item.kind === "command" ? item.command : undefined);
+        return;
+      }
       if (item.kind === "resume") {
         launchResume(item);
         return;
@@ -569,17 +593,17 @@ export default function LauncherPane({
       }
       launchAgent(item.target);
     },
-    [launchAgent, launchWeb, launchResume],
+    [launchAgent, launchWeb, launchResume, launchTerminal],
   );
 
   const openSpec = useCallback((target: string) => {
     const entry = getCatalogEntry(target);
-    if (!entry || entry.kind !== "agent") return;
+    if (!entry || entry.kind !== "agent" || !serviceVisible(target)) return;
     setSpecTarget(target);
     setSpecRow(specRowsFor(entry)[0]);
     setModel("");
     setEffort("");
-  }, []);
+  }, [serviceVisible]);
 
   const closeSpec = () => {
     setSpecTarget(null);
@@ -607,6 +631,12 @@ export default function LauncherPane({
   };
 
   const onKeyDown = (event: React.KeyboardEvent | KeyboardEvent) => {
+    const native = "nativeEvent" in event ? event.nativeEvent : event;
+    if (native.isComposing || native.keyCode === 229) return;
+    if (commandError && event.key === "Enter" && !specTarget) {
+      event.preventDefault();
+      return;
+    }
     if (specTarget) {
       if (!specEntry) return;
       if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Tab") {
@@ -847,13 +877,21 @@ export default function LauncherPane({
       body.push(...matchedResumes.map((item, i) => resumeRow(item, offset + i)));
       offset += matchedResumes.length;
     }
-    if (body.length === 0) {
-      body.push(
-        <div key="empty" style={{ padding: "18px 12px", fontSize: 11, color: "var(--cmux-text-tertiary)", textAlign: "center" }}>
-          {S.noMatch(trimmed)}
-        </div>,
-      );
-    }
+    body.push(
+      <button
+        key="terminal-command"
+        type="button"
+        data-nav={offset}
+        data-terminal-command="true"
+        onMouseDown={keepFocus}
+        onClick={() => launchTerminal(query)}
+        aria-disabled={Boolean(commandError)}
+        style={{ ...row, ...(isActive && cursor === offset ? rowSelected : null) }}
+      >
+        <AgentKindIcon kind="shell" size={17} />
+        <span style={primaryText}>{S.runInTerminal(query)}</span>
+      </button>,
+    );
     // The crossing run is missing its 続きから half here, so say so rather than
     // let "一致なし" stand for a list that was never read.
     if (resumeFailedNote) body.push(resumeFailedNote);
@@ -957,6 +995,15 @@ export default function LauncherPane({
           ref={inputRef}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
+          onPaste={(event) => {
+            const pasted = event.clipboardData.getData("text");
+            if (terminalCommandError(pasted)) {
+              // A text input silently removes newlines from a paste. Keep the
+              // rejected value so it can never turn into a different command.
+              event.preventDefault();
+              setQuery(pasted);
+            }
+          }}
           placeholder={S.searchPlaceholder}
           aria-label={S.searchPlaceholder}
           autoComplete="off"
@@ -1076,6 +1123,8 @@ export default function LauncherPane({
           <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>{S.specKeyHint}</div>
         </div>
       )}
+
+      {commandErrorText && <div role="alert" style={{ padding: "6px 10px", color: "var(--cmux-red)", fontSize: "var(--cmux-font-size-xs)" }}>{commandErrorText}</div>}
 
       <div ref={hoverListRef} data-pane-hover-focus-surface={hoverFocusEnabled ? "launcher" : undefined}
         style={{ flex: "1 1 auto", overflowY: "auto", padding: "2px 0 10px" }}>{body}</div>

@@ -5,7 +5,7 @@ import { buildTerminalPaneLaunchEnv } from "./terminalPaneLaunchEnv";
 
 interface TerminalPaneAgents {
   getAgent(id: string): AgentDefinition | undefined;
-  getDefaultAgent(): AgentDefinition;
+  getDefaultAgent(integratedShell?: boolean): AgentDefinition;
 }
 
 function resolveSavedAgentSession(tab: PaneTab): { kind: AgentSessionKind; sessionId: string } | null {
@@ -26,7 +26,8 @@ export function buildTerminalPaneLaunch(
 ) {
   const paneCwd = activeTab?.cwd ?? pane.cwd;
   const resolvedAgentId = activeTab?.agentId;
-  const savedAgentSession = activeTab ? resolveSavedAgentSession(activeTab) : null;
+  const shellOnly = (activeTab?.launchEnv ?? pane.launchEnv)?.MYCMUX_LAUNCH_TARGET === "shell";
+  const savedAgentSession = activeTab && !shellOnly ? resolveSavedAgentSession(activeTab) : null;
   const launchThroughLauncher = Boolean(
     activeTab
     && !activeTab.commandArgv?.length
@@ -34,11 +35,13 @@ export function buildTerminalPaneLaunch(
       || (resolvedAgentId === "shell" && (savedAgentSession?.kind === "codex" || activeTab.codexRestoreReason))),
   );
   const agent = resolvedAgentId
-    ? (launchThroughLauncher ? agents.getDefaultAgent() : agents.getAgent(resolvedAgentId) ?? agents.getDefaultAgent())
+    ? (launchThroughLauncher ? agents.getDefaultAgent(shellOnly) : agents.getAgent(resolvedAgentId) ?? agents.getDefaultAgent())
     : null;
   const launchCommand = activeTab?.commandArgv?.[0] ?? agent?.command ?? "";
   const launchArgs = activeTab?.commandArgv?.length
     ? activeTab.commandArgv.slice(1)
+    : shellOnly && agent
+    ? agent.args
     : agent
     ? buildLaunchArgs(
         agent.command,
@@ -52,5 +55,5 @@ export function buildTerminalPaneLaunch(
     : [];
   const launchEnv = buildTerminalPaneLaunchEnv(pane, activeTab, launchThroughLauncher, savedAgentSession);
   return { paneCwd, resolvedAgentId, agent, savedAgentSession, launchCommand, launchArgs, launchEnv,
-    ...(activeTab?.codexRestoreReason ? { restoreReason: activeTab.codexRestoreReason } : {}) };
+    ...(!shellOnly && activeTab?.codexRestoreReason ? { restoreReason: activeTab.codexRestoreReason } : {}) };
 }

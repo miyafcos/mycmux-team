@@ -1,5 +1,31 @@
 ﻿$ErrorActionPreference = "Continue"
 
+# Take the one-shot line out of the process environment before any child runs.
+$script:MycmuxTerminalCommand = $env:MYCMUX_LAUNCH_COMMAND
+[Environment]::SetEnvironmentVariable("MYCMUX_LAUNCH_COMMAND", $null, "Process")
+
+function Invoke-MycmuxTerminalShell {
+  $__mycmuxTerminalLine = $script:MycmuxTerminalCommand
+  $script:MycmuxTerminalCommand = $null
+  [Environment]::SetEnvironmentVariable("MYCMUX_LAUNCH_TARGET", $null, "Process")
+  if ($null -eq $__mycmuxTerminalLine -or $__mycmuxTerminalLine.Length -eq 0) { return }
+  if ([string]::IsNullOrWhiteSpace($__mycmuxTerminalLine) -or $__mycmuxTerminalLine.Length -gt 4096 -or
+      $__mycmuxTerminalLine -match '[\x00-\x1f\x7f-\x9f\u2028\u2029]') {
+    Write-Warning "Terminal command must be one line of at most 4096 characters."
+    $__mycmuxTerminalLine = $null
+    return
+  }
+  try {
+    # Dot-source the parsed line: quotes/operators remain shell syntax and
+    # assignments and cwd changes belong to the interactive shell, not a child.
+    . ([scriptblock]::Create($__mycmuxTerminalLine))
+  } catch {
+    Write-Warning "Terminal command failed."
+  } finally {
+    $__mycmuxTerminalLine = $null
+  }
+}
+
 $global:MycmuxGrokExecutable = Get-Command grok -CommandType Application,ExternalScript -ErrorAction SilentlyContinue |
   Select-Object -First 1 -ExpandProperty Source
 
@@ -121,6 +147,14 @@ function global:grok {
 }
 
 if ($env:MYCMUX_HOOK_WRAPPERS_ONLY -eq "1") {
+  return
+}
+
+if ($env:MYCMUX_LAUNCH_TARGET -eq 'shell') {
+  foreach ($key in @('MYCMUX_RESUME', 'MYCMUX_SESSION_ID', 'MYCMUX_AGENT_KIND', 'MYCMUX_RESUME_FORK', 'MYCMUX_LAUNCH_MODEL', 'MYCMUX_LAUNCH_EFFORT', 'MYCMUX_LAUNCH_KIND')) {
+    [Environment]::SetEnvironmentVariable($key, $null, 'Process')
+  }
+  . Invoke-MycmuxTerminalShell
   return
 }
 
@@ -1526,6 +1560,13 @@ function Invoke-MycmuxLaunchSpecMenu {
 }
 
 Read-MycmuxLaunchSpecFromEnv
+if ($null -ne $script:MycmuxTerminalCommand -or
+    ($env:MYCMUX_LAUNCH_TARGET -and -not $LaunchTargets.ContainsKey($env:MYCMUX_LAUNCH_TARGET))) {
+  $script:MycmuxTerminalCommand = $null
+  [Environment]::SetEnvironmentVariable("MYCMUX_LAUNCH_TARGET", $null, "Process")
+  Write-Warning "Invalid launcher target or terminal command."
+  return
+}
 
 if (Invoke-MycmuxHandoffFromEnv) {
   return

@@ -1,3 +1,6 @@
+import { fallbackAttributeGrouping } from "./attributeGrouping";
+import { paneRegistry } from "../../lib/paneEvidence";
+import { useAiSettingsStore } from "../../stores/aiSettingsStore";
 import { evidenceAnalysis, evidenceRole } from "./evidenceGrouping";
 import { cachedEvidenceScan } from "../../lib/paneEvidence";
 import { reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
@@ -361,6 +364,7 @@ function presetLayout(
 
 /** Practical presets select sessions without pulling idle lineage members along. */
 export function buildPresetGroupingPlan(scan: GroupingScan, strategy: GroupingPresetStrategy): GroupingPlan {
+  if (strategy === "attribute") return fallbackAttributeGrouping(scan, paneRegistry(), useAiSettingsStore.getState().aiEnabled ? "判定待ち" : "AI がオフ").plan;
   const roles = new Map(scan.tabs.map((tab, index) => [tab.id, evidenceRole(scan, index)]));
   const workspaceOrder = new Map(scan.workspaces.map((workspace, index) => [workspace.id, index]));
   const scanOrder = new Map(scan.tabs.map((tab, index) => [tab.id, index]));
@@ -427,9 +431,12 @@ export function buildPresetGroupingPlan(scan: GroupingScan, strategy: GroupingPr
 export function withRequestedGroupingPlan(
   analysis: GroupingAnalysisResult,
   requestedStrategy?: GroupingPresetStrategy,
+  attributePlan?: GroupingPlan,
 ): GroupingAnalysisResult {
   if (!requestedStrategy || analysis.parsed.status !== "ok") return analysis;
-  const requested = buildPresetGroupingPlan(analysis.scan, requestedStrategy);
+  const requested = requestedStrategy === "attribute"
+    ? attributePlan ?? analysis.parsed.plans.find(plan => plan.strategy === "attribute") ?? buildPresetGroupingPlan(analysis.scan, requestedStrategy)
+    : buildPresetGroupingPlan(analysis.scan, requestedStrategy);
   const alternatives = analysis.parsed.plans.filter(plan => plan.strategy !== requestedStrategy);
   const role = alternatives.find(plan => plan.strategy === "role");
   const plans = [requested, ...(role ? [role] : []), ...alternatives.filter(plan => plan.strategy !== "role")].slice(0, TAB_GROUPING_PLAN_MAX);

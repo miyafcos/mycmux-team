@@ -166,9 +166,53 @@ afterEach(async () => {
 });
 
 describe("grouping preset controls", () => {
-  it("shows three chips, defaults to recommended, and immediately shows the requested plan while AI is pending", async () => {
+  it("shows the attribute option, retains the local plan while pending, and replaces it with the completed attribute plan even with Jev off", async () => {
+    useJevSettingsStore.setState({ enabled: false });
     await mount();
-    expect([...document.querySelectorAll('[data-grouping-preset]')].map(button => button.textContent)).toEqual(["おすすめ", "稼働中だけ", "メインだけ"]);
+    await click(preset("attribute"));
+    await vi.waitFor(() => {
+      expect(firstPlan()?.getAttribute("data-strategy")).toBe("attribute");
+      expect(harness.pending.at(-1)?.strategy).toBe("attribute");
+    }, { timeout: 10_000 });
+    expect(document.getElementById("grouping-preset-description")?.textContent).toBe(tabGroupingStrings.strategyAttributeDescription);
+    expect(localStorage.getItem(GROUPING_PRESET_STORAGE_KEY)).toBe("attribute");
+    const analysis = await currentAnalysis();
+    if (analysis.parsed.status !== "ok") throw new Error("No analysis");
+    const final = { ...analysis.parsed.plans[0], planId: "attribute-final", strategy: "attribute" as const,
+      title: "属性でまとめる", rationale: "属性の判定済みの案" };
+    analysis.parsed.plans.unshift(final);
+    await act(async () => harness.pending.at(-1)!.resolve({ kind: "ready", analysis, generatedAt: Date.now() }));
+    await vi.waitFor(() => expect(firstPlan()?.textContent).toContain("属性の判定済みの案"), { timeout: 10_000 });
+    expect(firstPlan()?.textContent).not.toContain("判定待ち");
+  });
+
+  it("applies the fixed-only attribute fallback without renaming existing workspaces and restores it on Undo", async () => {
+    useAiSettingsStore.setState({ aiEnabled: false });
+    localStorage.setItem(GROUPING_PRESET_STORAGE_KEY, "attribute");
+    const original = workspaces();
+    original[0].gridTemplateId = "3x1";
+    for (const pane of original[0].panes) pane.tabs[0].cwd = "/work/sample";
+    original.push({ id: "other", name: "資料机", gridTemplateId: "1x1", status: "running", createdAt: 1,
+      splitColumns: [["pane-extra"]], panes: [{ id: "pane-extra", agentId: "shell-starter", sessionId: "session-extra", activeTabId: "extra",
+        tabs: [{ id: "extra", sessionId: "session-extra", agentId: "shell-starter", type: "terminal", cwd: "/work/sample" }] }] });
+    useWorkspaceListStore.setState({ workspaces: original, layoutRevision: useWorkspaceListStore.getState().layoutRevision + 1 });
+    useLauncherDirsStore.setState({ view: { doc: { entries: [{ section: "dev", label: "架空案件", path: "/work/sample" }] } } as never });
+    for (const workspace of original) for (const pane of workspace.panes) pane.cwd = pane.tabs.find(tab => tab.id === pane.activeTabId)?.cwd;
+    const saved = structuredClone(original);
+    await mount();
+    await vi.waitFor(() => expect(firstPlan()?.textContent).toContain("AI の判定なし (AI がオフ)"), { timeout: 10_000 });
+    await click(button(tabGroupingStrings.confirmPlan));
+    await click(button(tabGroupingStrings.apply));
+    await vi.waitFor(() => expect(groupingBoundary.commit).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+    expect(useWorkspaceListStore.getState().workspaces.map(workspace => workspace.name)).toEqual(saved.map(workspace => workspace.name));
+    expect(useWorkspaceListStore.getState().workspaces.find(workspace => workspace.id === "source")?.panes.flatMap(pane => pane.tabs.map(tab => tab.id))).toContain("extra");
+    await click(button(tabGroupingStrings.undo));
+    expect(useWorkspaceListStore.getState().workspaces).toEqual(saved);
+  });
+
+  it("shows four chips, defaults to recommended, and immediately shows the requested plan while AI is pending", async () => {
+    await mount();
+    expect([...document.querySelectorAll('[data-grouping-preset]')].map(button => button.textContent)).toEqual(["おすすめ", "稼働中だけ", "メインだけ", "属性でまとめる"]);
     expect(preset("recommended").getAttribute("aria-pressed")).toBe("true");
     await click(preset("active_watch"));
     expect(preset("active_watch").getAttribute("aria-pressed")).toBe("true");

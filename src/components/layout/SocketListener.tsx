@@ -1122,6 +1122,7 @@ const EPHEMERAL_LAUNCH_ENV_KEYS = new Set([
   "MYCMUX_AGENT_KIND",
   "MYCMUX_RESUME_FORK",
   "MYCMUX_LAUNCH_TARGET",
+  "MYCMUX_LAUNCH_COMMAND",
   "MYCMUX_LAUNCH_MODEL",
   "MYCMUX_LAUNCH_EFFORT",
   "MYCMUX_HANDOFF",
@@ -1145,7 +1146,8 @@ function stripEphemeralLaunchEnv(
   if (!env) return null;
   const filtered: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) {
-    if (!EPHEMERAL_LAUNCH_ENV_KEYS.has(k.toUpperCase())) {
+    // The shell mode is repeatable; its one-shot command reference is not.
+    if ((k === "MYCMUX_LAUNCH_TARGET" && v === "shell") || !EPHEMERAL_LAUNCH_ENV_KEYS.has(k.toUpperCase())) {
       filtered[k] = v;
     }
   }

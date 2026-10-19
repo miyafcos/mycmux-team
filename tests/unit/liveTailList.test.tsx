@@ -4,8 +4,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LiveTailList, liveTailFactText } from "../../src/components/layout/LiveTailList";
+import { LiveTailList } from "../../src/components/layout/LiveTailList";
 import { useLiveBriefStore } from "../../src/stores/liveBriefStore";
+import { liveTailStateLine } from "../../src/lib/liveTail/stateLine";
 import { LIVE_TAIL_KINDS, LIVE_TAIL_TEST_NOW, liveTailFixtureEntry, liveTailFixtureScene } from "../fixtures/liveTailList";
 import type { LiveSessionBrief } from "../../src/lib/livebrief";
 
@@ -41,7 +42,7 @@ describe("live-tail workspace list", () => {
     if (kind === "idle") { expect(row("Sample idle")).toBeNull(); expect(host.textContent).toContain("ほか 入力待ち 1"); return; }
     const element = row(`Sample ${kind}`);
     expect(element.dataset.fact).toBe(kind);
-    const badges: Record<string, string> = { frozen: "止まっている", unreadable: "読めない", error: "エラー", stale: "進んでいない" };
+    const badges: Record<string, string> = { frozen: "止まっている", error: "エラー", stale: "進んでいない" };
     expect(element.querySelector(".live-tail-badge")?.textContent ?? null).toBe(badges[kind] ?? null);
   });
   it("counts only input-idle seats and keeps reply-waiting seats as rows", async () => {
@@ -51,7 +52,7 @@ describe("live-tail workspace list", () => {
     expect(host.querySelectorAll(".live-tail-row")).toHaveLength(1);
     expect(host.textContent).toContain("ほか 入力待ち 2");
     await hover(host.querySelector("button")!);
-    expect(tooltip().textContent).toContain("返事待ち");
+    expect(tooltip().textContent).toContain("回答待ち");
     expect(tooltip().querySelector(".live-tail-badge")).toBeNull();
   });
   it("does not show a zero idle count", async () => {
@@ -75,7 +76,7 @@ describe("live-tail workspace list", () => {
     scene = liveTailFixtureScene(["cmd"]); await render(); await hover(row("Sample cmd"));
     expect([...tooltip().querySelectorAll(".live-tail-popup-rows > div")].map(element => element.textContent))
       .toEqual(scene.entries["sample-session-0"].evidence.observation.crop.rows);
-    expect(tooltip().textContent).toContain("コマンド待ち 2分4秒");
+    expect(tooltip().textContent).toContain("コマンド実行中 · 2分4秒");
     expect(tooltip().querySelector(".live-tail-go")).toBeNull();
     expect(row("Sample cmd").querySelector(".live-tail-line")!.textContent).toBe("● Wait for sample report · 2m 4s");
     expect(tooltip().closest("[data-cmux-themed-root]")).toBe(host);
@@ -84,7 +85,7 @@ describe("live-tail workspace list", () => {
   it("uses the spinner without a running command", async () => {
     scene = liveTailFixtureScene(["progress"]); await render();
     expect(row("Sample progress").querySelector(".live-tail-line")!.textContent).toBe(scene.entries["sample-session-0"].evidence.observation.crop.marker);
-    await hover(row("Sample progress")); expect(tooltip().textContent).toContain("進んだ 12秒前");
+    await hover(row("Sample progress")); expect(tooltip().textContent).toContain("作業中 · 12秒前に進んだ");
   });
   it("opens the popup from keyboard focus and jumps on Enter with the exact identity", async () => {
     scene = liveTailFixtureScene(["alive"]); await render();
@@ -99,22 +100,23 @@ describe("live-tail workspace list", () => {
     scene = liveTailFixtureScene(["progress"]); await render(); await act(async () => row("Sample progress").click());
     expect(jump).toHaveBeenCalledExactlyOnceWith({ workspaceId: scene.workspace.id, paneId: "sample-pane", tab: scene.workspace.panes[0].tabs[0] });
   });
-  it("shows both frozen timestamps without treating a live transcript as terminal output", async () => {
+  it("keeps a live transcript from changing the frozen state age", async () => {
     scene = liveTailFixtureScene(["frozen"]);
     const transcriptAt = LIVE_TAIL_TEST_NOW - 2_000;
     useLiveBriefStore.setState({ briefsBySession: { "sample-session-0": { lastEventAt: transcriptAt } as LiveSessionBrief } });
     await render(); await hover(row("Sample frozen"));
-    const time = (at: number) => new Date(at).toLocaleTimeString("ja-JP", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    expect(tooltip().textContent).toContain("画面が止まっている 3分");
-    expect(tooltip().textContent).toContain(`端末の最後の出力 ${time(LIVE_TAIL_TEST_NOW - 180_000)} · 会話記録の最後の書き込み ${time(transcriptAt)}`);
+    expect(tooltip().querySelector(".live-tail-fact")?.textContent).toBe("画面が止まっている · 3分前から");
+    expect(tooltip().querySelector(".live-tail-evidence")).toBeNull();
   });
-  it("states when a frozen seat's transcript time is unknown", async () => {
+  it("keeps the frozen state age when the transcript time is unknown", async () => {
     scene = liveTailFixtureScene(["frozen"]); await render(); await hover(row("Sample frozen"));
-    expect(tooltip().textContent).toContain("会話記録 不明");
+    expect(tooltip().querySelector(".live-tail-fact")?.textContent).toBe("画面が止まっている · 3分前から");
+    expect(tooltip().querySelector(".live-tail-evidence")).toBeNull();
   });
   it("does not present stale diagnostic rows as a readable screen", async () => {
     scene = liveTailFixtureScene(["unreadable"]); await render(); await hover(row("Sample unreadable"));
-    expect(tooltip().textContent).toContain("画面を読めない"); expect(tooltip().textContent).not.toContain("開けば最新になります");
+    expect(tooltip().querySelector(".live-tail-fact")?.textContent).toBe("作業中");
+    expect(tooltip().textContent).not.toContain("読めない"); expect(tooltip().textContent).not.toContain("開けば最新になります");
     expect(tooltip().querySelector(".live-tail-popup-rows")).toBeNull();
     expect(row("Sample unreadable").querySelector(".live-tail-summary")).toBeNull();
   });
@@ -144,7 +146,8 @@ describe("live-tail workspace list", () => {
   it.each(["stale", "frozen", "error", "unreadable"] as const)("uses the design's %s wording", kind => {
     const entry = liveTailFixtureEntry(kind);
     const fact = { kind, sinceMs: LIVE_TAIL_TEST_NOW - 180_000, elapsedSec: null, tokens: null, toolElapsedSec: null, error: entry.evidence.observation.crop.error };
-    expect(liveTailFactText(fact, LIVE_TAIL_TEST_NOW)).toBe({ stale: "3分 進んでいない", frozen: "画面が止まっている 3分", error: "エラー", unreadable: "画面を読めない" }[kind]);
+    expect(liveTailStateLine({ fact, now: LIVE_TAIL_TEST_NOW, status: "unknown", attentionKind: null, cropState: null })?.text ?? null)
+      .toBe({ stale: "進んでいない · 3分前から", frozen: "画面が止まっている · 3分前から", error: "エラー", unreadable: null }[kind]);
   });
 
   it.each(["progress", "cmd", "stale", "frozen", "error"] as const)("keeps two lines only when %s has screen text", async kind => {
@@ -212,12 +215,14 @@ describe("live-tail workspace list", () => {
     await act(async () => root.render(null)); await render();
     expect(toggle().getAttribute("aria-expanded")).toBe("false");
   });
-  it("shows the actual age of a retained screen without guide text", async () => {
+  it("retains screen rows without exposing the acquisition age or guide text", async () => {
     scene = liveTailFixtureScene(["alive"]);
     scene.entries["sample-session-0"].retained = true;
     scene.entries["sample-session-0"].evidence.observation.observedAt = LIVE_TAIL_TEST_NOW - 7_000;
     await render(); await hover(row("Sample alive"));
-    expect(tooltip().textContent).toContain("画面の読み取り 7秒前");
+    expect(tooltip().querySelector(".live-tail-popup-rows")?.textContent).toBe(scene.entries["sample-session-0"].evidence.observation.crop.rows.join(""));
+    expect(tooltip().querySelector(".live-tail-evidence")).toBeNull();
+    expect(tooltip().querySelector(".live-tail-fact")?.textContent).toBe("作業中");
     expect(tooltip().textContent).not.toContain("開けば最新になります");
     expect(host.querySelector(".live-tail-go")).toBeNull();
   });

@@ -17,6 +17,8 @@ import { HistoryView } from "./HistoryView";
 import { ExportView } from "./ExportView";
 import { InspectionView, visibleFindings } from "./InspectionView";
 import { createReadOnlySkillsApi } from "./readOnlySkillsApi";
+import { useVisibleAgentDesignServices } from "./serviceVisibility";
+import { agentServiceVisibilityStrings as visibilityStrings } from "../../lib/agentServiceVisibilityStrings";
 import "./agentDesign.css";
 const folderKey = (path: string) => {
   const normalized = path.replace(/\\/g, "/").replace(/\/$/, "");
@@ -24,6 +26,7 @@ const folderKey = (path: string) => {
 };
 export interface AgentDesignViewProps { onClose: () => void; active?: boolean; api?: AgentDesignApi; initialCatalog?: AgentDesignCatalog; initialCwd?: string | null; skillApi?: typeof skillsApi; exportApi?: AgentDesignExportApi; initialView?: "mechanism" | "overview" }
 export function AgentDesignView({ onClose, active = true, api = agentDesignApi, initialCatalog, initialCwd = null, skillApi, exportApi = agentDesignExportApi, initialView = "mechanism" }: AgentDesignViewProps) {
+  const visibleServiceIds = useVisibleAgentDesignServices();
   const [cwd, setCwd] = useState<string | null>(initialCwd);
   const [catalog, setCatalog] = useState<AgentDesignCatalog | null>(() => initialCatalog ?? api.peek(initialCwd));
   const [serviceId, setServiceId] = useState<AgentServiceId>("claude"); const [view, setView] = useState(initialView === "overview" ? 1 : 0); const [layer, setLayer] = useState(3);
@@ -76,7 +79,13 @@ export function AgentDesignView({ onClose, active = true, api = agentDesignApi, 
   const openSkill = useCallback((id?: string) => { embeddedOrigin.current = document.activeElement as HTMLElement | null; setSkillId(id ?? null); setEmbedded("skills"); }, []);
   const openReflection = () => { embeddedOrigin.current = document.activeElement as HTMLElement | null; setReflectionVisited(true); setEmbedded("reflection"); };
   const reflectionActive = active && embedded === "reflection";
-  const service = catalog?.services.find(a => a.id === serviceId) ?? catalog?.services[0];
+  const effectiveServiceId = visibleServiceIds.includes(serviceId) ? serviceId : visibleServiceIds[0];
+  const service = catalog?.services.find(a => a.id === effectiveServiceId) ?? (embedded ? catalog?.services[0] : undefined);
+  useEffect(() => {
+    if (visibleServiceIds.includes(serviceId)) return;
+    if (visibleServiceIds[0]) setServiceId(visibleServiceIds[0]);
+    setSelected(null); setSourceLine(undefined); setTrail([]); setCompareOpen(false);
+  }, [serviceId, visibleServiceIds]);
   const switchView = (next: number) => { embeddedOrigin.current = null; setView(next); setEmbedded(null); setSelected(null); setSourceLine(undefined); setTrail([]); setCompareOpen(false); };
   const keyboard = (event: React.KeyboardEvent) => {
     // Portal events bubble through React ancestors, but belong to their own
@@ -121,20 +130,20 @@ export function AgentDesignView({ onClose, active = true, api = agentDesignApi, 
   const backItem = () => { const previous = trail[trail.length - 1]; returning.current = !previous; setTrail(trail.slice(0, -1)); setSelected(previous?.id ?? null); setSourceLine(previous?.line); };
   const selectedItem = catalog?.items.find(item => item.id === selected);
   return <div className="ad-view" ref={surface} onKeyDown={keyboard} tabIndex={-1}>
-    <header className="ad-header"><SkillsIcon size={20} /><div className="ad-brand"><strong>{s.title}</strong><small>{catalog?.services.filter(a => a.version).map(a => a.displayName + " " + a.version).join(" · ") || s.version + " " + s.unknown}{catalog && " · " + s.updatedAt + " " + new Date(catalog.generatedAt).toLocaleTimeString("ja-JP")}{busy && " · " + s.updating}</small></div>
+    <header className="ad-header"><SkillsIcon size={20} /><div className="ad-brand"><strong>{s.title}</strong><small>{catalog?.services.filter(a => a.version && visibleServiceIds.includes(a.id)).map(a => a.displayName + " " + a.version).join(" · ") || s.version + " " + s.unknown}{catalog && " · " + s.updatedAt + " " + new Date(catalog.generatedAt).toLocaleTimeString("ja-JP")}{busy && " · " + s.updating}</small></div>
       <nav className="ad-tabs" aria-label={s.title}>{s.views.map((label, index) => <button key={label} aria-pressed={!embedded && view === index} className={!embedded && view === index ? "active" : ""} onClick={() => switchView(index)}>{label}{index === 4 && catalog && <small>{catalog.findings.length}</small>}</button>)}<button aria-pressed={embedded === "skills"} className={embedded === "skills" ? "active" : ""} onClick={() => openSkill()}>{s.skills}</button><button aria-pressed={embedded === "reflection"} className={embedded === "reflection" ? "active" : ""} onClick={openReflection}>{s.reflection}</button>{["履歴", "書き出し"].map((label, index) => <button key={label} aria-pressed={!embedded && view === index + 5} onClick={() => switchView(index + 5)}>{label}</button>)}</nav>
       <label className="ad-search"><Search size={15} /><input ref={search} aria-label={s.search} placeholder={s.searchPlaceholder} value={query} onChange={event => setQuery(event.target.value)} /><kbd>/</kbd></label>
       <button aria-label={s.refresh} title={s.refresh} onClick={() => void refresh()} disabled={busy}><RefreshCw size={15} className={busy ? "ad-spinning" : ""} />{s.refresh}</button><button aria-label={s.close} title={s.close} onClick={onClose}><X size={16} /></button>
     </header>
     {(notice || catalog?.warnings.length) ? <div className="ad-notice" role="status">{notice || s.countError}<button aria-label={s.dismiss} onClick={() => setNotice("")}><X size={13} /></button></div> : null}
     <div className="ad-body"><nav className="ad-rail" aria-label={s.services}><h3>{s.services}</h3>
-      {(["claude", "codex", "hermes"] as const).map(id => { const a = catalog?.services.find(a => a.id === id); const own = id === "codex" ? a?.stats.skillsCodex == null || a.stats.skillsAgents == null ? null : a.stats.skillsCodex + a.stats.skillsAgents : a?.stats.skillsOwn; return <button key={id} aria-pressed={serviceId === id} className={"ad-service" + (serviceId === id ? " selected" : "")} onClick={() => { setServiceId(id); setSelected(null); setTrail([]); setSourceLine(undefined); }}><span><ServiceMark id={id} /><strong>{a?.displayName ?? (id === "claude" ? "Claude Code" : id === "codex" ? "Codex" : "Hermes")}</strong></span><small>{a?.state === "absent" ? s.absent : id === "hermes" ? s.hermesScope : initialAmountLabel(a) + " " + chars(a?.context.total ?? a?.context.knownTotal)}</small><small>{own != null && s.groupNames.own + " " + number(own) + " 本"}{id !== "hermes" && a?.stats.hookHandlers != null && " · 処理の登録 " + number(a.stats.hookHandlers) + " 件"}</small></button>; })}
+      {visibleServiceIds.map(id => { const a = catalog?.services.find(a => a.id === id); const own = id === "codex" ? a?.stats.skillsCodex == null || a.stats.skillsAgents == null ? null : a.stats.skillsCodex + a.stats.skillsAgents : a?.stats.skillsOwn; return <button key={id} aria-pressed={effectiveServiceId === id} className={"ad-service" + (effectiveServiceId === id ? " selected" : "")} onClick={() => { setServiceId(id); setSelected(null); setTrail([]); setSourceLine(undefined); }}><span><ServiceMark id={id} /><strong>{a?.displayName ?? (id === "claude" ? "Claude Code" : id === "codex" ? "Codex" : "Hermes")}</strong></span><small>{a?.state === "absent" ? s.absent : id === "hermes" ? s.hermesScope : initialAmountLabel(a) + " " + chars(a?.context.total ?? a?.context.knownTotal)}</small><small>{own != null && s.groupNames.own + " " + number(own) + " 本"}{id !== "hermes" && a?.stats.hookHandlers != null && " · 処理の登録 " + number(a.stats.hookHandlers) + " 件"}</small></button>; })}
       <h3>{s.thisPc}</h3><button className="ad-home" onClick={() => setCwd(null)}><Monitor size={15} /><code title={catalog?.home}>{catalog?.home ?? s.home}</code></button><button className="ad-folder" onClick={() => void chooseFolder()}><Folder size={15} /><span>{s.chooseFolder}</span></button>
       {catalog && catalog.cwd !== catalog.home && <code className="ad-current-folder ad-path">{catalog.cwd}</code>}
-      {serviceId === "hermes" && <button className="ad-folder" onClick={() => void chooseFolder(true)}><Folder size={15} /><span>{s.hermesLocation}</span></button>}
+      {effectiveServiceId === "hermes" && <button className="ad-folder" onClick={() => void chooseFolder(true)}><Folder size={15} /><span>{s.hermesLocation}</span></button>}
       {catalog && <footer>{s.readOnly}<br />{s.refreshedDuration} 約 {(catalog.refreshMs / 1000).toFixed(1)} 秒</footer>}
     </nav>
-    <div className={"ad-content" + (embedded ? " ad-embedded" : "")}>{!catalog || !service ? !reflectionActive && <div className="ad-empty">{s.noData}</div> : <>
+    <div className={"ad-content" + (embedded ? " ad-embedded" : "")}>{!catalog || !service ? !reflectionActive && <div className="ad-empty">{visibleServiceIds.length ? s.noData : visibilityStrings.agentDesignNone}</div> : <>
       <div className="ad-page" hidden={Boolean(embedded) || Boolean(selectedItem)}>
         {view === 0 ? <MechanismView catalog={catalog} service={service} layer={layer} setLayer={setLayer} query={query} onOpen={openItem} onSkill={openSkill} onReading={() => switchView(2)} />
           : view === 1 ? <Overview catalog={catalog} service={service} api={api} layer={layer} setLayer={setLayer} selected={null} setSelected={id => id ? openItem(id) : setSelected(null)} onSkill={openSkill} query={query} onMechanism={() => switchView(0)} onReading={() => switchView(2)} />

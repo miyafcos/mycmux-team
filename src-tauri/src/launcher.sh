@@ -2,6 +2,41 @@
 # Terminal launcher - arrow keys, j/k, or number keys
 # Called from .bashrc
 
+# Unexport the one-shot line before even platform detection can spawn a child.
+unset __MYCMUX_TERMINAL_COMMAND
+__MYCMUX_TERMINAL_COMMAND="${MYCMUX_LAUNCH_COMMAND-}"
+unset MYCMUX_LAUNCH_COMMAND
+
+__mycmux_terminal_shell() {
+  local __mycmux_terminal_line="$__MYCMUX_TERMINAL_COMMAND"
+  unset __MYCMUX_TERMINAL_COMMAND MYCMUX_LAUNCH_TARGET
+  [ -n "$__mycmux_terminal_line" ] || return 0
+  if ! __mycmux_terminal_line_valid "$__mycmux_terminal_line"; then
+    printf '%s\n' 'Terminal command must be one line of at most 4096 characters.' >&2
+    return 0
+  fi
+  # The line is already shell source. Never interpolate it into another command.
+  eval -- "$__mycmux_terminal_line"
+  return 0
+}
+
+__mycmux_terminal_line_valid() {
+  local __mycmux_terminal_line="$1"
+  # Count UTF-16 units from UTF-8 bytes without relying on installed locales
+  # or bash-4 Unicode escapes (macOS still ships bash 3.2).
+  local LC_ALL=C
+  local __mycmux_leads="${__mycmux_terminal_line//[$'\200'-$'\277']/}"
+  local __mycmux_astral="${__mycmux_terminal_line//[!$'\360'-$'\364']/}"
+  if [ "$(( ${#__mycmux_leads} + ${#__mycmux_astral} ))" -gt 4096 ] ||
+      [[ "$__mycmux_terminal_line" == *[$'\001'-$'\037'$'\177']* ]] ||
+      [[ "$__mycmux_terminal_line" == *$'\302'[$'\200'-$'\237']* ]] ||
+      [[ "$__mycmux_terminal_line" == *$'\342\200\250'* || "$__mycmux_terminal_line" == *$'\342\200\251'* ]] ||
+      [[ "$__mycmux_terminal_line" != *[![:space:]]* ]]; then
+    return 1
+  fi
+  return 0
+}
+
 __MYCMUX_UNAME="$(uname -s 2>/dev/null || echo "")"
 case "${MSYSTEM:-}:$__MYCMUX_UNAME" in
   *MINGW*|*MSYS*|*CYGWIN*) __MYCMUX_PLATFORM=windows ;;
@@ -343,6 +378,13 @@ __mycmux_restore_codex() {
 # END CODEX RESTORE HELPERS
 
 if [ "${MYCMUX_HOOK_WRAPPERS_ONLY:-}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+if [ "${MYCMUX_LAUNCH_TARGET:-}" = shell ]; then
+  unset MYCMUX_RESUME MYCMUX_SESSION_ID MYCMUX_AGENT_KIND MYCMUX_RESUME_FORK
+  unset MYCMUX_LAUNCH_MODEL MYCMUX_LAUNCH_EFFORT MYCMUX_LAUNCH_KIND
+  __mycmux_terminal_shell
   return 0 2>/dev/null || exit 0
 fi
 
@@ -1482,6 +1524,12 @@ __launch_spec_menu() {
   return 0
 }
 
+if [ -n "$__MYCMUX_TERMINAL_COMMAND" ] && [ "${MYCMUX_LAUNCH_TARGET:-}" != shell ]; then
+  unset __MYCMUX_TERMINAL_COMMAND MYCMUX_LAUNCH_TARGET
+  printf '%s\n' 'Terminal command requires the shell target.' >&2
+  return 0 2>/dev/null || exit 0
+fi
+
 if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
   case "$MYCMUX_LAUNCH_TARGET" in
     claude)
@@ -1555,6 +1603,12 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
       cmd="aider"
       ;;
     shell)
+      __mycmux_terminal_shell
+      return 0 2>/dev/null || exit 0
+      ;;
+    *)
+      unset __MYCMUX_TERMINAL_COMMAND MYCMUX_LAUNCH_TARGET
+      printf '%s\n' 'Invalid launcher target.' >&2
       return 0 2>/dev/null || exit 0
       ;;
   esac

@@ -82,6 +82,7 @@ permissions = [
     "allow-crsm-create-handoff",
     "allow-crsm-list-sessions",
     "allow-delete-online-savepoint",
+    "allow-detect-agent-services",
     "allow-discard-session-scrollback",
     "allow-dispatch-claim-watchdog",
     "allow-dispatch-scan",

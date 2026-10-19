@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { recordPerf } from "./lib/perfTimeline";
+import { startAgentServiceDetectionOnStartup } from "./stores/agentServiceDetectionStore";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -166,6 +167,7 @@ function App() {
   const uiVariant = uiVariantEnv === "mycmux" || uiVariantEnv === "cmux" ? "cmux" : "default";
   // Startup identity controls hydration/reveal; shared tasks follow the role.
   const isMain = isMainWindow();
+  useEffect(() => { if (ready) return startAgentServiceDetectionOnStartup(); }, [ready]);
   const hasRole = useWindowRole();
   // Selecting the workspace itself (not the array) keeps the main window off
   // this subscription entirely: it resolves to a stable null, so unrelated

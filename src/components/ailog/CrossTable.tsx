@@ -1,3 +1,4 @@
+import { useAgentServiceVisibility } from "../../hooks/useAgentServiceVisibility";
 import { useMemo } from "react";
 
 import type { PivotAxis, PivotReport } from "../../lib/ailog";
@@ -8,11 +9,10 @@ import {
   heatMixPercent,
   isFilterablePivotAxis,
   OTHER_KEY,
-  PIVOT_AXES,
   pivotAxisLabel,
   selectionFromPivotCell,
 } from "./crossTableModel";
-import { groupLabel, metricUnit, type UsageMetric } from "./usageModel";
+import { groupLabel, metricUnit, usageAxisHint, USAGE_AXES, type UsageMetric } from "./usageModel";
 import { ButtonGroup, EmptyState, Num, VScrollBox, noteStyle, tableActionButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
 
 function axisLabel(value: string, axis: PivotAxis): string {
@@ -52,6 +52,8 @@ export function CrossTable({
   onColBy: (value: PivotAxis) => void;
   onSelect: (selection: AilogSelection | null) => void;
 }) {
+  const visible = useAgentServiceVisibility();
+  const visibleAxes = USAGE_AXES.map(axis => ({ value: axis.value, label: axis.label, title: usageAxisHint(axis, visible) }));
   const folded = useMemo(() => (report ? foldPivot(report, metric) : null), [report, metric]);
   const note = folded ? foldNote(folded) : null;
   const max = folded ? Math.max(0, ...folded.rows.flatMap((row) => row.cells)) : 0;
@@ -60,8 +62,8 @@ export function CrossTable({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <ButtonGroup ariaLabel="行軸" roleLabel="行" value={rowBy} onChange={onRowBy} options={PIVOT_AXES} />
-        <ButtonGroup ariaLabel="列軸" roleLabel="列" value={colBy} onChange={onColBy} options={PIVOT_AXES} />
+        <ButtonGroup ariaLabel="行軸" roleLabel="行" value={rowBy} onChange={onRowBy} options={visibleAxes} />
+        <ButtonGroup ariaLabel="列軸" roleLabel="列" value={colBy} onChange={onColBy} options={visibleAxes} />
       </div>
       {error && report ? <EmptyState kind="error" message={error} onPrimary={onRetry} /> : null}
       {error && !report ? (

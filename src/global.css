@@ -154,7 +154,8 @@
   /* Live-tail facts have their own theme-safe text and marker colours. */
   --cmux-live-tail-progress: var(--status-done);
   --cmux-live-tail-cmd: var(--status-working);
-  --cmux-live-tail-stale: var(--status-waiting);
+  --cmux-live-tail-waiting: var(--status-waiting);
+  --cmux-live-tail-stale: var(--status-error);
   --cmux-live-tail-frozen: var(--status-error);
   --cmux-live-tail-error: var(--status-error);
   --cmux-live-tail-unreadable: var(--cmux-text);

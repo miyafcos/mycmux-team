@@ -31,6 +31,7 @@ mod cli_accounts;
 mod claude_skills;
 mod skills;
 mod agent_design;
+mod agent_services;
 mod commands;
 mod db;
 mod diag;
@@ -442,6 +443,7 @@ app_commands![
             commands::workspace::load_persistent_data,
             commands::workspace::save_persistent_data,
             commands::claude_codex_models::claude_codex_model_choices,
+            agent_services::detect_agent_services,
             commands::launcher::launcher_dirs_get,
             commands::launcher::launcher_dirs_set_section_label,
             commands::launcher::launcher_dirs_add_entry,
@@ -645,6 +647,7 @@ pub fn run() {
         "MYCMUX_AGENT_KIND",
         "MYCMUX_RESUME_FORK",
         "MYCMUX_LAUNCH_TARGET",
+        "MYCMUX_LAUNCH_COMMAND",
         "MYCMUX_LAUNCH_MODEL",
         "MYCMUX_LAUNCH_EFFORT",
         "MYCMUX_HANDOFF",

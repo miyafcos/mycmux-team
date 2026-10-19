@@ -13,9 +13,10 @@ import type { IFuseOptions } from "fuse.js";
 import { AGENT_CATALOG, type AgentCatalogEntry } from "../../lib/agentCatalog";
 import type { LauncherDirEntry, LauncherDirsView } from "../../lib/ipc";
 import { WEB_PRESET_MARKS } from "../../lib/tabMark";
+import { launcherStrings as S } from "./launcherStrings";
 
 export interface LauncherLaunchItem {
-  kind: "agent" | "web";
+  kind: "agent" | "web" | "shell";
   /** `MYCMUX_LAUNCH_TARGET` for agents; the web preset id for web rows. */
   target: string;
   /** The catalog's own row label. Queries match this, and it is the tooltip. */
@@ -53,7 +54,17 @@ export interface LauncherResumeItem {
   iconKind: string;
 }
 
-export type LauncherItem = LauncherLaunchItem | LauncherDirItem | LauncherResumeItem;
+export interface LauncherCommandItem {
+  kind: "command";
+  command: string;
+}
+
+export type LauncherItem = LauncherLaunchItem | LauncherDirItem | LauncherResumeItem | LauncherCommandItem;
+
+/** Separate from the agent catalog: no service visibility or model choices. */
+export function terminalLaunchItem(): LauncherLaunchItem {
+  return { kind: "shell", target: "shell", label: S.terminal, short: S.terminal, iconKind: "shell" };
+}
 
 export type SpecRow = "model" | "effort" | "launch";
 

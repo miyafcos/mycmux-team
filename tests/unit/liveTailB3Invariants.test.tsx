@@ -14,9 +14,10 @@ import { liveTerms, termCache, markTerminalBufferReady, isTerminalParsingCurrent
 import { createSession, killSession } from "../../src/lib/ipc";
 import * as registry from "../../src/lib/ptyReadGeneration";
 import { loadLiveTailOutputs, loadLiveTailTargets } from "../../src/lib/liveTail/targets";
-import { createLiveTailController } from "../../src/stores/liveTailStore";
+import { createLiveTailController, liveTailAttentionChanged } from "../../src/stores/liveTailStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { useSessionAttentionStore } from "../../src/stores/sessionAttentionStore";
+import { trustedLiveTailAttention } from "../../src/lib/liveTail/status";
 import type { Workspace } from "../../src/types";
 import { xtermWritePump } from "../fixtures/xtermWritePump";
 
@@ -285,13 +286,20 @@ describe("B3 generated 3–5 session real-path sequences", () => {
         expect(row, `sidebar omitted ${target.sessionId}`).not.toBeNull();
         expect(row?.dataset.fact).toBe(tab.fact.kind);
         const badge = host.querySelector(`[data-live-tail-tab="${tab.tabId}"] .live-tail-badge`);
-        if (tab.fact.kind === "error") expect(badge?.textContent).toBe("エラー");
-        if (badge?.textContent === "読めない") expect(tab.fact.kind).toBe("unreadable");
+        const attentionKind = trustedLiveTailAttention(target.sessionId)?.kind;
+        if (attentionKind === "rate_limited") expect(badge?.textContent).toBe("利用上限");
+        else if (attentionKind === "error" || tab.fact.kind === "error") expect(badge?.textContent).toBe("エラー");
+        expect(badge?.textContent).not.toBe("読めない");
         const sample = state.entries[target.sessionId];
         if (sample?.evidence.observations && (sample.retained || useSessionAttentionStore.getState().attentionBySession[target.sessionId]?.stateSince > tab.observedAt)) {
           await act(async () => row!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
           const tooltip = document.querySelector('[role="tooltip"]');
-          expect(tooltip?.textContent).toContain(`画面の読み取り ${Math.floor((Date.now() - tab.observedAt) / 1_000)}秒前`);
+          expect(tooltip?.querySelector(".live-tail-evidence")).toBeNull();
+          if (tab.readable && tab.rows.length) {
+            expect(tooltip?.querySelector(".live-tail-popup-rows")?.textContent).toBe(tab.rows.slice(-3).join(""));
+            expect(tooltip?.querySelector(".live-tail-popup-rows")?.classList.contains("live-tail-popup-rows--previous"))
+              .toBe(liveTailAttentionChanged(target, sample));
+          }
           await act(async () => row!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
         }
       }
@@ -369,7 +377,7 @@ describe("B3 generated 3–5 session real-path sequences", () => {
 });
 
 describe("B3 baseline regressions using production paths", () => {
-  it("C retains an exceptional screen's age while the real revalidation parser never settles", async () => {
+  it("C retains an exceptional screen and its original timestamp while the real revalidation parser never settles", async () => {
     scene(["A"]); backend.get("A")!.text = errorScreen; attention("error");
     const first = controller.getForApi(); await step(); await first;
     const observedAt = controller.store.getState().entries.A.evidence.observation.observedAt;
@@ -392,8 +400,9 @@ describe("B3 baseline regressions using production paths", () => {
       expect(row.querySelector(".live-tail-badge")).toBeNull();
       expect(row.querySelector(".live-tail-summary")?.textContent).toContain("API Error: 500 sample");
       await act(async () => row.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
-      expect(document.querySelector('[role="tooltip"]')?.textContent).toContain(`画面の読み取り ${Math.floor((Date.now() - observedAt) / 1_000)}秒前`);
-      expect(document.querySelector('[role="tooltip"] .live-tail-fact')?.textContent).toBe("前の画面");
+      expect(document.querySelector('[role="tooltip"] .live-tail-evidence')).toBeNull();
+      expect(document.querySelector('[role="tooltip"] .live-tail-popup-rows--previous')?.textContent).toContain("API Error: 500 sample");
+      expect(document.querySelector('[role="tooltip"] .live-tail-fact')?.textContent).toBe("入力待ち");
       await act(async () => root.unmount()); roots = roots.filter(value => value !== root);
       expect(reads).toHaveLength(count);
       expect(__headlessBufferStateForTests().entries.some(entry => entry.busy)).toBe(true);
@@ -516,14 +525,15 @@ describe("B3 baseline regressions using production paths", () => {
     expect(oraclePermitsSilence).toBe(false);
     expect(fact.kind === "frozen").toBe(oraclePermitsSilence);
   });
-  it.each(["error", "rate_limited"] as const)("N5 keeps a current parsed error ahead of %s waiting in API and DOM", async kind => {
+  it.each(["error", "rate_limited"] as const)("N5 keeps a current parsed error in API and shows trusted %s attention in DOM", async kind => {
     backend.get("A")!.text = errorScreen; attention(kind);
     const request = controller.getForApi(); await step(); const response = await request;
     const host = document.createElement("div"), root = createRoot(host); roots.push(root);
     await act(async () => root.render(<LiveTailList workspace={workspace} {...controller.store.getState()} />));
     const row = host.querySelector('[data-live-tail-tab="tab-A"]')!;
     expect(response.tabs.find(tab => tab.sessionId === "A")?.fact).toMatchObject({ kind: "error", error: "API Error 500 sample" });
-    expect(row.querySelector(".live-tail-badge")?.textContent).toBe("エラー");
+    expect(row.querySelector(".live-tail-badge")?.textContent).toBe(kind === "rate_limited" ? "利用上限" : "エラー");
+    expect(row.getAttribute("data-tone")).toBe("stopped");
     expect(row.querySelector(".live-tail-summary")?.textContent).toContain("API Error: 500 sample");
   });
   it.each(["initial", "overflow", "renewal"])("N6 reports zero-observation API entries as neutral (%s)", async reason => {

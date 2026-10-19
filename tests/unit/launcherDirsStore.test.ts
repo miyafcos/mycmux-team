@@ -44,6 +44,7 @@ import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useUiStore } from "../../src/stores/uiStore";
 import { LauncherTab } from "../../src/components/settings/tabs/LauncherTab";
 import { launcherTabStrings as T } from "../../src/components/settings/tabs/launcherTabStrings";
+import { launchItems } from "../../src/components/workspace/launcherModel";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -117,6 +118,23 @@ describe("launcher settings interactions", () => {
   const key = async (key: string) => {
     await act(async () => { input().dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key })); });
   };
+
+  it("U1 keeps a shell checkbox independent of service visibility", async () => {
+    const previous = useSettingsStore.getState().agentServiceVisibility;
+    try {
+      await act(async () => useSettingsStore.setState({ agentServiceVisibility: Object.fromEntries(launchItems().filter(item => item.kind === "agent").map(item => [item.target, false])) }));
+      const label = [...container.querySelectorAll("label")].find(label => label.textContent === T.terminalRow)!;
+      expect(label).toBeDefined(); expect(label.querySelector("svg")).not.toBeNull();
+      const checkbox = label.querySelector("input")!;
+      expect(checkbox.checked).toBe(true);
+      await act(async () => checkbox.click());
+      expect(useSettingsStore.getState().launcherHiddenIds).toContain("shell");
+      await act(async () => checkbox.click());
+      expect(useSettingsStore.getState().launcherHiddenIds).not.toContain("shell");
+    } finally {
+      await act(async () => useSettingsStore.setState({ agentServiceVisibility: previous }));
+    }
+  });
 
   it("draws the catalog icons for omp, Hermes and Browser rows", () => {
     const rows = [...container.querySelectorAll("label")];

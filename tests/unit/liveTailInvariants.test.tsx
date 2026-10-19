@@ -14,7 +14,7 @@ import { isTerminalParsingCurrentOutput, liveTerms, markTerminalBufferReady, reg
 import { createSession, killSession } from "../../src/lib/ipc";
 import { __resetPtyReadGenerationsForTests, ptyReadGeneration } from "../../src/lib/ptyReadGeneration";
 import { loadLiveTailOutputs, loadLiveTailTargets } from "../../src/lib/liveTail/targets";
-import { createLiveTailController } from "../../src/stores/liveTailStore";
+import { createLiveTailController, statusForLiveTailTarget } from "../../src/stores/liveTailStore";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
 import { useSessionAttentionStore } from "../../src/stores/sessionAttentionStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
@@ -210,13 +210,17 @@ describe("B2 mechanically generated real-path event sequences", () => {
       expect(cache.entries.length).toBeLessThanOrEqual(12);
       expect(writes.every(value => value === "hello" || value === "\r")).toBe(true);
       await renderList();
-      if (host!.querySelector(".live-tail-badge")?.textContent === "読めない") expect(sample?.evidence.observations).toBeGreaterThan(0);
+      expect(host!.querySelector(".live-tail-badge")?.textContent).not.toBe("読めない");
+      if (tab?.fact.kind === "unreadable") expect(sample?.evidence.observations).toBeGreaterThan(0);
       if (sample?.evidence.observation.crop.state === "unknown") {
         const row = host!.querySelector<HTMLButtonElement>(".live-tail-row");
         if (row) {
           await act(async () => row.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
           const text = document.querySelector('[role="tooltip"]')?.textContent ?? "";
-          expect(text).not.toContain("作業中"); expect(text).not.toContain("止まっている"); expect(text).not.toContain("進んでいない");
+          const status = statusForLiveTailTarget(state.targets.find(target => target.sessionId === sid)!);
+          if (status === "working") expect(document.querySelector(".live-tail-fact")?.textContent).toBe("作業中");
+          else expect(text).not.toContain("作業中");
+          expect(text).not.toContain("止まっている"); expect(text).not.toContain("進んでいない");
         }
       }
       metrics.steps++; metrics.invariantChecks += 6;
@@ -387,12 +391,12 @@ describe("B2 regressions through real live-tail paths", () => {
     expect(host!.querySelector(".live-tail-idle")).toBeNull();
     const row = host!.querySelector<HTMLButtonElement>(".live-tail-row")!;
     await act(async () => row.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
-    expect(document.querySelector('[role="tooltip"]')!.textContent).toContain("前の画面");
-    expect(document.querySelector('[role="tooltip"]')!.textContent).not.toContain("返事待ち");
+    expect(document.querySelector('[role="tooltip"] .live-tail-popup-rows--previous')).not.toBeNull();
+    expect(document.querySelector('[role="tooltip"] .live-tail-fact')?.textContent).toBe("回答待ち");
     vi.setSystemTime(Date.now() + 2_001); await api(); await renderList();
     await act(async () => row.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     await act(async () => row.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
-    expect(document.querySelector('[role="tooltip"]')!.textContent).toContain("返事待ち");
+    expect(document.querySelector('[role="tooltip"]')!.textContent).toContain("回答待ち");
   });
   it("R6 invalidates a read across demand release and immediate reacquisition", async () => {
     const held = nextFetch = deferred<ArrayBuffer>(); const release = controller.acquireConsumer("sidebar"); await step(1_500);

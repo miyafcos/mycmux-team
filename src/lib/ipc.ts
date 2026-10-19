@@ -1,4 +1,5 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { takeTerminalCommandEnv } from "./terminalShellCommand";
 import { beginPtyReadTransition, currentPtyRead, finishPtyReadTransition, ptyReadGeneration, retainPtyReads, validatePtySnapshot } from "./ptyReadGeneration";
 export {
   setDshExperimentEnabled, startDshExperiment, getDshExperimentStatus, readDshExperiment,
@@ -374,7 +375,7 @@ export async function createSession(
       try {
         await withTerminalDeadline(invoke<void>("create_session", {
           sessionId, command, args, cols, rows, onData: channel,
-          cwd: cwd ?? null, env: env ?? null, backgroundOnly: true, attachReason: "background",
+          cwd: cwd ?? null, env: takeTerminalCommandEnv(env) ?? null, backgroundOnly: true, attachReason: "background",
           ...(options.restoreReason ? { restoreReason: options.restoreReason } : {}),
         } satisfies CreateSessionArgs), "background create_session", TERMINAL_ATTACH_TIMEOUT_MS);
         // Rust ends this transient channel after a successful headless create.
@@ -441,7 +442,7 @@ export async function createSession(
         rows,
         onData: channel,
         cwd: cwd ?? null,
-        env: env ?? null,
+        env: takeTerminalCommandEnv(env) ?? null,
         attachReason: options.reason ?? "mount",
         ...(options.restoreConfirmed ? { restoreConfirmed: true } : {}),
         ...(options.restoreReason ? { restoreReason: options.restoreReason } : {}),

@@ -417,6 +417,11 @@ export const tabGroupingStrings = {
   strategyMixed: "複合",
   strategyActiveWatch: "稼働中だけ",
   strategyMainSessions: "メインだけ",
+  strategyAttribute: "属性でまとめる",
+  attributeAnalysisNote: (enabled: boolean, provider: string, model: string): string => enabled
+    ? `属性の判定に AI (${provider} / ${model}) を使います。送るのは題名・ラベル・作業フォルダ・登録情報です。画面末尾は送りません。`
+    : "AI がオフのため、確定した案件と登録の区分だけで組みます。",
+  strategyAttributeDescription: "案件ごとのワークスペースを基本に、タブの少ない案件を、編集・制作 / アプリ・開発 / 整理・事務の近いものどうし 2〜3 個でまとめます。名前は変えません。判定に AI を使います。",
   strategyActiveWatchDescription: "次の返事待ちが出るまで見張るタブだけ",
   strategyMainSessionsDescription: "いま主に相手にしている2〜3本だけ",
   presetLabel: "まとめ方",

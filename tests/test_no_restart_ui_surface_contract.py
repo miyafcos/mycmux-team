@@ -272,7 +272,7 @@ def test_file_preview_agent_usage_and_fault_surfaces_remain_wired() -> None:
             "export const BUILT_IN_AGENTS: AgentDefinition[] = [",
             'name: "Claude Code"',
             'name: "Codex CLI"',
-            "export function getDefaultAgent(): AgentDefinition {",
+            "export function getDefaultAgent(integratedShell = false): AgentDefinition {", "const launcher = BUILT_IN_AGENTS[0];", "if (!integratedShell) return launcher;",
         ],
     )
     assert_snippets(

@@ -1,3 +1,4 @@
+import { useAgentServiceVisibility } from "../../hooks/useAgentServiceVisibility";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import Fuse from "fuse.js";
@@ -518,6 +519,7 @@ export function preloadCrsmSessions(): void {
 }
 
 export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
+  const serviceVisible = useAgentServiceVisibility();
   const tabSweepShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["tab.sweep"]));
   const { mounted, closing } = useDeferredUnmount(open, OVERLAY_EXIT_MS);
   const [sessions, setSessions] = useState<CrsmSessionEntry[]>([]);
@@ -569,18 +571,18 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
   const sessionFilters = useMemo<Array<[SessionFilterKind, string]>>(() => {
     const filters: Array<[SessionFilterKind, string]> = [["all", SESSION_FILTER_LABELS.all]];
     for (const kind of OPEN_TARGETS) {
-      if (enabledKinds.has(kind)) {
+      if (enabledKinds.has(kind) && serviceVisible(kind)) {
         filters.push([kind, SESSION_FILTER_LABELS[kind]]);
       }
     }
     return filters;
-  }, [enabledKinds]);
+  }, [enabledKinds, serviceVisible]);
   // The 引き継ぎ先 (handoff target) row in the palette must mirror the
   // Settings toggles too — kinds the user disabled there should not be
   // an option to hand off into.
   const enabledTargets = useMemo<OpenTargetKind[]>(
-    () => OPEN_TARGETS.filter((kind) => enabledKinds.has(kind)),
-    [enabledKinds],
+    () => OPEN_TARGETS.filter((kind) => enabledKinds.has(kind) && serviceVisible(kind)),
+    [enabledKinds, serviceVisible],
   );
 
   useEffect(() => {
@@ -635,10 +637,10 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
   // in Settings, fall back to "all" so the palette is never stuck on an
   // empty filter the user can no longer clear.
   useEffect(() => {
-    if (sessionFilter !== "all" && !enabledKinds.has(sessionFilter)) {
+    if (sessionFilter !== "all" && (!enabledKinds.has(sessionFilter) || !serviceVisible(sessionFilter))) {
       setSessionFilter("all");
     }
-  }, [enabledKinds, sessionFilter]);
+  }, [enabledKinds, sessionFilter, serviceVisible]);
 
   // Same idea for the 引き継ぎ先 selection: if the currently-pinned
   // target kind is no longer enabled in Settings, snap to the first
@@ -813,9 +815,11 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
 
   useEffect(() => {
     if (!targetPinned) {
-      setTargetKind(defaultTargetFor(selected?.kind));
+      const preferred = defaultTargetFor(selected?.kind);
+      if (enabledTargets.includes(preferred)) setTargetKind(preferred);
+      else if (enabledTargets[0]) setTargetKind(enabledTargets[0]);
     }
-  }, [selected?.kind, targetPinned]);
+  }, [selected?.kind, targetPinned, enabledTargets]);
 
   useEffect(() => {
     if (summaryOnlyConfirmKey && sessionKey(selected) !== summaryOnlyConfirmKey) {
@@ -890,7 +894,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [closing, listViewportHeight, listed.length, open, onClose, query, selected, targetKind]);
+  }, [closing, listViewportHeight, listed.length, open, onClose, query, selected, targetKind, enabledTargets]);
 
   useEffect(() => {
     if (listKeyboardFocusPendingRef.current) {
@@ -907,7 +911,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
   }, [closing, open]);
 
   async function openSelected(sessionToOpen = selected): Promise<void> {
-    if (!sessionToOpen) return;
+    if (!sessionToOpen || !enabledTargets.includes(targetKind)) return;
     let workspace = activeWorkspace;
     if (!workspace) {
       // A window with no workspace — what the Dock opens — had nowhere to put
@@ -1035,7 +1039,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
               <span style={styles.targetSubtitle}>{agentSubtitle(selected, kind)}</span>
             </button>
           ))}
-          <span style={styles.targetText}>{targetSummary(selected, targetKind)}</span>
+          <span style={styles.targetText}>{enabledTargets.length > 0 ? targetSummary(selected, targetKind) : null}</span>
         </div>
         <div style={styles.filterRow} role="radiogroup" aria-label={resumeStrings.sessionKind} onKeyDown={moveKindRadio}>
           {sessionFilters.map(([kind, label]) => (

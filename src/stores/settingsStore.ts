@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { applyAutomaticStoreUpdate, syncedPersist } from "./syncedPersist";
+import { applyAutomaticStoreUpdate, syncedPersist, updateSyncedPersistedField } from "./syncedPersist";
 import {
   migratePersistedSettings,
   resolveDefaultTerminalRenderer,
@@ -7,6 +7,8 @@ import {
   type TerminalRenderer,
 } from "./settingsMigration";
 import { useAiSettingsStore } from "./aiSettingsStore";
+import { initializeAgentServiceVisibility, normalizeAgentServiceVisibility, type AgentServiceDetection } from "../lib/agentServiceVisibility";
+import { isMainWindow } from "../lib/windowContext";
 import type { DshRunRef } from "../lib/agentAdapterApi";
 import { DEFAULT_CONVERSATION_HISTORY_MODE, normalizeConversationHistoryMode, type ConversationHistoryMode } from "../lib/conversationHistory";
 import { DEFAULT_DORMANCY_PRESSURE_SETTINGS, normalizeDormancyPressureSettings, type DormancyPressureSettings } from "../lib/agentDormancy";
@@ -94,6 +96,7 @@ interface SettingsState {
    * an id that no longer exists is ignored rather than breaking the list.
    */
   launcherHiddenIds: string[];
+  agentServiceVisibility: Record<string, boolean>;
   /** Diagram-flight animation shown before a grouping layout commit. */
   groupingApplyAnimationEnabled: boolean;
   /** Opt-in compatibility path: close sweep suggestions without human review. */
@@ -145,6 +148,8 @@ interface SettingsState {
   setShowSplitRightButton: (v: boolean) => void;
   setNativePaneTearoutEnabled: (v: boolean) => void;
   setLauncherHiddenIds: (v: string[]) => void;
+  setAgentServiceVisible: (target: string, visible: boolean) => void;
+  initializeDetectedAgentServices: (detection: AgentServiceDetection) => void;
   setGroupingApplyAnimationEnabled: (v: boolean) => void;
   setAutoSweepCloseWithoutConfirmation: (v: boolean) => void;
   setDormancyPressureSettings: (v: Partial<DormancyPressureSettings>) => void;
@@ -197,6 +202,7 @@ export const useSettingsStore = create<SettingsState>()(
       // on once by the migration (settingsMigration.ts).
       macNativePaneTearoutEnabled: true,
       launcherHiddenIds: [],
+      agentServiceVisibility: {},
       groupingApplyAnimationEnabled: true,
       autoSweepCloseWithoutConfirmation: false,
       dormancyPressureSettings: { ...DEFAULT_DORMANCY_PRESSURE_SETTINGS },
@@ -238,6 +244,13 @@ export const useSettingsStore = create<SettingsState>()(
       setNativePaneTearoutEnabled: (v) => set({ nativePaneTearoutEnabled: v,
         ...(typeof navigator !== "undefined" && /^Mac/i.test(navigator.platform) ? { macNativePaneTearoutEnabled: v } : {}) }),
       setLauncherHiddenIds: (v) => set({ launcherHiddenIds: v }),
+      setAgentServiceVisible: (target, visible) => updateSyncedPersistedField(api, "agentServiceVisibility",
+        (stored) => ({ ...normalizeAgentServiceVisibility(stored), [target]: visible })),
+      initializeDetectedAgentServices: (detection) => {
+        if (!isMainWindow() || detection.status !== "success") return;
+        updateSyncedPersistedField(api, "agentServiceVisibility",
+          (stored) => initializeAgentServiceVisibility(normalizeAgentServiceVisibility(stored), detection, true));
+      },
       setGroupingApplyAnimationEnabled: (v) => set({ groupingApplyAnimationEnabled: v }),
       setAutoSweepCloseWithoutConfirmation: (v) => set({ autoSweepCloseWithoutConfirmation: v }),
       setDormancyPressureSettings: (v) => set((state) => ({
@@ -281,6 +294,7 @@ export const useSettingsStore = create<SettingsState>()(
       merge: (persisted, current) => {
         const merged = { ...current, ...(persisted as Partial<SettingsState> | undefined) };
         merged.conversationHistoryMode = normalizeConversationHistoryMode((persisted as Partial<SettingsState> | undefined)?.conversationHistoryMode);
+        merged.agentServiceVisibility = normalizeAgentServiceVisibility(merged.agentServiceVisibility);
         merged.paneFocusMode = normalizePaneFocusMode((persisted as Partial<SettingsState> | undefined)?.paneFocusMode);
         merged.dormancyPressureSettings = normalizeDormancyPressureSettings(merged.dormancyPressureSettings ?? {});
         // Older Mac installs carry the Windows-default true field. It is not

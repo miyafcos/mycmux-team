@@ -2,13 +2,17 @@ import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, typ
 import { createPortal } from "react-dom";
 import { jumpToPaneTab } from "../../lib/jumpToPaneTab";
 import { type LiveTailFact } from "../../lib/liveTail/facts";
+import type { LiveTailCrop } from "../../lib/liveTail/crop";
+import type { SessionAttentionKind } from "../../lib/ipc";
+import { trustedLiveTailAttention } from "../../lib/liveTail/status";
+import { liveTailStateLine } from "../../lib/liveTail/stateLine";
 import { isAutomaticNameTarget } from "../../lib/autoNameOwnership";
 import { autoNameDescription } from "../../lib/autoNameStatus";
 import { useAutoNameRuntimeStore } from "../../stores/autoNameRuntimeStore";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
-import { acquireLiveTailConsumer, liveTailAttentionChanged, liveTailScreenRetained, liveTailTargetsForView, statusForLiveTailTarget, useLiveTailStore, type LiveTailEntry, type LiveTailTarget } from "../../stores/liveTailStore";
+import { acquireLiveTailConsumer, liveTailAttentionChanged, liveTailTargetsForView, statusForLiveTailTarget, useLiveTailStore, type LiveTailEntry, type LiveTailTarget } from "../../stores/liveTailStore";
 import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
-import { connectLiveBriefStore, useLiveBriefStore } from "../../stores/liveBriefStore";
+import { connectLiveBriefStore } from "../../stores/liveBriefStore";
 import { useThemeStore } from "../../stores/themeStore";
 import type { PaneMetadata, PaneVolatileMetadata } from "../../stores/paneMetadataStore";
 import type { PaneTab, Workspace } from "../../types";
@@ -26,13 +30,6 @@ interface LiveTailListProps {
 }
 
 type ConnectedListProps = Omit<LiveTailListProps, "targets" | "entries">;
-
-const BADGES: Partial<Record<LiveTailFact["kind"], string>> = {
-  frozen: "止まっている",
-  unreadable: "読めない",
-  error: "エラー",
-  stale: "進んでいない",
-};
 
 /** Fit a verbatim prefix and suffix using the rendered font's pixel widths. */
 export function fitLiveTailLine(text: string, availablePx: number, measure: (text: string) => number): string {
@@ -92,38 +89,6 @@ function useFittedLine(text: string, fontFamily: string, fontScale: number) {
   return { ref, fitted };
 }
 
-export function liveTailFactText(fact: LiveTailFact, now: number, waitingForReply = false): string {
-  const seconds = Math.max(0, Math.floor((now - fact.sinceMs) / 1_000));
-  switch (fact.kind) {
-    case "progress": return `進んだ ${seconds}秒前`;
-    case "cmd": return `コマンド待ち ${Math.floor(seconds / 60)}分${seconds % 60}秒`;
-    case "stale": return `${Math.floor(seconds / 60)}分 進んでいない`;
-    case "frozen": return `画面が止まっている ${Math.floor(seconds / 60)}分`;
-    case "unreadable": return "画面を読めない";
-    case "error": return "エラー";
-    case "idle": return waitingForReply ? "返事待ち" : "入力待ち";
-    case "alive": return waitingForReply ? "返事待ち" : "作業中";
-  }
-}
-
-const clockFormatter = new Intl.DateTimeFormat("ja-JP", {
-  hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "UTC",
-});
-
-function localClockFields(at: number | null | undefined): number | null {
-  if (at === null || at === undefined || !Number.isFinite(at)) return null;
-  const date = new Date(at);
-  if (Number.isNaN(date.getTime())) return null;
-  return date.getHours() * 3_600 + date.getMinutes() * 60 + date.getSeconds();
-}
-
-function clockText(at: number | null | undefined): string | null {
-  // Read local civil fields on every call: caching the default timezone would
-  // keep an old OS timezone. A safe UTC date also handles either Date limit.
-  const seconds = localClockFields(at);
-  return seconds === null ? null : clockFormatter.format(new Date(Date.UTC(2000, 0, 1, 0, 0, seconds)));
-}
-
 /** This component owns the sidebar's one demand lease, even when kept mounted. */
 export function LiveTailSidebarConsumer({ open }: { open: boolean }) {
   useEffect(() => {
@@ -160,7 +125,6 @@ interface TailRowInput {
   fact: LiveTailFact;
   name: string;
   child: boolean;
-  lastOutputAt: number | null;
   compact?: boolean;
 }
 
@@ -177,10 +141,10 @@ type TailRowVisual = Readonly<{
   rows: readonly string[];
   progressAt: number | null;
   previousScreen: boolean;
-  sampleAt: number | null;
-  waitingForReply: boolean;
-  aliveScreenText: string | null;
-  lastOutputAt: number | null;
+  attentionKind: SessionAttentionKind | null;
+  attentionSince: number | null;
+  status: LiveTailTarget["status"];
+  cropState: LiveTailCrop["state"] | null;
 }>;
 
 interface TailRowProps {
@@ -190,24 +154,21 @@ interface TailRowProps {
 }
 
 /** Snapshot every row/popup/effect input; do not retain mutable entry history. */
-function projectTailRow({ workspaceId, paneId, tab, target, entry, fact, name, child, lastOutputAt, compact = false }: TailRowInput): TailRowVisual {
+function projectTailRow({ workspaceId, paneId, tab, target, entry, fact, name, child, compact = false }: TailRowInput): TailRowVisual {
   const previousScreen = liveTailAttentionChanged(target, entry);
-  const retained = liveTailScreenRetained(target, entry);
   const crop = entry?.evidence.observation.crop;
   const readable = crop?.readable && fact.kind !== "unreadable";
   const summary = readable && !compact && (fact.kind !== "idle" || previousScreen)
     ? (crop.tool || crop.state === "error" ? crop.rows[0] : crop.marker ?? crop.rows[crop.rows.length - 1]) ?? ""
     : "";
-  const status = statusForLiveTailTarget(target), waitingForReply = status === "waiting";
+  const status = statusForLiveTailTarget(target);
+  const attention = trustedLiveTailAttention(target.sessionId);
   return {
     workspaceId, paneId, tabId: tab.id, sessionId: target.sessionId, agentKind: target.agentKind, name, child,
     fact: { ...fact }, summary, rows: readable ? crop.rows.slice(-3) : [],
     progressAt: entry?.evidence.lastProgressAt ?? null, previousScreen,
-    sampleAt: retained && entry ? entry.evidence.observation.observedAt : null,
-    waitingForReply, lastOutputAt,
-    aliveScreenText: fact.kind === "alive" && !waitingForReply
-      && (crop?.state === "unknown" || (crop?.state !== "working" && status !== "working"))
-      ? (readable ? "画面を読めた" : "画面を確認中") : null,
+    attentionKind: attention?.kind ?? null, attentionSince: attention?.stateSince ?? null,
+    status, cropState: crop?.state ?? null,
   };
 }
 
@@ -217,10 +178,6 @@ function sameScalarFields<T extends object>(a: T, b: T): boolean {
 }
 
 function sameRowPresentation(a: TailRowProps, b: TailRowProps): boolean {
-  // Frozen popups can show civil clocks. Independent brief/timer renders can
-  // change those clocks without updating parent props, so every parent render
-  // must refresh them, as in stage C. Keep the same row instance and cadence.
-  if (b.visual.fact.kind === "frozen") return false;
   // Jump closures and theme variables are explicit inputs. The comparator
   // reads only immutable snapshots, never the current external stores.
   if (a.tab !== b.tab || a.colors !== b.colors) return false;
@@ -233,15 +190,14 @@ function sameRowPresentation(a: TailRowProps, b: TailRowProps): boolean {
 }
 
 function TailRow({ visual, tab, colors }: TailRowProps) {
-  const { workspaceId, paneId, tabId, sessionId, agentKind, fact, name, child, lastOutputAt,
-    summary, rows, progressAt, previousScreen, sampleAt, waitingForReply, aliveScreenText } = visual;
+  const { workspaceId, paneId, tabId, sessionId, agentKind, fact, name, child,
+    summary, rows, progressAt, previousScreen, attentionKind, attentionSince, status, cropState } = visual;
   const meaning = useAutoNameRuntimeStore(state => state.meanings.get(tabId));
   const automatic = isAutomaticNameTarget(tab);
   const namingHint = automatic ? autoNameDescription(meaning) : undefined;
   useSessionAttentionStore(state => state.attentionBySession[sessionId]);
   const fontFamily = useThemeStore(state => state.fontFamily);
   const fontScale = useThemeStore(state => state.uiFontScale);
-  const lastEventAt = useLiveBriefStore(state => state.briefsBySession[sessionId]?.lastEventAt ?? null);
   const { ref: lineRef, fitted } = useFittedLine(summary, fontFamily, fontScale);
   const anchorRef = useRef<HTMLButtonElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
@@ -305,10 +261,9 @@ function TailRow({ visual, tab, colors }: TailRowProps) {
   const enter = () => { clearTimeout(leaveTimer.current); setDismissed(false); setHovered(true); };
   const leave = () => { leaveTimer.current = setTimeout(() => setHovered(false), 120); };
   const jump = () => jumpToPaneTab({ workspaceId, paneId, tab });
-  const factText = previousScreen ? "前の画面" : aliveScreenText ?? liveTailFactText(fact, now, waitingForReply);
-  const outputTime = clockText(lastOutputAt);
-  const eventTime = clockText(lastEventAt);
-  const badge = BADGES[fact.kind];
+  const stateLine = liveTailStateLine({ fact, status, attentionKind, attentionSince, cropState, now });
+  const tone = stateLine?.tone ?? "neutral";
+  const badge = stateLine?.badge;
 
   return (
     <>
@@ -318,6 +273,7 @@ function TailRow({ visual, tab, colors }: TailRowProps) {
         className={`live-tail-row${child ? " live-tail-row--child" : ""}`}
         data-live-tail-tab={tabId}
         data-fact={fact.kind}
+        data-tone={tone}
         aria-label={name}
         aria-describedby={open ? popupId : undefined}
         onMouseEnter={enter}
@@ -351,16 +307,15 @@ function TailRow({ visual, tab, colors }: TailRowProps) {
           data-cmux-native-webview-occluder="overlap"
           className="live-tail-popup"
           data-fact={fact.kind}
+          data-tone={tone}
           style={{ ...colors, ...position }}
           onMouseEnter={enter}
           onMouseLeave={leave}
           onClick={jump}
         >
           <div className="live-tail-popup-heading"><AgentKindIcon kind={agentKind} size={12} chip={false} /><b>{name}</b></div>
-          {rows.length > 0 && <div className="live-tail-popup-rows" style={{ fontFamily }}>{rows.map((row, index) => <div key={index}>{row}</div>)}</div>}
-          <div className="live-tail-fact">{factText}</div>
-          {fact.kind === "frozen" && <div className="live-tail-evidence">端末の最後の出力 {outputTime ?? "不明"} · {eventTime ? `会話記録の最後の書き込み ${eventTime}` : "会話記録 不明"}</div>}
-          {sampleAt !== null && <div className="live-tail-evidence">画面の読み取り {Math.max(0, Math.floor((now - sampleAt) / 1_000))}秒前</div>}
+          {rows.length > 0 && <div className={`live-tail-popup-rows${previousScreen ? " live-tail-popup-rows--previous" : ""}`} style={{ fontFamily }}>{rows.map((row, index) => <div key={index}>{row}</div>)}</div>}
+          {stateLine && <div className="live-tail-fact">{stateLine.text}</div>}
         </div>, portal,
       )}
     </>
@@ -391,13 +346,10 @@ export function LiveTailList({ workspace, targets, entries, metadataBySession = 
     const view = byTab.get(tab.id);
     if (!view || view.target.paneId !== pane.id || view.target.sessionId !== tab.sessionId) return [];
     const { target, entry, fact, inputIdle } = view;
-    const times = [entry?.evidence.observation.lastOutputAt, volatileMetadataBySession[tab.sessionId]?.backendLastOutputAt, metadataBySession[tab.sessionId]?.backendLastOutputAt]
-      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
     const row = <MemoTailRow key={tab.id} tab={tab} colors={colors} visual={projectTailRow({
       workspaceId: workspace.id, paneId: pane.id, tab, target, entry, fact, compact: inputIdle,
       name: getTabDisplayLabel(tab, tab.id === pane.activeTabId, metadataBySession, volatileMetadataBySession),
       child: tab.origin?.kind === "agent" && Boolean(tab.origin.parentTabId),
-      lastOutputAt: times.length ? Math.max(...times) : null,
     })} />;
     if (inputIdle) { idleRows.push(row); return []; }
     return [row];

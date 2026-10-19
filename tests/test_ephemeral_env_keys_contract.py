@@ -12,6 +12,7 @@ EXPECTED_EPHEMERAL_ENV_KEYS = {
     "MYCMUX_AGENT_KIND",
     "MYCMUX_RESUME_FORK",
     "MYCMUX_LAUNCH_TARGET",
+    "MYCMUX_LAUNCH_COMMAND",
     "MYCMUX_LAUNCH_MODEL",
     "MYCMUX_LAUNCH_EFFORT",
     "MYCMUX_HANDOFF",
@@ -130,6 +131,7 @@ def test_ephemeral_env_keys_stay_in_sync_across_all_guards() -> None:
             # Unlike canonical internal paths, terminal.rs must not strip them.
             EXPECTED_EPHEMERAL_ENV_KEYS - {
                 "MYCMUX_LAUNCH_TARGET",
+                "MYCMUX_LAUNCH_COMMAND",
                 "MYCMUX_LAUNCH_MODEL",
                 "MYCMUX_LAUNCH_EFFORT",
             } - BACKEND_CODEX_REPORT_KEYS,

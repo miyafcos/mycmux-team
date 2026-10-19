@@ -4,6 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { isMainWindow } from "../lib/windowContext";
 
 const externalUpdates = new WeakMap<object, (update: () => void) => void>();
+type FieldUpdate = (stored: unknown) => unknown | null;
+const persistedFieldUpdates = new WeakMap<object, (key: string, update: FieldUpdate) => void>();
 
 type StoreUpdate<T> = T | Partial<T> | ((state: T) => T | Partial<T>);
 
@@ -18,6 +20,20 @@ export function applyExternalStoreUpdate<T>(store: Pick<StoreApi<T>, "setState">
 export function applyAutomaticStoreUpdate<T>(store: Pick<StoreApi<T>, "setState">, state: StoreUpdate<T>): void {
   if (isMainWindow()) store.setState(state);
   else applyExternalStoreUpdate(store, state);
+}
+
+/** Opt-in field transaction against this window's latest saved value. Null skips the write. */
+export function updateSyncedPersistedField<T, K extends keyof T & string>(
+  store: Pick<StoreApi<T>, "getState" | "setState">,
+  key: K,
+  update: (stored: unknown) => T[K] | null,
+): void {
+  const apply = persistedFieldUpdates.get(store.setState);
+  if (apply) apply(key, update);
+  else {
+    const next = update(store.getState()[key]);
+    if (next !== null) store.setState({ [key]: next } as Partial<T>);
+  }
 }
 
 // Snapshots must have the same contents as the JSON on disk: no actions or
@@ -134,6 +150,18 @@ export function syncedPersist<
       const previous = external;
       external = true;
       try { update(); } finally { external = previous; }
+    });
+    persistedFieldUpdates.set(api.setState, (key, update) => {
+      const raw = local.getItem(options.name);
+      const latest = raw === null ? null : JSON.parse(raw) as StorageValue<Record<string, unknown>>;
+      const stored = latest ? latest.state[key] : (get() as Record<string, unknown>)[key];
+      const next = update(stored);
+      if (next === null) return;
+      // Only this field adopts the saved baseline. An explicit user edit must
+      // persist even when it equals this window's stale local value; unrelated
+      // fields retain their existing patch and no-echo behavior.
+      baseline[key] = snapshot({ value: stored }).value;
+      api.setState({ [key]: next } as Partial<T>);
     });
     const persistence = api as typeof api & { persist: { rehydrate(): void | Promise<void> } };
     const onStorage = (event: StorageEvent) => {

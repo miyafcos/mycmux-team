@@ -1,3 +1,4 @@
+import { useAgentDesignServiceVisibility } from "./serviceVisibility";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { save as chooseFile } from "@tauri-apps/plugin-dialog";
 import { agentDesignExportApi, type AgentDesignCatalog, type AgentDesignExportApi, type AgentExportOptions, type AgentExportPreview, type ExportDocument } from "../../lib/agentDesignApi";
@@ -14,7 +15,9 @@ const errors: Record<string, string> = {
   exportSectionRequired: "指示の文書は見出しごとに選んでください。",
 };
 export function ExportView({ catalog, api = agentDesignExportApi, query = "", onOpen }: ExportViewProps) {
-  const [services, setServices] = useState(["claude", "codex", "hermes"]);
+  const visible = useAgentDesignServiceVisibility();
+  const [selectedServices, setServices] = useState(["claude", "codex", "hermes"]);
+  const services = useMemo(() => selectedServices.filter(visible), [selectedServices, visible]);
   const [layers, setLayers] = useState([1, 2, 3, 5, 6, 7]);
   const [documents, setDocuments] = useState<ExportDocument[]>([]);
   const [choices, setChoices] = useState<Record<string, string[] | null>>({});
@@ -108,7 +111,7 @@ export function ExportView({ catalog, api = agentDesignExportApi, query = "", on
     } finally { if (token === lifetime.current) setRechecking(previous => previous.filter(value => value !== id)); }
   };
   const availabilityReason = (doc: ExportDocument) => doc.reason === "truncated" ? "本文が長く、一部だけ取得しています。全体を添付できません。" : doc.reason === "recheckFailed" ? "本文の取得に失敗しました。再確認してください。" : doc.reason ? s.documentReasons[doc.reason] ?? "この本文を取得できません。開いて理由を確認してください。" : "本文は未取得です。開いて理由を確認するか、目録を読み直してください。";
-  const matching = documents.filter(d => !query || (d.label + " " + d.path + " " + d.sections.map(p => p.label).join(" ")).toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  const matching = documents.filter(d => visible(d.service) && (!query || (d.label + " " + d.path + " " + d.sections.map(p => p.label).join(" ")).toLocaleLowerCase().includes(query.toLocaleLowerCase())));
   const targets = catalog.items.filter(item => services.includes(item.service) && layers.includes(item.layer) && item.layer !== 4 && item.kind !== "privateCount");
   const activeDocuments = documents.filter(doc => services.includes(doc.service) && layers.includes(doc.layer));
   const available = activeDocuments.filter(doc => doc.available);
@@ -119,7 +122,7 @@ export function ExportView({ catalog, api = agentDesignExportApi, query = "", on
       <p className="ad-muted">本文は初めは選択しません。記憶・秘密・会話本文はいつも外します。</p>
       <div className="ad-facts"><section><h3>対象</h3><p>{number(targets.length)} 項目 / 全 {number(catalog.items.length)} 項目</p></section><section><h3>本文を選べる対象</h3><p>{number(available.length)} 本 / 候補 {number(activeDocuments.length)} 本</p><p>未取得 {number(activeDocuments.length - available.length)} 本</p></section><section><h3>添付の選択</h3><p>{number(options.documents.length)} 本</p><p>指示は見出しごとに選択</p></section><section><h3>目録の時点</h3><p>{dateTime(catalog.generatedAt)}</p><p>一時表示した鍵の値は含めません。</p></section></div>
       <fieldset><legend>入れるサービス</legend><div className="ad-export-checks">
-        {catalog.services.map(service => <label key={service.id}><input type="checkbox" checked={services.includes(service.id)} onChange={() => toggleService(service.id)} disabled={saving} />{service.displayName} · {number(catalog.items.filter(item => item.service === service.id && layers.includes(item.layer) && item.layer !== 4 && item.kind !== "privateCount").length)} 項目</label>)}
+        {catalog.services.filter(value => visible(value.id)).map(service => <label key={service.id}><input type="checkbox" checked={services.includes(service.id)} onChange={() => toggleService(service.id)} disabled={saving} />{service.displayName} · {number(catalog.items.filter(item => item.service === service.id && layers.includes(item.layer) && item.layer !== 4 && item.kind !== "privateCount").length)} 項目</label>)}
       </div></fieldset>
       <fieldset><legend>入れる層</legend><div className="ad-export-checks">
         {[1, 2, 3, 4, 5, 6, 7].map(layer => <label key={layer}><input type="checkbox" checked={layer !== 4 && layers.includes(layer)} onChange={() => toggleLayer(layer)} disabled={layer === 4 || saving} />{layer} {s.layerNames[layer]} · {number(catalog.items.filter(item => item.layer === layer && services.includes(item.service) && item.kind !== "privateCount").length)} 項目{layer === 4 && "（いつも外す）"}</label>)}
