@@ -3,6 +3,8 @@ export type DisplayAgentKind = "claude" | "codex" | "claude-codex" | "grok" | "a
 export const COMMAND_DISPLAY_KINDS: Record<string, DisplayAgentKind> = {
   agy: "antigravity",
   claude: "claude",
+  "claude-codex": "claude-codex",
+  "claude-codex-native": "claude-codex",
   codex: "codex",
   grok: "grok",
   // Hermes is launched by full path (hermes.exe), so the basename is what

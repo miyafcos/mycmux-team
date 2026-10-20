@@ -8,6 +8,8 @@ import { __turnListPromptCacheForTests } from "../../src/components/terminal/XTe
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
+  nextChannel: 0,
+  nextAttachment: 0,
   turnMarks: [] as Array<{ line: number; label: string; at: number }>,
   bufferType: "alternate" as "normal" | "alternate",
   bufferLines: [] as string[],
@@ -31,6 +33,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/api/core", () => ({
   Channel: class<T> {
+    id = ++mocks.nextChannel;
     onmessage?: (message: T) => void;
   },
   invoke: mocks.invoke,
@@ -242,7 +245,13 @@ beforeEach(() => {
   mocks.terminalInstances.length = 0;
   mocks.invoke.mockReset();
   vi.mocked(restoreTurnMarksAtLines).mockClear();
-  mocks.invoke.mockImplementation((command: string) => {
+  mocks.invoke.mockImplementation((command: string, args: any = {}) => {
+    if (command === "get_session_attachment_contexts") return Promise.resolve(args.sessionIds.map((session_id: string) => ({
+      backend_epoch: "fixture-backend", session_id, window_label: "detached-focus-test", window_incarnation: "fixture-window",
+      attachment_epoch: ++mocks.nextAttachment, nonce: String(mocks.nextAttachment), transfer_id: null, transfer_token: null,
+      existing_only: Boolean(args.existingOnly),
+    })));
+    if (command === "create_session" || command === "tearout_attach") return Promise.resolve(args.attachmentContext);
     if (command === "get_terminal_config") {
       return Promise.resolve({
         font_size: 14,
@@ -321,7 +330,7 @@ describe("L1 actual legacy detached host with the mounted XTermWrapper", () => {
     const previous = mocks.invoke.getMockImplementation()!; let creates = 0; let release!: () => void;
     mocks.invoke.mockImplementation((command: string, ...args: unknown[]) => {
       if (command === "create_session" && ++creates === 1) return Promise.reject('AGENT_RESTORE_CHOICE_REQUIRED:{"kind":"claude","agentSessionId":"synthetic-saved","candidates":[]}');
-      if (command === "create_session") return new Promise<void>(resolve => { release = resolve; });
+      if (command === "create_session") return new Promise<unknown>(resolve => { release = () => resolve((args[0] as { attachmentContext: unknown }).attachmentContext); });
       return previous(command, ...args);
     });
     await mountDetached(`detached-restart-${decision}`);
@@ -942,7 +951,7 @@ describe("R1 real asynchronous resume completion", () => {
         if (++aCreates === 1) return Promise.reject('AGENT_SESSION_ALREADY_RUNNING:' + JSON.stringify({
           kind: "claude", agentSessionId: "resume-conversation", ownerSessionId: "ended-owner",
         }));
-        return new Promise<void>((resolve) => { finishResume = resolve; });
+        return new Promise<unknown>((resolve) => { finishResume = () => resolve(args.attachmentContext); });
       }
       if (command === "get_window_fragments") return Promise.resolve([]);
       if (command === "get_agent_conversation_owner") return Promise.resolve(null);

@@ -1,5 +1,6 @@
 //! Opt-in pane tear-out. Every UI mutation is posted from an async command.
 mod geometry;
+pub(crate) mod attachment_epoch;
 pub mod log;
 #[cfg(target_os = "windows")]
 mod native;
@@ -233,31 +234,139 @@ pub async fn tearout_synthetic_sample(
 }
 
 #[tauri::command]
+pub async fn get_session_attachment_contexts(
+    window: tauri::Window, app: AppHandle, session_ids: Vec<String>,
+    existing_only: bool, transfer_token: Option<String>,
+) -> Result<Vec<attachment_epoch::AttachmentContext>, String> {
+    let proof = attachment_epoch::window_proof(&window);
+    crate::util::task::run_blocking("attachment_contexts", move || {
+        let app_state = app.state::<crate::AppState>();
+        let tearout = app.state::<TearoutState>();
+        // Transfer mutex is always outside lifecycle/create/authority locks.
+        // Neither swap entrance ever takes this mutex in the opposite order.
+        let transfers = tearout.transfers.lock().map_err(|e| e.to_string())?;
+        let transfer = match transfer_token.as_deref() {
+            Some(token) => Some(transfers.iter().find(|(_, transfer)| transfer.delivery_token == token)
+                .ok_or("tearout_transfer_token_changed")?),
+            None => None,
+        };
+        if let Some((_, transfer)) = transfer {
+            if transfer.receiver != proof.label || transfer.attachments_revoked || transfer.attachments_revoking
+                || !matches!(transfer.phase, transfer::Phase::Committed | transfer::Phase::Received | transfer::Phase::Cleaned)
+                || transfer.attachment_receiver.as_ref().is_none_or(|receiver| receiver.incarnation != proof.incarnation) {
+                return Err("attachment_transfer_revoked".into());
+            }
+        }
+        let mut unique = std::collections::HashSet::new();
+        let mut result = Vec::new();
+        for id in session_ids {
+            if id.is_empty() || !unique.insert(id.clone()) { return Err("attachment_sessions_invalid".into()); }
+            result.push(attachment_epoch::with_lifecycle(&id, || {
+                let mut authority = attachment_epoch::registry().lock().map_err(|e| e.to_string())?;
+                let existing = app_state.session_manager.is_alive(&id);
+                if existing_only && !existing { return Err("tearout_session_not_alive".into()); }
+                if let Some((transfer_id, transfer)) = transfer {
+                    if !transfer::session_ids(&transfer.configs).contains(&id) || !existing {
+                        return Err("attachment_transfer_session_changed".into());
+                    }
+                    authority.issue(&id, &proof, true, Some((transfer_id, &transfer.delivery_token)))
+                } else {
+                    if transfers.values().any(|transfer| transfer.reserved() && transfer::session_ids(&transfer.configs).contains(&id)) {
+                        return Err("attachment_transfer_reserved".into());
+                    }
+                    authority.require_owner(&id, &proof, existing, published_session_owner(&app_state, &proof.label, &id))?;
+                    authority.issue(&id, &proof, existing_only || existing, None)
+                }
+            })?);
+        }
+        Ok(result)
+    }).await
+}
+
+fn published_session_owner(state: &crate::AppState, label: &str, id: &str) -> bool {
+    state.window_registry.fragment(label).is_some_and(|fragment| fragment.workspaces.iter().any(|config| {
+        crate::window_registry::workspace_config_id(config).is_some_and(|workspace_id|
+            state.window_registry.window_for_workspace(&workspace_id).as_deref() == Some(label))
+            && transfer::session_ids(std::slice::from_ref(config)).contains(id)
+    }))
+}
+
+fn revoke_transfer_attachments(manager: &crate::pty::manager::SessionManager, id: &str,
+    transfer: &mut transfer::Transfer,
+) -> Result<(), String> {
+    if transfer.attachments_revoked { return Ok(()); }
+    if transfer.finalized { return Err("tearout_transfer_finalized".into()); }
+    transfer.attachments_revoking = true;
+    let source = transfer.attachment_source.as_ref().ok_or("attachment_source_missing")?;
+    let mut ids: Vec<_> = transfer::session_ids(&transfer.configs).into_iter().collect();
+    ids.sort();
+    for session_id in ids {
+        attachment_epoch::with_lifecycle(&session_id, || manager.revoke_attachment(&session_id, id, source))?;
+    }
+    // Context issuance and ack remain blocked on the transfer mutex until
+    // every session, including an already-swapped receiver, is retired.
+    transfer.attachments_revoked = true;
+    attachment_epoch::registry().lock().map_err(|e| e.to_string())?.remember_revoked(&transfer.delivery_token);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn tearout_revoke_attachments(window: tauri::Window, app: AppHandle, token: String) -> Result<(), String> {
+    let caller = window.label().to_owned();
+    crate::util::task::run_blocking("revoke_attachments", move || {
+        let state = app.state::<TearoutState>();
+        let mut transfers = state.transfers.lock().map_err(|e| e.to_string())?;
+        let Some((id, transfer)) = transfers.iter_mut().find(|(_, transfer)| transfer.delivery_token == token) else {
+            return if attachment_epoch::registry().lock().map_err(|e| e.to_string())?.was_revoked(&token) { Ok(()) }
+                else { Err("tearout_transfer_missing".into()) };
+        };
+        if caller != transfer.receiver { transfer.authorize(&caller)?; }
+        revoke_transfer_attachments(&app.state::<crate::AppState>().session_manager, id, transfer)
+    }).await
+}
+
+// This is the command's actual worker path; the test barrier precedes the
+// lifecycle gate so a delayed real request cannot rely on its entry-time check.
+fn tearout_attach_existing(manager: &crate::pty::manager::SessionManager, id: &str,
+    window: &attachment_epoch::WindowProof, context: &attachment_epoch::AttachmentContext,
+    channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+) -> Result<attachment_epoch::AttachmentContext, String> {
+    #[cfg(test)]
+    attachment_tests::before_gate(id);
+    attachment_epoch::with_lifecycle(id, || {
+        manager.attach_existing(id, window, context, channel)?;
+        Ok(context.clone())
+    })
+}
+
+#[tauri::command]
 pub async fn tearout_attach(
     window: tauri::Window,
     state: State<'_, crate::AppState>,
     session_id: String,
     on_data: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
-) -> Result<(), String> {
-    // The DashMap reference prevents removal while the existing channel swaps.
-    // This path has no spawn branch, even if the process disappears mid-drag.
+    attachment_context: attachment_epoch::AttachmentContext,
+) -> Result<attachment_epoch::AttachmentContext, String> {
     let app = window.app_handle().clone();
-    let label = window.label().to_string();
+    let proof = attachment_epoch::window_proof(&window);
     let _ = state;
     crate::util::task::run_blocking("tearout_attach", move || {
-        // Gate before DashMap reference, matching create/kill; never wait on
-        // this mutex in the async runtime or while retaining a session.
-        let gate = crate::commands::terminal::codex_restore_lifecycle_gate(&session_id);
-        let _guard = gate.lock().unwrap_or_else(|e| e.into_inner());
         let state = app.state::<crate::AppState>();
-        if state.window_registry.is_closing(&label) || app.get_window(&label).is_none() {
+        if state.window_registry.is_closing(&proof.label) || app.get_window(&proof.label).is_none() {
             return Err("tearout_attachment_window_closed".into());
         }
-        let session = state.session_manager.get(&session_id).ok_or("tearout_session_not_alive")?;
-        crate::commands::terminal::invalidate_codex_restore_notice(&app, &session_id);
-        let result = session.replace_data_channel(on_data).map(|_| ());
-        crate::commands::terminal::publish_codex_restore_epoch(&app, &session_id, Some(session.session_epoch()));
-        result
+        // Notice state is published within the same lifecycle boundary as
+        // the authenticated channel swap; it cannot revive a rejected attach.
+        let result = tearout_attach_existing(&state.session_manager, &session_id, &proof, &attachment_context, on_data)?;
+        attachment_epoch::with_lifecycle(&session_id, || {
+            let authority = attachment_epoch::registry().lock().map_err(|e| e.to_string())?;
+            authority.validate(&session_id, &proof, &attachment_context, true)?;
+            crate::commands::terminal::invalidate_codex_restore_notice(&app, &session_id);
+            let epoch = state.session_manager.session_observation(&session_id).map(|value| value.0);
+            crate::commands::terminal::publish_codex_restore_epoch(&app, &session_id, epoch);
+            Ok(())
+        })?;
+        Ok(result)
     }).await
 }
 
@@ -287,15 +396,30 @@ pub async fn tearout_prepare(
     {
         return Err("tearout_transfer_config_invalid".into());
     }
-    let mut transfers = state.transfers.lock().map_err(|e| e.to_string())?;
-    if transfers.contains_key(&id) {
-        return Err("tearout_transfer_duplicate".into());
-    }
-    if let Some(refusal) = transfer_refusal(&transfers, window.label(), &id, Some(&configs)) {
-        return Ok(Some(refusal));
-    }
-    transfers.insert(id, transfer::Transfer::new(window.label().into(), receiver, configs, delivery_token, finalizer));
-    Ok(None)
+    let source_proof = attachment_epoch::window_proof(&window);
+    let receiver_proof = attachment_epoch::window_proof(&app.get_window(&receiver).ok_or("tearout_receiver_unavailable")?);
+    let _ = state;
+    crate::util::task::run_blocking("tearout_prepare", move || {
+        let state = app.state::<TearoutState>();
+        let app_state = app.state::<crate::AppState>();
+        let mut transfers = state.transfers.lock().map_err(|e| e.to_string())?;
+        if transfers.contains_key(&id) || transfers.values().any(|entry| entry.delivery_token == delivery_token) {
+            return Err("tearout_transfer_duplicate".into());
+        }
+        if let Some(refusal) = transfer_refusal(&transfers, &source_proof.label, &id, Some(&configs)) { return Ok(Some(refusal)); }
+        for session_id in transfer::session_ids(&configs) {
+            attachment_epoch::with_lifecycle(&session_id, || {
+                attachment_epoch::registry().lock().map_err(|e| e.to_string())?.require_owner(
+                    &session_id, &source_proof, app_state.session_manager.is_alive(&session_id),
+                    published_session_owner(&app_state, &source_proof.label, &session_id))
+            })?;
+        }
+        let mut transfer = transfer::Transfer::new(source_proof.label.clone(), receiver, configs, delivery_token, finalizer);
+        transfer.attachment_source = Some(source_proof);
+        transfer.attachment_receiver = Some(receiver_proof);
+        transfers.insert(id, transfer);
+        Ok(None)
+    }).await
 }
 
 #[tauri::command]
@@ -306,27 +430,33 @@ pub async fn tearout_phase(
     id: String,
     phase: transfer::Phase,
 ) -> Result<bool, String> {
-    let mut transfers = state.transfers.lock().map_err(|e| e.to_string())?;
-    let transfer = transfers.get_mut(&id).ok_or("tearout_transfer_missing")?;
-    transfer.authorize(window.label())?;
-    if !transfer.advance(phase)? {
-        return Ok(false);
-    }
-    let app_state = app.state::<crate::AppState>();
-    if phase == transfer::Phase::Committed {
-        app_state
-            .window_registry
-            .queue_adoption(&transfer.receiver, transfer.configs.clone());
-    } else if matches!(
-        phase,
-        transfer::Phase::Received | transfer::Phase::RolledBack
-    ) {
-        let ids = crate::window_registry::workspace_config_ids(&transfer.configs);
-        app_state
-            .window_registry
-            .remove_pending_adoption(&transfer.receiver, &ids);
-    }
-    Ok(true)
+    let caller = window.label().to_owned();
+    let _ = state;
+    crate::util::task::run_blocking("tearout_phase", move || {
+        let state = app.state::<TearoutState>();
+        let mut transfers = state.transfers.lock().map_err(|e| e.to_string())?;
+        let transfer = transfers.get_mut(&id).ok_or("tearout_transfer_missing")?;
+        transfer.authorize(&caller)?;
+        let app_state = app.state::<crate::AppState>();
+        if phase == transfer::Phase::RolledBack { revoke_transfer_attachments(&app_state.session_manager, &id, transfer)?; }
+        if !transfer.advance(phase)? { return Ok(false); }
+        if phase == transfer::Phase::Cleaned {
+            let receiver = transfer.attachment_receiver.as_ref().ok_or("attachment_receiver_missing")?;
+            for session_id in transfer::session_ids(&transfer.configs) {
+                attachment_epoch::with_lifecycle(&session_id, || {
+                    attachment_epoch::registry().lock().map_err(|e| e.to_string())?.finalize_owner(&session_id, receiver);
+                    Ok(())
+                })?;
+            }
+        }
+        if phase == transfer::Phase::Committed {
+            app_state.window_registry.queue_adoption(&transfer.receiver, transfer.configs.clone());
+        } else if matches!(phase, transfer::Phase::Received | transfer::Phase::RolledBack) {
+            let ids = crate::window_registry::workspace_config_ids(&transfer.configs);
+            app_state.window_registry.remove_pending_adoption(&transfer.receiver, &ids);
+        }
+        Ok(true)
+    }).await
 }
 
 // The source commits only after real receipt and publication. Keep the
@@ -1305,5 +1435,169 @@ mod native_start_refusal_tests {
         assert!(!owner.closed.load(Ordering::Acquire));
         owner.closed.store(true, Ordering::Release);
         assert!(pre_ownership_regrab_refusal(&moves, "child", "child", "second", true).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+    use attachment_epoch::{AttachmentContext, WindowProof};
+    use crate::pty::manager::SessionManager;
+    use std::sync::{mpsc, OnceLock};
+    use std::time::Duration;
+    use tauri::ipc::{Channel, InvokeResponseBody};
+
+    type Pause = (mpsc::Sender<()>, mpsc::Receiver<()>);
+    static PAUSES: OnceLock<Mutex<HashMap<String, Pause>>> = OnceLock::new();
+    pub(super) fn before_gate(id: &str) {
+        let pause = PAUSES.get_or_init(Default::default).lock().unwrap().remove(id);
+        if let Some((reached, resume)) = pause {
+            reached.send(()).unwrap(); resume.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+    }
+    fn pause(id: &str) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (at, reached) = mpsc::channel(); let (resume, wait) = mpsc::channel();
+        PAUSES.get_or_init(Default::default).lock().unwrap().insert(id.into(), (at, wait));
+        (reached, resume)
+    }
+    fn fixture(count: usize) -> (Arc<SessionManager>, Vec<String>, WindowProof, WindowProof, transfer::Transfer) {
+        let manager = Arc::new(SessionManager::new());
+        let source = WindowProof::fixture("T"); let receiver = WindowProof::fixture("R");
+        let ids: Vec<_> = (0..count).map(|_| format!("pty-{}", uuid::Uuid::new_v4())).collect();
+        for id in &ids {
+            manager.install_fixture_owner(id, 101, Duration::ZERO, crate::pty::monitor::new_metadata_store());
+            attachment_epoch::registry().lock().unwrap().require_owner(id, &source, true, true).unwrap();
+        }
+        let config = serde_json::json!({"id":"fixture", "panes":[{"tabs":ids.iter().map(|id| serde_json::json!({"session_id":id})).collect::<Vec<_>>()}]});
+        let mut transfer = transfer::Transfer::new(source.label.clone(), receiver.label.clone(), vec![config], uuid::Uuid::new_v4().to_string(), None);
+        transfer.attachment_source = Some(source.clone()); transfer.attachment_receiver = Some(receiver.clone());
+        transfer.phase = transfer::Phase::Committed;
+        (manager, ids, source, receiver, transfer)
+    }
+    fn issue(id: &str, proof: &WindowProof, transfer: Option<(&str, &str)>) -> AttachmentContext {
+        attachment_epoch::with_lifecycle(id, || attachment_epoch::registry().lock().unwrap().issue(id, proof, true, transfer)).unwrap()
+    }
+    fn channel() -> (Channel<InvokeResponseBody>, Arc<Mutex<Vec<Vec<u8>>>>) {
+        let received = Arc::new(Mutex::new(Vec::new())); let sink = received.clone();
+        (Channel::new(move |body| {
+            if let InvokeResponseBody::Raw(bytes) = body { sink.lock().unwrap().push(bytes[40..].to_vec()); }
+            Ok(())
+        }), received)
+    }
+
+    #[tokio::test]
+    async fn a01_real_tearout_attach_paused_before_gate_cannot_steal_restored_output() {
+        let (manager, ids, source, receiver, mut transfer) = fixture(1);
+        let id = &ids[0]; let transfer_id = uuid::Uuid::new_v4().to_string();
+        let old = issue(id, &receiver, Some((&transfer_id, &transfer.delivery_token)));
+        let (reached, resume) = pause(id);
+        let late_manager = manager.clone(); let late_id = id.clone(); let late_window = receiver.clone();
+        let (old_channel, old_output) = channel();
+        let late = std::thread::spawn(move || tearout_attach_existing(&late_manager, &late_id, &late_window, &old, old_channel));
+        reached.recv_timeout(Duration::from_secs(10)).unwrap();
+        revoke_transfer_attachments(&manager, &transfer_id, &mut transfer).unwrap();
+        transfer.advance(transfer::Phase::RolledBack).unwrap();
+        let restored = issue(id, &source, None); let (current, output) = channel();
+        tearout_attach_existing(&manager, id, &source, &restored, current).unwrap();
+        assert!(manager.get(id).unwrap().fixture_output(b"before").await);
+        resume.send(()).unwrap(); assert!(late.join().unwrap().is_err());
+        assert!(manager.get(id).unwrap().fixture_output(b"after").await);
+        assert_eq!(*output.lock().unwrap(), [b"before".to_vec(), b"after".to_vec()]);
+        assert!(old_output.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a02_both_swap_orders_revoke_installed_channels_and_reject_forged_contexts() {
+        for swap_first in [false, true] {
+            let (manager, ids, source, receiver, mut transfer) = fixture(1);
+            let id = &ids[0]; let transfer_id = uuid::Uuid::new_v4().to_string();
+            let old = issue(id, &receiver, Some((&transfer_id, &transfer.delivery_token)));
+            let (old_channel, old_output) = channel();
+            if swap_first { tearout_attach_existing(&manager, id, &receiver, &old, old_channel).unwrap(); }
+            revoke_transfer_attachments(&manager, &transfer_id, &mut transfer).unwrap();
+            if (swap_first) { assert!(!manager.get(id).unwrap().fixture_output(b"revoked").await); }
+            assert!(tearout_attach_existing(&manager, id, &receiver, &old, channel().0).is_err());
+            let restored = issue(id, &source, None);
+            for field in ["backend", "nonce", "epoch", "session", "transfer", "incarnation"] {
+                let mut forged = restored.clone();
+                match field {
+                    "backend" => forged.backend_epoch.push('x'), "nonce" => forged.nonce.push('x'),
+                    "epoch" => forged.attachment_epoch += 1, "session" => forged.session_id.push('x'),
+                    "transfer" => forged.transfer_token = Some("forged".into()), _ => forged.window_incarnation.push('x'),
+                }
+                assert!(tearout_attach_existing(&manager, id, &source, &forged, channel().0).is_err(), "{field}");
+            }
+            assert!(tearout_attach_existing(&manager, id, &WindowProof::fixture("T"), &restored, channel().0).is_err());
+            let (current, output) = channel(); tearout_attach_existing(&manager, id, &source, &restored, current).unwrap();
+            assert!(manager.get(id).unwrap().fixture_output(b"restored").await);
+            assert_eq!(*output.lock().unwrap(), [b"restored".to_vec()]);
+            assert!(old_output.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn a02_multi_session_cancellation_ack_waits_for_every_gate_and_gc_keeps_revocations() {
+        let (manager, mut ids, source, receiver, mut transfer) = fixture(2);
+        ids.sort(); let transfer_id = uuid::Uuid::new_v4().to_string();
+        let contexts: Vec<_> = ids.iter().map(|id| issue(id, &receiver, Some((&transfer_id, &transfer.delivery_token)))).collect();
+        tearout_attach_existing(&manager, &ids[0], &receiver, &contexts[0], channel().0).unwrap();
+        let gate = crate::commands::terminal::codex_restore_lifecycle_gate(&ids[1]); let held = gate.lock().unwrap();
+        let (ack, acknowledged) = mpsc::channel(); let worker = manager.clone(); let key = transfer_id.clone();
+        let cancellation = std::thread::spawn(move || {
+            let result = revoke_transfer_attachments(&worker, &key, &mut transfer);
+            ack.send(result).unwrap(); transfer
+        });
+        assert!(acknowledged.recv_timeout(Duration::from_millis(50)).is_err());
+        drop(held); acknowledged.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+        assert!(cancellation.join().unwrap().attachments_revoked);
+        // The Transfer has been dropped, exactly as after tearout_forget.
+        for (id, old) in ids.iter().zip(contexts) {
+            assert!(tearout_attach_existing(&manager, id, &receiver, &old, channel().0).is_err());
+            let restored = issue(id, &source, None);
+            tearout_attach_existing(&manager, id, &source, &restored, channel().0).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a03_existing_create_session_uses_the_same_swap_authority_and_never_spawns() {
+        let (manager, ids, source, receiver, mut transfer) = fixture(1);
+        let id = &ids[0]; let transfer_id = uuid::Uuid::new_v4().to_string();
+        let old = issue(id, &receiver, Some((&transfer_id, &transfer.delivery_token)));
+        revoke_transfer_attachments(&manager, &transfer_id, &mut transfer).unwrap();
+        let restored = issue(id, &source, None);
+        let before = manager.iter_pids();
+        // Exercise the real create() entry used by create_session, including
+        // its existing-PTY decision and create lock. A native AppHandle is
+        // needed only for spawn, which must remain unreachable in this test.
+        let create = |window: &WindowProof, context: &AttachmentContext, channel| {
+            attachment_epoch::with_lifecycle(id, || manager.create(
+                id.clone(), "must-not-spawn", &[], 80, 24, channel,
+                || panic!("existing PTY must never request a spawn AppHandle"),
+                None, None, crate::pty::monitor::new_metadata_store(), None,
+                false, "A03-create-session", context, window,
+            ))
+        };
+        let (current, output) = channel();
+        create(&source, &restored, current).unwrap();
+        assert!(manager.get(id).unwrap().fixture_output(b"before-old-create").await);
+        let (late, rejected_output) = channel();
+        assert!(create(&receiver, &old, late).is_err());
+        assert!(manager.get(id).unwrap().fixture_output(b"after-old-create").await);
+        assert_eq!(*output.lock().unwrap(), [b"before-old-create".to_vec(), b"after-old-create".to_vec()]);
+        assert!(rejected_output.lock().unwrap().is_empty());
+        assert_eq!(manager.iter_pids(), before);
+    }
+
+    #[test]
+    fn a03_normal_mount_requires_current_owner_and_existing_grants_cannot_respawn() {
+        let (manager, ids, source, _, _) = fixture(1); let id = &ids[0];
+        let context = issue(id, &source, None);
+        let mut authority = attachment_epoch::registry().lock().unwrap();
+        assert!(authority.require_owner(id, &WindowProof::fixture("other"), true, false).is_err());
+        assert!(authority.validate(id, &source, &context, false).is_err());
+        let mut unknown = context.clone(); unknown.session_id = "unknown".into();
+        assert!(authority.validate("unknown", &source, &unknown, true).is_err());
+        drop(authority);
+        assert_eq!(manager.iter_pids().len(), 1);
     }
 }

@@ -50,6 +50,15 @@ async function render() { await act(async () => root.render(<TabBar onNewWorkspa
 async function advance(ms: number) { await act(async () => vi.advanceTimersByTimeAsync(ms)); }
 
 describe("real sidebar live-tail wiring", () => {
+  it("uses the same blue Hybrid glyph in the actual sidebar without starting or sending to the session", async () => {
+    mocks.targets.mockResolvedValue(scene.targets.map(target => ({ ...target, agentKind: "claude-codex" })));
+    await render(); await advance(0); await advance(2_000);
+    const icon = host.querySelector('.live-tail-agent');
+    expect(icon?.querySelector('path[fill="#7a9dff"]')).not.toBeNull();
+    expect(icon?.querySelector('path[fill="#d97757"]')).toBeNull();
+    expect(mocks.jump).not.toHaveBeenCalled();
+    expect(mocks.readPaneTail.mock.calls.every(call => call[0] === "sample-session-0")).toBe(true);
+  });
   it("reads only local pane tabs and preserves the configured width", async () => {
     await render(); await advance(0); await advance(2_000);
     expect(mocks.readPaneTail).toHaveBeenCalledTimes(2);

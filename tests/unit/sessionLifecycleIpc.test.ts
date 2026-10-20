@@ -1,9 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
 import { createSession, killSession, SessionClosedError, getCurrentSessionEpoch } from "../../src/lib/ipc";
 
+const backend = vi.hoisted(() => ({ invoke: vi.fn(), nextContext: 0 }));
+const invoke = backend.invoke;
+
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
+  invoke: async (command: string, ...parameters: any[]) => {
+    const args = parameters[0] ?? {};
+    if (command === "get_session_attachment_contexts") return args.sessionIds.map((session_id: string) => ({
+      backend_epoch: "fixture-backend", transfer_id: args.transferToken ?? null, transfer_token: args.transferToken ?? null,
+      session_id, window_label: "main", window_incarnation: "fixture-window",
+      attachment_epoch: ++backend.nextContext, nonce: String(backend.nextContext), existing_only: args.existingOnly,
+    }));
+    const result = await backend.invoke(command, ...parameters);
+    return command === "create_session" || command === "tearout_attach" ? result ?? args.attachmentContext : result;
+  },
   Channel: class { onmessage?: (frame: ArrayBuffer) => void; },
 }));
 

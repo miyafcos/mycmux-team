@@ -87,10 +87,10 @@ fn publish_savepoint_impl(
         author_slug
     };
     let short_id: String = session_id.chars().take(8).collect();
-    let head_dir = if agent_kind == SavepointAgentKind::Codex {
-        online_dir.join(format!("{author_slug}_codex_{short_id}"))
-    } else {
-        online_dir.join(format!("{author_slug}_{short_id}"))
+    let head_dir = match agent_kind {
+        SavepointAgentKind::Claude => online_dir.join(format!("{author_slug}_{short_id}")),
+        SavepointAgentKind::Codex => online_dir.join(format!("{author_slug}_codex_{short_id}")),
+        SavepointAgentKind::ClaudeCodex => online_dir.join(format!("{author_slug}_claude-codex_{short_id}")),
     };
 
     // Mutable head preserves its identity while active. Publishing again after

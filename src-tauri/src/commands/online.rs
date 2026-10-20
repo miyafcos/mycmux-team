@@ -23,6 +23,18 @@ const RESTORED_EXPIRE_HOURS: i64 = 48;
 pub(crate) enum SavepointAgentKind {
     Claude,
     Codex,
+    #[serde(rename = "claude-codex")]
+    ClaudeCodex,
+}
+
+impl SavepointAgentKind {
+    pub(crate) fn transcript_root(self, home: &Path) -> PathBuf {
+        match self {
+            Self::Claude => home.join(".claude").join("projects"),
+            Self::Codex => home.join(".codex").join("sessions"),
+            Self::ClaudeCodex => home.join(".claude-codex").join("config").join("projects"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -191,6 +203,10 @@ impl SavepointManifest {
             }
             (Some(SavepointAgentKind::Codex), Some(session_id), None) => Ok(SavepointIdentity {
                 kind: SavepointAgentKind::Codex,
+                session_id: session_id.to_string(),
+            }),
+            (Some(SavepointAgentKind::ClaudeCodex), Some(session_id), None) if Uuid::parse_str(session_id).is_ok() => Ok(SavepointIdentity {
+                kind: SavepointAgentKind::ClaudeCodex,
                 session_id: session_id.to_string(),
             }),
             _ => Err("Savepoint agent identity is invalid".to_string()),

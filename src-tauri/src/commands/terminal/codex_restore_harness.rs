@@ -45,8 +45,12 @@ fn launch(app: &AppHandle, pty: &str, command: &str, args: Vec<String>, env: Has
         if let InvokeResponseBody::Raw(bytes) = body { output.lock().unwrap().extend(bytes); }
         Ok(())
     });
+    let attachment_window = crate::tearout::attachment_epoch::e2e_window_proof();
+    let context_window = attachment_window.clone();
     create_session_blocking(app.clone(), app.state(), pty.into(), command.into(), args, 80, 24,
-        channel, Some(std::env::var("HOME").unwrap()), Some(env), true, "restore-regression".into(), true, None).unwrap();
+        channel, Some(std::env::var("HOME").unwrap()), Some(env), true, "restore-regression".into(), true, None,
+        |existing| crate::tearout::attachment_epoch::issue_e2e_context(pty, &context_window, existing),
+        attachment_window).unwrap();
 }
 fn wait_for(mut condition: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(8);

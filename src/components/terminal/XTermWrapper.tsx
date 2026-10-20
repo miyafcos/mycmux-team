@@ -1,6 +1,6 @@
 ﻿import { memo, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { TerminalRendererBudget } from "./terminalRendererBudget";
-import { hasTearoutSessionAttachment, markTearoutSessionAttached } from "../../lib/tearout/sessionAttachment";
+import { hasTearoutSessionAttachment, markTearoutSessionAttached, captureSessionAttachment, failTearoutSessionAttachment } from "../../lib/tearout/sessionAttachment";
 import { recordTerminalFlowReceive, startTerminalFlowWrite, finishTerminalFlowWrite, recordTerminalFlowRender } from "../../lib/terminalFlowTrace";
 import { useTerminalObservationStore } from "../../stores/terminalObservationStore";
 import { Terminal } from "@xterm/xterm";
@@ -2858,11 +2858,12 @@ export default memo(function XTermWrapper({
       cols: number, rows: number, reason: SessionAttachOptions["reason"] = "mount",
     ): Promise<void> => {
       const generation = pumpGeneration;
+      const attachment = captureSessionAttachment(sessionId, reason === "mount" && hasTearoutSessionAttachment(sessionId));
       // Read the launch parameters at attach time, not at effect-setup time:
       // the resume env (MYCMUX_AGENT_KIND / MYCMUX_SESSION_ID / MYCMUX_RESUME)
       // can land between this effect's first pass and the actual spawn.
       const launch = recoveryLaunch ? buildLaunchRequest(recoveryLaunch) : buildLaunchRequest(launchParamsRef.current);
-      await createSession(
+      const attached = await createSession(
         sessionId,
         launch.command,
         launch.args,
@@ -2875,16 +2876,17 @@ export default memo(function XTermWrapper({
         launch.cwd,
         launch.env,
         reason === "mount" && hasTearoutSessionAttachment(sessionId),
-        { reason, restoreConfirmed, restoreReason: launch.restoreReason, stillOwned: () => generation === pumpGeneration && !disposed && !termDisposed },
-      );
-      if (generation !== pumpGeneration || disposed || termDisposed) return;
+        { reason, restoreConfirmed, restoreReason: launch.restoreReason, attachment, stillOwned: () => generation === pumpGeneration && !disposed && !termDisposed },
+      ).catch(error => { failTearoutSessionAttachment(sessionId, attachment, error); throw error; });
+      if (generation !== pumpGeneration || disposed || termDisposed || !attachment.current() || !attached) return;
       if (launch.restoreReason) consumeCodexRestoreReason(sessionId);
-      ownedChannelId = getSessionChannelId(sessionId);
+      ownedChannelId = getSessionChannelId(sessionId, attached.context);
+      if (ownedChannelId !== attached.channelId) return;
       streamHealth.attached();
       if (launch.env?.MYCMUX_HANDOFF?.trim()) consumeHandoffLaunchEnv(sessionId);
       frontendChannelReady = true;
       if (term) registerReadAuthority(term);
-      markTearoutSessionAttached(sessionId);
+      markTearoutSessionAttached(sessionId, attached);
       if (cols > 0 && rows > 0) {
         lastSentCols = cols;
         lastSentRows = rows;

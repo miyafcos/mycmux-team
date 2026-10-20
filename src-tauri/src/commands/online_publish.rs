@@ -117,12 +117,9 @@ pub async fn publish_savepoint(
         let agent_kind = agent_kind.unwrap_or(SavepointAgentKind::Claude);
         let session_id = match agent_kind {
             SavepointAgentKind::Claude => agent_session_id.as_deref().or(claude_session_id.as_deref()),
-            SavepointAgentKind::Codex => agent_session_id.as_deref(),
+            SavepointAgentKind::Codex | SavepointAgentKind::ClaudeCodex => agent_session_id.as_deref(),
         };
-        let transcript_root = match agent_kind {
-            SavepointAgentKind::Claude => home.join(".claude").join("projects"),
-            SavepointAgentKind::Codex => home.join(".codex").join("sessions"),
-        };
+        let transcript_root = agent_kind.transcript_root(&home);
         // Multi-window: the progress stream belongs to the window that started
         // the publish. Broadcasting it made every open window animate the same
         // savepoint. `window_label` is optional so the socket/CLI callers (which
@@ -169,12 +166,9 @@ pub async fn finalize_savepoint(
         let agent_kind = agent_kind.unwrap_or(SavepointAgentKind::Claude);
         let session_id = match agent_kind {
             SavepointAgentKind::Claude => agent_session_id.as_deref().or(claude_session_id.as_deref()),
-            SavepointAgentKind::Codex => agent_session_id.as_deref(),
+            SavepointAgentKind::Codex | SavepointAgentKind::ClaudeCodex => agent_session_id.as_deref(),
         };
-        let transcript_root = match agent_kind {
-            SavepointAgentKind::Claude => home.join(".claude").join("projects"),
-            SavepointAgentKind::Codex => home.join(".codex").join("sessions"),
-        };
+        let transcript_root = agent_kind.transcript_root(&home);
         // Multi-window: the progress stream belongs to the window that started
         // the publish. Broadcasting it made every open window animate the same
         // savepoint. `window_label` is optional so the socket/CLI callers (which

@@ -81,9 +81,10 @@ pub(super) fn classify_source(manager: &SessionManager, pty: &str, provider: &st
         let kind = agent_kind_from_process(&system, pid).map(|kind| kind.display_kind().to_string());
         let args = process.cmd().iter().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
         let job = is_noninteractive_agent(kind.as_deref().unwrap_or(""), &args);
+        let hybrid_wrapper = crate::pty::monitor::hybrid_process::is_hybrid_wrapper(name, &args);
         Some(ProcessRow {
             parent: process.parent(), started_at: process.start_time(), kind,
-            shell: matches!(name, "bash" | "sh" | "zsh" | "fish" | "pwsh" | "powershell" | "cmd" | "dash" | "ksh"),
+            shell: hybrid_wrapper || matches!(name, "bash" | "sh" | "zsh" | "fish" | "pwsh" | "powershell" | "cmd" | "dash" | "ksh"),
             wrapper: matches!(name, "node" | "bun"),
             job,
         })
@@ -107,6 +108,16 @@ mod tests {
             assert_eq!(classify(&rows, 3, 1, provider), HookSource::OwnAgent { pid: 2, started_at: 20 });
             assert_eq!(classify(&rows, 4, 1, provider), HookSource::OwnAgent { pid: 2, started_at: 20 });
         }
+    }
+    #[test]
+    fn native_hybrid_wrapper_keeps_own_hooks_but_not_nested_agent_hooks() {
+        let rows = [(1, row(None, 10, None, true)), (2, row(Some(1), 20, None, true)),
+            (3, row(Some(2), 30, Some("claude-codex"), false)), (4, row(Some(3), 40, None, false))];
+        assert_eq!(classify(&rows, 4, 1, "claude"), HookSource::OwnAgent { pid: 3, started_at: 30 });
+        let mut nested = rows.to_vec();
+        nested.push((5, row(Some(3), 35, Some("claude"), false)));
+        nested.push((6, row(Some(5), 45, None, false)));
+        assert_eq!(classify(&nested, 6, 1, "claude"), HookSource::Child);
     }
     #[test]
     fn si_t2_child_jobs_and_server_jobs_never_become_the_pane_agent() {

@@ -7,7 +7,7 @@ export interface SavepointDragItem {
   bundleDir: string;
   label: string;
   sourceSessionId: string;
-  sourceAgentKind: "claude" | "codex";
+  sourceAgentKind: "claude" | "codex" | "claude-codex";
   checkpointId?: string | null;
 }
 

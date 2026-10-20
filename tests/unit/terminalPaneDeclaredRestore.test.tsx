@@ -13,6 +13,8 @@ import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
+  nextContext: 0,
+  nextChannel: 0,
   xtermMount: vi.fn(),
   evictTerminalCache: vi.fn(),
   tabBarProps: null as { onRemoveTab?: (tabId: string) => void } | null,
@@ -20,6 +22,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/api/core", () => ({
   Channel: class<T> {
+    id = ++mocks.nextChannel;
     onmessage?: (message: T) => void;
   },
   invoke: mocks.invoke,
@@ -63,8 +66,16 @@ vi.mock("../../src/components/terminal/XTermWrapper", async () => {
 
 import TerminalPane, { buildLaunchArgs } from "../../src/components/workspace/TerminalPane";
 import { prepareStartupSessionGate } from "../../src/lib/startupSessionGate";
-import { expectTearoutAttachments, markTearoutSessionAttached, rememberTearoutDormantSessions } from "../../src/lib/tearout/sessionAttachment";
+import { captureSessionAttachment, expectTearoutAttachments, markTearoutSessionAttached, rememberTearoutDormantSessions, type AttachmentContext } from "../../src/lib/tearout/sessionAttachment";
 import PaneDragOverlay from "../../src/components/workspace/PaneDragOverlay";
+
+function fixtureContext(sessionId: string, existingOnly = true): AttachmentContext {
+  return {
+    backend_epoch: "fixture-backend", transfer_id: null, transfer_token: null,
+    session_id: sessionId, window_label: "main", window_incarnation: "fixture-window",
+    attachment_epoch: ++mocks.nextContext, nonce: String(mocks.nextContext), existing_only: existingOnly,
+  };
+}
 
 let container: HTMLDivElement;
 let root: Root;
@@ -117,7 +128,9 @@ beforeEach(() => {
   root = createRoot(container);
   vi.clearAllMocks();
   mocks.tabBarProps = null;
-  mocks.invoke.mockResolvedValue(undefined);
+  mocks.invoke.mockImplementation(async (command: string, args: { sessionIds?: string[]; existingOnly?: boolean } = {}) =>
+    command === "get_session_attachment_contexts"
+      ? args.sessionIds!.map(id => fixtureContext(id, args.existingOnly)) : undefined);
   useSettingsStore.setState({ paneComposerEnabled: false, declaredLaunchEnabled: true });
   usePaneMetadataStore.setState({ metadata: {}, lastLog: {} });
   useUiStore.setState({ activePaneId: null, focusRevision: 0 });
@@ -142,10 +155,15 @@ describe("TerminalPane declared restore boundary", () => {
     const workspace = workspaceWith([{ ...paneWith(tabs[3]), tabs }]);
     const receipt = expectTearoutAttachments(tabs.map(tab => tab.sessionId));
     try {
+      await receipt.prepared;
+      const attempts = tabs.map(tab => captureSessionAttachment(tab.sessionId, true));
+      const contexts = await Promise.all(attempts.map(attempt => attempt.context));
       await renderPanes(workspace);
       expect([...container.querySelectorAll("[data-xterm-session]")].map(el => el.getAttribute("data-xterm-session")).sort())
         .toEqual(tabs.map(tab => tab.sessionId).sort());
-      for (const tab of tabs) markTearoutSessionAttached(tab.sessionId);
+      for (const [index, tab] of tabs.entries()) {
+        markTearoutSessionAttached(tab.sessionId, { context: contexts[index], channelId: index + 1 });
+      }
       await receipt.ready;
     } finally { await act(async () => receipt.dispose()); }
     await renderPanes(workspace);
@@ -404,10 +422,18 @@ describe("background spawn followed by a TerminalPane mount", () => {
     // IPC call on mount changes the channel, not the existing PTY process.
     const sessions = new Set([parent.sessionId]);
     const spawnPty = vi.fn();
-    mocks.invoke.mockImplementation(async (command: string, args: { sessionId?: string }) => {
-      if (command === "create_session" && args.sessionId && !sessions.has(args.sessionId)) {
-        sessions.add(args.sessionId);
-        spawnPty(args.sessionId);
+    mocks.invoke.mockImplementation(async (command: string, args: {
+      sessionId?: string; sessionIds?: string[]; existingOnly?: boolean; attachmentContext?: AttachmentContext;
+    }) => {
+      if (command === "get_session_attachment_contexts") {
+        return args.sessionIds!.map(id => fixtureContext(id, args.existingOnly || sessions.has(id)));
+      }
+      if (command === "create_session" && args.sessionId) {
+        if (!sessions.has(args.sessionId)) {
+          sessions.add(args.sessionId);
+          spawnPty(args.sessionId);
+        }
+        return args.attachmentContext;
       }
     });
     const ids: string[] = [];
@@ -429,7 +455,7 @@ describe("background spawn followed by a TerminalPane mount", () => {
     }) => {
       attachments.push(createSession(
         props.sessionId, props.command, props.args, 80, 24, () => {}, props.cwd, props.launchEnv,
-      ));
+      ).then(() => {}));
     });
     await renderPanes(useWorkspaceListStore.getState().getWorkspace(background.id)!);
     await Promise.all(attachments);

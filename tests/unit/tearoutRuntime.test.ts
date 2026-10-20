@@ -17,7 +17,7 @@ vi.mock("../../src/lib/tearout/sessionAttachment", () => ({ expectTearoutAttachm
 vi.mock("../../src/components/terminal/terminalCache", async (original) => ({
   ...await original<typeof import("../../src/components/terminal/terminalCache")>(), evictTerminalCache: vi.fn(),
 }));
-import { installTearoutRuntime, tearoutTab, tearoutPane, useTearoutStore, isTearoutChild, markTearoutChildReady, visitTearoutLocation, regrabTearoutWindow, canRegrabTearoutTab, canRegrabTearoutPane } from "../../src/lib/tearout/runtime";
+import { sendTearoutWorkspaces, installTearoutRuntime, tearoutTab, tearoutPane, useTearoutStore, isTearoutChild, markTearoutChildReady, visitTearoutLocation, regrabTearoutWindow, canRegrabTearoutTab, canRegrabTearoutPane } from "../../src/lib/tearout/runtime";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { useSessionAttentionStore } from "../../src/stores/sessionAttentionStore";
 import { createPaneMoveRequest, executePaneMove } from "../../src/lib/paneMoveOperation";
@@ -92,6 +92,42 @@ afterEach(async () => {
 const item = { kind: "tab" as const, workspaceId: "source", paneId: "pane", tabId: "tab", label: "Terminal" };
 const gap = { x: 0, y: 0, width: 90, height: 30 };
 describe("tear-out failure and Esc at the actual transfer entry", () => {
+  it("I0-R4 bounds sender revocation without sending a premature revoke event", async () => {
+    vi.useFakeTimers();
+    const original = mocks.invoke.getMockImplementation()!;
+    let release = () => {};
+    mocks.failReceipt = true;
+    mocks.invoke.mockImplementation((command: string, args: any) => command === "tearout_revoke_attachments"
+      ? new Promise<void>(resolve => { release = resolve; }) : original(command, args));
+    let result: unknown;
+    const pending = sendTearoutWorkspaces("peer", [], [], undefined, "lost-revoke-sender")
+      .catch(error => { result = error; });
+    try {
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(result).toBeInstanceOf(Error);
+      await pending;
+      expect(mocks.emitTo.mock.calls.some(([, event]) => event.endsWith("tearout-revoke"))).toBe(false);
+      release(); await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.emitTo.mock.calls.some(([, event]) => event.endsWith("tearout-revoke"))).toBe(false);
+    } finally { release(); await vi.advanceTimersByTimeAsync(0); vi.useRealTimers(); }
+  });
+  it("I0-R4 reports failed receiver revocation instead of acknowledging an unconfirmed revoke", async () => {
+    vi.useFakeTimers();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const original = mocks.invoke.getMockImplementation()!;
+    let release = () => {};
+    mocks.invoke.mockImplementation((command: string, args: any) => command === "tearout_revoke_attachments"
+      ? new Promise<void>(resolve => { release = resolve; }) : original(command, args));
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      dispatch("mycmux://tearout-revoke", { token: "lost-revoke-receiver", ack: "revoke-ack", source: "peer" }, "main");
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(mocks.emitTo).toHaveBeenCalledWith("peer", "mycmux://tearout-receipt",
+        { token: "revoke-ack", ok: false, error: "tearout_revoke_failed" });
+      release(); await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.emitTo.mock.calls.filter(([, event, payload]) => event.endsWith("tearout-receipt") && payload.token === "revoke-ack" && payload.ok)).toHaveLength(0);
+    } finally { release(); await vi.advanceTimersByTimeAsync(0); warning.mockRestore(); vi.useRealTimers(); }
+  });
   it("accepts a delivery addressed to this window, preserving its existing workspace", async () => {
     const incoming = config(workspace("incoming"));
     incoming.panes[0].tabs![0] = { ...incoming.panes[0].tabs![0], tab_id: "incoming-tab", session_id: "pty-incoming" };

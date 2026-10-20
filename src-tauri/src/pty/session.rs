@@ -542,6 +542,16 @@ impl FrontendFlow {
         self.inner.lock().map(|st| st.generation).unwrap_or(0)
     }
 
+    fn retire_channel(&self, channel_id: u32) -> Result<(), String> {
+        let mut st = self.inner.lock().map_err(|e| e.to_string())?;
+        if st.data_channel.id() != channel_id { return Ok(()); }
+        st.generation = st.generation.saturating_add(1);
+        st.attached = false;
+        st.inflight.clear(); st.inflight_bytes = 0; st.dropped_since_send = true;
+        self.notify.notify_waiters();
+        Ok(())
+    }
+
     fn set_visible_for_channel(&self, visible: bool, channel_id: Option<u32>) {
         let Ok(mut st) = self.inner.lock() else {
             return;
@@ -1185,6 +1195,8 @@ impl PtySession {
     ) -> Result<(String, String), String> {
         self.frontend_flow.replace_channel(data_channel)
     }
+
+    pub(crate) fn retire_data_channel(&self, channel_id: u32) -> Result<(), String> { self.frontend_flow.retire_channel(channel_id) }
 
     pub fn ack_frontend_data(&self, generation: u64, seq: u64, bytes: usize) {
         self.frontend_flow.ack(generation, seq, bytes);
@@ -2049,6 +2061,16 @@ mod scrollback_live_tail_tests {
 
 #[cfg(test)]
 impl PtySession {
+
+    pub(crate) async fn fixture_output(&self, data: &[u8]) -> bool {
+        let FlowPermit::Send { generation, seq, resync } = self.frontend_flow.reserve(data.len()).await else { return false; };
+        let batch = FrontendDataBatch { generation, seq, resync, scrollback_start: 0,
+            scrollback_end: data.len() as u64, data: data.to_vec() };
+        let sent = self.frontend_flow.send_batch(&batch).is_ok();
+        self.frontend_flow.ack(generation, seq, data.len());
+        sent
+    }
+
     pub(crate) fn fixture_owner(id: &str, pid: u32, age: Duration, store: MetadataStore) -> Self {
         #[derive(Debug, Clone)]
         struct FixtureChild(u32);

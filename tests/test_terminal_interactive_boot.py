@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -11,6 +12,18 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE = "terminal-integration"
+
+
+def visible_output_lines(output: str) -> list[str]:
+    return re.sub(r"\x1b\]7;[^\x07\x1b]*(?:\x07|\x1b\\)", "", output).splitlines()
+
+
+@pytest.mark.parametrize("terminator", ["\x07", "\x1b\\"])
+def test_visible_output_lines_preserves_exact_markers(terminator: str) -> None:
+    output = "\x1b]7;file://fixture/path" + terminator + "WRAPPER_COUNT:4\nSTATE:kept\n"
+    assert visible_output_lines(output) == ["WRAPPER_COUNT:4", "STATE:kept"]
+    assert visible_output_lines("WRAPPER_COUNT:3\n") == ["WRAPPER_COUNT:3"]
+
 
 NODE_PLAN = r"""
 const fs = require('node:fs');
@@ -78,7 +91,7 @@ def test_terminal_startup_keeps_wrappers_state_and_clears_payload(tmp_path: Path
     result = subprocess.run([executable, *plan["args"]], env=env, cwd=tmp_path, input=followup,
                             capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
-    lines = result.stdout.splitlines()
+    lines = visible_output_lines(result.stdout)
     assert lines.count("BOOT_RAN") == 1, (result.stdout, result.stderr)
     for expected in ["STATE:kept", "WRAPPERS_OK", "COMMAND_ENV:False"]:
         assert expected in lines, (result.stdout, result.stderr)
@@ -152,8 +165,9 @@ def test_restored_terminal_keeps_all_wrapper_functions(
     result = subprocess.run([executable, *plan["args"]], env=env, cwd=tmp_path, input=followup,
                             capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
-    assert "WRAPPER_COUNT:4" in result.stdout.splitlines(), (result.stdout, result.stderr)
-    assert "RESTORED_SHELL_ALIVE" in result.stdout.splitlines(), (result.stdout, result.stderr)
+    lines = visible_output_lines(result.stdout)
+    assert "WRAPPER_COUNT:4" in lines, (result.stdout, result.stderr)
+    assert "RESTORED_SHELL_ALIVE" in lines, (result.stdout, result.stderr)
     assert "ParserError" not in result.stderr and "syntax error" not in result.stderr
     assert "Launch:" not in result.stdout
     assert "ONE_SHOT_MUST_NOT_REPLAY" not in result.stdout + result.stderr

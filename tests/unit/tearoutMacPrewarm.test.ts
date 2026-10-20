@@ -69,6 +69,14 @@ describe("bounded Mac live-session prewarm", () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(mocks.expect).not.toHaveBeenCalled();
   });
+  it("I0-R3 includes authority preparation in the three-second prewarm budget", async () => {
+    mocks.expect.mockReturnValue({ prepared: new Promise<void>(() => {}), ready: new Promise<void>(() => {}), dispose: mocks.dispose });
+    stop = installMacTearoutPrewarm(() => false);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(mocks.dispose).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mocks.dispose).toHaveBeenCalledOnce();
+  });
   it("an unmounted view has a bounded attachment wait", async () => {
     mocks.expect.mockReturnValue({ ready: new Promise<void>(() => {}), dispose: mocks.dispose });
     stop = installMacTearoutPrewarm(() => false);
