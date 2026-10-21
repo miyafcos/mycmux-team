@@ -72,8 +72,14 @@ jobs:
           out.mkdir(exist_ok=False)
           records=[]
           failures=[]
+          omitted=["tests/unit/codexNarrowDetached.test.tsx","tests/unit/codexN3Entries.test.tsx","tests/unit/codexNarrowClaudeParity.test.ts"]
+          private_imports=sorted(path.relative_to(root).as_posix() for path in (root/"tests/unit").glob("*.test.*") if re.search(r"codex-(?:base|merge):",path.read_text(encoding="utf-8")))
+          assert private_imports==sorted(omitted), "private baseline test set changed"
+          config=root/"vitest.public-ci.config.ts"
+          config.write_text('import { defineConfig } from "vitest/config";\nexport default defineConfig({test:{projects:[{test:{name:"unit",include:["tests/unit/**/*.test.{ts,tsx}"],exclude:'+json.dumps(omitted+["tests/unit/persistentLayoutProjectionTypeCoverage.test.ts"])+',maxWorkers:1,sequence:{groupOrder:0}}},{test:{name:"type-coverage",include:["tests/unit/persistentLayoutProjectionTypeCoverage.test.ts"],fileParallelism:false,sequence:{groupOrder:1}}}]}});\n',encoding="utf-8")
+          records.append({"label":"private-baseline-parity","status":"not_run","files":omitted,"reason":"private pinned Git trees not in public checkout; no substitution"})
           commands=[("tsc",[str(root/"node_modules/.bin/tsc.cmd"),"--noEmit"]),
-                    ("vitest",[str(root/"node_modules/.bin/vitest.cmd"),"run","--maxWorkers=1","--no-file-parallelism","--testTimeout=30000","--reporter=json","--outputFile="+str(out/"vitest-results.json"),"--no-color"])]
+                    ("vitest",[str(root/"node_modules/.bin/vitest.cmd"),"run","--config",str(config),"--maxWorkers=1","--no-file-parallelism","--testTimeout=30000","--reporter=json","--outputFile="+str(out/"vitest-results.json"),"--no-color"])]
           if importlib.util.find_spec("pytest") is not None:
               commands.append(("python-contracts",[sys.executable,"-B","-X","utf8","-m","pytest","tests/test_public_export.py","tests/test_ailog_contract.py","tests/test_no_hardcoded_ai_models.py","-q","-p","no:cacheprovider","--junitxml="+str(out/"python-contracts.xml")]))
           else:
@@ -98,10 +104,12 @@ jobs:
           changed=subprocess.check_output(["git","diff","HEAD","--name-only"],text=True).splitlines()
           records.append({"label":"source-invariance","changed_paths":changed})
           if changed: failures.append("source-invariance")
+          for log in out.glob("*.log"):
+              if log.stat().st_size==0: log.write_text("[no output]\n",encoding="utf-8")
           assets=[]
           for path in sorted(out.iterdir()):
               if path.is_file(): assets.append({"name":path.name,"size":path.stat().st_size,"sha256":hashlib.sha256(path.read_bytes()).hexdigest()})
-          receipt={"source_commit":os.environ["SOURCE_COMMIT"],"source_tree":os.environ["SOURCE_TREE"],"version":os.environ["RELEASE_VERSION"],"checks":records,"failed_checks":failures,"python_version":sys.version,"artifacts":assets,"full_private_python_suite":"not_run_public_checkout"}
+          receipt={"source_commit":os.environ["SOURCE_COMMIT"],"source_tree":os.environ["SOURCE_TREE"],"version":os.environ["RELEASE_VERSION"],"checks":records,"failed_checks":failures,"python_version":sys.version,"artifacts":assets,"full_private_python_suite":"not_run_public_checkout","private_baseline_parity":"not_run_missing_trees"}
           (out/"regression-receipt.json").write_text(json.dumps(receipt,indent=2)+"\n",encoding="utf-8")
           print(json.dumps({"checks":records,"failed_checks":failures}),flush=True)
           raise SystemExit(1 if failures else 0)
