@@ -17,7 +17,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: public-windows-hidden-show
+  group: public-windows-hidden-identity
   cancel-in-progress: false
 jobs:
   hidden-smoke:
@@ -117,5 +117,5 @@ jobs:
               if path.stat().st_size==0: path.write_text('[no output]\n',encoding='utf-8')
           receipt=root/'smoke-artifact-manifest.json'
           receipt.write_text(json.dumps({'candidate_source':os.environ['SOURCE_COMMIT'],'probe_version':os.environ['PROBE_VERSION'],'files':[{'name':path.name,'size':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for path in files],'profile_contents_uploaded':False},indent=2)+'\n',encoding='utf-8')
-          tag='windows-hidden-show-'+os.environ['GITHUB_RUN_ID']+'-'+os.environ['PROBE_VERSION']
+          tag='windows-hidden-identity-'+os.environ['GITHUB_RUN_ID']+'-'+os.environ['PROBE_VERSION']
           subprocess.run(['gh','release','create',tag,*map(str,files),str(receipt),'--repo','miyafcos/mycmux-team','--draft','--target',os.environ['SOURCE_COMMIT'],'--title','Hidden comparison '+os.environ['PROBE_VERSION'],'--notes','Filtered verification receipts. No raw profile, credentials, arguments, production or updater changes.'],check=True)

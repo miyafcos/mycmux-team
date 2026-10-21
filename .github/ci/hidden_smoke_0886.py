@@ -266,6 +266,8 @@ def main() -> int:
     object_info = bind(window, 'GetUserObjectInformationW', [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)], wintypes.BOOL)
     foreground = bind(window, 'GetForegroundWindow', [], wintypes.HWND)
     window_text = bind(window, 'GetWindowTextW', [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int], ctypes.c_int)
+    class_name = bind(window, 'GetClassNameW', [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int], ctypes.c_int)
+    is_visible = bind(window, 'IsWindowVisible', [wintypes.HWND], wintypes.BOOL)
     show_window = bind(window, 'ShowWindowAsync', [wintypes.HWND, ctypes.c_int], wintypes.BOOL)
     window_pid = bind(window, 'GetWindowThreadProcessId', [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)], wintypes.DWORD)
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -512,13 +514,23 @@ def main() -> int:
         backend = until(lambda: call('system.version'), 30, 'backend socket ready')
         assert backend['app_version'] == args.version
         owned['checks'].append({'name': 'backend-ready', 'passed': True, 'app_version': backend['app_version'], 'api': backend['api']})
-        candidates = []
-        for hwnd in root_windows(desktop):
-            title = ctypes.create_unicode_buffer(512)
-            window_text(hwnd, title, len(title))
-            if profile in title.value and 'mycmux' in title.value.lower():
-                candidates.append(hwnd)
-        assert len(candidates) == 1, 'isolated profile main window must be unique'
+        def main_window_candidate():
+            candidates = []
+            snapshots = []
+            for hwnd in root_windows(desktop):
+                title = ctypes.create_unicode_buffer(512)
+                kind = ctypes.create_unicode_buffer(256)
+                window_text(hwnd, title, len(title))
+                class_name(hwnd, kind, len(kind))
+                exact_profile = profile in title.value and 'mycmux' in title.value.lower()
+                snapshots.append({'class': kind.value, 'title': scrub(title.value), 'profile_match': exact_profile, 'visible': bool(is_visible(hwnd))})
+                if exact_profile:
+                    candidates.append(hwnd)
+            owned['isolated_window_identity'] = snapshots
+            if len(candidates) > 1:
+                raise RuntimeError('multiple profile main windows')
+            return candidates if len(candidates) == 1 else None
+        candidates = until(main_window_candidate, 20, 'isolated profile main window identity')
         require(show_window(candidates[0], 4), 'show only isolated main window without activation')
         owned['checks'].append({'name': 'isolated-main-show-no-activate', 'passed': True, 'matching_windows': len(candidates)})
         ready = until(lambda: call('workspace.list'), 90, 'frontend socket ready')
