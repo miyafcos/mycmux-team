@@ -61,6 +61,35 @@ def bind(library, name: str, arguments: list, result):
     return function
 
 
+def tcp_listener_owners(port: int) -> list[dict]:
+    library = ctypes.WinDLL('iphlpapi', use_last_error=True)
+    get_table = library.GetExtendedTcpTable
+    get_table.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD), wintypes.BOOL, wintypes.ULONG, ctypes.c_int, wintypes.ULONG]
+    get_table.restype = wintypes.DWORD
+    size = wintypes.DWORD()
+    result = get_table(None, ctypes.byref(size), False, 2, 3, 0)
+    if result != 122:
+        raise OSError(result, 'TCP listener table size query')
+    for attempt in range(3):
+        buffer = ctypes.create_string_buffer(size.value)
+        result = get_table(buffer, ctypes.byref(size), False, 2, 3, 0)
+        if result == 122:
+            continue
+        if result != 0:
+            raise OSError(result, 'TCP listener table query')
+        values = memoryview(buffer.raw).cast('I')
+        count = values[0]
+        if 1 + count * 6 > len(values):
+            raise ValueError('TCP table is truncated')
+        listeners = []
+        for index in range(count):
+            state, address, local_port, _remote, _remote_port, owner = values[1 + index * 6:7 + index * 6]
+            if state == 2 and socket.ntohs(local_port & 65535) == port:
+                listeners.append({'LocalAddress': socket.inet_ntoa(int(address).to_bytes(4, 'little')), 'OwningProcess': int(owner)})
+        return listeners
+    raise RuntimeError('TCP listener table changed repeatedly')
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--exe', type=Path, required=True)
@@ -221,14 +250,7 @@ def main() -> int:
             return detail
         held = []
         try:
-            script = f"@(Get-NetTCPConnection -State Listen -LocalPort {diagnostic_port} -ErrorAction Stop | Select-Object LocalAddress,OwningProcess) | ConvertTo-Json -Compress"
-            result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
-                                    capture_output=True, text=True, timeout=15, env=environment)
-            if result.returncode:
-                raise RuntimeError('CDP listener not available')
-            listeners = json.loads(result.stdout)
-            if isinstance(listeners, dict):
-                listeners = [listeners]
+            listeners = tcp_listener_owners(diagnostic_port)
             assert listeners and all(row['LocalAddress'] in ['127.0.0.1', '::1'] for row in listeners), 'non-loopback CDP listener'
             owners = sorted({int(row['OwningProcess']) for row in listeners})
             for process_id in owners:
