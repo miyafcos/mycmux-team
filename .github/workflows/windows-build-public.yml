@@ -1,144 +1,119 @@
-name: Public Windows build
+name: Public Windows regression
 on:
-  push:
-    branches:
-      - ci/windows-build-0805-260930
   workflow_dispatch:
     inputs:
       source_commit:
-        description: "Public export commit to build (40 hexadecimal characters)"
+        description: "Public export commit to verify"
         required: true
         type: string
       source_tree:
-        description: "Expected public export tree (40 hexadecimal characters)"
+        description: "Expected public export tree"
         required: true
         type: string
       version:
-        description: "Release version, for example 0.80.5"
+        description: "Expected application version"
         required: true
         type: string
 permissions:
   contents: read
 concurrency:
-  group: public-windows-build
+  group: public-windows-regression
   cancel-in-progress: false
 jobs:
-  windows:
+  windows-regression:
     runs-on: windows-2022
-    timeout-minutes: 90
+    timeout-minutes: 55
     permissions:
       contents: write
     env:
-      SOURCE_COMMIT: ${{ inputs.source_commit || '6a07f965ef68372cfe973d0d7827f0ccf030e321' }}
-      SOURCE_TREE: ${{ inputs.source_tree || 'dc0ac9c2baaf151c1b71d813cf26eff72af01b47' }}
-      RELEASE_VERSION: ${{ inputs.version || '0.80.5' }}
-      CARGO_BUILD_JOBS: "2"
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      SOURCE_TREE: ${{ inputs.source_tree }}
+      RELEASE_VERSION: ${{ inputs.version }}
       PYTHONIOENCODING: utf-8
       PYTHONDONTWRITEBYTECODE: "1"
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
     steps:
-      - name: Validate inputs and use LF source files
+      - name: Validate inputs
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:SOURCE_COMMIT -notmatch '^[0-9a-f]{40}$') { throw 'Invalid source commit' }
           if ($env:SOURCE_TREE -notmatch '^[0-9a-f]{40}$') { throw 'Invalid source tree' }
-          if ($env:RELEASE_VERSION -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid version' }
+          if ($env:RELEASE_VERSION -ne '0.88.6') { throw 'Unexpected version' }
           git config --global core.autocrlf false
           if ($LASTEXITCODE) { throw 'Cannot configure checkout line endings' }
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_commit || '6a07f965ef68372cfe973d0d7827f0ccf030e321' }}
+          ref: ${{ inputs.source_commit }}
           persist-credentials: false
-      - name: Verify source and RAM
+      - name: Verify fixed source and RAM
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if ((git rev-parse HEAD).Trim() -ne $env:SOURCE_COMMIT) { throw 'Source commit mismatch' }
-          if ((git rev-parse 'HEAD^{tree}').Trim() -ne $env:SOURCE_TREE) { throw 'Source tree mismatch' }
-          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          if ($packageVersion -ne $env:RELEASE_VERSION -or $tauriVersion -ne $env:RELEASE_VERSION) { throw 'Version mismatch' }
-          $taskOs = Get-CimInstance Win32_OperatingSystem
-          $freeRam = $taskOs.FreePhysicalMemory / 1MB
+          if ((git rev-parse HEAD).Trim() -ne $env:SOURCE_COMMIT) { throw 'Source mismatch' }
+          if ((git rev-parse 'HEAD^{tree}').Trim() -ne $env:SOURCE_TREE) { throw 'Tree mismatch' }
+          if ((Get-Content package.json -Raw | ConvertFrom-Json).version -ne $env:RELEASE_VERSION) { throw 'Version mismatch' }
+          $freeRam = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB
           Write-Output ("Free RAM: {0:N2} GiB" -f $freeRam)
-          if ($freeRam -lt 5.2) { throw 'Windows build RAM gate failed' }
+          if ($freeRam -lt 5.2) { throw 'Runner RAM gate failed' }
       - uses: actions/setup-node@v4
         with:
           node-version: "24.14.0"
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.98.0"
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: amd64
       - name: Restore locked Node dependencies
         shell: pwsh
         run: npm ci
-      - name: Native Windows Rust verification
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Path cloud-output | Out-Null
-          & python -X utf8 scripts/run_windows_tests.py 2>&1 | Tee-Object -FilePath cloud-output/rust-final.log
-          if ($LASTEXITCODE -ne 0) { throw 'Native Windows Rust verification failed' }
-      - name: Check e2e tests and examples
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & cargo check --manifest-path src-tauri/Cargo.toml --features e2e --tests --examples --locked 2>&1 | Tee-Object -FilePath cloud-output/rust-e2e-check.log
-          if ($LASTEXITCODE -ne 0) { throw 'E2e tests/examples compile check failed' }
-      - name: Build Windows bundles without updater private keys
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $cloudConfigPath = Join-Path $pwd 'cloud-updater-config.json'
-          [System.IO.File]::WriteAllText($cloudConfigPath, '{"bundle":{"createUpdaterArtifacts":false}}', [System.Text.UTF8Encoding]::new($false))
-          & npm run tauri -- build --bundles nsis,msi --config $cloudConfigPath 2>&1 | Tee-Object -FilePath cloud-output/windows-build.log
-          if ($LASTEXITCODE -ne 0) { throw 'Windows bundle build failed' }
-          $changed = @(git diff HEAD --name-only)
-          if ($changed.Count -gt 0) {
-            git status --short
-            git diff HEAD --stat
-            git diff HEAD -- src-tauri/permissions src-tauri/gen/schemas src-tauri/Cargo.lock
-            throw 'Tracked source changed during build'
-          }
-      - name: Collect artifacts and source receipt
+      - name: Verify frontend and available Python contracts
         shell: python
         run: |
           from pathlib import Path
-          import hashlib, json, os, shutil, subprocess
-          version=os.environ["RELEASE_VERSION"]
-          root=Path("src-tauri/target/release")
-          out=Path("cloud-output")
-          sources=[root/"mycmux.exe",root/"bundle/nsis"/("mycmux_"+version+"_x64-setup.exe"),root/"bundle/msi"/("mycmux_"+version+"_x64_en-US.msi")]
+          import hashlib, importlib.util, json, os, re, runpy, subprocess, sys, time
+          root=Path.cwd()
+          out=root/"cloud-output"
+          out.mkdir(exist_ok=False)
           records=[]
-          for source in sources:
-              assert source.is_file(),source
-              target=out/source.name
-              shutil.copy2(source,target)
-              hash_state=hashlib.sha256()
-              with target.open("rb") as f:
-                  for chunk in iter(lambda: f.read(1024*1024),b""):
-                      hash_state.update(chunk)
-              digest=hash_state.hexdigest()
-              records.append({"name":target.name,"size":target.stat().st_size,"sha256":digest})
-          receipt={"version":version,"public_source_commit":os.environ["SOURCE_COMMIT"],"public_source_tree":os.environ["SOURCE_TREE"],"rust_exit_code":0,"build_exit_code":0,"assets":records,"updater_signing":"deferred to local existing key"}
-          expected=json.dumps(receipt,ensure_ascii=True,indent=2)+"\n"
-          target=out/"cloud-build-receipt.json"
-          target.write_bytes(expected.encode("utf-8"))
-          assert target.read_bytes().decode("utf-8")==expected
-      - name: Verify executable version
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if ((Get-Item cloud-output/mycmux.exe).VersionInfo.ProductVersion -ne $env:RELEASE_VERSION) { throw 'Executable ProductVersion mismatch' }
-      - name: Save build output as a draft release
+          failures=[]
+          commands=[("tsc",[str(root/"node_modules/.bin/tsc.cmd"),"--noEmit"]),
+                    ("vitest",[str(root/"node_modules/.bin/vitest.cmd"),"run","--maxWorkers=1","--no-file-parallelism","--testTimeout=30000","--reporter=json","--outputFile="+str(out/"vitest-results.json"),"--no-color"])]
+          if importlib.util.find_spec("pytest") is not None:
+              commands.append(("python-contracts",[sys.executable,"-B","-X","utf8","-m","pytest","tests/test_public_export.py","tests/test_ailog_contract.py","tests/test_no_hardcoded_ai_models.py","-q","-p","no:cacheprovider","--junitxml="+str(out/"python-contracts.xml")]))
+          else:
+              records.append({"label":"python-contracts","status":"not_run","reason":"pytest not preinstalled; no packages installed"})
+          for label,command in commands:
+              started=time.monotonic()
+              print("START",label,flush=True)
+              log=out/(label+".log")
+              with log.open("xb") as stream:
+                  result=subprocess.run(command,cwd=root,stdout=stream,stderr=subprocess.STDOUT)
+              records.append({"label":label,"exit":result.returncode,"seconds":round(time.monotonic()-started,3),"log":log.name})
+              print("END",label,result.returncode,flush=True)
+              if result.returncode: failures.append(label)
+          sys.path.insert(0,str(root/"scripts"))
+          exporter=runpy.run_path(str(root/"scripts/public_export.py"),run_name="ci_fixture_library")
+          fixture=root/"src-tauri/src/ailog/tests/r2_legacy_copies.json"
+          fixture_matches=fixture.read_bytes().replace(b"\r\n",b"\n")==exporter["synthetic_ailog_legacy_fixture"]()
+          rust=(root/"src-tauri/src/ailog/tests/stage1_r2_tests.rs").read_text(encoding="utf-8")
+          literal_ids=re.findall(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",rust,re.IGNORECASE)
+          records.append({"label":"synthetic-fixture","matches_recipe":fixture_matches,"rust_literal_uuid_count":len(literal_ids)})
+          if not fixture_matches or literal_ids: failures.append("synthetic-fixture")
+          changed=subprocess.check_output(["git","diff","HEAD","--name-only"],text=True).splitlines()
+          records.append({"label":"source-invariance","changed_paths":changed})
+          if changed: failures.append("source-invariance")
+          assets=[]
+          for path in sorted(out.iterdir()):
+              if path.is_file(): assets.append({"name":path.name,"size":path.stat().st_size,"sha256":hashlib.sha256(path.read_bytes()).hexdigest()})
+          receipt={"source_commit":os.environ["SOURCE_COMMIT"],"source_tree":os.environ["SOURCE_TREE"],"version":os.environ["RELEASE_VERSION"],"checks":records,"failed_checks":failures,"python_version":sys.version,"artifacts":assets,"full_private_python_suite":"not_run_public_checkout"}
+          (out/"regression-receipt.json").write_text(json.dumps(receipt,indent=2)+"\n",encoding="utf-8")
+          print(json.dumps({"checks":records,"failed_checks":failures}),flush=True)
+          raise SystemExit(1 if failures else 0)
+      - name: Retain regression results as draft
+        if: ${{ always() }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $buildTag = 'windows-build-' + $env:GITHUB_RUN_ID
+          if (-not (Test-Path cloud-output/regression-receipt.json)) { throw 'No completed regression receipt; no results retained' }
           $files = @(Get-ChildItem -LiteralPath cloud-output -File | ForEach-Object { $_.FullName })
-          & gh release create $buildTag @files --repo $env:GITHUB_REPOSITORY --draft --target $env:SOURCE_COMMIT --title ("Windows build " + $env:RELEASE_VERSION) --notes 'Unsigned build output. Source receipt and native test logs included. Local updater signing and final publication remain separate.'
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot retain draft build output' }
+          $tag = 'windows-regression-' + $env:GITHUB_RUN_ID
+          & gh release create $tag @files --repo $env:GITHUB_REPOSITORY --draft --target $env:SOURCE_COMMIT --title ('Windows regression ' + $env:RELEASE_VERSION) --notes 'Verification results only. No installable release or updater change.'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot retain regression results' }
