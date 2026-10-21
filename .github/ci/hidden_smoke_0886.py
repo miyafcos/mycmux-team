@@ -65,9 +65,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--exe', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--probe', type=Path, required=True)
     args = parser.parse_args()
     assert os.name == 'nt' and os.environ.get('GITHUB_ACTIONS') == 'true', 'CI-only execution'
     assert os.environ.get('GITHUB_REPOSITORY') == 'miyafcos/mycmux-team'
+    probe = args.probe.resolve()
+    assert probe.is_file() and probe.name == 'webview_probe_0886.mjs'
     binary = args.exe.resolve()
     assert binary.is_file() and binary.stat().st_size == EXPECTED_SIZE
     assert hashlib.sha256(binary.read_bytes()).hexdigest() == EXPECTED_SHA
@@ -109,6 +112,10 @@ def main() -> int:
     info = ProcessInfo()
     desktop = job = input_desktop = None
     assigned = False
+    diagnostic_port = None
+    environment = None
+    open_process = bind(system, 'OpenProcess', [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE)
+    in_job = bind(system, 'IsProcessInJob', [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)], wintypes.BOOL)
 
     def require(result, description: str):
         if not result:
@@ -171,6 +178,81 @@ def main() -> int:
             time.sleep(0.25)
         raise TimeoutError(label + ': ' + str(last))
 
+    def scrub(text: str) -> str:
+        token_path = runtime / 'mycmux.token'
+        if token_path.is_file():
+            token = token_path.read_text(encoding='utf-8').strip()
+            if token:
+                text = text.replace(token, '<redacted>')
+        return '\n'.join('<sensitive diagnostic line omitted>' if re.search(
+            r'token|authorization|password|credential|api[_-]?key|private[_-]?key', line, re.I) else line
+            for line in text.splitlines())
+
+    def filtered(value):
+        if isinstance(value, str):
+            return scrub(value)
+        if isinstance(value, dict):
+            return {str(key): filtered(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [filtered(item) for item in value]
+        return value
+
+    def diagnostic_snapshot() -> dict:
+        detail = {'raw_profile_uploaded': False, 'cdp': {'status': 'not_started'}}
+        if desktop:
+            detail['root_windows_hidden'] = len(root_windows(desktop))
+        current = require(open_input(0, False, 0x0041), 'inspect input desktop')
+        try:
+            detail['input_desktop_unchanged'] = desktop_name(current) == owned['input_desktop_before']
+            detail['root_windows_input'] = len(root_windows(current))
+            detail['foreground_after'] = int(foreground() or 0)
+        finally:
+            close_desktop(current)
+        if not detail['input_desktop_unchanged'] or detail['root_windows_input']:
+            owned['status'] = 'failed'
+            detail['isolation_failure'] = True
+        for name in ['diag.log', 'diag.log.1']:
+            path = runtime / name
+            if path.is_file():
+                payload = path.read_bytes()
+                detail[name] = {'size': len(payload), 'sha256': hashlib.sha256(payload).hexdigest(),
+                                'tail': scrub(payload[-32768:].decode('utf-8', errors='replace'))}
+        if not diagnostic_port or not assigned:
+            return detail
+        held = []
+        try:
+            script = f"@(Get-NetTCPConnection -State Listen -LocalPort {diagnostic_port} -ErrorAction Stop | Select-Object LocalAddress,OwningProcess) | ConvertTo-Json -Compress"
+            result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
+                                    capture_output=True, text=True, timeout=15, env=environment)
+            if result.returncode:
+                raise RuntimeError('CDP listener not available')
+            listeners = json.loads(result.stdout)
+            if isinstance(listeners, dict):
+                listeners = [listeners]
+            assert listeners and all(row['LocalAddress'] in ['127.0.0.1', '::1'] for row in listeners), 'non-loopback CDP listener'
+            owners = sorted({int(row['OwningProcess']) for row in listeners})
+            for process_id in owners:
+                handle = require(open_process(0x1000, False, process_id), 'hold CDP owner')
+                held.append(handle)
+                belongs = wintypes.BOOL()
+                require(in_job(handle, job, ctypes.byref(belongs)), 'check CDP owner job')
+                assert belongs.value, 'CDP owner is outside the isolated job'
+            detail['cdp'] = {'status': 'owned_listener_verified', 'owners': owners, 'port': diagnostic_port}
+            raw_path = output / 'webview-diagnostic-private.json'
+            result = subprocess.run(['node', str(probe), str(diagnostic_port), profile, str(raw_path)],
+                                    capture_output=True, text=True, timeout=60, env=environment)
+            detail['cdp']['probe_exit'] = result.returncode
+            detail['cdp']['probe_stdout'] = scrub(result.stdout)
+            detail['cdp']['probe_stderr'] = scrub(result.stderr)
+            if raw_path.is_file():
+                detail['webview'] = filtered(json.loads(raw_path.read_text(encoding='utf-8')))
+        except Exception as error:
+            detail['cdp']['error'] = scrub(type(error).__name__ + ': ' + str(error))
+        finally:
+            for handle in held:
+                close_handle(handle)
+        return detail
+
     try:
         free = memory_gib()
         owned['start_free_gib'] = free
@@ -194,7 +276,16 @@ def main() -> int:
                    'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'OS'}
         environment = {key: value for key, value in os.environ.items() if key.upper() in allowed}
         environment['WEBVIEW2_USER_DATA_FOLDER'] = str(runtime / 'webview2')
-        environment['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = '--disable-background-networking --disable-component-update --disable-sync'
+        for candidate_port in range(9300, 9400):
+            with socket.socket() as reservation:
+                try:
+                    reservation.bind(('127.0.0.1', candidate_port))
+                except OSError:
+                    continue
+                diagnostic_port = candidate_port
+                break
+        assert diagnostic_port, 'no unused diagnostic port'
+        environment['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = '--disable-background-networking --disable-component-update --disable-sync --remote-debugging-address=127.0.0.1 --remote-debugging-port=' + str(diagnostic_port)
         assert not any(key.upper().startswith(('GH_', 'GITHUB_', 'CLAUDE', 'ANTHROPIC', 'OPENAI', 'MYCMUX_')) for key in environment)
         owned['child_environment_keys'] = sorted(environment)
         block = ctypes.create_unicode_buffer('\0'.join(f'{key}={value}' for key, value in sorted(environment.items(), key=lambda item: item[0].upper())) + '\0\0')
@@ -207,6 +298,9 @@ def main() -> int:
         assigned = True
         require(resume(info.thread) != 0xFFFFFFFF, 'resume isolated app')
         owned['pid'] = int(info.pid)
+        backend = until(lambda: call('system.version'), 30, 'backend socket ready')
+        assert backend['app_version'] == '0.88.6'
+        owned['checks'].append({'name': 'backend-ready', 'passed': True, 'app_version': backend['app_version'], 'api': backend['api']})
         ready = until(lambda: call('workspace.list'), 90, 'frontend socket ready')
         owned['checks'].append({'name': 'frontend-ready', 'passed': True, 'initial_workspaces': len(ready['workspaces'])})
         created = call('workspace.new', {'name': 'Synthetic CI smoke', 'grid': '1x1', 'cwd': str(output)})
@@ -250,6 +344,12 @@ def main() -> int:
     except Exception as error:
         owned.update(status='failed', error=type(error).__name__ + ': ' + str(error))
     finally:
+        try:
+            diagnostic = diagnostic_snapshot()
+            (output / 'safe-diagnostic.json').write_text(json.dumps(diagnostic, indent=2) + '\n', encoding='utf-8')
+            owned['diagnostic_file'] = 'safe-diagnostic.json'
+        except Exception as error:
+            owned['diagnostic_error'] = type(error).__name__
         cleanup = {'job_assigned': assigned}
         if job and assigned:
             cleanup['job_terminate_ok'] = bool(terminate_job(job, 0))

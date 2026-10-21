@@ -1,4 +1,4 @@
-name: Public Windows hidden smoke
+name: Public Windows hidden diagnostic
 on:
   workflow_dispatch:
     inputs:
@@ -17,7 +17,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: public-windows-hidden-smoke
+  group: public-windows-hidden-diagnostic
   cancel-in-progress: false
 jobs:
   hidden-smoke:
@@ -80,11 +80,17 @@ jobs:
           record={'public_source':os.environ['SOURCE_COMMIT'],'public_tree':os.environ['SOURCE_TREE'],'version':version,'exe_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'exe_size':binary.stat().st_size,'build_run':39564338446,'ci_control':os.environ['GITHUB_SHA']}
           (out/'download-receipt.json').write_text(json.dumps(record,indent=2)+'\n',encoding='utf-8')
           print('EXACT_BINARY_VERIFIED',version)
+      - name: Confirm existing Node diagnostics
+        shell: pwsh
+        run: |
+          node --version
+          node -e "if(typeof fetch!=='function'||typeof WebSocket!=='function')process.exit(2)"
+          if ($LASTEXITCODE -ne 0) { throw 'Existing Node lacks diagnostics; no installation performed' }
       - name: Run distribution binary on isolated desktop
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & python -I -X utf8 ci-control/.github/ci/hidden_smoke_0886.py --exe binary-input/mycmux.exe --out smoke-output 2>&1 | Tee-Object -FilePath hidden-smoke.log
+          & python -I -X utf8 ci-control/.github/ci/hidden_smoke_0886.py --exe binary-input/mycmux.exe --out smoke-output --probe ci-control/.github/ci/webview_probe_0886.mjs 2>&1 | Tee-Object -FilePath hidden-smoke.log
           if ($LASTEXITCODE -ne 0) { throw 'Hidden smoke did not pass' }
       - name: Retain smoke receipts without profile secrets
         if: ${{ always() }}
@@ -95,12 +101,12 @@ jobs:
           from pathlib import Path
           import hashlib, json, os, subprocess
           root=Path.cwd()
-          paths=[root/'download-records/download-receipt.json',root/'hidden-smoke.log',root/'smoke-output/smoke-receipt.json']
+          paths=[root/'download-records/download-receipt.json',root/'hidden-smoke.log',root/'smoke-output/smoke-receipt.json',root/'smoke-output/safe-diagnostic.json']
           files=[path for path in paths if path.is_file()]
           assert files,'No smoke evidence was created'
           for path in files:
               if path.stat().st_size==0: path.write_text('[no output]\n',encoding='utf-8')
           receipt=root/'smoke-artifact-manifest.json'
           receipt.write_text(json.dumps({'source':os.environ['SOURCE_COMMIT'],'files':[{'name':path.name,'size':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for path in files],'profile_contents_uploaded':False},indent=2)+'\n',encoding='utf-8')
-          tag='windows-hidden-smoke-'+os.environ['GITHUB_RUN_ID']
-          subprocess.run(['gh','release','create',tag,*map(str,files),str(receipt),'--repo','miyafcos/mycmux-team','--draft','--target',os.environ['SOURCE_COMMIT'],'--title','Windows hidden smoke 0.88.6','--notes','Isolated verification receipts only. No profile tokens, transcripts, installer changes or updater publication.'],check=True)
+          tag='windows-hidden-diagnostic-'+os.environ['GITHUB_RUN_ID']
+          subprocess.run(['gh','release','create',tag,*map(str,files),str(receipt),'--repo','miyafcos/mycmux-team','--draft','--target',os.environ['SOURCE_COMMIT'],'--title','Windows hidden diagnostic 0.88.6','--notes','Isolated verification receipts only. No profile tokens, transcripts, installer changes or updater publication.'],check=True)
