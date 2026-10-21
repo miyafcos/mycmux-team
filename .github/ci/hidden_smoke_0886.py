@@ -265,6 +265,8 @@ def main() -> int:
     open_input = bind(window, 'OpenInputDesktop', [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE)
     object_info = bind(window, 'GetUserObjectInformationW', [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)], wintypes.BOOL)
     foreground = bind(window, 'GetForegroundWindow', [], wintypes.HWND)
+    window_text = bind(window, 'GetWindowTextW', [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int], ctypes.c_int)
+    show_window = bind(window, 'ShowWindowAsync', [wintypes.HWND, ctypes.c_int], wintypes.BOOL)
     window_pid = bind(window, 'GetWindowThreadProcessId', [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)], wintypes.DWORD)
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     enum_desktop = bind(window, 'EnumDesktopWindows', [wintypes.HANDLE, callback_type, wintypes.LPARAM], wintypes.BOOL)
@@ -499,6 +501,8 @@ def main() -> int:
         startup = Startup()
         startup.cb = ctypes.sizeof(startup)
         startup.desktop = 'WinSta0\\mycmux-' + profile
+        startup.flags = 1
+        startup.show = 5
         command = ctypes.create_unicode_buffer(subprocess.list2cmdline([str(binary), '--profile', profile]))
         require(create_process(str(binary), command, None, None, False, 0x0404, block, str(output), ctypes.byref(startup), ctypes.byref(info)), 'create suspended isolated app')
         require(assign_job(job, info.process), 'assign app to owned job')
@@ -508,6 +512,15 @@ def main() -> int:
         backend = until(lambda: call('system.version'), 30, 'backend socket ready')
         assert backend['app_version'] == args.version
         owned['checks'].append({'name': 'backend-ready', 'passed': True, 'app_version': backend['app_version'], 'api': backend['api']})
+        candidates = []
+        for hwnd in root_windows(desktop):
+            title = ctypes.create_unicode_buffer(512)
+            window_text(hwnd, title, len(title))
+            if profile in title.value and 'mycmux' in title.value.lower():
+                candidates.append(hwnd)
+        assert len(candidates) == 1, 'isolated profile main window must be unique'
+        require(show_window(candidates[0], 4), 'show only isolated main window without activation')
+        owned['checks'].append({'name': 'isolated-main-show-no-activate', 'passed': True, 'matching_windows': len(candidates)})
         ready = until(lambda: call('workspace.list'), 90, 'frontend socket ready')
         owned['checks'].append({'name': 'frontend-ready', 'passed': True, 'initial_workspaces': len(ready['workspaces'])})
         created = call('workspace.new', {'name': 'Synthetic CI smoke', 'grid': '1x1', 'cwd': str(output)})
