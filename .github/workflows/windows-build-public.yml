@@ -1,39 +1,44 @@
-name: Public Windows runtime error probe
+name: Public Windows version comparison
 on:
   workflow_dispatch:
     inputs:
       source_commit:
-        description: Frozen public source
+        description: "Frozen public candidate source"
         required: true
         type: string
       source_tree:
-        description: Frozen public tree
+        description: "Frozen public candidate tree"
         required: true
         type: string
       version:
-        description: Candidate version
+        description: "Candidate version"
         required: true
         type: string
 permissions:
   contents: read
 concurrency:
-  group: public-windows-runtime-probe
+  group: public-windows-hidden-medium
   cancel-in-progress: false
 jobs:
-  diagnostic:
+  hidden-smoke:
     runs-on: windows-2022
-    timeout-minutes: 75
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        version: ['0.88.5', '0.88.6']
     permissions:
       contents: write
     env:
       SOURCE_COMMIT: ${{ inputs.source_commit }}
       SOURCE_TREE: ${{ inputs.source_tree }}
       RELEASE_VERSION: ${{ inputs.version }}
-      CARGO_BUILD_JOBS: "2"
+      PROBE_VERSION: ${{ matrix.version }}
       PYTHONIOENCODING: utf-8
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
-      - name: Validate frozen inputs and resource gate
+      - name: Validate exact candidate
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -41,86 +46,76 @@ jobs:
           if ($env:SOURCE_TREE -ne 'e3ecd9d24c153471345dcdeef60d1945171510fc') { throw 'Unexpected tree' }
           if ($env:RELEASE_VERSION -ne '0.88.6') { throw 'Unexpected version' }
           git config --global core.autocrlf false
-          if ($LASTEXITCODE) { throw 'Cannot set LF checkout' }
-          $free = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB
-          if ($free -lt 5.2) { throw 'Start memory gate' }
+          if ($LASTEXITCODE) { throw 'Cannot set checkout line endings' }
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           path: ci-control
           persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source_commit }}
-          path: product-source
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24.14.0"
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.98.0"
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: amd64
-      - name: Apply diagnostic-only logger
+      - name: Download and verify fixed old or new distribution
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          from pathlib import Path
+          import hashlib, json, os, subprocess
+          root=Path.cwd()
+          out=root/'download-records'
+          out.mkdir(exist_ok=False)
+          target=root/'binary-input'
+          target.mkdir(exist_ok=False)
+          repo='miyafcos/mycmux-team'
+          version=os.environ['PROBE_VERSION']
+          definitions={
+              '0.88.5':('windows-build-39225333970','16ad5e480c0ae539f2b22732e872925d78e357ae','09650ce59931f87efebf0acc634e215686ff9381',75944448,'87dff21cc99029708cea4428412c58d8e0fa7b8d02a91239dc01b4bc50d858aa'),
+              '0.88.6':('windows-build-39564338446','ef72c0672d5a3a78685e7eab9511f07ddcca8892','e3ecd9d24c153471345dcdeef60d1945171510fc',77128704,'7a030f48a64fc7242d3e20cb04afc89ad3d8240cc35939d28b4636631466bf6f'),
+          }
+          tag,source,tree,size,sha=definitions[version]
+          release=json.loads(subprocess.check_output(['gh','release','view',tag,'--repo',repo,'--json','assets,isDraft,targetCommitish,tagName']))
+          assert release['isDraft'] and release['targetCommitish']==source
+          wanted={'mycmux.exe','cloud-build-receipt.json'}
+          selected={row['name']:row for row in release['assets'] if row['name'] in wanted}
+          assert set(selected)==wanted
+          for name in sorted(wanted):
+              subprocess.run(['gh','release','download',tag,'--repo',repo,'--pattern',name,'--dir',str(target)],check=True)
+              path=target/name
+              assert selected[name]['digest']=='sha256:'+hashlib.sha256(path.read_bytes()).hexdigest() and selected[name]['size']==path.stat().st_size
+          cloud=json.loads((target/'cloud-build-receipt.json').read_text(encoding='utf-8-sig'))
+          assert cloud['public_source_commit']==source and cloud['public_source_tree']==tree and cloud['version']==version
+          binary=target/'mycmux.exe'
+          assert binary.stat().st_size==size and hashlib.sha256(binary.read_bytes()).hexdigest()==sha
+          actual=subprocess.check_output(['powershell.exe','-NoProfile','-Command',"(Get-Item -LiteralPath '"+str(binary)+"').VersionInfo.ProductVersion"],text=True).strip()
+          assert actual==version
+          record={'public_source':source,'public_tree':tree,'version':version,'exe_sha256':sha,'exe_size':size,'ci_control':os.environ['GITHUB_SHA']}
+          (out/'download-receipt.json').write_text(json.dumps(record,indent=2)+'\n',encoding='utf-8')
+          print('EXACT_BINARY_VERIFIED',version)
+      - name: Confirm existing Node diagnostics
         shell: pwsh
         run: |
-          & python -I -X utf8 ci-control/.github/ci/prepare_runtime_probe.py --source product-source --receipt probe-evidence/patch-receipt.json
-          if ($LASTEXITCODE) { throw 'Diagnostic patch failed' }
-      - name: Restore unchanged locked Node dependencies
-        working-directory: product-source
-        shell: pwsh
-        run: |
-          npm ci
-          if ($LASTEXITCODE) { throw 'Locked dependency restoration failed' }
-      - name: Build non-distribution diagnostic executable
-        working-directory: product-source
+          node --version
+          node -e "if(typeof fetch!=='function'||typeof WebSocket!=='function')process.exit(2)"
+          if ($LASTEXITCODE -ne 0) { throw 'Existing Node lacks diagnostics; no installation performed' }
+      - name: Run fixed binary on isolated desktop
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & npm run tauri -- build --no-bundle -- --locked 2>&1 | Tee-Object -FilePath ../probe-evidence/diagnostic-build.log
-          if ($LASTEXITCODE) { throw 'Diagnostic build failed' }
-      - name: Verify diagnostic binary and exact patch
-        shell: python
-        run: |
-          import hashlib, json, os, subprocess
-          from pathlib import Path
-          root=Path('product-source')
-          out=Path('probe-evidence')
-          receipt=json.loads((out/'patch-receipt.json').read_text(encoding='utf-8'))
-          assert receipt['diagnostic_only'] and not receipt['production_update'] and receipt['new_packages']==[]
-          changes=subprocess.check_output(['git','diff','HEAD','--name-only'],cwd=root).decode().splitlines()
-          assert set(changes)=={row['path'] for row in receipt['files']}
-          for row in receipt['files']:
-              assert hashlib.sha256((root/row['path']).read_bytes()).hexdigest()==row['diagnostic_sha256']
-          binary=root/'src-tauri/target/release/mycmux.exe'
-          actual=subprocess.check_output(['powershell.exe','-NoProfile','-Command',"(Get-Item -LiteralPath '"+str(binary.resolve())+"').VersionInfo.ProductVersion"],text=True).strip()
-          assert actual=='0.88.6'
-          receipt.update(exe_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),exe_size=binary.stat().st_size,version=actual,ci_control=os.environ['GITHUB_SHA'])
-          (out/'diagnostic-build-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n',encoding='utf-8')
-          print('DIAGNOSTIC_ONLY_BINARY_VERIFIED',receipt['exe_sha256'])
-      - name: Run diagnostic on isolated desktop
-        shell: pwsh
-        run: |
-          & python -I -X utf8 ci-control/.github/ci/hidden_runtime_probe.py --exe product-source/src-tauri/target/release/mycmux.exe --build-receipt probe-evidence/diagnostic-build-receipt.json --out smoke-output --probe ci-control/.github/ci/webview_probe_0886.mjs --version 0.88.6 2>&1 | Tee-Object -FilePath probe-evidence/hidden-smoke.log
-          if ($LASTEXITCODE) { throw 'Diagnostic startup did not pass; inspect runtime error evidence' }
-      - name: Retain filtered diagnostic evidence only
+          & python -I -X utf8 ci-control/.github/ci/hidden_smoke_0886.py --exe binary-input/mycmux.exe --out smoke-output --probe ci-control/.github/ci/webview_probe_0886.mjs --version $env:PROBE_VERSION 2>&1 | Tee-Object -FilePath hidden-smoke.log
+          if ($LASTEXITCODE -ne 0) { throw 'Hidden comparison did not pass' }
+      - name: Retain filtered comparison evidence
         if: ${{ always() }}
         shell: python
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          import hashlib, json, os, subprocess
           from pathlib import Path
-          out=Path('probe-evidence')
-          out.mkdir(exist_ok=True)
-          paths=[out/name for name in ['patch-receipt.json','diagnostic-build.log','diagnostic-build-receipt.json','hidden-smoke.log']]
-          paths += [Path('smoke-output')/name for name in ['smoke-receipt.json','safe-diagnostic.json']]
+          import hashlib, json, os, subprocess
+          root=Path.cwd()
+          paths=[root/'download-records/download-receipt.json',root/'hidden-smoke.log',root/'smoke-output/smoke-receipt.json',root/'smoke-output/safe-diagnostic.json']
           files=[path for path in paths if path.is_file()]
-          assert files
+          assert files,'No smoke evidence was created'
           for path in files:
               if path.stat().st_size==0: path.write_text('[no output]\n',encoding='utf-8')
-          manifest=out/'runtime-probe-manifest.json'
-          manifest.write_text(json.dumps({'public_source':os.environ['SOURCE_COMMIT'],'diagnostic_only':True,'production_update':False,'binary_uploaded':False,'raw_profile_uploaded':False,'files':[{'name':path.name,'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'size':path.stat().st_size} for path in files]},indent=2)+'\n',encoding='utf-8')
-          subprocess.run(['gh','release','create','windows-runtime-probe-'+os.environ['GITHUB_RUN_ID'],*map(str,files),str(manifest),'--repo','miyafcos/mycmux-team','--draft','--target',os.environ['SOURCE_COMMIT'],'--title','Window runtime diagnostic','--notes','Diagnostic-only build evidence. No distribution binaries, profile contents or updater changes.'],check=True)
+          receipt=root/'smoke-artifact-manifest.json'
+          receipt.write_text(json.dumps({'candidate_source':os.environ['SOURCE_COMMIT'],'probe_version':os.environ['PROBE_VERSION'],'files':[{'name':path.name,'size':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for path in files],'profile_contents_uploaded':False},indent=2)+'\n',encoding='utf-8')
+          tag='windows-hidden-medium-'+os.environ['GITHUB_RUN_ID']+'-'+os.environ['PROBE_VERSION']
+          subprocess.run(['gh','release','create',tag,*map(str,files),str(receipt),'--repo','miyafcos/mycmux-team','--draft','--target',os.environ['SOURCE_COMMIT'],'--title','Hidden comparison '+os.environ['PROBE_VERSION'],'--notes','Filtered verification receipts. No raw profile, credentials, arguments, production or updater changes.'],check=True)

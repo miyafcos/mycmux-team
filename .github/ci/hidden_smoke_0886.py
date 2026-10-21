@@ -227,6 +227,85 @@ def owned_process_diagnostics(job, expected_port: int, expected_directory: Path)
     return {'assigned': int(assigned), 'records': records, 'raw_arguments_recorded': False}
 
 
+def create_medium_process(binary, command, block, directory, startup, info, evidence: dict) -> dict:
+    security = ctypes.WinDLL('advapi32', use_last_error=True)
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    open_token = bind(security, 'OpenProcessToken', [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)], wintypes.BOOL)
+    token_information = bind(security, 'GetTokenInformation', [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)], wintypes.BOOL)
+    create_restricted = bind(security, 'CreateRestrictedToken', [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p, ctypes.POINTER(wintypes.HANDLE)], wintypes.BOOL)
+    convert_sid = bind(security, 'ConvertStringSidToSidW', [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)], wintypes.BOOL)
+    set_token = bind(security, 'SetTokenInformation', [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD], wintypes.BOOL)
+    sid_length = bind(security, 'GetLengthSid', [ctypes.c_void_p], wintypes.DWORD)
+    count_subauthorities = bind(security, 'GetSidSubAuthorityCount', [ctypes.c_void_p], ctypes.POINTER(ctypes.c_ubyte))
+    subauthority = bind(security, 'GetSidSubAuthority', [ctypes.c_void_p, wintypes.DWORD], ctypes.POINTER(wintypes.DWORD))
+    equal_sid = bind(security, 'EqualSid', [ctypes.c_void_p, ctypes.c_void_p], wintypes.BOOL)
+    create_as_user = bind(security, 'CreateProcessAsUserW', [wintypes.HANDLE, wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p, wintypes.BOOL,
+                          wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR, ctypes.POINTER(Startup), ctypes.POINTER(ProcessInfo)], wintypes.BOOL)
+    current_process = bind(kernel, 'GetCurrentProcess', [], wintypes.HANDLE)
+    close = bind(kernel, 'CloseHandle', [wintypes.HANDLE], wintypes.BOOL)
+    local_free = bind(kernel, 'LocalFree', [ctypes.c_void_p], ctypes.c_void_p)
+
+    class SidAttributes(ctypes.Structure):
+        _fields_ = [('sid', ctypes.c_void_p), ('attributes', wintypes.DWORD)]
+
+    def checked(result, label: str):
+        if not result:
+            raise OSError(ctypes.get_last_error(), label)
+        return result
+
+    def information(token, kind: int):
+        size = wintypes.DWORD()
+        token_information(token, kind, None, 0, ctypes.byref(size))
+        assert 0 < size.value < 65536
+        payload = ctypes.create_string_buffer(size.value)
+        checked(token_information(token, kind, payload, len(payload), ctypes.byref(size)), 'read token information ' + str(kind))
+        return payload
+
+    def summary(token) -> dict:
+        integrity = information(token, 25)
+        descriptor = SidAttributes.from_buffer(integrity)
+        count = int(count_subauthorities(descriptor.sid).contents.value)
+        assert count > 0
+        level = int(subauthority(descriptor.sid, count - 1).contents.value)
+        elevation = information(token, 20)
+        return {'integrity_rid': level, 'elevated': bool(wintypes.DWORD.from_buffer(elevation).value)}
+
+    original = wintypes.HANDLE()
+    restricted = wintypes.HANDLE()
+    child = wintypes.HANDLE()
+    medium_sid = ctypes.c_void_p()
+    try:
+        checked(open_token(current_process(), 0x008B, ctypes.byref(original)), 'open own process token')
+        parent_state = summary(original)
+        evidence['parent'] = parent_state
+        assert parent_state['integrity_rid'] > 8192, 'host is not high integrity; do not vary this condition'
+        checked(create_restricted(original, 5, 0, None, 0, None, 0, None, ctypes.byref(restricted)), 'restrict own token privileges and admin groups')
+        checked(convert_sid('S-1-16-8192', ctypes.byref(medium_sid)), 'create medium integrity SID')
+        label = SidAttributes(medium_sid.value, 0x20)
+        checked(set_token(restricted, 25, ctypes.byref(label), ctypes.sizeof(label) + sid_length(medium_sid)), 'lower restricted token integrity')
+        restricted_state = summary(restricted)
+        evidence['restricted'] = restricted_state
+        assert restricted_state == {'integrity_rid': 8192, 'elevated': False}, restricted_state
+        original_user = information(original, 1)
+        restricted_user = information(restricted, 1)
+        assert equal_sid(SidAttributes.from_buffer(original_user).sid, SidAttributes.from_buffer(restricted_user).sid)
+        checked(create_as_user(restricted, str(binary), command, None, None, False, 0x0404, block, str(directory), ctypes.byref(startup), ctypes.byref(info)),
+                'create suspended same-user medium-integrity app')
+        checked(open_token(info.process, 0x0008, ctypes.byref(child)), 'read suspended child token')
+        child_state = summary(child)
+        child_user = information(child, 1)
+        assert child_state == restricted_state
+        assert equal_sid(SidAttributes.from_buffer(original_user).sid, SidAttributes.from_buffer(child_user).sid)
+        return {'parent': parent_state, 'restricted': restricted_state, 'child': child_state,
+                'same_user': True, 'user_sid_logged': False, 'privileges_added': False}
+    finally:
+        if medium_sid:
+            local_free(medium_sid)
+        for token in [child, restricted, original]:
+            if token:
+                close(token)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--exe', type=Path, required=True)
@@ -506,7 +585,8 @@ def main() -> int:
         startup.flags = 1
         startup.show = 5
         command = ctypes.create_unicode_buffer(subprocess.list2cmdline([str(binary), '--profile', profile]))
-        require(create_process(str(binary), command, None, None, False, 0x0404, block, str(output), ctypes.byref(startup), ctypes.byref(info)), 'create suspended isolated app')
+        owned['token_probe'] = {}
+        owned['token_probe'].update(create_medium_process(binary, command, block, output, startup, info, owned['token_probe']))
         require(assign_job(job, info.process), 'assign app to owned job')
         assigned = True
         require(resume(info.thread) != 0xFFFFFFFF, 'resume isolated app')
