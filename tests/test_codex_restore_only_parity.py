@@ -140,8 +140,8 @@ class RestoreOnlyParityTests(unittest.TestCase):
         paths = [*PROTECTED_PATHS, "src-tauri/src/commands/terminal.rs",
                  "src/components/terminal/XTermWrapper.tsx", "src-tauri/src/launcher.sh",
                  "src-tauri/src/launcher.ps1", "tests/helpers/narrow_hook_source_base.rs"]
-        changed = [path for path in paths if (ROOT / path).read_bytes()
-                   != subprocess.check_output(["git", "show", f"HEAD:{path}"], cwd=ROOT)]
+        changed = [path for path in paths if (ROOT / path).read_bytes().replace(b"\r\n", b"\n")
+                   != subprocess.check_output(["git", "show", f"HEAD:{path}"], cwd=ROOT).replace(b"\r\n", b"\n")]
         self.assertEqual(changed, [])
 
 if __name__ == "__main__":

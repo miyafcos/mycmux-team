@@ -196,7 +196,7 @@ fn synthetic_index_benchmark_reports_phase_timings_and_skips_unchanged_files() {
         let mut body = String::new();
         for turn_index in 0..TURNS_PER_FILE {
             body.push_str(&format!(
-                r#"{{"type":"assistant","sessionId":"BENCH-{file_index}","requestId":"request-{turn_index}","timestamp":"2026-08-01T00:{:02}:{:02}.000Z","cwd":"C:\\bench","entrypoint":"cli","uuid":"bench-{file_index}-{turn_index}","message":{{"id":"message-{turn_index}","model":"claude-opus-5","role":"assistant","content":[],"usage":{{"input_tokens":100,"output_tokens":200,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#,
+                r#"{{"type":"assistant","sessionId":"BENCH-{file_index}","requestId":"request-{file_index}-{turn_index}","timestamp":"2026-08-01T00:{:02}:{:02}.000Z","cwd":"C:\\bench","entrypoint":"cli","uuid":"bench-{file_index}-{turn_index}","message":{{"id":"message-{file_index}-{turn_index}","model":"claude-opus-5","role":"assistant","content":[],"usage":{{"input_tokens":100,"output_tokens":200,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#,
                 turn_index / 60,
                 turn_index % 60,
             ));

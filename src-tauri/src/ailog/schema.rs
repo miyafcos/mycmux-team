@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS turn (
   cost_usd       REAL NOT NULL DEFAULT 0,
   ingest_cost_usd  REAL NOT NULL DEFAULT 0,
   generate_cost_usd REAL NOT NULL DEFAULT 0,
+  usage_state    TEXT NOT NULL DEFAULT 'legacy',
   PRIMARY KEY (kind, session_id, seq)
 );
 CREATE INDEX IF NOT EXISTS ix_turn_ts ON turn(ts);

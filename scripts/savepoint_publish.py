@@ -114,8 +114,10 @@ def manifest_identity(manifest: dict[str, Any]) -> tuple[str, str]:
         and legacy_id == generic_id
     ):
         return ("claude", generic_id)
-    if generic_kind == "codex" and generic_id is not None and legacy_id is None:
-        return ("codex", generic_id)
+    if generic_kind in ("codex", "claude-codex") and generic_id is not None and legacy_id is None:
+        if generic_kind == "claude-codex":
+            uuid.UUID(generic_id)
+        return (generic_kind, generic_id)
     raise ValueError("Savepoint agent identity is invalid")
 
 
@@ -522,7 +524,7 @@ def write_bundle_temp(
 
 
 def validate_final_record(
-    manifest: dict[str, Any], target_dir: Path, session_id: str, checkpoint_id: str
+    manifest: dict[str, Any], target_dir: Path, session_id: str, checkpoint_id: str, agent_kind: str = "claude"
 ) -> None:
     lifecycle = lifecycle_from_manifest(manifest)
     try:
@@ -530,7 +532,7 @@ def validate_final_record(
     except ValueError:
         identity = None
     if (
-        identity != ("claude", session_id)
+        identity != (agent_kind, session_id)
         or lifecycle["status"] != "closed"
         or not lifecycle["final_checkpoint"]
         or lifecycle["checkpoint_id"] != checkpoint_id
@@ -585,8 +587,15 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     online_dir_raw = str(resolve_local_savepoint_dir(args.online_dir, config))
     author = args.author or config.get("author") or getpass.getuser()
     machine = args.machine or config.get("machine") or platform.node()
-    projects_dir = Path(args.claude_projects_dir).expanduser()
+    agent_kind = getattr(args, "agent_kind", "claude")
+    default_root = Path.home() / ".claude-codex" / "config" / "projects" if agent_kind == "claude-codex" else Path.home() / ".claude" / "projects"
+    projects_dir = Path(args.claude_projects_dir).expanduser() if args.claude_projects_dir else default_root
     cwd = args.cwd or os.getcwd()
+    if agent_kind == "claude-codex":
+        try:
+            uuid.UUID(args.session)
+        except (ValueError, TypeError, AttributeError) as error:
+            raise ValueError("Hybrid savepoint requires an exact UUID session id") from error
 
     jsonl_path, session_id = locate_transcript(projects_dir, cwd, args.session)
     digest = digest_transcript(jsonl_path, session_id)
@@ -599,7 +608,8 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     online_dir = online_dir.resolve(strict=True)
     final_records_dir = safe_final_records_dir(online_dir, args.record_kind == "final")
     author_slug = re.sub(r"[^A-Za-z0-9]", "-", author) or "user"
-    head_dir = online_dir / f"{author_slug}_{session_id[:8]}"
+    kind_prefix = "claude-codex_" if agent_kind == "claude-codex" else ""
+    head_dir = online_dir / f"{author_slug}_{kind_prefix}{session_id[:8]}"
 
     updated_at = now_jst()
     updated_at_text = updated_at.isoformat(timespec="seconds")
@@ -666,9 +676,9 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         "pinned": pinned,
         "summary_line": summary_line,
         "cwd": cwd_token,
-        "agent_kind": "claude",
+        "agent_kind": agent_kind,
         "agent_session_id": session_id,
-        "claude_session_id": session_id,
+        "claude_session_id": session_id if agent_kind == "claude" else None,
         "files_touched": [mapper.tokenize(p)[0] for p in digest.files_written + digest.files_read],
         "files_written": [mapper.tokenize(p)[0] for p in digest.files_written],
         "git_branch": digest.git_branch,
@@ -718,7 +728,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
             actual_manifest = read_manifest_if_valid(target_dir / "manifest.json")
             if actual_manifest is None:
                 raise RuntimeError(f"Immutable record manifest is unreadable: {target_dir}")
-            validate_final_record(actual_manifest, target_dir, session_id, checkpoint_id)
+            validate_final_record(actual_manifest, target_dir, session_id, checkpoint_id, agent_kind)
             manifest = write_head_from_final_record(target_dir, head_dir, online_dir)
             used_existing_final = not created
             updated = updated or used_existing_final
@@ -759,7 +769,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--record-kind", choices=RECORD_KINDS, default="current")
     parser.add_argument("--close-reason", choices=CLOSE_REASONS, default="manual")
     parser.add_argument("--config", default=str(runtime_dir() / "savepoint.json"))
-    parser.add_argument("--claude-projects-dir", default=str(Path.home() / ".claude" / "projects"))
+    parser.add_argument("--agent-kind", choices=["claude", "claude-codex"], default="claude")
+    parser.add_argument("--claude-projects-dir", help="会話rootの明示指定（既定はagent-kindに対応するroot）")
     return parser
 
 

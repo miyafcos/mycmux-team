@@ -1,6 +1,6 @@
 [package]
 name = "mycmux"
-version = "0.88.5"
+version = "0.88.6"
 description = "mycmux - AI agent terminal workspace"
 authors = ["miyafcos"]
 edition = "2021"
@@ -53,7 +53,7 @@ dirs = "6.0.0"
 # is how every web pane login used to be lost on restart.
 dunce = "1"
 tempfile = "3"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 # Session index for 続きから / Ctrl+P. Vendored from the crsm repository rather
 # than shelling out to the CLI, which a macOS GUI app never finds: launchd hands
 # it a minimal PATH. See crates/crsm-core/VENDOR.md.

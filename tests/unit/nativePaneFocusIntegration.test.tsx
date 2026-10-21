@@ -4,9 +4,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pane, Workspace } from "../../src/types";
 
-const native = vi.hoisted(() => ({ invoke: vi.fn() }));
+const native = vi.hoisted(() => ({ invoke: vi.fn(), nextChannel: 0, nextAttachment: 0 }));
 vi.mock("@tauri-apps/api/core", () => ({
-  Channel: class<T> { onmessage?: (message: T) => void; },
+  Channel: class<T> { id = ++native.nextChannel; onmessage?: (message: T) => void; },
   invoke: native.invoke, isTauri: () => true, convertFileSrc: (path: string) => path,
 }));
 vi.mock("@tauri-apps/api/event", () => ({
@@ -129,7 +129,13 @@ beforeEach(() => {
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
     x: 0, y: 0, top: 0, left: 0, right: 1200, bottom: 800, width: 1200, height: 800, toJSON: () => ({}),
   });
-  native.invoke.mockReset().mockImplementation((command: string) => {
+  native.invoke.mockReset().mockImplementation((command: string, args: any = {}) => {
+    if (command === "get_session_attachment_contexts") return Promise.resolve(args.sessionIds.map((session_id: string) => ({
+      backend_epoch: "fixture-backend", session_id, window_label: "mycmux-w-native-focus", window_incarnation: "fixture-window",
+      attachment_epoch: ++native.nextAttachment, nonce: String(native.nextAttachment), transfer_id: null, transfer_token: null,
+      existing_only: Boolean(args.existingOnly),
+    })));
+    if (command === "create_session" || command === "tearout_attach") return Promise.resolve(args.attachmentContext);
     if (command === "get_terminal_config") return Promise.resolve({ font_size: 14, font_family: "monospace",
       background: "#000000", foreground: "#ffffff", ansi: [], windows_build_number: null });
     if (command === "is_session_alive" || command === "has_persisted_scrollback") return Promise.resolve(false);
@@ -179,12 +185,12 @@ async function finishSearch(search: HTMLInputElement, exit: "Escape" | "close") 
 function deferRestart(model: "restore" | "conflict", phase: "attach" | "stop" = "attach") {
   const previous = native.invoke.getMockImplementation()!;
   let creates = 0, release: (() => void) | undefined, releaseStop: (() => void) | undefined, ownerPresent = true;
-  native.invoke.mockImplementation((command: string, args?: { sessionId?: string }) => {
+  native.invoke.mockImplementation((command: string, args?: { sessionId?: string; attachmentContext?: unknown }) => {
     if (command === "create_session" && args?.sessionId === SESSION) {
       if (++creates === 1) return Promise.reject(model === "restore"
         ? 'AGENT_RESTORE_CHOICE_REQUIRED:{"kind":"claude","agentSessionId":"synthetic-saved","candidates":[]}'
         : `AGENT_SESSION_ALREADY_RUNNING:{"kind":"claude","agentSessionId":"synthetic-saved","ownerSessionId":"${PEER_SESSION}"}`);
-      return new Promise<void>(resolve => { release = resolve; });
+      return new Promise<unknown>(resolve => { release = () => resolve(args?.attachmentContext); });
     }
     if (command === "get_agent_conversation_owner") return Promise.resolve(ownerPresent ? PEER_SESSION : null);
     if (command === "kill_session" && args?.sessionId === PEER_SESSION) {

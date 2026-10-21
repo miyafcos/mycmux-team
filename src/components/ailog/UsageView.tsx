@@ -6,6 +6,7 @@ import type { AilogSelection, BreakdownDimension, SessionSort } from "../../stor
 import { SESSION_PAGE_SIZE, useAilogStore } from "../../stores/ailogStore";
 import { CrossTable } from "./CrossTable";
 import { AilogOrientation } from "./AilogOrientation";
+import { AccountingNote } from "./AccountingNote";
 import { ProjectTable } from "./ProjectTable";
 import { SessionTable } from "./SessionTable";
 import { SummaryCards } from "./SummaryCards";
@@ -59,7 +60,7 @@ export const UsageView = memo(function UsageView(props: {
   if (p.error && !p.overview && !usageReady) return <EmptyState kind="error" message={p.error} onPrimary={p.onRefresh} primaryLabel="再試行" />;
   if (p.loading && !p.overview) return <div style={{ display: "flex", flexDirection: "column", gap: 10 }}><SkeletonBlock height={70} label="記録を読み込み中" /><SkeletonBlock height={160} label="集計を読み込み中" /></div>;
   if (p.noData && p.statusPending) return <div style={noteStyle}>インデックス状態を確認中です。</div>;
-  if (p.noData && !p.selection) return <EmptyState kind={p.neverIndexed ? "not-indexed" : "no-data"} onPrimary={p.onStartIndex} busy={p.running} />;
+  if (p.noData && !p.selection) return <><AccountingNote accounting={p.overview?.accounting} /><EmptyState kind={p.neverIndexed ? "not-indexed" : "no-data"} onPrimary={p.onStartIndex} busy={p.running} /></>;
 
   return (
     <div aria-busy={p.loading || p.usageLoading} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -92,6 +93,7 @@ export const UsageView = memo(function UsageView(props: {
             <div style={{ marginTop: 12 }}><UsageTotals report={p.series!} metric={p.metric} preset={p.preset} totals={p.overview!.totals} previousTotals={previousTotals} turnFilterActive={Boolean(modelSel)} /></div>
           </>
         )}
+        {p.overview ? <div style={{ marginTop: 12 }}><AccountingNote accounting={p.overview.accounting} /></div> : null}
         {p.overview && !modelSel ? <div style={{ marginTop: 12 }}><SummaryCards overview={p.overview} preset={p.preset} /></div> : null}
       </Section>
       <Section id="ailog-purpose" title="何に使ったか" subtitle="探索・実装・デバッグなど、作業の種類ごとのコストです。">

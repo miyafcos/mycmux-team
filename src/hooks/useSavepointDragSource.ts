@@ -172,7 +172,8 @@ async function commitSavepointDrop(
     const beforePaneIds = new Set(workspace.panes.map((pane) => pane.id));
     const paneOptions = prepared.mode === "full"
       ? {
-          agentId: prepared.joined.agent_kind === "codex" ? "codex" : "claude-code",
+          agentId: prepared.joined.agent_kind === "claude" ? "claude-code" : prepared.joined.agent_kind,
+          agentKind: prepared.joined.agent_kind,
           label: item.label,
           cwd: prepared.joined.resolved_cwd,
           commandArgv: prepared.joined.command_argv,

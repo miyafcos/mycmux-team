@@ -538,6 +538,8 @@ app_commands![
             tearout::tearout_forget,
             tearout::tearout_cancel_move,
             tearout::tearout_attach,
+            tearout::get_session_attachment_contexts,
+            tearout::tearout_revoke_attachments,
             tearout::log::tearout_input_evidence_enabled,
             tearout::log::tearout_log_record,
             tearout::tearout_restore_geometry,

@@ -285,7 +285,7 @@ describe("rework rankings fetch while the section is open", () => {
     expect(ailogReworkRankings).toHaveBeenCalledTimes(1);
     expect(ailogReworkRankings).toHaveBeenCalledWith(
       { preset: "30d" },
-      expect.objectContaining({ includeSidechain: false, models: [], projects: [] }),
+      expect.objectContaining({ includeSidechain: true, models: [], projects: [] }),
     );
   });
 
@@ -306,17 +306,17 @@ describe("rework rankings fetch while the section is open", () => {
     expect(ailogReworkRankings).toHaveBeenCalledTimes(2);
     expect(ailogReworkRankings).toHaveBeenLastCalledWith(
       { preset: "7d" },
-      expect.objectContaining({ includeSidechain: false }),
+      expect.objectContaining({ includeSidechain: true }),
     );
   });
 
-  it("fetches again after includeSidechain changes", async () => {
+  it("keeps aggregate rankings cached after includeSidechain changes", async () => {
     await setStumbleOpen(true);
     await act(async () => {
       useAilogStore.getState().setIncludeSidechain(true);
     });
     await flush();
-    expect(ailogReworkRankings).toHaveBeenCalledTimes(2);
+    expect(ailogReworkRankings).toHaveBeenCalledTimes(1);
     expect(ailogReworkRankings).toHaveBeenLastCalledWith(
       { preset: "30d" },
       expect.objectContaining({ includeSidechain: true }),

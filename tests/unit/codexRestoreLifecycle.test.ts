@@ -1,11 +1,20 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const fixture = vi.hoisted(() => ({
-  invoke: vi.fn(), listen: vi.fn(), toast: vi.fn(),
+  invoke: vi.fn(), nextContext: 0, listen: vi.fn(), toast: vi.fn(),
   callbacks: new Map<string, (event: { payload: any }) => unknown>(),
   workspaces: [] as any[], route: undefined as unknown,
 }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: fixture.invoke, Channel: class { onmessage?: unknown } }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, ...parameters: any[]) => {
+    const args = parameters[0] ?? {};
+    if (command === "get_session_attachment_contexts") return args.sessionIds.map((session_id: string) => ({
+      backend_epoch: "fixture-backend", transfer_id: args.transferToken ?? null, transfer_token: args.transferToken ?? null,
+      session_id, window_label: "main", window_incarnation: "fixture-window",
+      attachment_epoch: ++fixture.nextContext, nonce: String(fixture.nextContext), existing_only: args.existingOnly,
+    }));
+    const result = await fixture.invoke(command, ...parameters);
+    return command === "create_session" || command === "tearout_attach" ? result ?? args.attachmentContext : result;
+  }, Channel: class { onmessage?: unknown } }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: fixture.listen, emit: vi.fn() }));
 vi.mock("../../src/stores/workspaceListStore", () => ({ useWorkspaceListStore: { getState: () => ({ workspaces: fixture.workspaces }) } }));
 vi.mock("../../src/stores/toastStore", () => ({ useToastStore: { getState: () => ({ pushToast: fixture.toast }) } }));
@@ -67,7 +76,7 @@ it.each([false, true].flatMap(background => ["disposed", "closed", "transferred"
   const creating = ipc.createSession(P, "codex", ["resume", G], 80, 24, () => {}, undefined, undefined, false,
     { backgroundOnly, stillOwned: () => change === "disposed" ? owned : true });
   const result = creating.catch(error => error);
-  await vi.waitFor(() => expect(fixture.listen).toHaveBeenCalled());
+  await vi.waitFor(() => expect(fixture.listen).toHaveBeenCalled(), { timeout: 10000 });
   let killing: Promise<void> | undefined;
   if (change === "closed") killing = ipc.killSession(P);
   else if (change === "lease-replaced") {

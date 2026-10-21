@@ -14,6 +14,8 @@ import {
   isIgnoredPromptDecoration,
 } from "./tabSweep";
 import { processStatusReasonForTab } from "./socketCommands";
+import { normalizeDisplayAgentKind, resolveDisplayAgentKind } from "../../lib/agentDisplayKind";
+import type { SessionHistoryStatus } from "../../lib/sessionTitles";
 
 /**
  * Benchmarked on 2026-08-29 with the measured 19-tab prompt and luna/medium.
@@ -125,6 +127,8 @@ export interface GroupingTab {
   agentSessionId?: string;
   sessionTitle?: string | null;
   taskTitle?: string | null;
+  historyStatus?: SessionHistoryStatus;
+  livenessUnconfirmed?: boolean;
   cwd: string;
   agentKind: string;
   origin?: PaneTab["origin"];
@@ -270,7 +274,7 @@ function isTerminalTab(tab: PaneTab): boolean {
 }
 
 function isDeadReason(reason: string | null): boolean {
-  return reason === "no_live_pty_session" || reason === "snapshot_unavailable";
+  return reason === "no_live_pty_session";
 }
 
 function isDeclared(tab: PaneTab): boolean {
@@ -494,6 +498,18 @@ export async function scanGroupingContext(
           );
           if (!source.skipLivenessFilter && isDeadReason(reason)) continue;
           const metadata = source.metadata[tab.sessionId];
+          const process = source.processMetadata[tab.sessionId];
+          const nativeConversationKind = normalizeDisplayAgentKind(process?.agent_kind);
+          const nativeKind = normalizeDisplayAgentKind(process?.live_agent_kind) ?? nativeConversationKind;
+          const storedKind = normalizeDisplayAgentKind(metadata?.agentKind);
+          const tabKind = resolveDisplayAgentKind(tab.agentKind, tab.commandArgv, tab.launchEnv?.MYCMUX_LAUNCH_TARGET)
+            ?? normalizeDisplayAgentKind(tab.launchEnv?.MYCMUX_AGENT_KIND ?? tab.launchEnv?.MYCMUX_RESUME);
+          const agentKind = nativeKind ?? storedKind ?? tabKind ?? "";
+          const matchingId = (kind: string | null, id: string | undefined, legacy: string | undefined) =>
+            kind === agentKind ? id?.trim() || ((kind === "claude" || kind === "claude-codex") ? legacy?.trim() : undefined) : undefined;
+          const agentSessionId = nativeKind ? matchingId(nativeConversationKind, process?.agent_session_id, process?.claude_session_id)
+            : storedKind ? matchingId(storedKind, metadata?.agentSessionId, metadata?.claudeSessionId)
+            : matchingId(tabKind, tab.agentSessionId, tab.claudeSessionId);
           const attention = source.attentionBySession?.[tab.sessionId];
           const question = source.questionsBySession?.[tab.sessionId];
           const kind = attention?.kind;
@@ -506,9 +522,10 @@ export async function scanGroupingContext(
             label: tab.label ?? "",
             labelSource: tab.labelSource,
             displayName: tab.displayName,
-            agentSessionId: metadata?.agentSessionId ?? tab.agentSessionId ?? metadata?.claudeSessionId ?? tab.claudeSessionId,
-            cwd: metadata?.cwd ?? tab.cwd ?? pane.cwd ?? "",
-            agentKind: metadata?.agentKind ?? tab.agentKind ?? pane.agentKind ?? "",
+            agentSessionId,
+            cwd: process?.cwd?.trim() || metadata?.cwd?.trim() || tab.cwd || pane.cwd || "",
+            agentKind,
+            livenessUnconfirmed: reason === "snapshot_unavailable",
             origin: tab.origin,
             workspaceId: workspace.id,
             workspaceName: workspace.name,

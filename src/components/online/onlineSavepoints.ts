@@ -34,14 +34,14 @@ export interface OnlineSavepointEntry {
   transfer_id?: string | null;
 }
 
-export type SavepointAgentKind = "claude" | "codex";
+export type SavepointAgentKind = "claude" | "codex" | "claude-codex";
 
 export function isSavepointAgentKind(value: string | undefined | null): value is SavepointAgentKind {
-  return value === "claude" || value === "codex";
+  return value === "claude" || value === "codex" || value === "claude-codex";
 }
 
 export function savepointAgentKind(entry: OnlineSavepointEntry): SavepointAgentKind {
-  return entry.agent_kind === "codex" ? "codex" : "claude";
+  return isSavepointAgentKind(entry.agent_kind) ? entry.agent_kind : "claude";
 }
 
 export function savepointSessionId(entry: OnlineSavepointEntry): string {
@@ -181,8 +181,8 @@ export function collectOpenAgentSessions(
           agentSessionId: isRunning
             ? (metadata?.agentSessionId
               ?? (agentKind === "claude" ? metadata?.claudeSessionId : undefined)
-              ?? tab.agentSessionId
-              ?? (agentKind === "claude" ? tab.claudeSessionId : undefined))
+              ?? (persistedKind === agentKind ? tab.agentSessionId : undefined)
+              ?? (agentKind === "claude" && persistedKind === agentKind ? tab.claudeSessionId : undefined))
             : (tab.agentSessionId
               ?? (agentKind === "claude" ? tab.claudeSessionId : undefined)),
           status: isRunning ? "running" : "dormant",

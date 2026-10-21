@@ -255,6 +255,17 @@ function ipcCounts(): IpcCounts {
   }
   return Object.fromEntries(Object.entries(counts).sort(([left], [right]) => left.localeCompare(right)));
 }
+function aggregateFilterContract(counts: IpcCounts): IpcCounts {
+  const normalized: IpcCounts = {};
+  const aggregates = new Set(["ailog_overview", "ailog_series", "ailog_breakdown", "ailog_pivot", "ailog_models", "ailog_rework_rankings", "ailog_usage_rhythm", "ailog_efficiency", "ailog_model_handoffs"]);
+  for (const [key, count] of Object.entries(counts)) {
+    const [command, args] = JSON.parse(key);
+    if (aggregates.has(command) && args.filters) args.filters.includeSidechain = true;
+    const currentKey = JSON.stringify([command, canonical(args)]);
+    normalized[currentKey] = (normalized[currentKey] ?? 0) + count;
+  }
+  return Object.fromEntries(Object.entries(normalized).sort(([left], [right]) => left.localeCompare(right)));
+}
 function commandTotals(counts: IpcCounts): IpcCounts {
   const totals: IpcCounts = {};
   for (const [key, count] of Object.entries(counts)) {
@@ -321,7 +332,7 @@ describe("B6 baseline-relative IPC and summary actions", () => {
     const fixture = JSON.parse(readFileSync(baselineFixture, "utf8"));
     expect(fixture.revision).toBe(baselineRevision);
     expect(fixture[name].operations).toEqual(operations);
-    const reference: IpcCounts = fixture[name].counts;
+    const reference = aggregateFilterContract(fixture[name].counts);
     const embedded = await replayComparison("embedded", operations);
     const report = { operations, baseline: reference, base, embedded,
       totals: { baseline: commandTotals(reference), base: commandTotals(base), embedded: commandTotals(embedded) } };

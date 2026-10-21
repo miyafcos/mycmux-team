@@ -44,7 +44,7 @@ it('VR disposal while confirmation is pending prevents termination',async()=>{
   const action=controller.takeover();await vi.waitFor(()=>expect(resolve).toBeDefined(),{timeout:1000});
   controller.dispose();resolve(true);await action;expect(deps.stopOwner).not.toHaveBeenCalled();
 });
-it.each(['claude','grok','codex'])('VR direct %s recovery retains model/effort and replaces the old id',kind=>{
+it.each(['claude','claude-codex','grok','codex'])('VR direct %s recovery retains model/effort and replaces the old id',kind=>{
   const args=kind==='codex'?['resume',oldId,'--model','fake-model']:['--resume',oldId,'--model','fake-model'];
   const result=buildAgentRecoveryLaunch({command:kind+'.exe',args,launchEnv:{MYCMUX_EFFORT:'max'}},kind,newId,false);
   expect(result.args).not.toContain(oldId);expect(result.args).toContain(newId);expect(result.args).toContain('fake-model');expect(result.launchEnv?.MYCMUX_EFFORT).toBe('max');

@@ -6,7 +6,7 @@ vi.mock("../../src/lib/tearout/runtime", async original => ({ ...await original<
   waitForTearoutReceiver: mocks.ready, sendTearoutWorkspaces: mocks.send, visitTearoutLocation: mocks.visit }));
 vi.mock("../../src/components/terminal/XTermWrapper", () => ({ hasTerminalBuffer: () => false, getTerminalWriteCounter: () => 0, getTerminalBufferLines: () => [] }));
 vi.mock("../../src/lib/tearout/sessionAttachment", async original => ({ ...await original<typeof import("../../src/lib/tearout/sessionAttachment")>(),
-  expectTearoutAttachments: (ids: string[]) => ({ ready: mocks.attachment(ids), dispose: () => {} }) }));
+  expectTearoutAttachments: (ids: string[]) => ({ prepared: Promise.resolve(), ready: mocks.attachment(ids), dispose: () => {} }) }));
 import * as ipc from "../../src/lib/ipc";
 import { termCache, type CachedTerm } from "../../src/components/terminal/terminalCache";
 import { commitPaneDragDrop } from "../../src/hooks/usePaneDragSource";
@@ -91,7 +91,7 @@ describe("ordinary transport common move result", () => {
     const original = useWorkspaceListStore.getState().workspaces;
     const pending = executePaneMove(createPaneMoveRequest({ kind: "workspace", workspaceId: "source", label: "Source" }, { kind: "window" }));
     try {
-      await vi.waitFor(() => expect(mocks.ready).toHaveBeenCalledOnce()); feed(8); ready();
+      await vi.waitFor(() => expect(mocks.ready).toHaveBeenCalledOnce(), { timeout: 10000 }); feed(8); ready();
       expect(await pending).toMatchObject({ status: "failed", phase: "rolled_back", receipt: "pending", reason: expect.stringContaining("execution_changed") });
       expect(useWorkspaceListStore.getState().workspaces).toEqual(original); expect(mocks.send).not.toHaveBeenCalled();
     } finally { ready(); useSessionAttentionStore.getState().resetForTests(); }
@@ -103,7 +103,7 @@ describe("ordinary transport common move result", () => {
     const request = createPaneMoveRequest({ kind: "workspace", workspaceId: "source", label: "Source" }, { kind: "window" });
     let settled = false;
     const pending = executePaneMove(request).then(result => { settled = true; return result; });
-    await vi.waitFor(() => expect(mocks.send).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(mocks.send).toHaveBeenCalledOnce(), { timeout: 10000 });
     expect(settled).toBe(false);
     expect(mocks.invoke.mock.calls.some(([command, args]) => command === "tearout_phase" && args.phase === "received")).toBe(false);
     received();

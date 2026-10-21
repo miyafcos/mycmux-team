@@ -21,9 +21,18 @@ import { trustedLiveTailAttention } from "../../src/lib/liveTail/status";
 import type { Workspace } from "../../src/types";
 import { xtermWritePump } from "../fixtures/xtermWritePump";
 
-const core = vi.hoisted(() => ({ invoke: vi.fn() }));
+const core = vi.hoisted(() => ({ invoke: vi.fn(), nextContext: 0 }));
 vi.mock("@tauri-apps/api/core", async original => ({
-  ...await original<typeof import("@tauri-apps/api/core")>(), invoke: core.invoke,
+  ...await original<typeof import("@tauri-apps/api/core")>(), invoke: async (command: string, ...parameters: any[]) => {
+    const args = parameters[0] ?? {};
+    if (command === "get_session_attachment_contexts") return args.sessionIds.map((session_id: string) => ({
+      backend_epoch: "fixture-backend", transfer_id: args.transferToken ?? null, transfer_token: args.transferToken ?? null,
+      session_id, window_label: "main", window_incarnation: "fixture-window",
+      attachment_epoch: ++core.nextContext, nonce: String(core.nextContext), existing_only: args.existingOnly,
+    }));
+    const result = await core.invoke(command, ...parameters);
+    return command === "create_session" || command === "tearout_attach" ? result ?? args.attachmentContext : result;
+  },
   Channel: class { id = 1; onmessage = (_data: unknown) => {}; },
 }));
 const start = 1_800_000_000_000, working = "* Thinking… (3m 12s · ↓ 62.3k tokens)";

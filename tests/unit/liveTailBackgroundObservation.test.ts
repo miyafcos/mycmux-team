@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readPaneTail } from "../../src/components/layout/socketCommands";
 import { __resetHeadlessBufferCacheForTests } from "../../src/components/terminal/headlessBuffer";
 import { terminalSizeCache } from "../../src/components/terminal/terminalCache";
@@ -58,6 +58,10 @@ function workspace(id: string, sessionId: string, kind = "claude"): Workspace {
     panes: [{ id: `pane-${id}`, agentId: kind, sessionId, activeTabId: `tab-${id}`,
       tabs: [{ id: `tab-${id}`, sessionId, agentId: kind, agentKind: kind, type: "terminal", label: `Seat ${id}` }] }] };
 }
+beforeAll(async () => {
+  await Promise.all([import("../../src/lib/liveAgentMetadata"), import("../../src/lib/ipc"),
+    import("../../src/components/terminal/headlessBuffer"), import("../../src/components/terminal/terminalCache")]);
+});
 beforeEach(() => {
   vi.clearAllMocks(); __resetHeadlessBufferCacheForTests(); terminalSizeCache.clear();
   useSessionAttentionStore.getState().resetForTests();
@@ -78,7 +82,8 @@ beforeEach(() => {
     throw new Error(`Unexpected IPC: ${command}`);
   });
   controller = createLiveTailController({ listTargets: loadLiveTailTargets,
-    readTail: (sessionId, lines) => readPaneTail(sessionId, lines, false, { headlessFetchTimeoutMs: TERMINAL_IPC_TIMEOUT_MS }),
+    readTail: (sessionId, lines, isCurrent) => readPaneTail(sessionId, lines, false,
+      { headlessFetchTimeoutMs: TERMINAL_IPC_TIMEOUT_MS, purpose: "observation", isCurrent }),
     loadOutputs: loadLiveTailOutputs });
 });
 afterEach(() => {
@@ -88,6 +93,36 @@ afterEach(() => {
 });
 
 describe("live-tail observations through real background reads and mock binary IPC", () => {
+  it("recovers after cold target discovery outlives the observation deadline", async () => {
+    recordings.set("cold", recording(100 * 1024, "Cold discovery answer"));
+    useWorkspaceListStore.setState({ workspaces: [workspace("cold", "cold")], activeWorkspaceId: "cold" });
+    const original = mocks.invoke.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === "get_pty_metadata_snapshot") await gate;
+      return original(command, args);
+    });
+    vi.useFakeTimers();
+    const pending = controller.getForApi();
+    await vi.advanceTimersByTimeAsync(LIVE_TAIL_READ_TIMEOUT_MS);
+    expect((await pending).tabs).toEqual([]);
+    release(); await vi.advanceTimersByTimeAsync(600);
+    expect(controller.snapshot().tabs[0]).toMatchObject({ readable: true, rows: ["Resume complete", "Cold discovery answer"] });
+  });
+  it("keeps Hybrid live identity and does not revive a saved orange icon after an explicit shell observation", async () => {
+    const current = workspace("hybrid", "hybrid-session", "claude");
+    useWorkspaceListStore.setState({ workspaces: [current], activeWorkspaceId: current.id });
+    usePaneMetadataStore.setState({ metadata: { "hybrid-session": { agentKind: "claude" } }, volatileMetadata: {} });
+    let live: string | null = "claude-codex";
+    mocks.invoke.mockImplementation(async command => command === "get_pty_metadata_snapshot"
+      ? { "hybrid-session": { live_agent_kind: live, process_status: "working" } } : []);
+    expect((await loadLiveTailTargets())[0].agentKind).toBe("claude-codex");
+    live = null;
+    expect((await loadLiveTailTargets())[0].agentKind).toBeNull();
+    live = "claude";
+    expect((await loadLiveTailTargets())[0].agentKind).toBe("claude");
+  });
   it.each([100 * 1024, 256 * 1024, 1024 * 1024, 5 * 1024 * 1024])("reads an unmarked resumed screen in another workspace at %i bytes within the observation bound", async bytes => {
     recordings.set("resumed", recording(bytes, "Final answer from resumed conversation"));
     const other = workspace("other", "resumed", "codex");

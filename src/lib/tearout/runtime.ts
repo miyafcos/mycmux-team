@@ -288,8 +288,10 @@ async function receive(delivery: Delivery): Promise<void> {
   const expected = delivery.liveSessions ?? sessions(delivery.configs).filter(id =>
     !delivery.configs.some(config => config.panes.some(pane => pane.tabs?.some(tab => tab.session_id === id && tab.lifecycle === "declared"))));
   rememberTearoutDormantSessions(sessions(delivery.configs), expected);
-  const attachment = expectTearoutAttachments(expected);
+  const attachment = expectTearoutAttachments(expected, "transfer", undefined, delivery.token);
   try {
+    await attachment.prepared;
+    if (entry.revoked) return;
     if (deliveryIds.length !== rawDeliveryIds.length) throw new Error("tearout_adoption_missing_id");
     if (deliveryIds.some((id) => existingIds.has(id))) throw new Error("tearout_adoption_duplicate");
     const existingSessions = new Set(entry.before.flatMap(ws => ws.panes.flatMap(pane => pane.tabs.map(tab => tab.sessionId))));
@@ -376,6 +378,7 @@ async function revoke(label: string, token: string): Promise<void> {
   const ack = crypto.randomUUID();
   const receipt = new Promise<Receipt>((resolve) => receipts.set(ack, resolve));
   try {
+    await timeout(invoke("tearout_revoke_attachments", { token }), 5000, "tearout_revoke_authority_timeout");
     await emitTo(label, REVOKE, { token, ack, source: windowLabel() });
     const result = await timeout(receipt, 6000, "tearout_revoke_timeout");
     if (!result.ok) throw new Error("tearout_revoke_failed");
@@ -386,6 +389,7 @@ async function receiveRevoke(request: { token: string; ack: string; source: stri
   revokedTokens.add(request.token);
   window.setTimeout(() => revokedTokens.delete(request.token), 30000);
   try {
+    await timeout(invoke("tearout_revoke_attachments", { token: request.token }), 5000, "tearout_revoke_authority_timeout");
     const entry = incoming.get(request.token);
     if (entry && !entry.revoked) {
       entry.revoked = true;
@@ -562,6 +566,7 @@ async function dockOutgoing(request: DockRequest): Promise<void> {
       rememberTearoutDormantSessions(sessions(configs), liveSessions);
       const attachments = expectTearoutAttachments(liveSessions);
       try {
+        await attachments.prepared;
         flushSync(() => {
           useWorkspaceListStore.getState()._replaceWorkspaces(before);
           useWorkspaceListStore.setState({ activeWorkspaceId: selection.workspace });
@@ -583,6 +588,7 @@ async function dockOutgoing(request: DockRequest): Promise<void> {
             try {
               for (const sessionId of liveSessions) evictTerminalCache(sessionId);
               retry = expectTearoutAttachments(liveSessions);
+              await retry.prepared;
               await timeout(retry.ready, 5000, "tearout_restore_attachment_timeout");
               const alive = await Promise.all(liveSessions.map(isSessionAlive));
               if (!alive.every(Boolean)) throw new TransferFailure("tearout_restore_session_not_alive", liveSessions.filter((_, index) => !alive[index]));
@@ -1061,6 +1067,7 @@ export async function performNativePaneMove(
         rememberTearoutDormantSessions(sessions([config]), liveSessions);
         const attachment = expectTearoutAttachments(liveSessions);
         try {
+          await attachment.prepared;
           if (retrying) for (const sessionId of liveSessions) evictTerminalCache(sessionId);
           flushSync(() => {
             const list = useWorkspaceListStore.getState();

@@ -22,8 +22,11 @@ export async function loadLiveTailTargets(): Promise<LiveTailTarget[]> {
     const id = identity.sessionId;
     const meta = metadata[id];
     const status = trustedLiveTailStatus(id) ?? "unknown";
-    targets.push({ ...identity, agentKind: processes[id]?.live_agent_kind ?? volatileMetadata[id]?.liveAgentKind ?? meta?.agentKind ?? identity.agentKind,
-      status, waitingForReply: status === "waiting" });
+    const nativeKind = processes[id]?.live_agent_kind;
+    const observedKind = volatileMetadata[id]?.liveAgentKind;
+    const agentKind = nativeKind !== undefined ? nativeKind
+      : observedKind !== undefined ? observedKind : meta?.agentKind ?? identity.agentKind;
+    targets.push({ ...identity, agentKind, status, waitingForReply: status === "waiting" });
   }
   for (const workspace of workspaces) {
     for (const pane of workspace.panes) {

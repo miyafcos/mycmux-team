@@ -150,6 +150,9 @@ fn validate_final_record(
         SavepointAgentKind::Codex => {
             generic_kind == Some("codex") && generic_id == Some(session_id) && legacy_id.is_none()
         }
+        SavepointAgentKind::ClaudeCodex => {
+            generic_kind == Some("claude-codex") && generic_id == Some(session_id) && legacy_id.is_none()
+        }
     };
     if !identity_matches
         || lifecycle.status != SavepointLifecycleStatus::Closed

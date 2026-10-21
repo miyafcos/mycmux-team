@@ -8,7 +8,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::ailog::query::DAY_BOUNDARY_OFFSET_MIN;
 
-pub const VERSION: &str = "1";
+pub const VERSION: &str = "3";
 const DAY_MS: i64 = 86_400_000;
 
 fn day_expr(column: &str) -> String {
@@ -51,6 +51,10 @@ pub fn mark_all_dirty(conn: &Connection) -> Result<(), String> {
 /// tables, so an interrupted index never leaves a partially updated ready
 /// rollup visible to query-only readers.
 pub fn rebuild_days(conn: &Connection, days: &[i64]) -> Result<usize, String> {
+    rebuild_days_cancellable(conn,days,&|_|Ok(()))
+}
+
+fn rebuild_days_cancellable(conn: &Connection, days: &[i64], checkpoint: &dyn Fn(&str)->Result<(),String>) -> Result<usize, String> {
     if days.is_empty() {
         return Ok(0);
     }
@@ -92,15 +96,30 @@ pub fn rebuild_days(conn: &Connection, days: &[i64]) -> Result<usize, String> {
                    COALESCE(t.model_family, ''), COALESCE(t.effort, ''), \
                    COALESCE(s.origin, 'unknown'), COALESCE(s.is_sidechain, 0)"
     );
+    checkpoint("repair-rollup-deleted")?;
     let inserted = conn
-        .execute(&insert_sql, rusqlite::params_from_iter(unique.iter()))
+        .execute(&insert_sql.replace("WHERE ", "WHERE t.usage_state IN ('canonical','legacy') AND "), rusqlite::params_from_iter(unique.iter()))
         .map_err(|err| format!("rebuild rollup days: {err}"))?;
+    checkpoint("repair-rollup-v1-written")?;
+    conn.execute(&delete_sql.replace("rollup_turn_session_day", "rollup_turn_session_day_v2"),
+        rusqlite::params_from_iter(unique.iter())).map_err(|e|e.to_string())?;
+    let v2_sql = insert_sql
+        .replace("rollup_turn_session_day", "rollup_turn_session_day_v2")
+        .replace("origin, is_sidechain,", "origin, relationship_type, usage_state,")
+        .replace("COALESCE(s.is_sidechain, 0)", "COALESCE(s.relationship_type, 'unknown'), t.usage_state");
+    conn.execute(&v2_sql,rusqlite::params_from_iter(unique.iter()))
+        .map_err(|e|format!("rebuild accounting rollup: {e}"))?;
+    checkpoint("repair-rollup-v2-written")?;
     Ok(inserted)
 }
 
 /// Rebuild all currently dirty days, clear the dirty set, and record the
 /// version only after the transaction contains a coherent rollup.
 pub fn rebuild_dirty(conn: &Connection) -> Result<usize, String> {
+    rebuild_dirty_cancellable(conn,&|_|Ok(()))
+}
+
+pub fn rebuild_dirty_cancellable(conn: &Connection, checkpoint: &dyn Fn(&str)->Result<(),String>) -> Result<usize, String> {
     let days = {
         let mut stmt = conn
             .prepare("SELECT day FROM rollup_dirty ORDER BY day")
@@ -111,7 +130,8 @@ pub fn rebuild_dirty(conn: &Connection) -> Result<usize, String> {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|err| format!("collect dirty rollup day: {err}"))?
     };
-    let inserted = rebuild_days(conn, &days)?;
+    let inserted = rebuild_days_cancellable(conn, &days, checkpoint)?;
+    checkpoint("repair-rollup-finish")?;
     conn.execute("DELETE FROM rollup_dirty", [])
         .map_err(|err| format!("clear rebuilt rollup days: {err}"))?;
     conn.execute(
@@ -120,6 +140,8 @@ pub fn rebuild_dirty(conn: &Connection) -> Result<usize, String> {
         params![VERSION],
     )
     .map_err(|err| format!("record rollup version: {err}"))?;
+    conn.execute("INSERT INTO index_state(key,value) VALUES ('usage_rollup_version','2')
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value",[]).map_err(|e|e.to_string())?;
     Ok(inserted)
 }
 

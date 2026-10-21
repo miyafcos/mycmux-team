@@ -52,6 +52,8 @@ pub struct IndexOptions {
     /// Optional immutable gzip archive root. Defaults to `~/.mycmux/ailog-archive`
     /// only when indexing the normal default roots.
     pub archive_root: Option<PathBuf>,
+    /// Optional read-only mirror of Claude's projects root.
+    pub claude_fallback_root: Option<PathBuf>,
     pub db_path: PathBuf,
 }
 
@@ -61,6 +63,7 @@ impl IndexOptions {
             full: false,
             roots: Vec::new(),
             archive_root: None,
+            claude_fallback_root: None,
             db_path,
         }
     }
@@ -299,6 +302,20 @@ pub async fn run_index(
     let mut known: HashMap<String, (u64, i64, u64, Option<String>)> = HashMap::new();
     let mut persisted_codex: HashMap<String, PersistedCodex> = HashMap::new();
     let mut session_sources: HashMap<(String, String), usize> = HashMap::new();
+    let mut repair_errors = Vec::new();
+    if !options.full && (using_default_roots || options.claude_fallback_root.is_some()) {
+        let path=options.db_path.clone();
+        let fallback=options.claude_fallback_root.clone();
+        let archive=options.archive_root.clone();
+        let repair_cancel=cancel.clone();
+        let repair_progress=progress.clone();
+        let repair_report = tokio::task::spawn_blocking(move || {
+            let mut conn=crate::ailog::open_db(&path)?;
+            crate::ailog::repair::repair_pending(&mut conn,fallback.as_deref(),archive.as_deref(),&repair_cancel,repair_progress)
+        }).await.map_err(|e|e.to_string())??;
+        if repair_report.cancelled { return Ok(IndexReport { cancelled:true,errors:repair_report.errors,..Default::default() }); }
+        repair_errors = repair_report.errors;
+    }
     {
         let mut conn = crate::ailog::open_db(&options.db_path)?;
         if options.full {
@@ -582,6 +599,9 @@ pub async fn run_index(
             drop(source_file_metadata);
             drop(source_file_error);
             drop(source_file_upsert);
+            if touched.iter().any(|(kind,_)|kind==KIND_CODEX) {
+                crate::ailog::accounting::reconcile_codex_copies(&tx, &mut touched)?;
+            }
             for (kind, session_id) in &touched {
                 recompute_session(&tx, kind, session_id, &prices)?;
                 rollup::mark_session_dirty(&tx, kind, session_id)?;
@@ -716,9 +736,10 @@ pub async fn run_index(
     }
 
     let parse_ms = parse_started.elapsed().as_millis() as u64;
-    let (sessions, errors, db_write_ms, post_process_ms) = writer
+    let (sessions, mut errors, db_write_ms, post_process_ms) = writer
         .await
         .map_err(|err| format!("writer task: {err}"))??;
+    errors.extend(repair_errors);
 
     let report = IndexReport {
         files_total,
@@ -1119,7 +1140,7 @@ fn range_fingerprint(path: &Path, start: u64, len: u64) -> Result<String, String
     Ok(format!("{hash:016x}:{read_total}"))
 }
 
-fn fingerprint(bytes: &[u8]) -> String {
+pub(super) fn fingerprint(bytes: &[u8]) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
         hash ^= u64::from(*byte);
@@ -1128,7 +1149,7 @@ fn fingerprint(bytes: &[u8]) -> String {
     format!("{hash:016x}:{}", bytes.len())
 }
 
-fn extend_fingerprint(existing: &str, bytes: &[u8]) -> Option<String> {
+pub(super) fn extend_fingerprint(existing: &str, bytes: &[u8]) -> Option<String> {
     let (raw_hash, raw_len) = existing.split_once(':')?;
     let mut hash = u64::from_str_radix(raw_hash, 16).ok()?;
     let old_len = raw_len.parse::<u64>().ok()?;
@@ -1185,6 +1206,8 @@ fn load_persisted_codex_states(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
             session_behavior: behavior,
+            usage: (parsed.get("usage_state_version").and_then(|v|v.as_i64()) == Some(crate::ailog::accounting::STATE_VERSION))
+                .then(||parsed.get("usage").cloned().and_then(|v|serde_json::from_value(v).ok())).flatten().unwrap_or_default(),
         };
         out.insert(
             path.to_string(),
@@ -1209,7 +1232,7 @@ fn load_persisted_codex_states(
     Ok(out)
 }
 
-fn persist_codex_state(
+pub(super) fn persist_codex_state(
     tx: &Transaction<'_>,
     path: &str,
     parsed_bytes: u64,
@@ -1229,6 +1252,8 @@ fn persist_codex_state(
         "prefix_fp": prefix_fp,
         "boundary_fp": boundary_fp,
         "content_fp": content_fp,
+        "usage": state.usage,
+        "usage_state_version": crate::ailog::accounting::STATE_VERSION,
     });
     tx.execute(
         "INSERT INTO index_state (key, value) VALUES (?1, ?2) \
@@ -1239,6 +1264,13 @@ fn persist_codex_state(
         ],
     )
     .map_err(|err| format!("write persisted codex state: {err}"))?;
+    tx.execute("INSERT INTO usage_checkpoint(kind,source_path,source_fingerprint,parsed_bytes,state_version,state_json)
+        VALUES ('codex',?1,?2,?3,?4,?5) ON CONFLICT(kind,source_path) DO UPDATE SET
+        source_fingerprint=excluded.source_fingerprint,parsed_bytes=excluded.parsed_bytes,
+        state_version=excluded.state_version,state_json=excluded.state_json",
+        params![path,content_fp.unwrap_or(""),parsed_bytes as i64,
+            crate::ailog::accounting::STATE_VERSION,serde_json::to_string(&state.usage).map_err(|e|e.to_string())?])
+        .map_err(|e|e.to_string())?;
     Ok(())
 }
 
@@ -1293,7 +1325,12 @@ fn apply_plain_chunk(
     codex_end_state: Option<parse_codex::CodexParseState>,
     content_fp: Option<String>,
 ) -> Result<(), String> {
+    let line_offset: i64 = if reset { 0 } else {
+        tx.query_row("SELECT parsed_lines FROM source_file WHERE path=?1",[&job_path],|r|r.get(0)).optional()
+            .map_err(|e|e.to_string())?.unwrap_or(0)
+    };
     if reset {
+        tx.execute("DELETE FROM usage_occurrence WHERE kind=?1 AND source_path=?2",params![kind,job_path]).map_err(|e|e.to_string())?;
         let mut ids: HashSet<String> = data.sessions.keys().cloned().collect();
         if let Some(stored) = stored_session_id.clone() {
             ids.insert(stored);
@@ -1303,11 +1340,28 @@ fn apply_plain_chunk(
                 continue;
             }
             rollup::mark_session_dirty(tx, kind, &session_id)?;
-            delete_session(tx, kind, &session_id)?;
+            let witnessed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM turn t
+                WHERE t.kind=?1 AND t.session_id=?2 AND t.usage_state='canonical'
+                AND EXISTS(SELECT 1 FROM usage_occurrence e INDEXED BY ix_usage_occurrence_execution
+                    WHERE e.kind=t.kind AND e.execution_key=t.execution_key))",
+                params![kind,session_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+            if witnessed {
+                tx.execute("DELETE FROM turn WHERE kind=?1 AND session_id=?2 AND NOT
+                    (usage_state='canonical' AND EXISTS(SELECT 1 FROM usage_occurrence e INDEXED BY ix_usage_occurrence_execution
+                        WHERE e.kind=turn.kind AND e.execution_key=turn.execution_key))",
+                    params![kind,session_id]).map_err(|e|e.to_string())?;
+                for table in ["tool_event","file_touch","rework"] {
+                    tx.execute(&format!("DELETE FROM {table} WHERE kind=?1 AND session_id=?2"),params![kind,session_id]).map_err(|e|e.to_string())?;
+                }
+                tx.execute("UPDATE session SET user_msg_count=0,compact_count=0,active_ms=0,prompt_chars=0,write_chars=0
+                    WHERE kind=?1 AND session_id=?2",params![kind,session_id]).map_err(|e|e.to_string())?;
+                touched.insert((kind.to_string(),session_id));
+            } else { delete_session(tx, kind, &session_id)?; }
         }
     }
     for chunk in data.sessions.values() {
-        apply_chunk(tx, chunk)?;
+        apply_chunk(tx, chunk, touched)?;
+        crate::ailog::accounting::record_occurrences(tx,chunk,&job_path,"usage-v1",line_offset as u64)?;
         touched.insert((kind.to_string(), chunk.session_id.clone()));
     }
     let session_id = data
@@ -1496,9 +1550,17 @@ fn read_and_parse(
         filename_fallback
     };
 
+    let mut usage_end = None;
+    if job.kind == KIND_CODEX && start > 0 && seed.usage.event_index == 0 {
+        seed.usage = crate::ailog::repair::recover_usage_prefix(&job.path,start,&seed)?;
+    }
     let mut data = match job.kind {
-        KIND_CLAUDE | KIND_CLAUDE_CODEX => parse_claude::parse_chunk(&text, fallback),
-        KIND_CODEX => parse_codex::parse_chunk_with_state(&text, fallback, seed.clone()),
+        KIND_CLAUDE | KIND_CLAUDE_CODEX => parse_claude::parse_chunk_from_source(&text, fallback, &job.path),
+        KIND_CODEX => {
+            let (data,usage) = parse_codex::parse_chunk_with_end_state(&text,fallback,seed.clone());
+            usage_end=Some(usage);
+            data
+        },
         KIND_GROK => parse_grok::parse_chunk(&text, fallback),
         other => return Err(format!("unsupported ailog kind: {other}")),
     };
@@ -1516,8 +1578,12 @@ fn read_and_parse(
         }
     };
     data.consumed_bytes = complete as u64;
+    // Cursor lines count physical records, including malformed and empty
+    // ones, so occurrence identities cannot collide after an append.
+    data.lines = buffer[..complete].iter().filter(|byte| **byte == b'\n').count() as u64;
     data.parse_errors += utf8_errors;
     let end_state = if job.kind == KIND_CODEX {
+        seed.usage = usage_end.unwrap_or_default();
         let delta = observed_codex_state.unwrap_or_default();
         if delta.model.is_some() {
             seed.model = delta.model;
@@ -1688,7 +1754,10 @@ fn decode_complete_records(bytes: &[u8]) -> (String, u64) {
                 text.push_str(line);
                 text.push('\n');
             }
-            Err(_) => errors += 1,
+            Err(_) => {
+                errors += 1;
+                text.push('\n');
+            }
         }
         start = index + 1;
     }
@@ -1795,6 +1864,11 @@ fn clear_all(conn: &mut Connection) -> Result<(), String> {
         "rework",
         "rollup_turn_session_day",
         "rollup_dirty",
+        "usage_occurrence",
+        "usage_checkpoint",
+        "session_identity_alias",
+        "usage_repair_group",
+        "rollup_turn_session_day_v2",
     ] {
         tx.execute(&format!("DELETE FROM {table}"), [])
             .map_err(|err| format!("clear {table}: {err}"))?;
@@ -1819,7 +1893,8 @@ fn delete_session(tx: &Transaction<'_>, kind: &str, session_id: &str) -> Result<
 // Writing one chunk
 // ---------------------------------------------------------------------------
 
-fn apply_chunk(tx: &Transaction<'_>, chunk: &SessionChunk) -> Result<(), String> {
+pub(super) fn apply_chunk(tx: &Transaction<'_>, chunk: &SessionChunk,
+    touched: &mut crate::ailog::accounting::Touched) -> Result<(), String> {
     let (project_key_value, project_label_value) = match &chunk.cwd {
         Some(cwd) => {
             let touches: Vec<&str> = chunk.files.keys().map(String::as_str).collect();
@@ -1852,7 +1927,7 @@ fn apply_chunk(tx: &Transaction<'_>, chunk: &SessionChunk) -> Result<(), String>
            entrypoint = COALESCE(excluded.entrypoint, session.entrypoint), \
            origin = CASE WHEN session.origin = 'ailog-internal' OR excluded.origin = 'ailog-internal' \
                          THEN 'ailog-internal' ELSE COALESCE(excluded.origin, session.origin) END, \
-           is_sidechain = MAX(session.is_sidechain, excluded.is_sidechain), \
+           is_sidechain = CASE WHEN ?24 THEN excluded.is_sidechain ELSE MAX(session.is_sidechain, excluded.is_sidechain) END, \
            agent_names = COALESCE(excluded.agent_names, session.agent_names), \
            cli_version = COALESCE(excluded.cli_version, session.cli_version), \
            plan_type = COALESCE(excluded.plan_type, session.plan_type), \
@@ -1890,9 +1965,16 @@ fn apply_chunk(tx: &Transaction<'_>, chunk: &SessionChunk) -> Result<(), String>
             chunk.prompt_chars,
             chunk.write_chars,
             chunk.ends_on_tool as i64,
+            chunk.lineage_state.is_some(),
         ],
     )
     .map_err(|err| format!("upsert session: {err}"))?;
+    if let Some(relationship) = &chunk.relationship_type {
+        tx.execute("UPDATE session SET parent_kind=CASE WHEN ?3 IS NULL THEN NULL ELSE kind END,
+            parent_session_id=?3,relationship_type=?4,lineage_state=?5 WHERE kind=?1 AND session_id=?2",
+            params![chunk.kind,chunk.session_id,chunk.parent_session_id,relationship,chunk.lineage_state])
+            .map_err(|e|e.to_string())?;
+    }
 
     // --- turns -----------------------------------------------------------
     let mut next_turn_seq: i64 = tx
@@ -1903,7 +1985,16 @@ fn apply_chunk(tx: &Transaction<'_>, chunk: &SessionChunk) -> Result<(), String>
         )
         .map_err(|err| format!("next turn seq: {err}"))?;
 
-    for turn in &chunk.turns {
+    let mut request_key_rewrites = HashMap::new();
+    for source_turn in &chunk.turns {
+        let mut turn = source_turn.clone();
+        let claimed=crate::ailog::accounting::claim_turn(tx,chunk,&mut turn,touched)?;
+        request_key_rewrites.insert(source_turn.dedup_key.clone(), turn.dedup_key.clone());
+        if !claimed {
+            next_turn_seq=tx.query_row("SELECT COALESCE(MAX(seq),-1)+1 FROM turn WHERE kind=?1 AND session_id=?2",
+                params![chunk.kind,chunk.session_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+            continue
+        }
         let normalized = turn.model.as_deref().map(price::normalize);
         // Grok reports one aggregate cost for a completed turn. The existing
         // schema exposes input/output cost columns, so keep the exact total
@@ -1931,10 +2022,20 @@ fn apply_chunk(tx: &Transaction<'_>, chunk: &SessionChunk) -> Result<(), String>
              model_variant, effort, service_tier, input_tokens, output_tokens, \
              cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, \
              reasoning_tokens, duration_ms, tool_calls, tool_errors, cost_usd, \
-             ingest_cost_usd, generate_cost_usd) \
+             ingest_cost_usd, generate_cost_usd, execution_key, cost_owner_session_id, usage_state) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-             ?17, ?18, 0, COALESCE(?19, 0), COALESCE(?20, 0), COALESCE(?21, 0)) \
+             ?17, ?18, 0, COALESCE(?19, 0), COALESCE(?20, 0), COALESCE(?21, 0), ?22, ?2, COALESCE(?23,'legacy')) \
              ON CONFLICT(kind, session_id, request_id) DO UPDATE SET \
+               input_tokens = CASE WHEN (excluded.output_tokens > turn.output_tokens OR (excluded.output_tokens = turn.output_tokens AND excluded.ts >= turn.ts)) THEN excluded.input_tokens ELSE turn.input_tokens END, \
+               cache_read_tokens = CASE WHEN (excluded.output_tokens > turn.output_tokens OR (excluded.output_tokens = turn.output_tokens AND excluded.ts >= turn.ts)) THEN excluded.cache_read_tokens ELSE turn.cache_read_tokens END, \
+               cache_write_5m_tokens = CASE WHEN (excluded.output_tokens > turn.output_tokens OR (excluded.output_tokens = turn.output_tokens AND excluded.ts >= turn.ts)) THEN excluded.cache_write_5m_tokens ELSE turn.cache_write_5m_tokens END, \
+               cache_write_1h_tokens = CASE WHEN (excluded.output_tokens > turn.output_tokens OR (excluded.output_tokens = turn.output_tokens AND excluded.ts >= turn.ts)) THEN excluded.cache_write_1h_tokens ELSE turn.cache_write_1h_tokens END, \
+               reasoning_tokens = CASE WHEN (excluded.output_tokens > turn.output_tokens OR (excluded.output_tokens = turn.output_tokens AND excluded.ts >= turn.ts)) THEN excluded.reasoning_tokens ELSE turn.reasoning_tokens END, \
+               ts = CASE WHEN (excluded.output_tokens > turn.output_tokens OR (excluded.output_tokens = turn.output_tokens AND excluded.ts >= turn.ts)) THEN excluded.ts ELSE turn.ts END, \
+               output_tokens = MAX(turn.output_tokens,excluded.output_tokens), \
+               execution_key=COALESCE(excluded.execution_key,turn.execution_key), \
+               cost_owner_session_id=excluded.cost_owner_session_id, \
+               usage_state=excluded.usage_state, \
                tool_calls = turn.tool_calls + excluded.tool_calls, \
                duration_ms = COALESCE(excluded.duration_ms, turn.duration_ms), \
                model = COALESCE(turn.model, excluded.model), \
@@ -1963,6 +2064,8 @@ fn apply_chunk(tx: &Transaction<'_>, chunk: &SessionChunk) -> Result<(), String>
                 turn.reported_cost_usd,
                 reported_ingest,
                 reported_generate,
+                turn.execution_key,
+                turn.usage_state,
             ],
         )
         .map_err(|err| format!("upsert turn: {err}"))?;
@@ -1993,7 +2096,7 @@ fn apply_chunk(tx: &Transaction<'_>, chunk: &SessionChunk) -> Result<(), String>
                 // Links the call back to the turn that issued it so failures,
                 // which only surface in a later result record, can be counted
                 // against the right turn.
-                tool.turn_key,
+                tool.turn_key.as_ref().map(|key| request_key_rewrites.get(key).unwrap_or(key)),
             ],
         )
         .map_err(|err| format!("insert tool_event: {err}"))?;
@@ -2129,6 +2232,7 @@ pub fn recompute_session(
         stored_cost: f64,
         stored_ingest: f64,
         stored_generate: f64,
+        chargeable: bool,
     }
 
     let mut turns = Vec::new();
@@ -2137,7 +2241,7 @@ pub fn recompute_session(
             .prepare(
                 "SELECT seq, model, input_tokens, output_tokens, \
                  cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, \
-                 cost_usd, ingest_cost_usd, generate_cost_usd \
+                 cost_usd, ingest_cost_usd, generate_cost_usd, usage_state IN ('canonical','legacy') \
                  FROM turn WHERE kind = ?1 AND session_id = ?2",
             )
             .map_err(|err| format!("prepare turn scan: {err}"))?;
@@ -2154,6 +2258,7 @@ pub fn recompute_session(
                     stored_cost: row.get(7)?,
                     stored_ingest: row.get(8)?,
                     stored_generate: row.get(9)?,
+                    chargeable: row.get(10)?,
                 })
             })
             .map_err(|err| format!("scan turns: {err}"))?;
@@ -2199,7 +2304,7 @@ pub fn recompute_session(
                 turn.write_1h,
             )
         };
-        total_cost += split.total();
+        if turn.chargeable { total_cost += split.total(); }
         // Families are derived data. Refresh them while repricing so a newly
         // recognized model is fixed in existing sessions and all rollups too.
         let normalized = turn.model.as_deref().map(price::normalize);

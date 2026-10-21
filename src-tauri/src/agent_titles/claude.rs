@@ -1,17 +1,16 @@
-use super::{chunk, message_text, records, valid_session, Evidence, TitleRequest};
+use super::{chunk, message_text, records, Evidence, TitleRequest};
 use std::path::{Path, PathBuf};
-fn locate_at(root: Option<PathBuf>, request: &TitleRequest) -> Option<PathBuf> {
-    let session = request.agent_session_id.as_deref()?;
-    if !valid_session(session) {
-        return None;
-    }
-    crate::agent_transcript::locate_claude_transcript_exact(&root?, &request.cwd, session).ok()
+#[path = "claude_location.rs"]
+mod claude_location;
+fn locate_at(primary: Option<PathBuf>, alternate: Option<PathBuf>, request: &TitleRequest) -> Option<PathBuf> {
+    claude_location::locate_exact_in_roots(primary.as_deref(), alternate.as_deref(),
+        &crate::pty::path_norm::claude_project_key(&request.cwd), request.agent_session_id.as_deref()?)
 }
 pub(super) fn locate(request: &TitleRequest) -> Option<PathBuf> {
-    locate_at(crate::ailog::claude_root(), request)
+    locate_at(crate::ailog::claude_root(), crate::ailog::claude_codex_root(), request)
 }
 pub(super) fn locate_codex_wrapper(request: &TitleRequest) -> Option<PathBuf> {
-    locate_at(crate::ailog::claude_codex_root(), request)
+    locate_at(crate::ailog::claude_codex_root(), crate::ailog::claude_root(), request)
 }
 fn title(bytes: &[u8]) -> Option<String> {
     let mut custom = None;

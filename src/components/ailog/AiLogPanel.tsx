@@ -88,7 +88,7 @@ export function AiLogPanel({ open, visible, closing = false, embedded = false, o
 
   useLayoutEffect(() => {
     void refreshUsageSurface();
-  }, [refreshUsageSurface, store.preset, store.customFrom, store.customTo, store.includeSidechain, store.selection, store.granularity, store.usageSeriesAxis, store.usageBucket, store.breakdownDimension]);
+  }, [refreshUsageSurface, store.preset, store.customFrom, store.customTo, store.selection, store.granularity, store.usageSeriesAxis, store.usageBucket, store.breakdownDimension]);
   useEffect(() => {
     if (!open) return;
     void store.loadUsdJpyRate();

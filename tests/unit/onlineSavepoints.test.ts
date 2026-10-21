@@ -10,6 +10,8 @@ import {
   isCurrentSavepoint,
   isFinalSavepoint,
   isTrashedSavepoint,
+  isSavepointAgentKind,
+  savepointAgentKind,
   type OnlineSavepointEntry,
 } from "../../src/components/online/onlineSavepoints";
 
@@ -107,6 +109,19 @@ describe("restored handoff panel labels", () => {
 });
 
 describe("collectOpenAgentIdentityKeys", () => {
+  it("keeps Hybrid and native identities distinct even with the same conversation id", () => {
+    const workspaces = [{ panes: [{ tabs: [
+      { sessionId: "native", agentKind: "claude", agentSessionId: "same-id" },
+      { sessionId: "hybrid", agentKind: "claude-codex", agentSessionId: "same-id" },
+    ] }] }];
+    expect(isSavepointAgentKind("claude-codex")).toBe(true);
+    expect(savepointAgentKind(entry({ agent_kind: "claude-codex", agent_session_id: "same-id", claude_session_id: null }))).toBe("claude-codex");
+    expect([...collectOpenAgentIdentityKeys(workspaces, {})]).toEqual(["claude:same-id", "claude-codex:same-id"]);
+    expect(collectOpenAgentSessions(workspaces, { hybrid: { agentKind: "claude-codex", agentSessionId: "new-id" } })[0])
+      .toMatchObject({ agentKind: "claude-codex", agentSessionId: "new-id", status: "running" });
+    expect(collectOpenAgentSessions(workspaces, { native: { agentKind: "claude-codex" } })[0])
+      .toMatchObject({ agentKind: "claude-codex", agentSessionId: undefined });
+  });
   it("prefers metadata ids, skips missing ids, and deduplicates", () => {
     const workspaces = [{
       panes: [{

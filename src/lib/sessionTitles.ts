@@ -3,7 +3,16 @@ import type { GroupingScan } from "../components/layout/tabGrouping";
 // Session titles for grouping (paneEvidence) and automatic naming (autoNameEvidence). Kept
 // apart from paneEvidence so the naming reader does not pull in the launcher and identity stores.
 export interface AgentTitleRequest { tab_id: string; agent_kind: string; agent_session_id?: string; cwd: string }
-export interface AgentSessionTitles { tab_id: string; session_title: string | null; task_title: string | null }
+export type SessionHistoryStatus = "available" | "unavailable" | "missing_identity" | "unsupported";
+export interface AgentSessionTitles { tab_id: string; session_title: string | null; task_title: string | null; history_status?: SessionHistoryStatus }
+export function sessionHistoryStatusLabel(status?: SessionHistoryStatus): string {
+  return status === "available" ? "会話を確認済み" : status === "unsupported" ? "会話読取は未対応"
+    : status === "missing_identity" ? "会話IDを未取得" : "会話を未取得";
+}
+function fallbackHistoryStatus(tab: GroupingScan["tabs"][number]): SessionHistoryStatus {
+  if (!["claude", "claude-codex", "codex"].includes(tab.agentKind)) return "unsupported";
+  return tab.agentSessionId ? "unavailable" : "missing_identity";
+}
 export const TITLE_REFRESH_MS = 5 * 60_000;
 const cache = new Map<string, { key: string; at: number; value: AgentSessionTitles }>();
 export async function agentSessionTitles(requests: AgentTitleRequest[]): Promise<AgentSessionTitles[]> {
@@ -19,7 +28,9 @@ const keyFor = (request: AgentTitleRequest) => JSON.stringify(request);
 export function cachedEvidenceScan(scan: GroupingScan): GroupingScan {
   return { ...scan, tabs: scan.tabs.map(tab => {
     const cached = cache.get(tab.id);
-    return cached?.key === keyFor(titleRequest(tab)) ? { ...tab, sessionTitle: cached.value.session_title, taskTitle: cached.value.task_title } : tab;
+    return cached?.key === keyFor(titleRequest(tab)) ? { ...tab, sessionTitle: cached.value.session_title, taskTitle: cached.value.task_title,
+      historyStatus: cached.value.history_status ?? (cached.value.session_title ? "available" : fallbackHistoryStatus(tab)) }
+      : { ...tab, historyStatus: tab.historyStatus ?? fallbackHistoryStatus(tab) };
   }) };
 }
 /** A Claude tab names its session after the first turn; look again sooner until the title exists. */

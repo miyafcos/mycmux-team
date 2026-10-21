@@ -1,11 +1,20 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, it, vi } from "vitest";
 const fixture = vi.hoisted(() => ({
-  invoke: vi.fn(), listen: vi.fn(), pushToast: vi.fn(),
+  invoke: vi.fn(), nextContext: 0, listen: vi.fn(), pushToast: vi.fn(),
   receive: undefined as undefined | ((event: { payload: Record<string, unknown> }) => unknown),
   workspaces: [] as unknown[],
 }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: fixture.invoke, Channel: class { onmessage?: unknown } }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, ...parameters: any[]) => {
+    const args = parameters[0] ?? {};
+    if (command === "get_session_attachment_contexts") return args.sessionIds.map((session_id: string) => ({
+      backend_epoch: "fixture-backend", transfer_id: args.transferToken ?? null, transfer_token: args.transferToken ?? null,
+      session_id, window_label: "main", window_incarnation: "fixture-window",
+      attachment_epoch: ++fixture.nextContext, nonce: String(fixture.nextContext), existing_only: args.existingOnly,
+    }));
+    const result = await fixture.invoke(command, ...parameters);
+    return command === "create_session" || command === "tearout_attach" ? result ?? args.attachmentContext : result;
+  }, Channel: class { onmessage?: unknown } }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: fixture.listen, emit: vi.fn(async () => {}) }));
 vi.mock("../../src/stores/workspaceListStore", () => ({ useWorkspaceListStore: { getState: () => ({ workspaces: fixture.workspaces }) } }));
 vi.mock("../../src/stores/toastStore", () => ({ useToastStore: { getState: () => ({ pushToast: fixture.pushToast }) } }));

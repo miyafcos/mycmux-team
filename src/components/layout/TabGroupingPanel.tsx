@@ -1,6 +1,7 @@
 import { beginGroupingTrace } from "../../lib/groupingDiagnostics";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
 import { identitiesForScan } from "../../lib/paneEvidence";
+import { sessionHistoryStatusLabel } from "../../lib/sessionTitles";
 import { displayNameForWorkspace } from "../../lib/paneIdentity";
 import { createContext, useContext, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type MutableRefObject, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { OverlayShell } from "../common/OverlayShell";
@@ -2464,7 +2465,9 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
         : group?.destination.kind === "new_workspace" ? "" : tab.workspaceId;
       const name = displayNameForWorkspace(found, destination, identity.homes) ?? getTabDisplayLabel(tab);
       const reason = [found.projectReason, found.subjectReason].flatMap(r => r && reasons[r] ? [reasons[r]] : []);
-      cards.set(tab.id, { name, reason: [...new Set(reason)].join(" · ") || "材料なし" });
+      reason.push(sessionHistoryStatusLabel(tab.historyStatus));
+      if (tab.livenessUnconfirmed) reason.push("稼働状態を未確認");
+      cards.set(tab.id, { name, reason: [...new Set(reason)].join(" · ") });
     }
     return cards;
   }, [scan, edited]);

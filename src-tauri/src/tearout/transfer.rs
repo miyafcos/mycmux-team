@@ -21,6 +21,10 @@ pub struct Transfer {
     pub finalized: bool,
     pub configs: Vec<serde_json::Value>,
     pub phase: Phase,
+    pub(crate) attachment_source: Option<super::attachment_epoch::WindowProof>,
+    pub(crate) attachment_receiver: Option<super::attachment_epoch::WindowProof>,
+    pub(crate) attachments_revoked: bool,
+    pub(crate) attachments_revoking: bool,
 }
 
 impl Transfer {
@@ -39,6 +43,7 @@ impl Transfer {
             finalized: false,
             configs,
             phase: Phase::Prepared,
+            attachment_source: None, attachment_receiver: None, attachments_revoked: false, attachments_revoking: false,
         }
     }
 
@@ -100,7 +105,7 @@ impl Transfer {
     }
 }
 
-fn session_ids(configs: &[serde_json::Value]) -> HashSet<String> {
+pub(super) fn session_ids(configs: &[serde_json::Value]) -> HashSet<String> {
     let mut ids = HashSet::new();
     for pane in configs.iter().filter_map(|config| config.get("panes").and_then(|v| v.as_array())).flatten() {
         if let Some(tabs) = pane.get("tabs").and_then(|v| v.as_array()) {

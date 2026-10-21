@@ -19,12 +19,17 @@ def test_create_session_commits_attach_epoch_only_after_backend_success() -> Non
     attach_epoch = read_repo_text("src/lib/attachEpoch.ts")
 
     reserve_pos = ipc.index("const attach = beginSessionAttach(sessionId, {")
-    invoke_pos = ipc.index('invoke<void>("create_session",', reserve_pos)
-    commit_pos = ipc.index("attach.commit();")
-    failure_pos = ipc.index("attach.fail();")
+    invoke_pos = ipc.index('response = await withTerminalDeadline(invoke<AttachmentContext>("create_session",', reserve_pos)
+    validate_pos = ipc.index("if (!sameAttachmentContext(response, attachmentContext)", invoke_pos)
+    publish_pos = ipc.index("activePtyChannels.set(sessionId, { channel, context: attachmentContext });", validate_pos)
+    commit_pos = ipc.index("attach.commit();", reserve_pos)
+    failure_pos = ipc.index("attach.fail();", commit_pos)
 
-    assert reserve_pos < invoke_pos < commit_pos < failure_pos
-    assert "attach.commit();" not in ipc[reserve_pos:invoke_pos]
+    assert reserve_pos < invoke_pos < validate_pos < publish_pos < commit_pos < failure_pos
+    assert "attach.commit();" not in ipc[reserve_pos:validate_pos]
+    assert "!attachmentAttempt.current()" in ipc[validate_pos:publish_pos]
+    assert "options.stillOwned && !options.stillOwned()" in ipc[validate_pos:publish_pos]
+    assert "throw new SessionClosedError(sessionId)" in ipc[validate_pos:publish_pos]
 
     for snippet in [
         "beginSessionAttach",

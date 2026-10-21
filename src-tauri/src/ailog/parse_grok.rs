@@ -181,6 +181,8 @@ fn handle_turn_completed(
     let cached = number_field(usage, "cachedReadTokens");
     let turn = TurnRow {
         dedup_key: turn_key,
+        execution_key: None,
+        usage_state: None,
         ts,
         model,
         effort: None,

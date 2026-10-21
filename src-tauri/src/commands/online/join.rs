@@ -99,21 +99,24 @@ fn join_savepoint_full_from_config(
     let resolved_cwd_string = resolved_cwd.to_string_lossy().into_owned();
     let transcript = find_transcript(&bundle_dir)?;
     let (resume_session_id, command_argv) = match identity.kind {
-        SavepointAgentKind::Claude => {
-            let project_dir = projects_dir.join(sanitize_project_dir(&resolved_cwd_string));
+        SavepointAgentKind::Claude | SavepointAgentKind::ClaudeCodex => {
+            let root = if identity.kind == SavepointAgentKind::ClaudeCodex {
+                identity.kind.transcript_root(home)
+            } else { projects_dir.to_path_buf() };
+            let project_dir = root.join(sanitize_project_dir(&resolved_cwd_string));
             fs::create_dir_all(&project_dir)
                 .map_err(|error| format!("Failed to create {}: {error}", project_dir.display()))?;
             let resume_session_id = Uuid::new_v4().to_string();
             let target = project_dir.join(format!("{resume_session_id}.jsonl"));
-            fs::copy(&transcript, &target).map_err(|error| {
-                format!(
-                    "Failed to copy {} to {}: {error}",
-                    transcript.display(),
-                    target.display()
-                )
-            })?;
+            if identity.kind == SavepointAgentKind::ClaudeCodex {
+                crate::agent_transcript::copy_claude_transcript(&transcript, &target)?;
+            } else {
+                fs::copy(&transcript, &target).map_err(|error| {
+                    format!("Failed to copy {} to {}: {error}", transcript.display(), target.display())
+                })?;
+            }
             let command_argv = vec![
-                "claude".to_string(),
+                if identity.kind == SavepointAgentKind::ClaudeCodex { "claude-codex".to_string() } else { "claude".to_string() },
                 "--resume".to_string(),
                 resume_session_id.clone(),
                 "--fork-session".to_string(),

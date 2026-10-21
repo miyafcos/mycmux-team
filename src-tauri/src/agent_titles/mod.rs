@@ -27,6 +27,7 @@ pub struct SessionTitles {
     pub tab_id: String,
     pub session_title: Option<String>,
     pub task_title: Option<String>,
+    pub history_status: &'static str,
 }
 #[derive(Clone, Copy, Serialize)]
 pub struct TitleCapabilities {
@@ -267,6 +268,11 @@ fn task_title(cwd: &str, prompt: Option<&str>) -> Option<String> {
 }
 fn resolve(request: TitleRequest) -> SessionTitles {
     let mut evidence = Evidence::default();
+    let mut history_status = if !matches!(request.agent_kind.as_str(), "claude" | "claude-codex" | "codex") {
+        "unsupported"
+    } else if request.agent_session_id.as_deref().is_none_or(|id| !valid_session(id)) {
+        "missing_identity"
+    } else { "unavailable" };
     if let Some(adapter) = ADAPTERS.iter().find(|a| a.kind == request.agent_kind) {
         if let Some(path) = (adapter.locate)(&request) {
             if let Some(key) = file_key(&path) {
@@ -282,6 +288,7 @@ fn resolve(request: TitleRequest) -> SessionTitles {
                     }
                     value
                 });
+                if evidence.title.is_some() || evidence.prompt.is_some() { history_status = "available"; }
             }
         }
         if !capabilities(&request.agent_kind).session_title {
@@ -292,6 +299,7 @@ fn resolve(request: TitleRequest) -> SessionTitles {
         tab_id: request.tab_id,
         session_title: evidence.title,
         task_title: task_title(&request.cwd, evidence.prompt.as_deref()),
+        history_status,
     }
 }
 
@@ -461,6 +469,16 @@ mod tests {
         let evidence = claude::read(f.path());
         assert_eq!(evidence.prompt.as_deref(), Some("Read task"));
         assert_eq!(evidence.title.as_deref(), Some("new"));
+    }
+    #[test]
+    fn history_status_distinguishes_missing_identity_and_unsupported_adapters() {
+        for (kind, expected) in [("claude", "missing_identity"), ("claude-codex", "missing_identity"),
+            ("codex", "missing_identity"), ("grok", "unsupported"), ("antigravity", "unsupported"),
+            ("hermes", "unsupported"), ("omp", "unsupported"), ("cursor", "unsupported")] {
+            let result = resolve(TitleRequest { tab_id: "tab".into(), agent_kind: kind.into(), agent_session_id: None, cwd: String::new() });
+            assert_eq!(result.history_status, expected);
+            assert_eq!(result.tab_id, "tab");
+        }
     }
     #[tokio::test]
     async fn batch_limit() {
