@@ -81,6 +81,12 @@ jobs:
           New-Item -ItemType Directory -Path cloud-output | Out-Null
           & python -X utf8 scripts/run_windows_tests.py 2>&1 | Tee-Object -FilePath cloud-output/rust-final.log
           if ($LASTEXITCODE -ne 0) { throw 'Native Windows Rust verification failed' }
+      - name: Check e2e tests and examples
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & cargo check --manifest-path src-tauri/Cargo.toml --features e2e --tests --examples --locked 2>&1 | Tee-Object -FilePath cloud-output/rust-e2e-check.log
+          if ($LASTEXITCODE -ne 0) { throw 'E2e tests/examples compile check failed' }
       - name: Build Windows bundles without updater private keys
         shell: pwsh
         run: |
@@ -89,7 +95,13 @@ jobs:
           [System.IO.File]::WriteAllText($cloudConfigPath, '{"bundle":{"createUpdaterArtifacts":false}}', [System.Text.UTF8Encoding]::new($false))
           & npm run tauri -- build --bundles nsis,msi --config $cloudConfigPath 2>&1 | Tee-Object -FilePath cloud-output/windows-build.log
           if ($LASTEXITCODE -ne 0) { throw 'Windows bundle build failed' }
-          if ((git diff HEAD --name-only)) { throw 'Tracked source changed during build' }
+          $changed = @(git diff HEAD --name-only)
+          if ($changed.Count -gt 0) {
+            git status --short
+            git diff HEAD --stat
+            git diff HEAD -- src-tauri/permissions src-tauri/gen/schemas src-tauri/Cargo.lock
+            throw 'Tracked source changed during build'
+          }
       - name: Collect artifacts and source receipt
         shell: python
         run: |
