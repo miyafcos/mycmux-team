@@ -306,6 +306,103 @@ def create_medium_process(binary, command, block, directory, startup, info, evid
                 close(token)
 
 
+class NoninteractiveStation:
+    def __init__(self, name: str):
+        assert re.fullmatch(r'mycmux-ci0886_\d+_\d+', name)
+        self.name = name
+        self.station = None
+        self.desktop = None
+        self.original_station = None
+        self.original_desktop = None
+        self.user = ctypes.WinDLL('user32', use_last_error=True)
+        self.kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        self.security = ctypes.WinDLL('advapi32', use_last_error=True)
+        self.get_station = bind(self.user, 'GetProcessWindowStation', [], wintypes.HANDLE)
+        self.set_station = bind(self.user, 'SetProcessWindowStation', [wintypes.HANDLE], wintypes.BOOL)
+        self.get_thread = bind(self.kernel, 'GetCurrentThreadId', [], wintypes.DWORD)
+        self.get_desktop = bind(self.user, 'GetThreadDesktop', [wintypes.DWORD], wintypes.HANDLE)
+        self.set_desktop = bind(self.user, 'SetThreadDesktop', [wintypes.HANDLE], wintypes.BOOL)
+        self.close_station = bind(self.user, 'CloseWindowStation', [wintypes.HANDLE], wintypes.BOOL)
+        self.close_desktop = bind(self.user, 'CloseDesktop', [wintypes.HANDLE], wintypes.BOOL)
+        self.object_info = bind(self.user, 'GetUserObjectInformationW', [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)], wintypes.BOOL)
+
+    def checked(self, value, label: str):
+        if not value:
+            raise OSError(ctypes.get_last_error(), label)
+        return value
+
+    def flags(self, handle) -> int:
+        class UserObjectFlags(ctypes.Structure):
+            _fields_ = [('inherit', wintypes.BOOL), ('reserved', wintypes.BOOL), ('flags', wintypes.DWORD)]
+        flags = UserObjectFlags()
+        size = wintypes.DWORD()
+        self.checked(self.object_info(handle, 1, ctypes.byref(flags), ctypes.sizeof(flags), ctypes.byref(size)), 'read window station visibility')
+        return int(flags.flags)
+
+    def create(self) -> None:
+        class SecurityAttributes(ctypes.Structure):
+            _fields_ = [('length', wintypes.DWORD), ('descriptor', ctypes.c_void_p), ('inherit', wintypes.BOOL)]
+        class SidAttributes(ctypes.Structure):
+            _fields_ = [('sid', ctypes.c_void_p), ('attributes', wintypes.DWORD)]
+        current = bind(self.kernel, 'GetCurrentProcess', [], wintypes.HANDLE)
+        open_token = bind(self.security, 'OpenProcessToken', [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)], wintypes.BOOL)
+        query = bind(self.security, 'GetTokenInformation', [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)], wintypes.BOOL)
+        sid_to_text = bind(self.security, 'ConvertSidToStringSidW', [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)], wintypes.BOOL)
+        descriptor_from_text = bind(self.security, 'ConvertStringSecurityDescriptorToSecurityDescriptorW', [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.DWORD)], wintypes.BOOL)
+        create_station = bind(self.user, 'CreateWindowStationW', [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(SecurityAttributes)], wintypes.HANDLE)
+        create_desktop = bind(self.user, 'CreateDesktopW', [wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(SecurityAttributes)], wintypes.HANDLE)
+        local_free = bind(self.kernel, 'LocalFree', [ctypes.c_void_p], ctypes.c_void_p)
+        close = bind(self.kernel, 'CloseHandle', [wintypes.HANDLE], wintypes.BOOL)
+        token = wintypes.HANDLE()
+        sid_text = ctypes.c_void_p()
+        descriptor = ctypes.c_void_p()
+        self.original_station = self.checked(self.get_station(), 'get original station')
+        self.original_desktop = self.checked(self.get_desktop(self.get_thread()), 'get original thread desktop')
+        try:
+            self.checked(open_token(current(), 8, ctypes.byref(token)), 'query own SID for private station ACL')
+            size = wintypes.DWORD()
+            query(token, 1, None, 0, ctypes.byref(size))
+            assert 0 < size.value < 65536
+            payload = ctypes.create_string_buffer(size.value)
+            self.checked(query(token, 1, payload, len(payload), ctypes.byref(size)), 'read own token user')
+            user_sid = SidAttributes.from_buffer(payload).sid
+            self.checked(sid_to_text(user_sid, ctypes.byref(sid_text)), 'format own SID for private ACL')
+            sddl = 'D:P(A;;GA;;;SY)(A;;GA;;;' + ctypes.wstring_at(sid_text) + ')'
+            self.checked(descriptor_from_text(sddl, 1, ctypes.byref(descriptor), None), 'build same-user and system station ACL')
+            attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor.value, False)
+            self.station = self.checked(create_station(self.name, 1, 0x000F037F, ctypes.byref(attributes)), 'create new noninteractive station')
+            assert self.flags(self.station) & 1 == 0, 'station must not be visible'
+            self.checked(self.set_station(self.station), 'connect host temporarily to private station')
+            self.desktop = self.checked(create_desktop('Default', None, None, 0, 0x01FF, ctypes.byref(attributes)), 'create private Default desktop')
+        finally:
+            if self.original_station:
+                self.checked(self.set_station(self.original_station), 'restore original station after create')
+            for pointer in [descriptor, sid_text]:
+                if pointer:
+                    local_free(pointer)
+            if token:
+                close(token)
+
+    def enter(self) -> None:
+        self.checked(self.set_station(self.station), 'connect to private station')
+        self.checked(self.set_desktop(self.desktop), 'connect own thread to private desktop')
+
+    def restore(self) -> None:
+        self.checked(self.set_station(self.original_station), 'restore own process station')
+        self.checked(self.set_desktop(self.original_desktop), 'restore own thread desktop')
+
+    def close(self) -> dict:
+        if self.original_station:
+            self.restore()
+        result = {'host_station_restored': True, 'host_thread_desktop_restored': True}
+        if self.desktop:
+            result['private_desktop_closed'] = bool(self.close_desktop(self.desktop))
+        if self.station:
+            result['private_station_nonvisible'] = not bool(self.flags(self.station) & 1)
+            result['private_station_closed'] = bool(self.close_station(self.station))
+        return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--exe', type=Path, required=True)
@@ -365,6 +462,7 @@ def main() -> int:
     memory_status = bind(system, 'GlobalMemoryStatusEx', [ctypes.POINTER(Memory)], wintypes.BOOL)
     info = ProcessInfo()
     desktop = job = input_desktop = None
+    station = None
     assigned = False
     diagnostic_port = None
     environment = None
@@ -401,7 +499,14 @@ def main() -> int:
             if pid.value == info.pid:
                 result.append(int(hwnd))
             return True
-        require(enum_desktop(handle, collect, 0), 'enumerate owned windows')
+        if station is not None and handle == desktop:
+            station.enter()
+            try:
+                require(enum_desktop(handle, collect, 0), 'enumerate owned private windows')
+            finally:
+                station.restore()
+        else:
+            require(enum_desktop(handle, collect, 0), 'enumerate owned windows')
         return result
 
     def record_job_sample():
@@ -554,8 +659,11 @@ def main() -> int:
         input_desktop = require(open_input(0, False, 0x0041), 'open input desktop')
         owned['input_desktop_before'] = desktop_name(input_desktop)
         owned['foreground_before'] = int(foreground() or 0)
-        desktop = require(create_desktop('mycmux-' + profile, None, None, 0, 0x01FF, None), 'create isolated desktop')
-        assert desktop_name(desktop) != owned['input_desktop_before']
+        station = NoninteractiveStation('mycmux-' + profile)
+        station.create()
+        desktop = station.desktop
+        owned['window_station'] = {'name': station.name, 'desktop': 'Default', 'visible': bool(station.flags(station.station) & 1), 'acl_same_user_and_system_only': True}
+        assert not owned['window_station']['visible']
         job = require(create_job(None, None), 'create owned job')
         limits = ExtendedLimit()
         limits.basic.flags = 0x2000
@@ -581,12 +689,16 @@ def main() -> int:
         block = ctypes.create_unicode_buffer('\0'.join(f'{key}={value}' for key, value in sorted(environment.items(), key=lambda item: item[0].upper())) + '\0\0')
         startup = Startup()
         startup.cb = ctypes.sizeof(startup)
-        startup.desktop = 'WinSta0\\mycmux-' + profile
+        startup.desktop = station.name + '\\Default'
         startup.flags = 1
         startup.show = 5
         command = ctypes.create_unicode_buffer(subprocess.list2cmdline([str(binary), '--profile', profile]))
         owned['token_probe'] = {}
-        owned['token_probe'].update(create_medium_process(binary, command, block, output, startup, info, owned['token_probe']))
+        station.enter()
+        try:
+            owned['token_probe'].update(create_medium_process(binary, command, block, output, startup, info, owned['token_probe']))
+        finally:
+            station.restore()
         require(assign_job(job, info.process), 'assign app to owned job')
         assigned = True
         require(resume(info.thread) != 0xFFFFFFFF, 'resume isolated app')
@@ -611,7 +723,11 @@ def main() -> int:
                 raise RuntimeError('multiple profile main windows')
             return candidates if len(candidates) == 1 else None
         candidates = until(main_window_candidate, 20, 'isolated profile main window identity')
-        require(show_window(candidates[0], 4), 'show only isolated main window without activation')
+        station.enter()
+        try:
+            require(show_window(candidates[0], 4), 'show only noninteractive main window without activation')
+        finally:
+            station.restore()
         owned['checks'].append({'name': 'isolated-main-show-no-activate', 'passed': True, 'matching_windows': len(candidates)})
         ready = until(lambda: call('workspace.list'), 90, 'frontend socket ready')
         owned['checks'].append({'name': 'frontend-ready', 'passed': True, 'initial_workspaces': len(ready['workspaces'])})
@@ -684,7 +800,12 @@ def main() -> int:
         for handle in [info.thread, info.process, job]:
             if handle:
                 close_handle(handle)
-        if desktop:
+        if station is not None:
+            cleanup.update(station.close())
+            cleanup['desktop_closed'] = cleanup.get('private_desktop_closed', True)
+            if cleanup.get('private_station_closed') is False:
+                owned['status'] = 'failed'
+        elif desktop:
             cleanup['desktop_closed'] = bool(close_desktop(desktop))
         if input_desktop:
             close_desktop(input_desktop)
@@ -692,7 +813,7 @@ def main() -> int:
             owned['status'] = 'failed'
         owned['cleanup'] = cleanup
         owned['finished_at'] = datetime.now().astimezone().isoformat()
-        owned['scope'] = 'distribution executable hidden startup, PTY output and profile persistence; not I0 transfer or AI-log GUI acceptance'
+        owned['scope'] = 'distribution executable noninteractive-station startup, PTY output and profile persistence; not I0 transfer or AI-log GUI acceptance'
         (output / 'smoke-receipt.json').write_text(json.dumps(owned, indent=2) + '\n', encoding='utf-8')
         print('HIDDEN_SMOKE', owned['status'], owned.get('error', ''), flush=True)
     return 0 if owned['status'] == 'passed' else 1
