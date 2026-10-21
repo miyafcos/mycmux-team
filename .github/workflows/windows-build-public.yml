@@ -1,13 +1,13 @@
-name: Public Windows regression
+name: Public Windows hidden smoke
 on:
   workflow_dispatch:
     inputs:
       source_commit:
-        description: "Public export commit to verify"
+        description: "Frozen public source commit"
         required: true
         type: string
       source_tree:
-        description: "Expected public export tree"
+        description: "Frozen public source tree"
         required: true
         type: string
       version:
@@ -17,12 +17,12 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: public-windows-regression
+  group: public-windows-hidden-smoke
   cancel-in-progress: false
 jobs:
-  windows-regression:
+  hidden-smoke:
     runs-on: windows-2022
-    timeout-minutes: 55
+    timeout-minutes: 15
     permissions:
       contents: write
     env:
@@ -31,97 +31,76 @@ jobs:
       RELEASE_VERSION: ${{ inputs.version }}
       PYTHONIOENCODING: utf-8
       PYTHONDONTWRITEBYTECODE: "1"
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
     steps:
-      - name: Validate inputs
+      - name: Validate exact candidate
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:SOURCE_COMMIT -notmatch '^[0-9a-f]{40}$') { throw 'Invalid source commit' }
-          if ($env:SOURCE_TREE -notmatch '^[0-9a-f]{40}$') { throw 'Invalid source tree' }
+          if ($env:SOURCE_COMMIT -ne 'ef72c0672d5a3a78685e7eab9511f07ddcca8892') { throw 'Unexpected source' }
+          if ($env:SOURCE_TREE -ne 'e3ecd9d24c153471345dcdeef60d1945171510fc') { throw 'Unexpected tree' }
           if ($env:RELEASE_VERSION -ne '0.88.6') { throw 'Unexpected version' }
           git config --global core.autocrlf false
-          if ($LASTEXITCODE) { throw 'Cannot configure checkout line endings' }
+          if ($LASTEXITCODE) { throw 'Cannot set checkout line endings' }
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_commit }}
+          ref: ${{ github.sha }}
+          path: ci-control
           persist-credentials: false
-      - name: Verify fixed source and RAM
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if ((git rev-parse HEAD).Trim() -ne $env:SOURCE_COMMIT) { throw 'Source mismatch' }
-          if ((git rev-parse 'HEAD^{tree}').Trim() -ne $env:SOURCE_TREE) { throw 'Tree mismatch' }
-          if ((Get-Content package.json -Raw | ConvertFrom-Json).version -ne $env:RELEASE_VERSION) { throw 'Version mismatch' }
-          $freeRam = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB
-          Write-Output ("Free RAM: {0:N2} GiB" -f $freeRam)
-          if ($freeRam -lt 5.2) { throw 'Runner RAM gate failed' }
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24.14.0"
-      - name: Restore locked Node dependencies
-        shell: pwsh
-        run: npm ci
-      - name: Verify frontend and available Python contracts
+      - name: Download and verify exact distribution executable
         shell: python
-        run: |
-          from pathlib import Path
-          import hashlib, importlib.util, json, os, re, runpy, subprocess, sys, time
-          root=Path.cwd()
-          out=root/"cloud-output"
-          out.mkdir(exist_ok=False)
-          records=[]
-          failures=[]
-          omitted=["tests/unit/codexNarrowDetached.test.tsx","tests/unit/codexN3Entries.test.tsx","tests/unit/codexNarrowClaudeParity.test.ts"]
-          private_imports=sorted(path.relative_to(root).as_posix() for path in (root/"tests/unit").glob("*.test.*") if re.search(r"codex-(?:base|merge):",path.read_text(encoding="utf-8")))
-          assert private_imports==sorted(omitted), "private baseline test set changed"
-          config=root/"vitest.public-ci.config.ts"
-          config.write_text('import { defineConfig } from "vitest/config";\nexport default defineConfig({test:{projects:[{test:{name:"unit",include:["tests/unit/**/*.test.{ts,tsx}"],exclude:'+json.dumps(omitted+["tests/unit/persistentLayoutProjectionTypeCoverage.test.ts"])+',maxWorkers:1,sequence:{groupOrder:0}}},{test:{name:"type-coverage",include:["tests/unit/persistentLayoutProjectionTypeCoverage.test.ts"],fileParallelism:false,sequence:{groupOrder:1}}}]}});\n',encoding="utf-8")
-          records.append({"label":"private-baseline-parity","status":"not_run","files":omitted,"reason":"private pinned Git trees not in public checkout; no substitution"})
-          commands=[("tsc",[str(root/"node_modules/.bin/tsc.cmd"),"--noEmit"]),
-                    ("vitest",[str(root/"node_modules/.bin/vitest.cmd"),"run","--config",str(config),"--maxWorkers=1","--no-file-parallelism","--testTimeout=30000","--reporter=json","--outputFile="+str(out/"vitest-results.json"),"--no-color"])]
-          if importlib.util.find_spec("pytest") is not None:
-              commands.append(("python-contracts",[sys.executable,"-B","-X","utf8","-m","pytest","tests/test_public_export.py","tests/test_ailog_contract.py","tests/test_no_hardcoded_ai_models.py","-q","-p","no:cacheprovider","--junitxml="+str(out/"python-contracts.xml")]))
-          else:
-              records.append({"label":"python-contracts","status":"not_run","reason":"pytest not preinstalled; no packages installed"})
-          for label,command in commands:
-              started=time.monotonic()
-              print("START",label,flush=True)
-              log=out/(label+".log")
-              with log.open("xb") as stream:
-                  result=subprocess.run(command,cwd=root,stdout=stream,stderr=subprocess.STDOUT)
-              records.append({"label":label,"exit":result.returncode,"seconds":round(time.monotonic()-started,3),"log":log.name})
-              print("END",label,result.returncode,flush=True)
-              if result.returncode: failures.append(label)
-          sys.path.insert(0,str(root/"scripts"))
-          exporter=runpy.run_path(str(root/"scripts/public_export.py"),run_name="ci_fixture_library")
-          fixture=root/"src-tauri/src/ailog/tests/r2_legacy_copies.json"
-          fixture_matches=fixture.read_bytes().replace(b"\r\n",b"\n")==exporter["synthetic_ailog_legacy_fixture"]()
-          rust=(root/"src-tauri/src/ailog/tests/stage1_r2_tests.rs").read_text(encoding="utf-8")
-          literal_ids=re.findall(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",rust,re.IGNORECASE)
-          records.append({"label":"synthetic-fixture","matches_recipe":fixture_matches,"rust_literal_uuid_count":len(literal_ids)})
-          if not fixture_matches or literal_ids: failures.append("synthetic-fixture")
-          changed=subprocess.check_output(["git","diff","HEAD","--name-only"],text=True).splitlines()
-          records.append({"label":"source-invariance","changed_paths":changed})
-          if changed: failures.append("source-invariance")
-          for log in out.glob("*.log"):
-              if log.stat().st_size==0: log.write_text("[no output]\n",encoding="utf-8")
-          assets=[]
-          for path in sorted(out.iterdir()):
-              if path.is_file(): assets.append({"name":path.name,"size":path.stat().st_size,"sha256":hashlib.sha256(path.read_bytes()).hexdigest()})
-          receipt={"source_commit":os.environ["SOURCE_COMMIT"],"source_tree":os.environ["SOURCE_TREE"],"version":os.environ["RELEASE_VERSION"],"checks":records,"failed_checks":failures,"python_version":sys.version,"artifacts":assets,"full_private_python_suite":"not_run_public_checkout","private_baseline_parity":"not_run_missing_trees"}
-          (out/"regression-receipt.json").write_text(json.dumps(receipt,indent=2)+"\n",encoding="utf-8")
-          print(json.dumps({"checks":records,"failed_checks":failures}),flush=True)
-          raise SystemExit(1 if failures else 0)
-      - name: Retain regression results as draft
-        if: ${{ always() }}
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          from pathlib import Path
+          import hashlib, json, os, subprocess
+          root=Path.cwd()
+          out=root/'download-records'
+          out.mkdir(exist_ok=False)
+          target=root/'binary-input'
+          target.mkdir(exist_ok=False)
+          repo='miyafcos/mycmux-team'
+          release=json.loads(subprocess.check_output(['gh','release','view','windows-build-39564338446','--repo',repo,'--json','assets,isDraft,targetCommitish,tagName']))
+          assert release['isDraft'] and release['targetCommitish']==os.environ['SOURCE_COMMIT']
+          wanted={'mycmux.exe','cloud-build-receipt.json'}
+          selected={row['name']:row for row in release['assets'] if row['name'] in wanted}
+          assert set(selected)==wanted
+          for name in sorted(wanted):
+              subprocess.run(['gh','release','download',release['tagName'],'--repo',repo,'--pattern',name,'--dir',str(target)],check=True)
+              path=target/name
+              digest=hashlib.sha256(path.read_bytes()).hexdigest()
+              assert selected[name]['digest']=='sha256:'+digest and selected[name]['size']==path.stat().st_size
+          cloud=json.loads((target/'cloud-build-receipt.json').read_text(encoding='utf-8-sig'))
+          assert cloud['public_source_commit']==os.environ['SOURCE_COMMIT']
+          assert cloud['public_source_tree']==os.environ['SOURCE_TREE'] and cloud['version']==os.environ['RELEASE_VERSION']
+          binary=target/'mycmux.exe'
+          assert binary.stat().st_size==77128704
+          assert hashlib.sha256(binary.read_bytes()).hexdigest()=='7a030f48a64fc7242d3e20cb04afc89ad3d8240cc35939d28b4636631466bf6f'
+          version=subprocess.check_output(['powershell.exe','-NoProfile','-Command',"(Get-Item -LiteralPath '"+str(binary)+"').VersionInfo.ProductVersion"],text=True).strip()
+          assert version=='0.88.6'
+          record={'public_source':os.environ['SOURCE_COMMIT'],'public_tree':os.environ['SOURCE_TREE'],'version':version,'exe_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'exe_size':binary.stat().st_size,'build_run':39564338446,'ci_control':os.environ['GITHUB_SHA']}
+          (out/'download-receipt.json').write_text(json.dumps(record,indent=2)+'\n',encoding='utf-8')
+          print('EXACT_BINARY_VERIFIED',version)
+      - name: Run distribution binary on isolated desktop
+        shell: pwsh
+        run: |
           $ErrorActionPreference = 'Stop'
-          if (-not (Test-Path cloud-output/regression-receipt.json)) { throw 'No completed regression receipt; no results retained' }
-          $files = @(Get-ChildItem -LiteralPath cloud-output -File | ForEach-Object { $_.FullName })
-          $tag = 'windows-regression-' + $env:GITHUB_RUN_ID
-          & gh release create $tag @files --repo $env:GITHUB_REPOSITORY --draft --target $env:SOURCE_COMMIT --title ('Windows regression ' + $env:RELEASE_VERSION) --notes 'Verification results only. No installable release or updater change.'
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot retain regression results' }
+          & python -I -X utf8 ci-control/.github/ci/hidden_smoke_0886.py --exe binary-input/mycmux.exe --out smoke-output 2>&1 | Tee-Object -FilePath hidden-smoke.log
+          if ($LASTEXITCODE -ne 0) { throw 'Hidden smoke did not pass' }
+      - name: Retain smoke receipts without profile secrets
+        if: ${{ always() }}
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          from pathlib import Path
+          import hashlib, json, os, subprocess
+          root=Path.cwd()
+          paths=[root/'download-records/download-receipt.json',root/'hidden-smoke.log',root/'smoke-output/smoke-receipt.json']
+          files=[path for path in paths if path.is_file()]
+          assert files,'No smoke evidence was created'
+          for path in files:
+              if path.stat().st_size==0: path.write_text('[no output]\n',encoding='utf-8')
+          receipt=root/'smoke-artifact-manifest.json'
+          receipt.write_text(json.dumps({'source':os.environ['SOURCE_COMMIT'],'files':[{'name':path.name,'size':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for path in files],'profile_contents_uploaded':False},indent=2)+'\n',encoding='utf-8')
+          tag='windows-hidden-smoke-'+os.environ['GITHUB_RUN_ID']
+          subprocess.run(['gh','release','create',tag,*map(str,files),str(receipt),'--repo','miyafcos/mycmux-team','--draft','--target',os.environ['SOURCE_COMMIT'],'--title','Windows hidden smoke 0.88.6','--notes','Isolated verification receipts only. No profile tokens, transcripts, installer changes or updater publication.'],check=True)
