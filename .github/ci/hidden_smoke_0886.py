@@ -136,6 +136,97 @@ def listener_state(listeners: list[dict]) -> str:
     return 'loopback_owner_unverified'
 
 
+class ProcessCommandLine(ctypes.Structure):
+    _fields_ = [('length', wintypes.USHORT), ('maximum_length', wintypes.USHORT), ('buffer', ctypes.c_void_p)]
+
+
+def command_line_flags(command_line: str, expected_port: int, expected_directory: Path) -> dict:
+    def argument(name: str):
+        match = re.search(r'(?:^|\s)"?' + re.escape(name) + r'=(?:"([^"]*)"|([^\s"]+))', command_line)
+        return (match.group(1) if match.group(1) is not None else match.group(2)) if match else None
+    port = argument('--remote-debugging-port')
+    directory = argument('--user-data-dir')
+    process_type = argument('--type')
+    allowed_types = {'renderer', 'gpu-process', 'utility', 'crashpad-handler', 'broker', 'service-worker'}
+    return {'process_type': process_type if process_type in allowed_types else ('browser-or-host' if process_type is None else 'other'),
+            'remote_debugging_port_present': port is not None, 'remote_debugging_port_matches': port == str(expected_port),
+            'user_data_dir_present': directory is not None,
+            'user_data_dir_matches': directory is not None and os.path.normcase(os.path.normpath(directory)) == os.path.normcase(str(expected_directory)),
+            'remote_debugging_pipe': '--remote-debugging-pipe' in command_line,
+            'disable_background_networking': '--disable-background-networking' in command_line,
+            'no_sandbox': '--no-sandbox' in command_line}
+
+
+def process_summary(handle, expected_port: int, expected_directory: Path) -> dict:
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    query_image = bind(kernel, 'QueryFullProcessImageNameW', [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)], wintypes.BOOL)
+    exit_code = bind(kernel, 'GetExitCodeProcess', [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)], wintypes.BOOL)
+    size = wintypes.DWORD(32768)
+    image = ctypes.create_unicode_buffer(size.value)
+    if not query_image(handle, 0, image, ctypes.byref(size)):
+        raise OSError(ctypes.get_last_error(), 'owned process image query')
+    status = wintypes.DWORD()
+    if not exit_code(handle, ctypes.byref(status)):
+        raise OSError(ctypes.get_last_error(), 'owned process status query')
+    result = {'image': Path(image.value).name, 'exit_code': int(status.value), 'active': status.value == 259}
+    native = ctypes.WinDLL('ntdll')
+    query = bind(native, 'NtQueryInformationProcess', [wintypes.HANDLE, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)], ctypes.c_long)
+    required = ctypes.c_ulong()
+    query(handle, 60, None, 0, ctypes.byref(required))
+    if required.value < ctypes.sizeof(ProcessCommandLine) or required.value > 262144:
+        result['argument_query'] = 'size_unavailable'
+        return result
+    payload = ctypes.create_string_buffer(required.value)
+    status_code = query(handle, 60, payload, len(payload), ctypes.byref(required))
+    if status_code != 0:
+        result['argument_query'] = 'ntstatus_' + hex(status_code & 0xFFFFFFFF)
+        return result
+    descriptor = ProcessCommandLine.from_buffer(payload)
+    start = ctypes.addressof(payload)
+    pointer = int(descriptor.buffer or 0)
+    if descriptor.length % 2 or pointer < start or pointer + descriptor.length > start + len(payload):
+        result['argument_query'] = 'invalid_buffer'
+        return result
+    command_line = ctypes.string_at(pointer, descriptor.length).decode('utf-16-le')
+    result.update(argument_query='filtered', flags=command_line_flags(command_line, expected_port, expected_directory))
+    return result
+
+
+def owned_process_diagnostics(job, expected_port: int, expected_directory: Path) -> dict:
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    query = bind(kernel, 'QueryInformationJobObject', [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p], wintypes.BOOL)
+    open_owned = bind(kernel, 'OpenProcess', [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE)
+    belongs_to_job = bind(kernel, 'IsProcessInJob', [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)], wintypes.BOOL)
+    close = bind(kernel, 'CloseHandle', [wintypes.HANDLE], wintypes.BOOL)
+    payload = ctypes.create_string_buffer(8 + 4096 * ctypes.sizeof(ctypes.c_size_t))
+    if not query(job, 3, payload, len(payload), None):
+        raise OSError(ctypes.get_last_error(), 'owned job process enumeration')
+    assigned, count = (wintypes.DWORD * 2).from_buffer(payload)
+    if count > 4096 or assigned != count:
+        raise RuntimeError('owned job process list changed or exceeded limit')
+    identifiers = (ctypes.c_size_t * count).from_buffer(payload, 8)
+    records = []
+    for process_id in identifiers:
+        entry = {'pid': int(process_id)}
+        handle = open_owned(0x1000, False, process_id)
+        if not handle:
+            entry['error'] = 'process_handle_unavailable'
+            records.append(entry)
+            continue
+        try:
+            belongs = wintypes.BOOL()
+            if not belongs_to_job(handle, job, ctypes.byref(belongs)) or not belongs.value:
+                entry['error'] = 'job_membership_not_confirmed'
+            else:
+                entry.update(process_summary(handle, expected_port, expected_directory))
+        except Exception as error:
+            entry['error'] = type(error).__name__
+        finally:
+            close(handle)
+        records.append(entry)
+    return {'assigned': int(assigned), 'records': records, 'raw_arguments_recorded': False}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--exe', type=Path, required=True)
@@ -314,6 +405,10 @@ def main() -> int:
                                 'tail': scrub(payload[-32768:].decode('utf-8', errors='replace'))}
         if not diagnostic_port or not assigned:
             return detail
+        try:
+            detail['owned_processes'] = owned_process_diagnostics(job, diagnostic_port, runtime / 'webview2')
+        except Exception as error:
+            detail['owned_processes'] = {'error_type': type(error).__name__}
         held = []
         try:
             listeners = tcp_listener_owners(diagnostic_port)
