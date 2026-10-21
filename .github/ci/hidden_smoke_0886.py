@@ -90,6 +90,52 @@ def tcp_listener_owners(port: int) -> list[dict]:
     raise RuntimeError('TCP listener table changed repeatedly')
 
 
+SOCKET_RECEIVE_SECONDS = 35.0
+SOCKET_FRAME_LIMIT = 4 * 1024 * 1024
+
+
+def remaining_timeout(deadline: float, ceiling: float | None = None) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError('socket operation deadline expired')
+    return min(remaining, ceiling) if ceiling is not None else remaining
+
+
+def socket_exchange(port: int, request: dict, deadline: float) -> dict:
+    payload = (json.dumps(request) + '\n').encode('utf-8')
+    with socket.create_connection(('127.0.0.1', port), timeout=remaining_timeout(deadline, 10.0)) as connection:
+        connection.settimeout(remaining_timeout(deadline))
+        connection.sendall(payload)
+        response_bytes = bytearray()
+        while True:
+            connection.settimeout(remaining_timeout(deadline))
+            chunk = connection.recv(min(65536, SOCKET_FRAME_LIMIT + 1 - len(response_bytes)))
+            if not chunk:
+                raise ConnectionError('socket closed before a complete response')
+            response_bytes.extend(chunk)
+            newline = response_bytes.find(b'\n')
+            if newline >= 0:
+                if newline > SOCKET_FRAME_LIMIT:
+                    raise ValueError('socket response exceeds frame limit')
+                response = json.loads(response_bytes[:newline])
+                if not isinstance(response, dict):
+                    raise ValueError('socket response must be an object')
+                return response
+            if len(response_bytes) > SOCKET_FRAME_LIMIT:
+                raise ValueError('socket response exceeds frame limit')
+
+
+def listener_state(listeners: list[dict]) -> str:
+    if not listeners:
+        return 'no_ipv4_listener'
+    if any(not isinstance(row.get('OwningProcess'), int) or isinstance(row.get('OwningProcess'), bool)
+           or row['OwningProcess'] <= 0 or not isinstance(row.get('LocalAddress'), str) for row in listeners):
+        return 'invalid_listener_metadata'
+    if any(row['LocalAddress'] != '127.0.0.1' for row in listeners):
+        return 'non_loopback_listener'
+    return 'loopback_owner_unverified'
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--exe', type=Path, required=True)
@@ -143,6 +189,8 @@ def main() -> int:
     assigned = False
     diagnostic_port = None
     environment = None
+    active_wait_deadline = None
+    owned['socket_calls'] = []
     open_process = bind(system, 'OpenProcess', [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE)
     in_job = bind(system, 'IsProcessInJob', [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)], wintypes.BOOL)
 
@@ -176,36 +224,54 @@ def main() -> int:
         return result
 
     def call(name: str, values: dict | None = None):
-        port = int((runtime / 'mycmux.port').read_text(encoding='utf-8').strip())
-        token = (runtime / 'mycmux.token').read_text(encoding='utf-8').strip()
-        assert 0 < port < 65536 and token
-        request = {'cmd': name, 'args': values or {}, 'token': token}
-        with socket.create_connection(('127.0.0.1', port), timeout=10) as connection:
-            connection.settimeout(15)
-            connection.sendall((json.dumps(request) + '\n').encode())
-            with connection.makefile('rb') as reader:
-                line = reader.readline(4 * 1024 * 1024)
-        response = json.loads(line)
-        if response.get('error') is not None:
-            raise RuntimeError(name + ': ' + str(response['error']))
-        return response.get('result')
+        started = time.monotonic()
+        outcome = {'command': name}
+        try:
+            port = int((runtime / 'mycmux.port').read_text(encoding='utf-8').strip())
+            token = (runtime / 'mycmux.token').read_text(encoding='utf-8').strip()
+            assert 0 < port < 65536 and token
+            deadline = started + SOCKET_RECEIVE_SECONDS
+            if active_wait_deadline is not None:
+                deadline = min(deadline, active_wait_deadline)
+            response = socket_exchange(port, {'cmd': name, 'args': values or {}, 'token': token}, deadline)
+            if response.get('error') is not None:
+                outcome['backend_error'] = scrub(str(response['error']))
+                raise RuntimeError(name + ': ' + str(response['error']))
+            outcome['status'] = 'response_received'
+            return response.get('result')
+        except Exception as error:
+            outcome['status'] = 'failed'
+            outcome['error_type'] = type(error).__name__
+            raise
+        finally:
+            outcome['elapsed_seconds'] = round(time.monotonic() - started, 3)
+            if len(owned['socket_calls']) < 200:
+                owned['socket_calls'].append(outcome)
 
     def until(predicate, seconds: int, label: str):
+        nonlocal active_wait_deadline
         deadline = time.monotonic() + seconds
-        last = None
-        while time.monotonic() < deadline:
-            if memory_gib() < 2:
-                raise RuntimeError('runtime stop gate: free RAM below 2 GiB')
-            if info.process and wait_process(info.process, 0) == 0:
-                raise RuntimeError('test application exited before ' + label)
-            try:
-                value = predicate()
-                if value:
-                    return value
-            except (OSError, ValueError, RuntimeError) as error:
-                last = type(error).__name__ + ': ' + str(error)
-            time.sleep(0.25)
-        raise TimeoutError(label + ': ' + str(last))
+        previous_deadline = active_wait_deadline
+        active_wait_deadline = min(deadline, previous_deadline) if previous_deadline is not None else deadline
+        last_error = None
+        try:
+            while time.monotonic() < active_wait_deadline:
+                if memory_gib() < 2:
+                    raise RuntimeError('runtime stop gate: free RAM below 2 GiB')
+                if info.process and wait_process(info.process, 0) == 0:
+                    raise RuntimeError('test application exited before ' + label)
+                try:
+                    value = predicate()
+                    if value:
+                        return value
+                except (OSError, ValueError, RuntimeError) as error:
+                    last_error = type(error).__name__ + ': ' + str(error)
+                delay = active_wait_deadline - time.monotonic()
+                if delay > 0:
+                    time.sleep(min(0.25, delay))
+            raise TimeoutError(label + ': ' + str(last_error))
+        finally:
+            active_wait_deadline = previous_deadline
 
     def scrub(text: str) -> str:
         token_path = runtime / 'mycmux.token'
@@ -251,15 +317,19 @@ def main() -> int:
         held = []
         try:
             listeners = tcp_listener_owners(diagnostic_port)
-            assert listeners and all(row['LocalAddress'] in ['127.0.0.1', '::1'] for row in listeners), 'non-loopback CDP listener'
+            detail['cdp'] = {'status': listener_state(listeners), 'address_family': 'IPv4', 'port': diagnostic_port, 'listeners': listeners}
+            if detail['cdp']['status'] != 'loopback_owner_unverified':
+                return detail
             owners = sorted({int(row['OwningProcess']) for row in listeners})
             for process_id in owners:
                 handle = require(open_process(0x1000, False, process_id), 'hold CDP owner')
                 held.append(handle)
                 belongs = wintypes.BOOL()
                 require(in_job(handle, job, ctypes.byref(belongs)), 'check CDP owner job')
-                assert belongs.value, 'CDP owner is outside the isolated job'
-            detail['cdp'] = {'status': 'owned_listener_verified', 'owners': owners, 'port': diagnostic_port}
+                if not belongs.value:
+                    detail['cdp']['status'] = 'owner_outside_job'
+                    raise RuntimeError('CDP owner is outside the isolated job')
+            detail['cdp'].update(status='owned_listener_verified', owners=owners)
             raw_path = output / 'webview-diagnostic-private.json'
             result = subprocess.run(['node', str(probe), str(diagnostic_port), profile, str(raw_path)],
                                     capture_output=True, text=True, timeout=60, env=environment)

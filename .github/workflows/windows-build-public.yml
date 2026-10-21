@@ -1,4 +1,4 @@
-name: Public Windows native diagnostic
+name: Public Windows bounded diagnostic
 on:
   workflow_dispatch:
     inputs:
@@ -17,7 +17,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: public-windows-hidden-diagnostic-native
+  group: public-windows-hidden-r3
   cancel-in-progress: false
 jobs:
   hidden-smoke:
@@ -108,5 +108,5 @@ jobs:
               if path.stat().st_size==0: path.write_text('[no output]\n',encoding='utf-8')
           receipt=root/'smoke-artifact-manifest.json'
           receipt.write_text(json.dumps({'source':os.environ['SOURCE_COMMIT'],'files':[{'name':path.name,'size':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for path in files],'profile_contents_uploaded':False},indent=2)+'\n',encoding='utf-8')
-          tag='windows-hidden-diagnostic-native-'+os.environ['GITHUB_RUN_ID']
+          tag='windows-hidden-r3-'+os.environ['GITHUB_RUN_ID']
           subprocess.run(['gh','release','create',tag,*map(str,files),str(receipt),'--repo','miyafcos/mycmux-team','--draft','--target',os.environ['SOURCE_COMMIT'],'--title','Windows hidden diagnostic 0.88.6','--notes','Isolated verification receipts only. No profile tokens, transcripts, installer changes or updater publication.'],check=True)
