@@ -232,14 +232,19 @@ def main() -> int:
     parser.add_argument('--exe', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--probe', type=Path, required=True)
+    parser.add_argument('--version', choices=['0.88.5', '0.88.6'], required=True)
     args = parser.parse_args()
     assert os.name == 'nt' and os.environ.get('GITHUB_ACTIONS') == 'true', 'CI-only execution'
     assert os.environ.get('GITHUB_REPOSITORY') == 'miyafcos/mycmux-team'
     probe = args.probe.resolve()
     assert probe.is_file() and probe.name == 'webview_probe_0886.mjs'
+    expected_sha, expected_size = {
+        '0.88.5': ('87dff21cc99029708cea4428412c58d8e0fa7b8d02a91239dc01b4bc50d858aa', 75944448),
+        '0.88.6': (EXPECTED_SHA, EXPECTED_SIZE),
+    }[args.version]
     binary = args.exe.resolve()
-    assert binary.is_file() and binary.stat().st_size == EXPECTED_SIZE
-    assert hashlib.sha256(binary.read_bytes()).hexdigest() == EXPECTED_SHA
+    assert binary.is_file() and binary.stat().st_size == expected_size
+    assert hashlib.sha256(binary.read_bytes()).hexdigest() == expected_sha
     output = args.out.resolve()
     output.mkdir(exist_ok=False)
     profile = 'ci0886_' + os.environ['GITHUB_RUN_ID'] + '_' + os.environ.get('GITHUB_RUN_ATTEMPT', '1')
@@ -251,8 +256,8 @@ def main() -> int:
     assert not runtime.exists() and not profile_root.exists()
     assert not (data_root / 'data.json').exists() and not (home / '.mycmux').exists()
     runtime.mkdir()
-    owned = {'at': datetime.now().astimezone().isoformat(), 'profile': profile, 'binary_sha256': EXPECTED_SHA,
-             'binary_size': EXPECTED_SIZE, 'production_update': False, 'checks': [], 'status': 'started'}
+    owned = {'at': datetime.now().astimezone().isoformat(), 'profile': profile, 'binary_sha256': expected_sha, 'version': args.version,
+             'binary_size': expected_size, 'production_update': False, 'checks': [], 'status': 'started'}
     system = ctypes.WinDLL('kernel32', use_last_error=True)
     window = ctypes.WinDLL('user32', use_last_error=True)
     create_desktop = bind(window, 'CreateDesktopW', [wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p], wintypes.HANDLE)
@@ -282,6 +287,8 @@ def main() -> int:
     environment = None
     active_wait_deadline = None
     owned['socket_calls'] = []
+    owned['job_samples'] = []
+    job_clock = time.monotonic()
     open_process = bind(system, 'OpenProcess', [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE)
     in_job = bind(system, 'IsProcessInJob', [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)], wintypes.BOOL)
 
@@ -313,6 +320,17 @@ def main() -> int:
             return True
         require(enum_desktop(handle, collect, 0), 'enumerate owned windows')
         return result
+
+    def record_job_sample():
+        if not assigned:
+            return
+        state = Accounting()
+        require(query_job(job, 1, ctypes.byref(state), ctypes.sizeof(state), None), 'sample owned job')
+        sample = {'total': int(state.total), 'active': int(state.active), 'terminated': int(state.terminated)}
+        previous = owned['job_samples'][-1] if owned['job_samples'] else None
+        if previous is None or any(previous[key] != value for key, value in sample.items()):
+            sample['elapsed_seconds'] = round(time.monotonic() - job_clock, 3)
+            owned['job_samples'].append(sample)
 
     def call(name: str, values: dict | None = None):
         started = time.monotonic()
@@ -347,6 +365,7 @@ def main() -> int:
         last_error = None
         try:
             while time.monotonic() < active_wait_deadline:
+                record_job_sample()
                 if memory_gib() < 2:
                     raise RuntimeError('runtime stop gate: free RAM below 2 GiB')
                 if info.process and wait_process(info.process, 0) == 0:
@@ -384,6 +403,7 @@ def main() -> int:
         return value
 
     def diagnostic_snapshot() -> dict:
+        record_job_sample()
         detail = {'raw_profile_uploaded': False, 'cdp': {'status': 'not_started'}}
         if desktop:
             detail['root_windows_hidden'] = len(root_windows(desktop))
@@ -486,7 +506,7 @@ def main() -> int:
         require(resume(info.thread) != 0xFFFFFFFF, 'resume isolated app')
         owned['pid'] = int(info.pid)
         backend = until(lambda: call('system.version'), 30, 'backend socket ready')
-        assert backend['app_version'] == '0.88.6'
+        assert backend['app_version'] == args.version
         owned['checks'].append({'name': 'backend-ready', 'passed': True, 'app_version': backend['app_version'], 'api': backend['api']})
         ready = until(lambda: call('workspace.list'), 90, 'frontend socket ready')
         owned['checks'].append({'name': 'frontend-ready', 'passed': True, 'initial_workspaces': len(ready['workspaces'])})
