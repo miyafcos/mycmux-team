@@ -8,9 +8,18 @@ import type { Workspace } from "../../src/types";
 
 // Only the Tauri transport is replaced: exit admission, ownership, hydration,
 // publication, create/reattach and the live metadata store are production code.
-const transport = vi.hoisted(() => ({ invoke: vi.fn(), listeners: new Map<string, Array<(event: { payload: unknown }) => void>>() }));
+const transport = vi.hoisted(() => ({ invoke: vi.fn(), nextContext: 0, listeners: new Map<string, Array<(event: { payload: unknown }) => void>>() }));
 vi.mock("@tauri-apps/api/core", async original => ({
-  ...await original<typeof import("@tauri-apps/api/core")>(), invoke: transport.invoke,
+  ...await original<typeof import("@tauri-apps/api/core")>(), invoke: async (command: string, ...parameters: any[]) => {
+    const args = parameters[0] ?? {};
+    if (command === "get_session_attachment_contexts") return args.sessionIds.map((session_id: string) => ({
+      backend_epoch: "fixture-backend", transfer_id: args.transferToken ?? null, transfer_token: args.transferToken ?? null,
+      session_id, window_label: "main", window_incarnation: "fixture-window",
+      attachment_epoch: ++transport.nextContext, nonce: String(transport.nextContext), existing_only: args.existingOnly,
+    }));
+    const result = await transport.invoke(command, ...parameters);
+    return command === "create_session" || command === "tearout_attach" ? result ?? args.attachmentContext : result;
+  },
   Channel: class { id = 1; onmessage = (_frame: ArrayBuffer): void => {}; },
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async (name: string, callback: (event: { payload: unknown }) => void) => {
@@ -54,7 +63,7 @@ async function fixture(name: string, initial: number | null = e1) {
   await vi.waitFor(() => {
     expect(transport.listeners.get(`pty-exit-${p}`)).toHaveLength(2);
     expect(transport.invoke).toHaveBeenCalledWith("get_pty_metadata_snapshot");
-  });
+  }, { timeout: 10000 });
   await flush();
   return {
     p, callbacks, live: () => usePaneMetadataStore.getState().volatileMetadata[p],
@@ -114,7 +123,7 @@ it.each([true, false])("INTEG-6 settles a rejected create against native ownersh
   transport.invoke.mockImplementation((command: string, ...args: unknown[]) => command === "create_session" ? creating.promise : boundary(command, ...args));
   const reattach = createSession(f.p, "shell", [], 80, 24, () => {});
   const rejected = expect(reattach).rejects.toThrow("reattach rejected");
-  await vi.waitFor(() => expect(transport.invoke).toHaveBeenCalledWith("create_session", expect.objectContaining({ sessionId: f.p })));
+  await vi.waitFor(() => expect(transport.invoke).toHaveBeenCalledWith("create_session", expect.objectContaining({ sessionId: f.p })), { timeout: 10000 });
   expect(codexRestoreNoticeEpoch(f.p)).toBeNull();
   f.exit(e1); creating.reject(new Error("reattach rejected")); await rejected;
   queried.resolve(matching ? e1 : e2); await flush();

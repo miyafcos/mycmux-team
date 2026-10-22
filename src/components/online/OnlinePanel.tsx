@@ -343,7 +343,8 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
         setCwdNotice(onlineStrings.joinCwdMissing);
       }
       addPaneToWorkspaceWithOptions(workspaceId, paneId, "right", {
-        agentId: target.agent_kind === "codex" ? "codex" : "claude-code",
+        agentId: target.agent_kind === "claude" ? "claude-code" : target.agent_kind,
+        agentKind: target.agent_kind,
         label: entry.summary_line,
         cwd: target.resolved_cwd,
         commandArgv: target.command_argv,

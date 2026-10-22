@@ -20,6 +20,7 @@ from functools import lru_cache
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -202,12 +203,53 @@ def write_blobs(out, kept):
                 target.chmod(0o755 if mode == "100755" else 0o644)
 
 
+def synthetic_ailog_legacy_fixture() -> bytes:
+    cases = []
+    for index in range(599):
+        observed = 1_700_000_000_000 + index * 1000
+        cases.append({
+            "canonical_sid": f"synthetic-r2-canonical-{index % 9:02}",
+            "canonical_ts": observed if index < 187 else observed + (index % 3 + 1) * 1000,
+            "category": "original_candidate" if index < 594 else "new_global_native",
+            "cost_usd": (index % 7 + 1) / 100,
+            "execution_key": f"claude-exec:synthetic-r2-{index:04}",
+            "legacy_sid": f"synthetic-r2-legacy-{index % 9:02}",
+            "message_id": f"synthetic-r2-message-{index:04}",
+            "model": f"synthetic-r2-model-{index % 5}",
+            "observed_ts": observed,
+            "request_id": f"synthetic-r2-request-{index:04}",
+            "tokens": [100 + index % 11, 10 + index % 7, (index % 5) * 13,
+                       0, 20 + index % 17, 0],
+        })
+    return ("[\n" + ",\n".join("  " + json.dumps(row) for row in cases) + "\n]\n").encode("utf-8")
+
+
 def gate_findings(kept, patterns):
     """Release-gate findings for the exact blobs a publication would carry."""
     policy = load_release_policy(POLICY_DIR / "release_gate.txt", patterns)
+    findings = []
+
+    def texts(blobs):
+        for path, _, data in blobs:
+            usage_fixture = path == "src-tauri/src/ailog/tests/r2_legacy_copies.json" or (
+                data.lstrip().startswith(b"[") and all(field in data for field in (
+                    b'"canonical_sid"', b'"legacy_sid"', b'"execution_key"', b'"tokens"', b'"cost_usd"')))
+            if usage_fixture:
+                if data.replace(b"\r\n", b"\n") != synthetic_ailog_legacy_fixture():
+                    findings.append({"file": redact(path, patterns), "line": 1,
+                                     "category": "usage-fixture-provenance",
+                                     "match": "<non-synthetic fixture blocked>"})
+            if path == "src-tauri/src/ailog/tests/stage1_r2_tests.rs":
+                identifiers = re.findall(rb"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", data, re.IGNORECASE)
+                if identifiers:
+                    findings.append({"file": redact(path, patterns), "line": 1,
+                                     "category": "usage-fixture-provenance",
+                                     "match": "<literal session identifiers blocked>"})
+            yield path, read_text(data, Path(path))
+
     with closing(batch_blobs(kept)) as blobs:
-        return release_findings(((path, read_text(data, Path(path))) for path, _, data in blobs),
-                                patterns, policy)
+        findings.extend(release_findings(texts(blobs), patterns, policy))
+    return findings
 
 
 def main(argv=None):

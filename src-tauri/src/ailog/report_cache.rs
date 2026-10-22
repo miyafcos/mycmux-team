@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 use super::{Filters, Range};
 
-pub const FORMAT_VERSION: i64 = 1;
+pub const FORMAT_VERSION: i64 = 3;
 const MAX_ENTRIES: i64 = 128;
 const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TOTAL_BYTES: i64 = 32 * 1024 * 1024;
@@ -79,6 +79,11 @@ fn code_signature() -> &'static [u8; 32] {
         hash.update(include_str!("price.rs"));
         hash.update(include_str!("query.rs"));
         hash.update(include_str!("usage.rs"));
+        hash.update(include_str!("accounting.rs"));
+        hash.update(include_str!("repair.rs"));
+        hash.update(include_str!("legacy.rs"));
+        hash.update(include_str!("parse_claude.rs"));
+        hash.update(include_str!("parse_codex.rs"));
         hash.finalize().into()
     })
 }

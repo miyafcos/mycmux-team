@@ -217,6 +217,24 @@ mod tests {
     }
 
     #[test]
+    fn committed_app_permissions_match_registered_commands() {
+        let manifests: serde_json::Value = serde_json::from_str(include_str!("../gen/schemas/acl-manifests.json")).unwrap();
+        let app = &manifests["__app-acl__"];
+        let actual: std::collections::BTreeSet<_> = app["permission_sets"]["app-local"]["permissions"]
+            .as_array().unwrap().iter().map(|value| value.as_str().unwrap().to_string()).collect();
+        let expected: std::collections::BTreeSet<_> = crate::REGISTERED_APP_COMMAND_PATHS.iter()
+            .map(|path| format!("allow-{}", path.rsplit("::").next().unwrap().trim().replace('_', "-"))).collect();
+        assert_eq!(actual, expected);
+        for path in crate::REGISTERED_APP_COMMAND_PATHS {
+            let command = path.rsplit("::").next().unwrap().trim();
+            for mode in ["allow", "deny"] {
+                let identifier = format!("{mode}-{}", command.replace('_', "-"));
+                assert_eq!(app["permissions"][identifier]["commands"][mode], serde_json::json!([command]));
+            }
+        }
+    }
+
+    #[test]
     fn r4_dispatch_keeps_its_separate_binding_checks() {
         for command in CHILD_REPLY_COMMANDS {
             let caller = IpcCaller { command, window: "main".into(), webview: "web-pane-test".into(), origin_kind: "remote" };

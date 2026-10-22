@@ -1,13 +1,24 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
 import { createSession, SessionClosedError } from "../../src/lib/ipc";
 import { expectTearoutAttachments } from "../../src/lib/tearout/sessionAttachment";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import type { Workspace } from "../../src/types";
 
+const backend = vi.hoisted(() => ({ invoke: vi.fn(), nextContext: 0 }));
+const invoke = backend.invoke;
+
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(), Channel: class { onmessage?: (frame: ArrayBuffer) => void; },
+  invoke: async (command: string, ...parameters: any[]) => {
+    const args = parameters[0] ?? {};
+    if (command === "get_session_attachment_contexts") return args.sessionIds.map((session_id: string) => ({
+      backend_epoch: "fixture-backend", transfer_id: args.transferToken ?? null, transfer_token: args.transferToken ?? null,
+      session_id, window_label: "main", window_incarnation: "fixture-window",
+      attachment_epoch: ++backend.nextContext, nonce: String(backend.nextContext), existing_only: args.existingOnly,
+    }));
+    const result = await backend.invoke(command, ...parameters);
+    return command === "create_session" || command === "tearout_attach" ? result ?? args.attachmentContext : result;
+  }, Channel: class { onmessage?: (frame: ArrayBuffer) => void; },
 }));
 
 beforeEach(() => { vi.mocked(invoke).mockReset(); });
@@ -28,7 +39,7 @@ describe("M4 prewarm channel ownership ordering", () => {
         if (route !== "destination") sourceAttaches++;
       }
     });
-    const first = createSession(sessionId,"shell",[],80,24,()=>{});
+    const first = createSession(sessionId,"shell",[],80,24,()=>{}).catch(error => error);
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("create_session",expect.anything()), { timeout:10_000 });
     const warm = expectTearoutAttachments([sessionId], "prewarm", id =>
       useWorkspaceListStore.getState().workspaces.some(workspace => workspace.panes.some(pane => pane.tabs.some(tab => tab.sessionId===id))));
@@ -37,17 +48,11 @@ describe("M4 prewarm channel ownership ordering", () => {
     await invoke("tearout_attach",{sessionId,onData:"destination"});
     useWorkspaceListStore.setState({workspaces:[],activeWorkspaceId:null});
     warm.dispose();
-    resolve(); await first;
+    resolve(); expect(await first).toBeInstanceOf(SessionClosedError);
     const result = await late;
-    if (platform === "MacIntel") {
-      expect(sourceAttaches).toBe(0);
-      expect(route).toBe("destination");
-      expect(result).toBeInstanceOf(SessionClosedError);
-    } else {
-      expect(sourceAttaches).toBe(1);
-      expect(route).not.toBe("destination");
-      expect(result).toBeUndefined();
-    }
+    expect(sourceAttaches).toBe(0);
+    expect(route).toBe("destination");
+    expect(result).toBeInstanceOf(SessionClosedError);
   });
 });
 
@@ -59,11 +64,11 @@ describe("M4 cancelled prewarm leases", () => {
     let resolve!: () => void;
     const gate=new Promise<void>(yes=>{resolve=yes;});
     vi.mocked(invoke).mockImplementation(async command=>{if(command==="create_session") await gate;});
-    const first=createSession(id,"shell",[],80,24,()=>{});
+    const first=createSession(id,"shell",[],80,24,()=>{}).catch(error=>error);
     await vi.waitFor(()=>expect(invoke).toHaveBeenCalledWith("create_session",expect.anything()),{timeout:10_000});
     const warm=expectTearoutAttachments([id],"prewarm");
     const late=createSession(id,"shell",[],80,24,()=>{},undefined,undefined,true).catch(error=>error);
-    warm.dispose(); resolve(); await first;
+    warm.dispose(); resolve(); expect(await first).toBeInstanceOf(SessionClosedError);
     expect(await late).toBeInstanceOf(SessionClosedError);
     expect(vi.mocked(invoke).mock.calls.map(([command])=>command)).toEqual(["create_session"]);
   });

@@ -178,9 +178,6 @@ export function shouldShowPublishButton(
 ): boolean {
   if (!activeTab || activeTab.type === "browser" || activeTab.type === "online" || activeTab.type === "web"
     || activeTab.type === "launcher") return false;
-  if (activeMeta?.agentKind === "claude-codex" || activeTab.agentKind === "claude-codex") {
-    return false;
-  }
   // Deliberately not gated on processIsShell: the deepest-child heuristic
   // reports shell names while an agent runs tool subprocesses (for the whole
   // command duration with PowerShell tools), which made this button blink in
@@ -204,10 +201,12 @@ function resolvePublishIdentity(
       ? activeTab.agentKind
       : (activeMeta?.claudeSessionId || activeTab.claudeSessionId ? "claude" : null);
   if (!kind) return null;
-  const sessionId = activeMeta?.agentSessionId
-    ?? (kind === "claude" ? activeMeta?.claudeSessionId : undefined)
-    ?? activeTab.agentSessionId
-    ?? (kind === "claude" ? activeTab.claudeSessionId : undefined);
+  const metadataMatches = activeMeta?.agentKind === kind || (!activeMeta?.agentKind && kind === "claude");
+  const tabMatches = activeTab.agentKind === kind || (!activeTab.agentKind && kind === "claude");
+  const sessionId = (metadataMatches ? activeMeta?.agentSessionId : undefined)
+    ?? (metadataMatches && kind === "claude" ? activeMeta?.claudeSessionId : undefined)
+    ?? (tabMatches ? activeTab.agentSessionId : undefined)
+    ?? (tabMatches && kind === "claude" ? activeTab.claudeSessionId : undefined);
   return sessionId ? { kind, sessionId } : null;
 }
 

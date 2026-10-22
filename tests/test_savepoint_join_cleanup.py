@@ -88,6 +88,30 @@ def convert_bundle_to_codex(bundle: Path) -> None:
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
 
+def test_hybrid_join_uses_wrapper_root_and_keeps_the_bundle(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    bundle = make_bundle(tmp_path / "online", cwd_token=str(home))
+    path = bundle / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest.update(agent_kind="claude-codex", agent_session_id=SESSION_ID, claude_session_id=None)
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    original = path.read_bytes()
+    transcript = bundle / "transcript" / f"{SESSION_ID}.jsonl"
+    transcript.write_text(transcript.read_text(encoding="utf-8") + '{"partial":', encoding="utf-8")
+    args = sj.build_parser().parse_args([str(bundle), "--mode", "full", "--home", str(home),
+        "--config", str(tmp_path / "missing.json")])
+    first, second = sj.join(args), sj.join(args)
+    assert first["source_agent_kind"] == first["agent_kind"] == "claude-codex"
+    assert first["resume_session_id"] != second["resume_session_id"]
+    assert first["command_argv"] == ["claude-codex", "--resume", first["resume_session_id"], "--fork-session"]
+    assert Path(first["transplanted_jsonl"]).is_relative_to(home / ".claude-codex" / "config" / "projects")
+    assert len(sj.transcript_io_path(Path(first["transplanted_jsonl"])).read_text(encoding="utf-8").splitlines()) == 1
+    assert not first["transplanted_jsonl"].startswith("//?/")
+    assert not (home / ".claude").exists()
+    assert path.read_bytes() == original
+
+
 def test_join_full_transplants_with_fresh_uuid(tmp_path: Path) -> None:
     dropbox = tmp_path / "dropbox"
     (dropbox / "事務関係" / "案件A").mkdir(parents=True)

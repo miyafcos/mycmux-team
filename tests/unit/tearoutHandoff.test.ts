@@ -50,7 +50,7 @@ describe("receiver-owned native handoff", () => {
   it("uses the original agent session and the receiver's pinned terminal without adopting the source", async () => {
     dispatch("request", request); await received();
     expect(mocks.consume).toHaveBeenCalledWith("painted", target, request.approval, request.requester);
-    expect(mocks.publish).toHaveBeenCalledWith({ cwd: "C:/demo/source", agentKind: "claude", agentSessionId: "fake-agent-id" });
+    expect(mocks.publish).toHaveBeenCalledWith({ cwd: "C:/demo/source", agentKind: "claude-codex", agentSessionId: "fake-agent-id" });
     expect(mocks.write).toHaveBeenCalledWith("target-pty", expect.stringContaining("C:/demo/bundle/handoff.md"));
     expect(mocks.write.mock.calls[0][1]).not.toMatch(/[\r\n]/);
     expect(useWorkspaceListStore.getState().workspaces.map(ws => ws.id)).toEqual(["receiver"]);

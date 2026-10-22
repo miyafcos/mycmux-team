@@ -28,6 +28,7 @@ pub fn ensure_initialized(path: &Path) -> Result<(), String> {
     let conn = Connection::open(path).map_err(|err| format!("open {path:?}: {err}"))?;
     conn.busy_timeout(std::time::Duration::from_millis(5_000))
         .map_err(|err| format!("set busy timeout: {err}"))?;
+    crate::ailog::recovery::before_v3(&conn, path)?;
     crate::ailog::schema::init(&conn)?;
     crate::ailog::migrate::apply(&conn)?;
     crate::ailog::backfill::internal_origin(&conn)?;

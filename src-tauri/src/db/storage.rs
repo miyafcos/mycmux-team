@@ -661,6 +661,9 @@ pub struct AppSettings {
     /// Tier 2 while the metadata-only local mirror continues.
     #[serde(default = "default_ailog_mirror_full_text_root")]
     pub ailog_mirror_full_text_root: Option<String>,
+    /// Read-only fallback for missing Claude project transcripts. Empty disables it.
+    #[serde(default)]
+    pub ailog_claude_fallback_root: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -690,6 +693,7 @@ impl Default for AppSettings {
             pet_random_bag: None,
             ailog_usd_jpy_rate: default_ailog_usd_jpy_rate(),
             ailog_mirror_full_text_root: default_ailog_mirror_full_text_root(),
+            ailog_claude_fallback_root: None,
         }
     }
 }
@@ -1570,6 +1574,7 @@ mod tests {
             serde_json::from_str(r#"{"font_size":14,"theme_id":"yoru-cafe"}"#).unwrap();
 
         assert_eq!(settings.ailog_usd_jpy_rate, DEFAULT_AILOG_USD_JPY_RATE);
+        assert_eq!(settings.ailog_claude_fallback_root,None);
     }
 
     #[test]

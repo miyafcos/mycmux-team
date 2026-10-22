@@ -16,6 +16,8 @@ use crate::session_state::{
 use super::*;
 use crate::commands::session_mapping;
 use super::hook_source::{self, HookSource};
+#[path = "hook_identity.rs"]
+mod hook_identity;
 type SourceVerifier = Arc<dyn Fn(&str, &str, u32) -> HookSource + Send + Sync>;
 
 pub const HOOK_PROTOCOL_MAJOR: u64 = 1;
@@ -919,9 +921,12 @@ impl Worker {
         if record.state != CapabilityState::Active { return; }
         let pty = record.launch.terminal_session_id().as_str();
         let provider = record.launch.provider().as_str();
-        let kind = manager.requested_conversation(pty).map(|v| v.0)
-            .filter(|kind| kind == provider || (provider == "claude" && kind == "claude-codex"))
-            .unwrap_or_else(|| provider.to_string());
+        let requested = manager.requested_conversation(pty);
+        let mappings = self.mapping_dir.as_ref().map(|directory|
+            session_mapping::read_session_mapping_files_for_ids(directory, [pty]));
+        let mapping = mappings.as_ref().and_then(|values| values.get(pty));
+        let kind = hook_identity::verified_identity_kind(provider, requested.as_ref().map(|value| value.0.as_str()), session_id,
+            mapping.and_then(|value| value.agent_kind.as_deref().map(|kind| (kind, value.session_id.as_str())))).to_string();
         let Some(session_epoch) = source_epoch else { return; };
         manager.remember_agent_identity(pty, crate::pty::manager::TrustedAgentIdentity {
             session_epoch,

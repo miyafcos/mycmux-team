@@ -24,7 +24,7 @@ import type { AgentSessionKind, ArtifactSourceKind, ThemeTweaks, TurnMarkPersist
 import type { OnlineSavepointEntry } from "../components/online/onlineSavepoints";
 import { markSessionFrontendActivity } from "./agentDormancy";
 import { windowLabel, hasWindowRole, setWindowRole } from "./windowContext";
-import { macPrewarmAttachGuard, macPrewarmSessionOwned } from "./tearout/sessionAttachment";
+import { macPrewarmAttachGuard, macPrewarmSessionOwned, captureSessionAttachment, sameAttachmentContext, failTearoutSessionAttachment, type AttachmentContext, type SessionAttachmentAttempt, type SessionAttachmentResult } from "./tearout/sessionAttachment";
 import { needsCodexNoticePreparation, invalidateCodexRestoreNotice, codexRestoreNoticeEpoch, codexRestoreNoticeRevision, confirmPtyExit } from "./codexRestoreLifecycle";
 import type { ResetTickets, ResetTicketOutcome } from "./resetTickets";
 
@@ -52,6 +52,7 @@ interface CreateSessionArgs {
   attachReason?: string;
   restoreConfirmed?: boolean;
   restoreReason?: "saved-codex-pane";
+  attachmentContext?: AttachmentContext;
   cwd: string | null;
   env: Record<string, string> | null;
 }
@@ -65,7 +66,7 @@ interface SaveEditableArtifactArgs extends SourcePathArgs { sourceKind: Artifact
 interface ExportSavepointTransferArgs extends BundleDirArgs { destinationPath: string }
 interface PublishSavepointArgs {
   cwd: string;
-  agentKind: "claude" | "codex";
+  agentKind: "claude" | "codex" | "claude-codex";
   agentSessionId: string;
   claudeSessionId: string | null;
   summary: string | null;
@@ -103,12 +104,19 @@ interface BeginCliLoginArgs {
 interface LoginIdArgs { loginId: string }
 
 // Lifecycle tails also include kills so a later create cannot overtake a close.
-const sessionCreateTails = new Map<string, Promise<void>>();
+const sessionCreateTails = new Map<string, Promise<unknown>>();
 const sessionKillGenerations = new Map<string, number>();
-const activePtyChannels = new Map<string, PtyOutputChannel>();
+const activePtyChannels = new Map<string, { channel: PtyOutputChannel; context: AttachmentContext }>();
 
-export function getSessionChannelId(sessionId: string): number | undefined {
-  return activePtyChannels.get(sessionId)?.id;
+export function getSessionChannelId(sessionId: string, context?: AttachmentContext): number | undefined {
+  const active = activePtyChannels.get(sessionId);
+  return active && (!context || sameAttachmentContext(active.context, context)) ? active.channel.id : undefined;
+}
+export function retireSessionAttachment(sessionId: string, result: SessionAttachmentResult): void {
+  const active = activePtyChannels.get(sessionId);
+  if (active?.channel.id === result.channelId && sameAttachmentContext(active.context, result.context)) {
+    active.channel.retire(); activePtyChannels.delete(sessionId);
+  }
 }
 
 export interface SessionAttachOptions {
@@ -117,6 +125,7 @@ export interface SessionAttachOptions {
   restoreReason?: "saved-codex-pane";
   backgroundOnly?: boolean;
   stillOwned?: () => boolean;
+  attachment?: SessionAttachmentAttempt;
 }
 
 export class SessionClosedError extends Error {
@@ -346,7 +355,8 @@ export async function createSession(
   env?: Record<string, string>,
   reattachOnly = false,
   options: SessionAttachOptions = {},
-): Promise<void> {
+): Promise<SessionAttachmentResult | undefined> {
+  const attachmentAttempt = options.attachment ?? captureSessionAttachment(sessionId, reattachOnly);
   const readTransition = reattachOnly ? undefined : beginPtyReadTransition(sessionId);
   const generation = sessionKillGenerations.get(sessionId) ?? 0;
   const prewarmGuard = typeof navigator !== "undefined" && /^Mac/i.test(navigator.platform)
@@ -367,6 +377,15 @@ export async function createSession(
       && !macPrewarmSessionOwned(sessionId)) throw new SessionClosedError(sessionId);
     if (prewarmGuard && !prewarmGuard()) throw new SessionClosedError(sessionId);
     if (options.stillOwned && !options.stillOwned()) throw new SessionClosedError(sessionId);
+    if (!attachmentAttempt.current()) throw new SessionClosedError(sessionId);
+    const attachmentContext = await attachmentAttempt.context;
+    if ((sessionKillGenerations.get(sessionId) ?? 0) !== generation
+      || !attachmentAttempt.current()
+      || (options.stillOwned && !options.stillOwned())
+      || (prewarmGuard && !prewarmGuard())
+      || (typeof navigator !== "undefined" && /^Mac/i.test(navigator.platform) && !macPrewarmSessionOwned(sessionId))) {
+      throw new SessionClosedError(sessionId);
+    }
     invalidateCodexRestoreNotice(sessionId);
     if (options.backgroundOnly) {
       // Starting a headless PTY is not a renderer attachment. In particular it
@@ -375,7 +394,7 @@ export async function createSession(
       try {
         await withTerminalDeadline(invoke<void>("create_session", {
           sessionId, command, args, cols, rows, onData: channel,
-          cwd: cwd ?? null, env: takeTerminalCommandEnv(env) ?? null, backgroundOnly: true, attachReason: "background",
+          cwd: cwd ?? null, env: takeTerminalCommandEnv(env) ?? null, backgroundOnly: true, attachReason: "background", attachmentContext,
           ...(options.restoreReason ? { restoreReason: options.restoreReason } : {}),
         } satisfies CreateSessionArgs), "background create_session", TERMINAL_ATTACH_TIMEOUT_MS);
         // Rust ends this transient channel after a successful headless create.
@@ -425,16 +444,17 @@ export async function createSession(
       );
     }
     try {
+      let response: AttachmentContext;
       if (reattachOnly) {
-        const attachment = withTerminalDeadline(invoke<void>("tearout_attach", { sessionId, onData: channel }), "tearout_attach", TERMINAL_ATTACH_TIMEOUT_MS);
-        void preparation.then(restore => restore.synchronizeCodexRestoreNoticeEpoch(sessionId, attachment, () =>
+        const attachment = withTerminalDeadline(invoke<AttachmentContext>("tearout_attach", { sessionId, onData: channel, attachmentContext }), "tearout_attach", TERMINAL_ATTACH_TIMEOUT_MS);
+        void preparation.then(restore => restore.synchronizeCodexRestoreNoticeEpoch(sessionId, attachment.then(() => {}), () =>
           (sessionKillGenerations.get(sessionId) ?? 0) === generation
           && (!options.stillOwned || options.stillOwned()) && (!prewarmGuard || prewarmGuard())
           && (typeof navigator === "undefined" || !/^Mac/i.test(navigator.platform) || macPrewarmSessionOwned(sessionId))
         )).catch(() => {});
-        await attachment;
+        response = await attachment;
       } else {
-      await withTerminalDeadline(invoke<void>("create_session", {
+      response = await withTerminalDeadline(invoke<AttachmentContext>("create_session", {
         sessionId,
         command,
         args,
@@ -443,27 +463,31 @@ export async function createSession(
         onData: channel,
         cwd: cwd ?? null,
         env: takeTerminalCommandEnv(env) ?? null,
-        attachReason: options.reason ?? "mount",
+        attachReason: options.reason ?? "mount", attachmentContext,
         ...(options.restoreConfirmed ? { restoreConfirmed: true } : {}),
         ...(options.restoreReason ? { restoreReason: options.restoreReason } : {}),
       } satisfies CreateSessionArgs), "create_session", TERMINAL_ATTACH_TIMEOUT_MS);
       }
-      if (options.stillOwned && !options.stillOwned()) throw new SessionClosedError(sessionId);
+      if (!sameAttachmentContext(response, attachmentContext) || !attachmentAttempt.current()
+        || (options.stillOwned && !options.stillOwned())) throw new SessionClosedError(sessionId);
       const previousChannel = activePtyChannels.get(sessionId);
-      activePtyChannels.set(sessionId, channel);
+      activePtyChannels.set(sessionId, { channel, context: attachmentContext });
       attach.commit();
-      previousChannel?.retire();
+      previousChannel?.channel.retire();
+      return { context: attachmentContext, channelId: channel.id };
     } catch (err) {
       attach.fail();
       channel.retire();
+      failTearoutSessionAttachment(sessionId, attachmentAttempt, err);
       throw err;
     }
   });
   sessionCreateTails.set(sessionId, operation);
   let created = false;
   try {
-    await operation;
+    const result = await operation;
     created = true;
+    return result;
   } finally {
     if (readTransition) finishPtyReadTransition(sessionId, readTransition, created ? true : undefined);
     if (sessionCreateTails.get(sessionId) === operation) {
@@ -578,7 +602,7 @@ export async function killSession(sessionId: string): Promise<void> {
   let closed = false;
   invalidateCodexRestoreNotice(sessionId);
   sessionKillGenerations.set(sessionId, (sessionKillGenerations.get(sessionId) ?? 0) + 1);
-  activePtyChannels.get(sessionId)?.retire();
+  activePtyChannels.get(sessionId)?.channel.retire();
   activePtyChannels.delete(sessionId);
   const previous = sessionCreateTails.get(sessionId) ?? Promise.resolve();
   const operation = previous.catch(() => {}).then(() =>
@@ -877,7 +901,7 @@ export interface JoinSavepointFullResult {
   cwd_missing: boolean;
   resume_session_id: string | null;
   command_argv: string[];
-  agent_kind: "claude" | "codex";
+  agent_kind: "claude" | "codex" | "claude-codex";
   source_checkpoint_id?: string | null;
 }
 
@@ -995,7 +1019,7 @@ export type SavepointPublishStage = "digest" | "handoff" | "bundle" | "register"
 
 export interface SavepointPublishProgress {
   stage: SavepointPublishStage;
-  agent_kind: "claude" | "codex";
+  agent_kind: "claude" | "codex" | "claude-codex";
   agent_session_id: string;
   claude_session_id?: string | null;
 }
@@ -1010,7 +1034,7 @@ export function onSavepointPublishProgress(
 
 export async function publishSavepoint(options: {
   cwd: string;
-  agentKind: "claude" | "codex";
+  agentKind: "claude" | "codex" | "claude-codex";
   agentSessionId: string;
   summary?: string;
   nextStep?: string;
@@ -1028,7 +1052,7 @@ export async function publishSavepoint(options: {
 
 export async function finalizeSavepoint(options: {
   cwd: string;
-  agentKind: "claude" | "codex";
+  agentKind: "claude" | "codex" | "claude-codex";
   agentSessionId: string;
   summary?: string;
   nextStep?: string;

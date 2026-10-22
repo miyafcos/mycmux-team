@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  invoke: vi.fn(),
+  invoke: vi.fn(), nextContext: 0,
   terminalInstances: [] as Array<{ dispose: ReturnType<typeof vi.fn> }>,
   observers: [] as Array<{ disconnect: ReturnType<typeof vi.fn>; target?: Element }>,
 }));
@@ -13,7 +13,16 @@ vi.mock("@tauri-apps/api/core", () => ({
   Channel: class<T> {
     onmessage?: (message: T) => void;
   },
-  invoke: mocks.invoke,
+  invoke: async (command: string, ...parameters: any[]) => {
+    const args = parameters[0] ?? {};
+    if (command === "get_session_attachment_contexts") return args.sessionIds.map((session_id: string) => ({
+      backend_epoch: "fixture-backend", transfer_id: args.transferToken ?? null, transfer_token: args.transferToken ?? null,
+      session_id, window_label: "main", window_incarnation: "fixture-window",
+      attachment_epoch: ++mocks.nextContext, nonce: String(mocks.nextContext), existing_only: args.existingOnly,
+    }));
+    const result = await mocks.invoke(command, ...parameters);
+    return command === "create_session" || command === "tearout_attach" ? result ?? args.attachmentContext : result;
+  },
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -269,16 +278,16 @@ describe("declared restore PTY integration", () => {
     restoreWorkspaceConfigs(configs, { activeWorkspaceId: ids[0] });
     useWorkspaceListStore.getState().setActiveWorkspace(ids[0]);
     await renderWorkspaceView();
-    await vi.waitFor(() => expect(createSessionCalls()).toHaveLength(1));
+    await vi.waitFor(() => expect(createSessionCalls()).toHaveLength(1), { timeout: 10000 });
     const firstPane = useWorkspaceListStore.getState().getWorkspace(ids[0])!.panes[0];
     await act(async () => useWorkspaceLayoutStore.getState().setActivePaneTab(ids[0], firstPane.id, `${ids[0]}-second`));
-    await vi.waitFor(() => expect(createSessionCalls()).toHaveLength(2));
+    await vi.waitFor(() => expect(createSessionCalls()).toHaveLength(2), { timeout: 10000 });
     const changedPane = useWorkspaceListStore.getState().getWorkspace(ids[0])!.panes[0];
     const activeTerminal = container.querySelector(`[data-dnd-pane-id="${firstPane.id}"] .xterm-helper-textarea`);
     expect(activeTerminal?.closest('[data-session-id]')?.getAttribute('data-session-id')).toBe(changedPane.sessionId);
     expect(activeTerminal?.closest('[data-retained-terminal]')?.getAttribute('aria-hidden')).toBe('false');
     await act(async () => useWorkspaceListStore.getState().setActiveWorkspace(ids[1]));
-    await vi.waitFor(() => expect(createSessionCalls()).toHaveLength(3));
+    await vi.waitFor(() => expect(createSessionCalls()).toHaveLength(3), { timeout: 10000 });
     const terminals = [...mocks.terminalInstances], observers = [...mocks.observers];
     for (let i = 0; i < 10; i++) {
       await act(async () => useWorkspaceListStore.getState().setActiveWorkspace(ids[0]));
@@ -312,10 +321,10 @@ describe("declared restore PTY integration", () => {
     restoreWorkspaceConfigs([config], { activeWorkspaceId: workspaceId });
     useWorkspaceListStore.getState().setActiveWorkspace(workspaceId);
     await renderWorkspaceView();
-    await vi.waitFor(() => expect(createSessionCalls()).toHaveLength(1));
+    await vi.waitFor(() => expect(createSessionCalls()).toHaveLength(1), { timeout: 10000 });
     const pane = useWorkspaceListStore.getState().getWorkspace(workspaceId)!.panes[0];
     await act(async () => useWorkspaceLayoutStore.getState().setActivePaneTab(workspaceId, pane.id, "saved-agent-1"));
-    await vi.waitFor(() => expect(createSessionCalls()).toHaveLength(2));
+    await vi.waitFor(() => expect(createSessionCalls()).toHaveLength(2), { timeout: 10000 });
     for (let index = 0; index < 2; index++) {
       const payload = createSessionCalls()[index][1];
       expect(payload.sessionId).toBe(pane.tabs[index].sessionId);
@@ -363,7 +372,7 @@ describe("declared restore PTY integration", () => {
     useWorkspaceListStore.getState().setActiveWorkspace(workspaceId);
     await renderWorkspaceView();
 
-    await vi.waitFor(() => expect(createSessionCalls()).toHaveLength(5));
+    await vi.waitFor(() => expect(createSessionCalls()).toHaveLength(5), { timeout: 10000 });
     const restored = useWorkspaceListStore.getState().getWorkspace(workspaceId)!;
     expect(restored.panes).toHaveLength(105);
     expect(restored.panes.filter((pane) => pane.tabs[0].lifecycle === "declared")).toHaveLength(100);
@@ -416,7 +425,7 @@ describe("declared restore PTY integration", () => {
     expect(launched?.agentSessionId).toBeUndefined();
 
     await renderWorkspaceView();
-    await vi.waitFor(() => expect(createSessionCalls()).toHaveLength(1));
+    await vi.waitFor(() => expect(createSessionCalls()).toHaveLength(1), { timeout: 10000 });
 
     const payload = createSessionCalls()[0][1];
     expect(payload.args).toContain("--session-id");

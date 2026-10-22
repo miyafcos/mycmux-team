@@ -119,8 +119,15 @@ def prepare_summary(bundle_dir: Path, resolved_cwd: str, cwd_missing: bool) -> d
     }
 
 
+def transcript_io_path(path: Path) -> Path:
+    value = str(path.absolute())
+    if os.name != "nt" or value.startswith("\\\\?\\"):
+        return path
+    return Path("\\\\?\\UNC\\" + value[2:] if value.startswith("\\\\") else "\\\\?\\" + value)
+
+
 def prepare_full(
-    bundle_dir: Path, resolved_cwd: str, cwd_missing: bool, projects_dir: Path
+    bundle_dir: Path, resolved_cwd: str, cwd_missing: bool, projects_dir: Path, agent_kind: str = "claude"
 ) -> dict[str, Any]:
     transcript = find_transcript(bundle_dir)
     project_dir = projects_dir / sanitize_project_dir(resolved_cwd)
@@ -128,14 +135,24 @@ def prepare_full(
     # 常に新規 UUID 名でコピー = ID 衝突が構造的に起きない (Phase 0 でファイル名が正と実証済み)
     resume_id = str(uuid.uuid4())
     target = project_dir / f"{resume_id}.jsonl"
-    shutil.copy2(transcript, target)
+    if agent_kind == "claude-codex":
+        with transcript.open("r", encoding="utf-8") as source, transcript_io_path(target).open("x", encoding="utf-8", newline="\n") as output:
+            for line in source:
+                try:
+                    json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                output.write(line.rstrip("\r\n") + "\n")
+    else:
+        shutil.copy2(transcript, target)
     return {
         "mode": "full",
         "resolved_cwd": resolved_cwd,
         "cwd_missing": cwd_missing,
         "resume_session_id": resume_id,
         "transplanted_jsonl": norm_slashes(str(target)),
-        "command_argv": ["claude", "--resume", resume_id, "--fork-session"],
+        "command_argv": [agent_kind, "--resume", resume_id, "--fork-session"],
+        "agent_kind": agent_kind,
     }
 
 
@@ -145,7 +162,7 @@ def join(args: argparse.Namespace) -> dict[str, Any]:
     bundle_dir = Path(args.bundle_dir)
     manifest = read_manifest(bundle_dir)
     source_agent_kind, source_session_id = manifest_identity(manifest)
-    if args.mode == "full" and source_agent_kind != "claude":
+    if args.mode == "full" and source_agent_kind not in ("claude", "claude-codex"):
         raise ValueError(
             "Codex full restore is supported by the mycmux app, not this Claude-only CLI"
         )
@@ -154,9 +171,9 @@ def join(args: argparse.Namespace) -> dict[str, Any]:
     if args.mode == "summary":
         result = prepare_summary(bundle_dir, resolved_cwd, cwd_missing)
     else:
-        result = prepare_full(
-            bundle_dir, resolved_cwd, cwd_missing, Path(args.claude_projects_dir).expanduser()
-        )
+        default_root = home / ".claude-codex" / "config" / "projects" if source_agent_kind == "claude-codex" else home / ".claude" / "projects"
+        projects_dir = Path(args.claude_projects_dir).expanduser() if args.claude_projects_dir else default_root
+        result = prepare_full(bundle_dir, resolved_cwd, cwd_missing, projects_dir, source_agent_kind)
     result["source_agent_kind"] = source_agent_kind
     result["source_session_id"] = source_session_id
     result["source_checkpoint_id"] = lifecycle_from_manifest(manifest)["checkpoint_id"]
@@ -170,7 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=["summary", "full"], default="summary")
     parser.add_argument("--dropbox-root", help="自機の Dropbox ルート (既定: config)")
     parser.add_argument("--config", default=str(runtime_dir() / "savepoint.json"))
-    parser.add_argument("--claude-projects-dir", default=str(Path.home() / ".claude" / "projects"))
+    parser.add_argument("--claude-projects-dir", help="会話rootの明示指定（既定は保存されたagent-kindに対応するroot）")
     parser.add_argument("--home", help="cwd フォールバック先 (テスト用・既定: ホーム)")
     return parser
 

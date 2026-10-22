@@ -5,7 +5,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { capturePaneFocusReturn, captureTemporaryFocusReturn, focusController } from "../../src/lib/focusController";
 import { useUiStore } from "../../src/stores/uiStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
-const source = readFileSync("src/components/terminal/XTermWrapper.tsx", "utf8");
+const source = readFileSync("src/components/terminal/XTermWrapper.tsx", "utf8").replaceAll("\r\n", "\n");
 function callback(name: string, dependencies: Record<string, unknown>) {
   const start = source.indexOf(`const ${name} = useCallback(`);
   const end = source.indexOf("\n\n", start);

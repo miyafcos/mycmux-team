@@ -14,6 +14,7 @@
 //! sourced and why unknown models stay at zero instead of being guessed.
 
 pub mod db;
+pub mod accounting;
 pub mod digest;
 pub mod index;
 pub mod jsonl;
@@ -27,6 +28,9 @@ pub mod price;
 pub mod project_rules;
 pub mod query;
 pub mod report_cache;
+pub mod repair;
+mod recovery;
+pub mod legacy;
 pub mod rollup;
 pub mod schema;
 pub mod summarize;
@@ -203,13 +207,15 @@ impl Default for Filters {
 // Parser output
 // ---------------------------------------------------------------------------
 
-/// One billable exchange. Claude collapses every line sharing a `requestId`
-/// into a single turn; Codex emits one per `token_count` event.
+/// One billable exchange. Claude uses a global message.id/requestId pair;
+/// Codex uses a counter/epoch identity and records replay occurrences separately.
 #[derive(Debug, Clone, Default)]
 pub struct TurnRow {
     /// Stable identity used to merge rows that straddle an incremental read
     /// boundary. Stored in `turn.request_id`.
     pub dedup_key: String,
+    pub execution_key: Option<String>,
+    pub usage_state: Option<String>,
     pub ts: i64,
     pub model: Option<String>,
     pub effort: Option<String>,
@@ -285,6 +291,10 @@ pub struct SessionChunk {
     pub cli_version: Option<String>,
     pub plan_type: Option<String>,
     pub is_sidechain: bool,
+    pub parent_session_id: Option<String>,
+    pub relationship_type: Option<String>,
+    pub lineage_state: Option<String>,
+    pub occurrences: Vec<accounting::Occurrence>,
     pub agent_names: Vec<String>,
     pub started_at: Option<i64>,
     pub ended_at: Option<i64>,
@@ -319,6 +329,10 @@ impl SessionChunk {
             cli_version: None,
             plan_type: None,
             is_sidechain: false,
+            parent_session_id: None,
+            relationship_type: None,
+            lineage_state: None,
+            occurrences: Vec::new(),
             agent_names: Vec::new(),
             started_at: None,
             ended_at: None,

@@ -85,10 +85,20 @@ def test_existing_drop_zone_geometry_is_reused():
 
 def test_live_transfer_attachment_has_no_spawn_branch():
     backend = read("src-tauri/src/tearout/mod.rs")
+    manager = read("src-tauri/src/pty/manager.rs")
     attachment = backend.split("pub async fn tearout_attach(", 1)[1].split("#[tauri::command]", 1)[0]
-    assert re.search(r"session_manager\s*\.get\(&session_id\)", attachment)
-    assert "replace_data_channel(on_data)" in attachment
-    assert ".create(" not in attachment and "spawn(" not in attachment
+    worker = backend.split("fn tearout_attach_existing(", 1)[1].split("#[tauri::command]", 1)[0]
+    existing = manager.split("pub(crate) fn attach_existing(", 1)[1].split("pub(crate) fn revoke_attachment(", 1)[0]
+    swap = manager.split("fn swap_attachment_locked(", 1)[1].split("pub(crate) fn attach_existing(", 1)[0]
+    assert "attachment_epoch::window_proof(&window)" in attachment
+    assert "tearout_attach_existing(&state.session_manager, &session_id, &proof, &attachment_context, on_data)?" in attachment
+    assert worker.index("attachment_epoch::with_lifecycle(id,") < worker.index("manager.attach_existing(id, window, context, channel)?")
+    assert existing.index("self.create_lock_for(id)?") < existing.index("lock.lock()") < existing.index("self.swap_attachment_locked(id, window, context, channel)")
+    assert swap.index("attachment_epoch::registry().lock()") < swap.index("self.sessions.get(id)")
+    assert swap.index("authority.validate(id, window, context, true)?") < swap.index("session.replace_data_channel(data_channel)?")
+    assert swap.index("session.replace_data_channel(data_channel)?") < swap.index("authority.installed(context, channel_id)")
+    for body in (attachment, worker, existing, swap):
+        assert ".create(" not in body and "spawn(" not in body
 
 
 def test_escape_waits_for_native_exit_and_hidden_spares_do_not_keep_app_alive():

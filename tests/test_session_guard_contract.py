@@ -11,8 +11,10 @@ def test_resume_guard_precedes_all_launch_side_effects_and_skips_reattach() -> N
     terminal = text("src-tauri/src/commands/terminal.rs")
     wrapper = terminal[terminal.index("pub async fn create_session("):terminal.index("fn create_session_blocking(")]
     assert 'run_blocking("create_session", move || {' in wrapper
-    assert "create_session_blocking(app_handle, state, session_id, command, args, cols, rows, on_data, cwd, env, background_only.unwrap_or(false), attach_origin, restore_confirmed.unwrap_or(false), restore_reason)" in wrapper
+    assert "create_session_blocking(app_handle, state, session_id, command, args, cols, rows, on_data, cwd, env, background_only.unwrap_or(false), attach_origin, restore_confirmed.unwrap_or(false), restore_reason, |_| Ok(attachment_context), attachment_window)" in wrapper
     assert "restore_reason: Option<String>" in wrapper
+    assert "window_proof(&caller.window())" in wrapper
+    assert "attachment_context: crate::tearout::attachment_epoch::AttachmentContext" in wrapper
     assert "}).await" in wrapper
     create = terminal[terminal.index("fn create_session_blocking("):terminal.index("pub(crate) fn prepare_spawn_command(")]
     guard = create.index("LaunchClaim::acquire")

@@ -682,3 +682,63 @@ def test_release_policy_fails_closed(tmp_path, text):
     with pytest.raises(ValueError) as error:
         release_policy(tmp_path, text)
     assert "SYNTHETIC_PRIVATE" not in str(error.value)
+
+
+@pytest.mark.parametrize("mutation", [None, "request_id", "cost_usd", "observed_ts", "model", "extra_row", "invalid_json"])
+def test_usage_fixture_requires_exact_synthetic_recipe(repository, exporter_module, mutation):
+    payload = exporter_module.synthetic_ailog_legacy_fixture()
+    cases = json.loads(payload)
+    assert len(cases) == 599
+    assert len({row["canonical_sid"] for row in cases}) == 9
+    assert sum(row["category"] == "new_global_native" for row in cases) == 5
+    assert all(row["canonical_sid"] != row["legacy_sid"] for row in cases)
+    if mutation in {"request_id", "model"}:
+        cases[0][mutation] = "unexpected-private-value"
+    elif mutation in {"cost_usd", "observed_ts"}:
+        cases[0][mutation] += 1
+    elif mutation == "extra_row":
+        cases.append(dict(cases[0]))
+    if mutation:
+        payload = b"{" if mutation == "invalid_json" else (json.dumps(cases, indent=2) + "\n").encode()
+    put(repository, "src-tauri/src/ailog/tests/r2_legacy_copies.json", payload)
+    git(repository, "add", ".")
+    git(repository, "commit", "-qm", "Synthetic usage provenance check")
+    before = state(repository)
+    check = export(repository, "--check")
+    tree = export(repository, "--tree-object")
+    assert check.returncode == (1 if mutation else 0), check.stdout + check.stderr
+    assert tree.returncode == (2 if mutation else 0), tree.stderr
+    if mutation:
+        assert "usage-fixture-provenance" in check.stdout
+        assert "unexpected-private-value" not in check.stdout + check.stderr + tree.stdout + tree.stderr
+        assert not tree.stdout
+    assert state(repository) == before
+
+
+@pytest.mark.parametrize("suffix", ["json", "JSON", "txt"])
+def test_usage_fixture_rename_does_not_bypass_provenance_gate(repository, exporter_module, suffix):
+    cases = json.loads(exporter_module.synthetic_ailog_legacy_fixture())
+    cases[0]["request_id"] = "unexpected-private-value"
+    put(repository, "tests/renamed-usage." + suffix, json.dumps(cases))
+    git(repository, "add", ".")
+    git(repository, "commit", "-qm", "Synthetic renamed usage fixture")
+    check = export(repository, "--check")
+    assert check.returncode == 1
+    assert "usage-fixture-provenance" in check.stdout
+    assert "unexpected-private-value" not in check.stdout + check.stderr
+
+
+def test_r2_literal_session_ids_are_blocked(repository):
+    identifier = "12345678-1234-7123-8123-123456789abc"
+    put(repository, "src-tauri/src/ailog/tests/stage1_r2_tests.rs", f'let sid = "{identifier}";')
+    git(repository, "add", ".")
+    git(repository, "commit", "-qm", "Synthetic UUID provenance check")
+    check = export(repository, "--check")
+    assert check.returncode == 1
+    assert "usage-fixture-provenance" in check.stdout
+    assert identifier not in check.stdout + check.stderr
+
+
+def test_committed_usage_fixture_is_regenerable_without_profile_data(exporter_module):
+    path = ROOT / "src-tauri/src/ailog/tests/r2_legacy_copies.json"
+    assert path.read_bytes().replace(b"\r\n", b"\n") == exporter_module.synthetic_ailog_legacy_fixture()

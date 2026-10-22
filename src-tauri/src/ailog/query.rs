@@ -28,6 +28,10 @@ use crate::ailog::price::{normalize, ModelClass, PriceTable};
 use crate::ailog::rollup;
 use crate::ailog::{Filters, Range, ResolvedRange};
 
+mod presentation;
+
+pub use presentation::{SessionLineage, SessionPresentation};
+
 type SessionKey = (String, String);
 
 // ---------------------------------------------------------------------------
@@ -55,17 +59,18 @@ fn push_in(clauses: &mut Vec<String>, params: &mut Vec<SqlValue>, column: &str, 
 /// `force_sidechain` exists for `dimension="agent"`, where excluding
 /// sub-agents would empty the report by definition.
 fn build_where(range: &ResolvedRange, filters: &Filters, force_sidechain: bool) -> Where {
+    build_where_states(range, filters, force_sidechain, false)
+}
+
+fn build_where_states(range: &ResolvedRange, filters: &Filters, _force_sidechain: bool, all_states: bool) -> Where {
     let mut clauses: Vec<String> = Vec::new();
     let mut params: Vec<SqlValue> = Vec::new();
 
+    if !all_states { clauses.push("t.usage_state IN ('canonical','legacy')".to_string()); }
     clauses.push("t.ts >= ?".to_string());
     params.push(SqlValue::Integer(range.from));
     clauses.push("t.ts <= ?".to_string());
     params.push(SqlValue::Integer(range.to));
-
-    if !filters.include_sidechain && !force_sidechain {
-        clauses.push("s.is_sidechain = 0".to_string());
-    }
 
     push_in(&mut clauses, &mut params, "t.kind", &filters.kinds);
     push_in(&mut clauses, &mut params, "t.effort", &filters.efforts);
@@ -121,6 +126,97 @@ fn build_where(range: &ResolvedRange, filters: &Filters, force_sidechain: bool) 
         sql: clauses.join(" AND "),
         params,
     }
+}
+
+/// Stage-1 accounting input for the subsequent parent/child presentation.
+/// Display expansion never changes this total. Unresolved observations remain
+/// visible as a separate amount; preserved legacy costs are included.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountingTotals {
+    pub cost_usd: f64,
+    pub canonical_usd: f64,
+    pub legacy_usd: f64,
+    pub unresolved_usd: f64,
+    #[serde(default)]
+    pub unresolved_rows: i64,
+    pub suspected_duplicate_rows: i64,
+    pub suspected_duplicate_usd: f64,
+    pub confirmed_duplicate_rows: i64,
+    pub confirmed_duplicate_usd: f64,
+    pub turns: i64,
+}
+
+pub fn accounting_totals(conn: &Connection, range: &Range, filters: &Filters, now_ms: i64)
+    -> Result<AccountingTotals,String> {
+    let resolved = range.resolve(now_ms).0;
+    accounting_where(conn, build_where_states(&resolved, filters, true, true))
+}
+
+fn accounting_report(conn: &Connection, range: &Range, filters: &Filters, now_ms: i64)
+    -> Result<AccountingTotals,String> {
+    let resolved=range.resolve(now_ms).0;
+    if !rollup_is_eligible(filters) || !matches!(rollup::ready(conn), Ok(true)) {
+        return accounting_where(conn, build_where_states(&resolved,filters,true,true));
+    }
+    let (partial, complete) = hybrid_days(&resolved);
+    let mut totals = AccountingTotals::default();
+    for (from, to) in partial {
+        let value = accounting_where(conn, build_where_states(&ResolvedRange { from, to },filters,true,true))?;
+        totals.cost_usd += value.cost_usd;
+        totals.canonical_usd += value.canonical_usd;
+        totals.legacy_usd += value.legacy_usd;
+        totals.unresolved_usd += value.unresolved_usd;
+        totals.unresolved_rows += value.unresolved_rows;
+        totals.suspected_duplicate_rows += value.suspected_duplicate_rows;
+        totals.suspected_duplicate_usd += value.suspected_duplicate_usd;
+        totals.confirmed_duplicate_rows += value.confirmed_duplicate_rows;
+        totals.confirmed_duplicate_usd += value.confirmed_duplicate_usd;
+        totals.turns += value.turns;
+    }
+    if let Some((first, last)) = complete {
+        let (filter, mut params) = rollup_where(filters);
+        let mut values = vec![SqlValue::Integer(first), SqlValue::Integer(last)];
+        values.append(&mut params);
+        let suffix = if filter.is_empty() { String::new() } else { format!(" AND {filter}") };
+        let mut statement = conn.prepare(&format!("SELECT r.usage_state,SUM(r.turns),SUM(r.cost_usd)
+            FROM rollup_turn_session_day_v2 r JOIN session s USING(kind,session_id)
+            WHERE r.day>=? AND r.day<=?{suffix} GROUP BY r.usage_state")).map_err(|error|error.to_string())?;
+        let rows = statement.query_map(params_from_iter(values.iter()),|row|Ok((row.get::<_,String>(0)?,row.get::<_,i64>(1)?,row.get::<_,f64>(2)?)))
+            .map_err(|error|error.to_string())?;
+        for row in rows {
+            let (state, count, cost) = row.map_err(|error|error.to_string())?;
+            match state.as_str() {
+                "canonical" => { totals.canonical_usd += cost; totals.cost_usd += cost; totals.turns += count; },
+                "legacy" => { totals.legacy_usd += cost; totals.cost_usd += cost; totals.turns += count; },
+                "unresolved" => { totals.unresolved_usd += cost; totals.unresolved_rows += count; },
+                "suspected_duplicate" => { totals.suspected_duplicate_rows += count; totals.suspected_duplicate_usd += cost; },
+                "duplicate" => { totals.confirmed_duplicate_rows += count; totals.confirmed_duplicate_usd += cost; },
+                _ => {},
+            }
+        }
+    }
+    Ok(totals)
+}
+
+fn accounting_where(conn: &Connection, where_: Where) -> Result<AccountingTotals,String> {
+    let sql=format!("SELECT
+        COALESCE(SUM(CASE WHEN t.usage_state IN ('canonical','legacy') THEN t.cost_usd ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN t.usage_state='canonical' THEN t.cost_usd ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN t.usage_state='legacy' THEN t.cost_usd ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN t.usage_state='unresolved' THEN t.cost_usd ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN t.usage_state IN ('canonical','legacy') THEN 1 ELSE 0 END),0),
+        COALESCE(SUM(t.usage_state='suspected_duplicate'),0),
+        COALESCE(SUM(CASE WHEN t.usage_state='suspected_duplicate' THEN t.cost_usd ELSE 0 END),0),
+        COALESCE(SUM(t.usage_state='duplicate'),0),
+        COALESCE(SUM(CASE WHEN t.usage_state='duplicate' THEN t.cost_usd ELSE 0 END),0),
+        COALESCE(SUM(t.usage_state='unresolved'),0)
+        FROM turn t JOIN session s ON s.kind=t.kind AND s.session_id=t.session_id WHERE {}",where_.sql);
+    conn.query_row(&sql,rusqlite::params_from_iter(where_.params.iter()),|r|Ok(AccountingTotals {
+        cost_usd:r.get(0)?,canonical_usd:r.get(1)?,legacy_usd:r.get(2)?,unresolved_usd:r.get(3)?,turns:r.get(4)?,
+        suspected_duplicate_rows:r.get(5)?,suspected_duplicate_usd:r.get(6)?,
+        confirmed_duplicate_rows:r.get(7)?,confirmed_duplicate_usd:r.get(8)?,unresolved_rows:r.get(9)?,
+    })).map_err(|e|e.to_string())
 }
 
 /// The shared `WHERE` fragment, for callers that aggregate in SQL instead of
@@ -860,6 +956,8 @@ pub struct Overview {
     pub cache: Option<super::report_cache::SnapshotInfo>,
     pub range: RangeOut,
     pub totals: Totals,
+    #[serde(default)]
+    pub accounting: AccountingTotals,
     pub compare_previous: ComparePrevious,
     pub top_models: Vec<ModelRow>,
     pub mixed_model_sessions: i64,
@@ -1270,6 +1368,7 @@ fn overview_from_pass(
             label,
         },
         totals,
+        accounting: AccountingTotals::default(),
         compare_previous,
         top_models: build_model_rows(&pass, "family", &prices),
         mixed_model_sessions: pass
@@ -1621,9 +1720,6 @@ fn collect_aggregate_rows(
 fn rollup_where(filters: &Filters) -> (String, Vec<SqlValue>) {
     let mut clauses: Vec<String> = Vec::new();
     let mut params: Vec<SqlValue> = Vec::new();
-    if !filters.include_sidechain {
-        clauses.push("r.is_sidechain = 0".to_string());
-    }
     push_in(&mut clauses, &mut params, "r.kind", &filters.kinds);
     push_in(&mut clauses, &mut params, "r.effort", &filters.efforts);
     push_in(&mut clauses, &mut params, "s.git_branch", &filters.branches);
@@ -2253,7 +2349,11 @@ pub fn overview(
         "overview",
         &[],
         now_ms,
-        || overview_fresh(conn, range, filters, now_ms),
+        || {
+            let mut report = overview_fresh(conn, range, filters, now_ms)?;
+            report.accounting = accounting_report(conn, range, filters, now_ms)?;
+            Ok(report)
+        },
     )
 }
 
@@ -3579,6 +3679,10 @@ pub struct SessionRow {
     /// 期間内の distinct 生モデル数。
     pub range_model_count: i64,
     pub is_sidechain: bool,
+    #[serde(default)]
+    pub lineage: SessionLineage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<SessionPresentation>,
     pub work_tags: Vec<String>,
     pub started_at: Option<i64>,
     pub ended_at: Option<i64>,
@@ -3659,64 +3763,6 @@ fn apply_range_models(
     let (models, count) = top_range_models(tokens_by_model.unwrap_or(&empty));
     row.range_models = models;
     row.range_model_count = count;
-}
-
-fn fill_raw_range_models(
-    conn: &Connection,
-    rows: &mut [SessionRow],
-    from: i64,
-    to: i64,
-) -> Result<(), String> {
-    if rows.is_empty() {
-        return Ok(());
-    }
-    let requested = std::iter::repeat("(?, ?)")
-        .take(rows.len())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        "WITH requested(kind, session_id) AS (VALUES {requested}) \
-         SELECT t.kind, t.session_id, COALESCE(t.model, ''), \
-                SUM(t.input_tokens + t.output_tokens) \
-           FROM turn t JOIN requested q ON q.kind = t.kind AND q.session_id = t.session_id \
-          WHERE t.ts >= ? AND t.ts <= ? \
-          GROUP BY 1, 2, 3"
-    );
-    let mut params = Vec::with_capacity(rows.len() * 2 + 2);
-    for row in rows.iter() {
-        params.push(SqlValue::Text(row.kind.clone()));
-        params.push(SqlValue::Text(row.session_id.clone()));
-    }
-    params.push(SqlValue::Integer(from));
-    params.push(SqlValue::Integer(to));
-    let mut tokens: BTreeMap<SessionKey, BTreeMap<String, i64>> = BTreeMap::new();
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|err| format!("prepare session range models: {err}"))?;
-    let result = stmt
-        .query_map(params_from_iter(params.iter()), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<i64>>(3)?.unwrap_or(0),
-            ))
-        })
-        .map_err(|err| format!("query session range models: {err}"))?;
-    for row in result {
-        let (kind, session_id, model, tokens_sum) =
-            row.map_err(|err| format!("read session range model: {err}"))?;
-        *tokens
-            .entry((kind, session_id))
-            .or_default()
-            .entry(range_model_key(Some(&model)))
-            .or_default() += tokens_sum;
-    }
-    for row in rows.iter_mut() {
-        let key = (row.kind.clone(), row.session_id.clone());
-        apply_range_models(row, tokens.get(&key));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -3807,309 +3853,11 @@ pub struct DashboardReport {
     pub timings: ReportTimings,
 }
 
-fn sessions_raw(
-    conn: &Connection,
-    range: &Range,
-    filters: &Filters,
-    options: &SessionsOptions,
-    now_ms: i64,
-) -> Result<SessionsReport, String> {
-    let started = Instant::now();
-    let (resolved, label) = range.resolve(now_ms);
-    let prices = cached_prices(conn)?;
-    // Text search is a session predicate. Materialize the small matching
-    // session-key set before touching the much larger turn table so SQLite
-    // cannot flatten the join into a range-wide turn scan.
-    let mut aggregate_filters = filters.clone();
-    let search_query = aggregate_filters
-        .query
-        .take()
-        .filter(|value| !value.is_empty());
-    let filter = build_where(&resolved, &aggregate_filters, false);
-    let (search_cte, turn_source, base_params) = if let Some(query) = search_query {
-        let pattern = SqlValue::Text(format!("%{query}%"));
-        let mut params = vec![pattern.clone(), pattern.clone(), pattern];
-        params.extend(filter.params);
-        (
-            "matched_session AS MATERIALIZED (\
-             SELECT kind, session_id FROM session \
-             WHERE COALESCE(ai_title,'') LIKE ? OR COALESCE(first_prompt,'') LIKE ? \
-                OR COALESCE(project_label,'') LIKE ?), ",
-            "FROM matched_session matched \
-             CROSS JOIN turn t ON t.kind = matched.kind AND t.session_id = matched.session_id \
-             JOIN session s ON s.kind = t.kind AND s.session_id = t.session_id",
-            params,
-        )
-    } else {
-        (
-            "",
-            "FROM turn t JOIN session s \
-             ON s.kind = t.kind AND s.session_id = t.session_id",
-            filter.params,
-        )
-    };
-    let eligible = format!(
-        "SELECT t.kind, t.session_id, SUM(t.cost_usd) AS sort_cost, \
-         COUNT(*) AS sort_turns, MAX(t.ts) AS sort_recent \
-         {turn_source} \
-         WHERE {} GROUP BY t.kind, t.session_id",
-        filter.sql
-    );
-    let order_by = match options.sort.as_str() {
-        "recent" => "eligible.sort_recent DESC, eligible.kind ASC, eligible.session_id ASC",
-        "turns" => "eligible.sort_turns DESC, eligible.kind ASC, eligible.session_id ASC",
-        "rework" => "COALESCE(r.score, 0) DESC, eligible.kind ASC, eligible.session_id ASC",
-        _ => "eligible.sort_cost DESC, eligible.kind ASC, eligible.session_id ASC",
-    };
-    let sql = format!(
-        "WITH {search_cte}eligible AS ({eligible}) \
-         SELECT eligible.kind, eligible.session_id, s.ai_title, s.first_prompt, \
-                s.project_label, s.git_branch, s.origin, s.primary_model, s.model_count, \
-                s.is_sidechain, s.work_tags, s.started_at, s.ended_at, s.wall_ms, \
-                s.active_ms, s.turn_count, s.user_msg_count, s.compact_count, s.cost_usd, \
-                s.goal_summary, s.goal_cluster, COALESCE(r.score, 0), COUNT(*) OVER() \
-         FROM eligible \
-         JOIN session s ON s.kind = eligible.kind AND s.session_id = eligible.session_id \
-         LEFT JOIN rework r ON r.kind = eligible.kind AND r.session_id = eligible.session_id \
-         ORDER BY {order_by} LIMIT ? OFFSET ?"
-    );
-    let mut params = base_params.clone();
-    params.push(SqlValue::Integer(options.limit.max(0)));
-    params.push(SqlValue::Integer(options.offset.max(0)));
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|err| format!("prepare session page: {err}"))?;
-    let result_rows = stmt
-        .query_map(params_from_iter(params.iter()), |row| {
-            Ok((SessionRow {
-                kind: row.get(0)?,
-                session_id: row.get(1)?,
-                title: display_title(row.get(2)?, row.get(19)?, row.get(3)?),
-                project_label: row.get(4)?,
-                git_branch: row.get(5)?,
-                origin: row.get(6)?,
-                primary_model: row.get(7)?,
-                model_count: row.get(8)?,
-                range_models: Vec::new(),
-                range_model_count: 0,
-                is_sidechain: row.get::<_, i64>(9)? != 0,
-                work_tags: parse_json_array(row.get::<_, Option<String>>(10)?.as_deref()),
-                started_at: row.get(11)?,
-                ended_at: row.get(12)?,
-                wall_ms: row.get(13)?,
-                active_ms: row.get(14)?,
-                turn_count: row.get(15)?,
-                user_msg_count: row.get(16)?,
-                compact_count: row.get(17)?,
-                cost_usd: row.get(18)?,
-                rework_score: row.get(21)?,
-                goal_summary: row.get(19)?,
-                goal_cluster: row.get(20)?,
-            }, row.get::<_, i64>(22)?))
-        })
-        .map_err(|err| format!("run session page: {err}"))?;
-    let page = result_rows
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| format!("read session row: {err}"))?;
-    let mut total = page.first().map(|(_, total)| *total).unwrap_or(0);
-    let mut rows: Vec<SessionRow> = page.into_iter().map(|(row, _)| row).collect();
-    if rows.is_empty() && options.offset > 0 {
-        let total_sql = format!("WITH {search_cte}eligible AS ({eligible}) SELECT COUNT(*) FROM eligible");
-        total = conn
-            .query_row(
-                &total_sql,
-                params_from_iter(base_params.iter()),
-                |row| row.get(0),
-            )
-            .map_err(|err| format!("count sessions after empty page: {err}"))?;
-    }
-    fill_raw_range_models(conn, &mut rows, resolved.from, resolved.to)?;
-
-    let timings = ReportTimings {
-        sql_ms: elapsed_ms(started),
-        rows_scanned: total.max(0) as u64,
-        build_ms: 0,
-        path: "raw",
-    };
-    log_report_timings("sessions", timings);
-
-    Ok(SessionsReport {
-        range: RangeOut {
-            from: resolved.from,
-            to: resolved.to,
-            label,
-        },
-        rows,
-        total,
-        price_source: prices.source_summary(),
-        cost_note: COST_NOTE.to_string(),
-        timings,
-    })
-}
-
 #[derive(Default)]
 struct SessionSortAcc {
     cost: f64,
     turns: i64,
     recent: i64,
-}
-
-fn aggregate_session_page(
-    conn: &Connection,
-    source_rows: &[AggregateRow],
-    options: &SessionsOptions,
-) -> Result<(Vec<SessionRow>, i64), String> {
-    let mut eligible: BTreeMap<SessionKey, SessionSortAcc> = BTreeMap::new();
-    let mut model_tokens: BTreeMap<SessionKey, BTreeMap<String, i64>> = BTreeMap::new();
-    for row in source_rows {
-        let key = (row.kind.clone(), row.session_id.clone());
-        let entry = eligible.entry(key.clone()).or_default();
-        entry.cost += row.cost;
-        entry.turns += row.turns;
-        entry.recent = entry.recent.max(row.last_ts);
-        *model_tokens
-            .entry(key)
-            .or_default()
-            .entry(range_model_key(row.model.as_deref()))
-            .or_default() += row.input + row.output;
-    }
-    let total = eligible.len() as i64;
-    let mut ranked: Vec<(SessionKey, SessionSortAcc)> = eligible.into_iter().collect();
-    ranked.sort_by(|(left_key, left), (right_key, right)| {
-        let primary = match options.sort.as_str() {
-            "recent" => right.recent.cmp(&left.recent),
-            "turns" => right.turns.cmp(&left.turns),
-            // Rework is attached below from the canonical session/rework join.
-            // Populate it now through the same score used by the legacy SQL.
-            "rework" => std::cmp::Ordering::Equal,
-            _ => right
-                .cost
-                .partial_cmp(&left.cost)
-                .unwrap_or(std::cmp::Ordering::Equal),
-        };
-        primary
-            .then_with(|| left_key.0.cmp(&right_key.0))
-            .then_with(|| left_key.1.cmp(&right_key.1))
-    });
-
-    // Rework order needs the stored score, which is intentionally session-wide
-    // (matching the legacy CTE).  Fetch it before slicing so LIMIT/OFFSET stay
-    // semantically identical to the raw SQL path.
-    if options.sort == "rework" && !ranked.is_empty() {
-        let requested = std::iter::repeat("(?, ?)")
-            .take(ranked.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "WITH requested(kind, session_id) AS (VALUES {requested}) \
-            SELECT q.kind, q.session_id, COALESCE(r.score, 0) FROM requested q \
-            LEFT JOIN rework r ON r.kind = q.kind AND r.session_id = q.session_id"
-        );
-        let mut params = Vec::with_capacity(ranked.len() * 2);
-        for (key, _) in &ranked {
-            params.push(SqlValue::Text(key.0.clone()));
-            params.push(SqlValue::Text(key.1.clone()));
-        }
-        let mut scores = HashMap::new();
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|err| format!("prepare session rollup scores: {err}"))?;
-        let rows = stmt
-            .query_map(params_from_iter(params.iter()), |row| {
-                Ok((
-                    (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
-                    row.get::<_, f64>(2)?,
-                ))
-            })
-            .map_err(|err| format!("query session rollup scores: {err}"))?;
-        for row in rows {
-            let (key, score) = row.map_err(|err| format!("read session rollup score: {err}"))?;
-            scores.insert(key, score);
-        }
-        ranked.sort_by(|(left_key, _), (right_key, _)| {
-            scores
-                .get(right_key)
-                .unwrap_or(&0.0)
-                .partial_cmp(scores.get(left_key).unwrap_or(&0.0))
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| left_key.0.cmp(&right_key.0))
-                .then_with(|| left_key.1.cmp(&right_key.1))
-        });
-    }
-    let offset = options.offset.max(0) as usize;
-    let limit = options.limit.max(0) as usize;
-    let page: Vec<SessionKey> = ranked
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .map(|(key, _)| key)
-        .collect();
-    if page.is_empty() {
-        return Ok((Vec::new(), total));
-    }
-    let requested = std::iter::repeat("(?, ?)")
-        .take(page.len())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        "WITH requested(kind, session_id) AS (VALUES {requested}) \
-         SELECT s.kind, s.session_id, s.ai_title, s.first_prompt, s.project_label, s.git_branch, \
-                s.origin, s.primary_model, s.model_count, s.is_sidechain, s.work_tags, s.started_at, \
-                s.ended_at, s.wall_ms, s.active_ms, s.turn_count, s.user_msg_count, s.compact_count, \
-                s.cost_usd, s.goal_summary, s.goal_cluster, COALESCE(r.score, 0) \
-           FROM requested q JOIN session s ON s.kind = q.kind AND s.session_id = q.session_id \
-           LEFT JOIN rework r ON r.kind = s.kind AND r.session_id = s.session_id"
-    );
-    let mut params = Vec::with_capacity(page.len() * 2);
-    for key in &page {
-        params.push(SqlValue::Text(key.0.clone()));
-        params.push(SqlValue::Text(key.1.clone()));
-    }
-    let mut by_key = HashMap::new();
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|err| format!("prepare rollup session page: {err}"))?;
-    let result = stmt
-        .query_map(params_from_iter(params.iter()), |row| {
-            let row = SessionRow {
-                kind: row.get(0)?,
-                session_id: row.get(1)?,
-                title: display_title(row.get(2)?, row.get(19)?, row.get(3)?),
-                project_label: row.get(4)?,
-                git_branch: row.get(5)?,
-                origin: row.get(6)?,
-                primary_model: row.get(7)?,
-                model_count: row.get(8)?,
-                range_models: Vec::new(),
-                range_model_count: 0,
-                is_sidechain: row.get::<_, i64>(9)? != 0,
-                work_tags: parse_json_array(row.get::<_, Option<String>>(10)?.as_deref()),
-                started_at: row.get(11)?,
-                ended_at: row.get(12)?,
-                wall_ms: row.get(13)?,
-                active_ms: row.get(14)?,
-                turn_count: row.get(15)?,
-                user_msg_count: row.get(16)?,
-                compact_count: row.get(17)?,
-                cost_usd: row.get(18)?,
-                rework_score: row.get(21)?,
-                goal_summary: row.get(19)?,
-                goal_cluster: row.get(20)?,
-            };
-            Ok(((row.kind.clone(), row.session_id.clone()), row))
-        })
-        .map_err(|err| format!("query rollup session page: {err}"))?;
-    for row in result {
-        let (key, mut value) = row.map_err(|err| format!("read rollup session page: {err}"))?;
-        apply_range_models(&mut value, model_tokens.get(&key));
-        by_key.insert(key, value);
-    }
-    Ok((
-        page.into_iter()
-            .filter_map(|key| by_key.remove(&key))
-            .collect(),
-        total,
-    ))
 }
 
 pub fn sessions(
@@ -4123,11 +3871,17 @@ pub fn sessions(
     let mut timings = ReportTimings::default();
     let (resolved, label) = range.resolve(now_ms);
     let prices = cached_prices(conn)?;
-    let Some(rows) = measured_hybrid_rows(conn, &resolved, filters, &mut timings, false, false)?
-    else {
-        return sessions_raw(conn, range, filters, options, now_ms);
+    let rows = match measured_hybrid_rows(conn, &resolved, filters, &mut timings, false, false)? {
+        Some(rows) => rows,
+        None => {
+            let query_started = Instant::now();
+            let rows = aggregate_raw_span(conn, resolved.from, resolved.to, filters)?;
+            timings.sql_ms = elapsed_ms(query_started);
+            timings.rows_scanned = rows.len() as u64;
+            rows
+        }
     };
-    let (rows, total) = aggregate_session_page(conn, &rows, options)?;
+    let (rows, total) = presentation::session_page(conn, &rows, filters.include_sidechain, options)?;
     let timings = finish_timings(timings, started);
     log_report_timings("sessions", timings);
     Ok(SessionsReport {
@@ -4893,6 +4647,7 @@ pub struct SessionDetail {
     pub tools: Vec<ToolSummary>,
     pub rework: ReworkDetail,
     pub cost_breakdown: SessionCostBreakdown,
+    pub accounting: AccountingTotals,
     pub summary: Option<SummaryRow>,
     pub price_source: String,
     pub price_coverage: PriceCoverage,
@@ -5009,7 +4764,7 @@ pub fn session_detail(
                  output_tokens, cache_read_tokens, cache_write_5m_tokens, \
                  cache_write_1h_tokens, reasoning_tokens, duration_ms, tool_calls, \
                  tool_errors, cost_usd, ingest_cost_usd, generate_cost_usd \
-                 FROM turn WHERE kind = ?1 AND session_id = ?2 ORDER BY seq",
+                 FROM turn WHERE kind = ?1 AND session_id = ?2 AND usage_state IN ('canonical','legacy') ORDER BY seq",
             )
             .map_err(|err| format!("prepare turns: {err}"))?;
         let rows = stmt
@@ -5179,6 +4934,8 @@ pub fn session_detail(
             range_models: Vec::new(),
             range_model_count: 0,
             is_sidechain,
+            lineage: presentation::lineage(conn, kind, session_id)?,
+            presentation: None,
             work_tags: parse_json_array(work_tags.as_deref()),
             started_at,
             ended_at,
@@ -5203,6 +4960,10 @@ pub fn session_detail(
         tools,
         rework,
         cost_breakdown,
+        accounting: accounting_where(conn, Where {
+            sql: "t.kind = ? AND t.session_id = ?".into(),
+            params: vec![SqlValue::Text(kind.into()), SqlValue::Text(session_id.into())],
+        })?,
         summary,
         price_source: prices.source_summary(),
         price_coverage: price_coverage.finish(),

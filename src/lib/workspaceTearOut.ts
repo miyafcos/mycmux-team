@@ -108,6 +108,7 @@ export async function performWorkspaceWindowMove(
     if (retrying) for (const sessionId of liveSessions) evictTerminalCache(sessionId);
     const attachments = expectTearoutAttachments(liveSessions);
     try {
+      await attachments.prepared;
       restoreSource();
       await new Promise<void>((resolve, reject) => {
         const timer = window.setTimeout(() => reject(new Error("tearout_restore_attachment_timeout")), 5000);

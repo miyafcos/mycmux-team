@@ -2,9 +2,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSession, getCurrentSessionEpoch, getSessionChannelId, killSession } from "../../src/lib/ipc";
 import { PtyOutputChannel, PTY_CHANNEL_RETIRE_MS } from "../../src/lib/ptyOutputChannel";
 
-const backend = vi.hoisted(() => ({ invoke: vi.fn() }));
+const backend = vi.hoisted(() => ({ invoke: vi.fn(), nextContext: 0 }));
 vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@tauri-apps/api/core")>(), invoke: backend.invoke,
+  ...await importOriginal<typeof import("@tauri-apps/api/core")>(), invoke: async (command: string, ...parameters: any[]) => {
+    const args = parameters[0] ?? {};
+    if (command === "get_session_attachment_contexts") return args.sessionIds.map((session_id: string) => ({
+      backend_epoch: "fixture-backend", transfer_id: args.transferToken ?? null, transfer_token: args.transferToken ?? null,
+      session_id, window_label: "main", window_incarnation: "fixture-window",
+      attachment_epoch: ++backend.nextContext, nonce: String(backend.nextContext), existing_only: args.existingOnly,
+    }));
+    const result = await backend.invoke(command, ...parameters);
+    return command === "create_session" || command === "tearout_attach" ? result ?? args.attachmentContext : result;
+  },
 }));
 let nextId = 0;
 let callbacks: Map<number, (message: unknown) => void>;

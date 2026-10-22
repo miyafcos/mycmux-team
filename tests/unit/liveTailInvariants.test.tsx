@@ -22,9 +22,18 @@ import type { Workspace } from "../../src/types";
 
 // This is the only module mock: binary frames pass through the production IPC
 // decoder, parser/cache, reader, target loader, controller and Zustand store.
-const core = vi.hoisted(() => ({ invoke: vi.fn() }));
+const core = vi.hoisted(() => ({ invoke: vi.fn(), nextContext: 0 }));
 vi.mock("@tauri-apps/api/core", async original => ({
-  ...await original<typeof import("@tauri-apps/api/core")>(), invoke: core.invoke,
+  ...await original<typeof import("@tauri-apps/api/core")>(), invoke: async (command: string, ...parameters: any[]) => {
+    const args = parameters[0] ?? {};
+    if (command === "get_session_attachment_contexts") return args.sessionIds.map((session_id: string) => ({
+      backend_epoch: "fixture-backend", transfer_id: args.transferToken ?? null, transfer_token: args.transferToken ?? null,
+      session_id, window_label: "main", window_incarnation: "fixture-window",
+      attachment_epoch: ++core.nextContext, nonce: String(core.nextContext), existing_only: args.existingOnly,
+    }));
+    const result = await core.invoke(command, ...parameters);
+    return command === "create_session" || command === "tearout_attach" ? result ?? args.attachmentContext : result;
+  },
   Channel: class { id = 1; onmessage = (_data: unknown) => {}; },
 }));
 const encoder = new TextEncoder();

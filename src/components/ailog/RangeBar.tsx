@@ -123,7 +123,7 @@ export function RangeBar({
             checked={includeSidechain}
             onChange={(event) => onIncludeSidechain(event.target.checked)}
           />
-          サブエージェントのターンも含める
+          子の会話を表示（合計は変わりません）
         </label>
         <UsdJpyRateField value={usdJpyRate} onChange={onUsdJpyRate} />
         {freshness ? (

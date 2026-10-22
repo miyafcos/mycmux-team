@@ -196,6 +196,15 @@ pub async fn release_workspaces(
     if moved.is_empty() {
         return Ok(0);
     }
+    // The receiver must own the sessions before it mounts them on `window-adopt`.
+    let adopt_app = app.clone();
+    let adopt_label = to_label.clone();
+    let adopt_configs = moved.clone();
+    if let Err(error) = crate::util::task::run_blocking("release_attachments", move || {
+        crate::tearout::adopt_released_attachments(&adopt_app, &adopt_label, &adopt_configs)
+    }).await {
+        eprintln!("[window-registry] release attachment handoff failed to={to_label}: {error}");
+    }
     emit_adopt(
         &app,
         WindowAdoptPayload {
@@ -269,10 +278,18 @@ pub fn reclaim_destroyed_window(app: &AppHandle, label: &str) {
     if let Some(target) = target {
         let moved = state.window_registry.release_all(label, &target);
         if !moved.is_empty() {
-            emit_adopt(app, WindowAdoptPayload {
-                from_label: label.to_string(),
-                to_label: target,
-                workspace_ids: workspace_config_ids(&moved),
+            // Off the event-loop thread: a session's lifecycle gate may be held by a spawn.
+            let app = app.clone();
+            let from_label = label.to_string();
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(error) = crate::tearout::adopt_released_attachments(&app, &target, &moved) {
+                    eprintln!("[window-registry] rescue attachment handoff failed to={target}: {error}");
+                }
+                emit_adopt(&app, WindowAdoptPayload {
+                    from_label,
+                    to_label: target,
+                    workspace_ids: workspace_config_ids(&moved),
+                });
             });
         }
     }

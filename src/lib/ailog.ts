@@ -177,9 +177,23 @@ export interface ExcludedInternal {
   costUsd: number;
 }
 
+export interface AccountingTotals {
+  costUsd: number;
+  canonicalUsd: number;
+  legacyUsd: number;
+  unresolvedUsd: number;
+  unresolvedRows?: number;
+  suspectedDuplicateRows: number;
+  suspectedDuplicateUsd: number;
+  confirmedDuplicateRows: number;
+  confirmedDuplicateUsd: number;
+  turns: number;
+}
+
 export interface Overview {
   range: RangeOut;
   totals: Totals;
+  accounting?: AccountingTotals;
   comparePrevious: ComparePrevious;
   topModels: ModelRow[];
   mixedModelSessions: number;
@@ -485,6 +499,22 @@ export interface SessionRow {
   rangeModels: string[];
   rangeModelCount: number;
   isSidechain: boolean;
+  lineage?: {
+    parentKind: string | null;
+    parentSessionId: string | null;
+    relationshipType: string;
+    state: string;
+  };
+  presentation?: {
+    depth: number;
+    childrenCount: number;
+    ownCostUsd: number;
+    groupCostUsd: number;
+    groupTurns: number;
+    contextOnly: boolean;
+    parentMissing: boolean;
+    cycle: boolean;
+  };
   workTags: string[];
   startedAt: number | null;
   endedAt: number | null;
@@ -622,6 +652,7 @@ export interface SessionDetail {
   tools: ToolSummary[];
   rework: ReworkDetail;
   costBreakdown: SessionCostBreakdown;
+  accounting?: AccountingTotals;
   summary: SummaryRow | null;
   priceSource: string;
   priceCoverage: PriceCoverage;

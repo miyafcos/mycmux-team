@@ -185,11 +185,13 @@ fn merge_persistent_data(
     // get/set commands own it. Preserve across workspace saves.
     let ailog_usd_jpy_rate = disk.settings.ailog_usd_jpy_rate;
     let ailog_mirror_full_text_root = disk.settings.ailog_mirror_full_text_root.clone();
+    let ailog_claude_fallback_root = disk.settings.ailog_claude_fallback_root.clone();
     disk.settings = data.settings;
     disk.settings.dirty_save_mode = dirty_save_mode;
     disk.settings.osc7_tracking_enabled = osc7_tracking_enabled;
     disk.settings.ailog_usd_jpy_rate = ailog_usd_jpy_rate;
     disk.settings.ailog_mirror_full_text_root = ailog_mirror_full_text_root;
+    disk.settings.ailog_claude_fallback_root = ailog_claude_fallback_root;
     disk.active_workspace_id = data.active_workspace_id;
     disk.active_pane_id = data.active_pane_id;
     disk.active_tab_id = data.active_tab_id;
@@ -601,6 +603,7 @@ mod tests {
         disk.settings.osc7_tracking_enabled = false;
         disk.settings.ailog_usd_jpy_rate = 155.0;
         disk.settings.ailog_mirror_full_text_root = Some("X:\\archive".to_string());
+        disk.settings.ailog_claude_fallback_root = Some("X:\\restored-projects".to_string());
         let mut incoming = PersistentData::default();
         incoming.settings.dirty_save_mode = false;
         incoming.settings.osc7_tracking_enabled = true;
@@ -618,6 +621,7 @@ mod tests {
             Some("X:\\archive")
         );
         assert_eq!(disk.settings.font_size, 19);
+        assert_eq!(disk.settings.ailog_claude_fallback_root.as_deref(),Some("X:\\restored-projects"));
     }
     #[test]
     fn si_t2_canonical_save_overrides_scanned_identity_and_preserves_unstarted_tabs() {

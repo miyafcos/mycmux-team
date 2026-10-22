@@ -167,6 +167,42 @@ def test_sanitize_matches_observed_claude_behavior() -> None:
     )
 
 
+def test_hybrid_bundle_keeps_distinct_identity_and_finalization(tmp_path: Path) -> None:
+    native = run_publish(tmp_path)
+    hybrid = run_publish(tmp_path, agent_kind="claude-codex")
+    assert native["bundle_dir"] != hybrid["bundle_dir"]
+    bundle = Path(hybrid["bundle_dir"])
+    assert bundle.name == f"alice_claude-codex_{SESSION_ID[:8]}"
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    assert sp.manifest_identity(manifest) == ("claude-codex", SESSION_ID)
+    assert manifest["claude_session_id"] is None
+    manifest["claude_session_id"] = SESSION_ID
+    with pytest.raises(ValueError):
+        sp.manifest_identity(manifest)
+    final = run_publish(tmp_path, agent_kind="claude-codex", record_kind="final")
+    repeated = run_publish(tmp_path, agent_kind="claude-codex", record_kind="final")
+    assert repeated["checkpoint_id"] == final["checkpoint_id"]
+    assert repeated["bundle_dir"] == final["bundle_dir"]
+
+
+@pytest.mark.parametrize("session", ["latest", "../outside", "missing-id"])
+def test_hybrid_savepoint_rejects_nonexact_identity(tmp_path: Path, session: str) -> None:
+    with pytest.raises(ValueError, match="exact UUID"):
+        run_publish(tmp_path, agent_kind="claude-codex", session=session)
+    assert not (tmp_path / "online").exists()
+
+
+def test_hybrid_default_root_is_not_native_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    wrapper = tmp_path / ".claude-codex" / "config" / "projects"
+    write_fixture_transcript(wrapper, CWD_WIN, SESSION_ID)
+    args = sp.build_parser().parse_args(["--agent-kind", "claude-codex", "--session", SESSION_ID,
+        "--cwd", CWD_WIN, "--online-dir", str(tmp_path / "output"), "--config", str(tmp_path / "missing.json")])
+    result = sp.publish(args)
+    assert Path(result["bundle_dir"]).is_dir()
+    assert not (tmp_path / ".claude").exists()
+
+
 def test_publish_bundle_contents(tmp_path: Path) -> None:
     result = run_publish(tmp_path)
     bundle = Path(result["bundle_dir"])

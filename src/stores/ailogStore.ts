@@ -443,13 +443,13 @@ function cacheContext(state: Pick<AilogState, "preset" | "customFrom" | "customT
   const resolvedRange = resolvedRangeForKey(state.preset, state.customFrom, state.customTo, state.rangeAnchor);
   if (!range || !resolvedRange) return null;
   const filters = selectionFilters(
-    { ...emptyFilters(), includeSidechain: state.includeSidechain },
+    { ...emptyFilters(), includeSidechain: true },
     state.selection,
   );
   const key = JSON.stringify({
     from: resolvedRange.from,
     to: resolvedRange.to,
-    includeSidechain: state.includeSidechain,
+    includeSidechain: true,
     // Chart axes are resource inputs, not inputs to the period's overview,
     // breakdowns, session pages or usage rhythm.
     filters: {
@@ -587,14 +587,14 @@ function reworkRankingsContext(
   const resolvedRange = resolvedRangeForKey(state.preset, state.customFrom, state.customTo, state.rangeAnchor);
   if (!range || !resolvedRange) return null;
   const filters = selectionFilters(
-    { ...emptyFilters(), includeSidechain: state.includeSidechain },
+    { ...emptyFilters(), includeSidechain: true },
     state.selection,
   );
   return {
     key: JSON.stringify({
       from: resolvedRange.from,
       to: resolvedRange.to,
-      includeSidechain: state.includeSidechain,
+      includeSidechain: true,
       filters: {
         kinds: [...filters.kinds].sort(),
         models: [...filters.models].sort(),
@@ -774,16 +774,8 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   setIncludeSidechain: (includeSidechain) => {
     const current = get();
     if (current.includeSidechain === includeSidechain) return;
-    set({
-      includeSidechain,
-      overview: null, usageSeries: null, breakdown: null, pivot: null, models: null, sessions: null,
-      reportSnapshots: {},
-      usageRhythm: null,
-      usageRhythmError: null,
-      sessionPage: 0,
-      ...reworkResetIfContextChanged(current, { ...current, includeSidechain }),
-      ...handoffsResetIfContextChanged(current, { ...current, includeSidechain }),
-    });
+    set({ includeSidechain, sessionError: null });
+    void get().refreshSessions();
   },
   setGranularity: (granularity) => {
     const current = get();
@@ -964,13 +956,14 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   refreshSessions: async (options = {}) => {
     const context = cacheContext(get());
     if (!context) return;
-    const { sessionQuery, sessionSort, sessionPage } = get();
+    const { sessionQuery, sessionSort, sessionPage, includeSidechain } = get();
     const query = sessionQuery.trim();
     const requestKey = JSON.stringify({
       context: context.key,
       query,
       sort: sessionSort,
       page: sessionPage,
+      includeSidechain,
     });
     const isCurrentRequest = () => {
       const state = get();
@@ -979,6 +972,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
         query: state.sessionQuery.trim(),
         sort: state.sessionSort,
         page: state.sessionPage,
+        includeSidechain: state.includeSidechain,
       });
     };
     const mySeq = ++sessionSeq;
@@ -986,7 +980,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       mapResource(periodEntry(context.key).sessions, requestKey),
       () => ailogSessions(
         context.range,
-        { ...context.filters, query: query || null },
+        { ...context.filters, includeSidechain, query: query || null },
         { sort: sessionSort, limit: SESSION_PAGE_SIZE, offset: sessionPage * SESSION_PAGE_SIZE },
       ),
       options.force,

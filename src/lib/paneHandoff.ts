@@ -14,7 +14,7 @@ export interface PaneHandoffEndpoint {
 
 export interface PaneHandoffEligibility {
   sourceAgentKind: AgentSessionKind;
-  publishAgentKind: "claude" | "codex";
+  publishAgentKind: "claude" | "codex" | "claude-codex";
   sourceAgentSessionId: string;
   sourceCwd: string;
   targetAgentKind: AgentSessionKind;
@@ -134,7 +134,9 @@ export function resolvePaneHandoffEligibility(
 
   return {
     sourceAgentKind,
-    publishAgentKind: sourceAgentKind === "claude-codex" ? "claude" : sourceAgentKind,
+    // claude-codex keeps its own transcript root; publishing it as "claude" fell back to the
+    // newest native Claude conversation in the same cwd and handed off the wrong session.
+    publishAgentKind: sourceAgentKind,
     sourceAgentSessionId,
     sourceCwd,
     targetAgentKind,
