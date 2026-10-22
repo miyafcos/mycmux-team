@@ -57,7 +57,7 @@ function DashboardFontScope({ children }: { children?: React.ReactNode }) {
 describe("MarkdownView", () => {
   it("R2: fenced code keeps the explicit pre body route under the real global CSS", async () => {
     fontStyle = document.createElement("style");
-    fontStyle.textContent = readFileSync("src/global.css", "utf8");
+    fontStyle.textContent = readFileSync("src/global.css", "utf8").replaceAll("\r\n", "\n");
     document.head.append(fontStyle);
     useThemeStore.setState({ fontFamily: '"Fixture Body Font", monospace' });
     await render(<DashboardFontScope><MarkdownView text={'```sh\nprintf "fixture"\n```'} /></DashboardFontScope>);
@@ -126,7 +126,7 @@ describe("MarkdownView", () => {
     expect(scope.style.getPropertyValue("--cmux-font-mono")).toMatch(/^'BIZ UDGothic', /);
 
     const css = readFileSync("src/components/dashboard/DashboardView.css", "utf8");
-    const globalCss = readFileSync("src/global.css", "utf8");
+    const globalCss = readFileSync("src/global.css", "utf8").replaceAll("\r\n", "\n");
     const markdown = readFileSync("src/components/dashboard/MarkdownView.tsx", "utf8");
     const terminalTail = readFileSync("src/components/dashboard/DashboardTerminalTab.tsx", "utf8");
     expect(css).toContain(".cmux-dashboard-view {");
@@ -143,7 +143,7 @@ describe("MarkdownView", () => {
     expect(globalCss).toContain("[data-cmux-themed-root] {\n  font-family: var(--cmux-font-ui);\n}");
     expect(markdown).toContain('fontFamily: "var(--cmux-dash-body-font)"');
     expect(terminalTail).toContain('fontFamily: "var(--cmux-dash-body-font)"');
-    const previewCss = readFileSync("src-tauri/src/commands/artifact/markdown_preview.css", "utf8");
+    const previewCss = readFileSync("src-tauri/src/commands/artifact/markdown_preview.css", "utf8").replaceAll("\r\n", "\n");
     expect(previewCss).toContain('--md-font: "Segoe UI Variable Text", "Segoe UI", "BIZ UDPGothic", "Hiragino Sans",\n    "Hiragino Kaku Gothic ProN", "Yu Gothic UI", Meiryo, system-ui, sans-serif;');
     expect(previewCss).toContain("font-family: var(--md-font);");
   });

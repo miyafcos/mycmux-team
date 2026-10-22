@@ -166,6 +166,41 @@
         }
     }
 
+    #[test]
+    fn hybrid_savepoint_uses_exact_identity_and_a_separate_head() {
+        let fixture = setup_fixture();
+        let root = SavepointAgentKind::ClaudeCodex.transcript_root(&fixture.home);
+        let project = root.join(sanitize_project_dir(&fixture.cwd));
+        fs::create_dir_all(&project).unwrap();
+        write_transcript(&project.join(format!("{}.jsonl", fixture.session_id)), &fixture.cwd);
+        let now = Utc.with_ymd_and_hms(2026, 10, 21, 0, 0, 0).unwrap();
+        let mut events = Vec::new();
+        let result = publish_savepoint_impl(&fixture.config_path, &fixture.home, &root,
+            SavepointAgentKind::ClaudeCodex, &fixture.cwd, Some(&fixture.session_id), None, None,
+            PublishMode::Current, now, &mut |event| events.push(event)).unwrap();
+        let manifest: Value = read_json(&Path::new(&result.bundle_dir).join("manifest.json")).unwrap();
+        assert_eq!(manifest["agent_kind"], "claude-codex");
+        assert_eq!(manifest["agent_session_id"], fixture.session_id);
+        assert!(manifest["claude_session_id"].is_null());
+        assert!(Path::new(&result.bundle_dir).file_name().unwrap().to_string_lossy().contains("_claude-codex_"));
+        assert!(events.iter().all(|event| event.agent_kind == SavepointAgentKind::ClaudeCodex && event.claude_session_id.is_none()));
+        let native = publish_fixture(&fixture, Some(&fixture.session_id), None, now);
+        assert_ne!(native.bundle_dir, result.bundle_dir);
+        for session in [None, Some("missing-id"), Some("99999999-9999-4999-8999-999999999999")] {
+            assert!(publish_savepoint_impl(&fixture.config_path, &fixture.home, &root,
+                SavepointAgentKind::ClaudeCodex, &fixture.cwd, session, None, None,
+                PublishMode::Current, now, &mut |_| {}).is_err());
+        }
+        let final_result = publish_savepoint_impl(&fixture.config_path, &fixture.home, &root,
+            SavepointAgentKind::ClaudeCodex, &fixture.cwd, Some(&fixture.session_id), None, None,
+            PublishMode::Final(SavepointCloseReason::Manual), now, &mut |_| {}).unwrap();
+        let final_manifest: Value = read_json(&Path::new(&final_result.bundle_dir).join("manifest.json")).unwrap();
+        assert!(validate_final_record(&final_manifest, Path::new(&final_result.bundle_dir), SavepointAgentKind::ClaudeCodex,
+            &fixture.session_id, &final_result.checkpoint_id).is_ok());
+        assert!(validate_final_record(&final_manifest, Path::new(&final_result.bundle_dir), SavepointAgentKind::Claude,
+            &fixture.session_id, &final_result.checkpoint_id).is_err());
+    }
+
     fn publish_fixture(
         fixture: &PublishFixture,
         session: Option<&str>,

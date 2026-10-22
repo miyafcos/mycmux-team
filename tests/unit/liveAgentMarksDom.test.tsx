@@ -30,6 +30,19 @@ afterEach(async () => {
 });
 
 describe("agent mark DOM authority", () => {
+  it("keeps the Hybrid blue mark through repeated native observations and changes only on a real provider switch", async () => {
+    await act(async () => root.render(createElement(PaneTabBar, { pane: workspace.panes[0], workspaceId: "w", hasTerminalBuffer: () => false })));
+    for (let update = 0; update < 4; update++) {
+      await act(async () => usePaneMetadataStore.getState().setLiveAgent("pty-mark", "claude-codex", true));
+      const mark = container.querySelector('[data-mark-kind="claude-codex"][data-mark-source="live"]');
+      expect(mark).not.toBeNull();
+      expect(mark?.querySelector('path[fill="#7a9dff"]')).not.toBeNull();
+      expect(mark?.querySelector('path[fill="#d97757"]')).toBeNull();
+    }
+    await act(async () => usePaneMetadataStore.getState().setLiveAgent("pty-mark", "claude", true));
+    expect(container.querySelector('[data-mark-kind="claude"] path[fill="#d97757"]')).not.toBeNull();
+    expect(container.querySelector('[data-mark-kind="claude-codex"]')).toBeNull();
+  });
   it("renders saved, live and explicit null tab attributes from the actual volatile store", async () => {
     await act(async () => root.render(createElement(PaneTabBar, { pane: workspace.panes[0], workspaceId: "w", hasTerminalBuffer: () => false })));
     expect(container.querySelector('[data-mark-kind="claude"][data-mark-source="saved"]')).not.toBeNull();

@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::AppHandle;
+use crate::tearout::attachment_epoch::{self, AttachmentContext, WindowProof};
 
 use super::monitor::MetadataStore;
 use super::scrollback_store;
@@ -76,14 +77,17 @@ pub(crate) struct AgentIdentitySnapshot {
 }
 
 fn identity_kind_matches(saved: &str, live: &str) -> bool {
-    saved == live || (saved == "claude-codex" && live == "claude")
+    saved == live || matches!((saved, live), ("claude-codex", "claude") | ("claude", "claude-codex"))
 }
 
 impl AgentIdentitySnapshot {
     pub(crate) fn hook_for_process(&self, kind: &str, pid: u32, started_at: u64) -> Option<TrustedAgentIdentity> {
         self.identity.as_ref().filter(|identity| identity.from_hook
             && identity.session_epoch == self.session_epoch && identity_kind_matches(&identity.kind, kind)
-            && pid > 0 && started_at > 0 && identity.agent_pid == pid && identity.agent_started_at == started_at).cloned()
+            && pid > 0 && started_at > 0 && identity.agent_pid == pid && identity.agent_started_at == started_at).cloned().map(|mut identity| {
+                if kind == "claude-codex" { identity.kind = kind.to_string(); }
+                identity
+            })
     }
 
     fn hook_for_metadata(&self, metadata: &super::monitor::PtyMetadata) -> Option<TrustedAgentIdentity> {
@@ -159,48 +163,39 @@ impl SessionManager {
         cols: u16,
         rows: u16,
         data_channel: Channel<InvokeResponseBody>,
-        app_handle: AppHandle,
+        app_handle: impl FnOnce() -> AppHandle,
         cwd: Option<String>,
         env: Option<std::collections::HashMap<String, String>>,
         metadata_store: MetadataStore,
         scrollback_dir: Option<&Path>,
         background_only: bool,
-        attach_origin: &str,
+        _attach_origin: &str,
+        attachment_context: &AttachmentContext,
+        attachment_window: &WindowProof,
     ) -> Result<(), String> {
+        let new_channel_id_value = data_channel.id();
         #[cfg(debug_assertions)]
-        let new_channel_id = data_channel.id().to_string();
+        let new_channel_id = new_channel_id_value.to_string();
         let create_lock = self.create_lock_for(&session_id)?;
         let _create_guard = create_lock
             .lock()
             .map_err(|error| format!("Failed to lock create session {session_id}: {error}"))?;
+        // Caller holds the lifecycle gate. Always acquire create -> authority
+        // before a DashMap reference, matching tearout_attach and cancellation.
+        if self.sessions.contains_key(&session_id) {
+            if background_only { return Ok(()); }
+            self.swap_attachment_locked(&session_id, attachment_window, attachment_context, data_channel)?;
+            return Ok(());
+        }
+        {
+            let authority = attachment_epoch::registry().lock().map_err(|e| e.to_string())?;
+            authority.validate(&session_id, attachment_window, attachment_context, false)?;
+        }
         create_or_reattach(
             &self.sessions,
             session_id.clone(),
             data_channel, background_only,
-            |session, data_channel| {
-                // A background start races with mounting/clicking in another
-                // window. Existing PTYs keep their renderer's channel and epoch.
-                let replaced_channel_ids = session.replace_data_channel(data_channel)?;
-                crate::watchdog::log_with_memory(format!(
-                    "[pty] frontend attach session={session_id} {attach_origin} generation={} old_channel={} new_channel={}",
-                    session.frontend_generation(), replaced_channel_ids.0, replaced_channel_ids.1
-                ));
-                #[cfg(debug_assertions)]
-                {
-                    let age_ms = session.created_at.elapsed().as_millis();
-                    let (old_channel_id, active_channel_id) = replaced_channel_ids;
-                    eprintln!(
-                        "[mycmux-diag manager] create_session id={} kind=reattach age_ms={} old_channel_id={} new_channel_id={} active_channel_id={}",
-                        session_id, age_ms, old_channel_id, new_channel_id, active_channel_id
-                    );
-                }
-                #[cfg(not(debug_assertions))]
-                {
-                    let _ = replaced_channel_ids;
-                }
-                // contract-test pin: test_session_restore_agent_kind.py expects this literal early return
-                return Ok(());
-            },
+            |_session, _channel| Err("attachment_existing_session_changed".into()),
             |data_channel| {
                 crate::perf_timeline::mark("session.scrollback.load.enter", Some(&session_id));
                 let preload = scrollback_dir
@@ -228,7 +223,7 @@ impl SessionManager {
                     cols,
                     rows,
                     data_channel,
-                    app_handle,
+                    app_handle(),
                     cwd,
                     env,
                     metadata_store,
@@ -242,6 +237,35 @@ impl SessionManager {
         .inspect_err(|error| {
             crate::diag_warn!("pty", "create session {session_id} failed: {error}");
         })?;
+        attachment_epoch::registry().lock().map_err(|e| e.to_string())?.installed(attachment_context, new_channel_id_value);
+        Ok(())
+    }
+
+    fn swap_attachment_locked(&self, id: &str, window: &WindowProof, context: &AttachmentContext,
+        data_channel: Channel<InvokeResponseBody>,
+    ) -> Result<(), String> {
+        let mut authority = attachment_epoch::registry().lock().map_err(|e| e.to_string())?;
+        let session = self.sessions.get(id).ok_or("tearout_session_not_alive")?;
+        authority.validate(id, window, context, true)?;
+        let channel_id = data_channel.id();
+        session.replace_data_channel(data_channel)?;
+        authority.installed(context, channel_id);
+        Ok(())
+    }
+    pub(crate) fn attach_existing(&self, id: &str, window: &WindowProof, context: &AttachmentContext,
+        channel: Channel<InvokeResponseBody>,
+    ) -> Result<(), String> {
+        let lock = self.create_lock_for(id)?;
+        let _guard = lock.lock().map_err(|e| e.to_string())?;
+        self.swap_attachment_locked(id, window, context, channel)
+    }
+    pub(crate) fn revoke_attachment(&self, id: &str, transfer_id: &str, source: &WindowProof) -> Result<(), String> {
+        let lock = self.create_lock_for(id)?;
+        let _guard = lock.lock().map_err(|e| e.to_string())?;
+        let mut authority = attachment_epoch::registry().lock().map_err(|e| e.to_string())?;
+        if let Some(channel_id) = authority.retire_transfer(id, transfer_id, source) {
+            if let Some(session) = self.sessions.get(id) { session.retire_data_channel(channel_id)?; }
+        }
         Ok(())
     }
 
@@ -567,6 +591,25 @@ impl SessionManager {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn hybrid_reclassification_preserves_exact_hook_identity_and_lifetime_guards() {
+        let identity = TrustedAgentIdentity { session_epoch: 7, kind: "claude".into(), session_id: "exact-session".into(),
+            agent_pid: 42, agent_started_at: 10, from_hook: true };
+        let snapshot = AgentIdentitySnapshot { session_epoch: 7, revision: 1, trusted: false, identity: Some(identity.clone()) };
+        let recovered = snapshot.hook_for_process("claude-codex", 42, 10).unwrap();
+        assert_eq!(recovered.session_id, "exact-session");
+        assert_eq!(recovered.kind, "claude-codex");
+        for (kind, pid, started) in [("codex", 42, 10), ("grok", 42, 10), ("claude-codex", 43, 10), ("claude-codex", 42, 11)] {
+            assert!(snapshot.hook_for_process(kind, pid, started).is_none());
+        }
+        let mut metadata = super::super::monitor::PtyMetadata::unobserved("pty".into());
+        metadata.session_epoch = 7; metadata.agent_pid = Some(42); metadata.agent_started_at = Some(10_000);
+        metadata.live_agent_kind = Some("claude-codex".into());
+        assert!(identity_matches_metadata(&identity, &metadata));
+        metadata.session_epoch = 8;
+        assert!(!identity_matches_metadata(&identity, &metadata));
+    }
 
     struct FakeSession {
         reattach_count: AtomicUsize,

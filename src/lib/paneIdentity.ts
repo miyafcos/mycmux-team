@@ -6,7 +6,7 @@ export interface PaneEvidence {
   cwd: string; agentKind?: string; parentTabId?: string;
   sessionTitle?: string | null; taskTitle?: string | null;
 }
-export type ProjectReason = "folder_registry" | "folder_words" | "task_title" | "session_title" | "lineage" | "alias" | "workspace_name" | null;
+export type ProjectReason = "readable_label" | "folder_registry" | "folder_words" | "task_title" | "session_title" | "lineage" | "alias" | "workspace_name" | null;
 export type SubjectReason = "user_label" | "readable_label" | "folder_child" | "task_title" | "session_title" | "folder_remainder" | "tool_label" | null;
 export interface PaneProject { key: string; display: string; short: string }
 interface Entry extends PaneProject { paths: string[]; tokens: string[]; identity: string[]; facets: string[] }
@@ -14,7 +14,7 @@ export interface PaneIdentity {
   project: PaneProject | null; projectReason: ProjectReason;
   subject: string | null; subjectReason: SubjectReason; displayName: string | null;
 }
-export interface PaneIdentityInput { registry: readonly ProjectRegistration[]; workspaces: readonly IdentityWorkspace[]; tabs: readonly PaneEvidence[] }
+export interface PaneIdentityInput { registry: readonly ProjectRegistration[]; workspaces: readonly IdentityWorkspace[]; tabs: readonly PaneEvidence[]; allowLabelProjects?: boolean }
 export interface PaneIdentityResult { tabs: Map<string, PaneIdentity>; homes: Map<string, string>; homeScores: Map<string, number> }
 const normPath = (s: string) => s.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 const segments = (s: string) => s.replace(/\\/g, "/").split("/").filter(Boolean);
@@ -143,7 +143,8 @@ export function resolvePaneIdentities(input: PaneIdentityInput): PaneIdentityRes
     if (!hit) {
       const parts = segments(tab.cwd); const users = parts.findIndex(s => s.toLowerCase() === "users");
       const folderText = parts.filter((s, i) => !/^[a-z]:$/i.test(s) && s.toLowerCase() !== "users" && !(users >= 0 && i === users + 1)).join(" ");
-      for (const [text, why] of [[folderText, "folder_words"], [tab.taskTitle, "task_title"], [tab.sessionTitle, "session_title"]] as const) {
+      const readableLabel = input.allowLabelProjects && tab.labelSource !== "ai" && !isToolIdentifier(tab) ? tab.label : null;
+      for (const [text, why] of [[folderText, "folder_words"], [tab.taskTitle, "task_title"], [tab.sessionTitle, "session_title"], [readableLabel, "readable_label"]] as const) {
         if (text && (hit = best(text))) { reason = why; break; }
       }
     }

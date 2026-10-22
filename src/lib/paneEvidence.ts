@@ -5,7 +5,7 @@ import { withSessionTitles } from "./sessionTitles";
 export { agentSessionTitles, cachedEvidenceScan, TITLE_REFRESH_MS, TITLE_RETRY_MS, withSessionTitles, type AgentSessionTitles, type AgentTitleRequest } from "./sessionTitles";
 export function paneRegistry(): ProjectRegistration[] { return useLauncherDirsStore.getState().view?.doc?.entries ?? []; }
 export function identitiesForScan(scan: GroupingScan, registry = paneRegistry()): PaneIdentityResult {
-  return resolvePaneIdentities({ registry, workspaces: scan.workspaces, tabs: scan.tabs.map(tab => ({
+  return resolvePaneIdentities({ registry, allowLabelProjects: true, workspaces: scan.workspaces, tabs: scan.tabs.map(tab => ({
     ...tab, parentTabId: tab.origin?.parentTabId,
   })) });
 }

@@ -132,6 +132,11 @@ pub(crate) fn locate_agent_transcript(
     match kind {
         SavepointAgentKind::Claude => locate_claude_transcript(transcript_root, cwd, session),
         SavepointAgentKind::Codex => locate_codex_transcript(transcript_root, cwd, session),
+        SavepointAgentKind::ClaudeCodex => {
+            let session = session.ok_or("Hybrid savepoint requires an exact session id")?;
+            Uuid::parse_str(session).map_err(|_| "Hybrid session id is invalid".to_string())?;
+            locate_claude_transcript_exact(transcript_root, cwd, session).map(|path| (path, session.to_string()))
+        }
     }
 }
 

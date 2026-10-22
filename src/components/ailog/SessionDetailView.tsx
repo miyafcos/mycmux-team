@@ -23,6 +23,7 @@ import {
   type TranscriptReport,
 } from "../../lib/ailog";
 import { modelPaint } from "./modelColors";
+import { AccountingNote } from "./AccountingNote";
 import { ChartHatchDefs, Chip, Num, noteStyle, paintFill, paintSwatchBackground, subtleButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
 
 /** Above this many turns the bars are grouped so the chart stays readable. */
@@ -142,8 +143,11 @@ export function SessionDetailView({ detail, transcript, transcriptLoading, trans
         </button>
       </div>
 
+      <div style={noteStyle}>この詳細は選んだ会話自身の使用です。子の使用は期間全体の合計に含まれます。</div>
+      {detail.session.lineage?.state === "legacy" && <div style={noteStyle}>親子の区別なし（元ログなし）</div>}
+      <AccountingNote accounting={detail.accounting} sessionOnly />
       <div>
-        <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>ターン別コスト相当推移</div>
+        <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>ターン別コスト相当推移（合計対象のみ）</div>
         {bars.length === 0 ? (
           <div style={noteStyle}>ターンの記録がありません。再インデックスすると取り込まれることがあります。</div>
         ) : (

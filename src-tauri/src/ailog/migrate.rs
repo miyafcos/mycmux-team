@@ -4,7 +4,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::ailog::price::{PriceTable, DEFAULT_PRICES};
 
-const VERSION: i64 = 2;
+const VERSION: i64 = 3;
 const PRICE_CATALOG_VERSION: &str = "3";
 
 pub fn apply(conn: &Connection) -> Result<(), String> {
@@ -59,6 +59,9 @@ pub fn apply(conn: &Connection) -> Result<(), String> {
         )
         .map_err(|err| format!("apply ailog rollup schema: {err}"))?;
         }
+        if current < 3 {
+            crate::ailog::accounting::migrate(conn)?;
+        }
         conn.execute(
         "INSERT INTO index_state(key,value) VALUES ('schema_ext_version',?1) \
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -66,6 +69,7 @@ pub fn apply(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|err| format!("record ailog schema extension: {err}"))?;
     }
+    crate::ailog::accounting::migrate_r2(conn)?;
     apply_price_catalog(conn)?;
     Ok(())
 }
@@ -159,7 +163,7 @@ mod tests {
                 |r| r.get(0)
             )
             .unwrap(),
-            "2"
+            "3"
         );
         let tables: i64 = conn
             .query_row(

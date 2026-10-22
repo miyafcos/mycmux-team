@@ -16,3 +16,5 @@ mod report_cache_tests;
 mod rule_check_tests;
 mod rollup_tests;
 mod usage_series_tests;
+mod stage1_accounting_tests;
+mod stage2_presentation_tests;

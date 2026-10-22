@@ -17,6 +17,7 @@
 //! `cwd` field inside the records is the only reliable source.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use serde_json::Value;
 
@@ -34,6 +35,38 @@ const NEXT_ACTION_MARKER: &str = "[mycmux-next-action]";
 /// `fallback_session` is used when a record omits its session id (rare, but
 /// the file stem is authoritative for these transcripts).
 pub fn parse_chunk(text: &str, fallback_session: &str) -> ChunkData {
+    parse_source_chunk(text, fallback_session, None)
+}
+
+/// The physical source, rather than a copied sessionId, owns child identity.
+pub fn parse_chunk_from_source(text: &str, fallback_session: &str, source: &Path) -> ChunkData {
+    parse_source_chunk(text, fallback_session, Some(source))
+}
+
+pub(crate) fn source_identity(source: &Path, native: &str) -> (String, Option<String>, bool) {
+    let normalized = source.to_string_lossy().replace('\\', "/");
+    let normalized = normalized.trim_end_matches(".gz").trim_end_matches(".jsonl");
+    let parts: Vec<&str> = normalized.split('/').collect();
+    if let Some(index) = parts.iter().position(|part| *part == "subagents") {
+        let parent = parts.get(index.wrapping_sub(1)).copied().unwrap_or(native);
+        let tail = parts[index+1..].join("/");
+        let id = super::accounting::key("claude-child", &(parent, &tail));
+        let parent_id = tail.rfind("/subagents/").map(|end|
+            super::accounting::key("claude-child", &(parent, &tail[..end])))
+            .unwrap_or_else(|| parent.to_string());
+        return (id, Some(parent_id), true);
+    }
+    let stem = parts.last().copied().unwrap_or(native);
+    if stem.starts_with("agent-") {
+        let project = parts.get(parts.len().saturating_sub(2)).copied().unwrap_or("");
+        return (super::accounting::key("claude-child", &(native, project, stem)),
+            (!native.is_empty() && native != stem).then(||native.to_string()), true);
+    }
+    let root = if super::parse_codex::is_rollout_uuid(stem) { stem } else { native };
+    (root.to_string(), None, false)
+}
+
+fn parse_source_chunk(text: &str, fallback_session: &str, source: Option<&Path>) -> ChunkData {
     let mut data = ChunkData::default();
     // (session_id, dedup key) -> index into that session's `turns`.
     let mut turn_index: HashMap<(String, String), usize> = HashMap::new();
@@ -56,12 +89,14 @@ pub fn parse_chunk(text: &str, fallback_session: &str) -> ChunkData {
         };
         data.lines += 1;
 
-        let session_id = value
+        let native_session_id = value
             .get("sessionId")
             .and_then(Value::as_str)
             .or_else(|| value.get("session_id").and_then(Value::as_str))
             .unwrap_or(fallback_session)
             .to_string();
+        let (session_id, parent, child) = source.map(|path| source_identity(path, &native_session_id))
+            .unwrap_or_else(|| (native_session_id.clone(), None, false));
 
         let session = data
             .sessions
@@ -69,6 +104,12 @@ pub fn parse_chunk(text: &str, fallback_session: &str) -> ChunkData {
             .or_insert_with(|| SessionChunk::new(KIND_CLAUDE, session_id.clone()));
 
         apply_common_meta(session, &value);
+        if source.is_some() {
+            session.is_sidechain = child;
+            session.parent_session_id = parent;
+            session.relationship_type = Some(if child { "subagent" } else { "root" }.into());
+            session.lineage_state = Some(if child && session.parent_session_id.is_none() { "unresolved" } else { "verified" }.into());
+        }
         let ts = parse_ts(value.get("timestamp").and_then(Value::as_str)).unwrap_or(0);
         session.stamp(ts);
 
@@ -81,6 +122,7 @@ pub fn parse_chunk(text: &str, fallback_session: &str) -> ChunkData {
                 &session_id,
                 &mut turn_index,
                 &mut call_names,
+                source.is_some(),
             ),
             "user" => handle_user(session, &value, ts, &call_names),
             "system" => handle_system(session, &value, &session_id, &mut turn_index),
@@ -171,17 +213,41 @@ fn handle_assistant(
     session_id: &str,
     turn_index: &mut HashMap<(String, String), usize>,
     call_names: &mut HashMap<String, String>,
+    source_aware: bool,
 ) {
     let message = value.get("message").cloned().unwrap_or(Value::Null);
-    let dedup_key = value
+    let request = value.get("requestId").and_then(Value::as_str);
+    let message_id = message.get("id").and_then(Value::as_str);
+    let execution = match (message_id, request) {
+        // A provider message id remains stable across streamed snapshots even
+        // when older/wrapped logs omit requestId. UUID identifies an occurrence.
+        (Some(message), request) => Some(super::accounting::key("claude-exec", &(message, request))),
+        _ => value.get("uuid").and_then(Value::as_str)
+            .map(|id|super::accounting::key("claude-uuid", &(session_id,id))),
+    };
+    let native_dedup_key = value
         .get("requestId")
         .and_then(Value::as_str)
         .or_else(|| message.get("id").and_then(Value::as_str))
         .or_else(|| value.get("uuid").and_then(Value::as_str))
         .map(str::to_string)
         .unwrap_or_else(|| format!("line:{line_no}"));
+    let identity = if source_aware { execution.clone().unwrap_or_else(||native_dedup_key.clone()) }
+        else { native_dedup_key.clone() };
+    let dedup_key = if source_aware && session.turns.iter().any(|t|
+        t.dedup_key == native_dedup_key && t.execution_key != execution) {
+        identity.clone()
+    } else { native_dedup_key };
 
-    let key = (session_id.to_string(), dedup_key.clone());
+    session.occurrences.push(super::accounting::Occurrence {
+        line: line_no, event_id: value.get("uuid").and_then(Value::as_str).map(str::to_string),
+        execution_key: execution.clone(), ts,
+        decision: if execution.is_some() { "canonical" } else { "unresolved" }.into(),
+        evidence: serde_json::json!({"message_id":message_id,"request_id":request,
+            "source_session_id":value.get("sessionId"),"model":message.get("model"),"last":message.get("usage")}),
+    });
+
+    let key = (session_id.to_string(), identity);
     let index = match turn_index.get(&key) {
         Some(index) => *index,
         None => {
@@ -189,6 +255,10 @@ fn handle_assistant(
             let (write_5m, write_1h) = cache_creation_split(&usage);
             let turn = TurnRow {
                 dedup_key: dedup_key.clone(),
+                execution_key: execution.clone(),
+                usage_state: Some(if source_aware && execution.is_none() {
+                    "unresolved"
+                } else { "canonical" }.into()),
                 ts,
                 model: message
                     .get("model")
@@ -222,6 +292,18 @@ fn handle_assistant(
             index
         }
     };
+
+    let usage = message.get("usage").cloned().unwrap_or(Value::Null);
+    let turn = &mut session.turns[index];
+    if (num(&usage,"output_tokens"), ts) > (turn.output_tokens, turn.ts) {
+        let (five,hour) = cache_creation_split(&usage);
+        turn.input_tokens = num(&usage,"input_tokens");
+        turn.output_tokens = num(&usage,"output_tokens");
+        turn.cache_read_tokens = num(&usage,"cache_read_input_tokens");
+        turn.cache_write_5m_tokens = five;
+        turn.cache_write_1h_tokens = hour;
+        turn.ts = ts;
+    }
 
     let mut saw_tool = false;
     if let Some(blocks) = message.get("content").and_then(Value::as_array) {

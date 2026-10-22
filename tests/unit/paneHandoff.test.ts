@@ -79,7 +79,7 @@ describe("pane handoff eligibility", () => {
     expect(resolvePaneHandoffEligibility(source, target)).toBeNull();
   });
 
-  it("accepts live source and target metadata and maps claude-codex publishing to Claude", () => {
+  it("accepts live source and target metadata and publishes claude-codex as claude-codex", () => {
     const source = endpoint("workspace-a", "pane-a", "source", {
       ...liveSource,
       agentKind: "claude-codex",
@@ -88,7 +88,7 @@ describe("pane handoff eligibility", () => {
 
     expect(resolvePaneHandoffEligibility(source, target)).toEqual({
       sourceAgentKind: "claude-codex",
-      publishAgentKind: "claude",
+      publishAgentKind: "claude-codex",
       sourceAgentSessionId: liveSource.agentSessionId,
       sourceCwd: liveSource.cwd,
       targetAgentKind: "codex",

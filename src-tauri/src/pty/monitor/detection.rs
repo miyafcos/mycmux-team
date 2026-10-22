@@ -155,6 +155,7 @@ pub(super) fn mapping_matches_detected_agent_kind(
         (mapping.agent_kind.as_deref(), agent_kind),
         (Some("codex"), DetectedAgentKind::Codex)
             | (Some("claude"), DetectedAgentKind::Claude)
+            | (Some("claude"), DetectedAgentKind::ClaudeCodex)
             | (Some("claude-codex"), DetectedAgentKind::Claude)
             | (Some("claude-codex"), DetectedAgentKind::ClaudeCodex)
             | (Some("grok"), DetectedAgentKind::Grok)
@@ -311,6 +312,12 @@ where
     F: FnOnce() -> Option<AgentSessionAttribution>,
     S: FnMut(&str, &str) -> bool,
 {
+    let mapped = mapped.map(|mut mapping| {
+        if process_kind == DetectedAgentKind::ClaudeCodex && mapping.agent_kind == "claude" {
+            mapping.agent_kind = "claude-codex";
+        }
+        mapping
+    });
     if mapped.as_ref().is_some_and(|mapping| mapping.hook_confirmed) {
         return mapped;
     }
@@ -749,13 +756,24 @@ fn agent_detection_from_process(
     pid: Pid,
 ) -> Option<(DetectedAgentKind, AgentDetectionSource)> {
     let process = sys.process(pid)?;
-    classify_agent_process(&process.name().to_string_lossy(), || {
+    let (kind, source) = classify_agent_process(&process.name().to_string_lossy(), || {
         process
             .cmd()
             .iter()
             .map(|arg| arg.to_string_lossy().to_string())
             .collect()
-    })
+    })?;
+    let hybrid = kind == DetectedAgentKind::Claude && super::hybrid_process::has_hybrid_ancestor(pid.as_u32(), |id| {
+        let parent = sys.process(Pid::from_u32(id))?;
+        let name = parent.name().to_string_lossy();
+        let args = parent.cmd().iter().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        Some(super::hybrid_process::Ancestor {
+            parent: parent.parent().map(|parent| parent.as_u32()), started_at: parent.start_time(),
+            transparent_shell: is_shell_process(&name),
+            hybrid_wrapper: super::hybrid_process::is_hybrid_wrapper(&name, &args),
+        })
+    });
+    Some((if hybrid { DetectedAgentKind::ClaudeCodex } else { kind }, source))
 }
 
 fn classify_agent_process<F>(
@@ -973,6 +991,18 @@ fn select_agent_descendant(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_hybrid_process_repairs_old_claude_mapping_without_changing_session() {
+        let mapping = AgentSessionMapping { agent_kind: Some("claude".into()), session_id: "same-session".into(), hook_confirmed: true };
+        assert!(mapping_matches_detected_agent_kind(&mapping, DetectedAgentKind::ClaudeCodex));
+        let selected = select_claude_process_attribution(DetectedAgentKind::ClaudeCodex,
+            Some(AgentSessionAttribution::verified("claude", "same-session".into())), None, None, None, None,
+            &HashSet::new(), |_, _| false, || panic!("verified identity must not scan another conversation")).unwrap();
+        assert_eq!(selected.agent_kind, "claude-codex");
+        assert_eq!(selected.session_id, "same-session");
+        assert!(selected.hook_confirmed);
+    }
 
     fn child_index_from_edges(edges: &[(u32, u32)]) -> HashMap<Pid, Vec<Pid>> {
         let mut index = HashMap::<Pid, Vec<Pid>>::new();

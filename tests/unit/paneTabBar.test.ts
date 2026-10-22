@@ -71,15 +71,15 @@ describe("shouldShowPublishButton", () => {
     expect(shouldShowPublishButton(tab({ type: "online", claudeSessionId: "session-id" }), undefined)).toBe(false);
   });
 
-  it("does not show for unsupported claude-codex sessions", () => {
+  it("shows for Hybrid metadata and persisted Hybrid sessions", () => {
     expect(shouldShowPublishButton(tab({
       agentKind: "claude-codex",
       agentSessionId: "claude-codex-session",
-    }), undefined)).toBe(false);
+    }), undefined)).toBe(true);
     expect(shouldShowPublishButton(tab(), {
       agentKind: "claude-codex",
       agentSessionId: "claude-codex-session",
-    })).toBe(false);
+    })).toBe(true);
   });
 
   it("stays visible while the agent runs a shell subprocess (transient shell foreground)", () => {

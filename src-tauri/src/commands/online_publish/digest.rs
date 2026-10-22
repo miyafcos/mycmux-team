@@ -356,7 +356,7 @@ fn digest_agent_transcript(
     transcript: &Path,
 ) -> Result<SessionDigest, String> {
     match kind {
-        SavepointAgentKind::Claude => digest_claude_transcript(transcript),
+        SavepointAgentKind::Claude | SavepointAgentKind::ClaudeCodex => digest_claude_transcript(transcript),
         SavepointAgentKind::Codex => digest_codex_transcript(transcript),
     }
 }

@@ -214,7 +214,9 @@ pub async fn create_session(
     attach_reason: Option<String>,
     restore_confirmed: Option<bool>,
     restore_reason: Option<String>,
-) -> Result<(), String> {
+    attachment_context: crate::tearout::attachment_epoch::AttachmentContext,
+) -> Result<crate::tearout::attachment_epoch::AttachmentContext, String> {
+    let attachment_window = crate::tearout::attachment_epoch::window_proof(&caller.window());
     let reason = match attach_reason.as_deref() {
         Some("channel-stall" | "write-stall" | "background") => attach_reason.as_deref().unwrap(),
         _ => "mount",
@@ -225,7 +227,7 @@ pub async fn create_session(
     let _ = state;
     crate::util::task::run_blocking("create_session", move || {
         let state = worker_app.state::<AppState>();
-        create_session_blocking(app_handle, state, session_id, command, args, cols, rows, on_data, cwd, env, background_only.unwrap_or(false), attach_origin, restore_confirmed.unwrap_or(false), restore_reason)
+        create_session_blocking(app_handle, state, session_id, command, args, cols, rows, on_data, cwd, env, background_only.unwrap_or(false), attach_origin, restore_confirmed.unwrap_or(false), restore_reason, |_| Ok(attachment_context), attachment_window)
     }).await
 }
 
@@ -245,7 +247,9 @@ fn create_session_blocking(
     attach_origin: String,
     restore_confirmed: bool,
     restore_reason: Option<String>,
-) -> Result<(), String> {
+    attachment_context: impl FnOnce(bool) -> Result<crate::tearout::attachment_epoch::AttachmentContext, String>,
+    attachment_window: crate::tearout::attachment_epoch::WindowProof,
+) -> Result<crate::tearout::attachment_epoch::AttachmentContext, String> {
     crate::perf_timeline::mark("session.create.enter", Some(&session_id));
     #[cfg(feature = "e2e")]
     codex_restore_harness::publication_checkpoint(&session_id, "create-enter");
@@ -266,6 +270,11 @@ fn create_session_blocking(
     // and re-emit "agent-restore-downgraded" for sessions that were never
     // being restored in the first place.
     let reattach = state.session_manager.is_alive(&session_id);
+    // Production supplies its IPC-issued context. The e2e adapter issues one
+    // here so its existing pre-gate race checkpoints remain authoritative.
+    let attachment_context = attachment_context(reattach)?;
+    crate::tearout::attachment_epoch::registry().lock().map_err(|e| e.to_string())?
+        .validate(&session_id, &attachment_window, &attachment_context, reattach)?;
     let codex_restore = !reattach && codex_restore_requested(&requested_command, &args, &env_map, restore_reason.as_deref());
     let codex_executable = if codex_restore {
         Some(codex_restore::classify_executable(&requested_command, &args)
@@ -575,13 +584,15 @@ fn create_session_blocking(
         cols,
         rows,
         on_data,
-        app_handle.clone(),
+        || app_handle.clone(),
         launch_cwd,
         Some(env_map),
         state.metadata_store.clone(),
         state.scrollback_dir.get().map(PathBuf::as_path),
         background_only,
         &attach_origin,
+        &attachment_context,
+        &attachment_window,
     );
     if codex_restore && created.is_err() { codex_restore_diag(&session_id, restore_tab_id.as_deref(), codex_requested_id.as_deref(), "spawn-failure", "pty-spawn-failed"); }
     created?;
@@ -621,7 +632,7 @@ fn create_session_blocking(
             ),
         );
     }
-    Ok(())
+    Ok(attachment_context)
 }
 
 // Notification freshness only; not an identity/save reader or authority.

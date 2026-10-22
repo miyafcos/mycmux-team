@@ -456,6 +456,37 @@
     }
 
     #[test]
+    fn hybrid_full_join_keeps_wrapper_root_and_rejects_legacy_identity_mix() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("home");
+        let bundle = temp.path().join("online").join("hybrid");
+        let native_root = home.join(".claude").join("projects");
+        fs::create_dir_all(&home).unwrap();
+        copy_fixture_bundle(&bundle);
+        let manifest_path = bundle.join("manifest.json");
+        let mut manifest: serde_json::Value = read_json(&manifest_path).unwrap();
+        let id = manifest["claude_session_id"].as_str().unwrap().to_string();
+        manifest["agent_kind"] = serde_json::json!("claude-codex");
+        manifest["agent_session_id"] = serde_json::json!(id);
+        manifest["claude_session_id"] = serde_json::Value::Null;
+        manifest["cwd"] = serde_json::json!(home);
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let config = temp.path().join("config.json");
+        fs::write(&config, serde_json::json!({"local_dir": bundle.parent().unwrap()}).to_string()).unwrap();
+        let first = join_savepoint_full_from_config(&bundle, &config, &home, &native_root).unwrap();
+        let second = join_savepoint_full_from_config(&bundle, &config, &home, &native_root).unwrap();
+        assert_eq!(first.agent_kind, SavepointAgentKind::ClaudeCodex);
+        assert_ne!(first.resume_session_id, second.resume_session_id);
+        let resumed = first.resume_session_id.as_deref().unwrap();
+        assert_eq!(first.command_argv, vec!["claude-codex", "--resume", resumed, "--fork-session"]);
+        assert!(SavepointAgentKind::ClaudeCodex.transcript_root(&home).join(sanitize_project_dir(&first.resolved_cwd)).join(format!("{resumed}.jsonl")).is_file());
+        assert!(!native_root.exists());
+        manifest["claude_session_id"] = serde_json::json!(id);
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(join_savepoint_full_from_config(&bundle, &config, &home, &native_root).is_err());
+    }
+
+    #[test]
     fn full_join_transplants_fixture_with_fresh_uuid() {
         let temp = tempdir().unwrap();
         let home = temp.path().join("home");

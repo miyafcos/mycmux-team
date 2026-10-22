@@ -1,4 +1,7 @@
 from pathlib import Path
+import re
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,10 +57,25 @@ def test_ai_command_building_is_centralized() -> None:
             assert token not in source or is_ai_module or is_saved_pty_model or is_provider_argv_parse or is_codex_restore_argv_parse, f"{path}: centralized AI command token {token}"
 
 
+def sql_model_literals(source: str) -> list[str]:
+    allowed_identity_literals = {"claude-codex", "claude-uuid:*", "claude-exec:*"}
+    return [value for value in re.findall(r"'((?:gpt-|claude-)[^'\r\n]*)'", source)
+            if value not in allowed_identity_literals]
+
+
 def test_sql_model_literals_are_forbidden() -> None:
     for path in RUST_ROOT.rglob("*.rs"):
         source = path.read_text(encoding="utf-8")
         if allowed_model_path(path):
             continue
-        assert "'gpt-" not in source, f"{path}: SQL model literal"
-        assert "'claude-" not in source, f"{path}: SQL model literal"
+        assert not sql_model_literals(source), f"{path}: SQL model literal"
+
+
+@pytest.mark.parametrize("model", MODEL_IDS)
+def test_sql_model_detector_still_rejects_models(model: str) -> None:
+    assert sql_model_literals(f"WHERE model='{model}'") == [model]
+
+
+def test_sql_model_detector_distinguishes_exact_usage_identity_literals() -> None:
+    assert not sql_model_literals("kind='claude-codex' AND execution_key GLOB 'claude-exec:*'")
+    assert sql_model_literals("model='claude-unknown' OR model='gpt-future'") == ["claude-unknown", "gpt-future"]

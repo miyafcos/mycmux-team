@@ -29,6 +29,15 @@ function matchesBlockerAttributes(element: Element, values: Map<string, string |
     || attr("data-cmux-native-webview-occluder") !== null || attr("data-pane-hover-focus-blocker") !== null;
 }
 
+const VISIBILITY_ATTRIBUTES = new Set(["hidden", "inert", "aria-hidden", "style", "class"]);
+const SUBTREE_SEARCH_LIMIT = 8;
+
+/** Only a known xterm DOM-renderer row of leaf glyph spans can skip descendant selectors. */
+function terminalRenderRow(node: Element, parent: Element): boolean {
+  return node.tagName === "DIV" && parent.classList.contains("xterm-rows") && !!parent.closest(".xterm")
+    && [...node.children].every((cell) => cell.tagName === "SPAN" && !cell.firstElementChild && !cell.matches(BLOCKERS));
+}
+
 const EXCLUDED = "button,a,input,textarea:not(.xterm-helper-textarea),select,iframe,embed,object,[contenteditable],[role='button'],[role='separator'],"
   + "[draggable='true'],[data-dnd-drag-handle],[data-pane-drag-handle],[data-terminal-transcript-panel],[data-terminal-history],[data-terminal-search],[data-agent-resume-recovery],"
   + "[hidden],[inert],[aria-hidden='true'],[data-composer-session],[data-declared-tab-placeholder],[data-dormant-transfer-placeholder]";
@@ -181,38 +190,96 @@ class PaneHoverRuntime {
         if (r.type !== "childList") return false;
         const target = r.target as Element;
         return [...r.addedNodes, ...r.removedNodes].some((node) => node instanceof win.Element
-          && (node.matches(BLOCKERS) || (!target.closest?.(".xterm") && !!node.querySelector(BLOCKERS))));
+          && (node.matches(BLOCKERS) || (node.firstElementChild !== null && !terminalRenderRow(node, target)
+            && !!node.querySelector(BLOCKERS))));
       });
-      let attributeRelevant = false, membershipChanged = false;
+      if (childListChanged) {
+        // Cancellation and a final collection refresh are certain; do not search attribute subtrees.
+        this.visibleBlockers = this.readVisibleBlockers();
+        this.blockerRevision++; this.invalidate(); return;
+      }
+      const targets = new Map<Element, { blocker: boolean; relevant: boolean; changes: number; canUnhide: Set<string> }>();
+      for (const record of records) {
+        if (record.type !== "attributes") continue;
+        const target = record.target as Element;
+        let facts = targets.get(target);
+        if (!facts) {
+          const blocker = target.matches(BLOCKERS);
+          facts = { blocker, relevant: blocker || [...this.visibleBlockers].some((element) => target.contains(element)),
+            changes: 0, canUnhide: new Set() };
+          targets.set(target, facts);
+        }
+        const name = record.attributeName!;
+        if (((name === "hidden" || name === "inert") && record.oldValue === null)
+          || (name === "aria-hidden" && record.oldValue !== "true")) facts.canUnhide.add(name);
+      }
+      // Decide the budget before any subtree search. Duplicate targets are already coalesced.
+      const subtrees = [...targets].filter(([target, facts]) => !facts.relevant && target.firstElementChild !== null)
+        .map(([target]) => target);
+      let allBlockers: NodeListOf<HTMLElement> | undefined;
+      if (subtrees.length >= SUBTREE_SEARCH_LIMIT
+        || subtrees.some((target, i) => subtrees.slice(0, i).some((other) => target.contains(other) || other.contains(target)))) {
+        allBlockers = doc.querySelectorAll<HTMLElement>(BLOCKERS);
+        for (const target of subtrees) targets.get(target)!.relevant = [...allBlockers].some((element) => target.contains(element));
+      } else {
+        for (const target of subtrees) targets.get(target)!.relevant = !!target.querySelector(BLOCKERS);
+      }
+      let membershipChanged = false;
       const previousAttributes = new Map<Element, Map<string, string | null>>();
-      // Undo attribute records in reverse order so interleaved root/ignore or role/class changes
-      // retain their intermediate blocker membership, even when the final DOM is unchanged.
+      let styleProbe: CSSStyleDeclaration | undefined;
+      const styleSignatures = new Map<string | null, string>();
+      const visibilityValue = (name: string, value: string | null) => {
+        if (name === "hidden" || name === "inert") return value !== null;
+        if (name === "aria-hidden") return value === "true";
+        if (name !== "style") return value;
+        if (!styleSignatures.has(value)) {
+          styleProbe ??= doc.createElement("span").style;
+          styleProbe.cssText = value ?? "";
+          // Opacity never changes visible()'s gates. Other declarations may affect layout or CSS variables.
+          styleSignatures.set(value, JSON.stringify(Array.from({ length: styleProbe.length }, (_, i) => styleProbe!.item(i))
+            .filter((property) => property !== "opacity")
+            .map((property) => [property, styleProbe!.getPropertyValue(property), styleProbe!.getPropertyPriority(property)])));
+        }
+        return styleSignatures.get(value)!;
+      };
+      // Undo attributes without touching live DOM. Keep both selector and visibility history.
       for (let i = records.length - 1; i >= 0; i--) {
         const record = records[i];
         if (record.type !== "attributes") continue;
-        const target = record.target as Element, currentBlocker = target.matches(BLOCKERS);
-        let previousBlocker = false;
-        const name = record.attributeName!;
-        if (BLOCKER_ATTRIBUTES.has(name)) {
-          let values = previousAttributes.get(target);
-          const after = values ? matchesBlockerAttributes(target, values) : currentBlocker;
-          if (!values) { values = new Map(); previousAttributes.set(target, values); }
-          values.set(name, record.oldValue);
-          previousBlocker = matchesBlockerAttributes(target, values);
-          if (after !== previousBlocker) { membershipChanged = true; break; }
+        const target = record.target as Element, facts = targets.get(target)!, name = record.attributeName!;
+        let values = previousAttributes.get(target);
+        const afterValue = values?.has(name) ? values.get(name)! : target.getAttribute(name);
+        const afterBlocker = BLOCKER_ATTRIBUTES.has(name)
+          ? values ? matchesBlockerAttributes(target, values) : facts.blocker : false;
+        if (!values) { values = new Map(); previousAttributes.set(target, values); }
+        values.set(name, record.oldValue);
+        if (BLOCKER_ATTRIBUTES.has(name) && afterBlocker !== matchesBlockerAttributes(target, values)) {
+          membershipChanged = true; break;
         }
-        if (!attributeRelevant) {
-          attributeRelevant = currentBlocker || previousBlocker
-            || [...this.visibleBlockers].some((element) => target.contains(element))
-            || (target.firstElementChild !== null && !!target.querySelector(BLOCKERS));
-        }
+        if (facts.relevant && VISIBILITY_ATTRIBUTES.has(name) && afterValue !== record.oldValue
+          && visibilityValue(name, afterValue) !== visibilityValue(name, record.oldValue)) facts.changes++;
       }
-      if (!childListChanged && !membershipChanged && !attributeRelevant) return;
-      const blockers = this.readVisibleBlockers();
+      if (!membershipChanged && ![...targets.values()].some((facts) => facts.relevant)) return;
+      allBlockers ??= doc.querySelectorAll<HTMLElement>(BLOCKERS);
+      const blockers = this.readVisibleBlockers(allBlockers);
       const visibilityChanged = blockers.size !== this.visibleBlockers.size
         || [...blockers].some((element) => !this.visibleBlockers.has(element));
+      const visibilityExcursion = !membershipChanged && [...allBlockers].some((blocker) => {
+        // A fixed hidden/inert/aria-hidden gate on the path proves it could never have shown.
+        let changes = 0;
+        for (let node: Element | null = blocker; node; node = node.parentElement) {
+          const facts = targets.get(node);
+          changes += facts?.changes ?? 0;
+          const canUnhide = facts?.canUnhide;
+          if ((node.hasAttribute("hidden") && !canUnhide?.has("hidden"))
+            || (node.hasAttribute("inert") && !canUnhide?.has("inert"))
+            || (node.getAttribute("aria-hidden") === "true" && !canUnhide?.has("aria-hidden"))) return false;
+        }
+        // Two effective changes on one blocker path may expose it between equal final visible sets.
+        return changes >= 2;
+      });
       this.visibleBlockers = blockers;
-      if (childListChanged || membershipChanged || visibilityChanged) { this.blockerRevision++; this.invalidate(); }
+      if (membershipChanged || visibilityExcursion || visibilityChanged) { this.blockerRevision++; this.invalidate(); }
     });
     this.observer.observe(doc.documentElement, { subtree: true, childList: true, attributes: true, attributeOldValue: true,
       attributeFilter: ["class", "role", "aria-modal", "style", "hidden", "inert", "aria-hidden",
@@ -251,8 +318,8 @@ class PaneHoverRuntime {
     }
   }
 
-  private readVisibleBlockers(): Set<HTMLElement> {
-    return new Set([...this.doc.querySelectorAll<HTMLElement>(BLOCKERS)].filter((element) =>
+  private readVisibleBlockers(elements: Iterable<HTMLElement> = this.doc.querySelectorAll<HTMLElement>(BLOCKERS)): Set<HTMLElement> {
+    return new Set([...elements].filter((element) =>
       visible(element, element.matches(".cmux-overlay-backdrop,[data-cmux-overlay-root]"))));
   }
 

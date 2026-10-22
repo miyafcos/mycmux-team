@@ -168,6 +168,11 @@ pub async fn ailog_index_start(
     app: AppHandle,
     args: IndexStartArgs,
 ) -> Result<IndexStartResult, String> {
+    let config_app=app.clone();
+    let fallback_root=crate::util::task::run_blocking("ailog_fallback_config",move || {
+        Ok(crate::db::storage::load(&config_app)?.settings.ailog_claude_fallback_root
+            .filter(|s|!s.trim().is_empty()).map(std::path::PathBuf::from))
+    }).await?;
     if runner_gate()
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -210,6 +215,7 @@ pub async fn ailog_index_start(
 
     let mut options = IndexOptions::new(db_path);
     options.full = args.full;
+    options.claude_fallback_root = fallback_root;
     let cancel = state.cancel.clone();
 
     // The pass owns its own tasks and reports back through the event channel;

@@ -649,6 +649,27 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_transfer_preserves_identity_without_native_legacy_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let local_dir = temp.path().join("savepoints");
+        let bundle = local_dir.join("hybrid");
+        fs::create_dir_all(&local_dir).unwrap();
+        copy_fixture_bundle(&bundle);
+        let manifest_path = bundle.join("manifest.json");
+        let mut manifest: serde_json::Value = read_json(&manifest_path).unwrap();
+        manifest["agent_session_id"] = manifest["claude_session_id"].clone();
+        manifest["agent_kind"] = serde_json::json!("claude-codex");
+        manifest["claude_session_id"] = serde_json::Value::Null;
+        write_json_atomic(&manifest_path, &manifest).unwrap();
+        let archive = temp.path().join("hybrid.mycmux-transfer");
+        export_savepoint_transfer_at(&local_dir, &bundle, &archive).unwrap();
+        let imported = import_savepoint_transfer_at(&local_dir, &archive).unwrap();
+        let imported_manifest: SavepointManifest = read_json(&Path::new(&imported.bundle_dir).join("manifest.json")).unwrap();
+        assert_eq!(imported_manifest.identity().unwrap().kind, SavepointAgentKind::ClaudeCodex);
+        assert!(imported_manifest.claude_session_id.is_none());
+    }
+
+    #[test]
     fn import_rejects_extra_archive_entries_without_creating_a_bundle() {
         let temp = tempfile::tempdir().unwrap();
         let transfer_path = temp.path().join("bad.mycmux-transfer");

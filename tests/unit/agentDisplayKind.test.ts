@@ -18,6 +18,12 @@ describe("resolveDisplayAgentKind", () => {
     }
   });
 
+  it("recognizes direct Hybrid shims before session metadata is available", () => {
+    for (const command of ["claude-codex", "C:/tools/claude-codex.cmd", "C:/tools/claude-codex-native.exe"]) {
+      expect(resolveDisplayAgentKind(undefined, [command])).toBe("claude-codex");
+    }
+    expect(resolveDisplayAgentKind(undefined, ["not-claude-codex.exe"])).toBeNull();
+  });
   it("maps Hermes launched by its full path", () => {
     // The launchers start Hermes as %LOCALAPPDATA%/hermes/bin/hermes.exe and set
     // no agent kind, so the basename is the only thing that identifies the pane.
@@ -80,6 +86,6 @@ describe("LAUNCH_TARGET_DISPLAY_KINDS", () => {
 
 describe("COMMAND_DISPLAY_KINDS", () => {
   it("declares the display-only command mapping", () => {
-    expect(COMMAND_DISPLAY_KINDS).toEqual({ agy: "antigravity", claude: "claude", codex: "codex", grok: "grok", hermes: "hermes", omp: "omp", "cursor-agent": "cursor" });
+    expect(COMMAND_DISPLAY_KINDS).toEqual({ agy: "antigravity", claude: "claude", "claude-codex": "claude-codex", "claude-codex-native": "claude-codex", codex: "codex", grok: "grok", hermes: "hermes", omp: "omp", "cursor-agent": "cursor" });
   });
 });

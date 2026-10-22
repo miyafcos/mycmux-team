@@ -1,6 +1,6 @@
 # mycmux
 
-mycmux は、Claude Code / Codex / claude-codex / Grok Build といった AI エージェント CLI を、ワークスペース・タブの単位で並べて動かすターミナルワークスペースです。Windows と macOS (Apple Silicon) で動き、エージェントが出したパスをワンクリックで開く、作業の区切りを保存して人へ渡す、複数アカウントの使用量をタイトルバーで見張る、エージェント自身が可視タブで別のエージェントを起動する、といった実務向けの機能を足しています。[cmux-for-linux (ptrcode)](https://github.com/cai0baa/cmux-for-linux) のフォークで、ライセンスは GPL-3.0 です。配布物は公開ミラーの固定 feed リリース ([mycmux-personal-updater](https://github.com/miyafcos/mycmux-team/releases/tag/mycmux-personal-updater)) から取得します。現行版は v0.88.5 (2026-10-19) です。
+mycmux は、Claude Code / Codex / claude-codex / Grok Build といった AI エージェント CLI を、ワークスペース・タブの単位で並べて動かすターミナルワークスペースです。Windows と macOS (Apple Silicon) で動き、エージェントが出したパスをワンクリックで開く、作業の区切りを保存して人へ渡す、複数アカウントの使用量をタイトルバーで見張る、エージェント自身が可視タブで別のエージェントを起動する、といった実務向けの機能を足しています。[cmux-for-linux (ptrcode)](https://github.com/cai0baa/cmux-for-linux) のフォークで、ライセンスは GPL-3.0 です。配布物は公開ミラーの固定 feed リリース ([mycmux-personal-updater](https://github.com/miyafcos/mycmux-team/releases/tag/mycmux-personal-updater)) から取得します。現行版は v0.88.6 (2026-10-21) です。
 
 読み方は 2 通りに分かれます。**1〜3 章は初回に通読**してください (何ができるか / 入れ方 / 最初の 10 分)。**4 章以降は必要になったときに引く**参照部で、章の中は「〜したい → こうする」の逆引きと表で並べてあります。付録 A〜H はキー・コマンド・設定項目・保存先の全一覧です。
 
