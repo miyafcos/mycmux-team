@@ -113,7 +113,8 @@ jobs:
           untracked = subprocess.check_output(['git', 'ls-files', '--others', '--exclude-standard', '-z']).decode('utf-8').split('\0')
           unexpected = [path for path in untracked if path and not path.startswith('cloud-output/') and path != 'cloud-updater-config.json']
           patch = subprocess.check_output(['git', 'diff', '--binary', 'HEAD', '--', 'src-tauri/permissions', 'src-tauri/gen/schemas', 'src-tauri/Cargo.lock'])
-          (out/'generated-source.patch').write_bytes(patch)
+          if patch:
+              (out/'generated-source.patch').write_bytes(patch)
           (out/'changed-paths.json').write_text(json.dumps(changed, indent=2)+'\n', encoding='utf-8')
           allowed = [path for path in sorted(set(changed + unexpected)) if path.startswith(('src-tauri/permissions/', 'src-tauri/gen/schemas/')) or path == 'src-tauri/Cargo.lock']
           if allowed:
