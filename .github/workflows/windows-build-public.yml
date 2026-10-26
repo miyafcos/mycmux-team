@@ -82,25 +82,41 @@ jobs:
           failures=[]
           environment=dict(os.environ, SHELL='/usr/bin/bash', PYTHONDONTWRITEBYTECODE='1', PYTEST_DISABLE_PLUGIN_AUTOLOAD='1', PYTHONUTF8='1')
           environment['PATH']='C:/Program Files/Git/usr/bin'+os.pathsep+environment['PATH']
-          for locale in ['default','C']:
-              child=dict(environment)
-              if locale=='C': child['LC_ALL']='C'
-              else: child.pop('LC_ALL',None)
-              command=[sys.executable,'-B','-X','utf8','-m','pytest',*['tests/'+name for name in files],'-q','-p','no:cacheprovider','--junitxml='+str(out/(locale+'.xml'))]
-              started=time.monotonic()
-              with (out/(locale+'.log')).open('xb') as log:
-                  result=subprocess.run(command,cwd=root,env=child,stdout=log,stderr=subprocess.STDOUT,timeout=1500)
-              records.append({'locale':locale,'exit':result.returncode,'seconds':round(time.monotonic()-started,3)})
-              if result.returncode: failures.append(locale)
-          changed=subprocess.check_output(['git','diff','HEAD','--name-only'],text=True).splitlines()
-          untracked=subprocess.check_output(['git','ls-files','--others','--exclude-standard','-z']).decode().split('\0')
-          unexpected=[name for name in untracked if name and not name.startswith('cloud-output/')]
-          if changed or unexpected: failures.append('source-invariance')
-          assets=[{'name':path.name,'size':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for path in sorted(out.iterdir()) if path.is_file()]
-          receipt={'source_commit':os.environ['SOURCE_COMMIT'],'source_tree':os.environ['SOURCE_TREE'],'version':os.environ['RELEASE_VERSION'],'files':files,'checks':records,'failed_checks':failures,'changed_paths':changed,'unexpected_untracked':unexpected,'python_version':sys.version,'pytest':pytest.__version__,'openpyxl':openpyxl.__version__,'assets':assets}
-          (out/'regression-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n',encoding='utf-8')
-          print(json.dumps(receipt),flush=True)
-          raise SystemExit(1 if failures else 0)
+          try:
+              for locale in ['default','C']:
+                  child=dict(environment)
+                  if locale=='C': child['LC_ALL']='C'
+                  else: child.pop('LC_ALL',None)
+                  for name in files:
+                      label=locale+'-'+Path(name).stem
+                      command=[sys.executable,'-B','-X','utf8','-m','pytest','tests/'+name,'-vv','-s','-p','no:cacheprovider','--junitxml='+str(out/(label+'.xml'))]
+                      started=time.monotonic()
+                      print('START '+label,flush=True)
+                      with (out/(label+'.log')).open('xb') as log:
+                          process=subprocess.Popen(command,cwd=root,env=child,stdout=log,stderr=subprocess.STDOUT)
+                          try:
+                              exit_code=process.wait(timeout=180)
+                          except subprocess.TimeoutExpired:
+                              subprocess.run(['taskkill','/PID',str(process.pid),'/T','/F'],capture_output=True)
+                              process.wait(timeout=30)
+                              exit_code=124
+                      records.append({'locale':locale,'file':name,'exit':exit_code,'seconds':round(time.monotonic()-started,3)})
+                      print('END '+label+' '+str(exit_code),flush=True)
+                      if exit_code: failures.append(label)
+          except Exception as error:
+              failures.append(type(error).__name__+': '+str(error))
+          finally:
+              changed=subprocess.check_output(['git','diff','HEAD','--name-only'],text=True).splitlines()
+              untracked=subprocess.check_output(['git','ls-files','--others','--exclude-standard','-z']).decode().split('\0')
+              unexpected=[name for name in untracked if name and not name.startswith('cloud-output/')]
+              if changed or unexpected: failures.append('source-invariance')
+              for path in out.glob('*.log'):
+                  if path.stat().st_size==0: path.write_text('[no output]\n',encoding='utf-8')
+              assets=[{'name':path.name,'size':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for path in sorted(out.iterdir()) if path.is_file()]
+              receipt={'source_commit':os.environ['SOURCE_COMMIT'],'source_tree':os.environ['SOURCE_TREE'],'version':os.environ['RELEASE_VERSION'],'files':files,'checks':records,'failed_checks':failures,'changed_paths':changed,'unexpected_untracked':unexpected,'python_version':sys.version,'pytest':pytest.__version__,'openpyxl':openpyxl.__version__,'assets':assets}
+              (out/'regression-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n',encoding='utf-8')
+              print(json.dumps(receipt),flush=True)
+          raise SystemExit(1 if failures or len(records)!=2*len(files) else 0)
       - name: Retain regression results as draft
         if: ${{ always() }}
         shell: pwsh
