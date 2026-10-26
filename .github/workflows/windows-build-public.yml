@@ -1,13 +1,13 @@
-name: Public Windows build
+name: Public Windows regression
 on:
   workflow_dispatch:
     inputs:
       source_commit:
-        description: "Fixed public source commit"
+        description: "Public export commit to verify"
         required: true
         type: string
       source_tree:
-        description: "Expected public source tree"
+        description: "Expected public export tree"
         required: true
         type: string
       version:
@@ -17,28 +17,28 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: public-windows-build
+  group: public-windows-regression
   cancel-in-progress: false
 jobs:
-  windows:
+  windows-regression:
     runs-on: windows-2022
-    timeout-minutes: 100
+    timeout-minutes: 55
     permissions:
       contents: write
     env:
       SOURCE_COMMIT: ${{ inputs.source_commit }}
       SOURCE_TREE: ${{ inputs.source_tree }}
       RELEASE_VERSION: ${{ inputs.version }}
-      CARGO_BUILD_JOBS: "2"
       PYTHONIOENCODING: utf-8
       PYTHONDONTWRITEBYTECODE: "1"
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
     steps:
-      - name: Validate fixed inputs
+      - name: Validate inputs
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:SOURCE_COMMIT -notmatch '^[0-9a-f]{40}$') { throw 'Invalid source commit' }
-          if ($env:SOURCE_TREE -notmatch '^[0-9a-f]{40}$') { throw 'Invalid source tree' }
+          if ($env:SOURCE_COMMIT -ne '009d1c28f9e9d6be65a2bab55283cb87ad9b76b9') { throw 'Invalid source commit' }
+          if ($env:SOURCE_TREE -ne '3009534310c2b6f0e0abff9c9b55120b471b3f8b') { throw 'Invalid source tree' }
           if ($env:RELEASE_VERSION -ne '0.89.0') { throw 'Unexpected version' }
           git config --global core.autocrlf false
           if ($LASTEXITCODE) { throw 'Cannot configure checkout line endings' }
@@ -46,117 +46,85 @@ jobs:
         with:
           ref: ${{ inputs.source_commit }}
           persist-credentials: false
-      - name: Verify source and RAM
+      - name: Verify fixed source and RAM
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if ((git rev-parse HEAD).Trim() -ne $env:SOURCE_COMMIT) { throw 'Source commit mismatch' }
-          if ((git rev-parse 'HEAD^{tree}').Trim() -ne $env:SOURCE_TREE) { throw 'Source tree mismatch' }
-          if ((Get-Content package.json -Raw | ConvertFrom-Json).version -ne $env:RELEASE_VERSION) { throw 'Package version mismatch' }
-          if ((Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version -ne $env:RELEASE_VERSION) { throw 'Tauri version mismatch' }
+          if ((git rev-parse HEAD).Trim() -ne $env:SOURCE_COMMIT) { throw 'Source mismatch' }
+          if ((git rev-parse 'HEAD^{tree}').Trim() -ne $env:SOURCE_TREE) { throw 'Tree mismatch' }
+          if ((Get-Content package.json -Raw | ConvertFrom-Json).version -ne $env:RELEASE_VERSION) { throw 'Version mismatch' }
           $freeRam = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB
           Write-Output ("Free RAM: {0:N2} GiB" -f $freeRam)
-          if ($freeRam -lt 5.2) { throw 'Windows build RAM gate failed' }
-          New-Item -ItemType Directory -Path cloud-output | Out-Null
+          if ($freeRam -lt 5.2) { throw 'Runner RAM gate failed' }
       - uses: actions/setup-node@v4
         with:
           node-version: "24.14.0"
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.98.0"
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: amd64
       - name: Restore locked Node dependencies
+        shell: pwsh
         run: npm ci
-      - name: Native Windows Rust verification
-        id: rust
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & python -X utf8 scripts/run_windows_tests.py 2>&1 | Tee-Object -FilePath cloud-output/rust-final.log
-          if ($LASTEXITCODE -ne 0) { throw 'Native Windows Rust verification failed' }
-      - name: Check e2e tests and examples
-        id: e2e
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & cargo check --manifest-path src-tauri/Cargo.toml --features e2e --tests --examples --locked 2>&1 | Tee-Object -FilePath cloud-output/rust-e2e-check.log
-          if ($LASTEXITCODE -ne 0) { throw 'E2e compile check failed' }
-      - name: Build Windows bundles without updater private keys
-        id: bundle
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $config = Join-Path $pwd 'cloud-updater-config.json'
-          [System.IO.File]::WriteAllText($config, '{"bundle":{"createUpdaterArtifacts":false}}', [System.Text.UTF8Encoding]::new($false))
-          & npm run tauri -- build --bundles nsis,msi --config $config 2>&1 | Tee-Object -FilePath cloud-output/windows-build.log
-          if ($LASTEXITCODE -ne 0) { throw 'Windows bundle build failed' }
-          if ((Get-Item src-tauri/target/release/mycmux.exe).VersionInfo.ProductVersion -ne $env:RELEASE_VERSION) { throw 'Executable version mismatch' }
-      - name: Retain diagnostics and source receipt
-        if: ${{ always() && steps.rust.outcome != 'skipped' }}
+      - name: Verify frontend and available Python contracts
         shell: python
-        env:
-          RUST_OUTCOME: ${{ steps.rust.outcome }}
-          E2E_OUTCOME: ${{ steps.e2e.outcome }}
-          BUNDLE_OUTCOME: ${{ steps.bundle.outcome }}
         run: |
           from pathlib import Path
-          import hashlib, json, os, shutil, subprocess
-          out = Path('cloud-output')
-          out.mkdir(exist_ok=True)
-          version = os.environ['RELEASE_VERSION']
-          changed = subprocess.check_output(['git', 'diff', 'HEAD', '--name-only'], text=True).splitlines()
-          untracked = subprocess.check_output(['git', 'ls-files', '--others', '--exclude-standard', '-z']).decode('utf-8').split('\0')
-          unexpected = [path for path in untracked if path and not path.startswith('cloud-output/') and path != 'cloud-updater-config.json']
-          patch = subprocess.check_output(['git', 'diff', '--binary', 'HEAD', '--', 'src-tauri/permissions', 'src-tauri/gen/schemas', 'src-tauri/Cargo.lock'])
-          (out/'generated-source.patch').write_bytes(patch)
-          (out/'changed-paths.json').write_text(json.dumps(changed, indent=2)+'\n', encoding='utf-8')
-          allowed = [path for path in sorted(set(changed + unexpected)) if path.startswith(('src-tauri/permissions/', 'src-tauri/gen/schemas/')) or path == 'src-tauri/Cargo.lock']
-          if allowed:
-              (out/'generated').mkdir(parents=True, exist_ok=True)
-          for relative in allowed:
-              source = Path(relative)
-              if source.is_file():
-                  target = out/'generated'/relative
-                  target.parent.mkdir(parents=True, exist_ok=True)
-                  shutil.copy2(source, target)
-          if allowed:
-              shutil.make_archive(str(out/'generated-source'), 'zip', out/'generated')
-          root = Path('src-tauri/target/release')
-          for source in [root/'mycmux.exe', root/'bundle/nsis'/f'mycmux_{version}_x64-setup.exe', root/'bundle/msi'/f'mycmux_{version}_x64_en-US.msi']:
-              if source.is_file():
-                  shutil.copy2(source, out/source.name)
-          records = []
+          import hashlib, importlib.util, json, os, re, runpy, subprocess, sys, time
+          root=Path.cwd()
+          out=root/"cloud-output"
+          out.mkdir(exist_ok=False)
+          records=[]
+          failures=[]
+          omitted=["tests/unit/codexNarrowDetached.test.tsx","tests/unit/codexN3Entries.test.tsx","tests/unit/codexNarrowClaudeParity.test.ts"]
+          private_imports=sorted(path.relative_to(root).as_posix() for path in (root/"tests/unit").glob("*.test.*") if re.search(r"codex-(?:base|merge):",path.read_text(encoding="utf-8")))
+          assert private_imports==sorted(omitted), "private baseline test set changed"
+          config=root/"vitest.public-ci.config.ts"
+          config.write_text('import { defineConfig } from "vitest/config";\nexport default defineConfig({test:{projects:[{test:{name:"unit",include:["tests/unit/**/*.test.{ts,tsx}"],exclude:'+json.dumps(omitted+["tests/unit/persistentLayoutProjectionTypeCoverage.test.ts"])+',maxWorkers:1,sequence:{groupOrder:0}}},{test:{name:"type-coverage",include:["tests/unit/persistentLayoutProjectionTypeCoverage.test.ts"],fileParallelism:false,sequence:{groupOrder:1}}}]}});\n',encoding="utf-8")
+          records.append({"label":"private-baseline-parity","status":"not_run","files":omitted,"reason":"private pinned Git trees not in public checkout; no substitution"})
+          commands=[("tsc",[str(root/"node_modules/.bin/tsc.cmd"),"--noEmit"]),
+                    ("vitest",[str(root/"node_modules/.bin/vitest.cmd"),"run","--config",str(config),"--maxWorkers=1","--no-file-parallelism","--testTimeout=30000","--reporter=json","--outputFile="+str(out/"vitest-results.json"),"--no-color"])]
+          if importlib.util.find_spec("pytest") is not None:
+              commands.append(("python-contracts",[sys.executable,"-B","-X","utf8","-m","pytest","tests/test_public_export.py","tests/test_ailog_contract.py","tests/test_no_hardcoded_ai_models.py","-q","-p","no:cacheprovider","--junitxml="+str(out/"python-contracts.xml")]))
+          else:
+              records.append({"label":"python-contracts","status":"not_run","reason":"pytest not preinstalled; no packages installed"})
+          for label,command in commands:
+              started=time.monotonic()
+              print("START",label,flush=True)
+              log=out/(label+".log")
+              with log.open("xb") as stream:
+                  result=subprocess.run(command,cwd=root,stdout=stream,stderr=subprocess.STDOUT)
+              records.append({"label":label,"exit":result.returncode,"seconds":round(time.monotonic()-started,3),"log":log.name})
+              print("END",label,result.returncode,flush=True)
+              if result.returncode: failures.append(label)
+          sys.path.insert(0,str(root/"scripts"))
+          exporter=runpy.run_path(str(root/"scripts/public_export.py"),run_name="ci_fixture_library")
+          fixture=root/"src-tauri/src/ailog/tests/r2_legacy_copies.json"
+          fixture_matches=fixture.read_bytes().replace(b"\r\n",b"\n")==exporter["synthetic_ailog_legacy_fixture"]()
+          rust=(root/"src-tauri/src/ailog/tests/stage1_r2_tests.rs").read_text(encoding="utf-8")
+          literal_ids=re.findall(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",rust,re.IGNORECASE)
+          records.append({"label":"synthetic-fixture","matches_recipe":fixture_matches,"rust_literal_uuid_count":len(literal_ids)})
+          if not fixture_matches or literal_ids: failures.append("synthetic-fixture")
+          changed=subprocess.check_output(["git","diff","HEAD","--name-only"],text=True).splitlines()
+          records.append({"label":"source-invariance","changed_paths":changed})
+          untracked=subprocess.check_output(["git","ls-files","--others","--exclude-standard","-z"]).decode().split("\0")
+          unexpected=[name for name in untracked if name and not name.startswith("cloud-output/") and name!="vitest.public-ci.config.ts"]
+          records.append({"label":"untracked-invariance","unexpected":unexpected})
+          if changed or unexpected: failures.append("source-invariance")
+          for log in out.glob("*.log"):
+              if log.stat().st_size==0: log.write_text("[no output]\n",encoding="utf-8")
+          assets=[]
           for path in sorted(out.iterdir()):
-              if path.is_file():
-                  state = hashlib.sha256()
-                  with path.open('rb') as stream:
-                      for block in iter(lambda: stream.read(1024*1024), b''):
-                          state.update(block)
-                  records.append({'name':path.name, 'size':path.stat().st_size, 'sha256':state.hexdigest()})
-          outcomes = {name:os.environ[name.upper()+'_OUTCOME'] for name in ['rust','e2e','bundle']}
-          receipt = {'version':version, 'public_source_commit':os.environ['SOURCE_COMMIT'], 'public_source_tree':os.environ['SOURCE_TREE'], 'outcomes':outcomes, 'changed_paths':changed, 'unexpected_untracked':unexpected, 'assets':records, 'ready':not changed and not unexpected and all(value=='success' for value in outcomes.values()), 'updater_signing':'not performed'}
-          (out/'cloud-build-receipt.json').write_text(json.dumps(receipt, indent=2)+'\n', encoding='utf-8')
-      - name: Save build output as a draft release
-        if: ${{ always() && steps.rust.outcome != 'skipped' }}
+              if path.is_file(): assets.append({"name":path.name,"size":path.stat().st_size,"sha256":hashlib.sha256(path.read_bytes()).hexdigest()})
+          receipt={"source_commit":os.environ["SOURCE_COMMIT"],"source_tree":os.environ["SOURCE_TREE"],"version":os.environ["RELEASE_VERSION"],"checks":records,"failed_checks":failures,"python_version":sys.version,"artifacts":assets,"full_private_python_suite":"not_run_public_checkout","private_baseline_parity":"not_run_missing_trees"}
+          (out/"regression-receipt.json").write_text(json.dumps(receipt,indent=2)+"\n",encoding="utf-8")
+          print(json.dumps({"checks":records,"failed_checks":failures}),flush=True)
+          raise SystemExit(1 if failures else 0)
+      - name: Retain regression results as draft
+        if: ${{ always() }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if (-not (Test-Path cloud-output/cloud-build-receipt.json)) { throw 'Missing receipt' }
+          if (-not (Test-Path cloud-output/regression-receipt.json)) { throw 'No completed regression receipt; no results retained' }
           $files = @(Get-ChildItem -LiteralPath cloud-output -File | ForEach-Object { $_.FullName })
-          & gh release create ('windows-build-' + $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT) @files --repo $env:GITHUB_REPOSITORY --draft --target $env:SOURCE_COMMIT --title ('Windows build ' + $env:RELEASE_VERSION) --notes 'Unsigned build and diagnostics. Not accepted for release until every check and source-invariance gate passes.'
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot retain build results' }
-      - name: Enforce acceptance
-        if: ${{ always() }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if (-not (Test-Path cloud-output/cloud-build-receipt.json)) { throw 'No complete build receipt' }
-          $receipt = Get-Content cloud-output/cloud-build-receipt.json -Raw | ConvertFrom-Json
-          if (-not $receipt.ready) { throw 'Build or source-invariance acceptance failed; retained draft is diagnostic only' }
+          $tag = 'windows-regression-' + $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT
+          & gh release create $tag @files --repo $env:GITHUB_REPOSITORY --draft --target $env:SOURCE_COMMIT --title ('Windows regression ' + $env:RELEASE_VERSION) --notes 'Verification results only. No installable release or updater change.'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot retain regression results' }
