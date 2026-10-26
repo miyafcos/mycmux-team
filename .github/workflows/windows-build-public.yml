@@ -22,13 +22,21 @@ concurrency:
 jobs:
   windows-regression:
     runs-on: windows-2022
-    timeout-minutes: 15
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        group: [codex, grokbot, handoff-0, handoff-1, handoff-2, handoff-3, restore, terminal]
+        locale: [default, C]
     permissions:
       contents: write
     env:
       SOURCE_COMMIT: ${{ inputs.source_commit }}
       SOURCE_TREE: ${{ inputs.source_tree }}
       RELEASE_VERSION: ${{ inputs.version }}
+      TEST_GROUP: ${{ matrix.group }}
+      TEST_LOCALE: ${{ matrix.locale }}
       PYTHONIOENCODING: utf-8
       PYTHONDONTWRITEBYTECODE: "1"
       PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
@@ -81,71 +89,95 @@ jobs:
           import sys
           import time
 
-
-          def run_probe(command: list[str], cwd: Path, environment: dict, label: str, output: Path, limit: int) -> dict:
-              started = time.monotonic()
-              with (output / (label + '.log')).open('xb') as log:
-                  process = subprocess.Popen(command, cwd=cwd, env=environment, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
-                  try:
-                      code = process.wait(timeout=limit)
-                  except subprocess.TimeoutExpired:
-                      stopped = subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], capture_output=True, timeout=30)
-                      process.wait(timeout=30)
-                      code = 124
-                      log.write(b'\nTIMEOUT; OWNED_PROCESS_TREE_STOP_EXIT=' + str(stopped.returncode).encode())
-              print(label + ' exit=' + str(code), flush=True)
-              return {'label': label, 'exit': code, 'seconds': round(time.monotonic() - started, 3), 'timeout': limit}
+          FILES = {
+              'codex': 'test_codex_restore_runtime.py',
+              'grokbot': 'test_launcher_grokbot_app.py',
+              'handoff-0': 'test_launcher_handoff_env.py',
+              'handoff-1': 'test_launcher_handoff_env.py',
+              'handoff-2': 'test_launcher_handoff_env.py',
+              'handoff-3': 'test_launcher_handoff_env.py',
+              'restore': 'test_launcher_restore_auto_contract.py',
+              'terminal': 'test_terminal_interactive_boot.py',
+          }
 
 
           def main() -> int:
               root = Path.cwd()
-              output = root / 'cloud-output'
-              output.mkdir(exist_ok=False)
-              records = []
-              errors = []
-              environment = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', PYTEST_DISABLE_PLUGIN_AUTOLOAD='1', PYTHONUTF8='1')
-              environment['PATH'] = 'C:/Program Files/Git/usr/bin' + os.pathsep + environment['PATH']
-              environment['SHELL'] = '/usr/bin/bash'
-              powershell = shutil.which('powershell')
-              assert powershell
+              out = root / 'cloud-output'
+              out.mkdir(exist_ok=False)
+              group, locale = os.environ['TEST_GROUP'], os.environ['TEST_LOCALE']
+              test_file = FILES[group]
+              child = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', PYTEST_DISABLE_PLUGIN_AUTOLOAD='1', PYTHONUTF8='1', SHELL='/usr/bin/bash')
+              child['PATH'] = 'C:/Program Files/Git/usr/bin' + os.pathsep + child['PATH']
+              if locale == 'C':
+                  child['LC_ALL'] = 'C'
+              else:
+                  child.pop('LC_ALL', None)
+              record = {'group': group, 'locale': locale, 'file': test_file, 'source_commit': os.environ['SOURCE_COMMIT'], 'source_tree': os.environ['SOURCE_TREE'], 'records': [], 'errors': [], 'config_override': None}
+              cwd = root
+              started = time.monotonic()
               try:
-                  casefold_environment = {key.upper(): value for key, value in environment.items()}
-                  minimal = {key: casefold_environment[key.upper()] for key in ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'PATHEXT'] if key.upper() in casefold_environment}
-                  operating_system = {key: casefold_environment[key.upper()] for key in ['SystemDrive', 'ProgramData', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'COMSPEC', 'PSModulePath'] if key.upper() in casefold_environment}
-                  assert 'SystemRoot' in minimal and 'SystemDrive' in operating_system
-                  command = [powershell, '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', "$PSVersionTable.PSVersion.ToString(); $null=Get-Command __mycmux_absent_probe__ -ErrorAction SilentlyContinue; [Console]::WriteLine('LOOKUP_DONE'); exit 0"]
-                  for label, child in [('minimal', minimal), ('os-paths', {**minimal, **operating_system}), ('normal', environment)]:
-                      working = output / label
-                      working.mkdir()
-                      records.append(run_probe(command, working, child, label, output, 45))
-                      records[-1]['environment_keys'] = sorted(child) if label != 'normal' else ['normal runner environment; values not recorded']
-                      records[-1]['generated_files'] = [path.relative_to(working).as_posix() for path in working.rglob('*') if path.is_file()]
-                  baseline = output / 'baseline'
-                  base = '3119b7d0eda87595970b83d3c57c26d2d9530391'
-                  subprocess.run(['git', 'fetch', '--no-tags', 'origin', base], check=True, timeout=90)
-                  subprocess.run(['git', 'worktree', 'add', '--detach', str(baseline), base], check=True, timeout=90)
-                  for label, directory in [('base', baseline), ('candidate', root)]:
-                      command = [sys.executable, '-B', '-X', 'utf8', '-m', 'pytest', 'tests/test_public_export.py::test_gate_scans_nul_in_source_and_unicode_escapes', '-vv', '-p', 'no:cacheprovider', '--junitxml=' + str(output / (label + '-nul.xml'))]
-                      records.append(run_probe(command, directory, environment, label + '-nul', output, 60))
-                  record_paths = ['tests/test_public_export.py', 'scripts/public_scrub_gate.py']
-                  correspondence = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() == hashlib.sha256((baseline / name).read_bytes()).hexdigest() for name in record_paths}
-                  assert all(correspondence.values())
-                  code = "import runpy,shutil; m=runpy.run_path('tests/test_codex_restore_runtime.py'); m['run_powershell']('exact',shutil.which('powershell')); print('EXACT_ORIGINAL_ASSERTIONS_PASS')"
-                  records.append(run_probe([sys.executable, '-B', '-X', 'utf8', '-c', code], root, environment, 'original-exact', output, 90))
-                  diagnostic = "import runpy,shutil,os; m=runpy.run_path('tests/test_codex_restore_runtime.py'); original=m['fixture_env']; keys=['SystemDrive','ProgramData','USERPROFILE','LOCALAPPDATA','APPDATA','COMSPEC','PSModulePath']; extra={k:os.environ[k] for k in keys if k in os.environ}; m['run_powershell'].__globals__['fixture_env']=lambda directory,case:{**extra,**original(directory,case)}; m['run_powershell']('exact',shutil.which('powershell')); print('EXACT_ASSERTIONS_PASS_WITH_OS_ENV_DIAGNOSTIC')"
-                  records.append(run_probe([sys.executable, '-B', '-X', 'utf8', '-c', diagnostic], root, environment, 'os-env-exact-diagnostic', output, 90))
-                  records.append(run_probe([sys.executable, '-B', '-X', 'utf8', '-c', code], baseline, environment, 'base-original-exact', output, 90))
+                  if group == 'terminal':
+                      cwd = out / 'testtree'
+                      subprocess.run(['git', 'worktree', 'add', '--detach', str(cwd), os.environ['SOURCE_COMMIT']], check=True, timeout=90)
+                      subprocess.run(['cmd', '/d', '/c', 'mklink', '/J', str(cwd / 'node_modules'), str(root / 'node_modules')], check=True, capture_output=True, timeout=30)
+                      config = cwd / 'vitest.config.ts'
+                      before = config.read_bytes()
+                      (out / 'vitest-original.txt').write_bytes(before)
+                      content = 'import { defineConfig } from "vitest/config";\nexport default defineConfig({test:{environment:"node",include:["tests/unit/terminalShellRestore.test.ts"],maxWorkers:1,fileParallelism:false}});\n'
+                      config.write_text(content, encoding='utf-8')
+                      record['config_override'] = {'before_sha256': hashlib.sha256(before).hexdigest(), 'after_sha256': hashlib.sha256(content.encode()).hexdigest(), 'reason': 'target test does not import private baseline aliases; no test or product changes', 'path': str(config)}
+                  collected = subprocess.run([sys.executable, '-B', '-X', 'utf8', '-m', 'pytest', 'tests/' + test_file, '--collect-only', '-q', '-p', 'no:cacheprovider'], cwd=cwd, env=child, capture_output=True, text=True, encoding='utf-8', timeout=90)
+                  (out / 'collection.log').write_text(collected.stdout + collected.stderr, encoding='utf-8')
+                  if collected.returncode:
+                      raise RuntimeError('Collection failed')
+                  all_nodes = [line.strip() for line in collected.stdout.splitlines() if line.startswith('tests/') and '::' in line]
+                  if not all_nodes:
+                      raise RuntimeError('No collected test nodes')
+                  nodes = [node for index, node in enumerate(all_nodes) if index % 4 == int(group[-1])] if group.startswith('handoff-') else all_nodes
+                  record['collected_nodes'] = all_nodes
+                  record['selected_nodes'] = nodes
+                  for index, node in enumerate(nodes):
+                      label = 'case-' + str(index).zfill(3)
+                      command = [sys.executable, '-B', '-X', 'utf8', '-m', 'pytest', node, '-vv', '-p', 'no:cacheprovider', '--junitxml=' + str(out / (label + '.xml'))]
+                      clock = time.monotonic()
+                      with (out / (label + '.log')).open('xb') as log:
+                          process = subprocess.Popen(command, cwd=cwd, env=child, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+                          try:
+                              exit_code = process.wait(timeout=600 if group == 'codex' else 90)
+                          except subprocess.TimeoutExpired:
+                              subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], capture_output=True, timeout=30)
+                              process.wait(timeout=30)
+                              exit_code = 124
+                      record['records'].append({'node': node, 'exit': exit_code, 'seconds': round(time.monotonic()-clock,3), 'xml': label + '.xml'})
+                      print(group + '/' + locale + ' ' + str(index + 1) + '/' + str(len(nodes)) + ' exit=' + str(exit_code), flush=True)
               except Exception as error:
-                  errors.append(type(error).__name__ + ': ' + str(error))
+                  record['errors'].append(type(error).__name__ + ': ' + str(error))
               finally:
-                  changed = subprocess.check_output(['git', 'diff', 'HEAD', '--name-only'], text=True).splitlines()
-                  untracked = subprocess.check_output(['git', 'ls-files', '--others', '--exclude-standard', '-z']).decode().split('\0')
-                  unexpected = [name for name in untracked if name and not name.startswith('cloud-output/')]
-                  assets = [{'name': path.name, 'size': path.stat().st_size, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()} for path in output.iterdir() if path.is_file()]
-                  receipt = {'scope': 'diagnostic only; not release acceptance', 'source_commit': os.environ['SOURCE_COMMIT'], 'source_tree': os.environ['SOURCE_TREE'], 'records': records, 'errors': errors, 'changed': changed, 'unexpected': unexpected, 'assets': assets}
-                  (output / 'regression-receipt.json').write_text(json.dumps(receipt, indent=2), encoding='utf-8')
-                  print(json.dumps(receipt), flush=True)
-              return 1 if errors or changed else 0
+                  record['changed'] = subprocess.check_output(['git', 'diff', 'HEAD', '--name-only'], cwd=root, text=True).splitlines()
+                  record['testtree_changed'] = subprocess.check_output(['git', 'diff', 'HEAD', '--name-only'], cwd=cwd, text=True).splitlines() if cwd != root else []
+                  untracked = subprocess.check_output(['git', 'ls-files', '--others', '--exclude-standard', '-z'], cwd=cwd).decode().split('\0')
+                  record['unexpected'] = [name for name in untracked if name and not name.startswith('cloud-output/')]
+                  retained = []
+                  for name in record['unexpected']:
+                      path = cwd / name
+                      if path.is_file():
+                          target = out / 'retained' / name
+                          target.parent.mkdir(parents=True, exist_ok=True)
+                          shutil.copy2(path, target)
+                          retained.append({'path': name, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'size': path.stat().st_size})
+                  if retained:
+                      shutil.make_archive(str(out / 'retained-generated'), 'zip', out / 'retained')
+                  record['retained_generated'] = retained
+                  record['seconds'] = round(time.monotonic()-started, 3)
+                  record['test_success'] = bool(record.get('selected_nodes')) and len(record['records']) == len(record['selected_nodes']) and all(row['exit'] == 0 for row in record['records']) and not record['errors']
+                  record['accepted'] = record['test_success'] and not record['changed'] and not record['unexpected'] and record['testtree_changed'] in ([], ['vitest.config.ts'])
+                  for path in out.glob('*.log'):
+                      if path.stat().st_size == 0:
+                          path.write_text('[no output]\n', encoding='utf-8')
+                  record['assets'] = [{'name': path.name, 'size': path.stat().st_size, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()} for path in out.iterdir() if path.is_file()]
+                  (out / 'receipt.json').write_text(json.dumps(record, indent=2), encoding='utf-8')
+              return 0 if record['accepted'] else 1
 
 
           if __name__ == '__main__':
@@ -157,8 +189,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if (-not (Test-Path cloud-output/regression-receipt.json)) { throw 'No completed regression receipt; no results retained' }
+          if (-not (Test-Path cloud-output/receipt.json)) { throw 'No completed regression receipt; no results retained' }
           $files = @(Get-ChildItem -LiteralPath cloud-output -File | ForEach-Object { $_.FullName })
-          $tag = 'windows-python-probe-' + $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT
+          $tag = 'windows-contract-' + $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT + '-' + $env:TEST_GROUP + '-' + $env:TEST_LOCALE
           & gh release create $tag @files --repo $env:GITHUB_REPOSITORY --draft --target $env:SOURCE_COMMIT --title ('Windows regression ' + $env:RELEASE_VERSION) --notes 'Verification results only. No installable release or updater change.'
           if ($LASTEXITCODE -ne 0) { throw 'Cannot retain regression results' }
