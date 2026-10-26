@@ -1,20 +1,17 @@
 name: Public Windows build
 on:
-  push:
-    branches:
-      - ci/windows-build-0805-260930
   workflow_dispatch:
     inputs:
       source_commit:
-        description: "Public export commit to build (40 hexadecimal characters)"
+        description: "Fixed public source commit"
         required: true
         type: string
       source_tree:
-        description: "Expected public export tree (40 hexadecimal characters)"
+        description: "Expected public source tree"
         required: true
         type: string
       version:
-        description: "Release version, for example 0.80.5"
+        description: "Expected application version"
         required: true
         type: string
 permissions:
@@ -25,29 +22,29 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-2022
-    timeout-minutes: 90
+    timeout-minutes: 100
     permissions:
       contents: write
     env:
-      SOURCE_COMMIT: ${{ inputs.source_commit || '6a07f965ef68372cfe973d0d7827f0ccf030e321' }}
-      SOURCE_TREE: ${{ inputs.source_tree || 'dc0ac9c2baaf151c1b71d813cf26eff72af01b47' }}
-      RELEASE_VERSION: ${{ inputs.version || '0.80.5' }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      SOURCE_TREE: ${{ inputs.source_tree }}
+      RELEASE_VERSION: ${{ inputs.version }}
       CARGO_BUILD_JOBS: "2"
       PYTHONIOENCODING: utf-8
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
-      - name: Validate inputs and use LF source files
+      - name: Validate fixed inputs
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:SOURCE_COMMIT -notmatch '^[0-9a-f]{40}$') { throw 'Invalid source commit' }
           if ($env:SOURCE_TREE -notmatch '^[0-9a-f]{40}$') { throw 'Invalid source tree' }
-          if ($env:RELEASE_VERSION -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid version' }
+          if ($env:RELEASE_VERSION -ne '0.89.0') { throw 'Unexpected version' }
           git config --global core.autocrlf false
           if ($LASTEXITCODE) { throw 'Cannot configure checkout line endings' }
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_commit || '6a07f965ef68372cfe973d0d7827f0ccf030e321' }}
+          ref: ${{ inputs.source_commit }}
           persist-credentials: false
       - name: Verify source and RAM
         shell: pwsh
@@ -55,13 +52,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if ((git rev-parse HEAD).Trim() -ne $env:SOURCE_COMMIT) { throw 'Source commit mismatch' }
           if ((git rev-parse 'HEAD^{tree}').Trim() -ne $env:SOURCE_TREE) { throw 'Source tree mismatch' }
-          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          if ($packageVersion -ne $env:RELEASE_VERSION -or $tauriVersion -ne $env:RELEASE_VERSION) { throw 'Version mismatch' }
-          $taskOs = Get-CimInstance Win32_OperatingSystem
-          $freeRam = $taskOs.FreePhysicalMemory / 1MB
+          if ((Get-Content package.json -Raw | ConvertFrom-Json).version -ne $env:RELEASE_VERSION) { throw 'Package version mismatch' }
+          if ((Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version -ne $env:RELEASE_VERSION) { throw 'Tauri version mismatch' }
+          $freeRam = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB
           Write-Output ("Free RAM: {0:N2} GiB" -f $freeRam)
           if ($freeRam -lt 5.2) { throw 'Windows build RAM gate failed' }
+          New-Item -ItemType Directory -Path cloud-output | Out-Null
       - uses: actions/setup-node@v4
         with:
           node-version: "24.14.0"
@@ -72,73 +68,95 @@ jobs:
         with:
           arch: amd64
       - name: Restore locked Node dependencies
-        shell: pwsh
         run: npm ci
       - name: Native Windows Rust verification
+        id: rust
+        continue-on-error: true
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Path cloud-output | Out-Null
           & python -X utf8 scripts/run_windows_tests.py 2>&1 | Tee-Object -FilePath cloud-output/rust-final.log
           if ($LASTEXITCODE -ne 0) { throw 'Native Windows Rust verification failed' }
       - name: Check e2e tests and examples
+        id: e2e
+        continue-on-error: true
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           & cargo check --manifest-path src-tauri/Cargo.toml --features e2e --tests --examples --locked 2>&1 | Tee-Object -FilePath cloud-output/rust-e2e-check.log
-          if ($LASTEXITCODE -ne 0) { throw 'E2e tests/examples compile check failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'E2e compile check failed' }
       - name: Build Windows bundles without updater private keys
+        id: bundle
+        continue-on-error: true
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $cloudConfigPath = Join-Path $pwd 'cloud-updater-config.json'
-          [System.IO.File]::WriteAllText($cloudConfigPath, '{"bundle":{"createUpdaterArtifacts":false}}', [System.Text.UTF8Encoding]::new($false))
-          & npm run tauri -- build --bundles nsis,msi --config $cloudConfigPath 2>&1 | Tee-Object -FilePath cloud-output/windows-build.log
+          $config = Join-Path $pwd 'cloud-updater-config.json'
+          [System.IO.File]::WriteAllText($config, '{"bundle":{"createUpdaterArtifacts":false}}', [System.Text.UTF8Encoding]::new($false))
+          & npm run tauri -- build --bundles nsis,msi --config $config 2>&1 | Tee-Object -FilePath cloud-output/windows-build.log
           if ($LASTEXITCODE -ne 0) { throw 'Windows bundle build failed' }
-          $changed = @(git diff HEAD --name-only)
-          if ($changed.Count -gt 0) {
-            git status --short
-            git diff HEAD --stat
-            git diff HEAD -- src-tauri/permissions src-tauri/gen/schemas src-tauri/Cargo.lock
-            throw 'Tracked source changed during build'
-          }
-      - name: Collect artifacts and source receipt
+          if ((Get-Item src-tauri/target/release/mycmux.exe).VersionInfo.ProductVersion -ne $env:RELEASE_VERSION) { throw 'Executable version mismatch' }
+      - name: Retain diagnostics and source receipt
+        if: ${{ always() && steps.rust.outcome != 'skipped' }}
         shell: python
+        env:
+          RUST_OUTCOME: ${{ steps.rust.outcome }}
+          E2E_OUTCOME: ${{ steps.e2e.outcome }}
+          BUNDLE_OUTCOME: ${{ steps.bundle.outcome }}
         run: |
           from pathlib import Path
           import hashlib, json, os, shutil, subprocess
-          version=os.environ["RELEASE_VERSION"]
-          root=Path("src-tauri/target/release")
-          out=Path("cloud-output")
-          sources=[root/"mycmux.exe",root/"bundle/nsis"/("mycmux_"+version+"_x64-setup.exe"),root/"bundle/msi"/("mycmux_"+version+"_x64_en-US.msi")]
-          records=[]
-          for source in sources:
-              assert source.is_file(),source
-              target=out/source.name
-              shutil.copy2(source,target)
-              hash_state=hashlib.sha256()
-              with target.open("rb") as f:
-                  for chunk in iter(lambda: f.read(1024*1024),b""):
-                      hash_state.update(chunk)
-              digest=hash_state.hexdigest()
-              records.append({"name":target.name,"size":target.stat().st_size,"sha256":digest})
-          receipt={"version":version,"public_source_commit":os.environ["SOURCE_COMMIT"],"public_source_tree":os.environ["SOURCE_TREE"],"rust_exit_code":0,"build_exit_code":0,"assets":records,"updater_signing":"deferred to local existing key"}
-          expected=json.dumps(receipt,ensure_ascii=True,indent=2)+"\n"
-          target=out/"cloud-build-receipt.json"
-          target.write_bytes(expected.encode("utf-8"))
-          assert target.read_bytes().decode("utf-8")==expected
-      - name: Verify executable version
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if ((Get-Item cloud-output/mycmux.exe).VersionInfo.ProductVersion -ne $env:RELEASE_VERSION) { throw 'Executable ProductVersion mismatch' }
+          out = Path('cloud-output')
+          out.mkdir(exist_ok=True)
+          version = os.environ['RELEASE_VERSION']
+          changed = subprocess.check_output(['git', 'diff', 'HEAD', '--name-only'], text=True).splitlines()
+          untracked = subprocess.check_output(['git', 'ls-files', '--others', '--exclude-standard', '-z']).decode('utf-8').split('\0')
+          unexpected = [path for path in untracked if path and not path.startswith('cloud-output/') and path != 'cloud-updater-config.json']
+          patch = subprocess.check_output(['git', 'diff', '--binary', 'HEAD', '--', 'src-tauri/permissions', 'src-tauri/gen/schemas', 'src-tauri/Cargo.lock'])
+          (out/'generated-source.patch').write_bytes(patch)
+          (out/'changed-paths.json').write_text(json.dumps(changed, indent=2)+'\n', encoding='utf-8')
+          allowed = [path for path in sorted(set(changed + unexpected)) if path.startswith(('src-tauri/permissions/', 'src-tauri/gen/schemas/')) or path == 'src-tauri/Cargo.lock']
+          if allowed:
+              (out/'generated').mkdir(parents=True, exist_ok=True)
+          for relative in allowed:
+              source = Path(relative)
+              if source.is_file():
+                  target = out/'generated'/relative
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(source, target)
+          if allowed:
+              shutil.make_archive(str(out/'generated-source'), 'zip', out/'generated')
+          root = Path('src-tauri/target/release')
+          for source in [root/'mycmux.exe', root/'bundle/nsis'/f'mycmux_{version}_x64-setup.exe', root/'bundle/msi'/f'mycmux_{version}_x64_en-US.msi']:
+              if source.is_file():
+                  shutil.copy2(source, out/source.name)
+          records = []
+          for path in sorted(out.iterdir()):
+              if path.is_file():
+                  state = hashlib.sha256()
+                  with path.open('rb') as stream:
+                      for block in iter(lambda: stream.read(1024*1024), b''):
+                          state.update(block)
+                  records.append({'name':path.name, 'size':path.stat().st_size, 'sha256':state.hexdigest()})
+          outcomes = {name:os.environ[name.upper()+'_OUTCOME'] for name in ['rust','e2e','bundle']}
+          receipt = {'version':version, 'public_source_commit':os.environ['SOURCE_COMMIT'], 'public_source_tree':os.environ['SOURCE_TREE'], 'outcomes':outcomes, 'changed_paths':changed, 'unexpected_untracked':unexpected, 'assets':records, 'ready':not changed and not unexpected and all(value=='success' for value in outcomes.values()), 'updater_signing':'not performed'}
+          (out/'cloud-build-receipt.json').write_text(json.dumps(receipt, indent=2)+'\n', encoding='utf-8')
       - name: Save build output as a draft release
+        if: ${{ always() && steps.rust.outcome != 'skipped' }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $buildTag = 'windows-build-' + $env:GITHUB_RUN_ID
+          if (-not (Test-Path cloud-output/cloud-build-receipt.json)) { throw 'Missing receipt' }
           $files = @(Get-ChildItem -LiteralPath cloud-output -File | ForEach-Object { $_.FullName })
-          & gh release create $buildTag @files --repo $env:GITHUB_REPOSITORY --draft --target $env:SOURCE_COMMIT --title ("Windows build " + $env:RELEASE_VERSION) --notes 'Unsigned build output. Source receipt and native test logs included. Local updater signing and final publication remain separate.'
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot retain draft build output' }
+          & gh release create ('windows-build-' + $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT) @files --repo $env:GITHUB_REPOSITORY --draft --target $env:SOURCE_COMMIT --title ('Windows build ' + $env:RELEASE_VERSION) --notes 'Unsigned build and diagnostics. Not accepted for release until every check and source-invariance gate passes.'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot retain build results' }
+      - name: Enforce acceptance
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path cloud-output/cloud-build-receipt.json)) { throw 'No complete build receipt' }
+          $receipt = Get-Content cloud-output/cloud-build-receipt.json -Raw | ConvertFrom-Json
+          if (-not $receipt.ready) { throw 'Build or source-invariance acceptance failed; retained draft is diagnostic only' }
