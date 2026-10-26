@@ -236,13 +236,13 @@ describe("AI log store U0", () => {
     expect(useAilogStore.getState().reworkRankings).toBe(report);
   });
 
-  it("keeps rankings until a custom range is valid", () => {
+  it("clears rankings when the period changes, including an incomplete custom range", () => {
     const report = { failedCommands: [], rewrittenFiles: [] };
     useAilogStore.setState({ reworkRankings: report, preset: "30d", customFrom: "", customTo: "" });
     useAilogStore.getState().setPreset("custom");
-    expect(useAilogStore.getState().reworkRankings).toBe(report);
+    expect(useAilogStore.getState().reworkRankings).toBeNull();
     useAilogStore.getState().setCustomRange("2026-01-01", "");
-    expect(useAilogStore.getState().reworkRankings).toBe(report);
+    expect(useAilogStore.getState().reworkRankings).toBeNull();
     useAilogStore.getState().setCustomRange("2026-01-01", "2026-01-31");
     expect(useAilogStore.getState().reworkRankings).toBeNull();
   });
@@ -440,10 +440,11 @@ describe("AI log report latency and cache boundaries", () => {
     useAilogStore.getState().setUsageRhythmOpen(true);
     await useAilogStore.getState().loadUsage({ force: true });
     expect(calls("ailog_usage_rhythm")).toBe(1);
+    const previousRhythm = useAilogStore.getState().usageRhythm;
     useAilogStore.getState().setUsageRhythmOpen(false);
     await useAilogStore.getState().loadUsage({ force: true });
     expect(calls("ailog_usage_rhythm")).toBe(1);
-    expect(useAilogStore.getState().usageRhythm).toBeNull();
+    expect(useAilogStore.getState().usageRhythm).toBe(previousRhythm);
     await useAilogStore.getState().refreshUsageRhythm();
     expect(calls("ailog_usage_rhythm")).toBe(2);
   });

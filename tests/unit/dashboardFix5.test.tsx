@@ -58,8 +58,8 @@ function checkUndeliveredPolls(scenario: Scenario) {
       expect(groupCardsByAttentionSection([item]).needsReview).toEqual(poll.display === "done" ? [item] : []);
       expect(buildAttentionFactCards([{sessionId:"s", label:"Worker", brief:value, noUpdateMinutes:Math.floor(poll.elapsedMs / 60_000), now}])).toEqual([]);
       act(() => root.render(<DashboardCardRow card={item} selected={false} open={false} now={now} hideWorkspaceBadge={false} onSelect={() => {}} onJump={() => {}} />));
-      expect(node.textContent).toContain(poll.display === "done" ? "要確認" : "作業中");
-      expect(node.querySelector('[aria-label="要確認 · 完了"]') !== null).toBe(poll.display === "done");
+      expect(node.textContent).toContain(poll.display === "done" ? "返答終了" : "作業中");
+      expect(node.querySelector('[aria-label="返答終了 · 要確認"]') !== null).toBe(poll.display === "done");
       expect(value.lastEventAt).toBe(anchor);
       expect(value.autonomy!.pendingNotificationCount).toBe(1);
     }

@@ -23,6 +23,7 @@ pub(crate) mod hook_tests;
 mod excerpt;
 pub(crate) mod excerpt_ja;
 pub(crate) mod intervene;
+pub(crate) mod message_send;
 mod reducer;
 pub(crate) mod naming;
 mod telemetry;

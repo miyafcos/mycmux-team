@@ -681,9 +681,9 @@ fn find_fence(file: &mut File, length: u64, search: &mut u64, budget: &mut Budge
     Ok((*search == 0).then_some(0))
 }
 #[cfg(unix)]
-fn file_identity(file: &File) -> Result<String, String> { use std::os::unix::fs::MetadataExt; let m = file.metadata().map_err(io_error)?; Ok(format!("{}:{}",m.dev(),m.ino())) }
+pub(super) fn file_identity(file: &File) -> Result<String, String> { use std::os::unix::fs::MetadataExt; let m = file.metadata().map_err(io_error)?; Ok(format!("{}:{}",m.dev(),m.ino())) }
 #[cfg(windows)]
-fn file_identity(file: &File) -> Result<String, String> {
+pub(super) fn file_identity(file: &File) -> Result<String, String> {
     use std::os::windows::io::AsRawHandle;
     #[repr(C)] #[derive(Default)] struct FileTime { low: u32, high: u32 }
     #[repr(C)] #[derive(Default)] struct Info { attributes: u32, creation: FileTime, access: FileTime, write: FileTime, volume: u32, size_high: u32, size_low: u32, links: u32, index_high: u32, index_low: u32 }

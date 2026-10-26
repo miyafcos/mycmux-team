@@ -77,8 +77,8 @@ function request(cmd: string, args: Record<string, unknown>, id = "request"): Pe
     context: webPaneCommandContext(cmd), expiresAt: Date.now() + 20_000 };
 }
 function attention(id: string): SessionAttention {
-  return { sessionId: "peer-target-pty", sessionEpoch: 4, attentionId: id, kind: "input",
-    detail: null, sessionRevision: 6, uiState: "waiting", stateSince: 1, occurrenceOrder: 1 };
+  return { sessionId: "peer-target-pty", sessionEpoch: 4, attentionId: id, kind: "done",
+    detail: null, sessionRevision: 6, uiState: "done", stateSince: 1, occurrenceOrder: 1 };
 }
 beforeEach(() => {
   vi.resetAllMocks(); mocks.listeners.clear(); mocks.label = "main";
@@ -95,8 +95,23 @@ beforeEach(() => {
   mocks.fragments.mockResolvedValue([fragment()]);
   mocks.buffer.mockImplementation(sessionId => [`${mocks.label}:${sessionId}:screen`]);
   mocks.write.mockResolvedValue(undefined); mocks.guardedWrite.mockResolvedValue({ sent: true }); mocks.kill.mockResolvedValue(undefined);
-  mocks.invoke.mockImplementation(async (cmd, args) => cmd === "webpane_eval" ? { value: { tabId: args.tabId } }
-    : cmd === "get_pty_metadata_snapshot" || cmd === "get_session_output_snapshot" ? {} : null);
+  mocks.invoke.mockImplementation(async (cmd, args) => {
+    if (cmd === "prepare_pane_message") {
+      const current = useSessionAttentionStore.getState().attentionBySession[args.sessionId];
+      if (current?.kind === "input" || current?.kind === "approval") return { guard: null, reason: "pending_prompt" };
+      return { guard: { sessionId: args.sessionId, sessionEpoch: current?.sessionEpoch ?? 4,
+        sessionRevision: current?.sessionRevision ?? 6, attentionId: current?.attentionId ?? null,
+        inputRevision: 8, strictRevision: args.strictRevision, agentMessage: args.agentMessage }, reason: null };
+    }
+    if (cmd === "write_pane_message") {
+      const guard = args.guard;
+      if (guard.strictRevision) return mocks.guardedWrite(guard.sessionId, args.data, guard.attentionId,
+        guard.sessionEpoch, guard.sessionRevision, guard.inputRevision + Number(args.submit));
+      await mocks.write(guard.sessionId, args.data); return { sent: true, reason: null };
+    }
+    return cmd === "webpane_eval" ? { value: { tabId: args.tabId } }
+      : cmd === "get_pty_metadata_snapshot" || cmd === "get_session_output_snapshot" ? {} : null;
+  });
   useWorkspaceListStore.setState({ workspaces: [workspace("local")], activeWorkspaceId: "local-ws", lastActivePaneByWorkspace: {} });
   useUiStore.setState({ activePaneId: "local-target-pty", focusRevision: 3 });
   useSessionAttentionStore.getState().resetForTests(); usePaneMetadataStore.setState({ metadata: {}, volatileMetadata: {} });
@@ -376,7 +391,7 @@ describe("owner-window execution with real socket handlers", () => {
       useWorkspaceListStore.setState({ workspaces: [] });
       return result;
     });
-    await expect(handleSocketCommand("pane.send_text", MOVED_SEND_ARGS)).rejects.toThrow("not a known pane");
+    await expect(handleSocketCommand("pane.send_text", MOVED_SEND_ARGS)).resolves.toMatchObject({ sent: false, reason: "target_changed", textWritten: true, enterWritten: false });
     expect(mocks.guardedWrite).toHaveBeenCalledExactlyOnceWith("peer-target-pty", MOVED_SEND_TEXT, "owner-attention", 4, 6, 8);
   });
   it("preserves background attention and input-revision refusals", async () => {
@@ -385,7 +400,7 @@ describe("owner-window execution with real socket handlers", () => {
       .toEqual({ sent: false, reason: "attention_id", current: null });
     expect(mocks.guardedWrite).not.toHaveBeenCalled(); expect(mocks.scrollback).not.toHaveBeenCalled();
     mocks.guardedWrite.mockResolvedValue({ sent: false, reason: "input_revision" });
-    expect(await handleSocketCommand("pane.send_text", MOVED_SEND_ARGS)).toEqual({ sent: false, reason: "input_revision" });
+    expect(await handleSocketCommand("pane.send_text", MOVED_SEND_ARGS)).toMatchObject({ sent: false, reason: "input_revision", textWritten: false, enterWritten: false });
     expect(mocks.guardedWrite).toHaveBeenCalledExactlyOnceWith("peer-target-pty", MOVED_SEND_TEXT, "owner-attention", 4, 6, 8);
     expect(mocks.write).not.toHaveBeenCalled();
   });
@@ -441,7 +456,7 @@ describe("owner-window execution with real socket handlers", () => {
     expect(await handleSocketCommand("pane.send_text", args)).toEqual({ sent: false, reason: "attention_id", current: null });
     expect(mocks.guardedWrite).not.toHaveBeenCalled();
     mocks.guardedWrite.mockResolvedValue({ sent: false, reason: "input_revision" });
-    expect(await handleSocketCommand("pane.send_text", { ...args, expected_attention_id: "owner-attention" })).toEqual({ sent: false, reason: "input_revision" });
+    expect(await handleSocketCommand("pane.send_text", { ...args, expected_attention_id: "owner-attention" })).toMatchObject({ sent: false, reason: "input_revision", textWritten: false, enterWritten: false });
     expect(mocks.write).not.toHaveBeenCalled();
   });
   it("close_tab closes only the owner's requested tab and returns the existing identity keys", async () => {
@@ -628,7 +643,7 @@ describe("peer request lifetime and send safety", () => {
     await connectOwner();
     mocks.buffer.mockReturnValueOnce(["ready"]).mockReturnValue(["ready hello"]);
     mocks.write.mockImplementation(async () => { useWorkspaceListStore.setState({ workspaces: [] }); });
-    await expect(handleSocketCommand("pane.send_text", { sessionId: "peer-target-pty", text: "hello", enter: true })).rejects.toThrow("not a known pane");
+    await expect(handleSocketCommand("pane.send_text", { sessionId: "peer-target-pty", text: "hello", enter: true })).resolves.toMatchObject({ sent: false, reason: "target_changed", textWritten: true, enterWritten: false });
     expect(mocks.write.mock.calls).toEqual([["peer-target-pty", "hello"]]);
   });
 });

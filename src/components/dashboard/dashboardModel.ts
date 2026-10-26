@@ -1,5 +1,10 @@
+import { isManualDoneMarkValid, sessionLastActivityAt } from "../../lib/manualDoneMark";
+export { isManualDoneMarkValid } from "../../lib/manualDoneMark";
 import type { AgentTelemetry, LiveSessionBrief } from "../../lib/livebrief";
 import { deriveDisplayStatus } from "../../lib/notificationStatus";
+import { presentSessionState } from "../../lib/sessionStatePresentation";
+import type { SessionStatusSignals } from "../../lib/sessionStatusSignals";
+import type { LiveReadObservation } from "../../lib/livebrief";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
 import type { PaneMetadata, PaneVolatileMetadata } from "../../stores/paneMetadataStore";
 import type { StallEntry } from "../../stores/stallStore";
@@ -23,11 +28,13 @@ export type DashboardAgentKind = "claude" | "codex" | "claude-codex" | "grok" | 
  * 画面に出す1本化した状態。カードのグリッド時代の group/section を置き換える。
  * livebrief が生きている間はそちらが正、そうでなければ attention/stall/metadata へ落ちる。
  */
-export type DashboardDisplayState = "needsHuman" | "error" | "running" | "noUpdate" | "done" | "acknowledged" | "idle" | "stopped" | "delegated" | "delegationUnknown";
+export type DashboardDisplayState = "needsHuman" | "error" | "running" | "noUpdate" | "done" | "acknowledged" | "idle" | "stopped" | "delegated" | "delegationUnknown" | "unknown";
 export type DashboardStateFilter = "needsHuman" | "running" | "noUpdate" | "done";
 
 /** 「更新なし」と言い切るまでの猶予 (分)。 */
 export const NO_UPDATE_THRESHOLD_MINUTES = 5;
+const UNKNOWN_STATUS_SIGNALS: SessionStatusSignals = { activity: "unknown", health: "unknown",
+  lastOutputAt: null, lastMonitorAt: null, lastEvidenceAt: null, processStartedAt: null };
 
 export interface DashboardCardModel {
   now?: number;
@@ -42,6 +49,8 @@ export interface DashboardCardModel {
   /** 同じタブの非アクティブペインかどうか。並びの内部判断だけに使い、表示には出さない。 */
   background: boolean;
   attention?: SessionAttention;
+  statusSignals?: SessionStatusSignals;
+  readObservation?: LiveReadObservation;
   dormantCompletion?: boolean;
   attentionCategory: AttentionCategory | null;
   /** 手動の完了マーク。新しい活動が確認できたカードには載せない。 */
@@ -83,6 +92,8 @@ export interface DashboardModelInput {
   lastLogBySession: Record<string, string | undefined>;
   lastLogAtBySession: Record<string, number | undefined>;
   attentionBySession: Record<string, SessionAttention | undefined>;
+  statusSignalsBySession?: Record<string, SessionStatusSignals | undefined>;
+  observationsBySession?: Record<string, LiveReadObservation | undefined>;
   dormantCompletionsBySession?: Record<string, DormantCompletionRecord | undefined>;
   seenAttentionByTab: Map<string, string>;
   doneMarkByTab: Map<string, number>;
@@ -113,6 +124,7 @@ const STATE_ORDER: Record<DashboardDisplayState, number> = {
   stopped: 7,
   delegated: 8,
   delegationUnknown: 9,
+  unknown: 10,
 };
 
 function tieBreak(left: DashboardCardModel, right: DashboardCardModel): number {
@@ -138,44 +150,27 @@ export function groupDashboardCard(
   return "idle";
 }
 
-function finiteTimestamp(value: number | null | undefined): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-/**
- * 手動完了マーク後に届いた活動だけを無効化の根拠にする。
- * ターン状態のある brief は意味イベントの時刻を使い、定期的な読取では解除しない。
- * 旧 brief の時刻の扱いは維持する。
- */
-export function isManualDoneMarkValid(card: DashboardCardModel, markedAt: number): boolean {
-  if (!Number.isFinite(markedAt)) return false;
-  const autonomy = card.brief?.autonomy;
-  if (autonomy && Object.prototype.hasOwnProperty.call(autonomy, "turnStartedAt") && autonomy.turnState !== "active"
-    && !autonomy.openToolCount && !autonomy.armedBackgroundCount && !autonomy.pendingNotificationCount) {
-    // A delayed completion envelope belongs to the same turn, even if the PTY
-    // output or attention clock moved after the user marked it complete.
-    const startedAt = finiteTimestamp(autonomy.turnStartedAt);
-    if (startedAt !== null && startedAt > markedAt) return false;
-    if ((card.operationalState === "needsHuman" || card.attentionCategory === "error")
-      && Math.max(card.brief?.lastEventAt ?? 0, card.attention?.stateSince ?? 0) > markedAt) return false;
-    return !(card.stall?.reason === "queued_input" && card.stall.since > markedAt);
-  }
-  const activityTimes = [
-    finiteTimestamp(card.lastActivityAt),
-    finiteTimestamp(card.attention?.stateSince),
-    finiteTimestamp(card.brief?.lastEventAt),
-    finiteTimestamp(card.brief?.autonomy ? null : card.brief?.lastSuccessfulReadAt),
-    finiteTimestamp(card.brief?.autonomy ? null : card.brief?.updatedAt),
-  ].filter((value): value is number => value !== null);
-  return !activityTimes.some((activityAt) => activityAt > markedAt);
-}
-
 /**
  * livebrief が「生きている」と言える間はそれを正とし、そうでなければ
  * 従来の attention / stall / metadata 判定へ落とす。断定できないものは idle。
  */
 export function resolveDisplayState(card: DashboardCardModel): DashboardDisplayState {
   if (card.manualDoneAt !== undefined) return "acknowledged";
+  if (card.dormantCompletion && card.attentionCategory === "done") return completedDisplayState(card);
+  // Existing model consumers can omit the canonical feed. Live renderers pass
+  // it explicitly, including unknown entries while the feed is unavailable.
+  if (card.statusSignals !== undefined || card.readObservation !== undefined) {
+    const presented = presentSessionState({ attention: card.attention, signals: card.statusSignals,
+      brief: card.brief, observation: card.readObservation, now: card.now,
+      identity: { sessionId: card.tab.sessionId, agentKind: card.metadata?.agentKind ?? card.tab.agentKind,
+        agentSessionId: card.metadata?.agentSessionId ?? card.tab.agentSessionId ?? card.tab.claudeSessionId } });
+    if (presented === "needsHuman" || presented === "error") return presented;
+    if (card.stall?.reason === "pty_dead" || card.volatileMetadata?.ptyAlive === false) return "stopped";
+    if (card.stall?.reason === "queued_input") return "noUpdate";
+    if (presented === "done") return completedDisplayState(card);
+    if (presented !== null) return presented;
+    if (!card.neverStarted && card.tab.type !== "web") return "unknown";
+  }
   if (card.telemetryHealth === "live") {
     if (card.operationalState === "needsHuman") return "needsHuman";
     if (card.attentionCategory === "error") return "error";
@@ -262,11 +257,7 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
         const category = attentionCategory(tab.id, attention, input.seenAttentionByTab);
         const stall = input.stallsBySession[tab.sessionId];
         const brief = input.briefsBySession?.[tab.sessionId];
-        const lastActivityAt = Math.max(
-          input.lastLogAtBySession[tab.sessionId] ?? 0,
-          metadata?.screenStatusAt ?? 0,
-          metadata?.agentStatusAt ?? 0,
-        );
+        const lastActivityAt = sessionLastActivityAt(metadata, input.lastLogAtBySession[tab.sessionId]);
         // A Web tab has no terminal buffer and never will: judging it by one
         // labelled every ChatGPT tab "未観測・未起動" while the page was open
         // and readable. Its conversation is read from the pane instead.
@@ -291,6 +282,9 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
           tabIndex,
           background: tab.id !== pane.activeTabId,
           attention,
+          statusSignals: input.statusSignalsBySession?.[tab.sessionId]
+            ?? (input.statusSignalsBySession && !isWebTab ? UNKNOWN_STATUS_SIGNALS : undefined),
+          readObservation: input.observationsBySession?.[tab.sessionId],
           dormantCompletion: Boolean(input.dormantCompletionsBySession?.[tab.sessionId]),
           attentionCategory: category,
           group,

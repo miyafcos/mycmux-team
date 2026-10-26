@@ -2,7 +2,7 @@ import type { DashboardDisplayState } from "./dashboardModel";
 import { dashboardStrings } from "./dashboardStrings";
 
 export type AttentionState = "needsAnswer" | "needsReview" | null;
-export type ActivityState = "working" | "waiting" | "stalled" | "done" | "stopped" | "error";
+export type ActivityState = "working" | "waiting" | "stalled" | "done" | "stopped" | "error" | "unknown";
 
 export interface StateLabels {
   attention: AttentionState;
@@ -16,10 +16,12 @@ export interface StateLabels {
 /** The dashboard's sole old-state to two-axis vocabulary conversion. */
 export function stateLabels(state: DashboardDisplayState): StateLabels {
   if (state === "needsHuman") return stateLabelsForAxes("needsAnswer", "waiting");
-  if (state === "error") return stateLabelsForAxes("needsReview", "error");
+  if (state === "error") return { ...stateLabelsForAxes("needsReview", "error"), primary: dashboardStrings.stateError };
+  if (state === "unknown") return stateLabelsForAxes(null, "unknown");
   if (state === "noUpdate") return stateLabelsForAxes("needsReview", "stalled");
   if (state === "running") return stateLabelsForAxes(null, "working");
-  if (state === "done") return stateLabelsForAxes("needsReview", "done");
+  if (state === "done") return { ...stateLabelsForAxes("needsReview", "done"), primary: dashboardStrings.stateTurnEnded,
+    activityLabel: dashboardStrings.stateTurnEnded, tooltip: `${dashboardStrings.stateTurnEnded} · ${dashboardStrings.stateNeedsReview}` };
   if (state === "acknowledged") return stateLabelsForAxes(null, "done");
   if (state === "stopped") return stateLabelsForAxes(null, "stopped");
   if (state === "delegated") {
@@ -42,6 +44,7 @@ export function stateLabelsForAxes(attention: AttentionState, activity: Activity
 }
 
 function labelFor(kind: "needsAnswer" | "needsReview" | ActivityState): string {
+  if (kind === "unknown") return dashboardStrings.stateUnknown;
   if (kind === "needsAnswer") return dashboardStrings.stateNeedsAnswer;
   if (kind === "needsReview") return dashboardStrings.stateNeedsReview;
   if (kind === "working") return dashboardStrings.stateRunning;

@@ -37,7 +37,7 @@ export function statePillStyle(color: string): CSSProperties {
     flex: "0 0 auto",
     borderRadius: "4px",
     padding: "0 6px",
-    fontSize: 10,
+    fontSize: "var(--cmux-font-size-xs)",
     background: `color-mix(in srgb, ${color} 15%, transparent)`,
     color,
   };
@@ -100,7 +100,7 @@ function CardRow({ card, selected, open, now, hideWorkspaceBadge, onSelect, onJu
       <span className="cmux-dash-row-status">
         <span title={labels.tooltip} aria-label={labels.tooltip} style={statePillStyle(stateColor)}>{card.neverStarted ? dashboardStrings.stateNotStarted : labels.primary}</span>
         {dormantDescription ? <span title={dormantDescription} aria-label={dormantDescription} style={statePillStyle("var(--cmux-text-tertiary)")}>{AGENT_DORMANT_LABEL}</span> : null}
-        <span className="cmux-dash-row-activity">{labels.activityLabel}</span>
+        {labels.activityLabel !== labels.primary ? <span className="cmux-dash-row-activity">{labels.activityLabel}</span> : null}
         {elapsedMinutes === null ? null : <span className="cmux-dash-row-elapsed">{card.telemetryHealth === "live" ? dashboardStrings.lastActivityAgo(elapsedMinutes) : dashboardStrings.elapsed(elapsedMinutes)}</span>}
       </span>
       {instrumentSlots.length ? <span className="cmux-dash-row-instrument" data-dashboard-instrument={card.tab.id} title={instrumentTitle}>

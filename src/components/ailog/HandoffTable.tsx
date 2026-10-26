@@ -7,6 +7,7 @@ import { useEffect } from "react";
 
 import { formatCount, type Handoff, type HandoffsReport } from "../../lib/ailog";
 import { useAilogStore } from "../../stores/ailogStore";
+import { ReportFailure, ReportPeriod } from "./ReportFeedback";
 import { EmptyState, SkeletonBlock, VScrollBox, noteStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle, subtleButtonStyle } from "./ui";
 
 export const HANDOFF_SECTION_SUMMARY = "モデルの切り替え";
@@ -54,7 +55,7 @@ export function HandoffPanelBody({
   error: string | null;
   onRetry: () => void;
 }) {
-  if (error) {
+  if (error && !report) {
     return <EmptyState kind="error" message={error} onPrimary={onRetry} />;
   }
   if (loading && !report) {
@@ -70,7 +71,11 @@ export function HandoffPanelBody({
       </div>
     );
   }
-  return <HandoffTables report={report} />;
+  return <>
+    <ReportPeriod range={report.range} />
+    {error ? <ReportFailure label="モデルの切り替え" error={error} range={report.range} onRetry={onRetry} /> : null}
+    <HandoffTables report={report} />
+  </>;
 }
 
 export function HandoffTable() {

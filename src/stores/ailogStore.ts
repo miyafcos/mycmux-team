@@ -53,6 +53,7 @@ import {
   type TranscriptReport,
   type SessionsReport,
   type RangePreset,
+  type RangeOut,
   type SeriesGroupBy,
   type SummaryRangePreset,
   type UsageBucket,
@@ -110,6 +111,7 @@ export interface ReportSnapshotStatus {
 
 type SnapshotReport<T> = T & { cache?: { savedAt: number; stale: boolean } };
 type RefreshOptions = { force?: boolean; revalidate?: boolean };
+type OverviewRefreshOptions = RefreshOptions & { comparePrevious?: boolean };
 
 interface AilogState {
   // --- range / filters ---
@@ -142,6 +144,8 @@ interface AilogState {
   previousTotalsStatus: "idle" | "loading" | "ready" | "error";
   series: SeriesReport | null;
   models: ModelsReport | null;
+  modelsLoading: boolean;
+  modelsError: string | null;
   projects: BreakdownReport | null;
   breakdown: BreakdownReport | null;
   /** Scoped to the breakdown section; see `refreshBreakdown`. */
@@ -177,6 +181,7 @@ interface AilogState {
   usageLoading: boolean;
   usageError: string | null;
   reworkRankings: ReworkRankingsReport | null;
+  reworkRankingsRange: RangeOut | null;
   reworkRankingsLoading: boolean;
   reworkRankingsError: string | null;
   /** True only while the "つまずいた場所" block is mounted. */
@@ -224,6 +229,8 @@ interface AilogState {
   setBreakdownDimension: (value: BreakdownDimension) => void;
   currentRange: () => AilogRange | null;
   refresh: (options?: RefreshOptions) => Promise<void>;
+  refreshOverview: (options?: OverviewRefreshOptions) => Promise<void>;
+  refreshModels: (options?: RefreshOptions) => Promise<void>;
   refreshBreakdown: (options?: RefreshOptions) => Promise<void>;
   refreshSessions: (options?: RefreshOptions) => Promise<void>;
   openDetail: (kind: string, sessionId: string) => Promise<void>;
@@ -247,6 +254,7 @@ interface AilogState {
 }
 
 let refreshSeq = 0;
+let modelsSeq = 0;
 let detailSeq = 0;
 let transcriptSeq = 0;
 let breakdownSeq = 0;
@@ -490,9 +498,9 @@ function clearAilogCaches(): void {
  * Drop cached SQL reports and in-flight generations. A response that started
  * before this call must not land as the post-invalidation picture.
  */
-export function invalidateAilogCaches(): void {
-  cacheEpoch += 1;
+function invalidateReportRequests(): void {
   refreshSeq += 1;
+  modelsSeq += 1;
   breakdownSeq += 1;
   usageSeq += 1;
   reworkSeq += 1;
@@ -501,6 +509,11 @@ export function invalidateAilogCaches(): void {
   sessionSeq += 1;
   rhythmSeq += 1;
   usageLoadSeq += 1;
+}
+
+export function invalidateAilogCaches(): void {
+  cacheEpoch += 1;
+  invalidateReportRequests();
   clearAilogCaches();
 }
 
@@ -522,7 +535,7 @@ function handoffsResetIfContextChanged(
 ): Partial<AilogState> {
   const currentKey = cacheContext(current)?.key ?? null;
   const nextKey = cacheContext(next)?.key ?? null;
-  if ((nextKey === currentKey && next.granularity === current.granularity) || nextKey === null) return {};
+  if (nextKey === currentKey && next.granularity === current.granularity) return {};
   return {
     handoffs: null,
     handoffsError: null,
@@ -543,9 +556,10 @@ function reworkResetIfContextChanged(
 ): Partial<AilogState> {
   const currentKey = reworkContextKey(current);
   const nextKey = reworkContextKey(next);
-  if (nextKey === currentKey || nextKey === null) return {};
+  if (nextKey === currentKey) return {};
   return {
     reworkRankings: null,
+    reworkRankingsRange: null,
     reworkRankingsError: null,
     reworkRankingsLoading: false,
     previousTotals: null,
@@ -582,7 +596,7 @@ function previousTotalsKey(range: AilogRange, filters: ReturnType<typeof emptyFi
  */
 function reworkRankingsContext(
   state: Pick<AilogState, "preset" | "customFrom" | "customTo" | "rangeAnchor" | "includeSidechain" | "selection">,
-): { key: string; range: AilogRange; filters: ReturnType<typeof emptyFilters> } | null {
+): { key: string; range: AilogRange; displayRange: RangeOut; filters: ReturnType<typeof emptyFilters> } | null {
   const range = buildRange(state.preset, state.customFrom, state.customTo);
   const resolvedRange = resolvedRangeForKey(state.preset, state.customFrom, state.customTo, state.rangeAnchor);
   if (!range || !resolvedRange) return null;
@@ -606,7 +620,8 @@ function reworkRankingsContext(
         query: filters.query ?? null,
       },
     }),
-    range,
+    range: state.preset === "custom" ? range : { preset: state.preset, anchor: resolvedRange.to },
+    displayRange: { ...resolvedRange, label: state.preset },
     filters,
   };
 }
@@ -659,6 +674,8 @@ const initialState = {
   previousTotalsStatus: "idle" as const,
   series: null,
   models: null,
+  modelsLoading: false,
+  modelsError: null,
   projects: null,
   breakdown: null,
   breakdownError: null,
@@ -694,6 +711,7 @@ const initialState = {
   usageLoading: false,
   usageError: null,
   reworkRankings: null,
+  reworkRankingsRange: null,
   reworkRankingsLoading: false,
   reworkRankingsError: null,
   reworkRankingsOpen: false,
@@ -731,11 +749,16 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     const current = get();
     if (current.preset === preset) return;
     const next = { ...current, preset, selection: null };
+    invalidateReportRequests();
     set({
       preset,
       overview: null, usageSeries: null, breakdown: null, pivot: null, models: null, sessions: null,
+      loading: false, dashboardError: null, modelsLoading: false, modelsError: null,
+      usageLoading: false, usageError: null, breakdownLoading: false, breakdownError: null,
+      pivotLoading: false, pivotError: null, sessionLoading: false, sessionError: null,
       reportSnapshots: {},
       usageRhythm: null,
+      usageRhythmLoading: false,
       usageRhythmError: null,
       sessionPage: 0,
       selection: null,
@@ -750,12 +773,17 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     const current = get();
     if (current.preset === "custom" && current.customFrom === customFrom && current.customTo === customTo) return;
     const next = { ...current, customFrom, customTo, preset: "custom" as const };
+    invalidateReportRequests();
     set({
       customFrom,
       customTo,
       preset: "custom",
-      ...(cacheContext(next) ? { overview: null, usageSeries: null, breakdown: null, pivot: null, models: null, sessions: null, reportSnapshots: {} } : {}),
+      overview: null, usageSeries: null, breakdown: null, pivot: null, models: null, sessions: null, reportSnapshots: {},
+      loading: false, dashboardError: null, modelsLoading: false, modelsError: null,
+      usageLoading: false, usageError: null, breakdownLoading: false, breakdownError: null,
+      pivotLoading: false, pivotError: null, sessionLoading: false, sessionError: null,
       usageRhythm: null,
+      usageRhythmLoading: false,
       usageRhythmError: null,
       sessionPage: 0,
       previousTotals: null,
@@ -774,23 +802,31 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   setIncludeSidechain: (includeSidechain) => {
     const current = get();
     if (current.includeSidechain === includeSidechain) return;
-    set({ includeSidechain, sessionError: null });
+    sessionSeq += 1;
+    set({ includeSidechain, sessions: null, sessionLoading: false, sessionError: null });
     void get().refreshSessions();
   },
   setGranularity: (granularity) => {
     const current = get();
+    if (current.granularity === granularity) return;
+    modelsSeq += 1;
+    handoffSeq += 1;
     set({
       granularity,
+      models: null, modelsLoading: false, modelsError: null,
       ...handoffsResetIfContextChanged(current, { ...current, granularity }),
     });
   },
   setUsageSeriesAxis: (usageSeriesAxis) => {
     const current = get();
     const granularity = granularityFromSeriesAxis(usageSeriesAxis);
+    if (current.usageSeriesAxis !== usageSeriesAxis) usageSeq += 1;
+    if (current.granularity !== granularity) { modelsSeq += 1; handoffSeq += 1; }
     set({
       usageSeriesAxis,
       granularity,
-      ...(current.usageSeriesAxis !== usageSeriesAxis ? { usageSeries: null, usageError: null, reportSnapshots: snapshotStatuses(current.reportSnapshots, "usage", null) } : {}),
+      ...(current.granularity !== granularity ? { models: null, modelsLoading: false, modelsError: null } : {}),
+      ...(current.usageSeriesAxis !== usageSeriesAxis ? { usageSeries: null, usageLoading: false, usageError: null, reportSnapshots: snapshotStatuses(current.reportSnapshots, "usage", null) } : {}),
       ...handoffsResetIfContextChanged(current, { ...current, usageSeriesAxis, granularity }),
     });
   },
@@ -816,6 +852,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   setSelection: (selection) => {
     const current = get();
     const nextSelection = selection && (selection.model || selection.project) ? selection : null;
+    invalidateReportRequests();
     set({
       selection: nextSelection,
       reportSnapshots: {},
@@ -825,11 +862,20 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       previousTotalsStatus: "idle",
       series: null,
       models: null,
+      modelsLoading: false,
+      modelsError: null,
+      dashboardError: null,
+      usageLoading: false, usageError: null,
+      breakdownLoading: false, breakdownError: null,
+      pivotLoading: false, pivotError: null,
+      sessionLoading: false, sessionError: null,
       projects: null,
       breakdown: null,
       sessions: null,
       usageSeries: null,
       usageRhythm: null,
+      usageRhythmLoading: false,
+      usageRhythmError: null,
       pivot: null,
       loading: true,
       ...reworkResetIfContextChanged(current, { ...current, selection: nextSelection }),
@@ -837,7 +883,8 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     });
   },
   setBreakdownDimension: (breakdownDimension) => {
-    set({ breakdownDimension, breakdown: null, breakdownError: null, reportSnapshots: snapshotStatuses(get().reportSnapshots, "breakdown", null) });
+    breakdownSeq += 1;
+    set({ breakdownDimension, breakdown: null, breakdownLoading: false, breakdownError: null, reportSnapshots: snapshotStatuses(get().reportSnapshots, "breakdown", null) });
   },
 
   currentRange: () => {
@@ -846,6 +893,33 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   },
 
   refresh: async (options = {}) => {
+    const overview = get().refreshOverview({ ...options, comparePrevious: true });
+    void get().refreshModels(options);
+    void get().refreshSessions(options);
+    await overview;
+  },
+
+  refreshModels: async (options = {}) => {
+    const context = cacheContext(get());
+    if (!context) return;
+    const mySeq = ++modelsSeq;
+    const cached = fetchOnce(
+      mapResource(periodEntry(context.key).models, context.granularity),
+      () => ailogModels(context.range, context.filters, { granularity: context.granularity, bucket: "day" }),
+      options.force || options.revalidate,
+    );
+    if (cached.pending) set({ modelsLoading: true, modelsError: null });
+    try {
+      const models = await cached.promise;
+      if (mySeq !== modelsSeq || get().granularity !== context.granularity || !isCurrentContext(get, context.key)) return;
+      set({ models, modelsLoading: false, modelsError: null });
+    } catch (error) {
+      if (mySeq !== modelsSeq || get().granularity !== context.granularity || !isCurrentContext(get, context.key)) return;
+      set({ modelsLoading: false, modelsError: errorMessage(error) });
+    }
+  },
+
+  refreshOverview: async (options = {}) => {
     const context = cacheContext(get());
     if (!context) return;
     const mySeq = ++refreshSeq;
@@ -856,7 +930,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       options.force || options.revalidate,
       (overview) => {
         if (!(mySeq === refreshSeq && isCurrentContext(get, context.key))) return;
-        set({ overview, loading: true, dashboardError: null,
+        set({ overview, loading: true, dashboardError: null, previousTotals: null, previousTotalsStatus: "idle",
           reportSnapshots: snapshotStatuses(get().reportSnapshots, "overview", overview, true) });
       },
     );
@@ -867,30 +941,14 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       set({
         overview,
         reportSnapshots: snapshotStatuses(get().reportSnapshots, "overview", overview),
-        previousTotalsStatus: get().preset === "all" ? "idle" : "loading",
+        previousTotalsStatus: options.comparePrevious && get().preset !== "all" ? "loading" : "idle",
+        ...(options.comparePrevious ? {} : { previousTotals: null }),
         loading: false,
         loadedAt: Date.now(),
         dashboardError: null,
       });
 
-      // The overview is the useful first paint. Models and the paged session
-      // list are independent, below-the-fold reports and must not hold it up.
-      const models = fetchOnce(
-        mapResource(entry.models, context.granularity),
-        () => ailogModels(context.range, context.filters, {
-          granularity: context.granularity,
-          bucket: "day",
-        }),
-        options.force || options.revalidate,
-      );
-      void models.promise.then((report) => {
-        if (mySeq !== refreshSeq || get().granularity !== context.granularity || !isCurrentContext(get, context.key)) return;
-        set({ models: report });
-      }).catch(() => {
-        // The overview and the dedicated usage reports stay usable if this
-        // optional work-tag/model detail fails.
-      });
-      void get().refreshSessions(options);
+      if (!options.comparePrevious) return;
 
       if (get().preset === "all") {
         set({ previousTotals: null, previousTotalsStatus: "idle" });
@@ -944,7 +1002,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       if (mySeq !== breakdownSeq || get().breakdownDimension !== dimension || !isCurrentContext(get, context.key)) return;
       set({ breakdown, breakdownLoading: false, breakdownError: null, reportSnapshots: snapshotStatuses(get().reportSnapshots, "breakdown", breakdown) });
     } catch (error) {
-      if (mySeq !== breakdownSeq || !isCurrentContext(get, context.key)) return;
+      if (mySeq !== breakdownSeq || get().breakdownDimension !== dimension || !isCurrentContext(get, context.key)) return;
       // Scoped to the breakdown section. The global `error` is reserved for
       // `refresh()`, which fetches every report at once: setting it here
       // replaced the whole dashboard with a failure screen even though the
@@ -1007,17 +1065,32 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     // to five minutes, but never round a fresh update back into the past.
     if (current.preset !== "custom" && now !== current.rangeAnchor
       && (options.force || options.revalidate || Math.abs(now - current.rangeAnchor) >= 300_000)) {
+      invalidateReportRequests();
       clearAilogCaches();
-      set({ rangeAnchor: now, previousTotals: null, previousTotalsStatus: "idle" });
+      set({ rangeAnchor: now,
+        reportSnapshots: Object.fromEntries(Object.entries(current.reportSnapshots).map(([slot, snapshot]) => [slot, { ...snapshot, refreshing: false }])),
+        loading: false, dashboardError: null, usageLoading: false, usageError: null,
+        modelsLoading: false, modelsError: null, breakdownLoading: false, breakdownError: null,
+        pivotLoading: false, pivotError: null, sessionLoading: false, sessionError: null,
+        usageRhythmLoading: false, usageRhythmError: null, reworkRankingsLoading: false, reworkRankingsError: null,
+        handoffsLoading: false, handoffsError: null, previousTotals: null, previousTotalsStatus: "idle" });
     }
     const startedAt = performance.now();
     const myLoad = ++usageLoadSeq;
     try {
       // Reserve the first two backend slots for the overview and visible chart.
       // The hidden rhythm and lower tables must not queue ahead of the chart.
-      await Promise.all([get().refresh(options), get().refreshUsage(options)]);
+      const overview = get().refreshOverview({ ...options, comparePrevious: true });
+      const usage = get().refreshUsage(options);
+      // Independent reports must not wait for the chart to settle.
+      const models = get().refreshModels(options);
+      const sessions = get().refreshSessions(options);
+      await usage;
       if (myLoad !== usageLoadSeq) return;
       const tasks: Array<Promise<void>> = [
+        overview,
+        models,
+        sessions,
         get().refreshBreakdown(options),
         get().refreshPivot(options),
       ];
@@ -1026,19 +1099,19 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       } else if (options.force) {
         rhythmSeq += 1;
         for (const entry of periodCache.values()) entry.rhythm = resource();
-        set({ usageRhythm: null, usageRhythmLoading: false, usageRhythmError: null, reportSnapshots: snapshotStatuses(get().reportSnapshots, "rhythm", null) });
+        set({ usageRhythmLoading: false, reportSnapshots: failedSnapshotStatus(get().reportSnapshots, "rhythm") });
       }
       if (get().reworkRankingsOpen) {
         tasks.push(get().refreshReworkRankings({ force: options.force }));
       } else if (options.force) {
         dropReworkRankingsCache();
-        set({ reworkRankings: null, reworkRankingsError: null, reworkRankingsLoading: false });
+        set({ reworkRankingsLoading: false });
       }
       if (get().handoffsOpen) {
         tasks.push(get().refreshModelHandoffs({ force: options.force }));
       } else if (options.force) {
         dropHandoffsCache();
-        set({ handoffs: null, handoffsError: null, handoffsLoading: false });
+        set({ handoffsLoading: false });
       }
       await Promise.all(tasks);
     } finally {
@@ -1184,7 +1257,8 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   setUsageStack: (usageStack) => set({ usageStack }),
   setUsageBucket: (usageBucket) => {
     if (get().usageBucket === usageBucket) return;
-    set({ usageBucket, usageSeries: null, usageError: null, reportSnapshots: snapshotStatuses(get().reportSnapshots, "usage", null) });
+    usageSeq += 1;
+    set({ usageBucket, usageSeries: null, usageLoading: false, usageError: null, reportSnapshots: snapshotStatuses(get().reportSnapshots, "usage", null) });
   },
 
   refreshPivot: async (options = {}) => {
@@ -1209,7 +1283,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       if (mySeq !== pivotSeq || get().pivotRowBy !== rowBy || get().pivotColBy !== colBy || !isCurrentContext(get, context.key)) return;
       set({ pivot, pivotLoading: false, pivotError: null, reportSnapshots: snapshotStatuses(get().reportSnapshots, "pivot", pivot) });
     } catch (error) {
-      if (mySeq !== pivotSeq || !isCurrentContext(get, context.key)) return;
+      if (mySeq !== pivotSeq || get().pivotRowBy !== rowBy || get().pivotColBy !== colBy || !isCurrentContext(get, context.key)) return;
       set({ pivotLoading: false, pivotError: errorMessage(error), reportSnapshots: failedSnapshotStatus(get().reportSnapshots, "pivot") });
     }
   },
@@ -1235,10 +1309,10 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     try {
       const reworkRankings = await cached.promise;
       if (epoch !== cacheEpoch || mySeq !== reworkSeq || reworkRankingsContext(get())?.key !== context.key) return;
-      set({ reworkRankings, reworkRankingsLoading: false, reworkRankingsError: null });
+      set({ reworkRankings, reworkRankingsRange: context.displayRange, reworkRankingsLoading: false, reworkRankingsError: null });
     } catch (error) {
       if (epoch !== cacheEpoch || mySeq !== reworkSeq || reworkRankingsContext(get())?.key !== context.key) return;
-      set({ reworkRankingsLoading: false, reworkRankingsError: errorMessage(error), reworkRankings: null });
+      set({ reworkRankingsLoading: false, reworkRankingsError: errorMessage(error) });
     }
   },
 
@@ -1266,7 +1340,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       set({ handoffs, handoffsLoading: false, handoffsError: null });
     } catch (error) {
       if (epoch !== cacheEpoch || mySeq !== handoffSeq || get().granularity !== context.granularity || !isCurrentContext(get, context.key)) return;
-      set({ handoffsLoading: false, handoffsError: errorMessage(error), handoffs: null });
+      set({ handoffsLoading: false, handoffsError: errorMessage(error) });
     }
   },
 
@@ -1334,6 +1408,7 @@ export function __resetAilogStoreForTests(): void {
   clearAilogCaches();
   cacheEpoch = 0;
   refreshSeq = 0;
+  modelsSeq = 0;
   detailSeq = 0;
   transcriptSeq = 0;
   breakdownSeq = 0;

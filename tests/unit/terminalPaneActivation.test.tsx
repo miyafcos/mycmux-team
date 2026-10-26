@@ -77,7 +77,8 @@ async function pointer(target: HTMLElement, phase: "down" | "up" | "cancel", opt
 }
 
 async function settleFocus(): Promise<void> {
-  await act(async () => vi.runAllTimersAsync());
+  // Settle finite focus/heading delays while the shared session clock keeps running.
+  await act(async () => vi.advanceTimersByTimeAsync(600));
 }
 
 beforeEach(() => {

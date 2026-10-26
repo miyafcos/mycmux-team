@@ -37,10 +37,10 @@ describe("AI-log presentation without record filtering (T10)", () => {
     const range = { from: 100, to: 200, label: "sample" };
     const series: SeriesReport = { range, bucket: "day", groupBy: "kind", buckets: [{ bucket: 100, sessions: 9, turns: 9, costUsd: 0, groups: ["claude", "codex", "grok"].map(group => ({ group, sessions: 3, turns: 3, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 })) }], priceSource: "", priceCoverage: {} as SeriesReport["priceCoverage"], costNote: "" };
     const overview = { range, totals: { sessions: 9 } } as Overview;
-    const sessions = { rows: [{ sessionId: "claude-record" }, { sessionId: "codex-record" }, { sessionId: "grok-record" }] } as SessionsReport;
+    const sessions = { range, rows: [{ sessionId: "claude-record" }, { sessionId: "codex-record" }, { sessionId: "grok-record" }] } as SessionsReport;
     const fn = vi.fn();
     const props: ComponentProps<typeof UsageView> = {
-      overview, series, sessions, previousTotalsStatus: "ready", models: null, rhythm: null, loading: false, usageLoading: false, usageError: null, error: null, statusPending: false, neverIndexed: false, noData: false, running: false,
+      overview, series, sessions, previousTotalsStatus: "ready", models: null, modelsLoading: false, modelsError: null, onRetryModels: fn, rhythm: null, loading: false, usageLoading: false, usageError: null, error: null, statusPending: false, neverIndexed: false, noData: false, running: false,
       preset: "all", metric: "sessions", stack: "absolute", bucket: "day", seriesAxis: "kind", excludeSynthetic: false,
       selection: null, breakdownDimension: "project", breakdown: null, breakdownError: null, breakdownLoading: false, sessionSort: "recent", sessionPage: 0,
       sessionQuery: "", sessionAppliedQuery: "", sessionAppliedSort: "recent", sessionAppliedPage: 0, sessionLoading: false, sessionError: null,

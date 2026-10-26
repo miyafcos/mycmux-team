@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { useAilogStore } from "../../stores/ailogStore";
 import type { RhythmMetric } from "./usageModel";
 import { UsageRhythm } from "./UsageRhythm";
+import { ReportPeriod } from "./ReportFeedback";
 import { EmptyState, RefreshingBlock, SkeletonBlock } from "./ui";
 
 /** Mounted only when the rhythm disclosure is expanded. */
@@ -26,5 +27,5 @@ export function UsageRhythmDetails({ metric }: { metric: RhythmMetric }) {
 
   if (error && !report) return <EmptyState kind="error" message={error} onPrimary={() => void refresh({ force: true })} />;
   if (!report) return <SkeletonBlock height={120} label="稼働リズムを読み込み中" />;
-  return <RefreshingBlock busy={loading}>{error ? <EmptyState kind="error" message={error} onPrimary={() => void refresh({ force: true })} /> : null}<UsageRhythm report={report} metric={metric} /></RefreshingBlock>;
+  return <RefreshingBlock busy={loading}><ReportPeriod range={report.range} />{error ? <EmptyState kind="error" message={error} onPrimary={() => void refresh({ force: true })} /> : null}<UsageRhythm report={report} metric={metric} /></RefreshingBlock>;
 }

@@ -12,6 +12,7 @@ import {
   type ToolRankingRow,
 } from "../../lib/ailog";
 import { useAilogStore } from "../../stores/ailogStore";
+import { ReportFailure, ReportPeriod } from "./ReportFeedback";
 import { EmptyState, SkeletonBlock, VScrollBox, noteStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle, subtleButtonStyle } from "./ui";
 
 /** Backend `rework_rankings` already truncates to this; the UI discloses the cap. */
@@ -140,6 +141,7 @@ export function ReworkRankings() {
   const refreshReworkRankings = useAilogStore((state) => state.refreshReworkRankings);
   const setReworkRankingsOpen = useAilogStore((state) => state.setReworkRankingsOpen);
   const report = useAilogStore((state) => state.reworkRankings);
+  const range = useAilogStore((state) => state.reworkRankingsRange);
   const loading = useAilogStore((state) => state.reworkRankingsLoading);
   const error = useAilogStore((state) => state.reworkRankingsError);
   const preset = useAilogStore((state) => state.preset);
@@ -157,7 +159,7 @@ export function ReworkRankings() {
     void refreshReworkRankings();
   }, [refreshReworkRankings, preset, customFrom, customTo, includeSidechain, selection]);
 
-  if (error) {
+  if (error && !report) {
     return (
       <EmptyState
         kind="error"
@@ -179,5 +181,9 @@ export function ReworkRankings() {
       </div>
     );
   }
-  return <ReworkRankingsTables report={report} />;
+  return <>
+    {range ? <ReportPeriod range={range} /> : null}
+    {error ? <ReportFailure label="つまずいた場所" error={error} range={range} onRetry={() => void refreshReworkRankings({ force: true })} /> : null}
+    <ReworkRankingsTables report={report} />
+  </>;
 }

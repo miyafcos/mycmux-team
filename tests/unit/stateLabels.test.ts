@@ -5,12 +5,12 @@ describe("stateLabels", () => {
   it("maps legacy state into the two-axis priority vocabulary", () => {
     expect(stateLabels("needsHuman")).toMatchObject({ attention: "needsAnswer", activity: "waiting", primary: "要回答" });
     expect(stateLabels("noUpdate")).toMatchObject({ attention: "needsReview", activity: "stalled", primary: "要確認" });
-    expect(stateLabels("error")).toMatchObject({ attention: "needsReview", activity: "error", primary: "要確認" });
+    expect(stateLabels("error")).toMatchObject({ attention: "needsReview", activity: "error", primary: "エラー" });
   });
 
   it("uses the activity label when no attention state exists", () => {
     expect(stateLabels("running")).toMatchObject({ attention: null, activity: "working", primary: "作業中" });
-    expect(stateLabels("done")).toMatchObject({ attention: "needsReview", activity: "done", primary: "要確認" });
+    expect(stateLabels("done")).toMatchObject({ attention: "needsReview", activity: "done", primary: "返答終了" });
     expect(stateLabels("acknowledged")).toMatchObject({ attention: null, activity: "done", primary: "完了" });
     expect(stateLabels("idle")).toMatchObject({ attention: null, activity: "waiting", primary: "待機" });
     expect(stateLabels("stopped")).toMatchObject({ attention: null, activity: "stopped", primary: "停止" });

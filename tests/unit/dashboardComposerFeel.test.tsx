@@ -282,3 +282,36 @@ describe("dashboard optimistic composer feedback", () => {
   });
 
 });
+
+describe("review fix 1: post-write refusal", () => {
+  it.each([{ textWritten: true }, { textWritten: false, writeMayHaveOccurred: true }])("never exposes or accepts retry after possible input (%j)", async (written) => {
+    mocks.handleSocketCommand.mockResolvedValue({ sent: false, ...written, enterWritten: false,
+      message: "入力済みの可能性があります。再送せず確認してください。" });
+    const textarea = await renderFeel();
+    await input(textarea, "重複させない本文");
+    await send(textarea);
+    const message = container.querySelector<HTMLElement>("[data-dashboard-optimistic-message]")!;
+    expect(message.dataset.deliveryState).toBe("sent");
+    expect(message.textContent).toContain("未確認");
+    expect(message.querySelector("button")).toBeNull();
+    expect(textarea.value).toBe("");
+    await act(async () => {
+      message.querySelector<HTMLButtonElement>("button")?.click();
+      useComposerStore.getState().requestDashboardOptimisticRetry("session-feel", message.dataset.dashboardOptimisticMessage!);
+      await Promise.resolve();
+    });
+    expect(mocks.handleSocketCommand.mock.calls.map(([, args]) => [args.text, args.enter])).toEqual([["重複させない本文", true]]);
+  });
+
+  it("retains clickable retry for an explicitly unwritten refusal", async () => {
+    mocks.handleSocketCommand.mockResolvedValueOnce({ sent: false, textWritten: false, writeMayHaveOccurred: false })
+      .mockResolvedValueOnce({ confirmed: true });
+    const textarea = await renderFeel();
+    await input(textarea, "未投入だけ再送"); await send(textarea);
+    const message = container.querySelector<HTMLElement>("[data-dashboard-optimistic-message]")!;
+    expect(message.dataset.deliveryState).toBe("failed");
+    await act(async () => { message.querySelector<HTMLButtonElement>("button")!.click(); await Promise.resolve(); });
+    expect(mocks.handleSocketCommand.mock.calls.map(([, args]) => [args.text, args.enter]))
+      .toEqual([["未投入だけ再送", true], ["未投入だけ再送", true]]);
+  });
+});

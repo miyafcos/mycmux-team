@@ -170,6 +170,7 @@ permissions = [
     "allow-open-with-default",
     "allow-open-workspace-window",
     "allow-perf-timeline-read",
+    "allow-prepare-pane-message",
     "allow-preview-artifact-uri-for-session-v2",
     "allow-publish-savepoint",
     "allow-publish-window-fragment",
@@ -255,6 +256,7 @@ permissions = [
     "allow-toggle-savepoint-pin",
     "allow-unsubscribe-live-briefs",
     "allow-use-reset-ticket",
+    "allow-verify-pane-message",
     "allow-watch-window-drag",
     "allow-webpane-click",
     "allow-webpane-create",
@@ -290,6 +292,7 @@ permissions = [
     "allow-workorder-refresh-sources",
     "allow-workorder-retry-spawn",
     "allow-workorder-spawn-result",
+    "allow-write-pane-message",
     "allow-write-to-session",
     "allow-write-to-session-guarded",
 ]

@@ -589,6 +589,31 @@ div:focus-within > .tab-close-btn,
   white-space: nowrap;
 }
 
+.pane-session-state {
+  flex: 0 0 auto;
+  font-size: var(--cmux-font-size-xs);
+  color: var(--cmux-text-secondary);
+  white-space: nowrap;
+}
+.pane-session-state[data-session-state="needsHuman"] { color: var(--status-waiting); }
+.pane-session-state[data-session-state="error"] { color: var(--status-error); }
+.cmux-your-turn {
+  min-height: 32px;
+  min-width: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cmux-text);
+  font-size: var(--cmux-font-size-xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cmux-your-turn:focus-visible { outline: 2px solid var(--cmux-accent); outline-offset: -2px; }
+
 .pane-heading-spacer {
   flex: 1 1 0;
   min-width: 0;

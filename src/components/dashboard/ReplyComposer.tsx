@@ -39,6 +39,11 @@ import { useAskQuestionStore } from "../../stores/askQuestionStore";
 interface PaneSendTextOutcome {
   confirmed?: boolean;
   reason?: string;
+  sent?: boolean;
+  message?: string;
+  textWritten?: boolean;
+  enterWritten?: boolean;
+  writeMayHaveOccurred?: boolean;
 }
 
 interface ComposerNote {
@@ -275,10 +280,14 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
         text: body,
         enter: true,
       }) as PaneSendTextOutcome | null;
+      if (outcome?.sent === false) return {
+        state: outcome.textWritten || outcome.writeMayHaveOccurred ? "unconfirmed" : "blocked",
+        detail: outcome.message ?? dashboardStrings.composerRetryRouteChanged,
+      };
       if (outcome?.confirmed === true) return { state: "confirmed", detail: dashboardStrings.sendConfirmedOnScreen };
       return {
         state: "unconfirmed",
-        detail: unconfirmedSendText(outcome?.reason),
+        detail: outcome?.message ?? unconfirmedSendText(outcome?.reason),
       };
     } catch (error) {
       return { state: "failed", detail: `${dashboardStrings.sendFailedBeforeWrite} (${errorText(error)})` };
@@ -337,15 +346,24 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
         text: body,
         enter: true,
       }) as PaneSendTextOutcome | null;
+      if (outcome?.sent === false) {
+        const detail = outcome.message ?? dashboardStrings.composerRetryRouteChanged;
+        const mayHaveWritten = outcome.textWritten || outcome.writeMayHaveOccurred;
+        setNote({ text: detail, error: !mayHaveWritten });
+        // Reuse the non-retryable receipt for possible input, even if Enter was refused.
+        setDashboardOptimisticMessageState(sessionId, messageId, mayHaveWritten ? "sent" : "failed", detail);
+        if (!mayHaveWritten && clearDraftAfterSend && !useComposerStore.getState().draftBySession[sessionId]) setDraft(sessionId, text);
+        return;
+      }
       const confirmed = outcome?.confirmed === true;
       const reason = outcome?.reason;
       setNote({
         text: confirmed
           ? dashboardStrings.sendConfirmedOnScreen
-          : unconfirmedSendText(reason),
+          : outcome?.message ?? unconfirmedSendText(reason),
         error: false,
       });
-      setDashboardOptimisticMessageState(sessionId, messageId, "sent");
+      setDashboardOptimisticMessageState(sessionId, messageId, "sent", confirmed ? null : outcome?.message ?? unconfirmedSendText(reason));
     } catch (error) {
       // handleSocketCommand が throw したときは書き込み自体が走っていない。
       const detail = `${dashboardStrings.sendFailedBeforeWrite} (${errorText(error)})`;
