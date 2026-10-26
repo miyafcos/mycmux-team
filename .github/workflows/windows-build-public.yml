@@ -70,6 +70,8 @@ jobs:
           root=Path.cwd()
           out=root/"cloud-output"
           out.mkdir(exist_ok=False)
+          generated_paths=['.dispatch/STAGE-B-generated.json', '.dispatch/stage-B3-B2-continuity-counts.json', '.dispatch/stage-C-B3-original-counts.json', '.dispatch/stage-C-extended-counts.json']
+          assert all(not (root/name).exists() for name in generated_paths)
           records=[]
           failures=[]
           omitted=["tests/unit/codexNarrowDetached.test.tsx","tests/unit/codexN3Entries.test.tsx","tests/unit/codexNarrowClaudeParity.test.ts"]
@@ -101,6 +103,19 @@ jobs:
           literal_ids=re.findall(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",rust,re.IGNORECASE)
           records.append({"label":"synthetic-fixture","matches_recipe":fixture_matches,"rust_literal_uuid_count":len(literal_ids)})
           if not fixture_matches or literal_ids: failures.append("synthetic-fixture")
+          generated=[]
+          for name in generated_paths:
+              path=root/name
+              assert path.is_file() and not path.is_symlink(), "expected test evidence missing or linked: "+name
+              value=json.loads(path.read_text(encoding="utf-8"))
+              assert isinstance(value,dict) and value, "invalid test evidence: "+name
+              checksum=hashlib.sha256(path.read_bytes()).hexdigest()
+              destination=out/path.name
+              assert not destination.exists()
+              path.rename(destination)
+              assert hashlib.sha256(destination.read_bytes()).hexdigest()==checksum
+              generated.append({"source":name,"asset":destination.name,"sha256":checksum})
+          records.append({"label":"generated-test-evidence","files":generated})
           changed=subprocess.check_output(["git","diff","HEAD","--name-only"],text=True).splitlines()
           records.append({"label":"source-invariance","changed_paths":changed})
           untracked=subprocess.check_output(["git","ls-files","--others","--exclude-standard","-z"]).decode().split("\0")
