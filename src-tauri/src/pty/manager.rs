@@ -411,6 +411,21 @@ impl SessionManager {
         Ok(session.input_revision())
     }
 
+    /// Keep a known agent's ownership read lock through the existing input gate,
+    /// so a replacement process cannot consume an ordinary message's Enter.
+    pub(crate) fn write_message_if_revision(
+        &self, session_id: &str, epoch: u64, revision: u64,
+        expected_agent: Option<(&str, &str, u32, u64)>, data: &[u8],
+    ) -> Result<std::sync::mpsc::Receiver<Result<(), String>>, String> {
+        let session = self.sessions.get(session_id).ok_or("unknown_session")?;
+        let saved = self.trusted_agent_identities.get(session_id);
+        let identity = saved.as_ref().filter(|saved| saved.trusted && saved.session_epoch == epoch)
+            .and_then(|saved| saved.identity.as_ref());
+        let actual = identity.map(|identity| (identity.kind.as_str(), identity.session_id.as_str(), identity.agent_pid, identity.agent_started_at));
+        if actual != expected_agent { return Err("target_changed".into()); }
+        session.write_intervention_if_revision(Some(epoch), revision, data)
+    }
+
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
         let session = self
             .sessions

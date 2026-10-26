@@ -10,6 +10,10 @@ vi.mock("../../src/lib/appConfirmation", () => ({ confirm: vi.fn(async () => tru
 vi.mock("../../src/hooks/usePaneDragSource", () => ({
   usePaneDragSource: () => ({ beginPointerDrag: drag.begin, shouldSuppressClick: () => false }),
 }));
+import { DashboardButton } from "../../src/components/dashboard/DashboardButton";
+import { useLiveBriefStore } from "../../src/stores/liveBriefStore";
+import type { LiveSessionBrief } from "../../src/lib/livebrief";
+import { isManualDoneMarkValid, buildDashboardCards, resolveDisplayState, type DashboardCardModel } from "../../src/components/dashboard/dashboardModel";
 import PaneTabBar from "../../src/components/workspace/PaneTabBar";
 import { paneToolbarStrings, terminalPaneStrings } from "../../src/components/workspace/terminalPaneStrings";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
@@ -85,6 +89,8 @@ beforeEach(() => {
   useSettingsStore.setState({ showTerminalHistoryButton: false, showSplitRightButton: true, showSplitDownButton: true, declaredLaunchEnabled: true });
   usePaneMetadataStore.setState({ metadata: {}, volatileMetadata: {} });
   useSessionAttentionStore.getState().resetForTests();
+  useLiveBriefStore.getState().reset();
+  usePaneMetadataStore.setState({ lastLogAt: {} });
   useUiStore.setState({ activePaneId: "pty-0" });
   resetPaneCloseOperationsForTests();
   while (popClosedPane()) { /* Drain synthetic history. */ }
@@ -527,5 +533,114 @@ describe("Stage 2a single heading", () => {
     await click(host.querySelector(".pane-active-heading"));
     await act(async () => vi.advanceTimersByTimeAsync(250));
     expect(select).not.toHaveBeenCalled();
+  });
+});
+
+describe("review fixes 3 and 4: rendered session state", () => {
+  const now = 1_000_000;
+  const canonical = (kind: SessionAttention["kind"] = "input", uiState: SessionAttention["uiState"] = "waiting"): SessionAttention => ({
+    sessionId: "pty-0", sessionEpoch: 3, sessionRevision: 4, attentionId: "attention", kind, uiState,
+    detail: null, stateSince: now - 10_000, occurrenceOrder: 1,
+  });
+  const publish = (kind: SessionAttention["kind"] = "input", uiState: SessionAttention["uiState"] = "waiting") => {
+    useSessionAttentionStore.setState({ attentionBySession: { "pty-0": canonical(kind, uiState) },
+      statusSignalsBySession: { "pty-0": { health: "fresh", activity: "idle", lastEvidenceAt: Date.now(),
+        lastMonitorAt: Date.now(), lastOutputAt: now, processStartedAt: 1 } } });
+  };
+  const brief = (turnStartedAt: number) => ({ ptySessionId: "pty-0", ptyGeneration: 3, ptyInstanceId: "instance",
+    agentKind: "codex", agentSessionId: "conversation", serviceEpoch: "service", telemetryHealth: "live",
+    operationalState: "idle", autonomy: { turnState: "complete", openToolCount: 0, armedBackgroundCount: 0,
+      pendingNotificationCount: 0, turnStartedAt }, lastEventAt: now - 10_000, lastSuccessfulReadAt: now, updatedAt: now } as LiveSessionBrief);
+  const stateText = () => host.querySelector(".pane-session-state")?.textContent;
+  it("expires the actual button count and header without store updates, then recovers", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now); publish();
+    await mount(pane(1, { agentKind: "codex", agentSessionId: "conversation" }));
+    await act(async () => root.render(<><Harness /><DashboardButton /></>));
+    expect(stateText()).toBe("要回答"); expect(host.querySelector(".cmux-your-turn")?.textContent).toBe("あなたの番 1");
+    await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+    expect(stateText()).toBe("状態確認不能"); expect(host.querySelector(".cmux-your-turn")?.textContent).toBe("あなたの番");
+    await act(async () => publish());
+    expect(stateText()).toBe("要回答"); expect(host.querySelector(".cmux-your-turn")?.textContent).toBe("あなたの番 1");
+  });
+
+  it("shares one clock, pauses when hidden, refreshes on visibility and releases on unmount", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now); publish();
+    const intervals = vi.spyOn(globalThis, "setInterval"), cleared = vi.spyOn(globalThis, "clearInterval");
+    await mount(pane(1, { agentKind: "codex" }));
+    await act(async () => root.render(<><Harness /><DashboardButton /></>));
+    const ticks = intervals.mock.calls.map((call, index) => ({ call, handle: intervals.mock.results[index].value })).filter(({ call }) => call[1] === 1_000);
+    expect(ticks).toHaveLength(1);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    expect(cleared).toHaveBeenCalledWith(ticks[0].handle);
+    await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    expect(stateText()).toBe("状態確認不能"); expect(host.querySelector(".cmux-your-turn")?.textContent).toBe("あなたの番");
+    const current = useWorkspaceListStore.getState().workspaces[0].panes[0];
+    await act(async () => root.render(<PaneTabBar pane={current} workspaceId="w" isVisible={false} hasTerminalBuffer={() => true} />));
+    const lastTick = intervals.mock.results.at(-1)!.value;
+    expect(cleared).toHaveBeenCalledWith(lastTick);
+  });
+
+  it("does not resurrect an old manual completion after a newer turn ends", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now); publish("done", "done");
+    const original = brief(now - 20_000);
+    useLiveBriefStore.setState({ briefsBySession: { "pty-0": original } });
+    useSessionAttentionStore.getState().markDone("t0", now - 5_000);
+    await mount(pane(1, { agentKind: "codex", agentSessionId: "conversation" }));
+    expect(stateText()).toBe("完了");
+    await act(async () => { publish("none", "working"); useLiveBriefStore.setState({ briefsBySession: {
+      "pty-0": { ...original, autonomy: { ...original.autonomy!, turnState: "active", turnStartedAt: now - 2_000 } } } }); });
+    expect(stateText()).toBe("作業中");
+    await act(async () => { publish("done", "done"); useLiveBriefStore.setState({ briefsBySession: { "pty-0": brief(now - 2_000) } }); });
+    expect(stateText()).toBe("返答終了");
+    expect(isManualDoneMarkValid({ brief: brief(now - 2_000), lastActivityAt: 0, attention: canonical("done", "done") } as DashboardCardModel, now - 5_000)).toBe(false);
+  });
+
+  it("keeps same-turn completion through output/read refresh and invalidates legacy new log activity", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now); publish("done", "done");
+    const original = brief(now - 20_000);
+    useLiveBriefStore.setState({ briefsBySession: { "pty-0": original } });
+    useSessionAttentionStore.getState().markDone("t0", now - 5_000);
+    await mount(pane(1, { agentKind: "codex" }));
+    await act(async () => {
+      usePaneMetadataStore.setState({ lastLogAt: { "pty-0": now }, metadata: { "pty-0": { screenStatusAt: now } } });
+      useLiveBriefStore.setState({ briefsBySession: { "pty-0": { ...original, lastSuccessfulReadAt: now + 1, updatedAt: now + 1 } } });
+    });
+    expect(stateText()).toBe("完了");
+    await act(async () => useLiveBriefStore.setState({ briefsBySession: {} }));
+    expect(stateText()).toBe("返答終了");
+  });
+  it.each(["needsHuman", "running"] as const)("renders a fresh same-owner %s brief after canonical expiry", async (operationalState) => {
+    vi.useFakeTimers(); vi.setSystemTime(now); publish("none", "working");
+    const current = { ...brief(now - 20_000), operationalState, autonomy: null };
+    useLiveBriefStore.setState({ briefsBySession: { "pty-0": current } });
+    useSessionAttentionStore.setState((state) => ({ statusSignalsBySession: {
+      "pty-0": { ...state.statusSignalsBySession["pty-0"], health: "stale" },
+    } }));
+    await mount(pane(1, { agentKind: "codex", agentSessionId: "conversation" }));
+    expect(stateText()).toBe(operationalState === "needsHuman" ? "要回答" : "作業中");
+    const workspace = useWorkspaceListStore.getState().workspaces[0];
+    const [card] = buildDashboardCards([workspace], { metadataBySession: {}, volatileMetadataBySession: {},
+      lastLogBySession: {}, lastLogAtBySession: {}, attentionBySession: useSessionAttentionStore.getState().attentionBySession,
+      statusSignalsBySession: useSessionAttentionStore.getState().statusSignalsBySession,
+      briefsBySession: { "pty-0": current }, seenAttentionByTab: new Map(), doneMarkByTab: new Map(),
+      stallsBySession: {}, now, hasTerminalBuffer: () => true });
+    expect(resolveDisplayState(card)).toBe(operationalState === "needsHuman" ? "needsHuman" : "running");
+  });
+
+  it.each([
+    ["input", "waiting", "要回答"],
+    ["none", "working", "作業中"],
+    ["error", "waiting", "エラー"],
+  ] as const)("keeps canonical %s priority over same-turn manual completion", async (kind, uiState, label) => {
+    vi.useFakeTimers(); vi.setSystemTime(now); publish("done", "done");
+    useLiveBriefStore.setState({ briefsBySession: { "pty-0": brief(now - 20_000) } });
+    useSessionAttentionStore.getState().markDone("t0", now - 5_000);
+    await mount(pane(1, { agentKind: "codex", agentSessionId: "conversation" }));
+    expect(stateText()).toBe("完了");
+    await act(async () => publish(kind, uiState));
+    expect(stateText()).toBe(label);
   });
 });

@@ -75,6 +75,9 @@ const viewProps = {
   overview: null,
   previousTotalsStatus: "idle" as const,
   models: null,
+  modelsLoading: false,
+  modelsError: null,
+  onRetryModels: () => {},
   sessions: null,
   series: null,
   rhythm: emptyRhythm,
@@ -284,7 +287,7 @@ describe("rework rankings fetch while the section is open", () => {
     await setStumbleOpen(true);
     expect(ailogReworkRankings).toHaveBeenCalledTimes(1);
     expect(ailogReworkRankings).toHaveBeenCalledWith(
-      { preset: "30d" },
+      { preset: "30d", anchor: useAilogStore.getState().rangeAnchor },
       expect.objectContaining({ includeSidechain: true, models: [], projects: [] }),
     );
   });
@@ -305,7 +308,7 @@ describe("rework rankings fetch while the section is open", () => {
     await flush();
     expect(ailogReworkRankings).toHaveBeenCalledTimes(2);
     expect(ailogReworkRankings).toHaveBeenLastCalledWith(
-      { preset: "7d" },
+      { preset: "7d", anchor: useAilogStore.getState().rangeAnchor },
       expect.objectContaining({ includeSidechain: true }),
     );
   });
@@ -318,7 +321,7 @@ describe("rework rankings fetch while the section is open", () => {
     await flush();
     expect(ailogReworkRankings).toHaveBeenCalledTimes(1);
     expect(ailogReworkRankings).toHaveBeenLastCalledWith(
-      { preset: "30d" },
+      { preset: "30d", anchor: useAilogStore.getState().rangeAnchor },
       expect.objectContaining({ includeSidechain: true }),
     );
   });
@@ -331,7 +334,7 @@ describe("rework rankings fetch while the section is open", () => {
     await flush();
     expect(ailogReworkRankings).toHaveBeenCalledTimes(2);
     expect(ailogReworkRankings).toHaveBeenLastCalledWith(
-      { preset: "30d" },
+      { preset: "30d", anchor: useAilogStore.getState().rangeAnchor },
       expect.objectContaining({ models: ["gpt-5.6-terra"] }),
     );
   });

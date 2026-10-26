@@ -59,6 +59,7 @@ let nativeFrames: Array<{ id: string; task: ReturnType<typeof deferred<ArrayBuff
 let nativeOutputs: Array<{ ids: string[]; task: ReturnType<typeof deferred<Record<string, number>>>; values: Record<string, number>; settled: boolean }>;
 let outputMode: "fresh" | "pending" | "missing", discoveryDelay: number, discoveryFailed: boolean;
 let settledFailures: Map<string, number>, writes: string[];
+const messageInputs = new Map<string, { text: string; accepted: boolean }>();
 let foreignIds: string[];
 let controller: ReturnType<typeof createLiveTailController>, workspace: Workspace;
 let reads: string[], roots: Root[], terms: RendererTerminal[], pumps: ReturnType<typeof xtermWritePump>[];
@@ -126,6 +127,23 @@ beforeEach(async () => {
       return frame(value.text, value.epoch);
     }
     if (["create_session", "kill_session", "ack_frontend_data"].includes(command)) return;
+    if (command === "prepare_pane_message") {
+      messageInputs.set(args.sessionId, { text: "", accepted: false });
+      return { guard: { sessionId: args.sessionId, sessionEpoch: backend.get(args.sessionId)!.epoch,
+        inputRevision: 0, agentMessage: true }, reason: null };
+    }
+    if (command === "verify_pane_message") {
+      const input = messageInputs.get(args.guard.sessionId);
+      return { confirmed: input?.accepted === true && input.text === args.text };
+    }
+    if (command === "write_pane_message") {
+      const input = messageInputs.get(args.guard.sessionId)!;
+      if (backend.get(args.guard.sessionId)!.epoch !== args.guard.sessionEpoch) return { sent: false, reason: "session_epoch" };
+      if (args.submit) input.accepted = true; else input.text = args.data;
+      writes.push(args.data); const value = backend.get(args.guard.sessionId)!;
+      value.text += args.submit ? "\r\nSubmitted\r\n" : args.data; value.outputAt = Date.now();
+      return { sent: true, reason: null };
+    }
     if (command === "write_to_session") {
       writes.push(args.data!); const value = backend.get(args.sessionId)!;
       value.text += args.data === "\r" ? "\r\nSubmitted\r\n" : args.data; value.outputAt = Date.now(); return;

@@ -80,8 +80,8 @@ describe("FIX-4 clock and queue display reproductions", () => {
     act(() => root.render(<DashboardCardRow card={early} selected={false} open={false} now={early.now!} hideWorkspaceBadge={false} onSelect={() => {}} onJump={() => {}} />));
     expect(node.textContent).toContain("作業中");
     act(() => root.render(<DashboardCardRow card={ended} selected={false} open={false} now={ended.now!} hideWorkspaceBadge={false} onSelect={() => {}} onJump={() => {}} />));
-    expect(node.textContent).toContain("要確認");
-    expect(node.querySelector('[aria-label="要確認 · 完了"]')).not.toBeNull();
+    expect(node.textContent).toContain("返答終了");
+    expect(node.querySelector('[aria-label="返答終了 · 要確認"]')).not.toBeNull();
     act(() => root.unmount());
     node.remove();
   });

@@ -363,3 +363,24 @@ describe("ReplyComposer mentions", () => {
     expect(textarea.disabled).toBe(false);
   });
 });
+
+describe("review fix 1: batch post-write refusal", () => {
+  it.each([{ textWritten: true }, { writeMayHaveOccurred: true }])("keeps possibly written members out of retry (%j)", async (written) => {
+    const candidates = buildMentionCandidates([
+      { logicalSessionId: "tab-a", sessionId: "session-a", label: "設計", workspaceName: "WS a", statusLabel: "作業中", isWorking: true },
+      { logicalSessionId: "tab-b", sessionId: "session-b", label: "校正", workspaceName: "WS b", statusLabel: "待機", isWorking: false },
+    ]);
+    useComposerStore.setState({ draftBySession: { "session-a": "分配" },
+      mentionTokensBySession: { "session-a": [mentionTokenFromCandidate(candidates[1]), mentionTokenFromCandidate(candidates[2])] } });
+    mocks.handleSocketCommand.mockImplementation((_: string, args: { sessionId: string }) => args.sessionId === "session-a"
+      ? Promise.resolve({ sent: false, ...written, message: "再送せず確認" }) : Promise.reject(new Error("before write")));
+    const textarea = await renderComposer(); await key(textarea, "Enter");
+    const report = Object.values(useReportInboxStore.getState().dispatchBatchesById)[0];
+    expect(Object.values(report.membersByAssignmentId).find((member) => member.ptySessionId === "session-a")?.delivery.state).toBe("unconfirmed");
+    const retry = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("失敗した 1件だけ再送"));
+    expect(retry).toBeDefined();
+    await act(async () => { retry!.click(); await Promise.resolve(); });
+    expect(mocks.handleSocketCommand.mock.calls.filter(([, args]) => args.sessionId === "session-a")).toHaveLength(1);
+    expect(mocks.handleSocketCommand.mock.calls.filter(([, args]) => args.sessionId === "session-b")).toHaveLength(2);
+  });
+});

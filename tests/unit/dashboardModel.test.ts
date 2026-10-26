@@ -290,7 +290,7 @@ describe("dashboard model", () => {
       }))).toBe("error");
     });
 
-    it("calls a live session stale once it passes the five minute threshold", () => {
+    it("retains the legacy no-boundary no-output fact without a canonical feed", () => {
       expect(resolveDisplayState(card({
         telemetryHealth: "live",
         operationalState: "running",

@@ -28,6 +28,10 @@ function errorText(error: unknown): string {
 interface PaneSendOutcome {
   confirmed?: boolean;
   reason?: string;
+  sent?: boolean;
+  message?: string;
+  textWritten?: boolean;
+  writeMayHaveOccurred?: boolean;
 }
 
 const TARGET_LABEL: Record<ComposerAgentLabelKind, string> = {
@@ -171,6 +175,11 @@ export function PaneComposer({ sessionId, target }: PaneComposerProps) {
     // ride the terminal's own queue, so anything typed between the body and the
     // submit key lands inside the line about to be submitted.
     void writeToPane(payload.body, true).then((outcome) => {
+      if (outcome?.sent === false) {
+        if (!outcome.textWritten && !outcome.writeMayHaveOccurred) restoreFailedDraft(sent);
+        useToastStore.getState().pushToast(outcome.message ?? "送信を止めました。対象の質問・承認を確認してください。", "warning");
+        return;
+      }
       // Only when the operator has not started the next message. Waiting for the
       // send and *then* taking focus is worse than never taking it: the typing
       // already in progress gets cut in half, with the first part in the editor
@@ -181,7 +190,7 @@ export function PaneComposer({ sessionId, target }: PaneComposerProps) {
       // change exists to remove.
       if (outcome?.confirmed !== true) {
         useToastStore.getState().pushToast(
-          `送信を確認できませんでした${outcome?.reason ? ` (${outcome.reason})` : ""}。タブの入力行を確認してください`,
+          outcome?.message ?? `送信を確認できませんでした${outcome?.reason ? ` (${outcome.reason})` : ""}。再送せず、タブの入力行を確認してください`,
           "warning",
         );
       }

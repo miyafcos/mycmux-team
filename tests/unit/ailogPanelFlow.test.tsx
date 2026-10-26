@@ -221,7 +221,7 @@ beforeEach(async () => {
   vi.mocked(ailogSeries).mockReset().mockResolvedValue({} as any);
   vi.mocked(ailogUsageRhythm).mockReset().mockResolvedValue({} as any);
   vi.mocked(ailogOverview).mockReset().mockResolvedValue(emptyOverview as any);
-  vi.mocked(ailogModels).mockReset().mockResolvedValue({ byWorkTag: [] } as any);
+  vi.mocked(ailogModels).mockReset().mockResolvedValue({ range: emptyOverview.range, granularity: "raw", byWorkTag: [] } as any);
   vi.mocked(ailogBreakdown).mockReset().mockResolvedValue({} as any);
   vi.mocked(ailogPivot).mockReset().mockResolvedValue({} as any);
   vi.mocked(ailogReworkRankings).mockReset().mockResolvedValue({ failedCommands: [], rewrittenFiles: [] } as any);
@@ -250,6 +250,78 @@ afterEach(() => {
 });
 
 describe("AI log panel single-view flow", () => {
+
+  it.each(["toolbar", "reopen"] as const)("D01 actual panel %s keeps the old chart on an advancing relative window", async (entry) => {
+    const firstAnchor = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(firstAnchor);
+    useAilogStore.setState({ rangeAnchor: firstAnchor });
+    const windowFor = (request: { from?: number | null; to?: number | null; anchor?: number | null }) => ({
+      from: request.from ?? (request.anchor ?? firstAnchor) - 30 * 86_400_000,
+      to: request.to ?? request.anchor ?? firstAnchor, label: "30d",
+    });
+    const seriesFor = (request: { anchor?: number | null }) => {
+      const actualRange = windowFor(request);
+      const group = { group: "gpt-6.1-sol", turns: 2, sessions: 2, input: (request.anchor ?? firstAnchor) > firstAnchor ? 40 : 20, output: 7, cacheRead: 0, cacheWrite: 0, costUsd: 1 };
+      return { range: actualRange, bucket: "day", groupBy: "model_raw" as const, buckets: [{ bucket: actualRange.from, turns: 2, sessions: 2, costUsd: 1, groups: [group] }], priceCoverage: emptyOverview.priceCoverage, priceSource: "test", costNote: "" };
+    };
+    vi.mocked(ailogOverview).mockImplementation(async (request) => ({ ...emptyOverview, range: windowFor(request), totals: { ...emptyOverview.totals, sessions: 2 } }));
+    vi.mocked(ailogSeries).mockImplementation(async (request) => seriesFor(request));
+    vi.mocked(ailogModels).mockImplementation(async (request) => ({ range: windowFor(request), byWorkTag: [] } as any));
+    vi.mocked(ailogSessions).mockImplementation(async (request) => ({ range: windowFor(request), rows: [], total: 0, priceSource: "test", costNote: "" }));
+    await useAilogStore.getState().loadUsage({ force: true });
+    await settle();
+    const oldSeries = useAilogStore.getState().usageSeries;
+    clearLoaders();
+    [ailogIndexStart, ailogSummarizeStart, ailogSessionSummarize, ailogDigestGenerate].forEach((loader) => vi.mocked(loader).mockClear());
+    let rejectSeries!: (error: Error) => void;
+    vi.mocked(ailogSeries).mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSeries = reject; }));
+    if (entry === "reopen") { panelOpen = false; renderAndFlush(); }
+    const nextAnchor = firstAnchor + 1_000;
+    vi.mocked(Date.now).mockReturnValue(nextAnchor);
+    if (entry === "toolbar") (childByName(latest, "RangeBar").props!.onRefresh as () => void)();
+    else { panelOpen = true; renderAndFlush(); }
+    expect(useAilogStore.getState().rangeAnchor).toBe(nextAnchor);
+    expect(useAilogStore.getState().usageSeries).toBe(oldSeries);
+    expect(vi.mocked(ailogSeries).mock.calls[0]?.[0]).toMatchObject({ anchor: nextAnchor });
+    rejectSeries(new Error("panel-relative-down"));
+    await settle();
+    const usage = childByName(latest, "UsageView");
+    const html = renderToStaticMarkup(createElement(UsageView, usage.props as any));
+    expect(html).toContain("<svg");
+    expect(html).toContain("panel-relative-down");
+    expect(html).toContain("今回の要求と異なる期間");
+    clearLoaders();
+    vi.mocked(ailogSessions).mockClear();
+    (usage.props!.onRetryUsage as () => void)();
+    await settle();
+    expect(ailogSeries).toHaveBeenCalledOnce();
+    expect(useAilogStore.getState().usageSeries?.range.to).toBe(nextAnchor);
+    expect(useAilogStore.getState().usageError).toBeNull();
+    for (const loader of [ailogOverview, ailogModels, ailogSessions, ailogBreakdown, ailogPivot, ailogIndexStart, ailogSummarizeStart, ailogSessionSummarize, ailogDigestGenerate]) expect(loader).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["onRefresh", ailogOverview],
+    ["onRetryModels", ailogModels],
+    ["onRetryUsage", ailogSeries],
+    ["onRetrySessions", ailogSessions],
+    ["onRefreshBreakdown", ailogBreakdown],
+    ["onRetryPivot", ailogPivot],
+  ] as const)("stage1 A7 actual panel %s retries only its report", async (callback, expectedLoader) => {
+    clearLoaders();
+    [ailogSessions, ailogIndexStart, ailogSummarizeStart, ailogSessionSummarize, ailogDigestGenerate].forEach((loader) => vi.mocked(loader).mockClear());
+    const usage = childByName(latest, "UsageView");
+    (usage.props![callback] as () => void)();
+    await settle();
+    for (const loader of [ailogOverview, ailogModels, ailogSeries, ailogSessions, ailogBreakdown, ailogPivot, ailogUsageRhythm]) {
+      if (loader === expectedLoader) expect(loader).toHaveBeenCalledOnce();
+      else expect(loader).not.toHaveBeenCalled();
+    }
+    expect(ailogIndexStart).not.toHaveBeenCalled();
+    expect(ailogSummarizeStart).not.toHaveBeenCalled();
+    expect(ailogSessionSummarize).not.toHaveBeenCalled();
+    expect(ailogDigestGenerate).not.toHaveBeenCalled();
+  });
   it("turns a selected chart bucket into its full day, week, or month range", () => {
     const augustThirdJst = Date.UTC(2026, 7, 3) - 9 * 60 * 60 * 1000;
     expect(bucketInputRange(augustThirdJst, "day")).toEqual({ from: "2026-08-03", to: "2026-08-03" });

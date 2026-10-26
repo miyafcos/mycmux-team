@@ -45,6 +45,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { postInboxMessage } from "../../lib/inbox";
 import { usePaneMetadataStore as delegationMetadataStore } from "../../stores/paneMetadataStore";
 import { delegationForCaller } from "../dashboard/delegationModel";
+import { preparePaneMessage, writePaneMessage, verifyPaneMessage, type MessageSendGuard } from "../../lib/livebrief";
+import { resolveComposerTarget } from "../../lib/composerSend";
 
 import type { WebPaneBounds, WebPaneTarget, WebPaneTargetInfo, WebPaneWaitResult, WebPaneModifier, WebPaneNativeBudget } from "../workspace/webPaneApi";
 
@@ -2271,6 +2273,9 @@ function unavailableSendReason(targetMounted: boolean): "target_unmounted" | "ve
 }
 
 const paneSendTails = new Map<string, Promise<unknown>>();
+// A text-only API call can be followed by Enter in another call. Retain its
+// native fence, never treat that submit as proof from a changing screen.
+const paneMessageDrafts = new Map<string, { guard: MessageSendGuard; text: string; tabId?: string }>();
 
 async function serializePaneSend<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
   const previous = paneSendTails.get(sessionId) ?? Promise.resolve();
@@ -2397,8 +2402,13 @@ async function writePaneBytes(
   args: SocketArgs,
   expectedInputRevision?: number,
   validateTarget: () => void = () => {},
+  messageGuard?: MessageSendGuard,
 ): Promise<{ sent: false; reason: string } | null> {
   validateTarget();
+  if (messageGuard) {
+    const result = await writePaneMessage(messageGuard, data, expectedInputRevision === messageGuard.inputRevision + 1);
+    return result.sent ? null : { sent: false, reason: result.reason ?? "ambiguous" };
+  }
   const { expectedAttentionId, expectedSessionEpoch, expectedSessionRevision } = guardedWriteExpectations(args);
   if (
     expectedAttentionId === undefined
@@ -2485,11 +2495,64 @@ async function sendPaneText(args: SocketArgs, expiresAt?: number, peerRequest = 
       useSessionAttentionStore.getState().attentionBySession[sessionId],
     );
     if (stale) return stale;
+    const staged = !textValue && (enter || key === "enter")
+      ? paneMessageDrafts.get(sessionId) : undefined;
+    const currentAttention = useSessionAttentionStore.getState().attentionBySession[sessionId];
+    const dedicatedAnswer = !enter && key === null && guarded && expectedAttentionId != null
+      && (currentAttention?.kind === "input" || currentAttention?.kind === "approval");
+    const editingKeys = !enter && key === null && /^[\b\x7f]+$/.test(textValue);
+    const ordinaryMessage = textValue.length > 0 && (key === null || key === "enter") && !dedicatedAnswer && !editingKeys;
+    let messageGuard: MessageSendGuard | undefined = staged?.guard;
+    const submittedText = staged?.text ?? textValue;
+    const messageRejected = (reason: string, textWritten = false) => ({
+      sent: false as const, reason, confirmed: false, enterWritten: false, textWritten,
+      message: reason === "pending_prompt"
+        ? "質問・承認への回答待ちです。「あなたの番」から専用の回答画面を開いてください。"
+        : "対象の状態が変わったため送信を止めました。再送せず、対象を確認してください。",
+    });
+    if (ordinaryMessage) {
+      paneMessageDrafts.delete(sessionId);
+      const meta = delegationMetadataStore.getState().metadata[sessionId];
+      const agentTarget = resolveComposerTarget({ command: target?.tab.commandArgv?.[0] ?? meta?.processTitle ?? "",
+        agentKind: target?.tab.agentKind ?? meta?.agentKind, agentId: target?.tab.agentId,
+        launchEnv: target?.tab.launchEnv }) !== "shell";
+      validateTarget();
+      const preparation = await preparePaneMessage(sessionId, agentTarget, guarded);
+      if (!preparation?.guard) return messageRejected(preparation?.reason ?? "unknown_session");
+      messageGuard = preparation.guard;
+      if (guarded && (messageGuard.attentionId !== expectedAttentionId
+        || messageGuard.sessionEpoch !== expectedSessionEpoch
+        || messageGuard.sessionRevision !== expectedSessionRevision
+        || messageGuard.inputRevision !== expectedInputRevision)) return messageRejected("stale_expectations");
+    }
+    if (staged && staged.tabId !== target?.tab.id) return messageRejected("target_changed", true);
+    let textWritten = Boolean(staged);
+    const writeBytes = async (data: string, revision?: number) => {
+      if (messageGuard) {
+        try { validateTarget(); } catch {
+          return messageRejected("target_changed", textWritten);
+        }
+      }
+      let rejected: Awaited<ReturnType<typeof writePaneBytes>>;
+      try { rejected = await writePaneBytes(sessionId, data, args, revision, validateTarget, messageGuard); }
+      catch (error) {
+        if (!messageGuard) throw error;
+        return { sessionId, ok: false, confirmed: false, attempts: 1, outcome: "unknown", reason: "write_unconfirmed",
+          textWritten, enterWritten: null, writeMayHaveOccurred: true,
+          message: "入力を書き込んだ可能性があります。再送せず、対象の状態を確認してください。" };
+      }
+      if (!rejected && messageGuard && revision === messageGuard.inputRevision) textWritten = true;
+      return rejected && messageGuard ? messageRejected(rejected.reason, revision === messageGuard.inputRevision + 1) : rejected;
+    };
     const keyBytes = key === null ? "\r" : SEND_KEY_BYTES[key];
     const bytes = textValue.length + (enter || key !== null ? keyBytes.length : 0);
     if (!enter && key === null) {
-      const rejected = await writePaneBytes(sessionId, textValue, args, expectedInputRevision, validateTarget);
+      const rejected = await writeBytes(textValue, messageGuard?.inputRevision ?? expectedInputRevision);
       if (rejected) return rejected;
+      if (messageGuard?.agentMessage) {
+        if (paneMessageDrafts.size >= 128) paneMessageDrafts.delete(paneMessageDrafts.keys().next().value!);
+        paneMessageDrafts.set(sessionId, { guard: messageGuard, text: textValue, tabId: target?.tab.id });
+      }
       return {
         sessionId,
         queuedBytes: new TextEncoder().encode(textValue).byteLength,
@@ -2510,7 +2573,7 @@ async function sendPaneText(args: SocketArgs, expiresAt?: number, peerRequest = 
     let canConfirm = beforeEnter !== null;
     let targetMounted = beforeText.targetMounted;
     if (textValue) {
-      const rejected = await writePaneBytes(sessionId, textValue, args, expectedInputRevision, validateTarget);
+      const rejected = await writeBytes(textValue, messageGuard?.inputRevision ?? expectedInputRevision);
       if (rejected) return rejected;
       const settled = await waitForTypedTextToSettle(sessionId, beforeText, preferHeadless);
       beforeEnter = settled.snapshot;
@@ -2518,11 +2581,29 @@ async function sendPaneText(args: SocketArgs, expiresAt?: number, peerRequest = 
       targetMounted = settled.targetMounted;
     }
 
-    let inputRevision = expectedInputRevision;
-    if (guarded && textValue) inputRevision = inputRevision === undefined ? undefined : inputRevision + 1;
+    let inputRevision = messageGuard?.inputRevision ?? expectedInputRevision;
+    if ((guarded || messageGuard) && (textValue || staged)) inputRevision = inputRevision === undefined ? undefined : inputRevision + 1;
+
+    if (messageGuard?.agentMessage) {
+      const rejected = await writeBytes(keyBytes, inputRevision);
+      if (rejected) return rejected;
+      paneMessageDrafts.delete(sessionId);
+      recordRecentInputText(sessionId, submittedText);
+      noteTurnSubmit(sessionId, turnLabelFrom(submittedText));
+      clearTurnDraft(sessionId);
+      const polls = Math.ceil(SEND_ENTER_CONFIRM_TIMEOUT_MS / SEND_CONFIRM_POLL_MS);
+      for (let poll = 0; poll < polls; poll += 1) {
+        await waitForSendConfirmationPoll();
+        try { validateTarget(); } catch { break; }
+        const evidence = await verifyPaneMessage(messageGuard, submittedText).catch(() => null);
+        if (evidence?.confirmed) return { sessionId, bytes, ok: true, confirmed: true, attempts: 1 };
+      }
+      return { sessionId, bytes, ok: false, confirmed: false, attempts: 1,
+        enterWritten: true, outcome: "unknown", reason: "submit_unconfirmed" };
+    }
 
     if (!canConfirm || beforeEnter === null) {
-      const rejected = await writePaneBytes(sessionId, keyBytes, args, inputRevision, validateTarget);
+      const rejected = await writeBytes(keyBytes, inputRevision);
       if (rejected) return rejected;
       if (textValue) {
         recordRecentInputText(sessionId, textValue);
@@ -2541,7 +2622,7 @@ async function sendPaneText(args: SocketArgs, expiresAt?: number, peerRequest = 
       };
     }
 
-    const rejected = await writePaneBytes(sessionId, keyBytes, args, inputRevision, validateTarget);
+    const rejected = await writeBytes(keyBytes, inputRevision);
     if (rejected) return rejected;
     if (textValue) {
       recordRecentInputText(sessionId, textValue);

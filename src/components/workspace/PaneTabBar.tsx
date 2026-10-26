@@ -65,6 +65,11 @@ import { useKeybindingStore } from "../../stores/keybindingStore";
 import { TERMINAL_SEARCH_EVENT } from "../terminal/XTermWrapper";
 import { TerminalHistoryEntry } from "../terminal/TerminalHistoryEntry";
 import { displayedPaneShortcutSource } from "./webPaneShortcuts";
+import { useLiveBriefStore } from "../../stores/liveBriefStore";
+import { useSessionStateClock } from "../../hooks/useSessionStateClock";
+import { isManualDoneMarkValid, sessionLastActivityAt } from "../../lib/manualDoneMark";
+import { useStallStore } from "../../stores/stallStore";
+import { presentSessionState, SESSION_STATE_LABELS } from "../../lib/sessionStatePresentation";
 
 interface PaneTabBarProps {
   pane: Pane;
@@ -1071,6 +1076,27 @@ export default memo(function PaneTabBar({
   const activeMeta = activeTab ? metadataBySession[activeTab.sessionId] : undefined;
   const activeVolatileMeta = activeTab ? volatileMetadataBySession[activeTab.sessionId] : undefined;
   const activeAttention = activeTab ? attentionBySession[activeTab.sessionId] : undefined;
+  const activeSessionId = activeTab?.sessionId ?? "";
+  const activeSignals = useSessionAttentionStore((state) => state.statusSignalsBySession[activeSessionId]);
+  const activeBrief = useLiveBriefStore((state) => state.briefsBySession[activeSessionId]);
+  const activeObservation = useLiveBriefStore((state) => state.observationsBySession[activeSessionId]);
+  const activeDoneMark = useSessionAttentionStore((state) => state.doneMarkByTab.get(activeTab?.id ?? ""));
+  const activeLastLogAt = usePaneMetadataStore((state) => state.lastLogAt[activeSessionId]);
+  const activeStall = useStallStore((state) => state.entries[activeSessionId]);
+  const stateNow = useSessionStateClock(isVisible && Boolean(activeTab) && !activeTabDeclared);
+  const activePresentation = presentSessionState({ attention: activeAttention, signals: activeSignals,
+    brief: activeBrief, observation: activeObservation, now: stateNow,
+    identity: { sessionId: activeSessionId, agentKind: activeMeta?.agentKind ?? activeTab?.agentKind,
+      agentSessionId: activeMeta?.agentSessionId ?? activeTab?.agentSessionId ?? activeTab?.claudeSessionId } });
+  const humanCompleted = activeDoneMark !== undefined
+    && activePresentation !== "running" && activePresentation !== "needsHuman" && activePresentation !== "error"
+    && isManualDoneMarkValid({
+    brief: activeBrief, attention: activeAttention, operationalState: activeBrief?.operationalState,
+    attentionCategory: activeTab ? attentionCategory(activeTab.id, activeAttention, seenAttentionByTab) : null,
+    lastActivityAt: sessionLastActivityAt(activeMeta, activeLastLogAt), stall: activeStall,
+  }, activeDoneMark);
+  const activeStateLabel = humanCompleted ? "完了" : activePresentation ? SESSION_STATE_LABELS[activePresentation]
+    : activeMeta?.agentKind ? SESSION_STATE_LABELS.unknown : null;
   // These tooltips used to spell the shortcut out as "Ctrl+Shift+Enter". On
   // macOS the same binding answers to ⇧⌘↩, so the tooltip was naming keys the
   // user does not press — and it went stale whenever the binding was rebound.
@@ -1094,7 +1120,9 @@ export default memo(function PaneTabBar({
   const published = useOnlineSavepointStore((state) =>
     publishIdentityKey ? state.publishedSessionIds[publishIdentityKey] === true : false,
   );
-  const activeStatus: EffectiveStatus = deriveDisplayStatus(activeMeta, activeVolatileMeta);
+  const activeStatus: EffectiveStatus = activePresentation === "running" ? "working"
+    : activePresentation === "needsHuman" ? "waiting"
+    : activePresentation ? "idle" : deriveDisplayStatus(activeMeta, activeVolatileMeta);
   const activeMark = activeTab ? resolveTabMark(activeTab, activeVolatileMeta?.liveAgentKind, activeVolatileMeta?.ptyAlive === true) : null;
   // Heading and icon share the same authority; a live null cannot fall back
   // to the launcher's saved agentId.
@@ -1393,8 +1421,8 @@ export default memo(function PaneTabBar({
       ? "未確認のエラー"
         : null;
   const activeStatusIndicator = resolveTabStatusIndicator({
-    unreadAttentionCategory: activeBlockingUnreadCategory,
-    notificationCount: activeNotificationCount,
+    unreadAttentionCategory: activePresentation ? activePresentation === "error" ? "error" : activePresentation === "needsHuman" ? "waiting" : null : activeBlockingUnreadCategory,
+    notificationCount: activePresentation ? 0 : activeNotificationCount,
     displayStatus: activeStatus,
   });
   const hiddenTabs = pane.tabs.filter((tab) => tab.id !== pane.activeTabId);
@@ -1582,6 +1610,8 @@ export default memo(function PaneTabBar({
       <span className="pane-active-heading-name" style={{ fontFamily: "var(--cmux-font-mono)", fontSize: "var(--cmux-font-size-xs)" }}>
         {activeTabDeclared ? `＋ ${label}（まだ）` : label}
       </span>
+      {!activeTabDeclared && activeStateLabel ? <span className="pane-session-state" role="status"
+        data-session-state={activePresentation ?? "unknown"}>{activeStateLabel}</span> : null}
     </div>;
   })();
 

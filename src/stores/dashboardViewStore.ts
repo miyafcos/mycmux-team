@@ -419,6 +419,8 @@ function applyToggleChatColumn(
 
 interface DashboardViewState {
   open: boolean;
+  /** Temporary question view when all saved chat columns are pinned. Never persisted. */
+  yourTurnTabId: string | null;
   query: string;
   workspaceFilter: string | null;
   agentFilter: string | null;
@@ -472,6 +474,7 @@ interface DashboardViewState {
 
 export const useDashboardViewStore = create<DashboardViewState>((set, get) => ({
   open: false,
+  yourTurnTabId: null,
   query: "",
   workspaceFilter: null,
   agentFilter: null,
@@ -490,7 +493,7 @@ export const useDashboardViewStore = create<DashboardViewState>((set, get) => ({
   userTurnRequestSeq: 0,
   toggle: () => set((state) => ({ open: !state.open })),
   openView: () => set({ open: true }),
-  close: () => set({ open: false }),
+  close: () => set({ open: false, yourTurnTabId: null }),
   setQuery: (query) => set({ query }),
   setWorkspaceFilter: (workspaceFilter) => set({ workspaceFilter }),
   setAgentFilter: (agentFilter) => set({ agentFilter }),

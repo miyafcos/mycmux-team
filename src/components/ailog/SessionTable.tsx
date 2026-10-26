@@ -18,6 +18,7 @@ import {
 } from "../../lib/ailog";
 import type { SessionSort } from "../../stores/ailogStore";
 import { useThemeStore } from "../../stores/themeStore";
+import { ReportPeriod } from "./ReportFeedback";
 import { getSessionTableRowMetrics } from "./sessionTableRowHeight";
 import { ButtonGroup, Chip, noteStyle, subtleButtonStyle, tableStyle, tdClipStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
 import { groupLabel } from "./usageModel";
@@ -137,6 +138,7 @@ export function SessionTable({
           ]}
         />
       </div>
+      <ReportPeriod range={report.range} />
       {draftQuery !== query ? <div role="status" style={noteStyle}>入力中の検索語は0.25秒後に一覧へ反映します。</div> : null}
       <div role="note" style={noteStyle}>親子を1組として表示しています。ターン・コスト相当は選んだ期間{modelFilterActive ? "・モデル" : ""}に一致する分です。「子を含む」は親と子の合計で、各行を足し直すものではありません。手戻りは会話全体の値です。</div>
       {error ? <div role="alert" style={{ ...noteStyle, color: "var(--cmux-red)" }}>指定した条件でセッション一覧を取得できませんでした。{appliedQuery ? `直前の「${appliedQuery}」の一覧を表示しています。` : "直前の一覧を表示しています。"}<button type="button" onClick={onRetry} style={{ ...subtleButtonStyle, marginLeft: 6 }}>同じ条件で再試行</button><details><summary>技術情報</summary>{error}</details></div> : null}

@@ -250,6 +250,29 @@ export function sendIntervention(expectation: InterventionExpectation, action: I
   return invoke<InterventionResult>("send_intervention", { expectation, action });
 }
 
+/** Native receipt; the same frozen identity is used for text, Enter and proof. */
+export interface MessageSendGuard {
+  sessionId: string;
+  sessionEpoch: number;
+  sessionRevision: number;
+  strictRevision: boolean;
+  attentionId: string | null;
+  inputRevision: number;
+  agentKind: string | null;
+  agentSessionId: string | null;
+  agentPid: number | null;
+  agentStartedAt: number | null;
+  agentMessage: boolean;
+  source: unknown | null;
+}
+
+export const preparePaneMessage = (sessionId: string, agentMessage: boolean, strictRevision = false): Promise<{ guard: MessageSendGuard | null; reason: string | null }> =>
+  invoke("prepare_pane_message", { sessionId, agentMessage, strictRevision });
+export const writePaneMessage = (guard: MessageSendGuard, data: string, submit: boolean): Promise<{ sent: boolean; reason: string | null }> =>
+  invoke("write_pane_message", { guard, data, submit });
+export const verifyPaneMessage = (guard: MessageSendGuard, text: string): Promise<{ confirmed: boolean; matchedEventId: string | null }> =>
+  invoke("verify_pane_message", { guard, text });
+
 export async function onLiveBriefUpdate(handler: (brief: LiveSessionBrief) => void): Promise<UnlistenFn> {
   return listen<{ brief: LiveSessionBrief }>("livebrief://update", (event) => handler(event.payload.brief));
 }

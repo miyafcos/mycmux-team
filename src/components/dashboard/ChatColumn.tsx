@@ -234,7 +234,7 @@ export function ChatColumn({
           data-optimistic-motion={reducedMotion ? undefined : "true"}
           className={`cmux-dashboard-msg is-user is-optimistic is-${message.state}${reducedMotion ? "" : " is-optimistic-motion"}`}
         >
-          <div className="cmux-dashboard-msg-who"><span>{dashboardStrings.chatRoleUser}</span><span>{message.state === "sending" ? dashboardStrings.composerMessageSending : message.state === "sent" ? dashboardStrings.composerMessageSent : dashboardStrings.composerMessageFailed}</span></div>
+          <div className="cmux-dashboard-msg-who"><span>{dashboardStrings.chatRoleUser}</span><span>{message.state === "sending" ? dashboardStrings.composerMessageSending : message.state === "sent" ? message.error ? dashboardStrings.dispatchUnconfirmed : dashboardStrings.composerMessageSent : dashboardStrings.composerMessageFailed}</span></div>
           <div className="cmux-dashboard-msg-plain">{message.text}</div>
           {message.state === "failed" ? <div className="cmux-dashboard-optimistic-retry"><span>{message.error ?? dashboardStrings.composerMessageFailed}</span><button type="button" onClick={() => requestOptimisticRetry(sessionId, message.id)}>{dashboardStrings.composerRetry}</button></div> : null}
         </div>)}

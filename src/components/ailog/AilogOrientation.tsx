@@ -57,10 +57,16 @@ export function AilogOrientation({
       ? "セッション一覧を更新中です。"
     : nextSession
       ? `${sessionError ? "直前" : "表示中"}の一覧で、機械指標上の手戻り兆候が最大: ${nextSession.title?.trim() || "（無題）"}（${formatScore(nextSession.reworkScore)}）`
-      : "次に確認するセッション候補はありません。";
+      : sessionError
+        ? "セッション一覧を取得できません。一覧欄から再試行できます。"
+        : sessions === null
+          ? "この概要と同じ期間のセッション一覧は未取得です。"
+          : "次に確認するセッション候補はありません。";
   const change = preset === "all"
     ? "全期間では前期間比較なし"
-    : previousTotalsStatus === "loading" || previousTotalsStatus === "idle"
+    : previousTotalsStatus === "idle"
+      ? "前期間は未取得です"
+    : previousTotalsStatus === "loading"
       ? "前期間との比較を読み込み中"
     : previousTotalsStatus === "error" || previousTotals === null
       ? "前期間を取得できません"

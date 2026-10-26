@@ -18,6 +18,10 @@ const terminalBufferMocks = vi.hoisted(() => ({
 const headlessBufferMocks = vi.hoisted(() => ({
   getHeadlessBufferLines: vi.fn(),
 }));
+const messageMocks = vi.hoisted(() => ({ preparePaneMessage: vi.fn(), writePaneMessage: vi.fn(), verifyPaneMessage: vi.fn() }));
+vi.mock("../../src/lib/livebrief", async (original) => ({
+  ...await original<typeof import("../../src/lib/livebrief")>(), ...messageMocks,
+}));
 
 vi.mock("../../src/lib/ipc", () => ipcMocks);
 vi.mock("../../src/components/terminal/XTermWrapper", () => ({ ...terminalBufferMocks, isTerminalParsingCurrentOutput: (id: string) => terminalBufferMocks.hasTerminalBuffer(id, true) }));
@@ -59,6 +63,23 @@ function workspace(): Workspace {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
+  messageMocks.preparePaneMessage.mockImplementation(async (id: string, agentMessage: boolean) => {
+    const attention = useSessionAttentionStore.getState().attentionBySession[id];
+    return { guard: { sessionId: id, sessionEpoch: attention?.sessionEpoch ?? 5,
+      sessionRevision: attention?.sessionRevision ?? 11, attentionId: attention?.attentionId ?? null,
+      inputRevision: 7, agentMessage }, reason: null };
+  });
+  // The fake native transport records the same physical writes as the shell
+  // tests below; separate regressions assert guard calls and rejection behavior.
+  messageMocks.writePaneMessage.mockImplementation(async (guard, data, submit) => {
+    if (useSessionAttentionStore.getState().attentionBySession[guard.sessionId]) {
+      return ipcMocks.writeToSessionGuarded(guard.sessionId, data, guard.attentionId,
+        guard.sessionEpoch, guard.sessionRevision, guard.inputRevision + Number(submit));
+    }
+    await ipcMocks.writeToSession(guard.sessionId, data);
+    return { sent: true, reason: null };
+  });
+  messageMocks.verifyPaneMessage.mockResolvedValue({ confirmed: false, matchedEventId: null });
   ipcMocks.getSessionInputRevision.mockResolvedValue(7);
   ipcMocks.writeToSession.mockResolvedValue(undefined);
   ipcMocks.writeToSessionGuarded.mockResolvedValue({ sent: true, reason: null });
@@ -85,6 +106,91 @@ async function flushSendTimers(): Promise<void> {
 }
 
 describe("pane.send_text confirmed enter", () => {
+  it("keeps the composer's erase-only adoption on the raw editing path", async () => {
+    await expect(handleSocketCommand("pane.send_text", { sessionId, text: "\u007f\u007f" })).resolves.toMatchObject({ unverified: true });
+    expect(messageMocks.preparePaneMessage).not.toHaveBeenCalled();
+    expect(ipcMocks.writeToSession).toHaveBeenCalledExactlyOnceWith(sessionId, "\u007f\u007f");
+  });
+  it.each([true, false])("keeps the native receipt across text-only then Enter (enter flag=%s)", async (flag) => {
+    const ws = workspace(); ws.panes[0].tabs[0].agentKind = "codex";
+    useWorkspaceListStore.setState({ workspaces: [ws] });
+    terminalBufferMocks.getTerminalBufferLines.mockReturnValue(["spinner"]);
+    await handleSocketCommand("pane.send_text", { sessionId, text: "日本語\n次の行" });
+    const pending = handleSocketCommand("pane.send_text", { sessionId, text: "", ...(flag ? { enter: true } : { key: "enter" }) });
+    await flushSendTimers();
+    await expect(pending).resolves.toMatchObject({ confirmed: false, enterWritten: true, outcome: "unknown" });
+    expect(messageMocks.preparePaneMessage).toHaveBeenCalledOnce();
+    expect(messageMocks.verifyPaneMessage).toHaveBeenCalledWith(expect.objectContaining({ sessionId }), "日本語\n次の行");
+    expect(ipcMocks.writeToSession.mock.calls).toEqual([[sessionId, "日本語\n次の行"], [sessionId, "\r"]]);
+  });
+
+  it("blocks text-only before bytes when the agent is asking, without stealing answer keys", async () => {
+    messageMocks.preparePaneMessage.mockResolvedValue({ guard: null, reason: "pending_prompt" });
+    await expect(handleSocketCommand("pane.send_text", { sessionId, text: "本文" }))
+      .resolves.toMatchObject({ sent: false, textWritten: false, reason: "pending_prompt" });
+    expect(messageMocks.writePaneMessage).not.toHaveBeenCalled();
+    terminalBufferMocks.getTerminalBufferLines.mockReturnValueOnce(["choice"]).mockReturnValue(["selected"]);
+    const arrow = handleSocketCommand("pane.send_text", { sessionId, text: "", key: "down" });
+    await flushSendTimers(); await expect(arrow).resolves.toMatchObject({ confirmed: true });
+    expect(ipcMocks.writeToSession).toHaveBeenCalledWith(sessionId, "\u001b[B");
+  });
+
+  it("reports text already written if the target disappears before Enter", async () => {
+    terminalBufferMocks.getTerminalBufferLines.mockReturnValue(["echo"]);
+    messageMocks.writePaneMessage.mockImplementationOnce(async () => {
+      useWorkspaceListStore.setState({ workspaces: [] }); return { sent: true, reason: null };
+    });
+    const pending = handleSocketCommand("pane.send_text", { sessionId, text: "本文", enter: true });
+    await flushSendTimers();
+    await expect(pending).resolves.toMatchObject({ reason: "target_changed", textWritten: true, enterWritten: false });
+    expect(messageMocks.writePaneMessage).toHaveBeenCalledOnce();
+  });
+
+  it.each(["claude", "codex", "claude-codex"])("does not confirm %s from a spinner or dismissed modal", async (kind) => {
+    const ws = workspace();
+    ws.panes[0].tabs[0].agentKind = kind as "claude" | "codex" | "claude-codex";
+    useWorkspaceListStore.setState({ workspaces: [ws] });
+    terminalBufferMocks.getTerminalBufferLines.mockReturnValueOnce(["prompt"])
+      .mockReturnValueOnce(["typed"] ).mockReturnValueOnce(["typed"]).mockReturnValue(["spinner changed"]);
+    const pending = handleSocketCommand("pane.send_text", { sessionId, text: "same instruction", enter: true });
+    await flushSendTimers();
+    await expect(pending).resolves.toMatchObject({ confirmed: false, enterWritten: true, outcome: "unknown" });
+    expect(messageMocks.verifyPaneMessage).toHaveBeenCalled();
+    expect(ipcMocks.writeToSession.mock.calls).toEqual([[sessionId, "same instruction"], [sessionId, "\r"]]);
+  });
+
+  it("confirms an agent input from native acceptance evidence with an unreadable screen", async () => {
+    const ws = workspace(); ws.panes[0].tabs[0].agentKind = "codex";
+    useWorkspaceListStore.setState({ workspaces: [ws] });
+    terminalBufferMocks.getTerminalBufferLines.mockImplementation(() => { throw new Error("unreadable"); });
+    messageMocks.verifyPaneMessage.mockResolvedValue({ confirmed: true, matchedEventId: "new-user-event" });
+    const pending = handleSocketCommand("pane.send_text", { sessionId, text: "accepted", enter: true });
+    await flushSendTimers();
+    await expect(pending).resolves.toMatchObject({ confirmed: true, attempts: 1 });
+    expect(messageMocks.verifyPaneMessage).toHaveBeenCalledWith(expect.objectContaining({ sessionId }), "accepted");
+  });
+
+  it("blocks an ordinary message before text when expectations were omitted", async () => {
+    messageMocks.preparePaneMessage.mockResolvedValue({ guard: null, reason: "pending_prompt" });
+    await expect(handleSocketCommand("pane.send_text", { sessionId, text: "do not answer", enter: true }))
+      .resolves.toMatchObject({ sent: false, textWritten: false, enterWritten: false, reason: "pending_prompt",
+        message: expect.stringContaining("あなたの番") });
+    expect(messageMocks.writePaneMessage).not.toHaveBeenCalled();
+    expect(ipcMocks.writeToSession).not.toHaveBeenCalled();
+  });
+
+  it("does not submit or retype when a question arrives after text", async () => {
+    terminalBufferMocks.getTerminalBufferLines.mockReturnValue(["echo"]);
+    messageMocks.writePaneMessage.mockResolvedValueOnce({ sent: true, reason: null })
+      .mockResolvedValueOnce({ sent: false, reason: "pending_prompt" });
+    const pending = handleSocketCommand("pane.send_text", { sessionId, text: "draft", enter: true });
+    await flushSendTimers();
+    await expect(pending).resolves.toMatchObject({ reason: "pending_prompt", textWritten: true, enterWritten: false });
+    expect(messageMocks.writePaneMessage.mock.calls.map(([, data, submit]) => [data, submit]))
+      .toEqual([["draft", false], ["\r", true]]);
+    expect(ipcMocks.writeToSession).not.toHaveBeenCalled();
+  });
+
   it("rejects a declared tab before any write or buffer read", async () => {
     const state = useWorkspaceListStore.getState();
     const declaredWorkspace = state.workspaces[0];
@@ -352,7 +458,7 @@ describe("pane.send_text confirmed enter", () => {
 
     await expect(
       handleSocketCommand("pane.send_text", { sessionId, text: "short", enter: true }),
-    ).rejects.toThrow("text write failed");
+    ).resolves.toMatchObject({ confirmed: false, outcome: "unknown", reason: "write_unconfirmed", writeMayHaveOccurred: true });
     expect(ipcMocks.writeToSession.mock.calls).toEqual([[sessionId, "short"]]);
   });
 
@@ -636,4 +742,65 @@ describe("pane.send_text optimistic lock from the frontend", () => {
     })).resolves.toEqual({ sent: false, reason: "attention_id" });
     expect(ipcMocks.writeToSession).not.toHaveBeenCalled();
   });
+  it.each([true, false])("keeps a staged ordinary guard with a done attention ID (enter flag=%s)", async (flag) => {
+    seedAttention("done-a", 11);
+    useSessionAttentionStore.setState((state) => ({ attentionBySession: {
+      ...state.attentionBySession, [sessionId]: { ...state.attentionBySession[sessionId]!, kind: "done", uiState: "done" },
+    } }));
+    const ws = workspace(); ws.panes[0].tabs[0].agentKind = "codex";
+    useWorkspaceListStore.setState({ workspaces: [ws] });
+    const expectations = { expectedAttentionId: "done-a", expectedSessionEpoch: 5, expectedSessionRevision: 11 };
+    await handleSocketCommand("pane.send_text", { sessionId, text: "日本語の通常本文", ...expectations, expectedInputRevision: 7 });
+    const guard = messageMocks.writePaneMessage.mock.calls[0][0];
+    terminalBufferMocks.getTerminalBufferLines.mockReturnValueOnce(["status panel"]).mockReturnValue(["panel closed"]);
+    const pending = handleSocketCommand("pane.send_text", {
+      sessionId, text: "", ...expectations, expectedInputRevision: 8, ...(flag ? { enter: true } : { key: "enter" }),
+    });
+    await flushSendTimers();
+    await expect(pending).resolves.toMatchObject({ confirmed: false, enterWritten: true, outcome: "unknown" });
+    expect(messageMocks.writePaneMessage.mock.calls).toEqual([[guard, "日本語の通常本文", false], [guard, "\r", true]]);
+    expect(messageMocks.verifyPaneMessage).toHaveBeenCalledWith(guard, "日本語の通常本文");
+    expect(ipcMocks.writeToSessionGuarded).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["input", "approval"] as const)("preserves an explicit %s Enter without a staged ordinary draft", async (kind) => {
+    seedAttention("question-a", 11);
+    useSessionAttentionStore.setState((state) => ({ attentionBySession: {
+      ...state.attentionBySession, [sessionId]: { ...state.attentionBySession[sessionId]!, kind },
+    } }));
+    terminalBufferMocks.getTerminalBufferLines.mockReturnValueOnce(["choice"]).mockReturnValue(["answered"]);
+    const pending = handleSocketCommand("pane.send_text", { sessionId, text: "", key: "enter",
+      expectedAttentionId: "question-a", expectedSessionEpoch: 5, expectedSessionRevision: 11, expectedInputRevision: 7 });
+    await flushSendTimers();
+    await expect(pending).resolves.toMatchObject({ confirmed: true });
+    expect(messageMocks.preparePaneMessage).not.toHaveBeenCalled();
+    expect(messageMocks.writePaneMessage).not.toHaveBeenCalled();
+    expect(ipcMocks.writeToSessionGuarded).toHaveBeenCalledExactlyOnceWith(sessionId, "\r", "question-a", 5, 11, 7);
+  });
+
+  it.each(["input", "approval"] as const)("does not turn a staged ordinary Enter into a new %s answer", async (kind) => {
+    seedAttention("done-a", 11);
+    useSessionAttentionStore.setState((state) => ({ attentionBySession: {
+      ...state.attentionBySession, [sessionId]: { ...state.attentionBySession[sessionId]!, kind: "done", uiState: "done" },
+    } }));
+    const ws = workspace(); ws.panes[0].tabs[0].agentKind = "codex";
+    useWorkspaceListStore.setState({ workspaces: [ws] });
+    await handleSocketCommand("pane.send_text", { sessionId, text: "通常の下書き",
+      expectedAttentionId: "done-a", expectedSessionEpoch: 5, expectedSessionRevision: 11, expectedInputRevision: 7 });
+    const guard = messageMocks.writePaneMessage.mock.calls[0][0];
+    seedAttention("new-question", 12);
+    useSessionAttentionStore.setState((state) => ({ attentionBySession: {
+      ...state.attentionBySession, [sessionId]: { ...state.attentionBySession[sessionId]!, kind },
+    } }));
+    messageMocks.writePaneMessage.mockResolvedValueOnce({ sent: false, reason: "pending_prompt" });
+    terminalBufferMocks.getTerminalBufferLines.mockReturnValueOnce(["question"]).mockReturnValue(["selection changed"]);
+    const pending = handleSocketCommand("pane.send_text", { sessionId, text: "", key: "enter",
+      expectedAttentionId: "new-question", expectedSessionEpoch: 5, expectedSessionRevision: 12, expectedInputRevision: 8 });
+    await flushSendTimers();
+    await expect(pending).resolves.toMatchObject({ sent: false, textWritten: true, enterWritten: false, reason: "pending_prompt" });
+    expect(messageMocks.writePaneMessage.mock.calls).toEqual([[guard, "通常の下書き", false], [guard, "\r", true]]);
+    expect(ipcMocks.writeToSessionGuarded).toHaveBeenCalledExactlyOnceWith(sessionId, "通常の下書き", "done-a", 5, 11, 7);
+    expect(messageMocks.verifyPaneMessage).not.toHaveBeenCalled();
+  });
+
 });

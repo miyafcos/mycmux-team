@@ -4,6 +4,18 @@
   min-width: 0;
 }
 
+.cmux-your-turn-overlay {
+  position: absolute;
+  inset: 8px;
+  z-index: 10;
+  overflow: auto;
+  padding: 12px;
+  background: var(--cmux-bg-solid);
+  border: 1px solid var(--cmux-border);
+  border-radius: 6px;
+}
+.cmux-your-turn-overlay-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
 .cmux-dashboard-view {
   --cmux-bg: var(--cmux-bg-solid);
   --cmux-surface: var(--cmux-surface-solid);
@@ -193,7 +205,7 @@
 .cmux-dashboard-qcard-tab.is-active { color: var(--cmux-text); font-weight: 600; }
 .cmux-dashboard-qcard-tab-progress { margin-left: auto; color: var(--cmux-text-tertiary); font-size: var(--cmux-font-size-xs); }
 .cmux-dashboard-qcard-options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.cmux-dashboard-qcard-option { display: inline-flex; align-items: center; gap: 8px; border: 1px solid color-mix(in srgb, var(--status-waiting) 55%, transparent); border-radius: 7px; padding: 6px 14px; background: transparent; color: var(--cmux-text); font: inherit; font-size: 12.5px; cursor: pointer; }
+.cmux-dashboard-qcard-option { display: inline-flex; align-items: center; min-height: 32px; gap: 8px; border: 1px solid color-mix(in srgb, var(--status-waiting) 55%, transparent); border-radius: 7px; padding: 6px 14px; background: transparent; color: var(--cmux-text); font: inherit; font-size: 12.5px; cursor: pointer; }
 .cmux-dashboard-qcard-option.is-checked { border-color: var(--status-waiting); background: color-mix(in srgb, var(--status-waiting) 12%, transparent); }
 .cmux-dashboard-qcard-option.is-current { outline: 1px solid color-mix(in srgb, var(--status-waiting) 40%, transparent); }
 .cmux-dashboard-qcard-desc { color: var(--cmux-text-secondary); font-size: var(--cmux-font-size-xs); overflow-wrap: anywhere; }

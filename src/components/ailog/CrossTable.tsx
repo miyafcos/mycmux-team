@@ -13,6 +13,7 @@ import {
   selectionFromPivotCell,
 } from "./crossTableModel";
 import { groupLabel, metricUnit, usageAxisHint, USAGE_AXES, type UsageMetric } from "./usageModel";
+import { ReportFailure, ReportNotLoaded, ReportPeriod } from "./ReportFeedback";
 import { ButtonGroup, EmptyState, Num, VScrollBox, noteStyle, tableActionButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
 
 function axisLabel(value: string, axis: PivotAxis): string {
@@ -65,11 +66,12 @@ export function CrossTable({
         <ButtonGroup ariaLabel="行軸" roleLabel="行" value={rowBy} onChange={onRowBy} options={visibleAxes} />
         <ButtonGroup ariaLabel="列軸" roleLabel="列" value={colBy} onChange={onColBy} options={visibleAxes} />
       </div>
-      {error && report ? <EmptyState kind="error" message={error} onPrimary={onRetry} /> : null}
+      {report ? <ReportPeriod range={report.range} /> : null}
+      {error && report ? <ReportFailure label="クロス集計" error={error} range={report.range} onRetry={onRetry} /> : null}
       {error && !report ? (
         <EmptyState kind="error" message={error} onPrimary={onRetry} />
       ) : !report || !folded ? (
-        loading ? null : <EmptyState kind="no-data" />
+        loading ? null : <ReportNotLoaded label="クロス集計" onLoad={onRetry} />
       ) : folded.rows.length === 0 ? (
         <EmptyState kind="no-data" />
       ) : (

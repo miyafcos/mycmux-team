@@ -39,6 +39,7 @@ vi.mock("@tauri-apps/api/core", async original => ({
 const encoder = new TextEncoder();
 const startTime = 1_800_000_000_000;
 const sid = "invariant-session";
+let messageInput = { text: "", accepted: false };
 const working = "* Thinking… (3m 12s · ↓ 62.3k tokens)";
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (reason: Error) => void;
@@ -114,6 +115,17 @@ beforeEach(async () => {
     }
     if (command === "kill_session") return;
     if (command === "create_session") return;
+    if (command === "prepare_pane_message") {
+      messageInput = { text: "", accepted: false };
+      return { guard: { sessionId: sid, sessionEpoch: backend.epoch, inputRevision: 0, agentMessage: true }, reason: null };
+    }
+    if (command === "verify_pane_message") return { confirmed: messageInput.accepted && messageInput.text === args.text };
+    if (command === "write_pane_message") {
+      if (backend.epoch !== args.guard.sessionEpoch) return { sent: false, reason: "session_epoch" };
+      if (args.submit) messageInput.accepted = true; else messageInput.text = args.data;
+      writes.push(args.data); backend.text += args.submit ? "\r\nSubmitted\r\n" : args.data;
+      backend.outputAt = Date.now(); return { sent: true, reason: null };
+    }
     if (command === "write_to_session") {
       writes.push(args.data!); backend.text += args.data === "\r" ? "\r\nSubmitted\r\n" : args.data;
       backend.outputAt = Date.now(); return;

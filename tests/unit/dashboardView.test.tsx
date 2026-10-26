@@ -392,6 +392,37 @@ describe("DashboardView page layout contract", () => {
     expect(appShell).toContain("<GroupingStatusBar />");
     expect(dashboardView).not.toContain("<GroupingStatusBar />");
   });
+  it("stacks the pinned question overlay above dashboard children below outer modals", async () => {
+    const saved = tab("saved-overlay", "s-saved-overlay", "Saved");
+    const question = tab("overlay-question", "s-overlay-question", "Question");
+    seedDashboard({ workspace: workspace([saved, question]), selectedTabId: saved.id,
+      briefs: [brief({ ptySessionId: question.sessionId, agentSessionId: "exact-s-overlay-question" })] });
+    useDashboardViewStore.setState({ pinnedChatColumnTabIds: [saved.id], yourTurnTabId: question.id });
+    const styles = document.createElement("style");
+    styles.textContent = readFileSync("src/components/dashboard/DashboardView.css", "utf8")
+      + "\n" + readFileSync("src/components/dashboard/MinimapPanel.css", "utf8");
+    document.head.appendChild(styles);
+    try {
+      await renderDashboard();
+      const dashboard = container.querySelector<HTMLElement>(".cmux-dashboard-view")!;
+      const overlay = dashboard.querySelector<HTMLElement>(".cmux-your-turn-overlay")!;
+      expect(overlay.parentElement).toBe(dashboard);
+      expect(overlay.querySelector(".cmux-dashboard-composer-input")).not.toBeNull();
+      expect(overlay.querySelector("[data-dashboard-question]")).not.toBeNull();
+      expect(dashboard.querySelector(".cmux-dashboard-chat-column.is-active")).not.toBeNull();
+      expect(dashboard.querySelector(".cmux-minimap-chip")).not.toBeNull();
+      const childLayers = Array.from(styles.sheet!.cssRules)
+        .filter((rule): rule is CSSStyleRule => rule.type === CSSRule.STYLE_RULE)
+        .filter(rule => ![".cmux-your-turn-overlay", ".cmux-dashboard-view"].includes(rule.selectorText))
+        .map(rule => Number(rule.style.getPropertyValue("z-index"))).filter(Number.isFinite);
+      expect(Number(getComputedStyle(overlay).zIndex)).toBeGreaterThan(Math.max(...childLayers));
+      expect(getComputedStyle(dashboard).position).toBe("fixed");
+      const modalLayer = Number(readFileSync("src/global.css", "utf8").match(/--cmux-overlay-z:\s*(\d+)/)![1]);
+      expect(Number(getComputedStyle(dashboard).zIndex)).toBeLessThan(modalLayer);
+      expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toEqual([saved.id]);
+    } finally { styles.remove(); }
+  });
+
 });
 
 describe("DashboardView active AI target", () => {
@@ -448,6 +479,8 @@ describe("DashboardView split3 selection", () => {
     await act(async () => {
       useSessionAttentionStore.setState({
         attentionBySession: { [cardB.sessionId]: inputAttention(cardB.sessionId, 2) },
+        statusSignalsBySession: { [cardB.sessionId]: { activity: "idle", health: "fresh", lastMonitorAt: NOW,
+          lastEvidenceAt: NOW, lastOutputAt: NOW, processStartedAt: NOW - 1000 } },
       });
     });
     await act(async () => {
@@ -456,6 +489,8 @@ describe("DashboardView split3 selection", () => {
           [cardB.sessionId]: inputAttention(cardB.sessionId, 2),
           [cardA.sessionId]: inputAttention(cardA.sessionId, 1),
         },
+        statusSignalsBySession: Object.fromEntries([cardA, cardB].map((card) => [card.sessionId,
+          { activity: "idle", health: "fresh", lastMonitorAt: NOW, lastEvidenceAt: NOW, lastOutputAt: NOW, processStartedAt: NOW - 1000 }])),
       });
     });
 
