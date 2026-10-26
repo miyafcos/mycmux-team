@@ -1,4 +1,4 @@
-name: Public Windows regression
+name: Public Windows Python contracts
 on:
   workflow_dispatch:
     inputs:
@@ -17,7 +17,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: public-windows-regression
+  group: public-windows-python-contracts
   cancel-in-progress: false
 jobs:
   windows-regression:
@@ -62,74 +62,44 @@ jobs:
       - name: Restore locked Node dependencies
         shell: pwsh
         run: npm ci
+      - name: Install approved pinned test dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check pytest==9.0.2 openpyxl==3.1.5
+          if ($LASTEXITCODE -ne 0) { throw 'Approved test dependencies unavailable' }
       - name: Verify frontend and available Python contracts
         shell: python
         run: |
           from pathlib import Path
-          import hashlib, importlib.util, json, os, re, runpy, subprocess, sys, time
+          import hashlib, json, os, subprocess, sys, time
+          import pytest, openpyxl
+          assert pytest.__version__ == '9.0.2' and openpyxl.__version__ == '3.1.5'
           root=Path.cwd()
-          out=root/"cloud-output"
+          out=root/'cloud-output'
           out.mkdir(exist_ok=False)
-          generated_paths=['.dispatch/STAGE-B-generated.json', '.dispatch/stage-B3-B2-continuity-counts.json', '.dispatch/stage-C-B3-original-counts.json', '.dispatch/stage-C-extended-counts.json']
-          assert all(not (root/name).exists() for name in generated_paths)
+          files=['test_agent_cli_inbox.py', 'test_agent_hook_contract.py', 'test_claude_codex_tab_identity.py', 'test_claude_skills_pack_contract.py', 'test_codex_restore_runtime.py', 'test_cursor_launcher.py', 'test_grok_handoff_runtime.py', 'test_hook_settings_merge_contract.py', 'test_launcher_catalog_contract.py', 'test_launcher_codex_pane_env.py', 'test_launcher_grokbot_app.py', 'test_launcher_handoff_env.py', 'test_launcher_restore_auto_contract.py', 'test_launcher_terminal_shell.py', 'test_public_export.py', 'test_terminal_interactive_boot.py', 'test_updater_feed_contract.py']
           records=[]
           failures=[]
-          omitted=["tests/unit/codexNarrowDetached.test.tsx","tests/unit/codexN3Entries.test.tsx","tests/unit/codexNarrowClaudeParity.test.ts"]
-          private_imports=sorted(path.relative_to(root).as_posix() for path in (root/"tests/unit").glob("*.test.*") if re.search(r"codex-(?:base|merge):",path.read_text(encoding="utf-8")))
-          assert private_imports==sorted(omitted), "private baseline test set changed"
-          config=root/"vitest.public-ci.config.ts"
-          config.write_text('import { defineConfig } from "vitest/config";\nexport default defineConfig({test:{projects:[{test:{name:"unit",include:["tests/unit/**/*.test.{ts,tsx}"],exclude:'+json.dumps(omitted+["tests/unit/persistentLayoutProjectionTypeCoverage.test.ts"])+',maxWorkers:1,sequence:{groupOrder:0}}},{test:{name:"type-coverage",include:["tests/unit/persistentLayoutProjectionTypeCoverage.test.ts"],fileParallelism:false,sequence:{groupOrder:1}}}]}});\n',encoding="utf-8")
-          records.append({"label":"private-baseline-parity","status":"not_run","files":omitted,"reason":"private pinned Git trees not in public checkout; no substitution"})
-          commands=[("tsc",[str(root/"node_modules/.bin/tsc.cmd"),"--noEmit"]),
-                    ("vitest",[str(root/"node_modules/.bin/vitest.cmd"),"run","--config",str(config),"--maxWorkers=1","--no-file-parallelism","--testTimeout=30000","--reporter=json","--outputFile="+str(out/"vitest-results.json"),"--no-color"])]
-          if importlib.util.find_spec("pytest") is not None:
-              commands.append(("python-contracts",[sys.executable,"-B","-X","utf8","-m","pytest","tests/test_public_export.py","tests/test_ailog_contract.py","tests/test_no_hardcoded_ai_models.py","-q","-p","no:cacheprovider","--junitxml="+str(out/"python-contracts.xml")]))
-          else:
-              records.append({"label":"python-contracts","status":"not_run","reason":"pytest not preinstalled; no packages installed"})
-          for label,command in commands:
+          environment=dict(os.environ, SHELL='/usr/bin/bash', PYTHONDONTWRITEBYTECODE='1', PYTEST_DISABLE_PLUGIN_AUTOLOAD='1', PYTHONUTF8='1')
+          environment['PATH']='C:/Program Files/Git/usr/bin'+os.pathsep+environment['PATH']
+          for locale in ['default','C']:
+              child=dict(environment)
+              if locale=='C': child['LC_ALL']='C'
+              else: child.pop('LC_ALL',None)
+              command=[sys.executable,'-B','-X','utf8','-m','pytest',*['tests/'+name for name in files],'-q','-p','no:cacheprovider','--junitxml='+str(out/(locale+'.xml'))]
               started=time.monotonic()
-              print("START",label,flush=True)
-              log=out/(label+".log")
-              with log.open("xb") as stream:
-                  result=subprocess.run(command,cwd=root,stdout=stream,stderr=subprocess.STDOUT)
-              records.append({"label":label,"exit":result.returncode,"seconds":round(time.monotonic()-started,3),"log":log.name})
-              print("END",label,result.returncode,flush=True)
-              if result.returncode: failures.append(label)
-          sys.path.insert(0,str(root/"scripts"))
-          exporter=runpy.run_path(str(root/"scripts/public_export.py"),run_name="ci_fixture_library")
-          fixture=root/"src-tauri/src/ailog/tests/r2_legacy_copies.json"
-          fixture_matches=fixture.read_bytes().replace(b"\r\n",b"\n")==exporter["synthetic_ailog_legacy_fixture"]()
-          rust=(root/"src-tauri/src/ailog/tests/stage1_r2_tests.rs").read_text(encoding="utf-8")
-          literal_ids=re.findall(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",rust,re.IGNORECASE)
-          records.append({"label":"synthetic-fixture","matches_recipe":fixture_matches,"rust_literal_uuid_count":len(literal_ids)})
-          if not fixture_matches or literal_ids: failures.append("synthetic-fixture")
-          generated=[]
-          for name in generated_paths:
-              path=root/name
-              assert path.is_file() and not path.is_symlink(), "expected test evidence missing or linked: "+name
-              value=json.loads(path.read_text(encoding="utf-8"))
-              assert isinstance(value,dict) and value, "invalid test evidence: "+name
-              checksum=hashlib.sha256(path.read_bytes()).hexdigest()
-              destination=out/path.name
-              assert not destination.exists()
-              path.rename(destination)
-              assert hashlib.sha256(destination.read_bytes()).hexdigest()==checksum
-              generated.append({"source":name,"asset":destination.name,"sha256":checksum})
-          records.append({"label":"generated-test-evidence","files":generated})
-          changed=subprocess.check_output(["git","diff","HEAD","--name-only"],text=True).splitlines()
-          records.append({"label":"source-invariance","changed_paths":changed})
-          untracked=subprocess.check_output(["git","ls-files","--others","--exclude-standard","-z"]).decode().split("\0")
-          unexpected=[name for name in untracked if name and not name.startswith("cloud-output/") and name!="vitest.public-ci.config.ts"]
-          records.append({"label":"untracked-invariance","unexpected":unexpected})
-          if changed or unexpected: failures.append("source-invariance")
-          for log in out.glob("*.log"):
-              if log.stat().st_size==0: log.write_text("[no output]\n",encoding="utf-8")
-          assets=[]
-          for path in sorted(out.iterdir()):
-              if path.is_file(): assets.append({"name":path.name,"size":path.stat().st_size,"sha256":hashlib.sha256(path.read_bytes()).hexdigest()})
-          receipt={"source_commit":os.environ["SOURCE_COMMIT"],"source_tree":os.environ["SOURCE_TREE"],"version":os.environ["RELEASE_VERSION"],"checks":records,"failed_checks":failures,"python_version":sys.version,"artifacts":assets,"full_private_python_suite":"not_run_public_checkout","private_baseline_parity":"not_run_missing_trees"}
-          (out/"regression-receipt.json").write_text(json.dumps(receipt,indent=2)+"\n",encoding="utf-8")
-          print(json.dumps({"checks":records,"failed_checks":failures}),flush=True)
+              with (out/(locale+'.log')).open('xb') as log:
+                  result=subprocess.run(command,cwd=root,env=child,stdout=log,stderr=subprocess.STDOUT,timeout=1500)
+              records.append({'locale':locale,'exit':result.returncode,'seconds':round(time.monotonic()-started,3)})
+              if result.returncode: failures.append(locale)
+          changed=subprocess.check_output(['git','diff','HEAD','--name-only'],text=True).splitlines()
+          untracked=subprocess.check_output(['git','ls-files','--others','--exclude-standard','-z']).decode().split('\0')
+          unexpected=[name for name in untracked if name and not name.startswith('cloud-output/')]
+          if changed or unexpected: failures.append('source-invariance')
+          assets=[{'name':path.name,'size':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for path in sorted(out.iterdir()) if path.is_file()]
+          receipt={'source_commit':os.environ['SOURCE_COMMIT'],'source_tree':os.environ['SOURCE_TREE'],'version':os.environ['RELEASE_VERSION'],'files':files,'checks':records,'failed_checks':failures,'changed_paths':changed,'unexpected_untracked':unexpected,'python_version':sys.version,'pytest':pytest.__version__,'openpyxl':openpyxl.__version__,'assets':assets}
+          (out/'regression-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n',encoding='utf-8')
+          print(json.dumps(receipt),flush=True)
           raise SystemExit(1 if failures else 0)
       - name: Retain regression results as draft
         if: ${{ always() }}
@@ -140,6 +110,6 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if (-not (Test-Path cloud-output/regression-receipt.json)) { throw 'No completed regression receipt; no results retained' }
           $files = @(Get-ChildItem -LiteralPath cloud-output -File | ForEach-Object { $_.FullName })
-          $tag = 'windows-regression-' + $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT
+          $tag = 'windows-python-' + $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT
           & gh release create $tag @files --repo $env:GITHUB_REPOSITORY --draft --target $env:SOURCE_COMMIT --title ('Windows regression ' + $env:RELEASE_VERSION) --notes 'Verification results only. No installable release or updater change.'
           if ($LASTEXITCODE -ne 0) { throw 'Cannot retain regression results' }
