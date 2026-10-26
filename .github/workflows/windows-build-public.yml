@@ -109,8 +109,10 @@ jobs:
               powershell = shutil.which('powershell')
               assert powershell
               try:
-                  minimal = {key: environment[key] for key in ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'PATHEXT'] if key in environment}
-                  operating_system = {key: environment[key] for key in ['SystemDrive', 'ProgramData', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'COMSPEC', 'PSModulePath'] if key in environment}
+                  casefold_environment = {key.upper(): value for key, value in environment.items()}
+                  minimal = {key: casefold_environment[key.upper()] for key in ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'PATHEXT'] if key.upper() in casefold_environment}
+                  operating_system = {key: casefold_environment[key.upper()] for key in ['SystemDrive', 'ProgramData', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'COMSPEC', 'PSModulePath'] if key.upper() in casefold_environment}
+                  assert 'SystemRoot' in minimal and 'SystemDrive' in operating_system
                   command = [powershell, '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', "$PSVersionTable.PSVersion.ToString(); $null=Get-Command __mycmux_absent_probe__ -ErrorAction SilentlyContinue; [Console]::WriteLine('LOOKUP_DONE'); exit 0"]
                   for label, child in [('minimal', minimal), ('os-paths', {**minimal, **operating_system}), ('normal', environment)]:
                       working = output / label
@@ -130,6 +132,9 @@ jobs:
                   assert all(correspondence.values())
                   code = "import runpy,shutil; m=runpy.run_path('tests/test_codex_restore_runtime.py'); m['run_powershell']('exact',shutil.which('powershell')); print('EXACT_ORIGINAL_ASSERTIONS_PASS')"
                   records.append(run_probe([sys.executable, '-B', '-X', 'utf8', '-c', code], root, environment, 'original-exact', output, 90))
+                  diagnostic = "import runpy,shutil,os; m=runpy.run_path('tests/test_codex_restore_runtime.py'); original=m['fixture_env']; keys=['SystemDrive','ProgramData','USERPROFILE','LOCALAPPDATA','APPDATA','COMSPEC','PSModulePath']; extra={k:os.environ[k] for k in keys if k in os.environ}; m['run_powershell'].__globals__['fixture_env']=lambda directory,case:{**extra,**original(directory,case)}; m['run_powershell']('exact',shutil.which('powershell')); print('EXACT_ASSERTIONS_PASS_WITH_OS_ENV_DIAGNOSTIC')"
+                  records.append(run_probe([sys.executable, '-B', '-X', 'utf8', '-c', diagnostic], root, environment, 'os-env-exact-diagnostic', output, 90))
+                  records.append(run_probe([sys.executable, '-B', '-X', 'utf8', '-c', code], baseline, environment, 'base-original-exact', output, 90))
               except Exception as error:
                   errors.append(type(error).__name__ + ': ' + str(error))
               finally:
