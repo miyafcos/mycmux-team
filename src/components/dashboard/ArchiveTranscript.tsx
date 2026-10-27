@@ -72,16 +72,20 @@ function ArchiveReaderView({reader,descriptor,visible=true,tabId,context=null,ta
   const [geometry,setGeometry]=useState({top:0,height:600});
   const [measurement,setMeasurement]=useState(0);
   const [body,setBody]=useState<ArchiveItem|null>(null);
+  const [showRecords,setShowRecords]=useState(false);
+  const [toolReveal,setToolReveal]=useState<{id:string;request:number}|null>(null);
+  const recordCount=state.items.filter((item)=>item.kind==="source"||item.kind==="diagnostic").length;
+  const displayItems=useMemo(()=>showRecords?state.items:state.items.filter((item)=>item.kind!=="source"&&item.kind!=="diagnostic"),[state.items,showRecords]);
   const [searching,setSearching]=useState(false);
   const navigation=useRef(0);
   useEffect(()=>()=>{navigation.current++;reader.cancelSearch();},[reader]);
   const [selected,setSelected]=useState(false);
   const selectionWindow=useRef<ReturnType<typeof archiveWindow>|null>(null);
-  const layout=useMemo(()=>archiveLayout(state.items,heights.current),[state.items,measurement]);
+  const layout=useMemo(()=>archiveLayout(displayItems,heights.current),[displayItems,measurement]);
   const computedWindow=archiveWindow(layout,geometry.top,geometry.height,body?96:120);
   const computedWindowRef=useRef(computedWindow);computedWindowRef.current=computedWindow;
   const windowed=selected&&selectionWindow.current?selectionWindow.current:computedWindow;
-  const mounted=state.items.slice(windowed.start,windowed.end);
+  const mounted=displayItems.slice(windowed.start,windowed.end);
   const capture=()=>{
     const node=log.current; if(!node) return;
     const top=node.getBoundingClientRect().top;
@@ -95,12 +99,12 @@ function ArchiveReaderView({reader,descriptor,visible=true,tabId,context=null,ta
   useLayoutEffect(()=>{
     const node=log.current; if(!node) return;
     if(pendingJump.current) {
-      const index=state.items.findIndex((i)=>i.occurrenceId===pendingJump.current);
+      const index=displayItems.findIndex((i)=>i.occurrenceId===pendingJump.current);
       if(index>=0) { node.scrollTop=layout[index]; pendingJump.current=null; }
     } else if(state.following && state.reachedFence && !selected) node.scrollTop=node.scrollHeight;
-    else if(anchor.current && !selected) { const top=anchoredScrollTop(anchor.current,state.items,layout); if(top!==null) node.scrollTop=top; }
+    else if(anchor.current && !selected) { const top=anchoredScrollTop(anchor.current,displayItems,layout); if(top!==null) node.scrollTop=top; }
     updateGeometry(); capture();
-  },[state.items,layout,state.following,state.reachedFence,selected]);
+  },[displayItems,layout,state.following,state.reachedFence,selected]);
   useLayoutEffect(()=>{
     const node=log.current; if(!node || typeof ResizeObserver==="undefined") return;
     const observer=new ResizeObserver((entries)=>{
@@ -115,18 +119,18 @@ function ArchiveReaderView({reader,descriptor,visible=true,tabId,context=null,ta
     });
     observer.observe(node); node.querySelectorAll("[data-archive-row]").forEach((row)=>observer.observe(row));
     return ()=>observer.disconnect();
-  },[state.items,windowed.start,windowed.end,selected]);
+  },[displayItems,windowed.start,windowed.end,selected]);
   useEffect(()=>{
     const visibility=()=>reader.setVisible(visible && !document.hidden);
     const selection=()=>{ const s=window.getSelection(); const active=!!s && !s.isCollapsed && !!s.anchorNode && !!log.current?.parentElement?.contains(s.anchorNode); if(active&&!selectionWindow.current) selectionWindow.current=computedWindowRef.current; if(!active) selectionWindow.current=null; reader.setSelection(active); setSelected(active); };
     visibility(); document.addEventListener("visibilitychange",visibility); document.addEventListener("selectionchange",selection);
     return ()=>{document.removeEventListener("visibilitychange",visibility);document.removeEventListener("selectionchange",selection);reader.setSelection(false);};
   },[reader,visible]);
-  useEffect(()=>setBody(null),[state.sourceGeneration]);
-  const jump=(item:ArchiveItem)=>{ reader.setFollowing(false); capture(); pendingJump.current=item.occurrenceId; setGeometry((old)=>({...old,top:layout[state.items.findIndex((i)=>i.occurrenceId===item.occurrenceId)]??0})); setMeasurement((m)=>m+1); };
+  useEffect(()=>{setBody(null);setShowRecords(false);},[state.sourceGeneration]);
+  const jump=(item:ArchiveItem)=>{ reader.setFollowing(false); capture(); pendingJump.current=item.occurrenceId; setGeometry((old)=>({...old,top:layout[displayItems.findIndex((i)=>i.occurrenceId===item.occurrenceId)]??0})); setMeasurement((m)=>m+1); };
   const visibleIndex=indexAt(layout,geometry.top);
   const turns=state.items.filter((i)=>i.kind==="user");
-  const currentTurn=last(state.items.slice(0,visibleIndex+1).filter((i)=>i.kind==="user"))??turns[0];
+  const currentTurn=last(displayItems.slice(0,visibleIndex+1).filter((i)=>i.kind==="user"))??turns[0];
   const step=async(delta:-1|1)=>{
     reader.setFollowing(false); const current=currentTurn; const index=turns.findIndex((i)=>i.occurrenceId===current?.occurrenceId);
     const target=turns[index+delta]; if(target) {jump(target);return;}
@@ -162,6 +166,7 @@ function ArchiveReaderView({reader,descriptor,visible=true,tabId,context=null,ta
   const targetReady=state.status==="ready" && !!state.sourceGeneration;
   const [activeSearchMatch, setActiveSearchMatch] = useState<string | null>(null);
   useEffect(() => {
+    if(selected)return;
     setActiveSearchMatch(null);
     const target = transcriptSearch?.targetId;
     if (!target || !visible || transcriptSearch.identity !== descriptorKey(state.descriptor)) return;
@@ -182,6 +187,8 @@ function ArchiveReaderView({reader,descriptor,visible=true,tabId,context=null,ta
         const item = await reader.find(item => item.occurrenceId === target, { fromLatest: true, signal: abort.signal });
         if (cancelled || abort.signal.aborted) return;
         if (!item) { report(false, reader.snapshot.error ?? reader.snapshot.notice ?? "targetMissing"); return; }
+        if(item.kind==="source"||item.kind==="diagnostic")setShowRecords(true);
+        setToolReveal(previous=>({id:item.occurrenceId,request:(previous?.request??0)+1}));
         pendingJump.current = item.occurrenceId;
         setActiveSearchMatch(item.occurrenceId);
         setMeasurement(value => value + 1);
@@ -191,27 +198,28 @@ function ArchiveReaderView({reader,descriptor,visible=true,tabId,context=null,ta
     };
     void navigate();
     return () => { cancelled = true; clearTimeout(timer); abort.abort(); if (pendingJump.current === target) pendingJump.current = null; };
-  }, [reader, transcriptSearch?.targetId, transcriptSearch?.generation, transcriptSearch?.navigation, transcriptSearch?.identity, visible, targetReady, state.error, onSearchNavigation]);
+  }, [reader, transcriptSearch?.targetId, transcriptSearch?.generation, transcriptSearch?.navigation, transcriptSearch?.identity, visible, targetReady, state.error, onSearchNavigation, selected]);
   useEffect(()=>{
-    if(!targetEventId||!targetReady) return;
-    const key=`${targetEventId}:${targetEventRequest}:${state.sourceGeneration}`; if(targetKey.current===key) return;targetKey.current=key;
+    if(!targetEventId||!targetReady||selected) return;
+    const key=`${targetEventId}:${targetEventRequest}:${state.sourceGeneration}`; if(targetKey.current===key) return;
     let cancelled=false;setSearching(true);
     const prefix=`${state.descriptor.expectedAgentKind}:${state.descriptor.expectedAgentSessionId}:${state.sourceGeneration}:`;
     const exact=targetEventId.startsWith(prefix) && /^\d+:\d+$/.test(targetEventId.slice(prefix.length));
-    void reader.find((i)=>exact?i.occurrenceId===targetEventId:i.aliases.includes(targetEventId),{unique:!exact,fromLatest:true}).then((item)=>{if(!cancelled&&item){pendingJump.current=item.occurrenceId;setMeasurement((m)=>m+1);}}).finally(()=>{if(!cancelled)setSearching(false);});
+    void reader.find((i)=>exact?i.occurrenceId===targetEventId:i.aliases.includes(targetEventId),{unique:!exact,fromLatest:true}).then((item)=>{if(!cancelled&&item){targetKey.current=key;if(item.kind==="source"||item.kind==="diagnostic")setShowRecords(true);setToolReveal(previous=>({id:item.occurrenceId,request:(previous?.request??0)+1}));pendingJump.current=item.occurrenceId;setMeasurement((m)=>m+1);}}).finally(()=>{if(!cancelled)setSearching(false);});
     return ()=>{cancelled=true;setSearching(false);};
-  },[targetEventId,targetEventRequest,targetReady,reader]);
+  },[targetEventId,targetEventRequest,targetReady,reader,selected]);
   const different=!!descriptor&&descriptorKey(descriptor)!==descriptorKey(state.descriptor);
   const searchFence = transcriptSearch?.query && transcriptSearch.identity === descriptorKey(state.descriptor)
     && transcriptSearch.sourceGeneration === state.sourceGeneration && transcriptSearch.snapshotEnd !== null ? BigInt(transcriptSearch.snapshotEnd) : null;
   const activeTarget = searchFence !== null && transcriptSearch?.targetId === activeSearchMatch ? activeSearchMatch : null;
   return <div className="cmux-archive-transcript" data-archive-view="true">
     <div className="cmux-archive-actions">
-      <button type="button" disabled={!!state.loading||selected||!state.items.length} onClick={()=>{const ticket=++navigation.current;setSearching(true);void reader.first().then((reached)=>{if(ticket===navigation.current && reached){pendingJump.current=reader.snapshot.items[0]?.occurrenceId??null;setMeasurement((m)=>m+1);}}).finally(()=>{if(ticket===navigation.current)setSearching(false);});}}>最初へ</button>
+      <button type="button" disabled={!!state.loading||selected||!state.items.length} onClick={()=>{const ticket=++navigation.current;setSearching(true);void reader.first().then((reached)=>{if(ticket===navigation.current && reached){pendingJump.current=reader.snapshot.items.find((item)=>showRecords||(item.kind!=="source"&&item.kind!=="diagnostic"))?.occurrenceId??null;setMeasurement((m)=>m+1);}}).finally(()=>{if(ticket===navigation.current)setSearching(false);});}}>最初へ</button>
       <button type="button" disabled={!!state.loading||selected||state.status!=="ready"} onClick={()=>void reader.latest()}>最新へ</button>
       {searching?<button type="button" onClick={()=>{navigation.current++;reader.cancelSearch();setSearching(false);}}>検索を停止</button>:null}
       {different?<button type="button" onClick={()=>reader.reopen(descriptor!)}>現在の会話を開く</button>:null}
       {(state.error||state.notice==="readerBusy")&&!different?<button type="button" onClick={()=>reader.reopen()}>もう一度開く</button>:null}
+      {recordCount?<button type="button" aria-pressed={showRecords} disabled={selected} title="読み込み済みの未分類・大きい記録を表示" onClick={()=>{capture();setShowRecords((shown)=>!shown);}}>記録の詳細 {recordCount}件</button>:null}
       <span>端末の履歴は Shift+ホイール</span>
     </div>
     {state.error?<div role="status" className="cmux-archive-notice">{explain(state.error)}</div>:null}
@@ -231,8 +239,9 @@ function ArchiveReaderView({reader,descriptor,visible=true,tabId,context=null,ta
       {mounted.map((item)=><div key={item.occurrenceId} data-archive-row={item.occurrenceId} data-dashboard-event={item.occurrenceId}
         data-transcript-search-match={searchFence !== null && BigInt(item.sourceStart) < searchFence && BigInt(item.sourceEnd) <= searchFence && matchesTranscriptQuery(item, transcriptSearch!.query) ? "true" : undefined}
         data-transcript-search-active={activeTarget === item.occurrenceId ? "true" : undefined}
-        className={`cmux-archive-row${activeTarget === item.occurrenceId ? " cmux-archive-search-active" : ""}`}><ArchiveRow item={item} context={context} bodyDisabled={selected} onBody={()=>{capture();setBody(item);}}/></div>)}
+        className={`cmux-archive-row${activeTarget === item.occurrenceId ? " cmux-archive-search-active" : ""}`}><ArchiveRow item={item} context={context} bodyDisabled={selected} revealRequest={toolReveal?.id===item.occurrenceId?toolReveal.request:0} onBody={()=>{capture();setBody(item);}}/></div>)}
       <div aria-hidden="true" style={{height:windowed.bottom}}/>
+      {!displayItems.length && recordCount ? <div className="cmux-archive-notice" role="status">この範囲には表示できる会話本文がありません。記録の詳細から内容を確認できます。</div> : null}
       {!state.items.length ? <ArchiveEmpty unavailable={state.status!=="ready" || !!state.error || state.notice==="readerBusy"} reason={state.error?explain(state.error):state.notice?explain(state.notice):state.loading?"会話を読み込んでいます":undefined}/> : null}
       {state.continuation?<div className="cmux-archive-pending">前の文脈を読み取っています</div>:null}
     </div>
@@ -246,14 +255,24 @@ function ArchiveEmpty({unavailable=false,reason}:{unavailable?:boolean;reason?:s
     {unavailable?<><div>{dashboardStrings.chatUnavailable}</div><div>{dashboardStrings.telemetryUnavailable}{reason?` (${reason})`:""}</div></>:dashboardStrings.chatEmpty}
   </div>;
 }
-const ArchiveRow=memo(function ArchiveRow({item,context,onBody,bodyDisabled}:{item:ArchiveItem;context:DashboardLinkContext|null;onBody:()=>void;bodyDisabled:boolean}){
+const ArchiveRow=memo(function ArchiveRow({item,context,onBody,bodyDisabled,revealRequest}:{item:ArchiveItem;context:DashboardLinkContext|null;onBody:()=>void;bodyDisabled:boolean;revealRequest:number}){
+  const [toolOpen,setToolOpen]=useState(false);
+  const appliedReveal=useRef(0);
+  useEffect(()=>{if(revealRequest&&revealRequest!==appliedReveal.current&&!bodyDisabled){appliedReveal.current=revealRequest;setToolOpen(true);}},[revealRequest,bodyDisabled]);
   const role=item.kind==="user"?"私":item.kind==="assistant"?"エージェント":item.kind==="toolCall"?item.tool??"ツール":item.kind==="toolResult"?"ツール結果":item.kind==="question"?"記録された質問":item.kind==="boundary"?"会話の区切り":item.kind==="attachment"?"添付資料":"元の記録";
+  const timestamp=item.timestamp===null?null:new Date(item.timestamp);
+  const time=timestamp&&Number.isFinite(timestamp.getTime())?timestamp.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):null;
+  const more=item.bodyRef?<button type="button" disabled={bodyDisabled} onClick={onBody}>{item.kind==="source"||item.kind==="diagnostic"?"元の記録を表示":"本文の続きを表示"}</button>:null;
+  if(item.kind==="toolCall"||item.kind==="toolResult")return <details className="cmux-dashboard-msg cmux-archive-tool" open={toolOpen} onToggle={(event)=>setToolOpen(event.currentTarget.open)}>
+    <summary>{role}{item.target?<span>{item.target}</span>:null}{time?<span>{time}</span>:null}</summary>
+    <div className="cmux-archive-tool-content"><div className="cmux-dashboard-msg-plain"><DashboardLinkedText text={item.text} context={context}/></div>{more}</div>
+  </details>;
   return <div className={`cmux-dashboard-msg ${item.kind==="assistant"?"is-agent":item.kind==="user"?"is-user":"cmux-archive-evidence"}`}>
-    <div className="cmux-dashboard-msg-who"><span>{role}</span><span>{item.timestamp===null?"時刻不明":new Date(item.timestamp).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</span></div>
+    <div className="cmux-dashboard-msg-who"><span>{role}</span>{time?<span>{time}</span>:null}</div>
     {item.target?<div className="cmux-archive-target">{item.target}</div>:null}
     {item.kind==="assistant"?<MarkdownView text={item.text} context={context}/>:<div className="cmux-dashboard-msg-plain"><DashboardLinkedText text={item.text} context={context}/></div>}
     {item.kind==="question"?<small>回答は端末で行います</small>:null}
-    {item.bodyRef?<button type="button" disabled={bodyDisabled} onClick={onBody}>{item.kind==="source"||item.kind==="diagnostic"?"元の記録を表示":"本文の続きを表示"}</button>:null}
+    {more}
   </div>;
 });
 function ArchiveBody({reader,item,onClose}:{reader:TranscriptHistoryReader;item:ArchiveItem;onClose:()=>void}) {

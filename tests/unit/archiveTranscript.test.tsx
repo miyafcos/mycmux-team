@@ -25,6 +25,88 @@ describe("shared read-only archive view",()=>{
     await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor}/>);await new Promise((r)=>setTimeout(r,5));});
     expect(host.textContent).toContain("result without start");expect(host.textContent).toContain("ツール結果");expect(host.textContent).toContain("historical question");expect(host.textContent).toContain("回答は端末で行います");expect(host.querySelector("textarea,input")).toBeNull();
   });
+  it("keeps diagnostic records out of the conversation while preserving access to their source",async()=>{
+    const p=page(0,4);
+    p.items[0]={...p.items[0],kind:"user",text:"表示を直してください"};
+    p.items[1]={...p.items[1],kind:"diagnostic",text:"未対応の記録（元の記録を表示できます）",bodyRef:"raw-body"};
+    p.items[2]={...p.items[2],kind:"assistant",text:"会話本文を読みやすく直します。"};
+    p.items[3]={...p.items[3],kind:"source",text:"大きい記録・読み取れない記録（元の記録を表示）",bodyRef:"raw-body-2"};
+    mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"?p:c==="read_transcript_history_body"?{text:"original record",cursor:null,sourceText:true}:null);
+    await render();
+    expect(host.textContent).toContain("表示を直してください");expect(host.textContent).toContain("会話本文を読みやすく直します。");
+    expect(host.textContent).not.toContain("未対応の記録");expect(host.textContent).not.toContain("時刻不明");
+    expect(host.querySelectorAll("[data-archive-row]")).toHaveLength(2);
+    const details=[...host.querySelectorAll<HTMLButtonElement>("button")].find(button=>button.textContent==="記録の詳細 2件")!;
+    expect(details.getAttribute("aria-pressed")).toBe("false");await act(async()=>details.click());
+    expect(host.querySelectorAll("[data-archive-row]")).toHaveLength(4);
+    const source=[...host.querySelectorAll<HTMLButtonElement>("button")].find(button=>button.textContent==="元の記録を表示")!;
+    await act(async()=>{source.click();await Promise.resolve();});
+    expect(host.querySelector(".cmux-archive-body")?.textContent).toContain("original record");
+  });
+  it("does not pretend a diagnostic-only page is an empty conversation",async()=>{
+    const p=page(0,1);p.items[0]={...p.items[0],kind:"diagnostic",text:"未対応の記録（元の記録を表示できます）",bodyRef:"raw-body"};
+    mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"?p:null);
+    await render();expect(host.textContent).toContain("この範囲には表示できる会話本文がありません");
+    expect(host.textContent).toContain("記録の詳細 1件");expect(host.textContent).not.toContain("時刻不明");
+  });
+  it("collapses tool input and output without hiding the recorded question",async()=>{
+    const p=page(0,3);p.items[0]={...p.items[0],kind:"toolCall",tool:"Read",target:"src/example.ts",text:'{"file_path":"src/example.ts"}'};
+    p.items[1]={...p.items[1],kind:"toolResult",text:"読み取った内容"};
+    p.items[2]={...p.items[2],kind:"question",text:"この方針で進めますか？"};
+    mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"?p:null);
+    await render();const tools=[...host.querySelectorAll<HTMLDetailsElement>("details.cmux-archive-tool")];
+    expect(tools).toHaveLength(2);expect(tools.every(tool=>!tool.open)).toBe(true);
+    expect(tools[0].querySelector("summary")?.textContent).toContain("Read");
+    expect(tools[0].querySelector("summary")?.textContent).toContain("src/example.ts");
+    expect(tools[1].querySelector("summary")?.textContent).toContain("ツール結果");
+    expect(host.textContent).toContain("この方針で進めますか？");
+    expect(host.textContent).not.toContain("時刻不明");
+  });
+  it("reveals a diagnostic source explicitly targeted by its stable occurrence",async()=>{
+    const p=page(0,2);p.items[1]={...p.items[1],kind:"diagnostic",text:"unclassified record",bodyRef:"raw-body"};
+    mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"||c==="read_transcript_history_page"?p:c==="refresh_transcript_history_tail"?{...p,items:[]}:null);
+    await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor} targetEventId={p.items[1].occurrenceId}/>);await new Promise(resolve=>setTimeout(resolve,25));});
+    expect(host.querySelector(`[data-archive-row="${p.items[1].occurrenceId}"]`)).not.toBeNull();
+    expect(host.textContent).toContain("unclassified record");
+  });
+  it("opens a targeted tool result while leaving unrelated tools collapsed",async()=>{
+    const p=page(0,2);p.items[1]={...p.items[1],kind:"toolResult",text:"target result"};
+    mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"||c==="read_transcript_history_page"?p:c==="refresh_transcript_history_tail"?{...p,items:[]}:null);
+    await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor} targetEventId={p.items[1].occurrenceId}/>);await new Promise(resolve=>setTimeout(resolve,25));});
+    const tools=[...host.querySelectorAll<HTMLDetailsElement>("details.cmux-archive-tool")];
+    expect(tools).toHaveLength(2);expect(tools[0].open).toBe(false);expect(tools[1].open).toBe(true);
+  });
+  it("reopens a tool after it was closed and the same target is requested again",async()=>{
+    const p=page(0,1);mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"||c==="read_transcript_history_page"?p:c==="refresh_transcript_history_tail"?{...p,items:[]}:null);
+    await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor} targetEventId={p.items[0].occurrenceId} targetEventRequest={1}/>);await new Promise(resolve=>setTimeout(resolve,25));});
+    const tool=host.querySelector<HTMLDetailsElement>("details.cmux-archive-tool")!;
+    expect(tool.open).toBe(true);await act(async()=>{tool.open=false;tool.dispatchEvent(new Event("toggle"));});
+    expect(tool.open).toBe(false);
+    await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor} targetEventId={p.items[0].occurrenceId} targetEventRequest={2}/>);await new Promise(resolve=>setTimeout(resolve,25));});
+    expect(tool.open).toBe(true);
+  });
+  it("does not reopen a manually closed tool merely because text selection ends",async()=>{
+    const p=page(0,2);mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"||c==="read_transcript_history_page"?p:c==="refresh_transcript_history_tail"?{...p,items:[]}:null);
+    await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor} targetEventId={p.items[0].occurrenceId} targetEventRequest={1}/>);await new Promise(resolve=>setTimeout(resolve,25));});
+    const tool=host.querySelector<HTMLDetailsElement>("details.cmux-archive-tool")!;
+    await act(async()=>{tool.open=false;tool.dispatchEvent(new Event("toggle"));});
+    const range=document.createRange();range.selectNodeContents(host.querySelector("[data-archive-row]:last-of-type")??host.querySelector("[role=log]")!);
+    await act(async()=>{window.getSelection()!.addRange(range);document.dispatchEvent(new Event("selectionchange"));});
+    await act(async()=>{window.getSelection()!.removeAllRanges();document.dispatchEvent(new Event("selectionchange"));await Promise.resolve();});
+    expect(tool.open).toBe(false);
+  });
+  it("preserves an expanded tool during selection when a different target arrives",async()=>{
+    const p=page(0,2);p.items[1]={...p.items[1],kind:"toolResult",text:"next result"};
+    mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"||c==="read_transcript_history_page"?p:c==="refresh_transcript_history_tail"?{...p,items:[]}:null);
+    await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor} targetEventId={p.items[0].occurrenceId}/>);await new Promise(resolve=>setTimeout(resolve,25));});
+    const tools=[...host.querySelectorAll<HTMLDetailsElement>("details.cmux-archive-tool")];
+    const range=document.createRange();range.selectNodeContents(tools[0].querySelector(".cmux-archive-tool-content")!);
+    await act(async()=>{window.getSelection()!.addRange(range);document.dispatchEvent(new Event("selectionchange"));});
+    await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor} targetEventId={p.items[1].occurrenceId}/>);await new Promise(resolve=>setTimeout(resolve,10));});
+    expect(tools[0].open).toBe(true);expect(tools[1].open).toBe(false);
+    await act(async()=>{window.getSelection()!.removeAllRanges();document.dispatchEvent(new Event("selectionchange"));await new Promise(resolve=>setTimeout(resolve,25));});
+    expect(tools[1].open).toBe(true);
+  });
   it("retains the old source and provides an explicit current conversation action",async()=>{
     reader=new TranscriptHistoryReader(descriptor);
     await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor} prepared={reader!}/>);await new Promise((r)=>setTimeout(r,5));});

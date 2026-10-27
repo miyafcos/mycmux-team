@@ -552,15 +552,15 @@ describe("review fixes 3 and 4: rendered session state", () => {
     operationalState: "idle", autonomy: { turnState: "complete", openToolCount: 0, armedBackgroundCount: 0,
       pendingNotificationCount: 0, turnStartedAt }, lastEventAt: now - 10_000, lastSuccessfulReadAt: now, updatedAt: now } as LiveSessionBrief);
   const stateText = () => host.querySelector(".pane-session-state")?.textContent;
-  it("expires the actual button count and header without store updates, then recovers", async () => {
+  it("expires the header without store updates, then recovers without the removed button", async () => {
     vi.useFakeTimers(); vi.setSystemTime(now); publish();
     await mount(pane(1, { agentKind: "codex", agentSessionId: "conversation" }));
     await act(async () => root.render(<><Harness /><DashboardButton /></>));
-    expect(stateText()).toBe("要回答"); expect(host.querySelector(".cmux-your-turn")?.textContent).toBe("あなたの番 1");
+    expect(stateText()).toBe("要回答"); expect(host.querySelector(".cmux-your-turn")).toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
-    expect(stateText()).toBe("状態確認不能"); expect(host.querySelector(".cmux-your-turn")?.textContent).toBe("あなたの番");
+    expect(stateText()).toBe("状態確認不能"); expect(host.querySelector(".cmux-your-turn")).toBeNull();
     await act(async () => publish());
-    expect(stateText()).toBe("要回答"); expect(host.querySelector(".cmux-your-turn")?.textContent).toBe("あなたの番 1");
+    expect(stateText()).toBe("要回答"); expect(host.querySelector(".cmux-your-turn")).toBeNull();
   });
 
   it("shares one clock, pauses when hidden, refreshes on visibility and releases on unmount", async () => {
@@ -576,7 +576,7 @@ describe("review fixes 3 and 4: rendered session state", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     await act(async () => document.dispatchEvent(new Event("visibilitychange")));
-    expect(stateText()).toBe("状態確認不能"); expect(host.querySelector(".cmux-your-turn")?.textContent).toBe("あなたの番");
+    expect(stateText()).toBe("状態確認不能"); expect(host.querySelector(".cmux-your-turn")).toBeNull();
     const current = useWorkspaceListStore.getState().workspaces[0].panes[0];
     await act(async () => root.render(<PaneTabBar pane={current} workspaceId="w" isVisible={false} hasTerminalBuffer={() => true} />));
     const lastTick = intervals.mock.results.at(-1)!.value;

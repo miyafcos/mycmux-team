@@ -105,7 +105,7 @@ pub fn project(kind: &str, value: &Value) -> Vec<Draft> {
             ("response_item", "function_call_output" | "custom_tool_call_output") => {
                 push(0, "toolResult", collect_text(payload.get("output")).unwrap_or_default(), string(payload, "call_id"), None, None, None);
             }
-            ("session_meta" | "turn_context", _) | ("event_msg", "task_started" | "task_complete" | "turn_aborted" | "token_count" | "agent_message" | "agent_reasoning") => {}
+            ("session_meta" | "turn_context", _) | ("response_item", "reasoning") | ("event_msg", "task_started" | "task_complete" | "turn_aborted" | "token_count" | "agent_message" | "agent_reasoning") => {}
             _ => push(0, "diagnostic", "未対応の記録（元の記録を表示できます）".into(), None, None, None, None),
         }
         return out;
@@ -152,7 +152,8 @@ pub fn project(kind: &str, value: &Value) -> Vec<Draft> {
         }
         "tool_result" => push(0, "toolResult", collect_text(value.get("content")).unwrap_or_default(), string(value, "tool_use_id").or_else(|| string(value, "toolUseId")), None, None, None),
         "system" if value["subtype"] == "compact_boundary" => push(0, "boundary", "会話の要約・圧縮".into(), None, None, None, None),
-        "system" | "progress" | "file-history-snapshot" | "queue-operation" | "summary" => {}
+        "system" | "progress" | "file-history-snapshot" | "queue-operation" | "summary"
+        | "custom-title" | "ai-title" | "agent-name" | "last-prompt" => {}
         _ => push(0, "diagnostic", "未対応の記録（元の記録を表示できます）".into(), None, None, None, None),
     }
     out
@@ -254,6 +255,22 @@ mod tests {
         assert_eq!(rows[0].aliases,vec!["native"]);
         let rows=project("claude",&json!({"type":"user","uuid":"native","message":{"content":[{"type":"tool_result","content":"first"},{"type":"tool_result","content":"second"}]}}));
         assert_eq!(rows[0].aliases,vec!["native","native:0"]);assert_eq!(rows[1].aliases,vec!["native"]);
+    }
+
+    #[test]
+    fn metadata_does_not_become_empty_conversation_messages() {
+        for kind in ["claude", "claude-codex"] {
+            for record_type in ["custom-title", "ai-title", "agent-name", "last-prompt", "progress", "file-history-snapshot", "queue-operation"] {
+                assert!(project(kind, &json!({"type": record_type, "sessionId": "synthetic", "lastPrompt": "index text"})).is_empty(), "{kind}: {record_type}");
+            }
+            let rows = project(kind, &json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "本文を表示します"}]}}));
+            assert_eq!(rows[0].kind, "assistant");
+            assert_eq!(rows[0].text, "本文を表示します");
+            let unknown = project(kind, &json!({"type": "future-record", "text": "unclassified"}));
+            assert_eq!(unknown[0].kind, "diagnostic");
+        }
+        assert!(project("codex", &json!({"type": "response_item", "payload": {"type": "reasoning", "encrypted_content": "opaque"}})).is_empty());
+        assert_eq!(project("codex", &json!({"type": "future-record"}))[0].kind, "diagnostic");
     }
 
     #[test]

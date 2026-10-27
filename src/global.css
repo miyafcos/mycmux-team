@@ -1505,7 +1505,14 @@ div:focus-within > .tab-close-btn,
 .cmux-archive-nav { flex-wrap: nowrap; border-bottom: 1px solid var(--cmux-border); }
 .cmux-archive-boundary { text-align: center; font-size: var(--cmux-font-size-xs); }
 .cmux-archive-log { flex: 1; min-height: 0; padding: 0; overflow: auto; overflow-anchor: none; }
-.cmux-archive-row { padding: var(--cmux-space-2); box-sizing: border-box; }
+.cmux-archive-row { display: flex; padding: var(--cmux-space-2); box-sizing: border-box; }
+.cmux-archive-row > .is-user { margin-left: auto; }
+.cmux-archive-row > .cmux-dashboard-msg.is-agent { max-width: 100%; background: transparent; }
+.cmux-archive-row > .cmux-archive-tool { display: block; width: 100%; max-width: 100%; padding: var(--cmux-space-1) var(--cmux-space-2); color: var(--cmux-text-secondary); border-left: 2px solid var(--cmux-border); border-radius: 0; font-size: var(--cmux-font-size-xs); animation: none; }
+.cmux-archive-tool summary { cursor: pointer; overflow-wrap: anywhere; }
+.cmux-archive-tool summary:focus-visible { outline: 2px solid var(--cmux-accent); outline-offset: 2px; }
+.cmux-archive-tool summary span { color: var(--cmux-text-dim); margin-left: var(--cmux-space-2); }
+.cmux-archive-tool-content { display: grid; gap: var(--cmux-space-2); margin-top: var(--cmux-space-2); }
 .cmux-archive-evidence { border-left: 2px solid var(--cmux-border); }
 .cmux-archive-target { color: var(--cmux-text-dim); overflow-wrap: anywhere; }
 .cmux-archive-empty, .cmux-archive-notice { padding: var(--cmux-space-2); font-size: var(--cmux-font-size-xs); color: var(--cmux-text-dim); }

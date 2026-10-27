@@ -91,18 +91,22 @@ describe("Your Turn mouse entry", () => {
     expect(yourTurnTargets([legacy], { session: pending }, {}, { session: signals }, {}, now)).toHaveLength(1);
     expect(yourTurnTargets([workspace], { session: pending }, {}, { session: { ...signals, health: "stale" } }, {}, now)).toHaveLength(0);
   });
-  it("one click clears hiding filters and opens the existing question session", async () => {
+  it("keeps only the dashboard toggle when a question is pending", async () => {
     useSessionAttentionStore.setState({ attentionBySession: { session: attention("input", "waiting") },
       statusSignalsBySession: { session: { ...signals, lastMonitorAt: Date.now(), lastEvidenceAt: Date.now() } } });
     const host = document.createElement("div"); document.body.append(host);
     const root = createRoot(host);
     await act(async () => root.render(<DashboardButton />));
-    const button = host.querySelector<HTMLButtonElement>(".cmux-your-turn")!;
-    expect(button.textContent).toContain("あなたの番 1");
+    expect(host.querySelector(".cmux-your-turn")).toBeNull();
+    expect(host.textContent).not.toContain("あなたの番");
+    expect(host.querySelectorAll("button")).toHaveLength(1);
+    const button = host.querySelector<HTMLButtonElement>("button")!;
+    expect(button.getAttribute("aria-pressed")).toBe("false");
     await act(async () => button.click());
-    expect(useDashboardViewStore.getState()).toMatchObject({ open: true, selectedTabId: "tab", query: "",
-      workspaceFilter: null, agentFilter: null, stateFilter: null, chatColumnTabIds: ["tab"] });
-    expect(button.textContent).toContain("あなたの番 1");
+    expect(useDashboardViewStore.getState().open).toBe(true);
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    await act(async () => button.click());
+    expect(useDashboardViewStore.getState().open).toBe(false);
     await act(async () => root.unmount()); host.remove();
   });
   it("does not count stale questions after a fresh canonical turn end or epoch change", () => {
@@ -130,8 +134,9 @@ describe("Your Turn mouse entry", () => {
       "--cmux-text-secondary": theme.chrome.textMuted, "--cmux-border": theme.chrome.border,
       "--cmux-accent": theme.chrome.accent, "--status-waiting": theme.status.waiting } as CSSProperties;
     const html = renderToStaticMarkup(<div data-theme={themeId} style={style}><DashboardButton /></div>);
-    expect(html).toContain("あなたの番"); expect(html).toContain("aria-label=");
-    expect(html).toContain("cmux-your-turn");
+    expect(html).not.toContain("あなたの番"); expect(html).toContain("aria-label=");
+    expect(html).not.toContain("cmux-your-turn");
+    expect(html.match(/<button\b/g)).toHaveLength(1);
     const evidenceDir = process.env.MYCMUX_MOUSE_UI_EVIDENCE_DIR;
     if (evidenceDir) {
       mkdirSync(evidenceDir, { recursive: true });

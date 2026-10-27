@@ -2507,7 +2507,7 @@ async function sendPaneText(args: SocketArgs, expiresAt?: number, peerRequest = 
     const messageRejected = (reason: string, textWritten = false) => ({
       sent: false as const, reason, confirmed: false, enterWritten: false, textWritten,
       message: reason === "pending_prompt"
-        ? "質問・承認への回答待ちです。「あなたの番」から専用の回答画面を開いてください。"
+        ? "質問・承認への回答待ちです。対象のターミナルか、ダッシュボードの質問カードから回答してください。"
         : "対象の状態が変わったため送信を止めました。再送せず、対象を確認してください。",
     });
     if (ordinaryMessage) {

@@ -174,7 +174,7 @@ describe("pane.send_text confirmed enter", () => {
     messageMocks.preparePaneMessage.mockResolvedValue({ guard: null, reason: "pending_prompt" });
     await expect(handleSocketCommand("pane.send_text", { sessionId, text: "do not answer", enter: true }))
       .resolves.toMatchObject({ sent: false, textWritten: false, enterWritten: false, reason: "pending_prompt",
-        message: expect.stringContaining("あなたの番") });
+        message: "質問・承認への回答待ちです。対象のターミナルか、ダッシュボードの質問カードから回答してください。" });
     expect(messageMocks.writePaneMessage).not.toHaveBeenCalled();
     expect(ipcMocks.writeToSession).not.toHaveBeenCalled();
   });
