@@ -69,6 +69,8 @@ const CLAUDE_MODELS: readonly ModelChoice[] = [
  * Source: https://developers.openai.com/codex/models (2026-09-23).
  */
 const CODEX_MODELS: readonly ModelChoice[] = [
+  { value: "gpt-6.1-sol", label: "Sol (6.1)" },
+  { value: "gpt-6.1-terra", label: "Terra (6.1)" },
   { value: "gpt-6-astra", label: "Astra (6 flagship)" },
   { value: "gpt-6-sol", label: "Sol (6)" },
   { value: "gpt-6-luna", label: "Luna (6 light)" },

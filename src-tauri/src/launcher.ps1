@@ -1071,6 +1071,8 @@ $ClaudeModels = @(
   New-MycmuxModelChoice "Haiku" "haiku"
 )
 $CodexModels = @(
+  New-MycmuxModelChoice "Sol (6.1)" "gpt-6.1-sol"
+  New-MycmuxModelChoice "Terra (6.1)" "gpt-6.1-terra"
   New-MycmuxModelChoice "Astra (6 flagship)" "gpt-6-astra"
   New-MycmuxModelChoice "Sol (6)" "gpt-6-sol"
   New-MycmuxModelChoice "Luna (6 light)" "gpt-6-luna"
@@ -1485,7 +1487,7 @@ function Show-MycmuxSpecMenu {
     if ($Note) { Write-Host ("  {0}" -f $Note) }
     Write-Host ""
     for ($i = 0; $i -lt $rows.Count; $i++) {
-      $num = $i + 1
+      $num = if ($rows[$i].Value -eq $MYCMUX_SPEC_TYPE_IN) { "0" } elseif ($i -lt 9) { [string]($i + 1) } else { "-" }
       $suffix = ""
       if ($rows[$i].Value -notin @($MYCMUX_SPEC_DEFAULT, $MYCMUX_SPEC_TYPE_IN) -and $rows[$i].Label -ne $rows[$i].Value) {
         $suffix = "  ($($rows[$i].Value))"
@@ -1494,7 +1496,7 @@ function Show-MycmuxSpecMenu {
       Write-Host $line
     }
     Write-Host ""
-    Write-Host "  Up/Down or j/k move  Enter/number select  Esc back"
+    Write-Host "  Up/Down or j/k move  Enter/1-9 select  0 type in  Esc back"
 
     $key = [Console]::ReadKey($true)
     if ($key.Key -eq [ConsoleKey]::UpArrow -or $key.KeyChar -eq "k") {
@@ -1510,7 +1512,9 @@ function Show-MycmuxSpecMenu {
     if ($key.Key -eq [ConsoleKey]::Escape -or $key.Key -eq [ConsoleKey]::LeftArrow -or $key.KeyChar -eq "q") {
       return $null
     }
-    if ($key.KeyChar -match "^[1-9]$") {
+    if ($key.KeyChar -eq "0") {
+      $selected = $rows.Count - 1
+    } elseif ($key.KeyChar -match "^[1-9]$") {
       $index = [int]::Parse([string]$key.KeyChar) - 1
       if ($index -lt $rows.Count) { $selected = $index } else { continue }
     } elseif ($key.Key -ne [ConsoleKey]::Enter -and $key.Key -ne [ConsoleKey]::RightArrow) {

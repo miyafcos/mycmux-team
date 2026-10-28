@@ -22,6 +22,7 @@ import {
 import { loadClaudeCodexModels, useLaunchModels } from "../../src/lib/claudeCodexModels";
 
 const INSTALLED: ModelChoice[] = [
+  { value: "gpt-6.1-terra", label: "GPT-6.1 Terra" },
   { value: "gpt-6-astra", label: "GPT-6 Astra" },
   { value: "claude-opus-5", label: "Claude Opus 5" },
   { value: "anthropic/gateway/fcc/open_router/x-ai/grok-4.3", label: "Grok 4.3" },
@@ -77,12 +78,14 @@ describe("useLaunchModels", () => {
     await render(entry);
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(seen).toEqual(entry.models);
+    expect(seen.map((choice) => choice.value)).toContain("gpt-6.1-terra");
   });
 
   it("never asks for other agents", async () => {
     await render(getCatalogEntry("codex"));
     expect(invokeMock).not.toHaveBeenCalled();
     expect(seen).toEqual(getCatalogEntry("codex")!.models);
+    expect(seen.map((choice) => choice.value).slice(0, 2)).toEqual(["gpt-6.1-sol", "gpt-6.1-terra"]);
   });
 
   it("offers nothing without an entry", async () => {

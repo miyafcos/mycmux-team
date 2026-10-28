@@ -401,6 +401,9 @@ CLAUDE_CMD = "claude --allow-dangerously-skip-permissions"
 PARITY_CASES = [
     ("claude", CLAUDE_CMD, "opus", "high"),
     ("codex", "codex --no-alt-screen", "gpt-5.6-terra", "xhigh"),
+    ("codex-terra-61", "codex --no-alt-screen", "gpt-6.1-terra", "max"),
+    ("codex-resume-terra-61", "codex resume --no-alt-screen --last", "gpt-6.1-terra", "max"),
+    ("claude-codex-terra-61", "claude-codex --backend gpt", "gpt-6.1-terra", "max"),
     ("codex-positional", "codex resume --no-alt-screen --last", "gpt-5.6-sol", "max"),
     ("grok", "grok --no-alt-screen --permission-mode auto", "grok-4", "high"),
     ("agy", "agy", "gemini-3.1-pro-high", "high"),
@@ -608,47 +611,53 @@ def test_a_model_that_could_be_read_as_a_flag_is_dropped(case_id: str) -> None:
 # that is off by one on one side, which is exactly what a menu gets wrong.
 
 # (id, target, POSIX key bytes, PowerShell key names, typed lines, expected)
-# Codex rows (2026-09-23): 1 default, 2 Astra 6, 3 Sol 6, 4 Luna 6,
-# 5 Sol 5.6, 6 Terra 5.6, 7 Luna 5.6, 8 type-in.
+# Codexの行: 1 default、2 Sol 6.1、3 Terra 6.1、4 Astra 6、5 Sol 6、
+# 6 Luna 6、7 Sol 5.6、8 Terra 5.6、9 Luna 5.6、10 type-in。
 # Efforts: 1 default, 2 low, 3 medium, 4 high, 5 xhigh, 6 max, 7 ultra
 # (Luna has no ultra; its type-in row is 7).
 MENU_CASES = [
     ("omp-sol-xhigh", "omp", "35", ["3", "5"], [], "openai-codex/gpt-6-sol|xhigh"),
-    ("digits", "codex", "64", ["6", "4"], [], "gpt-5.6-terra|high"),
+    ("sol-61-max", "codex", "26", ["2", "6"], [], "gpt-6.1-sol|max"),
+    ("terra-61-max", "codex", "36", ["3", "6"], [], "gpt-6.1-terra|max"),
+    ("terra-61-claude-codex", "claude-codex", "36", ["3", "6"], [], "gpt-6.1-terra|max"),
+    ("digits", "codex", "84", ["8", "4"], [], "gpt-5.6-terra|high"),
     (
         "arrows",
         "codex",
-        "\\x1b[B\\x1b[B\\x1b[B\\n\\x1b[B\\n",
-        ["down", "down", "down", "enter", "down", "enter"],
+        "\\x1b[B\\x1b[B\\x1b[B\\x1b[B\\x1b[B\\n\\x1b[B\\n",
+        ["down", "down", "down", "down", "down", "enter", "down", "enter"],
         [],
         "gpt-6-luna|low",
     ),
     # The flagship row sits right under the default; the last effort row is ultra.
-    ("astra-ultra", "codex", "27", ["2", "7"], [], "gpt-6-astra|ultra"),
-    ("sol-ultra", "codex", "37", ["3", "7"], [], "gpt-6-sol|ultra"),
-    ("luna-max", "codex", "46", ["4", "6"], [], "gpt-6-luna|max"),
-    ("legacy-luna-max", "codex", "76", ["7", "6"], [], "gpt-5.6-luna|max"),
+    ("astra-ultra", "codex", "47", ["4", "7"], [], "gpt-6-astra|ultra"),
+    ("sol-ultra", "codex", "57", ["5", "7"], [], "gpt-6-sol|ultra"),
+    ("luna-max", "codex", "66", ["6", "6"], [], "gpt-6-luna|max"),
+    ("legacy-luna-max", "codex", "96", ["9", "6"], [], "gpt-5.6-luna|max"),
     # Up from default selects type-in, then max: no hidden ultra row for Luna.
-    ("luna-cap", "codex", "4\\x1b[A\\x1b[A\\n", ["4", "up", "up", "enter"], [], "gpt-6-luna|max"),
+    ("luna-cap", "codex", "6\\x1b[A\\x1b[A\\n", ["6", "up", "up", "enter"], [], "gpt-6-luna|max"),
     # Enter twice is the launch that happened before this menu existed.
     ("defaults", "claude", "\\n\\n", ["enter", "enter"], [], "|"),
     ("escape", "claude", "\\x1b", ["esc"], [], "CANCELLED"),
-    ("typed", "codex", "8gpt-5.6-custom\\n1", ["8", "1"], ["gpt-5.6-custom"], "gpt-5.6-custom|"),
+    ("typed", "codex", "0gpt-5.6-custom\\n1", ["0", "1"], ["gpt-5.6-custom"], "gpt-5.6-custom|"),
+    ("typed-claude-codex", "claude-codex", "0gpt-6.1-terra\\n6", ["0", "6"], ["gpt-6.1-terra"], "gpt-6.1-terra|max"),
+    ("typed-effort", "codex", "20high\\n", ["2", "0"], ["high"], "gpt-6.1-sol|high"),
+    ("typed-arrows", "codex", "\\x1b[A\\ngpt-5.6-custom\\n1", ["up", "enter", "1"], ["gpt-5.6-custom"], "gpt-5.6-custom|"),
     # grok publishes no model list, so its type-in row is row 2.
     ("typed-grok", "grok", "2grok-4-fast\\n4", ["2", "4"], ["grok-4-fast"], "grok-4-fast|high"),
     (
         "typed-trim",
         "codex",
-        "8  gpt-5.6-luna  \\n1",
-        ["8", "1"],
+        "\\x1b[A\\n  gpt-5.6-luna  \\n1",
+        ["up", "enter", "1"],
         ["  gpt-5.6-luna  "],
         "gpt-5.6-luna|",
     ),
     # Typing nothing takes the default rather than stranding the user there.
-    ("typed-blank", "codex", "8\\n1", ["8", "1"], [""], "|"),
+    ("typed-blank", "codex", "\\x1b[A\\n\\n1", ["up", "enter", "1"], [""], "|"),
     # A typed value that could pass as a flag is refused and the menu stays put,
     # so the scripted keys run out and it backs out instead of launching.
-    ("typed-refused", "codex", "8--evil\\n", ["8"], ["--evil"], "CANCELLED"),
+    ("typed-refused", "codex", "\\x1b[A\\n--evil\\n", ["up", "enter"], ["--evil"], "CANCELLED"),
     # Web and directory rows carry no target; the key does nothing.
     ("no-target", "", "\\n\\n", ["enter", "enter"], [], "CANCELLED"),
 ]
@@ -716,6 +725,8 @@ foreach ($f in $ast.FindAll({
   $found++
 }
 if ($found -ne $wantFunctions.Count) { throw "expected $($wantFunctions.Count) functions, ran $found" }
+
+function Get-MycmuxClaudeCodexModelChoices { return @() }
 
 $wantVars = @("ClaudeModels","CodexModels","AgyModels","OmpModels","ClaudeEfforts","CodexEfforts","ShortEfforts","OmpEfforts","LaunchSpecCatalog")
 foreach ($a in $ast.FindAll({

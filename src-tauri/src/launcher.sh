@@ -1370,7 +1370,7 @@ __spec_models_for() {
     # type-in row reaches any other id. It serves macOS, where neither Mac has
     # claude-codex (2026-09-18), and a Windows pane whose shell is Git Bash.
     codex|claude-codex)
-      printf '%s\n' "Astra (6 flagship)|gpt-6-astra" "Sol (6)|gpt-6-sol" "Luna (6 light)|gpt-6-luna" "Sol (5.6)|gpt-5.6-sol" "Terra (5.6)|gpt-5.6-terra" "Luna (5.6)|gpt-5.6-luna" ;;
+      printf '%s\n' "Sol (6.1)|gpt-6.1-sol" "Terra (6.1)|gpt-6.1-terra" "Astra (6 flagship)|gpt-6-astra" "Sol (6)|gpt-6-sol" "Luna (6 light)|gpt-6-luna" "Sol (5.6)|gpt-5.6-sol" "Terra (5.6)|gpt-5.6-terra" "Luna (5.6)|gpt-5.6-luna" ;;
     agy)
       printf '%s\n' \
         "Gemini 3.1 Pro (High)|gemini-3.1-pro-high" \
@@ -1438,7 +1438,7 @@ __spec_menu() {
     [ -n "$note" ] && echo "  $note" >&$__CMUX_MENU_FD
     echo "" >&$__CMUX_MENU_FD
     for i in "${!__SPEC_LABELS[@]}"; do
-      num=$((i + 1))
+      if [ "${__SPEC_VALUES[$i]}" = "__type__" ]; then num=0; elif [ "$i" -lt 9 ]; then num=$((i + 1)); else num="-"; fi
       if [ "$i" -eq "$sel" ]; then marker=">"; else marker=" "; fi
       line="${marker} ${num}. ${__SPEC_LABELS[$i]}"
       if [ -n "${__SPEC_VALUES[$i]}" ] && [ "${__SPEC_VALUES[$i]}" != "__type__" ] \
@@ -1448,7 +1448,7 @@ __spec_menu() {
       echo "$line" >&$__CMUX_MENU_FD
     done
     echo "" >&$__CMUX_MENU_FD
-    echo "  ^v: move   Enter/number: select   Esc: back" >&$__CMUX_MENU_FD
+    echo "  ^v: move   Enter/1-9: select   0: type in   Esc: back" >&$__CMUX_MENU_FD
 
     __read_menu_event
     case "$__MENU_EVENT" in
@@ -1456,9 +1456,13 @@ __spec_menu() {
       up) ((sel--)); [ $sel -lt 0 ] && sel=$((total - 1)); continue ;;
       down) ((sel++)); [ $sel -ge $total ] && sel=0; continue ;;
       digit)
-        i=$((__MENU_DIGIT - 1))
-        [ "$i" -lt 0 ] || [ "$i" -ge "$total" ] && continue
-        sel=$i
+        if [ "$__MENU_DIGIT" -eq 0 ]; then
+          sel=$((total - 1))
+        else
+          i=$((__MENU_DIGIT - 1))
+          [ "$i" -lt 0 ] || [ "$i" -ge "$total" ] && continue
+          sel=$i
+        fi
         ;;
       enter|right) ;;
       *) continue ;;
