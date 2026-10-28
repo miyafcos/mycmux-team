@@ -282,7 +282,7 @@ describe("ReplyComposer mentions", () => {
       input.sessionId === "session-a" ? Promise.resolve({ confirmed: true }) : Promise.reject(new Error("offline"))
     ));
     const textarea = await renderComposer();
-    expect(textarea.getAttribute("placeholder")).toBe("ここに指示をタイプ");
+    expect(textarea.getAttribute("placeholder")).toBe("メッセージ");
     const preview = container.querySelector<HTMLElement>(".cmux-dashboard-dispatch-preview");
     expect(preview?.textContent).toBe("2件へ送ります:");
     expect(container.querySelectorAll(".cmux-dashboard-mention-token")).toHaveLength(2);

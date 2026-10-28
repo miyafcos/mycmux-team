@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent, RefObject } from "react";
+import { ArrowUp } from "lucide-react";
 
 import { handleSocketCommand } from "../layout/socketCommands";
 import { useLiveBriefStore } from "../../stores/liveBriefStore";
@@ -149,6 +150,39 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
   const dragItem = usePaneDragStore((state) => state.item);
   const dragPointer = usePaneDragStore((state) => state.pointer);
   const [dropOver, setDropOver] = useState(false);
+
+  const fitInput = useCallback(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    const style = getComputedStyle(input);
+    const border = (Number.parseFloat(style.borderTopWidth) || 0) + (Number.parseFloat(style.borderBottomWidth) || 0);
+    const minimum = Number.parseFloat(style.minHeight) || 42;
+    const maximum = Number.parseFloat(style.maxHeight) || 160;
+    input.style.height = "0px";
+    const height = input.scrollHeight + border;
+    input.style.height = `${Math.max(minimum, Math.min(maximum, height))}px`;
+    input.style.overflowY = height > maximum ? "auto" : "hidden";
+  }, [inputRef]);
+
+  useLayoutEffect(fitInput, [draft, sessionId, fitInput]);
+
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    let width = input.getBoundingClientRect().width;
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
+      const nextWidth = input.getBoundingClientRect().width;
+      if (nextWidth === width) return;
+      width = nextWidth;
+      fitInput();
+    });
+    observer?.observe(input);
+    if (!observer) window.addEventListener("resize", fitInput);
+    return () => {
+      observer?.disconnect();
+      if (!observer) window.removeEventListener("resize", fitInput);
+    };
+  }, [fitInput, inputRef]);
 
   const mentionCandidates = useMemo(() => buildMentionCandidates(mentionTargets.map((target) => {
     const displayState = resolveDisplayState(target);
@@ -582,7 +616,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
         value={draft}
         disabled={blocked || sending}
         aria-label={dashboardStrings.composerAriaLabel}
-        placeholder={dashboardStrings.composerPlaceholder}
+        placeholder="メッセージ"
         onChange={(event) => onInputChange(event.target.value, event.target.selectionStart ?? event.target.value.length)}
         onKeyDown={onKeyDown}
         className="cmux-dashboard-composer-input"
@@ -590,10 +624,12 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
       <button
         type="button"
         disabled={!canSubmit}
+        aria-label="送信"
+        title="送信"
         className="cmux-dashboard-composer-send"
         style={{ opacity: canSubmit ? 1 : 0.55 }}
         onClick={() => void submit()}
-      >{dashboardStrings.composerSend}</button>
+      ><ArrowUp size={18} aria-hidden="true" /></button>
     </div>
     {menuOpen ? <div className="cmux-dashboard-mention-menu" role="listbox" aria-label={dashboardStrings.mentionMenuAriaLabel}>
       {menuCandidates.length ? menuCandidates.map((candidate, index) => <button

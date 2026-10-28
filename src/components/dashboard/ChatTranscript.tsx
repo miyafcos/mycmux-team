@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import type { SemanticEventEnvelope, TranscriptDescriptor } from "../../lib/livebrief";
 import type { TranscriptHistoryReader } from "../../stores/transcriptHistoryStore";
 import { ArchiveTranscript, type ArchiveTranscriptProps } from "./ArchiveTranscript";
@@ -26,8 +27,9 @@ function clockLabel(at: number): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-const ChatBubble = memo(function ChatBubble({ message, context, highlighted }: { message: ChatMessage; context: DashboardLinkContext | null; highlighted: boolean }) {
+const ChatBubble = memo(function ChatBubble({ message, context, highlighted, compact }: { message: ChatMessage; context: DashboardLinkContext | null; highlighted: boolean; compact: boolean }) {
   const className = `cmux-dashboard-msg ${message.role === "assistant" ? "is-agent" : message.role === "error" ? "is-error" : "is-user"}${highlighted ? " is-source-highlighted" : ""}`;
+  if (compact && (message.role === "assistant" || message.role === "user")) return <div id={`dashboard-event-${message.id}`} data-dashboard-event={message.id} className={className} role="group" aria-label={message.role === "user" ? dashboardStrings.chatRoleUser : dashboardStrings.chatRoleAgent} title={clockLabel(message.at)}>{message.role === "assistant" ? <MarkdownView text={message.text} context={context} /> : <div className="cmux-dashboard-msg-plain"><DashboardLinkedText text={message.text} context={context} /></div>}</div>;
   if (message.role === "assistant") return <div id={`dashboard-event-${message.id}`} data-dashboard-event={message.id} className={className}><MessageLabel message={message} /><MarkdownView text={message.text} context={context} /></div>;
   if (message.role === "error") return <div id={`dashboard-event-${message.id}`} data-dashboard-event={message.id} className={className}><MessageLabel message={message} /><div className="cmux-dashboard-msg-plain"><DashboardLinkedText text={message.text} context={context} /></div></div>;
   return <div id={`dashboard-event-${message.id}`} data-dashboard-event={message.id} className={className}><MessageLabel message={message} /><div className="cmux-dashboard-msg-plain"><DashboardLinkedText text={message.text} context={context} /></div></div>;
@@ -45,6 +47,7 @@ function keepComposerFocus(event: ReactMouseEvent): void {
 type UserTurnNavState = { index: number; total: number; label: string; followingBottom: boolean };
 
 function UserTurnNavBar({
+  compact = false,
   index,
   total,
   label,
@@ -52,6 +55,7 @@ function UserTurnNavBar({
   onPrev,
   onNext,
 }: {
+  compact?: boolean;
   index: number;
   total: number;
   label: string;
@@ -72,7 +76,7 @@ function UserTurnNavBar({
         disabled={index <= 0}
         onMouseDown={keepComposerFocus}
         onClick={onPrev}
-      >▲</button>
+      >{compact ? <ChevronUp size={16} aria-hidden="true" /> : "▲"}</button>
       <button
         type="button"
         aria-label={dashboardStrings.userTurnNextAriaLabel}
@@ -80,10 +84,10 @@ function UserTurnNavBar({
         disabled={followingBottom}
         onMouseDown={keepComposerFocus}
         onClick={onNext}
-      >▼</button>
+      >{compact ? <ChevronDown size={16} aria-hidden="true" /> : "▼"}</button>
     </span>
-    <span className="cmux-dashboard-user-turn-nav-count" data-dashboard-user-turn-count={`${index + 1}/${total}`}>{`${index + 1}/${total}`}</span>
-    <span className="cmux-dashboard-user-turn-nav-label">{label}</span>
+    {!compact ? <><span className="cmux-dashboard-user-turn-nav-count" data-dashboard-user-turn-count={`${index + 1}/${total}`}>{`${index + 1}/${total}`}</span>
+    <span className="cmux-dashboard-user-turn-nav-label">{label}</span></> : null}
   </div>;
 }
 
@@ -181,12 +185,14 @@ export function ChatTranscript(props: Parameters<typeof LegacyChatTranscript>[0]
     tabId={props.tabId} context={props.linkContext} targetEventId={props.targetEventId} targetEventRequest={props.targetEventRequest} onUserMessages={props.onArchiveUserMessages}
     transcriptSearch={props.transcriptSearch}
     onSearchNavigation={props.onSearchNavigation}
+    compact={props.compact}
   />;
   return <LegacyChatTranscript {...props}/>;
 }
 
 function LegacyChatTranscript({
   events,
+  compact = false,
   sessionId = null,
   tabId = null,
   displayState = "idle",
@@ -200,6 +206,7 @@ function LegacyChatTranscript({
   detailLoaded = false,
 }: {
   events: readonly SemanticEventEnvelope[];
+  compact?: boolean;
   sessionId?: string | null;
   tabId?: string | null;
   displayState?: DashboardDisplayState;
@@ -389,7 +396,7 @@ function LegacyChatTranscript({
     scrollToUserTurn(target);
   }, [detailLoaded, scrollToUserTurn, tabId, userTurnRequest, userTurns]);
 
-  const footer = <ChatActivityFooter displayState={displayState} agentKind={agentKind} lastOutputAt={lastOutputAt} />;
+  const footer = compact ? null : <ChatActivityFooter displayState={displayState} agentKind={agentKind} lastOutputAt={lastOutputAt} />;
   // 0行の理由は2種類ある。読めていないだけなのに「記録がありません」と言うと
   // 会話が消えたように読めるので、取得できていない側は別文言+理由を出す。
   if (!rows.length && !syntheticSource) {
@@ -407,6 +414,7 @@ function LegacyChatTranscript({
   }
   return <div className="cmux-dashboard-chat-transcript">
     {userTurnNav && userTurns.length ? <UserTurnNavBar
+      compact={compact}
       index={userTurnNav.index}
       total={userTurnNav.total}
       label={userTurnNav.label}
@@ -420,7 +428,7 @@ function LegacyChatTranscript({
       <div className="cmux-dashboard-msg-plain">{syntheticSource.text}</div>
     </div> : null}
     {rows.map((row) => row.kind === "message"
-      ? row.message.role === "question" ? null : <ChatBubble key={row.message.id} message={row.message} context={linkContext} highlighted={row.message.id === targetMessageId} />
+      ? row.message.role === "question" ? null : <ChatBubble key={row.message.id} message={row.message} compact={compact} context={linkContext} highlighted={row.message.id === targetMessageId} />
       : <details key={row.id} className="cmux-dashboard-toolfold" open={expandedToolGroups.has(`${sessionId ?? "none"}:${row.id}`)} onToggle={(event) => onToolGroupToggle(`${sessionId ?? "none"}:${row.id}`, event.currentTarget.open)}>
         <summary>{`▸ ツール実行 ${row.tools.length}件`}</summary>
         {row.tools.map((tool) => <ToolDetails key={tool.id} tool={tool} context={linkContext} />)}

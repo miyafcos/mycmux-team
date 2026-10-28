@@ -187,6 +187,88 @@ async function send(textarea: HTMLTextAreaElement): Promise<void> {
 }
 
 describe("dashboard optimistic composer feedback", () => {
+  it.each(["agent-wheel", "legacy"] as const)("uses position instead of visible speaker labels (%s)", async (mode) => {
+    useSettingsStore.setState({ conversationHistoryMode: mode });
+    await renderFeel([transcript("画面を確認してください")]);
+    const bubble = container.querySelector(".cmux-dashboard-msg.is-user");
+    expect(bubble?.querySelector(".cmux-dashboard-msg-who")).toBeNull();
+    expect(bubble?.getAttribute("aria-label")).toBe("私");
+    expect(container.querySelector(".cmux-dashboard-composer-send")?.textContent).toBe("");
+    expect(container.querySelector(".cmux-dashboard-composer-send")?.getAttribute("aria-label")).toBe("送信");
+    expect(container.querySelector("textarea")?.placeholder).toBe("メッセージ");
+    expect(container.querySelector("details.cmux-dashboard-chat-details")?.hasAttribute("open")).toBe(false);
+  });
+
+  it("fits multiline drafts, caps tall input, and shrinks again after clearing", async () => {
+    const textarea = await renderFeel();
+    textarea.style.minHeight = "38px";
+    textarea.style.maxHeight = "160px";
+    textarea.style.border = "0px";
+    let contentHeight = 84;
+    Object.defineProperty(textarea, "scrollHeight", { configurable: true, get: () => contentHeight });
+
+    await input(textarea, "first\nsecond\nthird");
+    expect(textarea.style.height).toBe("84px");
+    expect(textarea.style.overflowY).toBe("hidden");
+
+    contentHeight = 360;
+    await input(textarea, "line\n".repeat(20));
+    expect(textarea.style.height).toBe("160px");
+    expect(textarea.style.overflowY).toBe("auto");
+
+    contentHeight = 28;
+    await input(textarea, "");
+    expect(textarea.style.height).toBe("38px");
+    expect(textarea.style.overflowY).toBe("hidden");
+    expect(mocks.handleSocketCommand).not.toHaveBeenCalled();
+  });
+
+  it("refits when the column width changes and releases the observer", async () => {
+    const observers: { callback: () => void; disconnect: ReturnType<typeof vi.fn>; target?: Element }[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      entry: typeof observers[number];
+      constructor(callback: () => void) {
+        this.entry = { callback, disconnect: vi.fn() };
+        observers.push(this.entry);
+      }
+      observe(target: Element) { this.entry.target = target; }
+      disconnect() { this.entry.disconnect(); }
+    });
+    const textarea = await renderFeel();
+    textarea.style.minHeight = "38px";
+    textarea.style.maxHeight = "160px";
+    textarea.style.border = "0px";
+    Object.defineProperty(textarea, "scrollHeight", { configurable: true, value: 102 });
+    let width = 320;
+    vi.spyOn(textarea, "getBoundingClientRect").mockImplementation(() => ({ width }) as DOMRect);
+    const observer = observers.findLast((entry) => entry.target === textarea)!;
+    const observerCount = observers.length;
+    await input(textarea, "入力しても監視を再登録しない");
+    expect(observers).toHaveLength(observerCount);
+    expect(observer.disconnect).not.toHaveBeenCalled();
+    await act(async () => observer.callback());
+    expect(textarea.style.height).toBe("102px");
+    textarea.style.height = "77px";
+    await act(async () => observer.callback());
+    expect(textarea.style.height).toBe("77px");
+    width = 240;
+    await act(async () => observer.callback());
+    expect(textarea.style.height).toBe("102px");
+    await act(async () => root.render(null));
+    expect(observer.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it("preserves IME confirmation and Shift+Enter without sending", async () => {
+    const textarea = await renderFeel();
+    await input(textarea, "日本語の入力途中");
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true, cancelable: true }));
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(mocks.handleSocketCommand).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("日本語の入力途中");
+  });
+
   it("clears the editor and immediately shows a sending message in its chat column", async () => {
     const pending = deferred<{ confirmed: boolean }>();
     mocks.handleSocketCommand.mockReturnValueOnce(pending.promise);

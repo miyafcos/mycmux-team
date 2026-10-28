@@ -16,6 +16,7 @@ import { QuestionCard } from "./QuestionCard";
 import { stateLabels } from "./stateLabels";
 import { useArchiveDescriptor } from "./useTranscriptHistory";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { Check, ExternalLink, MoreHorizontal, Pin, PinOff, RotateCcw, X } from "lucide-react";
 
 const EMPTY_OPTIMISTIC_MESSAGES: readonly DashboardOptimisticMessage[] = [];
 const EMPTY_EVENTS: readonly SemanticEventEnvelope[] = [];
@@ -156,43 +157,39 @@ export function ChatColumn({
       onClick={onActivate}
       onKeyDown={onReorderKeyDown}
     >
-      <strong>{card.label}</strong>
-      <div className="cmux-dashboard-chat-header-meta">
-        {card.neverStarted
-          ? <span style={statePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.stateNotStarted}</span>
-          : <span title={stateLabels(displayState).tooltip} aria-label={stateLabels(displayState).tooltip} style={statePillStyle(displayStateColor(displayState))}>{displayStateLabel(displayState)}</span>}
-        {card.manualDoneAt !== undefined
-          ? <span data-dashboard-manual-done={card.tab.id} style={statePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.manualDoneBadge}</span>
-          : null}
-        {card.telemetryHealth === "ended" ? <span style={statePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.telemetryEnded}</span> : null}
-        {dashboardActivity(card) ? <span>{dashboardActivity(card)}</span> : null}
-        {elapsedText ? <span>{elapsedText}</span> : null}
-        {card.stall && (card.telemetryHealth !== "live" || card.stall.reason !== "no_output") ? <span className="cmux-dashboard-chat-header-stall">{stallLabel(card.stall.reason)}</span> : null}
-        {instrument ? <span className="cmux-dashboard-chat-header-instrument" data-dashboard-instrument={card.tab.id} title={instrument}>{instrument}</span> : null}
+      <div className="cmux-dashboard-chat-identity">
+        <strong title={card.label}>{card.label}</strong>
+        <div className="cmux-dashboard-chat-header-meta">
+          {card.neverStarted
+            ? <span style={statePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.stateNotStarted}</span>
+            : <span title={stateLabels(displayState).tooltip} aria-label={stateLabels(displayState).tooltip} style={statePillStyle(displayStateColor(displayState))}>{displayStateLabel(displayState)}</span>}
+          {card.manualDoneAt !== undefined ? <span data-dashboard-manual-done={card.tab.id} style={statePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.manualDoneBadge}</span> : null}
+          {card.stall && (card.telemetryHealth !== "live" || card.stall.reason !== "no_output") ? <span className="cmux-dashboard-chat-header-stall">{stallLabel(card.stall.reason)}</span> : null}
+        </div>
       </div>
-      <span>{dashboardStrings.breadcrumb(card.workspace.name, card.paneIndex + 1, card.tabIndex + 1)}</span>
-      {card.manualDoneAt === undefined
-        ? <button type="button" data-dashboard-manual-done-toggle={card.tab.id} className="cmux-dashboard-chat-header-action" title={dashboardStrings.markDoneTitle} onClick={(event) => {
-          event.stopPropagation();
-          const store = useSessionAttentionStore.getState();
-          store.markDone(card.tab.id, Date.now());
-          if (card.attention?.attentionId) store.markSeen(card.tab.id, card.attention.attentionId);
-        }}>{dashboardStrings.markDoneButton}</button>
-        : <button type="button" data-dashboard-manual-done-toggle={card.tab.id} className="cmux-dashboard-chat-header-action" title={dashboardStrings.unmarkDoneTitle} onClick={(event) => {
-          event.stopPropagation();
-          useSessionAttentionStore.getState().clearDoneMark(card.tab.id);
-        }}>{dashboardStrings.unmarkDoneButton}</button>}
-      <button type="button" className="cmux-dashboard-chat-header-action" title={dormantDescription ?? dashboardStrings.jumpButtonTitle} onClick={(event) => { event.stopPropagation(); onJump(); }}>{dormantDescription ? "会話を再開" : dashboardStrings.jumpButtonTitle}</button>
-      <button
-        type="button"
-        data-dashboard-chat-column-pin={card.tab.id}
-        className="cmux-dashboard-chat-header-action"
-        aria-pressed={pinned}
-        aria-label={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel}
-        title={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel}
-        onClick={(event) => { event.stopPropagation(); onTogglePin(); }}
-      >{dashboardStrings.chatColumnPin}</button>
-      <button type="button" data-dashboard-chat-column-close={card.tab.id} className="cmux-dashboard-chat-column-close" aria-label={`${card.label} を閉じる`} onClick={(event) => { event.stopPropagation(); onClose(); }}>×</button>
+      <div className="cmux-dashboard-chat-actions">
+        <details className="cmux-dashboard-chat-details" onClick={(event) => event.stopPropagation()}>
+          <summary aria-label="会話の詳細" title="会話の詳細"><MoreHorizontal size={16} aria-hidden="true" /></summary>
+          <div className="cmux-dashboard-chat-detail-content">
+            <span data-dashboard-breadcrumb>{dashboardStrings.breadcrumb(card.workspace.name, card.paneIndex + 1, card.tabIndex + 1)}</span>
+            {dashboardActivity(card) && dashboardActivity(card) !== displayStateLabel(displayState) ? <span>{dashboardActivity(card)}</span> : null}
+            {elapsedText ? <span>{elapsedText}</span> : null}
+            {card.telemetryHealth === "ended" ? <span>{dashboardStrings.telemetryEnded}</span> : null}
+            {instrument ? <span className="cmux-dashboard-chat-header-instrument" data-dashboard-instrument={card.tab.id} title={instrument}>{instrument}</span> : null}
+            <button type="button" data-dashboard-manual-done-toggle={card.tab.id} className="cmux-dashboard-chat-header-action" aria-label={card.manualDoneAt === undefined ? dashboardStrings.markDoneButton : dashboardStrings.unmarkDoneButton} title={card.manualDoneAt === undefined ? dashboardStrings.markDoneTitle : dashboardStrings.unmarkDoneTitle} onClick={() => {
+              const store = useSessionAttentionStore.getState();
+              if (card.manualDoneAt !== undefined) store.clearDoneMark(card.tab.id);
+              else {
+                store.markDone(card.tab.id, Date.now());
+                if (card.attention?.attentionId) store.markSeen(card.tab.id, card.attention.attentionId);
+              }
+            }}><Check size={15} aria-hidden="true" />{card.manualDoneAt === undefined ? dashboardStrings.markDoneButton : dashboardStrings.unmarkDoneButton}</button>
+          </div>
+        </details>
+        <button type="button" className="cmux-dashboard-chat-header-action" aria-label={dormantDescription ? "会話を再開" : dashboardStrings.jumpButtonTitle} title={dormantDescription ?? dashboardStrings.jumpButtonTitle} onClick={(event) => { event.stopPropagation(); onJump(); }}>{dormantDescription ? <RotateCcw size={15} aria-hidden="true" /> : <ExternalLink size={15} aria-hidden="true" />}</button>
+        <button type="button" data-dashboard-chat-column-pin={card.tab.id} className="cmux-dashboard-chat-header-action" aria-pressed={pinned} aria-label={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel} title={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel} onClick={(event) => { event.stopPropagation(); onTogglePin(); }}>{pinned ? <PinOff size={15} aria-hidden="true" /> : <Pin size={15} aria-hidden="true" />}</button>
+        <button type="button" data-dashboard-chat-column-close={card.tab.id} className="cmux-dashboard-chat-column-close" aria-label={`${card.label} を閉じる`} title="閉じる" onClick={(event) => { event.stopPropagation(); onClose(); }}><X size={16} aria-hidden="true" /></button>
+      </div>
     </header>
     <div className="cmux-dashboard-chat-column-body">
       {dormantDescription ? <p>{dormantDescription}</p> : null}
@@ -204,6 +201,7 @@ export function ChatColumn({
           ? <DashboardTelemetryFallback card={card} now={now} />
           : null}
       <ChatTranscript
+        compact
         events={transcriptEvents}
         sessionId={card.tab.sessionId}
         tabId={card.tab.id}
@@ -234,7 +232,7 @@ export function ChatColumn({
           data-optimistic-motion={reducedMotion ? undefined : "true"}
           className={`cmux-dashboard-msg is-user is-optimistic is-${message.state}${reducedMotion ? "" : " is-optimistic-motion"}`}
         >
-          <div className="cmux-dashboard-msg-who"><span>{dashboardStrings.chatRoleUser}</span><span>{message.state === "sending" ? dashboardStrings.composerMessageSending : message.state === "sent" ? message.error ? dashboardStrings.dispatchUnconfirmed : dashboardStrings.composerMessageSent : dashboardStrings.composerMessageFailed}</span></div>
+          <div className="cmux-dashboard-msg-who"><span>{message.state === "sending" ? dashboardStrings.composerMessageSending : message.state === "sent" ? message.error ? dashboardStrings.dispatchUnconfirmed : dashboardStrings.composerMessageSent : dashboardStrings.composerMessageFailed}</span></div>
           <div className="cmux-dashboard-msg-plain">{message.text}</div>
           {message.state === "failed" ? <div className="cmux-dashboard-optimistic-retry"><span>{message.error ?? dashboardStrings.composerMessageFailed}</span><button type="button" onClick={() => requestOptimisticRetry(sessionId, message.id)}>{dashboardStrings.composerRetry}</button></div> : null}
         </div>)}

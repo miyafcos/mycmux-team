@@ -15,6 +15,23 @@ beforeEach(()=>{vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);host=document.cre
 afterEach(async()=>{await act(async()=>root.unmount());reader?.dispose();reader=null;host.remove();vi.unstubAllGlobals();});
 async function render(){await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor}/>);await new Promise(r=>setTimeout(r,10));});}
 describe("shared read-only archive view",()=>{
+  it("keeps dashboard conversation content without redundant visible labels",async()=>{
+    const compactPage=page(0,2);
+    compactPage.items[0]={...compactPage.items[0],kind:"user",text:"確認をお願いします",timestamp:Date.now()};
+    compactPage.items[1]={...compactPage.items[1],kind:"assistant",text:"内容を確認しました",timestamp:Date.now()};
+    mocks.invoke.mockImplementation(async(command:string)=>command==="open_transcript_history"||command==="read_transcript_history_page"?compactPage:null);
+    await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor} compact/>);await new Promise(resolve=>setTimeout(resolve,10));});
+    expect(host.querySelectorAll(".cmux-dashboard-msg-who")).toHaveLength(0);
+    expect(host.textContent).not.toMatch(/エージェント|会話の最初|読み込み済み|Shift\+ホイール/);
+    expect(host.querySelector('[role="group"][aria-label="私"]')?.textContent).toBe("確認をお願いします");
+    expect(host.querySelector('[role="group"][aria-label="エージェント"]')?.textContent).toContain("内容を確認しました");
+    for(const label of ["最初へ","最新へ","前の指示へ","次の指示へ"]){
+      const button=host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+      expect(button?.textContent).toBe("");expect(button?.title).toBe(label);
+    }
+    expect(host.querySelector(".cmux-archive-nav")).toBeNull();
+  });
+
   it("renders a bounded DOM with stable source occurrences and no PTY calls",async()=>{
     await act(async()=>{root.render(<StrictMode><ArchiveTranscript descriptor={descriptor}/></StrictMode>);await new Promise((r)=>setTimeout(r,10));});
     expect(host.querySelectorAll("[data-archive-row]").length).toBeLessThanOrEqual(120);expect(host.querySelectorAll("[data-archive-row]").length).toBeGreaterThan(0);expect(host.textContent).toContain("端末の履歴は Shift+ホイール");

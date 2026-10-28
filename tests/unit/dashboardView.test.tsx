@@ -222,7 +222,7 @@ function seedDashboard(input: {
 }
 
 function centerBreadcrumb(container: HTMLElement): string | null {
-  return container.querySelector<HTMLElement>("[data-dashboard-chat-column][data-active='true'] > header > span")?.textContent ?? null;
+  return container.querySelector<HTMLElement>("[data-dashboard-chat-column][data-active='true'] [data-dashboard-breadcrumb]")?.textContent ?? null;
 }
 
 function setViewportWidth(width: number): void {
@@ -435,6 +435,20 @@ describe("DashboardView active AI target", () => {
 });
 
 describe("DashboardView split3 selection", () => {
+  it("omits a redundant single-chat destination but preserves the active target for multiple chats", async () => {
+    const first = tab("tab-target-first", "s-target-first", "First target");
+    const second = tab("tab-target-second", "s-target-second", "Second target");
+    seedDashboard({ workspace: workspace([first, second]), selectedTabId: first.id });
+    await renderDashboard();
+    const destination = () => container.querySelector<HTMLSpanElement>(".cmux-dashboard-composer-destination > span")!;
+    expect(destination().hidden).toBe(true);
+    await act(async () => useDashboardViewStore.setState({ chatColumnTabIds: [first.id, second.id], activeChatColumn: 1 }));
+    expect(destination().hidden).toBe(false);
+    expect(destination().textContent).toContain("Second target");
+    await act(async () => useDashboardViewStore.getState().setActiveChatColumn(0));
+    expect(destination().textContent).toContain("First target");
+  });
+
   it("toggles the per-card manual done mark and clears the attention seen state together", async () => {
     const target = tab("tab-manual-done", "s-manual-done", "Manual done target");
     const attention = inputAttention(target.sessionId, 1);

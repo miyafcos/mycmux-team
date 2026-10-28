@@ -144,7 +144,7 @@ describe("the dormant conversation display", () => {
     expect(ipc.getAgentDormancyRecord).toHaveBeenCalledWith(receipt);
     expect(container.textContent).toContain("Saved reply");
     expect(container.textContent).toContain(AGENT_DORMANT_DESCRIPTION);
-    const resume = [...container.querySelectorAll("button")].find((button) => button.textContent === "会話を再開")!;
+    const resume = container.querySelector<HTMLButtonElement>('button[aria-label="会話を再開"]')!;
     act(() => resume.click());
     expect(onJump).toHaveBeenCalledOnce();
     expect(unseen()).toBe(true);

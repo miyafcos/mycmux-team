@@ -1,4 +1,5 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { ArrowDownToLine, ArrowUpToLine, ChevronDown, ChevronUp, FileText } from "lucide-react";
 import type { ArchiveItem, TranscriptDescriptor } from "../../lib/livebrief";
 import { dashboardStrings } from "./dashboardStrings";
 import { TranscriptHistoryReader, descriptorKey } from "../../stores/transcriptHistoryStore";
@@ -27,6 +28,7 @@ const last=<T,>(items:readonly T[]):T|undefined=>items[items.length-1];
 
 export interface ArchiveTranscriptProps {
   descriptor: TranscriptDescriptor | null;
+  compact?: boolean;
   visible?: boolean;
   prepared?: TranscriptHistoryReader;
   tabId?: string | null;
@@ -58,7 +60,7 @@ function waitForReaderIdle(reader: TranscriptHistoryReader, signal: AbortSignal)
   });
 }
 
-function ArchiveReaderView({reader,descriptor,visible=true,tabId,context=null,targetEventId,targetEventRequest=0,onUserMessages,transcriptSearch,onSearchNavigation}:ArchiveTranscriptProps&{reader:TranscriptHistoryReader}) {
+function ArchiveReaderView({reader,descriptor,visible=true,compact=false,tabId,context=null,targetEventId,targetEventRequest=0,onUserMessages,transcriptSearch,onSearchNavigation}:ArchiveTranscriptProps&{reader:TranscriptHistoryReader}) {
   const state=useSyncExternalStore(reader.subscribe,reader.getSnapshot,reader.getSnapshot);
   useEffect(()=>{
     if(state.status!=="ready" || !descriptor || descriptorKey(descriptor)!==descriptorKey(state.descriptor)) return;
@@ -212,25 +214,29 @@ function ArchiveReaderView({reader,descriptor,visible=true,tabId,context=null,ta
   const searchFence = transcriptSearch?.query && transcriptSearch.identity === descriptorKey(state.descriptor)
     && transcriptSearch.sourceGeneration === state.sourceGeneration && transcriptSearch.snapshotEnd !== null ? BigInt(transcriptSearch.snapshotEnd) : null;
   const activeTarget = searchFence !== null && transcriptSearch?.targetId === activeSearchMatch ? activeSearchMatch : null;
-  return <div className="cmux-archive-transcript" data-archive-view="true">
+  return <div className={`cmux-archive-transcript${compact?" is-conversation":""}`} data-archive-view="true">
     <div className="cmux-archive-actions">
-      <button type="button" disabled={!!state.loading||selected||!state.items.length} onClick={()=>{const ticket=++navigation.current;setSearching(true);void reader.first().then((reached)=>{if(ticket===navigation.current && reached){pendingJump.current=reader.snapshot.items.find((item)=>showRecords||(item.kind!=="source"&&item.kind!=="diagnostic"))?.occurrenceId??null;setMeasurement((m)=>m+1);}}).finally(()=>{if(ticket===navigation.current)setSearching(false);});}}>最初へ</button>
-      <button type="button" disabled={!!state.loading||selected||state.status!=="ready"} onClick={()=>void reader.latest()}>最新へ</button>
+      <button type="button" aria-label="最初へ" title="最初へ" disabled={!!state.loading||selected||!state.items.length} onClick={()=>{const ticket=++navigation.current;setSearching(true);void reader.first().then((reached)=>{if(ticket===navigation.current && reached){pendingJump.current=reader.snapshot.items.find((item)=>showRecords||(item.kind!=="source"&&item.kind!=="diagnostic"))?.occurrenceId??null;setMeasurement((m)=>m+1);}}).finally(()=>{if(ticket===navigation.current)setSearching(false);});}}>{compact?<ArrowUpToLine size={15} aria-hidden="true"/>:"最初へ"}</button>
+      {compact?<>
+        <button type="button" aria-label="前の指示へ" title="前の指示へ" disabled={!!state.loading||selected||(!turns.length&&state.reachedStart)} onClick={()=>void step(-1)}><ChevronUp size={16} aria-hidden="true"/></button>
+        <button type="button" aria-label="次の指示へ" title="次の指示へ" disabled={!!state.loading||selected||(state.following&&state.reachedFence)} onClick={()=>void step(1)}><ChevronDown size={16} aria-hidden="true"/></button>
+      </>:null}
+      <button type="button" aria-label="最新へ" title="最新へ" disabled={!!state.loading||selected||state.status!=="ready"} onClick={()=>void reader.latest()}>{compact?<ArrowDownToLine size={15} aria-hidden="true"/>:"最新へ"}</button>
       {searching?<button type="button" onClick={()=>{navigation.current++;reader.cancelSearch();setSearching(false);}}>検索を停止</button>:null}
       {different?<button type="button" onClick={()=>reader.reopen(descriptor!)}>現在の会話を開く</button>:null}
       {(state.error||state.notice==="readerBusy")&&!different?<button type="button" onClick={()=>reader.reopen()}>もう一度開く</button>:null}
-      {recordCount?<button type="button" aria-pressed={showRecords} disabled={selected} title="読み込み済みの未分類・大きい記録を表示" onClick={()=>{capture();setShowRecords((shown)=>!shown);}}>記録の詳細 {recordCount}件</button>:null}
-      <span>端末の履歴は Shift+ホイール</span>
+      {recordCount?<button type="button" aria-label={`記録の詳細 ${recordCount}件`} aria-pressed={showRecords} disabled={selected} title={`記録の詳細 ${recordCount}件`} onClick={()=>{capture();setShowRecords((shown)=>!shown);}}>{compact?<FileText size={15} aria-hidden="true"/>:`記録の詳細 ${recordCount}件`}</button>:null}
+      {!compact?<span>端末の履歴は Shift+ホイール</span>:null}
     </div>
     {state.error?<div role="status" className="cmux-archive-notice">{explain(state.error)}</div>:null}
     {state.notice?<div role="status" className="cmux-archive-notice">{explain(state.notice)}</div>:null}
-    <div className="cmux-archive-nav">
+    {!compact?<div className="cmux-archive-nav">
       <button type="button" aria-label="前の指示へ" disabled={!!state.loading||selected||(!turns.length&&state.reachedStart)} onClick={()=>void step(-1)}>▲</button>
       <button type="button" aria-label="次の指示へ" disabled={!!state.loading||selected||(state.following&&state.reachedFence)} onClick={()=>void step(1)}>▼</button>
       <span>{turns.length?`${Math.max(1,turns.findIndex((t)=>t.occurrenceId===currentTurn?.occurrenceId)+1)}/${turns.length}（読み込み済み）`:"指示はまだありません"}</span>
       <span className="cmux-dashboard-user-turn-nav-label">{currentTurn?.text}</span>
-    </div>
-    {!state.reachedStart?<button type="button" className="cmux-archive-boundary" disabled={!!state.loading||selected} onClick={()=>void reader.load("older")}>前の会話を読む</button>:<div className="cmux-archive-boundary">会話の最初</div>}
+    </div>:null}
+    {!state.reachedStart?<button type="button" className="cmux-archive-boundary" disabled={!!state.loading||selected} onClick={()=>void reader.load("older")}>前の会話を読む</button>:!compact?<div className="cmux-archive-boundary">会話の最初</div>:null}
     <div ref={log} className="cmux-dashboard-chat-log cmux-archive-log" role="log" aria-label="会話履歴" tabIndex={0} onScroll={()=>{
       updateGeometry(); capture(); const node=log.current!;
       reader.setFollowing(state.reachedFence&&node.scrollHeight-node.clientHeight-node.scrollTop<=24);
@@ -239,7 +245,7 @@ function ArchiveReaderView({reader,descriptor,visible=true,tabId,context=null,ta
       {mounted.map((item)=><div key={item.occurrenceId} data-archive-row={item.occurrenceId} data-dashboard-event={item.occurrenceId}
         data-transcript-search-match={searchFence !== null && BigInt(item.sourceStart) < searchFence && BigInt(item.sourceEnd) <= searchFence && matchesTranscriptQuery(item, transcriptSearch!.query) ? "true" : undefined}
         data-transcript-search-active={activeTarget === item.occurrenceId ? "true" : undefined}
-        className={`cmux-archive-row${activeTarget === item.occurrenceId ? " cmux-archive-search-active" : ""}`}><ArchiveRow item={item} context={context} bodyDisabled={selected} revealRequest={toolReveal?.id===item.occurrenceId?toolReveal.request:0} onBody={()=>{capture();setBody(item);}}/></div>)}
+        className={`cmux-archive-row${activeTarget === item.occurrenceId ? " cmux-archive-search-active" : ""}`}><ArchiveRow item={item} compact={compact} context={context} bodyDisabled={selected} revealRequest={toolReveal?.id===item.occurrenceId?toolReveal.request:0} onBody={()=>{capture();setBody(item);}}/></div>)}
       <div aria-hidden="true" style={{height:windowed.bottom}}/>
       {!displayItems.length && recordCount ? <div className="cmux-archive-notice" role="status">この範囲には表示できる会話本文がありません。記録の詳細から内容を確認できます。</div> : null}
       {!state.items.length ? <ArchiveEmpty unavailable={state.status!=="ready" || !!state.error || state.notice==="readerBusy"} reason={state.error?explain(state.error):state.notice?explain(state.notice):state.loading?"会話を読み込んでいます":undefined}/> : null}
@@ -255,7 +261,7 @@ function ArchiveEmpty({unavailable=false,reason}:{unavailable?:boolean;reason?:s
     {unavailable?<><div>{dashboardStrings.chatUnavailable}</div><div>{dashboardStrings.telemetryUnavailable}{reason?` (${reason})`:""}</div></>:dashboardStrings.chatEmpty}
   </div>;
 }
-const ArchiveRow=memo(function ArchiveRow({item,context,onBody,bodyDisabled,revealRequest}:{item:ArchiveItem;context:DashboardLinkContext|null;onBody:()=>void;bodyDisabled:boolean;revealRequest:number}){
+const ArchiveRow=memo(function ArchiveRow({item,compact,context,onBody,bodyDisabled,revealRequest}:{item:ArchiveItem;compact:boolean;context:DashboardLinkContext|null;onBody:()=>void;bodyDisabled:boolean;revealRequest:number}){
   const [toolOpen,setToolOpen]=useState(false);
   const appliedReveal=useRef(0);
   useEffect(()=>{if(revealRequest&&revealRequest!==appliedReveal.current&&!bodyDisabled){appliedReveal.current=revealRequest;setToolOpen(true);}},[revealRequest,bodyDisabled]);
@@ -267,8 +273,9 @@ const ArchiveRow=memo(function ArchiveRow({item,context,onBody,bodyDisabled,reve
     <summary>{role}{item.target?<span>{item.target}</span>:null}{time?<span>{time}</span>:null}</summary>
     <div className="cmux-archive-tool-content"><div className="cmux-dashboard-msg-plain"><DashboardLinkedText text={item.text} context={context}/></div>{more}</div>
   </details>;
-  return <div className={`cmux-dashboard-msg ${item.kind==="assistant"?"is-agent":item.kind==="user"?"is-user":"cmux-archive-evidence"}`}>
-    <div className="cmux-dashboard-msg-who"><span>{role}</span>{time?<span>{time}</span>:null}</div>
+  const conversation=compact&&(item.kind==="user"||item.kind==="assistant");
+  return <div className={`cmux-dashboard-msg ${item.kind==="assistant"?"is-agent":item.kind==="user"?"is-user":"cmux-archive-evidence"}`} role={conversation?"group":undefined} aria-label={conversation?role:undefined} title={conversation&&time?time:undefined}>
+    {!conversation?<div className="cmux-dashboard-msg-who"><span>{role}</span>{time?<span>{time}</span>:null}</div>:null}
     {item.target?<div className="cmux-archive-target">{item.target}</div>:null}
     {item.kind==="assistant"?<MarkdownView text={item.text} context={context}/>:<div className="cmux-dashboard-msg-plain"><DashboardLinkedText text={item.text} context={context}/></div>}
     {item.kind==="question"?<small>回答は端末で行います</small>:null}

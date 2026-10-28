@@ -91,6 +91,8 @@ import { chatColumnColor } from "../../lib/chatColumnColors";
 import ErrorBoundary from "../common/ErrorBoundary";
 import BrowserPane from "../workspace/BrowserPane";
 import "./DashboardView.css";
+import "./DashboardChatSurface.css";
+import { Columns2 } from "lucide-react";
 
 /** 番号キーで撃てる選択肢。ここを増やすなら dashboardStrings.numberKeyHint も直す。 */
 const NUMBER_KEYS = ["1", "2", "3"];
@@ -1344,13 +1346,15 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
           </div>
         </div>
         <div className="cmux-dashboard-composer-destination" aria-live="polite">
-          <span>{activeColumnIsInbox
+          <span hidden={chatColumnTabIds.length === 1 && !!activeColumnCard}>{activeColumnIsInbox
             ? `入力先: ${dashboardStrings.attentionTitle}（${activeChatColumn + 1}/${chatColumnTabIds.length}列）`
             : activeColumnIsPreview
               ? `入力先: ${viewState.previewColumn?.label ?? dashboardStrings.previewColumnTitle}（${activeChatColumn + 1}/${chatColumnTabIds.length}列）`
             : activeColumnCard
               ? `入力先: ${activeColumnCard.label}（${activeChatColumn + 1}/${chatColumnTabIds.length}列）`
               : dashboardStrings.detailEmpty}</span>
+          <details className="cmux-dashboard-column-options">
+          <summary aria-label={dashboardStrings.chatColumnLimitGroupLabel} title={dashboardStrings.chatColumnLimitGroupLabel}><Columns2 size={15} aria-hidden="true" /></summary>
           <div role="group" aria-label={dashboardStrings.chatColumnLimitGroupLabel} className="cmux-dashboard-column-limit">
             {CHAT_COLUMN_LIMIT_CHOICES.map((limit) => <button
               key={limit}
@@ -1361,6 +1365,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
               onClick={() => viewState.setChatColumnLimit(limit)}
             >{limit}</button>)}
           </div>
+          </details>
         </div>
         <WorkOrderContract
           card={activeColumnCard}
