@@ -17,7 +17,7 @@ import {
 } from "../../lib/ailog";
 import { cardStyle } from "./ui";
 
-export function SummaryCards({ overview, preset }: { overview: Overview; preset: RangePreset }) {
+export function SummaryCards({ overview, preset, showCost = true }: { overview: Overview; preset: RangePreset; showCost?: boolean }) {
   const showCompare = preset !== "all";
   const { totals, comparePrevious, rework } = overview;
 
@@ -55,11 +55,11 @@ export function SummaryCards({ overview, preset }: { overview: Overview; preset:
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+        gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 150px), 1fr))",
         gap: 8,
       }}
     >
-      {cards.map((card) => (
+      {cards.filter((card) => showCost || card.kind !== "cost").map((card) => (
         <div key={card.label} style={{ ...cardStyle, padding: "10px 12px 11px" }}>
           <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>{card.label}</div>
           <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em", marginTop: 2 }}>{card.value}</div>

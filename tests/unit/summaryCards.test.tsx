@@ -16,6 +16,12 @@ const overview = {
 } satisfies Overview;
 
 describe("SummaryCards price coverage", () => {
+  it("can omit the cost card when the usage totals already show it", () => {
+    const html = renderToStaticMarkup(<SummaryCards overview={overview} preset="7d" showCost={false} />);
+    expect(html).not.toContain("コスト相当");
+    expect(html).toContain("手戻り平均");
+    expect(html).toContain("ツール実行のまま終了した割合");
+  });
   it("qualifies the cost label below 100%", () => {
     expect(renderToStaticMarkup(<SummaryCards overview={overview} preset="week" />)).toContain("コスト相当 (対象トークンのうち価格情報あり 75%)");
   });

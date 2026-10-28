@@ -39,6 +39,13 @@ afterEach(() => {
 });
 
 describe("notification toast settings", () => {
+  it("places the notification explanation before its sound setting", () => {
+    act(() => root.render(<NotificationsLayoutTab />));
+    const text = container.textContent ?? "";
+    expect(text.indexOf("通知をオフにすると")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("通知サウンド")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("通知をオフにすると")).toBeLessThan(text.indexOf("通知サウンド"));
+  });
   it("dims and disables every child setting while the notification master is off", () => {
     useSettingsStore.setState({ notificationsEnabled: false });
 

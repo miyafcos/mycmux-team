@@ -14,7 +14,7 @@ import { UsageBucketChart } from "./UsageBucketChart";
 import { UsageModelTable } from "./UsageModelTable";
 import { UsageRhythmDetails } from "./UsageRhythmDetails";
 import { ReworkRankings } from "./ReworkRankings";
-import { UsageTotals } from "./UsageTotals";
+import { previousPeriodLabel, UsageTotals } from "./UsageTotals";
 import { ReportFailure, ReportNotLoaded, ReportPeriod } from "./ReportFeedback";
 import { WorkTagTable } from "./WorkTagTable";
 import { HANDOFF_SECTION_SUMMARY, HandoffTable } from "./HandoffTable";
@@ -46,6 +46,7 @@ export const UsageView = memo(function UsageView(props: {
   const projectSel = p.selection?.project;
   const modelSel = p.selection?.model;
   const previousTotals = useAilogStore((state) => state.previousTotals);
+  const setExcludeSynthetic = useAilogStore((state) => state.setExcludeSynthetic);
   const breakdownLabel = ({ project: "案件", branch: "ブランチ", effort: "推論の深さ", origin: "起動元", title: "主題", agent: "エージェント" } as const)[p.breakdownDimension];
   const rhythmMetric = rhythmMetricOf(p.metric);
   const breakdown = p.breakdown?.dimension === p.breakdownDimension ? p.breakdown : null;
@@ -81,14 +82,15 @@ export const UsageView = memo(function UsageView(props: {
           primaryLabel="絞り込みを解除"
         />
       ) : null}
-      <Section id="ailog-overview" title="この期間" subtitle={p.metric === "costUsd" ? "この期間の記録と前期間からの変化です。価格情報のある記録から計算した参考値で、請求額ではありません。円額は設定した為替レートでの換算です。" : "この期間の記録と前期間からの変化です。コスト相当ではなく、実際に処理した量で並べています。"}>
+      <Section id="ailog-overview" title="この期間">
         {p.error ? <ReportFailure label="概要" error={p.error} range={p.overview?.range} onRetry={p.onRefresh} /> : null}
         {p.overview ? <ReportPeriod range={p.overview.range} /> : p.loading ? <SkeletonBlock height={70} label="概要を読み込み中" /> : !p.error ? <ReportNotLoaded label="概要" onLoad={p.onRefresh} /> : null}
         {!p.overview ? <div style={noteStyle}>概要を取得するまで、セッション総数は未取得です。</div> : null}
         {usageReady ? <ButtonGroup ariaLabel="指標" roleLabel="指標" value={p.metric} onChange={p.onMetric} options={USAGE_METRICS.map((entry) => ({ value: entry.id, label: entry.label, title: entry.hint }))} /> : null}
-        {usageReady && p.series && p.overview && seriesMatchesOverview ? <div style={{ marginTop: 12 }}><UsageTotals report={p.series} metric={p.metric} preset={p.preset} totals={p.overview.totals} previousTotals={previousTotals} turnFilterActive={Boolean(modelSel)} /></div> : p.overview && usageReady ? <div style={noteStyle}>概要と推移の表示期間が異なるため、期間合計と前期間比は表示していません。</div> : null}
+        {usageReady && p.series && p.overview && seriesMatchesOverview ? <div style={{ marginTop: 12 }}><UsageTotals report={p.series} metric={p.metric} preset={p.preset} totals={p.overview.totals} previousTotals={previousTotals} previousTotalsStatus={p.previousTotalsStatus} turnFilterActive={Boolean(modelSel)} /></div> : p.overview && usageReady ? <div style={noteStyle}>概要と推移の表示期間が異なるため、期間合計と前期間比は表示していません。</div> : null}
+        {p.overview && !(usageReady && seriesMatchesOverview) && p.preset !== "all" && (p.previousTotalsStatus !== "ready" || previousTotals === null) ? <div style={noteStyle}>{previousPeriodLabel(p.metric, p.overview.totals, previousTotals, p.previousTotalsStatus, p.preset)}</div> : null}
         {p.overview ? <div style={{ marginTop: 12 }}><AccountingNote accounting={p.overview.accounting} /></div> : null}
-        {p.overview && !modelSel ? <div style={{ marginTop: 12 }}><SummaryCards overview={p.overview} preset={p.preset} /></div> : null}
+        {p.overview && !modelSel ? <div style={{ marginTop: 12 }}><SummaryCards overview={p.overview} preset={p.preset} showCost={false} /></div> : null}
       </Section>
       <Section id="ailog-purpose" title="何に使ったか" subtitle="探索・実装・デバッグなど、作業の種類ごとのコストです。">
         {p.modelsError ? <ReportFailure label="作業種別" error={p.modelsError} range={p.models?.range} onRetry={p.onRetryModels} /> : null}
@@ -126,6 +128,10 @@ export const UsageView = memo(function UsageView(props: {
         )}
       </Section>
       <Section id="ailog-compare" title={`${groupingLabel}別`} subtitle="選んだ分類ごとの内訳です。">
+        <label style={{ ...noteStyle, display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }} title="内部生成レコード（<synthetic>）だけを、この内訳表から除きます。他の集計は変わりません。">
+          <input type="checkbox" checked={p.excludeSynthetic} onChange={(event) => setExcludeSynthetic(event.target.checked)} />
+          内部生成レコードをこの表から除く
+        </label>
         {usageReady && p.series ? <ReportPeriod range={p.series.range} /> : null}
         {p.usageError && usageReady ? <ReportFailure label="推移" error={p.usageError} range={p.series?.range} onRetry={p.onRetryUsage} /> : null}
         {usageReady ? (
@@ -136,7 +142,7 @@ export const UsageView = memo(function UsageView(props: {
           <ReportNotLoaded label="推移" onLoad={p.onRetryUsage} />
         )}
       </Section>
-      <Section id="ailog-cross" title="2つの切り口で比較" subtitle="時間を外して、2つの軸で積み替えた表です。">
+      <Section id="ailog-cross" title="2つの切り口で比較" subtitle="行と列の項目を選んで比較できます。">
         {p.pivotLoading && !pivot ? (
           <SkeletonBlock height={180} label="クロス集計を読み込み中" />
         ) : (
@@ -163,7 +169,7 @@ export const UsageView = memo(function UsageView(props: {
         {breakdown ? <><ReportPeriod range={breakdown.range} />{breakdown.rows.length > 0 ? <ProjectTable report={breakdown} overview={breakdownOverview} selection={p.selection} onSelect={p.onSelect} dimensionLabel={breakdownLabel} projectMode={p.breakdownDimension === "project"} /> : <EmptyState kind="no-data" />}</> : p.breakdownLoading ? <SkeletonBlock height={120} label="内訳を更新中" /> : !p.breakdownError ? <ReportNotLoaded label="内訳" onLoad={p.onRefreshBreakdown} /> : null}
       </Section>
       <Section id="ailog-sessions" title="セッション一覧" subtitle="検索と並び替えは、この一覧だけを更新します。概要やグラフはそのまま残ります。">{p.sessions ? <SessionTable report={p.sessions} sort={p.sessionSort} appliedSort={p.sessionAppliedSort} onSort={p.onSessionSort} page={p.sessionPage} appliedPage={p.sessionAppliedPage} onPage={p.onSessionPage} pageSize={SESSION_PAGE_SIZE} onOpenDetail={p.onOpenDetail} activeKey={p.detailKey} query={p.sessionQuery} appliedQuery={p.sessionAppliedQuery} onQuery={p.onSessionQuery} onRetry={p.onRetrySessions} loading={p.sessionLoading} error={p.sessionError} modelFilterActive={Boolean(modelSel)} /> : p.sessionError ? <ReportFailure label="セッション一覧" error={p.sessionError} onRetry={p.onRetrySessions} /> : p.sessionLoading ? <SkeletonBlock height={120} label="セッション一覧を読み込み中" /> : <ReportNotLoaded label="セッション一覧" onLoad={p.onRetrySessions} />}</Section>
-      <DeferredDetails summary={`稼働リズム（${usageMetricInfo(rhythmMetric).label}）`} subtitle={`${rhythmMetric !== p.metric ? `選択中の「${usageMetricInfo(p.metric).label}」は稼働リズム未対応のため、入出力トークンを表示します。` : ""}選択中の期間と絞り込みに追随します。稼働日の分母だけは、期間内の最初の記録日から最後の記録日までです。`}>
+      <DeferredDetails summary={`稼働リズム（${usageMetricInfo(rhythmMetric).label}）`} subtitle={rhythmMetric !== p.metric ? `ここでは入出力トークンを表示しています。${usageMetricInfo(p.metric).label}には対応していません。` : "選択中の期間・絞り込みで集計しています。"}>
         <UsageRhythmDetails metric={rhythmMetric} />
       </DeferredDetails>
     </div>

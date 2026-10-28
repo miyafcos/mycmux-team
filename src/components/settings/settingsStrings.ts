@@ -25,7 +25,7 @@ export const delegationWatchStrings = {
   currentSensitivity: (intervalMinutes: number, stallMinutes: number): string => `現在の設定: ${intervalMinutes}分ごとにチェック・見守りの停滞が${stallMinutes}分続くと通知`,
   notifyTitle: "見守りの通知",
   notifyLabel: "見守りの通知を出す",
-  notifyHint: "「通知とレイアウト」の通知をオフにしている間は、ここをオンにしてもトーストとバッジは出ません。",
+  notifyHint: "「通知・配置・入力」の通知をオフにしている間は、ここをオンにしてもトーストとバッジは出ません。",
   queueTitle: (count: number): string => `いま気になっているタブ (${count}件)`,
   queueEmpty: "問題は見つかっていません。",
   queueContinuing: (elapsed: string, confirmations: number): string => `${elapsed}継続・連続確認 ${confirmations} 回`,
@@ -68,7 +68,7 @@ export const autonomySettingsStrings = {
 export const notificationSettingsStrings = {
   title: "通知",
   enabledLabel: "通知",
-  enabledHint: "オフにすると、右下のトーストを出しません。",
+  enabledHint: "通知をオフにすると、右下の通知を表示しません。失敗・エラーは引き続き表示します。",
   soundLabel: "通知サウンド",
   toastCategoryTitle: "右下トースト",
   toastAiActivityLabel: "AIの自動処理結果",
@@ -101,11 +101,11 @@ export const aiSettingsStrings = {
   tabLabel: "AI",
   automationTabLabel: "自動化",
   enableLabel: "AI機能を有効にする",
-  enableHint: "オフにするとAIを使う機能が止まります。材料からの表示名は利用できます。",
+  enableHint: "オフにするとAIを使う機能が止まります。AIを使わないタブの自動命名は利用できます。",
   providerTitle: "使用する AI",
   modelTitle: "モデル",
   customModelLabel: "カスタム…",
-  featureTitle: "この設定で動く機能",
+  featureTitle: "選択したAIを使う機能",
   automaticBadge: "自動",
   manualBadge: "ボタンで実行",
   features: {
@@ -139,7 +139,7 @@ export const aiSettingsStrings = {
     },
     tabRelayout: {
       label: "タブ再配置",
-      disclosure: "案件登録・作業フォルダ・会話の題名から3案を組みます。Jevは役割判定に使います。",
+      disclosure: "案件登録・作業フォルダ・会話の題名から配置案を作ります。役割の分類に使うAIは、下の設定で選べます。",
     },
   },
   modelMismatch: (providerLabel: string): string =>
@@ -151,7 +151,7 @@ export const aiSettingsStrings = {
 // 材料から付ける表示名の文言。
 export const autoPaneNamingStrings = {
   title: "タブ名の自動命名",
-  label: "材料から表示名を付ける (AI は使わない)",
+  label: "作業情報からタブ名を付ける (AI は使わない)",
   hint: "案件登録・作業フォルダ・会話の題名を使います。自分で付けた名前を優先します。",
   disabledByAiHint: "AI機能がオフでも利用できます。",
   // トーストは 8 秒で消えて履歴が残らないので、どの機能が何をしたかが

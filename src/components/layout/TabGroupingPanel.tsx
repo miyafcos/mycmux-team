@@ -3447,7 +3447,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
             <div className="cmux-tab-grouping-note">
               {mode === "compare" && currentPlanStats ? `${tabGroupingStrings.planMoveNote(currentPlanStats.moved)} / ` : ""}
               {preset === "attribute" ? tabGroupingStrings.attributeAnalysisNote(aiEnabled, aiProvider, attributeModel)
-                : `案件登録・作業フォルダ・会話の題名から3案を組みます。${jevEnabled && aiEnabled ? `Jev (${jevModel}) は役割の判定に使います。` : ""}`}
+                : `案件登録・作業フォルダ・会話の題名から配置案を作ります。${jevEnabled && aiEnabled ? `役割の判定には ${jevModel} を使います。` : ""}`}
               {editErrors.length > 0 ? ` / ${editErrors.join(" / ")}` : ""}
               {status !== tabGroupingStrings.ticketInvalidated && stale.length > 0
                 ? ` / ${stale.map((issue) => issue.message).join(" / ")}`

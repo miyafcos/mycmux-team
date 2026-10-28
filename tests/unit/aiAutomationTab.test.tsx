@@ -18,11 +18,12 @@ describe("AI と自動化の設定", () => {
 
     for (const text of [
       "AI機能を有効にする",
-      "オフにするとAIを使う機能が止まります。材料からの表示名は利用できます。",
+      "オフにするとAIを使う機能が止まります。AIを使わないタブの自動命名は利用できます。",
       "使用する AI",
       "モデル",
       "カスタム…",
-      "この設定で動く機能",
+      "選択したAIを使う機能",
+      "名前の自動設定（AIを使わない）",
       "タブの自動命名",
       "ワークスペース名を中身から自動で付ける",
       "返信案の準備",
@@ -42,6 +43,14 @@ describe("AI と自動化の設定", () => {
 
     expect(html).toContain("自動");
     expect(html.match(/AI は使いません/g)).toHaveLength(2);
+    const aiFeatures = html.indexOf("選択したAIを使う機能");
+    const workspaceNaming = html.indexOf("ワークスペース名を中身から自動で付ける");
+    const tabNaming = html.indexOf("タブの自動命名");
+    expect(aiFeatures).toBeGreaterThanOrEqual(0);
+    expect(workspaceNaming).toBeGreaterThanOrEqual(0);
+    expect(tabNaming).toBeGreaterThanOrEqual(0);
+    expect(workspaceNaming).toBeLessThan(aiFeatures);
+    expect(tabNaming).toBeLessThan(aiFeatures);
     expect(html).toContain("ボタンで実行");
     expect(html.match(/<select/g)).toHaveLength(3);
     expect(html).toContain('aria-label="Jevの接続先"');
@@ -57,6 +66,6 @@ describe("AI と自動化の設定", () => {
     expect(html).toContain("見守りを有効にする");
     expect(html).toContain("自律モード");
     expect(html).toContain("休眠セッションの整理");
-    expect(html).not.toContain("この設定で動く機能");
+    expect(html).not.toContain("選択したAIを使う機能");
   });
 });

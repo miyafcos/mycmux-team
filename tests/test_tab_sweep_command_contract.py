@@ -93,7 +93,8 @@ def test_tab_sweep_ui_contract_covers_all_entry_points_and_safety_copy() -> None
     assert "④ 無名タブのラベル案" not in panel
     assert "③ ロック中" not in panel
     assert "lockedExpanded" not in panel
-    assert "ラベル案: " in panel
+    assert "タブ名の案: " in panel
+    assert "完了候補にチェックを追加します。今のチェックは外しません。" in panel
 
     assert "lastMeaningfulTailLine" in panel
     assert "shortenCwdFromStart" in panel

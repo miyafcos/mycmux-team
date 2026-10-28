@@ -553,16 +553,16 @@ export function TabSweepPanel({ open, visible, closing = false, onClose, autoRev
                           ) : null}
                           {suggestedLabel ? (
                             <>
-                              <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-accent-text)" }}>{`ラベル案: ${suggestedLabel}`}</span>
+                              <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-accent-text)" }}>{`タブ名の案: ${suggestedLabel}`}</span>
                               <ActionButton
                                 disabled={busy}
                                 ariaLabel={`${tabName(tab)}に${suggestedLabel}を適用`}
                                 onClick={() => void applyAndRefresh(
                                   { renames: [{ id: tab.id, label: suggestedLabel }] },
-                                  (result) => `${result.renamed}件にラベルを付けました`,
+                                  (result) => `${result.renamed}件のタブ名を変更しました`,
                                 )}
                               >
-                                適用
+                                この名前にする
                               </ActionButton>
                             </>
                           ) : null}
@@ -599,13 +599,14 @@ export function TabSweepPanel({ open, visible, closing = false, onClose, autoRev
                   title={aiEnabled ? undefined : aiSettingsStrings.disabledReason}
                   onClick={() => void runJudge()}
                 >
-                  {judgeErrorDetail ? "AI判定を再実行" : judged ? "AIに選ばせ直す" : "AIに選ばせる"}
+                  {judgeErrorDetail || judged ? "AIで再判定" : "AIで完了候補を選ぶ"}
                 </ActionButton>
               )}
             </div>
             <div style={{ fontSize: "var(--cmux-font-size-xs)", lineHeight: 1.35, color: "var(--cmux-text-tertiary)" }}>
               {formatSweepAiNote("judge", aiProvider, aiModel, aiEnabled)}
             </div>
+            <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>完了候補にチェックを追加します。今のチェックは外しません。</div>
             <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
               閉じたタブの記録は {reopenTabShortcut} で復元できます。会話は再開できます。
             </div>

@@ -136,10 +136,42 @@ const viewProps = {
 };
 
 describe("UsageView", () => {
+  it.each([
+    ["idle", "前期間は未取得です"],
+    ["loading", "前期間との比較を読み込み中"],
+    ["error", "前期間を取得できません"],
+  ] as const)("preserves previous-period %s when series are absent", (status, message) => {
+    const html = renderToStaticMarkup(<UsageView {...viewProps} overview={overview} previousTotalsStatus={status} />);
+    const document = new DOMParser().parseFromString(html, "text/html");
+    expect(document.querySelector("#ailog-overview")?.textContent).toContain(message);
+  });
+
+  it("retains mismatch and previous-period failure", () => {
+    const series = { range: { ...overview.range, to: 2 }, groupBy: "model" as const, bucket: "day" as const, buckets: [], priceCoverage, priceSource: "test", costNote: "" };
+    const html = renderToStaticMarkup(<UsageView {...viewProps} overview={overview} series={series} previousTotalsStatus="error" />);
+    expect(html).toContain("概要と推移の表示期間が異なるため");
+    expect(html).toContain("前期間を取得できません");
+  });
+
+  it("does not add a detached percentage when series are absent", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    useAilogStore.setState({ previousTotals: { ...overview.totals, input: 10 } });
+    try {
+      await act(async () => root.render(<UsageView {...viewProps} overview={overview} selection={{ model: { key: "fixture", label: "fixture" } }} previousTotalsStatus="ready" />));
+      expect(host.querySelector("#ailog-overview")?.textContent).not.toContain("前期間比");
+      expect(host.querySelector("#ailog-overview")?.textContent).not.toContain("前期間を取得できません");
+    } finally {
+      await act(async () => root.unmount());
+      useAilogStore.setState({ previousTotals: null });
+    }
+  });
+
   it("states the actual denominator of the active-day ratio", () => {
     const html = renderToStaticMarkup(<UsageRhythm report={emptyRhythm} metric="ioTokens" />);
-    expect(html).toContain("記録がある区間の稼働日");
-    expect(html).toContain("最初の記録日〜最後の記録日を分母");
+    expect(html).toContain("記録のある日");
+    expect(html).toContain("最初〜最後の記録の1日間");
   });
 
   it("keeps the active filter visible when it matches no sessions", () => {
@@ -212,16 +244,21 @@ describe("UsageView", () => {
     expect(html).toContain("合計できません");
   });
 
-  it("shows the three-second orientation and page index from real report values", () => {
+  it("keeps the next record and page index without repeating headline totals", () => {
     const sessions = { range: overview.range, rows: [], total: 0, priceSource: "test", costNote: "" };
     const html = renderToStaticMarkup(<UsageView {...viewProps} overview={overview} sessions={sessions} />);
-    expect(html).toContain("3秒で分かる現在地");
-    expect(html).toContain("現在");
-    expect(html).toContain("変化");
+    expect(html).toContain("確認する記録");
+    expect(html).not.toContain("3秒で分かる現在地");
     expect(html).toContain("次に見る");
     expect(html).toContain("AIログ分析のページ内索引");
     expect(html).toContain("主題・最初の依頼・案件を検索");
     expect(html).toContain("href=\"#ailog-sessions\"");
+  });
+
+  it("keeps the synthetic filter next to its affected table", () => {
+    const html = renderToStaticMarkup(<UsageView {...viewProps} />);
+    const document = new DOMParser().parseFromString(html, "text/html");
+    expect(document.querySelector("#ailog-compare")?.textContent).toContain("内部生成レコードをこの表から除く");
   });
 
   it("does not mount rework rankings while the section stays collapsed", () => {

@@ -36,6 +36,17 @@ function effect(host: HTMLElement, name: "volume" | "rate" | "interaction") {
 }
 
 describe("UsageTotals cost change", () => {
+  it.each([
+    ["ready", 5, "30d", "前期間比"],
+    ["error", null, "30d", "前期間を取得できません"],
+    ["idle", null, "30d", "前期間は未取得です"],
+    ["loading", null, "30d", "前期間との比較を読み込み中"],
+    ["ready", 0, "30d", "前期間の値が0のため比率なし"],
+    ["ready", 5, "all", "全期間では前期間比較なし"],
+  ] as const)("explains previous-period state %s/%s/%s", (status, previousCost, preset, message) => {
+    const html = renderToStaticMarkup(<UsageTotals report={report} metric="costUsd" preset={preset} totals={totals(10, 10)} previousTotals={previousCost === null ? null : totals(previousCost, 5)} previousTotalsStatus={status} />);
+    expect(html).toContain(message);
+  });
   it("warns only an increasing cost per request, using the actual inline style", () => {
     const host = render(totals(30, 20), totals(10, 10));
     expect(effect(host, "rate").style.color).toBe("var(--cmux-usage-warn)");

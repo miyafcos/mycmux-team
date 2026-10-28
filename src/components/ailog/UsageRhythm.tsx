@@ -7,14 +7,17 @@
  * is always answerable.
  */
 
-import { formatCount, formatDayBucket, formatTokens, formatTokensFull, type UsageRhythmReport } from "../../lib/ailog";
+import { useId } from "react";
+import { formatCount, formatDayBucket, type UsageRhythmReport } from "../../lib/ailog";
 import {
   activeDayRatio,
   formatMetric,
+  formatMetricFull,
   offsetLabel,
   peakSlot,
   slotBars,
   type RhythmMetric,
+  usageMetricInfo,
   valueAxisTicks,
 } from "./usageModel";
 import { noteStyle } from "./ui";
@@ -42,22 +45,26 @@ function Bars({
   peakLabel: string;
   metric: RhythmMetric;
 }) {
+  const titleId = useId();
   const max = bars.reduce((peak, bar) => Math.max(peak, bar.value), 0);
   const ticks = valueAxisTicks(max);
   const tickBottom = (tick: number) => `${max > 0 ? (tick / max) * 100 : 0}%`;
+  const tickLabel = (tick: number) => formatMetric(tick, metric).replace(/ tok$/, "").replace(/\.0(?=[万億兆]|$)/, "");
+  const labels = bars.filter((_, index) => bars.length <= 12 || index % 6 === 0);
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+    <div role="group" aria-labelledby={titleId} style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-        <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", fontWeight: 600 }}>
-          {title}
+        <span id={titleId} style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", fontWeight: 600 }}>
+          {title} · {metric === "turns" ? "回" : "トークン"}
         </span>
         <span style={noteStyle}>{peakLabel}</span>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "52px minmax(0, 1fr)", gap: 4, minWidth: 0 }}>
-        <div style={{ position: "relative", height: 56 }}>
-          {ticks.map((tick) => <span key={tick} style={{ position: "absolute", right: 0, bottom: tickBottom(tick), transform: "translateY(50%)", color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)", whiteSpace: "nowrap" }}>{formatMetric(tick, metric)}</span>)}
+      <div aria-hidden="true" style={{ display: "grid", gridTemplateColumns: "max-content minmax(0, 1fr)", columnGap: 8, rowGap: 10, minWidth: 0, paddingTop: 8 }}>
+        <div data-rhythm-axis style={{ position: "relative", display: "grid", height: 72, fontSize: "var(--cmux-font-size-xs)", whiteSpace: "nowrap" }}>
+          {ticks.map((tick) => <span key={`width-${tick}`} style={{ gridArea: "1 / 1", visibility: "hidden" }}>{tickLabel(tick)}</span>)}
+          {ticks.map((tick) => <span key={tick} data-rhythm-tick style={{ position: "absolute", right: 0, bottom: tickBottom(tick), transform: "translateY(50%)", color: "var(--cmux-text-secondary)" }}>{tickLabel(tick)}</span>)}
         </div>
-        <div style={{ position: "relative", display: "flex", alignItems: "flex-end", gap: 2, height: 56, minWidth: 0 }}>
+        <div style={{ position: "relative", display: "flex", alignItems: "flex-end", gap: 2, height: 72, minWidth: 0 }}>
           {ticks.map((tick) => <span key={tick} aria-hidden="true" style={{ position: "absolute", left: 0, right: 0, bottom: tickBottom(tick), borderTop: "1px solid var(--cmux-border-hairline)", pointerEvents: "none" }} />)}
           {bars.map((bar) => (
             <div
@@ -76,27 +83,21 @@ function Bars({
             </div>
           ))}
         </div>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "52px minmax(0, 1fr)", gap: 4 }}>
         <div />
-        <div style={{ display: "flex", gap: 2 }}>
-          {bars.map((bar, index) => (
-          <div
-            key={bar.slot}
-            style={{
-              flex: 1,
-              textAlign: "center",
-              fontSize: "var(--cmux-font-size-xs)",
-              color: "var(--cmux-text-tertiary)",
-              minWidth: 0,
-              overflow: "hidden",
-            }}
-          >
-            {bars.length > 12 ? (index % 3 === 0 ? bar.slot : "") : bar.label}
-          </div>
+        <div data-rhythm-labels style={{ position: "relative", height: "1.5em", fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
+          {labels.map((bar) => (
+            <span key={bar.slot} data-rhythm-label style={{ position: "absolute", left: `${((bars.indexOf(bar) + 0.5) / bars.length) * 100}%`, transform: "translateX(-50%)", whiteSpace: "nowrap" }}>{bars.length > 12 ? bar.slot : bar.label}</span>
           ))}
         </div>
       </div>
+      <details>
+        <summary style={{ ...noteStyle, cursor: "pointer", color: "var(--cmux-text-secondary)" }}>数値を表で見る</summary>
+        <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8, fontSize: "var(--cmux-font-size-xs)" }}>
+          <caption style={{ textAlign: "left", paddingBottom: 6 }}>{title}ごとの{usageMetricInfo(metric).label}</caption>
+          <thead><tr><th scope="col" style={{ textAlign: "left" }}>{title}</th><th scope="col" style={{ textAlign: "right" }}>{usageMetricInfo(metric).label}</th></tr></thead>
+          <tbody>{bars.map((bar) => <tr key={bar.slot}><th scope="row" style={{ textAlign: "left", fontWeight: 400, padding: "4px 0" }}>{bar.label}</th><td style={{ textAlign: "right" }}>{formatMetricFull(bar.value, metric)}</td></tr>)}</tbody>
+        </table>
+      </details>
     </div>
   );
 }
@@ -114,6 +115,9 @@ export function UsageRhythm({
   const peakWeekday = peakSlot(weekdays);
   const ratio = activeDayRatio(report.activeDays, report.spanDays);
   const offset = offsetLabel(report.dayOffsetMinutes);
+  const info = usageMetricInfo(metric);
+  const valueOf = (day: { io: number; total: number; turns: number }) => metric === "ioTokens" ? day.io : metric === "totalTokens" ? day.total : day.turns;
+  const busiestDay = report.days.reduce<(typeof report.days)[number] | null>((best, day) => !best || valueOf(day) > valueOf(best) ? day : best, null);
 
   const streakHint =
     report.streak.currentThroughDay !== null
@@ -128,15 +132,14 @@ export function UsageRhythm({
     <div style={{ display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
       <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 150px), 1fr))" }}>
         <Stat
-          label="総トークン"
-          value={formatTokens(report.totals.total)}
-          hint={`うち入出力 ${formatTokens(report.totals.io)}`}
-          valueTitle={formatTokensFull(report.totals.total)}
+          label={info.label}
+          value={formatMetric(valueOf(report.totals), metric)}
+          valueTitle={formatMetricFull(valueOf(report.totals), metric)}
         />
         <Stat
-          label="記録がある区間の稼働日"
+          label="記録のある日"
           value={`${formatCount(report.activeDays)} / ${formatCount(report.spanDays)} 日`}
-          hint={report.spanDays > 0 ? `最初の記録日〜最後の記録日を分母 · ${(ratio * 100).toFixed(0)}%` : undefined}
+          hint={report.spanDays > 0 ? `最初〜最後の記録の${formatCount(report.spanDays)}日間 · ${(ratio * 100).toFixed(0)}%` : undefined}
         />
         <Stat label="連続日数" value={`${formatCount(report.streak.current)} 日`} hint={streakHint} />
         <Stat label="最長連続" value={`${formatCount(report.streak.longest)} 日`} hint={longestHint} />
@@ -167,17 +170,7 @@ export function UsageRhythm({
         />
       </div>
 
-      {report.busiestIo || report.busiestTotal ? (
-        <div style={noteStyle}>
-          {report.busiestIo
-            ? `入出力が最も多い日: ${formatDayBucket(report.busiestIo.day)} (${formatTokens(report.busiestIo.io)})`
-            : ""}
-          {report.busiestIo && report.busiestTotal ? "・" : ""}
-          {report.busiestTotal
-            ? `総トークンが最も多い日: ${formatDayBucket(report.busiestTotal.day)} (${formatTokens(report.busiestTotal.total)})`
-            : ""}
-        </div>
-      ) : null}
+      <div style={noteStyle}>{busiestDay && valueOf(busiestDay) > 0 ? `${info.label}が最も多い日: ${formatDayBucket(busiestDay.day)} (${formatMetric(valueOf(busiestDay), metric)})` : report.activeDays > 0 ? `この期間の${info.label}は0です。` : "この期間の記録はありません。"}</div>
     </div>
   );
 }

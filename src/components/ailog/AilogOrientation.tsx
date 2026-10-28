@@ -1,16 +1,11 @@
-import { formatDelta, formatScore, type Overview, type RangePreset, type SeriesReport, type SessionsReport, type Totals } from "../../lib/ailog";
-import { formatMetric, groupByLabel, usageMetricInfo, type UsageMetric } from "./usageModel";
-import { metricFromTotals, periodDeltaFromTotals } from "./UsageTotals";
+import { formatScore, type Overview, type RangePreset, type SeriesReport, type SessionsReport, type Totals } from "../../lib/ailog";
+import { groupByLabel, type UsageMetric } from "./usageModel";
 import { noteStyle } from "./ui";
 
 export function AilogOrientation({
   overview,
   series,
   sessions,
-  metric,
-  preset,
-  previousTotals,
-  previousTotalsStatus,
   breakdownLabel,
   running,
   sessionLoading,
@@ -32,8 +27,6 @@ export function AilogOrientation({
   onStartIndex: () => void;
   onOpenDetail: (kind: string, sessionId: string) => void;
 }) {
-  const total = metricFromTotals(overview.totals, metric);
-  const delta = periodDeltaFromTotals(metric, overview.totals, previousTotals, preset);
   const groupingLabel = groupByLabel(series?.groupBy ?? "provider");
   const pageLinks = [
     ["ailog-overview", "概要"],
@@ -62,23 +55,9 @@ export function AilogOrientation({
         : sessions === null
           ? "この概要と同じ期間のセッション一覧は未取得です。"
           : "次に確認するセッション候補はありません。";
-  const change = preset === "all"
-    ? "全期間では前期間比較なし"
-    : previousTotalsStatus === "idle"
-      ? "前期間は未取得です"
-    : previousTotalsStatus === "loading"
-      ? "前期間との比較を読み込み中"
-    : previousTotalsStatus === "error" || previousTotals === null
-      ? "前期間を取得できません"
-      : delta === null
-        ? "前期間の値が0のため比率なし"
-        : `${usageMetricInfo(metric).label} 前期間比 ${formatDelta(delta)}`;
-
   return (
     <div style={{ borderTop: "1px solid var(--cmux-border)", borderBottom: "1px solid var(--cmux-border)", padding: "9px 0", display: "flex", flexDirection: "column", gap: 8 }}>
-      <div aria-label="3秒で分かる現在地" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 8 }}>
-        <Status label="現在" value={`${overview.range.label} · ${overview.totals.sessions.toLocaleString("ja-JP")}セッション · ${usageMetricInfo(metric).label} ${formatMetric(total, metric)}`} />
-        <Status label="変化" value={change} />
+      <div aria-label="確認する記録">
         <Status
           label="次に見る"
           value={next}

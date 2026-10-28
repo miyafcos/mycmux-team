@@ -49,6 +49,9 @@ export function NotificationsLayoutTab() {
         />
         <span>{notificationSettingsStrings.enabledLabel}</span>
       </label>
+      <div style={{ color: "var(--cmux-text-dim)", fontSize: 12, marginTop: 4, marginBottom: 8 }}>
+        {notificationSettingsStrings.enabledHint}
+      </div>
       <label style={checkboxLabelStyleFor(notificationsEnabled)}>
         <input
           type="checkbox"
@@ -58,10 +61,6 @@ export function NotificationsLayoutTab() {
         />
         <span>{notificationSettingsStrings.soundLabel}</span>
       </label>
-      <div style={{ color: "var(--cmux-text-dim)", fontSize: 12, marginTop: 4 }}>
-        {notificationSettingsStrings.enabledHint}
-      </div>
-
       <div style={{ ...sectionHeadingStyle, marginTop: 20 }}>
         {notificationSettingsStrings.toastCategoryTitle}
       </div>

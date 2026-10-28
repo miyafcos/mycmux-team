@@ -53,7 +53,7 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
     tabs: [
       { id: "appearance", label: "外観" },
       { id: "pet", label: petSettingsStrings.tabLabel },
-      { id: "notifications", label: "通知とレイアウト" },
+      { id: "notifications", label: "通知・配置・入力" },
     ],
   },
   {

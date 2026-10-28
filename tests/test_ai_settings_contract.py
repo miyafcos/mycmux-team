@@ -37,11 +37,11 @@ def test_ai_tab_lists_the_eight_declared_features() -> None:
     strings = read_repo_text("src/components/settings/settingsStrings.ts")
     expected_copy = (
         "AI機能を有効にする",
-        "オフにするとAIを使う機能が止まります。材料からの表示名は利用できます。",
+        "オフにするとAIを使う機能が止まります。AIを使わないタブの自動命名は利用できます。",
         "使用する AI",
         "モデル",
         "カスタム…",
-        "この設定で動く機能",
+        "選択したAIを使う機能",
         "自動",
         "ボタンで実行",
         "タブの自動命名",
@@ -59,7 +59,7 @@ def test_ai_tab_lists_the_eight_declared_features() -> None:
         "ailog 一括要約",
         "選択したセッションのログを順に送ります",
         "タブ再配置",
-        "案件登録・作業フォルダ・会話の題名から3案を組みます。Jevは役割判定に使います。",
+        "案件登録・作業フォルダ・会話の題名から配置案を作ります。役割の分類に使うAIは、下の設定で選べます。",
     )
     for snippet in expected_copy:
         assert snippet in strings, f"Missing approved copy: {snippet}"

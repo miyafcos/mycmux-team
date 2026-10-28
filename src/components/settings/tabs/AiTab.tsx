@@ -166,7 +166,7 @@ export function AiTab() {
       )}
       {customModelMode && classification === "custom" ? <div style={hintStyle}>{aiSettingsStrings.modelCustom}</div> : null}
 
-      <div style={{ ...sectionHeadingStyle, marginTop: 24 }}>{aiSettingsStrings.featureTitle}</div>
+      <div style={{ ...sectionHeadingStyle, marginTop: 24 }}>名前の自動設定（AIを使わない）</div>
       <div style={{ display: "grid", gap: 14 }}>
         <FeatureRow
           label={aiSettingsStrings.features.autoPaneNaming.label}
@@ -187,6 +187,9 @@ export function AiTab() {
           <button onClick={() => void recoverNamesFromContent(undefined, nameRecoveryFeedback)}>自動の名前に戻す (手で付けた名前以外)</button>
           {recovery && <button onClick={() => undoRecoveredNames(nameRecoveryFeedback)}>名前の付け直しを元に戻す</button>}
         </div>
+      </div>
+      <div style={{ ...sectionHeadingStyle, marginTop: 24 }}>{aiSettingsStrings.featureTitle}</div>
+      <div style={{ display: "grid", gap: 14 }}>
         <FeatureRow
           label={aiSettingsStrings.features.replyDraft.label}
           badge={aiSettingsStrings.automaticBadge}

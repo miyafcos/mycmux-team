@@ -373,9 +373,9 @@ export const tabGroupingStrings = {
   buttonBusy: "再配置を分析中…",
   panelAriaLabel: "タブ再配置",
   title: "タブ再配置",
-  stepCompare: "1 案を比較",
-  stepEdit: "2 内容を編集",
-  stepConfirm: "3 適用前確認",
+  stepCompare: "1. 案を比較",
+  stepEdit: "2. 内容を編集",
+  stepConfirm: "3. 適用前に確認",
   analyzing: "全ワークスペースを分析しています…",
   // Each stage names what is happening, so the elapsed seconds read as
   // "still working on this" rather than "nothing is happening". Repeating
@@ -403,11 +403,11 @@ export const tabGroupingStrings = {
   showReadyPlansHint: "現在の編集内容を置き換えて、生成済みのAI案を表示します",
   analysisDetails: "応答の詳細を表示",
   partialPlans: "一部の案を使えませんでした。有効な案を表示しています。",
-  localPlanWhileJudging: "表示中の案は作業フォルダと系譜から組んだものです。このまま編集・適用できます。",
+  localPlanWhileJudging: "作業フォルダとタブの起動元から作成した案です。このまま編集・適用できます。",
   analyzeAgain: "再分析する",
   analyzed: "分析完了",
-  unassignedTitle: "未分類",
-  moveToUnassigned: "未分類へ",
+  unassignedTitle: "未分類（移動しません）",
+  moveToUnassigned: "移動せず残す",
   applyZeroMoves: "動かすタブがありません",
   warningsTitle: "警告",
   close: "閉じる",
@@ -431,7 +431,7 @@ export const tabGroupingStrings = {
   presetRecommendedDescription: "案件・役割・移動の少なさから案を比較",
   presetPlanWhileJudging: "表示中の案は現在の状態から組んだものです。このまま編集・適用できます。",
   movedCount: (n: number): string => `移動 ${n}`,
-  newWorkspaceCount: (n: number): string => `新規WS ${n}`,
+  newWorkspaceCount: (n: number): string => `新規ワークスペース ${n}`,
   keptCount: (n: number): string => `現状維持 ${n}`,
   warningCount: (n: number): string => `警告 ${n}`,
   showCurrent: "現在を表示",
@@ -458,8 +458,8 @@ export const tabGroupingStrings = {
   sideBySideLegend: "線は別のワークスペースへ移るタブ / 線の色は移動先のワークスペース / タブをクリックすると1本だけ固定して追えます",
   sideBySideDiffCount: (crossCount: number, withinCount: number): string => (
     withinCount === 0
-      ? `移動 ${crossCount}件（すべて WS 跨ぎ）`
-      : `移動 ${crossCount + withinCount}件（うち WS 跨ぎ ${crossCount}件・同 WS 内 ${withinCount}件）`
+      ? `移動 ${crossCount}件（すべて別ワークスペースへ）`
+      : `移動 ${crossCount + withinCount}件（別ワークスペースへ ${crossCount}件・同じワークスペース内 ${withinCount}件）`
   ),
   moveBadgeColumns: (fromColumn: number, toColumn: number): string => `列${fromColumn} → 列${toColumn}`,
   moveBadgePanes: (fromPaneTitle: string, toPaneTitle: string): string => `${fromPaneTitle} → ${toPaneTitle}`,
@@ -471,7 +471,7 @@ export const tabGroupingStrings = {
   liveStatusIdle: "待機",
   lineageChild: (parentName: string): string => `${parentName} から起動`,
   lineageOrphan: "起動元のタブは残っていません",
-  sideBySideGroupAriaLabel: (side: string): string => `${side}の配置図。矢印キーでタブを移動できます`,
+  sideBySideGroupAriaLabel: (side: string): string => `${side}の配置図。矢印キーで項目間を移動し、Enterで移動線の表示を固定できます`,
   liveChipAriaDescription: (status: string, age: string | null): string => (
     age ? `${status}・最終出力から${age}` : status
   ),
@@ -489,7 +489,7 @@ export const tabGroupingStrings = {
   applyOperationInProgress: "別の再配置処理が実行中です。完了してからもう一度お試しください。",
   prepareFailed: "適用前確認を準備できませんでした。",
   ticketInvalidated: "レイアウトが変わったため、適用前確認をやり直しました。",
-  emptyWorkspaces: (n: number): string => `${n}個のWSが空になりました`,
+  emptyWorkspaces: (n: number): string => `適用すると、${n}個のワークスペースが空になります。`,
   inspectEmpty: "確認する",
   notDeleted: "削除されません",
   newBadge: "新規",
@@ -555,7 +555,7 @@ export const tabGroupingStrings = {
   statusDurabilityWarning: "再配置は適用されましたが、ディスクへの保存を確認できません。アプリを終了せず、再保存を待ってください。",
   unnamedTab: "無名タブ",
   undoEdit: "元に戻す (編集)",
-  resetToAiPlan: "AI 案に戻す",
+  resetToAiPlan: "編集前の案に戻す",
   renameLabel: "名前を編集",
   liveLegendWithParentRef: "●は作業中 / ◐は返答待ち / ✓は完了 / ✗はエラー / 数字は最終出力からの経過 / ↑は起動元",
   liveParentRef: (parentName: string, parentWorkspaceName: string | null): string => (

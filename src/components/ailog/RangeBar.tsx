@@ -26,8 +26,6 @@ export function RangeBar({
   usageRhythm,
   onRefresh,
   loading,
-  excludeSynthetic,
-  onExcludeSynthetic,
   includeSidechain,
   onIncludeSidechain,
   usdJpyRate,
@@ -109,14 +107,6 @@ export function RangeBar({
       ) : null}
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <label style={checkboxLabelStyle}>
-          <input
-            type="checkbox"
-            checked={excludeSynthetic}
-            onChange={(event) => onExcludeSynthetic(event.target.checked)}
-          />
-          {"<synthetic> をシリーズ別の表から除外"}
-        </label>
         <label style={checkboxLabelStyle}>
           <input
             type="checkbox"

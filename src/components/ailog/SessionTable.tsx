@@ -160,7 +160,7 @@ export function SessionTable({
           <thead>
             <tr>
               <th scope="col" style={thLeftStyle}>日時</th>
-              <th scope="col" style={thLeftStyle}>主題</th>
+              <th scope="col" style={{ ...thLeftStyle, position: "sticky", left: 0, zIndex: 2, background: "var(--cmux-surface-solid)" }}>主題</th>
               <th scope="col" style={thLeftStyle}>要約</th>
               <th scope="col" style={thLeftStyle}>案件</th>
               <th scope="col" style={thLeftStyle}>モデル</th>
@@ -185,7 +185,7 @@ export function SessionTable({
                   }}
                 >
                   <td style={tdStyle}>{formatLocalDateTime(row.startedAt)}</td>
-                  <th scope="row" style={{ ...tdClipStyle, paddingLeft: 8 + Math.min(row.presentation?.depth ?? 0, 4) * 12, fontWeight: 400, textAlign: "left" }} title={row.title ?? undefined}>
+                  <th scope="row" style={{ ...tdClipStyle, paddingLeft: 8 + Math.min(row.presentation?.depth ?? 0, 4) * 12, fontWeight: 400, textAlign: "left", position: "sticky", left: 0, zIndex: 1, background: active ? "linear-gradient(var(--cmux-selected), var(--cmux-selected)) var(--cmux-surface-solid)" : "var(--cmux-surface-solid)" }} title={row.title ?? undefined}>
                     <button type="button" onClick={() => onOpenDetail(row.kind, row.sessionId)} style={{ display: "block", width: "100%", minWidth: 0, padding: 0, border: 0, background: "transparent", color: "var(--cmux-accent)", textAlign: "left", textDecoration: "underline", textUnderlineOffset: 2, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {(row.presentation?.depth ?? 0) > 0 ? "子 · " : ""}{row.title?.trim() || "（無題）"}
                     </button>

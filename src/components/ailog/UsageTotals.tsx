@@ -54,6 +54,15 @@ export function periodDeltaFromTotals(metric: UsageMetric, current: Totals, prev
   return ((metricFromTotals(current, metric) - before) / Math.abs(before)) * 100;
 }
 
+export function previousPeriodLabel(metric: UsageMetric, current: Totals, previous: Totals | null, status: "idle" | "loading" | "ready" | "error", preset: RangePreset): string {
+  if (preset === "all") return "全期間では前期間比較なし";
+  if (status === "idle") return "前期間は未取得です";
+  if (status === "loading") return "前期間との比較を読み込み中";
+  if (status === "error" || previous === null) return "前期間を取得できません";
+  const delta = periodDeltaFromTotals(metric, current, previous, preset);
+  return delta === null ? "前期間の値が0のため比率なし" : `${formatDelta(delta)} 前期間比`;
+}
+
 /**
  * Attribute a group to a provider by its model name.
  *
@@ -144,6 +153,7 @@ export function UsageTotals({
   preset,
   totals,
   previousTotals,
+  previousTotalsStatus = previousTotals ? "ready" : "idle",
   turnFilterActive = false,
 }: {
   report: SeriesReport;
@@ -151,6 +161,7 @@ export function UsageTotals({
   preset: RangePreset;
   totals: Totals;
   previousTotals: Totals | null;
+  previousTotalsStatus?: "idle" | "loading" | "ready" | "error";
   turnFilterActive?: boolean;
 }) {
   const data = summarizeUsage(report, metric);
@@ -158,7 +169,7 @@ export function UsageTotals({
   const headlineTotal = metric === "sessions" ? totals.sessions : data.metricTotal;
   const pct = (value: number) =>
     data.metricTotal > 0 ? `${((value / data.metricTotal) * 100).toFixed(1)}%` : "—";
-  const periodDelta = periodDeltaFromTotals(metric, totals, previousTotals, preset);
+  const comparisonLabel = previousPeriodLabel(metric, totals, previousTotals, previousTotalsStatus, preset);
   const requestDelta = previousTotals ? percentChange(totals.userMessages, previousTotals.userMessages) : null;
   const currentCostPerRequest = totals.userMessages > 0 ? totals.costUsd / totals.userMessages : null;
   const previousCostPerRequest = previousTotals && previousTotals.userMessages > 0
@@ -181,7 +192,7 @@ export function UsageTotals({
           <div title={formatMetricFull(headlineTotal, metric)} style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, marginTop: 3 }}>
             {formatMetric(headlineTotal, metric)}
           </div>
-          {periodDelta !== null ? <div style={{ ...noteStyle, marginTop: 3 }}>{`${formatDelta(periodDelta)} 前期間比`}</div> : null}
+          <div style={{ ...noteStyle, marginTop: 3 }}>{comparisonLabel}</div>
           <div style={{ ...noteStyle, marginTop: 3 }}>{info.hint}</div>
         </Card>
 
@@ -201,7 +212,7 @@ export function UsageTotals({
               {formatMoney(data.costUsd)}
             </div>
             <div style={{ ...noteStyle, marginTop: 3 }}>
-              請求額ではありません。円額は設定レートでの換算です。この指標の順位とは一致しません。
+              請求額ではありません。円額は設定レートでの換算です。
             </div>
           </Card>
         )}
@@ -253,10 +264,13 @@ export function UsageTotals({
         </div>
       ) : null}
 
-      <div style={noteStyle}>
-        {`入出力トークンは送った文章と生成した文章の量。総トークンはそれにキャッシュ読み書きを含む量です${data.cacheShare > 0 ? `（この期間は ${(data.cacheShare * 100).toFixed(1)}% がキャッシュ読み書き）` : ""}。`}
-      </div>
-      <div style={noteStyle}>推論トークンは出力に含まれるため、二重計上を避けて別加算しません。</div>
+      <details style={noteStyle}>
+        <summary style={{ cursor: "pointer" }}>集計方法</summary>
+        <div style={{ marginTop: 6 }}>
+          {`入出力トークンは送った文章と生成した文章の量。総トークンはそれにキャッシュ読み書きを含む量です${data.cacheShare > 0 ? `（この期間は ${(data.cacheShare * 100).toFixed(1)}% がキャッシュ読み書き）` : ""}。`}
+        </div>
+        <div style={noteStyle}>推論トークンは出力に含まれるため、二重計上を避けて別加算しません。</div>
+      </details>
 
     </div>
   );
