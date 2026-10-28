@@ -39,7 +39,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if ($env:SOURCE_COMMIT -notmatch '^[0-9a-f]{40}$') { throw 'Invalid source commit' }
           if ($env:SOURCE_TREE -notmatch '^[0-9a-f]{40}$') { throw 'Invalid source tree' }
-          if ($env:RELEASE_VERSION -ne '0.89.2') { throw 'Unexpected version' }
+          if ($env:RELEASE_VERSION -ne '0.89.3') { throw 'Unexpected version' }
           git config --global core.autocrlf false
           if ($LASTEXITCODE) { throw 'Cannot configure checkout line endings' }
       - uses: actions/checkout@v4
