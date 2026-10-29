@@ -19,6 +19,9 @@ import { resolveTabMark, type TabMark } from "../../lib/tabMark";
 import type { Pane, PaneTab, Workspace } from "../../types";
 import { noUpdateMinutes } from "./liveTimelineModel";
 import { resolveDelegationState, localParentState, mergeDelegationParent, type DelegationParent } from "./delegationModel";
+import { canonicalPeerWindowTabs } from "./peerWindowTabs";
+import { isDeclaredTab } from "../../lib/tabLifecycle";
+import type { WindowTabIndex } from "../../lib/ipc";
 
 export type DashboardGroup = "waiting" | "stalled" | "done" | "working" | "idle";
 export type DashboardStatus = DashboardGroup | "error" | "unobserved";
@@ -37,6 +40,7 @@ const UNKNOWN_STATUS_SIGNALS: SessionStatusSignals = { activity: "unknown", heal
   lastOutputAt: null, lastMonitorAt: null, lastEvidenceAt: null, processStartedAt: null };
 
 export interface DashboardCardModel {
+  windowLabel?: string;
   now?: number;
   workspace: Workspace;
   workspaceId: string;
@@ -87,6 +91,7 @@ export interface DashboardCardModel {
 }
 
 export interface DashboardModelInput {
+  peerWindowTabs?: readonly WindowTabIndex[];
   metadataBySession: Record<string, PaneMetadata | undefined>;
   volatileMetadataBySession: Record<string, PaneVolatileMetadata | undefined>;
   lastLogBySession: Record<string, string | undefined>;
@@ -229,6 +234,9 @@ export function needsDashboardAttention(card: DashboardCardModel): boolean {
 }
 
 export function buildDashboardCards(workspaces: readonly Workspace[], input: DashboardModelInput): DashboardCardModel[] {
+  const peers = canonicalPeerWindowTabs(input.peerWindowTabs ?? [], workspaces);
+  const peerByTab = new Map(peers.map(peer => [peer.tab.id, peer]));
+  const peerWorkspaces = [...new Set(peers.map(peer => peer.workspace))];
   const parentById = new Map<string, DelegationParent>();
   for (const workspace of workspaces) for (const pane of workspace.panes) for (const tab of pane.tabs) {
     const observation = input.volatileMetadataBySession[tab.sessionId];
@@ -248,11 +256,15 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
     parentById.set(tab.id, parent);
   }
   const cards: DashboardCardModel[] = [];
-  for (const [workspaceIndex, workspace] of workspaces.entries()) {
+  for (const [workspaceIndex, workspace] of [...workspaces, ...peerWorkspaces].entries()) {
     for (const [paneIndex, pane] of workspace.panes.entries()) {
       for (const [tabIndex, tab] of pane.tabs.entries()) {
         const metadata = input.metadataBySession[tab.sessionId];
-        const volatileMetadata = input.volatileMetadataBySession[tab.sessionId];
+        const peer = peerByTab.get(tab.id);
+        const declaredPeer = Boolean(peer && !peer.ptyAlive && isDeclaredTab(tab));
+        const volatileMetadata = peer && !declaredPeer ? { ...input.volatileMetadataBySession[tab.sessionId],
+          ptyAlive: peer.ptyAlive, liveAgentKind: peer.liveAgentKind, liveAgentObservationKnown: true,
+        } : input.volatileMetadataBySession[tab.sessionId];
         const attention = input.attentionBySession[tab.sessionId];
         const category = attentionCategory(tab.id, attention, input.seenAttentionByTab);
         const stall = input.stallsBySession[tab.sessionId];
@@ -262,7 +274,7 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
         // labelled every ChatGPT tab "未観測・未起動" while the page was open
         // and readable. Its conversation is read from the pane instead.
         const isWebTab = tab.type === "web";
-        const unobserved = !isWebTab && !input.hasTerminalBuffer(tab.sessionId);
+        const unobserved = !isWebTab && (declaredPeer || (!peer && !input.hasTerminalBuffer(tab.sessionId)));
         const group = groupDashboardCard(category, stall, lastActivityAt, input.now);
         const status: DashboardStatus = category === "error"
           ? "error"
@@ -271,6 +283,7 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
           ? Math.max(0, Math.floor((input.now - lastActivityAt) / 60_000))
           : null;
         const card: DashboardCardModel = {
+          windowLabel: peer?.windowLabel,
           now: input.now,
           workspace,
           workspaceId: workspace.id,
@@ -298,7 +311,7 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
             tab,
             tab.id === pane.activeTabId,
             input.metadataBySession,
-            input.volatileMetadataBySession,
+            peer ? { ...input.volatileMetadataBySession, [tab.sessionId]: volatileMetadata } : input.volatileMetadataBySession,
           ),
           agentKind: normalizeAgentKind(resolveTabMark(tab, volatileMetadata?.liveAgentKind, volatileMetadata?.ptyAlive === true)?.kind),
           mark: resolveTabMark(tab, volatileMetadata?.liveAgentKind, volatileMetadata?.ptyAlive === true),

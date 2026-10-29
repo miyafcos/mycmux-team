@@ -23,22 +23,115 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
+const SPARE_IDLE_MS: u64 = 3000;
+const STALE_OPERATION_MS: u64 = 300000;
+
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
+enum WarmPreparation<R> {
+    Existing(String),
+    Reserved { reservation: R, label: String, generation: u64 },
+}
+
 #[derive(Default)]
 pub struct TearoutState {
     spare: Mutex<Option<(String, bool)>>,
     warming: AtomicBool,
+    last_activity_ms: AtomicU64,
     spare_generation: AtomicU64,
     moves: Mutex<HashMap<String, Arc<MoveState>>>,
     transfers: Mutex<HashMap<String, transfer::Transfer>>,
     releases: Mutex<HashMap<String, Arc<ReleaseEscrow>>>,
     #[cfg(target_os = "windows")]
     restored_windows: Mutex<HashMap<String, bool>>,
+    #[cfg(target_os = "windows")]
+    followers: Mutex<HashMap<String, Arc<AtomicBool>>>,
+}
+
+impl TearoutState {
+    fn activity(&self) { self.last_activity_ms.store(unix_ms(), Ordering::Release); }
+
+    #[cfg(target_os = "windows")]
+    fn replace_follower(&self, label: &str, stop: Arc<AtomicBool>) {
+        // Each follower has at most one pending UI tick. A replaced follower's
+        // queued tick sees its stop flag before it can move the window.
+        let mut followers = self.followers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(previous) = followers.remove(label) { previous.store(true, Ordering::Release); }
+        followers.insert(label.to_owned(), stop);
+    }
+
+    #[cfg(target_os = "windows")]
+    fn stop_follower(&self, label: &str) {
+        if let Some(stop) = self.followers.lock().unwrap_or_else(|e| e.into_inner()).remove(label) {
+            stop.store(true, Ordering::Release);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn finish_follower(&self, label: &str, stop: &Arc<AtomicBool>) {
+        stop.store(true, Ordering::Release);
+        let mut followers = self.followers.lock().unwrap_or_else(|e| e.into_inner());
+        if followers.get(label).is_some_and(|current| Arc::ptr_eq(current, stop)) { followers.remove(label); }
+    }
+
+    // Called on the async side, before warming or reserving a spare label.
+    #[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
+    fn check_idle_warm(&self, idle_only: Option<bool>, now: u64, left_held: bool) -> Result<(), String> {
+        if idle_only != Some(true) { return Ok(()); }
+        if left_held || now.saturating_sub(self.last_activity_ms.load(Ordering::Acquire)) < SPARE_IDLE_MS {
+            return Err("tearout_warm_deferred".into());
+        }
+        // Release this separate lock before taking transfers -> moves.
+        if !self.releases.lock().map_err(|e| e.to_string())?.is_empty() {
+            return Err("tearout_warm_deferred".into());
+        }
+        let transfers = self.transfers.lock().map_err(|e| e.to_string())?;
+        if transfers.values().any(|transfer| now.saturating_sub(transfer.created_at_ms) <= STALE_OPERATION_MS) {
+            return Err("tearout_warm_deferred".into());
+        }
+        let moves = self.moves.lock().map_err(|e| e.to_string())?;
+        if moves.values().any(|movement| {
+            let requested = movement.requested_at_ms.load(Ordering::Acquire);
+            !movement.closed.load(Ordering::Acquire) && (requested == 0 || now.saturating_sub(requested) <= STALE_OPERATION_MS)
+        }) { return Err("tearout_warm_deferred".into()); }
+        Ok(())
+    }
+
+    #[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
+    fn prepare_warm<R>(
+        &self,
+        idle_only: Option<bool>,
+        now: u64,
+        left_held: impl FnOnce() -> bool,
+        reserve: impl FnOnce() -> Result<R, String>,
+        label_of: impl FnOnce(&R) -> String,
+    ) -> Result<Option<WarmPreparation<R>>, String> {
+        if let Some((label, _)) = self.spare.lock().map_err(|e| e.to_string())?.as_ref() {
+            return Ok(Some(WarmPreparation::Existing(label.clone())));
+        }
+        self.check_idle_warm(idle_only, now, idle_only == Some(true) && left_held())?;
+        if self.warming.swap(true, Ordering::AcqRel) {
+            return Ok(None);
+        }
+        let reservation = match reserve() {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                self.warming.store(false, Ordering::Release);
+                return Err(error);
+            }
+        };
+        let label = label_of(&reservation);
+        let generation = self.spare_generation.load(Ordering::Acquire);
+        *self.spare.lock().map_err(|e| e.to_string())? = Some((label.clone(), false));
+        Ok(Some(WarmPreparation::Reserved { reservation, label, generation }))
+    }
 }
 
 /// An idle spare must not keep the app alive or receive crash-rescued work.
 pub fn release_idle_after_destroy(app: &AppHandle, dying: &str) {
     expire_releases_for_window(app, dying);
     let state = app.state::<TearoutState>();
+    #[cfg(target_os = "windows")]
+    state.stop_follower(dying);
     #[cfg(target_os = "windows")]
     if let Ok(mut restored) = state.restored_windows.lock() { restored.remove(dying); }
     let label = state
@@ -68,6 +161,8 @@ pub fn release_idle_after_destroy(app: &AppHandle, dying: &str) {
         *spare = None;
     }
     if let Some(window) = app.get_window(&label) {
+        #[cfg(target_os = "windows")]
+        state.stop_follower(&label);
         let _ = window.destroy();
     }
 }
@@ -107,6 +202,8 @@ pub struct MoveState {
     failed: AtomicBool,
     observer_removed: AtomicBool,
     started_at: AtomicU64,
+    requested_at_ms: AtomicU64,
+    claimed_at_ms: AtomicU64,
     synthetic: AtomicBool,
     moved: AtomicBool,
     dragged: AtomicBool,
@@ -126,6 +223,12 @@ pub struct MoveState {
 }
 
 impl MoveState {
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    fn native_start_delay_ms(&self) -> Option<u64> {
+        let requested = self.requested_at_ms.load(Ordering::Acquire);
+        let claimed = self.claimed_at_ms.load(Ordering::Acquire);
+        (requested != 0 && claimed != 0).then(|| claimed.saturating_sub(requested))
+    }
     fn require_mode(&self, mode: MoveMode) -> Result<(), String> {
         if self.mode == mode { Ok(()) } else { Err("tearout_move_mode_changed".into()) }
     }
@@ -433,6 +536,7 @@ pub async fn tearout_prepare(
         transfer.attachment_source = Some(source_proof);
         transfer.attachment_receiver = Some(receiver_proof);
         transfers.insert(id, transfer);
+        state.activity();
         Ok(None)
     }).await
 }
@@ -455,6 +559,7 @@ pub async fn tearout_phase(
         let app_state = app.state::<crate::AppState>();
         if phase == transfer::Phase::RolledBack { revoke_transfer_attachments(&app_state.session_manager, &id, transfer)?; }
         if !transfer.advance(phase)? { return Ok(false); }
+        state.activity();
         if phase == transfer::Phase::Cleaned {
             let receiver = transfer.attachment_receiver.as_ref().ok_or("attachment_receiver_missing")?;
             for session_id in transfer::session_ids(&transfer.configs) {
@@ -514,6 +619,8 @@ pub async fn tearout_cancel_move(
     id: String,
     label: String,
 ) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    state.stop_follower(&label);
     if let Some(shared) = state
         .moves
         .lock()
@@ -556,30 +663,31 @@ pub async fn on_ui<T: Send + 'static>(
 pub async fn tearout_warm(
     app: AppHandle,
     state: State<'_, TearoutState>,
+    idle_only: Option<bool>,
 ) -> Result<Option<String>, String> {
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        let _ = (app, state);
+        let _ = (app, state, idle_only);
         return Ok(None);
     }
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
-        if let Some((label, _)) = state.spare.lock().map_err(|e| e.to_string())?.as_ref() {
-            return Ok(Some(label.clone()));
-        }
-        if state.warming.swap(true, Ordering::AcqRel) {
-            return Ok(None);
-        }
-        let reservation = match crate::commands::window::resolve_child_window_label(&app, None) {
-            Ok(crate::commands::window::ResolvedChildWindow::New(r)) => r,
-            other => {
-                state.warming.store(false, Ordering::Release);
-                return Err(format!("Fresh tear-out reservation failed: {other:?}"));
-            }
+        #[cfg(target_os = "windows")]
+        let left_held = native::left_button_down;
+        #[cfg(not(target_os = "windows"))]
+        let left_held = || false;
+        let (reservation, label, generation) = match state.prepare_warm(
+            idle_only, unix_ms(), left_held,
+            || match crate::commands::window::resolve_child_window_label(&app, None) {
+                Ok(crate::commands::window::ResolvedChildWindow::New(reservation)) => Ok(reservation),
+                other => Err(format!("Fresh tear-out reservation failed: {other:?}")),
+            },
+            |reservation| reservation.label().to_owned(),
+        )? {
+            Some(WarmPreparation::Existing(label)) => return Ok(Some(label)),
+            Some(WarmPreparation::Reserved { reservation, label, generation }) => (reservation, label, generation),
+            None => return Ok(None),
         };
-        let label = reservation.label().to_string();
-        let generation = state.spare_generation.load(Ordering::Acquire);
-        *state.spare.lock().map_err(|e| e.to_string())? = Some((label.clone(), false));
         let result = on_ui(&app, move |app| {
             if app
                 .state::<TearoutState>()
@@ -717,6 +825,7 @@ pub async fn tearout_take_spare(
 ) -> Result<Option<String>, String> {
     let mut spare = state.spare.lock().map_err(|e| e.to_string())?;
     if spare.as_ref().is_some_and(|(_, ready)| *ready) {
+        state.activity();
         let label = spare.take().map(|(label, _)| label);
         if let Some(label) = &label {
             app.state::<crate::AppState>()
@@ -748,6 +857,8 @@ pub async fn tearout_release_spare(
         .take()
         .map(|(label, _)| label);
     if let Some(label) = label {
+        #[cfg(target_os = "windows")]
+        state.stop_follower(&label);
         on_ui(&app, move |app| {
             app.state::<crate::AppState>()
                 .window_registry
@@ -787,6 +898,7 @@ pub async fn tearout_show(
     logical_width: Option<f64>,
     logical_height: Option<f64>,
 ) -> Result<Reveal, String> {
+    app.state::<TearoutState>().activity();
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = (app, label, offset_x, offset_y, logical_width, logical_height);
@@ -818,11 +930,18 @@ pub struct NativeStartRefusal {
     owner_id: String,
     source: String,
     label: String,
+    refusal_source: &'static str,
 }
 impl NativeStartRefusal {
     fn moving(owner_id: &str, source: &str, label: &str) -> Self {
         Self { kind: "rejected_busy", pre_ownership: true, phase: "moving",
-            owner_id: owner_id.into(), source: source.into(), label: label.into() }
+            owner_id: owner_id.into(), source: source.into(), label: label.into(), refusal_source: "backend_pre_ownership" }
+    }
+    fn transfer(owner_id: &str, source: &str, label: &str) -> Self {
+        Self { refusal_source: "backend_transfer", ..Self::moving(owner_id, source, label) }
+    }
+    fn release(owner_id: &str, source: &str, label: &str) -> Self {
+        Self { refusal_source: "backend_release", ..Self::moving(owner_id, source, label) }
     }
 }
 
@@ -830,7 +949,7 @@ fn transfer_refusal(transfers: &HashMap<String, transfer::Transfer>, requester: 
     configs: Option<&[serde_json::Value]>) -> Option<NativeStartRefusal> {
     transfers.iter().find(|(owner_id, transfer)| owner_id.as_str() != id &&
         (transfer.reserves_window(requester) || configs.is_some_and(|configs| transfer.reserves_sessions(configs))))
-        .map(|(owner_id, transfer)| NativeStartRefusal::moving(owner_id, &transfer.source, requester))
+        .map(|(owner_id, transfer)| NativeStartRefusal::transfer(owner_id, &transfer.source, requester))
 }
 
 #[tauri::command]
@@ -841,14 +960,14 @@ pub async fn tearout_transfer_refusal(window: tauri::Window, state: State<'_, Te
     // An incoming reservation never becomes the child's own operation, even
     // when a caller reuses the source's drag ID.
     Ok(transfers.iter().find(|(_, transfer)| transfer.reserves_window(window.label()))
-        .map(|(owner_id, transfer)| NativeStartRefusal::moving(owner_id, &transfer.source, window.label())))
+        .map(|(owner_id, transfer)| NativeStartRefusal::transfer(owner_id, &transfer.source, window.label())))
 }
 
 fn provisional_move_refusal(transfers: &HashMap<String, transfer::Transfer>, requester: &str,
     label: &str, id: &str) -> Option<NativeStartRefusal> {
     transfers.iter().find(|(owner_id, transfer)| transfer.reserves_window(requester)
         || (transfer.reserves_window(label) && !(owner_id.as_str() == id && transfer.source == requester)))
-        .map(|(owner_id, transfer)| NativeStartRefusal::moving(owner_id, &transfer.source, label))
+        .map(|(owner_id, transfer)| NativeStartRefusal::transfer(owner_id, &transfer.source, label))
 }
 
 fn pre_ownership_regrab_refusal(
@@ -880,6 +999,8 @@ pub async fn tearout_start_move(
     offset_x: Option<f64>,
     offset_y: Option<f64>,
 ) -> Result<Option<NativeStartRefusal>, String> {
+    #[cfg(target_os = "windows")]
+    let _follower = native::FollowerStartGuard::new(&app, &label);
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = (app, window, label, id, mode, region_count, regrab, offset_x, offset_y);
@@ -891,11 +1012,12 @@ pub async fn tearout_start_move(
         if mode.allows_dock() && source != label { return Err("tearout_dock_source_invalid".into()); }
         let before_ownership = mode.allows_dock() && regrab == Some(true) && source == label;
         let state = app.state::<TearoutState>();
+        state.activity();
         {
             let releases = state.releases.lock().map_err(|e| e.to_string())?;
             if let Some(release) = releases.values().find(|release| release.pending_for(&label)) {
                 if before_ownership && release.frame.id != id {
-                    return Ok(Some(NativeStartRefusal::moving(&release.frame.id, &release.frame.source, &label)));
+                    return Ok(Some(NativeStartRefusal::release(&release.frame.id, &release.frame.source, &label)));
                 }
                 return Err("tearout_release_pending".into());
             }
@@ -904,6 +1026,7 @@ pub async fn tearout_start_move(
             offset_x.zip(offset_y).map(|(x, y)| geometry::GrabOffset { x, y })
         } else { None };
         let shared = Arc::new(MoveState { mode, grab_offset, ..MoveState::default() });
+        shared.requested_at_ms.store(unix_ms(), Ordering::Release);
         *shared.moving_label.lock().map_err(|e| e.to_string())? = Some(label.clone());
         *shared.source_label.lock().map_err(|e| e.to_string())? = Some(source.clone());
         shared.region_count.store(region_count.unwrap_or(1).max(1) as u64, Ordering::Release);
@@ -924,6 +1047,9 @@ pub async fn tearout_start_move(
         }
         let key = id.clone();
         let result = on_ui(&app, move |app| {
+            shared.claimed_at_ms.store(unix_ms(), Ordering::Release);
+            #[cfg(target_os = "windows")]
+            app.state::<TearoutState>().stop_follower(&label);
             native::start(&app, &label, source, id, shared)
         }).await;
         if result.is_err() {
@@ -1199,6 +1325,24 @@ pub async fn tearout_alpha(
     Ok(())
 }
 
+async fn retire_with_record(
+    retirement: impl std::future::Future<Output = Result<(), String>>,
+    record: Option<serde_json::Value>,
+) -> Result<(), String> {
+    retirement.await?;
+    if let Some(value) = record {
+        match serde_json::from_value::<log::DragRecord>(value) {
+            Ok(record) => {
+                if log::write_record(record.docked().into()).await.is_err() {
+                    eprintln!("[tearout] log write failed after dock");
+                }
+            }
+            Err(_) => eprintln!("[tearout] invalid dock record discarded after retirement"),
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn tearout_retire(
     window: tauri::Window,
@@ -1209,9 +1353,11 @@ pub async fn tearout_retire(
     transfer_id: Option<String>,
     finalize_label: Option<String>,
     finalize_token: Option<String>,
-    record: Option<log::DragRecord>,
+    record: Option<serde_json::Value>,
 ) -> Result<(), String> {
     let caller = window.label().to_owned();
+    #[cfg(target_os = "windows")]
+    app.state::<TearoutState>().stop_follower(&label);
     if let Some(id) = transfer_id.as_deref() {
         let state = app.state::<TearoutState>();
         let transfers = state.transfers.lock().map_err(|e| e.to_string())?;
@@ -1222,8 +1368,9 @@ pub async fn tearout_retire(
             if finalize_label.as_deref() != Some(transfer.receiver.as_str()) { return Err("tearout_transfer_receiver_changed".into()); }
         }
     }
-    on_ui(&app, move |app| {
+    retire_with_record(on_ui(&app, move |app| {
         let state = app.state::<TearoutState>();
+        state.activity();
         let mut transfers = state.transfers.lock().map_err(|e| e.to_string())?;
         if let Some(id) = transfer_id.as_deref() {
             let transfer = transfers.get(id).ok_or("tearout_transfer_missing")?;
@@ -1256,16 +1403,7 @@ pub async fn tearout_retire(
             if transfers.get(&id).is_some_and(|transfer| transfer.can_forget()) { transfers.remove(&id); }
         }
         Ok(())
-    })
-    .await?;
-    if let Some(record) = record {
-        if log::tearout_log_record(record.docked().into())
-            .await
-            .is_err()
-        {
-            eprintln!("[tearout] log write failed after dock");
-        }
-    }
+    }), record).await?;
     if let Some((receiver, token)) = receipt_label.zip(receipt_token) {
         app.emit_to(
             receiver,
@@ -1287,6 +1425,8 @@ pub async fn tearout_settle(app: AppHandle, label: String) -> Result<(), String>
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         on_ui(&app, move |app| {
+            #[cfg(target_os = "windows")]
+            app.state::<TearoutState>().stop_follower(&label);
             if let Some(window) = app.get_window(&label) {
                 native::set_alpha(&window, 255)?;
                 #[cfg(target_os = "windows")]
@@ -1395,6 +1535,207 @@ pub async fn tearout_restore_geometry(
 mod native_start_refusal_tests {
     use super::*;
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn follower_state_replacement_and_stop_preserve_other_labels_and_generations() {
+        // These are state helpers; this does not exercise each stopping command.
+        let state = TearoutState::default();
+        let first = Arc::new(AtomicBool::new(false));
+        let next = Arc::new(AtomicBool::new(false));
+        let unrelated = Arc::new(AtomicBool::new(false));
+        state.replace_follower("child", first.clone());
+        state.replace_follower("other", unrelated.clone());
+        state.replace_follower("child", next.clone());
+        assert!(first.load(Ordering::Acquire));
+        state.finish_follower("child", &first); // Old thread exits after a newer reveal.
+        assert!(Arc::ptr_eq(state.followers.lock().unwrap().get("child").unwrap(), &next));
+        assert!(!next.load(Ordering::Acquire));
+        state.stop_follower("child");
+        assert!(next.load(Ordering::Acquire));
+        assert!(!unrelated.load(Ordering::Acquire));
+        assert!(!state.followers.lock().unwrap().contains_key("child"));
+        state.finish_follower("other", &unrelated);
+        assert!(state.followers.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn native_start_delay_measures_ui_queue_wait_without_an_instant_field() {
+        let movement = MoveState::default();
+        assert!(movement.native_start_delay_ms().is_none());
+        movement.requested_at_ms.store(100, Ordering::Release);
+        assert!(movement.native_start_delay_ms().is_none());
+        movement.claimed_at_ms.store(5519, Ordering::Release);
+        assert_eq!(movement.native_start_delay_ms(), Some(5419));
+        movement.claimed_at_ms.store(100, Ordering::Release);
+        assert_eq!(movement.native_start_delay_ms(), Some(0));
+        movement.claimed_at_ms.store(99, Ordering::Release);
+        assert_eq!(movement.native_start_delay_ms(), Some(0));
+        for refusal in [NativeStartRefusal::moving("move", "source", "child"),
+            NativeStartRefusal::release("release", "source", "child"),
+            NativeStartRefusal::transfer("transfer", "source", "child")] {
+            let value = serde_json::to_value(refusal).unwrap();
+            assert_eq!(value["refusal_source"], format!("backend_{}", match value["owner_id"].as_str().unwrap() {
+                "move" => "pre_ownership", other => other,
+            }));
+        }
+    }
+
+    #[test]
+    fn idle_warm_gate_preserves_demand_warm_and_does_not_reserve_on_deferral() {
+        let state = TearoutState::default();
+        let now = 400000;
+        state.spare_generation.store(7, Ordering::Release);
+        let reservations = std::cell::Cell::new(0);
+        state.last_activity_ms.store(now - 2999, Ordering::Release);
+        let movement = Arc::new(MoveState::default());
+        movement.requested_at_ms.store(now - 4000, Ordering::Release);
+        state.moves.lock().unwrap().insert("moving".into(), movement.clone());
+        for idle_only in [None, Some(false)] {
+            assert!(state.check_idle_warm(idle_only, now, true).is_ok());
+        }
+        let deferred = || {
+            let result = state.prepare_warm(Some(true), now, || false, || {
+                reservations.set(reservations.get() + 1);
+                Ok("must-not-reserve".to_owned())
+            }, Clone::clone);
+            assert!(matches!(result, Err(error) if error == "tearout_warm_deferred"));
+            assert_eq!(reservations.get(), 0);
+            assert!(state.spare.lock().unwrap().is_none());
+            assert!(!state.warming.load(Ordering::Acquire));
+            // prepare_warm only reads the generation; this guards future changes.
+            // Reservation count, spare and warming assertions verify the ordering.
+            assert_eq!(state.spare_generation.load(Ordering::Acquire), 7);
+        };
+        deferred(); // Recent activity.
+        state.last_activity_ms.store(now - 3000, Ordering::Release);
+        deferred(); // Open move.
+        movement.closed.store(true, Ordering::Release);
+        assert!(state.check_idle_warm(Some(true), now, false).is_ok());
+        movement.closed.store(false, Ordering::Release);
+        movement.requested_at_ms.store(now - 300001, Ordering::Release);
+        assert!(state.check_idle_warm(Some(true), now, false).is_ok());
+        assert_eq!(state.check_idle_warm(Some(true), now, true).unwrap_err(), "tearout_warm_deferred");
+        state.transfers.lock().unwrap().insert("pending".into(), transfer::Transfer::new(
+            "source".into(), "receiver".into(), vec![], "token".into(), None));
+        deferred();
+        assert!(state.check_idle_warm(None, now, true).is_ok());
+        state.transfers.lock().unwrap().clear();
+        let frame = ReleaseFrame { id: "release".into(), mode: MoveMode::Dock, label: "child".into(),
+            source: "child".into(), receiver: "main".into(), receiver_epoch: 1, region_count: 1,
+            client_x: 0.0, client_y: 0.0, token: "token".into(),
+            point: ReleasePoint { x: 0.0, y: 0.0, at: now, method: release::ReleaseMethod::NativeUp } };
+        state.releases.lock().unwrap().insert("release".into(), Arc::new(ReleaseEscrow::new(frame)));
+        deferred();
+        assert!(state.check_idle_warm(None, now, true).is_ok());
+    }
+
+    #[test]
+    fn idle_warm_gate_ignores_transfers_only_after_the_stale_operation_limit() {
+        let state = TearoutState::default();
+        let pending = transfer::Transfer::new("source".into(), "receiver".into(), vec![], "token".into(), None);
+        let now = unix_ms();
+        assert!(pending.created_at_ms <= now);
+        state.transfers.lock().unwrap().insert("pending".into(), pending);
+        assert_eq!(state.check_idle_warm(Some(true), now, false).unwrap_err(), "tearout_warm_deferred");
+        state.transfers.lock().unwrap().get_mut("pending").unwrap().created_at_ms = now - STALE_OPERATION_MS;
+        assert_eq!(state.check_idle_warm(Some(true), now, false).unwrap_err(), "tearout_warm_deferred");
+        state.transfers.lock().unwrap().get_mut("pending").unwrap().created_at_ms = now - STALE_OPERATION_MS - 1;
+        assert!(state.check_idle_warm(Some(true), now, false).is_ok());
+    }
+
+    #[test]
+    fn demand_warm_reserves_without_consulting_idle_activity_or_the_button() {
+        for idle_only in [None, Some(false)] {
+            let state = TearoutState::default();
+            let now = unix_ms();
+            state.last_activity_ms.store(now, Ordering::Release);
+            state.transfers.lock().unwrap().insert("pending".into(), transfer::Transfer::new(
+                "source".into(), "receiver".into(), vec![], "token".into(), None));
+            let reservations = std::cell::Cell::new(0);
+            let result = state.prepare_warm(idle_only, now, || panic!("demand warm must not query the button"), || {
+                reservations.set(reservations.get() + 1);
+                Ok("new-spare".to_owned())
+            }, Clone::clone).unwrap();
+            assert!(matches!(result, Some(WarmPreparation::Reserved { reservation, label, generation: 0 })
+                if reservation == "new-spare" && label == "new-spare"));
+            assert_eq!(reservations.get(), 1);
+            assert_eq!(*state.spare.lock().unwrap(), Some(("new-spare".into(), false)));
+            assert!(state.warming.load(Ordering::Acquire));
+        }
+    }
+
+    #[test]
+    fn existing_spare_returns_its_label_before_the_idle_gate_or_reservation() {
+        let state = TearoutState::default();
+        *state.spare.lock().unwrap() = Some(("existing".into(), false));
+        state.warming.store(true, Ordering::Release);
+        state.spare_generation.store(7, Ordering::Release);
+        let result = state.prepare_warm::<String>(Some(true), 0, || panic!("must not query the button"),
+            || panic!("must not reserve"), |_| panic!("must not extract a reserved label")).unwrap();
+        assert!(matches!(result, Some(WarmPreparation::Existing(label)) if label == "existing"));
+        assert_eq!(*state.spare.lock().unwrap(), Some(("existing".into(), false)));
+        assert!(state.warming.load(Ordering::Acquire));
+        // prepare_warm only reads the generation; this guards future changes.
+        // Reservation count, spare and warming assertions verify the ordering.
+        assert_eq!(state.spare_generation.load(Ordering::Acquire), 7);
+    }
+
+    #[test]
+    fn warming_spare_returns_none_without_reserving_again() {
+        let state = TearoutState::default();
+        state.warming.store(true, Ordering::Release);
+        let result = state.prepare_warm::<String>(Some(true), 400000, || false,
+            || panic!("must not reserve"), |_| panic!("must not extract a reserved label")).unwrap();
+        assert!(result.is_none());
+        assert!(state.spare.lock().unwrap().is_none());
+        assert!(state.warming.load(Ordering::Acquire));
+        // prepare_warm only reads the generation; this guards future changes.
+        // Reservation count, spare and warming assertions verify the ordering.
+        assert_eq!(state.spare_generation.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn warm_reservation_failure_clears_warming_without_publishing_a_spare() {
+        let state = TearoutState::default();
+        let result = state.prepare_warm::<String>(None, 0, || false,
+            || Err("reservation failed".into()), Clone::clone);
+        assert!(matches!(result, Err(error) if error == "reservation failed"));
+        assert!(state.spare.lock().unwrap().is_none());
+        assert!(!state.warming.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn idle_warm_arguments_demonstrate_the_assumed_tauri_default_camel_case_shape() {
+        // This equivalent struct demonstrates reliance on Tauri's default
+        // camelCase arguments; it does not exercise the command itself.
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Arguments { idle_only: Option<bool> }
+        let args: Arguments = serde_json::from_str(r#"{"idleOnly":true}"#).unwrap();
+        assert_eq!(args.idle_only, Some(true));
+        assert!(serde_json::from_str::<Arguments>("{}").unwrap().idle_only.is_none());
+    }
+
+    #[tokio::test]
+    async fn retire_continues_when_diagnostic_record_has_unknown_fields() {
+        let mut record = serde_json::json!({
+            "drag_id": "drag", "pane_id": "tab", "source_window": "child", "switch_on": true,
+            "down_at": 10, "layout_done_at": 0, "result": "docked", "focus_stolen": false, "errors": []
+        });
+        assert!(serde_json::from_value::<log::DragRecord>(record.clone()).is_ok());
+        record["unknown_future_field"] = serde_json::json!("ignored");
+        assert!(serde_json::from_value::<log::DragRecord>(record.clone()).is_err());
+        let retired = std::sync::atomic::AtomicBool::new(false);
+        let result = retire_with_record(async {
+            retired.store(true, Ordering::SeqCst);
+            Ok(())
+        }, Some(record)).await;
+        assert!(result.is_ok());
+        assert!(retired.load(Ordering::SeqCst));
+        let failed = retire_with_record(async { Err("retire_failed".into()) }, None).await;
+        assert_eq!(failed.unwrap_err(), "retire_failed");
+    }
+
     #[test]
     fn move_intent_is_explicit_serialized_and_cannot_change_o2() {
         for mode in [MoveMode::Detach, MoveMode::Dock] {
@@ -1439,6 +1780,7 @@ mod native_start_refusal_tests {
         assert_eq!(serde_json::to_value(refusal).unwrap(), serde_json::json!({
             "kind": "rejected_busy", "pre_ownership": true, "phase": "moving",
             "owner_id": "owner", "source": "main", "label": "child",
+            "refusal_source": "backend_pre_ownership",
         }));
         assert!(pre_ownership_regrab_refusal(&moves, "main", "child", "second", true).unwrap().is_none());
         assert!(pre_ownership_regrab_refusal(&moves, "child", "child", "second", false).unwrap().is_none());

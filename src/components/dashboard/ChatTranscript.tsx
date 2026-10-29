@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import type { SemanticEventEnvelope, TranscriptDescriptor } from "../../lib/livebrief";
 import type { TranscriptHistoryReader } from "../../stores/transcriptHistoryStore";
@@ -186,6 +187,7 @@ export function ChatTranscript(props: Parameters<typeof LegacyChatTranscript>[0]
     transcriptSearch={props.transcriptSearch}
     onSearchNavigation={props.onSearchNavigation}
     compact={props.compact}
+    navigationTarget={props.navigationTarget}
   />;
   return <LegacyChatTranscript {...props}/>;
 }
@@ -194,6 +196,7 @@ function LegacyChatTranscript({
   events,
   compact = false,
   sessionId = null,
+  navigationTarget = null,
   tabId = null,
   displayState = "idle",
   agentKind = "none",
@@ -208,6 +211,7 @@ function LegacyChatTranscript({
   events: readonly SemanticEventEnvelope[];
   compact?: boolean;
   sessionId?: string | null;
+  navigationTarget?: HTMLElement | null;
   tabId?: string | null;
   displayState?: DashboardDisplayState;
   agentKind?: DashboardAgentKind;
@@ -412,8 +416,7 @@ function LegacyChatTranscript({
         : dashboardStrings.chatEmpty}
     </div>{footer}</>;
   }
-  return <div className="cmux-dashboard-chat-transcript">
-    {userTurnNav && userTurns.length ? <UserTurnNavBar
+  const navigation = userTurnNav && userTurns.length ? <UserTurnNavBar
       compact={compact}
       index={userTurnNav.index}
       total={userTurnNav.total}
@@ -421,7 +424,9 @@ function LegacyChatTranscript({
       followingBottom={userTurnNav.followingBottom}
       onPrev={() => jumpUserTurn(-1)}
       onNext={() => jumpUserTurn(1)}
-    /> : null}
+    /> : null;
+  return <div className="cmux-dashboard-chat-transcript">
+    {compact && navigationTarget ? createPortal(navigation, navigationTarget) : navigation}
     <div ref={scrollRef} onScroll={onScroll} role="log" aria-label={dashboardStrings.chatAriaLabel} className="cmux-dashboard-chat">
     {syntheticSource ? <div id={`dashboard-event-${syntheticSource.eventId}`} data-dashboard-event={syntheticSource.eventId} className={`cmux-dashboard-msg is-agent is-status-source${syntheticSource.eventId === targetEventId ? " is-source-highlighted" : ""}`}>
       <div className="cmux-dashboard-msg-who"><span>状態イベント</span><span>{clockLabel(syntheticSource.at)}</span></div>
@@ -430,8 +435,8 @@ function LegacyChatTranscript({
     {rows.map((row) => row.kind === "message"
       ? row.message.role === "question" ? null : <ChatBubble key={row.message.id} message={row.message} compact={compact} context={linkContext} highlighted={row.message.id === targetMessageId} />
       : <details key={row.id} className="cmux-dashboard-toolfold" open={expandedToolGroups.has(`${sessionId ?? "none"}:${row.id}`)} onToggle={(event) => onToolGroupToggle(`${sessionId ?? "none"}:${row.id}`, event.currentTarget.open)}>
-        <summary>{`▸ ツール実行 ${row.tools.length}件`}</summary>
-        {row.tools.map((tool) => <ToolDetails key={tool.id} tool={tool} context={linkContext} />)}
+        <summary>{compact ? <><span className="cmux-dashboard-tool-marker">▸ </span><span className="cmux-dashboard-tool-name">{`ツール実行 ${row.tools.length}件`}</span><span className="cmux-dashboard-tool-target">{row.tools[0]?.target}</span><span className="cmux-dashboard-tool-time">{clockLabel(events.find((event) => event.eventId === row.id)?.occurredAt ?? 0)}</span></> : `▸ ツール実行 ${row.tools.length}件`}</summary>
+        {compact ? <div className="cmux-dashboard-tool-content">{row.tools.map((tool) => <ToolDetails key={tool.id} tool={tool} context={linkContext} />)}</div> : row.tools.map((tool) => <ToolDetails key={tool.id} tool={tool} context={linkContext} />)}
       </details>)}
     {footer}
   </div>

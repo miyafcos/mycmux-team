@@ -20,6 +20,8 @@ import {
   type AskStopReason,
 } from "../../stores/askQuestionStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
+import { canonicalPeerWindowTabs } from "./peerWindowTabs";
+import { usePeerWindowTabsStore } from "./peerWindowTabsStore";
 
 export type AskSentKey =
   | { kind: "text"; text: string }
@@ -57,7 +59,8 @@ function defaultDeps(): AskQuestionDeps {
     attentionFor: (sessionId) => useSessionAttentionStore.getState().attentionBySession[sessionId],
     sessionExists: (sessionId) => useWorkspaceListStore.getState().workspaces.some((workspace) => (
       workspace.panes.some((pane) => pane.tabs.some((tab) => tab.sessionId === sessionId))
-    )),
+    )) || canonicalPeerWindowTabs(usePeerWindowTabsStore.getState().index, useWorkspaceListStore.getState().workspaces)
+      .some(peer => peer.tab.sessionId === sessionId),
     claimPrompt: tryAnswerPrompt,
     isCurrentLaunch: isCurrentPromptLaunch,
     now: () => Date.now(),

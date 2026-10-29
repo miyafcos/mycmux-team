@@ -22,6 +22,7 @@ import { toTransferConfig } from "../../src/components/layout/SocketListener";
 import { installTearoutRuntime, regrabTearoutWindow, tearoutTab } from "../../src/lib/tearout/runtime";
 import { beginTearoutOperation, endTearoutOperation, tearoutOperationBusy } from "../../src/lib/tearout/operation";
 import { tearOutWorkspaceToNewWindow } from "../../src/lib/workspaceTearOut";
+import { createPaneMoveRequest, executePaneMove } from "../../src/lib/paneMoveOperation";
 import { commitPaneDragDrop } from "../../src/hooks/usePaneDragSource";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { usePaneDragStore } from "../../src/stores/paneDragStore";
@@ -167,6 +168,28 @@ it("notices an ordinary prepare reservation without reporting a failed creation 
   await refused("ordinary"); expectNotice();
   expect(mutations().map(([command]) => command)).toEqual(["open_workspace_window", "tearout_prepare", "tearout_retire"]);
   expect(useWorkspaceListStore.getState().workspaces).toEqual([workspace]);
+  expect(boundary.invoke.mock.calls.find(([command, args]) => command === "tearout_log_record" && args.record.result === "rejected_busy")?.[1].record)
+    .toMatchObject({ refusal_source: "backend_transfer", blocker_id: "first", blocker_phase: "moving" });
+});
+
+it("records an ordinary workspace operation ID as the phase blocker while it opens", async () => {
+  const base = boundary.invoke.getMockImplementation()!;
+  let open!: (label: string) => void;
+  boundary.invoke.mockImplementation((command: string, args: any) => command === "open_workspace_window"
+    ? new Promise<string>(resolve => { open = resolve; }) : base(command, args));
+  const request = createPaneMoveRequest({ kind: "workspace", workspaceId: workspace.id, label: "Web" }, { kind: "window" });
+  const pending = executePaneMove(request);
+  try {
+    await act(async () => { await flush(); });
+    expect(open).toEqual(expect.any(Function));
+    await refused("dock");
+    expect(boundary.invoke.mock.calls.find(([command, args]) => command === "tearout_log_record" && args.record.result === "rejected_busy")?.[1].record)
+      .toMatchObject({ refusal_source: "phase", blocker_id: request.operationId, blocker_phase: "moving" });
+  } finally {
+    boundary.refusePrepare = true;
+    await act(async () => { open("C"); await pending; });
+  }
+  expect(tearoutOperationBusy()).toBe(false);
 });
 it("keeps a repeated pointer refusal quiet rather than claiming a pending reservation", async () => {
   expect(beginTearoutOperation()).toBe(true);

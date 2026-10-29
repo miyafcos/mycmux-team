@@ -22,13 +22,14 @@ const report: UsageRhythmReport = {
 
 describe("usage rhythm layout and metric", () => {
   it.each([
-    ["ioTokens", "入出力トークン", "300 tok", "2026-10-21 (200 tok)"],
-    ["totalTokens", "総トークン", "550 tok", "2026-10-20 (300 tok)"],
-    ["turns", "ターン数", "12", "2026-10-20 (9)"],
-  ] as const)("aligns the headline and busiest day with %s", (metric, label, total, busiest) => {
+    ["ioTokens", "入出力トークン", "230 tok"],
+    ["totalTokens", "総トークン", "460 tok"],
+    ["turns", "ターン数", "23"],
+  ] as const)("keeps %s values and metric labels in the hourly table", (metric, label, peak) => {
     const html = renderToStaticMarkup(<UsageRhythm report={report} metric={metric} />);
-    expect(html).toContain(`${label}が最も多い日: ${busiest}`);
-    expect(html).toContain(`title="${total}"`);
+    expect(html).toContain(`時間帯（+09:00）ごとの${label}`);
+    expect(html).toContain(`>${peak}</td>`);
+    expect(html).toContain("最多 23時");
   });
 
   it("uses intrinsic tick width and separate sparse hour labels", () => {
@@ -47,7 +48,7 @@ describe("usage rhythm layout and metric", () => {
     expect(html).toContain("230 tok");
   });
 
-  it("does not claim a busiest day when the selected metric is zero", () => {
+  it("keeps both slot tables and no peak for a zero selected metric", () => {
     const empty = {
       ...report,
       totals: { ...report.totals, turns: 0 },
@@ -56,13 +57,11 @@ describe("usage rhythm layout and metric", () => {
       byWeekday: report.byWeekday.map((slot) => ({ ...slot, turns: 0 })),
     };
     const html = renderToStaticMarkup(<UsageRhythm report={empty} metric="turns" />);
-    expect(html).not.toContain("ターン数が最も多い日");
-    expect(html).toContain("この期間のターン数は0です。");
-    expect(html).not.toContain("この期間の記録はありません。");
+    expect(html.match(/<td[^>]*>0<\/td>/g)).toHaveLength(31);
     expect(html.match(/記録なし/g)).toHaveLength(2);
   });
 
-  it("distinguishes an empty period from records with a zero selected metric", () => {
+  it("keeps both empty distributions after removing the daily summary", () => {
     const empty = {
       ...report,
       activeDays: 0,
@@ -72,7 +71,7 @@ describe("usage rhythm layout and metric", () => {
       byWeekday: report.byWeekday.map((slot) => ({ ...slot, io: 0, total: 0, turns: 0 })),
     };
     const html = renderToStaticMarkup(<UsageRhythm report={empty} metric="ioTokens" />);
-    expect(html).toContain("この期間の記録はありません。");
-    expect(html).not.toContain("入出力トークンが最も多い日");
+    expect(html.match(/記録なし/g)).toHaveLength(2);
+    expect(html.match(/<th scope="row"/g)).toHaveLength(31);
   });
 });

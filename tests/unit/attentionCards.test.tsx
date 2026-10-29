@@ -80,6 +80,25 @@ afterEach(async () => {
 });
 
 describe("AttentionCards", () => {
+  it.each(["throw", "reject"])("reports a synchronous or rejected action error (%s) and permits retry", async (failure) => {
+    bridgeMocks.attentionListCards.mockResolvedValue([actionCard("retry-error", {
+      type: "openSession", session: { type: "pty", pty_session_id: "pty-a" },
+    })]);
+    const operation = vi.fn<() => void | Promise<void>>().mockImplementationOnce(() => {
+      if (failure === "throw") throw new Error("unavailable");
+      return Promise.reject(new Error("unavailable"));
+    });
+    await act(async () => root.render(<AttentionCards {...actionHandlers({ openSession: operation }).actions} />));
+    const button = container.querySelector<HTMLButtonElement>(".cmux-attention-card-action button")!;
+    await act(async () => button.click());
+    expect(operation).toHaveBeenCalledOnce();
+    expect(button.hasAttribute("aria-busy")).toBe(false);
+    expect(container.querySelector("[role=status]")?.textContent).toBe(dashboardStrings.attentionActionFailed);
+    await act(async () => button.click());
+    expect(operation).toHaveBeenCalledTimes(2);
+    expect(button.hasAttribute("aria-busy")).toBe(false);
+    expect(container.querySelector("[role=status]")?.textContent).toBe(dashboardStrings.attentionActionSucceeded);
+  });
   it("renders a session chip and routes its click to the dashboard callback", async () => {
     const openCardSession = vi.fn();
     const cards = [actionCard("open", { type: "openSession", session: { type: "pty", pty_session_id: "pty-a" } })];

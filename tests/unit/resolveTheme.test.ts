@@ -302,7 +302,9 @@ const STAGE_2_ADDED_VAR = "--pane-tabbar-bg";
 
 function compareVars(actual: Record<string, unknown>, expected: Record<string, unknown>, label: string): number {
   const keys = [...new Set([...Object.keys(expected), ...Object.keys(actual)])]
-    .filter((key) => key !== STAGE_2_ADDED_VAR)
+    // Reading typography is new; this equivalence proof still compares every
+    // original chrome, colour and terminal variable against the frozen copy.
+    .filter((key) => key !== STAGE_2_ADDED_VAR && key !== "--cmux-read-font-size" && key !== "--cmux-read-line-height")
     .sort();
   for (const key of keys) {
     expect(actual[key], `${label} / ${key}`).toBe(expected[key]);
@@ -321,15 +323,15 @@ describe("resolveTheme leaves every dark theme byte-identical", () => {
     expect(DARK_THEMES).toHaveLength(21);
   });
 
-  it("emits 53 colour variables plus 11 typography/spacing plus 6 font/dashboard plus colorScheme", () => {
+  it("emits 53 colour variables plus 11 typography/spacing plus 8 font/dashboard plus colorScheme", () => {
     expect(RESOLVED_THEME_TOKENS).toHaveLength(53);
     expect(new Set(RESOLVED_THEME_TOKENS.map((token) => token.cssVar)).size).toBe(53);
     expect(RESOLVED_THEME_TOKENS.map((token) => token.cssVar)).toContain(STAGE_2_ADDED_VAR);
 
     const vars = buildThemeVars({ theme: THEMES[0], background: WALLPAPER_ON, ...BASE_TYPOGRAPHY });
     const keys = Object.keys(vars);
-    expect(keys).toHaveLength(71);
-    expect(keys.filter((key) => key.startsWith("--"))).toHaveLength(70);
+    expect(keys).toHaveLength(73);
+    expect(keys.filter((key) => key.startsWith("--"))).toHaveLength(72);
     expect(keys).toContain("colorScheme");
   });
 

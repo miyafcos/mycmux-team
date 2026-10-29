@@ -12,6 +12,7 @@ import {
 
 export const TAB_SWEEP_IDLE_MS = 5 * 60 * 1000;
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
+import { isDetachedDashboardHost } from "../../lib/dashboardHost";
 
 export const TAB_SWEEP_TAIL_LINES = 8;
 export const TAB_NAMING_TAIL_LINES = 14;
@@ -22,7 +23,7 @@ export const SWEEP_RESTORE_LIMIT_TEXT = "取り消しは記録の復元で、実
 
 /** Opens the only sweep surface, then waits for its dashboard-local listener. */
 export function openTabSweepInDashboard(): void {
-  if (typeof window === "undefined") return;
+  if (typeof window === "undefined" || isDetachedDashboardHost()) return;
   useDashboardViewStore.getState().openView();
   window.setTimeout(() => window.dispatchEvent(new Event(TAB_SWEEP_OPEN_EVENT)), 0);
 }

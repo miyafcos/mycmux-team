@@ -102,6 +102,47 @@
   --cmux-dash-body-font: var(--cmux-font-mono);
   --cmux-dash-font-size: var(--cmux-font-size-sm);
   --cmux-dash-line-height: var(--cmux-line-height-ui);
+  /* Conversation type is independent of the terminal grid. Derived aliases
+     are redeclared on .cmux-dashboard-view, below the themed app root. */
+  --cmux-read-font-size: 14px;
+  --cmux-read-line-height: 1.7;
+  --cmux-chat-font-floor: 11px;
+  --cmux-chat-hairline: 1px;
+  --cmux-chat-mark-width: 3px;
+  --cmux-chat-meta-line-height: 1.5;
+  --cmux-chat-strong-weight: 600;
+  --cmux-chat-motion-fast: 100ms;
+  --cmux-chat-meta-size: max(11px, calc(var(--cmux-read-font-size) - 2px));
+  --cmux-chat-code-size: max(11px, calc(var(--cmux-read-font-size) - 1px));
+  --cmux-chat-lane: calc(42 * var(--cmux-read-font-size));
+  --cmux-chat-column-color: var(--cmux-accent);
+  --cmux-chat-gutter: 20px;
+  --cmux-chat-gutter-narrow: 14px;
+  --cmux-chat-space-1: 2px;
+  --cmux-chat-space-2: 4px;
+  --cmux-chat-space-3: 6px;
+  --cmux-chat-space-4: 8px;
+  --cmux-chat-space-5: 10px;
+  --cmux-chat-space-6: 12px;
+  --cmux-chat-space-7: 14px;
+  --cmux-chat-space-8: 16px;
+  --cmux-chat-tool-indent: 18px;
+  --cmux-chat-status-height: 18px;
+  --cmux-chat-space-10: 20px;
+  --cmux-chat-space-11: 22px;
+  --cmux-chat-space-12: 24px;
+  --cmux-chat-radius-inline: 4px;
+  --cmux-chat-radius-button: 6px;
+  --cmux-chat-radius-block: 8px;
+  --cmux-chat-radius-input: 10px;
+  --cmux-chat-radius-user: 12px;
+  --cmux-chat-radius-send: 7px;
+  --cmux-chat-header-height: 40px;
+  --cmux-chat-button-size: 28px;
+  --cmux-chat-nav-size: 26px;
+  --cmux-chat-icon-size: 15px;
+  --cmux-chat-nav-icon-size: 14px;
+  --cmux-chat-tool-max-height: 280px;
   /* Mono fallback. The themed root prepends the selected font's named faces.
      "UDEV Gothic NF" is bundled; the other faces are a safety net if its assets
      fail to load. The canonical stack stays in sync with fontAvailability. */

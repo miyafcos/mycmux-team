@@ -56,7 +56,7 @@ import {
   savepointPublishErrorMessage,
   type SavepointAgentKind,
 } from "../online/onlineSavepoints";
-import { openDashboardForTab } from "../layout/openDashboardForTab";
+import { requestDashboard } from "../layout/openDashboardForTab";
 import { TAB_RESTORE_CLOSED_EVENT } from "../layout/tabSweep";
 import { peekClosedPane } from "../../stores/closedPaneStore";
 import { paneTabMenuStrings, paneToolbarStrings, terminalPaneStrings } from "./terminalPaneStrings";
@@ -1482,7 +1482,7 @@ export default memo(function PaneTabBar({
         setPublishPopoverOpen(true);
       } },
     { id: "dashboard", label: paneToolbarStrings.openInDashboard, show: Boolean(activeTab),
-      run: () => { if (activeTab) openDashboardForTab(activeTab.id); } },
+      run: () => { if (activeTab) void requestDashboard({ tabId: activeTab.id, sessionId: activeTab.sessionId }); } },
     { id: "history", content: <TerminalHistoryEntry sessionId={canSearchTerminal ? activeTab!.sessionId : null}
         visible={isVisible} variant="menu" /> },
     { id: "duplicate", label: paneToolbarStrings.duplicateSession, show: Boolean(activeMeta?.agentKind && activeMeta.agentSessionId),

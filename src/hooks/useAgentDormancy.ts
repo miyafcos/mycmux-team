@@ -43,6 +43,7 @@ import { useAskQuestionStore } from "../stores/askQuestionStore";
 import { useToastStore } from "../stores/toastStore";
 import { getTabDisplayLabel } from "../lib/tabDisplayLabel";
 import { openTabSweepInDashboard } from "../components/layout/tabSweep";
+import { isDetachedDashboardHost } from "../lib/dashboardHost";
 import { AGENT_DORMANCY_REVIEW_EVENT, matchesDormancyApproval, useAgentDormancyStore, type AgentDormancyProposal } from "../stores/agentDormancyStore";
 
 interface RuntimeDormancyTarget {
@@ -502,7 +503,7 @@ export function useAgentDormancy(enabled: boolean): void {
           useAgentDormancyStore.getState().finishApprovals(Object.keys(approvals));
           if (proposals.some((entry) => !previousIds.has(entry.sessionId))) {
             useToastStore.getState().pushToast(`休止候補が${proposals.length}件あります。確認するまでプロセスは終了しません`, "info", undefined,
-              [{ label: "候補を確認", run: openTabSweepInDashboard }], undefined, "system");
+              isDetachedDashboardHost() ? undefined : [{ label: "候補を確認", run: openTabSweepInDashboard }], undefined, "system");
           }
         }
         inFlight = false;

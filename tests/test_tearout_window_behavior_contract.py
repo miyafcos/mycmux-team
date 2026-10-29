@@ -34,7 +34,9 @@ def test_native_regrab_changes_no_window_attribute_and_gates_docking_after_movem
         assert forbidden not in start
     # The 0882 ruling permits one initial-detach realignment, never a regrab/dock mutation.
     alignment = start[start.index('if let Some(offset) = shared.grab_offset'):start.index('if let Err(error) = window.start_dragging()')]
-    assert start.count('set_position') == alignment.count('set_position') == 2
+    # geometry.rs tests the shared entry's two-placement limit (no third move).
+    assert start.count('set_position') == alignment.count('set_position') >= 1
+    assert 'geometry::settle_from_window_scale(' in alignment
     command = body(read("src-tauri/src/tearout/mod.rs"), "tearout_start_move")
     assert 'mode == MoveMode::Detach && regrab != Some(true) && source != label' in command
     assert 'offset_x.zip(offset_y)' in command

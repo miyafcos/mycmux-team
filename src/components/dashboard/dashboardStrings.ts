@@ -7,6 +7,8 @@ type AttentionFactKindLabel = "pendingQuestion" | "queuedInput" | "noUpdate";
 type AttentionKindLabel = "agentAsked" | "workStopped" | "reportsComplete" | "completionWithoutTests" | "budgetReached" | "outOfScopeWrite" | "conflictDetected" | "goalReached" | "nextItemReady" | "workOrderStalled" | "sessionBoardIncident";
 
 export const dashboardStrings = {
+  peerWindow: "別の窓",
+  dashboardTabNotFound: "そのタブを本体のダッシュボードで見つけられませんでした",
   buttonTitle: "ダッシュボード",
   panelAriaLabel: "ダッシュボード — 全タブ一覧",
   // 状態語 (resolveDisplayState の6値に対応)

@@ -176,7 +176,7 @@ describe("AI log partial failures through the actual store and report components
     const pending = useAilogStore.getState().loadUsage();
     await vi.waitFor(() => expect(useAilogStore.getState().sessions).toEqual(sessions));
     expect(useAilogStore.getState().loading).toBe(true);
-    expect(section(view(), "ailog-trend")).toContain("<svg");
+    expect(section(view(), "ailog-trend")).toContain("data-usage-day=");
     pendingOverview.reject(new Error("overview-only-failure"));
     await pending;
     const html = view();
@@ -221,7 +221,7 @@ describe("AI log partial failures through the actual store and report components
       expect(displayedRange).toEqual({ ...request, label: "custom" });
     }
     if (action === "refreshUsage") {
-      expect(section(html, "ailog-trend")).toContain("<svg");
+      expect(section(html, "ailog-trend")).toContain("data-usage-day=");
       expect(section(html, "ailog-compare")).toContain("gpt-6.1-sol");
     }
     if (action === "refreshModels") expect(section(html, "ailog-purpose")).toContain("デバッグ");
@@ -489,7 +489,7 @@ describe("AI log partial failures through the actual store and report components
     expect(useAilogStore.getState().pivot).toBe(previous.pivot);
     expect(useAilogStore.getState().handoffs).toBe(previous.handoffs);
     expect(useAilogStore.getState().reworkRankings).toBe(previous.reworkRankings);
-    expect(section(view(), "ailog-trend")).toContain("<svg");
+    expect(section(view(), "ailog-trend")).toContain("data-usage-day=");
     pendingSeries.reject(new Error("relative-series-down"));
     await pending;
     const state = useAilogStore.getState();
@@ -498,7 +498,7 @@ describe("AI log partial failures through the actual store and report components
     expect(state.sessions?.range.to).toBe(nextAnchor);
     expect(state.models?.range.to).toBe(nextAnchor);
     const html = view();
-    expect(section(html, "ailog-trend")).toContain("<svg");
+    expect(section(html, "ailog-trend")).toContain("data-usage-day=");
     expect(section(html, "ailog-compare")).toContain("357");
     expect(section(html, "ailog-trend")).toContain("relative-series-down");
     expect(section(html, "ailog-trend")).toContain("今回の要求と異なる期間");

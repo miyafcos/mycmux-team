@@ -42,6 +42,9 @@ import { usePaneMetadataStore, useUiStore, useWorkspaceListStore } from "../../s
 import { jumpToPaneTab } from "../../lib/jumpToPaneTab";
 import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { useDelegationParents } from "./useDelegationParents";
+import { usePeerWindowTabs } from "./usePeerWindowTabs";
+import { openSessionInWindow } from "../../lib/agentResumeOwner";
+import { useToastStore } from "../../stores/toastStore";
 import { useStallStore } from "../../stores/stallStore";
 import { useWorkOrderStore } from "../../stores/workOrderStore";
 import { connectReportInboxStatusFeed, useReportInboxStore } from "../../stores/reportInboxStore";
@@ -204,6 +207,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   const minimapWidth = clampDashboardMinimapWidth(viewState.minimapWidth, viewportWidth, viewState.sessionListCollapsed);
   const sessionListWidth = dashboardSessionListWidth(viewState.sessionListCollapsed);
   const workspaces = useWorkspaceListStore((state) => state.workspaces);
+  const peerWindowTabs = usePeerWindowTabs();
   const delegationParents = useDelegationParents(workspaces);
   const dragItem = usePaneDragStore((state) => state.item);
   const dragPointer = usePaneDragStore((state) => state.pointer);
@@ -233,6 +237,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     ingestSemanticEvents: state.ingestSemanticEvents,
   })));
   const cards = useMemo(() => buildDashboardCards(workspaces, {
+    peerWindowTabs,
     metadataBySession: metadataState.metadata,
     volatileMetadataBySession: metadataState.volatileMetadata,
     lastLogBySession: metadataState.lastLog,
@@ -248,7 +253,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     delegationParents,
     now,
     hasTerminalBuffer,
-  }), [attentionState, briefsBySession, observationsBySession, delegationParents, metadataState, now, stallsBySession, workspaces]);
+  }), [attentionState, briefsBySession, observationsBySession, delegationParents, metadataState, now, stallsBySession, workspaces, peerWindowTabs]);
   const attentionFactSources = useMemo<AttentionFactSource[]>(() => cards.map((card) => ({
     sessionId: card.tab.sessionId,
     label: card.label,
@@ -570,7 +575,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   // Web 列は livebrief に載らない (PTY を持たない)。開いている列のぶんだけ
   // ペインの webview を直接読んで会話を取る。
   const webColumnKey = useMemo(
-    () => chatColumnCards.filter((card) => card.tab.type === "web").map((card) => card.tab.id).join(","),
+    () => chatColumnCards.filter((card) => card.tab.type === "web" && !card.windowLabel).map((card) => card.tab.id).join(","),
     [chatColumnCards],
   );
   useEffect(() => {
@@ -950,7 +955,15 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     onClose();
     focusController.focusSessionSoon(useUiStore.getState().lastActivePaneId);
   }, [onClose]);
-  const jumpToCard = useCallback((card: Pick<DashboardCardModel, "workspaceId" | "paneId" | "tab">) => {
+  const jumpToCard = useCallback((card: Pick<DashboardCardModel, "workspaceId" | "paneId" | "tab" | "windowLabel">) => {
+    if (card.windowLabel) {
+      if (card.windowLabel !== "main") {
+        void openSessionInWindow(card.windowLabel, card.tab.sessionId).catch(() => {
+          useToastStore.getState().pushToast(dashboardStrings.attentionActionFailed, "error");
+        });
+      }
+      return;
+    }
     jumpToPaneTab(card);
     onClose();
   }, [onClose]);
@@ -1232,10 +1245,11 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
                     tabIndex={0}
                     role="group"
                     aria-label={`${previewTitle} の列。Alt+左矢印またはAlt+右矢印で並べ替え`}
-                    style={columnColor ? { borderLeftColor: columnColor } : undefined}
+                    style={columnColor ? { "--cmux-chat-column-color": columnColor } as CSSProperties : undefined}
                     onClick={() => viewState.setActiveChatColumn(index)}
                     onKeyDown={(event) => reorderChatColumnFromHeader(index, event)}
                   >
+                    <span className="cmux-dashboard-chat-color" aria-hidden="true" />
                     <strong>{previewTitle}</strong>
                     <button
                       type="button"
@@ -1281,10 +1295,11 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
                     tabIndex={0}
                     role="group"
                     aria-label={`${dashboardStrings.attentionTitle} の列。Alt+左矢印またはAlt+右矢印で並べ替え`}
-                    style={columnColor ? { borderLeftColor: columnColor } : undefined}
+                    style={columnColor ? { "--cmux-chat-column-color": columnColor } as CSSProperties : undefined}
                     onClick={() => viewState.setActiveChatColumn(index)}
                     onKeyDown={(event) => reorderChatColumnFromHeader(index, event)}
                   >
+                    <span className="cmux-dashboard-chat-color" aria-hidden="true" />
                     <strong>{dashboardStrings.attentionTitle}</strong>
                     <button
                       type="button"
@@ -1332,7 +1347,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
                 onReorderKeyDown={(event) => reorderChatColumnFromHeader(index, event)}
                 onPreviewArtifact={viewState.openOrReloadPreviewColumn}
                 webTranscript={webTranscript}
-                onRefreshWebTranscript={webTranscript
+                onRefreshWebTranscript={webTranscript && !card.windowLabel
                   ? () => void useWebPaneTranscriptStore.getState().refresh(card.tab.id)
                   : undefined}
                 detailLoaded={webTranscript

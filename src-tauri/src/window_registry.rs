@@ -56,6 +56,150 @@ pub struct WindowFragment {
     pub active_tab_id: Option<String>,
 }
 
+/// Display-only index. Never copy a fragment's scrollback into a polling read.
+#[derive(Debug, Serialize)]
+pub struct WindowTabIndex {
+    pub window_label: String,
+    pub pending: bool,
+    pub workspaces: Vec<WindowTabWorkspace>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WindowTabWorkspace {
+    pub id: String,
+    pub name: String,
+    pub panes: Vec<WindowTabPane>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WindowTabPane {
+    pub id: String,
+    pub tabs: Vec<WindowTabIndexTab>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WindowTabIndexTab {
+    pub tab_id: String,
+    pub session_id: String,
+    pub agent_id: String,
+    #[serde(flatten)]
+    fields: serde_json::Map<String, Value>,
+    pub pty_alive: bool,
+    pub live_agent_kind: Option<String>,
+}
+
+fn display_tab_index(tab: &Value, pane: &Value) -> Option<WindowTabIndexTab> {
+    let mut fields = serde_json::Map::new();
+    // Keep serialized WorkspaceConfig names, rather than frontend runtime names.
+    for key in [
+        "label",
+        "label_source",
+        "display_name",
+        "display_name_source",
+        "type",
+        "preset_id",
+        "cwd",
+        "agent_kind",
+        "agent_session_id",
+        "claude_session_id",
+        "source_kind",
+        "source_path",
+        "lifecycle",
+        "delegated_by_tab_id",
+        "delegated_by_agent_session_id",
+    ] {
+        if let Some(value) = tab
+            .get(key)
+            .filter(|value| value.is_string() || value.is_null())
+        {
+            fields.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(value) = tab.get("delegated_at").filter(|value| value.is_number()) {
+        fields.insert("delegated_at".into(), value.clone());
+    }
+    let command = tab
+        .get("command_argv")
+        .or_else(|| tab.get("commandArgv"))
+        .and_then(Value::as_array)
+        .and_then(|args| args.first())
+        .and_then(Value::as_str);
+    fields.insert(
+        "command_argv".into(),
+        Value::Array(
+            command
+                .into_iter()
+                .map(|value| Value::String(value.into()))
+                .collect(),
+        ),
+    );
+    let mut launch_env = serde_json::Map::new();
+    let target = tab
+        .get("launch_env")
+        .and_then(|env| env.get("MYCMUX_LAUNCH_TARGET"))
+        .or_else(|| {
+            pane.get("launch_env")
+                .and_then(|env| env.get("MYCMUX_LAUNCH_TARGET"))
+        })
+        .and_then(Value::as_str);
+    if let Some(target) = target {
+        launch_env.insert("MYCMUX_LAUNCH_TARGET".into(), Value::String(target.into()));
+    }
+    fields.insert("launch_env".into(), Value::Object(launch_env));
+    Some(WindowTabIndexTab {
+        tab_id: tab.get("tab_id")?.as_str()?.to_string(),
+        session_id: tab.get("session_id")?.as_str()?.to_string(),
+        agent_id: tab
+            .get("agent_id")
+            .or_else(|| pane.get("agent_id"))
+            .and_then(Value::as_str)
+            .unwrap_or("shell-starter")
+            .to_string(),
+        fields,
+        pty_alive: false,
+        live_agent_kind: None,
+    })
+}
+
+fn display_workspace_index(workspaces: &[Value]) -> Vec<WindowTabWorkspace> {
+    workspaces
+        .iter()
+        .filter_map(|workspace| {
+            let id = workspace.get("id")?.as_str()?.to_string();
+            let panes = workspace
+                .get("panes")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|pane| {
+                    let id = pane
+                        .get("pane_id")
+                        .or_else(|| pane.get("id"))?
+                        .as_str()?
+                        .to_string();
+                    let tabs = pane
+                        .get("tabs")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|tab| display_tab_index(tab, pane))
+                        .collect();
+                    Some(WindowTabPane { id, tabs })
+                })
+                .collect();
+            Some(WindowTabWorkspace {
+                name: workspace
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&id)
+                    .to_string(),
+                id,
+                panes,
+            })
+        })
+        .collect()
+}
+
 /// Payload of `mycmux://window-adopt`. The receiving window drains
 /// `take_pending_adoption` rather than trusting this payload — the queue is the
 /// authority, so a duplicate event can never restore a workspace twice.
@@ -288,6 +432,38 @@ impl WindowRegistry {
         fragments
     }
 
+    /// Project while holding each entry guard; only small display fields escape.
+    /// Liveness is filled by the caller after every registry guard is released.
+    pub fn tab_index(&self, caller: &str) -> Vec<WindowTabIndex> {
+        let mut index = Vec::new();
+        for entry in self.fragments.iter() {
+            if entry.key() == caller {
+                continue;
+            }
+            index.push(WindowTabIndex {
+                window_label: entry.key().clone(),
+                pending: false,
+                workspaces: display_workspace_index(&entry.value().workspaces),
+            });
+        }
+        for entry in self.pending_adoptions.iter() {
+            if entry.value().is_empty() {
+                continue;
+            }
+            index.push(WindowTabIndex {
+                window_label: entry.key().clone(),
+                pending: true,
+                workspaces: display_workspace_index(entry.value()),
+            });
+        }
+        index.sort_by(|a, b| {
+            a.window_label
+                .cmp(&b.window_label)
+                .then(a.pending.cmp(&b.pending))
+        });
+        index
+    }
+
     /// Move workspaces from one window to another: they leave the source
     /// fragment and land in the target's adoption queue. Returns what actually
     /// moved (a workspace the source never published cannot move).
@@ -408,6 +584,79 @@ impl WindowRegistry {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn dashboard_tab_index_excludes_own_published_copy_and_keeps_own_pending_copy() {
+        let registry = WindowRegistry::new();
+        registry.publish_fragment(fragment("main", &["local"]));
+        registry.publish_fragment(fragment("mycmux-w1", &["peer"]));
+        registry.queue_adoption("main", vec![workspace("returning")]);
+        let index = registry.tab_index("main");
+        assert_eq!(index.len(), 2);
+        assert!(index.iter().any(|entry| entry.window_label == "main"
+            && entry.pending
+            && entry.workspaces[0].id == "returning"));
+        assert!(index
+            .iter()
+            .all(|entry| entry.pending || entry.window_label != "main"));
+    }
+
+    #[test]
+    fn dashboard_tab_index_copies_only_display_fields_and_first_command_argument() {
+        let registry = WindowRegistry::new();
+        let source = json!({ "id": "ws", "name": "Research", "declared_prompt": "secret",
+            "panes": [{ "pane_id": "pane", "agent_id": "codex",
+                "tabs": [{ "tab_id": "tab", "session_id": "session", "agent_id": "codex", "label": "Label", "label_source": "ai",
+                    "display_name": "Name", "display_name_source": "auto", "type": "web", "preset_id": "chatgpt", "cwd": "/work",
+                    "agent_kind": "codex", "agent_session_id": "conversation", "claude_session_id": null,
+                    "source_kind": "pdf", "source_path": "/read.pdf", "commandArgv": ["codex", "secret"],
+                    "launch_env": { "MYCMUX_LAUNCH_TARGET": "mac", "SECRET": "secret" },
+                    "lifecycle": "declared", "delegated_by_tab_id": "parent", "delegated_by_agent_session_id": "parent-session", "delegated_at": 1,
+                    "terminal_snapshot": ["secret"], "turn_marks": ["secret"], "declared_prompt": "secret", "suppressed_agent_sessions": ["secret"]
+                }] }] });
+        registry.publish_fragment(WindowFragment {
+            window_label: "mycmux-w1".into(),
+            workspaces: vec![source],
+            ..Default::default()
+        });
+        let value = serde_json::to_value(registry.tab_index("main")).unwrap();
+        let tab = &value[0]["workspaces"][0]["panes"][0]["tabs"][0];
+        assert_eq!(tab["command_argv"], json!(["codex"]));
+        assert_eq!(tab["launch_env"], json!({ "MYCMUX_LAUNCH_TARGET": "mac" }));
+        assert_eq!(tab["display_name_source"], "auto");
+        assert_eq!(value[0]["workspaces"][0]["panes"][0]["id"], "pane");
+        let allowed = [
+            "tab_id",
+            "session_id",
+            "agent_id",
+            "label",
+            "label_source",
+            "display_name",
+            "display_name_source",
+            "type",
+            "preset_id",
+            "cwd",
+            "agent_kind",
+            "agent_session_id",
+            "claude_session_id",
+            "source_kind",
+            "source_path",
+            "command_argv",
+            "launch_env",
+            "pty_alive",
+            "live_agent_kind",
+            "lifecycle",
+            "delegated_by_tab_id",
+            "delegated_by_agent_session_id",
+            "delegated_at",
+        ];
+        assert!(tab
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|key| allowed.contains(&key.as_str())));
+        assert!(!value.to_string().contains("secret"));
+    }
 
     fn workspace(id: &str) -> Value {
         json!({ "id": id, "name": id, "panes": [] })

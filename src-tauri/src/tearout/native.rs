@@ -1,4 +1,5 @@
 use super::geometry::{self, ReceiverCandidate, Rect};
+use super::performance::{claim_follower_tick, follower_should_stop, FollowerConditions};
 use super::{unix_ms, Approval, MoveMode, MoveState, Reveal, TearoutState, WindowGeometry};
 use super::release::{ReleaseFrame, ReleaseMethod, ReleasePoint};
 use serde::Serialize;
@@ -6,7 +7,7 @@ use std::time::{Duration, Instant};
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
-    sync::{atomic::Ordering, Arc, Mutex, OnceLock},
+    sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex, OnceLock},
 };
 use tauri::{AppHandle, Emitter, Manager};
 use windows::Win32::{
@@ -21,7 +22,7 @@ use windows::Win32::{
         Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         WindowsAndMessaging::{
             CallNextHookEx, GetCursorPos, GetForegroundWindow, GetLayeredWindowAttributes,
-            GetTopWindow, GetWindow, GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindowVisible,
+            GetTopWindow, GetWindow, GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindow, IsWindowVisible,
             PostMessageW, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowsHookExW,
             ShowWindow, UnhookWindowsHookEx, GWL_EXSTYLE, GW_HWNDNEXT, HHOOK, LWA_ALPHA,
             GetWindowPlacement, SetWindowPlacement, SetWindowPos, SW_MAXIMIZE, SW_SHOWNORMAL,
@@ -51,6 +52,10 @@ pub fn cursor() -> Result<POINT, String> {
     Ok(p)
 }
 
+pub fn left_button_down() -> bool {
+    unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000 != 0 }
+}
+
 pub fn reveal(
     app: &AppHandle,
     label: &str,
@@ -59,6 +64,7 @@ pub fn reveal(
     logical_width: f64,
     logical_height: f64,
 ) -> Result<Reveal, String> {
+    app.state::<TearoutState>().stop_follower(label);
     let window = app.get_window(label).ok_or("Prepared window disappeared")?;
     let point = cursor()?;
     let monitor = app
@@ -81,6 +87,11 @@ pub fn reveal(
     quiet_show(&window, false)?;
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
     let handle = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
+    let follower = window.inner_size().map_err(|e| e.to_string()).and_then(|size| {
+        let logical_width = size.width as f64 / scale.max(0.01);
+        start_follower(app, label, handle.0 as usize, logical_width, geometry::GrabOffset { x: offset_x, y: offset_y })
+    });
+    if let Err(error) = follower { eprintln!("[tearout] cursor follower unavailable: {error}"); }
     Ok(Reveal {
         shown_at,
         visible_at: unix_ms(),
@@ -94,6 +105,90 @@ pub fn reveal(
             false,
         ),
     })
+}
+
+/// An early refusal, failed queue post, or dropped command stops only the
+/// reveal it saw at request time. It never waits for the polling thread.
+pub(super) struct FollowerStartGuard(Option<Arc<AtomicBool>>);
+impl FollowerStartGuard {
+    pub(super) fn new(app: &AppHandle, label: &str) -> Self {
+        Self(app.state::<TearoutState>().followers.lock().unwrap_or_else(|e| e.into_inner()).get(label).cloned())
+    }
+}
+impl Drop for FollowerStartGuard {
+    fn drop(&mut self) {
+        if let Some(stop) = &self.0 { stop.store(true, Ordering::Release); }
+    }
+}
+
+fn follower_conditions(app: &AppHandle, label: &str, handle: usize, stop: &AtomicBool, started: Instant) -> FollowerConditions {
+    FollowerConditions {
+        stopped: stop.load(Ordering::Acquire), elapsed_ms: started.elapsed().as_millis() as u64,
+        left_held: left_button_down(), escape_held: unsafe { GetAsyncKeyState(VK_ESCAPE.0 as i32) < 0 },
+        valid_window: unsafe { IsWindow(HWND(handle as *mut _)) }.as_bool(),
+        registered_window: app.get_window(label).is_some(),
+    }
+}
+
+/// UI thread only. Read the OS-assigned window DPI for both placement callers.
+fn window_scale(handle: usize) -> Result<f64, String> {
+    let dpi = unsafe { GetDpiForWindow(HWND(handle as *mut _)) };
+    if dpi == 0 { return Err("tearout_window_scale_unavailable".into()); }
+    Ok(dpi as f64 / 96.0)
+}
+
+/// UI thread only. Stop following if a second placement flips scale again.
+fn follow_cursor(window: &tauri::Window, handle: usize, width: f64, offset: geometry::GrabOffset) -> Result<bool, String> {
+    let point = cursor()?;
+    let placement = geometry::settle_from_window_scale((point.x, point.y), width, offset,
+        || window_scale(handle).map_err(|_| "tearout_follow_window_gone".to_owned()), |origin| {
+            window.set_position(tauri::PhysicalPosition::new(origin.0, origin.1)).map_err(|e| e.to_string())
+        })?;
+    Ok(placement.settled)
+}
+
+fn start_follower(app: &AppHandle, label: &str, handle: usize, width: f64, offset: geometry::GrabOffset) -> Result<(), String> {
+    let stop = Arc::new(AtomicBool::new(false));
+    app.state::<TearoutState>().replace_follower(label, stop.clone());
+    let worker_app = app.clone();
+    let worker_label = label.to_owned();
+    let worker_stop = stop.clone();
+    let started = Instant::now();
+    let spawned = std::thread::Builder::new().name("tearout-follow".into()).spawn(move || {
+        let pending = Arc::new(AtomicBool::new(false));
+        loop {
+            if follower_should_stop(follower_conditions(&worker_app, &worker_label, handle, &worker_stop, started)) { break; }
+            if claim_follower_tick(&worker_stop, &pending) {
+                let tick_app = worker_app.clone();
+                let tick_label = worker_label.clone();
+                let tick_stop = worker_stop.clone();
+                let tick_pending = pending.clone();
+                if worker_app.run_on_main_thread(move || {
+                    if follower_should_stop(follower_conditions(&tick_app, &tick_label, handle, &tick_stop, started)) {
+                        tick_stop.store(true, Ordering::Release);
+                    } else if let Some(window) = tick_app.get_window(&tick_label) {
+                        if !tick_stop.load(Ordering::Acquire) && !matches!(follow_cursor(&window, handle, width, offset), Ok(true)) {
+                            tick_stop.store(true, Ordering::Release);
+                        }
+                    } else {
+                        tick_stop.store(true, Ordering::Release);
+                    }
+                    tick_pending.store(false, Ordering::Release);
+                }).is_err() {
+                    worker_stop.store(true, Ordering::Release);
+                    pending.store(false, Ordering::Release);
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(8));
+        }
+        worker_app.state::<TearoutState>().finish_follower(&worker_label, &worker_stop);
+    });
+    if let Err(error) = spawned {
+        app.state::<TearoutState>().finish_follower(label, &stop);
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 
@@ -325,6 +420,8 @@ struct Sample {
     client_y: f64,
     approval: Option<Approval>,
     native_started_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_start_delay_ms: Option<u64>,
     start_alignment: Option<geometry::StartAlignment>,
     error: Option<&'static str>,
     scale: f64,
@@ -456,6 +553,7 @@ unsafe extern "system" fn observe(
 }
 
 pub fn cancel(app: &AppHandle, label: &str) -> Result<(), String> {
+    app.state::<TearoutState>().stop_follower(label);
     if let Some(window) = app.get_window(label) {
         let hwnd = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
         unsafe { PostMessageW(hwnd, WM_CANCELMODE, WPARAM(0), LPARAM(0)) }
@@ -587,6 +685,7 @@ pub(super) fn synthetic_sample(
             .entry(id.clone())
             .or_insert_with(|| {
                 let shared = Arc::new(MoveState { mode, ..MoveState::default() });
+                shared.requested_at_ms.store(unix_ms(), Ordering::Release);
                 *shared.moving_label.lock().unwrap_or_else(|e| e.into_inner()) = Some(label.clone());
                 *shared.source_label.lock().unwrap_or_else(|e| e.into_inner()) = Some(source.clone());
                 shared.synthetic.store(true, Ordering::Release);
@@ -692,6 +791,7 @@ pub(super) fn synthetic_sample(
             None
         },
         native_started_at: None,
+        native_start_delay_ms: shared.native_start_delay_ms(),
         start_alignment: None,
         error: None,
         scale: window.scale_factor().map_err(|e| e.to_string())?,
@@ -736,6 +836,7 @@ pub(super) fn synthetic_sample(
             let log_label = sample.label.clone();
             std::thread::spawn(move || super::log::native_summary(log_id, log_label, summary));
         }
+        app.state::<TearoutState>().activity();
         app.state::<TearoutState>()
             .moves
             .lock()
@@ -877,7 +978,6 @@ pub fn start(
     let initial_cursor = cursor().unwrap_or_default();
     let start_anchor = Arc::new(Mutex::new((initial_cursor.x - position.x, initial_cursor.y - position.y)));
     let poll_anchor = start_anchor.clone();
-    let start_app = app.clone();
     std::thread::spawn(move || {
         let begin = std::time::Instant::now();
         let mut opacity = 255;
@@ -1014,6 +1114,7 @@ pub fn start(
                 client_y: hit.as_ref().map(|(_, _, y)| *y).unwrap_or(-1.0),
                 approval,
                 native_started_at: (started != 0).then_some(started),
+                native_start_delay_ms: polling.native_start_delay_ms(),
                 start_alignment: *polling.start_alignment.lock().unwrap_or_else(|e| e.into_inner()),
                 error: failed.then_some("tearout_native_move_failed"),
                 scale: unsafe { GetDpiForWindow(HWND(handle as *mut _)) }.max(96) as f64 / 96.0,
@@ -1075,6 +1176,7 @@ pub fn start(
             }
             std::thread::sleep(std::time::Duration::from_millis(8));
         }
+        app.state::<TearoutState>().activity();
         app.state::<TearoutState>()
             .moves
             .lock()
@@ -1086,24 +1188,17 @@ pub fn start(
             let alignment = (|| -> Result<geometry::StartAlignment, String> {
                 let point = cursor()?;
                 let before = window.outer_position().map_err(|e| e.to_string())?;
-                let original_scale = window.scale_factor().map_err(|e| e.to_string())?;
+                let original_scale = window_scale(handle)?;
                 let width = window.inner_size().map_err(|e| e.to_string())?.width as f64 / original_scale.max(0.01);
-                let monitor = start_app.monitor_from_point(point.x as f64, point.y as f64).map_err(|e| e.to_string())?;
-                let mut scale = monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(original_scale);
-                let mut expected = geometry::origin_under_cursor((point.x, point.y), width, offset, scale);
-                window.set_position(tauri::PhysicalPosition::new(expected.0, expected.1)).map_err(|e| e.to_string())?;
-                // At a mixed-DPI seam the HWND can belong to the neighboring screen.
-                // Convert the grip with its actual assigned DPI after placement too.
-                let assigned = window.scale_factor().map_err(|e| e.to_string())?;
-                if (assigned - scale).abs() > 0.001 {
-                    scale = assigned;
-                    expected = geometry::origin_under_cursor((point.x, point.y), width, offset, scale);
-                    window.set_position(tauri::PhysicalPosition::new(expected.0, expected.1)).map_err(|e| e.to_string())?;
-                }
+                let placement = geometry::settle_from_window_scale((point.x, point.y), width, offset, || window_scale(handle), |origin| {
+                    window.set_position(tauri::PhysicalPosition::new(origin.0, origin.1)).map_err(|e| e.to_string())
+                })?;
+                // Even an unsettled seam proceeds from the final placed origin.
+                let expected = placement.origin;
                 let after = window.outer_position().map_err(|e| e.to_string())?;
                 *start_anchor.lock().unwrap_or_else(|e| e.into_inner()) = (point.x - after.x, point.y - after.y);
                 Ok(geometry::StartAlignment::measure([point.x as f64, point.y as f64], [before.x as f64, before.y as f64],
-                    [expected.0 as f64, expected.1 as f64], [after.x as f64, after.y as f64], scale, 1.0))
+                    [expected.0 as f64, expected.1 as f64], [after.x as f64, after.y as f64], placement.scale, 1.0))
             })();
             match alignment {
                 Ok(alignment) => *shared.start_alignment.lock().unwrap_or_else(|e| e.into_inner()) = Some(alignment),
@@ -1122,6 +1217,14 @@ pub fn start(
 #[cfg(test)]
 mod escape_tests {
     use super::*;
+
+    #[test]
+    fn dropping_follower_start_guard_sets_its_stop_flag() {
+        // This tests the guard, not the individual commands that own it.
+        let stop = Arc::new(AtomicBool::new(false));
+        drop(FollowerStartGuard(Some(stop.clone())));
+        assert!(stop.load(Ordering::Acquire));
+    }
 
     #[test]
     fn escape_snapshot_equality_includes_show_state_and_normal_rectangle() {

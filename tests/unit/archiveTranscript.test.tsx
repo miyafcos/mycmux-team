@@ -15,6 +15,127 @@ beforeEach(()=>{vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);host=document.cre
 afterEach(async()=>{await act(async()=>root.unmount());reader?.dispose();reader=null;host.remove();vi.unstubAllGlobals();});
 async function render(){await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor}/>);await new Promise(r=>setTimeout(r,10));});}
 describe("shared read-only archive view",()=>{
+  it("F-6 keeps the content anchor stable inside a padded archive log",async()=>{
+    mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"?page(0,20):null);
+    await render();
+    const log=host.querySelector<HTMLElement>("[role=log]")!;
+    log.style.paddingTop="16px";
+    Object.defineProperties(log,{scrollHeight:{configurable:true,value:1500},clientHeight:{configurable:true,value:200}});
+    const original=HTMLElement.prototype.getBoundingClientRect;
+    const rects=vi.spyOn(HTMLElement.prototype,"getBoundingClientRect").mockImplementation(function(this:HTMLElement){
+      if(this===log)return {top:0,bottom:200,height:200,left:0,right:600,width:600,x:0,y:0,toJSON(){return {};}};
+      if(this.dataset.archiveRow){
+        const index=Number(this.dataset.archiveRow.split(":").at(-2))/10;
+        const top=16+index*75-log.scrollTop;
+        return {top,bottom:top+75,height:75,left:0,right:600,width:600,x:0,y:top,toJSON(){return {};}};
+      }
+      return original.call(this);
+    });
+    try {
+      await act(async()=>{log.scrollTop=150;log.dispatchEvent(new Event("scroll",{bubbles:true}));});
+      expect(log.scrollTop).toBe(150);
+    } finally {rects.mockRestore();}
+  });
+
+  it("F-6 does not turn a programmatic jump into follow-latest on its scroll event",async()=>{
+    const p=page(0,2);
+    mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"||c==="read_transcript_history_page"?p:c==="refresh_transcript_history_tail"?{...p,items:[]}:null);
+    reader=new TranscriptHistoryReader(descriptor);
+    await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor} prepared={reader!} targetEventId={p.items[1].occurrenceId}/>);await new Promise(resolve=>setTimeout(resolve,25));});
+    const log=host.querySelector<HTMLElement>("[role=log]")!;
+    const destination=log.scrollTop;
+    Object.defineProperties(log,{scrollHeight:{configurable:true,value:destination+100},clientHeight:{configurable:true,value:100}});
+    expect(reader.snapshot.following).toBe(false);
+    await act(async()=>log.dispatchEvent(new Event("scroll",{bubbles:true})));
+    expect(reader.snapshot.following).toBe(false);
+    await act(async()=>{log.scrollTop=0;log.dispatchEvent(new Event("scroll",{bubbles:true}));});
+    await act(async()=>{log.scrollTop=destination;log.dispatchEvent(new Event("scroll",{bubbles:true}));});
+    expect(reader.snapshot.following).toBe(true);
+  });
+
+  it("F-5 expires the jump color after 1.6 seconds without closing the revealed tool",async()=>{
+    vi.useFakeTimers();
+    try {
+      const p=page(0,2);
+      mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"||c==="read_transcript_history_page"?p:c==="refresh_transcript_history_tail"?{...p,items:[]}:c==="heartbeat_transcript_history"?{hasNewBytes:false}:null);
+      await act(async()=>root.render(<ArchiveTranscript descriptor={descriptor} targetEventId={p.items[0].occurrenceId} targetEventRequest={1}/>));
+      await act(async()=>vi.advanceTimersByTimeAsync(30));
+      expect(host.querySelector('[data-transcript-jump-active="true"]')?.getAttribute("data-archive-row")).toBe(p.items[0].occurrenceId);
+      await act(async()=>vi.advanceTimersByTimeAsync(1599));
+      expect(host.querySelector('[data-transcript-jump-active="true"]')).toBeNull();
+      const tool=host.querySelector<HTMLDetailsElement>("details.cmux-archive-tool")!;
+      expect(tool.open).toBe(true);
+      await act(async()=>{tool.open=false;tool.dispatchEvent(new Event("toggle"));});
+      await act(async()=>vi.advanceTimersByTimeAsync(10));
+      await act(async()=>root.render(<ArchiveTranscript descriptor={descriptor} targetEventId={p.items[0].occurrenceId} targetEventRequest={2}/>));
+      await act(async()=>vi.advanceTimersByTimeAsync(30));
+      expect(host.querySelector<HTMLDetailsElement>("details.cmux-archive-tool")?.open).toBe(true);
+      expect(host.querySelector('[data-transcript-jump-active="true"]')).not.toBeNull();
+    } finally {vi.useRealTimers();}
+  });
+
+  it.each(["hidden","inactive"])("F-5 clears the jump color when the column becomes %s",async(reason)=>{
+    const p=page(0,2);
+    mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"||c==="read_transcript_history_page"?p:c==="refresh_transcript_history_tail"?{...p,items:[]}:null);
+    await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor} targetEventId={p.items[0].occurrenceId}/>);await new Promise(resolve=>setTimeout(resolve,25));});
+    expect(host.querySelector('[data-transcript-jump-active="true"]')).not.toBeNull();
+    await act(async()=>root.render(<ArchiveTranscript descriptor={descriptor} visible={reason!=="hidden"} targetEventId={reason==="inactive"?null:p.items[0].occurrenceId}/>));
+    expect(host.querySelector('[data-transcript-jump-active="true"]')).toBeNull();
+    await act(async()=>root.render(<ArchiveTranscript descriptor={descriptor} targetEventId={p.items[0].occurrenceId}/>));
+    expect(host.querySelector('[data-transcript-jump-active="true"]')).toBeNull();
+  });
+
+  it("F-5 reveals tools without a lingering jump color under reduced motion",async()=>{
+    vi.stubGlobal("matchMedia",vi.fn(()=>({matches:true,addEventListener:vi.fn(),removeEventListener:vi.fn()})));
+    const p=page(0,1);
+    mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"||c==="read_transcript_history_page"?p:c==="refresh_transcript_history_tail"?{...p,items:[]}:null);
+    await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor} targetEventId={p.items[0].occurrenceId}/>);await new Promise(resolve=>setTimeout(resolve,25));});
+    expect(host.querySelector<HTMLDetailsElement>("details.cmux-archive-tool")?.open).toBe(true);
+    expect(host.querySelector('[data-transcript-jump-active="true"]')).toBeNull();
+  });
+
+  it("F-6 exposes the logical predecessor even at the virtual window boundary",async()=>{
+    await render();
+    const log=host.querySelector<HTMLElement>("[role=log]")!;
+    await act(async()=>{log.scrollTop=30000;log.dispatchEvent(new Event("scroll",{bubbles:true}));});
+    const rows=[...host.querySelectorAll<HTMLElement>("[data-archive-row]")];
+    expect(rows.length).toBeGreaterThan(0);
+    const firstIndex=page().items.findIndex(item=>item.occurrenceId===rows[0].dataset.archiveRow);
+    expect(firstIndex).toBeGreaterThan(0);
+    for(const row of rows) {
+      const index=page().items.findIndex(item=>item.occurrenceId===row.dataset.archiveRow);
+      expect(row.dataset.prevKind).toBe(page().items[index-1]?.kind);
+    }
+    const short=page(0,2);
+    await act(async()=>root.unmount());root=createRoot(host);
+    mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"?short:null);
+    await render();
+    expect(host.querySelector<HTMLElement>("[data-archive-row]")?.dataset.prevKind).toBeUndefined();
+  });
+
+  it("portals only compact actions and restores the standalone navigation without duplicates", async () => {
+    const target = document.createElement("header");
+    document.body.append(target);
+    try {
+      await act(async () => {
+        root.render(<ArchiveTranscript descriptor={descriptor} compact navigationTarget={target} />);
+        await new Promise(resolve => setTimeout(resolve, 10));
+      });
+      expect(target.querySelectorAll(".cmux-archive-actions")).toHaveLength(1);
+      expect(host.querySelector(".cmux-archive-actions")).toBeNull();
+      expect([...target.querySelectorAll("button")].slice(0, 4).map(button => button.getAttribute("aria-label")))
+        .toEqual(["最初へ", "前の指示へ", "次の指示へ", "最新へ"]);
+      await act(async () => root.render(<ArchiveTranscript descriptor={descriptor} compact />));
+      expect(target.children).toHaveLength(0);
+      expect(host.querySelectorAll(".cmux-archive-actions")).toHaveLength(1);
+      await act(async () => root.render(<ArchiveTranscript descriptor={descriptor} navigationTarget={target} />));
+      expect(target.children).toHaveLength(0);
+      expect(host.querySelector(".cmux-archive-actions")?.textContent).toContain("最初へ");
+    } finally {
+      target.remove();
+    }
+  });
+
   it("keeps dashboard conversation content without redundant visible labels",async()=>{
     const compactPage=page(0,2);
     compactPage.items[0]={...compactPage.items[0],kind:"user",text:"確認をお願いします",timestamp:Date.now()};

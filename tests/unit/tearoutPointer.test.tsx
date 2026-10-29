@@ -8,7 +8,7 @@ vi.mock("../../src/lib/tearout/runtime", () => ({
   canRegrabTearoutTab: mocks.canRegrab, regrabTearoutWindow: mocks.regrab,
 }));
 vi.mock("../../src/lib/tearout/record", () => ({ TearoutRecord: class {
-  outside() {} error() {} failure() {} async finish() {}
+  outside() {} error() {} failure() {} refusal() {} async finish() {}
 } }));
 import { beginTearoutOperation, restoringTearoutOperation, endTearoutOperation } from "../../src/lib/tearout/operation";
 import { usePaneDragSource } from "../../src/hooks/usePaneDragSource";

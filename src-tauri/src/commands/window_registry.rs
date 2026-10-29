@@ -224,6 +224,32 @@ pub async fn get_window_fragments(state: State<'_, AppState>) -> Result<Vec<Wind
     Ok(state.window_registry.fragments())
 }
 
+#[tauri::command]
+pub async fn get_window_tab_index(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::window_registry::WindowTabIndex>, String> {
+    let mut index = state.window_registry.tab_index(window.label());
+    // `tab_index` has released every registry entry guard before this PTY read.
+    let processes = crate::commands::terminal::metadata_snapshot_for(
+        &state.session_manager,
+        &state.metadata_store,
+    );
+    for entry in &mut index {
+        for workspace in &mut entry.workspaces {
+            for pane in &mut workspace.panes {
+                for tab in &mut pane.tabs {
+                    if let Some(process) = processes.get(&tab.session_id) {
+                        tab.pty_alive = true;
+                        tab.live_agent_kind = process.live_agent_kind.clone();
+                    }
+                }
+            }
+        }
+    }
+    Ok(index)
+}
+
 /// Settings-only hydration for windows that must not load workspaces. The
 /// leader path reads the same file through `load_persistent_data`; this is the
 /// same load with the workspace list left behind.

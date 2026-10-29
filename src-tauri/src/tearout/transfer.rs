@@ -14,6 +14,7 @@ pub enum Phase {
 
 #[derive(Debug)]
 pub struct Transfer {
+    pub created_at_ms: u64,
     pub source: String,
     pub receiver: String,
     pub finalizer: String,
@@ -36,6 +37,7 @@ impl Transfer {
         finalizer: Option<String>,
     ) -> Self {
         Self {
+            created_at_ms: super::unix_ms(),
             finalizer: finalizer.unwrap_or_else(|| source.clone()),
             source,
             receiver,

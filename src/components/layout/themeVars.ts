@@ -96,6 +96,8 @@ export function buildThemeVars(input: ThemeVarsInput): CSSProperties {
     "--cmux-font-size-sm": scalePx(densityTokens.fontSm),
     "--cmux-font-size-md": scalePx(densityTokens.fontMd),
     "--cmux-line-height-ui": densityTokens.lineHeightUi,
+    "--cmux-read-font-size": `${Math.min(22, Math.max(12, Math.round(14 * uiFontScale) + (uiDensity === "relaxed" ? 1 : 0)))}px`,
+    "--cmux-read-line-height": "1.7",
     ...dashboardTypographyVars(fontFamily, fontSize, lineHeight, uiFontScale),
     "--cmux-space-1": densitySpace(2),
     "--cmux-space-2": densitySpace(4),

@@ -200,6 +200,8 @@ import DetachedPaneShell from "../../src/components/layout/DetachedPaneShell";
 import type { DetachedWorkspace } from "../../src/lib/detachedPane";
 import { resumeRecoveryStrings } from "../../src/components/terminal/AgentResumeRecoveryPanel";
 import TerminalPane from "../../src/components/workspace/TerminalPane";
+import { mountDetachedDashboardHost } from "../../src/lib/dashboardHost";
+import { useDashboardViewStore } from "../../src/stores/dashboardViewStore";
 
 // Built from the placeholder the component renders, so translating it does
 // not silently turn these reachability checks into no-ops.
@@ -481,6 +483,26 @@ describe("XTermWrapper turn-list row integration", () => {
     </>); });
     await vi.waitFor(() => expect(mocks.invoke.mock.calls.some(([command]) => command === "create_session")).toBe(true), { timeout: 10_000 });
   }
+
+  it("routes the real detached reader link to main with the latest turn and preserves pins", async () => {
+    const sessionId = "detached-reader";
+    useSettingsStore.setState({ showTerminalHistoryButton: true });
+    const release = mountDetachedDashboardHost();
+    try {
+      await mountProgressPane(sessionId);
+      useDashboardViewStore.setState({ chatColumnTabIds: [], pinnedChatColumnTabIds: ["saved"] });
+      localStorage.setItem("mycmux:dashboard-chat-column-pins", '["saved"]');
+      await act(async () => window.dispatchEvent(new CustomEvent(TERMINAL_HISTORY_EVENT, { detail: { sessionId } })));
+      const link = [...host.querySelectorAll<HTMLButtonElement>(".terminal-transcript-panel__link")]
+        .find(button => button.textContent === terminalTurnStrings.openInDashboard);
+      expect(link).toBeDefined();
+      await act(async () => link!.click());
+      expect(mocks.invoke).toHaveBeenCalledWith("open_main_dashboard", { tabId: `tab-${sessionId}`, sessionId, turn: "latest" });
+      expect(localStorage.getItem("mycmux:dashboard-chat-column-pins")).toBe('["saved"]');
+      expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toEqual(["saved"]);
+      expect(useDashboardViewStore.getState().open).toBe(false);
+    } finally { release(); }
+  });
 
   function sendProgressOutput(sessionId: string, text: string): number {
     const bytes = new TextEncoder().encode(text);

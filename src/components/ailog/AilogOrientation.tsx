@@ -31,7 +31,7 @@ export function AilogOrientation({
   const pageLinks = [
     ["ailog-overview", "概要"],
     ["ailog-purpose", "使い道"],
-    ["ailog-trend", "推移"],
+    ["ailog-trend", "日ごとの使用量"],
     ["ailog-learning", "つまずき"],
     ["ailog-handoffs", "切り替え"],
     ["ailog-compare", `${groupingLabel}別`],

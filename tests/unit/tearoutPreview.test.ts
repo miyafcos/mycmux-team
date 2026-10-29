@@ -11,6 +11,15 @@ function setup() {
 const center: DockTarget = { kind: "pane-zone", workspaceId: "w", paneId: "p", zone: "center" };
 const left: DockTarget = { ...center, zone: "left" };
 describe("native drop approval", () => {
+  it("review2 uses the native sample time when a highlight leaves its target", async () => {
+    const callbacks: (() => void)[] = [];
+    const cleared = vi.fn();
+    const preview = new TearoutPreview({ frame() {}, afterPaint: callback => callbacks.push(callback),
+      approve: async () => true, alpha: async () => {}, cleared });
+    preview.sample(center, 1000); preview.sample(center, 1120); callbacks[0](); await Promise.resolve();
+    preview.sample(null, 1200);
+    expect(cleared).toHaveBeenCalledWith(1200, false);
+  });
   it("keeps a constant target mounted and changes opacity only on entry and exit", async () => {
     const { preview, effects, callbacks } = setup();
     for (let i = 0; i < 18; i++) preview.sample({ ...center }, 1000 + i * 8);

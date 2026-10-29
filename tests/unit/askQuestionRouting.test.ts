@@ -11,6 +11,9 @@ import {
   type AskSentKey,
 } from "../../src/components/dashboard/askQuestionRouting";
 import type { SessionAttention } from "../../src/stores/sessionAttentionStore";
+import { usePeerWindowTabsStore } from "../../src/components/dashboard/peerWindowTabsStore";
+import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { peerIndex } from "./fixtures/peerWindowTabs";
 import {
   ingestAskQuestionLines,
   questionKey,
@@ -135,6 +138,19 @@ beforeEach(() => {
 });
 
 describe("submitAskQuestionChoice", () => {
+  it("uses the real default existence check to send an answer to a peer session", async () => {
+    useWorkspaceListStore.setState({ workspaces: [] });
+    const index = peerIndex(); index[0].workspaces[0].panes[0].tabs[0].session_id = sessionId;
+    usePeerWindowTabsStore.getState().acceptIndex(index);
+    try {
+      ingestAskQuestionLines(sessionId, fixtures.single, 1, 7);
+      const { deps, sent } = scriptedDeps({ reads: [fixtures.single, ["PS C:\\>", "working"]] });
+      const { sessionExists: _testOverride, ...routing } = deps;
+      const result = await submitAskQuestionChoice(sessionId, 2, routing);
+      expect(result.ok).toBe(true); expect(result.stopReason).not.toBe("target_disappeared");
+      expect(sent[0]).toMatchObject({ sessionId, text: "2" });
+    } finally { usePeerWindowTabsStore.getState().acceptIndex([]); }
+  });
   it("P2-02 sends exactly one numeric byte through the existing guarded path", async () => {
     ingestAskQuestionLines(sessionId, fixtures.single, 1, 7);
     const { deps, sent } = scriptedDeps({

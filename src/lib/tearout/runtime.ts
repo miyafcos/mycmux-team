@@ -9,17 +9,19 @@ import { sourceLogicalExtent, windowsNativeBand } from "./windowBehavior";
 import { startTearoutFrames, finishTearoutFrames, disposeTearoutFrames } from "./frameMetrics";
 import { expectTearoutAttachments, rememberTearoutDormantSessions } from "./sessionAttachment";
 import { terminalTransferSessions, liveTransferSessions } from "./transferSessions";
-import { LocalTearoutRefusal, beginTearoutOperation, restoringTearoutOperation, endTearoutOperation, tearoutOperationBusy, localTearoutRefusal, observeTearoutMove, clearObservedTearoutMoves, finishObservedTearoutMove, reserveIncomingTearout, finishIncomingTearout } from "./operation";
+import { LocalTearoutRefusal, beginTearoutOperation, restoringTearoutOperation, endTearoutOperation, tearoutOperationBusy, localTearoutRefusal, observeTearoutMove, clearObservedTearoutMoves, finishObservedTearoutMove, reserveIncomingTearout, finishIncomingTearout, setTearoutDisplayActivity, incomingTearoutTokens, subscribeTearoutOperationStart } from "./operation";
+import type { TearoutRefusalSource } from "./operation";
 import { recoveryProgress, recoveryFinished, recoveryFailed, recoveryBusy } from "./recoveryNotice";
 import { recordTearoutRefusal, rejectTearoutStart } from "./refusal";
 import { useToastStore } from "../../stores/toastStore";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getAllWindows } from "@tauri-apps/api/window";
 import { installMacTearoutPrewarm } from "./macPrewarm";
 import { restoreTearoutSource, restoreTearoutGroup, removeTearoutTab, nativeDropAllowed, type Rect } from "./model";
 import { detachedOriginForDrag, detachedWorkspaceConfig, isTransferableTab, type DetachedReturnTarget } from "../detachedPane";
 import { restoreWorkspaceConfigs } from "../workspaceRestore";
 import { windowLabel, isMainWindow } from "../windowContext";
-import { isSessionAlive, type WorkspaceConfig } from "../ipc";
+import { isSessionAlive, WINDOW_REGISTRY_CHANGED_EVENT, type WorkspaceConfig } from "../ipc";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
 import { useSettingsStore } from "../../stores/settingsStore";
@@ -30,7 +32,8 @@ import { focusController } from "../focusController";
 import { detachedDockTarget, useDetachedDockStore, type DockTarget } from "../../stores/detachedDockStore";
 import { TearoutReleaseReceiver, afterReleasePaint, type ReleasePoint, type ReleaseFrame, type ReleaseApproval } from "./release";
 import { TearoutPreview, sameDockTarget } from "./preview";
-import { TearoutRecord, activeTearoutRecords, configureTearoutInputEvidence, type RecordData, type Reveal, type TearoutError, type TearoutResult } from "./record";
+import { TearoutRecord, activeTearoutRecords, configureTearoutInputEvidence, mergeDockDiagnostics, type DockDiagnostics, type DockStage,
+  type FailureCheckpoint, type ReleaseDecision, type RecordData, type Reveal, type TearoutError, type TearoutResult } from "./record";
 import type { PaneDragItem } from "../../stores/paneDragStore";
 import { createWorkspaceHover } from "../workspaceHover";
 import type { Workspace } from "../../types";
@@ -55,15 +58,18 @@ const PREFERENCE = "mycmux://tearout-preference";
 const OUTGOING = "mycmux://tearout-outgoing";
 const FINALIZE = "mycmux://tearout-finalize";
 const HIGHLIGHT = "mycmux://tearout-highlight";
+const PROGRESS = "mycmux://tearout-progress";
 type Approval = ReleaseApproval;
-interface Delivery { token: string; source: string; configs: WorkspaceConfig[]; placement?: DetachedReturnTarget; approval?: Approval; activeSessionId?: string | null; liveSessions?: string[] }
-interface DockReservationRefusal { kind: "reservation"; pre_ownership: true; source: string; deliveryToken: string }
-interface Receipt { token: string; ok: boolean; error?: string; reason?: string; failedSessions?: string[]; refusal?: DockReservationRefusal }
+interface Delivery { token: string; source: string; configs: WorkspaceConfig[]; placement?: DetachedReturnTarget; approval?: Approval; activeSessionId?: string | null; liveSessions?: string[]; dock?: { requester: string } }
+interface DockReservationRefusal { kind: "reservation"; pre_ownership: true; source: string; deliveryToken: string;
+  refusalSource?: TearoutRefusalSource; blockerId?: string | null }
+interface Receipt extends DockDiagnostics { token: string; ok: boolean; error?: string; reason?: string; failedSessions?: string[]; refusal?: DockReservationRefusal }
 interface DockRequest { token: string; deliveryToken: string; requester: string; approval: Approval; record?: RecordData }
 export interface NativeSample {
   id: string; readonly mode: TearoutMode; label: string; x: number; y: number; phase: "move" | "end"; at: number; escaped: boolean;
   receiver: string | null; client_x: number; client_y: number; approval: Approval | null;
   native_started_at: number | null; error: string | null; start_alignment?: import("./record").StartAlignment | null;
+  native_start_delay_ms?: number | null;
   scale: number; monitor: string | null; focus_stolen: boolean;
   esc_at: number | null; original: { x: number; y: number; width: number; height: number };
   source?: string; region_count?: number; receiver_epoch?: number; moved?: boolean; sequence?: number; release?: ReleasePoint | null;
@@ -72,14 +78,63 @@ interface Adapter {
   hydrated?: Promise<void>; serialize: (workspace: Workspace) => WorkspaceConfig; publish: () => Promise<void> }
 let adapter: Adapter | null = null;
 let listenersReady: Promise<void> = Promise.resolve();
+export const TEAROUT_SPARE_IDLE_MS = 3000;
+const SPARE_REFILL_LIMIT_MS = 30000;
+// Backstop for the 30-second deadline, which normally expires first.
+const SPARE_REFILL_MAX_ATTEMPTS = 30;
+let spareRefill: { request: () => void; activity: () => void } | null = null;
 const receipts = new Map<string, (receipt: Receipt) => void>();
 interface Incoming { delivery: Delivery; before: Workspace[]; revoked: boolean; workspace: string | null; session: string | null;
-  zoom: string | null; remembered: Record<string, string>; settled: Promise<void>; settle: () => void; addedIds: Set<string> }
+  zoom: string | null; remembered: Record<string, string>; settled: Promise<void>; settle: () => void; addedIds: Set<string>;
+  failed: boolean; cancel: () => void; receiving: boolean; finalized: boolean; notices: Set<string> }
 const incoming = new Map<string, Incoming>();
+let incomingCheckTimer: number | null = null;
+let incomingCheckEpoch = 0;
+let incomingChecksEnabled = false;
 const revokedTokens = new Set<string>();
 const retiredDeliveries = new Set<string>();
 const reasonOf = (error: unknown): string => error instanceof Error ? error.message : String(error);
-class TransferFailure extends Error { constructor(reason: string, public readonly sessionIds: string[] = []) { super(reason); } }
+class TransferFailure extends Error {
+  constructor(reason: string, public readonly sessionIds: string[] = [], public readonly recoveryFailed = false) { super(reason); }
+}
+const failureDiagnostics = new WeakMap<object, DockDiagnostics>();
+const diagnosticsOf = (error: unknown): DockDiagnostics => error !== null && typeof error === "object" ? failureDiagnostics.get(error) ?? {} : {};
+function annotateFailure(error: unknown, diagnostics: DockDiagnostics): void {
+  if (error !== null && typeof error === "object") failureDiagnostics.set(error, diagnostics);
+}
+function diagnosedFailure(error: unknown, diagnostics: DockDiagnostics): unknown {
+  const failure = error !== null && typeof error === "object" ? error : new Error(reasonOf(error));
+  annotateFailure(failure, diagnostics); return failure;
+}
+interface DockTrace { source: string; receiver: string; details: DockDiagnostics; record?: TearoutRecord }
+const dockTraces = new Map<string, DockTrace>();
+function updateDockTrace(token: string, details: DockDiagnostics): void {
+  const trace = dockTraces.get(token);
+  if (!trace) return;
+  mergeDockDiagnostics(trace.details, details); trace.record?.diagnostics(details);
+}
+function dockStage(token: string, details: DockDiagnostics, side: DockStage["side"], stage: DockStage["stage"], labels: string[]): void {
+  const update = { dock_stages: [{ side, stage, at: Date.now() }] };
+  mergeDockDiagnostics(details, update); updateDockTrace(token, update);
+  for (const label of new Set(labels)) void emitTo(label, PROGRESS, { token, sender: windowLabel(), ...update }).catch(() => {});
+}
+function failureCheckpoint(error: unknown, fallback: FailureCheckpoint = "other"): FailureCheckpoint {
+  const reason = reasonOf(error);
+  return reason === "tearout_receipt_timeout" || reason === "tearout_dock_timeout" ? "receipt_timeout"
+    : reason.includes("attachment_timeout") || reason.includes("Terminal IPC timed out: get_session_attachment_contexts") ? "attachment_timeout" : fallback;
+}
+function releaseFailureDecision(error: unknown): ReleaseDecision | null {
+  const reason = reasonOf(error);
+  return reason === "tearout_drop_target_changed" ? "layout_changed"
+    : reason === "tearout_release_timeout" || reason === "tearout_release_paint_timeout" ? "receiver_timeout"
+    : reason === "tearout_release_cancelled" || reason === "tearout_release_disposed" ? "cancelled"
+    : reason === "tearout_release_identity_changed" || reason === "tearout_release_receiver_changed" ? "identity_changed"
+    : reason === "tearout_release_expired" ? "expired" : null;
+}
+function releaseDecision(sample: NativeSample, approval: Approval | null): ReleaseDecision {
+  return sample.escaped ? "esc_cancelled" : sample.release === null ? "no_release_point"
+    : approval ? "approved" : sample.receiver ? "no_hit" : "no_receiver";
+}
 const approvedDrops = new Map<string, DockTarget>();
 let preview: { id: string; label: string; epoch: number; feedback: TearoutPreview; target: DockTarget | null } | null = null;
 let pendingSample: NativeSample | null = null;
@@ -130,13 +185,33 @@ function nativeTarget(sample: Pick<NativeSample, "id" | "mode" | "label" | "sour
 const releasedIds = new Set<string>();
 let releaseReceiver: TearoutReleaseReceiver | null = null;
 let releaseFrameOwner: string | null = null;
+const awaitingRelease = new Map<string, number>();
+function finishAwaitingRelease(id: string): void {
+  const timer = awaitingRelease.get(id);
+  if (timer !== undefined) window.clearTimeout(timer);
+  awaitingRelease.delete(id); setTearoutDisplayActivity(`release-await:${id}`, false);
+}
+function holdAwaitingRelease(sample: NativeSample): void {
+  if (sample.mode !== "dock" || sample.phase !== "end" || !sample.release || sample.escaped || sample.error
+    || sample.receiver !== windowLabel() || sample.label === windowLabel() || awaitingRelease.has(sample.id)) return;
+  setTearoutDisplayActivity(`release-await:${sample.id}`, true);
+  awaitingRelease.set(sample.id, window.setTimeout(() => finishAwaitingRelease(sample.id), 500));
+}
 
-function releaseLayoutRevision(): string {
+function releaseLayoutRevision(target: DockTarget): string {
   const state = useWorkspaceListStore.getState();
-  const boxes = Array.from(document.querySelectorAll<HTMLElement>("[data-dnd-pane-id][data-dnd-workspace-id], .pane-tabbar, [data-tab-id], [data-dnd-workspace-sidebar]"))
-    .map(element => { const r = element.getBoundingClientRect(); return [element.dataset.dndPaneId, element.dataset.dndWorkspaceId, element.dataset.tabId, r.x, r.y, r.width, r.height]; });
+  const pane = target.kind === "workspace" ? null : Array.from(document.querySelectorAll<HTMLElement>("[data-dnd-pane-id][data-dnd-workspace-id]"))
+    .find(element => element.dataset.dndPaneId === target.paneId && element.dataset.dndWorkspaceId === target.workspaceId);
+  const element = target.kind === "workspace" ? document.querySelector<HTMLElement>('[data-dnd-workspace-sidebar="true"]')
+    : target.kind === "tab-index" ? pane?.querySelector<HTMLElement>(".pane-tabbar") : pane;
+  // Header text and session metadata can change without moving this target.
+  // A missing target remains a different revision, even at zero-sized bounds.
+  const rect = element?.getBoundingClientRect();
+  const geometry = rect ? [rect.x, rect.y, rect.width, rect.height] : null;
+  const tabOrder = target.kind === "tab-index" ? Array.from(element?.querySelectorAll<HTMLElement>("[data-tab-id]") ?? [])
+    .map(tab => tab.dataset.tabId) : null;
   return JSON.stringify([window.innerWidth, window.innerHeight, window.devicePixelRatio, useUiStore.getState().zoomedPaneId, state.activeWorkspaceId, workspaceViewRevision,
-    state.workspaces.map(ws => [ws.id, ws.splitColumns, ws.columnWidths, ws.rowHeightsPerCol, ws.panes.map(pane => [pane.id, pane.activeTabId, pane.tabs.map(tab => [tab.id, tab.sessionId, tab.agentId, tab.type])])]), boxes]);
+    state.workspaces.map(ws => [ws.id, ws.splitColumns, ws.columnWidths, ws.rowHeightsPerCol, ws.panes.map(pane => [pane.id, pane.activeTabId, pane.tabs.map(tab => tab.id)])]), geometry, tabOrder]);
 }
 
 async function finalReleaseApproval(sample: NativeSample): Promise<Approval | null> {
@@ -154,6 +229,7 @@ function handleNativeSample(sample: NativeSample): void {
   if (mode && mode !== sample.mode) return;
   nativeModes.set(sample.id, sample.mode);
   if (nativeModes.size > 64) nativeModes.delete(nativeModes.keys().next().value!);
+  holdAwaitingRelease(sample);
   observeTearoutMove(sample, windowLabel());
   if (sample.phase === "end") finishTearoutFrames(sample.id);
   else startTearoutFrames(sample.id);
@@ -180,12 +256,12 @@ function applyNativeSample(sample: NativeSample): void {
   // may resume hover feedback after final acknowledgement or cancellation.
   if (releaseFrameOwner !== null) return;
   if (sample.mode !== "dock" || sample.receiver !== windowLabel() || sample.label === windowLabel()) {
-    if (preview?.id === sample.id) { preview.feedback.clear(); preview = null; }
+    if (preview?.id === sample.id) { preview.feedback.clear(sample.phase === "end", sample.at); preview = null; }
     return;
   }
   const epoch = sample.receiver_epoch ?? 0;
   if (!preview || preview.id !== sample.id || preview.epoch !== epoch) {
-    preview?.feedback.clear();
+    preview?.feedback.clear(false, sample.at);
     let revision = 0;
     let token: string | null = null;
     const feedback = new TearoutPreview({
@@ -203,6 +279,10 @@ function applyNativeSample(sample: NativeSample): void {
         const labels = new Set([sample.source ?? sample.label, sample.label]);
         for (const label of labels) void emitTo(label, HIGHLIGHT, { id: sample.id, at, hoverAt, receiver: windowLabel() }).catch(() => {});
       },
+      cleared: (at, afterRelease) => {
+        for (const label of new Set([sample.source ?? sample.label, sample.label]))
+          void emitTo(label, HIGHLIGHT, { id: sample.id, at, active: false, afterRelease, receiver: windowLabel() }).catch(() => {});
+      },
     });
     preview = { id: sample.id, label: sample.label, epoch, feedback, target: null };
   }
@@ -214,7 +294,7 @@ function applyNativeSample(sample: NativeSample): void {
       approvedDrops.set(approval.token, target);
       window.setTimeout(() => approvedDrops.delete(approval.token), 6000);
     }
-    preview.feedback.clear();
+    preview.feedback.clear(true, sample.at);
     preview = null;
     return;
   }
@@ -274,24 +354,40 @@ function removeReceived(entry: Incoming): void {
 
 async function receive(delivery: Delivery): Promise<void> {
   if (incoming.has(delivery.token) || revokedTokens.has(delivery.token)) return;
+  spareRefill?.activity();
   let settle = () => {};
   const settled = new Promise<void>((resolve) => { settle = resolve; });
+  let cancel = () => {};
+  const cancelled = new Promise<never>((_, reject) => { cancel = () => reject(new Error("tearout_receive_cancelled")); });
+  void cancelled.catch(() => {});
+  const wait = <T,>(promise: Promise<T>) => Promise.race([promise, cancelled]);
   const existingIds = new Set(useWorkspaceListStore.getState().workspaces.flatMap((ws) => ws.panes.flatMap((pane) => pane.tabs.map((tab) => tab.id))));
   const rawDeliveryIds = delivery.configs.flatMap((cfg) => cfg.panes.flatMap((pane) => (pane.tabs ?? []).map((tab) => tab.tab_id)));
   const deliveryIds = rawDeliveryIds.filter((id): id is string => typeof id === "string" && id.length > 0);
-  const entry = { delivery, before: useWorkspaceListStore.getState().workspaces, revoked: false, settled, settle,
+  const entry: Incoming = { delivery, before: useWorkspaceListStore.getState().workspaces, revoked: false, settled,
+    settle: () => { if (entry.receiving) { entry.receiving = false; settle(); } }, cancel, failed: false, receiving: true, finalized: false, notices: new Set(),
     workspace: useWorkspaceListStore.getState().activeWorkspaceId, session: useUiStore.getState().activePaneId,
     zoom: useUiStore.getState().zoomedPaneId, remembered: useWorkspaceListStore.getState().lastActivePaneByWorkspace,
     addedIds: new Set(deliveryIds.filter((id) => !existingIds.has(id))) };
   incoming.set(delivery.token, entry);
   reserveIncomingTearout(delivery.token);
+  queueIncomingCheck();
   const expected = delivery.liveSessions ?? sessions(delivery.configs).filter(id =>
     !delivery.configs.some(config => config.panes.some(pane => pane.tabs?.some(tab => tab.session_id === id && tab.lifecycle === "declared"))));
   rememberTearoutDormantSessions(sessions(delivery.configs), expected);
-  const attachment = expectTearoutAttachments(expected, "transfer", undefined, delivery.token);
+  let attachment: ReturnType<typeof expectTearoutAttachments> | undefined;
+  const details: DockDiagnostics = {};
+  const stage = (name: DockStage["stage"]) => {
+    if (delivery.dock) dockStage(delivery.token, details, "receiver", name, [delivery.source, delivery.dock.requester]);
+  };
+  let checkpoint: FailureCheckpoint = "other";
   try {
-    await attachment.prepared;
+    attachment = expectTearoutAttachments(expected, "transfer", undefined, delivery.token);
+    stage("attachment_prepared_wait");
+    await wait(attachment.prepared);
+    stage("attachment_prepared");
     if (entry.revoked) return;
+    checkpoint = "receiver_validation";
     if (deliveryIds.length !== rawDeliveryIds.length) throw new Error("tearout_adoption_missing_id");
     if (deliveryIds.some((id) => existingIds.has(id))) throw new Error("tearout_adoption_duplicate");
     const existingSessions = new Set(entry.before.flatMap(ws => ws.panes.flatMap(pane => pane.tabs.map(tab => tab.sessionId))));
@@ -308,26 +404,34 @@ async function receive(delivery: Delivery): Promise<void> {
         : placement.kind === "pane" ? { ...placement, kind: "tab-index" } : placement;
       if (!actualPlacement || !sameDockTarget(actualPlacement, delivery.approval.target)) throw new Error("tearout_drop_target_changed");
       if (delivery.approval.release_id) {
-        if (!await releaseReceiver?.consume(delivery.approval, delivery.source)) throw new Error("tearout_drop_target_changed");
+        checkpoint = "consume"; stage("consume_wait");
+        const consumed = await wait(Promise.resolve(releaseReceiver?.consume(delivery.approval, delivery.source)));
+        if (!consumed?.ok) {
+          details.consume_failure_reason = consumed?.reason ?? "not_approved";
+          throw new Error(`tearout_consume_${details.consume_failure_reason}`);
+        }
+        stage("consumed"); checkpoint = "receiver_validation";
       } else {
         const target = approvedDrops.get(delivery.approval.token);
         if (!target || !sameDockTarget(target, delivery.approval.target)) throw new Error("tearout_drop_not_painted");
         approvedDrops.delete(delivery.approval.token);
       }
     }
+    stage("session_alive_wait");
     const alive = Promise.all(expected.map((id) => isSessionAlive(id)));
     // A synchronous restore failure can bypass checkAlive; retain its rejection handler.
     void alive.catch(() => {});
     // Mac may render/reattach while this read-only check is in flight. Receipt
     // still requires both live existing PTYs and successful attachments.
     const checkAlive = async () => {
-      const state = await alive;
+      const state = await wait(alive);
+      stage("session_alive");
       const failed = expected.filter((_, index) => !state[index]);
       if (failed.length) throw new TransferFailure("tearout_session_not_alive", failed);
     };
     if (!isMacTearoutPlatform()) await checkAlive();
     if (entry.revoked) return;
-    if (delivery.approval?.release_id && delivery.approval.layout_revision !== releaseLayoutRevision()) throw new Error("tearout_drop_target_changed");
+    if (delivery.approval?.release_id && delivery.approval.layout_revision !== releaseLayoutRevision(delivery.approval.target)) throw new Error("tearout_drop_target_changed");
     flushSync(() => {
       const configs = delivery.placement?.kind === "workspace"
         ? delivery.configs.map((config) => ({ ...config, detached: false, detached_from: null })) : delivery.configs;
@@ -356,22 +460,93 @@ async function receive(delivery: Delivery): Promise<void> {
       useWorkspaceLayoutStore.getState().setActivePaneTab(workspace.id, pane.id, firstId);
       useUiStore.getState().setActivePaneId(selected?.session_id ?? pane.sessionId);
     });
+    stage("layout"); stage("attachment_wait");
     if (isMacTearoutPlatform()) {
-      await Promise.all([checkAlive(), timeout(attachment.ready, 5000, "tearout_attachment_timeout")]);
+      await wait(Promise.all([checkAlive(), timeout(attachment.ready, 5000, "tearout_attachment_timeout")]));
     } else {
-      await timeout(attachment.ready, 5000, "tearout_attachment_timeout");
+      await wait(timeout(attachment.ready, 5000, "tearout_attachment_timeout"));
     }
+    stage("attached");
     if (entry.revoked) return;
     const ownedIds = useWorkspaceListStore.getState().workspaces.flatMap((ws) => ws.panes.flatMap((pane) => pane.tabs.map((tab) => tab.sessionId)));
     if (!expected.every((id) => ownedIds.includes(id))) throw new Error("tearout_session_identity_changed");
-    await adapter!.publish();
-    await emitTo(delivery.source, RECEIPT, { token: delivery.token, ok: true });
+    checkpoint = "other";
+    stage("publish_wait"); await wait(adapter!.publish()); stage("published"); stage("receipt");
+    await wait(emitTo(delivery.source, RECEIPT, { token: delivery.token, ok: true, ...(delivery.dock ? details : {}) }));
   } catch (error) {
-    if (!entry.revoked) removeReceived(entry);
-    await adapter!.publish();
+    if (entry.revoked) return;
+    entry.failed = true;
+    details.failure_checkpoint = failureCheckpoint(error, checkpoint);
+    try { removeReceived(entry); await wait(adapter!.publish()); }
+    catch (recoveryError) { details.receiver_cleanup_reason = reasonOf(recoveryError); }
+    stage("receipt");
     await emitTo(delivery.source, RECEIPT, { token: delivery.token, ok: false, error: "tearout_receive_failed",
-      ...(delivery.liveSessions ? { reason: reasonOf(error), failedSessions: error instanceof TransferFailure ? error.sessionIds : expected } : {}) });
-  } finally { attachment.dispose(); entry.settle(); }
+      reason: reasonOf(error), ...details,
+      ...(delivery.liveSessions ? { failedSessions: error instanceof TransferFailure ? error.sessionIds : expected } : {}) });
+  } finally {
+    try { attachment?.dispose(); }
+    finally {
+      entry.settle();
+      if (entry.failed || entry.revoked) void clearAbandonedIncoming("settled");
+    }
+  }
+}
+
+function releaseIncomingReservation(token: string, entry: Incoming | undefined, reason: string, log = true): boolean {
+  if (incoming.get(token) !== entry || entry?.receiving) return false;
+  if (entry && (entry.failed || entry.revoked)) removeReceived(entry);
+  incoming.delete(token); finishIncomingTearout(token);
+  if (log) console.warn("[tearout] incoming reservation released", { token, reason });
+  if (!incoming.size && !incomingTearoutTokens().length && incomingCheckTimer !== null) {
+    window.clearTimeout(incomingCheckTimer); incomingCheckTimer = null;
+  }
+  return true;
+}
+function queueIncomingCheck(delay = 10_000): void {
+  if (!incomingChecksEnabled || incomingCheckTimer !== null || !incoming.size && !incomingTearoutTokens().length) return;
+  const epoch = incomingCheckEpoch;
+  incomingCheckTimer = window.setTimeout(() => {
+    incomingCheckTimer = null;
+    void clearAbandonedIncoming("watchdog").finally(() => { if (epoch === incomingCheckEpoch) queueIncomingCheck(5_000); });
+  }, delay);
+}
+function retainIncoming(entry: Incoming, reason: string): void {
+  if (entry.notices.has(reason)) return;
+  entry.notices.add(reason);
+  console.warn("[tearout] incoming reservation retained", { token: entry.delivery.token, reason, receiving: entry.receiving });
+}
+async function clearAbandonedIncoming(trigger: "settled" | "registry" | "watchdog" | "revoke_failed" = "registry"): Promise<void> {
+  const tokens = new Set([...incomingTearoutTokens(), ...incoming.keys()]);
+  for (const token of tokens) if (!incoming.has(token)) releaseIncomingReservation(token, undefined, "missing_incoming_entry");
+  if (!incoming.size) return;
+  try {
+    const windows = await getAllWindows();
+    let backendClear: boolean | undefined;
+    for (const token of tokens) {
+      const entry = incoming.get(token);
+      if (!entry) continue;
+      const senderGone = !windows.some(view => view.label === entry.delivery.source);
+      if (entry.receiving) {
+        if (trigger === "watchdog" || trigger === "revoke_failed" || senderGone) retainIncoming(entry, "receive_not_settled");
+        continue;
+      }
+      if (entry.finalized) { releaseIncomingReservation(token, entry, "finalized", false); continue; }
+      if (senderGone || (trigger === "watchdog" || trigger === "revoke_failed") && (entry.failed || entry.revoked)) {
+        releaseIncomingReservation(token, entry, senderGone ? "sender_gone_settled" : "failed_or_revoked_settled");
+      } else if (trigger === "watchdog" && !entry.failed && !entry.revoked) {
+        if (backendClear === undefined) {
+          const id = crypto.randomUUID();
+          const proof = await invoke<unknown>("tearout_transfer_refusal", { id });
+          if (proof !== null && !isPreOwnershipTearoutRefusal(proof, windowLabel(), id)) {
+            retainIncoming(entry, "backend_proof_unverifiable"); continue;
+          }
+          backendClear = proof === null;
+        }
+        if (backendClear) releaseIncomingReservation(token, entry, "backend_reservation_absent");
+        else retainIncoming(entry, "backend_reservation_active");
+      }
+    }
+  } catch (error) { console.warn("[tearout] abandoned transfer check failed", error); }
 }
 
 async function revoke(label: string, token: string): Promise<void> {
@@ -393,31 +568,53 @@ async function receiveRevoke(request: { token: string; ack: string; source: stri
     const entry = incoming.get(request.token);
     if (entry && !entry.revoked) {
       entry.revoked = true;
+      entry.cancel();
       removeReceived(entry);
       await timeout(entry.settled, 5500, "tearout_revoke_attachment_timeout");
       for (const sessionId of sessions(entry.delivery.configs)) evictTerminalCache(sessionId);
       await adapter!.publish();
     }
-    incoming.delete(request.token);
-    finishIncomingTearout(request.token);
+    const finished = incoming.get(request.token);
+    if (!releaseIncomingReservation(request.token, finished, "revoked", false)) throw new Error("tearout_revoke_attachment_timeout");
     await emitTo(request.source, RECEIPT, { token: request.ack, ok: true });
   } catch (error) {
     await emitTo(request.source, RECEIPT, { token: request.ack, ok: false, error: "tearout_revoke_failed" });
     console.warn("[tearout] revoke failed", error);
+    void clearAbandonedIncoming("revoke_failed"); queueIncomingCheck();
   }
 }
 
 async function send(label: string, configs: WorkspaceConfig[], placement?: DetachedReturnTarget, approval?: Approval,
-  token: string = crypto.randomUUID(), activeSessionId?: string | null, liveSessions?: string[]): Promise<string> {
+  token: string = crypto.randomUUID(), activeSessionId?: string | null, liveSessions?: string[],
+  dock?: { requester: string; details: DockDiagnostics }): Promise<string> {
   const receipt = new Promise<Receipt>((resolve) => receipts.set(token, resolve));
   try {
-    await emitTo(label, DELIVERY, { token, source: windowLabel(), configs, placement, approval, activeSessionId, liveSessions });
+    await emitTo(label, DELIVERY, { token, source: windowLabel(), configs, placement, approval, activeSessionId, liveSessions,
+      ...(dock ? { dock: { requester: dock.requester } } : {}) });
+    if (dock) {
+      dockStage(token, dock.details, "child", "delivery_sent", [dock.requester]);
+      dockStage(token, dock.details, "child", "receipt_wait", [dock.requester]);
+    }
     const result = await timeout(receipt, 6000, "tearout_receipt_timeout");
-    if (!result.ok) throw new TransferFailure(result.reason ?? result.error ?? "tearout_receive_failed", result.failedSessions);
+    if (dock) {
+      mergeDockDiagnostics(dock.details, result); updateDockTrace(token, result);
+      dockStage(token, dock.details, "child", "receipt", [dock.requester]);
+    }
+    if (!result.ok) {
+      const error = new TransferFailure(result.reason ?? result.error ?? "tearout_receive_failed", result.failedSessions);
+      annotateFailure(error, result); throw error;
+    }
     return token;
   } catch (error) {
-    if (!retiredDeliveries.has(token)) await revoke(label, token);
-    throw error;
+    const details = dock?.details ?? {};
+    mergeDockDiagnostics(details, diagnosticsOf(error));
+    details.failure_checkpoint = failureCheckpoint(error, details.failure_checkpoint);
+    if (!retiredDeliveries.has(token)) {
+      try { await revoke(label, token); }
+      catch (revokeError) { details.revoke_reason = reasonOf(revokeError); }
+    }
+    updateDockTrace(token, details);
+    throw diagnosedFailure(error, details);
   } finally { receipts.delete(token); retiredDeliveries.delete(token); }
 }
 
@@ -454,21 +651,30 @@ async function requestDock(label: string, approval: Approval, record?: TearoutRe
   const token = crypto.randomUUID();
   const deliveryToken = crypto.randomUUID();
   const receipt = new Promise<Receipt>((resolve) => receipts.set(token, resolve));
+  record?.attempted(approval.target, approval.receiver); record?.decision("approved", approval.target);
+  const trace: DockTrace = { source: label, receiver: approval.receiver, details: {}, record };
+  dockTraces.set(deliveryToken, trace);
   let preOwnershipRefused = false;
   try {
     await emitTo(label, OUTGOING, { token, deliveryToken, requester: windowLabel(), approval,
-      record: label === windowLabel() ? record?.forRetire(approval.target) : undefined });
+      record: label === windowLabel() ? record?.forRetire(approval.target, approval.receiver) : undefined });
     // Allow the child's bounded delivery, revocation and reattachment to finish.
     const result = await timeout(receipt, 20000, "tearout_dock_timeout");
+    updateDockTrace(deliveryToken, result);
     if (result.ok === false && result.token === token && result.refusal?.kind === "reservation"
       && result.refusal.pre_ownership === true && result.refusal.source === label && result.refusal.deliveryToken === deliveryToken) {
       // A correlated refusal created no transfer to revoke or roll back. Release
       // cleanup still has to succeed; its failure remains a genuine error.
       preOwnershipRefused = true;
-      if (approval.release_id) await invoke("tearout_release_cancel", { id: approval.release_id });
-      return new LocalTearoutRefusal("moving", "reservation");
+      if (approval.release_id) await invoke("tearout_release_cancel", { id: approval.release_id }).catch(error => {
+        trace.details.release_cancel_reason = reasonOf(error); throw diagnosedFailure(error, trace.details);
+      });
+      return new LocalTearoutRefusal("moving", "reservation", result.refusal.refusalSource ?? "incoming", result.refusal.blockerId ?? null);
     }
-    if (!result.ok) throw new TransferFailure(result.reason ?? result.error ?? "tearout_dock_failed", result.failedSessions);
+    if (!result.ok) {
+      const error = new TransferFailure(result.reason ?? result.error ?? "tearout_dock_failed", result.failedSessions, result.restore_unconfirmed === true);
+      annotateFailure(error, trace.details); throw error;
+    }
     // Keep receiver undo until this live parent has the successful dock receipt.
     // Cleanup failure must not roll back an already acknowledged transfer.
     void invoke("tearout_finalize", { id: deliveryToken, token: deliveryToken })
@@ -483,22 +689,31 @@ async function requestDock(label: string, approval: Approval, record?: TearoutRe
       catch (error) { releaseError = error; }
     }
     // Revoke even a late delivery before retiring the child or restoring the source.
-    await revoke(approval.receiver, deliveryToken);
+    try { await revoke(approval.receiver, deliveryToken); }
+    catch (revokeError) {
+      if (reasonOf(revokeError) !== "tearout_transfer_missing") trace.details.revoke_reason ??= reasonOf(revokeError);
+    }
     try { await invoke("tearout_phase", { id: deliveryToken, phase: "rolled_back" }); }
     catch (phaseError) {
       const code = phaseError instanceof Error ? phaseError.message : String(phaseError);
-      if (code !== "tearout_transfer_missing") throw phaseError;
+      if (code !== "tearout_transfer_missing") trace.details.recovery_reason ??= code;
     }
-    await invoke("tearout_forget", { id: deliveryToken });
-    throw releaseError ?? error;
-  } finally { receipts.delete(token); }
+    try { await invoke("tearout_forget", { id: deliveryToken }); }
+    catch (forgetError) { trace.details.recovery_reason ??= reasonOf(forgetError); }
+    if (releaseError) trace.details.release_cancel_reason = reasonOf(releaseError);
+    trace.details.failure_checkpoint = failureCheckpoint(error, trace.details.failure_checkpoint);
+    updateDockTrace(deliveryToken, trace.details);
+    throw diagnosedFailure(error, trace.details);
+  } finally { receipts.delete(token); dockTraces.delete(deliveryToken); }
 }
 
-async function refuseOutgoingDock(request: DockRequest): Promise<void> {
+async function refuseOutgoingDock(request: DockRequest, refusal = new LocalTearoutRefusal("moving", "reservation", "incoming",
+  incoming.keys().next().value ?? null)): Promise<void> {
   const record = new TearoutRecord(request.deliveryToken, "pending-transfer", windowLabel(), Date.now());
-  await recordTearoutRefusal(record, new LocalTearoutRefusal("moving", "reservation"));
+  await recordTearoutRefusal(record, refusal);
   await emitTo(request.requester, RECEIPT, { token: request.token, ok: false, error: "tearout_move_busy",
-    refusal: { kind: "reservation", pre_ownership: true, source: windowLabel(), deliveryToken: request.deliveryToken } });
+    refusal: { kind: "reservation", pre_ownership: true, source: windowLabel(), deliveryToken: request.deliveryToken,
+      refusalSource: refusal.source, blockerId: refusal.blockerId } });
 }
 
 async function dockOutgoing(request: DockRequest): Promise<void> {
@@ -511,15 +726,27 @@ async function dockOutgoing(request: DockRequest): Promise<void> {
   const before = useWorkspaceListStore.getState().workspaces;
   const selection = { workspace: useWorkspaceListStore.getState().activeWorkspaceId,
     session: useUiStore.getState().activePaneId, zoom: useUiStore.getState().zoomedPaneId };
-  const configs = before.map((workspace) => adapter!.serialize(workspace));
-  const liveSessions = await liveTransferSessions(configs);
+  let configs: WorkspaceConfig[] = [];
+  let liveSessions: string[] = [];
   const id = request.deliveryToken;
+  const phaseOwner = request.record?.drag_id ?? id;
+  spareRefill?.activity();
+  const ownsOperation = beginTearoutOperation(phaseOwner);
+  setTearoutDisplayActivity(`outgoing:${id}`, true);
+  const previousTrace = dockTraces.get(id);
+  const details = previousTrace?.details ?? {};
+  if (!previousTrace) dockTraces.set(id, { source: windowLabel(), receiver: request.approval.receiver, details });
+  const stage = (name: DockStage["stage"]) => dockStage(id, details, "child", name, [request.requester]);
   let prepared = false;
   let preOwnershipRefused = false;
   let removed = false;
   let delivered: string | undefined;
   let recoveryError: unknown;
   try {
+    stage("prepare_wait");
+    configs = before.map(workspace => adapter!.serialize(workspace));
+    liveSessions = await liveTransferSessions(configs);
+    details.transferred_session_ids = sessions(configs);
     if (request.approval.target.kind === "handoff") throw new Error("tearout_handoff_is_not_docking");
     if (configs.length !== 1 || !nativeDropAllowed(configs[0].panes.length, request.approval.target)) throw new Error("tearout_dock_shape_unsupported");
     const refused = await invoke("tearout_prepare", { id, receiver: request.approval.receiver, configs,
@@ -528,13 +755,16 @@ async function dockOutgoing(request: DockRequest): Promise<void> {
       preOwnershipRefused = true;
       // Finish the existing cleanup before acknowledging a successful refusal.
       await invoke("tearout_forget", { id });
-      await refuseOutgoingDock(request);
+      await refuseOutgoingDock(request, new LocalTearoutRefusal("moving", "reservation", "backend_transfer", refused.owner_id));
       return;
     }
     if (refused != null) throw new Error("tearout_prepare_result_invalid");
     prepared = true;
+    stage("prepared");
     await invoke("tearout_phase", { id, phase: "shown" });
+    stage("phase_shown");
     await invoke("tearout_phase", { id, phase: "committed" });
+    stage("phase_committed");
     removed = true;
     flushSync(() => {
       useWorkspaceListStore.getState()._replaceWorkspaces([]);
@@ -542,10 +772,11 @@ async function dockOutgoing(request: DockRequest): Promise<void> {
       useUiStore.setState({ activePaneId: null, zoomedPaneId: null });
     });
     for (const sessionId of sessions(configs)) { evictTerminalCache(sessionId); focusController.clearSession(sessionId); }
-    await adapter!.publish();
+    stage("publish_wait"); await adapter!.publish(); stage("published");
     const target = request.approval.target;
     const placement: DetachedReturnTarget = target.kind === "tab-index" ? { ...target, kind: "pane" } : target;
-    delivered = await send(request.approval.receiver, configs, placement, request.approval, request.deliveryToken, selection.session, liveSessions);
+    delivered = await send(request.approval.receiver, configs, placement, request.approval, request.deliveryToken, selection.session, liveSessions,
+      { requester: request.requester, details });
     await invoke("tearout_phase", { id, phase: "received" });
     await invoke("tearout_phase", { id, phase: "cleaned" });
     const selfRequested = request.requester === windowLabel();
@@ -553,19 +784,30 @@ async function dockOutgoing(request: DockRequest): Promise<void> {
       receiptToken: request.token, transferId: id,
       finalizeLabel: selfRequested ? request.approval.receiver : undefined,
       finalizeToken: selfRequested ? delivered : undefined,
-      record: request.record ?? null });
+      record: request.record ? { ...request.record, ...activeTearoutRecords.get(request.record.drag_id)?.forRetire(target, request.approval.receiver),
+        dock_stages: details.dock_stages ?? [], transferred_session_ids: details.transferred_session_ids ?? [],
+        receiver_window: request.approval.receiver } : null });
   } catch (error) {
-    if (delivered) await revoke(request.approval.receiver, delivered);
-    if (prepared) await invoke("tearout_phase", { id, phase: "rolled_back" });
+    mergeDockDiagnostics(details, diagnosticsOf(error));
+    details.failure_checkpoint = failureCheckpoint(error, details.failure_checkpoint);
+    if (delivered) {
+      try { await revoke(request.approval.receiver, delivered); }
+      catch (revokeError) { details.revoke_reason = reasonOf(revokeError); details.restore_unconfirmed = true; }
+    }
+    if (prepared) {
+      try { await invoke("tearout_phase", { id, phase: "rolled_back" }); }
+      catch (phaseError) { recoveryError = phaseError; }
+    }
     if (removed) {
-      restoringTearoutOperation();
+      if (ownsOperation || request.requester === windowLabel()) restoringTearoutOperation();
       const name = before.flatMap(workspace => workspace.panes.flatMap(pane => pane.tabs))
         .map(tab => tab.label || tab.displayName || "\u540d\u524d\u306e\u306a\u3044\u30bf\u30d6").join("\u3001") || "\u30bf\u30d6";
       const location = "\u5207\u308a\u96e2\u3057\u5148\u306e\u7a93";
       const progress = recoveryProgress(name, location);
       rememberTearoutDormantSessions(sessions(configs), liveSessions);
-      const attachments = expectTearoutAttachments(liveSessions);
+      let attachments: ReturnType<typeof expectTearoutAttachments> | undefined;
       try {
+        attachments = expectTearoutAttachments(liveSessions);
         await attachments.prepared;
         flushSync(() => {
           useWorkspaceListStore.getState()._replaceWorkspaces(before);
@@ -580,7 +822,7 @@ async function dockOutgoing(request: DockRequest): Promise<void> {
       } catch (restoreError) {
         recoveryError = restoreError;
         const failed = (retryError: unknown): void => recoveryFailed(name, location, reasonOf(retryError), () => {
-          if (!beginTearoutOperation()) { recoveryBusy(); return; }
+          if (!beginTearoutOperation(phaseOwner)) { recoveryBusy(); return; }
           void (async () => {
             restoringTearoutOperation();
             const retryProgress = recoveryProgress(name, location);
@@ -599,22 +841,36 @@ async function dockOutgoing(request: DockRequest): Promise<void> {
           })();
         }, () => visitTearoutLocation(before[0]?.id ?? "", selection.session));
         failed(restoreError);
-      } finally { attachments.dispose(); useToastStore.getState().dismissToast(progress); }
+      } finally { attachments?.dispose(); useToastStore.getState().dismissToast(progress); }
     }
+    if (recoveryError) { details.recovery_reason = reasonOf(recoveryError); details.restore_unconfirmed = true; }
+    updateDockTrace(id, details);
     await emitTo(request.requester, RECEIPT, { token: request.token, ok: false, error: "tearout_dock_failed",
-      ...(recoveryError ? { reason: reasonOf(recoveryError), failedSessions: liveSessions } : {}) });
-  } finally { if (!preOwnershipRefused) await invoke("tearout_forget", { id }); }
+      reason: reasonOf(error), ...details,
+      ...(recoveryError ? { failedSessions: recoveryError instanceof TransferFailure ? recoveryError.sessionIds : liveSessions } : {}) });
+  } finally {
+    setTearoutDisplayActivity(`outgoing:${id}`, false);
+    if (ownsOperation) endTearoutOperation();
+    if (!previousTrace) dockTraces.delete(id);
+    if (!preOwnershipRefused) await invoke("tearout_forget", { id }).catch(error => console.warn("[tearout] forget failed", error));
+  }
 }
 
 function finalizeIncoming(payload: { token: string; source: string }): void {
   const entry = incoming.get(payload.token);
   if (entry && payload.source === entry.delivery.source) {
-    incoming.delete(payload.token); finishIncomingTearout(payload.token);
+    entry.finalized = true;
+    if (!releaseIncomingReservation(payload.token, entry, "finalized", false)) {
+      void entry.settled.then(() => releaseIncomingReservation(payload.token, entry, "finalized", false));
+    }
   }
 }
 
 export function installTearoutRuntime(value: Adapter): () => void {
   let live = true, hydrated = value.hydrated === undefined;
+  const checkEpoch = ++incomingCheckEpoch;
+  if (incomingCheckTimer !== null) window.clearTimeout(incomingCheckTimer);
+  incomingCheckTimer = null; incomingChecksEnabled = true; queueIncomingCheck();
   adapter = value;
   configureTearoutInputEvidence(false);
   void invoke<boolean>("tearout_input_evidence_enabled").then(enabled => {
@@ -635,9 +891,10 @@ export function installTearoutRuntime(value: Adapter): () => void {
       if (releasedIds.size > 64) releasedIds.delete(releasedIds.values().next().value!);
       if (pendingSample?.id === id) { cancelSampleFrame?.(); cancelSampleFrame = null; pendingSample = null; }
       // Invalidate even another drag's pending hover paint/clear callbacks.
-      preview?.feedback.clear(); preview = null;
+      preview?.feedback.clear(true); preview = null;
     },
     target: frame => nativeTarget(frame, null), revision: releaseLayoutRevision,
+    activity: setTearoutDisplayActivity,
     frame: (target, frame) => {
       if (target && releaseFrameOwner !== null && releaseFrameOwner !== frame.id) throw new Error("tearout_release_receiver_busy");
       if (target) releaseFrameOwner = frame.id;
@@ -653,7 +910,7 @@ export function installTearoutRuntime(value: Adapter): () => void {
   });
   const ownReleaseReceiver = releaseReceiver;
   const handoff = installTearoutHandoff(async (token, target, approval, sender) => {
-    if (approval.release_id) return ownReleaseReceiver.consume(approval, sender);
+    if (approval.release_id) return (await ownReleaseReceiver.consume(approval, sender)).ok;
     const approved = approvedDrops.get(token);
     if (!approved || !sameDockTarget(approved, target)) return false;
     approvedDrops.delete(token);
@@ -667,19 +924,28 @@ export function installTearoutRuntime(value: Adapter): () => void {
       }).catch(() => {});
     }, ownWindow),
     listen<Receipt>(RECEIPT, ({ payload }) => receipts.get(payload.token)?.(payload), ownWindow),
+    listen<DockDiagnostics & { token: string; sender: string }>(PROGRESS, ({ payload }) => {
+      const trace = dockTraces.get(payload.token);
+      if (trace && (payload.sender === trace.source || payload.sender === trace.receiver)) updateDockTrace(payload.token, payload);
+    }, ownWindow),
     listen<{ id: string }>("mycmux://tearout-release-finished", ({ payload }) => {
-      endWorkspaceHover(payload.id); finishObservedTearoutMove(payload.id);
+      endWorkspaceHover(payload.id); finishObservedTearoutMove(payload.id); finishAwaitingRelease(payload.id);
     }, ownWindow),
     listen<{ id: string; epoch: number }>("mycmux://tearout-release", ({ payload }) => {
-      endWorkspaceHover(payload.id); void ownReleaseReceiver.resolve(payload);
+      endWorkspaceHover(payload.id);
+      void ownReleaseReceiver.resolve(payload).catch(error => console.warn("[tearout] release cleanup failed", error))
+        .finally(() => finishAwaitingRelease(payload.id));
     }, ownWindow),
     listen<NativeSample>("mycmux://tearout-native", ({ payload }) => handleNativeSample(payload), ownWindow),
     listen<DockRequest>(OUTGOING, ({ payload }) => { void dockOutgoing(payload).catch((error) => console.warn("[tearout] dock recovery failed", error)); }, ownWindow),
-    listen<{ id: string; at: number; hoverAt: number; receiver: string }>(HIGHLIGHT, ({ payload }) => {
-      activeTearoutRecords.get(payload.id)?.highlighted(payload.at, payload.hoverAt, payload.receiver);
+    listen<{ id: string; at: number; hoverAt: number; receiver: string; active?: boolean; afterRelease?: boolean }>(HIGHLIGHT, ({ payload }) => {
+      const record = activeTearoutRecords.get(payload.id);
+      if (payload.active === false) record?.clearedHighlight(payload.at, payload.afterRelease);
+      else record?.highlighted(payload.at, payload.hoverAt, payload.receiver);
     }, ownWindow),
     listen<{ token: string; ack: string; source: string }>(REVOKE, ({ payload }) => { void receiveRevoke(payload); }, ownWindow),
     listen<{ token: string; source: string }>(FINALIZE, ({ payload }) => finalizeIncoming(payload), ownWindow),
+    listen(WINDOW_REGISTRY_CHANGED_EVENT, () => { void clearAbandonedIncoming(); }),
     listen<boolean | { mac: true; enabled: boolean }>(PREFERENCE, ({ payload }) => {
       if (typeof payload === "boolean") {
         if (useSettingsStore.getState().nativePaneTearoutEnabled !== payload)
@@ -692,6 +958,61 @@ export function installTearoutRuntime(value: Adapter): () => void {
   listenersReady = Promise.all([...registered, handoff.ready]).then(() => {});
   const stopPrewarm = isTearoutChild() ? () => {} : installMacTearoutPrewarm(() => tearoutOperationBusy() || incoming.size > 0);
   let preference = nativePaneTearoutEnabled(useSettingsStore.getState().nativePaneTearoutEnabled);
+  let refillTimer: number | null = null, refillStarted: number | null = null;
+  let refillIdleUntil = 0, refillAttempts = 0, refillEpoch = 0, refillPending = false;
+  const refillEligible = () => live && hydrated
+    && nativePaneTearoutEnabled(useSettingsStore.getState().nativePaneTearoutEnabled);
+  const cancelRefill = () => {
+    if (refillTimer !== null) window.clearTimeout(refillTimer);
+    refillTimer = null; refillStarted = null; refillAttempts = 0; refillPending = false; refillEpoch++;
+  };
+  const giveUpRefill = (reason: unknown) => {
+    console.warn("[tearout] refill abandoned", reason);
+    cancelRefill();
+  };
+  const armRefill = (delay: number) => {
+    if (refillTimer !== null) window.clearTimeout(refillTimer);
+    if (refillStarted === null || refillPending) return;
+    const remaining = refillStarted + SPARE_REFILL_LIMIT_MS - Date.now();
+    refillTimer = window.setTimeout(runRefill, Math.max(0, Math.min(delay, remaining)));
+  };
+  const runRefill = () => {
+    refillTimer = null;
+    if (refillStarted === null || !refillEligible()) { cancelRefill(); return; }
+    if (Date.now() >= refillStarted + SPARE_REFILL_LIMIT_MS || refillAttempts >= SPARE_REFILL_MAX_ATTEMPTS) {
+      giveUpRefill("tearout_warm_deferred: idle deadline or attempt limit"); return;
+    }
+    if (Date.now() < refillIdleUntil) { armRefill(refillIdleUntil - Date.now()); return; }
+    const epoch = refillEpoch;
+    refillAttempts++; refillPending = true;
+    void invoke("tearout_warm", { idleOnly: true }).then(() => {
+      if (epoch === refillEpoch) cancelRefill();
+    }).catch(error => {
+      if (epoch !== refillEpoch) return;
+      refillPending = false;
+      if (!refillEligible()) { cancelRefill(); return; }
+      if (reasonOf(error) !== "tearout_warm_deferred" || refillAttempts >= SPARE_REFILL_MAX_ATTEMPTS
+        || Date.now() >= refillStarted! + SPARE_REFILL_LIMIT_MS) { giveUpRefill(error); return; }
+      armRefill(Math.max(1000, refillIdleUntil - Date.now()));
+    });
+  };
+  const ownRefill = {
+    request: () => {
+      if (!refillEligible()) return;
+      refillStarted ??= Date.now();
+      refillIdleUntil = Date.now() + TEAROUT_SPARE_IDLE_MS;
+      armRefill(TEAROUT_SPARE_IDLE_MS);
+    },
+    activity: () => {
+      if (refillStarted === null) return;
+      refillIdleUntil = Date.now() + TEAROUT_SPARE_IDLE_MS;
+      armRefill(TEAROUT_SPARE_IDLE_MS);
+    },
+  };
+  spareRefill = ownRefill;
+  const stopRefillActivity = subscribeTearoutOperationStart(ownRefill.activity);
+  window.addEventListener("pagehide", cancelRefill);
+  window.addEventListener("beforeunload", cancelRefill);
   const warm = () => {
     if (!hydrated) return;
     if (nativePaneTearoutEnabled(preference) && !isMainWindow()) return;
@@ -708,6 +1029,7 @@ export function installTearoutRuntime(value: Adapter): () => void {
     const enabled = nativePaneTearoutEnabled(state.nativePaneTearoutEnabled);
     if (enabled === preference) return;
     preference = enabled;
+    if (!enabled) cancelRefill();
     void emit(PREFERENCE, isMacTearoutPlatform() ? { mac: true, enabled: preference } : preference).catch((error) => console.warn("[tearout] preference failed", error));
     warm();
   });
@@ -720,8 +1042,27 @@ export function installTearoutRuntime(value: Adapter): () => void {
   });
   return () => {
     live = false; configureTearoutInputEvidence(false);
+    cancelRefill();
+    stopRefillActivity();
+    if (spareRefill === ownRefill) spareRefill = null;
+    window.removeEventListener("pagehide", cancelRefill);
+    window.removeEventListener("beforeunload", cancelRefill);
+    if (checkEpoch === incomingCheckEpoch) {
+      incomingChecksEnabled = false; incomingCheckEpoch++;
+      if (incomingCheckTimer !== null) window.clearTimeout(incomingCheckTimer);
+      incomingCheckTimer = null;
+    }
     clearObservedTearoutMoves();
     ownReleaseReceiver.dispose(); releaseReceiver = null; releasedIds.clear(); nativeModes.clear();
+    releaseFrameOwner = null;
+    for (const id of awaitingRelease.keys()) finishAwaitingRelease(id);
+    for (const [token, entry] of incoming) {
+      entry.revoked = true; entry.cancel();
+      if (!entry.receiving) releaseIncomingReservation(token, entry, "runtime_disposed", false);
+      else void entry.settled.then(() => releaseIncomingReservation(token, entry, "runtime_disposed", false));
+    }
+    for (const token of dockTraces.keys()) setTearoutDisplayActivity(`outgoing:${token}`, false);
+    dockTraces.clear(); endTearoutOperation();
     stop(); stopWorkspace(); stopPrewarm(); handoff.dispose();
     nativeWorkspaceHover.clear(); workspaceHoverSample = null; hoverEndedIds.clear();
     disposeTearoutFrames();
@@ -768,6 +1109,7 @@ export function canRegrabTearoutPane(item: Extract<PaneDragItem, { kind: "pane" 
 interface NativeStartRefusal {
   kind: "rejected_busy"; pre_ownership: true; phase: "moving";
   owner_id: string; source: string; label: string;
+  refusal_source?: "backend_pre_ownership" | "backend_release" | "backend_transfer";
 }
 export function isPreOwnershipTearoutRefusal(value: unknown, label: string, id: string): value is NativeStartRefusal {
   if (!value || typeof value !== "object") return false;
@@ -780,7 +1122,7 @@ export function isPreOwnershipTearoutRefusal(value: unknown, label: string, id: 
 /** Backend proof is authenticated to this WebView and precedes any ownership. */
 export async function checkTearoutTransferReservation(id: string): Promise<LocalTearoutRefusal | null> {
   const proof = await invoke<unknown>("tearout_transfer_refusal", { id });
-  if (isPreOwnershipTearoutRefusal(proof, windowLabel(), id)) return new LocalTearoutRefusal("moving", "reservation");
+  if (isPreOwnershipTearoutRefusal(proof, windowLabel(), id)) return new LocalTearoutRefusal("moving", "reservation", "backend_transfer", proof.owner_id);
   if (proof != null) throw new Error("tearout_start_result_invalid");
   return null;
 }
@@ -799,7 +1141,7 @@ export async function regrabTearoutWindow(record?: TearoutRecord, onEnd?: (sampl
   record.identity(useWorkspaceListStore.getState().workspaces.some((ws) => ws.panes.some((pane) => pane.tabs.some((tab) => tab.sessionId.startsWith("pty-")))) ? true : null);
   const refusal = localTearoutRefusal();
   if (refusal) return rejectTearoutStart(record, refusal);
-  beginTearoutOperation();
+  beginTearoutOperation(record.id);
   const id = record.id;
   activeTearoutRecords.set(id, record);
   let ended = false;
@@ -837,6 +1179,8 @@ export async function regrabTearoutWindow(record?: TearoutRecord, onEnd?: (sampl
       if (payload.mode !== mode) throw new Error("tearout_move_mode_changed");
       if (payload.error) { record!.error("native_move_failed"); throw new Error(payload.error); }
       const approval = await finalReleaseApproval(payload);
+      record!.decision(releaseDecision(payload, approval), approval?.target);
+      if (approval) record!.attempted(approval.target, approval.receiver);
       stage = approval ? "docking" : "settling";
       if (!payload.escaped && approval?.target.kind === "handoff") {
         stage = "handoff";
@@ -849,7 +1193,9 @@ export async function regrabTearoutWindow(record?: TearoutRecord, onEnd?: (sampl
           record!.failure(reasonOf(error), stage);
           useToastStore.getState().pushToast(onlineStrings.dragDropErrorPrefix + reasonOf(error), "error");
         } finally {
-          if (approval.release_id) await invoke("tearout_release_cancel", { id: approval.release_id });
+          if (approval.release_id) await invoke("tearout_release_cancel", { id: approval.release_id }).catch(error => {
+            throw diagnosedFailure(error, { release_cancel_reason: reasonOf(error) });
+          });
         }
         if (!handedOff && !handoffError) record!.failure("tearout_handoff_failed", stage);
         // Handoff sends a savepoint; the child keeps its workspace and sessions.
@@ -870,12 +1216,17 @@ export async function regrabTearoutWindow(record?: TearoutRecord, onEnd?: (sampl
       }
     })().catch(async (error) => {
       record!.error("dock_failed");
+      const details = diagnosticsOf(error);
+      record!.diagnostics({ ...details, ...(stage === "docking" ? { failure_checkpoint: failureCheckpoint(error, details.failure_checkpoint) } : {}) });
+      const reason = reasonOf(error);
+      const decision = stage === "resolving_release" ? releaseFailureDecision(error) : null;
+      if (decision) record!.decision(decision);
       const name = workspaces[0].name;
       const location = "\u5207\u308a\u96e2\u3057\u5148\u306e\u7a93";
       const visit = () => visitTearoutLocation(workspaces[0].id, useUiStore.getState().activePaneId);
       const restoreGeometry = () => invoke("tearout_restore_geometry", { label, geometry: payload.original });
       const failedRestore = (restoreError: unknown): void => recoveryFailed(name, location, reasonOf(restoreError), () => {
-        if (!beginTearoutOperation()) { recoveryBusy(); return; }
+        if (!beginTearoutOperation(id)) { recoveryBusy(); return; }
         restoringTearoutOperation();
         const progress = recoveryProgress(name, location);
         void restoreGeometry().then(() => recoveryFinished(name, location)).catch(failedRestore)
@@ -884,13 +1235,14 @@ export async function regrabTearoutWindow(record?: TearoutRecord, onEnd?: (sampl
       restoringTearoutOperation();
       try { await restoreGeometry(); }
       catch (restoreError) {
-        record!.error("rollback_failed"); record!.failure(reasonOf(restoreError), "restoring");
+        record!.error("rollback_failed"); record!.failure(reason, "restoring", [], stage);
+        record!.diagnostics({ recovery_reason: reasonOf(restoreError), restore_unconfirmed: true });
         failedRestore(restoreError);
         await record!.finish("restore_failed").catch(logError => console.warn("[tearout] log failed", logError));
         return;
       }
-      const unconfirmed = reasonOf(error).includes("restore");
-      record!.failure(reasonOf(error), unconfirmed ? "restoring" : stage, error instanceof TransferFailure ? error.sessionIds : []);
+      const unconfirmed = error instanceof TransferFailure && error.recoveryFailed;
+      record!.failure(reasonOf(error), unconfirmed ? "restoring" : stage, unconfirmed && error instanceof TransferFailure ? error.sessionIds : [], unconfirmed ? stage : undefined);
       if (!unconfirmed) recoveryFinished(name, location, reasonOf(error), undefined, visit);
       await record!.finish(unconfirmed ? "restore_failed" : "failed_restored", null, unconfirmed ? false : undefined)
         .catch(logError => console.warn("[tearout] log failed", logError));
@@ -914,7 +1266,8 @@ export async function regrabTearoutWindow(record?: TearoutRecord, onEnd?: (sampl
       const pending = await checkTearoutTransferReservation(id).catch(error => {
         console.warn("[tearout] reservation notice check failed", error); return null;
       });
-      return rejectTearoutStart(record, pending ?? new LocalTearoutRefusal("moving"));
+      return rejectTearoutStart(record, new LocalTearoutRefusal("moving", pending?.reason ?? "overlap",
+        refused.refusal_source ?? "backend_pre_ownership", refused.owner_id));
     }
     if (refused != null) throw new Error("tearout_start_result_invalid");
   }
@@ -1044,7 +1397,7 @@ export async function performNativePaneMove(
     record!.escaped(Date.now());
     if (label) void invoke("tearout_cancel_move", { id, label }).catch(() => {});
   };
-  beginTearoutOperation();
+  beginTearoutOperation(id);
   window.addEventListener("keydown", escape, true);
   const rollback = (notify = true): Promise<void> => {
     if (restore) return restore;
@@ -1110,7 +1463,7 @@ export async function performNativePaneMove(
             && !movedTabs.every(tab => useWorkspaceListStore.getState().workspaces.some(ws => ws.id === source.id && ws.panes.some(pane => pane.tabs.some(now => now.id === tab.id))))) {
             visitTearoutLocation(source.id, failedSession); return;
           }
-          if (!beginTearoutOperation()) { recoveryBusy(); return; }
+          if (!beginTearoutOperation(id)) { recoveryBusy(); return; }
           retrying = true; restore = null; progress = undefined;
           void rollback().catch(() => {}).finally(endTearoutOperation);
         },
@@ -1164,7 +1517,7 @@ export async function performNativePaneMove(
       // This spare has not been shown, restored or attached to any session.
       await invoke("tearout_retire", { label }); label = undefined;
       refusedBeforeOwnership = true;
-      return rejectTearoutStart(record, new LocalTearoutRefusal("moving", "reservation"));
+      return rejectTearoutStart(record, new LocalTearoutRefusal("moving", "reservation", "backend_transfer", refused.owner_id));
     }
     if (refused != null) throw new Error("tearout_prepare_result_invalid");
     prepared = true;
@@ -1226,6 +1579,7 @@ export async function performNativePaneMove(
     void delivery.catch(error => {
       if (restore || cancelled) return;
       transferFailed = true; record!.error("receive_failed"); failureReason = reasonOf(error);
+      record!.diagnostics(diagnosticsOf(error));
       record!.failure(failureReason, "receiving", error instanceof TransferFailure ? error.sessionIds : liveSessions);
       void invoke("tearout_cancel_move", { id, label }).catch(() => {});
     });
@@ -1255,7 +1609,7 @@ export async function performNativePaneMove(
     if (!refusedBeforeOwnership) await record.finish(finalIdentity === false ? "restore_failed" : result, null, finalIdentity).catch((error) => console.warn("[tearout] log failed", error));
     if (prepared) await invoke("tearout_forget", { id });
     if ((!refusedBeforeOwnership || spareTaken) && nativePaneTearoutEnabled(useSettingsStore.getState().nativePaneTearoutEnabled)) {
-      void invoke("tearout_warm").catch((error) => console.warn("[tearout] refill failed", error));
+      spareRefill?.request();
     }
   }
   const outcome = result as TearoutResult;

@@ -117,6 +117,53 @@ pub fn origin_under_cursor(point: (i32, i32), logical_width: f64, offset: GrabOf
         point.1 - (bounded(offset.y, 30.0) * scale).round() as i32)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub struct CursorPlacement {
+    pub origin: (i32, i32),
+    pub scale: f64,
+    pub placements: u8,
+    pub settled: bool,
+}
+
+/// Own the initial window-scale read and reread only after successful moves.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn settle_from_window_scale<E>(
+    point: (i32, i32),
+    logical_width: f64,
+    offset: GrabOffset,
+    mut read_scale: impl FnMut() -> Result<f64, E>,
+    mut move_to: impl FnMut((i32, i32)) -> Result<(), E>,
+) -> Result<CursorPlacement, E> {
+    let initial_scale = read_scale()?;
+    settle_under_cursor(point, logical_width, offset, initial_scale, |origin| {
+        move_to(origin)?;
+        read_scale()
+    })
+}
+
+/// Read the assigned scale after each placement, but never place a third time.
+/// An unsettled result retains the scale used for the final origin calculation.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn settle_under_cursor<E>(
+    point: (i32, i32),
+    logical_width: f64,
+    offset: GrabOffset,
+    initial_scale: f64,
+    mut place: impl FnMut((i32, i32)) -> Result<f64, E>,
+) -> Result<CursorPlacement, E> {
+    let scale = if initial_scale.is_finite() && initial_scale > 0.0 { initial_scale } else { 1.0 };
+    let origin = origin_under_cursor(point, logical_width, offset, scale);
+    let assigned = place(origin)?;
+    if (assigned - scale).abs() <= 0.001 {
+        return Ok(CursorPlacement { origin, scale, placements: 1, settled: true });
+    }
+    let scale = assigned;
+    let origin = origin_under_cursor(point, logical_width, offset, scale);
+    let assigned = place(origin)?;
+    Ok(CursorPlacement { origin, scale, placements: 2, settled: (assigned - scale).abs() <= 0.001 })
+}
+
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct StartAlignment {
     pub cursor: [f64; 2], pub before: [f64; 2], pub expected: [f64; 2], pub after: [f64; 2],
@@ -133,6 +180,181 @@ impl StartAlignment {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
+
+    fn settle_model(point: (i32, i32), width: f64, grip: GrabOffset, model: &mut SeamModel) -> CursorPlacement {
+        let model = RefCell::new(model);
+        settle_from_window_scale(point, width, grip, || Ok(model.borrow().window_scale),
+            |origin| model.borrow_mut().place(origin).map(|_| ())).unwrap()
+    }
+
+    #[test]
+    fn cursor_placement_settles_once_inside_a_single_scale_screen() {
+        for scale in [1.0, 1.5, 1.75] {
+            let grip = GrabOffset { x: 90.0, y: 18.0 };
+            let mut model = SeamModel::new(false, 720.0, scale, scale, scale);
+            let result = settle_model((900, 700), 720.0, grip, &mut model);
+            assert_eq!(result, CursorPlacement { origin: origin_under_cursor((900, 700), 720.0, grip, scale),
+                scale, placements: 1, settled: true });
+            assert_eq!(model.positions, [result.origin]);
+        }
+    }
+
+    /// Scale follows the center computed with the window's size BEFORE placing.
+    /// Updating that scale also updates the size used by the next placement.
+    struct SeamModel {
+        vertical: bool,
+        extent: f64,
+        negative_scale: f64,
+        positive_scale: f64,
+        window_scale: f64,
+        positions: Vec<(i32, i32)>,
+    }
+    impl SeamModel {
+        fn new(vertical: bool, extent: f64, negative_scale: f64, positive_scale: f64, window_scale: f64) -> Self {
+            Self { vertical, extent, negative_scale, positive_scale, window_scale, positions: vec![] }
+        }
+        fn place(&mut self, origin: (i32, i32)) -> Result<f64, &'static str> {
+            self.positions.push(origin);
+            let axis = if self.vertical { origin.1 } else { origin.0 };
+            let center = axis as f64 + self.extent * self.window_scale / 2.0;
+            self.window_scale = if center < 0.0 { self.negative_scale } else { self.positive_scale };
+            Ok(self.window_scale)
+        }
+    }
+
+    #[test]
+    fn follower_and_native_keep_the_same_window_scale_in_the_dual_stable_band() {
+        let width = 400.0;
+        let grip = GrabOffset { x: 300.0, y: 18.0 }; // Right half: k = 300 - 400/2 = 100.
+        for (high, low, expected_edges) in [(1.75_f64, 1.0_f64, (100.0, 175.0)), (1.5, 1.0, (100.0, 150.0))] {
+            let edge = |scale: f64| (grip.x * scale).round() - width * scale / 2.0;
+            let (low_edge, high_edge) = (edge(low), edge(high));
+            assert_eq!((low_edge, high_edge), expected_edges);
+            // Both scales are consistent for cursor x in [k*low, k*high).
+            for x in [low_edge as i32, ((low_edge + high_edge) / 2.0) as i32, high_edge as i32 - 1] {
+                let point = (x, 500);
+                let mut high_model = SeamModel::new(false, width, high, low, high);
+                let from_high = settle_model(point, width, grip, &mut high_model);
+                let mut low_model = SeamModel::new(false, width, high, low, low);
+                let from_low = settle_model(point, width, grip, &mut low_model);
+                assert!(from_high.settled && from_low.settled);
+                assert_eq!((from_high.placements, from_high.scale), (1, high));
+                assert_eq!((from_low.placements, from_low.scale), (1, low));
+                // Reading a fixed initial scale would collapse this difference to zero.
+                let difference = (grip.x * (high - low)).round() as i32;
+                assert_eq!(from_low.origin.0 - from_high.origin.0, difference);
+
+                // The previous native start used cursor-monitor scale (low),
+                // even though the window still had its incoming high scale.
+                let old_origin = origin_under_cursor(point, width, grip, low);
+                let mut old_model = SeamModel::new(false, width, high, low, high);
+                assert_eq!(old_model.place(old_origin).unwrap(), low); // No old second correction.
+                assert_eq!(old_origin.0 - from_high.origin.0, difference);
+                if high == 1.75 { assert_eq!(old_origin.0 - from_high.origin.0, 225); }
+            }
+            let mut boundary = SeamModel::new(false, width, high, low, high);
+            let result = settle_model((high_edge as i32, 500), width, grip, &mut boundary);
+            assert!(result.settled);
+            assert_eq!((result.placements, result.scale), (2, low));
+        }
+    }
+
+    #[test]
+    fn oscillating_horizontal_and_vertical_seams_stop_after_two_placements() {
+        let grip = GrabOffset { x: 90.0, y: 18.0 }; // Left half of width 720.
+        for (vertical, extent, high, low, expected_edges) in [
+            (false, 720.0_f64, 1.75_f64, 1.0_f64, (270.0, 472.0)),
+            (false, 720.0, 1.5, 1.0, (270.0, 405.0)),
+            (false, 720.0, 1.75, 1.5, (405.0, 472.0)),
+            (true, 520.0, 1.75, 1.0, (242.0, 423.0)),
+            (true, 520.0, 1.5, 1.0, (242.0, 363.0)),
+        ] {
+            let offset = if vertical { grip.y } else { grip.x };
+            // Ideal distances are (extent/2 - offset)*scale:
+            // x: 270..472.5, y: 242..423.5 at 100/175%.
+            // Integer origins round the grip: x becomes 270..472, y 242..423.
+            let edge = |scale: f64| extent * scale / 2.0 - (offset * scale).round();
+            let (low_edge, high_edge) = (edge(low), edge(high));
+            assert_eq!((low_edge, high_edge), expected_edges);
+            let point = |axis| if vertical { (500, axis) } else { (axis, 500) };
+            // Center==0 belongs to the positive screen, so the oscillating
+            // cursor interval is [-high_edge, -low_edge) from either incoming scale.
+            // From low, the first center is axis+low_edge, the second axis+high_edge.
+            for initial_scale in [high, low] {
+                let final_scale = if initial_scale == high { low } else { high };
+                for axis in [-high_edge as i32, -((low_edge + high_edge) / 2.0) as i32, -low_edge as i32 - 1] {
+                    let mut model = SeamModel::new(vertical, extent, high, low, initial_scale);
+                    let result = settle_model(point(axis), 720.0, grip, &mut model);
+                    assert!(!result.settled);
+                    assert_eq!(result.placements, 2);
+                    assert_eq!(model.positions.len(), 2); // Never enqueue a third placement.
+                    assert_eq!(result.origin, origin_under_cursor(point(axis), 720.0, grip, final_scale));
+                    assert_eq!(result.scale, final_scale); // Scale used for the final origin.
+                    assert_eq!(model.window_scale, initial_scale);
+                }
+                let left_placements = if initial_scale == high { 1 } else { 2 };
+                let right_placements = if initial_scale == high { 2 } else { 1 };
+                for (axis, placements, scale) in [(-high_edge as i32 - 1, left_placements, high), (-low_edge as i32, right_placements, low)] {
+                    let mut model = SeamModel::new(vertical, extent, high, low, initial_scale);
+                    let result = settle_model(point(axis), 720.0, grip, &mut model);
+                    assert!(result.settled);
+                    assert_eq!((result.placements, result.scale), (placements, scale));
+                    assert_eq!(model.positions.len(), placements as usize);
+                    assert_eq!(model.window_scale, scale);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn window_scale_entry_reads_once_more_than_it_places_and_never_a_third_time() {
+        let grip = GrabOffset { x: 90.0, y: 18.0 };
+        for (point, width, offset, model, placements, settled) in [
+            ((900, 700), 720.0, grip, SeamModel::new(false, 720.0, 1.5, 1.5, 1.5), 1, true),
+            ((175, 500), 400.0, GrabOffset { x: 300.0, y: 18.0 }, SeamModel::new(false, 400.0, 1.75, 1.0, 1.75), 2, true),
+            ((-400, 500), 720.0, grip, SeamModel::new(false, 720.0, 1.75, 1.0, 1.75), 2, false),
+        ] {
+            let model = RefCell::new(model);
+            let reads = Cell::new(0);
+            let moves = Cell::new(0);
+            let result = settle_from_window_scale(point, width, offset, || {
+                reads.set(reads.get() + 1);
+                Ok(model.borrow().window_scale)
+            }, |origin| {
+                moves.set(moves.get() + 1);
+                model.borrow_mut().place(origin).map(|_| ())
+            }).unwrap();
+            assert_eq!((result.placements, result.settled), (placements, settled));
+            assert_eq!(moves.get(), placements);
+            assert_eq!(reads.get(), placements + 1);
+            assert_eq!(model.borrow().positions.len(), placements as usize);
+        }
+    }
+
+    #[test]
+    fn window_scale_entry_propagates_read_or_placement_failures_without_retrying() {
+        for (fail_read, fail_move, expected_reads, expected_moves, error) in [
+            (Some(1), None, 1, 0, "scale read failed"),
+            (None, Some(1), 1, 1, "placement failed"),
+            (Some(2), None, 2, 1, "scale read failed"),
+            (None, Some(2), 2, 2, "placement failed"),
+            (Some(3), None, 3, 2, "scale read failed"),
+        ] {
+            let reads = Cell::new(0);
+            let moves = Cell::new(0);
+            let result = settle_from_window_scale((100, 500), 720.0, GrabOffset { x: 90.0, y: 18.0 }, || {
+                reads.set(reads.get() + 1);
+                if Some(reads.get()) == fail_read { Err("scale read failed") }
+                else { Ok(if reads.get() == 1 { 1.75 } else { 1.0 }) }
+            }, |_| {
+                moves.set(moves.get() + 1);
+                if Some(moves.get()) == fail_move { Err("placement failed") } else { Ok(()) }
+            });
+            assert_eq!(result.unwrap_err(), error);
+            assert_eq!((reads.get(), moves.get()), (expected_reads, expected_moves));
+        }
+    }
     #[test]
     fn realignment_uses_current_destination_dpi_and_signed_screen_coordinates() {
         let grip = GrabOffset { x: 90.0, y: 18.0 };

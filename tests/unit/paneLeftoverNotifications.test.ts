@@ -10,6 +10,7 @@ vi.mock("../../src/components/layout/tabSweep", () => ({ openTabSweepInDashboard
 
 import { groupPaneLeftovers } from "../../src/lib/paneLeftovers";
 import { __resetPaneLeftoverNotificationsForTests } from "../../src/lib/paneLeftoverNotifications";
+import { mountDetachedDashboardHost } from "../../src/lib/dashboardHost";
 import { getClosedPaneEntries, getClosedPaneCount, popClosedPane, pushClosedPane, pushClosedTab, pushClosedWorkspace } from "../../src/stores/closedPaneStore";
 import { __resetToastStoreForTests, useToastStore } from "../../src/stores/toastStore";
 import { useSettingsStore } from "../../src/stores/settingsStore";
@@ -39,6 +40,16 @@ afterEach(() => {
 });
 
 describe("closed-pane leftover notifications", () => {
+  it("keeps the detached leftover message without a sweep action", async () => {
+    const release = mountDetachedDashboardHost();
+    try {
+      mocks.invoke.mockResolvedValue([process("a")]);
+      const a = tab("a"); pushClosedTab(pane([a]), a);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(useToastStore.getState().toasts[0].action).toBeUndefined();
+      expect(useToastStore.getState().toasts[0].actions).toBeUndefined();
+    } finally { release(); }
+  });
   it("batches closes within ten seconds, filters other panes and offers one sweep action", async () => {
     mocks.invoke.mockResolvedValue([process("a"), { ...process("a", 104), parentPid: 101 }, process("b", 102), { ...process("b", 105), parentPid: 102 }, process("unrelated", 103)]);
     const a = tab("a");

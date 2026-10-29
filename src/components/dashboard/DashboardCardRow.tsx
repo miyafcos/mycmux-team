@@ -94,6 +94,7 @@ function CardRow({ card, selected, open, now, hideWorkspaceBadge, onSelect, onJu
     <span className="cmux-dash-row-body">
       <span className="cmux-dash-row-title">
         <strong>{card.label}</strong>
+        {card.windowLabel && card.windowLabel !== "main" ? <span className="cmux-dashboard-peer-window">{dashboardStrings.peerWindow}</span> : null}
         {hideWorkspaceBadge ? null : <span className="cmux-dash-row-workspace">{card.workspace.name}</span>}
       </span>
       {preview ? <span className="cmux-dash-row-preview">{preview}</span> : null}

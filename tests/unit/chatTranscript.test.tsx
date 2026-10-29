@@ -128,6 +128,29 @@ describe("ChatTranscript next-to-latest", () => {
     });
   }
 
+  it("moves compact turn navigation into the header and preserves its labels and focus behavior", async () => {
+    const target = document.createElement("header");
+    document.body.append(target);
+    const events = [userMessage("first"), userMessage("last")];
+    try {
+      await act(async () => root.render(<ChatTranscript compact events={events} navigationTarget={target} />));
+      expect(host.querySelector("[data-dashboard-user-turn-nav]")).toBeNull();
+      expect([...target.querySelectorAll("button")].map(button => button.getAttribute("aria-label")))
+        .toEqual([PREV_LABEL, NEXT_LABEL]);
+      const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+      target.querySelector("button")!.dispatchEvent(down);
+      expect(down.defaultPrevented).toBe(true);
+      await act(async () => root.render(<ChatTranscript compact events={events} />));
+      expect(target.children).toHaveLength(0);
+      expect(host.querySelectorAll("[data-dashboard-user-turn-nav]")).toHaveLength(1);
+      await act(async () => root.render(<ChatTranscript events={events} navigationTarget={target} />));
+      expect(target.children).toHaveLength(0);
+      expect(host.querySelector(".cmux-dashboard-user-turn-nav-count")).not.toBeNull();
+    } finally {
+      target.remove();
+    }
+  });
+
   async function mountThreeTurns(): Promise<{ log: HTMLElement; metrics: { scrollHeight: number; clientHeight: number; scrollTop: number } }> {
     await act(async () => {
       root.render(

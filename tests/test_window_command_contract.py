@@ -6,6 +6,23 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_dashboard_window_focus_restores_windows_with_child_webviews() -> None:
+    import re
+
+    source = read_repo_text("src-tauri/src/commands/window.rs")
+
+    def body(name: str) -> str:
+        start = source.index(f"fn {name}(")
+        following = re.search(r"\n(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn \w+\(", source[start + 3:])
+        return source[start:] if following is None else source[start:start + 3 + following.start()]
+
+    for name in ("focus_window", "show_main_window"):
+        assert "get_window(" in body(name)
+        assert "get_webview_window(" not in body(name)
+    assert "unminimize()" in body("restore_and_focus")
+    assert "set_focus()" in body("restore_and_focus")
+
+
 def read_repo_text(relative_path: str) -> str:
     return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
 

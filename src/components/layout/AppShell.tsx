@@ -6,7 +6,7 @@ import {
   useWorkspaceLayoutStore,
   useUiStore,
 } from "../../stores/workspaceStore";
-import { isMainWindow } from "../../lib/windowContext";
+import { isMainWindow, windowLabel } from "../../lib/windowContext";
 import { attachGlobalFontZoom } from "../terminal/terminalMouseInputFilter";
 import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from "../../lib/constants";
 import { sidebarStrings } from "../../lib/sidebarStrings";
@@ -32,6 +32,7 @@ import { useKeybindingStore } from "../../stores/keybindingStore";
 import { isEditableTarget } from "../../lib/keybindings";
 import { TAB_RESTORE_CLOSED_EVENT, openTabSweepInDashboard } from "./tabSweep";
 import { openDashboardForActiveSession } from "./openDashboardForTab";
+import { connectMainDashboardRequests } from "../../lib/mainDashboardRequests";
 import { DashboardView } from "../dashboard/DashboardView";
 import { GroupingFlightHost } from "./GroupingFlightHost";
 import { GroupingStatusBar } from "../dashboard/GroupingStatusBar";
@@ -534,6 +535,8 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const lineHeight = useThemeStore((s) => s.lineHeight);
   const uiDensity = useThemeStore((s) => s.uiDensity);
   const uiFontScale = useThemeStore((s) => s.uiFontScale);
+
+  useEffect(() => connectMainDashboardRequests(windowLabel()), []);
 
   // Multi-window (Phase 3a): both of these are app-wide singleton fetches
   // (crsm session index / savepoint index). Running them once per window just

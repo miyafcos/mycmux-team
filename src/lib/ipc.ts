@@ -1196,6 +1196,63 @@ export async function revealMainWindow(): Promise<void> {
   return invoke<void>("reveal_main_window");
 }
 
+export const OPEN_DASHBOARD_EVENT = "mycmux://open-dashboard";
+
+export interface OpenDashboardTarget {
+  tabId?: string;
+  sessionId?: string;
+  turn?: "latest";
+}
+
+export async function openMainDashboard(target: OpenDashboardTarget = {}): Promise<boolean> {
+  return invoke<boolean>("open_main_dashboard", {
+    tabId: target.tabId ?? null,
+    sessionId: target.sessionId ?? null,
+    turn: target.turn ?? null,
+  });
+}
+
+export async function focusWindow(label: string): Promise<void> {
+  return invoke<void>("focus_window", { label });
+}
+
+/** A display-only projection: no terminal snapshots or launch secrets. */
+export interface WindowTabIndexTab {
+  tab_id: string;
+  session_id: string;
+  agent_id: string;
+  label?: string | null;
+  label_source?: PaneTabConfig["label_source"];
+  display_name?: string | null;
+  display_name_source?: "auto" | null;
+  type?: PaneTabConfig["type"];
+  preset_id?: string | null;
+  cwd?: string | null;
+  agent_kind?: AgentSessionKind | null;
+  agent_session_id?: string | null;
+  claude_session_id?: string | null;
+  source_kind?: ArtifactSourceKind | null;
+  source_path?: string | null;
+  command_argv?: string[];
+  launch_env?: { MYCMUX_LAUNCH_TARGET?: string };
+  lifecycle?: "declared" | null;
+  delegated_by_tab_id?: string | null;
+  delegated_by_agent_session_id?: string | null;
+  delegated_at?: number | null;
+  pty_alive: boolean;
+  live_agent_kind?: string | null;
+}
+
+export interface WindowTabIndex {
+  window_label: string;
+  pending: boolean;
+  workspaces: Array<{ id: string; name: string; panes: Array<{ id: string; tabs: WindowTabIndexTab[] }> }>;
+}
+
+export async function getWindowTabIndex(): Promise<WindowTabIndex[]> {
+  return invoke<WindowTabIndex[]>("get_window_tab_index");
+}
+
 export async function setWindowCloseIntent(closing: boolean): Promise<void> {
   return invoke<void>("set_window_close_intent", { closing });
 }

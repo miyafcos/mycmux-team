@@ -30,6 +30,7 @@ import type { LiveSessionBrief } from "../../src/lib/livebrief";
 import type { Workspace } from "../../src/types";
 import { __resetAttentionStoreForTests } from "../../src/stores/attentionStore";
 import { useAskQuestionStore } from "../../src/stores/askQuestionStore";
+import { useToastStore, __resetToastStoreForTests } from "../../src/stores/toastStore";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -148,6 +149,18 @@ async function renderAttention(sessions: readonly AttentionFactSource[], handler
 }
 
 describe("気づき欄の事実カード", () => {
+  it.each(["throw", "reject"])("reports an unavailable fact-card target on %s", async mode => {
+    __resetToastStoreForTests();
+    const handlers = actions();
+    handlers.openSession.mockImplementation(() => {
+      if (mode === "throw") throw new Error("gone");
+      return Promise.reject(new Error("gone"));
+    });
+    await renderAttention([source({ noUpdateMinutes: 45 })], handlers);
+    await act(async () => { container.querySelector<HTMLButtonElement>(".cmux-attention-card-session-chip")!.click(); });
+    expect(useToastStore.getState().toasts.at(-1)?.message).toBe(dashboardStrings.attentionActionFailed);
+    __resetToastStoreForTests();
+  });
   it("質問を出したまま待っている席は、質問文と選択肢をそのまま出す", async () => {
     const handlers = await renderAttention([source({
       brief: brief({

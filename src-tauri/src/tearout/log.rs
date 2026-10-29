@@ -83,6 +83,37 @@ struct ReleaseEvidence { point: super::release::ReleasePoint, receiver_window: O
 static INPUT_EVIDENCE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FailureCheckpoint { Consume, ReceiverValidation, ReceiptTimeout, AttachmentTimeout, Other }
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ReleaseDecision { NoReceiver, NoHit, LayoutChanged, Expired, ReceiptTimeout, Approved,
+    NoReleasePoint, EscCancelled, ReceiverTimeout, Cancelled, IdentityChanged }
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ConsumeFailureReason { Expired, ReceiverChanged, ReleaseIdChanged, TargetChanged, LayoutChanged,
+    SenderChanged, NotApproved, AlreadyConsumed, Disposed, BackendRejected }
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DockSide { Child, Receiver }
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DockStageName {
+    PrepareWait, Prepared, PhaseShown, PhaseCommitted, PublishWait, Published, DeliverySent,
+    ReceiptWait, Receipt, AttachmentPreparedWait, AttachmentPrepared, ConsumeWait, Consumed,
+    SessionAliveWait, SessionAlive, Layout, AttachmentWait, Attached,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RefusalSource { Band, Pointer, Phase, ObservedMove, Incoming, BackendPreOwnership, BackendRelease, BackendTransfer }
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BlockerPhase { Moving, Restoring }
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DockStage { side: DockSide, stage: DockStageName, at: u64 }
+
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DragRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -104,6 +135,14 @@ pub struct DragRecord {
     native_started_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     start_alignment: Option<super::geometry::StartAlignment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_start_delay_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refusal_source: Option<RefusalSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blocker_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blocker_phase: Option<BlockerPhase>,
     hover_started_at: Option<u64>,
     highlighted_at: Option<u64>,
     receiver_window: Option<String>,
@@ -120,6 +159,38 @@ pub struct DragRecord {
     layout_done_at: u64,
     result: Outcome,
     destination: Option<Destination>,
+    #[serde(default)]
+    attempted_destination: Option<Destination>,
+    #[serde(default)]
+    failure_checkpoint: Option<FailureCheckpoint>,
+    #[serde(default)]
+    recovery_reason: Option<String>,
+    #[serde(default)]
+    revoke_reason: Option<String>,
+    #[serde(default)]
+    receiver_cleanup_reason: Option<String>,
+    #[serde(default)]
+    release_cancel_reason: Option<String>,
+    #[serde(default)]
+    restore_unconfirmed: bool,
+    #[serde(default)]
+    release_receiver_window: Option<String>,
+    #[serde(default)]
+    transferred_session_ids: Vec<String>,
+    #[serde(default)]
+    failure_phase_before_restore: Option<String>,
+    #[serde(default)]
+    consume_failure_reason: Option<ConsumeFailureReason>,
+    #[serde(default)]
+    dock_stages: Vec<DockStage>,
+    #[serde(default)]
+    highlight_at_release: Option<bool>,
+    #[serde(default)]
+    highlight_cleared_at: Option<u64>,
+    #[serde(default)]
+    release_decision: Option<ReleaseDecision>,
+    #[serde(default)]
+    release_target_kind: Option<DestinationKind>,
     session_id_equal: Option<bool>,
     scale: Option<f64>,
     monitor: Option<String>,
@@ -162,9 +233,11 @@ fn line(mut record: DragRecord, profile: &str) -> Result<Vec<u8>, String> {
     record.drag_id = identifier(&record.drag_id);
     record.pane_id = identifier(&record.pane_id);
     record.source_window = identifier(&record.source_window);
+    record.blocker_id = record.blocker_id.map(|id| identifier(&id));
     record.receiver_window = record.receiver_window.map(|id| identifier(&id));
+    record.release_receiver_window = record.release_receiver_window.map(|id| identifier(&id));
     if let Some(evidence) = &mut record.release_point { evidence.receiver_window = evidence.receiver_window.take().map(|id| identifier(&id)); }
-    if let Some(destination) = &mut record.destination {
+    for destination in [&mut record.destination, &mut record.attempted_destination].into_iter().flatten() {
         destination.workspace_id = destination.workspace_id.take().map(|id| identifier(&id));
         destination.pane_id = destination.pane_id.take().map(|id| identifier(&id));
     }
@@ -176,9 +249,16 @@ fn line(mut record: DragRecord, profile: &str) -> Result<Vec<u8>, String> {
         .filter(|scale| scale.is_finite() && *scale > 0.0 && *scale <= 16.0);
     record.errors.truncate(8);
     record.failure_reason = record.failure_reason.map(|reason| identifier(&reason));
+    record.recovery_reason = record.recovery_reason.map(|reason| identifier(&reason));
+    record.revoke_reason = record.revoke_reason.map(|reason| identifier(&reason));
+    record.receiver_cleanup_reason = record.receiver_cleanup_reason.map(|reason| identifier(&reason));
+    record.release_cancel_reason = record.release_cancel_reason.map(|reason| identifier(&reason));
     record.failure_phase = record.failure_phase.map(|phase| identifier(&phase));
+    record.failure_phase_before_restore = record.failure_phase_before_restore.map(|phase| identifier(&phase));
     record.failed_session_ids.truncate(256);
     record.failed_session_ids = record.failed_session_ids.into_iter().map(|id| identifier(&id)).collect();
+    record.transferred_session_ids.truncate(256);
+    record.transferred_session_ids = record.transferred_session_ids.into_iter().map(|id| identifier(&id)).collect();
     record.released = record.released_at.is_some();
     let mut value = serde_json::to_value(record).map_err(|e| e.to_string())?;
     value["profile"] = serde_json::Value::String(identifier(profile));
@@ -323,7 +403,17 @@ pub async fn tearout_input_evidence_enabled() -> bool {
 }
 
 #[tauri::command]
-pub async fn tearout_log_record(record: LogRecord) -> Result<(), String> {
+pub async fn tearout_log_record(record: serde_json::Value) -> Result<(), String> {
+    match serde_json::from_value::<LogRecord>(record) {
+        Ok(record) => write_record(record).await,
+        Err(error) => {
+            eprintln!("[tearout] invalid diagnostic record discarded: {error}");
+            Ok(())
+        }
+    }
+}
+
+pub(super) async fn write_record(record: LogRecord) -> Result<(), String> {
     let root = crate::test_profile::runtime_dir()?;
     let profile = crate::test_profile::name().unwrap_or("default").to_owned();
     tokio::task::spawn_blocking(move || {
@@ -348,6 +438,52 @@ pub async fn tearout_log_record(record: LogRecord) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const SHARED_SAMPLE: &str = include_str!("../../../tests/fixtures/tearout-drag-record.sample.json");
+
+    #[test]
+    fn regrab_diagnostics_roundtrip_shared_sample_and_legacy_records() {
+        let sample: serde_json::Value = serde_json::from_str(SHARED_SAMPLE).unwrap();
+        for source in ["band", "pointer", "phase", "observed_move", "incoming", "backend_pre_ownership", "backend_release", "backend_transfer"] {
+            for phase in ["moving", "restoring"] {
+                let mut value = sample.clone();
+                value["refusal_source"] = serde_json::json!(source);
+                value["blocker_phase"] = serde_json::json!(phase);
+                let actual = serde_json::to_value(serde_json::from_value::<DragRecord>(value.clone()).unwrap()).unwrap();
+                for key in ["refusal_source", "blocker_id", "blocker_phase", "native_start_delay_ms"] {
+                    assert_eq!(actual[key], value[key], "{key}");
+                }
+            }
+        }
+        assert!(serde_json::from_str::<LogRecord>(SHARED_SAMPLE).is_ok());
+        let mut old = sample;
+        for key in ["refusal_source", "blocker_id", "blocker_phase", "native_start_delay_ms"] {
+            old.as_object_mut().unwrap().remove(key);
+        }
+        let parsed: DragRecord = serde_json::from_value(old).unwrap();
+        assert!(parsed.refusal_source.is_none() && parsed.blocker_id.is_none() && parsed.blocker_phase.is_none());
+        assert!(parsed.native_start_delay_ms.is_none());
+        let serialized = serde_json::to_value(parsed).unwrap();
+        for key in ["refusal_source", "blocker_id", "blocker_phase", "native_start_delay_ms"] {
+            assert!(serialized.get(key).is_none());
+        }
+        let mut unsafe_id: DragRecord = serde_json::from_str(SHARED_SAMPLE).unwrap();
+        unsafe_id.blocker_id = Some("private C:/path\n".repeat(50));
+        let bounded: serde_json::Value = serde_json::from_slice(&line(unsafe_id, "test").unwrap()).unwrap();
+        let blocker = bounded["blocker_id"].as_str().unwrap();
+        assert_eq!(blocker.len(), 128);
+        assert!(blocker.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')));
+    }
+
+    #[tokio::test]
+    async fn log_record_discards_unknown_or_unreadable_diagnostics_without_failing() {
+        let mut sample: serde_json::Value = serde_json::from_str(SHARED_SAMPLE).unwrap();
+        sample["unknown_future_field"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<LogRecord>(sample.clone()).is_err());
+        assert!(tearout_log_record(sample).await.is_ok());
+        for value in [serde_json::Value::Null, serde_json::json!({ "drag_id": 42 }), serde_json::json!([])] {
+            assert!(tearout_log_record(value).await.is_ok());
+        }
+    }
     fn record() -> DragRecord {
         serde_json::from_value(serde_json::json!({
             "drag_id": "drag", "pane_id": "tab", "source_window": "main", "switch_on": true,
@@ -368,6 +504,64 @@ mod tests {
         let mut injected = serde_json::to_value(record()).unwrap();
         injected["terminal_output"] = serde_json::json!("SECRET");
         assert!(serde_json::from_value::<DragRecord>(injected).is_err());
+    }
+    #[test]
+    fn review2_diagnostics_roundtrip_and_old_records_default_new_fields() {
+        let old = serde_json::json!({
+            "drag_id": "drag", "pane_id": "tab", "source_window": "main", "switch_on": true,
+            "down_at": 10, "layout_done_at": 110, "result": "kept_window", "focus_stolen": false, "errors": []
+        });
+        let parsed: DragRecord = serde_json::from_value(old.clone()).unwrap();
+        assert!(!parsed.restore_unconfirmed);
+        assert!(parsed.transferred_session_ids.is_empty());
+        assert!(parsed.receiver_cleanup_reason.is_none() && parsed.release_cancel_reason.is_none());
+        assert!(parsed.release_receiver_window.is_none() && parsed.failure_phase_before_restore.is_none());
+        assert!(parsed.consume_failure_reason.is_none());
+        for decision in ["no_release_point", "esc_cancelled", "receiver_timeout", "cancelled", "identity_changed"] {
+            let mut value = old.clone();
+            for (key, value_to_add) in [
+                ("receiver_cleanup_reason", serde_json::json!("cleanup_failed")),
+                ("release_cancel_reason", serde_json::json!("cancel_failed")),
+                ("restore_unconfirmed", serde_json::json!(true)),
+                ("release_receiver_window", serde_json::json!("receiver")),
+                ("transferred_session_ids", serde_json::json!(["pty-live"])),
+                ("failure_phase_before_restore", serde_json::json!("docking")),
+                ("consume_failure_reason", serde_json::json!("expired")),
+                ("release_decision", serde_json::json!(decision)),
+            ] { value[key] = value_to_add; }
+            let actual = serde_json::to_value(serde_json::from_value::<DragRecord>(value.clone()).unwrap()).unwrap();
+            for key in ["receiver_cleanup_reason", "release_cancel_reason", "restore_unconfirmed", "release_receiver_window",
+                "transferred_session_ids", "failure_phase_before_restore", "consume_failure_reason", "release_decision"] {
+                assert_eq!(actual[key], value[key], "{key}");
+            }
+        }
+        let unknown_stage = serde_json::json!({"side":"child", "stage":"receipt", "at":10, "extra":"rejected"});
+        assert!(serde_json::from_value::<DockStage>(unknown_stage).is_err());
+        for reason in ["expired", "receiver_changed", "release_id_changed", "target_changed", "layout_changed",
+            "sender_changed", "not_approved", "already_consumed", "disposed", "backend_rejected"] {
+            assert_eq!(serde_json::to_value(serde_json::from_value::<ConsumeFailureReason>(serde_json::json!(reason)).unwrap()).unwrap(), reason);
+        }
+    }
+    #[test]
+    fn review2_log_sanitizes_every_reason_and_attempted_destination() {
+        let mut value = serde_json::to_value(record()).unwrap();
+        let unsafe_text = format!("path C:/private\\cwd\n{}", "x".repeat(200));
+        for key in ["failure_reason", "recovery_reason", "revoke_reason", "receiver_cleanup_reason", "release_cancel_reason",
+            "failure_phase", "failure_phase_before_restore", "release_receiver_window"] {
+            value[key] = serde_json::json!(unsafe_text);
+        }
+        value["attempted_destination"] = serde_json::json!({"kind":"left", "workspace_id":unsafe_text, "pane_id":unsafe_text, "index":null});
+        value["transferred_session_ids"] = serde_json::json!(vec![unsafe_text.clone(); 300]);
+        let logged: serde_json::Value = serde_json::from_slice(&line(serde_json::from_value(value).unwrap(), "test").unwrap()).unwrap();
+        for key in ["failure_reason", "recovery_reason", "revoke_reason", "receiver_cleanup_reason", "release_cancel_reason",
+            "failure_phase", "failure_phase_before_restore", "release_receiver_window"] {
+            assert_eq!(logged[key], identifier(&unsafe_text), "{key}");
+        }
+        for key in ["workspace_id", "pane_id"] { assert_eq!(logged["attempted_destination"][key], identifier(&unsafe_text)); }
+        assert_eq!(logged["transferred_session_ids"].as_array().unwrap().len(), 256);
+        assert_eq!(logged["transferred_session_ids"][0], identifier(&unsafe_text));
+        assert!(identifier(&unsafe_text).len() <= 128);
+        assert!(identifier(&unsafe_text).chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')));
     }
     #[test]
     fn input_release_schema_is_bounded_test_only_and_rejects_content() {

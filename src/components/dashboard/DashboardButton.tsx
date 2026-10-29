@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { recordRecentKeystroke } from "../../stores/recentInputStore";
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 import { dashboardStrings } from "./dashboardStrings";
+import { DashboardIcon } from "../layout/DashboardIcon";
 
 export function DashboardButton() {
   const open = useDashboardViewStore((state) => state.open);
@@ -34,12 +35,7 @@ export function DashboardButton() {
             half-integer corners keep it inside a single pixel column
             instead of splitting it across two. Measured: 6% of the ink
             reached full strength before, 75% after. */}
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1" aria-hidden="true">
-          <rect x="1.5" y="1.5" width="4" height="4" rx=".4" />
-          <rect x="7.5" y="1.5" width="4" height="4" rx=".4" />
-          <rect x="1.5" y="7.5" width="4" height="4" rx=".4" />
-          <rect x="7.5" y="7.5" width="4" height="4" rx=".4" />
-        </svg>
+        <DashboardIcon />
       </button>
     </div>
   );

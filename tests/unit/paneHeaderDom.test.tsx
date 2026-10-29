@@ -32,8 +32,14 @@ import { closePaneOperation, resetPaneCloseOperationsForTests } from "../../src/
 import { popClosedPane, peekClosedPane, getClosedPaneCount } from "../../src/stores/closedPaneStore";
 import { persistentLayoutProjection } from "../../src/lib/persistentLayoutProjection";
 import { resolvePaneHeaderTarget } from "../../src/lib/paneHandoff";
+import { beginTearoutOperation, endTearoutOperation } from "../../src/lib/tearout/operation";
+import { presentSessionState, SESSION_STATE_LABELS } from "../../src/lib/sessionStatePresentation";
 import { handleSocketCommand } from "../../src/components/layout/socketCommands";
 import type { Pane, PaneTab, Workspace } from "../../src/types";
+import { openMainDashboard } from "../../src/lib/ipc";
+import { mountDetachedDashboardHost } from "../../src/lib/dashboardHost";
+import { useToastStore, __resetToastStoreForTests } from "../../src/stores/toastStore";
+import { tearoutStrings } from "../../src/components/layout/tearoutStrings";
 
 let root: Root;
 let host: HTMLDivElement;
@@ -110,6 +116,45 @@ afterEach(async () => {
 });
 
 describe("Stage 2a single heading", () => {
+  it.each(["missing", "reject"])("handles a real detached dormant heading click without selecting or launching when main is %s", async mode => {
+    vi.useFakeTimers(); __resetToastStoreForTests();
+    const agentSessionId = "11111111-1111-4111-8111-111111111111";
+    const attention: SessionAttention = { sessionId: "pty-0", sessionEpoch: 7, attentionId: "done-id", kind: "done", detail: null,
+      sessionRevision: 1, uiState: "idle", stateSince: 1, occurrenceOrder: 1 };
+    useSessionAttentionStore.setState({ dormantCompletionsBySession: { "pty-0": { tabIds: ["t0"], attention,
+      receipt: { ptySessionId: "pty-0", agentKind: "claude", agentSessionId, ptyGeneration: 7, savedAt: 1, bytes: 100 } } } });
+    usePaneMetadataStore.setState({ volatileMetadata: { "pty-0": { ptyAlive: false, liveAgentKind: null } } });
+    if (mode === "missing") vi.mocked(openMainDashboard).mockResolvedValueOnce(false);
+    else vi.mocked(openMainDashboard).mockRejectedValueOnce(new Error("offline"));
+    const release = mountDetachedDashboardHost();
+    try {
+      await mount(pane(1, { agentId: "claude", agentKind: "claude", agentSessionId }));
+      useDashboardViewStore.setState({ chatColumnTabIds: [], pinnedChatColumnTabIds: ["saved"] });
+      localStorage.setItem("mycmux:dashboard-chat-column-pins", '["saved"]');
+      await click(host.querySelector(".pane-active-heading"));
+      await act(async () => vi.advanceTimersByTimeAsync(250));
+      expect(select).not.toHaveBeenCalled(); expect(killSession).not.toHaveBeenCalled();
+      expect(openMainDashboard).toHaveBeenCalledWith({ tabId: "t0", sessionId: "pty-0", turn: "latest" });
+      expect(localStorage.getItem("mycmux:dashboard-chat-column-pins")).toBe('["saved"]');
+      expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toEqual(["saved"]);
+      expect(useDashboardViewStore.getState().open).toBe(false);
+      expect(useToastStore.getState().toasts.at(-1)?.message).toBe(mode === "missing" ? tearoutStrings.dashboardMainUnavailable : tearoutStrings.failed);
+    } finally { release(); __resetToastStoreForTests(); }
+  });
+  it("routes the detached tab menu to main without opening a local dashboard", async () => {
+    vi.mocked(openMainDashboard).mockResolvedValue(true);
+    const release = mountDetachedDashboardHost();
+    try {
+      await mount(pane());
+      useDashboardViewStore.setState({ chatColumnTabIds: [], pinnedChatColumnTabIds: ["saved"] });
+      localStorage.setItem("mycmux:dashboard-chat-column-pins", '["saved"]');
+      await menu(); await click(item("dashboard"));
+      expect(openMainDashboard).toHaveBeenCalledWith({ tabId: "t0", sessionId: "pty-0" });
+      expect(localStorage.getItem("mycmux:dashboard-chat-column-pins")).toBe('["saved"]');
+      expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toEqual(["saved"]);
+      expect(useDashboardViewStore.getState().open).toBe(false);
+    } finally { release(); }
+  });
   it.each([800, 500, 320, 244, 204, 181, 164, 120])("keeps one heading and both closing controls at width %i", async (value) => {
     width = value;
     await mount(pane());
@@ -552,6 +597,44 @@ describe("review fixes 3 and 4: rendered session state", () => {
     operationalState: "idle", autonomy: { turnState: "complete", openToolCount: 0, armedBackgroundCount: 0,
       pendingNotificationCount: 0, turnStartedAt }, lastEventAt: now - 10_000, lastSuccessfulReadAt: now, updatedAt: now } as LiveSessionBrief);
   const stateText = () => host.querySelector(".pane-session-state")?.textContent;
+  it.each(["paused", "first-subscription-paused", "between-ticks"])("review read-proof freshness keeps the real header current: %s", async scenario => {
+    const at = Date.now() + 180_000;
+    vi.useFakeTimers(); vi.setSystemTime(at); publish("none", "working");
+    useSessionAttentionStore.setState(state => ({ statusSignalsBySession: { "pty-0": { ...state.statusSignalsBySession["pty-0"], health: "stale" } } }));
+    const current = { ...brief(at - 20_000), lastSuccessfulReadAt: at, operationalState: "running" as const,
+      autonomy: { ...brief(at - 20_000).autonomy!, turnState: "active" as const } };
+    useLiveBriefStore.setState({ briefsBySession: { "pty-0": current } });
+    await mount(pane(1, { agentKind: "codex", agentSessionId: "conversation" }));
+    try {
+      if (scenario === "first-subscription-paused") await act(async () => root.render(null));
+      if (scenario !== "between-ticks") act(() => { expect(beginTearoutOperation()).toBe(true); });
+      vi.setSystemTime(at + (scenario === "between-ticks" ? 500 : 1_500));
+      const observation = { ptySessionId: "pty-0", ptyGeneration: 3, ptyInstanceId: "instance", agentKind: "codex",
+        agentSessionId: "conversation", serviceEpoch: "service", lastSuccessfulReadAt: Date.now() };
+      await act(async () => useLiveBriefStore.getState().applyObservations([observation], new Set(["pty-0"])));
+      if (scenario === "first-subscription-paused") await mount(pane(1, { agentKind: "codex", agentSessionId: "conversation" }));
+      expect(presentSessionState({ brief: current, observation, now: at })).toBe("unknown");
+      expect(presentSessionState({ brief: current, observation, now: Date.now() })).toBe("running");
+      expect(stateText()).toBe(SESSION_STATE_LABELS.running);
+    } finally { act(() => endTearoutOperation()); }
+  });
+  it.each(["paused", "first-subscription-paused", "between-ticks"])("review freshness keeps the real header current: %s", async scenario => {
+    const at = Date.now() + 120_000;
+    vi.useFakeTimers(); vi.setSystemTime(at); publish("none", "working");
+    await mount(pane(1, { agentKind: "codex", agentSessionId: "conversation" }));
+    try {
+      if (scenario === "first-subscription-paused") await act(async () => root.render(null));
+      if (scenario !== "between-ticks") act(() => { expect(beginTearoutOperation()).toBe(true); });
+      vi.setSystemTime(at + (scenario === "between-ticks" ? 500 : 1_500));
+      await act(async () => publish("none", "working"));
+      if (scenario === "first-subscription-paused") await mount(pane(1, { agentKind: "codex", agentSessionId: "conversation" }));
+      const feed = useSessionAttentionStore.getState();
+      const evidence = { attention: feed.attentionBySession["pty-0"], signals: feed.statusSignalsBySession["pty-0"] };
+      expect(presentSessionState({ ...evidence, now: at })).toBe("unknown");
+      expect(presentSessionState({ ...evidence, now: Date.now() })).toBe("running");
+      expect(stateText()).toBe(SESSION_STATE_LABELS.running);
+    } finally { act(() => endTearoutOperation()); }
+  });
   it("expires the header without store updates, then recovers without the removed button", async () => {
     vi.useFakeTimers(); vi.setSystemTime(now); publish();
     await mount(pane(1, { agentKind: "codex", agentSessionId: "conversation" }));

@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   close: vi.fn(async () => {}),
+  openMainDashboard: vi.fn(async () => true),
   setTitle: vi.fn(async () => {}),
   terminal: vi.fn(),
+  childHost: [] as boolean[],
   browser: vi.fn(),
   webController: vi.fn(),
   emit: vi.fn(async () => {}),
@@ -33,10 +35,13 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("../../src/lib/paneCloseConfirmation", () => ({ confirmPaneClose: mocks.confirmPaneClose }));
 vi.mock("../../src/lib/focusController", async original => ({ ...await original<object>(), focusController: { request: vi.fn() } }));
 vi.mock("../../src/lib/paneCloseLifecycle", () => ({ beforePaneClose: vi.fn() }));
-vi.mock("../../src/lib/ipc", () => ({ killSession: mocks.killSession }));
+vi.mock("../../src/lib/ipc", () => ({ killSession: mocks.killSession, openMainDashboard: mocks.openMainDashboard }));
 vi.mock("../../src/components/layout/SocketListener", () => ({ closeWindowWorkspacesAndDestroy: mocks.discardAndClose }));
 vi.mock("../../src/components/terminal/XTermWrapper", () => ({
-  default: (props: { sessionId: string }) => { mocks.terminal(props); return <div data-terminal-session={props.sessionId} />; },
+  default: (props: { sessionId: string }) => {
+    useEffect(() => { mocks.childHost.push(isDetachedDashboardHost()); }, []);
+    mocks.terminal(props); return <div data-terminal-session={props.sessionId} />;
+  },
   evictTerminalCache: mocks.evictTerminalCache,
 }));
 vi.mock("../../src/components/workspace/BrowserPane", () => ({
@@ -59,6 +64,10 @@ vi.mock("../../src/components/layout/AppShell", () => ({ buildThemeVars: () => (
 import DetachedPaneShell from "../../src/components/layout/DetachedPaneShell";
 import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
 import type { DetachedWorkspace } from "../../src/lib/detachedPane";
+import { isDetachedDashboardHost } from "../../src/lib/dashboardHost";
+import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { useUiStore } from "../../src/stores/uiStore";
+import { useKeybindingStore } from "../../src/stores/keybindingStore";
 
 function workspace(type: "terminal" | "launcher" | "browser" | "web" = "terminal"): DetachedWorkspace {
   const tab = { id: "tab", sessionId: "pty-original-pane-tab", agentId: "shell", label: "Session", type, ...(type === "browser" ? { htmlPath: "C:/preview.pdf", sourceKind: "pdf" as const } : {}),
@@ -70,6 +79,64 @@ function workspace(type: "terminal" | "launcher" | "browser" | "web" = "terminal
 afterEach(() => { vi.clearAllMocks(); vi.unstubAllGlobals(); });
 
 describe("DetachedPaneShell", () => {
+  it("routes Ctrl+Shift+G from an xterm textarea using the props tab rather than the store tab", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    useKeybindingStore.getState().resetAll();
+    const before = useWorkspaceListStore.getState();
+    const other = workspace();
+    Object.assign(other.panes[0].tabs[0], { id: "other-tab", sessionId: "other-session" });
+    other.panes[0].activeTabId = "other-tab";
+    useWorkspaceListStore.setState({ workspaces: [other], activeWorkspaceId: other.id });
+    useUiStore.setState({ activePaneId: "other-session" });
+    const host = document.createElement("div"); document.body.append(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<DetachedPaneShell workspace={workspace()} />));
+      const terminal = document.createElement("div"); terminal.className = "xterm";
+      const input = document.createElement("textarea"); input.className = "xterm-helper-textarea";
+      terminal.append(input); host.append(terminal);
+      const event = new KeyboardEvent("keydown", { key: "G", ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+      await act(async () => input.dispatchEvent(event));
+      expect(event.defaultPrevented).toBe(true);
+      expect(mocks.openMainDashboard).toHaveBeenCalledOnce();
+      expect(mocks.openMainDashboard).toHaveBeenCalledWith({ tabId: "tab", sessionId: "pty-original-pane-tab" });
+    } finally {
+      await act(async () => root.unmount()); host.remove();
+      useWorkspaceListStore.setState(before);
+    }
+  });
+  it("marks the detached host before a terminal child mount effect runs", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    mocks.childHost = [];
+    const root = createRoot(document.createElement("div"));
+    try {
+      await act(async () => root.render(<DetachedPaneShell workspace={workspace()} />));
+      expect(mocks.childHost).toEqual([true]);
+    } finally { await act(async () => root.unmount()); }
+  });
+  it("keeps terminal focus on legacy band buttons, including a canceled close, and still clicks", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    mocks.confirmPaneClose.mockResolvedValueOnce(false);
+    const host = document.createElement("div"); document.body.append(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<DetachedPaneShell workspace={workspace()} />));
+      const input = document.createElement("textarea"); host.append(input); input.focus();
+      const buttons = Array.from(host.querySelectorAll<HTMLButtonElement>("button"));
+      expect(buttons).toHaveLength(2);
+      for (const button of buttons) {
+        const event = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
+        await act(async () => { button.dispatchEvent(event); button.click(); });
+        expect(event.defaultPrevented).toBe(true);
+        expect(document.activeElement).toBe(input);
+        expect(button.tabIndex).toBe(0);
+      }
+      expect(mocks.openMainDashboard).toHaveBeenCalledOnce();
+      expect(mocks.openMainDashboard).toHaveBeenCalledWith({ tabId: "tab", sessionId: "pty-original-pane-tab" });
+      expect(mocks.confirmPaneClose).toHaveBeenCalledOnce();
+      expect(mocks.discardAndClose).not.toHaveBeenCalled();
+    } finally { await act(async () => root.unmount()); host.remove(); }
+  });
   it.each(["terminal", "browser", "web"] as const)(
     "hands a %s window's move to the OS and relays the cursor back", async (type) => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -91,7 +158,7 @@ describe("DetachedPaneShell", () => {
       await act(async () => root.render(<DetachedPaneShell workspace={workspace(type)} />));
       const band = host.querySelector("[data-detached-pane-shell]")!.children[0] as HTMLElement;
 
-      // The close button inside the band is not a drag handle.
+      // Buttons inside the band are not drag handles.
       await act(async () => pointer(band.querySelector("button")!, "pointerdown", 220, 110));
       expect(mocks.startDragging).not.toHaveBeenCalled();
 
@@ -207,9 +274,11 @@ describe("DetachedPaneShell", () => {
       expect(band.hasAttribute("data-tauri-drag-region")).toBe(false);
       expect(band.textContent).toContain("Session");
       // × closes the pane; the way back is dragging the band onto a tab strip.
-      expect(band.querySelectorAll("button")).toHaveLength(1);
-      expect(band.querySelector("button")!.textContent).toBe("×");
-      expect(band.querySelector("button")!.getAttribute("aria-label")).toBe("このタブを閉じる");
+      expect(band.querySelectorAll("button")).toHaveLength(2);
+      expect(band.querySelector("button:last-child")!.textContent).toBe("×");
+      expect(band.querySelector("button:last-child")!.getAttribute("aria-label")).toBe("このタブを閉じる");
+      await act(async () => band.querySelector<HTMLButtonElement>("button")!.click());
+      expect(mocks.openMainDashboard).toHaveBeenLastCalledWith({ tabId: "tab", sessionId: "pty-original-pane-tab" });
       expect(shell.children).toHaveLength(2);
       if (type === "terminal") {
         expect(host.querySelector("[data-terminal-session]")?.getAttribute("data-terminal-session")).toBe("pty-original-pane-tab");
@@ -231,7 +300,7 @@ describe("DetachedPaneShell", () => {
           expect(host.querySelector("[data-launcher-content]")).not.toBeNull();
         }
       }
-      await act(async () => band.querySelector("button")!.click());
+      await act(async () => band.querySelector<HTMLButtonElement>("button:last-child")!.click());
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
       expect(mocks.confirmPaneClose).toHaveBeenCalledTimes(1);
       // The shared operation owns termination; the shell never issues a second kill.

@@ -26,6 +26,6 @@ export function UsageRhythmDetails({ metric }: { metric: RhythmMetric }) {
   useEffect(() => { void refresh(); }, [refresh, preset, from, to, includeSidechain, selection]);
 
   if (error && !report) return <EmptyState kind="error" message={error} onPrimary={() => void refresh({ force: true })} />;
-  if (!report) return <SkeletonBlock height={120} label="稼働リズムを読み込み中" />;
+  if (!report) return <SkeletonBlock height={120} label="時間帯と曜日を読み込み中" />;
   return <RefreshingBlock busy={loading}><ReportPeriod range={report.range} />{error ? <EmptyState kind="error" message={error} onPrimary={() => void refresh({ force: true })} /> : null}<UsageRhythm report={report} metric={metric} /></RefreshingBlock>;
 }

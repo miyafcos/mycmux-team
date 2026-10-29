@@ -8,6 +8,32 @@ use std::{
     time::Instant,
 };
 
+/// Shared by the polling thread and the UI tick: a queued tick rechecks every
+/// condition before touching the window, including the two-second deadline.
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy)]
+pub struct FollowerConditions {
+    pub stopped: bool,
+    pub elapsed_ms: u64,
+    pub left_held: bool,
+    pub escape_held: bool,
+    pub valid_window: bool,
+    pub registered_window: bool,
+}
+
+#[cfg(any(target_os = "windows", test))]
+pub fn follower_should_stop(state: FollowerConditions) -> bool {
+    state.stopped || state.elapsed_ms >= 2000 || !state.left_held || state.escape_held
+        || !state.valid_window || !state.registered_window
+}
+
+/// The UI closure releases this slot only after its synchronous work finishes.
+#[cfg(any(target_os = "windows", test))]
+pub fn claim_follower_tick(stopped: &AtomicBool, pending: &AtomicBool) -> bool {
+    !stopped.load(Ordering::Acquire)
+        && pending.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok()
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Distribution {
@@ -244,6 +270,41 @@ impl NativeMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn follower_stop_predicate_checks_flag_release_escape_timeout_and_window_loss() {
+        // The predicate does not exercise commands that set the stop flag.
+        let running = FollowerConditions { stopped: false, elapsed_ms: 1999, left_held: true,
+            escape_held: false, valid_window: true, registered_window: true };
+        assert!(!follower_should_stop(running));
+        for (reason, state) in [
+            ("stop flag set", FollowerConditions { stopped: true, ..running }),
+            ("two-second deadline", FollowerConditions { elapsed_ms: 2000, ..running }),
+            ("left button released", FollowerConditions { left_held: false, ..running }),
+            ("Escape", FollowerConditions { escape_held: true, ..running }),
+            ("invalid or recycled HWND", FollowerConditions { valid_window: false, ..running }),
+            ("window label no longer registered", FollowerConditions { registered_window: false, ..running }),
+        ] { assert!(follower_should_stop(state), "{reason}"); }
+    }
+
+    #[test]
+    fn follower_has_at_most_one_pending_ui_tick_and_a_stopped_tick_cannot_move() {
+        let stopped = std::sync::Arc::new(AtomicBool::new(false));
+        let pending = std::sync::Arc::new(AtomicBool::new(false));
+        let claims: Vec<_> = (0..32).map(|_| {
+            let stopped = stopped.clone(); let pending = pending.clone();
+            std::thread::spawn(move || claim_follower_tick(&stopped, &pending))
+        }).collect();
+        let count = claims.into_iter().map(|thread| usize::from(thread.join().unwrap())).sum::<usize>();
+        assert_eq!(count, 1);
+        for _ in 0..100 { assert!(!claim_follower_tick(&stopped, &pending)); }
+        pending.store(false, Ordering::Release); // Only the finished UI tick clears it.
+        assert!(claim_follower_tick(&stopped, &pending));
+        stopped.store(true, Ordering::Release); // Native start wins before the queued tick.
+        assert!(follower_should_stop(FollowerConditions { stopped: stopped.load(Ordering::Acquire), elapsed_ms: 10,
+            left_held: true, escape_held: false, valid_window: true, registered_window: true }));
+        pending.store(false, Ordering::Release);
+        assert!(!claim_follower_tick(&stopped, &pending));
+    }
     #[test]
     fn pacing_preserves_receiver_edges_end_and_dwell() {
         let mut p = SamplePacer::default();

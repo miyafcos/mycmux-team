@@ -12,6 +12,7 @@ import { recordTearoutRefusal } from "./refusal";
 import { afterTearoutFrame } from "./macFrame";
 
 let pointerOwner: symbol | null = null;
+let pointerOwnerRecordId: string | null = null;
 
 export function usesNativePaneDrag(item: PaneDragItem): boolean {
   // Minimap chips describe an atomic layout edit; they do not carry a native
@@ -46,7 +47,7 @@ export function beginNativeGroupDrag(event: PointerEvent, element: HTMLElement,
 }
 function beginNativeRegionDrag(event: PointerEvent, element: HTMLElement,
   item: Extract<PaneDragItem, { kind: "tab" | "pane" }>, callbacks: DragCallbacks): void {
-  const refusal = localTearoutRefusal() ?? (pointerOwner ? new LocalTearoutRefusal("moving") : null);
+  const refusal = localTearoutRefusal() ?? (pointerOwner ? new LocalTearoutRefusal("moving", "overlap", "pointer", pointerOwnerRecordId) : null);
   if (refusal) {
     const record = new TearoutRecord(crypto.randomUUID(), item.kind === "tab" ? item.tabId : item.paneId, windowLabel(), Date.now(), item.kind === "tab" ? "pane" : "tab", item.kind === "tab" ? 1 : item.tabCount);
     record.input?.(event, "strip"); void recordTearoutRefusal(record, refusal);
@@ -65,7 +66,7 @@ function beginNativeRegionDrag(event: PointerEvent, element: HTMLElement,
   let cancelFrame: (() => void) | null = null;
   let latest: { x: number; y: number } | null = null;
   const cleanup = () => {
-    if (pointerOwner === owner) pointerOwner = null;
+    if (pointerOwner === owner) { pointerOwner = null; pointerOwnerRecordId = null; }
     cancelFrame?.(); cancelFrame = null; latest = null;
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
@@ -87,6 +88,7 @@ function beginNativeRegionDrag(event: PointerEvent, element: HTMLElement,
     if (!dragging) {
       record = new TearoutRecord(crypto.randomUUID(), item.kind === "tab" ? item.tabId : item.paneId, windowLabel(), downAt,
         item.kind === "tab" ? "pane" : "tab", item.kind === "tab" ? 1 : item.tabCount);
+      pointerOwnerRecordId = record.id;
       record.input?.(event, "strip");
       const refusal = localTearoutRefusal();
       if (refusal) {
@@ -153,7 +155,7 @@ function beginNativeRegionDrag(event: PointerEvent, element: HTMLElement,
 
 /** Vertical sidebar movement remains a reorder; crossing its outer boundary tears out. */
 export function beginNativeWorkspaceDrag(event: PointerEvent, element: HTMLElement, workspaceId: string, callbacks: DragCallbacks): boolean {
-  const refusal = localTearoutRefusal() ?? (pointerOwner ? new LocalTearoutRefusal("moving") : null);
+  const refusal = localTearoutRefusal() ?? (pointerOwner ? new LocalTearoutRefusal("moving", "overlap", "pointer", pointerOwnerRecordId) : null);
   if (refusal) {
     const record = new TearoutRecord(crypto.randomUUID(), workspaceId, windowLabel(), Date.now(), "workspace", useWorkspaceListStore.getState().getWorkspace(workspaceId)?.panes.reduce((n, pane) => n + pane.tabs.length, 0) ?? 0);
     record.input?.(event, "sidebar"); void recordTearoutRefusal(record, refusal);
@@ -172,7 +174,7 @@ export function beginNativeWorkspaceDrag(event: PointerEvent, element: HTMLEleme
   let cancelFrame: (() => void) | null = null;
   let latest: { x: number; y: number } | null = null;
   const cleanup = () => {
-    if (pointerOwner === owner) pointerOwner = null;
+    if (pointerOwner === owner) { pointerOwner = null; pointerOwnerRecordId = null; }
     cancelFrame?.(); cancelFrame = null; latest = null;
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
@@ -190,6 +192,7 @@ export function beginNativeWorkspaceDrag(event: PointerEvent, element: HTMLEleme
     if (!dragging) {
       const count = useWorkspaceListStore.getState().getWorkspace(workspaceId)?.panes.reduce((count, pane) => count + pane.tabs.length, 0) ?? 0;
       record = new TearoutRecord(crypto.randomUUID(), workspaceId, windowLabel(), downAt, "workspace", count);
+      pointerOwnerRecordId = record.id;
       record.input?.(event, "sidebar");
       const refusal = localTearoutRefusal();
       if (refusal) {

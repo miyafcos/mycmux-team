@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import postcss from "postcss";
 
 vi.mock("../../src/components/dashboard/DashboardLinkedText", () => ({
   DashboardLinkedText: ({ text }: { text: string }) => <>{text}</>,
@@ -55,6 +56,23 @@ function DashboardFontScope({ children }: { children?: React.ReactNode }) {
 }
 
 describe("MarkdownView", () => {
+  it("F-1 loads standalone defaults without either dashboard stylesheet", async () => {
+    fontStyle = document.createElement("style");
+    fontStyle.textContent = readFileSync("src/components/dashboard/MarkdownView.css", "utf8");
+    document.head.append(fontStyle);
+    await render(<MarkdownView text={'# Heading\n\nParagraph\n\n> Quote\n\n- Item\n  - Nested\n- [x] Checked\n\n```ts\ncode\n```\n\n| Name | Count |\n| --- | ---: |\n| a | 2 |'} />);
+    expect(readFileSync("src/components/dashboard/MarkdownView.tsx", "utf8")).toContain('import "./MarkdownView.css"');
+    expect(readFileSync("src/components/dashboard/DashboardView.css", "utf8")).not.toContain(".cmux-dashboard-markdown {");
+    expect(getComputedStyle(container.querySelector("p")!).margin).toBe("0px");
+    expect(getComputedStyle(container.querySelector("h1")!).fontSize).toBe("15px");
+    expect(getComputedStyle(container.querySelector("pre")!).padding).toBe("10px");
+    expect(getComputedStyle(container.querySelector("blockquote")!).paddingLeft).toBe("10px");
+    expect(getComputedStyle(container.querySelector("ul")!).paddingLeft).toBe("22px");
+    expect(getComputedStyle(container.querySelector("ul ul")!).paddingLeft).toBe("22px");
+    expect(getComputedStyle(container.querySelector("ul ul")!).marginTop).toBe("0px");
+    expect(getComputedStyle(container.querySelector("td")!).padding).toBe("6px 9px");
+  });
+
   it("R2: fenced code keeps the explicit pre body route under the real global CSS", async () => {
     fontStyle = document.createElement("style");
     fontStyle.textContent = readFileSync("src/global.css", "utf8").replaceAll("\r\n", "\n");
@@ -67,7 +85,17 @@ describe("MarkdownView", () => {
     expect(code.textContent).toBe('printf "fixture"');
     expect(scope.style.getPropertyValue("--cmux-dash-body-font")).toBe('"Fixture Body Font", monospace');
     expect(scope.style.getPropertyValue("--cmux-font-mono")).toBe('"Fixture Body Font", "UDEV Gothic NF", "UDEV Gothic", "SFMono-Regular", "JetBrains Mono", "Consolas", ui-monospace, monospace');
-    expect(pre.style.fontFamily).toBe("var(--cmux-dash-body-font)");
+    expect(pre.style.fontFamily).toBe("");
+    expect(pre.className).toBe("cmux-dashboard-markdown-code");
+    const base = postcss.parse(readFileSync("src/components/dashboard/MarkdownView.css", "utf8"));
+    const surface = postcss.parse(readFileSync("src/components/dashboard/DashboardChatSurface.css", "utf8"));
+    const family = (css: postcss.Root, selector: string) => {
+      let value = "";
+      css.walkRules(selector, rule => { rule.walkDecls("font-family", declaration => { value = declaration.value; }); });
+      return value;
+    };
+    expect(family(base, ".cmux-dashboard-markdown-code")).toBe("var(--cmux-dash-body-font)");
+    expect(family(surface, ".cmux-dashboard-view .cmux-dashboard-markdown-code")).toBe("var(--cmux-font-mono)");
     expect(code.style.fontFamily).toBe("");
     expect(code.className).toBe("");
     // jsdom does not compute custom-property font values. Pin the real CSS cascade
@@ -125,14 +153,15 @@ describe("MarkdownView", () => {
     expect(scope.style.getPropertyValue("--cmux-dash-ui-font")).toBe(uiFont);
     expect(scope.style.getPropertyValue("--cmux-font-mono")).toMatch(/^'BIZ UDGothic', /);
 
-    const css = readFileSync("src/components/dashboard/DashboardView.css", "utf8");
+    const css = readFileSync("src/components/dashboard/DashboardView.css", "utf8")
+      + readFileSync("src/components/dashboard/MarkdownView.css", "utf8");
     const globalCss = readFileSync("src/global.css", "utf8").replaceAll("\r\n", "\n");
     const markdown = readFileSync("src/components/dashboard/MarkdownView.tsx", "utf8");
     const terminalTail = readFileSync("src/components/dashboard/DashboardTerminalTab.tsx", "utf8");
     expect(css).toContain(".cmux-dashboard-view {");
     expect(css).toContain("font-family: var(--cmux-dash-ui-font);");
     expect(css).toContain(".cmux-dashboard-msg { display: grid; min-width: 0; max-width: 84%; gap: 4px; border-radius: 10px; padding: 9px 13px; font-family: var(--cmux-dash-body-font);");
-    expect(css).toContain(".cmux-dashboard-markdown { font-family: var(--cmux-dash-body-font) !important;");
+    expect(css).toContain("font-family: var(--cmux-dash-body-font); font-size: var(--cmux-dash-font-size); line-height: var(--cmux-dash-line-height);");
     expect(css).toContain(".cmux-dashboard-markdown-table th, .cmux-dashboard-markdown-table td { border-right: 1px solid var(--cmux-border-hairline); border-bottom: 1px solid var(--cmux-border-hairline); padding: 6px 9px; vertical-align: top; text-align: left; white-space: normal; overflow-wrap: anywhere; font-family: var(--cmux-dash-body-font);");
     // The fixed stacks remain the fallback; themed roots prefer the setting.
     expect(globalCss).toContain(
@@ -141,7 +170,12 @@ describe("MarkdownView", () => {
     expect(globalCss).toContain("--cmux-dash-ui-font: var(--cmux-font-ui);");
     expect(globalCss).toContain("font-family: var(--cmux-dash-ui-font);");
     expect(globalCss).toContain("[data-cmux-themed-root] {\n  font-family: var(--cmux-font-ui);\n}");
-    expect(markdown).toContain('fontFamily: "var(--cmux-dash-body-font)"');
+    expect(markdown).toContain('className="cmux-dashboard-markdown-code"');
+    expect(markdown).not.toContain("style={");
+    const surface = readFileSync("src/components/dashboard/DashboardChatSurface.css", "utf8");
+    expect(surface).toContain("font-size: var(--cmux-read-font-size)");
+    expect(scope.style.getPropertyValue("--cmux-read-font-size")).toBe("13px");
+    expect(scope.style.getPropertyValue("--cmux-read-line-height")).toBe("1.7");
     expect(terminalTail).toContain('fontFamily: "var(--cmux-dash-body-font)"');
     const previewCss = readFileSync("src-tauri/src/commands/artifact/markdown_preview.css", "utf8").replaceAll("\r\n", "\n");
     expect(previewCss).toContain('--md-font: "Segoe UI Variable Text", "Segoe UI", "BIZ UDPGothic", "Hiragino Sans",\n    "Hiragino Kaku Gothic ProN", "Yu Gothic UI", Meiryo, system-ui, sans-serif;');

@@ -27,7 +27,8 @@ def test_off_route_and_non_tab_routes_remain_legacy():
 def test_new_children_only_use_fresh_reservations():
     backend = read("src-tauri/src/tearout/mod.rs")
     assert "resolve_child_window_label(&app, None)" in backend
-    assert "ResolvedChildWindow::New(r)" in backend
+    assert "ResolvedChildWindow::New(reservation)) => Ok(reservation)" in backend
+    assert 'other => Err(format!("Fresh tear-out reservation failed' in backend
     warm = backend.split("pub async fn tearout_warm(", 1)[1].split("pub async fn tearout_child_ready(", 1)[0]
     assert ".visible(false)" in warm
     assert '#[cfg(target_os = "windows")]\n            let builder = builder.focused(true);' in warm

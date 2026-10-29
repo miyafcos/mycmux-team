@@ -417,7 +417,19 @@ function applyToggleChatColumn(
   });
 }
 
+export interface PendingDashboardRequest {
+  tabId?: string;
+  sessionId?: string;
+  turn?: "latest";
+  receivedAt: number;
+  refreshCompletedAtReceipt?: number;
+}
+
 interface DashboardViewState {
+  chatColumnIdFilter: ((tabId: string) => boolean) | null;
+  setChatColumnIdFilter: (filter: ((tabId: string) => boolean) | null) => void;
+  pendingDashboardRequest: PendingDashboardRequest | null;
+  setPendingDashboardRequest: (request: PendingDashboardRequest | null) => void;
   open: boolean;
   /** Temporary question view when all saved chat columns are pinned. Never persisted. */
   yourTurnTabId: string | null;
@@ -473,6 +485,10 @@ interface DashboardViewState {
 }
 
 export const useDashboardViewStore = create<DashboardViewState>((set, get) => ({
+  chatColumnIdFilter: null,
+  setChatColumnIdFilter: (chatColumnIdFilter) => set({ chatColumnIdFilter }),
+  pendingDashboardRequest: null,
+  setPendingDashboardRequest: (pendingDashboardRequest) => set({ pendingDashboardRequest }),
   open: false,
   yourTurnTabId: null,
   query: "",
@@ -491,16 +507,19 @@ export const useDashboardViewStore = create<DashboardViewState>((set, get) => ({
   sessionListCollapsed: readStoredSessionListCollapsed(),
   userTurnRequests: {},
   userTurnRequestSeq: 0,
-  toggle: () => set((state) => ({ open: !state.open })),
+  toggle: () => set((state) => ({ open: !state.open, ...(state.open ? { pendingDashboardRequest: null } : {}) })),
   openView: () => set({ open: true }),
-  close: () => set({ open: false, yourTurnTabId: null }),
+  close: () => set({ open: false, yourTurnTabId: null, pendingDashboardRequest: null }),
   setQuery: (query) => set({ query }),
   setWorkspaceFilter: (workspaceFilter) => set({ workspaceFilter }),
   setAgentFilter: (agentFilter) => set({ agentFilter }),
   setStateFilter: (stateFilter) => set({ stateFilter }),
   setSelectedTabId: (selectedTabId) => set((state) => applyPreviewColumnDrop(state, applyFocusChatColumn(state, selectedTabId, false)) ?? state),
   toggleChatColumn: (tabId) => set((state) => applyPreviewColumnDrop(state, applyToggleChatColumn(state, tabId)) ?? state),
-  focusChatColumn: (tabId) => set((state) => applyPreviewColumnDrop(state, applyFocusChatColumn(state, tabId)) ?? state),
+  focusChatColumn: (tabId) => {
+    if (get().chatColumnIdFilter?.(tabId) === false) return;
+    set((state) => applyPreviewColumnDrop(state, applyFocusChatColumn(state, tabId)) ?? state);
+  },
   setChatColumnLimit: (limit) => set((state) => {
     const chatColumnLimit = clampDashboardChatColumnLimit(limit);
     const next = applyPreviewColumnDrop(
@@ -696,6 +715,7 @@ export const useDashboardViewStore = create<DashboardViewState>((set, get) => ({
     return true;
   },
   openTranscriptTurnRequest: (tabId, payload) => {
+    if (get().chatColumnIdFilter?.(tabId) === false) return false;
     let opened = false;
     set((state) => {
       if (!tabId || !isValidUserTurnPayload(payload)) return state;

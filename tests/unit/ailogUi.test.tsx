@@ -38,6 +38,7 @@ describe("ailog table layout", () => {
     const allowed = new Map([
       ["AiLogPanel.tsx", /overflowX:\s*"hidden"/],
       ["SessionDetailView.tsx", /overflowX:\s*"auto"/],
+      ["UsageGrass.tsx", /data-grass-scroll[\s\S]*?overflowX:\s*"auto"/],
     ]);
     for (const file of listFiles(root)) {
       const text = readFileSync(file, "utf8");
@@ -45,6 +46,7 @@ describe("ailog table layout", () => {
       const name = file.split(/[/\\]/).pop() ?? file;
       expect(allowed.has(name), `${name} contains overflowX`).toBe(true);
       expect(text).toMatch(allowed.get(name)!);
+      if (name === "UsageGrass.tsx") expect(text.match(/overflowX:/g)).toHaveLength(1);
     }
   });
 });

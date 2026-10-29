@@ -55,6 +55,8 @@ import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeS
 import { useToastStore } from "../../stores/toastStore";
 import { openWatchdogSession } from "../../stores/dispatchWatchdogStore";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
+import { isDetachedDashboardHost } from "../../lib/dashboardHost";
+import { requestDashboard } from "../layout/openDashboardForTab";
 import { agentSessionAlreadyRunningNotice, findAgentSessionOwner, parseAgentSessionAlreadyRunning } from "../../lib/agentResumeConflict";
 import { consumeHandoffLaunchEnv } from "../../lib/handoffLaunchEnv";
 import { useDeferredUnmount } from "../../hooks/useDeferredUnmount";
@@ -1069,6 +1071,10 @@ export default memo(function XTermWrapper({
     const tabId = tabIdForSession(sessionId);
     const payload = resolveTranscriptTurnAction({ kind: "hint" }, { tabId });
     if (!tabId || !payload) return;
+    if (isDetachedDashboardHost()) {
+      void requestDashboard({ tabId, sessionId, turn: "latest" });
+      return;
+    }
     useDashboardViewStore.getState().openTranscriptTurnRequest(tabId, payload);
   }, [sessionId]);
 

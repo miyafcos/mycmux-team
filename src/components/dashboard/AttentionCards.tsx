@@ -4,6 +4,7 @@ import type { AttentionCard, SessionRef } from "../../lib/attentionBridge";
 import { useAskQuestionStore } from "../../stores/askQuestionStore";
 import { connectAttentionStore, useAttentionStore } from "../../stores/attentionStore";
 import { dashboardStrings } from "./dashboardStrings";
+import { useToastStore } from "../../stores/toastStore";
 import {
   buildAttentionFactCards,
   primaryActionLabel,
@@ -94,8 +95,8 @@ function AttentionFactCardItem({
   const open = () => {
     if (running) return;
     setRunning(true);
-    void Promise.resolve(openSession({ type: "pty", pty_session_id: card.sessionId }))
-      .catch(() => undefined)
+    void Promise.resolve().then(() => openSession({ type: "pty", pty_session_id: card.sessionId }))
+      .catch(() => useToastStore.getState().pushToast(dashboardStrings.attentionActionFailed, "error"))
       .finally(() => setRunning(false));
   };
   return <article
@@ -138,7 +139,7 @@ function AttentionCardItem({
     if (running) return;
     setRunning(true);
     setResult(null);
-    void Promise.resolve(operation())
+    void Promise.resolve().then(operation)
       .then(() => setResult("success"))
       .catch(() => setResult("error"))
       .finally(() => setRunning(false));

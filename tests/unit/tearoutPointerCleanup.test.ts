@@ -5,7 +5,7 @@ vi.mock("../../src/lib/tearout/runtime", () => ({
   canRegrabTearoutTab: () => false, canRegrabTearoutPane: () => false, regrabTearoutWindow: vi.fn(),
 }));
 vi.mock("../../src/lib/tearout/record", () => ({ TearoutRecord: class {
-  outside() {} error() {} failure() {} async finish() {}
+  outside() {} error() {} failure() {} refusal() {} async finish() {}
 } }));
 vi.mock("../../src/lib/windowContext", () => ({ windowLabel: () => "main" }));
 import { beginNativePaneDrag, beginNativeWorkspaceDrag } from "../../src/lib/tearout/pointerDrag";

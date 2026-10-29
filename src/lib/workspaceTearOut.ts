@@ -80,7 +80,7 @@ export async function performWorkspaceWindowMove(
   if (!config || config.panes.length === 0) return execution.result("refused", "not_transferable");
 
 
-  if (!beginTearoutOperation()) {
+  if (!beginTearoutOperation(request.operationId)) {
     const refusal = localTearoutRefusal();
     if (refusal) return rejectTearoutStart(options.record ?? new TearoutRecord(request.operationId,
       request.expected.owners[0]?.tabId ?? workspaceId, windowLabel(), Date.now()), refusal);
@@ -128,7 +128,7 @@ export async function performWorkspaceWindowMove(
     if (isPreOwnershipTearoutRefusal(refused, windowLabel(), id)) {
       await invoke("tearout_retire", { label }); label = undefined;
       return rejectTearoutStart(options.record ?? new TearoutRecord(id, request.expected.owners[0]?.tabId ?? workspaceId,
-        windowLabel(), Date.now()), new LocalTearoutRefusal("moving", "reservation"));
+        windowLabel(), Date.now()), new LocalTearoutRefusal("moving", "reservation", "backend_transfer", refused.owner_id));
     }
     if (refused != null) throw new Error("tearout_prepare_result_invalid");
     prepared = true;
@@ -169,7 +169,7 @@ export async function performWorkspaceWindowMove(
     };
     const failed = (restoreError: unknown) => recoveryFailed(name, location,
       restoreError instanceof Error ? restoreError.message : String(restoreError), () => {
-        if (!beginTearoutOperation()) { recoveryBusy(); return; }
+        if (!beginTearoutOperation(id)) { recoveryBusy(); return; }
         retrying = true;
         void recover().then(() => recoveryFinished(name, location), failed).finally(endTearoutOperation);
       }, visit);

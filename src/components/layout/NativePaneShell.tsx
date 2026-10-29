@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import WorkspaceView from "../workspace/WorkspaceView";
 import PaneDragOverlay from "../workspace/PaneDragOverlay";
@@ -15,7 +15,12 @@ import { tearoutStrings } from "./tearoutStrings";
 import { TearoutRecord } from "../../lib/tearout/record";
 import { windowLabel } from "../../lib/windowContext";
 import { getWindowFragments } from "../../lib/ipc";
-import { WindowControls } from "./WindowControls";
+import { WindowControls, buttonStyle } from "./WindowControls";
+import { DashboardIcon } from "./DashboardIcon";
+import { dashboardStrings } from "../dashboard/dashboardStrings";
+import { requestDashboard } from "./openDashboardForTab";
+import { mountDetachedDashboardHost } from "../../lib/dashboardHost";
+import { handleDetachedDashboardKey } from "../../lib/detachedDashboardKeys";
 import { localTearoutRefusal, LocalTearoutRefusal } from "../../lib/tearout/operation";
 import { recordTearoutRefusal } from "../../lib/tearout/refusal";
 import { windowsNativeBand } from "../../lib/tearout/windowBehavior";
@@ -35,6 +40,13 @@ export default function NativePaneShell() {
   const toggledAt = useRef(0);
   const bandMoving = useRef(false);
   const bandOwner = useRef<symbol | null>(null);
+  const bandRecordId = useRef<string | null>(null);
+  useLayoutEffect(mountDetachedDashboardHost, []);
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => handleDetachedDashboardKey(event);
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  }, []);
   useEffect(() => () => stopBand.current(), []);
   const beginBand = (event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
@@ -42,23 +54,26 @@ export default function NativePaneShell() {
     const start = { x: event.clientX, y: event.clientY, id: event.pointerId, at: Date.now() };
     const native = workspaces.length === 1 && nativePaneTearoutEnabled(useSettingsStore.getState().nativePaneTearoutEnabled);
     const kind = panes.length > 1 ? "workspace" : tabs.length > 1 ? "tab" : "pane";
-    const makeRecord = () => {
-      const record = new TearoutRecord(crypto.randomUUID(), tabs[0]?.id ?? workspaces[0]?.id ?? "missing", windowLabel(), start.at, kind, tabs.length);
+    const makeRecord = (id = crypto.randomUUID()) => {
+      const record = new TearoutRecord(id, tabs[0]?.id ?? workspaces[0]?.id ?? "missing", windowLabel(), start.at, kind, tabs.length);
       record.input?.(event.nativeEvent, "band"); return record;
     };
-    const refusal = localTearoutRefusal() ?? (bandOwner.current ? new LocalTearoutRefusal("moving") : null);
+    const refusal = localTearoutRefusal() ?? (bandOwner.current ? new LocalTearoutRefusal("moving", "overlap", "band", bandRecordId.current) : null);
     if (refusal) { void recordTearoutRefusal(makeRecord(), refusal); return; }
     stopBand.current();
     const owner = Symbol(); bandOwner.current = owner;
     const release = () => {
       if (bandOwner.current !== owner) return;
-      bandOwner.current = null; bandMoving.current = false;
+      bandOwner.current = null; bandRecordId.current = null; bandMoving.current = false;
     };
-    const regrab = () => regrabTearoutWindow(makeRecord(), (sample) => {
-      if (bandOwner.current !== owner) return;
-      release();
-      if (lastPress.current) lastPress.current.moved = sample.moved === true;
-    });
+    const regrab = () => {
+      const record = makeRecord(); bandRecordId.current = record.id;
+      return regrabTearoutWindow(record, (sample) => {
+        if (bandOwner.current !== owner) return;
+        release();
+        if (lastPress.current) lastPress.current.moved = sample.moved === true;
+      });
+    };
     const failedMove = (error: unknown) => {
       release();
       if (error instanceof LocalTearoutRefusal && error.phase === "moving") {
@@ -134,9 +149,18 @@ export default function NativePaneShell() {
       padding: "0 6px 0 10px", userSelect: "none", touchAction: "none", background: "var(--cmux-surface)",
       borderBottom: "1px solid var(--cmux-border-hairline)", color: "var(--cmux-text-secondary)" }}>
       <span title={title} style={{ flex: 1, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
+      <button type="button" className={windowsBand ? "cmux-title-btn" : undefined}
+        title={dashboardStrings.buttonTitle} aria-label={dashboardStrings.buttonTitle}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => { void requestDashboard(); }}
+        style={windowsBand ? buttonStyle : { height: 22, width: 22, display: "flex", alignItems: "center", justifyContent: "center",
+          border: "none", borderRadius: "var(--cmux-radius-sm)", background: "transparent", color: "inherit", cursor: "pointer" }}>
+        <DashboardIcon />
+      </button>
       {windowsBand ? <WindowControls onClose={() => { void close(); }} closing={closing}
         closeLabel={tearoutStrings.close} closeHint={tearoutStrings.closeHint} /> : <>
       <button type="button" aria-label={tearoutStrings.close} title={tearoutStrings.closeHint} disabled={closing}
+        onMouseDown={(event) => event.preventDefault()}
         onClick={() => { void close(); }} style={{ height: 22, width: 22, border: "none", borderRadius: "var(--cmux-radius-sm)",
           background: "transparent", color: "inherit", cursor: "pointer" }}>{"\u00d7"}</button>
       </>}

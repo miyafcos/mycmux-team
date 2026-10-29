@@ -44,6 +44,10 @@ pub(crate) fn rect_overlaps_any_monitor(
 /// definition somewhere the operator cannot reach. A window on a second display
 /// overlaps that display and is left alone.
 pub(crate) fn recenter_if_offscreen(window: &tauri::WebviewWindow) {
+    recenter_window_if_offscreen(&window.as_ref().window());
+}
+
+fn recenter_window_if_offscreen(window: &tauri::Window) {
     let (Ok(position), Ok(size), Ok(monitors)) = (
         window.outer_position(),
         window.outer_size(),
@@ -164,25 +168,67 @@ pub fn show_main_window(app: &AppHandle) {
     let app_handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Some(window) = app_handle.get_window("main") {
-            #[cfg(target_os = "windows")]
-            if let Some(webview) = app_handle.get_webview_window("main") {
-                if let Ok(hwnd) = webview.hwnd() {
-                    unsafe {
-                        use windows::Win32::UI::WindowsAndMessaging::{IsIconic, ShowWindow, SW_RESTORE};
-                        let hwnd = windows::Win32::Foundation::HWND(hwnd.0);
-                        if IsIconic(hwnd).as_bool() {
-                            let _ = ShowWindow(hwnd, SW_RESTORE);
-                        }
-                    }
-                }
-            }
-            let _ = window.show();
-            let _ = window.set_focus();
-            if let Some(webview_window) = app_handle.get_webview_window("main") {
-                recenter_if_offscreen(&webview_window);
-            }
+            let _ = restore_and_focus(&window);
         }
     });
+}
+
+fn restore_and_focus(window: &tauri::Window) -> Result<(), String> {
+    let mut result = match window.is_minimized() {
+        Ok(true) => window.unminimize().map_err(|error| error.to_string()),
+        Ok(false) => Ok(()),
+        Err(error) => Err(error.to_string()),
+    };
+    result = result.and(window.show().map_err(|error| error.to_string()));
+    recenter_window_if_offscreen(window);
+    result.and(window.set_focus().map_err(|error| error.to_string()))
+}
+
+fn valid_focus_window_label(label: &str) -> bool {
+    label == "main" || is_valid_child_window_label(label)
+}
+
+#[tauri::command]
+pub async fn focus_window(app: AppHandle, label: String) -> Result<(), String> {
+    if !valid_focus_window_label(&label) {
+        return Err("Invalid application window label".into());
+    }
+    let window = app.get_window(&label).ok_or("Application window is unavailable")?;
+    let (send, receive) = tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move || {
+        let _ = send.send(restore_and_focus(&window));
+    }).map_err(|error| error.to_string())?;
+    receive.await.map_err(|error| error.to_string())?
+}
+
+const OPEN_DASHBOARD_EVENT: &str = "mycmux://open-dashboard";
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DashboardTarget {
+    tab_id: Option<String>,
+    session_id: Option<String>,
+    turn: Option<String>,
+}
+
+fn sanitize_dashboard_target(tab_id: Option<String>, session_id: Option<String>, turn: Option<String>) -> DashboardTarget {
+    if tab_id.as_ref().is_some_and(|id| id.encode_utf16().count() > 256)
+        || session_id.as_ref().is_some_and(|id| id.encode_utf16().count() > 256)
+        || turn.as_ref().is_some_and(|value| value != "latest") {
+        return DashboardTarget::default();
+    }
+    DashboardTarget { tab_id, session_id, turn }
+}
+
+#[tauri::command]
+pub async fn open_main_dashboard(app: AppHandle, tab_id: Option<String>, session_id: Option<String>, turn: Option<String>) -> Result<bool, String> {
+    if app.get_window("main").is_none() {
+        return Ok(false);
+    }
+    let target = sanitize_dashboard_target(tab_id, session_id, turn);
+    app.emit_to("main", OPEN_DASHBOARD_EVENT, target).map_err(|error| error.to_string())?;
+    show_main_window(&app);
+    Ok(true)
 }
 
 #[tauri::command]
@@ -837,6 +883,27 @@ pub async fn watch_window_drag(window: tauri::Window) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dashboard_focus_accepts_only_application_window_labels() {
+        for label in ["main", "mycmux-w1", "mycmux-w42"] {
+            assert!(valid_focus_window_label(label));
+        }
+        for label in ["mycmux-w0", "mycmux-w01", "mycmux-w1x", "web-1", ""] {
+            assert!(!valid_focus_window_label(label));
+        }
+    }
+
+    #[test]
+    fn dashboard_target_validation_discards_invalid_requests() {
+        let target = sanitize_dashboard_target(Some("t".repeat(256)), Some("s".into()), Some("latest".into()));
+        assert_eq!(target.tab_id.as_ref().unwrap().len(), 256);
+        assert_eq!(target.session_id.as_deref(), Some("s"));
+        assert_eq!(target.turn.as_deref(), Some("latest"));
+        assert_eq!(sanitize_dashboard_target(Some("t".repeat(257)), None, None), DashboardTarget::default());
+        assert_eq!(sanitize_dashboard_target(None, Some("s".repeat(257)), None), DashboardTarget::default());
+        assert_eq!(sanitize_dashboard_target(Some("t".into()), None, Some("oldest".into())), DashboardTarget::default());
+    }
 
     fn labels(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()

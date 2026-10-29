@@ -16,6 +16,7 @@ interface PreviewEffects {
   approve: (token: string | null, target: DockTarget | null) => Promise<boolean>;
   alpha: (value: 128 | 255) => Promise<void>;
   highlighted?: (at: number, token: string, target: DockTarget, hoverAt: number) => void;
+  cleared?: (at: number, afterRelease: boolean) => void;
 }
 
 /** No timer can approve a stale target: a fresh native sample drives dwell. */
@@ -29,7 +30,7 @@ export class TearoutPreview {
 
   sample(target: DockTarget | null, at: number): void {
     if (!sameDockTarget(this.target, target)) {
-      this.clear();
+      this.clear(false, at);
       this.target = target;
       this.since = at;
     }
@@ -55,13 +56,14 @@ export class TearoutPreview {
     return this.painted?.token === token && sameDockTarget(this.painted.target, target);
   }
 
-  clear(): void {
+  clear(afterRelease = false, at = Date.now()): void {
     const visible = this.painting || this.painted !== null;
     this.generation++;
     this.target = null;
     this.painting = false;
     this.painted = null;
     if (!visible) return;
+    this.effects.cleared?.(at, afterRelease);
     this.effects.frame(null);
     void this.effects.approve(null, null).catch(() => {});
     void this.effects.alpha(255).catch(() => {});

@@ -1,5 +1,5 @@
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -32,6 +32,11 @@ import { confirmPaneClose } from "../../lib/paneCloseConfirmation";
 import { isRestorableTab } from "../../lib/tabLifecycle";
 import { tearoutStrings } from "./tearoutStrings";
 import type { DetachedWorkspace } from "../../lib/detachedPane";
+import { DashboardIcon } from "./DashboardIcon";
+import { dashboardStrings } from "../dashboard/dashboardStrings";
+import { requestDashboard } from "./openDashboardForTab";
+import { mountDetachedDashboardHost } from "../../lib/dashboardHost";
+import { handleDetachedDashboardKey } from "../../lib/detachedDashboardKeys";
 
 /** The child uses App's persistence/show lifecycle, with only one pane on screen. */
 export default function DetachedPaneShell({ workspace }: { workspace: DetachedWorkspace }) {
@@ -56,6 +61,12 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
     });
   }, [workspace.id, pane.id, tab.id, tab.sessionId]);
   const title = getTabDisplayLabel(tab);
+  useLayoutEffect(mountDetachedDashboardHost, []);
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => handleDetachedDashboardKey(event, { tabId: tab.id, sessionId: tab.sessionId });
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  }, [tab.id, tab.sessionId]);
   const setBrowserTabDirty = useWorkspaceLayoutStore((state) => state.setBrowserTabDirty);
   const refreshBrowserTabPreview = useWorkspaceLayoutStore((state) => state.refreshBrowserTabPreview);
   const handleBrowserDirtyChange = useCallback((isDirty: boolean) => {
@@ -311,9 +322,20 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
         }}>
           {title}
         </span>
+        <button type="button" title={dashboardStrings.buttonTitle} aria-label={dashboardStrings.buttonTitle}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => { void requestDashboard({ tabId: tab.id, sessionId: tab.sessionId }); }}
+          style={{ height: 22, width: 22, display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 13, lineHeight: 1, color: "var(--cmux-text-secondary)", background: "transparent", border: "none",
+            borderRadius: "var(--cmux-radius-sm)", cursor: "pointer" }}
+          onPointerEnter={(event) => { event.currentTarget.style.background = "var(--cmux-hover)"; }}
+          onPointerLeave={(event) => { event.currentTarget.style.background = "transparent"; }}>
+          <DashboardIcon />
+        </button>
         <button
           type="button"
           disabled={closing}
+          onMouseDown={(event) => event.preventDefault()}
           onClick={() => { void closePane(); }}
           aria-label="このタブを閉じる"
           title="このタブを閉じます（元の窓へ戻すには、この帯を掴んで相手のタブの見出しへ）"

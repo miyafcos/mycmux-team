@@ -10,6 +10,9 @@ export interface ReleaseFrame {
 export interface ReleaseApproval {
   receiver: string; token: string; target: DockTarget; release_id?: string; layout_revision?: string;
 }
+export type ConsumeFailureReason = "expired" | "receiver_changed" | "release_id_changed" | "target_changed" | "layout_changed"
+  | "sender_changed" | "not_approved" | "already_consumed" | "disposed" | "backend_rejected";
+export type ConsumeResult = { ok: true } | { ok: false; reason: ConsumeFailureReason };
 interface Decision { id: string; epoch: number; token: string | null; target: DockTarget | null; layoutRevision: string | null; error: string | null }
 interface Effects {
   receiver: string;
@@ -18,7 +21,8 @@ interface Effects {
   consume: (approval: ReleaseApproval) => Promise<boolean>;
   freeze: (id: string) => void;
   target: (frame: ReleaseFrame) => DockTarget | null;
-  revision: () => string;
+  revision: (target: DockTarget) => string;
+  activity?: (key: string, active: boolean) => void;
   frame: (target: DockTarget | null, frame: ReleaseFrame) => void;
   isFrameCurrent: (target: DockTarget, frame: ReleaseFrame) => boolean;
   afterPaint: (callback: () => void) => () => void;
@@ -31,13 +35,35 @@ interface Approved { frame: ReleaseFrame; target: DockTarget; revision: string; 
 export class TearoutReleaseReceiver {
   private seen = new Set<string>();
   private approved = new Map<string, Approved>();
+  private forgotten = new Map<string, ConsumeFailureReason>();
   private cancellations = new Set<() => void>();
+  private activities = new Set<string>();
   private disposed = false;
   constructor(private effects: Effects) {}
+
+  private activity(key: string, active: boolean): void {
+    if (active) this.activities.add(key); else this.activities.delete(key);
+    this.effects.activity?.(key, active);
+  }
+
+  private remember(token: string, reason: ConsumeFailureReason): void {
+    this.forgotten.set(token, reason);
+    if (this.forgotten.size > 64) this.forgotten.delete(this.forgotten.keys().next().value!);
+  }
+
+  private forget(token: string, reason: ConsumeFailureReason = "not_approved"): void {
+    const entry = this.approved.get(token);
+    if (entry) window.clearTimeout(entry.timer);
+    this.approved.delete(token);
+    this.remember(token, reason);
+    this.activity(token, false);
+  }
 
   async resolve(request: { id: string; epoch: number }): Promise<void> {
     if (this.disposed || this.seen.has(request.id)) return;
     this.seen.add(request.id);
+    const activity = `release:${request.id}`;
+    this.activity(activity, true);
     if (this.seen.size > 64) this.seen.delete(this.seen.values().next().value!);
     let frame: ReleaseFrame | null = null;
     let live = true;
@@ -61,16 +87,17 @@ export class TearoutReleaseReceiver {
         await this.effects.decide({ id: frame.id, epoch: frame.receiver_epoch, token: null, target: null, layoutRevision: null, error: null });
         return;
       }
-      const revision = this.effects.revision();
+      const revision = this.effects.revision(target);
       const exactTarget: DockTarget = JSON.parse(JSON.stringify(target));
       this.effects.frame(exactTarget, frame);
       await new Promise<void>(resolve => { cancelPaint = this.effects.afterPaint(resolve); });
       current();
-      if (!this.effects.isFrameCurrent(exactTarget, frame) || revision !== this.effects.revision()
+      if (!this.effects.isFrameCurrent(exactTarget, frame) || revision !== this.effects.revision(exactTarget)
         || !sameDockTarget(exactTarget, this.effects.target(frame))) throw new Error("tearout_drop_target_changed");
       const acknowledged = new Promise<boolean>(resolve => { ready = resolve; });
-      const expiry = window.setTimeout(() => this.approved.delete(frame!.token), 6000);
+      const expiry = window.setTimeout(() => this.forget(frame!.token, "expired"), 6000);
       this.approved.set(frame.token, { frame, target: exactTarget, revision, ready: acknowledged, timer: expiry });
+      this.activity(frame.token, true);
       // Delivery can race the command reply. It waits on this exact decision.
       const accepted = await this.effects.decide({ id: frame.id, epoch: frame.receiver_epoch, token: frame.token,
         target: exactTarget, layoutRevision: revision, error: null });
@@ -82,33 +109,45 @@ export class TearoutReleaseReceiver {
       live = false; ready(false);
       const failedFrame = frame as ReleaseFrame | null;
       if (failedFrame) {
-        const entry = this.approved.get(failedFrame.token);
-        if (entry) window.clearTimeout(entry.timer);
-        this.approved.delete(failedFrame.token);
+        this.forget(failedFrame.token);
         void this.effects.decide({ id: failedFrame.id, epoch: failedFrame.receiver_epoch, token: null, target: null, layoutRevision: null,
           error: error instanceof Error ? error.message : "tearout_release_failed" }).catch(() => {});
       }
     } finally {
-      live = false; window.clearTimeout(timer); cancelPaint(); this.cancellations.delete(cancel);
-      if (frame) this.effects.frame(null, frame);
+      live = false; window.clearTimeout(timer);
+      try { cancelPaint(); }
+      finally {
+        this.cancellations.delete(cancel); this.activity(activity, false);
+        if (frame) this.effects.frame(null, frame);
+      }
     }
   }
 
-  async consume(approval: ReleaseApproval, sender?: string): Promise<boolean> {
+  async consume(approval: ReleaseApproval, sender?: string): Promise<ConsumeResult> {
+    if (this.disposed) return { ok: false, reason: "disposed" };
     const entry = this.approved.get(approval.token);
-    if (!entry || !await entry.ready || this.disposed || this.approved.get(approval.token) !== entry) return false;
+    if (!entry) return { ok: false, reason: this.forgotten.get(approval.token) ?? "not_approved" };
+    if (!await entry.ready) return { ok: false, reason: "not_approved" };
+    if (this.disposed) return { ok: false, reason: "disposed" };
+    if (this.approved.get(approval.token) !== entry) return { ok: false, reason: this.forgotten.get(approval.token) ?? "not_approved" };
     // Delete before awaiting IPC: parallel deliveries cannot claim the token.
     this.approved.delete(approval.token); window.clearTimeout(entry.timer);
-    if (approval.receiver !== this.effects.receiver || approval.release_id !== entry.frame.id || approval.layout_revision !== entry.revision
-      || !sameDockTarget(entry.target, approval.target) || entry.revision !== this.effects.revision()
-      || sender !== undefined && sender !== entry.frame.label && sender !== entry.frame.source) return false;
-    return this.effects.consume(approval);
+    this.remember(approval.token, "already_consumed");
+    try {
+      if (approval.receiver !== this.effects.receiver) return { ok: false, reason: "receiver_changed" };
+      if (approval.release_id !== entry.frame.id) return { ok: false, reason: "release_id_changed" };
+      if (!sameDockTarget(entry.target, approval.target)) return { ok: false, reason: "target_changed" };
+      if (approval.layout_revision !== entry.revision || entry.revision !== this.effects.revision(entry.target)) return { ok: false, reason: "layout_changed" };
+      if (sender !== undefined && sender !== entry.frame.label && sender !== entry.frame.source) return { ok: false, reason: "sender_changed" };
+      return await this.effects.consume(approval) ? { ok: true } : { ok: false, reason: "backend_rejected" };
+    } finally { this.activity(approval.token, false); }
   }
   dispose(): void {
     this.disposed = true;
     for (const cancel of this.cancellations) cancel();
-    for (const entry of this.approved.values()) window.clearTimeout(entry.timer);
-    this.approved.clear(); this.seen.clear();
+    for (const token of this.approved.keys()) this.forget(token);
+    for (const key of this.activities) this.activity(key, false);
+    this.seen.clear();
   }
 }
 

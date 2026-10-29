@@ -9,6 +9,8 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: async (name: string, callback:
   return () => callbacks.delete(callback);
 }, emit: vi.fn(), emitTo: mocks.emitTo }));
 vi.mock("../../src/lib/windowContext", () => ({ windowLabel: () => "main", isMainWindow: () => true }));
+vi.mock("@tauri-apps/api/window", async original => ({ ...await original<typeof import("@tauri-apps/api/window")>(),
+  getAllWindows: async () => [{ label: "main" }, { label: "child" }] }));
 vi.mock("../../src/lib/tearout/sessionAttachment", () => ({ expectTearoutAttachments: () => ({ ready: Promise.resolve(), dispose() {} }), rememberTearoutDormantSessions: vi.fn() }));
 import { installTearoutRuntime, regrabTearoutWindow, tearoutTab } from "../../src/lib/tearout/runtime";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
@@ -17,7 +19,7 @@ import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useDetachedDockStore } from "../../src/stores/detachedDockStore";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
 import { useToastStore } from "../../src/stores/toastStore";
-import { endTearoutOperation, tearoutOperationBusy } from "../../src/lib/tearout/operation";
+import { endTearoutOperation, tearoutOperationBusy, tearoutDisplayBusy, tearoutDisplayReasons } from "../../src/lib/tearout/operation";
 import { toTransferConfig } from "../../src/components/layout/SocketListener";
 import type { Workspace } from "../../src/types";
 function workspace(id = "w"): Workspace {
@@ -33,7 +35,7 @@ function frame(id = "release", x = 150, y = 150, epoch = 1) {
   return { id, mode: "dock" as const, label: "child", source: "child", receiver: "main", receiver_epoch: epoch, region_count: 1,
     client_x: x, client_y: y, token: `token-${id}`, point: { x: -1200, y: 150, at: 1000, method: "native_up" } };
 }
-async function flush() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
+async function flush() { for (let i = 0; i < 40; i++) await Promise.resolve(); }
 async function paint() {
   const callbacks = [...mocks.raf.values()]; mocks.raf.clear(); callbacks.forEach(cb => cb(performance.now())); await flush();
 }
@@ -75,6 +77,155 @@ async function request(release = frame()) {
 }
 async function finishPaint() { await paint(); await paint(); await flush(); }
 describe("authoritative receiver resolution (R1/R2/R3/R6/R7/R8/R11)", () => {
+  it("review ignores unrelated geometry, sessionId and type at the post-paint validation", async () => {
+    const heading = document.createElement("span"); heading.dataset.tabId = "t"; strip.append(heading);
+    let width = 70; heading.getBoundingClientRect = () => new DOMRect(0, 30, width, 36);
+    await request(frame("review-post-paint")); width = 210; heading.textContent = "changed status";
+    useWorkspaceListStore.setState(state => ({ workspaces: state.workspaces.map(ws => ({ ...ws, panes: ws.panes.map(p => ({ ...p,
+      tabs: p.tabs.map(tab => ({ ...tab, sessionId: "changed-session", type: "web" as const })) })) })) }));
+    await finishPaint();
+    expect(mocks.decisions[0]).toMatchObject({ error: null, target: { kind: "pane-zone", zone: "center" } });
+    const decision = mocks.decisions[0];
+    const cfg = toTransferConfig(workspace("review-post-paint-incoming"));
+    cfg.panes[0].tabs![0].tab_id = "post-paint-new"; cfg.panes[0].tabs![0].session_id = "pty-post-paint-new";
+    dispatch("mycmux://tearout-delivery", { token: "review-post-paint-adopt", source: "child", configs: [cfg], placement: decision.target,
+      approval: { receiver: "main", token: "token-review-post-paint", target: decision.target,
+        release_id: "review-post-paint", layout_revision: decision.layoutRevision } });
+    await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith("child", "mycmux://tearout-receipt", { token: "review-post-paint-adopt", ok: true }));
+  });
+  it.each([false, true])("review tab-index accepts heading changes and rejects resized strips: resized=%s", async resized => {
+    const heading = document.createElement("span"); heading.dataset.tabId = "t"; strip.append(heading);
+    let width = 70; heading.getBoundingClientRect = () => new DOMRect(0, 30, width, 36);
+    const release = frame(`review-strip-${resized}`, 150, 45); await request(release); await finishPaint();
+    width = 210; heading.textContent = "changed status";
+    if (resized) strip.getBoundingClientRect = () => new DOMRect(0, 30, 450, 36);
+    const cfg = toTransferConfig(workspace("review-strip-incoming")); cfg.panes[0].tabs![0].tab_id = "strip-new";
+    cfg.panes[0].tabs![0].session_id = "pty-strip-new";
+    const decision = mocks.decisions[0]; const token = `review-strip-delivery-${resized}`;
+    dispatch("mycmux://tearout-delivery", { token, source: "child", configs: [cfg], placement: { ...decision.target, kind: "pane" },
+      approval: { receiver: "main", token: release.token, target: decision.target, release_id: release.id, layout_revision: decision.layoutRevision } });
+    await vi.waitFor(() => expect(mocks.emitTo.mock.calls.find(([, event, value]) => event.endsWith("tearout-receipt") && value.token === token)?.[2].ok).toBe(!resized));
+  });
+  it.each([false, true])("review workspace approval ignores other panes but rejects sidebar geometry: resized=%s", async resized => {
+    const sidebar = document.createElement("div"); sidebar.dataset.dndWorkspaceSidebar = "true"; document.body.append(sidebar);
+    let width = 150; sidebar.getBoundingClientRect = () => new DOMRect(0, 0, width, 600);
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => sidebar });
+    const release = frame(`review-sidebar-${resized}`); await request(release);
+    pane.getBoundingClientRect = () => new DOMRect(0, 30, 900, 400); await finishPaint();
+    expect(mocks.decisions[0].target).toEqual({ kind: "workspace" });
+    if (resized) width = 180;
+    const cfg = toTransferConfig(workspace("review-sidebar-incoming")); cfg.panes[0].tabs![0].tab_id = "sidebar-new";
+    cfg.panes[0].tabs![0].session_id = "pty-sidebar-new";
+    const decision = mocks.decisions[0]; const token = `review-sidebar-delivery-${resized}`;
+    dispatch("mycmux://tearout-delivery", { token, source: "child", configs: [cfg], placement: decision.target,
+      approval: { receiver: "main", token: release.token, target: decision.target, release_id: release.id, layout_revision: decision.layoutRevision } });
+    await vi.waitFor(() => expect(mocks.emitTo.mock.calls.find(([, event, value]) => event.endsWith("tearout-receipt") && value.token === token)?.[2].ok).toBe(!resized));
+  });
+  it.each([false, true])("review holds the receiver clock across native end until resolve or expiry: resolves=%s", async resolves => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command: string, args: any) => command === "tearout_preview" ? Promise.resolve(true) : original(command, args));
+    const release = frame(`review-gap-${resolves}`);
+    const clearing: boolean[] = [];
+    const unsubscribe = useDetachedDockStore.subscribe((state, before) => {
+      if (before.target && !state.target) clearing.push(tearoutDisplayBusy());
+    });
+    try {
+      dispatch("mycmux://tearout-native", { ...release, phase: "move", at: 0, escaped: false }); await paint();
+      dispatch("mycmux://tearout-native", { ...release, phase: "move", at: 121, escaped: false }); await paint();
+      expect(useDetachedDockStore.getState().target).not.toBeNull();
+      dispatch("mycmux://tearout-native", { ...release, phase: "end", at: 130, escaped: false, release: release.point, approval: null });
+      expect(clearing).toEqual([true]);
+      expect(tearoutDisplayReasons().displayActivity).toContain(`release-await:${release.id}`);
+      if (resolves) { await request(release); await finishPaint(); }
+      else await vi.advanceTimersByTimeAsync(500);
+      expect(tearoutDisplayReasons().displayActivity).not.toContain(`release-await:${release.id}`);
+    } finally { unsubscribe(); vi.useRealTimers(); }
+  });
+  it.each(["Win32", "MacIntel"])("2a ignores status header widths and session metadata during %s adoption", async platform => {
+    Object.defineProperty(navigator, "platform", { configurable: true, value: platform });
+    const heading = document.createElement("span"); heading.dataset.tabId = "t"; strip.append(heading);
+    let width = 80;
+    const measure = vi.fn(() => new DOMRect(0, 30, width, 36)); heading.getBoundingClientRect = measure;
+    const release = frame(); await request(release); await finishPaint();
+    width = 180;
+    useWorkspaceListStore.setState(state => ({ workspaces: state.workspaces.map(ws => ({ ...ws,
+      panes: ws.panes.map(p => ({ ...p, tabs: p.tabs.map(t => ({ ...t, agentId: "updated-agent" })) })) })) }));
+    const cfg = toTransferConfig(workspace("incoming-status"));
+    cfg.panes[0].tabs![0].tab_id = "status-new"; cfg.panes[0].tabs![0].session_id = "pty-status-new";
+    const decision = mocks.decisions[0];
+    const token = `status-delivery-${platform}`;
+    dispatch("mycmux://tearout-delivery", { token, source: "child", configs: [cfg], placement: decision.target, dock: { requester: "child" },
+      approval: { receiver: "main", token: release.token, target: decision.target, release_id: release.id, layout_revision: decision.layoutRevision } });
+    await flush();
+    await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith("child", "mycmux://tearout-receipt", expect.objectContaining({ token, ok: true })));
+    const receipt = mocks.emitTo.mock.calls.find(([, event, value]) => event.endsWith("tearout-receipt") && value.token === token)![2];
+    expect(receipt.dock_stages.map((stage: any) => stage.stage)).toEqual(expect.arrayContaining([
+      "attachment_prepared_wait", "attachment_prepared", "consume_wait", "consumed", "session_alive_wait", "session_alive", "layout",
+      "attachment_wait", "attached", "publish_wait", "published", "receipt"]));
+    expect(measure).not.toHaveBeenCalled();
+  });
+  it.each(["Win32", "MacIntel"])("2a rejects a target resize after token consumption on %s", async platform => {
+    Object.defineProperty(navigator, "platform", { configurable: true, value: platform });
+    const release = frame(); await request(release); await finishPaint();
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation(async (command: string, args: any) => {
+      if (command === "tearout_release_consume") pane.getBoundingClientRect = () => new DOMRect(0, 30, 450, 240);
+      return original(command, args);
+    });
+    const cfg = toTransferConfig(workspace("incoming-resize"));
+    cfg.panes[0].tabs![0].tab_id = "resize-new"; cfg.panes[0].tabs![0].session_id = "pty-resize-new";
+    const decision = mocks.decisions[0];
+    const token = `resize-delivery-${platform}`;
+    dispatch("mycmux://tearout-delivery", { token, source: "child", configs: [cfg], placement: decision.target,
+      approval: { receiver: "main", token: release.token, target: decision.target, release_id: release.id, layout_revision: decision.layoutRevision } });
+    await flush();
+    await vi.waitFor(() => expect(mocks.emitTo.mock.calls.find(([, name, receipt]) => name.endsWith("tearout-receipt") && receipt.token === token)?.[2].ok).toBe(false));
+    expect(useWorkspaceListStore.getState().workspaces[0].panes[0].tabs.map(tab => tab.id)).toEqual(["t"]);
+  });
+  it.each(["model", "dom"])("2a rejects reordered tab-strip IDs in the %s after acknowledgement", async change => {
+    useWorkspaceListStore.setState(state => ({ workspaces: state.workspaces.map(ws => ({ ...ws, panes: ws.panes.map(p => ({ ...p,
+      tabs: [...p.tabs, { ...p.tabs[0], id: "second", sessionId: "pty-second" }] })) })) }));
+    for (const id of ["t", "second"]) { const tab = document.createElement("span"); tab.dataset.tabId = id; strip.append(tab); }
+    const release = frame("strip-order", 150, 45); await request(release); await finishPaint();
+    if (change === "dom") strip.prepend(strip.lastElementChild!);
+    else useWorkspaceListStore.setState(state => ({ workspaces: state.workspaces.map(ws => ({ ...ws,
+      panes: ws.panes.map(p => ({ ...p, tabs: [...p.tabs].reverse() })) })) }));
+    const cfg = toTransferConfig(workspace("incoming-order"));
+    cfg.panes[0].tabs![0].tab_id = "order-new"; cfg.panes[0].tabs![0].session_id = "pty-order-new";
+    const decision = mocks.decisions[0];
+    const token = `order-delivery-${change}`;
+    dispatch("mycmux://tearout-delivery", { token, source: "child", configs: [cfg], placement: { ...decision.target, kind: "pane" },
+      approval: { receiver: "main", token: release.token, target: decision.target, release_id: release.id, layout_revision: decision.layoutRevision } });
+    await flush();
+    await vi.waitFor(() => expect(mocks.emitTo.mock.calls.find(([, name, receipt]) => name.endsWith("tearout-receipt") && receipt.token === token)?.[2].ok).toBe(false));
+  });
+  it.each(["expiry", "dispose"])("2a releases the display clock reservation on approval %s", async ending => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      await request(frame(`clock-${ending}`)); await finishPaint();
+      expect(tearoutDisplayBusy()).toBe(true);
+      if (ending === "dispose") { stop(); await flush(); }
+      else await vi.advanceTimersByTimeAsync(6000);
+      expect(tearoutDisplayBusy()).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+  it("2a releases display holds when disposing during a stalled consume IPC", async () => {
+    const release = frame("stalled-consume"); await request(release); await finishPaint();
+    const original = mocks.invoke.getMockImplementation()!;
+    let consumed = (_accepted: boolean) => {};
+    mocks.invoke.mockImplementation((command: string, args: any) => command === "tearout_release_consume"
+      ? new Promise<boolean>(resolve => { consumed = resolve; }) : original(command, args));
+    const cfg = toTransferConfig(workspace("stalled-incoming"));
+    cfg.panes[0].tabs![0].tab_id = "stalled-tab"; cfg.panes[0].tabs![0].session_id = "pty-stalled";
+    const decision = mocks.decisions[0];
+    dispatch("mycmux://tearout-delivery", { token: "stalled-consume", source: "child", configs: [cfg], placement: decision.target,
+      approval: { receiver: "main", token: release.token, target: decision.target, release_id: release.id, layout_revision: decision.layoutRevision } });
+    await flush(); expect(tearoutDisplayBusy()).toBe(true);
+    stop(); await flush(); expect(tearoutDisplayBusy()).toBe(false);
+    consumed(true); await flush();
+    expect(useWorkspaceListStore.getState().workspaces[0].panes[0].tabs.map(tab => tab.id)).toEqual(["t"]);
+  });
   it.each([0, 16, 119])("paints and acknowledges a valid release after %i ms without hover approval", async dwell => {
     const release = frame();
     dispatch("mycmux://tearout-native", { ...release, phase: "end", at: 1000 + dwell, escaped: false, approval: null });
@@ -182,6 +333,68 @@ describe("authoritative receiver resolution (R1/R2/R3/R6/R7/R8/R11)", () => {
       expect(useDetachedDockStore.getState().target).toBeNull();
     } finally { vi.useRealTimers(); }
   });
+});
+it.each(["no_receiver", "no_hit", "layout_changed", "expired", "receipt_timeout", "approved",
+  "no_release_point", "esc_cancelled", "receiver_timeout", "cancelled", "identity_changed"] as const)(
+  "2a records the actual release decision %s and accepted target kind", async decision => {
+    const original = mocks.invoke.getMockImplementation()!;
+    const approval = { receiver: "peer", token: "final-decision", target: { kind: "workspace" }, release_id: "decision-release", layout_revision: "view" };
+    mocks.invoke.mockImplementation(async (command: string, args: any) => {
+      if (command === "tearout_start_move") dispatch("mycmux://tearout-native", { ...frame(args.id), label: "main", source: "main",
+        receiver: decision === "no_receiver" ? null : "peer", phase: "end", at: 1000, escaped: decision === "esc_cancelled", approval: null,
+        release: decision === "no_release_point" ? null : frame().point, original: { x: 0, y: 0, width: 300, height: 200 } });
+      if (command === "tearout_resolve_release") {
+        if (decision === "layout_changed") throw new Error("tearout_drop_target_changed");
+        if (decision === "expired") throw new Error("tearout_release_expired");
+        if (decision === "receiver_timeout") throw new Error("tearout_release_timeout");
+        if (decision === "cancelled") throw new Error("tearout_release_cancelled");
+        if (decision === "identity_changed") throw new Error("tearout_release_identity_changed");
+        return decision === "no_hit" ? null : approval;
+      }
+      return original(command, args);
+    });
+    mocks.emitTo.mockImplementation(async (_label: string, event: string, payload: any) => {
+      if (event.endsWith("tearout-outgoing")) dispatch("mycmux://tearout-receipt", { token: payload.token,
+        ok: decision !== "receipt_timeout", reason: "tearout_receipt_timeout", failure_checkpoint: "receipt_timeout" });
+      if (event.endsWith("tearout-revoke")) dispatch("mycmux://tearout-receipt", { token: payload.ack, ok: true });
+    });
+    await regrabTearoutWindow(); await flush();
+    const record = decision === "approved" ? mocks.emitTo.mock.calls.find(([, event]) => event.endsWith("tearout-outgoing"))![2].record
+      : mocks.invoke.mock.calls.filter(([command]) => command === "tearout_log_record").at(-1)![1].record;
+    expect(record.release_decision).toBe(decision === "receipt_timeout" ? "approved" : decision);
+    expect(record.release_receiver_window).toBe(decision === "no_receiver" ? null : "peer");
+    if (decision === "approved" || decision === "receipt_timeout") expect(record).toMatchObject({ receiver_window: "peer",
+      attempted_destination: { kind: "sidebar" }, release_target_kind: "sidebar" });
+    else expect(record.receiver_window).toBeNull();
+  });
+it.each(["settle", "native"])("review2 leaves failure checkpoint unset without a docking attempt: %s", async path => {
+  const original = mocks.invoke.getMockImplementation()!;
+  mocks.invoke.mockImplementation(async (command: string, args: any) => {
+    if (command === "tearout_start_move") {
+      dispatch("mycmux://tearout-native", { ...frame(args.id), label: "main", source: "main", receiver: null,
+        phase: "end", at: 1000, escaped: false, approval: null, release: null, error: path === "native" ? "native_failed" : null,
+        original: { x: 0, y: 0, width: 300, height: 200 } }); return;
+    }
+    if (command === "tearout_settle") throw new Error("settle_failed");
+    return original(command, args);
+  });
+  await regrabTearoutWindow(); await flush();
+  const record = mocks.invoke.mock.calls.filter(([command]) => command === "tearout_log_record").at(-1)![1].record;
+  expect(record).toMatchObject({ attempted_destination: null, failure_checkpoint: null });
+});
+it("review2 records an expired consume token distinctly after the six second approval deadline", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  try {
+    const release = frame("expired-consume"); await request(release); await finishPaint();
+    const decision = mocks.decisions[0]; await vi.advanceTimersByTimeAsync(6000);
+    const cfg = toTransferConfig(workspace("expired-incoming")); cfg.panes[0].tabs![0].tab_id = "expired-tab"; cfg.panes[0].tabs![0].session_id = "pty-expired";
+    dispatch("mycmux://tearout-delivery", { token: "expired-delivery", source: "child", configs: [cfg], placement: decision.target,
+      approval: { receiver: "main", token: release.token, target: decision.target, release_id: release.id, layout_revision: decision.layoutRevision } });
+    await flush();
+    expect(mocks.emitTo).toHaveBeenCalledWith("child", "mycmux://tearout-receipt", expect.objectContaining({ token: "expired-delivery", ok: false,
+      reason: "tearout_consume_expired", failure_checkpoint: "consume", consume_failure_reason: "expired" }));
+    expect(useWorkspaceListStore.getState().workspaces[0].panes[0].tabs.map(tab => tab.id)).toEqual(["t"]);
+  } finally { vi.useRealTimers(); }
 });
 it("uses final release resolution at the actual regrab entry, and recovers visibly on timeout (R8/R9)", async () => {
   const invoke = mocks.invoke.getMockImplementation()!;
@@ -293,7 +506,8 @@ it("reports an unconfirmed native geometry restore after final timeout, with a w
   });
   await regrabTearoutWindow(); await flush();
   await vi.waitFor(() => expect(mocks.invoke.mock.calls.filter(([cmd]) => cmd === "tearout_log_record").at(-1)?.[1].record)
-    .toMatchObject({ result: "restore_failed", failure_reason: "native_geometry_unavailable", failure_phase: "restoring" }));
+    .toMatchObject({ result: "restore_failed", failure_reason: "tearout_release_timeout", failure_phase: "restoring", failure_phase_before_restore: "resolving_release",
+      recovery_reason: "native_geometry_unavailable" }));
   const notice = useToastStore.getState().toasts.find(toast => toast.kind === "error" && toast.actions?.length);
   expect(notice).toBeDefined(); expect(tearoutOperationBusy()).toBe(false);
   expect(useWorkspaceListStore.getState().workspaces).toEqual(before);
@@ -418,6 +632,24 @@ it("O2 retains a bound detach intent across a conflicting final dock frame", asy
 
 
 describe("F1 authoritative handoff conversation before request delivery", () => {
+  it.each([false, true])("review handoff accepts stable recipient geometry and rejects movement: moved=%s", async moved => {
+    pane.dataset.dndHandoffSurface = "true";
+    usePaneMetadataStore.setState({ metadata: { "pty-live": { agentKind: "codex", agentSessionId: "selected-conversation" } } });
+    const id = `review-handoff-${moved}`;
+    dispatch("mycmux://tearout-handoff-context", { id, mode: "dock", label: "child", sourceWindow: "child", endpoint: {
+      workspaceId: "source", paneId: "source-pane", tab: { id: "source-tab", sessionId: "source-pty", agentId: "shell", type: "terminal" },
+      metadata: { agentKind: "claude", agentSessionId: "source-conversation", cwd: "C:/demo/source" } } });
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command: string, args: any) => command === "publish_savepoint" ? Promise.resolve({ bundle_dir: "C:/demo/bundle" })
+      : command === "join_savepoint_summary" ? Promise.resolve({ handoff_path: "C:/demo/bundle/handoff.md", cwd_missing: false }) : original(command, args));
+    const release = frame(id); await request(release); await finishPaint();
+    const decision = mocks.decisions[0]; expect(decision.target.kind).toBe("handoff");
+    if (moved) pane.getBoundingClientRect = () => new DOMRect(20, 30, 300, 240);
+    dispatch("mycmux://tearout-handoff-request", { id, token: id, requester: "child", approval: {
+      receiver: "main", token: release.token, target: decision.target, release_id: id, layout_revision: decision.layoutRevision } });
+    await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith("child", "mycmux://tearout-handoff-result", { token: id, ok: !moved }));
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === "write_to_session")).toHaveLength(moved ? 0 : 1);
+  });
   it.each(["changed", "unchanged", "unknown"] as const)("keeps the selected recipient for %s conversation", async identity => {
     pane.dataset.dndHandoffSurface = "true";
     usePaneMetadataStore.setState({ metadata: { "pty-live": { agentKind: "codex",

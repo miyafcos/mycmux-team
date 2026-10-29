@@ -1,7 +1,8 @@
 import { getAgentDormancyRecord, type PreviewArtifactInfo } from "../../lib/ipc";
+import { PEER_WEB_TRANSCRIPT_UNAVAILABLE } from "../../stores/webPaneTranscriptStore";
 import { dormantAgentDescription, resolveDormantResumeIdentity } from "../../lib/agentDormancy";
 import type { LiveSessionBrief, SemanticEventEnvelope } from "../../lib/livebrief";
-import { useCallback, useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { WebPaneTranscriptEntry } from "../../stores/webPaneTranscriptStore";
 import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { useComposerStore, type DashboardOptimisticMessage } from "../../stores/composerStore";
@@ -20,6 +21,15 @@ import { Check, ExternalLink, MoreHorizontal, Pin, PinOff, RotateCcw, X } from "
 
 const EMPTY_OPTIMISTIC_MESSAGES: readonly DashboardOptimisticMessage[] = [];
 const EMPTY_EVENTS: readonly SemanticEventEnvelope[] = [];
+
+function chatStatePillStyle(color: string): CSSProperties {
+  return {
+    ...statePillStyle(color),
+    fontSize: "var(--cmux-chat-meta-size)",
+    borderRadius: "var(--cmux-chat-radius-inline)",
+    padding: "0 var(--cmux-chat-space-3)",
+  };
+}
 
 function useReducedMotion(): boolean {
   const getPreference = () => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
@@ -86,6 +96,7 @@ export function ChatColumn({
   detailLoaded?: boolean;
 }) {
   const sessionId = card.tab.sessionId;
+  const [navigationTarget, setNavigationTarget] = useState<HTMLDivElement | null>(null);
   const dormantDescription = card.neverStarted || card.telemetryHealth === "live" ? undefined : dormantAgentDescription(card.mark);
   const savedRecord = useSessionAttentionStore((state) => state.dormantCompletionsBySession[sessionId]?.receipt);
   const resumeIdentity = resolveDormantResumeIdentity(card.tab);
@@ -144,6 +155,7 @@ export function ChatColumn({
     data-dashboard-chat-column-motion={motion ?? "idle"}
     data-active={active ? "true" : "false"}
     data-dashboard-chat-drop-target="true"
+    style={columnColor ? { "--cmux-chat-column-color": columnColor } as CSSProperties : undefined}
     className={`cmux-dashboard-chat-column${active ? " is-active" : ""}${dragging ? " is-drag-source" : ""}${dropPreview ? " is-drop-existing" : ""}${motion ? ` is-${motion}` : ""}`}
     onPointerDown={onActivate}
   >
@@ -153,21 +165,24 @@ export function ChatColumn({
       tabIndex={0}
       role="group"
       aria-label={`${card.label} のチャット列。Alt+左矢印またはAlt+右矢印で並べ替え`}
-      style={columnColor ? { borderLeftColor: columnColor } : undefined}
       onClick={onActivate}
       onKeyDown={onReorderKeyDown}
     >
+      <div className="cmux-dashboard-chat-header-lane"><div className="cmux-dashboard-chat-header-content">
       <div className="cmux-dashboard-chat-identity">
+        <span className="cmux-dashboard-chat-color" aria-hidden="true" />
         <strong title={card.label}>{card.label}</strong>
+        {card.windowLabel && card.windowLabel !== "main" ? <span className="cmux-dashboard-peer-window">{dashboardStrings.peerWindow}</span> : null}
         <div className="cmux-dashboard-chat-header-meta">
           {card.neverStarted
-            ? <span style={statePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.stateNotStarted}</span>
-            : <span title={stateLabels(displayState).tooltip} aria-label={stateLabels(displayState).tooltip} style={statePillStyle(displayStateColor(displayState))}>{displayStateLabel(displayState)}</span>}
-          {card.manualDoneAt !== undefined ? <span data-dashboard-manual-done={card.tab.id} style={statePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.manualDoneBadge}</span> : null}
+            ? <span style={chatStatePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.stateNotStarted}</span>
+            : <span title={stateLabels(displayState).tooltip} aria-label={stateLabels(displayState).tooltip} style={chatStatePillStyle(displayStateColor(displayState))}>{displayStateLabel(displayState)}</span>}
+          {card.manualDoneAt !== undefined ? <span data-dashboard-manual-done={card.tab.id} style={chatStatePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.manualDoneBadge}</span> : null}
           {card.stall && (card.telemetryHealth !== "live" || card.stall.reason !== "no_output") ? <span className="cmux-dashboard-chat-header-stall">{stallLabel(card.stall.reason)}</span> : null}
         </div>
       </div>
       <div className="cmux-dashboard-chat-actions">
+        <div className="cmux-dashboard-chat-navigation" ref={setNavigationTarget} />
         <details className="cmux-dashboard-chat-details" onClick={(event) => event.stopPropagation()}>
           <summary aria-label="会話の詳細" title="会話の詳細"><MoreHorizontal size={16} aria-hidden="true" /></summary>
           <div className="cmux-dashboard-chat-detail-content">
@@ -190,18 +205,22 @@ export function ChatColumn({
         <button type="button" data-dashboard-chat-column-pin={card.tab.id} className="cmux-dashboard-chat-header-action" aria-pressed={pinned} aria-label={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel} title={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel} onClick={(event) => { event.stopPropagation(); onTogglePin(); }}>{pinned ? <PinOff size={15} aria-hidden="true" /> : <Pin size={15} aria-hidden="true" />}</button>
         <button type="button" data-dashboard-chat-column-close={card.tab.id} className="cmux-dashboard-chat-column-close" aria-label={`${card.label} を閉じる`} title="閉じる" onClick={(event) => { event.stopPropagation(); onClose(); }}><X size={16} aria-hidden="true" /></button>
       </div>
+      </div></div>
     </header>
     <div className="cmux-dashboard-chat-column-body">
       {dormantDescription ? <p>{dormantDescription}</p> : null}
       {recordKey && !recordLoaded ? <p role="status">保存した会話を読み込んでいます</p> : null}
       {recordLoaded && record.error ? <p role="alert">{record.error}</p> : null}
-      {webTranscript
+      {card.tab.type === "web" && card.windowLabel
+        ? <p>{PEER_WEB_TRANSCRIPT_UNAVAILABLE}</p>
+        : webTranscript
         ? <WebTranscriptStatus entry={webTranscript} onRefresh={onRefreshWebTranscript} />
         : !recordKey && card.telemetryHealth !== "live" && card.telemetryHealth !== "ended"
           ? <DashboardTelemetryFallback card={card} now={now} />
           : null}
       <ChatTranscript
         compact
+        navigationTarget={navigationTarget}
         events={transcriptEvents}
         sessionId={card.tab.sessionId}
         tabId={card.tab.id}

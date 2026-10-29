@@ -1,5 +1,5 @@
 import { findAgentSessionOwner } from "./agentResumeConflict";
-import { getWindowFragments, type WindowFragment } from "./ipc";
+import { focusWindow, getWindowFragments, type WindowFragment } from "./ipc";
 import { windowLabel } from "./windowContext";
 import { getTabDisplayLabel } from "./tabDisplayLabel";
 import { usePaneMetadataStore } from "../stores/paneMetadataStore";
@@ -57,13 +57,16 @@ export async function openAgentResumeOwner(sessionId: string): Promise<void> {
     openWatchdogSession(sessionId);
     return;
   }
-  const [{ emitTo }, { WebviewWindow }] = await Promise.all([
-    import("@tauri-apps/api/event"), import("@tauri-apps/api/webviewWindow"),
-  ]);
+  const { emitTo } = await import("@tauri-apps/api/event");
   await emitTo(label, OPEN_OWNER_EVENT, { sessionId });
-  const owner = await WebviewWindow.getByLabel(label);
-  await owner?.show();
-  await owner?.setFocus();
+  await focusWindow(label);
+}
+
+/** The dashboard already has the owner, including pending adoption windows. */
+export async function openSessionInWindow(label: string, sessionId: string): Promise<void> {
+  const { emitTo } = await import("@tauri-apps/api/event");
+  await emitTo(label, OPEN_OWNER_EVENT, { sessionId });
+  await focusWindow(label);
 }
 
 export function connectAgentResumeOwnerNavigation(): () => void {

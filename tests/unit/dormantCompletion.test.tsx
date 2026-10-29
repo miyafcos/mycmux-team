@@ -12,8 +12,10 @@ import { DashboardCardRow } from "../../src/components/dashboard/DashboardCardRo
 import { buildDashboardCards, resolveDisplayState } from "../../src/components/dashboard/dashboardModel";
 import { mergeWebPaneTurns } from "../../src/lib/webPaneTranscript";
 import type { Workspace } from "../../src/types";
+import { mountDetachedDashboardHost } from "../../src/lib/dashboardHost";
+import { useToastStore } from "../../src/stores/toastStore";
 
-const ipc = vi.hoisted(() => ({ getAgentDormancyRecord: vi.fn() }));
+const ipc = vi.hoisted(() => ({ getAgentDormancyRecord: vi.fn(), openMainDashboard: vi.fn(async () => false) }));
 vi.mock("../../src/lib/ipc", async (original) => ({ ...await original<typeof import("../../src/lib/ipc")>(), ...ipc }));
 const receipt: DormancyRecordReceipt = { ptySessionId: "pty", agentKind: "claude",
   agentSessionId: "11111111-1111-4111-8111-111111111111", ptyGeneration: 7, savedAt: 1000, bytes: 256 };
@@ -45,6 +47,21 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("a completion retained through process dormancy", () => {
+  it("handles a detached dormant click without selecting or launching and reports missing main", async () => {
+    preserve();
+    const release = mountDetachedDashboardHost();
+    const before = useDashboardViewStore.getState();
+    const onSelectTab = vi.fn();
+    try {
+      if (!openDormantCompletionRecord(tab, true)) onSelectTab();
+      await Promise.resolve(); await Promise.resolve();
+      expect(onSelectTab).not.toHaveBeenCalled();
+      expect(ipc.openMainDashboard).toHaveBeenCalledWith({ tabId: "tab", sessionId: "pty", turn: "latest" });
+      expect(useDashboardViewStore.getState()).toBe(before);
+      expect(useToastStore.getState().toasts.at(-1)?.message).toContain("本体の窓");
+      expect(unseen()).toBe(true);
+    } finally { release(); }
+  });
   it.each([
     { parentAlive: true, saved: true, expected: "delegated" },
     { parentAlive: false, saved: true, expected: "done" },

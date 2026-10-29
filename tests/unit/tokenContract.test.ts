@@ -72,6 +72,8 @@ describe("cmux design token contract", () => {
       "--cmux-status-stall",
       "--cmux-radius-card",
       "--cmux-radius-pill",
+      "--cmux-read-font-size",
+      "--cmux-read-line-height",
     ]) {
       expect(definedTokens.has(token), token).toBe(true);
     }

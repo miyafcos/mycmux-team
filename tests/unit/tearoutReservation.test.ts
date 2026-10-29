@@ -24,7 +24,7 @@ function approval(id: string) {
   const c = windows.get("C")!;
   return { receiver: "C", token: "painted", release_id: id, target: { kind: "workspace" },
     layout_revision: JSON.stringify([window.innerWidth, window.innerHeight, window.devicePixelRatio,
-      c.ui.getState().zoomedPaneId, c.list.getState().activeWorkspaceId, 0, [], []]) };
+      c.ui.getState().zoomedPaneId, c.list.getState().activeWorkspaceId, 0, [], null, null]) };
 }
 function nativeEnd(caller: string, args: any, approval: any = null) {
   const sample = { ...args, source: caller, phase: "end", at: Date.now(), escaped: false,
@@ -96,7 +96,7 @@ async function openWindow(label: string) {
   vi.doMock("../../src/lib/tearout/release", async original => ({ ...await original<typeof import("../../src/lib/tearout/release")>(),
     // An authenticated valid release is a precondition; release/frame behavior
     // has its own suite. Here real delivery, store mutation and rollback run.
-    TearoutReleaseReceiver: class { consume = async () => true; dispose() {} },
+    TearoutReleaseReceiver: class { consume = async () => ({ ok: true }); dispose() {} },
   }));
   const runtime = await import("../../src/lib/tearout/runtime");
   const { useWorkspaceListStore: list } = await import("../../src/stores/workspaceListStore");
@@ -164,6 +164,8 @@ describe("R2 provisional incoming ownership survives native end", () => {
     expect(calls.slice(before).some(call => ["tearout_start_move", "tearout_take_spare", "tearout_prepare", "tearout_retire", "tearout_warm"].includes(call.command))).toBe(false);
     expect(b.list.getState().workspaces).toEqual([source]);
     expect(b.toasts.getState().toasts.some(toast => toast.kind === "error")).toBe(false);
+    expect(calls.slice(before).find(call => call.command === "tearout_log_record" && call.args.record.result === "rejected_busy")?.args.record)
+      .toMatchObject({ refusal_source: "backend_transfer", blocker_id: "original-move", blocker_phase: "moving" });
     expect(transfers.get("original-move")?.finalized).toBe(false);
   });
   it("an unrelated finalize cannot unlock the receiver; valid source finalization unlocks it", async () => {

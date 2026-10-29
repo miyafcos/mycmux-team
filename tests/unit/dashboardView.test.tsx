@@ -106,6 +106,11 @@ import { ingestAskQuestionLines, useAskQuestionStore } from "../../src/stores/as
 import { useStallStore } from "../../src/stores/stallStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import type { PaneTab, Workspace } from "../../src/types";
+import { usePeerWindowTabsStore } from "../../src/components/dashboard/peerWindowTabsStore";
+import { peerIndex } from "./fixtures/peerWindowTabs";
+import * as ownerNavigation from "../../src/lib/agentResumeOwner";
+import { useToastStore, __resetToastStoreForTests } from "../../src/stores/toastStore";
+import { useComposerStore } from "../../src/stores/composerStore";
 
 const NOW = Date.parse("2026-08-14T12:00:00.000Z");
 
@@ -284,6 +289,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  usePeerWindowTabsStore.setState({ index: [], completedReads: 0, pollers: 0, reading: false, requestSequence: 0, handledRequestSequence: 0 });
   useSettingsStore.setState({conversationHistoryMode:"agent-wheel"});
   mocks.mappings.mockImplementation(async(ids:string[])=>Object.fromEntries(ids.map(id=>[id,{agent_kind:"codex",session_id:`exact-${id}`}])));
   mocks.invoke.mockImplementation(async(cmd:string,args:any)=>{
@@ -341,6 +347,96 @@ async function renderDashboard(): Promise<void> {
     await Promise.resolve();
   });
 }
+
+describe("main dashboard peer windows", () => {
+  it.each(["enter", "list", "column"])("jumps from %s using the indexed owner, preserving main selection and the dashboard", async entry => {
+    const navigate = vi.spyOn(ownerNavigation, "openSessionInWindow").mockResolvedValue(undefined);
+    try {
+      seedDashboard({ workspace: workspace([tab("local", "local-session", "Local")]), selectedTabId: "peer-tab" });
+      usePeerWindowTabsStore.getState().acceptIndex(peerIndex("mycmux-w2", true));
+      await renderDashboard();
+      const before = useWorkspaceListStore.getState();
+      if (entry === "enter") await act(async () => container.querySelector(".cmux-dashboard-view")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+      else if (entry === "list") await act(async () => container.querySelector("[data-dashboard-row='peer-tab']")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+      else await act(async () => container.querySelector<HTMLButtonElement>(`[data-dashboard-chat-column='peer-tab'] button[aria-label='${dashboardStrings.jumpButtonTitle}']`)!.click());
+      expect(navigate).toHaveBeenCalledWith("mycmux-w2", "peer-session");
+      expect(useWorkspaceListStore.getState()).toBe(before);
+      expect(useDashboardViewStore.getState().open).toBe(true);
+      expect(container.querySelector("[data-minimap-tab='peer-tab']")).toBeNull();
+      expect(container.querySelector("[data-dashboard-row='peer-tab'] .cmux-dashboard-peer-window")?.textContent).toBe(dashboardStrings.peerWindow);
+    } finally { navigate.mockRestore(); }
+  });
+  it("reports navigation failure and opens/answers peer attention cards through the shared card list", async () => {
+    __resetToastStoreForTests();
+    const navigate = vi.spyOn(ownerNavigation, "openSessionInWindow").mockRejectedValue(new Error("focus failed"));
+    try {
+      seedDashboard({ workspace: workspace([tab("local", "local-session", "Local")]), selectedTabId: "peer-tab",
+        chatColumnTabIds: ["peer-tab", DASHBOARD_INBOX_COLUMN_ID] });
+      usePeerWindowTabsStore.getState().acceptIndex(peerIndex()); await renderDashboard();
+      await act(async () => container.querySelector("[data-dashboard-row='peer-tab']")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+      expect(useToastStore.getState().toasts.at(-1)?.message).toBe(dashboardStrings.attentionActionFailed);
+      const actions = mocks.attentionCards.mock.calls.at(-1)![0];
+      await act(async () => useDashboardViewStore.getState().setSelectedTabId("local"));
+      await act(async () => actions.openSession({ type: "logical", logical_session_id: "peer-conversation" }));
+      expect(useDashboardViewStore.getState().selectedTabId).toBe("peer-tab");
+      await act(async () => useDashboardViewStore.getState().setSelectedTabId("local"));
+      useComposerStore.getState().setCommandKind("peer-session", "plain");
+      await act(async () => actions.answerQuestion({ type: "pty", pty_session_id: "peer-session" }));
+      expect(useDashboardViewStore.getState().selectedTabId).toBe("peer-tab");
+      expect(useComposerStore.getState().commandKindBySession["peer-session"]).toBe("answer-forward");
+    } finally { navigate.mockRestore(); __resetToastStoreForTests(); }
+  });
+  it("keeps peer columns, pins and special columns when reopening before an index arrives and after its read fails", async () => {
+    seedDashboard({ workspace: workspace([tab("local", "local-session", "Local")]), selectedTabId: "peer-tab",
+      chatColumnTabIds: ["peer-tab", DASHBOARD_INBOX_COLUMN_ID, "__mycmux_preview__"] });
+    useDashboardViewStore.setState({ pinnedChatColumnTabIds: ["peer-tab"] });
+    localStorage.setItem("mycmux:dashboard-chat-column-pins", '["peer-tab"]');
+    await renderDashboard();
+    const columns = useDashboardViewStore.getState().chatColumnTabIds;
+    const pins = useDashboardViewStore.getState().pinnedChatColumnTabIds;
+    expect(columns).toEqual(["peer-tab", DASHBOARD_INBOX_COLUMN_ID, "__mycmux_preview__"]);
+    expect(pins).toEqual(["peer-tab"]);
+    await act(async () => { useDashboardViewStore.getState().close(); root.render(null); });
+    let fail!: (error: Error) => void;
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command: string, args: unknown) => command === "get_window_tab_index"
+      ? new Promise((_resolve, reject) => { fail = reject; }) : original(command, args));
+    await act(async () => useDashboardViewStore.getState().openView());
+    await renderDashboard();
+    expect(usePeerWindowTabsStore.getState().index).toEqual([]);
+    expect(usePeerWindowTabsStore.getState().reading).toBe(true);
+    expect(useDashboardViewStore.getState().chatColumnTabIds).toBe(columns);
+    expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toBe(pins);
+    expect(localStorage.getItem("mycmux:dashboard-chat-column-pins")).toBe('["peer-tab"]');
+    const completed = usePeerWindowTabsStore.getState().completedReads;
+    await act(async () => fail(new Error("offline")));
+    expect(usePeerWindowTabsStore.getState().completedReads).toBe(completed + 1);
+    expect(useDashboardViewStore.getState().chatColumnTabIds).toBe(columns);
+    expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toBe(pins);
+    expect(localStorage.getItem("mycmux:dashboard-chat-column-pins")).toBe('["peer-tab"]');
+  });
+  it("keeps returning-main cards unbadged and leaves their jump inactive", async () => {
+    const navigate = vi.spyOn(ownerNavigation, "openSessionInWindow").mockResolvedValue(undefined);
+    try {
+      seedDashboard({ workspace: workspace([tab("local", "local-session", "Local")]), selectedTabId: "peer-tab" });
+      usePeerWindowTabsStore.getState().acceptIndex(peerIndex("main", true)); await renderDashboard();
+      expect(container.querySelector(".cmux-dashboard-peer-window")).toBeNull();
+      const before = useWorkspaceListStore.getState();
+      await act(async () => container.querySelector("[data-dashboard-row='peer-tab']")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+      expect(navigate).not.toHaveBeenCalled(); expect(useWorkspaceListStore.getState()).toBe(before);
+    } finally { navigate.mockRestore(); }
+  });
+  it("renders the peer Web restriction without loading, refresh or a Web read", async () => {
+    seedDashboard({ workspace: workspace([tab("local", "local-session", "Local")]), selectedTabId: "peer-tab" });
+    const index = peerIndex(); Object.assign(index[0].workspaces[0].panes[0].tabs[0], { type: "web", preset_id: "chatgpt" });
+    usePeerWindowTabsStore.getState().acceptIndex(index); await renderDashboard();
+    const column = container.querySelector("[data-dashboard-chat-column='peer-tab']")!;
+    expect(column.textContent).toContain("別ウィンドウのダッシュボードからは読めません");
+    expect(column.textContent).not.toContain(dashboardStrings.webTranscriptLoading);
+    expect(column.querySelector("[data-dashboard-web-transcript-refresh]")).toBeNull();
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === "webpane_read")).toEqual([]);
+  });
+});
 
 it("INTEG-4 subscribes to a delegated seat's retained dormant completion", async () => {
   const parent = tab("parent", "parent-session", "Parent");

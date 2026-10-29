@@ -287,7 +287,7 @@ describe("AI log panel single-view flow", () => {
     await settle();
     const usage = childByName(latest, "UsageView");
     const html = renderToStaticMarkup(createElement(UsageView, usage.props as any));
-    expect(html).toContain("<svg");
+    expect(html).toContain("data-usage-day=");
     expect(html).toContain("panel-relative-down");
     expect(html).toContain("今回の要求と異なる期間");
     clearLoaders();

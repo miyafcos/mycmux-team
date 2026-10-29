@@ -1,0 +1,25 @@
+/* Shared defaults must also load in detached terminal-history windows. */
+.cmux-dashboard-markdown { display: grid; gap: 8px; min-width: 0; font-family: var(--cmux-dash-body-font); font-size: var(--cmux-dash-font-size); line-height: var(--cmux-dash-line-height); overflow-wrap: anywhere; }
+.cmux-dashboard-markdown-paragraph { margin: 0; white-space: pre-wrap; }
+.cmux-dashboard-markdown :is(h1, h2, h3, h4, h5, h6) { margin: 0; font-weight: 700; }
+.cmux-dashboard-markdown h1 { font-size: 15px; }
+.cmux-dashboard-markdown h2 { font-size: 14px; }
+.cmux-dashboard-markdown :is(h3, h4, h5, h6) { font-size: 13px; }
+.cmux-dashboard-markdown-code { margin: 0; background: var(--cmux-bg-solid); border: 1px solid var(--cmux-border); border-radius: var(--cmux-radius-md); padding: 10px; font-family: var(--cmux-dash-body-font); font-size: var(--cmux-font-size-xs); line-height: 1.6; overflow-x: auto; white-space: pre; }
+.cmux-dashboard-markdown-inline-code { background: var(--cmux-hover); border: 1px solid var(--cmux-border-hairline); border-radius: var(--cmux-radius-sm); padding: 0 4px; font-family: var(--cmux-dash-body-font); }
+.cmux-dashboard-markdown-quote { margin: 0; border-left: 3px solid var(--cmux-border); padding-left: 10px; color: var(--cmux-text-secondary); white-space: pre-wrap; }
+.cmux-dashboard-markdown-table-scroll { max-inline-size: 100%; min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; border: 1px solid var(--cmux-border-hairline); border-radius: var(--cmux-radius-sm); background: var(--cmux-bg-solid); }
+.cmux-dashboard-markdown-table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; color: var(--cmux-text); }
+.cmux-dashboard-markdown-table th, .cmux-dashboard-markdown-table td { border-right: 1px solid var(--cmux-border-hairline); border-bottom: 1px solid var(--cmux-border-hairline); padding: 6px 9px; vertical-align: top; text-align: left; white-space: normal; overflow-wrap: anywhere; font-family: var(--cmux-dash-body-font); }
+.cmux-dashboard-markdown-table th:last-child, .cmux-dashboard-markdown-table td:last-child { border-right: 0; }
+.cmux-dashboard-markdown-table tbody tr:last-child td { border-bottom: 0; }
+.cmux-dashboard-markdown-table th { background: var(--cmux-hover); color: var(--cmux-text); font-weight: 700; }
+.cmux-dashboard-markdown-table [data-align="center"] { text-align: center; }
+.cmux-dashboard-markdown-table [data-align="right"], .cmux-dashboard-markdown-table [data-numeric="true"] { text-align: right; }
+.cmux-dashboard-markdown-table [data-numeric="true"] { font-family: var(--cmux-dash-body-font); font-variant-numeric: tabular-nums; }
+.cmux-dashboard-markdown-rule { width: 100%; height: 0; margin: 4px 0; border: 0; border-top: 1px solid var(--cmux-border-hairline); }
+.cmux-dashboard-markdown-list { margin: 0; padding-left: 22px; display: grid; gap: 2px; }
+.cmux-dashboard-markdown-list.is-checklist { list-style: none; }
+.cmux-dashboard-markdown-checkitem { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.cmux-dashboard-markdown-check { display: inline-grid; width: 1em; height: 1em; flex: 0 0 1em; place-items: center; border: 1px solid var(--cmux-border); border-radius: 3px; color: var(--cmux-on-accent); font-family: var(--cmux-font-mono); font-size: .8em; line-height: 1; }
+.cmux-dashboard-markdown-check.is-checked { border-color: var(--cmux-accent); background: var(--cmux-accent); }

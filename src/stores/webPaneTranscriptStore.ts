@@ -59,6 +59,8 @@ interface WebPaneTranscriptState {
   reset: () => void;
 }
 
+export const PEER_WEB_TRANSCRIPT_UNAVAILABLE = "別ウィンドウのダッシュボードからは読めません";
+
 /**
  * The pane cannot be read before it exists. Saying "open the tab once" is the
  * actionable half of that; the raw Rust string is kept for the title attribute.
@@ -73,7 +75,7 @@ function readFailureMessage(error: unknown): string {
   if (text.includes("has no reader")) return "このページは会話の読み取りに対応していません";
   if (text.includes("timed out")) return "ページの読み取りが時間内に終わりませんでした";
   if (text.includes("primary app webview") || text.includes("another window")) {
-    return "別ウィンドウのダッシュボードからは読めません";
+    return PEER_WEB_TRANSCRIPT_UNAVAILABLE;
   }
   if (text.includes("host changed")) return "ページが別のサイトに移動しているため読めません";
   return `ページを読めませんでした: ${text}`;

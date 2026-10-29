@@ -23,6 +23,8 @@ import { useAgentDormancyStore } from "../../src/stores/agentDormancyStore";
 import { useAskQuestionStore } from "../../src/stores/askQuestionStore";
 import { useSavepointDragStore } from "../../src/stores/savepointDragStore";
 import { DEFAULT_DORMANCY_PRESSURE_SETTINGS, markSessionFrontendActivity, clearSessionFrontendActivity } from "../../src/lib/agentDormancy";
+import { mountDetachedDashboardHost } from "../../src/lib/dashboardHost";
+import { useToastStore, __resetToastStoreForTests } from "../../src/stores/toastStore";
 
 const SID = "11111111-1111-4111-8111-111111111111";
 const START = 100_000_000;
@@ -78,6 +80,19 @@ afterEach(async () => {
 });
 
 describe("dormancy sweep approval and final checks", () => {
+  it("shows detached leader proposals without a dashboard action", async () => {
+    useSettingsStore.setState({ notificationsEnabled: true, toastSystemEnabled: true });
+    __resetToastStoreForTests();
+    const notify = vi.spyOn(useToastStore.getState(), "pushToast");
+    const release = mountDetachedDashboardHost();
+    try {
+      await start(); await advance(70);
+      expect(useAgentDormancyStore.getState().proposals).toHaveLength(1);
+      const toast = notify.mock.calls.find(([message]) => message.includes("休止候補"));
+      expect(toast).toBeDefined();
+      expect(toast?.[2]).toBeUndefined(); expect(toast?.[3]).toBeUndefined();
+    } finally { release(); notify.mockRestore(); __resetToastStoreForTests(); }
+  });
   it("only proposes under pressure, even after the normal sixty-minute timeout", async () => {
     await start(); await advance(70);
     expect(useAgentDormancyStore.getState().proposals).toEqual([expect.objectContaining({ sessionId: "pty", stage: "pressure", label: expect.any(String) })]);

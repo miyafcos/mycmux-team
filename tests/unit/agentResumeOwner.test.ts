@@ -1,15 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
-import { ownerWindowInFragments, ownerLocationInFragments, agentResumeOwnerLocation, agentResumeOwnerWindow, openAgentResumeOwner, connectAgentResumeOwnerNavigation } from "../../src/lib/agentResumeOwner";
+import { ownerWindowInFragments, ownerLocationInFragments, agentResumeOwnerLocation, agentResumeOwnerWindow, openAgentResumeOwner, openSessionInWindow, connectAgentResumeOwnerNavigation } from "../../src/lib/agentResumeOwner";
 import type { WindowFragment } from "../../src/lib/ipc";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 
-const mocks = vi.hoisted(() => ({ fragments: vi.fn(), emitTo: vi.fn(), show: vi.fn(), focus: vi.fn(), listen: vi.fn().mockResolvedValue(vi.fn()) }));
-vi.mock("../../src/lib/ipc", async original => ({ ...await original<typeof import("../../src/lib/ipc")>(), getWindowFragments: mocks.fragments }));
+const mocks = vi.hoisted(() => ({ fragments: vi.fn(), emitTo: vi.fn(), focus: vi.fn(), listen: vi.fn().mockResolvedValue(vi.fn()) }));
+vi.mock("../../src/lib/ipc", async original => ({ ...await original<typeof import("../../src/lib/ipc")>(), getWindowFragments: mocks.fragments, focusWindow: mocks.focus }));
 vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
-vi.mock("@tauri-apps/api/webviewWindow", () => ({ WebviewWindow: { getByLabel: vi.fn(async () => ({ show: mocks.show, setFocus: mocks.focus })) } }));
 vi.mock("../../src/lib/windowContext", () => ({ windowLabel: () => "main" }));
 const peer = { window_label: "peer", pending: false, workspaces: [{ name: "Research", panes: [{ agent_id: "claude-code", label: "Parent", tabs: [{ session_id: "owner", label: "Design review" }] }] }] } as unknown as WindowFragment;
 describe("SI owner navigation", () => {
+  it("sends directly to the indexed owner before focusing it and propagates failures", async () => {
+    mocks.emitTo.mockClear(); mocks.focus.mockClear();
+    await openSessionInWindow("mycmux-w2", "pending-session");
+    expect(mocks.emitTo).toHaveBeenCalledWith("mycmux-w2", "mycmux://agent-resume-open-owner", { sessionId: "pending-session" });
+    expect(mocks.focus).toHaveBeenCalledWith("mycmux-w2");
+    expect(mocks.emitTo.mock.invocationCallOrder[0]).toBeLessThan(mocks.focus.mock.invocationCallOrder[0]);
+    mocks.focus.mockRejectedValueOnce(new Error("cannot focus"));
+    await expect(openSessionInWindow("mycmux-w2", "pending-session")).rejects.toThrow("cannot focus");
+    mocks.emitTo.mockClear(); mocks.focus.mockClear();
+  });
   it("distinguishes a hidden PTY from an owner in a peer window", async () => {
     expect(ownerWindowInFragments([peer], "owner")).toBe("peer");
     expect(ownerLocationInFragments([peer], "owner")).toEqual({ windowLabel: "peer", workspaceName: "Research", paneName: "Design review", otherWindow: true });
@@ -20,7 +29,7 @@ describe("SI owner navigation", () => {
     expect(await agentResumeOwnerLocation("owner")).toMatchObject({ workspaceName: "Research", paneName: "Design review", otherWindow: true });
     await openAgentResumeOwner("owner");
     expect(mocks.emitTo).toHaveBeenCalledWith("peer", "mycmux://agent-resume-open-owner", { sessionId: "owner" });
-    expect(mocks.show).toHaveBeenCalledOnce(); expect(mocks.focus).toHaveBeenCalledOnce();
+    expect(mocks.focus).toHaveBeenCalledWith("peer");
   });
   it("uses the peer pane display name and preserves explicit user labels like the existing header", () => {
     const fragment = structuredClone(peer);

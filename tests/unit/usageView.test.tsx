@@ -136,6 +136,29 @@ const viewProps = {
 };
 
 describe("UsageView", () => {
+  it.each(["ioTokens", "sessions"] as const)("renders the daily grid for %s with grouping as its only chart control", metric => {
+    const series = { range: { from: 0, to: 1, label: "検証" }, groupBy: "model" as const, bucket: "day", buckets: [],
+      priceCoverage, priceSource: "test", costNote: "" };
+    const html = renderToStaticMarkup(<UsageView {...viewProps} series={series} metric={metric} />);
+    const section = new DOMParser().parseFromString(html, "text/html").querySelector("#ailog-trend")!;
+    expect(section.querySelectorAll("[data-usage-day]")).toHaveLength(1);
+    expect(section.querySelector('[aria-label="まとめ方"]')).not.toBeNull();
+    expect(section.querySelector('[aria-label="単位"]')).toBeNull();
+    expect(section.querySelector('[aria-label="表示"]')).toBeNull();
+    expect(section.querySelector("svg")).toBeNull();
+    expect(section.textContent).toContain("期間全体の内訳");
+  });
+
+  it("keeps a weekly report out of the daily grid and offers the existing load action", () => {
+    const series = { range: { from: 0, to: 1, label: "検証" }, groupBy: "model" as const, bucket: "week", buckets: [],
+      priceCoverage, priceSource: "test", costNote: "" };
+    const html = renderToStaticMarkup(<UsageView {...viewProps} series={series} bucket="week" />);
+    const section = new DOMParser().parseFromString(html, "text/html").querySelector("#ailog-trend")!;
+    expect(section.querySelector("[data-usage-grass]")).toBeNull();
+    expect(section.textContent).toContain("日ごとの使用量");
+    expect(section.querySelector("button")).not.toBeNull();
+  });
+
   it.each([
     ["idle", "前期間は未取得です"],
     ["loading", "前期間との比較を読み込み中"],
@@ -149,7 +172,7 @@ describe("UsageView", () => {
   it("retains mismatch and previous-period failure", () => {
     const series = { range: { ...overview.range, to: 2 }, groupBy: "model" as const, bucket: "day" as const, buckets: [], priceCoverage, priceSource: "test", costNote: "" };
     const html = renderToStaticMarkup(<UsageView {...viewProps} overview={overview} series={series} previousTotalsStatus="error" />);
-    expect(html).toContain("概要と推移の表示期間が異なるため");
+    expect(html).toContain("概要と日ごとの使用量の表示期間が異なるため");
     expect(html).toContain("前期間を取得できません");
   });
 
@@ -168,10 +191,12 @@ describe("UsageView", () => {
     }
   });
 
-  it("states the actual denominator of the active-day ratio", () => {
+  it("keeps hourly and weekday detail after the daily statistics move to the grid", () => {
     const html = renderToStaticMarkup(<UsageRhythm report={emptyRhythm} metric="ioTokens" />);
-    expect(html).toContain("記録のある日");
-    expect(html).toContain("最初〜最後の記録の1日間");
+    expect(html).toContain("時間帯（+09:00）");
+    expect(html).toContain("曜日");
+    expect(html).not.toContain("記録のある日");
+    expect(html.match(/数値を表で見る/g)).toHaveLength(2);
   });
 
   it("keeps the active filter visible when it matches no sessions", () => {
@@ -194,12 +219,12 @@ describe("UsageView", () => {
     expect(html).toContain("この期間");
     expect(html).toContain("何に使ったか");
     expect(html).toContain("つまずいた場所");
-    expect(html).toContain("推移");
+    expect(html).toContain("日ごとの使用量");
     expect(html).toContain("シリーズ別");
     expect(html).toContain("2つの切り口で比較");
     expect(html).toContain("案件別");
     expect(html).toContain("セッション一覧");
-    expect(html).toContain("稼働リズム");
+    expect(html).toContain("時間帯と曜日");
     expect(html).not.toContain("詳細");
     expect(html).not.toContain("内訳の次元");
     expect(html).not.toContain("連続日数");
@@ -207,7 +232,7 @@ describe("UsageView", () => {
     const period = html.indexOf("この期間");
     const usedFor = html.indexOf("何に使ったか");
     const stumble = html.indexOf("つまずいた場所");
-    const trend = html.indexOf("推移");
+    const trend = html.indexOf("日ごとの使用量");
     expect(period).toBeGreaterThanOrEqual(0);
     expect(usedFor).toBeGreaterThan(period);
     expect(stumble).toBeGreaterThan(usedFor);

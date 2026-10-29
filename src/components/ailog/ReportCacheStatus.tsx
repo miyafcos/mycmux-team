@@ -21,7 +21,7 @@ export function ReportCacheStatus() {
   const savedAt = Math.min(...entries.map(([, entry]) => entry.savedAt));
   const refreshing = entries.some(([, entry]) => entry.refreshing);
   const reports = { overview, usage: series, breakdown, pivot, rhythm };
-  const labels = { overview: "概要", usage: "推移", breakdown: "内訳", pivot: "クロス集計", rhythm: "稼働リズム" };
+  const labels = { overview: "概要", usage: "日ごとの使用量", breakdown: "内訳", pivot: "クロス集計", rhythm: "時間帯と曜日" };
   const selectedPeriod = preset === "custom" ? `${customFrom} 〜 ${customTo}`
     : ({ "7d": "直近7日", "30d": "直近30日", "90d": "直近90日", ytd: "今年", all: "全期間" })[preset];
   return <div role="status" aria-live="polite" data-testid="ailog-snapshot-status" style={{ ...noteStyle, marginTop: 2 }}>

@@ -1,5 +1,6 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { useToastStore } from "../stores/toastStore";
+import { isDetachedDashboardHost } from "./dashboardHost";
 import { __resetPaneLeftoverLabelsForTests, getPaneProcessTrees, listPaneLeftoverProcesses, rememberClosedPaneLabel } from "./paneLeftovers";
 
 export interface ClosedPaneProcessTarget {
@@ -23,7 +24,7 @@ async function checkClosedPanes(): Promise<void> {
     const message = affected.size === 1
       ? `閉じたタブ「${label}」から起動されたプロセスが ${trees.length} 件動いています`
       : `閉じたタブから起動されたプロセスが ${trees.length} 件動いています`;
-    useToastStore.getState().pushToast(message, "warning", {
+    useToastStore.getState().pushToast(message, "warning", isDetachedDashboardHost() ? undefined : {
       label: "タブ掃除で確認",
       run: () => {
         // Avoid a closedPaneStore -> socketCommands -> closedPaneStore cycle.

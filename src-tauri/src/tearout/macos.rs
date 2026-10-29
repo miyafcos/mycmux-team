@@ -830,6 +830,7 @@ pub(super) fn synthetic_sample(
             .entry(id.clone())
             .or_insert_with(|| {
                 let state = Arc::new(MoveState { mode, ..MoveState::default() });
+                state.requested_at_ms.store(unix_ms(), Ordering::Release);
                 *state.moving_label.lock().unwrap_or_else(|e| e.into_inner()) = Some(label.clone());
                 *state.source_label.lock().unwrap_or_else(|e| e.into_inner()) = Some(source.clone());
                 state.synthetic.store(true, Ordering::Release);
