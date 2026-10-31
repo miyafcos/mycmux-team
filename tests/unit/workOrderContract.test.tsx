@@ -1,3 +1,4 @@
+import { dashboardName, dashboardText } from "../helpers/dashboardA11y";
 // @vitest-environment jsdom
 
 import { act } from "react";
@@ -106,7 +107,7 @@ async function render(onFix: () => void = vi.fn()): Promise<void> {
 }
 
 function button(label: string): HTMLButtonElement {
-  return Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((entry) => entry.textContent === label)!;
+  return Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((entry) => dashboardName(entry) === label)!;
 }
 
 function roleChip(id: string): HTMLButtonElement {
@@ -115,13 +116,13 @@ function roleChip(id: string): HTMLButtonElement {
 
 async function chooseRole(id: string, label: string): Promise<void> {
   await act(async () => roleChip(id).click());
-  const choice = Array.from(container.querySelectorAll<HTMLButtonElement>("[role='menuitem']")).find((entry) => entry.textContent === label)!;
+  const choice = Array.from(container.querySelectorAll<HTMLButtonElement>("[role='menuitem']")).find((entry) => dashboardName(entry) === label)!;
   await act(async () => choice.click());
   await flushAsync();
 }
 
 function row(label: string): HTMLElement {
-  const term = Array.from(container.querySelectorAll<HTMLElement>(".cmux-dashboard-contract-rows dt")).find((entry) => entry.textContent === label)!;
+  const term = Array.from(container.querySelectorAll<HTMLElement>(".cmux-dashboard-contract-rows dt")).find((entry) => dashboardName(entry) === label)!;
   return term.nextElementSibling as HTMLElement;
 }
 
@@ -129,7 +130,7 @@ function assertNoProhibitedTerms(): void {
   const attributes = Array.from(container.querySelectorAll<HTMLElement>("[aria-label], [title]"))
     .map((entry) => `${entry.getAttribute("aria-label") ?? ""} ${entry.getAttribute("title") ?? ""}`)
     .join(" ");
-  expect(`${container.textContent} ${attributes}`).not.toMatch(/WorkOrder|Integrator|Source|worktree|workorder|outbox|seal|coverage/i);
+  expect(`${dashboardText(container)} ${attributes}`).not.toMatch(/WorkOrder|Integrator|Source|worktree|workorder|outbox|seal|coverage/i);
 }
 
 beforeEach(() => {
@@ -160,9 +161,20 @@ afterEach(async () => {
 });
 
 describe("WorkOrderContract", () => {
+  it("keeps the sealed plan version visible independently of its hover label", async () => {
+    await render();
+    await act(async () => button(dashboardStrings.contractGo).click());
+    await flushAsync();
+    const head = container.querySelector(".cmux-dashboard-contract.is-running .cmux-dashboard-contract-head")!;
+    expect(head.textContent).toContain("v1");
+    const version = head.querySelector(".cmux-dashboard-contract-head-note")!;
+    expect(version.getAttribute("title")).toBe(dashboardStrings.contractPlanSealed);
+    expect(version.getAttribute("aria-label")).toBe(dashboardStrings.contractPlanSealed);
+  });
+
   it("renders the seven rows in the approved order", async () => {
     await render();
-    const labels = Array.from(container.querySelectorAll(".cmux-dashboard-contract-rows dt")).map((entry) => entry.textContent);
+    const labels = Array.from(container.querySelectorAll(".cmux-dashboard-contract-rows dt")).map((entry) => dashboardName(entry));
     expect(labels).toEqual([
       dashboardStrings.contractPurpose,
       dashboardStrings.contractMaterials,
@@ -172,8 +184,8 @@ describe("WorkOrderContract", () => {
       dashboardStrings.contractCompletion,
       dashboardStrings.contractCoverage,
     ]);
-    expect(container.textContent).toContain(dashboardStrings.contractBeforeGo);
-    expect(container.textContent).toContain(dashboardStrings.contractNoSourceSend);
+    expect(dashboardText(container)).toContain(dashboardStrings.contractBeforeGo);
+    expect(dashboardText(container)).toContain(dashboardStrings.contractNoSourceSend);
   });
 
   it("rebuilds the preview after a role change and re-enables GO", async () => {
@@ -186,7 +198,7 @@ describe("WorkOrderContract", () => {
     const review = Array.from(container.querySelectorAll<HTMLButtonElement>("[role='menuitem']")).find((entry) => entry.textContent === dashboardStrings.contractRoleReview)!;
     await act(async () => review.click());
     await flushAsync();
-    expect(container.textContent).toContain(dashboardStrings.contractRefreshing);
+    expect(dashboardText(container)).toContain(dashboardStrings.contractRefreshing);
     expect(button(dashboardStrings.contractGo).disabled).toBe(true);
     expect(mocks.cancel).toHaveBeenCalledWith("draft-1");
 
@@ -219,7 +231,7 @@ describe("WorkOrderContract", () => {
     mocks.refresh.mockRejectedValueOnce("source snapshots not ready");
     await render();
     expect(mocks.cancel).toHaveBeenCalledWith("draft-1");
-    expect(container.textContent).toContain(dashboardStrings.contractSourceAcquisitionFailed);
+    expect(dashboardText(container)).toContain(dashboardStrings.contractSourceAcquisitionFailed);
     expect(button(dashboardStrings.contractGo).disabled).toBe(true);
   });
 
@@ -227,13 +239,13 @@ describe("WorkOrderContract", () => {
     await render();
     mocks.create.mockResolvedValueOnce({ workOrderId: "draft-2" });
     await chooseRole("tab-a", dashboardStrings.contractRoleReview);
-    expect(roleChip("tab-a").textContent).toContain(dashboardStrings.contractRoleReview);
+    expect(dashboardText(roleChip("tab-a"))).toContain(dashboardStrings.contractRoleReview);
 
     mocks.create.mockResolvedValueOnce({ workOrderId: "draft-3" });
     await act(async () => useComposerStore.getState().setDraft("pty-a", "これらを統合して最後まで実装する"));
     await act(async () => vi.advanceTimersByTimeAsync(500));
     await flushAsync();
-    expect(roleChip("tab-a").textContent).toContain(dashboardStrings.contractRoleReview);
+    expect(dashboardText(roleChip("tab-a"))).toContain(dashboardStrings.contractRoleReview);
     const latestPlan = mocks.create.mock.calls.at(-1)?.[0];
     expect(latestPlan.bindings.find((binding: { logicalSessionId: string }) => binding.logicalSessionId === "pty-a")?.roles).toEqual(["reviewer"]);
   });
@@ -244,8 +256,8 @@ describe("WorkOrderContract", () => {
       integratorPrompt: "WorkOrder Integrator Source worktree outbox seal coverage",
     }));
     await render();
-    expect(row(dashboardStrings.contractWrite).textContent).toContain(dashboardStrings.contractWriteTarget);
-    expect(row(dashboardStrings.contractWrite).textContent).toContain(dashboardStrings.contractBranchProtection);
+    expect(dashboardText(row(dashboardStrings.contractWrite))).toContain(dashboardStrings.contractWriteTarget);
+    expect(dashboardText(row(dashboardStrings.contractWrite))).toContain(dashboardStrings.contractBranchProtection);
     await act(async () => roleChip("tab-a").click());
     assertNoProhibitedTerms();
     await act(async () => {
@@ -271,10 +283,10 @@ describe("WorkOrderContract", () => {
     }));
     await act(async () => button(dashboardStrings.contractGo).click());
     await flushAsync();
-    expect(container.textContent).toContain(dashboardStrings.contractLaunchFailed);
-    expect(container.textContent).toContain("起動プログラムが応答しませんでした");
+    expect(dashboardText(container)).toContain(dashboardStrings.contractLaunchFailed);
+    expect(dashboardText(container)).toContain("起動プログラムが応答しませんでした");
     expect(container.querySelector(".cmux-dashboard-contract-progress")).toBeNull();
-    expect(container.textContent).toContain(dashboardStrings.contractHumanApprovalRequired);
+    expect(dashboardText(container)).toContain(dashboardStrings.contractHumanApprovalRequired);
   });
 
   it("does not call a pending launch request running", async () => {
@@ -284,9 +296,9 @@ describe("WorkOrderContract", () => {
     }));
     await act(async () => button(dashboardStrings.contractGo).click());
     await flushAsync();
-    expect(container.textContent).toContain(dashboardStrings.contractLaunchPending);
-    expect(container.textContent).not.toContain("統合役が作業中");
-    expect(container.textContent).not.toContain("実行中");
+    expect(dashboardText(container)).toContain(dashboardStrings.contractLaunchPending);
+    expect(dashboardText(container)).not.toContain("統合役が作業中");
+    expect(dashboardText(container)).not.toContain("実行中");
   });
 
   it("keeps the running view when the composer is edited afterwards", async () => {
@@ -296,7 +308,7 @@ describe("WorkOrderContract", () => {
     }));
     await act(async () => button(dashboardStrings.contractGo).click());
     await flushAsync();
-    expect(container.textContent).toContain(dashboardStrings.contractRunMerge);
+    expect(dashboardText(container)).toContain(dashboardStrings.contractRunMerge);
 
     const createCalls = mocks.create.mock.calls.length;
     await act(async () => {
@@ -307,8 +319,8 @@ describe("WorkOrderContract", () => {
 
     // Editing the composer must not replace the only view of what is running,
     // nor quietly start a second draft behind it.
-    expect(container.textContent).toContain(dashboardStrings.contractRunMerge);
-    expect(container.textContent).not.toContain(dashboardStrings.contractBeforeGo);
+    expect(dashboardText(container)).toContain(dashboardStrings.contractRunMerge);
+    expect(dashboardText(container)).not.toContain(dashboardStrings.contractBeforeGo);
     expect(mocks.create.mock.calls.length).toBe(createCalls);
   });
 
@@ -322,7 +334,7 @@ describe("WorkOrderContract", () => {
   it("distinguishes repository and source acquisition failures", async () => {
     mocks.preview.mockResolvedValueOnce(preview({ writeTarget: { unavailable: "not a git repository: C:\\plain" } }));
     await render();
-    expect(container.textContent).toContain(dashboardStrings.contractRepositoryUnavailable);
+    expect(dashboardText(container)).toContain(dashboardStrings.contractRepositoryUnavailable);
     expect(button(dashboardStrings.contractGo).disabled).toBe(true);
 
     await act(async () => root.unmount());
@@ -332,8 +344,8 @@ describe("WorkOrderContract", () => {
       sources: [{ logicalSessionId: "pty-a", label: "A", snapshotEventId: null, currentTask: null, latestInstruction: null, activity: null, openQuestions: [], acquired: false, failureReason: "no livebrief snapshot for PTY session" }],
     }));
     await render();
-    expect(container.textContent).toContain(dashboardStrings.contractMissingSources);
-    expect(container.textContent).not.toContain(dashboardStrings.contractRepositoryUnavailable);
+    expect(dashboardText(container)).toContain(dashboardStrings.contractMissingSources);
+    expect(dashboardText(container)).not.toContain(dashboardStrings.contractRepositoryUnavailable);
   });
 
   it("does not claim a new start when GO reports an existing request", async () => {
@@ -342,9 +354,9 @@ describe("WorkOrderContract", () => {
     mocks.preview.mockResolvedValueOnce(preview({ outbox: [] }));
     await act(async () => button(dashboardStrings.contractGo).click());
     await flushAsync();
-    expect(container.textContent).toContain(dashboardStrings.contractAlreadyStarted);
-    expect(container.textContent).toContain(dashboardStrings.contractLaunchUnknown);
-    expect(container.textContent).not.toContain("実行中");
+    expect(dashboardText(container)).toContain(dashboardStrings.contractAlreadyStarted);
+    expect(dashboardText(container)).toContain(dashboardStrings.contractLaunchUnknown);
+    expect(dashboardText(container)).not.toContain("実行中");
   });
 
   it("names an assigned integrator and uses the new-session label only when needed", async () => {
@@ -394,7 +406,7 @@ describe("WorkOrderContract", () => {
     expect(region.getAttribute("aria-atomic")).toBe("true");
     await chooseRole("integrator-pending", dashboardStrings.contractRoleWork);
     expect(container.querySelector(".cmux-dashboard-contract-note")).toBe(region);
-    expect(region.textContent).toContain(dashboardStrings.contractMissingIntegrator);
+    expect(dashboardText(region)).toContain(dashboardStrings.contractMissingIntegrator);
   });
 
   it("focuses the composer without changing the selected session", async () => {
@@ -455,7 +467,7 @@ describe("WorkOrderContract", () => {
     pendingRetry.resolve({ spawnRequestId: "retry-1" });
     await flushAsync();
     expect(mocks.preview).toHaveBeenLastCalledWith("draft-1", "C:\\repo");
-    expect(container.textContent).toContain(dashboardStrings.contractLaunchPending);
+    expect(dashboardText(container)).toContain(dashboardStrings.contractLaunchPending);
   });
 
   it("shows a retry failure reason without closing the running card", async () => {
@@ -471,7 +483,7 @@ describe("WorkOrderContract", () => {
     await act(async () => button("もう一度起動する").click());
     await flushAsync();
     expect(container.querySelector(".cmux-dashboard-contract.is-running")).not.toBeNull();
-    expect(container.textContent).toContain("再起動要求を送れませんでした");
+    expect(dashboardText(container)).toContain("再起動要求を送れませんでした");
   });
 
   it("closes a running card without cancelling the work order", async () => {
@@ -513,8 +525,8 @@ describe("WorkOrderContract", () => {
     await render();
     await act(async () => button(dashboardStrings.contractGo).click());
     await flushAsync();
-    expect(container.textContent).toContain(dashboardStrings.contractLaunchFailureUnknown);
-    expect(container.textContent).not.toMatch(/\bemit\b|workorder|spawn request/i);
+    expect(dashboardText(container)).toContain(dashboardStrings.contractLaunchFailureUnknown);
+    expect(dashboardText(container)).not.toMatch(/\bemit\b|workorder|spawn request/i);
   });
 
   it("renders integrator handoff headings and failure reasons without internal IDs or English", async () => {

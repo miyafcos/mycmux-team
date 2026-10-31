@@ -1,8 +1,11 @@
+import { windowLabel } from "../../lib/windowContext";
 import { memo } from "react";
+import { Layers, PanelsTopLeft } from "lucide-react";
+import { DashboardCount, DashboardGlyph, DashboardStatusMark } from "./DashboardUi";
 import type { CSSProperties } from "react";
 
 import { useLiveBriefStore } from "../../stores/liveBriefStore";
-import { AGENT_DORMANT_LABEL, dormantAgentDescription } from "../../lib/agentDormancy";
+import { dormantAgentDescription } from "../../lib/agentDormancy";
 import { useRecentInputStore } from "../../stores/recentInputStore";
 import { dashboardStrings } from "./dashboardStrings";
 import { dashboardActivity } from "./dashboardActivity";
@@ -69,7 +72,6 @@ function CardRow({ card, selected, open, now, hideWorkspaceBadge, onSelect, onJu
     ?? firstLine(card.lastLog)
     ?? firstLine(card.metadata?.cwd);
   const labels = stateLabels(state);
-  const stateColor = displayStateColor(state);
   const elapsedMinutes = card.noUpdateMinutes
     ?? (card.lastActivityAt ? Math.max(0, Math.floor((now - card.lastActivityAt) / 60_000)) : null);
   const agentColor = card.mark?.color.fg ?? "var(--cmux-text-tertiary)";
@@ -94,14 +96,13 @@ function CardRow({ card, selected, open, now, hideWorkspaceBadge, onSelect, onJu
     <span className="cmux-dash-row-body">
       <span className="cmux-dash-row-title">
         <strong>{card.label}</strong>
-        {card.windowLabel && card.windowLabel !== "main" ? <span className="cmux-dashboard-peer-window">{dashboardStrings.peerWindow}</span> : null}
+        {card.windowLabel && card.windowLabel !== windowLabel() ? <DashboardGlyph icon={PanelsTopLeft} label={dashboardStrings.peerWindow} className="cmux-dashboard-peer-window" /> : null}
         {hideWorkspaceBadge ? null : <span className="cmux-dash-row-workspace">{card.workspace.name}</span>}
       </span>
-      {preview ? <span className="cmux-dash-row-preview">{preview}</span> : null}
+      {preview && preview !== dashboardStrings.stateRunning ? <span className="cmux-dash-row-preview">{preview === dashboardStrings.modelResponseWait ? <DashboardStatusMark state="running" label={preview} /> : preview === dashboardStrings.turnStateUnknown ? <DashboardStatusMark state="unknown" label={preview} /> : preview === dashboardStrings.stateDelegationUnknown ? <DashboardStatusMark state="delegationUnknown" label={preview} /> : card.brief?.autonomy?.armedBackgroundCount && preview === dashboardStrings.backgroundWork(card.brief.autonomy.armedBackgroundCount) ? <DashboardCount icon={Layers} count={card.brief.autonomy.armedBackgroundCount} label={preview} /> : preview}</span> : null}
       <span className="cmux-dash-row-status">
-        <span title={labels.tooltip} aria-label={labels.tooltip} style={statePillStyle(stateColor)}>{card.neverStarted ? dashboardStrings.stateNotStarted : labels.primary}</span>
-        {dormantDescription ? <span title={dormantDescription} aria-label={dormantDescription} style={statePillStyle("var(--cmux-text-tertiary)")}>{AGENT_DORMANT_LABEL}</span> : null}
-        {labels.activityLabel !== labels.primary ? <span className="cmux-dash-row-activity">{labels.activityLabel}</span> : null}
+        <DashboardStatusMark state={card.neverStarted ? "notStarted" : state} label={card.neverStarted ? dashboardStrings.stateNotStarted : labels.tooltip} />
+        {dormantDescription ? <DashboardStatusMark state="dormant" label={dormantDescription} /> : null}
         {elapsedMinutes === null ? null : <span className="cmux-dash-row-elapsed">{card.telemetryHealth === "live" ? dashboardStrings.lastActivityAgo(elapsedMinutes) : dashboardStrings.elapsed(elapsedMinutes)}</span>}
       </span>
       {instrumentSlots.length ? <span className="cmux-dash-row-instrument" data-dashboard-instrument={card.tab.id} title={instrumentTitle}>

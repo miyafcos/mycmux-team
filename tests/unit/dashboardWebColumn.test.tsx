@@ -1,3 +1,4 @@
+import { dashboardText } from "../helpers/dashboardA11y";
 // @vitest-environment jsdom
 
 import { act, createRef } from "react";
@@ -121,8 +122,8 @@ describe("a Web tab's conversation in the dashboard", () => {
   it("states that the turns came from reading the page, and when", () => {
     renderColumn(transcriptEntry());
     const status = container.querySelector("[data-dashboard-web-transcript-status]");
-    expect(status?.textContent).toContain("ページから読み取り");
-    expect(status?.textContent).toContain("取得");
+    expect(dashboardText(status)).toContain("ページから読み取り");
+    expect(dashboardText(status)).toContain("取得");
     // Telemetry belongs to PTY sessions; a Web tab must not be told it is unlinked.
     expect(container.querySelector(".cmux-dashboard-telemetry-fallback")).toBeNull();
   });
@@ -153,6 +154,6 @@ describe("a Web tab's conversation in the dashboard", () => {
     const inputRef = createRef<HTMLTextAreaElement>();
     act(() => root.render(<ReplyComposer card={card} inputRef={inputRef} mentionTargets={[card]} />));
     expect(container.querySelector("textarea")?.disabled).toBe(true);
-    expect(container.textContent).toContain("Web ページには送信できません");
+    expect(dashboardText(container)).toContain("Web ページには送信できません");
   });
 });

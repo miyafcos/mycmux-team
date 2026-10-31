@@ -1,3 +1,4 @@
+import { dashboardName } from "../helpers/dashboardA11y";
 // @vitest-environment jsdom
 
 import { act } from "react";
@@ -104,7 +105,7 @@ describe("DashboardLinkedText", () => {
     await renderText(path);
     await act(async () => { (container.querySelector("a") as HTMLAnchorElement).click(); });
 
-    expect([...container.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
+    expect([...container.querySelectorAll("button")].map((button) => dashboardName(button))).toEqual([
       "既定のアプリで開く",
       "ファイルの場所を表示",
     ]);
@@ -169,7 +170,7 @@ describe("DashboardLinkedText", () => {
     expect(mocks.openInDashboardPreview).not.toHaveBeenCalled();
     expect(mocks.preview).not.toHaveBeenCalled();
     expect(mocks.openPreviewPane).not.toHaveBeenCalled();
-    expect([...container.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
+    expect([...container.querySelectorAll("button")].map((button) => dashboardName(button))).toEqual([
       "既定のアプリで開く",
       "ファイルの場所を表示",
     ]);
@@ -183,7 +184,7 @@ describe("DashboardLinkedText", () => {
     await renderText(path);
     await act(async () => { (container.querySelector("a") as HTMLAnchorElement).click(); });
     const openButton = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === dashboardStrings.pathActionOpenDefault,
+      (button) => dashboardName(button) === dashboardStrings.pathActionOpenDefault,
     );
     expect(openButton).toBeTruthy();
     await act(async () => { openButton!.click(); });
@@ -200,7 +201,7 @@ describe("DashboardLinkedText", () => {
     await renderText(path);
     await act(async () => { (container.querySelector("a") as HTMLAnchorElement).click(); });
     const openButton = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === dashboardStrings.pathActionOpenDefault,
+      (button) => dashboardName(button) === dashboardStrings.pathActionOpenDefault,
     );
     await act(async () => {
       openButton!.click();

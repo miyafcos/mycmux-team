@@ -1,3 +1,4 @@
+import { dashboardText } from "../helpers/dashboardA11y";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -78,9 +79,9 @@ describe("FIX-4 clock and queue display reproductions", () => {
     document.body.append(node);
     const root = createRoot(node);
     act(() => root.render(<DashboardCardRow card={early} selected={false} open={false} now={early.now!} hideWorkspaceBadge={false} onSelect={() => {}} onJump={() => {}} />));
-    expect(node.textContent).toContain("作業中");
+    expect(dashboardText(node)).toContain("作業中");
     act(() => root.render(<DashboardCardRow card={ended} selected={false} open={false} now={ended.now!} hideWorkspaceBadge={false} onSelect={() => {}} onJump={() => {}} />));
-    expect(node.textContent).toContain("返答終了");
+    expect(dashboardText(node)).toContain("返答終了");
     expect(node.querySelector('[aria-label="返答終了 · 要確認"]')).not.toBeNull();
     act(() => root.unmount());
     node.remove();

@@ -1,3 +1,4 @@
+import { dashboardText } from "../helpers/dashboardA11y";
 // @vitest-environment jsdom
 
 import { act } from "react";
@@ -7,6 +8,7 @@ import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  windowLabel: "main",
   syncDashboardEvents: vi.fn(),
   stopEventPolling: vi.fn(),
   onSessionStatusChanged: vi.fn(() => Promise.resolve(() => {})),
@@ -81,6 +83,7 @@ vi.mock("../../src/components/dashboard/askQuestionRouting", async () => {
 
 vi.mock("@tauri-apps/api/core",async original=>({...await original<typeof import("@tauri-apps/api/core")>(),invoke:mocks.invoke}));
 
+vi.mock("../../src/lib/windowContext", async original => ({ ...await original<object>(), windowLabel: () => mocks.windowLabel }));
 import { clampDashboardChatDropIndicatorOffset, DashboardView } from "../../src/components/dashboard/DashboardView";
 import { dashboardStrings } from "../../src/components/dashboard/dashboardStrings";
 import { useInterventionFeedbackStore } from "../../src/components/dashboard/interventionRouting";
@@ -111,6 +114,7 @@ import { peerIndex } from "./fixtures/peerWindowTabs";
 import * as ownerNavigation from "../../src/lib/agentResumeOwner";
 import { useToastStore, __resetToastStoreForTests } from "../../src/stores/toastStore";
 import { useComposerStore } from "../../src/stores/composerStore";
+import { mountDetachedDashboardHost } from "../../src/lib/dashboardHost";
 
 const NOW = Date.parse("2026-08-14T12:00:00.000Z");
 
@@ -289,6 +293,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  mocks.windowLabel = "main";
   usePeerWindowTabsStore.setState({ index: [], completedReads: 0, pollers: 0, reading: false, requestSequence: 0, handledRequestSequence: 0 });
   useSettingsStore.setState({conversationHistoryMode:"agent-wheel"});
   mocks.mappings.mockImplementation(async(ids:string[])=>Object.fromEntries(ids.map(id=>[id,{agent_kind:"codex",session_id:`exact-${id}`}])));
@@ -349,6 +354,57 @@ async function renderDashboard(): Promise<void> {
 }
 
 describe("main dashboard peer windows", () => {
+  it("keeps the selected compact conversation visible when a preceding peer column arrives late", async () => {
+    mocks.windowLabel = "mycmux-w1";
+    setViewportWidth(640);
+    vi.spyOn(HTMLElement.prototype, "offsetLeft", "get").mockImplementation(function (this: HTMLElement) {
+      if (!this.hasAttribute("data-dashboard-chat-column")) return 0;
+      const siblings = Array.from(this.parentElement!.querySelectorAll("[data-dashboard-chat-column]"));
+      return siblings.indexOf(this) * 640;
+    });
+    const release = mountDetachedDashboardHost();
+    try {
+      seedDashboard({ workspace: workspace([tab("local", "local-session", "Local")]), selectedTabId: "local",
+        chatColumnTabIds: ["peer-tab", "local"], activeChatColumn: 1 });
+      await renderDashboard();
+      const columns = container.querySelector<HTMLElement>(".cmux-dashboard-chat-columns")!;
+      expect(columns.querySelectorAll("[data-dashboard-chat-column]")).toHaveLength(1);
+      expect(columns.scrollLeft).toBe(0);
+      await act(async () => usePeerWindowTabsStore.getState().acceptIndex(peerIndex("main")));
+      expect(columns.querySelectorAll("[data-dashboard-chat-column]")).toHaveLength(2);
+      expect(useDashboardViewStore.getState().selectedTabId).toBe("local");
+      expect(columns.scrollLeft).toBe(640);
+      await act(async () => root.render(null));
+    } finally { release(); }
+  });
+  it.each(["main", "mycmux-w2"])("a detached dashboard badges, opens, answers and jumps to %s without closing", async owner => {
+    mocks.windowLabel = "mycmux-w1";
+    const navigate = vi.spyOn(ownerNavigation, "openSessionInWindow").mockResolvedValue(undefined);
+    try {
+      seedDashboard({ workspace: workspace([tab("local", "local-session", "Local")]), selectedTabId: "peer-tab",
+        chatColumnTabIds: ["peer-tab", DASHBOARD_INBOX_COLUMN_ID] });
+      usePeerWindowTabsStore.getState().acceptIndex(peerIndex(owner));
+      await renderDashboard();
+      expect(container.querySelector("[data-dashboard-row='local'] .cmux-dashboard-peer-window")).toBeNull();
+      expect(container.querySelector("[data-dashboard-row='peer-tab'] .cmux-dashboard-peer-window")?.getAttribute("aria-label")).toBe(dashboardStrings.peerWindow);
+      expect(container.querySelector("[data-dashboard-chat-column='peer-tab'] .cmux-dashboard-peer-window")?.getAttribute("aria-label")).toBe(dashboardStrings.peerWindow);
+      const before = useWorkspaceListStore.getState();
+      await act(async () => container.querySelector("[data-dashboard-row='peer-tab']")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+      expect(navigate).toHaveBeenCalledWith(owner, "peer-session");
+      expect(useWorkspaceListStore.getState()).toBe(before);
+      expect(useDashboardViewStore.getState().open).toBe(true);
+      const actions = mocks.attentionCards.mock.calls.at(-1)![0] as { openSession: (target: unknown) => Promise<unknown>; answerQuestion: (target: unknown) => Promise<unknown> };
+      await act(async () => useDashboardViewStore.getState().setSelectedTabId("local"));
+      await act(async () => actions.openSession({ type: "logical", logical_session_id: "peer-conversation" }));
+      expect(useDashboardViewStore.getState().selectedTabId).toBe("peer-tab");
+      await act(async () => useDashboardViewStore.getState().setSelectedTabId("local"));
+      useComposerStore.getState().setCommandKind("peer-session", "plain");
+      await act(async () => actions.answerQuestion({ type: "pty", pty_session_id: "peer-session" }));
+      expect(useDashboardViewStore.getState().selectedTabId).toBe("peer-tab");
+      expect(useComposerStore.getState().commandKindBySession["peer-session"]).toBe("answer-forward");
+      expect(mocks.invoke.mock.calls.some(([command]) => command === "open_main_dashboard")).toBe(false);
+    } finally { navigate.mockRestore(); }
+  });
   it.each(["enter", "list", "column"])("jumps from %s using the indexed owner, preserving main selection and the dashboard", async entry => {
     const navigate = vi.spyOn(ownerNavigation, "openSessionInWindow").mockResolvedValue(undefined);
     try {
@@ -363,7 +419,7 @@ describe("main dashboard peer windows", () => {
       expect(useWorkspaceListStore.getState()).toBe(before);
       expect(useDashboardViewStore.getState().open).toBe(true);
       expect(container.querySelector("[data-minimap-tab='peer-tab']")).toBeNull();
-      expect(container.querySelector("[data-dashboard-row='peer-tab'] .cmux-dashboard-peer-window")?.textContent).toBe(dashboardStrings.peerWindow);
+      expect(container.querySelector("[data-dashboard-row='peer-tab'] .cmux-dashboard-peer-window")?.getAttribute("aria-label")).toBe(dashboardStrings.peerWindow);
     } finally { navigate.mockRestore(); }
   });
   it("reports navigation failure and opens/answers peer attention cards through the shared card list", async () => {
@@ -431,8 +487,8 @@ describe("main dashboard peer windows", () => {
     const index = peerIndex(); Object.assign(index[0].workspaces[0].panes[0].tabs[0], { type: "web", preset_id: "chatgpt" });
     usePeerWindowTabsStore.getState().acceptIndex(index); await renderDashboard();
     const column = container.querySelector("[data-dashboard-chat-column='peer-tab']")!;
-    expect(column.textContent).toContain("別ウィンドウのダッシュボードからは読めません");
-    expect(column.textContent).not.toContain(dashboardStrings.webTranscriptLoading);
+    expect(dashboardText(column)).toContain("別ウィンドウのダッシュボードからは読めません");
+    expect(dashboardText(column)).not.toContain(dashboardStrings.webTranscriptLoading);
     expect(column.querySelector("[data-dashboard-web-transcript-refresh]")).toBeNull();
     expect(mocks.invoke.mock.calls.filter(([command]) => command === "webpane_read")).toEqual([]);
   });
@@ -561,7 +617,7 @@ describe("DashboardView split3 selection", () => {
 
     expect(useSessionAttentionStore.getState().doneMarkByTab.get(target.id)).toBe(NOW);
     expect(useSessionAttentionStore.getState().seenAttentionByTab.get(target.id)).toBe(attention.attentionId);
-    expect(container.querySelector(`[data-dashboard-manual-done='${target.id}']`)?.textContent)
+    expect(container.querySelector(`[data-dashboard-manual-done='${target.id}']`)?.querySelector("[role=img]")?.getAttribute("aria-label"))
       .toBe(dashboardStrings.manualDoneBadge);
     expect(container.querySelector<HTMLButtonElement>(`[data-dashboard-manual-done-toggle='${target.id}']`)?.textContent)
       .toBe(dashboardStrings.unmarkDoneButton);
@@ -705,9 +761,9 @@ describe("DashboardView split3 selection", () => {
     await renderDashboard();
 
     const fallback = container.querySelector<HTMLElement>("[aria-label='端末から拾える情報']");
-    expect(fallback?.textContent).toContain("履歴を読めません");
-    expect(fallback?.textContent).toContain("Check the log");
-    expect(fallback?.textContent).toContain("last terminal output");
+    expect(dashboardText(fallback)).toContain("履歴を読めません");
+    expect(dashboardText(fallback)).toContain("Check the log");
+    expect(dashboardText(fallback)).toContain("last terminal output");
     expect(fallback?.closest("[data-dashboard-center='true']")).not.toBeNull();
     expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "端末" || button.textContent === "チャット")).toBe(false);
   });
@@ -725,7 +781,7 @@ describe("DashboardView split3 selection", () => {
     const empty = container.querySelector<HTMLElement>(".cmux-dashboard-chat-empty")!;
     expect(empty.dataset.dashboardChatEmpty).toBe("unavailable");
     expect(empty.textContent).toContain("会話の記録を読み込めていません");
-    expect(empty.textContent).toContain("履歴を読めません");
+    expect(dashboardText(empty)).toContain("履歴を読めません");
     expect(empty.textContent).not.toContain("まだ会話の記録がありません");
 
     await act(async () => root.unmount());
@@ -765,7 +821,7 @@ describe("DashboardView split3 selection", () => {
     });
     await renderDashboard();
     const column = container.querySelector("[data-dashboard-chat-column]");
-    expect(column?.textContent).not.toContain("stale question");
+    expect(dashboardText(column)).not.toContain("stale question");
     expect(column?.querySelector("[data-dashboard-chat-empty]")).not.toBeNull();
     expect(mocks.observeActiveSession).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: item.sessionId, questionActive: false }));
   });
@@ -776,9 +832,9 @@ describe("DashboardView split3 selection", () => {
     await renderDashboard();
 
     const header = container.querySelector<HTMLElement>("[data-dashboard-chat-column][data-active='true'] > header");
-    expect(header?.textContent).toContain("Header session");
-    expect(header?.textContent).toContain("要回答");
-    expect(header?.textContent).toContain("0分");
+    expect(dashboardText(header)).toContain("Header session");
+    expect(dashboardText(header)).toContain("要回答");
+    expect(dashboardText(header)).toContain("0分");
     expect(header?.querySelector("button[aria-pressed]:not([data-dashboard-chat-column-pin])")).toBeNull();
     expect(header?.querySelector("[data-dashboard-chat-column-pin]")).not.toBeNull();
     expect(container.querySelector(".cmux-dashboard-detail-drawer")).toBeNull();
@@ -915,7 +971,7 @@ describe("DashboardView Q1 chat columns", () => {
       usePaneDragStore.getState().moveDrag({ x: 50, y: 20 });
     });
     expect(container.querySelector(".cmux-dashboard-chat-drop-indicator")).toBeNull();
-    expect(container.querySelector<HTMLElement>(".cmux-dashboard-chat-drop-capped")?.textContent).toBe("3列まで");
+    expect(container.querySelector<HTMLElement>(".cmux-dashboard-chat-drop-capped")?.getAttribute("aria-label")).toBe("3列まで");
     expect(useDashboardViewStore.getState().chatColumnTabIds).toEqual([first.id, second.id, third.id]);
   });
 
@@ -944,7 +1000,7 @@ describe("DashboardView Q1 chat columns", () => {
     });
     expect(columnsRoot.dataset.dashboardChatDropPreview).toBe("full");
     // ピルと文言はそのまま維持する (面全体の演出はその上乗せ)。
-    expect(container.querySelector<HTMLElement>(".cmux-dashboard-chat-drop-capped")?.textContent).toBe("3列まで");
+    expect(container.querySelector<HTMLElement>(".cmux-dashboard-chat-drop-capped")?.getAttribute("aria-label")).toBe("3列まで");
     expect(columnsRoot.dataset.dashboardChatCapPulse).toBeUndefined();
 
     await act(async () => window.dispatchEvent(pointer("pointerup", 77, 50, 20)));
@@ -1233,7 +1289,7 @@ describe("DashboardView Q1 chat columns", () => {
     });
     await renderDashboard();
 
-    expect(container.querySelector(".cmux-dashboard-composer-destination")?.textContent).toContain("入力先: Second（2/2列）");
+    expect(container.querySelector(".cmux-dashboard-composer-destination > span")?.getAttribute("aria-label")).toContain("入力先: Second（2/2列）");
     const textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
@@ -1679,5 +1735,71 @@ describe("DashboardView AskUserQuestion screen questions", () => {
     expect(submit.defaultPrevented).toBe(false);
     expect(mocks.submitAskQuestionReview).not.toHaveBeenCalled();
     expect(mocks.submitAskQuestionChoice).not.toHaveBeenCalled();
+  });
+});
+
+describe("dashboard icon action accessibility", () => {
+  it("names every icon-only action in the real list, minimap, chat column and column options", async () => {
+    const local = tab("icon-local", "icon-session", "Icon session");
+    seedDashboard({ workspace: workspace([local]), selectedTabId: local.id });
+    await renderDashboard();
+    const controls = [...container.querySelectorAll<HTMLButtonElement>("button, summary")];
+    const iconOnly = controls.filter(control => control.querySelector("svg") && !control.textContent?.trim());
+    expect(iconOnly.length).toBeGreaterThan(8);
+    for (const control of iconOnly) {
+      expect(control.getAttribute("aria-label")?.trim(), control.outerHTML).toBeTruthy();
+      expect(control.getAttribute("title")?.trim(), control.outerHTML).toBeTruthy();
+    }
+  });
+});
+
+describe("D1R-002 compact scroll destination", () => {
+  it("settles the visible column, active index, destination and mock sender together without scroll feedback", async () => {
+    mocks.windowLabel = "mycmux-w1";
+    setViewportWidth(640);
+    const offset = vi.spyOn(HTMLElement.prototype, "offsetLeft", "get").mockImplementation(function (this: HTMLElement) {
+      if (!this.hasAttribute("data-dashboard-chat-column")) return 0;
+      return Array.from(this.parentElement!.querySelectorAll("[data-dashboard-chat-column]")).indexOf(this) * 640;
+    });
+    const release = mountDetachedDashboardHost();
+    try {
+      const first = tab("scroll-a", "scroll-session-a", "Scroll A");
+      const second = tab("scroll-b", "scroll-session-b", "Scroll B");
+      mocks.handleSocketCommand.mockResolvedValue({ confirmed: true });
+      seedDashboard({ workspace: workspace([first, second]), selectedTabId: second.id,
+        chatColumnTabIds: [first.id, second.id], activeChatColumn: 1 });
+      await renderDashboard();
+      const columns = container.querySelector<HTMLElement>(".cmux-dashboard-chat-columns")!;
+      expect(columns.scrollLeft).toBe(640);
+      await act(async () => {
+        columns.scrollLeft = 0;
+        columns.dispatchEvent(new Event("scroll"));
+        await vi.advanceTimersByTimeAsync(180);
+      });
+      expect(useDashboardViewStore.getState()).toMatchObject({ activeChatColumn: 0, selectedTabId: first.id });
+      expect(columns.querySelector<HTMLElement>("[data-dashboard-chat-column][data-active='true']")?.dataset.dashboardChatColumn).toBe(first.id);
+      const destination = container.querySelector<HTMLElement>(".cmux-dashboard-composer-destination > span")!;
+      expect(destination.getAttribute("aria-label") ?? destination.textContent).toBe("入力先: Scroll A（1/2列）");
+      const textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(textarea, "for the visible column");
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => {
+        textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+        await Promise.resolve();
+      });
+      expect(mocks.handleSocketCommand).toHaveBeenCalledWith("pane.send_text", { sessionId: first.sessionId, text: "for the visible column", enter: true });
+      await act(async () => useDashboardViewStore.getState().setActiveChatColumn(1));
+      expect(columns.scrollLeft).toBe(640);
+      await act(async () => {
+        columns.dispatchEvent(new Event("scroll"));
+        columns.dispatchEvent(new Event("scrollend"));
+        await vi.advanceTimersByTimeAsync(600);
+      });
+      expect(useDashboardViewStore.getState().activeChatColumn).toBe(1);
+      expect(columns.scrollLeft).toBe(640);
+      await act(async () => root.render(null));
+    } finally { release(); offset.mockRestore(); }
   });
 });

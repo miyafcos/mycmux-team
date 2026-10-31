@@ -1,3 +1,5 @@
+import { ExternalLink, FolderOpen } from "lucide-react";
+import { DashboardIconButton } from "./DashboardUi";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-shell";
@@ -172,18 +174,18 @@ export function DashboardLinkedText({
   return <>
     {content}
     {fileActionUri ? <span className="cmux-dashboard-path-actions" data-livebrief-interactive="true">
-      <button type="button" onClick={() => {
+      <DashboardIconButton icon={ExternalLink} label={dashboardStrings.pathActionOpenDefault} onClick={() => {
         setActionError(null);
         void openPathWithDefaultApp(fileActionUri)
           .then(() => setFileActionUri(null))
           .catch((error) => setActionError(dashboardStrings.pathActionFailed(String(error))));
-      }}>{dashboardStrings.pathActionOpenDefault}</button>
-      <button type="button" onClick={() => {
+      }} />
+      <DashboardIconButton icon={FolderOpen} label={dashboardStrings.pathActionReveal} onClick={() => {
         setActionError(null);
         void revealPathInExplorer(fileActionUri)
           .then(() => setFileActionUri(null))
           .catch((error) => setActionError(dashboardStrings.pathActionFailed(String(error))));
-      }}>{dashboardStrings.pathActionReveal}</button>
+      }} />
       {actionError ? <span className="cmux-dashboard-path-action-error" role="alert" style={{ color: "var(--status-error)" }}>{actionError}</span> : null}
     </span> : null}
   </>;

@@ -93,11 +93,11 @@ describe("AttentionCards", () => {
     await act(async () => button.click());
     expect(operation).toHaveBeenCalledOnce();
     expect(button.hasAttribute("aria-busy")).toBe(false);
-    expect(container.querySelector("[role=status]")?.textContent).toBe(dashboardStrings.attentionActionFailed);
+    expect(container.querySelector("[role=status] [role=img]")?.getAttribute("aria-label")).toBe(dashboardStrings.attentionActionFailed);
     await act(async () => button.click());
     expect(operation).toHaveBeenCalledTimes(2);
     expect(button.hasAttribute("aria-busy")).toBe(false);
-    expect(container.querySelector("[role=status]")?.textContent).toBe(dashboardStrings.attentionActionSucceeded);
+    expect(container.querySelector("[role=status] [role=img]")?.getAttribute("aria-label")).toBe(dashboardStrings.attentionActionSucceeded);
   });
   it("renders a session chip and routes its click to the dashboard callback", async () => {
     const openCardSession = vi.fn();
@@ -129,7 +129,7 @@ describe("AttentionCards", () => {
       root.render(<AttentionCards {...actionHandlers().actions} />);
       await Promise.resolve();
     });
-    expect(container.textContent).toContain(dashboardStrings.attentionKindLabel("sessionBoardIncident"));
+    expect(container.querySelector('[role=img][aria-label="'+dashboardStrings.attentionKindLabel("sessionBoardIncident")+'"]')).not.toBeNull();
     expect(container.querySelectorAll("[data-attention-card]")).toHaveLength(1);
   });
 

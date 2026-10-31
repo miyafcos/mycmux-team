@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { useElementWidth } from "../../hooks/useElementWidth";
-import { type SeriesReport } from "../../lib/ailog";
+import { useGrassWidth } from "./useGrassWidth";
+import { type SeriesGroupBy, type SeriesReport } from "../../lib/ailog";
 import { useThemeStore } from "../../stores/themeStore";
 import { grassScale } from "./grassScale";
 import { buildUsageGrass, grassLayout, type GrassBreakdown, type GrassDay, type UsageGrassModel } from "./usageGrassModel";
@@ -85,19 +85,43 @@ const GrassGrid = memo(function GrassGrid({ model, colors, width, pinned, onPrev
 
 function GrassTooltip({ preview }: { preview: NonNullable<Preview> }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState({ left: 8, top: 8 });
   useLayoutEffect(() => {
     const node = ref.current;
     if (!node) return;
     const { width, height } = node.getBoundingClientRect();
     const { anchor } = preview;
-    const left = Math.max(8, Math.min(anchor.left + anchor.width / 2 - width / 2, window.innerWidth - width - 8));
+    let left = Math.max(8, Math.min(anchor.left + anchor.width / 2 - width / 2, window.innerWidth - width - 8));
+    const root = node.closest("[data-usage-grass]");
+    const calendar = root?.querySelector("[data-grass-calendar]")?.getBoundingClientRect();
+    const breakdown = root?.querySelector("[data-grass-breakdown]")?.getBoundingClientRect();
+    if (calendar && breakdown && breakdown.width > 0 && breakdown.left >= calendar.right) {
+      left = Math.max(8, Math.min(left, breakdown.left - width - 8));
+    }
     const above = anchor.top - height - 10;
     const preferred = preview.day.row <= 1 || above < 8 ? anchor.bottom + 10 : above;
-    const top = Math.max(8, Math.min(preferred, window.innerHeight - height - 8));
-    setPosition({ left, top });
+    let top = Math.max(8, Math.min(preferred, window.innerHeight - height - 8));
+    if (breakdown && breakdown.width > 0 && breakdown.height > 0
+      && left < breakdown.right && left + width > breakdown.left
+      && top < breakdown.bottom && top + height > breakdown.top) {
+      const clampLeft = (value: number) => Math.max(8, Math.min(value, window.innerWidth - width - 8));
+      const clampTop = (value: number) => Math.max(8, Math.min(value, window.innerHeight - height - 8));
+      const candidates = [
+        { left: clampLeft(breakdown.left - width - 8), top },
+        { left, top: clampTop(breakdown.top - height - 8) },
+        { left, top: clampTop(breakdown.bottom + 8) },
+        { left: clampLeft(breakdown.right + 8), top },
+      ];
+      const clear = candidates.find(candidate => candidate.left + width <= breakdown.left
+        || candidate.left >= breakdown.right || candidate.top + height <= breakdown.top
+        || candidate.top >= breakdown.bottom);
+      if (clear) ({ left, top } = clear);
+      else top = breakdown.top - height - 8;
+    }
+    // Position before paint without a second tooltip render on every pointer move.
+    node.style.left = left + "px";
+    node.style.top = top + "px";
   }, [preview]);
-  return <div ref={ref} role="tooltip" style={{ position: "fixed", ...position, zIndex: 20, pointerEvents: "none", maxWidth: "calc(100vw - 16px)", boxSizing: "border-box",
+  return <div ref={ref} role="tooltip" style={{ position: "fixed", left: 8, top: 8, zIndex: 20, pointerEvents: "none", maxWidth: "calc(100vw - 16px)", boxSizing: "border-box",
     padding: "7px 10px", borderRadius: 5, background: "var(--cmux-popover)", border: "1px solid var(--cmux-border)", boxShadow: "var(--cmux-shadow-popover, 0 3px 12px #0003)", color: "var(--cmux-text)", fontSize: "var(--cmux-font-size-xs)", lineHeight: 1.5 }}>
     <div>{preview.day.label} · {preview.day.tooltipValueLabel}</div>
     {preview.day.topLabel !== "—" ? <div style={{ color: "var(--cmux-text-secondary)", overflowWrap: "anywhere" }}>{preview.day.topLabel}</div> : null}
@@ -150,12 +174,31 @@ function Breakdown({ data, scope, pinned, metric, report, size, periodMessage, o
   </div>;
 }
 
+const GrassSummary = memo(function GrassSummary({ model, metric, groupBy }: {
+  model: UsageGrassModel; metric: UsageMetric; groupBy: SeriesGroupBy;
+}) {
+  return <>
+        <dl data-grass-statistics style={{ ...noteStyle, display: "grid", gridTemplateColumns: "max-content max-content", columnGap: 12, rowGap: 4, margin: "12px 0 0", width: "max-content", maxWidth: "100%", alignSelf: "flex-start" }}>
+          {model.summaryItems.map(item => <Fragment key={item.label}><dt>{item.label}</dt><dd style={{ margin: 0, whiteSpace: "nowrap", color: "var(--cmux-text)" }}>{item.value}</dd></Fragment>)}
+        </dl>
+        <details style={{ marginTop: 16, width: "100%", contain: "inline-size" }}>
+          <summary style={{ ...noteStyle, cursor: "pointer", color: "var(--cmux-text-secondary)" }}>日ごとの数値を表で見る</summary>
+          <VScrollBox maxHeight={320} label="日ごとの数値を表で見る">
+            <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8, fontSize: "var(--cmux-font-size-xs)" }}>
+              <thead><tr><th scope="col" style={leftCell}>日付</th><th scope="col" style={{ ...leftCell, textAlign: "right" }}>{usageMetricInfo(metric).label}</th><th scope="col" style={leftCell}>{"いちばん多い" + groupByLabel(groupBy)}</th></tr></thead>
+              <tbody>{model.recordedDays.map(day => <tr key={day.day}><th scope="row" style={{ ...leftCell, fontWeight: 400, whiteSpace: "nowrap" }}>{day.label}</th><td style={{ padding: "5px 8px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{day.fullValueLabel}</td><td style={{ ...leftCell, overflowWrap: "anywhere" }}>{day.topLabel}</td></tr>)}</tbody>
+            </table>
+          </VScrollBox>
+        </details>
+  </>;
+});
+
 export function UsageGrass({ report, metric, onPickDay }: {
   report: SeriesReport; metric: UsageMetric; onPickDay: (day: number) => void;
 }) {
-  const { ref, width } = useElementWidth();
-  const scheme = useThemeStore(state => state?.theme?.colorScheme ?? "dark");
-  const colors = useMemo(() => grassScale(scheme), [scheme]);
+  const { ref, width } = useGrassWidth();
+  const theme = useThemeStore(state => state?.theme);
+  const colors = useMemo(() => grassScale(theme?.colorScheme, theme?.id), [theme?.colorScheme, theme?.id]);
   const model = useMemo(() => buildUsageGrass(report, metric, report.groupBy), [report, metric]);
   const size = useMemo<BreakdownSize>(() => {
     const overall = model.breakdown("all");
@@ -202,6 +245,18 @@ export function UsageGrass({ report, metric, onPickDay }: {
     if (current?.source === "focus" && document.activeElement === current.element) showPreview(current.day, current.element, "focus");
     else showPreview(null);
   }, [showPreview]);
+  const previewVisible = preview !== null;
+  useEffect(() => {
+    if (!previewVisible) return;
+    // Fixed hints must follow ancestor scrolling too, including the panel.
+    // Pointer previews close; a focused cell is remeasured and remains visible.
+    window.addEventListener("scroll", scrollPreview, true);
+    window.addEventListener("resize", scrollPreview);
+    return () => {
+      window.removeEventListener("scroll", scrollPreview, true);
+      window.removeEventListener("resize", scrollPreview);
+    };
+  }, [previewVisible, scrollPreview]);
   const scope = preview?.day ?? model.days.find(day => day.day === pinned) ?? null;
   const data = model.breakdown(scope?.day ?? "all");
   const wide = width >= 760;
@@ -212,32 +267,24 @@ export function UsageGrass({ report, metric, onPickDay }: {
   }}>
     <style>{[
       "[data-usage-day] { outline: none; }",
+      "@container (min-width: 760px) { [data-grass-columns] { grid-template-columns: max-content minmax(320px, 720px) !important; } [data-grass-calendar] { margin-left: auto; } }",
       "[data-usage-day]:focus-visible { outline: 2px solid var(--cmux-accent); outline-offset: 1px; }",
       ".usage-grass-header { display: grid; grid-template-columns: minmax(0, 1fr) max-content; grid-template-areas: 'heading total' 'actions actions'; column-gap: 12px; row-gap: 8px; min-height: 60px; align-items: center; align-content: center; margin-bottom: 12px; }",
       "@container (min-width: 560px) { .usage-grass-header { grid-template-columns: max-content minmax(0, 1fr) max-content; grid-template-areas: 'heading actions total'; min-height: 32px; } }",
     ].join("\n")}</style>
+    <div data-grass-layout-container style={{ containerType: "inline-size", minWidth: 0 }}>
     <div data-grass-columns style={{ display: "grid", gridTemplateColumns: wide ? "max-content minmax(320px, 720px)" : "minmax(0, 1fr)", gap: 24, alignItems: "start" }}>
       <div data-grass-left style={{ minWidth: 0, width: wide ? "max-content" : "100%", maxWidth: wide ? gridWidth : "100%", display: "flex", flexDirection: "column", alignItems: wide ? "flex-end" : "flex-start" }}>
         <div data-grass-chart style={{ width: Math.min(layout.width, gridWidth || layout.width), maxWidth: "100%", minWidth: Math.min(100, gridWidth || 100) }}>
           <GrassGrid model={model} colors={colors} width={gridWidth} pinned={pinned} onPreview={showPreview} onPin={pin} onEscape={clear} onScroll={scrollPreview} />
-          <div data-grass-legend-row role="img" aria-label={"少から多の凡例: " + model.legend.map(entry => entry.label).join("、")} style={{ ...noteStyle, display: "flex", alignItems: "center", justifyContent: layout.width < 100 ? "flex-start" : "flex-end", gap: 4, whiteSpace: "nowrap", marginTop: 12 }}>
+          <div data-grass-legend-row role="img" aria-label={"少から多の凡例: " + model.legend.map(entry => entry.label).join("、")} style={{ ...noteStyle, display: "flex", alignItems: "center", justifyContent: layout.width < 100 ? "flex-start" : "flex-end", width: layout.width < 100 ? "max-content" : undefined, gap: layout.width < 100 ? 1 : 4, whiteSpace: "nowrap", marginTop: 12, marginLeft: wide && layout.width < 100 ? 100 - layout.width : 0 }}>
             <span>少</span>{model.legend.map(entry => <span key={entry.level} title={entry.label} data-grass-legend={entry.level} style={{ width: 10, height: 10, borderRadius: 2, background: colors[entry.level] }} />)}<span>多</span>
           </div>
         </div>
-        <dl data-grass-statistics style={{ ...noteStyle, display: "grid", gridTemplateColumns: "max-content max-content", columnGap: 12, rowGap: 4, margin: "12px 0 0", width: "max-content", maxWidth: "100%", alignSelf: "flex-start" }}>
-          {model.summaryItems.map(item => <Fragment key={item.label}><dt>{item.label}</dt><dd style={{ margin: 0, whiteSpace: "nowrap", color: "var(--cmux-text)" }}>{item.value}</dd></Fragment>)}
-        </dl>
-        <details style={{ marginTop: 16, width: "100%", contain: "inline-size" }}>
-          <summary style={{ ...noteStyle, cursor: "pointer", color: "var(--cmux-text-secondary)" }}>日ごとの数値を表で見る</summary>
-          <VScrollBox maxHeight={320} label="日ごとの数値を表で見る">
-            <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8, fontSize: "var(--cmux-font-size-xs)" }}>
-              <thead><tr><th scope="col" style={leftCell}>日付</th><th scope="col" style={{ ...leftCell, textAlign: "right" }}>{usageMetricInfo(metric).label}</th><th scope="col" style={leftCell}>{"いちばん多い" + groupByLabel(report.groupBy)}</th></tr></thead>
-              <tbody>{model.recordedDays.map(day => <tr key={day.day}><th scope="row" style={{ ...leftCell, fontWeight: 400, whiteSpace: "nowrap" }}>{day.label}</th><td style={{ padding: "5px 8px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{day.fullValueLabel}</td><td style={{ ...leftCell, overflowWrap: "anywhere" }}>{day.topLabel}</td></tr>)}</tbody>
-            </table>
-          </VScrollBox>
-        </details>
+        <GrassSummary model={model} metric={metric} groupBy={report.groupBy} />
       </div>
       <Breakdown data={data} scope={scope} pinned={pinned} metric={metric} report={report} size={size} periodMessage={model.periodMessage} onPickDay={onPickDay} onClear={clear} />
+    </div>
     </div>
     {preview ? <GrassTooltip preview={preview} /> : null}
   </div>;

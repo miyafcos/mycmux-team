@@ -79,6 +79,11 @@ fn code_signature() -> &'static [u8; 32] {
         hash.update(include_str!("price.rs"));
         hash.update(include_str!("query.rs"));
         hash.update(include_str!("usage.rs"));
+        hash.update(include_str!("heavy_aggregate.rs"));
+        hash.update(super::heavy_aggregate::SCHEMA_SQL);
+        for (_,sql) in super::heavy_aggregate::BUILD_SQL { hash.update(sql); }
+        for sql in [super::heavy_aggregate::HANDOFF_SQL,super::heavy_aggregate::RHYTHM_SQL,
+            super::heavy_aggregate::TOOL_SQL,super::heavy_aggregate::FILE_SQL] { hash.update(sql); }
         hash.update(include_str!("accounting.rs"));
         hash.update(include_str!("repair.rs"));
         hash.update(include_str!("legacy.rs"));
@@ -88,7 +93,7 @@ fn code_signature() -> &'static [u8; 32] {
     })
 }
 
-fn fingerprint(conn: &Connection) -> Option<String> {
+pub(crate) fn fingerprint(conn: &Connection) -> Option<String> {
     let mut stmt = conn
         .prepare(
             // Per-file Codex parser cursors can be megabytes. They are not
@@ -115,6 +120,10 @@ fn fingerprint(conn: &Connection) -> Option<String> {
     // without relying on a developer to remember a manual version bump.
     hash.update(code_signature());
     hash.update(serde_json::to_vec(&rows).ok()?);
+    let mut dirty = conn.prepare("SELECT day FROM rollup_dirty ORDER BY day").ok()?;
+    let days = dirty.query_map([], |row| row.get::<_, i64>(0)).ok()?
+        .collect::<Result<Vec<_>, _>>().ok()?;
+    hash.update(serde_json::to_vec(&days).ok()?);
     Some(format!("{:x}", hash.finalize()))
 }
 
@@ -244,6 +253,30 @@ fn save<T: Report>(
     tx.commit().map_err(|e| e.to_string())
 }
 
+/// Shared command adapter: saved fresh/stale values never queue behind an
+/// unrelated heavy calculation. Only a cache miss or refresh takes that lane.
+pub async fn heavy_report<T: Report + Send + 'static>(
+    runtime: &super::report_runtime::ReportRuntime,
+    window: &str, endpoint: &'static str, request: Option<super::report_runtime::ReportRequest>,
+    open: impl FnOnce() -> Result<Connection,String> + Send + 'static,
+    range: super::Range, filters: super::Filters, name: &'static str, axes: Vec<String>, now_ms: i64,
+    build: impl FnOnce(&Connection,&super::Range,&super::Filters,i64) -> Result<T,String> + Send + 'static,
+) -> Result<T,String> {
+    use super::report_runtime::Lane;
+    if !matches!(filters.report_cache,Some(CacheMode::Prefer)) {
+        return runtime.run(window,endpoint,request,Lane::Heavy,open,
+            move |conn|build(conn,&range,&filters,now_ms)).await;
+    }
+    let probe_range=range.clone(); let probe_filters=filters.clone();
+    runtime.run_with_probe(window,endpoint,request,Lane::Heavy,open,move |conn| {
+        let Some(path)=path(conn) else { return Ok(None); };
+        let axes=axes.iter().map(String::as_str).collect::<Vec<_>>();
+        let cache_key=key(&probe_range,&probe_filters,name,&axes,now_ms);
+        let revision=fingerprint(conn);
+        Ok(load(&path,&cache_key,revision.as_deref(),probe_range.resolve(now_ms).0))
+    },move |conn|build(conn,&range,&filters,now_ms)).await
+}
+
 pub fn report<T: Report>(
     conn: &Connection,
     range: &Range,
@@ -304,4 +337,6 @@ cached_report!(
     super::query::BreakdownReport,
     super::query::PivotReport,
     super::usage::UsageRhythmReport,
+    super::query::HandoffsReport,
+    super::query::ReworkRankingsReport,
 );

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent, RefObject } from "react";
-import { ArrowUp } from "lucide-react";
+import { ArrowUp, CircleHelp, Info, Send, Target } from "lucide-react";
+import { DashboardCount, DashboardGlyph, DashboardIconButton, DashboardStatusMark } from "./DashboardUi";
 
 import { handleSocketCommand } from "../layout/socketCommands";
 import { useLiveBriefStore } from "../../stores/liveBriefStore";
@@ -11,9 +12,8 @@ import { createBatch, sealBatch, type DispatchBatch as SealedDispatchBatch } fro
 import { buildComposerPayload, resolveComposerTarget } from "../../lib/composerSend";
 import type { DashboardCardModel } from "./dashboardModel";
 import { resolveDisplayState } from "./dashboardModel";
-import { stateLabels } from "./stateLabels";
+import { buildDashboardMentionCandidates } from "./dashboardMentionCandidates";
 import {
-  buildMentionCandidates,
   describeMentionToken,
   filterMentionCandidates,
   findMentionQuery,
@@ -184,19 +184,18 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
     };
   }, [fitInput, inputRef]);
 
-  const mentionCandidates = useMemo(() => buildMentionCandidates(mentionTargets.map((target) => {
-    const displayState = resolveDisplayState(target);
-    return {
-      logicalSessionId: target.tab.id,
-      sessionId: target.tab.sessionId,
-      label: target.label,
-      workspaceName: target.workspace.name,
-      statusLabel: stateLabels(displayState).tooltip,
-      isWorking: stateLabels(displayState).activity === "working",
-    };
-  })), [mentionTargets]);
-  const menuCandidates = useMemo(() => filterMentionCandidates(mentionCandidates, menuQuery), [mentionCandidates, menuQuery]);
-  const tokenDescriptions = useMemo(() => tokens.map((token) => ({ token, ...describeMentionToken(token, mentionCandidates) })), [mentionCandidates, tokens]);
+  const mentionCandidates = useMemo(() => buildDashboardMentionCandidates(mentionTargets), [mentionTargets]);
+  const menuCandidates = useMemo(() => {
+    const matches = new Set(filterMentionCandidates(mentionCandidates, menuQuery));
+    return mentionCandidates.filter((candidate) => matches.has(candidate));
+  }, [mentionCandidates, menuQuery]);
+  const tokenDescriptions = useMemo(() => tokens.map((token) => {
+    const current = mentionCandidates.find((candidate) => candidate.kind === token.kind && (
+      token.kind === "working-all" || (candidate.kind === "session"
+        && candidate.logicalSessionId === token.logicalSessionId && candidate.sessionId === token.sessionId)
+    ));
+    return { token, ...describeMentionToken(token, mentionCandidates), displayState: current?.displayState ?? "unknown" };
+  }), [mentionCandidates, tokens]);
   const preview = useMemo(() => resolveMentionRecipients(tokens, mentionCandidates), [mentionCandidates, tokens]);
   const cardByMember = useMemo(() => {
     const result = new Map<string, DashboardCardModel>();
@@ -601,14 +600,14 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
       onConfirm={submitSuggestion}
     />
     {tokens.length ? <div className="cmux-dashboard-mention-tokens" aria-label={dashboardStrings.mentionTokensAriaLabel}>
-      {!invalidPreview ? <span className="cmux-dashboard-dispatch-preview">{dashboardStrings.dispatchPreview(preview.recipients.length)}:</span> : null}
-      {tokenDescriptions.map(({ token, label, valid, statusLabel }) => <span key={`${token.kind}:${token.kind === "session" ? token.logicalSessionId : token.labelSnapshot}`} className={`cmux-dashboard-mention-token${valid ? "" : " is-invalid"}`} title={valid ? statusLabel ?? undefined : dashboardStrings.dispatchTargetMissing}>
+      {!invalidPreview ? <span className="cmux-dashboard-dispatch-preview"><DashboardCount icon={Send} count={preview.recipients.length} label={dashboardStrings.dispatchPreview(preview.recipients.length)} /></span> : null}
+      {tokenDescriptions.map(({ token, label, valid, statusLabel, displayState }) => <span key={`${token.kind}:${token.kind === "session" ? token.logicalSessionId : token.labelSnapshot}`} className={`cmux-dashboard-mention-token${valid ? "" : " is-invalid"}`} title={valid ? statusLabel ?? undefined : dashboardStrings.dispatchTargetMissing}>
         <span>@{label}</span>
-        {statusLabel ? <small>{statusLabel}</small> : null}
-        <button type="button" aria-label={dashboardStrings.removeMention(label)} onClick={() => { if (sessionId) removeMentionToken(sessionId, token); }}>×</button>
+        {statusLabel ? <small><DashboardStatusMark state={displayState} label={statusLabel} /></small> : null}
+        <button type="button" aria-label={dashboardStrings.removeMention(label)} title={dashboardStrings.removeMention(label)} onClick={() => { if (sessionId) removeMentionToken(sessionId, token); }}>×</button>
       </span>)}
     </div> : null}
-    {hasMentions && invalidPreview ? <div className="cmux-dashboard-dispatch-preview is-error">{dashboardStrings.dispatchInvalidTargets}</div> : null}
+    {hasMentions && invalidPreview ? <div className="cmux-dashboard-dispatch-preview is-error"><DashboardStatusMark state="error" label={dashboardStrings.dispatchInvalidTargets} /></div> : null}
     <div className="cmux-dashboard-composer-row">
       <textarea
         ref={inputRef}
@@ -629,7 +628,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
         className="cmux-dashboard-composer-send"
         style={{ opacity: canSubmit ? 1 : 0.55 }}
         onClick={() => void submit()}
-      ><ArrowUp size={18} aria-hidden="true" /></button>
+      ><ArrowUp size={18} aria-hidden="true" /><span>送信</span></button>
     </div>
     {menuOpen ? <div className="cmux-dashboard-mention-menu" role="listbox" aria-label={dashboardStrings.mentionMenuAriaLabel}>
       {menuCandidates.length ? menuCandidates.map((candidate, index) => <button
@@ -641,28 +640,28 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
         onPointerDown={(event: ReactPointerEvent<HTMLButtonElement>) => { event.preventDefault(); selectMenuCandidate(candidate); }}
       >
         <span>@{candidate.label}</span>
-        <small>{candidate.kind === "working-all" ? candidate.statusLabel : `${candidate.workspaceName} · ${candidate.statusLabel}`}</small>
+        <small>{candidate.kind === "working-all" ? null : candidate.workspaceName}<DashboardStatusMark state={candidate.displayState} label={candidate.statusLabel} /></small>
       </button>) : <div className="cmux-dashboard-mention-menu-empty">{dashboardStrings.mentionNoMatches}</div>}
     </div> : null}
     {tokens.length ? <div className="cmux-dashboard-status-templates" aria-label={dashboardStrings.statusTemplatesAriaLabel}>
-      <button type="button" disabled={!sessionId || sending} onClick={() => { if (sessionId) { setDraft(sessionId, dashboardStrings.statusTemplateWhat); setCommandKind(sessionId, "status-request"); } }}>{dashboardStrings.statusTemplateWhat}</button>
-      <button type="button" disabled={!sessionId || sending} onClick={() => { if (sessionId) { setDraft(sessionId, dashboardStrings.statusTemplateGoal); setCommandKind(sessionId, "status-request"); } }}>{dashboardStrings.statusTemplateGoal}</button>
+      <DashboardIconButton icon={CircleHelp} label={dashboardStrings.statusTemplateWhat} disabled={!sessionId || sending} onClick={() => { if (sessionId) { setDraft(sessionId, dashboardStrings.statusTemplateWhat); setCommandKind(sessionId, "status-request"); } }} />
+      <DashboardIconButton icon={Target} label={dashboardStrings.statusTemplateGoal} disabled={!sessionId || sending} onClick={() => { if (sessionId) { setDraft(sessionId, dashboardStrings.statusTemplateGoal); setCommandKind(sessionId, "status-request"); } }} />
     </div> : null}
     {batch ? <div className="cmux-dashboard-dispatch-results" aria-label={dashboardStrings.dispatchResultsAriaLabel}>
-      <div className="cmux-dashboard-dispatch-results-head"><strong>{dashboardStrings.dispatchResults(batch.members.length)}</strong><span>{dashboardStrings.dispatchMode(batch.commandKind)}</span></div>
+      <div className="cmux-dashboard-dispatch-results-head"><DashboardCount count={batch.members.length} label={dashboardStrings.dispatchResults(batch.members.length)} /><DashboardGlyph icon={Info} label={dashboardStrings.dispatchMode(batch.commandKind)} /></div>
       {batch.members.map((member) => {
         const delivery = batch.deliveries[memberKey(member)];
         const current = mentionCandidates.find((candidate) => candidate.kind === "session" && candidate.logicalSessionId === member.logicalSessionId && candidate.sessionId === member.sessionId);
         return <div key={memberKey(member)} className={`cmux-dashboard-dispatch-result is-${delivery.state}`}>
-          <span aria-hidden="true">{delivery.state === "confirmed" ? "✓" : delivery.state === "pending" ? "…" : delivery.state === "unconfirmed" ? "?" : "✗"}</span>
+          <DashboardStatusMark state={delivery.state === "confirmed" ? "sent" : delivery.state === "pending" ? "sending" : delivery.state === "unconfirmed" ? "unknown" : "error"} label={`${deliveryLabel(delivery.state)} — ${delivery.detail}`} />
           <span>@{current && current.kind === "session" ? current.label : member.label}</span>
-          <small>{deliveryLabel(delivery.state)} — {delivery.detail}</small>
+
         </div>;
       })}
-      {retryCount ? <button type="button" disabled={sending} onClick={() => void retryFailed()}>{dashboardStrings.dispatchRetryFailed(retryCount)}</button> : null}
+      {retryCount ? <button type="button" aria-label={dashboardStrings.dispatchRetryFailed(retryCount)} title={dashboardStrings.dispatchRetryFailed(retryCount)} disabled={sending} onClick={() => void retryFailed()}>再送 {retryCount}</button> : null}
     </div> : null}
     {noteText
-      ? <div role={noteIsError ? "alert" : "status"} aria-live={noteIsError ? "assertive" : "polite"} className={`cmux-dashboard-composer-note${noteIsError ? " is-error" : ""}`}>{noteText}</div>
+      ? <div role={noteIsError ? "alert" : "status"} aria-live={noteIsError ? "assertive" : "polite"} className={`cmux-dashboard-composer-note${noteIsError ? " is-error" : ""}`}><DashboardStatusMark state={noteIsError ? "error" : noteText === dashboardStrings.sendConfirmedOnScreen ? "sent" : "unknown"} label={noteText} /></div>
       : null}
   </div>;
 }

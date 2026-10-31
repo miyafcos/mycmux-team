@@ -1,6 +1,6 @@
 import { isEditableTarget } from "./keybindings";
 import { useKeybindingStore } from "../stores/keybindingStore";
-import { requestDashboard, type DashboardTarget } from "../components/layout/openDashboardForTab";
+import { toggleDetachedDashboard, type DashboardTarget } from "../components/layout/openDashboardForTab";
 
 // Keep AppShell's fixture-delimited helpers in place.
 function isXtermTarget(target: EventTarget | null): boolean {
@@ -12,5 +12,5 @@ export function handleDetachedDashboardKey(event: KeyboardEvent, target?: Dashbo
     || (isEditableTarget(event.target) && !isXtermTarget(event.target))) return;
   if (useKeybindingStore.getState().getActionsForEvent(event)[0] !== "dashboard.open") return;
   event.preventDefault();
-  void requestDashboard(target);
+  toggleDetachedDashboard(target);
 }

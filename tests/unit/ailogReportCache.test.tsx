@@ -32,6 +32,8 @@ const resources = [
   ["breakdown", "ailog_breakdown", "refreshBreakdown", "breakdown", "breakdownLoading"],
   ["pivot", "ailog_pivot", "refreshPivot", "pivot", "pivotLoading"],
   ["rhythm", "ailog_usage_rhythm", "refreshUsageRhythm", "usageRhythm", "usageRhythmLoading"],
+  ["handoffs", "ailog_model_handoffs", "refreshModelHandoffs", "handoffs", "handoffsLoading"],
+  ["rework", "ailog_rework_rankings", "refreshReworkRankings", "reworkRankings", "reworkRankingsLoading"],
 ] as const;
 
 beforeEach(() => {
@@ -63,17 +65,40 @@ describe("persistent AI log report replacements", () => {
     expect(renderToStaticMarkup(<ReportCacheStatus />)).toBe("");
   });
 
-  it("retains and honestly labels a saved chart after a failed latest request", async () => {
+  const failureResources = [
+    ["usage", "refreshUsage", "usageSeries", "usageLoading", "usageError"],
+    ["handoffs", "refreshModelHandoffs", "handoffs", "handoffsLoading", "handoffsError"],
+    ["rework", "refreshReworkRankings", "reworkRankings", "reworkRankingsLoading", "reworkRankingsError"],
+  ] as const;
+
+  it.each(failureResources)("retains saved %s and clears refresh status after a failed latest request", async (slot, action, field, loading, errorField) => {
     const latest = deferred<unknown>();
     invokeMock.mockImplementation((_, args) => args.filters.reportCache === "prefer" ? saved() : latest.promise);
-    const pending = useAilogStore.getState().refreshUsage();
-    await vi.waitFor(() => expect(useAilogStore.getState().usageSeries).toEqual(saved()), { timeout: 2_000 });
+    const pending = useAilogStore.getState()[action]();
+    await vi.waitFor(() => expect(useAilogStore.getState()[field]).toEqual(saved()), { timeout: 2_000 });
     latest.reject(new Error("refresh unavailable"));
     await pending;
-    expect(useAilogStore.getState().usageSeries).toEqual(saved());
-    expect(useAilogStore.getState().usageError).toContain("refresh unavailable");
-    expect(useAilogStore.getState().reportSnapshots.usage.refreshing).toBe(false);
+    expect(useAilogStore.getState()[field]).toEqual(saved());
+    expect(useAilogStore.getState()[loading]).toBe(false);
+    expect(useAilogStore.getState()[errorField]).toContain("refresh unavailable");
+    expect(useAilogStore.getState().reportSnapshots[slot].refreshing).toBe(false);
     expect(renderToStaticMarkup(<ReportCacheStatus />)).toContain("\u6700\u65b0\u306e\u96c6\u8a08\u3092\u66f4\u65b0\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f");
+  });
+
+  it.each(failureResources)("retains saved %s and clears refresh status after cancellation without a failure", async (slot, action, field, loading, errorField) => {
+    const latest = deferred<unknown>();
+    invokeMock.mockImplementation((_, args) => args.filters.reportCache === "prefer" ? saved() : latest.promise);
+    const pending = useAilogStore.getState()[action]();
+    await vi.waitFor(() => expect(useAilogStore.getState()[field]).toEqual(saved()), { timeout: 2_000 });
+    latest.reject(new Error("AILOG_REPORT_CANCELLED"));
+    await pending;
+    expect(useAilogStore.getState()[field]).toEqual(saved());
+    expect(useAilogStore.getState()[loading]).toBe(false);
+    expect(useAilogStore.getState()[errorField]).toBeNull();
+    expect(useAilogStore.getState().reportSnapshots[slot].refreshing).toBe(false);
+    const html = renderToStaticMarkup(<ReportCacheStatus />);
+    expect(html).not.toContain("\u6700\u65b0\u306e\u8a18\u9332\u3092\u96c6\u8a08\u4e2d");
+    expect(html).not.toContain("\u6700\u65b0\u306e\u96c6\u8a08\u3092\u66f4\u65b0\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f");
   });
 
   it("does not let an older saved response overwrite an explicit fresh update", async () => {
@@ -166,5 +191,25 @@ describe("persistent AI log report replacements", () => {
     latest.resolve(report(99));
     await pending;
     expect(useAilogStore.getState().usageSeries).toBeNull();
+  });
+});
+
+
+describe("grass report reuse", () => {
+  it.each(resources)("validates saved %s once without recomputing a matching source revision", async (_slot, command, action, field) => {
+    invokeMock.mockResolvedValue(wire({ ...report(12), cache: { savedAt: 1, stale: false } }));
+    if (action === "refresh") await useAilogStore.getState().refreshOverview();
+    else await useAilogStore.getState()[action]();
+    expect(invokeMock.mock.calls.filter(([name]) => name === command)).toHaveLength(1);
+    expect(useAilogStore.getState()[field]).toEqual(report(12));
+    expect(useAilogStore.getState().reportSnapshots).toEqual({});
+  });
+
+  it("uses overview's exact previous totals without fetching a second overview", async () => {
+    invokeMock.mockResolvedValue(wire({ ...report(20), previousTotals: totals(7) }));
+    await useAilogStore.getState().refreshOverview({ comparePrevious: true });
+    expect(invokeMock.mock.calls.filter(([name]) => name === "ailog_overview")).toHaveLength(1);
+    expect(useAilogStore.getState().previousTotals).toEqual(totals(7));
+    expect(useAilogStore.getState().previousTotalsStatus).toBe("ready");
   });
 });

@@ -94,7 +94,10 @@ function readStoredSessionListCollapsed(): boolean {
   }
 }
 
+let dashboardPreferencesPersistent = true;
+
 function persistSessionListCollapsed(collapsed: boolean): void {
+  if (!dashboardPreferencesPersistent) return;
   try {
     window.localStorage.setItem(DASHBOARD_SESSION_LIST_COLLAPSED_STORAGE_KEY, collapsed ? "true" : "false");
   } catch {
@@ -114,6 +117,7 @@ function readStoredMinimapWidth(): number {
 }
 
 function persistMinimapWidth(width: number): void {
+  if (!dashboardPreferencesPersistent) return;
   try {
     window.localStorage.setItem(DASHBOARD_MINIMAP_STORAGE_KEY, String(width));
   } catch {
@@ -131,6 +135,7 @@ function readStoredChatColumnLimit(): number {
 }
 
 function persistChatColumnLimit(limit: number): void {
+  if (!dashboardPreferencesPersistent) return;
   try {
     window.localStorage.setItem(DASHBOARD_CHAT_COLUMN_LIMIT_STORAGE_KEY, String(limit));
   } catch {
@@ -151,6 +156,7 @@ function readStoredChatColumnPins(): string[] {
 }
 
 function persistChatColumnPins(tabIds: readonly string[]): void {
+  if (!dashboardPreferencesPersistent) return;
   try {
     window.localStorage.setItem(DASHBOARD_CHAT_COLUMN_PINS_STORAGE_KEY, JSON.stringify(tabIds));
   } catch {
@@ -756,5 +762,24 @@ function queueUserTurnRequest(
       ...state.userTurnRequests,
       [tabId]: request,
     },
+  };
+}
+
+/** A compact window must neither inherit nor overwrite the main window's layout. */
+export function beginEphemeralDashboardSession(): () => void {
+  const snapshot = useDashboardViewStore.getState();
+  dashboardPreferencesPersistent = false;
+  useDashboardViewStore.setState({
+    open: false, yourTurnTabId: null, pendingDashboardRequest: null, chatColumnIdFilter: null,
+    query: "", workspaceFilter: null, agentFilter: null, stateFilter: null,
+    selectedTabId: null, chatColumnTabIds: [], activeChatColumn: 0,
+    pinnedChatColumnTabIds: [], chatColumnLimit: DASHBOARD_CHAT_COLUMN_LIMIT_DEFAULT,
+    minimapWidth: DASHBOARD_MINIMAP_DEFAULT_WIDTH, sessionListCollapsed: false,
+    previewColumn: null, userTurnRequests: {}, userTurnRequestSeq: 0,
+  });
+  return () => {
+    // Restore before enabling writes; no temporary pin or width escapes this host.
+    useDashboardViewStore.setState({ ...snapshot, open: false, pendingDashboardRequest: null });
+    dashboardPreferencesPersistent = true;
   };
 }

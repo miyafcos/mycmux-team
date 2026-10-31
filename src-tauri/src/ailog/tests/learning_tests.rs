@@ -296,3 +296,22 @@ fn learning_smoke_open_is_read_only_without_schema_initialization() {
     drop(conn);
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
+
+#[test]
+fn global_rankings_keep_success_denominators_trimmed_targets_and_sessions_across_200_key_boundaries() {
+    let fixture=Fixture::new(); let conn=fixture.conn();
+    for index in 0..401 {
+        let id=format!("fake-{index:04}");
+        seed(&conn,&id,1000,"unknown","[]");
+        conn.execute("INSERT INTO tool_event(kind,session_id,seq,ts,name,target,is_error) VALUES ('claude',?1,1,1000,'Bash',?2,?3)",
+            rusqlite::params![id,if index%2==0 { " cargo test " } else { "cargo test" },if index==0 || index==400 { 1 } else { 0 }]).unwrap();
+        conn.execute("INSERT INTO file_touch(kind,session_id,path,edit_count) VALUES ('claude',?1,'src/fake.rs',3)",[id]).unwrap();
+    }
+    let report=query::rework_rankings(&conn,&Range::default(),&Filters::default(),NOW).unwrap();
+    assert_eq!(report.failed_commands.len(),1);
+    assert_eq!(report.failed_commands[0].executions,401);
+    assert_eq!(report.failed_commands[0].failures,2);
+    assert_eq!(report.failed_commands[0].target.as_deref(),Some("cargo test"));
+    assert_eq!(report.rewritten_files[0].session_count,401);
+    assert_eq!(report.rewritten_files[0].edit_count,1203);
+}

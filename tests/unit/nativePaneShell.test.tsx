@@ -4,6 +4,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pane } from "../../src/types";
 
+vi.mock("../../src/components/dashboard/DashboardView", () => ({
+  DashboardView: ({ onClose }: { onClose: () => void }) => <div role="region" aria-label="dashboard-test">
+    <button data-close-dashboard onClick={onClose}>close</button>
+  </div>,
+}));
+
 const mocks = vi.hoisted(() => ({
   panes: [] as Pane[],
   childHost: [] as boolean[],
@@ -139,7 +145,7 @@ describe("Windows native band controls and immediate OS movement", () => {
   it("marks the detached host before a child mount effect runs", () => {
     expect(mocks.childHost).toEqual([true]);
   });
-  it("keeps terminal focus on mouse presses of all four Windows band buttons and still clicks", async () => {
+  it("prevents mouse focus on all four Windows band buttons before invoking their clicks", async () => {
     const input = document.createElement("textarea");
     container.append(input);
     input.focus();
@@ -150,21 +156,23 @@ describe("Windows native band controls and immediate OS movement", () => {
     for (const button of buttons) {
       const pointer = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 });
       const mouse = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
-      await act(async () => { button.dispatchEvent(pointer); button.dispatchEvent(mouse); button.click(); });
+      await act(async () => { button.dispatchEvent(pointer); button.dispatchEvent(mouse); expect(document.activeElement).toBe(input); button.click(); });
       expect(pointer.defaultPrevented).toBe(false);
       expect(mouse.defaultPrevented).toBe(true);
-      expect(document.activeElement).toBe(input);
       expect(button.tabIndex).toBe(0);
     }
-    expect(mocks.openMainDashboard).toHaveBeenCalledOnce();
-    expect(mocks.openMainDashboard).toHaveBeenCalledWith({ tabId: "b", sessionId: "session-b" });
+    expect(mocks.openMainDashboard).not.toHaveBeenCalled();
+    expect(useDashboardViewStore.getState().open).toBe(true);
+    expect(container.querySelector("[role=region]")).not.toBeNull();
+    expect(mocks.openMainDashboard).not.toHaveBeenCalled();
+    expect(useDashboardViewStore.getState()).toMatchObject({ open: true, selectedTabId: "b" });
     expect(mocks.minimize).toHaveBeenCalledOnce();
     expect(mocks.toggle).toHaveBeenCalledOnce();
     expect(mocks.confirm).toHaveBeenCalledOnce();
     expect(mocks.close).not.toHaveBeenCalled();
     expect(mocks.regrab).not.toHaveBeenCalled();
   });
-  it("keeps terminal focus on the non-Windows dashboard and canceled close buttons", async () => {
+  it("prevents mouse focus on the non-Windows dashboard and canceled close buttons before clicking", async () => {
     Object.defineProperty(navigator, "platform", { configurable: true, value: "MacIntel" });
     await act(async () => root.render(<NativePaneShell />));
     const input = document.createElement("textarea"); container.append(input); input.focus();
@@ -173,16 +181,17 @@ describe("Windows native band controls and immediate OS movement", () => {
     expect(buttons).toHaveLength(2);
     for (const button of buttons) {
       const event = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
-      await act(async () => { button.dispatchEvent(event); button.click(); });
+      await act(async () => { button.dispatchEvent(event); expect(document.activeElement).toBe(input); button.click(); });
       expect(event.defaultPrevented).toBe(true);
-      expect(document.activeElement).toBe(input);
       expect(button.tabIndex).toBe(0);
     }
-    expect(mocks.openMainDashboard).toHaveBeenCalledOnce();
+    expect(mocks.openMainDashboard).not.toHaveBeenCalled();
+    expect(useDashboardViewStore.getState().open).toBe(true);
+    expect(container.querySelector("[role=region]")).not.toBeNull();
     expect(mocks.confirm).toHaveBeenCalledOnce();
     expect(mocks.close).not.toHaveBeenCalled();
   });
-  it("opens main from the band and xterm shortcut using the focused tab without dragging", async () => {
+  it("opens locally from the band and closes with the xterm shortcut without dragging", async () => {
     useUiStore.setState({ activePaneId: "session-b" });
     useDashboardViewStore.setState({ chatColumnTabIds: [], pinnedChatColumnTabIds: ["saved"] });
     localStorage.setItem("mycmux:dashboard-chat-column-pins", '["saved"]');
@@ -191,13 +200,16 @@ describe("Windows native band controls and immediate OS movement", () => {
       dashboard.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
       dashboard.click();
     });
-    expect(mocks.openMainDashboard).toHaveBeenLastCalledWith({ tabId: "b", sessionId: "session-b" });
+    expect(mocks.openMainDashboard).not.toHaveBeenCalled();
+    expect(useDashboardViewStore.getState()).toMatchObject({ open: true, selectedTabId: "b" });
+    expect(container.querySelector("[role=region]")).not.toBeNull();
     const terminal = document.createElement("div"); terminal.className = "xterm";
     const input = document.createElement("textarea"); terminal.append(input); container.append(terminal);
     await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "G", ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true })));
-    expect(mocks.openMainDashboard).toHaveBeenCalledTimes(2);
+    expect(mocks.openMainDashboard).not.toHaveBeenCalled();
+    expect(container.querySelector("[role=region]")).toBeNull();
     expect(localStorage.getItem("mycmux:dashboard-chat-column-pins")).toBe('["saved"]');
-    expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toEqual(["saved"]);
+    expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toEqual([]);
     expect(useDashboardViewStore.getState().open).toBe(false);
     expect(mocks.regrab).not.toHaveBeenCalled();
   });
@@ -263,7 +275,8 @@ describe("overlapping band presses (E1/E2/E4)", () => {
       });
       expect(refusals()).toHaveLength(before);
       expect(mocks.regrab).toHaveBeenCalledOnce();
-      expect(mocks.openMainDashboard).toHaveBeenCalledWith({ tabId: "b", sessionId: "session-b" });
+      expect(mocks.openMainDashboard).not.toHaveBeenCalled();
+    expect(useDashboardViewStore.getState()).toMatchObject({ open: true, selectedTabId: "b" });
     } finally { await act(async () => end?.({ moved: true })); }
   });
   it("leaves the blocker ID null while feature-off window movement is pending", async () => {

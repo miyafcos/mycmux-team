@@ -98,12 +98,12 @@ fn populate() -> Fixture {
 }
 
 fn force_raw(conn: &rusqlite::Connection) {
-    conn.execute("INSERT OR IGNORE INTO rollup_dirty(day) VALUES (-1)", [])
+    conn.execute("UPDATE index_state SET value='force-raw-test' WHERE key='rollup_version'", [])
         .unwrap();
 }
 
 fn restore_rollup(conn: &rusqlite::Connection) {
-    conn.execute("DELETE FROM rollup_dirty WHERE day = -1", [])
+    conn.execute("UPDATE index_state SET value='3' WHERE key='rollup_version'", [])
         .unwrap();
     assert!(rollup::ready(conn).unwrap());
 }
@@ -432,4 +432,158 @@ fn failed_price_edit_rolls_back_the_price_and_rollup_state() {
         .unwrap();
     assert_eq!(price_rows, 0);
     assert!(rollup::ready(&conn).unwrap());
+}
+
+
+#[test]
+fn grass_raw_model_sql_totals_match_raw_at_partial_edges_and_with_filters() {
+    let fixture = populate();
+    let conn = fixture.conn();
+    let options = query::SeriesOptions { bucket: "day".into(), group_by: "model_raw".into() };
+    for filters in [Filters::default(), Filters { kinds: vec![KIND_CLAUDE.into()], ..Default::default() },
+        Filters { models: vec!["claude-opus-5".into()], ..Default::default() }] {
+        for range in [corpus_range(), full_rollup_range(), Range { preset: Some("all".into()), anchor: Some(NOW), ..Default::default() }] {
+            let rolled = query::series(&conn, &range, &filters, &options, NOW).unwrap();
+            assert_eq!(rolled.timings.path, "rollup");
+            force_raw(&conn);
+            let raw = query::series(&conn, &range, &filters, &options, NOW).unwrap();
+            restore_rollup(&conn);
+            assert_eq!(report_value(rolled), report_value(raw));
+        }
+    }
+}
+
+#[test]
+fn overview_reuses_exact_inclusive_previous_totals() {
+    let fixture = populate();
+    let conn = fixture.conn();
+    let range = corpus_range();
+    let report = query::overview(&conn, &range, &Filters::default(), NOW).unwrap();
+    let from = range.from.unwrap();
+    let span = range.to.unwrap() - from + 1;
+    let previous = Range { from: Some(from - span), to: Some(from - 1), ..Default::default() };
+    let expected = query::overview(&conn, &previous, &Filters::default(), NOW).unwrap();
+    assert_eq!(report_value(report.previous_totals.unwrap()), report_value(expected.totals));
+}
+
+#[test]
+fn shared_aggregate_reads_invalidate_on_committed_session_edits() {
+    let fixture = populate();
+    let conn = fixture.conn();
+    let range = corpus_range();
+    let filters = Filters::default();
+    let first = query::models(&conn, &range, &filters, &query::ModelsOptions::default(), NOW).unwrap();
+    let again = query::models(&conn, &range, &filters, &query::ModelsOptions::default(), NOW).unwrap();
+    assert_eq!(report_value(&first),report_value(again));
+    conn.execute("UPDATE session SET project_label='changed-project'",[]).unwrap();
+    let changed = query::breakdown(&conn, &range, &filters, "project", NOW).unwrap();
+    assert!(changed.rows.iter().all(|row| row.key == "changed-project"));
+    assert!(!first.rows.is_empty());
+}
+
+
+#[test]
+fn accounting_keeps_the_session_existence_rule_for_unfiltered_rollups() {
+    let fixture = populate();
+    let conn = fixture.conn();
+    let range = Range { preset: Some("all".into()), anchor: Some(NOW), ..Default::default() };
+    let before = query::overview(&conn,&range,&Filters::default(),NOW).unwrap().accounting;
+    let columns: Vec<String> = conn.prepare("PRAGMA table_info(rollup_turn_session_day_v2)").unwrap()
+        .query_map([],|row|row.get(1)).unwrap().collect::<Result<_,_>>().unwrap();
+    let projected = columns.iter().map(|name| if name=="session_id" { "session_id || '-orphan'".to_string() }
+        else { format!("\"{name}\"") }).collect::<Vec<_>>().join(",");
+    let inserted = conn.execute(&format!("INSERT INTO rollup_turn_session_day_v2 SELECT {projected} FROM rollup_turn_session_day_v2 LIMIT 1"),[]).unwrap();
+    assert_eq!(inserted,1);
+    let after = query::overview(&conn,&range,&Filters::default(),NOW).unwrap().accounting;
+    assert_eq!(report_value(before),report_value(after));
+}
+
+
+#[test]
+fn dirty_days_match_forced_raw_across_every_rollup_report() {
+    // Stale aggregates make accidental inclusion/double counting observable.
+    for dirty in [vec![1], vec![2, 4], vec![1, 2, 3, 4], vec![-300, 600]] {
+        let fixture = populate();
+        let conn = fixture.conn();
+        for day in &dirty {
+            let index = (timestamp(1, 0) + query::DAY_BOUNDARY_OFFSET_MIN * 60_000) / 86_400_000 + day - 1;
+            conn.execute("INSERT OR IGNORE INTO rollup_dirty(day) VALUES (?1)", [index]).unwrap();
+            for table in ["rollup_turn_session_day", "rollup_turn_session_day_v2"] {
+                conn.execute(&format!("UPDATE {table} SET turns=turns+9,cost_usd=cost_usd+7,input_tokens=input_tokens+13 WHERE day=?1"), [index]).unwrap();
+            }
+        }
+        for range in [corpus_range(), full_rollup_range(), Range { preset: Some("all".into()), ..Range::default() }] {
+            for filters in [
+                Filters::default(),
+                Filters { kinds:vec![KIND_CLAUDE.into()],..Filters::default() },
+                Filters { models:vec!["claude-opus-5".into()],..Filters::default() },
+                Filters { branches:vec!["main".into()],..Filters::default() },
+                Filters { projects:vec!["alpha".into()],..Filters::default() },
+                Filters { origins:vec!["unknown".into()],..Filters::default() },
+                Filters { efforts:vec!["high".into()],..Filters::default() },
+                Filters { min_cost:Some(0.0),..Filters::default() },
+                Filters { query:Some("fixture".into()),..Filters::default() },
+            ] {
+            let reports = |conn: &rusqlite::Connection| {
+                let overview=query::overview(conn,&range,&filters,NOW).unwrap();
+                assert_eq!(report_value(&overview.accounting),report_value(query::accounting_totals(conn,&range,&filters,NOW).unwrap()));
+                let mut values = vec![report_value(overview)];
+                for group_by in ["none", "model_raw", "model_family", "provider"] {
+                    values.push(report_value(query::series(conn, &range, &filters,
+                        &query::SeriesOptions { bucket: "day".into(), group_by: group_by.into() }, NOW).unwrap()));
+                }
+                values.push(report_value(query::models(conn, &range, &filters, &query::ModelsOptions::default(), NOW).unwrap()));
+                for dimension in ["model", "project", "branch", "effort", "origin"] {
+                    values.push(report_value(query::breakdown(conn, &range, &filters, dimension, NOW).unwrap()));
+                }
+                values.push(report_value(query::pivot(conn, &range, &filters, &query::PivotOptions::default(), NOW).unwrap()));
+                for sort in ["cost", "turns", "rework", "recent"] {
+                    for offset in [0, 1] {
+                        values.push(report_value(query::sessions(conn, &range, &filters,
+                            &query::SessionsOptions { sort: sort.into(), offset, limit: 2 }, NOW).unwrap()));
+                    }
+                }
+                values
+            };
+            let mixed = reports(&conn);
+            force_raw(&conn);
+            let raw = reports(&conn);
+            conn.execute("UPDATE index_state SET value='3' WHERE key='rollup_version'", []).unwrap();
+            assert_eq!(mixed, raw, "dirty={dirty:?}, range={range:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn all_history_keeps_first_complete_day_in_rollup() {
+    let fixture = populate();
+    let conn = fixture.conn();
+    let range = Range { preset: Some("all".into()), ..Range::default() };
+    let rolled = query::series(&conn, &range, &Filters::default(), &query::SeriesOptions::default(), NOW).unwrap();
+    assert_eq!(rolled.timings.path, "rollup");
+    let first: i64 = conn.query_row("SELECT MIN(ts) FROM turn", [], |row| row.get(0)).unwrap();
+    let first_day = (first + query::DAY_BOUNDARY_OFFSET_MIN * 60_000) / 86_400_000;
+    conn.execute("INSERT INTO rollup_dirty(day) VALUES (?1)", [first_day]).unwrap();
+    let mixed = query::series(&conn, &range, &Filters::default(), &query::SeriesOptions::default(), NOW).unwrap();
+    assert_eq!(mixed.timings.path, "hybrid");
+    assert_eq!(report_value(rolled), report_value(mixed));
+}
+
+#[test]
+fn partial_day_only_series_reports_its_raw_work_even_when_complete_days_are_empty() {
+    let fixture=Fixture::new();
+    let conn=fixture.conn();
+    conn.execute("INSERT INTO session(kind,session_id) VALUES ('claude','fake-edge')",[]).unwrap();
+    conn.execute("INSERT INTO turn(kind,session_id,seq,ts,model,input_tokens) VALUES ('claude','fake-edge',1,?1,'fake-model',7)",[timestamp(4,11)]).unwrap();
+    rollup::mark_all_dirty(&conn).unwrap();
+    rollup::rebuild_dirty(&conn).unwrap();
+    for group_by in ["none","model_raw"] {
+        let report=query::series(&conn,&corpus_range(),&Filters::default(),&query::SeriesOptions { bucket:"day".into(),group_by:group_by.into() },NOW).unwrap();
+        assert_eq!(report.buckets.iter().map(|bucket|bucket.turns).sum::<i64>(),1);
+        assert_eq!(report.timings.raw_turns,1);
+        assert_eq!(report.timings.raw_rows,1);
+        assert_eq!(report.timings.rollup_rows,0);
+        assert!(report.timings.rows_scanned>=1);
+    }
 }

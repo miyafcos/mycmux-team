@@ -71,6 +71,7 @@ pub fn apply(conn: &Connection) -> Result<(), String> {
     }
     crate::ailog::accounting::migrate_r2(conn)?;
     apply_price_catalog(conn)?;
+    crate::ailog::heavy_aggregate::migrate(conn)?;
     Ok(())
 }
 
@@ -87,8 +88,7 @@ fn apply_price_catalog(conn: &Connection) -> Result<(), String> {
         return Ok(());
     }
 
-    let tx = conn
-        .unchecked_transaction()
+    let tx = super::db::write_transaction(conn)
         .map_err(|err| format!("begin price catalog: {err}"))?;
     crate::ailog::price::seed_defaults(&tx)?;
     let now = chrono::Utc::now().timestamp_millis();

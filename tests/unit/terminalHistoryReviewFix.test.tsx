@@ -1,3 +1,5 @@
+import { terminalTurnStrings } from "../../src/components/terminal/terminalTurnStrings";
+import { dashboardName } from "../helpers/dashboardA11y";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -76,7 +78,7 @@ async function click(selector: string) {
   await act(async () => element!.click());
 }
 async function button(text: string) {
-  const element = [...host.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === text);
+  const element = [...host.querySelectorAll<HTMLButtonElement>("button")].find(b => dashboardName(b) === text);
   expect(element, text).toBeDefined(); expect(element!.disabled, text).toBe(false);
   await act(async () => element!.click());
 }
@@ -298,7 +300,7 @@ describe("stage E eligible terminal fallback and focus-only magnifier", () => {
         expect.soft(document.activeElement).toBe(input()); expect(useUiStore.getState().activePaneId).toBe("review-B");
       }],
       ["close and start guarded opening again", async () => {
-        rejectMapping = -1; await button("×"); await advance(20); const reads = mappingReads;
+        rejectMapping = -1; await button(terminalTurnStrings.closePanel); await advance(20); const reads = mappingReads;
         delayMapping = reads + 1; await click("[data-terminal-magnifier]"); await advance(10);
         expect(mappingReads).toBe(reads + 1); expect(releaseMapping).not.toBeNull(); expect(input()).toBeNull();
         await act(async () => releaseMapping!()); await advance(20); expect(mappingReads).toBeGreaterThanOrEqual(reads + 2); expect(document.activeElement).toBe(input());
@@ -379,7 +381,7 @@ describe("stage D cancellation and return focus with the same-session fixture or
     await trace(`R1-close-stage-${stage}-${outcome}`, [
       ["open A with B active", async () => { useUiStore.getState().setActivePaneId("review-B"); await open(); expect(document.activeElement).toBe(input()); }],
       ["close and delay guarded opening validation", async () => {
-        await button("×"); await advance(20);
+        await button(terminalTurnStrings.closePanel); await advance(20);
         delayMapping = mappingReads + stage; if (outcome === "rejection") rejectMapping = delayMapping;
       }],
       ["magnifier starts guarded reopening", async () => { await click("[data-terminal-magnifier]"); await advance(10); expect(releaseMapping).not.toBeNull(); expect(input()).toBeNull(); }],
@@ -435,7 +437,7 @@ describe("stage D cancellation and return focus with the same-session fixture or
           await act(async () => host.querySelector<HTMLTextAreaElement>("[data-terminal-b]")!.focus());
         }],
         ["close and delay guarded opening validation", async () => {
-          await button("×"); await advance(20);
+          await button(terminalTurnStrings.closePanel); await advance(20);
           delayMapping = mappingReads + stage; if (outcome === "rejection") rejectMapping = delayMapping;
         }],
         ["magnifier starts guarded reopening", async () => { await click("[data-terminal-magnifier]"); await advance(10); expect(releaseMapping).not.toBeNull(); expect(input()).toBeNull(); }],
@@ -484,7 +486,7 @@ describe("stage C required state-valid sequences with an independent fixture ora
       ["open A", async () => { await click("[data-terminal-magnifier]"); await advance(20); expect(document.activeElement).toBe(input()); expect(useUiStore.getState().activePaneId).toBe("review-B"); expect(terminalFocus).toHaveLength(0); }],
       ["search A", async () => { await type("猫"); await advance(1000); assertResult(expected); }],
       ["next A", async () => { await button("次へ"); await advance(1000); assertResult(expected, 1); expect(useUiStore.getState().activePaneId).toBe("review-B"); }],
-      ["close to B", async () => { await button("×"); await advance(20); expect(terminalFocus).toEqual(["review-B"]); expect(document.activeElement).toBe(host.querySelector("[data-terminal-b]")); }],
+      ["close to B", async () => { await button(terminalTurnStrings.closePanel); await advance(20); expect(terminalFocus).toEqual(["review-B"]); expect(document.activeElement).toBe(host.querySelector("[data-terminal-b]")); }],
     ]);
   });
   it("F2 legacy search clear retype retains the same conversation", async () => {
@@ -505,7 +507,7 @@ describe("stage C required state-valid sequences with an independent fixture ora
       ["leave to B", async () => { const before = generation(); await act(async () => host.querySelector<HTMLTextAreaElement>("[data-terminal-b]")!.focus()); expect(generation()).toBeGreaterThan(before); }],
       ["magnifier refocus", async () => { await click("[data-terminal-magnifier]"); await advance(1000); expect(host.querySelector("[data-terminal-transcript-panel]")).toBe(originalPanel!); expect(document.activeElement).toBe(input()); expect(useUiStore.getState().activePaneId).toBe("review-B"); assertResult(oracle("猫")); }],
       ["next A", async () => { await button("次へ"); await advance(1000); assertResult(oracle("猫"), 1); }],
-      ["close to B", async () => { await button("×"); await advance(20); expect(terminalFocus).toEqual(["review-B"]); }],
+      ["close to B", async () => { await button(terminalTurnStrings.closePanel); await advance(20); expect(terminalFocus).toEqual(["review-B"]); }],
     ]);
   });
   it("F3 Next then Previous waits after eviction and selects the exact newer occurrence", async () => {
@@ -615,7 +617,7 @@ describe("stage C required state-valid sequences with an independent fixture ora
       ["retype resumes binding", async () => { await type("説明"); await advance(1000); assertResult(oracle("説明")); expect(prepared!.snapshot.status).toBe("ready"); }],
       ["ordinary archive mode", async () => { await act(async () => useSettingsStore.setState({ conversationHistoryMode: "agent-wheel" })); }],
       ["clear keeps ordinary archive", async () => { await type(""); expect(host.querySelector("[data-archive-view]")).not.toBeNull(); expect(prepared!.snapshot.status).toBe("ready"); }],
-      ["close retains lender ownership", async () => { await button("×"); await advance(20); expect(prepared!.snapshot.status).toBe("ready"); }],
+      ["close retains lender ownership", async () => { await button(terminalTurnStrings.closePanel); await advance(20); expect(prepared!.snapshot.status).toBe("ready"); }],
     ]);
   });
   it("first mapping rejection uses the same terminal fallback and retry", async () => {
@@ -641,7 +643,7 @@ describe("stage C required state-valid sequences with an independent fixture ora
   it("closing cancels a rejected guarded reopening request of the retained session", async () => {
     await trace("mapping-second-request-cancellation", [
       ["open", open],
-      ["close and delay rejected reopening", async () => { await button("×"); await advance(20); delayMapping = rejectMapping = mappingReads + 2; }],
+      ["close and delay rejected reopening", async () => { await button(terminalTurnStrings.closePanel); await advance(20); delayMapping = rejectMapping = mappingReads + 2; }],
       ["click pending", async () => { await click("[data-terminal-magnifier]"); await advance(10); expect(releaseMapping).not.toBeNull(); }],
       ["cancel pending opening", async () => { await click("[data-cancel-history-opening]"); expect(input()).toBeNull(); }],
       ["release obsolete rejection", async () => { await act(async () => releaseMapping!()); await advance(20); expect(terminalSearch).toHaveLength(0); expect(input()).toBeNull(); }],

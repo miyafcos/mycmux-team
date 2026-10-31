@@ -1,3 +1,4 @@
+import { dashboardName } from "../helpers/dashboardA11y";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -18,6 +19,7 @@ import { archiveCacheStats } from "../../src/stores/transcriptHistoryStore";
 import type { ArchiveItem, TranscriptPage } from "../../src/lib/livebrief";
 import { normalizeTranscriptQuery, TRANSCRIPT_SEARCH_LIMIT } from "../../src/stores/transcriptSearchStore";
 import { TranscriptHistoryReader } from "../../src/stores/transcriptHistoryStore";
+import { mountDetachedDashboardHost } from "../../src/lib/dashboardHost";
 
 let root: Root, host: HTMLDivElement;
 let mapped = true, kind = "claude", total = 240;
@@ -65,7 +67,7 @@ async function type(query: string) {
   });
 }
 async function button(label: string) {
-  const node = [...host.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === label);
+  const node = [...host.querySelectorAll<HTMLButtonElement>("button")].find(b => dashboardName(b) === label);
   const enabled = !!node && !node.disabled;
   if (enabled) await act(async () => node.click());
   return enabled;
@@ -115,6 +117,19 @@ afterEach(async () => {
   host.remove(); vi.useRealTimers(); vi.unstubAllGlobals();
 });
 describe("L29 history search regressions through the real panel and reader", () => {
+  it("searches the real archive again after closing a detached dashboard", async () => {
+    const release = mountDetachedDashboardHost();
+    try {
+      await open();
+      await act(async () => useDashboardViewStore.getState().openView());
+      await act(async () => useDashboardViewStore.getState().close());
+      await act(async () => input().focus());
+      await type("\u732b"); await advance();
+      expect(status()).toContain("\u5168 2 \u4ef6");
+      expect(status()).toContain("\u6700\u521d\u307e\u3067\u691c\u7d22\u3057\u307e\u3057\u305f");
+      expect(mutationCalls()).toHaveLength(0);
+    } finally { release(); }
+  });
   it("replaces the text/book entry with one magnifier and focuses the search bar", async () => {
     await open();
     expect(host.querySelectorAll("[data-terminal-magnifier]")).toHaveLength(1);

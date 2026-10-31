@@ -1,12 +1,12 @@
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
-import { displayStateColor } from "./DashboardCardRow";
+import { DashboardStatusMark } from "./DashboardUi";
 import type { DashboardDisplayState } from "./dashboardModel";
 import { stateLabels } from "./stateLabels";
 import type { MinimapChip } from "./minimapModel";
 import { formatLastOutputAge, formatLastOutputAgeCompact } from "../layout/tabSweep";
 import { usePaneDragSource } from "../../hooks/usePaneDragSource";
 import { usePaneDragStore } from "../../stores/paneDragStore";
-import { AGENT_DORMANT_LABEL, dormantAgentDescription } from "../../lib/agentDormancy";
+import { dormantAgentDescription } from "../../lib/agentDormancy";
 
 const DECLARED_META_LABEL = "宣言のみ";
 
@@ -53,7 +53,8 @@ export function MinimapTabChip({ chip, workspaceId, paneId, selected, open, colu
       : { kind: "tab" as const, surface: "minimap" as const, workspaceId, paneId, tabId: chip.tabId, label };
     beginPointerDrag(event, dragItem);
   };
-  const statusDot = <span className={`cmux-minimap-status${labels.activity === "working" ? " is-working" : ""}`} aria-hidden="true" style={{ background: displayStateColor(displayState) }} />;
+  const declarationOnly = chip.declared && labels.attention === null;
+  const statusDot = <DashboardStatusMark state={declarationOnly ? "notStarted" : displayState} label={declarationOnly ? DECLARED_META_LABEL : labels.tooltip} />;
   return <button
     type="button"
     className={`cmux-minimap-chip${selected ? " is-selected" : ""}${open && !selected ? " is-open" : ""}${isBundleSelected ? " is-bundle-selected" : ""}${isGroupPulse ? " is-group-pulse" : ""}${chip.declared ? " is-declared" : ""}${needsAnswer ? " is-waiting" : ""}${collapsed ? " is-collapsed" : " is-expanded"}${isDragSource ? " is-drag-source" : ""}`}
@@ -63,7 +64,7 @@ export function MinimapTabChip({ chip, workspaceId, paneId, selected, open, colu
     data-dashboard-open={open || undefined}
     data-dashboard-active={selected || undefined}
     data-declared={chip.declared || undefined}
-    title={[label, dormantDescription, ageSentence].filter(Boolean).join("\n")}
+    title={[label, chip.declared ? DECLARED_META_LABEL : null, labels.tooltip, dormantDescription, ageSentence].filter(Boolean).join("\n")}
     aria-label={`${label} — ${agentSegment ? `${agentSegment}・` : ""}${labels.tooltip}${dormantDescription ? `・${dormantDescription}` : ""}${chip.contextPct == null ? "" : `・CTX ${Math.round(chip.contextPct)}%`}${ageSentence ? `・${ageSentence}` : ""}。${jumpHint}。${groupHint}`}
     aria-pressed={isBundleSelected}
     onPointerDown={beginChipDrag}
@@ -80,15 +81,15 @@ export function MinimapTabChip({ chip, workspaceId, paneId, selected, open, colu
   >
     {collapsed ? null : <span className="cmux-minimap-meta" aria-hidden="true">
       {chip.declared ? null : agentColor ? <span className="cmux-minimap-agent-dot" style={{ background: agentColor, opacity: chip.mark?.dormant ? 0.45 : 1 }} /> : null}
-      {agentSegment ? <span className="cmux-minimap-agent" style={{ opacity: chip.mark?.dormant ? 0.45 : 1 }}>{agentSegment}</span> : null}
-      {dormantDescription ? <span title={dormantDescription}>{AGENT_DORMANT_LABEL}</span> : null}
-      {chip.declared ? null : statusDot}
-      {needsAnswer ? <span className="cmux-minimap-question">返答待ち</span> : null}
+      {agentSegment && !chip.declared ? <span className="cmux-minimap-agent" style={{ opacity: chip.mark?.dormant ? 0.45 : 1 }}>{agentSegment}</span> : null}
+      {dormantDescription ? <DashboardStatusMark state="dormant" label={dormantDescription} /> : null}
+      {statusDot}
+      {chip.declared && !declarationOnly ? <DashboardStatusMark state="notStarted" label={DECLARED_META_LABEL} /> : null}
       {chip.contextPct == null ? null : <span className="cmux-minimap-ctx" data-minimap-ctx={chip.tabId}>{Math.round(chip.contextPct)}%</span>}
       {age ? <span className="cmux-minimap-age">{age}</span> : null}
     </span>}
     <span className="cmux-minimap-label">{label}</span>
     {collapsed && chip.contextPct != null ? <span className="cmux-minimap-ctx" data-minimap-ctx={chip.tabId}>{Math.round(chip.contextPct)}%</span> : null}
-    {collapsed && !chip.declared ? statusDot : null}
+    {collapsed ? statusDot : null}
   </button>;
 }

@@ -1,3 +1,4 @@
+import { windowLabel } from "../../lib/windowContext";
 import { getAgentDormancyRecord, type PreviewArtifactInfo } from "../../lib/ipc";
 import { PEER_WEB_TRANSCRIPT_UNAVAILABLE } from "../../stores/webPaneTranscriptStore";
 import { dormantAgentDescription, resolveDormantResumeIdentity } from "../../lib/agentDormancy";
@@ -8,7 +9,7 @@ import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { useComposerStore, type DashboardOptimisticMessage } from "../../stores/composerStore";
 import { DashboardTelemetryFallback } from "./DashboardSessionDetail";
 import { ChatTranscript } from "./ChatTranscript";
-import { displayStateColor, displayStateLabel, stallLabel, statePillStyle } from "./DashboardCardRow";
+import { displayStateLabel, stallLabel } from "./DashboardCardRow";
 import { type DashboardCardModel, resolveDisplayState } from "./dashboardModel";
 import { dashboardStrings } from "./dashboardStrings";
 import { dashboardActivity } from "./dashboardActivity";
@@ -17,19 +18,11 @@ import { QuestionCard } from "./QuestionCard";
 import { stateLabels } from "./stateLabels";
 import { useArchiveDescriptor } from "./useTranscriptHistory";
 import { useSettingsStore } from "../../stores/settingsStore";
-import { Check, ExternalLink, MoreHorizontal, Pin, PinOff, RotateCcw, X } from "lucide-react";
+import { Check, Clock, ExternalLink, Globe, Info, MoreHorizontal, PanelsTopLeft, Pin, PinOff, RotateCcw, X } from "lucide-react";
+import { DashboardGlyph, DashboardIconButton, DashboardStatusMark } from "./DashboardUi";
 
 const EMPTY_OPTIMISTIC_MESSAGES: readonly DashboardOptimisticMessage[] = [];
 const EMPTY_EVENTS: readonly SemanticEventEnvelope[] = [];
-
-function chatStatePillStyle(color: string): CSSProperties {
-  return {
-    ...statePillStyle(color),
-    fontSize: "var(--cmux-chat-meta-size)",
-    borderRadius: "var(--cmux-chat-radius-inline)",
-    padding: "0 var(--cmux-chat-space-3)",
-  };
-}
 
 function useReducedMotion(): boolean {
   const getPreference = () => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
@@ -172,13 +165,11 @@ export function ChatColumn({
       <div className="cmux-dashboard-chat-identity">
         <span className="cmux-dashboard-chat-color" aria-hidden="true" />
         <strong title={card.label}>{card.label}</strong>
-        {card.windowLabel && card.windowLabel !== "main" ? <span className="cmux-dashboard-peer-window">{dashboardStrings.peerWindow}</span> : null}
+        {card.windowLabel && card.windowLabel !== windowLabel() ? <DashboardGlyph icon={PanelsTopLeft} label={dashboardStrings.peerWindow} className="cmux-dashboard-peer-window" /> : null}
         <div className="cmux-dashboard-chat-header-meta">
-          {card.neverStarted
-            ? <span style={chatStatePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.stateNotStarted}</span>
-            : <span title={stateLabels(displayState).tooltip} aria-label={stateLabels(displayState).tooltip} style={chatStatePillStyle(displayStateColor(displayState))}>{displayStateLabel(displayState)}</span>}
-          {card.manualDoneAt !== undefined ? <span data-dashboard-manual-done={card.tab.id} style={chatStatePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.manualDoneBadge}</span> : null}
-          {card.stall && (card.telemetryHealth !== "live" || card.stall.reason !== "no_output") ? <span className="cmux-dashboard-chat-header-stall">{stallLabel(card.stall.reason)}</span> : null}
+          <DashboardStatusMark state={card.neverStarted ? "notStarted" : displayState} label={card.neverStarted ? dashboardStrings.stateNotStarted : stateLabels(displayState).tooltip} />
+          {card.manualDoneAt !== undefined ? <span data-dashboard-manual-done={card.tab.id}><DashboardStatusMark state="acknowledged" label={dashboardStrings.manualDoneBadge} /></span> : null}
+          {card.stall && (card.telemetryHealth !== "live" || card.stall.reason !== "no_output") ? <DashboardStatusMark state={card.stall.reason === "pty_dead" ? "stopped" : "noUpdate"} label={stallLabel(card.stall.reason)} className="cmux-dashboard-chat-header-stall" /> : null}
         </div>
       </div>
       <div className="cmux-dashboard-chat-actions">
@@ -208,11 +199,11 @@ export function ChatColumn({
       </div></div>
     </header>
     <div className="cmux-dashboard-chat-column-body">
-      {dormantDescription ? <p>{dormantDescription}</p> : null}
-      {recordKey && !recordLoaded ? <p role="status">保存した会話を読み込んでいます</p> : null}
+      {dormantDescription ? <p><DashboardGlyph icon={Info} label={dormantDescription} /></p> : null}
+      {recordKey && !recordLoaded ? <p role="status"><DashboardStatusMark state="running" label="保存した会話を読み込んでいます" /></p> : null}
       {recordLoaded && record.error ? <p role="alert">{record.error}</p> : null}
       {card.tab.type === "web" && card.windowLabel
-        ? <p>{PEER_WEB_TRANSCRIPT_UNAVAILABLE}</p>
+        ? <p><DashboardGlyph icon={Info} label={PEER_WEB_TRANSCRIPT_UNAVAILABLE} /></p>
         : webTranscript
         ? <WebTranscriptStatus entry={webTranscript} onRefresh={onRefreshWebTranscript} />
         : !recordKey && card.telemetryHealth !== "live" && card.telemetryHealth !== "ended"
@@ -251,7 +242,7 @@ export function ChatColumn({
           data-optimistic-motion={reducedMotion ? undefined : "true"}
           className={`cmux-dashboard-msg is-user is-optimistic is-${message.state}${reducedMotion ? "" : " is-optimistic-motion"}`}
         >
-          <div className="cmux-dashboard-msg-who"><span>{message.state === "sending" ? dashboardStrings.composerMessageSending : message.state === "sent" ? message.error ? dashboardStrings.dispatchUnconfirmed : dashboardStrings.composerMessageSent : dashboardStrings.composerMessageFailed}</span></div>
+          <div className="cmux-dashboard-msg-who"><DashboardStatusMark state={message.state === "sent" && message.error ? "unknown" : message.state} label={message.state === "sending" ? dashboardStrings.composerMessageSending : message.state === "sent" ? message.error ? dashboardStrings.dispatchUnconfirmed : dashboardStrings.composerMessageSent : dashboardStrings.composerMessageFailed} /></div>
           <div className="cmux-dashboard-msg-plain">{message.text}</div>
           {message.state === "failed" ? <div className="cmux-dashboard-optimistic-retry"><span>{message.error ?? dashboardStrings.composerMessageFailed}</span><button type="button" onClick={() => requestOptimisticRetry(sessionId, message.id)}>{dashboardStrings.composerRetry}</button></div> : null}
         </div>)}
@@ -289,18 +280,17 @@ function WebTranscriptStatus({ entry, onRefresh }: {
     entry.truncated ? dashboardStrings.webTranscriptTruncated : null,
   ].filter((note) => note !== null);
   return <div className="cmux-dashboard-web-transcript-status" data-dashboard-web-transcript-status="true">
-    <span className="cmux-dashboard-web-transcript-source">{dashboardStrings.webTranscriptSource}</span>
+    <DashboardGlyph icon={Globe} label={dashboardStrings.webTranscriptSource} className="cmux-dashboard-web-transcript-source" />
     <span className="cmux-dashboard-web-transcript-when">
-      {clock ? dashboardStrings.webTranscriptFetchedAt(clock) : dashboardStrings.webTranscriptLoading}
+      {clock ? <><DashboardGlyph icon={Clock} label={dashboardStrings.webTranscriptFetchedAt(clock)} /><span aria-hidden="true">{clock}</span></> : <DashboardStatusMark state="running" label={dashboardStrings.webTranscriptLoading} />}
     </span>
-    {notes.map((note) => <span key={note} className="cmux-dashboard-web-transcript-note">{note}</span>)}
+    {notes.map((note) => <span key={note} className="cmux-dashboard-web-transcript-note">{note === dashboardStrings.webTranscriptGenerating ? <DashboardStatusMark state="running" label={note} /> : note === dashboardStrings.webTranscriptSignedOut ? <DashboardStatusMark state="unknown" label={note} /> : <DashboardGlyph icon={Info} label={note} />}</span>)}
     {entry.error ? <span className="cmux-dashboard-web-transcript-error" role="alert">{entry.error}</span> : null}
-    {onRefresh ? <button
-      type="button"
+    {onRefresh ? <DashboardIconButton icon={RotateCcw} label={dashboardStrings.webTranscriptRefresh}
       className="cmux-dashboard-chat-header-action"
       data-dashboard-web-transcript-refresh="true"
       disabled={entry.loading}
       onClick={(event) => { event.stopPropagation(); onRefresh(); }}
-    >{dashboardStrings.webTranscriptRefresh}</button> : null}
+    /> : null}
   </div>;
 }

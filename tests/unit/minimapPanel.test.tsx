@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { mountDetachedDashboardHost } from "../../src/lib/dashboardHost";
 import { LayoutMinimapPanel, MINIMAP_COLLAPSED_WORKSPACE_IDS_STORAGE_KEY } from "../../src/components/dashboard/LayoutMinimapPanel";
 import { minimapCellHeightPx, minimapMapHeightPx } from "../../src/components/dashboard/MinimapWorkspaceBlock";
 import PaneDragOverlay from "../../src/components/workspace/PaneDragOverlay";
@@ -214,12 +215,12 @@ describe("LayoutMinimapPanel", () => {
     expect(chip.classList.contains("is-declared")).toBe(true);
     // The declared chip carries "宣言のみ" in the meta row and a plain title: no
     // "＋ …（まだ）" decoration, no status dot, no elapsed value.
-    expect(chip.querySelector(".cmux-minimap-agent")?.textContent).toBe("宣言のみ");
+    expect(chip.getAttribute("aria-label")).toContain("宣言のみ");
     expect(chip.querySelector(".cmux-minimap-label")?.textContent).toBe("declared");
     expect(chip.textContent).not.toContain("＋");
     expect(chip.querySelector(".cmux-minimap-meta .cmux-minimap-status")).toBeNull();
     expect(chip.querySelector(".cmux-minimap-age")).toBeNull();
-    expect(chip.querySelector(".cmux-minimap-question")).not.toBeNull();
+    expect(chip.querySelector("[data-dashboard-status=notStarted]")).not.toBeNull();
     await act(async () => chip.click());
     expect(onSelect).toHaveBeenCalledWith("declared");
     const header = container.querySelector<HTMLElement>("[data-minimap-workspace='ws-b'] > button")!;
@@ -237,7 +238,7 @@ describe("LayoutMinimapPanel", () => {
     const chip = container.querySelector<HTMLElement>("[data-minimap-tab='tab']")!;
     const name = container.querySelector<HTMLElement>(".cmux-minimap-workspace-name")!;
     expect(chip.querySelector(".cmux-minimap-label")?.textContent).toBe(longLabel);
-    expect(chip.title).toBe(`${longLabel}\n休止中・会話は再開できる (プロセスは終了している)`);
+    expect(chip.title).toBe(`${longLabel}\n作業中\n休止中・会話は再開できる (プロセスは終了している)`);
     expect(chip.getAttribute("aria-label")).toContain(`${longLabel} — `);
     expect(chip.getAttribute("aria-label")).toContain("ダブルクリックで元の画面に戻る");
     expect(chip.getAttribute("aria-label")).toContain("Alt+クリックでグループ選択");
@@ -492,7 +493,7 @@ describe("LayoutMinimapPanel", () => {
   it("F10: keeps the full new-workspace label on one line and lets sibling actions wrap", async () => {
     await renderDndPanel(dndWorkspaces());
     const button = container.querySelector<HTMLButtonElement>("[data-minimap-new-workspace-button='true']")!;
-    expect(button.textContent?.trim()).toBe("＋ 新しいワークスペース");
+    expect(button.getAttribute("aria-label")).toBe("新しいワークスペース");
     expect(button.closest(".cmux-minimap-new-workspace-zone")?.parentElement?.className).toBe("cmux-minimap-footer");
     const css = readFileSync("src/components/dashboard/MinimapPanel.css", "utf8");
     const footer = css.match(/\.cmux-minimap-footer\s*\{([^}]+)\}/)![1];
@@ -674,7 +675,7 @@ describe("LayoutMinimapPanel", () => {
     expect(container.querySelector<HTMLElement>("[data-minimap-tab='a']")!.classList.contains("is-bundle-selected")).toBe(false);
     expect(chipB.classList.contains("is-bundle-selected")).toBe(true);
     expect(chipC.classList.contains("is-bundle-selected")).toBe(true);
-    expect(container.querySelector(".cmux-minimap-selection-summary")?.textContent).toContain("2本");
+    expect(container.querySelector(".cmux-minimap-selection-count")?.getAttribute("aria-label")).toContain("2本");
   });
 
   it("keeps minimap multi-selection local but replaces it after an external primary selection", async () => {
@@ -723,6 +724,25 @@ describe("LayoutMinimapPanel", () => {
     expect(workspaceB.querySelector("[data-minimap-tab='b']")?.classList.contains("is-selected")).toBe(true);
   });
 
+  it("keeps detached minimap collapse state temporary without inheriting or overwriting the main preference", async () => {
+    const workspaces = dndWorkspaces();
+    const states = new Map<string, DashboardDisplayState>([["a", "running"], ["b", "running"]]);
+    localStorage.setItem(MINIMAP_COLLAPSED_WORKSPACE_IDS_STORAGE_KEY, '["ws-a"]');
+    const release = mountDetachedDashboardHost();
+    try {
+      await act(async () => root.render(<LayoutMinimapPanel workspaces={workspaces} displayStateByTabId={states} selectedTabId="a" activePaneSessionId={null} onSelect={vi.fn()} />));
+      expect(container.querySelector("[data-minimap-workspace='ws-a'] > button")?.getAttribute("aria-expanded")).toBe("true");
+      await act(async () => container.querySelector<HTMLButtonElement>("[data-minimap-workspace='ws-b'] > button")!.click());
+      expect(container.querySelector("[data-minimap-workspace='ws-b'] > button")?.getAttribute("aria-expanded")).toBe("false");
+      expect(localStorage.getItem(MINIMAP_COLLAPSED_WORKSPACE_IDS_STORAGE_KEY)).toBe('["ws-a"]');
+      await act(async () => root.render(null));
+      await act(async () => root.render(<LayoutMinimapPanel workspaces={workspaces} displayStateByTabId={states} selectedTabId="a" activePaneSessionId={null} onSelect={vi.fn()} />));
+      expect(container.querySelector("[data-minimap-workspace='ws-a'] > button")?.getAttribute("aria-expanded")).toBe("true");
+      expect(container.querySelector("[data-minimap-workspace='ws-b'] > button")?.getAttribute("aria-expanded")).toBe("true");
+      expect(localStorage.getItem(MINIMAP_COLLAPSED_WORKSPACE_IDS_STORAGE_KEY)).toBe('["ws-a"]');
+      await act(async () => root.render(null));
+    } finally { release(); }
+  });
   it("persists manually collapsed workspaces without collapsing the others", async () => {
     const workspaces = dndWorkspaces();
     const states = new Map<string, DashboardDisplayState>([["a", "running"], ["b", "running"]]);
@@ -762,7 +782,7 @@ describe("LayoutMinimapPanel", () => {
     expect(chipA.classList.contains("is-bundle-selected")).toBe(true);
     expect(container.querySelector<HTMLElement>("[data-minimap-tab='b']")!.classList.contains("is-bundle-selected")).toBe(true);
     expect(container.querySelector<HTMLElement>("[data-minimap-tab='c']")!.classList.contains("is-bundle-selected")).toBe(false);
-    expect(container.querySelector(".cmux-minimap-selection-summary")?.textContent).toContain("2本");
+    expect(container.querySelector(".cmux-minimap-selection-count")?.getAttribute("aria-label")).toContain("2本");
   });
 
   it("jumps from a chip double-click without selecting the group", async () => {
@@ -903,7 +923,7 @@ describe("LayoutMinimapPanel", () => {
     expect(chipOf("wait").classList.contains("is-waiting")).toBe(true);
     expect(chipOf("wait").classList.contains("is-selected")).toBe(true);
     expect(chipOf("wait").classList.contains("is-bundle-selected")).toBe(true);
-    expect(chipOf("wait").querySelector(".cmux-minimap-question")?.textContent).toBe("返答待ち");
+    expect(chipOf("wait").querySelector("[data-dashboard-status=needsHuman]")).not.toBeNull();
     expect(chipOf("open").classList.contains("is-open")).toBe(true);
     expect(chipOf("open").classList.contains("is-waiting")).toBe(false);
     expect(chipOf("plain").className).not.toMatch(/is-(waiting|open|selected)/);
@@ -913,12 +933,12 @@ describe("LayoutMinimapPanel", () => {
     expect(chipOf("waitopen").classList.contains("is-waiting")).toBe(true);
     expect(chipOf("waitopen").classList.contains("is-open")).toBe(true);
     expect(chipOf("waitopen").style.outlineColor).not.toBe("");
-    // wait x declared: the declared meta wins the label, the waiting face wins
-    // the background, and neither drops a status dot into the meta row.
+    // Waiting remains the primary state; declaration metadata is also retained.
     expect(chipOf("waitdecl").classList.contains("is-waiting")).toBe(true);
     expect(chipOf("waitdecl").classList.contains("is-declared")).toBe(true);
-    expect(chipOf("waitdecl").querySelector(".cmux-minimap-agent")?.textContent).toBe("宣言のみ");
-    expect(chipOf("waitdecl").querySelector(".cmux-minimap-question")?.textContent).toBe("返答待ち");
+    expect(chipOf("waitdecl").getAttribute("aria-label")).toContain("宣言のみ");
+    expect(chipOf("waitdecl").querySelector("[data-dashboard-status=needsHuman]")).not.toBeNull();
+    expect(chipOf("waitdecl").querySelector("[data-dashboard-status=notStarted]")).not.toBeNull();
     expect(chipOf("waitdecl").querySelector(".cmux-minimap-status")).toBeNull();
 
     // Cascade order is the contract: the later rule wins the background, so the
@@ -965,13 +985,41 @@ describe("LayoutMinimapPanel", () => {
     expect(chip().querySelector(".cmux-minimap-question")).toBeNull();
     expect(chip().querySelector(".cmux-minimap-glyph")).toBeNull();
     expect(chip().querySelector(".cmux-minimap-label")?.textContent).toBe("a");
-    expect(chip().querySelector(".cmux-minimap-status")).not.toBeNull();
+    expect(chip().querySelector("[data-dashboard-status=needsHuman]")).not.toBeNull();
     // Waiting still reads at a glance through the amber band.
     expect(chip().classList.contains("is-waiting")).toBe(true);
     expect(readFileSync("src/components/dashboard/MinimapPanel.css", "utf8")).toContain(".cmux-minimap-chip.is-collapsed.is-waiting");
   });
 
-  it("keeps a declared chip free of a status dot in both modes", async () => {
+
+  it.each(["needsHuman", "error", "noUpdate", "done"] as const)(
+    "keeps the %s mark before declaration metadata in expanded and collapsed waitdecl",
+    async (state) => {
+      const workspace: Workspace = { id: "ws", name: "Declaration", gridTemplateId: "1x1", status: "running", createdAt: 1,
+        panes: [pane("p", [tab("waitdecl", "declared")])], splitColumns: [["p"]] };
+      await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]}
+        displayStateByTabId={new Map([["waitdecl", state]])} selectedTabId={null}
+        activePaneSessionId={null} onSelect={vi.fn()} />));
+      const chip = () => container.querySelector<HTMLElement>("[data-minimap-tab=waitdecl]")!;
+      const verifyDeclaration = () => {
+        expect(chip().classList.contains("is-declared")).toBe(true);
+        expect(chip().getAttribute("title")).toContain("宣言のみ");
+        expect(chip().getAttribute("aria-label")).toContain("宣言のみ");
+        expect(chip().querySelector("[data-dashboard-status]")?.getAttribute("data-dashboard-status")).toBe(state);
+      };
+      verifyDeclaration();
+      expect(chip().querySelector("[data-dashboard-status=notStarted] svg.lucide-circle-dashed")).not.toBeNull();
+      if (state === "needsHuman") expect(chip().querySelector("svg[class*=lucide-message-circle-question]")).not.toBeNull();
+      await act(async () => container.querySelector<HTMLElement>(".cmux-minimap-workspace-header")!.click());
+      verifyDeclaration();
+      expect(chip().classList.contains("is-collapsed")).toBe(true);
+      expect(chip().querySelector(".cmux-minimap-meta")).toBeNull();
+      expect(chip().querySelector("[data-dashboard-status=notStarted]")).toBeNull();
+      if (state === "needsHuman") expect(chip().querySelector("svg[class*=lucide-message-circle-question]")).not.toBeNull();
+    },
+  );
+
+  it("keeps a declared idle chip not-started in both modes", async () => {
     const workspace: Workspace = { id: "ws", name: "宣言", gridTemplateId: "1x1", status: "running", createdAt: 1,
       panes: [pane("p", [tab("d", "declared")])], splitColumns: [["p"]] };
     const states = new Map<string, DashboardDisplayState>([["d", "idle"]]);
@@ -979,11 +1027,13 @@ describe("LayoutMinimapPanel", () => {
     const chip = () => container.querySelector<HTMLElement>("[data-minimap-tab='d']")!;
 
     expect(chip().classList.contains("is-expanded")).toBe(true);
+    expect(chip().querySelector("[data-dashboard-status=notStarted]")).not.toBeNull();
     expect(chip().querySelector(".cmux-minimap-status")).toBeNull();
 
     await act(async () => container.querySelector<HTMLElement>(".cmux-minimap-workspace-header")!.click());
 
     expect(chip().classList.contains("is-collapsed")).toBe(true);
+    expect(chip().querySelector("[data-dashboard-status=notStarted]")).not.toBeNull();
     expect(chip().querySelector(".cmux-minimap-status")).toBeNull();
     // The "宣言のみ" meta is tertiary and 11px, not the 10px mono the ASCII
     // agent name uses.
@@ -1047,7 +1097,7 @@ describe("LayoutMinimapPanel", () => {
     await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]} displayStateByTabId={new Map()} selectedTabId={null} activePaneSessionId={null} onSelect={vi.fn()} />));
     const chip = container.querySelector<HTMLElement>("[data-minimap-tab='a']")!;
     expect(chip.querySelector(".cmux-minimap-age")).toBeNull();
-    expect(chip.title).toBe("a\n休止中・会話は再開できる (プロセスは終了している)");
+    expect(chip.title).toBe("a\n待機\n休止中・会話は再開できる (プロセスは終了している)");
     // The chip names the vendor the same way the tab bar badge does.
     expect(chip.getAttribute("aria-label")).toContain("a — Codex・");
   });

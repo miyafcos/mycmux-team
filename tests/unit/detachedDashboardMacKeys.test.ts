@@ -16,8 +16,10 @@ it("uses the macOS Command shortcut for a synthetic preview event", async () => 
   const release = mountDetachedDashboardHost();
   try {
     handleDetachedDashboardKey(event);
-    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("open_main_dashboard", expect.any(Object)));
+    expect(mocks.invoke).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(true);
+    expect(useDashboardViewStore.getState().open).toBe(true);
+    handleDetachedDashboardKey(new KeyboardEvent("keydown", { key: "G", metaKey: true, shiftKey: true, cancelable: true }));
     expect(useDashboardViewStore.getState().open).toBe(false);
   } finally { release(); }
 });

@@ -20,6 +20,13 @@ const input = (): DashboardModelInput => ({ metadataBySession: {}, volatileMetad
   attentionBySession: {}, seenAttentionByTab: new Map(), doneMarkByTab: new Map(), stallsBySession: {}, now: 1000, hasTerminalBuffer: () => false });
 afterEach(() => { mocks.handlers.clear(); mocks.invoke.mockReset(); useWorkspaceListStore.setState({ workspaces: [] }); });
 describe("peer window display projection", () => {
+  it("includes main and another child while excluding the current detached window", () => {
+    const main = peerIndex("main"); main[0].workspaces[0].panes[0].tabs[0].tab_id = "main-tab";
+    const own = peerIndex("mycmux-w1"); own[0].workspaces[0].panes[0].tabs[0].tab_id = "own-stale";
+    const other = peerIndex("mycmux-w2");
+    const peers = canonicalPeerWindowTabs([...main, ...own, ...other], [], "mycmux-w1");
+    expect(peers.map(peer => [peer.windowLabel, peer.tab.id])).toEqual([["main", "main-tab"], ["mycmux-w2", "peer-tab"]]);
+  });
   it("keeps window/workspace/pane/tab locations, local priority, published priority, and main pending cards", () => {
     const pending = peerIndex("mycmux-w1", true);
     const published = peerIndex("mycmux-w2");

@@ -484,7 +484,7 @@ describe("XTermWrapper turn-list row integration", () => {
     await vi.waitFor(() => expect(mocks.invoke.mock.calls.some(([command]) => command === "create_session")).toBe(true), { timeout: 10_000 });
   }
 
-  it("routes the real detached reader link to main with the latest turn and preserves pins", async () => {
+  it("opens the real detached reader link locally with the latest turn and preserves saved pins", async () => {
     const sessionId = "detached-reader";
     useSettingsStore.setState({ showTerminalHistoryButton: true });
     const release = mountDetachedDashboardHost();
@@ -497,10 +497,12 @@ describe("XTermWrapper turn-list row integration", () => {
         .find(button => button.textContent === terminalTurnStrings.openInDashboard);
       expect(link).toBeDefined();
       await act(async () => link!.click());
-      expect(mocks.invoke).toHaveBeenCalledWith("open_main_dashboard", { tabId: `tab-${sessionId}`, sessionId, turn: "latest" });
+      expect(mocks.invoke.mock.calls.some(([command]) => command === "open_main_dashboard")).toBe(false);
+      expect(useDashboardViewStore.getState().selectedTabId).toBe(`tab-${sessionId}`);
+      expect(useDashboardViewStore.getState().userTurnRequests[`tab-${sessionId}`]?.kind).toBe("latest");
       expect(localStorage.getItem("mycmux:dashboard-chat-column-pins")).toBe('["saved"]');
-      expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toEqual(["saved"]);
-      expect(useDashboardViewStore.getState().open).toBe(false);
+      expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toEqual([]);
+      expect(useDashboardViewStore.getState().open).toBe(true);
     } finally { release(); }
   });
 

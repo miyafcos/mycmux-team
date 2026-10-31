@@ -131,6 +131,7 @@ fn rhythm_fresh(
     let (where_sql, params) = shared_where(&resolved, filters);
     let shift = DAY_BOUNDARY_OFFSET_MIN * 60_000;
 
+    let source=if super::query::sequential_all_range(&resolved,filters) { "turn t NOT INDEXED" } else { "turn t" };
     let sql = format!(
         "SELECT (t.ts + {shift}) / {DAY_MS} AS d, \
          ((t.ts + {shift}) / 3600000) % 24 AS h, COUNT(*), \
@@ -138,9 +139,14 @@ fn rhythm_fresh(
          COALESCE(SUM(t.cache_read_tokens),0), \
          COALESCE(SUM(t.cache_write_5m_tokens + t.cache_write_1h_tokens),0), \
          COALESCE(SUM(t.cost_usd),0) \
-         FROM turn t JOIN session s ON s.kind=t.kind AND s.session_id=t.session_id \
+         FROM {source} JOIN session s ON s.kind=t.kind AND s.session_id=t.session_id \
          WHERE {where_sql} GROUP BY d, h ORDER BY d, h"
     );
+    let aggregated=super::heavy_aggregate::eligible_for_range(conn,filters,&resolved);
+    let sql=if aggregated { super::heavy_aggregate::RHYTHM_SQL.to_string() } else { sql };
+    let params=if aggregated { vec![rusqlite::types::Value::Integer(resolved.from),
+        rusqlite::types::Value::Integer(resolved.to)] } else { params };
+    let sql_started=Instant::now();
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|err| format!("prepare usage buckets: {err}"))?;
@@ -163,15 +169,21 @@ fn rhythm_fresh(
                     io: input + output,
                     cost_usd: row.get(7)?,
                 },
+                if aggregated { row.get::<_,i64>(8)? } else { row.get::<_,i64>(2)? },
+                if aggregated { row.get::<_,i64>(9)? } else { 0 },
             ))
         })
         .map_err(|err| format!("run usage buckets: {err}"))?;
+    let rows=rows.collect::<Result<Vec<_>,_>>().map_err(|error|error.to_string())?;
+    let sql_ms=sql_started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
     let mut totals = RhythmTotals::default();
     let mut daily = BTreeMap::<i64, RhythmDay>::new();
     let mut by_hour = empty_slots(24);
     let mut by_weekday = empty_slots(7);
-    for row in rows {
-        let (index, hour, bucket) = row.map_err(|err| format!("usage bucket row: {err}"))?;
+    let raw_turns=rows.iter().map(|r|r.3.max(0) as u64).sum::<u64>();
+    let rollup_rows=rows.iter().map(|r|r.4.max(0) as u64).sum::<u64>();
+    for (index, hour, bucket, _, _) in rows {
+        super::report_runtime::checkpoint()?;
         totals.turns += bucket.turns;
         totals.input += bucket.input;
         totals.output += bucket.output;
@@ -204,7 +216,6 @@ fn rhythm_fresh(
     let days: Vec<RhythmDay> = daily.into_values().collect();
 
     let index_freshness = index_freshness(conn);
-    let sql_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
 
     let streak = streaks(&indices, shift);
     let active_days = days.len() as i64;
@@ -225,14 +236,18 @@ fn rhythm_fresh(
 
     let timings = ReportTimings {
         sql_ms,
-        rows_scanned: totals.turns.max(0) as u64,
+        rows_scanned: raw_turns+rollup_rows,
+        raw_rows: raw_turns,
+        rollup_rows,
+        raw_turns,
+        raw_turns_measured: true,
         build_ms: started
             .elapsed()
             .as_millis()
             .try_into()
             .unwrap_or(u64::MAX)
             .saturating_sub(sql_ms),
-        path: "raw",
+        path: super::heavy_aggregate::path(raw_turns,rollup_rows),
     };
     log_report_timings("usage_rhythm", timings);
 

@@ -69,14 +69,14 @@ fn migrated_reports_expose_rollup_timings_and_other_reports_stay_raw() {
         query::rule_check(&conn, &range, &filters, NOW)
             .unwrap()
             .timings,
-        query::rework_rankings(&conn, &range, &filters, NOW)
-            .unwrap()
-            .timings,
         query::dashboard(&conn, &range, &filters, "family", NOW)
             .unwrap()
             .timings,
     ];
     assert!(raw_timings.iter().all(|timing| timing.path == "raw"));
+    // Unbuilt heavy tables retain the complete G1-3 reader, including its
+    // ready daily rollup for selecting rework session keys.
+    assert_eq!(query::rework_rankings(&conn, &range, &filters, NOW).unwrap().timings.path, "rollup");
     assert_eq!(
         query::series(
             &conn,

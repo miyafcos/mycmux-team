@@ -39,7 +39,7 @@ WINDOWS_KITS_BIN = Path(r"C:\Program Files (x86)\Windows Kits\10\bin")
 # under RAM exhaustion, and long-running production jobs may share the box.
 # Refuse to start a build below MIN_BUILD_RAM_GB and throttle below LOW_RAM_JOBS_GB.
 MIN_BUILD_RAM_GB = 5.0
-LOW_RAM_JOBS_GB = 8.0
+LOW_RAM_JOBS_GB = 12.0
 RAM_POLL_SECONDS = 60
 
 
@@ -95,8 +95,8 @@ def wait_for_build_ram() -> list[str]:
         time.sleep(RAM_POLL_SECONDS)
         avail = available_ram_gb()
     if avail is not None and avail < LOW_RAM_JOBS_GB:
-        print(f"RAM gate: 空き {avail:.1f}GB < {LOW_RAM_JOBS_GB}GB — cargo -j 2 で実行", flush=True)
-        return ["-j", "2"]
+        print(f"RAM gate: 空き {avail:.1f}GB < {LOW_RAM_JOBS_GB}GB — cargo -j 1 で実行", flush=True)
+        return ["-j", "1"]
     return []
 
 

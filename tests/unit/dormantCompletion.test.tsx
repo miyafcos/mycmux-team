@@ -1,3 +1,4 @@
+import { dashboardText } from "../helpers/dashboardA11y";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -12,6 +13,7 @@ import { DashboardCardRow } from "../../src/components/dashboard/DashboardCardRo
 import { buildDashboardCards, resolveDisplayState } from "../../src/components/dashboard/dashboardModel";
 import { mergeWebPaneTurns } from "../../src/lib/webPaneTranscript";
 import type { Workspace } from "../../src/types";
+import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { mountDetachedDashboardHost } from "../../src/lib/dashboardHost";
 import { useToastStore } from "../../src/stores/toastStore";
 
@@ -47,18 +49,17 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("a completion retained through process dormancy", () => {
-  it("handles a detached dormant click without selecting or launching and reports missing main", async () => {
+  it("opens a detached dormant completion locally without selecting or launching", async () => {
     preserve();
     const release = mountDetachedDashboardHost();
-    const before = useDashboardViewStore.getState();
+    useWorkspaceListStore.setState({ workspaces: [{ id: "ws", panes: [{ id: "p", tabs: [tab] }] }] as Workspace[] });
     const onSelectTab = vi.fn();
     try {
       if (!openDormantCompletionRecord(tab, true)) onSelectTab();
       await Promise.resolve(); await Promise.resolve();
       expect(onSelectTab).not.toHaveBeenCalled();
-      expect(ipc.openMainDashboard).toHaveBeenCalledWith({ tabId: "tab", sessionId: "pty", turn: "latest" });
-      expect(useDashboardViewStore.getState()).toBe(before);
-      expect(useToastStore.getState().toasts.at(-1)?.message).toContain("本体の窓");
+      expect(ipc.openMainDashboard).not.toHaveBeenCalled();
+      expect(useDashboardViewStore.getState()).toMatchObject({ open: true, selectedTabId: "tab", userTurnRequests: { tab: { kind: "latest" } } });
       expect(unseen()).toBe(true);
     } finally { release(); }
   });
@@ -159,8 +160,8 @@ describe("the dormant conversation display", () => {
       dropPreview={false} motion={null} targetEventId={null} targetEventRequest={0} syntheticSource={null}
       onActivate={vi.fn()} onTogglePin={vi.fn()} onClose={vi.fn()} onFocusComposer={vi.fn()} onJump={onJump} onReorderKeyDown={vi.fn()} />); });
     expect(ipc.getAgentDormancyRecord).toHaveBeenCalledWith(receipt);
-    expect(container.textContent).toContain("Saved reply");
-    expect(container.textContent).toContain(AGENT_DORMANT_DESCRIPTION);
+    expect(dashboardText(container)).toContain("Saved reply");
+    expect(dashboardText(container)).toContain(AGENT_DORMANT_DESCRIPTION);
     const resume = container.querySelector<HTMLButtonElement>('button[aria-label="会話を再開"]')!;
     act(() => resume.click());
     expect(onJump).toHaveBeenCalledOnce();
@@ -168,6 +169,6 @@ describe("the dormant conversation display", () => {
   });
   it("shows the same dormancy explanation in the dashboard list", () => {
     act(() => root.render(<DashboardCardRow card={card()} selected={false} open={false} now={1000} hideWorkspaceBadge={false} onSelect={vi.fn()} onJump={vi.fn()} />));
-    expect(container.querySelector(`[title="${AGENT_DORMANT_DESCRIPTION}"]`)?.textContent).toBe("休止中");
+    expect(container.querySelector(`[data-dashboard-status="dormant"] [role="img"]`)?.getAttribute("aria-label")).toBe(AGENT_DORMANT_DESCRIPTION);
   });
 });

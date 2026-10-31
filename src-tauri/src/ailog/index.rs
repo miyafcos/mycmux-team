@@ -39,6 +39,35 @@ const HISTORICAL_REPAIR_PENDING: &str =
     "historical repair pending: shared Codex source requires a destructive reset";
 
 #[cfg(test)]
+type ReaderHook = Arc<dyn Fn() + Send + Sync>;
+
+#[cfg(test)]
+fn reader_hooks() -> &'static std::sync::Mutex<HashMap<PathBuf, ReaderHook>> {
+    static HOOKS: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, ReaderHook>>> = std::sync::OnceLock::new();
+    HOOKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+pub(crate) struct ReaderHookGuard(PathBuf);
+
+#[cfg(test)]
+impl Drop for ReaderHookGuard {
+    fn drop(&mut self) { reader_hooks().lock().unwrap().remove(&self.0); }
+}
+
+#[cfg(test)]
+pub(crate) fn observe_reader(path: &Path, hook: ReaderHook) -> ReaderHookGuard {
+    assert!(reader_hooks().lock().unwrap().insert(path.to_path_buf(), hook).is_none());
+    ReaderHookGuard(path.to_path_buf())
+}
+
+#[cfg(test)]
+fn reader_checkpoint(path: &Path) {
+    let hook = reader_hooks().lock().unwrap().get(path).cloned();
+    if let Some(hook) = hook { hook(); }
+}
+
+#[cfg(test)]
 pub(crate) fn default_roots_for_test() -> Vec<(&'static str, PathBuf)> {
     default_roots()
 }
@@ -448,8 +477,7 @@ pub async fn run_index(
     let writer_progress = progress.clone();
     let writer =
         tokio::task::spawn_blocking(move || -> Result<(usize, Vec<String>, u64, u64), String> {
-            let mut conn = crate::ailog::open_db(&db_path)?;
-            let prices = PriceTable::load(&conn)?;
+            let conn = crate::ailog::open_db(&db_path)?;
             let mut touched: HashSet<(String, String)> = HashSet::new();
             let mut errors = Vec::new();
             let mut db_write_ms = 0u64;
@@ -458,9 +486,14 @@ pub async fn run_index(
             // made a full initial import pay a journal sync for every JSONL file.
             // The writer remains single-threaded, so readers can still parse in
             // parallel without retaining completed chunks in memory.
-            let tx = conn
-                .transaction()
+            // Parsing the first file must not reserve the product-writer gate.
+            // A closed channel still runs the same atomic finalization below.
+            #[cfg(test)]
+            crate::ailog::db::write_checkpoint(&conn, "index-first-message");
+            let first = rx.recv().ok();
+            let tx = crate::ailog::db::write_transaction(&conn)
                 .map_err(|err| format!("begin index transaction: {err}"))?;
+            let prices = PriceTable::load(&tx)?;
             let mut source_file_upsert = tx
                 .prepare_cached(
                     "INSERT INTO source_file (path, kind, size_bytes, mtime_ns, parsed_bytes, \
@@ -492,7 +525,7 @@ pub async fn run_index(
                 )
                 .map_err(|err| format!("prepare source_file metadata: {err}"))?;
 
-            while let Ok(message) = rx.recv() {
+            for message in first.into_iter().chain(rx.iter()) {
                 let write_started = Instant::now();
                 match message {
                     WriteMsg::Metadata {
@@ -628,8 +661,10 @@ pub async fn run_index(
                 params![chrono::Utc::now().timestamp_millis().to_string()],
             )
             .map_err(|err| format!("write index_state: {err}"))?;
+            crate::ailog::heavy_aggregate::record_source_mark(&tx)?;
             tx.commit()
                 .map_err(|err| format!("commit finalize: {err}"))?;
+            crate::ailog::heavy_aggregate::schedule(&db_path);
             Ok((
                 count,
                 errors,
@@ -659,6 +694,8 @@ pub async fn run_index(
             .await
             .map_err(|err| format!("acquire worker permit: {err}"))?;
         let tx = tx.clone();
+        #[cfg(test)]
+        let reader_db = options.db_path.clone();
         handles.push(tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let job_path = job.path.to_string_lossy().to_string();
@@ -702,6 +739,8 @@ pub async fn run_index(
                 }
             };
             let bytes = job.size.saturating_sub(job.start);
+            #[cfg(test)]
+            reader_checkpoint(&reader_db);
             let _ = tx.send(message);
             bytes
         }));
@@ -1329,6 +1368,8 @@ fn apply_plain_chunk(
         tx.query_row("SELECT parsed_lines FROM source_file WHERE path=?1",[&job_path],|r|r.get(0)).optional()
             .map_err(|e|e.to_string())?.unwrap_or(0)
     };
+    #[cfg(test)]
+    crate::ailog::db::write_checkpoint(tx, "parsed_lines");
     if reset {
         tx.execute("DELETE FROM usage_occurrence WHERE kind=?1 AND source_path=?2",params![kind,job_path]).map_err(|e|e.to_string())?;
         let mut ids: HashSet<String> = data.sessions.keys().cloned().collect();
@@ -1852,8 +1893,7 @@ fn hex_digit(byte: u8) -> Option<u8> {
 }
 
 fn clear_all(conn: &mut Connection) -> Result<(), String> {
-    let tx = conn
-        .transaction()
+    let tx = crate::ailog::db::write_transaction(conn)
         .map_err(|err| format!("begin clear transaction: {err}"))?;
     for table in [
         "source_file",
@@ -1869,10 +1909,22 @@ fn clear_all(conn: &mut Connection) -> Result<(), String> {
         "session_identity_alias",
         "usage_repair_group",
         "rollup_turn_session_day_v2",
+        "heavy_aggregate_day",
+        "heavy_aggregate_dirty",
+        "heavy_session_day",
+        "heavy_handoff_chunk",
+        "heavy_handoff_pair",
+        "heavy_tool_day",
+        "heavy_file_session",
+        "heavy_file_ready",
+        "heavy_rhythm_day",
     ] {
         tx.execute(&format!("DELETE FROM {table}"), [])
             .map_err(|err| format!("clear {table}: {err}"))?;
     }
+    tx.execute("DELETE FROM index_state WHERE key IN ('heavy_aggregate_cursor','heavy_aggregate_lower_day','heavy_aggregate_reset')", [])
+        .map_err(|err| format!("clear heavy aggregate cursor: {err}"))?;
+    crate::ailog::heavy_aggregate::record_source_mark(&tx)?;
     tx.commit()
         .map_err(|err| format!("commit clear transaction: {err}"))?;
     Ok(())

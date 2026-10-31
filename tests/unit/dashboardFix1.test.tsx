@@ -1,3 +1,4 @@
+import { dashboardText } from "../helpers/dashboardA11y";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -142,11 +143,11 @@ describe("FIX-1 dashboard reproductions", () => {
       const legacy = card({ brief: brief({ agentKind: "grok", autonomy: null }), noUpdateMinutes: 8 });
       await act(async () => root.render(<DashboardCardRow card={legacy} selected={false} open={false} now={NOW}
         hideWorkspaceBadge={false} onSelect={() => {}} onJump={() => {}} />));
-      expect(container.textContent).toContain("要確認");
+      expect(dashboardText(container)).toContain("要確認");
       const active = card({ brief: brief({ autonomy: { ...brief().autonomy!, turnState: "active" } }), noUpdateMinutes: 45 });
       await act(async () => root.render(<DashboardCardRow card={active} selected={false} open={false} now={NOW}
         hideWorkspaceBadge={false} onSelect={() => {}} onJump={() => {}} />));
-      expect(container.textContent).toContain("作業中"); expect(container.textContent).not.toContain("要確認");
+      expect(dashboardText(container)).toContain("作業中"); expect(dashboardText(container)).not.toContain("要確認");
     } finally { await act(async () => root.unmount()); container.remove(); }
   });
 });

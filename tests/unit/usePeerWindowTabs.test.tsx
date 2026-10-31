@@ -25,11 +25,15 @@ beforeEach(async () => {
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 describe("peer window tab polling", () => {
-  it("is silent while closed and in non-main windows", async () => {
+  it("is silent while closed and polls in a detached window only while open", async () => {
     await act(async () => vi.advanceTimersByTimeAsync(9000)); expect(mocks.invoke).not.toHaveBeenCalled();
     mocks.label = "mycmux-w1"; await act(async () => root.render(<Probe />)); await open();
-    await act(async () => vi.advanceTimersByTimeAsync(9000)); expect(mocks.invoke).not.toHaveBeenCalled();
-    expect(mocks.listen).not.toHaveBeenCalled();
+    expect(mocks.invoke).toHaveBeenCalledTimes(1); expect(host.textContent).toBe("1");
+    await act(async () => vi.advanceTimersByTimeAsync(9000)); expect(mocks.invoke).toHaveBeenCalledTimes(4);
+    await act(async () => mocks.registry()); expect(mocks.invoke).toHaveBeenCalledTimes(5);
+    await act(async () => useDashboardViewStore.getState().close());
+    await act(async () => vi.advanceTimersByTimeAsync(9000)); expect(mocks.invoke).toHaveBeenCalledTimes(5);
+    expect(usePeerWindowTabsStore.getState().pollers).toBe(0);
   });
   it("reads on open, every three seconds and registry changes; pauses hidden intervals and retains the cache", async () => {
     await open(); expect(mocks.invoke).toHaveBeenCalledTimes(1);

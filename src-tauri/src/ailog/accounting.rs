@@ -28,7 +28,7 @@ pub struct Occurrence {
 }
 
 pub fn migrate(conn: &Connection) -> Result<(), String> {
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let tx = super::db::write_transaction(conn).map_err(|e| e.to_string())?;
     for (table, column, definition) in [
         ("session", "parent_kind", "TEXT"),
         ("session", "parent_session_id", "TEXT"),

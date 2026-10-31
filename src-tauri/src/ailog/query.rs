@@ -62,6 +62,15 @@ fn build_where(range: &ResolvedRange, filters: &Filters, force_sidechain: bool) 
     build_where_states(range, filters, force_sidechain, false)
 }
 
+/// An unfiltered all-history request cannot benefit from the timestamp index;
+/// avoid random table lookups through every timestamp entry.
+pub(crate) fn sequential_all_range(range: &ResolvedRange, filters: &Filters) -> bool {
+    range.from==i64::MIN/4 && filters.kinds.is_empty() && filters.models.is_empty()
+        && filters.projects.is_empty() && filters.branches.is_empty() && filters.efforts.is_empty()
+        && filters.origins.is_empty() && filters.min_cost.is_none()
+        && filters.query.as_deref().unwrap_or_default().is_empty()
+}
+
 fn build_where_states(range: &ResolvedRange, filters: &Filters, _force_sidechain: bool, all_states: bool) -> Where {
     let mut clauses: Vec<String> = Vec::new();
     let mut params: Vec<SqlValue> = Vec::new();
@@ -153,16 +162,16 @@ pub fn accounting_totals(conn: &Connection, range: &Range, filters: &Filters, no
     accounting_where(conn, build_where_states(&resolved, filters, true, true))
 }
 
-fn accounting_report(conn: &Connection, range: &Range, filters: &Filters, now_ms: i64)
+fn accounting_report(conn: &Connection, range: &Range, filters: &Filters, now_ms: i64, timings: &mut ReportTimings)
     -> Result<AccountingTotals,String> {
     let resolved=range.resolve(now_ms).0;
-    if !rollup_is_eligible(filters) || !matches!(rollup::ready(conn), Ok(true)) {
-        return accounting_where(conn, build_where_states(&resolved,filters,true,true));
+    if !rollup_is_eligible(filters) || !matches!(rollup::version_matches(conn), Ok(true)) {
+        return measured_accounting_where(conn, build_where_states(&resolved,filters,true,true), timings);
     }
-    let (partial, complete) = hybrid_days(&resolved);
+    let (partial, complete) = timed_sql(timings, || hybrid_days(conn, &resolved))?;
     let mut totals = AccountingTotals::default();
     for (from, to) in partial {
-        let value = accounting_where(conn, build_where_states(&ResolvedRange { from, to },filters,true,true))?;
+        let value = measured_accounting_where(conn, build_where_states(&ResolvedRange { from, to },filters,true,true), timings)?;
         totals.cost_usd += value.cost_usd;
         totals.canonical_usd += value.canonical_usd;
         totals.legacy_usd += value.legacy_usd;
@@ -179,13 +188,25 @@ fn accounting_report(conn: &Connection, range: &Range, filters: &Filters, now_ms
         let mut values = vec![SqlValue::Integer(first), SqlValue::Integer(last)];
         values.append(&mut params);
         let suffix = if filter.is_empty() { String::new() } else { format!(" AND {filter}") };
+        let session_join = if rollup_needs_session(filters, false) {
+            "JOIN session s USING(kind,session_id)"
+        } else { "" };
+        // Keep the original inner join's existence rule without hydrating a
+        // session row when no session fields are part of the filter.
+        let session_filter = if rollup_needs_session(filters, false) { "" } else {
+            " AND EXISTS (SELECT 1 FROM session s WHERE s.kind=r.kind AND s.session_id=r.session_id)"
+        };
+        let query_started = Instant::now();
         let mut statement = conn.prepare(&format!("SELECT r.usage_state,SUM(r.turns),SUM(r.cost_usd)
-            FROM rollup_turn_session_day_v2 r JOIN session s USING(kind,session_id)
-            WHERE r.day>=? AND r.day<=?{suffix} GROUP BY r.usage_state")).map_err(|error|error.to_string())?;
+            FROM rollup_turn_session_day_v2 r {session_join}
+            WHERE r.day>=? AND r.day<=? AND {CLEAN_ROLLUP_DAY}{suffix}{session_filter} GROUP BY r.usage_state")).map_err(|error|error.to_string())?;
         let rows = statement.query_map(params_from_iter(values.iter()),|row|Ok((row.get::<_,String>(0)?,row.get::<_,i64>(1)?,row.get::<_,f64>(2)?)))
             .map_err(|error|error.to_string())?;
-        for row in rows {
-            let (state, count, cost) = row.map_err(|error|error.to_string())?;
+        let rows=rows.collect::<Result<Vec<_>,_>>().map_err(|error|error.to_string())?;
+        timings.sql_ms+=elapsed_ms(query_started);
+        timings.rows_scanned+=rows.len() as u64;
+        timings.rollup_rows+=rows.len() as u64;
+        for (state,count,cost) in rows {
             match state.as_str() {
                 "canonical" => { totals.canonical_usd += cost; totals.cost_usd += cost; totals.turns += count; },
                 "legacy" => { totals.legacy_usd += cost; totals.cost_usd += cost; totals.turns += count; },
@@ -200,6 +221,16 @@ fn accounting_report(conn: &Connection, range: &Range, filters: &Filters, now_ms
 }
 
 fn accounting_where(conn: &Connection, where_: Where) -> Result<AccountingTotals,String> {
+    accounting_where_rows(conn,where_).map(|(totals,_)|totals)
+}
+
+fn measured_accounting_where(conn: &Connection, where_: Where, timings: &mut ReportTimings) -> Result<AccountingTotals,String> {
+    let (totals,turns)=timed_sql(timings,||accounting_where_rows(conn,where_))?;
+    timings.rows_scanned+=1; timings.raw_rows+=1; timings.raw_turns+=turns;
+    Ok(totals)
+}
+
+fn accounting_where_rows(conn: &Connection, where_: Where) -> Result<(AccountingTotals,u64),String> {
     let sql=format!("SELECT
         COALESCE(SUM(CASE WHEN t.usage_state IN ('canonical','legacy') THEN t.cost_usd ELSE 0 END),0),
         COALESCE(SUM(CASE WHEN t.usage_state='canonical' THEN t.cost_usd ELSE 0 END),0),
@@ -210,13 +241,13 @@ fn accounting_where(conn: &Connection, where_: Where) -> Result<AccountingTotals
         COALESCE(SUM(CASE WHEN t.usage_state='suspected_duplicate' THEN t.cost_usd ELSE 0 END),0),
         COALESCE(SUM(t.usage_state='duplicate'),0),
         COALESCE(SUM(CASE WHEN t.usage_state='duplicate' THEN t.cost_usd ELSE 0 END),0),
-        COALESCE(SUM(t.usage_state='unresolved'),0)
+        COALESCE(SUM(t.usage_state='unresolved'),0),COUNT(*)
         FROM turn t JOIN session s ON s.kind=t.kind AND s.session_id=t.session_id WHERE {}",where_.sql);
-    conn.query_row(&sql,rusqlite::params_from_iter(where_.params.iter()),|r|Ok(AccountingTotals {
+    conn.query_row(&sql,rusqlite::params_from_iter(where_.params.iter()),|r|Ok((AccountingTotals {
         cost_usd:r.get(0)?,canonical_usd:r.get(1)?,legacy_usd:r.get(2)?,unresolved_usd:r.get(3)?,turns:r.get(4)?,
         suspected_duplicate_rows:r.get(5)?,suspected_duplicate_usd:r.get(6)?,
         confirmed_duplicate_rows:r.get(7)?,confirmed_duplicate_usd:r.get(8)?,unresolved_rows:r.get(9)?,
-    })).map_err(|e|e.to_string())
+    },r.get::<_,i64>(10)?.max(0) as u64))).map_err(|e|e.to_string())
 }
 
 /// The shared `WHERE` fragment, for callers that aggregate in SQL instead of
@@ -768,6 +799,13 @@ pub struct RangeOut {
 pub struct ReportTimings {
     pub sql_ms: u64,
     pub rows_scanned: u64,
+    /// Logical report-row units and raw aggregate/stream turns, not physical I/O.
+    /// Report-specific counting units are documented in ailog-usage-grass.md.
+    pub raw_rows: u64,
+    pub rollup_rows: u64,
+    pub raw_turns: u64,
+    /// False when a DISTINCT-key query did not count its input turns.
+    pub raw_turns_measured: bool,
     pub build_ms: u64,
     pub path: &'static str,
 }
@@ -782,6 +820,10 @@ impl<'de> Deserialize<'de> for ReportTimings {
         struct StoredTimings {
             sql_ms: u64,
             rows_scanned: u64,
+            #[serde(default)] raw_rows: u64,
+            #[serde(default)] rollup_rows: u64,
+            #[serde(default)] raw_turns: u64,
+            #[serde(default)] raw_turns_measured: bool,
             build_ms: u64,
             path: String,
         }
@@ -789,9 +831,10 @@ impl<'de> Deserialize<'de> for ReportTimings {
         let path = match stored.path.as_str() {
             "raw" => "raw",
             "rollup" => "rollup",
+            "hybrid" => "hybrid",
             value => return Err(serde::de::Error::custom(format!("unknown report path: {value}"))),
         };
-        Ok(Self { sql_ms: stored.sql_ms, rows_scanned: stored.rows_scanned, build_ms: stored.build_ms, path })
+        Ok(Self { sql_ms: stored.sql_ms, rows_scanned: stored.rows_scanned, raw_rows: stored.raw_rows, rollup_rows: stored.rollup_rows, raw_turns: stored.raw_turns, raw_turns_measured: stored.raw_turns_measured, build_ms: stored.build_ms, path })
     }
 }
 
@@ -800,6 +843,10 @@ impl Default for ReportTimings {
         Self {
             sql_ms: 0,
             rows_scanned: 0,
+            raw_rows: 0,
+            rollup_rows: 0,
+            raw_turns: 0,
+            raw_turns_measured: true,
             build_ms: 0,
             path: "raw",
         }
@@ -828,7 +875,25 @@ fn measured_turns(
     let turns = read_turns(conn, range, filters, force_sidechain)?;
     timings.sql_ms = timings.sql_ms.saturating_add(elapsed_ms(started));
     timings.rows_scanned = timings.rows_scanned.saturating_add(turns.len() as u64);
+    timings.raw_rows += turns.len() as u64;
+    timings.raw_turns += turns.len() as u64;
     Ok(turns)
+}
+
+fn timed_sql<T>(timings: &mut ReportTimings, query: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let started = Instant::now();
+    let result = query();
+    timings.sql_ms = timings.sql_ms.saturating_add(elapsed_ms(started));
+    result
+}
+
+fn measured_raw_aggregate_span(conn: &Connection, from: i64, to: i64, filters: &Filters,
+    timings: &mut ReportTimings) -> Result<Vec<AggregateRow>, String> {
+    let rows = timed_sql(timings, || aggregate_raw_span(conn, from, to, filters))?;
+    timings.raw_rows += rows.len() as u64;
+    timings.raw_turns += rows.iter().map(|row| row.turns.max(0) as u64).sum::<u64>();
+    timings.rows_scanned += rows.len() as u64;
+    Ok(rows)
 }
 
 fn finish_timings(mut timings: ReportTimings, started: Instant) -> ReportTimings {
@@ -838,8 +903,8 @@ fn finish_timings(mut timings: ReportTimings, started: Instant) -> ReportTimings
 
 pub fn log_report_timings(report: &str, timings: ReportTimings) {
     crate::diag::log(&format!(
-        "[ailog] report={report} path={} sql_ms={} rows_scanned={} build_ms={}",
-        timings.path, timings.sql_ms, timings.rows_scanned, timings.build_ms
+        "[ailog] report={report} path={} sql_ms={} rows_scanned={} build_ms={} raw_rows={} rollup_rows={} raw_turns={} raw_turns_measured={}",
+        timings.path, timings.sql_ms, timings.rows_scanned, timings.build_ms, timings.raw_rows, timings.rollup_rows, timings.raw_turns, timings.raw_turns_measured
     ));
 }
 
@@ -956,6 +1021,8 @@ pub struct Overview {
     pub cache: Option<super::report_cache::SnapshotInfo>,
     pub range: RangeOut,
     pub totals: Totals,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_totals: Option<Totals>,
     #[serde(default)]
     pub accounting: AccountingTotals,
     pub compare_previous: ComparePrevious,
@@ -994,48 +1061,50 @@ fn rework_summary(
     if sessions.is_empty() {
         return Ok(ReworkSummary::default());
     }
-    let requested = std::iter::repeat("(?, ?)")
-        .take(sessions.len())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        "WITH requested(kind, session_id) AS (VALUES {requested}) \
-         SELECT COALESCE(SUM(r.tool_error_count), 0), COALESCE(SUM(r.tool_call_count), 0), \
-                COALESCE(SUM(r.correction_count), 0), COALESCE(SUM(r.churn_files), 0), \
-                COALESCE(SUM(r.abandoned <> 0), 0), \
-                COALESCE(AVG(COALESCE(r.score, 0.0)), 0.0) \
-         FROM requested q LEFT JOIN rework r \
-         ON r.kind = q.kind AND r.session_id = q.session_id"
-    );
-    let mut params = Vec::with_capacity(sessions.len() * 2);
-    for (kind, session_id) in sessions.keys() {
-        params.push(SqlValue::Text(kind.clone()));
-        params.push(SqlValue::Text(session_id.clone()));
+    let mut summary = ReworkSummary::default();
+    let mut total_errors = 0;
+    let mut total_calls = 0;
+    let keys: Vec<_> = sessions.keys().cloned().collect();
+    for chunk in keys.chunks(200) {
+        let requested = std::iter::repeat("(?, ?)")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "WITH requested(kind, session_id) AS (VALUES {requested}) \
+             SELECT COALESCE(SUM(r.tool_error_count), 0), COALESCE(SUM(r.tool_call_count), 0), \
+                    COALESCE(SUM(r.correction_count), 0), COALESCE(SUM(r.churn_files), 0), \
+                    COALESCE(SUM(r.abandoned <> 0), 0), \
+                    COALESCE(AVG(COALESCE(r.score, 0.0)), 0.0) \
+             FROM requested q LEFT JOIN rework r \
+             ON r.kind = q.kind AND r.session_id = q.session_id"
+        );
+        let mut params = Vec::with_capacity(chunk.len() * 2);
+        for (kind, session_id) in chunk {
+            params.push(SqlValue::Text(kind.clone()));
+            params.push(SqlValue::Text(session_id.clone()));
+        }
+        let (errors, calls, correction_hits, churn_files, abandoned_sessions, avg_score) = conn
+            .query_row(&sql, params_from_iter(params.iter()), |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, f64>(5)?,
+                ))
+            })
+            .map_err(|err| format!("aggregate rework: {err}"))?;
+        summary.correction_hits += correction_hits;
+        summary.churn_files += churn_files;
+        summary.abandoned_sessions += abandoned_sessions;
+        summary.avg_score += avg_score * chunk.len() as f64;
+        total_errors += errors;
+        total_calls += calls;
     }
-    let (errors, calls, correction_hits, churn_files, abandoned_sessions, avg_score) = conn
-        .query_row(&sql, params_from_iter(params.iter()), |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, f64>(5)?,
-            ))
-        })
-        .map_err(|err| format!("aggregate rework: {err}"))?;
-    let mut summary = ReworkSummary {
-        correction_hits,
-        churn_files,
-        abandoned_sessions,
-        avg_score,
-        ..ReworkSummary::default()
-    };
-    summary.tool_error_rate = if calls > 0 {
-        errors as f64 / calls as f64
-    } else {
-        0.0
-    };
+    summary.avg_score /= sessions.len() as f64;
+    summary.tool_error_rate = if total_calls > 0 { total_errors as f64 / total_calls as f64 } else { 0.0 };
     Ok(summary)
 }
 
@@ -1242,17 +1311,7 @@ fn cached_prices(conn: &Connection) -> Result<Arc<PriceTable>, String> {
 // ailog_overview
 // ---------------------------------------------------------------------------
 
-fn overview_from_pass(
-    conn: &Connection,
-    resolved: ResolvedRange,
-    label: String,
-    prices: Arc<PriceTable>,
-    pass: Pass,
-    previous: Pass,
-    internal_pass: Pass,
-    timings: ReportTimings,
-    started: Instant,
-) -> Result<Overview, String> {
+fn pass_totals(pass: &Pass) -> Totals {
     let sessions_count = pass.sessions.len() as i64;
     let projects: BTreeSet<String> = pass
         .sessions
@@ -1260,7 +1319,7 @@ fn overview_from_pass(
         .filter_map(|session| session.project_label.clone())
         .collect();
 
-    let totals = Totals {
+    Totals {
         sessions: sessions_count,
         turns: pass.totals.turns,
         user_messages: pass.sessions.values().map(|s| s.user_msgs).sum(),
@@ -1274,7 +1333,23 @@ fn overview_from_pass(
         active_ms: pass.sessions.values().map(|s| s.active_ms).sum(),
         projects: projects.len() as i64,
         models: pass.by_family.len() as i64,
-    };
+    }
+}
+
+fn overview_from_pass(
+    conn: &Connection,
+    resolved: ResolvedRange,
+    label: String,
+    prices: Arc<PriceTable>,
+    pass: Pass,
+    previous: Pass,
+    internal_pass: Pass,
+    timings: ReportTimings,
+    started: Instant,
+) -> Result<Overview, String> {
+    let totals = pass_totals(&pass);
+    let sessions_count = totals.sessions;
+    let previous_totals = Some(pass_totals(&previous));
 
     let previous_rework = rework_summary(conn, &previous.sessions)?;
     let current_rework = rework_summary(conn, &pass.sessions)?;
@@ -1359,7 +1434,6 @@ fn overview_from_pass(
     top_titles.truncate(20);
 
     let timings = finish_timings(timings, started);
-    log_report_timings("overview", timings);
     Ok(Overview {
         cache: None,
         range: RangeOut {
@@ -1368,6 +1442,7 @@ fn overview_from_pass(
             label,
         },
         totals,
+        previous_totals,
         accounting: AccountingTotals::default(),
         compare_previous,
         top_models: build_model_rows(&pass, "family", &prices),
@@ -1404,10 +1479,10 @@ fn overview_raw(
     let prices = cached_prices(conn)?;
     let turns = measured_turns(conn, &resolved, filters, false, &mut timings)?;
     let pass = run_pass(&turns, &prices);
-    let span = (resolved.to - resolved.from).max(0);
+    let span = (resolved.to - resolved.from).max(0).saturating_add(1);
     let previous_range = ResolvedRange {
-        from: resolved.from - span,
-        to: resolved.from,
+        from: resolved.from.saturating_sub(span),
+        to: resolved.from.saturating_sub(1),
     };
     let previous_turns = measured_turns(conn, &previous_range, filters, false, &mut timings)?;
     let previous = run_pass(&previous_turns, &prices);
@@ -1702,19 +1777,63 @@ fn aggregate_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AggregateRow> {
     })
 }
 
+// Share completed reads across report workers. Never hold the mutex over SQL.
+// A transactional source revision and database identity are required; scratch
+// databases without that identity and oversized results simply bypass reuse.
+struct AggregateCacheEntry {
+    revision: String,
+    key: String,
+    bytes: usize,
+    rows: Vec<AggregateRow>,
+}
+
+fn aggregate_cache() -> &'static Mutex<Vec<AggregateCacheEntry>> {
+    static CACHE: OnceLock<Mutex<Vec<AggregateCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn aggregate_bytes(rows: &[AggregateRow]) -> usize {
+    rows.iter().map(|row| std::mem::size_of::<AggregateRow>() + row.kind.len() + row.session_id.len()
+        + [&row.model, &row.family, &row.effort, &row.origin, &row.project_label, &row.branch]
+            .iter().map(|s| s.as_ref().map_or(0, String::len)).sum::<usize>()).sum()
+}
+
+const AGGREGATE_CACHE_BYTES: usize = 32 * 1024 * 1024;
+
 fn collect_aggregate_rows(
     conn: &Connection,
     sql: &str,
     params: &[SqlValue],
 ) -> Result<Vec<AggregateRow>, String> {
+    let revision = if conn.path().is_some_and(|path| !path.is_empty()) {
+        super::report_cache::fingerprint(conn)
+    } else { None };
+    let key = format!("{}:{sql}:{params:?}", conn.path().unwrap_or_default());
+    if let Some(revision) = &revision {
+        let mut cache = aggregate_cache().lock().unwrap_or_else(|e| e.into_inner());
+        cache.retain(|entry| &entry.revision == revision);
+        if let Some(entry) = cache.iter().find(|entry| entry.key == key) { return Ok(entry.rows.clone()); }
+    }
     let mut stmt = conn
         .prepare(sql)
         .map_err(|err| format!("prepare rollup aggregate query: {err}"))?;
     let rows = stmt
         .query_map(params_from_iter(params.iter()), aggregate_row)
         .map_err(|err| format!("run rollup aggregate query: {err}"))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|err| format!("read rollup aggregate row: {err}"))
+    let rows = rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("read rollup aggregate row: {err}"))?;
+    let bytes = aggregate_bytes(&rows);
+    if let Some(revision) = revision.filter(|before| super::report_cache::fingerprint(conn).as_ref() == Some(before)) {
+        if bytes > 0 && bytes <= AGGREGATE_CACHE_BYTES {
+            let mut cache = aggregate_cache().lock().unwrap_or_else(|e| e.into_inner());
+            cache.retain(|entry| entry.revision == revision && entry.key != key);
+            while !cache.is_empty() && (cache.len() >= 4 || cache.iter().map(|entry| entry.bytes).sum::<usize>() + bytes > AGGREGATE_CACHE_BYTES) {
+                cache.remove(0);
+            }
+            cache.push(AggregateCacheEntry { revision, key, bytes, rows: rows.clone() });
+        }
+    }
+    Ok(rows)
 }
 
 fn rollup_where(filters: &Filters) -> (String, Vec<SqlValue>) {
@@ -1836,29 +1955,18 @@ fn collect_series_day_summaries(
         .map_err(|err| format!("read rollup series summary: {err}"))
 }
 
-fn add_model_token_coverage(
-    conn: &Connection,
-    sql: &str,
-    params: &[SqlValue],
-    prices: &PriceTable,
-    coverage: &mut PriceCoverageAcc,
-) -> Result<(), String> {
-    let mut stmt = conn
-        .prepare(sql)
-        .map_err(|err| format!("prepare rollup coverage: {err}"))?;
-    let rows = stmt
-        .query_map(params_from_iter(params.iter()), |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })
-        .map_err(|err| format!("run rollup coverage: {err}"))?;
-    for row in rows {
-        let (model, tokens) = row.map_err(|err| format!("read rollup coverage: {err}"))?;
-        coverage.add_model_tokens(
-            (!model.is_empty()).then_some(model.as_str()),
-            tokens,
-            prices,
-        );
-    }
+fn model_token_coverage_rows(conn: &Connection, sql: &str, params: &[SqlValue]) -> Result<Vec<(String,i64)>,String> {
+    let mut statement = conn.prepare(sql).map_err(|error|error.to_string())?;
+    let rows = statement.query_map(params_from_iter(params.iter()), |row| Ok((row.get(0)?,row.get(1)?)))
+        .map_err(|error|error.to_string())?;
+    rows.collect::<Result<_,_>>().map_err(|error|error.to_string())
+}
+
+fn measured_coverage(conn: &Connection, sql: &str, params: &[SqlValue], prices: &PriceTable,
+    coverage: &mut PriceCoverageAcc, timings: &mut ReportTimings) -> Result<(),String> {
+    let rows = timed_sql(timings, || model_token_coverage_rows(conn, sql, params))?;
+    timings.rows_scanned += rows.len() as u64;
+    for (model,tokens) in rows { coverage.add_model_tokens((!model.is_empty()).then_some(model.as_str()),tokens,prices); }
     Ok(())
 }
 
@@ -1875,21 +1983,20 @@ fn measured_rollup_series_day_none(
         || !filters.branches.is_empty()
         || !filters.projects.is_empty()
         || !rollup_is_eligible(filters)
-        || !matches!(rollup::ready(conn), Ok(true))
+        || !matches!(rollup::version_matches(conn), Ok(true))
     {
         return Ok(None);
     }
-    let (partial_spans, complete_days) = hybrid_days(range);
+    let (partial_spans, complete_days) = timed_sql(timings, || hybrid_days(conn, range))?;
     let Some((first_day, last_day)) = complete_days else {
         return Ok(None);
     };
 
-    let started = Instant::now();
     let mut summaries = BTreeMap::new();
     let mut coverage = PriceCoverageAcc::default();
     let mut raw_sessions: BTreeMap<i64, HashSet<SessionKey>> = BTreeMap::new();
     for (from, to) in partial_spans {
-        for row in aggregate_raw_span(conn, from, to, filters)? {
+        for row in measured_raw_aggregate_span(conn, from, to, filters, timings)? {
             let day = row.day;
             summaries
                 .entry(day)
@@ -1928,6 +2035,7 @@ fn measured_rollup_series_day_none(
     } else {
         format!("r.day >= ? AND r.day <= ? AND {filter_sql}")
     };
+    let where_sql = format!("{where_sql} AND {CLEAN_ROLLUP_DAY}");
     let summary_sql = format!(
         "SELECT r.day, COALESCE(SUM(r.turns), 0), \
                 COUNT(DISTINCT r.kind || char(31) || r.session_id), \
@@ -1936,7 +2044,10 @@ fn measured_rollup_series_day_none(
                 COALESCE(SUM(r.cost_usd), 0) \
            FROM rollup_turn_session_day r WHERE {where_sql} GROUP BY r.day"
     );
-    for (day, summary) in collect_series_day_summaries(conn, &summary_sql, &params)? {
+    let rows = timed_sql(timings, || collect_series_day_summaries(conn, &summary_sql, &params))?;
+    timings.rows_scanned += rows.len() as u64;
+    timings.rollup_rows += rows.len() as u64;
+    for (day, summary) in rows {
         summaries
             .entry(day)
             .or_insert_with(SeriesDaySummary::default)
@@ -1947,11 +2058,9 @@ fn measured_rollup_series_day_none(
                                        r.cache_write_tokens), 0) \
            FROM rollup_turn_session_day r WHERE {where_sql} GROUP BY r.model"
     );
-    add_model_token_coverage(conn, &coverage_sql, &params, prices, &mut coverage)?;
+    measured_coverage(conn, &coverage_sql, &params, prices, &mut coverage, timings)?;
 
-    timings.sql_ms = timings.sql_ms.saturating_add(elapsed_ms(started));
-    timings.rows_scanned = timings.rows_scanned.saturating_add(summaries.len() as u64);
-    timings.path = "rollup";
+    timings.path = if timings.path == "hybrid" { "hybrid" } else { hybrid_path(conn, first_day, last_day)? };
     Ok(Some((summaries, coverage.finish())))
 }
 
@@ -2006,8 +2115,10 @@ fn aggregate_rollup_days(
     include_session: bool,
     include_rework: bool,
 ) -> Result<Vec<AggregateRow>, String> {
+    // Filter predicates can require session columns even if the output does not.
+    let include_session = rollup_needs_session(filters, include_session);
     let (filter_sql, mut params) = rollup_where(filters);
-    let mut clauses = vec!["r.day >= ?".to_string(), "r.day <= ?".to_string()];
+    let mut clauses = vec!["r.day >= ?".to_string(), "r.day <= ?".to_string(), CLEAN_ROLLUP_DAY.to_string()];
     let mut all_params = vec![SqlValue::Integer(first_day), SqlValue::Integer(last_day)];
     if !filter_sql.is_empty() {
         clauses.push(filter_sql);
@@ -2055,15 +2166,24 @@ fn day_start(day: i64) -> i64 {
     day * DAY_MS - DAY_BOUNDARY_OFFSET_MIN * 60_000
 }
 
-fn hybrid_days(range: &ResolvedRange) -> (Vec<(i64, i64)>, Option<(i64, i64)>) {
+fn hybrid_days(conn: &Connection, range: &ResolvedRange) -> Result<(Vec<(i64, i64)>, Option<(i64, i64)>), String> {
+    let mut range = *range;
+    // An unbounded lower end is not a partially covered ancient day. Start at
+    // the first indexed day's boundary so "all" uses its complete days too.
+    if range.from == i64::MIN / 4 {
+        let first: Option<i64> = conn.query_row("SELECT MIN(ts) FROM turn", [], |row| row.get(0))
+            .map_err(|error| format!("read first indexed day: {error}"))?;
+        let Some(first) = first else { return Ok((vec![(range.from, range.to)], None)); };
+        range.from = day_start(day_of(first));
+    }
     let first = day_of(range.from);
     let last = day_of(range.to);
     if first == last {
         let full_day = range.from == day_start(first) && range.to == day_start(first) + DAY_MS - 1;
         if full_day {
-            return (Vec::new(), Some((first, first)));
+            return add_dirty_days(conn, Vec::new(), Some((first, first)));
         }
-        return (vec![(range.from, range.to)], None);
+        return Ok((vec![(range.from, range.to)], None));
     }
     let mut partial = Vec::new();
     let mut full_first = first;
@@ -2077,7 +2197,44 @@ fn hybrid_days(range: &ResolvedRange) -> (Vec<(i64, i64)>, Option<(i64, i64)>) {
         full_last -= 1;
     }
     let complete = (full_first <= full_last).then_some((full_first, full_last));
-    (partial, complete)
+    add_dirty_days(conn, partial, complete)
+}
+
+// Keep complete clean days in the indexed range, exclude dirty days from all
+// rollup SQL, and read those exact days from canonical turns. End days are
+// already raw and are never added twice.
+fn add_dirty_days(conn: &Connection, mut raw: Vec<(i64, i64)>, complete: Option<(i64, i64)>)
+    -> Result<(Vec<(i64, i64)>, Option<(i64, i64)>), String> {
+    if let Some((first, last)) = complete {
+        let mut statement = conn.prepare("SELECT day FROM rollup_dirty WHERE day>=?1 AND day<=?2 ORDER BY day")
+            .map_err(|error| format!("prepare dirty report days: {error}"))?;
+        let days = statement.query_map(rusqlite::params![first, last], |row| row.get::<_, i64>(0))
+            .map_err(|error| format!("read dirty report days: {error}"))?;
+        for day in days {
+            let start = day_start(day.map_err(|error| error.to_string())?);
+            raw.push((start, start + DAY_MS - 1));
+        }
+    }
+    raw.sort_unstable();
+    let mut merged: Vec<(i64, i64)> = Vec::new();
+    for (from, to) in raw {
+        if let Some(previous) = merged.last_mut() {
+            if from <= previous.1.saturating_add(1) {
+                previous.1 = previous.1.max(to);
+                continue;
+            }
+        }
+        merged.push((from, to));
+    }
+    Ok((merged, complete))
+}
+
+const CLEAN_ROLLUP_DAY: &str = "NOT EXISTS (SELECT 1 FROM rollup_dirty d WHERE d.day=r.day)";
+
+fn hybrid_path(conn: &Connection, first: i64, last: i64) -> Result<&'static str, String> {
+    let dirty: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM rollup_dirty WHERE day>=?1 AND day<=?2)",
+        rusqlite::params![first, last], |row| row.get(0)).map_err(|error| error.to_string())?;
+    Ok(if dirty { "hybrid" } else { "rollup" })
 }
 
 fn rollup_is_eligible(filters: &Filters) -> bool {
@@ -2098,32 +2255,32 @@ fn measured_hybrid_rows(
 ) -> Result<Option<Vec<AggregateRow>>, String> {
     // A read-only connection can legitimately point at a pre-v2 database.  It
     // cannot migrate it, so a missing rollup schema is a safe raw fallback.
-    let ready = matches!(rollup::ready(conn), Ok(true));
+    let ready = matches!(rollup::version_matches(conn), Ok(true));
     if !rollup_is_eligible(filters) || !ready {
         return Ok(None);
     }
-    let (partial_spans, complete_days) = hybrid_days(range);
+    let (partial_spans, complete_days) = timed_sql(timings, || hybrid_days(conn, range))?;
     // Do not label a range as rollup when it contains no complete JST day.
     // The normal raw path preserves both the work and the timing contract.
     let Some((first_day, last_day)) = complete_days else {
         return Ok(None);
     };
-    let started = Instant::now();
     let mut rows = Vec::new();
     for (from, to) in partial_spans {
-        rows.extend(aggregate_raw_span(conn, from, to, filters)?);
+        rows.extend(measured_raw_aggregate_span(conn, from, to, filters, timings)?);
     }
-    rows.extend(aggregate_rollup_days(
+    let rolled = timed_sql(timings, || aggregate_rollup_days(
         conn,
         first_day,
         last_day,
         filters,
         include_session,
         include_rework,
-    )?);
-    timings.sql_ms = timings.sql_ms.saturating_add(elapsed_ms(started));
-    timings.rows_scanned = timings.rows_scanned.saturating_add(rows.len() as u64);
-    timings.path = "rollup";
+    ))?;
+    timings.rollup_rows += rolled.len() as u64;
+    timings.rows_scanned += rolled.len() as u64;
+    rows.extend(rolled);
+    timings.path = if timings.path == "hybrid" { "hybrid" } else { hybrid_path(conn, first_day, last_day)? };
     Ok(Some(rows))
 }
 
@@ -2248,65 +2405,68 @@ fn hydrate_aggregate_sessions(
     if sessions.is_empty() {
         return Ok(());
     }
-    let requested = std::iter::repeat("(?, ?)")
-        .take(sessions.len())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        "WITH requested(kind, session_id) AS (VALUES {requested}) \
-         SELECT s.kind, s.session_id, s.project_label, s.ai_title, s.first_prompt, s.work_tags, \
-                s.user_msg_count, COALESCE(s.wall_ms, 0), COALESCE(s.active_ms, 0), \
-                COALESCE(r.score, 0), COALESCE(s.ends_on_tool, 0) \
-           FROM requested q JOIN session s ON s.kind = q.kind AND s.session_id = q.session_id \
-           LEFT JOIN rework r ON r.kind = s.kind AND r.session_id = s.session_id"
-    );
-    let mut params = Vec::with_capacity(sessions.len() * 2);
-    for (kind, session_id) in sessions.keys() {
-        params.push(SqlValue::Text(kind.clone()));
-        params.push(SqlValue::Text(session_id.clone()));
-    }
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|err| format!("prepare aggregate sessions: {err}"))?;
-    let rows = stmt
-        .query_map(params_from_iter(params.iter()), |row| {
-            Ok((
-                (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, i64>(6)?,
-                row.get::<_, i64>(7)?,
-                row.get::<_, i64>(8)?,
-                row.get::<_, f64>(9)?,
-                row.get::<_, i64>(10)? != 0,
-            ))
-        })
-        .map_err(|err| format!("query aggregate sessions: {err}"))?;
-    for row in rows {
-        let (
-            key,
-            project_label,
-            ai_title,
-            first_prompt,
-            work_tags,
-            user_msgs,
-            wall_ms,
-            active_ms,
-            rework,
-            abandoned,
-        ) = row.map_err(|err| format!("read aggregate session: {err}"))?;
-        if let Some(session) = sessions.get_mut(&key) {
-            session.project_label = project_label;
-            session.ai_title = ai_title;
-            session.first_prompt = first_prompt;
-            session.tags = parse_json_array(work_tags.as_deref());
-            session.user_msgs = user_msgs;
-            session.wall_ms = wall_ms;
-            session.active_ms = active_ms;
-            session.rework = rework;
-            session.abandoned = abandoned;
+    let keys: Vec<_> = sessions.keys().cloned().collect();
+    for chunk in keys.chunks(200) {
+        let requested = std::iter::repeat("(?, ?)")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "WITH requested(kind, session_id) AS (VALUES {requested}) \
+             SELECT s.kind, s.session_id, s.project_label, s.ai_title, s.first_prompt, s.work_tags, \
+                    s.user_msg_count, COALESCE(s.wall_ms, 0), COALESCE(s.active_ms, 0), \
+                    COALESCE(r.score, 0), COALESCE(s.ends_on_tool, 0) \
+               FROM requested q JOIN session s ON s.kind = q.kind AND s.session_id = q.session_id \
+               LEFT JOIN rework r ON r.kind = s.kind AND r.session_id = s.session_id"
+        );
+        let mut params = Vec::with_capacity(chunk.len() * 2);
+        for (kind, session_id) in chunk {
+            params.push(SqlValue::Text(kind.clone()));
+            params.push(SqlValue::Text(session_id.clone()));
+        }
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|err| format!("prepare aggregate sessions: {err}"))?;
+        let rows = stmt
+            .query_map(params_from_iter(params.iter()), |row| {
+                Ok((
+                    (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, f64>(9)?,
+                    row.get::<_, i64>(10)? != 0,
+                ))
+            })
+            .map_err(|err| format!("query aggregate sessions: {err}"))?;
+        for row in rows {
+            let (
+                key,
+                project_label,
+                ai_title,
+                first_prompt,
+                work_tags,
+                user_msgs,
+                wall_ms,
+                active_ms,
+                rework,
+                abandoned,
+            ) = row.map_err(|err| format!("read aggregate session: {err}"))?;
+            if let Some(session) = sessions.get_mut(&key) {
+                session.project_label = project_label;
+                session.ai_title = ai_title;
+                session.first_prompt = first_prompt;
+                session.tags = parse_json_array(work_tags.as_deref());
+                session.user_msgs = user_msgs;
+                session.wall_ms = wall_ms;
+                session.active_ms = active_ms;
+                session.rework = rework;
+                session.abandoned = abandoned;
+            }
         }
     }
     Ok(())
@@ -2350,8 +2510,11 @@ pub fn overview(
         &[],
         now_ms,
         || {
+            let started = Instant::now();
             let mut report = overview_fresh(conn, range, filters, now_ms)?;
-            report.accounting = accounting_report(conn, range, filters, now_ms)?;
+            report.accounting = accounting_report(conn, range, filters, now_ms, &mut report.timings)?;
+            report.timings = finish_timings(report.timings, started);
+            log_report_timings("overview", report.timings);
             Ok(report)
         },
     )
@@ -2373,18 +2536,18 @@ fn overview_fresh(
         return overview_raw(conn, range, filters, now_ms);
     };
     let mut pass = run_aggregate_pass(&current_rows, &prices);
-    hydrate_aggregate_sessions(conn, &mut pass.sessions)?;
+    timed_sql(&mut timings, || hydrate_aggregate_sessions(conn, &mut pass.sessions))?;
 
-    let span = (resolved.to - resolved.from).max(0);
+    let span = (resolved.to - resolved.from).max(0).saturating_add(1);
     let previous_range = ResolvedRange {
-        from: resolved.from - span,
-        to: resolved.from,
+        from: resolved.from.saturating_sub(span),
+        to: resolved.from.saturating_sub(1),
     };
     let previous = if let Some(rows) =
         measured_hybrid_rows(conn, &previous_range, filters, &mut timings, true, true)?
     {
         let mut pass = run_aggregate_pass(&rows, &prices);
-        hydrate_aggregate_sessions(conn, &mut pass.sessions)?;
+        timed_sql(&mut timings, || hydrate_aggregate_sessions(conn, &mut pass.sessions))?;
         pass
     } else {
         let turns = measured_turns(conn, &previous_range, filters, false, &mut timings)?;
@@ -2628,6 +2791,95 @@ pub fn series(
     )
 }
 
+/// The grass needs day/model totals, not one row per day/model/session.
+/// Keep the day-wide distinct count separate: a session may use several models.
+fn measured_series_day_raw_model(
+    conn: &Connection,
+    range: &ResolvedRange,
+    filters: &Filters,
+    options: &SeriesOptions,
+    prices: &PriceTable,
+    timings: &mut ReportTimings,
+) -> Result<Option<(Vec<SeriesBucket>, PriceCoverage)>, String> {
+    if options.bucket != "day" || options.group_by != "model_raw"
+        || !filters.branches.is_empty() || !filters.projects.is_empty()
+        || !rollup_is_eligible(filters) || !matches!(rollup::version_matches(conn), Ok(true)) {
+        return Ok(None);
+    }
+    let (partial, complete) = timed_sql(timings, || hybrid_days(conn, range))?;
+    let Some((first, last)) = complete else { return Ok(None) };
+    let mut coverage = PriceCoverageAcc::default();
+    let mut buckets = BTreeMap::new();
+    for (from, to) in partial {
+        let rows = measured_raw_aggregate_span(conn, from, to, filters, timings)?;
+        for row in &rows {
+            coverage.add_model_tokens(row.model.as_deref(), row.input + row.output + row.cache_read + row.cache_write, prices);
+        }
+        let report = aggregate_series_report(&rows, RangeOut { from, to, label: String::new() }, options, prices, ReportTimings::default());
+        for bucket in report.buckets { buckets.insert(bucket.bucket, bucket); }
+    }
+    let (filter, mut rest) = rollup_where(filters);
+    let mut params = vec![SqlValue::Integer(first), SqlValue::Integer(last)];
+    params.append(&mut rest);
+    let suffix = if filter.is_empty() { String::new() } else { format!(" AND {filter}") };
+    let sql = format!(
+        "SELECT r.day, COALESCE(NULLIF(r.model, ''), '(unknown)'), SUM(r.turns), \
+                COUNT(DISTINCT r.kind || char(31) || r.session_id), \
+                SUM(r.input_tokens), SUM(r.output_tokens), SUM(r.cache_read_tokens), \
+                SUM(r.cache_write_tokens), SUM(r.cost_usd) \
+         FROM rollup_turn_session_day r WHERE r.day>=? AND r.day<=? AND {CLEAN_ROLLUP_DAY}{suffix} \
+         GROUP BY r.day, COALESCE(NULLIF(r.model, ''), '(unknown)') ORDER BY r.day, 2"
+    );
+    let query_started = Instant::now();
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(params_from_iter(params.iter()), |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, SeriesGroup {
+            group: String::new(), turns: row.get(2)?, sessions: row.get(3)?, input: row.get(4)?,
+            output: row.get(5)?, cache_read: row.get(6)?, cache_write: row.get(7)?,
+            cost_usd: report_cost(row.get(8)?),
+        }))
+    }).map_err(|e| e.to_string())?;
+    let rows = rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+    timings.sql_ms += elapsed_ms(query_started);
+    timings.rows_scanned += rows.len() as u64;
+    timings.rollup_rows += rows.len() as u64;
+    for (day, model, mut group) in rows {
+        group.group = model;
+        let bucket = buckets.entry(day_start(day)).or_insert_with(|| SeriesBucket {
+            bucket: day_start(day), turns: 0, sessions: 0, cost_usd: 0.0, groups: Vec::new(),
+        });
+        bucket.turns += group.turns;
+        bucket.cost_usd += group.cost_usd;
+        bucket.groups.push(group);
+    }
+    let sql = format!(
+        "SELECT r.day, COUNT(DISTINCT r.kind || char(31) || r.session_id) \
+         FROM rollup_turn_session_day r WHERE r.day>=? AND r.day<=? AND {CLEAN_ROLLUP_DAY}{suffix} GROUP BY r.day"
+    );
+    let query_started = Instant::now();
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(params_from_iter(params.iter()), |row| Ok((row.get::<_, i64>(0)?,row.get::<_, i64>(1)?)))
+        .map_err(|e| e.to_string())?;
+    let rows = rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+    timings.sql_ms += elapsed_ms(query_started);
+    timings.rows_scanned += rows.len() as u64;
+    for (day, count) in rows {
+        if let Some(bucket) = buckets.get_mut(&day_start(day)) { bucket.sessions = count; }
+    }
+    let coverage_sql = format!(
+        "SELECT r.model, COALESCE(SUM(r.input_tokens + r.output_tokens + r.cache_read_tokens + \
+                                       r.cache_write_tokens), 0) \
+         FROM rollup_turn_session_day r WHERE r.day>=? AND r.day<=? AND {CLEAN_ROLLUP_DAY}{suffix} GROUP BY r.model"
+    );
+    measured_coverage(conn, &coverage_sql, &params, prices, &mut coverage, timings)?;
+    for bucket in buckets.values_mut() {
+        bucket.cost_usd = report_cost(bucket.cost_usd);
+        bucket.groups.sort_by(|a,b| a.group.cmp(&b.group));
+    }
+    timings.path = hybrid_path(conn, first, last)?;
+    Ok(Some((buckets.into_values().collect(),coverage.finish())))
+}
+
 fn series_fresh(
     conn: &Connection,
     range: &Range,
@@ -2639,6 +2891,13 @@ fn series_fresh(
     let mut timings = ReportTimings::default();
     let (resolved, label) = range.resolve(now_ms);
     let prices = cached_prices(conn)?;
+    if let Some((buckets, price_coverage)) = measured_series_day_raw_model(conn, &resolved, filters, options, &prices, &mut timings)? {
+        let timings = finish_timings(timings, started);
+        log_report_timings("series", timings);
+        return Ok(SeriesReport { cache: None, range: RangeOut { from: resolved.from, to: resolved.to, label },
+            bucket: options.bucket.clone(), group_by: options.group_by.clone(), buckets,
+            price_source: prices.source_summary(), price_coverage, cost_note: COST_NOTE.to_string(), timings });
+    }
     if let Some((summaries, price_coverage)) =
         measured_rollup_series_day_none(conn, &resolved, filters, options, &prices, &mut timings)?
     {
@@ -3297,7 +3556,7 @@ pub struct ModelSeriesBucket {
     pub per_model: Vec<ModelSeriesEntry>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Handoff {
     pub from: String,
@@ -3345,9 +3604,11 @@ pub struct ModelsReport {
     pub timings: ReportTimings,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HandoffsReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<super::report_cache::SnapshotInfo>,
     pub range: RangeOut,
     pub granularity: String,
     pub handoffs: Vec<Handoff>,
@@ -3593,7 +3854,7 @@ pub fn models(
     };
     if let Some(rows) = measured_hybrid_rows(conn, &resolved, filters, &mut timings, true, true)? {
         let mut pass = run_aggregate_pass(&rows, &prices);
-        hydrate_aggregate_sessions(conn, &mut pass.sessions)?;
+        timed_sql(&mut timings, || hydrate_aggregate_sessions(conn, &mut pass.sessions))?;
         fill_tag_model_from_aggregates(&mut pass, &rows);
         let series = model_series_from_aggregates(
             &rows,
@@ -3621,15 +3882,97 @@ pub fn model_handoffs(
     options: &ModelsOptions,
     now_ms: i64,
 ) -> Result<HandoffsReport, String> {
+    super::report_cache::report(conn, range, filters, "model_handoffs", &[&options.granularity], now_ms, || model_handoffs_fresh(conn, range, filters, options, now_ms))
+}
+
+fn model_handoffs_fresh(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    options: &ModelsOptions,
+    now_ms: i64,
+) -> Result<HandoffsReport, String> {
     let started = Instant::now();
     let mut timings = ReportTimings::default();
     let (resolved, label) = range.resolve(now_ms);
+    if options.granularity != "provider" && super::heavy_aggregate::eligible_for_range(conn,filters,&resolved) {
+        let (handoffs,timings)=super::heavy_aggregate::read_handoffs(conn,&resolved,&options.granularity)?;
+        let timings=finish_timings(timings,started);
+        log_report_timings("model_handoffs",timings);
+        return Ok(HandoffsReport { cache:None,range:RangeOut { from:resolved.from,to:resolved.to,label },
+            granularity:options.granularity.clone(),handoffs,timings });
+    }
+    if options.granularity != "provider" {
+        let filter=build_where(&resolved,filters,false);
+        let column=if options.granularity=="raw" { "t.model" } else { "t.model_family" };
+        let source=if sequential_all_range(&resolved,filters) { "turn t NOT INDEXED" } else { "turn t" };
+        // Skip absent names before adjacency, exactly like count_handoffs.
+        // Keep self-pairs until Rust so their counts also expose raw work.
+        let sql=format!("WITH sequence AS (
+            SELECT {column} AS name,LAG({column}) OVER(PARTITION BY t.kind,t.session_id ORDER BY t.seq) AS previous
+            FROM {source} JOIN session s USING(kind,session_id) WHERE {} AND {column} IS NOT NULL)
+            SELECT previous,name,COUNT(*) AS count FROM sequence GROUP BY previous,name ORDER BY count DESC,previous,name",filter.sql);
+        let rows=timed_sql(&mut timings,|| {
+            let mut statement=conn.prepare(&sql).map_err(|error|error.to_string())?;
+            let rows=statement.query_map(params_from_iter(filter.params.iter()),|row|Ok((row.get::<_,Option<String>>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?)))
+                .map_err(|error|error.to_string())?;
+            rows.collect::<Result<Vec<_>,_>>().map_err(|error|error.to_string())
+        })?;
+        timings.rows_scanned=rows.len() as u64;
+        timings.raw_rows=rows.len() as u64;
+        timings.raw_turns=rows.iter().map(|row|row.2.max(0) as u64).sum();
+        let handoffs=rows.into_iter().filter_map(|(from,to,count)| {
+            from.filter(|from|from!=&to).map(|from|Handoff { from,to,count })
+        }).collect();
+        let timings=finish_timings(timings,started);
+        log_report_timings("model_handoffs",timings);
+        return Ok(HandoffsReport { cache:None,range:RangeOut { from:resolved.from,to:resolved.to,label },granularity:options.granularity.clone(),handoffs,timings });
+    }
     let prices = cached_prices(conn)?;
-    let turns = measured_turns(conn, &resolved, filters, false, &mut timings)?;
-    let handoffs = count_handoffs(&turns, &options.granularity, &prices);
+    let filter = build_where(&resolved, filters, false);
+    let sql = format!("SELECT t.kind,t.session_id,t.seq,t.model,t.model_family FROM turn t
+        JOIN session s USING(kind,session_id) WHERE {} ORDER BY t.kind,t.session_id,t.seq", filter.sql);
+    let sql_started = Instant::now();
+    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let mut rows = statement.query_map(params_from_iter(filter.params.iter()), |row| Ok((
+        (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
+        row.get::<_, Option<String>>(3)?, row.get::<_, Option<String>>(4)?
+    ))).map_err(|error| error.to_string())?;
+    let mut counts = BTreeMap::<(String,String), i64>::new();
+    let mut previous: Option<(SessionKey,String)> = None;
+    let mut providers = HashMap::<Option<String>, String>::new();
+    let mut sql_time = sql_started.elapsed();
+    loop {
+        super::report_runtime::checkpoint()?;
+        let next_started = Instant::now();
+        let row = rows.next();
+        sql_time += next_started.elapsed();
+        let Some(row) = row else { break; };
+        let (key, model, family) = row.map_err(|error| error.to_string())?;
+        timings.rows_scanned += 1;
+        let name = match options.granularity.as_str() {
+            "raw" => model,
+            "provider" => Some(providers.entry(model.clone()).or_insert_with(|| model.as_deref()
+                .map(|model| prices.provider(model).as_str().to_string()).unwrap_or_else(|| "other".into())).clone()),
+            _ => family,
+        };
+        // Missing models/families are skipped before adjacency, as in the old
+        // per-session vectors; null provider names still mean "other".
+        let Some(name) = name else { continue; };
+        if let Some((old_key, old_name)) = &previous {
+            if old_key == &key && old_name != &name { *counts.entry((old_name.clone(),name.clone())).or_default() += 1; }
+        }
+        previous = Some((key,name));
+    }
+    timings.sql_ms = sql_time.as_millis().try_into().unwrap_or(u64::MAX);
+    timings.raw_rows = timings.rows_scanned;
+    timings.raw_turns = timings.rows_scanned;
+    let mut handoffs: Vec<_> = counts.into_iter().map(|((from,to),count)| Handoff { from,to,count }).collect();
+    handoffs.sort_by(|a,b| b.count.cmp(&a.count).then_with(|| a.from.cmp(&b.from)));
     let timings = finish_timings(timings, started);
     log_report_timings("model_handoffs", timings);
     Ok(HandoffsReport {
+        cache: None,
         range: RangeOut {
             from: resolved.from,
             to: resolved.to,
@@ -3874,14 +4217,11 @@ pub fn sessions(
     let rows = match measured_hybrid_rows(conn, &resolved, filters, &mut timings, false, false)? {
         Some(rows) => rows,
         None => {
-            let query_started = Instant::now();
-            let rows = aggregate_raw_span(conn, resolved.from, resolved.to, filters)?;
-            timings.sql_ms = elapsed_ms(query_started);
-            timings.rows_scanned = rows.len() as u64;
-            rows
+            measured_raw_aggregate_span(conn, resolved.from, resolved.to, filters, &mut timings)?
         }
     };
-    let (rows, total) = presentation::session_page(conn, &rows, filters.include_sidechain, options)?;
+    let (rows, total, page_sql_ms) = presentation::session_page(conn, &rows, filters.include_sidechain, options)?;
+    timings.sql_ms = timings.sql_ms.saturating_add(page_sql_ms);
     let timings = finish_timings(timings, started);
     log_report_timings("sessions", timings);
     Ok(SessionsReport {
@@ -3950,7 +4290,7 @@ pub struct FindingsReport {
     pub repeat_truncated: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolRankingRow {
     pub name: String,
@@ -3960,7 +4300,7 @@ pub struct ToolRankingRow {
     pub failure_rate: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileRankingRow {
     pub path: String,
@@ -3968,9 +4308,12 @@ pub struct FileRankingRow {
     pub session_count: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReworkRankingsReport {
+    pub range: RangeOut,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<super::report_cache::SnapshotInfo>,
     pub failed_commands: Vec<ToolRankingRow>,
     pub rewritten_files: Vec<FileRankingRow>,
     pub timings: ReportTimings,
@@ -3996,12 +4339,24 @@ fn learning_keys_with_timings(
     filters: &Filters,
 ) -> Result<(BTreeSet<SessionKey>, ReportTimings), String> {
     let mut timings = ReportTimings::default();
-    let turns = measured_turns(conn, resolved, filters, false, &mut timings)?;
-    let keys = turns
-        .iter()
-        .filter(|turn| turn.origin.as_deref() != Some("ailog-internal"))
-        .map(|turn| (turn.kind.clone(), turn.session_id.clone()))
-        .collect::<BTreeSet<_>>();
+    let keys = if let Some(rows) = measured_hybrid_rows(conn, resolved, filters, &mut timings, false, false)? {
+        rows.into_iter().filter(|row| row.origin.as_deref() != Some("ailog-internal"))
+            .map(|row| (row.kind,row.session_id)).collect()
+    } else {
+        let filter = build_where(resolved, filters, false);
+        let started = Instant::now();
+        let sql = format!("SELECT DISTINCT t.kind,t.session_id FROM turn t JOIN session s USING(kind,session_id)
+            WHERE {} AND COALESCE(s.origin,'unknown')<>'ailog-internal'", filter.sql);
+        let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+        let rows = statement.query_map(params_from_iter(filter.params.iter()), |row| Ok((row.get(0)?,row.get(1)?)))
+            .map_err(|error| error.to_string())?;
+        let keys: BTreeSet<SessionKey> = rows.collect::<Result<_,_>>().map_err(|error| error.to_string())?;
+        timings.sql_ms = elapsed_ms(started);
+        timings.rows_scanned = keys.len() as u64;
+        timings.raw_rows = keys.len() as u64;
+        timings.raw_turns_measured = false;
+        keys
+    };
     Ok((keys, timings))
 }
 
@@ -4297,20 +4652,36 @@ pub fn rework_rankings(
     filters: &Filters,
     now_ms: i64,
 ) -> Result<ReworkRankingsReport, String> {
+    super::report_cache::report(conn, range, filters, "rework_rankings", &[], now_ms, || rework_rankings_fresh(conn, range, filters, now_ms))
+}
+
+fn rework_rankings_fresh(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    now_ms: i64,
+) -> Result<ReworkRankingsReport, String> {
     let started = Instant::now();
-    let (resolved, _) = range.resolve(now_ms);
+    let (resolved, label) = range.resolve(now_ms);
+    if super::heavy_aggregate::eligible_for_range(conn,filters,&resolved) {
+        let (failed_commands,rewritten_files,timings)=super::heavy_aggregate::read_rework(conn,&resolved)?;
+        let timings=finish_timings(timings,started);
+        log_report_timings("rework_rankings",timings);
+        return Ok(ReworkRankingsReport { range:RangeOut { from:resolved.from,to:resolved.to,label },
+            cache:None,failed_commands,rewritten_files,timings });
+    }
     let (keys, mut timings) = learning_keys_with_timings(conn, &resolved, filters)?;
     if keys.is_empty() {
         let timings = finish_timings(timings, started);
         log_report_timings("rework_rankings", timings);
         return Ok(ReworkRankingsReport {
+            range: RangeOut { from: resolved.from, to: resolved.to, label },
+        cache: None,
             failed_commands: Vec::new(),
             rewritten_files: Vec::new(),
             timings,
         });
     }
-    let direct_sql_started = Instant::now();
-    let mut tools: BTreeMap<(String, Option<String>), (i64, i64)> = BTreeMap::new();
     let mut tool_params = vec![
         SqlValue::Integer(resolved.from),
         SqlValue::Integer(resolved.to),
@@ -4329,109 +4700,45 @@ pub fn rework_rankings(
             format!("AND (t.model_family IN ({holes}) OR t.model IN ({holes}))"),
         )
     };
-    let tool_sql = format!(
-        "SELECT te.kind, te.session_id, te.name, NULLIF(TRIM(te.target), ''), COALESCE(te.is_error, 0) \
-         FROM tool_event te \
-         JOIN session s ON s.kind = te.kind AND s.session_id = te.session_id \
-         {turn_join} \
-         WHERE te.ts >= ? AND te.ts <= ? \
-           AND COALESCE(s.origin, 'unknown') <> 'ailog-internal' \
-           {model_clause}"
-    );
-    let mut tool_stmt = conn
-        .prepare(&tool_sql)
-        .map_err(|err| format!("prepare tool rankings: {err}"))?;
-    let tool_rows = tool_stmt
-        .query_map(params_from_iter(tool_params.iter()), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, i64>(4)?,
-            ))
-        })
-        .map_err(|err| format!("query tool rankings: {err}"))?;
-    for row in tool_rows {
-        let (kind, session_id, name, target, is_error) =
-            row.map_err(|err| format!("read tool ranking: {err}"))?;
-        if !keys.contains(&(kind, session_id)) {
-            continue;
-        }
-        let entry = tools.entry((name, target)).or_default();
-        entry.0 += 1;
-        entry.1 += (is_error != 0) as i64;
-    }
-    let mut failed_commands: Vec<ToolRankingRow> = tools
-        .into_iter()
-        .filter_map(|((name, target), (executions, failures))| {
-            (failures > 0).then(|| ToolRankingRow {
-                name,
-                target,
-                executions,
-                failures,
-                failure_rate: failures as f64 / executions as f64,
-            })
-        })
-        .collect();
-    failed_commands.sort_by(|left, right| {
-        right
-            .failures
-            .cmp(&left.failures)
-            .then_with(|| right.executions.cmp(&left.executions))
-            .then_with(|| left.name.cmp(&right.name))
-            .then_with(|| left.target.cmp(&right.target))
-    });
-    failed_commands.truncate(10);
-    let mut files: BTreeMap<String, (i64, BTreeSet<SessionKey>)> = BTreeMap::new();
-    let mut file_stmt = conn.prepare("SELECT ft.kind, ft.session_id, ft.path, COALESCE(ft.edit_count, 0) FROM file_touch ft JOIN session s ON s.kind=ft.kind AND s.session_id=ft.session_id WHERE COALESCE(ft.edit_count, 0) >= 3 AND COALESCE(s.origin, 'unknown') <> 'ailog-internal'").map_err(|err| format!("prepare file rankings: {err}"))?;
-    let file_rows = file_stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-            ))
-        })
-        .map_err(|err| format!("query file rankings: {err}"))?;
-    for row in file_rows {
-        let (kind, session_id, path, edits) =
-            row.map_err(|err| format!("read file ranking: {err}"))?;
-        let key = (kind, session_id);
-        if !keys.contains(&key) {
-            continue;
-        }
-        let entry = files.entry(path).or_insert_with(|| (0, BTreeSet::new()));
-        entry.0 += edits;
-        entry.1.insert(key);
-    }
-    timings.sql_ms = timings
-        .sql_ms
-        .saturating_add(elapsed_ms(direct_sql_started));
-    let mut rewritten_files: Vec<FileRankingRow> = files
-        .into_iter()
-        .map(|(path, (edit_count, sessions))| FileRankingRow {
-            path,
-            edit_count,
-            session_count: sessions.len() as i64,
-        })
-        .collect();
-    rewritten_files.sort_by(|left, right| {
-        right
-            .edit_count
-            .cmp(&left.edit_count)
-            .then_with(|| right.session_count.cmp(&left.session_count))
-            .then_with(|| left.path.cmp(&right.path))
-    });
-    rewritten_files.truncate(10);
-    let timings = finish_timings(timings, started);
-    log_report_timings("rework_rankings", timings);
-    Ok(ReworkRankingsReport {
-        failed_commands,
-        rewritten_files,
-        timings,
-    })
+    let encoded=serde_json::to_string(&keys).map_err(|error|error.to_string())?;
+    let requested="WITH requested(kind,session_id) AS (
+        SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]') FROM json_each(?))";
+    let mut params=vec![SqlValue::Text(encoded.clone())];
+    params.extend(tool_params);
+    let sql=format!("{requested}
+        SELECT te.name,NULLIF(TRIM(te.target),''),COUNT(*) AS executions,SUM(COALESCE(te.is_error,0)<>0) AS failures
+        FROM requested q JOIN tool_event te ON te.kind=q.kind AND te.session_id=q.session_id
+        JOIN session s ON s.kind=te.kind AND s.session_id=te.session_id {turn_join}
+        WHERE te.ts>=? AND te.ts<=? AND COALESCE(s.origin,'unknown')<>'ailog-internal' {model_clause}
+        GROUP BY te.name,NULLIF(TRIM(te.target),'') HAVING failures>0
+        ORDER BY failures DESC,executions DESC,te.name,NULLIF(TRIM(te.target),'') LIMIT 10");
+    let failed_commands=timed_sql(&mut timings,|| {
+        let mut statement=conn.prepare(&sql).map_err(|error|error.to_string())?;
+        let rows=statement.query_map(params_from_iter(params.iter()),|row| {
+            let executions:i64=row.get(2)?; let failures:i64=row.get(3)?;
+            Ok(ToolRankingRow { name:row.get(0)?,target:row.get(1)?,executions,failures,failure_rate:failures as f64/executions as f64 })
+        }).map_err(|error|error.to_string())?;
+        rows.collect::<Result<Vec<_>,_>>().map_err(|error|error.to_string())
+    })?;
+    super::report_runtime::checkpoint()?;
+    // file_touch's primary key gives one row per requested session and path.
+    let sql=format!("{requested}
+        SELECT ft.path,SUM(COALESCE(ft.edit_count,0)) AS edits,COUNT(*) AS sessions
+        FROM requested q JOIN file_touch ft ON ft.kind=q.kind AND ft.session_id=q.session_id
+        JOIN session s ON s.kind=ft.kind AND s.session_id=ft.session_id
+        WHERE COALESCE(ft.edit_count,0)>=3 AND COALESCE(s.origin,'unknown')<>'ailog-internal'
+        GROUP BY ft.path ORDER BY edits DESC,sessions DESC,ft.path LIMIT 10");
+    let rewritten_files=timed_sql(&mut timings,|| {
+        let mut statement=conn.prepare(&sql).map_err(|error|error.to_string())?;
+        let rows=statement.query_map([encoded],|row|Ok(FileRankingRow { path:row.get(0)?,edit_count:row.get(1)?,session_count:row.get(2)? }))
+            .map_err(|error|error.to_string())?;
+        rows.collect::<Result<Vec<_>,_>>().map_err(|error|error.to_string())
+    })?;
+    timings.rows_scanned+=(failed_commands.len()+rewritten_files.len()) as u64;
+    timings.raw_rows+=(failed_commands.len()+rewritten_files.len()) as u64;
+    let timings=finish_timings(timings,started);
+    log_report_timings("rework_rankings",timings);
+    Ok(ReworkRankingsReport { range:RangeOut { from:resolved.from,to:resolved.to,label },cache:None,failed_commands,rewritten_files,timings })
 }
 
 /// Assemble the dashboard from one connection and a request-scoped turn-row
@@ -4499,6 +4806,10 @@ pub fn dashboard(
         let timings = ReportTimings {
             sql_ms,
             rows_scanned,
+            raw_rows: overview.timings.raw_rows + series.timings.raw_rows + models.timings.raw_rows + projects.timings.raw_rows + sessions.timings.raw_rows,
+            rollup_rows: overview.timings.rollup_rows + series.timings.rollup_rows + models.timings.rollup_rows + projects.timings.rollup_rows + sessions.timings.rollup_rows,
+            raw_turns: overview.timings.raw_turns + series.timings.raw_turns + models.timings.raw_turns + projects.timings.raw_turns + sessions.timings.raw_turns,
+            raw_turns_measured: overview.timings.raw_turns_measured && series.timings.raw_turns_measured && models.timings.raw_turns_measured && projects.timings.raw_turns_measured && sessions.timings.raw_turns_measured,
             build_ms: elapsed_ms(started).saturating_sub(sql_ms),
             path: "raw",
         };
@@ -5310,12 +5621,36 @@ pub fn get_prices(conn: &Connection) -> Result<Vec<PriceEntry>, String> {
         .collect())
 }
 
+pub(crate) const PRICE_WRITER_WAIT: std::time::Duration = std::time::Duration::from_millis(5_000);
+
+#[cfg(test)]
+std::thread_local! {
+    static PRICE_WRITER_WAIT_OVERRIDE: std::cell::Cell<Option<std::time::Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_price_writer_wait_for_test<T>(timeout: std::time::Duration, run: impl FnOnce() -> T) -> T {
+    struct Restore(Option<std::time::Duration>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PRICE_WRITER_WAIT_OVERRIDE.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = Restore(PRICE_WRITER_WAIT_OVERRIDE.with(|value| value.replace(Some(timeout))));
+    run()
+}
+
 /// Upsert one rate as a user override, then re-price the whole database so the
 /// stored costs match the table that produced them.
 pub fn set_price(conn: &mut Connection, entry: &PriceEntry) -> Result<usize, String> {
-    let tx = conn
-        .transaction()
+    let writer_wait = PRICE_WRITER_WAIT;
+    #[cfg(test)]
+    let writer_wait = PRICE_WRITER_WAIT_OVERRIDE.with(|value| value.get().unwrap_or(writer_wait));
+    let tx = super::db::write_transaction_within(conn, writer_wait)
         .map_err(|err| format!("begin price update: {err}"))?;
+    #[cfg(test)]
+    super::db::write_checkpoint(&tx, "price");
     tx.execute(
         "INSERT INTO price (model, input_per_mtok, output_per_mtok, cache_read_per_mtok, \
          cache_write_5m_per_mtok, cache_write_1h_per_mtok, source, updated_at) \
@@ -5347,5 +5682,81 @@ pub fn set_price(conn: &mut Connection, entry: &PriceEntry) -> Result<usize, Str
     let count = crate::ailog::index::reprice_all_in_transaction(&tx, &prices)?;
     tx.commit()
         .map_err(|err| format!("commit price update: {err}"))?;
+    if let Some(path)=conn.path().filter(|path| !path.is_empty()) {
+        super::heavy_aggregate::schedule(std::path::Path::new(path));
+    }
     Ok(count)
+}
+
+
+#[cfg(test)]
+mod grass_parameter_tests {
+    use super::*;
+
+    #[test]
+    fn metadata_and_weighted_rework_cross_chunk_boundaries() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::ailog::schema::init(&conn).unwrap();
+        let mut sessions = BTreeMap::new();
+        for i in 0..17001 {
+            let id = format!("chunk-{i:04}");
+            conn.execute("INSERT INTO session(kind,session_id,user_msg_count) VALUES ('claude',?1,?2)",rusqlite::params![id,i]).unwrap();
+            conn.execute("INSERT INTO rework(kind,session_id,score,tool_error_count,tool_call_count,correction_count,churn_files,abandoned) VALUES ('claude',?1,?2,1,4,2,3,1)",rusqlite::params![id,i as f64]).unwrap();
+            sessions.insert(("claude".to_string(),id), SessionAcc { project_label: None, ai_title: None, first_prompt: None, tags: Vec::new(), user_msgs: 0, wall_ms: 0, active_ms: 0, rework: 0.0, abandoned: false, families: BTreeSet::new(), tokens: TokenAcc::default() });
+        }
+        hydrate_aggregate_sessions(&conn,&mut sessions).unwrap();
+        assert_eq!(sessions.values().map(|s|s.user_msgs).sum::<i64>(),144508500);
+        let summary = rework_summary(&conn,&sessions).unwrap();
+        assert_eq!(summary.avg_score,8500.0);
+        assert_eq!(summary.tool_error_rate,0.25);
+        assert_eq!(summary.correction_hits,34002);
+        assert_eq!(summary.churn_files,51003);
+        assert_eq!(summary.abandoned_sessions,17001);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn measure_session_assembly_pair(conn: &Connection, range: &Range, now: i64) -> Result<(),String> {
+    let filters=Filters::default();
+    let resolved=range.resolve(now).0;
+    let mut timing=ReportTimings::default();
+    let rows=measured_hybrid_rows(conn,&resolved,&filters,&mut timing,false,false)?
+        .map_or_else(|| aggregate_raw_span(conn,resolved.from,resolved.to,&filters), Ok)?;
+    for sort in ["cost","turns","recent","rework"] {
+        for expanded in [false,true] {
+            let options=SessionsOptions { sort:sort.into(),limit:100,offset:0 };
+            let before=presentation::session_page_reference(conn,&rows,expanded,&options)?;
+            let after=presentation::session_page(conn,&rows,expanded,&options)?;
+            // Real-copy probes must never print report fields when equality fails.
+            assert!(serde_json::to_value(&before).unwrap() == serde_json::to_value((&after.0,after.1)).unwrap(),"session assembly compatibility mismatch");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod handoff_stream_compatibility {
+    use super::*;
+    #[test]
+    fn sql_and_stream_handoffs_match_raw_adjacency_with_missing_names_and_filters() {
+        let conn=Connection::open_in_memory().unwrap();
+        crate::ailog::schema::init(&conn).unwrap();
+        crate::ailog::migrate::apply(&conn).unwrap();
+        for session in ["a","b"] {
+            conn.execute("INSERT INTO session(kind,session_id) VALUES ('claude',?1)",[session]).unwrap();
+            for (seq,model,family) in [(1,Some("gpt-5"),Some("gpt")),(2,None,None),(3,Some("claude-opus-4"),Some("claude")),(4,Some(""),Some("")),(5,Some("gpt-5"),Some("gpt"))] {
+                conn.execute("INSERT INTO turn(kind,session_id,seq,ts,model,model_family) VALUES ('claude',?1,?2,?3,?4,?5)",rusqlite::params![session,seq,1000+seq,model,family]).unwrap();
+            }
+        }
+        let prices=cached_prices(&conn).unwrap();
+        for range in [Range { from:Some(0),to:Some(2000),..Range::default() },Range { preset:Some("all".into()),..Range::default() }] {
+            for filters in [Filters::default(),Filters { models:vec!["gpt-5".into()],..Filters::default() }] {
+                let turns=read_turns(&conn,&range.resolve(2000).0,&filters,false).unwrap();
+                for granularity in ["raw","family","provider","default-family"] {
+                    let actual=model_handoffs(&conn,&range,&filters,&ModelsOptions { granularity:granularity.into(),bucket:"day".into() },2000).unwrap();
+                    assert_eq!(serde_json::to_value(actual.handoffs).unwrap(),serde_json::to_value(count_handoffs(&turns,granularity,&prices)).unwrap());
+                }
+            }
+        }
+    }
 }

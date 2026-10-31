@@ -34,7 +34,9 @@ import { tearoutStrings } from "./tearoutStrings";
 import type { DetachedWorkspace } from "../../lib/detachedPane";
 import { DashboardIcon } from "./DashboardIcon";
 import { dashboardStrings } from "../dashboard/dashboardStrings";
-import { requestDashboard } from "./openDashboardForTab";
+import { toggleDetachedDashboard } from "./openDashboardForTab";
+import { DetachedDashboardSurface } from "../dashboard/DetachedDashboardSurface";
+import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 import { mountDetachedDashboardHost } from "../../lib/dashboardHost";
 import { handleDetachedDashboardKey } from "../../lib/detachedDashboardKeys";
 
@@ -61,6 +63,7 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
     });
   }, [workspace.id, pane.id, tab.id, tab.sessionId]);
   const title = getTabDisplayLabel(tab);
+  const dashboardOpen = useDashboardViewStore(state => state.open);
   useLayoutEffect(mountDetachedDashboardHost, []);
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => handleDetachedDashboardKey(event, { tabId: tab.id, sessionId: tab.sessionId });
@@ -322,9 +325,9 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
         }}>
           {title}
         </span>
-        <button type="button" title={dashboardStrings.buttonTitle} aria-label={dashboardStrings.buttonTitle}
+        <button type="button" title={dashboardStrings.buttonTitle} aria-label={dashboardStrings.buttonTitle} aria-pressed={dashboardOpen}
           onMouseDown={(event) => event.preventDefault()}
-          onClick={() => { void requestDashboard({ tabId: tab.id, sessionId: tab.sessionId }); }}
+          onClick={() => toggleDetachedDashboard({ tabId: tab.id, sessionId: tab.sessionId })}
           style={{ height: 22, width: 22, display: "flex", alignItems: "center", justifyContent: "center",
             fontSize: 13, lineHeight: 1, color: "var(--cmux-text-secondary)", background: "transparent", border: "none",
             borderRadius: "var(--cmux-radius-sm)", cursor: "pointer" }}
@@ -351,6 +354,7 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
         </button>
       </div>
       {error && <div role="alert" style={{ padding: "4px 10px", fontSize: 12, color: "var(--cmux-red)" }}>{error}</div>}
+      <DetachedDashboardSurface>
       <div data-session-id={tab.sessionId} style={{ flex: 1, minHeight: 0, position: "relative" }}
         onPointerDown={() => focusController.request("pointer", { sessionId: tab.sessionId, focus: true })}>
         {tab.type === "browser" && tab.htmlPath ? (
@@ -385,6 +389,7 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
             initialReplay={tab.terminalSnapshot} launchEnv={launch.launchEnv} restoreReason={codexLaunch?.restoreReason} />
         ) : <div style={{ padding: 12, fontSize: 12 }}>まだ起動していません</div>}
       </div>
+      </DetachedDashboardSurface>
     </div>
   );
 }

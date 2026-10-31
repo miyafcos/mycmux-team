@@ -1,3 +1,6 @@
+import { FolderPlus, Map as MapIcon, MousePointer2, X } from "lucide-react";
+import { DashboardGlyph, DashboardIconButton } from "./DashboardUi";
+import { isDetachedDashboardHost } from "../../lib/dashboardHost";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
 import {
   memo,
@@ -63,7 +66,7 @@ interface CloseConfirmation {
 }
 
 function readCollapsedWorkspaceIds(): Set<string> {
-  if (typeof window === "undefined") return new Set();
+  if (typeof window === "undefined" || isDetachedDashboardHost()) return new Set();
   try {
     const raw = window.localStorage.getItem(MINIMAP_COLLAPSED_WORKSPACE_IDS_STORAGE_KEY);
     if (!raw) return new Set();
@@ -75,7 +78,7 @@ function readCollapsedWorkspaceIds(): Set<string> {
 }
 
 function persistCollapsedWorkspaceIds(collapsedWorkspaceIds: ReadonlySet<string>): void {
-  if (typeof window === "undefined") return;
+  if (typeof window === "undefined" || isDetachedDashboardHost()) return;
   try {
     window.localStorage.setItem(MINIMAP_COLLAPSED_WORKSPACE_IDS_STORAGE_KEY, JSON.stringify([...collapsedWorkspaceIds]));
   } catch {
@@ -481,10 +484,10 @@ export const LayoutMinimapPanel = memo(function LayoutMinimapPanel({ workspaces,
     : null;
 
   return <section className="cmux-minimap-panel" aria-label={dashboardStrings.layoutMinimapAriaLabel}>
-    <div className="cmux-minimap-title">{dashboardStrings.layoutMinimapTitle}</div>
+    <div className="cmux-minimap-title"><DashboardGlyph icon={MapIcon} label={dashboardStrings.layoutMinimapTitle} /></div>
     {selectedTabIds.size > 0 ? <div className="cmux-minimap-selection-summary" aria-live="polite">
-      <span key={selectedTabIds.size} className="cmux-minimap-selection-count">選択<b className="cmux-minimap-selection-n">{selectedTabIds.size}</b>本</span>
-      <button type="button" data-minimap-close-selection="true" onClick={openCloseConfirmation}>選択を閉じる</button>
+      <span key={selectedTabIds.size} className="cmux-minimap-selection-count" title={`選択${selectedTabIds.size}本`} aria-label={`選択${selectedTabIds.size}本`}><MousePointer2 size={15} aria-hidden="true" /><b className="cmux-minimap-selection-n" aria-hidden="true">{selectedTabIds.size}</b></span>
+      <DashboardIconButton icon={X} label="選択を閉じる" data-minimap-close-selection="true" onClick={openCloseConfirmation} />
     </div> : null}
     <div ref={stackRef} className={`cmux-minimap-stack${isMinimapDragging ? " is-minimap-dragging" : ""}`} onPointerDownCapture={handlePointerDown} onPointerMoveCapture={handlePointerMove} onPointerUpCapture={finishPointer} onPointerCancelCapture={cancelMarquee} onScroll={handleStackScroll}>
       {workspaces.map((workspace) => {
@@ -501,9 +504,7 @@ export const LayoutMinimapPanel = memo(function LayoutMinimapPanel({ workspaces,
     </div>
     <div className="cmux-minimap-footer">
       <div className={`cmux-minimap-new-workspace-zone${isNewWorkspaceTarget ? " is-minimap-drop-target" : ""}`} data-minimap-new-workspace-target="true">
-        <button type="button" data-minimap-new-workspace-button="true" disabled={!selectedItem} onClick={() => { if (selectedItem) moveMinimapItemToNewWorkspace(selectedItem); }}>
-          ＋ 新しいワークスペース
-        </button>
+        <DashboardIconButton icon={FolderPlus} label="新しいワークスペース" data-minimap-new-workspace-button="true" disabled={!selectedItem} onClick={() => { if (selectedItem) moveMinimapItemToNewWorkspace(selectedItem); }} />
       </div>
       {TAB_GROUPING_ENTRY_ENABLED ? <TabGroupingButton /> : null}
       <TabSweepButton />

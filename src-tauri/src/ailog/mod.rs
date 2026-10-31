@@ -16,6 +16,7 @@
 pub mod db;
 pub mod accounting;
 pub mod digest;
+pub mod heavy_aggregate;
 pub mod index;
 pub mod jsonl;
 pub mod metrics;
@@ -28,6 +29,7 @@ pub mod price;
 pub mod project_rules;
 pub mod query;
 pub mod report_cache;
+pub mod report_runtime;
 pub mod repair;
 mod recovery;
 pub mod legacy;

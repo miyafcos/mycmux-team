@@ -1,3 +1,4 @@
+import { dashboardText } from "../helpers/dashboardA11y";
 // @vitest-environment jsdom
 //
 // 気づき欄を外部 JSON から自前データへ移した回 (2026-09-16) の受け皿。
@@ -5,6 +6,8 @@
 
 import { act, createRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
+import { Filter } from "lucide-react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const bridgeMocks = vi.hoisted(() => ({
@@ -149,6 +152,19 @@ async function renderAttention(sessions: readonly AttentionFactSource[], handler
 }
 
 describe("気づき欄の事実カード", () => {
+  it("keeps 45 elapsed minutes in visible fact-card text independently of accessible words", async () => {
+    await renderAttention([source({
+      noUpdateMinutes: 45,
+      brief: brief({ activityText: "Synthetic activity" }),
+    })]);
+    const card = container.querySelector<HTMLElement>("[data-attention-fact-card]")!;
+    expect(card.textContent).toContain("45分");
+    expect(card.querySelector(".cmux-attention-fact-elapsed")?.textContent).toBe("45分");
+    const mark = card.querySelector("[data-dashboard-status=noUpdate] [role=img]")!;
+    expect(mark.getAttribute("title")).toBe(dashboardStrings.attentionFactKindLabel("noUpdate", 45));
+    expect(mark.getAttribute("aria-label")).toBe(dashboardStrings.attentionFactKindLabel("noUpdate", 45));
+  });
+
   it.each(["throw", "reject"])("reports an unavailable fact-card target on %s", async mode => {
     __resetToastStoreForTests();
     const handlers = actions();
@@ -198,7 +214,7 @@ describe("気づき欄の事実カード", () => {
 
     const card = container.querySelector<HTMLElement>("[data-attention-fact-card]");
     expect(card?.dataset.attentionFactKind).toBe("noUpdate");
-    expect(card?.textContent).toContain(dashboardStrings.attentionFactKindLabel("noUpdate", 45));
+    expect(dashboardText(card)).toContain(dashboardStrings.attentionFactKindLabel("noUpdate", 45));
     expect(card?.querySelector(".cmux-attention-fact-detail")?.textContent).toBe("テストを実行中");
     expect(card?.textContent).not.toContain("2 本目");
   });
@@ -235,6 +251,24 @@ describe("一覧の行", () => {
 });
 
 describe("セッション一覧のナビ", () => {
+  it("keeps the filtered count and total in visible text independently of accessible words", async () => {
+    await act(async () => root.render(<DashboardSessionList
+      needsHuman={[]} all={[]} deferred={[]} hideWorkspaceBadge={false} selectedTabId={null} now={now}
+      onSelect={() => undefined} onJump={() => undefined} onHoverChange={() => undefined}
+      query="target" searchInputRef={createRef<HTMLInputElement>()} onQueryChange={() => undefined}
+      onSearchFocusChange={() => undefined} onClose={() => undefined} clearDoneCount={0}
+      onClearDone={() => undefined} filteredSummary={dashboardStrings.filteredSummary(2, 7)}
+      attentionOpen={false} onOpenAttention={() => undefined} collapsed={false} onToggleCollapsed={() => undefined}
+    />));
+    const summary = container.querySelector(".cmux-dash-list-search .cmux-dashboard-count")!;
+    expect(summary.textContent).toBe("2 / 7");
+    expect(summary.textContent).toContain("2");
+    expect(summary.textContent).toContain("7");
+    expect(summary.querySelector("svg")?.outerHTML).toBe(renderToStaticMarkup(<Filter size={15} aria-hidden="true" />));
+    expect(summary.getAttribute("title")).toBe(dashboardStrings.filteredSummary(2, 7));
+    expect(summary.getAttribute("aria-label")).toBe(dashboardStrings.filteredSummary(2, 7));
+  });
+
   it("報告インボックスのナビを出さない", async () => {
     await act(async () => {
       root.render(<DashboardSessionList
@@ -265,7 +299,7 @@ describe("セッション一覧のナビ", () => {
 
     expect(container.querySelector("[data-report-inbox-nav]")).toBeNull();
     expect(container.textContent).not.toContain("報告インボックス");
-    expect(container.querySelector("[data-attention-nav='true']")?.textContent)
+    expect(dashboardText(container.querySelector("[data-attention-nav='true']")))
       .toContain(dashboardStrings.attentionTitle);
   });
 });

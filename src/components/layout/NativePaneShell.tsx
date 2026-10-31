@@ -18,7 +18,9 @@ import { getWindowFragments } from "../../lib/ipc";
 import { WindowControls, buttonStyle } from "./WindowControls";
 import { DashboardIcon } from "./DashboardIcon";
 import { dashboardStrings } from "../dashboard/dashboardStrings";
-import { requestDashboard } from "./openDashboardForTab";
+import { toggleDetachedDashboard } from "./openDashboardForTab";
+import { DetachedDashboardSurface } from "../dashboard/DetachedDashboardSurface";
+import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 import { mountDetachedDashboardHost } from "../../lib/dashboardHost";
 import { handleDetachedDashboardKey } from "../../lib/detachedDashboardKeys";
 import { localTearoutRefusal, LocalTearoutRefusal } from "../../lib/tearout/operation";
@@ -41,7 +43,14 @@ export default function NativePaneShell() {
   const bandMoving = useRef(false);
   const bandOwner = useRef<symbol | null>(null);
   const bandRecordId = useRef<string | null>(null);
+  const dashboardOpen = useDashboardViewStore(state => state.open);
   useLayoutEffect(mountDetachedDashboardHost, []);
+  useLayoutEffect(() => {
+    if (tabs.length) return;
+    // A native tearout window can remain mounted while its last tab returns.
+    useDashboardViewStore.setState({ open: false, selectedTabId: null, chatColumnTabIds: [],
+      pinnedChatColumnTabIds: [], previewColumn: null, yourTurnTabId: null, pendingDashboardRequest: null, userTurnRequests: {} });
+  }, [tabs.length]);
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => handleDetachedDashboardKey(event);
     window.addEventListener("keydown", keydown);
@@ -150,9 +159,9 @@ export default function NativePaneShell() {
       borderBottom: "1px solid var(--cmux-border-hairline)", color: "var(--cmux-text-secondary)" }}>
       <span title={title} style={{ flex: 1, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
       <button type="button" className={windowsBand ? "cmux-title-btn" : undefined}
-        title={dashboardStrings.buttonTitle} aria-label={dashboardStrings.buttonTitle}
+        title={dashboardStrings.buttonTitle} aria-label={dashboardStrings.buttonTitle} aria-pressed={dashboardOpen}
         onMouseDown={(event) => event.preventDefault()}
-        onClick={() => { void requestDashboard(); }}
+        onClick={() => toggleDetachedDashboard()}
         style={windowsBand ? buttonStyle : { height: 22, width: 22, display: "flex", alignItems: "center", justifyContent: "center",
           border: "none", borderRadius: "var(--cmux-radius-sm)", background: "transparent", color: "inherit", cursor: "pointer" }}>
         <DashboardIcon />
@@ -166,7 +175,7 @@ export default function NativePaneShell() {
       </>}
     </div>
     {failed && <div role="alert" style={{ fontSize: 12, padding: "4px 10px", color: "var(--cmux-red)" }}>{tearoutStrings.failed}</div>}
-    <div style={{ flex: 1, minHeight: 0, position: "relative" }}><WorkspaceView /></div>
+    <DetachedDashboardSurface><div style={{ flex: 1, minHeight: 0, position: "relative" }}><WorkspaceView /></div></DetachedDashboardSurface>
     <PaneDragOverlay />
   </div>;
 }

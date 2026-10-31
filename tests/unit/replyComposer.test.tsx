@@ -1,3 +1,4 @@
+import { dashboardText } from "../helpers/dashboardA11y";
 // @vitest-environment jsdom
 
 import { act } from "react";
@@ -14,7 +15,10 @@ vi.mock("../../src/components/layout/socketCommands", () => ({
 }));
 
 import { ReplyComposer } from "../../src/components/dashboard/ReplyComposer";
-import type { DashboardCardModel } from "../../src/components/dashboard/dashboardModel";
+import { resolveDisplayState, type DashboardCardModel } from "../../src/components/dashboard/dashboardModel";
+import { DashboardCardRow } from "../../src/components/dashboard/DashboardCardRow";
+import { stateLabels } from "../../src/components/dashboard/stateLabels";
+import { buildDashboardMentionCandidates } from "../../src/components/dashboard/dashboardMentionCandidates";
 import { mentionTokenFromCandidate, buildMentionCandidates } from "../../src/lib/mentionModel";
 import { useComposerStore } from "../../src/stores/composerStore";
 import { useLiveBriefStore } from "../../src/stores/liveBriefStore";
@@ -123,13 +127,87 @@ async function key(textarea: HTMLTextAreaElement, keyName: string, options: Reco
 }
 
 describe("ReplyComposer mentions", () => {
+  it.each([
+    "needsHuman", "error", "running", "noUpdate", "done", "acknowledged",
+    "idle", "stopped", "delegated", "delegationUnknown", "unknown",
+  ] as const)("keeps %s mention menu and selected token marks aligned with the session row", async (state) => {
+    const target = card("state-target", "state-session", "State target", false);
+    target.now = NOW;
+    if (state === "needsHuman") target.operationalState = "needsHuman";
+    if (state === "error") target.attentionCategory = "error";
+    if (state === "running") target.operationalState = "running";
+    if (state === "noUpdate") target.noUpdateMinutes = 45;
+    if (state === "acknowledged") target.manualDoneAt = NOW;
+    if (state === "stopped") target.telemetryHealth = "ended";
+    if (state === "done" || state === "delegated" || state === "delegationUnknown") {
+      target.attentionCategory = "done";
+      if (state !== "done") {
+        target.tab = { ...target.tab, delegatedByTabId: "parent", delegatedByAgentSessionId: "parent-agent" };
+        if (state === "delegated") target.delegationParent = {
+          tabId: "parent", label: "Parent", alive: true, state: "alive", checkedAt: NOW, agentSessionId: "parent-agent",
+        };
+      }
+    }
+    if (state === "unknown") target.statusSignals = {
+      activity: "unknown", health: "unknown", lastOutputAt: null, lastMonitorAt: null,
+      lastEvidenceAt: null, processStartedAt: null,
+    };
+    expect(resolveDisplayState(target)).toBe(state);
+    const candidates = buildDashboardMentionCandidates([target]);
+    const candidate = candidates.find((item) => item.kind === "session")!;
+    expect(candidate.displayState).toBe(state);
+    expect(candidate.statusLabel).toBe(stateLabels(state).tooltip);
+
+    const textarea = await renderComposer([target]);
+    await input(textarea, "@State");
+    const option = container.querySelector<HTMLElement>("[role=option]")!;
+    const glyph = option.querySelector<HTMLElement>("[data-dashboard-status]")!;
+    expect(glyph.dataset.dashboardStatus).toBe(state);
+    expect(glyph.querySelector("[role=img]")?.getAttribute("title")).toBe(stateLabels(state).tooltip);
+    expect(glyph.querySelector("[role=img]")?.getAttribute("aria-label")).toBe(stateLabels(state).tooltip);
+
+    const rowHost = document.createElement("div");
+    const rowRoot = createRoot(rowHost);
+    try {
+      await act(async () => rowRoot.render(<DashboardCardRow card={target} selected={false} open={false}
+        now={NOW} hideWorkspaceBadge={false} onSelect={() => undefined} onJump={() => undefined} />));
+      const rowGlyph = rowHost.querySelector("[data-dashboard-status]")!;
+      expect(glyph.querySelector("svg")?.innerHTML).toBe(rowGlyph.querySelector("svg")?.innerHTML);
+      await key(textarea, "Enter");
+      const selected = container.querySelector<HTMLElement>(".cmux-dashboard-mention-token [data-dashboard-status]")!;
+      expect(selected.dataset.dashboardStatus).toBe(state);
+      expect(selected.querySelector("svg")?.innerHTML).toBe(rowGlyph.querySelector("svg")?.innerHTML);
+      expect(selected.querySelector("[role=img]")?.getAttribute("title")).toBe(stateLabels(state).tooltip);
+      expect(selected.querySelector("[role=img]")?.getAttribute("aria-label")).toBe(stateLabels(state).tooltip);
+    } finally {
+      await act(async () => rowRoot.unmount());
+    }
+    expect(mocks.handleSocketCommand).not.toHaveBeenCalled();
+  });
+
+  it("uses the running mark for the working-all menu and selected token", async () => {
+    const textarea = await renderComposer();
+    await input(textarea, "@");
+    const option = container.querySelector<HTMLElement>("[role=option]")!;
+    expect(option.querySelector("[data-dashboard-status=running]")).not.toBeNull();
+    const label = buildMentionCandidates([])[0].statusLabel;
+    expect(option.querySelector("[role=img]")?.getAttribute("aria-label")).toBe(label);
+    expect(option.querySelector("[role=img]")?.getAttribute("title")).toBe(label);
+    await key(textarea, "Enter");
+    const selected = container.querySelector(".cmux-dashboard-mention-token")!;
+    expect(selected.querySelector("[data-dashboard-status=running]")).not.toBeNull();
+    expect(selected.querySelector("[role=img]")?.getAttribute("aria-label")).toBe(label);
+    expect(selected.querySelector("[role=img]")?.getAttribute("title")).toBe(label);
+    expect(mocks.handleSocketCommand).not.toHaveBeenCalled();
+  });
+
   it("opens @ suggestions and inserts the selected structured token with Enter", async () => {
     const textarea = await renderComposer();
     await input(textarea, "@");
-    expect(container.textContent).toContain("@動いてる全員");
+    expect(dashboardText(container)).toContain("@動いてる全員");
     await key(textarea, "ArrowDown");
     await key(textarea, "Enter");
-    expect(container.textContent).toContain("@設計");
+    expect(dashboardText(container)).toContain("@設計");
     expect(useComposerStore.getState().mentionTokensBySession["session-a"]?.[0]).toMatchObject({
       kind: "session",
       logicalSessionId: "tab-a",
@@ -169,7 +247,7 @@ describe("ReplyComposer mentions", () => {
     await input(textarea, "質問カードを迂回する指示");
     await key(textarea, "Enter");
     expect(mocks.handleSocketCommand).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("質問カードで回答するまで通常の指示は送信できません");
+    expect(dashboardText(container)).toContain("質問カードで回答するまで通常の指示は送信できません");
   });
 
   it("uses the shared Codex multiline input shape before sending", async () => {
@@ -210,8 +288,9 @@ describe("ReplyComposer mentions", () => {
     await key(textarea, "Enter");
     const note = container.querySelector<HTMLElement>(".cmux-dashboard-composer-note");
     expect(note?.getAttribute("role")).toBe("status");
-    expect(note?.textContent).toBe("入力をキューに追加しましたが、対象タブが未マウントのため画面で確認できませんでした");
-    expect(note?.textContent).not.toContain("送信を画面で確認しました");
+    expect(note?.querySelector("[data-dashboard-status]")?.getAttribute("data-dashboard-status")).toBe("unknown");
+    expect(note?.querySelector("[role=img]")?.getAttribute("aria-label")).toBe("入力をキューに追加しましたが、対象タブが未マウントのため画面で確認できませんでした");
+    expect(note?.querySelector("[role=img]")?.getAttribute("aria-label")).not.toContain("送信を画面で確認しました");
   });
 
   it("does not submit on modified Enter", async () => {
@@ -263,7 +342,7 @@ describe("ReplyComposer mentions", () => {
     const textarea = await renderComposer();
     await key(textarea, "Enter");
     expect(mocks.handleSocketCommand).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("質問が更新されたため送信していません");
+    expect(dashboardText(container)).toContain("質問が更新されたため送信していません");
   });
 
   it("sends @ recipients as a sealed batch and retries only pre-write failures", async () => {
@@ -284,7 +363,7 @@ describe("ReplyComposer mentions", () => {
     const textarea = await renderComposer();
     expect(textarea.getAttribute("placeholder")).toBe("メッセージ");
     const preview = container.querySelector<HTMLElement>(".cmux-dashboard-dispatch-preview");
-    expect(preview?.textContent).toBe("2件へ送ります:");
+    expect(preview?.querySelector("[role=img]")?.getAttribute("aria-label")).toBe("2件へ送ります");
     expect(container.querySelectorAll(".cmux-dashboard-mention-token")).toHaveLength(2);
     expect(container.querySelectorAll(".cmux-dashboard-dispatch-recipient")).toHaveLength(0);
     await key(textarea, "Enter");
@@ -295,8 +374,8 @@ describe("ReplyComposer mentions", () => {
     expect(report?.batch.assignments).toHaveLength(2);
     expect(Object.values(report?.membersByAssignmentId ?? {}).map((member) => member.delivery.state).sort())
       .toEqual(["confirmed", "failed"]);
-    expect(container.textContent).toContain("失敗した 1件だけ再送");
-    const retry = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("失敗した 1件だけ再送"));
+    expect(dashboardText(container)).toContain("失敗した 1件だけ再送");
+    const retry = [...container.querySelectorAll("button")].find((button) => (button.getAttribute("aria-label") ?? button.textContent)?.includes("失敗した 1件だけ再送"));
     await act(async () => { retry?.click(); await Promise.resolve(); });
     expect(mocks.handleSocketCommand.mock.calls.filter(([, input]) => input.sessionId === "session-a")).toHaveLength(1);
     expect(mocks.handleSocketCommand.mock.calls.filter(([, input]) => input.sessionId === "session-b")).toHaveLength(2);
@@ -318,11 +397,11 @@ describe("ReplyComposer mentions", () => {
     ));
     const textarea = await renderComposer();
     await key(textarea, "Enter");
-    const retry = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("失敗した 1件だけ再送"));
+    const retry = [...container.querySelectorAll("button")].find((button) => (button.getAttribute("aria-label") ?? button.textContent)?.includes("失敗した 1件だけ再送"));
     await act(async () => { retry?.click(); await Promise.resolve(); });
     expect(mocks.handleSocketCommand.mock.calls.filter(([, input]) => input.sessionId === "session-a")).toHaveLength(1);
     expect(mocks.handleSocketCommand.mock.calls.filter(([, input]) => input.sessionId === "session-b")).toHaveLength(2);
-    expect(container.textContent).toContain("書き込み結果は未確認");
+    expect(dashboardText(container)).toContain("書き込み結果は未確認");
   });
 
   it("accepts a minimap-tab drop without changing the layout drag store", async () => {
@@ -377,7 +456,7 @@ describe("review fix 1: batch post-write refusal", () => {
     const textarea = await renderComposer(); await key(textarea, "Enter");
     const report = Object.values(useReportInboxStore.getState().dispatchBatchesById)[0];
     expect(Object.values(report.membersByAssignmentId).find((member) => member.ptySessionId === "session-a")?.delivery.state).toBe("unconfirmed");
-    const retry = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("失敗した 1件だけ再送"));
+    const retry = [...container.querySelectorAll("button")].find((button) => (button.getAttribute("aria-label") ?? button.textContent)?.includes("失敗した 1件だけ再送"));
     expect(retry).toBeDefined();
     await act(async () => { retry!.click(); await Promise.resolve(); });
     expect(mocks.handleSocketCommand.mock.calls.filter(([, args]) => args.sessionId === "session-a")).toHaveLength(1);

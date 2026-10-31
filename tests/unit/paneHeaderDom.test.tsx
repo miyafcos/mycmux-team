@@ -116,7 +116,7 @@ afterEach(async () => {
 });
 
 describe("Stage 2a single heading", () => {
-  it.each(["missing", "reject"])("handles a real detached dormant heading click without selecting or launching when main is %s", async mode => {
+  it.each(["missing", "reject"])("opens a real detached dormant heading locally without selecting or launching when main is %s", async mode => {
     vi.useFakeTimers(); __resetToastStoreForTests();
     const agentSessionId = "11111111-1111-4111-8111-111111111111";
     const attention: SessionAttention = { sessionId: "pty-0", sessionEpoch: 7, attentionId: "done-id", kind: "done", detail: null,
@@ -134,14 +134,15 @@ describe("Stage 2a single heading", () => {
       await click(host.querySelector(".pane-active-heading"));
       await act(async () => vi.advanceTimersByTimeAsync(250));
       expect(select).not.toHaveBeenCalled(); expect(killSession).not.toHaveBeenCalled();
-      expect(openMainDashboard).toHaveBeenCalledWith({ tabId: "t0", sessionId: "pty-0", turn: "latest" });
+      expect(openMainDashboard).not.toHaveBeenCalled();
+      expect(useDashboardViewStore.getState().userTurnRequests.t0?.kind).toBe("latest");
       expect(localStorage.getItem("mycmux:dashboard-chat-column-pins")).toBe('["saved"]');
-      expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toEqual(["saved"]);
-      expect(useDashboardViewStore.getState().open).toBe(false);
-      expect(useToastStore.getState().toasts.at(-1)?.message).toBe(mode === "missing" ? tearoutStrings.dashboardMainUnavailable : tearoutStrings.failed);
+      expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toEqual([]);
+      expect(useDashboardViewStore.getState().open).toBe(true);
+      expect(useDashboardViewStore.getState().selectedTabId).toBe("t0");
     } finally { release(); __resetToastStoreForTests(); }
   });
-  it("routes the detached tab menu to main without opening a local dashboard", async () => {
+  it("opens the detached tab menu target in the local dashboard", async () => {
     vi.mocked(openMainDashboard).mockResolvedValue(true);
     const release = mountDetachedDashboardHost();
     try {
@@ -149,10 +150,11 @@ describe("Stage 2a single heading", () => {
       useDashboardViewStore.setState({ chatColumnTabIds: [], pinnedChatColumnTabIds: ["saved"] });
       localStorage.setItem("mycmux:dashboard-chat-column-pins", '["saved"]');
       await menu(); await click(item("dashboard"));
-      expect(openMainDashboard).toHaveBeenCalledWith({ tabId: "t0", sessionId: "pty-0" });
+      expect(openMainDashboard).not.toHaveBeenCalled();
+      expect(useDashboardViewStore.getState().selectedTabId).toBe("t0");
       expect(localStorage.getItem("mycmux:dashboard-chat-column-pins")).toBe('["saved"]');
-      expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toEqual(["saved"]);
-      expect(useDashboardViewStore.getState().open).toBe(false);
+      expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toEqual([]);
+      expect(useDashboardViewStore.getState().open).toBe(true);
     } finally { release(); }
   });
   it.each([800, 500, 320, 244, 204, 181, 164, 120])("keeps one heading and both closing controls at width %i", async (value) => {

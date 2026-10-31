@@ -3,6 +3,12 @@ import { act, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../../src/components/dashboard/DashboardView", () => ({
+  DashboardView: ({ onClose }: { onClose: () => void }) => <div role="region" aria-label="dashboard-test">
+    <button data-close-dashboard onClick={onClose}>close</button>
+  </div>,
+}));
+
 const mocks = vi.hoisted(() => ({
   close: vi.fn(async () => {}),
   openMainDashboard: vi.fn(async () => true),
@@ -67,6 +73,7 @@ import type { DetachedWorkspace } from "../../src/lib/detachedPane";
 import { isDetachedDashboardHost } from "../../src/lib/dashboardHost";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { useUiStore } from "../../src/stores/uiStore";
+import { useDashboardViewStore } from "../../src/stores/dashboardViewStore";
 import { useKeybindingStore } from "../../src/stores/keybindingStore";
 
 function workspace(type: "terminal" | "launcher" | "browser" | "web" = "terminal"): DetachedWorkspace {
@@ -86,7 +93,7 @@ describe("DetachedPaneShell", () => {
     const other = workspace();
     Object.assign(other.panes[0].tabs[0], { id: "other-tab", sessionId: "other-session" });
     other.panes[0].activeTabId = "other-tab";
-    useWorkspaceListStore.setState({ workspaces: [other], activeWorkspaceId: other.id });
+    useWorkspaceListStore.setState({ workspaces: [workspace(), other], activeWorkspaceId: other.id });
     useUiStore.setState({ activePaneId: "other-session" });
     const host = document.createElement("div"); document.body.append(host);
     const root = createRoot(host);
@@ -98,8 +105,10 @@ describe("DetachedPaneShell", () => {
       const event = new KeyboardEvent("keydown", { key: "G", ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
       await act(async () => input.dispatchEvent(event));
       expect(event.defaultPrevented).toBe(true);
-      expect(mocks.openMainDashboard).toHaveBeenCalledOnce();
-      expect(mocks.openMainDashboard).toHaveBeenCalledWith({ tabId: "tab", sessionId: "pty-original-pane-tab" });
+      expect(mocks.openMainDashboard).not.toHaveBeenCalled();
+      expect(useDashboardViewStore.getState().open).toBe(true);
+      expect(host.querySelector("[role=region]")).not.toBeNull();
+      expect(useDashboardViewStore.getState().selectedTabId).toBe("tab");
     } finally {
       await act(async () => root.unmount()); host.remove();
       useWorkspaceListStore.setState(before);
@@ -114,25 +123,27 @@ describe("DetachedPaneShell", () => {
       expect(mocks.childHost).toEqual([true]);
     } finally { await act(async () => root.unmount()); }
   });
-  it("keeps terminal focus on legacy band buttons, including a canceled close, and still clicks", async () => {
+  it("prevents mouse focus on legacy band buttons before clicking, including a canceled close", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     mocks.confirmPaneClose.mockResolvedValueOnce(false);
     const host = document.createElement("div"); document.body.append(host);
     const root = createRoot(host);
     try {
+      useWorkspaceListStore.setState({ workspaces: [workspace()] });
       await act(async () => root.render(<DetachedPaneShell workspace={workspace()} />));
       const input = document.createElement("textarea"); host.append(input); input.focus();
       const buttons = Array.from(host.querySelectorAll<HTMLButtonElement>("button"));
       expect(buttons).toHaveLength(2);
       for (const button of buttons) {
         const event = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
-        await act(async () => { button.dispatchEvent(event); button.click(); });
+        await act(async () => { button.dispatchEvent(event); expect(document.activeElement).toBe(input); button.click(); });
         expect(event.defaultPrevented).toBe(true);
-        expect(document.activeElement).toBe(input);
-        expect(button.tabIndex).toBe(0);
+          expect(button.tabIndex).toBe(0);
       }
-      expect(mocks.openMainDashboard).toHaveBeenCalledOnce();
-      expect(mocks.openMainDashboard).toHaveBeenCalledWith({ tabId: "tab", sessionId: "pty-original-pane-tab" });
+      expect(mocks.openMainDashboard).not.toHaveBeenCalled();
+      expect(useDashboardViewStore.getState().open).toBe(true);
+      expect(host.querySelector("[role=region]")).not.toBeNull();
+      expect(useDashboardViewStore.getState().selectedTabId).toBe("tab");
       expect(mocks.confirmPaneClose).toHaveBeenCalledOnce();
       expect(mocks.discardAndClose).not.toHaveBeenCalled();
     } finally { await act(async () => root.unmount()); host.remove(); }
@@ -267,7 +278,9 @@ describe("DetachedPaneShell", () => {
     document.body.appendChild(host);
     const root = createRoot(host);
     try {
-      await act(async () => root.render(<DetachedPaneShell workspace={workspace(type)} />));
+      const current = workspace(type);
+      useWorkspaceListStore.setState({ workspaces: [current], activeWorkspaceId: current.id });
+      await act(async () => root.render(<DetachedPaneShell workspace={current} />));
       const shell = host.querySelector("[data-detached-pane-shell]")!;
       const band = shell.children[0] as HTMLElement;
       expect(band.style.height).toBe("30px");
@@ -278,7 +291,9 @@ describe("DetachedPaneShell", () => {
       expect(band.querySelector("button:last-child")!.textContent).toBe("×");
       expect(band.querySelector("button:last-child")!.getAttribute("aria-label")).toBe("このタブを閉じる");
       await act(async () => band.querySelector<HTMLButtonElement>("button")!.click());
-      expect(mocks.openMainDashboard).toHaveBeenLastCalledWith({ tabId: "tab", sessionId: "pty-original-pane-tab" });
+      expect(mocks.openMainDashboard).not.toHaveBeenCalled();
+      expect(useDashboardViewStore.getState()).toMatchObject({ open: true, selectedTabId: "tab" });
+      expect(host.querySelector("[role=region]")).not.toBeNull();
       expect(shell.children).toHaveLength(2);
       if (type === "terminal") {
         expect(host.querySelector("[data-terminal-session]")?.getAttribute("data-terminal-session")).toBe("pty-original-pane-tab");

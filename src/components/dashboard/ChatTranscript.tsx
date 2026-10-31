@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, ChevronUp } from "lucide-react";
+import { DashboardStatusLabel } from "./DashboardUi";
 import type { SemanticEventEnvelope, TranscriptDescriptor } from "../../lib/livebrief";
 import type { TranscriptHistoryReader } from "../../stores/transcriptHistoryStore";
 import { ArchiveTranscript, type ArchiveTranscriptProps } from "./ArchiveTranscript";
@@ -167,8 +168,8 @@ function ChatActivityFooter({ displayState, agentKind, lastOutputAt }: {
       ? `最終出力 ${Math.floor(elapsedMs / 1_000)}秒前`
       : coarseElapsedLabel(elapsedMs);
   return <div className={`cmux-dashboard-chat-activity${working ? " is-working" : ""}`} aria-live="polite">
-    <span className="cmux-dashboard-chat-activity-glyph" aria-hidden="true">{working ? "⋯" : "•"}</span>
-    <span>{`${agentLabel(agentKind)} · ${labels.activityLabel} · ${timeLabel}`}</span>
+    <DashboardStatusLabel label={labels.activityLabel} />
+    <span>{`${agentLabel(agentKind)} · ${timeLabel}`}</span>
   </div>;
 }
 

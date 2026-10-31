@@ -370,7 +370,6 @@ fn repair_families(conn: &mut Connection, options: &RepairOptions, control: &Con
         }
     }
     let groups = merge_source_families(groups);
-    let prices = PriceTable::load(conn)?;
     for ((kind, sid), sources) in groups {
         if cancel.load(Ordering::Relaxed) {
             report.cancelled = true;
@@ -538,7 +537,8 @@ fn repair_families(conn: &mut Connection, options: &RepairOptions, control: &Con
         }
         control.pulse("repair-swap")?;
         let complete = resolved.iter().all(Option::is_some);
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let tx = super::db::write_transaction(conn).map_err(|e| e.to_string())?;
+        let prices = PriceTable::load(&tx)?;
         let mut touched = accounting::Touched::new();
         // Replace usage supported only by the inputs being staged. A global
         // execution witnessed by another family remains available for claim_turn
@@ -709,11 +709,11 @@ fn repair_families(conn: &mut Connection, options: &RepairOptions, control: &Con
 fn run_inner(conn: &mut Connection, options: &RepairOptions, control: &Control<'_>, force_retry: bool,
     report: &mut RepairReport) -> Result<(),String> {
     repair_families(conn,options,control,force_retry,report)?;
-    let prices=PriceTable::load(conn)?;
     let mut retried=BTreeSet::new();
     while !report.cancelled {
         control.check()?;
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let tx = super::db::write_transaction(conn).map_err(|e| e.to_string())?;
+        let prices=PriceTable::load(&tx)?;
         let mut touched = accounting::Touched::new();
         accounting::reconcile_codex_copies(&tx, &mut touched)?;
         // A later family swap or transitive copy reconciliation can invalidate

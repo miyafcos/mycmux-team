@@ -971,9 +971,10 @@ fn upsert_result(
     result: &ValidResult,
     ai: &crate::ai::AiConfig,
 ) -> Result<(), String> {
-    let tx = conn
-        .transaction()
+    let tx = super::db::write_transaction(conn)
         .map_err(|err| format!("begin summary transaction: {err}"))?;
+    #[cfg(test)]
+    super::db::write_checkpoint(&tx, "summary");
     let now = chrono::Utc::now().timestamp_millis();
     tx.execute(
         "UPDATE session SET goal_summary=?3, goal_cluster=?4 WHERE kind=?1 AND session_id=?2",
@@ -1003,10 +1004,43 @@ fn save_parse_error(
     session: &PendingSession,
     error: &str,
 ) -> Result<(), String> {
+    let tx = super::db::write_transaction(conn)
+        .map_err(|err| format!("begin summary error transaction: {err}"))?;
+    #[cfg(test)]
+    super::db::write_checkpoint(&tx, "summary");
     let now = chrono::Utc::now().timestamp_millis();
     let kind = if error.contains("timed out") { "timeout" } else if error.contains("cancelled") { "cancelled" } else if error.contains("start AI") { "spawn" } else if error.contains("exited") { "exit" } else { "parse" };
     conn.execute("INSERT INTO summary (kind,session_id,created_at,parse_error,error_kind,prompt_version,attempt_count,last_error_at) VALUES (?1,?2,?3,?4,?5,?6,1,?3) ON CONFLICT(kind,session_id) DO UPDATE SET created_at=excluded.created_at,parse_error=excluded.parse_error,error_kind=excluded.error_kind,prompt_version=excluded.prompt_version,attempt_count=COALESCE(summary.attempt_count,0)+1,last_error_at=excluded.last_error_at", params![session.kind, session.session_id, now, crate::ailog::truncate_chars(error, 500), kind, PROMPT_VERSION]).map_err(|err| format!("save parse error: {err}"))?;
-    Ok(())
+    tx.commit().map_err(|err| format!("commit summary error transaction: {err}"))
+}
+
+
+/// Exercise the real success/error persistence without running an AI process.
+#[cfg(test)]
+pub(crate) fn save_summary_for_heavy_test(conn: &mut Connection, success: bool) {
+    save_summary_for_writer_test(conn, "codex", "session-00", success).unwrap();
+}
+
+#[cfg(test)]
+pub(crate) fn save_summary_for_writer_test(
+    conn: &mut Connection, kind: &str, session_id: &str, success: bool,
+) -> Result<(), String> {
+    let session = PendingSession {
+        kind:kind.into(), session_id:session_id.into(), source_path:None,
+        ai_title:None, first_prompt:None, turn_count:10, compact_count:0,
+        wall_ms:None, cost_usd:1.0,
+    };
+    if success {
+        let result = ValidResult {
+            id_mismatch:false, goal:"saved summary".into(), cluster:"test".into(),
+            outcome:"done".into(), findings:Vec::new(), rework_happened:false,
+            rework_cause:String::new(), rework_category:"none".into(),
+            cost_note:String::new(), confidence:"high".into(),
+        };
+        upsert_result(conn, &session, &result, &crate::ai::AiConfig::default())
+    } else {
+        save_parse_error(conn, &session, "injected parse error")
+    }
 }
 
 #[cfg(test)]

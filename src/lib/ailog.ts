@@ -193,6 +193,7 @@ export interface AccountingTotals {
 export interface Overview {
   range: RangeOut;
   totals: Totals;
+  previousTotals?: Totals;
   accounting?: AccountingTotals;
   comparePrevious: ComparePrevious;
   topModels: ModelRow[];
@@ -482,6 +483,7 @@ export interface ModelsReport {
 }
 
 export interface HandoffsReport {
+  cache?: { savedAt: number; stale: boolean };
   range: RangeOut;
   granularity: AilogGranularity;
   handoffs: Handoff[];
@@ -822,6 +824,8 @@ export interface FileRankingRow {
 }
 
 export interface ReworkRankingsReport {
+  range?: RangeOut;
+  cache?: { savedAt: number; stale: boolean };
   failedCommands: ToolRankingRow[];
   rewrittenFiles: FileRankingRow[];
 }
@@ -873,11 +877,37 @@ export async function ailogDigestGenerate(date: string, force = false): Promise<
   return invoke<DigestReport>("ailog_digest_generate", { date, force });
 }
 
+export interface AilogReportRequest {
+  id: number;
+  supersedes: number[];
+  channel: string;
+  cancelled?: boolean;
+}
+
+let activeReportRequest: AilogReportRequest | undefined;
+export function currentAilogReportRequest(): AilogReportRequest | undefined { return activeReportRequest; }
+/** Only synchronous invocation setup is scoped; no context crosses an await. */
+export function withAilogReportRequest<T>(request: AilogReportRequest | undefined, invoke: () => T): T {
+  const previous = activeReportRequest;
+  activeReportRequest = request;
+  try { return invoke(); } finally { activeReportRequest = previous; }
+}
+export function isAilogReportCancelled(error: unknown): boolean {
+  return errorMessage(error).startsWith("AILOG_REPORT_CANCELLED");
+}
+function invokeReport<T>(command: string, args: Record<string, unknown>): Promise<T> {
+  const request = activeReportRequest;
+  if (request?.cancelled) return Promise.reject("AILOG_REPORT_CANCELLED");
+  return invoke<T>(command, request ? { ...args, reportRequest: {
+    id: request.id, channel: request.channel, supersedes: request.supersedes,
+  } } : args);
+}
+
 export async function ailogOverview(
   range: AilogRange,
   filters: AilogFilters,
 ): Promise<Overview> {
-  return invoke<Overview>("ailog_overview", { range, filters });
+  return invokeReport<Overview>("ailog_overview", { range, filters });
 }
 
 export async function ailogSeries(
@@ -885,7 +915,7 @@ export async function ailogSeries(
   filters: AilogFilters,
   options: { bucket?: string; groupBy?: SeriesGroupBy } = {},
 ): Promise<SeriesReport> {
-  return invoke<SeriesReport>("ailog_series", { range, filters, options });
+  return invokeReport<SeriesReport>("ailog_series", { range, filters, options });
 }
 
 export async function ailogBreakdown(
@@ -893,7 +923,7 @@ export async function ailogBreakdown(
   filters: AilogFilters,
   dimension: string,
 ): Promise<BreakdownReport> {
-  return invoke<BreakdownReport>("ailog_breakdown", {
+  return invokeReport<BreakdownReport>("ailog_breakdown", {
     range,
     filters,
     options: { dimension },
@@ -905,7 +935,7 @@ export async function ailogPivot(
   filters: AilogFilters,
   options: { rowBy: PivotAxis; colBy: PivotAxis },
 ): Promise<PivotReport> {
-  return invoke<PivotReport>("ailog_pivot", { range, filters, options });
+  return invokeReport<PivotReport>("ailog_pivot", { range, filters, options });
 }
 
 export const DEFAULT_USD_JPY_RATE = 150;
@@ -935,7 +965,7 @@ export async function ailogSessions(
   filters: AilogFilters,
   options: { sort?: string; limit?: number; offset?: number } = {},
 ): Promise<SessionsReport> {
-  return invoke<SessionsReport>("ailog_sessions", { range, filters, options });
+  return invokeReport<SessionsReport>("ailog_sessions", { range, filters, options });
 }
 
 export async function ailogSessionDetail(
@@ -960,7 +990,7 @@ export async function ailogModels(
   filters: AilogFilters,
   options: { granularity?: AilogGranularity; bucket?: string } = {},
 ): Promise<ModelsReport> {
-  return invoke<ModelsReport>("ailog_models", { range, filters, options });
+  return invokeReport<ModelsReport>("ailog_models", { range, filters, options });
 }
 
 export async function ailogModelHandoffs(
@@ -968,21 +998,21 @@ export async function ailogModelHandoffs(
   filters: AilogFilters,
   options: { granularity?: AilogGranularity; bucket?: string } = {},
 ): Promise<HandoffsReport> {
-  return invoke<HandoffsReport>("ailog_model_handoffs", { range, filters, options });
+  return invokeReport<HandoffsReport>("ailog_model_handoffs", { range, filters, options });
 }
 
 export async function ailogReworkRankings(
   range: AilogRange,
   filters: AilogFilters,
 ): Promise<ReworkRankingsReport> {
-  return invoke<ReworkRankingsReport>("ailog_rework_rankings", { range, filters });
+  return invokeReport<ReworkRankingsReport>("ailog_rework_rankings", { range, filters });
 }
 
 export async function ailogUsageRhythm(
   range: AilogRange,
   filters: AilogFilters,
 ): Promise<UsageRhythmReport> {
-  return invoke<UsageRhythmReport>("ailog_usage_rhythm", { range, filters });
+  return invokeReport<UsageRhythmReport>("ailog_usage_rhythm", { range, filters });
 }
 
 export async function listenIndexProgress(
@@ -1139,7 +1169,13 @@ function safe(value: number): number {
 
 const TOKEN_UNITS: [number, string][] = [[1e4, "万"], [1e8, "億"], [1e12, "兆"]];
 
-function formatScaledJapanese(value: number, fractionDigits: number): string {
+// Reuse locale formatters across every day/model instead of constructing one per value.
+const countFormatter = new Intl.NumberFormat("en-US");
+const fractionalFormatters = [0, 1].map(digits => new Intl.NumberFormat("en-US", {
+  minimumFractionDigits: digits, maximumFractionDigits: digits,
+}));
+
+function formatScaledJapanese(value: number, fractionDigits: 0 | 1): string {
   const abs = Math.abs(value);
   let index = 0;
   for (let i = TOKEN_UNITS.length - 1; i >= 0; i -= 1) {
@@ -1153,10 +1189,7 @@ function formatScaledJapanese(value: number, fractionDigits: number): string {
     index += 1;
     mantissa = Number((value / TOKEN_UNITS[index][0]).toFixed(fractionDigits));
   }
-  const shown = mantissa.toLocaleString("en-US", {
-    minimumFractionDigits: fractionDigits,
-    maximumFractionDigits: fractionDigits,
-  });
+  const shown = fractionalFormatters[fractionDigits].format(mantissa);
   return `${shown}${TOKEN_UNITS[index][1]}`;
 }
 
@@ -1165,11 +1198,11 @@ function formatYen(yen: number, short: boolean): string {
   const abs = Math.abs(amount);
   const sign = amount < 0 ? "-" : "";
   if (abs < 100) {
-    const body = short ? Math.round(abs).toLocaleString("en-US") : abs.toFixed(1);
+    const body = short ? countFormatter.format(Math.round(abs)) : abs.toFixed(1);
     return `${sign}¥${body}`;
   }
   if (abs < 10_000) {
-    return `${sign}¥${Math.round(abs).toLocaleString("en-US")}`;
+    return `${sign}¥${countFormatter.format(Math.round(abs))}`;
   }
   return `${sign}¥${formatScaledJapanese(abs, short ? 0 : 1)}`;
 }
@@ -1185,7 +1218,7 @@ export function formatMoneyShort(value: number): string {
 }
 
 export function formatCount(value: number): string {
-  return Math.round(safe(value)).toLocaleString("en-US");
+  return countFormatter.format(Math.round(safe(value)));
 }
 
 /** `1,234.6万 tok` */
@@ -1203,10 +1236,7 @@ export function formatTokens(value: number): string {
     index += 1;
     mantissa = Number((tokens / TOKEN_UNITS[index][0]).toFixed(1));
   }
-  const shown = mantissa.toLocaleString("en-US", {
-    minimumFractionDigits: 1,
-    maximumFractionDigits: 1,
-  });
+  const shown = fractionalFormatters[1].format(mantissa);
   return `${shown}${TOKEN_UNITS[index][1]} tok`;
 }
 

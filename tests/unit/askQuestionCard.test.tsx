@@ -97,10 +97,10 @@ describe("AskUserQuestion QuestionCard", () => {
     expect(container.querySelector("[data-ask-question-option='1']")?.textContent).toContain("[ ]");
     expect(container.querySelector("[aria-label='選択肢 1']")).not.toBeNull();
     expect(container.querySelector("[aria-label='質問の切り替え']")).not.toBeNull();
-    expect(container.querySelector("[aria-label='質問の状態']")?.textContent).toBe(
+    expect(container.querySelector("[aria-label='質問の状態']")?.querySelector("[role=img]")?.getAttribute("aria-label")).toBe(
       dashboardStrings.askQuestionSending,
     );
-    expect(container.querySelector("[aria-label='質問が止まった理由']")?.textContent).toBe(
+    expect(container.querySelector("[aria-label='質問が止まった理由']")?.querySelector("[role=img]")?.getAttribute("aria-label")).toBe(
       dashboardStrings.askQuestionStopReason("needs_confirmation"),
     );
     expect(container.querySelector<HTMLButtonElement>("[data-ask-question-option='1']")?.disabled).toBe(true);
@@ -165,7 +165,7 @@ describe("AskUserQuestion QuestionCard", () => {
     useAskQuestionStore.getState().clearScreen("s-ask", "read_failure");
     await renderCard();
 
-    expect(container.querySelector("[aria-label='質問が止まった理由']")?.textContent).toBe(
+    expect(container.querySelector("[aria-label='質問が止まった理由']")?.querySelector("[role=img]")?.getAttribute("aria-label")).toBe(
       dashboardStrings.askQuestionStopReason("read_failure"),
     );
   });
@@ -178,7 +178,7 @@ describe("AskUserQuestion QuestionCard", () => {
       await renderCard();
 
       expect(container.querySelector("[data-ask-question-session='s-ask']")).not.toBeNull();
-      expect(container.querySelector("[aria-label='質問が止まった理由']")?.textContent).toBe(
+      expect(container.querySelector("[aria-label='質問が止まった理由']")?.querySelector("[role=img]")?.getAttribute("aria-label")).toBe(
         dashboardStrings.askQuestionStopReason(reason),
       );
     },

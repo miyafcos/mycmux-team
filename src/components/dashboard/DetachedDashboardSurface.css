@@ -1,0 +1,18 @@
+.cmux-detached-dashboard-host > .cmux-dashboard-view { position: absolute; inset: 0; }
+
+/* Compact windows retain all panels in a vertical, independently scrollable layout. */
+@media (max-width: 999px) {
+  .cmux-detached-dashboard-host .cmux-dashboard-shell { flex-direction: column; overflow-y: auto; overflow-x: hidden; }
+  .cmux-detached-dashboard-host .cmux-dash-list {
+    width: 100%; flex: 0 0 38%; min-height: 120px; max-height: 180px;
+    border-right: 0; border-bottom: 1px solid var(--cmux-border-hairline);
+  }
+  .cmux-detached-dashboard-host .cmux-dash-list[data-collapsed="true"] { flex-basis: auto; min-height: 32px; }
+  .cmux-detached-dashboard-host .cmux-dashboard-chat-pane { flex: 1 0 280px; width: 100%; }
+  .cmux-detached-dashboard-host .cmux-dashboard-chat-columns { overflow-x: auto; scroll-snap-type: x mandatory; }
+  .cmux-detached-dashboard-host .cmux-dashboard-chat-column { flex: 0 0 100%; scroll-snap-align: start; }
+  .cmux-detached-dashboard-host .cmux-dashboard-minimap-resizer { display: none; }
+  .cmux-detached-dashboard-host .cmux-dashboard-right-pane {
+    width: 100%; flex: 0 0 280px; border-left: 0; border-top: 1px solid var(--cmux-border-hairline);
+  }
+}

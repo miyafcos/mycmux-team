@@ -44,6 +44,8 @@ import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { useDelegationParents } from "./useDelegationParents";
 import { usePeerWindowTabs } from "./usePeerWindowTabs";
 import { openSessionInWindow } from "../../lib/agentResumeOwner";
+import { windowLabel } from "../../lib/windowContext";
+import { isDetachedDashboardHost } from "../../lib/dashboardHost";
 import { useToastStore } from "../../stores/toastStore";
 import { useStallStore } from "../../stores/stallStore";
 import { useWorkOrderStore } from "../../stores/workOrderStore";
@@ -95,7 +97,8 @@ import ErrorBoundary from "../common/ErrorBoundary";
 import BrowserPane from "../workspace/BrowserPane";
 import "./DashboardView.css";
 import "./DashboardChatSurface.css";
-import { Columns2 } from "lucide-react";
+import { ArrowLeft, Columns2, CornerDownRight, FileText, Info, Lightbulb, Pin, PinOff, X } from "lucide-react";
+import { DashboardGlyph, DashboardIconButton, DashboardStatusMark } from "./DashboardUi";
 
 /** 番号キーで撃てる選択肢。ここを増やすなら dashboardStrings.numberKeyHint も直す。 */
 const NUMBER_KEYS = ["1", "2", "3"];
@@ -299,6 +302,45 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   });
   const chatColumnCards = chatColumnSlots.flatMap((slot) => slot.kind === "chat" ? [slot.card] : []);
   const activeColumnTabId = chatColumnTabIds[activeChatColumn] ?? null;
+  const renderedColumnKey = JSON.stringify(chatColumnSlots.map(slot => slot.kind === "chat" ? slot.card.tab.id : slot.kind));
+  const compactScrollTimerRef = useRef<number | null>(null);
+  const selectSettledCompactColumn = useCallback(() => {
+    if (!isDetachedDashboardHost() || viewportWidth >= 1000) return;
+    const columns = chatColumnsRef.current;
+    const state = useDashboardViewStore.getState();
+    if (!columns || !state.open) return;
+    const visible = Array.from(columns.querySelectorAll<HTMLElement>("[data-dashboard-chat-column]"))
+      .filter(column => state.chatColumnTabIds.includes(column.dataset.dashboardChatColumn!))
+      .sort((left, right) => Math.abs(left.offsetLeft - columns.scrollLeft) - Math.abs(right.offsetLeft - columns.scrollLeft))[0];
+    const index = visible ? state.chatColumnTabIds.indexOf(visible.dataset.dashboardChatColumn!) : -1;
+    if (index >= 0 && index !== state.activeChatColumn) state.setActiveChatColumn(index);
+  }, [viewportWidth]);
+  const scheduleCompactColumnSelection = useCallback(() => {
+    if (compactScrollTimerRef.current !== null) window.clearTimeout(compactScrollTimerRef.current);
+    compactScrollTimerRef.current = window.setTimeout(() => {
+      compactScrollTimerRef.current = null;
+      selectSettledCompactColumn();
+    }, 150);
+  }, [selectSettledCompactColumn]);
+  useEffect(() => {
+    const columns = chatColumnsRef.current;
+    const settled = () => {
+      if (compactScrollTimerRef.current !== null) window.clearTimeout(compactScrollTimerRef.current);
+      compactScrollTimerRef.current = null;
+      selectSettledCompactColumn();
+    };
+    columns?.addEventListener("scrollend", settled);
+    return () => {
+      columns?.removeEventListener("scrollend", settled);
+      if (compactScrollTimerRef.current !== null) window.clearTimeout(compactScrollTimerRef.current);
+    };
+  }, [selectSettledCompactColumn]);
+  useLayoutEffect(() => {
+    if (!isDetachedDashboardHost() || viewportWidth >= 1000) return;
+    const columns = chatColumnsRef.current;
+    const active = columns?.querySelector<HTMLElement>("[data-dashboard-chat-column][data-active='true']");
+    if (columns && active) columns.scrollLeft = active.offsetLeft;
+  }, [activeColumnTabId, viewportWidth, renderedColumnKey]);
   const activeColumnIsInbox = isDashboardInboxColumn(activeColumnTabId);
   const activeColumnIsPreview = isDashboardPreviewColumn(activeColumnTabId);
   const registerPreviewFocusOwner = useCallback((article: HTMLElement | null) => {
@@ -957,7 +999,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   }, [onClose]);
   const jumpToCard = useCallback((card: Pick<DashboardCardModel, "workspaceId" | "paneId" | "tab" | "windowLabel">) => {
     if (card.windowLabel) {
-      if (card.windowLabel !== "main") {
+      if (card.windowLabel !== windowLabel()) {
         void openSessionInWindow(card.windowLabel, card.tab.sessionId).catch(() => {
           useToastStore.getState().pushToast(dashboardStrings.attentionActionFailed, "error");
         });
@@ -1162,10 +1204,18 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     openTabIds: openSessionTabIds,
   } as const;
 
+  const composerDestination = activeColumnIsInbox
+    ? `入力先: ${dashboardStrings.attentionTitle}（${activeChatColumn + 1}/${chatColumnTabIds.length}列）`
+    : activeColumnIsPreview
+      ? `入力先: ${viewState.previewColumn?.label ?? dashboardStrings.previewColumnTitle}（${activeChatColumn + 1}/${chatColumnTabIds.length}列）`
+      : activeColumnCard
+        ? `入力先: ${activeColumnCard.label}（${activeChatColumn + 1}/${chatColumnTabIds.length}列）`
+        : dashboardStrings.detailEmpty;
+
   return <div ref={rootRef} tabIndex={-1} role="region" aria-label={dashboardStrings.viewAriaLabel} className="cmux-dashboard-view" onPointerDownCapture={beginDashboardPointerDrag} onClickCapture={suppressDashboardListClick}>
     {yourTurnCard ? <section className="cmux-your-turn-overlay" aria-label={`あなたの番 — ${yourTurnCard.label}`}>
-      <div className="cmux-your-turn-overlay-head"><strong>{yourTurnCard.label} · {stateLabels(resolveDisplayState(yourTurnCard)).primary}</strong>
-        <button type="button" className="cmux-your-turn" onClick={() => useDashboardViewStore.setState({ yourTurnTabId: null })}>一覧に戻る</button></div>
+      <div className="cmux-your-turn-overlay-head"><strong>{yourTurnCard.label} <DashboardStatusMark state={resolveDisplayState(yourTurnCard)} label={stateLabels(resolveDisplayState(yourTurnCard)).tooltip} /></strong>
+        <DashboardIconButton icon={ArrowLeft} label="一覧に戻る" className="cmux-your-turn" onClick={() => useDashboardViewStore.setState({ yourTurnTabId: null })} /></div>
       <QuestionCard brief={yourTurnCard.brief} events={eventsBySession[yourTurnCard.tab.sessionId]}
         targetLabel={yourTurnCard.label} sessionId={yourTurnCard.tab.sessionId} attention={yourTurnCard.attention}
         onFocusComposer={(brief) => {
@@ -1208,6 +1258,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
         <div className="cmux-dashboard-chat-columns-shell">
           <div
             ref={chatColumnsRef}
+            onScroll={(event) => { if (event.target === event.currentTarget) scheduleCompactColumnSelection(); }}
             className="cmux-dashboard-chat-columns"
             data-dashboard-chat-drop-target="true"
             data-visible-columns={chatColumnSlots.length}
@@ -1250,7 +1301,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
                     onKeyDown={(event) => reorderChatColumnFromHeader(index, event)}
                   >
                     <span className="cmux-dashboard-chat-color" aria-hidden="true" />
-                    <strong>{previewTitle}</strong>
+                    <strong>{preview ? previewTitle : <DashboardGlyph icon={FileText} label={previewTitle} />}</strong>
                     <button
                       type="button"
                       data-dashboard-chat-column-pin={slotId}
@@ -1259,8 +1310,8 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
                       aria-label={viewState.pinnedChatColumnTabIds.includes(slotId) ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel}
                       title={viewState.pinnedChatColumnTabIds.includes(slotId) ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel}
                       onClick={(event) => { event.stopPropagation(); viewState.toggleChatColumnPin(slotId); }}
-                    >{dashboardStrings.chatColumnPin}</button>
-                    <button type="button" data-dashboard-chat-column-close={slotId} className="cmux-dashboard-chat-column-close" aria-label={`${previewTitle} を閉じる`} onClick={(event) => { event.stopPropagation(); closeChatColumn(index, slot); }}>×</button>
+                    >{viewState.pinnedChatColumnTabIds.includes(slotId) ? <PinOff size={15} aria-hidden="true" /> : <Pin size={15} aria-hidden="true" />}</button>
+                    <button type="button" data-dashboard-chat-column-close={slotId} className="cmux-dashboard-chat-column-close" aria-label={`${previewTitle} を閉じる`} title={`${previewTitle} を閉じる`} onClick={(event) => { event.stopPropagation(); closeChatColumn(index, slot); }}><X size={16} aria-hidden="true" /></button>
                   </header>
                   <div className="cmux-dashboard-chat-column-body" data-dashboard-preview-column="true">
                     {preview ? <ErrorBoundary>
@@ -1275,7 +1326,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
                         onDirtyChange={viewState.setPreviewDirty}
                         onSaved={viewState.applyPreviewSaved}
                       />
-                    </ErrorBoundary> : <div className="cmux-dashboard-preview-empty">{dashboardStrings.previewColumnEmpty}</div>}
+                    </ErrorBoundary> : <div className="cmux-dashboard-preview-empty"><DashboardGlyph icon={Info} label={dashboardStrings.previewColumnEmpty} /></div>}
                   </div>
                 </article>;
               }
@@ -1300,7 +1351,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
                     onKeyDown={(event) => reorderChatColumnFromHeader(index, event)}
                   >
                     <span className="cmux-dashboard-chat-color" aria-hidden="true" />
-                    <strong>{dashboardStrings.attentionTitle}</strong>
+                    <strong><DashboardGlyph icon={Lightbulb} label={dashboardStrings.attentionTitle} /></strong>
                     <button
                       type="button"
                       data-dashboard-chat-column-pin={slotId}
@@ -1309,8 +1360,8 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
                       aria-label={viewState.pinnedChatColumnTabIds.includes(slotId) ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel}
                       title={viewState.pinnedChatColumnTabIds.includes(slotId) ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel}
                       onClick={(event) => { event.stopPropagation(); viewState.toggleChatColumnPin(slotId); }}
-                    >{dashboardStrings.chatColumnPin}</button>
-                    <button type="button" data-dashboard-chat-column-close={slotId} className="cmux-dashboard-chat-column-close" aria-label={`${dashboardStrings.attentionTitle} を閉じる`} onClick={(event) => { event.stopPropagation(); closeChatColumn(index, slot); }}>×</button>
+                    >{viewState.pinnedChatColumnTabIds.includes(slotId) ? <PinOff size={15} aria-hidden="true" /> : <Pin size={15} aria-hidden="true" />}</button>
+                    <button type="button" data-dashboard-chat-column-close={slotId} className="cmux-dashboard-chat-column-close" aria-label={`${dashboardStrings.attentionTitle} を閉じる`} title={`${dashboardStrings.attentionTitle} を閉じる`} onClick={(event) => { event.stopPropagation(); closeChatColumn(index, slot); }}><X size={16} aria-hidden="true" /></button>
                   </header>
                   <div className="cmux-dashboard-chat-column-body" data-dashboard-inbox-column="true">
                     <AttentionCards {...attentionActions} sessions={attentionFactSources} />
@@ -1355,19 +1406,17 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
                   : eventsFetchedAtBySession[card.tab.sessionId] != null}
               />;
             })}
-            {!chatColumnSlots.length && !closingColumn ? <div className="cmux-dashboard-chat-columns-empty" data-dashboard-chat-columns-empty="true">{dashboardStrings.chatColumnsEmpty}</div> : null}
+            {!chatColumnSlots.length && !closingColumn ? <div className="cmux-dashboard-chat-columns-empty" data-dashboard-chat-columns-empty="true"><DashboardGlyph icon={Info} label={dashboardStrings.chatColumnsEmpty} /></div> : null}
             {dashboardChatDropPreview?.kind === "insert" ? <span className="cmux-dashboard-chat-drop-indicator" aria-hidden="true" data-dashboard-chat-insert-index={dashboardChatDropPreview.index} style={{ left: dashboardChatDropPreview.offsetX }} /> : null}
-            {dashboardChatDropPreview?.kind === "full" ? <span className="cmux-dashboard-chat-drop-capped" aria-hidden="true">{dashboardStrings.chatColumnCapLabel(viewState.chatColumnLimit)}</span> : null}
+            {dashboardChatDropPreview?.kind === "full" ? <span className="cmux-dashboard-chat-drop-capped" role="img" aria-label={dashboardStrings.chatColumnCapLabel(viewState.chatColumnLimit)} title={dashboardStrings.chatColumnCapLabel(viewState.chatColumnLimit)}><Columns2 size={15} aria-hidden="true" /> {viewState.chatColumnLimit}</span> : null}
           </div>
         </div>
         <div className="cmux-dashboard-composer-destination" aria-live="polite">
-          <span hidden={chatColumnTabIds.length === 1 && !!activeColumnCard}>{activeColumnIsInbox
-            ? `入力先: ${dashboardStrings.attentionTitle}（${activeChatColumn + 1}/${chatColumnTabIds.length}列）`
-            : activeColumnIsPreview
-              ? `入力先: ${viewState.previewColumn?.label ?? dashboardStrings.previewColumnTitle}（${activeChatColumn + 1}/${chatColumnTabIds.length}列）`
-            : activeColumnCard
-              ? `入力先: ${activeColumnCard.label}（${activeChatColumn + 1}/${chatColumnTabIds.length}列）`
-              : dashboardStrings.detailEmpty}</span>
+          <span hidden={chatColumnTabIds.length === 1 && !!activeColumnCard} title={composerDestination} aria-label={composerDestination}>
+            <DashboardGlyph icon={activeColumnCard || activeColumnIsInbox || activeColumnIsPreview ? CornerDownRight : Info} label={composerDestination} />
+            {activeColumnCard ? <span aria-hidden="true">{activeColumnCard.label}</span> : activeColumnIsPreview && viewState.previewColumn ? <span aria-hidden="true">{viewState.previewColumn.label}</span> : null}
+            {chatColumnTabIds.length > 0 ? <span aria-hidden="true"> {activeChatColumn + 1}/{chatColumnTabIds.length}</span> : null}
+          </span>
           <details className="cmux-dashboard-column-options">
           <summary aria-label={dashboardStrings.chatColumnLimitGroupLabel} title={dashboardStrings.chatColumnLimitGroupLabel}><Columns2 size={15} aria-hidden="true" /></summary>
           <div role="group" aria-label={dashboardStrings.chatColumnLimitGroupLabel} className="cmux-dashboard-column-limit">

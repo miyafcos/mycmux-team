@@ -1104,3 +1104,248 @@ fn measure_models_report_read_only() {
         .expect("serialize models split")
     );
 }
+
+
+/// G1-3 snapshot-copy measurement. Never opens the runtime database.
+#[test]
+#[ignore = "explicit snapshot-copy-only G1-3 measurement"]
+fn measure_g1_3_reports_read_only() {
+    let path = g1_3_path();
+    let now: i64 = env::var("AILOG_PERF_NOW").expect("fixed anchor required").parse().unwrap();
+    let conn = read_only_connection(&path);
+    let filters = Filters::default();
+    let selected = env::var("AILOG_PERF_PRESET").ok();
+    for preset in ["7d", "30d", "90d", "all"] {
+        if selected.as_deref().is_some_and(|selected| selected != preset) { continue; }
+        let range = Range { preset: Some(preset.into()), anchor: Some(now), ..Range::default() };
+        for name in ["overview", "series", "models", "sessions", "breakdown", "pivot", "model_handoffs", "rework_rankings", "usage_rhythm"] {
+            for iteration in 0..4 {
+                let begin = Instant::now();
+                let result = match name {
+                    "overview" => query::overview(&conn, &range, &filters, now).map(|report| report.timings),
+                    "series" => query::series(&conn, &range, &filters, &query::SeriesOptions { bucket: "day".into(), group_by: "model_raw".into() }, now).map(|report| report.timings),
+                    "models" => query::models(&conn, &range, &filters, &query::ModelsOptions { granularity: "raw".into(), bucket: "day".into() }, now).map(|report| report.timings),
+                    "sessions" => query::sessions(&conn, &range, &filters, &query::SessionsOptions { sort:"rework".into(),limit:100,offset:0 }, now).map(|report| report.timings),
+                    "breakdown" => query::breakdown(&conn, &range, &filters, "project", now).map(|report| report.timings),
+                    "pivot" => query::pivot(&conn, &range, &filters, &query::PivotOptions::default(), now).map(|report| report.timings),
+                    "model_handoffs" => query::model_handoffs(&conn, &range, &filters, &query::ModelsOptions { granularity: "raw".into(), bucket: "day".into() }, now).map(|report| report.timings),
+                    "rework_rankings" => query::rework_rankings(&conn, &range, &filters, now).map(|report| report.timings),
+                    _ => crate::ailog::usage::rhythm(&conn, &range, &filters, now).map(|report| report.timings),
+                };
+                let wall = begin.elapsed().as_secs_f64()*1000.0;
+                let value = match result {
+                    Ok(timings) => serde_json::json!({"preset":preset,"report":name,"iteration":iteration,"wall_ms":wall,"timings":timings}),
+                    Err(error) => serde_json::json!({"preset":preset,"report":name,"iteration":iteration,"wall_ms":wall,
+                        "error": if error.contains("too many SQL variables") { "too_many_sql_variables" } else { "report_error_see_code" }}),
+                };
+                println!("AILOG_G1_3_ROW={}", serde_json::to_string(&value).unwrap());
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "explicit snapshot-copy-only session assembly comparison"]
+fn measure_g1_3_session_assembly_read_only() {
+    let path=g1_3_path();
+    let now=env::var("AILOG_PERF_NOW").expect("fixed anchor required").parse().unwrap();
+    let conn=read_only_connection(&path);
+    for preset in ["7d","30d","90d","all"] {
+        println!("AILOG_G1_3_SESSION_PRESET={preset}");
+        query::measure_session_assembly_pair(&conn,&Range { preset:Some(preset.into()),anchor:Some(now),..Range::default() },now).unwrap();
+    }
+}
+
+// Test-only G1-3 measurement support. No runtime database is an allowed input.
+fn g1_3_path() -> PathBuf {
+    let path=PathBuf::from(env::var("AILOG_PERF_DB").expect("explicit measurement path"));
+    if cfg!(windows) {
+        assert_eq!(path.canonicalize().unwrap(),PathBuf::from("D:/mycmux-g1-3-dbcopy/ailog-copy.db").canonicalize().unwrap());
+    } else {
+        assert_eq!(env::var("AILOG_G1_3_SYNTHETIC").as_deref(),Ok("1"));
+        assert!(path.is_absolute());
+        assert_eq!(path.file_name().unwrap(),"g1-3-synthetic.db");
+        assert_eq!(path.parent().unwrap().file_name().unwrap(),"target");
+        assert!(path.to_string_lossy().contains("/04_macrun/mirrors/mycmux-wt-grass-perf-261030-"));
+        let conn=read_only_connection(&path);
+        let marker:String=conn.query_row("SELECT value FROM index_state WHERE key='g1_3_synthetic_only'",[],|row|row.get(0)).unwrap();
+        assert_eq!(marker,"random-fixture-from-spec-only-v2");
+    }
+    path
+}
+
+#[test]
+#[ignore="Mac-only synthetic fallback, never reads the snapshot or live database"]
+fn create_g1_3_synthetic_fixture() {
+    assert!(!cfg!(windows));
+    assert_eq!(env::var("AILOG_G1_3_SYNTHETIC").as_deref(),Ok("1"));
+    let path=std::env::current_dir().unwrap().join("target/g1-3-synthetic.db");
+    assert!(!path.exists(),"preserve an existing synthetic fixture");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut conn=Connection::open(&path).unwrap();
+    crate::ailog::schema::init(&conn).unwrap();
+    crate::ailog::migrate::apply(&conn).unwrap();
+    let now:i64=env::var("AILOG_PERF_NOW").unwrap().parse().unwrap();
+    let day=86_400_000_i64; let shift=9*3_600_000_i64;
+    let first=(now+shift)/day*day-shift-229*day;
+    let mut seed=0x261030_6a13_u64;
+    fn random(seed:&mut u64)->u64 { *seed^=*seed<<13;*seed^=*seed>>7;*seed^=*seed<<17;*seed }
+    {
+        let tx=conn.transaction().unwrap();
+        let mut sessions=tx.prepare("INSERT INTO session(kind,session_id,ai_title,first_prompt,project_key,project_label,primary_model,model_count,started_at,user_msg_count,work_tags,origin) VALUES ('claude',?1,?2,?2,?3,?3,?4,1,?5,7,'[\"debug\"]','unknown')").unwrap();
+        let mut turns=tx.prepare("INSERT INTO turn(kind,session_id,seq,ts,model,model_family,input_tokens,output_tokens,cache_read_tokens,cache_write_5m_tokens,cost_usd,usage_state) VALUES ('claude',?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)").unwrap();
+        let mut tools=tx.prepare("INSERT INTO tool_event(kind,session_id,seq,ts,name,target,is_error) VALUES ('claude',?1,?2,?3,'fake-tool',?4,?5)").unwrap();
+        let mut files=tx.prepare("INSERT INTO file_touch(kind,session_id,path,edit_count) VALUES ('claude',?1,?2,?3)").unwrap();
+        let mut rework=tx.prepare("INSERT INTO rework(kind,session_id,score) VALUES ('claude',?1,?2)").unwrap();
+        for index in 0..50_000_i64 {
+            let id=format!("synthetic-{index:06}");
+            let text=format!("random-{:016x}",random(&mut seed)).repeat(40);
+            let project=format!("fake-project-{}",index%200);
+            let model=format!("fake-model-{}",index%8);
+            let start=first+(index%230)*day;
+            sessions.execute(rusqlite::params![id,text,project,model,start]).unwrap();
+            rework.execute(rusqlite::params![id,(random(&mut seed)%1000) as f64/100.0]).unwrap();
+            let targets:Vec<_>=(0..4).map(|_|format!("random-command-{:016x}",random(&mut seed)).repeat(20)).collect();
+            for seq in 0..44_i64 {
+                let ts=start+(random(&mut seed)%(day as u64)) as i64;
+                let selected=if index%5==0 && seq>22 {(index+1)%8}else{index%8};
+                let model=format!("fake-model-{selected}");let family=format!("fake-family-{}",selected%3);
+                let input=(random(&mut seed)%5000) as i64;let output=(random(&mut seed)%1000) as i64;
+                let cache=(random(&mut seed)%10000) as i64;
+                let state=if seq==0 && index%5==0 {"unresolved"}else{"legacy"};
+                turns.execute(rusqlite::params![id,seq,ts,model,family,input,output,cache,0,(input+output) as f64/1000000.0,state]).unwrap();
+                tools.execute(rusqlite::params![id,seq,ts,targets[(seq%4) as usize],(random(&mut seed)%10==0) as i64]).unwrap();
+            }
+            files.execute(rusqlite::params![id,format!("src/fake-{}.rs",index%5000),3+(random(&mut seed)%10) as i64]).unwrap();
+            if index%10000==0 {println!("AILOG_G1_3_SYNTHETIC_PROGRESS sessions={index}");}
+        }
+        drop((sessions,turns,tools,files,rework));
+        tx.commit().unwrap();
+    }
+    crate::ailog::report_cache::init_source_revision(&conn).unwrap();
+    conn.execute("INSERT INTO index_state(key,value) VALUES ('g1_3_synthetic_only','random-fixture-from-spec-only-v2')",[]).unwrap();
+    crate::ailog::rollup::mark_all_dirty(&conn).unwrap();
+    crate::ailog::rollup::rebuild_dirty(&conn).unwrap();
+    println!("AILOG_G1_3_SYNTHETIC_READY sessions=50000 turns=2200000 days=230 seed=0x2610306a13");
+}
+
+#[test]
+#[ignore="measurement database only; changes rollup_dirty rows and nothing else"]
+fn set_g1_3_dirty_scene() {
+    let path=g1_3_path();
+    let conn=Connection::open_with_flags(path,OpenFlags::SQLITE_OPEN_READ_WRITE).unwrap();
+    let now:i64=env::var("AILOG_PERF_NOW").unwrap().parse().unwrap();
+    let scene=env::var("AILOG_PERF_SCENE").unwrap();
+    assert!(["clean","today_dirty","day_30_before_dirty"].contains(&scene.as_str()));
+    let day=(now+9*3_600_000)/86_400_000;
+    conn.execute("DELETE FROM rollup_dirty",[]).unwrap();
+    if scene!="clean" { conn.execute("INSERT INTO rollup_dirty(day) VALUES (?1)",[if scene=="today_dirty" {day}else{day-30}]).unwrap(); }
+    let count:i64=conn.query_row("SELECT COUNT(*) FROM rollup_dirty",[],|row|row.get(0)).unwrap();
+    println!("AILOG_G1_3_SCENE={scene} dirty_rows={count}");
+}
+
+fn g1_3_query(conn:&Connection,name:&str,range:&Range,now:i64)->Result<query::ReportTimings,String> {
+    let filters=Filters::default();
+    match name {
+        "overview"=>query::overview(conn,range,&filters,now).map(|r|r.timings),
+        "series"=>query::series(conn,range,&filters,&query::SeriesOptions {bucket:"day".into(),group_by:"model_raw".into()},now).map(|r|r.timings),
+        "models"=>query::models(conn,range,&filters,&query::ModelsOptions {granularity:"raw".into(),bucket:"day".into()},now).map(|r|r.timings),
+        "sessions"=>query::sessions(conn,range,&filters,&query::SessionsOptions {sort:"rework".into(),limit:100,offset:0},now).map(|r|r.timings),
+        "breakdown"=>query::breakdown(conn,range,&filters,"project",now).map(|r|r.timings),
+        "pivot"=>query::pivot(conn,range,&filters,&query::PivotOptions::default(),now).map(|r|r.timings),
+        "model_handoffs"=>query::model_handoffs(conn,range,&filters,&query::ModelsOptions {granularity:"raw".into(),bucket:"day".into()},now).map(|r|r.timings),
+        _=>unreachable!(),
+    }
+}
+
+fn g1_3_spawn(name:&'static str,preset:&str,now:i64)->tokio::task::JoinHandle<(String,f64,query::ReportTimings)> {
+    let path=g1_3_path();let preset=preset.to_owned();
+    tokio::spawn(async move {
+        let range=Range {preset:Some(preset),anchor:Some(now),..Default::default()};
+        let started=Instant::now();
+        let timing=g1_3_gate(name,None,move ||Ok(read_only_connection(&path)),move |conn|g1_3_query(conn,name,&range,now)).await.unwrap();
+        (name.into(),started.elapsed().as_secs_f64()*1000.0,timing)
+    })
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="measurement through the production report runtime with an explicit readonly database"]
+async fn measure_g1_3_opening_lanes_read_only() {
+    let now:i64=env::var("AILOG_PERF_NOW").unwrap().parse().unwrap();
+    for preset in ["7d","30d","90d","all"] {
+        for heavy in [false,true] {
+            for iteration in 0..4 {
+                let mut heavy_job=None;
+                let finished=Arc::new(AtomicBool::new(false));
+                if heavy {
+                    let path=g1_3_path();let ended=finished.clone();
+                    let (ready,wait)=tokio::sync::oneshot::channel();
+                    heavy_job=Some(tokio::spawn(async move {
+                        let value=g1_3_gate("model_handoffs",Some(1),move ||Ok(read_only_connection(&path)),move |conn| {
+                            let _=ready.send(());
+                            g1_3_query(conn,"model_handoffs",&Range {preset:Some("all".into()),anchor:Some(now),..Default::default()},now)
+                        }).await;
+                        ended.store(true,std::sync::atomic::Ordering::Release);value
+                    }));
+                    wait.await.unwrap();
+                }
+                let started=Instant::now();
+                let overview=g1_3_spawn("overview",preset,now);
+                let series=g1_3_spawn("series",preset,now);
+                let models=g1_3_spawn("models",preset,now);
+                let sessions=g1_3_spawn("sessions",preset,now);
+                let series=series.await.unwrap();
+                let breakdown=g1_3_spawn("breakdown",preset,now);
+                let pivot=g1_3_spawn("pivot",preset,now);
+                let rows=vec![overview.await.unwrap(),series,models.await.unwrap(),sessions.await.unwrap(),breakdown.await.unwrap(),pivot.await.unwrap()];
+                let wall=started.elapsed().as_secs_f64()*1000.0;
+                let overlaps=heavy && !finished.load(std::sync::atomic::Ordering::Acquire);
+                println!("AILOG_G1_3_OPENING={}",serde_json::json!({"preset":preset,"iteration":iteration,"heavy":heavy,"heavy_active_through_light":overlaps,"wall_ms":wall,"reports":rows}));
+                if let Some(job)=heavy_job { let _=job.await.unwrap(); }
+            }
+        }
+    }
+}
+
+async fn g1_3_gate<T:Send+'static>(name:&'static str,id:Option<u64>,open:impl FnOnce()->Result<Connection,String>+Send+'static,
+    build:impl FnOnce(&Connection)->Result<T,String>+Send+'static)->Result<T,String> {
+    use crate::ailog::report_runtime::{runtime,Lane,ReportRequest};
+    let request=id.map(|id|ReportRequest {id,supersedes:Vec::new(),channel:"measurement".into()});
+    runtime().run("g1-3-measure",name,request,if name=="model_handoffs" {Lane::Heavy}else{Lane::Light},open,build).await
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="explicit readonly database and real heavy report cancellation measurement"]
+async fn measure_g1_3_heavy_cancellation_read_only() {
+    use crate::ailog::report_runtime::{runtime,Lane,ReportRequest,CANCELLED};
+    let now:i64=env::var("AILOG_PERF_NOW").unwrap().parse().unwrap();
+    for name in ["model_handoffs","rework_rankings","usage_rhythm"] {
+        for iteration in 0..4 {
+            let path=g1_3_path(); let next_path=path.clone();
+            let (ready,wait)=tokio::sync::oneshot::channel();
+            let old=tokio::spawn(async move {
+                runtime().run("g1-3-cancellation",name,Some(ReportRequest {id:100,supersedes:vec![],channel:"measurement".into()}),Lane::Heavy,
+                    move ||Ok(read_only_connection(&path)),move |conn| {
+                        let _=ready.send(());
+                        let range=Range {preset:Some("all".into()),anchor:Some(now),..Default::default()};
+                        let filters=Filters::default();
+                        match name {
+                            "rework_rankings"=>query::rework_rankings(conn,&range,&filters,now).map(|r|r.timings),
+                            "usage_rhythm"=>crate::ailog::usage::rhythm(conn,&range,&filters,now).map(|r|r.timings),
+                            _=>g1_3_query(conn,name,&range,now),
+                        }
+                    }).await
+            });
+            wait.await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            let started=Instant::now();
+            runtime().run("g1-3-cancellation",name,Some(ReportRequest {id:101,supersedes:vec![100],channel:"measurement".into()}),Lane::Heavy,
+                move ||Ok(read_only_connection(&next_path)),|_|Ok(())).await.unwrap();
+            let release_ms=started.elapsed().as_secs_f64()*1000.0;
+            let cancelled=old.await.unwrap().unwrap_err()==CANCELLED;
+            println!("AILOG_G1_3_CANCELLATION={}",serde_json::json!({"report":name,"iteration":iteration,"release_ms":release_ms,"old_cancelled":cancelled}));
+            assert!(cancelled);
+            assert!(release_ms<=200.0);
+        }
+    }
+}

@@ -1,7 +1,9 @@
+import { BellOff, Eye, History, Timer } from "lucide-react";
 import { useDispatchWatchdogStore } from "../../stores/dispatchWatchdogStore";
 import { isMainWindow } from "../../lib/windowContext";
 import { dashboardStrings } from "./dashboardStrings";
 import { watchStatusModel } from "./watchStatusModel";
+import { DashboardGlyph, DashboardStatusMark } from "./DashboardUi";
 
 export function WatchStatusRow({ now }: { now: number }) {
   const telemetry = useDispatchWatchdogStore((state) => state.telemetry);
@@ -9,12 +11,11 @@ export function WatchStatusRow({ now }: { now: number }) {
   const stateText = model.state === "running" ? dashboardStrings.watchRunning : model.state === "stopped" ? dashboardStrings.watchStopped : dashboardStrings.watchUnmeasured;
   const reason = model.skipReason === "hidden" ? dashboardStrings.watchHidden : model.skipReason === "not-main-window" ? dashboardStrings.watchNotMain : model.skipReason === "disabled" ? dashboardStrings.watchDisabled : null;
   return <section aria-label={dashboardStrings.watchTitle} className="cmux-dashboard-watchrow">
-    <strong className="cmux-dashboard-watch-title">{dashboardStrings.watchTitle}</strong>
-    <span className={model.state === "running" ? "is-running" : undefined}>{stateText}</span>
-    {model.lastTickAt === null ? null : <span>{dashboardStrings.watchLastTick(age(model.lastTickAt, now))}</span>}
-    {model.nextTickDueAt === null ? null : <span>{dashboardStrings.watchNextTick(age(model.nextTickDueAt, now))}</span>}
-    {reason ? <span>{reason}</span> : null}
-    {model.notifySuppressed ? <span>{dashboardStrings.watchNotifyOff}</span> : null}
+    <DashboardGlyph icon={Eye} label={dashboardStrings.watchTitle} />
+    <DashboardStatusMark state={model.state === "running" ? "running" : model.state === "stopped" ? "stopped" : "unknown"} label={[stateText, reason].filter(Boolean).join(" · ")} />
+    {model.lastTickAt === null ? null : <span className="cmux-dashboard-watch-clock" title={dashboardStrings.watchLastTick(age(model.lastTickAt, now))} aria-label={dashboardStrings.watchLastTick(age(model.lastTickAt, now))}><History size={13} aria-hidden="true" /><span aria-hidden="true">{age(model.lastTickAt, now)}</span></span>}
+    {model.nextTickDueAt === null ? null : <span className="cmux-dashboard-watch-clock" title={dashboardStrings.watchNextTick(age(model.nextTickDueAt, now))} aria-label={dashboardStrings.watchNextTick(age(model.nextTickDueAt, now))}><Timer size={13} aria-hidden="true" /><span aria-hidden="true">{age(model.nextTickDueAt, now)}</span></span>}
+    {model.notifySuppressed ? <DashboardGlyph icon={BellOff} label={dashboardStrings.watchNotifyOff} /> : null}
   </section>;
 }
 

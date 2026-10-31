@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
+import { ArrowLeft, CheckCheck, Ellipsis, Filter, Lightbulb, LoaderCircle, MessageCircleQuestion, PanelLeftClose, PanelLeftOpen, Search, TriangleAlert, type LucideIcon } from "lucide-react";
+import { DashboardCount, DashboardIconButton } from "./DashboardUi";
 import type { ReactNode, RefObject } from "react";
 
 import { DashboardCardRow } from "./DashboardCardRow";
@@ -43,8 +45,10 @@ export function useFrozenCardOrder(
 }
 
 function Section({ title, count, children }: { title: string; count: number; children: ReactNode }) {
-  return <section className="cmux-dash-list-section">
-    <div className="cmux-dash-list-heading">{`${title} (${count})`}</div>
+  if (count === 0) return null;
+  const icon: LucideIcon = title === dashboardStrings.sectionNeedsAnswer ? MessageCircleQuestion : title === dashboardStrings.sectionNeedsReview ? TriangleAlert : title === dashboardStrings.sectionWorking ? LoaderCircle : Ellipsis;
+  return <section className="cmux-dash-list-section" aria-label={title}>
+    <div className="cmux-dash-list-heading"><DashboardCount icon={icon} count={count} label={`${title} (${count})`} /></div>
     {children}
   </section>;
 }
@@ -144,19 +148,21 @@ export function DashboardSessionList({
         title={collapsed ? dashboardStrings.sessionListExpandTitle : dashboardStrings.sessionListCollapseTitle}
         onClick={onToggleCollapsed}
       >
-        {collapsed ? dashboardStrings.sessionListExpand : dashboardStrings.sessionListCollapse}
+        {collapsed ? <PanelLeftOpen size={16} aria-hidden="true" /> : <PanelLeftClose size={16} aria-hidden="true" />}
       </button>
       <div className="cmux-dash-list-search">
+        <Search size={15} aria-hidden="true" className="cmux-dashboard-search-icon" />
         <input
           ref={searchInputRef}
           value={query}
           aria-label={dashboardStrings.searchPlaceholder}
-          placeholder={dashboardStrings.searchPlaceholder}
+          title={dashboardStrings.searchPlaceholder}
+          placeholder=""
           onChange={(event) => onQueryChange(event.target.value)}
           onFocus={() => onSearchFocusChange(true)}
           onBlur={() => onSearchFocusChange(false)}
         />
-        {filteredSummary ? <span>{filteredSummary}</span> : null}
+        {filteredSummary ? <DashboardCount icon={Filter} count={Number(filteredSummary.match(/\d+/g)?.[0] ?? 0)} total={Number(filteredSummary.match(/\d+/g)?.[1] ?? 0)} label={filteredSummary} /> : null}
       </div>
     </div>
     <button
@@ -165,12 +171,11 @@ export function DashboardSessionList({
       className={`cmux-dash-attention-nav${attentionOpen ? " is-selected" : ""}`}
       aria-pressed={attentionOpen}
       aria-label={dashboardStrings.attentionTitle}
-      title={dashboardStrings.attentionTitle}
+      title={`${dashboardStrings.attentionTitle} · ${dashboardStrings.attentionNavHint}`}
       onClick={onOpenAttention}
     >
-      <span className="cmux-dash-attention-nav-icon" aria-hidden="true">{dashboardStrings.attentionRailIcon}</span>
-      <span>{dashboardStrings.attentionTitle}</span>
-      <small>{dashboardStrings.attentionNavHint}</small>
+      <span className="cmux-dash-attention-nav-icon" aria-hidden="true"><Lightbulb size={16} /></span>
+      <span className="cmux-dashboard-sr-only">{dashboardStrings.attentionNavHint}</span>
     </button>
     <div className="cmux-dash-list-scroll">
     <Section title={dashboardStrings.sectionNeedsAnswer} count={attentionSections.needsAnswer.length}>{attentionSections.needsAnswer.map((card) => row(card, `answer-${card.tab.id}`))}</Section>
@@ -179,8 +184,8 @@ export function DashboardSessionList({
     <Section title={dashboardStrings.sectionOther} count={attentionSections.other.length}>{attentionSections.other.map((card) => row(card, `other-${card.tab.id}`))}</Section>
     </div>
     <div className="cmux-dash-list-footer">
-      {clearDoneCount > 0 ? <button type="button" onClick={onClearDone}>{dashboardStrings.clearDoneButton(clearDoneCount)}</button> : null}
-      <button type="button" onClick={onClose}>{dashboardStrings.backToSession}</button>
+      {clearDoneCount > 0 ? <button type="button" aria-label={dashboardStrings.clearDoneButton(clearDoneCount)} title={dashboardStrings.clearDoneButton(clearDoneCount)} onClick={onClearDone}><CheckCheck size={15} aria-hidden="true" /> 既読 {clearDoneCount}</button> : null}
+      <DashboardIconButton icon={ArrowLeft} label={dashboardStrings.backToSession} onClick={onClose} />
     </div>
   </div>;
 }

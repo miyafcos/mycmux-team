@@ -1,3 +1,4 @@
+import { dashboardText } from "../helpers/dashboardA11y";
 // @vitest-environment jsdom
 
 import { act } from "react";
@@ -49,7 +50,7 @@ describe("NextActionSuggestions", () => {
     });
     await act(async () => root.render(render("s-loading")));
     expect(container.querySelector("[data-next-action-status]")?.getAttribute("data-next-action-status")).toBe("loading");
-    expect(container.textContent).toContain(dashboardStrings.nextActionLoading);
+    expect(dashboardText(container)).toContain(dashboardStrings.nextActionLoading);
   });
 
   it("renders three ready chips, highlights the first, and confirms the selected action", async () => {
@@ -85,7 +86,7 @@ describe("NextActionSuggestions", () => {
       status: "failed", requestKey: "failed-key", oneLine: "", completionAssessment: "", nextActions: [], failureCode: "cli_not_found",
     });
     await act(async () => root.render(render("s-failed")));
-    expect(container.textContent).toContain(dashboardStrings.nextActionFailed(dashboardStrings.aiSuggestionFailureReason("cli_not_found")));
+    expect(dashboardText(container)).toContain(dashboardStrings.nextActionFailed(dashboardStrings.aiSuggestionFailureReason("cli_not_found")));
     expect(container.querySelector<HTMLButtonElement>(`button[aria-label="${dashboardStrings.nextActionRetry}"]`)).not.toBeNull();
   });
 

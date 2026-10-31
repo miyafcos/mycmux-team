@@ -3,7 +3,7 @@ import { THEMES } from "../../src/components/theme/themeDefinitions";
 import { contrastRatio } from "../../src/components/theme/colorContrast";
 import { hexToOklch } from "../../src/lib/oklch";
 import { compositeOver } from "../../src/lib/theme/oklab";
-import { GRASS_DARK, GRASS_LIGHT, grassScale } from "../../src/components/ailog/grassScale";
+import { GRASS_DARK, GRASS_EMPTY, GRASS_LIGHT, grassScale } from "../../src/components/ailog/grassScale";
 
 describe("usage grass ordinal scale", () => {
   it("uses the dark positive palette by default and selects light explicitly", () => {
@@ -23,32 +23,29 @@ describe("usage grass ordinal scale", () => {
     });
   }
 
-  // A foreground wash cannot remove the authored surface chroma on these three
-  // themes while keeping the same percentage usable by all other themes.
-  // Only the 0.03 chroma ceiling is excepted; both contrast floors still apply.
-  const chromaExceptions: Record<string, { ceiling: number; reason: string }> = {
-    "yoi-ai": { ceiling: 0.045, reason: "The teal surface remains at C=0.044913 with the common 9.9% wash." },
-    "yogiri": { ceiling: 0.044, reason: "The violet surface remains at C=0.043132 with the common 9.9% wash." },
-    "synthwave": { ceiling: 0.049, reason: "The purple surface remains at C=0.048508 with the common 9.9% wash." },
-  };
   const cases = [
     ...THEMES.map(theme => ({ name: theme.id, theme, scheme: theme.colorScheme as "light" | "dark" | undefined })),
     { name: "default-dark", theme: THEMES.find(theme => theme.id === "mayonaka")!, scheme: undefined },
   ];
   for (const { name, theme, scheme } of cases) {
-    it("keeps empty-level contrast and the named chroma limit on " + name, () => {
-      const colors = grassScale(scheme);
+    it("keeps the empty level neutral with both contrast floors on " + name, () => {
+      const colors = grassScale(scheme, theme.id);
       const match = /^color-mix\(in srgb, var\(--cmux-text\) ([\d.]+)%, transparent\)$/.exec(colors[0]);
-      expect(match).not.toBeNull();
-      const alpha = Number(match![1]) / 100;
-      expect(alpha).toBeGreaterThan(0);
-      expect(alpha).toBeLessThan(1);
+      if (match) {
+        const alpha = Number(match[1]) / 100;
+        expect(alpha).toBeGreaterThan(0);
+        expect(alpha).toBeLessThan(1);
+      } else expect(colors[0]).toMatch(/^#[0-9a-f]{6}$/);
       const surface = theme.colorScheme === "light" ? theme.chrome.surface : compositeOver(theme.chrome.surface, 0.93, "#ffffff");
-      const empty = compositeOver(theme.chrome.text, alpha, surface);
-      const exception = chromaExceptions[name];
-      expect(hexToOklch(empty).C, exception?.reason).toBeLessThanOrEqual(exception?.ceiling ?? 0.03);
+      const empty = match ? compositeOver(theme.chrome.text, Number(match[1]) / 100, surface) : colors[0];
+      expect(hexToOklch(empty).C).toBeLessThanOrEqual(0.03);
       expect(contrastRatio(empty, surface)).toBeGreaterThanOrEqual(1.10);
       expect(contrastRatio(empty, colors[1])).toBeGreaterThanOrEqual(1.25);
     });
   }
+  it("preserves the common empty wash on every other authored theme", () => {
+    for (const theme of THEMES.filter(theme => !["yoi-ai", "yogiri", "synthwave"].includes(theme.id))) {
+      expect(grassScale(theme.colorScheme, theme.id)[0]).toBe(GRASS_EMPTY);
+    }
+  });
 });

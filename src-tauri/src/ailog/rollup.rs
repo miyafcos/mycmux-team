@@ -31,6 +31,7 @@ pub fn mark_session_dirty(conn: &Connection, kind: &str, session_id: &str) -> Re
         params![kind, session_id],
     )
     .map_err(|err| format!("mark rollup session days dirty: {err}"))?;
+    super::heavy_aggregate::mark_session_dirty(conn,kind,session_id)?;
     Ok(())
 }
 
@@ -43,6 +44,7 @@ pub fn mark_all_dirty(conn: &Connection) -> Result<(), String> {
         [],
     )
     .map_err(|err| format!("mark all rollup days dirty: {err}"))?;
+    super::heavy_aggregate::mark_all_dirty(conn)?;
     Ok(())
 }
 

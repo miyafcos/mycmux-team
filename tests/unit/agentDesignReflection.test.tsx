@@ -250,7 +250,9 @@ function canonical(value: any): any {
 function ipcCounts(): IpcCounts {
   const counts: IpcCounts = {};
   for (const [command, args] of aiCalls()) {
-    const key = JSON.stringify([command, canonical(args ?? {})]);
+    // Cancellation metadata identifies a transport lease, not another report.
+    const { reportRequest: _lease, ...logicalArgs } = args ?? {};
+    const key = JSON.stringify([command, canonical(logicalArgs)]);
     counts[key] = (counts[key] ?? 0) + 1;
   }
   return Object.fromEntries(Object.entries(counts).sort(([left], [right]) => left.localeCompare(right)));

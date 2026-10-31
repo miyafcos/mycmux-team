@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
 use crate::ailog::digest;
+use crate::ailog::report_runtime::{self, Lane, ReportRequest};
 use crate::ailog::index::{self, IndexOptions, IndexProgress};
 use crate::ailog::summarize::{self, SummarizeProgress};
 use crate::ailog::{query, usage, Filters, Range};
@@ -118,26 +119,26 @@ fn open() -> Result<rusqlite::Connection, String> {
     crate::ailog::db::reader(&path)
 }
 
-fn report_gate() -> &'static Arc<tokio::sync::Semaphore> {
-    static GATE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
-    GATE.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(2)))
-}
-
 async fn blocking_report<T: Send + 'static>(
     f: impl FnOnce(&rusqlite::Connection) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    let permit = report_gate()
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|err| format!("report gate closed: {err}"))?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let conn = open()?;
-        f(&conn)
-    })
-    .await
-    .map_err(|err| format!("report worker task failed: {err}"))?
+    report_runtime::runtime().run("", "legacy", None, Lane::Light, open, f).await
+}
+
+async fn scoped_report<T: Send + 'static>(
+    window: tauri::WebviewWindow, endpoint: &'static str, request: Option<ReportRequest>, lane: Lane,
+    f: impl FnOnce(&rusqlite::Connection) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    report_runtime::runtime().run(window.label(), endpoint, request, lane, open, f).await
+}
+
+async fn scoped_cached_heavy_report<T: crate::ailog::report_cache::Report + Send + 'static>(
+    window: tauri::WebviewWindow, endpoint: &'static str, request: Option<ReportRequest>,
+    range: Range, filters: Filters, name: &'static str, axes: Vec<String>,
+    build: impl FnOnce(&rusqlite::Connection,&Range,&Filters,i64) -> Result<T,String> + Send + 'static,
+) -> Result<T,String> {
+    crate::ailog::report_cache::heavy_report(report_runtime::runtime(),window.label(),endpoint,request,
+        open,range,filters,name,axes,now_ms(),build).await
 }
 
 fn open_writer() -> Result<rusqlite::Connection, String> {
@@ -603,16 +604,20 @@ pub async fn ailog_digest_generate(
 
 #[tauri::command(async)]
 pub async fn ailog_overview(
+    window: tauri::WebviewWindow,
+    report_request: Option<ReportRequest>,
     range: Option<Range>,
     filters: Option<Filters>,
 ) -> Result<query::Overview, String> {
     let range = range.unwrap_or_default();
     let filters = filters.unwrap_or_default();
-    blocking_report(move |conn| query::overview(conn, &range, &filters, now_ms())).await
+    scoped_report(window, "overview", report_request, Lane::Light, move |conn| query::overview(conn, &range, &filters, now_ms())).await
 }
 
 #[tauri::command(async)]
 pub async fn ailog_series(
+    window: tauri::WebviewWindow,
+    report_request: Option<ReportRequest>,
     range: Option<Range>,
     filters: Option<Filters>,
     options: Option<query::SeriesOptions>,
@@ -620,7 +625,7 @@ pub async fn ailog_series(
     let range = range.unwrap_or_default();
     let filters = filters.unwrap_or_default();
     let options = options.unwrap_or_default();
-    blocking_report(move |conn| query::series(conn, &range, &filters, &options, now_ms())).await
+    scoped_report(window, "series", report_request, Lane::Light, move |conn| query::series(conn, &range, &filters, &options, now_ms())).await
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -636,6 +641,8 @@ fn default_dimension() -> String {
 
 #[tauri::command(async)]
 pub async fn ailog_breakdown(
+    window: tauri::WebviewWindow,
+    report_request: Option<ReportRequest>,
     range: Option<Range>,
     filters: Option<Filters>,
     options: Option<BreakdownArgs>,
@@ -645,11 +652,13 @@ pub async fn ailog_breakdown(
     let dimension = options
         .map(|value| value.dimension)
         .unwrap_or_else(default_dimension);
-    blocking_report(move |conn| query::breakdown(conn, &range, &filters, &dimension, now_ms())).await
+    scoped_report(window, "breakdown", report_request, Lane::Light, move |conn| query::breakdown(conn, &range, &filters, &dimension, now_ms())).await
 }
 
 #[tauri::command(async)]
 pub async fn ailog_pivot(
+    window: tauri::WebviewWindow,
+    report_request: Option<ReportRequest>,
     range: Option<Range>,
     filters: Option<Filters>,
     options: Option<query::PivotOptions>,
@@ -657,11 +666,13 @@ pub async fn ailog_pivot(
     let range = range.unwrap_or_default();
     let filters = filters.unwrap_or_default();
     let options = options.unwrap_or_default();
-    blocking_report(move |conn| query::pivot(conn, &range, &filters, &options, now_ms())).await
+    scoped_report(window, "pivot", report_request, Lane::Light, move |conn| query::pivot(conn, &range, &filters, &options, now_ms())).await
 }
 
 #[tauri::command(async)]
 pub async fn ailog_sessions(
+    window: tauri::WebviewWindow,
+    report_request: Option<ReportRequest>,
     range: Option<Range>,
     filters: Option<Filters>,
     options: Option<query::SessionsOptions>,
@@ -669,7 +680,7 @@ pub async fn ailog_sessions(
     let range = range.unwrap_or_default();
     let filters = filters.unwrap_or_default();
     let options = options.unwrap_or_default();
-    blocking_report(move |conn| query::sessions(conn, &range, &filters, &options, now_ms())).await
+    scoped_report(window, "sessions", report_request, Lane::Light, move |conn| query::sessions(conn, &range, &filters, &options, now_ms())).await
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -721,6 +732,8 @@ pub async fn ailog_session_summarize(app: AppHandle, args: SessionDetailArgs) ->
 
 #[tauri::command(async)]
 pub async fn ailog_models(
+    window: tauri::WebviewWindow,
+    report_request: Option<ReportRequest>,
     range: Option<Range>,
     filters: Option<Filters>,
     options: Option<query::ModelsOptions>,
@@ -728,11 +741,13 @@ pub async fn ailog_models(
     let range = range.unwrap_or_default();
     let filters = filters.unwrap_or_default();
     let options = options.unwrap_or_default();
-    blocking_report(move |conn| query::models(conn, &range, &filters, &options, now_ms())).await
+    scoped_report(window, "models", report_request, Lane::Light, move |conn| query::models(conn, &range, &filters, &options, now_ms())).await
 }
 
 #[tauri::command(async)]
 pub async fn ailog_model_handoffs(
+    window: tauri::WebviewWindow,
+    report_request: Option<ReportRequest>,
     range: Option<Range>,
     filters: Option<Filters>,
     options: Option<query::ModelsOptions>,
@@ -740,17 +755,20 @@ pub async fn ailog_model_handoffs(
     let range = range.unwrap_or_default();
     let filters = filters.unwrap_or_default();
     let options = options.unwrap_or_default();
-    blocking_report(move |conn| query::model_handoffs(conn, &range, &filters, &options, now_ms())).await
+    scoped_cached_heavy_report(window, "model_handoffs", report_request, range, filters, "model_handoffs", vec![options.granularity.clone()],
+        move |conn,range,filters,now| query::model_handoffs(conn,range,filters,&options,now)).await
 }
 
 #[tauri::command(async)]
 pub async fn ailog_efficiency(
+    window: tauri::WebviewWindow,
+    report_request: Option<ReportRequest>,
     range: Option<Range>,
     filters: Option<Filters>,
 ) -> Result<query::EfficiencyReport, String> {
     let range = range.unwrap_or_default();
     let filters = filters.unwrap_or_default();
-    blocking_report(move |conn| query::efficiency(conn, &range, &filters, now_ms())).await
+    scoped_report(window, "efficiency", report_request, Lane::Heavy, move |conn| query::efficiency(conn, &range, &filters, now_ms())).await
 }
 
 /// Absolute-volume view: totals, per-day series, hour-of-day and weekday shape,
@@ -758,22 +776,26 @@ pub async fn ailog_efficiency(
 /// and stays available when the summariser subprocess is not.
 #[tauri::command(async)]
 pub async fn ailog_usage_rhythm(
+    window: tauri::WebviewWindow,
+    report_request: Option<ReportRequest>,
     range: Option<Range>,
     filters: Option<Filters>,
 ) -> Result<usage::UsageRhythmReport, String> {
     let range = range.unwrap_or_default();
     let filters = filters.unwrap_or_default();
-    blocking_report(move |conn| usage::rhythm(conn, &range, &filters, now_ms())).await
+    scoped_cached_heavy_report(window, "usage_rhythm", report_request, range, filters, "rhythm", vec![], usage::rhythm).await
 }
 
 #[tauri::command(async)]
 pub async fn ailog_rework_rankings(
+    window: tauri::WebviewWindow,
+    report_request: Option<ReportRequest>,
     range: Option<Range>,
     filters: Option<Filters>,
 ) -> Result<query::ReworkRankingsReport, String> {
     let range = range.unwrap_or_default();
     let filters = filters.unwrap_or_default();
-    blocking_report(move |conn| query::rework_rankings(conn, &range, &filters, now_ms())).await
+    scoped_cached_heavy_report(window, "rework_rankings", report_request, range, filters, "rework_rankings", vec![], query::rework_rankings).await
 }
 
 // ---------------------------------------------------------------------------

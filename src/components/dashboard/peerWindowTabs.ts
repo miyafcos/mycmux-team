@@ -1,5 +1,6 @@
 import type { WindowTabIndex, WindowTabIndexTab } from "../../lib/ipc";
 import type { Pane, PaneTab, Workspace } from "../../types";
+import { windowLabel } from "../../lib/windowContext";
 
 export interface PeerWindowTab {
   windowLabel: string;
@@ -51,11 +52,11 @@ export function paneTabFromWindowIndex(tab: WindowTabIndexTab): PaneTab {
 }
 
 /** Keep the entire location; local IDs and published copies have priority. */
-export function canonicalPeerWindowTabs(index: readonly WindowTabIndex[], local: readonly Workspace[]): PeerWindowTab[] {
+export function canonicalPeerWindowTabs(index: readonly WindowTabIndex[], local: readonly Workspace[], ownLabel = windowLabel()): PeerWindowTab[] {
   const seen = new Set(local.flatMap(workspace => workspace.panes.flatMap(pane => pane.tabs.map(tab => tab.id))));
   const result: PeerWindowTab[] = [];
   for (const entry of [...index].sort((a, b) => Number(a.pending) - Number(b.pending))) {
-    if (entry.window_label === "main" && !entry.pending) continue;
+    if (entry.window_label === ownLabel && !entry.pending) continue;
     for (const sourceWorkspace of entry.workspaces) {
       const workspace: Workspace = { id: sourceWorkspace.id, name: sourceWorkspace.name,
         gridTemplateId: "1x1", status: "running", createdAt: 0, panes: [] };

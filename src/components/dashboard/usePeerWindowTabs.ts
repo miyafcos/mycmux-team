@@ -1,20 +1,18 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getWindowTabIndex, WINDOW_REGISTRY_CHANGED_EVENT, type WindowTabIndex } from "../../lib/ipc";
+import { getWindowTabIndex, WINDOW_REGISTRY_CHANGED_EVENT } from "../../lib/ipc";
 import { windowLabel } from "../../lib/windowContext";
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 import { delegationReadWithTimeout } from "./delegationModel";
 import { parsePeerWindowTabIndex } from "./peerWindowTabs";
 import { usePeerWindowTabsStore } from "./peerWindowTabsStore";
 
-const EMPTY_INDEX: readonly WindowTabIndex[] = [];
-
 export function usePeerWindowTabs() {
   const open = useDashboardViewStore(state => state.open);
   const index = usePeerWindowTabsStore(state => state.index);
   const label = windowLabel();
   useEffect(() => {
-    if (label !== "main" || !open) return;
+    if (!open) return;
     let alive = true, inFlight = false, requested = false;
     let unlisten: (() => void) | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
@@ -58,5 +56,5 @@ export function usePeerWindowTabs() {
       usePeerWindowTabsStore.setState(state => ({ pollers: Math.max(0, state.pollers - 1), reading: false }));
     };
   }, [label, open]);
-  return label === "main" ? index : EMPTY_INDEX;
+  return index;
 }

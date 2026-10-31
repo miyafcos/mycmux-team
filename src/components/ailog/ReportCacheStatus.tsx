@@ -11,17 +11,19 @@ export function ReportCacheStatus() {
   const breakdown = useAilogStore((state) => state.breakdown);
   const pivot = useAilogStore((state) => state.pivot);
   const rhythm = useAilogStore((state) => state.usageRhythm);
+  const handoffs = useAilogStore((state) => state.handoffs);
+  const rework = useAilogStore((state) => state.reworkRankings);
   const preset = useAilogStore((state) => state.preset);
   const customFrom = useAilogStore((state) => state.customFrom);
   const customTo = useAilogStore((state) => state.customTo);
   const selection = useAilogStore((state) => state.selection);
-  const failed = useAilogStore((state) => Boolean(state.dashboardError || state.usageError || state.breakdownError || state.pivotError || state.usageRhythmError));
+  const failed = useAilogStore((state) => Boolean(state.dashboardError || state.usageError || state.breakdownError || state.pivotError || state.usageRhythmError || state.handoffsError || state.reworkRankingsError));
   const entries = Object.entries(snapshots);
   if (entries.length === 0) return null;
   const savedAt = Math.min(...entries.map(([, entry]) => entry.savedAt));
   const refreshing = entries.some(([, entry]) => entry.refreshing);
-  const reports = { overview, usage: series, breakdown, pivot, rhythm };
-  const labels = { overview: "概要", usage: "日ごとの使用量", breakdown: "内訳", pivot: "クロス集計", rhythm: "時間帯と曜日" };
+  const reports = { overview, usage: series, breakdown, pivot, rhythm, handoffs, rework };
+  const labels = { overview: "概要", usage: "日ごとの使用量", breakdown: "内訳", pivot: "クロス集計", rhythm: "時間帯と曜日", handoffs: "モデルの切り替え", rework: "つまずいた場所" };
   const selectedPeriod = preset === "custom" ? `${customFrom} 〜 ${customTo}`
     : ({ "7d": "直近7日", "30d": "直近30日", "90d": "直近90日", ytd: "今年", all: "全期間" })[preset];
   return <div role="status" aria-live="polite" data-testid="ailog-snapshot-status" style={{ ...noteStyle, marginTop: 2 }}>
@@ -29,7 +31,7 @@ export function ReportCacheStatus() {
     <div>{`現在の条件: ${selectedPeriod}${selection?.project ? ` · 案件 ${selection.project.label}` : ""}${selection?.model ? ` · モデル ${selection.model.label}` : ""}`}</div>
     {entries.map(([slot, entry]) => {
       const report = reports[slot as keyof typeof reports];
-      return report ? <div key={slot}>
+      return report?.range ? <div key={slot}>
         {`${labels[slot as keyof typeof labels]} · 保存時の期間 ${reportRangeLabel(report.range)} · 保存: ${formatLocalDateTime(entry.savedAt)}${entry.stale ? " · 保存時点から更新あり" : ""}`}
       </div> : null;
     })}

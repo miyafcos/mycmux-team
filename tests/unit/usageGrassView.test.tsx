@@ -5,12 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseDayInput, type SeriesReport } from "../../src/lib/ailog";
 
 const measurement = vi.hoisted(() => ({ width: 0 }));
-vi.mock("../../src/hooks/useElementWidth", () => ({ useElementWidth: () => ({ ref: { current: null }, width: measurement.width }) }));
+vi.mock("../../src/components/ailog/useGrassWidth", () => ({ useGrassWidth: () => ({ ref: { current: null }, width: measurement.width }) }));
 
 const renders = vi.hoisted(() => new Map<number, number>());
+const staticRenders = vi.hoisted(() => ({ tables: 0 }));
 vi.mock("react/jsx-runtime", async importOriginal => {
   const runtime = await importOriginal<typeof import("react/jsx-runtime")>();
   const counted = (original: typeof runtime.jsx): typeof runtime.jsx => (type, props, key) => {
+    if (type === "tbody") staticRenders.tables += 1;
     if (type === "button" && props && "data-usage-day" in props) {
       const day = Number(props["data-usage-day"]);
       renders.set(day, (renders.get(day) ?? 0) + 1);
@@ -23,6 +25,7 @@ vi.mock("react/jsx-dev-runtime", async importOriginal => {
   const runtime = await importOriginal<typeof import("react/jsx-dev-runtime")>();
   return { ...runtime, jsxDEV: (...args: Parameters<typeof runtime.jsxDEV>) => {
     const [type, props] = args;
+    if (type === "tbody") staticRenders.tables += 1;
     if (type === "button" && props && "data-usage-day" in props) {
       const day = Number(props["data-usage-day"]);
       renders.set(day, (renders.get(day) ?? 0) + 1);
@@ -58,7 +61,7 @@ describe("daily usage grid interactions", () => {
   }
   beforeEach(async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    pick.mockClear(); renders.clear(); measurement.width = 0;
+    pick.mockClear(); renders.clear(); staticRenders.tables = 0; measurement.width = 0;
     host = document.createElement("div");
     document.body.append(host);
     root = createRoot(host);
@@ -138,12 +141,15 @@ describe("daily usage grid interactions", () => {
   it("changes the breakdown on hover without rendering any day button again", async () => {
     expect(renders.size).toBe(9);
     const before = new Map(renders);
+    const tablesBefore = staticRenders.tables;
+    expect(tablesBefore).toBeGreaterThan(0);
     await hover(1);
     expect(heading()).toBe("10/2（金）の内訳");
     expect(renders).toEqual(before);
     await hover(3);
     expect(heading()).toBe("10/4（日）の内訳");
     expect(renders).toEqual(before);
+    expect(staticRenders.tables).toBe(tablesBefore);
   });
   it("includes the price coverage note for the cost metric", async () => {
     await act(async () => root.render(<UsageGrass report={report} metric="costUsd" onPickDay={pick} />));
@@ -335,4 +341,71 @@ describe("daily usage grid interactions", () => {
     expect(hint.textContent).toBe("10/1（木） · ¥0.0");
     expect(host.querySelector("tbody tr:last-child td:last-child")?.textContent).toBe("—");
   });
+  it("moves a narrow-layout hint above a stacked breakdown it would otherwise cover", async () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.getAttribute("role") === "tooltip") return new DOMRect(0, 0, 200, 40);
+      if (this.hasAttribute("data-grass-calendar")) return new DOMRect(10, 100, 400, 180);
+      if (this.hasAttribute("data-grass-breakdown")) return new DOMRect(10, 300, 450, 300);
+      return new DOMRect(100, 270, 16, 16);
+    });
+    await hover(4);
+    const hint = host.querySelector<HTMLElement>('[role="tooltip"]')!;
+    expect(parseFloat(hint.style.top)).toBeGreaterThanOrEqual(8);
+    expect(parseFloat(hint.style.top) + 40).toBeLessThanOrEqual(300);
+  });
+  it("keeps a wide-layout hint left of every breakdown row", async () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.getAttribute("role") === "tooltip") return new DOMRect(0, 0, 200, 40);
+      if (this.hasAttribute("data-grass-calendar")) return new DOMRect(100, 200, 380, 180);
+      if (this.hasAttribute("data-grass-breakdown")) return new DOMRect(500, 200, 450, 300);
+      return new DOMRect(480, 300, 16, 16);
+    });
+    for (let index = 0; index < 9; index += 1) {
+      await hover(index);
+      const hint = host.querySelector<HTMLElement>('[role="tooltip"]')!;
+      expect(parseFloat(hint.style.left)).toBeGreaterThanOrEqual(8);
+      expect(parseFloat(hint.style.left) + 200).toBeLessThanOrEqual(492);
+    }
+  });
+  it("avoids the final breakdown rectangle for a seven-day long-model hint wider than its left space", async () => {
+    measurement.width = 1000;
+    const long = "gpt-sample-".repeat(16);
+    const seven = { ...report, range: { ...report.range, to: start + 7 * dayMs - 1 },
+      buckets: report.buckets.map(bucket => ({ ...bucket, groups: bucket.groups.map(group => ({ ...group, group: long })) })) };
+    await act(async () => root.render(<UsageGrass report={seven} metric="ioTokens" onPickDay={pick} />));
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.getAttribute("role") === "tooltip") return new DOMRect(0, 0, 280, 48);
+      if (this.hasAttribute("data-grass-calendar")) return new DOMRect(171.5, 99, 63, 180);
+      if (this.hasAttribute("data-grass-breakdown")) return new DOMRect(258.5, 99, 600, 324.5);
+      return new DOMRect(200, 205, 16, 16);
+    });
+    await hover(3);
+    const hint = host.querySelector<HTMLElement>('[role="tooltip"]')!;
+    const left = parseFloat(hint.style.left), top = parseFloat(hint.style.top);
+    expect(hint.textContent).toContain("gpt-sample-");
+    expect(left < 858.5 && left + 280 > 258.5 && top < 423.5 && top + 48 > 99).toBe(false);
+    expect(top + 48).toBeLessThanOrEqual(99);
+  });
+
+  it("closes pointer hints on ancestor scroll and remeasures focused hints without covering the breakdown", async () => {
+    let shift = 0;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.getAttribute("role") === "tooltip") return new DOMRect(0, 0, 280, 48);
+      if (this.hasAttribute("data-grass-calendar")) return new DOMRect(171.5, 99 - shift, 63, 180);
+      if (this.hasAttribute("data-grass-breakdown")) return new DOMRect(258.5, 99 - shift, 600, 324.5);
+      return new DOMRect(200, 205 - shift, 16, 16);
+    });
+    await hover(3);
+    expect(host.querySelector('[role="tooltip"]')).not.toBeNull();
+    await act(async () => window.dispatchEvent(new Event("scroll")));
+    expect(host.querySelector('[role="tooltip"]')).toBeNull();
+    await act(async () => cell(3).focus());
+    expect(host.querySelector('[role="tooltip"]')).not.toBeNull();
+    shift = 120;
+    await act(async () => window.dispatchEvent(new Event("scroll")));
+    const hint = host.querySelector<HTMLElement>('[role="tooltip"]')!;
+    expect(document.activeElement).toBe(cell(3));
+    expect(parseFloat(hint.style.top)).toBeGreaterThanOrEqual(303.5);
+  });
+
 });

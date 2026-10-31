@@ -46,6 +46,80 @@ fn saved_copy(fx: &Fixture) -> Connection {
     Connection::open(cache).unwrap()
 }
 
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn cached_heavy_reports_return_before_unrelated_heavy_lane_is_released() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use crate::ailog::report_runtime::{ReportRuntime,Lane};
+    for stale in [false,true] {
+        for endpoint in ["model_handoffs","rework_rankings","usage_rhythm"] {
+            let fx=tokio::task::spawn_blocking(fixture).await.unwrap();
+            let conn=db::reader(&fx.db).unwrap();
+            let fresh=filters(report_cache::CacheMode::Refresh);
+            let options=query::ModelsOptions::default();
+            match endpoint {
+                "model_handoffs"=>{query::model_handoffs(&conn,&range(),&fresh,&options,NOW).unwrap();},
+                "rework_rankings"=>{query::rework_rankings(&conn,&range(),&fresh,NOW).unwrap();},
+                _=>{usage::rhythm(&conn,&range(),&fresh,NOW).unwrap();},
+            }
+            drop(conn);
+            if stale { fx.conn().execute("UPDATE index_state SET value=CAST(value AS INTEGER)+1 WHERE key='report_revision'",[]).unwrap(); }
+            let runtime=Arc::new(ReportRuntime::default());
+            let owner=runtime.clone();
+            let (started,ready)=tokio::sync::oneshot::channel();
+            let (finish,wait)=std::sync::mpsc::channel();
+            let heavy=tokio::spawn(async move { owner.run("other-window","unrelated-heavy",None,Lane::Heavy,
+                ||Connection::open_in_memory().map_err(|e|e.to_string()),move |_| {
+                    started.send(()).unwrap();wait.recv().unwrap();Ok(())
+                }).await });
+            ready.await.unwrap();
+            let path=fx.db.clone();
+            let open=move ||db::reader(&path);
+            let prefer=filters(report_cache::CacheMode::Prefer);
+            let loaded=tokio::time::timeout(Duration::from_millis(5_000),async {
+                match endpoint {
+                    "model_handoffs"=>report_cache::heavy_report(&runtime,"this-window",endpoint,None,open,range(),prefer,
+                        "model_handoffs",vec![options.granularity.clone()],NOW,
+                        |_,_,_,_|->Result<query::HandoffsReport,String>{panic!("a disk hit must not rebuild")}).await.map(|r|r.cache.unwrap()),
+                    "rework_rankings"=>report_cache::heavy_report(&runtime,"this-window",endpoint,None,open,range(),prefer,
+                        "rework_rankings",vec![],NOW,
+                        |_,_,_,_|->Result<query::ReworkRankingsReport,String>{panic!("a disk hit must not rebuild")}).await.map(|r|r.cache.unwrap()),
+                    _=>report_cache::heavy_report(&runtime,"this-window",endpoint,None,open,range(),prefer,
+                        "rhythm",vec![],NOW,
+                        |_,_,_,_|->Result<usage::UsageRhythmReport,String>{panic!("a disk hit must not rebuild")}).await.map(|r|r.cache.unwrap()),
+                }
+            }).await;
+            finish.send(()).unwrap();heavy.await.unwrap().unwrap();
+            let loaded=loaded.expect("saved heavy report waited for the unrelated heavy lane").unwrap();
+            assert_eq!(loaded.stale,stale);
+        }
+    }
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn heavy_report_refresh_and_cache_miss_still_use_the_heavy_lane() {
+    use std::sync::{Arc,atomic::{AtomicBool,Ordering}};
+    use crate::ailog::report_runtime::{ReportRuntime,Lane};
+    for mode in [report_cache::CacheMode::Prefer,report_cache::CacheMode::Refresh] {
+        let fx=tokio::task::spawn_blocking(fixture).await.unwrap();let path=fx.db.clone();
+        let runtime=Arc::new(ReportRuntime::default());let owner=runtime.clone();
+        let (started,ready)=tokio::sync::oneshot::channel();let (finish,wait)=std::sync::mpsc::channel();
+        let heavy=tokio::spawn(async move { owner.run("other","holding",None,Lane::Heavy,
+            ||Connection::open_in_memory().map_err(|e|e.to_string()),move |_|{started.send(()).unwrap();wait.recv().unwrap();Ok(())}).await });
+        ready.await.unwrap();
+        let built=Arc::new(AtomicBool::new(false));let flag=built.clone();let owner=runtime.clone();
+        let next=tokio::spawn(async move { report_cache::heavy_report(&owner,"here","usage_rhythm",None,
+            move ||db::reader(&path),range(),filters(mode),"rhythm",vec![],NOW,move |conn,range,filters,now| {
+                flag.store(true,Ordering::Release);usage::rhythm(conn,range,filters,now)
+            }).await });
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let prematurely_built=built.load(Ordering::Acquire);
+        finish.send(()).unwrap();heavy.await.unwrap().unwrap();next.await.unwrap().unwrap();
+        assert!(!prematurely_built,"fresh work must retain the heavy permit");
+        assert!(built.load(Ordering::Acquire));
+    }
+}
+
 fn value(report: impl Serialize) -> serde_json::Value {
     let mut out = serde_json::to_value(report).unwrap();
     out.as_object_mut().unwrap().remove("cache");

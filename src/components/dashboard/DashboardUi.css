@@ -1,0 +1,56 @@
+.cmux-dashboard-glyph,
+.cmux-dashboard-status-mark,
+.cmux-dashboard-count {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  gap: 4px;
+  color: inherit;
+  font-size: var(--cmux-font-size-xs);
+}
+.cmux-dashboard-glyph svg,
+.cmux-dashboard-count svg { flex: 0 0 auto; }
+.cmux-dashboard-count b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.cmux-dashboard-status-mark { color: var(--cmux-text-tertiary); }
+.cmux-dashboard-status-mark:is(.is-running, .is-sending) { color: var(--status-working); }
+.cmux-dashboard-status-mark:is(.is-needsHuman, .is-needsReview, .is-delegated) { color: var(--status-waiting); }
+.cmux-dashboard-status-mark:is(.is-done, .is-acknowledged, .is-sent) { color: var(--status-done); }
+.cmux-dashboard-status-mark:is(.is-error, .is-failed) { color: var(--status-error); }
+.cmux-dashboard-status-mark.is-noUpdate { color: var(--cmux-status-stall); }
+.cmux-dashboard-view .cmux-dashboard-icon-button {
+  display: inline-flex;
+  min-width: 24px;
+  min-height: 24px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  border: 1px solid var(--cmux-border);
+  border-radius: var(--cmux-radius-sm);
+  background: transparent;
+  color: var(--cmux-text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.cmux-dashboard-view .cmux-dashboard-icon-button:hover:not(:disabled) { background: var(--cmux-hover); color: var(--cmux-text); }
+.cmux-dashboard-view .cmux-dash-attention-nav { display: flex; align-items: center; justify-content: center; min-height: 28px; padding: 4px; }
+.cmux-dashboard-view .cmux-dash-attention-nav .cmux-dash-attention-nav-icon { display: inline-flex; }
+.cmux-dashboard-view .cmux-dash-list-search > .cmux-dashboard-count { display: inline-flex; }
+.cmux-dashboard-view .cmux-dash-list-toggle { min-width: 24px; min-height: 28px; }
+.cmux-dashboard-search-icon { flex: 0 0 auto; color: var(--cmux-text-tertiary); }
+.cmux-dashboard-watchrow .cmux-dashboard-watch-clock { display: inline-flex; align-items: center; gap: 4px; }
+.cmux-dashboard-view .cmux-minimap-footer .cmux-minimap-tab-sweep-button { min-width: 24px; min-height: 24px; }
+.cmux-dashboard-view .cmux-minimap-footer .cmux-minimap-tab-sweep-button > span {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+.cmux-dashboard-view .cmux-minimap-selection-summary { align-items: center; }
+.cmux-dashboard-view .cmux-minimap-selection-count { display: inline-flex; align-items: center; gap: 4px; }
+.cmux-dashboard-view .cmux-dash-list-footer button { min-height: 24px; }
+.cmux-dashboard-view .cmux-dashboard-mention-token button { min-width: 24px; min-height: 24px; }
+
+.cmux-dashboard-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+.cmux-dashboard-view .cmux-dashboard-composer .cmux-dashboard-composer-send { width: auto; min-width: 52px; flex: 0 0 auto; gap: 3px; padding-inline: 6px; white-space: nowrap; font-size: var(--cmux-font-size-xs); }
+.cmux-dashboard-view .cmux-dashboard-contract-fold > summary { min-width: 24px; min-height: 24px; display: flex; align-items: center; }

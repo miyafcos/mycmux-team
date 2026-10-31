@@ -1,25 +1,20 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Workspace } from "../../src/types";
-
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(async () => true) }));
 vi.mock("@tauri-apps/api/core", async original => ({ ...await original<object>(), invoke: mocks.invoke }));
-import { requestDashboard } from "../../src/components/layout/openDashboardForTab";
+import { requestDashboard, toggleDetachedDashboard } from "../../src/components/layout/openDashboardForTab";
 import { mountDetachedDashboardHost } from "../../src/lib/dashboardHost";
 import { handleDetachedDashboardKey } from "../../src/lib/detachedDashboardKeys";
 import { useDashboardViewStore } from "../../src/stores/dashboardViewStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { useUiStore } from "../../src/stores/uiStore";
-import { useToastStore, __resetToastStoreForTests } from "../../src/stores/toastStore";
 import { useKeybindingStore } from "../../src/stores/keybindingStore";
-import { openTabSweepInDashboard } from "../../src/components/layout/tabSweep";
-import { tearoutStrings } from "../../src/components/layout/tearoutStrings";
 
 let release: () => void;
 beforeEach(() => {
   mocks.invoke.mockReset().mockResolvedValue(true);
-  __resetToastStoreForTests();
-  useDashboardViewStore.setState({ open: false, chatColumnTabIds: [], pinnedChatColumnTabIds: ["saved"], selectedTabId: "saved" });
+  useDashboardViewStore.setState({ open: false, chatColumnTabIds: [], pinnedChatColumnTabIds: ["saved"], selectedTabId: "saved", chatColumnIdFilter: null });
   localStorage.setItem("mycmux:dashboard-chat-column-pins", '["saved"]');
   useWorkspaceListStore.setState({ activeWorkspaceId: "ws", workspaces: [{ id: "ws", panes: [{ id: "p", activeTabId: "visible", tabs: [
     { id: "focused", sessionId: "focus" }, { id: "visible", sessionId: "shown" }, { id: "last-focused", sessionId: "last" },
@@ -28,8 +23,7 @@ beforeEach(() => {
   useKeybindingStore.getState().resetAll();
   release = mountDetachedDashboardHost();
 });
-afterEach(() => { release(); __resetToastStoreForTests(); vi.restoreAllMocks(); });
-
+afterEach(() => { release(); vi.restoreAllMocks(); });
 describe("detached dashboard requests", () => {
   it("throws local store failures synchronously without turning them into a rejection", () => {
     release();
@@ -38,62 +32,73 @@ describe("detached dashboard requests", () => {
     expect(() => requestDashboard({ tabId: "local" })).toThrow(error);
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
-  it("routes explicit menu and reader targets and leaves local state and saved pins intact", async () => {
-    const before = useDashboardViewStore.getState();
-    await requestDashboard({ tabId: "menu", sessionId: "menu-session" });
-    await requestDashboard({ tabId: "reader", sessionId: "reader-session", turn: "latest" });
-    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "open_main_dashboard", { tabId: "menu", sessionId: "menu-session", turn: null });
-    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "open_main_dashboard", { tabId: "reader", sessionId: "reader-session", turn: "latest" });
+  it("opens explicit menu and reader targets locally without changing saved pins", async () => {
+    await requestDashboard({ tabId: "visible", sessionId: "shown" });
+    expect(useDashboardViewStore.getState()).toMatchObject({ open: true, selectedTabId: "visible" });
+    await requestDashboard({ tabId: "focused", sessionId: "focus", turn: "latest" });
+    expect(useDashboardViewStore.getState()).toMatchObject({ open: true, selectedTabId: "focused",
+      userTurnRequests: { focused: { kind: "latest" } } });
     expect(localStorage.getItem("mycmux:dashboard-chat-column-pins")).toBe('["saved"]');
-    expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toEqual(["saved"]);
-    expect(useDashboardViewStore.getState()).toBe(before);
+    expect(mocks.invoke).not.toHaveBeenCalled();
   });
   it("uses active then last focused session, then visible tab, then a plain request", async () => {
-    await requestDashboard();
-    expect(mocks.invoke).toHaveBeenLastCalledWith("open_main_dashboard", { tabId: "focused", sessionId: "focus", turn: null });
+    await requestDashboard(); expect(useDashboardViewStore.getState().selectedTabId).toBe("focused");
     useUiStore.setState({ activePaneId: null }); await requestDashboard();
-    expect(mocks.invoke).toHaveBeenLastCalledWith("open_main_dashboard", { tabId: "last-focused", sessionId: "last", turn: null });
+    expect(useDashboardViewStore.getState().selectedTabId).toBe("last-focused");
     useUiStore.setState({ activePaneId: "missing" }); await requestDashboard();
-    expect(mocks.invoke).toHaveBeenLastCalledWith("open_main_dashboard", { tabId: "visible", sessionId: "shown", turn: null });
-    useWorkspaceListStore.setState({ workspaces: [] }); await requestDashboard();
-    expect(mocks.invoke).toHaveBeenLastCalledWith("open_main_dashboard", { tabId: null, sessionId: null, turn: null });
+    expect(useDashboardViewStore.getState().selectedTabId).toBe("visible");
+    useWorkspaceListStore.setState({ workspaces: [] }); useDashboardViewStore.getState().close(); await requestDashboard();
+    expect(useDashboardViewStore.getState().open).toBe(true);
+    expect(mocks.invoke).not.toHaveBeenCalled();
   });
-  it("reports false and catches rejected fire-and-forget requests", async () => {
-    mocks.invoke.mockResolvedValueOnce(false); await requestDashboard({ tabId: "a" });
-    expect(useToastStore.getState().toasts.at(-1)?.message).toBe(tearoutStrings.dashboardMainUnavailable);
-    mocks.invoke.mockRejectedValueOnce(new Error("offline"));
-    await expect(requestDashboard({ tabId: "a", turn: "latest" })).resolves.toBeUndefined();
-    expect(useToastStore.getState().toasts.at(-1)?.message).toBe(tearoutStrings.failed);
+  it("rejects unknown columns and never depends on the main IPC being available", async () => {
+    mocks.invoke.mockRejectedValue(new Error("offline"));
+    await requestDashboard({ tabId: "missing", turn: "latest" });
+    expect(useDashboardViewStore.getState().chatColumnTabIds).toEqual([]);
+    await requestDashboard({ tabId: "visible" });
+    expect(useDashboardViewStore.getState()).toMatchObject({ open: true, selectedTabId: "visible" });
+    expect(mocks.invoke).not.toHaveBeenCalled();
   });
-  it("closes a stale local dashboard on shell mount and keeps tab sweep closed", () => {
-    useDashboardViewStore.getState().openView();
+  it("clears stale layout on first mount, keeps nested hosts live, and closes on last cleanup", async () => {
+    release(); useDashboardViewStore.getState().openView();
+    release = mountDetachedDashboardHost();
+    expect(useDashboardViewStore.getState().open).toBe(false);
+    await requestDashboard({ tabId: "visible" });
     const stop = mountDetachedDashboardHost();
-    expect(useDashboardViewStore.getState().open).toBe(false);
-    openTabSweepInDashboard();
-    expect(useDashboardViewStore.getState().open).toBe(false);
-    stop();
+    expect(useDashboardViewStore.getState().open).toBe(true);
+    stop(); expect(useDashboardViewStore.getState().open).toBe(true);
+    release(); expect(useDashboardViewStore.getState().open).toBe(false);
   });
-  it("accepts a synthetic xterm shortcut but excludes editable, composing, repeated and earlier actions", async () => {
+  it("toggles for xterm keys but excludes editable, composing, repeated and earlier actions", () => {
     const terminal = document.createElement("div"); terminal.className = "xterm";
     const textarea = document.createElement("textarea"); terminal.append(textarea);
     const event = (target: HTMLElement, init: KeyboardEventInit = {}) => {
       const value = new KeyboardEvent("keydown", { key: "G", ctrlKey: true, shiftKey: true, cancelable: true, ...init });
       Object.defineProperty(value, "target", { value: target }); return value;
     };
-    const accepted = event(textarea); handleDetachedDashboardKey(accepted); await Promise.resolve();
-    expect(accepted.defaultPrevented).toBe(true);
-    expect(mocks.invoke).toHaveBeenCalledOnce();
+    const accepted = event(textarea); handleDetachedDashboardKey(accepted);
+    expect(accepted.defaultPrevented).toBe(true); expect(useDashboardViewStore.getState().open).toBe(true);
+    handleDetachedDashboardKey(event(textarea)); expect(useDashboardViewStore.getState().open).toBe(false);
     handleDetachedDashboardKey(event(document.createElement("input")));
-    handleDetachedDashboardKey(event(textarea, { isComposing: true }));
-    handleDetachedDashboardKey(event(textarea, { repeat: true }));
+    handleDetachedDashboardKey(event(textarea, { isComposing: true })); handleDetachedDashboardKey(event(textarea, { repeat: true }));
     vi.spyOn(useKeybindingStore.getState(), "getActionsForEvent").mockReturnValue(["workspace.new", "dashboard.open"]);
-    handleDetachedDashboardKey(event(textarea));
-    expect(mocks.invoke).toHaveBeenCalledOnce();
+    handleDetachedDashboardKey(event(textarea)); expect(useDashboardViewStore.getState().open).toBe(false);
+    expect(mocks.invoke).not.toHaveBeenCalled();
   });
   it("keeps ordinary AppShell requests local without the marker", async () => {
-    release();
-    await requestDashboard({ tabId: "local" });
+    release(); await requestDashboard({ tabId: "local" });
     expect(mocks.invoke).not.toHaveBeenCalled();
     expect(useDashboardViewStore.getState()).toMatchObject({ open: true, selectedTabId: "local" });
+  });
+  it("keeps all layout preferences temporary and restores the main snapshot when the shell leaves", () => {
+    const saved = Object.fromEntries(["mycmux:dashboard-chat-column-pins", "mycmux:dashboard-chat-column-limit", "mycmux:dashboard-minimap-width", "mycmux:dashboard-session-list-collapsed"].map(key => [key, localStorage.getItem(key)]));
+    const view = useDashboardViewStore.getState();
+    view.focusChatColumn("visible"); view.toggleChatColumnPin("visible");
+    view.setChatColumnLimit(1); view.setMinimapWidth(280); view.toggleSessionListCollapsed();
+    expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toEqual(["visible"]);
+    expect(localStorage.getItem("mycmux:dashboard-chat-column-pins")).toBe('["saved"]');
+    for (const [key, value] of Object.entries(saved)) expect(localStorage.getItem(key)).toBe(value);
+    toggleDetachedDashboard(); expect(useDashboardViewStore.getState().open).toBe(true);
+    release(); expect(useDashboardViewStore.getState()).toMatchObject({ open: false, pinnedChatColumnTabIds: ["saved"], selectedTabId: "saved" });
   });
 });

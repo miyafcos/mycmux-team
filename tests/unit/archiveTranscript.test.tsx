@@ -1,3 +1,5 @@
+import { dashboardName } from "../helpers/dashboardA11y";
+import { dashboardText } from "../helpers/dashboardA11y";
 // @vitest-environment jsdom
 import { act,StrictMode } from "react";
 import {createRoot,type Root} from "react-dom/client";
@@ -155,13 +157,13 @@ describe("shared read-only archive view",()=>{
 
   it("renders a bounded DOM with stable source occurrences and no PTY calls",async()=>{
     await act(async()=>{root.render(<StrictMode><ArchiveTranscript descriptor={descriptor}/></StrictMode>);await new Promise((r)=>setTimeout(r,10));});
-    expect(host.querySelectorAll("[data-archive-row]").length).toBeLessThanOrEqual(120);expect(host.querySelectorAll("[data-archive-row]").length).toBeGreaterThan(0);expect(host.textContent).toContain("端末の履歴は Shift+ホイール");
+    expect(host.querySelectorAll("[data-archive-row]").length).toBeLessThanOrEqual(120);expect(host.querySelectorAll("[data-archive-row]").length).toBeGreaterThan(0);expect(dashboardText(host)).toContain("端末の履歴は Shift+ホイール");
     expect(mocks.invoke.mock.calls.every(([c])=>String(c).includes("transcript_history"))).toBe(true);
   });
   it("shows independent tool results and historical questions as read-only content",async()=>{
     mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"?page(0,2):null);
     await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor}/>);await new Promise((r)=>setTimeout(r,5));});
-    expect(host.textContent).toContain("result without start");expect(host.textContent).toContain("ツール結果");expect(host.textContent).toContain("historical question");expect(host.textContent).toContain("回答は端末で行います");expect(host.querySelector("textarea,input")).toBeNull();
+    expect(host.textContent).toContain("result without start");expect(host.textContent).toContain("ツール結果");expect(host.textContent).toContain("historical question");expect(dashboardText(host)).toContain("回答は端末で行います");expect(host.querySelector("textarea,input")).toBeNull();
   });
   it("keeps diagnostic records out of the conversation while preserving access to their source",async()=>{
     const p=page(0,4);
@@ -174,17 +176,17 @@ describe("shared read-only archive view",()=>{
     expect(host.textContent).toContain("表示を直してください");expect(host.textContent).toContain("会話本文を読みやすく直します。");
     expect(host.textContent).not.toContain("未対応の記録");expect(host.textContent).not.toContain("時刻不明");
     expect(host.querySelectorAll("[data-archive-row]")).toHaveLength(2);
-    const details=[...host.querySelectorAll<HTMLButtonElement>("button")].find(button=>button.textContent==="記録の詳細 2件")!;
+    const details=[...host.querySelectorAll<HTMLButtonElement>("button")].find(button=>dashboardName(button)==="記録の詳細 2件")!;
     expect(details.getAttribute("aria-pressed")).toBe("false");await act(async()=>details.click());
     expect(host.querySelectorAll("[data-archive-row]")).toHaveLength(4);
-    const source=[...host.querySelectorAll<HTMLButtonElement>("button")].find(button=>button.textContent==="元の記録を表示")!;
+    const source=[...host.querySelectorAll<HTMLButtonElement>("button")].find(button=>dashboardName(button)==="元の記録を表示")!;
     await act(async()=>{source.click();await Promise.resolve();});
     expect(host.querySelector(".cmux-archive-body")?.textContent).toContain("original record");
   });
   it("does not pretend a diagnostic-only page is an empty conversation",async()=>{
     const p=page(0,1);p.items[0]={...p.items[0],kind:"diagnostic",text:"未対応の記録（元の記録を表示できます）",bodyRef:"raw-body"};
     mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"?p:null);
-    await render();expect(host.textContent).toContain("この範囲には表示できる会話本文がありません");
+    await render();expect(dashboardText(host)).toContain("この範囲には表示できる会話本文がありません");
     expect(host.textContent).toContain("記録の詳細 1件");expect(host.textContent).not.toContain("時刻不明");
   });
   it("collapses tool input and output without hiding the recorded question",async()=>{
@@ -249,7 +251,7 @@ describe("shared read-only archive view",()=>{
     reader=new TranscriptHistoryReader(descriptor);
     await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor} prepared={reader!}/>);await new Promise((r)=>setTimeout(r,5));});
     await act(async()=>{reader!.freeze();root.render(<ArchiveTranscript descriptor={{...descriptor,expectedAgentSessionId:"next"}} prepared={reader!}/>);});
-    expect(host.textContent).toContain("以前の会話を表示しています");expect(host.textContent).toContain("現在の会話を開く");expect(reader.snapshot.descriptor.expectedAgentSessionId).toBe("view-id");
+    expect(dashboardText(host)).toContain("以前の会話を表示しています");expect(dashboardText(host)).toContain("現在の会話を開く");expect(reader.snapshot.descriptor.expectedAgentSessionId).toBe("view-id");
   });
   it("mounts and jumps to an offscreen source occurrence after asynchronous page work",async()=>{
     const target="claude:view-id:g:4990:0";
@@ -262,7 +264,7 @@ describe("shared read-only archive view",()=>{
     await act(async()=>{root.render(<ArchiveTranscript descriptor={descriptor}/>);await new Promise((r)=>setTimeout(r,10));});
     const range=document.createRange();range.selectNodeContents(host.querySelector("[data-archive-row]")!);
     await act(async()=>{window.getSelection()!.addRange(range);document.dispatchEvent(new Event("selectionchange"));});
-    const button=Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((b)=>b.textContent==="本文の続きを表示")!;expect(button.disabled).toBe(true);button.click();expect(host.querySelector("[aria-label='会話の本文']")).toBeNull();
+    const button=Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((b)=>dashboardName(b)==="本文の続きを表示")!;expect(button.disabled).toBe(true);button.click();expect(host.querySelector("[aria-label='会話の本文']")).toBeNull();
     await act(async()=>{window.getSelection()!.removeAllRanges();document.dispatchEvent(new Event("selectionchange"));});
     await act(async()=>{button.click();await Promise.resolve();});
     expect(host.querySelectorAll("[data-archive-row], [data-archive-body-block]").length).toBeLessThanOrEqual(120);
@@ -272,19 +274,19 @@ describe("shared read-only archive view",()=>{
     mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"?page(0,20):null);
     await render();const log=host.querySelector<HTMLElement>("[role=log]")!;
     log.scrollTop=500;await act(async()=>log.dispatchEvent(new Event("scroll",{bubbles:true})));
-    const first=[...host.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="最初へ")!;
+    const first=[...host.querySelectorAll<HTMLButtonElement>("button")].find(b=>dashboardName(b)==="最初へ")!;
     expect(first.disabled).toBe(false);await act(async()=>first.click());expect(log.scrollTop).toBe(0);
   });
   it.each(["permissionDenied","recordMissing","readerBusy"])("R11 distinguishes %s from an empty archive and exposes retry",async(reason)=>{
     mocks.invoke.mockImplementation(async(c:string)=>{if(c==="open_transcript_history")throw reason;return null;});
     await render();const empty=host.querySelector<HTMLElement>("[data-dashboard-chat-empty]");
-    expect(empty?.dataset.dashboardChatEmpty).toBe("unavailable");expect(empty?.textContent).toContain("会話の記録を読み込めていません");expect(empty?.textContent).toContain("履歴を読めません");
-    expect([...host.querySelectorAll("button")].some(b=>b.textContent==="もう一度開く")).toBe(true);
+    expect(empty?.dataset.dashboardChatEmpty).toBe("unavailable");expect(dashboardText(empty)).toContain("会話の記録を読み込めていません");expect(dashboardText(empty)).toContain("履歴を読めません");
+    expect([...host.querySelectorAll("button")].some(b=>dashboardName(b)==="もう一度開く")).toBe(true);
   });
   it("R11 keeps an unlinked mapping unavailable without opening a lease",async()=>{
     await act(async()=>root.render(<ArchiveTranscript descriptor={null}/>));
     const empty=host.querySelector<HTMLElement>("[data-dashboard-chat-empty]");
-    expect(empty?.dataset.dashboardChatEmpty).toBe("unavailable");expect(empty?.textContent).toContain("会話の記録を読み込めていません");expect(empty?.textContent).toContain("履歴を読めません");expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(empty?.dataset.dashboardChatEmpty).toBe("unavailable");expect(dashboardText(empty)).toContain("会話の記録を読み込めていません");expect(dashboardText(empty)).toContain("履歴を読めません");expect(mocks.invoke).not.toHaveBeenCalled();
   });
   it("R11 preserves the empty-state marker for a successfully read empty archive",async()=>{
     mocks.invoke.mockImplementation(async(c:string)=>c==="open_transcript_history"?page(0,0):null);

@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { ArrowLeft, Info, RotateCcw } from "lucide-react";
+import { DashboardGlyph, DashboardIconButton, DashboardStatusMark } from "./DashboardUi";
 
 import { retryActiveSession, useBackgroundAiSuggestion } from "../../lib/backgroundAiScheduler";
 import type { DashboardDisplayState } from "./dashboardModel";
@@ -26,14 +28,13 @@ export function NextActionSuggestions(props: NextActionSuggestionsProps) {
 
   if (!aiSuggestion || questionActive) return null;
 
-  const retryButton = <button
-    type="button"
+  const retryButton = <DashboardIconButton icon={RotateCcw} label={dashboardStrings.nextActionRetry}
     className="cmux-dashboard-next-actions-retry"
     title={dashboardStrings.nextActionRetry}
     aria-label={dashboardStrings.nextActionRetry}
     disabled={sending}
     onClick={() => retryActiveSession()}
-  >{"\u21BB"}</button>;
+  />;
 
   if (aiSuggestion.status === "loading") {
     return <section
@@ -42,7 +43,7 @@ export function NextActionSuggestions(props: NextActionSuggestionsProps) {
       data-next-action-status="loading"
       aria-label={dashboardStrings.nextActionAriaLabel}
     >
-      <div className="cmux-dashboard-next-actions-loading">{dashboardStrings.nextActionLoading}</div>
+      <div className="cmux-dashboard-next-actions-loading"><DashboardStatusMark state="running" label={dashboardStrings.nextActionLoading} /></div>
     </section>;
   }
 
@@ -55,7 +56,7 @@ export function NextActionSuggestions(props: NextActionSuggestionsProps) {
     >
       <div className="cmux-dashboard-next-actions-row">
         <div className="cmux-dashboard-next-actions-failed" data-next-action-ai-failed="true">
-          {dashboardStrings.nextActionFailed(dashboardStrings.aiSuggestionFailureReason(aiSuggestion.failureCode ?? "internal"))}
+          <DashboardStatusMark state="error" label={dashboardStrings.nextActionFailed(dashboardStrings.aiSuggestionFailureReason(aiSuggestion.failureCode ?? "internal"))} />
         </div>
         {retryButton}
       </div>
@@ -89,11 +90,11 @@ export function NextActionSuggestions(props: NextActionSuggestionsProps) {
       </button>)}
     </div>
     {pending ? <div className="cmux-dashboard-next-action-confirm" data-next-action-confirm="true">
-      <div>{dashboardStrings.nextActionSendPreviewTitle}</div>
+      <DashboardGlyph icon={Info} label={dashboardStrings.nextActionSendPreviewTitle} />
       <pre>{pending.prompt}</pre>
       <div>
         <button type="button" disabled={sending} onClick={() => { void onConfirm(pending).then(() => setPending(null)); }}>{dashboardStrings.nextActionSendConfirm}</button>
-        <button type="button" disabled={sending} onClick={() => setPending(null)}>{dashboardStrings.nextActionSendCancel}</button>
+        <DashboardIconButton icon={ArrowLeft} label={dashboardStrings.nextActionSendCancel} disabled={sending} onClick={() => setPending(null)} />
       </div>
     </div> : null}
   </section>;

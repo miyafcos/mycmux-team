@@ -3,9 +3,6 @@ import { useUiStore } from "../../stores/uiStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import type { Workspace } from "../../types";
 import { isDetachedDashboardHost } from "../../lib/dashboardHost";
-import { openMainDashboard } from "../../lib/ipc";
-import { useToastStore } from "../../stores/toastStore";
-import { tearoutStrings } from "./tearoutStrings";
 
 /** Open the dashboard on a pane tab, clearing filters first so the card stays visible. */
 export function openDashboardForTab(tabId: string): void {
@@ -67,29 +64,24 @@ function activeDashboardTarget(): DashboardTarget {
   return tab ? { tabId: tab.id, sessionId: tab.sessionId } : {};
 }
 
+/** Open in the current renderer. Compact shells own a visible, temporary view. */
 export function requestDashboard(target?: DashboardTarget): Promise<void> {
-  if (!isDetachedDashboardHost()) {
-    // Current callers (XTermWrapper and dormantCompletion) check the host marker,
-    // so turn cannot reach an unmarked window. If that changes, match XTermWrapper's
-    // local route: keep filters and use the resolveTranscriptTurnAction payload.
-    if (target?.tabId && target.turn) {
-      const store = useDashboardViewStore.getState();
-      store.setQuery("");
-      store.setStateFilter(null);
-      store.setWorkspaceFilter(null);
-      store.setAgentFilter(null);
-      store.openTranscriptTurnRequest(target.tabId, { kind: target.turn });
-    } else if (target?.tabId) openDashboardForTab(target.tabId);
-    else openDashboardForActiveSession();
-    return Promise.resolve();
-  }
-  return (async () => {
-    try {
-      if (!await openMainDashboard(target ?? activeDashboardTarget())) {
-        useToastStore.getState().pushToast(tearoutStrings.dashboardMainUnavailable, "error");
-      }
-    } catch {
-      useToastStore.getState().pushToast(tearoutStrings.failed, "error");
-    }
-  })();
+  const resolved = isDetachedDashboardHost() ? target ?? activeDashboardTarget() : target;
+  if (resolved?.tabId && resolved.turn) {
+    const store = useDashboardViewStore.getState();
+    store.setQuery("");
+    store.setStateFilter(null);
+    store.setWorkspaceFilter(null);
+    store.setAgentFilter(null);
+    store.openTranscriptTurnRequest(resolved.tabId, { kind: resolved.turn });
+  } else if (resolved?.tabId) openDashboardForTab(resolved.tabId);
+  else openDashboardForActiveSession();
+  return Promise.resolve();
+}
+
+/** Match the main window's band button and dashboard shortcut. */
+export function toggleDetachedDashboard(target?: DashboardTarget): void {
+  const view = useDashboardViewStore.getState();
+  if (view.open) view.close();
+  else void requestDashboard(target);
 }

@@ -1,4 +1,6 @@
 import { useEffect, useMemo } from "react";
+import { Info, MessageCircleQuestion, MessageSquareReply } from "lucide-react";
+import { DashboardGlyph, DashboardIconButton, DashboardStatusMark } from "./DashboardUi";
 import type { MouseEvent } from "react";
 
 import { targetKey, type LiveSessionBrief, type SemanticEventEnvelope } from "../../lib/livebrief";
@@ -91,7 +93,7 @@ function AskScreenCard({
     onDoubleClick={stop}
   >
     {compact ? null : <div className="cmux-dashboard-qcard-head">
-      <strong>{dashboardStrings.liveBriefQuestionLabel}</strong>
+      <DashboardGlyph icon={MessageCircleQuestion} label={dashboardStrings.liveBriefQuestionLabel} />
       <span>{targetLabel}</span>
     </div>}
     {screen.header ? <div className="cmux-dashboard-qcard-header" data-ask-question-header>{screen.header}</div> : null}
@@ -157,14 +159,14 @@ function AskScreenCard({
         }}
       >{dashboardStrings.askQuestionSubmit}</button> : null}
       {screen.kind !== "review" && !screen.multiSelect && numberedOptions.length && numberedOptions.length <= NUMBER_KEY_LIMIT
-        ? <span className="cmux-dashboard-qcard-hint">{dashboardStrings.numberKeyHint}</span>
+        ? <DashboardGlyph icon={Info} label={dashboardStrings.numberKeyHint} className="cmux-dashboard-qcard-hint" />
         : null}
     </div>}
     {inFlight
-      ? <div className="cmux-dashboard-qcard-result" role="status" aria-label="質問の状態" aria-live="polite">{dashboardStrings.askQuestionSending}</div>
+      ? <div className="cmux-dashboard-qcard-result" role="status" aria-label="質問の状態" aria-live="polite"><DashboardStatusMark state="sending" label={dashboardStrings.askQuestionSending} /></div>
       : null}
     {stopReason
-      ? <div className="cmux-dashboard-qcard-result is-error" role="status" aria-label="質問が止まった理由">{dashboardStrings.askQuestionStopReason(stopReason)}</div>
+      ? <div className="cmux-dashboard-qcard-result is-error" role="status" aria-label="質問が止まった理由"><DashboardStatusMark state="error" label={dashboardStrings.askQuestionStopReason(stopReason)} /></div>
       : null}
   </section>;
 }
@@ -229,7 +231,7 @@ export function QuestionCard({
       className={`cmux-dashboard-qcard${compact ? " is-compact" : ""}`}
     >
       <div className="cmux-dashboard-qcard-result is-error" role="status" aria-label="質問が止まった理由">
-        {dashboardStrings.askQuestionStopReason(askSession.stopReason)}
+        <DashboardStatusMark state="error" label={dashboardStrings.askQuestionStopReason(askSession.stopReason)} />
       </div>
     </section>;
   }
@@ -246,7 +248,7 @@ export function QuestionCard({
     onDoubleClick={stop}
   >
     {compact ? null : <div className="cmux-dashboard-qcard-head">
-      <strong>{dashboardStrings.liveBriefQuestionLabel}</strong>
+      <DashboardGlyph icon={MessageCircleQuestion} label={dashboardStrings.liveBriefQuestionLabel} />
       <span>{targetLabel}</span>
     </div>}
     <div className="cmux-dashboard-qcard-prompt">{model.prompt}</div>
@@ -264,19 +266,18 @@ export function QuestionCard({
       </button>)}
     </div> : null}
     {compact ? null : <div className="cmux-dashboard-qcard-footer">
-      <button
-        type="button"
+      <DashboardIconButton icon={MessageSquareReply} label={dashboardStrings.otherFreeText}
         disabled={inFlight}
         className="cmux-dashboard-qcard-other"
         style={{ opacity: inFlight ? 0.55 : 1 }}
         onClick={(event) => { stop(event); onFocusComposer(brief); }}
-      >{dashboardStrings.otherFreeText}</button>
+      />
       {model.options.length && model.options.length <= NUMBER_KEY_LIMIT
-        ? <span className="cmux-dashboard-qcard-hint">{dashboardStrings.numberKeyHint}</span>
+        ? <DashboardGlyph icon={Info} label={dashboardStrings.numberKeyHint} className="cmux-dashboard-qcard-hint" />
         : null}
     </div>}
     {resultText
-      ? <div className={`cmux-dashboard-qcard-result${isInterventionConflict(result) ? " is-error" : ""}`}>{resultText}</div>
+      ? <div className={`cmux-dashboard-qcard-result${isInterventionConflict(result) ? " is-error" : ""}`}><DashboardStatusMark state={result?.type === "confirmed" ? "sent" : result?.type === "busy" || result?.type === "writtenAwaitingEvidence" ? "sending" : result?.type === "conflict" || result?.type === "rejectedBeforeWrite" ? "error" : "unknown"} label={resultText} /></div>
       : null}
   </section>;
 }

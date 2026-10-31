@@ -1,3 +1,4 @@
+import { dashboardText } from "../helpers/dashboardA11y";
 // @vitest-environment jsdom
 
 import { act, createRef } from "react";
@@ -193,7 +194,7 @@ describe("dashboard optimistic composer feedback", () => {
     const bubble = container.querySelector(".cmux-dashboard-msg.is-user");
     expect(bubble?.querySelector(".cmux-dashboard-msg-who")).toBeNull();
     expect(bubble?.getAttribute("aria-label")).toBe("私");
-    expect(container.querySelector(".cmux-dashboard-composer-send")?.textContent).toBe("");
+    expect(container.querySelector(".cmux-dashboard-composer-send")?.textContent).toBe("送信");
     expect(container.querySelector(".cmux-dashboard-composer-send")?.getAttribute("aria-label")).toBe("送信");
     expect(container.querySelector("textarea")?.placeholder).toBe("メッセージ");
     expect(container.querySelector("details.cmux-dashboard-chat-details")?.hasAttribute("open")).toBe(false);
@@ -281,7 +282,7 @@ describe("dashboard optimistic composer feedback", () => {
     expect(textarea.value).toBe("");
     expect(message?.dataset.deliveryState).toBe("sending");
     expect(message?.textContent).toContain("今すぐ見せる");
-    expect(message?.textContent).toContain("送信中");
+    expect(dashboardText(message)).toContain("送信中");
   });
 
   it.each(["agent-wheel","legacy"] as const)("marks a successful send as sent and collapses it when the matching transcript arrives (%s)", async mode => {
@@ -374,7 +375,7 @@ describe("review fix 1: post-write refusal", () => {
     await send(textarea);
     const message = container.querySelector<HTMLElement>("[data-dashboard-optimistic-message]")!;
     expect(message.dataset.deliveryState).toBe("sent");
-    expect(message.textContent).toContain("未確認");
+    expect(dashboardText(message)).toContain("未確認");
     expect(message.querySelector("button")).toBeNull();
     expect(textarea.value).toBe("");
     await act(async () => {
