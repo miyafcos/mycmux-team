@@ -115,7 +115,7 @@ export async function cleanup() {
   document.body.replaceChildren(); localStorage.clear();
 }
 export function content(id = "b"): HTMLElement {
-  return host.querySelector<HTMLElement>(`[data-dnd-pane-id='p-${id}'] [data-dnd-handoff-surface]`)!;
+  return host.querySelector<HTMLElement>(`[data-dnd-pane-id='p-${id}'] .pane-tabbar + div`)!;
 }
 export function textarea(id = "b"): HTMLTextAreaElement { return host.querySelector(`[data-xterm='${id}'] textarea`)!; }
 export function pointer(el: Element, type = "pointermove", patch: Record<string, unknown> = {}) {

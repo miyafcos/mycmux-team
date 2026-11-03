@@ -50,3 +50,7 @@
 .cmux-attention-card-action-result { font-size: 0.9em; }
 .cmux-attention-card-action-result.is-success { color: var(--status-done, #22c55e); }
 .cmux-attention-card-action-result.is-error { color: var(--status-error, #ef4444); }
+
+
+/* Field labels remain available to assistive technology and hover. */
+.cmux-attention-card dl { grid-template-columns: minmax(0, 1fr); }

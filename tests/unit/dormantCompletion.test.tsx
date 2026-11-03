@@ -169,6 +169,6 @@ describe("the dormant conversation display", () => {
   });
   it("shows the same dormancy explanation in the dashboard list", () => {
     act(() => root.render(<DashboardCardRow card={card()} selected={false} open={false} now={1000} hideWorkspaceBadge={false} onSelect={vi.fn()} onJump={vi.fn()} />));
-    expect(container.querySelector(`[data-dashboard-status="dormant"] [role="img"]`)?.getAttribute("aria-label")).toBe(AGENT_DORMANT_DESCRIPTION);
+    expect(container.querySelector(`[data-dashboard-status="dormant"][role="img"]`)?.getAttribute("aria-label")).toBe(AGENT_DORMANT_DESCRIPTION);
   });
 });

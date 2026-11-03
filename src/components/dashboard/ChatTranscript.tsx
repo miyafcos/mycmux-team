@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, ChevronUp } from "lucide-react";
-import { DashboardStatusLabel } from "./DashboardUi";
+import { DashboardStatusLabel, DashboardUiScope } from "./DashboardUi";
 import type { SemanticEventEnvelope, TranscriptDescriptor } from "../../lib/livebrief";
 import type { TranscriptHistoryReader } from "../../stores/transcriptHistoryStore";
 import { ArchiveTranscript, type ArchiveTranscriptProps } from "./ArchiveTranscript";
@@ -78,7 +78,7 @@ function UserTurnNavBar({
         disabled={index <= 0}
         onMouseDown={keepComposerFocus}
         onClick={onPrev}
-      >{compact ? <ChevronUp size={16} aria-hidden="true" /> : "▲"}</button>
+      >{compact ? <ChevronUp aria-hidden="true" /> : "▲"}</button>
       <button
         type="button"
         aria-label={dashboardStrings.userTurnNextAriaLabel}
@@ -86,7 +86,7 @@ function UserTurnNavBar({
         disabled={followingBottom}
         onMouseDown={keepComposerFocus}
         onClick={onNext}
-      >{compact ? <ChevronDown size={16} aria-hidden="true" /> : "▼"}</button>
+      >{compact ? <ChevronDown aria-hidden="true" /> : "▼"}</button>
     </span>
     {!compact ? <><span className="cmux-dashboard-user-turn-nav-count" data-dashboard-user-turn-count={`${index + 1}/${total}`}>{`${index + 1}/${total}`}</span>
     <span className="cmux-dashboard-user-turn-nav-label">{label}</span></> : null}
@@ -167,7 +167,7 @@ function ChatActivityFooter({ displayState, agentKind, lastOutputAt }: {
     : working
       ? `最終出力 ${Math.floor(elapsedMs / 1_000)}秒前`
       : coarseElapsedLabel(elapsedMs);
-  return <div className={`cmux-dashboard-chat-activity${working ? " is-working" : ""}`} aria-live="polite">
+  return <div className={`cmux-dashboard-chat-activity${working ? " is-working" : ""}`} title={labels.activityLabel} aria-live="polite">
     <DashboardStatusLabel label={labels.activityLabel} />
     <span>{`${agentLabel(agentKind)} · ${timeLabel}`}</span>
   </div>;
@@ -182,15 +182,15 @@ export function ChatTranscript(props: Parameters<typeof LegacyChatTranscript>[0]
   transcriptSearch?: ArchiveTranscriptProps["transcriptSearch"];
   onSearchNavigation?: ArchiveTranscriptProps["onSearchNavigation"];
 }) {
-  if (props.archiveEnabled || props.archiveReader || props.archiveDescriptor) return <ArchiveTranscript
+  const transcript = props.archiveEnabled || props.archiveReader || props.archiveDescriptor ? <ArchiveTranscript
     descriptor={props.archiveDescriptor ?? null} prepared={props.archiveReader} visible={props.archiveVisible}
     tabId={props.tabId} context={props.linkContext} targetEventId={props.targetEventId} targetEventRequest={props.targetEventRequest} onUserMessages={props.onArchiveUserMessages}
     transcriptSearch={props.transcriptSearch}
     onSearchNavigation={props.onSearchNavigation}
     compact={props.compact}
     navigationTarget={props.navigationTarget}
-  />;
-  return <LegacyChatTranscript {...props}/>;
+  /> : <LegacyChatTranscript {...props}/>;
+  return <DashboardUiScope dashboard={Boolean(props.compact)}>{transcript}</DashboardUiScope>;
 }
 
 function LegacyChatTranscript({

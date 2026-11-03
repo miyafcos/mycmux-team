@@ -32,7 +32,8 @@ beforeEach(() => {
   hit = document.querySelector<HTMLElement>(".pane-tab-pill span")!;
   hitTest = vi.fn(() => hit);
   Object.defineProperty(document, "elementFromPoint", { configurable: true, value: hitTest });
-  const target = makePane("destination", ["old", "pinned", "tail"]); target.pinnedTabId = "pinned";
+  const target = makePane("destination", ["pinned", "old", "tail"]); target.pinnedTabId = "pinned";
+  target.activeTabId = "old"; target.sessionId = "pty-old";
   const workspace: Workspace = { id: "w", name: "Synthetic", status: "running", createdAt: 1, gridTemplateId: "1x1",
     panes: [makePane("source", ["incoming", "remaining"]), target], splitColumns: [["source"], ["destination"]] };
   useWorkspaceListStore.setState({ workspaces: [workspace], activeWorkspaceId: "w" });
@@ -72,7 +73,7 @@ describe("isolated header merge helpers", () => {
     expect(selectPaneHeaderTab("w", "destination", "tail")).toBe(true);
     expect(destination().activeTabId).toBe("tail"); expect(destination().sessionId).toBe("pty-tail");
     expect(destination().pinnedTabId).toBe("pinned");
-    expect(destination().tabs.map((tab) => tab.id)).toEqual(["old", "pinned", "tail"]);
+    expect(destination().tabs.map((tab) => tab.id)).toEqual(["pinned", "old", "tail"]);
   });
 });
 
@@ -85,7 +86,7 @@ describe("Stage 2a header drops", () => {
     expect(target).toEqual({ kind: "tab-index", workspaceId: "w", paneId: "destination", index: 3 });
     expect(detachedDockTarget({ screenX: 10, screenY: 10 }, { x: 0, y: 0, scale: 1 })).toEqual(target);
     commitPaneDragDrop(source, target);
-    expect(destination().tabs.map((tab) => tab.id)).toEqual(["old", "pinned", "tail", "incoming"]);
+    expect(destination().tabs.map((tab) => tab.id)).toEqual(["pinned", "old", "tail", "incoming"]);
     expect(destination().activeTabId).toBe("incoming"); expect(destination().sessionId).toBe("pty-incoming");
     expect(destination().pinnedTabId).toBe("pinned");
     expect(useWorkspaceListStore.getState().workspaces[0].splitColumns).toEqual([["source"], ["destination"]]);
@@ -101,6 +102,7 @@ describe("Stage 2a header drops", () => {
     commitPaneDragDrop(source, target);
     const pane = useWorkspaceListStore.getState().getWorkspace("other")!.panes[0];
     expect(pane.activeTabId).toBe("incoming"); expect(pane.tabs.at(-1)?.id).toBe("incoming");
+    expect(pane.pinnedTabId).toBe("pinned"); expect(pane.tabs[0].id).toBe("pinned");
     expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe("other");
     const removed = { ...target, paneId: "removed" };
     const before = useWorkspaceListStore.getState().workspaces;
@@ -133,20 +135,20 @@ describe("Stage 2a header drops", () => {
       transfer: { kind: "pane", workspaceId: "w", paneId: "destination", index: 0 },
     } });
     expect(result.restoredWorkspaceIds).toEqual(["w"]); expect(result.activePaneSessionId).toBe("pty-returned-active");
-    expect(destination().tabs.map((tab) => tab.id)).toEqual(["old", "pinned", "tail", "returned-first", "returned-active"]);
+    expect(destination().tabs.map((tab) => tab.id)).toEqual(["pinned", "old", "tail", "returned-first", "returned-active"]);
     expect(destination().activeTabId).toBe("returned-active"); expect(destination().sessionId).toBe("pty-returned-active");
     expect(destination().pinnedTabId).toBe("pinned");
     expect(useWorkspaceListStore.getState().workspaces[0].splitColumns).toEqual([["source"], ["destination"]]);
   });
-  it("leaves body-center adoption and origin-only restoration selection unchanged", () => {
+  it("selects body-center adoption while leaving origin-only restoration selection unchanged", () => {
     restoreWorkspaceConfigs([returned()], { placementByWorkspaceId: {
       transfer: { kind: "pane-zone", workspaceId: "w", paneId: "destination", zone: "center" },
     } });
-    expect(destination().activeTabId).toBe("old"); expect(destination().sessionId).toBe("pty-old");
+    expect(destination().activeTabId).toBe("returned-active"); expect(destination().sessionId).toBe("pty-returned-active");
     const next = returned(); next.id = "origin-transfer"; next.detached = true;
     next.panes[0].tabs = [{ tab_id: "origin-return", session_id: "pty-origin", agent_id: "shell-starter", type: "terminal" }];
     next.detached_from = { workspace_id: "w", pane_id: "destination", tab_id: "origin-return", index: 0 };
     restoreWorkspaceConfigs([next], { dockDetached: true });
-    expect(destination().tabs[0].id).toBe("origin-return"); expect(destination().activeTabId).toBe("old");
+    expect(destination().tabs[0].id).toBe("origin-return"); expect(destination().activeTabId).toBe("returned-active");
   });
 });

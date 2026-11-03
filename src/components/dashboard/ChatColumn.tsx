@@ -18,7 +18,7 @@ import { QuestionCard } from "./QuestionCard";
 import { stateLabels } from "./stateLabels";
 import { useArchiveDescriptor } from "./useTranscriptHistory";
 import { useSettingsStore } from "../../stores/settingsStore";
-import { Check, Clock, ExternalLink, Globe, Info, MoreHorizontal, PanelsTopLeft, Pin, PinOff, RotateCcw, X } from "lucide-react";
+import { Check, ExternalLink, Globe, Info, MoreHorizontal, PanelsTopLeft, Pin, PinOff, RotateCcw, X } from "lucide-react";
 import { DashboardGlyph, DashboardIconButton, DashboardStatusMark } from "./DashboardUi";
 
 const EMPTY_OPTIMISTIC_MESSAGES: readonly DashboardOptimisticMessage[] = [];
@@ -164,9 +164,9 @@ export function ChatColumn({
       <div className="cmux-dashboard-chat-header-lane"><div className="cmux-dashboard-chat-header-content">
       <div className="cmux-dashboard-chat-identity">
         <span className="cmux-dashboard-chat-color" aria-hidden="true" />
-        <strong title={card.label}>{card.label}</strong>
+        <strong title={[card.label, card.windowLabel && card.windowLabel !== windowLabel() ? dashboardStrings.peerWindow : null].filter(Boolean).join(" · ")}>{card.label}</strong>
         {card.windowLabel && card.windowLabel !== windowLabel() ? <DashboardGlyph icon={PanelsTopLeft} label={dashboardStrings.peerWindow} className="cmux-dashboard-peer-window" /> : null}
-        <div className="cmux-dashboard-chat-header-meta">
+        <div className="cmux-dashboard-chat-header-meta" title={stateLabels(displayState).tooltip}>
           <DashboardStatusMark state={card.neverStarted ? "notStarted" : displayState} label={card.neverStarted ? dashboardStrings.stateNotStarted : stateLabels(displayState).tooltip} />
           {card.manualDoneAt !== undefined ? <span data-dashboard-manual-done={card.tab.id}><DashboardStatusMark state="acknowledged" label={dashboardStrings.manualDoneBadge} /></span> : null}
           {card.stall && (card.telemetryHealth !== "live" || card.stall.reason !== "no_output") ? <DashboardStatusMark state={card.stall.reason === "pty_dead" ? "stopped" : "noUpdate"} label={stallLabel(card.stall.reason)} className="cmux-dashboard-chat-header-stall" /> : null}
@@ -175,7 +175,7 @@ export function ChatColumn({
       <div className="cmux-dashboard-chat-actions">
         <div className="cmux-dashboard-chat-navigation" ref={setNavigationTarget} />
         <details className="cmux-dashboard-chat-details" onClick={(event) => event.stopPropagation()}>
-          <summary aria-label="会話の詳細" title="会話の詳細"><MoreHorizontal size={16} aria-hidden="true" /></summary>
+          <summary aria-label="会話の詳細" title="会話の詳細"><MoreHorizontal aria-hidden="true" /></summary>
           <div className="cmux-dashboard-chat-detail-content">
             <span data-dashboard-breadcrumb>{dashboardStrings.breadcrumb(card.workspace.name, card.paneIndex + 1, card.tabIndex + 1)}</span>
             {dashboardActivity(card) && dashboardActivity(card) !== displayStateLabel(displayState) ? <span>{dashboardActivity(card)}</span> : null}
@@ -189,12 +189,12 @@ export function ChatColumn({
                 store.markDone(card.tab.id, Date.now());
                 if (card.attention?.attentionId) store.markSeen(card.tab.id, card.attention.attentionId);
               }
-            }}><Check size={15} aria-hidden="true" />{card.manualDoneAt === undefined ? dashboardStrings.markDoneButton : dashboardStrings.unmarkDoneButton}</button>
+            }}><Check aria-hidden="true" />{card.manualDoneAt === undefined ? dashboardStrings.markDoneButton : dashboardStrings.unmarkDoneButton}</button>
           </div>
         </details>
-        <button type="button" className="cmux-dashboard-chat-header-action" aria-label={dormantDescription ? "会話を再開" : dashboardStrings.jumpButtonTitle} title={dormantDescription ?? dashboardStrings.jumpButtonTitle} onClick={(event) => { event.stopPropagation(); onJump(); }}>{dormantDescription ? <RotateCcw size={15} aria-hidden="true" /> : <ExternalLink size={15} aria-hidden="true" />}</button>
-        <button type="button" data-dashboard-chat-column-pin={card.tab.id} className="cmux-dashboard-chat-header-action" aria-pressed={pinned} aria-label={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel} title={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel} onClick={(event) => { event.stopPropagation(); onTogglePin(); }}>{pinned ? <PinOff size={15} aria-hidden="true" /> : <Pin size={15} aria-hidden="true" />}</button>
-        <button type="button" data-dashboard-chat-column-close={card.tab.id} className="cmux-dashboard-chat-column-close" aria-label={`${card.label} を閉じる`} title="閉じる" onClick={(event) => { event.stopPropagation(); onClose(); }}><X size={16} aria-hidden="true" /></button>
+        <button type="button" className="cmux-dashboard-chat-header-action" aria-label={dormantDescription ? "会話を再開" : dashboardStrings.jumpButtonTitle} title={dormantDescription ?? dashboardStrings.jumpButtonTitle} onClick={(event) => { event.stopPropagation(); onJump(); }}>{dormantDescription ? <RotateCcw aria-hidden="true" /> : <ExternalLink aria-hidden="true" />}</button>
+        <button type="button" data-dashboard-chat-column-pin={card.tab.id} className="cmux-dashboard-chat-header-action" aria-pressed={pinned} aria-label={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel} title={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel} onClick={(event) => { event.stopPropagation(); onTogglePin(); }}>{pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}</button>
+        <button type="button" data-dashboard-chat-column-close={card.tab.id} className="cmux-dashboard-chat-column-close" aria-label={`${card.label} を閉じる`} title="閉じる" onClick={(event) => { event.stopPropagation(); onClose(); }}><X aria-hidden="true" /></button>
       </div>
       </div></div>
     </header>
@@ -279,12 +279,12 @@ function WebTranscriptStatus({ entry, onRefresh }: {
     entry.generating ? dashboardStrings.webTranscriptGenerating : null,
     entry.truncated ? dashboardStrings.webTranscriptTruncated : null,
   ].filter((note) => note !== null);
-  return <div className="cmux-dashboard-web-transcript-status" data-dashboard-web-transcript-status="true">
+  return <div className="cmux-dashboard-web-transcript-status" data-dashboard-web-transcript-status="true" title={[dashboardStrings.webTranscriptSource, ...notes].join(" · ")} aria-label={dashboardStrings.webTranscriptSource}>
     <DashboardGlyph icon={Globe} label={dashboardStrings.webTranscriptSource} className="cmux-dashboard-web-transcript-source" />
-    <span className="cmux-dashboard-web-transcript-when">
-      {clock ? <><DashboardGlyph icon={Clock} label={dashboardStrings.webTranscriptFetchedAt(clock)} /><span aria-hidden="true">{clock}</span></> : <DashboardStatusMark state="running" label={dashboardStrings.webTranscriptLoading} />}
+    <span className="cmux-dashboard-web-transcript-when" title={clock ? dashboardStrings.webTranscriptFetchedAt(clock) : dashboardStrings.webTranscriptLoading} aria-label={clock ? dashboardStrings.webTranscriptFetchedAt(clock) : dashboardStrings.webTranscriptLoading}>
+      {clock ? <><span aria-hidden="true">{clock}</span></> : <DashboardStatusMark state="running" label={dashboardStrings.webTranscriptLoading} />}
     </span>
-    {notes.map((note) => <span key={note} className="cmux-dashboard-web-transcript-note">{note === dashboardStrings.webTranscriptGenerating ? <DashboardStatusMark state="running" label={note} /> : note === dashboardStrings.webTranscriptSignedOut ? <DashboardStatusMark state="unknown" label={note} /> : <DashboardGlyph icon={Info} label={note} />}</span>)}
+    {notes.map((note) => <span key={note} className="cmux-dashboard-web-transcript-note" title={note}>{note === dashboardStrings.webTranscriptGenerating ? <DashboardStatusMark state="running" label={note} /> : note === dashboardStrings.webTranscriptSignedOut ? <DashboardStatusMark state="unknown" label={note} /> : <DashboardGlyph icon={Info} label={note} />}</span>)}
     {entry.error ? <span className="cmux-dashboard-web-transcript-error" role="alert">{entry.error}</span> : null}
     {onRefresh ? <DashboardIconButton icon={RotateCcw} label={dashboardStrings.webTranscriptRefresh}
       className="cmux-dashboard-chat-header-action"

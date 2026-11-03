@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Calculator, ChevronDown, CircleCheck, FileCheck, FileQuestion, FileText, FolderOpen, GitMerge, Info, Layers, LockKeyhole, Pencil, Rocket, ShieldCheck, Sparkles, Target, TerminalSquare, TestTube2, X, XCircle } from "lucide-react";
+import { ChevronDown, FileCheck, FileQuestion, FileText, GitMerge, Info, Pencil, Rocket, TerminalSquare, X } from "lucide-react";
 import { DashboardCount, DashboardGlyph, DashboardIconButton, DashboardStatusMark } from "./DashboardUi";
 
 const contractRoleIcons = { material: FileText, work: TerminalSquare, integrator: GitMerge, review: FileCheck };
@@ -336,7 +336,7 @@ function ContractRoleChip({
       {/* The "@" marks an existing session. A session that is still to be
           created has no handle to mention, so it is named plainly. */}
       <span>{participant.logicalSessionId === newIntegratorId ? participant.label : `@${participant.label}`}</span>
-      <small><DashboardGlyph icon={contractRoleIcons[participant.role]} label={roleName(participant.role)} /><ChevronDown size={12} aria-hidden="true" /></small>
+      <small><DashboardGlyph icon={contractRoleIcons[participant.role]} label={roleName(participant.role)} /><ChevronDown aria-hidden="true" /></small>
     </button>
     {open ? <span
       ref={menuRef}
@@ -618,13 +618,13 @@ export function WorkOrderContract({
         <span className={requestStatus === "failed"
           ? "cmux-dashboard-next-actions-machine-tag is-error"
           : "cmux-dashboard-next-actions-machine-tag"}><DashboardStatusMark state={requestStatus === "failed" ? "error" : requestStatus === "in_flight" ? "running" : requestStatus === "pending" ? "idle" : requestStatus === "delivered" ? "done" : "unknown"} label={launchLabel} /></span>
-        <span className="cmux-dashboard-contract-head-note" title={dashboardStrings.contractPlanSealed} aria-label={dashboardStrings.contractPlanSealed}><DashboardGlyph icon={LockKeyhole} label={dashboardStrings.contractPlanSealed} /><span aria-hidden="true">v1</span></span>
+        <span className="cmux-dashboard-contract-head-note" title={dashboardStrings.contractPlanSealed} aria-label={dashboardStrings.contractPlanSealed}><span aria-hidden="true">v1</span></span>
       </header>
       <div className="cmux-dashboard-contract-running-list">
-        <div><DashboardGlyph icon={Layers} label={dashboardStrings.contractRunSources} /><DashboardStatusMark state={coverage.missing === 0 && coverage.failed === 0 ? "done" : "error"} label={sourceStatus} /><DashboardCount count={coverage.acquired} label={sourceStatus} icon={FileCheck} /></div>
-        <div><DashboardGlyph icon={TerminalSquare} label={dashboardStrings.contractRunSession} /><DashboardStatusMark state={requestStatus === "delivered" ? "done" : requestStatus === "in_flight" ? "running" : requestStatus === "failed" ? "error" : requestStatus === "pending" ? "idle" : "unknown"} label={requestStatus === "failed" ? `${launchLabel}: ${launchFailureReason(request?.reason ?? null)}` : launchLabel} /></div>
-        <div><DashboardGlyph icon={TestTube2} label={dashboardStrings.contractRunTests} /><DashboardStatusMark state="unknown" label={dashboardStrings.contractRunUnknown} /></div>
-        <div><DashboardGlyph icon={GitMerge} label={dashboardStrings.contractRunMerge} /><DashboardStatusMark state="needsReview" label={dashboardStrings.contractHumanApprovalRequired} /></div>
+        <div title={dashboardStrings.contractRunSources} aria-label={dashboardStrings.contractRunSources}><DashboardStatusMark state={coverage.missing === 0 && coverage.failed === 0 ? "done" : "error"} label={sourceStatus} /><DashboardCount count={coverage.acquired} label={sourceStatus} icon={FileCheck} /></div>
+        <div title={dashboardStrings.contractRunSession} aria-label={dashboardStrings.contractRunSession}><DashboardStatusMark state={requestStatus === "delivered" ? "done" : requestStatus === "in_flight" ? "running" : requestStatus === "failed" ? "error" : requestStatus === "pending" ? "idle" : "unknown"} label={requestStatus === "failed" ? `${launchLabel}: ${launchFailureReason(request?.reason ?? null)}` : launchLabel} /></div>
+        <div title={dashboardStrings.contractRunTests} aria-label={dashboardStrings.contractRunTests}><DashboardStatusMark state="unknown" label={dashboardStrings.contractRunUnknown} /></div>
+        <div title={dashboardStrings.contractRunMerge} aria-label={dashboardStrings.contractRunMerge}><DashboardStatusMark state="needsReview" label={dashboardStrings.contractHumanApprovalRequired} /></div>
       </div>
       <p className="cmux-dashboard-contract-note" role="status" aria-live="polite" aria-atomic="true">{state.notice ? <DashboardGlyph icon={Info} label={state.notice} /> : null}</p>
       <footer className="cmux-dashboard-contract-foot">
@@ -634,7 +634,7 @@ export function WorkOrderContract({
           className="cmux-dashboard-contract-button is-go"
           disabled={retrying || !state.workOrderId}
           onClick={retryLaunch}
-         aria-label={dashboardStrings.contractRetryLaunch} title={dashboardStrings.contractRetryLaunch}><Rocket size={15} aria-hidden="true" />起動</button> : null}
+         aria-label={dashboardStrings.contractRetryLaunch} title={dashboardStrings.contractRetryLaunch}><Rocket aria-hidden="true" />起動</button> : null}
         <DashboardIconButton icon={X} label={dashboardStrings.contractDismissRunning} className="cmux-dashboard-contract-button" onClick={dismissRunning} />
       </footer>
     </section>;
@@ -657,16 +657,11 @@ export function WorkOrderContract({
     ? dashboardStrings.contractReferenceRefreshing
     : referenceText(state.draft, candidates, state.preview);
 
-  return <section className="cmux-dashboard-contract" aria-label={dashboardStrings.contractAriaLabel}>
-    <header className="cmux-dashboard-contract-head">
-      <DashboardGlyph icon={FileText} label={dashboardStrings.contractTitle} />
-      <DashboardGlyph icon={Sparkles} label={dashboardStrings.contractAiPlan} className="cmux-dashboard-next-actions-ai-tag" />
-      <DashboardGlyph icon={Calculator} label={dashboardStrings.contractMachineNumbers} className="cmux-dashboard-next-actions-machine-tag" />
-      <DashboardGlyph icon={ShieldCheck} label={dashboardStrings.contractBeforeGo} className="cmux-dashboard-contract-head-note" />
-    </header>
+  return <section className="cmux-dashboard-contract" aria-label={dashboardStrings.contractAriaLabel} title={[dashboardStrings.contractTitle, dashboardStrings.contractAiPlan, dashboardStrings.contractMachineNumbers, dashboardStrings.contractBeforeGo].join(" · ")} aria-description={[dashboardStrings.contractAiPlan, dashboardStrings.contractMachineNumbers, dashboardStrings.contractBeforeGo].join(" · ")}>
+    <header className="cmux-dashboard-contract-head" title={[dashboardStrings.contractTitle, dashboardStrings.contractAiPlan, dashboardStrings.contractMachineNumbers, dashboardStrings.contractBeforeGo].join(" · ")} aria-label={[dashboardStrings.contractTitle, dashboardStrings.contractAiPlan, dashboardStrings.contractMachineNumbers, dashboardStrings.contractBeforeGo].join(" · ")} />
     <dl className="cmux-dashboard-contract-rows">
-      <dt><DashboardGlyph icon={Target} label={dashboardStrings.contractPurpose} /></dt><dd>{state.draft.purpose}</dd>
-      <dt><DashboardGlyph icon={Layers} label={dashboardStrings.contractMaterials} /></dt><dd className="cmux-dashboard-contract-chip-list">
+      <dt className="cmux-dashboard-sr-only" title={dashboardStrings.contractPurpose} aria-label={dashboardStrings.contractPurpose} /><dd title={dashboardStrings.contractPurpose}>{state.draft.purpose}</dd>
+      <dt className="cmux-dashboard-sr-only" title={dashboardStrings.contractMaterials} aria-label={dashboardStrings.contractMaterials} /><dd className="cmux-dashboard-contract-chip-list" title={dashboardStrings.contractMaterials}>
         {state.draft.participants.map((participant) => <ContractRoleChip
           key={participant.logicalSessionId}
           participant={participant}
@@ -676,7 +671,7 @@ export function WorkOrderContract({
           onChoose={(role) => setRole(participant.logicalSessionId, role)}
         />)}
       </dd>
-      <dt><DashboardGlyph icon={TerminalSquare} label={dashboardStrings.contractExecution} /></dt><dd className="cmux-dashboard-contract-execution">
+      <dt className="cmux-dashboard-sr-only" title={dashboardStrings.contractExecution} aria-label={dashboardStrings.contractExecution} /><dd className="cmux-dashboard-contract-execution" title={dashboardStrings.contractExecution}>
         {assignedIntegrators.map((participant) => <span key={participant.logicalSessionId} className="cmux-dashboard-contract-new-session">@{participant.label}</span>)}
         {pendingParticipant ? <ContractRoleChip
           participant={pendingParticipant}
@@ -687,13 +682,13 @@ export function WorkOrderContract({
         /> : null}
         <small title={dashboardStrings.contractExecutionDetail(card.agentKind === "none" ? "codex" : card.agentKind)} aria-label={dashboardStrings.contractExecutionDetail(card.agentKind === "none" ? "codex" : card.agentKind)}>{card.agentKind === "none" ? "codex" : card.agentKind}</small>
       </dd>
-      <dt><DashboardGlyph icon={FileText} label={dashboardStrings.contractReferenceLabel} /></dt><dd className="cmux-dashboard-contract-mono">{reference === dashboardStrings.contractReferencePending || reference === dashboardStrings.contractReferenceRefreshing ? <DashboardStatusMark state="running" label={reference} /> : reference}</dd>
-      <dt><DashboardGlyph icon={FolderOpen} label={dashboardStrings.contractWrite} /></dt><dd>{state.phase === "preparing" || state.phase === "refreshing" || !writeTarget ? <DashboardStatusMark state="running" label={writeText} /> : writeUnavailable ? <DashboardStatusMark state="error" label={writeText} /> : <DashboardGlyph icon={FolderOpen} label={writeText} />}<DashboardGlyph icon={ShieldCheck} label={dashboardStrings.contractBranchProtection} /></dd>
-      <dt><DashboardGlyph icon={CircleCheck} label={dashboardStrings.contractCompletion} /></dt><dd>{state.draft.doneCondition.join(" ＋ ")}</dd>
-      <dt><DashboardGlyph icon={FileCheck} label={dashboardStrings.contractCoverage} /></dt><dd className="cmux-dashboard-contract-mono" aria-label={dashboardStrings.contractCoverageSummary(coverage.target, coverage.acquired, coverage.missing, coverage.failed)} title={dashboardStrings.contractCoverageSummary(coverage.target, coverage.acquired, coverage.missing, coverage.failed)}><DashboardCount icon={Target} count={coverage.target} label={`対象 ${coverage.target}`} /><DashboardCount icon={FileCheck} count={coverage.acquired} label={`取得 ${coverage.acquired}`} /><DashboardCount icon={FileQuestion} count={coverage.missing} label={`未取得 ${coverage.missing}`} /><DashboardCount icon={XCircle} count={coverage.failed} label={`失敗 ${coverage.failed}`} /></dd>
+      <dt className="cmux-dashboard-sr-only" title={dashboardStrings.contractReferenceLabel} aria-label={dashboardStrings.contractReferenceLabel} /><dd className="cmux-dashboard-contract-mono" title={dashboardStrings.contractReferenceLabel}>{reference === dashboardStrings.contractReferencePending || reference === dashboardStrings.contractReferenceRefreshing ? <DashboardStatusMark state="running" label={reference} /> : reference}</dd>
+      <dt className="cmux-dashboard-sr-only" title={dashboardStrings.contractWrite} aria-label={dashboardStrings.contractWrite} /><dd title={[dashboardStrings.contractWrite, writeText, dashboardStrings.contractBranchProtection].join(" · ")}>{state.phase === "preparing" || state.phase === "refreshing" || !writeTarget ? <DashboardStatusMark state="running" label={writeText} /> : writeUnavailable ? <DashboardStatusMark state="error" label={writeText} /> : <DashboardGlyph icon={Info} label={writeText} />}<span className="cmux-dashboard-sr-only" title={dashboardStrings.contractBranchProtection} aria-label={dashboardStrings.contractBranchProtection} /></dd>
+      <dt className="cmux-dashboard-sr-only" title={dashboardStrings.contractCompletion} aria-label={dashboardStrings.contractCompletion} /><dd title={dashboardStrings.contractCompletion}>{state.draft.doneCondition.join(" ＋ ")}</dd>
+      <dt className="cmux-dashboard-sr-only" title={dashboardStrings.contractCoverage} aria-label={dashboardStrings.contractCoverage} /><dd className="cmux-dashboard-contract-mono" aria-label={dashboardStrings.contractCoverageSummary(coverage.target, coverage.acquired, coverage.missing, coverage.failed)} title={dashboardStrings.contractCoverageSummary(coverage.target, coverage.acquired, coverage.missing, coverage.failed)}><DashboardCount count={coverage.acquired} total={coverage.target} label={dashboardStrings.contractCoverageSummary(coverage.target, coverage.acquired, coverage.missing, coverage.failed)} /><DashboardCount icon={FileQuestion} count={coverage.missing} label={`未取得 ${coverage.missing}`} /><DashboardCount icon={X} count={coverage.failed} label={`失敗 ${coverage.failed}`} /></dd>
     </dl>
     <details className="cmux-dashboard-contract-fold">
-      <summary aria-label={dashboardStrings.contractPromptSummary} title={dashboardStrings.contractPromptSummary}><FileText size={15} aria-hidden="true" /></summary>
+      <summary aria-label={dashboardStrings.contractPromptSummary} title={dashboardStrings.contractPromptSummary}><FileText aria-hidden="true" /></summary>
       <pre>{state.preview ? formatIntegratorPrompt(state.preview.integratorPrompt, candidates) : <DashboardStatusMark state="running" label={dashboardStrings.contractPromptPending} />}</pre>
     </details>
     <p className="cmux-dashboard-contract-note" role="status" aria-live="polite" aria-atomic="true">{blocker ? <DashboardStatusMark state={state.phase === "preparing" || state.phase === "refreshing" ? "running" : "needsReview"} label={blocker} /> : correctionHint ? <DashboardGlyph icon={Info} label={dashboardStrings.contractCorrectionHint} /> : null}</p>
@@ -702,7 +697,7 @@ export function WorkOrderContract({
       <span className="cmux-dashboard-contract-spacer" />
       <DashboardIconButton icon={Pencil} label={dashboardStrings.contractFix} className="cmux-dashboard-contract-button" onClick={() => { setCorrectionHint(true); onFix(); }} />
       <DashboardIconButton icon={X} label={dashboardStrings.contractCancel} className="cmux-dashboard-contract-button" onClick={cancel} />
-      <button type="button" className="cmux-dashboard-contract-button is-go" aria-label={dashboardStrings.contractGo} title={dashboardStrings.contractGo} disabled={Boolean(blocker)} onClick={go}><Rocket size={15} aria-hidden="true" /> GO 1</button>
+      <button type="button" className="cmux-dashboard-contract-button is-go" aria-label={dashboardStrings.contractGo} title={dashboardStrings.contractGo} disabled={Boolean(blocker)} onClick={go}><Rocket aria-hidden="true" /> GO 1</button>
     </footer>
   </section>;
 }

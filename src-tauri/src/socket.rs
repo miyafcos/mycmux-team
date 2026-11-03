@@ -46,7 +46,7 @@ const FRONTEND_SOCKET_COMMAND_NAMES: &[&str] = &[
     "pane.live_tails", "live_tails", "list_all_panes",
     "pane.spawn", "pane.spawn_tab", "pane.declare_tab", "pane.launch_declared",
     "pane.start_tab", "pane.activate_tab", "pane.restore_activation", "pane.close_tab", "pane.close_tabs",
-    "pane.rename_tab", "pane.send_text", "pane.read", "pane.move",
+    "pane.rename_tab", "pane.send_text", "pane.read", "pane.screen", "pane.move",
     "web.open", "web.list", "web.focus", "web.navigate", "web.wait",
     "web.eval", "web.snapshot", "web.find", "web.click", "web.type",
     "web.key", "web.scroll", "web.upload", "web.screenshot", "web.downloads",
@@ -80,6 +80,7 @@ fn system_version_payload() -> Value {
         "capabilities": [
             "state_view.input_revision_nullable",
             "send.enter.single",
+            "pane.screen.v1",
             "spawn.launch_spec.all_modes",
             "launch.kind_env",
             "agent.hooks.status",
@@ -1264,11 +1265,13 @@ mod tests {
         assert!(!commands.contains(&serde_json::json!("agent.hooks.set")));
         assert!(commands.contains(&serde_json::json!("pane.spawn")));
         assert!(commands.contains(&serde_json::json!("pane.start_tab")));
+        assert!(commands.contains(&serde_json::json!("pane.screen")));
         assert!(payload["capabilities"].as_array().unwrap().contains(
             &serde_json::json!("state_view.input_revision_nullable")
         ));
         for capability in [
             "send.enter.single",
+            "pane.screen.v1",
             "spawn.launch_spec.all_modes",
             "launch.kind_env",
             "agent.hooks.status",
@@ -1944,7 +1947,7 @@ mod tests {
             classify_and_strip_credentials(&mut hook),
             CredentialRealm::Hook(Some("cap".to_string()))
         );
-        for command in ["pane.spawn", "pane.send_text", "pane.read", "pane.close_tab"] {
+        for command in ["pane.spawn", "pane.send_text", "pane.read", "pane.screen", "pane.close_tab"] {
             assert!(!command.starts_with("hook."));
         }
 

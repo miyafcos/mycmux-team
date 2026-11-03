@@ -1069,6 +1069,7 @@ describe("pane socket responses", () => {
       {
         workspaceId: "workspace-a",
         workspaceName: "Workspace A",
+        zoomedPaneId: null,
         splitColumns: [["pane-a"]],
         columnWidths: [2],
         rowHeightsPerCol: [[3]],
@@ -1077,6 +1078,7 @@ describe("pane socket responses", () => {
       {
         workspaceId: "workspace-b",
         workspaceName: "Workspace B",
+        zoomedPaneId: null,
         splitColumns: [["pane-b"]],
         columnWidths: [1],
         rowHeightsPerCol: [[1]],

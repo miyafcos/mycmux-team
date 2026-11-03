@@ -2,7 +2,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExt
 import { createPortal } from "react-dom";
 import { ArrowDownToLine, ArrowUpToLine, ChevronDown, ChevronUp, ExternalLink, FileText, Info, RotateCcw, X } from "lucide-react";
 import type { ArchiveItem, TranscriptDescriptor } from "../../lib/livebrief";
-import { DashboardGlyph, DashboardIconButton, DashboardStatusMark } from "./DashboardUi";
+import { DashboardGlyph, DashboardIconButton, DashboardStatusMark, DashboardUiScope } from "./DashboardUi";
 import { dashboardStrings } from "./dashboardStrings";
 import { TranscriptHistoryReader, descriptorKey } from "../../stores/transcriptHistoryStore";
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
@@ -44,8 +44,7 @@ export interface ArchiveTranscriptProps {
 }
 export function ArchiveTranscript(props:ArchiveTranscriptProps) {
   const reader=useTranscriptHistory(props.descriptor,props.prepared);
-  if(!reader) return <ArchiveEmpty unavailable reason={explain("unlinked")}/>;
-  return <ArchiveReaderView reader={reader} {...props}/>;
+  return <DashboardUiScope dashboard={Boolean(props.compact)}>{reader ? <ArchiveReaderView reader={reader} {...props}/> : <ArchiveEmpty unavailable reason={explain("unlinked")}/>}</DashboardUiScope>;
 }
 
 /** A cancelled read still drains on the shared connection. Wait for its
@@ -238,16 +237,16 @@ function ArchiveReaderView({reader,descriptor,visible=true,compact=false,navigat
     && transcriptSearch.sourceGeneration === state.sourceGeneration && transcriptSearch.snapshotEnd !== null ? BigInt(transcriptSearch.snapshotEnd) : null;
   const activeTarget = searchFence !== null && transcriptSearch?.targetId === activeSearchMatch ? activeSearchMatch : null;
   const actions = <div className="cmux-archive-actions">
-      <button type="button" aria-label="最初へ" title="最初へ" disabled={!!state.loading||selected||!state.items.length} onClick={()=>{const ticket=++navigation.current;setSearching(true);void reader.first().then((reached)=>{if(ticket===navigation.current && reached){pendingJump.current=reader.snapshot.items.find((item)=>showRecords||(item.kind!=="source"&&item.kind!=="diagnostic"))?.occurrenceId??null;setMeasurement((m)=>m+1);}}).finally(()=>{if(ticket===navigation.current)setSearching(false);});}}>{compact?<ArrowUpToLine size={15} aria-hidden="true"/>:"最初へ"}</button>
+      <button type="button" aria-label="最初へ" title="最初へ" disabled={!!state.loading||selected||!state.items.length} onClick={()=>{const ticket=++navigation.current;setSearching(true);void reader.first().then((reached)=>{if(ticket===navigation.current && reached){pendingJump.current=reader.snapshot.items.find((item)=>showRecords||(item.kind!=="source"&&item.kind!=="diagnostic"))?.occurrenceId??null;setMeasurement((m)=>m+1);}}).finally(()=>{if(ticket===navigation.current)setSearching(false);});}}>{compact?<ArrowUpToLine aria-hidden="true"/>:"最初へ"}</button>
       {compact?<>
-        <button type="button" aria-label="前の指示へ" title="前の指示へ" disabled={!!state.loading||selected||(!turns.length&&state.reachedStart)} onClick={()=>void step(-1)}><ChevronUp size={16} aria-hidden="true"/></button>
-        <button type="button" aria-label="次の指示へ" title="次の指示へ" disabled={!!state.loading||selected||(state.following&&state.reachedFence)} onClick={()=>void step(1)}><ChevronDown size={16} aria-hidden="true"/></button>
+        <button type="button" aria-label="前の指示へ" title="前の指示へ" disabled={!!state.loading||selected||(!turns.length&&state.reachedStart)} onClick={()=>void step(-1)}><ChevronUp aria-hidden="true"/></button>
+        <button type="button" aria-label="次の指示へ" title="次の指示へ" disabled={!!state.loading||selected||(state.following&&state.reachedFence)} onClick={()=>void step(1)}><ChevronDown aria-hidden="true"/></button>
       </>:null}
-      <button type="button" aria-label="最新へ" title="最新へ" disabled={!!state.loading||selected||state.status!=="ready"} onClick={()=>void reader.latest()}>{compact?<ArrowDownToLine size={15} aria-hidden="true"/>:"最新へ"}</button>
+      <button type="button" aria-label="最新へ" title="最新へ" disabled={!!state.loading||selected||state.status!=="ready"} onClick={()=>void reader.latest()}>{compact?<ArrowDownToLine aria-hidden="true"/>:"最新へ"}</button>
       {searching?<DashboardIconButton icon={X} label="検索を停止" onClick={()=>{navigation.current++;reader.cancelSearch();setSearching(false);}} />:null}
       {different?<DashboardIconButton icon={ExternalLink} label="現在の会話を開く" onClick={()=>reader.reopen(descriptor!)} />:null}
       {(state.error||state.notice==="readerBusy")&&!different?<DashboardIconButton icon={RotateCcw} label="もう一度開く" onClick={()=>reader.reopen()} />:null}
-      {recordCount?<button type="button" aria-label={`記録の詳細 ${recordCount}件`} aria-pressed={showRecords} disabled={selected} title={`記録の詳細 ${recordCount}件`} onClick={()=>{capture();setShowRecords((shown)=>!shown);}}>{compact?<FileText size={15} aria-hidden="true"/>:`記録の詳細 ${recordCount}件`}</button>:null}
+      {recordCount?<button type="button" aria-label={`記録の詳細 ${recordCount}件`} aria-pressed={showRecords} disabled={selected} title={`記録の詳細 ${recordCount}件`} onClick={()=>{capture();setShowRecords((shown)=>!shown);}}>{compact?<FileText aria-hidden="true"/>:`記録の詳細 ${recordCount}件`}</button>:null}
       {!compact?<DashboardGlyph icon={Info} label="端末の履歴は Shift+ホイール" />:null}
     </div>;
   return <div className={`cmux-archive-transcript${compact?" is-conversation":""}`} data-archive-view="true">

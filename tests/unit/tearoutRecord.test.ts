@@ -109,6 +109,15 @@ describe("one metadata record per native gesture", () => {
     expect(Object.keys(data)).not.toContain("terminal_output");
     expect(Object.keys(data)).not.toContain("command");
   });
+  it.each(["center", "left", "right", "up", "down"] as const)("records a %s pane merge/split without changing its destination value", async zone => {
+    const record = new TearoutRecord(`drop-${zone}`, "incoming", "child", 10);
+    const target = { kind: "pane-zone" as const, workspaceId: "w", paneId: "p", zone };
+    record.attempted(target, "main"); record.decision("approved", target);
+    await record.finish("docked", target);
+    expect(mocks.invoke.mock.calls[0][1].record).toMatchObject({ result: "docked", release_target_kind: zone,
+      destination: { kind: zone, index: null, workspace_id: "w", pane_id: "p" },
+      attempted_destination: { kind: zone, index: null, workspace_id: "w", pane_id: "p" } });
+  });
   it("lets the backend log a self-dock after its webview has been destroyed", () => {
     const record = new TearoutRecord("regrab", "tab", "mycmux-w1", 10);
     record.error("dock_failed");

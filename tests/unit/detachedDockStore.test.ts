@@ -21,6 +21,9 @@ import { detachedDockTarget, useDetachedDockStore, listenForDetachedDock,
   takeDetachedPlacements, DETACHED_DRAG_EVENT, type DetachedDragPayload } from "../../src/stores/detachedDockStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import type { Workspace } from "../../src/types";
+import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
+import { restoreWorkspaceConfigs } from "../../src/lib/workspaceRestore";
+import { sameDockTarget } from "../../src/lib/tearout/preview";
 import { WINDOW_REGISTRY_CHANGED_EVENT } from "../../src/lib/ipc";
 
 let hit: ReturnType<typeof vi.fn>;
@@ -93,6 +96,50 @@ describe("detached dock target", () => {
         .toEqual({ kind: "tab-index", workspaceId: "destination", paneId: "pane", index });
       expect(hit).toHaveBeenCalledWith(screenX - 200, 10);
     });
+  it.each([[300, 200, "center"], [5, 200, "left"], [595, 200, "right"], [300, 35, "up"], [300, 395, "down"], [75, 20, "header"]] as const)(
+    "keeps eligible agent window point %i,%i on the %s docking path", (x, y, zone) => {
+      const pane = document.querySelector<HTMLElement>("[data-dnd-pane-id]")!;
+      pane.getBoundingClientRect = () => new DOMRect(0, 0, 600, 400);
+      const receiver = useWorkspaceListStore.getState().workspaces[0].panes[0];
+      Object.assign(receiver, { activeTabId: "a", sessionId: "pty-target" });
+      Object.assign(receiver.tabs[0], { type: "terminal", sessionId: "pty-target", agentId: "shell" });
+      usePaneMetadataStore.setState({ metadata: {
+        "pty-target": { agentKind: "codex" },
+        "pty-carried": { agentKind: "claude", agentSessionId: "source-agent", cwd: "C:/demo/source" },
+      } });
+      hit.mockReturnValue(zone === "header" ? document.querySelector("[data-tab-id]") : pane);
+      const target = detachedDockTarget({ screenX: x + 200, screenY: y + 100 }, { x: 300, y: 150, scale: 1.5 });
+      expect(target).toEqual(zone === "header"
+        ? { kind: "tab-index", workspaceId: "destination", paneId: "pane", index: 2 }
+        : { kind: "pane-zone", workspaceId: "destination", paneId: "pane", zone });
+      expect(sameDockTarget(target, target && { ...target })).toBe(true);
+    });
+  it("docks a legacy agent window at the center and selects the returned tab", async () => {
+    const pane = document.querySelector<HTMLElement>("[data-dnd-pane-id]")!;
+    pane.getBoundingClientRect = () => new DOMRect(0, 0, 600, 400); hit.mockReturnValue(pane);
+    const destination = useWorkspaceListStore.getState().workspaces[0].panes[0];
+    Object.assign(destination, { activeTabId: "a", sessionId: "pty-target" });
+    Object.assign(destination.tabs[0], { agentId: "shell", sessionId: "pty-target", type: "terminal" });
+    usePaneMetadataStore.setState({ metadata: { "pty-target": { agentKind: "codex" },
+      "pty-carried": { agentKind: "claude", agentSessionId: "source-agent", cwd: "C:/demo/source" } } });
+    useWorkspaceListStore.setState({ activeWorkspaceId: "destination" });
+    const stop = listenForDetachedDock();
+    try {
+      for (const phase of ["start", "end"] as const) {
+        mocks.listeners.get(DETACHED_DRAG_EVENT)!({ payload: { ...payload(phase, 500), screenY: 300 } }); await frame();
+      }
+      const placementByWorkspaceId = takeDetachedPlacements(["transfer"]);
+      expect(placementByWorkspaceId.transfer).toEqual({ kind: "pane-zone", workspaceId: "destination", paneId: "pane", zone: "center" });
+      expect(mocks.handoff).toHaveBeenCalledWith("child", "mycmux://detached-dock-request", { toLabel: "main", workspaceId: "transfer" });
+      restoreWorkspaceConfigs([{ id: "transfer", name: "Return", created_at: 1, grid_template_id: "1x1",
+        panes: [{ agent_id: "shell", label: null, active_tab_id: "incoming",
+          tabs: [{ tab_id: "incoming", agent_id: "shell", session_id: "pty-carried", type: "terminal" }] }] }], { placementByWorkspaceId });
+      const merged = useWorkspaceListStore.getState().workspaces[0].panes[0];
+      expect(merged.tabs.map(tab => tab.id)).toEqual(["a", "b", "incoming"]);
+      expect(merged.activeTabId).toBe("incoming"); expect(merged.sessionId).toBe("pty-carried");
+      expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe("destination");
+    } finally { stop(); }
+  });
   it("does not publish an unchanged target", () => {
     const changes = vi.fn();
     const unsubscribe = useDetachedDockStore.subscribe(changes);

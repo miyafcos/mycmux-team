@@ -32,11 +32,10 @@ import { bump as bumpPaintStat } from "../lib/paintStats";
 import {
   applyActiveTabFields,
   clearPinIfMissing,
-  resolveMergeActiveTabId,
   withPinnedTabFirst,
 } from "../lib/paneTabState";
 
-export { clearPinIfMissing, resolveMergeActiveTabId, withPinnedTabFirst } from "../lib/paneTabState";
+export { clearPinIfMissing, withPinnedTabFirst } from "../lib/paneTabState";
 
 /**
  * Workspace Layout Store - Manages panes within workspaces
@@ -1420,7 +1419,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
           return [updated];
         }
         if (pane.id === targetPaneId) {
-          return [appendTabsToPane(pane, [tab], resolveMergeActiveTabId(pane, tab.id))];
+          return [appendTabsToPane(pane, [tab], tab.id)];
         }
         return [pane];
       });
@@ -1443,7 +1442,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     );
     const targetPanes = targetWorkspace.panes.map((pane) =>
       pane.id === targetPaneId
-        ? appendTabsToPane(pane, [tab], resolveMergeActiveTabId(pane, tab.id))
+        ? appendTabsToPane(pane, [tab], tab.id)
         : pane,
     );
 
@@ -1580,7 +1579,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
           return [appendTabsToPane(
             pane,
             sourcePane.tabs,
-            resolveMergeActiveTabId(pane, sourcePane.activeTabId),
+            sourcePane.activeTabId,
           )];
         }
         return [pane];
@@ -1602,7 +1601,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         ? appendTabsToPane(
             pane,
             sourcePane.tabs,
-            resolveMergeActiveTabId(pane, sourcePane.activeTabId),
+            sourcePane.activeTabId,
           )
         : pane,
     );

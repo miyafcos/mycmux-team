@@ -1016,8 +1016,8 @@ fn backfill_and_price_updates_dirty_heavy_inputs_in_their_transactions() {
 }
 
 
-// Only the tests which deliberately pause a product writer share this lock.
-// Recover poison so a failed mutation cannot strand later writer-gate tests.
+// Writer gates are scoped to each database file, so unrelated tests can run in parallel.
+// Writer-gate checkpoints and worker waits have explicit time bounds.
 // Every test thread owns its inputs. A failed checkpoint can report the
 // completed result (including a panic) without an implicit scoped-thread join.
 const WRITER_TEST_WAIT: std::time::Duration = std::time::Duration::from_secs(4);

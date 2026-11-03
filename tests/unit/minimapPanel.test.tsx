@@ -238,7 +238,7 @@ describe("LayoutMinimapPanel", () => {
     const chip = container.querySelector<HTMLElement>("[data-minimap-tab='tab']")!;
     const name = container.querySelector<HTMLElement>(".cmux-minimap-workspace-name")!;
     expect(chip.querySelector(".cmux-minimap-label")?.textContent).toBe(longLabel);
-    expect(chip.title).toBe(`${longLabel}\n作業中\n休止中・会話は再開できる (プロセスは終了している)`);
+    expect(chip.title).toBe(`${longLabel}\nCodex\n作業中\n休止中・会話は再開できる (プロセスは終了している)`);
     expect(chip.getAttribute("aria-label")).toContain(`${longLabel} — `);
     expect(chip.getAttribute("aria-label")).toContain("ダブルクリックで元の画面に戻る");
     expect(chip.getAttribute("aria-label")).toContain("Alt+クリックでグループ選択");
@@ -1006,16 +1006,23 @@ describe("LayoutMinimapPanel", () => {
         expect(chip().getAttribute("title")).toContain("宣言のみ");
         expect(chip().getAttribute("aria-label")).toContain("宣言のみ");
         expect(chip().querySelector("[data-dashboard-status]")?.getAttribute("data-dashboard-status")).toBe(state);
+        const mark = chip().querySelector("[data-dashboard-status]")!;
+        expect(mark.getAttribute("title")?.trim()).toBeTruthy();
+        expect(mark.getAttribute("aria-label")).toBe(mark.getAttribute("title"));
+        if (state === "noUpdate") {
+          expect(mark.querySelector("svg,[data-status-shape]")).toBeNull();
+          expect(mark.textContent?.trim()).toBeTruthy();
+        }
       };
       verifyDeclaration();
-      expect(chip().querySelector("[data-dashboard-status=notStarted] svg.lucide-circle-dashed")).not.toBeNull();
-      if (state === "needsHuman") expect(chip().querySelector("svg[class*=lucide-message-circle-question]")).not.toBeNull();
+      expect(chip().querySelector("[data-dashboard-status=notStarted] svg.lucide-minus")).not.toBeNull();
+      if (state === "needsHuman") expect(chip().querySelector("svg[class*=lucide-message-square-reply]")).not.toBeNull();
       await act(async () => container.querySelector<HTMLElement>(".cmux-minimap-workspace-header")!.click());
       verifyDeclaration();
       expect(chip().classList.contains("is-collapsed")).toBe(true);
       expect(chip().querySelector(".cmux-minimap-meta")).toBeNull();
       expect(chip().querySelector("[data-dashboard-status=notStarted]")).toBeNull();
-      if (state === "needsHuman") expect(chip().querySelector("svg[class*=lucide-message-circle-question]")).not.toBeNull();
+      if (state === "needsHuman") expect(chip().querySelector("svg[class*=lucide-message-square-reply]")).not.toBeNull();
     },
   );
 
@@ -1097,7 +1104,7 @@ describe("LayoutMinimapPanel", () => {
     await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]} displayStateByTabId={new Map()} selectedTabId={null} activePaneSessionId={null} onSelect={vi.fn()} />));
     const chip = container.querySelector<HTMLElement>("[data-minimap-tab='a']")!;
     expect(chip.querySelector(".cmux-minimap-age")).toBeNull();
-    expect(chip.title).toBe("a\n待機\n休止中・会話は再開できる (プロセスは終了している)");
+    expect(chip.title).toBe("a\nCodex\n待機\n休止中・会話は再開できる (プロセスは終了している)");
     // The chip names the vendor the same way the tab bar badge does.
     expect(chip.getAttribute("aria-label")).toContain("a — Codex・");
   });

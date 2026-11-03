@@ -87,6 +87,7 @@ function CardRow({ card, selected, open, now, hideWorkspaceBadge, onSelect, onJu
     data-dashboard-open={open || undefined}
     data-dashboard-active={selected || undefined}
     data-dashboard-state={state}
+    title={[card.label, labels.tooltip, card.windowLabel && card.windowLabel !== windowLabel() ? dashboardStrings.peerWindow : null].filter(Boolean).join(" · ")}
     aria-pressed={selected}
     onClick={() => onSelect(card.tab.id)}
     onDoubleClick={() => onJump(card)}
@@ -99,9 +100,9 @@ function CardRow({ card, selected, open, now, hideWorkspaceBadge, onSelect, onJu
         {card.windowLabel && card.windowLabel !== windowLabel() ? <DashboardGlyph icon={PanelsTopLeft} label={dashboardStrings.peerWindow} className="cmux-dashboard-peer-window" /> : null}
         {hideWorkspaceBadge ? null : <span className="cmux-dash-row-workspace">{card.workspace.name}</span>}
       </span>
-      {preview && preview !== dashboardStrings.stateRunning ? <span className="cmux-dash-row-preview">{preview === dashboardStrings.modelResponseWait ? <DashboardStatusMark state="running" label={preview} /> : preview === dashboardStrings.turnStateUnknown ? <DashboardStatusMark state="unknown" label={preview} /> : preview === dashboardStrings.stateDelegationUnknown ? <DashboardStatusMark state="delegationUnknown" label={preview} /> : card.brief?.autonomy?.armedBackgroundCount && preview === dashboardStrings.backgroundWork(card.brief.autonomy.armedBackgroundCount) ? <DashboardCount icon={Layers} count={card.brief.autonomy.armedBackgroundCount} label={preview} /> : preview}</span> : null}
+      {preview && preview !== dashboardStrings.stateRunning ? <span className="cmux-dash-row-preview" title={preview}>{preview === dashboardStrings.modelResponseWait ? <DashboardStatusMark state="running" label={preview} /> : preview === dashboardStrings.turnStateUnknown ? <DashboardStatusMark state="unknown" label={preview} /> : preview === dashboardStrings.stateDelegationUnknown ? <DashboardStatusMark state="delegationUnknown" label={preview} /> : card.brief?.autonomy?.armedBackgroundCount && preview === dashboardStrings.backgroundWork(card.brief.autonomy.armedBackgroundCount) ? <DashboardCount icon={Layers} count={card.brief.autonomy.armedBackgroundCount} label={preview} /> : preview}</span> : null}
       <span className="cmux-dash-row-status">
-        <DashboardStatusMark state={card.neverStarted ? "notStarted" : state} label={card.neverStarted ? dashboardStrings.stateNotStarted : labels.tooltip} />
+        <DashboardStatusMark state={card.neverStarted ? "notStarted" : state} label={card.neverStarted ? dashboardStrings.stateNotStarted : labels.tooltip} hasElapsed={elapsedMinutes !== null} />
         {dormantDescription ? <DashboardStatusMark state="dormant" label={dormantDescription} /> : null}
         {elapsedMinutes === null ? null : <span className="cmux-dash-row-elapsed">{card.telemetryHealth === "live" ? dashboardStrings.lastActivityAgo(elapsedMinutes) : dashboardStrings.elapsed(elapsedMinutes)}</span>}
       </span>

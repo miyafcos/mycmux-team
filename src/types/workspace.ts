@@ -126,7 +126,7 @@ export interface Pane {
   /** Active tab's duplicate restore identity retained for manual recovery. */
   suppressedAgentSessions?: SuppressedAgentSession[];
   launchEnv?: Record<string, string>;
-  /** Tab that keeps display ownership on merge; always sorts first. */
+  /** Tab that always sorts first; incoming merges may activate another tab. */
   pinnedTabId?: string;
 }
 

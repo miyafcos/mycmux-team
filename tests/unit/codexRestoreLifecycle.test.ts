@@ -54,7 +54,11 @@ it.each([false, true])("ordinary create and kill do not await pending notice reg
 });
 it("bounds Codex preparation and retains one listener after a late registration succeeds", async () => {
   const registration = deferred<() => void>(); fixture.listen.mockReturnValue(registration.promise);
-  const ipc = await import("../../src/lib/ipc"); vi.useFakeTimers();
+  const ipc = await import("../../src/lib/ipc");
+  // Settle module loading before advancing the virtual preparation deadline.
+  // The deferred listener registration below is the operation under test.
+  await import("../../src/lib/codexRestore");
+  vi.useFakeTimers();
   let completed = false;
   const creating = ipc.createSession(P, "codex", ["resume", G], 80, 24, () => {}).then(() => { completed = true; });
   await vi.advanceTimersByTimeAsync(8_001);

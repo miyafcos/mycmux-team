@@ -1,4 +1,4 @@
-import { Info, TerminalSquare } from "lucide-react";
+import { Info } from "lucide-react";
 import { DashboardGlyph, DashboardStatusMark } from "./DashboardUi";
 import { useRecentInputStore } from "../../stores/recentInputStore";
 import { attentionDetail } from "../../stores/sessionAttentionStore";
@@ -22,10 +22,9 @@ export function DashboardTelemetryFallback({ card, now }: { card: DashboardCardM
     : card.telemetryHealth === "unavailable"
       ? dashboardStrings.telemetryUnavailable
       : dashboardStrings.telemetryUnlinked;
-  return <section className="cmux-dashboard-telemetry-fallback" aria-label={dashboardStrings.fallbackTitle}>
+  return <section className="cmux-dashboard-telemetry-fallback" aria-label={dashboardStrings.fallbackTitle} title={reason}>
     <DashboardStatusMark state={card.neverStarted ? "notStarted" : "unknown"} label={reason} />
-    <div className="cmux-dashboard-telemetry-fallback-lines">
-      <DashboardGlyph icon={TerminalSquare} label={dashboardStrings.fallbackTitle} />
+    <div className="cmux-dashboard-telemetry-fallback-lines" title={dashboardStrings.fallbackTitle} aria-label={dashboardStrings.fallbackTitle}>
       {recentInput ? <SummaryLine label={dashboardStrings.myInstructionLabel} value={recentInput.text} /> : null}
       {asking ? <SummaryLine label={dashboardStrings.agentAskingLabel} value={asking} /> : null}
       {card.stall ? <SummaryLine label={stallLabel(card.stall.reason)} value={dashboardStrings.stallSince(Math.max(0, Math.floor((now - card.stall.since) / 60_000)))} /> : null}

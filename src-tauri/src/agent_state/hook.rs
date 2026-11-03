@@ -1613,6 +1613,7 @@ mod tests {
             "pane.spawn",
             "pane.send_text",
             "pane.read",
+            "pane.screen",
             "pane.close_tab",
         ]
         .into_iter()

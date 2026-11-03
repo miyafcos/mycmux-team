@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
-import { ArrowLeft, CheckCheck, Ellipsis, Filter, Lightbulb, LoaderCircle, MessageCircleQuestion, PanelLeftClose, PanelLeftOpen, Search, TriangleAlert, type LucideIcon } from "lucide-react";
+import { ArrowLeft, CheckCheck, Ellipsis, Filter, Lightbulb, LoaderCircle, MessageSquareReply, PanelLeftClose, PanelLeftOpen, Search, TriangleAlert, type LucideIcon } from "lucide-react";
 import { DashboardCount, DashboardIconButton } from "./DashboardUi";
 import type { ReactNode, RefObject } from "react";
 
@@ -46,7 +46,7 @@ export function useFrozenCardOrder(
 
 function Section({ title, count, children }: { title: string; count: number; children: ReactNode }) {
   if (count === 0) return null;
-  const icon: LucideIcon = title === dashboardStrings.sectionNeedsAnswer ? MessageCircleQuestion : title === dashboardStrings.sectionNeedsReview ? TriangleAlert : title === dashboardStrings.sectionWorking ? LoaderCircle : Ellipsis;
+  const icon: LucideIcon = title === dashboardStrings.sectionNeedsAnswer ? MessageSquareReply : title === dashboardStrings.sectionNeedsReview ? TriangleAlert : title === dashboardStrings.sectionWorking ? LoaderCircle : Ellipsis;
   return <section className="cmux-dash-list-section" aria-label={title}>
     <div className="cmux-dash-list-heading"><DashboardCount icon={icon} count={count} label={`${title} (${count})`} /></div>
     {children}
@@ -148,10 +148,10 @@ export function DashboardSessionList({
         title={collapsed ? dashboardStrings.sessionListExpandTitle : dashboardStrings.sessionListCollapseTitle}
         onClick={onToggleCollapsed}
       >
-        {collapsed ? <PanelLeftOpen size={16} aria-hidden="true" /> : <PanelLeftClose size={16} aria-hidden="true" />}
+        {collapsed ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
       </button>
       <div className="cmux-dash-list-search">
-        <Search size={15} aria-hidden="true" className="cmux-dashboard-search-icon" />
+        <Search aria-hidden="true" className="cmux-dashboard-search-icon" />
         <input
           ref={searchInputRef}
           value={query}
@@ -174,7 +174,7 @@ export function DashboardSessionList({
       title={`${dashboardStrings.attentionTitle} · ${dashboardStrings.attentionNavHint}`}
       onClick={onOpenAttention}
     >
-      <span className="cmux-dash-attention-nav-icon" aria-hidden="true"><Lightbulb size={16} /></span>
+      <span className="cmux-dash-attention-nav-icon" aria-hidden="true"><Lightbulb /></span>
       <span className="cmux-dashboard-sr-only">{dashboardStrings.attentionNavHint}</span>
     </button>
     <div className="cmux-dash-list-scroll">
@@ -184,7 +184,7 @@ export function DashboardSessionList({
     <Section title={dashboardStrings.sectionOther} count={attentionSections.other.length}>{attentionSections.other.map((card) => row(card, `other-${card.tab.id}`))}</Section>
     </div>
     <div className="cmux-dash-list-footer">
-      {clearDoneCount > 0 ? <button type="button" aria-label={dashboardStrings.clearDoneButton(clearDoneCount)} title={dashboardStrings.clearDoneButton(clearDoneCount)} onClick={onClearDone}><CheckCheck size={15} aria-hidden="true" /> 既読 {clearDoneCount}</button> : null}
+      {clearDoneCount > 0 ? <button type="button" aria-label={dashboardStrings.clearDoneButton(clearDoneCount)} title={dashboardStrings.clearDoneButton(clearDoneCount)} onClick={onClearDone}><CheckCheck aria-hidden="true" /> 既読 {clearDoneCount}</button> : null}
       <DashboardIconButton icon={ArrowLeft} label={dashboardStrings.backToSession} onClick={onClose} />
     </div>
   </div>;

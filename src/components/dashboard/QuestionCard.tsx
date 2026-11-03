@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from "react";
-import { Info, MessageCircleQuestion, MessageSquareReply } from "lucide-react";
+import { Info, MessageSquareReply } from "lucide-react";
 import { DashboardGlyph, DashboardIconButton, DashboardStatusMark } from "./DashboardUi";
 import type { MouseEvent } from "react";
 
@@ -93,7 +93,7 @@ function AskScreenCard({
     onDoubleClick={stop}
   >
     {compact ? null : <div className="cmux-dashboard-qcard-head">
-      <DashboardGlyph icon={MessageCircleQuestion} label={dashboardStrings.liveBriefQuestionLabel} />
+      <DashboardStatusMark state="needsHuman" label={dashboardStrings.liveBriefQuestionLabel} />
       <span>{targetLabel}</span>
     </div>}
     {screen.header ? <div className="cmux-dashboard-qcard-header" data-ask-question-header>{screen.header}</div> : null}
@@ -248,7 +248,7 @@ export function QuestionCard({
     onDoubleClick={stop}
   >
     {compact ? null : <div className="cmux-dashboard-qcard-head">
-      <DashboardGlyph icon={MessageCircleQuestion} label={dashboardStrings.liveBriefQuestionLabel} />
+      <DashboardStatusMark state="needsHuman" label={dashboardStrings.liveBriefQuestionLabel} />
       <span>{targetLabel}</span>
     </div>}
     <div className="cmux-dashboard-qcard-prompt">{model.prompt}</div>
@@ -277,7 +277,7 @@ export function QuestionCard({
         : null}
     </div>}
     {resultText
-      ? <div className={`cmux-dashboard-qcard-result${isInterventionConflict(result) ? " is-error" : ""}`}><DashboardStatusMark state={result?.type === "confirmed" ? "sent" : result?.type === "busy" || result?.type === "writtenAwaitingEvidence" ? "sending" : result?.type === "conflict" || result?.type === "rejectedBeforeWrite" ? "error" : "unknown"} label={resultText} /></div>
+      ? <div className={`cmux-dashboard-qcard-result${isInterventionConflict(result) ? " is-error" : ""}`} title={resultText}><DashboardStatusMark state={result?.type === "confirmed" ? "sent" : result?.type === "busy" || result?.type === "writtenAwaitingEvidence" ? "sending" : result?.type === "conflict" || result?.type === "rejectedBeforeWrite" ? "error" : "unknown"} label={resultText} /></div>
       : null}
   </section>;
 }

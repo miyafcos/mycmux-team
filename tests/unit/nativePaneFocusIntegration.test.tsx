@@ -35,7 +35,7 @@ vi.mock("@xterm/xterm", () => {
     element?: HTMLElement;
     textarea?: HTMLTextAreaElement;
     unicode = { activeVersion: "" };
-    parser = { registerOscHandler: disposable };
+    parser = { registerOscHandler: disposable, registerCsiHandler: disposable, registerEscHandler: disposable };
     buffer = { active: { type: "normal", length: 24, baseY: 0, cursorY: 0, viewportY: 0, getLine: () => undefined } };
     constructor(options: Record<string, unknown>) { this.options = { ...options }; }
     open(container: HTMLElement) {

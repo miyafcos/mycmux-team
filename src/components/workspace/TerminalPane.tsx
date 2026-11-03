@@ -21,7 +21,6 @@ import { useRetainedViews } from "../../lib/retainedViews";
 import { hasTearoutSessionAttachment, useTearoutAttachmentRevision, isTearoutSessionDormant, startDormantTearoutSession, tearoutAttachmentGeneration } from "../../lib/tearout/sessionAttachment";
 import { recordPerf } from "../../lib/perfTimeline";
 import PaneTabBar from "./PaneTabBar";
-import { paneDndStrings } from "./paneDndStrings";
 import { terminalPaneStrings } from "./terminalPaneStrings";
 import XTermWrapper, { hasTerminalBuffer } from "../terminal/XTermWrapper";
 import BrowserPane from "./BrowserPane";
@@ -43,10 +42,8 @@ import { captureTemporaryFocusReturn, focusController, type FocusSource } from "
 import { usePaneHoverFocus } from "../../hooks/usePaneHoverFocus";
 import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
 import { usePaneDragStore } from "../../stores/paneDragStore";
-import { useDetachedDockStore } from "../../stores/detachedDockStore";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { resolveLiveSavepointTargetKind, savepointTargetLabel } from "../../lib/savepointHandoff";
-import { resolvePaneHandoffEligibility } from "../../lib/paneHandoff";
 import { onlineStrings } from "../online/onlineStrings";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { PaneComposer } from "../composer/PaneComposer";
@@ -266,16 +263,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const activeWorkspaceId = useWorkspaceListStore((s) => s.activeWorkspaceId);
   const isPaneVisible = activeWorkspaceId === workspaceId
     && (zoomedPaneId === null || isZoomed);
-  const dragItem = usePaneDragStore((s) => s.item);
-  const handoffDropTarget = usePaneDragStore((s) =>
-    s.target?.kind === "handoff"
-      && s.target.workspaceId === workspaceId
-      && s.target.paneId === pane.id
-      ? s.target
-      : null,
-  );
-  const detachedHandoffTarget = useDetachedDockStore(state => state.target?.kind === "handoff"
-    && state.target.workspaceId === workspaceId && state.target.paneId === pane.id ? state.target : null);
   const savepointDropTarget = useSavepointDragStore((state) =>
     state.target?.mode !== "export"
       && state.target?.workspaceId === workspaceId
@@ -305,34 +292,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const activeTabMetadataProcessTitle = activeTabVolatileMetadata?.processTitle;
   const savepointPaneTargetKind = savepointDragItem
     ? resolveLiveSavepointTargetKind(activeTab, activeTabMetadataAgentKind)
-    : null;
-  const dragSourceTab = useWorkspaceListStore((state) => {
-    if (!dragItem) return undefined;
-    const sourceWorkspace = state.workspaces.find((workspace) => workspace.id === dragItem.workspaceId);
-    const sourcePane = sourceWorkspace?.panes.find((candidate) => candidate.id === dragItem.paneId);
-    if (!sourcePane) return undefined;
-    return dragItem.kind === "tab"
-      ? sourcePane.tabs.find((tab) => tab.id === dragItem.tabId)
-      : (sourcePane.tabs.find((tab) => tab.id === sourcePane.activeTabId) ?? sourcePane.tabs[0]);
-  });
-  const dragSourceMetadata = usePaneMetadataStore((state) =>
-    dragSourceTab ? state.metadata[dragSourceTab.sessionId] : undefined,
-  );
-  const paneHandoffEligibility = dragItem
-    ? resolvePaneHandoffEligibility(
-        {
-          workspaceId: dragItem.workspaceId,
-          paneId: dragItem.paneId,
-          tab: dragSourceTab,
-          metadata: dragSourceMetadata,
-        },
-        {
-          workspaceId,
-          paneId: pane.id,
-          tab: activeTab,
-          metadata: activeTabMetadata,
-        },
-      )
     : null;
   const paneRootRef = useRef<HTMLDivElement>(null);
   const hoverContentRef = useRef<HTMLDivElement>(null);
@@ -505,7 +464,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     const onEnd = (event: PointerEvent): void => {
       if (pendingPaneClickActivationRef.current?.pointerId === event.pointerId) cancelNonTerminalClick();
     };
-    // A drag can clear its store during Escape or handoff before pointer-up.
+    // A drag can clear its store during Escape or drop before pointer-up.
     // Latch cancellation at movement/start, including events outside this root.
     const unsubscribe = usePaneDragStore.subscribe(state => { if (state.item) cancelNonTerminalClick(); });
     window.addEventListener("pointermove", onMove, true);
@@ -873,7 +832,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       data-dnd-workspace-id={workspaceId}
       data-dnd-pane-id={pane.id}
       data-savepoint-drop-pane="true"
-      data-tearout-handoff-active={detachedHandoffTarget ? "true" : undefined}
       data-active-pane={isActive && !isZoomed ? "true" : undefined}
       data-pane-zoomed={isZoomed ? "true" : undefined}
       tabIndex={-1}
@@ -947,7 +905,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       )}
 
       <div ref={hoverContentRef} data-pane-hover-focus-surface={hoverFocusEnabled ? "terminal" : undefined}
-        data-dnd-handoff-surface={isTerminalTab(activeTab) ? "true" : undefined}
         style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative", background: "transparent" }}>
         {activeTab?.type === "online" ? (
           <ErrorBoundary>
@@ -1034,16 +991,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
             }}
           >
             接続中…
-          </div>
-        )}
-        {(paneHandoffEligibility || detachedHandoffTarget) && (
-          <div
-            className={`pane-handoff-drop-chip${handoffDropTarget || detachedHandoffTarget ? " is-active" : ""}`}
-            data-dnd-handoff-target="true"
-          >
-            {paneDndStrings.handoffDropChip(
-              savepointTargetLabel(detachedHandoffTarget?.targetAgentKind ?? paneHandoffEligibility!.targetAgentKind),
-            )}
           </div>
         )}
         {savepointPaneTargetKind && (

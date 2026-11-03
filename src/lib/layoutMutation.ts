@@ -3,7 +3,6 @@ import { reconcileSplitLayoutMetrics, type SplitInsertHint } from "./layoutMetri
 import {
   applyActiveTabFields,
   clearPinIfMissing,
-  resolveMergeActiveTabId,
   withPinnedTabFirst,
 } from "./paneTabState";
 import type { Pane, PaneTab, Workspace } from "../types/workspace";
@@ -103,13 +102,15 @@ function appendAffected(summary: MutationSummary, workspaceId: string): void {
   appendUnique(summary.affectedWorkspaces, workspaceId);
 }
 
-function cleanNonEmptyPane(pane: Pane): Pane {
+function cleanNonEmptyPane(pane: Pane, preferActiveTab = false): Pane {
   const withoutStalePin = clearPinIfMissing(pane);
   const pinned = withoutStalePin.pinnedTabId
     ? withoutStalePin.tabs.find((tab) => tab.id === withoutStalePin.pinnedTabId)
     : undefined;
-  const activeTab = pinned
-    ?? withoutStalePin.tabs.find((tab) => tab.id === withoutStalePin.activeTabId)
+  const currentActiveTab = withoutStalePin.tabs.find((tab) => tab.id === withoutStalePin.activeTabId);
+  const activeTab = (preferActiveTab ? currentActiveTab : undefined)
+    ?? pinned
+    ?? currentActiveTab
     ?? withoutStalePin.tabs[withoutStalePin.tabs.length - 1];
   return withPinnedTabFirst(applyActiveTabFields(withoutStalePin, activeTab));
 }
@@ -119,6 +120,7 @@ function cleanWorkspace(
   previous: Workspace,
   summary: MutationSummary,
   insertHint?: SplitInsertHint,
+  mergeTargetPaneId?: string,
 ): Workspace {
   const nonEmpty = current.panes.filter((pane) => pane.tabs.length > 0);
   let panes: Pane[];
@@ -127,7 +129,8 @@ function cleanWorkspace(
     for (const pane of current.panes) {
       if (!survivingIds.has(pane.id)) appendUnique(summary.removedPanes, pane.id);
     }
-    panes = nonEmpty.map(cleanNonEmptyPane);
+    // A merge selects the incoming anchor; cleanup must not reselect the pin.
+    panes = nonEmpty.map((pane) => cleanNonEmptyPane(pane, pane.id === mergeTargetPaneId));
   } else if (current.panes.length > 0) {
     const retained = current.panes[current.panes.length - 1];
     for (const pane of current.panes.slice(0, -1)) appendUnique(summary.removedPanes, pane.id);
@@ -259,10 +262,9 @@ export function applyLayoutMutation(
     }
     const targetPane = targetWorkspace.panes[targetPaneIndex];
     const tabs = [...targetPane.tabs, ...selectedTabs];
-    const requestedActiveId = selectedSet.has(mutation.anchorTabId)
+    const activeTabId = selectedSet.has(mutation.anchorTabId)
       ? mutation.anchorTabId
       : targetPane.activeTabId;
-    const activeTabId = resolveMergeActiveTabId({ ...targetPane, tabs }, requestedActiveId);
     targetWorkspace.panes[targetPaneIndex] = { ...targetPane, tabs, activeTabId };
   } else if ("split" in mutation.to) {
     const split = mutation.to.split;
@@ -342,7 +344,10 @@ export function applyLayoutMutation(
       const previous = originalsById.get(workspace.id);
       if (!previous) return workspace;
       const hint = workspace.id === mutation.to.workspaceId ? insertHint : undefined;
-      return cleanWorkspace(workspace, previous, summary, hint);
+      const mergeTargetPaneId = workspace.id === mutation.to.workspaceId && selectedSet.has(mutation.anchorTabId)
+        ? targetPaneId
+        : undefined;
+      return cleanWorkspace(workspace, previous, summary, hint, mergeTargetPaneId);
     }),
     summary,
   };

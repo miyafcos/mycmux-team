@@ -26,19 +26,40 @@ describe("dashboard icon presentation", () => {
     expect(onClick).toHaveBeenCalledOnce();
   });
 
-  it("distinguishes every dashboard state by SVG geometry, with a name for each", async () => {
-    const states: DashboardDisplayState[] = ["needsHuman", "error", "running", "noUpdate", "done", "acknowledged", "idle", "stopped", "delegated", "delegationUnknown", "unknown"];
+  it("distinguishes the visible A states by unframed SVG geometry and preserves each name", async () => {
+    const states: DashboardDisplayState[] = ["needsHuman", "error", "running", "done", "acknowledged", "idle", "stopped", "delegated", "delegationUnknown"];
     await act(async () => root.render(<>{states.map(state => <DashboardStatusMark key={state} state={state} />)}</>));
     const markers = [...host.querySelectorAll("[data-dashboard-status]")];
     expect(markers).toHaveLength(states.length);
     const shapes = markers.map(marker => {
-      const image = marker.querySelector("[role=img]")!;
-      expect(image.getAttribute("aria-label")?.trim()).toBeTruthy();
-      expect(image.getAttribute("title")).toBe(image.getAttribute("aria-label"));
-      expect(image.textContent).toBe("");
-      return image.querySelector("svg")!.innerHTML;
+      expect(marker.getAttribute("aria-label")?.trim()).toBeTruthy();
+      expect(marker.getAttribute("title")).toBe(marker.getAttribute("aria-label"));
+      expect(marker.textContent).toBe("");
+      expect(marker.querySelector("svg")?.getAttribute("class")).not.toMatch(/circle-help|circle-check|circle-dashed|circle-x|message-circle-question/);
+      return marker.querySelector("svg")!.innerHTML;
     });
     expect(new Set(shapes).size).toBe(states.length);
+  });
+
+  it("keeps unknown and elapsed-only stalled states named without drawing a mark", async () => {
+    await act(async () => root.render(<><DashboardStatusMark state="unknown" /><DashboardStatusMark state="noUpdate" hasElapsed /></>));
+    const markers = [...host.querySelectorAll("[data-dashboard-status]")];
+    expect(markers).toHaveLength(2);
+    for (const marker of markers) {
+      expect(marker.querySelector("svg,.cmux-dashboard-status-dot")).toBeNull();
+      expect(marker.getAttribute("aria-label")?.trim()).toBeTruthy();
+      expect(marker.getAttribute("title")).toBe(marker.getAttribute("aria-label"));
+      expect(marker.classList.contains("cmux-dashboard-sr-only")).toBe(true);
+    }
+  });
+
+  it("uses readable hover-named text for a stalled location without an elapsed time", async () => {
+    await act(async () => root.render(<DashboardStatusMark state="noUpdate" label="No recent update" />));
+    const marker = host.querySelector("[data-dashboard-status]")!;
+    expect(marker.textContent).toBe(dashboardStrings.stateNoUpdate);
+    expect(marker.getAttribute("aria-label")).toBe("No recent update");
+    expect(marker.getAttribute("title")).toBe("No recent update");
+    expect(marker.querySelector("svg")).toBeNull();
   });
 
   it("hides a zero count and preserves the meaning of a positive count without visible prose", async () => {
@@ -54,4 +75,12 @@ it("uses the same working shape for the watch row and recipient vocabulary", asy
   const shapes = [...host.querySelectorAll("[data-dashboard-status] svg")].map(icon => icon.innerHTML);
   expect(shapes).toHaveLength(3);
   expect(new Set(shapes).size).toBe(1);
+});
+
+it("keeps zero acquired visible when a target total exists", async () => {
+  await act(async () => root.render(<DashboardCount count={0} total={2} label="0 of 2 sources acquired" />));
+  const count = host.querySelector("[role=img]")!;
+  expect(count.textContent).toBe("0 / 2");
+  expect(count.getAttribute("aria-label")).toBe("0 of 2 sources acquired");
+  expect(count.getAttribute("title")).toBe("0 of 2 sources acquired");
 });

@@ -631,47 +631,38 @@ it("O2 retains a bound detach intent across a conflicting final dock frame", asy
 });
 
 
-describe("F1 authoritative handoff conversation before request delivery", () => {
-  it.each([false, true])("review handoff accepts stable recipient geometry and rejects movement: moved=%s", async moved => {
-    pane.dataset.dndHandoffSurface = "true";
-    usePaneMetadataStore.setState({ metadata: { "pty-live": { agentKind: "codex", agentSessionId: "selected-conversation" } } });
-    const id = `review-handoff-${moved}`;
-    dispatch("mycmux://tearout-handoff-context", { id, mode: "dock", label: "child", sourceWindow: "child", endpoint: {
-      workspaceId: "source", paneId: "source-pane", tab: { id: "source-tab", sessionId: "source-pty", agentId: "shell", type: "terminal" },
-      metadata: { agentKind: "claude", agentSessionId: "source-conversation", cwd: "C:/demo/source" } } });
-    const original = mocks.invoke.getMockImplementation()!;
-    mocks.invoke.mockImplementation((command: string, args: any) => command === "publish_savepoint" ? Promise.resolve({ bundle_dir: "C:/demo/bundle" })
-      : command === "join_savepoint_summary" ? Promise.resolve({ handoff_path: "C:/demo/bundle/handoff.md", cwd_missing: false }) : original(command, args));
-    const release = frame(id); await request(release); await finishPaint();
-    const decision = mocks.decisions[0]; expect(decision.target.kind).toBe("handoff");
-    if (moved) pane.getBoundingClientRect = () => new DOMRect(20, 30, 300, 240);
-    dispatch("mycmux://tearout-handoff-request", { id, token: id, requester: "child", approval: {
-      receiver: "main", token: release.token, target: decision.target, release_id: id, layout_revision: decision.layoutRevision } });
-    await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith("child", "mycmux://tearout-handoff-result", { token: id, ok: !moved }));
-    expect(mocks.invoke.mock.calls.filter(([command]) => command === "write_to_session")).toHaveLength(moved ? 0 : 1);
-  });
-  it.each(["changed", "unchanged", "unknown"] as const)("keeps the selected recipient for %s conversation", async identity => {
-    pane.dataset.dndHandoffSurface = "true";
-    usePaneMetadataStore.setState({ metadata: { "pty-live": { agentKind: "codex",
-      ...(identity === "unknown" ? {} : { agentSessionId: "selected-conversation" }) } } });
-    const endpoint = { workspaceId: "source", paneId: "source-pane", tab: { id: "source-tab", sessionId: "source-pty", agentId: "shell", type: "terminal" },
-      metadata: { agentKind: "claude", agentSessionId: "source-conversation", cwd: "C:/demo/source" } };
-    dispatch("mycmux://tearout-handoff-context", { id: "release", mode: "dock", label: "child", sourceWindow: "child", endpoint });
-    const originalInvoke = mocks.invoke.getMockImplementation()!;
-    mocks.invoke.mockImplementation(async (command: string, args: any) => {
-      if (command === "publish_savepoint") return { bundle_dir: "C:/demo/bundle" };
-      if (command === "join_savepoint_summary") return { handoff_path: "C:/demo/bundle/handoff.md", cwd_missing: false };
-      return originalInvoke(command, args);
-    });
-    const release = frame(); await request(release); await finishPaint();
-    const target = mocks.decisions[0].target;
-    expect(target.kind).toBe("handoff");
-    if (identity === "changed") usePaneMetadataStore.setState({ metadata: { "pty-live": { agentKind: "codex", agentSessionId: "replacement-conversation" } } });
-    dispatch("mycmux://tearout-handoff-request", { id: release.id, token: "handoff-request", requester: "child",
-      approval: { receiver: "main", token: release.token, target, release_id: release.id, layout_revision: mocks.decisions[0].layoutRevision } });
-    await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith("child", "mycmux://tearout-handoff-result",
-      { token: "handoff-request", ok: identity !== "changed" }));
-    expect(mocks.invoke.mock.calls.filter(([command]) => command === "write_to_session")).toHaveLength(identity === "changed" ? 0 : 1);
-    if (identity === "changed") expect(useToastStore.getState().toasts.some(toast => toast.kind === "warning")).toBe(true);
+describe("native agent center and header merges", () => {
+  it.each([["center", false], ["center", true], ["header", false], ["header", true]] as const)(
+    "adopts and activates the incoming agent tab via %s while preserving the destination pin, pinned=%s", async (zone, pinned) => {
+    const receiver = useWorkspaceListStore.getState().workspaces[0].panes[0];
+    if (pinned) receiver.pinnedTabId = "t";
+    usePaneMetadataStore.setState({ metadata: {
+      "pty-live": { agentKind: "codex", agentSessionId: "recipient-conversation" },
+      "pty-incoming-agent": { agentKind: "claude", agentSessionId: "source-conversation", cwd: "C:/demo/source" },
+    } });
+    const release = frame(`agent-${zone}-${pinned}`, 150, zone === "header" ? 45 : 150);
+    await request(release); await finishPaint();
+    const decision = mocks.decisions[0];
+    expect(decision.target).toEqual(zone === "header"
+      ? { kind: "tab-index", workspaceId: "w", paneId: "p", index: 1 }
+      : { kind: "pane-zone", workspaceId: "w", paneId: "p", zone: "center" });
+    const cfg = toTransferConfig(workspace("incoming-agent"));
+    Object.assign(cfg.panes[0], { pane_id: "incoming-pane", active_tab_id: "incoming-agent", session_id: "pty-incoming-agent" });
+    Object.assign(cfg.panes[0].tabs![0], { tab_id: "incoming-agent", session_id: "pty-incoming-agent",
+      agent_kind: "claude", agent_session_id: "source-conversation", cwd: "C:/demo/source" });
+    const placement = zone === "header" ? { ...decision.target, kind: "pane" } : decision.target;
+    const token = `agent-delivery-${zone}-${pinned}`;
+    dispatch("mycmux://tearout-delivery", { token, source: "child", configs: [cfg], placement,
+      approval: { receiver: "main", token: release.token, target: decision.target, release_id: release.id, layout_revision: decision.layoutRevision },
+      activeSessionId: "pty-incoming-agent", liveSessions: ["pty-incoming-agent"] });
+    await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith("child", "mycmux://tearout-receipt", {
+      token, ok: true }), { timeout: 3000 });
+    const list = useWorkspaceListStore.getState();
+    const merged = list.getWorkspace("w")!.panes[0];
+    expect(merged.tabs.map(tab => tab.id)).toEqual(["t", "incoming-agent"]);
+    expect(merged.activeTabId).toBe("incoming-agent"); expect(merged.sessionId).toBe("pty-incoming-agent");
+    expect(merged.pinnedTabId).toBe(pinned ? "t" : undefined);
+    expect(list.activeWorkspaceId).toBe("w"); expect(useUiStore.getState().activePaneId).toBe("pty-incoming-agent");
+    expect(mocks.invoke.mock.calls.some(([cmd]) => cmd === "publish_savepoint" || cmd === "tearout_restore_geometry")).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent, RefObject } from "react";
-import { ArrowUp, CircleHelp, Info, Send, Target } from "lucide-react";
+import { ArrowUp, MessageSquareReply, Info, Send, Target } from "lucide-react";
 import { DashboardCount, DashboardGlyph, DashboardIconButton, DashboardStatusMark } from "./DashboardUi";
 
 import { handleSocketCommand } from "../layout/socketCommands";
@@ -628,7 +628,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
         className="cmux-dashboard-composer-send"
         style={{ opacity: canSubmit ? 1 : 0.55 }}
         onClick={() => void submit()}
-      ><ArrowUp size={18} aria-hidden="true" /><span>送信</span></button>
+      ><ArrowUp aria-hidden="true" /><span>送信</span></button>
     </div>
     {menuOpen ? <div className="cmux-dashboard-mention-menu" role="listbox" aria-label={dashboardStrings.mentionMenuAriaLabel}>
       {menuCandidates.length ? menuCandidates.map((candidate, index) => <button
@@ -640,11 +640,11 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
         onPointerDown={(event: ReactPointerEvent<HTMLButtonElement>) => { event.preventDefault(); selectMenuCandidate(candidate); }}
       >
         <span>@{candidate.label}</span>
-        <small>{candidate.kind === "working-all" ? null : candidate.workspaceName}<DashboardStatusMark state={candidate.displayState} label={candidate.statusLabel} /></small>
+        <small title={candidate.statusLabel}>{candidate.kind === "working-all" ? null : candidate.workspaceName}<DashboardStatusMark state={candidate.displayState} label={candidate.statusLabel} /></small>
       </button>) : <div className="cmux-dashboard-mention-menu-empty">{dashboardStrings.mentionNoMatches}</div>}
     </div> : null}
     {tokens.length ? <div className="cmux-dashboard-status-templates" aria-label={dashboardStrings.statusTemplatesAriaLabel}>
-      <DashboardIconButton icon={CircleHelp} label={dashboardStrings.statusTemplateWhat} disabled={!sessionId || sending} onClick={() => { if (sessionId) { setDraft(sessionId, dashboardStrings.statusTemplateWhat); setCommandKind(sessionId, "status-request"); } }} />
+      <DashboardIconButton icon={MessageSquareReply} label={dashboardStrings.statusTemplateWhat} disabled={!sessionId || sending} onClick={() => { if (sessionId) { setDraft(sessionId, dashboardStrings.statusTemplateWhat); setCommandKind(sessionId, "status-request"); } }} />
       <DashboardIconButton icon={Target} label={dashboardStrings.statusTemplateGoal} disabled={!sessionId || sending} onClick={() => { if (sessionId) { setDraft(sessionId, dashboardStrings.statusTemplateGoal); setCommandKind(sessionId, "status-request"); } }} />
     </div> : null}
     {batch ? <div className="cmux-dashboard-dispatch-results" aria-label={dashboardStrings.dispatchResultsAriaLabel}>
@@ -652,7 +652,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
       {batch.members.map((member) => {
         const delivery = batch.deliveries[memberKey(member)];
         const current = mentionCandidates.find((candidate) => candidate.kind === "session" && candidate.logicalSessionId === member.logicalSessionId && candidate.sessionId === member.sessionId);
-        return <div key={memberKey(member)} className={`cmux-dashboard-dispatch-result is-${delivery.state}`}>
+        return <div key={memberKey(member)} className={`cmux-dashboard-dispatch-result is-${delivery.state}`} title={`${deliveryLabel(delivery.state)} — ${delivery.detail}`}>
           <DashboardStatusMark state={delivery.state === "confirmed" ? "sent" : delivery.state === "pending" ? "sending" : delivery.state === "unconfirmed" ? "unknown" : "error"} label={`${deliveryLabel(delivery.state)} — ${delivery.detail}`} />
           <span>@{current && current.kind === "session" ? current.label : member.label}</span>
 
@@ -661,7 +661,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
       {retryCount ? <button type="button" aria-label={dashboardStrings.dispatchRetryFailed(retryCount)} title={dashboardStrings.dispatchRetryFailed(retryCount)} disabled={sending} onClick={() => void retryFailed()}>再送 {retryCount}</button> : null}
     </div> : null}
     {noteText
-      ? <div role={noteIsError ? "alert" : "status"} aria-live={noteIsError ? "assertive" : "polite"} className={`cmux-dashboard-composer-note${noteIsError ? " is-error" : ""}`}><DashboardStatusMark state={noteIsError ? "error" : noteText === dashboardStrings.sendConfirmedOnScreen ? "sent" : "unknown"} label={noteText} /></div>
+      ? <div role={noteIsError ? "alert" : "status"} aria-live={noteIsError ? "assertive" : "polite"} className={`cmux-dashboard-composer-note${noteIsError ? " is-error" : ""}`} title={noteText}><DashboardStatusMark state={noteIsError ? "error" : noteText === dashboardStrings.sendConfirmedOnScreen ? "sent" : "unknown"} label={noteText} /></div>
       : null}
   </div>;
 }

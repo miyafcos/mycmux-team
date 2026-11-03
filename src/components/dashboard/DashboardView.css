@@ -354,3 +354,6 @@
   .cmux-dashboard-chat-columns[data-dashboard-chat-cap-pulse] .cmux-dashboard-chat-column,
   .cmux-dashboard-chat-columns[data-dashboard-chat-cap-pulse] .cmux-dashboard-chat-drop-capped { animation: none; transform: none; }
 }
+
+
+.cmux-dashboard-contract-rows { grid-template-columns: minmax(0, 1fr); }

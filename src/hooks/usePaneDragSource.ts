@@ -18,14 +18,11 @@ import { TearoutRecord } from "../lib/tearout/record";
 import { windowLabel } from "../lib/windowContext";
 import {
   isPaneDropTargetEligible,
-  prioritizePaneHandoffDropTarget,
   resolvePaneDropZone,
   resolvePaneHeaderTarget,
   paneHeaderInsertionIndex,
 } from "../lib/paneHandoff";
 import { selectPaneHeaderTab } from "../lib/workspaceRestore";
-import { capturePaneHandoffSource, resolvePaneHandoffContext as resolveHandoffContext,
-  commitPaneHandoffContext } from "../lib/paneHandoffRuntime";
 import { paneDndStrings } from "../components/workspace/paneDndStrings";
 import { useToastStore } from "../stores/toastStore";
 import { createPaneMoveRequest, executePaneMove } from "../lib/paneMoveOperation";
@@ -69,10 +66,6 @@ function getFocusSessionId(item: PaneDragItem): string | null {
   return activeTab?.sessionId ?? pane.sessionId;
 }
 
-function resolvePaneHandoffContext(item: PaneDragItem, targetWorkspaceId: string, targetPaneId: string) {
-  return resolveHandoffContext(capturePaneHandoffSource(item), targetWorkspaceId, targetPaneId);
-}
-
 export function canDropTarget(item: PaneDragItem, target: PaneDropTarget): boolean {
   const listState = useWorkspaceListStore.getState();
   const sourceWorkspace = listState.getWorkspace(item.workspaceId);
@@ -94,11 +87,6 @@ export function canDropTarget(item: PaneDragItem, target: PaneDropTarget): boole
     if (item.kind === "tab") return transferable(item.tabId);
     return target.kind === "new-workspace" ? item.tabIds.some(transferable)
       : item.tabIds.length > 0 && item.tabIds.every(transferable);
-  }
-
-  if (target.kind === "handoff") {
-    if (item.kind === "tab-bundle") return false;
-    return resolvePaneHandoffContext(item, target.workspaceId, target.paneId) !== null;
   }
 
   if (target.kind === "tab-index") {
@@ -159,26 +147,9 @@ export function resolveDropTargetAtPoint(x: number, y: number, item: PaneDragIte
     };
     return canDropTarget(item, target) ? target : null;
   }
-  const handoffElement = element?.closest<HTMLElement>("[data-dnd-handoff-target='true']");
-  const handoffPaneElement = handoffElement?.closest<HTMLElement>(
-    "[data-dnd-workspace-id][data-dnd-pane-id]",
-  );
-  const handoffWorkspaceId = handoffPaneElement?.getAttribute("data-dnd-workspace-id");
-  const handoffPaneId = handoffPaneElement?.getAttribute("data-dnd-pane-id");
-  const handoffTarget = handoffWorkspaceId && handoffPaneId
-    && resolvePaneHandoffContext(item, handoffWorkspaceId, handoffPaneId)
-    ? {
-        kind: "handoff" as const,
-        workspaceId: handoffWorkspaceId,
-        paneId: handoffPaneId,
-      }
-    : null;
-
-  let fallbackTarget: PaneDropTarget | null = null;
   if (element?.closest("[data-dnd-new-workspace-target='true']")) {
     const target = { kind: "new-workspace" as const };
-    fallbackTarget = canDropTarget(item, target) ? target : null;
-    return prioritizePaneHandoffDropTarget(Boolean(handoffElement), handoffTarget, fallbackTarget);
+    return canDropTarget(item, target) ? target : null;
   }
 
   // Resolve the heading before the body zones, so an OFF tearout setting does
@@ -192,15 +163,11 @@ export function resolveDropTargetAtPoint(x: number, y: number, item: PaneDragIte
   }
 
   const paneElement = element?.closest<HTMLElement>("[data-dnd-workspace-id][data-dnd-pane-id]");
-  if (!paneElement) {
-    return prioritizePaneHandoffDropTarget(Boolean(handoffElement), handoffTarget, null);
-  }
+  if (!paneElement) return null;
 
   const workspaceId = paneElement.getAttribute("data-dnd-workspace-id");
   const paneId = paneElement.getAttribute("data-dnd-pane-id");
-  if (!workspaceId || !paneId) {
-    return prioritizePaneHandoffDropTarget(Boolean(handoffElement), handoffTarget, null);
-  }
+  if (!workspaceId || !paneId) return null;
 
   const prior = usePaneDragStore.getState().target;
   const previousZone = prior?.kind === "pane"
@@ -211,19 +178,13 @@ export function resolveDropTargetAtPoint(x: number, y: number, item: PaneDragIte
     : "center";
   const zone = resolvePaneDropZone(paneElement.getBoundingClientRect(), x, y, previousZone);
   const target = { kind: "pane" as const, workspaceId, paneId, zone };
-  fallbackTarget = canDropTarget(item, target) ? target : null;
-  return prioritizePaneHandoffDropTarget(Boolean(handoffElement), handoffTarget, fallbackTarget);
+  return canDropTarget(item, target) ? target : null;
 }
 
 function commitMinimapPaneMove(item: PaneDragItem, target: Extract<PaneDropTarget, { kind: "pane" }>): void {
   executePaneMove(createPaneMoveRequest(item, {
     kind: "split", workspaceId: target.workspaceId, paneId: target.paneId, zone: target.zone, atomic: true,
   }));
-}
-
-async function commitPaneHandoff(item: PaneDragItem,
-  target: Extract<PaneDropTarget, { kind: "handoff" }>): Promise<void> {
-  await commitPaneHandoffContext(resolvePaneHandoffContext(item, target.workspaceId, target.paneId));
 }
 
 function moveDragItemToNewWorkspace(
@@ -320,11 +281,6 @@ export function commitPaneDragDrop(
     if (target.kind === "pane") commitMinimapPaneMove(item, target);
     else if (target.kind === "new-workspace") moveMinimapItemToNewWorkspace(item);
     else if (target.kind === "new-window") tearOutPaneToNewWindow(item, focusSessionId, target, trace);
-    return;
-  }
-
-  if (target.kind === "handoff") {
-    void commitPaneHandoff(item, target);
     return;
   }
 

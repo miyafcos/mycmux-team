@@ -155,7 +155,7 @@ describe("applyLayoutMutation", () => {
     assertWellFormed(workspaces, []);
   });
 
-  it("chooses the last successor and clears or honors pins", () => {
+  it("chooses the last successor and activates incoming tabs while preserving destination pins", () => {
     const source = fixture();
     source[0].panes[0] = makePane("a1", ["t1", "t2", "t7"], "t2");
     source[0].splitColumns = [["a1", "a2"], ["a3"]];
@@ -173,8 +173,41 @@ describe("applyLayoutMutation", () => {
       to: { workspaceId: "b", paneId: "b1" }, sourceLayoutRevision: 2,
     }, 2).workspaces;
     expect(moved[0].panes[0].pinnedTabId).toBeUndefined();
-    expect(moved[1].panes[0]).toMatchObject({ pinnedTabId: "t5", activeTabId: "t5", sessionId: "session-t5" });
+    expect(moved[1].panes[0]).toMatchObject({ pinnedTabId: "t5", activeTabId: "t1", sessionId: "session-t1" });
     assertWellFormed(moved, ["t1", "t2", "t3", "t4", "t5", "t6"]);
+  });
+
+  it.each([false, true])("keeps a pinned destination first while activating a bundle anchor, crossWorkspace=%s", (crossWorkspace) => {
+    const input = fixture();
+    input[0].panes[0] = makePane("a1", ["t1", "t2"], "t2", "t1");
+    input[0].panes[1] = makePane("a2", ["t3", "t7"], "t7", "t3");
+    input[1].panes[0] = makePane("b1", ["t5", "t6"], "t6", "t5");
+    const { workspaces, summary } = applyLayoutMutation(input, {
+      kind: "move-tabs", operationId: "pinned-bundle", tabIds: ["t2", "t1"], anchorTabId: "t2",
+      to: crossWorkspace ? { workspaceId: "b", paneId: "b1" } : { workspaceId: "a", paneId: "a2" },
+      sourceLayoutRevision: 2,
+    }, 2);
+    const target = crossWorkspace ? workspaces[1].panes[0] : workspaces[0].panes.find((pane) => pane.id === "a2")!;
+    expect(target).toMatchObject({
+      pinnedTabId: crossWorkspace ? "t5" : "t3", activeTabId: "t2", sessionId: "session-t2", agentId: "agent-t2",
+    });
+    expect(target.tabs.map((tab) => tab.id)).toEqual(crossWorkspace ? ["t5", "t6", "t1", "t2"] : ["t3", "t7", "t1", "t2"]);
+    expect(summary.moved).toEqual(["t1", "t2"]);
+    expect(workspaces[0].panes.some((pane) => pane.id === "a1")).toBe(false);
+    assertWellFormed(workspaces, ["t1", "t2", "t3", "t4", "t5", "t6", "t7"]);
+  });
+
+  it("retains pin selection during close cleanup and at the move source", () => {
+    const input = fixture();
+    input[0].panes[0] = makePane("a1", ["t1", "t2", "t7"], "t7", "t1");
+    const closed = applyLayoutMutation(input, { kind: "close-tabs", operationId: "close-pinned", tabIds: ["t2"] }, 0).workspaces;
+    expect(closed[0].panes[0]).toMatchObject({ pinnedTabId: "t1", activeTabId: "t1", sessionId: "session-t1" });
+    const moved = applyLayoutMutation(input, {
+      kind: "move-tabs", operationId: "source-pin", tabIds: ["t2"], anchorTabId: "t2",
+      to: { workspaceId: "b", paneId: "b1" }, sourceLayoutRevision: 2,
+    }, 2).workspaces;
+    expect(moved[0].panes[0]).toMatchObject({ pinnedTabId: "t1", activeTabId: "t1", sessionId: "session-t1" });
+    expect(moved[1].panes[0]).toMatchObject({ activeTabId: "t2", pinnedTabId: undefined });
   });
 
   it("rejects stale revisions without changing layout", () => {

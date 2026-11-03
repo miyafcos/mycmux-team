@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { restoreWorkspaceConfigs } from "../../src/lib/workspaceRestore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { useUiStore } from "../../src/stores/uiStore";
 import type { WorkspaceConfig } from "../../src/lib/ipc";
 import type { DetachedReturnTarget } from "../../src/lib/detachedPane";
 import type { Pane, Workspace } from "../../src/types";
@@ -29,7 +30,7 @@ describe("detached pane placement adoption", () => {
     ["right", [["target", "below"], ["incoming"], ["neighbor"]]],
     ["up", [["incoming", "target", "below"], ["neighbor"]]],
     ["down", [["target", "incoming", "below"], ["neighbor"]]],
-  ] as const)("adopts terminal and PDF at %s with selection changed only for a header drop", (zone, columns) => {
+  ] as const)("adopts terminal and PDF at %s with selection changed for header and center drops", (zone, columns) => {
     const placement: DetachedReturnTarget = zone === "index"
       ? { kind: "pane", workspaceId: "destination", paneId: "target", index: 0 }
       : { kind: "pane-zone", workspaceId: "destination", paneId: "target", zone };
@@ -40,13 +41,34 @@ describe("detached pane placement adoption", () => {
     expect(store.workspaces).toHaveLength(1); expect(store.activeWorkspaceId).toBe("destination");
     expect(ws.splitColumns).toEqual(columns);
     const target = ws.panes.find((pane) => pane.id === "target")!;
-    expect(target.activeTabId).toBe(zone === "index" ? "pdf" : "target-tab"); expect(target.sessionId).toBe(zone === "index" ? "pty-pdf" : "pty-target");
+    const merged = zone === "index" || zone === "center";
+    expect(target.activeTabId).toBe(merged ? "pdf" : "target-tab"); expect(target.sessionId).toBe(merged ? "pty-pdf" : "pty-target");
     const receiving = ws.panes.find((pane) => pane.tabs.some((tab) => tab.id === "pdf"))!;
     expect(receiving.tabs.find((tab) => tab.id === "terminal")!.sessionId).toBe("pty-carried");
     expect(receiving.tabs.find((tab) => tab.id === "pdf")).toMatchObject({ type: "browser", sourceKind: "pdf", htmlPath: "C:/preview.html" });
     if (zone === "index") expect(receiving.tabs.map((tab) => tab.id)).toEqual(["target-tab", "terminal", "pdf"]);
     else if (zone === "center") expect(receiving.tabs.map((tab) => tab.id)).toEqual(["target-tab", "terminal", "pdf"]);
     else { expect(receiving.tabs.map((tab) => tab.id)).toEqual(["terminal", "pdf"]); expect(receiving.activeTabId).toBe("pdf"); }
+  });
+
+  it.each([["center", false], ["center", true], ["header", false], ["header", true]] as const)(
+    "selects a %s return without switching the working workspace, pinned=%s", (zone, pinned) => {
+    const destination = useWorkspaceListStore.getState().workspaces[0];
+    if (pinned) destination.panes[0].pinnedTabId = "target-tab";
+    useWorkspaceListStore.setState({ workspaces: [destination, { ...destination, id: "working", panes: [pane("working")] }], activeWorkspaceId: "working" });
+    useUiStore.setState({ activePaneId: "pty-working" });
+    const result = restoreWorkspaceConfigs([incoming()], { dockDetached: true, activeWorkspaceId: "transfer", placementByWorkspaceId: {
+      transfer: zone === "header"
+        ? { kind: "pane", workspaceId: "destination", paneId: "target", index: 0 }
+        : { kind: "pane-zone", workspaceId: "destination", paneId: "target", zone: "center" },
+    } });
+    const store = useWorkspaceListStore.getState();
+    const target = store.getWorkspace("destination")!.panes[0];
+    expect(target.activeTabId).toBe("pdf"); expect(target.sessionId).toBe("pty-pdf");
+    expect(target.pinnedTabId).toBe(pinned ? "target-tab" : undefined);
+    expect(target.tabs.map(tab => tab.id)).toEqual(["target-tab", "terminal", "pdf"]);
+    expect(result.activePaneSessionId).toBe("pty-pdf");
+    expect(store.activeWorkspaceId).toBe("working"); expect(useUiStore.getState().activePaneId).toBe("pty-working");
   });
 
   it("allocates a fresh pane ID if the returning pane ID already exists", () => {

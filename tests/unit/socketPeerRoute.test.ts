@@ -124,6 +124,7 @@ afterEach(() => {
 
 const routes: Array<[string, Record<string, unknown>]> = [
   ["pane.read", { sessionId: "peer-target-pty", lines: 3 }],
+  ["pane.screen", { session_id: "peer-target-pty", scrollback: 20 }],
   ["pane.send_text", { session_id: "peer-target-pty", text: "hello", expected_input_revision: 8 }],
   ["pane.close_tab", { sessionId: "peer-target-pty" }],
   ["pane.rename_tab", { session_id: "peer-target-pty", label: "renamed" }],
@@ -168,7 +169,7 @@ describe("explicit control API targets in another window", () => {
     expect(mocks.write).not.toHaveBeenCalled(); expect(mocks.kill).not.toHaveBeenCalled(); expect(mocks.buffer).not.toHaveBeenCalled();
     expect(mocks.unlisten).toHaveBeenCalledOnce();
   });
-  it.each(["pane.read", "pane.send_text", "pane.close_tab"])("rejects missing and ambiguous owners for %s before dispatch", async cmd => {
+  it.each(["pane.read", "pane.screen", "pane.send_text", "pane.close_tab"])("rejects missing and ambiguous owners for %s before dispatch", async cmd => {
     const args = { sessionId: "peer-target-pty", text: "hello" };
     mocks.fragments.mockResolvedValue([fragment(), fragment("mycmux-w3")]);
     await expect(handleSocketCommand(cmd, args)).rejects.toThrow("conflicting window owners");

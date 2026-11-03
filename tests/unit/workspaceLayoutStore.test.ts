@@ -230,7 +230,7 @@ describe("workspaceLayoutStore structural moves", () => {
 });
 
 describe("workspaceLayoutStore pinned tabs", () => {
-  it("keeps display ownership when a tab is dropped into a pinned pane (same workspace)", () => {
+  it("activates a dropped tab while preserving the destination pin (same workspace)", () => {
     setWorkspaces([
       workspace(
         "source",
@@ -242,15 +242,15 @@ describe("workspaceLayoutStore pinned tabs", () => {
     useWorkspaceLayoutStore.getState().moveTabToPane("source", "pane-a", "a2", "source", "pane-b");
 
     expect(getPane("source", "pane-b")).toMatchObject({
-      activeTabId: "b1",
-      sessionId: "session-b1",
-      agentId: "agent-b1",
+      activeTabId: "a2",
+      sessionId: "session-a2",
+      agentId: "agent-a2",
       pinnedTabId: "b1",
     });
     expect(getPane("source", "pane-b").tabs.map((candidate) => candidate.id)).toEqual(["b1", "b2", "a2"]);
   });
 
-  it("keeps display ownership when a tab is dropped into a pinned pane (cross workspace)", () => {
+  it("activates a dropped tab while preserving the destination pin (cross workspace)", () => {
     setWorkspaces([
       workspace("source", [pane("pane-a", ["a1", "a2"])], [["pane-a"]]),
       workspace("target", [pane("pane-c", ["c1", "c2"], "c2", "c1")], [["pane-c"]]),
@@ -259,15 +259,15 @@ describe("workspaceLayoutStore pinned tabs", () => {
     useWorkspaceLayoutStore.getState().moveTabToPane("source", "pane-a", "a2", "target", "pane-c");
 
     expect(getPane("target", "pane-c")).toMatchObject({
-      activeTabId: "c1",
-      sessionId: "session-c1",
-      agentId: "agent-c1",
+      activeTabId: "a2",
+      sessionId: "session-a2",
+      agentId: "agent-a2",
       pinnedTabId: "c1",
     });
     expect(getPane("target", "pane-c").tabs.map((candidate) => candidate.id)).toEqual(["c1", "c2", "a2"]);
   });
 
-  it("keeps display ownership when a pane is merged into a pinned pane (same workspace)", () => {
+  it("activates the merged pane's active tab while preserving the destination pin (same workspace)", () => {
     setWorkspaces([
       workspace(
         "source",
@@ -279,15 +279,15 @@ describe("workspaceLayoutStore pinned tabs", () => {
     useWorkspaceLayoutStore.getState().movePaneToPane("source", "pane-a", "source", "pane-b");
 
     expect(getPane("source", "pane-b")).toMatchObject({
-      activeTabId: "b1",
-      sessionId: "session-b1",
-      agentId: "agent-b1",
+      activeTabId: "a2",
+      sessionId: "session-a2",
+      agentId: "agent-a2",
       pinnedTabId: "b1",
     });
     expect(getPane("source", "pane-b").tabs.map((candidate) => candidate.id)).toEqual(["b1", "b2", "a1", "a2"]);
   });
 
-  it("keeps display ownership when a pane is merged into a pinned pane (cross workspace)", () => {
+  it("activates the merged pane's active tab while preserving the destination pin (cross workspace)", () => {
     setWorkspaces([
       workspace("source", [pane("pane-a", ["a1", "a2"]), pane("pane-z", ["z1"])], [["pane-a", "pane-z"]]),
       workspace("target", [pane("pane-c", ["c1", "c2"], "c2", "c1")], [["pane-c"]]),
@@ -296,9 +296,9 @@ describe("workspaceLayoutStore pinned tabs", () => {
     useWorkspaceLayoutStore.getState().movePaneToPane("source", "pane-a", "target", "pane-c");
 
     expect(getPane("target", "pane-c")).toMatchObject({
-      activeTabId: "c1",
-      sessionId: "session-c1",
-      agentId: "agent-c1",
+      activeTabId: "a2",
+      sessionId: "session-a2",
+      agentId: "agent-a2",
       pinnedTabId: "c1",
     });
     expect(getPane("target", "pane-c").tabs.map((candidate) => candidate.id)).toEqual(["c1", "c2", "a1", "a2"]);

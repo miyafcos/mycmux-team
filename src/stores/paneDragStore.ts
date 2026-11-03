@@ -84,11 +84,6 @@ export type PaneDropTarget =
       kind: "new-window";
       screenX: number;
       screenY: number;
-    }
-  | {
-      kind: "handoff";
-      workspaceId: string;
-      paneId: string;
     };
 
 interface PointerPosition {
@@ -117,8 +112,6 @@ export function samePaneDropTarget(a: PaneDropTarget | null, b: PaneDropTarget |
       return b.kind === "new-workspace" && a.surface === b.surface;
     case "new-window":
       return b.kind === "new-window" && a.screenX === b.screenX && a.screenY === b.screenY;
-    case "handoff":
-      return b.kind === "handoff" && a.workspaceId === b.workspaceId && a.paneId === b.paneId;
   }
 }
 

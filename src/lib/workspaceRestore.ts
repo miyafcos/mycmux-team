@@ -57,9 +57,9 @@ export interface RestoreResult {
 }
 
 /**
- * Restore configs into the list/layout stores. Nothing is activated here —
- * both call sites decide the selection themselves (startup restores the
- * persisted one; adoption keeps whatever the window was already looking at).
+ * Restore configs into the list/layout stores. Explicit header/center merges
+ * select the incoming tab without changing the active workspace. Call sites
+ * decide workspace selection (startup restores it; adoption keeps it).
  */
 export function restoreWorkspaceConfigs(
   configs: WorkspaceConfig[],
@@ -81,6 +81,8 @@ export function restoreWorkspaceConfigs(
     const canPlace = destination && incomingTabs?.length
       && !placementWorkspace!.panes.some((pane) => pane.tabs.some((tab) => incomingTabs.some((incoming) => incoming.tab_id === tab.id)));
     const isHeaderPlacement = canPlace && placement?.kind === "pane" && Number.isSafeInteger(placement.index);
+    const isCenterPlacement = canPlace && placement?.kind === "pane-zone" && placement.zone === "center";
+    const selectMergedTab = isHeaderPlacement || isCenterPlacement;
     const validPlacement = isHeaderPlacement
       ? { ...placement, index: paneHeaderInsertionIndex(destination) }
       : canPlace && placement?.kind === "pane-zone"
@@ -138,9 +140,9 @@ export function restoreWorkspaceConfigs(
       listStore._updateWorkspacePanes(workspace.id, workspace.panes.map((candidate) =>
         candidate.id === pane.id ? returnedPane : candidate));
       const returnedActiveTab = tabs.find((tab) => tab.id === restored.panes[0]?.activeTabId) ?? tabs[0];
-      if (isHeaderPlacement) selectPaneHeaderTab(workspace.id, pane.id, returnedActiveTab.id);
+      if (selectMergedTab) selectPaneHeaderTab(workspace.id, pane.id, returnedActiveTab.id);
       restoredWorkspaceIds.push(workspace.id);
-      if (cfg.id === selection.activeWorkspaceId) activePaneSessionId = isHeaderPlacement ? returnedActiveTab.sessionId : tabs[0].sessionId;
+      if (cfg.id === selection.activeWorkspaceId) activePaneSessionId = selectMergedTab ? returnedActiveTab.sessionId : tabs[0].sessionId;
       continue;
     }
     // Use split_columns if available; fall back to transposed split_rows for old data

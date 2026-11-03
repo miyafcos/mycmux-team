@@ -1,24 +1,5 @@
-import type { PaneMetadata } from "../stores/paneMetadataStore";
 import type { PaneDropTarget, PaneDropZone } from "../stores/paneDragStore";
-import type { AgentSessionKind, Pane, PaneTab } from "../types";
-import { resolveLiveSavepointTargetKind } from "./savepointHandoff";
-
-type HandoffMetadata = Pick<PaneMetadata, "agentKind" | "agentSessionId" | "cwd">;
-
-export interface PaneHandoffEndpoint {
-  workspaceId: string;
-  paneId: string;
-  tab: PaneTab | undefined;
-  metadata: HandoffMetadata | undefined;
-}
-
-export interface PaneHandoffEligibility {
-  sourceAgentKind: AgentSessionKind;
-  publishAgentKind: "claude" | "codex" | "claude-codex";
-  sourceAgentSessionId: string;
-  sourceCwd: string;
-  targetAgentKind: AgentSessionKind;
-}
+import type { Pane } from "../types";
 
 interface PaneDropRect {
   left: number;
@@ -104,49 +85,4 @@ export function resolvePaneDropZone(
     if (!best || ratio < best.ratio) best = { zone: candidate.zone, ratio };
   }
   return best?.zone ?? "center";
-}
-
-export function resolvePaneHandoffEligibility(
-  source: PaneHandoffEndpoint,
-  target: PaneHandoffEndpoint,
-): PaneHandoffEligibility | null {
-  if (
-    source.workspaceId === target.workspaceId
-    && source.paneId === target.paneId
-  ) {
-    return null;
-  }
-  if (!source.tab || (source.tab.type !== undefined && source.tab.type !== "terminal")) {
-    return null;
-  }
-  const sourceAgentKind = source.metadata?.agentKind;
-  const sourceAgentSessionId = source.metadata?.agentSessionId;
-  const sourceCwd = source.metadata?.cwd;
-  if (!sourceAgentKind || !sourceAgentSessionId || !sourceCwd) return null;
-  // Grok is intentionally outside the CRSM/savepoint handoff pipeline for now.
-  if (sourceAgentKind === "grok") return null;
-
-  const targetAgentKind = resolveLiveSavepointTargetKind(
-    target.tab,
-    target.metadata?.agentKind,
-  );
-  if (!targetAgentKind) return null;
-
-  return {
-    sourceAgentKind,
-    // claude-codex keeps its own transcript root; publishing it as "claude" fell back to the
-    // newest native Claude conversation in the same cwd and handed off the wrong session.
-    publishAgentKind: sourceAgentKind,
-    sourceAgentSessionId,
-    sourceCwd,
-    targetAgentKind,
-  };
-}
-
-export function prioritizePaneHandoffDropTarget(
-  isHandoffChip: boolean,
-  handoffTarget: Extract<PaneDropTarget, { kind: "handoff" }> | null,
-  fallbackTarget: PaneDropTarget | null,
-): PaneDropTarget | null {
-  return isHandoffChip && handoffTarget ? handoffTarget : fallbackTarget;
 }

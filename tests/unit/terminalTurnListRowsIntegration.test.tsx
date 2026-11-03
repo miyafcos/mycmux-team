@@ -57,7 +57,11 @@ vi.mock("@xterm/xterm", () => {
     element: HTMLElement | undefined;
     textarea: HTMLTextAreaElement | undefined;
     unicode = { activeVersion: "" };
-    parser = { registerOscHandler: vi.fn(() => disposable()) };
+    parser = {
+      registerOscHandler: vi.fn(() => disposable()),
+      registerCsiHandler: vi.fn(() => disposable()),
+      registerEscHandler: vi.fn(() => disposable()),
+    };
     buffer = {
       active: {
         get type(): "normal" | "alternate" { return mocks.bufferType; },

@@ -37,9 +37,6 @@ import { TearoutRecord, activeTearoutRecords, configureTearoutInputEvidence, mer
 import type { PaneDragItem } from "../../stores/paneDragStore";
 import { createWorkspaceHover } from "../workspaceHover";
 import type { Workspace } from "../../types";
-import { capturePaneHandoffSource } from "../paneHandoffRuntime";
-import { onlineStrings } from "../../components/online/onlineStrings";
-import { installTearoutHandoff, publishTearoutHandoffDrag, requestTearoutHandoff, tearoutHandoffSource } from "./handoff";
 import { createPaneMoveRequest, executePaneMove, type PaneMoveRequest, type NativeMoveDestination,
   type PaneMoveExecution, type PaneMoveOptions, type PaneMoveResult } from "../paneMoveOperation";
 
@@ -176,7 +173,7 @@ function nativeTarget(sample: Pick<NativeSample, "id" | "mode" | "label" | "sour
   if (sample.mode !== "dock" || nativeModes.get(sample.id) === "detach") return null;
   const sidebar = document.elementFromPoint(sample.client_x, sample.client_y)?.closest('[data-dnd-workspace-sidebar="true"]');
   const target: DockTarget | null = sidebar ? { kind: "workspace" } : detachedDockTarget({ screenX: sample.client_x, screenY: sample.client_y },
-    { x: 0, y: 0, scale: 1 }, document, previous, tearoutHandoffSource(sample.id, sample.label, sample.source));
+    { x: 0, y: 0, scale: 1 }, document, previous);
   const list = useWorkspaceListStore.getState();
   return nativeDropAllowed(sample.region_count ?? 1, target) && target && (target.kind === "workspace" || list.workspaces.some((workspace) => workspace.id === list.activeWorkspaceId && workspace.id === target.workspaceId
     && workspace.panes.some((pane) => pane.id === target.paneId))) ? target : null;
@@ -747,7 +744,6 @@ async function dockOutgoing(request: DockRequest): Promise<void> {
     configs = before.map(workspace => adapter!.serialize(workspace));
     liveSessions = await liveTransferSessions(configs);
     details.transferred_session_ids = sessions(configs);
-    if (request.approval.target.kind === "handoff") throw new Error("tearout_handoff_is_not_docking");
     if (configs.length !== 1 || !nativeDropAllowed(configs[0].panes.length, request.approval.target)) throw new Error("tearout_dock_shape_unsupported");
     const refused = await invoke("tearout_prepare", { id, receiver: request.approval.receiver, configs,
       deliveryToken: id, finalizer: request.requester });
@@ -909,13 +905,6 @@ export function installTearoutRuntime(value: Adapter): () => void {
     afterPaint: afterReleasePaint,
   });
   const ownReleaseReceiver = releaseReceiver;
-  const handoff = installTearoutHandoff(async (token, target, approval, sender) => {
-    if (approval.release_id) return (await ownReleaseReceiver.consume(approval, sender)).ok;
-    const approved = approvedDrops.get(token);
-    if (!approved || !sameDockTarget(approved, target)) return false;
-    approvedDrops.delete(token);
-    return true;
-  });
   const registered = [
     listen<Delivery>(DELIVERY, ({ payload }) => { void receive(payload); }, ownWindow),
     listen<{ token: string; source: string }>("mycmux://tearout-ready-query", ({ payload }) => {
@@ -955,7 +944,7 @@ export function installTearoutRuntime(value: Adapter): () => void {
       }
     }),
   ];
-  listenersReady = Promise.all([...registered, handoff.ready]).then(() => {});
+  listenersReady = Promise.all(registered).then(() => {});
   const stopPrewarm = isTearoutChild() ? () => {} : installMacTearoutPrewarm(() => tearoutOperationBusy() || incoming.size > 0);
   let preference = nativePaneTearoutEnabled(useSettingsStore.getState().nativePaneTearoutEnabled);
   let refillTimer: number | null = null, refillStarted: number | null = null;
@@ -1063,7 +1052,7 @@ export function installTearoutRuntime(value: Adapter): () => void {
     }
     for (const token of dockTraces.keys()) setTearoutDisplayActivity(`outgoing:${token}`, false);
     dockTraces.clear(); endTearoutOperation();
-    stop(); stopWorkspace(); stopPrewarm(); handoff.dispose();
+    stop(); stopWorkspace(); stopPrewarm();
     nativeWorkspaceHover.clear(); workspaceHoverSample = null; hoverEndedIds.clear();
     disposeTearoutFrames();
     cancelSampleFrame?.();
@@ -1147,22 +1136,6 @@ export async function regrabTearoutWindow(record?: TearoutRecord, onEnd?: (sampl
   let ended = false;
   let stop = () => {};
   let stage = "preparing";
-  let clearHandoff = async () => {};
-  let handoffCleanup: Promise<void> | null = null;
-  const clearContext = () => handoffCleanup ??= clearHandoff().catch(error => console.warn("[tearout] handoff cleanup failed", error));
-  const capturedHandoffSource = panes.length === 1 && panes[0].tabs.length === 1
-    ? capturePaneHandoffSource({ kind: "tab", workspaceId: workspaces[0].id, paneId: panes[0].id,
-      tabId: panes[0].tabs[0].id, label: workspaces[0].name }) : null;
-  // A fresh child already received these identities with its real sessions.
-  // Before its first metadata event, use that receipt's tab fields. Once live
-  // metadata exists (including cleared agent fields), it remains authoritative.
-  const receivedTab = panes[0]?.tabs[0];
-  const handoffSource = capturedHandoffSource && !capturedHandoffSource.metadata
-    ? { ...capturedHandoffSource, metadata: { agentKind: receivedTab?.agentKind,
-      agentSessionId: receivedTab?.agentSessionId, cwd: receivedTab?.cwd } }
-    : capturedHandoffSource;
-  const canHandoff = handoffSource?.metadata?.agentKind && handoffSource.metadata.agentKind !== "grok"
-    && handoffSource.metadata.agentSessionId && handoffSource.metadata.cwd;
   try {
     const pending = await checkTearoutTransferReservation(id);
     if (pending) {
@@ -1182,27 +1155,7 @@ export async function regrabTearoutWindow(record?: TearoutRecord, onEnd?: (sampl
       record!.decision(releaseDecision(payload, approval), approval?.target);
       if (approval) record!.attempted(approval.target, approval.receiver);
       stage = approval ? "docking" : "settling";
-      if (!payload.escaped && approval?.target.kind === "handoff") {
-        stage = "handoff";
-        if (!canHandoff) throw new Error("tearout_handoff_source_invalid");
-        let handedOff = false;
-        let handoffError: unknown;
-        try { handedOff = await requestTearoutHandoff(id, { ...approval, target: approval.target }); }
-        catch (error) {
-          handoffError = error;
-          record!.failure(reasonOf(error), stage);
-          useToastStore.getState().pushToast(onlineStrings.dragDropErrorPrefix + reasonOf(error), "error");
-        } finally {
-          if (approval.release_id) await invoke("tearout_release_cancel", { id: approval.release_id }).catch(error => {
-            throw diagnosedFailure(error, { release_cancel_reason: reasonOf(error) });
-          });
-        }
-        if (!handedOff && !handoffError) record!.failure("tearout_handoff_failed", stage);
-        // Handoff sends a savepoint; the child keeps its workspace and sessions.
-        await invoke("tearout_restore_geometry", { label, geometry: payload.original });
-        await record!.finish(handedOff ? "handed_off" : "handoff_failed", approval.target);
-      }
-      else if (!payload.escaped && approval) {
+      if (!payload.escaped && approval) {
         const refusal = await requestDock(label, approval, record);
         if (refusal) {
           await invoke("tearout_restore_geometry", { label, geometry: payload.original });
@@ -1246,17 +1199,14 @@ export async function regrabTearoutWindow(record?: TearoutRecord, onEnd?: (sampl
       if (!unconfirmed) recoveryFinished(name, location, reasonOf(error), undefined, visit);
       await record!.finish(unconfirmed ? "restore_failed" : "failed_restored", null, unconfirmed ? false : undefined)
         .catch(logError => console.warn("[tearout] log failed", logError));
-    }).finally(async () => {
-      try { await clearContext(); }
-      finally { stop(); activeTearoutRecords.delete(id); finishObservedTearoutMove(id); endTearoutOperation(); }
+    }).finally(() => {
+      stop(); activeTearoutRecords.delete(id); finishObservedTearoutMove(id); endTearoutOperation();
     });
   }, { target: { kind: "Window", label: windowLabel() } });
     await listenersReady;
-    if (canHandoff) clearHandoff = await publishTearoutHandoffDrag({ id, mode, label, sourceWindow: label, endpoint: handoffSource });
     stage = "moving";
     const refused = await invoke<unknown>("tearout_start_move", { label, id, mode, regionCount: panes.length, regrab: true });
     if (isPreOwnershipTearoutRefusal(refused, label, id)) {
-      await clearContext();
       stop(); activeTearoutRecords.delete(id); endTearoutOperation();
       // No native/store ownership was acquired. Returning the refusal promise
       // keeps it outside the genuine native-start recovery catch below.
@@ -1272,7 +1222,6 @@ export async function regrabTearoutWindow(record?: TearoutRecord, onEnd?: (sampl
     if (refused != null) throw new Error("tearout_start_result_invalid");
   }
   catch (error) {
-    await clearContext();
     stop(); activeTearoutRecords.delete(id); finishObservedTearoutMove(id); endTearoutOperation(); record.error("native_move_failed");
     record.failure(reasonOf(error), stage);
     try { await invoke("tearout_settle", { label }); }
@@ -1489,7 +1438,7 @@ export async function performNativePaneMove(
       else {
         stage = "settling";
         // First release completes the real transfer even over an app receiver.
-        // Detach never resolves or promises a dock/handoff target.
+        // Detach never resolves or promises a dock target.
         await delivery;
         await published;
         await invoke("tearout_settle", { label });

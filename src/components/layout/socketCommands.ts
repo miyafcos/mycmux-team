@@ -47,6 +47,8 @@ import { usePaneMetadataStore as delegationMetadataStore } from "../../stores/pa
 import { delegationForCaller } from "../dashboard/delegationModel";
 import { preparePaneMessage, writePaneMessage, verifyPaneMessage, type MessageSendGuard } from "../../lib/livebrief";
 import { resolveComposerTarget } from "../../lib/composerSend";
+import { TERMINAL_IPC_TIMEOUT_MS } from "../../lib/terminalDeadline";
+import type { TerminalScreenSnapshot } from "../terminal/terminalScreenSnapshot";
 
 import type { WebPaneBounds, WebPaneTarget, WebPaneTargetInfo, WebPaneWaitResult, WebPaneModifier, WebPaneNativeBudget } from "../workspace/webPaneApi";
 
@@ -103,8 +105,8 @@ function socketCommandTargets(cmd: string, args: SocketArgs): SocketTarget[] {
       ...target(paneId ? "pane" : "session", paneId ?? sessionId, `pane not found: ${paneId ?? sessionId}`, explicitWorkspaceId),
     ];
   }
-  if (["pane.read", "pane.send_text", "pane.close_tab", "pane.rename_tab", "pane.activate_tab", "pane.start_tab"].includes(cmd)) {
-    return target("session", sessionId, cmd === "pane.read" || cmd === "pane.send_text"
+  if (["pane.read", "pane.screen", "pane.send_text", "pane.close_tab", "pane.rename_tab", "pane.activate_tab", "pane.start_tab"].includes(cmd)) {
+    return target("session", sessionId, cmd === "pane.read" || cmd === "pane.screen" || cmd === "pane.send_text"
       ? `${cmd} session is not a known pane` : `${cmd} session not found`);
   }
   if (cmd === "web.open") return target("session", anchor, "web.open anchor session not found");
@@ -2702,6 +2704,43 @@ export async function readPaneTail(
   }, clampPaneReadLines(lines), terminalSizeCache.get(sessionId), options?.headlessFetchTimeoutMs, options?.purpose, options?.isCurrent);
 }
 
+async function readPaneScreen(args: SocketArgs, peerRequest = false, expiresAt = Infinity) {
+  const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
+  const sessionId = socketArgString(args, "sessionId", "session_id");
+  if (!sessionId) throw new Error("pane.screen requires sessionId");
+  const state = useWorkspaceListStore.getState();
+  const target = findTabBySessionId(state.workspaces, sessionId);
+  if (target && isDeclaredTab(target.tab)) throw new Error("pane.screen cannot target a declared tab");
+  if (!isKnownPaneSession(state.workspaces, sessionId)) throw new Error("pane.screen session is not a known pane");
+  const isCurrent = () => {
+    const workspaces = useWorkspaceListStore.getState().workspaces;
+    const current = findTabBySessionId(workspaces, sessionId);
+    return Date.now() < expiresAt && isKnownPaneSession(workspaces, sessionId)
+      && (!target || (current?.tab.id === target.tab.id && !isDeclaredTab(current.tab)));
+  };
+  const preferHeadless = peerRequest && peerPaneNeedsHeadlessRead(sessionId, state.workspaces, state.activeWorkspaceId);
+  return { sessionId, ...await readPaneScreenBuffer(sessionId, args?.scrollback, preferHeadless, isCurrent) };
+}
+
+export async function readPaneScreenBuffer(
+  sessionId: string, scrollback: unknown, preferHeadless = false, isCurrent = () => true,
+): Promise<TerminalScreenSnapshot> {
+  const { getTerminalBufferScreen, isTerminalParsingCurrentOutput } = await import("../terminal/XTermWrapper");
+  if (!isCurrent()) throw new Error("pane read lifetime changed");
+  if (!preferHeadless && isTerminalParsingCurrentOutput(sessionId)) return getTerminalBufferScreen(sessionId, scrollback);
+  const [{ getSessionScrollback }, { readHeadlessBufferScreen }, { terminalSizeCache }] = await Promise.all([
+    import("../../lib/ipc"), import("../terminal/headlessBuffer"), import("../terminal/terminalCache"),
+  ]);
+  return readHeadlessBufferScreen(sessionId, async since => {
+    let snapshot;
+    try {
+      snapshot = since === undefined ? await getSessionScrollback(sessionId) : await getSessionScrollback(sessionId, since);
+    } catch { throw new Error("no terminal buffer for session"); }
+    if (snapshot.data.byteLength === 0 && !snapshot.isDelta) throw new Error("no terminal buffer for session");
+    return snapshot;
+  }, scrollback, terminalSizeCache.get(sessionId), TERMINAL_IPC_TIMEOUT_MS, isCurrent);
+}
+
 async function movePane(args: SocketArgs) {
   const sessionId = socketArgString(args, "sessionId", "session_id");
   const paneId = socketArgString(args, "paneId", "pane_id");
@@ -2859,6 +2898,7 @@ export const SOCKET_COMMAND_NAMES = [
   "pane.rename_tab",
   "pane.send_text",
   "pane.read",
+  "pane.screen",
   "pane.move",
   "web.open",
   "web.list",
@@ -3033,10 +3073,12 @@ export async function handleSocketCommand(
           ...workspaceState.workspaces.map((workspace) => ({
             workspaceId: workspace.id,
             workspaceName: workspace.name,
+            zoomedPaneId: workspace.panes.some(pane => pane.id === useUiStore.getState().zoomedPaneId)
+              ? useUiStore.getState().zoomedPaneId : null,
             ...serializeWorkspaceLayoutForSocket(workspace),
           })),
           ...peers.map(({ workspace, windowLabel }) => ({
-            workspaceId: workspace.id, workspaceName: workspace.name, windowLabel,
+            workspaceId: workspace.id, workspaceName: workspace.name, windowLabel, zoomedPaneId: null,
           })),
         ],
         panes: [
@@ -3077,6 +3119,8 @@ export async function handleSocketCommand(
       return sendPaneText(args, execution?.expiresAt, execution !== undefined);
     case "pane.read":
       return readPane(args, execution !== undefined);
+    case "pane.screen":
+      return readPaneScreen(args, execution !== undefined, execution?.expiresAt);
     case "pane.move":
       return movePane(args);
     case "web.open":

@@ -4,7 +4,7 @@ import type { ReleasePoint, ConsumeFailureReason } from "./release";
 import type { DockTarget } from "../../stores/detachedDockStore";
 import type { TearoutRefusalSource } from "./operation";
 
-export type TearoutResult = "kept_window" | "handed_off" | "handoff_failed" | "docked" | "esc_cancelled" | "failed_restored" | "reordered" | "cancelled_before_tearout" | "rejected_busy" | "restore_failed";
+export type TearoutResult = "kept_window" | "docked" | "esc_cancelled" | "failed_restored" | "reordered" | "cancelled_before_tearout" | "rejected_busy" | "restore_failed";
 export type TearoutError = "prepare_failed" | "show_failed" | "native_move_failed" | "receive_failed" | "dock_failed" | "rollback_failed" | "unexpected_failure" | "move_busy";
 export interface Reveal { shown_at: number; visible_at: number; scale: number; monitor: string | null; focus_stolen: boolean }
 export interface ReleaseEvidence { point: ReleasePoint; receiver_window: string | null; receiver_epoch: number | null; client_x: number | null; client_y: number | null }
@@ -67,7 +67,7 @@ export interface RecordData {
 function destination(target: DockTarget | null) {
   if (!target) return null;
   if (target.kind === "workspace") return { kind: "sidebar", index: null, workspace_id: null, pane_id: null };
-  return { kind: target.kind === "tab-index" ? "tab_strip" : target.kind === "handoff" ? "handoff" : target.zone, index: target.kind === "tab-index" ? target.index : null,
+  return { kind: target.kind === "tab-index" ? "tab_strip" : target.zone, index: target.kind === "tab-index" ? target.index : null,
     workspace_id: target.workspaceId, pane_id: target.paneId };
 }
 

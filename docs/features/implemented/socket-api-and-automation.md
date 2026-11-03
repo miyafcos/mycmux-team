@@ -24,7 +24,7 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 
 ### 版と能力の照会 (2026-09-25 追加)
 
-`system.version` は、認証を通ったあとに Rust が直接答えます (フロントエンドの準備を待ちません)。応答は `app_version`・`api` (`major: 1`、`minor: 0`)・`status_protocol`・`hook_protocol`・`commands`・`capabilities` です。`commands` には Rust が答える名前とフロントエンドの名前が入り、`e2e.*` は e2e ビルドのときだけ入ります。宣言する能力は `state_view.input_revision_nullable`、`send.enter.single`、`spawn.launch_spec.all_modes`、`launch.kind_env`、`agent.hooks.status` です。
+`system.version` は、認証を通ったあとに Rust が直接答えます (フロントエンドの準備を待ちません)。応答は `app_version`・`api` (`major: 1`、`minor: 0`)・`status_protocol`・`hook_protocol`・`commands`・`capabilities` です。`commands` には Rust が答える名前とフロントエンドの名前が入り、`e2e.*` は e2e ビルドのときだけ入ります。宣言する能力は `state_view.input_revision_nullable`、`send.enter.single`、`spawn.launch_spec.all_modes`、`launch.kind_env`、`agent.hooks.status`、`pane.screen.v1` です。
 
 `session.state_view` の各行は `input_revision` のキーを必ず持ちます。値は 0 以上の整数か `null` です。`null` は入力の数えがないこと (PTY が生きていない行など) を表し、0 とは違います。送信の期待値には使えません。CLI の `status` (`--session` なし) と、プロンプト・引き継ぎ・再開に `--model` または `--effort` を付けた `spawn` / `spawn-tab` は先に `system.version` を問い、能力が足りなければ操作せずに止まります。古い mycmux が `Unknown socket command: system.version` を返したときは `the running mycmux predates capability reporting` と出して止まります。`hooks-status` も `agent.hooks.status` 能力を確かめてから照会します。それ以外の CLI コマンドは 1 回の接続で済みます。
 
@@ -57,7 +57,7 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 | `pane.list` | `workspaceId` (省略時 active) | 表示中のタブと裏のタブの一覧 (sessionId 含む) |
 | `pane.spawn` | 下記 | 新タブを可視で立ち上げ、`{workspaceId, paneId, sessionId, mode}` を返す |
 | `pane.spawn_tab` | `anchorSessionId`、起動引数 | 呼び出し元のタブの裏に新しいタブを追加 |
-| `pane.list_all` | なし | 全ワークスペースの表示中のタブと裏のタブの一覧 |
+| `pane.list_all` | なし | 全ワークスペースの表示中のタブと裏のタブの一覧。`workspaces[]` に `zoomedPaneId` (入れ物の ID または null) |
 | `pane.activate_tab` / `pane.close_tab` / `pane.rename_tab` | `sessionId` 等 | タブの選択・終了・改名 |
 | `web.open` / `web.list` / `web.focus` / `web.push` | `presetId`、`tabId` 等 | サービス Web タブの操作 |
 | `web.read` / `web.close` | `tabId` (`web.read` は `presetId`、`anchorSessionId` でも指定可) | 会話を JSON で取得 / Web タブを閉じる |
@@ -76,6 +76,7 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 | `web.dialogs` | T + clear? | browser の自動応答ダイアログ記録を取得・消去 |
 | `pane.send_text` | `sessionId`, `text`, `enter?` | 既存タブの端末へ入力を送る |
 | `pane.read` | `sessionId`, `lines?` (既定80、最大400) | 既存タブの画面末尾を読む |
+| `pane.screen` | `sessionId`, `scrollback?` (既定0、0〜500) | 端末の表示範囲をセルと属性で読む (読み取り専用) |
 
 新コマンドの `T` は `{tabId?, presetId?, anchorSessionId?}`。tabId 優先、指定がなければ対象ワークスペース内の最新プリセット候補を使う。`trusted` と screenshot は Windows 先行（macOSは段2）。
 
@@ -83,6 +84,56 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 
 一覧・ワークスペース操作には snake_case の別名 (`list_workspaces` など) もあります。全コマンドは `socketCommands.ts` の dispatcher と `mycmux_agent_cli.py` の parser が正本です。
 `status.subscribe` / `status.snapshot` は `socket.rs` が直接扱う状態フィードで、PTY 生出力のストリーミングとは別です。
+
+### `pane.screen` の画面読取
+
+`system.version.commands` の `pane.screen` と `capabilities` の `pane.screen.v1` が対応の印です。
+要求例 (認証トークンは省略):
+
+```json
+{"cmd":"pane.screen","args":{"sessionId":"pty-sample","scrollback":0}}
+```
+
+返り値は `sessionId`・`cols`・`rows`・`cursor`・`atBottom`・`alternateScreen`・`scrollbackLines`・`theme`・`lines` です。
+`scrollback` は表示範囲の上へ足す行数で、整数の範囲外は 0〜500 に丸めます。実際に存在する分だけを足します。
+`lines` の長さは常に `scrollbackLines + rows`。空行は `[]`、折り返した物理行は別の要素です。
+各行の run は `[col, width, text, fg, bg, flags]`:
+
+- `col` は 0 始まりの列、`width` は各書記素のセル幅 (1 または 2)。全角の続きのセルは重複させず、結合文字は元の文字と同じセルに含めます。幅か属性が変わるときや、連結で書記素の境界がセルの境界とずれるときに run を分けます。
+- `fg`・`bg` は既定色なら null、色番号なら 0〜255、RGB なら小文字の `#rrggbb`。OSC で変更した 16〜255 番の色は RGB に解決します。
+- `flags` は太字 1・斜体 2・下線 4・薄字 8・反転 16・取り消し線 32 のビット和です。
+- 既定の空白は省略することがありますが、位置は `col` に残します。背景・反転・下線などのある空白は保持します。非表示属性の文字は空白として扱います。
+
+`cursor` は `{col, row, visible}` (0 始まり) で、`row` は追加した履歴を含めず表示範囲の中の行です。
+範囲外なら null。`visible` は端末のカーソル表示モードを表します。PC で上へスクロールしている間は `atBottom: false` で、その位置を読み、PC の表示を動かしません。
+`alternateScreen` は代替画面の使用中を表します。
+`theme` は端末に適用した前景 `foreground`・背景 `background`・カーソル `cursor`・ANSI 16 色の `palette`。アプリからの OSC 色設定・解除も反映します。
+色は RGB で返し、透過背景でもテーマの RGB を保ちます (背景画像や透過率はこの形式に含みません)。
+
+表示中で解析済みなら live xterm、それ以外は PTY の既存出力を headless xterm で再生し、同じ関数でセルを読みます。
+headless も Unicode 11 と画面の色変換を使います。ポーリングの IPC 待ちは observation 経路に置き、送信確認の 250ms の期限を占有しません。
+別の窓のタブは既存の所有窓への振分けを使います。PTY の起動・入力・フォーカス変更・保存は行いません。
+用途ごとに解析状態を分け、`pane.read` の結果は `pane.screen` の呼び出しに左右されません。
+`pane.read` の整形済み文字列と `pane.live_tails` の返り値は従来どおりです。
+
+誤りの語は `pane.screen requires sessionId`・`pane.screen cannot target a declared tab`・`pane.screen session is not a known pane`・`no terminal buffer for session`。
+`pane.list_all.workspaces[].zoomedPaneId` は「このタブだけ表示」の対象の入れ物 ID で、該当しなければ null。別の窓の値は取得できないため null です。
+
+見本 (62×48・120×40) と測定値の再生成:
+
+```bash
+UPDATE_PANE_SCREEN_SAMPLES=1 nice -n 15 ./node_modules/.bin/vitest run --no-cache --configLoader runner tests/unit/paneScreenSamples.test.ts
+```
+
+実際の読取関数へ架空の ANSI 画面を通し、`.dispatch/out/pane-screen-sample-62x48.json`・`pane-screen-sample-120x40.json` と測定 JSON を出します。
+
+#### 既知の制約
+
+- PTY の出力履歴は最大 256KB です。それより前の色・非表示属性・代替画面などの状態は、キャッシュが無い場合には復元できません。`pane.read` も同じ履歴の制約を受けます。
+- 解析済みの headless キャッシュがあれば、その状態をリサイズして差分を追加します。キャッシュが無い場合の全再生は今の寸法で解釈するため、過去のリサイズ順序を再現できません。
+- PC 側で上へスクロール中に解析が遅れている間は、headless の表示位置が一時的にずれることがあります。
+- テーマ変更後の全再生では、過去の出力も今の色変換で解釈します。出力時点のテーマや変換設定の履歴は保持しません。
+- 解析が遅れている間に OSC の色変更と同じテーマの再適用が重なると、解析が追いついたあとも色が残ることがあり、次のテーマの再適用か再起動で消えます。
 
 ### `workspace.new` の作成と起動
 

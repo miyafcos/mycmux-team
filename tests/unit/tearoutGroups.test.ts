@@ -140,7 +140,8 @@ describe("transported groups land at the requested state", () => {
     if (kind === "sidebar") expect(result.panes[0].tabs.map(t => t.id)).toEqual(["incoming-first-a", "incoming-first-b"]);
     else if (kind === "strip" || kind === "center") {
       expect(result.panes[0].tabs.map(t => t.id)).toEqual(["neighbor-first-a", "neighbor-first-b", "incoming-first-a", "incoming-first-b"]);
-      expect(result.panes[0].activeTabId).toBe(kind === "strip" ? "incoming-first-b" : "neighbor-first-b");
+      expect(result.panes[0].activeTabId).toBe("incoming-first-b");
+      expect(result.panes[0].pinnedTabId).toBe("neighbor-first-a");
     }
     else {
       expect(result.panes.find(p => p.id === "incoming-first")!.tabs.map(t => t.id)).toEqual(["incoming-first-a", "incoming-first-b"]);

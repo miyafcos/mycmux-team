@@ -1,5 +1,5 @@
-import { FolderPlus, Map as MapIcon, MousePointer2, X } from "lucide-react";
-import { DashboardGlyph, DashboardIconButton } from "./DashboardUi";
+import { FolderPlus, X } from "lucide-react";
+import { DashboardIconButton } from "./DashboardUi";
 import { isDetachedDashboardHost } from "../../lib/dashboardHost";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
 import {
@@ -484,9 +484,8 @@ export const LayoutMinimapPanel = memo(function LayoutMinimapPanel({ workspaces,
     : null;
 
   return <section className="cmux-minimap-panel" aria-label={dashboardStrings.layoutMinimapAriaLabel}>
-    <div className="cmux-minimap-title"><DashboardGlyph icon={MapIcon} label={dashboardStrings.layoutMinimapTitle} /></div>
     {selectedTabIds.size > 0 ? <div className="cmux-minimap-selection-summary" aria-live="polite">
-      <span key={selectedTabIds.size} className="cmux-minimap-selection-count" title={`選択${selectedTabIds.size}本`} aria-label={`選択${selectedTabIds.size}本`}><MousePointer2 size={15} aria-hidden="true" /><b className="cmux-minimap-selection-n" aria-hidden="true">{selectedTabIds.size}</b></span>
+      <span key={selectedTabIds.size} className="cmux-minimap-selection-count" title={`選択${selectedTabIds.size}本`} aria-label={`選択${selectedTabIds.size}本`}><b className="cmux-minimap-selection-n" aria-hidden="true">{selectedTabIds.size}</b></span>
       <DashboardIconButton icon={X} label="選択を閉じる" data-minimap-close-selection="true" onClick={openCloseConfirmation} />
     </div> : null}
     <div ref={stackRef} className={`cmux-minimap-stack${isMinimapDragging ? " is-minimap-dragging" : ""}`} onPointerDownCapture={handlePointerDown} onPointerMoveCapture={handlePointerMove} onPointerUpCapture={finishPointer} onPointerCancelCapture={cancelMarquee} onScroll={handleStackScroll}>

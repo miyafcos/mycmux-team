@@ -13,6 +13,13 @@ const headlessState = vi.hoisted(() => ({
 
 vi.mock("@xterm/headless/lib-headless/xterm-headless.mjs", () => {
   class FakeTerminal {
+    readonly unicode = { activeVersion: "6" };
+    readonly parser = {
+      registerOscHandler: () => ({ dispose() {} }),
+      registerCsiHandler: () => ({ dispose() {} }),
+      registerEscHandler: () => ({ dispose() {} }),
+    };
+    loadAddon() {}
     readonly buffer = {
       active: {
         length: 0,
@@ -26,8 +33,8 @@ vi.mock("@xterm/headless/lib-headless/xterm-headless.mjs", () => {
       headlessState.instances.push(this);
     }
 
-    write(data: Uint8Array, callback?: () => void): void {
-      this.writes.push(data.slice());
+    write(data: string | Uint8Array, callback?: () => void): void {
+      this.writes.push(typeof data === "string" ? new TextEncoder().encode(data) : data.slice());
       if (headlessState.holdWrites && callback) headlessState.pendingWrites.push(callback);
       else callback?.();
     }

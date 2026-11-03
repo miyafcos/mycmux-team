@@ -23,15 +23,7 @@ export function clearPinIfMissing(pane: Pane): Pane {
   return { ...pane, pinnedTabId: undefined };
 }
 
-/** Drag-merge guard: a live pin keeps display ownership over incoming tabs. */
-export function resolveMergeActiveTabId(pane: Pane, incomingActiveTabId: string): string {
-  if (pane.pinnedTabId && pane.tabs.some((tab) => tab.id === pane.pinnedTabId)) {
-    return pane.pinnedTabId;
-  }
-  return incomingActiveTabId;
-}
-
-/** Keep the persisted tab order consistent with pinned display ownership. */
+/** Keep the pinned tab first without changing the active tab. */
 export function withPinnedTabFirst(pane: Pane): Pane {
   if (!pane.pinnedTabId) return pane;
   const index = pane.tabs.findIndex((tab) => tab.id === pane.pinnedTabId);

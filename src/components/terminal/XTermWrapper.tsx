@@ -5,6 +5,8 @@ import { recordTerminalFlowReceive, startTerminalFlowWrite, finishTerminalFlowWr
 import { useTerminalObservationStore } from "../../stores/terminalObservationStore";
 import { Terminal } from "@xterm/xterm";
 import { SgrLightRewriter } from "./sgrLightTheme";
+import { snapshotTerminalScreen, type TerminalScreenSnapshot } from "./terminalScreenSnapshot";
+import { trackTerminalScreenState, resetTerminalScreenState, terminalScreenCursorVisible, terminalScreenThemeFor, terminalScreenPaletteOverrides, resetTerminalScreenColors } from "./terminalScreenState";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SearchAddon } from "@xterm/addon-search";
@@ -677,6 +679,15 @@ export function hasMountedTerminal(sessionId: string): boolean {
   return liveTerms.has(sessionId);
 }
 
+/** Read the displayed physical rows without changing the PC viewport. */
+export function getTerminalBufferScreen(sessionId: string, scrollback: unknown): TerminalScreenSnapshot {
+  const term = liveTerms.get(sessionId) ?? termCache.get(sessionId)?.term;
+  if (!term) throw new Error("no terminal buffer for session");
+  return snapshotTerminalScreen(term, terminalScreenThemeFor(term, term.options.theme), {
+    scrollback, cursorVisible: terminalScreenCursorVisible(term), paletteOverrides: terminalScreenPaletteOverrides(term),
+  });
+}
+
 /** Read the last N non-empty logical lines of a pane's xterm buffer, ANSI/control-char stripped. */
 export function getTerminalBufferLines(
   sessionId: string,
@@ -1219,6 +1230,7 @@ export default memo(function XTermWrapper({
     if (!termRef.current) return;
     bumpPaintStat("settings", sessionId);
     termRef.current.options.theme = resolveTerminalTheme(storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
+    resetTerminalScreenColors(termRef.current);
     termRef.current.options.minimumContrastRatio = minimumContrastRatio;
     termRef.current.options.fontSize = storeFontSize;
     termRef.current.options.fontFamily = storeFontFamily;
@@ -2535,6 +2547,7 @@ export default memo(function XTermWrapper({
           snapshotTurnMarksForReset(sessionId, term);
           sgrLightRewriters.get(term)?.reset();
           term.reset();
+          resetTerminalScreenState(term);
           outputDecoder = prepared.decoder;
           backgroundScanResync = true;
           await writeTerminalOutput(stripTerminalMouseModeControlSequences(prepared.text), 8000, scrollbackSnapshot.endOffset, undefined, readGeneration);
@@ -2577,6 +2590,7 @@ export default memo(function XTermWrapper({
           snapshotTurnMarksForReset(sessionId, term);
           sgrLightRewriters.get(term)?.reset();
           term.reset();
+          resetTerminalScreenState(term);
           outputDecoder = resetTerminalOutputDecoder(sessionId);
         }
         const replayText = outputDecoder.decode(replay, { stream: true });
@@ -2778,6 +2792,7 @@ export default memo(function XTermWrapper({
         colorAdapterRef.current.reset();
         sgrLightRewriters.get(term)?.reset();
         term.reset();
+        resetTerminalScreenState(term);
         replayActive = true;
       },
       write: async (data) => {
@@ -3340,6 +3355,7 @@ export default memo(function XTermWrapper({
         attachAppearance.terminalOpacity,
         attachAppearance.mediaActive,
       );
+      resetTerminalScreenColors(cached.term);
       cached.term.options.minimumContrastRatio = attachAppearance.minimumContrastRatio;
       cached.term.options.fontSize = storeFontSize;
       cached.term.options.fontFamily = storeFontFamily;
@@ -3462,6 +3478,7 @@ export default memo(function XTermWrapper({
           ? { windowsPty: { backend: "conpty", buildNumber: windowsBuildNumber } }
           : {}),
       });
+      trackTerminalScreenState(term, () => term!.options.theme, sessionId);
       const sgrLightRewriter = new SgrLightRewriter();
       sgrLightRewriters.set(term, sgrLightRewriter);
       term.loadAddon({

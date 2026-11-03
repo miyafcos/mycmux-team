@@ -88,6 +88,11 @@
   --cmux-motion-slow: 240ms;
   --cmux-ease: cubic-bezier(0.2, 0, 0, 1);
   --cmux-edge-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --cmux-dash-icon-sm: 11px;
+  --cmux-dash-icon-md: 12px;
+  --cmux-dash-icon-lg: 13px;
+  --cmux-dash-icon-action: 14px;
+  --cmux-dash-icon-size: var(--cmux-dash-icon-lg);
   --cmux-font-size-xs: 11px;
   --cmux-font-size-sm: 12px;
   --cmux-font-size-md: 13px;
@@ -1404,18 +1409,6 @@ div:focus-within > .tab-close-btn,
   border-radius: 1px;
   background: var(--cmux-accent);
   animation: savepointWriteCaretBlink 0.72s steps(1, end) infinite;
-}
-
-/* A handoff returns the source, so its frame covers the receiving terminal. */
-.terminal-pane-border[data-tearout-handoff-active="true"]::before {
-  content: "";
-  position: absolute;
-  inset: 3px;
-  border: 2px dashed var(--cmux-accent);
-  border-radius: var(--cmux-radius-sm);
-  box-shadow: inset 0 0 18px color-mix(in srgb, var(--cmux-accent) 22%, transparent);
-  pointer-events: none;
-  z-index: 31;
 }
 
 .pane-handoff-drop-chip {

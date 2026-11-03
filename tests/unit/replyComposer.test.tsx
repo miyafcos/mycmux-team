@@ -163,8 +163,14 @@ describe("ReplyComposer mentions", () => {
     const option = container.querySelector<HTMLElement>("[role=option]")!;
     const glyph = option.querySelector<HTMLElement>("[data-dashboard-status]")!;
     expect(glyph.dataset.dashboardStatus).toBe(state);
-    expect(glyph.querySelector("[role=img]")?.getAttribute("title")).toBe(stateLabels(state).tooltip);
-    expect(glyph.querySelector("[role=img]")?.getAttribute("aria-label")).toBe(stateLabels(state).tooltip);
+    if (state === "unknown" || state === "noUpdate") {
+      expect(glyph.querySelector("svg,[data-status-shape]")).toBeNull();
+      expect(option.querySelector("small")?.getAttribute("title")).toBe(stateLabels(state).tooltip);
+    } else {
+      expect(glyph.querySelector("svg")).not.toBeNull();
+    }
+    expect(glyph.getAttribute("title")).toBe(stateLabels(state).tooltip);
+    expect(glyph.getAttribute("aria-label")).toBe(stateLabels(state).tooltip);
 
     const rowHost = document.createElement("div");
     const rowRoot = createRoot(rowHost);
@@ -177,8 +183,8 @@ describe("ReplyComposer mentions", () => {
       const selected = container.querySelector<HTMLElement>(".cmux-dashboard-mention-token [data-dashboard-status]")!;
       expect(selected.dataset.dashboardStatus).toBe(state);
       expect(selected.querySelector("svg")?.innerHTML).toBe(rowGlyph.querySelector("svg")?.innerHTML);
-      expect(selected.querySelector("[role=img]")?.getAttribute("title")).toBe(stateLabels(state).tooltip);
-      expect(selected.querySelector("[role=img]")?.getAttribute("aria-label")).toBe(stateLabels(state).tooltip);
+      expect(selected.getAttribute("title")).toBe(stateLabels(state).tooltip);
+      expect(selected.getAttribute("aria-label")).toBe(stateLabels(state).tooltip);
     } finally {
       await act(async () => rowRoot.unmount());
     }

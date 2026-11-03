@@ -1,7 +1,13 @@
 // @ts-expect-error @xterm/headless@6.0.0 publishes this ESM file without colocated declarations.
 import { Terminal as PublishedTerminal } from "@xterm/headless/lib-headless/xterm-headless.mjs";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { LightDarkColorAdaptController } from "../../lib/lightDarkColorAdapt";
+import { SgrLightRewriter } from "./sgrLightTheme";
+import { readHeadlessAppearance, headlessScreenViewport } from "./headlessAppearance";
+import { snapshotTerminalScreen, type TerminalScreenSnapshot } from "./terminalScreenSnapshot";
+import { trackTerminalScreenState, terminalScreenCursorVisible, terminalScreenThemeFor, terminalScreenPaletteOverrides } from "./terminalScreenState";
 import type { ScrollbackCursor, ScrollbackSnapshot } from "../../lib/ipc";
-import { withTerminalDeadline } from "../../lib/terminalDeadline";
+import { TERMINAL_IPC_TIMEOUT_MS, withTerminalDeadline } from "../../lib/terminalDeadline";
 import { currentPtyRead, ptyReadGeneration, retainPtyReads, subscribePtyReads, validatePtySnapshot, type PtyReadGeneration } from "../../lib/ptyReadGeneration";
 import {
   TERMINAL_SNAPSHOT_MAX_WRAPPED_LINES,
@@ -29,7 +35,11 @@ export interface HeadlessBufferSize {
 }
 
 interface HeadlessBufferCacheEntry {
+  sessionId: string;
   terminal: HeadlessTerminal;
+  decoder: TextDecoder;
+  colorAdapter: LightDarkColorAdaptController;
+  sgrRewriter: SgrLightRewriter;
   generation: PtyReadGeneration;
   endOffset: number;
   sessionEpoch?: number;
@@ -53,15 +63,17 @@ function resolveSize(
   };
 }
 
+// Both uses share one LRU and its total limit, but never a parser.
 const headlessBufferCache = new Map<string, HeadlessBufferCacheEntry>();
 const sessionWriteQueues = new Map<string, Promise<void>>();
 subscribePtyReads(sessionId => {
-  const entry = headlessBufferCache.get(sessionId);
-  if (!entry) return;
-  headlessBufferCache.delete(sessionId);
-  // A parser callback must settle before disposal. Its generation check below
-  // prevents the retired parser from committing or re-entering the cache.
-  if (!entry.busy) entry.terminal.dispose();
+  for (const [cacheKey, entry] of headlessBufferCache) {
+    if (entry.sessionId !== sessionId) continue;
+    headlessBufferCache.delete(cacheKey);
+    // A parser callback must settle before disposal. Its generation check below
+    // prevents the retired parser from committing or re-entering the cache.
+    if (!entry.busy) entry.terminal.dispose();
+  }
 });
 
 function cleanTerminalSnapshotLine(text: string): string {
@@ -121,14 +133,23 @@ function getBufferLines(terminal: HeadlessTerminal, maxLines: number): string[] 
   }
 }
 
-function createCacheEntry(size: HeadlessBufferSize, generation: PtyReadGeneration): HeadlessBufferCacheEntry {
+function createCacheEntry(sessionId: string, size: HeadlessBufferSize, generation: PtyReadGeneration): HeadlessBufferCacheEntry {
+  const terminal = new Terminal({
+    cols: size.cols,
+    rows: size.rows,
+    scrollback: HEADLESS_BUFFER_SCROLLBACK,
+    windowsPty: readHeadlessAppearance(sessionId).windowsPty,
+    allowProposedApi: true,
+  });
+  terminal.loadAddon(new Unicode11Addon());
+  terminal.unicode.activeVersion = "11";
+  trackTerminalScreenState(terminal, () => readHeadlessAppearance(sessionId).theme, sessionId);
   return {
-    terminal: new Terminal({
-      cols: size.cols,
-      rows: size.rows,
-      scrollback: HEADLESS_BUFFER_SCROLLBACK,
-      allowProposedApi: true,
-    }),
+    sessionId,
+    terminal,
+    decoder: new TextDecoder(),
+    colorAdapter: new LightDarkColorAdaptController(),
+    sgrRewriter: new SgrLightRewriter(),
     generation,
     endOffset: 0,
     busy: false,
@@ -137,14 +158,14 @@ function createCacheEntry(size: HeadlessBufferSize, generation: PtyReadGeneratio
   };
 }
 
-function disposeEntry(sessionId: string, entry: HeadlessBufferCacheEntry): void {
-  if (headlessBufferCache.get(sessionId) === entry) headlessBufferCache.delete(sessionId);
+function disposeEntry(cacheKey: string, entry: HeadlessBufferCacheEntry): void {
+  if (headlessBufferCache.get(cacheKey) === entry) headlessBufferCache.delete(cacheKey);
   entry.terminal.dispose();
 }
 
-function touchEntry(sessionId: string, entry: HeadlessBufferCacheEntry): void {
-  headlessBufferCache.delete(sessionId);
-  headlessBufferCache.set(sessionId, entry);
+function touchEntry(cacheKey: string, entry: HeadlessBufferCacheEntry): void {
+  headlessBufferCache.delete(cacheKey);
+  headlessBufferCache.set(cacheKey, entry);
 }
 
 function evictOverflow(): void {
@@ -155,8 +176,8 @@ function evictOverflow(): void {
   }
 }
 
-function writeToTerminal(terminal: HeadlessTerminal, data: Uint8Array): Promise<void> {
-  if (data.byteLength === 0) return Promise.resolve();
+function writeToTerminal(terminal: HeadlessTerminal, data: string): Promise<void> {
+  if (data.length === 0) return Promise.resolve();
   return new Promise((resolve) => terminal.write(data, resolve));
 }
 
@@ -177,23 +198,39 @@ type SnapshotLoader = (since?: ScrollbackCursor) => Promise<ScrollbackSnapshot>;
 export function getHeadlessBufferLines(
   sessionId: string, snapshot: ScrollbackSnapshot, maxLines: number, size?: HeadlessBufferSize,
 ): Promise<string[]> {
-  return replayHeadlessBuffer(sessionId, snapshot, maxLines, size);
+  return replayHeadlessBuffer(sessionId, snapshot, entry => getBufferLines(entry.terminal, maxLines), size);
 }
 
 export function readHeadlessBufferLines(
   sessionId: string, loadSnapshot: SnapshotLoader, maxLines: number, size?: HeadlessBufferSize,
   fetchTimeoutMs = HEADLESS_BUFFER_FETCH_TIMEOUT_MS, purpose?: "observation", isCurrent = () => true,
 ): Promise<string[]> {
-  return replayHeadlessBuffer(sessionId, loadSnapshot, maxLines, size, fetchTimeoutMs, purpose, isCurrent);
+  return replayHeadlessBuffer(sessionId, loadSnapshot, entry => getBufferLines(entry.terminal, maxLines), size, fetchTimeoutMs, purpose, isCurrent);
 }
 
-async function replayHeadlessBuffer(
-  sessionId: string, source: ScrollbackSnapshot | SnapshotLoader, maxLines: number, size?: HeadlessBufferSize,
+/** Screen polling always uses observation fetches: IPC never owns the queue. */
+export function readHeadlessBufferScreen(
+  sessionId: string, loadSnapshot: SnapshotLoader, scrollback: unknown, size?: HeadlessBufferSize,
+  fetchTimeoutMs = TERMINAL_IPC_TIMEOUT_MS, isCurrent = () => true,
+): Promise<TerminalScreenSnapshot> {
+  return replayHeadlessBuffer(sessionId, loadSnapshot, entry => snapshotTerminalScreen(
+    entry.terminal, terminalScreenThemeFor(entry.terminal, readHeadlessAppearance(sessionId).theme), {
+      scrollback, cursorVisible: terminalScreenCursorVisible(entry.terminal),
+      paletteOverrides: terminalScreenPaletteOverrides(entry.terminal),
+      viewportY: headlessScreenViewport(sessionId, entry.terminal.buffer.active.baseY),
+    },
+  ), size, fetchTimeoutMs, "observation", isCurrent, true);
+}
+
+async function replayHeadlessBuffer<T>(
+  sessionId: string, source: ScrollbackSnapshot | SnapshotLoader, read: (entry: HeadlessBufferCacheEntry) => T, size?: HeadlessBufferSize,
   fetchTimeoutMs = HEADLESS_BUFFER_FETCH_TIMEOUT_MS, purpose?: "observation", isCurrent = () => true,
-): Promise<string[]> {
+  preserveScreenOnResize = false,
+): Promise<T> {
   const release = retainPtyReads(sessionId);
   try {
     const generation = ptyReadGeneration(sessionId);
+    const cacheKey = `${preserveScreenOnResize ? "screen" : "lines"}:${sessionId}`;
     const cursorFor = (entry?: HeadlessBufferCacheEntry): ScrollbackCursor | undefined => {
       const wanted = entry ? resolveSize(size, entry) : undefined;
       return entry && currentPtyRead(sessionId, entry.generation) && wanted?.cols === entry.cols && wanted.rows === entry.rows
@@ -206,44 +243,51 @@ async function replayHeadlessBuffer(
       if (typeof source !== "function") return Promise.reject(new Error("PTY scrollback delta requires a full snapshot"));
       return withTerminalDeadline(source(cursor), "headless get_session_scrollback", Math.max(0, fetchDeadline - performance.now()));
     };
-    const commit = async (snapshot: ScrollbackSnapshot): Promise<string[] | undefined> => {
+    const commit = async (snapshot: ScrollbackSnapshot): Promise<T | undefined> => {
       if (!isCurrent()) throw new Error("pane read lifetime changed");
       validatePtySnapshot(sessionId, generation, snapshot.sessionEpoch);
-      let entry = headlessBufferCache.get(sessionId);
+      let entry = headlessBufferCache.get(cacheKey);
       const wanted = resolveSize(size, snapshot);
-      const compatible = Boolean(entry && entry.generation === generation && entry.cols === wanted.cols && entry.rows === wanted.rows
-        && entry.sessionEpoch === snapshot.sessionEpoch && entry.sizeRevision === snapshot.sizeRevision);
+      const compatible = Boolean(entry && entry.generation === generation && entry.sessionEpoch === snapshot.sessionEpoch
+        && (preserveScreenOnResize || (entry.cols === wanted.cols && entry.rows === wanted.rows && entry.sizeRevision === snapshot.sizeRevision)));
       // An interactive reader may advance the cursor while an observer is fetching.
       // Never rewind the committed parser to that observer's older reply.
       if (entry?.generation === generation && entry.sessionEpoch === snapshot.sessionEpoch
         && (entry.endOffset > snapshot.endOffset || (entry.sizeRevision !== undefined && snapshot.sizeRevision !== undefined
-          && entry.sizeRevision > snapshot.sizeRevision))) return getBufferLines(entry.terminal, maxLines);
+          && entry.sizeRevision > snapshot.sizeRevision))) return read(entry);
       const canAppend = compatible && entry!.endOffset >= snapshot.startOffset && entry!.endOffset <= snapshot.endOffset;
       if (snapshot.isDelta && !canAppend) return undefined;
       if (!entry || !canAppend) {
-        if (entry) disposeEntry(sessionId, entry);
+        if (entry) disposeEntry(cacheKey, entry);
         if (headlessBufferCache.size >= HEADLESS_BUFFER_CACHE_LIMIT) {
           const idle = [...headlessBufferCache.entries()].find(([, candidate]) => !candidate.busy);
           if (idle) disposeEntry(idle[0], idle[1]);
         }
-        entry = createCacheEntry(wanted, generation);
-        if (headlessBufferCache.size < HEADLESS_BUFFER_CACHE_LIMIT) headlessBufferCache.set(sessionId, entry);
+        entry = createCacheEntry(sessionId, wanted, generation);
+        if (headlessBufferCache.size < HEADLESS_BUFFER_CACHE_LIMIT) headlessBufferCache.set(cacheKey, entry);
       }
       const replayStart = canAppend ? entry.endOffset - snapshot.startOffset : 0;
       entry.busy = true;
       try {
-        await writeToTerminal(entry.terminal, snapshot.data.subarray(replayStart));
+        if (preserveScreenOnResize && (entry.cols !== wanted.cols || entry.rows !== wanted.rows)) {
+          entry.terminal.resize(wanted.cols, wanted.rows);
+          entry.cols = wanted.cols; entry.rows = wanted.rows;
+        }
+        const appearance = readHeadlessAppearance(sessionId);
+        const output = entry.decoder.decode(snapshot.data.subarray(replayStart), { stream: true });
+        const adapted = entry.colorAdapter.transform(output, appearance.adaptColors);
+        await writeToTerminal(entry.terminal, entry.sgrRewriter.transform(adapted, appearance.light));
         if (!isCurrent()) throw new Error("pane read lifetime changed");
         validatePtySnapshot(sessionId, generation, snapshot.sessionEpoch);
         entry.endOffset = snapshot.endOffset;
         entry.sessionEpoch = snapshot.sessionEpoch;
         entry.sizeRevision = snapshot.sizeRevision;
-        const lines = getBufferLines(entry.terminal, maxLines);
-        if (headlessBufferCache.get(sessionId) === entry) touchEntry(sessionId, entry);
+        const lines = read(entry);
+        if (headlessBufferCache.get(cacheKey) === entry) touchEntry(cacheKey, entry);
         else entry.terminal.dispose();
         return lines;
       } catch (error) {
-        disposeEntry(sessionId, entry);
+        disposeEntry(cacheKey, entry);
         throw error;
       } finally {
         entry.busy = false;
@@ -253,7 +297,7 @@ async function replayHeadlessBuffer(
     if (purpose === "observation") {
       // Only parser mutations share the queue. A four-second observer IPC wait
       // cannot consume an ordinary read or send-confirmation's deadline.
-      let snapshot = typeof source === "function" ? await load(cursorFor(headlessBufferCache.get(sessionId))) : source;
+      let snapshot = typeof source === "function" ? await load(cursorFor(headlessBufferCache.get(cacheKey))) : source;
       let lines = await withSessionWriteQueue(sessionId, () => commit(snapshot));
       if (lines === undefined) {
         snapshot = await load(); // One full retry, outside the queue, same budget.
@@ -265,7 +309,7 @@ async function replayHeadlessBuffer(
     return await withSessionWriteQueue(sessionId, async () => {
       // Preserve the default reader's serialized cursor and 200 ms fetch budget.
       fetchDeadline = performance.now() + fetchTimeoutMs;
-      let snapshot = typeof source === "function" ? await load(cursorFor(headlessBufferCache.get(sessionId))) : source;
+      let snapshot = typeof source === "function" ? await load(cursorFor(headlessBufferCache.get(cacheKey))) : source;
       let lines = await commit(snapshot);
       if (lines === undefined) { snapshot = await load(); lines = await commit(snapshot); }
       if (lines === undefined) throw new Error("PTY scrollback delta requires a full snapshot");
@@ -277,12 +321,12 @@ async function replayHeadlessBuffer(
 export function __headlessBufferCacheSizeForTests(): number { return headlessBufferCache.size; }
 
 export function __headlessBufferStateForTests() {
-  return { entries: [...headlessBufferCache].map(([sessionId, entry]) => ({ sessionId, generation: entry.generation,
+  return { entries: [...headlessBufferCache.values()].map(entry => ({ sessionId: entry.sessionId, generation: entry.generation,
     epoch: entry.sessionEpoch, endOffset: entry.endOffset, busy: entry.busy })), queued: [...sessionWriteQueues.keys()] };
 }
 
 export function __resetHeadlessBufferCacheForTests(): void {
-  for (const [sessionId, entry] of headlessBufferCache) disposeEntry(sessionId, entry);
+  for (const [cacheKey, entry] of headlessBufferCache) disposeEntry(cacheKey, entry);
   headlessBufferCache.clear();
   sessionWriteQueues.clear();
 }

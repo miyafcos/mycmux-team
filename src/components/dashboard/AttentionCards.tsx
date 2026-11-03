@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { BellRing, CircleCheck, CornerUpLeft, ExternalLink, FileText, MessageSquareReply, RotateCcw, Target } from "lucide-react";
-import { DashboardGlyph, DashboardIconButton, DashboardStatusMark } from "./DashboardUi";
+import { Check, ExternalLink, FileText, MessageSquareReply, RotateCcw } from "lucide-react";
+import { DashboardIconButton, DashboardStatusMark } from "./DashboardUi";
 
 import type { AttentionCard, SessionRef } from "../../lib/attentionBridge";
 import { useAskQuestionStore } from "../../stores/askQuestionStore";
@@ -109,8 +109,8 @@ function AttentionFactCardItem({
     <div className="cmux-attention-card-head">
       <div className="cmux-attention-card-head-main">
         <button type="button" className="cmux-attention-card-session-chip" onClick={open}>{card.label}</button>
-        <DashboardStatusMark state={card.kind === "pendingQuestion" ? "needsHuman" : "noUpdate"} label={dashboardStrings.attentionFactKindLabel(card.kind, card.minutes)} />
-        {card.minutes === null ? null : <span className="cmux-attention-fact-elapsed">{`${card.minutes}分`}</span>}
+        <DashboardStatusMark state={card.kind === "pendingQuestion" ? "needsHuman" : "noUpdate"} label={dashboardStrings.attentionFactKindLabel(card.kind, card.minutes)} hasElapsed={card.minutes !== null} />
+        {card.minutes === null ? null : <span className={`cmux-attention-fact-elapsed${card.kind === "pendingQuestion" ? "" : " is-stalled"}`} title={dashboardStrings.attentionFactKindLabel(card.kind, card.minutes)}>{`${card.minutes}分`}</span>}
       </div>
     </div>
     {card.prompt ? <p className="cmux-attention-fact-prompt" data-attention-fact-prompt={card.id}>{card.prompt}</p> : null}
@@ -172,14 +172,14 @@ function AttentionCardItem({
     </div>
     {contractGoal ? <div className="cmux-attention-card-subject" data-attention-contract-goal={card.id}>{contractGoal}</div> : null}
     <dl>
-      <dt><DashboardGlyph icon={BellRing} label={dashboardStrings.attentionWhyNow} /></dt><dd>{card.whyNow}</dd>
-      <dt><DashboardGlyph icon={Target} label={dashboardStrings.attentionImpact} /></dt><dd>{card.impact}</dd>
-      <dt><DashboardGlyph icon={FileText} label={dashboardStrings.attentionEvidence} /></dt><dd>{evidence.map((item) => <div className="cmux-attention-card-evidence" key={`${item.source}:${item.refId}`}><span>{item.detail}</span></div>)}</dd>
-      <dt><DashboardGlyph icon={CornerUpLeft} label={dashboardStrings.attentionReplyRoute} /></dt><dd><DashboardGlyph icon={CornerUpLeft} label={routeLabel(card)} /></dd>
-      <dt><DashboardGlyph icon={CircleCheck} label={dashboardStrings.attentionResolution} /></dt><dd><DashboardGlyph icon={CircleCheck} label={resolutionLabel(card)} /></dd>
+      <dt className="cmux-dashboard-sr-only" title={dashboardStrings.attentionWhyNow} aria-label={dashboardStrings.attentionWhyNow} /><dd title={dashboardStrings.attentionWhyNow}>{card.whyNow}</dd>
+      <dt className="cmux-dashboard-sr-only" title={dashboardStrings.attentionImpact} aria-label={dashboardStrings.attentionImpact} /><dd title={dashboardStrings.attentionImpact}>{card.impact}</dd>
+      <dt className="cmux-dashboard-sr-only" title={dashboardStrings.attentionEvidence} aria-label={dashboardStrings.attentionEvidence} /><dd title={dashboardStrings.attentionEvidence}>{evidence.map((item) => <div className="cmux-attention-card-evidence" key={`${item.source}:${item.refId}`}><span>{item.detail}</span></div>)}</dd>
+      <dt className="cmux-dashboard-sr-only" title={dashboardStrings.attentionReplyRoute} aria-label={dashboardStrings.attentionReplyRoute} /><dd title={dashboardStrings.attentionReplyRoute} aria-label={`${dashboardStrings.attentionReplyRoute}: ${routeLabel(card)}`}>{routeLabel(card)}</dd>
+      <dt className="cmux-dashboard-sr-only" title={dashboardStrings.attentionResolution} aria-label={dashboardStrings.attentionResolution} /><dd title={dashboardStrings.attentionResolution} aria-label={`${dashboardStrings.attentionResolution}: ${resolutionLabel(card)}`}>{resolutionLabel(card)}</dd>
     </dl>
     <div className="cmux-attention-card-action">
-      {card.primaryAction.type === "acknowledgeGoalReached" || card.primaryAction.type === "retryWorkItem" ? <button type="button" aria-label={actionLabel} title={actionLabel} aria-busy={running || undefined} onClick={runPrimaryAction}>{card.primaryAction.type === "retryWorkItem" ? <RotateCcw size={15} aria-hidden="true" /> : <CircleCheck size={15} aria-hidden="true" />}{actionLabel}</button> : <DashboardIconButton icon={card.primaryAction.type === "answerQuestion" ? MessageSquareReply : card.primaryAction.type === "reviewConflict" || card.primaryAction.type === "raiseBudget" ? FileText : ExternalLink} label={actionLabel} aria-busy={running || undefined} onClick={runPrimaryAction} />}
+      {card.primaryAction.type === "acknowledgeGoalReached" || card.primaryAction.type === "retryWorkItem" ? <button type="button" aria-label={actionLabel} title={actionLabel} aria-busy={running || undefined} onClick={runPrimaryAction}>{card.primaryAction.type === "retryWorkItem" ? <RotateCcw aria-hidden="true" /> : <Check aria-hidden="true" />}{actionLabel}</button> : <DashboardIconButton icon={card.primaryAction.type === "answerQuestion" ? MessageSquareReply : card.primaryAction.type === "reviewConflict" || card.primaryAction.type === "raiseBudget" ? FileText : ExternalLink} label={actionLabel} aria-busy={running || undefined} onClick={runPrimaryAction} />}
       {result ? <span className={`cmux-attention-card-action-result is-${result}`} role="status"><DashboardStatusMark state={result === "success" ? "acknowledged" : "error"} label={result === "success" ? dashboardStrings.attentionActionSucceeded : dashboardStrings.attentionActionFailed} /></span> : null}
     </div>
   </article>;

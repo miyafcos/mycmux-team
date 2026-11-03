@@ -223,7 +223,7 @@ def test_savepoint_overlay_copy_matches_left_right_full_resume_and_bottom_paste(
     assert "左・右端: 完全再開" in strings
     assert 'direction === "left" ? "左に完全再開" : "右に完全再開"' in strings
     assert "下: この会話へ引き継ぎ" in strings
-    assert "paneDndStrings.handoffSplit(savepointDropTarget.direction)" not in terminal_pane
+    assert ("paneDndStrings.handoff" "Split(savepointDropTarget.direction)") not in terminal_pane
 
 
 def _ts_join_prompt_body() -> str:

@@ -6,8 +6,6 @@ import { dashboardText } from "../helpers/dashboardA11y";
 
 import { act, createRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { renderToStaticMarkup } from "react-dom/server";
-import { Filter } from "lucide-react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const bridgeMocks = vi.hoisted(() => ({
@@ -160,7 +158,9 @@ describe("気づき欄の事実カード", () => {
     const card = container.querySelector<HTMLElement>("[data-attention-fact-card]")!;
     expect(card.textContent).toContain("45分");
     expect(card.querySelector(".cmux-attention-fact-elapsed")?.textContent).toBe("45分");
-    const mark = card.querySelector("[data-dashboard-status=noUpdate] [role=img]")!;
+    expect(card.querySelector(".cmux-attention-fact-elapsed")?.classList.contains("is-stalled")).toBe(true);
+    expect(card.querySelector("[data-dashboard-status=noUpdate] svg")).toBeNull();
+    const mark = card.querySelector("[data-dashboard-status=noUpdate][role=img]")!;
     expect(mark.getAttribute("title")).toBe(dashboardStrings.attentionFactKindLabel("noUpdate", 45));
     expect(mark.getAttribute("aria-label")).toBe(dashboardStrings.attentionFactKindLabel("noUpdate", 45));
   });
@@ -264,7 +264,8 @@ describe("セッション一覧のナビ", () => {
     expect(summary.textContent).toBe("2 / 7");
     expect(summary.textContent).toContain("2");
     expect(summary.textContent).toContain("7");
-    expect(summary.querySelector("svg")?.outerHTML).toBe(renderToStaticMarkup(<Filter size={15} aria-hidden="true" />));
+    expect(summary.querySelector("svg")).toBeNull();
+    expect(summary.querySelector("b")?.textContent).toBe("2 / 7");
     expect(summary.getAttribute("title")).toBe(dashboardStrings.filteredSummary(2, 7));
     expect(summary.getAttribute("aria-label")).toBe(dashboardStrings.filteredSummary(2, 7));
   });
