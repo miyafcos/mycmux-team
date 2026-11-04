@@ -10,7 +10,7 @@ import { useRecentInputStore } from "../../stores/recentInputStore";
 import { dashboardStrings } from "./dashboardStrings";
 import { dashboardActivity } from "./dashboardActivity";
 import { firstLine } from "./attentionModel";
-import { instrumentLineFromTelemetry, instrumentSlotsFromTelemetry } from "./instrumentLine";
+import { instrumentSlotsFromTelemetry } from "./instrumentLine";
 import { resolveDisplayState, type DashboardCardModel, type DashboardDisplayState } from "./dashboardModel";
 import { latestInstruction as latestInstructionFromEvents } from "./liveTimelineModel";
 import { stateLabels } from "./stateLabels";
@@ -77,8 +77,9 @@ function CardRow({ card, selected, open, now, hideWorkspaceBadge, onSelect, onJu
   const agentColor = card.mark?.color.fg ?? "var(--cmux-text-tertiary)";
   const tone = state === "needsHuman" ? " is-ask" : state === "error" || state === "noUpdate" ? " is-error" : "";
   const instrumentSid = card.metadata?.agentSessionId ?? card.brief?.agentSessionId ?? card.tab.agentSessionId;
-  const instrumentSlots = instrumentSlotsFromTelemetry(card.telemetry, instrumentSid, { compactContext: true });
-  const instrumentTitle = instrumentLineFromTelemetry(card.telemetry, instrumentSid);
+  const instrumentSlots = instrumentSlotsFromTelemetry(card.telemetry, instrumentSid, { compactContext: true })
+    .filter(slot => slot.kind === "model" || slot.kind === "context");
+  const instrumentTitle = instrumentSlots.map(slot => slot.text).join(" · ");
 
   return <button
     type="button"

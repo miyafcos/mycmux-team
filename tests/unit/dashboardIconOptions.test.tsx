@@ -42,7 +42,8 @@ it("renders the chosen small symbols for every state with accessible names", asy
   }
   for (const state of ["unknown", "noUpdate"]) {
     const mark = host.querySelector(`[data-dashboard-status="${state}"]`)!;
-    expect(mark.childElementCount).toBe(0);
+    expect(mark.querySelector("svg")).toBeNull();
+    expect(mark.querySelector(".cmux-dashboard-status-text")?.textContent).toBe(mark.getAttribute("aria-label"));
     expect(mark.classList.contains("cmux-dashboard-sr-only")).toBe(true);
     expect(mark.getAttribute("title")?.trim()).toBeTruthy();
   }
@@ -142,7 +143,7 @@ function narrowCard(chip = narrowChip, state: "running" | "unknown" = "running")
     selectedTabIds={new Set()} groupPulseTabIds={new Set()} displayState={state} collapsed={false} now={46000}
     onSelect={() => {}} onSelectGroup={() => {}} />;
 }
-it.each([[180, true, true, 5], [82, true, false, 5], [54, false, false, 5], [43, false, false, 2]] as const)(
+it.each([[180, true, true, 5], [82, true, false, 5], [54, false, false, 5], [43, false, false, 5]] as const)(
   "reserves elapsed text before CTX at %i px and keeps hidden values accessible", async (width, contextVisible, nameVisible, gap) => {
     mockMetaWidth(() => width);
     await act(async () => root.render(narrowCard()));
@@ -153,6 +154,9 @@ it.each([[180, true, true, 5], [82, true, false, 5], [54, false, false, 5], [43,
     expect(host.querySelector(".cmux-minimap-agent-dot")).not.toBeNull();
     const meta = host.querySelector<HTMLElement>(".cmux-minimap-meta")!;
     expect(meta.style.columnGap).toBe(`${gap}px`);
+    expect(meta.querySelector("[data-dashboard-status]")).toBeNull();
+    expect(host.querySelector(".cmux-minimap-status-line [data-dashboard-status]")).not.toBeNull();
+    expect(meta.nextElementSibling?.className).toBe("cmux-minimap-status-line");
     const elapsed = host.querySelector(".cmux-minimap-age")!;
     expect(elapsed.textContent).toBe("45秒");
     expect(elapsed.classList.contains("cmux-dashboard-sr-only")).toBe(false);

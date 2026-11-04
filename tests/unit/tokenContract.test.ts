@@ -65,6 +65,16 @@ describe("cmux design token contract", () => {
 
   it("defines the readability tokens this phase introduced", () => {
     for (const token of [
+      "--cmux-dashboard-control-size",
+      "--cmux-dashboard-band-height",
+      "--cmux-dashboard-header-height",
+      "--cmux-dashboard-side-width",
+      "--cmux-dashboard-reading-width",
+      "--cmux-dashboard-reading-inset",
+      "--cmux-dashboard-reading-line-height",
+      "--cmux-dashboard-card-min-height",
+      "--cmux-dashboard-tile-min-height",
+      "--cmux-dashboard-composer-min-height",
       "--cmux-accent-text",
       "--cmux-yellow",
       "--cmux-boot-bg",

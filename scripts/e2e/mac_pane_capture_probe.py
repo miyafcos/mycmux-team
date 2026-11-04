@@ -18,6 +18,7 @@ import statistics
 import struct
 import subprocess
 import sys
+import threading
 import time
 import zlib
 from datetime import datetime, timezone
@@ -450,11 +451,247 @@ def load_probe(app: App, session: str, seconds: float, idle_seconds: float,
     return result
 
 
+# E2E-only timer state, installed into a fresh fixture window. It records only
+# numeric delays. Reset the due time after each tick so one long stall is one
+# observation, rather than thousands of synthetic catch-up observations.
+LOAD_MONITOR = r"""const old=window.__captureLoad;if(old)clearInterval(old.timer);
+ const s=window.__captureLoad={capture:[],other:[],idle:[],active:false,sinceTick:false,
+ phase:'load',expected:performance.now()+50};
+ s.timer=setInterval(()=>{const now=performance.now(),kind=s.phase==='idle'?'idle':
+   s.active||s.sinceTick?'capture':'other';
+ s[kind].push(Math.max(0,now-s.expected));s.expected=now+50;s.sinceTick=false;},50);
+ return {visibility:document.visibilityState,dpr:devicePixelRatio};"""
+
+
+def number_distribution(values: list[float]) -> dict[str, Any]:
+    ordered = sorted(values)
+    return {"count": len(ordered), "medianMs": statistics.median(ordered) if ordered else None,
+            "p95Ms": ordered[math.ceil(len(ordered) * .95) - 1] if ordered else None,
+            "maximumMs": max(ordered) if ordered else None,
+            "over100ms": sum(value > 100 for value in ordered)}
+
+
+def window_capture_sample(app: App, session: str, out: Path) -> dict[str, Any]:
+    """Independent WKSnapshot at the real canvas rectangle, plus socket capture.
+
+    The fixture is stopped while taking the pair. Preserve the original crop
+    and every numerical difference; no tolerance for channel differences.
+    """
+    activate(app, session)
+    # Paint the actual source synchronously: rAF can be stopped in this hidden
+    # window. No capture/copy helper participates in the window reference.
+    geometry = app.eval("""const t=window.__mycmuxE2E.terminals.live.get(""" + json.dumps(session) + """);
+      t.blur();t.clearSelection();const pane=t.element.closest('.terminal-pane-border');
+      const sampleTheme=t.options.theme,transparency=t.options.allowTransparency;
+      // v1 specifies an opaque solid grid. Prepare that supported applied
+      // option on this synthetic live reference too, before taking the pair.
+      // Retain the previous run's transparent-window sample as evidence.
+      const background=sampleTheme.background?.slice(0,7);
+      t.options={allowTransparency:false,theme:{...sampleTheme,background}};
+      const style=document.createElement('style');
+      pane?.setAttribute('data-capture-sample','true');
+      style.textContent='.terminal-pane-border[data-capture-sample]::after {opacity:0 !important;transition:none !important;}';
+      document.head.append(style);
+      // The API exports the grid, not the app's overlaid active-pane ring.
+      // Hide only that decoration in the synthetic sample; dimensions and
+      // actual WebGL rendering/compositing stay untouched.
+      const border=pane?.style.getPropertyValue('--pane-border-color'),glow=pane?.style.getPropertyValue('--pane-focus-glow');
+      pane?.style.setProperty('--pane-border-color','transparent');pane?.style.setProperty('--pane-focus-glow','none');
+      const r=t._core._renderService;
+      r._renderRows(0,t.rows-1);const c=r._renderer.value._canvas,b=c.getBoundingClientRect();
+      return {rect:{x:b.x,y:b.y,width:b.width,height:b.height},
+        width:c.width,height:c.height,viewport:{width:innerWidth,height:innerHeight},dpr:devicePixelRatio,
+        decoration:{border,glow,opacity:pane?getComputedStyle(pane,'::after').opacity:null},
+        sampleOptions:{allowTransparency:t.options.allowTransparency,background:t.options.theme.background,
+          previousAllowTransparency:transparency,previousBackground:sampleTheme.background}};""")
+    # Let the decoration style commit; no rAF or visibility spoofing.
+    time.sleep(.2)
+    screenshot = out / "sample-window.png"
+    app.snapshot(screenshot)
+    reply = app.call("pane.capture", {"sessionId": session, "scale": "native"})
+    captured = base64.b64decode(reply["image"]["data"], validate=True)
+    (out / "sample-capture.png").write_bytes(captured)
+    sw, sh, rgba = png_read(screenshot.read_bytes())
+    cw, ch, _ = png_read(captured)
+    rect, viewport = geometry["rect"], geometry["viewport"]
+    x, y = round(rect["x"] * sw / viewport["width"]), round(rect["y"] * sh / viewport["height"])
+    def crop(cx: int, cy: int) -> bytes:
+        if cx < 0 or cy < 0 or cx + cw > sw or cy + ch > sh:
+            raise E2eError("snapshot grid outside viewport")
+        return b"".join(rgba[(row * sw + cx) * 4:(row * sw + cx + cw) * 4] for row in range(cy, cy + ch))
+    png_write(out / "sample-window-crop.png", cw, ch, crop(x, y))
+    pixels = pixel_diff((out / "sample-window-crop.png").read_bytes(), captured, out / "sample-diff.png")
+    best = {"dx": 0, "dy": 0, **pixels}
+    if pixels.get("mismatchedPixels"):
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if not (dx or dy):
+                    continue
+                candidate = out / "sample-shift-candidate.png"
+                png_write(candidate, cw, ch, crop(x + dx, y + dy))
+                comparison = pixel_diff(candidate.read_bytes(), captured, out / "sample-shift-diff.png")
+                if comparison["mismatchedPixels"] < best["mismatchedPixels"]:
+                    best = {"dx": dx, "dy": dy, **comparison}
+    return {"window": screenshot.name, "crop": "sample-window-crop.png", "capture": "sample-capture.png",
+            "geometry": geometry, "cropOrigin": {"x": x, "y": y}, "pixels": pixels, "bestPlacement": best,
+            "ok": best.get("mismatchedPixels") == 0}
+
+
+def stage4_load_probe(app: App, session: str, seconds: float, idle_seconds: float,
+                      rate: int, out: Path, screen_rtt: bool = False) -> dict[str, Any]:
+    """Mixed 9 native / 1 scale-2 socket load and matched no-capture control."""
+    result: dict[str, Any] = {"requestedSeconds": seconds, "requestedCapturesPerSecond": rate, "zoomEvery": 10,
+        "attempts": 0, "successes": 0, "errors": {}, "frames": [], "rss": [],
+        "cold": [], "recovery": {"timeouts": 0, "retained": 0, "attempts": 0, "successes": 0}}
+    result["monitor"] = app.eval(LOAD_MONITOR)
+    initial_selection = selection(app)
+    started = time.monotonic()
+    screen_reads: list[dict[str, Any]] = []
+    screen_stop = threading.Event()
+    in_capture, capture_serial = False, 0
+    def poll_screen() -> None:
+        while not screen_stop.is_set():
+            began = time.monotonic()
+            serial, active = capture_serial, in_capture
+            row: dict[str, Any] = {"seconds": began - started}
+            try:
+                # Each call owns its connection. Discard the synthetic screen
+                # immediately; persist only RTT, overlap and fixed errors.
+                app.call("pane.screen", {"sessionId": session, "scrollback": 0}, timeout=5)
+            except Exception as error:
+                row["error"] = error_word(error)
+            row.update(elapsedMs=(time.monotonic() - began) * 1000,
+                       capture=active or in_capture or serial != capture_serial)
+            screen_reads.append(row)
+            screen_stop.wait(max(0, began + .05 - time.monotonic()))
+    screen_thread = threading.Thread(target=poll_screen, daemon=True) if screen_rtt else None
+    if screen_thread:
+        screen_thread.start()
+    def point() -> dict[str, Any]:
+        return {"seconds": time.monotonic() - started, **memory(app)}
+    result["rss"].append(point())
+    pending_timeout = False
+    def take(scale: str | int, after_idle: bool = False) -> dict[str, Any]:
+        nonlocal pending_timeout, in_capture, capture_serial
+        before = diagnostic(app)
+        app.eval("const s=window.__captureLoad;s.active=true;s.sinceTick=true;return true;")
+        began = time.monotonic()
+        in_capture = True
+        capture_serial += 1
+        row: dict[str, Any] = {"seconds": began - started, "scale": scale, "cold": not before["allocated"],
+                               "afterIdle": after_idle}
+        result["attempts"] += 1
+        try:
+            reply = app.call("pane.capture", {"sessionId": session, "scale": scale})
+            image = reply["image"]
+            if image["type"] != "image/png" or reply["renderer"] != "webgl":
+                raise E2eError("capture contract mismatch")
+            row.update(elapsedMs=reply["elapsedMs"], pngBytes=len(base64.b64decode(image["data"], validate=True)))
+            result["successes"] += 1
+        except Exception as error:
+            word = error_word(error)
+            row["error"] = word
+            result["errors"][word] = result["errors"].get(word, 0) + 1
+        row["socketMs"] = (time.monotonic() - began) * 1000
+        in_capture = False
+        state = app.eval("window.__captureLoad.active=false;return window.__mycmuxE2E.captureProbe.state();")
+        row.update(allocated=state["allocated"], busy=state["busy"],
+                   initializeMs=state.get("render", {}).get("stageMs", {}).get("initialize"),
+                   renderStage=state.get("render", {}).get("stage"),
+                   stageMs=state.get("render", {}).get("stageMs", {}))
+        if pending_timeout:
+            row["afterTimeout"] = True
+            result["recovery"]["attempts"] += 1
+            result["recovery"]["successes"] += "error" not in row
+        pending_timeout = row.get("error") == "pane.capture timeout"
+        if pending_timeout:
+            result["recovery"]["timeouts"] += 1
+            result["recovery"]["retained"] += state["allocated"] and not state["busy"]
+        if row["cold"]:
+            result["cold"].append(row)
+        result["frames"].append(row)
+        return row
+    try:
+        next_sample, tick = 15.0, 0
+        while time.monotonic() - started < seconds:
+            tick_started = time.monotonic()
+            tick += 1
+            # Both profiles do the same live fixture update work at six/s. The
+            # control differs only by omitting pane.capture, including after idle.
+            app.eval("const t=window.__mycmuxE2E.terminals.live.get(" + json.dumps(session) + ");"
+                     + "t._core.writeSync(" + json.dumps("\x1b[18;1H\x1b[0Kサンプル企画 / synthetic counter " + str(tick)
+                         + (" / 北斗学院" if tick % 2 else " / fixture row") + "\x1b[15;4H") + ");return true;")
+            if rate:
+                take(2 if tick % 10 == 0 else "native")
+            if time.monotonic() - started >= next_sample:
+                result["rss"].append(point())
+                print(json.dumps({"stage4Seconds": round(result["rss"][-1]["seconds"], 1), "rate": rate,
+                    "captures": result["successes"], "errors": result["errors"],
+                    "webContentRssKiB": result["rss"][-1]["webContentRssKiB"]}), flush=True)
+                next_sample += 15
+            time.sleep(max(0, min(started + seconds, tick_started + 1 / 6) - time.monotonic()))
+        # If a timeout was the final scheduled frame, measure its next capture
+        # explicitly instead of leaving the recovery fraction's denominator open.
+        if pending_timeout:
+            time.sleep(1 / 6)
+            take("native")
+        result["elapsedSeconds"] = time.monotonic() - started
+    finally:
+        if screen_thread:
+            screen_stop.set()
+            screen_thread.join(10)
+            if screen_thread.is_alive():
+                raise E2eError("fixture screen read thread did not stop")
+    if screen_thread:
+        result["screenRtt"] = {"periodMs": 50, "samples": screen_reads,
+            "all": number_distribution([row["elapsedMs"] for row in screen_reads]),
+            "capture": number_distribution([row["elapsedMs"] for row in screen_reads if row["capture"]]),
+            "other": number_distribution([row["elapsedMs"] for row in screen_reads if not row["capture"]]),
+            "errors": sum("error" in row for row in screen_reads)}
+    result["rss"].append(point())
+    result["readOnly"] = initial_selection == selection(app)
+    result["stalls"] = app.eval("const s=window.__captureLoad;s.phase='idle';return {capture:s.capture,other:s.other};")
+    result["stalls"] = {key: number_distribution(values) for key, values in result["stalls"].items()}
+    time.sleep(idle_seconds)
+    result["afterIdle"] = {"idleSeconds": idle_seconds, **point()}
+    if rate:
+        take("native", after_idle=True)
+        if pending_timeout:
+            time.sleep(1)
+            take("native", after_idle=True)
+    idle_stalls = app.eval("const s=window.__captureLoad;clearInterval(s.timer);return s.idle;")
+    result["stalls"]["idle"] = number_distribution(idle_stalls)
+    warm = [row for row in result["frames"] if not row["cold"] and not row["afterIdle"]]
+    result["timings"] = {str(scale): number_distribution([row["elapsedMs"] for row in warm
+        if row["scale"] == scale and "error" not in row]) for scale in ("native", 2)}
+    result["pngBytesPerMinute"] = [sum(row.get("pngBytes", 0) for row in result["frames"]
+        if minute * 60 <= row["seconds"] < (minute + 1) * 60 and not row["afterIdle"]) for minute in range(5)]
+    result["warmErrors"] = {str(scale): {word: sum(row.get("error") == word for row in warm if row["scale"] == scale)
+        for word in result["errors"]} for scale in ("native", 2)}
+    result["scale2Attempts"] = sum(row["scale"] == 2 for row in warm)
+    result["coldFailures"] = sum("error" in row for row in result["cold"])
+    result["nativeWarmAttempts"] = sum(row["scale"] == "native" for row in warm)
+    result["actualCapturesPerSecond"] = sum(not row["afterIdle"] for row in result["frames"]) / result["elapsedSeconds"]
+    bad = [row for row in result["frames"] if "error" in row and not
+           (row["error"] == "pane.capture timeout" and (row["cold"] or row["scale"] == 2)
+            and row["allocated"] and not row["busy"])]
+    recovery = result["recovery"]
+    result["ok"] = (not bad and result["readOnly"] and not result["afterIdle"]["capture"]["allocated"]
+        and recovery["timeouts"] == recovery["retained"] == recovery["attempts"] == recovery["successes"]
+        and (result["successes"] > 0 if rate else result["attempts"] == 0)
+        and not result.get("screenRtt", {}).get("errors", 0))
+    if rate:
+        result["sample"] = window_capture_sample(app, session, out)
+        result["ok"] = result["ok"] and result["sample"]["ok"]
+    return result
+
+
 def run_preset(bundle: Path, out: Path, preset: str, samples: int, memory_captures: int, idle_seconds: float,
                control_wait: float | None = None, load_seconds: float = 0,
-               load_scales: tuple[str | int, ...] = ("native",)) -> dict[str, Any]:
+               load_scales: tuple[str | int, ...] = ("native",), stage4_rate: int | None = None,
+               stage4_screen_rtt: bool = False) -> dict[str, Any]:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-    mode = "control-" if control_wait is not None else "load-" if load_seconds else ""
+    mode = "load-control-" if stage4_rate == 0 else "control-" if control_wait is not None else "load-" if load_seconds else ""
     app = App(f"capture261104-{preset}-{mode}{stamp}", bundle)
     result: dict[str, Any] = {"preset": preset, "profile": app.profile, "dimensions": [], "status": "PASS"}
     settings = {"font_size": 14 if preset == "default" else 13, "line_height": 1.35 if preset == "default" else 1.1,
@@ -507,7 +744,8 @@ def run_preset(bundle: Path, out: Path, preset: str, samples: int, memory_captur
             return result
         if load_seconds:
             result["stage"] = "five-minute-load"
-            result["load"] = load_probe(app, session, load_seconds, idle_seconds, load_scales)
+            result["load"] = (stage4_load_probe(app, session, load_seconds, idle_seconds, stage4_rate, out, stage4_screen_rtt)
+                              if stage4_rate is not None else load_probe(app, session, load_seconds, idle_seconds, load_scales))
             if not result["load"]["ok"]:
                 result["status"] = "FAIL"
             result["stage"] = "complete"
@@ -633,6 +871,24 @@ def run_preset(bundle: Path, out: Path, preset: str, samples: int, memory_captur
 
 
 def report(record: dict[str, Any], out: Path) -> None:
+    if record.get("stage4"):
+        lines = ["# 段4 混合負荷・対照", "", "読者＝母艦と作者／語り手＝測り台本", "",
+                 f"結果: {record['status']}。架空の新規profileだけ。製品の撮影関数・socket・400ms不変。", "",
+                 "PC設定・実80×24・DPR1・6回/秒 (9native+1scale2)、対照も6回/秒のfixture更新だけは同じ。", "",
+                 "| rate | 秒 | app RSS KiB | WebContent RSS KiB | 成功枚数 |", "|---|---:|---:|---:|---:|"]
+        for preset in record["loads"]:
+            load = preset.get("load", {})
+            for point in load.get("rss", []):
+                lines.append(f"| {load['requestedCapturesPerSecond']} | {point['seconds']:.1f} | {point['appRssKiB']} | "
+                             f"{point['webContentRssKiB']} | {point['capture']['captures']} |")
+            # Per-frame numeric records remain in probe.json, not in this table.
+            compact = {key: value for key, value in load.items() if key not in ("frames", "rss")}
+            if "screenRtt" in compact:
+                compact["screenRtt"] = {key: value for key, value in compact["screenRtt"].items() if key != "samples"}
+            lines += ["", "```json", json.dumps(compact, indent=2, ensure_ascii=False), "```", "",
+                      f"終了確認: 残存PID={preset.get('remainingPids')} / 誤り={preset.get('error')}", ""]
+        (out / "PROBE-REPORT.md").write_text("\n".join(lines), encoding="utf-8")
+        return
     lines = ["# 段1 pane.capture 測定", "", "読者＝母艦と作者／語り手＝測り台本", "",
              f"結果: {record['status']}。画像は使い捨て profile の架空データだけ。", "",
              "全倍率を撮影端末のDPRで描き直してWebGL backing寸法を1:1コピー。Mac実測DPRは1、その他の実窓DPRはWindows比較頁で測る。", "",
@@ -695,6 +951,8 @@ def main() -> int:
     parser.add_argument("--load-seconds", type=float, default=0, help="extra fresh profiles for the final >=300s RSS load")
     parser.add_argument("--load-scales", nargs="+", choices=("native", "2"), default=["native"],
                         help="load scales in order: native by default; native 2 reproduces atlas-switching stress")
+    parser.add_argument("--stage4-only", action="store_true", help="PC mixed socket load, matched no-capture control and real window sample only")
+    parser.add_argument("--stage4-screen-rtt", action="store_true", help="parallel read-only pane.screen RTT in stage 4 (50ms cadence)")
     args = parser.parse_args()
     if (sys.platform != "darwin" or args.samples < 1 or args.memory_captures < 1 or args.idle_seconds < 60
             or not math.isfinite(args.load_seconds) or args.load_seconds < 0 or 0 < args.load_seconds < 300):
@@ -709,6 +967,19 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     record: dict[str, Any] = {"started": datetime.now(timezone.utc).isoformat(), "samples": args.samples,
         "binarySha256": hashlib.sha256((bundle / "Contents/MacOS/mycmux").read_bytes()).hexdigest(), "presets": [], "loads": []}
+    if args.stage4_only:
+        record["stage4"] = True
+        if args.load_seconds < 300:
+            parser.error("stage 4 requires >=300 load seconds")
+        for rate in (6, 0):
+            record["loads"].append(run_preset(bundle, out, "pc", args.samples, args.memory_captures,
+                args.idle_seconds, load_seconds=args.load_seconds, stage4_rate=rate,
+                stage4_screen_rtt=args.stage4_screen_rtt))
+            record["status"] = "PASS" if all(row["status"] == "PASS" for row in record["loads"]) else "FAIL"
+            (out / "probe.json").write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            report(record, out)
+        print(json.dumps({"status": record["status"], "report": str(out / "PROBE-REPORT.md")}), flush=True)
+        return 0 if record["status"] == "PASS" else 1
     for preset in ("default", "pc"):
         measured = run_preset(bundle, out, preset, args.samples, args.memory_captures, args.idle_seconds)
         record["presets"].append(measured)

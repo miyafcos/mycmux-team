@@ -484,10 +484,7 @@ export const LayoutMinimapPanel = memo(function LayoutMinimapPanel({ workspaces,
     : null;
 
   return <section className="cmux-minimap-panel" aria-label={dashboardStrings.layoutMinimapAriaLabel}>
-    {selectedTabIds.size > 0 ? <div className="cmux-minimap-selection-summary" aria-live="polite">
-      <span key={selectedTabIds.size} className="cmux-minimap-selection-count" title={`選択${selectedTabIds.size}本`} aria-label={`選択${selectedTabIds.size}本`}><b className="cmux-minimap-selection-n" aria-hidden="true">{selectedTabIds.size}</b></span>
-      <DashboardIconButton icon={X} label="選択を閉じる" data-minimap-close-selection="true" onClick={openCloseConfirmation} />
-    </div> : null}
+    <header className="cmux-dashboard-layout-heading"><strong>タブの配置</strong><span>{workspaces.reduce((count, workspace) => count + workspace.panes.reduce((n, pane) => n + pane.tabs.length, 0), 0)}</span></header>
     <div ref={stackRef} className={`cmux-minimap-stack${isMinimapDragging ? " is-minimap-dragging" : ""}`} onPointerDownCapture={handlePointerDown} onPointerMoveCapture={handlePointerMove} onPointerUpCapture={finishPointer} onPointerCancelCapture={cancelMarquee} onScroll={handleStackScroll}>
       {workspaces.map((workspace) => {
         const activePaneId = workspace.panes.find((pane) => paneContainsSession(pane, activePaneSessionId))?.id ?? null;
@@ -502,9 +499,15 @@ export const LayoutMinimapPanel = memo(function LayoutMinimapPanel({ workspaces,
       {marquee ? <div className="cmux-minimap-selection-marquee" aria-hidden="true" style={{ left: marquee.left, top: marquee.top, width: marquee.right - marquee.left, height: marquee.bottom - marquee.top }} /> : null}
     </div>
     <div className="cmux-minimap-footer">
+    {selectedTabIds.size > 0 ? <div className="cmux-minimap-selection-summary" aria-live="polite">
+      <span className="cmux-minimap-selection-count" aria-label={`選択中：${selectedTabIds.size}タブ`} title={`選択中：${selectedTabIds.size}タブ`}>{`選択中：${selectedTabIds.size}タブ`}</span>
+      <DashboardIconButton icon={X} label="選択タブを閉じる" data-minimap-close-selection="true" onClick={openCloseConfirmation} />
+    </div> : null}
+
       <div className={`cmux-minimap-new-workspace-zone${isNewWorkspaceTarget ? " is-minimap-drop-target" : ""}`} data-minimap-new-workspace-target="true">
-        <DashboardIconButton icon={FolderPlus} label="新しいワークスペース" data-minimap-new-workspace-button="true" disabled={!selectedItem} onClick={() => { if (selectedItem) moveMinimapItemToNewWorkspace(selectedItem); }} />
+        <DashboardIconButton icon={FolderPlus} label="選んだタブを新しいワークスペースへ移す" title={selectedItem ? "選んだタブを新しいワークスペースへ移す" : "移すタブを配置図で選んでください"} data-minimap-new-workspace-button="true" disabled={!selectedItem} onClick={() => { if (selectedItem) moveMinimapItemToNewWorkspace(selectedItem); }} />
       </div>
+      {!selectedItem ? <small>移すタブを配置図で選んでください</small> : null}
       {TAB_GROUPING_ENTRY_ENABLED ? <TabGroupingButton /> : null}
       <TabSweepButton />
     </div>

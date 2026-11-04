@@ -283,7 +283,7 @@ describe("DetachedPaneShell", () => {
       await act(async () => root.render(<DetachedPaneShell workspace={current} />));
       const shell = host.querySelector("[data-detached-pane-shell]")!;
       const band = shell.children[0] as HTMLElement;
-      expect(band.style.height).toBe("30px");
+      expect(band.style.height).toBe("var(--cmux-dashboard-band-height)");
       expect(band.hasAttribute("data-tauri-drag-region")).toBe(false);
       expect(band.textContent).toContain("Session");
       // × closes the pane; the way back is dragging the band onto a tab strip.

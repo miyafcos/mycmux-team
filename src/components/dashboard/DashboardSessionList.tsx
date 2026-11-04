@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
-import { ArrowLeft, CheckCheck, Ellipsis, Filter, Lightbulb, LoaderCircle, MessageSquareReply, PanelLeftClose, PanelLeftOpen, Search, TriangleAlert, type LucideIcon } from "lucide-react";
-import { DashboardCount, DashboardIconButton } from "./DashboardUi";
+import { CheckCheck, Ellipsis, Filter, Lightbulb, LoaderCircle, MessageSquareReply, PanelLeftClose, PanelLeftOpen, Search, TriangleAlert, type LucideIcon } from "lucide-react";
+import { DashboardCount } from "./DashboardUi";
 import type { ReactNode, RefObject } from "react";
 
 import { DashboardCardRow } from "./DashboardCardRow";
@@ -67,7 +67,6 @@ export function DashboardSessionList({
   searchInputRef,
   onQueryChange,
   onSearchFocusChange,
-  onClose,
   clearDoneCount,
   onClearDone,
   filteredSummary,
@@ -157,7 +156,7 @@ export function DashboardSessionList({
           value={query}
           aria-label={dashboardStrings.searchPlaceholder}
           title={dashboardStrings.searchPlaceholder}
-          placeholder=""
+          placeholder={dashboardStrings.searchPlaceholder}
           onChange={(event) => onQueryChange(event.target.value)}
           onFocus={() => onSearchFocusChange(true)}
           onBlur={() => onSearchFocusChange(false)}
@@ -165,18 +164,20 @@ export function DashboardSessionList({
         {filteredSummary ? <DashboardCount icon={Filter} count={Number(filteredSummary.match(/\d+/g)?.[0] ?? 0)} total={Number(filteredSummary.match(/\d+/g)?.[1] ?? 0)} label={filteredSummary} /> : null}
       </div>
     </div>
+    <nav className="cmux-dashboard-list-tabs" aria-label="一覧の表示">
+    <button type="button" aria-pressed={!attentionOpen} onClick={() => { if (attentionOpen) onOpenAttention(); }}>一覧</button>
     <button
       type="button"
       data-attention-nav="true"
       className={`cmux-dash-attention-nav${attentionOpen ? " is-selected" : ""}`}
       aria-pressed={attentionOpen}
-      aria-label={dashboardStrings.attentionTitle}
+      aria-label={`${dashboardStrings.attentionTitle} ${needsHuman.length}件`}
       title={`${dashboardStrings.attentionTitle} · ${dashboardStrings.attentionNavHint}`}
       onClick={onOpenAttention}
     >
-      <span className="cmux-dash-attention-nav-icon" aria-hidden="true"><Lightbulb /></span>
-      <span className="cmux-dashboard-sr-only">{dashboardStrings.attentionNavHint}</span>
+      <Lightbulb aria-hidden="true" /><span>{dashboardStrings.attentionTitle} {needsHuman.length}</span>
     </button>
+    </nav>
     <div className="cmux-dash-list-scroll">
     <Section title={dashboardStrings.sectionNeedsAnswer} count={attentionSections.needsAnswer.length}>{attentionSections.needsAnswer.map((card) => row(card, `answer-${card.tab.id}`))}</Section>
     <Section title={dashboardStrings.sectionNeedsReview} count={attentionSections.needsReview.length}>{attentionSections.needsReview.map((card) => row(card, `review-${card.tab.id}`))}</Section>
@@ -184,8 +185,8 @@ export function DashboardSessionList({
     <Section title={dashboardStrings.sectionOther} count={attentionSections.other.length}>{attentionSections.other.map((card) => row(card, `other-${card.tab.id}`))}</Section>
     </div>
     <div className="cmux-dash-list-footer">
-      {clearDoneCount > 0 ? <button type="button" aria-label={dashboardStrings.clearDoneButton(clearDoneCount)} title={dashboardStrings.clearDoneButton(clearDoneCount)} onClick={onClearDone}><CheckCheck aria-hidden="true" /> 既読 {clearDoneCount}</button> : null}
-      <DashboardIconButton icon={ArrowLeft} label={dashboardStrings.backToSession} onClick={onClose} />
+      {clearDoneCount > 0 ? <button type="button" aria-label={dashboardStrings.clearDoneButton(clearDoneCount)} title={dashboardStrings.clearDoneButton(clearDoneCount)} onClick={onClearDone}><CheckCheck aria-hidden="true" />{dashboardStrings.clearDoneButton(clearDoneCount)}</button> : null}
+
     </div>
   </div>;
 }

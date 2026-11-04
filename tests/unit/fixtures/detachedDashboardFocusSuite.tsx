@@ -119,13 +119,17 @@ async function open(shell: "native" | "legacy") {
 }
 
 describe.each(["native", "legacy"] as const)(`D1R-001 ${IS_MAC ? "Mac" : "Windows"} %s real dashboard focus return`, shell => {
-  it.each(["escape", "band", "shortcut", "view"] as const)("restores terminal selection, focus, search and history after %s", async source => {
+  it.each(["escape", "return", "shortcut", "link-escape"] as const)("restores terminal selection, focus, search and history after %s", async source => {
     const terminal = await open(shell);
     await act(async () => {
       if (source === "escape") key("Escape");
-      else if (source === "band") host.querySelector<HTMLButtonElement>(`button[aria-label="${dashboardStrings.buttonTitle}"]`)!.click();
+      else if (source === "return") host.querySelector<HTMLButtonElement>(`button[aria-label="${dashboardStrings.backToSession}"]`)!.click();
       else if (source === "shortcut") key("G", { ...primary(), shiftKey: true });
-      else host.querySelector<HTMLButtonElement>(`button[aria-label="${dashboardStrings.backToSession}"]`)!.click();
+      else {
+        const link = document.createElement("a"); link.href = "#fixture"; link.textContent = "Fictional transcript link";
+        host.querySelector(".cmux-dashboard-view")!.append(link); link.focus();
+        link.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      }
     });
     await settle();
     expect(useDashboardViewStore.getState().open).toBe(false);

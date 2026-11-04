@@ -37,7 +37,8 @@ export function DashboardStatusMark({ state, label, className = "", hasElapsed =
   const Icon = dashboardStatusIcons[state];
   const hidden = state === "unknown" || (state === "noUpdate" && hasElapsed);
   return <span className={`cmux-dashboard-status-mark is-${state}${hidden ? " cmux-dashboard-sr-only" : ""} ${className}`} data-dashboard-status={state} role="img" aria-label={text} title={text}>
-    {Icon ? <Icon aria-hidden="true" /> : state === "noUpdate" && !hasElapsed ? <span aria-hidden="true">{dashboardStrings.stateNoUpdate}</span> : null}
+    {Icon ? <Icon aria-hidden="true" /> : null}
+    <span className="cmux-dashboard-status-text" aria-hidden="true">{text}</span>
   </span>;
 }
 
@@ -70,5 +71,6 @@ export function DashboardIconButton({ icon: Icon, label, className = "", ...prop
   if (!useContext(DashboardUiScopeContext)) return <LegacyDashboardIconButton icon={Icon} label={label} className={className} {...props} />;
   return <button type="button" {...props} className={`cmux-dashboard-icon-button ${className}`} aria-label={label} title={props.title ?? label}>
     <Icon aria-hidden="true" />
+    <span className="cmux-dashboard-action-name">{label}</span>
   </button>;
 }

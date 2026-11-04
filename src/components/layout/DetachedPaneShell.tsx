@@ -315,17 +315,17 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
       overflow: "hidden", background: "var(--cmux-bg-solid)", color: "var(--cmux-text)",
     }}>
       <div ref={bandRef} style={{
-        height: 30, flex: "0 0 30px", display: "flex", alignItems: "center", gap: 8,
+        height: "var(--cmux-dashboard-band-height)", flex: "0 0 var(--cmux-dashboard-band-height)", display: "flex", alignItems: "center", gap: 8,
         padding: "0 6px 0 10px", background: "var(--cmux-surface)", userSelect: "none",
         borderBottom: "1px solid var(--cmux-border-hairline)", cursor: "default", touchAction: "none",
       }}>
         <span title={title} style={{
           flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-          fontSize: 12, color: "var(--cmux-text-secondary)", pointerEvents: "none",
+          fontSize: "var(--cmux-font-size-sm)", color: "var(--cmux-text-secondary)", pointerEvents: "none",
         }}>
           {title}
         </span>
-        <button type="button" title={dashboardStrings.buttonTitle} aria-label={dashboardStrings.buttonTitle} aria-pressed={dashboardOpen}
+        {!dashboardOpen ? <button type="button" title={dashboardStrings.buttonTitle} aria-label={dashboardStrings.buttonTitle} aria-pressed={dashboardOpen}
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => toggleDetachedDashboard({ tabId: tab.id, sessionId: tab.sessionId })}
           style={{ height: 22, width: 22, display: "flex", alignItems: "center", justifyContent: "center",
@@ -334,7 +334,7 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
           onPointerEnter={(event) => { event.currentTarget.style.background = "var(--cmux-hover)"; }}
           onPointerLeave={(event) => { event.currentTarget.style.background = "transparent"; }}>
           <DashboardIcon />
-        </button>
+        </button> : null}
         <button
           type="button"
           disabled={closing}
@@ -355,7 +355,7 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
       </div>
       {error && <div role="alert" style={{ padding: "4px 10px", fontSize: 12, color: "var(--cmux-red)" }}>{error}</div>}
       <DetachedDashboardSurface>
-      <div data-session-id={tab.sessionId} style={{ flex: 1, minHeight: 0, position: "relative" }}
+      <div role="group" aria-label={`${title} の端末`} tabIndex={0} onKeyDown={(event) => { if (event.target === event.currentTarget && event.key === "Enter") { event.preventDefault(); focusController.request("pointer", { sessionId: tab.sessionId, focus: true }); } }} data-session-id={tab.sessionId} style={{ flex: 1, minHeight: 0, position: "relative" }}
         onPointerDown={() => focusController.request("pointer", { sessionId: tab.sessionId, focus: true })}>
         {tab.type === "browser" && tab.htmlPath ? (
           <>

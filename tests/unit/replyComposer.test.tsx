@@ -238,6 +238,7 @@ describe("ReplyComposer mentions", () => {
   it("keeps no-@ input on the selected session's existing direct route", async () => {
     mocks.handleSocketCommand.mockResolvedValue({ confirmed: true });
     const textarea = await renderComposer();
+    expect(container.querySelector(".cmux-dashboard-composer-target")?.textContent).toContain("送信先：このタブ（");
     await input(textarea, "直接送信");
     await key(textarea, "Enter");
     expect(mocks.handleSocketCommand).toHaveBeenCalledWith("pane.send_text", {
@@ -368,6 +369,7 @@ describe("ReplyComposer mentions", () => {
     ));
     const textarea = await renderComposer();
     expect(textarea.getAttribute("placeholder")).toBe("メッセージ");
+    expect(container.querySelector(".cmux-dashboard-composer-target")?.textContent).toBe("送信先：@で指定したタブ（2 件）");
     const preview = container.querySelector<HTMLElement>(".cmux-dashboard-dispatch-preview");
     expect(preview?.querySelector("[role=img]")?.getAttribute("aria-label")).toBe("2件へ送ります");
     expect(container.querySelectorAll(".cmux-dashboard-mention-token")).toHaveLength(2);

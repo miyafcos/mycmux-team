@@ -93,6 +93,16 @@
   --cmux-dash-icon-lg: 13px;
   --cmux-dash-icon-action: 14px;
   --cmux-dash-icon-size: var(--cmux-dash-icon-lg);
+  --cmux-dashboard-control-size: calc(var(--cmux-space-7) * 2);
+  --cmux-dashboard-band-height: calc(var(--cmux-space-7) * 2);
+  --cmux-dashboard-header-height: calc(var(--cmux-space-6) * 4);
+  --cmux-dashboard-side-width: calc(var(--cmux-space-7) * 13);
+  --cmux-dashboard-reading-width: calc(var(--cmux-space-7) * 46);
+  --cmux-dashboard-reading-inset: calc(var(--cmux-space-5) * 2);
+  --cmux-dashboard-reading-line-height: 1.85;
+  --cmux-dashboard-card-min-height: calc(var(--cmux-space-7) * 5);
+  --cmux-dashboard-tile-min-height: calc(var(--cmux-space-7) * 4);
+  --cmux-dashboard-composer-min-height: calc(var(--cmux-space-7) * 4);
   --cmux-font-size-xs: 11px;
   --cmux-font-size-sm: 12px;
   --cmux-font-size-md: 13px;

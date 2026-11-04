@@ -42,6 +42,7 @@ describe("AI と自動化の設定", () => {
     }
 
     expect(html).toContain("自動");
+    expect(html).toMatch(/<span>返信案の準備<\/span><span[^>]*>自動（押すと表示）<\/span>/);
     expect(html.match(/AI は使いません/g)).toHaveLength(2);
     const aiFeatures = html.indexOf("選択したAIを使う機能");
     const workspaceNaming = html.indexOf("ワークスペース名を中身から自動で付ける");

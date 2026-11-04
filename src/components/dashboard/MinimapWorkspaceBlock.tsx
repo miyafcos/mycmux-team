@@ -8,15 +8,12 @@ import { usePaneMetadataStore } from "../../stores/paneMetadataStore";
 import { useLiveBriefStore } from "../../stores/liveBriefStore";
 import { resolveWorkspaceColor } from "../../lib/workspaceColors";
 
-// The strip stays one line: past this many ticks the overflow is written as a
-// "+N" tail so no tab is silently dropped from the summary.
-const MINIMAP_STRIP_MAX_TICKS = 12;
-
 const MINIMAP_MAP_PADDING_Y = 8;
-const MINIMAP_CELL_PADDING_COLLAPSED = 4;
-const MINIMAP_CELL_PADDING_EXPANDED = 5;
-const MINIMAP_ROW_COLLAPSED = 26;
-const MINIMAP_ROW_EXPANDED = 53;
+const MINIMAP_CELL_PADDING_COLLAPSED = 10;
+const MINIMAP_CELL_PADDING_EXPANDED = 10;
+const MINIMAP_ROW_COLLAPSED = 64;
+// 84px budget = agent/CTX/age row + state row + two title lines + gaps/padding/borders.
+const MINIMAP_ROW_EXPANDED = 84;
 const MINIMAP_COLUMN_GAP = 4;
 const MINIMAP_CHIP_GAP_COLLAPSED = 4;
 const MINIMAP_CHIP_GAP_EXPANDED = 5;
@@ -102,7 +99,6 @@ export function MinimapWorkspaceBlock({ workspace, selectedTabId, selectedTabIds
     [activePaneId, liveMarks, volatileMetadata, workspace, now],
   );
   const strip = useMemo(() => minimapWorkspaceStrip(model, displayStateByTabId), [displayStateByTabId, model]);
-  const hiddenTicks = strip.tabCount - MINIMAP_STRIP_MAX_TICKS;
   const { rowCount, mapStyle } = useMemo(() => {
     const columnChipCounts = model.columns.map((column) => column.cells.map((cell) => cell.chips.length));
     return {
@@ -113,23 +109,10 @@ export function MinimapWorkspaceBlock({ workspace, selectedTabId, selectedTabIds
   // 実画面のサイドバー (ワークスペース一覧)と同じ解決 (TabItem 参照): 未設定の WS には色を発明しない。
   const workspaceColor = resolveWorkspaceColor(workspace.color)?.value;
   return <section className={`cmux-minimap-workspace${expanded ? " is-expanded" : ""}`} data-minimap-workspace={workspace.id} style={workspaceColor ? { "--minimap-ws": workspaceColor } as CSSProperties : undefined}>
-    <button type="button" className="cmux-minimap-workspace-header" aria-expanded={expanded} onClick={onToggle} title={workspace.name} aria-label={`${workspace.name} — ${strip.tabCount}本${strip.waitingCount > 0 ? `、返答待ち${strip.waitingCount}本` : ""}`}>
+    <button type="button" className="cmux-minimap-workspace-header" aria-expanded={expanded} onClick={onToggle} title={workspace.name} aria-label={`${workspace.name} — タブ ${strip.tabCount}${strip.waitingCount > 0 ? `、返答待ち ${strip.waitingCount}件` : ""}`}>
       <span className="cmux-minimap-workspace-swatch" aria-hidden="true" />
       <span className="cmux-minimap-workspace-name" title={workspace.name}>{workspace.name}</span>
-      <span className="cmux-minimap-workspace-summary" aria-hidden="true">
-        <span className="cmux-minimap-workspace-strip">
-          {strip.ticks.slice(0, MINIMAP_STRIP_MAX_TICKS).map((entry) => {
-            const tickColor = entry.mark?.color.fg;
-            return <i
-              key={entry.tabId}
-              className={`cmux-minimap-strip-tick is-${entry.activity}`}
-              style={tickColor ? { "--minimap-agent": tickColor, opacity: entry.mark?.dormant ? 0.45 : 1 } as CSSProperties : undefined}
-            />;
-          })}
-          {hiddenTicks > 0 ? <em className="cmux-minimap-strip-overflow">{`+${hiddenTicks}`}</em> : null}
-        </span>
-        <span className="cmux-minimap-workspace-count">{strip.tabCount}</span>
-      </span>
+      <span className="cmux-minimap-workspace-summary"><span className="cmux-minimap-workspace-count">タブ {strip.tabCount}</span><span className="cmux-minimap-workspace-collapse" aria-hidden="true">{expanded ? "▾" : "▸"}</span></span>
     </button>
     <div className={`cmux-minimap-map${expanded ? " is-expanded" : ""}`} data-minimap-expanded={expanded || undefined} data-minimap-row-count={rowCount} style={mapStyle}>
       {model.columns.map((column) => <div key={column.index} className="cmux-minimap-column" style={{ flexGrow: column.widthShare }}>

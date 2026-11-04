@@ -77,9 +77,11 @@ function combineMatches(
 function LinkButton({
   children,
   onActivate,
+  title,
 }: {
   children: ReactNode;
   onActivate: () => void;
+  title?: string;
 }) {
   const activate = useCallback((event: MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
@@ -91,7 +93,7 @@ function LinkButton({
     event.preventDefault();
     onActivate();
   }, [onActivate]);
-  return <a href="#" className="cmux-dashboard-content-link" onClick={activate} onKeyDown={onKeyDown}>{children}</a>;
+  return <a href="#" title={title} className="cmux-dashboard-content-link" onClick={activate} onKeyDown={onKeyDown}>{children}</a>;
 }
 
 export function DashboardLinkedText({
@@ -128,7 +130,7 @@ export function DashboardLinkedText({
 
   const openOrPreview = useCallback((uri: string) => {
     if (!context?.canPreviewInternally) {
-      void open(uri);
+      void Promise.resolve(open(uri)).catch(error => setActionError(dashboardStrings.pathActionFailed(String(error))));
       return;
     }
     const openInDashboard = context.openInDashboardPreview && isArtifactPreviewUri(uri)
@@ -139,16 +141,17 @@ export function DashboardLinkedText({
         if (openInDashboard) openInDashboard(info);
         else openOrReloadHtmlPreviewPane(context.workspaceId, context.paneId, info);
       })
-      .catch(() => { void open(uri); });
+      .catch(() => { void Promise.resolve(open(uri)).catch(error => setActionError(dashboardStrings.pathActionFailed(String(error)))); });
   }, [context, openOrReloadHtmlPreviewPane]);
 
   const activatePath = useCallback((uri: string) => {
+    setActionError(null);
     if (isArtifactPreviewUri(uri)) {
       openOrPreview(uri);
       return;
     }
     if (isDirectoryLikeUri(uri)) {
-      void revealPathInExplorer(uri);
+      void Promise.resolve(revealPathInExplorer(uri)).catch(error => setActionError(dashboardStrings.pathActionFailed(String(error))));
       return;
     }
     setFileActionUri(uri);
@@ -162,9 +165,10 @@ export function DashboardLinkedText({
     content.push(
       <LinkButton
         key={`link-${match.index}-${match.endIndex}`}
+        title={match.text}
         onActivate={() => match.kind === "url" ? openOrPreview(match.uri) : activatePath(match.uri)}
       >
-        {match.text}
+        {match.kind === "path" ? match.text.replace(/\\/g, "/").split("/").filter(Boolean).pop() || match.text : match.text}
       </LinkButton>,
     );
     cursor = match.endIndex;
@@ -186,8 +190,8 @@ export function DashboardLinkedText({
           .then(() => setFileActionUri(null))
           .catch((error) => setActionError(dashboardStrings.pathActionFailed(String(error))));
       }} />
-      {actionError ? <span className="cmux-dashboard-path-action-error" role="alert" style={{ color: "var(--status-error)" }}>{actionError}</span> : null}
     </span> : null}
+    {actionError ? <span className="cmux-dashboard-path-action-error" role="alert" style={{ color: "var(--status-error)" }}>{actionError}</span> : null}
   </>;
 }
 
@@ -216,5 +220,5 @@ export function DashboardUrlLink({
       })
       .catch(() => { void open(url); });
   }, [context, openOrReloadHtmlPreviewPane, url]);
-  return <LinkButton onActivate={activate}>{children}</LinkButton>;
+  return <LinkButton title={url} onActivate={activate}>{children}</LinkButton>;
 }

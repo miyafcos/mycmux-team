@@ -13,6 +13,22 @@ export const DASHBOARD_SESSION_LIST_WIDTH = 256;
 export const DASHBOARD_SESSION_LIST_COLLAPSED_WIDTH = 32;
 export const DASHBOARD_MINIMAP_RESIZER_WIDTH = 8;
 export const DASHBOARD_CHAT_MIN_WIDTH = 360;
+export const DASHBOARD_CHAT_READING_MIN_WIDTH = 520;
+export const DASHBOARD_COMPACT_SIDE_WIDTH = 208;
+
+/** Derived presentation only: never write responsive widths to preferences. */
+export function dashboardPanelWidths(width: number, preferredMinimapWidth: number, collapsed = false) {
+  const preferredList = dashboardSessionListWidth(collapsed);
+  const preferredMap = Number.isFinite(preferredMinimapWidth)
+    ? Math.max(DASHBOARD_MINIMAP_MIN_WIDTH, Math.round(preferredMinimapWidth))
+    : DASHBOARD_MINIMAP_DEFAULT_WIDTH;
+  const compact = width > 0 && width - preferredList - preferredMap
+    - DASHBOARD_MINIMAP_RESIZER_WIDTH < DASHBOARD_CHAT_READING_MIN_WIDTH;
+  const sessionListWidth = compact && !collapsed ? DASHBOARD_COMPACT_SIDE_WIDTH : preferredList;
+  const minimapWidth = compact ? DASHBOARD_COMPACT_SIDE_WIDTH : preferredMap;
+  return { sessionListWidth, minimapWidth, compact,
+    chatWidth: Math.max(0, width - sessionListWidth - minimapWidth - DASHBOARD_MINIMAP_RESIZER_WIDTH) };
+}
 export const DASHBOARD_MINIMAP_STORAGE_KEY = "mycmux:dashboard-minimap-width";
 export const DASHBOARD_SESSION_LIST_COLLAPSED_STORAGE_KEY = "mycmux:dashboard-session-list-collapsed";
 export const DASHBOARD_CHAT_COLUMN_LIMIT_MIN = 1;
@@ -69,7 +85,7 @@ export function dashboardMinimapMaxWidth(width = viewportWidth(), collapsed = fa
   const readableChatMaximum = Math.floor(width
     - dashboardSessionListWidth(collapsed)
     - DASHBOARD_MINIMAP_RESIZER_WIDTH
-    - DASHBOARD_CHAT_MIN_WIDTH);
+    - DASHBOARD_CHAT_READING_MIN_WIDTH);
   return Math.max(DASHBOARD_MINIMAP_MIN_WIDTH, Math.min(ratioMaximum, readableChatMaximum));
 }
 
@@ -110,7 +126,7 @@ function readStoredMinimapWidth(): number {
     const stored = window.localStorage.getItem(DASHBOARD_MINIMAP_STORAGE_KEY);
     return stored === null
       ? DASHBOARD_MINIMAP_DEFAULT_WIDTH
-      : clampDashboardMinimapWidth(Number(stored), viewportWidth(), readStoredSessionListCollapsed());
+      : Number.isFinite(Number(stored)) ? Math.max(DASHBOARD_MINIMAP_MIN_WIDTH, Math.round(Number(stored))) : DASHBOARD_MINIMAP_DEFAULT_WIDTH;
   } catch {
     return DASHBOARD_MINIMAP_DEFAULT_WIDTH;
   }

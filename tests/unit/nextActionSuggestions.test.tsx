@@ -8,7 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { dashboardStrings } from "../../src/components/dashboard/dashboardStrings";
 import { NextActionSuggestions } from "../../src/components/dashboard/NextActionSuggestions";
-import { useBackgroundAiSuggestionStore } from "../../src/lib/backgroundAiScheduler";
+import { useAiSettingsStore } from "../../src/stores/aiSettingsStore";
+import { useSettingsStore } from "../../src/stores/settingsStore";
+import { nextActionRequestKey, useBackgroundAiSuggestionStore } from "../../src/lib/backgroundAiScheduler";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -30,6 +32,8 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   useBackgroundAiSuggestionStore.getState().reset();
+  useAiSettingsStore.setState({ aiEnabled: true });
+  useSettingsStore.setState({ replyDraftSuggestionsEnabled: true });
 });
 
 afterEach(async () => {
@@ -46,9 +50,10 @@ describe("NextActionSuggestions", () => {
 
   it("renders the loading line", async () => {
     useBackgroundAiSuggestionStore.getState().set("s-loading", {
-      status: "loading", requestKey: "loading-key", oneLine: "", completionAssessment: "", nextActions: [],
+      status: "loading", requestKey: nextActionRequestKey({ sessionId: "s-loading", eventSeq: 0, displayState: "done" }), oneLine: "", completionAssessment: "", nextActions: [],
     });
     await act(async () => root.render(render("s-loading")));
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
     expect(container.querySelector("[data-next-action-status]")?.getAttribute("data-next-action-status")).toBe("loading");
     expect(dashboardText(container)).toContain(dashboardStrings.nextActionLoading);
   });
@@ -63,12 +68,13 @@ describe("NextActionSuggestions", () => {
     const onConfirm = vi.fn(async () => {});
     useBackgroundAiSuggestionStore.getState().set("s-ready", {
       status: "ready",
-      requestKey: "ready-key",
+      requestKey: nextActionRequestKey({ sessionId: "s-ready", eventSeq: 0, displayState: "done" }),
       oneLine: "Ready summary",
       completionAssessment: "Ready assessment",
       nextActions: actions,
     });
     await act(async () => root.render(render("s-ready", { onConfirm })));
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
     const chips = container.querySelectorAll<HTMLButtonElement>(".cmux-dashboard-next-action");
     expect(chips).toHaveLength(3);
     expect(chips[0]?.dataset.nextActionRecommended).toBe("true");
@@ -83,9 +89,10 @@ describe("NextActionSuggestions", () => {
 
   it("shows the failed reason and a retry button", async () => {
     useBackgroundAiSuggestionStore.getState().set("s-failed", {
-      status: "failed", requestKey: "failed-key", oneLine: "", completionAssessment: "", nextActions: [], failureCode: "cli_not_found",
+      status: "failed", requestKey: nextActionRequestKey({ sessionId: "s-failed", eventSeq: 0, displayState: "done" }), oneLine: "", completionAssessment: "", nextActions: [], failureCode: "cli_not_found",
     });
     await act(async () => root.render(render("s-failed")));
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
     expect(dashboardText(container)).toContain(dashboardStrings.nextActionFailed(dashboardStrings.aiSuggestionFailureReason("cli_not_found")));
     expect(container.querySelector<HTMLButtonElement>(`button[aria-label="${dashboardStrings.nextActionRetry}"]`)).not.toBeNull();
   });
@@ -93,7 +100,7 @@ describe("NextActionSuggestions", () => {
   it("renders nothing while a question is active", async () => {
     useBackgroundAiSuggestionStore.getState().set("s-question", {
       status: "ready",
-      requestKey: "question-key",
+      requestKey: nextActionRequestKey({ sessionId: "s-question", eventSeq: 0, displayState: "done" }),
       oneLine: "Ready summary",
       completionAssessment: "Ready assessment",
       nextActions: [{ label: "Action", prompt: "Prompt" }],

@@ -95,19 +95,19 @@ async function renderDndPanel(workspaces: Workspace[], onSelect = vi.fn()): Prom
 
 describe("minimapMapHeightPx", () => {
   it("uses chip counts per cell and does not clamp", () => {
-    // expanded: pad 5*2 + border 2 + grip 7 + gap 5 + chips * 53 + (chips-1)*5
-    expect(minimapCellHeightPx(1, true)).toBe(77);
-    expect(minimapCellHeightPx(6, true)).toBe(367);
-    expect(minimapMapHeightPx([[1]], true)).toBe(93);
-    expect(minimapMapHeightPx([[6]], true)).toBe(383);
-    expect(minimapMapHeightPx([[3, 3, 3, 3]], true)).toBe(800);
-    expect(minimapMapHeightPx([[1], [1]], true)).toBe(93);
-    expect(minimapMapHeightPx([[1, 1, 1]], true)).toBe(255);
-    expect(minimapMapHeightPx([Array.from({ length: 8 }, () => 1)], true)).toBe(660);
+    // expanded: pad 10*2 + border 2 + grip 7 + gap 5 + chips * 84 + (chips-1)*5
+    expect(minimapCellHeightPx(1, true)).toBe(118);
+    expect(minimapCellHeightPx(6, true)).toBe(563);
+    expect(minimapMapHeightPx([[1]], true)).toBe(134);
+    expect(minimapMapHeightPx([[6]], true)).toBe(579);
+    expect(minimapMapHeightPx([[3, 3, 3, 3]], true)).toBe(1212);
+    expect(minimapMapHeightPx([[1], [1]], true)).toBe(134);
+    expect(minimapMapHeightPx([[1, 1, 1]], true)).toBe(378);
+    expect(minimapMapHeightPx([Array.from({ length: 8 }, () => 1)], true)).toBe(988);
     expect(minimapMapHeightPx([Array.from({ length: 8 }, () => 1)], true)).toBeGreaterThan(248);
-    // collapsed: pad 4*2 + border 2 + grip 7 + gap 4 + chips * 26 + (chips-1)*4
-    expect(minimapCellHeightPx(1, false)).toBe(47);
-    expect(minimapMapHeightPx([[1]], false)).toBe(63);
+    // collapsed: pad 10*2 + border 2 + grip 7 + gap 4 + chips * 64 + (chips-1)*4
+    expect(minimapCellHeightPx(1, false)).toBe(97);
+    expect(minimapMapHeightPx([[1]], false)).toBe(113);
   });
 });
 
@@ -490,21 +490,16 @@ describe("LayoutMinimapPanel", () => {
     expect(useUiStore.getState().focusRevision).toBe(0);
   });
 
-  it("F10: keeps the full new-workspace label on one line and lets sibling actions wrap", async () => {
+  it("F10: names the move operation and keeps the shared footer readable at narrow widths", async () => {
     await renderDndPanel(dndWorkspaces());
     const button = container.querySelector<HTMLButtonElement>("[data-minimap-new-workspace-button='true']")!;
-    expect(button.getAttribute("aria-label")).toBe("新しいワークスペース");
+    expect(button.getAttribute("aria-label")).toBe("選んだタブを新しいワークスペースへ移す");
+    expect(button.textContent).toBe(button.getAttribute("aria-label"));
     expect(button.closest(".cmux-minimap-new-workspace-zone")?.parentElement?.className).toBe("cmux-minimap-footer");
-    const css = readFileSync("src/components/dashboard/MinimapPanel.css", "utf8");
-    const footer = css.match(/\.cmux-minimap-footer\s*\{([^}]+)\}/)![1];
-    const zone = css.match(/\.cmux-minimap-new-workspace-zone\s*\{([^}]+)\}/)![1];
-    const action = css.match(/\.cmux-minimap-new-workspace-zone button\s*\{([^}]+)\}/)![1];
-    expect(footer).toContain("flex-wrap: wrap;");
-    expect(zone).toContain("min-width: max-content;");
-    expect(zone).toContain("flex: 1 0 auto;");
-    expect(action).toContain("white-space: nowrap;");
-    expect(action).not.toMatch(/text-overflow:\s*ellipsis|overflow:\s*hidden/);
-    expect(css.match(/\.cmux-minimap-tab-sweep\s*\{([^}]+)\}/)![1]).toContain("min-height: 29px;");
+    const css = readFileSync("src/components/dashboard/DashboardA.css", "utf8");
+    expect(css).toContain("flex-direction: column; flex-wrap: nowrap;");
+    expect(css).toContain("white-space: normal; font-size: var(--cmux-font-size-sm);");
+    expect(css).toContain(".cmux-minimap-new-workspace-zone { min-width: 0; border: 0;");
   });
 
   it("commits one atomic center drop across workspaces without changing active workspace or focus", async () => {
@@ -675,7 +670,7 @@ describe("LayoutMinimapPanel", () => {
     expect(container.querySelector<HTMLElement>("[data-minimap-tab='a']")!.classList.contains("is-bundle-selected")).toBe(false);
     expect(chipB.classList.contains("is-bundle-selected")).toBe(true);
     expect(chipC.classList.contains("is-bundle-selected")).toBe(true);
-    expect(container.querySelector(".cmux-minimap-selection-count")?.getAttribute("aria-label")).toContain("2本");
+    expect(container.querySelector(".cmux-minimap-selection-count")?.getAttribute("aria-label")).toContain("2タブ");
   });
 
   it("keeps minimap multi-selection local but replaces it after an external primary selection", async () => {
@@ -782,7 +777,7 @@ describe("LayoutMinimapPanel", () => {
     expect(chipA.classList.contains("is-bundle-selected")).toBe(true);
     expect(container.querySelector<HTMLElement>("[data-minimap-tab='b']")!.classList.contains("is-bundle-selected")).toBe(true);
     expect(container.querySelector<HTMLElement>("[data-minimap-tab='c']")!.classList.contains("is-bundle-selected")).toBe(false);
-    expect(container.querySelector(".cmux-minimap-selection-count")?.getAttribute("aria-label")).toContain("2本");
+    expect(container.querySelector(".cmux-minimap-selection-count")?.getAttribute("aria-label")).toContain("2タブ");
   });
 
   it("jumps from a chip double-click without selecting the group", async () => {
@@ -897,8 +892,8 @@ describe("LayoutMinimapPanel", () => {
     expect(container.querySelectorAll("[data-minimap-pane='empty'] [data-minimap-tab]")).toHaveLength(0);
     // A 0-tab pane is budgeted as one row, exactly like a 1-tab pane.
     expect(minimapCellHeightPx(0, true)).toBe(minimapCellHeightPx(1, true));
-    expect(minimapCellHeightPx(0, true)).toBe(77);
-    expect(minimapCellHeightPx(0, false)).toBe(47);
+    expect(minimapCellHeightPx(0, true)).toBe(118);
+    expect(minimapCellHeightPx(0, false)).toBe(97);
     expect(cell.style.minHeight).toBe(`${minimapCellHeightPx(0, true)}px`);
 
     // At that real height the five zones are all distinct; at the pre-fix 19px
@@ -1051,7 +1046,7 @@ describe("LayoutMinimapPanel", () => {
     expect(css).toContain(".cmux-minimap-age { margin-left: auto; flex: 0 0 auto; color: var(--cmux-text-tertiary); font-family: var(--cmux-dash-ui-font); font-size: var(--cmux-font-size-xs); }");
   });
 
-  it("summarises the header with a swatch, caps at 12 ticks, and shows +N", async () => {
+  it("summarises the header with a swatch, a tab count and a collapse indicator", async () => {
     const tabs = Array.from({ length: 13 }, (_, index) => tab(`t${index}`));
     const workspace: Workspace = { id: "ws", name: "十三本", gridTemplateId: "1x1", status: "running", createdAt: 1,
       panes: [pane("p", tabs)], splitColumns: [["p"]] };
@@ -1062,15 +1057,15 @@ describe("LayoutMinimapPanel", () => {
     // The swatch renders even without an authored workspace colour (CSS falls
     // back to tertiary), so the three-column header grid never shifts.
     expect(header.querySelector(".cmux-minimap-workspace-swatch")).not.toBeNull();
-    expect(header.querySelectorAll(".cmux-minimap-strip-tick")).toHaveLength(12);
-    expect(header.querySelector(".cmux-minimap-strip-overflow")?.textContent).toBe("+1");
-    expect(header.querySelector(".cmux-minimap-workspace-count")?.textContent).toBe("13");
-    expect(header.querySelector(".cmux-minimap-strip-tick.is-waiting")).not.toBeNull();
-    expect(header.querySelector(".cmux-minimap-strip-tick.is-working")).not.toBeNull();
+    expect(header.querySelectorAll(".cmux-minimap-strip-tick")).toHaveLength(0);
+    expect(header.querySelector(".cmux-minimap-strip-overflow")).toBeNull();
+    expect(header.querySelector(".cmux-minimap-workspace-count")?.textContent).toBe("タブ 13");
+    expect(header.querySelector(".cmux-minimap-workspace-collapse")).not.toBeNull();
+    expect(header.getAttribute("aria-expanded")).toBe("true");
     // The old glyph summary is gone; the waiting count moved into the aria label.
     expect(header.textContent).not.toContain("❓");
     expect(header.textContent).not.toContain("●");
-    expect(header.getAttribute("aria-label")).toBe("十三本 — 13本、返答待ち1本");
+    expect(header.getAttribute("aria-label")).toBe("十三本 — タブ 13、返答待ち 1件");
   });
 
   it("re-evaluates the elapsed value on the panel clock without subscribing to PTY output", async () => {

@@ -19,7 +19,7 @@ describe("dashboard icon presentation", () => {
     const button = host.querySelector("button")!;
     expect(button.getAttribute("aria-label")).toBe("Back to session");
     expect(button.title).toBe("Back to session");
-    expect(button.textContent).toBe("");
+    expect(button.textContent).toBe("Back to session");
     button.focus();
     expect(document.activeElement).toBe(button);
     await act(async () => button.click());
@@ -34,7 +34,7 @@ describe("dashboard icon presentation", () => {
     const shapes = markers.map(marker => {
       expect(marker.getAttribute("aria-label")?.trim()).toBeTruthy();
       expect(marker.getAttribute("title")).toBe(marker.getAttribute("aria-label"));
-      expect(marker.textContent).toBe("");
+      expect(marker.textContent).toBe(marker.getAttribute("aria-label"));
       expect(marker.querySelector("svg")?.getAttribute("class")).not.toMatch(/circle-help|circle-check|circle-dashed|circle-x|message-circle-question/);
       return marker.querySelector("svg")!.innerHTML;
     });
@@ -56,7 +56,7 @@ describe("dashboard icon presentation", () => {
   it("uses readable hover-named text for a stalled location without an elapsed time", async () => {
     await act(async () => root.render(<DashboardStatusMark state="noUpdate" label="No recent update" />));
     const marker = host.querySelector("[data-dashboard-status]")!;
-    expect(marker.textContent).toBe(dashboardStrings.stateNoUpdate);
+    expect(marker.textContent).toBe("No recent update");
     expect(marker.getAttribute("aria-label")).toBe("No recent update");
     expect(marker.getAttribute("title")).toBe("No recent update");
     expect(marker.querySelector("svg")).toBeNull();

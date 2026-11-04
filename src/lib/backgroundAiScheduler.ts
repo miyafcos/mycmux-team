@@ -207,6 +207,11 @@ function modelHash(): string {
   return `${ai.aiProvider}:${ai.aiModel.trim()}`;
 }
 
+/** The display and scheduler must compare the same conversation/model/prompt identity. */
+export function nextActionRequestKey(target: Pick<ActiveSessionTarget, "sessionId" | "eventSeq" | "displayState">): string {
+  return [target.sessionId, String(target.eventSeq), target.displayState, NEXT_ACTION_PROMPT_VERSION, modelHash()].join(":");
+}
+
 function isProviderModelMismatch(): boolean {
   const ai = useAiSettingsStore.getState();
   return classifyModelForProvider(ai.aiProvider, ai.aiModel) === "likely-mismatch";
@@ -312,7 +317,7 @@ function scheduleActiveSession(
     useBackgroundAiSuggestionStore.getState().clear(sessionId);
     return;
   }
-  const requestKey = [sessionId, String(target.eventSeq), target.displayState, NEXT_ACTION_PROMPT_VERSION, modelHash()].join(":");
+  const requestKey = nextActionRequestKey(target);
   const existing = useBackgroundAiSuggestionStore.getState().bySession[sessionId];
   if (!force && existing?.status === "ready" && existing.requestKey === requestKey) return;
   const current = pendingByTarget.get(sessionId);

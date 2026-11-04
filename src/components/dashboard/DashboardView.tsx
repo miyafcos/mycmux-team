@@ -12,7 +12,7 @@ import {
   clampDashboardMinimapWidth,
   dashboardMinimapMaxWidth,
   dashboardReportInboxOpen,
-  dashboardSessionListWidth,
+  dashboardPanelWidths,
   DASHBOARD_CHAT_COLUMN_LIMIT_MAX,
   DASHBOARD_CHAT_COLUMN_LIMIT_MIN,
   DASHBOARD_INBOX_COLUMN_ID,
@@ -67,6 +67,7 @@ import {
   submitAskQuestionReview,
   toggleAskQuestionDraft,
 } from "./askQuestionRouting";
+import { dashboardMenuKeys, syncDashboardMenuPopup } from "./dashboardMenuKeys";
 import { WatchStatusRow } from "./WatchStatusRow";
 import {
   applyDashboardFilters,
@@ -97,7 +98,8 @@ import ErrorBoundary from "../common/ErrorBoundary";
 import BrowserPane from "../workspace/BrowserPane";
 import "./DashboardView.css";
 import "./DashboardChatSurface.css";
-import { ArrowLeft, Columns2, CornerDownRight, Info, Pin, PinOff, X } from "lucide-react";
+import "./DashboardA.css";
+import { ArrowLeft, CornerDownRight, Info, Pin, PinOff, X } from "lucide-react";
 import { DashboardGlyph, DashboardIconButton, DashboardStatusMark } from "./DashboardUi";
 
 /** 番号キーで撃てる選択肢。ここを増やすなら dashboardStrings.numberKeyHint も直す。 */
@@ -207,8 +209,9 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     toggleSessionListCollapsed: state.toggleSessionListCollapsed,
   })));
   const minimapMaxWidth = dashboardMinimapMaxWidth(viewportWidth, viewState.sessionListCollapsed);
-  const minimapWidth = clampDashboardMinimapWidth(viewState.minimapWidth, viewportWidth, viewState.sessionListCollapsed);
-  const sessionListWidth = dashboardSessionListWidth(viewState.sessionListCollapsed);
+  const { minimapWidth, sessionListWidth, compact } = dashboardPanelWidths(
+    viewportWidth, viewState.minimapWidth, viewState.sessionListCollapsed,
+  );
   const workspaces = useWorkspaceListStore((state) => state.workspaces);
   const peerWindowTabs = usePeerWindowTabs();
   const delegationParents = useDelegationParents(workspaces);
@@ -305,7 +308,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   const renderedColumnKey = JSON.stringify(chatColumnSlots.map(slot => slot.kind === "chat" ? slot.card.tab.id : slot.kind));
   const compactScrollTimerRef = useRef<number | null>(null);
   const selectSettledCompactColumn = useCallback(() => {
-    if (!isDetachedDashboardHost() || viewportWidth >= 1000) return;
+    if (viewportWidth >= 1000) return;
     const columns = chatColumnsRef.current;
     const state = useDashboardViewStore.getState();
     if (!columns || !state.open) return;
@@ -336,7 +339,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     };
   }, [selectSettledCompactColumn]);
   useLayoutEffect(() => {
-    if (!isDetachedDashboardHost() || viewportWidth >= 1000) return;
+    if (viewportWidth >= 1000) return;
     const columns = chatColumnsRef.current;
     const active = columns?.querySelector<HTMLElement>("[data-dashboard-chat-column][data-active='true']");
     if (columns && active) columns.scrollLeft = active.offsetLeft;
@@ -951,10 +954,11 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     window.requestAnimationFrame(() => document.getElementById(`dashboard-question-${sessionId}`)?.scrollIntoView({ block: "nearest" }));
   }, [viewState]);
   const resizeMinimap = useCallback((width: number) => {
+    if (compact) return;
     viewState.setMinimapWidth(clampDashboardMinimapWidth(width, viewportWidth, viewState.sessionListCollapsed));
-  }, [viewState, viewportWidth]);
+  }, [compact, viewState, viewportWidth]);
   const beginMinimapResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || !event.isPrimary) return;
+    if (compact || event.button !== 0 || !event.isPrimary) return;
     event.preventDefault();
     resizeRef.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: minimapWidth };
     setResizingMinimap(true);
@@ -964,7 +968,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
       // Pointer capture is unavailable in a few embedded WebViews; pointer
       // events still reach the separator while it remains under the pointer.
     }
-  }, [minimapWidth]);
+  }, [compact, minimapWidth]);
   const moveMinimapResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = resizeRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
@@ -981,6 +985,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     }
   }, []);
   const resizeMinimapByKeyboard = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (compact) return;
     const step = event.shiftKey ? 32 : 16;
     const next = event.key === "ArrowLeft" ? minimapWidth + step
       : event.key === "ArrowRight" ? minimapWidth - step
@@ -991,7 +996,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     event.preventDefault();
     event.stopPropagation();
     resizeMinimap(next);
-  }, [minimapMaxWidth, minimapWidth, resizeMinimap]);
+  }, [compact, minimapMaxWidth, minimapWidth, resizeMinimap]);
 
   const close = useCallback(() => {
     onClose();
@@ -1069,8 +1074,18 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
           return;
         }
       }
-      const interactive = target instanceof HTMLButtonElement || target instanceof HTMLSelectElement || Boolean(typeof target?.closest === "function" && target.closest("[data-livebrief-interactive='true']"));
-      const editable = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || Boolean(target?.isContentEditable) || interactive;
+      // Only these named menus own navigation keys; transcript folds keep dashboard shortcuts.
+      const menu = typeof target?.closest === "function"
+        ? target.closest<HTMLDetailsElement>(".cmux-dashboard-chat-history, .cmux-dashboard-chat-details, .cmux-dashboard-column-options")
+        : null;
+      if (!event.altKey && !event.ctrlKey && !event.metaKey && menu && (event.key !== "Escape" || menu.open)) {
+        dashboardMenuKeys(event, menu);
+        return;
+      }
+      const interactive = target instanceof HTMLButtonElement || target instanceof HTMLSelectElement || Boolean(typeof target?.closest === "function" && target.closest("button, select, [data-livebrief-interactive='true']"));
+      const activatesInlineControl = ["Enter", " "].includes(event.key)
+        && typeof target?.closest === "function" && Boolean(target.closest("summary, a[href]"));
+      const editable = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || Boolean(target?.isContentEditable) || interactive || activatesInlineControl;
       const askQuestionTarget = typeof target?.closest === "function"
         ? target.closest<HTMLElement>("[data-ask-question-session]")
         : null;
@@ -1227,14 +1242,35 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
         }} />
       <ReplyComposer card={yourTurnCard} inputRef={yourTurnComposerRef} mentionTargets={cards} questionActive />
     </section> : null}
+    <div className="cmux-dashboard-toolbar">
+      <strong>{dashboardStrings.buttonTitle}</strong>
+      <button type="button" aria-label={dashboardStrings.backToSession} title={dashboardStrings.backToSession} onClick={onClose}>{dashboardStrings.backToSession}</button>
+          <details className="cmux-dashboard-column-options" onKeyDown={dashboardMenuKeys} onToggle={event => syncDashboardMenuPopup(event.currentTarget)}>
+          <summary aria-label="表示" title="表示">表示</summary>
+          <div className="cmux-dashboard-column-limit" data-dashboard-menu-popup="true">
+             {!isDetachedDashboardHost() ? <WatchStatusRow now={now} /> : null}
+             <div role="group" aria-label={dashboardStrings.chatColumnLimitGroupLabel} className="cmux-dashboard-column-choice-group">
+             <strong>{dashboardStrings.chatColumnLimitGroupLabel}</strong>
+            {CHAT_COLUMN_LIMIT_CHOICES.map((limit) => <button
+              key={limit}
+              type="button"
+              aria-label={dashboardStrings.chatColumnLimitButtonLabel(limit)}
+              aria-pressed={viewState.chatColumnLimit === limit}
+              data-dashboard-column-limit={limit}
+              onClick={() => viewState.setChatColumnLimit(limit)}
+            >{limit}</button>)}
+             </div>
+          </div>
+          </details>
+    </div>
     <AskStrip items={askItems} onSelect={(item) => selectQuestion(item.tabId, item.sessionId)} />
-    <WatchStatusRow now={now} />
     <div
       className="cmux-dashboard-shell"
       data-list-collapsed={viewState.sessionListCollapsed ? "true" : "false"}
+      data-dashboard-compact={compact ? "true" : "false"}
       style={{
-        "--dashboard-minimap-width": `${minimapWidth}px`,
-        "--dashboard-session-list-width": `${sessionListWidth}px`,
+        "--dashboard-minimap-width": compact ? "var(--cmux-dashboard-side-width)" : `${minimapWidth}px`,
+        "--dashboard-session-list-width": compact && !viewState.sessionListCollapsed ? "var(--cmux-dashboard-side-width)" : `${sessionListWidth}px`,
       } as CSSProperties}
     >
       <DashboardSessionList
@@ -1417,19 +1453,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
             {activeColumnCard ? <span aria-hidden="true">{activeColumnCard.label}</span> : activeColumnIsPreview && viewState.previewColumn ? <span aria-hidden="true">{viewState.previewColumn.label}</span> : null}
             {chatColumnTabIds.length > 0 ? <span aria-hidden="true"> {activeChatColumn + 1}/{chatColumnTabIds.length}</span> : null}
           </span>
-          <details className="cmux-dashboard-column-options">
-          <summary aria-label={dashboardStrings.chatColumnLimitGroupLabel} title={dashboardStrings.chatColumnLimitGroupLabel}><Columns2 aria-hidden="true" /></summary>
-          <div role="group" aria-label={dashboardStrings.chatColumnLimitGroupLabel} className="cmux-dashboard-column-limit">
-            {CHAT_COLUMN_LIMIT_CHOICES.map((limit) => <button
-              key={limit}
-              type="button"
-              aria-label={dashboardStrings.chatColumnLimitButtonLabel(limit)}
-              aria-pressed={viewState.chatColumnLimit === limit}
-              data-dashboard-column-limit={limit}
-              onClick={() => viewState.setChatColumnLimit(limit)}
-            >{limit}</button>)}
-          </div>
-          </details>
+
         </div>
         <WorkOrderContract
           card={activeColumnCard}
@@ -1446,9 +1470,11 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
         role="separator"
         tabIndex={0}
         aria-label="配置図の幅を変更"
+        aria-disabled={compact || undefined}
+        title={compact ? "窓を広げると幅を変えられます" : "配置図の幅を変更"}
         aria-orientation="vertical"
-        aria-valuemin={DASHBOARD_MINIMAP_MIN_WIDTH}
-        aria-valuemax={minimapMaxWidth}
+        aria-valuemin={Math.min(DASHBOARD_MINIMAP_MIN_WIDTH, minimapWidth)}
+        aria-valuemax={Math.max(minimapMaxWidth, minimapWidth)}
         aria-valuenow={minimapWidth}
         onPointerDown={beginMinimapResize}
         onPointerMove={moveMinimapResize}

@@ -107,6 +107,7 @@ export const aiSettingsStrings = {
   customModelLabel: "カスタム…",
   featureTitle: "選択したAIを使う機能",
   automaticBadge: "自動",
+  automaticOnReadBadge: "自動（押すと表示）",
   manualBadge: "ボタンで実行",
   features: {
     autoPaneNaming: {

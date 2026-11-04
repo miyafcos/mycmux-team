@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { titleBarStrings } from "./titleBarStrings";
 
 export const buttonStyle: CSSProperties = {
+  minWidth: "var(--cmux-dashboard-control-size)", minHeight: "var(--cmux-dashboard-control-size)",
   background: "none", border: "none", color: "var(--cmux-text-secondary)",
   cursor: "pointer", padding: "3px 6px", display: "flex", alignItems: "center",
 };
@@ -114,7 +115,7 @@ export function WindowControls({ onClose, closing = false, closeLabel = titleBar
       aria-label={titleBarStrings.minimize} title={titleBarStrings.minimize}
       onMouseDown={(event) => event.preventDefault()}
       onClick={() => { void getCurrentWindow().minimize().catch(console.error); }}>
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
         <line x1="5" y1="12" x2="19" y2="12" />
       </svg>
     </button>
@@ -126,7 +127,7 @@ export function WindowControls({ onClose, closing = false, closeLabel = titleBar
       aria-label={maximizeLabel} title={maximizeLabel}
       onMouseDown={(event) => event.preventDefault()}
       onClick={() => { void getCurrentWindow().toggleMaximize().catch(console.error); }}>
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         {maximized ? <><rect x="5" y="7" width="12" height="12" rx="1" />
           <path d="M7 7V6a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-1" /></>
           : <rect x="4" y="4" width="16" height="16" rx="1" />}
@@ -136,7 +137,7 @@ export function WindowControls({ onClose, closing = false, closeLabel = titleBar
       aria-label={closeLabel} title={closeHint} disabled={closing}
       onMouseDown={(event) => event.preventDefault()}
       onClick={onClose ?? (() => { void getCurrentWindow().close().catch(console.error); })}>
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
         <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
       </svg>
     </button>

@@ -1,5 +1,5 @@
 import { windowLabel } from "../../lib/windowContext";
-import { getAgentDormancyRecord, type PreviewArtifactInfo } from "../../lib/ipc";
+import { getAgentDormancyRecord, getWindowFragments, type PreviewArtifactInfo } from "../../lib/ipc";
 import { PEER_WEB_TRANSCRIPT_UNAVAILABLE } from "../../stores/webPaneTranscriptStore";
 import { dormantAgentDescription, resolveDormantResumeIdentity } from "../../lib/agentDormancy";
 import type { LiveSessionBrief, SemanticEventEnvelope } from "../../lib/livebrief";
@@ -11,6 +11,7 @@ import { DashboardTelemetryFallback } from "./DashboardSessionDetail";
 import { ChatTranscript } from "./ChatTranscript";
 import { displayStateLabel, stallLabel } from "./DashboardCardRow";
 import { type DashboardCardModel, resolveDisplayState } from "./dashboardModel";
+import { dashboardMenuKeys, syncDashboardMenuPopup } from "./dashboardMenuKeys";
 import { dashboardStrings } from "./dashboardStrings";
 import { dashboardActivity } from "./dashboardActivity";
 import { instrumentLineFromTelemetry } from "./instrumentLine";
@@ -18,6 +19,7 @@ import { QuestionCard } from "./QuestionCard";
 import { stateLabels } from "./stateLabels";
 import { useArchiveDescriptor } from "./useTranscriptHistory";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { delegationReadWithTimeout } from "./delegationModel";
 import { Check, ExternalLink, Globe, Info, MoreHorizontal, PanelsTopLeft, Pin, PinOff, RotateCcw, X } from "lucide-react";
 import { DashboardGlyph, DashboardIconButton, DashboardStatusMark } from "./DashboardUi";
 
@@ -114,6 +116,29 @@ export function ChatColumn({
   const optimisticMessages = useComposerStore((state) => state.dashboardOptimisticMessagesBySession[sessionId] ?? EMPTY_OPTIMISTIC_MESSAGES);
   const collapseOptimisticMessages = useComposerStore((state) => state.collapseDashboardOptimisticMessages);
   const requestOptimisticRetry = useComposerStore((state) => state.requestDashboardOptimisticRetry);
+  const peerLabel = card.windowLabel && card.windowLabel !== windowLabel() ? card.windowLabel : null;
+  const [receiver, setReceiver] = useState<{ label: string; present: boolean; failed: boolean } | null>(null);
+  const receiverPresent = !peerLabel || (receiver?.label === peerLabel && receiver.present);
+  const receiverReason = receiver?.label !== peerLabel ? "その窓の受け口を確認しています"
+    : receiver.failed ? "その窓の受け口を確認できません" : "その窓は閉じています";
+  useEffect(() => {
+    if (!peerLabel) return;
+    let alive = true, inFlight = false;
+    const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        // The conversation index can be cached. Confirm the receiver independently.
+        const fragments = await delegationReadWithTimeout(getWindowFragments());
+        if (alive) setReceiver({ label: peerLabel, present: Array.isArray(fragments) && fragments.some(fragment => fragment.window_label === peerLabel), failed: !Array.isArray(fragments) });
+      } catch {
+        if (alive) setReceiver({ label: peerLabel, present: false, failed: true });
+      } finally { inFlight = false; }
+    };
+    void refresh();
+    const interval = window.setInterval(() => { if (!document.hidden) void refresh(); }, 3000);
+    return () => { alive = false; window.clearInterval(interval); };
+  }, [peerLabel]);
   const reducedMotion = useReducedMotion();
   const displayState = resolveDisplayState(card);
   const eventOutputAt = transcriptEvents.reduce((latest, event) => (
@@ -173,10 +198,14 @@ export function ChatColumn({
         </div>
       </div>
       <div className="cmux-dashboard-chat-actions">
-        <div className="cmux-dashboard-chat-navigation" ref={setNavigationTarget} />
-        <details className="cmux-dashboard-chat-details" onClick={(event) => event.stopPropagation()}>
-          <summary aria-label="会話の詳細" title="会話の詳細"><MoreHorizontal aria-hidden="true" /></summary>
-          <div className="cmux-dashboard-chat-detail-content">
+        <details className="cmux-dashboard-chat-history" onKeyDown={dashboardMenuKeys} onToggle={event => syncDashboardMenuPopup(event.currentTarget)}>
+          <summary>履歴</summary>
+          <div className="cmux-dashboard-chat-navigation" data-dashboard-menu-popup="true" ref={setNavigationTarget} />
+        </details>
+        <details className="cmux-dashboard-chat-details" onKeyDown={dashboardMenuKeys} onToggle={event => syncDashboardMenuPopup(event.currentTarget)} onClick={(event) => event.stopPropagation()}>
+          <summary aria-label="その他" title="その他"><MoreHorizontal aria-hidden="true" /><span>その他</span></summary>
+          <div className="cmux-dashboard-chat-detail-content" data-dashboard-menu-popup="true">
+            <strong>会話の詳細</strong>
             <span data-dashboard-breadcrumb>{dashboardStrings.breadcrumb(card.workspace.name, card.paneIndex + 1, card.tabIndex + 1)}</span>
             {dashboardActivity(card) && dashboardActivity(card) !== displayStateLabel(displayState) ? <span>{dashboardActivity(card)}</span> : null}
             {elapsedText ? <span>{elapsedText}</span> : null}
@@ -190,11 +219,11 @@ export function ChatColumn({
                 if (card.attention?.attentionId) store.markSeen(card.tab.id, card.attention.attentionId);
               }
             }}><Check aria-hidden="true" />{card.manualDoneAt === undefined ? dashboardStrings.markDoneButton : dashboardStrings.unmarkDoneButton}</button>
+            <button type="button" className="cmux-dashboard-chat-header-action" aria-label={dormantDescription ? "会話を再開" : card.windowLabel && card.windowLabel !== windowLabel() ? "別の窓の対象タブへ移動" : "この窓の端末へ移動"} disabled={!receiverPresent} title={!receiverPresent ? receiverReason : dormantDescription ? "会話を再開" : peerLabel ? "別の窓の対象タブへ移動" : "この窓の端末へ移動"} onClick={(event) => { event.stopPropagation(); onJump(); }}>{dormantDescription ? <RotateCcw aria-hidden="true" /> : <ExternalLink aria-hidden="true" />}<span>{dormantDescription ? "会話を再開" : card.windowLabel && card.windowLabel !== windowLabel() ? "別の窓の対象タブへ移動" : "この窓の端末へ移動"}</span></button>
+            <button type="button" data-dashboard-chat-column-close={card.tab.id} className="cmux-dashboard-chat-column-close" aria-label={`${card.label} の会話の表示を閉じる`} title="会話の表示を閉じる" onClick={(event) => { event.stopPropagation(); onClose(); }}><X aria-hidden="true" /><span>会話の表示を閉じる</span></button>
           </div>
         </details>
-        <button type="button" className="cmux-dashboard-chat-header-action" aria-label={dormantDescription ? "会話を再開" : dashboardStrings.jumpButtonTitle} title={dormantDescription ?? dashboardStrings.jumpButtonTitle} onClick={(event) => { event.stopPropagation(); onJump(); }}>{dormantDescription ? <RotateCcw aria-hidden="true" /> : <ExternalLink aria-hidden="true" />}</button>
-        <button type="button" data-dashboard-chat-column-pin={card.tab.id} className="cmux-dashboard-chat-header-action" aria-pressed={pinned} aria-label={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel} title={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel} onClick={(event) => { event.stopPropagation(); onTogglePin(); }}>{pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}</button>
-        <button type="button" data-dashboard-chat-column-close={card.tab.id} className="cmux-dashboard-chat-column-close" aria-label={`${card.label} を閉じる`} title="閉じる" onClick={(event) => { event.stopPropagation(); onClose(); }}><X aria-hidden="true" /></button>
+        <button type="button" data-dashboard-chat-column-pin={card.tab.id} className="cmux-dashboard-chat-header-action" aria-pressed={pinned} aria-label={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel} title={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel} onClick={(event) => { event.stopPropagation(); onTogglePin(); }}>{pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}<span>{pinned ? "固定を解除" : "固定する"}</span></button>
       </div>
       </div></div>
     </header>

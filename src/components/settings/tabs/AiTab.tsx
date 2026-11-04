@@ -192,7 +192,7 @@ export function AiTab() {
       <div style={{ display: "grid", gap: 14 }}>
         <FeatureRow
           label={aiSettingsStrings.features.replyDraft.label}
-          badge={aiSettingsStrings.automaticBadge}
+          badge={aiSettingsStrings.automaticOnReadBadge}
           disclosure={aiSettingsStrings.features.replyDraft.disclosure}
           enabled={enabled}
           checked={replyDraftSuggestionsEnabled}

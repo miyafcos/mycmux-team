@@ -154,18 +154,18 @@ export default function NativePaneShell() {
   const themeVars = buildThemeVars({ ...theme, background: theme.themeTweaks.background, mediaActive: false });
   return <div data-native-pane-shell="true" data-cmux-themed-root="true" style={{ ...themeVars,
     display: "flex", flexDirection: "column", width: "100%", height: "100%", position: "relative", background: "var(--cmux-bg)" }}>
-    <div data-native-pane-band="true" onPointerDown={beginBand} onDoubleClick={doubleClickBand} style={{ height: 30, flex: "0 0 30px", display: "flex", alignItems: "center",
+    <div data-native-pane-band="true" onPointerDown={beginBand} onDoubleClick={doubleClickBand} style={{ height: "var(--cmux-dashboard-band-height)", flex: "0 0 var(--cmux-dashboard-band-height)", display: "flex", alignItems: "center",
       padding: "0 6px 0 10px", userSelect: "none", touchAction: "none", background: "var(--cmux-surface)",
       borderBottom: "1px solid var(--cmux-border-hairline)", color: "var(--cmux-text-secondary)" }}>
-      <span title={title} style={{ flex: 1, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
-      <button type="button" className={windowsBand ? "cmux-title-btn" : undefined}
+      <span title={title} style={{ flex: 1, fontSize: "var(--cmux-font-size-sm)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
+      {!dashboardOpen ? <button type="button" className={windowsBand ? "cmux-title-btn" : undefined}
         title={dashboardStrings.buttonTitle} aria-label={dashboardStrings.buttonTitle} aria-pressed={dashboardOpen}
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => toggleDetachedDashboard()}
         style={windowsBand ? buttonStyle : { height: 22, width: 22, display: "flex", alignItems: "center", justifyContent: "center",
           border: "none", borderRadius: "var(--cmux-radius-sm)", background: "transparent", color: "inherit", cursor: "pointer" }}>
         <DashboardIcon />
-      </button>
+      </button> : null}
       {windowsBand ? <WindowControls onClose={() => { void close(); }} closing={closing}
         closeLabel={tearoutStrings.close} closeHint={tearoutStrings.closeHint} /> : <>
       <button type="button" aria-label={tearoutStrings.close} title={tearoutStrings.closeHint} disabled={closing}

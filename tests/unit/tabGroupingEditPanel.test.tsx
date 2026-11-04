@@ -231,17 +231,17 @@ describe("TabGroupingPanel edit session controls", () => {
     expect(groupHost.textContent).toBe("案件群改");
 
     const destinationHost = document.querySelector<HTMLElement>(
-      ".cmux-tab-grouping-group .cmux-tab-grouping-dest strong",
+      ".cmux-tab-grouping-group .cmux-tab-grouping-dest button",
     );
     if (!destinationHost) throw new Error("destination host is missing");
     await click(destinationHost);
     const destinationInput = document.querySelector<HTMLInputElement>(
-      ".cmux-tab-grouping-group .cmux-tab-grouping-dest strong input",
+      ".cmux-tab-grouping-group .cmux-tab-grouping-dest input",
     );
     if (!destinationInput) throw new Error("workspace name input is missing");
     await setInputValue(destinationInput, "新しい作業机");
     await press(destinationInput, "Enter");
-    expect(document.querySelector(".cmux-tab-grouping-group .cmux-tab-grouping-dest strong")?.textContent)
+    expect(document.querySelector(".cmux-tab-grouping-group .cmux-tab-grouping-dest button")?.textContent)
       .toContain("新しい作業机");
 
     const paneHost = document.querySelector<HTMLElement>(".cmux-tab-grouping-editpane-head");

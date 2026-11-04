@@ -53,10 +53,10 @@ describe("dashboard minimap width store", () => {
     expect(malformed.useDashboardViewStore.getState().minimapWidth).toBe(malformed.DASHBOARD_MINIMAP_DEFAULT_WIDTH);
   });
 
-  it("keeps 360px for the chat before applying the 45 percent maximum", async () => {
+  it("keeps 520px for reading before applying the 45 percent maximum", async () => {
     const { dashboardMinimapMaxWidth } = await loadStore();
-    expect(dashboardMinimapMaxWidth(1200)).toBe(540);
-    expect(dashboardMinimapMaxWidth(1000)).toBe(376);
+    expect(dashboardMinimapMaxWidth(1200)).toBe(416);
+    expect(dashboardMinimapMaxWidth(1000)).toBe(240);
   });
 });
 
@@ -88,8 +88,8 @@ describe("dashboard session list collapsed store", () => {
 
   it("subtracts the collapsed list width when computing minimap max", async () => {
     const { dashboardMinimapMaxWidth } = await loadStore();
-    expect(dashboardMinimapMaxWidth(1000)).toBe(376);
-    expect(dashboardMinimapMaxWidth(1000, true)).toBe(450);
+    expect(dashboardMinimapMaxWidth(1000)).toBe(240);
+    expect(dashboardMinimapMaxWidth(1000, true)).toBe(440);
     expect(dashboardMinimapMaxWidth(1200, true)).toBe(540);
   });
 });

@@ -3057,16 +3057,15 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
                       </div>
                       {isReorganize && group.destination.kind === "new_workspace" ? (
                         <div className="cmux-tab-grouping-dest">
-                          <strong onClick={(event) => {
-                            event.stopPropagation();
-                            setSelectedGroupId(group.groupId);
-                            setNameEdit({ kind: "workspace", groupId: group.groupId });
-                            setNameDraft(group.destination.kind === "new_workspace" ? group.destination.proposedName : "");
-                          }}>
-                            {nameEdit?.kind === "workspace" && nameEdit.groupId === group.groupId
-                              ? renderNameInput()
-                              : tabGroupingStrings.destinationHeading(group.destination.proposedName)}
-                          </strong>
+                          <div>
+                            <button type="button" aria-label={`${tabGroupingStrings.renameLabel}: ${group.destination.proposedName}`} onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedGroupId(group.groupId);
+                              setNameEdit({ kind: "workspace", groupId: group.groupId });
+                              setNameDraft(group.destination.kind === "new_workspace" ? group.destination.proposedName : "");
+                            }}>{tabGroupingStrings.destinationHeading(group.destination.proposedName)}</button>
+                            {nameEdit?.kind === "workspace" && nameEdit.groupId === group.groupId ? renderNameInput() : null}
+                          </div>
                         </div>
                       ) : null}
                     </div>
@@ -3096,6 +3095,8 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
                           key={tabId}
                           data-grouping-drop-control="chip"
                           aria-pressed={selectedTabIds.has(tabId)}
+                          aria-label={tab ? getTabDisplayLabel(tab) : tabName(undefined)}
+                          title={tab ? getTabDisplayLabel(tab) : tabName(undefined)}
                           className={`cmux-tab-grouping-chip is-unassigned${selectedTabIds.has(tabId) ? " is-selected" : ""}`}
                           onClick={() => toggleTabSelection(tabId)}
                       >

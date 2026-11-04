@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import { ArrowLeft, Info, RotateCcw } from "lucide-react";
 import { DashboardGlyph, DashboardIconButton, DashboardStatusMark } from "./DashboardUi";
 
-import { retryActiveSession, useBackgroundAiSuggestion } from "../../lib/backgroundAiScheduler";
+import { nextActionRequestKey, retryActiveSession, useBackgroundAiSuggestion } from "../../lib/backgroundAiScheduler";
 import type { DashboardDisplayState } from "./dashboardModel";
+import { useAiSettingsStore } from "../../stores/aiSettingsStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { dashboardStrings } from "./dashboardStrings";
 
 export interface NextAction {
@@ -14,6 +16,7 @@ export interface NextAction {
 interface NextActionSuggestionsProps {
   sessionId: string | null;
   displayState: DashboardDisplayState;
+  eventSeq?: number;
   questionActive: boolean;
   sending: boolean;
   onConfirm: (action: NextAction) => Promise<void>;
@@ -21,19 +24,55 @@ interface NextActionSuggestionsProps {
 
 export function NextActionSuggestions(props: NextActionSuggestionsProps) {
   const { sessionId, questionActive, sending, onConfirm } = props;
-  const aiSuggestion = useBackgroundAiSuggestion(sessionId);
+  const storedSuggestion = useBackgroundAiSuggestion(sessionId);
+  // Subscribe to model/provider changes as well as enablement; the key includes them.
+  const aiSettings = useAiSettingsStore(state => state);
+  const expectedKey = sessionId ? nextActionRequestKey({ sessionId, eventSeq: props.eventSeq ?? 0, displayState: props.displayState }) : null;
+  const aiSuggestion = storedSuggestion?.requestKey === expectedKey ? storedSuggestion : undefined;
   const [pending, setPending] = useState<NextAction | null>(null);
+  const [requestedKey, setRequestedKey] = useState<string | null>(null);
+  const requested = expectedKey !== null && requestedKey === expectedKey;
+  const [elapsed, setElapsed] = useState(0);
+  const [readAttempt, setReadAttempt] = useState(0);
+  const aiEnabled = aiSettings.aiEnabled;
+  const suggestionsEnabled = useSettingsStore(state => state.replyDraftSuggestionsEnabled);
+  const eligible = ["done", "acknowledged", "idle", "noUpdate", "error"].includes(props.displayState);
+  const canRead = aiEnabled && suggestionsEnabled && eligible;
+  useEffect(() => { setRequestedKey(null); setElapsed(0); }, [expectedKey]);
+  useEffect(() => {
+    if (!requested || (aiSuggestion && aiSuggestion.status !== "loading")) return;
+    const started = Date.now();
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [requested, aiSuggestion?.status, readAttempt]);
 
-  useEffect(() => setPending(null), [sessionId, questionActive, aiSuggestion?.requestKey]);
+  useEffect(() => setPending(null), [expectedKey, questionActive, aiSuggestion?.requestKey]);
 
-  if (!aiSuggestion || questionActive) return null;
+  if (!sessionId || questionActive) return null;
+  const request = () => {
+    setRequestedKey(expectedKey);
+    setReadAttempt(attempt => attempt + 1);
+    setElapsed(0);
+    if (!aiSuggestion || aiSuggestion.status === "failed") retryActiveSession();
+  };
+  if (!aiEnabled || !suggestionsEnabled) return <section className="cmux-dashboard-next-actions is-unavailable" data-next-action-status="unavailable" role="note">
+    <span>{!aiEnabled ? "AIの提案は無効です" : "返信案の準備は無効です"}</span>
+  </section>;
+  if (!requested) return <section className="cmux-dashboard-next-actions" data-next-action-status="not-requested">
+    <span>{!aiEnabled || !suggestionsEnabled ? "AIの提案は無効です" : !eligible ? "会話の処理が落ち着くと提案を読めます" : "提案はまだ読み込んでいません"}</span>
+    <button type="button" disabled={!canRead || sending} onClick={request}>提案を読む</button>
+  </section>;
+  if (!aiSuggestion) return <section className="cmux-dashboard-next-actions" role="status">
+    <span>{elapsed < 30 ? `提案を読み取っています（${elapsed}秒）` : "提案の読み取りに時間がかかっています。再試行できます"}</span>
+    <button type="button" disabled={!canRead || sending} onClick={() => { setElapsed(0); setReadAttempt(attempt => attempt + 1); retryActiveSession(); }}>再試行</button>
+  </section>;
 
   const retryButton = <DashboardIconButton icon={RotateCcw} label={dashboardStrings.nextActionRetry}
     className="cmux-dashboard-next-actions-retry"
     title={dashboardStrings.nextActionRetry}
     aria-label={dashboardStrings.nextActionRetry}
-    disabled={sending}
-    onClick={() => retryActiveSession()}
+    disabled={!canRead || sending}
+    onClick={() => { setElapsed(0); setReadAttempt(attempt => attempt + 1); retryActiveSession(); }}
   />;
 
   if (aiSuggestion.status === "loading") {
@@ -43,7 +82,7 @@ export function NextActionSuggestions(props: NextActionSuggestionsProps) {
       data-next-action-status="loading"
       aria-label={dashboardStrings.nextActionAriaLabel}
     >
-      <div className="cmux-dashboard-next-actions-loading"><DashboardStatusMark state="running" label={dashboardStrings.nextActionLoading} /></div>
+      <div className="cmux-dashboard-next-actions-loading"><DashboardStatusMark state="running" label={`${dashboardStrings.nextActionLoading}（${elapsed}秒）`} />{elapsed >= 30 ? <span>時間がかかっています</span> : null}{retryButton}</div>
     </section>;
   }
 

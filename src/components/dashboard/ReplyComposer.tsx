@@ -595,6 +595,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
     <NextActionSuggestions
       sessionId={sessionId}
       displayState={card ? resolveDisplayState(card) : "idle"}
+      eventSeq={brief?.eventSeq ?? 0}
       questionActive={questionActive}
       sending={sending}
       onConfirm={submitSuggestion}
@@ -608,6 +609,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
       </span>)}
     </div> : null}
     {hasMentions && invalidPreview ? <div className="cmux-dashboard-dispatch-preview is-error"><DashboardStatusMark state="error" label={dashboardStrings.dispatchInvalidTargets} /></div> : null}
+    <div className="cmux-dashboard-composer-target">{hasMentions ? `送信先：@で指定したタブ（${preview.recipients.length} 件）` : card ? `送信先：このタブ（${card.label}）` : dashboardStrings.detailEmpty}</div>
     <div className="cmux-dashboard-composer-row">
       <textarea
         ref={inputRef}

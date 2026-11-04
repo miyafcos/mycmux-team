@@ -2,6 +2,7 @@ import { dashboardText } from "../helpers/dashboardA11y";
 // @vitest-environment jsdom
 
 import { act } from "react";
+import { createPortal } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -40,7 +41,7 @@ vi.mock("../../src/lib/focusController", async () => {
 
 vi.mock("../../src/lib/ipc", async () => {
   const actual = await vi.importActual<typeof import("../../src/lib/ipc")>("../../src/lib/ipc");
-  return { ...actual, onSessionStatusChanged: mocks.onSessionStatusChanged, readAgentSessionMappings:mocks.mappings };
+  return { ...actual, onSessionStatusChanged: mocks.onSessionStatusChanged, readAgentSessionMappings:mocks.mappings, getWindowFragments:async()=>usePeerWindowTabsStore.getState().index.map(entry=>({window_label:entry.window_label,pending:entry.pending,workspaces:[]})) };
 });
 
 vi.mock("../../src/lib/backgroundAiScheduler", async () => {
@@ -346,9 +347,9 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-async function renderDashboard(): Promise<void> {
+async function renderDashboard(onClose = vi.fn()): Promise<void> {
   await act(async () => {
-    root.render(<DashboardView onClose={vi.fn()} />);
+    root.render(<DashboardView onClose={onClose} />);
     await Promise.resolve();
   });
 }
@@ -414,7 +415,7 @@ describe("main dashboard peer windows", () => {
       const before = useWorkspaceListStore.getState();
       if (entry === "enter") await act(async () => container.querySelector(".cmux-dashboard-view")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
       else if (entry === "list") await act(async () => container.querySelector("[data-dashboard-row='peer-tab']")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
-      else await act(async () => container.querySelector<HTMLButtonElement>(`[data-dashboard-chat-column='peer-tab'] button[aria-label='${dashboardStrings.jumpButtonTitle}']`)!.click());
+      else await act(async () => container.querySelector<HTMLButtonElement>(`[data-dashboard-chat-column='peer-tab'] button[aria-label='別の窓の対象タブへ移動']`)!.click());
       expect(navigate).toHaveBeenCalledWith("mycmux-w2", "peer-session");
       expect(useWorkspaceListStore.getState()).toBe(before);
       expect(useDashboardViewStore.getState().open).toBe(true);
@@ -1414,6 +1415,55 @@ describe("DashboardView Q1 chat columns", () => {
 });
 
 describe("DashboardView minimap resize", () => {
+
+  it.each([[958,400],[1100,336]])("does not change the saved compact width at viewport %s / saved %s", async (width,saved) => {
+    setViewportWidth(width);
+    const item=tab("compact-locked","compact-locked-session","Fictional compact review");
+    seedDashboard({workspace:workspace([item]),selectedTabId:item.id});
+    useDashboardViewStore.setState({minimapWidth:saved});
+    await renderDashboard();
+    const resizer=container.querySelector<HTMLElement>("[data-dashboard-resizer='true']")!;
+    expect(resizer.getAttribute("aria-disabled")).toBe("true");
+    expect(resizer.title).toBe("窓を広げると幅を変えられます");
+    expect(resizer.getAttribute("aria-valuenow")).toBe("208");
+    for(const key of ["ArrowLeft","ArrowRight","Home","End"]){
+      await act(async()=>resizer.dispatchEvent(new KeyboardEvent("keydown",{key,bubbles:true,cancelable:true})));
+      expect(useDashboardViewStore.getState().minimapWidth).toBe(saved);
+    }
+    await act(async()=>{dispatchPointer(resizer,"pointerdown",31,650);dispatchPointer(resizer,"pointermove",31,450);dispatchPointer(resizer,"pointerup",31,450);});
+    expect(useDashboardViewStore.getState().minimapWidth).toBe(saved);
+    expect(resizer.classList.contains("is-resizing")).toBe(false);
+  });
+
+  it.each([".cmux-dashboard-column-options",".cmux-dashboard-chat-history",".cmux-dashboard-chat-details",".cmux-dashboard-toolfold"])("lets Escape close the dashboard from a closed %s summary", async selector=>{
+    const item=tab("esc-closed","esc-closed-session","Fictional Escape review");
+    seedDashboard({workspace:workspace([item]),selectedTabId:item.id});const close=vi.fn();await renderDashboard(close);
+    let menu=container.querySelector<HTMLDetailsElement>(selector);
+    if(!menu){menu=document.createElement("details");menu.className="cmux-dashboard-toolfold";menu.innerHTML="<summary>Fictional tool output</summary><p>Fictional details</p>";container.querySelector(".cmux-dashboard-chat-column-body")!.append(menu);}
+    menu.open=false;const summary=menu.querySelector("summary")!;summary.focus();
+    await act(async()=>summary.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true})));
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets Escape close the dashboard from an open transcript tool summary",async()=>{
+    const item=tab("esc-tool","esc-tool-session","Fictional open tool");seedDashboard({workspace:workspace([item]),selectedTabId:item.id});const close=vi.fn();await renderDashboard(close);
+    const tool=document.createElement("details");tool.className="cmux-dashboard-toolfold";tool.open=true;tool.innerHTML="<summary>Fictional tool output</summary><p>Fictional detail</p>";container.querySelector(".cmux-dashboard-chat-column-body")!.append(tool);
+    await act(async()=>tool.querySelector("summary")!.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true})));
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps watch status outside the named conversation-limit group",async()=>{
+    const item=tab("limit-names","limit-names-session","Fictional named limits");seedDashboard({workspace:workspace([item]),selectedTabId:item.id});await renderDashboard();
+    const summary=container.querySelector<HTMLDetailsElement>(".cmux-dashboard-column-options")!.querySelector("summary")!;
+    expect(summary.getAttribute("aria-label")).toBe("表示");expect(summary.title).toBe("表示");
+    const group=container.querySelector(".cmux-dashboard-column-choice-group")!;
+    expect(group.querySelectorAll("button")).toHaveLength(5);
+    for(const button of group.querySelectorAll("button"))expect(button.getAttribute("aria-label")).toBe(`会話を ${button.textContent} 件まで`);
+    const watch=container.querySelector("[data-watch-status]");
+    expect(watch).not.toBeNull();
+    expect(group.contains(watch)).toBe(false);
+  });
+
   it("drags the separator within its lower and readable-chat upper bounds", async () => {
     setViewportWidth(1200);
     const item = tab("tab-resize", "s-resize", "Resize target");
@@ -1456,21 +1506,97 @@ describe("DashboardView minimap resize", () => {
     expect(useDashboardViewStore.getState().selectedTabId).toBe(item.id);
   });
 
+  it("keeps the responsive splitter value within its accessible range", async () => {
+    setViewportWidth(958);
+    const item = tab("compact-range", "compact-range-session", "Fictional compact target");
+    seedDashboard({ workspace: workspace([item]), selectedTabId: item.id });
+    await renderDashboard();
+    const resizer = container.querySelector<HTMLElement>("[data-dashboard-resizer='true']")!;
+    expect(Number(resizer.getAttribute("aria-valuenow"))).toBe(208);
+    expect(Number(resizer.getAttribute("aria-valuemin"))).toBeLessThanOrEqual(208);
+    expect(Number(resizer.getAttribute("aria-valuemax"))).toBeGreaterThanOrEqual(208);
+    expect(useDashboardViewStore.getState().minimapWidth).toBe(336);
+  });
+
+  it("keeps a restored wide preference within the accessible range without rewriting it", async () => {
+    setViewportWidth(2000);
+    const item = tab("restored-range", "restored-range-session", "Fictional restored target");
+    seedDashboard({ workspace: workspace([item]), selectedTabId: item.id });
+    useDashboardViewStore.setState({ minimapWidth: 1000 });
+    await renderDashboard();
+    const resizer = container.querySelector<HTMLElement>("[data-dashboard-resizer='true']")!;
+    expect(Number(resizer.getAttribute("aria-valuenow"))).toBe(1000);
+    expect(Number(resizer.getAttribute("aria-valuemax"))).toBeGreaterThanOrEqual(1000);
+    expect(useDashboardViewStore.getState().minimapWidth).toBe(1000);
+  });
+
+  it("keeps named menu keyboard events out of dashboard-wide navigation", async () => {
+    const item = tab("menu-keys", "menu-keys-session", "Fictional menu target");
+    seedDashboard({ workspace: workspace([item]), selectedTabId: item.id });
+    await renderDashboard();
+    const menu = container.querySelector<HTMLDetailsElement>(".cmux-dashboard-column-options")!;
+    const summary = menu.querySelector("summary")!;
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    summary.focus();
+    await act(async () => summary.dispatchEvent(enter));
+    expect(enter.defaultPrevented).toBe(false);
+    expect(useDashboardViewStore.getState().open).toBe(true);
+    await act(async () => summary.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })));
+    expect(menu.open).toBe(true);
+    expect(document.activeElement?.getAttribute("data-dashboard-column-limit")).toBe("1");
+    await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true })));
+    const last = document.activeElement as HTMLButtonElement;
+    expect(last.getAttribute("data-dashboard-column-limit")).toBe("5");
+    await act(async () => last.click());
+    expect(useDashboardViewStore.getState().chatColumnLimit).toBe(5);
+    await act(async () => useDashboardViewStore.getState().setQuery("Fictional"));
+    await act(async () => last.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    expect(menu.open).toBe(false);
+    expect(document.activeElement).toBe(summary);
+    expect(useDashboardViewStore.getState().query).toBe("Fictional");
+    expect(useDashboardViewStore.getState().open).toBe(true);
+    expect(useDashboardViewStore.getState().selectedTabId).toBe(item.id);
+  });
+
+  it("routes history portal button keys through their native menu", async () => {
+    const item = tab("portal-keys", "portal-keys-session", "Fictional portal target");
+    seedDashboard({ workspace: workspace([item]), selectedTabId: item.id });
+    await renderDashboard();
+    const menu = container.querySelector<HTMLDetailsElement>(".cmux-dashboard-chat-history")!;
+    const portalRoot = createRoot(document.createElement("div"));
+    try {
+      await act(async () => portalRoot.render(createPortal(<><button>Fictional first</button><button data-native-history-last>Fictional last</button></>, menu)));
+      menu.open = true;
+      const last = menu.querySelector<HTMLButtonElement>("[data-native-history-last]")!;
+      last.focus();
+      await act(async () => last.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true })));
+      expect(document.activeElement).toBe(menu.querySelector("button:not([disabled])"));
+      await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true })));
+      expect(document.activeElement).toBe(last);
+      await act(async () => useDashboardViewStore.getState().setQuery("Fictional"));
+      await act(async () => last.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+      expect(menu.open).toBe(false);
+      expect(document.activeElement).toBe(menu.querySelector("summary"));
+      expect(useDashboardViewStore.getState().open).toBe(true);
+      expect(useDashboardViewStore.getState().query).toBe("Fictional");
+    } finally { await act(async () => portalRoot.unmount()); }
+  });
+
   it("persists the width across overlay remounts and keeps all three content panes", async () => {
     setViewportWidth(1200);
     const item = tab("tab-remount-resize", "s-remount-resize", "Remount target");
     seedDashboard({ workspace: workspace([item]), selectedTabId: item.id });
-    useDashboardViewStore.getState().setMinimapWidth(420);
+    useDashboardViewStore.getState().setMinimapWidth(400);
     await renderDashboard();
-    expect(window.localStorage.getItem(DASHBOARD_MINIMAP_STORAGE_KEY)).toBe("420");
-    expect(container.querySelector<HTMLElement>(".cmux-dashboard-shell")?.style.getPropertyValue("--dashboard-minimap-width")).toBe("420px");
+    expect(window.localStorage.getItem(DASHBOARD_MINIMAP_STORAGE_KEY)).toBe("400");
+    expect(container.querySelector<HTMLElement>(".cmux-dashboard-shell")?.style.getPropertyValue("--dashboard-minimap-width")).toBe("400px");
 
     await act(async () => root.unmount());
     root = createRoot(container);
     await renderDashboard();
 
     const shell = container.querySelector<HTMLElement>(".cmux-dashboard-shell")!;
-    expect(shell.style.getPropertyValue("--dashboard-minimap-width")).toBe("420px");
+    expect(shell.style.getPropertyValue("--dashboard-minimap-width")).toBe("400px");
     expect(shell.querySelector(".cmux-dash-list")).not.toBeNull();
     expect(shell.querySelector("[data-dashboard-center='true']")).not.toBeNull();
     expect(shell.querySelector(".cmux-dashboard-right-pane")).not.toBeNull();
@@ -1745,7 +1871,8 @@ describe("dashboard icon action accessibility", () => {
     await renderDashboard();
     const controls = [...container.querySelectorAll<HTMLButtonElement>("button, summary")];
     const iconOnly = controls.filter(control => control.querySelector("svg") && !control.textContent?.trim());
-    expect(iconOnly.length).toBeGreaterThan(8);
+    expect(controls.length).toBeGreaterThan(8);
+    expect(iconOnly.length).toBeGreaterThan(0);
     for (const control of iconOnly) {
       expect(control.getAttribute("aria-label")?.trim(), control.outerHTML).toBeTruthy();
       expect(control.getAttribute("title")?.trim(), control.outerHTML).toBeTruthy();

@@ -211,3 +211,21 @@ describe("DashboardLinkedText", () => {
     expect(container.textContent).toContain(dashboardStrings.pathActionFailed("access denied"));
   });
 });
+
+it("shows the filename and retains the full path in the title", async () => {
+  const path = "C:/samples/fictional/report.md";
+  mocks.resolve.mockResolvedValue([{ text: path, index: 0, endIndex: path.length, activationUri: path }]);
+  await renderText(path);
+  const link = container.querySelector("a")!;
+  expect(link.textContent).toBe("report.md");
+  expect(link.title).toBe(path);
+});
+
+it("shows the reason when a directory cannot be opened", async () => {
+  const path = "C:/samples/fictional/";
+  mocks.resolve.mockResolvedValue([{ text: path, index: 0, endIndex: path.length, activationUri: path }]);
+  mocks.reveal.mockRejectedValue(new Error("fictional permission failure"));
+  await renderText(path);
+  await act(async () => container.querySelector("a")!.click());
+  expect(container.querySelector("[role=alert]")?.textContent).toContain("fictional permission failure");
+});
