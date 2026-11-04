@@ -11,7 +11,7 @@ import { tearOutWorkspaceToNewWindow } from "./workspaceTearOut";
 import { tearoutTab, tearoutPane, tearoutWorkspace, regrabTearoutWindow, isTearoutChild } from "./tearout/runtime";
 import { activeTearoutRecords } from "./tearout/record";
 import { useSettingsStore } from "../stores/settingsStore";
-import { readPaneTail, handleSocketCommand } from "../components/layout/socketCommands";
+import { readPaneTail, readPaneScreenBuffer, handleSocketCommand } from "../components/layout/socketCommands";
 import { commitPaneDragDrop } from "../hooks/usePaneDragSource";
 import { getTearOutDiagnosticEvents } from "./tearOutDiagnostics";
 import { isMainWindow, windowLabel } from "./windowContext";
@@ -24,6 +24,8 @@ import { recordPerf } from "./perfTimeline";
 import { liveTerms, termCache, terminalWriteCounters } from "../components/terminal/terminalCache";
 import { previewArtifactUriForSessionV2 } from "./ipc";
 import { Window as TauriWindow } from "@tauri-apps/api/window";
+import { captureTerminalScreen, canvasBlob, copyWebglTerminalGrid, pngCaptureImage, terminalCaptureDiagnostics, type PaneCaptureResult, type CaptureScale } from "../components/terminal/terminalCapture";
+import { terminalScreenThemeFor } from "../components/terminal/terminalScreenState";
 
 /** Installed only in e2e bundles. Timer stacks are captured at registration,
  * not on every tick; native timers preserve their arguments and receiver. */
@@ -134,6 +136,69 @@ function installMacProbe() {
   };
 }
 
+/** Read-only capture evidence. Only the probe's disposable synthetic PTYs are
+ * serialized by its caller; no image or screen enters the performance log.
+ */
+async function measureSizedCapture(sessionId: string, cols: number, rows: number, scale: CaptureScale) {
+  if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 2 || rows < 1 || cols > 500 || rows > 500) {
+    throw new Error("capture probe invalid dimensions");
+  }
+  const source = await readPaneScreenBuffer(sessionId, 0);
+  // This read-only probe varies the fixture's empty margins; cells, theme and
+  // cursor stay the same. It never resizes a PTY, changes reader caches, or
+  // claims this synthetic geometry is the pane.capture socket's screen.
+  if (source.lines.slice(rows).some(line => line.length > 0)
+    || source.lines.some(line => line.some(run => run[0] + [...run[2]].length * run[1] > cols))
+    || (source.cursor && (source.cursor.row >= rows || source.cursor.col >= cols))) {
+    throw new Error("capture probe fixture exceeds dimensions");
+  }
+  const screen = { ...source, sessionId, cols, rows, lines: Array.from({ length: rows }, (_, row) => source.lines[row] ?? []) };
+  return captureTerminalScreen(async () => screen, scale);
+}
+
+const captureProbe = {
+  measure: measureSizedCapture,
+  state: terminalCaptureDiagnostics,
+  live: async (sessionId: string) => {
+    const term = liveTerms.get(sessionId);
+    if (!term) throw new Error("capture probe terminal is not mounted");
+    const theme = terminalScreenThemeFor(term, term.options.theme);
+    const screen = term.element?.querySelector(".xterm-screen");
+    const rect = screen?.getBoundingClientRect();
+    const dpr = window.devicePixelRatio;
+    const { canvas, renderPath } = await copyWebglTerminalGrid(term, theme.background);
+    try {
+      return { image: await pngCaptureImage(canvas, { scale: Math.round(dpr * 100) / 100, native: true }), renderPath, dpr,
+        rect: rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null,
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        options: { fontFamily: term.options.fontFamily, fontSize: term.options.fontSize,
+          lineHeight: term.options.lineHeight, fontWeight: term.options.fontWeight,
+          fontWeightBold: term.options.fontWeightBold, minimumContrastRatio: term.options.minimumContrastRatio,
+          background: theme.background, allowTransparency: term.options.allowTransparency } };
+    } finally { canvas.width = 0; canvas.height = 0; }
+  },
+  encodings: async (sessionId: string, scale: CaptureScale, cols?: number, rows?: number) => {
+    const capture = cols !== undefined && rows !== undefined
+      ? await measureSizedCapture(sessionId, cols, rows, scale)
+      : await handleSocketCommand("pane.capture", { sessionId, scale }) as PaneCaptureResult;
+    const image = new Image();
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve(); image.onerror = () => reject(new Error("capture probe PNG decode failed"));
+      image.src = "data:image/png;base64," + capture.image.data;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = capture.image.width; canvas.height = capture.image.height;
+    try {
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("capture probe canvas unavailable");
+      context.drawImage(image, 0, 0);
+      const webp = await canvasBlob(canvas, "image/webp");
+      return { pngBytes: atob(capture.image.data).length, webpType: webp.type,
+        webpBytes: webp.type === "image/webp" ? webp.size : null };
+    } finally { canvas.width = 0; canvas.height = 0; image.src = ""; }
+  },
+};
+
 declare global {
   interface Window {
     __mycmuxE2E?: Record<string, unknown>;
@@ -161,6 +226,7 @@ export function installE2eHooks(): void {
   const macProbe = installMacProbe();
   window.__mycmuxE2E = {
     macProbe,
+    captureProbe,
     terminals: { live: liveTerms, cached: termCache, writes: terminalWriteCounters },
     previewArtifactUriForSessionV2,
     bootAt,

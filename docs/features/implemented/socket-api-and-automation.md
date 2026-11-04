@@ -24,7 +24,7 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 
 ### 版と能力の照会 (2026-09-25 追加)
 
-`system.version` は、認証を通ったあとに Rust が直接答えます (フロントエンドの準備を待ちません)。応答は `app_version`・`api` (`major: 1`、`minor: 0`)・`status_protocol`・`hook_protocol`・`commands`・`capabilities` です。`commands` には Rust が答える名前とフロントエンドの名前が入り、`e2e.*` は e2e ビルドのときだけ入ります。宣言する能力は `state_view.input_revision_nullable`、`send.enter.single`、`spawn.launch_spec.all_modes`、`launch.kind_env`、`agent.hooks.status`、`pane.screen.v1` です。
+`system.version` は、認証を通ったあとに Rust が直接答えます (フロントエンドの準備を待ちません)。応答は `app_version`・`api` (`major: 1`、`minor: 0`)・`status_protocol`・`hook_protocol`・`commands`・`capabilities` です。`commands` には Rust が答える名前とフロントエンドの名前が入り、`e2e.*` は e2e ビルドのときだけ入ります。宣言する能力は `state_view.input_revision_nullable`、`send.enter.single`、`spawn.launch_spec.all_modes`、`launch.kind_env`、`agent.hooks.status`、`pane.screen.v1`、`pane.capture.v1` です。
 
 `session.state_view` の各行は `input_revision` のキーを必ず持ちます。値は 0 以上の整数か `null` です。`null` は入力の数えがないこと (PTY が生きていない行など) を表し、0 とは違います。送信の期待値には使えません。CLI の `status` (`--session` なし) と、プロンプト・引き継ぎ・再開に `--model` または `--effort` を付けた `spawn` / `spawn-tab` は先に `system.version` を問い、能力が足りなければ操作せずに止まります。古い mycmux が `Unknown socket command: system.version` を返したときは `the running mycmux predates capability reporting` と出して止まります。`hooks-status` も `agent.hooks.status` 能力を確かめてから照会します。それ以外の CLI コマンドは 1 回の接続で済みます。
 
@@ -77,6 +77,7 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 | `pane.send_text` | `sessionId`, `text`, `enter?` | 既存タブの端末へ入力を送る |
 | `pane.read` | `sessionId`, `lines?` (既定80、最大400) | 既存タブの画面末尾を読む |
 | `pane.screen` | `sessionId`, `scrollback?` (既定0、0〜500) | 端末の表示範囲をセルと属性で読む (読み取り専用) |
+| `pane.capture` | `sessionId`, `scale?` (`native`・1・2、既定`native`) | 同じ表示範囲をPCの設定のxtermでPNGに描く (読み取り専用) |
 
 新コマンドの `T` は `{tabId?, presetId?, anchorSessionId?}`。tabId 優先、指定がなければ対象ワークスペース内の最新プリセット候補を使う。`trusted` と screenshot は Windows 先行（macOSは段2）。
 
@@ -84,6 +85,53 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 
 一覧・ワークスペース操作には snake_case の別名 (`list_workspaces` など) もあります。全コマンドは `socketCommands.ts` の dispatcher と `mycmux_agent_cli.py` の parser が正本です。
 `status.subscribe` / `status.snapshot` は `socket.rs` が直接扱う状態フィードで、PTY 生出力のストリーミングとは別です。
+
+### `pane.capture` の画像読取
+
+`system.version.commands` の `pane.capture` と `capabilities` の `pane.capture.v1` が対応の印です。
+要求例 (認証トークンは省略):
+
+```json
+{"cmd":"pane.capture","args":{"sessionId":"pty-sample","scale":"native"}}
+```
+
+`session_id` は `sessionId` の別名です。成功時の `result` は次の形です (`screen` の本文とbase64は省略):
+
+```json
+{
+  "sessionId": "pty-sample",
+  "screen": {"sessionId": "pty-sample", "cols": 120, "rows": 40},
+  "image": {"type": "image/png", "scale": 1.5, "native": true, "width": 1080, "height": 960, "data": "<base64>"},
+  "renderer": "webgl",
+  "elapsedMs": 42.0
+}
+```
+
+`screen` は同じ時点に `pane.screen` を `scrollback:0` で読んだ値そのものです。表示中で解析済みの xterm、または headless のセルを読み、別の撮影専用端末へ再生してPNGにします。別の窓のセッションは所有窓へ振り分け、その窓で撮ります。PTYの起動・入力・フォーカス・スクロール・タブ選択は行いません。hookの権限からは呼べません。
+
+`scale` の既定 `native` は、その窓の現在の `devicePixelRatio` で描きます。Chromiumの小数の精度を保って描画し、返す `image.scale` だけを小数2桁に丸めます。`1` と `2` はCSS 1pxあたりの画像の画素数を指定し、`image.native` は実際に窓と同じDPRで描いたかを表します。撮影専用 xterm のインスタンスだけDPRを上書きして字形と格子を描き直し、WebGL backingの画素を1:1でコピーします。本物の端末と窓のDPRには触れません。xterm更新でこの内部APIが無くなった場合は、字の大きさとletterSpacingを `scale / 窓のDPR` 倍にして描き直します。画像の引き伸ばしは行いません。この代替経路では格子の丸めで寸法が異なることがあります。`width`・`height` は実際のPNG画素数です。
+
+設定は本物の端末と同じbuilderと現在の値から読みます。書体・大きさ・太さ・行の高さ・letterSpacing・テーマ・contrast・描字の設定とcomputed typographyを次の撮影へ反映し、未読込の字を待つ時間も期限に含めます。字の読込が失敗した場合は本物と同じブラウザの代替書体を使います。DOM描画を選んでいる間は `unavailable` です。WebGLへ戻すと撮影端末を作り直します。
+
+画像は端末の格子だけで、余白・スクロールバー・選択色・タブ見出しを含みません。背景は不透明で、壁紙と透過はv1では再現しません。カーソルは `screen.cursor` に従い、フォーカスの無い端末の輪郭の形で点滅せず描きます。画面の文字と画像はメモリだけに置き、ファイル・console・診断ログへ残しません。
+
+誤りはソケット応答の `error` に次の語を返します。
+
+| 語 | 条件 |
+| --- | --- |
+| `pane.screen` と同じ語 | 対象なし・宣言タブ・バッファなし・寿命の変更 (`pane read lifetime changed` を含む) |
+| `pane.capture scale must be native, 1 or 2` | 不正な倍率 (文字列 `"1"` も不可) |
+| `pane.capture busy` | その窓で撮影・読取中。2本目を待たせず拒否 |
+| `pane.capture timeout` | 描画開始からPNGのbase64完成まで400ms以上 |
+| `pane.capture unavailable` | WebGLを使えない・文脈の喪失・描画や再生の失敗 |
+
+`elapsedMs` は描画開始からbase64完成までで、元の `screen` の読取時間を含みません。期限超過やタブの寿命変更の結果は捨て、準備済みの撮影端末は次の要求で再利用します。`unavailable` や文脈喪失では端末と文脈を捨て、次に作り直します。撮影端末とWebGL文脈は窓ごとに1つだけ追加し、本物の端末の12枠を消費しません。60秒使わなければ両方を解放します。ソケットの1MiB制限は要求行だけに適用され、応答行には大きさの上限を設けていません。
+
+v1の制限:
+
+- wireのセル属性は下線の種類 (波線・二重)・下線の色 (SGR 58)・上線を運びません。neovimのundercurlなどは、画像では本文色の直線の下線になります。
+- WebGL addonの字形atlas cacheは本物の端末と共有されます。nativeの撮影は、裏のタブの字形を本物と同じatlasへ描き足します (atlasの上限内)。nativeと2を交互に撮ると、2のatlasは毎回作り直されます。
+- 撮影用の1文脈は本物の12枠とは別です。Chromiumの上限16に対する余白は4から3へ減ります。本物の端末の予算は変更しません。
 
 ### `pane.screen` の画面読取
 

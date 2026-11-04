@@ -51,7 +51,6 @@ import { useKeybindingStore } from "../../stores/keybindingStore";
 import { IS_MAC } from "../../lib/keybindings";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { LightDarkColorAdaptController, shouldAdaptLightColorsForPane } from "../../lib/lightDarkColorAdapt";
-import { colorWithOpacity } from "../../lib/theme/colorPrimitives";
 import { resolveEffectiveTerminalRenderer } from "../../stores/settingsMigration";
 import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
 import { useToastStore } from "../../stores/toastStore";
@@ -170,7 +169,9 @@ import {
 } from "./terminalMouseInputFilter";
 import { HTTP_LINK_REGEX, registerArtifactLinkProvider } from "./terminalLinkProvider";
 import { recordPerf } from "../../lib/perfTimeline";
-import { ANSI_KEYS, withAnsiContrastFloor } from "./terminalThemeColors";
+import { ANSI_KEYS } from "./terminalThemeColors";
+import { buildTerminalOptions, resolveTerminalTheme } from "./terminalOptions";
+export { withTerminalOpacity } from "./terminalOptions";
 import { buildLaunchRequest, buildAgentRecoveryLaunch, type TerminalLaunchParams } from "./terminalLaunchParams";
 import { consumeCodexRestoreReason } from "../../lib/codexRestore";
 import { createAgentResumeRecovery } from "../../lib/agentResumeRecovery";
@@ -417,22 +418,6 @@ function buildThemeFromConfig(
     (theme as Record<string, string>)[ANSI_KEYS[i] as string] = cfg.ansi[i];
   }
   return theme;
-}
-
-export function withTerminalOpacity(theme: ITheme, opacity: number, mediaActive: boolean): ITheme {
-  return {
-    ...theme,
-    // xterm measures contrast against RGB even when alpha is zero. Keep the
-    // theme background as that reference while CSS paints the media beneath.
-    background: colorWithOpacity(theme.background, mediaActive ? 0 : opacity),
-  };
-}
-
-// The single place an ITheme is prepared for xterm. Every path that assigns
-// options.theme goes through here so the wallpaper-mode ANSI floor and the
-// transparent background with theme RGB can never be skipped.
-function resolveTerminalTheme(theme: ITheme, opacity: number, mediaActive: boolean): ITheme {
-  return withTerminalOpacity(withAnsiContrastFloor(theme, mediaActive), opacity, mediaActive);
 }
 
 // The contrast policy itself lives in compositionStore so live updates, cached
@@ -3454,30 +3439,15 @@ export default memo(function XTermWrapper({
 
       const windowsBuildNumber = cfg?.windowsBuildNumber ?? undefined;
 
-      term = new Terminal({
+      term = new Terminal(buildTerminalOptions({
         cursorBlink: useUiStore.getState().activePaneId === sessionId,
-        cursorStyle: "block",
         fontSize: initFontSize,
         fontFamily: initFontFamily,
-        fontWeight: 500,
-        fontWeightBold: 700,
-        letterSpacing: 0,
         lineHeight: resolveTerminalLineHeight(),
-        rescaleOverlappingGlyphs: true,
-        customGlyphs: true,
         theme: initTheme,
-        allowTransparency: true,
-        allowProposedApi: true,
-        altClickMovesCursor: false,
-        macOptionClickForcesSelection: true,
-        scrollback: 5000,
-        smoothScrollDuration: 0,
-        rightClickSelectsWord: true,
         minimumContrastRatio: initAppearance.minimumContrastRatio,
-        ...(windowsBuildNumber !== undefined
-          ? { windowsPty: { backend: "conpty", buildNumber: windowsBuildNumber } }
-          : {}),
-      });
+        windowsBuildNumber,
+      }));
       trackTerminalScreenState(term, () => term!.options.theme, sessionId);
       const sgrLightRewriter = new SgrLightRewriter();
       sgrLightRewriters.set(term, sgrLightRewriter);

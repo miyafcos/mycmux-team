@@ -105,9 +105,9 @@ function socketCommandTargets(cmd: string, args: SocketArgs): SocketTarget[] {
       ...target(paneId ? "pane" : "session", paneId ?? sessionId, `pane not found: ${paneId ?? sessionId}`, explicitWorkspaceId),
     ];
   }
-  if (["pane.read", "pane.screen", "pane.send_text", "pane.close_tab", "pane.rename_tab", "pane.activate_tab", "pane.start_tab"].includes(cmd)) {
-    return target("session", sessionId, cmd === "pane.read" || cmd === "pane.screen" || cmd === "pane.send_text"
-      ? `${cmd} session is not a known pane` : `${cmd} session not found`);
+  if (["pane.read", "pane.screen", "pane.capture", "pane.send_text", "pane.close_tab", "pane.rename_tab", "pane.activate_tab", "pane.start_tab"].includes(cmd)) {
+    return target("session", sessionId, cmd === "pane.read" || cmd === "pane.screen" || cmd === "pane.capture" || cmd === "pane.send_text"
+      ? `${cmd === "pane.capture" ? "pane.screen" : cmd} session is not a known pane` : `${cmd} session not found`);
   }
   if (cmd === "web.open") return target("session", anchor, "web.open anchor session not found");
   if (cmd.startsWith("web.") && cmd !== "web.list" && SOCKET_COMMAND_NAMES.includes(cmd as SocketCommandName)) {
@@ -2722,6 +2722,32 @@ async function readPaneScreen(args: SocketArgs, peerRequest = false, expiresAt =
   return { sessionId, ...await readPaneScreenBuffer(sessionId, args?.scrollback, preferHeadless, isCurrent) };
 }
 
+async function readPaneCapture(args: SocketArgs, peerRequest = false, expiresAt = Infinity) {
+  const [{ captureTerminalScreen }, { useWorkspaceListStore }, { ptyReadGeneration, currentPtyRead }] = await Promise.all([
+    import("../terminal/terminalCapture"), import("../../stores/workspaceStore"), import("../../lib/ptyReadGeneration"),
+  ]);
+  const sessionId = socketArgString(args, "sessionId", "session_id");
+  // Let pane.screen supply its existing validation and acquisition error words.
+  const original = sessionId ? findTabBySessionId(useWorkspaceListStore.getState().workspaces, sessionId) : null;
+  const generation = sessionId ? ptyReadGeneration(sessionId) : null;
+  const isCurrent = () => {
+    if (!sessionId) return true;
+    const workspaces = useWorkspaceListStore.getState().workspaces;
+    const current = findTabBySessionId(workspaces, sessionId);
+    return Date.now() < expiresAt && currentPtyRead(sessionId, generation!)
+      && isKnownPaneSession(workspaces, sessionId)
+      && (!original || (current?.tab.id === original.tab.id && !isDeclaredTab(current.tab)));
+  };
+  // The initial guard belongs to pane.screen, so missing/declared targets keep
+  // its exact error contract. Later guards also cover the PNG encoding window.
+  let acquired = false;
+  return captureTerminalScreen(async () => {
+    const screen = await readPaneScreen({ ...args, scrollback: 0 }, peerRequest, expiresAt);
+    acquired = true;
+    return screen;
+  }, args?.scale, () => !acquired || isCurrent());
+}
+
 export async function readPaneScreenBuffer(
   sessionId: string, scrollback: unknown, preferHeadless = false, isCurrent = () => true,
 ): Promise<TerminalScreenSnapshot> {
@@ -2899,6 +2925,7 @@ export const SOCKET_COMMAND_NAMES = [
   "pane.send_text",
   "pane.read",
   "pane.screen",
+  "pane.capture",
   "pane.move",
   "web.open",
   "web.list",
@@ -3121,6 +3148,8 @@ export async function handleSocketCommand(
       return readPane(args, execution !== undefined);
     case "pane.screen":
       return readPaneScreen(args, execution !== undefined, execution?.expiresAt);
+    case "pane.capture":
+      return readPaneCapture(args, execution !== undefined, execution?.expiresAt);
     case "pane.move":
       return movePane(args);
     case "web.open":

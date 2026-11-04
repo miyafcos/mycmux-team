@@ -1614,6 +1614,7 @@ mod tests {
             "pane.send_text",
             "pane.read",
             "pane.screen",
+            "pane.capture",
             "pane.close_tab",
         ]
         .into_iter()

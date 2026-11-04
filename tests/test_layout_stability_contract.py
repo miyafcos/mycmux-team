@@ -6,6 +6,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TERMINAL_SOURCE_PATHS = [
     "src/components/terminal/XTermWrapper.tsx",
+    "src/components/terminal/terminalOptions.ts",
     "src/components/terminal/terminalCache.ts",
     "src/components/terminal/terminalFocusHelpers.ts",
     "src/components/terminal/terminalSelectionCopy.ts",

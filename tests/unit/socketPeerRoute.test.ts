@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   listen: vi.fn(), emitTo: vi.fn(), unlisten: vi.fn(), fragments: vi.fn(),
   buffer: vi.fn(), mounted: vi.fn(), parsed: vi.fn(), scrollback: vi.fn(),
   write: vi.fn(), guardedWrite: vi.fn(), kill: vi.fn(), invoke: vi.fn(),
+  screen: vi.fn(), capture: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen, emitTo: mocks.emitTo }));
 vi.mock("@tauri-apps/api/core", async original => ({
@@ -45,7 +46,9 @@ vi.mock("../../src/components/terminal/XTermWrapper", () => ({
       (pane.tabs.find(tab => tab.id === pane.activeTabId) ?? pane.tabs[0])?.sessionId === sessionId));
   },
   getTerminalBufferLines: mocks.buffer,
+  getTerminalBufferScreen: mocks.screen,
 }));
+vi.mock("../../src/components/terminal/terminalCapture", () => ({ captureTerminalScreen: mocks.capture }));
 
 const OWNER = "mycmux-w2";
 const REQUEST = PEER_COMMAND_EVENTS.request, RESULT = PEER_COMMAND_EVENTS.response;
@@ -94,6 +97,15 @@ beforeEach(() => {
   mocks.emitTo.mockResolvedValue(undefined);
   mocks.fragments.mockResolvedValue([fragment()]);
   mocks.buffer.mockImplementation(sessionId => [`${mocks.label}:${sessionId}:screen`]);
+  mocks.screen.mockReturnValue({ cols: 20, rows: 5, lines: [[], [], [], [], []], cursor: null,
+    theme: { foreground: "#ffffff", background: "#000000", cursor: "#ffffff", palette: [] },
+    scrollbackLines: 0, alternateScreen: false, atBottom: true });
+  mocks.capture.mockImplementation(async (read, _scale, current) => {
+    const screen = await read();
+    if (!current()) throw new Error("pane read lifetime changed");
+    return { sessionId: screen.sessionId, screen, image: { type: "image/png", scale: 1, native: true,
+      width: 140, height: 70, data: "synthetic-png" }, renderer: "webgl", elapsedMs: 1 };
+  });
   mocks.write.mockResolvedValue(undefined); mocks.guardedWrite.mockResolvedValue({ sent: true }); mocks.kill.mockResolvedValue(undefined);
   mocks.invoke.mockImplementation(async (cmd, args) => {
     if (cmd === "prepare_pane_message") {
@@ -125,6 +137,8 @@ afterEach(() => {
 const routes: Array<[string, Record<string, unknown>]> = [
   ["pane.read", { sessionId: "peer-target-pty", lines: 3 }],
   ["pane.screen", { session_id: "peer-target-pty", scrollback: 20 }],
+  ["pane.capture", { session_id: "peer-target-pty", scale: "native" }],
+  ["pane.capture", { sessionId: "peer-target-pty", scale: 2 }],
   ["pane.send_text", { session_id: "peer-target-pty", text: "hello", expected_input_revision: 8 }],
   ["pane.close_tab", { sessionId: "peer-target-pty" }],
   ["pane.rename_tab", { session_id: "peer-target-pty", label: "renamed" }],
@@ -169,7 +183,7 @@ describe("explicit control API targets in another window", () => {
     expect(mocks.write).not.toHaveBeenCalled(); expect(mocks.kill).not.toHaveBeenCalled(); expect(mocks.buffer).not.toHaveBeenCalled();
     expect(mocks.unlisten).toHaveBeenCalledOnce();
   });
-  it.each(["pane.read", "pane.screen", "pane.send_text", "pane.close_tab"])("rejects missing and ambiguous owners for %s before dispatch", async cmd => {
+  it.each(["pane.read", "pane.screen", "pane.capture", "pane.send_text", "pane.close_tab"])("rejects missing and ambiguous owners for %s before dispatch", async cmd => {
     const args = { sessionId: "peer-target-pty", text: "hello" };
     mocks.fragments.mockResolvedValue([fragment(), fragment("mycmux-w3")]);
     await expect(handleSocketCommand(cmd, args)).rejects.toThrow("conflicting window owners");
@@ -281,6 +295,28 @@ function mockMovedTerminalOutput(activeSessionId = "peer-keeper-pty") {
 }
 
 describe("owner-window execution with real socket handlers", () => {
+  it("captures in the addressed owner, preserving screen, PNG and both windows' selection", async () => {
+    const owner = await connectOwner();
+    mocks.capture.mockImplementationOnce(async (read, scale, current) => {
+      expect(mocks.label).toBe(OWNER); expect(scale).toBe(2);
+      const screen = await read(); expect(current()).toBe(true);
+      return { sessionId: screen.sessionId, screen, image: { type: "image/png", scale: 2, native: false,
+        width: 280, height: 140, data: "synthetic-owner-png" }, renderer: "webgl", elapsedMs: 42 };
+    });
+    const result = await handleSocketCommand("pane.capture", { session_id: "peer-target-pty", scale: 2 });
+    expect(result).toEqual({ sessionId: "peer-target-pty", screen: { sessionId: "peer-target-pty", ...mocks.screen.mock.results[0].value },
+      image: { type: "image/png", scale: 2, native: false, width: 280, height: 140, data: "synthetic-owner-png" }, renderer: "webgl", elapsedMs: 42 });
+    expect(mocks.screen).toHaveBeenCalledExactlyOnceWith("peer-target-pty", 0);
+    expect(mocks.capture).toHaveBeenCalledOnce(); expect(mocks.write).not.toHaveBeenCalled();
+    expect(owner().workspaces[0].panes[0].activeTabId).toBe("peer-target-tab");
+    expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe("local-ws");
+    expect(useUiStore.getState()).toMatchObject({ activePaneId: "local-target-pty", focusRevision: 3 });
+  });
+  it.each(["pane.capture busy", "pane.capture timeout", "pane.capture unavailable"])("preserves owner capture error %s without local fallback", async word => {
+    await connectOwner(); mocks.capture.mockRejectedValueOnce(new Error(word));
+    await expect(handleSocketCommand("pane.capture", { sessionId: "peer-target-pty" })).rejects.toThrow(word);
+    expect(mocks.capture).toHaveBeenCalledOnce(); expect(mocks.screen).not.toHaveBeenCalled();
+  });
   it.each([
     ["parsed initial replay", true, true],
     ["unparsed mount", true, false],
