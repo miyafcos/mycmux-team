@@ -1,25 +1,24 @@
-import { useAgentServiceVisibility } from "../../hooks/useAgentServiceVisibility";
 import { memo } from "react";
-
+import { useAgentServiceVisibility } from "../../hooks/useAgentServiceVisibility";
 import type { BreakdownReport, ModelsReport, Overview, PivotAxis, PivotReport, RangePreset, SeriesGroupBy, SeriesReport, SessionsReport, UsageBucket, UsageRhythmReport } from "../../lib/ailog";
-import type { AilogSelection, BreakdownDimension, SessionSort } from "../../stores/ailogStore";
-import { SESSION_PAGE_SIZE, useAilogStore } from "../../stores/ailogStore";
+import { SESSION_PAGE_SIZE, useAilogStore, type AilogSelection, type BreakdownDimension, type SessionSort } from "../../stores/ailogStore";
 import { CrossTable } from "./CrossTable";
+import { AilogOverview } from "./AilogOverview";
 import { AilogOrientation } from "./AilogOrientation";
+import { AilogTabs } from "./AilogTabs";
 import { AccountingNote } from "./AccountingNote";
 import { ProjectTable } from "./ProjectTable";
 import { SessionTable } from "./SessionTable";
-import { SummaryCards } from "./SummaryCards";
-import { UsageGrass } from "./UsageGrass";
+import { UsageDaily } from "./UsageDaily";
 import { UsageModelTable } from "./UsageModelTable";
 import { UsageRhythmDetails } from "./UsageRhythmDetails";
 import { ReworkRankings } from "./ReworkRankings";
-import { previousPeriodLabel, UsageTotals } from "./UsageTotals";
-import { ReportFailure, ReportNotLoaded, ReportPeriod } from "./ReportFeedback";
+import { HandoffTable } from "./HandoffTable";
+import { UsageTotals } from "./UsageTotals";
 import { WorkTagTable } from "./WorkTagTable";
-import { HANDOFF_SECTION_SUMMARY, HandoffTable } from "./HandoffTable";
-import { groupByLabel, rhythmMetricOf, usageAxisHint, SERIES_AXES, USAGE_METRICS, usageMetricInfo, type UsageMetric } from "./usageModel";
-import { ButtonGroup, DeferredDetails, EmptyState, Section, SkeletonBlock, noteStyle } from "./ui";
+import { ReportFailure, ReportPeriod, ReportNotLoaded } from "./ReportFeedback";
+import { SERIES_AXES, USAGE_METRICS, usageAxisHint, type UsageMetric } from "./usageModel";
+import { ButtonGroup, EmptyState, RefreshingBlock, Section, SkeletonBlock, noteStyle } from "./ui";
 
 export const UsageView = memo(function UsageView(props: {
   overview: Overview | null; previousTotalsStatus: "idle" | "loading" | "ready" | "error"; models: ModelsReport | null; sessions: SessionsReport | null; series: SeriesReport | null; rhythm: UsageRhythmReport | null;
@@ -35,143 +34,75 @@ export const UsageView = memo(function UsageView(props: {
 }) {
   const visible = useAgentServiceVisibility();
   const p = props;
-  const groupingLabel = groupByLabel(p.series?.groupBy ?? p.seriesAxis);
-  const seriesMatchesOverview = Boolean(p.series && p.overview
-    && p.series.range.from === p.overview.range.from
-    && p.series.range.to === p.overview.range.to);
-  const usageReady = Boolean(p.series && p.series.groupBy === p.seriesAxis && p.series.bucket === p.bucket);
-  const grassReady = usageReady && p.series?.bucket === "day";
+  const previousTotals = useAilogStore(state => state.previousTotals);
+  const setExcludeSynthetic = useAilogStore(state => state.setExcludeSynthetic);
+  const axis = useAilogStore(state => state.breakdownAxis);
+  const setAxis = useAilogStore(state => state.setAilogBreakdownAxis);
+  const independent = Boolean(p.series?.buckets.some(row => row.turns > 0) || p.models?.byWorkTag.length || p.sessions?.rows.length || p.breakdown?.rows.length || p.pivot?.rows.length);
+  const modelAxis = axis === "usage";
+  const breakdownLabel = ({ project: "案件", branch: "ブランチ", effort: "推論の深さ", origin: "起動元", title: "主題", agent: "エージェント" } as const)[p.breakdownDimension];
   const projectSel = p.selection?.project;
   const modelSel = p.selection?.model;
-  const previousTotals = useAilogStore((state) => state.previousTotals);
-  const setExcludeSynthetic = useAilogStore((state) => state.setExcludeSynthetic);
-  const breakdownLabel = ({ project: "案件", branch: "ブランチ", effort: "推論の深さ", origin: "起動元", title: "主題", agent: "エージェント" } as const)[p.breakdownDimension];
-  const rhythmMetric = rhythmMetricOf(p.metric);
-  const breakdown = p.breakdown?.dimension === p.breakdownDimension ? p.breakdown : null;
-  const pivot = p.pivot?.rowBy === p.pivotRowBy && p.pivot.colBy === p.pivotColBy ? p.pivot : null;
-  const breakdownOverview = breakdown && p.overview
-    && breakdown.range.from === p.overview.range.from && breakdown.range.to === p.overview.range.to ? p.overview : null;
-  const overviewSessions = p.sessions && p.overview
-    && p.sessions.range.from === p.overview.range.from && p.sessions.range.to === p.overview.range.to ? p.sessions : null;
-  const hasIndependentData = Boolean((usageReady && p.series?.buckets.length) || breakdown?.rows.length || pivot?.rows.length
-    || p.models?.byWorkTag.length || p.sessions?.rows.length);
-
-  return (
-    <div aria-busy={p.loading || p.usageLoading} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {p.noData && p.statusPending ? <div style={noteStyle}>インデックス状態を確認中です。</div> : null}
-      {p.noData && !p.statusPending && !p.selection && !hasIndependentData ? <><AccountingNote accounting={p.overview?.accounting} /><EmptyState kind={p.neverIndexed ? "not-indexed" : "no-data"} onPrimary={p.onStartIndex} busy={p.running} /></> : null}
-      {p.overview ? <AilogOrientation overview={p.overview} series={usageReady && seriesMatchesOverview ? p.series : null} sessions={overviewSessions} sessionLoading={p.sessionLoading} sessionError={p.sessionError} metric={p.metric} preset={p.preset} previousTotals={previousTotals} previousTotalsStatus={p.previousTotalsStatus} breakdownLabel={breakdownLabel} running={p.running} onStartIndex={p.onStartIndex} onOpenDetail={p.onOpenDetail} /> : null}
-      {projectSel || modelSel ? (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {projectSel ? (
-            <button type="button" onClick={() => p.onSelect(modelSel ? { model: modelSel } : null)} style={clearFilterStyle}>{`案件: ${projectSel.label} ×`}</button>
-          ) : null}
-          {modelSel ? (
-            <button type="button" onClick={() => p.onSelect(projectSel ? { project: projectSel } : null)} style={clearFilterStyle}>{`モデル: ${modelSel.label} ×`}</button>
-          ) : null}
-        </div>
-      ) : null}
-      {p.noData && p.selection && !hasIndependentData ? (
-        <EmptyState
-          kind="no-data"
-          title="絞り込みに一致する記録なし"
-          message="選択中の絞り込みを解除するか、期間を広げてください。"
-          onPrimary={() => p.onSelect(null)}
-          primaryLabel="絞り込みを解除"
-        />
-      ) : null}
-      <Section id="ailog-overview" title="この期間">
-        {p.error ? <ReportFailure label="概要" error={p.error} range={p.overview?.range} onRetry={p.onRefresh} /> : null}
-        {p.overview ? <ReportPeriod range={p.overview.range} /> : p.loading ? <SkeletonBlock height={70} label="概要を読み込み中" /> : !p.error ? <ReportNotLoaded label="概要" onLoad={p.onRefresh} /> : null}
-        {!p.overview ? <div style={noteStyle}>概要を取得するまで、セッション総数は未取得です。</div> : null}
-        {usageReady ? <ButtonGroup ariaLabel="指標" roleLabel="指標" value={p.metric} onChange={p.onMetric} options={USAGE_METRICS.map((entry) => ({ value: entry.id, label: entry.label, title: entry.hint }))} /> : null}
-        {usageReady && p.series && p.overview && seriesMatchesOverview ? <div style={{ marginTop: 12 }}><UsageTotals report={p.series} metric={p.metric} preset={p.preset} totals={p.overview.totals} previousTotals={previousTotals} previousTotalsStatus={p.previousTotalsStatus} turnFilterActive={Boolean(modelSel)} /></div> : p.overview && usageReady ? <div style={noteStyle}>概要と日ごとの使用量の表示期間が異なるため、期間合計と前期間比は表示していません。</div> : null}
-        {p.overview && !(usageReady && seriesMatchesOverview) && p.preset !== "all" && (p.previousTotalsStatus !== "ready" || previousTotals === null) ? <div style={noteStyle}>{previousPeriodLabel(p.metric, p.overview.totals, previousTotals, p.previousTotalsStatus, p.preset)}</div> : null}
-        {p.overview ? <div style={{ marginTop: 12 }}><AccountingNote accounting={p.overview.accounting} /></div> : null}
-        {p.overview && !modelSel ? <div style={{ marginTop: 12 }}><SummaryCards overview={p.overview} preset={p.preset} showCost={false} /></div> : null}
-      </Section>
-      <Section id="ailog-purpose" title="何に使ったか" subtitle="探索・実装・デバッグなど、作業の種類ごとのコストです。">
-        {p.modelsError ? <ReportFailure label="作業種別" error={p.modelsError} range={p.models?.range} onRetry={p.onRetryModels} /> : null}
-        {p.models ? <ReportPeriod range={p.models.range} /> : null}
-        {p.models?.byWorkTag && p.models.byWorkTag.length > 0 ? (
-          <WorkTagTable report={p.models} />
-        ) : p.models ? <EmptyState kind="no-data" /> : p.modelsLoading ? (
-          <SkeletonBlock height={120} label="作業種別を読み込み中" />
-        ) : !p.modelsError ? <ReportNotLoaded label="作業種別" onLoad={p.onRetryModels} /> : null}
-      </Section>
-      <DeferredDetails id="ailog-learning" summary="つまずいた場所">
-        <ReworkRankings />
-      </DeferredDetails>
-      <DeferredDetails id="ailog-handoffs" summary={HANDOFF_SECTION_SUMMARY} subtitle="同じセッションの中で、続けて別のモデルに切り替わった回数です。回数を数えているだけで、切り替えが良かったかどうかは判定していません。">
-        <HandoffTable />
-      </DeferredDetails>
-      <Section id="ailog-trend" title="日ごとの使用量" subtitle="1 マスが 1 日です。マスを選ぶと、内訳がその日のものに切り替わります。">
-        {grassReady && p.series ? <ReportPeriod range={p.series.range} /> : null}
-        {p.usageError && grassReady ? <ReportFailure label="日ごとの使用量" error={p.usageError} range={p.series?.range} onRetry={p.onRetryUsage} /> : null}
-        {grassReady && p.series ? (
-          <>
-            <div style={{ marginBottom: 16 }}>
-              <ButtonGroup ariaLabel="まとめ方" roleLabel="まとめ方" value={p.seriesAxis} onChange={p.onSeriesAxis} options={SERIES_AXES.map((axis) => ({ value: axis.value, label: axis.label, title: usageAxisHint(axis, visible) }))} />
-            </div>
-            <UsageGrass report={p.series} metric={p.metric} onPickDay={p.onPickDay} />
-          </>
-        ) : p.usageError ? (
-          <ReportFailure label="日ごとの使用量" error={p.usageError} onRetry={p.onRetryUsage} />
-        ) : p.usageLoading ? (
-          <SkeletonBlock height={220} label="日ごとの使用量を読み込み中" />
-        ) : (
-          <ReportNotLoaded label="日ごとの使用量" onLoad={p.onRetryUsage} />
-        )}
-      </Section>
-      <Section id="ailog-compare" title={`${groupingLabel}別`} subtitle="選んだ分類ごとの内訳です。">
-        <label style={{ ...noteStyle, display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }} title="内部生成レコード（<synthetic>）だけを、この内訳表から除きます。他の集計は変わりません。">
-          <input type="checkbox" checked={p.excludeSynthetic} onChange={(event) => setExcludeSynthetic(event.target.checked)} />
-          内部生成レコードをこの表から除く
-        </label>
-        {usageReady && p.series ? <ReportPeriod range={p.series.range} /> : null}
-        {p.usageError && usageReady ? <ReportFailure label="日ごとの使用量" error={p.usageError} range={p.series?.range} onRetry={p.onRetryUsage} /> : null}
-        {usageReady ? (
-          <UsageModelTable report={p.series!} metric={p.metric} excludeSynthetic={p.excludeSynthetic} selection={p.selection} onSelect={p.onSelect} />
-        ) : p.usageError ? <ReportFailure label="日ごとの使用量" error={p.usageError} onRetry={p.onRetryUsage} /> : p.usageLoading ? (
-          <SkeletonBlock height={160} label="集計を読み込み中" />
-        ) : (
-          <ReportNotLoaded label="日ごとの使用量" onLoad={p.onRetryUsage} />
-        )}
-      </Section>
-      <Section id="ailog-cross" title="2つの切り口で比較" subtitle="行と列の項目を選んで比較できます。">
-        {p.pivotLoading && !pivot ? (
-          <SkeletonBlock height={180} label="クロス集計を読み込み中" />
-        ) : (
-          <CrossTable
-            report={pivot}
-            metric={p.metric}
-            rowBy={p.pivotRowBy}
-            colBy={p.pivotColBy}
-            loading={p.pivotLoading}
-            error={p.pivotError}
-            selection={p.selection}
-            onRetry={p.onRetryPivot}
-            onRowBy={p.onPivotRowBy}
-            onColBy={p.onPivotColBy}
-            onSelect={p.onSelect}
-          />
-        )}
-      </Section>
-      <Section id="ailog-projects" title={`${breakdownLabel}別`} subtitle="内訳の軸を切り替えて比較できます。">
-        <div style={{ marginBottom: 10 }}>
-          <ButtonGroup ariaLabel="内訳" roleLabel="内訳" value={p.breakdownDimension} onChange={p.onBreakdownDimension} options={[{ value: "project", label: "案件" }, { value: "branch", label: "ブランチ" }, { value: "effort", label: "推論の深さ" }, { value: "origin", label: "起動元" }, { value: "title", label: "主題" }, { value: "agent", label: "エージェント" }]} />
-        </div>
-        {p.breakdownError ? <ReportFailure label="内訳" error={p.breakdownError} range={breakdown?.range} onRetry={p.onRefreshBreakdown} /> : null}
-        {breakdown ? <><ReportPeriod range={breakdown.range} />{breakdown.rows.length > 0 ? <ProjectTable report={breakdown} overview={breakdownOverview} selection={p.selection} onSelect={p.onSelect} dimensionLabel={breakdownLabel} projectMode={p.breakdownDimension === "project"} /> : <EmptyState kind="no-data" />}</> : p.breakdownLoading ? <SkeletonBlock height={120} label="内訳を更新中" /> : !p.breakdownError ? <ReportNotLoaded label="内訳" onLoad={p.onRefreshBreakdown} /> : null}
-      </Section>
-      <Section id="ailog-sessions" title="セッション一覧" subtitle="検索と並び替えは、この一覧だけを更新します。概要やグラフはそのまま残ります。">{p.sessions ? <SessionTable report={p.sessions} sort={p.sessionSort} appliedSort={p.sessionAppliedSort} onSort={p.onSessionSort} page={p.sessionPage} appliedPage={p.sessionAppliedPage} onPage={p.onSessionPage} pageSize={SESSION_PAGE_SIZE} onOpenDetail={p.onOpenDetail} activeKey={p.detailKey} query={p.sessionQuery} appliedQuery={p.sessionAppliedQuery} onQuery={p.onSessionQuery} onRetry={p.onRetrySessions} loading={p.sessionLoading} error={p.sessionError} modelFilterActive={Boolean(modelSel)} /> : p.sessionError ? <ReportFailure label="セッション一覧" error={p.sessionError} onRetry={p.onRetrySessions} /> : p.sessionLoading ? <SkeletonBlock height={120} label="セッション一覧を読み込み中" /> : <ReportNotLoaded label="セッション一覧" onLoad={p.onRetrySessions} />}</Section>
-      <DeferredDetails summary={`時間帯と曜日（${usageMetricInfo(rhythmMetric).label}）`} subtitle={rhythmMetric !== p.metric ? `ここでは入出力トークンを表示しています。${usageMetricInfo(p.metric).label}には対応していません。` : "選択中の期間・絞り込みで集計しています。"}>
-        <UsageRhythmDetails metric={rhythmMetric} />
-      </DeferredDetails>
-    </div>
-  );
+  const matches = Boolean(p.overview && p.series && p.overview.range.from === p.series.range.from && p.overview.range.to === p.series.range.to);
+  const breakdownPeriod = (range: NonNullable<typeof p.overview>["range"]) =>
+    p.overview && !p.loading && !p.error && p.overview.range.from === range.from && p.overview.range.to === range.to
+      ? null : <ReportPeriod range={range} />;
+  const failure = (label: string, value: string | null, retry: () => void) => value ? <ReportFailure label={label} error={value} onRetry={retry} /> : null;
+  return <div style={{ display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
+    {projectSel || modelSel ? <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+      {projectSel ? <button type="button" onClick={() => p.onSelect(modelSel ? { model: modelSel } : null)} style={clearFilterStyle}>案件: {projectSel.label} ×</button> : null}
+      {modelSel ? <button type="button" onClick={() => p.onSelect(projectSel ? { project: projectSel } : null)} style={clearFilterStyle}>モデル: {modelSel.label} ×</button> : null}
+    </div> : null}
+    <RefreshingBlock busy={p.loading}>
+      <section id="ailog-overview" aria-label="概要">
+      {failure("概要", p.error, p.onRefresh)}
+      {p.overview && p.error ? <ReportPeriod range={p.overview.range} /> : null}
+      {p.overview ? <AilogOverview overview={p.overview} metric={p.metric} preset={p.preset} previousTotals={previousTotals} previousTotalsStatus={p.previousTotalsStatus} filtered={Boolean(modelSel)} /> : p.loading ? <SkeletonBlock height={90} label="概要を読み込み中" /> : !p.error ? <ReportNotLoaded label="概要" onLoad={p.onRefresh} /> : null}
+      {!p.overview ? <div style={noteStyle}>セッション総数は未取得です。</div> : null}
+      </section>
+    </RefreshingBlock>
+    {p.noData && p.statusPending ? <div style={noteStyle}>インデックス状態を確認中です。</div> : null}
+    {p.noData && !p.statusPending && !p.loading && !p.usageLoading && !independent ? p.selection
+      ? <EmptyState kind="no-data" title="絞り込みに一致する記録なし" message="絞り込みを解除するか、期間を広げてください。" onPrimary={() => p.onSelect(null)} primaryLabel="絞り込みを解除" />
+      : <EmptyState kind={p.neverIndexed ? "not-indexed" : "no-data"} onPrimary={p.onStartIndex} busy={p.running} /> : null}
+    <Section id="ailog-trend" title="日ごとの使用量">
+      <div style={{ marginBottom: 10 }}><ButtonGroup ariaLabel="指標" roleLabel="指標" value={p.metric} onChange={p.onMetric} options={USAGE_METRICS.map(entry => ({ value: entry.id, label: entry.label, title: entry.hint }))} /></div>
+      <RefreshingBlock busy={p.usageLoading}>{failure("日ごとの使用量", p.usageError, p.onRetryUsage)}
+        {p.series && (!matches || p.usageError) ? <ReportPeriod range={p.series.range} /> : null}
+        {p.series && p.overview && !matches ? <div style={noteStyle}>概要と日ごとの使用量の表示期間が異なるため、各欄の期間を確認してください。</div> : null}
+        {p.series ? <UsageDaily report={p.series} metric={p.metric} onPickDay={p.onPickDay} /> : p.usageLoading ? <SkeletonBlock height={300} label="日ごとの使用量を読み込み中" /> : !p.usageError ? <ReportNotLoaded label="日ごとの使用量" onLoad={p.onRetryUsage} /> : null}
+      </RefreshingBlock>
+    </Section>
+    <AilogTabs>{section => section === "breakdown" ? <Section id="ailog-breakdown" title="内訳">
+      <ButtonGroup ariaLabel="内訳の軸" roleLabel="内訳の軸" value={axis} onChange={value => {
+        setAxis(value);
+        if (value !== "usage" && value !== "work") p.onBreakdownDimension(value as BreakdownDimension);
+      }} options={[{ value: "usage", label: "モデル" },
+        { value: "project", label: "案件" }, { value: "branch", label: "ブランチ" }, { value: "effort", label: "推論の深さ" }, { value: "origin", label: "起動元" },
+        { value: "title", label: "主題" }, { value: "agent", label: "エージェント" }, { value: "work", label: "作業種別" }]} />
+      {modelAxis ? <section id="ailog-compare"><RefreshingBlock busy={p.usageLoading}>
+        <ButtonGroup ariaLabel="まとめ方" roleLabel="まとめ方" value={p.seriesAxis} onChange={p.onSeriesAxis} options={SERIES_AXES.map(entry => ({ value: entry.value, label: entry.label, title: usageAxisHint(entry, visible) }))} />
+        <label style={{ ...noteStyle, display: "block", margin: "10px 0" }}><input type="checkbox" checked={p.excludeSynthetic} onChange={event => setExcludeSynthetic(event.target.checked)} />内部生成レコードをこの表から除く</label>
+        {p.series ? <UsageModelTable report={p.series} metric={p.metric} excludeSynthetic={p.excludeSynthetic} selection={p.selection} onSelect={p.onSelect} /> : <SkeletonBlock height={200} label="内訳を読み込み中" />}
+      </RefreshingBlock></section> : axis === "work" ? <section id="ailog-purpose"><RefreshingBlock busy={p.modelsLoading}>{failure("作業種別", p.modelsError, p.onRetryModels)}
+        {p.models ? <>{breakdownPeriod(p.models.range)}{p.models.byWorkTag.length ? <WorkTagTable report={p.models} /> : <EmptyState kind="no-data" />}</> : p.modelsLoading ? <SkeletonBlock height={160} label="作業種別を読み込み中" /> : !p.modelsError ? <ReportNotLoaded label="作業種別" onLoad={p.onRetryModels} /> : null}
+      </RefreshingBlock></section> : <section id="ailog-projects"><RefreshingBlock busy={p.breakdownLoading}>{failure("内訳", p.breakdownError, p.onRefreshBreakdown)}
+        {p.breakdown ? <>{breakdownPeriod(p.breakdown.range)}<ProjectTable report={p.breakdown} overview={p.overview && p.breakdown.range.from === p.overview.range.from && p.breakdown.range.to === p.overview.range.to ? p.overview : null} selection={p.selection} onSelect={p.onSelect} dimensionLabel={breakdownLabel} projectMode={p.breakdown.dimension === "project"} /></> : p.breakdownLoading ? <SkeletonBlock height={200} label="内訳を読み込み中" /> : !p.breakdownError ? <ReportNotLoaded label="内訳" onLoad={p.onRefreshBreakdown} /> : null}
+      </RefreshingBlock></section>}
+      {p.series && p.overview && matches ? <UsageTotals supporting report={p.series} metric={p.metric} preset={p.preset} totals={p.overview.totals} previousTotals={previousTotals} previousTotalsStatus={p.previousTotalsStatus} turnFilterActive={Boolean(modelSel)} /> : null}
+      {p.overview ? <AccountingNote accounting={p.overview.accounting} /> : null}
+    </Section> : section === "comparison" ? <Section id="ailog-cross" title="比較">
+      <RefreshingBlock busy={p.pivotLoading}><CrossTable report={p.pivot} metric={p.metric} rowBy={p.pivotRowBy} colBy={p.pivotColBy} loading={p.pivotLoading} error={p.pivotError} selection={p.selection} onRetry={p.onRetryPivot} onRowBy={p.onPivotRowBy} onColBy={p.onPivotColBy} onSelect={p.onSelect} /></RefreshingBlock>
+    </Section> : section === "sessions" ? <Section id="ailog-sessions" title="セッション">
+      {p.overview ? <AilogOrientation overview={p.overview} series={p.series} sessions={p.sessions} metric={p.metric} preset={p.preset} previousTotals={previousTotals} previousTotalsStatus={p.previousTotalsStatus} breakdownLabel={breakdownLabel} running={p.running} sessionLoading={p.sessionLoading} sessionError={p.sessionError} onStartIndex={p.onStartIndex} onOpenDetail={p.onOpenDetail} /> : null}
+      <RefreshingBlock busy={p.sessionLoading}>{p.sessions ? <SessionTable report={p.sessions} sort={p.sessionSort} appliedSort={p.sessionAppliedSort} onSort={p.onSessionSort} page={p.sessionPage} appliedPage={p.sessionAppliedPage} onPage={p.onSessionPage} pageSize={SESSION_PAGE_SIZE} onOpenDetail={p.onOpenDetail} activeKey={p.detailKey} query={p.sessionQuery} appliedQuery={p.sessionAppliedQuery} onQuery={p.onSessionQuery} onRetry={p.onRetrySessions} loading={p.sessionLoading} error={p.sessionError} modelFilterActive={Boolean(modelSel)} />
+        : p.sessionError ? <ReportFailure label="セッション" error={p.sessionError} onRetry={p.onRetrySessions} /> : p.sessionLoading ? <SkeletonBlock height={240} label="セッションを読み込み中" /> : <ReportNotLoaded label="セッション" onLoad={p.onRetrySessions} />}</RefreshingBlock>
+    </Section> : section === "rework" ? <Section id="ailog-learning" title="手戻り"><ReworkRankings />
+      {p.overview ? <div style={noteStyle}>ツール実行のまま終了した割合: {p.overview.totals.sessions ? (p.overview.rework.abandonedSessions / p.overview.totals.sessions * 100).toFixed(1) : "0"}%</div> : null}
+    </Section> : section === "handoffs" ? <Section id="ailog-handoffs" title="モデル切替" subtitle="同じセッションで続けて別のモデルに切り替わった回数です。切り替えの良し悪しは判定しません。"><HandoffTable /></Section>
+      : <Section id="ailog-activity" title="活動時間"><UsageRhythmDetails /></Section>}
+    </AilogTabs>
+  </div>;
 });
-
 UsageView.displayName = "UsageView";
-
-const clearFilterStyle = { alignSelf: "flex-start", border: "1px solid var(--cmux-accent)", borderRadius: 999, background: "var(--cmux-hover)", color: "var(--cmux-accent)", padding: "2px 9px", fontSize: "var(--cmux-font-size-xs)", cursor: "pointer" };
+const clearFilterStyle = { border: "1px solid var(--cmux-accent)", borderRadius: 999, background: "var(--cmux-hover)", color: "var(--cmux-accent-text)", padding: "2px 9px", fontSize: "var(--cmux-font-size-xs)", cursor: "pointer" };

@@ -90,6 +90,7 @@ function response(command: string, args: Args): unknown {
 }
 function initializeIpc(): void {
   __resetAilogStoreForTests(); __resetAilogJobStoreForTests();
+  useAilogStore.setState({ activeSection: "sessions" });
   useAilogJobStore.setState({ lastAutoStartedAt: Date.now() });
   pending = []; held = new Set(); listeners = new Map(); callbacks = new Map(); listenerHandlers = new Map(); nextId = 0; failSeries = false; peakPending = 0; override = undefined; holdWhen = undefined;
   core.invoke.mockReset().mockImplementation((command: string, args: Args = {}) => {
@@ -113,7 +114,12 @@ async function click(button: HTMLButtonElement): Promise<void> {
 function byText(text: string, selector = "button"): HTMLButtonElement {
   return [...document.querySelectorAll<HTMLButtonElement>(selector)].find(b => b.textContent === text)!;
 }
-async function tab(text: string): Promise<void> { await click(byText(text, ".ad-tabs button")); }
+async function tab(text: string): Promise<void> {
+  const back = byText("エージェント設計へ戻る");
+  if (back && text === "ふりかえり") return;
+  if (back) await click(back);
+  await click(byText(text, ".ad-tabs button"));
+}
 async function open(): Promise<void> { await click(byText("設計を開く")); }
 async function escape(): Promise<void> {
   const target = document.querySelector<HTMLElement>('[role="dialog"][aria-label="セッション詳細"]') ?? document.querySelector<HTMLElement>(".ad-view")!;
@@ -173,7 +179,7 @@ describe("agent design reflection integration", () => {
     if (mode === "failed") await finishReads(true);
     expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(2);
     await escape(); expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
-    expect(byText("ふりかえり", ".ad-tabs button").getAttribute("aria-pressed")).toBe("true");
+    expect(byText("エージェント設計へ戻る")).toBeTruthy();
     expect(document.activeElement).toBe(trigger);
     await finishReads(); expect(useAilogStore.getState().detailKey).toBeNull();
     await escape(); expect(document.querySelector('[role="dialog"]')).toBeTruthy();
@@ -181,14 +187,28 @@ describe("agent design reflection integration", () => {
     await escape(); expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(document.activeElement).toBe(byText("設計を開く"));
   });
+  it("006 focuses the back button when reflection opens and restores the original trigger on return", async () => {
+    await render(); await open();
+    const trigger = byText("ふりかえり", ".ad-tabs button");
+    await click(trigger);
+    const back = byText("エージェント設計へ戻る");
+    expect(document.activeElement).toBe(back);
+    await click(back);
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it.each([1440, 640])("keeps tabs wrapping and reflection inside the themed shell at %i px", async width => {
     host.style.width = `${width}px`; host.style.setProperty("--cmux-popover", "#faf9f5");
     const styles = document.createElement("style"); styles.textContent = readFileSync("src/components/agentDesign/agentDesign.css", "utf8"); document.head.append(styles);
     try {
-      await render(); await open(); await tab("ふりかえり");
+      await render(); await open();
       const tabs = document.querySelector<HTMLElement>(".ad-tabs")!;
-      expect(getComputedStyle(tabs).flexWrap).toBe("wrap"); expect(getComputedStyle(tabs).maxWidth).toBe("100%");
-      expect(getComputedStyle(byText("ふりかえり", ".ad-tabs button")).whiteSpace).toBe("nowrap");
+      expect(getComputedStyle(tabs).flexWrap).toBe("wrap");
+      expect(getComputedStyle(tabs.querySelector("button")!).whiteSpace).toBe("nowrap");
+      await tab("ふりかえり");
+      expect(byText("エージェント設計へ戻る")).toBeTruthy();
+      expect(document.querySelector(".ad-search")?.closest("header")?.style.display).toBe("none");
+      expect(document.querySelector('[role="tablist"][aria-label="分析の見出し"]')).toBeTruthy();
       const panel = document.querySelector<HTMLElement>(".ailog-embedded")!;
       expect(panel.closest("#agent-design-panel")).toBeTruthy();
       expect(getComputedStyle(panel).getPropertyValue("--cmux-popover")).toBe("#faf9f5");
@@ -235,8 +255,10 @@ function reportRevision(revision: "旧" | "新", amount: number) {
   };
 }
 
-const baselineRevision = "a30907c44a6c6d68a58cd7d5081d882d01717cdc";
-const baselineFixture = "tests/fixtures/agent_home/reflectionBaselineIpc.json";
+const baselineRevision = "523f290ed2aba4b23154bac63daf175d141f53a2";
+const baselineFixture = "tests/fixtures/agent_home/reflectionPlanABaselineIpc.json";
+// Replaced only during this approved one-time capture, then kept as fixed counts.
+const round2PrefetchCounts = {"actions": {"base": {"ailog_model_handoffs": 6, "ailog_rework_rankings": 6, "ailog_usage_rhythm": 6}, "embedded": {"ailog_model_handoffs": 6, "ailog_rework_rankings": 6, "ailog_usage_rhythm": 6}}, "delayed": {"base": {"ailog_model_handoffs": 2, "ailog_rework_rankings": 2, "ailog_usage_rhythm": 2}, "embedded": {"ailog_model_handoffs": 2, "ailog_rework_rankings": 2, "ailog_usage_rhythm": 2}}} as const;
 const comparisonOperations = {
   actions: ["open", "7d", "detail:A", "summary", "escape", "detail:B", "summary", "settle", "escape", "close", "open", "reload", "close", "open", "30d", "close"],
   delayed: ["open", "hold", "reload", "close", "open", "close", "open", "7d", "close", "open", "30d", "close", "open", "settle", "close"],
@@ -256,17 +278,6 @@ function ipcCounts(): IpcCounts {
     counts[key] = (counts[key] ?? 0) + 1;
   }
   return Object.fromEntries(Object.entries(counts).sort(([left], [right]) => left.localeCompare(right)));
-}
-function aggregateFilterContract(counts: IpcCounts): IpcCounts {
-  const normalized: IpcCounts = {};
-  const aggregates = new Set(["ailog_overview", "ailog_series", "ailog_breakdown", "ailog_pivot", "ailog_models", "ailog_rework_rankings", "ailog_usage_rhythm", "ailog_efficiency", "ailog_model_handoffs"]);
-  for (const [key, count] of Object.entries(counts)) {
-    const [command, args] = JSON.parse(key);
-    if (aggregates.has(command) && args.filters) args.filters.includeSidechain = true;
-    const currentKey = JSON.stringify([command, canonical(args)]);
-    normalized[currentKey] = (normalized[currentKey] ?? 0) + count;
-  }
-  return Object.fromEntries(Object.entries(normalized).sort(([left], [right]) => left.localeCompare(right)));
 }
 function commandTotals(counts: IpcCounts): IpcCounts {
   const totals: IpcCounts = {};
@@ -318,37 +329,45 @@ async function replayComparison(route: "base" | "embedded", operations: readonly
 }
 
 describe("B6 baseline-relative IPC and summary actions", () => {
-  it.each(Object.entries(comparisonOperations))("compares embedded IPC with the baseline-style mount for %s operations", async (name, operations) => {
+  it.each(Object.entries(comparisonOperations))("matches exact IPC baselines and fixed prefetch counts for %s operations", async (name, operations) => {
     const base = await replayComparison("base", operations);
+    const embedded = await replayComparison("embedded", operations);
+    const prefetchCommands = ["ailog_model_handoffs", "ailog_rework_rankings", "ailog_usage_rhythm"] as const;
     if (process.env.L30_BASELINE_CAPTURE) {
-      // Oracle generation is explicit and only allowed with the actual baseline
-      // controller/stores. Ordinary test runs never execute Git or rewrite it.
-      for (const path of ["src/stores/ailogStore.ts", "src/stores/useAilogJobStore.ts", "src/hooks/useAilogAutoIndex.ts", "src/components/ailog/AiLogPanel.tsx", "src/components/ailog/AiLogButton.tsx"]) {
-        expect(readFileSync(path, "utf8")).toBe(execFileSync("git", ["show", `${baselineRevision}:${path}`], { encoding: "utf8" }));
+      // Capture only against the pinned production controller. Test changes do
+      // not change its native requests. Ordinary runs never execute Git/write.
+      for (const path of ["src/stores/ailogStore.ts", "src/stores/useAilogJobStore.ts", "src/hooks/useAilogAutoIndex.ts", "src/components/ailog/AiLogPanel.tsx", "src/components/ailog/AiLogButton.tsx", "src/components/agentDesign/AgentDesignView.tsx"]) {
+        expect(readFileSync(path, "utf8").replace(/\r\n/g, "\n")).toBe(execFileSync("git", ["show", baselineRevision + ":" + path], { encoding: "utf8" }));
       }
-      const fixture = JSON.parse(readFileSync(process.env.L30_BASELINE_CAPTURE, "utf8"));
-      fixture[name] = { operations, counts: base };
+      let fixture: Record<string, any> = { revision: baselineRevision };
+      try { fixture = JSON.parse(readFileSync(process.env.L30_BASELINE_CAPTURE, "utf8")); } catch { /* explicit first capture */ }
+      fixture[name] = { operations, counts: { base, embedded },
+        prefetch: { base: Object.fromEntries(prefetchCommands.map(command => [command, commandTotals(base)[command] ?? 0])),
+          embedded: Object.fromEntries(prefetchCommands.map(command => [command, commandTotals(embedded)[command] ?? 0])) } };
       writeFileSync(process.env.L30_BASELINE_CAPTURE, JSON.stringify(fixture, null, 2) + "\n");
       return;
     }
     const fixture = JSON.parse(readFileSync(baselineFixture, "utf8"));
     expect(fixture.revision).toBe(baselineRevision);
     expect(fixture[name].operations).toEqual(operations);
-    const reference = aggregateFilterContract(fixture[name].counts);
-    const embedded = await replayComparison("embedded", operations);
-    const report = { operations, baseline: reference, base, embedded,
-      totals: { baseline: commandTotals(reference), base: commandTotals(base), embedded: commandTotals(embedded) } };
+    const report = { operations, base, embedded, expected: fixture[name],
+      totals: { base: commandTotals(base), embedded: commandTotals(embedded) } };
     if (process.env.L30_BASELINE_REPORT) {
       let reports: Record<string, unknown> = {};
       try { reports = JSON.parse(readFileSync(process.env.L30_BASELINE_REPORT, "utf8")); } catch { /* first case */ }
       reports[name] = report;
       writeFileSync(process.env.L30_BASELINE_REPORT, JSON.stringify(reports, null, 2) + "\n");
     }
-    for (const [key, count] of Object.entries(embedded)) {
-      expect(count, `${name}: embedded versus a30907c44 ${key}`).toBeLessThanOrEqual(reference[key] ?? 0);
-      expect(count, `${name}: embedded versus base-style mount ${key}`).toBeLessThanOrEqual(base[key] ?? 0);
+    for (const [route, counts] of Object.entries({ base, embedded })) {
+      // Exact maps cover both excess requests and missing requests, including
+      // every argument-specific prefetch. Neither route acts as the other's oracle.
+      expect(counts, name + ": exact " + route + " IPC").toEqual(fixture[name].counts[route]);
+      const expected = round2PrefetchCounts[name as keyof typeof round2PrefetchCounts][route as "base" | "embedded"];
+      for (const command of prefetchCommands) {
+        expect(commandTotals(counts)[command] ?? 0, name + ": fixed " + route + " " + command).toBe(expected[command]);
+        expect(fixture[name].prefetch[route][command]).toBe(expected[command]);
+      }
     }
-    expect(base, "base-style IPC matches the independently captured a30907c44 oracle").toEqual(reference);
   });
 
   it("N4 executes a different session's enabled summary while the first summary is pending", async () => {
@@ -375,7 +394,9 @@ describe("B4 running-job lifetimes beyond the 240 navigation sequences", () => {
     override = reportRevision("新", 202);
     await tab("ふりかえり");
     expect(calls("ailog_index_start")).toHaveLength(1);
+    await click(byText("内訳", '[role="tab"]')); await click(byText("案件", '[aria-label="内訳の軸"] button'));
     expect(document.querySelector("#ailog-projects")?.textContent).toContain("新内訳");
+    await click(byText("比較", '[role="tab"]'));
     expect(document.querySelector("#ailog-cross")?.textContent).toContain("新ピボット");
   });
 
@@ -401,6 +422,7 @@ describe("B4 running-job lifetimes beyond the 240 navigation sequences", () => {
     const currentCallback = callbacks.get((lastListen[1] as Args).handler) as (event: unknown) => void;
     await act(async () => currentCallback({ event: summaryListener[1], id: summaryListener[0], payload: { phase: "done", sessionsDone: 1, sessionsTotal: 1 } }));
     await clock(4_000); await menu(); expect(byText("要約を実行")).toBeTruthy();
+    await click(byText("内訳", '[role="tab"]')); await click(byText("案件", '[aria-label="内訳の軸"] button'));
     expect(document.querySelector("#ailog-projects")?.textContent).toContain("新内訳");
     await closeDeferred(); expect([...listeners.values()].filter(name => name.startsWith("ailog://"))).toHaveLength(0);
     const closed = aiCalls().length; await clock(12_000); expect(aiCalls()).toHaveLength(closed);
@@ -493,7 +515,7 @@ describe("generated reflection event orderings", () => {
           case "delay": held.add("ailog_series"); held.add("ailog_index_status"); held.add("ailog_summarize_status"); break;
           case "fail": if (pending.length) await finishReads(true); else failSeries = true; break;
           case "resolve": await finishReads(); break;
-          case "detail": await click(detailTrigger); break;
+          case "detail": if (!detailTrigger) await finishReads(); await click(byText(session.title!)); break;
           case "escape": await escape(); break;
           case "range": await click(byText(useAilogStore.getState().preset === "7d" ? "30日" : "7日", '.ailog-embedded [aria-label="期間"] button')); break;
         }
@@ -514,4 +536,28 @@ describe("generated reflection event orderings", () => {
     if (process.env.L30_SEQUENCE_REPORT) writeFileSync(process.env.L30_SEQUENCE_REPORT, JSON.stringify(report, null, 2) + "\n");
     console.info("L30_GENERATED", report);
   }, 120_000);
+});
+
+
+it("025 keeps failed overview idle and reload usable when the selected grouping is pressed again", async () => {
+  const invoke = core.invoke.getMockImplementation()!;
+  core.invoke.mockImplementation((command: string, args: Args = {}) =>
+    command === "ailog_overview" ? Promise.reject(new Error("Synthetic overview failure")) : invoke(command, args));
+  await render(); await open(); await tab("ふりかえり");
+  expect(useAilogStore.getState().dashboardError).toBeTruthy();
+  await click(byText("内訳", '[role="tab"]'));
+  await click(byText("モデル", '[aria-label="内訳の軸"] button'));
+  const selected = document.querySelector<HTMLButtonElement>('[aria-label="まとめ方"] [aria-pressed="true"]')!;
+  expect(selected).toBeTruthy();
+  const states: Array<{ loading: boolean; usageLoading: boolean }> = [];
+  const stop = useAilogStore.subscribe(state => states.push({ loading: state.loading, usageLoading: state.usageLoading }));
+  try {
+    await click(selected);
+    expect(useAilogStore.getState().loading).toBe(false);
+    expect(useAilogStore.getState().usageLoading).toBe(false);
+    expect(states.every(state => !state.loading && !state.usageLoading)).toBe(true);
+    expect(document.querySelectorAll('[data-ailog-refreshing="true"]')).toHaveLength(0);
+    expect(document.querySelector(".ailog-embedded")?.textContent).not.toContain("更新中");
+    expect(document.querySelector<HTMLButtonElement>('button[aria-label="再読込"]')!.disabled).toBe(false);
+  } finally { stop(); }
 });

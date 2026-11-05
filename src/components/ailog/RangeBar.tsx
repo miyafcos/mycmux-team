@@ -55,6 +55,7 @@ export function RangeBar({
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <ButtonGroup
           ariaLabel="期間"
+          roleLabel="期間"
           value={preset}
           onChange={onPreset}
           options={RANGE_PRESETS.map((entry) => ({ value: entry.id, label: entry.label }))}

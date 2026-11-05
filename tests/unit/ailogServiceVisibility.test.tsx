@@ -1,11 +1,13 @@
+import { useAilogStore, __resetAilogStoreForTests } from "../../src/stores/ailogStore";
 // @vitest-environment jsdom
 import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Overview, SeriesReport, SessionsReport } from "../../src/lib/ailog";
 vi.mock("../../src/components/ailog/AilogOrientation", () => ({ AilogOrientation: () => null }));
+vi.mock("../../src/components/ailog/AilogOverview", () => ({ AilogOverview: ({ overview }: { overview: Overview }) => <span data-test-total>{overview.totals.sessions}</span> }));
 vi.mock("../../src/components/ailog/SummaryCards", () => ({ SummaryCards: () => null }));
-vi.mock("../../src/components/ailog/UsageTotals", () => ({ UsageTotals: ({ totals }: { totals: { sessions: number } }) => <span data-test-total>{totals.sessions}</span> }));
+vi.mock("../../src/components/ailog/UsageTotals", async original => ({ ...await original<typeof import("../../src/components/ailog/UsageTotals")>(), UsageTotals: ({ totals }: { totals: { sessions: number } }) => <span data-test-total>{totals.sessions}</span> }));
 vi.mock("../../src/components/ailog/UsageModelTable", () => ({ UsageModelTable: ({ report }: { report: SeriesReport }) => <div data-test-models>{report.buckets.flatMap(bucket => bucket.groups.map(group => group.group + ":" + group.sessions)).join(",")}</div> }));
 vi.mock("../../src/components/ailog/SessionTable", () => ({ SessionTable: ({ report }: { report: SessionsReport }) => <div data-test-sessions>{report.rows.map(row => row.sessionId).join(",")}</div> }));
 import { EmptyState } from "../../src/components/ailog/ui";
@@ -17,6 +19,7 @@ import { useAgentServiceDetectionStore } from "../../src/stores/agentServiceDete
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 let host: HTMLDivElement, root: Root;
 beforeEach(() => {
+  __resetAilogStoreForTests();
   useSettingsStore.setState({ agentServiceVisibility: {} });
   useAgentServiceDetectionStore.setState({ detection: { status: "idle" } });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
@@ -49,14 +52,17 @@ describe("AI-log presentation without record filtering (T10)", () => {
       onPivotRowBy: fn, onPivotColBy: fn, onRetryPivot: fn, onSessionSort: fn, onSessionPage: fn, onSessionQuery: fn, onRetrySessions: fn, onOpenDetail: fn,
     };
     await act(async () => root.render(<UsageView {...props} />));
-    expect(host.querySelectorAll('button[title="Claude Code / Codex / Grok"]')).toHaveLength(3);
+    expect(host.querySelectorAll('button[title="Claude Code / Codex / Grok"]')).toHaveLength(1);
     const records = host.querySelector("[data-test-models]")!.textContent;
+    await act(async () => useAilogStore.getState().setActiveSection("sessions"));
     const sessionIds = host.querySelector("[data-test-sessions]")!.textContent;
+    await act(async () => useAilogStore.getState().setActiveSection("breakdown"));
     await act(async () => useSettingsStore.getState().setAgentServiceVisible("codex", false));
-    expect(host.querySelectorAll('button[title="Claude Code / Grok"]')).toHaveLength(3);
+    expect(host.querySelectorAll('button[title="Claude Code / Grok"]')).toHaveLength(1);
     expect(host.querySelectorAll('button[title="Claude Code / Codex / Grok"]')).toHaveLength(0);
     expect(host.querySelector("[data-test-total]")!.textContent).toBe("9");
     expect(host.querySelector("[data-test-models]")!.textContent).toBe(records);
+    await act(async () => useAilogStore.getState().setActiveSection("sessions"));
     expect(host.querySelector("[data-test-sessions]")!.textContent).toBe(sessionIds);
     expect(sessionIds).toContain("codex-record");
   });

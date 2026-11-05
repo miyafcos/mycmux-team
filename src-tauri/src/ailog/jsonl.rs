@@ -23,7 +23,8 @@ pub fn for_each_line(path: &Path, budget: Budget, mut f: impl FnMut(&str) -> Con
     const MAX_LINE_BYTES: u64 = 1024 * 1024;
     loop {
         if stats.lines_read >= budget.max_lines || stats.bytes_read >= budget.max_bytes {
-            stats.scan_truncated = stats.bytes_read < file_bytes;
+            // file_bytes is compressed for gzip; compare with the decoded stream.
+            stats.scan_truncated = !reader.fill_buf().map_err(|err| format!("read transcript {path:?}: {err}"))?.is_empty();
             break;
         }
         let remaining = (budget.max_bytes - stats.bytes_read).min(MAX_LINE_BYTES);
@@ -34,6 +35,7 @@ pub fn for_each_line(path: &Path, budget: Budget, mut f: impl FnMut(&str) -> Con
             .map_err(|err| format!("read transcript {path:?}: {err}"))?;
         if count == 0 { break; }
         if !buffer.ends_with(b"\n") && count as u64 == remaining {
+            stats.bytes_read += count as u64;
             stats.scan_truncated = true;
             break;
         }

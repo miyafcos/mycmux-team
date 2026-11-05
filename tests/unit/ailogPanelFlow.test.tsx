@@ -369,12 +369,12 @@ describe("AI log panel single-view flow", () => {
     indexProgressHandler!(doneProgress);
     await settle();
     expect(ailogSeries).toHaveBeenCalled();
-    expect(ailogUsageRhythm).not.toHaveBeenCalled();
+    expect(ailogUsageRhythm).toHaveBeenCalled();
     expect(ailogOverview).toHaveBeenCalled();
     expect(ailogModels).toHaveBeenCalled();
     expect(ailogBreakdown).toHaveBeenCalled();
     expect(ailogPivot).toHaveBeenCalled();
-    expect(ailogReworkRankings).not.toHaveBeenCalled();
+    expect(ailogReworkRankings).toHaveBeenCalled();
     expect(ailogSummarizeStart).not.toHaveBeenCalled();
     expect(ailogDigestGenerate).not.toHaveBeenCalled();
     expect(ailogSessionSummarize).not.toHaveBeenCalled();
@@ -382,12 +382,12 @@ describe("AI log panel single-view flow", () => {
 
   it("loads usage reports on open and keeps LLM endpoints behind explicit actions", () => {
     expect(ailogSeries).toHaveBeenCalledOnce();
-    expect(ailogUsageRhythm).not.toHaveBeenCalled();
+    expect(ailogUsageRhythm).toHaveBeenCalled();
     expect(ailogOverview).toHaveBeenCalled();
     expect(ailogModels).toHaveBeenCalledOnce();
     expect(ailogBreakdown).toHaveBeenCalledOnce();
     expect(ailogPivot).toHaveBeenCalledOnce();
-    expect(ailogReworkRankings).not.toHaveBeenCalled();
+    expect(ailogReworkRankings).toHaveBeenCalled();
     const menu = childByName(latest, "PanelMenu");
     (menu.props!.onStartSummarize as () => void)();
     expect(ailogSummarizeStart).toHaveBeenCalledOnce();
@@ -444,7 +444,7 @@ describe("AI log panel single-view flow", () => {
     const html = renderToStaticMarkup(createElement(UsageView, usage.props as any));
     expect(html).toContain('role="group"');
     expect(html).toContain("gpt-6.1-sol");
-    expect(ailogUsageRhythm).not.toHaveBeenCalled();
+    expect(ailogUsageRhythm).toHaveBeenCalled();
   });
 
   it("starts overview and chart before lower tables without waiting for hidden rhythm", async () => {
@@ -465,6 +465,7 @@ describe("AI log panel single-view flow", () => {
     expect(ailogSeries).toHaveBeenCalledOnce();
     expect(ailogBreakdown).toHaveBeenCalledOnce();
     expect(ailogPivot).toHaveBeenCalledOnce();
+    expect(ailogUsageRhythm).toHaveBeenCalledOnce();
   });
 
   it("revalidates saved aggregates when reopening even inside the auto-index cooldown", async () => {

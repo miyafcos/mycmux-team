@@ -155,6 +155,7 @@ export function UsageTotals({
   previousTotals,
   previousTotalsStatus = previousTotals ? "ready" : "idle",
   turnFilterActive = false,
+  supporting = false,
 }: {
   report: SeriesReport;
   metric: UsageMetric;
@@ -163,6 +164,7 @@ export function UsageTotals({
   previousTotals: Totals | null;
   previousTotalsStatus?: "idle" | "loading" | "ready" | "error";
   turnFilterActive?: boolean;
+  supporting?: boolean;
 }) {
   const data = summarizeUsage(report, metric);
   const info = usageMetricInfo(metric);
@@ -188,13 +190,13 @@ export function UsageTotals({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
       <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 190px), 1fr))" }}>
-        <Card label={`${info.label} (期間合計)`}>
+        {!supporting ? <Card label={`${info.label} (期間合計)`}>
           <div title={formatMetricFull(headlineTotal, metric)} style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, marginTop: 3 }}>
             {formatMetric(headlineTotal, metric)}
           </div>
           <div style={{ ...noteStyle, marginTop: 3 }}>{comparisonLabel}</div>
           <div style={{ ...noteStyle, marginTop: 3 }}>{info.hint}</div>
-        </Card>
+        </Card> : null}
 
         {showProviderSplit ? <Card label="Claude / GPT の内訳">
           <div style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, marginTop: 3 }}>
@@ -206,7 +208,7 @@ export function UsageTotals({
           </div>
         </Card> : null}
 
-        {metric === "costUsd" ? null : (
+        {supporting || metric === "costUsd" ? null : (
           <Card label={data.priceCoverage.coveredTokenRatio < 1 ? `コスト相当 (対象トークンのうち価格情報あり ${Math.round(data.priceCoverage.coveredTokenRatio * 100)}%)` : "コスト相当 (副次)"}>
             <div style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, marginTop: 3, color: "var(--cmux-text-secondary)" }}>
               {formatMoney(data.costUsd)}
@@ -217,7 +219,7 @@ export function UsageTotals({
           </Card>
         )}
 
-        {!turnFilterActive ? <Card label="対象セッションの依頼数">
+        {!supporting && !turnFilterActive ? <Card label="対象セッションの依頼数">
           <div style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, marginTop: 3 }}>{totals.userMessages.toLocaleString("ja-JP")}</div>
           {requestDelta !== null ? <div style={{ ...noteStyle, marginTop: 3 }}>{`${requestDelta} 前期間比`}</div> : null}
           <div style={{ ...noteStyle, marginTop: 3 }}>選んだ期間に記録のあるセッションについて、セッション全体の依頼発話を数えます。</div>
@@ -264,13 +266,13 @@ export function UsageTotals({
         </div>
       ) : null}
 
-      <details style={noteStyle}>
-        <summary style={{ cursor: "pointer" }}>集計方法</summary>
+      <div style={noteStyle}>
+        <strong>集計方法</strong>
         <div style={{ marginTop: 6 }}>
           {`入出力トークンは送った文章と生成した文章の量。総トークンはそれにキャッシュ読み書きを含む量です${data.cacheShare > 0 ? `（この期間は ${(data.cacheShare * 100).toFixed(1)}% がキャッシュ読み書き）` : ""}。`}
         </div>
         <div style={noteStyle}>推論トークンは出力に含まれるため、二重計上を避けて別加算しません。</div>
-      </details>
+      </div>
 
     </div>
   );

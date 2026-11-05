@@ -1,9 +1,5 @@
-/**
- * Failed commands and heavily rewritten files. Fetches only while this block
- * is mounted (the parent keeps it behind DeferredDetails).
- */
+/** Period-prefetched report; selecting this view performs no requests. */
 
-import { useEffect } from "react";
 
 import {
   formatCount,
@@ -13,7 +9,7 @@ import {
 } from "../../lib/ailog";
 import { useAilogStore } from "../../stores/ailogStore";
 import { ReportFailure, ReportPeriod } from "./ReportFeedback";
-import { EmptyState, SkeletonBlock, VScrollBox, noteStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle, subtleButtonStyle } from "./ui";
+import { RefreshingBlock, EmptyState, SkeletonBlock, VScrollBox, noteStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle, subtleButtonStyle } from "./ui";
 
 /** Backend `rework_rankings` already truncates to this; the UI discloses the cap. */
 export const REWORK_RANKINGS_TOP_N = 10;
@@ -139,26 +135,10 @@ export function ReworkRankingsTables({ report }: { report: ReworkRankingsReport 
 
 export function ReworkRankings() {
   const refreshReworkRankings = useAilogStore((state) => state.refreshReworkRankings);
-  const setReworkRankingsOpen = useAilogStore((state) => state.setReworkRankingsOpen);
   const report = useAilogStore((state) => state.reworkRankings);
   const range = useAilogStore((state) => state.reworkRankingsRange);
   const loading = useAilogStore((state) => state.reworkRankingsLoading);
   const error = useAilogStore((state) => state.reworkRankingsError);
-  const preset = useAilogStore((state) => state.preset);
-  const customFrom = useAilogStore((state) => state.customFrom);
-  const customTo = useAilogStore((state) => state.customTo);
-  const includeSidechain = useAilogStore((state) => state.includeSidechain);
-  const selection = useAilogStore((state) => state.selection);
-
-  useEffect(() => {
-    setReworkRankingsOpen(true);
-    return () => setReworkRankingsOpen(false);
-  }, [setReworkRankingsOpen]);
-
-  useEffect(() => {
-    void refreshReworkRankings();
-  }, [refreshReworkRankings, preset, customFrom, customTo, includeSidechain, selection]);
-
   if (error && !report) {
     return (
       <EmptyState
@@ -169,7 +149,7 @@ export function ReworkRankings() {
     );
   }
   if (loading && !report) {
-    return <SkeletonBlock height={140} label="つまずいた場所を読み込み中" />;
+    return <SkeletonBlock height={140} label="手戻りを読み込み中" />;
   }
   if (!report) {
     return (
@@ -183,7 +163,7 @@ export function ReworkRankings() {
   }
   return <>
     {range ? <ReportPeriod range={range} /> : null}
-    {error ? <ReportFailure label="つまずいた場所" error={error} range={range} onRetry={() => void refreshReworkRankings({ force: true })} /> : null}
-    <ReworkRankingsTables report={report} />
+    {error ? <ReportFailure label="手戻り" error={error} range={range} onRetry={() => void refreshReworkRankings({ force: true })} /> : null}
+    <RefreshingBlock busy={loading}><ReworkRankingsTables report={report} /></RefreshingBlock>
   </>;
 }

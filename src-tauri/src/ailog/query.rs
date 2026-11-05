@@ -807,7 +807,18 @@ pub struct ReportTimings {
     /// False when a DISTINCT-key query did not count its input turns.
     pub raw_turns_measured: bool,
     pub build_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_prepare: Option<SessionPreparationTimings>,
     pub path: &'static str,
+}
+
+/// Measured once when a session period is prepared, never copied into cache hits.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionPreparationTimings {
+    pub aggregate_us: u64,
+    pub node_sql_us: u64,
+    pub path_us: u64,
 }
 
 // Deserialize the path into an owned string before mapping to known static
@@ -826,6 +837,7 @@ impl<'de> Deserialize<'de> for ReportTimings {
             #[serde(default)] raw_turns_measured: bool,
             build_ms: u64,
             path: String,
+            #[serde(default)] session_prepare: Option<SessionPreparationTimings>,
         }
         let stored = StoredTimings::deserialize(d)?;
         let path = match stored.path.as_str() {
@@ -834,7 +846,7 @@ impl<'de> Deserialize<'de> for ReportTimings {
             "hybrid" => "hybrid",
             value => return Err(serde::de::Error::custom(format!("unknown report path: {value}"))),
         };
-        Ok(Self { sql_ms: stored.sql_ms, rows_scanned: stored.rows_scanned, raw_rows: stored.raw_rows, rollup_rows: stored.rollup_rows, raw_turns: stored.raw_turns, raw_turns_measured: stored.raw_turns_measured, build_ms: stored.build_ms, path })
+        Ok(Self { sql_ms: stored.sql_ms, rows_scanned: stored.rows_scanned, raw_rows: stored.raw_rows, rollup_rows: stored.rollup_rows, raw_turns: stored.raw_turns, raw_turns_measured: stored.raw_turns_measured, build_ms: stored.build_ms, path, session_prepare: stored.session_prepare })
     }
 }
 
@@ -848,6 +860,7 @@ impl Default for ReportTimings {
             raw_turns: 0,
             raw_turns_measured: true,
             build_ms: 0,
+            session_prepare: None,
             path: "raw",
         }
     }
@@ -4214,13 +4227,7 @@ pub fn sessions(
     let mut timings = ReportTimings::default();
     let (resolved, label) = range.resolve(now_ms);
     let prices = cached_prices(conn)?;
-    let rows = match measured_hybrid_rows(conn, &resolved, filters, &mut timings, false, false)? {
-        Some(rows) => rows,
-        None => {
-            measured_raw_aggregate_span(conn, resolved.from, resolved.to, filters, &mut timings)?
-        }
-    };
-    let (rows, total, page_sql_ms) = presentation::session_page(conn, &rows, filters.include_sidechain, options)?;
+    let (rows, total, page_sql_ms) = presentation::cached_session_page(conn, &resolved, filters, options, &mut timings)?;
     timings.sql_ms = timings.sql_ms.saturating_add(page_sql_ms);
     let timings = finish_timings(timings, started);
     log_report_timings("sessions", timings);
@@ -4811,6 +4818,7 @@ pub fn dashboard(
             raw_turns: overview.timings.raw_turns + series.timings.raw_turns + models.timings.raw_turns + projects.timings.raw_turns + sessions.timings.raw_turns,
             raw_turns_measured: overview.timings.raw_turns_measured && series.timings.raw_turns_measured && models.timings.raw_turns_measured && projects.timings.raw_turns_measured && sessions.timings.raw_turns_measured,
             build_ms: elapsed_ms(started).saturating_sub(sql_ms),
+            session_prepare: sessions.timings.session_prepare,
             path: "raw",
         };
         log_report_timings("dashboard", timings);

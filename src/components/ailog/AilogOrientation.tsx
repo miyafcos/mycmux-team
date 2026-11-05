@@ -1,12 +1,10 @@
 import { formatScore, type Overview, type RangePreset, type SeriesReport, type SessionsReport, type Totals } from "../../lib/ailog";
-import { groupByLabel, type UsageMetric } from "./usageModel";
+import { type UsageMetric } from "./usageModel";
 import { noteStyle } from "./ui";
 
 export function AilogOrientation({
   overview,
-  series,
   sessions,
-  breakdownLabel,
   running,
   sessionLoading,
   sessionError,
@@ -27,56 +25,13 @@ export function AilogOrientation({
   onStartIndex: () => void;
   onOpenDetail: (kind: string, sessionId: string) => void;
 }) {
-  const groupingLabel = groupByLabel(series?.groupBy ?? "provider");
-  const pageLinks = [
-    ["ailog-overview", "概要"],
-    ["ailog-purpose", "使い道"],
-    ["ailog-trend", "日ごとの使用量"],
-    ["ailog-learning", "つまずき"],
-    ["ailog-handoffs", "切り替え"],
-    ["ailog-compare", `${groupingLabel}別`],
-    ["ailog-cross", "2軸比較"],
-    ["ailog-projects", `${breakdownLabel}別`],
-    ["ailog-sessions", "セッション"],
-  ] as const;
   const nextSession = sessions?.rows.reduce((best, row) => (
     !best || row.reworkScore > best.reworkScore ? row : best
   ), sessions.rows[0]);
-  const next = overview.indexFreshness.staleFiles > 0
-    ? running
-      ? `${overview.indexFreshness.staleFiles.toLocaleString("ja-JP")}ファイルを取り込み中です。`
-      : `未反映 ${overview.indexFreshness.staleFiles.toLocaleString("ja-JP")}ファイル。選ぶと取り込みを開始します。`
-    : sessionLoading
-      ? "セッション一覧を更新中です。"
-    : nextSession
-      ? `${sessionError ? "直前" : "表示中"}の一覧で、機械指標上の手戻り兆候が最大: ${nextSession.title?.trim() || "（無題）"}（${formatScore(nextSession.reworkScore)}）`
-      : sessionError
-        ? "セッション一覧を取得できません。一覧欄から再試行できます。"
-        : sessions === null
-          ? "この概要と同じ期間のセッション一覧は未取得です。"
-          : "次に確認するセッション候補はありません。";
-  return (
-    <div style={{ borderTop: "1px solid var(--cmux-border)", borderBottom: "1px solid var(--cmux-border)", padding: "9px 0", display: "flex", flexDirection: "column", gap: 8 }}>
-      <div aria-label="確認する記録">
-        <Status
-          label="次に見る"
-          value={next}
-          action={overview.indexFreshness.staleFiles > 0 && !running ? onStartIndex : overview.indexFreshness.staleFiles === 0 && nextSession && !sessionLoading ? () => onOpenDetail(nextSession.kind, nextSession.sessionId) : undefined}
-        />
-      </div>
-      <nav aria-label="AIログ分析のページ内索引" style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
-        <span style={noteStyle}>移動:</span>
-        {pageLinks.map(([id, label]) => (
-          <a key={id} href={`#${id}`} style={{ ...noteStyle, color: "var(--cmux-accent)", padding: "2px 5px" }}>{label}</a>
-        ))}
-      </nav>
-    </div>
-  );
-}
-
-function Status({ label, value, action }: { label: string; value: string; action?: () => void }) {
-  const body = <><strong style={{ color: "var(--cmux-text)", marginRight: 6 }}>{label}</strong>{value}</>;
-  return action ? (
-    <button type="button" onClick={action} style={{ ...noteStyle, border: 0, background: "transparent", padding: 0, textAlign: "left", color: "var(--cmux-text-secondary)", cursor: "pointer" }}>{body}</button>
-  ) : <div style={{ ...noteStyle, color: "var(--cmux-text-secondary)" }}>{body}</div>;
+  return <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
+    {overview.indexFreshness.staleFiles > 0 ? <button type="button" disabled={running} onClick={onStartIndex} style={noteStyle}>記録を更新（未反映 {overview.indexFreshness.staleFiles} ファイル）</button> : null}
+    {nextSession && !sessionLoading ? <button type="button" onClick={() => onOpenDetail(nextSession.kind, nextSession.sessionId)} style={{ ...noteStyle, color: "var(--cmux-accent-text)", background: "transparent", border: "1px solid var(--cmux-border)", borderRadius: 4, cursor: "pointer", padding: "4px 8px" }}>
+      会話候補を開く: {nextSession.title?.trim() || "（無題）"}（手戻り {formatScore(nextSession.reworkScore)}）
+    </button> : <span style={noteStyle}>{sessionLoading ? "会話候補を更新中" : sessionError ? "セッション一覧を取得できませんでした" : "会話候補なし"}</span>}
+  </div>;
 }

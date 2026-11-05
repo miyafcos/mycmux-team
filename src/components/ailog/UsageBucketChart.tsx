@@ -30,6 +30,7 @@ import { ChartHatchDefs, Num, noteStyle, paintFill, paintSwatchBackground } from
 const HEIGHT = 168;
 const GAP = 2;
 const AXIS_WIDTH = 52;
+const DAILY_DATE_FORMATTER = new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit" });
 
 export function UsageBucketChart({
   model,
@@ -38,11 +39,13 @@ export function UsageBucketChart({
   highlight,
   onHighlight,
   onPickDay,
+  onSelectDay,
   onOpenDigest,
   digestLinkLabel = "日別まとめへ",
   groupBy,
   bucket,
   priceCoverage,
+  selectedDay,
 }: {
   model: UsageModel;
   metric: UsageMetric;
@@ -50,11 +53,13 @@ export function UsageBucketChart({
   highlight: string | null;
   onHighlight: (group: string | null) => void;
   onPickDay?: (day: number) => void;
+  onSelectDay?: (day: number) => void;
   onOpenDigest?: (day: number) => void;
   digestLinkLabel?: string;
   groupBy: SeriesGroupBy;
   bucket: UsageBucket;
   priceCoverage?: PriceCoverage;
+  selectedDay?: number | null;
 }) {
   const { ref: widthRef, width: measured } = useElementWidth();
   const [selectedBucket, setSelectedBucket] = useState<number | null>(null);
@@ -62,6 +67,7 @@ export function UsageBucketChart({
     return <div style={noteStyle}>この期間に記録がありません。期間を広げるか、再インデックスしてください。</div>;
   }
 
+  const activeBucket = selectedDay === undefined ? selectedBucket : selectedDay;
   const width = measured > 0 ? measured : 760;
   const plotWidth = Math.max(1, width - AXIS_WIDTH);
   const slot = plotWidth / model.days.length;
@@ -75,10 +81,10 @@ export function UsageBucketChart({
     <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
       <div ref={widthRef} style={{ minWidth: 0 }}>
         <svg
-          viewBox={`0 0 ${width} ${HEIGHT}`}
+          viewBox={`0 0 ${width} ${HEIGHT + 24}`}
           role="group"
           aria-label={`${unit}別の${USAGE_METRICS.find((entry) => entry.id === metric)?.label ?? "集計"}。各棒はボタンとして選べます。`}
-          style={{ display: "block", width: "100%", height: HEIGHT }}
+          style={{ display: "block", width: "100%", height: HEIGHT + 24 }}
         >
           <ChartHatchDefs paints={[...model.legend, ...model.days.flatMap((row) => row.slices)]} />
           {ticks.map((tick) => {
@@ -89,8 +95,9 @@ export function UsageBucketChart({
           {model.days.map((row, index) => {
             const x = AXIS_WIDTH + index * slot;
             const rects = layoutStack(row, model.max, mode);
+            const dateLabel = bucket === "day" ? DAILY_DATE_FORMATTER.format(row.bucket) : row.label;
             const tooltip = [
-              row.label,
+              dateLabel,
               `合計 ${formatMetricFull(row.total, metric)}`,
               ...rects.map((rect) => `${groupLabel(rect.group, groupBy)} ${formatMetricFull(rect.value, metric)}`),
               `セッション ${row.sessions}`,
@@ -125,12 +132,24 @@ export function UsageBucketChart({
                     />
                   );
                 })}
+                {index === 0 || index === model.days.length - 1 || index % Math.max(1, Math.ceil(model.days.length / 7)) === 0 ? <text x={x + barWidth / 2} y={HEIGHT + 18} textAnchor={index === model.days.length - 1 ? "end" : "middle"} fill="var(--cmux-text-secondary)" fontSize="var(--cmux-font-size-xs)">{row.label}</text> : null}
                 {onPickDay ? (
                   <foreignObject x={x} y={0} width={barWidth} height={HEIGHT}>
                     <button
                       type="button"
-                      aria-label={`${row.label}を選ぶ。${tooltip.replaceAll("\n", "、")}`}
-                      aria-pressed={selectedBucket === row.bucket}
+                      data-daily-index={index}
+                      data-usage-day={row.bucket}
+                      tabIndex={activeBucket === row.bucket || (activeBucket === null && index === model.days.length - 1) ? 0 : -1}
+                      onKeyDown={event => {
+                        const target = event.key === "Home" ? 0 : event.key === "End" ? model.days.length - 1 : event.key === "ArrowRight" ? Math.min(model.days.length - 1, index + 1) : event.key === "ArrowLeft" ? Math.max(0, index - 1) : -1;
+                        if (target < 0) return;
+                        event.preventDefault();
+                        setSelectedBucket(model.days[target].bucket);
+                        (onSelectDay ?? onPickDay)(model.days[target].bucket);
+                        event.currentTarget.closest("svg")?.querySelector<HTMLButtonElement>('[data-daily-index="' + target + '"]')?.focus();
+                      }}
+                      aria-label={`${dateLabel}を選ぶ。${tooltip.replaceAll("\n", "、")}`}
+                      aria-pressed={activeBucket === row.bucket}
                       title={tooltip}
                       onClick={() => { setSelectedBucket(row.bucket); onPickDay(row.bucket); }}
                       style={{ width: "100%", height: "100%", padding: 0, border: 0, background: "transparent", color: "transparent", cursor: "pointer" }}
@@ -146,6 +165,7 @@ export function UsageBucketChart({
       {selectedBucket !== null && onOpenDigest ? <button type="button" onClick={() => onOpenDigest(selectedBucket)} style={{ alignSelf: "flex-start", border: "1px solid var(--cmux-border)", borderRadius: 5, background: "var(--cmux-hover)", color: "var(--cmux-text)", padding: "3px 9px", fontSize: "var(--cmux-font-size-xs)", cursor: "pointer" }}>{digestLinkLabel}</button> : null}
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <span data-usage-grouping style={noteStyle}>{groupByLabel(groupBy)}ごと</span>
         {model.legend.map((entry) => {
           const active = highlight === entry.group;
           return (

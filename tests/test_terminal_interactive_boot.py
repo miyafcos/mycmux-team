@@ -166,7 +166,8 @@ def test_restored_terminal_keeps_all_wrapper_functions(
                             capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
     lines = visible_output_lines(result.stdout)
-    assert "WRAPPER_COUNT:4" in lines, (result.stdout, result.stderr)
+    # BSD wc pads its count; GNU wc does not. Require the same exact count.
+    assert any(line.startswith("WRAPPER_COUNT:") and line.partition(":")[2].strip() == "4" for line in lines), (result.stdout, result.stderr)
     assert "RESTORED_SHELL_ALIVE" in lines, (result.stdout, result.stderr)
     assert "ParserError" not in result.stderr and "syntax error" not in result.stderr
     assert "Launch:" not in result.stdout

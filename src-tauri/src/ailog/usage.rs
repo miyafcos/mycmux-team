@@ -247,6 +247,7 @@ fn rhythm_fresh(
             .try_into()
             .unwrap_or(u64::MAX)
             .saturating_sub(sql_ms),
+        session_prepare: None,
         path: super::heavy_aggregate::path(raw_turns,rollup_rows),
     };
     log_report_timings("usage_rhythm", timings);

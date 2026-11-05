@@ -1,3 +1,5 @@
+import { renderAllUsageSections, selectUsageSection } from "../helpers/renderAllUsageSections";
+import { rhythm } from "../helpers/ailogPlanAFixtures";
 // @vitest-environment jsdom
 import { act, type ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
@@ -11,7 +13,7 @@ vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
 }));
 vi.mock("../../src/stores/ailogStore", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/stores/ailogStore")>();
-  const hook = Object.assign(<Result,>(selector: (state: ReturnType<typeof actual.useAilogStore.getState>) => Result) => selector(actual.useAilogStore.getState()), actual.useAilogStore);
+  const hook = Object.assign(<Result,>(selector: (state: ReturnType<typeof actual.useAilogStore.getState>) => Result) => { actual.useAilogStore(selector); return selector(actual.useAilogStore.getState()); }, actual.useAilogStore);
   return { ...actual, useAilogStore: hook };
 });
 
@@ -69,7 +71,7 @@ const rework: ReworkRankingsReport = { failedCommands: [{ name: "stage1-command"
 const reports: Record<string, unknown> = {
   ailog_overview: overview, ailog_series: series(), ailog_breakdown: breakdown,
   ailog_pivot: pivot, ailog_models: models, ailog_sessions: sessions,
-  ailog_model_handoffs: handoffs, ailog_rework_rankings: rework,
+  ailog_model_handoffs: handoffs, ailog_rework_rankings: rework, ailog_usage_rhythm: rhythm,
 };
 function deferred<Result>() {
   let resolve!: (value: Result) => void;
@@ -108,7 +110,7 @@ function viewProps(overrides: Partial<ComponentProps<typeof UsageView>> = {}): C
   };
 }
 function view(overrides: Partial<ComponentProps<typeof UsageView>> = {}) {
-  return renderToStaticMarkup(<UsageView {...viewProps(overrides)} />);
+  return renderAllUsageSections(viewProps(overrides));
 }
 function section(html: string, id: string) {
   const start = html.indexOf('id="' + id + '"');
@@ -116,6 +118,7 @@ function section(html: string, id: string) {
   return html.slice(start, html.indexOf("</section>", start));
 }
 async function clickRetry(id: string) {
+  selectUsageSection(id, viewProps());
   const host = document.createElement("div");
   const root = createRoot(host);
   try {
@@ -170,11 +173,12 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); __resetAilogStoreForTests(); });
 
 describe("AI log partial failures through the actual store and report components", () => {
-  it("A1 loads independent reports while overview is pending, then keeps them after its initial failure", async () => {
+  it("A1 loads the chart first and then independent reports after overview settles, retaining its failure", async () => {
     const pendingOverview = deferred<unknown>();
     invokeMock.mockImplementation((command: string) => command === "ailog_overview" ? pendingOverview.promise : Promise.resolve(reports[command]));
     const pending = useAilogStore.getState().loadUsage();
-    await vi.waitFor(() => expect(useAilogStore.getState().sessions).toEqual(sessions));
+    await vi.waitFor(() => expect(useAilogStore.getState().usageSeries).not.toBeNull());
+    expect(useAilogStore.getState().sessions).toBeNull();
     expect(useAilogStore.getState().loading).toBe(true);
     expect(section(view(), "ailog-trend")).toContain("data-usage-day=");
     pendingOverview.reject(new Error("overview-only-failure"));
@@ -341,6 +345,7 @@ describe("AI log partial failures through the actual store and report components
     expect(view()).toContain("セッション総数は未取得");
     expect(view()).not.toContain("セッション数 (期間合計)");
     useAilogStore.setState({ overview: { ...overview, totals: { ...totals, sessions: 0 } }, usageSeries: null, sessions: null, models: null });
+    useAilogStore.setState({ loading: false, usageLoading: false });
     expect(view({ neverIndexed: true })).toContain("記録をまだ取り込んでいません");
     expect(view()).toContain("この期間の記録なし");
   });
@@ -404,15 +409,16 @@ describe("AI log partial failures through the actual store and report components
     await pending;
   });
 
-  it("A5 clears loaded data immediately on period/filter changes and rejects an earlier request even after returning to its inputs", async () => {
+  it("A5 retains loaded data visibly on period/filter changes and rejects an earlier request even after returning to its inputs", async () => {
     await useAilogStore.getState().loadUsage();
     await useAilogStore.getState().refreshReworkRankings();
     await useAilogStore.getState().refreshModelHandoffs();
+    const previous = useAilogStore.getState();
     useAilogStore.getState().setSelection({ project: { key: "new-context", label: "new-context" } });
-    expect(useAilogStore.getState()).toMatchObject({
-      overview: null, usageSeries: null, models: null, sessions: null, breakdown: null,
-      pivot: null, reworkRankings: null, reworkRankingsRange: null, handoffs: null, reportSnapshots: {},
-    });
+    const requested = useAilogStore.getState();
+    for (const key of ["overview", "usageSeries", "models", "sessions", "breakdown", "pivot", "reworkRankings", "handoffs"] as const) expect(requested[key]).toBe(previous[key]);
+    expect(requested.loading).toBe(true);
+    expect(requested.reportSnapshots).toEqual({});
     const response = deferred<unknown>();
     invokeMock.mockReturnValueOnce(response.promise);
     const pending = useAilogStore.getState().refreshUsage();
@@ -424,6 +430,7 @@ describe("AI log partial failures through the actual store and report components
   });
 
   it("A6 distinguishes not fetched models/sessions from successful empty responses", async () => {
+    useAilogStore.setState({ modelsLoading: false, sessionLoading: false });
     expect(section(view(), "ailog-purpose")).toContain("まだ読み込んでいません");
     expect(section(view(), "ailog-sessions")).toContain("まだ読み込んでいません");
     invokeMock.mockImplementation((command: string) => Promise.resolve(command === "ailog_models" ? { ...models, byWorkTag: [] } : { ...sessions, total: 0, rows: [] }));
@@ -569,8 +576,9 @@ describe("AI log partial failures through the actual store and report components
       invokeMock.mockImplementation((command: string, payload: RelativePayload) =>
         command === "ailog_series" && payload.range.anchor === oldAnchor ? oldSeries.promise : Promise.resolve(relativeReport(command, payload)));
       const oldLoad = useAilogStore.getState().loadUsage({ force: true });
+      const priorVisible = useAilogStore.getState().usageSeries;
       change(useAilogStore.getState());
-      expect(useAilogStore.getState().usageSeries).toBeNull();
+      expect(useAilogStore.getState().usageSeries).toBe(_label === "preset" || _label === "filter" ? priorVisible : null);
       const nextAnchor = oldAnchor + 60_000;
       vi.mocked(Date.now).mockReturnValue(nextAnchor);
       await useAilogStore.getState().loadUsage({ force: true });
@@ -604,16 +612,17 @@ describe("AI log partial failures through the actual store and report components
     expect(useAilogStore.getState().usageError).toBeNull();
   });
 
-  it("D01 keeps closed lazy reports until their next successful fetch without refetching them on refresh", async () => {
+  it("D01 refreshes all prefetched reports even when their views are not selected", async () => {
     await loadRelativeReports();
     const previous = useAilogStore.getState();
     useAilogStore.setState({ handoffsOpen: false, reworkRankingsOpen: false });
     vi.mocked(Date.now).mockReturnValue(relativeAnchor + 60_000);
     invokeMock.mockClear();
     await useAilogStore.getState().loadUsage({ force: true });
-    expect(useAilogStore.getState().handoffs).toBe(previous.handoffs);
-    expect(useAilogStore.getState().reworkRankings).toBe(previous.reworkRankings);
-    expect(invokeMock.mock.calls.some(([command]) => command === "ailog_model_handoffs" || command === "ailog_rework_rankings")).toBe(false);
+    expect(useAilogStore.getState().handoffs).not.toBe(previous.handoffs);
+    expect(useAilogStore.getState().reworkRankings).toEqual(previous.reworkRankings);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_model_handoffs")).toHaveLength(1);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_rework_rankings")).toHaveLength(1);
     await useAilogStore.getState().refreshModelHandoffs();
     await useAilogStore.getState().refreshReworkRankings();
     expect(useAilogStore.getState().handoffs?.range.to).toBe(relativeAnchor + 60_000);
@@ -679,25 +688,26 @@ describe("reflection fix1 scheduling", () => {
     };
   }
 
-  it("S1F1 starts models and sessions before series settles and opens detail from the real panel", async () => {
+  it("S1F1 loads the overview and chart before models/sessions and opens detail from the real panel", async () => {
     const blockedSeries = deferred<unknown>();
     const blockedDetail = deferred<unknown>();
     const surface = await panel((command, payload) => command === "ailog_series" ? blockedSeries.promise
       : command === "ailog_session_detail" ? blockedDetail.promise : reportFor(command, payload));
     try {
       await surface.render();
-      expect(invokeMock.mock.calls.slice(0, 4).map(([command]) => command)).toEqual([
-        "ailog_overview", "ailog_series", "ailog_models", "ailog_sessions",
-      ]);
+      expect(invokeMock.mock.calls.filter(([command]) => ["ailog_overview", "ailog_series", "ailog_models", "ailog_sessions"].includes(command)).slice(0, 2).map(([command]) => command)).toEqual(["ailog_overview", "ailog_series"]);
+      expect(useAilogStore.getState().models).toBeNull();
+      await act(async () => blockedSeries.resolve(reportFor("ailog_series", { range: { preset: "30d", anchor: relativeAnchor } })));
       const state = useAilogStore.getState();
       const expectedRange = { from: relativeAnchor - 30 * 86_400_000, to: relativeAnchor, label: "30d" };
       expect(state.models?.range).toEqual(expectedRange);
       expect(state.sessions?.range).toEqual(expectedRange);
-      expect(state.usageLoading).toBe(true);
-      expect(state.usageSeries).toBeNull();
-      expect(invokeMock.mock.calls.some(([command]) => ["ailog_breakdown", "ailog_pivot"].includes(command))).toBe(false);
+      expect(state.usageLoading).toBe(false);
+      expect(state.usageSeries?.range).toEqual(expectedRange);
+      expect(invokeMock.mock.calls.some(([command]) => ["ailog_breakdown", "ailog_pivot"].includes(command))).toBe(true);
+      useAilogStore.setState({ activeSection: "sessions" });
       await surface.render();
-      expect(surface.host.querySelector("#ailog-purpose")?.textContent).toContain("デバッグ");
+      expect(state.models?.byWorkTag[0].workTag).toBe("debug");
       const trigger = [...surface.host.querySelectorAll<HTMLButtonElement>("#ailog-sessions button")]
         .find((button) => button.textContent === "fix1-30d-session");
       expect(trigger).toBeDefined();
@@ -707,7 +717,7 @@ describe("reflection fix1 scheduling", () => {
       expect(useAilogStore.getState().detailKey).toEqual({ kind: "codex", sessionId: "stage1-session" });
       expect(useAilogStore.getState().detailLoading).toBe(true);
       expect(document.querySelector('[role="dialog"][aria-label="セッション詳細"]')).not.toBeNull();
-      expect(useAilogStore.getState().usageLoading).toBe(true);
+      expect(useAilogStore.getState().usageLoading).toBe(false);
       expect(invokeMock.mock.calls.some(([command]) => ["ailog_index_start", "ailog_summarize_start", "ailog_session_summarize"].includes(command))).toBe(false);
     } finally {
       await surface.unmount();
@@ -719,10 +729,9 @@ describe("reflection fix1 scheduling", () => {
   });
 
   it.each(["success", "failure"] as const)(
-    "S1F1 preset change starts independent reports before series settles and ignores old %s", async (outcome) => {
+    "S1F1 preset change completes the first phase before independent reports and ignores old %s", async (outcome) => {
       const oldReads = {
         ailog_overview: deferred<unknown>(), ailog_series: deferred<unknown>(),
-        ailog_models: deferred<unknown>(), ailog_sessions: deferred<unknown>(),
       };
       const nextSeries = deferred<unknown>();
       const oldPayload = { range: { preset: "30d", anchor: relativeAnchor } };
@@ -734,14 +743,14 @@ describe("reflection fix1 scheduling", () => {
       });
       try {
         await surface.render();
-        expect(invokeMock.mock.calls.slice(0, 4).map(([command]) => command)).toEqual([
-          "ailog_overview", "ailog_series", "ailog_models", "ailog_sessions",
-        ]);
+        expect(invokeMock.mock.calls.filter(([command]) => ["ailog_overview", "ailog_series", "ailog_models", "ailog_sessions"].includes(command)).slice(0, 2).map(([command]) => command)).toEqual(["ailog_overview", "ailog_series"]);
         const sevenDays = [...surface.host.querySelectorAll<HTMLButtonElement>('[aria-label="期間"] button')]
           .find((button) => button.textContent === "7日");
         expect(sevenDays).toBeDefined();
         await act(async () => sevenDays!.click());
         await surface.render();
+        expect(useAilogStore.getState().models).toBeNull();
+        await act(async () => nextSeries.resolve(reportFor("ailog_series", nextPayload)));
         const next = useAilogStore.getState();
         const expectedRange = { from: relativeAnchor - 7 * 86_400_000, to: relativeAnchor, label: "7d" };
         expect(next.preset).toBe("7d");
@@ -749,8 +758,8 @@ describe("reflection fix1 scheduling", () => {
         expect(next.models?.range).toEqual(expectedRange);
         expect(next.sessions?.range).toEqual(expectedRange);
         expect(next.sessions?.rows[0].title).toBe("fix1-7d-session");
-        expect(next.usageLoading).toBe(true);
-        expect(next.usageSeries).toBeNull();
+        expect(next.usageLoading).toBe(false);
+        expect(next.usageSeries?.range).toEqual(expectedRange);
         expect(invokeMock.mock.calls.filter(([command, payload]) => payload?.range?.preset === "7d"
           && ["ailog_overview", "ailog_series", "ailog_models", "ailog_sessions"].includes(command))
           .map(([command]) => command)).toEqual(["ailog_overview", "ailog_series", "ailog_models", "ailog_sessions"]);
@@ -769,11 +778,12 @@ describe("reflection fix1 scheduling", () => {
         expect(current.modelsError).toBeNull();
         expect(current.sessionError).toBeNull();
         expect(current.usageError).toBeNull();
-        expect(current.usageSeries).toBeNull();
-        expect(current.usageLoading).toBe(true);
+        expect(current.usageSeries).toBe(next.usageSeries);
+        expect(current.usageLoading).toBe(false);
+        useAilogStore.setState({ activeSection: "sessions" }); await surface.render();
         expect(surface.host.querySelector("#ailog-sessions")?.textContent).toContain("fix1-7d-session");
         expect(surface.host.querySelector("#ailog-sessions")?.textContent).not.toContain("fix1-30d-session");
-        expect(invokeMock.mock.calls.some(([command]) => ["ailog_breakdown", "ailog_pivot"].includes(command))).toBe(false);
+        expect(invokeMock.mock.calls.some(([command]) => ["ailog_breakdown", "ailog_pivot"].includes(command))).toBe(true);
       } finally {
         await surface.unmount();
         await act(async () => {

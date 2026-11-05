@@ -1,3 +1,4 @@
+import { Fragment, useState } from "react";
 /**
  * Per-project table. The "主な主題" column is filled from the overview's top
  * projects, which is the only place F1 exposes a representative title; rows the
@@ -13,7 +14,7 @@ import {
   type Overview,
 } from "../../lib/ailog";
 import type { AilogSelection } from "../../stores/ailogStore";
-import { ShareBar, VScrollBox, noteStyle, tableActionButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
+import { VScrollBox, noteStyle, tableActionButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
 
 function breakdownValueLabel(value: string, dimensionLabel: string): string {
   if (!value || value === "(none)") return "未指定";
@@ -39,6 +40,7 @@ export function ProjectTable({
   dimensionLabel?: string;
   projectMode?: boolean;
 }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
   const topTitles = new Map(
     (overview?.topProjects ?? []).map((project) => [project.projectLabel, project.topTitle]),
   );
@@ -52,35 +54,14 @@ export function ProjectTable({
         <div role="note" style={noteStyle}>この内訳だけは「サブエージェントのターンも含める」がオフでもサブエージェントを含みます。{report.overlapping ? "関係するエージェントそれぞれに同じターンを計上するため、行同士が重複し合計できません。" : "この期間の行同士に重複はありません。"}</div>
       ) : null}
       <VScrollBox maxHeight={320} label={`${dimensionLabel}別の内訳`}>
-        <table style={{ ...tableStyle, minWidth: projectMode ? 760 : 600 }}>
-          <colgroup>
-            {projectMode ? (
-              <>
-                <col style={{ width: "26%" }} />
-                <col style={{ width: "10%" }} />
-                <col style={{ width: "14%" }} />
-                <col style={{ width: "16%" }} />
-                <col style={{ width: "24%" }} />
-                <col style={{ width: "10%" }} />
-              </>
-            ) : (
-              <>
-                <col style={{ width: "50%" }} />
-                <col style={{ width: "10%" }} />
-                <col style={{ width: "14%" }} />
-                <col style={{ width: "16%" }} />
-                <col style={{ width: "10%" }} />
-              </>
-            )}
-          </colgroup>
+        <table style={{ ...tableStyle, minWidth: 0 }}>
           <thead>
             <tr>
               <th scope="col" style={thLeftStyle}>{dimensionLabel}</th>
               <th scope="col" style={thStyle}>セッション</th>
               <th scope="col" style={thStyle}>{costLabel}</th>
-              <th scope="col" style={thStyle}>シェア</th>
-              {projectMode ? <th scope="col" style={thLeftStyle}>主な主題</th> : null}
               <th scope="col" style={thStyle}>平均手戻り</th>
+              <th scope="col" style={thStyle}>詳細</th>
             </tr>
           </thead>
           <tbody>
@@ -88,8 +69,7 @@ export function ProjectTable({
               const filterableProject = projectMode && row.key !== "(unknown)" && row.key !== "unknown";
               const selected = filterableProject && selection?.project?.key === row.key;
               return (
-                <tr
-                  key={row.key}
+                <Fragment key={row.key}><tr
                   aria-selected={selected}
                   style={{ background: selected ? "var(--cmux-selected)" : undefined }}
                 >
@@ -109,15 +89,9 @@ export function ProjectTable({
                   </th>
                   <td style={tdStyle}>{formatCount(row.sessions)}</td>
                   <td style={tdStyle}>{formatMoney(row.costUsd)}</td>
-                  <td style={tdStyle}>
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-                      <ShareBar pct={row.sharePct} />
-                      {formatPct(row.sharePct)}
-                    </span>
-                  </td>
-                  {projectMode ? <td style={tdLeftStyle} title={topTitles.get(row.key) ?? undefined}>{topTitles.get(row.key) ?? "—"}</td> : null}
                   <td style={tdStyle}>{formatScore(row.avgRework)}</td>
-                </tr>
+                  <td style={tdStyle}><button type="button" aria-expanded={expanded === row.key} onClick={() => setExpanded(expanded === row.key ? null : row.key)} style={tableActionButtonStyle}>詳細</button></td>
+                </tr>{expanded === row.key ? <tr><td colSpan={5} style={tdLeftStyle}>シェア {formatPct(row.sharePct)}{projectMode ? " · 主な主題: " + (topTitles.get(row.key) ?? "—") : ""}</td></tr> : null}</Fragment>
               );
             })}
           </tbody>

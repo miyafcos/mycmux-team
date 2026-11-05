@@ -122,9 +122,17 @@ fn path_to_root(key: &SessionKey, nodes: &BTreeMap<SessionKey,Node>, eligible: &
     }
 }
 
-pub(super) fn session_page(conn: &Connection, source_rows: &[AggregateRow], expanded: bool, options: &SessionsOptions)
-    -> Result<(Vec<SessionRow>,i64,u64),String> {
-    let started = Instant::now();
+struct PreparedSessions {
+    eligible: BTreeMap<SessionKey, SessionSortAcc>,
+    models: BTreeMap<SessionKey, BTreeMap<String, i64>>,
+    nodes: BTreeMap<SessionKey, Node>,
+    paths: BTreeMap<SessionKey, (Vec<SessionKey>, bool, bool)>,
+    groups: BTreeMap<SessionKey, Vec<SessionKey>>,
+    scores: BTreeMap<SessionKey, (f64, i64, i64, f64)>,
+}
+
+fn prepare_sessions(conn: &Connection, source_rows: &[AggregateRow]) -> Result<(PreparedSessions, SessionPreparationTimings), String> {
+    let aggregate_started = Instant::now();
     let mut eligible: BTreeMap<SessionKey,SessionSortAcc> = BTreeMap::new();
     let mut models: BTreeMap<SessionKey,BTreeMap<String,i64>> = BTreeMap::new();
     for row in source_rows {
@@ -134,28 +142,51 @@ pub(super) fn session_page(conn: &Connection, source_rows: &[AggregateRow], expa
         entry.cost += row.cost;
         entry.turns += row.turns;
         entry.recent = entry.recent.max(row.last_ts);
+        *models.entry(key).or_default().entry(range_model_key(row.model.as_deref())).or_default() += row.input + row.output;
     }
-    let aggregate_ms = elapsed_ms(started);
+
+    let aggregate_us = aggregate_started.elapsed().as_micros().try_into().unwrap_or(u64::MAX);
     let node_started = Instant::now();
     let requested_keys: Vec<_> = eligible.keys().cloned().collect();
     let nodes = scoped_nodes(conn, &requested_keys)?;
-    let node_sql_ms = elapsed_ms(node_started);
+    let node_sql_us = node_started.elapsed().as_micros().try_into().unwrap_or(u64::MAX);
     let path_started = Instant::now();
+
     let paths: BTreeMap<_,_> = eligible.keys().map(|key| (key.clone(),path_to_root(key,&nodes,&eligible))).collect();
     let mut groups: BTreeMap<SessionKey,Vec<SessionKey>> = BTreeMap::new();
     for (key,(path,_,_)) in &paths {
         groups.entry(path[0].clone()).or_default().push(key.clone());
     }
-    let total = groups.len() as i64;
-    let path_ms = elapsed_ms(path_started);
-    let rank_started = Instant::now();
-    let scores: BTreeMap<_,_> = groups.iter().map(|(key,members)| {
+
+    let scores: BTreeMap<SessionKey, (f64, i64, i64, f64)> = groups.iter().map(|(key,members)| {
         let cost = members.iter().map(|member|eligible[member].cost).sum::<f64>();
         let turns = members.iter().map(|member|eligible[member].turns).sum::<i64>();
         let recent = members.iter().map(|member|eligible[member].recent).max().unwrap_or(0);
         let rework = members.iter().filter_map(|member|nodes.get(member)).map(|node|node.score).fold(0.0,f64::max);
         (key.clone(),(cost,turns,recent,rework))
     }).collect();
+    let path_us = path_started.elapsed().as_micros().try_into().unwrap_or(u64::MAX);
+    Ok((PreparedSessions { eligible, models, nodes, paths, groups, scores },
+        SessionPreparationTimings { aggregate_us, node_sql_us, path_us }))
+}
+
+#[cfg(test)]
+pub(super) fn session_page(conn: &Connection, source_rows: &[AggregateRow], expanded: bool, options: &SessionsOptions)
+    -> Result<(Vec<SessionRow>, i64, u64), String> {
+    let (prepared, preparation) = prepare_sessions(conn, source_rows)?;
+    page_from_prepared(conn, &prepared, expanded, options, Some(preparation))
+}
+
+fn page_from_prepared(conn: &Connection, prepared: &PreparedSessions, expanded: bool, options: &SessionsOptions, preparation: Option<SessionPreparationTimings>)
+    -> Result<(Vec<SessionRow>, i64, u64), String> {
+    let PreparedSessions { eligible, models, nodes, paths, groups, scores } = prepared;
+    let total = groups.len() as i64;
+    let preparation_reused = preparation.is_none();
+    let phase = preparation.unwrap_or_default();
+    let aggregate_ms = phase.aggregate_us as f64 / 1000.0;
+    let node_sql_ms = phase.node_sql_us as f64 / 1000.0;
+    let path_ms = phase.path_us as f64 / 1000.0;
+    let rank_started = Instant::now();
     let mut ranking: Vec<_> = scores.iter().map(|(key,score)| (key.clone(),*score)).collect();
     ranking.sort_by(|(left,first),(right,second)| {
         let order = match options.sort.as_str() {
@@ -170,14 +201,6 @@ pub(super) fn session_page(conn: &Connection, source_rows: &[AggregateRow], expa
         .skip(options.offset.max(0) as usize).take(options.limit.max(0) as usize).collect();
     let rank_ms = elapsed_ms(rank_started);
     let model_started = Instant::now();
-    let selected_members: BTreeSet<_> = selected.iter().flat_map(|root| groups[root].iter().cloned()).collect();
-    for row in source_rows {
-        super::super::report_runtime::checkpoint()?;
-        let key = (row.kind.clone(),row.session_id.clone());
-        if selected_members.contains(&key) {
-            *models.entry(key).or_default().entry(range_model_key(row.model.as_deref())).or_default() += row.input + row.output;
-        }
-    }
     let group_models: BTreeMap<_,_> = selected.iter().map(|root| {
         let members = &groups[root];
         let mut combined = BTreeMap::new();
@@ -260,11 +283,68 @@ pub(super) fn session_page(conn: &Connection, source_rows: &[AggregateRow], expa
         }
     }
     let hydrate_ms = elapsed_ms(hydrate_started);
-    let phases = format!("aggregate_ms={aggregate_ms} node_sql_ms={node_sql_ms} path_ms={path_ms} rank_ms={rank_ms} model_ms={model_ms} assembly_ms={assembly_ms} hydrate_ms={hydrate_ms}");
+    let phases = format!("preparation_reused={preparation_reused} aggregate_ms={aggregate_ms} node_sql_ms={node_sql_ms} path_ms={path_ms} rank_ms={rank_ms} model_ms={model_ms} assembly_ms={assembly_ms} hydrate_ms={hydrate_ms}");
     crate::diag::log(&format!("[ailog] sessions_build {phases}"));
     #[cfg(test)]
     if std::env::var_os("AILOG_PERF_DB").is_some() { println!("AILOG_G1_3_SESSION_BUILD={phases}"); }
-    Ok((requested.into_iter().filter_map(|key|hydrated.remove(&key)).collect(),total,node_sql_ms + hydrate_ms))
+    Ok((requested.into_iter().filter_map(|key|hydrated.remove(&key)).collect(),total,phase.node_sql_us / 1000 + hydrate_ms))
+}
+
+
+const SESSION_INDEX_MAX_BYTES: usize = 32 * 1024 * 1024;
+type CachedSessionIndex = (String, String, usize, Arc<PreparedSessions>);
+
+fn session_indices() -> &'static Mutex<Vec<CachedSessionIndex>> {
+    static CACHE: OnceLock<Mutex<Vec<CachedSessionIndex>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn store_session_index(cache: &mut Vec<CachedSessionIndex>, entry: CachedSessionIndex) {
+    cache.retain(|previous| previous.0 != entry.0);
+    // Four periods is the hard cap. Keep one oversized current index so that
+    // sorting a long period still reuses its aggregates; evict all other periods.
+    while !cache.is_empty() && (cache.len() >= 4 || cache.iter().map(|previous| previous.2).sum::<usize>() + entry.2 > SESSION_INDEX_MAX_BYTES) {
+        cache.remove(0);
+    }
+    cache.push(entry);
+}
+
+pub(super) fn cached_session_page(conn: &Connection, resolved: &ResolvedRange, filters: &Filters,
+    options: &SessionsOptions, timings: &mut ReportTimings) -> Result<(Vec<SessionRow>, i64, u64), String> {
+    let _snapshot = if conn.is_autocommit() { Some(conn.unchecked_transaction().map_err(|error| error.to_string())?) } else { None };
+    let revision = conn.path().filter(|path| !path.is_empty()).and_then(|_| super::super::report_cache::fingerprint(conn));
+    let key = format!("{}:{}:{}:{}", conn.path().unwrap_or_default(), resolved.from, resolved.to,
+        serde_json::to_string(filters).map_err(|error| error.to_string())?);
+    let cached = revision.as_ref().and_then(|revision| {
+        let mut cache = session_indices().lock().unwrap_or_else(|error| error.into_inner());
+        let index = cache.iter().position(|entry| entry.0 == key && &entry.1 == revision)?;
+        let entry = cache.remove(index);
+        let prepared = Arc::clone(&entry.3);
+        cache.push(entry);
+        Some(prepared)
+    });
+    let prepared = match cached {
+        Some(prepared) => prepared,
+        None => {
+            let rows = match measured_hybrid_rows(conn, resolved, filters, timings, false, false)? {
+                Some(rows) => rows,
+                None => measured_raw_aggregate_span(conn, resolved.from, resolved.to, filters, timings)?,
+            };
+            let (prepared, preparation) = prepare_sessions(conn, &rows)?;
+            timings.session_prepare = Some(preparation);
+            let prepared = Arc::new(prepared);
+            let bytes = prepared.nodes.len() * 256
+                + prepared.paths.values().map(|(path, _, _)| path.iter().map(|key| key.0.len() + key.1.len() + std::mem::size_of::<SessionKey>()).sum::<usize>()).sum::<usize>()
+                + prepared.models.values().map(|models| models.keys().map(|key| key.len() + 64).sum::<usize>()).sum::<usize>()
+                + prepared.eligible.len() * 512;
+            if let Some(revision) = revision {
+                let mut cache = session_indices().lock().unwrap_or_else(|error| error.into_inner());
+                store_session_index(&mut cache, (key, revision, bytes, Arc::clone(&prepared)));
+            }
+            prepared
+        }
+    };
+    page_from_prepared(conn, &prepared, filters.include_sidechain, options, timings.session_prepare)
 }
 
 
@@ -457,4 +537,28 @@ mod scoped_node_tests {
         }
     }
 
+}
+
+#[cfg(test)]
+mod session_index_retention_tests {
+    use super::*;
+
+    #[test]
+    fn retains_one_oversized_index_and_at_most_four_periods() {
+        let prepared = Arc::new(PreparedSessions {
+            eligible: BTreeMap::new(), models: BTreeMap::new(), nodes: BTreeMap::new(),
+            paths: BTreeMap::new(), groups: BTreeMap::new(), scores: BTreeMap::new(),
+        });
+        let mut cache = Vec::new();
+        for period in 0..6 {
+            store_session_index(&mut cache, (period.to_string(), "revision".into(), 1, Arc::clone(&prepared)));
+        }
+        assert_eq!(cache.iter().map(|entry| entry.0.as_str()).collect::<Vec<_>>(), vec!["2", "3", "4", "5"]);
+        store_session_index(&mut cache, ("all-time".into(), "revision".into(), SESSION_INDEX_MAX_BYTES + 1, Arc::clone(&prepared)));
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache[0].0, "all-time", "an oversized current period must remain reusable");
+        store_session_index(&mut cache, ("new-day".into(), "revision".into(), 1, prepared));
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache[0].0, "new-day");
+    }
 }

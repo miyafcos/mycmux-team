@@ -542,6 +542,9 @@ export interface TranscriptReport {
   messages: TranscriptMessage[];
   truncated: boolean;
   omittedCount: number;
+  bytesRead?: number;
+  fileBytes?: number;
+  scanTruncated?: boolean;
 }
 
 export interface SessionsReport {

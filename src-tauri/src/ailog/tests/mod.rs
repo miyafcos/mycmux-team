@@ -20,3 +20,5 @@ mod usage_series_tests;
 mod stage1_accounting_tests;
 mod stage2_presentation_tests;
 mod g1_4_measure;
+
+mod session_cache_tests;

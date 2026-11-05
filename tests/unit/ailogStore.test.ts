@@ -179,7 +179,7 @@ describe("AI log store U0", () => {
     await vi.waitFor(() => expect(useAilogStore.getState().previousTotals).toEqual(totals(10, 10)), { timeout: 2_000 });
   });
 
-  it("does not fetch rework rankings from loadUsage and caches a later open", async () => {
+  it("prefetches rework rankings from loadUsage and caches later visits", async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "ailog_rework_rankings") return { failedCommands: [], rewrittenFiles: [] };
       if (command === "ailog_overview") return dashboard(100, 199, 30, 20).overview;
@@ -187,7 +187,7 @@ describe("AI log store U0", () => {
     });
 
     await useAilogStore.getState().loadUsage();
-    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_rework_rankings")).toHaveLength(0);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_rework_rankings")).toHaveLength(1);
 
     await useAilogStore.getState().refreshReworkRankings();
     await useAilogStore.getState().refreshReworkRankings();
@@ -236,15 +236,15 @@ describe("AI log store U0", () => {
     expect(useAilogStore.getState().reworkRankings).toBe(report);
   });
 
-  it("clears rankings when the period changes, including an incomplete custom range", () => {
+  it("retains rankings when the period changes, including an incomplete custom range", () => {
     const report = { failedCommands: [], rewrittenFiles: [] };
     useAilogStore.setState({ reworkRankings: report, preset: "30d", customFrom: "", customTo: "" });
     useAilogStore.getState().setPreset("custom");
-    expect(useAilogStore.getState().reworkRankings).toBeNull();
+    expect(useAilogStore.getState().reworkRankings).toBe(report);
     useAilogStore.getState().setCustomRange("2026-01-01", "");
-    expect(useAilogStore.getState().reworkRankings).toBeNull();
+    expect(useAilogStore.getState().reworkRankings).toBe(report);
     useAilogStore.getState().setCustomRange("2026-01-01", "2026-01-31");
-    expect(useAilogStore.getState().reworkRankings).toBeNull();
+    expect(useAilogStore.getState().reworkRankings).toBe(report);
   });
 
   it("drops a rework ranking response that started before cache invalidation", async () => {
@@ -260,7 +260,7 @@ describe("AI log store U0", () => {
     expect(useAilogStore.getState().reworkRankings).toBeNull();
   });
 
-  it("does not fetch model handoffs from loadUsage and caches a later open", async () => {
+  it("prefetches model handoffs from loadUsage and caches later visits", async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "ailog_model_handoffs") return { range: { from: 0, to: 1, label: "test" }, granularity: "raw", handoffs: [{ from: "a", to: "b", count: 1 }] };
       if (command === "ailog_overview") return dashboard(100, 199, 30, 20).overview;
@@ -268,7 +268,7 @@ describe("AI log store U0", () => {
     });
 
     await useAilogStore.getState().loadUsage();
-    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_model_handoffs")).toHaveLength(0);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_model_handoffs")).toHaveLength(1);
 
     await useAilogStore.getState().refreshModelHandoffs();
     await useAilogStore.getState().refreshModelHandoffs();
@@ -288,32 +288,32 @@ describe("AI log store U0", () => {
     expect(useAilogStore.getState().usageError).toBeNull();
   });
 
-  it("force-refreshes open handoffs from loadUsage and does not fetch while closed", async () => {
+  it("force-refreshes handoffs from loadUsage independent of visibility", async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "ailog_model_handoffs") return { range: { from: 0, to: 1, label: "test" }, granularity: "raw", handoffs: [] };
       if (command === "ailog_overview") return dashboard(100, 199, 30, 20).overview;
       return {};
     });
     await useAilogStore.getState().loadUsage({ force: true });
-    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_model_handoffs")).toHaveLength(0);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_model_handoffs")).toHaveLength(1);
 
     useAilogStore.getState().setHandoffsOpen(true);
     await useAilogStore.getState().loadUsage({ force: true });
-    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_model_handoffs")).toHaveLength(1);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_model_handoffs")).toHaveLength(2);
   });
 
-  it("force-refreshes open rankings from loadUsage and does not fetch while closed", async () => {
+  it("force-refreshes rankings from loadUsage independent of visibility", async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "ailog_rework_rankings") return { failedCommands: [], rewrittenFiles: [] };
       if (command === "ailog_overview") return dashboard(100, 199, 30, 20).overview;
       return {};
     });
     await useAilogStore.getState().loadUsage({ force: true });
-    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_rework_rankings")).toHaveLength(0);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_rework_rankings")).toHaveLength(1);
 
     useAilogStore.getState().setReworkRankingsOpen(true);
     await useAilogStore.getState().loadUsage({ force: true });
-    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_rework_rankings")).toHaveLength(1);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_rework_rankings")).toHaveLength(2);
   });
 
   it("resets prior-period status when the filter context changes", () => {
@@ -373,16 +373,19 @@ describe("AI log report latency and cache boundaries", () => {
 
   const calls = (command: string) => invokeMock.mock.calls.filter(([name]) => name === command).length;
 
-  it("does not request hidden rhythm and does not let it hold the chart", async () => {
+  it("prefetches rhythm without letting its slow response hold the visible chart", async () => {
+    const rhythm = deferred<unknown>();
     invokeMock.mockImplementation((command: string) => {
-      if (command === "ailog_usage_rhythm") return new Promise(() => {});
+      if (command === "ailog_usage_rhythm") return rhythm.promise;
       if (command === "ailog_overview") return dashboard(100, 199, 30, 20).overview;
       return {};
     });
-    await useAilogStore.getState().loadUsage();
-    expect(calls("ailog_usage_rhythm")).toBe(0);
+    const pending = useAilogStore.getState().loadUsage();
+    await vi.waitFor(() => expect(calls("ailog_usage_rhythm")).toBe(1));
     expect(useAilogStore.getState().usageLoading).toBe(false);
     expect(useAilogStore.getState().usageSeries).toEqual({});
+    rhythm.resolve({});
+    await pending;
   });
 
   it("reuses period reports and session pages across chart grouping and bucket changes", async () => {
@@ -436,15 +439,15 @@ describe("AI log report latency and cache boundaries", () => {
     expect(useAilogStore.getState().usageSeries).toEqual({});
   });
 
-  it("refreshes rhythm after an update only while expanded", async () => {
+  it("refreshes rhythm after an update even when its view is not selected", async () => {
     useAilogStore.getState().setUsageRhythmOpen(true);
     await useAilogStore.getState().loadUsage({ force: true });
     expect(calls("ailog_usage_rhythm")).toBe(1);
     const previousRhythm = useAilogStore.getState().usageRhythm;
     useAilogStore.getState().setUsageRhythmOpen(false);
     await useAilogStore.getState().loadUsage({ force: true });
-    expect(calls("ailog_usage_rhythm")).toBe(1);
-    expect(useAilogStore.getState().usageRhythm).toBe(previousRhythm);
+    expect(calls("ailog_usage_rhythm")).toBe(2);
+    expect(useAilogStore.getState().usageRhythm).toEqual(previousRhythm);
     await useAilogStore.getState().refreshUsageRhythm();
     expect(calls("ailog_usage_rhythm")).toBe(2);
   });

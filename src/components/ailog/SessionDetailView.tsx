@@ -1,3 +1,4 @@
+import { TranscriptFeedback } from "./TranscriptFeedback";
 /**
  * One session, opened from the list.
  *
@@ -342,20 +343,21 @@ export function SessionDetailView({ detail, transcript, transcriptLoading, trans
 
       <details
         onToggle={(event) => {
-          if (event.currentTarget.open && !transcript && !transcriptLoading) onLoadTranscript();
+          if (event.currentTarget.open && !transcript && !transcriptLoading && !transcriptError) onLoadTranscript();
         }}
         style={{ border: "1px solid var(--cmux-border)", borderRadius: 6, padding: "6px 8px" }}
       >
         <summary style={{ cursor: "pointer", fontSize: "var(--cmux-font-size-xs)", fontWeight: 700 }}>{transcript ? "会話" : "会話を読み込む"}</summary>
         <div style={{ marginTop: 8 }}>
           {transcriptLoading ? <div style={noteStyle}>会話を読み込み中…</div> : null}
-          {transcriptError ? <div role="alert" style={{ ...noteStyle, color: "var(--cmux-red)" }}>会話を読み込めませんでした。<button type="button" onClick={onLoadTranscript} style={{ ...subtleButtonStyle, marginLeft: 6 }}>再試行</button><details><summary>技術情報</summary>{transcriptError}</details></div> : null}
+          <TranscriptFeedback error={transcriptError} onRetry={onLoadTranscript} />
           {transcript ? <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {transcript.messages.length === 0 ? <div style={noteStyle}>このログには表示できる会話がありません。</div> : null}
             {transcript.messages.map((message, index) => message.role === "tool" ? (
               <details key={index} style={{ ...noteStyle, border: "1px solid var(--cmux-border)", borderRadius: 4, padding: "4px 6px" }}><summary>{`${message.toolName ?? "tool"}${message.toolTarget ? ` · ${message.toolTarget}` : ""}`}</summary>{message.text ? <pre style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "var(--cmux-font-mono, monospace)" }}>{message.text}</pre> : null}</details>
             ) : <div key={index} style={{ borderLeft: `3px solid ${message.role === "user" ? "var(--cmux-accent)" : "var(--cmux-border)"}`, paddingLeft: 8 }}><div style={{ ...noteStyle, fontWeight: 700 }}>{message.role === "user" ? "依頼" : "応答"}</div><div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: 1.55, ...(expanded.has(index) ? {} : { display: "-webkit-box", WebkitLineClamp: 8, WebkitBoxOrient: "vertical", overflow: "hidden" }) }}>{message.text}</div>{message.text.split("\n").length > 8 ? <button type="button" style={subtleButtonStyle} onClick={() => setExpanded((old) => { const next = new Set(old); if (next.has(index)) next.delete(index); else next.add(index); return next; })}>{expanded.has(index) ? "折りたたむ" : "展開"}</button> : null}</div>)}
-            {transcript.truncated ? <div style={noteStyle}>{`表示上限のため ${transcript.omittedCount} 件を省略しています`}</div> : null}
+            {transcript.scanTruncated ? <div role="note" style={noteStyle}>読み取り上限（64MB・20万行、または1行1MB）に達したため、会話は途中までです。読み取っていない部分の件数は分かりません。</div> : null}
+            {transcript.omittedCount > 0 ? <div style={noteStyle}>表示上限200件のため、読み取った会話のうち {transcript.omittedCount} 件を省略しています。</div> : null}
           </div> : null}
         </div>
       </details>

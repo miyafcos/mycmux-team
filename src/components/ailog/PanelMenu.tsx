@@ -32,7 +32,7 @@ export function PanelMenu({
     <div ref={rootRef} style={{ position: "relative" }}>
       <button
         type="button"
-        aria-label="その他の操作"
+        aria-label="その他の操作" title="その他の操作"
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}

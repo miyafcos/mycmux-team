@@ -1,3 +1,4 @@
+import { Fragment, useState } from "react";
 /**
  * Per-model breakdown for the usage tab.
  *
@@ -95,6 +96,7 @@ export function UsageModelTable({
   selection: AilogSelection | null;
   onSelect: (selection: AilogSelection | null) => void;
 }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
   const rows = buildModelRows(report, metric).filter((row) => !excludeSynthetic || row.group !== SYNTHETIC_MODEL);
   const total = rows.reduce((sum, row) => sum + row.metric, 0);
   const groupingLabel = groupByLabel(report.groupBy);
@@ -123,33 +125,14 @@ export function UsageModelTable({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
       <VScrollBox label={`${groupingLabel}別の利用内訳`}>
-        <table style={{ ...tableStyle, minWidth: 1120 }}>
-          <colgroup>
-            <col style={{ width: "18%" }} />
-            <col style={{ width: "9%" }} />
-            <col style={{ width: "12%" }} />
-            <col style={{ width: "8%" }} />
-            <col style={{ width: "8%" }} />
-            <col style={{ width: "8%" }} />
-            <col style={{ width: "8%" }} />
-            <col style={{ width: "6%" }} />
-            <col style={{ width: "7%" }} />
-            <col style={{ width: "6%" }} />
-            <col style={{ width: "10%" }} />
-          </colgroup>
+        <table style={{ ...tableStyle, minWidth: 0 }}>
           <thead>
             <tr>
               <th scope="col" style={thLeftStyle}>{groupingLabel}</th>
               <ThCell main={usageMetricInfo(metric).label} />
               <ThCell main="シェア" />
-              <ThCell main="入力" />
-              <ThCell main="出力" />
-              <ThCell main="キャッシュ" sub="読み" />
-              <ThCell main="キャッシュ" sub="書き" />
-              <ThCell main="ターン" />
-              <ThCell main="延べ" sub="セッション" title="日別のセッション数を合計。日をまたぐ同一セッションは重複します" />
-              <ThCell main="使用" sub="日数" />
               <ThCell main="コスト相当" sub={costSub} title={costLabel} />
+              <ThCell main="詳細" />
             </tr>
           </thead>
           <tbody>
@@ -172,8 +155,7 @@ export function UsageModelTable({
                       ? { value: "money", title: "Grok の自己申告コスト" }
                       : { value: "money", title: undefined };
               return (
-                <tr
-                  key={row.group}
+                <Fragment key={row.group}><tr
                   aria-selected={selected || undefined}
                   style={{ background: selected ? "var(--cmux-selected)" : undefined }}
                 >
@@ -207,17 +189,14 @@ export function UsageModelTable({
                     <ShareBar pct={share} title={`${share.toFixed(1)}%`} />
                     <span style={{ marginLeft: 6 }}>{`${share.toFixed(1)}%`}</span>
                   </td>
-                  <td style={tdStyle}><Num value={row.input} kind="tokens" bare /></td>
-                  <td style={tdStyle}><Num value={row.output} kind="tokens" bare /></td>
-                  <td style={tdStyle}><Num value={row.cacheRead} kind="tokens" bare /></td>
-                  <td style={tdStyle}><Num value={row.cacheWrite} kind="tokens" bare /></td>
-                  <td style={tdStyle}><Num value={row.turns} kind="count" /></td>
-                  <td style={tdStyle}><Num value={row.sessions} kind="count" /></td>
-                  <td style={tdStyle}><Num value={row.days} kind="count" /></td>
                   <td style={{ ...tdStyle, color: cost.value === "—" ? "var(--cmux-text-tertiary)" : undefined }}>
                     {cost.value === "—" ? "—" : <Num value={row.costUsd} kind="money" title={cost.title} />}
                   </td>
+                  <td style={tdStyle}><button type="button" aria-expanded={expanded === row.group} onClick={() => setExpanded(expanded === row.group ? null : row.group)} style={tableActionButtonStyle}>詳細</button></td>
                 </tr>
+                {expanded === row.group ? <tr><td colSpan={5} style={tdLeftStyle}><dl style={{ display: "flex", flexWrap: "wrap", gap: 12, margin: 0 }}>
+                  {[["入力", row.input], ["出力", row.output], ["キャッシュ読み", row.cacheRead], ["キャッシュ書き", row.cacheWrite], ["ターン", row.turns], ["延べセッション", row.sessions], ["使用日数", row.days]].map(([label, value]) => <div key={label}><dt style={noteStyle}>{label}</dt><dd style={{ margin: 0 }}>{Number(value).toLocaleString("ja-JP")}</dd></div>)}
+                </dl></td></tr> : null}</Fragment>
               );
             })}
           </tbody>

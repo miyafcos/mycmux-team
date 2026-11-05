@@ -434,9 +434,9 @@ export function SkeletonBlock({ height = 90, label }: { height?: number; label: 
 /** Keeps previous data visible while its replacement is loading. */
 export function RefreshingBlock({ busy, children }: { busy: boolean; children: ReactNode }) {
   return (
-    <div aria-busy={busy} data-ailog-refreshing={busy ? "true" : "false"} style={{ minWidth: 0 }}>
+    <div aria-busy={busy} data-ailog-refreshing={busy ? "true" : "false"} style={{ minWidth: 0, position: "relative" }}>
       {busy ? (
-        <div role="status" aria-live="polite" style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)" }}>
+        <div role="status" aria-live="polite" style={{ display: "flex", alignItems: "center", gap: 6, position: "absolute", top: 0, right: 0, zIndex: 1, padding: "2px 6px", background: "var(--cmux-surface-solid)", color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)" }}>
           <span>更新中…</span>
           <span aria-hidden="true" style={{ display: "block", flex: 1, maxWidth: 72, height: 3, borderRadius: 999, background: "var(--cmux-accent)", opacity: 0.8 }} />
         </div>

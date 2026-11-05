@@ -756,7 +756,12 @@ def run_shell_menu() -> tuple[str, ...]:
     bash = shutil.which("bash")
     if not bash:
         pytest.skip("bash is not available")
-    script = [extract_named_sh_functions(SPEC_MENU_SH_FUNCTIONS), 'K="$(mktemp)"']
+    functions = extract_named_sh_functions(SPEC_MENU_SH_FUNCTIONS)
+    # A terminal is duplex; this fixture key file is read-only. Keep the
+    # shipped key/menu logic, and direct only its drawing to stderr. Failed
+    # writes to the read-only FD pollute process-substitution output on Bash 3.2.
+    functions = functions.replace(">&$__CMUX_MENU_FD", ">&2")
+    script = [functions, 'K="$(mktemp)"']
     for _case_id, target, keys, _ps_keys, _lines, _expected in MENU_CASES:
         script.append(
             "__MYCMUX_LAUNCH_MODEL=''; __MYCMUX_LAUNCH_EFFORT=''\n"
@@ -764,9 +769,9 @@ def run_shell_menu() -> tuple[str, ...]:
             'exec 9< "$K"\n'
             "__CMUX_MENU_FD=9\n"
             f"if __launch_spec_menu {shlex.quote(target)} probe 2>/dev/null; then\n"
-            '  printf "%s|%s\\n" "$__MYCMUX_LAUNCH_MODEL" "$__MYCMUX_LAUNCH_EFFORT"\n'
+            '  printf "__MYCMUX_TEST_RESULT__:%s|%s\\n" "$__MYCMUX_LAUNCH_MODEL" "$__MYCMUX_LAUNCH_EFFORT"\n'
             "else\n"
-            '  printf "CANCELLED\\n"\n'
+            '  printf "__MYCMUX_TEST_RESULT__:CANCELLED\\n"\n'
             "fi\n"
             "exec 9<&-\n"
         )
@@ -779,7 +784,12 @@ def run_shell_menu() -> tuple[str, ...]:
         timeout=120,
     )
     assert result.returncode == 0, f"bash failed: {result.stderr}"
-    return tuple(line for line in result.stdout.splitlines() if line.strip())
+    # Bash 3.2 may also print the terminal drawing while the input FD is a
+    # fixture file. Parse only marked decisions, and require one per case.
+    prefix = "__MYCMUX_TEST_RESULT__:"
+    decisions = tuple(line[len(prefix):] for line in result.stdout.splitlines() if line.startswith(prefix))
+    assert len(decisions) == len(MENU_CASES), result.stdout
+    return decisions
 
 
 @lru_cache(maxsize=1)

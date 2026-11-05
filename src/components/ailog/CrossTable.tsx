@@ -1,5 +1,5 @@
 import { useAgentServiceVisibility } from "../../hooks/useAgentServiceVisibility";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import type { PivotAxis, PivotReport } from "../../lib/ailog";
 import type { AilogSelection } from "../../stores/ailogStore";
@@ -12,7 +12,7 @@ import {
   pivotAxisLabel,
   selectionFromPivotCell,
 } from "./crossTableModel";
-import { groupLabel, metricUnit, usageAxisHint, USAGE_AXES, type UsageMetric } from "./usageModel";
+import { metricValue, groupLabel, metricUnit, usageAxisHint, USAGE_AXES, type UsageMetric } from "./usageModel";
 import { ReportFailure, ReportNotLoaded, ReportPeriod } from "./ReportFeedback";
 import { ButtonGroup, EmptyState, Num, VScrollBox, noteStyle, tableActionButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
 
@@ -53,12 +53,14 @@ export function CrossTable({
   onColBy: (value: PivotAxis) => void;
   onSelect: (selection: AilogSelection | null) => void;
 }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
   const visible = useAgentServiceVisibility();
   const visibleAxes = USAGE_AXES.map(axis => ({ value: axis.value, label: axis.label, title: usageAxisHint(axis, visible) }));
-  const folded = useMemo(() => (report ? foldPivot(report, metric) : null), [report, metric]);
+  const folded = useMemo(() => (report ? foldPivot(report, metric, 12, 3) : null), [report, metric]);
   const note = folded ? foldNote(folded) : null;
-  const max = folded ? Math.max(0, ...folded.rows.flatMap((row) => row.cells)) : 0;
   const stackable = folded?.stackable ?? true;
+  const max = folded ? Math.max(0, ...folded.rows.flatMap((row) => row.cells.filter((_, index) =>
+    stackable || (row.key !== OTHER_KEY && folded.cols[index] !== OTHER_KEY)))) : 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
@@ -77,13 +79,12 @@ export function CrossTable({
       ) : (
         <>
           <VScrollBox maxHeight={360} label={`${pivotAxisLabel(rowBy)}と${pivotAxisLabel(colBy)}のクロス集計`}>
-            <table style={{ ...tableStyle, minWidth: Math.max(640, 190 + folded.cols.length * 112) }}>
+            <table style={{ ...tableStyle, minWidth: 0 }}>
               <colgroup>
                 <col style={{ width: "22%" }} />
                 {folded.cols.map((col) => (
                   <col key={col} style={{ width: `${folded.cols.length > 0 ? 68 / folded.cols.length : 68}%` }} />
                 ))}
-                <col style={{ width: "10%" }} />
               </colgroup>
               <caption style={{ ...noteStyle, captionSide: "bottom", textAlign: "left", paddingTop: 8 }}>
                 {`${pivotAxisLabel(rowBy)} × ${pivotAxisLabel(colBy)}`}
@@ -96,7 +97,6 @@ export function CrossTable({
                       {axisLabel(col, colBy)}
                     </th>
                   ))}
-                  <th scope="col" style={thStyle}>合計</th>
                 </tr>
               </thead>
               <tbody>
@@ -104,6 +104,8 @@ export function CrossTable({
                   <tr key={row.key}>
                     <th scope="row" style={{ ...tdLeftStyle, fontWeight: 400 }} title={axisLabel(row.key, rowBy)}>
                       {axisLabel(row.key, rowBy)}
+                      <div style={noteStyle}>合計 {stackable ? <Num value={row.total} kind={metricUnit(metric)} bare /> : "—"}</div>
+                      <button type="button" aria-expanded={expanded === row.key} onClick={() => setExpanded(expanded === row.key ? null : row.key)} style={tableActionButtonStyle}>詳細</button>
                     </th>
                     {row.cells.map((value, index) => {
                       const colKey = folded.cols[index];
@@ -114,8 +116,9 @@ export function CrossTable({
                         && (!next.model || selection.model?.key === next.model.key)
                         && (!next.project || selection.project?.key === next.project.key),
                       );
-                      const mix = heatMixPercent(value, max);
-                      const clickable = next !== null;
+                      const additiveCell = stackable || (row.key !== OTHER_KEY && colKey !== OTHER_KEY);
+                      const mix = additiveCell ? heatMixPercent(value, max) : 0;
+                      const clickable = additiveCell && next !== null;
                       return (
                         <td
                           key={colKey}
@@ -129,7 +132,7 @@ export function CrossTable({
                                 : undefined,
                           }}
                         >
-                          {next ? <button
+                          {!additiveCell ? "—" : next ? <button
                             type="button"
                             aria-pressed={selected}
                             aria-label={`${axisLabel(row.key, rowBy)}、${axisLabel(colKey, colBy)}、${value}`}
@@ -148,9 +151,6 @@ export function CrossTable({
                         </td>
                       );
                     })}
-                    <td style={{ ...tdStyle, fontWeight: 600 }}>
-                      {stackable ? <Num value={row.total} kind={metricUnit(metric)} bare /> : "—"}
-                    </td>
                   </tr>
                 ))}
                 <tr>
@@ -160,19 +160,27 @@ export function CrossTable({
                       {stackable ? <Num value={value} kind={metricUnit(metric)} bare /> : "—"}
                     </td>
                   ))}
-                  <td style={{ ...tdStyle, fontWeight: 700 }}>
-                    {stackable ? <Num value={folded.grandTotal} kind={metricUnit(metric)} bare /> : "—"}
-                  </td>
                 </tr>
               </tbody>
             </table>
           </VScrollBox>
+          <div style={noteStyle}>上位3項目とその他を表示。各行の合計と全項目は行の「詳細」で確認できます。</div>
+          {expanded !== null ? <div role="region" aria-label="比較の行詳細" style={{ border: "1px solid var(--cmux-border)", padding: 12 }}>
+            <strong>{axisLabel(expanded, rowBy)}の詳細</strong>
+            <dl style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
+              {report.cols.map((key, index) => {
+                const source = report.rows.filter(row => row.key === expanded || (expanded === OTHER_KEY && folded.foldedRowKeys.includes(row.key)));
+                const value = source.reduce((sum, row) => sum + metricValue(row.cells[index], metric), 0);
+                return <div key={key}><dt style={noteStyle}>{axisLabel(key, colBy)}</dt><dd style={{ margin: 0 }}>{!stackable && (key === OTHER_KEY || expanded === OTHER_KEY) ? "—" : <Num value={value} kind={metricUnit(metric)} bare />}</dd></div>;
+              })}
+            </dl><button type="button" onClick={() => setExpanded(null)} style={tableActionButtonStyle}>詳細を閉じる</button>
+          </div> : null}
           {note ? <div style={noteStyle}>{note}</div> : null}
           {!stackable ? (
             <div style={noteStyle}>1セッションが複数モデルに跨るため合計できません</div>
           ) : null}
           {isFilterablePivotAxis(rowBy) || isFilterablePivotAxis(colBy) ? (
-            <div style={noteStyle}>セルの値を選ぶと下のセッション一覧が連動します。</div>
+            <div style={noteStyle}>セルの値を選ぶと期間全体を絞り込みます。セッションの見出しで一覧を確認できます。</div>
           ) : null}
         </>
       )}

@@ -699,18 +699,29 @@ pub async fn ailog_session_detail(args: SessionDetailArgs) -> Result<query::Sess
 /// the webview and the UI only receives display-safe conversation entries.
 #[tauri::command(async)]
 pub async fn ailog_session_transcript(
+    app_handle: AppHandle,
     args: SessionDetailArgs,
-) -> Result<crate::ailog::transcript::TranscriptReport, String> {
-    let path = {
-        let conn = open()?;
-        conn.query_row(
-            "SELECT path FROM source_file WHERE kind=?1 AND session_id=?2 ORDER BY last_indexed DESC LIMIT 1",
-            rusqlite::params![args.kind, args.session_id], |row| row.get::<_, String>(0),
-        ).map_err(|err| format!("transcript source not found: {err}"))?
-    };
-    tokio::task::spawn_blocking(move || {
-        crate::ailog::transcript::extract_path(&args.kind, std::path::Path::new(&path))
-    }).await.map_err(|err| format!("transcript worker: {err}"))?
+) -> Result<crate::ailog::transcript::TranscriptReport, crate::ailog::transcript::source::TranscriptError> {
+    use crate::ailog::transcript::source::{SourceConfig, TranscriptError, TranscriptReader, READ_TIMEOUT};
+    // A timed-out cloud-drive open cannot be interrupted. Hold its slot until
+    // the worker ends, and distinguish a busy slot from this request timing out.
+    static READER: TranscriptReader = TranscriptReader::new();
+    let guard = READER.acquire()?;
+    let timed_out = guard.timeout_marker();
+    let worker = tokio::task::spawn_blocking(move || {
+        let _guard = guard;
+        let conn = open().map_err(TranscriptError::temporary)?;
+        let setting = crate::db::storage::load(&app_handle)
+            .map(|data| data.settings.ailog_mirror_full_text_root);
+        crate::ailog::transcript::source::load(&conn, &args.kind, &args.session_id, &SourceConfig::from_full_text_setting(setting))
+    });
+    match tokio::time::timeout(READ_TIMEOUT, worker).await {
+        Ok(result) => result.map_err(|error| TranscriptError::temporary(format!("transcript worker: {error}")))?,
+        Err(_) => {
+            timed_out.store(true, Ordering::Release);
+            Err(TranscriptError::timeout())
+        }
+    }
 }
 
 #[tauri::command(async)]

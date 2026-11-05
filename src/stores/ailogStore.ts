@@ -1,3 +1,4 @@
+import { transcriptFailure } from "../lib/ailogTranscript";
 /**
  * State for the AI log dashboard: the selected range, the filters, and the
  * usage reports the panel draws from.
@@ -68,10 +69,12 @@ import {
   type Totals,
   granularityFromSeriesAxis,
 } from "../lib/ailog";
-import type { UsageMetric } from "../components/ailog/usageModel";
+import type { UsageMetric, RhythmMetric } from "../components/ailog/usageModel";
 import { nextPivotAxes } from "../components/ailog/crossTableModel";
 
 export const SESSION_PAGE_SIZE = 100;
+
+export type AilogSection = "breakdown" | "comparison" | "sessions" | "rework" | "handoffs" | "activity";
 
 export type SessionSort = "cost" | "rework" | "recent" | "turns";
 export type BreakdownDimension = "project" | "branch" | "effort" | "origin" | "title" | "agent";
@@ -118,6 +121,10 @@ type RefreshOptions = { force?: boolean; revalidate?: boolean };
 type OverviewRefreshOptions = RefreshOptions & { comparePrevious?: boolean };
 
 interface AilogState {
+  breakdownAxis: "usage" | "work" | BreakdownDimension;
+  setAilogBreakdownAxis: (axis: "usage" | "work" | BreakdownDimension) => void;
+  activeSection: AilogSection;
+  setActiveSection: (section: AilogSection) => void;
   // --- range / filters ---
   preset: RangePreset;
   customFrom: string;
@@ -179,6 +186,7 @@ interface AilogState {
   usageBucket: UsageBucket;
   usageSeries: SeriesReport | null;
   usageRhythm: UsageRhythmReport | null;
+  usageRhythmMetric: RhythmMetric;
   usageRhythmLoading: boolean;
   usageRhythmError: string | null;
   usageRhythmOpen: boolean;
@@ -207,6 +215,7 @@ interface AilogState {
   setPreset: (preset: RangePreset) => void;
   setCustomRange: (from: string, to: string) => void;
   setUsageMetric: (metric: UsageMetric) => void;
+  setUsageRhythmMetric: (metric: RhythmMetric) => void;
   setUsageStack: (stack: "absolute" | "share") => void;
   setUsageBucket: (bucket: UsageBucket) => void;
   setUsageSeriesAxis: (axis: SeriesGroupBy) => void;
@@ -317,6 +326,15 @@ interface CacheContext {
   granularity: AilogGranularity;
 }
 
+export const AILOG_PERIOD_CACHE_LIMIT = 8;
+export const AILOG_RESOURCE_CACHE_LIMIT = 24;
+
+function touchBounded<K, V>(map: Map<K, V>, key: K, value: V, limit: number): void {
+  map.delete(key);
+  map.set(key, value);
+  while (map.size > limit) map.delete(map.keys().next().value!);
+}
+
 const periodCache = new Map<string, PeriodCache>();
 const previousTotalsCache = new Map<string, CachedResource<Totals>>();
 const reworkRankingsCache = new Map<string, CachedResource<ReworkRankingsReport>>();
@@ -338,8 +356,8 @@ function periodEntry(key: string): PeriodCache {
       breakdown: new Map(),
       pivot: new Map(),
     };
-    periodCache.set(key, entry);
   }
+  touchBounded(periodCache, key, entry, AILOG_PERIOD_CACHE_LIMIT);
   return entry;
 }
 
@@ -347,8 +365,8 @@ function mapResource<K, T>(map: Map<K, CachedResource<T>>, key: K): CachedResour
   let entry = map.get(key);
   if (!entry) {
     entry = resource<T>();
-    map.set(key, entry);
   }
+  touchBounded(map, key, entry, AILOG_RESOURCE_CACHE_LIMIT);
   return entry;
 }
 
@@ -356,8 +374,8 @@ function previousTotalsResource(key: string): CachedResource<Totals> {
   let entry = previousTotalsCache.get(key);
   if (!entry) {
     entry = resource<Totals>();
-    previousTotalsCache.set(key, entry);
   }
+  touchBounded(previousTotalsCache, key, entry, AILOG_PERIOD_CACHE_LIMIT);
   return entry;
 }
 
@@ -365,8 +383,8 @@ function reworkRankingsResource(key: string): CachedResource<ReworkRankingsRepor
   let entry = reworkRankingsCache.get(key);
   if (!entry) {
     entry = resource<ReworkRankingsReport>();
-    reworkRankingsCache.set(key, entry);
   }
+  touchBounded(reworkRankingsCache, key, entry, AILOG_PERIOD_CACHE_LIMIT);
   return entry;
 }
 
@@ -524,6 +542,27 @@ function cacheContext(state: Pick<AilogState, "preset" | "customFrom" | "customT
   return { key, range: requestRange, filters, granularity: state.granularity };
 }
 
+/** Pending flags follow actual cache misses, including later prefetch phases. */
+function plannedLoadingFlags(state: AilogState, options: RefreshOptions = {}): Partial<AilogState> {
+  const context = cacheContext(state);
+  const names = ["loading", "modelsLoading", "usageLoading", "breakdownLoading", "pivotLoading",
+    "sessionLoading", "reworkRankingsLoading", "handoffsLoading", "usageRhythmLoading"] as const;
+  if (!context) return { ...Object.fromEntries(names.map(name => [name, false])), previousTotalsStatus: "idle" };
+  const entry = periodCache.get(context.key);
+  const needs = (resource: { value?: unknown } | undefined) => Boolean(options.force || options.revalidate || resource?.value === undefined);
+  const sessionKey = JSON.stringify({ context: context.key, query: state.sessionQuery.trim(),
+    sort: state.sessionSort, page: state.sessionPage, includeSidechain: state.includeSidechain });
+  const rework = reworkRankingsContext(state);
+  return {
+    loading: needs(entry?.overview), usageLoading: needs(entry?.usage.get(state.usageBucket + ":" + state.usageSeriesAxis)),
+    modelsLoading: needs(entry?.models.get(context.granularity)), breakdownLoading: needs(entry?.breakdown.get(state.breakdownDimension)),
+    pivotLoading: needs(entry?.pivot.get(state.pivotRowBy + ":" + state.pivotColBy)),
+    sessionLoading: needs(entry?.sessions.get(sessionKey)), usageRhythmLoading: needs(entry?.rhythm),
+    handoffsLoading: needs(entry?.handoffs.get(context.granularity)),
+    reworkRankingsLoading: needs(rework ? reworkRankingsCache.get(rework.key) : undefined),
+  };
+}
+
 function isCurrentContext(get: () => AilogState, key: string): boolean {
   return cacheContext(get())?.key === key;
 }
@@ -557,18 +596,6 @@ export function invalidateAilogCaches(): void {
   clearAilogCaches();
 }
 
-function dropReworkRankingsCache(): void {
-  reworkRankingsCache.clear();
-  reworkSeq += 1;
-}
-
-function dropHandoffsCache(): void {
-  for (const entry of periodCache.values()) {
-    entry.handoffs.clear();
-  }
-  handoffSeq += 1;
-}
-
 function handoffsResetIfContextChanged(
   current: AilogState,
   next: Pick<AilogState, "preset" | "customFrom" | "customTo" | "rangeAnchor" | "includeSidechain" | "selection" | "granularity" | "usageSeriesAxis">,
@@ -577,9 +604,8 @@ function handoffsResetIfContextChanged(
   const nextKey = cacheContext(next)?.key ?? null;
   if (nextKey === currentKey && next.granularity === current.granularity) return {};
   return {
-    handoffs: null,
     handoffsError: null,
-    handoffsLoading: false,
+    handoffsLoading: true,
   };
 }
 
@@ -598,10 +624,8 @@ function reworkResetIfContextChanged(
   const nextKey = reworkContextKey(next);
   if (nextKey === currentKey) return {};
   return {
-    reworkRankings: null,
-    reworkRankingsRange: null,
     reworkRankingsError: null,
-    reworkRankingsLoading: false,
+    reworkRankingsLoading: true,
     previousTotals: null,
     previousTotalsStatus: "loading",
   };
@@ -689,6 +713,8 @@ export function selectionFilters<T extends { models: string[]; projects: string[
 }
 
 const initialState = {
+  breakdownAxis: "usage" as "usage" | "work" | BreakdownDimension,
+  activeSection: "breakdown" as AilogSection,
   preset: "30d" as RangePreset,
   customFrom: "",
   customTo: "",
@@ -745,6 +771,7 @@ const initialState = {
   usageBucket: "day" as UsageBucket,
   usageSeries: null,
   usageRhythm: null,
+  usageRhythmMetric: "ioTokens" as RhythmMetric,
   usageRhythmLoading: false,
   usageRhythmError: null,
   usageRhythmOpen: false,
@@ -822,6 +849,10 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     }
   },
 
+  setUsageRhythmMetric: (usageRhythmMetric) => set({ usageRhythmMetric }),
+  setActiveSection: (activeSection) => set({ activeSection }),
+  setAilogBreakdownAxis: (breakdownAxis) => set({ breakdownAxis }),
+
   setPreset: (preset) => {
     const current = get();
     if (current.preset === preset) return;
@@ -829,13 +860,11 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     invalidateReportRequests();
     set({
       preset,
-      overview: null, usageSeries: null, breakdown: null, pivot: null, models: null, sessions: null,
-      loading: false, dashboardError: null, modelsLoading: false, modelsError: null,
-      usageLoading: false, usageError: null, breakdownLoading: false, breakdownError: null,
-      pivotLoading: false, pivotError: null, sessionLoading: false, sessionError: null,
+      loading: true, dashboardError: null, modelsLoading: true, modelsError: null,
+      usageLoading: true, usageError: null, breakdownLoading: true, breakdownError: null,
+      pivotLoading: true, pivotError: null, sessionLoading: true, sessionError: null,
       reportSnapshots: {},
-      usageRhythm: null,
-      usageRhythmLoading: false,
+      usageRhythmLoading: true,
       usageRhythmError: null,
       sessionPage: 0,
       selection: null,
@@ -843,6 +872,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       previousTotalsStatus: "idle",
       ...reworkResetIfContextChanged(current, next),
       ...handoffsResetIfContextChanged(current, next),
+      ...plannedLoadingFlags(next),
     });
   },
 
@@ -856,18 +886,18 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       customFrom,
       customTo,
       preset: "custom",
-      overview: null, usageSeries: null, breakdown: null, pivot: null, models: null, sessions: null, reportSnapshots: {},
-      loading: false, dashboardError: null, modelsLoading: false, modelsError: null,
-      usageLoading: false, usageError: null, breakdownLoading: false, breakdownError: null,
-      pivotLoading: false, pivotError: null, sessionLoading: false, sessionError: null,
-      usageRhythm: null,
-      usageRhythmLoading: false,
+      reportSnapshots: {},
+      loading: true, dashboardError: null, modelsLoading: true, modelsError: null,
+      usageLoading: true, usageError: null, breakdownLoading: true, breakdownError: null,
+      pivotLoading: true, pivotError: null, sessionLoading: true, sessionError: null,
+      usageRhythmLoading: true,
       usageRhythmError: null,
       sessionPage: 0,
       previousTotals: null,
       previousTotalsStatus: "idle",
       ...reworkResetIfContextChanged(current, next),
       ...handoffsResetIfContextChanged(current, next),
+      ...plannedLoadingFlags(next),
     });
   },
 
@@ -897,6 +927,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   },
   setUsageSeriesAxis: (usageSeriesAxis) => {
     const current = get();
+    if (current.usageSeriesAxis === usageSeriesAxis) return;
     const granularity = granularityFromSeriesAxis(usageSeriesAxis);
     if (current.usageSeriesAxis !== usageSeriesAxis) usageSeq += 1;
     if (current.granularity !== granularity) { modelsSeq += 1; handoffSeq += 1; }
@@ -906,6 +937,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       ...(current.granularity !== granularity ? { models: null, modelsLoading: false, modelsError: null } : {}),
       ...(current.usageSeriesAxis !== usageSeriesAxis ? { usageSeries: null, usageLoading: false, usageError: null, reportSnapshots: snapshotStatuses(current.reportSnapshots, "usage", null) } : {}),
       ...handoffsResetIfContextChanged(current, { ...current, usageSeriesAxis, granularity }),
+      ...plannedLoadingFlags({ ...current, usageSeriesAxis, granularity }),
     });
   },
   setPivotRowBy: (rowBy) => {
@@ -935,34 +967,26 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       selection: nextSelection,
       reportSnapshots: {},
       sessionPage: 0,
-      overview: null,
       previousTotals: null,
       previousTotalsStatus: "idle",
-      series: null,
-      models: null,
-      modelsLoading: false,
+      modelsLoading: true,
       modelsError: null,
       dashboardError: null,
-      usageLoading: false, usageError: null,
-      breakdownLoading: false, breakdownError: null,
-      pivotLoading: false, pivotError: null,
-      sessionLoading: false, sessionError: null,
-      projects: null,
-      breakdown: null,
-      sessions: null,
-      usageSeries: null,
-      usageRhythm: null,
-      usageRhythmLoading: false,
+      usageLoading: true, usageError: null,
+      breakdownLoading: true, breakdownError: null,
+      pivotLoading: true, pivotError: null,
+      sessionLoading: true, sessionError: null,
+      usageRhythmLoading: true,
       usageRhythmError: null,
-      pivot: null,
       loading: true,
       ...reworkResetIfContextChanged(current, { ...current, selection: nextSelection }),
       ...handoffsResetIfContextChanged(current, { ...current, selection: nextSelection }),
     });
   },
   setBreakdownDimension: (breakdownDimension) => {
+    if (get().breakdownDimension === breakdownDimension) return;
     breakdownSeq += 1;
-    set({ breakdownDimension, breakdown: null, breakdownLoading: false, breakdownError: null, reportSnapshots: snapshotStatuses(get().reportSnapshots, "breakdown", null) });
+    set({ breakdownDimension, breakdown: null, breakdownLoading: false, breakdownError: null, reportSnapshots: snapshotStatuses(get().reportSnapshots, "breakdown", null), ...plannedLoadingFlags({ ...get(), breakdownDimension }) });
   },
 
   currentRange: () => {
@@ -1172,42 +1196,23 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     const startedAt = performance.now();
     const myLoad = ++usageLoadSeq;
     try {
-      // Reserve the first two backend slots for the overview and visible chart.
-      // The hidden rhythm and lower tables must not queue ahead of the chart.
-      const overview = get().refreshOverview({ ...options, comparePrevious: true });
-      const usage = get().refreshUsage(options);
-      // Independent reports must not wait for the chart to settle.
-      const models = get().refreshModels(options);
-      const sessions = get().refreshSessions(options);
-      await usage;
+      if (!cacheContext(get())) { set(plannedLoadingFlags(get())); return; }
+      set(plannedLoadingFlags(get(), options));
+      // One period, three phases. Tabs only select already requested reports.
+      await Promise.all([
+        get().refreshOverview({ ...options, comparePrevious: true }),
+        get().refreshUsage(options),
+      ]);
       if (myLoad !== usageLoadSeq) return;
-      const tasks: Array<Promise<void>> = [
-        overview,
-        models,
-        sessions,
-        get().refreshBreakdown(options),
-        get().refreshPivot(options),
-      ];
-      if (get().usageRhythmOpen) {
-        tasks.push(get().refreshUsageRhythm(options));
-      } else if (options.force) {
-        rhythmSeq += 1;
-        for (const entry of periodCache.values()) entry.rhythm = resource();
-        set({ usageRhythmLoading: false, reportSnapshots: failedSnapshotStatus(get().reportSnapshots, "rhythm") });
-      }
-      if (get().reworkRankingsOpen) {
-        tasks.push(get().refreshReworkRankings({ force: options.force }));
-      } else if (options.force) {
-        dropReworkRankingsCache();
-        set({ reworkRankingsLoading: false });
-      }
-      if (get().handoffsOpen) {
-        tasks.push(get().refreshModelHandoffs({ force: options.force }));
-      } else if (options.force) {
-        dropHandoffsCache();
-        set({ handoffsLoading: false });
-      }
-      await Promise.all(tasks);
+      await Promise.all([
+        get().refreshModels(options), get().refreshSessions(options),
+        get().refreshBreakdown(options), get().refreshPivot(options),
+      ]);
+      if (myLoad !== usageLoadSeq) return;
+      await Promise.all([
+        get().refreshReworkRankings(options), get().refreshModelHandoffs(options),
+        get().refreshUsageRhythm(options),
+      ]);
     } finally {
       if (myLoad === usageLoadSeq) set({ lastLoadMs: performance.now() - startedAt });
     }
@@ -1236,7 +1241,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       set({ transcript, transcriptLoading: false });
     } catch (error) {
       if (mySeq !== transcriptSeq) return;
-      set({ transcriptLoading: false, transcriptError: errorMessage(error) });
+      set({ transcriptLoading: false, transcriptError: JSON.stringify(transcriptFailure(error)) });
     }
   },
 

@@ -343,7 +343,7 @@ pub fn read_handoffs(conn: &Connection, range: &ResolvedRange, granularity: &str
     }
     Ok((handoffs,super::query::ReportTimings {
         sql_ms:started.elapsed().as_millis() as u64,rows_scanned:raw+rollup,
-        raw_rows:raw,rollup_rows:rollup,raw_turns:raw,raw_turns_measured:true,build_ms:0,path:path(raw,rollup),
+        raw_rows:raw,rollup_rows:rollup,raw_turns:raw,raw_turns_measured:true,build_ms:0,session_prepare:None,path:path(raw,rollup),
     }))
 }
 
@@ -380,7 +380,7 @@ pub fn read_rework(conn: &Connection, range: &ResolvedRange)
     let route=if ready_days>0 && raw_rows==0 { "rollup" } else { path(raw_rows,rollup_rows) };
     Ok((tools,files,super::query::ReportTimings {
         sql_ms:started.elapsed().as_millis() as u64,rows_scanned:raw_rows+rollup_rows,
-        raw_rows,rollup_rows,raw_turns,raw_turns_measured:true,build_ms:0,path:route,
+        raw_rows,rollup_rows,raw_turns,raw_turns_measured:true,build_ms:0,session_prepare:None,path:route,
     }))
 }
 

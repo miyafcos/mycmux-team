@@ -2,7 +2,8 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::ailog::{KIND_CLAUDE, KIND_CODEX};
+use crate::ailog::{KIND_CLAUDE, KIND_CLAUDE_CODEX, KIND_CODEX};
+pub mod source;
 
 pub const MESSAGE_LIMIT: usize = 200;
 
@@ -27,7 +28,7 @@ pub struct TranscriptReport {
 }
 
 pub fn extract(kind: &str, text: &str) -> Result<TranscriptReport, String> {
-    if kind != KIND_CLAUDE && kind != KIND_CODEX { return Err("unsupported transcript kind".to_string()); }
+    if kind != KIND_CLAUDE && kind != KIND_CLAUDE_CODEX && kind != KIND_CODEX { return Err("unsupported transcript kind".to_string()); }
     let mut messages = Vec::new();
     let mut omitted = 0;
     for line in text.lines() {
@@ -40,17 +41,17 @@ pub fn extract(kind: &str, text: &str) -> Result<TranscriptReport, String> {
 }
 
 pub fn extract_path(kind: &str, path: &std::path::Path) -> Result<TranscriptReport, String> {
-    if kind != KIND_CLAUDE && kind != KIND_CODEX { return Err("unsupported transcript kind".to_string()); }
+    if kind != KIND_CLAUDE && kind != KIND_CLAUDE_CODEX && kind != KIND_CODEX { return Err("unsupported transcript kind".to_string()); }
     let mut messages = Vec::new(); let mut omitted = 0;
     let stats = crate::ailog::jsonl::for_each_line(path, crate::ailog::jsonl::Budget { max_bytes: 64 * 1024 * 1024, max_lines: 200_000 }, |line| {
         if let Ok(value) = serde_json::from_str::<Value>(line) { for message in messages_from_value(kind, &value) { if messages.len() < MESSAGE_LIMIT { messages.push(message); } else { omitted += 1; } } }
         std::ops::ControlFlow::Continue(())
     })?;
-    Ok(TranscriptReport { messages, truncated: omitted > 0 || stats.scan_truncated, omitted_count: omitted, bytes_read: stats.bytes_read, file_bytes: stats.file_bytes, scan_truncated: stats.scan_truncated })
+    Ok(TranscriptReport { messages, truncated: omitted > 0, omitted_count: omitted, bytes_read: stats.bytes_read, file_bytes: stats.file_bytes, scan_truncated: stats.scan_truncated })
 }
 
 fn messages_from_value(kind: &str, value: &Value) -> Vec<TranscriptMessage> {
-    if kind == KIND_CLAUDE { return claude_messages(value); }
+    if kind == KIND_CLAUDE || kind == KIND_CLAUDE_CODEX { return claude_messages(value); }
     codex_messages(value)
 }
 
@@ -102,3 +103,7 @@ fn codex_messages(value: &Value) -> Vec<TranscriptMessage> {
     }
     out
 }
+
+#[cfg(test)]
+#[path = "transcript/source_tests.rs"]
+mod source_tests;

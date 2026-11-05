@@ -3,14 +3,11 @@
 import { useId } from "react";
 import type { UsageRhythmReport } from "../../lib/ailog";
 import {
-  formatMetric,
   formatMetricFull,
   offsetLabel,
   peakSlot,
   slotBars,
   type RhythmMetric,
-  usageMetricInfo,
-  valueAxisTicks,
 } from "./usageModel";
 import { noteStyle } from "./ui";
 
@@ -27,59 +24,16 @@ function Bars({
 }) {
   const titleId = useId();
   const max = bars.reduce((peak, bar) => Math.max(peak, bar.value), 0);
-  const ticks = valueAxisTicks(max);
-  const tickBottom = (tick: number) => `${max > 0 ? (tick / max) * 100 : 0}%`;
-  const tickLabel = (tick: number) => formatMetric(tick, metric).replace(/ tok$/, "").replace(/\.0(?=[万億兆]|$)/, "");
-  const labels = bars.filter((_, index) => bars.length <= 12 || index % 6 === 0);
-  return (
-    <div role="group" aria-labelledby={titleId} style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-        <span id={titleId} style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", fontWeight: 600 }}>
-          {title} · {metric === "turns" ? "回" : "トークン"}
-        </span>
-        <span style={noteStyle}>{peakLabel}</span>
-      </div>
-      <div aria-hidden="true" style={{ display: "grid", gridTemplateColumns: "max-content minmax(0, 1fr)", columnGap: 8, rowGap: 10, minWidth: 0, paddingTop: 8 }}>
-        <div data-rhythm-axis style={{ position: "relative", display: "grid", height: 72, fontSize: "var(--cmux-font-size-xs)", whiteSpace: "nowrap" }}>
-          {ticks.map((tick) => <span key={`width-${tick}`} style={{ gridArea: "1 / 1", visibility: "hidden" }}>{tickLabel(tick)}</span>)}
-          {ticks.map((tick) => <span key={tick} data-rhythm-tick style={{ position: "absolute", right: 0, bottom: tickBottom(tick), transform: "translateY(50%)", color: "var(--cmux-text-secondary)" }}>{tickLabel(tick)}</span>)}
-        </div>
-        <div style={{ position: "relative", display: "flex", alignItems: "flex-end", gap: 2, height: 72, minWidth: 0 }}>
-          {ticks.map((tick) => <span key={tick} aria-hidden="true" style={{ position: "absolute", left: 0, right: 0, bottom: tickBottom(tick), borderTop: "1px solid var(--cmux-border-hairline)", pointerEvents: "none" }} />)}
-          {bars.map((bar) => (
-            <div
-              key={bar.slot}
-              title={`${bar.label} ${formatMetric(bar.value, metric)}`}
-              style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%", minWidth: 0 }}
-            >
-              <div
-                style={{
-                  height: `${Math.max(bar.ratio * 100, bar.value > 0 ? 3 : 0)}%`,
-                  background: "var(--cmux-accent)",
-                  opacity: bar.value > 0 ? 0.45 + bar.ratio * 0.55 : 0.15,
-                  borderRadius: 2,
-                }}
-              />
-            </div>
-          ))}
-        </div>
-        <div />
-        <div data-rhythm-labels style={{ position: "relative", height: "1.5em", fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
-          {labels.map((bar) => (
-            <span key={bar.slot} data-rhythm-label style={{ position: "absolute", left: `${((bars.indexOf(bar) + 0.5) / bars.length) * 100}%`, transform: "translateX(-50%)", whiteSpace: "nowrap" }}>{bars.length > 12 ? bar.slot : bar.label}</span>
-          ))}
-        </div>
-      </div>
-      <details>
-        <summary style={{ ...noteStyle, cursor: "pointer", color: "var(--cmux-text-secondary)" }}>数値を表で見る</summary>
-        <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8, fontSize: "var(--cmux-font-size-xs)" }}>
-          <caption style={{ textAlign: "left", paddingBottom: 6 }}>{title}ごとの{usageMetricInfo(metric).label}</caption>
-          <thead><tr><th scope="col" style={{ textAlign: "left" }}>{title}</th><th scope="col" style={{ textAlign: "right" }}>{usageMetricInfo(metric).label}</th></tr></thead>
-          <tbody>{bars.map((bar) => <tr key={bar.slot}><th scope="row" style={{ textAlign: "left", fontWeight: 400, padding: "4px 0" }}>{bar.label}</th><td style={{ textAlign: "right" }}>{formatMetricFull(bar.value, metric)}</td></tr>)}</tbody>
-        </table>
-      </details>
-    </div>
-  );
+  return <div role="group" aria-labelledby={titleId} style={{ minWidth: 0 }}>
+    <h3 id={titleId} style={{ margin: "0 0 8px", fontSize: "var(--cmux-font-size-sm)" }}>{title}</h3>
+    <div style={{ ...noteStyle, marginBottom: 8 }}>{peakLabel}</div>
+    {bars.map(bar => <div key={bar.slot} data-rhythm-slot={bar.slot} title={formatMetricFull(bar.value, metric)}
+      style={{ display: "grid", gridTemplateColumns: "58px minmax(30px, 1fr) 96px", gap: 8, alignItems: "center", minHeight: 24, fontSize: "var(--cmux-font-size-xs)" }}>
+      <span>{bar.label}{bars.length === 7 ? "曜日" : ""}</span>
+      <div aria-hidden="true" style={{ height: 10, background: "var(--cmux-hover)", borderRadius: 2 }}><div style={{ width: (max > 0 ? bar.value / max * 100 : 0) + "%", height: "100%", background: "var(--cmux-accent)", borderRadius: 2 }} /></div>
+      <span style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{bar.value.toLocaleString("ja-JP")}</span>
+    </div>)}
+  </div>;
 }
 
 export function UsageRhythm({
