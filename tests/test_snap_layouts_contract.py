@@ -65,3 +65,14 @@ def test_dom_measurements_rebase_integer_webview_extent_on_native_client():
     assert 'lastRect = ""; schedule();' in UI
     assert 'signal.then(unlisten => unlisten()).catch' in UI
     assert 'GetClientRect(parent, &mut client)' in RUST
+
+
+def test_native_rectangle_is_withdrawn_for_hidden_or_covered_button():
+    assert 'getComputedStyle(target).visibility !== "visible"' in UI
+    assert 'document.elementFromPoint(' in UI and 'target.contains(top)' in UI
+    assert 'pressable(button, bounds) ? {' in UI
+    assert 'useUiStore.subscribe(' in UI and 'state.zoomedPaneId !== previous.zoomedPaneId' in UI
+    assert 'useDashboardViewStore.subscribe(' in UI and 'state.open !== previous.open' in UI
+    assert 'button.addEventListener("pointerenter", forceSchedule)' in UI
+    assert 'window.addEventListener("focus", forceSchedule)' in UI
+    assert 'if (live && rect && !enabled)' in UI

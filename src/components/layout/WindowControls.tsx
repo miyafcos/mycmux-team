@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { titleBarStrings } from "./titleBarStrings";
+import { useUiStore } from "../../stores/uiStore";
+import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 
 export const buttonStyle: CSSProperties = {
   minWidth: "var(--cmux-dashboard-control-size)", minHeight: "var(--cmux-dashboard-control-size)",
@@ -37,6 +39,12 @@ export function WindowControls({ onClose, closing = false, closeLabel = titleBar
     let frame = 0;
     let lastRect = "";
     let stop: (() => void) | undefined;
+    const pressable = (target: HTMLElement, box: DOMRect) => {
+      if (getComputedStyle(target).visibility !== "visible") return false;
+      if (typeof document.elementFromPoint !== "function") return true;
+      const top = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      return !top || top === target || target.contains(top);
+    };
     const measure = () => {
       frame = 0;
       if (!live || !ready || disabled) return;
@@ -48,7 +56,12 @@ export function WindowControls({ onClose, closing = false, closeLabel = titleBar
       // innerWidth rounds CSS pixels. The root fills this viewport and retains
       // subpixel width when its physical size is odd on a 150% display.
       const viewport = document.documentElement.getBoundingClientRect();
-      const rect = width > 0 && height > 0 ? {
+      // The native hit-test rectangle must not outlive a button the user cannot
+      // press: pane zoom hides the title bar (visibility) or covers a detached
+      // band, yet the box keeps its size and would swallow clicks on the zoomed
+      // pane's heading buttons. Report a rectangle only while the button is
+      // visible and topmost at its centre.
+      const rect = width > 0 && height > 0 && pressable(button, bounds) ? {
         x: bounds.left - (width - bounds.width) / 2,
         y: bounds.top - (height - bounds.height) / 2,
         width, height, viewportWidth: viewport.width, viewportHeight: viewport.height,
@@ -64,6 +77,20 @@ export function WindowControls({ onClose, closing = false, closeLabel = titleBar
     // A physical one-pixel change at fractional DPI can leave WebView's
     // rounded CSS extent unchanged. Still rebase the native client rectangle.
     const forceSchedule = () => { lastRect = ""; schedule(); };
+    // Zoom, the dashboard and focus change visibility or stacking from outside
+    // the title bar, so the observers below cannot see them. Measure again on the
+    // next frame as well: the store fires before React commits the new markup.
+    const resettle = () => { forceSchedule(); requestAnimationFrame(forceSchedule); };
+    const unsubscribeZoom = useUiStore.subscribe((state, previous) => {
+      if (state.zoomedPaneId !== previous.zoomedPaneId) resettle();
+    });
+    const unsubscribeDashboard = useDashboardViewStore.subscribe((state, previous) => {
+      if (state.open !== previous.open) resettle();
+    });
+    // While the rectangle is withdrawn the button receives the WebView press, so
+    // hovering is the moment to give the Snap Layouts rectangle back.
+    button.addEventListener("pointerenter", forceSchedule);
+    window.addEventListener("focus", forceSchedule);
     const win = getCurrentWindow();
     const nativeSignals = [win.onResized(forceSchedule), win.onMoved(forceSchedule)];
     for (const signal of nativeSignals) void signal.catch(() => {});
@@ -89,6 +116,10 @@ export function WindowControls({ onClose, closing = false, closeLabel = titleBar
       stop?.();
       for (const signal of nativeSignals) void signal.then(unlisten => unlisten()).catch(() => {});
       cancelAnimationFrame(frame);
+      unsubscribeZoom();
+      unsubscribeDashboard();
+      button.removeEventListener("pointerenter", forceSchedule);
+      window.removeEventListener("focus", forceSchedule);
       resize?.disconnect();
       changes.disconnect();
       window.removeEventListener("resize", schedule);
