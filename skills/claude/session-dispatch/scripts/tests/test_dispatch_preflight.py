@@ -22,7 +22,7 @@ def test_merge_backup_and_atomic_roundtrip(tmp_path):
     assert after["other"] == {"keep": 1}
     assert config.with_name(".claude.json.bak-guard").read_bytes() == original
     assert after["projects"][result["key"]] == {
-        "hasTrustDialogAccepted": True, "enabledMcpjsonServers": ["oracle", "deepwiki"]}
+        "hasTrustDialogAccepted": True, "enabledMcpjsonServers": ["oracle"]}
     assert prepare_project(config, "C:/new/path")["changed"] is False
 
 def test_concurrent_write_is_reread_and_preserved(tmp_path):
@@ -36,7 +36,16 @@ def test_concurrent_write_is_reread_and_preserved(tmp_path):
     value = json.loads(config.read_text(encoding="utf-8"))
     assert value["concurrent"] == 42
     assert value["projects"]["C:/new"]["custom"] == 7
-    assert value["projects"]["C:/new"]["enabledMcpjsonServers"] == ["user", "oracle", "deepwiki"]
+    assert value["projects"]["C:/new"]["enabledMcpjsonServers"] == ["user", "oracle"]
+
+def test_existing_deepwiki_entry_is_kept(tmp_path):
+    config = make_home(tmp_path)
+    value = json.loads(config.read_text(encoding="utf-8"))
+    value["projects"]["C:/keep"] = {"enabledMcpjsonServers": ["deepwiki"]}
+    config.write_text(json.dumps(value), encoding="utf-8")
+    prepare_project(config, "C:/keep")
+    after = json.loads(config.read_text(encoding="utf-8"))
+    assert after["projects"]["C:/keep"]["enabledMcpjsonServers"] == ["deepwiki", "oracle"]
 
 def test_mixed_case_existing_key_reused():
     assert normalized_cwd("c:\\USERS\\alice", {"C:/Users/alice": {}}) == "C:/Users/alice"

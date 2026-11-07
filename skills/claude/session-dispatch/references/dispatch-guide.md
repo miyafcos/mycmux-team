@@ -107,6 +107,13 @@ NO-LOG なら canonical state と画面を確認する。AskUserQuestion は
 - `UNKNOWN` (子ログを同定できない) は STALL ではない。まず `tab_id` / `claude_session_id` が
   台帳にあるかを見る。無ければ子に自己申告させるか、その dispatch は DONE.md と成果物だけで検収する
 
+## 実行が増え続けるとき
+
+- 席や便が増え続けるときは、mycmux の席 (`/seats`・`mycmux_bridge.py list`)・ほかの機械で動かしているバッチ実行 (各実行のログ)・予定実行 (タスク スケジューラ・schedule) のうち、そのとき動いているものを別々に確かめ、dispatch の台帳 (`~/.claude/dispatch/ledger.jsonl`) の依頼・会話 ID と突き合わせる。所有者・経過時間・消費量 (Codex の used_percent など)・成果物の増え方を今ある台帳に書き、取れない欄は未確認と書く。
+- 止めるのは、自分の依頼で起動したと台帳で確かめた実行だけにする (mycmux の席は、その dispatch の行の tab_session_id に限る)。所有者が分からない実行は止めずに、利用者の判断待ちとして報告する。skip フラグなどの原因の仮説は、ログで確かめるまで断定しない。
+
+
+
 ## watcher (dispatch_watch.py) — 自動検収+自動 close
 
 spawn 直後に親が `python ~/.claude/skills/session-dispatch/scripts/dispatch_watch.py --slug <slug>`

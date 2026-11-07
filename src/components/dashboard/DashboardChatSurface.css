@@ -52,6 +52,8 @@
   align-items: center;
   gap: var(--cmux-chat-space-3);
   min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .cmux-dashboard-view .cmux-dashboard-chat-header-lane {
@@ -75,8 +77,18 @@
 }
 
 .cmux-dashboard-view .cmux-dashboard-chat-header-meta {
-  flex-shrink: 0;
+  min-width: 0;
+  flex-shrink: 1;
   gap: var(--cmux-chat-space-2);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.cmux-dashboard-view .cmux-dashboard-chat-header-meta .cmux-dashboard-status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cmux-dashboard-view .cmux-dashboard-chat-header-meta > span {

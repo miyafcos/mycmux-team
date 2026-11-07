@@ -5,6 +5,7 @@ use serde::Serialize;
 use rusqlite::{Connection, OptionalExtension};
 use crate::ailog::{KIND_CLAUDE, KIND_CLAUDE_CODEX, KIND_CODEX};
 use super::TranscriptReport;
+use crate::ailog::repair::contained_file;
 
 pub const READ_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -71,20 +72,23 @@ pub struct SourceConfig {
     pub roots: Vec<(String, PathBuf)>,
     pub archive: Option<PathBuf>,
     pub full_text: Option<PathBuf>,
+    pub claude_fallback: Option<PathBuf>,
 }
 
 impl SourceConfig {
-    pub fn from_full_text_setting(setting: Result<Option<String>, String>) -> Self {
-        Self::configured(setting.ok().flatten()
-            .and_then(|root| (!root.trim().is_empty()).then(|| PathBuf::from(root.trim()))))
+    pub fn from_settings(settings: Result<(Option<String>, Option<String>), String>) -> Self {
+        let (full_text, claude_fallback) = settings.unwrap_or_default();
+        let root = |setting: Option<String>| setting
+            .and_then(|value| (!value.trim().is_empty()).then(|| PathBuf::from(value.trim())));
+        Self::configured(root(full_text), root(claude_fallback))
     }
-    pub fn configured(full_text: Option<PathBuf>) -> Self {
+    pub fn configured(full_text: Option<PathBuf>, claude_fallback: Option<PathBuf>) -> Self {
         let roots = [
             (KIND_CLAUDE, crate::ailog::claude_root()),
             (KIND_CLAUDE_CODEX, crate::ailog::claude_codex_root()),
             (KIND_CODEX, crate::ailog::codex_root()),
         ].into_iter().filter_map(|(kind, root)| root.map(|root| (kind.to_string(), root))).collect();
-        Self { roots, archive: crate::ailog::archive_root(), full_text }
+        Self { roots, archive: crate::ailog::archive_root(), full_text, claude_fallback }
     }
 }
 
@@ -101,24 +105,49 @@ fn child_source(path: &Path) -> bool {
         || path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("agent-"))
 }
 
-/// Four tiers, not four probes per file: all indexed originals precede any gzip.
-pub fn candidates(kind: &str, paths: &[PathBuf], child: bool, config: &SourceConfig) -> Vec<PathBuf> {
+/// All originals, all gzip, Claude fallback, archive, then full text.
+/// Keep roots alongside alternatives so a local original never waits on cloud metadata.
+fn ordered_candidates<'a>(kind: &str, paths: &[PathBuf], child: bool, config: &'a SourceConfig) -> Vec<(PathBuf, Option<&'a Path>)> {
     let sources: Vec<_> = paths.iter().filter(|path| child || !child_source(path)).collect();
-    let mut out: Vec<PathBuf> = sources.iter().map(|path| (*path).clone()).collect();
-    out.extend(sources.iter().map(|path| gzip_path(path)));
+    let mut out: Vec<_> = sources.iter().map(|path| ((*path).clone(), None)).collect();
+    out.extend(sources.iter().map(|path| (gzip_path(path), None)));
+    if kind == KIND_CLAUDE {
+        if let Some(fallback) = &config.claude_fallback {
+            for path in &sources {
+                for (_, root) in config.roots.iter().filter(|(source_kind, _)| source_kind == kind) {
+                    if let Ok(relative) = path.strip_prefix(root) {
+                        if relative.components().any(|part| matches!(part, std::path::Component::ParentDir)) { continue; }
+                        let candidate = fallback.join(relative);
+                        out.push((candidate.clone(), Some(fallback.as_path())));
+                        out.push((gzip_path(&candidate), Some(fallback.as_path())));
+                    }
+                }
+            }
+        }
+    }
     for tier in [&config.archive, &config.full_text].into_iter().flatten() {
         for path in &sources {
             for (_, root) in config.roots.iter().filter(|(source_kind, _)| source_kind == kind) {
                 if let Ok(relative) = path.strip_prefix(root) {
                     if relative.components().any(|part| matches!(part, std::path::Component::ParentDir)) { continue; }
-                    out.push(gzip_path(&tier.join(kind).join(relative)));
+                    out.push((gzip_path(&tier.join(kind).join(relative)), Some(tier.as_path())));
                 }
             }
         }
     }
     let mut seen = std::collections::HashSet::new();
-    out.retain(|path| seen.insert(path.clone()));
+    out.retain(|(path, _)| seen.insert(path.clone()));
     out
+}
+
+fn candidate_allowed(path: &Path, root: Option<&Path>) -> bool {
+    root.map_or(true, |root| contained_file(root, path))
+}
+
+pub fn candidates(kind: &str, paths: &[PathBuf], child: bool, config: &SourceConfig) -> Vec<PathBuf> {
+    ordered_candidates(kind, paths, child, config).into_iter()
+        .filter(|(path, root)| candidate_allowed(path, *root))
+        .map(|(path, _)| path).collect()
 }
 
 /// Read only a bounded header. The first identity is authoritative; a later
@@ -175,19 +204,21 @@ pub fn load(conn: &Connection, kind: &str, session_id: &str, config: &SourceConf
 
 pub fn load_paths(kind: &str, session_id: &str, child: bool, paths: &[PathBuf], config: &SourceConfig) -> Result<TranscriptReport, TranscriptError> {
     let deadline = Instant::now() + READ_TIMEOUT;
-    let candidates = candidates(kind, paths, child, config);
+    let candidates = ordered_candidates(kind, paths, child, config);
     let mut io_error = None;
     let mut wrong_identity = false;
     let mut denied = false;
     let mut corrupt = false;
     let mut empty_report = None;
-    for path in &candidates {
+    for (path, root) in &candidates {
         if Instant::now() >= deadline { return Err(TranscriptError::timeout()); }
         match path.try_exists() {
             Ok(false) => continue,
             Err(error) => { denied |= error.kind() == std::io::ErrorKind::PermissionDenied; io_error = Some(error.to_string()); continue; }
             Ok(true) => {}
         }
+        if !candidate_allowed(path, *root) { continue; }
+        if Instant::now() >= deadline { return Err(TranscriptError::timeout()); }
         // The indexed path itself is trusted, as before recovery was added.
         // Only alternatives need the same source identity rules as the indexer.
         if !paths.contains(path) {

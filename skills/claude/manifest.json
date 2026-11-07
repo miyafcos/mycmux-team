@@ -1,6 +1,6 @@
 {
   "pack_version": "1.0.0",
-  "generated_at": "2026-10-15T08:05:55.536886+00:00",
+  "generated_at": "2026-11-07T10:13:23.382420+00:00",
   "cli": {
     "path": "scripts/mycmux_agent_cli.py",
     "sha256": "ee51c46e4eb5d171840d7959c9d5750145d04b5a5109cd80ac39347fa20c7096",
@@ -33,28 +33,31 @@
     {
       "name": "session-dispatch",
       "files": {
-        "SKILL.md": "b82e0638043c5727cff1ab13c1fab6c2030fbd0060c13234694d77716020aff2",
+        ".packignore": "0077d431e627f7c5bfa2ca202bb5359db1c5bc503d760103f7fed05c4560953e",
+        "SKILL.md": "02d35400ed2ebf028dc26e73436030869b755108efe75bbdf005840bfd192075",
         "references/ask-card-contract.md": "19278a16e88f0830a26078901059ab7398ac6a2516501873af61e7741194a710",
         "references/decompose-guide.md": "9ed36f210540aa1dd5fbe40d268f1623ff316b6b054ed5a8a1c72078a5a0f8e7",
-        "references/dispatch-guide.md": "7bc026b5746a19459ed75115c141d0a0270780da7809225f340352f1132689b4",
+        "references/dispatch-guide.md": "49d9fc0faa25a844ddc5ab60ab68f9c191bb4ac320be3214193632913dd18408",
         "references/spec-template.md": "53acab90a2742c0c4755d6f27f4739e698933077d9bd7efb4f6ca76d47ea4104",
-        "scripts/dispatch-child-guard.py": "91badcf06154a67ad6ae404481a7490ad88b59bfa9683a5f697fad29d51a79d9",
+        "scripts/dispatch-child-guard.py": "9b67ed72296af9511cd163c0f2bfd5c7455c3b47dea7cea6ec1d81053f5a7852",
         "scripts/dispatch_canary.py": "2b6ec2221886e3002ba881f6347e8bba812641da277e0cd18ea0b2870e482bd1",
-        "scripts/dispatch_guard.py": "2356fa186467051a177ff024badf233261286867c766d6f044a0714d841bd5db",
-        "scripts/dispatch_ledger.py": "1769b8a43f9aaabf99870d21520dc029c00db225d3e94d426b20c2191581d31c",
-        "scripts/dispatch_preflight.py": "cd23a723b7f84b9ce7782eec5a2b9f40371c1618d16293aa4ddcc7d5992bc88b",
-        "scripts/dispatch_send.py": "9bc7ef04809cfedbca65d1230ea49d7622f168aa9669db16817d282f62ae18be",
+        "scripts/dispatch_guard.py": "52c3b2686d24cbf184b1d2af7a881a8b3f7e1faf483e1012f3e538153eea653f",
+        "scripts/dispatch_ledger.py": "a16762665da881c2898954acc0a00823457fd11cf39e2aab178315ed46142742",
+        "scripts/dispatch_preflight.py": "f911efc4d5eaa0e9e06684d702a1bea168b85b18257463d38f7ed70621b96e63",
+        "scripts/dispatch_send.py": "ff987237b7cbc55676c616cd4eba087cf2d56af2a6a3b5d67d620cb64b883f90",
         "scripts/dispatch_status.py": "a9f10c7e4aa2cd88ca7874f83891a3429d8c34c358570b6ee2e3d7ec20fb7969",
         "scripts/dispatch_watch.py": "17bc66846ffa8251f2448e7190b7b7325ba24ca3152c74ee74787562af208a35",
         "scripts/guard_actions.py": "8731dbf9a6fa11f111a530259a3a242d69494e1a5774fdcb75e8b104d11337f3",
-        "scripts/guard_classify.py": "86b88dbab8a4cfc18f7eb4683d06000aca457d6a744e02df56be38019175048a",
-        "scripts/tests/conftest.py": "51a4e769c2e3d8ac57e836f0cfcc36f99f4e9750d4ddc5830e1247f2f0c2acfc",
+        "scripts/guard_classify.py": "2df9398ba1ca45e530450a07a0b971b62a355848caab2096f192b619ac689db4",
+        "scripts/seat_watch.py": "b28822ac2e56ab4fb9f1e51ea0e54d11e6ce481ca7b93692256d3b070faa06ff",
+        "scripts/tests/conftest.py": "e1d11c5a5880e4a0d857c9e2dc21b44532f61ceca0fdbddd9300ac9d468adee2",
         "scripts/tests/fixtures/screens/ask_multi.txt": "f23441bb86488f5d2e8134d704c778c860634b7d8c96e73dcadbee3f7a463d6c",
         "scripts/tests/fixtures/screens/ask_review.txt": "d65f15871a832aa9ba9a1179a884890e77f02f0c4b148b0ed92baa94c539cb0b",
         "scripts/tests/fixtures/screens/ask_single.txt": "f5449d8705b7502dffff66a2e9bc0749cc6afc64051d4c532d0d33249e05e5f7",
         "scripts/tests/fixtures/screens/ask_tabbed.txt": "5311a3de453224b5bf741c0da2c8529ba9341ba397c78f566c0f33500d4a751d",
         "scripts/tests/fixtures/screens/auto_start.txt": "a4dbe0e76d90712023fac6428c33495c20e7151302862cca80c9b6e3692330a9",
         "scripts/tests/fixtures/screens/claude_nbsp_draft.txt": "8276c788490b219d4a6bab14da49b7d13e55f60c64aabf97f39661235455e411",
+        "scripts/tests/fixtures/screens/codex_0165_idle.txt": "a4fbab6d66b89fccdd2567953f644cb5f8a03543b8ef482d2c051248ecb314e1",
         "scripts/tests/fixtures/screens/draft_corrupt.txt": "af0013d88326f8304a7621bc6bfe839f82da577e68c2ae6fd091a8056264c6dc",
         "scripts/tests/fixtures/screens/empty.txt": "60394cf8a46980d6199d0a3a71692ecb6689151f46a7085d31faab90b9d1f5d7",
         "scripts/tests/fixtures/screens/human_draft.txt": "27504403155913e311b583ffa5e3601043dcbdb9a9a714de65059752b69811ac",
@@ -71,22 +74,24 @@
         "scripts/tests/test_ask_inject_addressing.py": "fb59cbf59155fce39ad9106abbc8de0879a3de093aadb69c5fc96255725c282d",
         "scripts/tests/test_ask_inject_unknown.py": "674afc871861ece8c489011222672228b6f97e6886f2f33b5c56feaea1bcb9e3",
         "scripts/tests/test_dispatch_child_guard.py": "4091aa4c2a08ca35e09aecb021380167c512cf98d0aed5d36082a7488bc9084e",
-        "scripts/tests/test_dispatch_guard.py": "8463fe8231242d9b6592e3a3c6abf3d4df619a739b6a21d52d2e8777c60b0f0e",
-        "scripts/tests/test_dispatch_ledger.py": "a4ad4a720a429240ed07f75ffff88e731a828879d286b343393c547e520faf5d",
-        "scripts/tests/test_dispatch_preflight.py": "78b5ad0d737f47eff4c0f064556effbf9ff83e0701c732311994a73683944dcb",
-        "scripts/tests/test_dispatch_send.py": "7ed5184493bf4366eb2e9a0bf671712c2e17f6e88be1b4a15081f0ed636792dc",
+        "scripts/tests/test_dispatch_guard.py": "26cf6ef2ed385675a42ad879f099c3f229fbc119f6b2e36d323139b54801c422",
+        "scripts/tests/test_dispatch_ledger.py": "a4d9e094a7a21e816d8a64ff322988f480d0e44f74a4816fa94fd9aacf7b16b0",
+        "scripts/tests/test_dispatch_preflight.py": "be6703e17918d5f2b6b06f431da1e48fa5e6851f0f4c61561302f0782c768f4b",
+        "scripts/tests/test_dispatch_send.py": "64657c01acce14ac12ba5bcfc497e7d1461142b1b9befad8a3b4c54e0d036234",
         "scripts/tests/test_dispatch_status.py": "145dddd5bc551cdde0546c23ab3228fb941a71b27829d29549fb718b0888e74e",
         "scripts/tests/test_dispatch_watch.py": "32794771af6bfd2381963de277fed4f6b468c7b05d7b0fd63fd7aeab5c8076a8",
         "scripts/tests/test_guard_card_volume.py": "4719c638d8de1b91486901f23a35264e76e92e63ef6cfd26c0a4cd4efbd3ca35",
-        "scripts/tests/test_guard_classify.py": "abe552374a646ae623c6c107e91ce83ab261ac26e44ff143fe57278cc8e1ffb9"
+        "scripts/tests/test_guard_classify.py": "d14fd0c709ed0e02f319d14a66f7c4cbc220fc30558b68126e4f4101e6520363",
+        "scripts/tests/test_seat_watch.py": "8a7f476933ad14dff1a40529452ca1266ffd58f1c09bff1fde0e13a6befe16c1"
       }
     },
     {
       "name": "mycmux-bridge",
       "files": {
-        "SKILL.md": "f8013e59f6b985a3eb2b955a14400753d6b645ae1fc7922ba5e5449ae805d85b",
-        "scripts/mycmux_bridge.py": "fc633d8acdf5b648245486d02552c26d9073e6910f06f58a75060061cff820c5",
-        "scripts/mycmux_bridge_support.py": "8868c3489b001ee6c82c85b600573ec26385c4b8424dc3f20c7990b4755839b0"
+        "SKILL.md": "eb5046edb4f8469cb475047e2620f48b22a8032066d417d09338e23aaeedb4d7",
+        "scripts/mycmux_bridge.py": "0c1c0df558d08d83f3a64c1866ec910467744c22f4e6d7ce1572928bfb45bf91",
+        "scripts/mycmux_bridge_support.py": "d87289726adb6841a20799cba9e22a45864294391d3aa4f291dc1f2abd6bb485",
+        "scripts/tests/test_input_nbsp.py": "08290884a5cdfacb8c231157eabc8db7b33a6fa840e64a5f7582cf1cae70a5e2"
       }
     },
     {

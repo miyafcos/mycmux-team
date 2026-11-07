@@ -255,7 +255,7 @@ function reportRevision(revision: "旧" | "新", amount: number) {
   };
 }
 
-const baselineRevision = "523f290ed2aba4b23154bac63daf175d141f53a2";
+const baselineRevision = "v0.90.5";
 const baselineFixture = "tests/fixtures/agent_home/reflectionPlanABaselineIpc.json";
 // Replaced only during this approved one-time capture, then kept as fixed counts.
 const round2PrefetchCounts = {"actions": {"base": {"ailog_model_handoffs": 6, "ailog_rework_rankings": 6, "ailog_usage_rhythm": 6}, "embedded": {"ailog_model_handoffs": 6, "ailog_rework_rankings": 6, "ailog_usage_rhythm": 6}}, "delayed": {"base": {"ailog_model_handoffs": 2, "ailog_rework_rankings": 2, "ailog_usage_rhythm": 2}, "embedded": {"ailog_model_handoffs": 2, "ailog_rework_rankings": 2, "ailog_usage_rhythm": 2}}} as const;

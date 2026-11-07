@@ -263,7 +263,12 @@ class Bridge(BridgeBase):
             return send_result("write_failed", "Enter request outcome is unknown; " + transport_error(exc))
         if isinstance(enter_result, dict) and enter_result.get("sent") is False:
             enter_sent = False
-            return send_result("write_failed", "Enter write was explicitly rejected")
+            result = send_result("write_failed", "Enter write was explicitly rejected")
+            if enter_result.get("reason") == "stale_staged_draft":
+                result.update(write_reason="stale_staged_draft",
+                              textWritten=enter_result.get("textWritten"),
+                              enterWritten=enter_result.get("enterWritten"))
+            return result
         enter_detail = (
             "single Enter confirmed"
             if confirmed_key_write(enter_result)

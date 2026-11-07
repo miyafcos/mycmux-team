@@ -580,6 +580,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
     void submit();
   };
 
+  const targetText = hasMentions ? `送信先：@で指定したタブ（${preview.recipients.length} 件）` : card ? `送信先：このタブ（${card.label}）` : dashboardStrings.detailEmpty;
   const noteText = disabledNote ?? note?.text ?? null;
   const noteIsError = disabledNote ? false : Boolean(note?.error);
   const invalidPreview = preview.missing.length > 0 || (hasMentions && preview.recipients.length === 0);
@@ -609,7 +610,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
       </span>)}
     </div> : null}
     {hasMentions && invalidPreview ? <div className="cmux-dashboard-dispatch-preview is-error"><DashboardStatusMark state="error" label={dashboardStrings.dispatchInvalidTargets} /></div> : null}
-    <div className="cmux-dashboard-composer-target">{hasMentions ? `送信先：@で指定したタブ（${preview.recipients.length} 件）` : card ? `送信先：このタブ（${card.label}）` : dashboardStrings.detailEmpty}</div>
+    <div className="cmux-dashboard-composer-target" title={targetText}>{targetText}</div>
     <div className="cmux-dashboard-composer-row">
       <textarea
         ref={inputRef}

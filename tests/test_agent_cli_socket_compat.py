@@ -899,3 +899,21 @@ def test_start_tab_cli_preserves_backend_conflict_text(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert result.stderr == error + "\n"
     assert result.stdout == ""
+
+
+def test_real_cli_stale_staged_draft_preserves_no_write_receipt(tmp_path: Path) -> None:
+    failure = {
+        "sent": False, "confirmed": False, "reason": "stale_staged_draft",
+        "textWritten": False, "enterWritten": False,
+    }
+    result, requests = _run_with_replies(tmp_path, [
+        "send", "--session", "session-a", "--key", "enter",
+    ], [{"id": 0, "result": failure, "error": None}])
+    assert result.returncode == 1
+    assert json.loads(result.stdout) == failure
+    assert len(requests) == 1
+    assert requests[0]["args"] == {
+        "sessionId": "session-a", "text": "", "enter": False, "key": "enter",
+    }
+    assert result.stderr == ""
+    assert "Enter written, acceptance not observed" not in result.stderr

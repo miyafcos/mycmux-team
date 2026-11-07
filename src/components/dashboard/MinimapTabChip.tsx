@@ -8,6 +8,7 @@ import { formatLastOutputAge, formatLastOutputAgeCompact } from "../layout/tabSw
 import { usePaneDragSource } from "../../hooks/usePaneDragSource";
 import { usePaneDragStore } from "../../stores/paneDragStore";
 import { dormantAgentDescription } from "../../lib/agentDormancy";
+import { useThemeStore } from "../../stores/themeStore";
 
 const DECLARED_META_LABEL = "宣言のみ";
 
@@ -34,6 +35,26 @@ export function MinimapTabChip({ chip, workspaceId, paneId, selected, open, colu
   const dormantDescription = chip.declared ? undefined : dormantAgentDescription(chip.mark);
   const agentColor = chip.mark?.color.fg;
   const label = chip.label;
+  // Glyph metrics follow these settings without resizing the label box, so ResizeObserver alone can miss them.
+  const fontFamily = useThemeStore((state) => state.fontFamily);
+  const fontScale = useThemeStore((state) => state.uiFontScale);
+  const density = useThemeStore((state) => state.uiDensity);
+  const labelRef = useRef<HTMLSpanElement>(null);
+  const [labelTruncated, setLabelTruncated] = useState(false);
+  useLayoutEffect(() => {
+    const node = labelRef.current;
+    if (!node || collapsed) return;
+    const measure = () => setLabelTruncated(node.scrollHeight > node.clientHeight + 1 || node.scrollWidth > node.clientWidth + 1);
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(node);
+    let active = true;
+    const fonts = typeof document === "undefined" ? undefined : document.fonts;
+    void fonts?.ready.then(() => { if (active) measure(); });
+    const onFontsLoaded = () => { if (active) measure(); };
+    fonts?.addEventListener?.("loadingdone", onFontsLoaded);
+    return () => { active = false; observer?.disconnect(); fonts?.removeEventListener?.("loadingdone", onFontsLoaded); };
+  }, [label, collapsed, fontFamily, fontScale, density]);
   const needsAnswer = displayState === "needsHuman";
   const isBundleSelected = selectedTabIds.has(chip.tabId);
   const isGroupPulse = groupPulseTabIds.has(chip.tabId);
@@ -93,7 +114,7 @@ export function MinimapTabChip({ chip, workspaceId, paneId, selected, open, colu
   const statusMark = <DashboardStatusMark state={declarationOnly ? "notStarted" : displayState} label={declarationOnly ? DECLARED_META_LABEL : labels.attention === "needsReview" ? dashboardStrings.stateNeedsReview : labels.primary} hasElapsed={Boolean(age)} />;
   return <button
     type="button"
-    className={`cmux-minimap-chip${selected ? " is-selected" : ""}${open && !selected ? " is-open" : ""}${isBundleSelected ? " is-bundle-selected" : ""}${isGroupPulse ? " is-group-pulse" : ""}${chip.declared ? " is-declared" : ""}${needsAnswer ? " is-waiting" : ""}${collapsed ? " is-collapsed" : " is-expanded"}${isDragSource ? " is-drag-source" : ""}`}
+    className={`cmux-minimap-chip${selected ? " is-selected" : ""}${open && !selected ? " is-open" : ""}${isBundleSelected ? " is-bundle-selected" : ""}${isGroupPulse ? " is-group-pulse" : ""}${chip.declared ? " is-declared" : ""}${needsAnswer ? " is-waiting" : ""}${collapsed ? " is-collapsed" : " is-expanded"}${!collapsed && labelTruncated ? " is-label-truncated" : ""}${isDragSource ? " is-drag-source" : ""}`}
     data-minimap-tab={chip.tabId}
     data-mark-kind={chip.mark?.kind ?? ""}
     data-mark-source={chip.mark?.source}
@@ -126,7 +147,7 @@ export function MinimapTabChip({ chip, workspaceId, paneId, selected, open, colu
       {statusMark}
       {chip.declared && !declarationOnly ? <DashboardStatusMark state="notStarted" label={DECLARED_META_LABEL} /> : null}
     </span>}
-    <span className="cmux-minimap-label">{label}</span>
+    <span ref={labelRef} className="cmux-minimap-label">{label}</span>
     {collapsed && chip.contextPct != null ? <span className="cmux-minimap-ctx" data-minimap-ctx={chip.tabId}>{Math.round(chip.contextPct)}%</span> : null}
     {collapsed ? displayState === "noUpdate" && age ? <span className="cmux-minimap-age is-stalled">{age}</span> : statusMark : null}
   </button>;

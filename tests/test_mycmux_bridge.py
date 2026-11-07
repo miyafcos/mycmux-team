@@ -1194,3 +1194,67 @@ def test_long_draft_refuses_input_revision_skipping_a_write():
     result = make_bridge(transport).send(LONG_DRAFT_TEXT, session_id=SESSION_ID)
     assert result["result"] == "prompt_changed"
     assert [write.get("key") for write in send_calls(transport)] == [None]
+
+
+def test_ask_parser_footer_wrapped_inside_chord_p_a05() -> None:
+    screen = SINGLE_ASK[:-1] + [
+        "Enter to select · ↑/↓ to", "navigate · Esc to cancel",
+    ]
+    parsed = scan_ask_question(screen)
+    assert parsed is not None
+    assert parsed["kind"] == "single"
+    assert parsed["question"] == "Pick a fruit"
+    assert [option["label"] for option in parsed["options"]] == [
+        "Apple", "Banana", "Type something.", "Chat about this",
+    ]
+
+
+def test_ask_parser_wrapped_tab_bar_p_a09() -> None:
+    screen = [TABBED_FIRST[0], "☐  ☐ Colour  ☐ Size", "✔ Submit  ▶", *TABBED_FIRST[2:]]
+    parsed = scan_ask_question(screen)
+    assert parsed is not None
+    assert parsed["kind"] == "tabbed"
+    assert parsed["question"] == "Pick a colour"
+    assert [tab["label"] for tab in parsed["tabs"]] == ["Colour", "Size"]
+    assert [tab["label"] for tab in parsed["tabs"] if tab["active"]] == ["Colour"]
+
+
+def test_ask_parser_review_with_blank_before_options_p_a12() -> None:
+    screen = REVIEW[:8] + [""] + REVIEW[8:]
+    parsed = scan_ask_question(screen)
+    assert parsed is not None
+    assert parsed["kind"] == "review"
+    assert parsed["question"] == "Ready to submit your answers?"
+    assert [option["label"] for option in parsed["options"]] == ["Submit answers", "Cancel"]
+
+
+def test_ask_parser_blank_review_guard_presses_submit_p_a12b() -> None:
+    screen = REVIEW[:8] + [""] + REVIEW[8:]
+    parsed = scan_ask_question(screen)
+    assert parsed is not None
+    # This is the guard's answer_ask choice, as exercised by probe P-A12b:
+    # review -> 1; other dialogs -> first role=option (which must not be Cancel).
+    digit = 1 if parsed["kind"] == "review" else next(
+        option["index"] for option in parsed["options"] if option["role"] == "option"
+    )
+    assert digit == 1
+    assert next(option["label"] for option in parsed["options"] if option["index"] == digit) == "Submit answers"
+
+
+def test_ask_parser_question_ending_with_arrow_p_a13b() -> None:
+    screen = [SINGLE_ASK[0], SINGLE_ASK[1], "Pick one →", *SINGLE_ASK[3:]]
+    parsed = scan_ask_question(screen)
+    assert parsed is not None
+    assert parsed["kind"] == "single"
+    assert parsed["question"] == "Pick one →"
+    assert parsed["tabs"] == []
+
+
+def test_answer_ask_free_text_cursor_never_writes_p_b01() -> None:
+    screen = [SINGLE_ASK[0], SINGLE_ASK[1], SINGLE_ASK[2],
+              "1. Apple", "2. Banana", "❯ 3. Type something.", *SINGLE_ASK[6:]]
+    transport = AskTransport([screen, screen, ["done"], ["done"]])
+    with pytest.raises(BridgeError) as error:
+        make_bridge(transport).answer_ask(SESSION_ID, {"Pick a fruit": 1})
+    assert error.value.kind == "verification_unavailable"
+    assert send_calls(transport) == []

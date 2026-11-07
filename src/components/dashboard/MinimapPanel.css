@@ -70,11 +70,27 @@
 
 /* chip = 階層の 3 段目。展開時は 2 段 (等幅メタ + タイトル 2 行)、折りたたみ時は
    タイトル + 状態ドットの 1 行だけ。 */
-.cmux-minimap-chip { --minimap-chip-ring: inset 0 0 0 1px color-mix(in srgb, var(--cmux-text) 18%, transparent); position: relative; z-index: 2; display: flex; min-width: 0; min-height: 26px; flex: none; align-items: center; gap: 5px; overflow: hidden; border: 0; border-radius: 3px; padding: 4px 7px; color: var(--cmux-text); background: var(--cmux-popover); font-size: var(--cmux-font-size-xs); line-height: 1.35; text-align: left; cursor: grab; box-shadow: var(--minimap-chip-ring); transition: outline-color 180ms var(--cmux-ease), background 180ms var(--cmux-ease), box-shadow 180ms var(--cmux-ease), opacity 180ms var(--cmux-ease), transform 180ms var(--cmux-ease); }
+.cmux-minimap-chip { --minimap-waiting-band: 4px; --minimap-selected-ring: 2px; --minimap-chip-ring: inset 0 0 0 1px color-mix(in srgb, var(--cmux-text) 18%, transparent); position: relative; z-index: 2; display: flex; min-width: 0; min-height: 26px; flex: none; align-items: center; gap: 5px; overflow: hidden; border: 0; border-radius: 3px; padding: 4px 7px; color: var(--cmux-text); background: var(--cmux-popover); font-size: var(--cmux-font-size-xs); line-height: 1.35; text-align: left; cursor: grab; box-shadow: var(--minimap-chip-ring); transition: outline-color 180ms var(--cmux-ease), background 180ms var(--cmux-ease), box-shadow 180ms var(--cmux-ease), opacity 180ms var(--cmux-ease), transform 180ms var(--cmux-ease); }
 /* 53px = minimapCellHeightPx の 1 行予算。上限も同値に固定し、内訳を
    padding 4+5 / meta 11 / gap 3 / タイトル 2 行 (11px x 1.35 x 2 = 29.7) に収める。 */
 .cmux-minimap-map.is-expanded .cmux-minimap-chip { min-height: 53px; max-block-size: 53px; flex-direction: column; align-items: stretch; gap: 3px; padding: 4px 6px 5px; cursor: grab; }
-.cmux-minimap-map.is-expanded .cmux-minimap-label { overflow: hidden; max-block-size: 2.7em; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; word-break: break-all; line-height: 1.35; }
+.cmux-minimap-map.is-expanded .cmux-minimap-label { overflow: hidden; max-block-size: 2.7em; text-overflow: ellipsis; white-space: normal; overflow-wrap: anywhere; word-break: break-all; line-height: 1.35; }
+/* The existing two-line budget stays intact. Mask only the final glyph slot
+   when measured overflow needs an ellipsis; the complete DOM name stays put. */
+.cmux-minimap-map.is-expanded .cmux-minimap-chip.is-label-truncated .cmux-minimap-label { clip-path: polygon(0 0, 100% 0, 100% calc(100% - 1.35em), calc(100% - 1em) calc(100% - 1.35em), calc(100% - 1em) 100%, 0 100%); }
+.cmux-minimap-map.is-expanded .cmux-minimap-chip.is-label-truncated::after { position: absolute; right: 6px; bottom: 5px; width: 1em; content: "\2026"; line-height: 1.35; text-align: right; pointer-events: none; }
+.cmux-dashboard-view .cmux-minimap-map.is-expanded .cmux-minimap-chip.is-label-truncated::after { right: var(--cmux-space-5); bottom: var(--cmux-space-5); }
+/* At five columns the label content box can be narrower than one glyph.
+   Borrow the existing tile padding only in that case, without resizing it. */
+.cmux-dashboard-view .cmux-minimap-map.is-expanded .cmux-minimap-chip { container: minimap-chip / inline-size; }
+@container minimap-chip (max-width: 1em) {
+  .cmux-dashboard-view .cmux-minimap-map.is-expanded .cmux-minimap-label { margin-inline: calc(-1 * var(--cmux-space-5)); }
+  /* Keep the borrowed space out from under the waiting band and the selection ring. */
+  .cmux-dashboard-view .cmux-minimap-map.is-expanded .cmux-minimap-chip:is(.is-selected, .is-bundle-selected) .cmux-minimap-label { margin-inline: calc(-1 * var(--cmux-space-5) + var(--minimap-selected-ring)); }
+  .cmux-dashboard-view .cmux-minimap-map.is-expanded .cmux-minimap-chip.is-waiting .cmux-minimap-label { margin-inline-start: calc(-1 * var(--cmux-space-5) + var(--minimap-waiting-band)); }
+  .cmux-dashboard-view .cmux-minimap-map.is-expanded .cmux-minimap-chip.is-label-truncated::after { right: 0; }
+  .cmux-dashboard-view .cmux-minimap-map.is-expanded .cmux-minimap-chip:is(.is-selected, .is-bundle-selected).is-label-truncated::after { right: var(--minimap-selected-ring); }
+}
 /* meta の 10px は ASCII のエージェント名だけ。日本語を含む子 (経過・宣言のみ・
    返答待ち) は 11px の xs トークンへ個別に戻す。 */
 .cmux-minimap-meta { --minimap-meta-gap: 5px; display: flex; min-width: 0; flex: none; align-items: center; gap: var(--minimap-meta-gap); color: var(--cmux-text-secondary); font-family: var(--cmux-font-mono); font-size: 10px; line-height: 1; }
@@ -102,14 +118,14 @@
 .cmux-minimap-chip.is-open { background: color-mix(in srgb, var(--cmux-accent) 9%, var(--cmux-popover)); }
 .cmux-minimap-chip.is-open:not(.is-selected) { outline-width: 1px; outline-style: solid; outline-offset: -1px; }
 .cmux-minimap-chip.is-open:hover:not(.is-selected):not(.is-bundle-selected):not(.is-waiting) { background: color-mix(in srgb, var(--cmux-accent) 16%, var(--cmux-popover)); }
-.cmux-minimap-chip.is-bundle-selected { background: color-mix(in srgb, var(--cmux-selected) 74%, var(--cmux-popover)); box-shadow: var(--minimap-chip-ring), inset 0 0 0 2px var(--cmux-accent); animation: cmux-minimap-selection-in 180ms cubic-bezier(.16,1,.3,1); }
-.cmux-minimap-chip.is-selected { background: color-mix(in srgb, var(--cmux-accent) 18%, var(--cmux-popover)); box-shadow: var(--minimap-chip-ring), inset 0 0 0 2px var(--cmux-accent); }
+.cmux-minimap-chip.is-bundle-selected { background: color-mix(in srgb, var(--cmux-selected) 74%, var(--cmux-popover)); box-shadow: var(--minimap-chip-ring), inset 0 0 0 var(--minimap-selected-ring) var(--cmux-accent); animation: cmux-minimap-selection-in 180ms cubic-bezier(.16,1,.3,1); }
+.cmux-minimap-chip.is-selected { background: color-mix(in srgb, var(--cmux-accent) 18%, var(--cmux-popover)); box-shadow: var(--minimap-chip-ring), inset 0 0 0 var(--minimap-selected-ring) var(--cmux-accent); }
 /* 返答待ちが最も強い面。帯は ::before なので選択リング (inset box-shadow) と
    重ねても消えない。 */
 .cmux-minimap-chip.is-waiting { background: color-mix(in srgb, var(--status-waiting) 12%, var(--cmux-popover)); }
 .cmux-minimap-chip.is-waiting::before { position: absolute; top: 0; bottom: 0; left: 0; z-index: 1; width: 3px; background: var(--status-waiting); content: ""; pointer-events: none; }
 .cmux-minimap-map.is-expanded .cmux-minimap-chip.is-waiting { padding-left: 9px; }
-.cmux-minimap-map.is-expanded .cmux-minimap-chip.is-waiting::before { width: 4px; }
+.cmux-minimap-map.is-expanded .cmux-minimap-chip.is-waiting::before { width: var(--minimap-waiting-band); }
 .cmux-minimap-chip.is-collapsed.is-waiting { padding-left: 8px; }
 .cmux-minimap-chip:active { cursor: grabbing; }
 .cmux-minimap-chip.is-group-pulse { z-index: 3; animation: cmux-minimap-group-select 180ms cubic-bezier(.16,1,.3,1); }

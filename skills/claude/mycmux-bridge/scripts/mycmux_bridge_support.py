@@ -249,6 +249,8 @@ class BridgeBase:
             raise BridgeError("prompt_changed", "AskUserQuestion choice must be one digit")
         latest_state, _, latest_ask = self._observe_ask(session_id)
         self._ensure_same_target(state, latest_state)
+        if any(option["current"] and option["role"] == "typeSomething" for option in latest_ask["options"]):
+            raise BridgeError("verification_unavailable", "cursor is on the free-text row")
         if ask_fingerprint(latest_ask) != expected_prompt_hash:
             raise BridgeError("prompt_changed", "AskUserQuestion prompt changed before response")
         expected_input_revision = self._ask_input_revision(session_id)
@@ -528,8 +530,8 @@ def ask_fingerprint(ask: dict[str, Any]) -> str:
     raw = json.dumps(ask, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 INPUT_LINE_PATTERNS = (
-    ("Codex", re.compile(r"^\s*›(?:[ \t]+(.*))?$")),
-    ("Claude Code", re.compile(r"^\s*[>❯](?:[ \t]+(.*))?$")),
+    ("Codex", re.compile(r"^\s*›(?:[ \t\xa0]+(.*))?$")),
+    ("Claude Code", re.compile(r"^\s*[>❯](?:[ \t\xa0]+(.*))?$")),
     ("PowerShell", re.compile(r"^\s*PS(?: [^>\r\n]*)?>[ \t]*(.*)$")),
     ("cmd", re.compile(r"^\s*[A-Za-z]:[\\/][^>\r\n]*>[ \t]*(.*)$")),
     ("shell", re.compile(r"^\s*(?:[\w.-]+@[\w.-]+(?::[^$#\r\n]*)?)?[$#](?:[ \t]+(.*))?$")),
@@ -627,10 +629,12 @@ def cursor_position(ask: dict[str, Any]) -> int:
     return positions[0]
 SEPARATOR = re.compile(r"^─{4,}\s*$")
 TAB_BAR = re.compile(r"^\s*(?:←\s+)?(?:[☐☑☒]\s{2,})?(.*?)\s+(?:→|▶)\s*$")
+TAB_BAR_START = re.compile(r"^\s*(?:←\s+[☐☑☒]|[☐☑☒]\s{2,}[☐☑☒])\s")
 TAB_TOKEN = re.compile(r"([☐☑☒])\s+(.+?)(?=\s+[☐☑☒]\s+|\s+✔\s+Submit|$)|✔\s+Submit")
 SIMPLE_HEADER = re.compile(r"^\s*☐\s+(.+)$")
 NUMBERED = re.compile(r"^(\d+)\.\s+(?:\[([ ✔])\]\s+)?(.+)$")
 FOOTER = re.compile(r"Enter to select")
+VIM_FOOTER_START = re.compile(r"^\s*--\s[A-Z]+(?:\s[A-Z]+)*\s--\s*·")
 READY = re.compile(r"^Ready to submit your answers\?\s*$")
 # The preview layout (an option carries a `preview`, Claude Code 2.1.272): the
 # options sit in a 30-cell column with the highlighted option's preview framed
@@ -642,11 +646,11 @@ PREVIEW_FOOTER = re.compile(r"\bn to add notes\b")
 PREVIEW_ROW = re.compile(r"^(?:[┌│├└]|Notes:)")
 COLUMN_GAP = re.compile(r" {4,}")
 TRAILING_TICK = re.compile(r"\s*[✔✓]$")
-# A footer too long for the pane continues on the next row(s): only its own
-# chords, "·"-separated (e.g. "Esc to cancel" alone, 80 columns, 2026-09-15).
+# A narrow pane can wrap a footer within a chord. Validate its joined rows as
+# a whole, accepting only its own "·"-separated chords and no trailing output.
 FOOTER_CHORD = (r"(?:Enter to select|↑/↓ to navigate|Tab/Arrow keys to navigate|n to add notes"
-                r"|Tab to switch questions|ctrl\+g to edit in [^·]+?|Esc to cancel)")
-FOOTER_TAIL = re.compile(rf"^(?:·\s*)?{FOOTER_CHORD}(?:\s*·\s*{FOOTER_CHORD})*\s*·?$")
+                r"|Tab to switch questions|ctrl\+g to edit in (?:VS Code|Devin Desktop|Sublime Text|IntelliJ IDEA|Android Studio|[^\s·]+)|Esc to cancel)")
+FOOTER_TAIL = re.compile(rf"^(?:--\s[A-Z]+(?:\s[A-Z]+)*\s--\s*·\s*)?(?:·\s*)?{FOOTER_CHORD}(?:\s*·\s*{FOOTER_CHORD})*\s*·?$")
 
 
 def _wide(character: str) -> bool:
@@ -669,13 +673,28 @@ def preview_column(line: str) -> str:
 
 def scan_ask_question(lines: Sequence[str]) -> dict[str, Any] | None:
     normalized = [line.rstrip("\r ") for line in lines]
-    footer_index = max((i for i, line in enumerate(normalized) if FOOTER.search(line)), default=-1)
-    if footer_index >= 0 and any(
-        line.strip() and not FOOTER_TAIL.match(line.strip()) for line in normalized[footer_index + 1 :]
-    ):
+    footer_index = max(
+        (i for i, line in enumerate(normalized) if FOOTER.search(line) or VIM_FOOTER_START.match(line)),
+        default=-1,
+    )
+    # The mode marker can precede a row containing Enter to select, or push
+    # that chord itself across rows. Include the marker in footer validation.
+    previous = footer_index - 1
+    while previous >= 0 and not normalized[previous].strip():
+        previous -= 1
+    if previous >= 0 and VIM_FOOTER_START.match(normalized[previous]):
+        footer_index = previous
+    footer_text = ""
+    if footer_index >= 0:
+        footer_end = footer_index
+        while footer_end < len(normalized) and normalized[footer_end].strip():
+            footer_end += 1
+        if any(line.strip() for line in normalized[footer_end:]):
+            return None
+        footer_text = " ".join(line.strip() for line in normalized[footer_index:footer_end])
+    if footer_index >= 0 and (FOOTER_TAIL.fullmatch(footer_text) is None or FOOTER.search(footer_text) is None):
         return None
     bound = footer_index if footer_index >= 0 else len(normalized)
-    footer_text = " ".join(line.strip() for line in normalized[footer_index:]) if footer_index >= 0 else ""
     preview = PREVIEW_FOOTER.search(footer_text) is not None
     hits: list[tuple[int, dict[str, Any]]] = []
     for index, line in enumerate(normalized[:bound]):
@@ -716,7 +735,23 @@ def scan_ask_question(lines: Sequence[str]) -> dict[str, Any] | None:
     tab_offset = -1
     header_offset = -1
     for offset, line in enumerate(prefix):
-        match = TAB_BAR.match(line)
+        if offset <= tab_offset:
+            continue
+        tab_end = offset
+        tab_text = line
+        match = TAB_BAR.match(tab_text) if TAB_BAR_START.match(line) else None
+        if match is None and TAB_BAR_START.match(line):
+            # Stop at a blank row or the tab bar's closing arrow, and keep the
+            # final row's offset so no tab text becomes part of the question.
+            while tab_end + 1 < len(prefix) and prefix[tab_end + 1].strip():
+                tab_end += 1
+                tab_text = f"{tab_text.rstrip()} {prefix[tab_end].strip()}"
+                match = TAB_BAR.match(tab_text)
+                if match is not None:
+                    break
+        # A joined bar includes Submit; a question may also end with an arrow.
+        if match and tab_end > offset and not re.search(r"✔\s+Submit", match.group(1)):
+            match = None
         if match:
             tokens = list(TAB_TOKEN.finditer(match.group(1)))
             if not tokens or TAB_TOKEN.sub("", match.group(1)).strip():
@@ -730,11 +765,13 @@ def scan_ask_question(lines: Sequence[str]) -> dict[str, Any] | None:
                 for token in tokens
                 if token.group(2) and token.group(2).strip() != "Submit"
             ]
-            tab_offset = offset
+            tab_offset = tab_end
             continue
         if SIMPLE_HEADER.match(line):
             header_offset = offset
     ready_index = first_option_index - 1
+    while ready_index >= 0 and not normalized[ready_index].strip():
+        ready_index -= 1
     is_review = ready_index >= 0 and READY.match(normalized[ready_index]) is not None
     if is_review:
         question = normalized[ready_index]

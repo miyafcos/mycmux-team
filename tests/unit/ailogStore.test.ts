@@ -388,6 +388,32 @@ describe("AI log report latency and cache boundaries", () => {
     await pending;
   });
 
+  it("keeps aggregate rankings cached after includeSidechain changes and refetches only sessions", async () => {
+    await useAilogStore.getState().loadUsage();
+    const aggregateCommands = ["ailog_overview", "ailog_series", "ailog_models", "ailog_breakdown",
+      "ailog_pivot", "ailog_rework_rankings", "ailog_model_handoffs", "ailog_usage_rhythm"];
+    for (const command of aggregateCommands) expect(calls(command), command).toBeGreaterThan(0);
+    const cached = useAilogStore.getState();
+    const warmedCalls = invokeMock.mock.calls.length;
+
+    useAilogStore.getState().setIncludeSidechain(true);
+    await useAilogStore.getState().loadUsage();
+
+    expect(invokeMock.mock.calls.slice(warmedCalls).map(([command]) => command)).toEqual(["ailog_sessions"]);
+    expect(invokeMock.mock.calls.at(-1)?.[1]).toMatchObject({ filters: { includeSidechain: true } });
+    const refreshed = useAilogStore.getState();
+    for (const key of ["overview", "usageSeries", "models", "breakdown", "pivot", "reworkRankings", "handoffs", "usageRhythm"] as const) {
+      expect(refreshed[key], key).toBe(cached[key]);
+    }
+
+    const toggledCalls = invokeMock.mock.calls.length;
+    useAilogStore.getState().setIncludeSidechain(false);
+    await useAilogStore.getState().loadUsage();
+    // Returning to the already cached session filter needs no IPC at all.
+    expect(invokeMock.mock.calls).toHaveLength(toggledCalls);
+    expect(useAilogStore.getState().includeSidechain).toBe(false);
+  });
+
   it("reuses period reports and session pages across chart grouping and bucket changes", async () => {
     await useAilogStore.getState().loadUsage();
     const overviewCount = calls("ailog_overview");

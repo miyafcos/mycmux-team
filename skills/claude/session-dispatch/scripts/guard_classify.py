@@ -20,15 +20,19 @@ LOGIN = re.compile(
     r"OAuth (?:required|login|authentication)\b)", re.I)
 DENIAL = re.compile(r"^\s*(?:\u276f\s*)?(\d)\.\s*(No,?\s+and tell Claude what to do differently|No)\b", re.I)
 PLACEHOLDER = re.compile(r'^(?:Try "|Ask Codex to do anything|Find and fix a bug|Implement \{feature\})', re.I)
-FOOTER = re.compile(r"^\s*(?:[\u2500\u2501\u2550]{3,}|-- INSERT --|.*\u00b7 Ready$|.*\u00b7 \d+% context left$|\? for shortcuts)")
+# A Codex TUI whose [tui].status_line starts with "context-used" (seen on 0.165.0) shows
+# "Context N% used \u00b7 <model> \u00b7 <cwd>" between the input and "? for shortcuts". Other status_line orders
+# (e.g. "context-remaining") are not matched here; the stale recovery then stops before ctrl-c.
+FOOTER = re.compile(r"^\s*(?:[\u2500\u2501\u2550]{3,}|-- INSERT --|.*\u00b7 Ready$|.*\u00b7 \d+% context left$|\? for shortcuts|"
+                    r"Context \d+% used(?: \u00b7|$))")
 
 def input_body(value):
     """Trim terminal chrome from the bridge parser's wrapped input area."""
     if value is None:
         return None
     body = []
-    for line in value[2].splitlines():
-        if FOOTER.search(line):
+    for index, line in enumerate(value[2].splitlines()):
+        if index and FOOTER.search(line):  # the prompt row itself is never chrome
             break
         body.append(line)
     text = "\n".join(body).strip()

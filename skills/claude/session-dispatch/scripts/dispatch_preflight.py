@@ -48,9 +48,10 @@ def prepare_project(config_path, cwd, *, before_reload=None):
     previous = deepcopy(entry)
     entry["hasTrustDialogAccepted"] = True
     servers = entry.setdefault("enabledMcpjsonServers", [])
-    for server in ("oracle", "deepwiki"):
-        if server not in servers:
-            servers.append(server)
+    # deepwiki is not approved here: since 2026-10-29 only seats started with
+    # their own --mcp-config load it. An existing entry is left as it is.
+    if "oracle" not in servers:
+        servers.append("oracle")
     if desired != latest:
         fd, tmp = tempfile.mkstemp(prefix=".claude-guard-", suffix=".tmp", dir=config_path.parent)
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:

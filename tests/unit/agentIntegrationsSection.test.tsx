@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentHooksStatus, HookInstallState, RepairReason } from "../../src/lib/agentHooksApi";
+import type { AgentHooksStatus, HookInstallState, HookProvider, RepairReason } from "../../src/lib/agentHooksApi";
 const api = vi.hoisted(() => ({ agentHooksStatus: vi.fn(), agentHooksSet: vi.fn() }));
 vi.mock("../../src/lib/agentHooksApi", () => api);
 import { AgentIntegrationsSection } from "../../src/components/settings/tabs/AgentIntegrationsSection";
@@ -119,4 +119,37 @@ describe("Agent integrations settings", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("変更できませんでした。");
     expect(row().textContent).toContain("設定ファイルの形を読み取れない");
   });
+});
+
+describe("Codex hook trust guidance", () => {
+  const states: HookInstallState[] = [
+    { state: "installed" },
+    { state: "disabled" },
+    { state: "unavailable" },
+    ...(["duplicate", "missing", "helper-path", "untrusted", "unknown-shape"] as const)
+      .map((reason): HookInstallState => ({ state: "needs-repair", reason })),
+  ];
+  const providers: HookProvider[] = ["claude", "codex", "grok"];
+  it.each(providers.flatMap((provider) => states.map((state) => ({ provider, state }))))(
+    "limits reapproval instructions to Codex untrusted: $provider $state",
+    async ({ provider, state }) => {
+      const value: AgentHooksStatus = { version: 2, providers: [
+        { provider, enabled: state.state !== "disabled", ...state },
+      ] };
+      await render(value);
+      const needsTrust = provider === "codex" && state.state === "needs-repair" && state.reason === "untrusted";
+      if (needsTrust) {
+        const codex = container.querySelector('[role="group"][aria-label="Codex"]')!;
+        expect(codex.textContent).toContain("Codex の側でまだ許可されていません");
+        expect(codex.textContent).toContain("Codex の入力欄に /hooks と入力し、mycmux の hook を確認して許可してください。許可したら Codex のタブを開き直してください。");
+      } else {
+        expect(container.textContent).not.toContain("/hooks");
+      }
+      const group = container.querySelector(`[role="group"][aria-label="${{ claude: "Claude Code", codex: "Codex", grok: "Grok" }[provider]}"]`)!;
+      const untrusted = state.state === "needs-repair" && state.reason === "untrusted";
+      expect(Boolean(button("直す", group))).toBe(state.state === "needs-repair" && !untrusted);
+      expect(Boolean(button("入れる", group))).toBe(state.state === "disabled" || state.state === "unavailable");
+      expect(api.agentHooksSet).not.toHaveBeenCalled();
+    },
+  );
 });

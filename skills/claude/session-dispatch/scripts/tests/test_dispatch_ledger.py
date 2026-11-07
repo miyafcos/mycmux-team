@@ -349,3 +349,113 @@ def test_a_slug_with_no_rows_yet_still_accepts_a_diff_row(tmp_path):
         ledger, slug="260909-brand-new", spawn_ts="2026-09-09T10:00:00",
         tab_session_id="pty-x", status="open")
     assert dispatch_ledger.load_dispatches(ledger)[0].status == "open"
+
+
+@pytest.mark.parametrize("identity", [
+    {"tab_id": "child-tab"},
+    {"tab_session_id": "child-session"},
+    {"session_id": "child-session"},
+    {"tabId": "child-tab"},
+    {"sessionId": "child-session"},
+])
+def test_append_records_environment_parent_for_seat_rows(tmp_path, monkeypatch, identity):
+    monkeypatch.setenv("MYCMUX_TAB_ID", "parent-tab")
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", "parent-session")
+    ledger = tmp_path / "ledger.jsonl"
+    payload = {"slug": "261005-child", "status": "open", **identity}
+    before = dict(payload)
+    row = dispatch_ledger.append_record(ledger, payload)
+    assert row["parent_tab_id"] == "parent-tab"
+    assert row["parent_session_id"] == "parent-session"
+    assert json.loads(ledger.read_text(encoding="ascii")) == row
+    assert dispatch_ledger.load_dispatches(ledger)[0].get("parent_tab_id") == "parent-tab"
+    assert payload == before
+
+
+@pytest.mark.parametrize("explicit_parent", ["chosen-parent", None])
+def test_append_does_not_overwrite_explicit_parent(tmp_path, monkeypatch, explicit_parent):
+    monkeypatch.setenv("MYCMUX_TAB_ID", "environment-parent")
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", "environment-session")
+    row = dispatch_ledger.append_record(tmp_path / "ledger.jsonl", {
+        "slug": "261005-child", "tab_id": "child-tab",
+        "parentTabId": explicit_parent, "parentSessionId": "chosen-session",
+    })
+    assert row["parent_tab_id"] == explicit_parent
+    assert row["parent_session_id"] == "chosen-session"
+
+
+@pytest.mark.parametrize("parent_tab_id", [None, ""])
+def test_append_does_not_infer_parent_without_tab_environment(tmp_path, monkeypatch, parent_tab_id):
+    if parent_tab_id is None:
+        monkeypatch.delenv("MYCMUX_TAB_ID", raising=False)
+    else:
+        monkeypatch.setenv("MYCMUX_TAB_ID", parent_tab_id)
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", "parent-session")
+    row = dispatch_ledger.append_record(tmp_path / "ledger.jsonl", {
+        "slug": "261005-child", "tab_id": "child-tab",
+    })
+    assert "parent_tab_id" not in row
+    assert "parent_session_id" not in row
+
+
+@pytest.mark.parametrize("tab_key", ["tab_id", "tabId"])
+def test_append_does_not_record_itself_as_parent(tmp_path, monkeypatch, tab_key):
+    monkeypatch.setenv("MYCMUX_TAB_ID", "same-tab")
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", "parent-session")
+    row = dispatch_ledger.append_record(tmp_path / "ledger.jsonl", {
+        "slug": "261005-child", tab_key: "same-tab", "session_id": "child-session",
+    })
+    assert "parent_tab_id" not in row
+    assert "parent_session_id" not in row
+
+
+def test_append_does_not_infer_parent_for_non_seat_row(tmp_path, monkeypatch):
+    monkeypatch.setenv("MYCMUX_TAB_ID", "parent-tab")
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", "parent-session")
+    row = dispatch_ledger.append_record(tmp_path / "ledger.jsonl", {
+        "slug": "261005-child", "status": "done",
+    })
+    assert "parent_tab_id" not in row
+    assert "parent_session_id" not in row
+
+
+@pytest.mark.parametrize("parent_session_id", [None, ""])
+def test_append_parent_session_is_optional(tmp_path, monkeypatch, parent_session_id):
+    monkeypatch.setenv("MYCMUX_TAB_ID", "parent-tab")
+    if parent_session_id is None:
+        monkeypatch.delenv("MYCMUX_PANE_SESSION_ID", raising=False)
+    else:
+        monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", parent_session_id)
+    row = dispatch_ledger.append_record(tmp_path / "ledger.jsonl", {
+        "slug": "261005-child", "tab_id": "child-tab",
+    })
+    assert row["parent_tab_id"] == "parent-tab"
+    assert "parent_session_id" not in row
+
+
+def test_update_does_not_infer_environment_parent(tmp_path, monkeypatch):
+    monkeypatch.setenv("MYCMUX_TAB_ID", "parent-tab")
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", "parent-session")
+    ledger = tmp_path / "ledger.jsonl"
+    row = dispatch_ledger.update_record(
+        ledger, slug="261005-child", tab_session_id="child-session",
+        tab_id="child-tab", status="open", ledger_ts="2026-10-05T22:00:00",
+    )
+    expected = {
+        "ts": "2026-10-05T22:00:00", "slug": "261005-child",
+        "tab_session_id": "child-session", "status": "open", "tab_id": "child-tab",
+    }
+    assert row == expected
+    assert json.loads(ledger.read_text(encoding="ascii")) == expected
+
+
+def test_append_preserves_explicit_parent_session_without_parent_tab(tmp_path, monkeypatch):
+    monkeypatch.setenv("MYCMUX_TAB_ID", "environment-parent")
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", "environment-session")
+    path = tmp_path / "ledger.jsonl"
+    row = dispatch_ledger.append_record(path, {
+        "slug": "261107-child", "tab_id": "child-tab", "parent_session_id": "chosen-session",
+    })
+    assert row["parent_tab_id"] == "environment-parent"
+    assert row["parent_session_id"] == "chosen-session"
+    assert json.loads(path.read_text(encoding="ascii"))["parent_session_id"] == "chosen-session"

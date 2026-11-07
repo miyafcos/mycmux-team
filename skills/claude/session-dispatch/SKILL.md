@@ -30,8 +30,8 @@ metadata:
 | 母艦が重い (compact 接近・長大化) ときに来た新規の重依頼 | 新ペインへ。母艦は司令塔に徹する |
 | 「どこまでやったっけ」系で、この先に重作業が続く | 母艦で現状整理 → 作業本体を spec 化して新ペイン |
 | 軽い読み調査・その場の検証 | 母艦直 (サブエージェント・ペインにしない) |
-| 素材大量の走査・分類・抽出 (MCP 不要) | codex ペイン (`gpt-6.1-sol` max を明示起動 `spawn-tab --no-activate -- powershell -NoLogo -NoExit -Command "codex --model gpt-6.1-sol -c model_reasoning_effort=max -c features.fast_mode=false"`。素の `spawn --target codex` は config 既定 = gpt-6.1-sol/high (2026-10-02 実測) で立ち max にならないので、委譲では使わない) |
-| MCP 必須素材・日本語プロースの fan-out | Agent tool `model:'opus'` 明示 (無指定は agent-model-guard hook が遮断) |
+| 素材大量の走査・分類・抽出 (MCP 不要) | codex ペイン (`gpt-6.1-sol` max を明示起動 `spawn-tab --no-activate -- powershell -NoLogo -NoExit -Command "codex --model gpt-6.1-sol -c model_reasoning_effort=max -c features.fast_mode=false"`。素の `spawn --target codex` は config.toml の既定で立ち、gpt-6.1-sol / max になるとは限らないので、委譲では使わない) |
+| MCP 必須素材・日本語プロースの fan-out | Agent tool で model を明示 (実装・下書き = `'sonnet'` / レビュー・判断 = `'opus'` / 軽い検索・抽出 = `'haiku'`・2026-10-09〜。無指定は agent-model-guard hook が遮断) |
 
 非 mycmux セッション (cron 等) では spawn 不可 → Agent tool / Workflow で代替する。
 
@@ -56,7 +56,7 @@ metadata:
 1. **spec 作成**: `~/.claude/dispatch/<YYMMDD>-<slug>/spec.md` を references/spec-template.md の型で書く。
    必須4点 (境界/完了条件/接続先/判断者) + DONE 契約 + **ask カード契約 (references/ask-card-contract.md)**。
    effort・モデルは `--prompt-file` の spawn では CLI から渡らず、子は既定の設定で立つ。spec の実行指定は記録として書き、実際の effort は子のヘッダーで確かめる (spec に深さを書いても思考量は変わらない)
-2. **spawn**:
+2. **spawn**: 
    `python <resolved-mycmux-agent-cli> spawn --target claude --prompt-file <spec> --label <slug> --cwd <作業フォルダ> --no-activate`
    — 既定は裏ペイン。`--split` は利用者の指定 or AskUserQuestion 承認後のみ足す。spawn / spawn-tab はどちらも `--no-activate` を付け、`--activate` は付けない (前面を奪うと戻せない)。
    応答 JSON を台帳に記録
@@ -66,6 +66,9 @@ metadata:
    `python ~/.claude/skills/session-dispatch/scripts/dispatch_watch.py --slug <slug>` を
    **バックグラウンド実行** (Bash run_in_background)。DONE 検知→spec の機械検収→PASS なら
    close-tab+台帳更新まで watcher が勝手にやる。FAIL・TIMEOUT・TAB-GONE は exit 非0 で通知が返る。STALL (ログ停止 45 分) では終了せず、台帳に記録して監視を続ける (`--legacy-stall-exit` 指定時だけ exit 2)
+3c. **複数の子をまとめて待つ・様子を見る**: DONE.md を grep したり待ちのスクリプトをその場で書いたりせず、`python -X utf8 ~/.claude/skills/session-dispatch/scripts/seat_watch.py wait --seat <slug> [--seat ...] [--watch "<ready の glob>"] --state <自分の dispatch フォルダ>/watch_state.json` を run_in_background で 1 回呼ぶ (どれかの DONE の節か ready が動いたら終了 0 で起きる)。今の様子は同じ引数の `status` (席ごと 1 行)。
+   state が無い初回は、先に同じ引数で `status` を 1 回回して DONE=YES の席を先に回収し、それから wait を呼ぶ (wait は呼んだ後の変化でしか起きない。status も state を保存するので、続けて呼ぶ wait はそこが基準になる)。
+   同じ `--state` の wait は 1 本だけ動かす (張り直す前に前の待ちを止める)。
 4. **回収**: watcher の verdict (`DONE-VERIFIED-CLOSED` なら完了) を確認。needs_review /
    watcher 無し運用は `dispatch_status.py` で突合し、**成果物を親が実体検証**
    (Test-Path / 行数 / diff / 実行出力)。DONE.md の自己申告は成果と見なさない
@@ -95,6 +98,25 @@ metadata:
   それ以外は DONE の「要判断」。**黙って止まるのは契約違反** — idle なのに DONE も ask も無い子 (silent blocker)
   を見つけたら、人間向けカードを親が代作せず、子へ「ask を発行するか自分で判断して続行せよ」を send する
 - 委譲契約の正本は `~/cmux-for-linux-dev-master/docs/agent-integration.md`。矛盾したらそちらが勝つ
+
+## guard が停止している送りの完結 (v0.90.7)
+
+Enter が通らないときに人へ Enter を頼まない。`dispatch_send.py` は、guard が `alive: false` の場合、
+その送りを頼んだ呼び出しの中で入力欄と対象を読み直す。入力版が自分の本文1回分だけ進み、
+入力欄もその本文だけなら、期待値4点付きで Enter だけを1回送る。
+`stale_staged_draft` と本文・Enter の未書込みが返った場合は、自分の本文だけが残ることを再確認し、
+ctrl-c を1回 → 空欄と入力版の確認 → 本文と Enter を1回で送る、まで行う。
+他の入力・重複・対象の変更・読取不能では送らず、理由を返す。生きていない guard が持つと報告しない。
+Enter の応答消失、書込みの結果不明、受付未確認では本文を自動再送しない。
+
+v0.90.6 以前など `stale_staged_draft` を返さない版の明示的な拒否は、従来どおり止める。
+旧版での回り道が必要なときは、元の送り手が入力欄に自分の本文1回分だけと確認し、
+現在の期待値4点付き ctrl-c → 空欄の確認 → 本文と Enter を1回、の順で完結させる。
+
+判断カードは、enqueue 時に同じ PTY の Claude 会話 ID を保存できた場合、
+epoch が変わっても現在の同じ PTY の会話 ID が一致すれば、新しい epoch の期待値で答えを送る。
+会話が違う、ID が不明、同じ PTY が重複する場合は止める。保存済みの会話 ID がない旧カードは、
+epoch が変わったら従来どおり止める。
 
 ## 見張り (dispatch_guard.py) — 2026-09-16 から停止中
 

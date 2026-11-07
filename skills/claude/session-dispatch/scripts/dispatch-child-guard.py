@@ -37,12 +37,24 @@ LOG_PATH = Path.home() / ".claude" / "dispatch" / "guard" / "child-guard.jsonl"
 BLOCKED_TOOLS = frozenset({"AskUserQuestion", "EnterPlanMode", "ExitPlanMode"})
 # Ledger keys that carry a child's pane session id (snake and camel spellings).
 CHILD_SESSION_KEYS = ("tab_session_id", "tabSessionId")
-
 try:  # single source of truth when the skill is installed as a whole
     sys.path.insert(0, str(SCRIPTS_DIR))
-    from dispatch_ledger import INACTIVE_STATUSES as _INACTIVE  # type: ignore
+    from dispatch_ledger import INACTIVE_STATUSES as _INACTIVE, is_mothership_session  # type: ignore
     INACTIVE_STATUSES = frozenset(_INACTIVE)
 except Exception:  # pragma: no cover - hook must never fail on import
+    def is_mothership_session(records: list[dict], pane_session_id: str) -> bool:
+        """Keep the same last non-empty kind rule when the ledger import fails."""
+        mothership_kinds = frozenset({"bokan"})
+        if not pane_session_id:
+            return False
+        latest_kind = None
+        for record in records:
+            if pane_session_id in (record.get("tab_session_id"), record.get("tabSessionId")):
+                value = record.get("kind")
+                if isinstance(value, str) and value:
+                    latest_kind = value
+        return latest_kind in mothership_kinds
+
     INACTIVE_STATUSES = frozenset(
         {"closed", "done-verified-closed", "abandoned", "fallback-inline", "lost"}
     )
@@ -115,9 +127,12 @@ def latest_status_for_session(records: list[dict], pane_session_id: str) -> str 
 def is_dispatch_child(pane_session_id: str, path: Path | None = None) -> bool:
     if not pane_session_id:
         return False
-    status = latest_status_for_session(load_jsonl(path or ledger_path()), pane_session_id)
+    records = load_jsonl(path or ledger_path())
+    status = latest_status_for_session(records, pane_session_id)
     if status is None:
         return False
+    if is_mothership_session(records, pane_session_id):
+        return False  # a mothership seat (kind "bokan"), not a child
     return status not in INACTIVE_STATUSES
 
 
@@ -180,6 +195,8 @@ def self_test() -> int:
             {"slug": "260908-closed", "status": "closed", "tab_session_id": "pty-closed"},
             {"slug": "260908-lost", "status": "lost", "tab_session_id": "pty-lost"},
             {"slug": "260908-nostatus", "tab_session_id": "pty-nostatus"},
+            {"slug": "261013-bokan", "status": "open", "kind": "bokan", "tab_session_id": "pty-bokan"},
+            {"slug": "261013-codex", "status": "open", "kind": "codex", "tab_session_id": "pty-codexkind"},
         ]
         ledger.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
         cases = [
@@ -192,6 +209,8 @@ def self_test() -> int:
             ("row without status (fail-closed => child)", "AskUserQuestion", "pty-nostatus", 2),
             ("unknown session (mothership)", "AskUserQuestion", "pty-unknown", 0),
             ("no pane session id", "AskUserQuestion", "", 0),
+            ("mothership seat (kind bokan, open) + AskUserQuestion", "AskUserQuestion", "pty-bokan", 0),
+            ("other kind (codex, open) still a child", "AskUserQuestion", "pty-codexkind", 2),
         ]
         for name, tool, sid, expected in cases:
             code, _ = decide(tool, sid, ledger)

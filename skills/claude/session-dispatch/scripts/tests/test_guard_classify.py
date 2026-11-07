@@ -109,6 +109,35 @@ def test_ambiguous_structure_and_historical_output_not_operated():
 def test_footer_is_not_a_draft():
     assert input_body(current_input_line([">", "\u2500" * 20, "auto mode on"])) == ""
 
+def codex_0165_lines(draft=None):
+    lines = (FIXTURES / "codex_0165_idle.txt").read_text(encoding="utf-8").splitlines()
+    if draft is not None:
+        index = lines.index("\u203a Ask Codex to do anything")
+        lines[index] = "\u203a " + draft
+    return lines
+
+def test_codex_0165_idle_placeholder_is_empty():
+    assert input_body(current_input_line(codex_0165_lines())) == ""
+
+@pytest.mark.parametrize("draft", ["hello", "probe line for the staged Enter fence check"])
+def test_codex_0165_context_used_row_is_footer_not_draft(draft):
+    # A status_line starting with "context-used" shows "Context N% used \u00b7 model \u00b7 cwd" below the input.
+    assert input_body(current_input_line(codex_0165_lines(draft))) == draft
+
+def test_context_used_inside_a_draft_line_stays_draft():
+    lines = codex_0165_lines("note: Context 3% used \u00b7 is the footer")
+    assert input_body(current_input_line(lines)) == "note: Context 3% used \u00b7 is the footer"
+
+@pytest.mark.parametrize("lines", [
+    ["\u203a Context 5% used", "and this is my note",
+     "Context 3% used \u00b7 sample-model \u00b7 ~\\work\\sample", "? for shortcuts"],
+    ["\u2500" * 20, "\u276f\xa0Context 5% used", "\u2500" * 20]])
+def test_footer_shaped_first_draft_row_stays_a_draft(lines):
+    # The prompt row itself is never terminal chrome, even when it reads like the Codex status row.
+    assert input_body(current_input_line(lines)).startswith("Context 5% used")
+    obs = observation("empty", screen_lines=lines, input_line=current_input_line(lines))
+    assert classify(obs).cls == "human_draft"
+
 def test_stale_streaming_with_exact_transcript_end_turn_can_deliver_owned_draft():
     obs = observation("draft_corrupt", pending_send={"text": "hello world", "origin": "canary",
         "input_revision_after": 3, "session_epoch": 9}, turn_ended=True)

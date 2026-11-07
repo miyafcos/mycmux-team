@@ -25,7 +25,8 @@
 .cmux-dashboard-view .cmux-dashboard-column-options > summary,
 .cmux-dashboard-view .cmux-dashboard-next-actions[data-next-action-status="not-requested"] > button,
 .cmux-dashboard-view .cmux-dashboard-next-actions[role="status"] > button,
-.cmux-dashboard-view .cmux-dashboard-next-actions .cmux-dashboard-next-actions-retry {
+.cmux-dashboard-view .cmux-dashboard-next-actions .cmux-dashboard-next-actions-retry,
+.cmux-dashboard-view .cmux-dashboard-next-actions-more-panel .cmux-dashboard-next-actions-retry {
   display: inline-flex; width: auto; height: auto;
   min-width: var(--cmux-dashboard-control-size); min-height: var(--cmux-dashboard-control-size);
   align-items: center; justify-content: center; gap: var(--cmux-space-4);
@@ -44,12 +45,14 @@
 .cmux-dashboard-view .cmux-dashboard-column-options > summary:disabled,
 .cmux-dashboard-view .cmux-dashboard-next-actions[data-next-action-status="not-requested"] > button:disabled,
 .cmux-dashboard-view .cmux-dashboard-next-actions[role="status"] > button:disabled,
-.cmux-dashboard-view .cmux-dashboard-next-actions .cmux-dashboard-next-actions-retry:disabled {
+.cmux-dashboard-view .cmux-dashboard-next-actions .cmux-dashboard-next-actions-retry:disabled,
+.cmux-dashboard-view .cmux-dashboard-next-actions-more-panel .cmux-dashboard-next-actions-retry:disabled {
   opacity: 0.5; cursor: default;
 }
 .cmux-dashboard-view .cmux-dashboard-next-actions[data-next-action-status="not-requested"] > button:hover:not(:disabled),
 .cmux-dashboard-view .cmux-dashboard-next-actions[role="status"] > button:hover:not(:disabled),
-.cmux-dashboard-view .cmux-dashboard-next-actions .cmux-dashboard-next-actions-retry:hover:not(:disabled) { background: var(--cmux-hover); }
+.cmux-dashboard-view .cmux-dashboard-next-actions .cmux-dashboard-next-actions-retry:hover:not(:disabled),
+.cmux-dashboard-view .cmux-dashboard-next-actions-more-panel .cmux-dashboard-next-actions-retry:hover:not(:disabled) { background: var(--cmux-hover); }
 
 .cmux-dashboard-view :is(.cmux-dashboard-glyph, .cmux-dashboard-status-mark, .cmux-dashboard-count) {
   border: 0; background: transparent; box-shadow: none; cursor: default;
@@ -205,3 +208,68 @@
 .cmux-dashboard-view .cmux-dashboard-column-options > .cmux-dashboard-column-limit {
   bottom: auto;
 }
+
+/* N9 plan 1 (2026-11-06): keep the conversation record tall by shrinking the controls around it.
+   Only vertical sizes change; colours, fonts and the 12px/11px text sizes stay on the existing tokens.
+   Padding is set per axis so the narrow-container gutters above keep working. */
+.cmux-dashboard-view .cmux-dashboard-chat-header { min-height: calc(var(--cmux-space-4) * 5); padding-block: var(--cmux-space-2); }
+.cmux-dashboard-view .cmux-dashboard-chat-actions .cmux-dashboard-chat-header-btn {
+  min-height: calc(var(--cmux-space-6) * 2); height: calc(var(--cmux-space-6) * 2); min-width: calc(var(--cmux-space-6) * 2);
+  padding: 0 var(--cmux-space-4); border-color: var(--cmux-border-hairline); font-size: var(--cmux-font-size-sm);
+}
+.cmux-dashboard-view .cmux-dashboard-chat-actions .cmux-dashboard-chat-header-btn:hover:not(:disabled) { background: var(--cmux-hover); border-color: var(--cmux-border); }
+.cmux-dashboard-view .cmux-dashboard-chat-header .cmux-dashboard-chat-actions { gap: var(--cmux-space-2); }
+.cmux-dashboard-view .cmux-dashboard-composer { gap: var(--cmux-space-2); padding-block: var(--cmux-space-3) var(--cmux-space-5); }
+.cmux-dashboard-view .cmux-dashboard-next-actions.is-balanced {
+  position: relative; min-height: calc(var(--cmux-space-6) * 2); margin: 0; padding: 0; gap: var(--cmux-space-4); border: 0; background: transparent;
+}
+.cmux-dashboard-view .cmux-dashboard-next-actions.is-balanced[data-next-action-status="ready"] { min-height: calc(var(--cmux-space-7) + var(--cmux-space-6)); }
+.cmux-dashboard-view .cmux-dashboard-next-actions.is-balanced button {
+  min-height: calc(var(--cmux-space-6) * 2); height: calc(var(--cmux-space-6) * 2); font-size: var(--cmux-font-size-sm);
+}
+.cmux-dashboard-view .cmux-dashboard-next-actions.is-balanced .cmux-dashboard-next-action-confirm button {
+  height: auto; min-height: var(--cmux-dashboard-control-size);
+}
+.cmux-dashboard-view .cmux-dashboard-next-actions.is-balanced .cmux-dashboard-next-action { padding: 0 var(--cmux-space-4); }
+.cmux-dashboard-view .cmux-dashboard-next-actions.is-balanced .cmux-dashboard-next-actions-list { flex-wrap: nowrap; min-width: 0; min-height: calc(var(--cmux-space-7) + var(--cmux-space-6)); gap: var(--cmux-space-4); }
+.cmux-dashboard-view .cmux-dashboard-next-actions.is-balanced .cmux-dashboard-next-actions-list > .cmux-dashboard-next-action { min-width: 0; }
+.cmux-dashboard-view .cmux-dashboard-next-actions.is-balanced .cmux-dashboard-next-actions-list > .cmux-dashboard-next-action > span:last-child {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cmux-dashboard-view .cmux-dashboard-next-actions-more { flex: 0 0 auto; }
+.cmux-dashboard-view .cmux-dashboard-next-actions.is-balanced .cmux-dashboard-next-actions-more-button {
+  display: inline-flex; align-items: center; padding: 0 var(--cmux-space-4);
+  border: 1px solid var(--cmux-border); border-radius: var(--cmux-radius-sm);
+  background: transparent; color: var(--cmux-text-secondary); cursor: pointer;
+}
+.cmux-dashboard-view .cmux-dashboard-next-actions.is-balanced .cmux-dashboard-next-actions-more-button:hover { background: var(--cmux-hover); }
+/* The panel is portalled into .cmux-dashboard-view and placed by NextActionSuggestions from the row's
+   rectangle (left / bottom / width / min-width / max-height inline), because the conversation column is
+   a CSS container and would clip it. The values below are the fallback before the first measurement. */
+.cmux-dashboard-view .cmux-dashboard-next-actions-more-panel {
+  position: fixed; z-index: 30; box-sizing: border-box;
+  display: flex; flex-direction: column; align-items: stretch; gap: var(--cmux-space-3);
+  min-width: 0; max-width: min(420px, 100%); max-height: 60vh; overflow-y: auto; padding: var(--cmux-space-5);
+  outline: none;
+  border: 1px solid var(--cmux-border); border-radius: var(--cmux-radius-md);
+  background: var(--cmux-popover); box-shadow: var(--cmux-shadow-popover);
+}
+.cmux-dashboard-view .cmux-dashboard-next-actions-more-panel .cmux-dashboard-next-actions-summary {
+  flex: none; overflow: visible; white-space: normal; line-height: 1.5; font-size: var(--cmux-font-size-sm);
+}
+.cmux-dashboard-view .cmux-dashboard-next-actions-more-panel button { min-height: calc(var(--cmux-space-6) * 2); height: calc(var(--cmux-space-6) * 2); font-size: var(--cmux-font-size-sm); }
+.cmux-dashboard-view .cmux-dashboard-next-actions-more-panel .cmux-dashboard-next-action {
+  height: auto; padding: 0 var(--cmux-space-4); white-space: normal; text-align: left;
+}
+.cmux-dashboard-view .cmux-dashboard-next-actions-more-panel .cmux-dashboard-next-actions-retry { align-self: flex-start; min-height: calc(var(--cmux-space-6) * 2); height: calc(var(--cmux-space-6) * 2); }
+.cmux-dashboard-view .cmux-dashboard-composer-target {
+  padding-bottom: 0; line-height: 16px; color: var(--cmux-text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cmux-dashboard-view .cmux-dashboard-composer-row { padding: var(--cmux-space-2) var(--cmux-space-2) var(--cmux-space-2) var(--cmux-space-6); align-items: flex-end; }
+.cmux-dashboard-view .cmux-dashboard-composer-input { min-height: calc(var(--cmux-space-7) + var(--cmux-space-6)); max-height: calc(6 * 1.5em + 8px); padding: var(--cmux-space-2) 0; }
+.cmux-dashboard-view .cmux-dashboard-composer .cmux-dashboard-composer-send { min-height: calc(var(--cmux-space-7) + var(--cmux-space-6)); height: calc(var(--cmux-space-7) + var(--cmux-space-6)); font-size: var(--cmux-font-size-sm); }
+.cmux-dashboard-view .cmux-dashboard-qcard:not(.is-compact) { margin: 0 var(--cmux-space-7) var(--cmux-space-4); padding: var(--cmux-space-4) var(--cmux-space-6); gap: var(--cmux-space-3); }
+.cmux-dashboard-view .cmux-dashboard-qcard:not(.is-compact) .cmux-dashboard-qcard-head { margin-bottom: 0; }
+.cmux-dashboard-view .cmux-dashboard-qcard:not(.is-compact) .cmux-dashboard-qcard-options { margin-top: var(--cmux-space-2); gap: var(--cmux-space-3); }
+.cmux-dashboard-view .cmux-dashboard-qcard:not(.is-compact) .cmux-dashboard-qcard-option { min-height: calc(var(--cmux-space-7) + var(--cmux-space-6)); padding: 0 var(--cmux-space-5); }

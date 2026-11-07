@@ -34,7 +34,7 @@ impl ButtonRect {
 
     /// Anchor to the client right edge so native resize/DPI messages need not
     /// wait for a round trip through React. New DOM measurements change inset.
-    fn physical(self, width: i32, height: i32, scale: f64) -> Option<PixelRect> {
+    fn physical(mut self, width: i32, height: i32, scale: f64) -> Option<PixelRect> {
         let numbers = [
             self.x,
             self.y,
@@ -52,11 +52,24 @@ impl ButtonRect {
             || self.height <= 0.0
             || self.viewport_width <= 0.0
             || self.viewport_height <= 0.0
-            || self.x < 0.0
-            || self.y < 0.0
+            || self.x <= -1.0
+            || self.y <= -1.0
             || self.x + self.width > self.viewport_width + 0.01
             || self.y + self.height > self.viewport_height + 0.01
         {
+            return None;
+        }
+        // Fractional DPI can place a centred button just above/left of the
+        // viewport. Clip less than one CSS pixel, keeping its far edges fixed.
+        if self.x < 0.0 {
+            self.width += self.x;
+            self.x = 0.0;
+        }
+        if self.y < 0.0 {
+            self.height += self.y;
+            self.y = 0.0;
+        }
+        if self.width <= 0.0 || self.height <= 0.0 {
             return None;
         }
         let inset = (self.viewport_width - self.x - self.width).max(0.0);
@@ -807,5 +820,247 @@ mod tests {
         assert!(button().measured(0, 700, 1.0).is_none());
         assert!(button().measured(1000, 0, 1.0).is_none());
         assert!(button().measured(1000, 700, 0.0).is_none());
+    }
+
+    #[test]
+    fn clips_subpixel_negative_y_without_moving_the_bottom() {
+        for (negative, bottoms) in [
+            (-0.333, [32, 40, 48, 55, 63]),
+            (-0.999, [31, 39, 47, 54, 62]),
+            // The captured DOMRect falls just below the half-pixel tie at 150%.
+            (-0.3333333432674408, [32, 40, 47, 55, 63]),
+        ] {
+            for (scale, bottom) in [1.0_f64, 1.25, 1.5, 1.75, 2.0].into_iter().zip(bottoms) {
+                let r = ButtonRect {
+                    y: negative,
+                    height: 32.0,
+                    ..button()
+                };
+                let width = (1000.0 * scale) as i32;
+                let height = (700.0 * scale) as i32;
+                let expected = Some(PixelRect {
+                    left: (948.0 * scale).round() as i32,
+                    top: 0,
+                    right: (972.0 * scale).round() as i32,
+                    bottom,
+                });
+                assert_eq!(r.physical(width, height, scale), expected);
+                let measured = r.measured(width, height, scale).unwrap();
+                assert_eq!(measured.physical(width, height, scale), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn clips_subpixel_negative_x_without_moving_the_right_edge() {
+        for (negative, rights) in [
+            (-0.333, [32, 40, 48, 55, 63]),
+            (-0.999, [31, 39, 47, 54, 62]),
+        ] {
+            for (scale, right) in [1.0_f64, 1.25, 1.5, 1.75, 2.0].into_iter().zip(rights) {
+                let r = ButtonRect {
+                    x: negative,
+                    width: 32.0,
+                    ..button()
+                };
+                let width = (1000.0 * scale) as i32;
+                let height = (700.0 * scale) as i32;
+                let expected = Some(PixelRect {
+                    left: 0,
+                    top: (9.0 * scale).round() as i32,
+                    right,
+                    bottom: (27.0 * scale).round() as i32,
+                });
+                assert_eq!(r.physical(width, height, scale), expected);
+                let measured = r.measured(width, height, scale).unwrap();
+                assert_eq!(measured.physical(width, height, scale), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_negative_origins_of_one_css_pixel_or_more() {
+        for negative in [-1.0, -1.001, -2.0] {
+            for r in [
+                ButtonRect {
+                    x: negative,
+                    ..button()
+                },
+                ButtonRect {
+                    y: negative,
+                    ..button()
+                },
+            ] {
+                for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+                    assert_eq!(r.physical(2000, 1400, scale), None);
+                    assert!(r.measured(2000, 1400, scale).is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn clipping_keeps_nonnegative_rectangles_identical_at_all_supported_scales() {
+        for (scale, expected) in [
+            (
+                1.0,
+                PixelRect {
+                    left: 948,
+                    top: 9,
+                    right: 972,
+                    bottom: 27,
+                },
+            ),
+            (
+                1.25,
+                PixelRect {
+                    left: 1185,
+                    top: 11,
+                    right: 1215,
+                    bottom: 34,
+                },
+            ),
+            (
+                1.5,
+                PixelRect {
+                    left: 1422,
+                    top: 14,
+                    right: 1458,
+                    bottom: 41,
+                },
+            ),
+            (
+                1.75,
+                PixelRect {
+                    left: 1659,
+                    top: 16,
+                    right: 1701,
+                    bottom: 47,
+                },
+            ),
+            (
+                2.0,
+                PixelRect {
+                    left: 1896,
+                    top: 18,
+                    right: 1944,
+                    bottom: 54,
+                },
+            ),
+        ] {
+            assert_eq!(
+                button().physical((1000.0 * scale) as i32, (700.0 * scale) as i32, scale),
+                Some(expected)
+            );
+        }
+        let origin = ButtonRect {
+            x: 0.0,
+            y: 0.0,
+            ..button()
+        };
+        assert_eq!(
+            origin.physical(1000, 700, 1.0),
+            Some(PixelRect {
+                left: 0,
+                top: 0,
+                right: 24,
+                bottom: 18
+            })
+        );
+    }
+
+    #[test]
+    fn clipping_rejects_empty_results_and_preserves_far_edge_validation() {
+        for r in [
+            ButtonRect {
+                x: -0.999,
+                width: 0.5,
+                ..button()
+            },
+            ButtonRect {
+                y: -0.999,
+                height: 0.5,
+                ..button()
+            },
+            ButtonRect {
+                x: -0.333,
+                width: 1001.0,
+                ..button()
+            },
+            ButtonRect {
+                y: -0.333,
+                height: 701.0,
+                ..button()
+            },
+            ButtonRect {
+                x: -0.5,
+                width: 0.5,
+                ..button()
+            },
+            ButtonRect {
+                y: -0.5,
+                height: 0.5,
+                ..button()
+            },
+        ] {
+            assert_eq!(r.physical(1000, 700, 1.0), None);
+            assert!(r.measured(1000, 700, 1.0).is_none());
+        }
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for r in [
+                ButtonRect {
+                    x: invalid,
+                    ..button()
+                },
+                ButtonRect {
+                    y: invalid,
+                    ..button()
+                },
+            ] {
+                assert_eq!(r.physical(1000, 700, 1.0), None);
+            }
+        }
+    }
+
+    #[test]
+    fn band_rectangles_remain_inside_the_client_at_all_supported_scales() {
+        for scale in [1.0_f64, 1.25, 1.5, 1.75, 2.0] {
+            // The 1 CSS px bottom border is snapped down to physical pixels.
+            let y = -scale.floor() / (2.0 * scale);
+            let r = ButtonRect {
+                x: 916.0,
+                y,
+                width: 32.0,
+                height: 32.0,
+                viewport_width: 986.0,
+                viewport_height: 658.0,
+            };
+            let width = (986.0 * scale).round() as i32;
+            let height = (658.0 * scale).round() as i32;
+            let measured = r.measured(width, height, scale).unwrap();
+            let pixels = measured.physical(width, height, scale).unwrap();
+            assert_eq!(pixels.top, 0);
+            assert_eq!(pixels.bottom, ((y + 32.0) * scale).round() as i32);
+            assert!(0 <= pixels.left && pixels.left < pixels.right && pixels.right <= width);
+            assert!(pixels.top < pixels.bottom && pixels.bottom <= height);
+            assert_eq!(
+                hit_test(
+                    Some(pixels),
+                    (pixels.left + pixels.right) / 2,
+                    (pixels.top + pixels.bottom) / 2,
+                    1
+                ),
+                9
+            );
+            assert_eq!(
+                hit_test(
+                    None,
+                    (pixels.left + pixels.right) / 2,
+                    (pixels.top + pixels.bottom) / 2,
+                    1
+                ),
+                1
+            );
+        }
     }
 }

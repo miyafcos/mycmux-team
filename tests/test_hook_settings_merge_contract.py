@@ -14,8 +14,10 @@ Contract: docs/plans/2026-08-30-agent-hook-contract.md section 8.
 
 from __future__ import annotations
 
+import ast
 import copy
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,7 @@ REAL_SETTINGS = Path.home() / ".claude" / "settings.json"
 # The marker that identifies a handler as ours. Uninstall removes exactly the
 # handlers carrying it and nothing else.
 OWNERSHIP_MARKER = "mycmux_managed"
+MANAGED_HOOK_TIMEOUT_SECONDS = 5
 CLAUDE_EVENTS = {
     "UserPromptSubmit": "turn_active",
     "PermissionRequest": "attention_required",
@@ -97,7 +100,7 @@ def managed_handler(event: str) -> dict[str, Any]:
     return {
         "type": "command",
         "command": f'python "mycmux_hook.py" --provider claude --event-kind {CLAUDE_EVENTS.get(event, event)}',
-        "timeout": 1,
+        "timeout": MANAGED_HOOK_TIMEOUT_SECONDS,
         OWNERSHIP_MARKER: True,
     }
 
@@ -267,3 +270,40 @@ def test_old_question_pre_hook_is_upgraded_to_one_managed_group() -> None:
     assert groups[1]["hooks"][0]["command"].endswith("--event-kind pre_tool_use")
     assert install(after, list(CLAUDE_EVENTS)) == after
     assert user_groups(uninstall(after)) == user_groups(before)
+
+
+def test_managed_hook_timeout_matches_rust_json_toml_and_helper_budget() -> None:
+    source = (REPO_ROOT / "src-tauri/src/agent_state/settings.rs").read_text(encoding="utf-8")
+    timeout = re.search(r"const HOOK_TIMEOUT_SECONDS: u64 = (\d+);", source)
+    assert timeout is not None, "managed runners need one explicit startup budget"
+    assert int(timeout.group(1)) == MANAGED_HOOK_TIMEOUT_SECONDS == 5
+    codex_end = re.search(r"const CODEX_SESSION_END_TIMEOUT_SECONDS: u64 = (\d+);", source)
+    assert codex_end is not None, "Codex clamps SessionEnd to 3 s and warns on every session open above it"
+    assert int(codex_end.group(1)) == 3 < MANAGED_HOOK_TIMEOUT_SECONDS
+    assert '"timeout": timeout,' in source
+    assert "provider == Provider::Codex && event_kind == \"session_terminated\"" in source
+    assert r"  timeout = {HOOK_TIMEOUT_SECONDS}\n" in source
+    helper = ast.parse((REPO_ROOT / "src-tauri/hooks/mycmux_hook.py").read_text(encoding="utf-8"))
+    deadline = next(
+        ast.literal_eval(node.value)
+        for node in helper.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "DEADLINE_SECONDS" for target in node.targets)
+    )
+    # Keep network failure fail-open within 0.5 s; the outer runner also covers startup.
+    assert deadline == 0.5
+    assert 0 < deadline < MANAGED_HOOK_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("event", list(CLAUDE_EVENTS))
+def test_timeout_upgrade_preserves_user_groups_and_uninstall_round_trip(event: str) -> None:
+    original = copy.deepcopy(SYNTHETIC)
+    lookalike = {"hooks": [{"type": "command", "command": "python mycmux_hook.py", "timeout": 1}]}
+    original["hooks"].setdefault(event, []).append(lookalike)
+    old = install(original, [event])
+    old["hooks"][event][-1]["hooks"][0]["timeout"] = 1
+    upgraded = install(old, [event])
+    assert upgraded["hooks"][event][-1]["hooks"][0]["timeout"] == 5
+    assert user_groups(upgraded) == user_groups(original)
+    assert uninstall(upgraded) == original
+    assert install(upgraded, [event]) == upgraded

@@ -711,9 +711,9 @@ pub async fn ailog_session_transcript(
     let worker = tokio::task::spawn_blocking(move || {
         let _guard = guard;
         let conn = open().map_err(TranscriptError::temporary)?;
-        let setting = crate::db::storage::load(&app_handle)
-            .map(|data| data.settings.ailog_mirror_full_text_root);
-        crate::ailog::transcript::source::load(&conn, &args.kind, &args.session_id, &SourceConfig::from_full_text_setting(setting))
+        let settings = crate::db::storage::load(&app_handle)
+            .map(|data| (data.settings.ailog_mirror_full_text_root, data.settings.ailog_claude_fallback_root));
+        crate::ailog::transcript::source::load(&conn, &args.kind, &args.session_id, &SourceConfig::from_settings(settings))
     });
     match tokio::time::timeout(READ_TIMEOUT, worker).await {
         Ok(result) => result.map_err(|error| TranscriptError::temporary(format!("transcript worker: {error}")))?,

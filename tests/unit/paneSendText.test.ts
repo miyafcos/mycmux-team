@@ -758,8 +758,9 @@ describe("pane.send_text optimistic lock from the frontend", () => {
     });
     await flushSendTimers();
     await expect(pending).resolves.toMatchObject({ confirmed: false, enterWritten: true, outcome: "unknown" });
-    expect(messageMocks.writePaneMessage.mock.calls).toEqual([[guard, "日本語の通常本文", false], [guard, "\r", true]]);
-    expect(messageMocks.verifyPaneMessage).toHaveBeenCalledWith(guard, "日本語の通常本文");
+    const submitGuard = { ...guard, strictRevision: false };
+    expect(messageMocks.writePaneMessage.mock.calls).toEqual([[guard, "日本語の通常本文", false], [submitGuard, "\r", true]]);
+    expect(messageMocks.verifyPaneMessage).toHaveBeenCalledWith(submitGuard, "日本語の通常本文");
     expect(ipcMocks.writeToSessionGuarded).toHaveBeenCalledTimes(2);
   });
 
@@ -797,10 +798,141 @@ describe("pane.send_text optimistic lock from the frontend", () => {
     const pending = handleSocketCommand("pane.send_text", { sessionId, text: "", key: "enter",
       expectedAttentionId: "new-question", expectedSessionEpoch: 5, expectedSessionRevision: 12, expectedInputRevision: 8 });
     await flushSendTimers();
-    await expect(pending).resolves.toMatchObject({ sent: false, textWritten: true, enterWritten: false, reason: "pending_prompt" });
-    expect(messageMocks.writePaneMessage.mock.calls).toEqual([[guard, "通常の下書き", false], [guard, "\r", true]]);
+    await expect(pending).resolves.toMatchObject({ sent: false, textWritten: false, enterWritten: false, reason: "pending_prompt" });
+    expect(messageMocks.writePaneMessage.mock.calls).toEqual([[guard, "通常の下書き", false], [{ ...guard, strictRevision: false }, "\r", true]]);
     expect(ipcMocks.writeToSessionGuarded).toHaveBeenCalledExactlyOnceWith(sessionId, "通常の下書き", "done-a", 5, 11, 7);
     expect(messageMocks.verifyPaneMessage).not.toHaveBeenCalled();
   });
 
+
+  describe("staged draft revision fences", () => {
+    const body = "one owned draft";
+    let inputRevision: number;
+    const expectations = (revision = 11, input = 7) => ({
+      expectedAttentionId: null, expectedSessionEpoch: 5,
+      expectedSessionRevision: revision, expectedInputRevision: input,
+    });
+    beforeEach(() => {
+      inputRevision = 7;
+      seedAttention(null, 11);
+      const ws = workspace(); ws.panes[0].tabs[0].agentKind = "claude";
+      useWorkspaceListStore.setState({ workspaces: [ws] });
+      terminalBufferMocks.getTerminalBufferLines.mockReturnValue(["spinner"]);
+      messageMocks.preparePaneMessage.mockImplementation(async (id, agentMessage, strictRevision) => {
+        const current = useSessionAttentionStore.getState().attentionBySession[id]!;
+        return { guard: { sessionId: id, sessionEpoch: current.sessionEpoch,
+          attentionId: current.attentionId, sessionRevision: current.sessionRevision,
+          inputRevision, agentMessage, strictRevision }, reason: null };
+      });
+      const nativeWrite = async (epoch: number, attention: string | null, revision: number,
+        input: number, strict: boolean, data: string, native = false) => {
+        const current = useSessionAttentionStore.getState().attentionBySession[sessionId]!;
+        const reason = current.sessionEpoch !== epoch ? "session_epoch"
+          : current.attentionId !== attention ? "attention_id"
+          : strict && current.sessionRevision !== revision ? "session_revision"
+          : inputRevision !== input ? (native ? `PTY_INPUT_REVISION_CONFLICT:${inputRevision}` : "input_revision") : null;
+        if (reason) return { sent: false, reason };
+        inputRevision += 1;
+        await ipcMocks.writeToSession(sessionId, data);
+        return { sent: true, reason: null };
+      };
+      messageMocks.writePaneMessage.mockImplementation((guard, data, submit) =>
+        nativeWrite(guard.sessionEpoch, guard.attentionId, guard.sessionRevision,
+          guard.inputRevision + Number(submit), guard.strictRevision, data, true));
+      ipcMocks.writeToSessionGuarded.mockImplementation((_id, data, attention, epoch, revision, input) =>
+        nativeWrite(epoch, attention, revision, input, true, data));
+    });
+
+    it.each([true, false])("allows session-only echo changes for staged draft Enter (flag=%s)", async (flag) => {
+      await handleSocketCommand("pane.send_text", { sessionId, text: body, ...expectations() });
+      const guard = messageMocks.writePaneMessage.mock.calls[0][0];
+      expect(guard.strictRevision).toBe(true);
+      seedAttention(null, 12); // Output ingestion, without any new input.
+      const pending = handleSocketCommand("pane.send_text", { sessionId, text: "",
+        ...expectations(11, 8), ...(flag ? { enter: true } : { key: "enter" }) });
+      await flushSendTimers();
+      await expect(pending).resolves.toMatchObject({ enterWritten: true });
+      expect(ipcMocks.writeToSession.mock.calls).toEqual([[sessionId, body], [sessionId, "\r"]]);
+      expect(messageMocks.writePaneMessage.mock.calls[1][0]).toEqual({ ...guard, strictRevision: false });
+    });
+
+    it.each(["PTY_INPUT_REVISION_CONFLICT:9", "input_revision"])("rejects changed input as stale_staged_draft without retyping or Enter (%s)", async (reason) => {
+      await handleSocketCommand("pane.send_text", { sessionId, text: body, ...expectations() });
+      inputRevision += 1; // ctrl-c, human typing, or another writer.
+      if (reason === "input_revision") messageMocks.writePaneMessage.mockResolvedValueOnce({ sent: false, reason });
+      const pending = handleSocketCommand("pane.send_text", { sessionId, text: "", key: "enter",
+        ...expectations(11, 8) });
+      await flushSendTimers();
+      await expect(pending).resolves.toMatchObject({
+        sent: false, reason: "stale_staged_draft", textWritten: false, enterWritten: false,
+      });
+      expect(ipcMocks.writeToSession.mock.calls).toEqual([[sessionId, body]]);
+    });
+
+    it("discards a refused staged draft before the next Enter call", async () => {
+      await handleSocketCommand("pane.send_text", { sessionId, text: body, ...expectations() });
+      inputRevision += 1;
+      const args = { sessionId, text: "", key: "enter", ...expectations(11, 8) };
+      let pending = handleSocketCommand("pane.send_text", args);
+      await flushSendTimers();
+      await pending;
+      const nativeCalls = messageMocks.writePaneMessage.mock.calls.length;
+      pending = handleSocketCommand("pane.send_text", args);
+      await flushSendTimers();
+      await expect(pending).resolves.toMatchObject({ sent: false, reason: "input_revision" });
+      expect(messageMocks.writePaneMessage).toHaveBeenCalledTimes(nativeCalls);
+      expect(ipcMocks.writeToSession.mock.calls).toEqual([[sessionId, body]]);
+    });
+
+    it.each(["session_epoch", "attention_id"] as const)("keeps the staged %s fence and discards refusal", async (reason) => {
+      await handleSocketCommand("pane.send_text", { sessionId, text: body, ...expectations() });
+      useSessionAttentionStore.setState((state) => ({ attentionBySession: {
+        [sessionId]: { ...state.attentionBySession[sessionId]!,
+          ...(reason === "session_epoch" ? { sessionEpoch: 6 } : { attentionId: "new-attention" }) },
+      } }));
+      const current = reason === "session_epoch" ? { expectedSessionEpoch: 6 } : { expectedAttentionId: "new-attention" };
+      const pending = handleSocketCommand("pane.send_text", { sessionId, text: "", key: "enter",
+        ...expectations(11, 8), ...current });
+      await flushSendTimers();
+      await expect(pending).resolves.toMatchObject({ sent: false, reason, textWritten: false, enterWritten: false });
+      expect(ipcMocks.writeToSession.mock.calls).toEqual([[sessionId, body]]);
+      const calls = messageMocks.writePaneMessage.mock.calls.length;
+      const again = handleSocketCommand("pane.send_text", { sessionId, text: "", key: "enter",
+        ...expectations(10, 8), ...current });
+      await flushSendTimers();
+      await expect(again).resolves.toMatchObject({ sent: false, reason: "session_revision" });
+      expect(messageMocks.writePaneMessage).toHaveBeenCalledTimes(calls);
+    });
+
+    it("preserves the native input conflict reason for a non-staged send", async () => {
+      const reason = "PTY_INPUT_REVISION_CONFLICT:8";
+      messageMocks.writePaneMessage.mockResolvedValueOnce({ sent: false, reason });
+      await expect(handleSocketCommand("pane.send_text", { sessionId, text: body, ...expectations() }))
+        .resolves.toMatchObject({ sent: false, reason, textWritten: false, enterWritten: false });
+      expect(ipcMocks.writeToSession).not.toHaveBeenCalled();
+    });
+
+    it("keeps caller session expectations strict without a staged draft", async () => {
+      seedAttention(null, 12);
+      await expect(handleSocketCommand("pane.send_text", { sessionId, text: "", key: "enter",
+        ...expectations() })).resolves.toMatchObject({ sent: false, reason: "session_revision" });
+      expect(messageMocks.writePaneMessage).not.toHaveBeenCalled();
+      expect(ipcMocks.writeToSession).not.toHaveBeenCalled();
+    });
+
+    it("keeps text-and-Enter strict when output advances the session revision", async () => {
+      messageMocks.writePaneMessage.mockImplementationOnce(async (guard, data) => {
+        inputRevision += 1;
+        await ipcMocks.writeToSession(sessionId, data);
+        seedAttention(null, 12);
+        return { sent: true, reason: null };
+      });
+      const pending = handleSocketCommand("pane.send_text", { sessionId, text: body, enter: true, ...expectations() });
+      await flushSendTimers();
+      await expect(pending).resolves.toMatchObject({ sent: false, reason: "session_revision",
+        textWritten: true, enterWritten: false });
+      expect(messageMocks.writePaneMessage.mock.calls[1][0].strictRevision).toBe(true);
+      expect(ipcMocks.writeToSession.mock.calls).toEqual([[sessionId, body]]);
+    });
+  });
 });

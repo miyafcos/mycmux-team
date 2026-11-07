@@ -199,11 +199,11 @@ export function ChatColumn({
       </div>
       <div className="cmux-dashboard-chat-actions">
         <details className="cmux-dashboard-chat-history" onKeyDown={dashboardMenuKeys} onToggle={event => syncDashboardMenuPopup(event.currentTarget)}>
-          <summary>履歴</summary>
+          <summary className="cmux-dashboard-chat-header-btn">履歴</summary>
           <div className="cmux-dashboard-chat-navigation" data-dashboard-menu-popup="true" ref={setNavigationTarget} />
         </details>
         <details className="cmux-dashboard-chat-details" onKeyDown={dashboardMenuKeys} onToggle={event => syncDashboardMenuPopup(event.currentTarget)} onClick={(event) => event.stopPropagation()}>
-          <summary aria-label="その他" title="その他"><MoreHorizontal aria-hidden="true" /><span>その他</span></summary>
+          <summary className="cmux-dashboard-chat-header-btn" aria-label="その他" title="その他"><MoreHorizontal aria-hidden="true" /><span>その他</span></summary>
           <div className="cmux-dashboard-chat-detail-content" data-dashboard-menu-popup="true">
             <strong>会話の詳細</strong>
             <span data-dashboard-breadcrumb>{dashboardStrings.breadcrumb(card.workspace.name, card.paneIndex + 1, card.tabIndex + 1)}</span>
@@ -223,7 +223,7 @@ export function ChatColumn({
             <button type="button" data-dashboard-chat-column-close={card.tab.id} className="cmux-dashboard-chat-column-close" aria-label={`${card.label} の会話の表示を閉じる`} title="会話の表示を閉じる" onClick={(event) => { event.stopPropagation(); onClose(); }}><X aria-hidden="true" /><span>会話の表示を閉じる</span></button>
           </div>
         </details>
-        <button type="button" data-dashboard-chat-column-pin={card.tab.id} className="cmux-dashboard-chat-header-action" aria-pressed={pinned} aria-label={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel} title={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel} onClick={(event) => { event.stopPropagation(); onTogglePin(); }}>{pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}<span>{pinned ? "固定を解除" : "固定する"}</span></button>
+        <button type="button" data-dashboard-chat-column-pin={card.tab.id} className="cmux-dashboard-chat-header-action cmux-dashboard-chat-header-btn" aria-pressed={pinned} aria-label={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel} title={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel} onClick={(event) => { event.stopPropagation(); onTogglePin(); }}>{pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}<span>{pinned ? "固定を解除" : "固定する"}</span></button>
       </div>
       </div></div>
     </header>

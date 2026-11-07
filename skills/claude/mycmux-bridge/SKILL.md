@@ -53,6 +53,18 @@ python "~/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py" answer-ask --se
 - `input_revision` が 1 進んだことを到達と読まない。`pane.send_text` は composer (入力欄) に本文を出さずに revision だけ進めることがある。到達の根拠は、入力欄に本文が安定して見えたこと (draft) と、Enter 後に入力欄から本文が消えて画面か state が変わったこと (`observed_delivered`) の 2 つだけ。
 - `draft_not_observed` と `screen_changed_ambiguously` はどちらも Enter を送っていない (`enter_sent: false`)。本文を再送しない (入力欄に同じ本文が重なって届く)。`read` で入力行を見直し、本文が入力行に残っていれば Enter だけを 1 回送る (`mycmux_agent_cli.py send --key enter` に `status` の view から取った `--expect-epoch` `--expect-attention-id` `--expect-revision` `--expect-input-revision` の 4 点を付ける)。入力行が読めない席 (描画待ち・作業中のアニメーション) は待って `read` し直す。
 
+## Enter が通らないときの手順 (v0.90.7 と旧版)
+
+Enter が通らないときに人へ Enter を頼まない。元の送りを担当した道具が、以下の確認と復旧まで行う。
+`enter_sent: true`、`enterWritten: true`、応答消失などの結果不明は、自動再送の根拠にしない。
+
+- **v0.90.7 (下書きの Enter の直しが入った版)**: 同じ epoch・attention と、本文を書く前の入力版 + 1 が維持されていれば、本文なしの Enter を1回送る。出力だけによる session revision の進みでは下書きを拒否しない。期待値は現在の4点をそろえる。
+- **`stale_staged_draft`**: その呼び出しでは本文も Enter も書かれておらず、下書きは捨てられている。`textWritten: false` と `enterWritten: false` を確認する。元の送り手だけが、同じ対象で入力欄が自分の本文1回分だけであることを確かめ、期待値4点付きの ctrl-c を1回送る。空の入力欄と入力版 + 1 を確認してから、本文と Enter を1回で送り直す。他の入力・本文の重複・入力行が読めない場合は、理由を返して止める。
+- **v0.90.6 以前**: 下書きの古い session revision により Enter だけでは復旧しない場合がある。自分の本文1回分だけが入力欄にあると確認できたときに限り、期待値4点付き ctrl-c → 空欄の確認 → 現在の期待値4点で本文と Enter を1回、の回り道を使う。新しい理由を返さない旧版に、新版用の自動復旧を推測で適用しない。
+
+Claude Code の `❯`・Codex の `›` の直後の NBSP (U+00A0) も空白として読む。
+入力行を識別できた画面では、履歴に同じ本文があることや、画面の指紋だけの変化で配送を確定しない。
+
 ## resume 失敗の席 (already in use)
 
 - 画面に `Session ID … is already in use` が出ている席へは送らない。その席は目的の会話を持っていない。

@@ -44,9 +44,22 @@ vi.mock("../../src/lib/ipc", async () => {
   return { ...actual, onSessionStatusChanged: mocks.onSessionStatusChanged, readAgentSessionMappings:mocks.mappings, getWindowFragments:async()=>usePeerWindowTabsStore.getState().index.map(entry=>({window_label:entry.window_label,pending:entry.pending,workspaces:[]})) };
 });
 
+const panelProbe = vi.hoisted(() => ({
+  on: false,
+  ready: { status: "ready" as const, requestKey: "PANEL-PROBE-KEY", oneLine: "Probe summary", completionAssessment: "Probe assessment",
+    nextActions: [{ label: "P1", prompt: "P1 prompt" }, { label: "P2", prompt: "P2 prompt" }, { label: "P3", prompt: "P3 prompt" }] },
+}));
+
+vi.mock("../../src/components/dashboard/dashboardModel", async () => {
+  const actual = await vi.importActual<typeof import("../../src/components/dashboard/dashboardModel")>("../../src/components/dashboard/dashboardModel");
+  return { ...actual, resolveDisplayState: (card: Parameters<typeof actual.resolveDisplayState>[0]) => panelProbe.on && card.tab.sessionId === "s-first" ? "done" as const : actual.resolveDisplayState(card) };
+});
+
 vi.mock("../../src/lib/backgroundAiScheduler", async () => {
   const actual = await vi.importActual<typeof import("../../src/lib/backgroundAiScheduler")>("../../src/lib/backgroundAiScheduler");
-  return { ...actual, observeActiveSession: mocks.observeActiveSession };
+  return { ...actual, observeActiveSession: mocks.observeActiveSession,
+    nextActionRequestKey: (...args: Parameters<typeof actual.nextActionRequestKey>) => panelProbe.on ? "PANEL-PROBE-KEY" : actual.nextActionRequestKey(...args),
+    useBackgroundAiSuggestion: (sessionId: string | null) => panelProbe.on && sessionId === "s-first" ? panelProbe.ready : actual.useBackgroundAiSuggestion(sessionId) };
 });
 
 vi.mock("../../src/components/terminal/XTermWrapper", () => ({
@@ -100,6 +113,7 @@ import {
   useDashboardViewStore,
 } from "../../src/stores/dashboardViewStore";
 import { useSettingsStore } from "../../src/stores/settingsStore";
+import { useAiSettingsStore } from "../../src/stores/aiSettingsStore";
 import { useLiveBriefStore } from "../../src/stores/liveBriefStore";
 import { __resetReportInboxStoreForTests } from "../../src/stores/reportInboxStore";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
@@ -1928,5 +1942,61 @@ describe("D1R-002 compact scroll destination", () => {
       expect(columns.scrollLeft).toBe(640);
       await act(async () => root.render(null));
     } finally { release(); offset.mockRestore(); }
+  });
+});
+
+describe("more panel inside the real dashboard root (N9 plan 1 round 3)", () => {
+  // The panel is portalled into the dashboard root, outside the composer's data-livebrief-interactive
+  // wrapper; its own marker keeps the root's document-level shortcuts from firing for it.
+  beforeEach(() => { panelProbe.on = true; });
+  afterEach(() => { panelProbe.on = false; });
+
+  async function openPanel(onClose: ReturnType<typeof vi.fn>) {
+    const first = tab("tab-first", "s-first", "First");
+    const second = tab("tab-second", "s-second", "Second");
+    seedDashboard({
+      workspace: workspace([first, second]),
+      selectedTabId: first.id,
+      chatColumnTabIds: [first.id],
+      attention: { "s-first": doneAttention("s-first"), "s-second": doneAttention("s-second") },
+    });
+    useAiSettingsStore.setState({ aiEnabled: true } as never);
+    useSettingsStore.setState({ replyDraftSuggestionsEnabled: true } as never);
+    await renderDashboard(onClose);
+    const read = [...container.querySelectorAll<HTMLButtonElement>(".cmux-dashboard-next-actions button")].find(button => button.textContent === "提案を読む");
+    expect(read).toBeDefined();
+    await act(async () => { read!.click(); await Promise.resolve(); });
+    const more = container.querySelector<HTMLButtonElement>(".cmux-dashboard-next-actions-more-button");
+    expect(more).not.toBeNull();
+    await act(async () => { more!.click(); await Promise.resolve(); });
+    const dashboardRoot = container.querySelector<HTMLElement>(".cmux-dashboard-view")!;
+    const panel = dashboardRoot.querySelector<HTMLElement>(".cmux-dashboard-next-actions-more-panel")!;
+    expect(panel).not.toBeNull();
+    expect(panel.parentElement).toBe(dashboardRoot);
+    panel.focus();
+    expect(document.activeElement).toBe(panel);
+    return { panel, first, second };
+  }
+
+  for (const key of ["ArrowDown", "ArrowUp", "j", "k", "Enter", "Tab"]) {
+    it(`does not turn ${key} pressed on the panel itself into a dashboard shortcut`, async () => {
+      const onClose = vi.fn();
+      const { panel, first } = await openPanel(onClose);
+      const before = useDashboardViewStore.getState().selectedTabId;
+      expect(before).toBe(first.id);
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      await act(async () => { panel.dispatchEvent(event); });
+      expect(useDashboardViewStore.getState().selectedTabId).toBe(before);
+      expect(onClose).not.toHaveBeenCalled();
+      expect(mocks.submitAskQuestionChoice).not.toHaveBeenCalled();
+    });
+  }
+
+  it("still closes only the panel on Escape and leaves the dashboard open", async () => {
+    const onClose = vi.fn();
+    const { panel } = await openPanel(onClose);
+    await act(async () => { panel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(container.querySelector(".cmux-dashboard-next-actions-more-panel")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

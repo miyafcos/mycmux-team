@@ -21,7 +21,7 @@ spec.loader.exec_module(gate_module)
 
 def run(*args, cwd=None):
     return subprocess.run([str(a) for a in args], cwd=cwd,
-                          capture_output=True, text=True, encoding="utf-8",
+                          capture_output=True, text=True, encoding="utf-8", errors="replace",
                           env={**os.environ, "PYTHONIOENCODING": "utf-8",
                                "PYTHONDONTWRITEBYTECODE": "1"})
 
@@ -289,8 +289,9 @@ def test_gate_does_not_follow_directory_links(tmp_path):
     outside.mkdir()
     link = tree / "external"
     if os.name == "nt":
-        made = run("cmd", "/c", "mklink", "/J", link, outside)
-        assert made.returncode == 0, made.stderr
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                              capture_output=True, text=True, encoding="mbcs", errors="replace")
+        assert made.returncode == 0, (made.stdout or "") + (made.stderr or "")
     else:
         link.symlink_to(outside, target_is_directory=True)
     result = scan(tree, patterns, output)
@@ -360,8 +361,9 @@ def test_export_refuses_linked_destination_ancestor(repository, tmp_path):
     outside.mkdir()
     link = tmp_path / "linked"
     if os.name == "nt":
-        result = run("cmd", "/c", "mklink", "/J", link, outside)
-        assert result.returncode == 0, result.stderr
+        result = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                                capture_output=True, text=True, encoding="mbcs", errors="replace")
+        assert result.returncode == 0, (result.stdout or "") + (result.stderr or "")
     else:
         link.symlink_to(outside, target_is_directory=True)
     before = state(repository)

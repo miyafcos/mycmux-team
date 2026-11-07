@@ -578,3 +578,87 @@ def test_single_ask_answers_first_option_with_no_enter(tmp_path):
     guard.cycle()
     assert len(bridge.writes) == 1 and bridge.writes[0]["text"] == "1"
     assert not bridge.writes[0].get("key") and bridge.writes[0]["enter"] is False
+
+
+def child_guard_for_kind_test():
+    path = Path(__file__).parents[1] / "dispatch-child-guard.py"
+    spec = importlib.util.spec_from_file_location("child_guard_kind_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("status", ["open", "running", "blocked"])
+@pytest.mark.parametrize("session_key", ["tab_session_id", "tabSessionId"])
+def test_bokan_guard_and_child_guard_agree(tmp_path, status, session_key):
+    fixture = Path(__file__).parent / "fixtures/screens/ask_single.txt"
+    bridge = FakeBridge(fixture.read_text(encoding="utf-8").splitlines())
+    guard, _, path, alerts = setup(tmp_path, bridge)
+    row = {"slug": "261107-mothership", "status": status, "kind": "bokan", session_key: "s"}
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    assert child_guard_for_kind_test().decide("AskUserQuestion", "s", path) == (0, "")
+    target = guard.cycle()["targets"]["s"]
+
+    assert target["slug"] is None
+    assert target["verdict"]["cls"] == "ask_dialog"
+    assert target["verdict"]["action"] == "escalate"
+    assert len(alerts) == 1
+    assert not bridge.writes
+
+
+@pytest.mark.parametrize("new_slug", ["260908-test", "261107-reregistered"])
+def test_bokan_session_reregistered_as_child_uses_latest_kind(tmp_path, new_slug):
+    fixture = Path(__file__).parent / "fixtures/screens/ask_single.txt"
+    bridge = FakeBridge(fixture.read_text(encoding="utf-8").splitlines())
+    guard, _, path, alerts = setup(tmp_path, bridge)
+    ledger.update_record(path, slug="260908-test", tab_session_id="s", kind="bokan")
+    ledger.append_record(path, {"slug": new_slug, "tab_session_id": "s", "kind": "claude", "status": "open"})
+
+    code, message = child_guard_for_kind_test().decide("AskUserQuestion", "s", path)
+    assert code == 2 and "AskUserQuestion" in message
+    target = guard.cycle()["targets"]["s"]
+
+    assert target["slug"] == new_slug
+    assert target["verdict"]["action"] == "answer_ask"
+    assert [write["text"] for write in bridge.writes] == ["1"]
+    assert not alerts
+
+
+def test_bokan_kind_survives_status_only_update(tmp_path):
+    fixture = Path(__file__).parent / "fixtures/screens/ask_single.txt"
+    bridge = FakeBridge(fixture.read_text(encoding="utf-8").splitlines())
+    guard, _, path, alerts = setup(tmp_path, bridge)
+    ledger.update_record(path, slug="260908-test", tab_session_id="s", status="open", kind="bokan")
+    ledger.update_record(path, slug="260908-test", tab_session_id="s", status="running")
+
+    assert child_guard_for_kind_test().decide("AskUserQuestion", "s", path) == (0, "")
+    target = guard.cycle()["targets"]["s"]
+
+    assert target["slug"] is None
+    assert target["verdict"]["cls"] == "ask_dialog"
+    assert target["verdict"]["action"] == "escalate"
+    assert len(alerts) == 1
+    assert not bridge.writes
+
+
+def test_child_guard_import_failure_keeps_child_and_mothership_rules(tmp_path, monkeypatch):
+    import sys
+
+    path = tmp_path / "import-failure.jsonl"
+    ledger.append_record(path, {"slug": "261107-child", "tab_session_id": "child", "status": "open"})
+    ledger.append_record(path, {"slug": "261107-mothership", "tab_session_id": "mother",
+                                "status": "open", "kind": "bokan"})
+    with monkeypatch.context() as patch:
+        patch.setitem(sys.modules, "dispatch_ledger", None)
+        child_guard = child_guard_for_kind_test()
+
+    assert child_guard.decide("AskUserQuestion", "child", path)[0] == 2
+    assert child_guard.decide("AskUserQuestion", "mother", path) == (0, "")
+    ledger.update_record(path, slug="261107-mothership", tab_session_id="mother", status="running")
+    assert child_guard.decide("AskUserQuestion", "mother", path) == (0, "")
+    ledger.update_record(path, slug="261107-mothership", tab_session_id="mother", status="blocked", kind="")
+    assert child_guard.decide("AskUserQuestion", "mother", path) == (0, "")
+    ledger.append_record(path, {"slug": "261107-reregistered", "tab_session_id": "mother",
+                                "status": "open", "kind": "claude"})
+    assert child_guard.decide("AskUserQuestion", "mother", path)[0] == 2

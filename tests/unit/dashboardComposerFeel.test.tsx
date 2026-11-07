@@ -224,6 +224,63 @@ describe("dashboard optimistic composer feedback", () => {
     expect(mocks.handleSocketCommand).not.toHaveBeenCalled();
   });
 
+  it("N9 plan 1: starts at one 28px line, grows with the text, stops at 6 lines and scrolls inside without losing text", async () => {
+    const textarea = await renderFeel();
+    // The shipped CSS gives min-height 28px and max-height calc(6 * 1.5em + 8px) = 125px at 13px text.
+    textarea.style.minHeight = "28px";
+    textarea.style.maxHeight = "125px";
+    textarea.style.border = "0px";
+    let contentHeight = 28;
+    Object.defineProperty(textarea, "scrollHeight", { configurable: true, get: () => contentHeight });
+
+    await input(textarea, "x");
+    expect(textarea.style.height).toBe("28px");
+    expect(textarea.style.overflowY).toBe("hidden");
+
+    contentHeight = 66;
+    await input(textarea, "a\nb\nc");
+    expect(textarea.style.height).toBe("66px");
+    expect(textarea.style.overflowY).toBe("hidden");
+
+    contentHeight = 125;
+    await input(textarea, "1\n2\n3\n4\n5\n6");
+    expect(textarea.style.height).toBe("125px");
+    expect(textarea.style.overflowY).toBe("hidden");
+
+    const long = Array.from({ length: 15 }, (_, index) => `line ${index + 1}`).join("\n");
+    contentHeight = 15 * 19.5 + 8;
+    await input(textarea, long);
+    expect(textarea.style.height).toBe("125px");
+    expect(textarea.style.overflowY).toBe("auto");
+    expect(textarea.value).toBe(long);
+
+    // Enter sends, Shift+Enter is left to the textarea (newline): the keys are unchanged.
+    const shiftEnter = new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true });
+    await act(async () => { textarea.dispatchEvent(shiftEnter); });
+    expect(shiftEnter.defaultPrevented).toBe(false);
+    expect(textarea.value).toBe(long);
+  });
+
+  it("N9 plan 1: the history, more and pin controls of the header carry the compact class", async () => {
+    await renderFeel();
+    const actions = container.querySelector(".cmux-dashboard-chat-actions")!;
+    const history = actions.querySelector(".cmux-dashboard-chat-history > summary")!;
+    const more = actions.querySelector(".cmux-dashboard-chat-details > summary")!;
+    const pin = actions.querySelector("button[data-dashboard-chat-column-pin]")!;
+    for (const control of [history, more, pin]) expect(control.classList.contains("cmux-dashboard-chat-header-btn")).toBe(true);
+    // Controls inside the opened "more" panel are not part of the header row and keep the normal size.
+    for (const inner of actions.querySelectorAll(".cmux-dashboard-chat-detail-content button")) expect(inner.classList.contains("cmux-dashboard-chat-header-btn")).toBe(false);
+    expect(more.getAttribute("aria-label")).toBe("その他");
+    expect(pin.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("N9 plan 1: the destination line is one line and its full text is kept as the title", async () => {
+    await renderFeel();
+    const target = container.querySelector<HTMLElement>(".cmux-dashboard-composer-target")!;
+    expect(target.textContent).toBe("送信先：このタブ（Target）");
+    expect(target.getAttribute("title")).toBe(target.textContent);
+  });
+
   it("refits when the column width changes and releases the observer", async () => {
     const observers: { callback: () => void; disconnect: ReturnType<typeof vi.fn>; target?: Element }[] = [];
     vi.stubGlobal("ResizeObserver", class {

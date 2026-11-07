@@ -18,6 +18,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import time
 from functools import lru_cache
 import sys
@@ -206,6 +207,107 @@ def transcript_mtime_for(ledger_path, session_id):
     return path.stat().st_mtime if path and path.is_file() else None
 
 
+
+def recovery_input_body(module, lines):
+    """Use the guard's wrapped-input, footer and placeholder parsing."""
+    from guard_classify import input_body
+    return input_body(module.current_input_line(lines))
+
+
+def recovery_input_empty(module, lines):
+    return recovery_input_body(module, lines) == ""
+
+
+def recover_dead_guard(bridge, module, session_id, text, initial, expected_attention, writes):
+    """The original sender owns one bounded recovery; no unknown write is retried."""
+    def stopped(detail):
+        return {"result": "verification_unavailable", "detail": detail,
+                "enter_sent": False, "recovery": "stopped"}
+
+    def last_refusal():
+        response = writes[-1].get("response", {}) if writes else {}
+        return response if isinstance(response, dict) and response.get("sent") is False else {}
+
+    def inspect_owned(*, expected_input=None, exact=False):
+        from guard_classify import compact
+        state = bridge.status(session_id)
+        bridge._ensure_same_target(initial, state)
+        bridge._ensure_sendable(state, expected_attention)
+        if expected_input is not None:
+            bridge._ensure_input_revision(state, expected_input)
+        lines = bridge.read(session_id)["lines"]
+        body = recovery_input_body(module, lines)
+        expected, visible = compact(text), compact(body)
+        owned = body is not None and bool(expected)
+        if exact:
+            owned = owned and visible == expected
+        else:
+            # The unchanged input revision proves this is still our sole write.
+            # Keep bridge visibility (including one collapsed paste), but reject duplicates.
+            owned = owned and module.draft_visible(lines, text) and visible.count(expected) <= 1
+            pasted = re.findall(r"\[(?:Pasted Content \d+ chars|Pasted text #\d+ \+\d+ lines)\]", body or "")
+            if pasted:
+                owned = owned and len(pasted) == 1 and body.strip() == pasted[0]
+        if not owned:
+            raise module.BridgeError("prompt_changed", "input is not exactly this call's single draft")
+        after = bridge.status(session_id)
+        bridge._ensure_same_target(state, after)
+        bridge._ensure_input_revision(after, bridge._input_revision(state))
+        bridge._ensure_sendable(after, expected_attention)
+        return after
+
+    if expected_attention not in TEXT_SENDABLE_ATTENTION or any(w.get("unknown") for w in writes):
+        return stopped("prompt input or an unknown write cannot be recovered")
+    refusal = last_refusal()
+    if refusal and refusal.get("reason") != "stale_staged_draft":
+        # v0.90.6 and earlier keep the previous refusal behavior.
+        return stopped("legacy or unrelated refusal; no automatic retry")
+    try:
+        if not refusal:
+            state = inspect_owned(expected_input=bridge._input_revision(initial) + 1)
+            retry = bridge.send("", session_id=session_id, expected_attention=expected_attention,
+                                expected_state=state, enter_only=True)
+            if retry.get("enter_sent"):
+                return {**retry, "recovery": "enter_only"}
+            refusal = last_refusal()
+            if refusal.get("reason") != "stale_staged_draft":
+                return {**retry, "recovery": "stopped"}
+        if refusal.get("textWritten") is not False or refusal.get("enterWritten") is not False:
+            return stopped("stale draft refusal did not prove no write")
+        state = inspect_owned(exact=True)
+        clear = bridge.request("pane.send_text", bridge._send_args(session_id, text="", key="ctrl-c", state=state))
+        # A written control key may be unconfirmed (ok=false) while its
+        # physical write receipt is explicit. Still require fresh empty input.
+        clear_written = isinstance(clear, dict) and clear.get("sent") is not False and (
+            clear.get("enterWritten") is True or clear.get("sent") is True or module.confirmed_key_write(clear))
+        if not clear_written:
+            return stopped("guarded input clear was refused or its write is unknown")
+        empty = bridge.status(session_id)
+        bridge._ensure_same_target(state, empty)
+        bridge._ensure_sendable(empty, expected_attention)
+        bridge._ensure_input_revision(empty, bridge._input_revision(state) + 1)
+        if not recovery_input_empty(module, bridge.read(session_id)["lines"]):
+            return stopped("input was not observed empty after clearing this call's draft")
+        request = bridge._send_args(session_id, text=text, state=empty)
+        request["enter"] = True
+        # No further send is allowed after issuing this single combined request.
+        try:
+            response = bridge.request("pane.send_text", request)
+        except (RuntimeError, OSError):
+            return {"result": "write_failed", "detail": "combined send outcome unknown; do not resend",
+                    "enter_sent": True, "recovery": "combined_unknown"}
+        if isinstance(response, dict) and response.get("sent") is False:
+            return {"result": "write_failed", "detail": "combined send refused; no retry",
+                    "enter_sent": response.get("enterWritten") is not False,
+                    "recovery": "combined_refused"}
+        delivered = isinstance(response, dict) and response.get("ok") is True and response.get("confirmed") is True
+        return {"result": "observed_delivered" if delivered else "verification_unavailable",
+                "detail": "single combined send issued after clearing owned stale draft",
+                "enter_sent": True, "recovery": "combined"}
+    except (module.BridgeError, RuntimeError, OSError) as exc:
+        return stopped(str(exc))
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if not args.text and not args.enter and not args.show and not args.dry_run:
@@ -278,6 +380,24 @@ def main(argv: list[str] | None = None) -> int:
         return refuse_send(str(exc), kind=exc.kind, session_id=session_id)
     except (RuntimeError, OSError):
         return refuse_send("mycmux request failed", session_id=session_id)
+    text_writes = [w for w in writes if w["payload"].get("text")]
+    accepted_text = bool(text_writes and text_writes[-1].get("response", {}).get("sent") is not False
+                         and text_writes[-1].get("response", {}).get("ok") is not False)
+    guard = None
+    if accepted_text or result.get("enter_sent"):
+        try:
+            guard = ensure_guard()
+        except (RuntimeError, OSError):
+            guard = {"alive": False, "warning": "Guard startup unavailable"}
+    if args.text and accepted_text and not result.get("enter_sent") and isinstance(guard, dict) and guard.get("alive") is False:
+        receipt_keys = ("write_reason", "textWritten", "enterWritten")
+        initial_rejection = {key: result[key] for key in receipt_keys if key in result}
+        recovered = recover_dead_guard(bridge, bridge_module, session_id, args.text,
+                                      state, expected_attention, writes)
+        result = {key: value for key, value in result.items() if key not in receipt_keys}
+        result.update(recovered)
+        if initial_rejection:
+            result["initial_rejection"] = initial_rejection
     delivered = result.get("result") == "observed_delivered"
     enter_sent = result["enter_sent"]
     output = {"sessionId": session_id, "ok": delivered, "confirmed": delivered, **result}
@@ -286,11 +406,8 @@ def main(argv: list[str] | None = None) -> int:
             "Enter was sent or its outcome is unknown; delivery is not confirmed. "
             "Do not resend automatically; inspect the current input line."
         )
-    text_writes = [w for w in writes if w["payload"].get("text")]
-    accepted_text = bool(text_writes and text_writes[-1].get("response", {}).get("sent") is not False
-                         and text_writes[-1].get("response", {}).get("ok") is not False)
     baseline = state
-    enter_writes = [w for w in writes if w["payload"].get("key") == "enter"]
+    enter_writes = [w for w in writes if w["payload"].get("key") == "enter" or w["payload"].get("enter") is True]
     if enter_writes:
         payload = enter_writes[-1]["payload"]
         baseline = {"session_id": session_id, "input_revision": payload["expectedInputRevision"],
@@ -303,7 +420,7 @@ def main(argv: list[str] | None = None) -> int:
             before_mtime=before_mtime)
     output["delivered_confirmed"] = check["delivered_confirmed"]
     output["delivery_observation"] = check
-    if args.text and accepted_text and not check["delivered_confirmed"]:
+    if args.text and accepted_text and not check["delivered_confirmed"] and isinstance(guard, dict) and guard.get("alive") is True:
         last = writes[-1]["payload"]
         response = writes[-1].get("response", {})
         own_revision = last["expectedInputRevision"] + (0 if response.get("sent") is False else 1)
@@ -313,11 +430,12 @@ def main(argv: list[str] | None = None) -> int:
         output["guard_pending"] = True
         output["warning"] = ("Delivery is not confirmed; guard owns the pending machine send. "
                              "Do not resend automatically; inspect the current input line.")
-    if accepted_text or enter_sent:
-        try:
-            output["guard"] = ensure_guard()
-        except (RuntimeError, OSError):
-            output["guard"] = {"alive": False, "warning": "Guard startup unavailable"}
+    if guard is not None:
+        output["guard"] = guard
+        if guard.get("alive") is False:
+            output["guard_pending"] = False
+            if not enter_sent:
+                output["warning"] = "Guard unavailable; recovery stopped without Enter. Inspect the refusal reason before a new send."
     print(json.dumps(output, ensure_ascii=False))
     return 0 if delivered or enter_sent else 1
 

@@ -70,6 +70,11 @@ pub const OWNERSHIP_MARKER: &str = "mycmux_managed";
 const GROK_BLOCK_START: &str = "# mycmux-managed-hooks:start";
 const GROK_BLOCK_END: &str = "# mycmux-managed-hooks:end";
 const HELPER_BYTES: &[u8] = include_bytes!("../../hooks/mycmux_hook.py");
+// The helper's separate 0.5 s deadline excludes Python process startup.
+const HOOK_TIMEOUT_SECONDS: u64 = 5;
+// Codex 0.165.0 clamps SessionEnd hook timeouts to 3 s and, when the configured value
+// is larger, emits a startup warning every time a session opens. Write the cap itself.
+const CODEX_SESSION_END_TIMEOUT_SECONDS: u64 = 3;
 
 fn hook_python_command() -> &'static str {
     #[cfg(target_os = "windows")]
@@ -465,11 +470,16 @@ fn provider_events(provider: Provider) -> Vec<(&'static str, &'static str)> {
 fn managed_group(helper: &Path, provider: Provider, event_kind: &str) -> Value {
     let helper = helper.to_string_lossy().replace('\\', "/");
     let python = hook_python_command();
+    let timeout = if provider == Provider::Codex && event_kind == "session_terminated" {
+        CODEX_SESSION_END_TIMEOUT_SECONDS
+    } else {
+        HOOK_TIMEOUT_SECONDS
+    };
     json!({
         "hooks": [{
             "type": "command",
             "command": format!("{python} \"{helper}\" --provider {} --event-kind {event_kind}", provider.as_str()),
-            "timeout": 1,
+            "timeout": timeout,
             "statusMessage": "mycmux lifecycle observation",
             (OWNERSHIP_MARKER): true,
         }]
@@ -666,7 +676,7 @@ fn append_grok_block(current: &str, helper: &Path) -> String {
     next.push('\n');
     for (event, event_kind) in provider_events(Provider::Grok) {
         next.push_str(&format!(
-            "[[hooks.{event}]]\n  [[hooks.{event}.hooks]]\n  type = \"command\"\n  command = '{python} \"{helper}\" --provider grok --event-kind {event_kind}'\n  timeout = 1\n  statusMessage = \"mycmux lifecycle observation\"\n  {OWNERSHIP_MARKER} = true\n\n"
+            "[[hooks.{event}]]\n  [[hooks.{event}.hooks]]\n  type = \"command\"\n  command = '{python} \"{helper}\" --provider grok --event-kind {event_kind}'\n  timeout = {HOOK_TIMEOUT_SECONDS}\n  statusMessage = \"mycmux lifecycle observation\"\n  {OWNERSHIP_MARKER} = true\n\n"
         ));
     }
     next.push_str(GROK_BLOCK_END);
@@ -820,6 +830,12 @@ fn codex_trusted_hash(event: &str, group: &Value, handler: &Value) -> Result<Str
     let handler = handler
         .as_object()
         .ok_or_else(|| "Codex handler must be an object".to_string())?;
+    // Codex 0.165.0 hashes the normalized timeout, not the configured number.
+    let configured_timeout = handler.get("timeout").and_then(Value::as_u64);
+    let timeout = match event {
+        "SessionEnd" | "Interrupt" => configured_timeout.unwrap_or(1).clamp(1, 3),
+        _ => configured_timeout.unwrap_or(600).max(1),
+    };
     let canonical_handler = CanonicalCodexHandler {
         asynchronous: handler
             .get("async")
@@ -827,7 +843,7 @@ fn codex_trusted_hash(event: &str, group: &Value, handler: &Value) -> Result<Str
             .unwrap_or(false),
         command: required_json_text(handler, "command")?,
         status_message: handler.get("statusMessage").and_then(Value::as_str),
-        timeout: handler.get("timeout").and_then(Value::as_u64).unwrap_or(60),
+        timeout,
         kind: required_json_text(handler, "type")?,
     };
     let mut canonical = Map::new();
@@ -913,7 +929,11 @@ mod tests {
                     "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py",
                     &paths.helper.to_string_lossy().replace('\\', "/"),
                 )
-                .replace("python \"", &format!("{} \"", hook_python_command()));
+                .replace("python \"", &format!("{} \"", hook_python_command()))
+                .replace(
+                    "  timeout = 1\n",
+                    &format!("  timeout = {HOOK_TIMEOUT_SECONDS}\n"),
+                );
         assert_eq!(cleaned, expected);
         assert_eq!(remove_grok_block(&cleaned).unwrap(), owner);
         let groups = grok_settings::parse(&cleaned).unwrap().groups;
@@ -1576,5 +1596,256 @@ mod tests {
         assert!(
             provider_events(Provider::Codex).contains(&("PermissionRequest", "attention_required"))
         );
+    }
+}
+
+#[cfg(test)]
+mod timeout_regression_tests {
+    use super::*;
+
+    fn temp_paths(dir: &Path) -> HookInstallPaths {
+        HookInstallPaths {
+            claude_settings: dir.join(".claude/settings.json"),
+            codex_hooks: dir.join(".codex/hooks.json"),
+            codex_config: dir.join(".codex/config.toml"),
+            grok_config: dir.join(".grok/config.toml"),
+            helper: dir.join(".mycmux/hooks/v1/mycmux_hook.py"),
+            state: dir.join(".mycmux/agent-hooks-state.json"),
+        }
+    }
+
+    #[test]
+    fn managed_hook_timeouts_include_python_startup_margin() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = temp_paths(dir.path());
+        for provider in PROVIDERS {
+            for (_, kind) in provider_events(provider) {
+                let group = managed_group(&paths.helper, provider, kind);
+                let expected = if provider == Provider::Codex && kind == "session_terminated" {
+                    3
+                } else {
+                    5
+                };
+                assert_eq!(
+                    group["hooks"][0]["timeout"],
+                    json!(expected),
+                    "{provider:?}: {kind}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn codex_managed_timeouts_equal_the_normalized_trust_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = temp_paths(dir.path());
+        for (event, kind) in provider_events(Provider::Codex) {
+            let group = managed_group(&paths.helper, Provider::Codex, kind);
+            let written = group["hooks"][0]["timeout"].as_u64().unwrap();
+            let normalized = if matches!(event, "SessionEnd" | "Interrupt") {
+                written.clamp(1, 3)
+            } else {
+                written.max(1)
+            };
+            assert_eq!(written, normalized, "{event} would be clamped by Codex");
+        }
+    }
+
+    #[test]
+    fn codex_timeout_change_invalidates_trusted_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = temp_paths(dir.path());
+        for (event, kind) in provider_events(Provider::Codex) {
+            let current = managed_group(&paths.helper, Provider::Codex, kind);
+            let mut old = current.clone();
+            old["hooks"][0]["timeout"] = json!(1);
+            assert_ne!(
+                codex_trusted_hash(event, &current, &current["hooks"][0]).unwrap(),
+                codex_trusted_hash(event, &old, &old["hooks"][0]).unwrap(),
+                "{event} must require the user's fresh trust"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_session_end_trust_uses_effective_timeout_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = temp_paths(dir.path());
+        let group = managed_group(&paths.helper, Provider::Codex, "session_terminated");
+        let mut configured = group.clone();
+        configured["hooks"][0]["timeout"] = json!(5);
+        let mut effective = group.clone();
+        effective["hooks"][0]["timeout"] = json!(3);
+        assert_eq!(
+            codex_trusted_hash("SessionEnd", &configured, &configured["hooks"][0]).unwrap(),
+            codex_trusted_hash("SessionEnd", &effective, &effective["hooks"][0]).unwrap()
+        );
+        assert_ne!(
+            codex_trusted_hash("Stop", &configured, &configured["hooks"][0]).unwrap(),
+            codex_trusted_hash("Stop", &effective, &effective["hooks"][0]).unwrap()
+        );
+    }
+
+    #[test]
+    fn grok_toml_uses_startup_budget_and_preserves_owner_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = temp_paths(dir.path());
+        let owner = "# user settings\nmodel = \"example-model\"\n";
+        let installed = append_grok_block(owner, &paths.helper);
+        assert_eq!(
+            installed.matches("  timeout = 5\n").count(),
+            provider_events(Provider::Grok).len()
+        );
+        assert_eq!(remove_grok_block(&installed).unwrap(), owner);
+    }
+
+    #[test]
+    fn reconcile_upgrades_one_second_hooks_without_touching_owner_or_codex_trust() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = temp_paths(dir.path());
+        let user = json!({"matcher": "", "hooks": [{"type": "command", "command": "user.py", "timeout": 11}]});
+        let lookalike = json!({"hooks": [{"type": "command", "command": "python mycmux_hook.py", "timeout": 1}]});
+        let mut originals = Vec::new();
+        let mut config = String::from("# user config\n");
+        for provider in [Provider::Claude, Provider::Codex] {
+            let path = if provider == Provider::Claude {
+                &paths.claude_settings
+            } else {
+                &paths.codex_hooks
+            };
+            let mut root = json!({"theme": "dark", "hooks": {}});
+            let mut original = root.clone();
+            for (event, kind) in provider_events(provider) {
+                let mut old = managed_group(&paths.helper, provider, kind);
+                old["hooks"][0]["timeout"] = json!(1);
+                if provider == Provider::Claude {
+                    match event {
+                        "PreToolUse" => {
+                            old["matcher"] = json!("AskUserQuestion|Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit|WebFetch|WebSearch|Agent|Skill");
+                        }
+                        "PostToolUse" => old["matcher"] = json!("AskUserQuestion"),
+                        _ => {}
+                    }
+                }
+                if provider == Provider::Codex {
+                    config.push_str(&format!(
+                        "[hooks.state.'{}:{}:1:0']\ntrusted_hash = \"{}\"\n",
+                        paths.codex_hooks.display(),
+                        snake_case_event(event),
+                        codex_trusted_hash(event, &old, &old["hooks"][0]).unwrap()
+                    ));
+                }
+                root["hooks"][event] = json!([user.clone(), old, lookalike.clone()]);
+                original["hooks"][event] = json!([user.clone(), lookalike.clone()]);
+            }
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, serde_json::to_vec(&root).unwrap()).unwrap();
+            originals.push((provider, original));
+        }
+        fs::write(&paths.codex_config, &config).unwrap();
+        assert!(codex_hooks_are_trusted(&paths.codex_hooks, &paths.codex_config).unwrap());
+        let owner_toml = "# user Grok hooks\n[[hooks.Stop]]\n  [[hooks.Stop.hooks]]\n  type = \"command\"\n  command = 'user.py'\n  timeout = 11\n[[hooks.Stop]]\n  [[hooks.Stop.hooks]]\n  type = \"command\"\n  command = 'python mycmux_hook.py'\n  timeout = 1\n";
+        let old_grok = append_grok_block(owner_toml, &paths.helper)
+            .replace("  timeout = 5\n", "  timeout = 1\n");
+        fs::create_dir_all(paths.grok_config.parent().unwrap()).unwrap();
+        fs::write(&paths.grok_config, old_grok).unwrap();
+        fs::create_dir_all(paths.helper.parent().unwrap()).unwrap();
+        fs::write(&paths.helper, HELPER_BYTES).unwrap();
+
+        let outcome = reconcile(&paths, None).unwrap();
+        for provider in PROVIDERS {
+            let groups = read_groups(&paths, provider).unwrap();
+            for (event, _) in provider_events(provider) {
+                let managed: Vec<_> = groups
+                    .iter()
+                    .filter(|(name, group)| name == event && is_managed_group(group, provider))
+                    .collect();
+                assert_eq!(managed.len(), 1, "{provider:?}: {event}");
+                // The Grok status projection deliberately keeps only command/ownership.
+                if provider != Provider::Grok {
+                    let expected = if provider == Provider::Codex && event == "SessionEnd" {
+                        3
+                    } else {
+                        5
+                    };
+                    assert_eq!(
+                        managed[0].1["hooks"][0]["timeout"],
+                        json!(expected),
+                        "{provider:?}: {event}"
+                    );
+                }
+            }
+        }
+        let written_grok = fs::read_to_string(&paths.grok_config).unwrap();
+        assert_eq!(written_grok, append_grok_block(owner_toml, &paths.helper));
+        assert_eq!(
+            written_grok
+                .split(GROK_BLOCK_START)
+                .nth(1)
+                .unwrap()
+                .matches("  timeout = 5\n")
+                .count(),
+            provider_events(Provider::Grok).len()
+        );
+        assert_eq!(outcome.modes[&Provider::Claude], HookMode::Installed);
+        assert_eq!(outcome.modes[&Provider::Grok], HookMode::Installed);
+        assert_eq!(outcome.modes[&Provider::Codex], HookMode::Unavailable);
+        assert!(!codex_hooks_are_trusted(&paths.codex_hooks, &paths.codex_config).unwrap());
+        assert_eq!(
+            inspect_provider(&paths, Provider::Codex, true),
+            HookInstallState::NeedsRepair {
+                reason: RepairReason::Untrusted
+            }
+        );
+        assert_eq!(fs::read_to_string(&paths.codex_config).unwrap(), config);
+        assert_eq!(
+            remove_grok_block(&fs::read_to_string(&paths.grok_config).unwrap()).unwrap(),
+            owner_toml
+        );
+        for (provider, original) in &originals {
+            let path = if *provider == Provider::Claude {
+                &paths.claude_settings
+            } else {
+                &paths.codex_hooks
+            };
+            let root: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            for (event, _) in provider_events(*provider) {
+                let owners: Vec<_> = root["hooks"][event]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|group| !is_managed_group(group, *provider))
+                    .cloned()
+                    .collect();
+                assert_eq!(json!(owners), original["hooks"][event]);
+                if *provider == Provider::Codex {
+                    assert!(is_managed_group(&root["hooks"][event][1], *provider));
+                }
+            }
+        }
+        let files = [
+            &paths.claude_settings,
+            &paths.codex_hooks,
+            &paths.grok_config,
+            &paths.codex_config,
+            &paths.helper,
+        ];
+        let before: Vec<_> = files.iter().map(|path| fs::read(path).unwrap()).collect();
+        reconcile(&paths, None).unwrap();
+        let after: Vec<_> = files.iter().map(|path| fs::read(path).unwrap()).collect();
+        assert_eq!(after, before);
+        for (provider, original) in originals {
+            set_provider(&paths, provider, false).unwrap();
+            let path = if provider == Provider::Claude {
+                &paths.claude_settings
+            } else {
+                &paths.codex_hooks
+            };
+            let root: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            assert_eq!(root, original);
+        }
+        set_provider(&paths, Provider::Grok, false).unwrap();
+        assert_eq!(fs::read_to_string(&paths.grok_config).unwrap(), owner_toml);
+        assert_eq!(fs::read_to_string(&paths.codex_config).unwrap(), config);
     }
 }

@@ -195,7 +195,7 @@ pub fn resolve_source(path: &Path, kind: &str, options: &RepairOptions) -> Optio
     contained_file(archive, &gzip).then_some(gzip)
 }
 
-fn contained_file(root: &Path, candidate: &Path) -> bool {
+pub(super) fn contained_file(root: &Path, candidate: &Path) -> bool {
     candidate.is_file() && root.canonicalize().ok().zip(candidate.canonicalize().ok())
         .is_some_and(|(root, target)| target.starts_with(root))
 }

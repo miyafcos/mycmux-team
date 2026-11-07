@@ -234,6 +234,12 @@ export const dashboardStrings = {
   nextActionAriaLabel: "次の一手",
   nextActionLoading: "次の一手を用意中… (会話を読んでいます)",
   nextActionRetry: "作り直す",
+  // 案 1 (2026-11-06): 読み込んだあとは 1 行。先頭の提案と「ほか N 件」だけを出し、残りは上に開く面へ。
+  nextActionNotRequested: "提案はまだありません",
+  nextActionWaitSettle: "返答が終わると読めます",
+  nextActionMoreCount: (count: number): string => `ほか ${count} 件`,
+  nextActionMoreDetail: "詳細",
+  nextActionMorePanelLabel: "次の一手の続き",
   nextActionRecommended: "推奨",
   nextActionSendPreviewTitle: "送る全文",
   nextActionSendConfirm: "この内容を送る",

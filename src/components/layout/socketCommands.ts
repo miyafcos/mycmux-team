@@ -2365,6 +2365,7 @@ function guardedWriteIsPartial(args: SocketArgs): boolean {
 function staleSendTextFromFrontend(
   args: SocketArgs,
   attention: { attentionId: string | null; kind: string; sessionEpoch: number | null; sessionRevision: number } | undefined,
+  stagedSubmit = false,
 ): { sent: false; reason: string; current: unknown } | null {
   const {
     expectedAttentionId,
@@ -2392,7 +2393,7 @@ function staleSendTextFromFrontend(
   if (attention.sessionEpoch !== expectedSessionEpoch) {
     return { sent: false, reason: "session_epoch", current: null };
   }
-  if (attention.sessionRevision !== expectedSessionRevision) {
+  if (!stagedSubmit && attention.sessionRevision !== expectedSessionRevision) {
     return { sent: false, reason: "session_revision", current: null };
   }
   return null;
@@ -2492,19 +2493,24 @@ async function sendPaneText(args: SocketArgs, expiresAt?: number, peerRequest = 
       || expectedSessionEpoch !== undefined
       || expectedSessionRevision !== undefined
       || expectedInputRevision !== undefined;
+    const staged = !textValue && (enter || key === "enter")
+      ? paneMessageDrafts.get(sessionId) : undefined;
+    // A staged submit is single-use, including every refusal and unknown outcome.
+    if (staged) paneMessageDrafts.delete(sessionId);
     const stale = staleSendTextFromFrontend(
       args,
       useSessionAttentionStore.getState().attentionBySession[sessionId],
+      Boolean(staged),
     );
-    if (stale) return stale;
-    const staged = !textValue && (enter || key === "enter")
-      ? paneMessageDrafts.get(sessionId) : undefined;
+    if (stale) return staged ? { ...stale, textWritten: false, enterWritten: false, confirmed: false } : stale;
     const currentAttention = useSessionAttentionStore.getState().attentionBySession[sessionId];
     const dedicatedAnswer = !enter && key === null && guarded && expectedAttentionId != null
       && (currentAttention?.kind === "input" || currentAttention?.kind === "approval");
     const editingKeys = !enter && key === null && /^[\b\x7f]+$/.test(textValue);
     const ordinaryMessage = textValue.length > 0 && (key === null || key === "enter") && !dedicatedAnswer && !editingKeys;
-    let messageGuard: MessageSendGuard | undefined = staged?.guard;
+    // Echo/output may advance the session revision after staging. Keep the
+    // original epoch, attention, identity/source fences and input revision.
+    let messageGuard: MessageSendGuard | undefined = staged ? { ...staged.guard, strictRevision: false } : undefined;
     const submittedText = staged?.text ?? textValue;
     const messageRejected = (reason: string, textWritten = false) => ({
       sent: false as const, reason, confirmed: false, enterWritten: false, textWritten,
@@ -2527,8 +2533,8 @@ async function sendPaneText(args: SocketArgs, expiresAt?: number, peerRequest = 
         || messageGuard.sessionRevision !== expectedSessionRevision
         || messageGuard.inputRevision !== expectedInputRevision)) return messageRejected("stale_expectations");
     }
-    if (staged && staged.tabId !== target?.tab.id) return messageRejected("target_changed", true);
-    let textWritten = Boolean(staged);
+    if (staged && staged.tabId !== target?.tab.id) return messageRejected("target_changed");
+    let textWritten = false;
     const writeBytes = async (data: string, revision?: number) => {
       if (messageGuard) {
         try { validateTarget(); } catch {
@@ -2544,7 +2550,12 @@ async function sendPaneText(args: SocketArgs, expiresAt?: number, peerRequest = 
           message: "入力を書き込んだ可能性があります。再送せず、対象の状態を確認してください。" };
       }
       if (!rejected && messageGuard && revision === messageGuard.inputRevision) textWritten = true;
-      return rejected && messageGuard ? messageRejected(rejected.reason, revision === messageGuard.inputRevision + 1) : rejected;
+      if (rejected && messageGuard) {
+        const reason = staged && (rejected.reason === "input_revision"
+          || rejected.reason.startsWith("PTY_INPUT_REVISION_CONFLICT:")) ? "stale_staged_draft" : rejected.reason;
+        return messageRejected(reason, textWritten);
+      }
+      return rejected;
     };
     const keyBytes = key === null ? "\r" : SEND_KEY_BYTES[key];
     const bytes = textValue.length + (enter || key !== null ? keyBytes.length : 0);

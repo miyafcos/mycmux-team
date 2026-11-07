@@ -7,6 +7,7 @@ import {
 const copy = {
   title: "エージェント連携",
   lead: "mycmux は各エージェントの設定ファイルに hook を入れ、作業中・完了・質問の状態を受け取ります。エージェントごとに入れるか外すかを選べます。",
+  codexTrustHelp: "Codex の入力欄に /hooks と入力し、mycmux の hook を確認して許可してください。許可したら Codex のタブを開き直してください。",
   agents: { claude: "Claude Code", codex: "Codex", grok: "Grok" },
   labels: { installed: "入っています", disabled: "外しています", unavailable: "使えません", "needs-repair": "直す必要があります" },
   reasons: {
@@ -88,7 +89,10 @@ export function AgentIntegrationsSection() {
           <strong>{copy.agents[entry.provider]}</strong>
           <span>{copy.labels[entry.state]}</span>
           {entry.state === "needs-repair" && <span>{copy.reasons[entry.reason]}</span>}
-          {entry.state !== "installed" && (
+          {entry.provider === "codex" && entry.state === "needs-repair" && entry.reason === "untrusted" && (
+            <p style={{ flexBasis: "100%", margin: 0 }}>{copy.codexTrustHelp}</p>
+          )}
+          {entry.state !== "installed" && !(entry.state === "needs-repair" && entry.reason === "untrusted") && (
             <button style={buttonStyle} disabled={busy || confirm !== null} onClick={() => void run(entry.provider, true)}>
               {entry.state === "needs-repair" ? copy.buttons.repair : copy.buttons.enable}
             </button>

@@ -56,6 +56,7 @@ const functionSamples: Partial<Record<DashboardStringKey, readonly unknown[][]>>
     ["no_context"],
   ],
   nextActionFailed: [["reason"]],
+  nextActionMoreCount: [[1], [2]],
   pathActionFailed: [["reason"]],
   webTranscriptFetchedAt: [["12:30"]],
 };

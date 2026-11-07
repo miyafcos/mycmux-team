@@ -252,8 +252,10 @@ class Guard:
         if not isinstance(inventory, dict) or not isinstance(inventory.get("sessions"), list):
             raise RuntimeError("Invalid bridge inventory")
         all_tabs = {r["session_id"]: r for r in inventory["sessions"]}
+        ledger_records = list(json_rows(self.ledger_path))
         children = {d.tab_session_id: d for d in ledger.load_dispatches(self.ledger_path)
-                    if d.status in ledger.ACTIVE_STATUSES and d.tab_session_id}
+                    if d.status in ledger.ACTIVE_STATUSES and d.tab_session_id
+                    and not ledger.is_mothership_session(ledger_records, d.tab_session_id)}
         targets = {sid for sid, tab in all_tabs.items() if tab.get("agent_kind") in AGENTS} | set(children)
         if session:
             targets &= {session}

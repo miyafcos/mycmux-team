@@ -440,3 +440,240 @@ def test_text_is_not_sent_into_another_prompt(install_transport, capsys, kind):
     assert json.loads(captured.out)["enter_sent"] is False
     assert f"target attention is {kind}" in captured.err
     assert not any(cmd == "pane.send_text" for cmd, _ in transport.calls)
+
+
+class RecoveryPty(MockPty):
+    def __init__(self, mode):
+        super().__init__()
+        self.mode = mode
+        self.hidden_reads = 0
+        self.refused = False
+        self.clear_count = 0
+
+    def __call__(self, cmd, args):
+        if cmd == "pane.read" and self.mode == "claude_hint":
+            body = self.text if not self.submitted else ""
+            return {"sessionId": "pty-tab-1", "lines": ["\u2500" * 20,
+                "\u276f\xa0" + (body or 'Try "an example"'), "\u2500" * 20, "-- INSERT --"]}
+        if cmd == "pane.read" and self.text and not self.submitted:
+            self.hidden_reads += 1
+            if self.mode in {"enter_only", "stale_retry", "foreign", "duplicate", "unknown_enter", "unknown_text"} and self.hidden_reads <= 2:
+                return {"sessionId": "pty-tab-1", "lines": ["PS>"]}
+            if self.mode == "foreign":
+                return {"sessionId": "pty-tab-1", "lines": ["PS> other input"]}
+            if self.mode == "duplicate":
+                return {"sessionId": "pty-tab-1", "lines": ["PS> " + self.text * 2]}
+        if cmd == "pane.send_text":
+            if args.get("key") == "enter" and self.mode == "unknown_enter":
+                raise OSError("reply lost after Enter")
+            if args.get("key") == "enter" and self.mode in {"stale", "stale_retry", "claude_hint", "legacy", "not_empty", "clear_race", "unknown_combined", "unknown_clear"} and not self.refused:
+                self.refused = True
+                self.entry["input_revision"] += 1
+                return {"sent": False, "reason": "session_revision" if self.mode == "legacy" else "stale_staged_draft",
+                        "textWritten": False, "enterWritten": False}
+            if args.get("key") == "ctrl-c":
+                self.clear_count += 1
+                if self.mode == "unknown_clear":
+                    raise OSError("clear outcome unknown")
+                assert args["expectedInputRevision"] == self.entry["input_revision"]
+                self.writes.append(deepcopy(args))
+                self.entry["input_revision"] += 2 if self.mode == "clear_race" else 1
+                if self.mode != "not_empty":
+                    self.text = ""
+                return {"ok": False, "confirmed": False, "enterWritten": True}
+            if args.get("enter") is True:
+                if self.mode == "unknown_combined":
+                    raise OSError("reply lost after combined send")
+                assert self.text == ""
+                assert args["expectedInputRevision"] == self.entry["input_revision"]
+                self.writes.append(deepcopy(args))
+                self.entry["input_revision"] += 2
+                self.entry["view"]["session_revision"] += 1
+                self.entry["view"]["activity"] = "running_silent"
+                self.text = args["text"]
+                self.submitted = True
+                return {"ok": True, "confirmed": True, "enterWritten": True}
+        response = super().__call__(cmd, args)
+        if cmd == "pane.send_text" and args.get("text") and self.mode == "unknown_text":
+            raise OSError("text reply lost")
+        return response
+
+
+@pytest.mark.parametrize("mode", ["enter_only", "stale", "stale_retry", "claude_hint"])
+def test_dead_guard_finishes_in_the_request(install_transport, monkeypatch, capsys, mode):
+    pty = install_transport(RecoveryPty(mode))
+    monkeypatch.setattr(dispatch_send, "ensure_guard", lambda: {"alive": False})
+    assert dispatch_send.main(["--session", "pty-tab-1", "--text", "hello"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["enter_sent"] is True and pty.submitted
+    assert result.get("enterWritten") is not False
+    if mode in {"stale", "claude_hint"}:
+        assert result["initial_rejection"] == {"write_reason": "stale_staged_draft",
+                                                "textWritten": False, "enterWritten": False}
+        assert "write_reason" not in result
+    assert result["guard_pending"] is False
+    assert len([p for p in pty.writes if p.get("text")]) == (1 if mode == "enter_only" else 2)
+    assert pty.clear_count == (0 if mode == "enter_only" else 1)
+    assert result["recovery"] == ("enter_only" if mode == "enter_only" else "combined")
+
+
+@pytest.mark.parametrize("mode", ["foreign", "duplicate", "legacy", "not_empty", "clear_race", "unknown_clear", "unknown_text"])
+def test_dead_guard_refuses_foreign_input_and_legacy_refusals(install_transport, monkeypatch, capsys, mode):
+    pty = install_transport(RecoveryPty(mode))
+    monkeypatch.setattr(dispatch_send, "ensure_guard", lambda: {"alive": False})
+    assert dispatch_send.main(["--session", "pty-tab-1", "--text", "hello"]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["enter_sent"] is False and not pty.submitted
+    assert result["guard_pending"] is False
+    assert len([p for p in pty.writes if p.get("text")]) == 1
+    assert "guard owns" not in result["warning"]
+    assert result["recovery"] == "stopped"
+
+
+@pytest.mark.parametrize("mode", ["unknown_enter", "unknown_combined"])
+def test_dead_guard_never_repeats_an_unknown_submit(install_transport, monkeypatch, capsys, mode):
+    pty = install_transport(RecoveryPty(mode))
+    monkeypatch.setattr(dispatch_send, "ensure_guard", lambda: {"alive": False})
+    assert dispatch_send.main(["--session", "pty-tab-1", "--text", "hello"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["enter_sent"] is True
+    assert pty.clear_count <= 1
+    assert len([p for p in pty.writes if p.get("text")]) == 1
+    assert result["confirmed"] is False
+
+
+
+RECOVERY_BODY = "Read the sample specification and preserve every completed artifact. " * 4
+RECOVERY_MULTILINE = "Read the sample specification.\nPreserve completed artifacts.\nWrite the requested result."
+
+
+CODEX_0165_STATUS = "Context 3% used \u00b7 sample-model \u00b7 ~\\work\\sample"
+
+
+class RecoveryScreenPty(RecoveryPty):
+    """Synthetic wrapped/paste/Codex screens; all writes stay in this transport."""
+    def __init__(self, screen, empty_screen="codex-empty"):
+        super().__init__("")
+        self.screen = screen
+        self.empty_screen = empty_screen
+
+    def __call__(self, command, args):
+        if command != "pane.read":
+            return super().__call__(command, args)
+        body = self.text if not self.submitted else ""
+        if not body and self.empty_screen == "codex-0165":
+            lines = ["\u203a Ask Codex to do anything", CODEX_0165_STATUS, "? for shortcuts"]
+        elif not body:
+            hint = {"codex-empty": "", "codex-try": 'Try "a sample task"',
+                    "codex-example": "Ask Codex to do anything"}[self.empty_screen]
+            lines = ["\u203a " + hint, "", "? for shortcuts", "sample-model \u00b7 100% context left"]
+        elif self.screen == "wrapped":
+            rows = [body[i:i + 37] for i in range(0, len(body), 37)]
+            lines = ["\u2500" * 40, "\u276f\xa0" + rows[0],
+                     *("  " + row for row in rows[1:]), "\u2500" * 40, "-- INSERT --"]
+        elif self.screen == "multiline":
+            rows = body.splitlines()
+            lines = ["\u276f " + rows[0], *("  " + row for row in rows[1:]),
+                     "\u2500" * 40, "-- INSERT --"]
+        elif self.screen == "paste":
+            lines = ["\u276f\xa0[Pasted text #1 +42 lines]", "\u2500" * 40, "-- INSERT --"]
+        elif self.screen == "two-pastes":
+            lines = ["\u276f [Pasted text #1 +42 lines]", "  [Pasted text #2 +42 lines]", "\u2500" * 40]
+        elif self.screen == "foreign":
+            lines = ["\u203a unrelated input", "? for shortcuts", "sample-model \u00b7 100% context left"]
+        elif self.screen == "duplicate":
+            lines = ["\u203a " + body * 2, "? for shortcuts", "sample-model \u00b7 100% context left"]
+        elif self.screen == "codex-0165":
+            # 0.165.0 with a status_line starting at context-used: the status row sits right under the input.
+            rows = [body[i:i + 53] for i in range(0, len(body), 53)]
+            lines = ["\u203a " + rows[0], *("  " + row for row in rows[1:]), CODEX_0165_STATUS, "? for shortcuts"]
+        else:
+            assert self.screen == "codex"
+            rows = [body[i:i + 53] for i in range(0, len(body), 53)]
+            lines = ["\u203a " + rows[0], *("  " + row for row in rows[1:]),
+                     "", "? for shortcuts", "sample-model \u00b7 100% context left"]
+        return {"sessionId": "pty-tab-1", "lines": lines}
+
+
+def recover_screen(screen, *, stale=False, empty_screen="codex-empty", extra_input=0):
+    module = dispatch_send.load_bridge()
+    pty = RecoveryScreenPty(screen, empty_screen)
+    writes = []
+
+    def request(command, args):
+        response = pty(command, args)
+        if command == "pane.send_text":
+            writes.append({"payload": deepcopy(args), "response": deepcopy(response)})
+        return response
+
+    bridge = module.Bridge(request)
+    initial = bridge.status("pty-tab-1")
+    body = RECOVERY_MULTILINE if screen == "multiline" else RECOVERY_BODY
+    # Create the post-text state, then (for stale) one competing input revision.
+    pty.text = body
+    pty.entry["input_revision"] += 1 + int(stale) + extra_input
+    if stale:
+        writes.append({"payload": {"key": "enter"}, "response": {
+            "sent": False, "reason": "stale_staged_draft", "textWritten": False, "enterWritten": False}})
+    result = dispatch_send.recover_dead_guard(bridge, module, "pty-tab-1", body, initial, "none", writes)
+    return pty, result
+
+
+@pytest.mark.parametrize("screen", ["wrapped", "multiline", "paste", "codex"])
+def test_dead_guard_screen_enter_only_finishes(install_transport, screen):
+    pty, result = recover_screen(screen)
+    assert result["enter_sent"] is True and result["recovery"] == "enter_only"
+    assert pty.submitted and pty.clear_count == 0
+    assert [write.get("key") for write in pty.writes] == ["enter"]
+    assert not any(write.get("text") for write in pty.writes)
+
+
+@pytest.mark.parametrize("screen", ["wrapped", "multiline", "codex"])
+@pytest.mark.parametrize("empty_screen", ["codex-empty", "codex-try", "codex-example"])
+def test_dead_guard_screen_stale_compact_match_finishes(install_transport, screen, empty_screen):
+    pty, result = recover_screen(screen, stale=True, empty_screen=empty_screen)
+    assert result["enter_sent"] is True and result["recovery"] == "combined"
+    assert pty.submitted and pty.clear_count == 1
+    assert [write.get("key") for write in pty.writes] == ["ctrl-c", None]
+    combined = pty.writes[-1]
+    assert combined["enter"] is True
+    assert combined["text"] == (RECOVERY_MULTILINE if screen == "multiline" else RECOVERY_BODY)
+
+
+@pytest.mark.parametrize("stale", [False, True])
+def test_dead_guard_codex_0165_status_row_is_not_part_of_the_draft(install_transport, stale):
+    pty, result = recover_screen("codex-0165", stale=stale, empty_screen="codex-0165")
+    assert result["enter_sent"] is True
+    assert result["recovery"] == ("combined" if stale else "enter_only")
+    assert pty.submitted and pty.clear_count == int(stale)
+    assert [write.get("key") for write in pty.writes] == (["ctrl-c", None] if stale else ["enter"])
+    if stale:
+        assert pty.writes[-1]["enter"] is True and pty.writes[-1]["text"] == RECOVERY_BODY
+
+
+def test_dead_guard_screen_stale_paste_stops_without_writing(install_transport):
+    pty, result = recover_screen("paste", stale=True)
+    assert result["enter_sent"] is False and result["recovery"] == "stopped"
+    assert not pty.submitted and pty.clear_count == 0 and pty.writes == []
+
+
+@pytest.mark.parametrize("screen", ["foreign", "duplicate", "two-pastes"])
+@pytest.mark.parametrize("stale", [False, True])
+def test_dead_guard_screen_ambiguous_input_stops_without_writing(install_transport, screen, stale):
+    pty, result = recover_screen(screen, stale=stale)
+    assert result["enter_sent"] is False and result["recovery"] == "stopped"
+    assert not pty.submitted and pty.clear_count == 0 and pty.writes == []
+
+
+def test_dead_guard_screen_changed_revision_stops_without_writing(install_transport):
+    pty, result = recover_screen("paste", extra_input=1)
+    assert result["enter_sent"] is False and result["recovery"] == "stopped"
+    assert pty.clear_count == 0 and pty.writes == []
+
+
+@pytest.mark.parametrize("hint", ["", 'Try "a sample task"', "Ask Codex to do anything"])
+def test_dead_guard_screen_codex_empty_input_excludes_footer(install_transport, hint):
+    module = dispatch_send.load_bridge()
+    lines = ["\u203a " + hint, "", "? for shortcuts", "sample-model \u00b7 100% context left"]
+    assert dispatch_send.recovery_input_body(module, lines) == ""
+    assert dispatch_send.recovery_input_empty(module, lines) is True

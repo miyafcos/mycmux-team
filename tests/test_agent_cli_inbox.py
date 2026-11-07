@@ -178,6 +178,38 @@ def test_rejects_linked_source_or_destination(inbox):
     assert not list(outside.iterdir())
 
 
+def make_windows_junction(junction: Path, outside: Path):
+    result = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+                            capture_output=True, text=True, encoding="mbcs", errors="replace")
+    assert result.returncode == 0, (result.stdout or "") + (result.stderr or "")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows command encoding")
+def test_windows_junction_decodes_command_output_under_utf8(tmp_path, monkeypatch):
+    # Exercise actual reader threads with native-codepage bytes and a truncated
+    # multibyte sequence, even when the surrounding Python uses -X utf8.
+    message = "\u30b8\u30e3\u30f3\u30af\u30b7\u30e7\u30f3"
+    payload = message.encode("mbcs") + b"\x81"
+    real_run = subprocess.run
+
+    def failed_command(_args, **kwargs):
+        code = "import os; os.write(1, " + repr(payload) + "); os.write(2, b' fixture stderr'); raise SystemExit(1)"
+        return real_run([sys.executable, "-X", "utf8", "-c", code], **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", failed_command)
+    with pytest.raises(AssertionError) as failure:
+        make_windows_junction(tmp_path / "junction", tmp_path / "outside")
+    assert payload.decode("mbcs", errors="replace") + " fixture stderr" in str(failure.value)
+
+
+@pytest.mark.parametrize("stdout, stderr", [(None, None), (None, "synthetic failure"), ("synthetic failure", None)])
+def test_windows_junction_failure_allows_missing_output(tmp_path, monkeypatch, stdout, stderr):
+    monkeypatch.setattr(subprocess, "run", lambda args, **kwargs: subprocess.CompletedProcess(args, 1, stdout, stderr))
+    with pytest.raises(AssertionError) as failure:
+        make_windows_junction(tmp_path / "junction", tmp_path / "outside")
+    assert (stdout or "") + (stderr or "") in str(failure.value)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction fixture")
 def test_rejects_windows_inbox_junction(inbox):
     root, runtime, _ = inbox
@@ -185,9 +217,7 @@ def test_rejects_windows_inbox_junction(inbox):
     outside.mkdir()
     runtime.mkdir()
     junction = runtime / "inbox"
-    result = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
-                            capture_output=True, text=True)
-    assert result.returncode == 0, result.stdout + result.stderr
+    make_windows_junction(junction, outside)
     with pytest.raises(RuntimeError, match="junctions"):
         cli.copy_inbox_report(namespace())
     assert not list(outside.iterdir())

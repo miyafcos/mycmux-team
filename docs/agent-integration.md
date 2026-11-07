@@ -148,6 +148,23 @@ python C:/Users/miyaz/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py answ
 - `SendMessage` は Claude harness session 用、bridge の PTY send は mycmux tab 用。相互互換として扱わない
 - AskUserQuestion は `docs/adr/0003-askuserquestion-input-contract.md` が正本。初回に `input revision → screen` の順で観測し、screen identity にその revision を固定する。送信直前の再観測で revision を上書きせず、自分のwrite成功後だけ固定値を1増やす。単一選択と通常の複数質問は数字キー1バイトだけを送り、Enter を付けない。multiSelect のみ各 toggle 後に画面を再読し、Submit まで Down、Enter 1回、review で `1` の順に処理する
 
+### 本文を置いたあとに Enter だけを送る場合 (v0.90.7)
+
+エージェントのタブに本文だけを送ると、本体は本文と native guard を下書きとして保存します。
+本文なしの `send --key enter` / `send --text "" --enter` は、この下書きの epoch・attention・入力版を照合します。
+入力版は本文を書く前の版 + 1 と一致する必要があります。本文の表示や出力による
+`session_revision` の変化だけでは拒否しません。呼び出し側が期待値を付ける場合は、従来どおり4点すべてを渡します。
+
+入力版が変わった場合は `sent: false, reason: "stale_staged_draft", textWritten: false, enterWritten: false`
+を返し、その呼び出しでは本文も Enter も書きません。epoch・attention・対象の識別・質問待ちの検査も残ります。
+下書きは Enter の試行で消費され、拒否や結果不明のあとに使い回しません。
+下書きがない Enter は呼び出し側の期待値4点で照合します。新しい本文、および本文と Enter を1回で送る場合の照合は従来どおりです。
+
+`stale_staged_draft` のあとに本文を送り直す判断は、元の本文を送った呼び出し側が行います。
+入力欄が自分の本文1回分だけであることと現在の対象を確かめてから、期待値4点付きで空に戻し、
+空になったことを確認して本文と Enter を1回で送ります。他の入力があれば止めます。
+Enter の結果不明や受付未確認は再送の根拠にせず、人へ Enter を頼みません。
+
 ### ソケット認証 (2026-08-09 追加・自作ツールを書くとき必読)
 
 ローカルソケットは**トークン必須**になった (ループバックは認可の境界ではないため)。CLI 経由なら意識不要 —

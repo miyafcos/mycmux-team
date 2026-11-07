@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -56,6 +57,9 @@ CLOSED_STATUSES = frozenset(
 INACTIVE_STATUSES = frozenset(CLOSED_STATUSES | {STATUS_LOST})
 KNOWN_STATUSES = frozenset(ACTIVE_STATUSES | DONE_STATUSES | INACTIVE_STATUSES)
 
+# These seats receive the person's rulings directly, rather than acting as children.
+MOTHERSHIP_KINDS = frozenset({"bokan"})
+
 SLUG_RE = re.compile(r"^\d{6}-[A-Za-z0-9][A-Za-z0-9._-]*$")
 _DATED_PREFIX_RE = re.compile(r"^\d{6}-")
 _CAMEL_RE = re.compile(r"(?<=[a-z0-9])([A-Z])")
@@ -64,6 +68,19 @@ _CAMEL_RE = re.compile(r"(?<=[a-z0-9])([A-Z])")
 def is_closed(status: str | None) -> bool:
     """クローズ済み集合の判定 (未知 status は「閉じていない」= 触ってはいけない側)。"""
     return bool(status) and str(status) in CLOSED_STATUSES
+
+
+def is_mothership_session(records: Iterable[dict[str, Any]], pane_session_id: str) -> bool:
+    """Use the last non-empty string kind naming this exact pane session id."""
+    if not pane_session_id:
+        return False
+    latest_kind = None
+    for record in records:
+        if pane_session_id in (record.get("tab_session_id"), record.get("tabSessionId")):
+            value = record.get("kind")
+            if isinstance(value, str) and value:
+                latest_kind = value
+    return latest_kind in MOTHERSHIP_KINDS
 
 
 # --- キー正規化 ---------------------------------------------------------------
@@ -269,6 +286,17 @@ def append_record(
     validate_slug(str(normalized.get("slug", "")))
     validate_status(normalized.get("status"))
     normalized.setdefault("ts", ledger_ts or local_timestamp())
+    parent_tab_id = os.environ.get("MYCMUX_TAB_ID")
+    if (
+        any(key in normalized for key in ("tab_id", "tab_session_id", "session_id"))
+        and parent_tab_id
+        and parent_tab_id != normalized.get("tab_id")
+        and "parent_tab_id" not in normalized
+    ):
+        normalized["parent_tab_id"] = parent_tab_id
+        parent_session_id = os.environ.get("MYCMUX_PANE_SESSION_ID")
+        if parent_session_id and "parent_session_id" not in normalized:
+            normalized["parent_session_id"] = parent_session_id
     _write_line(Path(path), normalized)
     return normalized
 
