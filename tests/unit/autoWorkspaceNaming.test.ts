@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { PaneTab, Workspace } from "../../src/types";
 import { deriveAutoName, UNKNOWN_AUTO_NAME, type AutoNameMeaning } from "../../src/lib/autoNamePolicy";
 import { namingBinding, type AutoNameEvidence } from "../../src/lib/autoNameMaterial";
@@ -10,6 +10,15 @@ import { structuralUndoSignature } from "./helpers/groupingTestEntrypoint";
 import { persistentLayoutSignature } from "../../src/lib/persistentLayoutProjection";
 import { resolvePaneIdentities } from "../../src/lib/paneIdentity";
 import { holdRestoredNames, isPaneNameHeld, isWorkspaceNameHeld, clearNamingHolds, useAutoNameRuntimeStore } from "../../src/stores/autoNameRuntimeStore";
+
+// vi.mock is hoisted to the top of the file, so it replaces the terminal
+// renderer with a lightweight fixed value for every test in this file.
+// Persistence needs the real serializer/restorer, not the renderer and its cold dependency graph.
+vi.mock("../../src/components/terminal/XTermWrapper", () => ({
+  getTerminalBufferLines: () => [],
+  getTerminalWriteCounter: () => 0,
+  hasTerminalBuffer: () => false,
+}));
 
 function tab(id: string, extra: Partial<PaneTab> = {}): PaneTab {
   return { id, sessionId: "pty-" + id, agentId: "shell-starter", agentKind: "codex", agentSessionId: "agent-" + id,

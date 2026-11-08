@@ -69,6 +69,8 @@ metadata:
 3c. **複数の子をまとめて待つ・様子を見る**: DONE.md を grep したり待ちのスクリプトをその場で書いたりせず、`python -X utf8 ~/.claude/skills/session-dispatch/scripts/seat_watch.py wait --seat <slug> [--seat ...] [--watch "<ready の glob>"] --state <自分の dispatch フォルダ>/watch_state.json` を run_in_background で 1 回呼ぶ (どれかの DONE の節か ready が動いたら終了 0 で起きる)。今の様子は同じ引数の `status` (席ごと 1 行)。
    state が無い初回は、先に同じ引数で `status` を 1 回回して DONE=YES の席を先に回収し、それから wait を呼ぶ (wait は呼んだ後の変化でしか起きない。status も state を保存するので、続けて呼ぶ wait はそこが基準になる)。
    同じ `--state` の wait は 1 本だけ動かす (張り直す前に前の待ちを止める)。
+   `--seat` は slug、絶対パス、作業フォルダからの相対パス (`./name`・`../name`・区切り付きのパス) を受ける。保存済みの state に無い席は DONE.md がまだ無いときだけ、保存済みの state に無い glob は当たるファイルがまだ無いときだけ、今の状態を基準に取り込み、その後の変化で起きる。DONE.md が既にある席・当たるファイルが既にある glob は、待つ側がまだ見ていない知らせなので、足した直後の wait がすぐ CHANGED で起きる。
+   `--state` の親フォルダは先に用意する。存在と書き込み可否を待つ前に確かめ、不可なら exit 2 で止まる。
 4. **回収**: watcher の verdict (`DONE-VERIFIED-CLOSED` なら完了) を確認。needs_review /
    watcher 無し運用は `dispatch_status.py` で突合し、**成果物を親が実体検証**
    (Test-Path / 行数 / diff / 実行出力)。DONE.md の自己申告は成果と見なさない

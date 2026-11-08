@@ -1,13 +1,18 @@
 r"""Watch dispatch DONE headings and ready-file metadata; Python 3.10 stdlib only.
 
-python -X utf8 seat_watch.py status --seat 261009-sample-a --seat 261009-sample-b --seat 261009-sample-c
-python -X utf8 seat_watch.py wait --seat 261009-sample-a --watch "~\reports\日本語 フォルダ\*_ready.json"
-python -X utf8 seat_watch.py wait --seat 261009-sample-a --state "~\.claude\dispatch\<slug>\watch_state.json"
+python -X utf8 seat_watch.py status --seat 261108-sample-a --seat 261108-sample-b
+python -X utf8 seat_watch.py wait --seat 261108-sample-a --watch "./ready/*_ready.json"
+python -X utf8 seat_watch.py wait --seat 261108-sample-a --state "./watch_state.json"
 
 Repeat the third command after it exits: the saved state becomes its baseline.
 Defaults: --timeout-min 180 (fractions allowed), --poll-sec 20. Exit codes:
 0 = status/CHANGED, 2 = input or I/O error, 3 = TIMEOUT. Output is buffered.
 State is atomically replaced outside the watched seats/files; its parent must exist.
+The state parent is checked for writes before reading or waiting.
+--seat accepts a bare dispatch slug, an absolute path, or an explicit cwd-relative
+path (./name, ../name, or a path with a separator). A wait target missing from the
+saved state adopts its current state only when it has no DONE.md / no matching file;
+an existing DONE.md or matching file is reported as a change.
 """
 
 from __future__ import annotations
@@ -80,7 +85,10 @@ def resolve_seats(values: list[str]) -> list[Path]:
     seats = []
     for value in values:
         path = Path(value).expanduser()
-        path = fs_path(path if path.is_absolute() else DISPATCH_ROOT / path).resolve()
+        # Bare slugs use the dispatch root; explicit relative paths use cwd.
+        if not path.is_absolute() and "/" not in value and "\\" not in value and value not in (".", ".."):
+            path = DISPATCH_ROOT / path
+        path = fs_path(path).resolve()
         if not path.is_dir():
             raise ValueError(f"seat folder does not exist: {value}")
         if path not in seats:
@@ -184,6 +192,22 @@ def check_state_target(path: Path | None, seats: list[Path], patterns: list[str]
             raise ValueError("--state must not overwrite a watched file")
 
 
+def check_state_writable(path: Path | None) -> None:
+    if path is None:
+        return
+    if not path.parent.is_dir():
+        raise ValueError("--state parent folder must exist")
+    if path.exists() and not path.is_file():
+        raise ValueError("--state must be a file")
+    if path.exists() and not os.access(path, os.W_OK):
+        raise ValueError("--state file is not writable")
+    # Exercise the same directory used by the eventual atomic replacement.
+    with tempfile.TemporaryFile(dir=path.parent, prefix=".seat-watch-probe-") as probe:
+        probe.write(b"state write probe")
+        probe.flush()
+        os.fsync(probe.fileno())
+
+
 def save_state(path: Path | None, data: dict) -> None:
     if path is None:
         return
@@ -278,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
         seats = resolve_seats(args.seat)  # Validate every seat before reading DONE/state/globs.
         state_path = fs_path(args.state).resolve() if args.state else None
         check_state_target(state_path, seats, args.watch)
+        check_state_writable(state_path)
         previous = load_state(state_path)
         current = snapshot(seats, args.watch)
         if args.command == "status":
@@ -286,6 +311,17 @@ def main(argv: list[str] | None = None) -> int:
             code = 0
         else:
             baseline = previous if previous is not None else current
+            if previous is not None:
+                # Old targets keep the saved baseline so changes between waits are
+                # not lost. A target absent from the saved state starts at its current
+                # state only when it has nothing to report (no DONE.md / no glob match);
+                # a DONE.md or matching file the saved state never saw is a change.
+                baseline = {
+                    "seats": {**{k: v for k, v in current["seats"].items() if not v["exists"]},
+                              **previous["seats"]},
+                    "watches": {**{k: v for k, v in current["watches"].items() if not v},
+                                **previous["watches"]},
+                }
             deadline = time.monotonic() + args.timeout_min * 60
             while True:
                 changed = changes(current, baseline)

@@ -468,7 +468,11 @@ class Actions:
                 ask = scan_ask_question(lines)
                 if not ask:
                     raise RuntimeError("Question no longer parses")
-                if ask["kind"] == "review":
+                if any(option["current"] and option["role"] == "typeSomething"
+                       for option in ask["options"]):
+                    result = self.escalate(session, "ask_dialog",
+                                           "Free-text option needs a human")
+                elif ask["kind"] == "review":
                     result = self.answer_digit(session, 1)
                 else:
                     option = next(o for o in ask["options"] if o["role"] == "option")

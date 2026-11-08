@@ -30,6 +30,14 @@ CATALOG = REPO_ROOT / "src" / "lib" / "agentCatalog.ts"
 PANE_SESSION_ID = "11112222-3333-4444-5555-666677778888"
 
 
+@pytest.fixture(autouse=True)
+def isolate_cli_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # These are all MYCMUX_* keys read from os.environ by this CLI.
+    # Tests needing a caller must set it explicitly; prompt files go under tmp_path.
+    monkeypatch.delenv("MYCMUX_PANE_SESSION_ID", raising=False)
+    monkeypatch.setenv("MYCMUX_RUNTIME_DIR", str(tmp_path / "mycmux-runtime"))
+
+
 def catalog_agent_targets() -> set[str]:
     """Every `kind: "agent"` row of the catalog, read from the file itself."""
     text = CATALOG.read_text(encoding="utf-8")

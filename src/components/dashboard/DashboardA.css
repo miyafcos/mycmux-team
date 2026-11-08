@@ -114,6 +114,20 @@
   padding-inline: var(--cmux-dashboard-reading-inset);
   font-size: var(--cmux-font-size-md); line-height: var(--cmux-dashboard-reading-line-height);
 }
+/* Container queries measure inside the border. DashboardView.css gives every
+   non-last column a 1px right border: 179px inside means 180px outside.
+   Keep wider columns unchanged, including the unbordered last column. */
+@container dashboard-chat (max-width: 179px) {
+  .cmux-dashboard-view .cmux-dashboard-chat-column .cmux-dashboard-chat,
+  .cmux-dashboard-view .cmux-archive-log {
+    padding-inline: var(--cmux-space-4);
+    scrollbar-gutter: stable;
+  }
+  .cmux-dashboard-view .cmux-dashboard-chat-column .cmux-dashboard-markdown-list:not(.is-checklist) {
+    padding-left: 1.25em;
+    padding-inline-start: 1.25em;
+  }
+}
 .cmux-dashboard-view .cmux-dashboard-chat-columns { min-width: 0; overflow-x: auto; }
 .cmux-dashboard-view .cmux-dashboard-chat-column { min-width: 0; }
 .cmux-dashboard-view .cmux-dashboard-composer { padding-inline: var(--cmux-space-7); }

@@ -287,14 +287,15 @@ def append_record(
     validate_status(normalized.get("status"))
     normalized.setdefault("ts", ledger_ts or local_timestamp())
     parent_tab_id = os.environ.get("MYCMUX_TAB_ID")
+    parent_session_id = os.environ.get("MYCMUX_PANE_SESSION_ID")
     if (
         any(key in normalized for key in ("tab_id", "tab_session_id", "session_id"))
         and parent_tab_id
         and parent_tab_id != normalized.get("tab_id")
+        and (not parent_session_id or parent_session_id != normalized.get("tab_session_id"))
         and "parent_tab_id" not in normalized
     ):
         normalized["parent_tab_id"] = parent_tab_id
-        parent_session_id = os.environ.get("MYCMUX_PANE_SESSION_ID")
         if parent_session_id and "parent_session_id" not in normalized:
             normalized["parent_session_id"] = parent_session_id
     _write_line(Path(path), normalized)

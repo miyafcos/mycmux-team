@@ -25,6 +25,14 @@ import mycmux_agent_cli as cli  # noqa: E402
 PANE_SESSION_ID = "11112222-3333-4444-5555-666677778888"
 
 
+@pytest.fixture(autouse=True)
+def isolate_cli_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These are all MYCMUX_* keys read from os.environ by this CLI.
+    # Tests needing a caller or runtime directory must set it explicitly.
+    for name in ("MYCMUX_PANE_SESSION_ID", "MYCMUX_RUNTIME_DIR"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def request_for_spawn(argv: list[str]) -> tuple[str, dict[str, Any]]:
     namespace = cli.build_parser().parse_args(["spawn", *argv])
     return cli.request_for(namespace)
@@ -449,12 +457,13 @@ def test_missing_env_is_an_error_not_a_split_fallback(
 
 
 def test_spawn_tab_detach_routes_split_pane_with_warning(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", PANE_SESSION_ID)
     namespace = cli.build_parser().parse_args(
         ["spawn-tab", "--target", "claude", "--detach", "--prompt", "x"]
     )
+    monkeypatch.setenv("MYCMUX_RUNTIME_DIR", str(tmp_path))
     cmd, _ = cli.request_for(namespace)
     assert cmd == "pane.spawn"
     assert "NEW PANE" in capsys.readouterr().err

@@ -648,6 +648,54 @@ describe("NextActionSuggestions more panel inside a dashboard root (N9 plan 1 ro
     expect(document.activeElement).toBe(container.querySelector(".cmux-dashboard-next-actions-retry"));
   }
 
+  it.each(["loading", "ready"] as const)("drops retry follow intent when switching to a %s conversation (N24)", async (status) => {
+    await retryFromPanelToLoading("s-n24-old");
+    const sessionId = "s-n24-new";
+    const ready = {
+      status: "ready" as const, requestKey: nextActionRequestKey({ sessionId, eventSeq: 0, displayState: "done" }),
+      oneLine: "Ready summary", completionAssessment: "Ready assessment", nextActions: actions,
+    };
+    await act(async () => {
+      useBackgroundAiSuggestionStore.getState().set(sessionId, status === "loading" ? { ...ready, status: "loading", nextActions: [] } : ready);
+      root.render(render(sessionId));
+    });
+    // Each conversation explicitly requests its own suggestions.
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+    if (status === "loading") {
+      (document.activeElement as HTMLElement).blur();
+      expect(document.activeElement).toBe(document.body);
+      await act(async () => useBackgroundAiSuggestionStore.getState().set(sessionId, ready));
+    }
+    expect(container.querySelector("[data-next-action-status='ready']")).not.toBeNull();
+    expect(moreButton()).not.toBeNull();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("drops a pending retry when switching before the old replacement row exists (N24)", async () => {
+    const oldSession = "s-n24-pending-old", sessionId = "s-n24-pending-new";
+    await renderReady(oldSession);
+    await act(async () => moreButton().click());
+    const retry = panel()!.querySelector<HTMLButtonElement>(".cmux-dashboard-next-actions-retry")!;
+    retry.focus();
+    await act(async () => {
+      retry.click();
+      useBackgroundAiSuggestionStore.getState().set(oldSession, otherKeyState(oldSession, "other-key"));
+    });
+    expect(document.activeElement).toBe(document.body);
+    await act(async () => {
+      useBackgroundAiSuggestionStore.getState().set(sessionId, otherKeyState(sessionId, nextActionRequestKey({ sessionId, eventSeq: 0, displayState: "done" })));
+      root.render(render(sessionId));
+    });
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+    expect(container.querySelector(".cmux-dashboard-next-actions-retry")).not.toBeNull();
+    await act(async () => useBackgroundAiSuggestionStore.getState().set(sessionId, {
+      status: "ready", requestKey: nextActionRequestKey({ sessionId, eventSeq: 0, displayState: "done" }),
+      oneLine: "Ready summary", completionAssessment: "Ready assessment", nextActions: actions,
+    }));
+    expect(moreButton()).not.toBeNull();
+    expect(document.activeElement).toBe(document.body);
+  });
+
   it("follows retry focus to the more button when the loading row becomes ready (TM 0907)", async () => {
     const sessionId = "s-tm-retry-follow-ready";
     await retryFromPanelToLoading(sessionId);

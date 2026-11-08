@@ -1,6 +1,6 @@
 {
   "pack_version": "1.0.0",
-  "generated_at": "2026-11-07T10:13:23.382420+00:00",
+  "generated_at": "2026-11-08T11:31:03.990170+00:00",
   "cli": {
     "path": "scripts/mycmux_agent_cli.py",
     "sha256": "ee51c46e4eb5d171840d7959c9d5750145d04b5a5109cd80ac39347fa20c7096",
@@ -34,7 +34,7 @@
       "name": "session-dispatch",
       "files": {
         ".packignore": "0077d431e627f7c5bfa2ca202bb5359db1c5bc503d760103f7fed05c4560953e",
-        "SKILL.md": "02d35400ed2ebf028dc26e73436030869b755108efe75bbdf005840bfd192075",
+        "SKILL.md": "6f3b06df8073489f6a8b5a2dd057115d486f179fcce6b5ef82beffd64033e300",
         "references/ask-card-contract.md": "19278a16e88f0830a26078901059ab7398ac6a2516501873af61e7741194a710",
         "references/decompose-guide.md": "9ed36f210540aa1dd5fbe40d268f1623ff316b6b054ed5a8a1c72078a5a0f8e7",
         "references/dispatch-guide.md": "49d9fc0faa25a844ddc5ab60ab68f9c191bb4ac320be3214193632913dd18408",
@@ -42,14 +42,14 @@
         "scripts/dispatch-child-guard.py": "9b67ed72296af9511cd163c0f2bfd5c7455c3b47dea7cea6ec1d81053f5a7852",
         "scripts/dispatch_canary.py": "2b6ec2221886e3002ba881f6347e8bba812641da277e0cd18ea0b2870e482bd1",
         "scripts/dispatch_guard.py": "52c3b2686d24cbf184b1d2af7a881a8b3f7e1faf483e1012f3e538153eea653f",
-        "scripts/dispatch_ledger.py": "a16762665da881c2898954acc0a00823457fd11cf39e2aab178315ed46142742",
+        "scripts/dispatch_ledger.py": "21986a8adc01261f8da93f80f54b7bbb369f95d2f512058d2d6eb9757be157ad",
         "scripts/dispatch_preflight.py": "f911efc4d5eaa0e9e06684d702a1bea168b85b18257463d38f7ed70621b96e63",
         "scripts/dispatch_send.py": "ff987237b7cbc55676c616cd4eba087cf2d56af2a6a3b5d67d620cb64b883f90",
         "scripts/dispatch_status.py": "a9f10c7e4aa2cd88ca7874f83891a3429d8c34c358570b6ee2e3d7ec20fb7969",
         "scripts/dispatch_watch.py": "17bc66846ffa8251f2448e7190b7b7325ba24ca3152c74ee74787562af208a35",
-        "scripts/guard_actions.py": "8731dbf9a6fa11f111a530259a3a242d69494e1a5774fdcb75e8b104d11337f3",
+        "scripts/guard_actions.py": "0ef7413831aef4de12ee5553c0af9d81ead2f8d015e43b6107d17467a0d18c7f",
         "scripts/guard_classify.py": "2df9398ba1ca45e530450a07a0b971b62a355848caab2096f192b619ac689db4",
-        "scripts/seat_watch.py": "b28822ac2e56ab4fb9f1e51ea0e54d11e6ce481ca7b93692256d3b070faa06ff",
+        "scripts/seat_watch.py": "89d4014215077752b8151160e61d9c3468b77534bc9ba35aec3499729fa86e39",
         "scripts/tests/conftest.py": "e1d11c5a5880e4a0d857c9e2dc21b44532f61ceca0fdbddd9300ac9d468adee2",
         "scripts/tests/fixtures/screens/ask_multi.txt": "f23441bb86488f5d2e8134d704c778c860634b7d8c96e73dcadbee3f7a463d6c",
         "scripts/tests/fixtures/screens/ask_review.txt": "d65f15871a832aa9ba9a1179a884890e77f02f0c4b148b0ed92baa94c539cb0b",
@@ -76,12 +76,13 @@
         "scripts/tests/test_dispatch_child_guard.py": "4091aa4c2a08ca35e09aecb021380167c512cf98d0aed5d36082a7488bc9084e",
         "scripts/tests/test_dispatch_guard.py": "26cf6ef2ed385675a42ad879f099c3f229fbc119f6b2e36d323139b54801c422",
         "scripts/tests/test_dispatch_ledger.py": "a4d9e094a7a21e816d8a64ff322988f480d0e44f74a4816fa94fd9aacf7b16b0",
-        "scripts/tests/test_dispatch_preflight.py": "be6703e17918d5f2b6b06f431da1e48fa5e6851f0f4c61561302f0782c768f4b",
+        "scripts/tests/test_dispatch_preflight.py": "55d46988e323d65e79c54c4e57b51cb872cbc70431639701b3a7197416a57828",
         "scripts/tests/test_dispatch_send.py": "64657c01acce14ac12ba5bcfc497e7d1461142b1b9befad8a3b4c54e0d036234",
         "scripts/tests/test_dispatch_status.py": "145dddd5bc551cdde0546c23ab3228fb941a71b27829d29549fb718b0888e74e",
         "scripts/tests/test_dispatch_watch.py": "32794771af6bfd2381963de277fed4f6b468c7b05d7b0fd63fd7aeab5c8076a8",
         "scripts/tests/test_guard_card_volume.py": "4719c638d8de1b91486901f23a35264e76e92e63ef6cfd26c0a4cd4efbd3ca35",
         "scripts/tests/test_guard_classify.py": "d14fd0c709ed0e02f319d14a66f7c4cbc220fc30558b68126e4f4101e6520363",
+        "scripts/tests/test_pkc_m3_regressions.py": "b7a1a0a9e549c5216557e75eef985e9f3767fed97dc88a9cd4ef7739e470b54b",
         "scripts/tests/test_seat_watch.py": "8a7f476933ad14dff1a40529452ca1266ffd58f1c09bff1fde0e13a6befe16c1"
       }
     },
@@ -90,8 +91,9 @@
       "files": {
         "SKILL.md": "eb5046edb4f8469cb475047e2620f48b22a8032066d417d09338e23aaeedb4d7",
         "scripts/mycmux_bridge.py": "0c1c0df558d08d83f3a64c1866ec910467744c22f4e6d7ce1572928bfb45bf91",
-        "scripts/mycmux_bridge_support.py": "d87289726adb6841a20799cba9e22a45864294391d3aa4f291dc1f2abd6bb485",
-        "scripts/tests/test_input_nbsp.py": "08290884a5cdfacb8c231157eabc8db7b33a6fa840e64a5f7582cf1cae70a5e2"
+        "scripts/mycmux_bridge_support.py": "41ab6d493bae27fdcb4236c5d00e7fc793000d3aee8f680f04b5db9627cd9b3a",
+        "scripts/tests/test_input_nbsp.py": "08290884a5cdfacb8c231157eabc8db7b33a6fa840e64a5f7582cf1cae70a5e2",
+        "scripts/tests/test_pkc_footer.py": "0c0a8afc41e36c417c08d3c3b106d3e25829a34324e744835cb4e9ced79a2910"
       }
     },
     {

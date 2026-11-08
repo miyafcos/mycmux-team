@@ -46,6 +46,11 @@ def test_existing_deepwiki_entry_is_kept(tmp_path):
     prepare_project(config, "C:/keep")
     after = json.loads(config.read_text(encoding="utf-8"))
     assert after["projects"]["C:/keep"]["enabledMcpjsonServers"] == ["deepwiki", "oracle"]
+    # Existing approval is retained, but a fresh project must not gain deepwiki.
+    prepare_project(config, "C:/fresh")
+    final = json.loads(config.read_text(encoding="utf-8"))
+    assert final["projects"]["C:/fresh"]["enabledMcpjsonServers"] == ["oracle"]
+    assert final["projects"]["C:/keep"]["enabledMcpjsonServers"] == ["deepwiki", "oracle"]
 
 def test_mixed_case_existing_key_reused():
     assert normalized_cwd("c:\\USERS\\alice", {"C:/Users/alice": {}}) == "C:/Users/alice"

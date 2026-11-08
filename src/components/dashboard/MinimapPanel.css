@@ -50,7 +50,7 @@
 
 /* cell = 部屋。bg 地 + inset 1px hairline。border は透明のまま残す
    (minimapCellHeightPx が 1px x 2 を高さ計算に織り込んでいる)。 */
-.cmux-minimap-column { display: flex; min-width: 0; flex-basis: 0; flex-direction: column; gap: 4px; }
+.cmux-minimap-column { container: minimap-column / inline-size; display: flex; min-width: 0; flex-basis: 0; flex-direction: column; gap: 4px; }
 .cmux-minimap-cell { position: relative; display: flex; min-height: 0; min-width: 0; flex-basis: 0; flex-direction: column; gap: 4px; overflow: hidden; border: 1px solid transparent; border-radius: 3px; padding: 4px; background: var(--cmux-bg); box-shadow: inset 0 0 0 1px var(--cmux-border-hairline); }
 .cmux-minimap-cell.is-expanded { gap: 5px; padding: 5px; }
 .cmux-minimap-pane-grip { flex: none; height: 7px; border-radius: 3px; background: transparent; cursor: grab; }
@@ -75,10 +75,10 @@
    padding 4+5 / meta 11 / gap 3 / タイトル 2 行 (11px x 1.35 x 2 = 29.7) に収める。 */
 .cmux-minimap-map.is-expanded .cmux-minimap-chip { min-height: 53px; max-block-size: 53px; flex-direction: column; align-items: stretch; gap: 3px; padding: 4px 6px 5px; cursor: grab; }
 .cmux-minimap-map.is-expanded .cmux-minimap-label { overflow: hidden; max-block-size: 2.7em; text-overflow: ellipsis; white-space: normal; overflow-wrap: anywhere; word-break: break-all; line-height: 1.35; }
-/* The existing two-line budget stays intact. Mask only the final glyph slot
-   when measured overflow needs an ellipsis; the complete DOM name stays put. */
-.cmux-minimap-map.is-expanded .cmux-minimap-chip.is-label-truncated .cmux-minimap-label { clip-path: polygon(0 0, 100% 0, 100% calc(100% - 1.35em), calc(100% - 1em) calc(100% - 1.35em), calc(100% - 1em) 100%, 0 100%); }
-.cmux-minimap-map.is-expanded .cmux-minimap-chip.is-label-truncated::after { position: absolute; right: 6px; bottom: 5px; width: 1em; content: "\2026"; line-height: 1.35; text-align: right; pointer-events: none; }
+/* Preserve the two-line budget and complete DOM name. The measured cutoff
+   ends after a complete second-line glyph; the old slot is the no-layout fallback. */
+.cmux-minimap-map.is-expanded .cmux-minimap-chip.is-label-truncated .cmux-minimap-label { clip-path: polygon(0 0, 100% 0, 100% var(--minimap-label-line2-top, calc(100% - 1.35em)), var(--minimap-label-cut, calc(100% - 1em)) var(--minimap-label-line2-top, calc(100% - 1.35em)), var(--minimap-label-cut, calc(100% - 1em)) 100%, 0 100%); }
+.cmux-minimap-map.is-expanded .cmux-minimap-chip.is-label-truncated::after { position: absolute; left: var(--minimap-label-ellipsis-left, auto); top: var(--minimap-label-ellipsis-top, auto); right: 6px; bottom: 5px; width: 1em; content: "\2026"; line-height: 1.35; text-align: left; pointer-events: none; }
 .cmux-dashboard-view .cmux-minimap-map.is-expanded .cmux-minimap-chip.is-label-truncated::after { right: var(--cmux-space-5); bottom: var(--cmux-space-5); }
 /* At five columns the label content box can be narrower than one glyph.
    Borrow the existing tile padding only in that case, without resizing it. */
@@ -148,4 +148,52 @@
 /* A name is either complete or omitted; the agent dot and card name remain. */
 .cmux-minimap-agent { flex: 0 0 auto; overflow: visible; text-overflow: clip; }
 .cmux-minimap-agent.is-name-hidden,
-.cmux-minimap-ctx.is-ctx-hidden { position: absolute; visibility: hidden; pointer-events: none; }
+.cmux-minimap-ctx.is-ctx-hidden,
+.cmux-minimap-age.is-age-hidden { position: absolute; visibility: hidden; pointer-events: none; }
+/* Keep hidden status text in flow so collapsed label widths stay unchanged. */
+.cmux-minimap-chip.is-status-text-hidden .cmux-dashboard-status-text { visibility: hidden; pointer-events: none; }
+
+/* Reclaim space in five-plus columns and relaxed four-column maps, open or
+   collapsed. Cutoffs use the actual
+   tile font: 4 * space-5 + two 1px cell borders + one fontSm glyph. The
+   original one-glyph borrowing rules remain unchanged outside these queries.
+   Below space-1, the two cell sides and tile end share the space left
+   after the 4px waiting band and a whole glyph/icon (plus two cell borders). */
+@container minimap-column (width < 50px) {
+  .cmux-dashboard-view .cmux-minimap-map[data-minimap-tight-columns="true"][data-minimap-density="compact"] .cmux-minimap-cell { padding-inline: min(var(--cmux-space-1), max(0px, calc((100cqw - 2px - 4px - max(var(--cmux-font-size-sm), var(--cmux-dash-icon-md))) / 3))); }
+  .cmux-dashboard-view .cmux-minimap-map[data-minimap-tight-columns="true"][data-minimap-density="compact"] .cmux-minimap-chip { padding-inline: min(var(--cmux-space-1), max(0px, calc((100cqw - 2px - 4px - max(var(--cmux-font-size-sm), var(--cmux-dash-icon-md))) / 3))); }
+  .cmux-dashboard-view .cmux-minimap-map[data-minimap-tight-columns="true"][data-minimap-density="compact"] .cmux-minimap-chip.is-waiting { padding-inline-start: max(var(--minimap-waiting-band), var(--cmux-space-1)); }
+  .cmux-dashboard-view .cmux-minimap-map[data-minimap-tight-columns="true"][data-minimap-density="compact"] .cmux-minimap-chip.is-collapsed .cmux-minimap-label { display: none; }
+  .cmux-dashboard-view .cmux-minimap-map.is-expanded[data-minimap-tight-columns="true"][data-minimap-density="compact"] .cmux-minimap-chip .cmux-minimap-label { margin-inline: 0; }
+  .cmux-dashboard-view .cmux-minimap-map.is-expanded[data-minimap-tight-columns="true"][data-minimap-density="compact"] .cmux-minimap-chip.is-label-truncated::after { right: var(--cmux-space-1); }
+}
+@container minimap-column (width < 54px) {
+  .cmux-dashboard-view .cmux-minimap-map[data-minimap-tight-columns="true"][data-minimap-density="standard"] .cmux-minimap-cell { padding-inline: min(var(--cmux-space-1), max(0px, calc((100cqw - 2px - 4px - max(var(--cmux-font-size-sm), var(--cmux-dash-icon-md))) / 3))); }
+  .cmux-dashboard-view .cmux-minimap-map[data-minimap-tight-columns="true"][data-minimap-density="standard"] .cmux-minimap-chip { padding-inline: min(var(--cmux-space-1), max(0px, calc((100cqw - 2px - 4px - max(var(--cmux-font-size-sm), var(--cmux-dash-icon-md))) / 3))); }
+  .cmux-dashboard-view .cmux-minimap-map[data-minimap-tight-columns="true"][data-minimap-density="standard"] .cmux-minimap-chip.is-waiting { padding-inline-start: max(var(--minimap-waiting-band), var(--cmux-space-1)); }
+  .cmux-dashboard-view .cmux-minimap-map[data-minimap-tight-columns="true"][data-minimap-density="standard"] .cmux-minimap-chip.is-collapsed .cmux-minimap-label { display: none; }
+  .cmux-dashboard-view .cmux-minimap-map.is-expanded[data-minimap-tight-columns="true"][data-minimap-density="standard"] .cmux-minimap-chip .cmux-minimap-label { margin-inline: 0; }
+  .cmux-dashboard-view .cmux-minimap-map.is-expanded[data-minimap-tight-columns="true"][data-minimap-density="standard"] .cmux-minimap-chip.is-label-truncated::after { right: var(--cmux-space-1); }
+}
+@container minimap-column (width < 67px) {
+  .cmux-dashboard-view .cmux-minimap-map[data-minimap-tight-columns="true"][data-minimap-density="relaxed"] .cmux-minimap-cell { padding-inline: min(var(--cmux-space-1), max(0px, calc((100cqw - 2px - 4px - max(var(--cmux-font-size-sm), var(--cmux-dash-icon-md))) / 3))); }
+  .cmux-dashboard-view .cmux-minimap-map[data-minimap-tight-columns="true"][data-minimap-density="relaxed"] .cmux-minimap-chip { padding-inline: min(var(--cmux-space-1), max(0px, calc((100cqw - 2px - 4px - max(var(--cmux-font-size-sm), var(--cmux-dash-icon-md))) / 3))); }
+  .cmux-dashboard-view .cmux-minimap-map[data-minimap-tight-columns="true"][data-minimap-density="relaxed"] .cmux-minimap-chip.is-waiting { padding-inline-start: max(var(--minimap-waiting-band), var(--cmux-space-1)); }
+  .cmux-dashboard-view .cmux-minimap-map[data-minimap-tight-columns="true"][data-minimap-density="relaxed"] .cmux-minimap-chip.is-collapsed .cmux-minimap-label { display: none; }
+  .cmux-dashboard-view .cmux-minimap-map.is-expanded[data-minimap-tight-columns="true"][data-minimap-density="relaxed"] .cmux-minimap-chip .cmux-minimap-label { margin-inline: 0; }
+  .cmux-dashboard-view .cmux-minimap-map.is-expanded[data-minimap-tight-columns="true"][data-minimap-density="relaxed"] .cmux-minimap-chip.is-label-truncated::after { right: var(--cmux-space-1); }
+}
+
+/* Hidden elapsed or no-time status text must leave the same no-update ring. */
+.cmux-minimap-chip:has(.cmux-minimap-age.is-age-hidden) .cmux-dashboard-status-mark.is-noUpdate:not(.cmux-dashboard-sr-only)::before,
+.cmux-minimap-chip.is-status-text-hidden:not(:has(.cmux-minimap-age)) .cmux-dashboard-status-mark.is-noUpdate:not(.cmux-dashboard-sr-only)::before { content: ""; position: relative; left: var(--minimap-status-offset, 0px); box-sizing: border-box; width: var(--cmux-dash-icon-md); height: var(--cmux-dash-icon-md); flex: 0 0 auto; border: 1.75px solid currentColor; border-radius: 50%; }
+
+.cmux-minimap-chip .cmux-dashboard-status-text { white-space: nowrap; }
+
+.cmux-minimap-age { white-space: nowrap; }
+
+/* Omitting elapsed text must not shrink its existing metadata row. */
+.cmux-minimap-meta:has(.cmux-minimap-age.is-age-hidden) { min-height: var(--cmux-font-size-xs); }
+
+/* All narrow status icons borrow padding without moving their labels or order. */
+.cmux-minimap-chip .cmux-dashboard-status-mark svg { position: relative; left: var(--minimap-status-offset, 0px); }

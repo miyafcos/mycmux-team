@@ -86,6 +86,11 @@ export function NextActionSuggestions(props: NextActionSuggestionsProps) {
   const [panelBox, setPanelBox] = useState<PanelBox | null>(null);
   const retryFocusPending = useRef(false);
   const retryFollowLoading = useRef(false);
+  // Drop only retry focus intent when switching conversations, before focus effects run.
+  useLayoutEffect(() => {
+    retryFocusPending.current = false;
+    retryFollowLoading.current = false;
+  }, [sessionId]);
   const isInsideMore = (node: Node) => Boolean(moreRef.current?.contains(node) || panelRef.current?.contains(node));
   useEffect(() => setMoreOpen(false), [expectedKey, questionActive, aiSuggestion?.requestKey, aiSuggestion?.status, aiEnabled, suggestionsEnabled]);
   useEffect(() => {

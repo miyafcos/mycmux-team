@@ -6,6 +6,7 @@ import { MinimapPaneCell } from "./MinimapPaneCell";
 import type { Workspace } from "../../types";
 import { usePaneMetadataStore } from "../../stores/paneMetadataStore";
 import { useLiveBriefStore } from "../../stores/liveBriefStore";
+import { useThemeStore } from "../../stores/themeStore";
 import { resolveWorkspaceColor } from "../../lib/workspaceColors";
 
 const MINIMAP_MAP_PADDING_Y = 8;
@@ -98,6 +99,9 @@ export function MinimapWorkspaceBlock({ workspace, selectedTabId, selectedTabIds
     },
     [activePaneId, liveMarks, volatileMetadata, workspace, now],
   );
+  const uiDensity = useThemeStore(state => state.uiDensity);
+  // shareValues quantizes equal thirds into 3334/3333/3333 out of 10,000.
+  const unevenColumns = model.columns.some(column => Math.abs(column.widthShare - (model.columns[0]?.widthShare ?? 0)) > 1e-4 + Number.EPSILON);
   const strip = useMemo(() => minimapWorkspaceStrip(model, displayStateByTabId), [displayStateByTabId, model]);
   const { rowCount, mapStyle } = useMemo(() => {
     const columnChipCounts = model.columns.map((column) => column.cells.map((cell) => cell.chips.length));
@@ -114,7 +118,7 @@ export function MinimapWorkspaceBlock({ workspace, selectedTabId, selectedTabIds
       <span className="cmux-minimap-workspace-name" title={workspace.name}>{workspace.name}</span>
       <span className="cmux-minimap-workspace-summary"><span className="cmux-minimap-workspace-count">タブ {strip.tabCount}</span><span className="cmux-minimap-workspace-collapse" aria-hidden="true">{expanded ? "▾" : "▸"}</span></span>
     </button>
-    <div className={`cmux-minimap-map${expanded ? " is-expanded" : ""}`} data-minimap-expanded={expanded || undefined} data-minimap-row-count={rowCount} style={mapStyle}>
+    <div className={`cmux-minimap-map${expanded ? " is-expanded" : ""}`} data-minimap-expanded={expanded || undefined} data-minimap-row-count={rowCount} data-minimap-column-count={model.columns.length} data-minimap-density={uiDensity} data-minimap-tight-columns={unevenColumns || model.columns.length >= 5 || (uiDensity === "relaxed" && model.columns.length === 4) || undefined} style={mapStyle}>
       {model.columns.map((column) => <div key={column.index} className="cmux-minimap-column" style={{ flexGrow: column.widthShare }}>
         {column.cells.map((cell) => <MinimapPaneCell key={cell.paneId} cell={cell} workspaceId={workspace.id} selectedTabId={selectedTabId} selectedTabIds={selectedTabIds} openColumnByTabId={openColumnByTabId} groupPulseTabIds={groupPulseTabIds} displayStateByTabId={displayStateByTabId} expanded={expanded} now={now} minHeight={minimapCellHeightPx(cell.chips.length, expanded)} onSelect={onSelect} onSelectGroup={onSelectGroup} onJump={onJump} />)}
       </div>)}

@@ -488,68 +488,122 @@ export function composerHoldsFocus(): boolean {
   return active instanceof Element && Boolean(active.closest("[data-composer-session]"));
 }
 
+// A retry belongs to its terminal/pane and to the window that scheduled it.
+// Keep both timer kinds so unmount/close cannot leave a callback in a dead window.
+const focusRetryCancellations = new Map<string, Set<() => void>>();
+
+function cancelFocusRetries(owner: string): void {
+  for (const cancel of [...(focusRetryCancellations.get(owner) ?? [])]) cancel();
+}
+
+function trackFocusRetry(owner: string, onCancelled?: () => void) {
+  const ownerWindow = window;
+  const timers = new Set<number>();
+  const frames = new Set<number>();
+  let active = true;
+  const isLive = () => active && typeof window !== "undefined" && window === ownerWindow && !ownerWindow.closed;
+  const finish = (): void => {
+    active = false;
+    // Preserve the receiver: bare WebView2 timer methods can throw Illegal invocation.
+    timers.forEach(id => ownerWindow.clearTimeout(id));
+    frames.forEach(id => ownerWindow.cancelAnimationFrame(id));
+    timers.clear(); frames.clear();
+    ownerWindow.removeEventListener?.("pagehide", cancel);
+    ownerWindow.removeEventListener?.("beforeunload", cancel);
+    const owners = focusRetryCancellations.get(owner);
+    owners?.delete(cancel);
+    if (owners?.size === 0) focusRetryCancellations.delete(owner);
+  };
+  const cancel = (): void => {
+    if (!active) return;
+    finish();
+    onCancelled?.();
+  };
+  const owners = focusRetryCancellations.get(owner) ?? new Set<() => void>();
+  owners.add(cancel);
+  focusRetryCancellations.set(owner, owners);
+  ownerWindow.addEventListener?.("pagehide", cancel);
+  ownerWindow.addEventListener?.("beforeunload", cancel);
+  const schedule = (callback: () => void, delay: number): void => {
+    if (!isLive()) { cancel(); return; }
+    // A callback that throws ends the retry, as it did before cancellation existed.
+    const run = (): void => {
+      try { callback(); } catch (error) { finish(); throw error; }
+    };
+    const timer = ownerWindow.setTimeout(() => {
+      timers.delete(timer);
+      if (!isLive()) { cancel(); return; }
+      if (typeof ownerWindow.requestAnimationFrame === "function") {
+        // Some hosts invoke RAF synchronously; do not retain an already-fired frame.
+        let frame: number | undefined;
+        let fired = false;
+        frame = ownerWindow.requestAnimationFrame(() => {
+          fired = true;
+          if (frame !== undefined) frames.delete(frame);
+          if (!isLive()) { cancel(); return; }
+          run();
+        });
+        if (!fired) frames.add(frame);
+      } else run();
+    }, delay);
+    timers.add(timer);
+  };
+  return { schedule, finish, cancel };
+}
+
 function focusSessionSoon(
   sessionId: string | null | undefined,
   options: SessionFocusOptions = {},
 ): void {
-  if (!sessionId || typeof window === "undefined") { options.onFocusAborted?.(); return; }
+  if (!sessionId || typeof window === "undefined" || window.closed) { options.onFocusAborted?.(); return; }
   const revision = useUiStore.getState().focusRevision;
+  const retry = trackFocusRetry(`session:${sessionId}`, () => options.onFocusAborted?.());
   let attempts = 0;
   const restoreFocus = (): void => {
     if (options.requireRegisteredTarget) {
       try {
-        if (!focusTargets.has(sessionId) || options.focusGuard?.() === false) { options.onFocusAborted?.(); return; }
+        if (!focusTargets.has(sessionId) || options.focusGuard?.() === false) { retry.cancel(); return; }
       } catch {
-        options.onFocusAborted?.();
+        retry.cancel();
         return;
       }
     }
     attempts += 1;
-    if (composerHoldsFocus() || useUiStore.getState().focusRevision !== revision) { options.onFocusAborted?.(); return; }
-    if (!options.allowInactive && getActiveSessionId() !== sessionId) { options.onFocusAborted?.(); return; }
+    if (composerHoldsFocus() || useUiStore.getState().focusRevision !== revision) { retry.cancel(); return; }
+    if (!options.allowInactive && getActiveSessionId() !== sessionId) { retry.cancel(); return; }
     const target = focusTargets.get(sessionId);
-    if (options.requireEligibleTerminal && !isTerminalEligible(sessionId)) return;
+    if (options.requireEligibleTerminal && !isTerminalEligible(sessionId)) { retry.finish(); return; }
     if (target) {
       try {
         if (options.acquireFocus) options.acquireFocus(target);
         else target.focus();
       } catch {
-        options.onFocusAborted?.();
+        retry.cancel();
         return;
       }
       if (options.onFocused) {
         try {
           if (target.containsActiveElement()) {
             if (focusTargets.get(sessionId) === target && options.focusGuard?.() !== false) {
-              options.onFocused(() => focusTargets.get(sessionId) === target && target.containsActiveElement());
-            } else options.onFocusAborted?.();
+              retry.finish();
+              try { options.onFocused(() => focusTargets.get(sessionId) === target && target.containsActiveElement()); }
+              catch { options.onFocusAborted?.(); }
+            } else retry.cancel();
             return;
           }
-        } catch { options.onFocusAborted?.(); return; }
-        if (attempts >= TERMINAL_FOCUS_RETRY_LIMIT) { options.onFocusAborted?.(); return; }
+        } catch { retry.cancel(); return; }
+        if (attempts >= TERMINAL_FOCUS_RETRY_LIMIT) { retry.cancel(); return; }
       } else {
-        if (target.containsActiveElement() || attempts >= TERMINAL_FOCUS_RETRY_LIMIT) return;
+        if (target.containsActiveElement() || attempts >= TERMINAL_FOCUS_RETRY_LIMIT) { retry.finish(); return; }
       }
     } else {
-      if (options.requireRegisteredTarget) { options.onFocusAborted?.(); return; }
+      if (options.requireRegisteredTarget) { retry.cancel(); return; }
       const paneElement = queryPaneElementBySessionId(sessionId);
-      if (focusXtermInElement(paneElement) || attempts >= TERMINAL_FOCUS_RETRY_LIMIT) return;
+      if (focusXtermInElement(paneElement) || attempts >= TERMINAL_FOCUS_RETRY_LIMIT) { retry.finish(); return; }
     }
-    window.setTimeout(() => {
-      if (typeof window.requestAnimationFrame === "function") {
-        window.requestAnimationFrame(restoreFocus);
-        return;
-      }
-      restoreFocus();
-    }, attempts < 3 ? 16 : 50);
+    retry.schedule(restoreFocus, attempts < 3 ? 16 : 50);
   };
-  window.setTimeout(() => {
-    if (typeof window.requestAnimationFrame === "function") {
-      window.requestAnimationFrame(restoreFocus);
-      return;
-    }
-    restoreFocus();
-  }, 0);
+  retry.schedule(restoreFocus, 0);
 }
 
 function isTerminalEligible(sessionId: string | null | undefined): boolean {
@@ -562,40 +616,23 @@ function isTerminalEligible(sessionId: string | null | undefined): boolean {
 }
 
 function focusPaneSoon(paneId: string | null | undefined): void {
-  if (!paneId || typeof window === "undefined" || typeof document === "undefined") return;
+  if (!paneId || typeof window === "undefined" || window.closed || typeof document === "undefined") return;
   const revision = useUiStore.getState().focusRevision;
+  const retry = trackFocusRetry(`pane:${paneId}`);
   let attempts = 0;
   const restoreFocus = (): void => {
     attempts += 1;
-    if (composerHoldsFocus() || useUiStore.getState().focusRevision !== revision) return;
+    if (composerHoldsFocus() || useUiStore.getState().focusRevision !== revision) { retry.finish(); return; }
     const paneElement = document.querySelector<HTMLElement>(`[data-dnd-pane-id="${paneId}"]`);
     if (!paneElementOwnsSession(paneElement, getActiveSessionId())) {
-      if (attempts >= TERMINAL_FOCUS_RETRY_LIMIT) return;
-      window.setTimeout(() => {
-        if (typeof window.requestAnimationFrame === "function") {
-          window.requestAnimationFrame(restoreFocus);
-          return;
-        }
-        restoreFocus();
-      }, attempts < 3 ? 16 : 50);
+      if (attempts >= TERMINAL_FOCUS_RETRY_LIMIT) { retry.finish(); return; }
+      retry.schedule(restoreFocus, attempts < 3 ? 16 : 50);
       return;
     }
-    if (focusXtermInElement(paneElement) || attempts >= TERMINAL_FOCUS_RETRY_LIMIT) return;
-    window.setTimeout(() => {
-      if (typeof window.requestAnimationFrame === "function") {
-        window.requestAnimationFrame(restoreFocus);
-        return;
-      }
-      restoreFocus();
-    }, attempts < 3 ? 16 : 50);
+    if (focusXtermInElement(paneElement) || attempts >= TERMINAL_FOCUS_RETRY_LIMIT) { retry.finish(); return; }
+    retry.schedule(restoreFocus, attempts < 3 ? 16 : 50);
   };
-  window.setTimeout(() => {
-    if (typeof window.requestAnimationFrame === "function") {
-      window.requestAnimationFrame(restoreFocus);
-      return;
-    }
-    restoreFocus();
-  }, 0);
+  retry.schedule(restoreFocus, 0);
 }
 
 const core: FocusControllerCore = createFocusControllerCore({
@@ -627,11 +664,12 @@ export const focusController = {
     core.request(source, { ...intent, sessionId, action: "commit" });
   },
   registerTerminal(sessionId: string, target: FocusTarget): () => void {
+    // Retries are looked up by session on every tick, so a terminal that is
+    // remounted (drag to another pane) must keep them. Window teardown and
+    // clearSession() are the only cancellations.
     focusTargets.set(sessionId, target);
     return () => {
-      if (focusTargets.get(sessionId) === target) {
-        focusTargets.delete(sessionId);
-      }
+      if (focusTargets.get(sessionId) === target) focusTargets.delete(sessionId);
     };
   },
   resolveEligibleTerminal(...sessionIds: (string | null | undefined)[]): string | null {
@@ -665,6 +703,7 @@ export const focusController = {
   focusSessionSoon,
   focusPaneSoon,
   clearSession(sessionId: string): void {
+    cancelFocusRetries(`session:${sessionId}`);
     core.clearSession(sessionId);
     focusTargets.delete(sessionId);
     terminalLiveOutput.delete(sessionId);

@@ -679,6 +679,7 @@ def scan_ask_question(lines: Sequence[str]) -> dict[str, Any] | None:
     )
     # The mode marker can precede a row containing Enter to select, or push
     # that chord itself across rows. Include the marker in footer validation.
+    footer_body_index = footer_index
     previous = footer_index - 1
     while previous >= 0 and not normalized[previous].strip():
         previous -= 1
@@ -686,7 +687,9 @@ def scan_ask_question(lines: Sequence[str]) -> dict[str, Any] | None:
         footer_index = previous
     footer_text = ""
     if footer_index >= 0:
-        footer_end = footer_index
+        # Skip exactly the blank gap already crossed while finding the mode
+        # marker; blanks after the actual footer still terminate its block.
+        footer_end = footer_body_index
         while footer_end < len(normalized) and normalized[footer_end].strip():
             footer_end += 1
         if any(line.strip() for line in normalized[footer_end:]):

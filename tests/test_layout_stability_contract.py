@@ -425,7 +425,7 @@ def test_selection_copy_listener_survives_cached_terminal_remounts() -> None:
         "const TERMINAL_FOCUS_RETRY_LIMIT = 8;",
         "function focusTerminalSoon(currentTerm: Terminal, sessionId?: string): void",
         "focusController.focusSessionSoon(sessionId);",
-        "if (target.containsActiveElement() || attempts >= TERMINAL_FOCUS_RETRY_LIMIT) return;",
+        "if (target.containsActiveElement() || attempts >= TERMINAL_FOCUS_RETRY_LIMIT) { retry.finish(); return; }",
         "function registerSelectionCopyListener(currentTerm: Terminal, sessionId: string): void",
         "disposeSelectionCopyListener(currentTerm);",
         "const copySelectedText = (): void => {",
@@ -493,7 +493,7 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
         'const textarea = Array.from(el?.querySelectorAll<HTMLTextAreaElement>(".xterm-helper-textarea") ?? [])\n'
         '    .find(candidate => !candidate.closest("[hidden],[aria-hidden=\'true\']"));',
         "if (textarea) {\n    textarea.focus();\n    return true;\n  }\n  return false;",
-        "if (composerHoldsFocus() || useUiStore.getState().focusRevision !== revision) return;",
+        "if (composerHoldsFocus() || useUiStore.getState().focusRevision !== revision) { retry.finish(); return; }",
         "const TERMINAL_FOCUS_RETRY_LIMIT = 8;",
         "function focusSessionSoon(",
         "function focusPaneSoon(paneId: string | null | undefined): void",
