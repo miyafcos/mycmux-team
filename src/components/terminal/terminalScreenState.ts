@@ -15,6 +15,11 @@ const states = new WeakMap<ObservableTerminal, ScreenState>();
 const themeRevisions = new WeakMap<PtyReadGeneration, number>();
 const specialColors = ["foreground", "background", "cursor"] as const;
 
+/** Checkpoints must not resurrect OSC overrides reset while a parser was evicted. */
+export function terminalScreenColorRevision(sessionId: string): number {
+  return themeRevisions.get(ptyReadGeneration(sessionId)) ?? 0;
+}
+
 function syncTheme(state: ScreenState, theme: ScreenTheme): void {
   const key = JSON.stringify(theme);
   const revision = state.sessionId ? themeRevisions.get(ptyReadGeneration(state.sessionId)) ?? 0 : 0;

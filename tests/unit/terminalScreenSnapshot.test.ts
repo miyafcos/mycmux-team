@@ -302,8 +302,8 @@ describe("browser/headless parity and legacy reads", () => {
   it("keeps pane.read's full replay behavior when the cached size changes", async () => {
     const data = encoder.encode("ABCDEFGHIJK\rX");
     const original = { data, startOffset: 0, endOffset: data.length, sessionEpoch: 1, sizeRevision: 1 };
-    await getHeadlessBufferLines("legacy", original, 80, { cols: 10, rows: 5 });
-    expect(await getHeadlessBufferLines("legacy", { ...original, sizeRevision: 2 }, 80, { cols: 5, rows: 5 }))
+    await getHeadlessBufferLines("legacy", original, 80, Date.now(), { cols: 10, rows: 5 });
+    expect(await getHeadlessBufferLines("legacy", { ...original, sizeRevision: 2 }, 80, Date.now(), { cols: 5, rows: 5 }))
       .toEqual(["ABCDEFGHIJX"]);
   });
 
@@ -323,7 +323,7 @@ describe("browser/headless parity and legacy reads", () => {
     const snapshot = { data, startOffset: 0, endOffset: data.length, sessionEpoch: 1, sizeRevision: 1 };
     const replay = await readHeadlessBufferScreen("parity", async () => snapshot, 0, { cols: 24, rows: 7 });
     expect(replay).toEqual(getTerminalBufferScreen("parity", 0));
-    expect(await getHeadlessBufferLines("parity", snapshot, 80, { cols: 24, rows: 7 })).toEqual(getTerminalBufferLines("parity", 80));
+    expect(await getHeadlessBufferLines("parity", snapshot, 80, Date.now(), { cols: 24, rows: 7 })).toEqual(getTerminalBufferLines("parity", 80));
     live.scrollToLine(0);
     expect(await readHeadlessBufferScreen("parity", async () => snapshot, 2, { cols: 24, rows: 7 }))
       .toEqual(getTerminalBufferScreen("parity", 2));
@@ -410,9 +410,9 @@ describe("browser/headless parity and legacy reads", () => {
     const data = encoder.encode("  indented\r\n\r\n" + "w".repeat(90) + "\r\n\x1b[31m日本e\u0301😀\x1b[0m\r\nlast");
     const snapshot = { data, startOffset: 0, endOffset: data.length, sessionEpoch: 1, sizeRevision: 1 };
     const expected = ["indented", "w".repeat(90), "日本e\u0301😀", "last"];
-    expect(await getHeadlessBufferLines("legacy", snapshot, 80)).toEqual(expected);
+    expect(await getHeadlessBufferLines("legacy", snapshot, 80, Date.now())).toEqual(expected);
     await readHeadlessBufferScreen("legacy", async () => snapshot, 0);
-    expect(await getHeadlessBufferLines("legacy", snapshot, 80)).toEqual(expected);
+    expect(await getHeadlessBufferLines("legacy", snapshot, 80, Date.now())).toEqual(expected);
   });
 });
 
@@ -425,11 +425,11 @@ describe("headless cache isolation", () => {
   };
 
   it("(a) preserves pane.read after a narrower pane.screen read", async () => {
-    await getHeadlessBufferLines("legacy", snapshot(1), 80, size(10));
+    await getHeadlessBufferLines("legacy", snapshot(1), 80, Date.now(), size(10));
     const expected = await readHeadlessBufferLines("legacy", async () => snapshot(2), 80, size(5));
     expect(expected).toEqual(["ABCDEFGHIJX"]);
 
-    await getHeadlessBufferLines("parity", snapshot(1), 80, size(10));
+    await getHeadlessBufferLines("parity", snapshot(1), 80, Date.now(), size(10));
     await readHeadlessBufferScreen("parity", async () => snapshot(2), 0, size(5));
     expect(await readHeadlessBufferLines("parity", async () => snapshot(2), 80, size(5))).toEqual(expected);
   });
@@ -439,21 +439,21 @@ describe("headless cache isolation", () => {
     const expected = await readHeadlessBufferScreen("parity", async () => snapshot(2), 0, size(5));
 
     await readHeadlessBufferScreen("legacy", async () => snapshot(1), 0, size(10));
-    expect(await getHeadlessBufferLines("legacy", snapshot(2), 80, size(5))).toEqual(["ABCDEFGHIJX"]);
+    expect(await getHeadlessBufferLines("legacy", snapshot(2), 80, Date.now(), size(5))).toEqual(["ABCDEFGHIJX"]);
     expect(await readHeadlessBufferScreen("legacy", async () => snapshot(2), 0, size(5))).toEqual(expected);
   });
 
   it("(c) matches independent readers throughout a 10 to 5 to 10 round trip", async () => {
-    await getHeadlessBufferLines("legacy", snapshot(1), 80, size(10));
+    await getHeadlessBufferLines("legacy", snapshot(1), 80, Date.now(), size(10));
     await readHeadlessBufferScreen("parity", async () => snapshot(1), 0, size(10));
-    await getHeadlessBufferLines("split", snapshot(1), 80, size(10));
+    await getHeadlessBufferLines("split", snapshot(1), 80, Date.now(), size(10));
     await readHeadlessBufferScreen("split", async () => snapshot(1), 0, size(10));
     for (const [index, cols] of [5, 10].entries()) {
       const current = snapshot(index + 2);
-      const lines = await getHeadlessBufferLines("legacy", current, 80, size(cols));
+      const lines = await getHeadlessBufferLines("legacy", current, 80, Date.now(), size(cols));
       const screenOnly = await readHeadlessBufferScreen("parity", async () => current, 0, size(cols));
       expect(await readHeadlessBufferScreen("split", async () => current, 0, size(cols))).toEqual(screenOnly);
-      expect(await getHeadlessBufferLines("split", current, 80, size(cols))).toEqual(lines);
+      expect(await getHeadlessBufferLines("split", current, 80, Date.now(), size(cols))).toEqual(lines);
       expect(await readHeadlessBufferScreen("split", async () => current, 0, size(cols))).toEqual(screenOnly);
     }
   });
@@ -488,7 +488,7 @@ describe("headless cache isolation", () => {
     for (let i = 0; i < 3; i++) {
       expect(await readHeadlessBufferLines("legacy", lineLoader, 80, size(20))).toEqual(["first second"]);
       expect(await getHeadlessBufferLines("legacy", { data, startOffset: 0, endOffset,
-        sessionEpoch: 1, sizeRevision: 1 }, 80, size(20))).toEqual(["first second"]);
+        sessionEpoch: 1, sizeRevision: 1 }, 80, Date.now(), size(20))).toEqual(["first second"]);
       expect(await readHeadlessBufferScreen("legacy", screenLoader, 0, size(20))).toEqual(result);
     }
     const cursor = { endOffset, sessionEpoch: 1, sizeRevision: 1 };
@@ -503,7 +503,7 @@ describe("headless cache isolation", () => {
     const sessions = Array.from({ length: 7 }, (_, i) => `cache-${i}`);
     replacePtyReadOwners(owner, new Set(sessions));
     for (const [index, sessionId] of sessions.entries()) {
-      await getHeadlessBufferLines(sessionId, snapshot(1), 80, size(10));
+      await getHeadlessBufferLines(sessionId, snapshot(1), 80, Date.now(), size(10));
       await readHeadlessBufferScreen(sessionId, async () => snapshot(1), 0, size(10));
       expect(__headlessBufferCacheSizeForTests()).toBe(Math.min((index + 1) * 2, 12));
     }
@@ -515,7 +515,7 @@ describe("headless cache isolation", () => {
 
   it.each(["reset", "generation change", "session end"])("(f) disposes both parsers on %s", async event => {
     const disposeSpy = vi.spyOn(HeadlessTerminal.prototype, "dispose");
-    await getHeadlessBufferLines("legacy", snapshot(1), 80, size(10));
+    await getHeadlessBufferLines("legacy", snapshot(1), 80, Date.now(), size(10));
     await readHeadlessBufferScreen("legacy", async () => snapshot(1), 0, size(10));
     expect(__headlessBufferCacheSizeForTests()).toBe(2);
     if (event === "reset") __resetHeadlessBufferCacheForTests();

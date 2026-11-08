@@ -23,3 +23,6 @@ src-tauri/src/commands/artifact/text_preview.css text eol=lf
 # app appends; a CRLF checkout failed observed_grok_fixture_dedupes_and_preserves_owner_bytes
 # in the v0.80.0 release worktree (2026-09-26). The real config they copy is LF.
 tests/fixtures/agent-hooks/*.toml text eol=lf
+
+# Preserve captured PTY bytes on every checkout.
+tests/fixtures/terminal/*.bin binary

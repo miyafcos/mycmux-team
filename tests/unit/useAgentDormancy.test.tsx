@@ -80,6 +80,27 @@ afterEach(async () => {
 });
 
 describe("dormancy sweep approval and final checks", () => {
+  it("passes each snapshot request time through all four dormancy observations", async () => {
+    const fetched: { value: { data: string; startOffset: number; endOffset: number }; requestedAt: number }[] = [];
+    mocks.scrollback.mockImplementation(async () => {
+      const requestedAt = Date.now();
+      const value = { data: "stable", startOffset: 0, endOffset: 10 };
+      fetched.push({ value, requestedAt });
+      vi.setSystemTime(requestedAt + 20);
+      return value;
+    });
+    await start(true); await advance(50); await advance(10);
+    expect(mocks.kill).toHaveBeenCalledWith("pty");
+    // The final action has four observed fetches and one raw pre-kill fetch.
+    const finalFetches = fetched.slice(-5, -1);
+    expect(finalFetches).toHaveLength(4);
+    expect(mocks.lines.mock.calls.slice(-4).map(call => call[1])).toEqual(finalFetches.map(fetch => fetch.value));
+    for (const call of mocks.lines.mock.calls) {
+      const fetch = fetched.find(fetch => fetch.value === call[1]);
+      expect(fetch).toBeDefined();
+      expect(call[3]).toBe(fetch!.requestedAt);
+    }
+  });
   it("shows detached leader proposals without a dashboard action", async () => {
     useSettingsStore.setState({ notificationsEnabled: true, toastSystemEnabled: true });
     __resetToastStoreForTests();

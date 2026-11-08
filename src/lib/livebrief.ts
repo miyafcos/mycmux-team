@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { markSessionFrontendActivity } from "./agentDormancy";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 /** Separate read-only archive transport; operational events are never merged. */
@@ -247,6 +248,7 @@ export function getTranscriptUserPrompts(
 }
 
 export function sendIntervention(expectation: InterventionExpectation, action: InterventionAction): Promise<InterventionResult> {
+  markSessionFrontendActivity(expectation.ptySessionId);
   return invoke<InterventionResult>("send_intervention", { expectation, action });
 }
 
@@ -268,8 +270,10 @@ export interface MessageSendGuard {
 
 export const preparePaneMessage = (sessionId: string, agentMessage: boolean, strictRevision = false): Promise<{ guard: MessageSendGuard | null; reason: string | null }> =>
   invoke("prepare_pane_message", { sessionId, agentMessage, strictRevision });
-export const writePaneMessage = (guard: MessageSendGuard, data: string, submit: boolean): Promise<{ sent: boolean; reason: string | null }> =>
-  invoke("write_pane_message", { guard, data, submit });
+export const writePaneMessage = (guard: MessageSendGuard, data: string, submit: boolean): Promise<{ sent: boolean; reason: string | null }> => {
+  markSessionFrontendActivity(guard.sessionId);
+  return invoke("write_pane_message", { guard, data, submit });
+};
 export const verifyPaneMessage = (guard: MessageSendGuard, text: string): Promise<{ confirmed: boolean; matchedEventId: string | null }> =>
   invoke("verify_pane_message", { guard, text });
 

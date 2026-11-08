@@ -144,6 +144,7 @@ function findRuntimeTarget(
 async function observeRuntimeTarget(
   target: RuntimeDormancyTarget,
   snapshot: Awaited<ReturnType<typeof getSessionScrollback>>,
+  requestedAt: number,
   previous: DormancyObservation | undefined,
   now: number,
 ): Promise<{ candidate: DormantSessionCandidate; observation: DormancyObservation }> {
@@ -151,6 +152,7 @@ async function observeRuntimeTarget(
     target.sessionId,
     snapshot,
     DORMANCY_HISTORY_SCAN_LINES,
+    requestedAt,
   );
   const semanticFingerprint = await fingerprintDormancySemanticState(lines);
   const observation = observeDormancyActivity(
@@ -248,6 +250,7 @@ export function useAgentDormancy(enabled: boolean): void {
           }
 
           let snapshot;
+          const snapshotRequestedAt = Date.now();
           try {
             snapshot = await getSessionScrollback(target.sessionId);
           } catch {
@@ -262,6 +265,7 @@ export function useAgentDormancy(enabled: boolean): void {
             observed = await observeRuntimeTarget(
               target,
               snapshot,
+              snapshotRequestedAt,
               observations.get(target.sessionId),
               now,
             );
@@ -299,6 +303,7 @@ export function useAgentDormancy(enabled: boolean): void {
           }
 
           let latestSnapshot;
+          const latestRequestedAt = Date.now();
           try {
             latestSnapshot = await getSessionScrollback(target.sessionId);
           } catch {
@@ -311,6 +316,7 @@ export function useAgentDormancy(enabled: boolean): void {
             rechecked = await observeRuntimeTarget(
               target,
               latestSnapshot,
+              latestRequestedAt,
               observed.observation,
               recheckedAt,
             );
@@ -333,6 +339,7 @@ export function useAgentDormancy(enabled: boolean): void {
             continue;
           }
           let finalSnapshot;
+          const finalRequestedAt = Date.now();
           try {
             finalSnapshot = await getSessionScrollback(target.sessionId);
           } catch {
@@ -345,6 +352,7 @@ export function useAgentDormancy(enabled: boolean): void {
             finalObserved = await observeRuntimeTarget(
               latestTarget,
               finalSnapshot,
+              finalRequestedAt,
               rechecked.observation,
               finalAt,
             );
@@ -366,6 +374,7 @@ export function useAgentDormancy(enabled: boolean): void {
             continue;
           }
           let killSnapshot;
+          const killRequestedAt = Date.now();
           try {
             killSnapshot = await getSessionScrollback(target.sessionId);
           } catch {
@@ -378,6 +387,7 @@ export function useAgentDormancy(enabled: boolean): void {
             killObserved = await observeRuntimeTarget(
               finalTarget,
               killSnapshot,
+              killRequestedAt,
               finalObserved.observation,
               killCheckedAt,
             );

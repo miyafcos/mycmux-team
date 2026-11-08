@@ -64,7 +64,7 @@ describe("headless terminal scrollback cache", () => {
   it("keeps at most 12 cached terminals even when all slots are busy", async () => {
     headlessState.holdWrites = true;
     const requests = Array.from({ length: 14 }, (_, index) => getHeadlessBufferLines(
-      "busy-" + index, { data: new Uint8Array([index]), startOffset: 0, endOffset: 1 }, 80,
+      "busy-" + index, { data: new Uint8Array([index]), startOffset: 0, endOffset: 1 }, 80, Date.now(),
     ));
     for (let i = 0; i < 5; i++) await Promise.resolve();
     expect(__headlessBufferCacheSizeForTests()).toBe(12);
@@ -81,12 +81,12 @@ describe("headless terminal scrollback cache", () => {
     await getHeadlessBufferLines(
       "session",
       { data: new Uint8Array([1, 2, 3]), startOffset: 0, endOffset: 3 },
-      80,
+      80, Date.now(),
     );
     await getHeadlessBufferLines(
       "session",
       { data: new Uint8Array([1, 2, 3, 4, 5]), startOffset: 0, endOffset: 5 },
-      80,
+      80, Date.now(),
     );
 
     expect(headlessState.instances).toHaveLength(1);
@@ -107,7 +107,7 @@ describe("headless terminal scrollback cache", () => {
       await getHeadlessBufferLines(
         `session-${index}`,
         { data: new Uint8Array([index]), startOffset: 0, endOffset: 1 },
-        80,
+        80, Date.now(),
       );
     }
 

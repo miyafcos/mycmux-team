@@ -67,7 +67,7 @@ afterEach(() => { vi.useRealTimers(); __resetHeadlessBufferCacheForTests(); term
 describe("stage 0 background pane reads", () => {
   it("T1 reconstructs a 120x40 positioned Codex-like frame without a renderer size cache", async () => {
     const legacy = { data: current.data, startOffset: 0, endOffset: current.endOffset };
-    await expect(getHeadlessBufferLines("old-default", legacy, 40)).resolves.not.toEqual(expected());
+    await expect(getHeadlessBufferLines("old-default", legacy, 40, Date.now())).resolves.not.toEqual(expected());
     await expect(readPaneTail("background", 40)).resolves.toEqual(expected());
     expect(terminalSizeCache.has("background")).toBe(false);
   });
@@ -77,7 +77,7 @@ describe("stage 0 background pane reads", () => {
     append(frame(90, 30, "Working (2s)"));
     current = { ...current, cols: 90, rows: 30, sizeRevision: 1 };
     await expect(readPaneTail("background", 40)).resolves.toEqual(expected(90, "Working (2s)"));
-    await expect(getHeadlessBufferLines("full", current, 40)).resolves.toEqual(expected(90, "Working (2s)"));
+    await expect(getHeadlessBufferLines("full", current, 40, Date.now())).resolves.toEqual(expected(90, "Working (2s)"));
     expect(payloadBytes[1]).toBe(current.data.length);
   });
 
@@ -96,7 +96,7 @@ describe("stage 0 background pane reads", () => {
     await readPaneTail("background", 40);
     append("\x1b[38;1H\x1b[2KWorking (2s)");
     const actual = await readPaneTail("background", 40);
-    expect(actual).toEqual(await getHeadlessBufferLines("full", current, 40));
+    expect(actual).toEqual(await getHeadlessBufferLines("full", current, 40, Date.now()));
     expect(actual).toEqual(expected(120, "Working (2s)"));
     expect(requests[1]).toEqual({ endOffset: payloadBytes[0], sessionEpoch: 17, sizeRevision: 0 });
     expect(payloadBytes[1]).toBe(encoder.encode("\x1b[38;1H\x1b[2KWorking (2s)").length);
@@ -112,7 +112,7 @@ describe("stage 0 background pane reads", () => {
       current = { ...current, data: data.slice(0, offset), endOffset: offset };
       actual = await readPaneTail("background", 40);
     }
-    expect(actual).toEqual(await getHeadlessBufferLines("full", current, 40));
+    expect(actual).toEqual(await getHeadlessBufferLines("full", current, 40, Date.now()));
     expect(actual).toEqual(expected(120, "Working \u2713 (3s)"));
     expect(payloadBytes.reduce((sum, value) => sum + value, 0)).toBe(data.length);
   });
@@ -122,7 +122,7 @@ describe("stage 0 background pane reads", () => {
     const end = current.endOffset;
     replace(frame(120, 40, "Working (9s)"), { startOffset: end + 100, endOffset: end + 100 + encoder.encode(frame(120, 40, "Working (9s)")).length });
     const actual = await readPaneTail("background", 40);
-    expect(actual).toEqual(await getHeadlessBufferLines("full", current, 40));
+    expect(actual).toEqual(await getHeadlessBufferLines("full", current, 40, Date.now()));
     expect(actual).toEqual(expected(120, "Working (9s)"));
     expect(payloadBytes[1]).toBe(current.data.length);
   });
@@ -131,7 +131,7 @@ describe("stage 0 background pane reads", () => {
     await readPaneTail("background", 40);
     replace(frame(120, 40, "Working (7s)"), { sessionEpoch: 18 });
     const actual = await readPaneTail("background", 40);
-    expect(actual).toEqual(await getHeadlessBufferLines("full", current, 40));
+    expect(actual).toEqual(await getHeadlessBufferLines("full", current, 40, Date.now()));
     expect(actual).toEqual(expected(120, "Working (7s)"));
     expect(payloadBytes[1]).toBe(current.data.length);
   });
@@ -246,7 +246,7 @@ describe("RV0-01 bounded snapshot fetching with the real headless parser", () =>
   it.each(["resolve", "reject"] as const)("recovers after a fetch timeout and ignores a late %s", async (late) => {
     replace("old");
     const initial = current;
-    await getHeadlessBufferLines("background", initial, 40);
+    await getHeadlessBufferLines("background", initial, 40, Date.now());
     let resolveLate!: (snapshot: Snapshot) => void;
     let rejectLate!: (error: Error) => void;
     const held = new Promise<Snapshot>((resolve, reject) => { resolveLate = resolve; rejectLate = reject; });
@@ -281,14 +281,14 @@ describe("RV0-01 bounded snapshot fetching with the real headless parser", () =>
   it("releases a timed-out cache pin so eviction and a full fetch can follow", async () => {
     replace("old");
     const initial = current;
-    await getHeadlessBufferLines("background", initial, 40);
+    await getHeadlessBufferLines("background", initial, 40, Date.now());
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
     const failed = readHeadlessBufferLines("background", () => new Promise(() => {}), 40)
       .catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(FETCH_TIMEOUT_MS);
     expect(await failed).toBeInstanceOf(TerminalDeadlineError);
     vi.useRealTimers();
-    for (let index = 0; index < 12; index++) await getHeadlessBufferLines(`pressure-${index}`, initial, 40);
+    for (let index = 0; index < 12; index++) await getHeadlessBufferLines(`pressure-${index}`, initial, 40, Date.now());
     expect(__headlessBufferCacheSizeForTests()).toBe(12);
     replace("old\r\nnew");
     const next = vi.fn(async (cursor?: Cursor) => response(cursor));
@@ -312,7 +312,7 @@ describe("RV0-01 bounded snapshot fetching with the real headless parser", () =>
   it.each([200, 4_000])("bounds an incompatible delta and its full retry within one %i ms fetch budget", async budget => {
     replace("old");
     const initial = current;
-    await getHeadlessBufferLines("background", initial, 40);
+    await getHeadlessBufferLines("background", initial, 40, Date.now());
     let releaseLate!: (snapshot: Snapshot) => void;
     const lateFull = new Promise<Snapshot>((resolve) => { releaseLate = resolve; });
     const loadA = vi.fn()
@@ -354,7 +354,7 @@ describe("RV0-01 bounded snapshot fetching with the real headless parser", () =>
   });
 });
 
-describe("RV0-02 retained raw ring is not a screen checkpoint", () => {
+describe("RV0-02 raw ring rollover and screen checkpoints", () => {
   it("preserves earlier screen cells across ring rollover while the cached cursor is still retained", async () => {
     seedPartialScreenRing();
     await expect(readPaneTail("background", 40)).resolves.toEqual(["retained screen", "Working (1s)"]);
@@ -366,17 +366,18 @@ describe("RV0-02 retained raw ring is not a screen checkpoint", () => {
     expect(requests[1]?.endOffset).toBe(cursor);
     expect(payloadBytes[1]).toBe(current.startOffset);
     expect(payloadBytes[1]).toBeLessThan(current.data.length);
-    // Cold replay lacks the discarded initial screen cells; the warm parser is correct.
-    await expect(getHeadlessBufferLines("cold", current, 40)).resolves.toEqual(["ng (1s)", "Working (2s)"]);
+    // A genuinely cold reader cannot recover unseen cells, but must discard the
+    // incomplete leading row instead of printing its orphaned suffix.
+    await expect(getHeadlessBufferLines("cold", current, 40, Date.now())).resolves.toEqual(["Working (2s)"]);
   });
 
-  it("fetches the whole retained ring after eviction, which can omit earlier screen cells in a partial-update TUI", async () => {
+  it("fetches the retained ring after eviction and restores earlier cells from the screen checkpoint", async () => {
     seedPartialScreenRing();
     await readPaneTail("background", 40);
     rollPartialScreenRing();
     await expect(readPaneTail("background", 40)).resolves.toEqual(["retained screen", "Working (2s)"]);
-    for (let index = 0; index < 12; index++) await getHeadlessBufferLines(`other-${index}`, current, 40);
-    await expect(readPaneTail("background", 40)).resolves.toEqual(["ng (1s)", "Working (2s)"]);
+    for (let index = 0; index < 12; index++) await getHeadlessBufferLines(`other-${index}`, current, 40, Date.now());
+    await expect(readPaneTail("background", 40)).resolves.toEqual(["retained screen", "Working (2s)"]);
     expect(requests.at(-1)).toBeUndefined();
     expect(payloadBytes.at(-1)).toBe(current.data.length);
     expect(__headlessBufferCacheSizeForTests()).toBe(12);
@@ -402,7 +403,7 @@ describe("RV0-03 every byte boundary of a complete UTF-8 recording", () => {
 
   it.each(byteSplitPoints)("matches a full replay after streaming the split at byte %i", async (cut) => {
     current = { ...current, data: utf8Recording, endOffset: utf8Recording.length };
-    const full = await getHeadlessBufferLines("full", current, 40);
+    const full = await getHeadlessBufferLines("full", current, 40, Date.now());
     expect(full).toEqual(["before", "Working \u00a2 \u65e5\u672c\ud83d\ude80 done"]);
     current = { ...current, data: utf8Recording.slice(0, cut), endOffset: cut };
     await readPaneTail("background", 40);
