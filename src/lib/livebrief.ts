@@ -119,6 +119,7 @@ export interface LiveSessionBrief extends LiveBinding {
   autonomy?: { turnState: "unknown" | "idle" | "active" | "complete"; openToolCount: number; armedBackgroundCount: number;
     backgroundState?: "known" | "unknown"; pendingNotificationCount?: number; turnStartedAt?: number | null } | null;
   telemetryHealth: string;
+  telemetryDetail?: string | null;
   lastEventAt: number | null;
   lastSuccessfulReadAt: number | null;
   updatedAt: number;

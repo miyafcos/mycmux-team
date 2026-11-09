@@ -14,6 +14,7 @@ export interface LiveTailCrop {
   tokens: number | null;
   tool: LiveTailTool | null;
   doneAt: string | null;
+  doneElapsedSec: number | null;
   doneDay: string | null;
   shells: number;
   error: string | null;
@@ -53,7 +54,7 @@ export function durationSeconds(text: string | null | undefined): number | null 
 }
 
 function base(): LiveTailCrop {
-  return { readable: true, state: "working", rows: [], marker: null, elapsedSec: null, tokens: null, tool: null, doneAt: null, doneDay: null, shells: 0, error: null };
+  return { readable: true, state: "working", rows: [], marker: null, elapsedSec: null, tokens: null, tool: null, doneAt: null, doneElapsedSec: null, doneDay: null, shells: 0, error: null };
 }
 
 export function unreadableLiveTail(reason: LiveTailCrop["reason"] = "read_failed", rows: string[] = []): LiveTailCrop {
@@ -91,9 +92,9 @@ function errorAbove(rows: string[]): { error: string; row: string } | null {
   return null;
 }
 
-function completed(marker: string, above: string[], at: string, day: string | null, shells: number): LiveTailCrop {
+function completed(marker: string, above: string[], at: string, day: string | null, shells: number, elapsed: string): LiveTailCrop {
   const error = errorAbove(above);
-  return { ...base(), state: error ? "error" : "done", marker, doneAt: at, doneDay: day, shells,
+  return { ...base(), state: error ? "error" : "done", marker, doneAt: at, doneElapsedSec: error ? null : durationSeconds(elapsed), doneDay: day, shells,
     error: error?.error ?? null, rows: [...(error ? [error.row] : above.slice(-1)), marker] };
 }
 
@@ -106,7 +107,7 @@ function cropClaude(rows: string[]): LiveTailCrop {
     const line = body[i].trim();
     const done = CLAUDE_DONE.exec(line);
     if (done && i >= body.length - 6) {
-      return completed(body[i], body.slice(0, i).filter((r) => r.trim()), done[2], done[3] ?? null, Number(done[4] ?? 0));
+      return completed(body[i], body.slice(0, i).filter((r) => r.trim()), done[2], done[3] ?? null, Number(done[4] ?? 0), done[1]);
     }
     const spinner = CLAUDE_SPINNER.exec(line);
     if (!spinner) continue;
@@ -149,7 +150,7 @@ function cropCodex(rows: string[]): LiveTailCrop {
     const done = CODEX_DONE.exec(line);
     if (done) {
       const above = body.slice(0, i).filter((r) => r.trim() && !COLLAPSED.test(r.trim()) && !CODEX_CHROME.some((p) => p.test(r.trim())));
-      return completed(body[i], above, done[2], /^(.+?) at \d{1,2}:\d{2}$/.exec(done[2])?.[1] ?? null, 0);
+      return completed(body[i], above, done[2], /^(.+?) at \d{1,2}:\d{2}$/.exec(done[2])?.[1] ?? null, 0, done[1]);
     }
     const spinner = CODEX_SPINNER.exec(line);
     if (!spinner) {
@@ -179,6 +180,23 @@ export function cropLiveTail(rawRows: readonly string[], agentKind: string | nul
   if (agentKind === "claude" || agentKind === "claude-codex") return cropClaude(rows);
   if (agentKind === "codex") return cropCodex(rows);
   return { ...base(), state: "unknown", readable: rows.length > 0, rows: rows.filter((r) => r.trim()).slice(-3) };
+}
+
+/** Reuse the parser's completion markers without changing its selected rows. */
+export function isLiveTailDoneRow(row: string, agentKind: string | null): boolean {
+  const pattern = agentKind === "claude" || agentKind === "claude-codex" ? CLAUDE_DONE
+    : agentKind === "codex" ? CODEX_DONE : null;
+  return pattern?.test(row.trim()) ?? false;
+}
+
+/** Return existing body rows without terminal input boxes or footer hints. */
+export function liveTailBodyRows(rawRows: readonly string[], agentKind: string | null, max: number): string[] {
+  const limit = Math.floor(max);
+  if (!(limit > 0)) return [];
+  const rows = trimBlankTail(rawRows);
+  const body = agentKind === "claude" || agentKind === "claude-codex" ? claudeBody(rows)
+    : agentKind === "codex" ? codexBody(rows) : rows;
+  return body.filter(row => row.trim()).slice(-limit);
 }
 
 /** A successful screen read need not contain an agent's running/done marker.

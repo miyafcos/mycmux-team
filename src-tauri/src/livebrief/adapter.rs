@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -84,6 +84,15 @@ pub enum UserMessageKind {
     Ack,
 }
 
+// Acceptance receipts stay internal: enqueue is not a conversation event.
+#[derive(Clone, Debug)]
+struct QueuedInputReceipt {
+    event_id: String,
+    source_revision: u64,
+    source_byte_start: u64,
+    text: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct AgentAdapter {
     kind: String,
@@ -95,6 +104,7 @@ pub struct AgentAdapter {
     seen_native_ids: HashSet<String>,
     replayed_autonomy_ids: Option<HashSet<String>>,
     seen_operator_message: bool,
+    queued_inputs: VecDeque<QueuedInputReceipt>,
     claude_billed: HashMap<String, BillableTokens>,
     codex_turn_id: Option<String>,
     codex_unpaired_users: Vec<(bool, String)>,
@@ -125,6 +135,7 @@ impl AgentAdapter {
             seen_native_ids: HashSet::new(),
             replayed_autonomy_ids: None,
             seen_operator_message: false,
+            queued_inputs: VecDeque::new(),
             claude_billed: HashMap::new(),
             codex_turn_id: None,
             codex_unpaired_users: Vec::new(),
@@ -167,6 +178,15 @@ impl AgentAdapter {
             self.last_telemetry_delta = None;
             return Ok(Vec::new());
         }
+        if self.kind == "claude" {
+            if let Some(text) = claude_queued_input(&value) {
+                self.queued_inputs.push_back(QueuedInputReceipt {
+                    event_id: format!("{native_id}:queue"), source_revision,
+                    source_byte_start: byte_range.start, text: text.to_string(),
+                });
+                if self.queued_inputs.len() > super::RING_CAPACITY { self.queued_inputs.pop_front(); }
+            }
+        }
         self.last_telemetry_delta = self.extract_telemetry(&value);
         let occurred_at = if self.kind == "grok" {
             grok_timestamp(&value).unwrap_or_else(unix_ms)
@@ -208,6 +228,12 @@ impl AgentAdapter {
                 kind,
             })
             .collect())
+    }
+
+    pub(super) fn matching_queued_input(&self, revision: u64, offset: u64, text: &str) -> Option<String> {
+        self.queued_inputs.iter().find(|receipt| receipt.source_revision > revision
+            && receipt.source_byte_start >= offset && receipt.text.trim() == text.trim())
+            .map(|receipt| receipt.event_id.clone())
     }
 
     pub fn autonomy_at(&self, now: i64, process_started_at: Option<i64>) -> SessionAutonomy {
@@ -345,13 +371,14 @@ impl AgentAdapter {
             ("event_msg", "user_message") => payload
                 .get("message")
                 .and_then(Value::as_str)
+                .filter(|text| !is_codex_injected_block(text))
                 .and_then(|text| self.codex_user_message(text, true))
                 .into_iter()
                 .collect(),
             ("response_item", "message")
                 if payload.get("role").and_then(Value::as_str) == Some("user") =>
             {
-                collect_text(payload.get("content"))
+                collect_codex_user_text(payload.get("content"))
                     .and_then(|text| self.codex_user_message(&text, false))
                     .into_iter()
                     .collect()
@@ -413,6 +440,7 @@ impl AgentAdapter {
         let message = value.get("message").unwrap_or(value);
         match kind {
             "user" => self.claude_user(value, message),
+            "attachment" => claude_human_queued_command(value).map(|text| self.user_message(text)).into_iter().collect(),
             "assistant" => self.claude_assistant(message),
             "tool_result" => self.claude_tool_result(value),
             _ => Vec::new(),
@@ -723,6 +751,28 @@ impl AgentAdapter {
     }
 }
 
+/// Only an explicitly human, non-meta prompt becomes a conversation turn.
+pub(super) fn claude_human_queued_command(value: &Value) -> Option<&str> {
+    let attachment = value.get("attachment")?;
+    if value["type"] != "attachment" || value["isSidechain"] == true || value["isMeta"] == true
+        || attachment["type"] != "queued_command" || attachment["commandMode"] != "prompt"
+        || attachment["isMeta"] == true || attachment["origin"]["kind"] != "human" { return None; }
+    attachment["prompt"].as_str().filter(|text| !text.trim().is_empty())
+}
+
+/// Human enqueues omit mode/origin in Claude's transcript. Explicit machine
+/// modes, origins, meta flags and notification envelopes are never receipts.
+fn claude_queued_input(value: &Value) -> Option<&str> {
+    if value["type"] != "queue-operation" || value["operation"] != "enqueue"
+        || value["isSidechain"] == true || value["isMeta"] == true
+        || value.get("commandMode").is_some_and(|mode| mode != "prompt")
+        || value.get("origin").is_some_and(|origin| origin["kind"] != "human")
+        || value.get("reminderId").is_some() { return None; }
+    value["content"].as_str().filter(|text| !text.trim().is_empty() && !is_injected_user_text(text)
+        && !["<task-notification", "<agent-message", "<peer-message", "<teammate-message",
+            "<stop-hook-feedback", "Stop hook feedback:"].iter().any(|prefix| text.trim_start().starts_with(prefix)))
+}
+
 pub fn classify_user_message(
     text: &str,
     has_unresolved_question: bool,
@@ -877,6 +927,34 @@ pub(super) fn collect_text(value: Option<&Value>) -> Option<String> {
         }
         Value::Object(map) => map.get("text").and_then(Value::as_str).map(str::to_string),
         _ => None,
+    }
+}
+
+/// Only leading, known Codex context markers identify injected user blocks.
+pub(super) fn is_codex_injected_block(text: &str) -> bool {
+    let text = text.trim_start();
+    [
+        "# AGENTS.md instructions",
+        "<INSTRUCTIONS>",
+        "<user_instructions>",
+        "<environment_context>",
+        "<recommended_plugins>",
+        "<plan_mode>",
+        "<system_reminder>",
+        "# Codex CLI",
+    ].iter().any(|prefix| text.starts_with(prefix))
+}
+
+/// Filter each user block before joining, so mixed records keep operator text.
+pub(super) fn collect_codex_user_text(value: Option<&Value>) -> Option<String> {
+    if let Some(Value::Array(items)) = value {
+        let text = items.iter()
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .filter(|text| !is_codex_injected_block(text))
+            .collect::<Vec<_>>().join("\n");
+        (!text.trim().is_empty()).then_some(text)
+    } else {
+        collect_text(value).filter(|text| !text.trim().is_empty() && !is_codex_injected_block(text))
     }
 }
 
@@ -1102,6 +1180,72 @@ pub(super) fn parse_timestamp(value: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn human_queued(prompt: &str) -> Value {
+        serde_json::json!({"type":"attachment","uuid":"queued-human","timestamp":"2026-11-08T16:03:20Z",
+            "attachment":{"type":"queued_command","prompt":prompt,"commandMode":"prompt","origin":{"kind":"human"}}})
+    }
+
+    #[test]
+    fn human_queued_commands_become_source_bound_user_events() {
+        for provider in ["claude", "claude-codex"] {
+            let mut adapter = AgentAdapter::new(provider).unwrap();
+            let raw = human_queued("Add a closing word.").to_string();
+            let range = ByteRange { start: 300, end: 450 };
+            let events = adapter.decode_record(&raw, range, 4).unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].event_id, "queued-human:0");
+            assert_eq!(events[0].source_revision, 4);
+            assert_eq!(events[0].source_byte_start, 300);
+            assert_eq!(events[0].occurred_at, parse_timestamp("2026-11-08T16:03:20Z").unwrap());
+            assert!(matches!(&events[0].kind, SemanticEventKind::UserMessage {
+                kind: UserMessageKind::TaskStart, text, ..
+            } if text == "Add a closing word."));
+            assert!(adapter.decode_record(&raw, range, 5).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn machine_queued_commands_do_not_become_operator_messages() {
+        for provider in ["claude", "claude-codex"] {
+            for excluded in 0..6 {
+                let mut value = human_queued("synthetic notice");
+                match excluded {
+                    0 => value["attachment"]["commandMode"] = serde_json::json!("task-notification"),
+                    1 => value["attachment"]["isMeta"] = serde_json::json!(true),
+                    2 => value["attachment"]["origin"]["kind"] = serde_json::json!("peer"),
+                    3 => value["isMeta"] = serde_json::json!(true),
+                    4 => value["attachment"].as_object_mut().unwrap().remove("origin").map(|_| ()).unwrap(),
+                    _ => value["isSidechain"] = serde_json::json!(true),
+                }
+                let mut adapter = AgentAdapter::new(provider).unwrap();
+                assert!(adapter.decode_record(&value.to_string(), ByteRange { start: 0, end: 100 }, 1).unwrap().is_empty(),
+                    "{provider}: {excluded}");
+            }
+        }
+    }
+
+    #[test]
+    fn queued_prompts_keep_the_existing_instruction_question_and_naming_classification() {
+        let mut queued = AgentAdapter::new("claude").unwrap();
+        let mut ordinary = AgentAdapter::new("claude").unwrap();
+        for (text, expected, question) in [
+            ("First instruction", UserMessageKind::TaskStart, false),
+            ("Additional instruction", UserMessageKind::TaskChange, false),
+            ("yes", UserMessageKind::Answer, true),
+            ("違うので戻して", UserMessageKind::Correction, true),
+            ("ok", UserMessageKind::Ack, false),
+        ] {
+            for adapter in [&mut queued, &mut ordinary] {
+                adapter.open_questions.clear();
+                if question { adapter.open_questions.insert("call".into(), "question".into()); }
+            }
+            let actual = queued.decode_claude(&human_queued(text));
+            let normal = ordinary.decode_claude(&serde_json::json!({"type":"user","message":{"content":text}}));
+            assert_eq!(actual, normal);
+            assert!(matches!(&actual[0], SemanticEventKind::UserMessage { kind, .. } if *kind == expected));
+        }
+    }
+
     #[test]
     fn answer_beats_short_ack_when_a_question_is_open() {
         assert_eq!(
@@ -1182,6 +1326,85 @@ mod tests {
                 codex_input(false, Some("one"), "2026-09-08T00:00:00Z"), boundary,
                 codex_input(true, None, "2026-09-08T00:00:01Z"),
             ]).len(), 2);
+        }
+    }
+
+    #[test]
+    fn codex_injected_blocks_require_a_known_leading_marker() {
+        for prefix in ["# AGENTS.md instructions", "<INSTRUCTIONS>", "<user_instructions>",
+            "<environment_context>", "<recommended_plugins>", "<plan_mode>", "<system_reminder>", "# Codex CLI"] {
+            let injected = format!(" \n\t{prefix} synthetic context");
+            assert!(is_codex_injected_block(&injected));
+            assert!(!is_codex_injected_block(&format!("Explain {prefix} in this text")));
+            let record = serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":injected}});
+            assert!(codex_records(vec![record]).is_empty());
+            for content in [serde_json::json!(injected), serde_json::json!({"text":injected}),
+                serde_json::json!([{"type":"input_text","text":injected}])] {
+                assert_eq!(collect_codex_user_text(Some(&content)), None);
+            }
+        }
+        for text in ["#AGENTS please keep", "<environment>please keep", "<environment_context_extra>keep",
+            "<instructions>keep", "<send_user_message_question_reply>answer"] {
+            assert!(!is_codex_injected_block(text));
+        }
+    }
+
+    #[test]
+    fn codex_user_blocks_hide_startup_context_and_keep_the_first_real_task() {
+        let mut adapter = AgentAdapter::new("codex").unwrap();
+        let startup = serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[
+            {"type":"input_text","text":"# AGENTS.md instructions for C:\\x\n\n<INSTRUCTIONS>synthetic</INSTRUCTIONS>"},
+            {"type":"input_text","text":"<environment_context>synthetic</environment_context>"}]}});
+        assert!(decode(&mut adapter, &startup.to_string()).is_empty());
+        assert!(!adapter.seen_operator_message);
+        let request = "次の作業をして";
+        let mixed = serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[
+            {"type":"input_text","text":"<environment_context>synthetic</environment_context>"},
+            {"type":"input_text","text":request}]}});
+        let events = decode(&mut adapter, &mixed.to_string());
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], SemanticEventKind::UserMessage { kind: UserMessageKind::TaskStart, text, .. } if text == request));
+        let blocks = serde_json::json!([{"text":" first "},{"text":"<plan_mode>synthetic"},{"text":"second"}]);
+        assert_eq!(collect_codex_user_text(Some(&blocks)).as_deref(), Some(" first \nsecond"));
+        for content in [serde_json::json!(""), serde_json::json!({"text":" \n"}), serde_json::json!([])] {
+            assert_eq!(collect_codex_user_text(Some(&content)), None);
+        }
+    }
+
+    #[test]
+    fn codex_keeps_operator_markers_inside_text_and_similar_openings() {
+        for text in ["Explain <environment_context> in this text", "#AGENTS please keep", "<environment>please keep",
+            "<send_user_message_question_reply>answer"] {
+            for event_form in [false, true] {
+                let mut record = codex_input(event_form, None, "2026-11-08T00:00:00Z");
+                if event_form { record["payload"]["message"] = serde_json::json!(text); }
+                else { record["payload"]["content"][0]["text"] = serde_json::json!(text); }
+                let events = codex_records(vec![record]);
+                assert_eq!(events.len(), 1);
+                assert!(matches!(&events[0].kind, SemanticEventKind::UserMessage { text: actual, .. } if actual == text));
+            }
+        }
+    }
+
+    #[test]
+    fn codex_filtered_mirrors_pair_across_injection_without_changing_turn_boundaries() {
+        for reverse in [false, true] {
+            for event_form in [false, true] {
+                for (turn, expected) in [(None, 1), (Some("one"), 1), (Some("two"), 2)] {
+                    let event = codex_input(true, None, "2026-11-08T00:00:00Z");
+                    let mut response = codex_input(false, None, "2026-11-08T00:00:01Z");
+                    response["payload"]["content"].as_array_mut().unwrap().insert(0,
+                        serde_json::json!({"type":"input_text","text":"<environment_context>synthetic"}));
+                    let mut injected = codex_input(event_form, turn, "2026-11-08T00:00:02Z");
+                    if event_form { injected["payload"]["message"] = serde_json::json!("<environment_context>synthetic"); }
+                    else { injected["payload"]["content"][0]["text"] = serde_json::json!("<environment_context>synthetic"); }
+                    let (first, second) = if reverse { (response, event) } else { (event, response) };
+                    let events = codex_records(vec![
+                        serde_json::json!({"type":"turn_context","payload":{"turn_id":"one"}}), first, injected, second]);
+                    assert_eq!(events.len(), expected, "reverse={reverse}, event_form={event_form}, turn={turn:?}");
+                    assert!(events.iter().all(|event| matches!(&event.kind, SemanticEventKind::UserMessage { text, .. } if text == "repeat this task")));
+                }
+            }
         }
     }
 

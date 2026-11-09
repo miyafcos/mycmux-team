@@ -184,3 +184,18 @@ describe("queueTranscriptTurnRequest", () => {
     expect(useDashboardViewStore.getState().open).toBe(true);
   });
 });
+
+describe("tab search focus requests", () => {
+  it("opens a collapsed search on a terminal focusRequest", async () => {
+    const inputRef = { current: null as HTMLTextAreaElement | null };
+    const fullTab = { card: null, cards: [], inputRef, active: false, onEscape: vi.fn(), onVisible: vi.fn() };
+    useLiveBriefStore.setState({ briefsBySession: { [SESSION]: { telemetryHealth: "live" } as never } });
+    const container = document.createElement("div"); document.body.replaceChildren(container); root = createRoot(container);
+    const draw = (focusRequest: number) => <TerminalTranscriptPanel sessionId={SESSION} tabId={TAB} agentKind="claude" onClose={vi.fn()} fullTab={fullTab} focusRequest={focusRequest} />;
+    await act(async () => root?.render(draw(0)));
+    expect(container.querySelector("[data-transcript-search-input]")).toBeNull();
+    await act(async () => root?.render(draw(1)));
+    const search = container.querySelector<HTMLInputElement>("[data-transcript-search-input]");
+    expect(search).not.toBeNull(); expect(document.activeElement).toBe(search);
+  });
+});

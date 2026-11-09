@@ -116,6 +116,8 @@ pub struct LiveSessionBrief {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autonomy: Option<SessionAutonomy>,
     pub telemetry_health: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry_detail: Option<String>,
     pub last_event_at: Option<i64>,
     pub last_successful_read_at: Option<i64>,
     pub updated_at: i64,
@@ -687,6 +689,7 @@ fn brief_changed(old: &LiveSessionBrief, new: &LiveSessionBrief) -> bool {
         || old.operational_state != new.operational_state
         || old.autonomy != new.autonomy
         || old.telemetry_health != new.telemetry_health
+        || old.telemetry_detail != new.telemetry_detail
         || old.last_event_at != new.last_event_at
         || old.service_epoch != new.service_epoch
         || old.telemetry != new.telemetry
@@ -829,7 +832,9 @@ fn refresh_discovered_transcript(
     locate: &mut impl FnMut(&str, &str) -> Option<PathBuf>,
 ) -> Option<SessionSnapshot> {
     let Some(path) = locate(kind, session_id) else {
-        return Some(unavailable_snapshot(binding.clone(), "unavailable", service_epoch));
+        let mut snapshot = unavailable_snapshot(binding.clone(), "unavailable", service_epoch);
+        snapshot.brief.telemetry_detail = Some("recordNotFound".to_string());
+        return Some(snapshot);
     };
     match apply_known_transcript_path(
         prior,
@@ -1452,7 +1457,7 @@ fn unavailable_snapshot(binding: LiveBinding, health: &str, service_epoch: &str)
         pending_input_kind: None, pending_prompt: None, pending_options: Vec::new(), prompt_event_id: None,
         prompt_hash: None, event_seq: 0, operational_state: "running".to_string(), telemetry_health: health.to_string(),
         last_event_at: None, last_successful_read_at: None, updated_at: now, service_epoch: service_epoch.to_string(), brief_revision: 0,
-        autonomy: None, telemetry: None,
+        autonomy: None, telemetry: None, telemetry_detail: None,
     };
     SessionSnapshot { brief, cursor: TailCursor { path: PathBuf::new(), file_identity: String::new(), stream_generation: 0, read_offset: 0, committed_offset: 0, pending_bytes: Vec::new(), committed_anchor: String::new() }, adapter: AgentAdapter::new("codex").expect("supported adapter"), reducer: LiveBriefReducer::new(), events: VecDeque::new(), agent_process: None, agent_process_cutoff: None }
 }
@@ -2487,7 +2492,84 @@ mod tests {
             .expect("missing path yields a snapshot");
         assert_eq!(calls.get(), 2);
         assert_eq!(missing.brief.telemetry_health, "unavailable");
+        assert_eq!(missing.brief.telemetry_detail.as_deref(), Some("recordNotFound"));
         assert!(user_message_texts(&missing).is_empty());
+    }
+
+    #[test]
+    fn a_bound_conversation_without_a_record_recovers_when_its_first_record_arrives() {
+        let dir = tempfile::tempdir().unwrap(); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
+        for kind in ["claude", "claude-codex", "codex"] {
+            let binding = LiveBinding { agent_kind: kind.to_string(), ..test_binding() };
+            let missing = refresh_bound_transcript(None, &binding, kind, "agent-1", "epoch", None, None, |_, _| None).unwrap();
+            assert_eq!(missing.brief.telemetry_health, "unavailable");
+            assert_eq!(missing.brief.telemetry_detail.as_deref(), Some("recordNotFound"));
+            let missing_json = serde_json::to_value(&missing.brief).unwrap();
+            assert_eq!(missing_json["telemetryHealth"], "unavailable");
+            assert_eq!(missing_json["telemetryDetail"], "recordNotFound");
+            assert!(missing_json.get("telemetry_detail").is_none());
+
+            let path = dir.path().join(format!("{kind}.jsonl"));
+            let line = if kind == "codex" { codex_user_line("first request") } else { claude_user_line("first request") };
+            std::fs::write(&path, line).unwrap();
+            let found = refresh_bound_transcript(Some(&missing), &binding, kind, "agent-1", "epoch", None, None, |_, _| Some(path.clone())).unwrap();
+            let recovered = keep_last_picture(Some(&missing), found);
+            assert_eq!(recovered.brief.telemetry_health, "live");
+            assert_eq!(recovered.brief.telemetry_detail, None);
+            assert_eq!(user_message_texts(&recovered), vec!["first request"]);
+            assert!(brief_changed(&missing.brief, &recovered.brief));
+            assert!(serde_json::to_value(&recovered.brief).unwrap().get("telemetryDetail").is_none());
+        }
+    }
+
+    #[test]
+    fn an_unreadable_record_has_no_missing_record_detail_and_publishes_the_reason_change() {
+        let dir = tempfile::tempdir().unwrap(); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
+        let binding = test_binding();
+        let missing = refresh_bound_transcript(None, &binding, "codex", "agent-1", "epoch", None, None, |_, _| None).unwrap();
+        // A directory is discoverable but cannot be read as a transcript.
+        let unreadable = refresh_bound_transcript(Some(&missing), &binding, "codex", "agent-1", "epoch", None, None, |_, _| Some(dir.path().to_path_buf())).unwrap();
+        assert_eq!(unreadable.brief.telemetry_health, "unavailable");
+        assert_eq!(unreadable.brief.telemetry_detail, None);
+        assert!(brief_changed(&missing.brief, &unreadable.brief));
+        let mut reason_only = missing.brief.clone();
+        reason_only.telemetry_detail = None;
+        assert!(brief_changed(&missing.brief, &reason_only));
+        assert!(!brief_changed(&missing.brief, &missing.brief));
+    }
+
+    #[test]
+    fn unlinked_and_older_duplicate_bindings_do_not_claim_a_missing_record() {
+        let dir = tempfile::tempdir().unwrap(); let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
+        let map_dir = mapping_dir().unwrap();
+        std::fs::create_dir_all(&map_dir).unwrap();
+        for (pane, mtime) in [("older", 1_700_000_000), ("newer", 1_700_000_001)] {
+            let path = map_dir.join(format!("{pane}.txt"));
+            std::fs::write(&path, b"claude:agent-1").unwrap();
+            set_mtime(&path, mtime);
+        }
+        let mapping = AgentSessionMapping { agent_kind: Some("claude".to_string()), session_id: "agent-1".to_string(), hook_confirmed: false };
+        let mappings = HashMap::from([("older".to_string(), mapping.clone()), ("newer".to_string(), mapping)]);
+        let service = LiveBriefService::new(Arc::new(SessionManager::new()), crate::pty::monitor::new_metadata_store());
+        let duplicate = service.refresh_one("older", mappings.get("older"), &mappings, None).unwrap();
+        assert_eq!(duplicate.brief.telemetry_health, "unavailable");
+        assert_eq!(duplicate.brief.telemetry_detail, None);
+        let unlinked = service.refresh_one("unlinked", None, &mappings, None).unwrap();
+        assert_eq!(unlinked.brief.telemetry_health, "unlinked");
+        assert_eq!(unlinked.brief.telemetry_detail, None);
+    }
+
+    #[test]
+    fn briefs_without_detail_keep_the_existing_json_shape_and_deserialize_old_payloads() {
+        for health in ["unavailable", "unlinked", "live", "ended"] {
+            let brief = unavailable_snapshot(test_binding(), health, "epoch").brief;
+            let json = serde_json::to_value(&brief).unwrap();
+            assert_eq!(json["telemetryHealth"], health);
+            assert!(json.get("telemetryDetail").is_none());
+            let restored: LiveSessionBrief = serde_json::from_value(json).unwrap();
+            assert_eq!(restored, brief);
+            assert_eq!(restored.telemetry_detail, None);
+        }
     }
 
     #[test]

@@ -1,4 +1,9 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { MessageSquareText, SquareTerminal } from "lucide-react";
+import { useAgentTabViewStore } from "../../stores/agentTabViewStore";
+import { isAgentConversationKind } from "../terminal/agentTabConversationModel";
+import { resolveAgentConversationKind } from "../../lib/agentConversationKind";
+import { agentTabStrings } from "../terminal/agentTabStrings";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { RefObject } from "react";
@@ -966,6 +971,8 @@ export default memo(function PaneTabBar({
   const showSplitDownButton = useSettingsStore((s) => s.showSplitDownButton);
   const showSplitRightButton = useSettingsStore((s) => s.showSplitRightButton);
   const declaredLaunchEnabled = useSettingsStore((s) => s.declaredLaunchEnabled);
+  const agentTabContent = useSettingsStore((s) => s.agentTabContent);
+  const tabViews = useAgentTabViewStore((s) => s.views);
   const tabMetadata = usePaneMetadataStore(useShallow((s) =>
     pane.tabs.map((tab) => s.metadata[tab.sessionId]),
   ));
@@ -1124,6 +1131,14 @@ export default memo(function PaneTabBar({
     : activePresentation === "needsHuman" ? "waiting"
     : activePresentation ? "idle" : deriveDisplayStatus(activeMeta, activeVolatileMeta);
   const activeMark = activeTab ? resolveTabMark(activeTab, activeVolatileMeta?.liveAgentKind, activeVolatileMeta?.ptyAlive === true) : null;
+  const contentAgentKind = resolveAgentConversationKind(activeVolatileMeta, activeMeta?.agentKind,
+    activeTab ? resolveTabMark(activeTab)?.kind : undefined);
+  const canSwitchContent = agentTabContent === "conversation" && canSearchTerminal && isAgentConversationKind(contentAgentKind);
+  const tabContent = activeTab ? tabViews[activeTab.id] ?? "conversation" : "conversation";
+  const contentSwitchLabel = tabContent === "conversation" ? agentTabStrings.toTerminal : agentTabStrings.toConversation;
+  const switchContent = () => {
+    if (activeTab && canSwitchContent) useAgentTabViewStore.getState().setView(activeTab.id, tabContent === "conversation" ? "terminal" : "conversation");
+  };
   // Heading and icon share the same authority; a live null cannot fall back
   // to the launcher's saved agentId.
   const activeAgentLabel = activeTab?.type === "web" || activeTab?.type === "browser"
@@ -1454,7 +1469,7 @@ export default memo(function PaneTabBar({
   const placeCloseLabel = `${paneToolbarStrings.closePaneWithHidden(hiddenTabs.length)}。${paneToolbarStrings.reopenActiveOnly}`;
 
   // Each item has one definition, so L29 can replace search/history locally.
-  const showHeaderMagnifier = visibleActions.includes("zoom"); // Plan B; set false for plan A (menu only).
+  const showHeaderMagnifier = false; // Plan A: search and history stay in the menu only.
   const menuItems: Array<{
     id: string;
     label?: string;
@@ -1464,6 +1479,7 @@ export default memo(function PaneTabBar({
     run?: () => void;
     content?: ReactNode;
   }> = [
+    { id: "agent-tab-content", label: contentSwitchLabel, show: canSwitchContent, run: switchContent },
     { id: "new-tab", label: paneToolbarStrings.newTab, run: () => onAddTab?.(getDefaultAgent().id, "launcher") },
     { id: "rename", label: paneTabMenuStrings.rename, disabled: !activeTab,
       run: () => { if (activeTab) startEditingTab(activeTab.id, activeTabLabel); } },
@@ -1700,6 +1716,12 @@ export default memo(function PaneTabBar({
           <button type="button" className="pane-action-btn pane-tabbar-zoom" onClick={onZoomToggle}
             title={isZoomed ? paneToolbarStrings.restorePaneAt(zoomShortcut) : paneToolbarStrings.zoomPaneAt(zoomShortcut)}>
             {isZoomed ? <MinimizeIcon /> : <MaximizeIcon />}
+          </button>
+        )}
+        {canSwitchContent && visibleActions.includes("zoom") && (
+          <button type="button" className="pane-action-btn pane-agent-content-switch" title={contentSwitchLabel}
+            aria-label={contentSwitchLabel} onClick={switchContent}>
+            {tabContent === "conversation" ? <SquareTerminal size={12} aria-hidden="true" /> : <MessageSquareText size={12} aria-hidden="true" />}
           </button>
         )}
         {showHeaderMagnifier && <TerminalHistoryEntry sessionId={canSearchTerminal ? activeTab!.sessionId : null}

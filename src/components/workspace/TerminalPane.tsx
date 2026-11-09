@@ -832,6 +832,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       data-dnd-workspace-id={workspaceId}
       data-dnd-pane-id={pane.id}
       data-savepoint-drop-pane="true"
+      data-agent-tab-surface="true"
       data-active-pane={isActive && !isZoomed ? "true" : undefined}
       data-pane-zoomed={isZoomed ? "true" : undefined}
       tabIndex={-1}
@@ -904,7 +905,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         </div>
       )}
 
-      <div ref={hoverContentRef} data-pane-hover-focus-surface={hoverFocusEnabled ? "terminal" : undefined}
+      <div ref={hoverContentRef} data-agent-tab-content="true" data-pane-hover-focus-surface={hoverFocusEnabled ? "terminal" : undefined}
         style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative", background: "transparent" }}>
         {activeTab?.type === "online" ? (
           <ErrorBoundary>

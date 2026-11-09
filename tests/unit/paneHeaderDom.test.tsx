@@ -21,6 +21,9 @@ import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
 import { useSessionAttentionStore, type SessionAttention } from "../../src/stores/sessionAttentionStore";
 import { useSettingsStore } from "../../src/stores/settingsStore";
+import { useAgentTabViewStore } from "../../src/stores/agentTabViewStore";
+import { agentTabStrings } from "../../src/components/terminal/agentTabStrings";
+import { TERMINAL_SEARCH_EVENT } from "../../src/components/terminal/terminalSearchEvents";
 import { useUiStore } from "../../src/stores/uiStore";
 import { useDashboardViewStore } from "../../src/stores/dashboardViewStore";
 import { focusController } from "../../src/lib/focusController";
@@ -44,6 +47,7 @@ import { tearoutStrings } from "../../src/components/layout/tearoutStrings";
 let root: Root;
 let host: HTMLDivElement;
 let width: number;
+let resizeBar: () => void;
 const close = vi.fn();
 const remove = vi.fn();
 const select = vi.fn();
@@ -86,13 +90,16 @@ beforeEach(() => {
   vi.clearAllMocks();
   for (const callback of [close, remove, select, splitRight, splitDown, zoom, add]) callback.mockReset();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.stubGlobal("ResizeObserver", class { constructor(private callback: () => void) {} observe() { this.callback(); } disconnect() {} });
+  vi.stubGlobal("ResizeObserver", class { constructor(private callback: () => void) {} observe(target: Element) {
+    if (target.classList.contains("pane-tabbar")) resizeBar = this.callback;
+    this.callback();
+  } disconnect() {} });
   width = 800;
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function () {
     return (this as HTMLElement).classList.contains("pane-tabbar") ? width : 600;
   });
   vi.spyOn(focusController, "request").mockImplementation(() => {});
-  useSettingsStore.setState({ showTerminalHistoryButton: false, showSplitRightButton: true, showSplitDownButton: true, declaredLaunchEnabled: true });
+  useSettingsStore.setState({ agentTabContent: "terminal", showTerminalHistoryButton: false, showSplitRightButton: true, showSplitDownButton: true, declaredLaunchEnabled: true });
   usePaneMetadataStore.setState({ metadata: {}, volatileMetadata: {} });
   useSessionAttentionStore.getState().resetForTests();
   useLiveBriefStore.getState().reset();
@@ -116,6 +123,74 @@ afterEach(async () => {
 });
 
 describe("Stage 2a single heading", () => {
+  it.each([120, 181, 209, 210, 237, 238, 244, 249, 250, 359, 360, 559, 560, 720])("replaces the former magnifier with the Claude switch at width %i", async value => {
+    width = value;
+    useSettingsStore.setState({ agentTabContent: "conversation" });
+    useAgentTabViewStore.setState({ views: {} });
+    await mount(pane(4, { agentId: "claude", agentKind: "claude", agentSessionId: "fixture-agent" }));
+    expect(Boolean(host.querySelector(".pane-agent-content-switch"))).toBe(value >= 210);
+    expect(host.querySelector(".pane-heading-row [data-terminal-magnifier]")).toBeNull();
+    if (value === 181) expect(host.querySelectorAll(".pane-heading-row button, .pane-active-heading-name")).toHaveLength(4);
+    await menu();
+    expect(item("search")).not.toBeNull(); expect(item("history")).not.toBeNull();
+    expect(item("agent-tab-content")?.textContent).toBe(agentTabStrings.toTerminal);
+    await click(item("agent-tab-content"));
+    expect(useAgentTabViewStore.getState().views.t0).toBe("terminal");
+    await menu(); expect(item("agent-tab-content")?.textContent).toBe(agentTabStrings.toConversation);
+    await click(item("agent-tab-content"));
+    expect(useAgentTabViewStore.getState().views.t0).toBe("conversation");
+  });
+  it("keeps the former magnifier width hysteresis and switches directly from the heading", async () => {
+    useSettingsStore.setState({ agentTabContent: "conversation" });
+    useAgentTabViewStore.setState({ views: {} });
+    await mount(pane(1, { agentId: "claude", agentKind: "claude" }));
+    for (const [nextWidth, visible] of [[800, true], [560, true], [360, true], [250, true], [210, true],
+      [209, false], [210, false], [237, false], [238, true], [129, false], [158, false], [198, false],
+      [237, false], [238, true], [290, true], [400, true], [600, true]] as const) {
+      await act(async () => { width = nextWidth; resizeBar(); });
+      expect(Boolean(host.querySelector(".pane-agent-content-switch")), String(nextWidth)).toBe(visible);
+      expect(host.querySelector(".pane-heading-row [data-terminal-magnifier]")).toBeNull();
+    }
+    await click(host.querySelector(`button[aria-label="${agentTabStrings.toTerminal}"]`));
+    expect(useAgentTabViewStore.getState().views.t0).toBe("terminal");
+    await click(host.querySelector(`button[aria-label="${agentTabStrings.toConversation}"]`));
+    expect(useAgentTabViewStore.getState().views.t0).toBe("conversation");
+  });
+  it.each(["terminal", "web"] as const)("keeps unsupported %s headings free of both controls", async type => {
+    useSettingsStore.setState({ agentTabContent: "conversation" });
+    await mount(pane(1, type === "web" ? { type, presetId: "browser" } : {}));
+    expect(host.querySelector(".pane-agent-content-switch")).toBeNull();
+    expect(host.querySelector(".pane-heading-row [data-terminal-magnifier]")).toBeNull();
+  });
+  it.each([false, true])("keeps menu search and the history setting when history is %s", async enabled => {
+    useSettingsStore.setState({ agentTabContent: "conversation", showTerminalHistoryButton: enabled });
+    vi.mocked(readAgentSessionMappings).mockResolvedValue({ "pty-0": { agent_kind: "claude", session_id: "fixture-agent" } });
+    const requested = vi.fn(); window.addEventListener(TERMINAL_SEARCH_EVENT, requested);
+    try {
+      await mount(pane(1, { agentId: "claude", agentKind: "claude" }));
+      expect(host.querySelector(".pane-heading-row [data-terminal-magnifier]")).toBeNull();
+      await menu();
+      const history = item("history")?.querySelector("button");
+      expect(history?.getAttribute("aria-disabled")).toBe(String(!enabled));
+      expect(vi.mocked(readAgentSessionMappings).mock.calls.length > 0).toBe(enabled);
+      expect(item("search")?.getAttribute("aria-disabled")).toBe("false");
+      await click(item("search"));
+      expect(requested).toHaveBeenCalledOnce();
+      expect((requested.mock.calls[0][0] as CustomEvent).detail).toEqual({ sessionId: "pty-0" });
+    } finally { window.removeEventListener(TERMINAL_SEARCH_EVENT, requested); }
+  });
+  it("removes the content switch after a live agent returns to a shell", async () => {
+    useSettingsStore.setState({ agentTabContent: "conversation" });
+    usePaneMetadataStore.setState({ metadata: { "pty-0": { agentKind: "codex" } }, volatileMetadata: { "pty-0": { ptyAlive: true, liveAgentKind: null } } });
+    await mount(pane(1, { agentId: "codex", agentKind: "codex" }));
+    expect(host.querySelector(".pane-agent-content-switch")).toBeNull();
+    await menu(); expect(item("agent-tab-content")).toBeNull();
+  });
+  it("leaves the existing terminal and shell headings without content controls", async () => {
+    await mount(pane(4, { agentId: "codex", agentKind: "codex" }));
+    expect(host.querySelector(".pane-agent-content-switch")).toBeNull();
+    await menu(); expect(item("agent-tab-content")).toBeNull();
+  });
   it.each(["missing", "reject"])("opens a real detached dormant heading locally without selecting or launching when main is %s", async mode => {
     vi.useFakeTimers(); __resetToastStoreForTests();
     const agentSessionId = "11111111-1111-4111-8111-111111111111";
@@ -186,9 +261,9 @@ describe("Stage 2a single heading", () => {
     expect(host.querySelectorAll("[data-tab-id]")).toHaveLength(1);
     const operations = host.querySelectorAll(".pane-heading-row button, .pane-active-heading-name").length;
     expect(Boolean(host.querySelector(".pane-place-close"))).toBe(value >= 250);
-    // compact3 keeps the 0.88.0 count (the × moved beside the name); wider tiers add split and place ×.
-    expect(operations).toBe(value < 210 ? 4 : value < 250 ? 6 : value < 360 ? 8 : 9);
-    expect(Boolean(host.querySelector(".pane-heading-row [data-terminal-magnifier]"))).toBe(value >= 210);
+    // Shell headings no longer spend a slot on the magnifier.
+    expect(operations).toBe(value < 210 ? 4 : value < 250 ? 5 : value < 360 ? 7 : 8);
+    expect(host.querySelector(".pane-heading-row [data-terminal-magnifier]")).toBeNull();
     if (value === 181) expect(operations).toBeLessThanOrEqual(4);
     await click(count);
     expect(host.querySelectorAll("[data-menu-tab-id]")).toHaveLength(4);

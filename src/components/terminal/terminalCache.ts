@@ -85,6 +85,17 @@ export function isTerminalParsingCurrentOutput(sessionId: string): boolean {
     && parsedPtyGenerations.get(term) === generation && !pendingTerminalBufferWrites(term, generation)
     && failedWrites.get(term) !== generation && currentOutputParsers.get(term)?.());
 }
+/** A ready current buffer with submitted writes, not permission to read it.
+ * The pump itself also reports false while its write callback is outstanding. */
+export function isTerminalBufferWritePending(sessionId: string): boolean {
+  const term = liveTerms.get(sessionId);
+  const generation = ptyReadGeneration(sessionId);
+  return Boolean(term && !termCache.has(sessionId) && isTerminalBufferReady(term)
+    && currentPtyRead(sessionId, generation) && parsedPtyGenerations.get(term) === generation
+    && pendingTerminalBufferWrites(term, generation) && failedWrites.get(term) !== generation
+    && currentOutputParsers.has(term));
+}
+
 export const terminalSizeCache = new Map<string, { cols: number; rows: number }>();
 export const terminalWriteCounters = new Map<string, number>();
 export const terminalDeferredBatches = new Map<string, PendingFrontendBatch[]>();

@@ -178,12 +178,13 @@ export function ChatTranscript(props: Parameters<typeof LegacyChatTranscript>[0]
   archiveVisible?: boolean;
   archiveDescriptor?: TranscriptDescriptor | null;
   archiveReader?: TranscriptHistoryReader;
+  archiveRetainedState?: ArchiveTranscriptProps["retainedState"];
   onArchiveUserMessages?: (messages:readonly {text:string;occurredAt:number}[]) => void;
   transcriptSearch?: ArchiveTranscriptProps["transcriptSearch"];
   onSearchNavigation?: ArchiveTranscriptProps["onSearchNavigation"];
 }) {
   const transcript = props.archiveEnabled || props.archiveReader || props.archiveDescriptor ? <ArchiveTranscript
-    descriptor={props.archiveDescriptor ?? null} prepared={props.archiveReader} visible={props.archiveVisible}
+    descriptor={props.archiveDescriptor ?? null} prepared={props.archiveReader} visible={props.archiveVisible} retainedState={props.archiveRetainedState}
     tabId={props.tabId} context={props.linkContext} targetEventId={props.targetEventId} targetEventRequest={props.targetEventRequest} onUserMessages={props.onArchiveUserMessages}
     transcriptSearch={props.transcriptSearch}
     onSearchNavigation={props.onSearchNavigation}

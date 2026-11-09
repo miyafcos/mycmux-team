@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { agentTabStrings } from "../../terminal/agentTabStrings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { supportsNativePaneTearout, isMacTearoutPlatform } from "../../../lib/tearout/feature";
 import { notificationSettingsStrings } from "../settingsStrings";
@@ -31,6 +32,8 @@ export function NotificationsLayoutTab() {
   const setPaneComposerEnabled = useSettingsStore((s) => s.setPaneComposerEnabled);
   const showTerminalHistoryButton = useSettingsStore((s) => s.showTerminalHistoryButton);
   const setShowTerminalHistoryButton = useSettingsStore((s) => s.setShowTerminalHistoryButton);
+  const agentTabContent = useSettingsStore((s) => s.agentTabContent);
+  const setAgentTabContent = useSettingsStore((s) => s.setAgentTabContent);
   const conversationHistoryMode=useSettingsStore((s)=>s.conversationHistoryMode);
   const setConversationHistoryMode=useSettingsStore((s)=>s.setConversationHistoryMode);
   const terminalProgressDiagnosticsEnabled = useSettingsStore((s) => s.terminalProgressDiagnosticsEnabled);
@@ -152,6 +155,13 @@ export function NotificationsLayoutTab() {
       </fieldset>
 
       <div style={{ ...sectionHeadingStyle, marginTop: 20 }}>{notificationSettingsStrings.terminalInputTitle}</div>
+      <label style={checkboxLabelStyle}><span>{agentTabStrings.settingLabel}</span>
+        <select value={agentTabContent} onChange={e => setAgentTabContent(e.target.value as typeof agentTabContent)}>
+          <option value="terminal">{agentTabStrings.settingTerminal}</option>
+          <option value="conversation">{agentTabStrings.settingConversation}</option>
+        </select>
+      </label>
+      <div style={{ color: "var(--cmux-text-dim)", fontSize: 12, marginTop: 4 }}>{agentTabStrings.settingHint}</div>
       <label style={checkboxLabelStyle}><span>{notificationSettingsStrings.conversationHistoryModeLabel}</span>
         <select value={conversationHistoryMode} onChange={(e)=>setConversationHistoryMode(e.target.value as typeof conversationHistoryMode)}>
           <option value="agent-wheel">エージェントの上ホイールで会話へ</option>

@@ -86,13 +86,14 @@ export function shouldSuppressWheelFocusInput(sessionId: string): boolean {
   return focusController.shouldSuppressWheelFocusInput(sessionId);
 }
 
-export function registerTerminalFocusSync(currentTerm: Terminal, sessionId: string, isEligible: () => boolean): () => void {
+export function registerTerminalFocusSync(currentTerm: Terminal, sessionId: string, isEligible: () => boolean,
+  alternateTarget?: () => { focus: () => void; containsActiveElement: () => boolean } | null): () => void {
   const element = currentTerm.element;
   if (!element) return () => {};
 
   const unregister = focusController.registerTerminal(sessionId, {
-    focus: () => currentTerm.focus(),
-    containsActiveElement: () => terminalContainsActiveElement(currentTerm),
+    focus: () => { const alternate = alternateTarget?.(); if (alternate) alternate.focus(); else currentTerm.focus(); },
+    containsActiveElement: () => alternateTarget?.()?.containsActiveElement() ?? terminalContainsActiveElement(currentTerm),
     clearNotification: () => clearActiveTerminalNotification(sessionId),
     isEligible: () => element.isConnected && isEligible(),
   });

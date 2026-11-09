@@ -51,11 +51,11 @@ afterEach(async () => {
   await act(async () => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals();
 });
 describe("L29 history in the U3 one-row header", () => {
-  it.each([800, 500, 330, 240, 200, 160, 100])("keeps plan B's header placement and a history-only menu at width %i", async value => {
+  it.each([800, 500, 330, 240, 200, 160, 100])("keeps plan A's menu-only history at width %i", async value => {
     width = value; await render();
     const header = host.querySelector<HTMLButtonElement>(".pane-heading-row [data-terminal-magnifier=true]");
-    expect(Boolean(header)).toBe([800, 500, 330, 240].includes(value));
-    expect(Boolean(header)).toBe(Boolean(host.querySelector(".pane-tabbar-zoom")));
+    expect(header).toBeNull();
+    expect(Boolean(host.querySelector(".pane-tabbar-zoom"))).toBe([800, 500, 330, 240].includes(value));
     const item = await menu();
     expect(item.getAttribute("data-terminal-magnifier-destination")).toBe("history");
     expect(item.textContent).toBe("会話履歴を開く"); expect(item.getAttribute("aria-disabled")).toBe("false");

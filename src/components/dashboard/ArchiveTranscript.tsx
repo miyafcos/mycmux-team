@@ -4,13 +4,14 @@ import { ArrowDownToLine, ArrowUpToLine, ChevronDown, ChevronUp, ExternalLink, F
 import type { ArchiveItem, TranscriptDescriptor } from "../../lib/livebrief";
 import { DashboardGlyph, DashboardIconButton, DashboardStatusMark, DashboardUiScope } from "./DashboardUi";
 import { dashboardStrings } from "./dashboardStrings";
-import { TranscriptHistoryReader, descriptorKey } from "../../stores/transcriptHistoryStore";
+import { TranscriptHistoryReader, descriptorKey, type HistoryState } from "../../stores/transcriptHistoryStore";
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 import { labelsMatch } from "../terminal/terminalTurnChipState";
 import { DashboardLinkedText, type DashboardLinkContext } from "./DashboardLinkedText";
 import { MarkdownView } from "./MarkdownView";
 import { useTranscriptHistory } from "./useTranscriptHistory";
 import { ArchiveHeights, archiveLayout, archiveWindow, anchoredScrollTop, archiveBodyBlocks, indexAt, type ArchiveAnchor } from "./archiveWindow";
+import { agentTabStrings } from "../terminal/agentTabStrings";
 import { matchesTranscriptQuery, TRANSCRIPT_SEARCH_WAIT_MS } from "../../stores/transcriptSearchStore";
 
 const explanations: Record<string,string> = {
@@ -31,9 +32,13 @@ const last=<T,>(items:readonly T[]):T|undefined=>items[items.length-1];
 export interface ArchiveTranscriptProps {
   descriptor: TranscriptDescriptor | null;
   compact?: boolean;
+  /** In-tab layout and grouping; dashboard compact mode keeps its contract. */
+  tabPresentation?: boolean;
   navigationTarget?: HTMLElement | null;
   visible?: boolean;
   prepared?: TranscriptHistoryReader;
+  /** Full-tab loading may display its last readable window; never another binding. */
+  retainedState?: HistoryState;
   tabId?: string | null;
   context?: DashboardLinkContext | null;
   targetEventId?: string | null;
@@ -62,8 +67,11 @@ function waitForReaderIdle(reader: TranscriptHistoryReader, signal: AbortSignal)
   });
 }
 
-function ArchiveReaderView({reader,descriptor,visible=true,compact=false,navigationTarget=null,tabId,context=null,targetEventId,targetEventRequest=0,onUserMessages,transcriptSearch,onSearchNavigation}:ArchiveTranscriptProps&{reader:TranscriptHistoryReader}) {
-  const state=useSyncExternalStore(reader.subscribe,reader.getSnapshot,reader.getSnapshot);
+function ArchiveReaderView({reader,descriptor,visible=true,compact=false,tabPresentation=false,navigationTarget=null,tabId,context=null,targetEventId,targetEventRequest=0,onUserMessages,transcriptSearch,onSearchNavigation,retainedState}:ArchiveTranscriptProps&{reader:TranscriptHistoryReader}) {
+  const currentState=useSyncExternalStore(reader.subscribe,reader.getSnapshot,reader.getSnapshot);
+  const retaining=!!retainedState && currentState.status==="opening" && !!descriptor
+    && descriptorKey(retainedState.descriptor)===descriptorKey(descriptor) && descriptorKey(currentState.descriptor)===descriptorKey(descriptor);
+  const state=retaining?retainedState:currentState;
   useEffect(()=>{
     if(state.status!=="ready" || !descriptor || descriptorKey(descriptor)!==descriptorKey(state.descriptor)) return;
     const messages=state.items.filter((i)=>i.kind==="user" && i.timestamp!==null && !i.bodyRef).map((i)=>({text:i.text,occurredAt:i.timestamp!}));
@@ -74,6 +82,7 @@ function ArchiveReaderView({reader,descriptor,visible=true,compact=false,navigat
   const anchor=useRef<ArchiveAnchor|null>(null);
   const pendingJump=useRef<string|null>(null);
   const positionedScrollTop=useRef<number|null>(null);
+  const logViewport=useRef<{top:number;height:number}|null>(null);
   const [geometry,setGeometry]=useState({top:0,height:600});
   const [measurement,setMeasurement]=useState(0);
   const [body,setBody]=useState<ArchiveItem|null>(null);
@@ -94,7 +103,39 @@ function ArchiveReaderView({reader,descriptor,visible=true,compact=false,navigat
     if(!visible || (!targetEventId&&!transcriptSearch?.targetId)) setJumpHighlight(null);
   },[visible,targetEventId,transcriptSearch?.targetId,state.sourceGeneration]);
   const recordCount=state.items.filter((item)=>item.kind==="source"||item.kind==="diagnostic").length;
-  const displayItems=useMemo(()=>showRecords?state.items:state.items.filter((item)=>item.kind!=="source"&&item.kind!=="diagnostic"),[state.items,showRecords]);
+  const projection=useMemo(()=>{
+    const items=showRecords?state.items:state.items.filter(item=>item.kind!=="source"&&item.kind!=="diagnostic");
+    const rows:ArchiveItem[]=[],groups=new Map<string,ArchiveItem[]>(),heads=new Map<string,string>();
+    let group:ArchiveItem[]|null=null;
+    for(const item of items) {
+      if(tabPresentation&&(item.kind==="toolCall"||item.kind==="toolResult")) {
+        if(!group) {group=[];rows.push(item);groups.set(item.occurrenceId,group);}
+        group.push(item);heads.set(item.occurrenceId,group[0].occurrenceId);
+      } else {group=null;rows.push(item);}
+    }
+    return {rows,groups,heads};
+  },[state.items,showRecords,tabPresentation]);
+  const displayItems=projection.rows;
+  const rowId=(id:string)=>projection.heads.get(id)??id;
+  const [arrivals,setArrivals]=useState<ReadonlySet<string>>(()=>new Set());
+  const arrivalCursor=useRef<{source:string;end:bigint}|null>(null);
+  useEffect(()=>{
+    if(!tabPresentation) return;
+    if(!visible||state.status!=="ready") {setArrivals(new Set());return;}
+    const end=state.items.reduce((max,item)=>BigInt(item.sourceEnd)>max?BigInt(item.sourceEnd):max,0n);
+    const source=`${descriptorKey(state.descriptor)}:${state.sourceGeneration}`;
+    const previous=arrivalCursor.current;arrivalCursor.current={source,end};
+    if(!previous||previous.source!==source||!state.following||!state.reachedFence) return;
+    const motion=window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    if(motion?.matches) return;
+    const ids=state.items.filter(item=>BigInt(item.sourceEnd)>previous.end&&["assistant","toolCall","toolResult"].includes(item.kind)).map(item=>item.occurrenceId);
+    if(!ids.length) return;
+    setArrivals(new Set(ids));
+    const clear=()=>setArrivals(new Set());
+    const reduce=()=>{if(motion?.matches)clear();};
+    const timer=setTimeout(clear,1500);motion?.addEventListener?.("change",reduce);
+    return ()=>{clearTimeout(timer);clear();motion?.removeEventListener?.("change",reduce);};
+  },[state.items,state.sourceGeneration,state.status,state.following,state.reachedFence,tabPresentation,visible]);
   const [searching,setSearching]=useState(false);
   const navigation=useRef(0);
   useEffect(()=>()=>{navigation.current++;reader.cancelSearch();},[reader]);
@@ -112,7 +153,10 @@ function ArchiveReaderView({reader,descriptor,visible=true,compact=false,navigat
     const first=Array.from(node.querySelectorAll<HTMLElement>("[data-archive-row]")).find((row)=>row.getBoundingClientRect().bottom>top);
     if(first) {anchor.current={id:first.dataset.archiveRow!,offset:first.getBoundingClientRect().top-top};reader.setAnchor(first.dataset.archiveRow!);}
   };
-  const updateGeometry=()=>{ const node=log.current; if(node) setGeometry({top:node.scrollTop,height:node.clientHeight||600}); };
+  const updateGeometry=()=>{ const node=log.current; if(node) {
+    logViewport.current={top:node.scrollTop,height:node.clientHeight};
+    setGeometry({top:node.scrollTop,height:node.clientHeight||600});
+  } };
   useLayoutEffect(()=>{
     reader.setBeforeMutation(capture); return ()=>reader.setBeforeMutation(null);
   },[reader]);
@@ -122,8 +166,9 @@ function ArchiveReaderView({reader,descriptor,visible=true,compact=false,navigat
     if(pendingJump.current) {
       // The current DOM can still be the old virtual window. Keep the target
       // anchor through the first measurements instead of capturing those rows.
-      const index=displayItems.findIndex((i)=>i.occurrenceId===pendingJump.current);
-      if(index>=0) { anchor.current={id:pendingJump.current,offset:0};node.scrollTop=layout[index];pendingJump.current=null;jumped=true; }
+      const id=rowId(pendingJump.current);
+      const index=displayItems.findIndex((i)=>i.occurrenceId===id);
+      if(index>=0) { anchor.current={id,offset:0};node.scrollTop=layout[index];pendingJump.current=null;jumped=true; }
     } else if(state.following && state.reachedFence && !selected) node.scrollTop=node.scrollHeight;
     else if(anchor.current && !selected) { const top=anchoredScrollTop(anchor.current,displayItems,layout); if(top!==null) node.scrollTop=top; }
     positionedScrollTop.current=node.scrollTop;
@@ -139,11 +184,18 @@ function ArchiveReaderView({reader,descriptor,visible=true,compact=false,navigat
         if(element.dataset.archiveRow) changed=heights.current.set(element.dataset.archiveRow,element.getBoundingClientRect().height)||changed;
       }
       if(changed) setMeasurement((value)=>value+1);
-      if(entries.some((e)=>e.target===node)) updateGeometry();
+      if(entries.some((e)=>e.target===node)) {
+        // Controls and page boundaries can shrink the log after its rows have
+        // settled. Geometry alone does not rerun the row-positioning effect.
+        if(tabPresentation && visible && state.following && state.reachedFence) {
+          node.scrollTop=node.scrollHeight;positionedScrollTop.current=node.scrollTop;
+        }
+        updateGeometry();
+      }
     });
     observer.observe(node); node.querySelectorAll("[data-archive-row]").forEach((row)=>observer.observe(row));
     return ()=>observer.disconnect();
-  },[displayItems,windowed.start,windowed.end,selected]);
+  },[displayItems,windowed.start,windowed.end,selected,tabPresentation,tabPresentation&&visible,tabPresentation&&state.following,tabPresentation&&state.reachedFence]);
   useEffect(()=>{
     const visibility=()=>reader.setVisible(visible && !document.hidden);
     const selection=()=>{ const s=window.getSelection(); const active=!!s && !s.isCollapsed && !!s.anchorNode && !!log.current?.parentElement?.contains(s.anchorNode); if(active&&!selectionWindow.current) selectionWindow.current=computedWindowRef.current; if(!active) selectionWindow.current=null; reader.setSelection(active); setSelected(active); };
@@ -151,7 +203,7 @@ function ArchiveReaderView({reader,descriptor,visible=true,compact=false,navigat
     return ()=>{document.removeEventListener("visibilitychange",visibility);document.removeEventListener("selectionchange",selection);reader.setSelection(false);};
   },[reader,visible]);
   useEffect(()=>{setBody(null);setShowRecords(false);},[state.sourceGeneration]);
-  const jump=(item:ArchiveItem)=>{ reader.setFollowing(false); capture(); pendingJump.current=item.occurrenceId; setGeometry((old)=>({...old,top:layout[displayItems.findIndex((i)=>i.occurrenceId===item.occurrenceId)]??0})); setMeasurement((m)=>m+1); };
+  const jump=(item:ArchiveItem)=>{ reader.setFollowing(false); capture(); pendingJump.current=item.occurrenceId; setGeometry((old)=>({...old,top:layout[displayItems.findIndex((i)=>i.occurrenceId===rowId(item.occurrenceId))]??0})); setMeasurement((m)=>m+1); };
   const visibleIndex=indexAt(layout,geometry.top);
   const turns=state.items.filter((i)=>i.kind==="user");
   const currentTurn=last(displayItems.slice(0,visibleIndex+1).filter((i)=>i.kind==="user"))??turns[0];
@@ -262,6 +314,16 @@ function ArchiveReaderView({reader,descriptor,visible=true,compact=false,navigat
     {!state.reachedStart?<DashboardIconButton icon={ChevronUp} label="前の会話を読む" className="cmux-archive-boundary" disabled={!!state.loading||selected} onClick={()=>void reader.load("older")} />:!compact?<div className="cmux-archive-boundary">会話の最初</div>:null}
     <div ref={log} className="cmux-dashboard-chat-log cmux-archive-log" role="log" aria-label="会話履歴" tabIndex={0} onScroll={()=>{
       const node=log.current!;
+      const previous=logViewport.current;
+      // Layout/scroll anchoring can emit scroll before ResizeObserver. Keep a
+      // following tab pinned through a viewport change unless the person moved
+      // upward; a grow may also clamp scrollTop to the new bottom.
+      if(tabPresentation && visible && state.following && state.reachedFence && !selected && previous
+        && previous.height!==node.clientHeight
+        && node.scrollTop>=Math.min(previous.top,node.scrollHeight-node.clientHeight)-1) {
+        node.scrollTop=node.scrollHeight;positionedScrollTop.current=node.scrollTop;
+        updateGeometry();return;
+      }
       // A delayed scroll event from our own positioning must not re-enable
       // following while a source/search jump is mounting its destination.
       const positioned=positionedScrollTop.current!==null&&Math.abs(node.scrollTop-positionedScrollTop.current)<=1;
@@ -270,22 +332,57 @@ function ArchiveReaderView({reader,descriptor,visible=true,compact=false,navigat
       if(!positioned) {capture();reader.setFollowing(state.reachedFence&&node.scrollHeight-node.clientHeight-node.scrollTop<=24);}
     }}>
       <div aria-hidden="true" style={{height:windowed.top}}/>
-      {mounted.map((item,index)=><div key={item.occurrenceId} data-archive-row={item.occurrenceId} data-dashboard-event={item.occurrenceId}
+      {mounted.map((item,index)=>{
+        const group=projection.groups.get(item.occurrenceId);
+        const members=group??[item];
+        const active=members.some(member=>member.occurrenceId===activeTarget);
+        const revealed=members.some(member=>member.occurrenceId===toolReveal?.id);
+        const onBody=(member:ArchiveItem)=>{capture();setBody(member);};
+        return <div key={item.occurrenceId} data-archive-row={item.occurrenceId} data-dashboard-event={item.occurrenceId}
         data-kind={item.kind}
         data-prev-kind={displayItems[windowed.start+index-1]?.kind}
-        data-transcript-jump-active={visible&&jumpHighlight===item.occurrenceId ? "true" : undefined}
-        data-transcript-search-match={searchFence !== null && BigInt(item.sourceStart) < searchFence && BigInt(item.sourceEnd) <= searchFence && matchesTranscriptQuery(item, transcriptSearch!.query) ? "true" : undefined}
-        data-transcript-search-active={activeTarget === item.occurrenceId ? "true" : undefined}
-        className={`cmux-archive-row${activeTarget === item.occurrenceId ? " cmux-archive-search-active" : ""}`}><ArchiveRow item={item} compact={compact} context={context} bodyDisabled={selected} revealRequest={toolReveal?.id===item.occurrenceId?toolReveal.request:0} onBody={()=>{capture();setBody(item);}}/></div>)}
+        data-transcript-jump-active={visible&&members.some(member=>member.occurrenceId===jumpHighlight) ? "true" : undefined}
+        data-agent-tab-arrival={tabPresentation&&members.some(member=>arrivals.has(member.occurrenceId)) ? "true" : undefined}
+        data-transcript-search-match={searchFence !== null && members.some(member=>BigInt(member.sourceStart) < searchFence && BigInt(member.sourceEnd) <= searchFence && matchesTranscriptQuery(member, transcriptSearch!.query)) ? "true" : undefined}
+        data-transcript-search-active={active ? "true" : undefined}
+        className={`cmux-archive-row${active ? " cmux-archive-search-active" : ""}`}>{group ? <ArchiveToolGroup items={group} context={context} bodyDisabled={selected||retaining} revealRequest={revealed?toolReveal!.request:0} onBody={onBody} /> : <ArchiveRow item={item} compact={compact} context={context} bodyDisabled={selected||retaining} revealRequest={revealed?toolReveal!.request:0} onBody={()=>onBody(item)}/>}</div>;
+      })}
       <div aria-hidden="true" style={{height:windowed.bottom}}/>
       {!displayItems.length && recordCount ? <div className="cmux-archive-notice" role="status"><DashboardGlyph icon={Info} label="この範囲には表示できる会話本文がありません。記録の詳細から内容を確認できます。" /></div> : null}
       {!state.items.length ? <ArchiveEmpty unavailable={state.status!=="ready" || !!state.error || state.notice==="readerBusy"} reason={state.error?explain(state.error):state.notice?explain(state.notice):state.loading?"会話を読み込んでいます":undefined}/> : null}
       {state.continuation?<div className="cmux-archive-pending"><DashboardStatusMark state="running" label="前の文脈を読み取っています" /></div>:null}
     </div>
     {!state.reachedFence?<DashboardIconButton icon={ChevronDown} label="後の会話を読む" className="cmux-archive-boundary" disabled={!!state.loading||selected} onClick={()=>void reader.load("newer")} />:null}
-    {state.newTail?<DashboardIconButton icon={ArrowDownToLine} label="新しい記録へ" onClick={()=>void reader.latest()} />:null}
+    {state.newTail?<DashboardIconButton icon={ArrowDownToLine} label="新しい記録へ" className={tabPresentation?"agent-tab-new-records":undefined} disabled={retaining} onClick={()=>void reader.latest()} />:null}
     {body?<ArchiveBody key={body.occurrenceId} reader={reader} item={body} onClose={()=>setBody(null)}/>:null}
   </div>;
+}
+function ArchiveToolGroup({items,context,bodyDisabled,revealRequest,onBody}:{
+  items:readonly ArchiveItem[];context:DashboardLinkContext|null;bodyDisabled:boolean;revealRequest:number;onBody:(item:ArchiveItem)=>void;
+}) {
+  const [open,setOpen]=useState(false),appliedReveal=useRef(0);
+  useEffect(()=>{if(revealRequest&&revealRequest!==appliedReveal.current&&!bodyDisabled){appliedReveal.current=revealRequest;setOpen(true);}},[revealRequest,bodyDisabled]);
+  const count=items.filter(item=>item.kind==="toolCall").length||items.length;
+  const targets=items.filter(item=>item.kind==="toolCall").map(item=>{
+    if(item.target) return item.target;
+    // Codex command arguments may use "cmd", which older archive projections
+    // leave out of target. Read the recorded argument, never invent a label.
+    try {
+      const input=JSON.parse(item.text);
+      if(typeof input?.cmd==="string"&&input.cmd.trim()) return input.cmd as string;
+    } catch { /* A truncated/custom argument still has its original text. */ }
+    return item.text.split("\n")[0]||item.tool;
+  });
+  const target=targets.find(Boolean)??items.find(item=>item.target)?.target??items[0]?.text.split("\n")[0];
+  return <details className="cmux-dashboard-msg cmux-archive-tool agent-tab-tool-group" open={open} onToggle={event=>setOpen(event.currentTarget.open)}>
+    <summary><span className="cmux-dashboard-tool-name">{agentTabStrings.toolGroup(count)}</span>{target?<span className="cmux-dashboard-tool-target"> · {target}</span>:null}</summary>
+    <div className="cmux-archive-tool-content">{items.map((item,index)=><div key={item.occurrenceId}
+      data-dashboard-event={index?item.occurrenceId:undefined} data-archive-member={item.occurrenceId}>
+      <div className="cmux-dashboard-msg-who"><span>{item.kind==="toolCall"?item.tool??"ツール":"ツール結果"}</span>{item.target?<span>{item.target}</span>:null}</div>
+      <div className="cmux-dashboard-msg-plain"><DashboardLinkedText text={item.text} context={context}/></div>
+      {item.bodyRef?<DashboardIconButton icon={FileText} label="本文の続きを表示" disabled={bodyDisabled} onClick={()=>onBody(item)}/>:null}
+    </div>)}</div>
+  </details>;
 }
 function ArchiveEmpty({unavailable=false,reason}:{unavailable?:boolean;reason?:string}) {
   return <div className="cmux-dashboard-chat-empty" data-dashboard-chat-empty={unavailable?"unavailable":"empty"} role="status">

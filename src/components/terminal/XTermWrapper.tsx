@@ -1,4 +1,8 @@
 ﻿import { memo, useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { AgentTabConversation } from "./AgentTabConversation";
+import { isAgentConversationKind } from "./agentTabConversationModel";
+import { resolveAgentConversationKind } from "../../lib/agentConversationKind";
+import { useAgentTabViewStore } from "../../stores/agentTabViewStore";
 import { TerminalRendererBudget } from "./terminalRendererBudget";
 import { hasTearoutSessionAttachment, markTearoutSessionAttached, captureSessionAttachment, failTearoutSessionAttachment } from "../../lib/tearout/sessionAttachment";
 import { recordTerminalFlowReceive, startTerminalFlowWrite, finishTerminalFlowWrite, recordTerminalFlowRender } from "../../lib/terminalFlowTrace";
@@ -811,6 +815,39 @@ export default memo(function XTermWrapper({
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const agentTabContent = useSettingsStore(state => state.agentTabContent);
+  const conversationTabId = tabIdForSession(sessionId);
+  const tabView = useAgentTabViewStore(state => conversationTabId ? state.views[conversationTabId] ?? "conversation" : "conversation");
+  const conversationAgentKind = usePaneMetadataStore(state => resolveAgentConversationKind(
+    state.volatileMetadata[sessionId], state.metadata[sessionId]?.agentKind, agentKind,
+  ));
+  const conversationWanted = agentTabContent === "conversation" && !!conversationTabId
+    && isAgentConversationKind(conversationAgentKind) && tabView === "conversation";
+  const [conversationReady, setConversationReady] = useState(false);
+  const conversationCovered = conversationWanted && conversationReady;
+  const conversationCoveredRef = useRef(conversationCovered);
+  conversationCoveredRef.current = conversationCovered;
+  const conversationInputRef = useRef<HTMLTextAreaElement>(null);
+  const [conversationSearchRequest, setConversationSearchRequest] = useState(0);
+  const conversationFocusTarget = useCallback(() => conversationCoveredRef.current ? {
+    focus: () => {
+      const input = conversationInputRef.current;
+      if (input && !input.disabled) input.focus();
+      else input?.closest<HTMLElement>("[data-terminal-transcript-panel]")?.focus();
+    },
+    containsActiveElement: () => Boolean(conversationInputRef.current?.closest("[data-terminal-transcript-panel]")?.contains(document.activeElement)),
+  } : null, []);
+  const showConversationTerminal = useCallback(() => {
+    const tabId = tabIdForSession(sessionId);
+    if (tabId) useAgentTabViewStore.getState().setView(tabId, "terminal");
+  }, [sessionId]);
+  const interruptConversation = useCallback(() => { chunkedWrite(sessionId, "\x1b"); }, [sessionId]);
+  const previousConversationCovered = useRef(false);
+  useEffect(() => {
+    if (previousConversationCovered.current && !conversationCovered && historyVisible && !document.hidden
+      && !useDashboardViewStore.getState().open && useUiStore.getState().activePaneId === sessionId) focusController.focusSessionSoon(sessionId);
+    previousConversationCovered.current = conversationCovered;
+  }, [conversationCovered, historyVisible, sessionId]);
   const isAtBottomRef = useRef(true);
   const syncResizeRef = useRef<(force?: boolean) => void>(() => {});
   const settingsResizeTimerRef = useRef<number | null>(null);
@@ -886,10 +923,21 @@ export default memo(function XTermWrapper({
   useEffect(() => {
     if (isSearchOpen) searchInputRef.current?.focus();
   }, [isSearchOpen]);
+  const previousSearchCovered = useRef(conversationCovered);
+  useEffect(() => {
+    if (!previousSearchCovered.current && conversationCovered && isSearchOpen) {
+      setIsSearchOpen(false);
+      setSearchQuery("");
+      searchAddonRef.current?.clearDecorations();
+    }
+    previousSearchCovered.current = conversationCovered;
+  }, [conversationCovered, isSearchOpen]);
 
   useEffect(() => {
     const handleSearchRequest = (event: Event) => {
-      if ((event as CustomEvent<{ sessionId?: string }>).detail?.sessionId === sessionId) openSearch();
+      if ((event as CustomEvent<{ sessionId?: string }>).detail?.sessionId !== sessionId) return;
+      if (conversationCoveredRef.current) setConversationSearchRequest(request => request + 1);
+      else openSearch();
     };
     window.addEventListener(TERMINAL_SEARCH_EVENT, handleSearchRequest);
     return () => window.removeEventListener(TERMINAL_SEARCH_EVENT, handleSearchRequest);
@@ -900,7 +948,11 @@ export default memo(function XTermWrapper({
   const turnListRequestRef = useRef(0);
   const turnChipVisibilityRef = useRef<TurnChipVisibilityController | null>(null);
   const turnListOpenRef = useRef(false);
-  const { transcriptPanelOpen, transcriptPanelFocusRequest, setTranscriptPanelOpen, closeTranscriptPanel: closeHistoryPanel, openAccepted } = useTerminalHistoryPanel(sessionId, historyVisible);
+  const { transcriptPanelOpen: historyPanelRequested, transcriptPanelFocusRequest, setTranscriptPanelOpen, closeTranscriptPanel: closeHistoryPanel, openAccepted } = useTerminalHistoryPanel(sessionId, historyVisible);
+  const transcriptPanelOpen = historyPanelRequested && !conversationWanted;
+  useEffect(() => {
+    if (conversationWanted && historyPanelRequested) setTranscriptPanelOpen(false);
+  }, [conversationWanted, historyPanelRequested, setTranscriptPanelOpen]);
   const archiveEntry = useTerminalArchiveEntry(sessionId, tabIdForSession(sessionId), containerRef, termRef, transcriptPanelOpen, openAccepted, historyVisible);
   const archiveEntryRef = useRef(archiveEntry); archiveEntryRef.current = archiveEntry;
   const searchOpenRef = useRef(isSearchOpen); searchOpenRef.current = isSearchOpen;
@@ -1785,6 +1837,7 @@ export default memo(function XTermWrapper({
 
     const attachTerminalKeyHandler = (currentTerm: Terminal): void => {
       currentTerm.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+        if (currentTerm.element?.closest("[inert]")) return false;
         if (e.type !== "keydown") return true;
         recordPerf("terminal.keydown", sessionId);
 
@@ -3119,7 +3172,7 @@ export default memo(function XTermWrapper({
           sessionId,
           filterTerminalMouseInputSequences(data),
         );
-        if (!inputData) return;
+        if (!inputData || conversationCoveredRef.current) return;
         const accept = () => {
           if (hasNonWheelInput) {
             recordPerf("terminal.input.accepted", sessionId);
@@ -3149,7 +3202,7 @@ export default memo(function XTermWrapper({
           sessionId,
           filterTerminalMouseInputSequences(data),
         );
-        if (!inputData) return;
+        if (!inputData || conversationCoveredRef.current) return;
         if (!shouldAcceptTerminalInput(sessionId)) return;
         if (hasNonWheelInput) {
           clearActiveTerminalNotification(sessionId);
@@ -3354,7 +3407,7 @@ export default memo(function XTermWrapper({
       registerSelectionCopyListener(cached.term, sessionId);
       removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, cached.term, sessionId, forceWheelMouseReport, historyAdmission);
       removeWheelFocusGuard = registerTerminalWheelFocusGuard(cached.term, sessionId);
-      removeFocusSync = registerTerminalFocusSync(cached.term, sessionId, isEligibleFocusTarget);
+      removeFocusSync = registerTerminalFocusSync(cached.term, sessionId, isEligibleFocusTarget, conversationFocusTarget);
       attachTerminalKeyHandler(cached.term);
       registerInputListeners(cached.term);
       registerScanListener(cached.term);
@@ -3542,7 +3595,7 @@ export default memo(function XTermWrapper({
       registerSelectionCopyListener(term, sessionId);
       removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, term, sessionId, forceWheelMouseReport, historyAdmission);
       removeWheelFocusGuard = registerTerminalWheelFocusGuard(term, sessionId);
-      removeFocusSync = registerTerminalFocusSync(term, sessionId, isEligibleFocusTarget);
+      removeFocusSync = registerTerminalFocusSync(term, sessionId, isEligibleFocusTarget, conversationFocusTarget);
       attachTerminalKeyHandler(term);
 
       // OSC 9988: mycmux HTML sidetab. Payload = file URL or absolute path.
@@ -3755,6 +3808,10 @@ export default memo(function XTermWrapper({
           archiveReader={archiveEntry.reader}
         />
       )}
+      {conversationWanted && conversationTabId ? <AgentTabConversation sessionId={sessionId} tabId={conversationTabId}
+        agentKind={conversationAgentKind} visible={historyVisible} active={isActivePane} inputRef={conversationInputRef}
+        focusRequest={conversationSearchRequest}
+        onTerminal={showConversationTerminal} onEscape={interruptConversation} onVisible={setConversationReady} /> : null}
       {isSearchOpen && (
         <div data-terminal-search="true" style={{
           position: "absolute",
@@ -3797,6 +3854,8 @@ export default memo(function XTermWrapper({
       )}
       <div
         ref={containerRef}
+        inert={conversationCovered || undefined}
+        aria-hidden={conversationCovered || undefined}
         style={{
           width: "100%",
           height: "100%",

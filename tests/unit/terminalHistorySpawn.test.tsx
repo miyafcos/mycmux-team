@@ -16,6 +16,7 @@ vi.mock("../../src/lib/ipc", async (original) => ({
 import { handleSocketCommand } from "../../src/components/layout/socketCommands";
 import PaneTabBar from "../../src/components/workspace/PaneTabBar";
 import { HISTORY_MAPPING_POLL_MS, TERMINAL_HISTORY_EVENT } from "../../src/components/terminal/TerminalHistoryEntry";
+import { useTerminalHistoryPanel } from "../../src/components/terminal/useTerminalHistoryPanel";
 import type { AgentSessionMapping } from "../../src/lib/ipc";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
@@ -35,8 +36,11 @@ let mappings: Record<string, AgentSessionMapping>;
 
 function Toolbar() {
   const pane = useWorkspaceListStore((state) => state.workspaces[0].panes[0]);
-  return <PaneTabBar pane={pane} workspaceId={workspaceId} hasTerminalBuffer={() => true}
-    onSelectTab={(tabId) => useWorkspaceLayoutStore.getState().setActivePaneTab(workspaceId, paneId, tabId)} />;
+  const activeSessionId = pane.tabs.find(tab => tab.id === pane.activeTabId)!.sessionId;
+  const panel = useTerminalHistoryPanel(activeSessionId);
+  return <><PaneTabBar pane={pane} workspaceId={workspaceId} hasTerminalBuffer={() => true}
+    onSelectTab={(tabId) => useWorkspaceLayoutStore.getState().setActivePaneTab(workspaceId, paneId, tabId)} />
+    <output data-history-open={String(panel.transcriptPanelOpen)} /></>;
 }
 
 async function openActions() {
@@ -111,8 +115,9 @@ describe("synthetic history acceptance through the real spawn handler and toolba
     expect(useWorkspaceListStore.getState().workspaces[0].panes[0].activeTabId).toBe("shell-tab");
     expect(useUiStore.getState().activePaneId).toBe(anchor);
     expect(host.querySelector(".pane-heading-row > [data-terminal-magnifier-destination=history]")).toBeNull();
-    expect(host.querySelector(".pane-heading-row > [data-terminal-magnifier]")?.getAttribute("data-terminal-magnifier-destination"))
-      .toBe("terminal");
+    expect(host.querySelector(".pane-heading-row > [data-terminal-magnifier]")).toBeNull();
+    expect(host.querySelector(".pane-actions-menu [data-terminal-magnifier-destination=history]")?.getAttribute("aria-disabled"))
+      .toBe("true");
     await act(async () => vi.advanceTimersByTimeAsync(60_000));
     expect(host.querySelector(".pane-heading-row > [data-terminal-magnifier-destination=history]")).toBeNull();
     expect(mocks.mappings.mock.calls.every(([ids]) => ids.length === 1 && ids[0] === anchor)).toBe(true);
@@ -123,7 +128,7 @@ describe("synthetic history acceptance through the real spawn handler and toolba
     expect(target).not.toBeNull();
     expect(useWorkspaceListStore.getState().workspaces[0].panes[0].activeTabId).toBe(result.tabId);
     expect(mocks.mappings).toHaveBeenLastCalledWith([result.sessionId]);
-    const entry = host.querySelector<HTMLButtonElement>(".pane-heading-row > [data-terminal-magnifier-destination=history]");
+    const entry = host.querySelector<HTMLButtonElement>(".pane-actions-menu [data-terminal-magnifier-destination=history]");
     expect(entry).not.toBeNull();
     const request = vi.fn();
     window.addEventListener(TERMINAL_HISTORY_EVENT, request, { once: true });
@@ -131,9 +136,10 @@ describe("synthetic history acceptance through the real spawn handler and toolba
     const focusOwner = document.activeElement;
     await act(async () => entry!.click());
     expect(request).toHaveBeenCalledOnce();
+    expect(host.querySelector("output")?.dataset.historyOpen).toBe("true");
     expect((request.mock.calls[0][0] as CustomEvent).detail).toEqual({
       sessionId: result.sessionId,
-      request: { sessionId: result.sessionId, signal: expect.objectContaining({ aborted: false }),
+      request: { sessionId: result.sessionId, historyOnly: true, signal: expect.objectContaining({ aborted: false }),
         selectionRevision: intent.focusRevision, ownerSessionId: intent.activePaneId, focusOwner },
     });
     expect(mocks.createSession).toHaveBeenCalledOnce();
@@ -148,14 +154,16 @@ describe("synthetic history acceptance through the real spawn handler and toolba
     }) as { tabId: string; sessionId: string };
     await act(async () => root.render(<Toolbar />));
     await openActions();
-    expect(host.querySelector(".pane-heading-row > [data-terminal-magnifier-destination=history]")).not.toBeNull();
+    expect(host.querySelector(".pane-heading-row > [data-terminal-magnifier]")).toBeNull();
+    expect(host.querySelector(".pane-actions-menu [data-terminal-magnifier-destination=history]")?.getAttribute("aria-disabled")).toBe("false");
     expect(mocks.mappings).toHaveBeenLastCalledWith([anchor]);
 
     await openActions();
     await selectHidden(result.tabId);
     expect(mocks.mappings).toHaveBeenLastCalledWith([result.sessionId]);
     expect(host.querySelector(".pane-heading-row > [data-terminal-magnifier-destination=history]")).toBeNull();
-    expect(host.querySelector(".pane-heading-row > [data-terminal-magnifier]")?.getAttribute("data-terminal-magnifier-destination"))
-      .toBe("terminal");
+    expect(host.querySelector(".pane-heading-row > [data-terminal-magnifier]")).toBeNull();
+    expect(host.querySelector(".pane-actions-menu [data-terminal-magnifier-destination=history]")?.getAttribute("aria-disabled"))
+      .toBe("true");
   });
 });

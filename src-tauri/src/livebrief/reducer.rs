@@ -123,7 +123,7 @@ impl LiveBriefReducer {
             prompt_event_id: pending.as_ref().map(|pending| pending.0.clone()), prompt_hash,
             event_seq: self.event_seq, operational_state: if pending.is_some() { "needsHuman".to_string() } else if activity.is_some() { "running".to_string() } else { "ready".to_string() }, telemetry_health: health.to_string(),
             last_event_at: self.last_event_at, last_successful_read_at: Some(now), updated_at: now, service_epoch: service_epoch.to_string(), brief_revision: 0,
-            autonomy: None, telemetry: self.telemetry.to_telemetry(),
+            telemetry_detail: None, autonomy: None, telemetry: self.telemetry.to_telemetry(),
         }
     }
 }

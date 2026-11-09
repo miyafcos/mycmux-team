@@ -299,6 +299,7 @@ mod tests {
             operational_state: "idle".into(),
             autonomy: None,
             telemetry_health: "live".into(),
+            telemetry_detail: None,
             last_event_at: None,
             last_successful_read_at: None,
             updated_at: 0,

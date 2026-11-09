@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { normalizeAgentTabContent, type AgentTabContent } from "./agentTabViewStore";
 import { applyAutomaticStoreUpdate, syncedPersist, updateSyncedPersistedField } from "./syncedPersist";
 import {
   migratePersistedSettings,
@@ -112,6 +113,7 @@ interface SettingsState {
   /** Persisted magnifier routing preference; retain the original storage key. */
   showTerminalHistoryButton: boolean;
   conversationHistoryMode: ConversationHistoryMode;
+  agentTabContent: AgentTabContent;
   /** Content-free terminal progress logging; no polling or writes by default. */
   terminalProgressDiagnosticsEnabled: boolean;
   /** Deliberately off until an operator explicitly enables declared-tab launch. */
@@ -162,6 +164,7 @@ interface SettingsState {
   setPaneFocusMode: (v: PaneFocusMode) => void;
   setShowTerminalHistoryButton: (v: boolean) => void;
   setConversationHistoryMode: (v: ConversationHistoryMode) => void;
+  setAgentTabContent: (v: AgentTabContent) => void;
   setTerminalProgressDiagnosticsEnabled: (v: boolean) => void;
   setDeclaredLaunchEnabled: (v: boolean) => void;
   setCodexAppServerExperimentEnabled: (v: boolean) => void;
@@ -215,6 +218,7 @@ export const useSettingsStore = create<SettingsState>()(
       paneFocusMode: "click",
       showTerminalHistoryButton: true,
       conversationHistoryMode: DEFAULT_CONVERSATION_HISTORY_MODE,
+      agentTabContent: "conversation",
       terminalProgressDiagnosticsEnabled: false,
       declaredLaunchEnabled: false,
       codexAppServerExperimentEnabled: false,
@@ -265,6 +269,7 @@ export const useSettingsStore = create<SettingsState>()(
       setPaneFocusMode: (v) => set({ paneFocusMode: normalizePaneFocusMode(v) }),
       setShowTerminalHistoryButton: (v) => set({ showTerminalHistoryButton: v }),
       setConversationHistoryMode: (v) => set({ conversationHistoryMode: normalizeConversationHistoryMode(v) }),
+      setAgentTabContent: (v) => set({ agentTabContent: normalizeAgentTabContent(v) }),
       setTerminalProgressDiagnosticsEnabled: (v) => set({ terminalProgressDiagnosticsEnabled: v }),
       setDeclaredLaunchEnabled: (v) => set({ declaredLaunchEnabled: v }),
       setCodexAppServerExperimentEnabled: (v) => set({ codexAppServerExperimentEnabled: v }),
@@ -294,6 +299,8 @@ export const useSettingsStore = create<SettingsState>()(
       merge: (persisted, current) => {
         const merged = { ...current, ...(persisted as Partial<SettingsState> | undefined) };
         merged.conversationHistoryMode = normalizeConversationHistoryMode((persisted as Partial<SettingsState> | undefined)?.conversationHistoryMode);
+        const savedAgentTabContent = (persisted as Partial<SettingsState> | undefined)?.agentTabContent;
+        merged.agentTabContent = savedAgentTabContent === undefined ? "conversation" : normalizeAgentTabContent(savedAgentTabContent);
         merged.agentServiceVisibility = normalizeAgentServiceVisibility(merged.agentServiceVisibility);
         merged.paneFocusMode = normalizePaneFocusMode((persisted as Partial<SettingsState> | undefined)?.paneFocusMode);
         merged.dormancyPressureSettings = normalizeDormancyPressureSettings(merged.dormancyPressureSettings ?? {});

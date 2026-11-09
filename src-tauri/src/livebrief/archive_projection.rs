@@ -1,7 +1,7 @@
 //! Record-local archive presentation. No reducer, clock, telemetry, PTY or DB.
 use std::collections::HashMap;
 use serde_json::Value;
-use super::adapter::{collect_text, extract_target, is_injected_user_text, parse_question, parse_timestamp};
+use super::adapter::{claude_human_queued_command, collect_codex_user_text, collect_text, extract_target, is_codex_injected_block, is_injected_user_text, parse_question, parse_timestamp};
 use super::archive_scan::STRUCTURED_BYTES;
 use super::sha256_hex;
 
@@ -82,12 +82,14 @@ pub fn project(kind: &str, value: &Value) -> Vec<Draft> {
         let inner = payload["type"].as_str().unwrap_or_default();
         match (outer, inner) {
             ("event_msg", "user_message") => {
-                if let Some(text) = payload["message"].as_str().filter(|s| !s.trim().is_empty()) {
+                if let Some(text) = payload["message"].as_str().filter(|s| !s.trim().is_empty() && !is_codex_injected_block(s)) {
                     push(0, "user", text.to_string(), None, None, None, Some(true));
                 }
             }
             ("response_item", "message") => {
-                if let Some(text) = collect_text(payload.get("content")) {
+                let text = if payload["role"] == "user" { collect_codex_user_text(payload.get("content")) }
+                    else { collect_text(payload.get("content")) };
+                if let Some(text) = text {
                     match payload["role"].as_str() {
                         Some("user") => push(0, "user", text, None, None, None, Some(false)),
                         Some("assistant") => push(0, "assistant", text, None, None, None, None),
@@ -111,6 +113,11 @@ pub fn project(kind: &str, value: &Value) -> Vec<Draft> {
         return out;
     }
     match outer {
+        "attachment" if matches!(kind, "claude" | "claude-codex") => {
+            if let Some(text) = claude_human_queued_command(value) {
+                push(0, "user", text.into(), None, None, None, None);
+            }
+        }
         "user" => {
             let text = if let Some(blocks) = message["content"].as_array() {
                 let text = blocks.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n");
@@ -154,6 +161,9 @@ pub fn project(kind: &str, value: &Value) -> Vec<Draft> {
         "system" if value["subtype"] == "compact_boundary" => push(0, "boundary", "会話の要約・圧縮".into(), None, None, None, None),
         "system" | "progress" | "file-history-snapshot" | "queue-operation" | "summary"
         | "custom-title" | "ai-title" | "agent-name" | "last-prompt" => {}
+        "api-request" | "api-request-blob" | "api-request-shape" | "atis-latch" | "mode"
+        | "permission-mode" | "session-owner" | "file-history-delta" | "tools-used" | "cost-state"
+            if matches!(kind, "claude" | "claude-codex") => {}
         _ => push(0, "diagnostic", "未対応の記録（元の記録を表示できます）".into(), None, None, None, None),
     }
     out
@@ -212,6 +222,73 @@ impl PairContext {
 mod tests {
     use super::*;
     use serde_json::json;
+    fn queued_command() -> Value {
+        json!({"type":"attachment","uuid":"queued","timestamp":"2026-11-08T16:03:20Z",
+            "attachment":{"type":"queued_command","prompt":"Add a closing word.",
+                "commandMode":"prompt","origin":{"kind":"human"}}})
+    }
+
+    #[test]
+    fn human_queued_command_is_a_user_at_its_file_position_not_its_earlier_timestamp() {
+        for provider in ["claude", "claude-codex"] {
+            let rows = [
+                json!({"type":"tool_result","timestamp":"2026-11-08T16:03:35Z","content":"done"}),
+                queued_command(),
+                json!({"type":"assistant","message":{"content":"Final reply."}}),
+            ].iter().flat_map(|record| project(provider, record)).collect::<Vec<_>>();
+            assert_eq!(rows.iter().map(|row| row.kind).collect::<Vec<_>>(), vec!["toolResult", "user", "assistant"]);
+            assert_eq!(rows[1].text, "Add a closing word.");
+            assert_eq!(rows[1].slot, 0);
+            assert!(rows[1].timestamp < rows[0].timestamp);
+            assert_eq!(rows[1].aliases, vec!["queued", "queued:0"]);
+            for excluded in 0..5 {
+                let mut record = queued_command();
+                match excluded {
+                    0 => record["attachment"]["commandMode"] = json!("task-notification"),
+                    1 => record["attachment"]["isMeta"] = json!(true),
+                    2 => record["attachment"]["origin"]["kind"] = json!("peer"),
+                    3 => record["isMeta"] = json!(true),
+                    _ => record["attachment"].as_object_mut().unwrap().remove("origin").map(|_| ()).unwrap(),
+                }
+                assert!(project(provider, &record).is_empty(), "{provider}: {excluded}");
+            }
+            assert!(project(provider, &json!({"type":"queue-operation","operation":"enqueue","content":"Add a closing word."})).is_empty());
+        }
+    }
+
+    #[test]
+    fn slash_only_claude_records_and_known_bookkeeping_have_no_items_or_diagnostics() {
+        for provider in ["claude", "claude-codex"] {
+            let mut records = vec![
+                json!({"type":"last-prompt","lastPrompt":"/usage"}),
+                json!({"type":"mode"}), json!({"type":"permission-mode"}), json!({"type":"session-owner"}),
+                json!({"type":"attachment","attachment":{"type":"hook_success"}}),
+                json!({"type":"attachment","attachment":{"type":"hook_success"}}),
+                json!({"type":"atis-latch"}),
+            ];
+            records.extend((0..6).map(|_| json!({"type":"system","subtype":"local_command"})));
+            let rows = records.iter().flat_map(|record| project(provider, record)).collect::<Vec<_>>();
+            assert!(rows.is_empty(), "{provider}: slash-only items include diagnostics");
+            for kind in ["api-request", "api-request-blob", "api-request-shape", "atis-latch", "mode",
+                "permission-mode", "session-owner", "file-history-delta", "tools-used", "cost-state"] {
+                assert!(project(provider, &json!({"type":kind})).is_empty(), "{provider}: {kind}");
+            }
+            for kind in ["environment", "deferred_tools_record", "silent_turn_reminder", "hook_additional_context",
+                "file", "hook_cancelled", "prompt_snapshot", "nested_memory", "skill_listing", "date", "task_status", "model", "future-attachment"] {
+                assert!(project(provider, &json!({"type":"attachment","attachment":{"type":kind}})).is_empty(), "{provider}: {kind}");
+            }
+            assert_eq!(project(provider, &json!({"type":"future-record"}))[0].kind, "diagnostic");
+        }
+    }
+
+    #[test]
+    fn claude_queued_and_bookkeeping_rules_do_not_change_other_provider_projection() {
+        for provider in ["codex", "grok"] {
+            assert_eq!(project(provider, &queued_command())[0].kind, "diagnostic");
+            assert_eq!(project(provider, &json!({"type":"mode"}))[0].kind, "diagnostic");
+        }
+    }
+
     #[test]
     fn structural_slots_repeat_native_ids_and_standalone_results_are_preserved() {
         let v = json!({"type":"assistant","uuid":"same","message":{"content":[{"type":"thinking"},{"type":"text","text":"hello"},{"type":"tool_use","name":"Read","input":{}}]}});
@@ -281,6 +358,77 @@ mod tests {
         assert!(bounded_value(v.to_string().as_bytes()).is_ok());
         let rows=project("codex",&v);assert_eq!(rows[0].text,raw);assert_eq!(rows[0].kind,"question");
         assert_eq!(bounded_target(r#"{"file_path":"/synthetic"}"#),Some("/synthetic".into()));
+    }
+
+    #[test]
+    fn codex_projection_filters_injected_blocks_and_keeps_mixed_operator_blocks() {
+        let startup = json!({"type":"response_item","payload":{"type":"message","role":"user","content":[
+            {"type":"input_text","text":"# AGENTS.md instructions for C:\\x\n\n<INSTRUCTIONS>synthetic</INSTRUCTIONS>"},
+            {"type":"input_text","text":"<environment_context>synthetic</environment_context>"}]}});
+        assert!(project("codex", &startup).is_empty());
+        let request = "次の作業をして";
+        let mixed = json!({"type":"response_item","payload":{"type":"message","role":"user","content":[
+            {"type":"input_text","text":"<environment_context>synthetic</environment_context>"},
+            {"type":"input_text","text":request}]}});
+        let rows = project("codex", &mixed);
+        assert_eq!(rows.len(), 1); assert_eq!(rows[0].kind, "user"); assert_eq!(rows[0].text, request);
+        let mut multi = mixed.clone();
+        multi["payload"]["content"].as_array_mut().unwrap().push(json!({"text":"second"}));
+        assert_eq!(project("codex", &multi)[0].text, format!("{request}\nsecond"));
+        for prefix in ["# AGENTS.md instructions", "<INSTRUCTIONS>", "<user_instructions>",
+            "<environment_context>", "<recommended_plugins>", "<plan_mode>", "<system_reminder>", "# Codex CLI"] {
+            let text = format!(" \n{prefix} synthetic");
+            let event = json!({"type":"event_msg","payload":{"type":"user_message","message":text}});
+            assert!(project("codex", &event).is_empty());
+            for role in ["user", "developer", "assistant"] {
+                let record = json!({"type":"response_item","payload":{"type":"message","role":role,"content":[{"text":text}]}});
+                let rows = project("codex", &record);
+                if role == "assistant" { assert_eq!(rows.len(), 1); assert_eq!(rows[0].text, text); }
+                else { assert!(rows.is_empty()); }
+            }
+        }
+    }
+
+    #[test]
+    fn codex_projection_preserves_nonleading_markers_and_similar_openings() {
+        for text in ["Explain <environment_context> in this text", "#AGENTS please keep", "<environment>please keep",
+            "<send_user_message_question_reply>answer"] {
+            for record in [json!({"type":"event_msg","payload":{"type":"user_message","message":text}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":text}]}})] {
+                let rows = project("codex", &record);
+                assert_eq!(rows.len(), 1); assert_eq!(rows[0].kind, "user"); assert_eq!(rows[0].text, text);
+            }
+        }
+    }
+
+    #[test]
+    fn codex_filtered_projection_pairs_mirrors_and_preserves_injected_turn_boundaries() {
+        for reverse in [false, true] {
+            for event_form in [false, true] {
+                for (turn, expected) in [(None, 1), (Some("one"), 1), (Some("two"), 2)] {
+                    let event = json!({"type":"event_msg","payload":{"type":"user_message","message":"repeat"}});
+                    let response = json!({"type":"response_item","payload":{"type":"message","role":"user","content":[
+                        {"text":"<environment_context>synthetic"},{"text":"repeat"}]}});
+                    let mut injected = if event_form {
+                        json!({"type":"event_msg","payload":{"type":"user_message","message":"<environment_context>synthetic"}})
+                    } else {
+                        json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"<environment_context>synthetic"}]}})
+                    };
+                    if let Some(turn) = turn { injected["payload"]["turn_id"] = json!(turn); }
+                    let (first, second) = if reverse { (response, event) } else { (event, response) };
+                    let mut context = PairContext::selected([sha256_hex(b"repeat")].into_iter());
+                    let mut visible = 0;
+                    for record in [json!({"type":"turn_context","payload":{"turn_id":"one"}}), first, injected, second] {
+                        let rows = project("codex", &record);
+                        let paired = context.apply(&record, &rows);
+                        if !paired { visible += rows.len(); }
+                        assert!(rows.iter().all(|row| row.kind == "user" && row.text == "repeat"));
+                    }
+                    assert_eq!(visible, expected, "reverse={reverse}, event_form={event_form}, turn={turn:?}");
+                    assert_eq!(context.turn, Some(turn_key(turn.unwrap_or("one"))));
+                }
+            }
+        }
     }
 
 }

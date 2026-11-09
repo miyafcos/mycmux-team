@@ -277,26 +277,15 @@ describe("reachability controls", () => {
     }
   });
 
-  it.each([800, 500, 330, 240, 200, 160, 100])("reachability #5 routes terminal search from the menu and magnifier at width %i", async (barWidth) => {
+  it.each([800, 500, 330, 240, 200, 160, 100])("reachability #5 routes terminal search from the menu without a header magnifier at width %i", async (barWidth) => {
     width = barWidth;
     const search = vi.fn();
     window.addEventListener(TERMINAL_SEARCH_EVENT, search);
     try {
       await act(async () => root.render(<PaneTabBar pane={pane} workspaceId={workspace.id} hasTerminalBuffer={() => true} />));
-      const header = host.querySelector<HTMLButtonElement>(`button[aria-label='${terminalPaneStrings.searchTerminal}']`);
-      expect(Boolean(header)).toBe([800, 500, 330, 240].includes(barWidth));
+      expect(host.querySelector(".pane-heading-row [data-terminal-magnifier]")).toBeNull();
       expect(host.querySelector(".pane-header-close")).not.toBeNull();
       expect(host.querySelector("[role='menu']")).toBeNull();
-      if (header) {
-        // The fallback magnifier carries the live terminal-search binding.
-        expect(header.title).toBe(terminalPaneStrings.searchTerminalTitle(
-          formatShortcutLabel(useKeybindingStore.getState().keybindings["terminal.search"]),
-        ));
-        await click(header);
-        expect(search).toHaveBeenCalledOnce();
-        expect((search.mock.calls[0][0] as CustomEvent).detail).toEqual({ sessionId: "session-a" });
-        search.mockClear();
-      }
       await click(button(terminalPaneStrings.paneActions));
       const item = [...host.querySelectorAll<HTMLButtonElement>("[role='menuitem']")]
         .find((node) => node.textContent === terminalPaneStrings.searchTerminal)!;
@@ -318,11 +307,8 @@ describe("reachability controls", () => {
     window.addEventListener(TERMINAL_SEARCH_EVENT, search);
     try {
       await act(async () => root.render(<PaneTabBar pane={inactivePane} workspaceId={workspace.id} hasTerminalBuffer={() => true} />));
-      const header = host.querySelector<HTMLButtonElement>(".pane-heading-row [data-terminal-magnifier]")!;
-      expect(header.getAttribute("aria-disabled")).toBe("true");
-      expect(header.title).toBe(terminalPaneStrings.searchUnavailable);
-      await click(header);
-      expect(search).not.toHaveBeenCalled();
+      expect(host.querySelector(".pane-heading-row [data-terminal-magnifier]")).toBeNull();
+      expect(host.querySelector(".pane-agent-content-switch")).toBeNull();
       expect(host.querySelector(".pane-header-close")).not.toBeNull();
       await click(button(terminalPaneStrings.paneActions));
       const item = [...host.querySelectorAll<HTMLButtonElement>("[role='menuitem']")]

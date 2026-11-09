@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent, RefObject } from "react";
 import { ArrowUp, MessageSquareReply, Info, Send, Target } from "lucide-react";
 import { DashboardCount, DashboardGlyph, DashboardIconButton, DashboardStatusMark } from "./DashboardUi";
@@ -35,6 +35,14 @@ import {
 } from "./interventionRouting";
 import { NextActionSuggestions, type NextAction } from "./NextActionSuggestions";
 import { useAskQuestionStore } from "../../stores/askQuestionStore";
+import { agentTabSlashCommandOpensTerminal, isAgentTabSlashCommand } from "../terminal/agentTabSlashCommand";
+import { skillsApi, type SkillCatalog } from "../../lib/skillsApi";
+import { agentTabStrings } from "../terminal/agentTabStrings";
+import {
+  agentTabSlashEnterAction, agentTabSlashQuery, buildAgentTabSlashCandidates,
+  completeAgentTabSlashCommand, filterAgentTabSlashCandidates, loadAgentTabSlashSkills,
+  readAgentTabSlashRecent, rememberAgentTabSlashCommand, type AgentTabSlashSuggestion,
+} from "../terminal/agentTabSlashSuggest";
 
 /** pane.send_text (送達確認つき送信) の戻り。確認できたときだけ confirmed が true。 */
 interface PaneSendTextOutcome {
@@ -107,13 +115,20 @@ function unconfirmedSendText(reason: string | undefined): string {
  * Dashboard command composer. Direct reply remains exactly one selected session;
  * one or more structured @ nodes switch the route into a sealed batch.
  */
-export function ReplyComposer({ card, inputRef, mentionTargets, questionActive = false }: {
+export function ReplyComposer({ card, inputRef, mentionTargets, questionActive = false, showSuggestions = true, tabSessionId, tabAgentKind, onSlashCommandSent }: {
   card: DashboardCardModel | null;
   inputRef: RefObject<HTMLTextAreaElement | null>;
   /** Always all workspace cards, never a search-filtered subset. */
   mentionTargets: readonly DashboardCardModel[];
   /** QuestionCard owns active questions, so suggestions never duplicate it. */
   questionActive?: boolean;
+  showSuggestions?: boolean;
+  /** Only the in-tab composer may omit its own, fully resolved destination. */
+  tabSessionId?: string;
+  /** The tab's actual agent kind, separate from its payload format. */
+  tabAgentKind?: string;
+  /** Reuse the tab's terminal-view action after a slash command reaches the writer. */
+  onSlashCommandSent?: () => void;
 }) {
   const sessionId = card?.tab.sessionId ?? null;
   const brief = useLiveBriefStore((state) => (sessionId ? state.briefsBySession[sessionId] : undefined));
@@ -150,6 +165,93 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
   const dragItem = usePaneDragStore((state) => state.item);
   const dragPointer = usePaneDragStore((state) => state.pointer);
   const [dropOver, setDropOver] = useState(false);
+  const slashEnabled = tabSessionId !== undefined && (tabAgentKind ?? card?.tab.agentKind ?? card?.agentKind) === "claude";
+  const [slashCatalog, setSlashCatalog] = useState<SkillCatalog | null>(() => slashEnabled ? skillsApi.peek() : null);
+  const [slashQuery, setSlashQuery] = useState<string | null>(null);
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [slashRecent, setSlashRecent] = useState<string[]>(() => slashEnabled ? readAgentTabSlashRecent() : []);
+  const slashComposing = useRef(false);
+  const pendingSlashCatalog = useRef<SkillCatalog | null | undefined>(undefined);
+  const slashCachedCatalog = useRef<Promise<SkillCatalog | null> | null>(null);
+  const slashMenuRef = useRef<HTMLDivElement>(null);
+  const slashMenuId = useId();
+  const slashCandidates = useMemo(() => slashEnabled ? buildAgentTabSlashCandidates(slashCatalog) : [], [slashCatalog, slashEnabled]);
+  const slashMatches = useMemo(() => slashQuery === null ? [] : filterAgentTabSlashCandidates(slashCandidates, slashQuery, slashRecent),
+    [slashCandidates, slashQuery, slashRecent]);
+  const slashOpen = slashEnabled && slashQuery !== null && !slashDismissed && !menuOpen && !sending
+    && slashMatches.length > 0;
+
+  useEffect(() => {
+    if (!slashEnabled) return;
+    let live = true;
+    setSlashCatalog(skillsApi.peek());
+    setSlashRecent(readAgentTabSlashRecent());
+    // Keep the initial snapshot read for the lazy slash loader to reuse.
+    slashCachedCatalog.current = skillsApi.cached();
+    void slashCachedCatalog.current.then(catalog => {
+      if (!live) return;
+      const next = skillsApi.peek() ?? catalog;
+      if (slashComposing.current) pendingSlashCatalog.current = next;
+      else setSlashCatalog(next);
+    }).catch(() => { /* Built-ins remain available without a catalog. */ });
+    return () => { live = false; };
+  }, [slashEnabled]);
+
+  useEffect(() => {
+    setSlashDismissed(false);
+    setSlashIndex(0);
+    slashComposing.current = false;
+    pendingSlashCatalog.current = undefined;
+  }, [sessionId, slashEnabled]);
+
+  useEffect(() => {
+    if (slashComposing.current) return;
+    setSlashQuery(slashEnabled ? agentTabSlashQuery(draft, inputRef.current?.selectionStart ?? draft.length) : null);
+  }, [draft, sessionId, slashEnabled, inputRef]);
+
+  useEffect(() => {
+    if (!slashEnabled || slashQuery === null || skillsApi.peek()) return;
+    let live = true;
+    void loadAgentTabSlashSkills(slashCachedCatalog.current ?? undefined).then(catalog => {
+      if (!live || !catalog) return;
+      const next = skillsApi.peek() ?? catalog;
+      if (slashComposing.current) pendingSlashCatalog.current = next;
+      else setSlashCatalog(next);
+    });
+    return () => { live = false; };
+  }, [sessionId, slashEnabled, slashQuery]);
+
+  useLayoutEffect(() => {
+    if (slashOpen) slashMenuRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView?.({ block: "nearest" });
+  }, [slashOpen, slashIndex, slashMatches]);
+
+  const updateSlashQuery = (value: string, cursor: number, reopen = false) => {
+    const cached = skillsApi.peek();
+    if (cached && cached !== slashCatalog) setSlashCatalog(cached);
+    const query = agentTabSlashQuery(value, cursor);
+    if (query !== slashQuery) setSlashIndex(0);
+    setSlashQuery(query);
+    if (reopen) setSlashDismissed(false);
+    return query;
+  };
+
+  const completeSlashCandidate = (candidate: AgentTabSlashSuggestion) => {
+    const text = completeAgentTabSlashCommand(draft, candidate);
+    if (sessionId) setDraft(sessionId, text);
+    setSlashDismissed(true);
+    inputRef.current?.focus();
+    queueMicrotask(() => inputRef.current?.setSelectionRange(text.length, text.length));
+  };
+
+  const slashCommandSent = (text: string) => {
+    if (slashEnabled) {
+      const candidates = buildAgentTabSlashCandidates(skillsApi.peek() ?? slashCatalog);
+      setSlashRecent(rememberAgentTabSlashCommand(text, candidates, [...readAgentTabSlashRecent(), ...slashRecent]));
+      if (!agentTabSlashCommandOpensTerminal(text, candidates)) return;
+    }
+    onSlashCommandSent?.();
+  };
 
   const fitInput = useCallback(() => {
     const input = inputRef.current;
@@ -368,7 +470,9 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
       }
       return;
     }
-    const messageId = optimisticMessageId ?? addDashboardOptimisticMessage(sessionId, text);
+    const tabSlashCommand = tabSessionId !== undefined && isAgentTabSlashCommand(text);
+    const messageId = tabSlashCommand ? undefined : optimisticMessageId ?? addDashboardOptimisticMessage(sessionId, text);
+    if (tabSlashCommand) setNote(null);
     // The visual receipt and cleared editor happen before waiting for the PTY
     // acknowledgement, which is the slow part of this path.
     if (clearDraftAfterSend) clearDraft(sessionId);
@@ -381,11 +485,19 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
       }) as PaneSendTextOutcome | null;
       if (outcome?.sent === false) {
         const detail = outcome.message ?? dashboardStrings.composerRetryRouteChanged;
-        const mayHaveWritten = outcome.textWritten || outcome.writeMayHaveOccurred;
+        const mayHaveWritten = outcome.textWritten || outcome.writeMayHaveOccurred || (tabSlashCommand && outcome.enterWritten);
+        if (tabSlashCommand && mayHaveWritten) {
+          slashCommandSent(text);
+          return;
+        }
         setNote({ text: detail, error: !mayHaveWritten });
         // Reuse the non-retryable receipt for possible input, even if Enter was refused.
-        setDashboardOptimisticMessageState(sessionId, messageId, mayHaveWritten ? "sent" : "failed", detail);
+        if (messageId) setDashboardOptimisticMessageState(sessionId, messageId, mayHaveWritten ? "sent" : "failed", detail);
         if (!mayHaveWritten && clearDraftAfterSend && !useComposerStore.getState().draftBySession[sessionId]) setDraft(sessionId, text);
+        return;
+      }
+      if (tabSlashCommand) {
+        slashCommandSent(text);
         return;
       }
       const confirmed = outcome?.confirmed === true;
@@ -396,12 +508,13 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
           : outcome?.message ?? unconfirmedSendText(reason),
         error: false,
       });
-      setDashboardOptimisticMessageState(sessionId, messageId, "sent", confirmed ? null : outcome?.message ?? unconfirmedSendText(reason));
+      if (messageId) setDashboardOptimisticMessageState(sessionId, messageId, "sent", confirmed ? null : outcome?.message ?? unconfirmedSendText(reason));
     } catch (error) {
       // handleSocketCommand が throw したときは書き込み自体が走っていない。
       const detail = `${dashboardStrings.sendFailedBeforeWrite} (${errorText(error)})`;
       setNote({ text: detail, error: true });
-      setDashboardOptimisticMessageState(sessionId, messageId, "failed", detail);
+      if (messageId) setDashboardOptimisticMessageState(sessionId, messageId, "failed", detail);
+      if (tabSlashCommand && clearDraftAfterSend && !useComposerStore.getState().draftBySession[sessionId]) setDraft(sessionId, text);
     }
   };
 
@@ -413,8 +526,8 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
     void submitDirect(dashboardRetryMessage.text, true, dashboardRetryMessage.id).finally(() => setSending(false));
   }, [consumeDashboardOptimisticRetry, dashboardRetryMessage, dashboardRetryRequest, sessionId, submitDirect]);
 
-  const submit = async () => {
-    if (!sessionId || sending || !draft.trim()) return;
+  const submit = async (text = draft) => {
+    if (!sessionId || sending || !text.trim()) return;
     if (!hasCurrentQuestionGuard()) {
       setNote({ text: dashboardStrings.questionGuardConflict, error: true });
       return;
@@ -423,7 +536,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
       if (blocked) return;
       setSending(true);
       try {
-        await submitDirect();
+        await submitDirect(text);
       } finally {
         setSending(false);
       }
@@ -451,7 +564,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
       batchId,
       sealedBatch,
       commandKind,
-      text: draft,
+      text,
       members,
       deliveries,
     };
@@ -531,9 +644,17 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
     return () => window.removeEventListener("pointerup", receiveMinimapDrop, true);
   }, [addMentionToken, mentionCandidates, sessionId]);
 
-  const onInputChange = (value: string, cursor: number) => {
+  const onInputChange = (value: string, cursor: number, composing = false) => {
     if (!sessionId) return;
     setDraft(sessionId, value);
+    if (slashEnabled) {
+      if (composing) slashComposing.current = true;
+      if (slashComposing.current) return;
+      if (updateSlashQuery(value, cursor, true) !== null) {
+        closeMenu();
+        return;
+      }
+    }
     const next = findMentionQuery(value, cursor);
     if (!next) {
       closeMenu();
@@ -546,7 +667,37 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || slashEnabled && slashComposing.current) return;
+    if (slashOpen) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const delta = event.key === "ArrowDown" ? 1 : -1;
+        setSlashIndex(index => (index + delta + slashMatches.length) % slashMatches.length);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSlashDismissed(true);
+        return;
+      }
+      const candidate = slashMatches[slashIndex] ?? slashMatches[0];
+      if (event.key === "Tab") {
+        event.preventDefault();
+        completeSlashCandidate(candidate);
+        return;
+      }
+      if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+        event.preventDefault();
+        const action = agentTabSlashEnterAction(draft, candidate);
+        if (!action.send) completeSlashCandidate(candidate);
+        else {
+          if (sessionId) setDraft(sessionId, action.text);
+          setSlashDismissed(true);
+          void submit(action.text);
+        }
+        return;
+      }
+    }
     if (menuOpen) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         if (menuCandidates.length) {
@@ -584,6 +735,8 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
   const noteText = disabledNote ?? note?.text ?? null;
   const noteIsError = disabledNote ? false : Boolean(note?.error);
   const invalidPreview = preview.missing.length > 0 || (hasMentions && preview.recipients.length === 0);
+  const localTarget = tabSessionId !== undefined && sessionId === tabSessionId
+    && (!hasMentions || !invalidPreview && preview.recipients.length === 1 && preview.recipients[0].sessionId === tabSessionId);
   const retryCount = batch?.members.filter((member) => batch.deliveries[memberKey(member)]?.state === "failed").length ?? 0;
 
   return <div
@@ -593,14 +746,14 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
     data-command-kind={commandKind}
     className={`cmux-dashboard-composer${dropOver ? " is-mention-drop-over" : ""}`}
   >
-    <NextActionSuggestions
+    {showSuggestions ? <NextActionSuggestions
       sessionId={sessionId}
       displayState={card ? resolveDisplayState(card) : "idle"}
       eventSeq={brief?.eventSeq ?? 0}
       questionActive={questionActive}
       sending={sending}
       onConfirm={submitSuggestion}
-    />
+    /> : null}
     {tokens.length ? <div className="cmux-dashboard-mention-tokens" aria-label={dashboardStrings.mentionTokensAriaLabel}>
       {!invalidPreview ? <span className="cmux-dashboard-dispatch-preview"><DashboardCount icon={Send} count={preview.recipients.length} label={dashboardStrings.dispatchPreview(preview.recipients.length)} /></span> : null}
       {tokenDescriptions.map(({ token, label, valid, statusLabel, displayState }) => <span key={`${token.kind}:${token.kind === "session" ? token.logicalSessionId : token.labelSnapshot}`} className={`cmux-dashboard-mention-token${valid ? "" : " is-invalid"}`} title={valid ? statusLabel ?? undefined : dashboardStrings.dispatchTargetMissing}>
@@ -610,7 +763,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
       </span>)}
     </div> : null}
     {hasMentions && invalidPreview ? <div className="cmux-dashboard-dispatch-preview is-error"><DashboardStatusMark state="error" label={dashboardStrings.dispatchInvalidTargets} /></div> : null}
-    <div className="cmux-dashboard-composer-target" title={targetText}>{targetText}</div>
+    {!localTarget ? <div className="cmux-dashboard-composer-target" title={targetText}>{targetText}</div> : null}
     <div className="cmux-dashboard-composer-row">
       <textarea
         ref={inputRef}
@@ -619,7 +772,23 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
         disabled={blocked || sending}
         aria-label={dashboardStrings.composerAriaLabel}
         placeholder="メッセージ"
-        onChange={(event) => onInputChange(event.target.value, event.target.selectionStart ?? event.target.value.length)}
+        onChange={(event) => onInputChange(event.target.value, event.target.selectionStart ?? event.target.value.length, (event.nativeEvent as InputEvent).isComposing)}
+        onSelect={slashEnabled ? event => {
+          if (!slashComposing.current) updateSlashQuery(event.currentTarget.value, event.currentTarget.selectionStart);
+        } : undefined}
+        onCompositionStart={slashEnabled ? () => { slashComposing.current = true; } : undefined}
+        onCompositionEnd={slashEnabled ? event => {
+          slashComposing.current = false;
+          if (pendingSlashCatalog.current !== undefined) {
+            setSlashCatalog(pendingSlashCatalog.current);
+            pendingSlashCatalog.current = undefined;
+          }
+          onInputChange(event.currentTarget.value, event.currentTarget.selectionStart);
+        } : undefined}
+        aria-autocomplete={slashEnabled ? "list" : undefined}
+        aria-expanded={slashEnabled ? slashOpen : undefined}
+        aria-controls={slashOpen ? slashMenuId : undefined}
+        aria-activedescendant={slashOpen ? slashMenuId + "-" + (slashMatches[slashIndex] ?? slashMatches[0]).name : undefined}
         onKeyDown={onKeyDown}
         className="cmux-dashboard-composer-input"
       />
@@ -633,6 +802,23 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
         onClick={() => void submit()}
       ><ArrowUp aria-hidden="true" /><span>送信</span></button>
     </div>
+    {slashOpen ? <div ref={slashMenuRef} id={slashMenuId} className="cmux-dashboard-mention-menu agent-tab-slash-menu" role="listbox" aria-label={agentTabStrings.slashMenu}>
+      {slashMatches.map((candidate, index) => <button
+        key={candidate.name}
+        id={slashMenuId + "-" + candidate.name}
+        type="button"
+        role="option"
+        aria-selected={index === (slashIndex < slashMatches.length ? slashIndex : 0)}
+        className={index === (slashIndex < slashMatches.length ? slashIndex : 0) ? "is-active" : ""}
+        title={"/" + candidate.name + (candidate.argumentHint ? " " + candidate.argumentHint : "") + " — " + candidate.description}
+        onPointerDown={event => event.preventDefault()}
+        onClick={() => { if (!slashComposing.current) completeSlashCandidate(candidate); }}
+      >
+        <span className="agent-tab-slash-name">/{candidate.name}</span>
+        {candidate.argumentHint ? <small className="agent-tab-slash-hint">{candidate.argumentHint}</small> : null}
+        <span className="agent-tab-slash-description">{candidate.description}</span>
+      </button>)}
+    </div> : null}
     {menuOpen ? <div className="cmux-dashboard-mention-menu" role="listbox" aria-label={dashboardStrings.mentionMenuAriaLabel}>
       {menuCandidates.length ? menuCandidates.map((candidate, index) => <button
         key={candidate.kind === "working-all" ? candidate.kind : candidate.logicalSessionId}
@@ -663,8 +849,11 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
       })}
       {retryCount ? <button type="button" aria-label={dashboardStrings.dispatchRetryFailed(retryCount)} title={dashboardStrings.dispatchRetryFailed(retryCount)} disabled={sending} onClick={() => void retryFailed()}>再送 {retryCount}</button> : null}
     </div> : null}
-    {noteText
-      ? <div role={noteIsError ? "alert" : "status"} aria-live={noteIsError ? "assertive" : "polite"} className={`cmux-dashboard-composer-note${noteIsError ? " is-error" : ""}`} title={noteText}><DashboardStatusMark state={noteIsError ? "error" : noteText === dashboardStrings.sendConfirmedOnScreen ? "sent" : "unknown"} label={noteText} /></div>
+    {tabSessionId !== undefined || noteText
+      ? <div role={noteText ? noteIsError ? "alert" : "status" : undefined} aria-live={noteText ? noteIsError ? "assertive" : "polite" : undefined}
+        className={`cmux-dashboard-composer-note${noteIsError ? " is-error" : ""}`} title={noteText ?? undefined}>
+        {noteText ? <DashboardStatusMark state={noteIsError ? "error" : noteText === dashboardStrings.sendConfirmedOnScreen ? "sent" : "unknown"} label={noteText} /> : null}
+      </div>
       : null}
   </div>;
 }
