@@ -141,8 +141,7 @@
   font-size: 16px;
 }
 
-.cmux-dashboard-view .cmux-dashboard-chat-actions svg,
-.cmux-dashboard-view .cmux-dashboard-composer-send svg {
+.cmux-dashboard-view .cmux-dashboard-chat-actions svg {
   width: var(--cmux-chat-icon-size);
   height: var(--cmux-chat-icon-size);
 }
@@ -622,37 +621,6 @@
   margin-inline: auto;
 }
 
-.cmux-dashboard-view .cmux-dashboard-composer-row {
-  gap: var(--cmux-chat-space-4);
-  align-items: flex-end;
-  border: var(--cmux-chat-hairline) solid var(--cmux-border);
-  border-radius: var(--cmux-chat-radius-input);
-  padding: var(--cmux-chat-space-3) var(--cmux-chat-space-3) var(--cmux-chat-space-3) var(--cmux-chat-space-6);
-  background: var(--cmux-surface-raised);
-  box-shadow: none;
-  transition: border-color var(--cmux-motion-base) ease, box-shadow var(--cmux-motion-base) ease;
-}
-
-.cmux-dashboard-view .cmux-dashboard-composer-row:focus-within {
-  border-color: var(--cmux-accent);
-  box-shadow: 0 0 0 var(--cmux-chat-mark-width) color-mix(in srgb, var(--cmux-accent) 18%, transparent);
-}
-
-.cmux-dashboard-view .cmux-dashboard-composer-input {
-  min-height: 1.5em;
-  max-height: calc(15em + var(--cmux-chat-space-4));
-  border: 0;
-  border-radius: 0;
-  padding: var(--cmux-chat-space-2) 0;
-  resize: none;
-  background: transparent;
-  font-size: var(--cmux-read-font-size);
-  line-height: var(--cmux-chat-meta-line-height);
-  transition: none;
-}
-
-.cmux-dashboard-view .cmux-dashboard-composer-input:focus { background: transparent; }
-
 /* The composer is a sibling of the columns, so column container queries do
    not reach it. Mirror the narrow gutter at the pane's own container. */
 .cmux-dashboard-view .cmux-dashboard-chat-pane {
@@ -664,32 +632,6 @@
   .cmux-dashboard-view .cmux-dashboard-composer-destination {
     --cmux-chat-gutter: var(--cmux-chat-gutter-narrow);
   }
-}
-
-.cmux-dashboard-view .cmux-dashboard-composer-send {
-  display: inline-flex;
-  width: var(--cmux-chat-button-size);
-  height: var(--cmux-chat-button-size);
-  min-height: var(--cmux-chat-button-size);
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--cmux-chat-radius-send);
-  padding: 0;
-  font-size: var(--cmux-chat-meta-size);
-  font-weight: var(--cmux-chat-strong-weight);
-  transition: background-color var(--cmux-chat-motion-fast) ease, opacity var(--cmux-chat-motion-fast) ease, transform var(--cmux-chat-motion-fast) ease;
-}
-
-.cmux-dashboard-view .cmux-dashboard-composer-send:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--cmux-accent) 88%, var(--cmux-text));
-}
-
-.cmux-dashboard-view .cmux-dashboard-composer-send:active:not(:disabled) { transform: scale(.97); }
-
-.cmux-dashboard-view .cmux-dashboard-composer-send:disabled {
-  background: transparent;
-  color: var(--cmux-text-tertiary);
-  cursor: default;
 }
 
 .cmux-dashboard-view .cmux-dashboard-chat-pane small,
@@ -793,13 +735,10 @@
   .cmux-dashboard-view .cmux-archive-actions button,
   .cmux-dashboard-view .cmux-archive-nav button,
   .cmux-dashboard-view .cmux-dashboard-user-turn-nav-buttons button,
-  .cmux-dashboard-view .cmux-dashboard-composer-row,
-  .cmux-dashboard-view .cmux-dashboard-composer-send,
   .cmux-dashboard-view .cmux-dashboard-msg.is-optimistic-motion {
     animation: none;
     transition: none;
   }
-  .cmux-dashboard-view .cmux-dashboard-composer-send:active:not(:disabled) { transform: none; }
 }
 
 .cmux-dashboard-view .cmux-dashboard-peer-window {

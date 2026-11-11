@@ -1,12 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import type { CSSProperties } from "react";
 
 import {
   buildComposerPayload,
   composerKeyIntent,
   resolveComposerAgentLabelKind,
   resolveComposerTarget,
-  type ComposerAgentLabelKind,
   type ComposerTargetInput,
 } from "../../lib/composerSend";
 import { eraseSequenceFor, resetSessionDraft, restorableText, sessionDraft } from "../../lib/inputLineDraft";
@@ -14,11 +12,11 @@ import { focusController } from "../../lib/focusController";
 import { handleSocketCommand } from "../layout/socketCommands";
 import { useComposerStore } from "../../stores/composerStore";
 import { useToastStore } from "../../stores/toastStore";
+import { COMPOSER_LINE_HEIGHT, COMPOSER_MAX_ROWS, COMPOSER_PLACEHOLDER, TARGET_LABEL } from "./composerLook";
+import "./composer.css";
 
 /** Past this the pane's line editor is the wrong tool and the write would stall it. */
 const MAX_SEND_CHARS = 100_000;
-const LINE_HEIGHT = 20;
-const MAX_ROWS = 6;
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -33,16 +31,6 @@ interface PaneSendOutcome {
   textWritten?: boolean;
   writeMayHaveOccurred?: boolean;
 }
-
-const TARGET_LABEL: Record<ComposerAgentLabelKind, string> = {
-  claude: "Claude",
-  "claude-codex": "claude-codex",
-  codex: "Codex",
-  grok: "Grok",
-  omp: "Oh My Pi",
-  cursor: "Cursor",
-  shell: "シェル",
-};
 
 export interface PaneComposerProps {
   sessionId: string;
@@ -75,7 +63,7 @@ export function PaneComposer({ sessionId, target }: PaneComposerProps) {
     const textarea = textareaRef.current;
     if (!textarea) return;
     textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, LINE_HEIGHT * MAX_ROWS)}px`;
+    textarea.style.height = `${Math.min(textarea.scrollHeight, COMPOSER_LINE_HEIGHT * COMPOSER_MAX_ROWS)}px`;
   }, [draft]);
 
   useEffect(() => {
@@ -211,16 +199,16 @@ export function PaneComposer({ sessionId, target }: PaneComposerProps) {
     <div
       data-livebrief-interactive="true"
       data-composer-session={sessionId}
-      style={rootStyle}
+      className="cmux-composer-root"
     >
-      <div style={{ ...shellStyle, ...(focused ? shellFocusedStyle : null) }}>
-        <span style={badgeStyle}>{label}</span>
+      <div className={`cmux-composer-shell${focused ? " is-focused" : ""}`}>
+        <span className="cmux-composer-badge">{label}</span>
         <textarea
           ref={textareaRef}
           rows={1}
           value={draft}
           aria-label={`${label} へ送るメッセージ`}
-          placeholder="メッセージを入力"
+          placeholder={COMPOSER_PLACEHOLDER}
           onChange={(event) => setDraft(sessionId, event.target.value)}
           onFocus={() => { setFocused(true); adoptPendingLine(); }}
           onBlur={() => setFocused(false)}
@@ -240,7 +228,7 @@ export function PaneComposer({ sessionId, target }: PaneComposerProps) {
             if (intent === "close") returnToTerminal();
             else send();
           }}
-          style={textareaStyle}
+          className="cmux-composer-field"
         />
         {/* Always mounted: a button that appears under the cursor turns a tap
             meant for the caret into a send. */}
@@ -249,87 +237,17 @@ export function PaneComposer({ sessionId, target }: PaneComposerProps) {
           onClick={send}
           disabled={!canSend}
           aria-label="送信"
-          style={{ ...sendButtonStyle, opacity: canSend ? 1 : 0.3, cursor: canSend ? "pointer" : "default" }}
+          className="cmux-composer-send"
         >
           ↵
         </button>
       </div>
       {/* The row keeps its height whether or not the hint is showing, so
           focusing the composer never resizes the terminal above it. */}
-      <div style={{ ...hintStyle, visibility: focused ? "visible" : "hidden" }}>
+      <div className={`cmux-composer-hint${focused ? " is-visible" : ""}`}>
         <span>Shift+Enter で改行・Esc でターミナルへ</span>
         {payload.foldedNewlines ? <span>改行はスペースに畳んで送ります</span> : null}
       </div>
     </div>
   );
 }
-
-const rootStyle: CSSProperties = {
-  flex: "0 0 auto",
-  display: "grid",
-  gap: 2,
-  padding: "4px 8px 6px",
-  borderTop: "1px solid var(--cmux-border)",
-  background: "var(--cmux-bg)",
-};
-// A text field has to look like one before anybody clicks it. Transparent left
-// the composer indistinguishable from the pane above, so the only sign that
-// something could be typed there was the placeholder text — and once that was
-// replaced by a draft, nothing at all. A quiet fill and a hairline give it an
-// edge at rest; focus still lifts it, and now lifts it onto a higher tier
-// rather than out of nothing, which is the difference macOS draws between a
-// control that is idle and one that is taking input.
-const shellStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "flex-end",
-  gap: 6,
-  padding: "4px 6px",
-  borderRadius: "var(--cmux-radius-lg)",
-  background: "var(--cmux-surface)",
-  boxShadow: "inset 0 0 0 1px var(--cmux-border-hairline)",
-  transition: "background 120ms ease-out, box-shadow 120ms ease-out",
-};
-const shellFocusedStyle: CSSProperties = {
-  background: "var(--cmux-surface-raised)",
-  boxShadow: "inset 0 0 0 1px color-mix(in srgb, var(--cmux-accent) 40%, transparent), 0 2px 12px rgba(0, 0, 0, 0.18)",
-};
-const badgeStyle: CSSProperties = {
-  flex: "0 0 auto",
-  alignSelf: "center",
-  color: "var(--cmux-text-dim)",
-  fontSize: "var(--cmux-font-size-xs)",
-  whiteSpace: "nowrap",
-};
-const textareaStyle: CSSProperties = {
-  flex: 1,
-  minWidth: 0,
-  resize: "none",
-  border: "none",
-  outline: "none",
-  background: "transparent",
-  color: "var(--cmux-text)",
-  fontFamily: "var(--cmux-font-mono)",
-  fontSize: "var(--cmux-font-size-sm)",
-  lineHeight: `${LINE_HEIGHT}px`,
-  padding: "2px 0",
-};
-const sendButtonStyle: CSSProperties = {
-  flex: "0 0 auto",
-  alignSelf: "flex-end",
-  border: "none",
-  background: "transparent",
-  color: "var(--cmux-text-secondary)",
-  cursor: "pointer",
-  fontSize: "var(--cmux-font-size-sm)",
-  lineHeight: `${LINE_HEIGHT}px`,
-  padding: "0 2px",
-  animation: "cmux-composer-send-in 90ms ease-out",
-};
-const hintStyle: CSSProperties = {
-  display: "flex",
-  justifyContent: "flex-end",
-  gap: 10,
-  padding: "0 8px",
-  color: "var(--cmux-text-dim)",
-  fontSize: "var(--cmux-font-size-xs)",
-};

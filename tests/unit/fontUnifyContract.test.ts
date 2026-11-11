@@ -98,7 +98,7 @@ describe("font unification contract", () => {
 
   it.each([
     { file: "src/components/CommandPalette/CrsmPalette.css", selector: ".cmux-crsm-cwd-chip", family: "var(--cmux-font-mono)" },
-    { file: "src/components/dashboard/DashboardView.css", selector: ".cmux-dashboard-composer-input", family: "var(--cmux-dash-ui-font)" },
+    { file: "src/components/composer/composer.css", selector: ".cmux-composer-field", family: "var(--cmux-font-mono)" },
   ])("F9: preserves the explicit class font on $selector", ({ file, selector, family }) => {
     const rules = [...read(file).matchAll(/([^{}]+)\{([^{}]*)\}/g)];
     const rule = rules.find((candidate) => candidate[1].trim() === selector)!;

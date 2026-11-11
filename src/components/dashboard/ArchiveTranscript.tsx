@@ -8,6 +8,8 @@ import { TranscriptHistoryReader, descriptorKey, type HistoryState } from "../..
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 import { labelsMatch } from "../terminal/terminalTurnChipState";
 import { DashboardLinkedText, type DashboardLinkContext } from "./DashboardLinkedText";
+import { tidyToolOutput } from "../../lib/toolOutputTidy";
+import { ToolOutputNote, ToolOutputText } from "./ToolOutputText";
 import { MarkdownView } from "./MarkdownView";
 import { useTranscriptHistory } from "./useTranscriptHistory";
 import { ArchiveHeights, archiveLayout, archiveWindow, anchoredScrollTop, archiveBodyBlocks, indexAt, type ArchiveAnchor } from "./archiveWindow";
@@ -35,6 +37,7 @@ export interface ArchiveTranscriptProps {
   /** In-tab layout and grouping; dashboard compact mode keeps its contract. */
   tabPresentation?: boolean;
   navigationTarget?: HTMLElement | null;
+  navigationHidden?: boolean;
   visible?: boolean;
   prepared?: TranscriptHistoryReader;
   /** Full-tab loading may display its last readable window; never another binding. */
@@ -67,7 +70,7 @@ function waitForReaderIdle(reader: TranscriptHistoryReader, signal: AbortSignal)
   });
 }
 
-function ArchiveReaderView({reader,descriptor,visible=true,compact=false,tabPresentation=false,navigationTarget=null,tabId,context=null,targetEventId,targetEventRequest=0,onUserMessages,transcriptSearch,onSearchNavigation,retainedState}:ArchiveTranscriptProps&{reader:TranscriptHistoryReader}) {
+function ArchiveReaderView({reader,descriptor,visible=true,compact=false,tabPresentation=false,navigationTarget=null,navigationHidden=false,tabId,context=null,targetEventId,targetEventRequest=0,onUserMessages,transcriptSearch,onSearchNavigation,retainedState}:ArchiveTranscriptProps&{reader:TranscriptHistoryReader}) {
   const currentState=useSyncExternalStore(reader.subscribe,reader.getSnapshot,reader.getSnapshot);
   const retaining=!!retainedState && currentState.status==="opening" && !!descriptor
     && descriptorKey(retainedState.descriptor)===descriptorKey(descriptor) && descriptorKey(currentState.descriptor)===descriptorKey(descriptor);
@@ -288,6 +291,7 @@ function ArchiveReaderView({reader,descriptor,visible=true,compact=false,tabPres
   const searchFence = transcriptSearch?.query && transcriptSearch.identity === descriptorKey(state.descriptor)
     && transcriptSearch.sourceGeneration === state.sourceGeneration && transcriptSearch.snapshotEnd !== null ? BigInt(transcriptSearch.snapshotEnd) : null;
   const activeTarget = searchFence !== null && transcriptSearch?.targetId === activeSearchMatch ? activeSearchMatch : null;
+  const tabNoticesInHead=tabPresentation && !!navigationTarget && !navigationHidden;
   const actions = <div className="cmux-archive-actions">
       <button type="button" aria-label="最初へ" title="最初へ" disabled={!!state.loading||selected||!state.items.length} onClick={()=>{const ticket=++navigation.current;setSearching(true);void reader.first().then((reached)=>{if(ticket===navigation.current && reached){pendingJump.current=reader.snapshot.items.find((item)=>showRecords||(item.kind!=="source"&&item.kind!=="diagnostic"))?.occurrenceId??null;setMeasurement((m)=>m+1);}}).finally(()=>{if(ticket===navigation.current)setSearching(false);});}}>{compact?<ArrowUpToLine aria-hidden="true"/>:"最初へ"}</button>
       {compact?<>
@@ -295,6 +299,8 @@ function ArchiveReaderView({reader,descriptor,visible=true,compact=false,tabPres
         <button type="button" aria-label="次の指示へ" title="次の指示へ" disabled={!!state.loading||selected||(state.following&&state.reachedFence)} onClick={()=>void step(1)}><ChevronDown aria-hidden="true"/></button>
       </>:null}
       <button type="button" aria-label="最新へ" title="最新へ" disabled={!!state.loading||selected||state.status!=="ready"} onClick={()=>void reader.latest()}>{compact?<ArrowDownToLine aria-hidden="true"/>:"最新へ"}</button>
+      {tabNoticesInHead && state.notice?<DashboardGlyph icon={Info} label={explain(state.notice)} className="agent-tab-archive-status" />:null}
+      {tabNoticesInHead && state.error?<DashboardStatusMark state="error" label={explain(state.error)} className="agent-tab-archive-status" />:null}
       {searching?<DashboardIconButton icon={X} label="検索を停止" onClick={()=>{navigation.current++;reader.cancelSearch();setSearching(false);}} />:null}
       {different?<DashboardIconButton icon={ExternalLink} label="現在の会話を開く" onClick={()=>reader.reopen(descriptor!)} />:null}
       {(state.error||state.notice==="readerBusy")&&!different?<DashboardIconButton icon={RotateCcw} label="もう一度開く" onClick={()=>reader.reopen()} />:null}
@@ -303,8 +309,9 @@ function ArchiveReaderView({reader,descriptor,visible=true,compact=false,tabPres
     </div>;
   return <div className={`cmux-archive-transcript${compact?" is-conversation":""}`} data-archive-view="true">
     {compact && navigationTarget ? createPortal(actions, navigationTarget) : actions}
-    {state.error?<div role="status" className="cmux-archive-notice"><DashboardStatusMark state="error" label={explain(state.error)} /></div>:null}
-    {state.notice?<div role="status" className="cmux-archive-notice"><DashboardGlyph icon={Info} label={explain(state.notice)} /></div>:null}
+    {tabNoticesInHead?<div role="status" className="cmux-dashboard-sr-only" data-archive-live="true">{[state.error?explain(state.error):"",state.notice?explain(state.notice):""].filter(Boolean).join(" ")}</div>:null}
+    {!tabNoticesInHead && state.error?<div role="status" className="cmux-archive-notice"><DashboardStatusMark state="error" label={explain(state.error)} /></div>:null}
+    {!tabNoticesInHead && state.notice?<div role="status" className="cmux-archive-notice"><DashboardGlyph icon={Info} label={explain(state.notice)} /></div>:null}
     {!compact?<div className="cmux-archive-nav">
       <button type="button" aria-label="前の指示へ" disabled={!!state.loading||selected||(!turns.length&&state.reachedStart)} onClick={()=>void step(-1)}>▲</button>
       <button type="button" aria-label="次の指示へ" disabled={!!state.loading||selected||(state.following&&state.reachedFence)} onClick={()=>void step(1)}>▼</button>
@@ -379,7 +386,7 @@ function ArchiveToolGroup({items,context,bodyDisabled,revealRequest,onBody}:{
     <div className="cmux-archive-tool-content">{items.map((item,index)=><div key={item.occurrenceId}
       data-dashboard-event={index?item.occurrenceId:undefined} data-archive-member={item.occurrenceId}>
       <div className="cmux-dashboard-msg-who"><span>{item.kind==="toolCall"?item.tool??"ツール":"ツール結果"}</span>{item.target?<span>{item.target}</span>:null}</div>
-      <div className="cmux-dashboard-msg-plain"><DashboardLinkedText text={item.text} context={context}/></div>
+      <div className="cmux-dashboard-msg-plain">{item.kind==="toolResult"?<ToolOutputText text={item.text} context={context}/>:<DashboardLinkedText text={item.text} context={context}/>}</div>
       {item.bodyRef?<DashboardIconButton icon={FileText} label="本文の続きを表示" disabled={bodyDisabled} onClick={()=>onBody(item)}/>:null}
     </div>)}</div>
   </details>;
@@ -399,7 +406,7 @@ const ArchiveRow=memo(function ArchiveRow({item,compact,context,onBody,bodyDisab
   const more=item.bodyRef?<DashboardIconButton icon={FileText} label={item.kind==="source"||item.kind==="diagnostic"?"元の記録を表示":"本文の続きを表示"} disabled={bodyDisabled} onClick={onBody} />:null;
   if(item.kind==="toolCall"||item.kind==="toolResult")return <details className="cmux-dashboard-msg cmux-archive-tool" open={toolOpen} onToggle={(event)=>setToolOpen(event.currentTarget.open)}>
     <summary>{compact?<span className="cmux-dashboard-tool-name">{role}</span>:role}{item.target?<span className="cmux-dashboard-tool-target">{item.target}</span>:null}{time?<span className="cmux-dashboard-tool-time">{time}</span>:null}</summary>
-    <div className="cmux-archive-tool-content"><div className="cmux-dashboard-msg-plain"><DashboardLinkedText text={item.text} context={context}/></div>{more}</div>
+    <div className="cmux-archive-tool-content"><div className="cmux-dashboard-msg-plain">{item.kind==="toolResult"?<ToolOutputText text={item.text} context={context}/>:<DashboardLinkedText text={item.text} context={context}/>}</div>{more}</div>
   </details>;
   const conversation=compact&&(item.kind==="user"||item.kind==="assistant");
   return <div className={`cmux-dashboard-msg ${item.kind==="assistant"?"is-agent":item.kind==="user"?"is-user":"cmux-archive-evidence"}`} role={conversation?"group":undefined} aria-label={conversation?role:undefined} title={conversation&&time?time:undefined}>
@@ -421,11 +428,12 @@ function ArchiveBody({reader,item,onClose}:{reader:TranscriptHistoryReader;item:
     void reader.readBody(item,position,abort.signal).then((p)=>{if(!disposed)setChunk(p);}).catch((e)=>{if(!disposed)setError(explain(String(e).replace(/^Error: /,"")));}).finally(()=>{if(!disposed)setLoading(false);});
     return ()=>{disposed=true;abort.abort();};
   },[reader,item,position]);
+  const output=useMemo(()=>chunk&&item.kind==="toolResult"&&chunk.sourceText===false?tidyToolOutput(chunk.text):{text:chunk?.text??"",lossy:false},[chunk,item.kind]);
   return <section className="cmux-archive-body" aria-label="会話の本文"><div className="cmux-archive-actions">
     <DashboardGlyph icon={Info} label={chunk?.sourceText?"元の記録（読み取り専用）":"本文（読み取り専用）"} />
     <DashboardIconButton icon={ArrowUpToLine} label="本文の最初へ" disabled={loading||position===null} onClick={()=>{setPosition(null);setBack([]);}} />
     <DashboardIconButton icon={ChevronUp} label="前へ" disabled={loading||!back.length} onClick={()=>{setPosition(back[back.length-1]);setBack((b)=>b.slice(0,-1));}} />
     <DashboardIconButton icon={ChevronDown} label="続きへ" disabled={loading||!chunk?.cursor} onClick={()=>{setBack((b)=>[...b,position].slice(-4));setPosition(chunk!.cursor);}} />
     <DashboardIconButton icon={X} label="本文を閉じる" onClick={onClose} />
-  </div>{error?<div role="status"><DashboardStatusMark state="error" label={error} /></div>:null}<pre tabIndex={0}>{loading?<DashboardStatusMark state="running" label="本文を読み取っています" />:archiveBodyBlocks(chunk?.text??"").map((text,index)=><span key={index} data-archive-body-block="true">{text}</span>)}</pre></section>;
+  </div>{error?<div role="status"><DashboardStatusMark state="error" label={error} /></div>:null}{!loading&&output.lossy?<ToolOutputNote/>:null}<pre tabIndex={0}>{loading?<DashboardStatusMark state="running" label="本文を読み取っています" />:archiveBodyBlocks(output.text).map((text,index)=><span key={index} data-archive-body-block="true">{text}</span>)}</pre></section>;
 }

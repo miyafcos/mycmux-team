@@ -161,6 +161,7 @@ export const dashboardStrings = {
   webTranscriptTruncated: "古い発言は読み取りの上限を超えたため省いています",
   chatRoleUser: "私",
   chatRoleAgent: "エージェント",
+  toolOutputEncodingNote: "文字コードが合わず、記録の時点で読めなくなった字があります。",
   userTurnNavAriaLabel: (n: number, total: number): string => `自分の命令文 ${n}/${total}`,
   userTurnPrevAriaLabel: "前の命令文",
   userTurnNextAriaLabel: "次の命令文 / 最新に戻る",

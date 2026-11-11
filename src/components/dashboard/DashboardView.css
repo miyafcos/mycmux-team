@@ -235,9 +235,6 @@
 .cmux-dashboard-next-action-confirm button { margin-right: 6px; border: 1px solid var(--cmux-border); border-radius: 5px; padding: 3px 7px; background: var(--cmux-surface-raised); color: var(--cmux-text); font: inherit; font-size: var(--cmux-font-size-xs); cursor: pointer; }
 
 .cmux-dashboard-composer { display: grid; flex: none; background: var(--cmux-bg-solid); }
-.cmux-dashboard-composer-row { display: flex; }
-.cmux-dashboard-composer-input { flex: 1; overflow-y: auto; outline: none; color: var(--cmux-text); font-family: var(--cmux-dash-ui-font); }
-.cmux-dashboard-composer-send { flex: none; border: 0; background: var(--cmux-accent); color: var(--cmux-on-accent); font: inherit; cursor: pointer; }
 .cmux-dashboard-composer-note { color: var(--cmux-text-secondary); font-size: var(--cmux-font-size-xs); overflow-wrap: anywhere; }
 .cmux-dashboard-composer-note.is-error { color: var(--status-error); }
 .cmux-dashboard-composer.is-mention-drop-over { background: color-mix(in srgb, var(--cmux-accent) 10%, var(--cmux-bg-solid)); }
@@ -347,7 +344,6 @@
   .cmux-dashboard-msg,
   .cmux-dashboard-msg.is-optimistic-motion,
   .cmux-dashboard-chat-column,
-  .cmux-dashboard-composer-input,
   .cmux-dashboard-chat-activity.is-working .cmux-dashboard-chat-activity-glyph { animation: none; transition: none; }
   .cmux-dashboard-chat-drop-indicator { border-left-style: solid; animation: none; }
   .cmux-dashboard-chat-columns[data-dashboard-chat-drop-preview="full"] .cmux-dashboard-chat-column,

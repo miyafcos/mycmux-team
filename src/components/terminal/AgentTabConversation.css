@@ -2,7 +2,7 @@
    Two classes: global.css gives the side panel `width: min(72ch, ...)` with the
    same single-class weight and loads later, which left the terminal showing
    through on the right of a wide tab. */
-.terminal-transcript-panel.terminal-transcript-panel--tab {
+.terminal-transcript-panel--tab.terminal-transcript-panel {
   inset: 0;
   width: 100%;
   min-width: 0;
@@ -17,37 +17,41 @@
 .terminal-transcript-panel--tab *::before,
 .terminal-transcript-panel--tab *::after { box-sizing: border-box; min-width: 0; max-width: 100%; }
 .terminal-transcript-panel--tab .terminal-transcript-panel__head {
-  flex: 0 0 32px;
-  height: 32px;
+  flex: 0 0 24px;
+  height: 24px;
   flex-wrap: nowrap;
-  gap: 4px;
-  padding: 3px 6px;
+  gap: 2px;
+  padding: 2px 4px;
   overflow: hidden;
 }
-.terminal-transcript-panel--tab .agent-tab-view-switch { display: flex; flex: 0 0 auto; }
-.terminal-transcript-panel--tab .agent-tab-view-switch button,
-.terminal-transcript-panel--tab .agent-tab-search-toggle {
-  height: 24px;
-  border: 1px solid var(--cmux-border);
-  border-radius: 4px;
-  padding: 2px 6px;
+.terminal-transcript-panel--tab .agent-tab-view-switch { display: flex; flex: 0 0 auto; border: 1px solid var(--cmux-border); border-radius: 4px; overflow: hidden; }
+.terminal-transcript-panel--tab .agent-tab-view-switch button {
+  height: 20px;
+  border: 0;
+  border-radius: 0;
+  padding: 0 6px;
   color: var(--cmux-text-secondary);
   background: transparent;
-  font: inherit;
+  font: var(--cmux-font-size-xs) var(--cmux-font-ui);
   white-space: nowrap;
   cursor: pointer;
 }
 .terminal-transcript-panel--tab .agent-tab-view-switch button[aria-pressed="true"] { color: var(--cmux-text); background: var(--cmux-hover); }
-.terminal-transcript-panel--tab .agent-tab-view-short { display: none; }
-.terminal-transcript-panel--tab .agent-tab-search-toggle { display: inline-flex; flex: 0 0 24px; align-items: center; justify-content: center; padding: 3px; margin-left: auto; }
+.terminal-transcript-panel--tab .agent-tab-view-full { display: none; }
+.terminal-transcript-panel--tab .agent-tab-view-short { display: inline; }
+.terminal-transcript-panel--tab .agent-tab-search-toggle { margin-left: auto; }
+.terminal-transcript-panel--tab .terminal-transcript-panel__head :is(.agent-tab-navigation button, .terminal-transcript-search__controls button, .agent-tab-search-toggle) { display: inline-flex; flex: 0 0 20px; align-items: center; justify-content: center; width: 20px; height: 20px; min-width: 20px; min-height: 20px; padding: 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--cmux-text-secondary); cursor: pointer; }
+.terminal-transcript-panel--tab .terminal-transcript-panel__head :is(.agent-tab-navigation button, .terminal-transcript-search__controls button, .agent-tab-search-toggle):hover:not(:disabled) { background: var(--cmux-hover); }
+.terminal-transcript-panel--tab .terminal-transcript-panel__head svg.lucide { width: 12px; height: 12px; }
+.terminal-transcript-panel--tab .terminal-transcript-panel__head .agent-tab-archive-status { width: 20px; height: 20px; flex: 0 0 20px; }
+.terminal-transcript-panel--tab .terminal-transcript-panel__head .cmux-dashboard-action-name,
+.terminal-transcript-panel--tab .terminal-transcript-panel__head .cmux-dashboard-status-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .terminal-transcript-panel--tab .agent-tab-navigation { flex: 1; overflow-x: auto; scrollbar-width: none; }
 .terminal-transcript-panel--tab .agent-tab-navigation[hidden] { display: none; }
-.terminal-transcript-panel--tab .agent-tab-navigation > * { flex-wrap: nowrap; width: max-content; max-width: none; padding: 0; border: 0; }
-.terminal-transcript-panel--tab .agent-tab-navigation button { flex: 0 0 auto; height: 24px; padding: 3px; }
+.terminal-transcript-panel--tab .agent-tab-navigation > * { flex-wrap: nowrap; width: max-content; max-width: none; gap: 2px; padding: 0; border: 0; }
 .terminal-transcript-panel--tab .terminal-transcript-search--inline { flex: 1; flex-direction: row; align-items: center; gap: 3px; border: 0; padding: 0; overflow-x: auto; scrollbar-width: none; }
-.terminal-transcript-panel--tab .terminal-transcript-search--inline input { width: 0; flex: 1 0 36px; height: 24px; padding: 2px 4px; }
+.terminal-transcript-panel--tab .terminal-transcript-search--inline input { width: 0; flex: 1 0 36px; height: 20px; padding: 2px 4px; }
 .terminal-transcript-panel--tab .terminal-transcript-search__controls { flex: none; flex-wrap: nowrap; gap: 2px; white-space: nowrap; }
-.terminal-transcript-panel--tab .terminal-transcript-search__controls button { display: inline-flex; align-items: center; justify-content: center; height: 24px; padding: 3px; }
 .terminal-transcript-panel--tab [data-transcript-search-status] { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .terminal-transcript-panel--tab .terminal-transcript-search--inline > [role="status"]:not([data-transcript-search-status]) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 
@@ -60,23 +64,38 @@
 .terminal-transcript-panel--tab .cmux-archive-log > :first-child,
 .terminal-transcript-panel--tab .cmux-dashboard-chat > :first-child { margin-top: auto; }
 .terminal-transcript-panel--tab .cmux-archive-row,
-.terminal-transcript-panel--tab .cmux-dashboard-chat > * { width: calc(100% - 20px); max-width: 760px; margin-inline: auto; padding: 7px 0; }
-.terminal-transcript-panel--tab .cmux-dashboard-chat > * { flex-shrink: 0; margin-bottom: 6px; }
-.terminal-transcript-panel--tab .cmux-dashboard-msg { max-width: 100%; padding: 7px 9px; font-family: var(--cmux-font-ui); animation: none; }
+.terminal-transcript-panel--tab .cmux-dashboard-chat > * { width: calc(100% - 20px); max-width: 760px; margin-inline: auto; padding: 3px 0; }
+.terminal-transcript-panel--tab .cmux-dashboard-chat > * { flex-shrink: 0; margin-bottom: 2px; }
+.terminal-transcript-panel--tab .cmux-dashboard-msg { max-width: 100%; font-family: var(--cmux-font-ui); font-size: var(--cmux-dash-font-size); line-height: max(var(--cmux-dash-line-height), 1.45); animation: none; }
+.terminal-transcript-panel--tab .cmux-dashboard-msg.is-agent { padding: 0; background: none; }
 .terminal-transcript-panel--tab .cmux-archive-row > .is-agent { width: 100%; padding-inline: 0; }
-.terminal-transcript-panel--tab .cmux-dashboard-msg.is-user { width: fit-content; max-width: 85%; margin-left: auto; margin-right: 0; font-family: var(--cmux-font-ui); }
-.terminal-transcript-panel--tab .cmux-dashboard-chat > .cmux-dashboard-msg.is-user { max-width: min(85%, 646px); margin-right: max(10px, calc((100% - 760px) / 2)); }
+.terminal-transcript-panel--tab .cmux-dashboard-msg.is-user { align-self: stretch; width: auto; max-width: 100%; margin-inline: 0; padding: 0 0 0 8px; border-left: 2px solid var(--cmux-accent); border-radius: 0; background: none; font-family: var(--cmux-font-ui); }
+.terminal-transcript-panel--tab .cmux-dashboard-chat > .cmux-dashboard-msg.is-user { width: calc(100% - 20px); max-width: 760px; margin-inline: auto; }
+.terminal-transcript-panel--tab .cmux-archive-row[data-kind="user"][data-prev-kind] { position: relative; border-top: 10px solid transparent; padding-top: 11px; background-clip: padding-box; }
+.terminal-transcript-panel--tab .cmux-archive-row[data-kind="user"][data-prev-kind]::before { content: ""; position: absolute; top: 0; left: 0; right: 0; border-top: 1px solid color-mix(in srgb, var(--cmux-border) 70%, transparent); pointer-events: none; }
+.terminal-transcript-panel--tab .cmux-archive-row[data-kind="user"][data-prev-kind].cmux-archive-search-active { outline-color: transparent; box-shadow: inset 0 0 0 2px var(--cmux-accent); }
+.terminal-transcript-panel--tab .cmux-archive-row[data-kind="user"][data-prev-kind].cmux-archive-search-active::before { border-top-color: transparent; }
 .terminal-transcript-panel--tab .cmux-dashboard-msg-who { flex-wrap: wrap; }
+.terminal-transcript-panel--tab .cmux-dashboard-markdown { gap: 4px; line-height: max(var(--cmux-dash-line-height), 1.45); }
+.terminal-transcript-panel--tab .cmux-dashboard-markdown :is(h1, h2, h3, h4, h5, h6) { margin: 0; font-size: 1em; font-weight: 700; line-height: max(var(--cmux-dash-line-height), 1.45); }
+.terminal-transcript-panel--tab .cmux-dashboard-markdown-list { gap: 0; }
+.terminal-transcript-panel--tab .cmux-dashboard-markdown li { margin-block: 0; padding-block: 0; }
 .terminal-transcript-panel--tab .cmux-dashboard-markdown,
 .terminal-transcript-panel--tab .cmux-dashboard-markdown a { overflow-wrap: anywhere; }
 .terminal-transcript-panel--tab pre { overflow-x: auto; font-family: var(--cmux-font-mono); }
 .terminal-transcript-panel--tab table { display: block; overflow-x: auto; }
+.terminal-transcript-panel--tab .cmux-archive-row > .cmux-archive-tool,
 .terminal-transcript-panel--tab .cmux-archive-tool,
-.terminal-transcript-panel--tab .cmux-dashboard-toolfold { color: var(--cmux-text-secondary); border: 1px solid var(--cmux-border); border-radius: 5px; background: var(--cmux-surface); }
-.terminal-transcript-panel--tab .cmux-archive-tool summary { padding: 5px 7px; color: var(--cmux-text); font-size: var(--cmux-font-size-xs); cursor: pointer; overflow-wrap: anywhere; }
+.terminal-transcript-panel--tab .cmux-dashboard-toolfold { color: var(--cmux-text-secondary); border: 0; border-radius: 0; padding: 0; background: none; opacity: .5; }
+.terminal-transcript-panel--tab :is(.cmux-archive-tool, .cmux-dashboard-toolfold):is(:hover, :focus-within, [open]) { opacity: 1; }
+.terminal-transcript-panel--tab .cmux-archive-tool summary,
+.terminal-transcript-panel--tab .cmux-dashboard-toolfold summary { padding: 1px 0; color: var(--cmux-text-secondary); font-size: var(--cmux-dash-font-size); cursor: pointer; overflow-wrap: anywhere; }
+.terminal-transcript-panel--tab .cmux-archive-tool:not([open]) summary,
+.terminal-transcript-panel--tab .cmux-dashboard-toolfold:not([open]) summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .terminal-transcript-panel--tab .cmux-dashboard-tool-name,
-.terminal-transcript-panel--tab .cmux-dashboard-tool-target { color: var(--cmux-text); }
-.terminal-transcript-panel--tab .cmux-archive-tool-content { padding: 6px; font-family: var(--cmux-font-mono); }
+.terminal-transcript-panel--tab .cmux-dashboard-tool-target { color: inherit; }
+.terminal-transcript-panel--tab .cmux-archive-tool-content,
+.terminal-transcript-panel--tab .cmux-dashboard-tool-content { padding: 6px; border: 1px solid var(--cmux-border); border-radius: 4px; background: var(--cmux-surface); font-family: var(--cmux-font-mono); }
 .terminal-transcript-panel--tab .cmux-archive-tool-content > * + * { border-top: 1px solid var(--cmux-border); margin-top: 8px; padding-top: 8px; }
 .terminal-transcript-panel--tab .cmux-dashboard-optimistic-messages { width: calc(100% - 20px); max-width: 760px; margin-inline: auto; max-height: 30%; overflow: auto; padding: 6px 0; }
 .terminal-transcript-panel--tab .agent-tab-conversation-question { flex: 0 1 auto; width: calc(100% - 20px); max-width: 760px; margin-inline: auto; max-height: 40%; overflow: auto; overflow-wrap: anywhere; }
@@ -85,13 +104,12 @@
 .terminal-transcript-panel--tab .cmux-dashboard-qcard-footer { flex-wrap: wrap; }
 .terminal-transcript-panel--tab svg.lucide { width: 14px; height: 14px; flex: 0 0 auto; }
 .terminal-transcript-panel--tab .cmux-dashboard-icon-button { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; border: 1px solid var(--cmux-border); border-radius: 4px; padding: 3px; background: transparent; color: var(--cmux-text-secondary); font: inherit; cursor: pointer; }
-.terminal-transcript-panel--tab .cmux-dashboard-composer { width: calc(100% - 20px); max-width: 760px; margin-inline: auto; gap: 4px; padding: 6px 0; border-top: 1px solid var(--cmux-border); max-height: 45%; overflow-y: auto; overflow-x: hidden; }
-.terminal-transcript-panel--tab .cmux-dashboard-composer-row { gap: 4px; align-items: flex-end; }
-.terminal-transcript-panel--tab .cmux-dashboard-composer-input { width: 0; min-height: 42px; max-height: 160px; resize: none; padding: 6px; border: 1px solid var(--cmux-border); border-radius: 5px; background: var(--cmux-bg-solid); font: inherit; }
-.terminal-transcript-panel--tab .cmux-dashboard-composer-send { min-height: 36px; width: 36px; border-radius: 5px; }
-.terminal-transcript-panel--tab .cmux-dashboard-composer-send svg { width: 16px; height: 16px; }
-.terminal-transcript-panel--tab .cmux-dashboard-composer-send span { display: none; }
-.terminal-transcript-panel--tab .cmux-dashboard-composer-note { display: flex; min-height: 15px; line-height: 15px; }
+.terminal-transcript-panel--tab .cmux-archive-boundary { width: auto; max-width: calc(100% - 20px); align-self: center; justify-content: center; height: 18px; min-height: 18px; margin-inline: auto; padding: 0 6px; border: 0; background: none; color: var(--cmux-text-secondary); font-size: var(--cmux-font-size-xs); line-height: 18px; }
+.terminal-transcript-panel--tab .cmux-archive-boundary:hover:not(:disabled) { color: var(--cmux-text); text-decoration: underline; }
+.terminal-transcript-panel--tab .cmux-archive-boundary svg.lucide { width: 10px; height: 10px; }
+.terminal-transcript-panel--tab .cmux-dashboard-composer { width: calc(100% - 20px); max-width: 760px; margin-inline: auto; gap: 2px; padding: 4px 0 6px; border-top: 1px solid var(--cmux-border); max-height: 45%; overflow-y: auto; overflow-x: hidden; }
+.terminal-transcript-panel--tab .cmux-dashboard-composer-note { display: flex; min-height: 0; font-size: var(--cmux-font-size-xs); line-height: 15px; }
+.terminal-transcript-panel--tab .cmux-dashboard-composer-note:empty { display: none; height: 0; min-height: 0; }
 .terminal-transcript-panel--tab .cmux-dashboard-composer-target { color: var(--cmux-text-secondary); font-size: var(--cmux-font-size-xs); overflow-wrap: anywhere; }
 .terminal-transcript-panel--tab .cmux-dashboard-mention-menu { position: static; max-height: 130px; overflow: auto; }
 /* Fixed rows keep the slash list at eight visible commands, with its own scroll. */
@@ -104,20 +122,26 @@
 .terminal-transcript-panel--tab .agent-tab-new-records { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; align-self: center; border: 1px solid var(--cmux-border); border-radius: 5px; padding: 4px 8px; background: var(--cmux-surface); color: var(--cmux-text); cursor: pointer; font: inherit; }
 
 /* Actual terminal rows only. Opacity is the only animated property. */
-.terminal-transcript-panel--tab .agent-tab-live-strip { position: relative; display: flex; flex: 0 1 auto; flex-direction: column; width: calc(100% - 20px); max-width: 760px; max-height: 40%; margin: 4px auto; border: 1px solid var(--cmux-border); border-radius: 5px; padding: 6px 8px; background: var(--cmux-surface); color: var(--cmux-text); text-align: left; overflow: hidden; cursor: pointer; }
+.terminal-transcript-panel--tab .agent-tab-live-strip { position: relative; display: flex; flex: 0 1 auto; flex-direction: column; width: calc(100% - 20px); max-width: 760px; max-height: 40%; margin: 2px auto; border: 0; border-radius: 0; padding: 2px 8px; background: none; color: var(--cmux-text); text-align: left; overflow: hidden; cursor: pointer; }
 .terminal-transcript-panel--tab .agent-tab-live-strip::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: var(--cmux-accent); opacity: .35; }
 .terminal-transcript-panel--tab .agent-tab-live-strip[data-agent-tab-live-pulsing="true"]::before { animation: agent-tab-live-pulse 1.6s ease-in-out infinite; }
 .terminal-transcript-panel--tab .agent-tab-live-strip__status { flex: 0 0 auto; font: var(--cmux-font-size-xs)/1.5 var(--cmux-font-ui); overflow-wrap: anywhere; }
 .terminal-transcript-panel--tab .agent-tab-live-strip__rows { display: flex; flex-direction: column; justify-content: flex-end; min-height: 0; overflow: hidden; }
-/* The terminal shows one or two rows from frame to frame; keep two rows of
-   height so the conversation above does not shift by a line each second. */
-.terminal-transcript-panel--tab .agent-tab-live-strip[aria-expanded="false"]:is([data-agent-tab-live-state="working"], [data-agent-tab-live-state="active"]) .agent-tab-live-strip__rows { min-height: calc(2 * 1.5 * var(--cmux-font-size-xs)); }
+/* Keep the existing terminal evidence in the DOM; only the collapsed layout
+   becomes a single line, with the last row taking priority. */
+.terminal-transcript-panel--tab .agent-tab-live-strip[aria-expanded="false"] { flex-direction: row; align-items: baseline; gap: 6px; white-space: nowrap; overflow: hidden; }
+.terminal-transcript-panel--tab .agent-tab-live-strip[aria-expanded="false"] .agent-tab-live-strip__rows { flex: 1 1 auto; flex-direction: row; align-items: baseline; justify-content: flex-start; gap: 6px; min-width: 0; }
+.terminal-transcript-panel--tab .agent-tab-live-strip[aria-expanded="false"] .agent-tab-live-strip__row { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.terminal-transcript-panel--tab .agent-tab-live-strip[aria-expanded="false"] .agent-tab-live-strip__row:last-child { flex: 0 0 auto; max-width: 100%; }
 .terminal-transcript-panel--tab .agent-tab-live-strip__row,
 .terminal-transcript-panel--tab .agent-tab-live-strip__body { display: block; flex: 0 0 auto; font: var(--cmux-font-size-xs)/1.5 var(--cmux-font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-.terminal-transcript-panel--tab .agent-tab-live-strip[data-agent-tab-live-state="ask"] { border-color: var(--status-waiting); color: var(--status-waiting); }
-.terminal-transcript-panel--tab .agent-tab-live-strip[data-agent-tab-live-state="error"] { border-color: var(--status-error); color: var(--status-error); }
+.terminal-transcript-panel--tab .agent-tab-live-strip[data-agent-tab-live-state="ask"] { color: var(--status-waiting); }
+.terminal-transcript-panel--tab .agent-tab-live-strip[data-agent-tab-live-state="ask"]::before { background: var(--status-waiting); }
+.terminal-transcript-panel--tab .agent-tab-live-strip[data-agent-tab-live-state="error"] { color: var(--status-error); }
+.terminal-transcript-panel--tab .agent-tab-live-strip[data-agent-tab-live-state="error"]::before { background: var(--status-error); }
 .terminal-transcript-panel--tab [data-agent-tab-arrival="true"] { box-shadow: inset 2px 0 var(--cmux-accent); }
 .terminal-transcript-panel--tab button:focus-visible { outline: 2px solid var(--cmux-accent); outline-offset: -2px; }
+.terminal-transcript-panel--tab .agent-tab-view-switch button:focus-visible { outline-offset: -2px !important; }
 @keyframes agent-tab-live-pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
   .terminal-transcript-panel--tab .agent-tab-live-strip[data-agent-tab-live-pulsing="true"]::before { animation: none; }
@@ -129,14 +153,11 @@
 @container agent-conversation (max-width: 360px) {
   .terminal-transcript-panel--tab .terminal-transcript-panel__head { padding-inline: 4px; gap: 2px; }
   .terminal-transcript-panel--tab .terminal-transcript-panel__head[data-tab-search-open="true"] .agent-tab-view-switch { display: none; }
-  .terminal-transcript-panel--tab .cmux-dashboard-msg { padding: 5px 6px; }
   .terminal-transcript-panel--tab .cmux-dashboard-msg-who > span:last-child { display: none; }
   .terminal-transcript-panel--tab .cmux-dashboard-qcard-head { display: none; }
 }
 @container agent-conversation (max-width: 220px) {
-  .terminal-transcript-panel--tab .agent-tab-view-full { display: none; }
-  .terminal-transcript-panel--tab .agent-tab-view-short { display: inline; }
-  .terminal-transcript-panel--tab .terminal-transcript-search__controls span { font-size: 10px; }
+  .terminal-transcript-panel--tab .terminal-transcript-search__controls span { font-size: var(--cmux-font-size-xs); }
   .terminal-transcript-panel--tab .terminal-transcript-search--inline [data-transcript-search-status] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .terminal-transcript-panel--tab .agent-tab-live-strip[aria-expanded="false"][data-agent-tab-live-state="working"] .agent-tab-live-strip__row:not(:last-child),
   .terminal-transcript-panel--tab .agent-tab-live-strip[aria-expanded="false"][data-agent-tab-live-state="active"] .agent-tab-live-strip__row:not(:last-child) { display: none; }

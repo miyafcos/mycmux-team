@@ -63,12 +63,12 @@ describe("N9 plan 1 shipped CSS", () => {
     expect(metric(one(`${V}.cmux-dashboard-chat-header`), "min-height")).toBe(40);
   });
 
-  it("makes the reply input 1 line (28px) up to 6 lines and no longer 15 lines", () => {
-    const body = one(`${V}.cmux-dashboard-composer-input`);
-    expect(metric(body, "min-height")).toBe(28);
-    expect(body).toMatch(/max-height:\s*calc\(6 \* 1\.5em \+ 8px\)/);
-    expect(dashboard("DashboardChatSurface.css")).toContain("max-height: calc(15em + var(--cmux-chat-space-4))");
-    expect(metric(one(`${V}.cmux-dashboard-composer .cmux-dashboard-composer-send`), "height")).toBe(28);
+  it("leaves input and send styling to the shared composer rather than N9 or the chat surface", () => {
+    for (const source of [block, dashboard("DashboardChatSurface.css")]) {
+      for (const rule of rules(source)) {
+        expect(rule.selector).not.toMatch(/\.cmux-dashboard-composer-(?:input|send)\b/);
+      }
+    }
   });
 
 
@@ -82,8 +82,6 @@ describe("N9 plan 1 shipped CSS", () => {
       [".cmux-dashboard-next-actions.is-balanced .cmux-dashboard-next-actions-list", ["min-height"], 28],
       [".cmux-dashboard-next-actions-more-panel button", ["min-height", "height"], 24],
       [".cmux-dashboard-next-actions-more-panel .cmux-dashboard-next-actions-retry", ["min-height", "height"], 24],
-      [".cmux-dashboard-composer-input", ["min-height"], 28],
-      [".cmux-dashboard-composer .cmux-dashboard-composer-send", ["min-height", "height"], 28],
       [".cmux-dashboard-qcard:not(.is-compact) .cmux-dashboard-qcard-option", ["min-height"], 28],
     ] as const;
     for (const [selector, properties, standard] of controls) {

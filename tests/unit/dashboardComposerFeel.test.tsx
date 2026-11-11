@@ -194,9 +194,9 @@ describe("dashboard optimistic composer feedback", () => {
     const bubble = container.querySelector(".cmux-dashboard-msg.is-user");
     expect(bubble?.querySelector(".cmux-dashboard-msg-who")).toBeNull();
     expect(bubble?.getAttribute("aria-label")).toBe("私");
-    expect(container.querySelector(".cmux-dashboard-composer-send")?.textContent).toBe("送信");
+    expect(container.querySelector(".cmux-dashboard-composer-send")?.textContent).toBe("↵");
     expect(container.querySelector(".cmux-dashboard-composer-send")?.getAttribute("aria-label")).toBe("送信");
-    expect(container.querySelector("textarea")?.placeholder).toBe("メッセージ");
+    expect(container.querySelector("textarea")?.placeholder).toBe("メッセージを入力");
     expect(container.querySelector("details.cmux-dashboard-chat-details")?.hasAttribute("open")).toBe(false);
   });
 
@@ -224,33 +224,33 @@ describe("dashboard optimistic composer feedback", () => {
     expect(mocks.handleSocketCommand).not.toHaveBeenCalled();
   });
 
-  it("N9 plan 1: starts at one 28px line, grows with the text, stops at 6 lines and scrolls inside without losing text", async () => {
+  it("shared composer: starts at one 24px line, grows with the text, stops at 6 lines and scrolls inside without losing text", async () => {
     const textarea = await renderFeel();
-    // The shipped CSS gives min-height 28px and max-height calc(6 * 1.5em + 8px) = 125px at 13px text.
-    textarea.style.minHeight = "28px";
-    textarea.style.maxHeight = "125px";
+    // The shared CSS gives min-height 24px and max-height 120px at every density.
+    textarea.style.minHeight = "24px";
+    textarea.style.maxHeight = "120px";
     textarea.style.border = "0px";
-    let contentHeight = 28;
+    let contentHeight = 24;
     Object.defineProperty(textarea, "scrollHeight", { configurable: true, get: () => contentHeight });
 
     await input(textarea, "x");
-    expect(textarea.style.height).toBe("28px");
+    expect(textarea.style.height).toBe("24px");
     expect(textarea.style.overflowY).toBe("hidden");
 
-    contentHeight = 66;
+    contentHeight = 64;
     await input(textarea, "a\nb\nc");
-    expect(textarea.style.height).toBe("66px");
+    expect(textarea.style.height).toBe("64px");
     expect(textarea.style.overflowY).toBe("hidden");
 
-    contentHeight = 125;
+    contentHeight = 120;
     await input(textarea, "1\n2\n3\n4\n5\n6");
-    expect(textarea.style.height).toBe("125px");
+    expect(textarea.style.height).toBe("120px");
     expect(textarea.style.overflowY).toBe("hidden");
 
     const long = Array.from({ length: 15 }, (_, index) => `line ${index + 1}`).join("\n");
-    contentHeight = 15 * 19.5 + 8;
+    contentHeight = 15 * 20 + 4;
     await input(textarea, long);
-    expect(textarea.style.height).toBe("125px");
+    expect(textarea.style.height).toBe("120px");
     expect(textarea.style.overflowY).toBe("auto");
     expect(textarea.value).toBe(long);
 

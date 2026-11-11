@@ -418,7 +418,13 @@ describe("legacy conversation search keeps the terminal covered", () => {
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 150)); });
     expectCoveredSearch(input);
     await release();
-    await vi.waitFor(() => expect(host.querySelector(".cmux-archive-notice")).not.toBeNull(), { timeout: 10000 });
+    await vi.waitFor(() => {
+      const mark = host.querySelector('.cmux-archive-notice [data-dashboard-status="error"]');
+      expect(mark).not.toBeNull();
+      expect(mark?.getAttribute("aria-label")).toBe(error === "recordMissing" ? "この会話の記録はまだ見つかりません" : "会話を読み取れませんでした。再試行できます");
+      expect(mark?.closest("[hidden]")).toBeNull();
+      expect(host.querySelector(".terminal-transcript-panel__head .agent-tab-archive-status")).toBeNull();
+    }, { timeout: 10000 });
     expectCoveredSearch(input);
   }, 20000);
 

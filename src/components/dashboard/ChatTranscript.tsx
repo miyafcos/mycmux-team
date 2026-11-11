@@ -8,6 +8,8 @@ import { ArchiveTranscript, type ArchiveTranscriptProps } from "./ArchiveTranscr
 import { labelsMatch } from "../terminal/terminalTurnChipState";
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 import { DashboardLinkedText, type DashboardLinkContext } from "./DashboardLinkedText";
+import { tidyToolOutput } from "../../lib/toolOutputTidy";
+import { ToolOutputNote } from "./ToolOutputText";
 import { MarkdownView } from "./MarkdownView";
 import {
   toChatTranscriptRows,
@@ -103,13 +105,15 @@ function previewText(text: string): { preview: string; hasMore: boolean } {
 }
 
 function ToolDetails({ tool, context }: { tool: ToolTranscriptItem; context: DashboardLinkContext | null }) {
-  const output = tool.summary ? previewText(tool.summary) : null;
+  const summary = useMemo(() => tool.summary ? tidyToolOutput(tool.summary) : null, [tool.summary]);
+  const output = summary ? previewText(summary.text) : null;
   return <div className="cmux-dashboard-toolfold-item">
     <div>{`${toolStatus(tool)} ${tool.tool}`}{tool.target ? <> (<DashboardLinkedText text={tool.target} context={context} />)</> : null}</div>
+    {summary?.lossy ? <ToolOutputNote /> : null}
     {output ? <div className="cmux-dashboard-tool-output"><DashboardLinkedText text={output.preview} context={context} /></div> : null}
     {output?.hasMore ? <details className="cmux-dashboard-tool-fulltext">
       <summary>▸ 全文</summary>
-      <div><DashboardLinkedText text={tool.summary ?? ""} context={context} /></div>
+      <div><DashboardLinkedText text={summary?.text ?? ""} context={context} /></div>
     </details> : null}
   </div>;
 }

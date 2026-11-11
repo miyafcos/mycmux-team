@@ -378,7 +378,7 @@ describe("ReplyComposer mentions", () => {
       input.sessionId === "session-a" ? Promise.resolve({ confirmed: true }) : Promise.reject(new Error("offline"))
     ));
     const textarea = await renderComposer();
-    expect(textarea.getAttribute("placeholder")).toBe("メッセージ");
+    expect(textarea.getAttribute("placeholder")).toBe("メッセージを入力");
     expect(container.querySelector(".cmux-dashboard-composer-target")?.textContent).toBe("送信先：@で指定したタブ（2 件）");
     const preview = container.querySelector<HTMLElement>(".cmux-dashboard-dispatch-preview");
     expect(preview?.querySelector("[role=img]")?.getAttribute("aria-label")).toBe("2件へ送ります");

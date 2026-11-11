@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent, RefObject } from "react";
-import { ArrowUp, MessageSquareReply, Info, Send, Target } from "lucide-react";
+import { MessageSquareReply, Info, Send, Target } from "lucide-react";
 import { DashboardCount, DashboardGlyph, DashboardIconButton, DashboardStatusMark } from "./DashboardUi";
 
 import { handleSocketCommand } from "../layout/socketCommands";
@@ -9,7 +9,9 @@ import { useComposerStore, type ComposerCommandKind } from "../../stores/compose
 import { usePaneDragStore } from "../../stores/paneDragStore";
 import { useReportInboxStore, type ReportDispatchDelivery } from "../../stores/reportInboxStore";
 import { createBatch, sealBatch, type DispatchBatch as SealedDispatchBatch } from "../../lib/dispatchBatch";
-import { buildComposerPayload, resolveComposerTarget } from "../../lib/composerSend";
+import { buildComposerPayload, resolveComposerAgentLabelKind, resolveComposerTarget } from "../../lib/composerSend";
+import { COMPOSER_MAX_HEIGHT, COMPOSER_MIN_HEIGHT, COMPOSER_NEWLINE_HINT, COMPOSER_PLACEHOLDER, TARGET_LABEL } from "../composer/composerLook";
+import "../composer/composer.css";
 import type { DashboardCardModel } from "./dashboardModel";
 import { resolveDisplayState } from "./dashboardModel";
 import { buildDashboardMentionCandidates } from "./dashboardMentionCandidates";
@@ -156,6 +158,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
   const consumeDashboardOptimisticRetry = useComposerStore((state) => state.consumeDashboardOptimisticRetry);
   const rootRef = useRef<HTMLDivElement>(null);
   const [sending, setSending] = useState(false);
+  const [focused, setFocused] = useState(false);
   const [note, setNote] = useState<ComposerNote | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuQuery, setMenuQuery] = useState("");
@@ -258,8 +261,8 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
     if (!input) return;
     const style = getComputedStyle(input);
     const border = (Number.parseFloat(style.borderTopWidth) || 0) + (Number.parseFloat(style.borderBottomWidth) || 0);
-    const minimum = Number.parseFloat(style.minHeight) || 42;
-    const maximum = Number.parseFloat(style.maxHeight) || 160;
+    const minimum = Number.parseFloat(style.minHeight) || COMPOSER_MIN_HEIGHT;
+    const maximum = Number.parseFloat(style.maxHeight) || COMPOSER_MAX_HEIGHT;
     input.style.height = "0px";
     const height = input.scrollHeight + border;
     input.style.height = `${Math.max(minimum, Math.min(maximum, height))}px`;
@@ -737,6 +740,15 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
   const invalidPreview = preview.missing.length > 0 || (hasMentions && preview.recipients.length === 0);
   const localTarget = tabSessionId !== undefined && sessionId === tabSessionId
     && (!hasMentions || !invalidPreview && preview.recipients.length === 1 && preview.recipients[0].sessionId === tabSessionId);
+  const agentLabel = card && !hasMentions && card.tab.type !== "web"
+    ? TARGET_LABEL[resolveComposerAgentLabelKind({
+      command: card.tab.commandArgv?.[0] ?? card.tab.lastProcess ?? card.pane.lastProcess ?? "",
+      args: card.tab.commandArgv?.slice(1),
+      agentId: card.tab.agentId ?? card.pane.agentId,
+      agentKind: tabAgentKind ?? card.tab.agentKind ?? card.pane.agentKind,
+      launchEnv: card.tab.launchEnv ?? card.pane.launchEnv,
+    })]
+    : null;
   const retryCount = batch?.members.filter((member) => batch.deliveries[memberKey(member)]?.state === "failed").length ?? 0;
 
   return <div
@@ -764,14 +776,17 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
     </div> : null}
     {hasMentions && invalidPreview ? <div className="cmux-dashboard-dispatch-preview is-error"><DashboardStatusMark state="error" label={dashboardStrings.dispatchInvalidTargets} /></div> : null}
     {!localTarget ? <div className="cmux-dashboard-composer-target" title={targetText}>{targetText}</div> : null}
-    <div className="cmux-dashboard-composer-row">
+    <div className={`cmux-dashboard-composer-row cmux-composer-shell${focused ? " is-focused" : ""}`}>
+      {agentLabel ? <span className="cmux-composer-badge">{agentLabel}</span> : null}
       <textarea
         ref={inputRef}
         rows={1}
         value={draft}
         disabled={blocked || sending}
         aria-label={dashboardStrings.composerAriaLabel}
-        placeholder="メッセージ"
+        placeholder={COMPOSER_PLACEHOLDER}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         onChange={(event) => onInputChange(event.target.value, event.target.selectionStart ?? event.target.value.length, (event.nativeEvent as InputEvent).isComposing)}
         onSelect={slashEnabled ? event => {
           if (!slashComposing.current) updateSlashQuery(event.currentTarget.value, event.currentTarget.selectionStart);
@@ -790,18 +805,18 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
         aria-controls={slashOpen ? slashMenuId : undefined}
         aria-activedescendant={slashOpen ? slashMenuId + "-" + (slashMatches[slashIndex] ?? slashMatches[0]).name : undefined}
         onKeyDown={onKeyDown}
-        className="cmux-dashboard-composer-input"
+        className="cmux-dashboard-composer-input cmux-composer-field"
       />
       <button
         type="button"
         disabled={!canSubmit}
         aria-label="送信"
         title="送信"
-        className="cmux-dashboard-composer-send"
-        style={{ opacity: canSubmit ? 1 : 0.55 }}
+        className="cmux-dashboard-composer-send cmux-composer-send"
         onClick={() => void submit()}
-      ><ArrowUp aria-hidden="true" /><span>送信</span></button>
+      >↵</button>
     </div>
+    <div className={`cmux-composer-hint${focused ? " is-visible" : ""}`}><span>{COMPOSER_NEWLINE_HINT}</span></div>
     {slashOpen ? <div ref={slashMenuRef} id={slashMenuId} className="cmux-dashboard-mention-menu agent-tab-slash-menu" role="listbox" aria-label={agentTabStrings.slashMenu}>
       {slashMatches.map((candidate, index) => <button
         key={candidate.name}

@@ -1,0 +1,7 @@
+.cmux-tool-output-note {
+  color: var(--cmux-text-dim);
+  font-size: var(--cmux-font-size-xs);
+  line-height: normal;
+  white-space: normal;
+  margin: 0 0 2px;
+}

@@ -332,7 +332,7 @@ export function TerminalTranscriptPanel({
       } : undefined}>
         {/* Hidden behind the Dashboard, the pane must not claim a turn request
             the Dashboard's own transcript is there to answer. */}
-        {fullTab && archiveEnabled ? <ArchiveTranscript compact tabPresentation navigationTarget={navigationTarget}
+        {fullTab && archiveEnabled ? <ArchiveTranscript compact tabPresentation navigationTarget={navigationTarget} navigationHidden={tabSearchOpen}
           descriptor={descriptor} prepared={reader ?? undefined} retainedState={retainedArchiveState}
           visible={visible && !dashboardOpen} tabId={dashboardOpen || !live ? null : tabId}
           context={fullTab.card ? { workspaceId: fullTab.card.workspaceId, paneId: fullTab.card.paneId, sessionId, canPreviewInternally: true } : null}

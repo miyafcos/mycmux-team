@@ -131,10 +131,6 @@
 .cmux-dashboard-view .cmux-dashboard-chat-columns { min-width: 0; overflow-x: auto; }
 .cmux-dashboard-view .cmux-dashboard-chat-column { min-width: 0; }
 .cmux-dashboard-view .cmux-dashboard-composer { padding-inline: var(--cmux-space-7); }
-.cmux-dashboard-view .cmux-dashboard-composer-input {
-  min-height: var(--cmux-dashboard-composer-min-height); font-size: var(--cmux-font-size-md);
-}
-.cmux-dashboard-view .cmux-dashboard-composer-send,
 .cmux-dashboard-view .cmux-dashboard-next-actions button { min-height: var(--cmux-dashboard-control-size); }
 .cmux-dashboard-view .cmux-dashboard-composer-target { display: block; padding-bottom: var(--cmux-space-4); font-size: var(--cmux-font-size-xs); }
 .cmux-dashboard-view .cmux-dashboard-layout-heading { display: flex; justify-content: space-between; min-height: var(--cmux-dashboard-header-height); align-items: center; padding-inline: var(--cmux-space-6); font-size: var(--cmux-font-size-md); border-bottom: 1px solid var(--cmux-border-hairline); }
@@ -280,9 +276,6 @@
   padding-bottom: 0; line-height: 16px; color: var(--cmux-text-secondary);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.cmux-dashboard-view .cmux-dashboard-composer-row { padding: var(--cmux-space-2) var(--cmux-space-2) var(--cmux-space-2) var(--cmux-space-6); align-items: flex-end; }
-.cmux-dashboard-view .cmux-dashboard-composer-input { min-height: calc(var(--cmux-space-7) + var(--cmux-space-6)); max-height: calc(6 * 1.5em + 8px); padding: var(--cmux-space-2) 0; }
-.cmux-dashboard-view .cmux-dashboard-composer .cmux-dashboard-composer-send { min-height: calc(var(--cmux-space-7) + var(--cmux-space-6)); height: calc(var(--cmux-space-7) + var(--cmux-space-6)); font-size: var(--cmux-font-size-sm); }
 .cmux-dashboard-view .cmux-dashboard-qcard:not(.is-compact) { margin: 0 var(--cmux-space-7) var(--cmux-space-4); padding: var(--cmux-space-4) var(--cmux-space-6); gap: var(--cmux-space-3); }
 .cmux-dashboard-view .cmux-dashboard-qcard:not(.is-compact) .cmux-dashboard-qcard-head { margin-bottom: 0; }
 .cmux-dashboard-view .cmux-dashboard-qcard:not(.is-compact) .cmux-dashboard-qcard-options { margin-top: var(--cmux-space-2); gap: var(--cmux-space-3); }
